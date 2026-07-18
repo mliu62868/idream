@@ -1,4 +1,8 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
+import {
+  hasHydratableMediaBlobAuthority,
+  isMediaAssetOperationalForAuthority,
+} from "@/server/lib/media-asset-authority";
 import { canonicalSha256 } from "../shared/canonical-json";
 import { toInputJson } from "../shared/prisma-json";
 import {
@@ -59,7 +63,7 @@ const EMPTY_SUMMARY: BackfillSummary = {
 };
 
 function record(
-  value: Prisma.JsonValue | null | undefined,
+  value: unknown,
 ): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -244,12 +248,22 @@ async function backfillVisualIdentity(
   );
   const assets = proposedIds.length
     ? await tx.mediaAsset.findMany({
-        where: { id: { in: proposedIds }, deletedAt: null },
-        select: { id: true },
+        where: {
+          id: { in: proposedIds },
+          characterId,
+          deletedAt: null,
+          type: "image",
+          safetyStatus: "passed",
+        },
+        select: { id: true, storageKey: true, url: true, metadata: true },
         orderBy: { id: "asc" },
       })
     : [];
-  const available = new Set(assets.map((item) => item.id));
+  const operationalAssets = assets.filter((asset) =>
+    isMediaAssetOperationalForAuthority(asset.metadata) &&
+    hasHydratableMediaBlobAuthority(asset)
+  );
+  const available = new Set(operationalAssets.map((item) => item.id));
   for (const mediaAssetId of proposedIds) {
     if (!available.has(mediaAssetId)) continue;
     await tx.referenceCandidate.upsert({
@@ -275,7 +289,7 @@ async function backfillVisualIdentity(
     orderBy: { revision: "desc" },
   });
   if (referenceSet && referenceSet.references.length === 0) referenceSet = null;
-  if (!referenceSet && assets.length > 0) {
+  if (!referenceSet && operationalAssets.length > 0) {
     const latest = await tx.referenceSetRevision.aggregate({
       where: { visualProfileId: profile.id },
       _max: { revision: true },
@@ -295,7 +309,7 @@ async function backfillVisualIdentity(
       },
     });
     await tx.characterVisualReferenceSnapshot.createMany({
-      data: assets.map((asset, position) => ({
+      data: operationalAssets.map((asset, position) => ({
         referenceSetRevisionId: createdReferenceSet.id,
         mediaAssetId: asset.id,
         position,
@@ -578,7 +592,11 @@ async function buildReconciliationReport(
       });
     }
     const provenance = record(release.generationProvenance);
-    if (typeof provenance.routeFingerprint !== "string") {
+    const requiredRoute = record(provenance.requiredReleaseRoute);
+    const routeFingerprint = typeof requiredRoute.routeFingerprint === "string"
+      ? requiredRoute.routeFingerprint
+      : provenance.routeFingerprint;
+    if (typeof routeFingerprint !== "string") {
       mismatches.push({
         characterId: character.id,
         code: "live_release_route_unqualified",
@@ -587,7 +605,7 @@ async function buildReconciliationReport(
     } else {
       const qualified = await db.generationRouteQualification.findFirst({
         where: {
-          routeFingerprint: provenance.routeFingerprint,
+          routeFingerprint,
           result: "qualified",
           OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
         },

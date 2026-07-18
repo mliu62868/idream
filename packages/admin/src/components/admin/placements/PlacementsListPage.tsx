@@ -79,6 +79,7 @@ export function PlacementsListPage({ canPublish }: { canPublish: boolean }) {
       value(row.slot),
       `${value(row.targetType)} · ${row.targetId}`,
       <StatusPill key="status" status={row.status} />,
+      <StatusPill key="verification" status={row.verificationState} />,
     ],
   }));
 
@@ -106,9 +107,9 @@ export function PlacementsListPage({ canPublish }: { canPublish: boolean }) {
         ]}
       />
       {error ? <p role="alert" className="mb-4 text-sm text-[var(--ad-red-text)]">{error}</p> : null}
-      {loading ? (
+      {loading && rows.length === 0 ? (
         <p className="text-sm text-[var(--ad-text-muted)]">{t("Loading…")}</p>
-      ) : (
+      ) : rows.length === 0 && error ? null : (
         <DataTable
           empty={
             <EmptyState
@@ -117,7 +118,7 @@ export function PlacementsListPage({ canPublish }: { canPublish: boolean }) {
               title={t("No placements yet.")}
             />
           }
-          headers={[t("Asset"), t("Slot"), t("Target"), t("Status")]}
+          headers={[t("Asset"), t("Slot"), t("Target"), t("Status"), t("Verification")]}
           rows={tableRows}
         />
       )}

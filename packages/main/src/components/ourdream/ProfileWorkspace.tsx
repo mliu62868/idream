@@ -24,6 +24,17 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  parseLibraryResponse,
+  parseMediaCollectionsResponse,
+  parseProfileResponse,
+  parseProfilePreferencesResponse,
+  parseTagListResponse,
+  type PublicBillingAccess,
+  type PublicSubscription,
+  type RuntimeLibraryItem as LibraryItem,
+  type RuntimeMediaCollection as MediaCollection,
+} from "@/lib/public-api-contracts";
+import {
   authorityShowsEmpty,
   failedAuthorityStatus,
   initialAuthorityStatus,
@@ -31,6 +42,7 @@ import {
   profileAuthorityStateForResponse,
   readyAuthorityStatus,
 } from "./authority-state";
+import { useAgeGateAccess } from "./AgeGateBoundary";
 import { authHrefForTarget, authNextTargetFromPath } from "./authRedirect";
 import {
   fetchProtectedForViewer,
@@ -39,61 +51,15 @@ import {
 import { activeEntitlementSummary } from "./entitlement-copy";
 import { LegacyTestAssetBadge } from "./LegacyTestAssetBadge";
 
-type ProfilePayload = {
+type ApiErrorPayload = {
   ok?: boolean;
   error?: { message?: string };
-  data?: {
-    user?: { displayName?: string | null; email?: string };
-    balance?: number;
-    subscription?: SubscriptionSummary | null;
-    entitlements?: Record<string, unknown>;
-  };
 };
 
-type SubscriptionSummary = {
-  id: string;
-  status: string;
-  currentPeriodEnd?: string | null;
-  cancelAtPeriodEnd?: boolean;
-  plan?: {
-    name: string;
-    billingPeriod: string;
-  };
-};
-
-type BillingPortalPayload = {
-  ok?: boolean;
-  error?: { message?: string };
+type ProfileMutationPayload = ApiErrorPayload & {
   data?: {
-    mode?: "manage" | "subscribe";
-    url?: string;
-    message?: string;
-    subscription?: SubscriptionSummary | null;
-  };
-};
-
-type BillingMutationPayload = {
-  ok?: boolean;
-  error?: { message?: string };
-  data?: {
-    message?: string;
-    subscription?: SubscriptionSummary | null;
-  };
-};
-
-type LibraryPayload = {
-  data?: {
-    items?: LibraryItem[];
-    emptyCta?: string | null;
-  };
-};
-
-type PreferencesPayload = {
-  data?: {
-    preferences?: {
-      locale?: string | null;
-      mutedTags?: string[] | null;
-      notificationSettings?: Record<string, unknown> | null;
+    user?: {
+      displayName?: string | null;
     };
   };
 };
@@ -104,41 +70,6 @@ type ProfileTag = {
   label: string;
   publicCharacterCount?: number;
   slug: string;
-};
-
-type ProfileTagsPayload = {
-  data?: {
-    items?: ProfileTag[];
-  };
-};
-
-type LibraryItem = {
-  id: string;
-  type?: string;
-  title?: string;
-  name?: string;
-  description?: string | null;
-  image?: string;
-  thumbnailUrl?: string;
-  url?: string;
-  contentType?: string | null;
-  isSynthetic?: boolean;
-  prompt?: string | null;
-  visibility?: string;
-  status?: string;
-  character?: {
-    id: string;
-    title?: string;
-    name?: string;
-    image?: string;
-  };
-};
-
-type MediaCollection = {
-  id: string;
-  name: string;
-  visibility: "private" | "public" | "unlisted";
-  itemCount: number;
 };
 
 type MediaCollectionCreatePayload = {
@@ -286,12 +217,15 @@ function focusProfileDeepLink() {
 }
 
 export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>) {
+  const { accepted: ageGateAccepted } = useAgeGateAccess();
   const [authState, setAuthState] = useState<AuthState>("loading");
   const [authTarget, setAuthTarget] = useState("/profile");
   const [profileAuthority, setProfileAuthority] = useState(initialAuthorityStatus);
   const [balance, setBalance] = useState<number | null>(null);
   const [plan, setPlan] = useState<string | null>(null);
-  const [subscription, setSubscription] = useState<SubscriptionSummary | null>(null);
+  const [subscription, setSubscription] = useState<PublicSubscription | null>(null);
+  const [billingAccess, setBillingAccess] =
+    useState<PublicBillingAccess | null>(null);
   const [entitlements, setEntitlements] = useState<Record<string, unknown>>({});
   const [displayName, setDisplayName] = useState("");
   const [profileName, setProfileName] = useState("");
@@ -336,6 +270,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
     setBalance(null);
     setPlan(null);
     setSubscription(null);
+    setBillingAccess(null);
     setEntitlements({});
     setDisplayName("");
     setProfileName("");
@@ -370,39 +305,34 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
         showAnonymousProfile();
         return;
       }
-      const payload = (await response.json().catch(() => null)) as
-        | ProfilePayload
-        | null;
+      const rawPayload: unknown = await response.json().catch(() => null);
       if (requestSerial !== profileRequestSerialRef.current) return;
-      if (responseState === "error" || payload?.ok === false) {
-        throw new Error(payload?.error?.message ?? "Account data could not load.");
+      if (responseState === "error") {
+        const errorPayload = rawPayload as ApiErrorPayload | null;
+        throw new Error(
+          errorPayload?.error?.message ?? "Account data could not load.",
+        );
       }
-      const profileData = payload?.data;
-      const user = profileData?.user;
+      const profileData = parseProfileResponse(rawPayload);
+      const user = profileData.user;
       const nextName = user?.displayName?.trim() || user?.email?.trim() || "";
-      const nextBalance = profileData?.balance;
-      const sub = profileData?.subscription;
-      const nextEntitlements = profileData?.entitlements;
-      if (
-        !profileData ||
-        !user ||
-        !nextName ||
-        typeof nextBalance !== "number" ||
-        !Number.isFinite(nextBalance) ||
-        sub === undefined ||
-        (sub !== null && !sub.plan) ||
-        !nextEntitlements ||
-        Array.isArray(nextEntitlements)
-      ) {
+      if (!nextName) {
         throw new Error("Account data was incomplete.");
       }
       setAuthState("authenticated");
       setDisplayName(nextName);
       setProfileName(nextName);
-      setBalance(nextBalance);
-      setSubscription(sub);
-      setEntitlements(nextEntitlements);
-      setPlan(sub?.plan ? `${sub.plan.name} ${sub.plan.billingPeriod}` : "Free");
+      setBalance(profileData.balance);
+      setSubscription(profileData.subscription);
+      setBillingAccess(profileData.billingAccess);
+      setEntitlements(profileData.entitlements);
+      setPlan(
+        profileData.subscription?.plan
+          ? `${profileData.subscription.plan.name} ${profileData.subscription.plan.billingPeriod}`
+          : profileData.subscription
+            ? "Paid access · purchased offer unavailable"
+            : "Free",
+      );
       setProfileAuthority(readyAuthorityStatus());
     } catch (error) {
       if (requestSerial !== profileRequestSerialRef.current) return;
@@ -434,15 +364,14 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
     );
     try {
       const response = await fetch(`/api/v1/library/${nextTab}`);
-      const payload = (await response.json().catch(() => null)) as
-        | LibraryPayload
-        | null;
+      const raw = await response.json().catch(() => null);
       if (requestSerial !== libraryRequestSerialRef.current) return;
-      if (!response.ok || !Array.isArray(payload?.data?.items)) {
+      if (!response.ok) {
         throw new Error("Library data could not load.");
       }
-      setItems(payload.data.items);
-      setEmptyCta(payload.data.emptyCta ?? null);
+      const payload = parseLibraryResponse(raw);
+      setItems(payload.items);
+      setEmptyCta(payload.emptyCta);
       setLibraryAuthority(readyAuthorityStatus());
     } catch (error) {
       if (requestSerial !== libraryRequestSerialRef.current) return;
@@ -461,22 +390,15 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
     setMediaCollectionsAuthority(loadingAuthorityStatus);
     try {
       const response = await fetch("/api/v1/media/collections");
-      const payload = (await response.json().catch(() => null)) as {
-        data?: { collections?: MediaCollection[] };
-        error?: { message?: string };
-        ok?: boolean;
-      } | null;
+      const raw = await response.json().catch(() => null);
       if (requestSerial !== mediaCollectionsRequestSerialRef.current) return;
-      if (
-        !response.ok ||
-        payload?.ok === false ||
-        !Array.isArray(payload?.data?.collections)
-      ) {
+      if (!response.ok) {
         throw new Error(
-          payload?.error?.message ?? "Media collections could not load.",
+          profileApiErrorMessage(raw) ??
+            "Media collections could not load.",
         );
       }
-      setMediaCollections(payload.data.collections);
+      setMediaCollections(parseMediaCollectionsResponse(raw).collections);
       setMediaCollectionsAuthority(readyAuthorityStatus());
     } catch (error) {
       if (requestSerial !== mediaCollectionsRequestSerialRef.current) return;
@@ -495,14 +417,12 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
     setPreferencesAuthority(loadingAuthorityStatus);
     try {
       const response = await fetch("/api/v1/profile/preferences");
-      const payload = (await response.json().catch(() => null)) as
-        | PreferencesPayload
-        | null;
+      const raw = await response.json().catch(() => null);
       if (requestSerial !== preferencesRequestSerialRef.current) return;
-      const preferences = payload?.data?.preferences;
-      if (!response.ok || !preferences) {
+      if (!response.ok) {
         throw new Error("Preferences could not load.");
       }
+      const preferences = parseProfilePreferencesResponse(raw).preferences;
       const notificationSettings = preferences.notificationSettings ?? {};
       setEmailUpdates(notificationSettings.productUpdates === true);
       setMutedTags(preferences.mutedTags ?? []);
@@ -520,15 +440,14 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
     setPreferenceTagsAuthority(loadingAuthorityStatus);
     try {
       const response = await fetch("/api/v1/tags");
-      const payload = (await response.json().catch(() => null)) as
-        | ProfileTagsPayload
-        | null;
+      const raw = await response.json().catch(() => null);
       if (requestSerial !== preferencesRequestSerialRef.current) return;
-      if (!response.ok || !Array.isArray(payload?.data?.items)) {
+      if (!response.ok) {
         throw new Error("Preference tags could not load.");
       }
+      const payload = parseTagListResponse(raw);
       setPreferenceTags(
-        payload.data.items.filter(
+        payload.items.filter(
           (tag) => !tag.isMutedByDefault && (tag.publicCharacterCount ?? 0) > 0,
         ),
       );
@@ -547,11 +466,12 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
   // Defer initial loads to a macrotask so the first render commits before any setState
   // (matches ExploreWorkspace/FeedWorkspace; avoids react-hooks/set-state-in-effect).
   useEffect(() => {
+    if (!ageGateAccepted) return;
     const timer = window.setTimeout(() => {
       void refreshProfile();
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [refreshProfile]);
+  }, [ageGateAccepted, refreshProfile]);
 
   useEffect(() => {
     function syncAuthTarget() {
@@ -570,27 +490,33 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
   }, []);
 
   useEffect(() => {
-    if (authState !== "authenticated") return;
+    if (!ageGateAccepted || authState !== "authenticated") return;
     const timer = window.setTimeout(() => void refreshPreferences(), 0);
     return () => window.clearTimeout(timer);
-  }, [authState, refreshPreferences]);
+  }, [ageGateAccepted, authState, refreshPreferences]);
 
   useEffect(() => {
-    if (authState !== "authenticated") return;
+    if (!ageGateAccepted || authState !== "authenticated") return;
     focusProfileDeepLink();
-  }, [authState]);
+  }, [ageGateAccepted, authState]);
 
   useEffect(() => {
-    if (authState !== "authenticated") return;
+    if (!ageGateAccepted || authState !== "authenticated") return;
     const timer = window.setTimeout(() => void refreshLibrary(tab), 0);
     return () => window.clearTimeout(timer);
-  }, [authState, refreshLibrary, tab]);
+  }, [ageGateAccepted, authState, refreshLibrary, tab]);
 
   useEffect(() => {
-    if (authState !== "authenticated" || tab !== "media") return;
+    if (
+      !ageGateAccepted ||
+      authState !== "authenticated" ||
+      tab !== "media"
+    ) {
+      return;
+    }
     const timer = window.setTimeout(() => void refreshMediaCollections(), 0);
     return () => window.clearTimeout(timer);
-  }, [authState, refreshMediaCollections, tab]);
+  }, [ageGateAccepted, authState, refreshMediaCollections, tab]);
 
   async function redeem() {
     setStatus("");
@@ -605,7 +531,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ code }),
       });
-      const payload = (await response.json()) as ProfilePayload;
+      const payload = (await response.json()) as ApiErrorPayload;
       if (!response.ok || payload.ok === false) {
         setStatus(payload.error?.message ?? "Redeem failed");
         return;
@@ -661,7 +587,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ displayName: nextName }),
       });
-      const payload = (await response.json()) as ProfilePayload;
+      const payload = (await response.json()) as ProfileMutationPayload;
       if (!response.ok || payload.ok === false) {
         setStatus(payload.error?.message ?? "Profile update failed.");
         return;
@@ -700,53 +626,6 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
       if (checked) return current.includes(slug) ? current : [...current, slug];
       return current.filter((item) => item !== slug);
     });
-  }
-
-  async function openBillingPortal() {
-    try {
-      const response = await fetch("/api/v1/billing/portal", { method: "POST" });
-      const payload = (await response.json()) as BillingPortalPayload;
-      if (!response.ok || payload.ok === false) {
-        setStatus(payload.error?.message ?? "Billing portal failed.");
-        return;
-      }
-      const url = payload.data?.url;
-      if (payload.data?.subscription !== undefined) setSubscription(payload.data.subscription);
-      if (payload.data?.subscription?.plan) {
-        setPlan(
-          `${payload.data.subscription.plan.name} ${payload.data.subscription.plan.billingPeriod}`,
-        );
-      }
-      if (url && url !== "/profile#billing") {
-        window.location.href = url;
-        return;
-      }
-      if (url === "/profile#billing") window.history.replaceState(null, "", "/profile#billing");
-      setStatus(payload.data?.message ?? "Billing portal ready.");
-    } catch {
-      setStatus("Network error. Please try again.");
-    }
-  }
-
-  async function updateRenewal(action: "cancel" | "resume") {
-    setStatus("");
-    try {
-      const response = await fetch(`/api/v1/billing/${action}`, { method: "POST" });
-      const payload = (await response.json()) as BillingMutationPayload;
-      if (!response.ok || payload.ok === false) {
-        setStatus(payload.error?.message ?? "Billing update failed.");
-        return;
-      }
-      if (payload.data?.subscription !== undefined) setSubscription(payload.data.subscription);
-      if (payload.data?.subscription?.plan) {
-        setPlan(
-          `${payload.data.subscription.plan.name} ${payload.data.subscription.plan.billingPeriod}`,
-        );
-      }
-      setStatus(payload.data?.message ?? "Billing updated.");
-    } catch {
-      setStatus("Network error. Please try again.");
-    }
   }
 
   async function signOutEverywhere() {
@@ -1019,18 +898,25 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
     : items;
   const isCreatedTab = tab === "created";
   const emptyState = emptyStateForTab(tab, emptyCta);
-  const subscriptionPeriod = subscription?.currentPeriodEnd
+  const benefitsPeriod = billingAccess?.benefitsEndAt
     ? new Intl.DateTimeFormat("en", { dateStyle: "medium" }).format(
-        new Date(subscription.currentPeriodEnd),
+        new Date(billingAccess.benefitsEndAt),
       )
-    : "current period";
-  const billingStatus = subscription
-    ? subscription.cancelAtPeriodEnd
-      ? `Renewal canceled · benefits active until ${subscriptionPeriod}`
-      : `Renews ${subscriptionPeriod}`
+    : "the displayed access period";
+  const renewalPeriod = billingAccess?.renewsAt
+    ? new Intl.DateTimeFormat("en", { dateStyle: "medium" }).format(
+        new Date(billingAccess.renewsAt),
+      )
+    : null;
+  const billingStatus = subscription && billingAccess
+    ? billingAccess.billingModel === "prepaid_period"
+      ? `Benefits active until ${benefitsPeriod} · no automatic renewal`
+      : renewalPeriod
+        ? `Renews ${renewalPeriod}`
+        : `Benefits active until ${benefitsPeriod}`
     : plan
-      ? "No active subscription"
-      : "Billing status unavailable";
+      ? "No active paid access"
+      : "Billing and access status unavailable";
   const isMyAiRoute = routePath.startsWith("/custom");
   const workspaceTitle = isMyAiRoute ? "My AI" : "Profile";
   const authRequiredTitle = isMyAiRoute ? "Sign in to open My AI" : "Sign in to open Profile";
@@ -1245,7 +1131,9 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
             data-testid="profile-billing-card"
             id="billing"
           >
-            <p className="text-[13px] font-black uppercase text-white">Billing Portal</p>
+            <p className="text-[13px] font-black uppercase text-white">
+              Billing &amp; access
+            </p>
             <p className="mt-2 text-[12px] font-bold text-[rgb(170,170,170)]">
               {plan ?? "Plan unavailable"}
             </p>
@@ -1260,30 +1148,12 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
                   Retry account data
                 </button>
               ) : subscription ? (
-                <>
-                  <button
-                    className="inline-flex h-9 items-center justify-center rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)]"
-                    onClick={openBillingPortal}
-                    type="button"
-                  >
-                    Manage
-                  </button>
-                  <Link
-                    className="inline-flex h-9 items-center justify-center rounded-full bg-[rgb(36,36,36)] px-4 text-[12px] font-bold text-white"
-                    href="/upgrade"
-                  >
-                    Change plan
-                  </Link>
-                  <button
-                    className="inline-flex h-9 items-center justify-center rounded-full bg-[rgb(36,36,36)] px-4 text-[12px] font-bold text-white"
-                    onClick={() =>
-                      void updateRenewal(subscription.cancelAtPeriodEnd ? "resume" : "cancel")
-                    }
-                    type="button"
-                  >
-                    {subscription.cancelAtPeriodEnd ? "Resume renewal" : "Cancel renewal"}
-                  </button>
-                </>
+                <Link
+                  className="inline-flex h-9 items-center justify-center rounded-full bg-[rgb(36,36,36)] px-4 text-[12px] font-bold text-white"
+                  href="/upgrade"
+                >
+                  Change plan
+                </Link>
               ) : (
                 <Link
                   className="inline-flex h-9 items-center justify-center rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)]"
@@ -2077,6 +1947,18 @@ function triggerDownload(url: string) {
 
 function profileRequestError(error: unknown, fallback: string) {
   return error instanceof Error && error.message ? error.message : fallback;
+}
+
+function profileApiErrorMessage(payload: unknown) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return undefined;
+  }
+  const error = (payload as Record<string, unknown>).error;
+  if (!error || typeof error !== "object" || Array.isArray(error)) {
+    return undefined;
+  }
+  const message = (error as Record<string, unknown>).message;
+  return typeof message === "string" ? message : undefined;
 }
 
 function isPrivateMediaUrl(url: string) {

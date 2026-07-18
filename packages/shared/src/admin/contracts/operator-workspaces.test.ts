@@ -5,6 +5,14 @@ import {
 } from "./index";
 
 describe("operator workspace contracts", () => {
+  const reviewContext = {
+    brief: "Create one clear customer-ready campaign image.",
+    orientation: "16:9",
+    profile: { key: "profile-1", version: 1, label: "Campaign image" },
+    recipe: { key: "recipe-1", version: 1, label: "Freeplay" },
+    referenceAssetCount: 0,
+  };
+
   it("requires an optimistic version and an auditable reason for project autosave", () => {
     const result = characterProjectDraftPatchRequestSchema.safeParse({
       entityVersion: 3,
@@ -34,6 +42,7 @@ describe("operator workspace contracts", () => {
       id: "run-1",
       title: "Feed refresh",
       purpose: "feed",
+      reviewContext,
       target: { type: "character", id: "character-1" },
       ownerId: null,
       dueAt: null,
@@ -61,6 +70,7 @@ describe("operator workspace contracts", () => {
       id: "run-2",
       title: "Campaign review",
       purpose: "campaign",
+      reviewContext,
       target: { type: "campaign", id: "campaign-1" },
       ownerId: null,
       dueAt: null,

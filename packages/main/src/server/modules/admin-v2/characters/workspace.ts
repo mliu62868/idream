@@ -2,7 +2,11 @@ import type {
   CharacterDraftPersona,
   CharacterDraftVisualDirection,
 } from "@idream/shared/admin";
-import { characterProjectDraftResumeSchema, characterQaRunSchema } from "@idream/shared/admin";
+import {
+  adminCommandStatusSchema,
+  characterProjectDraftResumeSchema,
+  characterQaRunSchema,
+} from "@idream/shared/admin";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
@@ -17,6 +21,19 @@ import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-executor";
 import { evaluateReleaseReadiness } from "./readiness";
 import { findQualifiedGenerationRoute } from "./visual-authority";
 import { characterVisualProfileSnapshotHash, referenceSetSnapshotHash } from "./release-snapshot";
+import { generationWorkflowDescriptor } from "@/server/modules/admin/generation-catalog";
+import { canonicalSha256 } from "../shared/canonical-json";
+import {
+  operationalCharacterWhere,
+  operationalMediaAssetWhere,
+} from "@/server/modules/admin/shared/metric-data-scope";
+import { ACTIVE_CONTROL_PLANE_COMMAND_STATUSES } from "../shared/control-plane-command";
+import { characterCommandCoordinationKey } from "./command-coordination";
+import { loadCharacterIdentityBootstrapAuthority } from "./identity-bootstrap-authority";
+import { lockCharacterGenerationAuthority } from "./generation-authority-lock";
+import { isMediaAssetOperationalForAuthority } from "@/server/lib/media-asset-authority";
+import { evaluateDraftAssetRouteAuthority } from "./draft-asset-route-authority";
+import { generationSourceVariationAuthority } from "./generation-route-authority";
 
 function record(value: Prisma.JsonValue | null | undefined): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -28,6 +45,145 @@ function strings(value: Prisma.JsonValue | null | undefined): string[] {
   return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
 }
 
+const characterPreviewAssetPurposes = [
+  "character_cover",
+  "character_hero",
+  "character_chat",
+] as const;
+
+type CharacterPreviewAssetPurpose = (typeof characterPreviewAssetPurposes)[number];
+
+type CharacterPreviewAssetPackIds = Partial<Record<CharacterPreviewAssetPurpose, string>>;
+
+function characterAssetPack(value: Prisma.JsonValue): CharacterPreviewAssetPackIds {
+  const source = record(value);
+  return Object.fromEntries(
+    characterPreviewAssetPurposes.flatMap((purpose) => {
+      const entry = source[purpose];
+      if (typeof entry === "string") return [[purpose, entry]];
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+      const assetId = (entry as Record<string, unknown>).assetId;
+      return typeof assetId === "string" ? [[purpose, assetId]] : [];
+    }),
+  );
+}
+
+function releasePreviewAssetPackIds(
+  release: { releasePlacementManifest: Prisma.JsonValue } | null,
+): CharacterPreviewAssetPackIds {
+  const manifest = release ? record(release.releasePlacementManifest) : {};
+  const placements = Array.isArray(manifest.placements) ? manifest.placements : [];
+  const purposeBySlot = {
+    character_avatar: "character_cover",
+    character_hero: "character_hero",
+    character_chat: "character_chat",
+  } as const;
+  const entries = placements.flatMap((value) => {
+    const placement = value !== null && typeof value === "object" && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : {};
+    const purpose = typeof placement.slotKey === "string"
+      ? purposeBySlot[placement.slotKey as keyof typeof purposeBySlot]
+      : undefined;
+    return purpose && typeof placement.assetId === "string"
+      ? [[purpose, placement.assetId]]
+      : [];
+  }) as Array<[CharacterPreviewAssetPurpose, string]>;
+  return Object.fromEntries(characterPreviewAssetPurposes.flatMap((purpose) => {
+    const matches = entries.filter(([candidate]) => candidate === purpose);
+    return matches.length === 1 ? [matches[0]] : [];
+  }));
+}
+
+type CharacterPreviewMediaAsset = {
+  id: string;
+  url: string;
+  thumbnailUrl: string | null;
+  deletedAt: Date | null;
+  type: string;
+  safetyStatus: string;
+  characterId: string | null;
+  metadata: Prisma.JsonValue;
+};
+
+function previewAssetPackDto(
+  assetIds: CharacterPreviewAssetPackIds,
+  assets: ReadonlyMap<string, CharacterPreviewMediaAsset>,
+  characterId: string,
+) {
+  return Object.fromEntries(characterPreviewAssetPurposes.map((purpose) => {
+    const assetId = assetIds[purpose] ?? null;
+    const asset = assetId ? assets.get(assetId) : null;
+    const available = Boolean(
+      asset &&
+      asset.deletedAt === null &&
+      asset.type === "image" &&
+      asset.safetyStatus === "passed" &&
+      asset.characterId === characterId &&
+      isMediaAssetOperationalForAuthority(asset.metadata)
+    );
+    return [purpose, {
+      assetId,
+      imageUrl: available && asset
+        ? asset.thumbnailUrl ?? asset.url
+        : null,
+      status: assetId === null
+        ? "missing" as const
+        : available
+          ? "available" as const
+          : "unavailable" as const,
+    }];
+  })) as Record<CharacterPreviewAssetPurpose, {
+    assetId: string | null;
+    imageUrl: string | null;
+    status: "available" | "missing" | "unavailable";
+  }>;
+}
+
+function characterAssetSelections(
+  value: Prisma.JsonValue,
+  currentRouteFingerprint: string | null,
+) {
+  const routeAuthority = evaluateDraftAssetRouteAuthority(
+    value,
+    currentRouteFingerprint,
+  );
+  const source = record(value);
+  return Object.fromEntries(
+    (["character_cover", "character_hero", "character_chat"] as const).flatMap((purpose) => {
+      const raw = source[purpose];
+      if (typeof raw === "string") {
+        return [[purpose, {
+          assetId: raw,
+          runId: null,
+          itemId: null,
+          reviewDecisionId: null,
+          generationJobId: null,
+          bootstrapIdentity: false,
+          generationRouteFingerprint: null,
+          routeCurrent: routeAuthority.routeCurrentByPurpose[purpose] ?? false,
+        }]];
+      }
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
+      const entry = raw as Record<string, unknown>;
+      if (typeof entry.assetId !== "string") return [];
+      return [[purpose, {
+        assetId: entry.assetId,
+        runId: typeof entry.runId === "string" ? entry.runId : null,
+        itemId: typeof entry.itemId === "string" ? entry.itemId : null,
+        reviewDecisionId: typeof entry.reviewDecisionId === "string" ? entry.reviewDecisionId : null,
+        generationJobId: typeof entry.generationJobId === "string" ? entry.generationJobId : null,
+        bootstrapIdentity: entry.bootstrapIdentity === true,
+        generationRouteFingerprint:
+          typeof entry.generationRouteFingerprint === "string"
+            ? entry.generationRouteFingerprint
+            : null,
+        routeCurrent: routeAuthority.routeCurrentByPurpose[purpose] ?? false,
+      }]];
+    }),
+  );
+}
+
 function text(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
@@ -36,18 +192,76 @@ function jsonObject(value: Prisma.JsonValue): Record<string, unknown> {
   return record(value);
 }
 
-function visualAssetDto(asset: {
+async function findBootstrapGenerationProfile() {
+  const profiles = await prisma.generationModelProfile.findMany({
+    where: {
+      mode: "image",
+      status: "active",
+      enabled: true,
+      rolloutPercent: { gt: 0 },
+    },
+    orderBy: [{ publishedAt: "desc" }, { version: "desc" }, { profileKey: "asc" }],
+    take: 40,
+  });
+  const ordered = [...profiles].sort((left, right) => {
+    const entitlementDelta = Number(Boolean(left.requiredEntitlement)) - Number(Boolean(right.requiredEntitlement));
+    return entitlementDelta || left.profileKey.localeCompare(right.profileKey);
+  });
+  for (const profile of ordered) {
+    const workflowKey = profile.workflowKey ?? profile.pipelineModel;
+    const workflow = await generationWorkflowDescriptor(workflowKey);
+    const capabilities = record(record(profile.runnerConfig).capabilities as Prisma.JsonValue | undefined);
+    if (
+      !workflow ||
+      workflow.identity.mode !== "none" ||
+      workflow.identity.maxReferences !== 0 ||
+      !workflow.capabilities.includes("textToImage") ||
+      capabilities.textToImage !== true
+    ) {
+      continue;
+    }
+    const allowedOrientations = strings(profile.allowedOrientations);
+    return {
+      profileKey: profile.profileKey,
+      profileVersion: profile.version,
+      label: profile.label,
+      workflowKey,
+      workflowVersion: workflow.version,
+      orientation: allowedOrientations.includes("4:5")
+        ? "4:5"
+        : allowedOrientations[0] ?? "4:5",
+    };
+  }
+  return null;
+}
+
+type VisualAssetProjectionSource = {
   id: string;
   url: string;
   thumbnailUrl: string | null;
   deletedAt: Date | null;
-}, role: string, scores: { qualityScore?: number | null; identityScore?: number | null } = {}) {
+  type: string;
+  safetyStatus: string;
+  characterId: string | null;
+  metadata: Prisma.JsonValue;
+};
+
+function visualAssetAvailable(asset: VisualAssetProjectionSource, expectedCharacterId: string) {
+  return asset.deletedAt === null &&
+    asset.type === "image" &&
+    asset.safetyStatus === "passed" &&
+    isMediaAssetOperationalForAuthority(asset.metadata) &&
+    asset.characterId === expectedCharacterId;
+}
+
+function visualAssetDto(asset: VisualAssetProjectionSource, role: string, expectedCharacterId: string, scores: { qualityScore?: number | null; identityScore?: number | null } = {}) {
+  const available = visualAssetAvailable(asset, expectedCharacterId);
   return {
     mediaAssetId: asset.id,
     role,
-    available: asset.deletedAt === null,
-    url: asset.deletedAt === null ? asset.url : null,
-    thumbnailUrl: asset.deletedAt === null ? asset.thumbnailUrl : null,
+    available,
+    url: available ? asset.url : null,
+    thumbnailUrl: available ? asset.thumbnailUrl : null,
     qualityScore: scores.qualityScore ?? null,
     identityScore: scores.identityScore ?? null,
   };
@@ -56,11 +270,21 @@ function visualAssetDto(asset: {
 function visualPoolDtos(
   assetIds: readonly string[],
   role: "identity_anchor" | "identity_reference",
-  assets: ReadonlyMap<string, { id: string; url: string; thumbnailUrl: string | null; deletedAt: Date | null }>,
+  assets: ReadonlyMap<string, {
+    id: string;
+    url: string;
+    thumbnailUrl: string | null;
+    deletedAt: Date | null;
+    type: string;
+    safetyStatus: string;
+    characterId: string | null;
+    metadata: Prisma.JsonValue;
+  }>,
+  expectedCharacterId: string,
 ) {
   return assetIds.map((mediaAssetId) => {
     const asset = assets.get(mediaAssetId);
-    return asset ? visualAssetDto(asset, role) : {
+    return asset ? visualAssetDto(asset, role, expectedCharacterId) : {
       mediaAssetId,
       role,
       available: false,
@@ -81,11 +305,17 @@ function projectDto(project: {
   hypothesis: string | null;
   differentiation: string | null;
   successCriteria: Prisma.JsonValue;
+  draftImageAssetId: string | null;
+  draftAssetPack: Prisma.JsonValue;
   plannedLaunchAt: Date | null;
   version: number;
   updatedAt: Date;
-}) {
+}, currentRouteFingerprint: string | null) {
   const audience = record(project.audience);
+  const draftAssetRouteAuthority = evaluateDraftAssetRouteAuthority(
+    project.draftAssetPack,
+    currentRouteFingerprint,
+  );
   return {
     id: project.id,
     characterId: project.characterId,
@@ -99,6 +329,22 @@ function projectDto(project: {
     successCriteria: strings(project.successCriteria),
     productionPackage: text(audience.productionPackage),
     qaPlan: text(audience.qaPlan),
+    draftImageAssetId: project.draftImageAssetId,
+    draftAssetPackHash: canonicalSha256(project.draftAssetPack),
+    draftAssetPack: characterAssetPack(project.draftAssetPack),
+    draftAssetSelections: characterAssetSelections(
+      project.draftAssetPack,
+      currentRouteFingerprint,
+    ),
+    draftAssetRouteAuthority: {
+      status: draftAssetRouteAuthority.status,
+      currentRouteFingerprint: draftAssetRouteAuthority.currentRouteFingerprint,
+      stalePurposes: draftAssetRouteAuthority.stalePurposes,
+      missingPurposes: draftAssetRouteAuthority.missingPurposes,
+      recoveryPurpose: draftAssetRouteAuthority.recoveryPurpose,
+      qaReady: draftAssetRouteAuthority.qaReady,
+      qaBlockers: draftAssetRouteAuthority.qaBlockers,
+    },
     plannedLaunchAt: project.plannedLaunchAt?.toISOString() ?? null,
     version: project.version,
     updatedAt: project.updatedAt.toISOString(),
@@ -165,8 +411,8 @@ function previewSnapshot(input: {
     appearanceSnapshot: Prisma.JsonValue;
   } | null;
   releaseId: string | null;
-  imageAssetId: string | null;
-  imageUrl: string | null;
+  servingVersion: number | null;
+  assetPack: ReturnType<typeof previewAssetPackDto>;
   label: "Live" | "Draft Preview";
 }) {
   const persona = input.content ? record(input.content.personaSnapshot) : record(input.character.advancedDetails);
@@ -174,13 +420,26 @@ function previewSnapshot(input: {
     firstMessage: record(input.character.advancedDetails).firstMessage ?? null,
   };
   const appearance = input.content ? record(input.content.appearanceSnapshot) : record(input.character.appearance);
-  const renderUrl = input.content
+  const selectedAssetIds = characterPreviewAssetPurposes.flatMap((purpose) =>
+    input.assetPack[purpose].assetId ? [input.assetPack[purpose].assetId] : []
+  );
+  const assetPackReady = characterPreviewAssetPurposes.every(
+    (purpose) => input.assetPack[purpose].status === "available",
+  ) && new Set(selectedAssetIds).size === characterPreviewAssetPurposes.length;
+  const exactAssetPack = assetPackReady ? {
+    character_cover: input.assetPack.character_cover.assetId!,
+    character_hero: input.assetPack.character_hero.assetId!,
+    character_chat: input.assetPack.character_chat.assetId!,
+  } : null;
+  const renderUrl = input.content && exactAssetPack
     ? new URL(
         `/internal-preview/characters/${encodeURIComponent(issueCharacterPreviewToken({
           characterId: input.character.id,
           contentVersionId: input.content.id,
           releaseId: input.releaseId,
-          imageAssetId: input.imageAssetId,
+          servingVersion: input.servingVersion,
+          imageAssetId: exactAssetPack.character_cover,
+          assetPack: exactAssetPack,
           label: input.label,
         }, env.BETTER_AUTH_SECRET))}`,
         env.BETTER_AUTH_URL,
@@ -195,21 +454,11 @@ function previewSnapshot(input: {
     persona,
     opening,
     appearance,
-    imageUrl: input.imageUrl,
+    imageUrl: input.assetPack.character_cover.imageUrl,
+    assetPack: input.assetPack,
+    assetPackReady,
     renderUrl,
   };
-}
-
-function releasePreviewImageAssetId(release: { releasePlacementManifest: Prisma.JsonValue } | null) {
-  const manifest = release ? record(release.releasePlacementManifest) : {};
-  const placements = Array.isArray(manifest.placements) ? manifest.placements : [];
-  for (const value of placements) {
-    const placement = value !== null && typeof value === "object" && !Array.isArray(value)
-      ? value as Record<string, unknown>
-      : {};
-    if (placement.slotKey === "character_avatar" && typeof placement.assetId === "string") return placement.assetId;
-  }
-  return null;
 }
 
 function changedFields(
@@ -217,15 +466,42 @@ function changedFields(
   draft: ReturnType<typeof previewSnapshot>,
 ) {
   if (!live) return ["new_release"];
-  return (["name", "description", "persona", "opening", "appearance", "imageUrl"] as const)
+  return (["name", "description", "persona", "opening", "appearance", "imageUrl", "assetPack"] as const)
     .filter((key) => JSON.stringify(live[key]) !== JSON.stringify(draft[key]));
 }
 
 export async function getCharacterWorkspace(characterId: string) {
-  const [character, project, serving] = await Promise.all([
-    prisma.character.findUnique({ where: { id: characterId }, include: { imageAsset: true, stats: true } }),
+  const [character, project, serving, activeCommand, activeLooks] = await Promise.all([
+    prisma.character.findFirst({
+      where: operationalCharacterWhere({ id: characterId, deletedAt: null }),
+      include: { imageAsset: true, stats: true },
+    }),
     prisma.characterProject.findFirst({ where: { characterId }, orderBy: { updatedAt: "desc" } }),
     prisma.characterServing.findUnique({ where: { characterId } }),
+    prisma.controlPlaneCommand.findFirst({
+      where: {
+        coordinationKey: characterCommandCoordinationKey(characterId),
+        status: { in: [...ACTIVE_CONTROL_PLANE_COMMAND_STATUSES] },
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    }),
+    prisma.characterLook.findMany({
+      where: {
+        characterId,
+        status: { in: ["active", "needs_rebase"] },
+      },
+      select: {
+        id: true,
+        ownerId: true,
+        label: true,
+        status: true,
+        visualProfileId: true,
+        referenceAssetId: true,
+        rebasedFromLookId: true,
+        updatedAt: true,
+      },
+      orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+    }),
   ]);
   if (!character || !project) throw Errors.notFound("Character Project not found");
   const releases = await prisma.characterRelease.findMany({
@@ -241,12 +517,26 @@ export async function getCharacterWorkspace(characterId: string) {
     include: { references: { include: { mediaAsset: true }, orderBy: { position: "asc" } } },
     orderBy: { revision: "desc" },
   }) : null;
+  const bootstrapAuthority = await loadCharacterIdentityBootstrapAuthority(prisma, characterId);
+  const activeReferenceAssetIds = activeReferenceSet
+    ? activeReferenceSet.references.map((reference) => reference.mediaAssetId)
+    : activeIdentity
+      ? strings(activeIdentity.referenceAssetIds)
+      : [];
   const visualPoolIds = activeIdentity
-    ? [...new Set([...strings(activeIdentity.anchorAssetIds), ...strings(activeIdentity.referenceAssetIds)])]
+    ? [...new Set([...strings(activeIdentity.anchorAssetIds), ...activeReferenceAssetIds])]
     : [];
   const visualAsOf = new Date();
-  const [visualPoolAssets, routeQualifications, qualifiedRoute] = await Promise.all([
-    prisma.mediaAsset.findMany({ where: { id: { in: visualPoolIds } } }),
+  const [visualPoolAssets, routeQualifications, qualifiedRoute, bootstrapProfile, characterImageReferenceCount] = await Promise.all([
+    prisma.mediaAsset.findMany({
+      where: operationalMediaAssetWhere({
+        id: { in: visualPoolIds },
+        deletedAt: null,
+        type: "image",
+        safetyStatus: "passed",
+        characterId,
+      }),
+    }),
     activeIdentity ? prisma.generationRouteQualification.findMany({
       where: { style: activeIdentity.style },
       orderBy: { evaluatedAt: "desc" },
@@ -257,8 +547,48 @@ export async function getCharacterWorkspace(characterId: string) {
       policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
       evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,
       at: visualAsOf,
+      requiredReferenceCount: activeReferenceSet?.references.length ?? 0,
+      requiredReferenceRoles:
+        activeReferenceSet?.references.map((reference) => reference.role) ?? [],
     }) : Promise.resolve(null),
+    bootstrapAuthority.allowed ? findBootstrapGenerationProfile() : Promise.resolve(null),
+    character.imageAsset?.characterId === null
+      ? prisma.character.count({ where: { imageAssetId: character.imageAsset.id } })
+      : Promise.resolve(0),
   ]);
+  const projectedRouteQualifications = qualifiedRoute &&
+      !routeQualifications.some((qualification) => qualification.id === qualifiedRoute.id)
+    ? [qualifiedRoute, ...routeQualifications]
+    : routeQualifications;
+  const qualificationProfileKey = (profileKey: string, version: number) =>
+    `${profileKey}\u0000${version}`;
+  const [workflowEntries, routeProfiles] = await Promise.all([
+    Promise.all([...new Set(projectedRouteQualifications.map((qualification) => qualification.workflowKey))]
+      .map(async (workflowKey) => {
+        const descriptor = await generationWorkflowDescriptor(workflowKey);
+        return [workflowKey, descriptor] as const;
+      })),
+    projectedRouteQualifications.length > 0
+      ? prisma.generationModelProfile.findMany({
+          where: {
+            OR: projectedRouteQualifications.map((qualification) => ({
+              profileKey: qualification.generationProfileKey,
+              version: qualification.generationProfileVersion,
+            })),
+          },
+          select: {
+            profileKey: true,
+            version: true,
+            runnerConfig: true,
+          },
+        })
+      : Promise.resolve([]),
+  ]);
+  const workflowByKey = new Map(workflowEntries);
+  const routeProfileByKey = new Map(routeProfiles.map((profile) => [
+    qualificationProfileKey(profile.profileKey, profile.version),
+    profile,
+  ]));
   const releaseIds = releases.map((release) => release.id);
   const validationRuns = await prisma.releaseValidationRun.findMany({
     where: { releaseId: { in: releaseIds } },
@@ -268,10 +598,11 @@ export async function getCharacterWorkspace(characterId: string) {
     const latest = validationRuns.find((run) => run.releaseId === releaseId);
     return latest ? [latest.id] : [];
   })));
-  const releaseImageAssetIds = [...new Set(releases.flatMap((release) => {
-    const assetId = releasePreviewImageAssetId(release);
-    return assetId ? [assetId] : [];
-  }))];
+  const draftPreviewAssetPackIds = characterAssetPack(project.draftAssetPack);
+  const previewAssetIds = [...new Set([
+    ...Object.values(draftPreviewAssetPackIds),
+    ...releases.flatMap((release) => Object.values(releasePreviewAssetPackIds(release))),
+  ])];
   const [checks, monitors, contents, qaRuns, releaseImageAssets] = await Promise.all([
     prisma.releaseCheckResult.findMany({ where: { validationRunId: { in: latestValidationIds } } }),
     prisma.releaseMonitor.findMany({ where: { releaseId: { in: releaseIds } }, orderBy: { startedAt: "desc" } }),
@@ -281,18 +612,27 @@ export async function getCharacterWorkspace(characterId: string) {
     }),
     prisma.characterQaRun.findMany({
       where: { characterId },
-      orderBy: { createdAt: "desc" },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       take: 20,
     }),
-    prisma.mediaAsset.findMany({ where: { id: { in: releaseImageAssetIds }, deletedAt: null } }),
+    prisma.mediaAsset.findMany({ where: { id: { in: previewAssetIds } } }),
   ]);
-  const imageUrl = character.imageAsset?.thumbnailUrl ?? character.imageAsset?.url ?? null;
-  const releaseImageUrl = (release: (typeof releases)[number] | null) => {
-    const assetId = releasePreviewImageAssetId(release);
-    const asset = releaseImageAssets.find((candidate) => candidate.id === assetId);
-    return asset?.thumbnailUrl ?? asset?.url ?? null;
-  };
-  const currentRelease = releases.find((release) => release.id === serving?.currentReleaseId) ?? null;
+  const characterImageAvailable = character.imageAsset !== null &&
+    character.imageAsset.deletedAt === null &&
+    character.imageAsset.type === "image" &&
+    character.imageAsset.safetyStatus === "passed" &&
+    isMediaAssetOperationalForAuthority(character.imageAsset.metadata) &&
+    (
+      character.imageAsset.characterId === characterId ||
+      (character.imageAsset.characterId === null && characterImageReferenceCount === 1)
+    );
+  const imageUrl = characterImageAvailable
+    ? character.imageAsset?.thumbnailUrl ?? character.imageAsset?.url ?? null
+    : null;
+  const previewAssetById = new Map(releaseImageAssets.map((asset) => [asset.id, asset]));
+  const currentRelease = serving?.state === "live"
+    ? releases.find((release) => release.id === serving.currentReleaseId) ?? null
+    : null;
   const candidateRelease = releases.find((release) => !["published", "superseded", "withdrawn"].includes(release.status)) ?? null;
   const liveContent = contents.find((content) => content.id === currentRelease?.characterContentVersionId) ?? null;
   const draftContent = contents.find((content) => content.id === candidateRelease?.characterContentVersionId) ?? contents[0] ?? null;
@@ -300,16 +640,24 @@ export async function getCharacterWorkspace(characterId: string) {
     character,
     content: liveContent,
     releaseId: currentRelease.id,
-    imageAssetId: releasePreviewImageAssetId(currentRelease),
-    imageUrl: releaseImageUrl(currentRelease),
+    servingVersion: serving?.version ?? null,
+    assetPack: previewAssetPackDto(
+      releasePreviewAssetPackIds(currentRelease),
+      previewAssetById,
+      characterId,
+    ),
     label: "Live",
   }) : null;
   const draft = previewSnapshot({
     character,
     content: draftContent,
     releaseId: candidateRelease?.id ?? null,
-    imageAssetId: releasePreviewImageAssetId(candidateRelease),
-    imageUrl: releaseImageUrl(candidateRelease),
+    servingVersion: null,
+    assetPack: previewAssetPackDto(
+      draftPreviewAssetPackIds,
+      previewAssetById,
+      characterId,
+    ),
     label: "Draft Preview",
   });
   const portfolio = await listCharacterPortfolioData(prisma, {
@@ -321,10 +669,19 @@ export async function getCharacterWorkspace(characterId: string) {
   const portfolioItem = portfolio.items.find((item) => item.characterId === characterId) ?? null;
   const poolAssetById = new Map(visualPoolAssets.map((asset) => [asset.id, asset]));
   const anchors = activeIdentity
-    ? visualPoolDtos(strings(activeIdentity.anchorAssetIds), "identity_anchor", poolAssetById)
+    ? visualPoolDtos(strings(activeIdentity.anchorAssetIds), "identity_anchor", poolAssetById, characterId)
     : [];
   const references = activeIdentity
-    ? visualPoolDtos(strings(activeIdentity.referenceAssetIds), "identity_reference", poolAssetById)
+    ? activeReferenceSet
+      ? activeReferenceSet.references.map((reference) =>
+          visualAssetDto(reference.mediaAsset, reference.role, characterId, reference)
+        )
+      : visualPoolDtos(
+          activeReferenceAssetIds,
+          "identity_reference",
+          poolAssetById,
+          characterId,
+        )
     : [];
   const visualReadiness = evaluateReleaseReadiness({
     releaseId: candidateRelease?.id ?? "visual-workbench",
@@ -351,7 +708,10 @@ export async function getCharacterWorkspace(characterId: string) {
       status: activeReferenceSet.status,
       snapshotSealed: activeReferenceSet.snapshotHash !== null
         && activeReferenceSet.snapshotHash === referenceSetSnapshotHash(activeReferenceSet),
-      availableReferenceCount: activeReferenceSet.references.filter((item) => item.mediaAsset.deletedAt === null).length,
+      availableReferenceCount: activeReferenceSet.references.length > 0 &&
+        activeReferenceSet.references.every((item) => visualAssetAvailable(item.mediaAsset, characterId))
+          ? activeReferenceSet.references.length
+          : 0,
     } : null,
     routeQualification: qualifiedRoute ? { status: qualifiedRoute.result, stale: false } : null,
     characterQa: { status: "passed" },
@@ -375,7 +735,7 @@ export async function getCharacterWorkspace(characterId: string) {
       imageUrl,
       updatedAt: character.updatedAt.toISOString(),
     },
-    project: projectDto(project),
+    project: projectDto(project, qualifiedRoute?.routeFingerprint ?? null),
     visual: {
       activeIdentity: activeIdentity ? {
         id: activeIdentity.id,
@@ -407,27 +767,75 @@ export async function getCharacterWorkspace(characterId: string) {
         snapshotHash: activeReferenceSet.snapshotHash,
         createdFrom: activeReferenceSet.createdFrom,
         createdAt: activeReferenceSet.createdAt.toISOString(),
-        references: activeReferenceSet.references.map((item) => visualAssetDto(item.mediaAsset, item.role, item)),
+        references: activeReferenceSet.references.map((item) => visualAssetDto(item.mediaAsset, item.role, characterId, item)),
       } : null,
-      routeQualifications: routeQualifications.map((qualification) => ({
-        id: qualification.id,
-        routeFingerprint: qualification.routeFingerprint,
-        generationProfileKey: qualification.generationProfileKey,
-        generationProfileVersion: qualification.generationProfileVersion,
-        workflowKey: qualification.workflowKey,
-        workflowVersion: qualification.workflowVersion,
-        style: qualification.style,
-        matrixKey: qualification.matrixKey,
-        sampleCount: qualification.sampleCount,
-        passCount: qualification.passCount,
-        identityMatch: qualification.identityMatch,
-        result: qualification.result,
-        evidence: record(qualification.evidence),
-        policyVersion: qualification.policyVersion,
-        evaluatedAt: qualification.evaluatedAt.toISOString(),
-        expiresAt: qualification.expiresAt?.toISOString() ?? null,
-        stale: qualification.result === "qualified" && qualification.id !== qualifiedRoute?.id,
+      looks: activeLooks.map((look) => ({
+        ...look,
+        status: look.status === "needs_rebase" ? "needs_rebase" as const : "active" as const,
+        updatedAt: look.updatedAt.toISOString(),
       })),
+      routeQualifications: projectedRouteQualifications.map((qualification) => {
+        const workflow = workflowByKey.get(qualification.workflowKey) ?? null;
+        const routeProfile = routeProfileByKey.get(qualificationProfileKey(
+          qualification.generationProfileKey,
+          qualification.generationProfileVersion,
+        ));
+        const profileCapabilities = record(
+          record(routeProfile?.runnerConfig).capabilities as Prisma.JsonValue | undefined,
+        );
+        return {
+          id: qualification.id,
+          routeFingerprint: qualification.routeFingerprint,
+          generationProfileKey: qualification.generationProfileKey,
+          generationProfileVersion: qualification.generationProfileVersion,
+          workflowKey: qualification.workflowKey,
+          workflowVersion: qualification.workflowVersion,
+          style: qualification.style,
+          matrixKey: qualification.matrixKey,
+          sampleCount: qualification.sampleCount,
+          passCount: qualification.passCount,
+          identityMatch: qualification.identityMatch,
+          result: qualification.result,
+          evidence: record(qualification.evidence),
+          policyVersion: qualification.policyVersion,
+          evaluatedAt: qualification.evaluatedAt.toISOString(),
+          expiresAt: qualification.expiresAt?.toISOString() ?? null,
+          stale: qualification.result === "qualified" && qualification.id !== qualifiedRoute?.id,
+          identityContract: workflow
+            ? {
+                maxReferences: workflow.identity.maxReferences,
+                acceptedRoles: workflow.identity.acceptedRoles,
+                supportsLookReference:
+                  workflow.identity.supportsLookReference,
+                supportsSourceImageWithIdentity:
+                  workflow.identity.supportsSourceImageWithIdentity,
+              }
+            : undefined,
+          profileCapabilities: routeProfile
+            ? {
+                referenceImages: profileCapabilities.referenceImages === true,
+                initImage: profileCapabilities.initImage === true,
+              }
+            : undefined,
+          sourceVariationAuthority: generationSourceVariationAuthority({
+            routeFingerprint: qualification.routeFingerprint,
+            routeQualified: qualification.id === qualifiedRoute?.id,
+            workflow,
+            qualificationWorkflowVersion: qualification.workflowVersion,
+            profileCapabilities,
+            canonicalReferenceRoles:
+              activeReferenceSet?.references.map((reference) => reference.role) ?? [],
+            sourceReferenceCount: 1,
+          }),
+        };
+      }),
+      identityBootstrap: {
+        state: bootstrapAuthority.state,
+        allowed: bootstrapAuthority.allowed,
+        nextIdentityVersion: bootstrapAuthority.nextVersion,
+        blockers: bootstrapAuthority.blockers,
+        profile: bootstrapProfile,
+      },
       readiness: {
         ready: visualBlockers.length === 0,
         qualificationPolicyVersion: CHARACTER_RELEASE_POLICY_VERSION,
@@ -435,10 +843,21 @@ export async function getCharacterWorkspace(characterId: string) {
           ...blocker,
           deepLink: blocker.deepLink.replace("?tab=visual-identity", "?tab=visual"),
         })),
-        productionDeepLink: `/admin/content/production?characterId=${encodeURIComponent(characterId)}`,
+        productionDeepLink: `/admin/characters/${encodeURIComponent(characterId)}?tab=assets`,
       },
     },
     serving: servingDto(serving),
+    activeCommand: activeCommand ? adminCommandStatusSchema.parse({
+      commandId: activeCommand.id,
+      requestId: activeCommand.requestId,
+      commandType: activeCommand.commandType,
+      target: { type: activeCommand.targetType, id: activeCommand.targetId },
+      status: activeCommand.status,
+      verificationState: activeCommand.status === "verifying" ? "verifying" : "pending",
+      needsReconciliation: activeCommand.needsReconciliation,
+      createdAt: activeCommand.createdAt.toISOString(),
+      updatedAt: activeCommand.updatedAt.toISOString(),
+    }) : null,
     releases: releases.map((release) => {
       const validation = validationRuns.find((run) => run.releaseId === release.id);
       return {
@@ -476,13 +895,46 @@ export async function getCharacterWorkspace(characterId: string) {
 }
 
 export async function getCharacterProjectDraftForResume(characterId: string) {
-  const [character, project, content] = await Promise.all([
-    prisma.character.findUnique({ where: { id: characterId } }),
+  const [character, project, content, visualAuthority] = await Promise.all([
+    prisma.character.findFirst({
+      where: operationalCharacterWhere({ id: characterId, deletedAt: null }),
+    }),
     prisma.characterProject.findFirst({ where: { characterId }, orderBy: { updatedAt: "desc" } }),
     prisma.characterContentVersion.findFirst({ where: { characterId }, orderBy: { version: "desc" } }),
+    prisma.characterVisualProfile.findFirst({
+      where: { characterId, status: "active" },
+      orderBy: [{ version: "desc" }, { id: "desc" }],
+      select: {
+        style: true,
+        referenceSetRevisions: {
+          where: { status: "active" },
+          orderBy: [{ revision: "desc" }, { id: "desc" }],
+          take: 1,
+          select: {
+            references: {
+              orderBy: { position: "asc" },
+              select: { role: true },
+            },
+          },
+        },
+      },
+    }),
   ]);
   if (!character || !project || !content) throw Errors.notFound("Character Project draft not found");
-  const projectView = projectDto(project);
+  const activeReferences =
+    visualAuthority?.referenceSetRevisions[0]?.references ?? [];
+  const qualifiedRoute = visualAuthority
+    ? await findQualifiedGenerationRoute(prisma, {
+        style: visualAuthority.style,
+        policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
+        evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,
+        at: new Date(),
+        requiredReferenceCount: activeReferences.length,
+        requiredReferenceRoles:
+          activeReferences.map((reference) => reference.role),
+      })
+    : null;
+  const projectView = projectDto(project, qualifiedRoute?.routeFingerprint ?? null);
   const persona = record(content.personaSnapshot);
   const opening = record(content.openingSnapshot);
   const appearance = record(content.appearanceSnapshot);
@@ -552,8 +1004,49 @@ export async function updateCharacterProjectDraft(input: {
   readonly requestId: string;
 }) {
   return prisma.$transaction(async (tx) => {
+    await lockCharacterGenerationAuthority(tx, input.characterId);
+    const character = await tx.character.findFirst({
+      where: operationalCharacterWhere({
+        id: input.characterId,
+        deletedAt: null,
+      }),
+      select: { id: true },
+    });
+    if (!character) throw Errors.notFound("Character Project not found");
     const project = await tx.characterProject.findFirst({ where: { characterId: input.characterId } });
     if (!project) throw Errors.notFound("Character Project not found");
+    const visualAuthority = await tx.characterVisualProfile.findFirst({
+      where: { characterId: input.characterId, status: "active" },
+      orderBy: [{ version: "desc" }, { id: "desc" }],
+      select: {
+        style: true,
+        referenceSetRevisions: {
+          where: { status: "active" },
+          orderBy: [{ revision: "desc" }, { id: "desc" }],
+          take: 1,
+          select: {
+            references: {
+              orderBy: { position: "asc" },
+              select: { role: true },
+            },
+          },
+        },
+      },
+    });
+    const activeReferences =
+      visualAuthority?.referenceSetRevisions[0]?.references ?? [];
+    const qualifiedRoute = visualAuthority
+      ? await findQualifiedGenerationRoute(tx, {
+          style: visualAuthority.style,
+          policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
+          evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,
+          at: new Date(),
+          requiredReferenceCount: activeReferences.length,
+          requiredReferenceRoles:
+            activeReferences.map((reference) => reference.role),
+        })
+      : null;
+    const currentRouteFingerprint = qualifiedRoute?.routeFingerprint ?? null;
     const changed = await tx.characterProject.updateMany({
       where: { id: project.id, version: input.expectedVersion },
       data: {
@@ -576,7 +1069,7 @@ export async function updateCharacterProjectDraft(input: {
       const current = await tx.characterProject.findUniqueOrThrow({ where: { id: project.id } });
       throw Errors.conflict("Character Project changed in another session", {
         currentVersion: current.version,
-        current: projectDto(current),
+        current: projectDto(current, currentRouteFingerprint),
       });
     }
     const updated = await tx.characterProject.findUniqueOrThrow({ where: { id: project.id } });
@@ -612,7 +1105,7 @@ export async function updateCharacterProjectDraft(input: {
             revision: (latestRevision?.revision ?? 0) + 1,
             characterContentVersionId: createdContent.id,
             projectSnapshot: toInputJson({
-              project: projectDto(updated),
+              project: projectDto(updated, currentRouteFingerprint),
               contentHash: snapshots.contentHash,
             }),
             createdById: input.actor.id,
@@ -640,8 +1133,12 @@ export async function updateCharacterProjectDraft(input: {
         targetType: "character_project",
         targetId: project.id,
         reason: input.reason,
-        before: toInputJson(projectDto(project)),
-        after: toInputJson({ project: projectDto(updated), contentVersion, revision }),
+        before: toInputJson(projectDto(project, currentRouteFingerprint)),
+        after: toInputJson({
+          project: projectDto(updated, currentRouteFingerprint),
+          contentVersion,
+          revision,
+        }),
         requestId: input.requestId,
       },
     });
@@ -671,7 +1168,7 @@ export async function updateCharacterProjectDraft(input: {
         }),
       },
     });
-    return projectDto(updated);
+    return projectDto(updated, currentRouteFingerprint);
   });
 }
 
@@ -684,11 +1181,18 @@ export async function refreshCharacterReleaseMonitor(input: {
   readonly requestId?: string;
 }, db?: Prisma.TransactionClient) {
   const execute = async (tx: Prisma.TransactionClient) => {
-  const [project, release] = await Promise.all([
+  const [character, project, release] = await Promise.all([
+    tx.character.findFirst({
+      where: operationalCharacterWhere({
+        id: input.characterId,
+        deletedAt: null,
+      }),
+      select: { id: true },
+    }),
     tx.characterProject.findFirst({ where: { characterId: input.characterId } }),
     tx.characterRelease.findUnique({ where: { id: input.releaseId } }),
   ]);
-  if (!project || !release || release.projectId !== project.id) {
+  if (!character || !project || !release || release.projectId !== project.id) {
     throw Errors.notFound("Character Release not found");
   }
   if (release.version !== input.expectedVersion) {

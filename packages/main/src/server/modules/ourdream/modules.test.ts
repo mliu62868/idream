@@ -1,7 +1,18 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { METRIC_PRODUCT_EVENTS } from "@idream/shared/contracts";
-import { prisma } from "@/server/lib/db";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  MAIN_TO_CHAT_EVENTS,
+  METRIC_PRODUCT_EVENTS,
+} from "@idream/shared/contracts";
+import { prisma } from "@/server/lib/db";
+import { jobQueue } from "@/server/jobs/queue";
+import { providers } from "@/server/providers";
+import {
+  hydratedImageReferenceInputs,
+  imageReferenceInputsForGenerationJob,
+} from "@/server/ai/reference-images";
+import { dispatchV1 } from "@/server/modules/ourdream/service";
+import {
+  AGE_GATE_COOKIE_HEADER,
   api,
   createCharacter,
   createMedia,
@@ -24,9 +35,169 @@ const P = "zt-mod-";
 const SYS = `${P}sys`;
 const CHAR = `${P}char`;
 
+async function seedCurrentPublicCharacterAuthority(input: {
+  characterId: string;
+  ownerId: string;
+}) {
+  const avatarAssetId = `${input.characterId}-public-avatar`;
+  const projectId = `${input.characterId}-public-project`;
+  const releaseId = `${input.characterId}-public-release`;
+  const snapshotHash = `${releaseId}-snapshot`;
+
+  await prisma.$transaction(async (tx) => {
+    const character = await tx.character.findUniqueOrThrow({
+      where: { id: input.characterId },
+      select: { creatorId: true, source: true },
+    });
+    const generatedUserRelease = character.source === "user";
+    if (generatedUserRelease && character.creatorId !== input.ownerId) {
+      throw new Error("Generated public fixture must be owned by its user creator");
+    }
+    const releaseAssets = generatedUserRelease
+      ? [
+          { id: avatarAssetId, slotKey: "character_avatar" },
+          { id: `${input.characterId}-public-hero`, slotKey: "character_hero" },
+          { id: `${input.characterId}-public-chat`, slotKey: "character_chat" },
+        ]
+      : [{ id: avatarAssetId, slotKey: "character_avatar" }];
+    await tx.mediaAsset.createMany({
+      data: releaseAssets.map((asset) => ({
+        id: asset.id,
+        ownerId: input.ownerId,
+        characterId: input.characterId,
+        type: "image",
+        url: `/user-content/${asset.id}/content.webp`,
+        thumbnailUrl: `/user-content/${asset.id}/thumbnail.webp`,
+        visibility: "public_pack",
+        safetyStatus: "passed",
+        metadata: {
+          source: generatedUserRelease ? "generated_release_fixture" : "editorial_import",
+          synthetic: false,
+          platformAsset: { status: "approved" },
+        },
+      })),
+    });
+    await tx.character.update({
+      where: { id: input.characterId },
+      data: { imageAssetId: avatarAssetId },
+    });
+    await tx.characterProject.create({
+      data: {
+        id: projectId,
+        characterId: input.characterId,
+        phase: "live_management",
+        audience: {},
+        successCriteria: [],
+      },
+    });
+    await tx.characterRelease.create({
+      data: {
+        id: releaseId,
+        projectId,
+        revisionId: `${releaseId}-revision`,
+        characterContentVersionId: `${releaseId}-content`,
+        generationProvenance: generatedUserRelease
+          ? {
+              schemaVersion: "character-release-generation-provenance-v2",
+              policyVersion: "character-release-policy-v2",
+              requiredReleaseRoute: {
+                routeFingerprint: `${releaseId}-route`,
+                matrixKey: "modules-public-authority",
+                generationProfileKey: "modules-public-profile",
+                generationProfileVersion: 1,
+                workflowKey: "modules-public-workflow",
+                workflowVersion: 1,
+              },
+              placements: releaseAssets.map((asset) => ({
+                slotKey: asset.slotKey,
+                assetId: asset.id,
+                provider: "pipeline",
+              })),
+            }
+          : {
+              schemaVersion: "character-release-editorial-import-v1",
+              sourceAssetId: avatarAssetId,
+            },
+        releasePlacementManifest: generatedUserRelease
+          ? {
+              schemaVersion: 2,
+              placements: releaseAssets.map((asset) => ({
+                slotKey: asset.slotKey,
+                assetId: asset.id,
+                slotVersion: 1,
+              })),
+            }
+          : {
+              schemaVersion: 1,
+              kind: "editorial_import",
+              placements: [
+                {
+                  slotKey: "character_avatar",
+                  assetId: avatarAssetId,
+                  slotVersion: 1,
+                },
+              ],
+            },
+        snapshotHash,
+        readiness: "ready",
+        legacy: !generatedUserRelease,
+        status: "published",
+        publishedAt: new Date(),
+      },
+    });
+    const validationRunId = generatedUserRelease
+      ? `${releaseId}-validation`
+      : null;
+    if (validationRunId) {
+      await tx.releaseValidationRun.create({
+        data: {
+          id: validationRunId,
+          releaseId,
+          snapshotHash,
+          policyVersion: "character-release-policy-v2",
+          result: "passed",
+          finishedAt: new Date(),
+        },
+      });
+    }
+    await tx.publicCatalogQualification.create({
+      data: {
+        id: `${releaseId}-qualification`,
+        releaseId,
+        releaseSnapshotHash: snapshotHash,
+        kind: generatedUserRelease ? "generated_release" : "editorial_import",
+        validationRunId,
+        evidence: generatedUserRelease
+          ? {
+              schemaVersion: "public-catalog-qualification-v1",
+              policyVersion: "character-release-policy-v2",
+              validationRunId,
+            }
+          : {
+              schemaVersion: "public-catalog-qualification-v1",
+              policyVersion: "public-catalog-editorial-import-v1",
+              sourceAssetId: avatarAssetId,
+            },
+      },
+    });
+    await tx.characterServing.create({
+      data: {
+        id: `${releaseId}-serving`,
+        characterId: input.characterId,
+        currentReleaseId: releaseId,
+        state: "live",
+      },
+    });
+  });
+}
+
 beforeAll(async () => {
   await purgeTestData(P);
-  await createUser({ id: SYS });
+  await createUser({
+    id: SYS,
+    email: `${SYS}@customer.invalid`,
+    dataClass: "customer",
+  });
   await createCharacter({
     id: CHAR,
     creatorId: SYS,
@@ -34,6 +205,10 @@ beforeAll(async () => {
     status: "approved",
     likes: 100_000,
     chats: 100_000,
+  });
+  await seedCurrentPublicCharacterAuthority({
+    characterId: CHAR,
+    ownerId: SYS,
   });
 });
 
@@ -71,6 +246,24 @@ describe("age gate + age verification", () => {
 });
 
 describe("profile, preferences, language", () => {
+  it("returns in-memory preference defaults without creating a database row", async () => {
+    const userId = `${P}profile-read-defaults`;
+    await createUser({ id: userId });
+
+    expect(await prisma.userPreferences.findUnique({ where: { userId } })).toBeNull();
+    const preferences = await api("GET", "profile/preferences", { userId });
+    expectOk(preferences);
+    expect(preferences.data.preferences).toMatchObject({
+      userId,
+      locale: "en",
+      mutedTags: [],
+      safeModeFlags: {},
+      notificationSettings: {},
+      updatedAt: null,
+    });
+    expect(await prisma.userPreferences.findUnique({ where: { userId } })).toBeNull();
+  });
+
   it("reads and updates profile + preferences + language", async () => {
     const userId = `${P}profile`;
     await createUser({ id: userId });
@@ -303,6 +496,52 @@ describe("referrals + account", () => {
     expectError(login, 403, "forbidden");
     expect(login.error?.message).toBe("Account is not active");
   });
+
+  it("commits account deletion and its Chat erasure intent when immediate enqueue fails", async () => {
+    const userId = `${P}account-delete-outbox`;
+    const eventId = `user_deleted_${userId}`;
+    await createUser({ id: userId });
+    await prisma.session.create({
+      data: {
+        userId,
+        token: `${P}tok-delete-outbox`,
+        expiresAt: new Date(Date.now() + 100_000),
+      },
+    });
+    const enqueue = vi.spyOn(jobQueue, "enqueue").mockRejectedValue(
+      new Error("Redis unavailable"),
+    );
+    try {
+      const deleted = await api("POST", "account/delete-request", { userId });
+      expectOk(deleted);
+      expect(deleted.data).toMatchObject({ requested: true });
+    } finally {
+      enqueue.mockRestore();
+    }
+
+    await expect(prisma.user.findUniqueOrThrow({
+      where: { id: userId },
+    })).resolves.toMatchObject({
+      status: "deleted",
+      deletedAt: expect.any(Date),
+    });
+    await expect(prisma.session.count({ where: { userId } })).resolves.toBe(0);
+    await expect(prisma.mainOutboxEvent.findUniqueOrThrow({
+      where: { id: eventId },
+    })).resolves.toMatchObject({
+      eventType: MAIN_TO_CHAT_EVENTS.userDeleted,
+      aggregateType: "user",
+      aggregateId: userId,
+      status: "pending",
+      attempts: 1,
+      payload: expect.objectContaining({
+        sourceService: "main",
+        sourceEventId: eventId,
+        eventType: MAIN_TO_CHAT_EVENTS.userDeleted,
+        payload: { userId },
+      }),
+    });
+  });
 });
 
 describe("library tabs", () => {
@@ -382,8 +621,17 @@ describe("feed actions", () => {
   it("keeps duplicate feed likes idempotent under concurrent clicks", async () => {
     const userId = `${P}feed-race-user`;
     const characterId = `${P}feed-race-char`;
-    await createUser({ id: userId });
-    await createCharacter({ id: characterId, visibility: "public", status: "approved" });
+    await createUser({ id: userId, dataClass: "customer" });
+    await createCharacter({
+      id: characterId,
+      creatorId: SYS,
+      visibility: "public",
+      status: "approved",
+    });
+    await seedCurrentPublicCharacterAuthority({
+      characterId,
+      ownerId: SYS,
+    });
     const itemId = `character:${characterId}`;
 
     const results = await Promise.all([
@@ -408,6 +656,10 @@ describe("tags, likes, duplicate", () => {
     await createCharacter({ id: `${P}tag-public`, creatorId: SYS, visibility: "public", status: "approved" });
     await createCharacter({ id: `${P}tag-private`, creatorId: SYS, visibility: "private", status: "approved" });
     await createCharacter({ id: `${P}tag-removed`, creatorId: SYS, visibility: "public", status: "removed" });
+    await seedCurrentPublicCharacterAuthority({
+      characterId: `${P}tag-public`,
+      ownerId: SYS,
+    });
     await prisma.characterTag.createMany({
       data: [
         { characterId: `${P}tag-public`, tagId: tag.id },
@@ -447,6 +699,10 @@ describe("tags, likes, duplicate", () => {
     });
     await createUser({ id: userId });
     await createCharacter({ id: characterId, creatorId: SYS, visibility: "public", status: "approved" });
+    await seedCurrentPublicCharacterAuthority({
+      characterId,
+      ownerId: SYS,
+    });
     await prisma.characterTag.create({ data: { characterId, tagId: tag.id } });
 
     const anonymous = await api("GET", "characters", {
@@ -488,6 +744,10 @@ describe("tags, likes, duplicate", () => {
       visibility: "public",
       status: "approved",
     });
+    await seedCurrentPublicCharacterAuthority({
+      characterId,
+      ownerId: SYS,
+    });
     await prisma.characterTag.create({ data: { characterId, tagId: tag.id } });
 
     const anonymous = await api("GET", "search/suggest", {
@@ -519,26 +779,569 @@ describe("tags, likes, duplicate", () => {
 
   it("likes then unlikes a character and adjusts stats", async () => {
     const userId = `${P}liker`;
-    await createUser({ id: userId });
+    await createUser({ id: userId, dataClass: "customer" });
+    const before = await prisma.characterStats.findUniqueOrThrow({
+      where: { characterId: CHAR },
+    });
 
     const like = await api("POST", `characters/${CHAR}/like`, { userId, ageGate: true });
     expectOk(like);
+    const duplicate = await api("POST", `characters/${CHAR}/like`, { userId, ageGate: true });
+    expectOk(duplicate);
     const liked = await prisma.characterLike.findFirst({ where: { userId, characterId: CHAR } });
     expect(liked).not.toBeNull();
+    expect(
+      (await prisma.characterStats.findUniqueOrThrow({ where: { characterId: CHAR } }))
+        .likesCount,
+    ).toBe(before.likesCount + 1);
 
     const unlike = await api("DELETE", `characters/${CHAR}/like`, { userId, ageGate: true });
     expectOk(unlike);
     const stillLiked = await prisma.characterLike.findFirst({ where: { userId, characterId: CHAR } });
     expect(stillLiked).toBeNull();
+    expect(
+      (await prisma.characterStats.findUniqueOrThrow({ where: { characterId: CHAR } }))
+        .likesCount,
+    ).toBe(before.likesCount);
   });
 
-  it("duplicates a readable character into a private copy", async () => {
+  it("keeps fixture likes out of public engagement totals", async () => {
+    const userId = `${P}fixture-liker`;
+    const characterId = `${P}fixture-like-target`;
+    await createUser({ id: userId });
+    await createCharacter({
+      id: characterId,
+      creatorId: SYS,
+      visibility: "public",
+      status: "approved",
+    });
+    await seedCurrentPublicCharacterAuthority({
+      characterId,
+      ownerId: SYS,
+    });
+
+    const like = await api("POST", `characters/${characterId}/like`, {
+      userId,
+      ageGate: true,
+    });
+    expectOk(like);
+    expect(
+      await prisma.characterLike.count({ where: { userId, characterId } }),
+    ).toBe(1);
+    expect(
+      (await prisma.characterStats.findUniqueOrThrow({ where: { characterId } }))
+        .likesCount,
+    ).toBe(0);
+  });
+
+  it("omits a cross-owner primary image whose bytes have no serviceable locator", async () => {
     const userId = `${P}dup`;
     await createUser({ id: userId });
+    const sourceImageAssetId = `${CHAR}-public-avatar`;
+    await prisma.mediaAsset.update({
+      where: { id: sourceImageAssetId },
+      data: {
+        metadata: {
+          source: "editorial_import",
+          synthetic: false,
+          providerKey: `${P}provider-key-without-owned-storage`,
+          platformAsset: { status: "approved" },
+        },
+      },
+    });
     const res = await api("POST", `characters/${CHAR}/duplicate`, { userId, ageGate: true });
     expectOk(res);
-    expect(res.data.character).toMatchObject({ visibility: "private" });
+    expect(res.data.character).toMatchObject({
+      creatorId: userId,
+      visibility: "private",
+      status: "approved",
+    });
     expect(res.data.character.name).toContain("Copy");
+    expect(res.data.character.imageAssetId).toBeNull();
+
+    const duplicate = await prisma.character.findUniqueOrThrow({
+      where: { id: res.data.character.id as string },
+      include: { imageAsset: true, stats: true },
+    });
+    expect(duplicate.imageAsset).toBeNull();
+    expect(duplicate.stats).toMatchObject({
+      likesCount: 0,
+      chatsCount: 0,
+      viewsCount: 0,
+    });
+    await expect(
+      prisma.character.findUniqueOrThrow({ where: { id: CHAR } }),
+    ).resolves.toMatchObject({ imageAssetId: sourceImageAssetId });
+    await expect(
+      prisma.mediaAsset.findUniqueOrThrow({ where: { id: sourceImageAssetId } }),
+    ).resolves.toMatchObject({
+      id: sourceImageAssetId,
+      ownerId: SYS,
+      characterId: CHAR,
+      deletedAt: null,
+      metadata: {
+        providerKey: `${P}provider-key-without-owned-storage`,
+        platformAsset: { status: "approved" },
+      },
+    });
+
+    const detail = await api("GET", `characters/${duplicate.id}`, {
+      userId,
+      ageGate: true,
+    });
+    expectOk(detail);
+    expect(detail.data.character).toMatchObject({
+      id: duplicate.id,
+      imageAssetId: null,
+      hasImage: false,
+    });
+    await expect(prisma.mediaAsset.count({
+      where: {
+        ownerId: userId,
+        metadata: {
+          path: ["duplicateLineage", "sourceAssetId"],
+          equals: sourceImageAssetId,
+        },
+      },
+    })).resolves.toBe(0);
+  });
+
+  it("keeps the duplicate private image serviceable after the source Character and asset are archived", async () => {
+    const userId = `${P}dup-blob-user`;
+    const reviewerId = `${P}dup-blob-reviewer`;
+    const sourceCharacterId = `${P}dup-blob-character`;
+    const sourceMediaId = `${P}dup-blob-media`;
+    const storageKey = `${P}dup-blob/source.webp`;
+    const bytes = Buffer.from("independent duplicate image bytes");
+    await createUser({ id: userId, dataClass: "customer" });
+    await createUser({
+      id: reviewerId,
+      role: "moderator",
+      dataClass: "internal",
+    });
+    await createCharacter({
+      id: sourceCharacterId,
+      creatorId: userId,
+      source: "user",
+      visibility: "private",
+    });
+    const stored = await providers.blob.putPrivate({
+      key: storageKey,
+      body: bytes,
+      contentType: "image/webp",
+    });
+    expect(stored.ok).toBe(true);
+    await prisma.mediaAsset.create({
+      data: {
+        id: sourceMediaId,
+        ownerId: userId,
+        characterId: sourceCharacterId,
+        type: "image",
+        url: `/user-content/${sourceMediaId}/content.webp`,
+        thumbnailUrl: `/user-content/${sourceMediaId}/thumbnail.webp`,
+        storageKey,
+        contentType: "image/webp",
+        width: 512,
+        height: 512,
+        visibility: "private",
+        safetyStatus: "passed",
+        metadata: {
+          provider: "pipeline",
+          providerKey: storageKey,
+          platformAsset: { status: "approved" },
+          synthetic: false,
+        },
+      },
+    });
+    await prisma.character.update({
+      where: { id: sourceCharacterId },
+      data: { imageAssetId: sourceMediaId },
+    });
+
+    const duplicateResponse = await api(
+      "POST",
+      `characters/${sourceCharacterId}/duplicate`,
+      { userId, ageGate: true },
+    );
+    expectOk(duplicateResponse);
+    const duplicateCharacterId = duplicateResponse.data.character.id as string;
+    const duplicateMediaId = duplicateResponse.data.character.imageAssetId as string;
+    const duplicateMedia = await prisma.mediaAsset.findUniqueOrThrow({
+      where: { id: duplicateMediaId },
+    });
+    expect(duplicateMedia).toMatchObject({
+      ownerId: userId,
+      characterId: duplicateCharacterId,
+      storageKey: null,
+      contentType: "image/webp",
+      width: 512,
+      height: 512,
+      safetyStatus: "unknown",
+    });
+    expect(duplicateMedia.url).not.toBe(`/user-content/${sourceMediaId}/content.webp`);
+    expect(duplicateMedia.thumbnailUrl).toBe(duplicateMedia.url);
+    expect(duplicateMedia.metadata).toMatchObject({
+      blobLocator: {
+        schemaVersion: "media-asset-blob-locator-v1",
+        kind: "shared_immutable",
+        key: storageKey,
+        sourceAssetId: sourceMediaId,
+      },
+      provider: "pipeline",
+      providerKey: storageKey,
+      source: "character_duplicate",
+      synthetic: false,
+    });
+    expect(duplicateMedia.metadata).not.toHaveProperty("platformAsset");
+    const generationReferenceInput = {
+      userId,
+      characterId: duplicateCharacterId,
+      controls: { sourceImageAssetId: duplicateMediaId },
+      maxReferences: 1,
+    };
+    await expect(
+      imageReferenceInputsForGenerationJob(generationReferenceInput),
+    ).resolves.toEqual([]);
+
+    const mediaQueue = await api("GET", "admin/moderation/queue", {
+      userId: reviewerId,
+      role: "moderator",
+      query: {
+        scope: "media",
+        search: duplicateMediaId,
+      },
+    });
+    expectOk(mediaQueue);
+    expect(mediaQueue.data.mediaReview).toEqual([
+      expect.objectContaining({
+        id: duplicateMediaId,
+        characterId: duplicateCharacterId,
+        safetyStatus: "unknown",
+        reviewKind: "independent_duplicate",
+        sourceAssetId: sourceMediaId,
+      }),
+    ]);
+
+    const mediaDecision = await api(
+      "POST",
+      `admin/moderation/media/${duplicateMediaId}/decision`,
+      {
+        userId: reviewerId,
+        role: "moderator",
+        body: {
+          decision: "passed",
+          reason: "Independent duplicate image review passed",
+          confirmation: duplicateMediaId,
+        },
+      },
+    );
+    expectOk(mediaDecision);
+    expect(mediaDecision.data.asset).toMatchObject({
+      id: duplicateMediaId,
+      safetyStatus: "passed",
+    });
+    await expect(
+      prisma.adminAuditLog.findFirst({
+        where: {
+          action: "safety.media.review",
+          targetId: duplicateMediaId,
+        },
+      }),
+    ).resolves.not.toBeNull();
+
+    const publish = await api("PATCH", `characters/${duplicateCharacterId}`, {
+      userId,
+      ageGate: true,
+      body: { visibility: "public" },
+    });
+    expectOk(publish);
+    const submission = await prisma.characterSubmission.findFirstOrThrow({
+      where: {
+        characterId: duplicateCharacterId,
+        status: "pending",
+      },
+      orderBy: { submittedAt: "desc" },
+    });
+    const characterQueue = await api("GET", "admin/content/review-queue", {
+      userId: reviewerId,
+      role: "moderator",
+      query: { search: duplicateCharacterId },
+    });
+    expectOk(characterQueue);
+    expect(characterQueue.data.items).toEqual([
+      expect.objectContaining({
+        submissionId: submission.id,
+        character: expect.objectContaining({
+          id: duplicateCharacterId,
+          status: "pending_review",
+          imageAssetId: duplicateMediaId,
+        }),
+      }),
+    ]);
+    const characterDecision = await api(
+      "POST",
+      `admin/content/review-queue/${submission.id}/decision`,
+      {
+        userId: reviewerId,
+        role: "moderator",
+        body: {
+          decision: "approve",
+          reviewReason: "Character and independent identity image approved",
+          reason: "Public Character review passed",
+          confirmation: submission.id,
+        },
+      },
+    );
+    expectOk(characterDecision);
+    await expect(
+      prisma.character.findUniqueOrThrow({
+        where: { id: duplicateCharacterId },
+      }),
+    ).resolves.toMatchObject({
+      visibility: "public",
+      status: "approved",
+      imageAssetId: duplicateMediaId,
+    });
+
+    expectOk(await api("DELETE", `characters/${sourceCharacterId}`, {
+      userId,
+      ageGate: true,
+    }));
+    expectOk(await api("DELETE", `media/${sourceMediaId}`, {
+      userId,
+      ageGate: true,
+    }));
+    await expect(
+      prisma.mediaAsset.findUniqueOrThrow({ where: { id: sourceMediaId } }),
+    ).resolves.toMatchObject({ deletedAt: expect.any(Date) });
+
+    const references = await imageReferenceInputsForGenerationJob(
+      generationReferenceInput,
+    );
+    expect(references).toEqual([
+      expect.objectContaining({
+        assetId: duplicateMediaId,
+        role: "source_image",
+        storageKey,
+      }),
+    ]);
+    const hydratedReferences = await hydratedImageReferenceInputs(
+      references,
+      providers.blob,
+    );
+    expect(hydratedReferences).toEqual([
+      expect.objectContaining({
+        assetId: duplicateMediaId,
+        role: "source_image",
+        storageKey,
+        b64Json: bytes.toString("base64"),
+      }),
+    ]);
+
+    const content = await dispatchV1(
+      new Request(`http://localhost/api/v1/media/${duplicateMediaId}/content`, {
+        headers: {
+          "x-idream-user-id": userId,
+          cookie: AGE_GATE_COOKIE_HEADER,
+        },
+      }),
+      ["media", duplicateMediaId, "content"],
+    );
+    expect(content.status).toBe(200);
+    expect(content.headers.get("content-type")).toBe("image/webp");
+    expect(Buffer.from(await content.arrayBuffer())).toEqual(bytes);
+  });
+
+  it("preserves the no-image duplicate flow without inventing media authority", async () => {
+    const userId = `${P}dup-no-image-user`;
+    const sourceCharacterId = `${P}dup-no-image-source`;
+    await createUser({ id: userId });
+    await createCharacter({
+      id: sourceCharacterId,
+      creatorId: userId,
+      source: "user",
+      visibility: "private",
+      imageAssetId: undefined,
+    });
+
+    const response = await api("POST", `characters/${sourceCharacterId}/duplicate`, {
+      userId,
+      ageGate: true,
+    });
+    expectOk(response);
+    expect(response.data.character).toMatchObject({
+      creatorId: userId,
+      visibility: "private",
+      imageAssetId: null,
+    });
+    await expect(
+      prisma.mediaAsset.count({
+        where: {
+          ownerId: userId,
+          metadata: {
+            path: ["duplicateLineage", "sourceCharacterId"],
+            equals: sourceCharacterId,
+          },
+        },
+      }),
+    ).resolves.toBe(0);
+  });
+
+  it.each([
+    { authorityChange: "archive", update: { metadata: { platformAsset: { status: "archived" } } } },
+    { authorityChange: "delete", update: { deletedAt: new Date() } },
+  ])(
+    "waits for the canonical media lock and refuses a source image that wins the $authorityChange race",
+    async ({ authorityChange, update }) => {
+      const userId = `${P}dup-race-${authorityChange}-user`;
+      const sourceCharacterId = `${P}dup-race-${authorityChange}-character`;
+      const sourceMediaId = `${P}dup-race-${authorityChange}-media`;
+      await createUser({ id: userId });
+      await createMedia({ id: sourceMediaId, ownerId: userId });
+      await createCharacter({
+        id: sourceCharacterId,
+        creatorId: userId,
+        source: "user",
+        visibility: "private",
+        imageAssetId: sourceMediaId,
+      });
+      await prisma.mediaAsset.update({
+        where: { id: sourceMediaId },
+        data: { characterId: sourceCharacterId },
+      });
+
+      let duplicateRequest: ReturnType<typeof api> | undefined;
+      await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`media-asset-authority:${sourceMediaId}`}))`;
+        duplicateRequest = api("POST", `characters/${sourceCharacterId}/duplicate`, {
+          userId,
+          ageGate: true,
+        });
+        const state = await Promise.race([
+          duplicateRequest.then(() => "settled" as const),
+          new Promise<"waiting">((resolve) => {
+            setTimeout(() => resolve("waiting"), 75);
+          }),
+        ]);
+        expect(state).toBe("waiting");
+        await tx.mediaAsset.update({
+          where: { id: sourceMediaId },
+          data: update,
+        });
+      });
+
+      expect(duplicateRequest).toBeDefined();
+      const response = await duplicateRequest!;
+      expectError(response, 409, "conflict");
+      expect(response.error?.message).toContain("source Character image");
+      await expect(
+        prisma.character.count({
+          where: {
+            creatorId: userId,
+            name: "Test Character Copy",
+          },
+        }),
+      ).resolves.toBe(0);
+      await expect(
+        prisma.mediaAsset.count({
+          where: {
+            ownerId: userId,
+            metadata: {
+              path: ["duplicateLineage", "sourceAssetId"],
+              equals: sourceMediaId,
+            },
+          },
+        }),
+      ).resolves.toBe(0);
+    },
+  );
+
+  it("serializes Character soft-delete, clears its image, and atomically retires its active Project", async () => {
+    const userId = `${P}character-delete-user`;
+    const characterId = `${P}character-delete-character`;
+    const mediaId = `${P}character-delete-media`;
+    const projectId = `${P}character-delete-project`;
+    await createUser({ id: userId });
+    await createMedia({ id: mediaId, ownerId: userId });
+    await createCharacter({
+      id: characterId,
+      creatorId: userId,
+      source: "user",
+      visibility: "private",
+      imageAssetId: mediaId,
+    });
+    await prisma.mediaAsset.update({
+      where: { id: mediaId },
+      data: { characterId },
+    });
+    await prisma.characterProject.create({
+      data: {
+        id: projectId,
+        characterId,
+        phase: "producing",
+        activeKey: `${characterId}:active`,
+        version: 3,
+        audience: {},
+        successCriteria: [],
+        draftImageAssetId: mediaId,
+      },
+    });
+    const prematureMediaDelete = await api("DELETE", `media/${mediaId}`, {
+      userId,
+      ageGate: true,
+    });
+    expectError(prematureMediaDelete, 409, "conflict");
+    expect(prematureMediaDelete.error?.details).toMatchObject({
+      dependencies: expect.arrayContaining([
+        expect.objectContaining({
+          kind: "character_project_draft",
+          characterId,
+          projectId,
+        }),
+      ]),
+    });
+
+    let archiveRequest: ReturnType<typeof api> | undefined;
+    await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`media-asset-authority:${mediaId}`}))`;
+      archiveRequest = api("DELETE", `characters/${characterId}`, {
+        userId,
+        ageGate: true,
+      });
+      const state = await Promise.race([
+        archiveRequest.then(() => "settled" as const),
+        new Promise<"waiting">((resolve) => {
+          setTimeout(() => resolve("waiting"), 75);
+        }),
+      ]);
+      expect(state).toBe("waiting");
+    });
+
+    expect(archiveRequest).toBeDefined();
+    expectOk(await archiveRequest!);
+    await expect(
+      prisma.character.findUniqueOrThrow({ where: { id: characterId } }),
+    ).resolves.toMatchObject({
+      status: "archived",
+      deletedAt: expect.any(Date),
+      imageAssetId: null,
+    });
+    await expect(
+      prisma.characterProject.findUniqueOrThrow({ where: { id: projectId } }),
+    ).resolves.toMatchObject({
+      phase: "retired",
+      activeKey: null,
+      version: 4,
+    });
+
+    const deleteMediaResponse = await api("DELETE", `media/${mediaId}`, {
+      userId,
+      ageGate: true,
+    });
+    expectOk(deleteMediaResponse);
+    await expect(
+      prisma.mediaAsset.findUniqueOrThrow({ where: { id: mediaId } }),
+    ).resolves.toMatchObject({ deletedAt: expect.any(Date) });
   });
 });
 
@@ -574,6 +1377,182 @@ describe("generation presets", () => {
 });
 
 describe("media bulk operations", () => {
+  it("protects a Character primary image even without Project, Profile, or Release authority", async () => {
+    const userId = `${P}primary-image-user`;
+    const mediaId = `${P}primary-image-media`;
+    const characterId = `${P}primary-image-character`;
+    await createUser({ id: userId });
+    await createMedia({
+      id: mediaId,
+      ownerId: userId,
+      visibility: "public_pack",
+    });
+    await createCharacter({
+      id: characterId,
+      creatorId: userId,
+      source: "user",
+      visibility: "private",
+      imageAssetId: mediaId,
+    });
+
+    const madePrivate = await api("POST", "media/bulk", {
+      userId,
+      ageGate: true,
+      body: {
+        ids: [mediaId],
+        action: "visibility",
+        visibility: "private",
+      },
+    });
+    expectError(madePrivate, 409, "conflict");
+    expect(madePrivate.error?.details).toMatchObject({
+      code: "media_asset_authority_dependency_active",
+      mediaAssetId: mediaId,
+      dependencies: expect.arrayContaining([
+        expect.objectContaining({
+          kind: "character_primary_image",
+          characterId,
+          repairPath: `/admin/characters/${characterId}?tab=assets`,
+        }),
+      ]),
+    });
+
+    const deleted = await api("DELETE", `media/${mediaId}`, {
+      userId,
+      ageGate: true,
+    });
+    expectError(deleted, 409, "conflict");
+    await expect(
+      prisma.mediaAsset.findUniqueOrThrow({ where: { id: mediaId } }),
+    ).resolves.toMatchObject({
+      visibility: "public_pack",
+      deletedAt: null,
+    });
+    await expect(
+      prisma.character.findUniqueOrThrow({ where: { id: characterId } }),
+    ).resolves.toMatchObject({ imageAssetId: mediaId });
+  });
+
+  it("rejects make-private and delete while an image is owned by the live Character Release", async () => {
+    const liveAvatarId = `${CHAR}-public-avatar`;
+
+    const madePrivate = await api("POST", "media/bulk", {
+      userId: SYS,
+      ageGate: true,
+      body: {
+        ids: [liveAvatarId],
+        action: "visibility",
+        visibility: "private",
+      },
+    });
+    expectError(madePrivate, 409, "conflict");
+    expect(madePrivate.error?.details).toMatchObject({
+      code: "media_asset_authority_dependency_active",
+      mediaAssetId: liveAvatarId,
+      dependencies: expect.arrayContaining([
+        expect.objectContaining({
+          kind: "character_release",
+          characterId: CHAR,
+          releaseState: "current",
+        }),
+      ]),
+      repairPath: `/admin/characters/${CHAR}?tab=release`,
+    });
+
+    const deleted = await api("DELETE", `media/${liveAvatarId}`, {
+      userId: SYS,
+      ageGate: true,
+    });
+    expectError(deleted, 409, "conflict");
+    await expect(
+      prisma.mediaAsset.findUniqueOrThrow({ where: { id: liveAvatarId } }),
+    ).resolves.toMatchObject({
+      visibility: "public_pack",
+      deletedAt: null,
+    });
+    await expect(
+      prisma.characterServing.findUniqueOrThrow({
+        where: { characterId: CHAR },
+      }),
+    ).resolves.toMatchObject({ state: "live" });
+  });
+
+  it("serializes a single owner delete behind the shared media authority barrier", async () => {
+    const userId = `${P}single-delete-barrier-user`;
+    const mediaId = `${P}single-delete-barrier-media`;
+    await createUser({ id: userId });
+    await createMedia({ id: mediaId, ownerId: userId });
+
+    let deleteRequest: ReturnType<typeof api> | undefined;
+    await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`media-asset-authority:${mediaId}`}))`;
+      deleteRequest = api("DELETE", `media/${mediaId}`, {
+        userId,
+        ageGate: true,
+      });
+      const state = await Promise.race([
+        deleteRequest.then(() => "settled" as const),
+        new Promise<"waiting">((resolve) => {
+          setTimeout(() => resolve("waiting"), 75);
+        }),
+      ]);
+      expect(state).toBe("waiting");
+      await tx.mediaAsset.update({
+        where: { id: mediaId },
+        data: { metadata: { authorityConsumer: "committed-before-delete" } },
+      });
+    });
+
+    expect(deleteRequest).toBeDefined();
+    expectOk(await deleteRequest!);
+    await expect(prisma.mediaAsset.findUniqueOrThrow({
+      where: { id: mediaId },
+    })).resolves.toMatchObject({
+      deletedAt: expect.any(Date),
+      metadata: { authorityConsumer: "committed-before-delete" },
+    });
+  });
+
+  it("locks the complete owned bulk-delete set in shared sorted authority order", async () => {
+    const userId = `${P}bulk-delete-barrier-user`;
+    const firstId = `${P}bulk-delete-barrier-a`;
+    const secondId = `${P}bulk-delete-barrier-b`;
+    await createUser({ id: userId });
+    await createMedia({ id: firstId, ownerId: userId });
+    await createMedia({ id: secondId, ownerId: userId });
+
+    let deleteRequest: ReturnType<typeof api> | undefined;
+    await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`media-asset-authority:${secondId}`}))`;
+      deleteRequest = api("POST", "media/bulk", {
+        userId,
+        ageGate: true,
+        body: {
+          ids: [secondId, firstId],
+          action: "delete",
+        },
+      });
+      const state = await Promise.race([
+        deleteRequest.then(() => "settled" as const),
+        new Promise<"waiting">((resolve) => {
+          setTimeout(() => resolve("waiting"), 75);
+        }),
+      ]);
+      expect(state).toBe("waiting");
+    });
+
+    expect(deleteRequest).toBeDefined();
+    const response = await deleteRequest!;
+    expectOk(response);
+    expect(response.data.deleted).toBe(2);
+    await expect(prisma.mediaAsset.count({
+      where: {
+        id: { in: [firstId, secondId] },
+        deletedAt: null,
+      },
+    })).resolves.toBe(0);
+  });
+
   it("bulk-deletes and bulk-updates visibility for owned media", async () => {
     const userId = `${P}bulk`;
     await createUser({ id: userId });
@@ -614,6 +1593,23 @@ describe("feed, community, policies, analytics", () => {
     expectOk(restart);
 
     const itemId = `character:${CHAR}`;
+    expectError(
+      await api("POST", "feed/not-a-real-action", {
+        userId,
+        ageGate: true,
+      }),
+      404,
+      "not_found",
+    );
+    expectError(
+      await api("PATCH", `feed/items/${encodeURIComponent(itemId)}/like`, {
+        userId,
+        ageGate: true,
+      }),
+      404,
+      "not_found",
+    );
+
     const share = await api("POST", `feed/items/${encodeURIComponent(itemId)}/share`, {
       userId,
       ageGate: true,
@@ -672,6 +1668,7 @@ describe("feed, community, policies, analytics", () => {
         targetType: "campaign",
         targetId: `${P}campaign`,
         status: "published",
+        verificationState: "passed",
         publishedAt: new Date(),
         createdById: SYS,
         metadata: {
@@ -698,27 +1695,106 @@ describe("feed, community, policies, analytics", () => {
       ctaLabel: "Open collection",
       eyebrow: "Featured",
       href: "/community?collection=seed-collection-fantasy-escapes",
-      image: "/images/ourdream/card-sarah-mercer.webp",
+      image:
+        `/user-content/${Buffer.from(mediaId, "utf8").toString("base64url")}/content.webp`,
       title: "Community campaign",
     });
   });
 
   it("returns a public creator profile with their characters and follow state", async () => {
+    const ownerId = `${P}creator-owner`;
+    const characterId = `${P}creator-character`;
     const viewer = `${P}creator-viewer`;
+    await createUser({
+      id: ownerId,
+      dataClass: "customer",
+      displayName: "Profile Creator",
+    });
+    await createCharacter({
+      id: characterId,
+      creatorId: ownerId,
+      source: "user",
+      visibility: "public",
+      status: "approved",
+    });
+    await seedCurrentPublicCharacterAuthority({
+      characterId,
+      ownerId,
+    });
     await createUser({ id: viewer });
 
-    const profile = await api("GET", `creators/${SYS}`, { userId: viewer, ageGate: true });
+    const profile = await api("GET", `creators/${ownerId}`, { userId: viewer, ageGate: true });
     expectOk(profile);
-    expect(profile.data.creator).toMatchObject({ id: SYS, isFollowing: false, isSelf: false });
-    expect(profile.data.creator.stats.characters).toBeGreaterThanOrEqual(1);
+    expect(profile.data.creator).toMatchObject({
+      id: ownerId,
+      displayName: "Profile Creator",
+      isFollowing: false,
+      isSelf: false,
+    });
+    expect(profile.data.creator.stats.characters).toBe(1);
     expect(Array.isArray(profile.data.characters)).toBe(true);
-    expect((profile.data.characters as Array<{ creatorId: string }>).every((c) => c.creatorId === SYS)).toBe(true);
+    expect(profile.data.characters).toEqual([
+      expect.objectContaining({
+        id: characterId,
+        source: "user",
+        creatorType: "user",
+        creatorId: ownerId,
+        creatorName: "Profile Creator",
+      }),
+    ]);
 
-    const follow = await api("POST", `users/${SYS}/follow`, { userId: viewer, ageGate: true });
+    const follow = await api("POST", `users/${ownerId}/follow`, { userId: viewer, ageGate: true });
     expectOk(follow);
-    const after = await api("GET", `creators/${SYS}`, { userId: viewer, ageGate: true });
+    const after = await api("GET", `creators/${ownerId}`, { userId: viewer, ageGate: true });
     expectOk(after);
     expect(after.data.creator.isFollowing).toBe(true);
+  });
+
+  it("reports all-character creator totals while limiting the returned card page", async () => {
+    const ownerId = `${P}creator-aggregate-owner`;
+    const characterIds = Array.from(
+      { length: 25 },
+      (_, index) => `${P}creator-aggregate-${index + 1}`,
+    );
+    await createUser({ id: ownerId, dataClass: "customer" });
+    await prisma.character.createMany({
+      data: characterIds.map((id, index) => ({
+        id,
+        creatorId: ownerId,
+        name: `Aggregate Character ${index + 1}`,
+        age: 24,
+        description: "Public aggregate test character.",
+        visibility: "public",
+        status: "approved",
+        source: "user",
+        style: "realistic",
+        gender: "female",
+        appearance: {},
+        advancedDetails: {},
+      })),
+    });
+    await prisma.characterStats.createMany({
+      data: characterIds.map((characterId, index) => ({
+        characterId,
+        likesCount: index + 1,
+        chatsCount: (index + 1) * 2,
+      })),
+    });
+    for (const characterId of characterIds) {
+      await seedCurrentPublicCharacterAuthority({
+        characterId,
+        ownerId,
+      });
+    }
+
+    const profile = await api("GET", `creators/${ownerId}`, { ageGate: true });
+    expectOk(profile);
+    expect(profile.data.characters).toHaveLength(24);
+    expect(profile.data.creator.stats).toMatchObject({
+      characters: 25,
+      likesCount: 325,
+      chatsCount: 650,
+    });
   });
 
   it("reflects follow state in community dreamers and 404s unknown creators", async () => {
@@ -768,7 +1844,39 @@ describe("feed, community, policies, analytics", () => {
       email: `${userId}@customer.invalid`,
       dataClass: "customer",
     });
-    await createCharacter({ id: characterId, creatorId: userId, likes: 9_999_999 });
+    await createCharacter({
+      id: characterId,
+      creatorId: userId,
+      source: "user",
+      likes: 9_999_999,
+    });
+    const releaseAssetIds = {
+      avatar: `${P}exposure-avatar`,
+      hero: `${P}exposure-hero`,
+      chat: `${P}exposure-chat`,
+    };
+    await prisma.mediaAsset.createMany({
+      data: Object.entries(releaseAssetIds).map(([slot, id]) => ({
+        id,
+        ownerId: userId,
+        characterId,
+        type: "image",
+        url: `/user-content/${id}/content.webp`,
+        thumbnailUrl: `/user-content/${id}/thumbnail.webp`,
+        visibility: "public_pack",
+        safetyStatus: "passed",
+        metadata: {
+          slot,
+          provider: "pipeline",
+          synthetic: false,
+          platformAsset: { status: "approved" },
+        },
+      })),
+    });
+    await prisma.character.update({
+      where: { id: characterId },
+      data: { imageAssetId: releaseAssetIds.avatar },
+    });
     await prisma.characterContentVersion.create({
       data: {
         id: contentVersionId,
@@ -797,11 +1905,84 @@ describe("feed, community, policies, analytics", () => {
         projectId,
         revisionId: `${P}exposure-revision-v1`,
         characterContentVersionId: contentVersionId,
-        generationProvenance: {},
-        releasePlacementManifest: {},
+        generationProvenance: {
+          schemaVersion: "character-release-generation-provenance-v2",
+          policyVersion: "character-release-policy-v2",
+          requiredReleaseRoute: {
+            routeFingerprint: `${releaseId}-route`,
+            matrixKey: "exposure-authority",
+            generationProfileKey: "exposure-profile",
+            generationProfileVersion: 1,
+            workflowKey: "exposure-workflow",
+            workflowVersion: 1,
+          },
+          placements: [
+            {
+              slotKey: "character_avatar",
+              assetId: releaseAssetIds.avatar,
+              provider: "pipeline",
+            },
+            {
+              slotKey: "character_hero",
+              assetId: releaseAssetIds.hero,
+              provider: "pipeline",
+            },
+            {
+              slotKey: "character_chat",
+              assetId: releaseAssetIds.chat,
+              provider: "pipeline",
+            },
+          ],
+        },
+        releasePlacementManifest: {
+          schemaVersion: 2,
+          placements: [
+            {
+              slotKey: "character_avatar",
+              assetId: releaseAssetIds.avatar,
+              slotVersion: 1,
+            },
+            {
+              slotKey: "character_hero",
+              assetId: releaseAssetIds.hero,
+              slotVersion: 1,
+            },
+            {
+              slotKey: "character_chat",
+              assetId: releaseAssetIds.chat,
+              slotVersion: 1,
+            },
+          ],
+        },
         snapshotHash: `${P}exposure-release-hash`,
+        readiness: "ready",
         status: "published",
         publishedAt: new Date(),
+      },
+    });
+    const validationRunId = `${P}exposure-validation-v1`;
+    await prisma.releaseValidationRun.create({
+      data: {
+        id: validationRunId,
+        releaseId,
+        snapshotHash: `${P}exposure-release-hash`,
+        policyVersion: "character-release-policy-v2",
+        result: "passed",
+        finishedAt: new Date(),
+      },
+    });
+    await prisma.publicCatalogQualification.create({
+      data: {
+        id: `${P}exposure-qualification-v1`,
+        releaseId,
+        releaseSnapshotHash: `${P}exposure-release-hash`,
+        kind: "generated_release",
+        validationRunId,
+        evidence: {
+          schemaVersion: "public-catalog-qualification-v1",
+          policyVersion: "character-release-policy-v2",
+          validationRunId,
+        },
       },
     });
     await prisma.characterServing.create({
@@ -900,6 +2081,10 @@ describe("feed, community, policies, analytics", () => {
     await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: event.id } });
     await prisma.analyticsEvent.delete({ where: { id: event.id } });
     await prisma.characterServing.delete({ where: { characterId } });
+    await prisma.publicCatalogQualification.deleteMany({
+      where: { releaseId },
+    });
+    await prisma.releaseValidationRun.delete({ where: { id: validationRunId } });
     await prisma.characterRelease.delete({ where: { id: releaseId } });
     await prisma.characterProject.delete({ where: { id: projectId } });
     await prisma.characterContentVersion.delete({ where: { id: contentVersionId } });
@@ -976,7 +2161,7 @@ describe("feed, community, policies, analytics", () => {
 
   it("creates a tracked support request for a signed-in adult user", async () => {
     const userId = `${P}support-requester`;
-    await createUser({ id: userId });
+    await createUser({ id: userId, dataClass: "customer" });
 
     const res = await api("POST", "support/requests", {
       userId,
@@ -1008,6 +2193,7 @@ describe("feed, community, policies, analytics", () => {
       where: { userId, name: "support_request_submitted" },
     });
     expect(row).not.toBeNull();
+    expect(row?.dataClass).toBe("customer");
     expect(row?.props).toMatchObject({
       ticketId: res.data.request.ticketId,
       category: "generation",
@@ -1048,7 +2234,7 @@ describe("feed, community, policies, analytics", () => {
 
   it("lists roadmap feedback and lets signed-in adults submit and vote", async () => {
     const userId = `${P}feedback-voter`;
-    await createUser({ id: userId });
+    await createUser({ id: userId, dataClass: "customer" });
 
     const list = await api("GET", "feedback/items");
     expectOk(list);
@@ -1089,6 +2275,16 @@ describe("feed, community, policies, analytics", () => {
     expectOk(unvote);
     expect(unvote.data.item.userVoted).toBe(false);
     expect(unvote.data.item.voteCount).toBe(defaultItem.voteCount);
+
+    const fixtureId = `${P}feedback-fixture-voter`;
+    await createUser({ id: fixtureId });
+    const fixtureVote = await api("POST", `feedback/items/${defaultItem.id}/vote`, {
+      userId: fixtureId,
+      ageGate: true,
+    });
+    expectOk(fixtureVote);
+    expect(fixtureVote.data.item.userVoted).toBe(true);
+    expect(fixtureVote.data.item.voteCount).toBe(defaultItem.voteCount);
   });
 
   it("does not write defaults on read and excludes non-customer user feedback", async () => {

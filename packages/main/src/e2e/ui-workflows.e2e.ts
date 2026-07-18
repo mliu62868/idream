@@ -47,6 +47,23 @@ function uniqueName(tag: string) {
   return `E2E ${tag} ${Date.now()} ${Math.floor(Math.random() * 1e6)}`;
 }
 
+function helpDeskResumeTarget(page: Page) {
+  const next = new URL(page.url()).searchParams.get("next");
+  expect(next).toMatch(/^\/helpdesk\?resume=[\w-]+$/);
+  return next!;
+}
+
+async function localStorageKeysStartingWith(page: Page, prefix: string) {
+  return page.evaluate((storagePrefix) => {
+    return Array.from({ length: window.localStorage.length }, (_, index) =>
+      window.localStorage.key(index),
+    ).filter(
+      (key): key is string =>
+        typeof key === "string" && key.startsWith(storagePrefix),
+    );
+  }, prefix);
+}
+
 function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -1050,7 +1067,19 @@ test("help desk signup redirect preserves anonymous support request draft", asyn
   await supportForm.getByRole("button", { name: /submit request/i }).click();
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/signup");
-  expect(new URL(page.url()).searchParams.get("next")).toBe("/helpdesk");
+  helpDeskResumeTarget(page);
+  const anonymousSupportKeys = await localStorageKeysStartingWith(
+    page,
+    "ourdream.helpdesk.supportDraft.v1:anonymous:",
+  );
+  expect(anonymousSupportKeys).toHaveLength(1);
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        window.sessionStorage.getItem("ourdream.helpdesk.resume.v1"),
+      ),
+    )
+    .not.toBeNull();
 
   await page.getByLabel("Display name").fill("E2E Helpdesk Signup Redirect");
   await page.getByLabel("Email").fill(email);
@@ -1064,16 +1093,39 @@ test("help desk signup redirect preserves anonymous support request draft", asyn
   await expect(supportDetails).toHaveValue(description);
   await expect(page.getByTestId("helpdesk-status")).toContainText(/support draft was restored/i);
 
+  const user = await prisma.user.findUniqueOrThrow({ where: { email }, select: { id: true } });
+  await expect
+    .poll(() =>
+      page.evaluate((key) => window.localStorage.getItem(key), anonymousSupportKeys[0]!),
+    )
+    .toBeNull();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (userId) =>
+          window.localStorage.getItem(
+            `ourdream.helpdesk.supportDraft.v1:user:${userId}`,
+          ),
+        user.id,
+      ),
+    )
+    .not.toBeNull();
+
   await supportForm.getByRole("button", { name: /submit request/i }).click();
   await expect(page.getByTestId("helpdesk-status")).toContainText(/SUP-/);
   await expect(page.getByTestId("helpdesk-status")).toContainText(/received/i);
   await expect
     .poll(() =>
-      page.evaluate(() => window.localStorage.getItem("ourdream.helpdesk.supportDraft.v1")),
+      page.evaluate(
+        (userId) =>
+          window.localStorage.getItem(
+            `ourdream.helpdesk.supportDraft.v1:user:${userId}`,
+          ),
+        user.id,
+      ),
     )
     .toBeNull();
 
-  const user = await prisma.user.findUniqueOrThrow({ where: { email }, select: { id: true } });
   const request = await prisma.supportRequest.findFirst({
     where: { userId: user.id, subject },
   });
@@ -1121,7 +1173,12 @@ test("help desk signup redirect preserves anonymous roadmap idea draft", async (
   await feedbackForm.getByRole("button", { name: /submit idea/i }).click();
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/signup");
-  expect(new URL(page.url()).searchParams.get("next")).toBe("/helpdesk");
+  helpDeskResumeTarget(page);
+  const anonymousFeedbackKeys = await localStorageKeysStartingWith(
+    page,
+    "ourdream.helpdesk.feedbackDraft.v1:anonymous:",
+  );
+  expect(anonymousFeedbackKeys).toHaveLength(1);
 
   await page.getByLabel("Display name").fill("E2E Helpdesk Feedback Signup Redirect");
   await page.getByLabel("Email").fill(email);
@@ -1135,15 +1192,38 @@ test("help desk signup redirect preserves anonymous roadmap idea draft", async (
   await expect(feedbackDetails).toHaveValue(description);
   await expect(page.getByTestId("feedback-status")).toContainText(/roadmap draft was restored/i);
 
+  const user = await prisma.user.findUniqueOrThrow({ where: { email }, select: { id: true } });
+  await expect
+    .poll(() =>
+      page.evaluate((key) => window.localStorage.getItem(key), anonymousFeedbackKeys[0]!),
+    )
+    .toBeNull();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (userId) =>
+          window.localStorage.getItem(
+            `ourdream.helpdesk.feedbackDraft.v1:user:${userId}`,
+          ),
+        user.id,
+      ),
+    )
+    .not.toBeNull();
+
   await feedbackForm.getByRole("button", { name: /submit idea/i }).click();
   await expect(page.getByTestId("feedback-status")).toContainText(/submitted/i);
   await expect
     .poll(() =>
-      page.evaluate(() => window.localStorage.getItem("ourdream.helpdesk.feedbackDraft.v1")),
+      page.evaluate(
+        (userId) =>
+          window.localStorage.getItem(
+            `ourdream.helpdesk.feedbackDraft.v1:user:${userId}`,
+          ),
+        user.id,
+      ),
     )
     .toBeNull();
 
-  const user = await prisma.user.findUniqueOrThrow({ where: { email }, select: { id: true } });
   const item = await prisma.productFeedbackItem.findFirst({
     where: { createdById: user.id, title },
   });
@@ -1209,10 +1289,12 @@ test("help desk signup redirect applies anonymous roadmap vote intent", async ({
   await feedbackCard.getByRole("button", { name: /Vote 0/ }).click();
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/signup");
-  expect(new URL(page.url()).searchParams.get("next")).toBe("/helpdesk");
+  helpDeskResumeTarget(page);
   await expect
     .poll(() =>
-      page.evaluate(() => window.localStorage.getItem("ourdream.helpdesk.pendingFeedbackVote.v1")),
+      page.evaluate(() =>
+        window.sessionStorage.getItem("ourdream.helpdesk.resume.v1"),
+      ),
     )
     .toContain(itemId);
 
@@ -1233,7 +1315,9 @@ test("help desk signup redirect applies anonymous roadmap vote intent", async ({
   );
   await expect
     .poll(() =>
-      page.evaluate(() => window.localStorage.getItem("ourdream.helpdesk.pendingFeedbackVote.v1")),
+      page.evaluate(() =>
+        window.sessionStorage.getItem("ourdream.helpdesk.resume.v1"),
+      ),
     )
     .toBeNull();
 
@@ -1285,7 +1369,12 @@ test("help desk signup redirect preserves anonymous appeal draft", async ({ page
   await appealForm.getByRole("button", { name: /submit appeal/i }).click();
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/signup");
-  expect(new URL(page.url()).searchParams.get("next")).toBe("/helpdesk");
+  helpDeskResumeTarget(page);
+  const anonymousAppealKeys = await localStorageKeysStartingWith(
+    page,
+    "ourdream.helpdesk.appealDraft.v1:anonymous:",
+  );
+  expect(anonymousAppealKeys).toHaveLength(1);
 
   await page.getByLabel("Display name").fill("E2E Helpdesk Appeal Signup Redirect");
   await page.getByLabel("Email").fill(email);
@@ -1300,15 +1389,38 @@ test("help desk signup redirect preserves anonymous appeal draft", async ({ page
   await expect(appealDetails).toHaveValue(appealText);
   await expect(page.getByTestId("appeal-status")).toContainText(/appeal draft was restored/i);
 
+  const user = await prisma.user.findUniqueOrThrow({ where: { email }, select: { id: true } });
+  await expect
+    .poll(() =>
+      page.evaluate((key) => window.localStorage.getItem(key), anonymousAppealKeys[0]!),
+    )
+    .toBeNull();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (userId) =>
+          window.localStorage.getItem(
+            `ourdream.helpdesk.appealDraft.v1:user:${userId}`,
+          ),
+        user.id,
+      ),
+    )
+    .not.toBeNull();
+
   await appealForm.getByRole("button", { name: /submit appeal/i }).click();
   await expect(page.getByTestId("appeal-status")).toContainText(/Appeal .* submitted/);
   await expect
     .poll(() =>
-      page.evaluate(() => window.localStorage.getItem("ourdream.helpdesk.appealDraft.v1")),
+      page.evaluate(
+        (userId) =>
+          window.localStorage.getItem(
+            `ourdream.helpdesk.appealDraft.v1:user:${userId}`,
+          ),
+        user.id,
+      ),
     )
     .toBeNull();
 
-  const user = await prisma.user.findUniqueOrThrow({ where: { email }, select: { id: true } });
   const appeal = await prisma.appeal.findFirst({
     where: { userId: user.id, targetType: "media", targetId },
   });
@@ -1335,6 +1447,10 @@ async function enableVideoGenerationForUser(email: string) {
     where: { key: "video_gen" },
     select: { enabled: true, rolloutPercent: true },
   });
+  const previousProfiles = await prisma.generationModelProfile.findMany({
+    where: { mode: "video", status: "active" },
+    select: { id: true, rolloutPercent: true },
+  });
   await prisma.entitlement.upsert({
     where: { userId_key: { userId: user.id, key: "video_generation" } },
     update: { value: true, source: "e2e" },
@@ -1344,23 +1460,62 @@ async function enableVideoGenerationForUser(email: string) {
     where: { key: "video_gen" },
     data: { enabled: true, rolloutPercent: 100 },
   });
-  return previousFlag;
+  await prisma.generationModelProfile.updateMany({
+    where: { mode: "video", status: "active", enabled: true },
+    data: { rolloutPercent: 100 },
+  });
+  await prisma.generationRecipe.upsert({
+    where: { id: "e2e-template-video-freeplay-v1" },
+    update: { status: "active" },
+    create: {
+      id: "e2e-template-video-freeplay-v1",
+      recipeKey: "e2e_template_video_freeplay",
+      label: "E2E video freeplay",
+      mode: "video",
+      useCase: "freeplay",
+      body: "E2E video freeplay prompt template.",
+      presetOrder: [],
+      safetyHints: {},
+      sampleMatrix: [{ freeplay: true, seconds: 4 }],
+      version: 1,
+      status: "active",
+    },
+  });
+  return { previousFlag, previousProfiles };
 }
 
-async function restoreVideoGenerationFlag(previousFlag: {
-  enabled: boolean;
-  rolloutPercent: number;
-} | null) {
+async function restoreVideoGenerationRuntime(previousRuntime: {
+  previousFlag: {
+    enabled: boolean;
+    rolloutPercent: number;
+  } | null;
+  previousProfiles: Array<{
+    id: string;
+    rolloutPercent: number;
+  }>;
+}) {
+  const { previousFlag, previousProfiles } = previousRuntime;
   if (!previousFlag) {
     await prisma.featureFlag.update({
       where: { key: "video_gen" },
       data: { enabled: false, rolloutPercent: 0 },
     });
-    return;
+  } else {
+    await prisma.featureFlag.update({
+      where: { key: "video_gen" },
+      data: previousFlag,
+    });
   }
-  await prisma.featureFlag.update({
-    where: { key: "video_gen" },
-    data: previousFlag,
+  await prisma.$transaction(
+    previousProfiles.map((profile) =>
+      prisma.generationModelProfile.update({
+        where: { id: profile.id },
+        data: { rolloutPercent: profile.rolloutPercent },
+      }),
+    ),
+  );
+  await prisma.generationRecipe.deleteMany({
+    where: { id: "e2e-template-video-freeplay-v1" },
   });
 }
 
@@ -2070,6 +2225,58 @@ test("global header search suggestions expose empty status semantics", async ({ 
   await expect(page.getByTestId("app-search-status")).toHaveAttribute("aria-live", "polite");
 });
 
+test("global search rejects malformed 200 responses instead of showing a false empty state", async ({
+  page,
+}) => {
+  await startSignedInAdultSession(page, "global-search-malformed-status");
+  await page.route("**/api/v1/search/suggest?**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, data: {} }),
+    });
+  });
+
+  await page.goto("/generate?characterId=melissa-burke");
+  const globalSearch = page.getByRole("searchbox", {
+    name: "Search characters, guides, and generators",
+  });
+  await globalSearch.fill("malformed authority");
+
+  await expect(page.getByTestId("app-search-status")).toHaveText(
+    "Search suggestions unavailable",
+  );
+  await expect(page.getByTestId("app-search-status")).not.toHaveText(
+    "No suggestions found",
+  );
+});
+
+test("global search distinguishes dependency failure from an intentional empty result", async ({
+  page,
+}) => {
+  await startSignedInAdultSession(page, "global-search-dependency-status");
+  await page.route("**/api/v1/search/suggest?**", async (route) => {
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: false,
+        error: { code: "DEPENDENCY_UNAVAILABLE", message: "Search unavailable" },
+      }),
+    });
+  });
+
+  await page.goto("/generate?characterId=melissa-burke");
+  const globalSearch = page.getByRole("searchbox", {
+    name: "Search characters, guides, and generators",
+  });
+  await globalSearch.fill("dependency authority");
+
+  await expect(page.getByTestId("app-search-status")).toHaveText(
+    "Search suggestions unavailable",
+  );
+});
+
 test("global header signup redirect returns anonymous generator intent", async ({
   page,
 }) => {
@@ -2166,7 +2373,23 @@ test("generate preset signup redirect preserves anonymous preset draft", async (
   await page.getByTestId("my-presets").getByRole("button", { name: "Save" }).click();
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/signup");
-  expect(new URL(page.url()).searchParams.get("next")).toBe("/generate");
+  expect(new URL(page.url()).searchParams.get("next")).toMatch(
+    /^\/generate\?presetResume=[\w-]+$/,
+  );
+  const anonymousPresetKeys = await localStorageKeysStartingWith(
+    page,
+    "idream.generatePresetDraft.v1:anonymous:",
+  );
+  expect(anonymousPresetKeys).toHaveLength(1);
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        window.sessionStorage.getItem(
+          "idream.generatePresetDraftTransfer.v1",
+        ),
+      ),
+    )
+    .not.toBeNull();
   const authExploreClass = await page
     .locator("aside")
     .getByRole("link", { name: "Explore" })
@@ -2185,10 +2408,39 @@ test("generate preset signup redirect preserves anonymous preset draft", async (
   });
   await expect(page.getByTestId("my-presets").getByLabel("Preset name")).toHaveValue(presetLabel);
   await expect(page.getByLabel("Background")).toHaveValue("seed-preset-background-studio");
-  await page.getByTestId("my-presets").getByRole("button", { name: "Save" }).click();
-  await expect(page.getByText(`Saved preset "${presetLabel}".`)).toBeVisible({ timeout: 10_000 });
 
   const user = await prisma.user.findUniqueOrThrow({ where: { email }, select: { id: true } });
+  await expect
+    .poll(() =>
+      page.evaluate((key) => window.localStorage.getItem(key), anonymousPresetKeys[0]!),
+    )
+    .toBeNull();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (userId) =>
+          window.localStorage.getItem(
+            `idream.generatePresetDraft.v1:user:${userId}`,
+          ),
+        user.id,
+      ),
+    )
+    .not.toBeNull();
+
+  await page.getByTestId("my-presets").getByRole("button", { name: "Save" }).click();
+  await expect(page.getByText(`Saved preset "${presetLabel}".`)).toBeVisible({ timeout: 10_000 });
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (userId) =>
+          window.localStorage.getItem(
+            `idream.generatePresetDraft.v1:user:${userId}`,
+          ),
+        user.id,
+      ),
+    )
+    .toBeNull();
+
   const savedPreset = await prisma.generationPreset.findFirst({
     where: { ownerId: user.id, label: presetLabel },
     select: { controls: true },
@@ -2209,7 +2461,23 @@ test("create signup redirect returns anonymous draft to the builder", async ({ p
   await page.getByTestId("create-next").click();
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/signup");
-  expect(new URL(page.url()).searchParams.get("next")).toBe("/create");
+  expect(new URL(page.url()).searchParams.get("next")).toMatch(
+    /^\/create\?draftResume=[\w-]+$/,
+  );
+  const anonymousCreateKeys = await localStorageKeysStartingWith(
+    page,
+    "ourdream.create.draft.v2:anonymous:",
+  );
+  expect(anonymousCreateKeys).toHaveLength(1);
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        window.sessionStorage.getItem(
+          "ourdream.create.draft.transfer.v1",
+        ),
+      ),
+    )
+    .not.toBeNull();
   const authExploreClass = await page
     .locator("aside")
     .getByRole("link", { name: "Explore" })
@@ -2225,6 +2493,24 @@ test("create signup redirect returns anonymous draft to the builder", async ({ p
   await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
   await expect(page.getByTestId("create-step-identity")).toBeVisible();
   await expect(page.getByLabel("Name")).toHaveValue(characterName);
+
+  const user = await prisma.user.findUniqueOrThrow({ where: { email }, select: { id: true } });
+  await expect
+    .poll(() =>
+      page.evaluate((key) => window.localStorage.getItem(key), anonymousCreateKeys[0]!),
+    )
+    .toBeNull();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (userId) =>
+          window.localStorage.getItem(
+            `ourdream.create.draft.v2:user:${userId}`,
+          ),
+        user.id,
+      ),
+    )
+    .toContain(characterName);
 });
 
 test("create UI walks the multi-step builder and shows the character in My AI", async ({ page }) => {
@@ -2914,9 +3200,11 @@ test("chat UI preserves input and shows upgrade path at the free daily limit", a
   expect(new URL(page.url()).searchParams.get("returnTo")).toBe(sessionPath);
   const premiumMonthly = page.locator("article").filter({ hasText: "Premium monthly" });
   await expect(premiumMonthly).toBeVisible({ timeout: 10_000 });
-  await premiumMonthly.getByRole("button", { name: "Demo upgrade" }).click();
+  await premiumMonthly.getByRole("button", { name: "Demo activate" }).click();
   await expect(
-    page.getByText("Premium monthly is active. 1,500 dreamcoins were added."),
+    page.getByText(
+      /Premium monthly access is active until .+ It will not renew automatically\./,
+    ),
   ).toBeVisible({ timeout: 10_000 });
   const continueChat = page
     .getByTestId("upgrade-checkout-result")
@@ -3200,16 +3488,18 @@ test("generator UI explains config load failures instead of showing a fake zero 
   page,
 }) => {
   await startSignedInAdultSession(page, "generate-config-error");
-  await page.route("**/api/v1/generation/config", (route) =>
-    route.fulfill({
+  let configUnavailable = true;
+  await page.route("**/api/v1/generation/config", (route) => {
+    if (!configUnavailable) return route.fallback();
+    return route.fulfill({
       status: 403,
       contentType: "application/json",
       body: JSON.stringify({
         ok: false,
         error: { message: "Age verification required" },
       }),
-    }),
-  );
+    });
+  });
 
   await page.goto("/generate");
 
@@ -3223,7 +3513,26 @@ test("generator UI explains config load failures instead of showing a fake zero 
   });
   await expect(page.getByText("Loading...", { exact: true })).toHaveCount(0);
   await expect(page.getByText("0 coins", { exact: true })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Generate" })).toBeDisabled();
+  await expect(
+    page.getByRole("button", {
+      name: "Generation price unavailable",
+    }),
+  ).toBeDisabled();
+
+  configUnavailable = false;
+  const privateJobsReloaded = page.waitForResponse(
+    (response) =>
+      response.url().includes("/api/v1/generation/jobs?") &&
+      response.status() === 200,
+  );
+  await page.getByRole("button", {
+    name: "Couldn't load generator. Retry.",
+  }).click();
+  await privateJobsReloaded;
+  await expect(page.getByText("Age verification required")).toHaveCount(0);
+  await expect(
+    page.locator("form").getByText(/^\d[\d,]* coins$/).first(),
+  ).toBeVisible();
 });
 
 test("generator UI blocks insufficient-balance requests with an upgrade path", async ({ page }) => {
@@ -3502,7 +3811,7 @@ test("generator UI queues a video job and surfaces completed video in the galler
 }) => {
   test.setTimeout(120_000);
   const { email } = await startSignedInAdultSession(page, "generate-video");
-  const previousFlag = await enableVideoGenerationForUser(email);
+  const previousRuntime = await enableVideoGenerationForUser(email);
 
   try {
     await page.goto("/generate");
@@ -3526,7 +3835,7 @@ test("generator UI queues a video job and surfaces completed video in the galler
       /\/user-content\/.+\.mp4$/,
     );
   } finally {
-    await restoreVideoGenerationFlag(previousFlag);
+    await restoreVideoGenerationRuntime(previousRuntime);
   }
 });
 
@@ -3641,7 +3950,7 @@ test("upgrade signup redirect returns anonymous checkout intent to plans", async
   );
   const premiumMonthly = page.locator("article").filter({ hasText: "Premium monthly" });
   await expect(premiumMonthly).toBeVisible({ timeout: 10_000 });
-  await premiumMonthly.getByRole("button", { name: "Demo upgrade" }).click();
+  await premiumMonthly.getByRole("button", { name: "Demo activate" }).click();
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/signup");
   expect(new URL(page.url()).searchParams.get("next")).toBe(
@@ -3672,7 +3981,9 @@ test("upgrade signup redirect returns anonymous checkout intent to plans", async
     .getByRole("link", { name: "Explore" })
     .getAttribute("class");
   expect(returnedExploreClass?.split(/\s+/)).not.toContain("bg-[rgb(46,46,46)]");
-  await expect(premiumMonthly.getByRole("button", { name: "Demo upgrade" })).toBeVisible();
+  await expect(
+    premiumMonthly.getByRole("button", { name: "Demo activate" }),
+  ).toBeVisible();
 });
 
 test("upgrade exposes retryable plan load errors as assertive alerts", async ({ page }) => {
@@ -3721,7 +4032,7 @@ test("upgrade checkout failures are announced as assertive alerts", async ({ pag
     { timeout: 10_000 },
   );
   const premiumMonthly = page.locator("article").filter({ hasText: "Premium monthly" });
-  await premiumMonthly.getByRole("button", { name: "Demo upgrade" }).click();
+  await premiumMonthly.getByRole("button", { name: "Demo activate" }).click();
 
   const checkoutResult = page.getByTestId("upgrade-checkout-result");
   await expect(checkoutResult).toContainText("forced checkout failure", { timeout: 10_000 });
@@ -3765,15 +4076,19 @@ test("upgrade UI activates Premium, grants dreamcoins, and unlocks prompt contro
   );
   const premiumMonthly = page.locator("article").filter({ hasText: "Premium monthly" });
   await expect(premiumMonthly).toBeVisible({ timeout: 10_000 });
-  await premiumMonthly.getByRole("button", { name: "Demo upgrade" }).click();
+  await premiumMonthly.getByRole("button", { name: "Demo activate" }).click();
   await expect(
-    page.getByText("Premium monthly is active. 1,500 dreamcoins were added."),
+    page.getByText(
+      /Premium monthly access is active until .+ It will not renew automatically\./,
+    ),
   ).toBeVisible({ timeout: 10_000 });
   await expect(premiumMonthly.getByRole("button", { name: "Current plan" })).toBeDisabled();
   await expect(page.getByTestId("upgrade-checkout-result")).toHaveAttribute("role", "status");
   await expect(page.getByTestId("upgrade-checkout-result")).toHaveAttribute("aria-live", "polite");
   await expect(
-    page.getByTestId("upgrade-checkout-result").getByRole("link", { name: "View billing" }),
+    page
+      .getByTestId("upgrade-checkout-result")
+      .getByRole("link", { name: "View billing & access" }),
   ).toBeVisible();
   const startGenerating = page
     .getByTestId("upgrade-checkout-result")
@@ -3791,15 +4106,20 @@ test("upgrade UI activates Premium, grants dreamcoins, and unlocks prompt contro
   });
   const billingCard = page.getByTestId("profile-billing-card");
   await expect(billingCard.getByText("Premium monthly")).toBeVisible({ timeout: 10_000 });
-  await expect(billingCard.getByText(/Renews/)).toBeVisible({ timeout: 10_000 });
-  await billingCard.getByRole("button", { name: "Cancel renewal" }).click();
-  await expect(page.getByText(/Renewal canceled. Benefits stay active/)).toBeVisible({
-    timeout: 10_000,
-  });
-  await expect(billingCard.getByText(/Renewal canceled/)).toBeVisible({ timeout: 10_000 });
-  await billingCard.getByRole("button", { name: "Resume renewal" }).click();
-  await expect(page.getByText("Renewal resumed.")).toBeVisible({ timeout: 10_000 });
-  await expect(billingCard.getByText(/Renews/)).toBeVisible({ timeout: 10_000 });
+  await expect(
+    billingCard.getByText(
+      /Benefits active until .+ · no automatic renewal/,
+    ),
+  ).toBeVisible({ timeout: 10_000 });
+  await expect(
+    billingCard.getByRole("button", { name: "Cancel renewal" }),
+  ).toHaveCount(0);
+  await expect(
+    billingCard.getByRole("button", { name: "Resume renewal" }),
+  ).toHaveCount(0);
+  await expect(
+    billingCard.getByRole("button", { name: "Manage" }),
+  ).toHaveCount(0);
 
   await page.goto(returnTarget);
   const prompt = page.getByRole("textbox", { name: "Prompt", exact: true });

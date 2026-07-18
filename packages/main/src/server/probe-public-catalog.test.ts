@@ -85,13 +85,13 @@ describe("public catalog probe audience audit", () => {
           severity: "fail",
           entity: "character",
           id: characterId,
-          field: "audience",
+          field: "imageAsset",
         }),
         expect.objectContaining({
           severity: "fail",
           entity: "collection",
           id: collectionId,
-          field: "audience",
+          field: "items",
         }),
         expect.objectContaining({
           severity: "fail",

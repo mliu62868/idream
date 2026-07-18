@@ -1,26 +1,35 @@
 import { Prisma } from "@prisma/client";
 import { buildCharacterSystemPrompt } from "@idream/shared";
+import { parseCharacterReleaseAssetManifest } from "@idream/shared/admin";
+import { assignWorkflowReferenceSlots } from "@idream/shared/gen-workflow";
 import { resolveLocalBlobPath, resolveLocalBlobRoot } from "@idream/shared/storage/local-blob";
+import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import type {
+  CharacterPreviewGeneratePayload,
   ChatImageRequestedPayload,
-  ImageGeneratePayload,
-  VideoGeneratePayload,
 } from "@/server/ai/schemas";
-import { imageReferenceInputsForGenerationJob } from "@/server/ai/reference-images";
 import {
   recordGenerationAttemptEvent,
-  recordGenerationAttemptQueuedEvent,
 } from "@/server/ai/generation-attempt-events";
+import {
+  assertPinnedLegacyCharacterGenerationAuthority,
+  enqueueGenerationAttempt,
+  legacyCharacterGenerationAuthorityFromControls,
+  loadLockedLiveEditorialLegacyGenerationAuthority,
+  type LegacyCharacterGenerationAuthority,
+} from "@/server/modules/generation/attempt-dispatch";
 import { transitionGenerationRequest } from "@/server/ai/generation-request-transition";
 import { dispatchAdmin } from "@/server/modules/admin/service";
+import { generationWorkflowDescriptor } from "@/server/modules/admin/generation-catalog";
 import {
   ensureReviewCaseForAppeal,
   ensureReviewCaseForReport,
   ensureSupportCaseForRequest,
 } from "@/server/modules/admin-v2/cases/service";
+import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 import { listActiveTemplates } from "@/server/modules/admin/characters/templates";
 import {
   IDENTITY_ASSEMBLER_VERSION,
@@ -33,16 +42,27 @@ import {
   characterVisualProfileSnapshotHash,
   referenceSetSnapshotHash,
 } from "@/server/modules/admin-v2/characters/release-snapshot";
+import {
+  lockCharacterGenerationAuthority,
+  lockCharacterMediaAssetAuthorities,
+  lockMediaAssetAuthority,
+} from "@/server/modules/admin-v2/characters/generation-authority-lock";
+import { invalidateCharacterDraftAssetPack } from "@/server/modules/admin-v2/characters/draft-asset-authority";
 import { proxyChatRequest } from "@/server/bff/chat-proxy";
 import { jobQueue } from "@/server/jobs/queue";
 import {
-  MAIN_TO_CHAT_QUEUE,
+  GEN_QUEUES,
   MAIN_TO_CHAT_EVENTS,
   METRIC_PRODUCT_EVENTS,
   characterExposureRecordedV2Schema,
   idempotencyKeys,
 } from "@idream/shared/contracts";
+import {
+  dispatchPendingChatEvents,
+  recordMainToChatEvent,
+} from "@/processes/chat-outbox";
 import { appendCanonicalMetricEvent } from "@/server/modules/admin-v2/metrics/event-writer";
+import { createClassifiedAnalyticsEvent } from "@/server/modules/admin-v2/metrics/classified-event-writer";
 import {
   ExperimentRuntimeError,
   assignExperiment,
@@ -70,13 +90,36 @@ import { nameMatch } from "@/server/lib/db/search";
 import { generationCostDreamcoins } from "@/server/lib/generation-pricing";
 import { env } from "@/server/lib/env";
 import { AppError, Errors } from "@/server/lib/errors";
-import { isSyntheticMediaAsset } from "@/server/lib/media-asset-authority";
+import {
+  evaluateMediaAssetCustomerPublishability,
+  hasHydratableMediaBlobAuthority,
+  isMediaAssetOperationalForAuthority,
+  isSyntheticMediaAsset,
+  resolveMediaAssetBlobLocator,
+  SHARED_IMMUTABLE_BLOB_LOCATOR_SCHEMA,
+} from "@/server/lib/media-asset-authority";
+import { mediaAssetAuthorityDependencies } from "@/server/modules/admin-v2/shared/media-asset-authority-dependencies";
+import { isCharacterProjectPhaseTransitionAllowed } from "@/server/modules/admin-v2/shared/state-transition-authority";
+import {
+  isReservedInternalEmail,
+  registeredUserDataClass,
+} from "@/server/lib/user-data-provenance";
 import { empty, fail, ok } from "@/server/lib/http";
 import { getOurdreamRoute, ourdreamRoutePaths } from "@/lib/ourdream-data";
+import { billingPeriodEnd } from "@/lib/billing-period";
+import { isPublicRouteDiscoverable } from "@/lib/public-route-authority";
 import { activeAnnouncements, readAnnouncements } from "@/server/announcements/store";
 import { logger } from "@/server/lib/logger";
-import { redeemCodeHashCandidates } from "@/server/lib/redeem-codes";
+import {
+  redeemCodeDreamcoins,
+  redeemCodeHashCandidates,
+} from "@/server/lib/redeem-codes";
 import { providers } from "@/server/providers";
+import type {
+  PaymentInvoice,
+  ProviderResult,
+} from "@/server/providers/types";
+import { paymentProviderCapabilities } from "@/server/providers/payment/capabilities";
 import type { OurdreamRoute, OurdreamRouteTemplate } from "@/types/ourdream";
 import {
   dimensionsForImageOrientation,
@@ -88,8 +131,23 @@ import {
   verifyExposureContext,
   type ExposureSubject,
 } from "./exposure-context";
-import { resolveCommunityCampaignPlacements } from "./community-campaigns";
-import { publicFeedbackAudienceWhere } from "./public-content-audience";
+import {
+  parseCommunityCampaignAuthoredCopy,
+  resolveCommunityCampaignPlacements,
+} from "./community-campaigns";
+import {
+  FEATURED_SETTING_KEY,
+  parseFeaturedSetting,
+} from "./featured-setting";
+import {
+  activeCustomerUserWhere,
+  nonSyntheticMediaAssetWhere,
+  publicCharacterAudienceWhere,
+  publicCollectionAudienceWhere,
+  publicFeedbackAudienceWhere,
+  publicReadableMediaAssetWhere,
+  resolvePublicCharacterReleaseAssetPack,
+} from "./public-content-audience";
 
 type ApiMethod = "GET" | "POST" | "PATCH" | "DELETE" | "PUT";
 type JsonRecord = Record<string, Prisma.JsonValue>;
@@ -101,24 +159,7 @@ type SearchRouteSuggestion = {
 };
 
 const credentialProvider = "credential";
-const fallbackCharacterImages = [
-  "/images/ourdream/card-melissa-burke.webp",
-  "/images/ourdream/card-summoned-world.webp",
-  "/images/ourdream/card-sarah-mercer.webp",
-  "/images/ourdream/card-alexa-reeves.webp",
-  "/images/ourdream/card-tamsin-jacobs.webp",
-  "/images/ourdream/card-truth-confessional.webp",
-  "/images/ourdream/card-truth-stepmother.webp",
-  "/images/ourdream/card-stephanie.webp",
-  "/images/ourdream/card-kennedy-graham.webp",
-  "/images/ourdream/card-eleanor-dawn.webp",
-  "/images/ourdream/card-bailey-price.webp",
-  "/images/ourdream/card-sophie.webp",
-  "/images/ourdream/card-raya-reyes.webp",
-  "/images/ourdream/card-emily-coming-home.webp",
-  "/images/ourdream/card-diana-weird-girl.webp",
-  "/images/ourdream/card-lola-moonstruck.webp",
-] as const;
+const missingCharacterImage = "/images/ourdream/character-placeholder.svg";
 
 const signupSchema = z.object({
   email: z.string().email().transform((value) => value.toLowerCase()),
@@ -205,7 +246,7 @@ const generationJobSchema = z
     controls: generationControlsSchema.default({}),
     presetIds: z.array(z.string()).max(12).default([]),
     orientation: z.enum(imageOrientations).optional(),
-    outputCount: z.number().int().min(1).max(4).default(1),
+    outputCount: z.number().int().min(1).max(8).default(1),
     model: z.string().max(80).optional(),
     remixFeedItemId: z.string().max(180).optional(),
   })
@@ -284,8 +325,26 @@ const checkoutSchema = z.object({
   planId: z.string().optional(),
   slug: z.enum(["premium", "deluxe"]).optional(),
   billingPeriod: z.enum(["monthly", "yearly"]).default("monthly"),
-  returnPath: z.string().max(240).default("/profile"),
+  returnPath: z
+    .string()
+    .max(240)
+    .refine((value) => value.startsWith("/") && !value.startsWith("//"), {
+      message: "returnPath must be an internal path",
+    })
+    .default("/profile"),
   autoConfirm: z.boolean().default(true),
+});
+
+const checkoutOfferSnapshotSchema = z.object({
+  version: z.literal(1),
+  planId: z.string().min(1),
+  slug: z.string().min(1),
+  name: z.string().min(1),
+  billingPeriod: z.enum(["monthly", "yearly"]),
+  priceCents: z.number().int().nonnegative(),
+  currency: z.string().min(1),
+  includedDreamcoins: z.number().int().nonnegative(),
+  features: z.record(z.string(), z.unknown()),
 });
 
 const reportSchema = z.object({
@@ -380,18 +439,51 @@ type ProductFeedbackItemRow = {
 
 export async function dispatchV1(request: Request, segments: string[]) {
   try {
-    return await dispatchV1Unsafe(request, segments);
+    const response = await dispatchV1Unsafe(request, segments);
+    return withPrivateNoStoreHeaders(response);
   } catch (error) {
-    if (error instanceof AppError) return fail(error);
+    let response: Response;
+    if (error instanceof AppError) {
+      response = fail(error);
+      return withPrivateNoStoreHeaders(response);
+    }
     if (error instanceof z.ZodError) {
-      return fail(new AppError("bad_request", "Validation failed", error.flatten()));
+      response = fail(
+        new AppError("bad_request", "Validation failed", error.flatten()),
+      );
+      return withPrivateNoStoreHeaders(response);
     }
     logger.error(
-      { error, method: request.method, path: new URL(request.url).pathname },
+      { err: error, method: request.method, path: new URL(request.url).pathname },
       "Unhandled v1 route error",
     );
-    return fail(new AppError("internal", "Internal error"));
+    response = fail(new AppError("internal", "Internal error"));
+    return withPrivateNoStoreHeaders(response);
   }
+}
+
+function withPrivateNoStoreHeaders(response: Response) {
+  const headers = new Headers(response.headers);
+  headers.set("cache-control", "private, no-store, max-age=0");
+  headers.set("pragma", "no-cache");
+  appendVaryHeader(headers, "Cookie");
+  appendVaryHeader(headers, "Authorization");
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+function appendVaryHeader(headers: Headers, value: string) {
+  const values = new Set(
+    (headers.get("vary") ?? "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean),
+  );
+  values.add(value);
+  headers.set("vary", [...values].join(", "));
 }
 
 async function dispatchV1Unsafe(request: Request, segments: string[]) {
@@ -597,6 +689,9 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
 async function signup(request: Request) {
   const body = signupSchema.parse(await jsonBody(request));
   const ctx = await getAuthCtx(request);
+  if (isReservedInternalEmail(body.email)) {
+    throw Errors.badRequest("Email domain is reserved");
+  }
   const existing = await prisma.user.findUnique({ where: { email: body.email } });
   if (existing) throw Errors.conflict("Email already registered");
 
@@ -607,7 +702,8 @@ async function signup(request: Request) {
     const created = await tx.user.create({
       data: {
         email: body.email,
-        emailVerified: true,
+        emailVerified: false,
+        dataClass: registeredUserDataClass(body.email),
         name: body.name,
         displayName: body.name ?? body.email.split("@")[0],
         ...(anonymousId ? { anonymousId } : {}),
@@ -760,15 +856,18 @@ async function me(request: Request) {
   const user = ctx.userId
     ? await prisma.user.findUnique({ where: { id: ctx.userId } })
     : null;
-  const entitlements = ctx.userId ? await entitlementMap(ctx.userId) : {};
-  const balance = ctx.userId ? await dreamcoinBalance(ctx.userId) : 0;
+  const [entitlements, balance, availability] = await Promise.all([
+    ctx.userId ? entitlementMap(ctx.userId) : Promise.resolve({}),
+    ctx.userId ? dreamcoinBalance(ctx.userId) : Promise.resolve(0),
+    publicOfferAvailability(),
+  ]);
 
   return ok({
     user: user ? userDTO(user) : null,
     anonymousId: ctx.anonymousId,
     ageGate: { accepted: ctx.ageGateAccepted },
     ageVerification: { status: ctx.ageVerificationStatus },
-    entitlements,
+    entitlements: publicFeatureProjection(entitlements, availability),
     dreamcoins: { balance },
   });
 }
@@ -916,37 +1015,39 @@ async function listCharacters(request: Request) {
   ]);
 
   const where: Prisma.CharacterWhereInput = {
-    visibility: "public",
-    status: "approved",
-    deletedAt: null,
-    gender,
-    style,
-    age: {
-      gte: intParam(url.searchParams.get("age_min")),
-      lte: intParam(url.searchParams.get("age_max")),
-    },
-    tags:
-      tags.length > 0
-        ? {
-            some: {
-              tag: {
-                slug: { in: tags.map(slugify) },
-              },
-            },
-          }
-        : undefined,
-    NOT:
-      mutedTagSlugs.length > 0
-        ? {
-            tags: {
-              some: {
-                tag: {
-                  slug: { in: mutedTagSlugs },
+    AND: [
+      publicCharacterAudienceWhere,
+      {
+        gender,
+        style,
+        age: {
+          gte: intParam(url.searchParams.get("age_min")),
+          lte: intParam(url.searchParams.get("age_max")),
+        },
+        tags:
+          tags.length > 0
+            ? {
+                some: {
+                  tag: {
+                    slug: { in: tags.map(slugify) },
+                  },
                 },
-              },
-            },
-          }
-        : undefined,
+              }
+            : undefined,
+        NOT:
+          mutedTagSlugs.length > 0
+            ? {
+                tags: {
+                  some: {
+                    tag: {
+                      slug: { in: mutedTagSlugs },
+                    },
+                  },
+                },
+              }
+            : undefined,
+      },
+    ],
   };
 
   if (sort === "following") {
@@ -976,7 +1077,9 @@ async function listCharacters(request: Request) {
     take: limit + 1,
   });
 
-  const page = characters.slice(0, limit);
+  const page = characters
+    .slice(0, limit)
+    .filter(hasPublicListReleaseManifestAuthority);
   return ok({
     items: page.map((character) => characterDTO(character, ctx.userId)),
     nextCursor: characters.length > limit ? encodeCursor(cursor + limit) : null,
@@ -1015,7 +1118,7 @@ async function getCharacter(request: Request, id: string) {
       id,
       deletedAt: null,
       OR: [
-        { visibility: "public", status: "approved" },
+        publicCharacterAudienceWhere,
         ctx.userId ? { creatorId: ctx.userId } : {},
       ].filter((item) => Object.keys(item).length > 0),
     },
@@ -1023,21 +1126,8 @@ async function getCharacter(request: Request, id: string) {
   });
   if (!character) throw Errors.notFound("Character not found");
 
-  await prisma.characterStats.upsert({
-    where: { characterId: character.id },
-    update: {
-      viewsCount: { increment: 1 },
-      lastActivityAt: new Date(),
-    },
-    create: {
-      characterId: character.id,
-      viewsCount: 1,
-      lastActivityAt: new Date(),
-    },
-  });
-
   await trackEvent("character_viewed", { characterId: character.id }, ctx);
-  return ok({ character: characterDTO(character, ctx.userId) });
+  return ok({ character: await characterDetailDTO(character, ctx.userId) });
 }
 
 async function listCharacterLooks(request: Request, characterId: string) {
@@ -1058,23 +1148,36 @@ async function createCharacterLook(request: Request, characterId: string) {
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   const body = characterLookSchema.parse(await jsonBody(request));
-  const character = await assertIdentityTargetCharacter(characterId, user.id);
-  const visualProfile = await ensureActiveVisualProfile(character, {
-    anchorAssetId: null,
-    createdFrom: "look_bootstrap",
-  });
+  await assertIdentityTargetCharacter(characterId, user.id);
   if (body.referenceAssetId) await assertIdentityImageMedia(body.referenceAssetId, user.id);
 
-  const look = await prisma.$transaction((tx) =>
-    persistCharacterLook(tx, {
+  const look = await prisma.$transaction(async (tx) => {
+    await lockCharacterGenerationAuthority(tx, characterId);
+    await lockCharacterMediaAssetAuthorities(
+      tx,
+      body.referenceAssetId ? [body.referenceAssetId] : [],
+    );
+    const character = await assertIdentityTargetCharacterInTx(tx, characterId, user.id);
+    if (body.referenceAssetId) {
+      const referenceAsset = await assertIdentityImageMediaForCharacterInTx(
+        tx,
+        body.referenceAssetId,
+        user.id,
+        character.id,
+        { allowUnassigned: false },
+      );
+      assertHydratableLookReferenceAsset(referenceAsset);
+    }
+    const visualProfile = await requireActiveVisualProfileInTx(tx, character.id);
+    return persistCharacterLook(tx, {
       characterId,
       visualProfileId: visualProfile.id,
       ownerId: user.id,
       label: body.label,
       appearanceDelta: toInputJson(body.appearanceDelta),
       referenceAssetId: body.referenceAssetId ?? null,
-    }),
-  );
+    });
+  });
   return ok({ look: characterLookDTO(look) }, { status: 201 });
 }
 
@@ -1085,23 +1188,85 @@ async function updateCharacterLook(request: Request, characterId: string, lookId
   requireAgeVerified(ctx);
   const body = characterLookPatchSchema.parse(await jsonBody(request));
   await assertIdentityTargetCharacter(characterId, user.id);
-  const current = await prisma.characterLook.findFirst({
-    where: { id: lookId, characterId, ownerId: user.id, status: { not: "archived" } },
-  });
-  if (!current) throw Errors.notFound("Character Look not found");
   if (body.referenceAssetId) await assertIdentityImageMedia(body.referenceAssetId, user.id);
-  const look = await prisma.characterLook.update({
-    where: { id: current.id },
-    data: {
-      label: body.label,
-      appearanceDelta: body.appearanceDelta ? toInputJson(body.appearanceDelta) : undefined,
-      referenceAssetId: body.referenceAssetId,
-      status: body.status,
-      activeKey:
-        (body.status ?? current.status) === "active"
-          ? characterLookActiveKey(user.id, characterId, body.label ?? current.label)
-          : null,
-    },
+  const look = await prisma.$transaction(async (tx) => {
+    await lockCharacterGenerationAuthority(tx, characterId);
+    const character = await assertIdentityTargetCharacterInTx(
+      tx,
+      characterId,
+      user.id,
+    );
+    const located = await tx.characterLook.findFirst({
+      where: {
+        id: lookId,
+        characterId,
+        ownerId: user.id,
+        status: { not: "archived" },
+      },
+    });
+    if (!located) throw Errors.notFound("Character Look not found");
+    const nextReferenceAssetId = body.referenceAssetId === undefined
+      ? located.referenceAssetId
+      : body.referenceAssetId;
+    await lockCharacterMediaAssetAuthorities(
+      tx,
+      nextReferenceAssetId ? [nextReferenceAssetId] : [],
+    );
+    const current = await tx.characterLook.findFirst({
+      where: {
+        id: located.id,
+        characterId,
+        ownerId: user.id,
+        status: { not: "archived" },
+        updatedAt: located.updatedAt,
+      },
+    });
+    if (!current) {
+      throw Errors.conflict("Character Look changed before the update was applied");
+    }
+    if (nextReferenceAssetId) {
+      const referenceAsset = await assertIdentityImageMediaForCharacterInTx(
+        tx,
+        nextReferenceAssetId,
+        user.id,
+        character.id,
+        { allowUnassigned: false },
+      );
+      assertHydratableLookReferenceAsset(referenceAsset);
+    }
+    const activeProfile = await requireActiveVisualProfileInTx(tx, character.id);
+    const nextStatus = body.status ?? current.status;
+    const nextLabel = body.label ?? current.label;
+    const nextAppearanceDelta = body.appearanceDelta
+      ? toInputJson(body.appearanceDelta)
+      : toInputJson(current.appearanceDelta);
+    const requiresRebase = current.visualProfileId !== activeProfile.id;
+    if (nextStatus === "active" && requiresRebase) {
+      return persistCharacterLook(tx, {
+        characterId,
+        visualProfileId: activeProfile.id,
+        ownerId: user.id,
+        label: nextLabel,
+        appearanceDelta: nextAppearanceDelta,
+        referenceAssetId: nextReferenceAssetId,
+        rebasedFromLookId: current.id,
+      });
+    }
+    return tx.characterLook.update({
+      where: { id: current.id },
+      data: {
+        label: body.label,
+        appearanceDelta: body.appearanceDelta
+          ? toInputJson(body.appearanceDelta)
+          : undefined,
+        referenceAssetId: body.referenceAssetId,
+        status: body.status,
+        activeKey:
+          nextStatus === "active"
+            ? characterLookActiveKey(user.id, characterId, nextLabel)
+            : null,
+      },
+    });
   });
   return ok({ look: characterLookDTO(look) });
 }
@@ -1112,9 +1277,33 @@ async function archiveCharacterLook(request: Request, characterId: string, lookI
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   await assertIdentityTargetCharacter(characterId, user.id);
-  const updated = await prisma.characterLook.updateMany({
-    where: { id: lookId, characterId, ownerId: user.id, status: { not: "archived" } },
-    data: { status: "archived", activeKey: null },
+  const updated = await prisma.$transaction(async (tx) => {
+    await lockCharacterGenerationAuthority(tx, characterId);
+    await assertIdentityTargetCharacterInTx(tx, characterId, user.id);
+    const current = await tx.characterLook.findFirst({
+      where: {
+        id: lookId,
+        characterId,
+        ownerId: user.id,
+        status: { not: "archived" },
+      },
+      select: { id: true, referenceAssetId: true, updatedAt: true },
+    });
+    if (!current) return { count: 0 };
+    await lockCharacterMediaAssetAuthorities(
+      tx,
+      current.referenceAssetId ? [current.referenceAssetId] : [],
+    );
+    return tx.characterLook.updateMany({
+      where: {
+        id: current.id,
+        characterId,
+        ownerId: user.id,
+        status: { not: "archived" },
+        updatedAt: current.updatedAt,
+      },
+      data: { status: "archived", activeKey: null },
+    });
   });
   if (updated.count === 0) throw Errors.notFound("Character Look not found");
   return empty();
@@ -1124,18 +1313,32 @@ async function likeCharacter(request: Request, id: string) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
   requireAgeGate(ctx);
-  await prisma.$transaction([
-    prisma.characterLike.upsert({
-      where: { userId_characterId: { userId: user.id, characterId: id } },
-      update: {},
-      create: { userId: user.id, characterId: id },
+  const [character, countsAsEngagement] = await Promise.all([
+    prisma.character.findFirst({
+      where: {
+        AND: [
+          publicCharacterAudienceWhere,
+          { id },
+        ],
+      },
+      select: { id: true },
     }),
-    prisma.characterStats.upsert({
-      where: { characterId: id },
-      update: { likesCount: { increment: 1 } },
-      create: { characterId: id, likesCount: 1 },
-    }),
+    isCustomerEngagementActor(user.id),
   ]);
+  if (!character) throw Errors.notFound("Character not found");
+  await prisma.$transaction(async (tx) => {
+    const created = await tx.characterLike.createMany({
+      data: [{ userId: user.id, characterId: id }],
+      skipDuplicates: true,
+    });
+    if (created.count > 0 && countsAsEngagement) {
+      await tx.characterStats.upsert({
+        where: { characterId: id },
+        update: { likesCount: { increment: 1 } },
+        create: { characterId: id, likesCount: 1 },
+      });
+    }
+  });
   return ok({ liked: true });
 }
 
@@ -1144,10 +1347,11 @@ async function unlikeCharacter(request: Request, id: string) {
   const user = requireUser(ctx);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
+  const countsAsEngagement = await isCustomerEngagementActor(user.id);
   const deleted = await prisma.characterLike.deleteMany({
     where: { userId: user.id, characterId: id },
   });
-  if (deleted.count > 0) {
+  if (deleted.count > 0 && countsAsEngagement) {
     await prisma.characterStats.updateMany({
       where: { characterId: id, likesCount: { gt: 0 } },
       data: { likesCount: { decrement: 1 } },
@@ -1165,11 +1369,7 @@ async function listTags(request: Request) {
         select: {
           characters: {
             where: {
-              character: {
-                deletedAt: null,
-                status: "approved",
-                visibility: "public",
-              },
+              character: publicCharacterAudienceWhere,
             },
           },
         },
@@ -1197,22 +1397,24 @@ async function suggest(request: Request) {
   const [characters, tags] = await Promise.all([
     prisma.character.findMany({
       where: {
-        deletedAt: null,
-        visibility: "public",
-        status: "approved",
-        name: { contains: normalized },
-        NOT:
-          mutedTagSlugs.length > 0
-            ? {
-                tags: {
-                  some: {
-                    tag: {
-                      slug: { in: mutedTagSlugs },
+        AND: [
+          publicCharacterAudienceWhere,
+          {
+            name: { contains: normalized },
+            NOT:
+              mutedTagSlugs.length > 0
+                ? {
+                    tags: {
+                      some: {
+                        tag: {
+                          slug: { in: mutedTagSlugs },
+                        },
+                      },
                     },
-                  },
-                },
-              }
-            : undefined,
+                  }
+                : undefined,
+          },
+        ],
       },
       include: characterInclude(ctx.userId),
       orderBy: exploreOrderBy("popular"),
@@ -1314,20 +1516,65 @@ async function previewDraft(request: Request, id: string) {
     throw Errors.forbidden("Draft failed safety checks", moderation);
   }
 
-  // Async: enqueue and return the queued job immediately so a slow image provider
-  // never blocks this request. The worker (drainLocalAiPipeline → character.preview)
-  // generates the image and settles the job; the client polls GET .../preview.
+  const profile = await selectGenerationProfile("image", undefined, {
+    pinnedReferences: [],
+    sourceImageAssetId: null,
+    lookReferenceAssetId: null,
+  });
+  const recipe = await selectRecipe("image", "character");
+  const allowedOrientations = jsonStringArray(profile.allowedOrientations);
+  const orientation = allowedOrientations.includes("4:5")
+    ? "4:5"
+    : (allowedOrientations[0] ?? "4:5");
+  const dimensions = dimensionsForImageOrientation({
+    orientation,
+    defaultWidth: profile.defaultWidth,
+    defaultHeight: profile.defaultHeight,
+  });
+  const prompt = [
+    recipe.body,
+    `${draft.style ?? "realistic"} portrait of an adult ${draft.gender ?? "female"} character`,
+    draft.name ? `Character name: ${draft.name}` : null,
+    `Appearance: ${JSON.stringify(draft.appearance ?? {})}`,
+    `Hair: ${JSON.stringify(draft.hair ?? {})}`,
+    `Body: ${JSON.stringify(draft.body ?? {})}`,
+    `Details: ${JSON.stringify(draft.advancedDetails ?? {})}`,
+    "single subject, clear face, identity reference portrait",
+  ]
+    .filter((part): part is string => Boolean(part))
+    .join(". ");
+
+  // Async: the generation service owns provider execution and blob persistence;
+  // main only creates and settles the authoritative preview job.
   const job = await prisma.characterPreviewJob.create({
     data: {
       draftId: id,
       status: "queued",
-      provider: "mock",
+      provider: "generation_service",
     },
   });
   await jobQueue.enqueue({
-    queue: "character.preview",
-    payload: { draftId: id, previewJobId: job.id },
-    dedupeKey: `character.preview:${job.id}`,
+    queue: GEN_QUEUES.characterPreview,
+    payload: toInputJson({
+      version: 1,
+      kind: "character.preview",
+      requestId: `character-preview:${job.id}`,
+      previewJobId: job.id,
+      draftId: id,
+      userId: user.id,
+      prompt,
+      negativePrompt: recipe.negativeBase,
+      controls: {
+        width: dimensions.width,
+        height: dimensions.height,
+        workflowKey: profile.workflowKey,
+      },
+      orientation,
+      seed: `${id}:${job.id}`,
+      model: profile.pipelineModel,
+      outputPrefix: `preview/${job.id}/`,
+    } satisfies CharacterPreviewGeneratePayload),
+    dedupeKey: idempotencyKeys.characterPreview(job.id),
   });
   return ok({ previewJob: job });
 }
@@ -1343,12 +1590,12 @@ async function previewStatus(request: Request, id: string) {
     where: { draftId: draft.id },
     orderBy: { createdAt: "desc" },
   });
-  if (!job) return ok({ previewJob: null });
+  if (!job) return ok({ previewJob: null, asset: null });
   if (job.status === "completed" && job.resultAssetId) {
     const asset = await prisma.mediaAsset.findUnique({ where: { id: job.resultAssetId } });
     return ok({ previewJob: job, asset: asset ? mediaDTO(asset) : null });
   }
-  return ok({ previewJob: job });
+  return ok({ previewJob: job, asset: null });
 }
 
 async function selectPreviewAnchor(request: Request, id: string) {
@@ -1449,6 +1696,22 @@ async function submitDraft(request: Request, id: string) {
   );
 
   const character = await prisma.$transaction(async (tx) => {
+    await lockCharacterMediaAssetAuthorities(tx, [anchorAssetId]);
+    const lockedAnchorAsset = await assertIdentityImageMediaInTx(
+      tx,
+      anchorAssetId,
+      user.id,
+    );
+    if (lockedAnchorAsset.characterId !== null) {
+      throw Errors.conflict(
+        "The selected identity image already belongs to another Character. Choose an unassigned image or clone it first.",
+        {
+          mediaAssetId: lockedAnchorAsset.id,
+          mediaCharacterId: lockedAnchorAsset.characterId,
+        },
+      );
+    }
+
     const created = await tx.character.create({
       data: {
         creatorId: user.id,
@@ -1466,11 +1729,24 @@ async function submitDraft(request: Request, id: string) {
       },
     });
 
-    if (anchorAssetId) {
-      await tx.mediaAsset.updateMany({
-        where: { id: anchorAssetId, ownerId: user.id },
-        data: { characterId: created.id },
-      });
+    const claimedAnchor = await tx.mediaAsset.updateMany({
+      where: {
+        id: anchorAssetId,
+        ownerId: user.id,
+        deletedAt: null,
+        type: "image",
+        characterId: null,
+      },
+      data: { characterId: created.id },
+    });
+    if (claimedAnchor.count !== 1) {
+      throw Errors.conflict(
+        "The selected identity image changed while the Character was being created. Review the image and submit again.",
+        {
+          mediaAssetId: anchorAssetId,
+          targetCharacterId: created.id,
+        },
+      );
     }
     await tx.characterVisualProfile.create({
       data: characterVisualProfileCreateData({
@@ -1525,7 +1801,7 @@ async function generationConfig(request: Request) {
   requireAgeVerified(ctx);
   const entitlements = ctx.userId ? await entitlementMap(ctx.userId) : {};
   const balance = ctx.userId ? await dreamcoinBalance(ctx.userId) : 0;
-  const [profiles, recipes, presets, videoEnabled, imageBaseCost, videoBaseCost] = await Promise.all([
+  const [profiles, recipes, presets, videoEnabled] = await Promise.all([
     prisma.generationModelProfile.findMany({
       where: { status: "active", enabled: true },
       orderBy: [{ mode: "asc" }, { costMultiplier: "asc" }, { label: "asc" }],
@@ -1543,46 +1819,105 @@ async function generationConfig(request: Request) {
       orderBy: [{ scope: "asc" }, { type: "asc" }, { label: "asc" }],
     }),
     featureFlagEnabled("video_gen"),
-    generationCost("image", 1),
-    generationCost("video", 1),
   ]);
+  const imageBaseCost = await generationCost("image", 1);
+  const videoBaseCost = videoEnabled ? await generationCost("video", 1) : null;
 
-  const visibleProfiles = profiles.filter((profile) =>
-    profile.requiredEntitlement ? Boolean(entitlements[profile.requiredEntitlement]) : true,
+  const executableProfiles = profiles.filter(isExecutableGenerationProfile);
+  const visibleProfiles = executableProfiles.filter((profile) =>
+    profile.requiredEntitlement
+      ? Boolean(entitlements[profile.requiredEntitlement])
+      : true,
   );
   const imageProfiles = visibleProfiles.filter((profile) => profile.mode === "image");
   const videoProfiles = visibleProfiles.filter((profile) => profile.mode === "video");
-  const defaultImageProfile = imageProfiles[0] ?? profiles.find((profile) => profile.mode === "image");
+  const globalImageProfiles = executableProfiles.filter(
+    (profile) => profile.mode === "image",
+  );
+  const globalVideoProfiles = executableProfiles.filter(
+    (profile) => profile.mode === "video",
+  );
+  const imageRecipes = recipes.filter((recipe) => recipe.mode === "image");
+  const videoRecipes = recipes.filter((recipe) => recipe.mode === "video");
+  const defaultImageProfile = imageProfiles[0];
+  const imageAvailability = !defaultImageProfile
+    ? {
+        state: "unavailable" as const,
+        reason:
+          globalImageProfiles.length > 0
+            ? ("entitlement_required" as const)
+            : ("no_active_model" as const),
+      }
+    : !hasCompleteGenerationRecipeSet(imageRecipes)
+      ? {
+          state: "unavailable" as const,
+          reason: "no_active_recipe" as const,
+        }
+      : { state: "available" as const };
+  const videoAvailability = !videoEnabled
+    ? {
+        state: "unavailable" as const,
+        reason: "feature_disabled" as const,
+      }
+    : videoProfiles.length === 0
+      ? {
+          state: "unavailable" as const,
+          reason:
+            globalVideoProfiles.length > 0
+              ? ("entitlement_required" as const)
+              : ("no_active_model" as const),
+        }
+      : !hasCompleteGenerationRecipeSet(videoRecipes)
+        ? {
+            state: "unavailable" as const,
+            reason: "no_active_recipe" as const,
+          }
+        : { state: "available" as const };
+  const availableImageProfile =
+    imageAvailability.state === "available" ? defaultImageProfile : undefined;
 
   return ok({
-    viewer: { authenticated: Boolean(ctx.userId) },
-    entitlements,
+    viewer: {
+      authenticated: Boolean(ctx.userId),
+      scope: ctx.userId
+        ? `user:${ctx.userId}`
+        : ctx.anonymousId
+          ? `anonymous:${ctx.anonymousId}`
+          : null,
+    },
+    entitlements: publicFeatureProjection(entitlements, {
+      videoGeneration: videoAvailability.state === "available",
+    }),
     dreamcoins: { balance },
     pricing: {
       image: {
         baseCost: imageBaseCost,
-        maxCount: defaultImageProfile?.maxCount ?? 4,
+        maxCount: availableImageProfile?.maxCount ?? null,
       },
       video: {
         baseCost: videoBaseCost,
       },
     },
     image: {
-      orientations: jsonStringArray(defaultImageProfile?.allowedOrientations).length
-        ? jsonStringArray(defaultImageProfile?.allowedOrientations)
-        : ["1:1", "4:5", "3:4", "9:16", "16:9"],
-      models: imageProfiles.map(profileConfigDTO),
-      recipes: recipes
-        .filter((recipe) => recipe.mode === "image")
-        .map(recipeConfigDTO),
+      availability: imageAvailability,
+      orientations: availableImageProfile
+        ? supportedProfileOrientations(availableImageProfile.allowedOrientations)
+        : [],
+      models:
+        imageAvailability.state === "available"
+          ? imageProfiles.map(profileConfigDTO)
+          : [],
+      recipes: imageRecipes.map(recipeConfigDTO),
     },
     video: {
       enabled: videoEnabled,
+      availability: videoAvailability,
       requiredEntitlement: "video_generation",
-      models: videoEnabled ? videoProfiles.map(profileConfigDTO) : [],
-      recipes: recipes
-        .filter((recipe) => recipe.mode === "video")
-        .map(recipeConfigDTO),
+      models:
+        videoAvailability.state === "available"
+          ? videoProfiles.map(profileConfigDTO)
+          : [],
+      recipes: videoRecipes.map(recipeConfigDTO),
     },
     presets: presets.map((preset) => ({
       id: preset.id,
@@ -1706,6 +2041,7 @@ interface GenerationPromptCharacter {
 
 interface GenerationVisualProfile {
   id: string;
+  characterId: string;
   version: number;
   status: string;
   style: string;
@@ -1813,16 +2149,38 @@ export async function createActiveCharacterVisualProfileVersion(
   character: CharacterVisualProfileSource,
   input: { createdFrom: string },
 ) {
+  await lockCharacterGenerationAuthority(tx, character.id);
+  await assertCharacterIdentityAuthorityMutable(tx, character.id);
   const active = await tx.characterVisualProfile.findFirst({
     where: { characterId: character.id, status: "active" },
     orderBy: { version: "desc" },
   });
-  const anchorAssetIds = active
-    ? jsonStringArray(active.anchorAssetIds)
-    : character.imageAssetId
-      ? [character.imageAssetId]
-      : [];
-  const referenceAssetIds = active ? jsonStringArray(active.referenceAssetIds) : [];
+  const activeReferenceAuthority = active
+    ? await loadLockedGenerationReferenceAuthority(
+        tx,
+        character.id,
+        active,
+        "balanced",
+      )
+    : null;
+  const inheritedReferences =
+    activeReferenceAuthority?.referenceSetRevision?.references.map((reference) => ({
+      mediaAssetId: reference.mediaAssetId,
+      position: reference.position,
+      role: reference.role,
+      weight: reference.weight,
+      selectionReason: reference.selectionReason,
+    })) ?? [];
+  const anchorAssetIds = inheritedReferences
+    .filter((reference) =>
+      reference.role === "primary_face" || reference.role === "identity_anchor"
+    )
+    .map((reference) => reference.mediaAssetId);
+  const referenceAssetIds = inheritedReferences
+    .filter((reference) =>
+      reference.role !== "primary_face" && reference.role !== "identity_anchor"
+    )
+    .map((reference) => reference.mediaAssetId);
   if (active) {
     await tx.characterVisualProfile.updateMany({
       where: { characterId: character.id, status: "active" },
@@ -1830,6 +2188,11 @@ export async function createActiveCharacterVisualProfileVersion(
     });
   }
   const version = (active?.version ?? 0) + 1;
+  const createdFrom =
+    inheritedReferences.length === 0 &&
+    (!active || active.createdFrom.startsWith("generation_bootstrap"))
+      ? `generation_bootstrap:${input.createdFrom}`
+      : input.createdFrom;
   const created = await tx.characterVisualProfile.create({
     data: characterVisualProfileCreateData({
       characterId: character.id,
@@ -1844,15 +2207,24 @@ export async function createActiveCharacterVisualProfileVersion(
       advancedDetails: character.advancedDetails,
       anchorAssetIds,
       referenceAssetIds,
-      createdFrom: input.createdFrom,
+      createdFrom,
     }),
   });
+  if (inheritedReferences.length > 0) {
+    await createReferenceSetRevision(
+      tx,
+      created,
+      `visual_profile_version:${input.createdFrom}`,
+      inheritedReferences,
+    );
+  }
   if (active) {
     await tx.characterLook.updateMany({
       where: { visualProfileId: active.id, status: "active" },
       data: { status: "needs_rebase", activeKey: null },
     });
   }
+  await invalidateCharacterDraftAssetPack(tx, character.id);
   return created;
 }
 
@@ -1931,6 +2303,21 @@ async function resolveGenerationLook(
   }
   const look = await prisma.characterLook.findFirst({
     where: { id: lookId, ownerId: userId, characterId, status: "active" },
+    include: {
+      referenceAsset: {
+        select: {
+          id: true,
+          ownerId: true,
+          characterId: true,
+          type: true,
+          deletedAt: true,
+          safetyStatus: true,
+          storageKey: true,
+          url: true,
+          metadata: true,
+        },
+      },
+    },
   });
   if (!look) throw Errors.notFound("Character Look not found");
   if (look.visualProfileId !== visualProfileId) {
@@ -1940,12 +2327,196 @@ async function resolveGenerationLook(
       activeVisualProfileId: visualProfileId,
     });
   }
+  if (
+    look.referenceAssetId &&
+    (
+      !look.referenceAsset ||
+      look.referenceAsset.ownerId !== userId ||
+      look.referenceAsset.characterId !== characterId ||
+      look.referenceAsset.type !== "image" ||
+      look.referenceAsset.deletedAt !== null ||
+      look.referenceAsset.safetyStatus !== "passed" ||
+      !isMediaAssetOperationalForAuthority(look.referenceAsset.metadata) ||
+      !hasHydratableMediaBlobAuthority(look.referenceAsset)
+    )
+  ) {
+    throw Errors.conflict(
+      "Character Look reference is unavailable. Update or rebase the Look before generating.",
+      {
+        lookId: look.id,
+        referenceAssetId: look.referenceAssetId,
+      },
+    );
+  }
   return look;
+}
+
+async function assertGenerationLookAuthorityInTx(
+  tx: Prisma.TransactionClient,
+  input: {
+    readonly look: Awaited<ReturnType<typeof resolveGenerationLook>>;
+    readonly userId: string;
+    readonly characterId: string;
+    readonly visualProfileId: string;
+  },
+) {
+  if (!input.look) return;
+  await lockCharacterMediaAssetAuthorities(
+    tx,
+    input.look.referenceAssetId ? [input.look.referenceAssetId] : [],
+  );
+  const current = await tx.characterLook.findFirst({
+    where: {
+      id: input.look.id,
+      ownerId: input.userId,
+      characterId: input.characterId,
+      visualProfileId: input.visualProfileId,
+      status: "active",
+      updatedAt: input.look.updatedAt,
+    },
+    include: {
+      referenceAsset: {
+        select: {
+          id: true,
+          ownerId: true,
+          characterId: true,
+          type: true,
+          deletedAt: true,
+          safetyStatus: true,
+          storageKey: true,
+          url: true,
+          metadata: true,
+        },
+      },
+    },
+  });
+  if (
+    !current ||
+    current.referenceAssetId !== input.look.referenceAssetId ||
+    (
+      current.referenceAssetId &&
+      (
+        !current.referenceAsset ||
+        current.referenceAsset.ownerId !== input.userId ||
+        current.referenceAsset.characterId !== input.characterId ||
+        current.referenceAsset.type !== "image" ||
+        current.referenceAsset.deletedAt !== null ||
+        current.referenceAsset.safetyStatus !== "passed" ||
+        !isMediaAssetOperationalForAuthority(current.referenceAsset.metadata) ||
+        !hasHydratableMediaBlobAuthority(current.referenceAsset)
+      )
+    )
+  ) {
+    throw Errors.conflict(
+      "Character Look authority changed or became unavailable before generation was pinned",
+      {
+        lookId: input.look.id,
+        referenceAssetId: input.look.referenceAssetId,
+      },
+    );
+  }
+}
+
+async function assertGenerationSourceImageAuthorityInTx(
+  tx: Prisma.TransactionClient,
+  input: {
+    readonly sourceImageAssetId: string;
+    readonly userId: string;
+    readonly characterId: string | null;
+  },
+) {
+  const source = await tx.mediaAsset.findFirst({
+    where: {
+      id: input.sourceImageAssetId,
+      type: "image",
+      deletedAt: null,
+      safetyStatus: "passed",
+      OR: [
+        { ownerId: input.userId },
+        ...(input.characterId ? [{ characterId: input.characterId }] : []),
+      ],
+    },
+    select: {
+      id: true,
+      storageKey: true,
+      url: true,
+      metadata: true,
+    },
+  });
+  if (
+    !source ||
+    !isMediaAssetOperationalForAuthority(source.metadata) ||
+    !hasHydratableMediaBlobAuthority(source)
+  ) {
+    throw Errors.conflict(
+      "Source image changed or became unavailable before generation was pinned",
+      { sourceImageAssetId: input.sourceImageAssetId },
+    );
+  }
+}
+
+async function assertRetryGenerationReferenceAuthoritiesInTx(
+  tx: Prisma.TransactionClient,
+  input: {
+    readonly referenceAssetIds: readonly string[];
+    readonly characterId: string | null;
+  },
+) {
+  if (input.referenceAssetIds.length === 0) return;
+  if (!input.characterId) {
+    throw Errors.conflict(
+      "Pinned Character references cannot be retried without their Character authority",
+      { referenceAssetIds: input.referenceAssetIds },
+    );
+  }
+  const references = await tx.mediaAsset.findMany({
+    where: {
+      id: { in: [...input.referenceAssetIds] },
+      characterId: input.characterId,
+      type: "image",
+      deletedAt: null,
+      safetyStatus: "passed",
+    },
+    select: {
+      id: true,
+      storageKey: true,
+      url: true,
+      metadata: true,
+    },
+  });
+  const usableReferenceIds = new Set(
+    references
+      .filter((reference) =>
+        isMediaAssetOperationalForAuthority(reference.metadata) &&
+        hasHydratableMediaBlobAuthority(reference)
+      )
+      .map((reference) => reference.id),
+  );
+  const unavailableReferenceAssetIds = input.referenceAssetIds.filter(
+    (assetId) => !usableReferenceIds.has(assetId),
+  );
+  if (unavailableReferenceAssetIds.length > 0) {
+    throw Errors.conflict(
+      "Pinned Character references changed or became unavailable before retry",
+      {
+        characterId: input.characterId,
+        unavailableReferenceAssetIds,
+      },
+    );
+  }
 }
 
 async function resolveActiveVisualProfile(
   character: GenerationPromptCharacter,
 ): Promise<GenerationVisualProfile | null> {
+  const legacyReleaseAuthority = await prisma.$transaction((tx) =>
+    loadLockedLiveEditorialLegacyGenerationAuthority(tx, character.id)
+  );
+  if (legacyReleaseAuthority) {
+    // A live editorial Release remains the current identity authority even if
+    // an unpinned active profile happens to coexist.
+    return null;
+  }
   const active = await prisma.characterVisualProfile.findFirst({
     where: { characterId: character.id, status: "active" },
     orderBy: { version: "desc" },
@@ -1957,8 +2528,15 @@ async function resolveActiveVisualProfile(
 async function bootstrapCharacterVisualProfile(
   character: GenerationPromptCharacter,
 ): Promise<GenerationVisualProfile | null> {
-  try {
-    return await prisma.characterVisualProfile.create({
+  return prisma.$transaction(async (tx) => {
+    await lockCharacterGenerationAuthority(tx, character.id);
+    const active = await tx.characterVisualProfile.findFirst({
+      where: { characterId: character.id, status: "active" },
+      orderBy: { version: "desc" },
+    });
+    if (active) return active;
+    await assertCharacterIdentityAuthorityMutable(tx, character.id);
+    const profile = await tx.characterVisualProfile.create({
       data: characterVisualProfileCreateData({
         characterId: character.id,
         version: 1,
@@ -1974,13 +2552,9 @@ async function bootstrapCharacterVisualProfile(
         createdFrom: "generation_bootstrap",
       }),
     });
-  } catch (error) {
-    if (!isUniqueConstraintError(error)) throw error;
-    return prisma.characterVisualProfile.findFirst({
-      where: { characterId: character.id, status: "active" },
-      orderBy: { version: "desc" },
-    });
-  }
+    await invalidateCharacterDraftAssetPack(tx, character.id);
+    return profile;
+  });
 }
 
 async function createGenerationJobForUser(
@@ -1996,6 +2570,33 @@ async function createGenerationJobForUser(
   if (preexisting) return preexisting;
 
   const entitlements = await entitlementMap(userId);
+  const selectedModel = body.model ?? body.controls.model;
+  if (body.mode === "video" && !entitlements.video_generation) {
+    throw Errors.paymentRequired("Video generation requires Deluxe entitlement");
+  }
+  if (body.mode === "video" && !(await featureFlagEnabled("video_gen"))) {
+    throw Errors.forbidden("Video generation is disabled");
+  }
+  const preflightProfile = await selectGenerationProfile(
+    body.mode,
+    selectedModel,
+  );
+  const systemPromptSource = isTrustedGenerationPromptSource(
+    options.source?.sourceType,
+  );
+  const freeCharacterMoment =
+    body.mode === "image" && Boolean(body.characterId) && Boolean(body.prompt);
+  if (
+    (body.negativePrompt || (body.prompt && !freeCharacterMoment)) &&
+    !systemPromptSource &&
+    !entitlements.premium_controls
+  ) {
+    throw Errors.paymentRequired("Custom prompt controls require Premium");
+  }
+  const recipe = await selectRecipe(
+    body.mode,
+    body.characterId ? "character" : "freeplay",
+  );
   const character = body.characterId ? await generationCharacter(body.characterId, userId) : null;
   const consistencyMode = body.consistencyMode ?? "balanced";
   const visualProfile =
@@ -2011,41 +2612,34 @@ async function createGenerationJobForUser(
     body.controls.lookId,
   );
   const lookSnapshot = selectedLook ? characterLookSnapshot(selectedLook) : null;
-  const selectedModel = body.model ?? body.controls.model;
-  const profile = await selectGenerationProfile(body.mode, selectedModel);
-  // Guard: if "chat-image-edit" was requested (edit_last_image) but selectGenerationProfile
-  // fell back to a different profile — missing/disabled edit profile — the fallback's
-  // capabilities are unrelated to img2img (it may even have initImage:true for an unrelated
-  // reason, e.g. an sd_cpp default), so forwarding sourceImageAssetId into it risks the wrong
-  // pipeline rather than a clean degrade. Drop it explicitly so degradation to plain
-  // generation is deterministic and independent of whatever profile ends up resolved.
+  const requestedLookReferenceAssetId = selectedLook?.referenceAssetId ?? null;
   const requestedSourceImageAssetId = (body.controls as Record<string, unknown>).sourceImageAssetId;
-  const sourceImageAssetIdDroppedOnFallback =
-    typeof requestedSourceImageAssetId === "string" &&
-    selectedModel === "chat-image-edit" &&
-    profile.profileKey !== "chat-image-edit";
-  if (sourceImageAssetIdDroppedOnFallback) {
-    logger.warn(
-      { requestedProfile: selectedModel, resolvedProfile: profile.profileKey },
-      "chat-image-edit profile unavailable; dropping sourceImageAssetId to avoid mismatched pipeline",
-    );
-  }
-
-  if (body.mode === "video" && !entitlements.video_generation) {
-    throw Errors.paymentRequired("Video generation requires Deluxe entitlement");
-  }
-  if (body.mode === "video" && !(await featureFlagEnabled("video_gen"))) {
-    throw Errors.forbidden("Video generation is disabled");
-  }
-  const systemPromptSource = isTrustedGenerationPromptSource(options.source?.sourceType);
-  const freeCharacterMoment = body.mode === "image" && Boolean(character) && Boolean(body.prompt);
-  if (
-    (body.negativePrompt || (body.prompt && !freeCharacterMoment)) &&
-    !systemPromptSource &&
-    !entitlements.premium_controls
-  ) {
-    throw Errors.paymentRequired("Custom prompt controls require Premium");
-  }
+  const preflightReferenceRequirements =
+    body.mode === "image" && character && visualProfile
+      ? await generationReferenceRouteRequirements(visualProfile.id)
+      : [];
+  const hasRequestedSourceImage =
+    typeof requestedSourceImageAssetId === "string";
+  const requiresReferenceRouting =
+    body.mode === "image" &&
+    (preflightReferenceRequirements.length > 0 ||
+      hasRequestedSourceImage ||
+      requestedLookReferenceAssetId !== null);
+  const profile = requiresReferenceRouting
+    ? await selectGenerationProfile(body.mode, selectedModel, {
+        pinnedReferences: preflightReferenceRequirements,
+        sourceImageAssetId: hasRequestedSourceImage
+          ? requestedSourceImageAssetId
+          : null,
+        lookReferenceAssetId: requestedLookReferenceAssetId,
+      })
+    : body.mode === "image"
+      ? await selectGenerationProfile(body.mode, selectedModel, {
+          pinnedReferences: [],
+          sourceImageAssetId: null,
+          lookReferenceAssetId: null,
+        })
+      : preflightProfile;
   if (profile.requiredEntitlement && !entitlements[profile.requiredEntitlement]) {
     throw Errors.paymentRequired("Selected model requires entitlement", {
       entitlement: profile.requiredEntitlement,
@@ -2057,7 +2651,22 @@ async function createGenerationJobForUser(
     });
   }
 
-  const recipe = await selectRecipe(body.mode, body.characterId ? "character" : "freeplay");
+  const workflowDescriptor = body.mode === "image"
+    ? await generationWorkflowDescriptor(profile.workflowKey ?? profile.pipelineModel)
+    : null;
+  if (
+    body.mode === "image" &&
+    hasRequestedSourceImage &&
+    preflightReferenceRequirements.length === 0
+  ) {
+    assertGenerationProfileCanDispatchReferences({
+      profile,
+      workflowDescriptor,
+      pinnedReferences: [],
+      sourceImageAssetId: requestedSourceImageAssetId,
+      lookReferenceAssetId: requestedLookReferenceAssetId,
+    });
+  }
   const orientation =
     body.orientation ??
     body.controls.orientation ??
@@ -2071,37 +2680,8 @@ async function createGenerationJobForUser(
           defaultHeight: profile.defaultHeight,
         })
       : { width: profile.defaultWidth, height: profile.defaultHeight };
-  const referenceAssetIds = visualProfile ? visualProfileReferenceAssetIds(visualProfile) : [];
-  const referenceSetRevision = visualProfile
-    ? await ensureReferenceSetRevision(visualProfile, "generation_lazy_snapshot")
-    : null;
-  const referenceManifest = referenceSetRevision
-    ? referenceManifestFromRevision(referenceSetRevision, consistencyMode)
-    : [];
   const momentSpec = buildMomentSpec(body, options.source);
   const seed = body.seed ?? visualProfile?.defaultSeed ?? null;
-  const controls = pruneUndefined({
-    ...body.controls,
-    orientation,
-    model: profile.profileKey,
-    profileId: profile.profileKey,
-    width: dimensions.width,
-    height: dimensions.height,
-    sourceImageAssetId: sourceImageAssetIdDroppedOnFallback ? undefined : requestedSourceImageAssetId,
-    consistencyMode: visualProfile ? consistencyMode : undefined,
-    visualIdentity: visualProfile
-      ? {
-          visualProfileId: visualProfile.id,
-          visualProfileVersion: visualProfile.version,
-          consistencyMode,
-          referenceAssetIds,
-          referenceSetRevisionId: referenceSetRevision?.id,
-          referenceManifest,
-          anchorAssetIds: jsonStringArray(visualProfile.anchorAssetIds),
-          seed,
-        }
-      : undefined,
-  });
   const cost = await generationCost(body.mode, body.outputCount, profile.costMultiplier);
   const presetFragment = await resolvePresetPromptFragment(body.controls, userId);
   const prompt = buildGenerationPrompt({
@@ -2127,12 +2707,148 @@ async function createGenerationJobForUser(
   // unique constraint throws P2002 — resolve to that existing job rather than a 500 / a
   // spurious chat.image.failed (handled below).
   const runCreateTx = () => prisma.$transaction(async (tx) => {
+    let legacyReleaseAuthority:
+      LegacyCharacterGenerationAuthority | null = null;
     if (options.source) {
       const existing = await tx.generationJob.findFirst({
         where: { sourceType: options.source.sourceType, sourceId: options.source.sourceId },
       });
       if (existing) return existing;
     }
+    if (character) {
+      await lockCharacterGenerationAuthority(tx, character.id);
+      const lockedCharacter = await tx.character.findFirst({
+        where: {
+          AND: [
+            {
+              id: character.id,
+              deletedAt: null,
+              age: { gte: 18 },
+              status: "approved",
+            },
+            {
+              OR: [
+                { creatorId: userId },
+                publicCharacterAudienceWhere,
+              ],
+            },
+          ],
+        },
+        select: { id: true },
+      });
+      if (!lockedCharacter) {
+        throw Errors.conflict(
+          "Character changed before generation authority could be reserved",
+          { characterId: character.id },
+        );
+      }
+      if (body.mode === "image") {
+        const lockedLegacyReleaseAuthority =
+          await loadLockedLiveEditorialLegacyGenerationAuthority(
+            tx,
+            character.id,
+          );
+        if (lockedLegacyReleaseAuthority && visualProfile) {
+          throw Errors.conflict(
+            "Character Release authority changed after generation identity was selected",
+            { characterId: character.id },
+          );
+        }
+        if (!lockedLegacyReleaseAuthority && !visualProfile) {
+          throw Errors.conflict(
+            "Legacy Character generation authority changed before the job could be queued",
+            { characterId: character.id },
+          );
+        }
+        legacyReleaseAuthority = lockedLegacyReleaseAuthority;
+      }
+    }
+    const sourceImageAssetId =
+      typeof requestedSourceImageAssetId === "string"
+        ? requestedSourceImageAssetId
+        : null;
+    const additionalMediaAssetIds = [
+      sourceImageAssetId,
+      requestedLookReferenceAssetId,
+    ].filter((assetId): assetId is string => Boolean(assetId));
+    const referenceAuthority =
+      visualProfile && character
+        ? await loadLockedGenerationReferenceAuthority(
+            tx,
+            character.id,
+            visualProfile,
+            consistencyMode,
+            additionalMediaAssetIds,
+          )
+        : null;
+    if (!referenceAuthority) {
+      await lockCharacterMediaAssetAuthorities(tx, additionalMediaAssetIds);
+    }
+    if (sourceImageAssetId) {
+      await assertGenerationSourceImageAuthorityInTx(tx, {
+        sourceImageAssetId,
+        userId,
+        characterId: character?.id ?? null,
+      });
+    }
+    const referenceAssetIds =
+      referenceAuthority?.referenceAssetIds ?? [];
+    const referenceSetRevision = referenceAuthority?.referenceSetRevision ?? null;
+    const referenceManifest =
+      referenceAuthority?.referenceManifest ?? [];
+    if (
+      referenceAssetIds.length > 0 ||
+      sourceImageAssetId ||
+      requestedLookReferenceAssetId
+    ) {
+      assertGenerationProfileCanDispatchReferences({
+        profile,
+        workflowDescriptor,
+        pinnedReferences: referenceManifest.map((reference) => ({
+          assetId: reference.mediaAssetId,
+          role: normalizedGenerationReferenceRole(reference.role),
+        })),
+        sourceImageAssetId,
+        lookReferenceAssetId: requestedLookReferenceAssetId,
+      });
+    }
+    if (selectedLook && character && visualProfile) {
+      await assertGenerationLookAuthorityInTx(tx, {
+        look: selectedLook,
+        userId,
+        characterId: character.id,
+        visualProfileId: visualProfile.id,
+      });
+    }
+    const controls = pruneUndefined({
+      ...body.controls,
+      orientation,
+      model: profile.profileKey,
+      profileId: profile.profileKey,
+      generationProfileKey: profile.profileKey,
+      generationProfileVersion: profile.version,
+      workflowKey: workflowDescriptor?.workflowKey,
+      workflowVersion: workflowDescriptor?.version,
+      width: dimensions.width,
+      height: dimensions.height,
+      sourceImageAssetId: sourceImageAssetId ?? undefined,
+      lookReferenceAssetId: requestedLookReferenceAssetId ?? undefined,
+      workflowIdentity: workflowDescriptor?.identity,
+      consistencyMode: visualProfile ? consistencyMode : undefined,
+      legacyReleaseAuthority: legacyReleaseAuthority ?? undefined,
+      visualIdentity: visualProfile
+        ? {
+            visualProfileId: visualProfile.id,
+            visualProfileVersion: visualProfile.version,
+            consistencyMode,
+            referenceAssetIds,
+            referenceSetRevisionId: referenceSetRevision?.id,
+            referenceManifest,
+            anchorAssetIds: referenceAuthority?.anchorAssetIds ?? [],
+            seed,
+          }
+        : undefined,
+    });
     await lockUserLedger(tx, userId);
     const balance = await dreamcoinBalance(userId, tx);
     if (balance < cost) {
@@ -2229,6 +2945,11 @@ async function createGenerationJobForUser(
     await enqueueGenerationJob(job);
   } catch (error) {
     await failQueuedGeneration(job, "queue_enqueue_failed", error);
+    logger.error(
+      { error, generationJobId: job.id },
+      "generation job enqueue failed",
+    );
+    if (error instanceof AppError) throw error;
     throw Errors.internal("Generation queue unavailable", { jobId: job.id });
   }
   return job;
@@ -2264,13 +2985,15 @@ export async function createChatImageGenerationJob(payload: ChatImageRequestedPa
       presetIds: [],
       orientation,
       outputCount: payload.controls.outputCount,
-      // edit_last_image routes to the img2img profile; selectGenerationProfile falls back to
-      // the cheapest active profile if "chat-image-edit" is missing/disabled. That fallback's
-      // capabilities are unrelated to img2img (it may even have initImage:true for an
-      // unrelated reason), so createGenerationJobForUser explicitly drops sourceImageAssetId
-      // whenever the resolved profileKey isn't "chat-image-edit" — plain generation, no
-      // mismatched pipeline, no failure.
-      model: sourceImageAssetId ? "chat-image-edit" : undefined,
+      // A source-only edit is pinned to the dedicated img2img profile. Character
+      // edits leave profile selection open so the complete identity + source
+      // reference shape can select a compatible multi-reference workflow.
+      // Explicit profile requests are fail-closed; source intent is never
+      // silently discarded in favor of plain text-to-image generation.
+      model:
+        sourceImageAssetId && !payload.characterId
+          ? "chat-image-edit"
+          : undefined,
     },
     {
       idempotencyKey: idempotencyKeys.chatImage(payload.attachmentId),
@@ -2280,6 +3003,7 @@ export async function createChatImageGenerationJob(payload: ChatImageRequestedPa
         sourceMeta: toInputJson({
           sessionId: payload.sessionId,
           messageId: payload.messageId,
+          characterReleaseId: payload.characterReleaseId ?? null,
           promptHint: payload.promptHint,
           conversationContext: payload.conversationContext,
         }),
@@ -2401,15 +3125,6 @@ function imageNegativePrompt(base: string | null, visualProfile: GenerationVisua
   return [cleanBase, identityNegative].filter(Boolean).join(", ") || null;
 }
 
-function visualProfileReferenceAssetIds(profile: GenerationVisualProfile) {
-  return Array.from(
-    new Set([
-      ...jsonStringArray(profile.anchorAssetIds),
-      ...jsonStringArray(profile.referenceAssetIds),
-    ]),
-  );
-}
-
 function referenceSnapshotInputs(profile: GenerationVisualProfile) {
   const anchorIds = jsonStringArray(profile.anchorAssetIds);
   const anchorSet = new Set(anchorIds);
@@ -2432,20 +3147,181 @@ function referenceSnapshotInputs(profile: GenerationVisualProfile) {
   ];
 }
 
+async function loadLockedGenerationReferenceAuthority(
+  tx: Prisma.TransactionClient,
+  characterId: string,
+  expectedProfile: GenerationVisualProfile,
+  consistencyMode: "balanced" | "strict" | "creative",
+  additionalMediaAssetIds: readonly string[] = [],
+) {
+  await lockCharacterGenerationAuthority(tx, characterId);
+  const lockedCharacter = await tx.character.findFirst({
+    where: {
+      id: characterId,
+      deletedAt: null,
+    },
+    select: { id: true },
+  });
+  if (!lockedCharacter) {
+    throw Errors.conflict(
+      "Character was archived before generation authority could be pinned",
+      { characterId },
+    );
+  }
+  const activeProfile = await tx.characterVisualProfile.findFirst({
+    where: { characterId, status: "active" },
+    orderBy: { version: "desc" },
+  });
+  if (
+    !activeProfile ||
+    activeProfile.id !== expectedProfile.id ||
+    activeProfile.version !== expectedProfile.version
+  ) {
+    throw Errors.conflict(
+      "Character identity changed before the generation job could pin its authority",
+      { characterId },
+    );
+  }
+
+  const bootstrapWithoutReferences =
+    activeProfile.createdFrom.startsWith("generation_bootstrap") &&
+    jsonStringArray(activeProfile.anchorAssetIds).length === 0 &&
+    jsonStringArray(activeProfile.referenceAssetIds).length === 0;
+  if (bootstrapWithoutReferences) {
+    await lockCharacterMediaAssetAuthorities(tx, additionalMediaAssetIds);
+    return {
+      anchorAssetIds: [] as string[],
+      referenceAssetIds: [] as string[],
+      referenceManifest: [] as ReturnType<typeof referenceManifestFromRevision>,
+      referenceSetRevision: null,
+    };
+  }
+
+  const candidate = await tx.referenceSetRevision.findFirst({
+    where: { visualProfileId: activeProfile.id, status: "active" },
+    include: { references: { orderBy: { position: "asc" } } },
+    orderBy: { revision: "desc" },
+  });
+  if (!candidate || candidate.references.length === 0) {
+    throw Errors.conflict(
+      "Character generation requires a complete active Reference Set",
+      {
+        characterId,
+        visualProfileId: activeProfile.id,
+      },
+    );
+  }
+  await lockCharacterMediaAssetAuthorities(
+    tx,
+    [
+      ...candidate.references.map((reference) => reference.mediaAssetId),
+      ...additionalMediaAssetIds,
+    ],
+  );
+  const referenceSetRevision = await tx.referenceSetRevision.findFirst({
+    where: {
+      visualProfileId: activeProfile.id,
+      status: "active",
+    },
+    include: {
+      references: {
+        include: { mediaAsset: true },
+        orderBy: { position: "asc" },
+      },
+    },
+    orderBy: { revision: "desc" },
+  });
+  if (!referenceSetRevision || referenceSetRevision.id !== candidate.id) {
+    throw Errors.conflict(
+      "Character Reference Set changed before generation authority was pinned",
+      { characterId, referenceSetRevisionId: candidate.id },
+    );
+  }
+  const referenceAssetIds = referenceSetRevision.references.map(
+    (reference) => reference.mediaAssetId,
+  );
+  if (
+    new Set(referenceAssetIds).size !== referenceAssetIds.length ||
+    referenceSetRevision.references.some(
+      (reference, index) =>
+        reference.position !== index ||
+        reference.mediaAsset.deletedAt !== null ||
+        reference.mediaAsset.type !== "image" ||
+        reference.mediaAsset.safetyStatus !== "passed" ||
+        !isMediaAssetOperationalForAuthority(reference.mediaAsset.metadata) ||
+        !hasHydratableMediaBlobAuthority(reference.mediaAsset) ||
+        reference.mediaAsset.characterId !== characterId,
+    )
+  ) {
+    throw Errors.conflict(
+      "Every Character reference must be unique, ordered, available, safety-passed, and owned by the exact Character",
+      {
+        characterId,
+        referenceSetRevisionId: referenceSetRevision.id,
+      },
+    );
+  }
+  const computedSnapshotHash = referenceSetSnapshotHash(referenceSetRevision);
+  if (
+    !referenceSetRevision.snapshotHash ||
+    referenceSetRevision.snapshotHash !== computedSnapshotHash
+  ) {
+    throw Errors.conflict(
+      "Character Reference Set snapshot is not sealed to its current references",
+      {
+        characterId,
+        referenceSetRevisionId: referenceSetRevision.id,
+      },
+    );
+  }
+  const referenceManifest = referenceManifestFromRevision(
+    referenceSetRevision,
+    consistencyMode,
+  );
+  return {
+    anchorAssetIds: referenceSetRevision.references
+      .filter((reference) =>
+        reference.role === "primary_face" || reference.role === "identity_anchor"
+      )
+      .map((reference) => reference.mediaAssetId),
+    referenceAssetIds,
+    referenceManifest,
+    referenceSetRevision,
+  };
+}
+
 async function createReferenceSetRevision(
   tx: Prisma.TransactionClient,
   profile: GenerationVisualProfile,
   createdFrom: string,
+  references = referenceSnapshotInputs(profile),
 ) {
-  const proposedReferences = referenceSnapshotInputs(profile);
+  const proposedReferences = references;
   const existingAssets = await tx.mediaAsset.findMany({
-    where: { id: { in: proposedReferences.map((reference) => reference.mediaAssetId) }, deletedAt: null },
-    select: { id: true },
+    where: {
+      id: { in: proposedReferences.map((reference) => reference.mediaAssetId) },
+      deletedAt: null,
+      type: "image",
+      safetyStatus: "passed",
+      characterId: profile.characterId,
+    },
+    select: { id: true, storageKey: true, url: true, metadata: true },
   });
   const existingAssetIds = new Set(existingAssets.map((asset) => asset.id));
-  const availableReferences = proposedReferences.filter((reference) =>
-    existingAssetIds.has(reference.mediaAssetId),
-  );
+  if (
+    existingAssetIds.size !== proposedReferences.length ||
+    proposedReferences.some((reference) => !existingAssetIds.has(reference.mediaAssetId)) ||
+    existingAssets.some((asset) =>
+      !isMediaAssetOperationalForAuthority(asset.metadata) ||
+      !hasHydratableMediaBlobAuthority(asset)
+    )
+  ) {
+    throw Errors.conflict(
+      "Every Character reference must be available, safety-passed, and owned by the exact Character",
+      { characterId: profile.characterId },
+    );
+  }
+  const availableReferences = proposedReferences;
   const latest = await tx.referenceSetRevision.aggregate({
     where: { visualProfileId: profile.id },
     _max: { revision: true },
@@ -2476,43 +3352,6 @@ async function createReferenceSetRevision(
     },
     include: { references: { orderBy: { position: "asc" } } },
   });
-}
-
-async function ensureReferenceSetRevisionInTx(
-  tx: Prisma.TransactionClient,
-  profile: GenerationVisualProfile,
-  createdFrom: string,
-) {
-  const existing = await tx.referenceSetRevision.findFirst({
-    where: { visualProfileId: profile.id, status: "active" },
-    include: { references: { orderBy: { position: "asc" } } },
-    orderBy: { revision: "desc" },
-  });
-  return existing ?? createReferenceSetRevision(tx, profile, createdFrom);
-}
-
-async function ensureReferenceSetRevision(
-  profile: GenerationVisualProfile,
-  createdFrom: string,
-): Promise<ReferenceSetWithReferences> {
-  const existing = await prisma.referenceSetRevision.findFirst({
-    where: { visualProfileId: profile.id, status: "active" },
-    include: { references: { orderBy: { position: "asc" } } },
-    orderBy: { revision: "desc" },
-  });
-  if (existing) return existing;
-  try {
-    return await prisma.$transaction((tx) =>
-      ensureReferenceSetRevisionInTx(tx, profile, createdFrom),
-    );
-  } catch (error) {
-    if (!isUniqueConstraintError(error)) throw error;
-    return prisma.referenceSetRevision.findFirstOrThrow({
-      where: { visualProfileId: profile.id, status: "active" },
-      include: { references: { orderBy: { position: "asc" } } },
-      orderBy: { revision: "desc" },
-    });
-  }
 }
 
 function referenceManifestFromRevision(
@@ -2829,11 +3668,7 @@ function characterVoiceTone(character: {
 }
 
 async function voiceClipCost() {
-  const pricing = await prisma.pricingRule.findFirst({
-    where: { mode: "voice", status: "active" },
-    orderBy: [{ effectiveFrom: "desc" }, { version: "desc" }],
-  });
-  return Math.max(0, pricing?.baseCost ?? 2);
+  return generationCostDreamcoins("voice", 1, 1);
 }
 
 function voiceClipResponse(asset: { id: string; url: string; metadata: Prisma.JsonValue }) {
@@ -2892,13 +3727,56 @@ async function getGenerationJob(request: Request, id: string) {
   return ok(generationJobResponse(job));
 }
 
+function requireGenerationRetryIdempotencyKey(request: Request) {
+  const value = request.headers.get("idempotency-key")?.trim();
+  if (!value) {
+    throw Errors.badRequest(
+      "Idempotency-Key header is required for generation retry",
+    );
+  }
+  if (value.length < 8 || value.length > 160) {
+    throw Errors.badRequest(
+      "Idempotency-Key must be between 8 and 160 characters",
+    );
+  }
+  return value;
+}
+
 async function retryGenerationJob(request: Request, id: string) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
+  const retryIdempotencyKey = requireGenerationRetryIdempotencyKey(request);
   const job = await prisma.generationJob.findFirst({ where: { id, userId: user.id } });
   if (!job) throw Errors.notFound("Generation job not found");
+  const replay = await prisma.generationJob.findFirst({
+    where: {
+      userId: user.id,
+      idempotencyKey: retryIdempotencyKey,
+    },
+  });
+  if (replay) {
+    if (replay.derivedFromJobId !== job.id) {
+      throw Errors.conflict(
+        "Idempotency-Key was already used for a different generation request",
+      );
+    }
+    if (generationJobRequiresPinnedLegacyAuthority(job)) {
+      await prisma.$transaction((tx) =>
+        assertPinnedLegacyCharacterGenerationAuthority(tx, {
+          generationJobId: job.id,
+          characterId: job.characterId!,
+          controls: job.controls,
+        })
+      );
+    }
+    const existing = await prisma.generationJob.findUniqueOrThrow({
+      where: { id: replay.id },
+      include: generationJobInclude(),
+    });
+    return ok(generationJobResponse(existing), { status: 202 });
+  }
   if (job.status === "blocked") {
     throw Errors.forbidden("Blocked generation jobs cannot be retried");
   }
@@ -2908,23 +3786,159 @@ async function retryGenerationJob(request: Request, id: string) {
   if (job.mode !== "image" && job.mode !== "video") {
     throw Errors.badRequest("Unsupported generation mode");
   }
-  const retryCount = await prisma.generationJob.count({ where: { derivedFromJobId: job.id } });
-  if (retryCount >= 3) {
-    throw Errors.rateLimited("Retry limit reached for this generation job", {
-      retries: retryCount,
-      max: 3,
-    });
-  }
   const entitlements = await entitlementMap(user.id);
   const controls = jsonRecord(job.controls);
-  const profile = await selectGenerationProfile(job.mode, job.profileId ?? job.model ?? undefined);
+  const retrySourceImageAssetId = stringFromRecord(
+    controls,
+    "sourceImageAssetId",
+  );
+  const retryLookReferenceAssetId =
+    stringFromRecord(controls, "lookReferenceAssetId") ??
+    stringFromRecord(jsonRecord(job.lookSnapshot), "referenceAssetId");
+  const retryPinnedReferences = generationRequirementsFromManifest(
+    job.referenceManifest,
+  );
+  const profile = await selectGenerationProfile(
+    job.mode,
+    job.profileId ?? job.model ?? undefined,
+    job.mode === "image"
+      ? {
+          pinnedReferences: retryPinnedReferences,
+          sourceImageAssetId: retrySourceImageAssetId ?? null,
+          lookReferenceAssetId: retryLookReferenceAssetId ?? null,
+        }
+      : undefined,
+  );
+  const workflowDescriptor = job.mode === "image"
+    ? await generationWorkflowDescriptor(
+        profile.workflowKey ?? profile.pipelineModel,
+      )
+    : null;
+  if (
+    job.mode === "image" &&
+    (
+      retryPinnedReferences.length > 0 ||
+      retrySourceImageAssetId ||
+      retryLookReferenceAssetId
+    )
+  ) {
+    assertGenerationProfileCanDispatchReferences({
+      profile,
+      workflowDescriptor,
+      pinnedReferences: retryPinnedReferences,
+      sourceImageAssetId: retrySourceImageAssetId ?? null,
+      lookReferenceAssetId: retryLookReferenceAssetId ?? null,
+    });
+  }
   if (profile.requiredEntitlement && !entitlements[profile.requiredEntitlement]) {
     throw Errors.paymentRequired("Selected model requires entitlement", {
       entitlement: profile.requiredEntitlement,
     });
   }
   const cost = await generationCost(job.mode, job.outputCount, profile.costMultiplier);
-  const retry = await prisma.$transaction(async (tx) => {
+  const retryReferenceAssetIds = [
+    ...new Set([
+      ...jsonStringArray(job.referenceAssetIds),
+      ...retryPinnedReferences.map((reference) => reference.assetId),
+    ]),
+  ];
+  const reservation = await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`generation-retry-idempotency:${user.id}:${retryIdempotencyKey}`}))`;
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`generation-retry-authority:${job.id}`}))`;
+    const lockedJob = await tx.generationJob.findFirst({
+      where: { id: job.id, userId: user.id },
+    });
+    if (
+      !lockedJob ||
+      lockedJob.status !== "failed" ||
+      lockedJob.version !== job.version
+    ) {
+      throw Errors.conflict(
+        "Generation job changed before retry authority could be reserved",
+        { generationJobId: job.id },
+      );
+    }
+    const existingRetry = await tx.generationJob.findFirst({
+      where: {
+        userId: user.id,
+        idempotencyKey: retryIdempotencyKey,
+      },
+    });
+    if (existingRetry) {
+      if (existingRetry.derivedFromJobId !== job.id) {
+        throw Errors.conflict(
+          "Idempotency-Key was already used for a different generation request",
+        );
+      }
+      return { job: existingRetry, created: false } as const;
+    }
+    const retryCount = await tx.generationJob.count({
+      where: { derivedFromJobId: job.id },
+    });
+    if (retryCount >= 3) {
+      throw Errors.rateLimited("Retry limit reached for this generation job", {
+        retries: retryCount,
+        max: 3,
+      });
+    }
+    if (job.characterId) {
+      await lockCharacterGenerationAuthority(tx, job.characterId);
+      const character = await tx.character.findFirst({
+        where: {
+          AND: [
+            {
+              id: job.characterId,
+              deletedAt: null,
+              age: { gte: 18 },
+              status: "approved",
+            },
+            {
+              OR: [
+                { creatorId: user.id },
+                publicCharacterAudienceWhere,
+              ],
+            },
+          ],
+        },
+        select: { id: true },
+      });
+      if (!character) {
+        throw Errors.conflict(
+          "Character changed before retry authority could be reserved",
+          { characterId: job.characterId },
+        );
+      }
+      if (generationJobRequiresPinnedLegacyAuthority(lockedJob)) {
+        await assertPinnedLegacyCharacterGenerationAuthority(tx, {
+          generationJobId: lockedJob.id,
+          characterId: lockedJob.characterId!,
+          controls: lockedJob.controls,
+        });
+      }
+    }
+    await lockCharacterMediaAssetAuthorities(tx, [
+      ...retryReferenceAssetIds,
+      ...(retrySourceImageAssetId ? [retrySourceImageAssetId] : []),
+      ...(retryLookReferenceAssetId ? [retryLookReferenceAssetId] : []),
+    ]);
+    await assertRetryGenerationReferenceAuthoritiesInTx(tx, {
+      referenceAssetIds: retryReferenceAssetIds,
+      characterId: job.characterId,
+    });
+    if (retrySourceImageAssetId) {
+      await assertGenerationSourceImageAuthorityInTx(tx, {
+        sourceImageAssetId: retrySourceImageAssetId,
+        userId: user.id,
+        characterId: job.characterId,
+      });
+    }
+    if (retryLookReferenceAssetId) {
+      await assertGenerationSourceImageAuthorityInTx(tx, {
+        sourceImageAssetId: retryLookReferenceAssetId,
+        userId: user.id,
+        characterId: job.characterId,
+      });
+    }
     await lockUserLedger(tx, user.id);
     const balance = await dreamcoinBalance(user.id, tx);
     if (balance < cost) {
@@ -2956,10 +3970,19 @@ async function retryGenerationJob(request: Request, id: string) {
         lookId: job.lookId,
         lookSnapshot: job.lookSnapshot === null ? undefined : job.lookSnapshot,
         derivedFromJobId: job.id,
+        idempotencyKey: retryIdempotencyKey,
         mode: job.mode,
         prompt: job.prompt,
         negativePrompt: job.negativePrompt,
-        controls: toInputJson(controls),
+        controls: toInputJson(pruneUndefined({
+          ...controls,
+          generationProfileKey: profile.profileKey,
+          generationProfileVersion: profile.version,
+          workflowKey: workflowDescriptor?.workflowKey,
+          workflowVersion: workflowDescriptor?.version,
+          workflowIdentity: workflowDescriptor?.identity,
+          lookReferenceAssetId: retryLookReferenceAssetId,
+        })),
         presetIds: toInputJson(jsonStringArray(job.presetIds)),
         model: profile.workflowKey ?? profile.pipelineModel,
         profileId: profile.profileKey,
@@ -2988,19 +4011,47 @@ async function retryGenerationJob(request: Request, id: string) {
       amount: cost,
     });
     await appendGenerationEvent(tx, created.id, "queued", "Retry generation job queued", {});
-    return created;
+    return { job: created, created: true } as const;
   });
-  try {
-    await enqueueGenerationJob(retry);
-  } catch (error) {
-    await failQueuedGeneration(retry, "queue_enqueue_failed", error);
-    throw Errors.internal("Generation queue unavailable", { jobId: retry.id });
+  const retry = reservation.job;
+  if (reservation.created) {
+    try {
+      await enqueueGenerationJob(retry);
+    } catch (error) {
+      await failQueuedGeneration(retry, "queue_enqueue_failed", error);
+      logger.error(
+        { error, generationJobId: retry.id },
+        "generation retry enqueue failed",
+      );
+      if (error instanceof AppError) throw error;
+      throw Errors.internal("Generation queue unavailable", {
+        jobId: retry.id,
+      });
+    }
   }
   const queued = await prisma.generationJob.findUniqueOrThrow({
     where: { id: retry.id },
     include: generationJobInclude(),
   });
   return ok(generationJobResponse(queued), { status: 202 });
+}
+
+function generationJobRequiresPinnedLegacyAuthority(job: {
+  readonly characterId: string | null;
+  readonly controls: Prisma.JsonValue;
+  readonly mode: string;
+  readonly sourceType: string | null;
+  readonly visualProfileId: string | null;
+}) {
+  return (
+    job.mode === "image" &&
+    job.characterId !== null &&
+    job.visualProfileId === null &&
+    (
+      job.sourceType !== "content_production_item" ||
+      legacyCharacterGenerationAuthorityFromControls(job.controls) !== null
+    )
+  );
 }
 
 async function listPresets(request: Request) {
@@ -3138,9 +4189,20 @@ async function listMedia(request: Request) {
   });
 }
 
-function mediaCollectionInclude() {
+function mediaCollectionInclude(publicOnly = false) {
+  const mediaAssetWhere: Prisma.MediaAssetWhereInput = {
+    deletedAt: null,
+    safetyStatus: "passed",
+    ...(publicOnly
+      ? {
+          ...nonSyntheticMediaAssetWhere,
+          visibility: { in: ["public_pack", "unlisted"] },
+        }
+      : {}),
+  };
   return {
     items: {
+      where: { mediaAsset: { is: mediaAssetWhere } },
       orderBy: { sortOrder: "asc" as const },
       take: 4,
       include: {
@@ -3160,7 +4222,11 @@ function mediaCollectionInclude() {
       },
     },
     owner: { select: { id: true, displayName: true, name: true } },
-    _count: { select: { items: true } },
+    _count: {
+      select: {
+        items: { where: { mediaAsset: { is: mediaAssetWhere } } },
+      },
+    },
   } satisfies Prisma.MediaCollectionInclude;
 }
 
@@ -3188,6 +4254,14 @@ async function createMediaCollection(request: Request) {
   requireAgeVerified(ctx);
   const body = mediaCollectionCreateSchema.parse(await jsonBody(request));
   const media = body.mediaAssetId ? await assertMediaOwner(body.mediaAssetId, user.id) : null;
+  if (body.visibility === "public") {
+    if (!media) {
+      throw Errors.badRequest(
+        "A public collection must contain at least one publishable media asset",
+      );
+    }
+    assertPublicCollectionMediaAsset(media);
+  }
 
   const collection = await prisma.$transaction(async (tx) => {
     const created = await tx.mediaCollection.create({
@@ -3241,6 +4315,18 @@ async function updateMediaCollection(request: Request, collectionId: string) {
 
   const collection = await prisma.$transaction(async (tx) => {
     if (body.visibility === "public") {
+      const items = await tx.mediaCollectionItem.findMany({
+        where: { collectionId },
+        include: { mediaAsset: true },
+      });
+      if (items.length === 0) {
+        throw Errors.badRequest(
+          "A public collection must contain at least one publishable media asset",
+        );
+      }
+      for (const item of items) {
+        assertPublicCollectionMediaAsset(item.mediaAsset);
+      }
       await tx.mediaAsset.updateMany({
         where: {
           ownerId: user.id,
@@ -3289,6 +4375,7 @@ async function addMediaToCollection(request: Request, collectionId: string) {
   const updated = await prisma.$transaction(async (tx) => {
     const sortOrder = await tx.mediaCollectionItem.count({ where: { collectionId } });
     if (collection.visibility === "public") {
+      assertPublicCollectionMediaAsset(media);
       await tx.mediaAsset.update({
         where: { id: media.id },
         data: { visibility: "public_pack" },
@@ -3358,11 +4445,15 @@ async function recordMediaFeedback(request: Request, id: string) {
   if (!asset.sourceJobId) throw Errors.badRequest("Generated image feedback requires a source job");
   const job = await prisma.generationJob.findFirst({
     where: { id: asset.sourceJobId, userId: user.id },
-    select: { id: true, characterId: true },
+    select: {
+      id: true,
+      characterId: true,
+      visualProfileId: true,
+      visualProfileVersion: true,
+    },
   });
   if (!job) throw Errors.notFound("Generation job not found for media feedback");
-  const character = job.characterId ? await generationCharacter(job.characterId, user.id) : null;
-  const visualProfile = character ? await resolveActiveVisualProfile(character) : null;
+  const visualProfile = await generationJobVisualProfileForFeedback(job);
 
   const value = body.feedbackType === "identity_match" ? "match" : "mismatch";
   const quality = jsonRecord(jsonRecord(asset.metadata).quality);
@@ -3385,24 +4476,79 @@ async function recordMediaFeedback(request: Request, id: string) {
     });
   }
 
-  const revision = (current?.revision ?? 0) + 1;
-  const feedback = {
-    id: `feedback:${user.id}:${asset.id}:identity`,
-    dimension: "identity",
-    value,
-    revision,
-    sourceSurface: body.sourceSurface,
-  } as const;
   const result = await prisma.$transaction(async (tx) => {
+    await lockMediaAssetAuthority(tx, asset.id);
+    const lockedAsset = await tx.mediaAsset.findFirst({
+      where: {
+        id: asset.id,
+        ownerId: user.id,
+        type: "image",
+        deletedAt: null,
+      },
+    });
+    if (!lockedAsset) {
+      throw Errors.conflict("Media asset changed before feedback was recorded");
+    }
+    const lockedVisualProfile = visualProfile
+      ? await tx.characterVisualProfile.findFirst({
+          where: {
+            id: visualProfile.id,
+            characterId: job.characterId!,
+            version: job.visualProfileVersion!,
+          },
+        })
+      : null;
+    if (visualProfile && !lockedVisualProfile) {
+      throw Errors.conflict(
+        "Generation job identity authority changed before feedback was recorded",
+        {
+          generationJobId: job.id,
+          visualProfileId: job.visualProfileId,
+          visualProfileVersion: job.visualProfileVersion,
+        },
+      );
+    }
+    const lockedQuality = jsonRecord(jsonRecord(lockedAsset.metadata).quality);
+    const lockedFeedback = mediaIdentityFeedback(
+      lockedQuality.identityFeedback,
+    );
     const currentFeedbackRow = await tx.generationFeedback.findFirst({
       where: {
         actorId: user.id,
         mediaAssetId: asset.id,
-        dimension: feedback.dimension,
+        dimension: "identity",
         active: true,
       },
       orderBy: { revision: "desc" },
     });
+    if (lockedFeedback?.value === value) {
+      const referenceCandidate = lockedVisualProfile
+        ? await tx.referenceCandidate.findUnique({
+            where: {
+              visualProfileId_mediaAssetId: {
+                visualProfileId: lockedVisualProfile.id,
+                mediaAssetId: lockedAsset.id,
+              },
+            },
+          })
+        : null;
+      return {
+        storedFeedback: lockedFeedback,
+        referenceCandidate,
+      };
+    }
+    const revision =
+      Math.max(
+        currentFeedbackRow?.revision ?? 0,
+        lockedFeedback?.revision ?? 0,
+      ) + 1;
+    const feedback = {
+      id: `feedback:${user.id}:${asset.id}:identity`,
+      dimension: "identity",
+      value,
+      revision,
+      sourceSurface: body.sourceSurface,
+    } as const;
     const event = await appendGenerationEvent(tx, job.id, "user_feedback", "User rated character identity", {
       schemaVersion: 1,
       actorId: user.id,
@@ -3414,7 +4560,8 @@ async function recordMediaFeedback(request: Request, id: string) {
       idempotencyKey: feedback.id,
       revision,
       sourceSurface: body.sourceSurface,
-      supersedesEventId: current?.eventId ?? null,
+      supersedesEventId:
+        currentFeedbackRow?.eventId ?? lockedFeedback?.eventId ?? null,
     });
     await tx.generationFeedback.updateMany({
       where: {
@@ -3444,16 +4591,16 @@ async function recordMediaFeedback(request: Request, id: string) {
     await tx.mediaAsset.update({
       where: { id: asset.id },
       data: {
-        metadata: mediaMetadataWithQuality(asset.metadata, {
+        metadata: mediaMetadataWithQuality(lockedAsset.metadata, {
           identityFeedback: storedFeedback,
         }),
       },
     });
-    const referenceCandidate = visualProfile
+    const referenceCandidate = lockedVisualProfile
       ? await tx.referenceCandidate.upsert({
           where: {
             visualProfileId_mediaAssetId: {
-              visualProfileId: visualProfile.id,
+              visualProfileId: lockedVisualProfile.id,
               mediaAssetId: asset.id,
             },
           },
@@ -3463,7 +4610,7 @@ async function recordMediaFeedback(request: Request, id: string) {
             rejectionReason: value === "mismatch" ? "user_identity_mismatch" : null,
           },
           create: {
-            visualProfileId: visualProfile.id,
+            visualProfileId: lockedVisualProfile.id,
             mediaAssetId: asset.id,
             sourceJobId: job.id,
             proposedRole: "identity_reference",
@@ -3482,6 +4629,48 @@ async function recordMediaFeedback(request: Request, id: string) {
       ? referenceCandidateDTO(result.referenceCandidate)
       : null,
   });
+}
+
+async function generationJobVisualProfileForFeedback(job: {
+  readonly id: string;
+  readonly characterId: string | null;
+  readonly visualProfileId: string | null;
+  readonly visualProfileVersion: number | null;
+}): Promise<GenerationVisualProfile | null> {
+  if (
+    job.visualProfileId === null &&
+    job.visualProfileVersion === null
+  ) {
+    return null;
+  }
+  if (
+    !job.characterId ||
+    !job.visualProfileId ||
+    job.visualProfileVersion === null
+  ) {
+    throw Errors.conflict(
+      "Generation job has incomplete identity authority for feedback",
+      { generationJobId: job.id },
+    );
+  }
+  const profile = await prisma.characterVisualProfile.findFirst({
+    where: {
+      id: job.visualProfileId,
+      characterId: job.characterId,
+      version: job.visualProfileVersion,
+    },
+  });
+  if (!profile) {
+    throw Errors.conflict(
+      "Generation job identity authority is unavailable for feedback",
+      {
+        generationJobId: job.id,
+        visualProfileId: job.visualProfileId,
+        visualProfileVersion: job.visualProfileVersion,
+      },
+    );
+  }
+  return profile;
 }
 
 function mediaIdentityFeedback(value: unknown) {
@@ -3507,57 +4696,40 @@ async function setMediaAsCharacterImage(request: Request, id: string) {
   const body = z.object({ characterId: z.string().optional() }).parse(await jsonBody(request));
   const asset = await assertIdentityImageMedia(id, user.id);
   const character = await assertIdentityTargetCharacter(body.characterId ?? asset.characterId, user.id);
-  const activeProfile = await ensureActiveVisualProfile(character, {
-    anchorAssetId: asset.id,
-    createdFrom: "gallery_character_image",
-  });
-  const activeAnchorIds = jsonStringArray(activeProfile.anchorAssetIds);
-  const activeReferenceIds = jsonStringArray(activeProfile.referenceAssetIds);
-  const nextAnchorIds = [asset.id, ...activeAnchorIds.filter((anchorId) => anchorId !== asset.id)];
-  const referenceChanged =
-    nextAnchorIds.length !== activeAnchorIds.length ||
-    nextAnchorIds.some((anchorId, index) => anchorId !== activeAnchorIds[index]) ||
-    activeReferenceIds.includes(asset.id);
   const result = await prisma.$transaction(async (tx) => {
-    const updatedProfile = await tx.characterVisualProfile.update({
-      where: { id: activeProfile.id },
-      data: {
-        anchorAssetIds: toInputJson(nextAnchorIds),
-        referenceAssetIds: toInputJson(
-          activeReferenceIds.filter((referenceId) => referenceId !== asset.id),
-        ),
-      },
-    });
+    await lockCharacterGenerationAuthority(tx, character.id);
+    const lockedCharacter = await assertIdentityTargetCharacterInTx(tx, character.id, user.id);
+    await lockCharacterMediaAssetAuthorities(tx, [asset.id]);
+    const lockedAsset = await assertIdentityImageMediaForCharacterInTx(
+      tx,
+      asset.id,
+      user.id,
+      lockedCharacter.id,
+      { allowUnassigned: true },
+    );
+    if (body.characterId === undefined && lockedAsset.characterId !== lockedCharacter.id) {
+      throw Errors.conflict("Media identity target changed before character-image promotion");
+    }
+    await assertCharacterDisplayImageMutable(tx, lockedCharacter.id);
     await tx.character.update({
-      where: { id: character.id },
-      data: { imageAssetId: asset.id },
+      where: { id: lockedCharacter.id },
+      data: { imageAssetId: lockedAsset.id },
     });
     await tx.mediaAsset.update({
-      where: { id: asset.id },
+      where: { id: lockedAsset.id },
       data: {
-        characterId: character.id,
-        metadata: mediaMetadataWithQuality(asset.metadata, {
+        characterId: lockedCharacter.id,
+        metadata: mediaMetadataWithQuality(lockedAsset.metadata, {
           selectedAsCharacterImage: true,
-          visualProfileId: updatedProfile.id,
-          visualProfileVersion: updatedProfile.version,
         }),
       },
     });
-    const referenceSetRevision = referenceChanged
-      ? await createReferenceSetRevision(tx, updatedProfile, "gallery_character_image")
-      : await ensureReferenceSetRevisionInTx(tx, updatedProfile, "gallery_character_image_existing");
-    await tx.referenceCandidate.updateMany({
-      where: { mediaAssetId: asset.id, status: "candidate" },
-      data: { status: "promoted", promotedRevisionId: referenceSetRevision.id },
-    });
-    return { visualProfile: updatedProfile, referenceSetRevision };
+    return { imageAssetId: lockedAsset.id };
   });
 
   return ok({
     characterId: character.id,
-    imageAssetId: asset.id,
-    visualProfile: visualProfileDTO(result.visualProfile),
-    referenceSetRevision: referenceSetRevisionDTO(result.referenceSetRevision),
+    imageAssetId: result.imageAssetId,
   });
 }
 
@@ -3569,62 +4741,101 @@ async function addMediaToIdentity(request: Request, id: string) {
   const body = z.object({ characterId: z.string().optional() }).parse(await jsonBody(request));
   const asset = await assertIdentityImageMedia(id, user.id);
   const character = await assertIdentityTargetCharacter(body.characterId ?? asset.characterId, user.id);
-  const activeProfile = await ensureActiveVisualProfile(character, {
-    anchorAssetId: null,
-    createdFrom: "gallery_reference_bootstrap",
-  });
-  const anchorIds = jsonStringArray(activeProfile.anchorAssetIds);
-  const currentReferenceIds = jsonStringArray(activeProfile.referenceAssetIds);
-  if (anchorIds.includes(asset.id) || currentReferenceIds.includes(asset.id)) {
-    const referenceSetRevision = await ensureReferenceSetRevision(
-      activeProfile,
-      "gallery_reference_existing",
+  const result = await prisma.$transaction(async (tx) => {
+    await lockCharacterGenerationAuthority(tx, character.id);
+    const lockedCharacter = await assertIdentityTargetCharacterInTx(tx, character.id, user.id);
+    const activeProfile = await tx.characterVisualProfile.findFirst({
+      where: { characterId: character.id, status: "active" },
+      orderBy: { version: "desc" },
+    });
+    if (!activeProfile) {
+      throw Errors.conflict(
+        "Establish a Character identity anchor before adding identity references",
+      );
+    }
+    if (jsonStringArray(activeProfile.anchorAssetIds).length === 0) {
+      throw Errors.conflict(
+        "Establish a Character identity anchor before adding identity references",
+      );
+    }
+    const currentReferenceSet = await tx.referenceSetRevision.findFirst({
+      where: { visualProfileId: activeProfile.id, status: "active" },
+      include: { references: { orderBy: { position: "asc" } } },
+      orderBy: { revision: "desc" },
+    });
+    await lockCharacterMediaAssetAuthorities(tx, [
+      asset.id,
+      ...jsonStringArray(activeProfile.anchorAssetIds),
+      ...jsonStringArray(activeProfile.referenceAssetIds),
+      ...(currentReferenceSet?.references.map((reference) => reference.mediaAssetId) ?? []),
+    ]);
+    const lockedAsset = await assertIdentityImageMediaForCharacterInTx(
+      tx,
+      asset.id,
+      user.id,
+      lockedCharacter.id,
+      { allowUnassigned: true },
     );
-    const updated = await prisma.mediaAsset.update({
-      where: { id: asset.id },
+    if (body.characterId === undefined && lockedAsset.characterId !== lockedCharacter.id) {
+      throw Errors.conflict("Media identity target changed before reference promotion");
+    }
+    const baseReferences =
+      currentReferenceSet?.references.map((reference) => ({
+        mediaAssetId: reference.mediaAssetId,
+        position: reference.position,
+        role: reference.role,
+        weight: reference.weight,
+        selectionReason: reference.selectionReason,
+      })) ?? referenceSnapshotInputs(activeProfile);
+    const alreadyPinned = baseReferences.some(
+      (reference) => reference.mediaAssetId === lockedAsset.id,
+    );
+    const referenceAuthorityChanged = !alreadyPinned || !currentReferenceSet;
+    if (referenceAuthorityChanged) {
+      await assertCharacterIdentityAuthorityMutable(tx, character.id);
+    }
+    await tx.mediaAsset.update({
+      where: { id: lockedAsset.id },
       data: {
-        characterId: character.id,
-        metadata: mediaMetadataWithQuality(asset.metadata, {
+        characterId: lockedCharacter.id,
+        metadata: mediaMetadataWithQuality(lockedAsset.metadata, {
           addedToReferences: true,
           visualProfileId: activeProfile.id,
           visualProfileVersion: activeProfile.version,
         }),
       },
     });
-    return ok({
-      visualProfile: visualProfileDTO(activeProfile),
-      referenceSetRevision: referenceSetRevisionDTO(referenceSetRevision),
-      media: mediaDTO({ ...updated, liked: false }),
-    });
-  }
-
-  const nextReferenceIds = [...currentReferenceIds, asset.id];
-  const result = await prisma.$transaction(async (tx) => {
-    const updatedProfile = await tx.characterVisualProfile.update({
-      where: { id: activeProfile.id },
-      data: { referenceAssetIds: toInputJson(nextReferenceIds) },
-    });
-    await tx.mediaAsset.update({
-      where: { id: asset.id },
-      data: {
-        characterId: character.id,
-        metadata: mediaMetadataWithQuality(asset.metadata, {
-          addedToReferences: true,
-          visualProfileId: updatedProfile.id,
-          visualProfileVersion: updatedProfile.version,
-        }),
-      },
-    });
-    const referenceSetRevision = await createReferenceSetRevision(
-      tx,
-      updatedProfile,
-      "gallery_reference",
-    );
+    const referenceSetRevision = alreadyPinned
+      ? currentReferenceSet ??
+        await createReferenceSetRevision(
+          tx,
+          activeProfile,
+          "gallery_reference_existing",
+          baseReferences,
+        )
+      : await createReferenceSetRevision(
+          tx,
+          activeProfile,
+          "gallery_reference",
+          [
+            ...baseReferences,
+            {
+              mediaAssetId: lockedAsset.id,
+              position: baseReferences.length,
+              role: "identity_reference",
+              weight: 0.75,
+              selectionReason: "user_promoted_identity_reference",
+            },
+          ],
+        );
     await tx.referenceCandidate.updateMany({
-      where: { mediaAssetId: asset.id, status: "candidate" },
+      where: { mediaAssetId: lockedAsset.id, status: "candidate" },
       data: { status: "promoted", promotedRevisionId: referenceSetRevision.id },
     });
-    return { visualProfile: updatedProfile, referenceSetRevision };
+    if (referenceAuthorityChanged) {
+      await invalidateCharacterDraftAssetPack(tx, lockedCharacter.id);
+    }
+    return { visualProfile: activeProfile, referenceSetRevision };
   });
 
   return ok({
@@ -3641,20 +4852,29 @@ async function saveMediaAsCharacterLook(request: Request, id: string) {
   const body = characterLookSchema.omit({ referenceAssetId: true }).parse(await jsonBody(request));
   const asset = await assertIdentityImageMedia(id, user.id);
   const character = await assertIdentityTargetCharacter(asset.characterId, user.id);
-  const visualProfile = await ensureActiveVisualProfile(character, {
-    anchorAssetId: null,
-    createdFrom: "media_look_bootstrap",
-  });
-  const look = await prisma.$transaction((tx) =>
-    persistCharacterLook(tx, {
-      characterId: character.id,
+  const look = await prisma.$transaction(async (tx) => {
+    await lockCharacterGenerationAuthority(tx, character.id);
+    await lockCharacterMediaAssetAuthorities(tx, [asset.id]);
+    const lockedCharacter = await assertIdentityTargetCharacterInTx(
+      tx,
+      character.id,
+      user.id,
+    );
+    const lockedAsset = await assertIdentityImageMediaInTx(tx, asset.id, user.id);
+    if (lockedAsset.characterId !== lockedCharacter.id) {
+      throw Errors.conflict("Media identity target changed before saving the Character Look");
+    }
+    assertHydratableLookReferenceAsset(lockedAsset);
+    const visualProfile = await requireActiveVisualProfileInTx(tx, lockedCharacter.id);
+    return persistCharacterLook(tx, {
+      characterId: lockedCharacter.id,
       visualProfileId: visualProfile.id,
       ownerId: user.id,
       label: body.label,
       appearanceDelta: toInputJson(body.appearanceDelta),
-      referenceAssetId: asset.id,
-    }),
-  );
+      referenceAssetId: lockedAsset.id,
+    });
+  });
   return ok({ look: characterLookDTO(look) }, { status: 201 });
 }
 
@@ -3667,6 +4887,7 @@ async function persistCharacterLook(
     label: string;
     appearanceDelta: Prisma.InputJsonValue;
     referenceAssetId: string | null;
+    rebasedFromLookId?: string;
   },
 ) {
   await tx.characterLook.updateMany({
@@ -3689,6 +4910,19 @@ async function persistCharacterLook(
 
 function characterLookActiveKey(ownerId: string, characterId: string, label: string) {
   return `${ownerId}:${characterId}:${label.trim().toLowerCase()}`;
+}
+
+function assertHydratableLookReferenceAsset(asset: {
+  id: string;
+  storageKey: string | null;
+  url: string | null;
+  metadata: Prisma.JsonValue;
+}) {
+  if (hasHydratableMediaBlobAuthority(asset)) return;
+  throw Errors.conflict(
+    "Character Look image does not have retrievable blob authority",
+    { mediaAssetId: asset.id },
+  );
 }
 
 async function createMediaVariation(request: Request, id: string) {
@@ -3716,7 +4950,6 @@ async function createMediaVariation(request: Request, id: string) {
   );
   const controls = pruneUndefined({
     orientation,
-    model: sourceJob?.profileId ?? sourceJob?.model ?? stringFromRecord(sourceControls, "model"),
     backgroundPresetId: stringFromRecord(sourceControls, "backgroundPresetId"),
     posePresetId: stringFromRecord(sourceControls, "posePresetId"),
     outfitPresetId: stringFromRecord(sourceControls, "outfitPresetId"),
@@ -3733,11 +4966,9 @@ async function createMediaVariation(request: Request, id: string) {
       characterId,
       freeplay: !characterId,
       consistencyMode: body.consistencyMode,
-      // A variation is an img2img request even when the source asset has no
-      // originating job/profile. Route it through the qualified edit profile;
-      // the common generation path will deterministically drop the source and
-      // degrade to text-to-image if that profile is unavailable.
-      model: "chat-image-edit",
+      // Select against the complete identity + source reference shape. Forcing
+      // the single-input chat edit route makes Character variations
+      // structurally impossible once workflow slots are enforced.
       prompt: variationScenePrompt(asset.prompt ?? sourceJob?.prompt),
       controls,
       presetIds: sourceJob ? jsonStringArray(sourceJob.presetIds) : [],
@@ -3777,18 +5008,54 @@ async function bulkMedia(request: Request) {
     .parse(await jsonBody(request));
 
   if (body.action === "delete") {
-    await prisma.mediaAsset.updateMany({
-      where: { id: { in: body.ids }, ownerId: user.id },
-      data: { deletedAt: new Date() },
-    });
-    return ok({ deleted: body.ids.length });
+    const deleted = await softDeleteOwnedMediaAssets(user.id, body.ids);
+    return ok({ deleted });
   }
 
-  await prisma.mediaAsset.updateMany({
-    where: { id: { in: body.ids }, ownerId: user.id },
-    data: { visibility: body.visibility ?? "private" },
+  const targetVisibility = body.visibility ?? "private";
+  const updated = await prisma.$transaction(async (tx) => {
+    const discovered = await tx.mediaAsset.findMany({
+      where: {
+        id: { in: body.ids },
+        ownerId: user.id,
+        deletedAt: null,
+      },
+      select: { id: true },
+    });
+    const ownedAssetIds = discovered.map((asset) => asset.id).sort();
+    await lockCharacterMediaAssetAuthorities(tx, ownedAssetIds);
+    if (ownedAssetIds.length === 0) return 0;
+
+    const current = await tx.mediaAsset.findMany({
+      where: {
+        id: { in: ownedAssetIds },
+        ownerId: user.id,
+        deletedAt: null,
+      },
+      select: { id: true, metadata: true },
+    });
+    if (
+      targetVisibility === "public_pack"
+      && current.some((asset) => isSyntheticMediaAsset(asset.metadata))
+    ) {
+      throw Errors.badRequest("Synthetic media cannot be made public");
+    }
+    if (targetVisibility !== "public_pack") {
+      for (const asset of current) {
+        await assertCustomerMediaAuthorityMutationAllowed(tx, asset.id);
+      }
+    }
+    const result = await tx.mediaAsset.updateMany({
+      where: {
+        id: { in: current.map((asset) => asset.id) },
+        ownerId: user.id,
+        deletedAt: null,
+      },
+      data: { visibility: targetVisibility },
+    });
+    return result.count;
   });
-  return ok({ updated: body.ids.length });
+  return ok({ updated });
 }
 
 async function downloadMedia(request: Request, id: string) {
@@ -3797,10 +5064,16 @@ async function downloadMedia(request: Request, id: string) {
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   const asset = await assertReadableMediaAsset(id, user.id);
-  const metadata = jsonRecord(asset.metadata);
-  const providerKey = typeof metadata.providerKey === "string" ? metadata.providerKey : undefined;
-  const key = asset.storageKey ?? providerKey ?? asset.url;
-  if ((process.env.BLOB_PROVIDER ?? "mock") === "mock" && (asset.storageKey ?? providerKey)) {
+  const blobLocator = resolveMediaAssetBlobLocator(asset);
+  const key = blobLocator?.key;
+  if (!key) {
+    const remoteUrl = absoluteHttpMediaUrl(asset.url);
+    if (remoteUrl) return ok({ url: remoteUrl });
+    throw Errors.unavailable("Media storage authority is incomplete", {
+      assetId: asset.id,
+    });
+  }
+  if ((process.env.BLOB_PROVIDER ?? "mock") === "mock") {
     return ok({ url: `${mediaViewUrl(asset)}?download=1` });
   }
   const signed = await providers.blob.signGetUrl({
@@ -3808,11 +5081,26 @@ async function downloadMedia(request: Request, id: string) {
     expiresInSeconds: signedUrlTtlSeconds(),
     downloadFilename: mediaDownloadFilename(asset),
   });
-  return ok({ url: signed.ok ? signed.data.url : asset.url });
+  if (!signed.ok) {
+    throw Errors.unavailable(
+      "Media download is temporarily unavailable",
+      signed.error,
+    );
+  }
+  return ok({ url: signed.data.url });
 }
 
 async function contentMedia(request: Request, id: string) {
   const ctx = await getAuthCtx(request);
+  if (ctx.userId && ctx.role && ctx.role !== "user") {
+    await actorWithPermission(request, "content.asset.read");
+    const asset = await prisma.mediaAsset.findFirst({
+      where: { id, deletedAt: null },
+    });
+    if (!asset) throw Errors.notFound("Media not found");
+    return contentMediaAsset(request, asset);
+  }
+
   requireAgeGate(ctx);
   const publicAsset = await findPublicReadableMediaAsset(id);
   if (publicAsset) return contentMediaAsset(request, publicAsset);
@@ -3826,9 +5114,7 @@ async function contentMediaAsset(
   request: Request,
   asset: Awaited<ReturnType<typeof assertReadableMediaAsset>>,
 ) {
-  const metadata = jsonRecord(asset.metadata);
-  const providerKey = typeof metadata.providerKey === "string" ? metadata.providerKey : undefined;
-  const key = asset.storageKey ?? providerKey;
+  const key = resolveMediaAssetBlobLocator(asset)?.key;
 
   if (key && (process.env.BLOB_PROVIDER ?? "mock") === "mock") {
     const body = await readFile(localBlobPath(key)).catch(() => null);
@@ -3836,15 +5122,39 @@ async function contentMediaAsset(
     return localMediaResponse(request, asset, body);
   }
 
+  if (!key) {
+    const remoteUrl = absoluteHttpMediaUrl(asset.url);
+    if (remoteUrl) return Response.redirect(remoteUrl, 302);
+    throw Errors.unavailable("Media storage authority is incomplete", {
+      assetId: asset.id,
+    });
+  }
   const signed = await providers.blob.signGetUrl({
-    key: key ?? asset.url,
+    key,
     expiresInSeconds: signedUrlTtlSeconds(),
     downloadFilename:
       new URL(request.url).searchParams.get("download") === "1"
         ? mediaDownloadFilename(asset)
         : undefined,
   });
-  return Response.redirect(signed.ok ? signed.data.url : asset.url, 302);
+  if (!signed.ok) {
+    throw Errors.unavailable(
+      "Media is temporarily unavailable",
+      signed.error,
+    );
+  }
+  return Response.redirect(signed.data.url, 302);
+}
+
+function absoluteHttpMediaUrl(value: string) {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:"
+      ? parsed.toString()
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function localMediaResponse(
@@ -3895,8 +5205,10 @@ function localMediaHeaders(
 ) {
   const url = new URL(request.url);
   const headers = new Headers({
-    "cache-control": "private, max-age=60",
+    "cache-control": "private, no-store, max-age=0",
     "content-type": asset.contentType ?? "application/octet-stream",
+    pragma: "no-cache",
+    vary: "Cookie, Authorization",
   });
   if (url.searchParams.get("download") === "1") {
     headers.set("content-disposition", `attachment; filename="${mediaDownloadFilename(asset)}"`);
@@ -3986,19 +5298,85 @@ async function deleteMedia(request: Request, id: string) {
   const user = requireUser(ctx);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
-  await prisma.mediaAsset.updateMany({
-    where: { id, ownerId: user.id },
-    data: { deletedAt: new Date() },
-  });
+  await softDeleteOwnedMediaAssets(user.id, [id]);
   return ok({ deleted: true });
 }
 
-async function listPlans() {
-  const plans = await prisma.plan.findMany({
-    where: { active: true },
-    orderBy: [{ slug: "asc" }, { billingPeriod: "asc" }],
+async function softDeleteOwnedMediaAssets(
+  ownerId: string,
+  requestedAssetIds: readonly string[],
+) {
+  const requestedIds = [...new Set(requestedAssetIds)];
+  return prisma.$transaction(async (tx) => {
+    const discovered = await tx.mediaAsset.findMany({
+      where: {
+        id: { in: requestedIds },
+        ownerId,
+        deletedAt: null,
+      },
+      select: { id: true },
+    });
+    const ownedAssetIds = discovered.map((asset) => asset.id).sort();
+    await lockCharacterMediaAssetAuthorities(tx, ownedAssetIds);
+    if (ownedAssetIds.length === 0) return 0;
+
+    const current = await tx.mediaAsset.findMany({
+      where: {
+        id: { in: ownedAssetIds },
+        ownerId,
+        deletedAt: null,
+      },
+      select: { id: true },
+    });
+    const currentAssetIds = current.map((asset) => asset.id).sort();
+    if (currentAssetIds.length === 0) return 0;
+    for (const assetId of currentAssetIds) {
+      await assertCustomerMediaAuthorityMutationAllowed(tx, assetId);
+    }
+    const deleted = await tx.mediaAsset.updateMany({
+      where: {
+        id: { in: currentAssetIds },
+        ownerId,
+        deletedAt: null,
+      },
+      data: { deletedAt: new Date() },
+    });
+    return deleted.count;
   });
-  return ok({ items: plans, billing: checkoutMode() });
+}
+
+async function assertCustomerMediaAuthorityMutationAllowed(
+  tx: Prisma.TransactionClient,
+  assetId: string,
+) {
+  const dependencies = await mediaAssetAuthorityDependencies(tx, assetId);
+  if (dependencies.length === 0) return;
+  throw Errors.conflict(
+    "This image is in use. Replace or withdraw it from the linked Character or campaign before making it private or deleting it.",
+    {
+      code: "media_asset_authority_dependency_active",
+      mediaAssetId: assetId,
+      dependencies,
+      repairPath: dependencies[0]?.repairPath ?? "/generator?tab=gallery",
+    },
+  );
+}
+
+async function listPlans() {
+  const [plans, availability] = await Promise.all([
+    prisma.plan.findMany({
+      where: { active: true },
+      orderBy: [{ slug: "asc" }, { billingPeriod: "asc" }],
+    }),
+    publicOfferAvailability(),
+  ]);
+  return ok({
+    items: plans.map((plan) => ({
+      ...plan,
+      features: publicFeatureProjection(plan.features, availability),
+    })),
+    billing: checkoutMode(),
+  });
 }
 
 function checkoutMode() {
@@ -4007,56 +5385,1074 @@ function checkoutMode() {
     provider,
     demoMode: provider === "mock",
     autoConfirmAvailable: provider === "mock",
+    ...providers.payment.capabilities,
   };
 }
 
 async function checkout(request: Request) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
+  const idempotencyKey = requireCheckoutIdempotencyKey(request);
   const body = checkoutSchema.parse(await jsonBody(request));
   const mode = checkoutMode();
   const autoConfirm = body.autoConfirm && mode.autoConfirmAvailable;
-  const plan = await findPlan(body);
-  const invoice = await providers.payment.createInvoice({
-    userId: user.id,
-    amountCents: plan.priceCents,
-    currency: plan.currency,
-    metadata: { planId: plan.id },
+  const requestHash = checkoutRequestHash({
+    selector: body.planId
+      ? { planId: body.planId }
+      : {
+          slug: body.slug ?? "premium",
+          billingPeriod: body.billingPeriod,
+        },
+    returnPath: body.returnPath,
+    autoConfirm,
+    provider: mode.provider,
   });
-  if (!invoice.ok) throw Errors.internal(invoice.error.message, invoice.error);
-
-  const checkoutSession = await prisma.checkoutSession.create({
-    data: {
-      userId: user.id,
-      provider: invoice.data.provider,
-      providerSessionId: invoice.data.invoiceId,
-      returnPath: body.returnPath,
-      status: autoConfirm ? "completed" : "created",
+  const preexisting = await prisma.checkoutSession.findUnique({
+    where: {
+      userId_idempotencyKey: {
+        userId: user.id,
+        idempotencyKey,
+      },
     },
   });
+  const selectedPlan = preexisting ? null : await findPlan(body);
 
-  let subscription = null;
-  let subscriptionStarted = false;
-  if (autoConfirm) {
-    const activation = await activateSubscription(user.id, plan.id, invoice.data.invoiceId);
-    subscription = activation.subscription;
-    subscriptionStarted = activation.created;
+  const durableIntent = await prisma.$transaction(async (tx) => {
+    await lockUserLedger(tx, user.id);
+    const existing = await tx.checkoutSession.findUnique({
+      where: {
+        userId_idempotencyKey: {
+          userId: user.id,
+          idempotencyKey,
+        },
+      },
+    });
+    if (existing) {
+      if (existing.requestHash !== requestHash) {
+        throw Errors.conflict(
+          "Idempotency-Key was already used for a different checkout request",
+          { idempotencyAction: "new_key" },
+        );
+      }
+      return existing;
+    }
+    if (!selectedPlan) {
+      throw Errors.conflict(
+        "Checkout intent disappeared before it could be replayed",
+        { idempotencyAction: "same_key" },
+      );
+    }
+    const now = new Date();
+    await assertNoActiveSamePlanAccessInTx(
+      tx,
+      user.id,
+      selectedPlan.id,
+      now,
+    );
+    return tx.checkoutSession.create({
+      data: {
+        userId: user.id,
+        planId: selectedPlan.id,
+        provider: mode.provider,
+        idempotencyKey,
+        requestHash,
+        amountCents: selectedPlan.priceCents,
+        currency: selectedPlan.currency.toLowerCase(),
+        offerSnapshot: toInputJson({
+          version: 1,
+          planId: selectedPlan.id,
+          slug: selectedPlan.slug,
+          name: selectedPlan.name,
+          billingPeriod: selectedPlan.billingPeriod,
+          priceCents: selectedPlan.priceCents,
+          currency: selectedPlan.currency.toLowerCase(),
+          includedDreamcoins: selectedPlan.includedDreamcoins,
+          features: selectedPlan.features,
+        }),
+        autoConfirm,
+        returnPath: body.returnPath,
+        status: "provider_pending",
+      },
+    });
+  });
+  if (
+    !durableIntent.planId ||
+    durableIntent.amountCents === null ||
+    !durableIntent.currency ||
+    !checkoutOfferSnapshotSchema.safeParse(durableIntent.offerSnapshot).success
+  ) {
+    throw Errors.unavailable("Checkout intent is missing its authoritative plan snapshot", {
+      checkoutId: durableIntent.id,
+    });
   }
 
-  await trackEvent("checkout_started", { planId: plan.id, autoConfirm, provider: mode.provider }, ctx);
-  if (subscriptionStarted) {
-    await trackEvent(
-      "subscription_started",
-      { planId: plan.id, provider: invoice.data.provider, source: "checkout" },
-      ctx,
+  await trackEventOnce(
+    "checkout_started",
+    {
+      planId: durableIntent.planId,
+      autoConfirm: durableIntent.autoConfirm,
+      provider: durableIntent.provider,
+    },
+    ctx,
+    `checkout:${durableIntent.id}:started`,
+  );
+
+  let checkoutSession = await ensureCheckoutInvoice(durableIntent.id, {
+    userId: durableIntent.userId,
+    planId: durableIntent.planId,
+    amountCents: durableIntent.amountCents,
+    currency: durableIntent.currency,
+  });
+  let subscription = await subscriptionForCheckout(checkoutSession);
+  if (checkoutSession.status === "provider_settled") {
+    const completed = await completeCheckoutIntent(checkoutSession.id, "checkout");
+    checkoutSession = completed.checkout;
+    if (completed.settlementDeferred) {
+      throw Errors.unavailable(
+        "Settlement is waiting for an in-flight same-plan provider dispatch to finish.",
+        {
+          checkoutId: checkoutSession.id,
+          competingCheckoutId: completed.deferredByCheckoutId,
+          deferred: true,
+        },
+      );
+    }
+    if (completed.reconciliationRequired) {
+      throw Errors.unavailable(
+        "The settled purchase requires billing reconciliation before access can change.",
+        { checkoutId: checkoutSession.id },
+      );
+    }
+    subscription = await subscriptionForCheckout(checkoutSession);
+  }
+  if (
+    checkoutSession.status === "provider_unknown" ||
+    checkoutSession.needsReconciliation
+  ) {
+    throw Errors.unavailable(
+      "Checkout payment state requires provider reconciliation before it can continue.",
+      { checkoutId: checkoutSession.id },
     );
   }
+  if (
+    checkoutSession.status === "expired" ||
+    checkoutSession.status === "canceled"
+  ) {
+    throw Errors.conflict(
+      "This payment invoice is no longer payable. Start a new checkout with a new Idempotency-Key.",
+      {
+        checkoutId: checkoutSession.id,
+        idempotencyAction: "new_key",
+        providerInvoiceStatus: checkoutSession.providerInvoiceStatus,
+      },
+    );
+  }
+  if (checkoutSession.autoConfirm && checkoutSession.status !== "completed") {
+    const completed = await completeCheckoutIntent(checkoutSession.id, "checkout");
+    checkoutSession = completed.checkout;
+    if (completed.settlementDeferred) {
+      throw Errors.unavailable(
+        "Settlement is waiting for an in-flight same-plan provider dispatch to finish.",
+        {
+          checkoutId: checkoutSession.id,
+          competingCheckoutId: completed.deferredByCheckoutId,
+          deferred: true,
+        },
+      );
+    }
+    if (completed.reconciliationRequired) {
+      throw Errors.unavailable(
+        "The settled purchase requires billing reconciliation before access can change.",
+        { checkoutId: checkoutSession.id },
+      );
+    }
+    subscription = await subscriptionForCheckout(checkoutSession);
+  }
+
+  if (!checkoutSession.providerSessionId || !checkoutSession.checkoutUrl) {
+    throw Errors.unavailable("Checkout provider state is incomplete", {
+      checkoutId: checkoutSession.id,
+    });
+  }
+  const publicSubscription = subscription
+    ? await publicSubscriptionDTO(subscription)
+    : null;
+
   return ok({
-    checkout: checkoutSession,
-    invoice: invoice.data,
-    subscription,
+    checkout: {
+      id: checkoutSession.id,
+      planId: checkoutSession.planId,
+      provider: checkoutSession.provider,
+      status: checkoutSession.status,
+      returnPath: checkoutSession.returnPath,
+      createdAt: checkoutSession.createdAt,
+      updatedAt: checkoutSession.updatedAt,
+    },
+    invoice: {
+      provider: checkoutSession.provider,
+      invoiceId: checkoutSession.providerSessionId,
+      checkoutUrl: checkoutSession.checkoutUrl,
+      status: checkoutSession.providerInvoiceStatus ?? "created",
+      additionalStatus:
+        checkoutSession.providerInvoiceAdditionalStatus ?? "none",
+    },
+    subscription: publicSubscription,
+    billingAccess: subscription ? billingAccessDTO(subscription) : null,
     billing: mode,
   });
+}
+
+function requireCheckoutIdempotencyKey(request: Request) {
+  const value = request.headers.get("idempotency-key")?.trim();
+  if (!value) {
+    throw Errors.badRequest("Idempotency-Key header is required for checkout");
+  }
+  if (value.length < 8 || value.length > 160) {
+    throw Errors.badRequest("Idempotency-Key must be between 8 and 160 characters");
+  }
+  return value;
+}
+
+function checkoutRequestHash(input: {
+  selector:
+    | { planId: string }
+    | { slug: "premium" | "deluxe"; billingPeriod: "monthly" | "yearly" };
+  returnPath: string;
+  autoConfirm: boolean;
+  provider: string;
+}) {
+  return createHash("sha256")
+    .update(JSON.stringify(input))
+    .digest("hex");
+}
+
+function billingProviderEventTargetHash(input: {
+  type: "invoice.confirmed" | "invoice.ignored";
+  invoiceId?: string;
+  orderId?: string;
+}) {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        type: input.type,
+        invoiceId: input.invoiceId ?? null,
+        orderId: input.orderId ?? null,
+      }),
+    )
+    .digest("hex");
+}
+
+const CHECKOUT_PROVIDER_RECONCILIATION_GRACE_MS = 30 * 60 * 1_000;
+const CHECKOUT_PROVIDER_RECONCILIATION_MIN_MISSES = 3;
+const CHECKOUT_PROVIDER_NOT_FOUND_TERMINAL =
+  "provider_invoice_not_found_after_grace";
+const CHECKOUT_PROVIDER_DISPATCH_LEASE_MS = 2 * 60 * 1_000;
+const PAYMENT_PROVIDER_REQUEST_DEADLINE_MS =
+  env.NODE_ENV === "test" ? 1_000 : 10_000;
+
+async function paymentProviderRequestWithDeadline<T>(
+  timeoutCode: string,
+  operation: (signal: AbortSignal) => Promise<ProviderResult<T>>,
+): Promise<ProviderResult<T>> {
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<ProviderResult<T>>((resolve) => {
+    timeout = setTimeout(() => {
+      controller.abort();
+      resolve({
+        ok: false,
+        error: {
+          code: timeoutCode,
+          message: "Payment provider request exceeded its deadline",
+          retryable: true,
+        },
+      });
+    }, PAYMENT_PROVIDER_REQUEST_DEADLINE_MS);
+  });
+  const requested = Promise.resolve()
+    .then(() => operation(controller.signal))
+    .catch(
+      (error): ProviderResult<T> => ({
+        ok: false,
+        error: {
+          code: timeoutCode,
+          message:
+            error instanceof Error
+              ? error.message
+              : "Payment provider request failed",
+          retryable: true,
+        },
+      }),
+    );
+  try {
+    return await Promise.race([requested, timedOut]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+async function ensureCheckoutInvoice(
+  checkoutId: string,
+  plan: {
+    userId: string;
+    planId: string;
+    amountCents: number;
+    currency: string;
+  },
+) {
+  let current = await prisma.checkoutSession.findUniqueOrThrow({
+    where: { id: checkoutId },
+  });
+  if (
+    current.status === "completed" &&
+    current.providerSessionId &&
+    current.checkoutUrl
+  ) {
+    return current;
+  }
+  if (isProviderMissingCheckoutTerminal(current)) {
+    throw Errors.conflict(
+      "The previous payment attempt was not found after reconciliation. Start a new checkout with a new Idempotency-Key.",
+      { checkoutId, idempotencyAction: "new_key" },
+    );
+  }
+  if (isLateSettledAbandonedCheckout(current)) {
+    throw Errors.unavailable(
+      "A late provider settlement is under manual reconciliation. Contact support before starting another checkout.",
+      { checkoutId },
+    );
+  }
+  if (
+    current.dispatchToken &&
+    current.dispatchLeaseUntil &&
+    current.dispatchLeaseUntil > new Date()
+  ) {
+    current = await waitForCheckoutDispatch(checkoutId);
+    if (current.providerSessionId && current.checkoutUrl) return current;
+    if (
+      current.dispatchToken &&
+      current.dispatchLeaseUntil &&
+      current.dispatchLeaseUntil > new Date()
+    ) {
+      throw Errors.conflict(
+        "Checkout creation is already in progress. Retry with the same Idempotency-Key.",
+        { checkoutId, idempotencyAction: "same_key" },
+      );
+    }
+  }
+  if (
+    current.providerAttemptedAt ||
+    current.providerSessionId ||
+    current.needsReconciliation ||
+    current.status === "provider_unknown"
+  ) {
+    const recovered = await paymentProviderRequestWithDeadline(
+      "invoice_lookup_timeout",
+      (signal) =>
+        providers.payment.findInvoiceByOrderId({
+          orderId: checkoutId,
+          signal,
+        }),
+    );
+    if (!recovered.ok) {
+      throw Errors.unavailable(
+        "Payment provider lookup is temporarily unavailable",
+        recovered.error,
+      );
+    }
+    if (recovered.data) {
+      return persistRecoveredCheckoutInvoice(checkoutId, recovered.data);
+    }
+    const missing = await recordCheckoutInvoiceMissing(
+      checkoutId,
+      "provider_attempt_requires_reconciliation",
+    );
+    if (missing.closed) {
+      throw Errors.conflict(
+        "The payment provider confirmed no invoice after the reconciliation window. Start a new checkout with a new Idempotency-Key.",
+        { checkoutId, idempotencyAction: "new_key" },
+      );
+    }
+    if (missing.preservedAuthority) return missing.checkout;
+    throw Errors.unavailable(
+      "Checkout payment state is awaiting reconciliation. Retry with the same key later.",
+      { checkoutId },
+    );
+  }
+
+  return dispatchCheckoutInvoiceWithAccessExclusion(checkoutId, plan);
+}
+
+async function dispatchCheckoutInvoiceWithAccessExclusion(
+  checkoutId: string,
+  plan: {
+    userId: string;
+    planId: string;
+    amountCents: number;
+    currency: string;
+  },
+) {
+  const dispatchToken = randomUUID();
+  const phaseOne = await prisma.$transaction(async (tx) => {
+    await lockCheckoutSession(tx, checkoutId);
+    const current = await tx.checkoutSession.findUniqueOrThrow({
+      where: { id: checkoutId },
+    });
+    const now = new Date();
+    const claimable =
+      current.providerAttemptedAt === null &&
+      current.providerSessionId === null &&
+      !current.needsReconciliation &&
+      (current.status === "provider_pending" ||
+        current.status === "provider_dispatching") &&
+      (current.dispatchLeaseUntil === null ||
+        current.dispatchLeaseUntil < now);
+    if (!claimable) return { kind: "busy" } as const;
+
+    await lockUserLedger(tx, plan.userId);
+    await assertNoActiveSamePlanAccessInTx(
+      tx,
+      plan.userId,
+      plan.planId,
+      now,
+    );
+    const competingDispatch = await activeSamePlanProviderDispatchInTx(
+      tx,
+      plan.userId,
+      plan.planId,
+      checkoutId,
+      now,
+    );
+    if (competingDispatch) {
+      throw Errors.conflict(
+        "Another checkout for this plan is already contacting the payment provider.",
+        {
+          checkoutId,
+          competingCheckoutId: competingDispatch.id,
+          idempotencyAction: "same_key",
+        },
+      );
+    }
+
+    // This marker commits before any provider network call. From this point on,
+    // every retry is lookup/reconciliation-only and can never issue a second
+    // POST, including a crash immediately after this transaction.
+    const checkout = await tx.checkoutSession.update({
+      where: { id: checkoutId },
+      data: {
+        status: "provider_dispatching",
+        dispatchToken,
+        dispatchLeaseUntil: new Date(
+          now.getTime() + CHECKOUT_PROVIDER_DISPATCH_LEASE_MS,
+        ),
+        providerAttemptedAt: now,
+        failureCode: null,
+      },
+    });
+    return { kind: "claimed", checkout } as const;
+  });
+
+  if (phaseOne.kind === "busy") {
+    const current = await waitForCheckoutDispatch(checkoutId);
+    if (current.providerSessionId && current.checkoutUrl) return current;
+    throw Errors.conflict(
+      "Checkout creation is already in progress. Retry with the same Idempotency-Key.",
+      { checkoutId, idempotencyAction: "same_key" },
+    );
+  }
+
+  const recoveredBeforeCreate = await paymentProviderRequestWithDeadline(
+    "invoice_lookup_timeout",
+    (signal) =>
+      providers.payment.findInvoiceByOrderId({
+        orderId: checkoutId,
+        signal,
+      }),
+  );
+  if (!recoveredBeforeCreate.ok) {
+    await recordProviderDispatchUnknown(
+      checkoutId,
+      dispatchToken,
+      recoveredBeforeCreate.error.code,
+    );
+    throw Errors.unavailable(
+      "Payment provider lookup is temporarily unavailable",
+      recoveredBeforeCreate.error,
+    );
+  }
+  if (recoveredBeforeCreate.data) {
+    return persistCheckoutInvoiceAuthority(
+      checkoutId,
+      recoveredBeforeCreate.data,
+      dispatchToken,
+    );
+  }
+
+  const created = await paymentProviderRequestWithDeadline(
+    "invoice_create_timeout",
+    (signal) =>
+      providers.payment.createInvoice({
+        orderId: checkoutId,
+        userId: plan.userId,
+        amountCents: plan.amountCents,
+        currency: plan.currency,
+        metadata: { planId: plan.planId },
+        signal,
+      }),
+  );
+  if (created.ok) {
+    return persistCheckoutInvoiceAuthority(
+      checkoutId,
+      created.data,
+      dispatchToken,
+    );
+  }
+
+  const recoveredAfterFailure = await paymentProviderRequestWithDeadline(
+    "invoice_lookup_timeout",
+    (signal) =>
+      providers.payment.findInvoiceByOrderId({
+        orderId: checkoutId,
+        signal,
+      }),
+  );
+  if (recoveredAfterFailure.ok && recoveredAfterFailure.data) {
+    return persistCheckoutInvoiceAuthority(
+      checkoutId,
+      recoveredAfterFailure.data,
+      dispatchToken,
+    );
+  }
+
+  const failureCode = recoveredAfterFailure.ok
+    ? created.error.code
+    : `${created.error.code}:${recoveredAfterFailure.error.code}`;
+  await recordProviderDispatchUnknown(
+    checkoutId,
+    dispatchToken,
+    failureCode,
+  );
+  throw Errors.unavailable(
+    "Payment provider did not return a recoverable checkout. The intent was preserved for reconciliation.",
+    { checkoutId, providerError: created.error },
+  );
+}
+
+async function waitForCheckoutDispatch(checkoutId: string) {
+  const deadline = Date.now() + 1_500;
+  let current = await prisma.checkoutSession.findUniqueOrThrow({
+    where: { id: checkoutId },
+  });
+  while (
+    current.dispatchToken &&
+    current.dispatchLeaseUntil &&
+    current.dispatchLeaseUntil > new Date() &&
+    Date.now() < deadline
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    current = await prisma.checkoutSession.findUniqueOrThrow({
+      where: { id: checkoutId },
+    });
+  }
+  return current;
+}
+
+async function persistRecoveredCheckoutInvoice(
+  checkoutId: string,
+  invoice: PaymentInvoice,
+) {
+  return persistCheckoutInvoiceAuthority(checkoutId, invoice);
+}
+
+async function persistCheckoutInvoiceAuthority(
+  checkoutId: string,
+  invoice: PaymentInvoice,
+  expectedDispatchToken?: string,
+) {
+  return prisma.$transaction((tx) =>
+    persistCheckoutInvoiceAuthorityInTx(
+      tx,
+      checkoutId,
+      invoice,
+      expectedDispatchToken,
+    ),
+  );
+}
+
+async function persistCheckoutInvoiceAuthorityInTx(
+  tx: Prisma.TransactionClient,
+  checkoutId: string,
+  invoice: PaymentInvoice,
+  expectedDispatchToken?: string,
+) {
+  await lockCheckoutSession(tx, checkoutId);
+  const current = await tx.checkoutSession.findUniqueOrThrow({
+    where: { id: checkoutId },
+  });
+    if (current.provider !== invoice.provider) {
+      throw Errors.conflict("Recovered invoice provider does not match checkout intent", {
+        checkoutId,
+        idempotencyAction: "same_key",
+      });
+    }
+    if (
+      current.providerSessionId &&
+      current.providerSessionId !== invoice.invoiceId
+    ) {
+      throw Errors.conflict("Recovered invoice does not match checkout intent", {
+        checkoutId,
+        idempotencyAction: "same_key",
+      });
+    }
+    assertRecoveredInvoiceMatchesCheckout(current, invoice);
+    if (isCheckoutReconciliationResolved(current)) return current;
+    if (isLateSettledAbandonedCheckout(current)) {
+      if (invoice.status !== "settled") return current;
+      return tx.checkoutSession.update({
+        where: { id: checkoutId },
+        data: lateSettledCheckoutData(current.reconciliationEvidence, invoice),
+      });
+    }
+    if (isCheckoutAbandonedTerminal(current)) {
+      if (invoice.status !== "settled") return current;
+      return tx.checkoutSession.update({
+        where: { id: checkoutId },
+        data: lateSettledCheckoutData(current.reconciliationEvidence, invoice),
+      });
+    }
+    if (current.status === "completed") {
+      return tx.checkoutSession.update({
+        where: { id: checkoutId },
+        data: {
+          providerSessionId: invoice.invoiceId,
+          checkoutUrl: invoice.checkoutUrl,
+          providerInvoiceStatus: "settled",
+          providerInvoiceAdditionalStatus:
+            current.providerInvoiceAdditionalStatus ??
+            invoice.additionalStatus,
+          dispatchToken: null,
+          dispatchLeaseUntil: null,
+          providerLookupMissCount: 0,
+          providerLastLookupAt: new Date(),
+        },
+      });
+    }
+    if (
+      expectedDispatchToken &&
+      current.dispatchToken !== expectedDispatchToken
+    ) {
+      if (current.providerSessionId === invoice.invoiceId) return current;
+      throw Errors.conflict(
+        "Checkout authority changed before invoice persistence",
+        { checkoutId, idempotencyAction: "same_key" },
+      );
+    }
+    if (
+      current.providerInvoiceStatus === "settled" &&
+      invoice.status !== "settled"
+    ) {
+      return current;
+    }
+    const disposition = checkoutDispositionForInvoice(
+      invoice,
+      current.status,
+    );
+    const providerInvoiceStatus =
+      current.status === "completed" ? "settled" : invoice.status;
+    const providerInvoiceAdditionalStatus =
+      current.status === "completed"
+        ? current.providerInvoiceAdditionalStatus ?? invoice.additionalStatus
+        : invoice.additionalStatus;
+  return tx.checkoutSession.update({
+    where: { id: checkoutId },
+    data: {
+      providerSessionId: invoice.invoiceId,
+      checkoutUrl: invoice.checkoutUrl,
+      providerInvoiceStatus,
+      providerInvoiceAdditionalStatus,
+      status: disposition.status,
+      dispatchToken: null,
+      dispatchLeaseUntil: null,
+      failureCode: disposition.failureCode,
+      needsReconciliation: disposition.needsReconciliation,
+      providerLookupMissCount: 0,
+      providerLastLookupAt: new Date(),
+    },
+  });
+}
+
+function lateSettledCheckoutData(
+  existingEvidence: unknown,
+  invoice: {
+    provider: PaymentInvoice["provider"];
+    invoiceId: string;
+    checkoutUrl: string | null;
+    additionalStatus: PaymentInvoice["additionalStatus"];
+  },
+) {
+  return {
+    providerSessionId: invoice.invoiceId,
+    checkoutUrl: invoice.checkoutUrl,
+    providerInvoiceStatus: "settled",
+    providerInvoiceAdditionalStatus: invoice.additionalStatus,
+    status: "provider_unknown",
+    dispatchToken: null,
+    dispatchLeaseUntil: null,
+    failureCode: "provider_invoice_settled_after_abandonment",
+    needsReconciliation: true,
+    providerLookupMissCount: 0,
+    providerLastLookupAt: new Date(),
+    reconciliationEvidence: toInputJson({
+      ...(isRecord(existingEvidence) ? existingEvidence : {}),
+      schemaVersion: "checkout-reconciliation-evidence-v1",
+      reason: "provider_invoice_settled_after_abandonment",
+      provider: invoice.provider,
+      providerInvoiceId: invoice.invoiceId,
+      observedAt: new Date().toISOString(),
+    }),
+  };
+}
+
+function assertRecoveredInvoiceMatchesCheckout(
+  checkout: {
+    id: string;
+    amountCents: number | null;
+    currency: string | null;
+  },
+  invoice: PaymentInvoice,
+) {
+  if (
+    invoice.orderId !== checkout.id ||
+    invoice.amountCents !== checkout.amountCents ||
+    invoice.currency.toLowerCase() !== checkout.currency?.toLowerCase()
+  ) {
+    throw Errors.conflict(
+      "Recovered invoice amount, currency, or order does not match checkout intent",
+      {
+        checkoutId: checkout.id,
+        idempotencyAction: "same_key",
+        providerInvoiceId: invoice.invoiceId,
+      },
+    );
+  }
+}
+
+function checkoutDispositionForInvoice(
+  invoice: PaymentInvoice,
+  currentStatus: string,
+) {
+  if (currentStatus === "completed") {
+    return {
+      status: "completed",
+      failureCode: null,
+      needsReconciliation: false,
+    };
+  }
+  if (invoice.status === "settled") {
+    return {
+      status: "provider_settled",
+      failureCode: null,
+      needsReconciliation: false,
+    };
+  }
+  if (
+    (invoice.status === "expired" || invoice.status === "invalid") &&
+    ["paid_late", "paid_over", "paid_partial"].includes(
+      invoice.additionalStatus,
+    )
+  ) {
+    return {
+      status: "provider_unknown",
+      failureCode: `provider_invoice_${invoice.status}_${invoice.additionalStatus}`,
+      needsReconciliation: true,
+    };
+  }
+  if (invoice.status === "expired") {
+    return {
+      status: "expired",
+      failureCode: "provider_invoice_expired",
+      needsReconciliation: false,
+    };
+  }
+  if (invoice.status === "invalid") {
+    return {
+      status: "canceled",
+      failureCode: "provider_invoice_invalid",
+      needsReconciliation: false,
+    };
+  }
+  return {
+    status: "created",
+    failureCode: null,
+    needsReconciliation: false,
+  };
+}
+
+async function recordCheckoutInvoiceMissing(
+  checkoutId: string,
+  failureCode: string,
+  dispatchToken?: string,
+) {
+  return prisma.$transaction(async (tx) => {
+    await lockCheckoutSession(tx, checkoutId);
+    const current = await tx.checkoutSession.findUniqueOrThrow({
+      where: { id: checkoutId },
+    });
+    const existingTerminal = isCheckoutAbandonedTerminal(current);
+    if (
+      current.status === "completed" ||
+      current.providerSessionId !== null ||
+      existingTerminal ||
+      isLateSettledAbandonedCheckout(current) ||
+      (dispatchToken && current.dispatchToken !== dispatchToken)
+    ) {
+      return {
+        checkout: current,
+        closed: existingTerminal,
+        preservedAuthority: true,
+      };
+    }
+    const now = new Date();
+    const missCount = current.providerLookupMissCount + 1;
+    const graceElapsed =
+      current.providerAttemptedAt !== null &&
+      now.getTime() - current.providerAttemptedAt.getTime() >=
+        CHECKOUT_PROVIDER_RECONCILIATION_GRACE_MS;
+    const closed =
+      graceElapsed &&
+      missCount >= CHECKOUT_PROVIDER_RECONCILIATION_MIN_MISSES &&
+      current.providerSessionId === null;
+    const checkout = await tx.checkoutSession.update({
+      where: { id: checkoutId },
+      data: {
+        status: closed ? "canceled" : "provider_unknown",
+        dispatchToken: null,
+        dispatchLeaseUntil: null,
+        providerLastLookupAt: now,
+        providerLookupMissCount: missCount,
+        failureCode: closed
+          ? CHECKOUT_PROVIDER_NOT_FOUND_TERMINAL
+          : failureCode,
+        needsReconciliation: !closed,
+      },
+    });
+    return { checkout, closed, preservedAuthority: false };
+  });
+}
+
+async function recordProviderDispatchUnknown(
+  checkoutId: string,
+  dispatchToken: string,
+  failureCode: string,
+) {
+  return recordCheckoutInvoiceMissing(
+    checkoutId,
+    failureCode,
+    dispatchToken,
+  );
+}
+
+function isProviderMissingCheckoutTerminal(checkout: {
+  status: string;
+  failureCode: string | null;
+}) {
+  return (
+    checkout.status === "canceled" &&
+    checkout.failureCode === CHECKOUT_PROVIDER_NOT_FOUND_TERMINAL
+  );
+}
+
+function isLateSettledAbandonedCheckout(checkout: {
+  failureCode: string | null;
+}) {
+  return checkout.failureCode === "provider_invoice_settled_after_abandonment";
+}
+
+function isCheckoutAbandonedTerminal(checkout: { status: string }) {
+  return checkout.status === "canceled" || checkout.status === "expired";
+}
+
+function isCheckoutReconciliationResolved(checkout: {
+  failureCode: string | null;
+}) {
+  return checkout.failureCode === "provider_invoice_refund_acknowledged";
+}
+
+function paymentInvoiceAdditionalStatus(
+  value: string | null,
+): PaymentInvoice["additionalStatus"] {
+  if (
+    value === "marked" ||
+    value === "paid_late" ||
+    value === "paid_over" ||
+    value === "paid_partial"
+  ) {
+    return value;
+  }
+  return "none";
+}
+
+async function subscriptionForCheckout(checkoutSession: {
+  userId: string;
+  planId: string | null;
+  provider: string;
+  providerSessionId: string | null;
+}) {
+  if (!checkoutSession.planId || !checkoutSession.providerSessionId) {
+    return null;
+  }
+  const purchased = await prisma.subscription.findFirst({
+    where: {
+      userId: checkoutSession.userId,
+      planId: checkoutSession.planId,
+      provider: checkoutSession.provider,
+      providerSubscriptionId: checkoutSession.providerSessionId,
+    },
+    include: { plan: true },
+    orderBy: { createdAt: "desc" },
+  });
+  if (purchased?.status === "active") return purchased;
+
+  // A late older invoice can be recorded as an applied purchase while its
+  // prepaid period extends a newer access authority. Public checkout state must
+  // return that current authority, not present the non-active receipt as access.
+  return prisma.subscription.findFirst({
+    where: activeSubscriptionWhere(checkoutSession.userId),
+    include: { plan: true },
+    orderBy: [{ currentPeriodEnd: "desc" }, { createdAt: "desc" }],
+  });
+}
+
+async function completeCheckoutIntent(
+  checkoutId: string,
+  source: "checkout" | "webhook",
+) {
+  return prisma.$transaction(async (tx) => {
+    await lockCheckoutSession(tx, checkoutId);
+    const current = await tx.checkoutSession.findUniqueOrThrow({
+      where: { id: checkoutId },
+    });
+    if (!current.planId || !current.providerSessionId) {
+      throw Errors.conflict("Checkout is missing its local plan or provider invoice", {
+        checkoutId,
+        idempotencyAction: "same_key",
+      });
+    }
+    const offerSnapshot = checkoutOfferSnapshotSchema.safeParse(
+      current.offerSnapshot,
+    );
+    if (
+      !offerSnapshot.success ||
+      offerSnapshot.data.planId !== current.planId
+    ) {
+      throw Errors.conflict("Checkout is missing its authoritative offer snapshot", {
+        checkoutId,
+        idempotencyAction: "same_key",
+      });
+    }
+    if (current.status === "completed") {
+      const subscription = await tx.subscription.findFirst({
+        where: {
+          userId: current.userId,
+          planId: current.planId,
+          provider: current.provider,
+          providerSubscriptionId: current.providerSessionId,
+        },
+        orderBy: { createdAt: "desc" },
+      });
+      return {
+        checkout: current,
+        subscription,
+        created: false,
+        reconciliationRequired: false,
+        settlementDeferred: false,
+      } as const;
+    }
+
+    const activation = await activateSubscriptionInTx(
+      tx,
+      current.userId,
+      current.planId,
+      current.providerSessionId,
+      current.provider,
+      offerSnapshot.data,
+      {
+        checkoutId: current.id,
+        createdAt: current.createdAt,
+      },
+    );
+    if (activation.settlementDeferred) {
+      return {
+        checkout: current,
+        subscription: null,
+        created: false,
+        reconciliationRequired: false,
+        settlementDeferred: true,
+        deferredByCheckoutId: activation.deferredByCheckoutId,
+      } as const;
+    }
+    if (activation.reconciliationRequired) {
+      const reconciled = await tx.checkoutSession.update({
+        where: { id: current.id },
+        data: checkoutSettlementReconciliationData(
+          activation.reconciliationReason,
+        ),
+      });
+      return {
+        checkout: reconciled,
+        subscription: null,
+        created: false,
+        reconciliationRequired: true,
+        settlementDeferred: false,
+      } as const;
+    }
+    const completed = await tx.checkoutSession.update({
+      where: { id: current.id },
+      data: {
+        status: "completed",
+        providerInvoiceStatus: "settled",
+        providerInvoiceAdditionalStatus:
+          current.providerInvoiceAdditionalStatus ?? "none",
+        failureCode: null,
+        needsReconciliation: false,
+      },
+    });
+    if (activation.created) {
+      await createClassifiedAnalyticsEvent(tx, {
+        userId: current.userId,
+        name: "subscription_started",
+        props: {
+          planId: current.planId,
+          provider: current.provider,
+          source,
+        },
+        sourceEventId: `checkout:${current.id}:subscription_started`,
+        sourceService: "billing",
+        trustClass: "server_trusted",
+      });
+    }
+    return {
+      checkout: completed,
+      subscription: activation.subscription,
+      created: activation.created,
+      reconciliationRequired: false,
+      settlementDeferred: false,
+    } as const;
+  });
+}
+
+function checkoutSettlementReconciliationData(reason: string) {
+  return {
+    status: "provider_unknown",
+    providerInvoiceStatus: "settled",
+    failureCode: reason,
+    needsReconciliation: true,
+    reconciliationEvidence: toInputJson({
+      schemaVersion: "checkout-settlement-reconciliation-v1",
+      reason,
+      observedAt: new Date().toISOString(),
+    }),
+  };
 }
 
 async function billingPortal(request: Request) {
@@ -4073,17 +6469,21 @@ async function billingPortal(request: Request) {
       mode: "subscribe",
       url: "/upgrade",
       subscription: null,
-      message: "No active subscription. Compare plans to upgrade.",
+      billingAccess: null,
+      message: "No active paid access. Compare plans to buy access.",
     });
   }
 
+  const billingAccess = billingAccessDTO(subscription);
   return ok({
-    mode: "manage",
+    mode: "access",
     url: "/profile#billing",
-    subscription,
-    message: subscription.cancelAtPeriodEnd
-      ? "Renewal is already canceled. Benefits stay active until the period ends."
-      : "Subscription management is available for the active local plan.",
+    subscription: await publicSubscriptionDTO(subscription),
+    billingAccess,
+    message:
+      billingAccess.billingModel === "prepaid_period"
+        ? "Your prepaid benefits remain active until the displayed end date and do not renew automatically."
+        : "Your active billing access is shown in Profile.",
   });
 }
 
@@ -4096,8 +6496,13 @@ async function cancelSubscription(request: Request) {
     orderBy: { createdAt: "desc" },
   });
   if (!subscription) throw Errors.badRequest("No active subscription to cancel.");
+  assertRenewalMutationSupported(subscription);
   if (subscription.cancelAtPeriodEnd) {
-    return ok({ subscription, message: "Renewal is already canceled." });
+    return ok({
+      subscription: await publicSubscriptionDTO(subscription),
+      billingAccess: billingAccessDTO(subscription),
+      message: "Renewal is already canceled.",
+    });
   }
 
   const updated = await prisma.subscription.update({
@@ -4111,7 +6516,8 @@ async function cancelSubscription(request: Request) {
     ctx,
   );
   return ok({
-    subscription: updated,
+    subscription: await publicSubscriptionDTO(updated),
+    billingAccess: billingAccessDTO(updated),
     message: "Renewal canceled. Benefits stay active until the current period ends.",
   });
 }
@@ -4120,11 +6526,15 @@ async function resumeSubscription(request: Request) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
   const subscription = await prisma.subscription.findFirst({
-    where: { ...activeSubscriptionWhere(user.id), cancelAtPeriodEnd: true },
+    where: activeSubscriptionWhere(user.id),
     include: { plan: true },
     orderBy: { createdAt: "desc" },
   });
-  if (!subscription) throw Errors.badRequest("No canceled renewal to resume.");
+  if (!subscription) throw Errors.badRequest("No active subscription.");
+  assertRenewalMutationSupported(subscription);
+  if (!subscription.cancelAtPeriodEnd) {
+    throw Errors.badRequest("No canceled renewal to resume.");
+  }
 
   const updated = await prisma.subscription.update({
     where: { id: subscription.id },
@@ -4136,10 +6546,17 @@ async function resumeSubscription(request: Request) {
     { planId: updated.planId, provider: updated.provider, source: "profile" },
     ctx,
   );
-  return ok({ subscription: updated, message: "Renewal resumed." });
+  return ok({
+    subscription: await publicSubscriptionDTO(updated),
+    billingAccess: billingAccessDTO(updated),
+    message: "Renewal resumed.",
+  });
 }
 
 async function billingWebhook(request: Request, provider: string) {
+  if (provider !== env.PAYMENT_PROVIDER) {
+    throw Errors.badRequest("Webhook provider does not match the configured payment provider");
+  }
   const rawBody = await bodyText(request);
   const payload = parseJsonText(rawBody);
   const eventId =
@@ -4162,22 +6579,119 @@ async function billingWebhook(request: Request, provider: string) {
   });
   if (!parsed.ok) throw Errors.badRequest(parsed.error.message, parsed.error);
   const providerEventId = parsed.data.providerEventId;
+  const payloadHash = createHash("sha256").update(rawBody).digest("hex");
+  const targetHash = billingProviderEventTargetHash(parsed.data);
 
-  const event = await prisma.providerEvent.upsert({
+  let event = await prisma.providerEvent.upsert({
     where: { provider_providerEventId: { provider, providerEventId } },
-    update: { payload: toInputJson(payload) },
+    update: {},
     create: {
       provider,
       providerEventId,
       type: parsed.data.type,
       payload: toInputJson(payload),
+      targetHash,
     },
   });
+  if (event.type !== parsed.data.type) {
+    throw Errors.conflict("Provider event type changed across deliveries", {
+      providerEventId,
+    });
+  }
+  if (!event.targetHash) {
+    await prisma.providerEvent.updateMany({
+      where: { id: event.id, targetHash: null },
+      data: { targetHash },
+    });
+    event = await prisma.providerEvent.findUniqueOrThrow({
+      where: { id: event.id },
+    });
+  }
+  if (event.targetHash !== targetHash) {
+    throw Errors.conflict("Provider event target changed across deliveries", {
+      providerEventId,
+    });
+  }
+  const delivery = await prisma.providerEventDelivery.upsert({
+    where: {
+      eventId_deliveryId: {
+        eventId: event.id,
+        deliveryId: parsed.data.deliveryId,
+      },
+    },
+    update: {},
+    create: {
+      eventId: event.id,
+      deliveryId: parsed.data.deliveryId,
+      payload: toInputJson(payload),
+      payloadHash,
+    },
+  });
+  if (delivery.payloadHash !== payloadHash) {
+    throw Errors.conflict("Provider delivery payload changed for the same delivery id", {
+      providerEventId,
+      deliveryId: parsed.data.deliveryId,
+    });
+  }
+
+  let verifiedOrderInvoice: PaymentInvoice | null = null;
+  if (
+    parsed.data.type === "invoice.confirmed" &&
+    parsed.data.invoiceId &&
+    parsed.data.orderId
+  ) {
+    const alreadyBound = await prisma.checkoutSession.findUnique({
+      where: {
+        provider_providerSessionId: {
+          provider,
+          providerSessionId: parsed.data.invoiceId,
+        },
+      },
+      select: { id: true },
+    });
+    if (!alreadyBound) {
+      const lookup = await paymentProviderRequestWithDeadline(
+        "invoice_lookup_timeout",
+        (signal) =>
+          providers.payment.findInvoiceByOrderId({
+            orderId: parsed.data.orderId!,
+            signal,
+          }),
+      );
+      if (!lookup.ok) {
+        throw Errors.unavailable(
+          "Payment provider lookup is temporarily unavailable",
+          lookup.error,
+        );
+      }
+      if (!lookup.data) {
+        throw Errors.unavailable(
+          "Settled payment could not yet be verified by its provider order id",
+          { orderId: parsed.data.orderId },
+        );
+      }
+      if (
+        lookup.data.provider !== provider ||
+        lookup.data.invoiceId !== parsed.data.invoiceId ||
+        lookup.data.status !== "settled"
+      ) {
+        throw Errors.conflict(
+          "Webhook settlement does not match the provider invoice authority",
+          {
+            invoiceId: parsed.data.invoiceId,
+            orderId: parsed.data.orderId,
+          },
+        );
+      }
+      verifiedOrderInvoice = lookup.data;
+    }
+  }
 
   type BillingWebhookSettlement = {
     processed: boolean;
     idempotent?: boolean;
-    subscriptionStarted?: { userId: string; planId: string; provider: string };
+    deferred?: boolean;
+    reconciliationRequired?: boolean;
   };
 
   const result: BillingWebhookSettlement = await prisma.$transaction(async (tx) => {
@@ -4187,58 +6701,260 @@ async function billingWebhook(request: Request, provider: string) {
     const current = await tx.providerEvent.findUniqueOrThrow({ where: { id: event.id } });
     if (current.processedAt) return { processed: false, idempotent: true };
 
-    let subscriptionStarted: BillingWebhookSettlement["subscriptionStarted"];
-    if (parsed.data.type === "invoice.confirmed" && parsed.data.invoiceId) {
-      const checkoutSession = await tx.checkoutSession.findFirst({
-        where: { providerSessionId: parsed.data.invoiceId },
+    if (parsed.data.type === "invoice.ignored") {
+      await tx.providerEvent.update({
+        where: { id: event.id },
+        data: { processedAt: new Date() },
       });
-      if (checkoutSession) {
-        // planId is echoed in the webhook payload from the invoice metadata set at
-        // checkout (createInvoice metadata.planId). A CheckoutSession.planId column
-        // fallback was intentionally dropped to avoid a user DB migration in the
-        // controlled-beta scope; re-add the column + fallback when the BTCPay webhook
-        // path is reactivated for providers that don't echo metadata.
-        const planId =
-          isRecord(payload) && typeof payload.planId === "string" ? payload.planId : undefined;
-        if (planId) {
-          const activation = await activateSubscriptionInTx(
-            tx,
-            checkoutSession.userId,
-            planId,
-            parsed.data.invoiceId,
-          );
-          if (activation.created) {
-            subscriptionStarted = { userId: checkoutSession.userId, planId, provider };
-          }
-        }
+      return { processed: true };
+    }
+
+    if (!parsed.data.invoiceId) {
+      throw Errors.badRequest("Confirmed payment webhook is missing an invoice id");
+    }
+
+    let checkoutIdentity = await tx.checkoutSession.findUnique({
+      where: {
+        provider_providerSessionId: {
+          provider,
+          providerSessionId: parsed.data.invoiceId,
+        },
+      },
+      select: { id: true },
+    });
+    if (
+      checkoutIdentity &&
+      parsed.data.orderId &&
+      checkoutIdentity.id !== parsed.data.orderId
+    ) {
+      throw Errors.conflict("Webhook order does not match its invoice checkout", {
+        checkoutId: checkoutIdentity.id,
+      });
+    }
+    if (!checkoutIdentity && parsed.data.orderId) {
+      const byOrderId = await tx.checkoutSession.findUnique({
+        where: { id: parsed.data.orderId },
+        select: { id: true, provider: true },
+      });
+      if (byOrderId?.provider === provider) {
+        checkoutIdentity = { id: byOrderId.id };
+      }
+    }
+    if (!checkoutIdentity) {
+      return { processed: false, deferred: true };
+    }
+
+    // Every path locks the checkout before inspecting or binding its provider
+    // invoice. Distinct provider events can settle concurrently, so any state
+    // read before this lock is only an identity hint, never mutation authority.
+    await lockCheckoutSession(tx, checkoutIdentity.id);
+    let checkoutSession = await tx.checkoutSession.findUniqueOrThrow({
+      where: { id: checkoutIdentity.id },
+    });
+    if (checkoutSession.provider !== provider) {
+      throw Errors.conflict("Webhook provider does not match the checkout", {
+        checkoutId: checkoutSession.id,
+      });
+    }
+    if (
+      parsed.data.orderId &&
+      checkoutSession.id !== parsed.data.orderId
+    ) {
+      throw Errors.conflict("Webhook order does not match its invoice checkout", {
+        checkoutId: checkoutSession.id,
+      });
+    }
+    if (
+      checkoutSession.providerSessionId &&
+      checkoutSession.providerSessionId !== parsed.data.invoiceId
+    ) {
+      throw Errors.conflict("Webhook invoice does not match the checkout order", {
+        checkoutId: checkoutSession.id,
+      });
+    }
+    if (isLateSettledAbandonedCheckout(checkoutSession)) {
+      await tx.providerEvent.update({
+        where: { id: event.id },
+        data: { processedAt: new Date() },
+      });
+      return { processed: true, reconciliationRequired: true };
+    }
+    if (isCheckoutReconciliationResolved(checkoutSession)) {
+      await tx.providerEvent.update({
+        where: { id: event.id },
+        data: { processedAt: new Date() },
+      });
+      return { processed: true, idempotent: true };
+    }
+    if (
+      isCheckoutAbandonedTerminal(checkoutSession) &&
+      checkoutSession.providerSessionId
+    ) {
+      await tx.checkoutSession.update({
+        where: { id: checkoutSession.id },
+        data: lateSettledCheckoutData(checkoutSession.reconciliationEvidence, {
+          provider,
+          invoiceId: checkoutSession.providerSessionId,
+          checkoutUrl: checkoutSession.checkoutUrl,
+          additionalStatus: paymentInvoiceAdditionalStatus(
+            checkoutSession.providerInvoiceAdditionalStatus,
+          ),
+        }),
+      });
+      await tx.providerEvent.update({
+        where: { id: event.id },
+        data: { processedAt: new Date() },
+      });
+      return { processed: true, reconciliationRequired: true };
+    }
+    if (!checkoutSession.providerSessionId) {
+      if (!verifiedOrderInvoice) {
+        return { processed: false, deferred: true };
+      }
+      assertRecoveredInvoiceMatchesCheckout(
+        checkoutSession,
+        verifiedOrderInvoice,
+      );
+      if (isProviderMissingCheckoutTerminal(checkoutSession)) {
         await tx.checkoutSession.update({
           where: { id: checkoutSession.id },
-          data: { status: "completed" },
+          data: lateSettledCheckoutData(
+            checkoutSession.reconciliationEvidence,
+            verifiedOrderInvoice,
+          ),
         });
+        await tx.providerEvent.update({
+          where: { id: event.id },
+          data: { processedAt: new Date() },
+        });
+        return { processed: true, reconciliationRequired: true };
       }
+      checkoutSession = await tx.checkoutSession.update({
+        where: { id: checkoutSession.id },
+        data: {
+          providerSessionId: verifiedOrderInvoice.invoiceId,
+          checkoutUrl: verifiedOrderInvoice.checkoutUrl,
+          providerInvoiceStatus: "settled",
+          providerInvoiceAdditionalStatus:
+            verifiedOrderInvoice.additionalStatus,
+          status:
+            checkoutSession.status === "completed"
+              ? "completed"
+              : "provider_settled",
+          failureCode:
+            checkoutSession.status === "completed"
+              ? checkoutSession.failureCode
+              : null,
+          needsReconciliation:
+            checkoutSession.status === "completed"
+              ? checkoutSession.needsReconciliation
+              : false,
+          providerLookupMissCount: 0,
+          providerLastLookupAt: new Date(),
+        },
+      });
+    }
+    if (checkoutSession.providerSessionId !== parsed.data.invoiceId) {
+      throw Errors.conflict("Checkout invoice changed before webhook settlement", {
+        checkoutId: checkoutSession.id,
+      });
+    }
+    if (checkoutSession.status === "completed") {
+      await tx.checkoutSession.update({
+        where: { id: checkoutSession.id },
+        data: {
+          providerInvoiceStatus: "settled",
+          providerInvoiceAdditionalStatus:
+            checkoutSession.providerInvoiceAdditionalStatus ?? "none",
+        },
+      });
+      await tx.providerEvent.update({
+        where: { id: event.id },
+        data: { processedAt: new Date() },
+      });
+      return { processed: true, idempotent: true };
+    }
+    if (!checkoutSession.planId) {
+      return { processed: false, deferred: true };
+    }
+
+    const offerSnapshot = checkoutOfferSnapshotSchema.safeParse(
+      checkoutSession.offerSnapshot,
+    );
+    if (
+      !offerSnapshot.success ||
+      offerSnapshot.data.planId !== checkoutSession.planId
+    ) {
+      return { processed: false, deferred: true };
+    }
+    const activation = await activateSubscriptionInTx(
+      tx,
+      checkoutSession.userId,
+      checkoutSession.planId,
+      parsed.data.invoiceId,
+      provider,
+      offerSnapshot.data,
+      {
+        checkoutId: checkoutSession.id,
+        createdAt: checkoutSession.createdAt,
+      },
+    );
+    if (activation.settlementDeferred) {
+      return { processed: false, deferred: true };
+    }
+    if (activation.reconciliationRequired) {
+      await tx.checkoutSession.update({
+        where: { id: checkoutSession.id },
+        data: checkoutSettlementReconciliationData(
+          activation.reconciliationReason,
+        ),
+      });
+      await tx.providerEvent.update({
+        where: { id: event.id },
+        data: { processedAt: new Date() },
+      });
+      return { processed: true, reconciliationRequired: true };
+    }
+    await tx.checkoutSession.update({
+      where: { id: checkoutSession.id },
+      data: {
+        status: "completed",
+        providerInvoiceStatus: "settled",
+        providerInvoiceAdditionalStatus:
+          checkoutSession.providerInvoiceAdditionalStatus ?? "none",
+        failureCode: null,
+        needsReconciliation: false,
+      },
+    });
+    if (activation.created) {
+      await createClassifiedAnalyticsEvent(tx, {
+        userId: checkoutSession.userId,
+        name: "subscription_started",
+        props: {
+          planId: checkoutSession.planId,
+          provider,
+          source: "webhook",
+        },
+        sourceEventId: `checkout:${checkoutSession.id}:subscription_started`,
+        sourceService: "billing",
+        trustClass: "server_trusted",
+      });
     }
 
     await tx.providerEvent.update({
       where: { id: event.id },
       data: { processedAt: new Date() },
     });
-    return { processed: true, subscriptionStarted };
+    return { processed: true };
   });
 
-  const { subscriptionStarted, ...response } = result;
-  if (subscriptionStarted) {
-    await trackEvent(
-      "subscription_started",
-      {
-        planId: subscriptionStarted.planId,
-        provider: subscriptionStarted.provider,
-        source: "webhook",
-      },
-      { userId: subscriptionStarted.userId },
+  if (result.deferred) {
+    throw Errors.unavailable(
+      "Payment event is valid but its checkout intent is not available yet; retry delivery.",
+      { providerEventId, deferred: true },
     );
   }
-
-  return ok(response);
+  return ok(result);
 }
 
 async function dreamcoins(request: Request) {
@@ -4364,7 +7080,7 @@ async function library(request: Request, tab: string) {
 async function profile(request: Request) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
-  const [fullUser, balance, subscription, entitlements] = await Promise.all([
+  const [fullUser, balance, subscription, entitlements, availability] = await Promise.all([
     prisma.user.findUnique({ where: { id: user.id }, include: { preferences: true } }),
     dreamcoinBalance(user.id),
     prisma.subscription.findFirst({
@@ -4373,8 +7089,18 @@ async function profile(request: Request) {
       orderBy: { createdAt: "desc" },
     }),
     entitlementMap(user.id),
+    publicOfferAvailability(),
   ]);
-  return ok({ user: fullUser, balance, subscription, entitlements });
+  const publicSubscription = subscription
+    ? await publicSubscriptionDTO(subscription)
+    : null;
+  return ok({
+    user: fullUser,
+    balance,
+    subscription: publicSubscription,
+    billingAccess: subscription ? billingAccessDTO(subscription) : null,
+    entitlements: publicFeatureProjection(entitlements, availability),
+  });
 }
 
 async function updateProfile(request: Request) {
@@ -4395,7 +7121,7 @@ async function updateProfile(request: Request) {
 async function profilePreferences(request: Request) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
-  const preferences = await ensurePreferences(user.id);
+  const preferences = await readPreferences(user.id);
   return ok({ preferences });
 }
 
@@ -4446,35 +7172,63 @@ async function redeemCode(request: Request) {
   if (!code || code.status !== "active" || (code.expiresAt && code.expiresAt < new Date())) {
     throw Errors.notFound("Redeem code not found");
   }
-  const reward = isRecord(code.reward) ? code.reward : {};
-  const coins = typeof reward.dreamcoins === "number" ? reward.dreamcoins : 100;
-
-  const redemption = await prisma.$transaction(async (tx) => {
+  const result = await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM redeem_codes WHERE id = ${code.id} FOR UPDATE`;
+    const lockedCode = await tx.redeemCode.findUnique({
+      where: { id: code.id },
+    });
+    if (
+      !lockedCode ||
+      lockedCode.status !== "active" ||
+      (lockedCode.expiresAt && lockedCode.expiresAt < new Date())
+    ) {
+      throw Errors.notFound("Redeem code not found");
+    }
+    const coins = redeemCodeDreamcoins(lockedCode.reward);
+    if (coins === null) {
+      logger.error(
+        {
+          redeemCodeId: lockedCode.id,
+          rewardType:
+            lockedCode.reward === null
+              ? "null"
+              : Array.isArray(lockedCode.reward)
+                ? "array"
+                : typeof lockedCode.reward,
+        },
+        "redeem code reward authority is invalid",
+      );
+      throw Errors.internal("Redeem code reward is invalid");
+    }
 
     // Reward exactly once per user — surface a graceful conflict on replay.
     const already = await tx.redeemCodeRedemption.findUnique({
-      where: { redeemCodeId_userId: { redeemCodeId: code.id, userId: user.id } },
+      where: {
+        redeemCodeId_userId: {
+          redeemCodeId: lockedCode.id,
+          userId: user.id,
+        },
+      },
     });
     if (already) throw Errors.conflict("Code already redeemed");
 
-    if (code.maxRedemptions !== null) {
+    if (lockedCode.maxRedemptions !== null) {
       const redemptions = await tx.redeemCodeRedemption.count({
-        where: { redeemCodeId: code.id },
+        where: { redeemCodeId: lockedCode.id },
       });
-      if (redemptions >= code.maxRedemptions) {
+      if (redemptions >= lockedCode.maxRedemptions) {
         throw Errors.conflict("Code redemption limit reached");
       }
     }
 
     const created = await tx.redeemCodeRedemption.create({
-      data: { redeemCodeId: code.id, userId: user.id },
+      data: { redeemCodeId: lockedCode.id, userId: user.id },
     });
     await appendLedger(tx, user.id, coins, "redeem", created.id);
-    return created;
+    return { coins, redemption: created };
   });
 
-  return ok({ redemption, dreamcoins: coins });
+  return ok({ redemption: result.redemption, dreamcoins: result.coins });
 }
 
 async function referrals(request: Request) {
@@ -4518,28 +7272,29 @@ async function signOutAll(request: Request) {
 async function deleteRequest(request: Request) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
-  await prisma.user.update({
-    where: { id: user.id },
-    data: { status: "deleted", deletedAt: new Date() },
-  });
-  await prisma.session.deleteMany({ where: { userId: user.id } });
-
-  // Propagate the deletion to the chat domain so it erases chat rows + the file
-  // layer and emits chat.account_erasure.completed (design P0-F). Best-effort,
-  // at-least-once: the chat consumer is idempotent on eventId; a delivery failure
-  // is logged but must not block the user's deletion response.
-  try {
-    await jobQueue.enqueue({
-      queue: MAIN_TO_CHAT_QUEUE,
-      payload: {
-        eventId: `user_deleted_${user.id}`,
-        eventType: MAIN_TO_CHAT_EVENTS.userDeleted,
-        payload: { userId: user.id },
-      },
-      dedupeKey: `user_deleted_${user.id}`,
+  const eventId = `user_deleted_${user.id}`;
+  await prisma.$transaction(async (tx) => {
+    await tx.user.update({
+      where: { id: user.id },
+      data: { status: "deleted", deletedAt: new Date() },
     });
+    await tx.session.deleteMany({ where: { userId: user.id } });
+    await recordMainToChatEvent({
+      eventId,
+      eventType: MAIN_TO_CHAT_EVENTS.userDeleted,
+      aggregateType: "user",
+      aggregateId: user.id,
+      payload: { userId: user.id },
+    }, tx);
+  });
+
+  // The response is authorized by the committed Main transaction above.
+  // Immediate dispatch is only a latency optimization: the durable pending row
+  // remains retryable when Chat ingress or the BullMQ fallback is unavailable.
+  try {
+    await dispatchPendingChatEvents();
   } catch (error) {
-    logger.error({ error, userId: user.id }, "failed to enqueue chat account erasure");
+    logger.error({ error, userId: user.id }, "failed to dispatch durable chat account erasure");
   }
 
   const response = ok({ requested: true });
@@ -4697,10 +7452,10 @@ async function track(request: Request) {
     }
     const authority = await prisma.character.findFirst({
       where: {
-        id: signedContext.characterId,
-        deletedAt: null,
-        visibility: "public",
-        status: "approved",
+        AND: [
+          publicCharacterAudienceWhere,
+          { id: signedContext.characterId },
+        ],
       },
       select: { id: true },
     });
@@ -4772,20 +7527,18 @@ async function submitSupportRequest(request: Request) {
         status: "received",
       },
     });
-    await tx.analyticsEvent.create({
-      data: {
-        userId: user.id,
-        anonymousId: ctx.anonymousId,
-        name: "support_request_submitted",
-        props: toInputJson({
-          ticketId,
-          supportRequestId: created.id,
-          category: body.category,
-          subject: body.subject,
-          description: body.description,
-          diagnosticConsent: body.diagnosticConsent,
-          sourcePath: body.sourcePath ?? null,
-        }),
+    await createClassifiedAnalyticsEvent(tx, {
+      userId: user.id,
+      anonymousId: ctx.anonymousId,
+      name: "support_request_submitted",
+      props: {
+        ticketId,
+        supportRequestId: created.id,
+        category: body.category,
+        subject: body.subject,
+        description: body.description,
+        diagnosticConsent: body.diagnosticConsent,
+        sourcePath: body.sourcePath ?? null,
       },
     });
     await appendCanonicalMetricEvent(tx, {
@@ -4834,30 +7587,30 @@ async function createFeedbackItem(request: Request) {
   requireAgeGate(ctx);
   const user = requireUser(ctx);
   const body = feedbackItemCreateSchema.parse(await jsonBody(request));
+  const countsAsEngagement = await isCustomerEngagementActor(user.id);
   const created = await prisma.$transaction(async (tx) => {
     const item = await tx.productFeedbackItem.create({
       data: {
         createdById: user.id,
+        source: "user",
         title: body.title,
         description: body.description,
         category: body.category,
         status: "under_review",
-        voteCount: 1,
+        voteCount: countsAsEngagement ? 1 : 0,
       },
     });
     await tx.productFeedbackVote.create({
       data: { userId: user.id, itemId: item.id },
     });
-    await tx.analyticsEvent.create({
-      data: {
-        userId: user.id,
-        anonymousId: ctx.anonymousId,
-        name: "feedback_item_created",
-        props: toInputJson({
-          itemId: item.id,
-          category: item.category,
-          title: item.title,
-        }),
+    await createClassifiedAnalyticsEvent(tx, {
+      userId: user.id,
+      anonymousId: ctx.anonymousId,
+      name: "feedback_item_created",
+      props: {
+        itemId: item.id,
+        category: item.category,
+        title: item.title,
       },
     });
     return item;
@@ -4869,25 +7622,28 @@ async function voteFeedbackItem(request: Request, itemId: string) {
   const ctx = await getAuthCtx(request);
   requireAgeGate(ctx);
   const user = requireUser(ctx);
+  const countsAsEngagement = await isCustomerEngagementActor(user.id);
   const item = await prisma.$transaction(async (tx) => {
-    const existingItem = await tx.productFeedbackItem.findUnique({ where: { id: itemId } });
+    const existingItem = await tx.productFeedbackItem.findFirst({
+      where: { AND: [publicFeedbackAudienceWhere, { id: itemId }] },
+    });
     if (!existingItem) throw Errors.notFound("Feedback item not found");
     const existingVote = await tx.productFeedbackVote.findUnique({
       where: { userId_itemId: { userId: user.id, itemId } },
     });
     if (existingVote) return existingItem;
     await tx.productFeedbackVote.create({ data: { userId: user.id, itemId } });
-    const updated = await tx.productFeedbackItem.update({
-      where: { id: itemId },
-      data: { voteCount: { increment: 1 } },
-    });
-    await tx.analyticsEvent.create({
-      data: {
-        userId: user.id,
-        anonymousId: ctx.anonymousId,
-        name: "feedback_item_voted",
-        props: toInputJson({ itemId }),
-      },
+    const updated = countsAsEngagement
+      ? await tx.productFeedbackItem.update({
+          where: { id: itemId },
+          data: { voteCount: { increment: 1 } },
+        })
+      : existingItem;
+    await createClassifiedAnalyticsEvent(tx, {
+      userId: user.id,
+      anonymousId: ctx.anonymousId,
+      name: "feedback_item_voted",
+      props: { itemId },
     });
     return updated;
   });
@@ -4898,25 +7654,28 @@ async function unvoteFeedbackItem(request: Request, itemId: string) {
   const ctx = await getAuthCtx(request);
   requireAgeGate(ctx);
   const user = requireUser(ctx);
+  const countsAsEngagement = await isCustomerEngagementActor(user.id);
   const item = await prisma.$transaction(async (tx) => {
-    const existingItem = await tx.productFeedbackItem.findUnique({ where: { id: itemId } });
+    const existingItem = await tx.productFeedbackItem.findFirst({
+      where: { AND: [publicFeedbackAudienceWhere, { id: itemId }] },
+    });
     if (!existingItem) throw Errors.notFound("Feedback item not found");
     const existingVote = await tx.productFeedbackVote.findUnique({
       where: { userId_itemId: { userId: user.id, itemId } },
     });
     if (!existingVote) return existingItem;
     await tx.productFeedbackVote.delete({ where: { id: existingVote.id } });
-    const updated = await tx.productFeedbackItem.update({
-      where: { id: itemId },
-      data: { voteCount: { decrement: 1 } },
-    });
-    await tx.analyticsEvent.create({
-      data: {
-        userId: user.id,
-        anonymousId: ctx.anonymousId,
-        name: "feedback_item_unvoted",
-        props: toInputJson({ itemId }),
-      },
+    const updated = countsAsEngagement
+      ? await tx.productFeedbackItem.update({
+          where: { id: itemId },
+          data: { voteCount: { decrement: 1 } },
+        })
+      : existingItem;
+    await createClassifiedAnalyticsEvent(tx, {
+      userId: user.id,
+      anonymousId: ctx.anonymousId,
+      name: "feedback_item_unvoted",
+      props: { itemId },
     });
     return updated;
   });
@@ -4961,15 +7720,11 @@ async function feed(request: Request, segments: string[]) {
     const focusedCharacterId = requestedItemId ? feedCharacterId(requestedItemId) : null;
     const focusedCollectionId = requestedItemId ? feedCollectionId(requestedItemId) : null;
     const featuredSetting = await prisma.appSetting.findUnique({
-      where: { key: "feed.featured" },
+      where: { key: FEATURED_SETTING_KEY },
     });
-    const featuredIds = featuredCharacterIds(featuredSetting?.value);
+    const featuredIds = parseFeaturedSetting(featuredSetting?.value).characterIds;
     const excludedIds = [...new Set([...featuredIds, focusedCharacterId].filter((id): id is string => Boolean(id)))];
-    const publicWhere = {
-      visibility: "public",
-      status: "approved",
-      deletedAt: null,
-    } satisfies Prisma.CharacterWhereInput;
+    const publicWhere = publicCharacterAudienceWhere;
     const collectionLimit = cursor === 0 ? Math.min(3, Math.floor(limit / 4)) : 0;
     const [popular, featured, focusedCharacter, recentCollections, focusedCollection] = await Promise.all([
       // 热度游标分页：排除置顶角色，稳定排序（热度→新→id）。
@@ -4996,7 +7751,7 @@ async function feed(request: Request, segments: string[]) {
       cursor === 0 && collectionLimit > 0
         ? prisma.mediaCollection.findMany({
             where: feedPublicCollectionWhere(focusedCollectionId ? [focusedCollectionId] : []),
-            include: mediaCollectionInclude(),
+            include: mediaCollectionInclude(true),
             orderBy: [{ createdAt: "desc" }, { id: "desc" }],
             take: collectionLimit,
           })
@@ -5004,7 +7759,7 @@ async function feed(request: Request, segments: string[]) {
       cursor === 0 && focusedCollectionId
         ? prisma.mediaCollection.findFirst({
             where: feedPublicCollectionWhere([], focusedCollectionId),
-            include: mediaCollectionInclude(),
+            include: mediaCollectionInclude(true),
           })
         : null,
     ]);
@@ -5040,17 +7795,19 @@ async function feed(request: Request, segments: string[]) {
   }
   if (request.method === "POST" && action === "restart") return ok({ cursor: null });
   if (action === "items" && itemId && subAction === "like") {
-    const characterId = feedCharacterId(itemId);
-    if (!characterId) return ok({ accepted: true });
+    const character = await feedPublicCharacterByItemId(itemId);
+    if (!character) throw Errors.notFound("Feed item not found");
+    const characterId = character.id;
     if (request.method === "POST") {
       const user = requireUser(ctx);
+      const countsAsEngagement = await isCustomerEngagementActor(user.id);
       // 幂等且并发安全：只有真正插入 like 行的请求才推进统计。
       const createdCount = await prisma.$transaction(async (tx) => {
         const created = await tx.characterLike.createMany({
           data: [{ userId: user.id, characterId }],
           skipDuplicates: true,
         });
-        if (created.count > 0) {
+        if (created.count > 0 && countsAsEngagement) {
           await tx.characterStats.upsert({
             where: { characterId },
             update: { likesCount: { increment: 1 } },
@@ -5066,11 +7823,12 @@ async function feed(request: Request, segments: string[]) {
     }
     if (request.method === "DELETE") {
       const user = requireUser(ctx);
+      const countsAsEngagement = await isCustomerEngagementActor(user.id);
       // 对称：仅当确实删除了一行 like 才 -1，且永不低于 0。
       const removed = await prisma.characterLike.deleteMany({
         where: { userId: user.id, characterId },
       });
-      if (removed.count > 0) {
+      if (removed.count > 0 && countsAsEngagement) {
         await prisma.characterStats.updateMany({
           where: { characterId, likesCount: { gt: 0 } },
           data: { likesCount: { decrement: 1 } },
@@ -5106,7 +7864,9 @@ async function feed(request: Request, segments: string[]) {
       targetId: (await canonicalPublicFeedItemId(itemId)) ?? itemId,
     });
   }
-  return ok({ accepted: true });
+  throw Errors.notFound("Feed route not found", {
+    path: `/${segments.join("/")}`,
+  });
 }
 
 function feedCharacterId(itemId: string) {
@@ -5124,10 +7884,10 @@ async function feedPublicCharacterByItemId(itemId: string) {
   if (!characterId) return null;
   return prisma.character.findFirst({
     where: {
-      id: characterId,
-      visibility: "public",
-      status: "approved",
-      deletedAt: null,
+      AND: [
+        publicCharacterAudienceWhere,
+        { id: characterId },
+      ],
     },
     select: {
       id: true,
@@ -5150,17 +7910,21 @@ function feedCollectionId(itemId: string) {
 function feedPublicCollectionWhere(excludedIds: string[] = [], id?: string) {
   const idFilter = id ? { id } : excludedIds.length > 0 ? { id: { notIn: excludedIds } } : {};
   return {
-    ...idFilter,
-    visibility: "public",
-    items: {
-      some: {
-        mediaAsset: {
-          deletedAt: null,
-          safetyStatus: "passed",
-          visibility: { in: ["public_pack", "unlisted"] },
+    AND: [
+      publicCollectionAudienceWhere,
+      idFilter,
+      {
+        items: {
+          some: {
+            mediaAsset: {
+              deletedAt: null,
+              safetyStatus: "passed",
+              visibility: { in: ["public_pack", "unlisted"] },
+            },
+          },
         },
       },
-    },
+    ],
   } satisfies Prisma.MediaCollectionWhereInput;
 }
 
@@ -5210,13 +7974,6 @@ function interleaveFeedItems<T, U>(primary: T[], secondary: U[]) {
   return items;
 }
 
-// 解析 AppSetting(feed.featured).value = { characterIds: string[] }；脏数据安全降级为空。
-function featuredCharacterIds(value: Prisma.JsonValue | null | undefined): string[] {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
-  const ids = (value as Record<string, unknown>).characterIds;
-  return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : [];
-}
-
 async function community(request: Request, segments: string[]) {
   const ctx = await getAuthCtx(request);
   requireAgeGate(ctx);
@@ -5235,16 +7992,12 @@ async function community(request: Request, segments: string[]) {
       if (!(error instanceof ExperimentRuntimeError) || error.code !== "definition_not_running") throw error;
     }
   }
-  const publicCharacterWhere = {
-    visibility: "public",
-    status: "approved",
-    deletedAt: null,
-  } satisfies Prisma.CharacterWhereInput;
+  const publicCharacterWhere = publicCharacterAudienceWhere;
 
   if (view === "collections") {
     const collections = await prisma.mediaCollection.findMany({
-      where: { visibility: "public" },
-      include: mediaCollectionInclude(),
+      where: publicCollectionAudienceWhere,
+      include: mediaCollectionInclude(true),
       orderBy: { createdAt: "desc" },
       take: 20,
     });
@@ -5253,7 +8006,12 @@ async function community(request: Request, segments: string[]) {
 
   if (view === "campaigns") {
     const campaigns = await resolveCommunityCampaignPlacements(prisma);
-    return ok({ campaigns: campaigns.map(communityCampaignDTO) });
+    return ok({
+      campaigns: campaigns.flatMap((placement) => {
+        const campaign = communityCampaignDTO(placement);
+        return campaign ? [campaign] : [];
+      }),
+    });
   }
 
   const followedCreatorIds = ctx.userId ? await communityFollowedCreatorIds(ctx.userId) : [];
@@ -5294,6 +8052,8 @@ async function community(request: Request, segments: string[]) {
     followers: numberFromDb(dreamer.followers),
     likes: formatCount(numberFromDb(dreamer.likes)),
     chats: formatCount(numberFromDb(dreamer.chats)),
+    likesCount: numberFromDb(dreamer.likes),
+    chatsCount: numberFromDb(dreamer.chats),
     isFollowing: followingIds.has(dreamer.id),
   }));
   const exposureJourneyId = `community-journey-${cryptoRandomId("journey")}`;
@@ -5344,17 +8104,19 @@ type CommunityCampaignPlacement = Prisma.MediaAssetPlacementGetPayload<{
 }>;
 
 function communityCampaignDTO(placement: CommunityCampaignPlacement) {
-  const metadata = jsonRecord(placement.metadata);
+  const copy = parseCommunityCampaignAuthoredCopy(placement.metadata);
+  if (!copy) return null;
   const image = placement.mediaAsset.storageKey
     ? mediaViewUrl(placement.mediaAsset)
     : (placement.mediaAsset.thumbnailUrl ?? placement.mediaAsset.url);
   return {
     id: placement.id,
-    eyebrow: stringMetadata(metadata, "eyebrow", 80) ?? "Community",
-    title: stringMetadata(metadata, "title", 120) ?? "Dreamers, Characters, Collections",
-    ctaLabel: stringMetadata(metadata, "ctaLabel", 60),
-    href: publicCampaignHref(stringMetadata(metadata, "href", 512)),
+    eyebrow: copy.eyebrow,
+    title: copy.title,
+    ctaLabel: copy.ctaLabel,
+    href: copy.href,
     image,
+    source: "authority" as const,
   };
 }
 
@@ -5392,41 +8154,80 @@ function mergeCommunityDreamerRows(...groups: CommunityDreamerRow[][]) {
 }
 
 async function communityDreamerRows(options: { creatorIds?: string[]; limit?: number } = {}) {
-  const creatorFilter = options.creatorIds?.length
-    ? Prisma.sql`AND u.id IN (${Prisma.join(options.creatorIds)})`
-    : Prisma.empty;
   const limit = Math.max(1, Math.min(options.limit ?? 20, 40));
-  return prisma.$queryRaw<CommunityDreamerRow[]>`
-    SELECT
-      u.id,
-      COALESCE(u."displayName", u.name, 'Dreamer') AS "displayName",
-      u.image,
-      COUNT(c.id)::int AS characters,
-      COALESCE(f.followers, 0)::int AS followers,
-      COALESCE(SUM(cs."likesCount"), 0)::bigint AS likes,
-      COALESCE(SUM(cs."chatsCount"), 0)::bigint AS chats
-    FROM "users" u
-    JOIN "characters" c
-      ON c."creatorId" = u.id
-      AND c.visibility = 'public'
-      AND c.status = 'approved'
-      AND c."deletedAt" IS NULL
-    LEFT JOIN "character_stats" cs ON cs."characterId" = c.id
-    LEFT JOIN (
-      SELECT "followeeId", COUNT(*)::int AS followers
-      FROM "follows"
-      GROUP BY "followeeId"
-    ) f ON f."followeeId" = u.id
-    WHERE u.status = 'active'
-      AND u."deletedAt" IS NULL
-      ${creatorFilter}
-    GROUP BY u.id, u."displayName", u.name, u.image, f.followers
-    ORDER BY
-      (COALESCE(SUM(cs."likesCount"), 0) + COALESCE(SUM(cs."chatsCount"), 0)) DESC,
-      COUNT(c.id) DESC,
-      u."createdAt" DESC
-    LIMIT ${limit}
-  `;
+  const creators = await prisma.user.findMany({
+    where: {
+      ...activeCustomerUserWhere,
+      ...(options.creatorIds?.length
+        ? { id: { in: options.creatorIds } }
+        : {}),
+      charactersCreated: { some: publicCharacterAudienceWhere },
+    },
+    select: {
+      id: true,
+      displayName: true,
+      name: true,
+      image: true,
+      createdAt: true,
+      charactersCreated: {
+        where: publicCharacterAudienceWhere,
+        select: {
+          stats: {
+            select: {
+              likesCount: true,
+              chatsCount: true,
+            },
+          },
+        },
+      },
+      _count: {
+        select: {
+          followers: {
+            where: {
+              follower: {
+                is: activeCustomerUserWhere,
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+  return creators
+    .map((creator) => {
+      const totals = creator.charactersCreated.reduce(
+        (sum, character) => ({
+          likes: sum.likes + (character.stats?.likesCount ?? 0),
+          chats: sum.chats + (character.stats?.chatsCount ?? 0),
+        }),
+        { likes: 0, chats: 0 },
+      );
+      return {
+        id: creator.id,
+        displayName: creator.displayName ?? creator.name ?? "Dreamer",
+        image: creator.image,
+        characters: creator.charactersCreated.length,
+        followers: creator._count.followers,
+        likes: totals.likes,
+        chats: totals.chats,
+        createdAt: creator.createdAt,
+      };
+    })
+    .sort((left, right) =>
+      (right.likes + right.chats) - (left.likes + left.chats) ||
+      right.characters - left.characters ||
+      right.createdAt.getTime() - left.createdAt.getTime()
+    )
+    .slice(0, limit)
+    .map((creator): CommunityDreamerRow => ({
+      id: creator.id,
+      displayName: creator.displayName,
+      image: creator.image,
+      characters: creator.characters,
+      followers: creator.followers,
+      likes: creator.likes,
+      chats: creator.chats,
+    }));
 }
 
 async function followUser(request: Request, targetId: string) {
@@ -5434,7 +8235,11 @@ async function followUser(request: Request, targetId: string) {
   const user = requireUser(ctx);
   if (targetId === user.id) throw Errors.badRequest("Cannot follow yourself");
   const target = await prisma.user.findFirst({
-    where: { id: targetId, status: "active", deletedAt: null },
+    where: {
+      id: targetId,
+      ...activeCustomerUserWhere,
+      charactersCreated: { some: publicCharacterAudienceWhere },
+    },
   });
   if (!target) throw Errors.notFound("User not found");
   await prisma.follow.upsert({
@@ -5442,7 +8247,10 @@ async function followUser(request: Request, targetId: string) {
     update: {},
     create: { followerId: user.id, followeeId: targetId },
   });
-  return ok({ following: true });
+  return ok({
+    following: true,
+    followers: await activeFollowerCount(targetId),
+  });
 }
 
 async function unfollowUser(request: Request, targetId: string) {
@@ -5451,7 +8259,19 @@ async function unfollowUser(request: Request, targetId: string) {
   await prisma.follow.deleteMany({
     where: { followerId: user.id, followeeId: targetId },
   });
-  return ok({ following: false });
+  return ok({
+    following: false,
+    followers: await activeFollowerCount(targetId),
+  });
+}
+
+function activeFollowerCount(targetId: string) {
+  return prisma.follow.count({
+    where: {
+      followeeId: targetId,
+      follower: { is: activeCustomerUserWhere },
+    },
+  });
 }
 
 // SPEC: public creator profile — displayName + totals + their public/approved characters.
@@ -5460,18 +8280,44 @@ async function creatorProfile(request: Request, creatorId: string) {
   const ctx = await getAuthCtx(request);
   requireAgeGate(ctx);
   const creator = await prisma.user.findFirst({
-    where: { id: creatorId, status: "active", deletedAt: null },
+    where: {
+      id: creatorId,
+      ...activeCustomerUserWhere,
+      charactersCreated: { some: publicCharacterAudienceWhere },
+    },
     select: { id: true, displayName: true, name: true, image: true, createdAt: true },
   });
   if (!creator) throw Errors.notFound("Creator not found");
-  const [characters, followers, following] = await Promise.all([
+  const publicCreatorCharacterWhere: Prisma.CharacterWhereInput = {
+    AND: [
+      publicCharacterAudienceWhere,
+      { creatorId },
+    ],
+  };
+  const [characters, characterCount, characterTotals, followers, following] = await Promise.all([
     prisma.character.findMany({
-      where: { creatorId, visibility: "public", status: "approved", deletedAt: null },
+      where: publicCreatorCharacterWhere,
       include: characterInclude(ctx.userId),
       orderBy: [{ stats: { likesCount: "desc" } }, { createdAt: "desc" }],
       take: 24,
     }),
-    prisma.follow.count({ where: { followeeId: creatorId } }),
+    prisma.character.count({ where: publicCreatorCharacterWhere }),
+    prisma.characterStats.aggregate({
+      where: { character: { is: publicCreatorCharacterWhere } },
+      _sum: { likesCount: true, chatsCount: true },
+    }),
+    prisma.follow.count({
+      where: {
+        followeeId: creatorId,
+        follower: {
+          is: {
+            dataClass: "customer",
+            status: "active",
+            deletedAt: null,
+          },
+        },
+      },
+    }),
     ctx.userId
       ? prisma.follow.findFirst({
           where: { followerId: ctx.userId, followeeId: creatorId },
@@ -5479,8 +8325,8 @@ async function creatorProfile(request: Request, creatorId: string) {
         })
       : null,
   ]);
-  const totalLikes = characters.reduce((sum, c) => sum + (c.stats?.likesCount ?? 0), 0);
-  const totalChats = characters.reduce((sum, c) => sum + (c.stats?.chatsCount ?? 0), 0);
+  const totalLikes = characterTotals._sum.likesCount ?? 0;
+  const totalChats = characterTotals._sum.chatsCount ?? 0;
   return ok({
     creator: {
       id: creator.id,
@@ -5490,10 +8336,12 @@ async function creatorProfile(request: Request, creatorId: string) {
       isFollowing: Boolean(following),
       isSelf: ctx.userId === creator.id,
       stats: {
-        characters: characters.length,
+        characters: characterCount,
         followers,
         likes: formatCount(totalLikes),
         chats: formatCount(totalChats),
+        likesCount: totalLikes,
+        chatsCount: totalChats,
       },
     },
     characters: characters.map((character) => characterDTO(character, ctx.userId)),
@@ -5505,35 +8353,184 @@ async function duplicateCharacter(request: Request, id: string) {
   const user = requireUser(ctx);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
-  const source = await readableCharacter(id, user.id);
-  const name = `${source.name} Copy`;
-  const duplicate = await prisma.character.create({
-    data: {
-      creatorId: user.id,
-      name,
-      age: source.age,
-      description: source.description,
-      systemPrompt: buildCharacterSystemPrompt({
+  const duplicate = await prisma.$transaction(async (tx) => {
+    await lockCharacterGenerationAuthority(tx, id);
+    const source = await tx.character.findFirst({
+      where: {
+        id,
+        deletedAt: null,
+        OR: [
+          publicCharacterAudienceWhere,
+          { creatorId: user.id },
+        ],
+      },
+    });
+    if (!source) throw Errors.notFound("Character not found");
+
+    const sourceImageAssetId = source.imageAssetId;
+    if (sourceImageAssetId) {
+      await lockMediaAssetAuthority(tx, sourceImageAssetId);
+    }
+
+    // The Character authority lock stabilizes its primary-image pointer while
+    // the canonical MediaAsset authority lock serializes us with archive/delete.
+    // Re-read both only after those locks: the discovery read is never authority.
+    const lockedSource = await tx.character.findUnique({ where: { id } });
+    if (!lockedSource || lockedSource.deletedAt !== null) {
+      throw Errors.notFound("Character not found");
+    }
+    if (lockedSource.imageAssetId !== sourceImageAssetId) {
+      throw Errors.conflict("Character image changed while the duplicate was being created");
+    }
+
+    const sourceImageAsset = sourceImageAssetId
+      ? await tx.mediaAsset.findFirst({
+          where: {
+            id: sourceImageAssetId,
+            deletedAt: null,
+            type: "image",
+          },
+        })
+      : null;
+    if (
+      sourceImageAssetId &&
+      (
+        !sourceImageAsset ||
+        sourceImageAsset.safetyStatus !== "passed" ||
+        !sourceImageAsset.url.trim() ||
+        !isMediaAssetOperationalForAuthority(sourceImageAsset.metadata)
+      )
+    ) {
+      throw Errors.conflict("The source Character image is no longer available");
+    }
+    if (sourceImageAsset) {
+      assertNonSyntheticMediaAsset(
+        sourceImageAsset,
+        "Synthetic media cannot be copied as a character identity",
+      );
+    }
+
+    const name = `${lockedSource.name} Copy`;
+    const created = await tx.character.create({
+      data: {
+        creatorId: user.id,
         name,
-        age: source.age,
-        description: source.description,
-        relationship: source.relationship,
-        style: source.style,
-        gender: source.gender,
-        appearance: source.appearance,
-        advancedDetails: source.advancedDetails,
-      }),
-      visibility: "private",
-      status: "approved",
-      style: source.style,
-      gender: source.gender,
-      relationship: source.relationship,
-      imageAssetId: source.imageAssetId,
-      appearance: toInputJson(source.appearance ?? {}),
-      advancedDetails: toInputJson(source.advancedDetails ?? {}),
-    },
+        age: lockedSource.age,
+        description: lockedSource.description,
+        systemPrompt: buildCharacterSystemPrompt({
+          name,
+          age: lockedSource.age,
+          description: lockedSource.description,
+          relationship: lockedSource.relationship,
+          style: lockedSource.style,
+          gender: lockedSource.gender,
+          appearance: lockedSource.appearance,
+          advancedDetails: lockedSource.advancedDetails,
+        }),
+        visibility: "private",
+        status: "approved",
+        style: lockedSource.style,
+        gender: lockedSource.gender,
+        relationship: lockedSource.relationship,
+        imageAssetId: null,
+        appearance: toInputJson(lockedSource.appearance ?? {}),
+        advancedDetails: toInputJson(lockedSource.advancedDetails ?? {}),
+      },
+    });
+
+    const sourceBlobLocator = sourceImageAsset
+      ? resolveMediaAssetBlobLocator(sourceImageAsset)
+      : null;
+    if (sourceImageAsset && sourceBlobLocator) {
+      const duplicateImageAssetId = `media_${cryptoRandomId("character_duplicate")}`;
+      const sourceMetadata = jsonRecord(sourceImageAsset.metadata);
+      const backingKey = sourceBlobLocator.key;
+      const duplicateRouteUrl = mediaViewUrl({
+        id: duplicateImageAssetId,
+        type: sourceImageAsset.type,
+        contentType: sourceImageAsset.contentType,
+        storageKey: null,
+        url: sourceImageAsset.url,
+      });
+      const duplicateUrl = duplicateRouteUrl;
+      const duplicateThumbnailUrl = duplicateRouteUrl;
+      const retainedTechnicalMetadata: Record<string, unknown> = {};
+      for (const key of [
+        "backend",
+        "consistencyMode",
+        "contentType",
+        "height",
+        "index",
+        "model",
+        "profileId",
+        "profileVersion",
+        "provider",
+        "recipeId",
+        "recipeVersion",
+        "referenceAssetIds",
+        "seconds",
+        "seed",
+        "usage",
+        "visualProfileId",
+        "visualProfileVersion",
+        "width",
+        "workflow",
+      ]) {
+        if (Object.hasOwn(sourceMetadata, key)) {
+          retainedTechnicalMetadata[key] = sourceMetadata[key];
+        }
+      }
+      await tx.mediaAsset.create({
+        data: {
+          id: duplicateImageAssetId,
+          ownerId: user.id,
+          characterId: created.id,
+          type: "image",
+          url: duplicateUrl,
+          thumbnailUrl: duplicateThumbnailUrl,
+          storageKey: null,
+          contentType: sourceImageAsset.contentType,
+          width: sourceImageAsset.width,
+          height: sourceImageAsset.height,
+          providerAssetId: sourceImageAsset.providerAssetId,
+          sourcePromptHash: sourceImageAsset.sourcePromptHash,
+          prompt: sourceImageAsset.prompt,
+          visibility: "private",
+          // A distinct asset must earn its own review decision. Reusing the
+          // source row's `passed`/platform approval would launder authority
+          // across owners even though the underlying bytes are shared.
+          safetyStatus: "unknown",
+          metadata: toInputJson({
+            ...retainedTechnicalMetadata,
+            source: "character_duplicate",
+            synthetic: false,
+            providerKey: backingKey,
+            blobLocator: {
+              schemaVersion: SHARED_IMMUTABLE_BLOB_LOCATOR_SCHEMA,
+              kind: "shared_immutable",
+              key: backingKey,
+              sourceAssetId: sourceImageAsset.id,
+            },
+            duplicateLineage: {
+              schemaVersion: 1,
+              sourceAssetId: sourceImageAsset.id,
+              sourceCharacterId: lockedSource.id,
+              sourceOwnerId: sourceImageAsset.ownerId,
+              duplicateCharacterId: created.id,
+              duplicatedByUserId: user.id,
+            },
+          }),
+        },
+      });
+      await tx.character.update({
+        where: { id: created.id },
+        data: { imageAssetId: duplicateImageAssetId },
+      });
+    }
+
+    await tx.characterStats.create({ data: { characterId: created.id } });
+    return tx.character.findUniqueOrThrow({ where: { id: created.id } });
   });
-  await prisma.characterStats.create({ data: { characterId: duplicate.id } });
   return ok({ character: duplicate });
 }
 
@@ -5549,13 +8546,31 @@ async function updateCharacter(request: Request, id: string) {
       visibility: z.enum(["private", "unlisted", "public"]).optional(),
     })
     .parse(await jsonBody(request));
-  const existing = await prisma.character.findFirst({ where: { id, creatorId: user.id } });
-  if (!existing) throw Errors.notFound("Character not found");
-
-  const nextName = body.name ?? existing.name;
-  const nextDescription = body.description ?? existing.description;
   const shouldRebuildPrompt = body.name !== undefined || body.description !== undefined;
   await prisma.$transaction(async (tx) => {
+    await lockCharacterGenerationAuthority(tx, id);
+    const existing = await tx.character.findFirst({
+      where: { id, creatorId: user.id, deletedAt: null },
+    });
+    if (!existing) throw Errors.notFound("Character not found");
+    const nextName = body.name ?? existing.name;
+    const nextDescription = body.description ?? existing.description;
+    const activeProfile = shouldRebuildPrompt
+      ? await tx.characterVisualProfile.findFirst({
+          where: { characterId: id, status: "active" },
+          orderBy: { version: "desc" },
+        })
+      : null;
+    await lockCharacterMediaAssetAuthorities(tx, [
+      ...(body.visibility === "public" && existing.imageAssetId
+        ? [existing.imageAssetId]
+        : []),
+      ...jsonStringArray(activeProfile?.anchorAssetIds),
+      ...jsonStringArray(activeProfile?.referenceAssetIds),
+    ]);
+    if (shouldRebuildPrompt) {
+      await assertCharacterIdentityAuthorityMutable(tx, id);
+    }
     if (body.visibility === "public" && existing.imageAssetId) {
       const imageAsset = await tx.mediaAsset.findFirst({
         where: {
@@ -5565,10 +8580,17 @@ async function updateCharacter(request: Request, id: string) {
         },
         select: {
           id: true,
+          characterId: true,
+          safetyStatus: true,
           metadata: true,
         },
       });
-      if (!imageAsset) {
+      if (
+        !imageAsset ||
+        imageAsset.characterId !== id ||
+        imageAsset.safetyStatus !== "passed" ||
+        !isMediaAssetOperationalForAuthority(imageAsset.metadata)
+      ) {
         throw Errors.badRequest("The character identity image is no longer available");
       }
       assertNonSyntheticMediaAsset(
@@ -5594,9 +8616,38 @@ async function updateCharacter(request: Request, id: string) {
             })
           : undefined,
         visibility: body.visibility,
-        status: body.visibility === "public" ? "pending_review" : undefined,
+        status: body.visibility === "public"
+          ? "pending_review"
+          : body.visibility && existing.status === "pending_review"
+            ? "approved"
+            : undefined,
       },
     });
+    if (body.visibility === "public") {
+      const pendingSubmission = await tx.characterSubmission.findFirst({
+        where: { characterId: updated.id, status: "pending" },
+        orderBy: [{ submittedAt: "desc" }, { id: "desc" }],
+        select: { id: true },
+      });
+      if (!pendingSubmission) {
+        await tx.characterSubmission.create({
+          data: {
+            characterId: updated.id,
+            submitterId: user.id,
+            status: "pending",
+          },
+        });
+      }
+    } else if (body.visibility && existing.status === "pending_review") {
+      await tx.characterSubmission.updateMany({
+        where: { characterId: updated.id, status: "pending" },
+        data: {
+          status: "rejected",
+          reviewReason: "withdrawn_by_submitter",
+          reviewedAt: new Date(),
+        },
+      });
+    }
     if (shouldRebuildPrompt) {
       await createActiveCharacterVisualProfileVersion(tx, updated, {
         createdFrom: "character_update",
@@ -5611,9 +8662,83 @@ async function archiveCharacter(request: Request, id: string) {
   const user = requireUser(ctx);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
-  await prisma.character.updateMany({
-    where: { id, creatorId: user.id },
-    data: { status: "archived", deletedAt: new Date() },
+  await prisma.$transaction(async (tx) => {
+    await lockCharacterGenerationAuthority(tx, id);
+    const character = await tx.character.findFirst({
+      where: { id, creatorId: user.id },
+      select: { id: true, imageAssetId: true },
+    });
+    if (!character) return;
+    const activeGeneration = await tx.generationJob.findFirst({
+      where: {
+        characterId: character.id,
+        status: { in: activeGenerationStatuses() },
+      },
+      select: { id: true, status: true },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    });
+    if (activeGeneration) {
+      throw Errors.conflict(
+        "Character cannot be archived while image or video generation is active",
+        {
+          characterId: character.id,
+          generationJobId: activeGeneration.id,
+          generationStatus: activeGeneration.status,
+        },
+      );
+    }
+    if (character.imageAssetId) {
+      await lockMediaAssetAuthority(tx, character.imageAssetId);
+    }
+    await tx.characterServing.updateMany({
+      where: { characterId: character.id },
+      data: {
+        state: "retired",
+        currentReleaseId: null,
+        scheduledReleaseId: null,
+        scheduledAt: null,
+        version: { increment: 1 },
+      },
+    });
+    await tx.characterSubmission.updateMany({
+      where: { characterId: character.id, status: "pending" },
+      data: {
+        status: "rejected",
+        reviewReason: "character_archived",
+        reviewedAt: new Date(),
+      },
+    });
+    await tx.character.update({
+      where: { id: character.id },
+      data: {
+        status: "archived",
+        deletedAt: new Date(),
+        imageAssetId: null,
+      },
+    });
+    const activeProjects = await tx.characterProject.findMany({
+      where: {
+        characterId: character.id,
+        activeKey: { not: null },
+        phase: { notIn: ["inactive", "retired"] },
+      },
+      select: { id: true, phase: true },
+    });
+    if (activeProjects.some((project) =>
+      !isCharacterProjectPhaseTransitionAllowed(project.phase, "retired")
+    )) {
+      throw Errors.conflict("Character Project cannot be retired from its current phase");
+    }
+    await tx.characterProject.updateMany({
+      where: {
+        id: { in: activeProjects.map((project) => project.id) },
+      },
+      data: {
+        phase: "retired",
+        activeKey: null,
+        version: { increment: 1 },
+      },
+    });
   });
   return ok({ archived: true });
 }
@@ -5638,10 +8763,24 @@ type CharacterWithPublicRelations = Prisma.CharacterGetPayload<{
   include: ReturnType<typeof characterInclude>;
 }>;
 
+function hasPublicListReleaseManifestAuthority(
+  character: CharacterWithPublicRelations,
+) {
+  const currentRelease = character.serving?.currentRelease ?? null;
+  if (!currentRelease) return false;
+  return currentRelease.legacy ||
+    parseCharacterReleaseAssetManifest(
+      currentRelease.releasePlacementManifest,
+    ) !== null;
+}
+
 function characterDTO(character: CharacterWithPublicRelations, viewerId?: string | null) {
   const visualProfile = character.visualProfiles[0] ?? null;
-  const fallbackImage = fallbackCharacterImage(character.id);
-  const creatorName = character.creator?.displayName ?? character.creator?.name ?? null;
+  const image = character.imageAsset?.url ?? missingCharacterImage;
+  const official = character.source === "official";
+  const creatorName = official
+    ? "Official"
+    : (character.creator?.displayName ?? character.creator?.name ?? null);
   return {
     id: character.id,
     name: character.name,
@@ -5650,17 +8789,23 @@ function characterDTO(character: CharacterWithPublicRelations, viewerId?: string
     description: character.description,
     visibility: character.visibility,
     status: character.status,
+    source: official ? "official" : "user",
+    creatorType: official ? "official" : "user",
     style: character.style,
     gender: character.gender,
     relationship: character.relationship,
-    creatorId: character.creatorId,
-    creator: creatorName ?? (character.source === "official" ? "@ourdream" : "Creator"),
+    creatorId: official ? null : character.creatorId,
+    creator: creatorName ?? "Creator",
     creatorName,
-    canEditIdentity: Boolean(viewerId && character.creatorId === viewerId),
-    image: character.imageAsset?.url ?? fallbackImage,
-    thumbnailUrl: character.imageAsset?.thumbnailUrl ?? character.imageAsset?.url ?? fallbackImage,
+    canEditIdentity: Boolean(!official && viewerId && character.creatorId === viewerId),
+    image,
+    imageAssetId: character.imageAsset?.id ?? null,
+    thumbnailUrl: character.imageAsset?.thumbnailUrl ?? image,
+    hasImage: Boolean(character.imageAsset?.url),
     likes: formatCount(character.stats?.likesCount ?? 0),
     chats: formatCount(character.stats?.chatsCount ?? 0),
+    likesCount: character.stats?.likesCount ?? 0,
+    chatsCount: character.stats?.chatsCount ?? 0,
     views: character.stats?.viewsCount ?? 0,
     vivid: character.vivid,
     liked: Array.isArray(character.likes) ? character.likes.length > 0 : false,
@@ -5670,12 +8815,53 @@ function characterDTO(character: CharacterWithPublicRelations, viewerId?: string
   };
 }
 
-function fallbackCharacterImage(characterId: string) {
-  let hash = 0;
-  for (let index = 0; index < characterId.length; index += 1) {
-    hash = (hash * 31 + characterId.charCodeAt(index)) >>> 0;
+async function characterDetailDTO(
+  character: CharacterWithPublicRelations,
+  viewerId?: string | null,
+) {
+  const base = characterDTO(character, viewerId);
+  const currentRelease = character.serving?.currentRelease ?? null;
+  if (
+    !currentRelease ||
+    currentRelease.legacy ||
+    currentRelease.status !== "published" ||
+    character.serving?.state !== "live"
+  ) {
+    return {
+      ...base,
+      currentReleaseId: currentRelease?.id ?? null,
+      heroImage: base.image,
+      heroThumbnailUrl: base.thumbnailUrl,
+      heroImageAssetId: base.imageAssetId,
+      imageAuthority: {
+        source: currentRelease?.legacy
+          ? "legacy_projection"
+          : "character_projection",
+        releaseId: currentRelease?.id ?? null,
+      },
+    };
   }
-  return fallbackCharacterImages[hash % fallbackCharacterImages.length];
+
+  const assetPack = await resolvePublicCharacterReleaseAssetPack(prisma, {
+    characterId: character.id,
+    imageAssetId: character.imageAssetId,
+    releasePlacementManifest: currentRelease.releasePlacementManifest,
+  });
+  if (!assetPack) throw Errors.notFound("Character not found");
+  const heroImage = assetPack.hero.storageKey
+    ? mediaViewUrl(assetPack.hero)
+    : assetPack.hero.url;
+  return {
+    ...base,
+    currentReleaseId: currentRelease.id,
+    heroImage,
+    heroThumbnailUrl: assetPack.hero.thumbnailUrl ?? heroImage,
+    heroImageAssetId: assetPack.hero.id,
+    imageAuthority: {
+      source: "release",
+      releaseId: currentRelease.id,
+    },
+  };
 }
 
 function userDTO(user: {
@@ -5808,19 +8994,19 @@ function mediaProvenanceDTO(sourceJob?: {
 }
 
 function mediaCollectionDTO(collection: MediaCollectionWithRelations) {
+  const official = collection.source === "official";
   return {
     id: collection.id,
     name: collection.name,
     visibility: collection.visibility,
-    ownerId: collection.ownerId,
-    ownerName: collection.owner.displayName ?? collection.owner.name,
+    source: official ? "official" : "user",
+    ownerType: official ? "official" : "user",
+    ownerId: official ? null : collection.ownerId,
+    ownerName: official
+      ? "Official collection"
+      : (collection.owner.displayName ?? collection.owner.name),
     itemCount: collection._count.items,
     previews: collection.items
-      .filter(({ mediaAsset }) => {
-        if (mediaAsset.deletedAt) return false;
-        if (mediaAsset.safetyStatus !== "passed") return false;
-        return mediaAsset.visibility === "public_pack" || mediaAsset.visibility === "unlisted";
-      })
       .map(({ mediaAsset }) =>
         mediaAsset.storageKey ? mediaViewUrl(mediaAsset) : (mediaAsset.thumbnailUrl ?? mediaAsset.url),
       )
@@ -5967,20 +9153,6 @@ function jsonRecord(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
 }
 
-function stringMetadata(record: Record<string, unknown>, key: string, max: number) {
-  const value = record[key];
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  return trimmed ? trimmed.slice(0, max) : null;
-}
-
-function publicCampaignHref(value: string | null) {
-  if (!value) return null;
-  if (value.startsWith("/")) return value;
-  if (/^https?:\/\//i.test(value)) return value;
-  return null;
-}
-
 function jsonStringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string")
@@ -5992,7 +9164,7 @@ function normalizeMutedTags(values: readonly string[]) {
 }
 
 async function mutedTagSlugsForUser(userId: string) {
-  const preferences = await ensurePreferences(userId);
+  const preferences = await readPreferences(userId);
   return normalizeMutedTags(jsonStringArray(preferences.mutedTags));
 }
 
@@ -6003,7 +9175,11 @@ function suggestRoutes(query: string, limit: number): SearchRouteSuggestion[] {
   const querySlug = slugify(query);
   const queryTerms = normalizedQuery.split(/\s+/).filter(Boolean);
   return ourdreamRoutePaths
-    .filter(isSearchableRouteSuggestionPath)
+    .filter(
+      (routePath) =>
+        isSearchableRouteSuggestionPath(routePath) &&
+        isPublicRouteDiscoverable(routePath),
+    )
     .map((routePath) => getOurdreamRoute(routePath))
     .filter((route): route is OurdreamRoute => Boolean(route))
     .map((route) => ({
@@ -6084,16 +9260,6 @@ function stringControl(
   return typeof value === "string" && value.trim() ? value : fallback;
 }
 
-function numericControl(
-  controls: Record<string, unknown>,
-  key: string,
-  fallback: number,
-) {
-  const value = controls[key];
-  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
-  return value;
-}
-
 function normalizeHeader(value: string | null) {
   const trimmed = value?.trim();
   return trimmed ? trimmed.slice(0, 160) : null;
@@ -6139,6 +9305,17 @@ function numberFromDb(value: number | bigint) {
   return typeof value === "bigint" ? Number(value) : value;
 }
 
+async function isCustomerEngagementActor(userId: string) {
+  const actor = await prisma.user.findFirst({
+    where: {
+      id: userId,
+      ...activeCustomerUserWhere,
+    },
+    select: { id: true },
+  });
+  return Boolean(actor);
+}
+
 async function assertDraftOwner(id: string, userId: string) {
   const draft = await prisma.characterDraft.findFirst({
     where: { id, ownerId: userId },
@@ -6153,7 +9330,7 @@ async function readableCharacter(id: string, userId: string) {
       id,
       deletedAt: null,
       OR: [
-        { visibility: "public", status: "approved" },
+        publicCharacterAudienceWhere,
         { creatorId: userId },
       ],
     },
@@ -6186,14 +9363,18 @@ async function assertMediaOwner(id: string, userId: string) {
 }
 
 async function findPublicReadableMediaAsset(id: string) {
-  return prisma.mediaAsset.findFirst({
+  const media = await prisma.mediaAsset.findFirst({
     where: {
-      id,
-      deletedAt: null,
-      visibility: "public_pack",
-      safetyStatus: { in: ["passed", "unknown"] },
+      AND: [
+        publicReadableMediaAssetWhere,
+        { id },
+      ],
     },
   });
+  return media &&
+      evaluateMediaAssetCustomerPublishability({ metadata: media.metadata }).publishable
+    ? media
+    : null;
 }
 
 async function assertReadableMediaAsset(id: string, userId: string) {
@@ -6203,24 +9384,82 @@ async function assertReadableMediaAsset(id: string, userId: string) {
       deletedAt: null,
       OR: [
         ...(isReusablePlatformAssetWhere(userId).OR ?? []),
-        {
-          visibility: "public_pack",
-          safetyStatus: { in: ["passed", "unknown"] },
-        },
+        publicReadableMediaAssetWhere,
       ],
     },
   });
-  if (!media) throw Errors.notFound("Media not found");
+  if (
+    !media ||
+    !isMediaAssetOperationalForAuthority(media.metadata) ||
+    isSyntheticMediaAsset(media.metadata)
+  ) {
+    throw Errors.notFound("Media not found");
+  }
   return media;
 }
 
 async function assertIdentityImageMedia(id: string, userId: string) {
   const asset = await assertMediaOwner(id, userId);
   if (asset.type !== "image") throw Errors.badRequest("Only image media can update character identity");
+  if (asset.safetyStatus !== "passed") {
+    throw Errors.conflict("Only safety-passed media can update Character authority");
+  }
+  if (!isMediaAssetOperationalForAuthority(asset.metadata)) {
+    throw Errors.conflict("Archived or rejected media cannot be used for Character authority");
+  }
   assertNonSyntheticMediaAsset(
     asset,
     "Synthetic media cannot update character identity",
   );
+  return asset;
+}
+
+async function assertIdentityImageMediaInTx(
+  tx: Prisma.TransactionClient,
+  id: string,
+  userId: string,
+) {
+  const asset = await tx.mediaAsset.findFirst({
+    where: { id, ownerId: userId, deletedAt: null },
+  });
+  if (!asset) throw Errors.notFound("Media not found");
+  if (asset.type !== "image") {
+    throw Errors.badRequest("Only image media can update character identity");
+  }
+  if (asset.safetyStatus !== "passed") {
+    throw Errors.conflict("Only safety-passed media can update Character authority");
+  }
+  if (!isMediaAssetOperationalForAuthority(asset.metadata)) {
+    throw Errors.conflict("Archived or rejected media cannot be used for Character authority");
+  }
+  assertNonSyntheticMediaAsset(
+    asset,
+    "Synthetic media cannot update character identity",
+  );
+  return asset;
+}
+
+async function assertIdentityImageMediaForCharacterInTx(
+  tx: Prisma.TransactionClient,
+  id: string,
+  userId: string,
+  characterId: string,
+  options: { readonly allowUnassigned: boolean },
+) {
+  const asset = await assertIdentityImageMediaInTx(tx, id, userId);
+  if (
+    asset.characterId !== characterId &&
+    !(options.allowUnassigned && asset.characterId === null)
+  ) {
+    throw Errors.conflict(
+      "Media already belongs to another Character. Clone it before using it for a different Character.",
+      {
+        mediaAssetId: asset.id,
+        mediaCharacterId: asset.characterId,
+        targetCharacterId: characterId,
+      },
+    );
+  }
   return asset;
 }
 
@@ -6232,6 +9471,32 @@ function assertNonSyntheticMediaAsset(
   throw Errors.badRequest(message, { mediaAssetId: asset.id });
 }
 
+function assertPublicCollectionMediaAsset(asset: {
+  id: string;
+  type: string;
+  url: string;
+  deletedAt: Date | null;
+  safetyStatus: string;
+  metadata: Prisma.JsonValue;
+}) {
+  assertNonSyntheticMediaAsset(
+    asset,
+    "Synthetic media cannot be published in a public collection",
+  );
+  if (
+    asset.deletedAt !== null ||
+    !["image", "video"].includes(asset.type) ||
+    !asset.url.trim() ||
+    asset.safetyStatus !== "passed" ||
+    !isMediaAssetOperationalForAuthority(asset.metadata)
+  ) {
+    throw Errors.badRequest(
+      "Public collections require available, reviewed media",
+      { mediaAssetId: asset.id },
+    );
+  }
+}
+
 async function assertIdentityTargetCharacter(characterId: string | null | undefined, userId: string) {
   if (!characterId) throw Errors.badRequest("Choose a character for this identity action");
   const character = await prisma.character.findFirst({
@@ -6241,39 +9506,99 @@ async function assertIdentityTargetCharacter(characterId: string | null | undefi
   return character;
 }
 
-async function ensureActiveVisualProfile(
-  character: GenerationPromptCharacter,
-  input: { anchorAssetId: string | null; createdFrom: string },
+async function assertIdentityTargetCharacterInTx(
+  tx: Prisma.TransactionClient,
+  characterId: string,
+  userId: string,
 ) {
-  const active = await prisma.characterVisualProfile.findFirst({
-    where: { characterId: character.id, status: "active" },
+  const character = await tx.character.findFirst({
+    where: { id: characterId, creatorId: userId, deletedAt: null },
+  });
+  if (!character) throw Errors.notFound("Owned character not found");
+  return character;
+}
+
+async function assertCharacterIdentityAuthorityMutable(
+  tx: Prisma.TransactionClient,
+  characterId: string,
+) {
+  const serving = await tx.characterServing.findUnique({
+    where: { characterId },
+    select: { currentReleaseId: true, scheduledReleaseId: true },
+  });
+  if (serving?.currentReleaseId || serving?.scheduledReleaseId) {
+    throw Errors.conflict(
+      "Withdraw or replace serving Character Release authority before changing Visual Identity or Reference Set",
+      {
+        currentReleaseId: serving.currentReleaseId,
+        scheduledReleaseId: serving.scheduledReleaseId,
+        deepLink: `/admin/characters/${characterId}?tab=release`,
+      },
+    );
+  }
+  const projects = await tx.characterProject.findMany({
+    where: { characterId },
+    select: { id: true },
+  });
+  if (projects.length === 0) return;
+  const activeRelease = await tx.characterRelease.findFirst({
+    where: {
+      projectId: { in: projects.map((project) => project.id) },
+      status: { in: ["draft", "validating", "in_review", "approved"] },
+    },
+    select: { id: true, status: true },
+  });
+  if (!activeRelease) return;
+  throw Errors.conflict(
+    "Withdraw or finish the active Character Release before changing Visual Identity or Reference Set authority",
+    {
+      releaseId: activeRelease.id,
+      releaseStatus: activeRelease.status,
+      deepLink: `/admin/characters/${characterId}?tab=release`,
+    },
+  );
+}
+
+async function assertCharacterDisplayImageMutable(
+  tx: Prisma.TransactionClient,
+  characterId: string,
+) {
+  const serving = await tx.characterServing.findUnique({
+    where: { characterId },
+    select: { currentReleaseId: true, scheduledReleaseId: true },
+  });
+  if (serving?.currentReleaseId || serving?.scheduledReleaseId) {
+    throw Errors.conflict(
+      "Release-managed Character display images must change through Character Assets and Release",
+      {
+        currentReleaseId: serving.currentReleaseId,
+        scheduledReleaseId: serving.scheduledReleaseId,
+        deepLink: `/admin/characters/${characterId}?tab=assets`,
+      },
+    );
+  }
+  await assertCharacterIdentityAuthorityMutable(tx, characterId);
+}
+
+async function requireActiveVisualProfileInTx(
+  tx: Prisma.TransactionClient,
+  characterId: string,
+) {
+  const active = await tx.characterVisualProfile.findFirst({
+    where: { characterId, status: "active" },
     orderBy: { version: "desc" },
   });
-  if (active) return active;
-  try {
-    return await prisma.characterVisualProfile.create({
-      data: characterVisualProfileCreateData({
-        characterId: character.id,
-        version: 1,
-        status: "active",
-        style: character.style ?? "realistic",
-        name: character.name,
-        age: character.age,
-        description: character.description,
-        gender: character.gender ?? "female",
-        appearance: character.appearance,
-        advancedDetails: character.advancedDetails,
-        anchorAssetIds: input.anchorAssetId ? [input.anchorAssetId] : [],
-        createdFrom: input.createdFrom,
-      }),
-    });
-  } catch (error) {
-    if (!isUniqueConstraintError(error)) throw error;
-    return prisma.characterVisualProfile.findFirstOrThrow({
-      where: { characterId: character.id, status: "active" },
-      orderBy: { version: "desc" },
-    });
+  if (!active) {
+    throw Errors.conflict(
+      "Establish a Character identity anchor before saving reusable Looks",
+    );
   }
+  if (jsonStringArray(active.anchorAssetIds).length === 0) {
+    throw Errors.conflict(
+      "Establish a Character identity anchor before saving reusable Looks",
+    );
+  }
+  return active;
 }
 
 function mediaMetadataWithQuality(
@@ -6494,6 +9819,10 @@ async function lockProviderEvent(tx: Prisma.TransactionClient, providerEventId: 
   await tx.$queryRaw`SELECT id FROM "provider_events" WHERE id = ${providerEventId} FOR UPDATE`;
 }
 
+async function lockCheckoutSession(tx: Prisma.TransactionClient, checkoutId: string) {
+  await tx.$queryRaw`SELECT id FROM "checkout_sessions" WHERE id = ${checkoutId} FOR UPDATE`;
+}
+
 async function failQueuedGeneration(
   job: { id: string; userId: string; costDreamcoins: number },
   errorCode: string,
@@ -6569,6 +9898,8 @@ async function enqueueGenerationJob(job: {
   id: string;
   userId: string;
   characterId: string | null;
+  visualProfileId: string | null;
+  visualProfileVersion: number | null;
   mode: string;
   prompt: string | null;
   negativePrompt: string | null;
@@ -6580,97 +9911,12 @@ async function enqueueGenerationJob(job: {
   orientation: string | null;
   outputCount: number;
   seed?: string | null;
+  sourceType?: string | null;
   referenceAssetIds?: Prisma.JsonValue | null;
+  referenceSetRevisionId?: string | null;
   referenceManifest?: Prisma.JsonValue | null;
 }) {
-  const attempt = await prisma.$transaction(async (tx) => {
-    const row = await tx.generationAttempt.upsert({
-      where: { requestId_attemptNo: { requestId: job.id, attemptNo: 1 } },
-      create: { requestId: job.id, attemptNo: 1, status: "queued" },
-      update: {},
-    });
-    await recordGenerationAttemptQueuedEvent(tx, row);
-    return row;
-  });
-  const controls = await internalGenerationControls(job);
-  const modelCapabilities = modelCapabilitiesFromControls(controls);
-  const referenceImages =
-    job.mode === "image" && (modelCapabilities.referenceImages || modelCapabilities.initImage)
-      ? filterReferenceImagesForCapabilities(
-          await imageReferenceInputsForGenerationJob({
-            userId: job.userId,
-            characterId: job.characterId,
-            controls,
-            referenceAssetIds: job.referenceAssetIds,
-            referenceManifest: job.referenceManifest,
-          }),
-          modelCapabilities,
-        )
-      : [];
-  const common = {
-    version: 1 as const,
-    requestId: cryptoRandomId("gen_req"),
-    generationJobId: job.id,
-    attemptId: attempt.id,
-    attemptNo: attempt.attemptNo,
-    userId: job.userId,
-    characterId: job.characterId,
-    prompt: job.prompt ?? `${job.mode === "video" ? "Video" : "Image"} generation ${job.id}`,
-    negativePrompt: job.negativePrompt,
-    controls,
-    seed: job.seed ?? job.id,
-    model: job.model ?? (job.mode === "video" ? "mock-video" : "mock-image"),
-    outputPrefix: `gen/${job.id}/`,
-  };
-  const payload: ImageGeneratePayload | VideoGeneratePayload =
-    job.mode === "video"
-      ? {
-          ...common,
-          kind: "video",
-          seconds: numericControl(controls, "seconds", 4),
-        }
-      : {
-          ...common,
-          kind: "image",
-          presetIds: jsonStringArray(job.presetIds),
-          orientation: job.orientation ?? stringControl(controls, "orientation", "4:5"),
-          count: job.outputCount,
-          ...(referenceImages.length > 0 ? { referenceImages } : {}),
-        };
-  await jobQueue.enqueue({
-    queue: job.mode === "video" ? "ai.video.generate" : "ai.image.generate",
-    payload: toInputJson(payload),
-    dedupeKey: `generation:${job.id}`,
-    maxAttempts: 3,
-  });
-}
-
-async function internalGenerationControls(job: {
-  controls: Prisma.JsonValue;
-  profileId: string | null;
-  profileVersion: number | null;
-}) {
-  const controls = jsonRecord(job.controls);
-  if (!job.profileId || !job.profileVersion) return controls;
-  const profile = await prisma.generationModelProfile.findFirst({
-    where: {
-      version: job.profileVersion,
-      OR: [{ profileKey: job.profileId }, { id: job.profileId }],
-    },
-  });
-  if (!profile) return controls;
-  const capabilities = generationModelCapabilities(profile.runner, profile.runnerConfig);
-  if (profile.runner !== "sd_cpp") {
-    return pruneUndefined({
-      ...controls,
-      modelCapabilities: capabilities,
-    });
-  }
-  return {
-    ...controls,
-    modelCapabilities: capabilities,
-    sdcpp: sdcppProfileRuntimeConfig(profile),
-  };
+  return enqueueGenerationAttempt(job);
 }
 
 function generationModelCapabilities(runner: string, runnerConfig: Prisma.JsonValue) {
@@ -6684,97 +9930,6 @@ function generationModelCapabilities(runner: string, runnerConfig: Prisma.JsonVa
     initImage: booleanFromRecord(capabilities, "initImage", initImageDefault),
     lora: booleanFromRecord(capabilities, "lora", false),
   };
-}
-
-function modelCapabilitiesFromControls(controls: Record<string, unknown>) {
-  const capabilities = jsonRecord(controls.modelCapabilities);
-  return {
-    textToImage: booleanFromRecord(capabilities, "textToImage", true),
-    stableSeed: booleanFromRecord(capabilities, "stableSeed", true),
-    referenceImages: booleanFromRecord(capabilities, "referenceImages", false),
-    initImage: booleanFromRecord(capabilities, "initImage", false),
-    lora: booleanFromRecord(capabilities, "lora", false),
-  };
-}
-
-function filterReferenceImagesForCapabilities(
-  images: Awaited<ReturnType<typeof imageReferenceInputsForGenerationJob>>,
-  capabilities: ReturnType<typeof modelCapabilitiesFromControls>,
-) {
-  return images.filter((image) => {
-    if (image.role === "source_image") return capabilities.initImage;
-    return capabilities.referenceImages;
-  });
-}
-
-function sdcppProfileRuntimeConfig(profile: {
-  profileKey: string;
-  version: number;
-  pipelineModel: string;
-  sourceModelPath: string | null;
-  convertedModelPath: string | null;
-  modelFormat: string;
-  runnerConfig: Prisma.JsonValue;
-  steps: number;
-  sampler: string;
-  scheduler: string;
-  cfgScale: number;
-  defaultWidth: number;
-  defaultHeight: number;
-}) {
-  const config = jsonRecord(profile.runnerConfig);
-  const conversion = jsonRecord(config.conversion);
-  return pruneUndefined({
-    profileKey: profile.profileKey,
-    profileVersion: profile.version,
-    apiModelId: profile.pipelineModel,
-    modelFormat: profile.modelFormat,
-    sourceModelPath: profile.sourceModelPath,
-    convertedModelPath: profile.convertedModelPath,
-    modelPath: stringFromRecord(config, "modelPath"),
-    diffusionModelPath: stringFromRecord(config, "diffusionModelPath"),
-    llmPath: stringFromRecord(config, "llmPath"),
-    vaePath: stringFromRecord(config, "vaePath"),
-    llmVisionPath: stringFromRecord(config, "llmVisionPath"),
-    clipLPath: stringFromRecord(config, "clipLPath"),
-    clipGPath: stringFromRecord(config, "clipGPath"),
-    t5xxlPath: stringFromRecord(config, "t5xxlPath"),
-    backend: stringFromRecord(config, "backend"),
-    loraModelDir: stringFromRecord(config, "loraModelDir"),
-    loraApplyMode: stringFromRecord(config, "loraApplyMode"),
-    loras: normalizeSdcppLoras(config.loras),
-    conversion: conversion.enabled === true ? pruneUndefined({
-      enabled: true,
-      targetFormat: "gguf",
-      outputPath: stringFromRecord(conversion, "outputPath") ?? profile.convertedModelPath,
-      type: stringFromRecord(conversion, "type") ?? "q8_0",
-      sourceArg: stringFromRecord(conversion, "sourceArg") ?? "model",
-      convertName: conversion.convertName === true,
-      tensorTypeRules: stringFromRecord(conversion, "tensorTypeRules"),
-    }) : undefined,
-    steps: profile.steps,
-    sampler: profile.sampler,
-    scheduler: profile.scheduler,
-    cfgScale: profile.cfgScale,
-    defaultWidth: profile.defaultWidth,
-    defaultHeight: profile.defaultHeight,
-  });
-}
-
-function normalizeSdcppLoras(value: unknown) {
-  if (!Array.isArray(value)) return undefined;
-  const loras = value
-    .filter(isRecord)
-    .map((item) =>
-      pruneUndefined({
-        key: stringFromRecord(item, "key"),
-        path: stringFromRecord(item, "path"),
-        weight: typeof item.weight === "number" && Number.isFinite(item.weight) ? item.weight : 1,
-        enabled: item.enabled !== false,
-      }),
-    )
-    .filter((item) => typeof item.key === "string" || typeof item.path === "string");
-  return loras.length ? loras : undefined;
 }
 
 function stringFromRecord(value: Record<string, unknown>, key: string) {
@@ -6820,7 +9975,182 @@ async function generationCost(mode: "image" | "video", outputCount: number, mult
   return generationCostDreamcoins(mode, outputCount, multiplier);
 }
 
-async function selectGenerationProfile(mode: "image" | "video", requested?: string) {
+type GenerationReferenceRouteRequirement = {
+  readonly assetId: string;
+  readonly role: "identity_anchor" | "identity_reference";
+};
+
+type GenerationReferenceProfile = {
+  readonly profileKey: string;
+  readonly version: number;
+  readonly runner: string;
+  readonly runnerConfig: Prisma.JsonValue | null;
+  readonly workflowKey: string | null;
+  readonly pipelineModel: string;
+};
+
+async function generationReferenceRouteRequirements(
+  visualProfileId: string,
+): Promise<GenerationReferenceRouteRequirement[]> {
+  const revision = await prisma.referenceSetRevision.findFirst({
+    where: { visualProfileId, status: "active" },
+    orderBy: { revision: "desc" },
+    select: {
+      references: {
+        orderBy: { position: "asc" },
+        select: { mediaAssetId: true, role: true },
+      },
+    },
+  });
+  return revision?.references.map((reference) => ({
+    assetId: reference.mediaAssetId,
+    role: normalizedGenerationReferenceRole(reference.role),
+  })) ?? [];
+}
+
+function generationRequirementsFromManifest(
+  value: unknown,
+): GenerationReferenceRouteRequirement[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    const record = jsonRecord(entry);
+    const assetId = stringFromRecord(record, "mediaAssetId");
+    const role = stringFromRecord(record, "role");
+    if (
+      !assetId ||
+      !role ||
+      role === "source_image" ||
+      role === "look_reference"
+    ) {
+      return [];
+    }
+    return [{
+      assetId,
+      role: normalizedGenerationReferenceRole(role),
+    }];
+  });
+}
+
+function normalizedGenerationReferenceRole(
+  role: string,
+): GenerationReferenceRouteRequirement["role"] {
+  return role === "primary_face" || role === "identity_anchor"
+    ? "identity_anchor"
+    : "identity_reference";
+}
+
+function generationProfileReferenceIncompatibilities(input: {
+  readonly profile: GenerationReferenceProfile;
+  readonly workflowDescriptor: Awaited<ReturnType<typeof generationWorkflowDescriptor>>;
+  readonly pinnedReferences: readonly GenerationReferenceRouteRequirement[];
+  readonly sourceImageAssetId: string | null;
+  readonly lookReferenceAssetId: string | null;
+}) {
+  const capabilities = generationModelCapabilities(
+    input.profile.runner,
+    input.profile.runnerConfig ?? {},
+  );
+  const reasons: string[] = [];
+  if (
+    (
+      input.pinnedReferences.length > 0 ||
+      input.lookReferenceAssetId
+    ) &&
+    !capabilities.referenceImages
+  ) {
+    reasons.push("profile_reference_images_unsupported");
+  }
+  if (input.sourceImageAssetId && !capabilities.initImage) {
+    reasons.push("profile_source_image_unsupported");
+  }
+  const workflow = input.workflowDescriptor;
+  const requiredRoles = [
+    ...input.pinnedReferences.map((reference) => reference.role),
+    ...(input.lookReferenceAssetId ? ["look_reference" as const] : []),
+    ...(input.sourceImageAssetId ? ["source_image" as const] : []),
+  ];
+  if (!workflow && requiredRoles.length > 0) {
+    reasons.push("workflow_descriptor_missing");
+  }
+  if (workflow) {
+    if (
+      requiredRoles.length > 0 &&
+      (
+        !workflow.capabilities.includes("referenceImages") ||
+        workflow.identity.mode === "none"
+      )
+    ) {
+      reasons.push("workflow_reference_images_unsupported");
+    }
+    const acceptedRoles = new Set(workflow.identity.acceptedRoles);
+    if (
+      acceptedRoles.size > 0 &&
+      requiredRoles.some((role) => !acceptedRoles.has(role))
+    ) {
+      reasons.push("workflow_reference_role_unsupported");
+    }
+    const slotAuthority = assignWorkflowReferenceSlots(
+      workflow,
+      requiredRoles,
+    );
+    if (!slotAuthority.ok) {
+      reasons.push(
+        slotAuthority.reason === "reference_cardinality_mismatch"
+          ? "workflow_reference_cardinality_mismatch"
+          : "workflow_reference_slot_assignment_unsupported",
+      );
+    }
+    if (
+      input.lookReferenceAssetId &&
+      !workflow.identity.supportsLookReference
+    ) {
+      reasons.push("workflow_look_reference_unsupported");
+    }
+    if (
+      input.sourceImageAssetId &&
+      (
+        input.pinnedReferences.length > 0 ||
+        Boolean(input.lookReferenceAssetId)
+      ) &&
+      !workflow.identity.supportsSourceImageWithIdentity
+    ) {
+      reasons.push("workflow_source_with_identity_unsupported");
+    }
+  }
+  return [...new Set(reasons)];
+}
+
+function assertGenerationProfileCanDispatchReferences(input: {
+  readonly profile: GenerationReferenceProfile;
+  readonly workflowDescriptor: Awaited<ReturnType<typeof generationWorkflowDescriptor>>;
+  readonly pinnedReferences: readonly GenerationReferenceRouteRequirement[];
+  readonly sourceImageAssetId: string | null;
+  readonly lookReferenceAssetId: string | null;
+}) {
+  const incompatibilities = generationProfileReferenceIncompatibilities(input);
+  if (incompatibilities.length === 0) return;
+  throw Errors.conflict(
+    "Selected generation profile cannot preserve the complete pinned Character reference authority",
+    {
+      profileId: input.profile.profileKey,
+      profileVersion: input.profile.version,
+      pinnedReferenceAssetIds: input.pinnedReferences.map((reference) => reference.assetId),
+      sourceImageAssetId: input.sourceImageAssetId,
+      lookReferenceAssetId: input.lookReferenceAssetId,
+      incompatibilities,
+    },
+  );
+}
+
+async function selectGenerationProfile(
+  mode: "image" | "video",
+  requested?: string,
+  referenceRequirements?: {
+    readonly pinnedReferences: readonly GenerationReferenceRouteRequirement[];
+    readonly sourceImageAssetId: string | null;
+    readonly lookReferenceAssetId: string | null;
+  },
+) {
   const where: Prisma.GenerationModelProfileWhereInput = {
     mode,
     status: "active",
@@ -6829,20 +10159,62 @@ async function selectGenerationProfile(mode: "image" | "video", requested?: stri
       ? [{ profileKey: requested }, { id: requested }, { pipelineModel: requested }]
       : undefined,
   };
-  const requestedProfile = requested
-    ? await prisma.generationModelProfile.findFirst({
-        where,
-        orderBy: { version: "desc" },
-      })
-    : null;
-  const fallbackProfile =
-    requestedProfile ??
-    (await prisma.generationModelProfile.findFirst({
-      where: { mode, status: "active", enabled: true },
-      orderBy: [{ costMultiplier: "asc" }, { version: "desc" }],
-    }));
+  const candidates = (
+    await prisma.generationModelProfile.findMany({
+      where,
+      orderBy: requested
+        ? [{ version: "desc" }]
+        : [{ costMultiplier: "asc" }, { version: "desc" }],
+    })
+  ).filter(isExecutableGenerationProfile);
+  if (referenceRequirements) {
+    for (const candidate of candidates) {
+      const workflowDescriptor = await generationWorkflowDescriptor(
+        candidate.workflowKey ?? candidate.pipelineModel,
+      );
+      if (
+        generationProfileReferenceIncompatibilities({
+          profile: candidate,
+          workflowDescriptor,
+          ...referenceRequirements,
+        }).length === 0
+      ) {
+        return candidate;
+      }
+    }
+    if (candidates.length === 0 && !requested) {
+      throw Errors.unavailable(
+        "No active generation model profile is configured",
+        { mode, reason: "no_active_model" },
+      );
+    }
+    throw Errors.conflict(
+      requested
+        ? "The selected generation profile cannot preserve pinned Character references"
+        : "No active generation profile can preserve pinned Character references",
+      {
+        requestedProfile: requested ?? null,
+        pinnedReferenceAssetIds: referenceRequirements.pinnedReferences.map(
+          (reference) => reference.assetId,
+        ),
+        sourceImageAssetId: referenceRequirements.sourceImageAssetId,
+        lookReferenceAssetId: referenceRequirements.lookReferenceAssetId,
+      },
+    );
+  }
+  const requestedProfile = requested ? candidates[0] : null;
+  if (requested && !requestedProfile) {
+    throw Errors.conflict("Requested generation profile is unavailable", {
+      mode,
+      requestedProfile: requested,
+    });
+  }
+  const fallbackProfile = requestedProfile ?? candidates[0];
   if (!fallbackProfile) {
-    throw Errors.internal("No active generation model profile is configured", { mode });
+    throw Errors.unavailable(
+      "No active generation model profile is configured",
+      { mode, reason: "no_active_model" },
+    );
   }
   return fallbackProfile;
 }
@@ -6853,14 +10225,81 @@ async function selectRecipe(mode: "image" | "video", useCase: "character" | "fre
     orderBy: { version: "desc" },
   });
   if (!recipe) {
-    throw Errors.internal("No active generation prompt template is configured", { mode, useCase });
+    throw Errors.unavailable(
+      "No active generation prompt recipe is configured",
+      { mode, useCase, reason: "no_active_recipe" },
+    );
   }
   return recipe;
 }
 
 async function featureFlagEnabled(key: string) {
-  const flag = await prisma.featureFlag.findUnique({ where: { key } });
-  return Boolean(flag?.enabled);
+  const flag = await prisma.featureFlag.findUnique({
+    where: { key },
+    select: { enabled: true, rolloutPercent: true },
+  });
+  if (!flag?.enabled || flag.rolloutPercent !== 100) return false;
+  // Main has no production video adapter by design yet. Even an accidental
+  // operator flag change must not expose or execute the local mock provider.
+  if (key === "video_gen" && env.APP_ENV === "production") return false;
+  return true;
+}
+
+type PublicOfferAvailability = {
+  readonly videoGeneration: boolean;
+};
+
+async function publicOfferAvailability(): Promise<PublicOfferAvailability> {
+  const now = new Date();
+  const [videoEnabled, videoProfiles, videoRecipes, videoPricing] = await Promise.all([
+    featureFlagEnabled("video_gen"),
+    prisma.generationModelProfile.findMany({
+      where: { mode: "video", status: "active", enabled: true },
+      select: {
+        allowedOrientations: true,
+        maxCount: true,
+        rolloutPercent: true,
+      },
+    }),
+    prisma.generationRecipe.findMany({
+      where: { mode: "video", status: "active" },
+      select: { useCase: true },
+    }),
+    prisma.pricingRule.findMany({
+      where: {
+        mode: "video",
+        status: "active",
+        OR: [{ effectiveFrom: null }, { effectiveFrom: { lte: now } }],
+      },
+      select: { id: true },
+      take: 2,
+    }),
+  ]);
+
+  return {
+    videoGeneration:
+      videoEnabled &&
+      videoProfiles.some(isExecutableGenerationProfile) &&
+      hasCompleteGenerationRecipeSet(videoRecipes) &&
+      videoPricing.length === 1,
+  };
+}
+
+function publicFeatureProjection(
+  value: unknown,
+  availability: PublicOfferAvailability,
+) {
+  const features =
+    typeof value === "object" && value !== null && !Array.isArray(value)
+      ? { ...(value as Record<string, unknown>) }
+      : {};
+
+  if (!availability.videoGeneration) {
+    if ("videoGeneration" in features) features.videoGeneration = false;
+    if ("video_generation" in features) features.video_generation = false;
+  }
+
+  return features;
 }
 
 function profileConfigDTO(profile: {
@@ -6884,7 +10323,7 @@ function profileConfigDTO(profile: {
     rowId: profile.id,
     version: profile.version,
     mode: profile.mode,
-    orientations: jsonStringArray(profile.allowedOrientations),
+    orientations: supportedProfileOrientations(profile.allowedOrientations),
     defaultWidth: profile.defaultWidth,
     defaultHeight: profile.defaultHeight,
     costMultiplier: profile.costMultiplier,
@@ -6892,6 +10331,28 @@ function profileConfigDTO(profile: {
     maxCount: profile.maxCount,
     rolloutPercent: profile.rolloutPercent,
   };
+}
+
+function supportedProfileOrientations(value: Prisma.JsonValue) {
+  return jsonStringArray(value).filter(
+    (orientation) =>
+      imageOrientations.includes(
+        orientation as (typeof imageOrientations)[number],
+      ),
+  );
+}
+
+function isExecutableGenerationProfile(profile: {
+  readonly allowedOrientations: Prisma.JsonValue;
+  readonly maxCount: number;
+  readonly rolloutPercent: number;
+}) {
+  return (
+    profile.rolloutPercent === 100 &&
+    profile.maxCount >= 1 &&
+    profile.maxCount <= 8 &&
+    supportedProfileOrientations(profile.allowedOrientations).length > 0
+  );
 }
 
 function recipeConfigDTO(recipe: {
@@ -6910,6 +10371,13 @@ function recipeConfigDTO(recipe: {
     useCase: recipe.useCase,
     version: recipe.version,
   };
+}
+
+function hasCompleteGenerationRecipeSet(
+  recipes: ReadonlyArray<{ readonly useCase: string }>,
+) {
+  const useCases = new Set(recipes.map((recipe) => recipe.useCase));
+  return useCases.has("character") && useCases.has("freeplay");
 }
 
 async function entitlementMap(userId: string) {
@@ -6948,6 +10416,204 @@ async function entitlementMap(userId: string) {
 
   for (const entitlement of entitlements) map[entitlement.key] = entitlement.value;
   return map;
+}
+
+type PublicSubscriptionSource = {
+  id: string;
+  userId: string;
+  planId: string;
+  provider: string;
+  providerSubscriptionId: string | null;
+  status: string;
+  currentPeriodEnd: Date | null;
+  cancelAtPeriodEnd: boolean;
+};
+
+async function publicSubscriptionDTO(subscription: PublicSubscriptionSource) {
+  const checkout = subscription.providerSubscriptionId
+    ? await prisma.checkoutSession.findUnique({
+        where: {
+          provider_providerSessionId: {
+            provider: subscription.provider,
+            providerSessionId: subscription.providerSubscriptionId,
+          },
+        },
+        select: { offerSnapshot: true, planId: true },
+      })
+    : null;
+  const offerSnapshot = checkoutOfferSnapshotSchema.safeParse(
+    checkout?.offerSnapshot,
+  );
+  const authoritativeOffer =
+    offerSnapshot.success &&
+    offerSnapshot.data.planId === subscription.planId &&
+    checkout?.planId === subscription.planId
+      ? offerSnapshot.data
+      : null;
+  const availability = authoritativeOffer
+    ? await publicOfferAvailability()
+    : null;
+  return {
+    id: subscription.id,
+    userId: subscription.userId,
+    planId: subscription.planId,
+    status: subscription.status,
+    offerAuthority: authoritativeOffer
+      ? "checkout_snapshot"
+      : "unavailable",
+    plan: authoritativeOffer
+      ? {
+          id: authoritativeOffer.planId,
+          slug: authoritativeOffer.slug,
+          name: authoritativeOffer.name,
+          billingPeriod: authoritativeOffer.billingPeriod,
+          priceCents: authoritativeOffer.priceCents,
+          includedDreamcoins: authoritativeOffer.includedDreamcoins,
+          features: publicFeatureProjection(
+            authoritativeOffer.features,
+            availability ?? { videoGeneration: false },
+          ),
+        }
+      : null,
+  };
+}
+
+function billingAccessDTO(subscription: PublicSubscriptionSource) {
+  const capabilities = paymentProviderCapabilities(subscription.provider);
+  const benefitsEndAt =
+    subscription.currentPeriodEnd?.toISOString() ?? null;
+  return {
+    provider: subscription.provider,
+    ...capabilities,
+    benefitsEndAt,
+    renewsAt:
+      capabilities.billingModel === "recurring" &&
+      !subscription.cancelAtPeriodEnd
+        ? benefitsEndAt
+        : null,
+  };
+}
+
+function assertRenewalMutationSupported(
+  subscription: Pick<PublicSubscriptionSource, "provider">,
+) {
+  const capabilities = paymentProviderCapabilities(subscription.provider);
+  if (capabilities.renewalCapability === "cancel_resume") return;
+  throw Errors.conflict(
+    capabilities.billingModel === "prepaid_period"
+      ? "This access is prepaid and does not renew automatically."
+      : "Renewal changes are not supported for this billing provider.",
+    {
+      code: "renewal_not_supported",
+      ...capabilities,
+    },
+  );
+}
+
+async function assertNoActiveSamePlanAccessInTx(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  planId: string,
+  now: Date,
+) {
+  await expireEndedSubscriptionsInTx(tx, userId, now);
+  const activeSamePlan = await tx.subscription.findFirst({
+    where: {
+      ...activeSubscriptionWhere(userId, now),
+      planId,
+    },
+    orderBy: [{ currentPeriodEnd: "desc" }, { createdAt: "desc" }],
+  });
+  if (!activeSamePlan) return;
+
+  const capabilities = paymentProviderCapabilities(activeSamePlan.provider);
+  throw Errors.conflict(
+    capabilities.billingModel === "prepaid_period"
+      ? "This prepaid plan is already active. Buy it again after the current access period ends."
+      : "This plan is already active.",
+    {
+      code: "active_prepaid_access_exists",
+      idempotencyAction: "new_key",
+      billingModel: capabilities.billingModel,
+      renewalCapability: capabilities.renewalCapability,
+      benefitsEndAt: activeSamePlan.currentPeriodEnd?.toISOString() ?? null,
+    },
+  );
+}
+
+async function activeSamePlanProviderDispatchInTx(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  planId: string,
+  excludedCheckoutId: string,
+  now: Date,
+) {
+  return tx.checkoutSession.findFirst({
+    where: {
+      id: { not: excludedCheckoutId },
+      userId,
+      planId,
+      status: "provider_dispatching",
+      providerSessionId: null,
+      providerAttemptedAt: { not: null },
+      dispatchToken: { not: null },
+      dispatchLeaseUntil: { gt: now },
+    },
+    select: {
+      id: true,
+      dispatchLeaseUntil: true,
+    },
+  });
+}
+
+async function expireEndedSubscriptionsInTx(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  now: Date,
+) {
+  const ended = await tx.subscription.findMany({
+    where: {
+      userId,
+      status: "active",
+      currentPeriodEnd: { lte: now },
+    },
+    select: { id: true, userId: true },
+  });
+  if (ended.length === 0) return;
+
+  const endedIds = ended.map((subscription) => subscription.id);
+  await tx.subscription.updateMany({
+    where: {
+      id: { in: endedIds },
+      status: "active",
+      currentPeriodEnd: { lte: now },
+    },
+    data: {
+      status: "expired",
+      cancelAtPeriodEnd: false,
+    },
+  });
+  await tx.entitlement.deleteMany({
+    where: {
+      userId,
+      source: "subscription",
+      expiresAt: { lte: now },
+    },
+  });
+  for (const subscription of ended) {
+    await appendCanonicalMetricEvent(tx, {
+      sourceEventId: `subscription:${subscription.id}:ended:period_expired`,
+      eventType: METRIC_PRODUCT_EVENTS.subscriptionEnded,
+      occurredAt: now,
+      userId: subscription.userId,
+      context: { source: "checkout_expiry_reconciliation" },
+      payload: {
+        subscriptionId: subscription.id,
+        userId: subscription.userId,
+        reason: "period_expired",
+      },
+    });
+  }
 }
 
 function activeSubscriptionWhere(userId: string, now = new Date()): Prisma.SubscriptionWhereInput {
@@ -6992,81 +10658,231 @@ async function findPlan(input: z.infer<typeof checkoutSchema>) {
   return plan;
 }
 
-async function activateSubscription(userId: string, planId: string, providerSubscriptionId: string) {
-  return prisma.$transaction((tx) => activateSubscriptionInTx(tx, userId, planId, providerSubscriptionId));
-}
-
 async function activateSubscriptionInTx(
   tx: Prisma.TransactionClient,
   userId: string,
   planId: string,
   providerSubscriptionId: string,
+  provider: string,
+  offerSnapshot: z.infer<typeof checkoutOfferSnapshotSchema>,
+  purchaseAuthority: {
+    checkoutId: string;
+    createdAt: Date;
+  },
 ) {
-  const plan = await tx.plan.findUniqueOrThrow({ where: { id: planId } });
-  // SPEC: one active subscription per (user, plan). Checkout auto-confirm and the
-  // billing webhook can both fire for the same purchase (and the demo auto-confirm
-  // is replayable), so re-activation must be a no-op rather than stacking subs or
-  // re-minting included dreamcoins. The ledger grant below is also keyed on the
-  // provider invoice id as a second line of defense against concurrent races.
-  await lockUserLedger(tx, userId);
-  const existing = await tx.subscription.findFirst({
-    where: { userId, planId, status: "active" },
-  });
-  if (existing) {
-    await syncSubscriptionEntitlements(tx, userId, plan, existing.currentPeriodEnd);
-    return { subscription: existing, created: false };
+  if (offerSnapshot.planId !== planId) {
+    throw Errors.conflict("Checkout offer snapshot does not match its plan");
   }
-  // SPEC: one active subscription per USER. Re-activating the SAME plan is the no-op above;
-  // switching to a DIFFERENT plan must SUPERSEDE the prior one, not stack a second active
-  // sub. Without this, both subs keep renewing (each re-granting its includedDreamcoins) and
-  // entitlementMap max-merges both tiers, so the old tier's exclusive perks linger. Cancel
-  // any other active sub and drop its subscription-sourced entitlements; the new plan's
-  // syncSubscriptionEntitlements below re-establishes the authoritative set.
-  const superseded = await tx.subscription.findMany({
-    where: { userId, status: "active", planId: { not: planId } },
-    select: { id: true, userId: true },
+  const entitlementPlan = {
+    slug: offerSnapshot.slug,
+    billingPeriod: offerSnapshot.billingPeriod,
+    features: offerSnapshot.features as Prisma.JsonValue,
+  };
+  const includedDreamcoins = offerSnapshot.includedDreamcoins;
+  // A payment replay is identified by the provider invoice, never merely by plan.
+  // Distinct settled invoices are distinct purchases and must not be silently
+  // discarded as a same-plan replay.
+  await lockUserLedger(tx, userId);
+  const competingDispatch = await activeSamePlanProviderDispatchInTx(
+    tx,
+    userId,
+    planId,
+    purchaseAuthority.checkoutId,
+    new Date(),
+  );
+  if (competingDispatch) {
+    return {
+      subscription: null,
+      created: false,
+      reconciliationRequired: false,
+      settlementDeferred: true,
+      deferredByCheckoutId: competingDispatch.id,
+    } as const;
+  }
+  const replay = await tx.subscription.findFirst({
+    where: {
+      provider,
+      providerSubscriptionId,
+    },
   });
-  const endedAt = new Date();
+  if (replay) {
+    if (replay.userId !== userId || replay.planId !== planId) {
+      throw Errors.conflict(
+        "The provider invoice is already bound to different billing authority.",
+        { provider, providerSubscriptionId },
+      );
+    }
+    if (replay.status === "active") {
+      await syncSubscriptionEntitlements(
+        tx,
+        userId,
+        entitlementPlan,
+        replay.currentPeriodEnd,
+      );
+    }
+    return {
+      subscription: replay,
+      created: false,
+      reconciliationRequired: false,
+      settlementDeferred: false,
+    } as const;
+  }
+
+  const now = new Date();
+  await expireEndedSubscriptionsInTx(tx, userId, now);
+  const superseded = await tx.subscription.findMany({
+    where: activeSubscriptionWhere(userId, now),
+    select: {
+      id: true,
+      userId: true,
+      planId: true,
+      provider: true,
+      providerSubscriptionId: true,
+      currentPeriodEnd: true,
+    },
+  });
+  const activePurchaseAuthority = await resolveActivePurchaseOrderAuthority(
+    tx,
+    superseded,
+    purchaseAuthority,
+  );
+  if (activePurchaseAuthority.kind === "unavailable") {
+    return {
+      subscription: null,
+      created: false,
+      reconciliationRequired: true,
+      reconciliationReason: "active_purchase_authority_unavailable",
+      settlementDeferred: false,
+    } as const;
+  }
+  const billingPeriod = offerSnapshot.billingPeriod;
+  if (billingPeriod !== "monthly" && billingPeriod !== "yearly") {
+    throw Errors.conflict("Plan billing period is not supported");
+  }
+
+  if (activePurchaseAuthority.kind === "newer") {
+    const newerAccess = activePurchaseAuthority.subscription;
+    const convertedAccess = convertedPrepaidAccessEnd({
+      currentOffer: offerSnapshot,
+      newerOffer: activePurchaseAuthority.offerSnapshot,
+      newerAccessEnd: newerAccess.currentPeriodEnd,
+      now,
+    });
+    if (!convertedAccess.ok) {
+      return {
+        subscription: null,
+        created: false,
+        reconciliationRequired: true,
+        reconciliationReason: "prepaid_value_conversion_unavailable",
+        settlementDeferred: false,
+      } as const;
+    }
+    const extendedEnd = convertedAccess.currentPeriodEnd;
+    const preserved = await tx.subscription.update({
+      where: { id: newerAccess.id },
+      data: { currentPeriodEnd: extendedEnd },
+    });
+    await tx.entitlement.updateMany({
+      where: { userId, source: "subscription" },
+      data: { expiresAt: extendedEnd },
+    });
+    const appliedPurchase = await tx.subscription.create({
+      data: {
+        userId,
+        planId,
+        provider,
+        providerSubscriptionId,
+        status: "checkout_completed",
+        currentPeriodEnd: extendedEnd,
+      },
+    });
+    await appendLedger(
+      tx,
+      userId,
+      includedDreamcoins,
+      "subscription_grant",
+      appliedPurchase.id,
+      `subscription:grant:${provider}:${providerSubscriptionId}`,
+    );
+    await appendCanonicalMetricEvent(tx, {
+      sourceEventId: `subscription:${appliedPurchase.id}:activated`,
+      eventType: METRIC_PRODUCT_EVENTS.subscriptionActivated,
+      occurredAt: appliedPurchase.createdAt,
+      userId,
+      context: {
+        providerSubscriptionId,
+        source: "late_purchase_applied_to_newer_access",
+        activeSubscriptionId: preserved.id,
+      },
+      payload: {
+        subscriptionId: appliedPurchase.id,
+        userId,
+        planId,
+      },
+    });
+    return {
+      subscription: preserved,
+      created: true,
+      reconciliationRequired: false,
+      settlementDeferred: false,
+    } as const;
+  }
+
+  const samePlanAccess = superseded.find(
+    (subscription) => subscription.planId === planId,
+  );
   const supersededCount = await tx.subscription.updateMany({
-    where: { userId, status: "active", planId: { not: planId } },
+    where: activeSubscriptionWhere(userId, now),
     data: { status: "canceled", cancelAtPeriodEnd: false },
   });
   if (supersededCount.count > 0) {
     await tx.entitlement.deleteMany({ where: { userId, source: "subscription" } });
     for (const previous of superseded) {
+      const samePlanPurchase = previous.planId === planId;
       await appendCanonicalMetricEvent(tx, {
         sourceEventId: `subscription:${previous.id}:ended:${providerSubscriptionId}`,
         eventType: METRIC_PRODUCT_EVENTS.subscriptionEnded,
-        occurredAt: endedAt,
+        occurredAt: now,
         userId: previous.userId,
-        context: { source: "plan_switch" },
+        context: {
+          source: samePlanPurchase
+            ? "new_prepaid_period"
+            : "plan_switch",
+        },
         payload: {
           subscriptionId: previous.id,
           userId: previous.userId,
-          reason: "superseded_by_plan_switch",
+          reason: samePlanPurchase
+            ? "superseded_by_new_prepaid_period"
+            : "superseded_by_plan_switch",
         },
       });
     }
   }
-  const currentPeriodEnd = new Date(Date.now() + 1000 * 60 * 60 * 24 * 30);
+  const periodStartsAt =
+    samePlanAccess?.currentPeriodEnd &&
+    samePlanAccess.currentPeriodEnd > now
+      ? samePlanAccess.currentPeriodEnd
+      : now;
+  const currentPeriodEnd = billingPeriodEnd(periodStartsAt, billingPeriod);
   const subscription = await tx.subscription.create({
     data: {
       userId,
       planId,
-      provider: "mock",
+      provider,
       providerSubscriptionId,
       status: "active",
       currentPeriodEnd,
     },
   });
-  await syncSubscriptionEntitlements(tx, userId, plan, currentPeriodEnd);
+  await syncSubscriptionEntitlements(tx, userId, entitlementPlan, currentPeriodEnd);
   await appendLedger(
     tx,
     userId,
-    plan.includedDreamcoins,
+    includedDreamcoins,
     "subscription_grant",
     subscription.id,
-    `subscription:grant:${providerSubscriptionId}`,
+    `subscription:grant:${provider}:${providerSubscriptionId}`,
   );
   await appendCanonicalMetricEvent(tx, {
     sourceEventId: `subscription:${subscription.id}:activated`,
@@ -7076,7 +10892,168 @@ async function activateSubscriptionInTx(
     context: { providerSubscriptionId },
     payload: { subscriptionId: subscription.id, userId, planId },
   });
-  return { subscription, created: true };
+  return {
+    subscription,
+    created: true,
+    reconciliationRequired: false,
+    settlementDeferred: false,
+  } as const;
+}
+
+async function resolveActivePurchaseOrderAuthority(
+  tx: Prisma.TransactionClient,
+  activeSubscriptions: readonly {
+    id: string;
+    userId: string;
+    planId: string;
+    provider: string;
+    providerSubscriptionId: string | null;
+    currentPeriodEnd: Date | null;
+  }[],
+  currentPurchase: {
+    checkoutId: string;
+    createdAt: Date;
+  },
+) {
+  // Provider delivery order is nondeterministic. The durable checkout intent is
+  // the purchase-order authority: createdAt orders intents, with id as the
+  // stable tie-breaker for the rare equal-timestamp case.
+  if (activeSubscriptions.length === 0) return { kind: "none" } as const;
+  const providerPurchases = activeSubscriptions.filter(
+    (
+      subscription,
+    ): subscription is typeof subscription & {
+      providerSubscriptionId: string;
+    } => subscription.providerSubscriptionId !== null,
+  );
+  if (providerPurchases.length !== activeSubscriptions.length) {
+    return { kind: "unavailable" } as const;
+  }
+
+  const checkoutAuthorities = await tx.checkoutSession.findMany({
+    where: {
+      OR: providerPurchases.map((subscription) => ({
+        provider: subscription.provider,
+        providerSessionId: subscription.providerSubscriptionId,
+      })),
+    },
+    select: {
+      id: true,
+      provider: true,
+      providerSessionId: true,
+      createdAt: true,
+      userId: true,
+      planId: true,
+      amountCents: true,
+      currency: true,
+      offerSnapshot: true,
+      status: true,
+    },
+  });
+  const checkoutByProviderInvoice = new Map(
+    checkoutAuthorities.map((checkout) => [
+      `${checkout.provider}:${checkout.providerSessionId ?? ""}`,
+      checkout,
+    ]),
+  );
+  const authorities = [];
+  for (const subscription of providerPurchases) {
+    const checkout = checkoutByProviderInvoice.get(
+      `${subscription.provider}:${subscription.providerSubscriptionId}`,
+    );
+    const offerSnapshot = checkoutOfferSnapshotSchema.safeParse(
+      checkout?.offerSnapshot,
+    );
+    if (
+      !checkout ||
+      checkout.userId !== subscription.userId ||
+      checkout.planId !== subscription.planId ||
+      checkout.status !== "completed" ||
+      !offerSnapshot.success ||
+      offerSnapshot.data.planId !== subscription.planId ||
+      checkout.amountCents !== offerSnapshot.data.priceCents ||
+      checkout.currency?.toLowerCase() !==
+        offerSnapshot.data.currency.toLowerCase()
+    ) {
+      return { kind: "unavailable" } as const;
+    }
+    authorities.push({
+      subscription,
+      checkout,
+      offerSnapshot: offerSnapshot.data,
+    });
+  }
+
+  const newer = authorities
+    .filter(
+      (candidate) =>
+        compareCheckoutPurchaseOrder(candidate.checkout, currentPurchase) > 0,
+    )
+    .sort((left, right) =>
+      compareCheckoutPurchaseOrder(right.checkout, left.checkout),
+    )[0];
+  return newer
+    ? {
+        kind: "newer",
+        subscription: newer.subscription,
+        offerSnapshot: newer.offerSnapshot,
+      } as const
+    : { kind: "none" } as const;
+}
+
+function convertedPrepaidAccessEnd(input: {
+  currentOffer: z.infer<typeof checkoutOfferSnapshotSchema>;
+  newerOffer: z.infer<typeof checkoutOfferSnapshotSchema>;
+  newerAccessEnd: Date | null;
+  now: Date;
+}) {
+  if (
+    input.currentOffer.priceCents <= 0 ||
+    input.newerOffer.priceCents <= 0 ||
+    input.currentOffer.currency.toLowerCase() !==
+      input.newerOffer.currency.toLowerCase()
+  ) {
+    return { ok: false } as const;
+  }
+  if (input.newerAccessEnd === null) {
+    return { ok: true, currentPeriodEnd: null } as const;
+  }
+
+  const startsAt =
+    input.newerAccessEnd > input.now ? input.newerAccessEnd : input.now;
+  const newerUnitEnd = billingPeriodEnd(
+    startsAt,
+    input.newerOffer.billingPeriod,
+  );
+  const newerUnitDurationMs =
+    newerUnitEnd.getTime() - startsAt.getTime();
+  const convertedDurationMs = Math.max(
+    1,
+    Math.floor(
+      newerUnitDurationMs *
+        (input.currentOffer.priceCents / input.newerOffer.priceCents),
+    ),
+  );
+  const convertedEndMs = startsAt.getTime() + convertedDurationMs;
+  if (
+    !Number.isSafeInteger(convertedDurationMs) ||
+    !Number.isFinite(convertedEndMs)
+  ) {
+    return { ok: false } as const;
+  }
+  return {
+    ok: true,
+    currentPeriodEnd: new Date(convertedEndMs),
+  } as const;
+}
+
+function compareCheckoutPurchaseOrder(
+  left: { id: string; createdAt: Date },
+  right: { checkoutId?: string; id?: string; createdAt: Date },
+) {
+  const createdAtDelta = left.createdAt.getTime() - right.createdAt.getTime();
+  if (createdAtDelta !== 0) return createdAtDelta;
+  return left.id.localeCompare(right.checkoutId ?? right.id ?? "");
 }
 
 async function syncSubscriptionEntitlements(
@@ -7114,17 +11091,18 @@ function featureKey(key: string) {
   return key.replace(/[A-Z]/g, (match) => `_${match.toLowerCase()}`);
 }
 
-async function ensurePreferences(userId: string) {
-  return prisma.userPreferences.upsert({
+async function readPreferences(userId: string) {
+  const preferences = await prisma.userPreferences.findUnique({
     where: { userId },
-    update: {},
-    create: {
-      userId,
-      mutedTags: [],
-      safeModeFlags: {},
-      notificationSettings: {},
-    },
   });
+  return preferences ?? {
+    userId,
+    locale: "en",
+    mutedTags: [],
+    safeModeFlags: {},
+    notificationSettings: {},
+    updatedAt: null,
+  };
 }
 
 async function applyModerationAction(
@@ -7135,44 +11113,47 @@ async function applyModerationAction(
   // INVARIANT: a takedown must actually remove something. Feed items wrap a
   // character, so resolve and take that down; unknown target types throw so the
   // caller can escalate instead of recording a false "blocked" event.
-  if (targetType === "character") {
-    await prisma.character.updateMany({
-      where: { id: targetId },
-      data: { status: "removed" },
-    });
-  } else if (targetType === "media") {
-    await prisma.mediaAsset.updateMany({
-      where: { id: targetId },
-      data: { safetyStatus: "blocked" },
-    });
-  } else if (targetType === "feed_item") {
-    const characterId = feedCharacterId(targetId);
-    const collectionId = feedCollectionId(targetId);
-    if (characterId) {
-      await prisma.character.updateMany({
-        where: { id: characterId },
+  await prisma.$transaction(async (tx) => {
+    if (targetType === "character") {
+      await tx.character.updateMany({
+        where: { id: targetId },
         data: { status: "removed" },
       });
-    } else if (collectionId) {
-      await prisma.mediaCollection.updateMany({
-        where: { id: collectionId },
-        data: { visibility: "private" },
+    } else if (targetType === "media") {
+      await lockMediaAssetAuthority(tx, targetId);
+      await tx.mediaAsset.updateMany({
+        where: { id: targetId },
+        data: { safetyStatus: "blocked" },
       });
+    } else if (targetType === "feed_item") {
+      const characterId = feedCharacterId(targetId);
+      const collectionId = feedCollectionId(targetId);
+      if (characterId) {
+        await tx.character.updateMany({
+          where: { id: characterId },
+          data: { status: "removed" },
+        });
+      } else if (collectionId) {
+        await tx.mediaCollection.updateMany({
+          where: { id: collectionId },
+          data: { visibility: "private" },
+        });
+      } else {
+        throw Errors.badRequest(`Cannot resolve feed_item moderation target: ${targetId}`);
+      }
     } else {
-      throw Errors.badRequest(`Cannot resolve feed_item moderation target: ${targetId}`);
+      throw Errors.badRequest(`Unsupported moderation target type: ${targetType}`);
     }
-  } else {
-    throw Errors.badRequest(`Unsupported moderation target type: ${targetType}`);
-  }
-  await prisma.moderationEvent.create({
-    data: {
-      targetType,
-      targetId,
-      layer: "human_review",
-      status: "blocked",
-      policyCode,
-      details: {},
-    },
+    await tx.moderationEvent.create({
+      data: {
+        targetType,
+        targetId,
+        layer: "human_review",
+        status: "blocked",
+        policyCode,
+        details: {},
+      },
+    });
   });
 }
 
@@ -7181,13 +11162,26 @@ async function trackEvent(
   props: unknown,
   ctx: { userId?: string; anonymousId?: string },
 ) {
-  return prisma.analyticsEvent.create({
-    data: {
-      userId: ctx.userId,
-      anonymousId: ctx.anonymousId,
-      name,
-      props: toInputJson(props),
-    },
+  return createClassifiedAnalyticsEvent(prisma, {
+    userId: ctx.userId,
+    anonymousId: ctx.anonymousId,
+    name,
+    props,
+  });
+}
+
+async function trackEventOnce(
+  name: string,
+  props: unknown,
+  ctx: { userId?: string; anonymousId?: string },
+  sourceEventId: string,
+) {
+  return createClassifiedAnalyticsEvent(prisma, {
+    userId: ctx.userId,
+    anonymousId: ctx.anonymousId,
+    name,
+    props,
+    sourceEventId,
   });
 }
 

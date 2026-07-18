@@ -2,6 +2,10 @@
   "workflowKey": "qwen-image-edit-img2img",
   "modelId": "qwen-image-edit",
   "backendKind": "comfyui",
+  "comfyWorkflow": {
+    "id": "5d0c981b-76fa-471d-b487-67d83c7c798f",
+    "name": "iDream · Qwen Image Edit · Image to Image"
+  },
   "version": 1,
   "capabilities": ["img2img", "edit", "referenceImages", "stableSeed", "textToImage"],
   "identity": {
@@ -84,7 +88,13 @@
   },
   "inputs": [
     { "key": "prompt", "type": "text", "target": { "nodeId": "3", "field": "prompt" } },
-    { "key": "source_image", "type": "image", "target": { "nodeId": "8", "field": "image" } },
+    { "key": "negative", "type": "text", "target": { "nodeId": "4", "field": "prompt" }, "default": "" },
+    {
+      "key": "source_image",
+      "type": "image",
+      "referenceRoles": ["identity_anchor", "identity_reference", "source_image"],
+      "target": { "nodeId": "8", "field": "image" }
+    },
     { "key": "width", "type": "int", "target": { "nodeId": "9", "field": "width" }, "default": 832 },
     { "key": "height", "type": "int", "target": { "nodeId": "9", "field": "height" }, "default": 1216 },
     { "key": "seed", "type": "int", "target": { "nodeId": "2", "field": "seed" } },

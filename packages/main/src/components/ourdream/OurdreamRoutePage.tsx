@@ -10,8 +10,12 @@ import {
 import {
   getOurdreamRoute,
   getRoutesByPrefix,
-  ourdreamRoutePaths,
 } from "@/lib/ourdream-data";
+import {
+  hasDedicatedStaticArticleContent,
+  type DedicatedStaticArticlePath,
+} from "@/lib/static-article-authority";
+import { isPublicRouteDiscoverable } from "@/lib/public-route-authority";
 import { toSafetyHref } from "@/lib/ourdream-safety-data";
 import type { OurdreamRoute } from "@/types/ourdream";
 import { AppSidebar } from "./AppSidebar";
@@ -105,17 +109,17 @@ export function RouteShell({
   const activeHref = activeHrefForPath(route.path);
 
   return (
-    <main className="min-h-screen bg-[rgb(13,13,13)] text-white">
+    <div className="min-h-screen bg-[rgb(13,13,13)] text-white">
       <div className="flex min-h-screen w-full">
         <AppSidebar activeHref={activeHref} />
         <div className="min-w-0 flex-1 pb-16 md:pb-14">
           <AppTopbar activeHref={activeHref} currentPath={route.path} />
-          {children}
+          <main>{children}</main>
         </div>
       </div>
       <SiteFooter />
       <MobileBottomNav activeHref={activeHref} />
-    </main>
+    </div>
   );
 }
 
@@ -156,10 +160,10 @@ function PageHero({ route }: Readonly<{ route: OurdreamRoute }>) {
 
 function FeatureGrid() {
   const features = [
-    ["Create", "Shape appearance, personality, voice, and style."],
+    ["Create", "Shape appearance, personality details, tags, and visual style."],
     ["Chat", "Start long-memory roleplay with public or private characters."],
     ["Generate", "Use image controls with saved gallery results."],
-    ["Upgrade", "Mirror the premium plan and dreamcoin subscription surface."],
+    ["Upgrade", "Review live plans, entitlements, and included dreamcoins."],
   ];
 
   return (
@@ -290,8 +294,9 @@ function LibraryPage({ route }: Readonly<{ route: OurdreamRoute }>) {
     <RouteShell route={route}>
       <PageHero route={route} />
       <section className="px-4 pb-12 md:px-[60px]">
-        <div className="grid gap-3 md:grid-cols-3">
-          {cards.slice(0, 24).map((card) => (
+        {cards.length > 0 ? (
+          <div className="grid gap-3 md:grid-cols-3">
+            {cards.slice(0, 24).map((card) => (
             <Link
               className="group rounded-[14px] border border-white/10 bg-[rgb(18,18,18)] p-5 transition-colors hover:bg-[rgb(36,36,36)]"
               href={card.path}
@@ -311,8 +316,37 @@ function LibraryPage({ route }: Readonly<{ route: OurdreamRoute }>) {
                 <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1" />
               </span>
             </Link>
-          ))}
-        </div>
+            ))}
+          </div>
+        ) : (
+          <div
+            className="rounded-[16px] border border-white/10 bg-[rgb(18,18,18)] p-7"
+            data-testid="truthful-library-empty-state"
+          >
+            <h2 className="text-[24px] font-black uppercase leading-7 text-white">
+              This collection is being curated
+            </h2>
+            <p className="mt-3 max-w-2xl text-[14px] font-medium leading-7 text-[rgb(170,170,170)]">
+              There are no dedicated published guides in this collection yet.
+              Existing drafts stay preserved, but they are not presented as
+              finished articles.
+            </p>
+            <div className="mt-5 flex flex-wrap gap-3">
+              <Link
+                className="rounded-full bg-white px-5 py-3 text-[13px] font-bold text-black"
+                href="/resources-hub"
+              >
+                Browse published guides
+              </Link>
+              <Link
+                className="rounded-full bg-[rgb(46,46,46)] px-5 py-3 text-[13px] font-bold text-white"
+                href="/create"
+              >
+                Create a companion
+              </Link>
+            </div>
+          </div>
+        )}
       </section>
       <PublicCharacterStrip />
     </RouteShell>
@@ -321,23 +355,34 @@ function LibraryPage({ route }: Readonly<{ route: OurdreamRoute }>) {
 
 function routeCardsFromPaths(paths: string[]) {
   return paths
+    .filter(isPublicRouteDiscoverable)
     .map((path) => getOurdreamRoute(path))
     .filter((item): item is OurdreamRoute => Boolean(item));
 }
 
 function libraryCardsForRoute(route: OurdreamRoute) {
-  if (route.path === "/type") return getRoutesByPrefix("/type/");
-  if (route.path === "/videos") return getRoutesByPrefix("/videos/");
-  if (route.path === "/resources-hub") {
-    return routeCardsFromPaths(
-      ourdreamRoutePaths
-        .filter((path) =>
-          ["/guides/", "/comparison/", "/videos/", "/type/"].some((prefix) =>
-            path.startsWith(prefix),
-          ),
-        )
-        .slice(0, 24),
+  if (route.path === "/type") {
+    return getRoutesByPrefix("/type/").filter((item) =>
+      isPublicRouteDiscoverable(item.path),
     );
+  }
+  if (route.path === "/videos") {
+    return getRoutesByPrefix("/videos/").filter((item) =>
+      isPublicRouteDiscoverable(item.path),
+    );
+  }
+  if (route.path === "/resources-hub") {
+    return routeCardsFromPaths([
+      "/guides/character-cards",
+      "/guides/character-card-creator",
+      "/guides/sillytavern-setup-guide",
+      "/comparison",
+      "/create",
+      "/generate",
+      "/upgrade",
+      "/helpdesk",
+      "/safety/introduction",
+    ]);
   }
   if (route.path === "/games") {
     return routeCardsFromPaths([
@@ -359,7 +404,9 @@ function libraryCardsForRoute(route: OurdreamRoute) {
       "/guides/character-cards",
     ]);
   }
-  return getRoutesByPrefix(`${route.path}/`);
+  return getRoutesByPrefix(`${route.path}/`).filter((item) =>
+    isPublicRouteDiscoverable(item.path),
+  );
 }
 
 type ArticleContent = {
@@ -375,7 +422,10 @@ type ArticleContent = {
   }>;
 };
 
-const articleContentByPath: Record<string, ArticleContent> = {
+const articleContentByPath: Record<
+  DedicatedStaticArticlePath,
+  ArticleContent
+> = {
   "/guides/character-cards": {
     intro:
       "Use character cards as portable source material for a companion: who they are, how they speak, what scenario they start in, and what should stay consistent across chat and image generation.",
@@ -506,53 +556,19 @@ const articleContentByPath: Record<string, ArticleContent> = {
 };
 
 function articleContentForRoute(route: OurdreamRoute): ArticleContent {
-  return articleContentByPath[route.path] ?? defaultArticleContent(route);
-}
-
-function defaultArticleContent(route: OurdreamRoute): ArticleContent {
-  const routeKind = articleKind(route.path);
-  return {
-    intro: `${route.title} is a practical ${routeKind} for moving from discovery into a saved Ourdream workflow without losing character context.`,
-    sections: [
-      {
-        title: "Overview",
-        body: `${route.title} starts with a clear user intent: decide whether you are trying to discover a companion, create one, compare options, or prepare a generation workflow.`,
-        bullets: [
-          "Use the page title to anchor the scenario.",
-          "Choose the next action before adding detail.",
-          "Keep the result connected to Explore, Create, Chat, or Generate.",
-        ],
-      },
-      {
-        title: "How it works",
-        body: `Open the relevant Ourdream surface, carry the ${route.title.toLowerCase()} context into the next step, and check that the character, prompt, or comparison still matches the user's original goal.`,
-      },
-      {
-        title: "Best practices",
-        body:
-          "Start narrow, test the workflow once, then expand. A focused route produces better saved companions, cleaner prompts, and less confusing handoff between product surfaces.",
-      },
-    ],
-    faq: [
-      {
-        question: `Where should I start with ${route.title}?`,
-        answer:
-          "Start from the page's primary call to action, then use Explore for discovery, Create for companion setup, Chat for testing, and Generate for visual output.",
-      },
-      {
-        question: "Can I come back to this later?",
-        answer:
-          "Yes. Saved characters, generated media, presets, and profile library items keep the workflow available from My AI and Profile.",
-      },
-    ],
-  };
-}
-
-function articleKind(path: string) {
-  if (path.startsWith("/sex-chat/")) return "chat guide";
-  if (path.startsWith("/type/")) return "companion type guide";
-  if (path.startsWith("/videos/")) return "video idea guide";
-  return "guide";
+  if (!hasDedicatedStaticArticleContent(route.path)) {
+    throw new Error(
+      `Static article content is not published for route ${route.path}`,
+    );
+  }
+  const content =
+    articleContentByPath[route.path as DedicatedStaticArticlePath];
+  if (!content) {
+    throw new Error(
+      `Static article content is not published for route ${route.path}`,
+    );
+  }
+  return content;
 }
 
 function ArticlePage({ route }: Readonly<{ route: OurdreamRoute }>) {
@@ -676,7 +692,7 @@ const comparisonFeatureRows = [
     ourdream:
       "Current plan prices and included dreamcoins are loaded from the plan authority below; checkout and billing state live on Upgrade.",
     compare:
-      "Compare included credits, chat limits, renewal controls, and whether plan changes preserve the current workflow.",
+      "Compare included credits, chat limits, prepaid access periods, and whether plan changes preserve the current workflow.",
   },
 ] as const;
 
@@ -737,14 +753,18 @@ function ComparisonChecklist({ route }: Readonly<{ route: OurdreamRoute }>) {
 }
 
 function ComparisonRouteCards({ route }: Readonly<{ route: OurdreamRoute }>) {
-  const routes = route.path === "/comparison" ? getRoutesByPrefix("/comparison/") : [];
-  const cards = routes.length
-    ? routes
-    : [
-        { path: "/comparison", title: "All comparisons" },
-        { path: "/create", title: "Create a companion" },
-        { path: "/generate", title: "Open Generate" },
-      ];
+  const cards =
+    route.path === "/comparison"
+      ? [
+          { path: "/create", title: "Create a companion" },
+          { path: "/generate", title: "Open Generate" },
+          { path: "/upgrade", title: "Review live plans" },
+        ]
+      : [
+          { path: "/comparison", title: "All comparisons" },
+          { path: "/create", title: "Create a companion" },
+          { path: "/generate", title: "Open Generate" },
+        ];
 
   return (
     <section className="px-4 py-10 md:px-[60px] md:py-12">
@@ -898,10 +918,10 @@ function TermsPage({ route }: Readonly<{ route: OurdreamRoute }>) {
       <article className="px-4 py-12 md:px-[60px]">
         <div className="mx-auto max-w-6xl">
           <p className="text-[12px] font-black uppercase leading-4 text-[rgb(253,95,194)]">
-            Terms
+            Product policy index
           </p>
           <h1 className="mt-3 max-w-4xl text-[44px] font-black uppercase leading-none text-white md:text-[68px]">
-            Terms & Policies
+            Beta Terms & Policies
           </h1>
           <div className="mt-8 max-w-4xl space-y-5 rounded-[14px] border border-white/10 bg-[rgb(18,18,18)] p-6 text-[15px] leading-8 text-[rgb(170,170,170)]">
             <p>
@@ -911,9 +931,10 @@ function TermsPage({ route }: Readonly<{ route: OurdreamRoute }>) {
               policies.
             </p>
             <p>
-              Account access, billing, generated media, reports, moderation
-              reviews, and appeals are handled through the product surfaces and
-              support routes linked throughout the app.
+              This beta index describes current product behavior, not a copied
+              third-party legal agreement. Account access, billing, generated
+              media, reports, reviews, and appeals use the local product
+              surfaces linked throughout the app.
             </p>
           </div>
 
@@ -924,11 +945,11 @@ function TermsPage({ route }: Readonly<{ route: OurdreamRoute }>) {
                   Policy index
                 </p>
                 <h2 className="mt-2 text-[28px] font-black uppercase leading-8 text-white">
-                  12 policy routes
+                  {termsPolicyLinks.length} policy routes
                 </h2>
               </div>
               <p className="max-w-lg text-[13px] font-medium leading-6 text-[rgb(170,170,170)]">
-                These links route into the local Safety Center mirror so users can
+                These links route into the local Safety Center so users can
                 move from Terms into the exact policy, report, privacy, or appeal path.
               </p>
             </div>
@@ -986,7 +1007,8 @@ function TermsPage({ route }: Readonly<{ route: OurdreamRoute }>) {
 function RelatedRoutes({ route }: Readonly<{ route: OurdreamRoute }>) {
   const prefix = route.path.split("/").slice(0, 2).join("/") || "/";
   const related = getRoutesByPrefix(`${prefix}/`).filter(
-    (item) => item.path !== route.path,
+    (item) =>
+      item.path !== route.path && isPublicRouteDiscoverable(item.path),
   );
 
   if (related.length === 0) return null;

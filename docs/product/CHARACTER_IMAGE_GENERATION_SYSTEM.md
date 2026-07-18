@@ -1,8 +1,10 @@
 # 角色图片生成系统：从“生图工具”到“关系的视觉记忆”
 
-更新日期：2026-07-10
+更新日期：2026-07-17
 状态：V2 产品目标、领域对象与跨服务不变量的单一事实来源；可执行 schema/event/runbook 由关联工程契约承载
 适用范围：Create、Character Detail、Chat、Generate、Gallery、Admin、`packages/main`、`packages/chat`、`packages/gen`
+
+> **Admin Character Asset Studio（2026-07-16）**：官方角色图片生产已收敛为 Primary portrait / Character hero / Chat moments 三段决策式工作台。空白角色不会先制造无锚点的纯文字 identity，而是在 Assets 中生成 4 张无参考首肖像，经结构化审核后原子建立 reviewed identity、Reference Set rev1 与 Primary portrait 草稿；已有受审身份的角色继续使用 sealed references 与 qualified route。产品与业界实践结论见 [`CHARACTER_ASSET_STUDIO_REVIEW.md`](./CHARACTER_ASSET_STUDIO_REVIEW.md)，日常操作见 [`CHARACTER_ASSET_STUDIO_OPERATIONS_GUIDE.md`](./CHARACTER_ASSET_STUDIO_OPERATIONS_GUIDE.md)，草稿、审核与发布权威见 [`ADR-12`](../architecture/16-character-asset-studio-authority.md)。
 
 本文收敛并取代下列文档中互相重叠的产品决策；旧文档继续保留历史实现记录：
 
@@ -11,6 +13,8 @@
 - `docs/superpowers/specs/2026-07-07-image-generation-redesign-design.md` 的用户产品面
 
 > **Admin Release 实现补充（2026-07-11）**：`active CharacterVisualProfile`、sealed `ReferenceSetRevision` 与 `qualified GenerationRouteQualification` 是三个独立事实；只有三者与角色级 QA、精确 generation provenance 一起被 immutable Character Release snapshot 固定，才可显示 release ready。route 的 sampleCount 必须 ≥40、identityMatch ≥90%，policy/evaluator/expiry 漂移会使 readiness stale，但不会静默改写历史证据或自动下线当前 Serving。详见 [`ADR-11`](../architecture/15-admin-operating-system-authority-adr.md)。
+
+> **ComfyUI runtime 实现补充（2026-07-17）**：`qwen-image-edit-img2img`、`qwen-image-edit-multi-identity`、`qwen-image-edit-multi-reference`、`redcraft-krea2-txt2img` 四个 workflow 已完成 ComfyUI UI sync 与 readback。single reference、dual identity、identity + source 的真实 artifact 均为 832×1216：`/private/tmp/idream-qwen-img2img-smoke.png`（SHA-256 `3e0bdfa40aa9f70fa7c6fbaeb38f360254c89febf31988221ae2ef2b54fc5ea5`）、`/private/tmp/idream-qwen-multi-identity-smoke/sample-01.png`（SHA-256 `965c9f20dd71cd294429bc7c87e940328d441fd48380599aee533343162cb512`）、`/private/tmp/idream-qwen-identity-source-smoke.png`（SHA-256 `b2361c115cf2b8351303cc468d82661f0a40074bee4b026927bcf4e9a889d6e5`）。这只关闭本地 descriptor → ComfyUI → artifact 证明，不自动满足 route qualification、identity-bleed eval、profile publish 或生产容量 Gate。
 
 ## 1. 产品结论
 
@@ -706,7 +710,17 @@ type IdentityCapability = {
 };
 ```
 
-路由器只消费此契约。能力未声明或 smoke 过期时，该 profile 不进入默认角色路径。
+路由器只消费此契约。能力未声明或 smoke 过期时，该 profile 不进入默认角色路径。需要图片的任务还必须按 descriptor 的 semantic role 与 cardinality 精确绑定 required slot；zero、missing、extra 或 ambiguous reference 在上传和 prompt submit 前 fail closed，不按数组顺序猜测，也不降级为丢弃 source/reference 的 text-only 任务。
+
+以下 Gate 相互独立，任何一项通过都不能替代后一项：
+
+1. descriptor schema/load；
+2. ComfyUI UI sync/readback；
+3. provider 执行与 artifact sanity；
+4. profile publish 与 route qualification；
+5. 生产容量、对象存储和 live probe。
+
+因此 multi-identity smoke 只证明 transport/runtime 可执行，不把 P3D 的人数上限、identity bleed eval 与独立发布证据标成完成。
 
 ## 18. 质量与成本策略默认值
 

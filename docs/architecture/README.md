@@ -48,6 +48,7 @@ packages/main/prisma/schema.prisma + packages/*/src ← 代码（最终事实来
 | 12 | [12-roadmap.md](./12-roadmap.md) | 实施路线图与暂缓项 | PM、Lead |
 | 14 | [14-chat-service-tech-design.md](./14-chat-service-tech-design.md) | Chat Service 技术架构（服务拆分、权限边界、热路径、存储/记忆、服务目录/协议/pm2） | Lead、后端 |
 | 15 | [15-admin-operating-system-authority-adr.md](./15-admin-operating-system-authority-adr.md) | Admin v2 authority、命令/事件可靠性、渐进切换与回滚 ADR | Product、架构、后端、运营 |
+| 16 | [16-character-asset-studio-authority.md](./16-character-asset-studio-authority.md) | Character Asset Studio 的生成、审核、草稿采用与 Release 发布权威 | Product、架构、后端、运营 |
 
 > 实现状态（已落地/暂缓）以 [`CURRENT_FUNCTIONAL_COVERAGE.md`](../product/CURRENT_FUNCTIONAL_COVERAGE.md) 为唯一事实来源；剩余工作执行计划见 [`REMAINING_WORK_EXECUTION_PLAN.md`](../product/REMAINING_WORK_EXECUTION_PLAN.md)。
 > 管理后台方案见 [ADMIN_CONSOLE_PLAN.md](../product/ADMIN_CONSOLE_PLAN.md)；生成（图片/视频/语音）契约见 [BackendFeatureSpec.md](../product/BackendFeatureSpec.md) §5.5。

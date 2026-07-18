@@ -4,6 +4,7 @@ export type AppErrorCode =
   | "forbidden"
   | "payment_required"
   | "not_found"
+  | "gone"
   | "conflict"
   | "rate_limited"
   | "unavailable"
@@ -15,6 +16,7 @@ const statusByCode: Record<AppErrorCode, number> = {
   forbidden: 403,
   payment_required: 402,
   not_found: 404,
+  gone: 410,
   conflict: 409,
   rate_limited: 429,
   unavailable: 503,
@@ -50,6 +52,9 @@ export const Errors = {
   },
   notFound(message = "Not found", details?: unknown) {
     return new AppError("not_found", message, details);
+  },
+  gone(message = "Gone", details?: unknown) {
+    return new AppError("gone", message, details);
   },
   conflict(message = "Conflict", details?: unknown) {
     return new AppError("conflict", message, details);

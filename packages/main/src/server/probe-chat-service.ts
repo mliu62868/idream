@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import "dotenv/config";
 import {
@@ -8,6 +9,7 @@ import {
   signBffContext,
 } from "@idream/shared/bff";
 import { prisma } from "./lib/db";
+import { publicCharacterAudienceWhere } from "./modules/ourdream/public-content-audience";
 
 type ProbeOptions = {
   report: string | null;
@@ -231,10 +233,10 @@ async function resolveProbeCharacter(
   try {
     const character = await prisma.character.findFirst({
       where: {
-        visibility: "public",
-        status: "approved",
-        deletedAt: null,
-        age: { gte: 18 },
+        AND: [
+          publicCharacterAudienceWhere,
+          { age: { gte: 18 } },
+        ],
       },
       orderBy: [{ source: "asc" }, { createdAt: "desc" }],
       select: { id: true },
@@ -266,6 +268,7 @@ async function signedFetch(input: {
   path: string;
   query?: string;
   body?: string;
+  idempotencyKey?: string;
 }): Promise<Response> {
   const body = input.body ?? "";
   const { signature, context } = signBffContext({
@@ -283,6 +286,10 @@ async function signedFetch(input: {
       [BFF_HEADER]: signature,
       [BFF_USER_HEADER]: JSON.stringify(context),
       ...(body ? { "content-type": "application/json" } : {}),
+      ...(input.method === "POST" &&
+      /^\/api\/v1\/chat\/sessions\/[^/]+\/messages\/?$/.test(input.path)
+        ? { "idempotency-key": input.idempotencyKey ?? randomUUID() }
+        : {}),
     },
     body: body || undefined,
   });

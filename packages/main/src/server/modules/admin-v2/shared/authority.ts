@@ -13,10 +13,8 @@ import { verifyAdminBffRequest } from "./admin-bff";
 
 export type AdminActor = { id: string; role: ActorRole };
 
-export async function actorWithPermission(
+export async function authenticatedAdminActor(
   request: Request,
-  permission: PermissionKey,
-  resource?: { readonly characterId?: string },
 ): Promise<AdminActor> {
   const bff = await verifyAdminBffRequest(request);
   if (!bff.ok) {
@@ -24,7 +22,16 @@ export async function actorWithPermission(
   }
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
-  const effective = await effectivePermissions(user.id, user.role);
+  return { id: user.id, role: user.role };
+}
+
+export async function requireActorPermission(
+  request: Request,
+  actor: AdminActor,
+  permission: PermissionKey,
+  resource?: { readonly characterId?: string },
+): Promise<AdminActor> {
+  const effective = await effectivePermissions(actor.id, actor.role);
   const pathname = new URL(request.url).pathname;
   const manifestOperation = findAdminV2ApiOperation(request.method, pathname);
   if (pathname.startsWith("/api/v2/admin/") && !manifestOperation && process.env.APP_ENV === "production") {
@@ -47,7 +54,11 @@ export async function actorWithPermission(
     throw Errors.forbidden("Missing admin permission", { permission: missingPermission });
   }
   if (resource?.characterId && permission.startsWith("character.")) {
-    const allowedCharacterIds = await effectiveCharacterIdsForPermission(user.id, user.role, permission);
+    const allowedCharacterIds = await effectiveCharacterIdsForPermission(
+      actor.id,
+      actor.role,
+      permission,
+    );
     if (allowedCharacterIds !== null && !allowedCharacterIds.has(resource.characterId)) {
       throw Errors.forbidden("Character is outside the effective permission scope", {
         permission,
@@ -55,7 +66,16 @@ export async function actorWithPermission(
       });
     }
   }
-  return { id: user.id, role: user.role };
+  return actor;
+}
+
+export async function actorWithPermission(
+  request: Request,
+  permission: PermissionKey,
+  resource?: { readonly characterId?: string },
+): Promise<AdminActor> {
+  const actor = await authenticatedAdminActor(request);
+  return requireActorPermission(request, actor, permission, resource);
 }
 
 export async function jsonBody(request: Request): Promise<unknown> {

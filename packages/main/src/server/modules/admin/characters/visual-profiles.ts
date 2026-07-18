@@ -13,8 +13,8 @@
 //     写用 content.official.write（与 official.ts 编辑角色视觉身份用的是同一把权限，
 //     且本面板挂载于全程以 content.official.write 门控的 OfficialDetailPage 内，保持一致）。
 //   - POST 要求 reason.trim().length>=3（zod）且 confirmation===`${characterId}:visual-profile`。
-//   - 锚点/参考图池（anchorAssetIds/referenceAssetIds）本编辑器只读继承自当前 active（或角色
-//     imageAssetId 兜底），不在这里编辑 —— 池编辑属 P3 素材联动范畴。
+//   - 锚点只读继承当前 active Visual Profile；参考图只读继承当前 active Reference Set
+//     （旧数据无 Reference Set 时才回退 profile JSON），避免已从 Rn 清退的历史图被带入 Vn+1。
 //   - archive 旧 active 与创建新 active 必须在同一事务内完成。
 // EXAMPLE: GET .../visual-profiles → { items: [...] } version desc；
 //          POST { identityPrompt, reason, confirmation } → 铸 v(prev+1) active，旧 active → archived。
@@ -23,11 +23,12 @@ import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
 import {
+  adminAuditData,
   actorWithPermission,
   jsonBody,
   toInputJson,
-  writeAudit,
 } from "@/server/modules/admin/shared/legacy-primitives";
+import { executeIdempotentDomainCommand } from "@/server/modules/admin/shared/domain-command";
 import {
   IDENTITY_ASSEMBLER_VERSION,
   assembleIdentityPrompt,
@@ -36,6 +37,12 @@ import {
   type IdentityTraits,
 } from "@/server/modules/ourdream/identity-assembler";
 import { characterVisualProfileSnapshotHash } from "@/server/modules/admin-v2/characters/release-snapshot";
+import {
+  lockCharacterGenerationAuthority,
+  lockCharacterMediaAssetAuthorities,
+} from "@/server/modules/admin-v2/characters/generation-authority-lock";
+import { invalidateCharacterDraftAssetPack } from "@/server/modules/admin-v2/characters/draft-asset-authority";
+import { isMediaAssetOperationalForAuthority } from "@/server/lib/media-asset-authority";
 
 const styleEnum = z.enum(["realistic", "anime", "hybrid", "other"]);
 const traitsRecordSchema = z.record(z.string(), z.unknown());
@@ -174,32 +181,240 @@ export async function createCharacterVisualProfile(
     throw Errors.badRequest("Confirmation did not match visual profile target");
   }
 
-  const character = await prisma.character.findUnique({
-    where: { id: characterId },
-    select: { id: true, imageAssetId: true },
-  });
-  if (!character) throw Errors.notFound("Character not found");
+  const result = await executeIdempotentDomainCommand({
+    request,
+    actor,
+    commandType: "content.visual_profile.create",
+    targetType: "character",
+    targetId: characterId,
+    payload: body,
+    execute: async (tx) => {
+    await lockCharacterGenerationAuthority(tx, characterId);
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`character-identity-bootstrap:${characterId}`}))`;
+    const project = await tx.characterProject.findFirst({
+      where: { characterId },
+      orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+      select: { id: true },
+    });
+    const activeRelease = project
+      ? await tx.characterRelease.findFirst({
+          where: {
+            projectId: project.id,
+            status: { in: ["draft", "validating", "in_review", "approved"] },
+          },
+          select: { id: true, status: true },
+        })
+      : null;
+    if (activeRelease) {
+      throw Errors.conflict(
+        "Withdraw or finish the active Character Release before creating a new Visual Identity version",
+        {
+          releaseId: activeRelease.id,
+          releaseStatus: activeRelease.status,
+          deepLink: `/admin/characters/${characterId}?tab=release`,
+        },
+      );
+    }
+    const discoveredCharacter = await tx.character.findUnique({
+      where: { id: characterId },
+      select: { id: true, imageAssetId: true },
+    });
+    if (!discoveredCharacter) throw Errors.notFound("Character not found");
+    const discoveredActive = await tx.characterVisualProfile.findFirst({
+      where: { characterId, status: "active" },
+      orderBy: { version: "desc" },
+    });
+    const discoveredAnchorAssetIds = discoveredActive
+      ? jsonStringArray(discoveredActive.anchorAssetIds)
+      : [];
+    const discoveredReferenceSet = discoveredActive
+      ? await tx.referenceSetRevision.findFirst({
+          where: { visualProfileId: discoveredActive.id, status: "active" },
+          select: {
+            id: true,
+            references: {
+              select: { mediaAssetId: true },
+              orderBy: { position: "asc" },
+            },
+          },
+          orderBy: { revision: "desc" },
+        })
+      : null;
+    const discoveredReferenceAssetIds = discoveredReferenceSet
+      ? discoveredReferenceSet.references.map((reference) => reference.mediaAssetId)
+      : discoveredActive
+        ? jsonStringArray(discoveredActive.referenceAssetIds)
+        : [];
+    const discoveredFallbackImageAssetId =
+      discoveredAnchorAssetIds.length === 0 &&
+      discoveredReferenceAssetIds.length === 0
+        ? discoveredCharacter.imageAssetId
+        : null;
+    const discoveredMediaAssetIds = [
+      ...new Set([
+        ...discoveredAnchorAssetIds,
+        ...discoveredReferenceAssetIds,
+        ...(discoveredFallbackImageAssetId ? [discoveredFallbackImageAssetId] : []),
+      ]),
+    ];
+    await lockCharacterMediaAssetAuthorities(tx, discoveredMediaAssetIds);
 
-  const created = await prisma.$transaction(async (tx) => {
+    const character = await tx.character.findUnique({
+      where: { id: characterId },
+      select: { id: true, imageAssetId: true },
+    });
+    if (!character) throw Errors.notFound("Character not found");
     const active = await tx.characterVisualProfile.findFirst({
       where: { characterId, status: "active" },
       orderBy: { version: "desc" },
     });
+    if ((active?.id ?? null) !== (discoveredActive?.id ?? null)) {
+      throw Errors.conflict(
+        "Visual Identity authority changed while its media assets were being locked",
+        { deepLink: `/admin/characters/${characterId}?tab=visual` },
+      );
+    }
+    const activeAnchorAssetIds = active ? jsonStringArray(active.anchorAssetIds) : [];
+    const activeReferenceSet = active
+      ? await tx.referenceSetRevision.findFirst({
+          where: { visualProfileId: active.id, status: "active" },
+          select: {
+            id: true,
+            references: {
+              select: { mediaAssetId: true },
+              orderBy: { position: "asc" },
+            },
+          },
+          orderBy: { revision: "desc" },
+        })
+      : null;
+    if ((activeReferenceSet?.id ?? null) !== (discoveredReferenceSet?.id ?? null)) {
+      throw Errors.conflict(
+        "Reference Set authority changed while its media assets were being locked",
+        { deepLink: `/admin/characters/${characterId}?tab=visual` },
+      );
+    }
+    const inheritedReferenceAssetIds = activeReferenceSet
+      ? activeReferenceSet.references.map((reference) => reference.mediaAssetId)
+      : active
+        ? jsonStringArray(active.referenceAssetIds)
+        : [];
+    const fallbackImageAssetId =
+      activeAnchorAssetIds.length === 0 && inheritedReferenceAssetIds.length === 0
+        ? character.imageAssetId
+        : null;
+    const inheritedMediaAssetIds = [
+      ...new Set([
+        ...activeAnchorAssetIds,
+        ...inheritedReferenceAssetIds,
+        ...(fallbackImageAssetId ? [fallbackImageAssetId] : []),
+      ]),
+    ];
+    const discoveredMediaAssetIdSet = new Set(discoveredMediaAssetIds);
+    if (
+      inheritedMediaAssetIds.some((assetId) => !discoveredMediaAssetIdSet.has(assetId))
+    ) {
+      throw Errors.conflict(
+        "Character image authority changed while its media assets were being locked",
+        { deepLink: `/admin/characters/${characterId}?tab=assets` },
+      );
+    }
+    const inheritedMediaAssets = inheritedMediaAssetIds.length > 0
+      ? await tx.mediaAsset.findMany({
+          where: { id: { in: inheritedMediaAssetIds } },
+          select: {
+            id: true,
+            characterId: true,
+            type: true,
+            deletedAt: true,
+            safetyStatus: true,
+            metadata: true,
+          },
+        })
+      : [];
+    const inheritedMediaAssetById = new Map(
+      inheritedMediaAssets.map((asset) => [asset.id, asset] as const),
+    );
+    if (fallbackImageAssetId) {
+      const fallbackAsset = inheritedMediaAssetById.get(fallbackImageAssetId);
+      const fallbackOperational =
+        fallbackAsset?.type === "image" &&
+        fallbackAsset.deletedAt === null &&
+        fallbackAsset.safetyStatus === "passed" &&
+        isMediaAssetOperationalForAuthority(fallbackAsset.metadata);
+      if (fallbackAsset?.characterId === null && fallbackOperational) {
+        const characterReferences = await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT "id"
+          FROM "characters"
+          WHERE "imageAssetId" = ${fallbackImageAssetId}
+          ORDER BY "id"
+          FOR UPDATE
+        `;
+        if (
+          characterReferences.length !== 1 ||
+          characterReferences[0]?.id !== characterId
+        ) {
+          throw Errors.conflict(
+            "The current Character image is shared and cannot become this Character's identity authority",
+            { deepLink: `/admin/characters/${characterId}?tab=assets` },
+          );
+        }
+        const claimed = await tx.mediaAsset.updateMany({
+          where: { id: fallbackImageAssetId, characterId: null },
+          data: { characterId },
+        });
+        if (claimed.count !== 1) {
+          throw Errors.conflict(
+            "The current Character image changed while identity ownership was being repaired",
+            { deepLink: `/admin/characters/${characterId}?tab=assets` },
+          );
+        }
+        inheritedMediaAssetById.set(fallbackImageAssetId, {
+          ...fallbackAsset,
+          characterId,
+        });
+      }
+    }
+    const invalidInheritedAssetIds = inheritedMediaAssetIds.filter((assetId) => {
+      const asset = inheritedMediaAssetById.get(assetId);
+      return (
+        !asset ||
+        asset.characterId !== characterId ||
+        asset.type !== "image" ||
+        asset.deletedAt !== null ||
+        asset.safetyStatus !== "passed" ||
+        !isMediaAssetOperationalForAuthority(asset.metadata)
+      );
+    });
+    if (invalidInheritedAssetIds.length > 0) {
+      throw Errors.conflict(
+        "Repair archived, unsafe, unavailable, or foreign identity media before creating a new Visual Identity version",
+        {
+          assetIds: invalidInheritedAssetIds,
+          deepLink: `/admin/characters/${characterId}?tab=assets`,
+        },
+      );
+    }
+    const inheritedAnchorAssetIds = activeAnchorAssetIds.length > 0
+      ? activeAnchorAssetIds
+      : fallbackImageAssetId
+        ? [fallbackImageAssetId]
+        : [];
+    if (inheritedAnchorAssetIds.length === 0 && inheritedReferenceAssetIds.length === 0) {
+      throw Errors.conflict(
+        "Establish a reviewed portrait anchor in Character Assets before creating identity versions",
+        { deepLink: `/admin/characters/${characterId}?tab=assets` },
+      );
+    }
     if (active) {
       await tx.characterVisualProfile.updateMany({
         where: { characterId, status: "active" },
         data: { status: "archived" },
       });
     }
-    // 池只读继承：沿用当前 active 的锚点/参考图；首个版本时兜底角色主图。
-    const anchorAssetIds = active
-      ? jsonStringArray(active.anchorAssetIds)
-      : character.imageAssetId
-        ? [character.imageAssetId]
-        : [];
-    const referenceAssetIds = active
-      ? jsonStringArray(active.referenceAssetIds)
-      : [];
+    // 锚点继承 active identity；参考图继承 active Reference Set 的当前运行权威。
+    const anchorAssetIds = inheritedAnchorAssetIds;
+    const referenceAssetIds = inheritedReferenceAssetIds;
     const version = (active?.version ?? 0) + 1;
 
     const faceTraits = body.faceTraits ?? active?.faceTraits ?? {};
@@ -229,7 +444,7 @@ export async function createCharacterVisualProfile(
       ? traitsHashOf(traits)
       : derived.traitsHash;
 
-    return tx.characterVisualProfile.create({
+    const created = await tx.characterVisualProfile.create({
       data: {
         characterId,
         version,
@@ -270,19 +485,30 @@ export async function createCharacterVisualProfile(
       },
       select: visualProfileSelect,
     });
-  });
-
-  await writeAudit(request, actor, {
-    action: "content.visual_profile.create",
-    targetType: "character",
-    targetId: characterId,
-    reason: body.reason,
-    after: {
-      visualProfileId: created.id,
-      version: created.version,
-      status: created.status,
+    const invalidatedDraftAssets = await invalidateCharacterDraftAssetPack(tx, characterId);
+    await tx.adminAuditLog.create({
+      data: adminAuditData(request, actor, {
+        action: "content.visual_profile.create",
+        targetType: "character",
+        targetId: characterId,
+        reason: body.reason,
+        before: invalidatedDraftAssets ? {
+          draftAssetPackProjectId: invalidatedDraftAssets.projectId,
+          draftAssetPackVersion: invalidatedDraftAssets.previousVersion,
+          draftAssetPurposes: invalidatedDraftAssets.invalidatedPurposes,
+          draftAssetIds: invalidatedDraftAssets.invalidatedAssetIds,
+        } : undefined,
+        after: {
+          visualProfileId: created.id,
+          version: created.version,
+          status: created.status,
+          draftAssetPackVersion: invalidatedDraftAssets?.nextVersion ?? null,
+        },
+      }),
+    });
+    return { item: identityDisplayFields(created) };
     },
   });
 
-  return ok({ item: identityDisplayFields(created) });
+  return ok(result);
 }

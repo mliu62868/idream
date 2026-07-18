@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
+import { env } from "@/server/lib/env";
 import { createMedia, createUser } from "@/server/test/helpers";
 import { POST as scheduleRoute } from "@/app/api/v2/admin/characters/[id]/releases/[releaseId]/commands/schedule/route";
 import { POST as rollbackRoute } from "@/app/api/v2/admin/characters/[id]/releases/[releaseId]/commands/rollback/route";
@@ -11,9 +12,11 @@ import {
   characterVisualProfileSnapshotHash,
   referenceSetSnapshotHash,
 } from "./release-snapshot";
+import { canonicalSha256 } from "../shared/canonical-json";
 import {
   CHARACTER_RELEASE_POLICY_VERSION,
   executeCharacterReleaseCommand,
+  validateCharacterReleaseSnapshot,
 } from "./release-executor";
 import { dispatchDueCharacterReleasePublishes } from "./scheduled-release-dispatcher";
 
@@ -28,29 +31,136 @@ describe("Character Release command executor", () => {
   const profileId = `${prefix}-profile`;
   const referenceSetId = `${prefix}-refs`;
   const mediaId = `${prefix}-media`;
+  const referenceMediaId = `${prefix}-reference-media`;
+  const heroMediaId = `${prefix}-hero-media`;
+  const chatMediaId = `${prefix}-chat-media`;
   const oldReleaseId = `${prefix}-old`;
   const candidateReleaseId = `${prefix}-candidate`;
   const invalidReleaseId = `${prefix}-invalid`;
   const policyDriftReleaseId = `${prefix}-policy-drift`;
   const rescheduledReleaseId = `${prefix}-rescheduled`;
+  const legacyShapeReleaseId = `${prefix}-legacy-shape`;
   const routeFingerprint = `${prefix}:route`;
+  const routeModelProfileId = `${prefix}-route-model-profile`;
+  const routeProfileKey = `${prefix}-route-profile`;
+  const routeWorkflowKey = "qwen-image-edit-img2img";
   const qaRunId = `${prefix}-qa-run`;
   const qaEvidenceHash = `${prefix}-qa-evidence-hash`;
+  const releaseAssetFixtures = [
+    {
+      slotKey: "character_avatar",
+      purpose: "character_cover",
+      assetId: mediaId,
+      runId: `${prefix}-avatar-run`,
+      itemId: `${prefix}-avatar-item`,
+      jobId: `${prefix}-avatar-job`,
+      decisionId: `${prefix}-avatar-decision`,
+    },
+    {
+      slotKey: "character_hero",
+      purpose: "character_hero",
+      assetId: heroMediaId,
+      runId: `${prefix}-hero-run`,
+      itemId: `${prefix}-hero-item`,
+      jobId: `${prefix}-hero-job`,
+      decisionId: `${prefix}-hero-decision`,
+    },
+    {
+      slotKey: "character_chat",
+      purpose: "character_chat",
+      assetId: chatMediaId,
+      runId: `${prefix}-chat-run`,
+      itemId: `${prefix}-chat-item`,
+      jobId: `${prefix}-chat-job`,
+      decisionId: `${prefix}-chat-decision`,
+    },
+  ] as const;
+  const draftAssetPack = {
+    character_cover: {
+      assetId: mediaId,
+      runId: releaseAssetFixtures[0].runId,
+      itemId: releaseAssetFixtures[0].itemId,
+      reviewDecisionId: releaseAssetFixtures[0].decisionId,
+      generationJobId: releaseAssetFixtures[0].jobId,
+    },
+    character_hero: {
+      assetId: heroMediaId,
+      runId: releaseAssetFixtures[1].runId,
+      itemId: releaseAssetFixtures[1].itemId,
+      reviewDecisionId: releaseAssetFixtures[1].decisionId,
+      generationJobId: releaseAssetFixtures[1].jobId,
+    },
+    character_chat: {
+      assetId: chatMediaId,
+      runId: releaseAssetFixtures[2].runId,
+      itemId: releaseAssetFixtures[2].itemId,
+      reviewDecisionId: releaseAssetFixtures[2].decisionId,
+      generationJobId: releaseAssetFixtures[2].jobId,
+    },
+  };
+  const draftAssetPackHash = canonicalSha256(draftAssetPack);
+  let visualProfileHash = "";
+  let referenceSetHash = "";
+  let referenceManifestHash = "";
 
   function releaseData(id: string, overrides: Record<string, unknown> = {}) {
     const generationProvenance = {
-      routeFingerprint,
-      matrixKey: "default-character",
-      generationProfileKey: "portrait",
-      generationProfileVersion: 2,
-      workflowKey: "identity",
-      workflowVersion: 3,
-      characterQa: { status: "passed", qaRunId, evidenceHash: qaEvidenceHash },
+      schemaVersion: "character-release-generation-provenance-v2",
+      policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
+      requiredReleaseRoute: {
+        routeFingerprint,
+        matrixKey: "default-character",
+        generationProfileKey: routeProfileKey,
+        generationProfileVersion: 1,
+        workflowKey: routeWorkflowKey,
+        workflowVersion: 1,
+      },
+      characterQa: {
+        status: "passed",
+        qaRunId,
+        evidenceHash: qaEvidenceHash,
+        characterId,
+        projectId,
+        characterContentVersionId: contentId,
+        projectVersion: 1,
+        visualProfileId: profileId,
+        visualProfileVersion: 1,
+        visualProfileHash,
+        referenceSetRevisionId: referenceSetId,
+        referenceSetRevision: 1,
+        referenceSetHash,
+        draftAssetPackHash,
+      },
+      placements: releaseAssetFixtures.map((fixture) => ({
+        slotKey: fixture.slotKey,
+        assetId: fixture.assetId,
+        generationJobId: fixture.jobId,
+        attemptId: `${fixture.jobId}-attempt`,
+        attemptNo: 1,
+        provider: "comfyui",
+        generationProfileKey: routeProfileKey,
+        generationProfileVersion: 1,
+        workflowKey: routeWorkflowKey,
+        workflowVersion: 1,
+        visualProfileId: profileId,
+        visualProfileVersion: 1,
+        referenceSetRevisionId: referenceSetId,
+        referenceManifestHash,
+        bootstrapIdentity: false,
+      })),
     };
     const releasePlacementManifest = {
-      placements: [
-        { slotKey: "character_avatar", assetId: mediaId, slotVersion: 1 },
-      ],
+      schemaVersion: 2,
+      placements: releaseAssetFixtures.map((fixture) => ({
+        slotKey: fixture.slotKey,
+        assetId: fixture.assetId,
+        slotVersion: 1,
+        runId: fixture.runId,
+        itemId: fixture.itemId,
+        reviewDecisionId: fixture.decisionId,
+        generationJobId: fixture.jobId,
+        bootstrapIdentity: false,
+      })),
     };
     const snapshot = {
       projectId,
@@ -97,6 +207,29 @@ describe("Character Release command executor", () => {
     });
   }
 
+  async function executeServingTransition(input: {
+    commandType:
+      | "character.serving.pause"
+      | "character.serving.resume"
+      | "character.serving.retire";
+    now: Date;
+  }) {
+    const serving = await prisma.characterServing.findUniqueOrThrow({
+      where: { characterId },
+    });
+    const accepted = await accept({
+      commandType: input.commandType,
+      target: { type: "character_serving", id: characterId },
+      expectedVersion: serving.version,
+      payload: { reason: `Exercise ${input.commandType}` },
+    });
+    return executeCharacterReleaseCommand(prisma, {
+      commandId: accepted.commandId,
+      workerId: `${prefix}-${input.commandType}-worker`,
+      now: input.now,
+    });
+  }
+
   function routeRequest(body: Record<string, unknown>, confirmation: string) {
     return new Request(
       "http://localhost/api/v2/admin/characters/x/releases/x/commands/test",
@@ -124,7 +257,24 @@ describe("Character Release command executor", () => {
 
   beforeAll(async () => {
     await createUser({ id: actorId, role: "admin" });
-    await createMedia({ id: mediaId, ownerId: actorId, visibility: "public" });
+    await createMedia({
+      id: mediaId,
+      ownerId: actorId,
+      visibility: "public",
+      url: `https://assets.example.test/${mediaId}.webp`,
+    });
+    for (const assetId of [
+      referenceMediaId,
+      heroMediaId,
+      chatMediaId,
+    ]) {
+      await createMedia({
+        id: assetId,
+        ownerId: actorId,
+        visibility: "public",
+        url: `https://assets.example.test/${assetId}.webp`,
+      });
+    }
     await prisma.character.create({
       data: {
         id: characterId,
@@ -140,6 +290,19 @@ describe("Character Release command executor", () => {
         advancedDetails: { firstMessage: "Welcome back." },
       },
     });
+    await prisma.mediaAsset.updateMany({
+      where: {
+        id: {
+          in: [
+            mediaId,
+            referenceMediaId,
+            heroMediaId,
+            chatMediaId,
+          ],
+        },
+      },
+      data: { characterId, safetyStatus: "passed" },
+    });
     const visualProfileData = {
       id: profileId,
       characterId,
@@ -152,19 +315,20 @@ describe("Character Release command executor", () => {
       bodyTraits: {},
       signatureTraits: {},
       styleTraits: { style: "realistic" },
-      anchorAssetIds: [mediaId],
-      referenceAssetIds: [mediaId],
+      anchorAssetIds: [referenceMediaId],
+      referenceAssetIds: [referenceMediaId],
       adapterRefs: {},
       evidenceState: "qualified",
       createdFrom: "test",
     };
+    visualProfileHash = characterVisualProfileSnapshotHash({
+      ...visualProfileData,
+      negativeIdentityPrompt: null,
+    });
     await prisma.characterVisualProfile.create({
       data: {
         ...visualProfileData,
-        immutableHash: characterVisualProfileSnapshotHash({
-          ...visualProfileData,
-          negativeIdentityPrompt: null,
-        }),
+        immutableHash: visualProfileHash,
       },
     });
     await prisma.referenceSetRevision.create({
@@ -174,23 +338,23 @@ describe("Character Release command executor", () => {
         revision: 1,
         status: "active",
         selectorVersion: "v2",
-        snapshotHash: referenceSetSnapshotHash({
+        snapshotHash: (referenceSetHash = referenceSetSnapshotHash({
           visualProfileId: profileId,
           revision: 1,
           selectorVersion: "v2",
           references: [
             {
-              mediaAssetId: mediaId,
+              mediaAssetId: referenceMediaId,
               position: 0,
               role: "primary_face",
               weight: 1,
             },
           ],
-        }),
+        })),
         createdFrom: "test",
         references: {
           create: {
-            mediaAssetId: mediaId,
+            mediaAssetId: referenceMediaId,
             position: 0,
             role: "primary_face",
             selectionReason: "test evidence",
@@ -198,24 +362,164 @@ describe("Character Release command executor", () => {
         },
       },
     });
+    await prisma.generationModelProfile.create({
+      data: {
+        id: routeModelProfileId,
+        profileKey: routeProfileKey,
+        label: "Release executor identity route",
+        runner: "comfyui",
+        pipelineModel: routeWorkflowKey,
+        workflowKey: routeWorkflowKey,
+        runnerConfig: { capabilities: { referenceImages: true } },
+        allowedOrientations: ["4:5"],
+        version: 1,
+        status: "active",
+        enabled: true,
+        rolloutPercent: 100,
+      },
+    });
     await prisma.generationRouteQualification.create({
       data: {
         routeFingerprint,
-        generationProfileKey: "portrait",
-        generationProfileVersion: 2,
-        workflowKey: "identity",
-        workflowVersion: 3,
+        generationProfileKey: routeProfileKey,
+        generationProfileVersion: 1,
+        workflowKey: routeWorkflowKey,
+        workflowVersion: 1,
         style: "realistic",
         matrixKey: "default-character",
         sampleCount: 40,
         passCount: 37,
         identityMatch: 0.925,
         result: "qualified",
-        evidence: { reviewerId: actorId, evaluatorVersion: "eval-v2" },
+        evidence: {
+          reviewerId: actorId,
+          evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,
+        },
         policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
         expiresAt: new Date("2030-01-01T00:00:00.000Z"),
       },
     });
+    const jobReferenceManifest = [{
+      mediaAssetId: referenceMediaId,
+      position: 0,
+      role: "primary_face",
+      weight: 1,
+      selectorVersion: "v2",
+      selectionReason: "Release executor identity authority",
+      referenceSetRevisionId: referenceSetId,
+      referenceSetRevision: 1,
+      snapshotHash: referenceSetHash,
+    }];
+    referenceManifestHash = canonicalSha256(jobReferenceManifest);
+    for (const fixture of releaseAssetFixtures) {
+      await prisma.contentProductionBatch.create({
+        data: {
+          id: fixture.runId,
+          title: fixture.purpose,
+          purpose: fixture.purpose,
+          targetType: "character",
+          targetId: characterId,
+          presetIds: [],
+          count: 1,
+          totalItems: 1,
+          completedItems: 1,
+          approvedItems: 1,
+          status: "reviewing",
+          lifecycleState: "active",
+          workflowStage: "placement",
+          verificationState: "pending",
+          createdById: actorId,
+        },
+      });
+      await prisma.contentProductionItem.create({
+        data: {
+          id: fixture.itemId,
+          batchId: fixture.runId,
+          mediaAssetId: fixture.assetId,
+          itemIndex: 0,
+          status: "approved",
+          tags: [],
+        },
+      });
+      await prisma.creativeReviewDecision.create({
+        data: {
+          id: fixture.decisionId,
+          runItemId: fixture.itemId,
+          artifactId: fixture.assetId,
+          decision: "approved",
+          identityConsistency: "passed",
+          score: 92,
+          evidence: {
+            artifactFree: true,
+            singleSubject: true,
+            intentMatch: true,
+            noVisibleText: true,
+          },
+          reason: "Approved strict Release asset",
+          reviewerId: actorId,
+        },
+      });
+      await prisma.generationJob.create({
+        data: {
+          id: fixture.jobId,
+          userId: actorId,
+          characterId,
+          visualProfileId: profileId,
+          visualProfileVersion: 1,
+          consistencyMode: "strict",
+          referenceAssetIds: [referenceMediaId],
+          referenceSetRevisionId: referenceSetId,
+          referenceManifest: jobReferenceManifest,
+          mode: "image",
+          controls: {},
+          presetIds: [],
+          model: routeWorkflowKey,
+          profileId: routeProfileKey,
+          profileVersion: 1,
+          orientation: "4:5",
+          outputCount: 1,
+          deliveredOutputCount: 1,
+          status: "completed",
+          provider: "comfyui",
+          sourceType: "content_production_item",
+          sourceId: fixture.itemId,
+          sourceMeta: {
+            batchId: fixture.runId,
+            purpose: fixture.purpose,
+            targetType: "character",
+            targetId: characterId,
+            bootstrapIdentity: false,
+            referenceSetRevisionId: referenceSetId,
+            generationRouteFingerprint: routeFingerprint,
+          },
+          completedAt: new Date(),
+          finishedAt: new Date(),
+        },
+      });
+      await prisma.generationAttempt.create({
+        data: {
+          id: `${fixture.jobId}-attempt`,
+          requestId: fixture.jobId,
+          attemptNo: 1,
+          provider: "comfyui",
+          profileKey: routeProfileKey,
+          profileVersion: 1,
+          workflowKey: routeWorkflowKey,
+          workflowVersion: 1,
+          status: "succeeded",
+          creativeRunItemId: fixture.itemId,
+          finishedAt: new Date(),
+        },
+      });
+      await prisma.contentProductionItem.update({
+        where: { id: fixture.itemId },
+        data: { jobId: fixture.jobId },
+      });
+      await prisma.mediaAsset.update({
+        where: { id: fixture.assetId },
+        data: { sourceJobId: fixture.jobId },
+      });
+    }
     await prisma.characterContentVersion.create({
       data: {
         id: contentId,
@@ -246,6 +550,8 @@ describe("Character Release command executor", () => {
         phase: "launch_ready",
         audience: { segment: "test" },
         successCriteria: ["healthy launch"],
+        draftImageAssetId: mediaId,
+        draftAssetPack,
         activeKey: `official:${characterId}`,
       },
     });
@@ -265,6 +571,13 @@ describe("Character Release command executor", () => {
         projectId,
         characterContentVersionId: contentId,
         projectVersion: 1,
+        visualProfileId: profileId,
+        visualProfileVersion: 1,
+        visualProfileHash,
+        referenceSetRevisionId: referenceSetId,
+        referenceSetRevision: 1,
+        referenceSetHash,
+        draftAssetPackHash,
         ownerId: actorId,
         status: "passed",
         checks: [],
@@ -291,6 +604,47 @@ describe("Character Release command executor", () => {
     await prisma.characterRelease.create({
       data: releaseData(rescheduledReleaseId),
     });
+    const legacyShapeProvenance = {
+      routeFingerprint,
+      matrixKey: "default-character",
+      generationProfileKey: routeProfileKey,
+      generationProfileVersion: 1,
+      workflowKey: routeWorkflowKey,
+      workflowVersion: 1,
+      characterQa: {
+        status: "passed",
+        qaRunId,
+        evidenceHash: qaEvidenceHash,
+      },
+    };
+    const legacyShapeManifest = {
+      placements: [{
+        slotKey: "character_avatar",
+        assetId: mediaId,
+        slotVersion: 1,
+      }],
+    };
+    const legacyShapeSnapshot = {
+      projectId,
+      revisionId,
+      characterContentVersionId: contentId,
+      visualProfileId: profileId,
+      visualProfileVersion: 1,
+      referenceSetRevisionId: referenceSetId,
+      generationProvenance: legacyShapeProvenance,
+      releasePlacementManifest: legacyShapeManifest,
+    };
+    await prisma.characterRelease.create({
+      data: {
+        id: legacyShapeReleaseId,
+        ...legacyShapeSnapshot,
+        snapshotHash: characterReleaseSnapshotHash(legacyShapeSnapshot),
+        status: "approved",
+        readiness: "ready",
+        legacy: false,
+        version: 1,
+      },
+    });
     await prisma.characterServing.create({
       data: {
         characterId,
@@ -315,6 +669,9 @@ describe("Character Release command executor", () => {
       where: { commandId: { in: commands.map((item) => item.id) } },
     });
     await prisma.controlPlaneCommand.deleteMany({ where: { actorId } });
+    await prisma.publicCatalogQualification.deleteMany({
+      where: { releaseId: { startsWith: prefix } },
+    });
     await prisma.releaseCheckResult.deleteMany({
       where: {
         validationRunId: {
@@ -337,12 +694,50 @@ describe("Character Release command executor", () => {
     await prisma.characterRelease.deleteMany({
       where: { id: { startsWith: prefix } },
     });
+    await prisma.creativeReviewDecision.deleteMany({
+      where: {
+        id: {
+          in: releaseAssetFixtures.map((fixture) => fixture.decisionId),
+        },
+      },
+    });
+    await prisma.generationAttempt.deleteMany({
+      where: {
+        requestId: {
+          in: releaseAssetFixtures.map((fixture) => fixture.jobId),
+        },
+      },
+    });
+    await prisma.generationJob.deleteMany({
+      where: {
+        id: {
+          in: releaseAssetFixtures.map((fixture) => fixture.jobId),
+        },
+      },
+    });
+    await prisma.contentProductionItem.deleteMany({
+      where: {
+        id: {
+          in: releaseAssetFixtures.map((fixture) => fixture.itemId),
+        },
+      },
+    });
+    await prisma.contentProductionBatch.deleteMany({
+      where: {
+        id: {
+          in: releaseAssetFixtures.map((fixture) => fixture.runId),
+        },
+      },
+    });
     await prisma.characterQaRun.deleteMany({ where: { id: qaRunId } });
     await prisma.characterRevision.deleteMany({ where: { projectId } });
     await prisma.characterProject.deleteMany({ where: { id: projectId } });
     await prisma.characterContentVersion.deleteMany({ where: { characterId } });
     await prisma.generationRouteQualification.deleteMany({
       where: { routeFingerprint },
+    });
+    await prisma.generationModelProfile.deleteMany({
+      where: { id: routeModelProfileId },
     });
     await prisma.characterVisualReferenceSnapshot.deleteMany({
       where: { referenceSetRevisionId: referenceSetId },
@@ -354,7 +749,18 @@ describe("Character Release command executor", () => {
       where: { id: profileId },
     });
     await prisma.character.deleteMany({ where: { id: characterId } });
-    await prisma.mediaAsset.deleteMany({ where: { id: mediaId } });
+    await prisma.mediaAsset.deleteMany({
+      where: {
+        id: {
+          in: [
+            mediaId,
+            referenceMediaId,
+            heroMediaId,
+            chatMediaId,
+          ],
+        },
+      },
+    });
     await prisma.user.deleteMany({ where: { id: actorId } });
     await prisma.$disconnect();
   });
@@ -397,6 +803,90 @@ describe("Character Release command executor", () => {
     });
   });
 
+  it("fails closed for a non-legacy single-avatar Release with no strict-v2 lineage", async () => {
+    const release = await prisma.characterRelease.findUniqueOrThrow({
+      where: { id: legacyShapeReleaseId },
+    });
+    const validation = await prisma.$transaction((tx) =>
+      validateCharacterReleaseSnapshot(
+        tx,
+        release,
+        CHARACTER_RELEASE_POLICY_VERSION,
+        new Date("2026-07-11T00:00:00.000Z"),
+      )
+    );
+    expect(validation.run.result).toBe("failed");
+    expect(validation.failed.map((check) => check.key)).toEqual(
+      expect.arrayContaining([
+        "release_generation_authority_kind",
+        "release_asset_manifest_available",
+        "release_asset_review_authority",
+        "release_asset_generation_authority",
+      ]),
+    );
+  });
+
+  it.each([
+    ["missing exact policy", "missing_policy"],
+    ["top-level route fallback", "top_level_route"],
+  ] as const)(
+    "fails closed for strict-v2 provenance with %s",
+    async (_label, malformedKind) => {
+      const canonical = releaseData(
+        `${prefix}-malformed-authority-${malformedKind}`,
+      );
+      const canonicalRoute =
+        canonical.generationProvenance.requiredReleaseRoute;
+      const restProvenance = Object.fromEntries(
+        Object.entries(canonical.generationProvenance).filter(
+          ([key]) =>
+            key !== "requiredReleaseRoute" && key !== "policyVersion",
+        ),
+      );
+      const malformedProvenance = malformedKind === "missing_policy"
+        ? {
+            ...restProvenance,
+            requiredReleaseRoute: canonicalRoute,
+          }
+        : {
+            ...restProvenance,
+            policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
+            ...canonicalRoute,
+          };
+      const malformedSnapshot = {
+        projectId: canonical.projectId,
+        revisionId: canonical.revisionId,
+        characterContentVersionId: canonical.characterContentVersionId,
+        visualProfileId: canonical.visualProfileId,
+        visualProfileVersion: canonical.visualProfileVersion,
+        referenceSetRevisionId: canonical.referenceSetRevisionId,
+        generationProvenance: malformedProvenance,
+        releasePlacementManifest: canonical.releasePlacementManifest,
+      };
+      const malformed = await prisma.characterRelease.create({
+        data: {
+          ...canonical,
+          generationProvenance: malformedProvenance,
+          snapshotHash: characterReleaseSnapshotHash(malformedSnapshot),
+        },
+      });
+      const validation = await prisma.$transaction((tx) =>
+        validateCharacterReleaseSnapshot(
+          tx,
+          malformed,
+          CHARACTER_RELEASE_POLICY_VERSION,
+          new Date("2026-07-11T00:00:00.000Z"),
+        )
+      );
+
+      expect(validation.run.result).toBe("failed");
+      expect(validation.checks).toContainEqual(expect.objectContaining({
+        key: "release_generation_authority_kind",
+        passed: false,
+      }));
+    },
+  );
+
   it("fails closed when the current validation policy has no matching route qualification", async () => {
     const accepted = await accept({
       commandType: "character.release.publish",
@@ -429,6 +919,69 @@ describe("Character Release command executor", () => {
         })
       ).currentReleaseId,
     ).toBe(oldReleaseId);
+  });
+
+  it("fails publish-time route authority when evaluator or active profile availability drifts", async () => {
+    const release = await prisma.characterRelease.findUniqueOrThrow({
+      where: { id: candidateReleaseId },
+    });
+    const validate = () => prisma.$transaction((tx) =>
+      validateCharacterReleaseSnapshot(
+        tx,
+        release,
+        CHARACTER_RELEASE_POLICY_VERSION,
+        new Date("2026-07-11T00:00:00.000Z"),
+      )
+    );
+    await prisma.generationRouteQualification.updateMany({
+      where: { routeFingerprint, policyVersion: CHARACTER_RELEASE_POLICY_VERSION },
+      data: {
+        evidence: {
+          reviewerId: actorId,
+          evaluatorVersion: "retired-evaluator",
+        },
+      },
+    });
+    try {
+      const staleEvaluator = await validate();
+      expect(staleEvaluator.checks).toContainEqual(expect.objectContaining({
+        key: "generation_route_qualified",
+        passed: false,
+        evidence: expect.objectContaining({
+          effectiveReason: "evaluator_version_changed",
+        }),
+      }));
+    } finally {
+      await prisma.generationRouteQualification.updateMany({
+        where: { routeFingerprint, policyVersion: CHARACTER_RELEASE_POLICY_VERSION },
+        data: {
+          evidence: {
+            reviewerId: actorId,
+            evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,
+          },
+        },
+      });
+    }
+
+    await prisma.generationModelProfile.update({
+      where: { id: routeModelProfileId },
+      data: { enabled: false },
+    });
+    try {
+      const disabledProfile = await validate();
+      expect(disabledProfile.checks).toContainEqual(expect.objectContaining({
+        key: "generation_route_qualified",
+        passed: false,
+        evidence: expect.objectContaining({
+          effectiveReason: "generation_profile_unavailable",
+        }),
+      }));
+    } finally {
+      await prisma.generationModelProfile.update({
+        where: { id: routeModelProfileId },
+        data: { enabled: true },
+      });
+    }
   });
 
   it("rejects an illegal Project phase before writing validation evidence", async () => {
@@ -860,6 +1413,189 @@ describe("Character Release command executor", () => {
       currentReleaseId: rescheduledReleaseId,
       scheduledReleaseId: null,
       scheduledAt: null,
+    });
+  });
+
+  it("revalidates paused Serving and rejects blocked, archived, or snapshot-drifted Release assets", async () => {
+    const originalReferenceSet = await prisma.referenceSetRevision.findUniqueOrThrow({
+      where: { id: referenceSetId },
+      select: { snapshotHash: true },
+    });
+    if (!originalReferenceSet.snapshotHash) {
+      throw new Error("Release executor fixture must have a sealed Reference Set");
+    }
+    const originalReferenceSetHash = originalReferenceSet.snapshotHash;
+    const cases = [
+      {
+        label: "blocked asset",
+        mutate: () =>
+          prisma.mediaAsset.update({
+            where: { id: mediaId },
+            data: { safetyStatus: "blocked" },
+          }),
+        restore: () =>
+          prisma.mediaAsset.update({
+            where: { id: mediaId },
+            data: { safetyStatus: "passed" },
+          }),
+        expectedBlocker: "release_avatar_manifest_available",
+      },
+      {
+        label: "archived asset",
+        mutate: () =>
+          prisma.mediaAsset.update({
+            where: { id: mediaId },
+            data: { deletedAt: new Date("2026-07-24T14:00:00.000Z") },
+          }),
+        restore: () =>
+          prisma.mediaAsset.update({
+            where: { id: mediaId },
+            data: { deletedAt: null },
+          }),
+        expectedBlocker: "release_asset_manifest_available",
+      },
+      {
+        label: "reference snapshot drift",
+        mutate: () =>
+          prisma.referenceSetRevision.update({
+            where: { id: referenceSetId },
+            data: { snapshotHash: `${originalReferenceSetHash}:drifted` },
+          }),
+        restore: () =>
+          prisma.referenceSetRevision.update({
+            where: { id: referenceSetId },
+            data: { snapshotHash: originalReferenceSetHash },
+          }),
+        expectedBlocker: "reference_set_published_snapshot",
+      },
+    ] as const;
+
+    for (const [index, testCase] of cases.entries()) {
+      const pauseAt = new Date(
+        `2026-07-24T${String(13 + index).padStart(2, "0")}:00:00.000Z`,
+      );
+      const failedResumeAt = new Date(pauseAt.getTime() + 10 * 60 * 1_000);
+      const recoveredResumeAt = new Date(pauseAt.getTime() + 20 * 60 * 1_000);
+      await expect(
+        executeServingTransition({
+          commandType: "character.serving.pause",
+          now: pauseAt,
+        }),
+        testCase.label,
+      ).resolves.toMatchObject({ status: "succeeded" });
+      const paused = await prisma.characterServing.findUniqueOrThrow({
+        where: { characterId },
+      });
+      await testCase.mutate();
+
+      const failed = await executeServingTransition({
+        commandType: "character.serving.resume",
+        now: failedResumeAt,
+      });
+      const validation = await prisma.releaseValidationRun.findFirstOrThrow({
+        where: {
+          releaseId: paused.currentReleaseId!,
+          startedAt: failedResumeAt,
+        },
+      });
+      const failedChecks = await prisma.releaseCheckResult.findMany({
+        where: { validationRunId: validation.id, result: "failed" },
+        select: { checkKey: true },
+      });
+      const pausedAfterFailure = await prisma.characterServing.findUniqueOrThrow({
+        where: { characterId },
+      });
+      const characterAfterFailure = await prisma.character.findUniqueOrThrow({
+        where: { id: characterId },
+      });
+      await testCase.restore();
+      const recovered = await executeServingTransition({
+        commandType: "character.serving.resume",
+        now: recoveredResumeAt,
+      });
+
+      expect(failed, testCase.label).toMatchObject({
+        status: "failed",
+        errorCode: "serving_resume_validation_failed",
+      });
+      expect(validation, testCase.label).toMatchObject({ result: "failed" });
+      expect(
+        failedChecks.map((check) => check.checkKey),
+        testCase.label,
+      ).toContain(testCase.expectedBlocker);
+      expect(pausedAfterFailure, testCase.label).toMatchObject({
+        state: "paused",
+        version: paused.version,
+        currentReleaseId: paused.currentReleaseId,
+      });
+      expect(characterAfterFailure, testCase.label).toMatchObject({
+        status: "archived",
+        visibility: "private",
+        imageAssetId: mediaId,
+      });
+      expect(recovered, testCase.label).toMatchObject({ status: "succeeded" });
+      await expect(
+        prisma.characterServing.findUniqueOrThrow({ where: { characterId } }),
+      ).resolves.toMatchObject({ state: "live" });
+    }
+  });
+
+  it("rejects resume when a paused Serving is orphaned by a soft-deleted Character", async () => {
+    await expect(
+      executeServingTransition({
+        commandType: "character.serving.pause",
+        now: new Date("2026-07-24T16:00:00.000Z"),
+      }),
+    ).resolves.toMatchObject({ status: "succeeded" });
+    const servingBeforeResume = await prisma.characterServing.findUniqueOrThrow({
+      where: { characterId },
+    });
+    const validationsBefore = await prisma.releaseValidationRun.count({
+      where: { releaseId: servingBeforeResume.currentReleaseId! },
+    });
+    await prisma.character.update({
+      where: { id: characterId },
+      data: {
+        status: "archived",
+        deletedAt: new Date("2026-07-24T16:05:00.000Z"),
+      },
+    });
+
+    const failed = await executeServingTransition({
+      commandType: "character.serving.resume",
+      now: new Date("2026-07-24T16:10:00.000Z"),
+    });
+    const pausedAfterFailure = await prisma.characterServing.findUniqueOrThrow({
+      where: { characterId },
+    });
+    const validationsAfter = await prisma.releaseValidationRun.count({
+      where: { releaseId: servingBeforeResume.currentReleaseId! },
+    });
+    await prisma.character.update({
+      where: { id: characterId },
+      data: { deletedAt: null },
+    });
+    const recovered = await executeServingTransition({
+      commandType: "character.serving.resume",
+      now: new Date("2026-07-24T16:20:00.000Z"),
+    });
+
+    expect(failed).toMatchObject({
+      status: "failed",
+      errorCode: "serving_character_unavailable",
+    });
+    expect(pausedAfterFailure).toMatchObject({
+      state: "paused",
+      version: servingBeforeResume.version,
+    });
+    expect(validationsAfter).toBe(validationsBefore);
+    expect(recovered).toMatchObject({ status: "succeeded" });
+    await expect(
+      prisma.character.findUniqueOrThrow({ where: { id: characterId } }),
+    ).resolves.toMatchObject({
+      deletedAt: null,
+      status: "approved",
+      visibility: "public",
     });
   });
 

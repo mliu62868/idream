@@ -5,16 +5,22 @@ import { describe, expect, it } from "vitest";
 const seedPath = path.resolve(process.cwd(), "prisma/seed.ts");
 
 describe("production seed authority boundaries", () => {
-  it("does not rewrite operator-owned model profiles or route-page content", async () => {
+  it("does not rewrite operator-owned model profiles or seed application routes into CMS", async () => {
     const source = await readFile(seedPath, "utf8");
 
     expect(source).not.toContain("prisma.generationModelProfile.updateMany");
-    expect(source).toMatch(
-      /prisma\.routePage\.upsert\(\{[\s\S]*?where: \{ path: route\.path \},\s*update: \{\},/,
-    );
+    expect(source).not.toContain("prisma.routePage.upsert");
     expect(source).toContain(
       'if (!existingProfileKeys.has("profile_image_default_v1"))',
     );
+  });
+
+  it("merges official provenance without replacing existing JSON fields", async () => {
+    const source = await readFile(seedPath, "utf8");
+
+    expect(source).toContain("...existingMetadata");
+    expect(source).toContain("...existingAdvancedDetails");
+    expect(source).toContain("...existingProvenance");
   });
 
   it("creates defaults only when no pricing history exists", async () => {

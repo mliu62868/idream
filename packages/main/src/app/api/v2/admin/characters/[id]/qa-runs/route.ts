@@ -5,6 +5,7 @@ import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
 import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
+import { requireMatchingProjectVersion } from "@/server/modules/admin-v2/characters/project-version";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -17,6 +18,7 @@ export async function POST(
   return adminV2Route(async () => {
     const actor = await actorWithPermission(request, "character.release.review", { characterId: id });
     const body = characterQaRunCreateRequestSchema.parse(await request.json());
+    requireMatchingProjectVersion(request, body.entityVersion);
     const idempotencyKey = requireIdempotencyKey(request);
     const requestId = request.headers.get("x-request-id")?.trim() || crypto.randomUUID();
     const data = await executeAtomicIdempotentMutation({

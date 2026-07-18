@@ -1,4 +1,9 @@
+import { FREE_DAILY_MESSAGES } from "@idream/shared/chat/limits";
+
 type EntitlementValues = Record<string, unknown>;
+
+export const FREE_CHAT_SUMMARY =
+  `Free: ${FREE_DAILY_MESSAGES} text messages per day.`;
 
 function entitlementValues(value: unknown): EntitlementValues {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -70,8 +75,8 @@ export function activeEntitlementSummary(
   const benefits = configuredEntitlementBenefits(entitlements);
   if (!hasActiveSubscription) {
     return benefits.length > 0
-      ? `Free chat quota: 30 text messages per day · Additional entitlements: ${benefits.join(" · ")}.`
-      : "Free: 30 text messages per day.";
+      ? `Free chat quota: ${FREE_DAILY_MESSAGES} text messages per day · Additional entitlements: ${benefits.join(" · ")}.`
+      : FREE_CHAT_SUMMARY;
   }
 
   return benefits.length > 0

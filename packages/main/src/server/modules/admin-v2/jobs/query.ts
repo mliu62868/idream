@@ -347,8 +347,8 @@ export async function listGenerationJobsV2(request: Request) {
 
 export async function getGenerationJobV2(request: Request, requestId: string) {
   await actorWithPermission(request, "generation.job.read");
-  const row = await prisma.generationJob.findUnique({
-    where: { id: requestId },
+  const row = await prisma.generationJob.findFirst({
+    where: operationalGenerationJobWhere({ id: requestId }),
     include: { _count: { select: { assets: true } } },
   });
   if (!row) throw Errors.notFound("Generation Request not found");

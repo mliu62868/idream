@@ -5,7 +5,7 @@ import Link from "next/link";
 import { ArrowRight, X } from "lucide-react";
 import { useEffect, useState } from "react";
 
-const DISMISS_KEY = "od-promo-toast-dismissed";
+const DISMISS_KEY = "od-upgrade-toast-dismissed";
 
 export function PromoToast() {
   // 默认隐藏，挂载后再决定：localStorage 仅浏览器可用，避免 SSR/hydration 闪烁。
@@ -58,10 +58,10 @@ export function PromoToast() {
       </div>
       <div className="px-1 pb-1 pt-3">
         <h2 className="text-[16px] font-black uppercase italic leading-4 text-white">
-          Pride offer
+          Upgrade options
         </h2>
         <p className="mt-1 text-[12px] font-medium leading-4 text-[rgb(170,170,170)]">
-          Upgrade for more dreamcoins, longer chats, and advanced generation controls.
+          Compare the current plans, included Dreamcoins, and generation access.
         </p>
         <Link
           className="mt-4 flex h-9 w-full items-center justify-center gap-2 rounded-full bg-white text-[12px] font-bold leading-4 text-[rgb(13,13,13)]"

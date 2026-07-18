@@ -2,23 +2,18 @@
 
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
+import { RefreshCw } from "lucide-react";
 import { Suspense, useEffect, useState } from "react";
+import {
+  parseAuthMeResponse,
+  type AuthUser,
+} from "@/lib/public-api-contracts";
 import { authHrefForTarget, authNextTargetFromPath } from "./authRedirect";
 
 // SPEC: top-bar auth state. Reads /api/v1/me on mount; shows the signed-in user
 // (avatar + name + log out) when a session cookie is present, otherwise the
 // Login / Join Free calls-to-action. INTENT: the header reflects real auth state
 // instead of always inviting sign-up.
-
-type AuthUser = {
-  displayName: string | null;
-  email: string;
-  image: string | null;
-};
-
-type MeResponse = {
-  data?: { user: AuthUser | null };
-};
 
 export function AuthNav() {
   return (
@@ -30,7 +25,11 @@ export function AuthNav() {
 
 function AuthNavContent() {
   const [user, setUser] = useState<AuthUser | null>(null);
-  const [loaded, setLoaded] = useState(false);
+  const [loadState, setLoadState] = useState<"loading" | "ready" | "error">("loading");
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const [logoutState, setLogoutState] = useState<
+    "idle" | "pending" | "error"
+  >("idle");
   const [hash, setHash] = useState("");
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -41,12 +40,22 @@ function AuthNavContent() {
   useEffect(() => {
     const controller = new AbortController();
     fetch("/api/v1/me", { signal: controller.signal })
-      .then((response) => (response.ok ? (response.json() as Promise<MeResponse>) : null))
-      .then((payload) => setUser(payload?.data?.user ?? null))
-      .catch(() => undefined)
-      .finally(() => setLoaded(true));
+      .then((response) => {
+        if (!response.ok) throw new Error("Account authority unavailable");
+        return response.json();
+      })
+      .then((payload) => {
+        if (controller.signal.aborted) return;
+        setUser(parseAuthMeResponse(payload).user);
+        setLoadState("ready");
+      })
+      .catch(() => {
+        if (controller.signal.aborted) return;
+        setUser(null);
+        setLoadState("error");
+      });
     return () => controller.abort();
-  }, []);
+  }, [loadAttempt]);
 
   useEffect(() => {
     function syncHash() {
@@ -59,12 +68,36 @@ function AuthNavContent() {
   }, []);
 
   async function logout() {
-    await fetch("/api/v1/auth/logout", { method: "POST" }).catch(() => undefined);
-    window.location.href = "/";
+    if (logoutState === "pending") return;
+    setLogoutState("pending");
+    try {
+      const response = await fetch("/api/v1/auth/logout", { method: "POST" });
+      if (!response.ok) throw new Error("Logout failed");
+      window.location.assign("/");
+    } catch {
+      setLogoutState("error");
+    }
   }
 
   // Reserve space while resolving to avoid a Login→name layout flash.
-  if (!loaded) return <AuthNavLoading />;
+  if (loadState === "loading") return <AuthNavLoading />;
+
+  if (loadState === "error") {
+    return (
+      <button
+        className="inline-flex h-8 items-center gap-2 rounded-full border border-white/15 px-3 text-[12px] font-bold text-[rgb(170,170,170)] transition-colors hover:border-white/30 hover:text-white"
+        onClick={() => {
+          setLoadState("loading");
+          setLoadAttempt((attempt) => attempt + 1);
+        }}
+        title="Retry account status"
+        type="button"
+      >
+        <RefreshCw className="h-3.5 w-3.5" />
+        Account unavailable
+      </button>
+    );
+  }
 
   if (user) {
     const name = user.displayName ?? user.email.split("@")[0];
@@ -83,11 +116,20 @@ function AuthNavContent() {
         </Link>
         <button
           className="text-[12px] font-bold leading-4 text-[rgb(170,170,170)] transition-colors hover:text-white"
+          disabled={logoutState === "pending"}
           onClick={logout}
           type="button"
         >
-          Log out
+          {logoutState === "pending" ? "Logging out…" : "Log out"}
         </button>
+        {logoutState === "error" ? (
+          <span
+            className="max-w-40 text-[11px] font-semibold text-red-300"
+            role="alert"
+          >
+            Log out failed. Try again.
+          </span>
+        ) : null}
       </div>
     );
   }

@@ -59,4 +59,15 @@ describe("protected viewer requests", () => {
     ).rejects.toThrow("Viewer authority unavailable.");
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
+
+  it("does not request the protected resource for a malformed authenticated viewer", async () => {
+    const fetcher = vi.fn(async () =>
+      jsonResponse({ ok: true, data: { user: {} } }),
+    );
+
+    await expect(
+      fetchProtectedForViewer("/api/v1/profile", undefined, fetcher),
+    ).rejects.toThrow("Invalid viewer authority response");
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
 });

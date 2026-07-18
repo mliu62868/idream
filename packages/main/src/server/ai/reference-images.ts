@@ -4,6 +4,11 @@ import type { Prisma } from "@prisma/client";
 import type { ImageGeneratePayload } from "@idream/shared/contracts";
 import { resolveLocalBlobPath } from "@idream/shared/storage/local-blob";
 import { prisma } from "@/server/lib/db";
+import {
+  hasHydratableMediaBlobAuthority,
+  isMediaAssetOperationalForAuthority,
+  resolveMediaAssetBlobLocator,
+} from "@/server/lib/media-asset-authority";
 
 export type ImageReferenceInput = NonNullable<ImageGeneratePayload["referenceImages"]>[number];
 
@@ -13,6 +18,91 @@ type ReferenceBlobStore = {
     | { ok: false; error: { code: string; message: string; retryable: boolean } }
   >;
 };
+
+type GenerationReferenceRequest = {
+  readonly mediaAssetId: string;
+  readonly role: ImageReferenceInput["role"];
+  readonly weight?: number;
+  readonly selectorVersion?: string;
+  readonly selectionReason?: string;
+  readonly qualityScore?: number;
+  readonly identityScore?: number;
+};
+
+export function generationReferenceRequests(input: {
+  readonly sourceImageAssetId?: string;
+  readonly lookReferenceAssetId?: string;
+  readonly anchorAssetIds: readonly string[];
+  readonly identityReferenceIds: readonly string[];
+  readonly jobReferenceIds: readonly string[];
+  readonly referenceManifest?: unknown;
+  readonly maxReferences: number;
+}): GenerationReferenceRequest[] {
+  const manifest = referenceManifestItems(input.referenceManifest);
+  const manifestHasRequestedSource = Boolean(
+    input.sourceImageAssetId &&
+    manifest.some((item) =>
+      item.mediaAssetId === input.sourceImageAssetId &&
+      item.role === "source_image"
+    ),
+  );
+  const manifestHasRequestedLook = Boolean(
+    input.lookReferenceAssetId &&
+    manifest.some((item) =>
+      item.mediaAssetId === input.lookReferenceAssetId &&
+      item.role === "look_reference"
+    ),
+  );
+  return (
+    manifest.length > 0
+      ? [
+          ...(input.sourceImageAssetId && !manifestHasRequestedSource
+            ? [{
+                mediaAssetId: input.sourceImageAssetId,
+                role: "source_image" as const,
+              }]
+            : []),
+          ...(input.lookReferenceAssetId && !manifestHasRequestedLook
+            ? [{
+                mediaAssetId: input.lookReferenceAssetId,
+                role: "look_reference" as const,
+              }]
+            : []),
+          ...manifest,
+        ]
+      : uniqueReferenceRequests([
+          ...(input.sourceImageAssetId
+            ? [{
+                mediaAssetId: input.sourceImageAssetId,
+                role: "source_image" as const,
+              }]
+            : []),
+          ...(input.lookReferenceAssetId
+            ? [{
+                mediaAssetId: input.lookReferenceAssetId,
+                role: "look_reference" as const,
+              }]
+            : []),
+          ...input.anchorAssetIds.map((mediaAssetId) => ({
+            mediaAssetId,
+            role: "identity_anchor" as const,
+          })),
+          ...input.identityReferenceIds.map((mediaAssetId) => ({
+            mediaAssetId,
+            role: "identity_reference" as const,
+          })),
+          ...input.jobReferenceIds.map((mediaAssetId) => ({
+            mediaAssetId,
+            role: referenceRole({
+              assetId: mediaAssetId,
+              sourceImageAssetId: input.sourceImageAssetId,
+              anchorAssetIds: [...input.anchorAssetIds],
+              identityReferenceIds: [...input.identityReferenceIds],
+            }),
+          })),
+        ])
+  ).slice(0, input.maxReferences);
+}
 
 export async function imageReferenceInputsForGenerationJob(input: {
   userId: string;
@@ -26,24 +116,33 @@ export async function imageReferenceInputsForGenerationJob(input: {
   const visualIdentity = jsonRecord(controls.visualIdentity);
   const consistencyMode = consistencyModeFromControls(controls, visualIdentity);
   const sourceImageAssetId = stringFromRecord(controls, "sourceImageAssetId");
+  const lookReferenceAssetId = stringFromRecord(
+    controls,
+    "lookReferenceAssetId",
+  );
   const anchorAssetIds = jsonStringArray(visualIdentity.anchorAssetIds);
   const identityReferenceIds = jsonStringArray(visualIdentity.referenceAssetIds);
   const jobReferenceIds = jsonStringArray(input.referenceAssetIds);
-  const manifest = referenceManifestItems(input.referenceManifest);
-  const manifestById = new Map(manifest.map((item) => [item.mediaAssetId, item]));
-  const orderedIds = uniqueStrings([
+  const orderedReferences = generationReferenceRequests({
     sourceImageAssetId,
-    ...(manifest.length > 0
-      ? manifest.map((item) => item.mediaAssetId)
-      : [...anchorAssetIds, ...identityReferenceIds, ...jobReferenceIds]),
-  ]).slice(0, input.maxReferences ?? 4);
-  if (orderedIds.length === 0) return [];
+    lookReferenceAssetId,
+    anchorAssetIds,
+    identityReferenceIds,
+    jobReferenceIds,
+    referenceManifest: input.referenceManifest,
+    maxReferences: input.maxReferences ?? 4,
+  });
+  if (orderedReferences.length === 0) return [];
+  const orderedAssetIds = uniqueStrings(
+    orderedReferences.map((reference) => reference.mediaAssetId),
+  );
 
   const assets = await prisma.mediaAsset.findMany({
     where: {
-      id: { in: orderedIds },
+      id: { in: orderedAssetIds },
       type: "image",
       deletedAt: null,
+      safetyStatus: "passed",
       OR: [
         { ownerId: input.userId },
         ...(input.characterId ? [{ characterId: input.characterId }] : []),
@@ -56,33 +155,32 @@ export async function imageReferenceInputsForGenerationJob(input: {
       contentType: true,
       width: true,
       height: true,
+      metadata: true,
     },
   });
-  const byId = new Map(assets.map((asset) => [asset.id, asset]));
-  return orderedIds.flatMap((assetId) => {
-    const asset = byId.get(assetId);
+  const byId = new Map(
+    assets
+      .filter((asset) =>
+        isMediaAssetOperationalForAuthority(asset.metadata) &&
+        hasHydratableMediaBlobAuthority(asset)
+      )
+      .map((asset) => [asset.id, asset]),
+  );
+  return orderedReferences.flatMap((reference) => {
+    const asset = byId.get(reference.mediaAssetId);
     if (!asset) return [];
-    const manifestItem = manifestById.get(assetId);
-    const role =
-      assetId === sourceImageAssetId
-        ? "source_image"
-        : (manifestItem?.role ??
-          referenceRole({
-            assetId,
-            sourceImageAssetId,
-            anchorAssetIds,
-            identityReferenceIds,
-          }));
+    const role = reference.role;
+    const blobLocator = resolveMediaAssetBlobLocator(asset);
     return [
       {
-        assetId,
+        assetId: reference.mediaAssetId,
         role,
-        weight: manifestItem?.weight ?? referenceWeight(role, consistencyMode),
-        ...(manifestItem?.selectorVersion ? { selectorVersion: manifestItem.selectorVersion } : {}),
-        ...(manifestItem?.selectionReason ? { selectionReason: manifestItem.selectionReason } : {}),
-        ...(manifestItem?.qualityScore !== undefined ? { qualityScore: manifestItem.qualityScore } : {}),
-        ...(manifestItem?.identityScore !== undefined ? { identityScore: manifestItem.identityScore } : {}),
-        ...(asset.storageKey ? { storageKey: asset.storageKey } : {}),
+        weight: reference.weight ?? referenceWeight(role, consistencyMode),
+        ...(reference.selectorVersion ? { selectorVersion: reference.selectorVersion } : {}),
+        ...(reference.selectionReason ? { selectionReason: reference.selectionReason } : {}),
+        ...(reference.qualityScore !== undefined ? { qualityScore: reference.qualityScore } : {}),
+        ...(reference.identityScore !== undefined ? { identityScore: reference.identityScore } : {}),
+        ...(blobLocator ? { storageKey: blobLocator.key } : {}),
         ...(asset.url ? { url: asset.url } : {}),
         ...(asset.contentType ? { contentType: asset.contentType } : {}),
         ...(asset.width ? { width: asset.width } : {}),
@@ -92,7 +190,7 @@ export async function imageReferenceInputsForGenerationJob(input: {
   });
 }
 
-function referenceManifestItems(value: Prisma.JsonValue | null | undefined) {
+function referenceManifestItems(value: unknown) {
   if (!Array.isArray(value)) return [];
   return value.flatMap((item) => {
     const record = jsonRecord(item);
@@ -102,6 +200,8 @@ function referenceManifestItems(value: Prisma.JsonValue | null | undefined) {
     const role: ImageReferenceInput["role"] =
       rawRole === "primary_face" || rawRole === "identity_anchor"
         ? "identity_anchor"
+        : rawRole === "look_reference"
+          ? "look_reference"
         : rawRole === "source_image"
           ? "source_image"
           : "identity_reference";
@@ -124,8 +224,9 @@ export async function hydratedImageReferenceInputs(
   images: ImageReferenceInput[] | undefined,
   blob: ReferenceBlobStore,
 ): Promise<ImageReferenceInput[]> {
+  const requested = images ?? [];
   const hydrated = await Promise.all(
-    (images ?? []).map(async (image) => {
+    requested.map(async (image) => {
       if (image.b64Json || isAbsoluteUrl(image.url)) return image;
       if (!image.storageKey) return image;
       const local = await localBlobReference(image);
@@ -138,7 +239,19 @@ export async function hydratedImageReferenceInputs(
       return image;
     }),
   );
-  return hydrated.filter((image) => image.b64Json || isAbsoluteUrl(image.url));
+  const readable = hydrated.filter(
+    (image) => image.b64Json || isAbsoluteUrl(image.url),
+  );
+  if (readable.length !== requested.length) {
+    const readableIds = new Set(readable.map((image) => image.assetId));
+    const unavailableAssetIds = requested.flatMap((image) =>
+      readableIds.has(image.assetId) ? [] : [image.assetId]
+    );
+    throw new Error(
+      `Pinned image references could not be hydrated: ${unavailableAssetIds.join(", ")}`,
+    );
+  }
+  return readable;
 }
 
 function referenceRole(input: {
@@ -161,6 +274,11 @@ function referenceWeight(
     if (mode === "creative") return 0.7;
     if (mode === "strict") return 0.9;
     return 0.8;
+  }
+  if (role === "look_reference") {
+    if (mode === "creative") return 0.8;
+    if (mode === "strict") return 0.95;
+    return 0.9;
   }
   if (role === "identity_anchor") {
     if (mode === "creative") return 0.65;
@@ -226,6 +344,18 @@ function uniqueStrings(values: Array<string | undefined>) {
     result.push(value);
   }
   return result;
+}
+
+function uniqueReferenceRequests(
+  values: readonly GenerationReferenceRequest[],
+) {
+  const seen = new Set<string>();
+  return values.filter((value) => {
+    const key = `${value.mediaAssetId}\u0000${value.role}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function isAbsoluteUrl(value: string | undefined) {

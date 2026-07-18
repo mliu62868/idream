@@ -22,8 +22,8 @@ import {
 const CONFIG_READ = "generation.config.read" as const;
 const CONFIG_WRITE = "generation.config.write" as const;
 
-function percentile(sortedMs: number[], p: number): number {
-  if (sortedMs.length === 0) return 0;
+function percentile(sortedMs: number[], p: number): number | null {
+  if (sortedMs.length === 0) return null;
   const idx = Math.min(sortedMs.length - 1, Math.floor((p / 100) * sortedMs.length));
   return Math.round(sortedMs[idx]);
 }
@@ -72,8 +72,8 @@ export async function profileHealth(request: Request, id: string): Promise<Respo
       refunded,
       successRate:
         finished > 0 ? Math.round((completed / finished) * 100) : null,
-      blockedRate: finished > 0 ? Math.round((blocked / finished) * 100) : 0,
-      refundRate: total > 0 ? Math.round((refunded / total) * 100) : 0,
+      blockedRate: finished > 0 ? Math.round((blocked / finished) * 100) : null,
+      refundRate: total > 0 ? Math.round((refunded / total) * 100) : null,
       latencyP50Ms: percentile(durations, 50),
       latencyP95Ms: percentile(durations, 95),
       latencySamples: durations.length,
@@ -120,13 +120,13 @@ export async function profileDryRun(request: Request, id: string): Promise<Respo
   const failureMode = previousFailureMode ?? (status === "fail" ? failureModeForSamples(samples) : undefined);
   const summary = {
     ...previousSummary,
-    source: "admin_console_dry_run",
+    source: "admin_console_configuration_check",
     ranBy: actor.id,
     samples,
     passed,
     total: samples.length,
     sampleCount: samples.length,
-    successRate: samples.length > 0 ? passed / samples.length : 0,
+    configurationPassRate: samples.length > 0 ? passed / samples.length : 0,
     status,
     ...(failureMode ? { failureMode } : {}),
   };

@@ -1,8 +1,23 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { Errors } from "@/server/lib/errors";
-import { enqueueGenerationAttempt } from "@/server/modules/generation/attempt-dispatch";
+import {
+  enqueueGenerationAttempt,
+  normalizedModelCapabilities,
+  runtimeReferenceImagesForDispatch,
+} from "@/server/modules/generation/attempt-dispatch";
+import { generationReferenceRequests } from "@/server/ai/reference-images";
 import { recordGenerationAttemptQueuedEvent } from "@/server/ai/generation-attempt-events";
 import { transitionGenerationRequest } from "@/server/ai/generation-request-transition";
+import { generationWorkflowDescriptor } from "@/server/modules/admin/generation-catalog";
+import {
+  hasHydratableMediaBlobAuthority,
+  isMediaAssetOperationalForAuthority,
+} from "@/server/lib/media-asset-authority";
+import {
+  lockCharacterGenerationAuthority,
+  lockCharacterMediaAssetAuthorities,
+} from "../characters/generation-authority-lock";
+import { generationJobReferencedAssetIds } from "../shared/media-asset-authority-dependencies";
 import { claimControlPlaneCommand } from "../shared/control-plane-command";
 import { transitionControlPlaneCommandAttempt } from "../shared/control-plane-command-attempt";
 import {
@@ -19,6 +34,13 @@ import {
 
 const TERMINAL_ATTEMPT_STATES = new Set(["succeeded", "failed", "cancelled", "unknown"]);
 const HEALTHY_VERIFICATION_STATES = new Set(["passed", "verified", "manual_passed"]);
+const FROZEN_IMAGE_REFERENCE_ROLES = new Set([
+  "primary_face",
+  "identity_anchor",
+  "identity_reference",
+  "source_image",
+  "look_reference",
+]);
 
 function record(value: Prisma.JsonValue | null): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -49,6 +71,276 @@ export function generationProfileHealth(profile: {
     return { healthy: false, reason: `generation_profile_${verificationState}` } as const;
   }
   return { healthy: true, reason: null } as const;
+}
+
+type CreativeRetryFrozenJob = {
+  readonly id: string;
+  readonly userId: string;
+  readonly characterId: string | null;
+  readonly status: string;
+  readonly version: number;
+  readonly mode: string;
+  readonly controls: Prisma.JsonValue;
+  readonly referenceAssetIds: Prisma.JsonValue | null;
+  readonly referenceManifest: Prisma.JsonValue | null;
+};
+
+function frozenManifestRoleErrors(value: Prisma.JsonValue | null) {
+  if (value === null || value === undefined) return [];
+  if (!Array.isArray(value)) return ["reference_manifest_not_array"];
+  return value.flatMap((entry, index) => {
+    const item = record(entry as Prisma.JsonValue);
+    const mediaAssetId = item.mediaAssetId;
+    const role = item.role;
+    if (typeof mediaAssetId !== "string" || mediaAssetId.length === 0) {
+      return [`reference_manifest_asset_missing:${index}`];
+    }
+    if (typeof role !== "string" || !FROZEN_IMAGE_REFERENCE_ROLES.has(role)) {
+      return [`reference_manifest_role_invalid:${index}`];
+    }
+    return [];
+  });
+}
+
+function sameStringSet(left: readonly string[], right: readonly string[]) {
+  const normalizedLeft = [...new Set(left)].sort();
+  const normalizedRight = [...new Set(right)].sort();
+  return normalizedLeft.length === normalizedRight.length &&
+    normalizedLeft.every((value, index) => value === normalizedRight[index]);
+}
+
+async function assertCreativeRetryDispatchContract(input: {
+  readonly job: CreativeRetryFrozenJob;
+  readonly profile: {
+    readonly profileKey: string;
+    readonly version: number;
+    readonly runner: string;
+    readonly runnerConfig: Prisma.JsonValue | null;
+    readonly workflowKey: string | null;
+    readonly pipelineModel: string;
+  };
+  readonly latestAttempt: {
+    readonly profileKey: string | null;
+    readonly profileVersion: number | null;
+    readonly workflowKey: string | null;
+    readonly workflowVersion: number | null;
+  } | null;
+}) {
+  if (
+    (
+      input.latestAttempt?.profileKey &&
+      input.latestAttempt.profileKey !== input.profile.profileKey
+    ) ||
+    (
+      input.latestAttempt?.profileVersion !== null &&
+      input.latestAttempt?.profileVersion !== undefined &&
+      input.latestAttempt.profileVersion !== input.profile.version
+    )
+  ) {
+    throw Errors.conflict(
+      "Creative retry profile no longer matches the frozen Generation Attempt",
+      { generationJobId: input.job.id },
+    );
+  }
+  if (input.job.mode !== "image") return;
+  const controls = record(input.job.controls);
+  const visualIdentity = record(
+    controls.visualIdentity as Prisma.JsonValue | null,
+  );
+  const sourceImageAssetId =
+    typeof controls.sourceImageAssetId === "string"
+      ? controls.sourceImageAssetId
+      : undefined;
+  const lookReferenceAssetId =
+    typeof controls.lookReferenceAssetId === "string"
+      ? controls.lookReferenceAssetId
+      : undefined;
+  const referenceImages = generationReferenceRequests({
+    sourceImageAssetId,
+    lookReferenceAssetId,
+    anchorAssetIds: stringArray(
+      visualIdentity.anchorAssetIds as Prisma.JsonValue,
+    ),
+    identityReferenceIds: stringArray(
+      visualIdentity.referenceAssetIds as Prisma.JsonValue,
+    ),
+    jobReferenceIds: stringArray(
+      input.job.referenceAssetIds ?? [],
+    ),
+    referenceManifest: input.job.referenceManifest,
+    maxReferences: Number.MAX_SAFE_INTEGER,
+  }).map((reference) => ({
+    assetId: reference.mediaAssetId,
+    role: reference.role,
+    ...(reference.weight === undefined
+      ? {}
+      : { weight: reference.weight }),
+  }));
+  const workflowKey =
+    input.profile.workflowKey ?? input.profile.pipelineModel;
+  const workflow = await generationWorkflowDescriptor(workflowKey);
+  runtimeReferenceImagesForDispatch({
+    generationJobId: input.job.id,
+    images: referenceImages,
+    capabilities: normalizedModelCapabilities(
+      input.profile.runnerConfig,
+      input.profile.runner === "sd_cpp",
+    ),
+    workflow,
+    workflowKey,
+    storedWorkflowKey:
+      input.latestAttempt?.workflowKey ??
+      (
+        typeof controls.workflowKey === "string"
+          ? controls.workflowKey
+          : undefined
+      ),
+    storedWorkflowVersion:
+      input.latestAttempt?.workflowVersion ??
+      (
+        typeof controls.workflowVersion === "number"
+          ? controls.workflowVersion
+          : undefined
+      ),
+  });
+}
+
+/**
+ * A Creative retry is a new consumer of the original immutable image inputs.
+ * Validate those bytes under the same Character/Media authority locks as the
+ * failed→queued transition. If retry wins, a later Library archive observes
+ * the queued dependency; if archive wins, retry fails before any domain state
+ * is changed.
+ */
+async function assertCreativeRetryFrozenMediaAuthorities(
+  tx: Prisma.TransactionClient,
+  jobs: readonly CreativeRetryFrozenJob[],
+) {
+  const discoveredAssetIdsByJob = new Map(
+    jobs.map((job) => [job.id, generationJobReferencedAssetIds(job)]),
+  );
+  const characterIds = [...new Set(
+    jobs.flatMap((job) => job.characterId ? [job.characterId] : []),
+  )].sort();
+  for (const characterId of characterIds) {
+    await lockCharacterGenerationAuthority(tx, characterId);
+  }
+  await lockCharacterMediaAssetAuthorities(
+    tx,
+    jobs.flatMap((job) => discoveredAssetIdsByJob.get(job.id) ?? []),
+  );
+
+  for (const job of jobs) {
+    const current = await tx.generationJob.findUnique({
+      where: { id: job.id },
+      select: {
+        id: true,
+        userId: true,
+        characterId: true,
+        status: true,
+        version: true,
+        mode: true,
+        controls: true,
+        referenceAssetIds: true,
+        referenceManifest: true,
+      },
+    });
+    if (
+      !current ||
+      current.status !== "failed" ||
+      current.version !== job.version ||
+      current.userId !== job.userId ||
+      current.characterId !== job.characterId ||
+      current.mode !== job.mode
+    ) {
+      throw Errors.conflict(
+        "Generation job changed before Creative retry media authority was reserved",
+        { generationJobId: job.id },
+      );
+    }
+    const discoveredAssetIds = discoveredAssetIdsByJob.get(job.id) ?? [];
+    const currentAssetIds = generationJobReferencedAssetIds(current);
+    if (!sameStringSet(discoveredAssetIds, currentAssetIds)) {
+      throw Errors.conflict(
+        "Generation image references changed before Creative retry execution",
+        { generationJobId: job.id },
+      );
+    }
+    const manifestErrors = frozenManifestRoleErrors(current.referenceManifest);
+    if (manifestErrors.length > 0) {
+      throw Errors.conflict(
+        "Generation reference manifest is not replayable",
+        {
+          generationJobId: job.id,
+          manifestErrors,
+        },
+      );
+    }
+    if (current.characterId) {
+      const character = await tx.character.findFirst({
+        where: {
+          id: current.characterId,
+          deletedAt: null,
+          status: { notIn: ["archived", "removed"] },
+        },
+        select: { id: true },
+      });
+      if (!character) {
+        throw Errors.conflict(
+          "Creative retry Character is no longer active",
+          {
+            generationJobId: job.id,
+            characterId: current.characterId,
+          },
+        );
+      }
+    }
+    if (currentAssetIds.length === 0) continue;
+    const assets = await tx.mediaAsset.findMany({
+      where: { id: { in: [...new Set(currentAssetIds)] } },
+      select: {
+        id: true,
+        ownerId: true,
+        characterId: true,
+        type: true,
+        deletedAt: true,
+        safetyStatus: true,
+        storageKey: true,
+        url: true,
+        metadata: true,
+      },
+    });
+    const usableAssetIds = new Set(
+      assets
+        .filter((asset) =>
+          asset.type === "image" &&
+          asset.deletedAt === null &&
+          asset.safetyStatus === "passed" &&
+          isMediaAssetOperationalForAuthority(asset.metadata) &&
+          hasHydratableMediaBlobAuthority(asset) &&
+          (
+            asset.ownerId === current.userId ||
+            (
+              current.characterId !== null &&
+              asset.characterId === current.characterId
+            )
+          )
+        )
+        .map((asset) => asset.id),
+    );
+    const unavailableAssetIds = [...new Set(currentAssetIds)]
+      .filter((assetId) => !usableAssetIds.has(assetId))
+      .sort();
+    if (unavailableAssetIds.length > 0) {
+      throw Errors.conflict(
+        "Creative retry image references are no longer available",
+        {
+          generationJobId: job.id,
+          unavailableAssetIds,
+        },
+      );
+    }
+  }
 }
 
 async function failCommand(
@@ -137,6 +429,23 @@ export async function executeCreativeRetryCommand(
       if (items.length !== failedItemIds.length) {
         throw Errors.conflict("Creative retry target set changed before execution");
       }
+      for (const item of items) {
+        if (
+          !isCreativeRunItemTransitionAllowed(
+            item.status,
+            "regenerate_requested",
+          ) ||
+          !item.job
+        ) {
+          throw Errors.conflict("Creative item is no longer retryable", {
+            itemId: item.id,
+          });
+        }
+      }
+      await assertCreativeRetryFrozenMediaAuthorities(
+        tx,
+        items.flatMap((item) => item.job ? [item.job] : []),
+      );
 
       const attemptIds: string[] = [];
       for (const item of items) {
@@ -170,6 +479,17 @@ export async function executeCreativeRetryCommand(
             reason: health.reason,
           });
         }
+        if (!profile) {
+          throw Errors.conflict(
+            "Generation dependency is missing; retry is disabled",
+            { itemId: item.id },
+          );
+        }
+        await assertCreativeRetryDispatchContract({
+          job: item.job,
+          profile,
+          latestAttempt: latest,
+        });
         await transitionGenerationRequest(tx, {
           requestId: item.job.id,
           to: "queued",
@@ -326,6 +646,21 @@ export async function dispatchCreativeRetryOutbox(
   let delivered = 0;
   let failed = 0;
   for (const row of rows) {
+    const leaseExpiresAt = new Date(Date.now() + 60_000);
+    const claimed = await db.mainOutboxEvent.updateMany({
+      where: {
+        id: row.id,
+        status: row.status,
+        nextRunAt: row.nextRunAt,
+      },
+      data: {
+        status: "dispatched",
+        attempts: { increment: 1 },
+        nextRunAt: leaseExpiresAt,
+        lastError: Prisma.DbNull,
+      },
+    });
+    if (claimed.count !== 1) continue;
     const payload = record(row.payload);
     const generationJobId = typeof payload.generationJobId === "string" ? payload.generationJobId : null;
     const attemptId = typeof payload.attemptId === "string" ? payload.attemptId : null;
@@ -340,17 +675,16 @@ export async function dispatchCreativeRetryOutbox(
         throw new Error("Creative generation authority is missing");
       }
       await enqueueGenerationAttempt(job, { attemptId, attemptNo });
-      await db.mainOutboxEvent.update({
-        where: { id: row.id },
-        data: { status: "delivered", attempts: { increment: 1 }, deliveredAt: new Date(), lastError: Prisma.DbNull },
+      await db.mainOutboxEvent.updateMany({
+        where: { id: row.id, status: "dispatched", nextRunAt: leaseExpiresAt },
+        data: { status: "delivered", deliveredAt: new Date(), lastError: Prisma.DbNull },
       });
       delivered += 1;
     } catch (error) {
-      await db.mainOutboxEvent.update({
-        where: { id: row.id },
+      await db.mainOutboxEvent.updateMany({
+        where: { id: row.id, status: "dispatched", nextRunAt: leaseExpiresAt },
         data: {
           status: "pending",
-          attempts: { increment: 1 },
           nextRunAt: new Date(Date.now() + 30_000),
           lastError: toInputJson({ message: error instanceof Error ? error.message : "Creative generation dispatch failed" }),
         },

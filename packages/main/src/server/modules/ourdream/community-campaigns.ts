@@ -19,6 +19,80 @@ type CampaignPlacement = Prisma.MediaAssetPlacementGetPayload<{
   };
 }>;
 
+export type CommunityCampaignAuthoredCopy = {
+  readonly eyebrow: string;
+  readonly title: string;
+  readonly ctaLabel: string | null;
+  readonly href: string | null;
+};
+
+function normalizedCopyString(
+  value: unknown,
+  maxLength: number,
+): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  return normalized.length > 0 && normalized.length <= maxLength
+    ? normalized
+    : null;
+}
+
+function safeCampaignHref(value: string | null): string | null {
+  if (!value) return null;
+  if (
+    value.startsWith("//") ||
+    value.includes("\\") ||
+    /[\u0000-\u001F\u007F]/.test(value)
+  ) {
+    return null;
+  }
+  if (value.startsWith("/")) {
+    try {
+      return new URL(value, "https://community.invalid").origin ===
+        "https://community.invalid"
+        ? value
+        : null;
+    } catch {
+      return null;
+    }
+  }
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" &&
+      url.username === "" &&
+      url.password === ""
+      ? value
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export function parseCommunityCampaignAuthoredCopy(
+  value: unknown,
+): CommunityCampaignAuthoredCopy | null {
+  const metadata = value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  const eyebrow = normalizedCopyString(metadata.eyebrow, 80);
+  const title = normalizedCopyString(metadata.title, 120);
+  if (!eyebrow || !title) return null;
+
+  const ctaLabel = normalizedCopyString(metadata.ctaLabel, 60);
+  const rawHref = normalizedCopyString(metadata.href, 512);
+  const href = safeCampaignHref(rawHref);
+  if (
+    (metadata.ctaLabel !== undefined && !ctaLabel) ||
+    (metadata.href !== undefined && (!rawHref || !href))
+  ) {
+    return null;
+  }
+  if (Boolean(ctaLabel) !== Boolean(href)) return null;
+  return { eyebrow, title, ctaLabel, href };
+}
+
 // Shared by the customer-facing Community renderer and Admin verification.
 // This is the runtime serving predicate, not an Admin projection query.
 export async function resolveCommunityCampaignPlacements(db: Db, limit = 6) {
@@ -68,7 +142,10 @@ export async function resolveCommunityCampaignPlacements(db: Db, limit = 6) {
     ];
     const attempts = sourceJobIds.length > 0
       ? await db.generationAttempt.findMany({
-          where: { requestId: { in: sourceJobIds } },
+          where: {
+            requestId: { in: sourceJobIds },
+            status: "succeeded",
+          },
           orderBy: [{ requestId: "asc" }, { attemptNo: "desc" }],
           select: { requestId: true, provider: true },
         })
@@ -80,8 +157,16 @@ export async function resolveCommunityCampaignPlacements(db: Db, limit = 6) {
       }
     }
     for (const placement of candidates) {
+      if (!parseCommunityCampaignAuthoredCopy(placement.metadata)) continue;
       const evidence = parseCreativeMediaAuthorityEvidence(placement.metadata);
-      if (evidence.kind === "invalid") continue;
+      const metadata = placement.metadata !== null &&
+        typeof placement.metadata === "object" &&
+        !Array.isArray(placement.metadata)
+        ? placement.metadata as Record<string, unknown>
+        : {};
+      const v2Owned = typeof metadata.creativeRunId === "string" ||
+        typeof metadata.creativeRunItemId === "string";
+      if (evidence.kind === "invalid" || (v2Owned && evidence.kind !== "present")) continue;
       const sourceJobId = placement.mediaAsset.sourceJobId;
       const authority = evaluateCreativeMediaAuthority({
         metadata: placement.mediaAsset.metadata,
@@ -95,6 +180,7 @@ export async function resolveCommunityCampaignPlacements(db: Db, limit = 6) {
         pinned: evidence.kind === "present"
           ? evidence.snapshot
           : undefined,
+        requireCompleteProviderAuthority: v2Owned,
       });
       if (authority.publishable) accepted.push(placement);
       if (accepted.length === normalizedLimit) break;

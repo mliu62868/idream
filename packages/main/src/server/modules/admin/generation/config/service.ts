@@ -12,7 +12,10 @@ import { transitionGenerationRequest } from "@/server/ai/generation-request-tran
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
-import { dimensionsForImageOrientation } from "@/server/modules/ourdream/generation-dimensions";
+import {
+  dimensionsForImageOrientation,
+  imageOrientations,
+} from "@/server/modules/ourdream/generation-dimensions";
 import { workflowKeyExists } from "@/server/modules/admin/generation-catalog";
 import { actorWithPermission, jsonBody, toInputJson, writeAudit } from "@/server/modules/admin/shared/legacy-primitives";
 import { redactGenerationJob as redactJob } from "@/server/modules/admin/shared/presenters";
@@ -40,7 +43,7 @@ const modelProfileSchema = z.object({
   runnerConfig: z.record(z.string(), z.unknown()).optional(),
   defaultWidth: z.number().int().min(128).max(4096).default(768),
   defaultHeight: z.number().int().min(128).max(4096).default(1024),
-  allowedOrientations: z.array(z.string().trim().min(1).max(20)).min(1).max(12),
+  allowedOrientations: z.array(z.enum(imageOrientations)).min(1).max(12),
   steps: z.number().int().min(1).max(150).default(28),
   sampler: z.string().trim().min(1).max(80).default("euler"),
   scheduler: z.string().trim().min(1).max(80).default("model_default"),
@@ -67,7 +70,7 @@ const modelProfilePatchSchema = z.object({
   runnerConfig: z.record(z.string(), z.unknown()).optional(),
   defaultWidth: z.number().int().min(128).max(4096).optional(),
   defaultHeight: z.number().int().min(128).max(4096).optional(),
-  allowedOrientations: z.array(z.string().trim().min(1).max(20)).min(1).max(12).optional(),
+  allowedOrientations: z.array(z.enum(imageOrientations)).min(1).max(12).optional(),
   steps: z.number().int().min(1).max(150).optional(),
   sampler: z.string().trim().min(1).max(80).optional(),
   scheduler: z.string().trim().min(1).max(80).optional(),
@@ -940,13 +943,13 @@ export async function publishModelProfile(request: Request, id: string) {
   }
 
   const dryRunSummary = body.dryRunSummary
-    ? toInputJson({
-        ...jsonRecord(profile.dryRunSummary),
-        ...body.dryRunSummary,
-      })
+    ? mergeModelProfilePublishEvidence(profile.dryRunSummary, body.dryRunSummary)
     : profile.dryRunSummary;
   if (!dryRunSummary) throw Errors.badRequest("Publish requires dry-run summary");
   assertModelProfilePublishable(profile, dryRunSummary);
+  const verifiedSummary = profile.mode === "image"
+    ? await attachVerifiedProfileTestEvidence(profile, dryRunSummary)
+    : dryRunSummary;
 
   const previous = await prisma.generationModelProfile.findFirst({
     where: { profileKey: profile.profileKey, status: "active" },
@@ -962,7 +965,7 @@ export async function publishModelProfile(request: Request, id: string) {
         status: "active",
         enabled: true,
         rolloutPercent: profile.rolloutPercent > 0 ? profile.rolloutPercent : 100,
-        dryRunSummary,
+        dryRunSummary: verifiedSummary,
         publishedAt: new Date(),
         archivedAt: null,
       },
@@ -977,6 +980,83 @@ export async function publishModelProfile(request: Request, id: string) {
     after: profileAuditSnapshot(published),
   });
   return ok({ profile: published, previousActiveId: previous?.id ?? null });
+}
+
+async function attachVerifiedProfileTestEvidence(
+  profile: {
+    id: string;
+    profileKey: string;
+    version: number;
+  },
+  summaryValue: Prisma.JsonValue | Prisma.InputJsonValue,
+): Promise<Prisma.InputJsonValue> {
+  const summary = jsonRecord(summaryValue);
+  const reviewedSamples = firstNumberFromRecord(summary, [
+    "consistencySampleCount",
+    "sampleCount",
+  ]) ?? 0;
+  const evidence = await prisma.generationJob.aggregate({
+    where: {
+      profileId: { in: [profile.id, profile.profileKey] },
+      profileVersion: profile.version,
+      sourceType: "admin_profile_test",
+      status: "completed",
+    },
+    _count: { _all: true },
+    _sum: { deliveredOutputCount: true },
+  });
+  const completedOutputs = evidence._sum.deliveredOutputCount ?? 0;
+  if (reviewedSamples > completedOutputs) {
+    throw Errors.badRequest(
+      "Publish requires completed profile-test outputs for every reviewed consistency sample",
+      {
+        reviewedSamples,
+        completedOutputs,
+        completedJobs: evidence._count._all,
+      },
+    );
+  }
+  return toInputJson({
+    ...summary,
+    profileTestJobCount: evidence._count._all,
+    profileTestOutputCount: completedOutputs,
+    profileTestEvidenceVerifiedAt: new Date().toISOString(),
+  });
+}
+
+function mergeModelProfilePublishEvidence(
+  storedSummary: Prisma.JsonValue,
+  submittedSummary: Record<string, unknown>,
+): Prisma.InputJsonValue {
+  const stored = jsonRecord(storedSummary);
+  const legacyConsistencySampleCount = numberFromRecord(submittedSummary, "sampleCount");
+  const consistencySampleCount =
+    numberFromRecord(submittedSummary, "consistencySampleCount") ??
+    legacyConsistencySampleCount;
+  const consistencyPassCount = numberFromRecord(submittedSummary, "consistencyPassCount");
+  const consistencyRate = firstNumberFromRecord(submittedSummary, [
+    "consistencyRate",
+    "consistencyPassRate",
+    "identityConsistencyRate",
+    "manualConsistencyRate",
+  ]);
+  const reviewUrl = stringFromRecord(submittedSummary, "reviewUrl");
+  const reviewSource =
+    stringFromRecord(submittedSummary, "reviewSource") ??
+    stringFromRecord(submittedSummary, "source");
+  const reviewStatus =
+    stringFromRecord(submittedSummary, "reviewStatus") ??
+    stringFromRecord(submittedSummary, "status");
+
+  return toInputJson({
+    ...stored,
+    ...(consistencySampleCount === undefined ? {} : { consistencySampleCount }),
+    ...(consistencyPassCount === undefined ? {} : { consistencyPassCount }),
+    ...(consistencyRate === undefined ? {} : { consistencyRate }),
+    ...(reviewUrl ? { reviewUrl } : {}),
+    ...(reviewSource ? { reviewSource } : {}),
+    ...(reviewStatus ? { reviewStatus } : {}),
+  });
 }
 
 function assertModelProfilePublishable(
@@ -1015,19 +1095,32 @@ function assertModelProfilePublishable(
     });
   }
 
-  const sampleCount = numberFromRecord(summary, "sampleCount");
+  const sampleCount = profile.mode === "image"
+    ? firstNumberFromRecord(summary, ["consistencySampleCount", "sampleCount"])
+    : numberFromRecord(summary, "sampleCount");
   const minSamples = profile.mode === "image" ? imageProfilePublishMinSamples : 1;
   if (sampleCount === undefined || sampleCount < minSamples) {
-    throw Errors.badRequest(`Publish requires at least ${minSamples} dry-run samples`, {
+    throw Errors.badRequest(
+      profile.mode === "image"
+        ? `Publish requires at least ${minSamples} reviewed consistency samples`
+        : `Publish requires at least ${minSamples} configuration-check samples`,
+      {
       sampleCount,
       minSamples,
-    });
+      },
+    );
   }
 
-  const successRate = numberFromRecord(summary, "successRate");
-  if (successRate !== undefined && successRate < modelProfilePublishMinRate) {
-    throw Errors.badRequest("Publish requires dry-run successRate >= 0.8", {
-      successRate,
+  const configurationPassRate = firstNumberFromRecord(summary, [
+    "configurationPassRate",
+    "successRate",
+  ]);
+  if (
+    configurationPassRate === undefined ||
+    configurationPassRate < modelProfilePublishMinRate
+  ) {
+    throw Errors.badRequest("Publish requires configuration-check pass rate >= 0.8", {
+      configurationPassRate: configurationPassRate ?? null,
     });
   }
 
@@ -1173,6 +1266,9 @@ export async function createProfileTestJob(request: Request, id: string) {
         status: "queued",
         costDreamcoins: 0,
         provider: profile.runner,
+        sourceType: "admin_profile_test",
+        sourceId: `${profile.id}:${randomUUID()}`,
+        sourceMeta: toInputJson({ profileRecordId: profile.id }),
       },
     });
     await appendAdminGenerationEvent(tx, created.id, "created", "Admin profile test job accepted", {

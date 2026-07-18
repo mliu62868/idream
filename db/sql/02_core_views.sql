@@ -107,7 +107,8 @@ SELECT
   CASE WHEN t.model_tier = 'deluxe' THEN 3 ELSE 1 END       AS memory_multiplier,
   COALESCE((t.m->>'unlimited_messages')::boolean, false)    AS unlimited_messages,
   COALESCE((t.m->>'voice_enabled')::boolean, false)         AS voice_enabled,
-  t.updated_at                                              AS updated_at
+  t.updated_at                                              AS updated_at,
+  COALESCE((t.m->>'image_tool_enabled')::boolean, true)     AS image_tool_enabled
 FROM tier t;
 
 -- 5.4 eligibility view: age gate / verification / jurisdiction -----------------

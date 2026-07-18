@@ -99,9 +99,9 @@ describe("Character Performance resumable fact backfills", () => {
     await prisma.characterFunnelDaily.deleteMany({ where: { characterId } });
     await prisma.aiUsageFact.deleteMany({ where: { characterId } });
     await prisma.chatExchangeFact.deleteMany({ where: { characterId } });
-    await prisma.characterRelease.delete({ where: { id: releaseId } });
-    await prisma.characterProject.delete({ where: { id: projectId } });
-    await prisma.characterContentVersion.delete({ where: { id: contentId } });
+    await prisma.characterRelease.deleteMany({ where: { id: releaseId } });
+    await prisma.characterProject.deleteMany({ where: { id: projectId } });
+    await prisma.characterContentVersion.deleteMany({ where: { id: contentId } });
     await prisma.$disconnect();
   });
 

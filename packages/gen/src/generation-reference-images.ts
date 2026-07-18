@@ -3,7 +3,11 @@ import { randomUUID } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-export type GenerationReferenceRole = "identity_anchor" | "identity_reference" | "source_image";
+export type GenerationReferenceRole =
+  | "identity_anchor"
+  | "identity_reference"
+  | "look_reference"
+  | "source_image";
 
 export type GenerationReferenceImage = {
   assetId?: string;

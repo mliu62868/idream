@@ -1,5 +1,4 @@
 import type { Prisma } from "@prisma/client";
-import { z } from "zod";
 import { mockVideoMp4Bytes } from "@idream/shared";
 import { MAIN_TO_CHAT_EVENTS, MAIN_TO_CHAT_QUEUE, idempotencyKeys } from "@idream/shared/contracts";
 import {
@@ -9,8 +8,10 @@ import {
 import { jobQueue } from "@/server/jobs/queue";
 import type { QueueJob } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
+import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { appendCanonicalMetricEvent } from "@/server/modules/admin-v2/metrics/event-writer";
+import { createClassifiedAnalyticsEvent } from "@/server/modules/admin-v2/metrics/classified-event-writer";
 import { providers } from "@/server/providers";
 import {
   markProductionItemFailed,
@@ -41,9 +42,6 @@ export const localAiQueueNames = [
   "ai.image.generate",
   "ai.video.generate",
   "app.ai.finalize",
-  // character preview: enqueued by previewDraft, drained here so slow image
-  // providers don't block the HTTP request (the client polls the job status).
-  "character.preview",
 ] as const;
 
 export interface LocalAiDrainResult {
@@ -57,12 +55,14 @@ export interface LocalAiDrainResult {
   processed: number;
 }
 
-const placeholderImagePng = Uint8Array.from(
-  Buffer.from(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
-    "base64",
-  ),
-);
+class GeneratedAssetBodyMissingError extends Error {
+  readonly code = "asset_body_missing";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "GeneratedAssetBodyMissingError";
+  }
+}
 
 function baselineGeneratedImageQuality() {
   return {
@@ -185,116 +185,8 @@ async function processLocalAiJob(job: QueueJob) {
   if (job.queue === "app.ai.finalize") {
     return processFinalize(job.payload);
   }
-  if (job.queue === "character.preview") {
-    return processCharacterPreview(job.payload, job);
-  }
 
   throw new Error(`Unsupported local AI queue: ${job.queue}`);
-}
-
-// SPEC: async character preview. previewDraft enqueues {draftId, previewJobId};
-// this generates the preview image off the request path and settles the
-// CharacterPreviewJob to completed|failed so the client poll resolves.
-// INVARIANTS: terminal-only outcome (never strands at running); idempotent — a
-// re-delivered job whose preview already completed (or whose job/draft row is
-// gone) is a no-op. ownerId is read from the draft (SSoT), not the payload.
-const previewPayloadSchema = z.object({
-  draftId: z.string().min(1),
-  previewJobId: z.string().min(1),
-});
-
-async function processCharacterPreview(payloadValue: Prisma.JsonValue, jobMeta: QueueJob) {
-  const { draftId, previewJobId } = previewPayloadSchema.parse(payloadValue);
-  try {
-    return await runCharacterPreview(draftId, previewJobId);
-  } catch (error) {
-    if (!isFinalAttempt(jobMeta)) throw error;
-    await failPreview(previewJobId, "preview_worker_error");
-  }
-}
-
-async function runCharacterPreview(draftId: string, previewJobId: string) {
-  const job = await prisma.characterPreviewJob.findUnique({ where: { id: previewJobId } });
-  if (!job || job.status === "completed" || job.status === "failed") return; // already settled / gone
-
-  const draft = await prisma.characterDraft.findUnique({ where: { id: draftId } });
-  if (!draft) {
-    await failPreview(previewJobId, "draft_not_found");
-    return;
-  }
-
-  const claimed = await prisma.characterPreviewJob.updateMany({
-    where: { id: previewJobId, status: { notIn: ["completed", "failed"] } },
-    data: { status: "running" },
-  });
-  if (claimed.count === 0) return;
-
-  const image = await providers.image.generate({
-    prompt: draft.name ?? "custom character",
-    count: 1,
-    seed: draftId,
-  });
-  if (!image.ok) {
-    await failPreview(previewJobId, image.error.code ?? "preview_generate_failed");
-    return;
-  }
-
-  // Persist the generated image and expose it via the same /user-content route as
-  // normal generation, so the preview shows the REAL character image. Mock
-  // providers return no body → fall back to the placeholder PNG bytes. The storage
-  // key is per-job (previewJobId) so regenerating the same draft can't collide on
-  // the unique storageKey.
-  const generated = image.data.assets[0];
-  const contentType = generated?.contentType ?? "image/png";
-  const key = `preview/${previewJobId}${mediaFileExtension(contentType)}`;
-  const persisted = await providers.blob.putPrivate({
-    key,
-    body: generated?.body ?? new Uint8Array(placeholderImagePng),
-    contentType,
-  });
-  if (!persisted.ok) {
-    await failPreview(previewJobId, "preview_persist_failed");
-    return;
-  }
-
-  const mediaId = `media_${cryptoRandomId()}`;
-  const displayUrl = `/user-content/${mediaRouteToken(mediaId)}/content${mediaFileExtension(contentType)}`;
-  const asset = await prisma.mediaAsset.create({
-    data: {
-      id: mediaId,
-      ownerId: draft.ownerId,
-      type: "image",
-      url: displayUrl,
-      thumbnailUrl: displayUrl,
-      storageKey: key,
-      contentType,
-      width: generated?.width,
-      height: generated?.height,
-      providerAssetId: key,
-      prompt: draft.name,
-      visibility: "private",
-      safetyStatus: "passed",
-      metadata: { providerKey: key, source: "character_preview" },
-    },
-  });
-
-  await prisma.characterPreviewJob.update({
-    where: { id: previewJobId },
-    data: { status: "completed", resultAssetId: asset.id, completedAt: new Date() },
-  });
-  await prisma.characterDraft.update({
-    where: { id: draftId },
-    data: { previewJobId },
-  });
-}
-
-// updateMany (not update) so a job row deleted mid-flight settles to a no-op
-// instead of throwing and forcing a pointless BullMQ retry.
-async function failPreview(previewJobId: string, errorCode: string) {
-  await prisma.characterPreviewJob.updateMany({
-    where: { id: previewJobId },
-    data: { status: "failed", errorCode, completedAt: new Date() },
-  });
 }
 
 async function processImageGenerate(payloadValue: Prisma.JsonValue, jobMeta: QueueJob) {
@@ -374,21 +266,23 @@ async function runImageGenerate(payload: ImageGeneratePayload, jobMeta: QueueJob
   try {
     assets = await Promise.all(
       result.data.assets.map(async (asset, index) => {
-        const hasProviderBody = Boolean(asset.body);
-        const contentType = hasProviderBody ? (asset.contentType ?? "image/png") : "image/png";
+        if (!asset.body) {
+          throw new GeneratedAssetBodyMissingError(
+            `Image provider returned no bytes for asset ${index + 1}`,
+          );
+        }
+        const contentType = asset.contentType ?? "image/png";
         const key = generatedAssetStorageKey(
           payload.outputPrefix,
           `image-${index + 1}`,
           contentType,
           ".png",
         );
-        const body = asset.body ?? new Uint8Array(placeholderImagePng);
-        if (hasProviderBody) {
-          assertGeneratedImageSanity(
-            Buffer.from(body),
-            `${payload.generationJobId} asset ${index + 1}`,
-          );
-        }
+        const body = asset.body;
+        assertGeneratedImageSanity(
+          Buffer.from(body),
+          `${payload.generationJobId} asset ${index + 1}`,
+        );
         const persisted = await providers.blob.putPrivate({
           key,
           body,
@@ -411,7 +305,9 @@ async function runImageGenerate(payload: ImageGeneratePayload, jobMeta: QueueJob
     if (!isFinalAttempt(jobMeta)) throw error;
     await enqueueGenerationFailed(
       payload,
-      error instanceof GeneratedImageSanityError ? error.code : "asset_persist_failed",
+      error instanceof GeneratedImageSanityError || error instanceof GeneratedAssetBodyMissingError
+        ? error.code
+        : "asset_persist_failed",
       errorMessage(error, "Failed to persist generated image assets"),
     );
     return;
@@ -427,6 +323,8 @@ async function runImageGenerate(payload: ImageGeneratePayload, jobMeta: QueueJob
       attemptId: payload.attemptId,
       attemptNo: payload.attemptNo,
       mode: "image",
+      provider: env.IMAGE_PROVIDER,
+      model: payload.model,
       assets,
       usage: { gpuSeconds: assets.length * 1.2, model: payload.model },
     } satisfies AiFinalizePayload),
@@ -514,6 +412,8 @@ async function runVideoGenerate(payload: VideoGeneratePayload, jobMeta: QueueJob
       attemptId: payload.attemptId,
       attemptNo: payload.attemptNo,
       mode: "video",
+      provider: "mock",
+      model: payload.model,
       assets: [
         {
           key: assetKey,
@@ -531,9 +431,129 @@ async function runVideoGenerate(payload: VideoGeneratePayload, jobMeta: QueueJob
 async function processFinalize(payloadValue: Prisma.JsonValue) {
   const payload = aiFinalizePayloadSchema.parse(payloadValue);
 
+  if (payload.kind === "character.preview.completed") {
+    return finalizeCharacterPreviewCompleted(payload);
+  }
+  if (payload.kind === "character.preview.failed") {
+    return finalizeCharacterPreviewFailed(payload);
+  }
   if (payload.kind === "generation.completed") return finalizeGenerationCompleted(payload);
   if (payload.kind === "generation.failed") return finalizeGenerationFailed(payload);
   if (payload.kind === "generation.blocked") return finalizeGenerationBlocked(payload);
+}
+
+async function finalizeCharacterPreviewCompleted(
+  payload: Extract<AiFinalizePayload, { kind: "character.preview.completed" }>,
+) {
+  const previewJob = await prisma.characterPreviewJob.findFirst({
+    where: {
+      id: payload.previewJobId,
+      draftId: payload.draftId,
+    },
+    include: {
+      draft: {
+        select: {
+          ownerId: true,
+          name: true,
+        },
+      },
+    },
+  });
+  if (!previewJob || previewJob.status === "completed" || previewJob.status === "failed") {
+    return;
+  }
+  if (previewJob.draft.ownerId !== payload.userId) {
+    await finalizeCharacterPreviewFailed({
+      version: 1,
+      kind: "character.preview.failed",
+      requestId: payload.requestId,
+      previewJobId: payload.previewJobId,
+      draftId: payload.draftId,
+      userId: payload.userId,
+      error: {
+        code: "preview_owner_mismatch",
+        message: "Character preview owner did not match the authoritative draft",
+        retryable: false,
+      },
+    });
+    return;
+  }
+
+  const mediaId = `media_preview_${payload.previewJobId}`;
+  const displayUrl =
+    `/user-content/${mediaRouteToken(mediaId)}/content` +
+    mediaFileExtension(payload.asset.contentType);
+  const providerKey =
+    typeof payload.asset.providerKey === "string"
+      ? payload.asset.providerKey
+      : payload.asset.key;
+
+  await prisma.$transaction(async (tx) => {
+    await tx.mediaAsset.upsert({
+      where: { id: mediaId },
+      update: {},
+      create: {
+        id: mediaId,
+        ownerId: payload.userId,
+        type: "image",
+        url: displayUrl,
+        thumbnailUrl: displayUrl,
+        storageKey: payload.asset.key,
+        contentType: payload.asset.contentType,
+        width: payload.asset.width,
+        height: payload.asset.height,
+        providerAssetId: providerKey,
+        prompt: previewJob.draft.name,
+        visibility: "private",
+        safetyStatus: "passed",
+        metadata: {
+          provider: payload.provider,
+          model: payload.model,
+          providerKey,
+          source: "character_preview",
+          synthetic: payload.provider === "mock",
+        },
+      },
+    });
+    const settled = await tx.characterPreviewJob.updateMany({
+      where: {
+        id: payload.previewJobId,
+        draftId: payload.draftId,
+        status: { notIn: ["completed", "failed"] },
+      },
+      data: {
+        status: "completed",
+        provider: payload.provider,
+        resultAssetId: mediaId,
+        errorCode: null,
+        completedAt: new Date(),
+      },
+    });
+    if (settled.count === 1) {
+      await tx.characterDraft.updateMany({
+        where: { id: payload.draftId, ownerId: payload.userId },
+        data: { previewJobId: payload.previewJobId },
+      });
+    }
+  });
+}
+
+async function finalizeCharacterPreviewFailed(
+  payload: Extract<AiFinalizePayload, { kind: "character.preview.failed" }>,
+) {
+  await prisma.characterPreviewJob.updateMany({
+    where: {
+      id: payload.previewJobId,
+      draftId: payload.draftId,
+      draft: { ownerId: payload.userId },
+      status: { notIn: ["completed", "failed"] },
+    },
+    data: {
+      status: "failed",
+      errorCode: payload.error.code,
+      completedAt: new Date(),
+    },
+  });
 }
 
 async function recordTerminalArtifactDeliveryEvidence(
@@ -692,9 +712,7 @@ async function finalizeGenerationCompleted(
         const mediaId = `media_${cryptoRandomId()}`;
         const providerKey = typeof asset.providerKey === "string" ? asset.providerKey : asset.key;
         const displayUrl =
-          payload.mode === "image"
-            ? `/user-content/${mediaRouteToken(mediaId)}/content${mediaFileExtension(asset.contentType)}`
-            : "/images/ourdream/promo-card-female.webp";
+          `/user-content/${mediaRouteToken(mediaId)}/content${mediaFileExtension(asset.contentType)}`;
         await tx.mediaAsset.create({
           data: {
             id: mediaId,
@@ -703,7 +721,7 @@ async function finalizeGenerationCompleted(
             characterId: job.characterId,
             type: payload.mode,
             url: displayUrl,
-            thumbnailUrl: displayUrl,
+            thumbnailUrl: payload.mode === "image" ? displayUrl : null,
             storageKey: asset.key,
             contentType: asset.contentType,
             width: asset.width,
@@ -715,8 +733,9 @@ async function finalizeGenerationCompleted(
             safetyStatus: outputModeration.status,
             metadata: toInputJson({
               index,
-              provider: "mock-pipeline",
+              provider: payload.provider ?? job.provider ?? "unknown",
               providerKey,
+              synthetic: payload.provider?.startsWith("mock") ?? false,
               contentType: asset.contentType,
               width: asset.width,
               height: asset.height,
@@ -895,8 +914,9 @@ async function finalizeGenerationCompleted(
           requestId: job.id,
           ...(attemptId ? { attemptId } : {}),
           userId: job.userId,
-          provider: job.provider ?? "local-pipeline",
-          model: job.model ?? (typeof payload.usage.model === "string" ? payload.usage.model : "unknown"),
+          provider: payload.provider ?? job.provider ?? "local-pipeline",
+          model: payload.model ?? job.model ??
+            (typeof payload.usage.model === "string" ? payload.usage.model : "unknown"),
           usage: payload.usage,
           pricingVersion: null,
         },
@@ -1417,13 +1437,12 @@ async function trackEvent(
   props: unknown,
   ctx: { userId?: string; anonymousId?: string },
 ) {
-  return prisma.analyticsEvent.create({
-    data: {
-      userId: ctx.userId,
-      anonymousId: ctx.anonymousId,
-      name,
-      props: toInputJson(props),
-    },
+  return createClassifiedAnalyticsEvent(prisma, {
+    userId: ctx.userId,
+    anonymousId: ctx.anonymousId,
+    name,
+    props,
+    sourceService: "main-worker",
   });
 }
 

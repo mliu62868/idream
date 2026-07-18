@@ -1,40 +1,207 @@
-// SPEC: CMS 公开读路径的 DB override 源（ADMIN_PHASE3_DESIGN §3.2）。
-// INTENT: 公开 [...slug] 优先读 published RoutePage；任何 DB 错误或无已发布行 → null，
-//         由调用方 fallback 到静态 getOurdreamRoute。故 DB 不可达时构建/渲染仍正常（韧性）。
-//         用 unstable_cache 包裹（per-path，60s ISR + tag），让 SEO 页保持静态/ISR 而非每次
-//         请求都打 DB 退化为动态 SSR；编辑经 ISR 在 ≤60s 生效（无需发版）。
 import { unstable_cache } from "next/cache";
 import { prisma } from "@/server/lib/db";
+import { logger } from "@/server/lib/logger";
+import {
+  CMS_CONTENT_SCHEMA_VERSION,
+  cmsCacheTag,
+  inspectCmsPublication,
+  validateCmsPublication,
+  type CmsArticleBody,
+  type CmsIndexingStatus,
+  type CmsPublicationCandidate,
+} from "@/server/cms/route-page-contract";
 
 export type PublishedRoutePage = {
-  path: string;
-  title: string;
-  description: string;
+  body: CmsArticleBody;
   canonical: string | null;
-  body: unknown;
+  description: string;
+  indexingStatus: CmsIndexingStatus;
+  path: string;
+  publishedAt: Date;
+  template: "article";
+  title: string;
+  updatedAt: Date;
 };
 
-async function readPublishedRoutePage(path: string): Promise<PublishedRoutePage | null> {
-  try {
-    const page = await prisma.routePage.findUnique({ where: { path } });
-    if (!page || page.contentStatus !== "published") return null;
+export type CmsRouteResolution =
+  | { state: "published"; page: PublishedRoutePage }
+  | { state: "absent"; reason: "missing" | "not_published" }
+  | {
+      state: "invalid";
+      issues: Array<{ code: string; path: string }>;
+    }
+  | { state: "unavailable" };
+
+type RoutePageRow = CmsPublicationCandidate & {
+  contentSchemaVersion: number | null;
+  contentStatus: string;
+  publishedAt: Date | null;
+  updatedAt: Date;
+};
+
+const routePageSelect = {
+  path: true,
+  template: true,
+  title: true,
+  description: true,
+  canonical: true,
+  contentStatus: true,
+  contentSchemaVersion: true,
+  indexingStatus: true,
+  body: true,
+  publishedAt: true,
+  updatedAt: true,
+} as const;
+
+export function resolveCmsRouteRow(
+  row: RoutePageRow | null,
+): Exclude<CmsRouteResolution, { state: "unavailable" }> {
+  if (!row) return { state: "absent", reason: "missing" };
+  if (row.contentStatus !== "published") {
+    return { state: "absent", reason: "not_published" };
+  }
+
+  if (
+    row.contentSchemaVersion !== CMS_CONTENT_SCHEMA_VERSION ||
+    row.publishedAt === null
+  ) {
     return {
-      path: page.path,
-      title: page.title,
-      description: page.description,
-      canonical: page.canonical,
-      body: page.body,
+      state: "invalid",
+      issues: [
+        {
+          code: "invalid_publication_version",
+          path: "contentSchemaVersion",
+        },
+      ],
     };
-  } catch {
-    // DB 不可达/未迁移 → 退回静态页，绝不让 CMS 拖垮公开渲染。
-    return null;
+  }
+
+  const candidate = {
+    body: row.body,
+    canonical: row.canonical,
+    description: row.description,
+    indexingStatus: row.indexingStatus,
+    path: row.path,
+    template: row.template,
+    title: row.title,
+  };
+  const readiness = inspectCmsPublication(candidate);
+  if (readiness.publishability === "blocked") {
+    return {
+      state: "invalid",
+      issues: readiness.issues.map((issue) => ({
+        code: issue.code,
+        path: issue.path,
+      })),
+    };
+  }
+
+  const validated = validateCmsPublication(candidate);
+  return {
+    state: "published",
+    page: {
+      body: validated.body,
+      canonical: validated.canonical,
+      description: validated.description,
+      indexingStatus: validated.indexingStatus,
+      path: validated.path,
+      publishedAt: row.publishedAt,
+      template: validated.template,
+      title: validated.title,
+      updatedAt: row.updatedAt,
+    },
+  };
+}
+
+export async function resolveCmsRouteWithReader(
+  path: string,
+  read: (path: string) => Promise<RoutePageRow | null>,
+): Promise<CmsRouteResolution> {
+  try {
+    return resolveCmsRouteRow(await read(path));
+  } catch (error) {
+    logger.error(
+      {
+        errorKind: error instanceof Error ? error.name : typeof error,
+        path,
+      },
+      "CMS route authority is unavailable",
+    );
+    return { state: "unavailable" };
   }
 }
 
-export async function loadPublishedRoutePage(path: string): Promise<PublishedRoutePage | null> {
-  const cached = unstable_cache(() => readPublishedRoutePage(path), ["cms-route-page", path], {
-    revalidate: 60,
-    tags: ["cms-pages", `cms-page:${path}`],
-  });
-  return cached();
+export async function loadPublishedRoutePage(
+  path: string,
+): Promise<CmsRouteResolution> {
+  const cached = unstable_cache(
+    async () => {
+      const row = await prisma.routePage.findUnique({
+        where: { path },
+        select: routePageSelect,
+      });
+      return resolveCmsRouteRow(row);
+    },
+    ["cms-route-page", path],
+    {
+      revalidate: 60,
+      tags: ["cms-pages", cmsCacheTag(path)],
+    },
+  );
+
+  try {
+    return await cached();
+  } catch (error) {
+    // Rejections are not converted into a cacheable "missing" result.
+    logger.error(
+      {
+        errorKind: error instanceof Error ? error.name : typeof error,
+        path,
+      },
+      "CMS route read failed",
+    );
+    return { state: "unavailable" };
+  }
+}
+
+export async function loadPublishedRoutePagesForDistribution(): Promise<
+  PublishedRoutePage[]
+> {
+  try {
+    const rows = await prisma.routePage.findMany({
+      where: {
+        contentStatus: "published",
+        contentSchemaVersion: CMS_CONTENT_SCHEMA_VERSION,
+      },
+      select: routePageSelect,
+      orderBy: { path: "asc" },
+    });
+    return rows
+      .map(resolveCmsRouteRow)
+      .filter(
+        (
+          resolution,
+        ): resolution is Extract<CmsRouteResolution, { state: "published" }> =>
+          resolution.state === "published",
+      )
+      .map((resolution) => resolution.page);
+  } catch (error) {
+    logger.error(
+      {
+        errorKind: error instanceof Error ? error.name : typeof error,
+      },
+      "CMS sitemap authority is unavailable",
+    );
+    throw new Error("CMS sitemap authority is unavailable", { cause: error });
+  }
+}
+
+export async function loadIndexablePublishedRoutePages(): Promise<
+  PublishedRoutePage[]
+> {
+  return (await loadPublishedRoutePagesForDistribution()).filter(
+    (page) =>
+      page.indexingStatus === "index" &&
+      (page.canonical === null || page.canonical === page.path),
+  );
 }

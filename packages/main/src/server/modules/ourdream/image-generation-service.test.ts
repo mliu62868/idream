@@ -2,8 +2,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Prisma } from "@prisma/client";
 import type { AiFinalizePayload } from "@/server/ai/schemas";
 import { drainLocalAiPipeline, reconcileStaleGenerationJobs } from "@/server/ai/local-pipeline";
+import { enqueueGenerationAttempt } from "@/server/modules/generation/attempt-dispatch";
 import { jobQueue } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
+import { referenceSetSnapshotHash } from "@/server/modules/admin-v2/characters/release-snapshot";
 import {
   api,
   createCharacter,
@@ -12,6 +14,7 @@ import {
   expectError,
   expectOk,
   grantCoins,
+  publishCharacterForPublicAudience,
   purgeTestData,
   runQueuedGenerationJobs,
 } from "@/server/test/helpers";
@@ -24,10 +27,241 @@ function asInputJson(value: AiFinalizePayload): Prisma.InputJsonValue {
   return value as unknown as Prisma.InputJsonValue;
 }
 
+async function createSealedReferenceSet(input: {
+  id: string;
+  visualProfileId: string;
+  revision?: number;
+  references: Array<{
+    mediaAssetId: string;
+    role: string;
+    weight: number;
+    selectionReason: string;
+  }>;
+}) {
+  const revision = input.revision ?? 1;
+  const references = input.references.map((reference, position) => ({
+    ...reference,
+    position,
+  }));
+  return prisma.referenceSetRevision.create({
+    data: {
+      id: input.id,
+      visualProfileId: input.visualProfileId,
+      revision,
+      status: "active",
+      selectorVersion: "v1",
+      createdFrom: "test",
+      snapshotHash: referenceSetSnapshotHash({
+        visualProfileId: input.visualProfileId,
+        revision,
+        selectorVersion: "v1",
+        references,
+      }),
+      references: {
+        create: references.map((reference) => ({
+          ...reference,
+          selectorVersion: "v1",
+        })),
+      },
+    },
+    include: { references: true },
+  });
+}
+
+async function completeCharacterPreview(input: {
+  previewJobId: string;
+  draftId: string;
+  userId: string;
+}) {
+  const dedupeKey = `character-preview:${input.previewJobId}`;
+  const queued = await jobQueue.getByDedupeKey("character.preview", dedupeKey);
+  expect(queued?.payload).toMatchObject({
+    kind: "character.preview",
+    previewJobId: input.previewJobId,
+    draftId: input.draftId,
+    userId: input.userId,
+    model: expect.not.stringContaining("mock"),
+  });
+  await jobQueue.removeByDedupePrefix(dedupeKey, ["character.preview"]);
+  await jobQueue.enqueue({
+    queue: "app.ai.finalize",
+    payload: asInputJson({
+      version: 1,
+      kind: "character.preview.completed",
+      requestId: `character-preview:${input.previewJobId}`,
+      previewJobId: input.previewJobId,
+      draftId: input.draftId,
+      userId: input.userId,
+      provider: "backend",
+      model: "redcraft-krea2-comfyui",
+      asset: {
+        key: `preview/${input.previewJobId}/image-1.webp`,
+        width: 832,
+        height: 1024,
+        contentType: "image/webp",
+      },
+    }),
+    dedupeKey: `character-preview-finalize:${input.previewJobId}:completed`,
+  });
+  await drainLocalAiPipeline({
+    limit: 2,
+    queues: ["app.ai.finalize"],
+    workerId: `${P}preview-finalizer`,
+  });
+  await jobQueue.removeByDedupePrefix(
+    `character-preview-finalize:${input.previewJobId}:`,
+    ["app.ai.finalize"],
+  );
+}
+
 beforeAll(async () => {
   await purgeTestData(P);
+  await prisma.generationModelProfile.create({
+    data: {
+      id: `${P}compatible-reference-route-v2`,
+      profileKey: "chat-image-edit",
+      label: "Compatible Character reference test route",
+      mode: "image",
+      runner: "comfyui",
+      pipelineModel: "qwen-image-edit",
+      workflowKey: "qwen-image-edit-img2img",
+      runnerConfig: {
+        workflowVersion: 1,
+        capabilities: {
+          textToImage: true,
+          stableSeed: true,
+          referenceImages: true,
+          initImage: true,
+          lora: false,
+        },
+      },
+      allowedOrientations: ["4:5", "16:9"],
+      costMultiplier: 1,
+      maxCount: 4,
+      version: 2,
+      status: "active",
+    },
+  });
   await createUser({ id: SYS });
   await createCharacter({ id: CHAR, creatorId: SYS, visibility: "public", status: "approved" });
+  const assetId = `${P}sys-char-asset`;
+  const profileId = `${P}sys-char-profile`;
+  const referenceSetId = `${P}sys-char-reference-set`;
+  const projectId = `${P}sys-char-project`;
+  const releaseId = `${P}sys-char-release`;
+  await prisma.mediaAsset.create({
+    data: {
+      id: assetId,
+      ownerId: SYS,
+      characterId: CHAR,
+      type: "image",
+      url: "/images/ourdream/card-sarah-mercer.webp",
+      storageKey: `${P}sys-char-asset.webp`,
+      visibility: "public_pack",
+      safetyStatus: "passed",
+      metadata: {
+        synthetic: false,
+        platformAsset: { status: "active" },
+      },
+    },
+  });
+  await prisma.character.update({
+    where: { id: CHAR },
+    data: { imageAssetId: assetId },
+  });
+  await prisma.characterVisualProfile.create({
+    data: {
+      id: profileId,
+      characterId: CHAR,
+      version: 1,
+      status: "active",
+      style: "realistic",
+      identityPrompt: "Stable official test identity",
+      faceTraits: {},
+      hairTraits: {},
+      bodyTraits: {},
+      signatureTraits: {},
+      styleTraits: {},
+      anchorAssetIds: [assetId],
+      referenceAssetIds: [],
+      adapterRefs: {},
+      createdFrom: "test",
+    },
+  });
+  await createSealedReferenceSet({
+    id: referenceSetId,
+    visualProfileId: profileId,
+    references: [
+      {
+        mediaAssetId: assetId,
+        role: "primary_face",
+        weight: 1,
+        selectionReason: "primary_identity_anchor",
+      },
+    ],
+  });
+  await prisma.characterProject.create({
+    data: {
+      id: projectId,
+      characterId: CHAR,
+      ownerId: SYS,
+      audience: {},
+      successCriteria: [],
+      activeKey: `official:${CHAR}`,
+    },
+  });
+  await prisma.characterRelease.create({
+    data: {
+      id: releaseId,
+      projectId,
+      revisionId: `${releaseId}:revision`,
+      characterContentVersionId: `${releaseId}:content`,
+      visualProfileId: profileId,
+      visualProfileVersion: 1,
+      referenceSetRevisionId: referenceSetId,
+      generationProvenance: {
+        schemaVersion: "character-release-editorial-import-v1",
+        sourceAssetId: assetId,
+      },
+      releasePlacementManifest: {
+        schemaVersion: 1,
+        kind: "editorial_import",
+        placements: [
+          {
+            slotKey: "character_avatar",
+            assetId,
+            slotVersion: 1,
+          },
+        ],
+      },
+      snapshotHash: `${releaseId}:snapshot`,
+      readiness: "ready",
+      legacy: true,
+      status: "published",
+      publishedAt: new Date(),
+    },
+  });
+  await prisma.publicCatalogQualification.create({
+    data: {
+      id: `${releaseId}:qualification`,
+      releaseId,
+      releaseSnapshotHash: `${releaseId}:snapshot`,
+      kind: "editorial_import",
+      evidence: {
+        schemaVersion: "public-catalog-qualification-v1",
+        policyVersion: "public-catalog-editorial-import-v1",
+        sourceAssetId: assetId,
+      },
+    },
+  });
+  await prisma.characterServing.create({
+    data: {
+      id: `${releaseId}:serving`,
+      characterId: CHAR,
+      currentReleaseId: releaseId,
+      state: "live",
+    },
+  });
 });
 
 afterAll(async () => {
@@ -36,6 +270,326 @@ afterAll(async () => {
 });
 
 describe("image generation service contract", () => {
+  it("queues a live legacy editorial Character without inventing identity authority", async () => {
+    const userId = `${P}legacy-editorial-user`;
+    const characterId = `${P}legacy-editorial-character`;
+    await createUser({ id: userId });
+    await createCharacter({
+      id: characterId,
+      name: "Legacy Editorial Muse",
+      source: "official",
+      visibility: "public",
+      status: "approved",
+    });
+    const published = await publishCharacterForPublicAudience({
+      characterId,
+      ownerId: SYS,
+    });
+    await grantCoins(userId, 100, "seed");
+
+    const response = await api("POST", "generation/jobs", {
+      userId,
+      ageGate: true,
+      body: { mode: "image", characterId, outputCount: 1 },
+    });
+    expectOk(response, 202);
+
+    const job = await prisma.generationJob.findUniqueOrThrow({
+      where: { id: response.data.job.id as string },
+    });
+    expect(job).toMatchObject({
+      characterId,
+      visualProfileId: null,
+      visualProfileVersion: null,
+      referenceSetRevisionId: null,
+      referenceManifest: null,
+      profileId: "profile_image_default_v1",
+      model: "redcraft-krea2-txt2img",
+      recipeId: "template_image_character_default",
+      status: "queued",
+    });
+    expect(job.controls).toMatchObject({
+      legacyReleaseAuthority: {
+        schemaVersion: "legacy-character-generation-authority-v1",
+        characterId,
+        releaseId: published.releaseId,
+        releaseSnapshotHash: `${published.releaseId}-snapshot`,
+        qualificationId: `${published.releaseId}-qualification`,
+        qualificationKind: "editorial_import",
+        qualificationPolicyVersion: "public-catalog-editorial-import-v1",
+      },
+    });
+    expect(job.prompt).toContain("Legacy Editorial Muse");
+    expect(
+      await prisma.characterVisualProfile.count({ where: { characterId } }),
+    ).toBe(0);
+    await expect(
+      prisma.characterServing.findUniqueOrThrow({ where: { characterId } }),
+    ).resolves.toMatchObject({
+      currentReleaseId: published.releaseId,
+      state: "live",
+    });
+
+    await runQueuedGenerationJobs(8);
+  });
+
+  it("keeps a live legacy Release authoritative over an unpinned active profile", async () => {
+    const userId = `${P}legacy-profile-coexist-user`;
+    const characterId = `${P}legacy-profile-coexist-character`;
+    const profileId = `${P}legacy-profile-coexist-profile`;
+    await createUser({ id: userId });
+    await createCharacter({
+      id: characterId,
+      creatorId: userId,
+      name: "Legacy Coexist Muse",
+      source: "official",
+      visibility: "public",
+      status: "approved",
+    });
+    const published = await publishCharacterForPublicAudience({
+      characterId,
+      ownerId: SYS,
+    });
+    await prisma.characterVisualProfile.create({
+      data: {
+        id: profileId,
+        characterId,
+        version: 1,
+        status: "active",
+        style: "realistic",
+        identityPrompt: "Unreleased staged identity",
+        faceTraits: {},
+        hairTraits: {},
+        bodyTraits: {},
+        signatureTraits: {},
+        styleTraits: {},
+        anchorAssetIds: [],
+        referenceAssetIds: [],
+        adapterRefs: {},
+        createdFrom: "test",
+      },
+    });
+    await grantCoins(userId, 100, "seed");
+
+    const response = await api("POST", "generation/jobs", {
+      userId,
+      ageGate: true,
+      body: { mode: "image", characterId, outputCount: 1 },
+    });
+    expectOk(response, 202);
+    await expect(
+      prisma.generationJob.findUniqueOrThrow({
+        where: { id: response.data.job.id as string },
+      }),
+    ).resolves.toMatchObject({
+      visualProfileId: null,
+      visualProfileVersion: null,
+      controls: {
+        legacyReleaseAuthority: {
+          releaseId: published.releaseId,
+          releaseSnapshotHash: `${published.releaseId}-snapshot`,
+        },
+      },
+    });
+    await expect(
+      prisma.characterVisualProfile.findMany({
+        where: { characterId },
+        select: { id: true, status: true },
+      }),
+    ).resolves.toEqual([{ id: profileId, status: "active" }]);
+
+    await runQueuedGenerationJobs(8);
+  });
+
+  it("fails legacy replay, retry, and dispatch closed after serving switches release authority", async () => {
+    const userId = `${P}legacy-switch-user`;
+    const characterId = `${P}legacy-switch-character`;
+    const profileId = `${P}legacy-switch-profile`;
+    const modernReleaseId = `${P}legacy-switch-modern-release`;
+    const modernSnapshotHash = `${modernReleaseId}-snapshot`;
+    const validationRunId = `${modernReleaseId}-validation`;
+    await createUser({ id: userId });
+    await createCharacter({
+      id: characterId,
+      creatorId: userId,
+      name: "Legacy Switch Muse",
+      source: "official",
+      visibility: "public",
+      status: "approved",
+    });
+    const published = await publishCharacterForPublicAudience({
+      characterId,
+      ownerId: SYS,
+    });
+    await grantCoins(userId, 100, "seed");
+
+    const created = await api("POST", "generation/jobs", {
+      userId,
+      ageGate: true,
+      body: { mode: "image", characterId, outputCount: 1 },
+    });
+    expectOk(created, 202);
+    const generationJobId = created.data.job.id as string;
+    await jobQueue.removeByDedupePrefix(
+      `generation:${generationJobId}`,
+      ["ai.image.generate"],
+    );
+    await prisma.generationJob.update({
+      where: { id: generationJobId },
+      data: { status: "failed", errorCode: "legacy-switch-fixture" },
+    });
+
+    const retryKey = `${P}legacy-switch-retry`;
+    const firstRetry = await api(
+      "POST",
+      `generation/jobs/${generationJobId}/retry`,
+      {
+        userId,
+        ageGate: true,
+        headers: { "idempotency-key": retryKey },
+      },
+    );
+    expectOk(firstRetry, 202);
+    const retryJobId = firstRetry.data.job.id as string;
+    await jobQueue.removeByDedupePrefix(
+      `generation:${retryJobId}`,
+      ["ai.image.generate"],
+    );
+
+    await prisma.$transaction(async (tx) => {
+      await tx.characterVisualProfile.create({
+        data: {
+          id: profileId,
+          characterId,
+          version: 1,
+          status: "active",
+          style: "realistic",
+          identityPrompt: "Replacement strict identity",
+          faceTraits: {},
+          hairTraits: {},
+          bodyTraits: {},
+          signatureTraits: {},
+          styleTraits: {},
+          anchorAssetIds: [],
+          referenceAssetIds: [],
+          adapterRefs: {},
+          createdFrom: "test",
+        },
+      });
+      await tx.characterRelease.create({
+        data: {
+          id: modernReleaseId,
+          projectId: published.projectId,
+          revisionId: `${modernReleaseId}-revision`,
+          characterContentVersionId: `${modernReleaseId}-content`,
+          visualProfileId: profileId,
+          visualProfileVersion: 1,
+          generationProvenance: {
+            schemaVersion: "character-release-generation-provenance-v2",
+            policyVersion: "character-release-policy-v2",
+            requiredReleaseRoute: {
+              visualProfileId: profileId,
+              visualProfileVersion: 1,
+            },
+          },
+          releasePlacementManifest: {
+            schemaVersion: 2,
+            placements: [],
+          },
+          snapshotHash: modernSnapshotHash,
+          readiness: "ready",
+          legacy: false,
+          status: "published",
+          publishedAt: new Date(),
+        },
+      });
+      await tx.releaseValidationRun.create({
+        data: {
+          id: validationRunId,
+          releaseId: modernReleaseId,
+          snapshotHash: modernSnapshotHash,
+          policyVersion: "character-release-policy-v2",
+          result: "passed",
+          finishedAt: new Date(),
+        },
+      });
+      await tx.publicCatalogQualification.create({
+        data: {
+          id: `${modernReleaseId}-qualification`,
+          releaseId: modernReleaseId,
+          releaseSnapshotHash: modernSnapshotHash,
+          kind: "generated_release",
+          validationRunId,
+          evidence: {
+            schemaVersion: "public-catalog-qualification-v1",
+            policyVersion: "character-release-policy-v2",
+          },
+        },
+      });
+      await tx.characterRelease.update({
+        where: { id: published.releaseId },
+        data: { status: "superseded" },
+      });
+      await tx.characterServing.update({
+        where: { characterId },
+        data: { currentReleaseId: modernReleaseId },
+      });
+    });
+
+    const replay = await api(
+      "POST",
+      `generation/jobs/${generationJobId}/retry`,
+      {
+        userId,
+        ageGate: true,
+        headers: { "idempotency-key": retryKey },
+      },
+    );
+    expectError(replay, 409, "conflict");
+
+    const newRetry = await api(
+      "POST",
+      `generation/jobs/${generationJobId}/retry`,
+      {
+        userId,
+        ageGate: true,
+        headers: {
+          "idempotency-key": `${P}legacy-switch-second-retry`,
+        },
+      },
+    );
+    expectError(newRetry, 409, "conflict");
+
+    const attemptCount = await prisma.generationAttempt.count({
+      where: { requestId: generationJobId },
+    });
+    const originalJob = await prisma.generationJob.findUniqueOrThrow({
+      where: { id: generationJobId },
+    });
+    await expect(
+      enqueueGenerationAttempt(originalJob),
+    ).rejects.toMatchObject({
+      status: 409,
+      details: {
+        generationJobId,
+        characterId,
+        pinnedReleaseId: published.releaseId,
+        currentReleaseId: null,
+      },
+    });
+    await expect(
+      prisma.generationAttempt.count({
+        where: { requestId: generationJobId },
+      }),
+    ).resolves.toBe(attemptCount);
+    await expect(
+      jobQueue.getByDedupeKey(
+        "ai.image.generate",
+        `generation:${generationJobId}`,
+      ),
+    ).resolves.toBeNull();
+  });
+
   it("creates an active visual profile from the character preview anchor on draft submit", async () => {
     const userId = `${P}create-identity-user`;
     await createUser({ id: userId });
@@ -68,7 +622,11 @@ describe("image generation service contract", () => {
       ageGate: true,
     });
     expectOk(previewResponse);
-    await runQueuedGenerationJobs(4);
+    await completeCharacterPreview({
+      previewJobId: previewResponse.data.previewJob.id as string,
+      draftId,
+      userId,
+    });
     const selectedPreview = await api("POST", `character-drafts/${draftId}/preview-anchor`, {
       userId,
       ageGate: true,
@@ -98,6 +656,161 @@ describe("image generation service contract", () => {
     expect(visualProfile.identityPrompt).toContain("hazel");
     expect(visualProfile.anchorAssetIds).toEqual([character.imageAssetId]);
     expect(character.imageAssetId).toBeTruthy();
+  });
+
+  it("atomically rejects draft submission when the selected preview was already claimed by another Character", async () => {
+    const userId = `${P}claimed-preview-user`;
+    const existingCharacterId = `${P}claimed-preview-character`;
+    const assetId = `${P}claimed-preview-asset`;
+    await createUser({ id: userId });
+    await createCharacter({
+      id: existingCharacterId,
+      creatorId: userId,
+      source: "user",
+      visibility: "private",
+      status: "approved",
+    });
+    await prisma.mediaAsset.create({
+      data: {
+        id: assetId,
+        ownerId: userId,
+        characterId: existingCharacterId,
+        type: "image",
+        url: `/user-content/${assetId}/content.webp`,
+        visibility: "private",
+        safetyStatus: "passed",
+        metadata: {},
+      },
+    });
+    await prisma.character.update({
+      where: { id: existingCharacterId },
+      data: { imageAssetId: assetId },
+    });
+
+    const draftResponse = await api("POST", "character-drafts", {
+      userId,
+      ageGate: true,
+      body: {
+        gender: "female",
+        style: "realistic",
+        name: "No Reparent",
+      },
+    });
+    expectOk(draftResponse);
+    const draftId = draftResponse.data.draft.id as string;
+    const preview = await prisma.characterPreviewJob.create({
+      data: {
+        draftId,
+        status: "completed",
+        provider: "backend",
+        resultAssetId: assetId,
+        completedAt: new Date(),
+      },
+    });
+    const selected = await api("POST", `character-drafts/${draftId}/preview-anchor`, {
+      userId,
+      ageGate: true,
+      body: { previewJobId: preview.id },
+    });
+    expectOk(selected);
+
+    const before = {
+      characters: await prisma.character.count({ where: { creatorId: userId } }),
+      profiles: await prisma.characterVisualProfile.count({
+        where: { character: { creatorId: userId } },
+      }),
+      submissions: await prisma.characterSubmission.count({
+        where: { character: { creatorId: userId } },
+      }),
+    };
+    const submitted = await api("POST", `character-drafts/${draftId}/submit`, {
+      userId,
+      ageGate: true,
+      body: {
+        visibility: "private",
+        description: "This submission must not steal another Character image.",
+        age: 25,
+      },
+    });
+    expectError(submitted, 409, "conflict");
+    await expect(
+      prisma.mediaAsset.findUniqueOrThrow({ where: { id: assetId } }),
+    ).resolves.toMatchObject({ characterId: existingCharacterId });
+    await expect(
+      prisma.character.count({ where: { creatorId: userId } }),
+    ).resolves.toBe(before.characters);
+    await expect(
+      prisma.characterVisualProfile.count({
+        where: { character: { creatorId: userId } },
+      }),
+    ).resolves.toBe(before.profiles);
+    await expect(
+      prisma.characterSubmission.count({
+        where: { character: { creatorId: userId } },
+      }),
+    ).resolves.toBe(before.submissions);
+  });
+
+  it("never promotes a synthetic preview into a character identity authority", async () => {
+    const userId = `${P}synthetic-preview-user`;
+    await createUser({ id: userId });
+    const draftResponse = await api("POST", "character-drafts", {
+      userId,
+      ageGate: true,
+      body: {
+        gender: "female",
+        style: "realistic",
+        name: "Synthetic Demo",
+      },
+    });
+    expectOk(draftResponse);
+    const draftId = draftResponse.data.draft.id as string;
+    const assetId = `${P}synthetic-preview-asset`;
+    await prisma.mediaAsset.create({
+      data: {
+        id: assetId,
+        ownerId: userId,
+        type: "image",
+        url: "/user-content/synthetic/content.png",
+        visibility: "private",
+        safetyStatus: "passed",
+        metadata: { source: "character_preview", synthetic: true },
+      },
+    });
+    const preview = await prisma.characterPreviewJob.create({
+      data: {
+        draftId,
+        status: "completed",
+        provider: "mock",
+        resultAssetId: assetId,
+        completedAt: new Date(),
+      },
+    });
+
+    const select = await api("POST", `character-drafts/${draftId}/preview-anchor`, {
+      userId,
+      ageGate: true,
+      body: { previewJobId: preview.id },
+    });
+    expectError(select, 400, "bad_request");
+
+    await prisma.characterDraft.update({
+      where: { id: draftId },
+      data: { previewJobId: preview.id },
+    });
+    const submit = await api("POST", `character-drafts/${draftId}/submit`, {
+      userId,
+      ageGate: true,
+      body: {
+        visibility: "private",
+        description: "Must not publish a demo identity.",
+        age: 25,
+      },
+    });
+    expectError(submit, 400, "bad_request");
+    expect(await prisma.character.count({
+      where: { creatorId: userId },
+    })).toBe(0);
   });
 
   it("uses the selected preview candidate as the visual identity anchor", async () => {
@@ -360,6 +1073,21 @@ describe("image generation service contract", () => {
     expectOk(download);
     const token = Buffer.from(mediaId, "utf8").toString("base64url");
     expect(download.data.url).toBe(`/user-content/${token}/content.webp?download=1`);
+    expect(download.headers.get("cache-control")).toBe(
+      "private, no-store, max-age=0",
+    );
+    expect(download.headers.get("vary")).toContain("Cookie");
+    expect(download.headers.get("vary")).toContain("Authorization");
+
+    const unauthorized = await api("GET", `media/${mediaId}/content`, {
+      ageGate: true,
+    });
+    expect(unauthorized.status).toBe(401);
+    expect(unauthorized.headers.get("cache-control")).toBe(
+      "private, no-store, max-age=0",
+    );
+    expect(unauthorized.headers.get("vary")).toContain("Cookie");
+    expect(unauthorized.headers.get("vary")).toContain("Authorization");
   });
 
   it("summarizes partial success refunds in the job cost response", async () => {
@@ -584,9 +1312,11 @@ describe("image generation service contract", () => {
         profileKey: modelKey,
         label: "Reference-capable identity model",
         mode: "image",
-        runner: "pipeline",
-        pipelineModel: "mock-image",
+        runner: "comfyui",
+        pipelineModel: "qwen-image-edit",
+        workflowKey: "qwen-image-edit-multi-identity",
         runnerConfig: {
+          workflowVersion: 1,
           capabilities: {
             textToImage: true,
             stableSeed: true,
@@ -657,6 +1387,24 @@ describe("image generation service contract", () => {
         createdFrom: "test",
       },
     });
+    await createSealedReferenceSet({
+      id: `${P}cvp-1-reference-set`,
+      visualProfileId: `${P}cvp-1`,
+      references: [
+        {
+          mediaAssetId: `${P}anchor-1`,
+          role: "primary_face",
+          weight: 1,
+          selectionReason: "primary_identity_anchor",
+        },
+        {
+          mediaAssetId: `${P}ref-1`,
+          role: "identity_reference",
+          weight: 0.75,
+          selectionReason: "supporting_identity_reference",
+        },
+      ],
+    });
     await grantCoins(userId, 100, "seed");
 
     const gen = await api("POST", "generation/jobs", {
@@ -712,7 +1460,7 @@ describe("image generation service contract", () => {
     await runQueuedGenerationJobs(4);
   });
 
-  it("falls back to text identity and stable seed when the selected model cannot consume reference images", async () => {
+  it("fails closed when the current profile cannot consume its pinned Character references", async () => {
     const userId = `${P}text-identity-user`;
     const characterId = `${P}text-identity-char`;
     const modelKey = `${P}text-only-model`;
@@ -804,6 +1552,24 @@ describe("image generation service contract", () => {
         createdFrom: "test",
       },
     });
+    await createSealedReferenceSet({
+      id: `${P}text-reference-set`,
+      visualProfileId: `${P}text-cvp`,
+      references: [
+        {
+          mediaAssetId: `${P}text-anchor`,
+          role: "primary_face",
+          weight: 1,
+          selectionReason: "primary_identity_anchor",
+        },
+        {
+          mediaAssetId: `${P}text-ref`,
+          role: "identity_reference",
+          weight: 0.75,
+          selectionReason: "supporting_identity_reference",
+        },
+      ],
+    });
     await grantCoins(userId, 100, "seed");
 
     const gen = await api("POST", "generation/jobs", {
@@ -817,36 +1583,17 @@ describe("image generation service contract", () => {
         consistencyMode: "strict",
       },
     });
-    expectOk(gen, 202);
-    const job = await prisma.generationJob.findUniqueOrThrow({
-      where: { id: gen.data.job.id as string },
-    });
-    expect(job.seed).toBe(`${P}text-seed`);
-    expect(job.referenceAssetIds).toEqual([`${P}text-anchor`, `${P}text-ref`]);
-    expect(job.prompt).toContain("Locked identity");
-    expect(job.prompt).toContain("ash-blonde waves");
-    const queued = await jobQueue.getByDedupeKey("ai.image.generate", `generation:${job.id}`);
-    const queuedPayload = queued?.payload as
-      | { controls?: Record<string, unknown>; referenceImages?: unknown[]; seed?: string }
-      | undefined;
-    expect(queuedPayload?.referenceImages).toBeUndefined();
-    expect(queuedPayload?.seed).toBe(`${P}text-seed`);
-    expect(queuedPayload?.controls).toMatchObject({
-      model: modelKey,
-      modelCapabilities: {
-        textToImage: true,
-        stableSeed: true,
-        referenceImages: false,
-        initImage: false,
-        lora: false,
-      },
-    });
-    await runQueuedGenerationJobs(4);
+    expectError(gen, 409, "conflict");
+    await expect(prisma.generationJob.count({
+      where: { userId, characterId },
+    })).resolves.toBe(0);
+    await expect(dreamcoinBalance(userId)).resolves.toBe(100);
   });
 
   it("keeps chat image scene prompts separate from the character visual identity", async () => {
     const userId = `${P}chat-identity-user`;
     const characterId = `${P}chat-identity-char`;
+    const anchorId = `${P}chat-identity-anchor`;
     await createUser({ id: userId });
     await createCharacter({
       id: characterId,
@@ -855,6 +1602,19 @@ describe("image generation service contract", () => {
       description: "A warm companion with copper curls.",
       visibility: "private",
       status: "approved",
+    });
+    await prisma.mediaAsset.create({
+      data: {
+        id: anchorId,
+        ownerId: userId,
+        characterId,
+        type: "image",
+        url: "/images/ourdream/card-sarah-mercer.webp",
+        storageKey: `${P}chat-identity-anchor.webp`,
+        visibility: "private",
+        safetyStatus: "passed",
+        metadata: {},
+      },
     });
     await prisma.characterVisualProfile.create({
       data: {
@@ -870,12 +1630,24 @@ describe("image generation service contract", () => {
         bodyTraits: {},
         signatureTraits: { freckles: true },
         styleTraits: { style: "realistic" },
-        anchorAssetIds: [],
+        anchorAssetIds: [anchorId],
         referenceAssetIds: [],
         defaultSeed: `${P}chat-seed`,
         adapterRefs: {},
         createdFrom: "test",
       },
+    });
+    await createSealedReferenceSet({
+      id: `${P}chat-reference-set`,
+      visualProfileId: `${P}chat-cvp`,
+      references: [
+        {
+          mediaAssetId: anchorId,
+          role: "primary_face",
+          weight: 1,
+          selectionReason: "primary_identity_anchor",
+        },
+      ],
     });
     await grantCoins(userId, 100, "seed");
 
@@ -912,7 +1684,7 @@ describe("image generation service contract", () => {
     await runQueuedGenerationJobs(4);
   });
 
-  it("promotes owned generated media to the character image and bootstraps identity", async () => {
+  it("sets owned generated media as the display avatar without bootstrapping identity", async () => {
     const userId = `${P}promote-user`;
     const characterId = `${P}promote-char`;
     const mediaId = `${P}promote-media`;
@@ -946,25 +1718,713 @@ describe("image generation service contract", () => {
     expectOk(promoted);
 
     const character = await prisma.character.findUniqueOrThrow({ where: { id: characterId } });
-    const visualProfile = await prisma.characterVisualProfile.findFirstOrThrow({
-      where: { characterId, status: "active" },
-    });
     const media = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: mediaId } });
     expect(character.imageAssetId).toBe(mediaId);
-    expect(visualProfile.anchorAssetIds).toEqual([mediaId]);
+    expect(await prisma.characterVisualProfile.count({ where: { characterId } })).toBe(0);
+    expect(await prisma.referenceSetRevision.count({
+      where: { visualProfile: { characterId } },
+    })).toBe(0);
     expect(media.characterId).toBe(characterId);
     expect(media.metadata).toMatchObject({
       quality: {
         selectedAsCharacterImage: true,
-        visualProfileId: visualProfile.id,
-        visualProfileVersion: visualProfile.version,
       },
     });
+  });
+
+  it("never reparents an asset that already belongs to another Character", async () => {
+    const userId = `${P}cross-character-user`;
+    const sourceCharacterId = `${P}cross-character-source`;
+    const targetCharacterId = `${P}cross-character-target`;
+    const sourceAssetId = `${P}cross-character-source-asset`;
+    const targetAnchorId = `${P}cross-character-target-anchor`;
+    const sourceProfileId = `${P}cross-character-source-profile`;
+    const targetProfileId = `${P}cross-character-target-profile`;
+    const sourceProjectId = `${P}cross-character-source-project`;
+    const sourceReleaseId = `${P}cross-character-source-release`;
+    await createUser({ id: userId });
+    await createCharacter({
+      id: sourceCharacterId,
+      creatorId: userId,
+      visibility: "private",
+      status: "approved",
+    });
+    await createCharacter({
+      id: targetCharacterId,
+      creatorId: userId,
+      visibility: "private",
+      status: "approved",
+    });
+    await prisma.mediaAsset.createMany({
+      data: [
+        {
+          id: sourceAssetId,
+          ownerId: userId,
+          characterId: sourceCharacterId,
+          type: "image",
+          url: "/images/ourdream/card-sarah-mercer.webp",
+          visibility: "private",
+          safetyStatus: "passed",
+          metadata: {},
+        },
+        {
+          id: targetAnchorId,
+          ownerId: userId,
+          characterId: targetCharacterId,
+          type: "image",
+          url: "/images/ourdream/card-sophie.webp",
+          visibility: "private",
+          safetyStatus: "passed",
+          metadata: {},
+        },
+      ],
+    });
+    await prisma.character.update({
+      where: { id: sourceCharacterId },
+      data: { imageAssetId: sourceAssetId },
+    });
+    await prisma.characterVisualProfile.createMany({
+      data: [
+        {
+          id: sourceProfileId,
+          characterId: sourceCharacterId,
+          version: 1,
+          status: "active",
+          style: "realistic",
+          identityPrompt: "Source identity",
+          faceTraits: {},
+          hairTraits: {},
+          bodyTraits: {},
+          signatureTraits: {},
+          styleTraits: {},
+          anchorAssetIds: [sourceAssetId],
+          referenceAssetIds: [],
+          adapterRefs: {},
+          createdFrom: "test",
+        },
+        {
+          id: targetProfileId,
+          characterId: targetCharacterId,
+          version: 1,
+          status: "active",
+          style: "realistic",
+          identityPrompt: "Target identity",
+          faceTraits: {},
+          hairTraits: {},
+          bodyTraits: {},
+          signatureTraits: {},
+          styleTraits: {},
+          anchorAssetIds: [targetAnchorId],
+          referenceAssetIds: [],
+          adapterRefs: {},
+          createdFrom: "test",
+        },
+      ],
+    });
+    const sourceReferenceSet = await createSealedReferenceSet({
+      id: `${P}cross-character-source-reference-set`,
+      visualProfileId: sourceProfileId,
+      references: [{
+        mediaAssetId: sourceAssetId,
+        role: "primary_face",
+        weight: 1,
+        selectionReason: "source_anchor",
+      }],
+    });
+    const targetReferenceSet = await createSealedReferenceSet({
+      id: `${P}cross-character-target-reference-set`,
+      visualProfileId: targetProfileId,
+      references: [{
+        mediaAssetId: targetAnchorId,
+        role: "primary_face",
+        weight: 1,
+        selectionReason: "target_anchor",
+      }],
+    });
+    await prisma.characterProject.create({
+      data: {
+        id: sourceProjectId,
+        characterId: sourceCharacterId,
+        ownerId: userId,
+        audience: {},
+        successCriteria: [],
+        draftImageAssetId: sourceAssetId,
+        draftAssetPack: {
+          character_cover: { assetId: sourceAssetId },
+        },
+        activeKey: `user:${sourceCharacterId}`,
+      },
+    });
+    await prisma.characterRelease.create({
+      data: {
+        id: sourceReleaseId,
+        projectId: sourceProjectId,
+        revisionId: `${sourceReleaseId}:revision`,
+        characterContentVersionId: `${sourceReleaseId}:content`,
+        visualProfileId: sourceProfileId,
+        visualProfileVersion: 1,
+        referenceSetRevisionId: sourceReferenceSet.id,
+        generationProvenance: {},
+        releasePlacementManifest: {
+          placements: [{ slotKey: "character_avatar", assetId: sourceAssetId }],
+        },
+        snapshotHash: `${sourceReleaseId}:snapshot`,
+        status: "approved",
+      },
+    });
+
+    const displayAttempt = await api(
+      "POST",
+      `media/${sourceAssetId}/use-as-character-image`,
+      {
+        userId,
+        ageGate: true,
+        body: { characterId: targetCharacterId },
+      },
+    );
+    expectError(displayAttempt, 409, "conflict");
+    const identityAttempt = await api(
+      "POST",
+      `media/${sourceAssetId}/add-to-identity`,
+      {
+        userId,
+        ageGate: true,
+        body: { characterId: targetCharacterId },
+      },
+    );
+    expectError(identityAttempt, 409, "conflict");
+    const createLookAttempt = await api(
+      "POST",
+      `characters/${targetCharacterId}/looks`,
+      {
+        userId,
+        ageGate: true,
+        body: {
+          label: "Stolen source look",
+          appearanceDelta: { outfit: "black jacket" },
+          referenceAssetId: sourceAssetId,
+        },
+      },
+    );
+    expectError(createLookAttempt, 409, "conflict");
+    const targetLook = await api(
+      "POST",
+      `characters/${targetCharacterId}/looks`,
+      {
+        userId,
+        ageGate: true,
+        body: {
+          label: "Target-owned look",
+          appearanceDelta: { outfit: "blue jacket" },
+        },
+      },
+    );
+    expectOk(targetLook, 201);
+    const updateLookAttempt = await api(
+      "PATCH",
+      `characters/${targetCharacterId}/looks/${targetLook.data.look.id as string}`,
+      {
+        userId,
+        ageGate: true,
+        body: { referenceAssetId: sourceAssetId },
+      },
+    );
+    expectError(updateLookAttempt, 409, "conflict");
+
+    await expect(
+      prisma.mediaAsset.findUniqueOrThrow({ where: { id: sourceAssetId } }),
+    ).resolves.toMatchObject({ characterId: sourceCharacterId });
+    await expect(
+      prisma.character.findUniqueOrThrow({ where: { id: sourceCharacterId } }),
+    ).resolves.toMatchObject({ imageAssetId: sourceAssetId });
+    await expect(
+      prisma.character.findUniqueOrThrow({ where: { id: targetCharacterId } }),
+    ).resolves.toMatchObject({ imageAssetId: null });
+    await expect(
+      prisma.characterProject.findUniqueOrThrow({ where: { id: sourceProjectId } }),
+    ).resolves.toMatchObject({
+      draftImageAssetId: sourceAssetId,
+      draftAssetPack: { character_cover: { assetId: sourceAssetId } },
+    });
+    await expect(
+      prisma.referenceSetRevision.findUniqueOrThrow({
+        where: { id: sourceReferenceSet.id },
+        include: { references: true },
+      }),
+    ).resolves.toMatchObject({
+      status: "active",
+      references: [expect.objectContaining({ mediaAssetId: sourceAssetId })],
+    });
+    await expect(
+      prisma.referenceSetRevision.findUniqueOrThrow({
+        where: { id: targetReferenceSet.id },
+        include: { references: true },
+      }),
+    ).resolves.toMatchObject({
+      status: "active",
+      references: [expect.objectContaining({ mediaAssetId: targetAnchorId })],
+    });
+    await expect(
+      prisma.characterRelease.findUniqueOrThrow({ where: { id: sourceReleaseId } }),
+    ).resolves.toMatchObject({
+      status: "approved",
+      releasePlacementManifest: {
+        placements: [
+          expect.objectContaining({ assetId: sourceAssetId }),
+        ],
+      },
+    });
+    await expect(
+      prisma.characterLook.findUniqueOrThrow({
+        where: { id: targetLook.data.look.id as string },
+      }),
+    ).resolves.toMatchObject({
+      characterId: targetCharacterId,
+      referenceAssetId: null,
+      status: "active",
+    });
+  });
+
+  it("serializes concurrent display-avatar changes without invalidating identity-bound drafts", async () => {
+    const userId = `${P}promote-race-user`;
+    const characterId = `${P}promote-race-char`;
+    const firstMediaId = `${P}promote-race-media-a`;
+    const secondMediaId = `${P}promote-race-media-b`;
+    const staleDraftId = `${P}promote-race-stale-draft`;
+    const projectId = `${P}promote-race-project`;
+    await createUser({ id: userId });
+    await createCharacter({
+      id: characterId,
+      creatorId: userId,
+      visibility: "private",
+      status: "approved",
+    });
+    await prisma.mediaAsset.createMany({
+      data: [
+        {
+          id: firstMediaId,
+          ownerId: userId,
+          type: "image",
+          url: "/images/ourdream/card-sarah-mercer.webp",
+          visibility: "private",
+          safetyStatus: "passed",
+          metadata: {},
+        },
+        {
+          id: secondMediaId,
+          ownerId: userId,
+          type: "image",
+          url: "/images/ourdream/card-sophie.webp",
+          visibility: "private",
+          safetyStatus: "passed",
+          metadata: {},
+        },
+        {
+          id: staleDraftId,
+          ownerId: userId,
+          characterId,
+          type: "image",
+          url: "/images/ourdream/card-emily.webp",
+          visibility: "private",
+          safetyStatus: "passed",
+          metadata: {},
+        },
+      ],
+    });
+    await prisma.characterProject.create({
+      data: {
+        id: projectId,
+        characterId,
+        ownerId: userId,
+        audience: {},
+        successCriteria: [],
+        draftImageAssetId: staleDraftId,
+        draftAssetPack: {
+          character_cover: { assetId: staleDraftId },
+        },
+        activeKey: `user:${characterId}`,
+      },
+    });
+
+    const [first, second] = await Promise.all([
+      api("POST", `media/${firstMediaId}/use-as-character-image`, {
+        userId,
+        ageGate: true,
+        body: { characterId },
+      }),
+      api("POST", `media/${secondMediaId}/use-as-character-image`, {
+        userId,
+        ageGate: true,
+        body: { characterId },
+      }),
+    ]);
+    expectOk(first);
+    expectOk(second);
+
+    const [character, project, activeProfiles, activeReferenceSets] = await Promise.all([
+      prisma.character.findUniqueOrThrow({ where: { id: characterId } }),
+      prisma.characterProject.findUniqueOrThrow({ where: { id: projectId } }),
+      prisma.characterVisualProfile.findMany({
+        where: { characterId, status: "active" },
+      }),
+      prisma.referenceSetRevision.findMany({
+        where: {
+          visualProfile: { characterId },
+          status: "active",
+        },
+        include: { references: true },
+      }),
+    ]);
+    expect([firstMediaId, secondMediaId]).toContain(character.imageAssetId);
+    expect(project).toMatchObject({
+      version: 1,
+      draftImageAssetId: staleDraftId,
+      draftAssetPack: {
+        character_cover: { assetId: staleDraftId },
+      },
+    });
+    expect(activeProfiles).toHaveLength(0);
+    expect(activeReferenceSets).toHaveLength(0);
+  });
+
+  it("blocks character identity version changes behind an active Release, then invalidates drafts atomically", async () => {
+    const userId = `${P}character-update-authority-user`;
+    const characterId = `${P}character-update-authority-char`;
+    const anchorId = `${P}character-update-authority-anchor`;
+    const referenceId = `${P}character-update-authority-reference`;
+    const staleDraftId = `${P}character-update-authority-draft`;
+    const profileId = `${P}character-update-authority-profile`;
+    const projectId = `${P}character-update-authority-project`;
+    const releaseId = `${P}character-update-authority-release`;
+    await createUser({ id: userId });
+    await createCharacter({
+      id: characterId,
+      creatorId: userId,
+      name: "Before update",
+      visibility: "private",
+      status: "approved",
+    });
+    await prisma.mediaAsset.createMany({
+      data: [
+        {
+          id: anchorId,
+          ownerId: userId,
+          characterId,
+          type: "image",
+          url: "/images/ourdream/card-sarah-mercer.webp",
+          storageKey: `${P}character-update-authority-anchor.webp`,
+          visibility: "private",
+          safetyStatus: "passed",
+          metadata: {},
+        },
+        {
+          id: staleDraftId,
+          ownerId: userId,
+          characterId,
+          type: "image",
+          url: "/images/ourdream/card-sophie.webp",
+          storageKey: `${P}character-update-authority-draft.webp`,
+          visibility: "private",
+          safetyStatus: "passed",
+          metadata: {},
+        },
+        {
+          id: referenceId,
+          ownerId: userId,
+          characterId,
+          type: "image",
+          url: "/images/ourdream/card-emily.webp",
+          storageKey: `${P}character-update-authority-reference.webp`,
+          visibility: "private",
+          safetyStatus: "passed",
+          metadata: {},
+        },
+      ],
+    });
+    await prisma.character.update({
+      where: { id: characterId },
+      data: { imageAssetId: anchorId },
+    });
+    await prisma.characterVisualProfile.create({
+      data: {
+        id: profileId,
+        characterId,
+        version: 1,
+        status: "active",
+        style: "realistic",
+        identityPrompt: "stable identity",
+        faceTraits: {},
+        hairTraits: {},
+        bodyTraits: {},
+        signatureTraits: {},
+        styleTraits: {},
+        anchorAssetIds: [anchorId],
+        referenceAssetIds: [],
+        adapterRefs: {},
+        createdFrom: "test",
+      },
+    });
+    await createSealedReferenceSet({
+      id: `${P}character-update-authority-reference-set`,
+      visualProfileId: profileId,
+      references: [
+        {
+          mediaAssetId: anchorId,
+          role: "primary_face",
+          weight: 1,
+          selectionReason: "primary_identity_anchor",
+        },
+        {
+          mediaAssetId: referenceId,
+          role: "identity_reference",
+          weight: 0.75,
+          selectionReason: "gallery_identity_reference",
+        },
+      ],
+    });
+    await prisma.characterProject.create({
+      data: {
+        id: projectId,
+        characterId,
+        ownerId: userId,
+        audience: {},
+        successCriteria: [],
+        draftImageAssetId: staleDraftId,
+        draftAssetPack: {
+          character_hero: { assetId: staleDraftId },
+        },
+        activeKey: `user:${characterId}`,
+      },
+    });
+    await prisma.characterRelease.create({
+      data: {
+        id: releaseId,
+        projectId,
+        revisionId: `${releaseId}-revision`,
+        characterContentVersionId: `${releaseId}-content`,
+        visualProfileId: profileId,
+        visualProfileVersion: 1,
+        generationProvenance: {},
+        releasePlacementManifest: {},
+        snapshotHash: `${releaseId}-snapshot`,
+        status: "approved",
+      },
+    });
+
+    const blockedDisplayImage = await api(
+      "POST",
+      `media/${referenceId}/use-as-character-image`,
+      {
+        userId,
+        ageGate: true,
+        body: { characterId },
+      },
+    );
+    expectError(blockedDisplayImage, 409, "conflict");
+    await expect(
+      prisma.character.findUniqueOrThrow({ where: { id: characterId } }),
+    ).resolves.toMatchObject({ imageAssetId: anchorId });
+
+    const blocked = await api("PATCH", `characters/${characterId}`, {
+      userId,
+      ageGate: true,
+      body: { name: "Must not commit" },
+    });
+    expectError(blocked, 409, "conflict");
+    await expect(
+      prisma.character.findUniqueOrThrow({ where: { id: characterId } }),
+    ).resolves.toMatchObject({ name: "Before update" });
+    await expect(
+      prisma.characterProject.findUniqueOrThrow({ where: { id: projectId } }),
+    ).resolves.toMatchObject({ version: 1, draftImageAssetId: staleDraftId });
+
+    await prisma.characterRelease.delete({ where: { id: releaseId } });
+    const updated = await api("PATCH", `characters/${characterId}`, {
+      userId,
+      ageGate: true,
+      body: { name: "After update" },
+    });
+    expectOk(updated);
+
+    const [project, profiles] = await Promise.all([
+      prisma.characterProject.findUniqueOrThrow({ where: { id: projectId } }),
+      prisma.characterVisualProfile.findMany({
+        where: { characterId },
+        orderBy: { version: "asc" },
+      }),
+    ]);
+    expect(project).toMatchObject({
+      version: 2,
+      draftImageAssetId: null,
+      draftAssetPack: {},
+    });
+    expect(profiles).toHaveLength(2);
+    expect(profiles.map((profile) => [profile.version, profile.status])).toEqual([
+      [1, "archived"],
+      [2, "active"],
+    ]);
+    expect(profiles[1]).toMatchObject({
+      anchorAssetIds: [anchorId],
+      referenceAssetIds: [referenceId],
+    });
+    const nextReferenceSet = await prisma.referenceSetRevision.findFirstOrThrow({
+      where: { visualProfileId: profiles[1]?.id, status: "active" },
+      include: { references: { orderBy: { position: "asc" } } },
+    });
+    expect(nextReferenceSet.references.map((reference) => reference.mediaAssetId)).toEqual([
+      anchorId,
+      referenceId,
+    ]);
+  });
+
+  it("never promotes synthetic gallery media into character identity authority", async () => {
+    const userId = `${P}synthetic-gallery-user`;
+    const characterId = `${P}synthetic-gallery-char`;
+    const mediaId = `${P}synthetic-gallery-media`;
+    await createUser({ id: userId });
+    await createCharacter({
+      id: characterId,
+      creatorId: userId,
+      visibility: "private",
+      status: "approved",
+    });
+    await prisma.mediaAsset.create({
+      data: {
+        id: mediaId,
+        ownerId: userId,
+        characterId,
+        type: "image",
+        url: `/user-content/${mediaId}/content.webp`,
+        visibility: "private",
+        safetyStatus: "passed",
+        metadata: { synthetic: true, source: "mock" },
+      },
+    });
+
+    const characterImage = await api("POST", `media/${mediaId}/use-as-character-image`, {
+      userId,
+      ageGate: true,
+      body: { characterId },
+    });
+    expectError(characterImage, 400, "bad_request");
+
+    const identityReference = await api("POST", `media/${mediaId}/add-to-identity`, {
+      userId,
+      ageGate: true,
+      body: { characterId },
+    });
+    expectError(identityReference, 400, "bad_request");
+
+    const look = await api("POST", `media/${mediaId}/save-as-look`, {
+      userId,
+      ageGate: true,
+      body: {
+        label: "Synthetic look",
+        appearanceDelta: { outfit: "red dress" },
+      },
+    });
+    expectError(look, 400, "bad_request");
+
+    await expect(
+      prisma.character.findUniqueOrThrow({ where: { id: characterId } }),
+    ).resolves.toMatchObject({ imageAssetId: null });
+    await expect(
+      prisma.characterVisualProfile.count({ where: { characterId } }),
+    ).resolves.toBe(0);
+    await expect(
+      prisma.characterLook.count({ where: { characterId } }),
+    ).resolves.toBe(0);
+  });
+
+  it("rejects unsafe or non-operational media at display, identity, and public visibility boundaries", async () => {
+    const userId = `${P}unsafe-authority-user`;
+    const characterId = `${P}unsafe-authority-char`;
+    const blockedAssetId = `${P}unsafe-authority-blocked`;
+    const archivedAssetId = `${P}unsafe-authority-archived`;
+    await createUser({ id: userId });
+    await createCharacter({
+      id: characterId,
+      creatorId: userId,
+      visibility: "private",
+      status: "approved",
+    });
+    await prisma.mediaAsset.createMany({
+      data: [
+        {
+          id: blockedAssetId,
+          ownerId: userId,
+          characterId,
+          type: "image",
+          url: "/images/ourdream/card-sarah-mercer.webp",
+          visibility: "private",
+          safetyStatus: "blocked",
+          metadata: {},
+        },
+        {
+          id: archivedAssetId,
+          ownerId: userId,
+          characterId,
+          type: "image",
+          url: "/images/ourdream/card-sophie.webp",
+          visibility: "private",
+          safetyStatus: "passed",
+          metadata: { platformAsset: { status: "archived" } },
+        },
+      ],
+    });
+
+    for (const mediaAssetId of [blockedAssetId, archivedAssetId]) {
+      const display = await api(
+        "POST",
+        `media/${mediaAssetId}/use-as-character-image`,
+        {
+          userId,
+          ageGate: true,
+          body: { characterId },
+        },
+      );
+      expectError(display, 409, "conflict");
+      const identity = await api(
+        "POST",
+        `media/${mediaAssetId}/add-to-identity`,
+        {
+          userId,
+          ageGate: true,
+          body: { characterId },
+        },
+      );
+      expectError(identity, 409, "conflict");
+    }
+
+    await prisma.character.update({
+      where: { id: characterId },
+      data: { imageAssetId: blockedAssetId },
+    });
+    const unsafePublish = await api("PATCH", `characters/${characterId}`, {
+      userId,
+      ageGate: true,
+      body: { visibility: "public" },
+    });
+    expectError(unsafePublish, 400, "bad_request");
+    await prisma.character.update({
+      where: { id: characterId },
+      data: { imageAssetId: archivedAssetId },
+    });
+    const archivedPublish = await api("PATCH", `characters/${characterId}`, {
+      userId,
+      ageGate: true,
+      body: { visibility: "public" },
+    });
+    expectError(archivedPublish, 400, "bad_request");
+    await expect(
+      prisma.character.findUniqueOrThrow({ where: { id: characterId } }),
+    ).resolves.toMatchObject({ visibility: "private" });
   });
 
   it("keeps one active identity verdict while preserving superseded feedback events", async () => {
     const userId = `${P}feedback-user`;
     const characterId = `${P}feedback-char`;
+    const visualProfileId = `${P}feedback-profile`;
     const jobId = `${P}feedback-job`;
     const mediaId = `${P}feedback-media`;
     await createUser({ id: userId });
@@ -974,11 +2434,32 @@ describe("image generation service contract", () => {
       visibility: "private",
       status: "approved",
     });
+    await prisma.characterVisualProfile.create({
+      data: {
+        id: visualProfileId,
+        characterId,
+        version: 1,
+        status: "active",
+        style: "realistic",
+        identityPrompt: "Feedback job identity",
+        faceTraits: {},
+        hairTraits: {},
+        bodyTraits: {},
+        signatureTraits: {},
+        styleTraits: {},
+        anchorAssetIds: [],
+        referenceAssetIds: [],
+        adapterRefs: {},
+        createdFrom: "test",
+      },
+    });
     await prisma.generationJob.create({
       data: {
         id: jobId,
         userId,
         characterId,
+        visualProfileId,
+        visualProfileVersion: 1,
         mode: "image",
         controls: {},
         presetIds: [],
@@ -1069,7 +2550,185 @@ describe("image generation service contract", () => {
     expect(feedbackRows[1]?.supersedesId).toBe(feedbackRows[0]?.id);
   });
 
-  it("promotes owned media into the active identity anchor set", async () => {
+  it("records historical profile-less feedback without polluting a new active identity", async () => {
+    const userId = `${P}legacy-feedback-user`;
+    const characterId = `${P}legacy-feedback-char`;
+    const visualProfileId = `${P}legacy-feedback-new-profile`;
+    const jobId = `${P}legacy-feedback-job`;
+    const mediaId = `${P}legacy-feedback-media`;
+    await createUser({ id: userId });
+    await createCharacter({
+      id: characterId,
+      creatorId: userId,
+      visibility: "private",
+      status: "approved",
+    });
+    await prisma.generationJob.create({
+      data: {
+        id: jobId,
+        userId,
+        characterId,
+        visualProfileId: null,
+        visualProfileVersion: null,
+        mode: "image",
+        controls: {
+          legacyReleaseAuthority: {
+            schemaVersion: "legacy-character-generation-authority-v1",
+            characterId,
+            releaseId: `${P}historical-release`,
+            releaseSnapshotHash: `${P}historical-snapshot`,
+            releaseProvenanceSchemaVersion:
+              "character-release-editorial-import-v1",
+            qualificationId: `${P}historical-qualification`,
+            qualificationKind: "editorial_import",
+            qualificationEvidenceSchemaVersion:
+              "public-catalog-qualification-v1",
+            qualificationPolicyVersion:
+              "public-catalog-editorial-import-v1",
+          },
+        },
+        presetIds: [],
+        outputCount: 1,
+        status: "completed",
+      },
+    });
+    await prisma.mediaAsset.create({
+      data: {
+        id: mediaId,
+        ownerId: userId,
+        characterId,
+        sourceJobId: jobId,
+        type: "image",
+        url: "/images/ourdream/card-sarah-mercer.webp",
+        visibility: "private",
+        safetyStatus: "passed",
+        metadata: {},
+      },
+    });
+    await prisma.characterVisualProfile.create({
+      data: {
+        id: visualProfileId,
+        characterId,
+        version: 1,
+        status: "active",
+        style: "realistic",
+        identityPrompt: "New identity created after historical media",
+        faceTraits: {},
+        hairTraits: {},
+        bodyTraits: {},
+        signatureTraits: {},
+        styleTraits: {},
+        anchorAssetIds: [],
+        referenceAssetIds: [],
+        adapterRefs: {},
+        createdFrom: "test",
+      },
+    });
+
+    const response = await api("POST", `media/${mediaId}/feedback`, {
+      userId,
+      ageGate: true,
+      body: { feedbackType: "identity_match", sourceSurface: "gallery" },
+    });
+    expectOk(response);
+    expect(response.data.feedback).toMatchObject({
+      value: "match",
+      revision: 1,
+    });
+    expect(response.data.referenceCandidate).toBeNull();
+    await expect(
+      prisma.referenceCandidate.count({ where: { mediaAssetId: mediaId } }),
+    ).resolves.toBe(0);
+    await expect(
+      prisma.characterVisualProfile.findMany({
+        where: { characterId },
+        select: { id: true, version: true, status: true },
+      }),
+    ).resolves.toEqual([
+      { id: visualProfileId, version: 1, status: "active" },
+    ]);
+  });
+
+  it("serializes identity feedback with Library metadata authority and never revives an archived asset", async () => {
+    const userId = `${P}feedback-archive-user`;
+    const jobId = `${P}feedback-archive-job`;
+    const mediaId = `${P}feedback-archive-media`;
+    await createUser({ id: userId });
+    await prisma.generationJob.create({
+      data: {
+        id: jobId,
+        userId,
+        mode: "image",
+        controls: {},
+        presetIds: [],
+        outputCount: 1,
+        status: "completed",
+      },
+    });
+    await prisma.mediaAsset.create({
+      data: {
+        id: mediaId,
+        ownerId: userId,
+        sourceJobId: jobId,
+        type: "image",
+        url: "/images/ourdream/card-sarah-mercer.webp",
+        visibility: "private",
+        safetyStatus: "passed",
+        metadata: { provider: "comfyui" },
+      },
+    });
+
+    let feedbackRequest:
+      | ReturnType<typeof api>
+      | undefined;
+    await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`media-asset-authority:${mediaId}`}))`;
+      await tx.mediaAsset.update({
+        where: { id: mediaId },
+        data: {
+          metadata: {
+            provider: "comfyui",
+            platformAsset: { status: "archived" },
+          },
+        },
+      });
+      const pendingFeedback = api("POST", `media/${mediaId}/feedback`, {
+        userId,
+        ageGate: true,
+        body: {
+          feedbackType: "identity_match",
+          sourceSurface: "gallery",
+        },
+      });
+      feedbackRequest = pendingFeedback;
+      const state = await Promise.race([
+        pendingFeedback.then(() => "settled" as const),
+        new Promise<"waiting">((resolve) => {
+          setTimeout(() => resolve("waiting"), 75);
+        }),
+      ]);
+      expect(state).toBe("waiting");
+    });
+
+    expect(feedbackRequest).toBeDefined();
+    const response = await feedbackRequest!;
+    expectOk(response);
+    const asset = await prisma.mediaAsset.findUniqueOrThrow({
+      where: { id: mediaId },
+    });
+    expect(asset.metadata).toMatchObject({
+      provider: "comfyui",
+      platformAsset: { status: "archived" },
+      quality: {
+        identityFeedback: {
+          value: "match",
+          revision: 1,
+        },
+      },
+    });
+  });
+
+  it("changes only the display avatar when an active immutable identity already exists", async () => {
     const userId = `${P}promote-existing-user`;
     const characterId = `${P}promote-existing-char`;
     const mediaId = `${P}promote-existing-media`;
@@ -1101,6 +2760,8 @@ describe("image generation service contract", () => {
         referenceAssetIds: [mediaId],
         defaultSeed: `${P}promote-existing-seed`,
         adapterRefs: {},
+        immutableHash: `${P}promote-existing-immutable`,
+        evidenceState: "sealed",
         createdFrom: "test",
       },
     });
@@ -1111,6 +2772,7 @@ describe("image generation service contract", () => {
         type: "image",
         url: "/images/ourdream/card-sarah-mercer.webp",
         thumbnailUrl: "/images/ourdream/card-sarah-mercer.webp",
+        storageKey: `${P}promote-existing/${mediaId}.webp`,
         visibility: "private",
         safetyStatus: "passed",
         metadata: {},
@@ -1132,14 +2794,20 @@ describe("image generation service contract", () => {
     });
     expect(oldProfile.status).toBe("active");
     expect(activeProfile.version).toBe(1);
-    expect(activeProfile.anchorAssetIds).toEqual([mediaId, oldAnchorId]);
-    expect(activeProfile.referenceAssetIds).toEqual([]);
+    expect(activeProfile.anchorAssetIds).toEqual([oldAnchorId]);
+    expect(activeProfile.referenceAssetIds).toEqual([mediaId]);
+    expect(activeProfile.immutableHash).toBe(`${P}promote-existing-immutable`);
+    await expect(
+      prisma.character.findUniqueOrThrow({ where: { id: characterId } }),
+    ).resolves.toMatchObject({ imageAssetId: mediaId });
   });
 
   it("adds generated media through a reference revision without changing identity version", async () => {
     const userId = `${P}reference-user`;
     const characterId = `${P}reference-char`;
     const mediaId = `${P}reference-media`;
+    const projectId = `${P}reference-project`;
+    const releaseId = `${P}reference-release`;
     await createUser({ id: userId });
     await createCharacter({
       id: characterId,
@@ -1167,22 +2835,59 @@ describe("image generation service contract", () => {
         referenceAssetIds: [],
         defaultSeed: `${P}reference-seed`,
         adapterRefs: {},
+        immutableHash: `${P}reference-immutable`,
+        evidenceState: "sealed",
         createdFrom: "test",
       },
     });
-    await prisma.mediaAsset.create({
-      data: {
-        id: mediaId,
+    await prisma.mediaAsset.createMany({
+      data: [`${P}reference-anchor`, mediaId].map((id) => ({
+        id,
         ownerId: userId,
         characterId,
         type: "image",
         url: "/images/ourdream/card-sarah-mercer.webp",
         thumbnailUrl: "/images/ourdream/card-sarah-mercer.webp",
+        storageKey: `${P}reference/${id}.webp`,
         visibility: "private",
         safetyStatus: "passed",
         metadata: {},
+      })),
+    });
+    await prisma.characterProject.create({
+      data: {
+        id: projectId,
+        characterId,
+        ownerId: userId,
+        audience: {},
+        successCriteria: [],
+        activeKey: `user:${characterId}`,
       },
     });
+    await prisma.characterRelease.create({
+      data: {
+        id: releaseId,
+        projectId,
+        revisionId: `${releaseId}-revision`,
+        characterContentVersionId: `${releaseId}-content`,
+        visualProfileId: `${P}reference-cvp-v1`,
+        visualProfileVersion: 1,
+        generationProvenance: {},
+        releasePlacementManifest: {},
+        snapshotHash: `${releaseId}-snapshot`,
+        status: "in_review",
+      },
+    });
+
+    const blocked = await api("POST", `media/${mediaId}/add-to-identity`, {
+      userId,
+      ageGate: true,
+    });
+    expectError(blocked, 409, "conflict");
+    expect(await prisma.referenceSetRevision.count({
+      where: { visualProfileId: `${P}reference-cvp-v1` },
+    })).toBe(0);
+    await prisma.characterRelease.delete({ where: { id: releaseId } });
 
     const added = await api("POST", `media/${mediaId}/add-to-identity`, {
       userId,
@@ -1199,8 +2904,17 @@ describe("image generation service contract", () => {
     const media = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: mediaId } });
     expect(oldProfile.status).toBe("active");
     expect(activeProfile.version).toBe(1);
-    expect(activeProfile.referenceAssetIds).toEqual([mediaId]);
+    expect(activeProfile.referenceAssetIds).toEqual([]);
     expect(activeProfile.anchorAssetIds).toEqual([`${P}reference-anchor`]);
+    expect(activeProfile.immutableHash).toBe(`${P}reference-immutable`);
+    expect(added.data.referenceSetRevision.references).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          mediaAssetId: mediaId,
+          role: "identity_reference",
+        }),
+      ]),
+    );
     expect(media.metadata).toMatchObject({
       quality: {
         addedToReferences: true,
@@ -1252,6 +2966,7 @@ describe("image generation service contract", () => {
         characterId,
         type: "image",
         url: "/images/ourdream/card-sarah-mercer.webp",
+        storageKey: `${P}manifest/${id}.webp`,
         visibility: "private",
         safetyStatus: "passed",
         metadata: {},
@@ -1271,39 +2986,50 @@ describe("image generation service contract", () => {
         { mediaAssetId: referenceId, role: "identity_reference" },
       ],
     });
+    await prisma.referenceSetRevision.update({
+      where: { id: promoted.data.referenceSetRevision.id },
+      data: { status: "superseded" },
+    });
+    const prunedReferenceSet = await createSealedReferenceSet({
+      id: `${P}manifest-reference-set-r2`,
+      visualProfileId: `${P}manifest-cvp-v1`,
+      revision: 2,
+      references: [
+        {
+          mediaAssetId: anchorId,
+          role: "primary_face",
+          weight: 1,
+          selectionReason: "primary_identity_anchor",
+        },
+      ],
+    });
 
     await grantCoins(userId, 100, "seed");
-    const defaultProfile = await prisma.generationModelProfile.findFirstOrThrow({
-      where: { mode: "image", status: "active", enabled: true },
-      orderBy: { version: "desc" },
-    });
-    await prisma.generationModelProfile.update({
-      where: { id: defaultProfile.id },
-      data: {
-        runnerConfig: {
-          ...(defaultProfile.runnerConfig as Record<string, unknown>),
-          capabilities: {
-            textToImage: true,
-            stableSeed: true,
-            referenceImages: true,
-            initImage: true,
-            lora: false,
-          },
-        },
-      },
-    });
     const created = await api("POST", "generation/jobs", {
       userId,
       ageGate: true,
-      body: { mode: "image", characterId, outputCount: 1 },
+      body: {
+        mode: "image",
+        characterId,
+        model: "chat-image-edit",
+        outputCount: 1,
+      },
     });
     expectOk(created, 202);
     expect(created.data.job).toMatchObject({
-      referenceSetRevisionId: promoted.data.referenceSetRevision.id,
+      referenceAssetIds: [anchorId],
+      referenceSetRevisionId: prunedReferenceSet.id,
       referenceManifest: [
         { mediaAssetId: anchorId, role: "primary_face" },
-        { mediaAssetId: referenceId, role: "identity_reference" },
       ],
+      controls: {
+        visualIdentity: {
+          referenceAssetIds: [anchorId],
+          referenceManifest: [
+            { mediaAssetId: anchorId, role: "primary_face" },
+          ],
+        },
+      },
     });
     const queued = await jobQueue.getByDedupeKey(
       "ai.image.generate",
@@ -1317,23 +3043,442 @@ describe("image generation service contract", () => {
           weight: 1,
           selectionReason: "primary_identity_anchor",
         },
+      ],
+    });
+    await prisma.mediaAsset.update({
+      where: { id: anchorId },
+      data: { safetyStatus: "blocked" },
+    });
+    const unavailableAuthority = await api("POST", "generation/jobs", {
+      userId,
+      ageGate: true,
+      body: {
+        mode: "image",
+        characterId,
+        model: "chat-image-edit",
+        outputCount: 1,
+      },
+    });
+    expectError(unavailableAuthority, 409, "conflict");
+    await prisma.mediaAsset.update({
+      where: { id: anchorId },
+      data: { safetyStatus: "passed" },
+    });
+    await prisma.mediaAsset.update({
+      where: { id: anchorId },
+      data: { metadata: { platformAsset: { status: "archived" } } },
+    });
+    const archivedAuthority = await api("POST", "generation/jobs", {
+      userId,
+      ageGate: true,
+      body: {
+        mode: "image",
+        characterId,
+        model: "chat-image-edit",
+        outputCount: 1,
+      },
+    });
+    expectError(archivedAuthority, 409, "conflict");
+    await prisma.mediaAsset.update({
+      where: { id: anchorId },
+      data: { metadata: {} },
+    });
+  });
+
+  it("fails dispatch closed when a source-only image was archived before resolution", async () => {
+    const userId = `${P}archived-source-dispatch-user`;
+    const sourceAssetId = `${P}archived-source-dispatch-asset`;
+    const jobId = `${P}archived-source-dispatch-job`;
+    await createUser({ id: userId });
+    await prisma.mediaAsset.create({
+      data: {
+        id: sourceAssetId,
+        ownerId: userId,
+        type: "image",
+        url: "/images/ourdream/card-sarah-mercer.webp",
+        visibility: "private",
+        safetyStatus: "passed",
+        metadata: { platformAsset: { status: "archived" } },
+      },
+    });
+    const job = await prisma.generationJob.create({
+      data: {
+        id: jobId,
+        userId,
+        mode: "image",
+        controls: {
+          sourceImageAssetId: sourceAssetId,
+          modelCapabilities: {
+            textToImage: true,
+            referenceImages: false,
+            initImage: true,
+          },
+        },
+        presetIds: [],
+        model: "chat-image-edit",
+        orientation: "4:5",
+        outputCount: 1,
+        status: "queued",
+      },
+    });
+
+    await expect(enqueueGenerationAttempt(job)).rejects.toMatchObject({
+      status: 409,
+      details: {
+        generationJobId: jobId,
+        sourceImageAssetId: sourceAssetId,
+      },
+    });
+    await expect(
+      jobQueue.getByDedupeKey("ai.image.generate", `generation:${jobId}`),
+    ).resolves.toBeNull();
+  });
+
+  it("fails dispatch closed when any pinned Reference Set image is unavailable", async () => {
+    const userId = `${P}partial-reference-dispatch-user`;
+    const blockedReferenceId = `${P}partial-reference-dispatch-blocked`;
+    const availableReferenceId = `${P}partial-reference-dispatch-available`;
+    const jobId = `${P}partial-reference-dispatch-job`;
+    await createUser({ id: userId });
+    await prisma.mediaAsset.createMany({
+      data: [
         {
-          assetId: referenceId,
-          role: "identity_reference",
-          weight: 0.75,
-          selectionReason: "user_promoted_identity_reference",
+          id: blockedReferenceId,
+          ownerId: userId,
+          type: "image",
+          url: "/images/ourdream/card-sarah-mercer.webp",
+          storageKey: `${P}partial-reference-blocked.webp`,
+          visibility: "private",
+          safetyStatus: "blocked",
+          metadata: {},
+        },
+        {
+          id: availableReferenceId,
+          ownerId: userId,
+          type: "image",
+          url: "/images/ourdream/card-sophie.webp",
+          storageKey: `${P}partial-reference-available.webp`,
+          visibility: "private",
+          safetyStatus: "passed",
+          metadata: {},
         },
       ],
     });
-    await prisma.generationModelProfile.update({
-      where: { id: defaultProfile.id },
-      data: { runnerConfig: defaultProfile.runnerConfig as Prisma.InputJsonValue },
+    const job = await prisma.generationJob.create({
+      data: {
+        id: jobId,
+        userId,
+        mode: "image",
+        controls: {
+          modelCapabilities: {
+            textToImage: true,
+            referenceImages: true,
+            initImage: false,
+          },
+        },
+        presetIds: [],
+        model: "reference-capable",
+        orientation: "4:5",
+        outputCount: 1,
+        status: "queued",
+      },
     });
+    const pinnedJob = {
+      ...job,
+      referenceAssetIds: [blockedReferenceId, availableReferenceId],
+      referenceSetRevisionId: `${P}partial-reference-dispatch-r1`,
+      referenceManifest: [
+        { mediaAssetId: blockedReferenceId, role: "primary_face" },
+        { mediaAssetId: availableReferenceId, role: "identity_reference" },
+      ],
+    };
+
+    await expect(enqueueGenerationAttempt(pinnedJob)).rejects.toMatchObject({
+      status: 409,
+      details: {
+        generationJobId: jobId,
+        referenceSetRevisionId: pinnedJob.referenceSetRevisionId,
+        unavailableReferenceAssetIds: [blockedReferenceId],
+      },
+    });
+    await expect(
+      jobQueue.getByDedupeKey("ai.image.generate", `generation:${jobId}`),
+    ).resolves.toBeNull();
+
+  });
+
+  it("fails dispatch closed when a pinned More-like source loses profile init-image capability", async () => {
+    const userId = `${P}source-runtime-dispatch-user`;
+    const anchorId = `${P}source-runtime-dispatch-anchor`;
+    const sourceId = `${P}source-runtime-dispatch-source`;
+    const profileKey = `${P}source-runtime-dispatch-profile`;
+    const jobId = `${P}source-runtime-dispatch-job`;
+    await createUser({ id: userId });
+    await prisma.generationModelProfile.create({
+      data: {
+        id: profileKey,
+        profileKey,
+        label: "Source variation dispatch profile",
+        mode: "image",
+        runner: "pipeline",
+        pipelineModel: "qwen-image-edit",
+        workflowKey: "qwen-image-edit-img2img",
+        runnerConfig: {
+          capabilities: {
+            textToImage: false,
+            stableSeed: true,
+            referenceImages: true,
+            initImage: false,
+            lora: false,
+          },
+        },
+        allowedOrientations: ["4:5"],
+        version: 1,
+        status: "active",
+      },
+    });
+    await prisma.generationRouteQualification.create({
+      data: {
+        id: `${P}source-runtime-qualification`,
+        routeFingerprint: `${P}source-runtime-route`,
+        generationProfileKey: profileKey,
+        generationProfileVersion: 1,
+        workflowKey: "qwen-image-edit-img2img",
+        workflowVersion: 1,
+        style: "realistic",
+        matrixKey: `${P}source-runtime-matrix`,
+        sampleCount: 40,
+        passCount: 40,
+        identityMatch: 0.95,
+        result: "qualified",
+        evidence: {
+          evaluatorVersion: "identity-match-v1",
+          reviewerId: `${P}source-runtime-reviewer`,
+        },
+        policyVersion: "character-release-policy-v2",
+      },
+    });
+    await prisma.mediaAsset.createMany({
+      data: [
+        {
+          id: anchorId,
+          ownerId: userId,
+          type: "image",
+          url: "/images/ourdream/card-sarah-mercer.webp",
+          storageKey: `${P}source-runtime-anchor.webp`,
+          visibility: "private",
+          safetyStatus: "passed",
+          metadata: {},
+        },
+        {
+          id: sourceId,
+          ownerId: userId,
+          type: "image",
+          url: "/images/ourdream/card-sophie.webp",
+          storageKey: `${P}source-runtime-source.webp`,
+          visibility: "private",
+          safetyStatus: "passed",
+          metadata: {},
+        },
+      ],
+    });
+    const job = await prisma.generationJob.create({
+      data: {
+        id: jobId,
+        userId,
+        mode: "image",
+        controls: {
+          generationRouteFingerprint: `${P}source-runtime-route`,
+          workflowIdentity: {
+            mode: "multi_reference",
+            acceptedRoles: ["identity_anchor", "source_image"],
+            maxReferences: 2,
+            supportsSourceImageWithIdentity: true,
+          },
+        },
+        presetIds: [],
+        model: "qwen-image-edit-img2img",
+        profileId: profileKey,
+        profileVersion: 1,
+        orientation: "4:5",
+        outputCount: 1,
+        status: "queued",
+      },
+    });
+    const pinnedJob = {
+      ...job,
+      referenceAssetIds: [anchorId, sourceId],
+      referenceSetRevisionId: `${P}source-runtime-r1`,
+      referenceManifest: [
+        { mediaAssetId: anchorId, role: "primary_face" },
+        { mediaAssetId: sourceId, role: "source_image" },
+      ],
+    };
+
+    await expect(enqueueGenerationAttempt(pinnedJob)).rejects.toMatchObject({
+      status: 409,
+      details: {
+        generationJobId: jobId,
+        sourceReferenceCount: 1,
+        identityReferenceCount: 1,
+      },
+    });
+    await expect(
+      jobQueue.getByDedupeKey("ai.image.generate", `generation:${jobId}`),
+    ).resolves.toBeNull();
+
+    await prisma.generationModelProfile.update({
+      where: { id: profileKey },
+      data: {
+        runnerConfig: {
+          capabilities: {
+            textToImage: false,
+            stableSeed: true,
+            referenceImages: true,
+            initImage: true,
+            lora: false,
+          },
+        },
+      },
+    });
+    await expect(enqueueGenerationAttempt(pinnedJob)).rejects.toMatchObject({
+      status: 409,
+      details: {
+        generationJobId: jobId,
+        workflowKey: "qwen-image-edit-img2img",
+        workflowVersion: 1,
+      },
+    });
+    await expect(
+      jobQueue.getByDedupeKey("ai.image.generate", `generation:${jobId}`),
+    ).resolves.toBeNull();
+  });
+
+  it("does not let stale stored workflow hints truncate pinned references", async () => {
+    const userId = `${P}filtered-reference-dispatch-user`;
+    const anchorId = `${P}filtered-reference-dispatch-anchor`;
+    const referenceId = `${P}filtered-reference-dispatch-reference`;
+    const profileKey = `${P}filtered-reference-dispatch-profile`;
+    await createUser({ id: userId });
+    await prisma.generationModelProfile.create({
+      data: {
+        id: profileKey,
+        profileKey,
+        label: "Filtered Reference dispatch profile",
+        mode: "image",
+        runner: "comfyui",
+        pipelineModel: "qwen-image-edit",
+        workflowKey: "qwen-image-edit-multi-identity",
+        runnerConfig: {
+          capabilities: {
+            textToImage: true,
+            stableSeed: true,
+            referenceImages: true,
+            initImage: false,
+            lora: false,
+          },
+        },
+        allowedOrientations: ["4:5"],
+        version: 1,
+        status: "active",
+      },
+    });
+    await prisma.mediaAsset.createMany({
+      data: [
+        {
+          id: anchorId,
+          ownerId: userId,
+          type: "image",
+          url: "/images/ourdream/card-sarah-mercer.webp",
+          storageKey: `${P}filtered-reference-anchor.webp`,
+          visibility: "private",
+          safetyStatus: "passed",
+          metadata: {},
+        },
+        {
+          id: referenceId,
+          ownerId: userId,
+          type: "image",
+          url: "/images/ourdream/card-sophie.webp",
+          storageKey: `${P}filtered-reference-support.webp`,
+          visibility: "private",
+          safetyStatus: "passed",
+          metadata: {},
+        },
+      ],
+    });
+    const cases = [
+      {
+        label: "accepted role",
+        workflowIdentity: {
+          acceptedRoles: ["identity_anchor"],
+          maxReferences: 2,
+        },
+      },
+      {
+        label: "max references",
+        workflowIdentity: {
+          acceptedRoles: ["identity_anchor", "identity_reference"],
+          maxReferences: 1,
+        },
+      },
+    ] as const;
+
+    for (const [index, scenario] of cases.entries()) {
+      const jobId = `${P}filtered-reference-dispatch-job-${index}`;
+      const job = await prisma.generationJob.create({
+        data: {
+          id: jobId,
+          userId,
+          mode: "image",
+          controls: { workflowIdentity: scenario.workflowIdentity },
+          presetIds: [],
+          model: "reference-capable",
+          profileId: profileKey,
+          profileVersion: 1,
+          orientation: "4:5",
+          outputCount: 1,
+          status: "queued",
+        },
+      });
+      const pinnedJob = {
+        ...job,
+        referenceAssetIds: [anchorId, referenceId],
+        referenceSetRevisionId: `${P}filtered-reference-dispatch-r1-${index}`,
+        referenceManifest: [
+          { mediaAssetId: anchorId, role: "primary_face" },
+          { mediaAssetId: referenceId, role: "identity_reference" },
+        ],
+      };
+
+      await expect(
+        enqueueGenerationAttempt(pinnedJob),
+        scenario.label,
+      ).resolves.toBeUndefined();
+      const queued = await jobQueue.getByDedupeKey(
+        "ai.image.generate",
+        `generation:${jobId}`,
+      );
+      expect(queued?.payload, scenario.label).toMatchObject({
+        referenceImages: [
+          expect.objectContaining({
+            assetId: anchorId,
+            role: "identity_anchor",
+          }),
+          expect.objectContaining({
+            assetId: referenceId,
+            role: "identity_reference",
+          }),
+        ],
+      });
+    }
   });
 
   it("stores a versioned MomentSpec snapshot instead of relying on prompt text alone", async () => {
     const userId = `${P}moment-user`;
     const characterId = `${P}moment-char`;
+    const anchorId = `${P}moment-anchor`;
+    const visualProfileId = `${P}moment-cvp`;
     await createUser({ id: userId });
     await createCharacter({
       id: characterId,
@@ -1342,6 +3487,54 @@ describe("image generation service contract", () => {
       description: "An adult companion with a calm presence.",
       visibility: "private",
       status: "approved",
+    });
+    await prisma.mediaAsset.create({
+      data: {
+        id: anchorId,
+        ownerId: userId,
+        characterId,
+        type: "image",
+        url: `/user-content/${anchorId}/content.webp`,
+        thumbnailUrl: `/user-content/${anchorId}/content.webp`,
+        storageKey: `${P}moment/identity-anchor.webp`,
+        contentType: "image/webp",
+        width: 1024,
+        height: 1280,
+        visibility: "private",
+        safetyStatus: "passed",
+        metadata: {},
+      },
+    });
+    await prisma.characterVisualProfile.create({
+      data: {
+        id: visualProfileId,
+        characterId,
+        version: 1,
+        status: "active",
+        style: "realistic",
+        identityPrompt: "Nora Vale, adult woman with a calm presence",
+        faceTraits: {},
+        hairTraits: {},
+        bodyTraits: {},
+        signatureTraits: {},
+        styleTraits: { style: "realistic" },
+        anchorAssetIds: [anchorId],
+        referenceAssetIds: [],
+        adapterRefs: {},
+        createdFrom: "test",
+      },
+    });
+    await createSealedReferenceSet({
+      id: `${P}moment-reference-set`,
+      visualProfileId,
+      references: [
+        {
+          mediaAssetId: anchorId,
+          role: "primary_face",
+          weight: 1,
+          selectionReason: "primary_identity_anchor",
+        },
+      ],
     });
     await grantCoins(userId, 100, "seed");
 
@@ -1368,9 +3561,103 @@ describe("image generation service contract", () => {
     });
   });
 
+  it("rejects Save as Look when relative media has only a providerKey projection", async () => {
+    const userId = `${P}look-provider-key-only-user`;
+    const characterId = `${P}look-provider-key-only-char`;
+    const anchorId = `${P}look-provider-key-only-anchor`;
+    const mediaId = `${P}look-provider-key-only-media`;
+    const profileId = `${P}look-provider-key-only-cvp`;
+    await createUser({ id: userId });
+    await createCharacter({
+      id: characterId,
+      creatorId: userId,
+      name: "Provider Key Look",
+      description: "An adult companion with a sealed visual identity.",
+      visibility: "private",
+      status: "approved",
+    });
+    await prisma.mediaAsset.createMany({
+      data: [
+        {
+          id: anchorId,
+          ownerId: userId,
+          characterId,
+          type: "image",
+          url: `/user-content/${anchorId}/content.webp`,
+          storageKey: `${P}look-provider-key-only/anchor.webp`,
+          visibility: "private",
+          safetyStatus: "passed",
+          metadata: {},
+        },
+        {
+          id: mediaId,
+          ownerId: userId,
+          characterId,
+          type: "image",
+          url: `/user-content/${mediaId}/content.webp`,
+          visibility: "private",
+          safetyStatus: "passed",
+          metadata: {
+            providerKey: `${P}look-provider-key-only/projected.webp`,
+          },
+        },
+      ],
+    });
+    await prisma.characterVisualProfile.create({
+      data: {
+        id: profileId,
+        characterId,
+        version: 1,
+        status: "active",
+        style: "realistic",
+        identityPrompt: "Stable adult identity for provider-key rejection",
+        faceTraits: {},
+        hairTraits: {},
+        bodyTraits: {},
+        signatureTraits: {},
+        styleTraits: {},
+        anchorAssetIds: [anchorId],
+        referenceAssetIds: [],
+        adapterRefs: {},
+        createdFrom: "test",
+      },
+    });
+    await createSealedReferenceSet({
+      id: `${P}look-provider-key-only-reference-set`,
+      visualProfileId: profileId,
+      references: [
+        {
+          mediaAssetId: anchorId,
+          role: "primary_face",
+          weight: 1,
+          selectionReason: "primary_identity_anchor",
+        },
+      ],
+    });
+
+    const looksBefore = await prisma.characterLook.count({
+      where: { characterId },
+    });
+    const saved = await api("POST", `media/${mediaId}/save-as-look`, {
+      userId,
+      ageGate: true,
+      body: {
+        label: "Projected bytes only",
+        appearanceDelta: { outfit: "silver evening coat" },
+      },
+    });
+
+    expectError(saved, 409, "conflict");
+    expect(saved.error?.details).toMatchObject({ mediaAssetId: mediaId });
+    await expect(
+      prisma.characterLook.count({ where: { characterId } }),
+    ).resolves.toBe(looksBefore);
+  });
+
   it("creates reusable character Looks and snapshots the selected Look on a job", async () => {
     const userId = `${P}look-user`;
     const characterId = `${P}look-char`;
+    const identityAnchorId = `${P}look-identity-anchor`;
     await createUser({ id: userId });
     await createCharacter({
       id: characterId,
@@ -1379,6 +3666,51 @@ describe("image generation service contract", () => {
       description: "An adult companion with dark curls.",
       visibility: "private",
       status: "approved",
+    });
+    await prisma.mediaAsset.create({
+      data: {
+        id: identityAnchorId,
+        ownerId: userId,
+        characterId,
+        type: "image",
+        url: "/images/ourdream/card-amelie-dubois.webp",
+        storageKey: `${P}look-identity-anchor.webp`,
+        visibility: "private",
+        safetyStatus: "passed",
+        metadata: {},
+      },
+    });
+    await prisma.characterVisualProfile.create({
+      data: {
+        id: `${P}look-cvp`,
+        characterId,
+        version: 1,
+        status: "active",
+        style: "realistic",
+        identityPrompt: "Mina Hart, adult woman, dark curls",
+        negativeIdentityPrompt: "different face",
+        faceTraits: {},
+        hairTraits: { color: "dark", texture: "curly" },
+        bodyTraits: {},
+        signatureTraits: {},
+        styleTraits: { style: "realistic" },
+        anchorAssetIds: [identityAnchorId],
+        referenceAssetIds: [],
+        adapterRefs: {},
+        createdFrom: "test",
+      },
+    });
+    await createSealedReferenceSet({
+      id: `${P}look-reference-set`,
+      visualProfileId: `${P}look-cvp`,
+      references: [
+        {
+          mediaAssetId: identityAnchorId,
+          role: "primary_face",
+          weight: 1,
+          selectionReason: "primary_identity_anchor",
+        },
+      ],
     });
 
     const saved = await api("POST", `characters/${characterId}/looks`, {
@@ -1422,6 +3754,7 @@ describe("image generation service contract", () => {
         characterId,
         type: "image",
         url: "/images/ourdream/card-sarah-mercer.webp",
+        storageKey: `${P}look-media.webp`,
         visibility: "private",
         safetyStatus: "passed",
         metadata: {},
@@ -1449,19 +3782,133 @@ describe("image generation service contract", () => {
       body: {
         mode: "image",
         characterId,
-        controls: { lookId: saved.data.look.id },
+        model: "character-image-multi-identity",
+        controls: { lookId: savedFromMedia.data.look.id },
         outputCount: 1,
       },
     });
     expectOk(generated, 202);
     expect(generated.data.job).toMatchObject({
-      lookId: saved.data.look.id,
+      lookId: savedFromMedia.data.look.id,
+      model: "qwen-image-edit-multi-identity",
+      profileId: "character-image-multi-identity",
+      profileVersion: 1,
       lookSnapshot: {
-        label: "Rainy day",
-        appearanceDelta: { outfit: "cream trench coat" },
+        label: "Evening dress",
+        appearanceDelta: { outfit: "midnight blue evening dress" },
+        referenceAssetId: lookMediaId,
+      },
+      controls: {
+        lookId: savedFromMedia.data.look.id,
+        lookReferenceAssetId: lookMediaId,
+        generationProfileKey: "character-image-multi-identity",
+        generationProfileVersion: 1,
+        workflowKey: "qwen-image-edit-multi-identity",
+        workflowVersion: 1,
       },
     });
-    expect(generated.data.job.prompt).toContain("cream trench coat");
+    expect(generated.data.job.prompt).toContain("midnight blue evening dress");
+    const generatedJobId = generated.data.job.id as string;
+    const queuedLookGeneration = await jobQueue.getByDedupeKey(
+      "ai.image.generate",
+      `generation:${generatedJobId}`,
+    );
+    expect(queuedLookGeneration?.payload).toMatchObject({
+      controls: {
+        lookReferenceAssetId: lookMediaId,
+        generationProfileKey: "character-image-multi-identity",
+        workflowKey: "qwen-image-edit-multi-identity",
+      },
+      referenceImages: expect.arrayContaining([
+        expect.objectContaining({
+          assetId: identityAnchorId,
+          role: "identity_anchor",
+          storageKey: `${P}look-identity-anchor.webp`,
+        }),
+        expect.objectContaining({
+          assetId: lookMediaId,
+          role: "look_reference",
+          storageKey: `${P}look-media.webp`,
+        }),
+      ]),
+    });
+
+    await jobQueue.removeByDedupePrefix(
+      `generation:${generatedJobId}`,
+      ["ai.image.generate"],
+    );
+    await prisma.generationJob.update({
+      where: { id: generatedJobId },
+      data: {
+        status: "failed",
+        errorCode: "look_retry_fixture",
+      },
+    });
+    const retriedLookGeneration = await api(
+      "POST",
+      `generation/jobs/${generatedJobId}/retry`,
+      {
+        userId,
+        ageGate: true,
+        headers: {
+          "idempotency-key": `${P}look-retry`,
+        },
+      },
+    );
+    expectOk(retriedLookGeneration, 202);
+    expect(retriedLookGeneration.data.job).toMatchObject({
+      derivedFromJobId: generatedJobId,
+      lookId: savedFromMedia.data.look.id,
+      model: "qwen-image-edit-multi-identity",
+      profileId: "character-image-multi-identity",
+      profileVersion: 1,
+      lookSnapshot: {
+        referenceAssetId: lookMediaId,
+      },
+      controls: {
+        lookId: savedFromMedia.data.look.id,
+        lookReferenceAssetId: lookMediaId,
+        generationProfileKey: "character-image-multi-identity",
+        generationProfileVersion: 1,
+        workflowKey: "qwen-image-edit-multi-identity",
+        workflowVersion: 1,
+      },
+    });
+    const retriedJobId = retriedLookGeneration.data.job.id as string;
+    const queuedLookRetry = await jobQueue.getByDedupeKey(
+      "ai.image.generate",
+      `generation:${retriedJobId}`,
+    );
+    expect(queuedLookRetry?.payload).toMatchObject({
+      controls: {
+        lookReferenceAssetId: lookMediaId,
+        generationProfileKey: "character-image-multi-identity",
+        workflowKey: "qwen-image-edit-multi-identity",
+      },
+      referenceImages: expect.arrayContaining([
+        expect.objectContaining({
+          assetId: identityAnchorId,
+          role: "identity_anchor",
+          storageKey: `${P}look-identity-anchor.webp`,
+        }),
+        expect.objectContaining({
+          assetId: lookMediaId,
+          role: "look_reference",
+          storageKey: `${P}look-media.webp`,
+        }),
+      ]),
+    });
+    await jobQueue.removeByDedupePrefix(
+      `generation:${retriedJobId}`,
+      ["ai.image.generate"],
+    );
+    await prisma.generationJob.update({
+      where: { id: retriedJobId },
+      data: {
+        status: "failed",
+        errorCode: "look_retry_asserted",
+      },
+    });
 
     const identityReferenceId = `${P}look-identity-reference`;
     await prisma.mediaAsset.create({
@@ -1471,6 +3918,7 @@ describe("image generation service contract", () => {
         characterId,
         type: "image",
         url: "/images/ourdream/card-sophie.webp",
+        storageKey: `${P}look-identity-reference.webp`,
         visibility: "private",
         safetyStatus: "passed",
         metadata: {},
@@ -1498,12 +3946,132 @@ describe("image generation service contract", () => {
         }),
       ]),
     );
+    const characterUpdate = await api("PATCH", `characters/${characterId}`, {
+      userId,
+      ageGate: true,
+      body: { name: "Mina Hart V2" },
+    });
+    expectOk(characterUpdate);
+    const activeProfileV2 = await prisma.characterVisualProfile.findFirstOrThrow({
+      where: { characterId, status: "active" },
+      orderBy: { version: "desc" },
+    });
+    expect(activeProfileV2.version).toBe(2);
+    await expect(
+      prisma.characterLook.findUniqueOrThrow({
+        where: { id: saved.data.look.id as string },
+      }),
+    ).resolves.toMatchObject({
+      visualProfileId: `${P}look-cvp`,
+      status: "needs_rebase",
+      activeKey: null,
+    });
+
+    const reactivated = await api(
+      "PATCH",
+      `characters/${characterId}/looks/${saved.data.look.id as string}`,
+      {
+        userId,
+        ageGate: true,
+        body: { status: "active" },
+      },
+    );
+    expectOk(reactivated);
+    expect(reactivated.data.look).toMatchObject({
+      characterId,
+      visualProfileId: activeProfileV2.id,
+      status: "active",
+      rebasedFromLookId: saved.data.look.id,
+    });
+    expect(reactivated.data.look.id).not.toBe(saved.data.look.id);
+
+    await prisma.mediaAsset.update({
+      where: { id: lookMediaId },
+      data: { metadata: { platformAsset: { status: "archived" } } },
+    });
+    const unavailableRebase = await api(
+      "PATCH",
+      `characters/${characterId}/looks/${savedFromMedia.data.look.id as string}`,
+      {
+        userId,
+        ageGate: true,
+        body: { status: "active" },
+      },
+    );
+    expectError(unavailableRebase, 409, "conflict");
+    await expect(
+      prisma.characterLook.findUniqueOrThrow({
+        where: { id: savedFromMedia.data.look.id as string },
+      }),
+    ).resolves.toMatchObject({
+      visualProfileId: `${P}look-cvp`,
+      status: "needs_rebase",
+    });
+
+    const generatedWithRebasedLook = await api("POST", "generation/jobs", {
+      userId,
+      ageGate: true,
+      body: {
+        mode: "image",
+        characterId,
+        controls: { lookId: reactivated.data.look.id },
+        outputCount: 1,
+      },
+    });
+    expectOk(generatedWithRebasedLook, 202);
+    expect(generatedWithRebasedLook.data.job).toMatchObject({
+      lookId: reactivated.data.look.id,
+      lookSnapshot: {
+        visualProfileId: activeProfileV2.id,
+      },
+    });
+  });
+
+  it("rejects another user retrying a failed job for a public Character", async () => {
+    const jobOwnerId = `${P}public-retry-job-owner`;
+    const otherUserId = `${P}public-retry-other-user`;
+    const failedJobId = `${P}public-retry-failed-job`;
+    await createUser({ id: jobOwnerId });
+    await createUser({ id: otherUserId });
+    await prisma.generationJob.create({
+      data: {
+        id: failedJobId,
+        userId: jobOwnerId,
+        characterId: CHAR,
+        mode: "image",
+        controls: {},
+        presetIds: [],
+        outputCount: 1,
+        status: "failed",
+        errorCode: "public_retry_fixture",
+      },
+    });
+
+    const response = await api(
+      "POST",
+      `generation/jobs/${failedJobId}/retry`,
+      {
+        userId: otherUserId,
+        ageGate: true,
+        headers: {
+          "idempotency-key": `${P}public-retry-other-user`,
+        },
+      },
+    );
+
+    expectError(response, 404, "not_found");
+    await expect(
+      prisma.generationJob.count({
+        where: { derivedFromJobId: failedJobId },
+      }),
+    ).resolves.toBe(0);
   });
 
   it("creates a more-like-this variation through the standard character identity pipeline", async () => {
     const userId = `${P}variation-user`;
     const characterId = `${P}variation-char`;
     const mediaId = `${P}variation-media`;
+    const identityAnchorId = `${P}variation-identity-anchor`;
     await createUser({ id: userId });
     await createCharacter({
       id: characterId,
@@ -1527,11 +4095,28 @@ describe("image generation service contract", () => {
         bodyTraits: {},
         signatureTraits: {},
         styleTraits: { style: "realistic" },
-        anchorAssetIds: [],
-        referenceAssetIds: [],
+        anchorAssetIds: [identityAnchorId],
+        referenceAssetIds: [identityAnchorId],
         defaultSeed: `${P}variation-seed`,
         adapterRefs: {},
         createdFrom: "test",
+      },
+    });
+    await prisma.mediaAsset.create({
+      data: {
+        id: identityAnchorId,
+        ownerId: userId,
+        characterId,
+        type: "image",
+        url: "/images/ourdream/card-amelie-dubois.webp",
+        thumbnailUrl: "/images/ourdream/card-amelie-dubois.webp",
+        storageKey: `${P}variation/identity-anchor.webp`,
+        contentType: "image/webp",
+        width: 1024,
+        height: 1280,
+        visibility: "private",
+        safetyStatus: "passed",
+        metadata: {},
       },
     });
     await prisma.mediaAsset.create({
@@ -1551,6 +4136,18 @@ describe("image generation service contract", () => {
         safetyStatus: "passed",
         metadata: {},
       },
+    });
+    await createSealedReferenceSet({
+      id: `${P}variation-reference-set`,
+      visualProfileId: `${P}variation-cvp`,
+      references: [
+        {
+          mediaAssetId: identityAnchorId,
+          role: "primary_face",
+          weight: 1,
+          selectionReason: "primary_identity_anchor",
+        },
+      ],
     });
     await grantCoins(userId, 100, "seed");
 
@@ -1577,7 +4174,7 @@ describe("image generation service contract", () => {
     expect(queuedPayload?.controls).toMatchObject({
       sourceImageAssetId: mediaId,
       modelCapabilities: {
-        referenceImages: false,
+        referenceImages: true,
         initImage: true,
       },
     });
@@ -1587,6 +4184,12 @@ describe("image generation service contract", () => {
         role: "source_image",
         storageKey: `${P}variation/source.webp`,
         weight: 0.7,
+      }),
+      expect.objectContaining({
+        assetId: identityAnchorId,
+        role: "identity_anchor",
+        storageKey: `${P}variation/identity-anchor.webp`,
+        selectionReason: "primary_identity_anchor",
       }),
     ]);
     await runQueuedGenerationJobs(4);

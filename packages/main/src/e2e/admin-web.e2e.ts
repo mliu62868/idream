@@ -43,7 +43,7 @@ async function startAdminSession(page: Page) {
 
   const user = await prisma.user.update({
     where: { email },
-    data: { role: "admin" },
+    data: { role: "admin", dataClass: "internal" },
     select: { id: true, email: true },
   });
 
@@ -58,7 +58,11 @@ async function startRoleSession(page: Page, role: "admin" | "support" | "analyst
     data: { email, password: "password123", name: `E2E ${role}` },
   });
   expect(signup.ok(), await signup.text()).toBeTruthy();
-  return prisma.user.update({ where: { email }, data: { role }, select: { id: true, email: true } });
+  return prisma.user.update({
+    where: { email },
+    data: { role, dataClass: "internal" },
+    select: { id: true, email: true },
+  });
 }
 
 async function expectAdminShellReady(page: Page, heading: string) {
@@ -173,7 +177,7 @@ test("admin web loads all control-plane sections and filters users", async ({ pa
     { path: "/admin/content/templates", heading: "Character Starters", evidence: "Create character template" },
     { path: "/admin/content/tags", heading: "Taxonomy", evidence: "Merge tags" },
     { path: "/admin/content/review-queue", heading: "Character Review", evidence: "Pending submissions" },
-    { path: "/admin/cms", heading: "CMS & SEO", evidence: "Create / overwrite page" },
+    { path: "/admin/cms", heading: "CMS & SEO", evidence: "Create new page draft" },
     { path: "/admin/chat", heading: "Chat Operations", evidence: "CHAT_SERVICE_URL" },
     { path: "/admin/support", heading: "Support Cases", evidence: "Support Requests" },
     { path: "/admin/users", heading: "Customers", evidence: admin.email },
@@ -218,7 +222,7 @@ test("admin web loads all control-plane sections and filters users", async ({ pa
   await prisma.user.deleteMany({ where: { id: { in: [admin.id, customer.id] } } });
 });
 
-test("admin content ops requires confirmation for public placement and archive writes", async ({
+test("admin content ops requires confirmation for standalone draft placement and archive writes", async ({
   page,
 }) => {
   const consoleFailures = collectConsoleFailures(page);
@@ -230,9 +234,9 @@ test("admin content ops requires confirmation for public placement and archive w
   const placementTargetId = `e2e-content-confirm-campaign-${suffix}`;
   const archiveAssetId = `e2e-content-confirm-archive-${suffix}`;
   const placementAssetId = `e2e-content-confirm-placement-${suffix}`;
-  const archiveBatchId = `e2e-content-confirm-archive-batch-${suffix}`;
   const placementBatchId = `e2e-content-confirm-placement-batch-${suffix}`;
-  const archiveBatchTitle = `Archive Confirmation ${suffix}`;
+  const placementItemId = `e2e-content-confirm-placement-item-${suffix}`;
+  const placementJobId = `e2e-content-confirm-placement-job-${suffix}`;
   const placementBatchTitle = `Placement Confirmation ${suffix}`;
   const archiveStorageKey = `e2e/admin/content-ops/${archiveAssetId}.png`;
   const placementStorageKey = `e2e/admin/content-ops/${placementAssetId}.png`;
@@ -270,20 +274,6 @@ test("admin content ops requires confirmation for public placement and archive w
     await prisma.contentProductionBatch.createMany({
       data: [
         {
-          id: archiveBatchId,
-          title: archiveBatchTitle,
-          purpose: "character_chat",
-          targetType: "character",
-          targetId: characterId,
-          presetIds: [],
-          count: 1,
-          totalItems: 1,
-          completedItems: 1,
-          approvedItems: 1,
-          status: "completed",
-          createdById: admin.id,
-        },
-        {
           id: placementBatchId,
           title: placementBatchTitle,
           purpose: "character_chat",
@@ -298,6 +288,26 @@ test("admin content ops requires confirmation for public placement and archive w
           createdById: admin.id,
         },
       ],
+    });
+    await prisma.generationJob.create({
+      data: {
+        id: placementJobId,
+        userId: admin.id,
+        mode: "image",
+        controls: {},
+        presetIds: [],
+        status: "completed",
+        provider: "pipeline",
+      },
+    });
+    await prisma.generationAttempt.create({
+      data: {
+        requestId: placementJobId,
+        attemptNo: 1,
+        provider: "pipeline",
+        status: "succeeded",
+        finishedAt: new Date(),
+      },
     });
     await prisma.mediaAsset.createMany({
       data: [
@@ -326,6 +336,7 @@ test("admin content ops requires confirmation for public placement and archive w
         {
           id: placementAssetId,
           ownerId: admin.id,
+          sourceJobId: placementJobId,
           type: "image",
           url: placementAssetUrl,
           thumbnailUrl: placementAssetUrl,
@@ -350,16 +361,9 @@ test("admin content ops requires confirmation for public placement and archive w
     await prisma.contentProductionItem.createMany({
       data: [
         {
-          batchId: archiveBatchId,
-          mediaAssetId: archiveAssetId,
-          itemIndex: 0,
-          status: "approved",
-          tags: ["e2e", "archive"],
-          reviewedById: admin.id,
-          reviewedAt: new Date(),
-        },
-        {
+          id: placementItemId,
           batchId: placementBatchId,
+          jobId: placementJobId,
           mediaAssetId: placementAssetId,
           itemIndex: 0,
           status: "approved",
@@ -368,6 +372,17 @@ test("admin content ops requires confirmation for public placement and archive w
           reviewedAt: new Date(),
         },
       ],
+    });
+    await prisma.creativeReviewDecision.create({
+      data: {
+        runItemId: placementItemId,
+        artifactId: placementAssetId,
+        decision: "approved",
+        identityConsistency: "unscored",
+        score: 90,
+        reason: "Canonical reviewed asset for standalone draft placement",
+        reviewerId: admin.id,
+      },
     });
 
     await page.goto(`${adminURL}/admin/content/assets`);
@@ -409,17 +424,18 @@ test("admin content ops requires confirmation for public placement and archive w
     const archivedPlacementAttempt = await page.request.post(`${adminURL}/api/v1/admin/content/placements`, {
       data: {
         mediaAssetId: archiveAssetId,
-        slot: "character_avatar",
-        targetType: "character",
-        targetId: characterId,
-        status: "published",
+        slot: "feed_card",
+        targetType: "campaign",
+        targetId: placementTargetId,
+        status: "draft",
         reason: "should reject archived asset",
       },
     });
-    expect(archivedPlacementAttempt.status()).toBe(409);
+    expect(archivedPlacementAttempt.status()).toBe(400);
 
     await page.goto(`${adminURL}/admin/content/placements`);
     await expectAdminShellReady(page, "Placements");
+    await expect(page.getByText("No placements yet.")).toBeVisible();
     await page.getByRole("link", { name: "New placement" }).first().click();
     await expect(page.getByRole("heading", { level: 2, name: "New placement" })).toBeVisible();
     await expect(page.getByRole("combobox", { name: "Asset" }).locator(`option[value="${archiveAssetId}"]`)).toHaveCount(0);
@@ -427,7 +443,7 @@ test("admin content ops requires confirmation for public placement and archive w
     await page.getByLabel("Slot").selectOption("feed_card");
     await page.getByLabel("Target type").selectOption("campaign");
     await page.getByLabel("Target ID").fill(placementTargetId);
-    await page.getByRole("textbox", { name: "Reason (≥3)" }).fill("publish approved E2E asset");
+    await page.getByRole("textbox", { name: "Reason (≥3)" }).fill("create standalone draft E2E asset");
     await expect(
       prisma.mediaAssetPlacement.count({
         where: { mediaAssetId: placementAssetId, targetId: placementTargetId },
@@ -449,12 +465,12 @@ test("admin content ops requires confirmation for public placement and archive w
         },
         { timeout: 10_000 },
       )
-      .toBe("published");
+      .toBe("draft");
     const createdPlacement = await prisma.mediaAssetPlacement.findFirstOrThrow({
       where: { mediaAssetId: placementAssetId, targetId: placementTargetId },
       select: { id: true, status: true },
     });
-    expect(createdPlacement.status).toBe("published");
+    expect(createdPlacement.status).toBe("draft");
     await expect(
       prisma.character.findUniqueOrThrow({ where: { id: characterId }, select: { imageAssetId: true } }),
     ).resolves.toEqual({ imageAssetId: null });
@@ -467,7 +483,7 @@ test("admin content ops requires confirmation for public placement and archive w
         where: { id: createdPlacement.id },
         select: { status: true },
       }),
-    ).resolves.toEqual({ status: "published" });
+    ).resolves.toEqual({ status: "draft" });
 
     await pauseDialog.getByRole("button", { name: "Pause", exact: true }).click();
     await expect(page.getByText("paused", { exact: true })).toBeVisible({ timeout: 10_000 });
@@ -483,14 +499,19 @@ test("admin content ops requires confirmation for public placement and archive w
     await prisma.mediaAssetPlacement.deleteMany({
       where: { mediaAssetId: { in: [archiveAssetId, placementAssetId] } },
     });
+    await prisma.creativeReviewDecision.deleteMany({
+      where: { runItemId: placementItemId },
+    });
     await prisma.contentProductionItem.deleteMany({
-      where: { batchId: { in: [archiveBatchId, placementBatchId] } },
+      where: { batchId: placementBatchId },
     });
     await prisma.contentProductionBatch.deleteMany({
-      where: { id: { in: [archiveBatchId, placementBatchId] } },
+      where: { id: placementBatchId },
     });
     await prisma.character.deleteMany({ where: { id: characterId } });
     await prisma.mediaAsset.deleteMany({ where: { id: { in: [archiveAssetId, placementAssetId] } } });
+    await prisma.generationAttempt.deleteMany({ where: { requestId: placementJobId } });
+    await prisma.generationJob.deleteMany({ where: { id: placementJobId } });
     await Promise.all([rm(archiveAssetPath, { force: true }), rm(placementAssetPath, { force: true })]);
     await prisma.user.deleteMany({ where: { id: admin.id } });
   }
@@ -622,7 +643,7 @@ test("admin users and billing actions write audit trail and clear adjustment for
       timeout: 10_000,
     });
     await expect(page.getByRole("alert").filter({ hasText: "subscriptions authority refresh failed" })).toBeVisible();
-    await expect(page.getByRole("table", { name: "Subscriptions" })).toBeVisible();
+    await expect(page.getByText("No subscriptions exist yet", { exact: true })).toBeVisible();
     await page.unroute(subscriptionRoute);
     await page.getByRole("button", { name: "Retry subscriptions" }).click();
     await expect(page.getByText(/Subscriptions: current client snapshot/)).toBeVisible();
@@ -1038,7 +1059,7 @@ test("admin Chat Ops isolates authority failures and restores URL filters", asyn
   await expect(page.getByText("Usage: unavailable", { exact: false })).toBeVisible();
   await expect(page.getByRole("alert").filter({ hasText: "usage authority refresh failed" })).toBeVisible();
   await expect(page.getByText("Sessions: current client snapshot", { exact: false })).toBeVisible();
-  await expect(page.getByText("CHAT_SERVICE_URL", { exact: false }).first()).toBeVisible();
+  await expect(page.getByText("Chat Service connected", { exact: true })).toBeVisible();
 
   await page.getByLabel("User ID", { exact: true }).fill("chat-user-1");
   await page.getByRole("combobox", { name: /Session status/ }).selectOption("all");
@@ -1669,10 +1690,10 @@ test("admin pricing and promo creation require typed confirmation", async ({ pag
 
     await page.goto(`${adminURL}/admin/promo`);
     await expectAdminShellReady(page, "Promotions");
-    await page.getByPlaceholder("Code (≥4)").fill(code);
-    await page.getByPlaceholder("Dreamcoins").fill("42");
-    await page.getByPlaceholder("Max uses (blank=∞)").fill("3");
-    await page.getByPlaceholder("Reason (≥3)").fill("E2E promo create confirmation");
+    await page.getByRole("textbox", { name: "Code (≥4)", exact: true }).fill(code);
+    await page.getByRole("textbox", { name: "Dreamcoins", exact: true }).fill("42");
+    await page.getByRole("textbox", { name: "Max uses (blank=∞)", exact: true }).fill("3");
+    await page.getByRole("textbox", { name: "Reason (≥3)", exact: true }).fill("E2E promo create confirmation");
     const createCode = page.getByRole("button", { name: "Create", exact: true });
     await expect(createCode).toBeDisabled();
     await page.getByRole("textbox", { name: "Redeem code confirmation" }).fill("CREATE");
@@ -1720,10 +1741,17 @@ test("admin featured curation requires typed target confirmation", async ({ page
   const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
   const featuredId = `e2e-featured-confirm-${suffix}`;
   const secondId = `e2e-featured-second-${suffix}`;
-  let previousFeatured: unknown = null;
+  let previousFeatured: {
+    value: unknown;
+    version: number;
+    status: string;
+  } | null = null;
 
   try {
-    previousFeatured = (await prisma.appSetting.findUnique({ where: { key: "feed.featured" } }))?.value ?? null;
+    previousFeatured = await prisma.appSetting.findUnique({
+      where: { key: "feed.featured" },
+      select: { value: true, version: true, status: true },
+    });
     await prisma.appSetting.deleteMany({ where: { key: "feed.featured" } });
     await prisma.character.createMany({
       data: [
@@ -1771,8 +1799,16 @@ test("admin featured curation requires typed target confirmation", async ({ page
     await saveFeatured.click();
     await expect.poll(async () => {
       const setting = await prisma.appSetting.findUnique({ where: { key: "feed.featured" } });
-      return (setting?.value as { characterIds?: string[] } | null)?.characterIds ?? [];
-    }).toEqual([featuredId, secondId]);
+      return {
+        characterIds:
+          (setting?.value as { characterIds?: string[] } | null)
+            ?.characterIds ?? [],
+        version: setting?.version ?? 0,
+      };
+    }).toEqual({
+      characterIds: [featuredId, secondId],
+      version: 1,
+    });
     await expect(page.getByRole("row").filter({ hasText: featuredId }).first()).toBeVisible({ timeout: 10_000 });
     await expect(page.getByRole("row").filter({ hasText: secondId }).first()).toBeVisible({ timeout: 10_000 });
 
@@ -1782,7 +1818,15 @@ test("admin featured curation requires typed target confirmation", async ({ page
       select: { reason: true, after: true },
     });
     expect(audit?.reason).toBe("E2E featured curation confirmation");
-    expect((audit?.after as { characterIds?: string[] })?.characterIds).toEqual([featuredId, secondId]);
+    expect(
+      (audit?.after as {
+        configuredCharacterIds?: string[];
+        settingVersion?: number;
+      })?.configuredCharacterIds,
+    ).toEqual([featuredId, secondId]);
+    expect(
+      (audit?.after as { settingVersion?: number })?.settingVersion,
+    ).toBe(1);
     expect(consoleFailures).toEqual([]);
   } finally {
     await prisma.adminAuditLog.deleteMany({ where: { action: "content.featured.write", targetId: "feed.featured" } });
@@ -1790,8 +1834,17 @@ test("admin featured curation requires typed target confirmation", async ({ page
     if (previousFeatured) {
       await prisma.appSetting.upsert({
         where: { key: "feed.featured" },
-        update: { value: previousFeatured as never },
-        create: { key: "feed.featured", value: previousFeatured as never },
+        update: {
+          value: previousFeatured.value as never,
+          version: previousFeatured.version,
+          status: previousFeatured.status,
+        },
+        create: {
+          key: "feed.featured",
+          value: previousFeatured.value as never,
+          version: previousFeatured.version,
+          status: previousFeatured.status,
+        },
       });
     } else {
       await prisma.appSetting.deleteMany({ where: { key: "feed.featured" } });
@@ -1852,24 +1905,44 @@ test("admin API Phase 3: CMS write (admin) + compliance/analytics gating", async
       data: {
         path,
         title: "E2E CMS page",
-        description: "e2e",
+        description:
+          "An end-to-end CMS guide proving that validated editorial content can move safely from draft to publication.",
         body: {
           heading: "Hello CMS",
-          intro: "Published CMS content should keep the app shell.",
-          sections: [{ heading: "Proof", paragraphs: ["CMS content renders in product navigation."] }],
+          intro:
+            "Published CMS content keeps the application shell while the body remains governed by the validated editorial contract.",
+          sections: [
+            {
+              heading: "Navigation proof",
+              paragraphs: [
+                "The published article renders inside the product navigation and keeps every primary route available to the reader.",
+              ],
+            },
+            {
+              heading: "Publication proof",
+              paragraphs: [
+                "The page becomes public only after its complete article body and current database version pass the publication command.",
+              ],
+            },
+          ],
           cta: { label: "Explore", href: "/" },
         },
-        contentStatus: "draft",
         reason: "e2e cms create",
         confirmation: path,
       },
     });
-    expect(create.status(), await create.text()).toBe(200);
+    const createdPayload = (await create.json()) as {
+      data?: { page?: { updatedAt?: string } };
+    };
+    expect(create.status(), JSON.stringify(createdPayload)).toBe(200);
+    const expectedUpdatedAt = createdPayload.data?.page?.updatedAt;
+    expect(typeof expectedUpdatedAt).toBe("string");
 
     const publish = await page.request.post(`${adminURL}/api/v1/admin/cms/pages/publish`, {
       data: {
         path,
         contentStatus: "published",
+        expectedUpdatedAt,
         reason: "e2e cms publish",
         confirmation: path,
       },
@@ -1922,9 +1995,27 @@ test("admin CMS UI requires typed confirmation for publish changes", async ({ pa
       data: {
         path: routePath,
         title: "E2E CMS confirmation page",
-        description: "e2e confirmation",
-        body: { heading: "Confirmation page" },
-        contentStatus: "draft",
+        description:
+          "An end-to-end confirmation page with complete editorial content for the CMS publication workflow.",
+        body: {
+          heading: "Confirmation page",
+          intro:
+            "This complete draft proves that an operator must type the exact route before a versioned CMS publication can proceed.",
+          sections: [
+            {
+              heading: "Typed confirmation",
+              paragraphs: [
+                "The status command remains disabled until the operator provides a reason and types the exact page path shown in the row.",
+              ],
+            },
+            {
+              heading: "Version protection",
+              paragraphs: [
+                "The interface sends the row version loaded from Main so a stale browser cannot overwrite a newer editorial decision.",
+              ],
+            },
+          ],
+        },
         reason: "E2E CMS confirmation create",
         confirmation: routePath,
       },

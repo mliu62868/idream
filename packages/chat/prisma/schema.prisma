@@ -55,13 +55,13 @@ view ChatCharacterView {
 }
 
 view ChatCharacterContentVersionView {
-  contentVersionId  String @unique @map("content_version_id")
-  characterId       String @map("character_id")
-  version           Int
-  contentHash       String @map("content_hash")
-  personaSnapshot   Json   @map("persona_snapshot")
-  openingSnapshot   Json   @map("opening_snapshot")
-  appearanceSnapshot Json  @map("appearance_snapshot")
+  contentVersionId   String @unique @map("content_version_id")
+  characterId        String @map("character_id")
+  version            Int
+  contentHash        String @map("content_hash")
+  personaSnapshot    Json   @map("persona_snapshot")
+  openingSnapshot    Json   @map("opening_snapshot")
+  appearanceSnapshot Json   @map("appearance_snapshot")
 
   @@map("chat_character_content_version_view")
   @@schema("core")
@@ -114,32 +114,53 @@ view ChatUserEligibilityView {
 
 // ---- chat authority tables (chat_service read/write) ------------------------
 model ChatSession {
-  id              String    @id
-  userId          String    @map("user_id")
-  characterId     String    @map("character_id")
-  title           String?
-  status          String    @default("active")
-  memoryEnabled   Boolean   @default(true) @map("memory_enabled")
-  memorySummary   String?   @map("memory_summary")
-  logExtractedSeq BigInt    @default(0) @map("log_extracted_seq")
-  lastMessageAt   DateTime? @map("last_message_at")
-  createdAt       DateTime  @default(now()) @map("created_at")
-  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at")
-  deletedAt       DateTime? @map("deleted_at")
-  characterContentVersionId String? @map("character_content_version_id")
-  characterReleaseId        String? @map("character_release_id")
+  id                        String    @id
+  userId                    String    @map("user_id")
+  characterId               String    @map("character_id")
+  title                     String?
+  status                    String    @default("active")
+  memoryEnabled             Boolean   @default(true) @map("memory_enabled")
+  memorySummary             String?   @map("memory_summary")
+  logExtractedSeq           BigInt    @default(0) @map("log_extracted_seq")
+  lastMessageAt             DateTime? @map("last_message_at")
+  createdAt                 DateTime  @default(now()) @map("created_at")
+  updatedAt                 DateTime  @default(now()) @updatedAt @map("updated_at")
+  deletedAt                 DateTime? @map("deleted_at")
+  characterContentVersionId String?   @map("character_content_version_id")
+  characterReleaseId        String?   @map("character_release_id")
   releasePinnedAt           DateTime? @map("release_pinned_at")
-  entryExposureId           String? @map("entry_exposure_id")
-  entryJourneyId            String? @map("entry_journey_id")
-  entryPlacementId          String? @map("entry_placement_id")
+  entryExposureId           String?   @map("entry_exposure_id")
+  entryJourneyId            String?   @map("entry_journey_id")
+  entryPlacementId          String?   @map("entry_placement_id")
 
-  messages    Message[]
-  attachments MessageAttachment[]
+  messages          Message[]
+  attachments       MessageAttachment[]
   releaseMigrations ChatSessionReleaseMigration[]
+  sendReceipts      ChatSendReceipt[]
 
   @@index([userId, lastMessageAt(sort: Desc)], map: "chat_sessions_user_last_idx")
   @@index([characterId], map: "chat_sessions_character_idx")
   @@map("chat_sessions")
+  @@schema("chat")
+}
+
+model ChatSendReceipt {
+  id                 String   @id
+  userId             String   @map("user_id")
+  sessionId          String   @map("session_id")
+  idempotencyKey     String   @map("idempotency_key")
+  requestHash        String   @map("request_hash")
+  userMessageId      String   @map("user_message_id")
+  assistantMessageId String   @map("assistant_message_id")
+  responseStatus     String   @map("response_status")
+  safetyPolicyCode   String?  @map("safety_policy_code")
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, idempotencyKey], map: "chat_send_receipts_user_idempotency_key")
+  @@index([sessionId], map: "chat_send_receipts_session_idx")
+  @@map("chat_send_receipts")
   @@schema("chat")
 }
 

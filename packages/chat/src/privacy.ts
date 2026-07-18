@@ -66,6 +66,7 @@ export async function deleteSession(
       select: { id: true, role: true, status: true, attempt: true, replyToMessageId: true },
     });
     const ids = messages.map((m) => m.id);
+    await tx.chatSendReceipt.deleteMany({ where: { sessionId: session.id } });
     if (ids.length) await tx.messageVersion.deleteMany({ where: { messageId: { in: ids } } });
     await tx.message.deleteMany({ where: { sessionId: session.id } });
     await tx.chatSession.update({
@@ -105,6 +106,7 @@ export async function deleteAccount(
     const sessionIds = sessions.map((s) => s.id);
     if (sessionIds.length) {
       await tx.chatSessionReleaseMigration.deleteMany({ where: { sessionId: { in: sessionIds } } });
+      await tx.chatSendReceipt.deleteMany({ where: { sessionId: { in: sessionIds } } });
       const messages = await tx.message.findMany({ where: { sessionId: { in: sessionIds } }, select: { id: true } });
       const messageIds = messages.map((m) => m.id);
       if (messageIds.length) await tx.messageVersion.deleteMany({ where: { messageId: { in: messageIds } } });

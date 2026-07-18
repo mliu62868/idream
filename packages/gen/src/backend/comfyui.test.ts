@@ -4,6 +4,7 @@ import { workflowDescriptorSchema } from "./workflow";
 
 const descriptor = workflowDescriptorSchema.parse({
   workflowKey: "t2i", modelId: "redcraft-krea2-comfyui", backendKind: "comfyui",
+  comfyWorkflow: { id: "11111111-1111-4111-8111-111111111111", name: "iDream Test T2I" },
   version: 1, capabilities: ["textToImage"],
   apiPrompt: { "9": { class_type: "SaveImage", inputs: {} },
                "6": { class_type: "CLIPTextEncode", inputs: { text: "" } } },
@@ -14,7 +15,15 @@ const descriptor = workflowDescriptorSchema.parse({
 // reference-image upload tests below.
 const editDescriptor = workflowDescriptorSchema.parse({
   workflowKey: "edit-wf", modelId: "edit-m", backendKind: "comfyui", version: 1,
+  comfyWorkflow: { id: "22222222-2222-4222-8222-222222222222", name: "iDream Test Edit" },
   capabilities: ["img2img", "edit", "referenceImages"],
+  identity: {
+    mode: "single_reference",
+    maxReferences: 1,
+    acceptedRoles: ["identity_anchor", "identity_reference", "source_image"],
+    supportsLookReference: false,
+    supportsSourceImageWithIdentity: false,
+  },
   apiPrompt: {
     "8": { class_type: "LoadImage", inputs: { image: "" } },
     "3": { class_type: "TextEncodeQwenImageEditPlus", inputs: { prompt: "" } },
@@ -22,7 +31,109 @@ const editDescriptor = workflowDescriptorSchema.parse({
   },
   inputs: [
     { key: "edit_prompt", type: "text", target: { nodeId: "3", field: "prompt" } },
-    { key: "source_image", type: "image", target: { nodeId: "8", field: "image" } },
+    {
+      key: "source_image",
+      type: "image",
+      referenceRoles: ["identity_anchor", "identity_reference", "source_image"],
+      target: { nodeId: "8", field: "image" },
+    },
+  ],
+});
+
+const combinedDescriptor = workflowDescriptorSchema.parse({
+  workflowKey: "combined-edit-wf",
+  modelId: "combined-edit-m",
+  backendKind: "comfyui",
+  version: 1,
+  comfyWorkflow: {
+    id: "33333333-3333-4333-8333-333333333333",
+    name: "iDream Test Combined Edit",
+  },
+  capabilities: ["img2img", "edit", "referenceImages"],
+  identity: {
+    mode: "multi_reference",
+    maxReferences: 2,
+    acceptedRoles: ["identity_anchor", "identity_reference", "source_image"],
+    supportsLookReference: false,
+    supportsSourceImageWithIdentity: true,
+  },
+  apiPrompt: {
+    "8": { class_type: "LoadImage", inputs: { image: "" } },
+    "12": { class_type: "LoadImage", inputs: { image: "" } },
+    "3": { class_type: "TextEncodeQwenImageEditPlus", inputs: { prompt: "" } },
+    "9": { class_type: "SaveImage", inputs: {} },
+  },
+  inputs: [
+    { key: "edit_prompt", type: "text", target: { nodeId: "3", field: "prompt" } },
+    {
+      key: "identity_image",
+      type: "image",
+      referenceRoles: ["identity_anchor", "identity_reference"],
+      target: { nodeId: "12", field: "image" },
+    },
+    {
+      key: "source_image",
+      type: "image",
+      referenceRoles: ["source_image"],
+      target: { nodeId: "8", field: "image" },
+    },
+  ],
+});
+
+const lookDescriptor = workflowDescriptorSchema.parse({
+  workflowKey: "identity-look-wf",
+  modelId: "identity-look-m",
+  backendKind: "comfyui",
+  version: 1,
+  comfyWorkflow: {
+    id: "44444444-4444-4444-8444-444444444444",
+    name: "iDream Test Identity and Look",
+  },
+  capabilities: ["edit", "referenceImages"],
+  identity: {
+    mode: "multi_identity",
+    maxReferences: 2,
+    acceptedRoles: [
+      "identity_anchor",
+      "identity_reference",
+      "look_reference",
+    ],
+    supportsLookReference: true,
+    supportsSourceImageWithIdentity: false,
+  },
+  apiPrompt: {
+    "3": {
+      class_type: "TextEncodeQwenImageEditPlus",
+      inputs: {
+        image1: ["8", 0],
+        image2: ["12", 0],
+        prompt: "",
+      },
+    },
+    "8": { class_type: "LoadImage", inputs: { image: "" } },
+    "12": { class_type: "LoadImage", inputs: { image: "" } },
+    "9": { class_type: "SaveImage", inputs: {} },
+  },
+  inputs: [
+    {
+      key: "edit_prompt",
+      type: "text",
+      target: { nodeId: "3", field: "prompt" },
+    },
+    {
+      key: "identity_anchor",
+      type: "image",
+      required: true,
+      referenceRoles: ["identity_anchor"],
+      target: { nodeId: "8", field: "image" },
+    },
+    {
+      key: "identity_reference",
+      type: "image",
+      required: true,
+      referenceRoles: ["identity_reference", "look_reference"],
+      target: { nodeId: "12", field: "image" },
+    },
   ],
 });
 
@@ -41,6 +152,19 @@ function mockFetch(seq: Array<() => Response>) {
   return vi.fn(async (..._args: Parameters<typeof fetch>) => seq[Math.min(i++, seq.length - 1)]());
 }
 
+async function testWorkflowSync(input: {
+  descriptor: { comfyWorkflow: { id: string; name: string } };
+}) {
+  return {
+    id: input.descriptor.comfyWorkflow.id,
+    name: input.descriptor.comfyWorkflow.name,
+  };
+}
+
+function makeBackend() {
+  return new ComfyUIBackend({ apiUrl: "http://x", workflowSync: testWorkflowSync });
+}
+
 describe("ComfyUIBackend", () => {
   beforeEach(() => vi.restoreAllMocks());
   it("submits prompt then polls history and fetches image", async () => {
@@ -51,7 +175,7 @@ describe("ComfyUIBackend", () => {
       () => new Response(PNG, { status: 200, headers: { "content-type": "image/png" } }),
     ]);
     vi.stubGlobal("fetch", g);
-    const backend = new ComfyUIBackend({ apiUrl: "http://x" });
+    const backend = makeBackend();
     const handle = await backend.submit({ descriptor, slots: { prompt: "cat" }, timeoutMs: 5000 });
     expect(handle.id).toBe("p1");
     const result = await backend.poll(handle);
@@ -60,11 +184,44 @@ describe("ComfyUIBackend", () => {
     // submitted body carried the bound slot
     const submitBody = JSON.parse((g.mock.calls[0][1] as RequestInit).body as string);
     expect(submitBody.prompt["6"].inputs.text).toBe("cat");
+    expect(submitBody.extra_data).toEqual({
+      extra_pnginfo: {
+        workflow: {
+          id: "11111111-1111-4111-8111-111111111111",
+          name: "iDream Test T2I",
+        },
+      },
+      idream_workflow: {
+        key: "t2i",
+        model_id: "redcraft-krea2-comfyui",
+        version: 1,
+      },
+    });
   });
   it("throws when prompt is rejected (no prompt_id)", async () => {
     vi.stubGlobal("fetch", mockFetch([() => new Response(JSON.stringify({ node_errors: { "6": "bad" } }), { status: 200 })]));
-    const backend = new ComfyUIBackend({ apiUrl: "http://x" });
+    const backend = makeBackend();
     await expect(backend.submit({ descriptor, slots: { prompt: "cat" }, timeoutMs: 5000 })).rejects.toThrow();
+  });
+  it("rejects references when the workflow has no semantic image slots", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const backend = makeBackend();
+    await expect(
+      backend.submit({
+        descriptor,
+        slots: { prompt: "cat" },
+        referenceImages: [{
+          assetId: "unexpected-reference",
+          role: "identity_anchor",
+          b64Json: PNG_B64,
+        }],
+        timeoutMs: 5_000,
+      }),
+    ).rejects.toThrow(
+      "workflow t2i requires 0 semantic image references but received 1",
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
   });
   it("uploads reference image and binds filename into image slot", async () => {
     const g = mockFetch([
@@ -72,7 +229,7 @@ describe("ComfyUIBackend", () => {
       () => new Response(JSON.stringify({ prompt_id: "p9" }), { status: 200 }), // prompt
     ]);
     vi.stubGlobal("fetch", g);
-    const backend = new ComfyUIBackend({ apiUrl: "http://x" });
+    const backend = makeBackend();
     await backend.submit({
       descriptor: editDescriptor,
       slots: { edit_prompt: "red dress" },
@@ -89,7 +246,7 @@ describe("ComfyUIBackend", () => {
   });
   it("throws when a required image slot has no reference image", async () => {
     vi.stubGlobal("fetch", vi.fn());
-    const backend = new ComfyUIBackend({ apiUrl: "http://x" });
+    const backend = makeBackend();
     await expect(
       backend.submit({
         descriptor: editDescriptor,
@@ -97,7 +254,9 @@ describe("ComfyUIBackend", () => {
         referenceImages: [],
         timeoutMs: 5000,
       }),
-    ).rejects.toThrow(/source_image/);
+    ).rejects.toThrow(
+      "workflow edit-wf requires 1 semantic image references but received 0",
+    );
   });
   it("fetches reference image bytes from url when b64Json is absent", async () => {
     const g = mockFetch([
@@ -106,7 +265,7 @@ describe("ComfyUIBackend", () => {
       () => new Response(JSON.stringify({ prompt_id: "p10" }), { status: 200 }), // prompt
     ]);
     vi.stubGlobal("fetch", g);
-    const backend = new ComfyUIBackend({ apiUrl: "http://x" });
+    const backend = makeBackend();
     await backend.submit({
       descriptor: editDescriptor,
       slots: { edit_prompt: "blue dress" },
@@ -117,5 +276,93 @@ describe("ComfyUIBackend", () => {
     expect(String(g.mock.calls[0][0])).toBe("http://example.com/ref.png");
     const promptBody = JSON.parse((g.mock.calls[2][1] as RequestInit).body as string);
     expect(promptBody.prompt["8"].inputs.image).toBe("in/url.png");
+  });
+
+  it("binds combined source and identity references by role instead of array order", async () => {
+    const g = mockFetch([
+      () => new Response(
+        JSON.stringify({ name: "identity.png", subfolder: "", type: "input" }),
+        { status: 200 },
+      ),
+      () => new Response(
+        JSON.stringify({ name: "source.png", subfolder: "", type: "input" }),
+        { status: 200 },
+      ),
+      () => new Response(JSON.stringify({ prompt_id: "combined-prompt" }), {
+        status: 200,
+      }),
+    ]);
+    vi.stubGlobal("fetch", g);
+    const backend = makeBackend();
+    await backend.submit({
+      descriptor: combinedDescriptor,
+      slots: { edit_prompt: "keep identity, change pose" },
+      referenceImages: [
+        { assetId: "same-asset", role: "source_image", b64Json: PNG_B64 },
+        { assetId: "same-asset", role: "identity_anchor", b64Json: PNG_B64 },
+      ],
+      timeoutMs: 5_000,
+    });
+
+    const promptBody = JSON.parse(
+      (g.mock.calls[2][1] as RequestInit).body as string,
+    );
+    expect(promptBody.prompt["12"].inputs.image).toBe("identity.png");
+    expect(promptBody.prompt["8"].inputs.image).toBe("source.png");
+  });
+
+  it("binds a shuffled Look reference to its semantic slot, even for the same asset", async () => {
+    const g = mockFetch([
+      () => new Response(
+        JSON.stringify({ name: "anchor.png", subfolder: "", type: "input" }),
+        { status: 200 },
+      ),
+      () => new Response(
+        JSON.stringify({ name: "look.png", subfolder: "", type: "input" }),
+        { status: 200 },
+      ),
+      () => new Response(JSON.stringify({ prompt_id: "look-prompt" }), {
+        status: 200,
+      }),
+    ]);
+    vi.stubGlobal("fetch", g);
+    const backend = makeBackend();
+    await backend.submit({
+      descriptor: lookDescriptor,
+      slots: { edit_prompt: "preserve identity, borrow the visual look" },
+      referenceImages: [
+        {
+          assetId: "shared-asset",
+          role: "look_reference",
+          b64Json: PNG_B64,
+        },
+        {
+          assetId: "shared-asset",
+          role: "identity_anchor",
+          b64Json: PNG_B64,
+        },
+      ],
+      timeoutMs: 5_000,
+    });
+
+    const promptBody = JSON.parse(
+      (g.mock.calls[2][1] as RequestInit).body as string,
+    );
+    expect(promptBody.prompt["8"].inputs.image).toBe("anchor.png");
+    expect(promptBody.prompt["12"].inputs.image).toBe("look.png");
+  });
+
+  it("rejects an incomplete concrete image-slot assignment before upload", async () => {
+    const backend = makeBackend();
+    await expect(backend.submit({
+      descriptor: combinedDescriptor,
+      slots: { edit_prompt: "keep identity" },
+      referenceImages: [
+        { assetId: "identity", role: "identity_anchor", b64Json: PNG_B64 },
+      ],
+      timeoutMs: 5_000,
+    })).rejects.toThrow(
+      "requires 2 semantic image references but received 1",
+    );
   });
 });

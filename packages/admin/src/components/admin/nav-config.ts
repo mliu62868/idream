@@ -300,6 +300,8 @@ function canonicalSection(path: string, query: URLSearchParams): AdminPath | nul
         : "generation/recipes";
     return { sectionId, view: { kind: "list" } };
   }
+  const listSectionId = CANONICAL_LIST_SECTIONS[path];
+  if (listSectionId) return { sectionId: listSectionId, view: { kind: "list" } };
   if (path === "characters/new") return { sectionId: "content/official", view: { kind: "new" } };
   if (path.startsWith("characters/") && path.split("/").length === 2) {
     return { sectionId: "content/official", view: { kind: "detail", id: path.slice("characters/".length) } };
@@ -314,8 +316,7 @@ function canonicalSection(path: string, query: URLSearchParams): AdminPath | nul
     if (path === `${prefix}new`) return { sectionId, view: { kind: "new" } };
     if (path.startsWith(prefix)) return { sectionId, view: { kind: "detail", id: path.slice(prefix.length) } };
   }
-  const sectionId = CANONICAL_LIST_SECTIONS[path];
-  return sectionId ? { sectionId, view: { kind: "list" } } : null;
+  return null;
 }
 
 export function parseAdminPath(value: string): AdminPath {

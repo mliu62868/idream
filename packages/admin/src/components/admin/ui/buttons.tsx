@@ -3,7 +3,7 @@ import type { ButtonHTMLAttributes } from "react";
 import { cn } from "@/lib/utils";
 
 const BASE =
-  "inline-flex min-h-11 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:border-[#c9c7c0] disabled:bg-[#e7e5df] disabled:text-[#5d5f59] active:scale-[0.98]";
+  "inline-flex min-h-11 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium transition-transform disabled:cursor-not-allowed disabled:border-[#c9c7c0] disabled:bg-[#e7e5df] disabled:text-[#5d5f59] active:scale-[0.98]";
 
 export function PrimaryButton({ className, ...props }: ButtonHTMLAttributes<HTMLButtonElement>) {
   return (

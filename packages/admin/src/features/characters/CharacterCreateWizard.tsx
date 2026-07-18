@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  characterProjectCreateRequestSchema,
   characterProjectCreateResponseSchema,
   characterProjectDraftResumeSchema,
   characterWorkspaceProjectSchema,
@@ -13,9 +14,25 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { AdminV2RequestError, adminV2Request } from "@/lib/admin-v2-api";
 import { cn } from "@/lib/utils";
 import { WorkspaceButton, fieldClass, textAreaClass } from "@/features/operations/WorkspaceUi";
+import {
+  claimDurableMutationIntent,
+  clearDurableMutationIntent,
+  readActiveDurableMutationIntent,
+  updateDurableMutationIntent,
+  type DurableMutationIntent,
+} from "@/lib/durable-mutation-intent";
+import { reconcileDurableMutationIntent } from "@/lib/durable-mutation-recovery";
 
 type Draft = CharacterProjectDraft;
 type SaveState = "Not saved" | "Saving" | "Saved" | "Conflict" | "Failed to save";
+type ResumeState =
+  | "checking"
+  | "restoring"
+  | "restored"
+  | "restore_failed"
+  | "new";
+
+class ReconciledUncommittedCharacter extends Error {}
 
 const steps = ["Positioning", "Persona", "Visual direction", "Commercial intent", "Review"] as const;
 
@@ -58,15 +75,55 @@ function draftKey(value: Draft) {
   return JSON.stringify(value);
 }
 
-export function CharacterCreateWizard({ canCreate }: { canCreate: boolean }) {
+function requestedDraftTarget() {
+  if (typeof window === "undefined") return null;
+  return new URLSearchParams(window.location.search).get("draft");
+}
+
+function draftFromCreateIntent(
+  intent: DurableMutationIntent | null,
+): Draft | null {
+  const parsed = characterProjectCreateRequestSchema.safeParse(
+    intent?.requestSnapshot,
+  );
+  if (!parsed.success) return null;
+  return {
+    positioning: parsed.data.positioning,
+    persona: parsed.data.persona,
+    visualDirection: parsed.data.visualDirection,
+    commercialIntent: parsed.data.commercialIntent,
+  };
+}
+
+export function CharacterCreateWizard({
+  actorId = "anonymous",
+  canCreate,
+}: {
+  actorId?: string;
+  canCreate: boolean;
+}) {
   const router = useRouter();
+  const createScope = `character-project:create:${actorId}`;
+  const [createIntent, setCreateIntent] =
+    useState<DurableMutationIntent | null>(() =>
+      requestedDraftTarget()
+        ? null
+        : readActiveDurableMutationIntent({ scope: createScope })
+    );
   const [step, setStep] = useState(0);
-  const [draft, setDraft] = useState<Draft>(initialDraft);
+  const [draft, setDraft] = useState<Draft>(
+    () => draftFromCreateIntent(createIntent) ?? initialDraft,
+  );
   const [authority, setAuthority] = useState<CharacterProjectDraftAuthority | null>(null);
   const [saveState, setSaveState] = useState<SaveState>("Not saved");
   const [error, setError] = useState<string | null>(null);
+  const [recoveryNotice, setRecoveryNotice] =
+    useState<string | null>(null);
+  const [resumeState, setResumeState] =
+    useState<ResumeState>("checking");
+  const [confirmStartNew, setConfirmStartNew] = useState(false);
   const authorityRef = useRef<CharacterProjectDraftAuthority | null>(null);
-  const idempotencyKeyRef = useRef<string | null>(null);
+  const resumeTargetRef = useRef<string | null | undefined>(undefined);
   const lastSavedKeyRef = useRef<string | null>(null);
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
 
@@ -75,28 +132,240 @@ export function CharacterCreateWizard({ canCreate }: { canCreate: boolean }) {
     if (lastSavedKeyRef.current === key && authorityRef.current) return;
     setSaveState("Saving");
     setError(null);
+    setRecoveryNotice(null);
+    const recoveredCreateRequest = createIntent
+      ? characterProjectCreateRequestSchema.safeParse(
+          createIntent.requestSnapshot,
+        )
+      : null;
+    if (
+      !authorityRef.current &&
+      createIntent &&
+      (
+        createIntent.status === "reconciliation_required" ||
+        (
+          recoveredCreateRequest !== null &&
+          !recoveredCreateRequest.success
+        )
+      )
+    ) {
+      try {
+        const receipt = await reconcileDurableMutationIntent({
+          intent: createIntent,
+          commandType: "character.project.create",
+        });
+        if (receipt.state === "committed") {
+          if (
+            !receipt.committedTargetId ||
+            receipt.verification?.kind !== "character_project" ||
+            receipt.verification.characterId !==
+              receipt.committedTargetId
+          ) {
+            throw new Error(
+              "The committed Character receipt is missing exact projection evidence. This draft remains locked.",
+            );
+          }
+          const committed = updateDurableMutationIntent(createIntent, {
+            status: "committed_projection_pending",
+            committedTargetId: receipt.committedTargetId,
+          });
+          setCreateIntent(committed);
+          const resumed = await adminV2Request(
+            `/api/v2/admin/characters/${encodeURIComponent(receipt.committedTargetId)}/project`,
+            { schema: characterProjectDraftResumeSchema },
+          );
+          authorityRef.current = resumed.authority;
+          lastSavedKeyRef.current = draftKey(resumed.draft);
+          setAuthority(resumed.authority);
+          setDraft(resumed.draft);
+          clearDurableMutationIntent(committed);
+          setCreateIntent(null);
+          resumeTargetRef.current = resumed.authority.characterId;
+          setResumeState("restored");
+          setSaveState("Saved");
+          try {
+            const url = new URL(window.location.href);
+            url.searchParams.set(
+              "draft",
+              resumed.authority.characterId,
+            );
+            window.history.replaceState(
+              null,
+              "",
+              `${url.pathname}?${url.searchParams.toString()}`,
+            );
+          } catch {
+            setError(
+              "The Character was recovered, but this tab URL could not be updated.",
+            );
+          }
+          return;
+        }
+        if (receipt.state === "cancelled") {
+          clearDurableMutationIntent(createIntent);
+          setCreateIntent(null);
+          setSaveState("Not saved");
+          const message =
+            "The old request had no committed Character. Its key was sealed on the server; review this draft and continue when ready.";
+          setRecoveryNotice(message);
+          throw new ReconciledUncommittedCharacter(message);
+        }
+        const message = receipt.state === "failed"
+          ? `The saved Character command ${receipt.commandId} is terminally failed. Its key remains locked for operator investigation; do not create a replacement Character.`
+          : `The saved Character request is ${receipt.state}. Keep this draft locked and reconcile again after the server reaches a terminal receipt.`;
+        setSaveState("Failed to save");
+        setError(message);
+        return Promise.reject(new Error(message));
+      } catch (cause) {
+        if (cause instanceof ReconciledUncommittedCharacter) {
+          throw cause;
+        }
+        const message =
+          cause instanceof Error
+            ? cause.message
+            : "The saved Character request could not be reconciled.";
+        setSaveState("Failed to save");
+        setError(message);
+        throw cause;
+      }
+    }
+    let pendingCreateIntent = createIntent;
     try {
       if (!authorityRef.current) {
         if (!allowCreate) return;
-        idempotencyKeyRef.current ??= crypto.randomUUID();
+        if (resumeTargetRef.current !== null) {
+          throw new Error(
+            resumeTargetRef.current
+              ? "Restore the requested server draft or explicitly start a new Character before continuing."
+              : "The draft destination is still being checked. Wait for restore to finish.",
+          );
+        }
+        if (
+          createIntent?.status === "committed_projection_pending" &&
+          createIntent.committedTargetId
+        ) {
+          const resumed = await adminV2Request(
+            `/api/v2/admin/characters/${encodeURIComponent(createIntent.committedTargetId)}/project`,
+            { schema: characterProjectDraftResumeSchema },
+          );
+          authorityRef.current = resumed.authority;
+          lastSavedKeyRef.current = draftKey(resumed.draft);
+          setAuthority(resumed.authority);
+          setDraft(resumed.draft);
+          clearDurableMutationIntent(createIntent);
+          setCreateIntent(null);
+          resumeTargetRef.current = resumed.authority.characterId;
+          setResumeState("restored");
+          setSaveState("Saved");
+          try {
+            const url = new URL(window.location.href);
+            url.searchParams.set(
+              "draft",
+              resumed.authority.characterId,
+            );
+            window.history.replaceState(
+              null,
+              "",
+              `${url.pathname}?${url.searchParams.toString()}`,
+            );
+          } catch {
+            setError(
+              "The Character was recovered, but this tab URL could not be updated.",
+            );
+          }
+          return;
+        }
+        const currentRequest = {
+          ...snapshot,
+          reason: {
+            code: "character_wizard_started",
+            summary: "Create a server-authoritative Character Project draft",
+          },
+          confirmation: "CREATE CHARACTER",
+        };
+        const recoveredRequest = recoveredCreateRequest;
+        if (recoveredRequest && !recoveredRequest.success) {
+          throw new Error(
+            "The saved Character creation intent is invalid and cannot be replayed.",
+          );
+        }
+        const parsedCurrent = recoveredRequest
+          ? null
+          : characterProjectCreateRequestSchema.safeParse(
+              currentRequest,
+            );
+        if (parsedCurrent && !parsedCurrent.success) {
+          throw new Error(
+            "The Character creation request no longer matches the active contract.",
+          );
+        }
+        const body = recoveredRequest?.success
+          ? recoveredRequest.data
+          : parsedCurrent?.success
+            ? parsedCurrent.data
+            : currentRequest;
+        const requestSignature = draftKey(body);
+        let intent = createIntent;
+        if (!intent) {
+          const claim = await claimDurableMutationIntent({
+            scope: createScope,
+            signature: requestSignature,
+            requestSnapshot: body,
+          });
+          intent = claim.intent;
+          if (
+            intent.signature !== requestSignature ||
+            [
+              "committed_projection_pending",
+              "reconciliation_required",
+            ].includes(intent.status)
+          ) {
+            const recoveredDraft = draftFromCreateIntent(intent);
+            if (recoveredDraft) setDraft(recoveredDraft);
+            setCreateIntent(intent);
+            pendingCreateIntent = null;
+            throw new Error(
+              intent.status === "committed_projection_pending"
+                ? "Another tab already committed a Character receipt. Resume to verify that Character before creating again."
+                : intent.status === "reconciliation_required"
+                  ? "Another tab has an aged Character receipt. Reconcile it with the server before creating again."
+                : "Another tab already started a different Character creation. Its exact draft is locked for safe resume.",
+            );
+          }
+        }
+        pendingCreateIntent = intent;
+        setCreateIntent(intent);
         const created = await adminV2Request("/api/v2/admin/characters", {
           method: "POST",
-          idempotencyKey: idempotencyKeyRef.current,
+          idempotencyKey: intent.idempotencyKey,
           schema: characterProjectCreateResponseSchema,
-          body: {
-            ...snapshot,
-            reason: {
-              code: "character_wizard_started",
-              summary: "Create a server-authoritative Character Project draft",
-            },
-            confirmation: "CREATE CHARACTER",
-          },
+          body,
         });
+        const committed = updateDurableMutationIntent(intent, {
+          status: "committed_projection_pending",
+          committedTargetId: created.characterId,
+        });
+        pendingCreateIntent = committed;
+        setCreateIntent(committed);
         authorityRef.current = created;
         setAuthority(created);
-        const url = new URL(window.location.href);
-        url.searchParams.set("draft", created.characterId);
-        window.history.replaceState(null, "", `${url.pathname}?${url.searchParams.toString()}`);
+        clearDurableMutationIntent(committed);
+        setCreateIntent(null);
+        resumeTargetRef.current = created.characterId;
+        setResumeState("restored");
+        try {
+          const url = new URL(window.location.href);
+          url.searchParams.set("draft", created.characterId);
+          window.history.replaceState(
+            null,
+            "",
+            `${url.pathname}?${url.searchParams.toString()}`,
+          );
+        } catch {
+          setError(
+            "The Character was created, but this tab URL could not be updated.",
+          );
+        }
       } else {
         const saved = await adminV2Request(`/api/v2/admin/characters/${authorityRef.current.characterId}/project`, {
           method: "PATCH",
@@ -130,10 +399,47 @@ export function CharacterCreateWizard({ canCreate }: { canCreate: boolean }) {
     } catch (cause) {
       if (cause instanceof AdminV2RequestError && cause.status === 409) setSaveState("Conflict");
       else setSaveState("Failed to save");
-      setError(cause instanceof Error ? cause.message : "Character draft could not be saved");
+      if (
+        !authorityRef.current &&
+        pendingCreateIntent?.status ===
+          "committed_projection_pending"
+      ) {
+        setCreateIntent(pendingCreateIntent);
+        setError(
+          cause instanceof Error
+            ? `The Character was committed, but its draft projection is still unavailable: ${cause.message}`
+            : "The Character was committed, but its draft projection is still unavailable.",
+        );
+      } else if (
+        !authorityRef.current &&
+        pendingCreateIntent &&
+        !(
+          cause instanceof AdminV2RequestError &&
+          [400, 401, 403, 404, 409, 422].includes(cause.status)
+        )
+      ) {
+        const unknown = updateDurableMutationIntent(pendingCreateIntent, {
+          status: "outcome_unknown",
+        });
+        setCreateIntent(unknown);
+        setError(
+          "Character creation outcome is unknown. Resume the same creation intent; it will reuse the original request key.",
+        );
+      } else {
+        if (
+          !authorityRef.current &&
+          pendingCreateIntent &&
+          cause instanceof AdminV2RequestError &&
+          [400, 401, 403, 404, 409, 422].includes(cause.status)
+        ) {
+          clearDurableMutationIntent(pendingCreateIntent);
+          setCreateIntent(null);
+        }
+        setError(cause instanceof Error ? cause.message : "Character draft could not be saved");
+      }
       throw cause;
     }
-  }, []);
+  }, [createIntent, createScope]);
 
   const persist = useCallback((snapshot: Draft, allowCreate: boolean) => {
     const run = saveQueueRef.current.then(() => persistNow(snapshot, allowCreate));
@@ -141,28 +447,40 @@ export function CharacterCreateWizard({ canCreate }: { canCreate: boolean }) {
     return run;
   }, [persistNow]);
 
+  const restoreDraft = useCallback(async (characterId: string) => {
+    resumeTargetRef.current = characterId;
+    setResumeState("restoring");
+    setSaveState("Saving");
+    setError(null);
+    try {
+      const resumed = await adminV2Request(`/api/v2/admin/characters/${encodeURIComponent(characterId)}/project`, {
+        schema: characterProjectDraftResumeSchema,
+      });
+      authorityRef.current = resumed.authority;
+      lastSavedKeyRef.current = draftKey(resumed.draft);
+      setAuthority(resumed.authority);
+      setDraft(resumed.draft);
+      setResumeState("restored");
+      setSaveState("Saved");
+    } catch (cause) {
+      setResumeState("restore_failed");
+      setSaveState("Failed to save");
+      setError(cause instanceof Error ? cause.message : "Server draft could not be restored");
+    }
+  }, []);
+
   useEffect(() => {
-    const timer = window.setTimeout(async () => {
+    const timer = window.setTimeout(() => {
       const characterId = new URLSearchParams(window.location.search).get("draft");
-      if (!characterId || authorityRef.current) return;
-      setSaveState("Saving");
-      setError(null);
-      try {
-        const resumed = await adminV2Request(`/api/v2/admin/characters/${encodeURIComponent(characterId)}/project`, {
-          schema: characterProjectDraftResumeSchema,
-        });
-        authorityRef.current = resumed.authority;
-        lastSavedKeyRef.current = draftKey(resumed.draft);
-        setAuthority(resumed.authority);
-        setDraft(resumed.draft);
-        setSaveState("Saved");
-      } catch (cause) {
-        setSaveState("Failed to save");
-        setError(cause instanceof Error ? cause.message : "Server draft could not be restored");
+      if (!characterId) {
+        resumeTargetRef.current = null;
+        setResumeState("new");
+        return;
       }
+      if (!authorityRef.current) void restoreDraft(characterId);
     }, 0);
     return () => window.clearTimeout(timer);
-  }, []);
+  }, [restoreDraft]);
 
   useEffect(() => {
     if (!authority) return;
@@ -183,6 +501,9 @@ export function CharacterCreateWizard({ canCreate }: { canCreate: boolean }) {
   }
 
   async function next() {
+    if (["checking", "restoring", "restore_failed"].includes(resumeState)) {
+      return;
+    }
     try {
       await persist(draft, true);
       setStep((current) => Math.min(steps.length - 1, current + 1));
@@ -192,6 +513,9 @@ export function CharacterCreateWizard({ canCreate }: { canCreate: boolean }) {
   }
 
   async function finish() {
+    if (["checking", "restoring", "restore_failed"].includes(resumeState)) {
+      return;
+    }
     try {
       await persist(draft, true);
       const destination = authorityRef.current?.deepLink;
@@ -206,6 +530,39 @@ export function CharacterCreateWizard({ canCreate }: { canCreate: boolean }) {
     if (authorityRef.current) setSaveState("Not saved");
   };
   const currentLabel = steps[step];
+  const navigationLocked =
+    saveState === "Saving" ||
+    ["checking", "restoring", "restore_failed"].includes(resumeState);
+
+  const startNewCharacter = () => {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("draft");
+    window.history.replaceState(
+      null,
+      "",
+      url.searchParams.size
+        ? `${url.pathname}?${url.searchParams.toString()}`
+        : url.pathname,
+    );
+    authorityRef.current = null;
+    resumeTargetRef.current = null;
+    lastSavedKeyRef.current = null;
+    const pendingIntent = readActiveDurableMutationIntent({
+      scope: createScope,
+    });
+    setAuthority(null);
+    setCreateIntent(pendingIntent);
+    setDraft(draftFromCreateIntent(pendingIntent) ?? initialDraft);
+    setStep(0);
+    setError(
+      pendingIntent
+        ? "An unresolved Character creation was restored. Resume it before starting another Character."
+        : null,
+    );
+    setSaveState("Not saved");
+    setResumeState("new");
+    setConfirmStartNew(false);
+  };
 
   return (
     <section className="mx-auto max-w-4xl" data-testid="character-create-wizard">
@@ -230,24 +587,80 @@ export function CharacterCreateWizard({ canCreate }: { canCreate: boolean }) {
       <div className="mt-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 sm:p-6">
         <h2 className="text-lg font-semibold">{currentLabel}</h2>
         <p className="mt-1 text-xs text-[var(--ad-text-muted)]">Project version {authority?.projectVersion ?? "not created"}</p>
-        <div className="mt-5">
+        <fieldset
+          className="mt-5"
+          disabled={
+            ["checking", "restoring"].includes(resumeState) ||
+            Boolean(createIntent)
+          }
+        >
           {step === 0 ? <PositioningStep draft={draft} update={update} /> : null}
           {step === 1 ? <PersonaStep draft={draft} update={update} /> : null}
           {step === 2 ? <VisualStep draft={draft} update={update} /> : null}
           {step === 3 ? <CommercialStep draft={draft} update={update} /> : null}
           {step === 4 ? <ReviewStep draft={draft} /> : null}
-        </div>
+        </fieldset>
         {error ? <p className="mt-4 rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">{error}</p> : null}
+        {recoveryNotice ? <p className="mt-4 rounded-md bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]" role="status">{recoveryNotice}</p> : null}
+        {resumeState === "restore_failed" ? (
+          <div className="mt-4 rounded-lg border border-[var(--ad-border)] p-3">
+            <p className="text-sm font-semibold">The requested server draft was not restored.</p>
+            <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">Navigation is locked so this page cannot silently create a second Character.</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <WorkspaceButton
+                onClick={() => {
+                  const target = resumeTargetRef.current;
+                  if (typeof target === "string") void restoreDraft(target);
+                }}
+              >
+                Retry restore
+              </WorkspaceButton>
+              {!confirmStartNew ? (
+                <WorkspaceButton onClick={() => setConfirmStartNew(true)}>
+                  Start a new Character instead
+                </WorkspaceButton>
+              ) : (
+                <>
+                  <WorkspaceButton onClick={() => setConfirmStartNew(false)}>
+                    Keep this draft
+                  </WorkspaceButton>
+                  <WorkspaceButton onClick={startNewCharacter} tone="danger">
+                    Confirm start new
+                  </WorkspaceButton>
+                </>
+              )}
+            </div>
+          </div>
+        ) : null}
+        {createIntent ? (
+          <p className="mt-4 rounded-md bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]" role="status">
+            {createIntent.status === "reconciliation_required" ||
+            !characterProjectCreateRequestSchema.safeParse(
+              createIntent.requestSnapshot,
+            ).success
+              ? "This saved request is aged or no longer matches the active contract. Reconcile its server receipt before editing or creating another Character."
+              : "A Character creation request is unresolved. Resume it to reuse the same request key; form fields remain locked until the authority responds."}
+          </p>
+        ) : null}
         <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-between">
-          <WorkspaceButton disabled={step === 0 || saveState === "Saving"} onClick={() => setStep((current) => Math.max(0, current - 1))}>
+          <WorkspaceButton disabled={step === 0 || navigationLocked} onClick={() => setStep((current) => Math.max(0, current - 1))}>
             <ArrowLeft className="h-4 w-4" /> Back
           </WorkspaceButton>
           {step < steps.length - 1 ? (
-            <WorkspaceButton disabled={saveState === "Saving"} onClick={() => void next()} tone="primary">
-              {step === 0 ? "Save positioning & continue" : "Save & continue"} <ArrowRight className="h-4 w-4" />
+            <WorkspaceButton disabled={navigationLocked} onClick={() => void next()} tone="primary">
+              {createIntent
+                ? createIntent.status === "reconciliation_required" ||
+                  !characterProjectCreateRequestSchema.safeParse(
+                    createIntent.requestSnapshot,
+                  ).success
+                  ? "Reconcile saved request"
+                  : "Resume Character creation"
+                : step === 0
+                  ? "Save positioning & continue"
+                  : "Save & continue"} <ArrowRight className="h-4 w-4" />
             </WorkspaceButton>
           ) : (
-            <WorkspaceButton disabled={saveState === "Saving"} onClick={() => void finish()} tone="primary">
+            <WorkspaceButton disabled={navigationLocked} onClick={() => void finish()} tone="primary">
               <Check className="h-4 w-4" /> Save and open project
             </WorkspaceButton>
           )}

@@ -19,17 +19,20 @@ type CallResult = {
   ok: boolean;
   data: Record<string, unknown> | undefined;
   errorCode: string | undefined;
+  errorDetails: unknown;
 };
 
 function makeRequest(
   method: string,
   path: string,
-  opts: { userId: string; role: string; body?: unknown },
+  opts: { userId: string; role: string; body?: unknown; idempotencyKey?: string },
 ): Request {
   const headers: Record<string, string> = {
     "x-idream-user-id": opts.userId,
     "x-idream-role": opts.role,
+    "x-request-id": crypto.randomUUID(),
   };
+  if (method === "POST") headers["idempotency-key"] = opts.idempotencyKey ?? crypto.randomUUID();
   if (opts.body !== undefined) headers["content-type"] = "application/json";
   return new Request(`http://localhost/api/v1/admin/content/characters${path}`, {
     method,
@@ -44,13 +47,13 @@ async function call(handler: Promise<Response>): Promise<CallResult> {
     const res = await handler;
     const text = await res.text();
     const json = text ? (JSON.parse(text) as { ok?: boolean; data?: Record<string, unknown> }) : null;
-    return { status: res.status, ok: Boolean(json?.ok), data: json?.data, errorCode: undefined };
+    return { status: res.status, ok: Boolean(json?.ok), data: json?.data, errorCode: undefined, errorDetails: undefined };
   } catch (error) {
     if (error instanceof AppError) {
-      return { status: error.status, ok: false, data: undefined, errorCode: error.code };
+      return { status: error.status, ok: false, data: undefined, errorCode: error.code, errorDetails: error.details };
     }
     if (error instanceof ZodError) {
-      return { status: 400, ok: false, data: undefined, errorCode: "bad_request" };
+      return { status: 400, ok: false, data: undefined, errorCode: "bad_request", errorDetails: undefined };
     }
     throw error;
   }
@@ -136,6 +139,33 @@ describe("Visual Passport (character visual profiles)", () => {
     );
     expect(createResult.status).toBe(403);
     expect(createResult.errorCode).toBe("forbidden");
+  });
+
+  it("rejects creating an unanchored first identity and routes the operator to Character Assets", async () => {
+    const admin = await seedActor("admin", "unanchored-first-version");
+    const characterId = `${P}char-unanchored-first-version`;
+    await createCharacter({ id: characterId, name: "Needs reviewed portrait" });
+
+    const result = await call(
+      createCharacterVisualProfile(
+        makeRequest("POST", `/${characterId}/visual-profiles`, {
+          userId: admin,
+          role: "admin",
+          body: {
+            identityPrompt: "text alone cannot establish image authority",
+            reason: "attempt unanchored identity",
+            confirmation: confirmationFor(characterId),
+          },
+        }),
+        characterId,
+      ),
+    );
+
+    expect(result.status).toBe(409);
+    expect(result.errorDetails).toMatchObject({
+      deepLink: `/admin/characters/${characterId}?tab=assets`,
+    });
+    expect(await prisma.characterVisualProfile.count({ where: { characterId } })).toBe(0);
   });
 
   it("lists versions in desc order with the documented field shape", async () => {
@@ -261,6 +291,9 @@ describe("Visual Passport (character visual profiles)", () => {
     expect(item.status).toBe("active");
     expect(item.identityPrompt).toBe("hand-authored identity prompt");
     expect(item.anchorAssetIds).toEqual([imageAssetId]);
+    await expect(prisma.mediaAsset.findUniqueOrThrow({ where: { id: imageAssetId } })).resolves.toMatchObject({
+      characterId,
+    });
 
     const audit = await prisma.adminAuditLog.findFirst({
       where: { action: "content.visual_profile.create", targetId: characterId },
@@ -269,17 +302,258 @@ describe("Visual Passport (character visual profiles)", () => {
     expect(audit?.reason).toBe("bootstrap passport");
   });
 
+  it("rejects a shared legacy Character image instead of claiming ambiguous identity authority", async () => {
+    const admin = await seedActor("admin", "shared-bootstrap");
+    const characterId = `${P}char-shared-bootstrap-a`;
+    const otherCharacterId = `${P}char-shared-bootstrap-b`;
+    const imageAssetId = `${P}image-shared-bootstrap`;
+    await createMedia({ id: imageAssetId, ownerId: admin });
+    await createCharacter({ id: characterId, name: "Shared A", imageAssetId });
+    await createCharacter({ id: otherCharacterId, name: "Shared B", imageAssetId });
+
+    const result = await call(createCharacterVisualProfile(
+      makeRequest("POST", `/${characterId}/visual-profiles`, {
+        userId: admin,
+        role: "admin",
+        body: {
+          identityPrompt: "ambiguous shared identity",
+          reason: "attempt shared legacy repair",
+          confirmation: confirmationFor(characterId),
+        },
+      }),
+      characterId,
+    ));
+
+    expect(result.status).toBe(409);
+    expect(result.errorDetails).toMatchObject({
+      deepLink: `/admin/characters/${characterId}?tab=assets`,
+    });
+    expect(await prisma.characterVisualProfile.count({ where: { characterId } })).toBe(0);
+    await expect(prisma.mediaAsset.findUniqueOrThrow({ where: { id: imageAssetId } })).resolves.toMatchObject({
+      characterId: null,
+    });
+  });
+
+  it("rejects a current image that already belongs to another Character", async () => {
+    const admin = await seedActor("admin", "foreign-bootstrap");
+    const characterId = `${P}char-foreign-bootstrap-target`;
+    const foreignCharacterId = `${P}char-foreign-bootstrap-owner`;
+    const imageAssetId = `${P}image-foreign-bootstrap`;
+    await createMedia({ id: imageAssetId, ownerId: admin });
+    await createCharacter({
+      id: foreignCharacterId,
+      name: "Foreign identity owner",
+    });
+    await prisma.mediaAsset.update({
+      where: { id: imageAssetId },
+      data: { characterId: foreignCharacterId },
+    });
+    await createCharacter({
+      id: characterId,
+      name: "Foreign image target",
+      imageAssetId,
+    });
+
+    const result = await call(createCharacterVisualProfile(
+      makeRequest("POST", `/${characterId}/visual-profiles`, {
+        userId: admin,
+        role: "admin",
+        body: {
+          identityPrompt: "must not steal foreign identity",
+          reason: "reject cross-Character image ownership",
+          confirmation: confirmationFor(characterId),
+        },
+      }),
+      characterId,
+    ));
+
+    expect(result.status).toBe(409);
+    expect(result.errorDetails).toMatchObject({
+      assetIds: [imageAssetId],
+      deepLink: `/admin/characters/${characterId}?tab=assets`,
+    });
+    expect(await prisma.characterVisualProfile.count({ where: { characterId } })).toBe(0);
+    await expect(prisma.mediaAsset.findUniqueOrThrow({
+      where: { id: imageAssetId },
+    })).resolves.toMatchObject({ characterId: foreignCharacterId });
+  });
+
+  it("waits for Library authority and rejects a current image archived before bootstrap", async () => {
+    const admin = await seedActor("admin", "archived-bootstrap");
+    const characterId = `${P}char-archived-bootstrap`;
+    const imageAssetId = `${P}image-archived-bootstrap`;
+    await createMedia({ id: imageAssetId, ownerId: admin });
+    await createCharacter({
+      id: characterId,
+      name: "Archived identity target",
+      imageAssetId,
+    });
+
+    let createRequest: Promise<CallResult> | undefined;
+    await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`media-asset-authority:${imageAssetId}`}))`;
+      await tx.mediaAsset.update({
+        where: { id: imageAssetId },
+        data: {
+          metadata: {
+            platformAsset: { status: "archived" },
+          },
+        },
+      });
+      const pendingCreate = call(createCharacterVisualProfile(
+        makeRequest("POST", `/${characterId}/visual-profiles`, {
+          userId: admin,
+          role: "admin",
+          body: {
+            identityPrompt: "must not revive archived media",
+            reason: "reject archived identity bootstrap",
+            confirmation: confirmationFor(characterId),
+          },
+        }),
+        characterId,
+      ));
+      createRequest = pendingCreate;
+      const state = await Promise.race([
+        pendingCreate.then(() => "settled" as const),
+        new Promise<"waiting">((resolve) => {
+          setTimeout(() => resolve("waiting"), 75);
+        }),
+      ]);
+      expect(state).toBe("waiting");
+    });
+
+    expect(createRequest).toBeDefined();
+    const result = await createRequest!;
+    expect(result.status).toBe(409);
+    expect(result.errorDetails).toMatchObject({
+      assetIds: [imageAssetId],
+      deepLink: `/admin/characters/${characterId}?tab=assets`,
+    });
+    expect(
+      await prisma.characterVisualProfile.count({ where: { characterId } }),
+    ).toBe(0);
+    await expect(prisma.mediaAsset.findUniqueOrThrow({
+      where: { id: imageAssetId },
+    })).resolves.toMatchObject({
+      characterId: null,
+      metadata: {
+        platformAsset: { status: "archived" },
+      },
+    });
+  });
+
+  it("repairs an unanchored active profile by carrying forward the current Character image", async () => {
+    const admin = await seedActor("admin", "repair-current-image");
+    const characterId = `${P}char-repair-current-image`;
+    const imageAssetId = `${P}image-repair-current-image`;
+    await createMedia({ id: imageAssetId, ownerId: admin });
+    await createCharacter({ id: characterId, name: "Repair Current Image", imageAssetId });
+    const legacy = await seedVisualProfile({
+      characterId,
+      version: 1,
+      status: "active",
+      identityPrompt: "Legacy text-only profile",
+      anchorAssetIds: [],
+      referenceAssetIds: [],
+    });
+
+    const result = await call(
+      createCharacterVisualProfile(
+        makeRequest("POST", `/${characterId}/visual-profiles`, {
+          userId: admin,
+          role: "admin",
+          body: {
+            identityPrompt: "Reviewed identity carried from the current Character image",
+            reason: "repair the unanchored legacy identity",
+            confirmation: confirmationFor(characterId),
+          },
+        }),
+        characterId,
+      ),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.data?.item).toMatchObject({
+      version: 2,
+      status: "active",
+      anchorAssetIds: [imageAssetId],
+    });
+    await expect(prisma.characterVisualProfile.findUniqueOrThrow({
+      where: { id: legacy.id },
+    })).resolves.toMatchObject({ status: "archived" });
+  });
+
+  it("replays the same visual profile command once and rejects key reuse for another payload", async () => {
+    const admin = await seedActor("admin", "idempotency");
+    const characterId = `${P}char-idempotency`;
+    const imageAssetId = `${P}image-idempotency`;
+    const idempotencyKey = `${P}visual-profile-key`;
+    await createMedia({ id: imageAssetId, ownerId: admin });
+    await createCharacter({ id: characterId, name: "Idempotent Target", imageAssetId });
+    const body = {
+      identityPrompt: "stable identity authority",
+      reason: "create one stable identity version",
+      confirmation: confirmationFor(characterId),
+    };
+
+    const first = await call(createCharacterVisualProfile(
+      makeRequest("POST", `/${characterId}/visual-profiles`, {
+        userId: admin,
+        role: "admin",
+        body,
+        idempotencyKey,
+      }),
+      characterId,
+    ));
+    const replay = await call(createCharacterVisualProfile(
+      makeRequest("POST", `/${characterId}/visual-profiles`, {
+        userId: admin,
+        role: "admin",
+        body,
+        idempotencyKey,
+      }),
+      characterId,
+    ));
+    const collision = await call(createCharacterVisualProfile(
+      makeRequest("POST", `/${characterId}/visual-profiles`, {
+        userId: admin,
+        role: "admin",
+        body: { ...body, identityPrompt: "different identity authority" },
+        idempotencyKey,
+      }),
+      characterId,
+    ));
+
+    expect(first.ok).toBe(true);
+    expect(first.data?.replayed).toBe(false);
+    expect(replay.ok).toBe(true);
+    expect(replay.data?.replayed).toBe(true);
+    expect(collision.status).toBe(409);
+    expect(await prisma.characterVisualProfile.count({ where: { characterId } })).toBe(1);
+    expect(await prisma.adminAuditLog.count({
+      where: { action: "content.visual_profile.create", targetId: characterId },
+    })).toBe(1);
+  });
+
   it("mints v(prev+1) active, archives the prior active, and carries forward unspecified traits/pool", async () => {
     const admin = await seedActor("admin", "version");
     const characterId = `${P}char-version`;
+    const anchorAssetId = `${P}anchor-1`;
+    const referenceAssetId = `${P}ref-1`;
     await createCharacter({ id: characterId, name: "Version Target" });
+    await createMedia({ id: anchorAssetId, ownerId: admin });
+    await createMedia({ id: referenceAssetId, ownerId: admin });
+    await prisma.mediaAsset.updateMany({
+      where: { id: { in: [anchorAssetId, referenceAssetId] } },
+      data: { characterId },
+    });
     await seedVisualProfile({
       characterId,
       version: 1,
       status: "active",
       identityPrompt: "original identity prompt",
-      anchorAssetIds: [`${P}anchor-1`],
-      referenceAssetIds: [`${P}ref-1`],
+      anchorAssetIds: [anchorAssetId],
+      referenceAssetIds: [referenceAssetId],
     });
 
     const result = await call(
@@ -308,8 +582,8 @@ describe("Visual Passport (character visual profiles)", () => {
     expect(item.status).toBe("active");
     expect(item.identityPrompt).toBe("revised identity prompt");
     // Pool carried forward unchanged — not editable from this endpoint.
-    expect(item.anchorAssetIds).toEqual([`${P}anchor-1`]);
-    expect(item.referenceAssetIds).toEqual([`${P}ref-1`]);
+    expect(item.anchorAssetIds).toEqual([anchorAssetId]);
+    expect(item.referenceAssetIds).toEqual([referenceAssetId]);
 
     const profiles = await prisma.characterVisualProfile.findMany({
       where: { characterId },
@@ -391,7 +665,9 @@ describe("Visual Passport (character visual profiles)", () => {
   it("explicit identityPrompt is stored as-is and marked manual", async () => {
     const admin = await seedActor("admin", "manual");
     const characterId = `${P}char-manual`;
-    await createCharacter({ id: characterId, name: "Manual Target" });
+    const imageAssetId = `${P}image-manual`;
+    await createMedia({ id: imageAssetId, ownerId: admin });
+    await createCharacter({ id: characterId, name: "Manual Target", imageAssetId });
 
     const result = await call(
       createCharacterVisualProfile(
@@ -417,7 +693,9 @@ describe("Visual Passport (character visual profiles)", () => {
   it("omitting identityPrompt derives it from traits and marks the version derived", async () => {
     const admin = await seedActor("admin", "derived");
     const characterId = `${P}char-derived`;
-    await createCharacter({ id: characterId, name: "Derived Target" });
+    const imageAssetId = `${P}image-derived`;
+    await createMedia({ id: imageAssetId, ownerId: admin });
+    await createCharacter({ id: characterId, name: "Derived Target", imageAssetId });
 
     const result = await call(
       createCharacterVisualProfile(

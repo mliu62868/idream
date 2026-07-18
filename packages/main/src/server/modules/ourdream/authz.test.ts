@@ -9,6 +9,7 @@ import {
   expectError,
   expectOk,
   grantCoins,
+  publishCharacterForPublicAudience,
   purgeTestData,
 } from "@/server/test/helpers";
 
@@ -42,8 +43,20 @@ describe("auth lifecycle (cookie session)", () => {
     const cookie = cookieHeader(signup.setCookies);
     const me = await api("GET", "me", { cookie });
     expectOk(me);
+    expect(me.headers.get("cache-control")).toBe(
+      "private, no-store, max-age=0",
+    );
+    expect(me.headers.get("pragma")).toBe("no-cache");
+    expect(me.headers.get("vary")).toContain("Cookie");
+    expect(me.headers.get("vary")).toContain("Authorization");
     expect(me.data.user.email).toBe(`${P}alice@test.local`);
     expect(me.data.dreamcoins.balance).toBe(250);
+    expect(
+      await prisma.user.findUniqueOrThrow({
+        where: { email: `${P}alice@test.local` },
+        select: { emailVerified: true },
+      }),
+    ).toEqual({ emailVerified: false });
     // userDTO must not leak any credential material.
     expect(me.data.user).not.toHaveProperty("password");
   });
@@ -70,6 +83,21 @@ describe("auth lifecycle (cookie session)", () => {
     });
     expectOk(goodLogin);
     expect(goodLogin.setCookies.join(";")).toContain("idream_session=");
+  });
+
+  it("rejects public signup on reserved internal email domains", async () => {
+    const signup = await api("POST", "auth/signup", {
+      ageGate: true,
+      body: {
+        email: `${P}operator@admin.idream.internal`,
+        password: "password123",
+        name: "Reserved Operator",
+      },
+    });
+    expectError(signup, 400, "bad_request");
+    expect(await prisma.user.count({
+      where: { email: `${P}operator@admin.idream.internal` },
+    })).toBe(0);
   });
 
   it("allows signup when a reused anonymous id already belongs to another account", async () => {
@@ -135,6 +163,11 @@ describe("authentication required", () => {
   it("rejects unauthenticated access to a user-only endpoint with 401", async () => {
     const result = await api("GET", "media");
     expectError(result, 401, "unauthorized");
+    expect(result.headers.get("cache-control")).toBe(
+      "private, no-store, max-age=0",
+    );
+    expect(result.headers.get("vary")).toContain("Cookie");
+    expect(result.headers.get("vary")).toContain("Authorization");
   });
 
   it("rejects unauthenticated dreamcoins access with 401", async () => {
@@ -206,6 +239,10 @@ describe("DTO privacy", () => {
       visibility: "public",
       status: "approved",
       systemPrompt: "TOP SECRET persona instructions",
+    });
+    await publishCharacterForPublicAudience({
+      characterId: charId,
+      ownerId: owner,
     });
 
     const detail = await api("GET", `characters/${charId}`, { ageGate: true });

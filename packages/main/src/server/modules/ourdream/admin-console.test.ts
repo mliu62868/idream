@@ -3,10 +3,18 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { Prisma } from "@prisma/client";
+import { parseGenerationConfigResponse } from "@/lib/public-api-contracts";
 import type { AiFinalizePayload } from "@/server/ai/schemas";
 import { drainLocalAiPipeline } from "@/server/ai/local-pipeline";
 import { jobQueue } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
+import { env } from "@/server/lib/env";
+import { CHARACTER_RELEASE_POLICY_VERSION } from "@/server/modules/admin-v2/characters/release-executor";
+import { POST as createCreativeRunV2 } from "@/app/api/v2/admin/creative/runs/route";
+import {
+  characterVisualProfileSnapshotHash,
+  referenceSetSnapshotHash,
+} from "@/server/modules/admin-v2/characters/release-snapshot";
 import {
   api,
   createCharacter,
@@ -20,13 +28,40 @@ import {
 } from "@/server/test/helpers";
 
 const P = "zt-admin-";
+const seedPricingAuthorities = [
+  { id: "seed-pricing-image-default-v1", mode: "image" },
+  { id: "seed-pricing-video-default-v1", mode: "video" },
+  { id: "seed-pricing-voice-default-v1", mode: "voice" },
+] as const;
+
+async function restoreSeedPricingAuthorities() {
+  const archivedAt = new Date();
+  for (const authority of seedPricingAuthorities) {
+    await prisma.$transaction([
+      prisma.pricingRule.updateMany({
+        where: {
+          mode: authority.mode,
+          status: "active",
+          id: { not: authority.id },
+        },
+        data: { status: "archived", archivedAt },
+      }),
+      prisma.pricingRule.update({
+        where: { id: authority.id },
+        data: { status: "active", archivedAt: null },
+      }),
+    ]);
+  }
+}
 
 beforeAll(async () => {
   await purgeTestData(P);
+  await restoreSeedPricingAuthorities();
 });
 
 afterAll(async () => {
   await purgeTestData(P);
+  await restoreSeedPricingAuthorities();
   await prisma.$disconnect();
 });
 
@@ -35,8 +70,248 @@ async function setupActor(
   suffix: string,
 ) {
   const id = `${P}${role}-${suffix}`;
-  await createUser({ id, role });
+  await createUser({ id, role, dataClass: "internal" });
   return id;
+}
+
+async function createCreativeRunThroughV2(input: {
+  readonly userId: string;
+  readonly role: string;
+  readonly body: Record<string, unknown>;
+}) {
+  const response = await createCreativeRunV2(new Request(
+    "http://localhost/api/v2/admin/creative/runs",
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-idream-user-id": input.userId,
+        "x-idream-role": input.role,
+        "idempotency-key": crypto.randomUUID(),
+      },
+      body: JSON.stringify(input.body),
+    },
+  ));
+  const json = await response.json() as {
+    ok?: boolean;
+    data?: { batch?: { id?: string } };
+    error?: { code?: string; message?: string; details?: unknown };
+  };
+  if (!response.ok || !json.data?.batch?.id) {
+    return {
+      status: response.status,
+      ok: Boolean(json.ok),
+      data: json.data,
+      error: json.error,
+      json,
+      headers: response.headers,
+      setCookies: [],
+    };
+  }
+  const detail = await api(
+    "GET",
+    `admin/content/production/batches/${json.data.batch.id}`,
+    { userId: input.userId, role: input.role },
+  );
+  return {
+    ...detail,
+    status: response.status,
+  };
+}
+
+async function seedEditorialPublicCharacterAuthority(input: {
+  characterId: string;
+  ownerId: string;
+}) {
+  const assetId = `${input.characterId}-featured-asset`;
+  const projectId = `${input.characterId}-featured-project`;
+  const releaseId = `${input.characterId}-featured-release`;
+  const snapshotHash = `${releaseId}-snapshot`;
+  await prisma.mediaAsset.create({
+    data: {
+      id: assetId,
+      ownerId: input.ownerId,
+      characterId: input.characterId,
+      type: "image",
+      url: `/user-content/${assetId}/content.webp`,
+      thumbnailUrl: `/user-content/${assetId}/thumbnail.webp`,
+      visibility: "public_pack",
+      safetyStatus: "passed",
+      metadata: {
+        source: "editorial_import",
+        synthetic: false,
+      },
+    },
+  });
+  await prisma.character.update({
+    where: { id: input.characterId },
+    data: { imageAssetId: assetId },
+  });
+  await prisma.characterProject.create({
+    data: {
+      id: projectId,
+      characterId: input.characterId,
+      phase: "live_management",
+      audience: {},
+      successCriteria: [],
+    },
+  });
+  await prisma.characterRelease.create({
+    data: {
+      id: releaseId,
+      projectId,
+      revisionId: `${releaseId}-revision`,
+      characterContentVersionId: `${releaseId}-content`,
+      generationProvenance: {
+        schemaVersion: "character-release-editorial-import-v1",
+        sourceAssetId: assetId,
+      },
+      releasePlacementManifest: {
+        schemaVersion: 1,
+        kind: "editorial_import",
+        placements: [
+          {
+            slotKey: "character_avatar",
+            assetId,
+            slotVersion: 1,
+          },
+        ],
+      },
+      snapshotHash,
+      readiness: "ready",
+      legacy: true,
+      status: "published",
+      publishedAt: new Date(),
+    },
+  });
+  await prisma.publicCatalogQualification.create({
+    data: {
+      id: `${releaseId}-qualification`,
+      releaseId,
+      releaseSnapshotHash: snapshotHash,
+      kind: "editorial_import",
+      evidence: {
+        schemaVersion: "public-catalog-qualification-v1",
+        policyVersion: "public-catalog-editorial-import-v1",
+        sourceAssetId: assetId,
+      },
+    },
+  });
+  await prisma.characterServing.create({
+    data: {
+      id: `${releaseId}-serving`,
+      characterId: input.characterId,
+      currentReleaseId: releaseId,
+      state: "live",
+    },
+  });
+}
+
+async function seedCharacterAssetAuthority(input: {
+  actorId: string;
+  characterId: string;
+  generationProfileKey: string;
+  anchorAssetId?: string;
+  visualProfileId?: string;
+}) {
+  const anchorAssetId = input.anchorAssetId ?? `${input.generationProfileKey}-identity-anchor`;
+  const existingAnchor = await prisma.mediaAsset.findUnique({ where: { id: anchorAssetId } });
+  if (!existingAnchor) {
+    await prisma.mediaAsset.create({
+      data: {
+        id: anchorAssetId,
+        ownerId: input.actorId,
+        characterId: input.characterId,
+        type: "image",
+        url: `/user-content/${anchorAssetId}/content.webp`,
+        safetyStatus: "passed",
+        metadata: {},
+      },
+    });
+  }
+  const visualProfileId = input.visualProfileId ?? `${input.generationProfileKey}-visual-profile-v1`;
+  const style = `${input.generationProfileKey}-style`;
+  const profile = await prisma.characterVisualProfile.create({
+    data: {
+      id: visualProfileId,
+      characterId: input.characterId,
+      version: 1,
+      status: "active",
+      style,
+      identityPrompt: "same adult woman, amber eyes, long dark hair",
+      negativeIdentityPrompt: "different face, different hair color",
+      faceTraits: { eyes: "amber" },
+      hairTraits: { color: "dark", length: "long" },
+      bodyTraits: {},
+      signatureTraits: {},
+      styleTraits: { style },
+      anchorAssetIds: [anchorAssetId],
+      referenceAssetIds: [anchorAssetId],
+      adapterRefs: {},
+      evidenceState: "qualified",
+      createdFrom: "admin_console_test",
+    },
+  });
+  await prisma.characterVisualProfile.update({
+    where: { id: visualProfileId },
+    data: { immutableHash: characterVisualProfileSnapshotHash(profile) },
+  });
+  const referenceSetId = `${input.generationProfileKey}-reference-set-v1`;
+  const selectorVersion = `${input.generationProfileKey}-selector-v1`;
+  await prisma.referenceSetRevision.create({
+    data: {
+      id: referenceSetId,
+      visualProfileId,
+      revision: 1,
+      status: "active",
+      selectorVersion,
+      snapshotHash: referenceSetSnapshotHash({
+        visualProfileId,
+        revision: 1,
+        selectorVersion,
+        references: [{
+          mediaAssetId: anchorAssetId,
+          position: 0,
+          role: "primary_face",
+          weight: 1,
+        }],
+      }),
+      createdFrom: "admin_console_test",
+      references: {
+        create: {
+          mediaAssetId: anchorAssetId,
+          position: 0,
+          role: "primary_face",
+          weight: 1,
+          selectorVersion,
+          selectionReason: "Reviewed identity authority fixture",
+        },
+      },
+    },
+  });
+  await prisma.generationRouteQualification.create({
+    data: {
+      id: `${input.generationProfileKey}-qualification-v1`,
+      routeFingerprint: `${input.generationProfileKey}-route-v1`,
+      generationProfileKey: input.generationProfileKey,
+      generationProfileVersion: 1,
+      workflowKey: "qwen-image-edit-img2img",
+      workflowVersion: 1,
+      style,
+      matrixKey: `${input.generationProfileKey}-matrix-v1`,
+      sampleCount: 40,
+      passCount: 40,
+      identityMatch: 0.96,
+      result: "qualified",
+      evidence: {
+        evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,
+        reviewerId: input.actorId,
+        batchIds: ["admin-console-qualified-fixture"],
+      },
+      policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
+    },
+  });
+  return { anchorAssetId, referenceSetId, visualProfileId };
 }
 
 function asInputJson(value: AiFinalizePayload): Prisma.InputJsonValue {
@@ -76,7 +351,7 @@ describe("admin support request inbox", () => {
     const requester = `${P}support-inbox-user`;
     const support = await setupActor("support", "inbox");
     const analyst = await setupActor("analyst", "inbox");
-    await createUser({ id: requester });
+    await createUser({ id: requester, dataClass: "customer" });
 
     const submitted = await api("POST", "support/requests", {
       userId: requester,
@@ -102,7 +377,7 @@ describe("admin support request inbox", () => {
         expect.objectContaining({
           ticketId: submitted.data.request.ticketId,
           userId: requester,
-          userEmail: `${requester}@test.local`,
+          userEmail: `${requester}@customer.invalid`,
           category: "generation",
           status: "received",
         }),
@@ -248,7 +523,7 @@ describe("admin appeal queue", () => {
     const charId = `${P}appeal-char`;
     const admin = await setupActor("admin", "appeal");
     const support = await setupActor("support", "appeal");
-    await createUser({ id: userId });
+    await createUser({ id: userId, dataClass: "customer" });
     await createCharacter({ id: charId, creatorId: userId, visibility: "public", status: "removed" });
     const appeal = await prisma.appeal.create({
       data: {
@@ -371,6 +646,69 @@ describe("admin appeal queue", () => {
       409,
     );
   });
+
+  it("serializes a media appeal restoration with the shared MediaAsset authority lock", async () => {
+    const userId = `${P}appeal-media-user`;
+    const mediaId = `${P}appeal-media`;
+    const admin = await setupActor("admin", "appeal-media");
+    await createUser({ id: userId, dataClass: "customer" });
+    await prisma.mediaAsset.create({
+      data: {
+        id: mediaId,
+        ownerId: userId,
+        type: "image",
+        url: "/images/ourdream/card-sarah-mercer.webp",
+        visibility: "private",
+        safetyStatus: "blocked",
+        metadata: {},
+      },
+    });
+    const appeal = await prisma.appeal.create({
+      data: {
+        userId,
+        targetType: "media",
+        targetId: mediaId,
+        appealText: "Please review the media decision again.",
+      },
+    });
+
+    let appealRequest: ReturnType<typeof api> | undefined;
+    await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`media-asset-authority:${mediaId}`}))`;
+      const pendingAppeal = api(
+        "PATCH",
+        `admin/moderation/appeals/${appeal.id}`,
+        {
+          userId: admin,
+          role: "admin",
+          body: {
+            outcome: "overturned",
+            reason: "Appeal accepted after reviewer check",
+            confirmation: "OVERTURN",
+          },
+        },
+      );
+      appealRequest = pendingAppeal;
+      const state = await Promise.race([
+        pendingAppeal.then(() => "settled" as const),
+        new Promise<"waiting">((resolve) => {
+          setTimeout(() => resolve("waiting"), 75);
+        }),
+      ]);
+      expect(state).toBe("waiting");
+    });
+
+    expect(appealRequest).toBeDefined();
+    const resolved = await appealRequest!;
+    expectOk(resolved);
+    expect(resolved.data.target).toMatchObject({
+      targetRestored: true,
+      restoredTargetType: "media",
+    });
+    await expect(
+      prisma.mediaAsset.findUniqueOrThrow({ where: { id: mediaId } }),
+    ).resolves.toMatchObject({ safetyStatus: "passed" });
+  });
 });
 
 describe("generation config control plane", () => {
@@ -394,7 +732,13 @@ describe("generation config control plane", () => {
 
     const config = await api("GET", "generation/config", { userId, ageGate: true });
     expectOk(config);
+    expect(() => parseGenerationConfigResponse(config)).not.toThrow();
     expect(config.data.video.enabled).toBe(false);
+    expect(config.data.video.availability).toEqual({
+      state: "unavailable",
+      reason: "feature_disabled",
+    });
+    expect(config.data.image.availability).toEqual({ state: "available" });
     expect(config.data.image.models).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -419,6 +763,220 @@ describe("generation config control plane", () => {
       recipeVersion: 1,
     });
     await runQueuedGenerationJobs(8);
+  });
+
+  it("reports missing image capacity explicitly and fails direct writes closed", async () => {
+    const userId = `${P}gen-unavailable-user`;
+    const characterId = `${P}gen-unavailable-char`;
+    await createUser({ id: userId });
+    await createCharacter({
+      id: characterId,
+      creatorId: userId,
+      visibility: "public",
+      status: "approved",
+    });
+    await grantCoins(userId, 100, "seed");
+    const previousProfiles = await prisma.generationModelProfile.findMany({
+      where: { mode: "image" },
+      select: {
+        id: true,
+        allowedOrientations: true,
+        enabled: true,
+        maxCount: true,
+        requiredEntitlement: true,
+        status: true,
+      },
+    });
+    const previousRecipes = await prisma.generationRecipe.findMany({
+      where: { mode: "image" },
+      select: {
+        id: true,
+        status: true,
+      },
+    });
+
+    try {
+      await prisma.generationModelProfile.updateMany({
+        where: { mode: "image" },
+        data: { enabled: false },
+      });
+
+      const config = await api("GET", "generation/config", {
+        userId,
+        ageGate: true,
+      });
+      expectOk(config);
+      expect(config.data.image).toMatchObject({
+        availability: {
+          state: "unavailable",
+          reason: "no_active_model",
+        },
+        models: [],
+        orientations: [],
+      });
+      expect(config.data.pricing.image.maxCount).toBeNull();
+      expect(() => parseGenerationConfigResponse(config)).not.toThrow();
+
+      const beforeJobs = await prisma.generationJob.count({ where: { userId } });
+      const beforeBalance = await dreamcoinBalance(userId);
+      const beforeVisualProfiles = await prisma.characterVisualProfile.count({
+        where: { characterId },
+      });
+      const response = await api("POST", "generation/jobs", {
+        userId,
+        ageGate: true,
+        body: { mode: "image", characterId, outputCount: 1 },
+      });
+      expectError(response, 503, "unavailable");
+      expect(response.error?.message).toBe(
+        "No active generation model profile is configured",
+      );
+      expect(response.error?.details).toBeUndefined();
+      expect(await prisma.generationJob.count({ where: { userId } })).toBe(
+        beforeJobs,
+      );
+      expect(await dreamcoinBalance(userId)).toBe(beforeBalance);
+      expect(
+        await prisma.characterVisualProfile.count({ where: { characterId } }),
+      ).toBe(beforeVisualProfiles);
+
+      const unavailableProfile = previousProfiles.find(
+        (profile) => profile.status === "active",
+      );
+      expect(unavailableProfile).toBeDefined();
+      await prisma.generationModelProfile.update({
+        where: { id: unavailableProfile!.id },
+        data: {
+          allowedOrientations: ["unsupported-orientation"],
+          enabled: true,
+          requiredEntitlement: null,
+        },
+      });
+      const invalidCapabilityConfig = await api("GET", "generation/config", {
+        userId,
+        ageGate: true,
+      });
+      expectOk(invalidCapabilityConfig);
+      expect(invalidCapabilityConfig.data.image).toMatchObject({
+        availability: {
+          state: "unavailable",
+          reason: "no_active_model",
+        },
+        models: [],
+        orientations: [],
+      });
+      const invalidCapabilityResponse = await api("POST", "generation/jobs", {
+        userId,
+        ageGate: true,
+        body: { mode: "image", characterId, outputCount: 1 },
+      });
+      expectError(invalidCapabilityResponse, 503, "unavailable");
+      expect(await prisma.generationJob.count({ where: { userId } })).toBe(
+        beforeJobs,
+      );
+      expect(await dreamcoinBalance(userId)).toBe(beforeBalance);
+
+      await prisma.generationModelProfile.update({
+        where: { id: unavailableProfile!.id },
+        data: {
+          allowedOrientations: unavailableProfile!.allowedOrientations as Prisma.InputJsonValue,
+          enabled: true,
+          maxCount: unavailableProfile!.maxCount,
+          requiredEntitlement: null,
+        },
+      });
+      await prisma.generationRecipe.updateMany({
+        where: { mode: "image" },
+        data: { status: "archived" },
+      });
+      const missingRecipeConfig = await api("GET", "generation/config", {
+        userId,
+        ageGate: true,
+      });
+      expectOk(missingRecipeConfig);
+      expect(missingRecipeConfig.data.image).toMatchObject({
+        availability: {
+          state: "unavailable",
+          reason: "no_active_recipe",
+        },
+        models: [],
+        orientations: [],
+        recipes: [],
+      });
+      expect(missingRecipeConfig.data.pricing.image.maxCount).toBeNull();
+      expect(() => parseGenerationConfigResponse(missingRecipeConfig)).not.toThrow();
+      const missingRecipeResponse = await api("POST", "generation/jobs", {
+        userId,
+        ageGate: true,
+        body: { mode: "image", characterId, outputCount: 1 },
+      });
+      expectError(missingRecipeResponse, 503, "unavailable");
+      expect(missingRecipeResponse.error?.message).toBe(
+        "No active generation prompt recipe is configured",
+      );
+      expect(await prisma.generationJob.count({ where: { userId } })).toBe(
+        beforeJobs,
+      );
+      expect(await dreamcoinBalance(userId)).toBe(beforeBalance);
+      expect(
+        await prisma.characterVisualProfile.count({ where: { characterId } }),
+      ).toBe(beforeVisualProfiles);
+
+      await prisma.$transaction(
+        previousRecipes.map((recipe) =>
+          prisma.generationRecipe.update({
+            where: { id: recipe.id },
+            data: { status: recipe.status },
+          }),
+        ),
+      );
+      await prisma.generationModelProfile.update({
+        where: { id: unavailableProfile!.id },
+        data: {
+          allowedOrientations: unavailableProfile!.allowedOrientations as Prisma.InputJsonValue,
+          enabled: true,
+          requiredEntitlement: `${P}generation-model-access`,
+        },
+      });
+      const entitlementConfig = await api("GET", "generation/config", {
+        userId,
+        ageGate: true,
+      });
+      expectOk(entitlementConfig);
+      expect(entitlementConfig.data.image).toMatchObject({
+        availability: {
+          state: "unavailable",
+          reason: "entitlement_required",
+        },
+        models: [],
+        orientations: [],
+      });
+      expect(entitlementConfig.data.pricing.image.maxCount).toBeNull();
+      expect(() =>
+        parseGenerationConfigResponse(entitlementConfig),
+      ).not.toThrow();
+    } finally {
+      await prisma.$transaction([
+        ...previousProfiles.map((profile) =>
+          prisma.generationModelProfile.update({
+            where: { id: profile.id },
+            data: {
+              allowedOrientations:
+                profile.allowedOrientations as Prisma.InputJsonValue,
+              enabled: profile.enabled,
+              maxCount: profile.maxCount,
+              requiredEntitlement: profile.requiredEntitlement,
+            },
+          }),
+        ),
+        ...previousRecipes.map((recipe) =>
+          prisma.generationRecipe.update({
+            where: { id: recipe.id },
+            data: { status: recipe.status },
+          }),
+        ),
+      ]);
+    }
   });
 
   it("keeps video visible but disabled by a single feature flag and creates no job", async () => {
@@ -495,23 +1053,60 @@ describe("generation config control plane", () => {
         confirmation: draft.data.profile.id,
       },
     });
-    expectOk(exactPublish);
-    expect(exactPublish.data.profile).toMatchObject({ status: "active", enabled: true, rolloutPercent: 100, version: 2 });
+    expectError(exactPublish, 400, "bad_request");
+    expect(exactPublish.error?.message).toContain("completed profile-test outputs");
+
+    await prisma.generationJob.create({
+      data: {
+        userId: admin,
+        mode: "image",
+        controls: {},
+        presetIds: [],
+        profileId: draft.data.profile.profileKey,
+        profileVersion: draft.data.profile.version,
+        outputCount: 20,
+        deliveredOutputCount: 20,
+        status: "completed",
+        sourceType: "admin_profile_test",
+        sourceId: `${draft.data.profile.id}:verified-publish-evidence`,
+        completedAt: new Date(),
+        finishedAt: new Date(),
+      },
+    });
+    const verifiedPublish = await api("POST", `admin/generation/model-profiles/${draft.data.profile.id}/publish`, {
+      userId: admin,
+      role: "admin",
+      body: {
+        reason: "verified dry run",
+        confirmation: draft.data.profile.id,
+      },
+    });
+    expectOk(verifiedPublish);
+    expect(verifiedPublish.data.profile).toMatchObject({
+      status: "active",
+      enabled: true,
+      rolloutPercent: 100,
+      version: 2,
+      dryRunSummary: expect.objectContaining({
+        profileTestJobCount: 1,
+        profileTestOutputCount: 20,
+      }),
+    });
     expect(await prisma.generationModelProfile.findUnique({ where: { id: `${P}profile-v1` } })).toMatchObject({
       status: "archived",
     });
 
-    const rollback = await api("POST", `admin/generation/model-profiles/${exactPublish.data.profile.id}/rollback`, {
+    const rollback = await api("POST", `admin/generation/model-profiles/${verifiedPublish.data.profile.id}/rollback`, {
       userId: admin,
       role: "admin",
       body: { reason: "regression detected", confirmation: "ROLLBACK" },
     });
     expectError(rollback, 400, "bad_request");
 
-    const exactRollback = await api("POST", `admin/generation/model-profiles/${exactPublish.data.profile.id}/rollback`, {
+    const exactRollback = await api("POST", `admin/generation/model-profiles/${verifiedPublish.data.profile.id}/rollback`, {
       userId: admin,
       role: "admin",
-      body: { reason: "regression detected", confirmation: exactPublish.data.profile.id },
+      body: { reason: "regression detected", confirmation: verifiedPublish.data.profile.id },
     });
     expectOk(exactRollback);
     expect(exactRollback.data).toMatchObject({ fromVersion: 2, toVersion: 1 });
@@ -721,7 +1316,7 @@ describe("generation config control plane", () => {
       },
     });
     expectError(smallSample, 400, "bad_request");
-    expect(smallSample.error?.message).toContain("20 dry-run samples");
+    expect(smallSample.error?.message).toContain("20 reviewed consistency samples");
 
     await prisma.generationModelProfile.update({
       where: { id: draft.id },
@@ -899,6 +1494,54 @@ describe("generation config control plane", () => {
     expect(publish.error?.message).toContain("failureMode");
     await expect(prisma.generationModelProfile.findUnique({ where: { id: draft.id } })).resolves.toMatchObject({
       status: "draft",
+    });
+  });
+
+  it("keeps the stored configuration-check success rate authoritative during publish", async () => {
+    const admin = await setupActor("admin", "profile-publish-success-rate-authority");
+    const draft = await prisma.generationModelProfile.create({
+      data: {
+        id: `${P}profile-failed-config-check`,
+        profileKey: `${P}profile-failed-config-check`,
+        label: "Failed configuration check candidate",
+        mode: "image",
+        runner: "sd_cpp",
+        pipelineModel: "failed-config-check-candidate",
+        allowedOrientations: ["1:1"],
+        version: 1,
+        status: "draft",
+        runnerConfig: {
+          apiModelId: "failed-config-check-candidate",
+          verificationStatus: "manual_passed",
+        },
+        dryRunSummary: {
+          sampleCount: 2,
+          successRate: 0,
+          status: "fail",
+        },
+      },
+    });
+
+    const publish = await api("POST", `admin/generation/model-profiles/${draft.id}/publish`, {
+      userId: admin,
+      role: "admin",
+      body: {
+        reason: "attempt to replace failed configuration evidence",
+        confirmation: draft.id,
+        dryRunSummary: {
+          consistencySampleCount: 20,
+          consistencyPassCount: 20,
+          consistencyRate: 1,
+          successRate: 1,
+        },
+      },
+    });
+
+    expectError(publish, 400, "bad_request");
+    expect(publish.error?.message).toContain("configuration-check pass rate");
+    await expect(prisma.generationModelProfile.findUnique({ where: { id: draft.id } })).resolves.toMatchObject({
+      status: "draft",
+      dryRunSummary: expect.objectContaining({ successRate: 0 }),
     });
   });
 
@@ -1238,7 +1881,7 @@ describe("generation config control plane", () => {
       passed: 0,
       total: 2,
       sampleCount: 2,
-      successRate: 0,
+      configurationPassRate: 0,
       failureMode: "missing_runtime_components",
     });
     expect(JSON.stringify(dryRun.data.dryRun.samples)).toContain("verificationStatus");
@@ -1255,6 +1898,10 @@ describe("generation config control plane", () => {
 
   it("creates zero-cost admin test image jobs for draft model profiles", async () => {
     const admin = await setupActor("admin", "profile-test-job");
+    await prisma.user.update({
+      where: { id: admin },
+      data: { dataClass: "internal" },
+    });
     const beforeBalance = await dreamcoinBalance(admin);
     const draft = await api("POST", "admin/generation/model-profiles", {
       userId: admin,
@@ -1327,7 +1974,9 @@ describe("generation config control plane", () => {
       costDreamcoins: 0,
       provider: "sd_cpp",
       orientation: "4:5",
+      sourceType: "admin_profile_test",
     });
+    expect(stored.sourceId).toMatch(new RegExp(`^${draft.data.profile.id}:`));
     expect(stored.controls).toMatchObject({
       adminTest: true,
       width: 768,
@@ -1351,6 +2000,21 @@ describe("generation config control plane", () => {
     expect(completed.assets).toHaveLength(1);
     expect(completed.assets[0]?.url).toContain("/user-content/");
     expect(await dreamcoinBalance(admin)).toBe(beforeBalance);
+
+    const repeatedQueued = await api("POST", `admin/generation/model-profiles/${draft.data.profile.id}/test-job`, {
+      userId: admin,
+      role: "admin",
+      body: {
+        prompt: "second independent verification image",
+        orientation: "1:1",
+        outputCount: 1,
+        reason: "accumulate real publish evidence",
+        confirmation: draft.data.profile.id,
+      },
+    });
+    expectOk(repeatedQueued, 202);
+    expect(repeatedQueued.data.job.id).not.toBe(exactQueued.data.job.id);
+    await runQueuedGenerationJobs(8);
 
     const list = await api("GET", "admin/generation/jobs", {
       userId: admin,
@@ -1424,7 +2088,7 @@ describe("generation config control plane", () => {
     }
   });
 
-  it("runs content production batches through asset review and placement history", async () => {
+  it("runs content production while enforcing Creative review and verified placement authority", async () => {
     const admin = await setupActor("admin", "content-production");
     const support = await setupActor("support", "content-production");
     const character = await createCharacter({
@@ -1434,24 +2098,16 @@ describe("generation config control plane", () => {
       visibility: "public",
       status: "approved",
     });
-    await prisma.characterVisualProfile.create({
+    const variationReference = await prisma.mediaAsset.create({
       data: {
-        id: `${P}production-visual-profile-v1`,
+        id: `${P}production-variation-reference`,
+        ownerId: admin,
         characterId: character.id,
-        version: 1,
-        status: "active",
-        style: "realistic",
-        identityPrompt: "same adult woman, amber eyes, long dark hair",
-        negativeIdentityPrompt: "different face, different hair color",
-        faceTraits: {},
-        hairTraits: {},
-        bodyTraits: {},
-        signatureTraits: {},
-        styleTraits: {},
-        anchorAssetIds: [],
-        referenceAssetIds: [],
-        adapterRefs: {},
-        createdFrom: "test",
+        type: "image",
+        url: `https://assets.test/${P}production-variation-reference.webp`,
+        contentType: "image/webp",
+        safetyStatus: "passed",
+        metadata: {},
       },
     });
     await prisma.generationModelProfile.create({
@@ -1461,8 +2117,18 @@ describe("generation config control plane", () => {
         label: "Production profile",
         mode: "image",
         runner: "pipeline",
-        pipelineModel: "mock-image",
-        runnerConfig: { workflowVersion: 1 },
+        pipelineModel: "qwen-image-edit",
+        workflowKey: "qwen-image-edit-img2img",
+        runnerConfig: {
+          workflowVersion: 1,
+          capabilities: {
+            textToImage: false,
+            stableSeed: true,
+            referenceImages: true,
+            initImage: true,
+            lora: false,
+          },
+        },
         allowedOrientations: ["1:1", "4:5"],
         defaultWidth: 768,
         defaultHeight: 1024,
@@ -1471,6 +2137,13 @@ describe("generation config control plane", () => {
         dryRunSummary: { sampleCount: 1 },
         publishedAt: new Date(),
       },
+    });
+    await seedCharacterAssetAuthority({
+      actorId: admin,
+      characterId: character.id,
+      generationProfileKey: `${P}production-profile`,
+      anchorAssetId: variationReference.id,
+      visualProfileId: `${P}production-visual-profile-v1`,
     });
     await prisma.generationRecipe.create({
       data: {
@@ -1490,6 +2163,10 @@ describe("generation config control plane", () => {
         publishedAt: new Date(),
       },
     });
+    await prisma.pricingRule.updateMany({
+      where: { mode: "image", status: "active" },
+      data: { status: "archived", archivedAt: new Date() },
+    });
     await prisma.pricingRule.create({
       data: {
         id: `${P}image-pricing-v1`,
@@ -1504,6 +2181,9 @@ describe("generation config control plane", () => {
         publishedAt: new Date(),
       },
     });
+    await expect(prisma.characterContentVersion.count({
+      where: { characterId: character.id },
+    })).resolves.toBe(0);
 
     const forbidden = await api("POST", "admin/content/production/batches", {
       userId: support,
@@ -1519,7 +2199,7 @@ describe("generation config control plane", () => {
     });
     expectError(forbidden, 403);
 
-    const created = await api("POST", "admin/content/production/batches", {
+    const retired = await api("POST", "admin/content/production/batches", {
       userId: admin,
       role: "admin",
       body: {
@@ -1534,6 +2214,32 @@ describe("generation config control plane", () => {
         brief: "Two cover candidates",
         consistencyMode: "strict",
         reason: "seed production batch",
+      },
+    });
+    expectError(retired, 410, "gone");
+    expect(retired.error?.details).toMatchObject({
+      replacementApi: "/api/v2/admin/creative/runs",
+      deepLink: "/admin/creative/runs",
+    });
+
+    const created = await createCreativeRunThroughV2({
+      userId: admin,
+      role: "admin",
+      body: {
+        title: `${P}production-batch`,
+        purpose: "character_chat",
+        targetType: "character",
+        targetId: character.id,
+        profileId: `${P}production-profile`,
+        recipeId: `${P}production-recipe`,
+        presetIds: [],
+        referenceAssetIds: [],
+        orientation: "4:5",
+        count: 2,
+        brief: "Two cover candidates",
+        consistencyMode: "strict",
+        priority: "normal",
+        reason: "seed production batch through the canonical Creative Run API",
       },
     });
     expectOk(created, 202);
@@ -1564,6 +2270,7 @@ describe("generation config control plane", () => {
       visualProfileId: `${P}production-visual-profile-v1`,
       visualProfileVersion: 1,
       consistencyMode: "strict",
+      referenceAssetIds: [variationReference.id],
     });
     expect(jobs[0]?.prompt).toContain("Locked identity: same adult woman");
     expect(jobs[0]?.negativePrompt).toContain("different face");
@@ -1572,6 +2279,7 @@ describe("generation config control plane", () => {
       visualIdentity: expect.objectContaining({
         visualProfileId: `${P}production-visual-profile-v1`,
         visualProfileVersion: 1,
+        referenceAssetIds: [variationReference.id],
       }),
     });
     expect(jobs[0]?.sourceMeta).toMatchObject({
@@ -1579,6 +2287,7 @@ describe("generation config control plane", () => {
       purpose: "character_chat",
       targetType: "character",
       targetId: character.id,
+      characterContentVersionId: null,
     });
     const initialAttempts = await prisma.generationAttempt.findMany({
       where: { requestId: { in: jobs.map((job) => job.id) } },
@@ -1655,7 +2364,11 @@ describe("generation config control plane", () => {
         confirmation: approveItemId,
       },
     });
-    expectOk(approve);
+    expectError(approve, 409, "conflict");
+    expect(approve.error?.details).toMatchObject({
+      code: "creative_run_review_required",
+      repairPath: `/admin/creative/runs/${created.data.batch.id}`,
+    });
     const reject = await api("POST", `admin/content/production/items/${rejectItemId}/reject`, {
       userId: admin,
       role: "admin",
@@ -1665,7 +2378,11 @@ describe("generation config control plane", () => {
         confirmation: rejectItemId,
       },
     });
-    expectOk(reject);
+    expectError(reject, 409, "conflict");
+    expect(reject.error?.details).toMatchObject({
+      code: "creative_run_review_required",
+      repairPath: `/admin/creative/runs/${created.data.batch.id}`,
+    });
     const legacyRetry = await api(
       "POST",
       `admin/content/production/items/${rejectItemId}/regenerate`,
@@ -1684,18 +2401,54 @@ describe("generation config control plane", () => {
       repairPath: `/admin/creative/runs/${created.data.batch.id}`,
     });
 
-    const assetId = approve.data.item.asset.id as string;
+    const assetId = generatedItems[0]?.asset?.id as string;
+    const libraryApprove = await api("PATCH", `admin/content/assets/${assetId}`, {
+      userId: admin,
+      role: "admin",
+      body: {
+        status: "approved",
+        reason: "attempt to bypass immutable Creative review",
+        confirmation: assetId,
+      },
+    });
+    expectError(libraryApprove, 409, "conflict");
+    expect(libraryApprove.error?.details).toMatchObject({
+      code: "creative_run_review_required",
+      repairPath: `/admin/creative/runs/${created.data.batch.id}`,
+    });
+    const libraryReject = await api("PATCH", `admin/content/assets/${assetId}`, {
+      userId: admin,
+      role: "admin",
+      body: {
+        status: "rejected",
+        reason: "attempt to bypass immutable Creative review",
+        confirmation: assetId,
+      },
+    });
+    expectError(libraryReject, 409, "conflict");
+
+    const metadataSave = await api("PATCH", `admin/content/assets/${assetId}`, {
+      userId: admin,
+      role: "admin",
+      body: {
+        tags: ["cover", "winner"],
+        description: "Reusable sunset selfie for chat retrieval",
+        reason: "curate searchable Image Library metadata",
+        confirmation: assetId,
+      },
+    });
+    expectOk(metadataSave);
     const assets = await api("GET", "admin/content/assets", {
       userId: admin,
       role: "admin",
-      query: { status: "approved", purpose: "character_chat" },
+      query: { status: "generated", purpose: "character_chat" },
     });
     expectOk(assets);
     expect(assets.data.items).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           id: assetId,
-          platformStatus: "approved",
+          platformStatus: "generated",
           purpose: "character_chat",
           tags: ["cover", "winner"],
           description: "Reusable sunset selfie for chat retrieval",
@@ -1705,7 +2458,19 @@ describe("generation config control plane", () => {
     );
     const assetDetail = await api("GET", `admin/content/assets/${assetId}`, { userId: admin, role: "admin" });
     expectOk(assetDetail);
-    expect(assetDetail.data.asset).toMatchObject({ id: assetId, platformStatus: "approved" });
+    expect(assetDetail.data.asset).toMatchObject({
+      id: assetId,
+      platformStatus: "generated",
+      authorityDependencies: [
+        expect.objectContaining({
+          kind: "creative_run_asset",
+          runId: created.data.batch.id,
+          itemId: approveItemId,
+          status: "generated",
+          repairPath: `/admin/creative/runs/${created.data.batch.id}`,
+        }),
+      ],
+    });
 
     const placement = await api("POST", "admin/content/placements", {
       userId: admin,
@@ -1719,16 +2484,20 @@ describe("generation config control plane", () => {
         reason: "publish approved cover",
       },
     });
-    expectOk(placement);
-    expect(placement.data.placement).toMatchObject({
-      mediaAssetId: assetId,
-      slot: "feed_card",
-      targetId: character.id,
-      status: "published",
+    expectError(placement, 400, "bad_request");
+    const draftPlacement = await api("POST", "admin/content/placements", {
+      userId: admin,
+      role: "admin",
+      body: {
+        mediaAssetId: assetId,
+        slot: "feed_card",
+        targetType: "character",
+        targetId: character.id,
+        status: "draft",
+        reason: "attempt to stage a projected approval without immutable review evidence",
+      },
     });
-    const placementDetail = await api("GET", `admin/content/placements/${placement.data.placement.id}`, { userId: admin, role: "admin" });
-    expectOk(placementDetail);
-    expect(placementDetail.data.placement).toMatchObject({ id: placement.data.placement.id, mediaAssetId: assetId });
+    expectError(draftPlacement, 400, "bad_request");
 
     const audits = await prisma.adminAuditLog.findMany({
       where: {
@@ -1736,6 +2505,7 @@ describe("generation config control plane", () => {
         action: {
           in: [
             "content.production.batch.create",
+            "content.asset.update",
             "content.production.item.approve",
             "content.production.item.reject",
             "content.placement.publish",
@@ -1744,8 +2514,10 @@ describe("generation config control plane", () => {
       },
     });
     expect(audits.map((audit) => audit.action)).toEqual(
+      expect.arrayContaining(["content.production.batch.create", "content.asset.update"]),
+    );
+    expect(audits.map((audit) => audit.action)).not.toEqual(
       expect.arrayContaining([
-        "content.production.batch.create",
         "content.production.item.approve",
         "content.production.item.reject",
         "content.placement.publish",
@@ -1770,8 +2542,18 @@ describe("generation config control plane", () => {
         label: "Pregen profile",
         mode: "image",
         runner: "pipeline",
-        pipelineModel: "mock-image",
-        runnerConfig: { workflowVersion: 1 },
+        pipelineModel: "qwen-image-edit",
+        workflowKey: "qwen-image-edit-img2img",
+        runnerConfig: {
+          workflowVersion: 1,
+          capabilities: {
+            textToImage: false,
+            stableSeed: true,
+            referenceImages: true,
+            initImage: true,
+            lora: false,
+          },
+        },
         allowedOrientations: ["4:5"],
         defaultWidth: 768,
         defaultHeight: 1024,
@@ -1780,6 +2562,11 @@ describe("generation config control plane", () => {
         dryRunSummary: { sampleCount: 1 },
         publishedAt: new Date(),
       },
+    });
+    await seedCharacterAssetAuthority({
+      actorId: admin,
+      characterId: character.id,
+      generationProfileKey: `${P}pregen-profile`,
     });
     await prisma.generationRecipe.create({
       data: {
@@ -1799,6 +2586,9 @@ describe("generation config control plane", () => {
         publishedAt: new Date(),
       },
     });
+    await expect(prisma.characterContentVersion.count({
+      where: { characterId: character.id },
+    })).resolves.toBe(0);
 
     const forbidden = await api("POST", `admin/content/characters/${character.id}/pregen`, {
       userId: support,
@@ -1812,12 +2602,29 @@ describe("generation config control plane", () => {
       role: "admin",
       body: { pack: "poster", profileId: `${P}pregen-profile` },
     });
-    expectError(badPack, 400);
+    expectError(badPack, 410, "gone");
+    expect(badPack.error?.details).toMatchObject({
+      replacementApi: "/api/v2/admin/creative/runs",
+      deepLink: `/admin/characters/${character.id}?tab=assets`,
+    });
 
-    const cover = await api("POST", `admin/content/characters/${character.id}/pregen`, {
+    const cover = await createCreativeRunThroughV2({
       userId: admin,
       role: "admin",
-      body: { pack: "cover", profileId: `${P}pregen-profile`, reason: "pregen cover pack" },
+      body: {
+        title: `${character.name} cover pack`,
+        purpose: "character_cover",
+        targetType: "character",
+        targetId: character.id,
+        profileId: `${P}pregen-profile`,
+        presetIds: [],
+        referenceAssetIds: [],
+        count: 4,
+        brief: "Create a reviewed primary portrait pack",
+        consistencyMode: "balanced",
+        priority: "normal",
+        reason: "Create the cover pack through Character Asset Studio authority",
+      },
     });
     expectOk(cover, 202);
     expect(cover.data.batch).toMatchObject({
@@ -1828,11 +2635,41 @@ describe("generation config control plane", () => {
       status: "queued",
     });
     expect(cover.data.batch.estimatedCostDreamcoins).toBeGreaterThan(0);
+    const coverItemIds = cover.data.batch.items.map(
+      (item: { id: string }) => item.id,
+    );
+    const coverJobs = await prisma.generationJob.findMany({
+      where: {
+        sourceType: "content_production_item",
+        sourceId: { in: coverItemIds },
+      },
+    });
+    expect(coverJobs).toHaveLength(4);
+    expect(coverJobs).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        sourceMeta: expect.objectContaining({
+          characterContentVersionId: null,
+        }),
+      }),
+    ]));
 
-    const chat = await api("POST", `admin/content/characters/${character.id}/pregen`, {
+    const chat = await createCreativeRunThroughV2({
       userId: admin,
       role: "admin",
-      body: { pack: "chat", profileId: `${P}pregen-profile`, count: 2, reason: "pregen chat pack" },
+      body: {
+        title: `${character.name} chat pack`,
+        purpose: "character_chat",
+        targetType: "character",
+        targetId: character.id,
+        profileId: `${P}pregen-profile`,
+        presetIds: [],
+        referenceAssetIds: [],
+        count: 2,
+        brief: "Create two reviewed conversational images",
+        consistencyMode: "balanced",
+        priority: "normal",
+        reason: "Create the chat pack through Character Asset Studio authority",
+      },
     });
     expectOk(chat, 202);
     expect(chat.data.batch).toMatchObject({ purpose: "character_chat", totalItems: 2 });
@@ -1851,7 +2688,7 @@ describe("generation config control plane", () => {
       role: "admin",
       body: { pack: "cover", profileId: `${P}pregen-profile` },
     });
-    expectError(missing, 400);
+    expectError(missing, 410, "gone");
   });
 
   it("prevents the legacy pregen placement path from bypassing Character Release authority", async () => {
@@ -1870,9 +2707,19 @@ describe("generation config control plane", () => {
         label: "Pregen e2e profile",
         mode: "image",
         runner: "pipeline",
-        pipelineModel: "mock-image",
-        // A distinct workflowKey lets us assert the job actually carries it (Step 3b).
+        pipelineModel: "redcraft-krea2-txt2img",
+        // This test intentionally stays on the first-portrait bootstrap path.
         workflowKey: "redcraft-krea2-txt2img",
+        runnerConfig: {
+          workflowVersion: 1,
+          capabilities: {
+            textToImage: true,
+            stableSeed: true,
+            referenceImages: false,
+            initImage: false,
+            lora: false,
+          },
+        },
         allowedOrientations: ["4:5"],
         defaultWidth: 768,
         defaultHeight: 1024,
@@ -1880,6 +2727,29 @@ describe("generation config control plane", () => {
         status: "active",
         dryRunSummary: { sampleCount: 1 },
         publishedAt: new Date(),
+      },
+    });
+    await prisma.characterProject.create({
+      data: {
+        id: `${P}pregen-e2e-project`,
+        characterId: character.id,
+        phase: "producing",
+        audience: {},
+        successCriteria: ["First portrait establishes identity"],
+        activeKey: `${P}pregen-e2e-project`,
+      },
+    });
+    await prisma.characterContentVersion.create({
+      data: {
+        id: `${P}pregen-e2e-content-v1`,
+        characterId: character.id,
+        version: 1,
+        contentHash: `${P}pregen-e2e-content-hash-v1`,
+        personaSnapshot: { name: character.name },
+        openingSnapshot: { firstMessage: "Hello" },
+        appearanceSnapshot: { style: "realistic", identityAnchor: "first portrait" },
+        sourceType: "admin_console_test",
+        createdById: admin,
       },
     });
     await prisma.generationRecipe.create({
@@ -1901,15 +2771,25 @@ describe("generation config control plane", () => {
       },
     });
 
-    const cover = await api("POST", `admin/content/characters/${character.id}/pregen`, {
+    const cover = await createCreativeRunThroughV2({
       userId: admin,
       role: "admin",
       body: {
-        pack: "cover",
+        title: `${character.name} first portrait`,
+        purpose: "character_cover",
+        targetType: "character",
+        targetId: character.id,
         profileId: `${P}pregen-e2e-profile`,
         recipeId: `${P}pregen-e2e-recipe`,
+        presetIds: [],
+        referenceAssetIds: [],
+        bootstrapIdentity: true,
+        orientation: "4:5",
         count: 1,
-        reason: "pregen e2e cover pack",
+        brief: "Create the reviewed first portrait that defines identity",
+        consistencyMode: "balanced",
+        priority: "normal",
+        reason: "Create the first portrait through Character Asset Studio authority",
       },
     });
     expectOk(cover, 202);
@@ -1925,6 +2805,10 @@ describe("generation config control plane", () => {
     });
     expect(jobs).toHaveLength(1);
     expect(jobs[0].model).toBe("redcraft-krea2-txt2img");
+    expect(jobs[0].sourceMeta).toMatchObject({
+      bootstrapIdentity: true,
+      characterContentVersionId: `${P}pregen-e2e-content-v1`,
+    });
 
     // A generous limit: earlier tests in this file enqueue jobs of their own without
     // draining them, so this drain call also flushes that backlog before reaching ours.
@@ -1946,7 +2830,11 @@ describe("generation config control plane", () => {
       role: "admin",
       body: { reason: "approve pregen cover", confirmation: item.id },
     });
-    expectOk(approve);
+    expectError(approve, 409, "conflict");
+    expect(approve.error?.details).toMatchObject({
+      code: "creative_run_review_required",
+      repairPath: `/admin/creative/runs/${batchId}`,
+    });
 
     const placementCreate = await api("POST", "admin/content/placements", {
       userId: admin,
@@ -1970,7 +2858,7 @@ describe("generation config control plane", () => {
       imageAssetId: null,
     });
     await expect(prisma.contentProductionItem.findUnique({ where: { id: item.id } })).resolves.toMatchObject({
-      status: "approved",
+      status: "generated",
     });
     await expect(prisma.mediaAssetPlacement.count({
       where: { mediaAssetId, slot: "character_avatar" },
@@ -1979,13 +2867,6 @@ describe("generation config control plane", () => {
 
   it("does not credit the operator's ledger when a production job fails or is blocked", async () => {
     const admin = await setupActor("admin", "production-refund-guard");
-    const character = await createCharacter({
-      id: `${P}production-refund-character`,
-      creatorId: admin,
-      name: "Production Refund Character",
-      visibility: "public",
-      status: "approved",
-    });
     await prisma.generationModelProfile.create({
       data: {
         id: `${P}production-refund-profile-v1`,
@@ -1993,8 +2874,12 @@ describe("generation config control plane", () => {
         label: "Production refund profile",
         mode: "image",
         runner: "pipeline",
-        pipelineModel: "mock-image",
-        runnerConfig: { workflowVersion: 1 },
+        pipelineModel: "redcraft-krea2-txt2img",
+        workflowKey: "redcraft-krea2-txt2img",
+        runnerConfig: {
+          workflowVersion: 1,
+          capabilities: { textToImage: true },
+        },
         allowedOrientations: ["4:5"],
         defaultWidth: 768,
         defaultHeight: 1024,
@@ -2010,7 +2895,7 @@ describe("generation config control plane", () => {
         recipeKey: `${P}production-refund-recipe`,
         label: "Production refund recipe",
         mode: "image",
-        useCase: "character",
+        useCase: "freeplay",
         body: "Production refund recipe body.",
         negativeBase: "low quality",
         presetOrder: [],
@@ -2021,6 +2906,10 @@ describe("generation config control plane", () => {
         dryRunSummary: { sampleCount: 1 },
         publishedAt: new Date(),
       },
+    });
+    await prisma.pricingRule.updateMany({
+      where: { mode: "image", status: "active" },
+      data: { status: "archived", archivedAt: new Date() },
     });
     await prisma.pricingRule.create({
       data: {
@@ -2037,19 +2926,20 @@ describe("generation config control plane", () => {
       },
     });
 
-    const created = await api("POST", "admin/content/production/batches", {
+    const created = await createCreativeRunThroughV2({
       userId: admin,
       role: "admin",
       body: {
         title: `${P}production-refund-batch`,
-        purpose: "character_chat",
-        targetType: "character",
-        targetId: character.id,
+        purpose: "model_eval",
+        targetType: "none",
         profileId: `${P}production-refund-profile`,
         recipeId: `${P}production-refund-recipe`,
         orientation: "4:5",
         count: 2,
         brief: "Force one failure, one moderation block",
+        consistencyMode: "balanced",
+        priority: "normal",
         reason: "verify ops jobs never credit the ledger on refund",
       },
     });
@@ -2481,6 +3371,18 @@ describe("pricing control plane", () => {
     });
     expectError(publish, 400, "bad_request");
 
+    const futurePublish = await api("POST", `admin/pricing/rules/${draft.data.rule.id}/publish`, {
+      userId: admin,
+      role: "admin",
+      body: {
+        reason: "unsupported scheduled price",
+        confirmation: draft.data.rule.id,
+        effectiveFrom: new Date(Date.now() + 86_400_000).toISOString(),
+      },
+    });
+    expectError(futurePublish, 400, "bad_request");
+    expect(futurePublish.error?.message).toContain("effectiveFrom cannot be in the future");
+
     const exactPublish = await api("POST", `admin/pricing/rules/${draft.data.rule.id}/publish`, {
       userId: admin,
       role: "admin",
@@ -2654,7 +3556,7 @@ describe("admin writes are audited", () => {
   it("does not discard completed generation jobs", async () => {
     const admin = await setupActor("admin", "discard");
     const target = `${P}discard-user`;
-    await createUser({ id: target });
+    await createUser({ id: target, dataClass: "customer" });
     await prisma.generationJob.create({
       data: {
         id: `${P}completed-job`,
@@ -2701,7 +3603,7 @@ describe("dead-letter operations console", () => {
     const ops = await setupActor("ops", "dl-list");
     const analyst = await setupActor("analyst", "dl-list");
     const owner = `${P}dl-owner`;
-    await createUser({ id: owner });
+    await createUser({ id: owner, dataClass: "customer" });
     await makeJob(`${P}dl-failed`, owner, "failed", 10, "provider_timeout");
     await makeJob(`${P}dl-blocked`, owner, "blocked", 10);
     await makeJob(`${P}dl-done`, owner, "completed", 10);
@@ -2723,7 +3625,7 @@ describe("dead-letter operations console", () => {
   it("batch requeues failed jobs, skips refunded/missing, writes one audit", async () => {
     const admin = await setupActor("admin", "dl-requeue");
     const owner = `${P}dl-rq-owner`;
-    await createUser({ id: owner });
+    await createUser({ id: owner, dataClass: "customer" });
     await makeJob(`${P}dl-rq-failed`, owner, "failed", 5);
     await prisma.generationAttempt.create({
       data: {
@@ -2803,7 +3705,7 @@ describe("dead-letter operations console", () => {
   it("batch discards with idempotent refund and writes one audit", async () => {
     const admin = await setupActor("admin", "dl-discard");
     const owner = `${P}dl-dc-owner`;
-    await createUser({ id: owner });
+    await createUser({ id: owner, dataClass: "customer" });
     await makeJob(`${P}dl-dc-failed`, owner, "failed", 8);
     await makeJob(`${P}dl-dc-refunded`, owner, "blocked", 8);
     await prisma.dreamcoinLedger.createMany({ data: [
@@ -2870,7 +3772,7 @@ describe("generation and Creative Run truth containment", () => {
   it("keeps failed legacy completedAt out of the success timeline and retry set", async () => {
     const admin = await setupActor("admin", "generation-truth");
     const owner = `${P}generation-truth-owner`;
-    await createUser({ id: owner });
+    await createUser({ id: owner, dataClass: "customer" });
     const failedAt = new Date("2026-01-02T03:04:05.000Z");
     const failedJob = await prisma.generationJob.create({
       data: {
@@ -3043,7 +3945,7 @@ describe("billing operations", () => {
     const support = await setupActor("support", "billing-subs");
     const ops = await setupActor("ops", "billing-subs");
     const owner = `${P}sub-owner`;
-    await createUser({ id: owner });
+    await createUser({ id: owner, dataClass: "customer" });
     // 复用 seed 的 premium 套餐，避免 (slug, billingPeriod) 唯一约束碰撞。
     const plan = await prisma.plan.findFirstOrThrow({ where: { slug: "premium" } });
     await prisma.subscription.create({
@@ -3066,6 +3968,10 @@ describe("billing operations", () => {
       query: { userId: owner },
     });
     expectOk(list);
+    expect(list.data.dataScope).toMatchObject({
+      kind: "customer",
+      includedDataClasses: ["customer"],
+    });
     expect(list.data.items).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -3709,7 +4615,16 @@ describe("admin content/character governance (F2)", () => {
     const admin = await setupActor("admin", "content");
     const ops = await setupActor("ops", "content"); // lacks content.read
     const charId = `${P}gov-char`;
-    await createCharacter({ id: charId, name: "Governable", visibility: "public", status: "approved" });
+    const ownerId = `${P}gov-owner`;
+    await createUser({ id: ownerId, dataClass: "customer" });
+    await createCharacter({
+      id: charId,
+      creatorId: ownerId,
+      name: "Governable",
+      source: "user",
+      visibility: "public",
+      status: "approved",
+    });
 
     // ops lacks content.read → 403 on both read and write.
     expectError(await api("GET", "admin/content/characters", { userId: ops, role: "ops" }), 403);
@@ -3856,7 +4771,7 @@ describe("admin featured curation (F3)", () => {
     await prisma.appSetting.deleteMany({ where: { key: "feed.featured" } });
   });
 
-  it("only keeps public+approved ids and surfaces them first in the public feed", async () => {
+  it("keeps configurable ids while only surfacing runtime-effective ids in the public feed", async () => {
     const admin = await setupActor("admin", "feat");
     const user = await setupActor("user", "feat");
     const hot = `${P}feat-hot`;
@@ -3865,25 +4780,52 @@ describe("admin featured curation (F3)", () => {
     await createCharacter({ id: hot, name: "Hot", chats: 999, visibility: "public", status: "approved" });
     await createCharacter({ id: cold, name: "Cold", chats: 0, visibility: "public", status: "approved" });
     await createCharacter({ id: priv, name: "Priv", visibility: "private", status: "draft" });
+    await seedEditorialPublicCharacterAuthority({
+      characterId: hot,
+      ownerId: admin,
+    });
+    await seedEditorialPublicCharacterAuthority({
+      characterId: cold,
+      ownerId: admin,
+    });
 
-    // Feature the cold (low-traffic) one + a private one; private must be dropped.
+    // Save both the currently live Character and the temporarily ineligible
+    // private draft. Runtime eligibility must not rewrite operator intent.
+    const beforePut = await api("GET", "admin/content/featured", {
+      userId: admin,
+      role: "admin",
+    });
+    expectOk(beforePut);
     const put = await api("PUT", "admin/content/featured", {
       userId: admin,
       role: "admin",
-      body: { characterIds: [cold, priv], reason: "promo push", confirmation: `${cold},${priv}` },
+      body: {
+        characterIds: [cold, priv],
+        expectedVersion: beforePut.data.settingVersion,
+        reason: "promo push",
+        confirmation: `${cold},${priv}`,
+      },
     });
     expectOk(put);
-    expect(put.data.characterIds).toEqual([cold]);
-    expect(put.data.skipped).toContain(priv);
+    expect(put.data.characterIds).toEqual([cold, priv]);
+    expect(put.data.configuredCharacterIds).toEqual([cold, priv]);
+    expect(put.data.effectiveCharacterIds).toEqual([cold]);
+    expect(put.data.skipped).toEqual([]);
+    expect(put.data.invalid).toEqual([]);
 
     const wrongConfirmation = await api("PUT", "admin/content/featured", {
       userId: admin,
       role: "admin",
-      body: { characterIds: [hot], reason: "wrong confirmation", confirmation: "FEATURED" },
+      body: {
+        characterIds: [hot],
+        expectedVersion: put.data.settingVersion,
+        reason: "wrong confirmation",
+        confirmation: "FEATURED",
+      },
     });
     expectError(wrongConfirmation, 400, "bad_request");
     const settingAfterWrong = await prisma.appSetting.findUniqueOrThrow({ where: { key: "feed.featured" } });
-    expect((settingAfterWrong.value as { characterIds?: string[] }).characterIds).toEqual([cold]);
+    expect((settingAfterWrong.value as { characterIds?: string[] }).characterIds).toEqual([cold, priv]);
 
     // Public feed: the featured public+approved character appears first; private picks are absent.
     const feed = await api("GET", "feed", { userId: user, role: "user", ageGate: true });
@@ -4201,21 +5143,70 @@ describe("admin CMS / SEO (T1)", () => {
       body: {
         path,
         title: "AI Girlfriend Guide",
-        description: "Everything about AI companions.",
-        body: { heading: "Guide", sections: [{ heading: "Intro", paragraphs: ["Hello."] }] },
-        contentStatus: "draft",
+        description:
+          "A complete editorial guide to creating, reviewing, and publishing trustworthy AI companions.",
+        body: {
+          heading: "AI Girlfriend Guide",
+          intro:
+            "This guide explains how to define a companion clearly, validate the draft, and publish only a complete experience.",
+          sections: [
+            {
+              heading: "Define the companion",
+              paragraphs: [
+                "Start with a specific relationship promise, stable personality traits, and an opening message that sets expectations.",
+              ],
+            },
+            {
+              heading: "Validate before publishing",
+              paragraphs: [
+                "Review the complete draft and its public presentation so an incomplete or stale version never reaches customers.",
+              ],
+            },
+          ],
+        },
         reason: "seed cms page",
         confirmation: path,
       },
     });
     expectOk(created);
+    expect(created.data.page).toMatchObject({
+      contentStatus: "draft",
+      contentSchemaVersion: null,
+      publishedAt: null,
+      editable: true,
+      publishability: "ready",
+    });
+    const createdUpdatedAt = created.data.page.updatedAt as string;
+
+    expectError(
+      await api("POST", "admin/cms/pages", {
+        userId: admin,
+        role: "admin",
+        body: {
+          path: `/${P}cms-direct-publish`,
+          title: "Direct publish is forbidden",
+          description:
+            "A complete description that still cannot bypass the CMS draft publication authority.",
+          contentStatus: "published",
+          reason: "attempt direct publish",
+          confirmation: `/${P}cms-direct-publish`,
+        },
+      }),
+      400,
+    );
 
     // bad confirmation → 400
     expectError(
       await api("PATCH", "admin/cms/pages", {
         userId: admin,
         role: "admin",
-        body: { path, title: "Y", reason: "valid edit reason", confirmation: "CMS" },
+        body: {
+          path,
+          title: "Y",
+          expectedUpdatedAt: createdUpdatedAt,
+          reason: "valid edit reason",
+          confirmation: "CMS",
+        },
       }),
       400,
     );
@@ -4223,16 +5214,59 @@ describe("admin CMS / SEO (T1)", () => {
     const patched = await api("PATCH", "admin/cms/pages", {
       userId: admin,
       role: "admin",
-      body: { path, title: "AI Girlfriend Guide Updated", reason: "valid edit reason", confirmation: path },
+      body: {
+        path,
+        title: "AI Girlfriend Guide Updated",
+        expectedUpdatedAt: createdUpdatedAt,
+        reason: "valid edit reason",
+        confirmation: path,
+      },
     });
     expectOk(patched);
     expect(patched.data.page.title).toBe("AI Girlfriend Guide Updated");
+    const patchedUpdatedAt = patched.data.page.updatedAt as string;
+
+    expectError(
+      await api("PATCH", "admin/cms/pages", {
+        userId: admin,
+        role: "admin",
+        body: {
+          path,
+          title: "Stale overwrite",
+          expectedUpdatedAt: createdUpdatedAt,
+          reason: "stale edit attempt",
+          confirmation: path,
+        },
+      }),
+      409,
+    );
 
     expectError(
       await api("POST", "admin/cms/pages/publish", {
         userId: admin,
         role: "admin",
-        body: { path, contentStatus: "published", reason: "go live", confirmation: "PUBLISH" },
+        body: {
+          path,
+          contentStatus: "published",
+          expectedUpdatedAt: createdUpdatedAt,
+          reason: "stale publish attempt",
+          confirmation: path,
+        },
+      }),
+      409,
+    );
+
+    expectError(
+      await api("POST", "admin/cms/pages/publish", {
+        userId: admin,
+        role: "admin",
+        body: {
+          path,
+          contentStatus: "published",
+          expectedUpdatedAt: patchedUpdatedAt,
+          reason: "go live",
+          confirmation: "PUBLISH",
+        },
       }),
       400,
     );
@@ -4240,14 +5274,60 @@ describe("admin CMS / SEO (T1)", () => {
     const published = await api("POST", "admin/cms/pages/publish", {
       userId: admin,
       role: "admin",
-      body: { path, contentStatus: "published", reason: "go live", confirmation: path },
+      body: {
+        path,
+        contentStatus: "published",
+        expectedUpdatedAt: patchedUpdatedAt,
+        reason: "go live",
+        confirmation: path,
+      },
     });
     expectOk(published);
     expect(published.data.page.contentStatus).toBe("published");
+    expect(published.data.page.contentSchemaVersion).toBe(1);
+    expect(published.data.page.publishedAt).toBeTruthy();
+    expect(published.data.page.editable).toBe(false);
+    const publishedUpdatedAt = published.data.page.updatedAt as string;
+
+    expectError(
+      await api("PATCH", "admin/cms/pages", {
+        userId: admin,
+        role: "admin",
+        body: {
+          path,
+          title: "Published pages cannot be edited",
+          expectedUpdatedAt: publishedUpdatedAt,
+          reason: "invalid published edit",
+          confirmation: path,
+        },
+      }),
+      409,
+    );
 
     const got = await api("GET", "admin/cms/pages", { userId: admin, role: "admin", query: { path } });
     expectOk(got);
     expect(got.data.page.title).toBe("AI Girlfriend Guide Updated");
+    expect(got.data.page.publishability).toBe("ready");
+
+    const unpublished = await api("POST", "admin/cms/pages/publish", {
+      userId: admin,
+      role: "admin",
+      body: {
+        path,
+        contentStatus: "draft",
+        expectedUpdatedAt: publishedUpdatedAt,
+        reason: "return to draft",
+        confirmation: path,
+      },
+    });
+    expectOk(unpublished);
+    expect(unpublished.data.page).toMatchObject({
+      contentStatus: "draft",
+      contentSchemaVersion: null,
+      indexingStatus: "noindex",
+      publishedAt: null,
+      editable: true,
+    });
 
     const audit = await prisma.adminAuditLog.findFirst({
       where: { action: "cms.page.publish", targetId: path },

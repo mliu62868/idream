@@ -61,6 +61,24 @@ export function billingAdjustmentConfirmation(userId: string, delta: number) {
   return `${userId.trim()}:${delta}`;
 }
 
+export function billingRefundAcknowledgementConfirmation(checkoutId: string) {
+  return `${checkoutId.trim()}:refund_acknowledged`;
+}
+
+export function isRefundAcknowledgementCandidate(
+  checkout: Readonly<Record<string, unknown>>,
+) {
+  return (
+    checkout.status === "provider_unknown" &&
+    checkout.failureCode ===
+      "provider_invoice_settled_after_abandonment" &&
+    checkout.needsReconciliation === true &&
+    checkout.providerInvoiceStatus === "settled" &&
+    typeof checkout.providerSessionId === "string" &&
+    checkout.providerSessionId.length > 0
+  );
+}
+
 export function parseLedgerAdjustmentDelta(value: string) {
   const normalized = value.trim();
   if (!/^-?\d+$/.test(normalized)) return null;

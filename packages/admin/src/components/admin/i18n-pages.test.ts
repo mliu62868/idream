@@ -75,13 +75,24 @@ export const PRESETS_KEYS = [
 // active/archived（status，StatusPill 缺省走 value()）都走 value()/zhValues 通道，不进这张表。
 
 export const ASSETS_KEYS = [
-  "All", "Approve", "Archive", "Asset details", "Asset not found.", "Assets have no name — type the first 8 characters of the ID to confirm.",
+  "{count} assets archived. The selection was cleared.",
+  "{count} selected", "{count} selected assets have active authority dependencies.",
+  "All", "Already archived", "Approve", "Archive", "Archive only after every active usage has been replaced or withdrawn.",
+  "Archive blocked by a newer authority dependency. No selected asset was changed.",
+  "Archive selected", "Archive selected assets", "Asset details", "Asset not found.",
+  "Assets have no name — type the first 8 characters of the ID to confirm.",
   "Back to image library", "Basic info", "Batch", "Browse and curate generated image assets.",
+  "Bulk archive", "Bulk archive is atomic. If one asset is still in use, none of the selected assets will change.",
+  "Checking dependencies…", "Clear selection", "Could not check selected asset dependencies.",
   "Description", "Description & tags", "Generation job", "Image Library", "Loading…",
-  "Media asset", "Missing", "Missing asset", "No platform assets match these filters.",
-  "Profile", "Purpose", "Reject", "Request failed", "Save", "Search by tag, description, or asset ID",
-  "Size", "Source", "Status", "Tags", "Tags and descriptions make assets searchable for chat reuse.",
-  "Target ID", "Target type",
+  "Media asset", "Missing", "Missing asset", "Missing selected assets: {ids}", "Next page",
+  "No platform assets match these filters.", "Paste exact asset IDs to confirm",
+  "Paste these exact asset IDs to confirm",
+  "Preflight checked {count} assets. No active authority dependencies were found.",
+  "Profile", "Purpose", "Reject", "Repair each usage before archiving. No selected asset was changed.",
+  "Request failed", "Save", "Search by tag, description, or asset ID", "Select", "Select asset {id}",
+  "Select page", "Selected", "Size", "Source", "Status", "Tags",
+  "Tags and descriptions make assets searchable for chat reuse.", "Target ID", "Target type",
 ];
 // 注意：状态词 generated/approved/rejected/published/archived（status）、targetType 枚举
 // （character/route_page/campaign/template/none）与 productionPurposeSchema 枚举
@@ -99,6 +110,41 @@ export const PLACEMENTS_KEYS = [
 // 注意：状态词 draft/scheduled/published/paused/archived（status）、slot 枚举
 // （character_avatar/character_hero/feed_card/homepage_strip/seo_article/template_cover/campaign）
 // 与 targetType 枚举（character/template/route_page/campaign）都走 value()/zhValues 通道，不进这张表。
+
+export const CREATIVE_WORKFLOW_KEYS = [
+  "Image creation",
+  "Create images",
+  "Creating Character images?",
+  "Open Character Asset Studio",
+  "What are you making?",
+  "Creative brief",
+  "Advanced creation details",
+  "Image route",
+  "Canvas",
+  "Create and launch",
+  "Review against the brief",
+  "Intended use",
+  "Reference images",
+  "Campaign destination key",
+  "Stage campaign candidate",
+  "Verify & activate",
+  "First identity portrait",
+  "Character asset pack",
+  "Establish the face customers will recognize",
+  "Create the images customers will remember",
+  "Record the visible review evidence",
+  "Required visible quality checks",
+  "Identity consistency",
+  "Evidence and reason",
+  "Record superseding approval",
+  "Record superseding rejection",
+  "Terminal disposition",
+  "Withdraw approval",
+  "Recent runs and technical lineage",
+  "Generation profile",
+  "Provider request / Comfy prompt",
+  "Immutable review decision",
+];
 
 export const TAGS_KEYS = [
   "Cancel", "Category (blank=none)", "category", "characters", "Edit", "label", "Label",
@@ -120,6 +166,10 @@ export const UI_KEYS = [
 ];
 
 describe("admin i18n — trio pages have zh", () => {
+  it("creative and Character image workflow", () => {
+    for (const key of CREATIVE_WORKFLOW_KEYS) expect(hasAdminZh(key)).toBe(true);
+  });
+
   it("official characters trio", () => {
     for (const key of OFFICIAL_KEYS) expect(hasAdminZh(key)).toBe(true);
   });

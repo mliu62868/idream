@@ -2,34 +2,19 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { categoryFilters } from "@/lib/ourdream-data";
+import {
+  parseCharacterListResponse,
+  parseTagListResponse,
+} from "@/lib/public-api-contracts";
 import type { CharacterCardData } from "@/types/ourdream";
+import { useAgeGateAccess } from "./AgeGateBoundary";
 import { CharacterGrid } from "./CharacterGrid";
 import { TopControls } from "./TopControls";
 
 const DEFAULT_LIMIT = 28;
 
-type CharacterResponse = {
-  ok: boolean;
-  data?: {
-    items: CharacterCardData[];
-    nextCursor: string | null;
-  };
-};
-
-type TagResponse = {
-  ok: boolean;
-  data?: {
-    items: Array<{
-      isMutedByDefault?: boolean;
-      isMutedByUser?: boolean;
-      label: string;
-      publicCharacterCount?: number;
-      slug: string;
-    }>;
-  };
-};
-
 export function ExploreWorkspace() {
+  const { accepted: ageGateAccepted } = useAgeGateAccess();
   const [cards, setCards] = useState<CharacterCardData[]>([]);
   const [activeCategory, setActiveCategory] = useState("All");
   const [availableCategories, setAvailableCategories] = useState<readonly string[]>(["All"]);
@@ -43,6 +28,7 @@ export function ExploreWorkspace() {
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [tagError, setTagError] = useState(false);
   const [initialized, setInitialized] = useState(false);
   // Debounced mirror of `query`: drives requests/URL so typing doesn't fire one
   // fetch per keystroke. `query` stays the immediate value bound to the input.
@@ -69,6 +55,7 @@ export function ExploreWorkspace() {
 
   const loadCharacters = useCallback(
     async (cursor?: string) => {
+      if (!ageGateAccepted) return;
       const serial = requestSerial.current + 1;
       requestSerial.current = serial;
       const requestParams = new URLSearchParams(params);
@@ -80,11 +67,11 @@ export function ExploreWorkspace() {
       try {
         const response = await fetch(`/api/v1/characters?${requestParams.toString()}`);
         if (!response.ok) throw new Error("Characters unavailable");
-        const payload = (await response.json()) as CharacterResponse;
+        const payload = parseCharacterListResponse(await response.json());
         if (serial !== requestSerial.current) return;
-        const items = payload.data?.items ?? [];
+        const items = payload.items;
         setCards((current) => (cursor ? [...current, ...items] : items));
-        setNextCursor(payload.data?.nextCursor ?? null);
+        setNextCursor(payload.nextCursor);
       } catch {
         if (serial !== requestSerial.current) return;
         if (!cursor) {
@@ -98,18 +85,18 @@ export function ExploreWorkspace() {
         else setLoading(false);
       }
     },
-    [params],
+    [ageGateAccepted, params],
   );
 
   useEffect(() => {
     // Rendered behind AgeGateBoundary, so acceptance is already guaranteed here —
     // load as soon as the URL-derived filters are parsed.
-    if (!initialized) return;
+    if (!ageGateAccepted || !initialized) return;
     const timer = window.setTimeout(() => {
       void loadCharacters();
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [initialized, loadCharacters]);
+  }, [ageGateAccepted, initialized, loadCharacters]);
 
   // Commit the search box to `debouncedQuery` ~300ms after the last keystroke.
   useEffect(() => {
@@ -134,21 +121,23 @@ export function ExploreWorkspace() {
   }, []);
 
   useEffect(() => {
+    if (!ageGateAccepted) return;
     let cancelled = false;
 
     async function loadTags() {
       try {
         const response = await fetch("/api/v1/tags");
         if (!response.ok) throw new Error("Tags unavailable");
-        const payload = (await response.json()) as TagResponse;
+        const payload = parseTagListResponse(await response.json());
         if (cancelled) return;
+        setTagError(false);
         const visibleSlugs = new Set(
-          (payload.data?.items ?? [])
+          payload.items
             .filter(
               (tag) =>
                 !tag.isMutedByDefault &&
                 !tag.isMutedByUser &&
-                (tag.publicCharacterCount ?? 0) > 0,
+                tag.publicCharacterCount > 0,
             )
             .map((tag) => tag.slug),
         );
@@ -160,7 +149,10 @@ export function ExploreWorkspace() {
           nextCategories.includes(current) ? current : "All",
         );
       } catch {
-        if (!cancelled) setAvailableCategories(["All"]);
+        if (!cancelled) {
+          setAvailableCategories(["All"]);
+          setTagError(true);
+        }
       }
     }
 
@@ -168,7 +160,7 @@ export function ExploreWorkspace() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [ageGateAccepted]);
 
   useEffect(() => {
     if (!initialized) return;
@@ -228,6 +220,16 @@ export function ExploreWorkspace() {
         sort={sort}
         style={style}
       />
+      {tagError ? (
+        <p
+          aria-live="polite"
+          className="mx-4 mt-3 rounded-[12px] border border-white/10 bg-[rgb(18,18,18)] px-4 py-3 text-[12px] font-semibold text-[rgb(170,170,170)] md:mx-[60px]"
+          data-testid="explore-tags-status"
+          role="status"
+        >
+          Categories are temporarily unavailable. Showing all public characters.
+        </p>
+      ) : null}
       <div className="pt-2 md:pt-6">
         <CharacterGrid
           cards={cards}

@@ -16,10 +16,42 @@ const descriptor = workflowDescriptorSchema.parse({
   workflowKey: "t2i",
   modelId: "m",
   backendKind: "comfyui",
+  comfyWorkflow: { id: "11111111-1111-4111-8111-111111111111", name: "Test T2I" },
   version: 1,
   capabilities: ["textToImage"],
   apiPrompt: {},
   inputs: [],
+});
+
+const noLookDescriptor = workflowDescriptorSchema.parse({
+  workflowKey: "identity-without-look",
+  modelId: "identity-without-look",
+  backendKind: "comfyui",
+  comfyWorkflow: {
+    id: "22222222-2222-4222-8222-222222222222",
+    name: "Identity Without Look",
+  },
+  version: 1,
+  capabilities: ["edit", "referenceImages"],
+  identity: {
+    mode: "single_reference",
+    maxReferences: 1,
+    acceptedRoles: ["identity_reference"],
+    supportsLookReference: false,
+    supportsSourceImageWithIdentity: false,
+  },
+  apiPrompt: {
+    "8": { class_type: "LoadImage", inputs: { image: "" } },
+  },
+  inputs: [
+    {
+      key: "identity_reference",
+      type: "image",
+      required: true,
+      referenceRoles: ["identity_reference"],
+      target: { nodeId: "8", field: "image" },
+    },
+  ],
 });
 
 function makeStubBackend(overrides?: Partial<GenBackend>): GenBackend {
@@ -56,6 +88,29 @@ function modelWith(backend: GenBackend): BackendImageModel {
 }
 
 describe("BackendImageModel", () => {
+  it("rejects a stale worker descriptor before backend submission", async () => {
+    const backend = makeStubBackend();
+    const model = modelWith(backend);
+    const result = await model.generate({
+      prompt: "a cat",
+      count: 1,
+      model: "m",
+      controls: {
+        workflowKey: "t2i",
+        workflowVersion: 2,
+      },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: "workflow_version_mismatch",
+        retryable: false,
+      },
+    });
+    expect(backend.submit).not.toHaveBeenCalled();
+  });
+
   it("rejects identity references when the workflow contract declares no identity support", async () => {
     const backend = makeStubBackend();
     const model = modelWith(backend);
@@ -72,6 +127,42 @@ describe("BackendImageModel", () => {
       ok: false,
       error: { code: "unsupported_identity_workflow", retryable: false },
     });
+    expect(backend.submit).not.toHaveBeenCalled();
+  });
+
+  it("rejects Look references when the workflow explicitly does not support Look", async () => {
+    const backend = makeStubBackend();
+    const registry = {
+      resolveForModel: vi.fn(() => ({
+        backend,
+        descriptor: noLookDescriptor,
+      })),
+    };
+    const model = new BackendImageModel(registry);
+    const result = await model.generate({
+      prompt: "same character, use this outfit and lighting",
+      count: 1,
+      model: "identity-without-look",
+      referenceImages: [
+        {
+          assetId: "look-1",
+          role: "look_reference",
+          b64Json: "aW1hZ2U=",
+        },
+      ],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: "unsupported_identity_workflow",
+        retryable: false,
+      },
+    });
+    if (result.ok) throw new Error("expected Look contract rejection");
+    expect(result.error.message).toContain(
+      "does not accept Character Look image references",
+    );
     expect(backend.submit).not.toHaveBeenCalled();
   });
 
@@ -94,6 +185,12 @@ describe("BackendImageModel", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("expected ok result");
     expect(result.data.assets).toHaveLength(2);
+    expect(result.invocation).toEqual({
+      providerRequestId: "handle-1",
+      usage: { providerRequestIds: ["handle-1", "handle-1"] },
+      costMicros: null,
+      pricingVersion: null,
+    });
     const [firstAsset] = result.data.assets;
     expect(firstAsset).toMatchObject({ width: 832, height: 1216, contentType: "image/png" });
     expect(firstAsset?.body?.byteLength).toBeGreaterThan(0);
@@ -125,6 +222,12 @@ describe("BackendImageModel", () => {
     expect(result.error.code).toBe("backend_error");
     expect(result.error.retryable).toBe(true);
     expect(result.error.message).toContain("network blip");
+    expect(result.invocation).toEqual({
+      providerRequestId: "handle-1",
+      usage: { providerRequestIds: ["handle-1"] },
+      costMicros: null,
+      pricingVersion: null,
+    });
   });
 
   it("maps an unknown model (registry throws) to ok:false with retryable:false", async () => {

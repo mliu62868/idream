@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import type { FormEvent, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -34,9 +35,12 @@ type Row = Record<string, unknown>;
 type PageInfo = { endCursor: string | null; hasNextPage: boolean };
 type QueueResponse = {
   reports?: Row[];
+  mediaReview?: Row[];
   blockedMedia?: Row[];
   appeals?: Row[];
-  pageInfo?: Partial<Record<ModerationScope | "blockedMedia", PageInfo>>;
+  pageInfo?: Partial<
+    Record<ModerationScope | "mediaReview" | "blockedMedia", PageInfo>
+  >;
 };
 type AuthorityState = {
   rows: Row[] | null;
@@ -88,11 +92,11 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
           scope === "reports"
             ? (response.reports ?? [])
             : scope === "media"
-              ? (response.blockedMedia ?? [])
+              ? (response.mediaReview ?? response.blockedMedia ?? [])
               : (response.appeals ?? []);
         const pageInfo =
           scope === "media"
-            ? response.pageInfo?.blockedMedia
+            ? response.pageInfo?.mediaReview ?? response.pageInfo?.blockedMedia
             : response.pageInfo?.[scope];
         setter({
           rows,
@@ -165,7 +169,14 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
   }
 
   function confirmDecision(input: {
-    kind: "action" | "close" | "uphold" | "overturn" | "modify";
+    kind:
+      | "action"
+      | "close"
+      | "uphold"
+      | "overturn"
+      | "modify"
+      | "media_pass"
+      | "media_block";
     id: string;
     endpoint: string;
     method: "POST" | "PATCH";
@@ -200,7 +211,7 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
   return (
     <section className="space-y-5">
       <PageHeader
-        purpose="Review reports, blocked media, and appeals from independent authority snapshots; every decision is confirmed, audited, and propagated."
+        purpose="Review reports, independently pending Character images, blocked media, and appeals from separate authority snapshots; every decision is confirmed, audited, and propagated."
         title="Moderation Cases"
       />
       <div
@@ -213,7 +224,7 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
             unavailable
           </span>
           <Freshness label="Reports" state={reports} />
-          <Freshness label="Blocked media" state={media} />
+          <Freshness label="Media review" state={media} />
           <Freshness label="Appeals" state={appeals} />
         </div>
         {!canDecide ? (
@@ -279,7 +290,7 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
         state={reports}
       />
       <AuthorityError
-        label="blocked media"
+        label="media review"
         onRetry={() => void loadScope(query, "media")}
         state={media}
       />
@@ -308,23 +319,19 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
         query={query}
       />
       <AuthoritySection
-        caption="Blocked Media"
+        caption="Media Review"
         empty={
           query.search
-            ? "No blocked media match this search"
-            : "No blocked media require review"
+            ? "No media review items match this search"
+            : "No Character images await independent review"
         }
-        loadingLabel="Loading blocked-media authority"
+        loadingLabel="Loading media-review authority"
         state={media}
-        rows={plainRows(
-          media.rows ?? [],
-          ["id", "ownerId", "type", "safetyStatus", "createdAt"],
-          "media",
-        )}
+        rows={mediaRows(media.rows ?? [], canDecide, confirmDecision)}
       />
       <Pager
         cursor="mediaCursor"
-        label="Next blocked-media page"
+        label="Next media-review page"
         loading={media.loading}
         navigate={navigate}
         pageInfo={media.pageInfo}
@@ -360,13 +367,111 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
 }
 
 type ConfirmDecision = (input: {
-  kind: "action" | "close" | "uphold" | "overturn" | "modify";
+  kind:
+    | "action"
+    | "close"
+    | "uphold"
+    | "overturn"
+    | "modify"
+    | "media_pass"
+    | "media_block";
   id: string;
   endpoint: string;
   method: "POST" | "PATCH";
   payload: (reason: string) => Record<string, unknown>;
   title: string;
 }) => void;
+
+function mediaRows(
+  rows: Row[],
+  canDecide: boolean,
+  confirm: ConfirmDecision,
+): DataTableRow[] {
+  return rows.map((row, index) => {
+    const id = text(row.id);
+    const characterId = text(row.characterId);
+    const safetyStatus = text(row.safetyStatus);
+    const pending = safetyStatus === "unknown" || safetyStatus === "flagged";
+    const preview = text(row.thumbnailUrl) || text(row.url);
+    const action = (
+      kind: "media_pass" | "media_block",
+      decision: "passed" | "blocked",
+      label: string,
+      icon: ReactNode,
+    ) => (
+      <Action
+        icon={icon}
+        label={label}
+        onClick={() =>
+          confirm({
+            kind,
+            id,
+            endpoint: `/api/v1/admin/moderation/media/${id}/decision`,
+            method: "POST",
+            title: `${label} Character image ${id}`,
+            payload: () => ({ decision }),
+          })
+        }
+      />
+    );
+    return {
+      id: id || `media-${index}`,
+      cells: [
+        preview ? (
+          <Image
+            alt={`Character image ${id}`}
+            className="h-14 w-14 rounded-md border object-cover"
+            height={56}
+            loading="lazy"
+            src={preview}
+            unoptimized
+            width={56}
+          />
+        ) : (
+          "No preview"
+        ),
+        id,
+        characterId ? (
+          <a
+            className="underline underline-offset-4"
+            href={`/admin/characters/${characterId}?tab=assets`}
+          >
+            {characterId}
+          </a>
+        ) : (
+          "—"
+        ),
+        display(row.ownerId),
+        safetyStatus || "—",
+        text(row.sourceAssetId)
+          ? `Duplicate of ${text(row.sourceAssetId)}`
+          : display(row.reviewKind),
+        date(row.createdAt),
+        canDecide && pending ? (
+          <div className="flex flex-wrap gap-1">
+            {action(
+              "media_pass",
+              "passed",
+              "Approve image",
+              <Check className="h-4 w-4" />,
+            )}
+            {action(
+              "media_block",
+              "blocked",
+              "Block image",
+              <X className="h-4 w-4" />,
+            )}
+          </div>
+        ) : canDecide ? (
+          "Terminal"
+        ) : (
+          "Read only"
+        ),
+      ],
+    };
+  });
+}
+
 function reportRows(
   rows: Row[],
   canDecide: boolean,
@@ -490,18 +595,6 @@ function appealRows(
     };
   });
 }
-function plainRows(
-  rows: Row[],
-  keys: string[],
-  prefix: string,
-): DataTableRow[] {
-  return rows.map((row, index) => ({
-    id: text(row.id) || `${prefix}-${index}`,
-    cells: keys.map((key) =>
-      key.endsWith("At") ? date(row[key]) : display(row[key]),
-    ),
-  }));
-}
 function AuthoritySection({
   caption,
   empty,
@@ -552,7 +645,16 @@ function AuthoritySection({
                 "Created",
                 "Actions",
               ]
-            : ["ID", "Owner", "Type", "Safety", "Created"]
+            : [
+                "Preview",
+                "ID",
+                "Character",
+                "Owner",
+                "Safety",
+                "Lineage",
+                "Created",
+                "Actions",
+              ]
       }
       rows={rows}
     />

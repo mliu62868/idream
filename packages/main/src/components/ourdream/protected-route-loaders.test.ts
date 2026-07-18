@@ -49,5 +49,16 @@ describe.each(protectedRouteLoaders)(
         protectedPath,
       ]);
     });
+
+    it("does not send its protected request for a malformed user object", async () => {
+      const fetcher = vi.fn(async () =>
+        jsonResponse({ ok: true, data: { user: {} } }),
+      );
+
+      await expect(loadForViewer(fetcher)).rejects.toThrow(
+        "Invalid viewer authority response",
+      );
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    });
   },
 );

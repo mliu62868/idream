@@ -13,6 +13,7 @@ import {
   expectError,
   expectOk,
   grantCoins,
+  publishCharacterForPublicAudience,
   purgeTestData,
   runQueuedGenerationJobs,
 } from "@/server/test/helpers";
@@ -42,7 +43,18 @@ describe("follow / unfollow creators", () => {
     const a = `${P}a`;
     const b = `${P}b`;
     await createUser({ id: a });
-    await createUser({ id: b });
+    await createUser({ id: b, dataClass: "customer" });
+    await createCharacter({
+      id: `${P}follow-target-character`,
+      creatorId: b,
+      source: "official",
+      visibility: "public",
+      status: "approved",
+    });
+    await publishCharacterForPublicAudience({
+      characterId: `${P}follow-target-character`,
+      ownerId: b,
+    });
 
     const follow = await api("POST", `users/${b}/follow`, { userId: a });
     expectOk(follow);
@@ -138,9 +150,9 @@ describe("age verification webhook", () => {
 });
 
 describe("community collections", () => {
-  it("lists public collections", async () => {
+  it("does not list an empty public collection", async () => {
     const owner = `${P}coll-owner`;
-    await createUser({ id: owner });
+    await createUser({ id: owner, dataClass: "customer" });
     await prisma.mediaCollection.create({
       data: { id: `${P}coll-1`, ownerId: owner, name: "Faves", visibility: "public" },
     });
@@ -153,12 +165,59 @@ describe("community collections", () => {
       ownerName: string | null;
       previews: string[];
     }>).find((item) => item.id === `${P}coll-1`);
-    expect(collection).toMatchObject({
-      id: `${P}coll-1`,
-      itemCount: 0,
-      ownerName: "Test User",
-      previews: [],
+    expect(collection).toBeUndefined();
+  });
+
+  it("fails closed when any public collection item is not publicly readable", async () => {
+    const owner = `${P}coll-filter-owner`;
+    const collectionId = `${P}coll-filter`;
+    const blockedIds = Array.from({ length: 4 }, (_, index) => `${P}coll-filter-blocked-${index}`);
+    const validId = `${P}coll-filter-valid`;
+    const validUrl = "/user-content/eligible-collection-preview.png";
+    await createUser({ id: owner, dataClass: "customer" });
+    for (const id of blockedIds) {
+      await createMedia({
+        id,
+        ownerId: owner,
+        visibility: "public_pack",
+        safetyStatus: "blocked",
+        url: `/user-content/${id}.png`,
+      });
+    }
+    await createMedia({
+      id: validId,
+      ownerId: owner,
+      visibility: "public_pack",
+      safetyStatus: "passed",
+      url: validUrl,
     });
+    await prisma.mediaCollection.create({
+      data: {
+        id: collectionId,
+        ownerId: owner,
+        name: "Filtered public collection",
+        visibility: "public",
+        items: {
+          create: [
+            ...blockedIds.map((mediaAssetId, sortOrder) => ({
+              mediaAssetId,
+              sortOrder,
+            })),
+            { mediaAssetId: validId, sortOrder: 4 },
+          ],
+        },
+      },
+    });
+
+    const response = await api("GET", "community/collections", { ageGate: true });
+    expectOk(response);
+    const collection = (response.data.collections as Array<{
+      id: string;
+      itemCount: number;
+      previews: string[];
+    }>).find((item) => item.id === collectionId);
+
+    expect(collection).toBeUndefined();
   });
 
   it("lets owners publish generated media into community collections", async () => {
@@ -166,7 +225,7 @@ describe("community collections", () => {
     const intruder = `${P}coll-intruder`;
     const mediaId = `${P}coll-media`;
     const otherMediaId = `${P}coll-other-media`;
-    await createUser({ id: owner });
+    await createUser({ id: owner, dataClass: "customer" });
     await createUser({ id: intruder });
     await createMedia({ id: mediaId, ownerId: owner, visibility: "private" });
     await createMedia({ id: otherMediaId, ownerId: intruder, visibility: "private" });
@@ -223,6 +282,120 @@ describe("community collections", () => {
     expectError(blocked, 404, "not_found");
   });
 
+  it("keeps synthetic media private and outside public collection authority", async () => {
+    const owner = `${P}synthetic-collection-owner`;
+    const syntheticMediaId = `${P}synthetic-collection-media`;
+    const realMediaId = `${P}synthetic-collection-real-media`;
+    await createUser({ id: owner, dataClass: "customer" });
+    await prisma.mediaAsset.create({
+      data: {
+        id: syntheticMediaId,
+        ownerId: owner,
+        type: "image",
+        url: `/user-content/${syntheticMediaId}/content.webp`,
+        visibility: "private",
+        safetyStatus: "passed",
+        metadata: { synthetic: true, source: "mock" },
+      },
+    });
+    await createMedia({
+      id: realMediaId,
+      ownerId: owner,
+      visibility: "private",
+      safetyStatus: "passed",
+    });
+
+    const rejectedCreate = await api("POST", "media/collections", {
+      userId: owner,
+      ageGate: true,
+      body: {
+        mediaAssetId: syntheticMediaId,
+        name: "Synthetic public board",
+        visibility: "public",
+      },
+    });
+    expectError(rejectedCreate, 400, "bad_request");
+
+    const privateCollection = await api("POST", "media/collections", {
+      userId: owner,
+      ageGate: true,
+      body: {
+        mediaAssetId: syntheticMediaId,
+        name: "Private synthetic audit board",
+        visibility: "private",
+      },
+    });
+    expectOk(privateCollection, 201);
+
+    const rejectedPublish = await api(
+      "PATCH",
+      `media/collections/${privateCollection.data.collection.id}`,
+      {
+        userId: owner,
+        ageGate: true,
+        body: { visibility: "public" },
+      },
+    );
+    expectError(rejectedPublish, 400, "bad_request");
+
+    const publicCollection = await api("POST", "media/collections", {
+      userId: owner,
+      ageGate: true,
+      body: {
+        mediaAssetId: realMediaId,
+        name: "Real public board",
+        visibility: "public",
+      },
+    });
+    expectOk(publicCollection, 201);
+    const rejectedAdd = await api(
+      "POST",
+      `media/collections/${publicCollection.data.collection.id}/items`,
+      {
+        userId: owner,
+        ageGate: true,
+        body: { mediaAssetId: syntheticMediaId },
+      },
+    );
+    expectError(rejectedAdd, 400, "bad_request");
+
+    const rejectedVisibility = await api("POST", "media/bulk", {
+      userId: owner,
+      ageGate: true,
+      body: {
+        ids: [syntheticMediaId],
+        action: "visibility",
+        visibility: "public_pack",
+      },
+    });
+    expectError(rejectedVisibility, 400, "bad_request");
+    await expect(
+      prisma.mediaAsset.findUniqueOrThrow({ where: { id: syntheticMediaId } }),
+    ).resolves.toMatchObject({ visibility: "private" });
+
+    await prisma.mediaCollection.update({
+      where: { id: privateCollection.data.collection.id as string },
+      data: { visibility: "public" },
+    });
+    await prisma.mediaAsset.update({
+      where: { id: syntheticMediaId },
+      data: { visibility: "public_pack" },
+    });
+    const community = await api("GET", "community/collections", { ageGate: true });
+    expectOk(community);
+    expect(
+      (community.data.collections as Array<{ id: string }>).map((item) => item.id),
+    ).not.toContain(privateCollection.data.collection.id);
+
+    const publicContent = await dispatchV1(
+      new Request(`http://localhost/api/v1/media/${syntheticMediaId}/content`, {
+        headers: { cookie: AGE_GATE_COOKIE_HEADER },
+      }),
+      ["media", syntheticMediaId, "content"],
+    );
+    expect(publicContent.status).toBe(401);
+  });
+
   it("serves public collection preview media to age-gated anonymous visitors", async () => {
     const owner = `${P}public-preview-owner`;
     const publicMediaId = `${P}public-preview-media`;
@@ -267,6 +440,49 @@ describe("community collections", () => {
       ["media", privateMediaId, "content"],
     );
     expect(privateResponse.status).toBe(401);
+  });
+
+  it("serves private production media to an authorized admin without consumer age-gate state", async () => {
+    const adminId = `${P}media-admin`;
+    const adminToken = `${P}media-admin-token`;
+    const mediaId = `${P}admin-private-media`;
+    const storageKey = `${P}admin-private.webp`;
+    const target = resolveLocalBlobPath(storageKey);
+
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, Buffer.from("admin private preview"));
+    await createUser({ id: adminId, role: "admin" });
+    await prisma.session.create({
+      data: {
+        userId: adminId,
+        token: adminToken,
+        expiresAt: new Date(Date.now() + 100_000),
+      },
+    });
+    await prisma.mediaAsset.create({
+      data: {
+        id: mediaId,
+        ownerId: adminId,
+        type: "image",
+        url: `/user-content/${Buffer.from(mediaId, "utf8").toString("base64url")}/content.webp`,
+        storageKey,
+        contentType: "image/webp",
+        visibility: "private",
+        safetyStatus: "passed",
+        metadata: { providerKey: storageKey },
+      },
+    });
+
+    const response = await dispatchV1(
+      new Request(`http://localhost/api/v1/media/${mediaId}/content`, {
+        headers: { cookie: `idream_admin_session=${adminToken}` },
+      }),
+      ["media", mediaId, "content"],
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("image/webp");
+    expect(await response.text()).toBe("admin private preview");
   });
 });
 
@@ -400,7 +616,11 @@ describe("feed share and remix provenance", () => {
     const collectionId = `${P}feed-coll`;
     const mediaId = `${P}feed-coll-media`;
     const itemId = `collection:${collectionId}`;
-    await createUser({ id: owner, displayName: "Feed Collection Creator" });
+    await createUser({
+      id: owner,
+      displayName: "Feed Collection Creator",
+      dataClass: "customer",
+    });
     await createUser({ id: userId });
     await createMedia({
       id: mediaId,
@@ -437,7 +657,9 @@ describe("feed share and remix provenance", () => {
       collection: {
         name: "Feed Collection Board",
         itemCount: 1,
-        previews: ["/images/ourdream/card-alexa-reeves.webp"],
+        previews: [
+          `/user-content/${Buffer.from(mediaId, "utf8").toString("base64url")}/content.webp`,
+        ],
       },
     });
 
@@ -480,7 +702,11 @@ describe("feed share and remix provenance", () => {
     const previousFeatured = await prisma.appSetting.findUnique({ where: { key: "feed.featured" } });
     await prisma.appSetting.deleteMany({ where: { key: "feed.featured" } });
     try {
-      await createUser({ id: owner, displayName: "Feed Cursor Creator" });
+      await createUser({
+        id: owner,
+        displayName: "Feed Cursor Creator",
+        dataClass: "customer",
+      });
       await createUser({ id: userId });
       await createMedia({
         id: mediaId,
@@ -498,13 +724,19 @@ describe("feed share and remix provenance", () => {
         },
       });
       for (let index = 0; index < 5; index += 1) {
+        const characterId = `${P}feed-cursor-${index}`;
         await createCharacter({
-          id: `${P}feed-cursor-${index}`,
+          id: characterId,
           creatorId: owner,
           name: `Feed Cursor ${index}`,
+          source: "official",
           visibility: "public",
           status: "approved",
           chats: 1_900_000_000 - index,
+        });
+        await publishCharacterForPublicAudience({
+          characterId,
+          ownerId: owner,
         });
       }
 
@@ -557,9 +789,13 @@ describe("feed share and remix provenance", () => {
     }
   });
 
-  it("spreads missing character images across stable fallback art", async () => {
+  it("hides characters that lack an operational public image authority", async () => {
     const owner = `${P}feed-fallback-owner`;
-    await createUser({ id: owner, displayName: "Fallback Creator" });
+    await createUser({
+      id: owner,
+      displayName: "Fallback Creator",
+      dataClass: "customer",
+    });
     for (let index = 0; index < 6; index += 1) {
       await createCharacter({
         id: `${P}feed-fallback-${index}`,
@@ -576,16 +812,17 @@ describe("feed share and remix provenance", () => {
       query: { limit: 8 },
     });
     expectOk(feed);
-    const fallbackImages = (
-      feed.data.items as Array<{ type: string; character?: { id: string; image: string } }>
+    const unqualifiedCharacters = (
+      feed.data.items as Array<{
+        type: string;
+        character?: { id: string; image: string; hasImage: boolean };
+      }>
     )
       .filter((item) => item.type === "character" && item.character?.id.startsWith(`${P}feed-fallback-`))
-      .map((item) => item.character?.image)
-      .filter((image): image is string => Boolean(image));
+      .map((item) => item.character)
+      .filter((character): character is NonNullable<typeof character> => Boolean(character));
 
-    expect(fallbackImages.length).toBe(6);
-    expect(new Set(fallbackImages).size).toBeGreaterThan(1);
-    expect(fallbackImages.every((image) => image === "/images/ourdream/card-sarah-mercer.webp")).toBe(false);
+    expect(unqualifiedCharacters).toEqual([]);
   });
 
   it("focuses shared feed items and records generation provenance from remix", async () => {
@@ -593,16 +830,44 @@ describe("feed share and remix provenance", () => {
     const userId = `${P}feed-remixer`;
     const characterId = `${P}feed-char`;
     const itemId = `character:${characterId}`;
-    await createUser({ id: owner, displayName: "Feed Creator" });
+    await createUser({
+      id: owner,
+      displayName: "Feed Creator",
+      dataClass: "customer",
+    });
     await createUser({ id: userId });
     await grantCoins(userId, 100, "seed");
     await createCharacter({
       id: characterId,
       creatorId: owner,
       name: "Feed Remix Source",
+      source: "official",
       visibility: "public",
       status: "approved",
       chats: 999,
+    });
+    await prisma.characterVisualProfile.create({
+      data: {
+        id: `${characterId}-bootstrap-visual-profile`,
+        characterId,
+        version: 1,
+        status: "active",
+        style: "realistic",
+        identityPrompt: "Feed Remix Source, adult woman",
+        faceTraits: {},
+        hairTraits: {},
+        bodyTraits: {},
+        signatureTraits: {},
+        styleTraits: {},
+        anchorAssetIds: [],
+        referenceAssetIds: [],
+        adapterRefs: {},
+        createdFrom: "generation_bootstrap:test",
+      },
+    });
+    await publishCharacterForPublicAudience({
+      characterId,
+      ownerId: owner,
     });
 
     const shared = await api("POST", `feed/items/${encodeURIComponent(itemId)}/share`, {
@@ -694,8 +959,13 @@ describe("feed share and remix provenance", () => {
     await createCharacter({
       id: publicCharacterId,
       creatorId: owner,
+      source: "official",
       visibility: "public",
       status: "approved",
+    });
+    await publishCharacterForPublicAudience({
+      characterId: publicCharacterId,
+      ownerId: owner,
     });
     await createCharacter({
       id: privateCharacterId,

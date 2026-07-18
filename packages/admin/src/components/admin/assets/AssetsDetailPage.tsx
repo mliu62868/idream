@@ -12,28 +12,18 @@ import { AssetImage } from "@/components/admin/ui/AssetImage";
 import { EngineeringDetails } from "@/components/admin/generation/EngineeringDetails";
 import {
   ASSETS_LIST,
+  assetAuthorityDependencyView,
   assetPatchPayload,
   draftFromAsset,
   type AssetDraft,
   type ContentAsset,
 } from "./assets-api";
-import {
-  MediaAssetAuthorityNotice,
-  canApproveMediaAsset,
-} from "./MediaAssetAuthority";
+import { MediaAssetAuthorityNotice } from "./MediaAssetAuthority";
 
-// SPEC: 图片库详情页 —— 大图 + 元数据（用途/目标/尺寸/标签描述）+ 生产溯源（生成任务/批次）+
-// 审核动作（通过/保存/拒绝/归档），spec §7 详情页的图片库变体。
-// INTENT: 无单条 GET，复用列表接口按 id 过滤（与其余三件套架构一致；后端其实有单条 GET，但为
-// 一致性仍走 list+find）。标签/描述没有独立编辑态——原样保留 旧图片库视图 "随时可改、四个
-// 动作都读当前输入框内容" 的交互，不强加 Starters/Recipes 那套 view/edit 模式切换（这里只有两个
-// 自由文本字段，加一层模式切换纯属多余）。
-// INVARIANTS: assetPatchSchema（content-ops.ts:90-97）要求 reason（≥3 字符）且
-// confirmation===完整 id——四个写动作全部原样搬运 旧图片库视图 的 PATCH body 构造
-// （patchAsset:540 / saveAssetMetadata:561），全部走 ConfirmDialog 采集 reason。拒绝/归档是
-// 破坏性操作，要求输入短 id 确认——资产没有名字，用 id 前 8 位代替（T16 例外，ConfirmDialog
-// 的 summary 说明这一点）。
-type PendingAction = "approve" | "save" | "reject" | "archive" | null;
+// Image Library manages searchable metadata and safe archival only. Immutable
+// approve/reject decisions belong to Creative Runs; every active production,
+// Character, Release, and Campaign dependency must be repaired before archival.
+type PendingAction = "save" | "archive" | null;
 
 function InfoGrid({ items }: { items: { label: string; value: ReactNode }[] }) {
   return (
@@ -53,18 +43,21 @@ export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: st
   const [rows, setRows] = useState<ContentAsset[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [refreshWarning, setRefreshWarning] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingAction>(null);
   const [draft, setDraft] = useState<AssetDraft>({ tags: "", description: "" });
   const [draftAssetId, setDraftAssetId] = useState<string | null>(null);
 
-  const reload = useCallback(async () => {
+  const reload = useCallback(async (propagateError = false) => {
     setLoading(true);
     setError(null);
     try {
       const data = await apiGet<{ asset: ContentAsset }>(`${ASSETS_LIST}/${encodeURIComponent(id)}`);
       setRows([data.asset]);
+      setRefreshWarning(null);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : t("Request failed"));
+      if (propagateError) throw loadError;
     } finally {
       setLoading(false);
     }
@@ -93,35 +86,22 @@ export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: st
   const confirmSpec: ConfirmSpec | null = useMemo(() => {
     if (!row || !pending) return null;
     const shortIdSummary = t("Assets have no name — type the first 8 characters of the ID to confirm.");
-    if (pending === "approve") {
-      return {
-        title: t("Approve"),
-        submitLabel: t("Approve"),
-        onSubmit: async (reason) => {
-          await apiWrite(`${ASSETS_LIST}/${id}`, "PATCH", assetPatchPayload({ id, draft, reason, status: "approved" }));
-          await reload();
-        },
-      };
-    }
     if (pending === "save") {
       return {
         title: t("Save"),
         submitLabel: t("Save"),
         onSubmit: async (reason) => {
           await apiWrite(`${ASSETS_LIST}/${id}`, "PATCH", assetPatchPayload({ id, draft, reason }));
-          await reload();
-        },
-      };
-    }
-    if (pending === "reject") {
-      return {
-        title: t("Reject"),
-        summary: shortIdSummary,
-        destructive: { expectedName: shortId },
-        submitLabel: t("Reject"),
-        onSubmit: async (reason) => {
-          await apiWrite(`${ASSETS_LIST}/${id}`, "PATCH", assetPatchPayload({ id, draft, reason, status: "rejected" }));
-          await reload();
+          try {
+            await reload(true);
+          } catch (refreshError) {
+            setError(null);
+            setRefreshWarning(
+              refreshError instanceof Error
+                ? `${t("Asset changes were committed, but the latest projection could not be refreshed:")} ${refreshError.message}. ${t("Use Refresh before another write.")}`
+                : t("Asset changes were committed, but the latest projection could not be refreshed. Use Refresh before another write."),
+            );
+          }
         },
       };
     }
@@ -132,7 +112,16 @@ export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: st
       submitLabel: t("Archive"),
       onSubmit: async (reason) => {
         await apiWrite(`${ASSETS_LIST}/${id}`, "PATCH", assetPatchPayload({ id, draft, reason, status: "archived" }));
-        await reload();
+        try {
+          await reload(true);
+          } catch (refreshError) {
+            setError(null);
+            setRefreshWarning(
+              refreshError instanceof Error
+              ? `${t("Asset archival was committed, but the latest projection could not be refreshed:")} ${refreshError.message}. ${t("Use Refresh before another write.")}`
+              : t("Asset archival was committed, but the latest projection could not be refreshed. Use Refresh before another write."),
+            );
+        }
       },
     };
   }, [pending, row, id, draft, shortId, t, reload]);
@@ -142,6 +131,16 @@ export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: st
   }
 
   if (!row) {
+    if (error) {
+      return (
+        <div className="rounded-lg bg-[var(--ad-red-bg)] p-4 text-sm text-[var(--ad-red-text)]" role="alert">
+          {error}{" "}
+          <button className="font-semibold underline" onClick={() => void reload()} type="button">
+            {t("Retry")}
+          </button>
+        </div>
+      );
+    }
     return (
       <EmptyState
         action={
@@ -155,17 +154,13 @@ export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: st
     );
   }
 
-  const actions = canReview ? (
+  const authorityDependencies = row.authorityDependencies ?? [];
+  const hasActiveAuthority = authorityDependencies.length > 0;
+  const actions = canReview || refreshWarning ? (
     <>
-      <GhostButton onClick={() => setPending("save")}>{t("Save")}</GhostButton>
-      <PrimaryButton
-        disabled={!canApproveMediaAsset(row)}
-        onClick={() => setPending("approve")}
-      >
-        {t("Approve")}
-      </PrimaryButton>
-      <DangerButton onClick={() => setPending("reject")}>{t("Reject")}</DangerButton>
-      <DangerButton onClick={() => setPending("archive")}>{t("Archive")}</DangerButton>
+      {refreshWarning ? <GhostButton onClick={() => void reload()}>{t("Refresh")}</GhostButton> : null}
+      {canReview ? <GhostButton disabled={Boolean(refreshWarning)} onClick={() => setPending("save")}>{t("Save")}</GhostButton> : null}
+      {canReview ? <DangerButton disabled={hasActiveAuthority || Boolean(refreshWarning)} onClick={() => setPending("archive")}>{t("Archive")}</DangerButton> : null}
     </>
   ) : null;
 
@@ -178,9 +173,40 @@ export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: st
       title={shortId}
     >
       {error ? <p role="alert" className="text-sm text-[var(--ad-red-text)]">{error}</p> : null}
+      {refreshWarning ? <p role="status" className="rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]">{refreshWarning}</p> : null}
 
       <MediaAssetAuthorityNotice asset={row} />
       <AssetImage asset={row} />
+
+      <DetailSection title={t("Authority & usage")}>
+        {row.sourceBatch ? (
+          <div className="rounded-lg bg-[var(--ad-blue-bg)] p-3 text-sm text-[var(--ad-blue-text)]">
+            {t("Review decisions are recorded in the immutable Creative Run history.")}{" "}
+            <Link className="font-semibold underline" href={`/admin/creative/runs/${row.sourceBatch.id}`}>
+              {t("Open Creative Run review")}
+            </Link>
+          </div>
+        ) : null}
+        {authorityDependencies.length > 0 ? (
+          <div className="mt-3 grid gap-2">
+            {authorityDependencies.map((dependency) => {
+              const dependencyView = assetAuthorityDependencyView(dependency);
+              return (
+                <div className="flex flex-col gap-2 rounded-lg border border-[var(--ad-border)] p-3 text-sm sm:flex-row sm:items-center sm:justify-between" key={dependencyView.key}>
+                  <div>
+                    <strong>{t(dependencyView.title)}</strong>
+                    <p className="mt-1 text-xs text-[var(--ad-text-muted)]">{dependencyView.detail}</p>
+                  </div>
+                  <Link className="text-sm font-semibold underline" href={dependency.repairPath}>{t("Open authority")}</Link>
+                </div>
+              );
+            })}
+            <p className="text-xs text-[var(--ad-text-muted)]">{t("Replace, roll back, or withdraw these usages before archiving the asset.")}</p>
+          </div>
+        ) : (
+          <p className="text-sm text-[var(--ad-text-muted)]">{t("This asset is not referenced by an active production, Character, Release, or Campaign authority.")}</p>
+        )}
+      </DetailSection>
 
       <DetailSection title={t("Basic info")}>
         <InfoGrid

@@ -1,4 +1,7 @@
-import { characterReferenceSetPublishRequestSchema } from "@idream/shared/admin";
+import {
+  characterReferenceSetPublishRequestSchema,
+  characterReferenceSetPublishResponseSchema,
+} from "@idream/shared/admin";
 import { env } from "@/server/lib/env";
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
@@ -25,6 +28,11 @@ export function POST(request: Request, context: { params: Promise<{ id: string }
       target: { type: "character", id },
       payload: body,
       mutate: (tx) => publishCharacterReferenceSet({ characterId: id, actor, requestId, request: body, tx }),
+      decorateResult: (stored, replayed) =>
+        characterReferenceSetPublishResponseSchema.parse({
+          ...(stored as Record<string, unknown>),
+          replayed,
+        }),
     });
     return Response.json({ ok: true, data: result }, { status: 201 });
   });

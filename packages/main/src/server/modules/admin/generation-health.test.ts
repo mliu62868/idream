@@ -60,7 +60,13 @@ describe("generation profile health truth semantics", () => {
           includedDataClasses: string[];
           excludedDataClasses: string[];
         };
-        metrics: { successRate: number | null };
+        metrics: {
+          successRate: number | null;
+          blockedRate: number | null;
+          refundRate: number | null;
+          latencyP50Ms: number | null;
+          latencyP95Ms: number | null;
+        };
       };
     };
 
@@ -70,6 +76,10 @@ describe("generation profile health truth semantics", () => {
       excludedDataClasses: ["fixture", "audit"],
     });
     expect(payload.data.metrics.successRate).toBeNull();
+    expect(payload.data.metrics.blockedRate).toBeNull();
+    expect(payload.data.metrics.refundRate).toBeNull();
+    expect(payload.data.metrics.latencyP50Ms).toBeNull();
+    expect(payload.data.metrics.latencyP95Ms).toBeNull();
     expect(mocks.countJobs.mock.calls[0]?.[0]).toEqual({
       where: {
         AND: [

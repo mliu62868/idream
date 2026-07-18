@@ -4,9 +4,13 @@
 // INVARIANTS: 不新增任何生成链路——一切走既有 Batch→Job→Asset→Placement。
 import { z } from "zod";
 import { prisma } from "@/server/lib/db";
+import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
+import { CHARACTER_RELEASE_POLICY_VERSION } from "@/server/modules/admin-v2/characters/release-executor";
+import { findQualifiedGenerationRoute } from "@/server/modules/admin-v2/characters/visual-authority";
 import { actorWithPermission, jsonBody } from "@/server/modules/admin/shared/legacy-primitives";
+import { generationWorkflowDescriptor } from "@/server/modules/admin/generation-catalog";
 import {
   createProductionBatchCore,
   productionBatchDTO,
@@ -40,13 +44,84 @@ async function requirePregenTargetCharacter(characterId: string) {
   return character;
 }
 
-async function resolveDefaultProfileKey() {
-  const profile = await prisma.generationModelProfile.findFirst({
-    where: { mode: "image", status: "active", enabled: true },
-    orderBy: [{ costMultiplier: "asc" }, { version: "desc" }],
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+async function resolveDefaultProfileKey(input: {
+  bootstrapIdentity: boolean;
+  characterId: string;
+}) {
+  if (input.bootstrapIdentity) {
+    const profiles = await prisma.generationModelProfile.findMany({
+      where: {
+        mode: "image",
+        status: "active",
+        enabled: true,
+        rolloutPercent: { gt: 0 },
+      },
+      orderBy: [{ costMultiplier: "asc" }, { version: "desc" }],
+      take: 40,
+    });
+    for (const profile of profiles) {
+      const workflowKey = profile.workflowKey ?? profile.pipelineModel;
+      const workflow = await generationWorkflowDescriptor(workflowKey);
+      const capabilities = record(record(profile.runnerConfig).capabilities);
+      if (
+        workflow &&
+        workflow.identity.mode === "none" &&
+        workflow.identity.maxReferences === 0 &&
+        workflow.capabilities.includes("textToImage") &&
+        capabilities.textToImage === true
+      ) {
+        return profile.profileKey;
+      }
+    }
+    throw Errors.badRequest("Pregen requires an active text-to-image identity bootstrap profile");
+  }
+
+  const identity = await prisma.characterVisualProfile.findFirst({
+    where: { characterId: input.characterId, status: "active" },
+    orderBy: { version: "desc" },
+    select: {
+      style: true,
+      referenceSetRevisions: {
+        where: { status: "active" },
+        orderBy: { revision: "desc" },
+        take: 1,
+        select: {
+          references: {
+            orderBy: { position: "asc" },
+            select: { role: true },
+          },
+        },
+      },
+    },
   });
-  if (!profile) throw Errors.badRequest("Pregen requires an active image profile");
-  return profile.profileKey;
+  if (!identity) {
+    throw Errors.conflict("Pregen requires an established Character Visual Identity", {
+      deepLink: `/admin/characters/${input.characterId}?tab=assets`,
+    });
+  }
+  const activeReferences =
+    identity.referenceSetRevisions[0]?.references ?? [];
+  const qualifiedRoute = await findQualifiedGenerationRoute(prisma, {
+    style: identity.style,
+    policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
+    evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,
+    at: new Date(),
+    requiredReferenceCount: activeReferences.length,
+    requiredReferenceRoles:
+      activeReferences.map((reference) => reference.role),
+  });
+  if (!qualifiedRoute) {
+    throw Errors.conflict("Pregen requires a current qualified Character identity route", {
+      deepLink: `/admin/characters/${input.characterId}?tab=visual`,
+    });
+  }
+  return qualifiedRoute.generationProfileKey;
 }
 
 export async function createCharacterPregenBatch(request: Request, characterId: string) {
@@ -54,14 +129,24 @@ export async function createCharacterPregenBatch(request: Request, characterId: 
   const body = pregenCreateSchema.parse(await jsonBody(request));
   const character = await requirePregenTargetCharacter(characterId);
   const pack = PREGEN_PACKS[body.pack];
+  const activeIdentity = await prisma.characterVisualProfile.findFirst({
+    where: { characterId: character.id, status: "active" },
+    select: { id: true },
+  });
+  const bootstrapIdentity = pack.purpose === "character_cover" && !activeIdentity;
   const input: ProductionBatchCreateInput = {
     title: `${character.name} ${body.pack} pack`,
     purpose: pack.purpose,
     targetType: "character",
     targetId: character.id,
-    profileId: body.profileId ?? (await resolveDefaultProfileKey()),
+    profileId: body.profileId ?? (await resolveDefaultProfileKey({
+      bootstrapIdentity,
+      characterId: character.id,
+    })),
     recipeId: body.recipeId,
     presetIds: [],
+    referenceAssetIds: [],
+    bootstrapIdentity,
     orientation: undefined,
     count: body.count ?? pack.count,
     brief: body.brief,

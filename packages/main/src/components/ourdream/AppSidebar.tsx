@@ -5,7 +5,6 @@ import {
   CircleHelp,
   Compass,
   Crown,
-  Disc3,
   Ellipsis,
   ExternalLink,
   MessageCircle,
@@ -29,11 +28,13 @@ const primaryIcons = [
   UsersRound,
 ];
 
-const secondaryIcons = [CircleHelp, ShieldCheck, Disc3, Ellipsis];
+const secondaryIcons = [CircleHelp, ShieldCheck, Ellipsis];
 
 export function AppSidebar({
   activeHref = "/",
 }: Readonly<{ activeHref?: string }>) {
+  const currentYear = new Date().getUTCFullYear();
+
   return (
     <aside className="hidden h-screen w-[220px] shrink-0 md:flex md:sticky md:top-0 md:z-30">
       <div className="flex h-screen w-[220px] flex-col overflow-hidden rounded-r-[24px] bg-[rgb(18,18,18)] px-0 pb-4 pt-2">
@@ -144,9 +145,7 @@ export function AppSidebar({
             Upgrade
           </Link>
           <div className="mt-4 text-center text-[9px] font-medium uppercase leading-3 text-[rgb(114,113,112)]">
-            <p>2026 OURDREAM.AI</p>
-            <p>USA: Dream Studio USA, Inc.</p>
-            <p>Cyprus: TEKTOPIA LTD (HE 473775)</p>
+            <p>{currentYear} OURDREAM.AI</p>
           </div>
         </div>
       </div>

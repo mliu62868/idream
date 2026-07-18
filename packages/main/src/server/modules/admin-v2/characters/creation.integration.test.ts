@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { POST as createCharacterProjectRoute } from "@/app/api/v2/admin/characters/route";
 import { GET as resumeCharacterProjectRoute } from "@/app/api/v2/admin/characters/[id]/project/route";
+import { POST as reconcileMutationReceipt } from "@/app/api/v2/admin/mutation-receipts/reconcile/route";
 
 describe("Character Project creation authority", () => {
   const suffix = randomUUID();
@@ -80,7 +81,7 @@ describe("Character Project creation authority", () => {
     const characterIds = projects.map((project) => project.characterId);
     await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: { in: projectIds } } });
     await prisma.adminCollaborationActivity.deleteMany({ where: { targetId: { in: projectIds } } });
-    await prisma.adminAuditLog.deleteMany({ where: { targetId: { in: projectIds } } });
+    await prisma.adminAuditLog.deleteMany({ where: { actorId } });
     await prisma.controlPlaneCommand.deleteMany({ where: { actorId, commandType: "character.project.create" } });
     await prisma.characterRevision.deleteMany({ where: { projectId: { in: projectIds } } });
     await prisma.characterContentVersion.deleteMany({ where: { characterId: { in: characterIds } } });
@@ -174,6 +175,52 @@ describe("Character Project creation authority", () => {
       body: JSON.stringify(body),
     }));
     expect(response.status).toBe(400);
+  });
+
+  it("blocks a late Character Project create after receipt reconciliation sealed the key", async () => {
+    const recoveryKey = `character-create-recovery-${suffix}`;
+    const lateName = `Late character ${suffix}`;
+    const recovery = await reconcileMutationReceipt(new Request(
+      "http://localhost/api/v2/admin/mutation-receipts/reconcile",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": recoveryKey,
+          "x-request-id": `character-recovery-${suffix}`,
+          "x-idream-user-id": actorId,
+          "x-idream-role": "admin",
+        },
+        body: JSON.stringify({
+          commandType: "character.project.create",
+        }),
+      },
+    ));
+    expect(recovery.status).toBe(200);
+    expect(await recovery.json()).toMatchObject({
+      data: {
+        state: "cancelled",
+        commandType: "character.project.create",
+      },
+    });
+
+    const lateCreate = await createCharacterProjectRoute(request(
+      actorId,
+      "admin",
+      {
+        ...body,
+        persona: { ...body.persona, name: lateName },
+      },
+      recoveryKey,
+      `character-recovery-late-${suffix}`,
+    ));
+    expect(lateCreate.status).toBe(409);
+    expect(await prisma.character.count({
+      where: { name: lateName },
+    })).toBe(0);
+    expect(await prisma.controlPlaneCommand.count({
+      where: { actorId, idempotencyKey: recoveryKey },
+    })).toBe(1);
   });
 
   it("rolls back every domain root when transaction evidence cannot be committed", async () => {

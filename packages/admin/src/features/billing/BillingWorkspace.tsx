@@ -2,7 +2,13 @@
 
 import type { FormEvent, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { BadgeDollarSign, Loader2, RefreshCcw, X } from "lucide-react";
+import {
+  BadgeDollarSign,
+  Loader2,
+  ReceiptText,
+  RefreshCcw,
+  X,
+} from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
@@ -14,20 +20,33 @@ import {
   billingAdjustmentConfirmation,
   billingLedgerPath,
   billingQueryFromSearch,
+  billingRefundAcknowledgementConfirmation,
   billingSubscriptionsPath,
   billingWorkspaceUrl,
   defaultBillingQuery,
   isBillingQueryFiltered,
+  isRefundAcknowledgementCandidate,
   parseLedgerAdjustmentDelta,
   type BillingQuery,
 } from "./query";
 
 type BillingRecord = Record<string, unknown>;
 type BillingPageInfo = { endCursor: string | null; hasNextPage: boolean };
-type BillingListResponse = { items: BillingRecord[]; pageInfo?: BillingPageInfo };
+type BillingDataScope = {
+  kind: "customer";
+  includedDataClasses: string[];
+  excludedDataClasses: string[];
+};
+type BillingListResponse = {
+  dataScope: BillingDataScope;
+  items: BillingRecord[];
+  pageInfo?: BillingPageInfo;
+};
 type BillingReconciliation = {
+  dataScope: BillingDataScope;
   window: { from: string; to: string };
   activeSubscriptions: number;
+  checkoutExceptions: BillingRecord[];
   byReason: BillingRecord[];
   totals: { net: number; entries: number };
 };
@@ -48,13 +67,20 @@ const emptyAuthorityState = <T,>(): AuthorityState<T> => ({
   refreshedAt: null,
 });
 
-export function BillingWorkspace({ canAdjust }: { canAdjust: boolean }) {
+export function BillingWorkspace({
+  canAdjust,
+  canReconcile,
+}: {
+  canAdjust: boolean;
+  canReconcile: boolean;
+}) {
   const [query, setQuery] = useState<BillingQuery>(() => currentQuery());
   const [queryDraft, setQueryDraft] = useState<BillingQuery>(() => currentQuery());
   const [ledgerState, setLedgerState] = useState<AuthorityState<BillingListResponse>>(emptyAuthorityState);
   const [subscriptionState, setSubscriptionState] = useState<AuthorityState<BillingListResponse>>(emptyAuthorityState);
   const [reconciliationState, setReconciliationState] = useState<AuthorityState<BillingReconciliation>>(emptyAuthorityState);
   const [adjustment, setAdjustment] = useState<AdjustmentDraft>(emptyAdjustment);
+  const [refundReference, setRefundReference] = useState("");
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const requestGates = useRef({
@@ -201,10 +227,97 @@ export function BillingWorkspace({ canAdjust }: { canAdjust: boolean }) {
     });
   }
 
+  function requestRefundAcknowledgement(checkout: BillingRecord) {
+    if (!canReconcile || !isRefundAcknowledgementCandidate(checkout)) return;
+    const checkoutId = text(checkout.id);
+    const providerInvoiceId = text(checkout.providerSessionId);
+    const authorityReference = refundReference.trim();
+    if (!checkoutId || !providerInvoiceId || !authorityReference) return;
+    const confirmationTarget =
+      billingRefundAcknowledgementConfirmation(checkoutId);
+    const idempotencyKey = crypto.randomUUID();
+    setConfirmation({
+      title: `Acknowledge provider refund for ${checkoutId}`,
+      summary: (
+        <span>
+          Invoice {providerInvoiceId}. This records an already-completed
+          provider refund and closes the late-settlement exception; it does not
+          issue a refund.
+        </span>
+      ),
+      destructive: {
+        expectedName: confirmationTarget,
+        inputLabel: "Checkout refund acknowledgement",
+      },
+      reasonLabel: "Reconciliation reason",
+      submitLabel: "Acknowledge refund",
+      onSubmit: async (reason) => {
+        await apiWrite(
+          `/api/v1/admin/billing/reconciliation/${encodeURIComponent(checkoutId)}/resolve`,
+          "POST",
+          {
+            resolution: "refund_acknowledged",
+            providerReference: authorityReference,
+            reason,
+            confirmation: confirmationTarget,
+          },
+          { "idempotency-key": idempotencyKey },
+        );
+        setRefundReference("");
+        setNotice(`Checkout ${checkoutId} refund acknowledgement recorded.`);
+        await loadReconciliation();
+      },
+    });
+  }
+
   const filtered = isBillingQueryFiltered(query);
   const ledger = ledgerState.data?.items ?? [];
   const subscriptions = subscriptionState.data?.items ?? [];
   const reconciliation = reconciliationState.data;
+  const hasRefundCandidates =
+    reconciliation?.checkoutExceptions.some(isRefundAcknowledgementCandidate) ??
+    false;
+  const reconciliationRows: DataTableRow[] =
+    reconciliation?.checkoutExceptions.map((row, index) => ({
+      id: text(row.id) || `checkout-exception-${index}`,
+      cells: [
+        ...[
+          "id",
+          "userId",
+          "userEmail",
+          "plan",
+          "billingPeriod",
+          "provider",
+          "providerSessionId",
+          "providerInvoiceStatus",
+          "providerInvoiceAdditionalStatus",
+          "status",
+          "failureCode",
+          "providerLookupMissCount",
+          "providerAttemptedAt",
+          "providerLastLookupAt",
+          "updatedAt",
+        ].map((key) => display(row[key])),
+        ...(canReconcile
+          ? [
+              isRefundAcknowledgementCandidate(row) ? (
+                <button
+                  className="inline-flex min-h-9 items-center gap-2 rounded-md border border-[var(--ad-border)] px-3 text-xs font-semibold disabled:opacity-50"
+                  disabled={!refundReference.trim()}
+                  key="refund-acknowledgement"
+                  onClick={() => requestRefundAcknowledgement(row)}
+                  type="button"
+                >
+                  <ReceiptText className="h-4 w-4" />
+                  Acknowledge refund
+                </button>
+              ) : (
+                "—"
+              ),
+            ]
+          : []),
+      ],
+    })) ?? [];
   const loading = ledgerState.loading || subscriptionState.loading || reconciliationState.loading;
   const initiallyLoading = !ledgerState.data && !subscriptionState.data && !reconciliationState.data && loading;
   return (
@@ -217,12 +330,15 @@ export function BillingWorkspace({ canAdjust }: { canAdjust: boolean }) {
       </div>
       <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--ad-text-muted)]" role="status">
         <div className="flex flex-wrap gap-x-3 gap-y-1">
-          <span>Legacy compatibility authority · source freshness watermark unavailable</span>
+          <span>Customer business records · dataClass=customer only · source freshness watermark unavailable</span>
           <AuthorityFreshness label="Ledger" state={ledgerState} />
           <AuthorityFreshness label="Subscriptions" state={subscriptionState} />
           <AuthorityFreshness label="Reconciliation" state={reconciliationState} />
         </div>
-        {!canAdjust ? <strong>Read only · billing.ledger.adjust is not granted</strong> : null}
+        <div className="flex flex-wrap gap-2">
+          {!canAdjust ? <strong>Ledger read only · billing.ledger.adjust is not granted</strong> : null}
+          {!canReconcile ? <strong>Reconciliation read only · billing.checkout.reconcile is not granted</strong> : null}
+        </div>
       </div>
 
       <form className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 md:grid-cols-2 xl:grid-cols-[minmax(260px,1fr)_200px_220px_auto]" onSubmit={apply}>
@@ -248,6 +364,32 @@ export function BillingWorkspace({ canAdjust }: { canAdjust: boolean }) {
         </section>
       ) : null}
 
+      {canReconcile && hasRefundCandidates ? (
+        <section
+          aria-labelledby="billing-reconciliation-resolution-title"
+          className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"
+        >
+          <h3
+            className="font-semibold"
+            id="billing-reconciliation-resolution-title"
+          >
+            Late-settlement resolution
+          </h3>
+          <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
+            Enter the provider refund transaction or case reference, then
+            acknowledge only after the external refund is complete.
+          </p>
+          <div className="mt-4 max-w-xl">
+            <Field
+              label="Provider refund reference"
+              onChange={setRefundReference}
+              placeholder="Refund transaction or provider case ID"
+              value={refundReference}
+            />
+          </div>
+        </section>
+      ) : null}
+
       {notice ? <p className="rounded-md bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]" data-testid="admin-action-status" role="status">{notice}</p> : null}
       <AuthorityError label="ledger" onRetry={() => void loadLedger(query)} state={ledgerState} />
       <AuthorityError label="subscriptions" onRetry={() => void loadSubscriptions(query)} state={subscriptionState} />
@@ -255,19 +397,43 @@ export function BillingWorkspace({ canAdjust }: { canAdjust: boolean }) {
       {initiallyLoading ? <BillingLoading /> : (
         <>
           {reconciliation ? <>
-          <div className="grid gap-px overflow-hidden rounded-lg border border-[var(--ad-border)] bg-black/[0.05] md:grid-cols-3">
+          <div className="grid gap-px overflow-hidden rounded-lg border border-[var(--ad-border)] bg-black/[0.05] md:grid-cols-4">
             <Metric label="Net coins (window)" meta={`${reconciliation.totals.entries} ledger entries`} value={String(reconciliation.totals.net)} />
             <Metric label="Active subscriptions" meta="status = active" value={String(reconciliation.activeSubscriptions)} />
+            <Metric label="Checkout exceptions" meta="provider reconciliation queue" value={String(reconciliation.checkoutExceptions.length)} />
             <Metric label="Window" meta={date(reconciliation.window.to)} value={`${date(reconciliation.window.from)} →`} />
           </div>
           <DataTable caption="Reconciliation by reason" headers={["Reason", "Total delta", "Count"]} rows={tableRows(reconciliation.byReason, ["reason", "totalDelta", "count"], "reconciliation")} />
+          <DataTable
+            caption="Checkout reconciliation exceptions"
+            empty={<EmptyState hint="No checkout intents currently require provider reconciliation." title="Checkout reconciliation is clear" />}
+            headers={[
+              "ID",
+              "User",
+              "Email",
+              "Plan",
+              "Period",
+              "Provider",
+              "Invoice",
+              "Provider status",
+              "Provider detail",
+              "Local status",
+              "Failure",
+              "Misses",
+              "Attempted",
+              "Last lookup",
+              "Updated",
+              ...(canReconcile ? ["Action"] : []),
+            ]}
+            rows={reconciliationRows}
+          />
           </> : null}
           {subscriptionState.data ? <>
-          <DataTable caption="Subscriptions" empty={<BillingEmpty filtered={Boolean(query.search || query.subscriptionStatus)} kind="subscriptions" onClear={clearFilters} />} headers={["ID", "User", "Email", "Plan", "Period", "Provider", "Status", "Period end", "Cancel at end"]} rows={tableRows(subscriptions, ["id", "userId", "userEmail", "plan", "billingPeriod", "provider", "status", "currentPeriodEnd", "cancelAtPeriodEnd"], "subscription")} />
+          <DataTable caption="Customer subscriptions" empty={<BillingEmpty filtered={Boolean(query.search || query.subscriptionStatus)} kind="subscriptions" onClear={clearFilters} />} headers={["ID", "User", "Email", "Plan", "Period", "Provider", "Status", "Period end", "Cancel at end"]} rows={tableRows(subscriptions, ["id", "userId", "userEmail", "plan", "billingPeriod", "provider", "status", "currentPeriodEnd", "cancelAtPeriodEnd"], "subscription")} />
           <NextPageButton label="Next subscription page" loading={subscriptionState.loading} onClick={() => navigate({ ...query, subscriptionCursor: subscriptionState.data?.pageInfo?.endCursor ?? "" })} pageInfo={subscriptionState.data.pageInfo ?? emptyPageInfo} />
           </> : null}
           {ledgerState.data ? <>
-          <DataTable caption="Ledger" empty={<BillingEmpty filtered={Boolean(query.search || query.ledgerReason)} kind="ledger entries" onClear={clearFilters} />} headers={["ID", "User", "Email", "Delta", "Balance after", "Reason", "Source", "Created"]} rows={tableRows(ledger, ["id", "userId", "userEmail", "delta", "balanceAfter", "reason", "sourceId", "createdAt"], "ledger")} />
+          <DataTable caption="Customer ledger" empty={<BillingEmpty filtered={Boolean(query.search || query.ledgerReason)} kind="ledger entries" onClear={clearFilters} />} headers={["ID", "User", "Email", "Delta", "Balance after", "Reason", "Source", "Created"]} rows={tableRows(ledger, ["id", "userId", "userEmail", "delta", "balanceAfter", "reason", "sourceId", "createdAt"], "ledger")} />
           <NextPageButton label="Next ledger page" loading={ledgerState.loading} onClick={() => navigate({ ...query, ledgerCursor: ledgerState.data?.pageInfo?.endCursor ?? "" })} pageInfo={ledgerState.data.pageInfo ?? emptyPageInfo} />
           </> : null}
         </>

@@ -1,7 +1,7 @@
 import { characterProjectDraftPatchRequestSchema, characterProjectDraftResumeSchema } from "@idream/shared/admin";
-import { Errors } from "@/server/lib/errors";
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 import { getCharacterProjectDraftForResume, updateCharacterProjectDraft } from "@/server/modules/admin-v2/characters/workspace";
+import { requireMatchingProjectVersion } from "@/server/modules/admin-v2/characters/project-version";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 
 export const dynamic = "force-dynamic";
@@ -15,25 +15,12 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
   });
 }
 
-function ifMatchVersion(request: Request): number | null {
-  const value = request.headers.get("if-match")?.replace(/^W\//, "").replaceAll('"', "");
-  if (!value) return null;
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
-}
-
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
   return adminV2Route(async () => {
     const actor = await actorWithPermission(request, "character.project.write", { characterId: id });
     const body = characterProjectDraftPatchRequestSchema.parse(await request.json());
-    const headerVersion = ifMatchVersion(request);
-    if (headerVersion === null) {
-      throw Errors.badRequest("If-Match must contain the Character Project version");
-    }
-    if (headerVersion !== body.entityVersion) {
-      throw Errors.badRequest("If-Match and entityVersion must identify the same Project revision");
-    }
+    requireMatchingProjectVersion(request, body.entityVersion);
     return updateCharacterProjectDraft({
       characterId: id,
       expectedVersion: body.entityVersion,

@@ -72,6 +72,7 @@ describe("Admin v2 command reliability", () => {
       environment: "test",
       actor: { id: "admin-v2-test", role: "admin" },
       idempotencyKey,
+      coordinationKey: "incident:incident-1",
       commandType: "incident.resolve",
       target: { type: "ops_incident", id: "incident-1" },
       expectedVersion: 3,
@@ -86,12 +87,54 @@ describe("Admin v2 command reliability", () => {
     expect(first.replayed).toBe(false);
     expect(replay).toMatchObject({ commandId: first.commandId, replayed: true });
     expect(await prisma.controlPlaneCommand.count()).toBe(1);
+    await expect(prisma.controlPlaneCommand.findUnique({ where: { id: first.commandId } }))
+      .resolves.toMatchObject({ coordinationKey: "incident:incident-1" });
     expect(await prisma.mainOutboxEvent.count()).toBe(1);
     expect(await prisma.adminAuditLog.count({ where: { actorId: "admin-v2-test" } })).toBe(1);
     const metrics = renderPrometheusMetrics();
     expect(metrics).toContain('admin_command_total{outcome="accepted",type="incident.resolve"} 1');
     expect(metrics).toContain('admin_command_total{outcome="replayed",type="incident.resolve"} 1');
     expect(metrics).toContain("admin_command_duration_seconds_count");
+  });
+
+  it("accepts only one active command for a coordination key across different idempotency keys", async () => {
+    const coordinationKey = `character:${randomUUID()}`;
+    const base = {
+      environment: "test",
+      actor: { id: "admin-v2-test", role: "admin" },
+      coordinationKey,
+      commandType: "character.release.publish",
+      target: { type: "character_release", id: "release-coordinated" },
+      expectedVersion: 4,
+      payload: { reason: "validated launch" },
+      reason: "publish coordinated release",
+      requestId: randomUUID(),
+    } as const;
+
+    const results = await Promise.allSettled([
+      acceptControlPlaneCommand(prisma, { ...base, idempotencyKey: randomUUID() }),
+      acceptControlPlaneCommand(prisma, { ...base, idempotencyKey: randomUUID() }),
+    ]);
+    const fulfilled = results.find((result) => result.status === "fulfilled");
+    const rejected = results.find((result) => result.status === "rejected");
+    if (!fulfilled || fulfilled.status !== "fulfilled") {
+      throw new Error("Expected one coordinated command to be accepted");
+    }
+    if (!rejected || rejected.status !== "rejected") {
+      throw new Error("Expected one coordinated command to be rejected");
+    }
+
+    expect(rejected.reason).toMatchObject({
+      code: "conflict",
+      status: 409,
+      details: {
+        activeCommandId: fulfilled.value.commandId,
+        activeCommandType: "character.release.publish",
+        activeCommandStatus: "accepted",
+      },
+    });
+    await expect(prisma.controlPlaneCommand.count({ where: { coordinationKey } }))
+      .resolves.toBe(1);
   });
 
   it("rejects reuse of an idempotency key for a different canonical request", async () => {

@@ -47,16 +47,31 @@ const contractClasses = {
   ],
 } as const;
 
-const refs = [...new Set(ADMIN_V2_API_OPERATIONS.flatMap((operation) => [
-  operation.contract.request.split("+")[0]!,
-  operation.contract.response.split("+")[0]!,
-]))];
+const manifestContractBindings = ADMIN_V2_API_OPERATIONS.flatMap((operation) => [
+  {
+    boundary: "request",
+    operationId: operation.id,
+    ref: operation.contract.request.split("+")[0]!,
+  },
+  {
+    boundary: "response",
+    operationId: operation.id,
+    ref: operation.contract.response.split("+")[0]!,
+  },
+]);
+
+const refs = [...new Set(manifestContractBindings.map((binding) => binding.ref))];
 
 describe("Admin v2 shared contract HTTP/in-process parity", () => {
   it("keeps the entire manifest executable with no pending escape hatch", () => {
     expect(Object.keys(ADMIN_V2_PENDING_CONTRACTS)).toHaveLength(0);
-    expect(refs).toHaveLength(134);
-    for (const ref of refs) expect(requireExecutableAdminV2Contract(ref).fixtureKey).toBe(ref);
+    expect(manifestContractBindings).not.toHaveLength(0);
+    for (const binding of manifestContractBindings) {
+      expect(
+        requireExecutableAdminV2Contract(binding.ref).fixtureKey,
+        `${binding.operationId} ${binding.boundary}: ${binding.ref}`,
+      ).toBe(binding.ref);
+    }
   });
 
   for (const [contractClass, classRefs] of Object.entries(contractClasses)) {

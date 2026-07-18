@@ -1,12 +1,11 @@
 import Image from "next/image";
 import Link from "next/link";
 import { ArrowRight, LoaderCircle } from "lucide-react";
-import { characterCards } from "@/lib/ourdream-data";
 import { CharacterCard } from "./CharacterCard";
 import type { CharacterCardData } from "@/types/ourdream";
 
 export function CharacterGrid({
-  cards = characterCards,
+  cards = [],
   emptyDescription = "Try another search term, clear a category, or switch the gender, style, and age filters.",
   emptyTitle = "No characters found",
   error = null,
@@ -34,7 +33,7 @@ export function CharacterGrid({
             <CharacterCard card={card} imageLoading={index < 10 ? "eager" : "lazy"} />
             {index === 5 && (
               <Link
-                aria-label="Pride offer - view plans"
+                aria-label="Compare upgrade plans"
                 className="group relative hidden aspect-[240/400] overflow-hidden rounded-[12px] bg-[rgb(36,36,36)] md:block"
                 href="/upgrade"
               >
@@ -49,10 +48,10 @@ export function CharacterGrid({
                 <span className="absolute inset-0 bg-[linear-gradient(0deg,rgba(0,0,0,.78),rgba(0,0,0,.18)_60%,transparent)]" />
                 <span className="absolute inset-x-0 bottom-0 p-4">
                   <span className="block text-[24px] font-black uppercase leading-6 text-white">
-                    Pride offer
+                    Create more
                   </span>
                   <span className="mt-2 block text-[12px] font-bold leading-4 text-white/80">
-                    Upgrade for more dreamcoins and longer chats.
+                    Compare current plans and included Dreamcoins.
                   </span>
                   <span className="mt-4 inline-flex h-9 items-center gap-2 rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)]">
                     View plans

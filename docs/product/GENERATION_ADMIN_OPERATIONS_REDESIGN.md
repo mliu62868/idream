@@ -1,10 +1,12 @@
 # 图片生成后台运营改造方案
 
-更新日期：2026-06-30
+更新日期：2026-07-17
 
-状态：产品设计方案 / 待拆任务执行
+状态：目标设计 + 当前实现补充；生成状态、发布资格与运营权威继续服从 Admin remediation plan 与 ADR
 
 > **2026-07-11 authority 修正**：本文的 Profile/Recipe/Batch/Asset/Placement 产品方向继续有效；生成状态和运营闭环以 [`ADMIN_CONSOLE_FIRST_PRINCIPLES_REMEDIATION_PLAN.md`](./ADMIN_CONSOLE_FIRST_PRINCIPLES_REMEDIATION_PLAN.md) §10–11 与 [`ADR-11`](../architecture/15-admin-operating-system-authority-adr.md) 为准。当前实现已使用 Request（兼容物理表 `GenerationJob`）→ Attempt → TransportExecution → Artifact → Delivery，并以 DreamcoinLedger + SettlementLink 表达结算；`completed`、`refunded` 和 BullMQ job state 不再混作业务成功。
+
+> **2026-07-17 ComfyUI 当前事实**：`qwen-image-edit-img2img`、`qwen-image-edit-multi-identity`、`qwen-image-edit-multi-reference`、`redcraft-krea2-txt2img` 四个 iDream workflow 已完成 UI sync/readback。single reference、dual identity、identity + source 三条真实执行分别产出 832×1216 artifact，SHA-256 为 `3e0bdfa40aa9f70fa7c6fbaeb38f360254c89febf31988221ae2ef2b54fc5ea5`、`965c9f20dd71cd294429bc7c87e940328d441fd48380599aee533343162cb512`、`b2361c115cf2b8351303cc468d82661f0a40074bee4b026927bcf4e9a889d6e5`。descriptor load、UI visibility、artifact smoke、profile publish/route qualification 与生产容量是不同 Gate；前两项或一次 smoke 不能自动发布 profile。
 
 适用范围：`/admin` 中图片生成相关的内置 profile 发布、生成任务、供应商健康、运营出图、素材管理和投放流程。
 
@@ -184,7 +186,7 @@ provider 和未来 LoRA/adapter 服务。需要收敛的是 admin UX：普通运
 `consistencyRate` 写回 `dryRunSummary`。服务端发布时会把这些字段和既有 dry-run 合并，
 不会让人工 review 覆盖掉已有 `failureMode`。
 
-内置模板要区分“已发布默认”和“隔离候选”：
+内置模板要区分“已发布默认”和“隔离候选”。以下 Redcraft 内容是历史探索证据，不冒充当前默认主路径：
 
 - 已跑通的 active/default 仍是 `pornmaster-zimage-turbo`；截图里的主站普通图片生成和
   admin test-job 成功，证明默认 sd.cpp 链路可用，不能和 Redcraft 候选混为一谈。
@@ -237,6 +239,13 @@ Redcraft 的 20 张一致性样本已用 `bun run launch:probe:redcraft-consiste
 `.tmp/redcraft-consistency-review`；其中 `manifest.json` 和 `review.html` 可直接用于人工
 review。人工 review 的 `sampleCount`、`consistencyPassCount`、`consistencyRate` 才能作为
 发布证据。
+
+`redcraft-krea2-comfyui-text.json` 是专用历史 probe 使用的 legacy non-conforming 文件，
+backend registry 对它记录 warn 并跳过是预期行为；当前可被 registry 与 ComfyUI UI 消费的
+canonical descriptor 是 `redcraft-krea2-txt2img.json`。两者不能混写成同一 serving
+workflow。Qwen 的三条当前真机 smoke 证明 semantic reference transport 可执行，但仍不替代
+角色 route 的样本、identity match、review、expiry 与生产 runner Gate。
+
 #### Prompt Recipes
 
 回答“用什么 prompt 结构生产图片”。
@@ -974,11 +983,18 @@ GET  /api/v1/admin/content/assets
 GET  /api/v1/admin/content/assets/:id
 PATCH /api/v1/admin/content/assets/:id
 POST /api/v1/admin/content/assets/bulk
+POST /api/v1/admin/content/assets/bulk/preflight
 
 GET  /api/v1/admin/content/placements
 POST /api/v1/admin/content/placements
 PATCH /api/v1/admin/content/placements/:id
 ```
+
+批量归档预检与提交都接受最多 100 个资产 ID。预检必须一次返回逐资产依赖，
+提交必须在按 ID 获取全部媒体权威锁后重读目标并重新执行同一批量依赖解析；
+任何目标缺失、已删除或新增依赖都会使整批原子失败。归档只改变生命周期状态，
+不会回放详情页中的标签或描述草稿。提交请求中的 `assetIds` 必须已排序、已去重，
+`confirmation` 必须与该 canonical 列表逐字一致。
 
 第一阶段可以把这些 handler 仍放在 `modules/admin/service.ts`，但组件和 DTO 先按新边界命名，后续再拆 service。
 

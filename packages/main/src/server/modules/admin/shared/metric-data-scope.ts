@@ -44,6 +44,10 @@ const operationalOwnerRelationWhere = {
   },
 } satisfies Prisma.GenerationJobWhereInput;
 
+const operationalUserDataClassWhere = {
+  dataClass: { in: [...OPERATIONAL_USER_DATA_CLASSES] },
+} satisfies Prisma.UserWhereInput;
+
 export function customerUserWhere(
   where: Prisma.UserWhereInput,
 ): Prisma.UserWhereInput {
@@ -73,6 +77,134 @@ export function operationalGenerationJobWhere(
 ): Prisma.GenerationJobWhereInput {
   return {
     AND: [operationalOwnerRelationWhere, where],
+  };
+}
+
+export function operationalUserWhere(
+  where: Prisma.UserWhereInput,
+): Prisma.UserWhereInput {
+  return {
+    AND: [operationalUserDataClassWhere, where],
+  };
+}
+
+export function operationalContentReportWhere(
+  where: Prisma.ContentReportWhereInput,
+): Prisma.ContentReportWhereInput {
+  return {
+    AND: [
+      {
+        OR: [
+          { reporterId: null },
+          {
+            reporter: {
+              is: {
+                dataClass: { in: [...OPERATIONAL_USER_DATA_CLASSES] },
+              },
+            },
+          },
+        ],
+      },
+      where,
+    ],
+  };
+}
+
+export function operationalMediaAssetWhere(
+  where: Prisma.MediaAssetWhereInput,
+): Prisma.MediaAssetWhereInput {
+  return {
+    AND: [
+      {
+        owner: {
+          is: { dataClass: { in: [...OPERATIONAL_USER_DATA_CLASSES] } },
+        },
+      },
+      where,
+    ],
+  };
+}
+
+export function operationalAppealWhere(
+  where: Prisma.AppealWhereInput,
+): Prisma.AppealWhereInput {
+  return {
+    AND: [
+      {
+        user: {
+          is: { dataClass: { in: [...OPERATIONAL_USER_DATA_CLASSES] } },
+        },
+      },
+      where,
+    ],
+  };
+}
+
+export function operationalSupportRequestWhere(
+  where: Prisma.SupportRequestWhereInput,
+): Prisma.SupportRequestWhereInput {
+  return {
+    AND: [
+      {
+        user: {
+          is: { dataClass: { in: [...OPERATIONAL_USER_DATA_CLASSES] } },
+        },
+      },
+      where,
+    ],
+  };
+}
+
+export function operationalCharacterWhere(
+  where: Prisma.CharacterWhereInput,
+): Prisma.CharacterWhereInput {
+  return {
+    AND: [
+      {
+        OR: [
+          { source: "official" },
+          {
+            source: "user",
+            creator: {
+              is: {
+                dataClass: { in: [...OPERATIONAL_USER_DATA_CLASSES] },
+              },
+            },
+          },
+        ],
+      },
+      where,
+    ],
+  };
+}
+
+export function operationalContentProductionBatchWhere(
+  where: Prisma.ContentProductionBatchWhereInput,
+): Prisma.ContentProductionBatchWhereInput {
+  return {
+    AND: [
+      {
+        createdBy: {
+          is: { dataClass: { in: [...OPERATIONAL_USER_DATA_CLASSES] } },
+        },
+      },
+      where,
+    ],
+  };
+}
+
+export function operationalCharacterSubmissionWhere(
+  where: Prisma.CharacterSubmissionWhereInput,
+): Prisma.CharacterSubmissionWhereInput {
+  return {
+    AND: [
+      {
+        character: {
+          is: operationalCharacterWhere({ deletedAt: null }),
+        },
+      },
+      where,
+    ],
   };
 }
 

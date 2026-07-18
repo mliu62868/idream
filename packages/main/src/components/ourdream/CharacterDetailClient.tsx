@@ -4,29 +4,39 @@ import Link from "next/link";
 import { ArrowLeft, Flag, Heart, MessageCircle, Sparkles } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
+  parseCharacterDetailResponse,
+  parseCharacterLikeResponse,
+  parseChatSessionCreateResponse,
+  parseReportResponse,
+  type PublicCharacterDetail,
+} from "@/lib/public-api-contracts";
+import {
   CharacterDetailHero,
-  type CharacterDetailPresentationData,
 } from "./CharacterDetailHero";
+import { useAgeGateAccess } from "./AgeGateBoundary";
 import { AppSidebar } from "./AppSidebar";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { SiteFooter } from "./SiteFooter";
 
-type CharacterDetailResponse = {
-  ok: boolean;
-  data?: {
-    character: CharacterDetail;
-  };
-};
-
-type CharacterDetail = CharacterDetailPresentationData;
+type CharacterDetail = PublicCharacterDetail;
 
 export function CharacterDetailClient({ id }: Readonly<{ id: string }>) {
+  return <CharacterDetailView id={id} key={id} />;
+}
+
+function CharacterDetailView({ id }: Readonly<{ id: string }>) {
+  const { accepted: ageGateAccepted } = useAgeGateAccess();
   const [character, setCharacter] = useState<CharacterDetail>();
   const [status, setStatus] = useState("Loading character...");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    fetch(`/api/v1/characters/${id}`)
+    if (!ageGateAccepted) return;
+    const controller = new AbortController();
+    fetch(`/api/v1/characters/${id}`, {
+      cache: "no-store",
+      signal: controller.signal,
+    })
       .then(async (response) => {
         if (!response.ok) {
           // Distinguish failure categories: 403 is the age gate, 404 is a
@@ -40,16 +50,16 @@ export function CharacterDetailClient({ id }: Readonly<{ id: string }>) {
           }
           return;
         }
-        const payload = (await response.json()) as CharacterDetailResponse;
-        if (payload.data?.character) {
-          setCharacter(payload.data.character);
-          setStatus("");
-        } else {
-          setStatus("This character could not be found.");
-        }
+        const payload = parseCharacterDetailResponse(await response.json());
+        setCharacter(payload.character);
+        setStatus("");
       })
-      .catch(() => setStatus("Could not load this character. Please try again."));
-  }, [id]);
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setStatus("Could not load this character. Please try again.");
+      });
+    return () => controller.abort();
+  }, [ageGateAccepted, id]);
 
   async function startChat() {
     if (!character) return;
@@ -76,12 +86,10 @@ export function CharacterDetailClient({ id }: Readonly<{ id: string }>) {
         setStatus("Could not start chat. Please try again.");
         return;
       }
-      const payload = (await response.json()) as {
-        data?: { session?: { id: string } };
-      };
-      if (payload.data?.session?.id) {
-        window.location.href = `/chat/${payload.data.session.id}`;
-      }
+      const payload = parseChatSessionCreateResponse(await response.json());
+      window.location.href = `/chat/${payload.session.id}`;
+    } catch {
+      setStatus("Could not start chat. Please try again.");
     } finally {
       setBusy(false);
     }
@@ -103,8 +111,11 @@ export function CharacterDetailClient({ id }: Readonly<{ id: string }>) {
         setStatus("Could not save your like. Please try again.");
         return;
       }
-      setCharacter({ ...character, liked: true });
-      setStatus("Character liked.");
+      const payload = parseCharacterLikeResponse(await response.json());
+      setCharacter({ ...character, liked: payload.liked });
+      setStatus(payload.liked ? "Character liked." : "Character like removed.");
+    } catch {
+      setStatus("Could not save your like. Please try again.");
     } finally {
       setBusy(false);
     }
@@ -131,7 +142,10 @@ export function CharacterDetailClient({ id }: Readonly<{ id: string }>) {
         setStatus("Could not submit the report. Please try again.");
         return;
       }
+      parseReportResponse(await response.json());
       setStatus("Report submitted for review.");
+    } catch {
+      setStatus("Could not submit the report. Please try again.");
     } finally {
       setBusy(false);
     }

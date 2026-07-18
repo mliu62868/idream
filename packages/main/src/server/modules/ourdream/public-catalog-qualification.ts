@@ -1,0 +1,369 @@
+import type { Prisma, PrismaClient } from "@prisma/client";
+import { evaluateMediaAssetCustomerPublishability } from "@/server/lib/media-asset-authority";
+import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
+import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
+import { characterReleaseSnapshotHash } from "@/server/modules/admin-v2/characters/release-snapshot";
+
+export const PUBLIC_CATALOG_QUALIFICATION_SCHEMA_VERSION =
+  "public-catalog-qualification-v1";
+export const PUBLIC_CATALOG_EDITORIAL_IMPORT_POLICY_VERSION =
+  "public-catalog-editorial-import-v1";
+export const MODERN_CHARACTER_RELEASE_POLICY_VERSION =
+  "character-release-policy-v2";
+
+function record(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function officialEditorialContentSnapshot(character: {
+  name: string;
+  age: number;
+  description: string;
+  systemPrompt: string | null;
+  style: string;
+  gender: string;
+  relationship: string | null;
+  appearance: Prisma.JsonValue;
+  advancedDetails: Prisma.JsonValue;
+}) {
+  const advanced = record(character.advancedDetails);
+  return {
+    persona: {
+      name: character.name,
+      age: character.age,
+      description: character.description,
+      systemPrompt: character.systemPrompt,
+      relationship: character.relationship,
+    },
+    opening: {
+      firstMessage:
+        typeof advanced.firstMessage === "string"
+          ? advanced.firstMessage
+          : null,
+    },
+    appearance: {
+      style: character.style,
+      gender: character.gender,
+      structured: character.appearance,
+    },
+  };
+}
+
+async function attachExistingModernQualification(
+  tx: Prisma.TransactionClient,
+  release: {
+    id: string;
+    snapshotHash: string;
+    legacy: boolean;
+    readiness: string;
+    status: string;
+    generationProvenance: Prisma.JsonValue;
+  },
+) {
+  if (
+    release.legacy ||
+    release.readiness !== "ready" ||
+    release.status !== "published" ||
+    record(release.generationProvenance).schemaVersion !==
+      "character-release-generation-provenance-v2"
+  ) {
+    return null;
+  }
+  const validation = await tx.releaseValidationRun.findFirst({
+    where: {
+      releaseId: release.id,
+      snapshotHash: release.snapshotHash,
+      policyVersion: MODERN_CHARACTER_RELEASE_POLICY_VERSION,
+      result: "passed",
+      finishedAt: { not: null },
+    },
+    orderBy: [{ finishedAt: "desc" }, { id: "desc" }],
+  });
+  if (!validation) return null;
+  return tx.publicCatalogQualification.upsert({
+    where: { releaseId: release.id },
+    update: {},
+    create: {
+      id: `catalog-qualification:${release.id}`,
+      releaseId: release.id,
+      releaseSnapshotHash: release.snapshotHash,
+      kind: "generated_release",
+      validationRunId: validation.id,
+      evidence: {
+        schemaVersion: PUBLIC_CATALOG_QUALIFICATION_SCHEMA_VERSION,
+        policyVersion: validation.policyVersion,
+        validationRunId: validation.id,
+        attachedFromExistingRelease: true,
+      },
+      qualifiedAt: validation.finishedAt ?? undefined,
+    },
+  });
+}
+
+export async function ensureOfficialEditorialCatalogQualification(
+  db: PrismaClient,
+  input: {
+    characterId: string;
+    expectedAssetId: string;
+    expectedSeedSource: string;
+  },
+) {
+  return db.$transaction(async (tx) => {
+    const character = await tx.character.findUnique({
+      where: { id: input.characterId },
+      include: {
+        imageAsset: true,
+        serving: {
+          include: {
+            currentRelease: {
+              include: { publicCatalogQualification: true },
+            },
+          },
+        },
+      },
+    });
+    if (
+      !character ||
+      character.source !== "official" ||
+      character.status !== "approved" ||
+      character.visibility !== "public" ||
+      character.deletedAt !== null
+    ) {
+      throw new Error(
+        `Official editorial import ${input.characterId} is not a public approved Character`,
+      );
+    }
+    const asset = character.imageAsset;
+    const assetMetadata = record(asset?.metadata);
+    const publishability = evaluateMediaAssetCustomerPublishability({
+      metadata: asset?.metadata,
+    });
+    if (
+      !asset ||
+      asset.id !== input.expectedAssetId ||
+      assetMetadata.seedSource !== input.expectedSeedSource ||
+      asset.type !== "image" ||
+      asset.deletedAt !== null ||
+      asset.visibility !== "public_pack" ||
+      asset.safetyStatus !== "passed" ||
+      !asset.url ||
+      !publishability.publishable
+    ) {
+      throw new Error(
+        `Official editorial import ${input.characterId} lacks its exact publishable seed asset`,
+      );
+    }
+
+    const currentRelease = character.serving?.currentRelease ?? null;
+    const currentQualification =
+      currentRelease?.publicCatalogQualification ?? null;
+    const currentProvenance = record(currentRelease?.generationProvenance);
+    const currentQualificationEvidence = record(
+      currentQualification?.evidence,
+    );
+    if (
+      currentRelease?.status === "published" &&
+      currentRelease.publishedAt !== null &&
+      currentRelease.readiness === "ready" &&
+      currentRelease.legacy &&
+      currentProvenance.schemaVersion ===
+        "character-release-editorial-import-v1" &&
+      currentProvenance.recordId === character.id &&
+      currentProvenance.sourceAssetId === asset.id &&
+      currentQualification &&
+      currentQualification.kind === "editorial_import" &&
+      currentQualification.validationRunId === null &&
+      currentQualification.revokedAt === null &&
+      currentQualification.releaseSnapshotHash ===
+        currentRelease.snapshotHash &&
+      currentQualificationEvidence.schemaVersion ===
+        PUBLIC_CATALOG_QUALIFICATION_SCHEMA_VERSION &&
+      currentQualificationEvidence.policyVersion ===
+        PUBLIC_CATALOG_EDITORIAL_IMPORT_POLICY_VERSION
+    ) {
+      return {
+        releaseId: currentRelease.id,
+        qualificationId: currentQualification.id,
+        kind: currentQualification.kind,
+        replayed: true,
+      };
+    }
+    if (currentRelease) {
+      const attached = await attachExistingModernQualification(
+        tx,
+        currentRelease,
+      );
+      if (attached) {
+        return {
+          releaseId: currentRelease.id,
+          qualificationId: attached.id,
+          kind: attached.kind,
+          replayed: true,
+        };
+      }
+    }
+
+    const contentSnapshot = officialEditorialContentSnapshot(character);
+    const contentHash = canonicalSha256(contentSnapshot);
+    const existingContent = await tx.characterContentVersion.findUnique({
+      where: {
+        characterId_contentHash: {
+          characterId: character.id,
+          contentHash,
+        },
+      },
+    });
+    const latestContentVersion = existingContent
+      ? null
+      : await tx.characterContentVersion.aggregate({
+          where: { characterId: character.id },
+          _max: { version: true },
+        });
+    const content =
+      existingContent ??
+      await tx.characterContentVersion.create({
+        data: {
+          id: `editorial-content:${character.id}:${contentHash.slice(0, 16)}`,
+          characterId: character.id,
+          version: (latestContentVersion?._max.version ?? 0) + 1,
+          contentHash,
+          personaSnapshot: toInputJson(contentSnapshot.persona),
+          openingSnapshot: toInputJson(contentSnapshot.opening),
+          appearanceSnapshot: toInputJson(contentSnapshot.appearance),
+          sourceType: "official_editorial_import",
+          sourceId: character.id,
+        },
+      });
+    const project = await tx.characterProject.upsert({
+      where: { id: `editorial-project:${character.id}` },
+      update: {},
+      create: {
+        id: `editorial-project:${character.id}`,
+        characterId: character.id,
+        phase: "live_management",
+        audience: {
+          source: "official_editorial_import",
+          state: "published",
+        },
+        successCriteria: [],
+      },
+    });
+    const revision = await tx.characterRevision.upsert({
+      where: { id: `editorial-revision:${character.id}:${contentHash.slice(0, 16)}` },
+      update: {},
+      create: {
+        id: `editorial-revision:${character.id}:${contentHash.slice(0, 16)}`,
+        projectId: project.id,
+        revision: 1,
+        characterContentVersionId: content.id,
+        projectSnapshot: {
+          source: "official_editorial_import",
+          characterId: character.id,
+          contentHash,
+        },
+      },
+    });
+    const generationProvenance = {
+      schemaVersion: "character-release-editorial-import-v1",
+      dataset: input.expectedSeedSource,
+      recordId: character.id,
+      sourceAssetId: asset.id,
+    };
+    const releasePlacementManifest = {
+      schemaVersion: 1,
+      kind: "editorial_import",
+      placements: [
+        {
+          slotKey: "character_avatar",
+          assetId: asset.id,
+          slotVersion: 1,
+        },
+      ],
+    };
+    const snapshotHash = characterReleaseSnapshotHash({
+      projectId: project.id,
+      revisionId: revision.id,
+      characterContentVersionId: content.id,
+      visualProfileId: null,
+      visualProfileVersion: null,
+      referenceSetRevisionId: null,
+      generationProvenance,
+      releasePlacementManifest,
+    });
+    const releaseId =
+      `editorial-release:${character.id}:${snapshotHash.slice(0, 16)}`;
+    const release = await tx.characterRelease.upsert({
+      where: { id: releaseId },
+      update: {},
+      create: {
+        id: releaseId,
+        projectId: project.id,
+        revisionId: revision.id,
+        characterContentVersionId: content.id,
+        generationProvenance: toInputJson(generationProvenance),
+        releasePlacementManifest: toInputJson(releasePlacementManifest),
+        snapshotHash,
+        readiness: "ready",
+        legacy: true,
+        status: "published",
+        publishedAt: new Date(),
+      },
+    });
+    const qualification = await tx.publicCatalogQualification.upsert({
+      where: { releaseId: release.id },
+      update: {},
+      create: {
+        id: `catalog-qualification:${release.id}`,
+        releaseId: release.id,
+        releaseSnapshotHash: release.snapshotHash,
+        kind: "editorial_import",
+        evidence: {
+          schemaVersion: PUBLIC_CATALOG_QUALIFICATION_SCHEMA_VERSION,
+          policyVersion: PUBLIC_CATALOG_EDITORIAL_IMPORT_POLICY_VERSION,
+          characterId: character.id,
+          sourceAssetId: asset.id,
+          checks: {
+            exactSeedRecord: true,
+            nonSynthetic: true,
+            safetyPassed: true,
+            publicPack: true,
+            imageAvailable: true,
+          },
+        },
+      },
+    });
+    if (
+      currentRelease &&
+      currentRelease.id !== release.id &&
+      currentRelease.status === "published"
+    ) {
+      await tx.characterRelease.update({
+        where: { id: currentRelease.id },
+        data: { status: "superseded", version: { increment: 1 } },
+      });
+    }
+    await tx.characterServing.upsert({
+      where: { characterId: character.id },
+      update: {
+        currentReleaseId: release.id,
+        scheduledReleaseId: null,
+        scheduledAt: null,
+        state: "live",
+        version: { increment: 1 },
+      },
+      create: {
+        characterId: character.id,
+        currentReleaseId: release.id,
+        state: "live",
+      },
+    });
+    return {
+      releaseId: release.id,
+      qualificationId: qualification.id,
+      kind: qualification.kind,
+      replayed: false,
+    };
+  });
+}

@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 export function AgeGate({
   forceVisible = false,
@@ -11,6 +11,7 @@ export function AgeGate({
   const [visible, setVisible] = useState(forceVisible);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
+  const enterButtonRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     if (forceVisible) return;
@@ -25,6 +26,28 @@ export function AgeGate({
     }, 0);
     return () => window.clearTimeout(timer);
   }, [forceVisible]);
+
+  useEffect(() => {
+    if (!visible) return;
+    const previousFocus =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    const focusFrame = window.requestAnimationFrame(() => {
+      enterButtonRef.current?.focus();
+    });
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      window.requestAnimationFrame(() => {
+        if (
+          previousFocus?.isConnected &&
+          !previousFocus.closest("[inert]")
+        ) {
+          previousFocus.focus();
+        }
+      });
+    };
+  }, [visible]);
 
   async function accept() {
     setPending(true);
@@ -56,7 +79,13 @@ export function AgeGate({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black p-2">
-      <div className="flex w-full max-w-sm flex-col items-center rounded-[28px] border border-white/10 bg-[rgb(36,36,36)] p-6 text-center shadow-[2px_2px_8px_3px_rgba(0,0,0,0.25)]">
+      <div
+        aria-describedby="age-gate-description"
+        aria-labelledby="age-gate-title"
+        aria-modal="true"
+        className="flex w-full max-w-sm flex-col items-center rounded-[28px] border border-white/10 bg-[rgb(36,36,36)] p-6 text-center shadow-[2px_2px_8px_3px_rgba(0,0,0,0.25)]"
+        role="dialog"
+      >
         <Image
           src="/images/ourdream/age-gate-logo.png"
           alt="ourdream.ai"
@@ -64,10 +93,16 @@ export function AgeGate({
           height={16}
           className="h-4 w-[100px] opacity-60"
         />
-        <h2 className="mt-6 text-[24px] font-bold uppercase leading-[26px] text-white">
+        <h2
+          className="mt-6 text-[24px] font-bold uppercase leading-[26px] text-white"
+          id="age-gate-title"
+        >
           Adults Only
         </h2>
-        <p className="mt-1.5 text-[14px] leading-5 text-[rgb(170,170,170)]">
+        <p
+          className="mt-1.5 text-[14px] leading-5 text-[rgb(170,170,170)]"
+          id="age-gate-description"
+        >
           By entering, you agree to our{" "}
           <Link className="text-white underline underline-offset-2" href="/terms">
             Terms
@@ -77,6 +112,7 @@ export function AgeGate({
           className="mt-6 min-h-10 w-full rounded-full bg-[linear-gradient(0deg,#ff1cac,#fd5fc2_50%,#ff79d1)] px-4 py-3 text-[14px] font-bold leading-[14px] text-white disabled:opacity-70"
           disabled={pending}
           onClick={accept}
+          ref={enterButtonRef}
           type="button"
         >
           {pending ? "Entering..." : "I'm over 18"}

@@ -13,6 +13,7 @@ import {
   TARGET_TYPES,
   defaultPlacementDraft,
   placementCreatePayload,
+  publishableApprovedAssets,
   type ApprovedAsset,
   type PlacementDraft,
 } from "./placements-api";
@@ -24,21 +25,34 @@ import {
 export function PlacementsNewPage() {
   const { t, value } = useAdminI18n();
   const [assets, setAssets] = useState<ApprovedAsset[]>([]);
+  const [blockedAssets, setBlockedAssets] = useState<ApprovedAsset[]>([]);
   const [draft, setDraft] = useState<PlacementDraft>(defaultPlacementDraft);
   const [loadingAssets, setLoadingAssets] = useState(true);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [idempotencyKey, setIdempotencyKey] = useState(() => crypto.randomUUID());
 
   const loadAssets = useCallback(async () => {
     setLoadingAssets(true);
     setError(null);
     try {
       const data = await apiGet<{ items: ApprovedAsset[] }>(APPROVED_ASSETS_LIST);
-      setAssets(data.items);
+      const eligible = publishableApprovedAssets(data.items);
+      setAssets(eligible);
+      setBlockedAssets(
+        data.items.filter((asset) => !asset.customerPublishable),
+      );
       setDraft((current) => ({
         ...current,
-        mediaAssetId: current.mediaAssetId || data.items[0]?.id || "",
-        targetId: current.targetId || data.items[0]?.targetId || "",
+        mediaAssetId:
+          eligible.some((asset) => asset.id === current.mediaAssetId)
+            ? current.mediaAssetId
+            : eligible[0]?.id ?? "",
+        targetId:
+          current.targetId ||
+          eligible.find((asset) => asset.id === current.mediaAssetId)?.targetId ||
+          eligible[0]?.targetId ||
+          "",
       }));
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : t("Request failed"));
@@ -56,6 +70,7 @@ export function PlacementsNewPage() {
 
   function patch(partial: Partial<PlacementDraft>) {
     setDraft((current) => ({ ...current, ...partial }));
+    setIdempotencyKey(crypto.randomUUID());
   }
 
   function selectAsset(assetId: string) {
@@ -64,7 +79,10 @@ export function PlacementsNewPage() {
   }
 
   const canSubmit =
-    !creating && draft.mediaAssetId.trim().length > 0 && draft.targetId.trim().length > 0 && draft.reason.trim().length >= 3;
+    !creating &&
+    assets.some((asset) => asset.id === draft.mediaAssetId) &&
+    draft.targetId.trim().length > 0 &&
+    draft.reason.trim().length >= 3;
 
   async function create() {
     setCreating(true);
@@ -74,6 +92,7 @@ export function PlacementsNewPage() {
         PLACEMENTS_BASE,
         "POST",
         placementCreatePayload(draft),
+        { "idempotency-key": idempotencyKey },
       );
       const newId = created.placement?.id;
       window.location.href = newId ? `/admin/content/placements/${newId}` : "/admin/content/placements";
@@ -85,11 +104,14 @@ export function PlacementsNewPage() {
 
   return (
     <FormPage backHref="/admin/content/placements" backLabel={t("Back to placements")} title={t("New placement")}>
+      <div className="rounded-lg bg-[var(--ad-blue-bg)] p-3 text-sm leading-6 text-[var(--ad-blue-text)]">
+        {t("Standalone placements are draft records only. Customer-visible campaign activation happens from a verified Creative Run; Character images publish through a Character Release.")}
+      </div>
       <FormSection title={t("Basic info")}>
         <Field full label={t("Asset")}>
           <select
             className={INPUT_CLASS}
-            disabled={loadingAssets}
+            disabled={loadingAssets || assets.length === 0}
             onChange={(event) => selectAsset(event.target.value)}
             value={draft.mediaAssetId}
           >
@@ -99,6 +121,18 @@ export function PlacementsNewPage() {
               </option>
             ))}
           </select>
+          {blockedAssets.length > 0 ? (
+            <p className="mt-2 text-xs text-[var(--ad-yellow-text)]" role="status">
+              {blockedAssets.length === 1
+                ? t("1 approved asset is hidden because generation authority is incomplete or untrusted.")
+                : t("{count} approved assets are hidden because generation authority is incomplete or untrusted.").replace("{count}", String(blockedAssets.length))}
+            </p>
+          ) : null}
+          {!loadingAssets && !error && assets.length === 0 ? (
+            <p className="mt-2 text-xs text-[var(--ad-red-text)]" role="alert">
+              {t("No customer-publishable approved assets are available. Repair generation authority in the Image Library or create a new reviewed asset.")}
+            </p>
+          ) : null}
         </Field>
         <Field label={t("Slot")}>
           <select className={INPUT_CLASS} onChange={(event) => patch({ slot: event.target.value as PlacementDraft["slot"] })} value={draft.slot}>

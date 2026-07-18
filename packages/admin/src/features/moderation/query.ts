@@ -46,7 +46,10 @@ export function moderationWorkspaceUrl(pathname: string, search: string, query: 
   return value ? `${pathname}?${value}` : pathname;
 }
 
-export function moderationDecisionConfirmation(kind: "action" | "close" | "uphold" | "overturn" | "modify", id: string) {
+export function moderationDecisionConfirmation(
+  kind: "action" | "close" | "uphold" | "overturn" | "modify" | "media_pass" | "media_block",
+  id: string,
+) {
   if (kind === "action") return "TAKEDOWN";
   if (kind === "uphold") return "UPHOLD";
   if (kind === "overturn") return "OVERTURN";

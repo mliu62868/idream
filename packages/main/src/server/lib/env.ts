@@ -21,9 +21,10 @@ function isPostgresUrl(value: string) {
 function isPublicHttpsOrigin(value: string) {
   try {
     const url = new URL(value);
+    const hostname = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
     return (
       url.protocol === "https:" &&
-      !new Set(["localhost", "127.0.0.1", "::1"]).has(url.hostname)
+      !new Set(["localhost", "127.0.0.1", "::1"]).has(hostname)
     );
   } catch {
     return false;
@@ -39,6 +40,7 @@ const EnvSchema = z.object({
   }),
   BETTER_AUTH_SECRET: z.string().min(32),
   BETTER_AUTH_URL: z.string().url(),
+  MAIN_WEB_URL: z.string().url().optional(),
   INTERNAL_TOKEN: z.string().min(16),
   CRON_SECRET: z.string().min(16),
   REDIS_URL: z.string().url().default("redis://127.0.0.1:6379/0"),
@@ -120,6 +122,17 @@ const EnvSchema = z.object({
       code: "custom",
       path: ["BETTER_AUTH_URL"],
       message: "BETTER_AUTH_URL must be a public HTTPS origin in production",
+    });
+  }
+  if (
+    value.APP_ENV === "production" &&
+    !isProductionBuild &&
+    (!value.MAIN_WEB_URL || !isPublicHttpsOrigin(value.MAIN_WEB_URL))
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["MAIN_WEB_URL"],
+      message: "MAIN_WEB_URL must be a public HTTPS origin in production",
     });
   }
   if (value.APP_ENV === "production" && !isProductionBuild && !value.ADMIN_BFF_SIGNING_SECRET) {

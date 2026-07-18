@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { purgeTestData } from "@/server/test/helpers";
@@ -15,18 +16,26 @@ afterAll(async () => {
 });
 
 describe("generationCostDreamcoins", () => {
-  it("uses the newest active rule's baseCost, ordered by effectiveFrom/version desc", async () => {
-    // mode is unique to this test, so no other (parallel) test's rule can win the ordering.
+  it("fails closed when no active rule exists", async () => {
+    await expect(
+      generationCostDreamcoins(`${P}missing` as "image", 1, 1),
+    ).rejects.toMatchObject({
+      code: "conflict",
+      message: "Generation pricing is unavailable",
+    });
+  });
+
+  it("uses the mode's single active rule and ignores archived history", async () => {
     const mode = `${P}newest-rule`;
     await prisma.pricingRule.create({
       data: {
         id: `${P}rule-v1`,
         ruleKey: `${P}rule-newest`,
-        label: "Older active rule",
+        label: "Older archived rule",
         mode,
         baseCost: 3,
         multiplier: 1,
-        status: "active",
+        status: "archived",
         version: 1,
         effectiveFrom: new Date("2026-01-01T00:00:00.000Z"),
         publishedAt: new Date(),
@@ -36,7 +45,7 @@ describe("generationCostDreamcoins", () => {
       data: {
         id: `${P}rule-v2`,
         ruleKey: `${P}rule-newest`,
-        label: "Newest active rule",
+        label: "Current active rule",
         mode,
         baseCost: 7,
         multiplier: 1,
@@ -50,38 +59,82 @@ describe("generationCostDreamcoins", () => {
     expect(await generationCostDreamcoins(mode as "image", 2, 1)).toBe(14);
   });
 
-  it("wins the ordering on the real 'video' mode via a far-future effectiveFrom + high version", async () => {
-    // "video" is a real, shared mode — other concurrent tests (e.g.
-    // admin-console.test.ts's video-pricing publish/rollback case) may create
-    // and mutate their own active video rules at the same time. Rather than
-    // read-then-assert against whatever happens to be active (a TOCTOU race:
-    // the effective rule can change between our read and the call under
-    // test), we seed a rule that is guaranteed to sort first — a far-future
-    // effectiveFrom and a version no concurrent test would plausibly use —
-    // so the assertion is deterministic regardless of what else is active.
-    // We only ever delete our own P-prefixed row, so this can't disturb the
-    // concurrent admin-console rule it created.
-    const ruleId = `${P}rule-video-wins`;
+  it("fails closed when corrupted data contains multiple active rules", async () => {
+    const mode = `${P}ambiguous`;
+    await prisma.pricingRule.createMany({
+      data: [
+        {
+          id: `${P}ambiguous-v1`,
+          ruleKey: `${P}ambiguous`,
+          label: "Ambiguous v1",
+          mode,
+          baseCost: 42,
+          multiplier: 1,
+          status: "active",
+          version: 1,
+        },
+        {
+          id: `${P}ambiguous-v2`,
+          ruleKey: `${P}ambiguous`,
+          label: "Ambiguous v2",
+          mode,
+          baseCost: 100,
+          multiplier: 1,
+          status: "active",
+          version: 2,
+        },
+      ],
+    });
+
+    await expect(
+      generationCostDreamcoins(mode as "video", 2, 1),
+    ).rejects.toMatchObject({
+      code: "conflict",
+      details: {
+        mode,
+        reason: "ambiguous_active_rules",
+      },
+    });
+  });
+
+  it("does not charge a future-dated rule before it becomes effective", async () => {
+    const mode = `${P}future`;
     await prisma.pricingRule.create({
       data: {
-        id: ruleId,
-        ruleKey: `${P}rule-video-wins`,
-        label: "Deterministically-newest video rule",
-        mode: "video",
-        baseCost: 42,
+        id: `${P}future-v1`,
+        ruleKey: `${P}future`,
+        label: "Future price",
+        mode,
+        baseCost: 99,
         multiplier: 1,
         status: "active",
-        version: 999_999,
-        effectiveFrom: new Date("2099-01-01T00:00:00.000Z"),
+        version: 1,
+        effectiveFrom: new Date(Date.now() + 86_400_000),
         publishedAt: new Date(),
       },
     });
 
-    try {
-      expect(await generationCostDreamcoins("video", 2, 1)).toBe(84);
-    } finally {
-      await prisma.pricingRule.delete({ where: { id: ruleId } });
-    }
+    await expect(
+      generationCostDreamcoins(mode as "image", 1, 1),
+    ).rejects.toMatchObject({
+      code: "conflict",
+      details: {
+        mode,
+        reason: "missing_active_rule",
+      },
+    });
+  });
+
+  it("keeps seed reruns from reactivating defaults over an existing authority", () => {
+    const seedSource = readFileSync(
+      new URL("../../../prisma/seed.ts", import.meta.url),
+      "utf8",
+    );
+
+    expect(seedSource).toContain("if (activeAuthorities.length === 1) return;");
+    expect(seedSource).toContain("if (existingHistory)");
+    expect(seedSource).toContain("publish one explicitly");
+    expect(seedSource).toContain("ensureDefaultPricingRule");
   });
 
   it("scales linearly with the multiplier (cost2x = 2 * cost1x)", async () => {

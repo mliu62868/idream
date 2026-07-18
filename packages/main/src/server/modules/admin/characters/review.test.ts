@@ -22,6 +22,7 @@ function buildRequest(method: string, path: string, opts: Caller) {
   if (opts.userId) headers["x-idream-user-id"] = opts.userId;
   if (opts.role) headers["x-idream-role"] = opts.role;
   if (opts.body !== undefined) headers["content-type"] = "application/json";
+  if (method !== "GET") headers["idempotency-key"] = crypto.randomUUID();
   return new Request(`http://test.local/${path}`, {
     method,
     headers,
@@ -190,7 +191,7 @@ describe("character review queue (D)", () => {
     expect(res.error.code).toBe("bad_request");
   });
 
-  it("rejects re-reviewing a non-pending submission (400)", async () => {
+  it("rejects re-reviewing a non-pending submission (409)", async () => {
     const moderator = `${P}mod-repeat`;
     await createUser({ id: moderator, role: "moderator" });
     const { submission } = await seedSubmission("repeat", "approved", "approved");
@@ -200,7 +201,7 @@ describe("character review queue (D)", () => {
       role: "moderator",
       body: { decision: "reject", reason: "already settled", confirmation: submission.id },
     });
-    expect(res.status).toBe(400);
-    expect(res.error.code).toBe("bad_request");
+    expect(res.status).toBe(409);
+    expect(res.error.code).toBe("conflict");
   });
 });

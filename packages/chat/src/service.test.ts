@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { FREE_DAILY_MESSAGES } from "@idream/shared/chat/limits";
 import type { ChatPrismaClient } from "./db.js";
 
 // service.ts value-imports ./db.js (constructs a real PrismaClient → needs a live
@@ -80,7 +81,7 @@ describe("regenerate quota + eligibility guard (P0-C)", () => {
       character: approvedCharacter,
       eligibility: noRestriction,
       entitlement: freeEntitlement,
-      usage: { messagesUsed: 30 }, // FREE_DAILY_MESSAGES
+      usage: { messagesUsed: FREE_DAILY_MESSAGES },
     });
 
     await expect(regenerate({ userId: "u1", messageId: "msg_a" }, { prisma })).rejects.toMatchObject({

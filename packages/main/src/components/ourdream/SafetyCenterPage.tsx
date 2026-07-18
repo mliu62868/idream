@@ -672,9 +672,9 @@ function SafetyFooter() {
             />
           </Link>
           <div className="flex flex-wrap gap-7 text-[14px] font-medium">
-            <a className="transition-colors hover:text-white" href="mailto:trust@ourdream.ai">
-              trust@ourdream.ai
-            </a>
+            <Link className="transition-colors hover:text-white" href="/helpdesk">
+              Help Desk
+            </Link>
             <Link className="transition-colors hover:text-white" href="/">
               ourdream.ai
             </Link>

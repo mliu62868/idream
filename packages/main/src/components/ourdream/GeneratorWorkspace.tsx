@@ -20,12 +20,24 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "re
 import type { ReactNode } from "react";
 import type { CharacterCardData } from "@/types/ourdream";
 import {
+  parseCharacterDetailResponse,
+  parseCharacterLooksResponse,
+  parseGenerationConfigResponse,
+  parseGenerationJobDetailResponse,
+  parseGenerationJobsResponse,
+  parseGeneratorCharactersResponse,
+  parseUserPresetsResponse,
+  parseWorkspaceMediaResponse,
+  type RuntimeGenerationConfig,
+} from "@/lib/public-api-contracts";
+import {
   authorityShowsEmpty,
   failedAuthorityStatus,
   initialAuthorityStatus,
   loadingAuthorityStatus,
   readyAuthorityStatus,
 } from "./authority-state";
+import { useAgeGateAccess } from "./AgeGateBoundary";
 import { authHrefForTarget } from "./authRedirect";
 import { LegacyTestAssetBadge } from "./LegacyTestAssetBadge";
 
@@ -65,15 +77,6 @@ type ConsistencyMode = "balanced" | "strict" | "creative";
 type WorkspaceView = "create" | "jobs" | "gallery";
 type GalleryTab = "image" | "video" | "liked";
 
-type ModelConfig = {
-  id: string;
-  label: string;
-  orientations?: string[];
-  costMultiplier: number;
-  entitlement: string | null;
-  maxCount: number;
-};
-
 type PresetConfig = {
   id: string;
   type: "background" | "pose" | "outfit" | "mode";
@@ -105,28 +108,6 @@ type CharacterLookItem = {
 
 type BulkAction = "delete" | "visibility";
 type BulkVisibility = "private" | "public_pack" | "unlisted";
-
-type GenerationConfig = {
-  viewer: {
-    authenticated: boolean;
-  };
-  entitlements: Record<string, unknown>;
-  dreamcoins: { balance: number };
-  pricing: {
-    image: { baseCost: number; maxCount: number };
-    video: { baseCost: number | null };
-  };
-  image: {
-    orientations: string[];
-    models: ModelConfig[];
-  };
-  video: {
-    enabled: boolean;
-    requiredEntitlement: string;
-    models: ModelConfig[];
-  };
-  presets?: PresetConfig[];
-};
 
 type GenerationJob = {
   id: string;
@@ -165,9 +146,36 @@ type GeneratorInitialDataLoaders = {
   loadIdentityMedia: () => Promise<void>;
 };
 
+type GeneratorConfigAuthorityRefs = {
+  authenticated: { current: boolean | null };
+  epoch: { current: number };
+  scope: { current: string | null };
+};
+
+type GeneratorConfigFailureActions = {
+  clearConfig: () => void;
+  clearPrivateProjections: () => void;
+  showError: (message: string) => void;
+};
+
+export function invalidateGeneratorConfigAuthority(
+  refs: GeneratorConfigAuthorityRefs,
+  actions: GeneratorConfigFailureActions,
+  message: string,
+) {
+  refs.epoch.current += 1;
+  refs.authenticated.current = null;
+  refs.scope.current = null;
+  actions.clearConfig();
+  actions.clearPrivateProjections();
+  actions.showError(message);
+}
+
 export async function loadGeneratorWorkspaceInitialData(
+  ageGateAccepted: boolean,
   loaders: GeneratorInitialDataLoaders,
 ) {
+  if (!ageGateAccepted) return;
   const [viewerAuthenticated] = await Promise.all([
     loaders.loadConfig(),
     loaders.loadCharacters(),
@@ -191,7 +199,8 @@ export async function loadGeneratorLooksForViewer(
 }
 
 export function GeneratorWorkspace() {
-  const [config, setConfig] = useState<GenerationConfig | null>(null);
+  const { accepted: ageGateAccepted } = useAgeGateAccess();
+  const [config, setConfig] = useState<RuntimeGenerationConfig | null>(null);
   const [characters, setCharacters] = useState<CharacterCardData[]>([]);
   const [charactersAuthority, setCharactersAuthority] = useState(initialAuthorityStatus);
   const [characterId, setCharacterId] = useState("");
@@ -221,6 +230,9 @@ export function GeneratorWorkspace() {
   const [status, setStatus] = useState("");
   const [configError, setConfigError] = useState("");
   const [pending, setPending] = useState(false);
+  const [retryingJobIds, setRetryingJobIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [failedMediaIds, setFailedMediaIds] = useState<Set<string>>(() => new Set());
   const [invalidPreviewMediaIds, setInvalidPreviewMediaIds] = useState<Set<string>>(() => new Set());
   const [failedLatestResultIds, setFailedLatestResultIds] = useState<Set<string>>(() => new Set());
@@ -248,8 +260,16 @@ export function GeneratorWorkspace() {
   const mediaTabRef = useRef<GalleryTab>("image");
   const mediaRequestSerialRef = useRef(0);
   const viewerAuthenticatedRef = useRef<boolean | null>(null);
+  const viewerScopeRef = useRef<string | null>(null);
+  const viewerEpochRef = useRef(0);
+  const privateRequestControllersRef = useRef<Set<AbortController>>(new Set());
+  const configRequestControllerRef = useRef<AbortController | null>(null);
+  const generationPollInFlightRef = useRef(false);
+  const retryIdempotencyKeysRef = useRef<Map<string, string>>(new Map());
 
-  const videoModeEnabled = Boolean(config?.video.enabled && (config.video.models.length ?? 0) > 0);
+  const videoModeEnabled =
+    config?.video.availability.state === "available" &&
+    config.video.models.length > 0;
   const availableModels = useMemo(
     () => (mode === "video" && videoModeEnabled ? (config?.video.models ?? []) : (config?.image.models ?? [])),
     [config, mode, videoModeEnabled],
@@ -258,19 +278,20 @@ export function GeneratorWorkspace() {
     () => availableModels.find((item) => item.id === model) ?? availableModels[0],
     [availableModels, model],
   );
-  const maxCount =
-    selectedModel?.maxCount ?? (mode === "video" ? 1 : (config?.pricing.image.maxCount ?? 4));
+  const maxCount = selectedModel?.maxCount ?? 1;
   const outputCount = mode === "video" ? 1 : Math.max(1, Math.min(count, maxCount));
   const baseCost = mode === "video"
     ? config?.pricing.video.baseCost
     : config?.pricing.image.baseCost;
-  const estimatedCost = typeof baseCost === "number"
-    ? Math.ceil(baseCost * outputCount * (selectedModel?.costMultiplier ?? 1))
-    : null;
   const modeAvailable =
     mode === "image"
-      ? (config?.image.models.length ?? 0) > 0
+      ? config?.image.availability.state === "available" &&
+        config.image.models.length > 0
       : videoModeEnabled;
+  const estimatedCost = modeAvailable && selectedModel && typeof baseCost === "number"
+    ? Math.ceil(baseCost * outputCount * (selectedModel?.costMultiplier ?? 1))
+    : null;
+  const modeUnavailableMessage = generationModeUnavailableMessage(config, mode);
   const galleryTabs = useMemo<GalleryTab[]>(
     () => (videoModeEnabled ? ["image", "video", "liked"] : ["image", "liked"]),
     [videoModeEnabled],
@@ -358,8 +379,17 @@ export function GeneratorWorkspace() {
     setLooksAuthority(initialAuthorityStatus());
   }, []);
 
-  const resetPrivateViewerData = useCallback(() => {
+  const abortPrivateViewerRequests = useCallback(() => {
+    for (const controller of privateRequestControllersRef.current) {
+      controller.abort();
+    }
+    privateRequestControllersRef.current.clear();
+  }, []);
+
+  const clearPrivateViewerProjections = useCallback(() => {
+    abortPrivateViewerRequests();
     mediaRequestSerialRef.current += 1;
+    looksRequestSerialRef.current += 1;
     setJobs([]);
     setJobsAuthority(readyAuthorityStatus());
     setMedia([]);
@@ -375,9 +405,50 @@ export function GeneratorWorkspace() {
     setBulkDeleteConfirmKey(null);
     setDeleteConfirmPresetId(null);
     setLookEditorMediaId(null);
+    retryIdempotencyKeysRef.current.clear();
+    setRetryingJobIds(new Set());
     invalidateLookScope();
     setLooksAuthority(readyAuthorityStatus());
-  }, [invalidateLookScope]);
+  }, [abortPrivateViewerRequests, invalidateLookScope]);
+
+  const resetPrivateViewerData = useCallback(() => {
+    clearPrivateViewerProjections();
+    setPresetName("");
+    setModePresetId("");
+    setBackgroundPresetId("");
+    setPosePresetId("");
+    setOutfitPresetId("");
+    setPrompt("");
+    setNegativePrompt("");
+    setRemixFeedItemId("");
+  }, [clearPrivateViewerProjections]);
+
+  const beginPrivateViewerRequest = useCallback(() => {
+    const scope = viewerScopeRef.current;
+    if (viewerAuthenticatedRef.current !== true || !scope) return null;
+    const controller = new AbortController();
+    privateRequestControllersRef.current.add(controller);
+    return {
+      controller,
+      epoch: viewerEpochRef.current,
+      scope,
+    };
+  }, []);
+
+  const privateViewerRequestIsCurrent = useCallback(
+    (request: { epoch: number; scope: string }) =>
+      request.epoch === viewerEpochRef.current &&
+      request.scope === viewerScopeRef.current &&
+      viewerAuthenticatedRef.current === true,
+    [],
+  );
+
+  const finishPrivateViewerRequest = useCallback(
+    (request: { controller: AbortController }) => {
+      privateRequestControllersRef.current.delete(request.controller);
+    },
+    [],
+  );
 
   const showJobsView = useCallback(() => {
     setView("jobs");
@@ -387,7 +458,11 @@ export function GeneratorWorkspace() {
   }, []);
 
   useEffect(() => {
-    const draft = readPresetDraft();
+    const viewerScope = config?.viewer.scope;
+    if (!viewerScope) return;
+    const draft =
+      consumePresetDraftTransfer(viewerScope) ??
+      readPresetDraft(viewerScope);
     if (!draft) return;
     const timer = window.setTimeout(() => {
       setPresetName(draft.label);
@@ -401,36 +476,77 @@ export function GeneratorWorkspace() {
       setStatus("Preset draft restored. Save it to add it to My Presets.");
     }, 0);
     return () => window.clearTimeout(timer);
-  }, []);
+  }, [config?.viewer.scope]);
 
   useEffect(() => {
+    if (!ageGateAccepted) return;
     const timer = window.setTimeout(() => {
       const target = `${window.location.pathname}${window.location.search}`;
       setAuthReturnTarget(target || "/generate");
     }, 0);
     return () => window.clearTimeout(timer);
-  }, []);
+  }, [ageGateAccepted]);
+
+  useEffect(
+    () => () => {
+      configRequestControllerRef.current?.abort();
+      abortPrivateViewerRequests();
+    },
+    [abortPrivateViewerRequests],
+  );
+
+  const failConfigAuthority = useCallback(
+    (message: string) => {
+      invalidateGeneratorConfigAuthority(
+        {
+          authenticated: viewerAuthenticatedRef,
+          epoch: viewerEpochRef,
+          scope: viewerScopeRef,
+        },
+        {
+          clearConfig: () => setConfig(null),
+          clearPrivateProjections: clearPrivateViewerProjections,
+          showError: setConfigError,
+        },
+        message,
+      );
+    },
+    [clearPrivateViewerProjections],
+  );
 
   const refreshConfig = useCallback(async () => {
+    configRequestControllerRef.current?.abort();
+    const controller = new AbortController();
+    configRequestControllerRef.current = controller;
     try {
-      const response = await fetch("/api/v1/generation/config", { cache: "no-store" });
-      const payload = (await response.json().catch(() => null)) as
-        | ApiPayload<GenerationConfig>
-        | null;
-      const data = payload?.data;
-      if (!response.ok || !payload?.ok || !data) {
-        setConfigError(
-          payload?.error?.message ?? generationConfigErrorMessage(response.status),
+      const response = await fetch("/api/v1/generation/config", {
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      const raw = await response.json().catch(() => null);
+      if (!response.ok) {
+        failConfigAuthority(
+          apiPayloadErrorMessage(raw) ??
+            generationConfigErrorMessage(response.status),
         );
         return null;
       }
-      if (typeof data.viewer?.authenticated !== "boolean") {
-        setConfigError("Generation viewer authority was incomplete.");
-        return null;
+      const data = parseGenerationConfigResponse(raw);
+      const nextScope = data.viewer.scope;
+      if (viewerScopeRef.current !== nextScope) {
+        viewerEpochRef.current += 1;
+        viewerScopeRef.current = nextScope;
+        resetPrivateViewerData();
       }
       viewerAuthenticatedRef.current = data.viewer.authenticated;
       if (!data.viewer.authenticated) resetPrivateViewerData();
-      setConfig(data);
+      setConfig({
+        ...data,
+        viewer: {
+          authenticated: data.viewer.authenticated,
+          scope: nextScope,
+        },
+      });
       setConfigError("");
       const nextVideoModeEnabled = data.video.enabled && data.video.models.length > 0;
       if (!nextVideoModeEnabled) {
@@ -438,38 +554,73 @@ export function GeneratorWorkspace() {
         setGalleryTab((current) => (current === "video" ? "image" : current));
       }
       const firstModel = data.image.models[0]?.id ?? "";
-      setModel((current) => current || firstModel);
-      setOrientation((current) => current || data.image.orientations[0] || "4:5");
-      setCount((current) => Math.min(current, data.pricing.image.maxCount));
+      setModel((current) =>
+        data.image.models.some((item) => item.id === current)
+          ? current
+          : firstModel,
+      );
+      setOrientation((current) =>
+        data.image.orientations.includes(current)
+          ? current
+          : (data.image.orientations[0] ?? ""),
+      );
+      setCount((current) =>
+        data.pricing.image.maxCount === null
+          ? 1
+          : Math.min(current, data.pricing.image.maxCount),
+      );
       return data.viewer.authenticated;
-    } catch {
-      setConfigError("Generation controls could not load. Refresh and try again.");
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        return null;
+      }
+      failConfigAuthority(
+        "Generation controls could not load. Refresh and try again.",
+      );
       return null;
+    } finally {
+      if (configRequestControllerRef.current === controller) {
+        configRequestControllerRef.current = null;
+      }
     }
-  }, [resetPrivateViewerData]);
+  }, [failConfigAuthority, resetPrivateViewerData]);
 
   const refreshJobs = useCallback(async () => {
-    if (viewerAuthenticatedRef.current !== true) return;
+    const viewerRequest = beginPrivateViewerRequest();
+    if (!viewerRequest) return;
     setJobsAuthority(loadingAuthorityStatus);
     try {
-      const response = await fetch("/api/v1/generation/jobs?limit=20");
-      const payload = (await response.json().catch(() => null)) as
-        | ApiPayload<{ items: GenerationJob[] }>
-        | null;
-      if (!response.ok || !payload?.ok || !Array.isArray(payload.data?.items)) {
-        throw new Error(payload?.error?.message ?? "Jobs could not load.");
+      const response = await fetch("/api/v1/generation/jobs?limit=20", {
+        cache: "no-store",
+        signal: viewerRequest.controller.signal,
+      });
+      const raw = await response.json().catch(() => null);
+      if (!privateViewerRequestIsCurrent(viewerRequest)) return;
+      if (!response.ok) {
+        throw new Error(
+          apiPayloadErrorMessage(raw) ?? "Jobs could not load.",
+        );
       }
-      setJobs(payload.data.items);
+      setJobs(parseGenerationJobsResponse(raw).items);
       setJobsAuthority(readyAuthorityStatus());
     } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      if (!privateViewerRequestIsCurrent(viewerRequest)) return;
       setJobsAuthority((current) =>
         failedAuthorityStatus(current, requestErrorMessage(error, "Jobs could not load.")),
       );
+    } finally {
+      finishPrivateViewerRequest(viewerRequest);
     }
-  }, []);
+  }, [
+    beginPrivateViewerRequest,
+    finishPrivateViewerRequest,
+    privateViewerRequestIsCurrent,
+  ]);
 
   const refreshMedia = useCallback(async (tab: GalleryTab) => {
-    if (viewerAuthenticatedRef.current !== true) return;
+    const viewerRequest = beginPrivateViewerRequest();
+    if (!viewerRequest) return;
     const query = tab === "liked" ? "liked=1" : `type=${tab}`;
     const requestSerial = mediaRequestSerialRef.current + 1;
     mediaRequestSerialRef.current = requestSerial;
@@ -487,74 +638,117 @@ export function GeneratorWorkspace() {
       ),
     );
     try {
-      const response = await fetch(`/api/v1/media?${query}`);
-      const payload = (await response.json().catch(() => null)) as
-        | ApiPayload<{ items: MediaItem[] }>
-        | null;
-      if (requestSerial !== mediaRequestSerialRef.current) return;
-      if (!response.ok || !payload?.ok || !Array.isArray(payload.data?.items)) {
-        throw new Error(payload?.error?.message ?? "Gallery could not load.");
+      const response = await fetch(`/api/v1/media?${query}`, {
+        cache: "no-store",
+        signal: viewerRequest.controller.signal,
+      });
+      const raw = await response.json().catch(() => null);
+      if (
+        requestSerial !== mediaRequestSerialRef.current ||
+        !privateViewerRequestIsCurrent(viewerRequest)
+      ) return;
+      if (!response.ok) {
+        throw new Error(
+          apiPayloadErrorMessage(raw) ?? "Gallery could not load.",
+        );
       }
-      setMedia(payload.data.items);
+      setMedia(parseWorkspaceMediaResponse(raw).items);
       setMediaAuthority(readyAuthorityStatus());
       setDeleteConfirmMediaId(null);
       setBulkDeleteConfirmKey(null);
     } catch (error) {
-      if (requestSerial !== mediaRequestSerialRef.current) return;
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      if (
+        requestSerial !== mediaRequestSerialRef.current ||
+        !privateViewerRequestIsCurrent(viewerRequest)
+      ) return;
       setMediaAuthority((current) =>
         failedAuthorityStatus(current, requestErrorMessage(error, "Gallery could not load.")),
       );
+    } finally {
+      finishPrivateViewerRequest(viewerRequest);
     }
-  }, []);
+  }, [
+    beginPrivateViewerRequest,
+    finishPrivateViewerRequest,
+    privateViewerRequestIsCurrent,
+  ]);
 
   const refreshPresets = useCallback(async () => {
-    if (viewerAuthenticatedRef.current !== true) return;
+    const viewerRequest = beginPrivateViewerRequest();
+    if (!viewerRequest) return;
     // scope=user yields only the signed-in user's saved presets (built-in
     // background/pose/outfit presets arrive separately via the config endpoint).
     setPresetsAuthority(loadingAuthorityStatus);
     try {
-      const response = await fetch("/api/v1/generation/presets?scope=user");
-      const payload = (await response.json().catch(() => null)) as
-        | ApiPayload<{ items: UserPreset[] }>
-        | null;
-      if (!response.ok || !payload?.ok || !Array.isArray(payload.data?.items)) {
-        throw new Error(payload?.error?.message ?? "Saved presets could not load.");
+      const response = await fetch("/api/v1/generation/presets?scope=user", {
+        cache: "no-store",
+        signal: viewerRequest.controller.signal,
+      });
+      const raw = await response.json().catch(() => null);
+      if (!privateViewerRequestIsCurrent(viewerRequest)) return;
+      if (!response.ok) {
+        throw new Error(
+          apiPayloadErrorMessage(raw) ?? "Saved presets could not load.",
+        );
       }
-      setUserPresets(payload.data.items);
+      setUserPresets(parseUserPresetsResponse(raw).items);
       setPresetsAuthority(readyAuthorityStatus());
       setDeleteConfirmPresetId(null);
     } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      if (!privateViewerRequestIsCurrent(viewerRequest)) return;
       setPresetsAuthority((current) =>
         failedAuthorityStatus(
           current,
           requestErrorMessage(error, "Saved presets could not load."),
         ),
       );
+    } finally {
+      finishPrivateViewerRequest(viewerRequest);
     }
-  }, []);
+  }, [
+    beginPrivateViewerRequest,
+    finishPrivateViewerRequest,
+    privateViewerRequestIsCurrent,
+  ]);
 
   const refreshIdentityMedia = useCallback(async () => {
-    if (viewerAuthenticatedRef.current !== true) return;
+    const viewerRequest = beginPrivateViewerRequest();
+    if (!viewerRequest) return;
     setIdentityMediaAuthority(loadingAuthorityStatus);
     try {
-      const response = await fetch("/api/v1/media?type=image&limit=60");
-      const payload = (await response.json().catch(() => null)) as
-        | ApiPayload<{ items: MediaItem[] }>
-        | null;
-      if (!response.ok || !payload?.ok || !Array.isArray(payload.data?.items)) {
-        throw new Error(payload?.error?.message ?? "Identity references could not load.");
+      const response = await fetch("/api/v1/media?type=image&limit=60", {
+        cache: "no-store",
+        signal: viewerRequest.controller.signal,
+      });
+      const raw = await response.json().catch(() => null);
+      if (!privateViewerRequestIsCurrent(viewerRequest)) return;
+      if (!response.ok) {
+        throw new Error(
+          apiPayloadErrorMessage(raw) ??
+            "Identity references could not load.",
+        );
       }
-      setIdentityMedia(payload.data.items);
+      setIdentityMedia(parseWorkspaceMediaResponse(raw).items);
       setIdentityMediaAuthority(readyAuthorityStatus());
     } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      if (!privateViewerRequestIsCurrent(viewerRequest)) return;
       setIdentityMediaAuthority((current) =>
         failedAuthorityStatus(
           current,
           requestErrorMessage(error, "Identity references could not load."),
         ),
       );
+    } finally {
+      finishPrivateViewerRequest(viewerRequest);
     }
-  }, []);
+  }, [
+    beginPrivateViewerRequest,
+    finishPrivateViewerRequest,
+    privateViewerRequestIsCurrent,
+  ]);
 
   const refreshLooks = useCallback(async () => {
     if (config?.viewer.authenticated !== true) {
@@ -573,6 +767,8 @@ export function GeneratorWorkspace() {
       setLooksAuthority(readyAuthorityStatus());
       return;
     }
+    const viewerRequest = beginPrivateViewerRequest();
+    if (!viewerRequest) return;
     const hasMatchingSnapshot = looksCharacterIdRef.current === characterId;
     if (!hasMatchingSnapshot) {
       setLooks([]);
@@ -585,45 +781,71 @@ export function GeneratorWorkspace() {
       ),
     );
     try {
-      const response = await fetch(`/api/v1/characters/${encodeURIComponent(characterId)}/looks`);
-      const payload = (await response.json().catch(() => null)) as
-        | ApiPayload<{ items: CharacterLookItem[] }>
-        | null;
-      if (requestSerial !== looksRequestSerialRef.current) return;
-      if (!response.ok || !payload?.ok || !Array.isArray(payload.data?.items)) {
-        throw new Error(payload?.error?.message ?? "Saved Looks could not load.");
+      const response = await fetch(
+        `/api/v1/characters/${encodeURIComponent(characterId)}/looks`,
+        {
+          cache: "no-store",
+          signal: viewerRequest.controller.signal,
+        },
+      );
+      const raw = await response.json().catch(() => null);
+      if (
+        requestSerial !== looksRequestSerialRef.current ||
+        !privateViewerRequestIsCurrent(viewerRequest)
+      ) return;
+      if (!response.ok) {
+        throw new Error(
+          apiPayloadErrorMessage(raw) ?? "Saved Looks could not load.",
+        );
       }
-      const items = payload.data.items.filter((look) => look.status === "active");
+      const items = parseCharacterLooksResponse(raw).items.filter(
+        (look) => look.status === "active",
+      );
       setLooks(items);
       setLooksAuthority(readyAuthorityStatus());
       setSelectedLookId((current) =>
         items.some((look) => look.id === current) ? current : "",
       );
     } catch (error) {
-      if (requestSerial !== looksRequestSerialRef.current) return;
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      if (
+        requestSerial !== looksRequestSerialRef.current ||
+        !privateViewerRequestIsCurrent(viewerRequest)
+      ) return;
       setLooksAuthority((current) =>
         failedAuthorityStatus(
           current,
           requestErrorMessage(error, "Saved Looks could not load."),
         ),
       );
+    } finally {
+      finishPrivateViewerRequest(viewerRequest);
     }
-  }, [characterId, config?.viewer.authenticated, freeplay, invalidateLookScope]);
+  }, [
+    beginPrivateViewerRequest,
+    characterId,
+    config?.viewer.authenticated,
+    finishPrivateViewerRequest,
+    freeplay,
+    invalidateLookScope,
+    privateViewerRequestIsCurrent,
+  ]);
 
   const refreshCharacters = useCallback(async () => {
     setCharactersAuthority(loadingAuthorityStatus);
     try {
       const response = await fetch("/api/v1/characters?limit=12");
-      const payload = (await response.json().catch(() => null)) as
-        | ApiPayload<{ items: CharacterCardData[] }>
-        | null;
-      if (!response.ok || !payload?.ok || !Array.isArray(payload.data?.items)) {
-        throw new Error(payload?.error?.message ?? "Character catalog could not load.");
+      const raw = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(
+          apiPayloadErrorMessage(raw) ??
+            "Character catalog could not load.",
+        );
       }
       const searchParams = new URLSearchParams(window.location.search);
       const desired = searchParams.get("characterId");
       const nextRemixFeedItemId = searchParams.get("remixFeedItemId") ?? "";
-      const listedItems = payload.data.items;
+      const listedItems = parseGeneratorCharactersResponse(raw).items;
       const desiredListed = Boolean(
         desired && listedItems.some((character) => character.id === desired),
       );
@@ -666,45 +888,80 @@ export function GeneratorWorkspace() {
     }
   }, [invalidateLookScope]);
 
+  const refreshWorkspaceAuthority = useCallback(
+    () =>
+      loadGeneratorWorkspaceInitialData(
+        ageGateAccepted,
+        {
+          loadConfig: refreshConfig,
+          loadCharacters: refreshCharacters,
+          loadJobs: refreshJobs,
+          loadMedia: () => refreshMedia("image"),
+          loadPresets: refreshPresets,
+          loadIdentityMedia: refreshIdentityMedia,
+        },
+      ),
+    [
+      ageGateAccepted,
+      refreshCharacters,
+      refreshConfig,
+      refreshIdentityMedia,
+      refreshJobs,
+      refreshMedia,
+      refreshPresets,
+    ],
+  );
+
   const pollGeneration = useCallback(async (jobId: string) => {
-    const response = await fetch(`/api/v1/generation/jobs/${jobId}`);
-    if (!response.ok) return;
-    const payload = (await response.json()) as ApiPayload<{
-      job: GenerationJob;
-      assets: MediaItem[];
-    }>;
-    const job = payload.data?.job;
-    if (!job) return;
-    const assets = payload.data?.assets ?? [];
-    setJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
-    if (job.status === "completed") {
-      setStatus("Generation complete.");
-      setLatestResults(assets);
-      setGalleryTab(job.mode);
-      void refreshConfig();
-      void refreshMedia(job.mode);
+    const viewerRequest = beginPrivateViewerRequest();
+    if (!viewerRequest) return;
+    try {
+      const response = await fetch(`/api/v1/generation/jobs/${jobId}`, {
+        cache: "no-store",
+        signal: viewerRequest.controller.signal,
+      });
+      if (!response.ok) return;
+      const payload = parseGenerationJobDetailResponse(await response.json());
+      if (!privateViewerRequestIsCurrent(viewerRequest)) return;
+      const job = payload.job;
+      const assets = payload.assets;
+      setJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
+      if (job.status === "completed") {
+        setStatus("Generation complete.");
+        setLatestResults(assets);
+        setGalleryTab(job.mode);
+        void refreshConfig();
+        void refreshMedia(job.mode);
+      }
+      if (job.status === "failed" || job.status === "blocked" || job.status === "refunded") {
+        setStatus(statusMessage(job));
+        void refreshConfig();
+      }
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "AbortError")) {
+        setStatus("Generation status could not refresh. Retrying…");
+      }
+    } finally {
+      finishPrivateViewerRequest(viewerRequest);
     }
-    if (job.status === "failed" || job.status === "blocked" || job.status === "refunded") {
-      setStatus(statusMessage(job));
-      void refreshConfig();
-    }
-  }, [refreshConfig, refreshMedia]);
+  }, [
+    beginPrivateViewerRequest,
+    finishPrivateViewerRequest,
+    privateViewerRequestIsCurrent,
+    refreshConfig,
+    refreshMedia,
+  ]);
 
   useEffect(() => {
+    if (!ageGateAccepted) return;
     const timer = window.setTimeout(() => {
-      void loadGeneratorWorkspaceInitialData({
-        loadConfig: refreshConfig,
-        loadCharacters: refreshCharacters,
-        loadJobs: refreshJobs,
-        loadMedia: () => refreshMedia("image"),
-        loadPresets: refreshPresets,
-        loadIdentityMedia: refreshIdentityMedia,
-      });
+      void refreshWorkspaceAuthority();
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [refreshCharacters, refreshConfig, refreshIdentityMedia, refreshJobs, refreshMedia, refreshPresets]);
+  }, [ageGateAccepted, refreshWorkspaceAuthority]);
 
   useEffect(() => {
+    if (!ageGateAccepted) return;
     const timer = window.setTimeout(
       () =>
         void loadGeneratorLooksForViewer(
@@ -714,19 +971,54 @@ export function GeneratorWorkspace() {
       0,
     );
     return () => window.clearTimeout(timer);
-  }, [config?.viewer.authenticated, refreshLooks]);
+  }, [ageGateAccepted, config?.viewer.authenticated, refreshLooks]);
 
   useEffect(() => {
-    const pendingJobs = jobs.filter((job) => !isTerminal(job.status));
-    if (pendingJobs.length === 0) return;
-    const timer = window.setInterval(() => {
-      void refreshJobs();
-      for (const job of pendingJobs) {
-        void pollGeneration(job.id);
+    if (!ageGateAccepted) return;
+    const pendingJobIds = jobs
+      .filter((job) => !isTerminal(job.status))
+      .map((job) => job.id);
+    if (pendingJobIds.length === 0) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    let failureCount = 0;
+    const schedule = (delay: number) => {
+      if (cancelled) return;
+      timer = window.setTimeout(() => void pollCycle(), delay);
+    };
+    const pollCycle = async () => {
+      if (cancelled) return;
+      if (document.hidden || generationPollInFlightRef.current) {
+        schedule(1_800);
+        return;
       }
-    }, 1800);
-    return () => window.clearInterval(timer);
-  }, [jobs, pollGeneration, refreshJobs]);
+      generationPollInFlightRef.current = true;
+      try {
+        for (const jobId of pendingJobIds) {
+          if (cancelled) break;
+          await pollGeneration(jobId);
+        }
+        failureCount = 0;
+      } catch {
+        failureCount += 1;
+      } finally {
+        generationPollInFlightRef.current = false;
+        schedule(Math.min(14_400, 1_800 * 2 ** failureCount));
+      }
+    };
+    const onVisibilityChange = () => {
+      if (document.hidden || cancelled) return;
+      if (timer !== undefined) window.clearTimeout(timer);
+      schedule(0);
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    schedule(1_800);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [ageGateAccepted, jobs, pollGeneration]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -793,9 +1085,17 @@ export function GeneratorWorkspace() {
   }
 
   async function retryJob(jobId: string) {
+    if (retryingJobIds.has(jobId)) return;
+    setRetryingJobIds((current) => new Set(current).add(jobId));
+    const idempotencyKey =
+      retryIdempotencyKeysRef.current.get(jobId) ?? crypto.randomUUID();
+    retryIdempotencyKeysRef.current.set(jobId, idempotencyKey);
     try {
       const response = await fetch(`/api/v1/generation/jobs/${jobId}/retry`, {
         method: "POST",
+        headers: {
+          "idempotency-key": idempotencyKey,
+        },
       });
       const payload = (await response.json().catch(() => null)) as ApiPayload<{
         job: GenerationJob;
@@ -805,11 +1105,21 @@ export function GeneratorWorkspace() {
         return;
       }
       const job = payload.data.job;
-      setJobs((current) => [job, ...current]);
+      retryIdempotencyKeysRef.current.delete(jobId);
+      setJobs((current) => [
+        job,
+        ...current.filter((item) => item.id !== job.id),
+      ]);
       setStatus("Retry queued.");
       void refreshConfig();
     } catch {
       setStatus("Retry failed. Check your connection and try again.");
+    } finally {
+      setRetryingJobIds((current) => {
+        const next = new Set(current);
+        next.delete(jobId);
+        return next;
+      });
     }
   }
 
@@ -1069,7 +1379,12 @@ export function GeneratorWorkspace() {
       const payload = (await response.json()) as ApiPayload<{ preset: UserPreset }>;
       if (!response.ok || !payload.ok) {
         if (response.status === 401) {
-          savePresetDraft({
+          const viewerScope = viewerScopeRef.current;
+          if (!viewerScope) {
+            setStatus("Viewer authority could not be confirmed. Refresh and try again.");
+            return;
+          }
+          const draft = {
             backgroundPresetId,
             label,
             modePresetId,
@@ -1077,8 +1392,13 @@ export function GeneratorWorkspace() {
             posePresetId,
             prompt: canUsePrompt ? prompt.trim() : "",
             savedAt: Date.now(),
-          });
-          window.location.assign(authHrefForTarget("/signup", "/generate"));
+          };
+          savePresetDraft(viewerScope, draft);
+          const resumeNonce = createPresetDraftTransfer(viewerScope, draft);
+          const returnTarget = resumeNonce
+            ? `/generate?presetResume=${encodeURIComponent(resumeNonce)}`
+            : "/generate";
+          window.location.assign(authHrefForTarget("/signup", returnTarget));
           return;
         }
         setStatus(payload.error?.message ?? "Couldn't save preset.");
@@ -1086,7 +1406,9 @@ export function GeneratorWorkspace() {
       }
       setPresetName("");
       setDeleteConfirmPresetId(null);
-      clearPresetDraft();
+      if (viewerScopeRef.current) {
+        clearPresetDraft(viewerScopeRef.current);
+      }
       setStatus(`Saved preset "${label}".`);
       void refreshPresets();
     } catch {
@@ -1256,7 +1578,7 @@ export function GeneratorWorkspace() {
                 ) : configError ? (
                   <button
                     className="flex items-center gap-2 text-left text-[14px] font-bold text-[rgb(255,184,112)]"
-                    onClick={() => void refreshConfig()}
+                    onClick={() => void refreshWorkspaceAuthority()}
                     type="button"
                   >
                     <RefreshCw className="h-4 w-4" />
@@ -1267,7 +1589,11 @@ export function GeneratorWorkspace() {
                 )}
               </div>
               <div className="rounded-full bg-[rgb(36,36,36)] px-3 py-2 text-[12px] font-bold text-white">
-                {estimatedCost === null ? "Price unavailable" : `${estimatedCost} coins`}
+                {config && !modeAvailable
+                  ? "Unavailable"
+                  : estimatedCost === null
+                    ? "Price unavailable"
+                    : `${estimatedCost} coins`}
               </div>
             </div>
 
@@ -1280,7 +1606,7 @@ export function GeneratorWorkspace() {
                   onClick={() => {
                     setMode("image");
                     setModel(config?.image.models[0]?.id ?? "");
-                    setOrientation(config?.image.orientations[0] ?? "4:5");
+                    setOrientation(config?.image.orientations[0] ?? "");
                   }}
                   type="button"
                 >
@@ -1294,13 +1620,23 @@ export function GeneratorWorkspace() {
                     const firstVideoModel = config?.video.models[0];
                     setMode("video");
                     setModel(firstVideoModel?.id ?? "");
-                    setOrientation(firstVideoModel?.orientations?.[0] ?? "9:16");
+                    setOrientation(firstVideoModel?.orientations?.[0] ?? "");
                     setCount(1);
                   }}
                   type="button"
                 >
                   Video
                 </button>
+              </div>
+            )}
+
+            {config && !modeAvailable && modeUnavailableMessage && (
+              <div
+                className="mt-4 rounded-[10px] border border-[rgb(255,184,112)]/40 bg-[rgb(36,28,18)] px-4 py-3 text-[13px] font-semibold leading-5 text-[rgb(255,184,112)]"
+                data-testid="generator-mode-unavailable"
+                role="status"
+              >
+                {modeUnavailableMessage}
               </div>
             )}
 
@@ -1580,6 +1916,7 @@ export function GeneratorWorkspace() {
                   Orientation
                   <select
                     className="mt-2 h-11 w-full rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] font-semibold text-white outline-none"
+                    disabled={!modeAvailable}
                     id="generator-orientation"
                     name="orientation"
                     onChange={(event) => setOrientation(event.target.value)}
@@ -1587,7 +1924,7 @@ export function GeneratorWorkspace() {
                   >
                     {(selectedModel?.orientations?.length
                       ? selectedModel.orientations
-                      : config?.image.orientations ?? ["1:1", "4:5", "3:4", "9:16", "16:9"]
+                      : config?.image.orientations ?? []
                     ).map((item) => (
                       <option key={item} value={item}>
                         {item}
@@ -1606,7 +1943,7 @@ export function GeneratorWorkspace() {
                     onChange={(event) =>
                       setCount(Math.max(1, Math.min(maxCount, Number(event.target.value))))
                     }
-                    disabled={mode === "video"}
+                    disabled={mode === "video" || !modeAvailable}
                     type="number"
                     value={outputCount}
                   />
@@ -1624,6 +1961,7 @@ export function GeneratorWorkspace() {
                   onChange={(event) =>
                     setCount(Math.max(1, Math.min(maxCount, Number(event.target.value))))
                   }
+                  disabled={!modeAvailable}
                   type="number"
                   value={outputCount}
                 />
@@ -1635,6 +1973,7 @@ export function GeneratorWorkspace() {
                 Model
                 <select
                   className="mt-2 h-11 w-full rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] font-semibold text-white outline-none"
+                  disabled={!modeAvailable}
                   id="generator-model"
                   name="modelId"
                   onChange={(event) => {
@@ -1959,6 +2298,8 @@ export function GeneratorWorkspace() {
                 ? imageEditMode
                   ? "Queuing edit..."
                   : "Queuing..."
+                : config && !modeAvailable
+                  ? `${mode === "image" ? "Image" : "Video"} generation unavailable`
                 : imageEditMode
                   ? "Create edit"
                   : characterImageMode
@@ -2156,6 +2497,7 @@ export function GeneratorWorkspace() {
                         <button
                           className="h-9 w-fit rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)] disabled:bg-[rgb(64,64,64)] disabled:text-[rgb(150,150,150)]"
                           disabled={
+                            retryingJobIds.has(job.id) ||
                             !config ||
                             (job.mode === "image"
                               ? typeof config.pricing.image.baseCost !== "number"
@@ -2164,7 +2506,9 @@ export function GeneratorWorkspace() {
                           onClick={() => retryJob(job.id)}
                           type="button"
                         >
-                          Retry
+                          {retryingJobIds.has(job.id)
+                            ? "Retrying…"
+                            : "Retry"}
                         </button>
                         <p className="text-[12px] font-medium text-[rgb(170,170,170)]">
                           {!config ||
@@ -2729,13 +3073,13 @@ function GeneratorAuthorityNotice({
 export async function fetchCharacterById(id: string) {
   const response = await fetch(`/api/v1/characters/${encodeURIComponent(id)}`);
   if (response.status === 404) return null;
-  const payload = (await response.json().catch(() => null)) as
-    | ApiPayload<{ character: CharacterCardData }>
-    | null;
-  if (!response.ok || !payload?.ok || !payload.data?.character) {
-    throw new Error(payload?.error?.message ?? "Requested character could not load.");
+  const raw = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(
+      apiPayloadErrorMessage(raw) ?? "Requested character could not load.",
+    );
   }
-  return payload.data.character;
+  return parseCharacterDetailResponse(raw).character;
 }
 
 function isTerminal(status: string) {
@@ -2775,42 +3119,155 @@ function currentPresetControls({
   return controls;
 }
 
-function savePresetDraft(draft: PresetDraft) {
-  if (typeof window === "undefined") return;
-  window.localStorage.setItem(generatorPresetDraftStorageKey, JSON.stringify(draft));
+const generatorPresetTransferStorageKey =
+  "idream.generatePresetDraftTransfer.v1";
+const presetDraftTtlMs = 7 * 24 * 60 * 60 * 1_000;
+const presetTransferTtlMs = 20 * 60 * 1_000;
+
+function scopedPresetDraftStorageKey(viewerScope: string) {
+  return `${generatorPresetDraftStorageKey}:${viewerScope}`;
 }
 
-function clearPresetDraft() {
-  if (typeof window === "undefined") return;
-  window.localStorage.removeItem(generatorPresetDraftStorageKey);
+function savePresetDraft(viewerScope: string, draft: PresetDraft) {
+  if (typeof window === "undefined") return false;
+  try {
+    window.localStorage.setItem(
+      scopedPresetDraftStorageKey(viewerScope),
+      JSON.stringify({
+        ownerScope: viewerScope,
+        expiresAt: Date.now() + presetDraftTtlMs,
+        draft,
+      }),
+    );
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-function readPresetDraft(): PresetDraft | null {
+function clearPresetDraft(viewerScope: string) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(scopedPresetDraftStorageKey(viewerScope));
+  } catch {
+    // Browser storage is an optional draft aid.
+  }
+}
+
+function readPresetDraft(viewerScope: string): PresetDraft | null {
   try {
     if (typeof window === "undefined") return null;
-    const raw = window.localStorage.getItem(generatorPresetDraftStorageKey);
+    const raw = window.localStorage.getItem(
+      scopedPresetDraftStorageKey(viewerScope),
+    );
     if (!raw) return null;
     const parsed = JSON.parse(raw) as unknown;
-    if (!isRecord(parsed)) {
-      clearPresetDraft();
+    if (
+      !isRecord(parsed) ||
+      parsed.ownerScope !== viewerScope ||
+      typeof parsed.expiresAt !== "number" ||
+      parsed.expiresAt <= Date.now() ||
+      !isRecord(parsed.draft)
+    ) {
+      clearPresetDraft(viewerScope);
       return null;
     }
+    const storedDraft = parsed.draft;
     const draft: PresetDraft = {
-      backgroundPresetId: presetControlString(parsed, "backgroundPresetId"),
-      label: presetControlString(parsed, "label"),
-      modePresetId: presetControlString(parsed, "modePresetId"),
-      outfitPresetId: presetControlString(parsed, "outfitPresetId"),
-      posePresetId: presetControlString(parsed, "posePresetId"),
-      prompt: presetControlString(parsed, "prompt"),
-      savedAt: typeof parsed.savedAt === "number" ? parsed.savedAt : 0,
+      backgroundPresetId: presetControlString(storedDraft, "backgroundPresetId"),
+      label: presetControlString(storedDraft, "label"),
+      modePresetId: presetControlString(storedDraft, "modePresetId"),
+      outfitPresetId: presetControlString(storedDraft, "outfitPresetId"),
+      posePresetId: presetControlString(storedDraft, "posePresetId"),
+      prompt: presetControlString(storedDraft, "prompt"),
+      savedAt:
+        typeof storedDraft.savedAt === "number" ? storedDraft.savedAt : 0,
     };
     if (!draft.label) {
-      clearPresetDraft();
+      clearPresetDraft(viewerScope);
       return null;
     }
     return draft;
   } catch {
-    clearPresetDraft();
+    clearPresetDraft(viewerScope);
+    return null;
+  }
+}
+
+function createPresetDraftTransfer(
+  sourceScope: string,
+  draft: PresetDraft,
+) {
+  if (
+    typeof window === "undefined" ||
+    !sourceScope.startsWith("anonymous:")
+  ) {
+    return null;
+  }
+  try {
+    const nonce = crypto.randomUUID();
+    window.sessionStorage.setItem(
+      generatorPresetTransferStorageKey,
+      JSON.stringify({
+        nonce,
+        sourceScope,
+        expiresAt: Date.now() + presetTransferTtlMs,
+        draft,
+      }),
+    );
+    return nonce;
+  } catch {
+    return null;
+  }
+}
+
+function consumePresetDraftTransfer(targetScope: string): PresetDraft | null {
+  try {
+    if (
+      typeof window === "undefined" ||
+      !targetScope.startsWith("user:")
+    ) {
+      return null;
+    }
+    const nonce = new URLSearchParams(window.location.search).get(
+      "presetResume",
+    );
+    if (!nonce) return null;
+    const raw = window.sessionStorage.getItem(
+      generatorPresetTransferStorageKey,
+    );
+    if (!raw) return null;
+    const transfer = JSON.parse(raw) as unknown;
+    if (
+      !isRecord(transfer) ||
+      transfer.nonce !== nonce ||
+      typeof transfer.sourceScope !== "string" ||
+      !transfer.sourceScope.startsWith("anonymous:") ||
+      typeof transfer.expiresAt !== "number" ||
+      transfer.expiresAt <= Date.now() ||
+      !isRecord(transfer.draft)
+    ) {
+      return null;
+    }
+    const draft = transfer.draft;
+    const restored: PresetDraft = {
+      backgroundPresetId: presetControlString(draft, "backgroundPresetId"),
+      label: presetControlString(draft, "label"),
+      modePresetId: presetControlString(draft, "modePresetId"),
+      outfitPresetId: presetControlString(draft, "outfitPresetId"),
+      posePresetId: presetControlString(draft, "posePresetId"),
+      prompt: presetControlString(draft, "prompt"),
+      savedAt: typeof draft.savedAt === "number" ? draft.savedAt : 0,
+    };
+    if (!restored.label) return null;
+    if (!savePresetDraft(targetScope, restored)) return null;
+    clearPresetDraft(transfer.sourceScope);
+    window.sessionStorage.removeItem(generatorPresetTransferStorageKey);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("presetResume");
+    window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+    return restored;
+  } catch {
     return null;
   }
 }
@@ -2905,8 +3362,35 @@ function generationConfigErrorMessage(status: number) {
   return "Generation controls could not load. Refresh and try again.";
 }
 
+function generationModeUnavailableMessage(
+  config: RuntimeGenerationConfig | null,
+  mode: GenerationMode,
+) {
+  if (!config) return null;
+  const availability =
+    mode === "image" ? config.image.availability : config.video.availability;
+  if (availability.state === "available") return null;
+  if (availability.reason === "entitlement_required") {
+    return `${mode === "image" ? "Image" : "Video"} generation is not available for the current plan. Your balance and existing creations remain available.`;
+  }
+  if (availability.reason === "feature_disabled") {
+    return "Video generation is currently disabled. Your existing creations remain available.";
+  }
+  if (availability.reason === "no_active_recipe") {
+    return `${mode === "image" ? "Image" : "Video"} generation is temporarily unavailable because generation recipes are not fully configured. Your balance and existing creations remain available.`;
+  }
+  return `${mode === "image" ? "Image" : "Video"} generation is temporarily unavailable because no active model is configured. Your balance and existing creations remain available.`;
+}
+
 function requestErrorMessage(error: unknown, fallback: string) {
   return error instanceof Error && error.message ? error.message : fallback;
+}
+
+function apiPayloadErrorMessage(payload: unknown) {
+  if (!isRecord(payload)) return undefined;
+  const error = payload.error;
+  if (!isRecord(error)) return undefined;
+  return typeof error.message === "string" ? error.message : undefined;
 }
 
 function jobStatusLabel(status: string, errorCode: string | null) {

@@ -1,8 +1,12 @@
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
+import {
+  isSyntheticMediaAsset,
+  mediaAssetPlatformStatus,
+} from "@/server/lib/media-asset-authority";
 import { executeIdempotentDomainCommand } from "@/server/modules/admin/shared/domain-command";
 import {
   adminAuditData,
@@ -12,11 +16,79 @@ import {
   toInputJson,
 } from "@/server/modules/admin/shared/legacy-primitives";
 import {
+  operationalCharacterWhere,
+  operationalContentReportWhere,
+  operationalGenerationJobWhere,
+} from "@/server/modules/admin/shared/metric-data-scope";
+import {
   decodeAdminListCursor,
   encodeAdminListCursor,
 } from "@/server/modules/admin-v2/shared/list-cursor";
+import {
+  FEATURED_CHARACTER_LIMIT,
+  FEATURED_SETTING_KEY,
+  parseFeaturedSetting,
+} from "@/server/modules/ourdream/featured-setting";
+import { publicCharacterAudienceWhere } from "@/server/modules/ourdream/public-content-audience";
 
-const FEATURED_SETTING_KEY = "feed.featured";
+const featuredCharacterSelect = {
+  id: true,
+  name: true,
+  visibility: true,
+  status: true,
+  source: true,
+  deletedAt: true,
+  creator: {
+    select: {
+      id: true,
+      dataClass: true,
+      role: true,
+      status: true,
+      deletedAt: true,
+    },
+  },
+  imageAsset: {
+    select: {
+      id: true,
+      type: true,
+      visibility: true,
+      safetyStatus: true,
+      deletedAt: true,
+      metadata: true,
+    },
+  },
+  serving: {
+    select: {
+      state: true,
+      currentRelease: {
+        select: {
+          id: true,
+          status: true,
+          publishedAt: true,
+          readiness: true,
+          legacy: true,
+          publicCatalogQualification: {
+            select: {
+              kind: true,
+              validationRunId: true,
+              revokedAt: true,
+            },
+          },
+        },
+      },
+    },
+  },
+} as const satisfies Prisma.CharacterSelect;
+
+type FeaturedCharacter = Prisma.CharacterGetPayload<{
+  select: typeof featuredCharacterSelect;
+}>;
+
+type FeaturedRuntimeBlocker = {
+  code: string;
+  message: string;
+  repairDeepLink: string;
+};
 
 const contentVisibilitySchema = z.object({
   visibility: z.enum(["private", "unlisted", "public"]),
@@ -31,7 +103,10 @@ const contentStatusSchema = z.object({
 });
 
 const featuredPutSchema = z.object({
-  characterIds: z.array(z.string().trim().min(1).max(160)).max(24),
+  characterIds: z
+    .array(z.string().trim().min(1).max(160))
+    .max(FEATURED_CHARACTER_LIMIT),
+  expectedVersion: z.number().int().nonnegative(),
   reason: z.string().trim().min(3).max(2_000),
   confirmation: z.string().trim().min(1).max(160),
 });
@@ -88,9 +163,9 @@ export async function listContentCharacters(request: Request) {
           select,
         })
       : await prisma.character.findMany({
-          where: {
-            ...baseWhere,
-            AND: cursorKeys
+        where: operationalCharacterWhere({
+          ...baseWhere,
+          AND: cursorKeys
               ? (() => {
                   const createdAt = cursorDate(
                     cursorKeys,
@@ -104,8 +179,8 @@ export async function listContentCharacters(request: Request) {
                     ],
                   };
                 })()
-              : undefined,
-          },
+            : undefined,
+        }),
           orderBy: [{ createdAt: "desc" }, { id: "desc" }],
           take: limit + 1,
           select,
@@ -138,11 +213,11 @@ async function listPopularCharacters(input: {
   const { baseWhere, cursorKeys, cursorId, limit, select } = input;
   if (cursorKeys?.[0] === null) {
     return prisma.character.findMany({
-      where: {
+      where: operationalCharacterWhere({
         ...baseWhere,
         stats: { is: null },
         id: { lt: cursorId ?? "" },
-      },
+      }),
       orderBy: { id: "desc" },
       take: limit + 1,
       select,
@@ -152,7 +227,7 @@ async function listPopularCharacters(input: {
     ? cursorNumber(cursorKeys, 0, "content_characters")
     : null;
   const ranked = await prisma.character.findMany({
-    where: {
+    where: operationalCharacterWhere({
       ...baseWhere,
       stats: { isNot: null },
       ...(chatsCount !== null && cursorId
@@ -167,14 +242,17 @@ async function listPopularCharacters(input: {
             ],
           }
         : {}),
-    },
+    }),
     orderBy: [{ stats: { chatsCount: "desc" } }, { id: "desc" }],
     take: limit + 1,
     select,
   });
   if (ranked.length > limit) return ranked;
   const unranked = await prisma.character.findMany({
-    where: { ...baseWhere, stats: { is: null } },
+    where: operationalCharacterWhere({
+      ...baseWhere,
+      stats: { is: null },
+    }),
     orderBy: { id: "desc" },
     take: limit + 1 - ranked.length,
     select,
@@ -184,8 +262,8 @@ async function listPopularCharacters(input: {
 
 export async function getContentCharacter(request: Request, id: string) {
   await actorWithPermission(request, "content.read");
-  const character = await prisma.character.findUnique({
-    where: { id },
+  const character = await prisma.character.findFirst({
+    where: operationalCharacterWhere({ id, deletedAt: null }),
     include: {
       stats: true,
       creator: { select: { id: true, email: true, displayName: true } },
@@ -195,12 +273,15 @@ export async function getContentCharacter(request: Request, id: string) {
   if (!character) throw Errors.notFound("Character not found");
   const [reports, recentJobs] = await Promise.all([
     prisma.contentReport.findMany({
-      where: { targetType: "character", targetId: id },
+      where: operationalContentReportWhere({
+        targetType: "character",
+        targetId: id,
+      }),
       orderBy: { createdAt: "desc" },
       take: 10,
     }),
     prisma.generationJob.findMany({
-      where: { characterId: id },
+      where: operationalGenerationJobWhere({ characterId: id }),
       orderBy: { createdAt: "desc" },
       take: 10,
       select: { id: true, mode: true, status: true, createdAt: true },
@@ -228,7 +309,9 @@ export async function setCharacterVisibility(request: Request, id: string) {
     targetId: id,
     payload: body,
     execute: async (tx, requestId) => {
-      const before = await tx.character.findUnique({ where: { id } });
+      const before = await tx.character.findFirst({
+        where: operationalCharacterWhere({ id, deletedAt: null }),
+      });
       if (!before) throw Errors.notFound("Character not found");
       rejectOfficialCharacter(before.source, id, "visibility");
       const after = await tx.character.update({
@@ -269,7 +352,9 @@ export async function setCharacterStatus(request: Request, id: string) {
     targetId: id,
     payload: body,
     execute: async (tx, requestId) => {
-      const before = await tx.character.findUnique({ where: { id } });
+      const before = await tx.character.findFirst({
+        where: operationalCharacterWhere({ id, deletedAt: null }),
+      });
       if (!before) throw Errors.notFound("Character not found");
       rejectOfficialCharacter(before.source, id, "status");
       const after = await tx.character.update({
@@ -298,31 +383,264 @@ export async function setCharacterStatus(request: Request, id: string) {
 
 export async function getFeaturedCharacters(request: Request) {
   await actorWithPermission(request, "content.read");
-  const setting = await prisma.appSetting.findUnique({
-    where: { key: FEATURED_SETTING_KEY },
+  const snapshot = await prisma.$transaction(async (tx) => {
+    const setting = await tx.appSetting.findUnique({
+      where: { key: FEATURED_SETTING_KEY },
+    });
+    const parsedSetting = parseFeaturedSetting(setting?.value);
+    const configuredCharacterIds = parsedSetting.characterIds;
+    const characters = configuredCharacterIds.length
+      ? await tx.character.findMany({
+          where: operationalCharacterWhere({
+            id: { in: configuredCharacterIds },
+          }),
+          select: featuredCharacterSelect,
+        })
+      : [];
+    const effectiveCharacters = configuredCharacterIds.length
+      ? await tx.character.findMany({
+          where: {
+            ...publicCharacterAudienceWhere,
+            id: { in: configuredCharacterIds },
+          },
+          select: { id: true },
+        })
+      : [];
+    const byId = new Map(
+      characters.map((character) => [character.id, character]),
+    );
+    const effectiveSet = new Set(
+      effectiveCharacters.map((character) => character.id),
+    );
+    const effectiveCharacterIds = configuredCharacterIds.filter((id) =>
+      effectiveSet.has(id),
+    );
+    const items = configuredCharacterIds.map((id, configuredPosition) => {
+      const character = byId.get(id);
+      const effective = effectiveSet.has(id);
+      return {
+        id,
+        name: character?.name ?? null,
+        visibility: character?.visibility ?? null,
+        status: character?.status ?? null,
+        configuredPosition,
+        configured: true as const,
+        effective,
+        blockers: effective
+          ? []
+          : featuredRuntimeBlockers(id, character),
+      };
+    });
+    return {
+      // `characterIds` remains as a compatibility alias for the saved order.
+      // It must never be interpreted as the runtime-visible Featured audience.
+      characterIds: configuredCharacterIds,
+      configuredCharacterIds,
+      effectiveCharacterIds,
+      settingVersion: setting?.version ?? 0,
+      settingDiagnostics: parsedSetting.diagnostics,
+      items,
+    };
+  }, {
+    isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
   });
-  const ids = featuredIdsFromSetting(setting?.value);
-  const characters = ids.length
-    ? await prisma.character.findMany({
-        where: { id: { in: ids } },
-        select: { id: true, name: true, visibility: true, status: true },
-      })
-    : [];
-  const byId = new Map(
-    characters.map((character) => [character.id, character]),
-  );
-  return ok({
-    characterIds: ids,
-    items: ids.map((id) => byId.get(id)).filter((value) => value !== undefined),
-  });
+  return ok(snapshot);
+}
+
+function featuredRuntimeBlockers(
+  characterId: string,
+  character: FeaturedCharacter | undefined,
+): FeaturedRuntimeBlocker[] {
+  const merchandisingRepairDeepLink =
+    `/admin/growth/merchandising?view=featured&search=${encodeURIComponent(characterId)}`;
+  const assetRepairDeepLink =
+    `/admin/characters/${encodeURIComponent(characterId)}?tab=assets`;
+  const releaseRepairDeepLink =
+    `/admin/characters/${encodeURIComponent(characterId)}?tab=release`;
+  if (!character) {
+    return [{
+      code: "character_not_operational",
+      message: "Character is missing or outside the operational inventory.",
+      repairDeepLink: merchandisingRepairDeepLink,
+    }];
+  }
+
+  const blockers: FeaturedRuntimeBlocker[] = [];
+  if (character.deletedAt !== null) {
+    blockers.push({
+      code: "character_deleted",
+      message: "Character is deleted.",
+      repairDeepLink: merchandisingRepairDeepLink,
+    });
+  }
+  if (character.visibility !== "public") {
+    blockers.push({
+      code: "character_not_public",
+      message: "Character visibility is not public.",
+      repairDeepLink: merchandisingRepairDeepLink,
+    });
+  }
+  if (character.status !== "approved") {
+    blockers.push({
+      code: "character_not_approved",
+      message: "Character status is not approved.",
+      repairDeepLink: merchandisingRepairDeepLink,
+    });
+  }
+  if (character.source === "user") {
+    const creator = character.creator;
+    if (
+      !creator ||
+      creator.dataClass !== "customer" ||
+      creator.role !== "user" ||
+      creator.status !== "active" ||
+      creator.deletedAt !== null
+    ) {
+      blockers.push({
+        code: "creator_not_publicly_eligible",
+        message: "Character creator is not an active customer user.",
+        repairDeepLink: merchandisingRepairDeepLink,
+      });
+    }
+  } else if (character.source !== "official") {
+    blockers.push({
+      code: "character_source_ineligible",
+      message: "Character source is not eligible for the public audience.",
+      repairDeepLink: merchandisingRepairDeepLink,
+    });
+  }
+
+  const imageAsset = character.imageAsset;
+  if (!imageAsset) {
+    blockers.push({
+      code: "avatar_missing",
+      message: "No primary character image is assigned.",
+      repairDeepLink: assetRepairDeepLink,
+    });
+  } else {
+    if (imageAsset.type !== "image") {
+      blockers.push({
+        code: "avatar_not_image",
+        message: "The primary character asset is not an image.",
+        repairDeepLink: assetRepairDeepLink,
+      });
+    }
+    if (imageAsset.deletedAt !== null) {
+      blockers.push({
+        code: "avatar_deleted",
+        message: "The primary character image is deleted.",
+        repairDeepLink: assetRepairDeepLink,
+      });
+    }
+    if (imageAsset.visibility !== "public_pack") {
+      blockers.push({
+        code: "avatar_not_public",
+        message: "The primary character image is not public.",
+        repairDeepLink: assetRepairDeepLink,
+      });
+    }
+    if (imageAsset.safetyStatus !== "passed") {
+      blockers.push({
+        code: "avatar_not_passed",
+        message: "The primary character image has not passed review.",
+        repairDeepLink: assetRepairDeepLink,
+      });
+    }
+    if (isSyntheticMediaAsset(imageAsset.metadata)) {
+      blockers.push({
+        code: "avatar_synthetic",
+        message: "The primary character image is synthetic test output.",
+        repairDeepLink: assetRepairDeepLink,
+      });
+    }
+    const platformStatus = mediaAssetPlatformStatus(imageAsset.metadata);
+    if (
+      platformStatus === "archived" ||
+      platformStatus === "rejected" ||
+      platformStatus === "blocked"
+    ) {
+      blockers.push({
+        code: "avatar_platform_ineligible",
+        message: `The primary character image is ${platformStatus} in the Image Library.`,
+        repairDeepLink: assetRepairDeepLink,
+      });
+    }
+  }
+
+  const serving = character.serving;
+  if (!serving || serving.state !== "live") {
+    blockers.push({
+      code: "serving_not_live",
+      message: "Character Serving is not live.",
+      repairDeepLink: releaseRepairDeepLink,
+    });
+  }
+  const release = serving?.currentRelease;
+  if (!release) {
+    blockers.push({
+      code: "current_release_missing",
+      message: "Character Serving has no current Release.",
+      repairDeepLink: releaseRepairDeepLink,
+    });
+  } else {
+    if (release.status !== "published" || release.publishedAt === null) {
+      blockers.push({
+        code: "current_release_not_published",
+        message: "The current Character Release is not published.",
+        repairDeepLink: releaseRepairDeepLink,
+      });
+    }
+    if (!release.legacy && release.readiness !== "ready") {
+      blockers.push({
+        code: "current_release_not_ready",
+        message: "The current generated Character Release is not ready.",
+        repairDeepLink: releaseRepairDeepLink,
+      });
+    }
+    const qualification = release.publicCatalogQualification;
+    if (!qualification) {
+      blockers.push({
+        code: "qualification_missing",
+        message: "The current Character Release has no public catalog qualification.",
+        repairDeepLink: releaseRepairDeepLink,
+      });
+    } else {
+      if (qualification.revokedAt !== null) {
+        blockers.push({
+          code: "qualification_revoked",
+          message: "The current Character Release qualification is revoked.",
+          repairDeepLink: releaseRepairDeepLink,
+        });
+      }
+      const qualificationKindValid = release.legacy
+        ? qualification.kind === "editorial_import"
+        : qualification.kind === "generated_release" &&
+          qualification.validationRunId !== null;
+      if (!qualificationKindValid) {
+        blockers.push({
+          code: "qualification_invalid",
+          message: "The current Character Release qualification does not match its release type.",
+          repairDeepLink: releaseRepairDeepLink,
+        });
+      }
+    }
+  }
+
+  return blockers.length > 0
+    ? blockers
+    : [{
+        code: "runtime_audience_ineligible",
+        message: "Character does not satisfy the current public audience authority.",
+        repairDeepLink: releaseRepairDeepLink,
+      }];
 }
 
 export async function putFeaturedCharacters(request: Request) {
   const actor = await actorWithPermission(request, "content.takedown.write");
   const body = featuredPutSchema.parse(await jsonBody(request));
-  const unique = [
-    ...new Set(body.characterIds.map((id) => id.trim()).filter(Boolean)),
-  ];
+  const unique = parseFeaturedSetting({
+    characterIds: body.characterIds,
+  }).characterIds;
   const expected = unique.length ? unique.join(",") : "CLEAR";
   if (body.confirmation !== expected) {
     throw Errors.badRequest("Confirmation did not match featured target");
@@ -335,46 +653,145 @@ export async function putFeaturedCharacters(request: Request) {
     targetId: FEATURED_SETTING_KEY,
     payload: body,
     execute: async (tx, requestId) => {
-      const valid = unique.length
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`app-setting:${FEATURED_SETTING_KEY}`}))`;
+      const before = await tx.appSetting.findUnique({
+        where: { key: FEATURED_SETTING_KEY },
+      });
+      const beforeSetting = parseFeaturedSetting(before?.value);
+      const currentVersion = before?.version ?? 0;
+      if (body.expectedVersion !== currentVersion) {
+        throw featuredSettingVersionConflict({
+          expectedVersion: body.expectedVersion,
+          currentVersion,
+          configuredCharacterIds: beforeSetting.characterIds,
+          settingDiagnostics: beforeSetting.diagnostics,
+        });
+      }
+
+      const configurable = unique.length
+        ? await tx.character.findMany({
+            where: operationalCharacterWhere({
+              id: { in: unique },
+              deletedAt: null,
+            }),
+            select: { id: true },
+          })
+        : [];
+      const configurableSet = new Set(
+        configurable.map((character) => character.id),
+      );
+      const configuredCharacterIds = unique.filter((id) =>
+        configurableSet.has(id),
+      );
+      const skipped = unique.filter((id) => !configurableSet.has(id));
+      const invalid = skipped.map((id) => ({
+        id,
+        reason: "character_not_found_or_not_configurable" as const,
+      }));
+      const effective = configuredCharacterIds.length
         ? await tx.character.findMany({
             where: {
-              id: { in: unique },
-              visibility: "public",
-              status: "approved",
-              deletedAt: null,
+              ...publicCharacterAudienceWhere,
+              id: { in: configuredCharacterIds },
             },
             select: { id: true },
           })
         : [];
-      const validSet = new Set(valid.map((character) => character.id));
-      const validIds = unique.filter((id) => validSet.has(id));
-      const before = await tx.appSetting.findUnique({
-        where: { key: FEATURED_SETTING_KEY },
-      });
-      await tx.appSetting.upsert({
-        where: { key: FEATURED_SETTING_KEY },
-        update: { value: toInputJson({ characterIds: validIds }) },
-        create: {
-          key: FEATURED_SETTING_KEY,
-          value: toInputJson({ characterIds: validIds }),
-        },
-      });
+      const effectiveSet = new Set(
+        effective.map((character) => character.id),
+      );
+      const effectiveCharacterIds = configuredCharacterIds.filter((id) =>
+        effectiveSet.has(id),
+      );
+      const settingVersion = currentVersion + 1;
+      if (before) {
+        const updated = await tx.appSetting.updateMany({
+          where: {
+            key: FEATURED_SETTING_KEY,
+            version: body.expectedVersion,
+          },
+          data: {
+            version: settingVersion,
+            value: toInputJson({
+              characterIds: configuredCharacterIds,
+            }),
+          },
+        });
+        if (updated.count !== 1) {
+          const current = await tx.appSetting.findUnique({
+            where: { key: FEATURED_SETTING_KEY },
+          });
+          const currentSetting = parseFeaturedSetting(current?.value);
+          throw featuredSettingVersionConflict({
+            expectedVersion: body.expectedVersion,
+            currentVersion: current?.version ?? 0,
+            configuredCharacterIds: currentSetting.characterIds,
+            settingDiagnostics: currentSetting.diagnostics,
+          });
+        }
+      } else {
+        await tx.appSetting.create({
+          data: {
+            key: FEATURED_SETTING_KEY,
+            version: settingVersion,
+            value: toInputJson({
+              characterIds: configuredCharacterIds,
+            }),
+          },
+        });
+      }
       await writeCommandSideEffects(tx, request, actor, requestId, {
         action: "content.featured.write",
         targetType: "app_setting",
         targetId: FEATURED_SETTING_KEY,
         reason: body.reason,
-        before: { characterIds: featuredIdsFromSetting(before?.value) },
-        after: { characterIds: validIds },
+        before: {
+          settingVersion: currentVersion,
+          characterIds: beforeSetting.characterIds,
+          settingDiagnostics: beforeSetting.diagnostics,
+        },
+        after: {
+          settingVersion,
+          configuredCharacterIds,
+          effectiveCharacterIds,
+          skipped,
+          invalid,
+        },
         eventType: "admin.content.featured_updated.v2",
       });
       return {
-        characterIds: validIds,
-        skipped: unique.filter((id) => !validSet.has(id)),
+        // `characterIds` remains a compatibility alias for the saved
+        // configuration, never the runtime-effective audience.
+        characterIds: configuredCharacterIds,
+        configuredCharacterIds,
+        effectiveCharacterIds,
+        settingVersion,
+        settingDiagnostics: [],
+        skipped,
+        invalid,
       };
     },
   });
   return ok(result);
+}
+
+function featuredSettingVersionConflict(input: {
+  expectedVersion: number;
+  currentVersion: number;
+  configuredCharacterIds: string[];
+  settingDiagnostics: ReturnType<typeof parseFeaturedSetting>["diagnostics"];
+}) {
+  return Errors.conflict(
+    "Featured configuration changed before this save was applied",
+    {
+      reason: "featured_setting_version_conflict",
+      expectedVersion: input.expectedVersion,
+      settingVersion: input.currentVersion,
+      characterIds: input.configuredCharacterIds,
+      configuredCharacterIds: input.configuredCharacterIds,
+      settingDiagnostics: input.settingDiagnostics,
+    },
+  );
 }
 
 async function writeCommandSideEffects(
@@ -429,18 +846,8 @@ function rejectOfficialCharacter(source: string, id: string, field: string) {
   );
 }
 
-function featuredIdsFromSetting(value: Prisma.JsonValue | undefined): string[] {
-  return isRecord(value) ? jsonStringArray(value.characterIds) : [];
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function jsonStringArray(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string")
-    : [];
 }
 
 function cursorKeysFor(url: URL, scope: string, query: unknown) {

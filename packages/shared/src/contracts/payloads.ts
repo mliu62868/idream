@@ -74,7 +74,12 @@ export const imageGeneratePayloadSchema = z
         z
           .object({
             assetId: z.string(),
-            role: z.enum(["identity_anchor", "identity_reference", "source_image"]),
+            role: z.enum([
+              "identity_anchor",
+              "identity_reference",
+              "look_reference",
+              "source_image",
+            ]),
             storageKey: z.string().optional(),
             url: z.string().optional(),
             contentType: z.string().optional(),
@@ -89,6 +94,24 @@ export const imageGeneratePayloadSchema = z
   })
   .passthrough();
 
+export const characterPreviewGeneratePayloadSchema = z
+  .object({
+    version: z.literal(1),
+    kind: z.literal("character.preview"),
+    requestId: z.string().min(1),
+    previewJobId: z.string().min(1),
+    draftId: z.string().min(1),
+    userId: z.string().min(1),
+    prompt: z.string().min(1),
+    negativePrompt: z.string().nullable(),
+    controls: z.record(z.string(), z.unknown()),
+    orientation: z.string().min(1),
+    seed: z.string().min(1),
+    model: z.string().min(1),
+    outputPrefix: z.string().min(1),
+  })
+  .passthrough();
+
 export const chatImageRequestedPayloadSchema = z
   .object({
     version: z.literal(1),
@@ -99,6 +122,11 @@ export const chatImageRequestedPayloadSchema = z
     messageId: z.string(),
     userId: z.string(),
     characterId: z.string(),
+    // The immutable Character Release pinned to this chat session. Optional
+    // for rolling compatibility with older Chat builds; Main fails closed to
+    // normal generation when it is absent instead of reusing an arbitrary
+    // historical character image.
+    characterReleaseId: z.string().min(1).optional(),
     promptHint: z.string().nullable(),
     conversationContext: z.string().nullable(),
     controls: z
@@ -416,6 +444,34 @@ export const aiFinalizePayloadSchema = z.discriminatedUnion("kind", [
   z
     .object({
       version: z.literal(1),
+      kind: z.literal("character.preview.completed"),
+      requestId: z.string().min(1),
+      previewJobId: z.string().min(1),
+      draftId: z.string().min(1),
+      userId: z.string().min(1),
+      provider: z.string().min(1),
+      model: z.string().min(1),
+      asset: generationAssetSchema,
+    })
+    .passthrough(),
+  z
+    .object({
+      version: z.literal(1),
+      kind: z.literal("character.preview.failed"),
+      requestId: z.string().min(1),
+      previewJobId: z.string().min(1),
+      draftId: z.string().min(1),
+      userId: z.string().min(1),
+      error: z.object({
+        code: z.string().min(1),
+        message: z.string().min(1),
+        retryable: z.boolean(),
+      }),
+    })
+    .passthrough(),
+  z
+    .object({
+      version: z.literal(1),
       kind: z.literal("generation.completed"),
       requestId: z.string(),
       generationJobId: z.string(),
@@ -424,6 +480,8 @@ export const aiFinalizePayloadSchema = z.discriminatedUnion("kind", [
       completionManifestRef: z.string().optional(),
       completionManifestChecksum: z.string().optional(),
       mode: z.enum(["image", "video"]),
+      provider: z.string().min(1).optional(),
+      model: z.string().min(1).optional(),
       assets: z.array(generationAssetSchema),
       usage: usageSchema,
     })
@@ -466,6 +524,9 @@ export type ChatStreamEvent = z.infer<typeof chatStreamEventSchema>;
 export type ChatGeneratePayload = z.infer<typeof chatGeneratePayloadSchema>;
 export type ChatMemoryExtractPayload = z.infer<typeof chatMemoryExtractPayloadSchema>;
 export type ImageGeneratePayload = z.infer<typeof imageGeneratePayloadSchema>;
+export type CharacterPreviewGeneratePayload = z.infer<
+  typeof characterPreviewGeneratePayloadSchema
+>;
 export type VideoGeneratePayload = z.infer<typeof videoGeneratePayloadSchema>;
 export type ChatImageRequestedPayload = z.infer<typeof chatImageRequestedPayloadSchema>;
 export type ChatImageAcceptedPayload = z.infer<typeof chatImageAcceptedPayloadSchema>;

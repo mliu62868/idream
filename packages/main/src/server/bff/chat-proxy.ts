@@ -17,6 +17,12 @@ import { isSyntheticMediaAsset } from "@/server/lib/media-asset-authority";
 import { isReusablePlatformAssetWhere } from "@/server/modules/ourdream/chat-image-reuse";
 
 const HOP_BY_HOP = new Set(["cookie", "host", "connection", "content-length", "transfer-encoding"]);
+const INBOUND_TRUST_HEADERS = new Set([
+  "x-idream-bff",
+  "x-idream-bff-user",
+  "x-idream-role",
+  "x-idream-user-id",
+]);
 
 /** Shown in place of a generated reply when input moderation blocks the turn. */
 const BLOCKED_NOTICE = "I can’t help with that request.";
@@ -31,6 +37,13 @@ export async function proxyChatRequest(request: Request, segments: string[]): Pr
   const base = env.CHAT_SERVICE_URL;
   const secret = env.CHAT_BFF_SIGNING_SECRET;
   if (!base) return jsonError(503, "chat_unavailable", "CHAT_SERVICE_URL not configured");
+  if (!secret && env.APP_ENV !== "test") {
+    return jsonError(
+      503,
+      "chat_unavailable",
+      "CHAT_BFF_SIGNING_SECRET not configured",
+    );
+  }
 
   const auth = await getAuthCtx(request);
   if (!auth.userId) return jsonError(401, "unauthorized", "sign in required");
@@ -43,10 +56,16 @@ export async function proxyChatRequest(request: Request, segments: string[]): Pr
 
   const headers = new Headers();
   for (const [k, v] of request.headers) {
-    if (!HOP_BY_HOP.has(k.toLowerCase())) headers.set(k, v);
+    const normalized = k.toLowerCase();
+    if (
+      !HOP_BY_HOP.has(normalized) &&
+      !INBOUND_TRUST_HEADERS.has(normalized)
+    ) {
+      headers.set(k, v);
+    }
   }
 
-  // Sign the internal user context (authn). No secret ⇒ dev mode: pass user header.
+  // Sign the internal user context. Plaintext identity exists only inside tests.
   if (secret) {
     const { signature, context } = signBffContext({
       secret,
@@ -79,6 +98,7 @@ export async function proxyChatRequest(request: Request, segments: string[]): Pr
   // Pass through status + body (streaming-safe for SSE).
   const respHeaders = new Headers(upstream.headers);
   respHeaders.delete("content-encoding");
+  applyPrivateNoStoreHeaders(respHeaders);
   return new Response(upstream.body, { status: upstream.status, headers: respHeaders });
 }
 
@@ -219,9 +239,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function envelope(data: unknown, status: number): Response {
+  const headers = new Headers({ "content-type": "application/json" });
+  applyPrivateNoStoreHeaders(headers);
   return new Response(JSON.stringify({ ok: true, data }), {
     status,
-    headers: { "content-type": "application/json" },
+    headers,
   });
 }
 
@@ -234,8 +256,24 @@ function safeContent(reqBody: string): string {
 }
 
 function jsonError(status: number, code: string, message: string): Response {
+  const headers = new Headers({ "content-type": "application/json" });
+  applyPrivateNoStoreHeaders(headers);
   return new Response(JSON.stringify({ error: code, message }), {
     status,
-    headers: { "content-type": "application/json" },
+    headers,
   });
+}
+
+function applyPrivateNoStoreHeaders(headers: Headers) {
+  headers.set("cache-control", "private, no-store, max-age=0");
+  headers.set("pragma", "no-cache");
+  const vary = new Set(
+    (headers.get("vary") ?? "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean),
+  );
+  vary.add("Cookie");
+  vary.add("Authorization");
+  headers.set("vary", [...vary].join(", "));
 }

@@ -9,6 +9,10 @@ import {
   resolveAdminV2ManifestAuthorization,
   type AdminV2ApiOperation,
 } from "@idream/shared/admin/api-manifest";
+import {
+  ADMIN_V2_MUTATION_TRANSPORT,
+  type AdminV2MutationTransport,
+} from "@idream/shared/admin";
 import { isPermissionKey } from "@/server/admin/permissions";
 
 const HTTP_METHOD_PATTERN = /export\s+(?:async\s+)?function\s+(GET|POST|PUT|PATCH|DELETE)\b/g;
@@ -34,6 +38,41 @@ function routePattern(file: string): string {
     .map((segment) => segment.replace(/^\[([^\]]+)\]$/, ":$1"))
     .join("/");
   return `/api/v2/admin${suffix ? `/${suffix}` : ""}`;
+}
+
+function routeFile(operation: AdminV2ApiOperation) {
+  const suffix = operation.route
+    .replace(/^\/api\/v2\/admin\/?/, "")
+    .split("/")
+    .filter(Boolean)
+    .map((segment) => segment.startsWith(":") ? `[${segment.slice(1)}]` : segment);
+  return join(routeRoot, ...suffix, "route.ts");
+}
+
+function declaredRequirements(operation: AdminV2ApiOperation) {
+  return operation.contract.request
+    .split("+")
+    .filter((part): part is "idempotency-key" | "if-match" =>
+      part === "idempotency-key" || part === "if-match"
+    )
+    .sort();
+}
+
+function registryRequirements(transport: AdminV2MutationTransport) {
+  if (transport.status === "pending") return [transport.requiredTransport.toLowerCase()];
+  if (transport.kind === "idempotency_key") return ["idempotency-key"];
+  if (transport.kind === "if_match") return ["if-match"];
+  return ["idempotency-key", "if-match"];
+}
+
+function handlerRequirements(source: string) {
+  return [
+    ...(source.includes("requireIdempotencyKey(") ? ["idempotency-key"] : []),
+    ...(source.includes("requireMatchingProjectVersion(") ||
+      /headers\.get\(["']if-match["']\)/.test(source)
+      ? ["if-match"]
+      : []),
+  ].sort();
 }
 
 async function implementedOperations(): Promise<string[]> {
@@ -65,7 +104,7 @@ describe("Admin v2 API permission and contract manifest", () => {
 
     expect(new Set(declared).size).toBe(declared.length);
     expect(declared).toEqual(implemented);
-    expect(declared).toHaveLength(86);
+    expect(declared).toHaveLength(92);
   });
 
   it("fails closed unless each operation has typed authority and request/response contracts", () => {
@@ -147,5 +186,54 @@ describe("Admin v2 API permission and contract manifest", () => {
       kind: "all_of_and_one_of_by_resource",
       oneOf: expect.arrayContaining([...new Set(Object.values(ADMIN_COMMAND_TARGET_READ_PERMISSIONS))]),
     });
+
+    const receiptRecovery = findAdminV2ApiOperation(
+      "POST",
+      "/api/v2/admin/mutation-receipts/reconcile",
+    );
+    expect(resolveAdminV2ManifestAuthorization(
+      receiptRecovery!,
+      "creative.run.review",
+    )).toEqual(["creative.run.review"]);
+    expect(resolveAdminV2ManifestAuthorization(
+      receiptRecovery!,
+      "character.project.write",
+    )).toEqual(["character.project.write"]);
+    expect(resolveAdminV2ManifestAuthorization(
+      receiptRecovery!,
+      "dashboard.read",
+    )).toBeNull();
+  });
+
+  it("keeps every combined transport exact across manifest, registry, and handlers", async () => {
+    const operationIds = (
+      Object.keys(ADMIN_V2_MUTATION_TRANSPORT) as Array<
+        keyof typeof ADMIN_V2_MUTATION_TRANSPORT
+      >
+    )
+      .filter((operationId) => {
+        const transport = ADMIN_V2_MUTATION_TRANSPORT[operationId];
+        return transport.status === "implemented" &&
+          transport.kind === "idempotency_key_and_if_match";
+      })
+      .sort();
+
+    for (const operationId of operationIds) {
+      const operation = ADMIN_V2_API_OPERATIONS.find(({ id }) => id === operationId);
+      const transport = (
+        ADMIN_V2_MUTATION_TRANSPORT as Readonly<
+          Record<string, AdminV2MutationTransport | undefined>
+        >
+      )[operationId];
+      expect(operation, operationId).toBeDefined();
+      expect(transport, operationId).toBeDefined();
+      if (!operation || !transport) continue;
+
+      const source = await readFile(routeFile(operation), "utf8");
+      const handler = handlerRequirements(source);
+      expect(handler, `${operationId} handler`).toEqual(["idempotency-key", "if-match"]);
+      expect(declaredRequirements(operation), `${operationId} manifest`).toEqual(handler);
+      expect(registryRequirements(transport).sort(), `${operationId} registry`).toEqual(handler);
+    }
   });
 });

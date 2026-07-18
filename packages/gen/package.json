@@ -16,6 +16,7 @@
     "probe:image": "tsx src/probe-image-pipeline.ts",
     "probe:character-consistency": "tsx src/probe-character-consistency.ts",
     "probe:redcraft-comfyui": "tsx src/probe-redcraft-comfyui.ts",
+    "sync:comfyui-workflows": "tsx src/sync-comfyui-workflows.ts",
     "smoke:backend": "tsx src/backend/smoke.ts"
   },
   "dependencies": {

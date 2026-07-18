@@ -31,7 +31,7 @@ async function seedFunctionSource(name: string) {
 }
 
 describe("seed data provenance", () => {
-  it("marks system, probe, operator, and curated creator users as internal", async () => {
+  it("marks system, probe, and operator users as internal without fake creator accounts", async () => {
     const users = await prisma.user.findMany({
       where: {
         OR: [
@@ -43,14 +43,16 @@ describe("seed data provenance", () => {
             "seed-ops-user",
             "seed-analyst-user",
           ] } },
-          { id: { startsWith: "seed-creator-" } },
         ],
       },
       select: { id: true, dataClass: true },
     });
 
-    expect(users).toHaveLength(19);
+    expect(users).toHaveLength(6);
     expect(new Set(users.map((user) => user.dataClass))).toEqual(new Set(["internal"]));
+    await expect(
+      prisma.user.count({ where: { id: { startsWith: "seed-creator-" } } }),
+    ).resolves.toBe(0);
   });
 
   it("keeps curated cold-start content official without invented engagement", async () => {
@@ -59,6 +61,38 @@ describe("seed data provenance", () => {
       select: {
         id: true,
         source: true,
+        creatorId: true,
+        relationship: true,
+        advancedDetails: true,
+        imageAssetId: true,
+        imageAsset: {
+          select: {
+            id: true,
+            characterId: true,
+          },
+        },
+        serving: {
+          select: {
+            state: true,
+            currentRelease: {
+              select: {
+                legacy: true,
+                readiness: true,
+                status: true,
+                publishedAt: true,
+                generationProvenance: true,
+                releasePlacementManifest: true,
+                publicCatalogQualification: {
+                  select: {
+                    kind: true,
+                    validationRunId: true,
+                    revokedAt: true,
+                  },
+                },
+              },
+            },
+          },
+        },
         stats: {
           select: {
             likesCount: true,
@@ -69,11 +103,11 @@ describe("seed data provenance", () => {
     });
     const collections = await prisma.mediaCollection.findMany({
       where: { id: { startsWith: "seed-collection-" } },
-      select: { id: true, source: true },
+      select: { id: true, source: true, _count: { select: { items: true } } },
     });
     const feedbackItems = await prisma.productFeedbackItem.findMany({
-      where: { sourceKey: { not: null } },
-      select: { sourceKey: true, voteCount: true },
+      where: { id: { startsWith: "seed-feedback-" } },
+      select: { sourceKey: true, source: true, voteCount: true },
       orderBy: { sourceKey: "asc" },
     });
 
@@ -82,15 +116,120 @@ describe("seed data provenance", () => {
     expect(
       characters.every(
         (character) =>
+          character.creatorId === "seed-system-creator" &&
+          character.relationship === null &&
+          (character.advancedDetails as {
+            provenance?: { ownership?: string; originalCreator?: string };
+          }).provenance?.ownership === "platform_official" &&
+          Boolean(
+            (character.advancedDetails as {
+              provenance?: { originalCreator?: string };
+            }).provenance?.originalCreator,
+          ),
+      ),
+    ).toBe(true);
+    expect(
+      characters.every(
+        (character) =>
           character.stats?.likesCount === 0 && character.stats.chatsCount === 0,
       ),
     ).toBe(true);
+    expect(
+      characters.every((character) => {
+        const release = character.serving?.currentRelease;
+        const provenance =
+          release?.generationProvenance as Record<string, unknown> | undefined;
+        const manifest =
+          release?.releasePlacementManifest as {
+            placements?: Array<Record<string, unknown>>;
+          } | undefined;
+        return character.imageAssetId === `seed-image-${character.id}` &&
+          character.imageAsset?.id === character.imageAssetId &&
+          character.imageAsset.characterId === character.id &&
+          character.serving?.state === "live" &&
+          release?.legacy === true &&
+          release.readiness === "ready" &&
+          release.status === "published" &&
+          release.publishedAt !== null &&
+          provenance?.schemaVersion === "character-release-editorial-import-v1" &&
+          manifest?.placements?.length === 1 &&
+          manifest.placements[0]?.slotKey === "character_avatar" &&
+          manifest.placements[0]?.assetId === character.imageAssetId &&
+          !("generationJobId" in manifest.placements[0]) &&
+          release.publicCatalogQualification?.kind === "editorial_import" &&
+          release.publicCatalogQualification.validationRunId === null &&
+          release.publicCatalogQualification.revokedAt === null;
+      }),
+    ).toBe(true);
     expect(collections).toHaveLength(3);
     expect(collections.every((collection) => collection.source === "official")).toBe(true);
+    expect(collections.every((collection) => collection._count.items > 0)).toBe(true);
     expect(feedbackItems).toEqual([
-      { sourceKey: "chat-memory-review", voteCount: 0 },
-      { sourceKey: "creator-collections", voteCount: 0 },
-      { sourceKey: "generator-recipes", voteCount: 0 },
+      { sourceKey: "chat-memory-review", source: "official", voteCount: 0 },
+      { sourceKey: "creator-collections", source: "official", voteCount: 0 },
+      { sourceKey: "generator-recipes", source: "official", voteCount: 0 },
+    ]);
+  });
+
+  it("keeps Qwen Edit profile controls aligned with the executable ComfyUI graphs", async () => {
+    const profiles = await prisma.generationModelProfile.findMany({
+      where: {
+        profileKey: {
+          in: [
+            "chat-image-edit",
+            "character-image-variation",
+            "character-image-multi-identity",
+          ],
+        },
+      },
+      select: {
+        profileKey: true,
+        workflowKey: true,
+        steps: true,
+        sampler: true,
+        scheduler: true,
+        cfgScale: true,
+        enabled: true,
+        rolloutPercent: true,
+        status: true,
+      },
+      orderBy: { profileKey: "asc" },
+    });
+
+    expect(profiles).toEqual([
+      {
+        profileKey: "character-image-multi-identity",
+        workflowKey: "qwen-image-edit-multi-identity",
+        steps: 4,
+        sampler: "sa_solver",
+        scheduler: "beta",
+        cfgScale: 1,
+        enabled: true,
+        rolloutPercent: 100,
+        status: "active",
+      },
+      {
+        profileKey: "character-image-variation",
+        workflowKey: "qwen-image-edit-multi-reference",
+        steps: 4,
+        sampler: "sa_solver",
+        scheduler: "beta",
+        cfgScale: 1,
+        enabled: true,
+        rolloutPercent: 100,
+        status: "active",
+      },
+      {
+        profileKey: "chat-image-edit",
+        workflowKey: "qwen-image-edit-img2img",
+        steps: 4,
+        sampler: "sa_solver",
+        scheduler: "beta",
+        cfgScale: 1,
+        enabled: true,
+        rolloutPercent: 100,
+        status: "active",
+      },
     ]);
   });
 
@@ -102,15 +241,18 @@ describe("seed data provenance", () => {
     const plans = await seedFunctionSource("seedPlans");
     const presets = await seedFunctionSource("seedPresets");
 
-    expect(users.slice(users.indexOf("const handles"))).toContain("update: {}");
-    expect(characters).toMatch(/mediaAsset\.upsert\(\{[\s\S]*?update: \{\},/);
-    expect(characters).toMatch(/character\.upsert\(\{[\s\S]*?update: \{\},/);
+    expect(users).not.toContain("seed-creator-");
+    expect(characters).toContain('ownerId: SYSTEM_USER_ID');
+    expect(characters).toContain('ownership: "platform_official"');
+    expect(characters).toContain("existingProvenance.legacyCreatorId");
+    expect(characters).toContain("originalOwnerId");
+    expect(characters).toContain("relationship: null");
     expect(characters).toMatch(
       /characterStats\.upsert\(\{[\s\S]*?update: \{\},/,
     );
     expect(collections).not.toContain("mediaCollectionItem.deleteMany");
     expect(collections).toMatch(
-      /mediaCollection\.upsert\(\{[\s\S]*?update: \{\},[\s\S]*?mediaCollectionItem\.createMany/,
+      /mediaCollection\.upsert\(\{[\s\S]*?ownerId: SYSTEM_USER_ID,[\s\S]*?mediaCollectionItem\.createMany/,
     );
     expect(feedback).toMatch(
       /productFeedbackItem\.upsert\(\{[\s\S]*?update: \{\},/,

@@ -3,6 +3,7 @@
 //   session.jsonl / derives no memory, P0-F user.deleted erases the chat domain,
 //   P0-G boundaries fail closed. Runs over PG + the file layer like hot-path.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { FREE_DAILY_MESSAGES } from "@idream/shared/chat/limits";
 import { mkdtemp, mkdir, rm, access, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -70,8 +71,8 @@ afterAll(async () => {
   await rm(fsRoot, { recursive: true, force: true });
 });
 
-describe("P0-C: free daily quota = 30", () => {
-  it("blocks the 31st free message in the same UTC day with 402 quota_exceeded", async () => {
+describe("P0-C: free daily quota", () => {
+  it("blocks the first message beyond the daily cap with 402 quota_exceeded", async () => {
     const user = "u_p0_quota";
     const session = await createSession({ userId: user, characterId: CHAR }, { prisma });
     // Pre-seed today's usage at the cap (avoids 30 real generations).
@@ -80,8 +81,15 @@ describe("P0-C: free daily quota = 30", () => {
     const periodEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
     await prisma.chatUsage.upsert({
       where: { userId_periodStart: { userId: user, periodStart } },
-      update: { messagesUsed: 30 },
-      create: { id: `usage_${user}`, userId: user, sessionId: session.id, messagesUsed: 30, periodStart, periodEnd },
+      update: { messagesUsed: FREE_DAILY_MESSAGES },
+      create: {
+        id: `usage_${user}`,
+        userId: user,
+        sessionId: session.id,
+        messagesUsed: FREE_DAILY_MESSAGES,
+        periodStart,
+        periodEnd,
+      },
     });
 
     await expect(

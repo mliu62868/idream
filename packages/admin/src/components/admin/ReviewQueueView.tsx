@@ -349,7 +349,7 @@ export function ReviewQueueView() {
                   </td>
                 </tr>
               ))}
-              {items.length === 0 ? (
+              {items.length === 0 && !error ? (
                 <tr>
                   <td className="px-3 py-10 text-center" colSpan={7}>
                     {loading ? (
@@ -405,6 +405,7 @@ function DecisionDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const dialogRef = useRef<HTMLDivElement | null>(null);
+  const idempotencyKey = useRef<string | null>(null);
   const titleId = useId();
 
   const canSubmit = reason.trim().length >= 3 && confirmation === item.submissionId && !busy;
@@ -454,6 +455,8 @@ function DecisionDialog({
     if (!canSubmit) return;
     setBusy(true);
     setError(null);
+    const requestKey = idempotencyKey.current ?? crypto.randomUUID();
+    idempotencyKey.current = requestKey;
     try {
       await apiWrite(
         `/api/v1/admin/content/review-queue/${item.submissionId}/decision`,
@@ -464,6 +467,7 @@ function DecisionDialog({
           reason: reason.trim(),
           confirmation,
         },
+        { "idempotency-key": requestKey },
       );
       await onDone();
     } catch (err) {

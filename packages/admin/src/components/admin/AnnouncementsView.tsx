@@ -238,7 +238,7 @@ export function AnnouncementsView() {
                 </td>
               </tr>
             ))}
-            {items.length === 0 && !loading ? (
+            {items.length === 0 && !loading && !error ? (
               <tr>
                 <td className="px-3 py-6 text-center text-xs text-[var(--ad-text-muted)]" colSpan={4}>
                   {t(query.announcementSearch || query.announcementLevel || query.announcementActive ? "No announcements match these filters." : "No announcements.")}

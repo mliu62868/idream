@@ -3,7 +3,7 @@ export type OfficialCharacterSeed = {
   readonly title: string;
   readonly age: string;
   readonly description: string;
-  readonly creator: string;
+  readonly originalCreator: string;
   readonly image: string;
   readonly vivid?: boolean;
 };
@@ -16,7 +16,7 @@ export const officialCharacterSeeds: readonly OfficialCharacterSeed[] = [
     title: "Melissa Burke",
     age: "38",
     description: "She's been your best friend's mom your whole life. The woman who made you both sandwiches after school.",
-    creator: "@some1cool",
+    originalCreator: "@some1cool",
     image: "/images/ourdream/card-melissa-burke.webp",
   },
   {
@@ -24,7 +24,7 @@ export const officialCharacterSeeds: readonly OfficialCharacterSeed[] = [
     title: "Summoned to Another World",
     age: "22",
     description: "(Recently Updated) A normal day at college becomes the beginning of something far greater.",
-    creator: "@fuze",
+    originalCreator: "@fuze",
     image: "/images/ourdream/card-summoned-world.webp",
   },
   {
@@ -32,7 +32,7 @@ export const officialCharacterSeeds: readonly OfficialCharacterSeed[] = [
     title: "Sarah Mercer",
     age: "27",
     description: "Sarah Mercer is your loving wife. Eight years together, high school sweethearts.",
-    creator: "@some1cool",
+    originalCreator: "@some1cool",
     image: "/images/ourdream/card-sarah-mercer.webp",
     vivid: true,
   },
@@ -41,7 +41,7 @@ export const officialCharacterSeeds: readonly OfficialCharacterSeed[] = [
     title: "Alexa Reeves",
     age: "19",
     description: "Three guys. One girl. A yacht. She knows what she's walking into.",
-    creator: "@archerz",
+    originalCreator: "@archerz",
     image: "/images/ourdream/card-alexa-reeves.webp",
     vivid: true,
   },
@@ -50,7 +50,7 @@ export const officialCharacterSeeds: readonly OfficialCharacterSeed[] = [
     title: "Tamsin Jacobs - A 'Bullish' Request",
     age: "20",
     description: "Friends Sister / Cuckold (Bull User). Your friend group is the bedrock of your life.",
-    creator: "@wordshitmelikeablow",
+    originalCreator: "@wordshitmelikeablow",
     image: "/images/ourdream/card-tamsin-jacobs.webp",
     vivid: true,
   },
@@ -59,7 +59,7 @@ export const officialCharacterSeeds: readonly OfficialCharacterSeed[] = [
     title: "Truth or Dare : Confessional",
     age: "18",
     description: "Your parents are away and your stepsister wants you to play with her.",
-    creator: "@thebigbadwolf",
+    originalCreator: "@thebigbadwolf",
     image: "/images/ourdream/card-truth-confessional.webp",
   },
   {
@@ -67,7 +67,7 @@ export const officialCharacterSeeds: readonly OfficialCharacterSeed[] = [
     title: "Truth or Dare: Stepmother Edition",
     age: "36",
     description: "When your stepmother invited you to join nine lively houseguests.",
-    creator: "@loudshrike",
+    originalCreator: "@loudshrike",
     image: "/images/ourdream/card-truth-stepmother.webp",
     vivid: true,
   },
@@ -76,7 +76,7 @@ export const officialCharacterSeeds: readonly OfficialCharacterSeed[] = [
     title: "Stephanie, your dumbass stepsis",
     age: "18",
     description: "Your super bratty step sister was messing around and got surprised.",
-    creator: "@jlg619",
+    originalCreator: "@jlg619",
     image: "/images/ourdream/card-stephanie.webp",
   },
   {
@@ -84,7 +84,7 @@ export const officialCharacterSeeds: readonly OfficialCharacterSeed[] = [
     title: "Kennedy Graham",
     age: "21",
     description: "SEC Sorority Sisters - Book Two. Slow burn | Kennedy Graham.",
-    creator: "@jmathersmind",
+    originalCreator: "@jmathersmind",
     image: "/images/ourdream/card-kennedy-graham.webp",
     vivid: true,
   },
@@ -93,7 +93,7 @@ export const officialCharacterSeeds: readonly OfficialCharacterSeed[] = [
     title: "Eleanor Dawn",
     age: "21",
     description: "A blackmail story with Eleanor, who keeps control of the apartment.",
-    creator: "@dreambig",
+    originalCreator: "@dreambig",
     image: "/images/ourdream/card-eleanor-dawn.webp",
     vivid: true,
   },
@@ -102,7 +102,7 @@ export const officialCharacterSeeds: readonly OfficialCharacterSeed[] = [
     title: "Bailey Price: One Safe Night",
     age: "19",
     description: "You never planned for any of this. You were supposed to get home tonight.",
-    creator: "@towle12",
+    originalCreator: "@towle12",
     image: "/images/ourdream/card-bailey-price.webp",
     vivid: true,
   },
@@ -111,7 +111,7 @@ export const officialCharacterSeeds: readonly OfficialCharacterSeed[] = [
     title: "Sophie - The Single Mother",
     age: "34",
     description: "It's a warm sunny moving day and she needs help around the apartment.",
-    creator: "@stzy1",
+    originalCreator: "@stzy1",
     image: "/images/ourdream/card-sophie.webp",
   },
   {
@@ -119,7 +119,7 @@ export const officialCharacterSeeds: readonly OfficialCharacterSeed[] = [
     title: "Raya Reyes",
     age: "19",
     description: "She didn't want a stepdad. She didn't want her mom to remarry.",
-    creator: "@some1cool",
+    originalCreator: "@some1cool",
     image: "/images/ourdream/card-raya-reyes.webp",
   },
   {
@@ -127,7 +127,7 @@ export const officialCharacterSeeds: readonly OfficialCharacterSeed[] = [
     title: "Emily : Coming Home",
     age: "31",
     description: "Five years ago, you lost everything. Your freedom. Your family.",
-    creator: "@thebigbadwolf",
+    originalCreator: "@thebigbadwolf",
     image: "/images/ourdream/card-emily-coming-home.webp",
   },
   {
@@ -135,7 +135,7 @@ export const officialCharacterSeeds: readonly OfficialCharacterSeed[] = [
     title: "Diana - The bet to date the weird girl !",
     age: "22",
     description: "You and your friends started a bet. John always makes the stupidest ideas.",
-    creator: "@mau4971",
+    originalCreator: "@mau4971",
     image: "/images/ourdream/card-diana-weird-girl.webp",
   },
   {
@@ -143,7 +143,7 @@ export const officialCharacterSeeds: readonly OfficialCharacterSeed[] = [
     title: "Lola Moonstruck",
     age: "20",
     description: "Ugh, did you have to introduce myself? Fine. I'm Lola.",
-    creator: "@anonarona",
+    originalCreator: "@anonarona",
     image: "/images/ourdream/card-lola-moonstruck.webp",
   },
 ] as const;

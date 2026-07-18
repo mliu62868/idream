@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import path from "node:path";
 
 type PlaywrightEnvironmentInput = Readonly<Record<string, string | undefined>>;
@@ -17,15 +17,35 @@ export type ResolvedPlaywrightEnvironment = {
   readonly redisURL: string;
   readonly bullmqPrefix: string;
   readonly chatFsRoot: string;
+  readonly runId: string;
+  readonly ownsDatabase: boolean;
+  readonly remoteDatabaseAuthority: {
+    readonly allowReset: boolean;
+    readonly ci: boolean;
+    readonly confirmedDatabaseName: string | null;
+  };
+  readonly mainDistDir: string;
+  readonly adminDistDir: string;
+  readonly mainTsconfigPath: string;
+  readonly adminTsconfigPath: string;
+  readonly lifecycleReceiptPath: string;
   readonly serviceEnv: Readonly<Record<string, string>>;
 };
 
 export type ManagedPlaywrightWebServer = {
   readonly command: string;
-  readonly url: string;
+  readonly url?: string;
   readonly reuseExistingServer: false;
   readonly timeout: number;
   readonly env: Readonly<Record<string, string>>;
+  readonly wait?: {
+    readonly stdout?: RegExp;
+    readonly stderr?: RegExp;
+  };
+  readonly gracefulShutdown?: {
+    readonly signal: "SIGINT" | "SIGTERM";
+    readonly timeout: number;
+  };
 };
 
 const TEST_DATABASE_TOKEN = /(^|[_-])test([_-]|$)/i;
@@ -58,6 +78,7 @@ export function resolvePlaywrightEnvironment(
     "PW_BASE_URL",
   );
   const mainPort = new URL(mainBaseURL).port;
+  const runId = playwrightRunId(input.PW_RUN_ID);
   const defaultAdminURL = offsetLoopbackURL(mainBaseURL, 1, "Playwright Admin");
   const adminBaseURL = loopbackBaseURL(
     input.PW_ADMIN_BASE_URL ?? defaultAdminURL,
@@ -83,19 +104,23 @@ export function resolvePlaywrightEnvironment(
     );
   }
 
-  const databaseURL = input.PW_DATABASE_URL
-    ? assertPlaywrightDatabaseUrl(input.PW_DATABASE_URL)
-    : derivedPlaywrightDatabaseUrl(
-        input.TEST_DATABASE_URL ?? DEFAULT_TEST_DATABASE_URL,
-        mainPort,
-      );
+  // PW_DATABASE_URL selects the PostgreSQL authority, never a database that
+  // multiple runs may share. Every Playwright run owns a derived database.
+  const ownsDatabase = true;
+  const databaseURL = derivedPlaywrightDatabaseUrl(
+    input.PW_DATABASE_URL ??
+      input.TEST_DATABASE_URL ??
+      DEFAULT_TEST_DATABASE_URL,
+    mainPort,
+    runId,
+  );
   const chatDatabaseURL = derivedPlaywrightChatDatabaseUrl(databaseURL);
   const redisURL = assertPlaywrightRedisUrl(
     input.PW_REDIS_URL ?? "redis://127.0.0.1:6379/14",
   );
-  const bullmqPrefix = `idream:e2e:${mainPort}`;
+  const bullmqPrefix = `idream:e2e:${mainPort}:${runId}`;
   const isolationHash = createHash("sha256")
-    .update(`${databaseURL}/${mainPort}`)
+    .update(`${databaseURL}/${mainPort}/${runId}`)
     .digest("hex")
     .slice(0, 12);
   const chatFsRoot = path.resolve(
@@ -105,9 +130,23 @@ export function resolvePlaywrightEnvironment(
   );
   const bffSecret = `playwright-bff-${isolationHash}`;
   const internalToken = `playwright-internal-${isolationHash}`;
+  const mainDistDir = `.next/playwright-main-${mainPort}-${runId}`;
+  const adminDistDir = `.next/playwright-admin-${adminPort}-${runId}`;
+  const mainTsconfigPath =
+    `.next/playwright-config-main-${mainPort}-${runId}/tsconfig.json`;
+  const adminTsconfigPath =
+    `.next/playwright-config-admin-${adminPort}-${runId}/tsconfig.json`;
+  const lifecycleReceiptPath =
+    `.next/playwright-lifecycle-main-${mainPort}-${runId}/cleanup.json`;
+  const remoteDatabaseAuthority = {
+    allowReset: input.CHAT_TEST_ALLOW_REMOTE_RESET === "1",
+    ci: input.CI === "true",
+    confirmedDatabaseName: input.CHAT_TEST_RESET_CONFIRM ?? null,
+  } as const;
   const serviceEnv = {
     APP_ENV: "test",
     PLAYWRIGHT_E2E: "1",
+    PW_RUN_ID: runId,
     DB_PROVIDER: "postgresql",
     TEST_DATABASE_URL: databaseURL,
     DATABASE_URL: databaseURL,
@@ -134,6 +173,13 @@ export function resolvePlaywrightEnvironment(
     PAYMENT_PROVIDER: input.PW_PAYMENT_PROVIDER ?? "mock",
     BLOB_PROVIDER: input.PW_BLOB_PROVIDER ?? "mock",
     AGE_VERIFICATION_PROVIDER: input.PW_AGE_VERIFICATION_PROVIDER ?? "mock",
+    NEXT_PUBLIC_SITE_AFFILIATE_URL: "",
+    NEXT_PUBLIC_SITE_DISCORD_URL: "",
+    NEXT_PUBLIC_SITE_HELP_CENTER_URL: "",
+    NEXT_PUBLIC_SITE_LEGAL_NAME: "",
+    NEXT_PUBLIC_SITE_REDDIT_URL: "",
+    NEXT_PUBLIC_SITE_SUPPORT_EMAIL: "",
+    NEXT_PUBLIC_SITE_X_URL: "",
   } as const;
 
   return {
@@ -150,6 +196,14 @@ export function resolvePlaywrightEnvironment(
     redisURL,
     bullmqPrefix,
     chatFsRoot,
+    runId,
+    ownsDatabase,
+    remoteDatabaseAuthority,
+    mainDistDir,
+    adminDistDir,
+    mainTsconfigPath,
+    adminTsconfigPath,
+    lifecycleReceiptPath,
     serviceEnv,
   };
 }
@@ -161,6 +215,7 @@ export function managedPlaywrightWebServers(
   ManagedPlaywrightWebServer,
   ManagedPlaywrightWebServer,
   ManagedPlaywrightWebServer,
+  ManagedPlaywrightWebServer,
 ] {
   return [
     {
@@ -168,6 +223,10 @@ export function managedPlaywrightWebServers(
       url: `${environment.chatBaseURL}/healthz`,
       reuseExistingServer: false,
       timeout: 120_000,
+      gracefulShutdown: {
+        signal: "SIGTERM",
+        timeout: 30_000,
+      },
       env: {
         ...environment.serviceEnv,
         DATABASE_URL: environment.chatDatabaseURL,
@@ -186,6 +245,8 @@ export function managedPlaywrightWebServers(
       env: {
         ...environment.serviceEnv,
         BETTER_AUTH_URL: environment.mainBaseURL,
+        IDREAM_NEXT_DIST_DIR: environment.mainDistDir,
+        IDREAM_NEXT_TSCONFIG: environment.mainTsconfigPath,
       },
     },
     {
@@ -196,6 +257,8 @@ export function managedPlaywrightWebServers(
       env: {
         ...environment.serviceEnv,
         MAIN_WEB_URL: environment.mainBaseURL,
+        IDREAM_NEXT_DIST_DIR: environment.adminDistDir,
+        IDREAM_NEXT_TSCONFIG: environment.adminTsconfigPath,
       },
     },
     {
@@ -205,6 +268,33 @@ export function managedPlaywrightWebServers(
       timeout: 30_000,
       env: {
         APP_ENV: "test",
+      },
+    },
+    {
+      // Playwright 1.61 supports managed background processes without a
+      // port/url. Readiness is the Gen entrypoint's stable startup log after
+      // both image-generation and character-preview workers are constructed.
+      command: "bun run --cwd ../gen start:image",
+      reuseExistingServer: false,
+      timeout: 30_000,
+      wait: {
+        stdout: /gen\/image workers started/,
+      },
+      gracefulShutdown: {
+        signal: "SIGTERM",
+        timeout: 30_000,
+      },
+      env: {
+        ...environment.serviceEnv,
+        // packages/gen/.env defines higher-priority GEN_* aliases. Pin them
+        // explicitly so this worker cannot escape the run-owned Redis,
+        // provider, pipeline fixture, or blob authority.
+        GEN_REDIS_URL: environment.redisURL,
+        GEN_IMAGE_PROVIDER: environment.serviceEnv.IMAGE_PROVIDER,
+        GEN_VIDEO_PROVIDER: environment.serviceEnv.VIDEO_PROVIDER,
+        GEN_MODERATION_PROVIDER: environment.serviceEnv.MODERATION_PROVIDER,
+        GEN_BLOB_PROVIDER: environment.serviceEnv.BLOB_PROVIDER,
+        LOG_LEVEL: "info",
       },
     },
   ];
@@ -253,15 +343,15 @@ function derivedPlaywrightChatDatabaseUrl(authorityDatabaseUrl: string) {
   );
 }
 
-function derivedPlaywrightDatabaseUrl(baseValue: string, mainPort: string) {
+function derivedPlaywrightDatabaseUrl(
+  baseValue: string,
+  mainPort: string,
+  runId: string,
+) {
   const parsed = postgresUrl(baseValue, "TEST_DATABASE_URL");
   const baseName = databaseNameFromUrl(parsed)
     .replace(/(?:[_-]playwright[_-]\d+)(?:[_-][a-f0-9]{8})?$/i, "");
-  const hash = createHash("sha256")
-    .update(`${parsed.host}/${baseName}/${mainPort}`)
-    .digest("hex")
-    .slice(0, 8);
-  const suffix = `_playwright_${mainPort}_${hash}`;
+  const suffix = `_playwright_${mainPort}_${runId}`;
   const testScopedBase = TEST_DATABASE_TOKEN.test(baseName)
     ? baseName
     : `${baseName}_test`;
@@ -301,12 +391,12 @@ function postgresUrl(value: string, variableName: string) {
   return parsed;
 }
 
-function assertPlaywrightRedisUrl(value: string) {
+export function assertPlaywrightRedisUrl(value: string) {
   const parsed = new URL(value);
   const database = Number(parsed.pathname.replace(/^\//, ""));
   if (
     parsed.protocol !== "redis:" ||
-    !["127.0.0.1", "localhost", "::1"].includes(parsed.hostname) ||
+    !["127.0.0.1", "localhost", "::1"].includes(normalizedHostname(parsed)) ||
     !Number.isInteger(database) ||
     database < 1
   ) {
@@ -315,6 +405,14 @@ function assertPlaywrightRedisUrl(value: string) {
     );
   }
   return parsed.toString();
+}
+
+function playwrightRunId(value: string | undefined) {
+  const runId = value ?? randomBytes(4).toString("hex");
+  if (!/^[a-f0-9]{8}$/.test(runId)) {
+    throw new Error("PW_RUN_ID must be exactly 8 lowercase hexadecimal characters");
+  }
+  return runId;
 }
 
 function offsetLoopbackURL(baseValue: string, offset: number, label: string) {
@@ -331,7 +429,7 @@ function loopbackBaseURL(value: string, variableName: string) {
   const parsed = new URL(value);
   if (
     parsed.protocol !== "http:" ||
-    !["127.0.0.1", "localhost", "::1"].includes(parsed.hostname) ||
+    !["127.0.0.1", "localhost", "::1"].includes(normalizedHostname(parsed)) ||
     !parsed.port ||
     parsed.username ||
     parsed.password ||
@@ -353,6 +451,10 @@ function loopbackBaseURL(value: string, variableName: string) {
 function normalizedPort(value: URL) {
   if (value.port) return value.port;
   return "5432";
+}
+
+function normalizedHostname(value: URL) {
+  return value.hostname.replace(/^\[|\]$/g, "").toLowerCase();
 }
 
 function mainPackageRoot() {

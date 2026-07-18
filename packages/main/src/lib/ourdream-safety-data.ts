@@ -1,4 +1,4 @@
-import safetyDocsJson from "./ourdream-safety-docs.json";
+import { localSafetyDocuments } from "./ourdream-local-safety-docs";
 
 export interface SafetyDocument {
   path: string;
@@ -19,7 +19,9 @@ export interface SafetyNavGroup {
 
 export const safetyRootHref = "/safety/introduction";
 
-export const safetyDocuments = safetyDocsJson as SafetyDocument[];
+export const safetyDocuments: SafetyDocument[] = localSafetyDocuments.map(
+  (document) => ({ ...document }),
+);
 
 export const safetyNavGroups: SafetyNavGroup[] = [
   {

@@ -19,13 +19,15 @@ export function CharacterCard({
   imageUnoptimized?: boolean;
 }>) {
   const description = card.description.trim().replace(/[.!?]+$/, "");
+  const hasLikes = typeof card.likesCount === "number" && card.likesCount > 0;
+  const hasChats = typeof card.chatsCount === "number" && card.chatsCount > 0;
   const label = [
     `${card.title}, age ${card.age}`,
     description,
     `Creator ${card.creator}`,
-    `${card.likes} likes`,
-    `${card.chats} chats`,
-  ].join(". ");
+    hasLikes ? `${card.likes} likes` : null,
+    hasChats ? `${card.chats} chats` : null,
+  ].filter((value): value is string => Boolean(value)).join(". ");
 
   return (
     <Link
@@ -70,14 +72,24 @@ export function CharacterCard({
         </div>
 
         <div className="mt-2 flex items-center gap-2 text-[10px] font-medium leading-3 text-white">
-          <span className="flex items-center gap-1">
-            <HeartOutlineIcon className="h-3.5 w-3.5" />
-            {card.likes}
-          </span>
-          <span className="flex items-center gap-1">
-            <ChatBubbleIcon className="h-3.5 w-3.5" />
-            {card.chats}
-          </span>
+          {hasLikes && (
+            <span className="flex items-center gap-1">
+              <HeartOutlineIcon className="h-3.5 w-3.5" />
+              {card.likes}
+            </span>
+          )}
+          {hasChats && (
+            <span className="flex items-center gap-1">
+              <ChatBubbleIcon className="h-3.5 w-3.5" />
+              {card.chats}
+            </span>
+          )}
+          {!hasLikes && !hasChats && (
+            <span className="flex items-center gap-1 text-white/75">
+              <SparkleBadgeIcon className="h-3.5 w-3.5" />
+              {card.source === "official" ? "Official" : "New"}
+            </span>
+          )}
           <span className="ml-auto min-w-0 truncate">{card.creator}</span>
         </div>
       </div>

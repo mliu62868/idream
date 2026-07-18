@@ -14,7 +14,7 @@ const actorId = `${P}admin`;
 
 beforeAll(async () => {
   await purgeTestData(P);
-  await createUser({ id: actorId, role: "admin" });
+  await createUser({ id: actorId, role: "admin", dataClass: "internal" });
 });
 
 afterAll(async () => {
@@ -30,6 +30,8 @@ describe("content merchandising commands", () => {
     const idempotencyKey = `${P}visibility-key`;
     await createCharacter({
       id: characterId,
+      creatorId: actorId,
+      source: "user",
       name: "Visibility command",
       visibility: "public",
       status: "approved",
@@ -79,12 +81,16 @@ describe("content merchandising commands", () => {
     const featuredId = `${P}featured`;
     await createCharacter({
       id: statusId,
+      creatorId: actorId,
+      source: "user",
       name: "Status command",
       visibility: "public",
       status: "approved",
     });
     await createCharacter({
       id: featuredId,
+      creatorId: actorId,
+      source: "user",
       name: "Featured command",
       visibility: "public",
       status: "approved",
@@ -94,12 +100,18 @@ describe("content merchandising commands", () => {
       reason: "verify status command transaction",
       confirmation: `${statusId}:status:removed`,
     });
+    const currentFeatured = await api("GET", "admin/content/featured", {
+      userId: actorId,
+      role: "admin",
+    });
+    expectOk(currentFeatured);
     const featured = await api("PUT", "admin/content/featured", {
       userId: actorId,
       role: "admin",
       headers: { "idempotency-key": `${P}featured-key` },
       body: {
         characterIds: [featuredId],
+        expectedVersion: currentFeatured.data.settingVersion,
         reason: "verify featured command transaction",
         confirmation: featuredId,
       },
@@ -137,6 +149,8 @@ describe("content merchandising commands", () => {
     const idempotencyKey = `${P}rollback-key`;
     await createCharacter({
       id: characterId,
+      creatorId: actorId,
+      source: "user",
       name: "Rollback command",
       visibility: "public",
       status: "approved",

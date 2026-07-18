@@ -3,14 +3,8 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { ArrowRight } from "lucide-react";
 import Link from "next/link";
+import { parseViewerAuthorityResponse } from "@/lib/public-api-contracts";
 import { authHrefForTarget, safeInternalAuthRedirect } from "./authRedirect";
-
-type MeResponse = {
-  ok: boolean;
-  data?: {
-    user?: { id: string } | null;
-  };
-};
 
 export function AuthWorkspace({
   mode,
@@ -28,8 +22,8 @@ export function AuthWorkspace({
     try {
       const response = await fetch("/api/v1/me");
       if (!response.ok) return false;
-      const payload = (await response.json()) as MeResponse;
-      if (!payload.ok || !payload.data?.user) return false;
+      const payload = parseViewerAuthorityResponse(await response.json());
+      if (!payload.user) return false;
       window.location.replace(authRedirectTarget());
       return true;
     } catch {

@@ -2,6 +2,10 @@
   "workflowKey": "redcraft-krea2-txt2img",
   "modelId": "redcraft-krea2-comfyui",
   "backendKind": "comfyui",
+  "comfyWorkflow": {
+    "id": "7942ed89-1764-451e-9f85-30e8ae686276",
+    "name": "iDream · RedCraft Krea2 · Text to Image"
+  },
   "version": 1,
   "capabilities": ["textToImage", "stableSeed"],
   "identity": {
@@ -44,9 +48,10 @@
       }
     },
     "5": {
-      "class_type": "ConditioningZeroOut",
+      "class_type": "CLIPTextEncode",
       "inputs": {
-        "conditioning": ["4", 0]
+        "clip": ["2", 0],
+        "text": ""
       }
     },
     "6": {
@@ -89,6 +94,7 @@
   },
   "inputs": [
     { "key": "prompt", "type": "text", "target": { "nodeId": "4", "field": "text" } },
+    { "key": "negative", "type": "text", "target": { "nodeId": "5", "field": "text" }, "default": "" },
     { "key": "width", "type": "int", "target": { "nodeId": "6", "field": "width" }, "default": 832 },
     { "key": "height", "type": "int", "target": { "nodeId": "6", "field": "height" }, "default": 1216 },
     { "key": "seed", "type": "int", "target": { "nodeId": "7", "field": "seed" } },

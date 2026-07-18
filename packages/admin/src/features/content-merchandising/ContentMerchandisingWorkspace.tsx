@@ -1,9 +1,21 @@
 "use client";
 
-import { Flag, Loader2, RotateCcw, Search } from "lucide-react";
+import {
+  Flag,
+  Loader2,
+  RotateCcw,
+  Search,
+  TriangleAlert,
+} from "lucide-react";
+import Link from "next/link";
 import type { FormEvent, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { apiGet, apiWrite } from "@/components/admin/api";
+import {
+  AdminApiRequestError,
+  apiGet,
+  apiWrite,
+} from "@/components/admin/api";
+import { useAdminI18n } from "@/components/admin/i18n";
 import {
   ConfirmDialog,
   type ConfirmSpec,
@@ -31,13 +43,65 @@ import {
 type Row = Record<string, unknown>;
 type PageInfo = { endCursor: string | null; hasNextPage: boolean };
 type CharacterResponse = { items: Row[]; pageInfo: PageInfo };
-type FeaturedResponse = { items: Row[]; characterIds: string[] };
+export type FeaturedRuntimeBlocker = {
+  code: string;
+  message: string;
+  repairDeepLink: string;
+};
+export type FeaturedItem = {
+  id: string;
+  name: string | null;
+  visibility: string | null;
+  status: string | null;
+  configuredPosition: number;
+  configured: true;
+  effective: boolean;
+  blockers: FeaturedRuntimeBlocker[];
+};
+export type FeaturedSettingDiagnostic = {
+  code:
+    | "setting_not_object"
+    | "character_ids_not_array"
+    | "character_id_not_string"
+    | "character_id_blank"
+    | "character_id_duplicate"
+    | "character_id_overflow";
+  message: string;
+  index?: number;
+  id?: string;
+};
+type FeaturedResponse = {
+  items: FeaturedItem[];
+  characterIds: string[];
+  configuredCharacterIds: string[];
+  effectiveCharacterIds: string[];
+  settingVersion: number;
+  settingDiagnostics: FeaturedSettingDiagnostic[];
+};
+export type FeaturedWriteResult = {
+  characterIds: string[];
+  configuredCharacterIds: string[];
+  effectiveCharacterIds: string[];
+  settingVersion: number;
+  settingDiagnostics: FeaturedSettingDiagnostic[];
+  skipped: string[];
+  invalid: Array<{
+    id: string;
+    reason: "character_not_found_or_not_configurable";
+  }>;
+  replayed?: boolean;
+};
+export type FeaturedVersionConflict = {
+  settingVersion: number;
+  configuredCharacterIds: string[];
+};
 
 export function ContentMerchandisingWorkspace({
   canWrite,
 }: {
   canWrite: boolean;
 }) {
+  const { t } = useAdminI18n();
   const [query, setQuery] = useState<ContentQuery>(() => currentQuery());
   const [draft, setDraft] = useState<ContentQuery>(() => currentQuery());
   const [characters, setCharacters] =
@@ -48,6 +112,11 @@ export function ContentMerchandisingWorkspace({
   const [reason, setReason] = useState("");
   const [confirmation, setConfirmation] = useState("");
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveConflict, setSaveConflict] =
+    useState<FeaturedVersionConflict | null>(null);
+  const [saveResult, setSaveResult] = useState<FeaturedWriteResult | null>(
+    null,
+  );
   const [saving, setSaving] = useState(false);
   const [confirmSpec, setConfirmSpec] = useState<ConfirmSpec | null>(null);
   const characterGate = useRef(createLatestRequestGate());
@@ -73,7 +142,9 @@ export function ContentMerchandisingWorkspace({
     }
   }, []);
 
-  const loadFeatured = useCallback(async () => {
+  const loadFeatured = useCallback(async (
+    options: { preserveInput?: boolean } = {},
+  ) => {
     const queryKey = "/api/v1/admin/content/featured";
     const request = featuredGate.current.begin();
     setFeatured((current) => authorityRequestStarted(current, queryKey));
@@ -81,7 +152,9 @@ export function ContentMerchandisingWorkspace({
       const data = await apiGet<FeaturedResponse>(queryKey);
       if (!request.isCurrent()) return;
       setFeatured(authorityRequestSucceeded(queryKey, data));
-      setFeaturedInput(data.characterIds.join(", "));
+      if (!options.preserveInput) {
+        setFeaturedInput(data.configuredCharacterIds.join(", "));
+      }
     } catch (cause) {
       if (!request.isCurrent()) return;
       setFeatured((current) => authorityRequestFailed(
@@ -145,23 +218,34 @@ export function ContentMerchandisingWorkspace({
     featuredKey.current ??= crypto.randomUUID();
     setSaving(true);
     setSaveError(null);
+    setSaveConflict(null);
+    setSaveResult(null);
     try {
-      await apiWrite(
+      const result = await apiWrite<FeaturedWriteResult>(
         "/api/v1/admin/content/featured",
         "PUT",
         {
           characterIds: parseCsv(featuredInput),
+          expectedVersion: featured.data?.settingVersion ?? 0,
           reason: reason.trim(),
           confirmation: confirmation.trim(),
         },
         { "idempotency-key": featuredKey.current },
       );
+      setSaveResult(result);
       featuredKey.current = null;
       setReason("");
       setConfirmation("");
       await loadFeatured();
     } catch (cause) {
-      setSaveError(errorMessage(cause, "Featured content could not be saved"));
+      const conflict = featuredVersionConflictFromError(cause);
+      if (conflict) {
+        featuredKey.current = null;
+        setSaveConflict(conflict);
+        await loadFeatured({ preserveInput: true });
+      } else {
+        setSaveError(errorMessage(cause, "Featured content could not be saved"));
+      }
     } finally {
       setSaving(false);
     }
@@ -190,7 +274,15 @@ export function ContentMerchandisingWorkspace({
   const characterRows = (characters.data?.items ?? []).map((row) =>
     characterTableRow(row, canWrite, command),
   );
-  const featuredRows = (featured.data?.items ?? []).map(simpleRow);
+  const featuredRows = (featured.data?.items ?? []).map((item) =>
+    featuredTableRow(item, t),
+  );
+  const configuredFeaturedCount =
+    featured.data?.configuredCharacterIds.length ?? 0;
+  const effectiveFeaturedCount =
+    featured.data?.effectiveCharacterIds.length ?? 0;
+  const blockedFeaturedCount =
+    configuredFeaturedCount - effectiveFeaturedCount;
   return (
     <section className="space-y-5">
       <PageHeader
@@ -273,10 +365,70 @@ export function ContentMerchandisingWorkspace({
         </p>
       ) : null}
       {featured.data ? <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-        <h2 className="text-sm font-semibold">Featured curation</h2>
-        <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
-          Only public, approved characters are retained in the public feed.
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-sm font-semibold">Featured curation</h2>
+          <span className="font-mono text-[11px] text-[var(--ad-text-muted)]">
+            {t("Configuration version")} {featured.data.settingVersion}
+          </span>
+        </div>
+        <p className="mt-1 max-w-3xl text-xs leading-5 text-[var(--ad-text-muted)]">
+          {t(
+            "This order is the saved configuration. A character is live featured only while the public audience authority also passes, including its primary image, Character Release, qualification, and Serving state.",
+          )}
         </p>
+        {featured.data.settingDiagnostics.length > 0 ? (
+          <div
+            className="mt-3 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-xs text-[var(--ad-yellow-text)]"
+            role="alert"
+          >
+            <p className="flex items-center gap-2 font-semibold">
+              <TriangleAlert className="h-4 w-4 shrink-0" />
+              {t("Stored Featured configuration needs repair")}
+            </p>
+            <p className="mt-1">
+              {t(
+                "The canonical preview below is safe and de-duplicated. Save it to repair the stored configuration.",
+              )}
+            </p>
+            <ul className="mt-2 list-disc space-y-1 pl-5">
+              {featured.data.settingDiagnostics.map((diagnostic, index) => (
+                <li key={`${diagnostic.code}:${diagnostic.index ?? index}`}>
+                  <strong>
+                    {t(diagnostic.code.replaceAll("_", " "))}
+                  </strong>
+                  {diagnostic.id ? (
+                    <>
+                      {" · "}
+                      <code>{diagnostic.id}</code>
+                    </>
+                  ) : null}
+                  {diagnostic.index !== undefined ? (
+                    <>
+                      {" · "}
+                      {t("Position")} {diagnostic.index + 1}
+                    </>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+        <dl className="mt-3 grid gap-px overflow-hidden rounded-md border border-[var(--ad-border)] bg-[var(--ad-border)] sm:grid-cols-3">
+          <FeaturedCount
+            label={t("Configured")}
+            value={configuredFeaturedCount}
+          />
+          <FeaturedCount
+            label={t("Live featured")}
+            tone="live"
+            value={effectiveFeaturedCount}
+          />
+          <FeaturedCount
+            label={t("Configured · not live")}
+            tone={blockedFeaturedCount > 0 ? "blocked" : undefined}
+            value={blockedFeaturedCount}
+          />
+        </dl>
         <div className="mt-3 grid gap-3 md:grid-cols-[1fr_220px_260px_auto]">
           <input
             className="h-10 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 font-mono text-sm"
@@ -284,6 +436,8 @@ export function ContentMerchandisingWorkspace({
             onChange={(event) => {
               setFeaturedInput(event.target.value);
               setConfirmation("");
+              setSaveResult(null);
+              setSaveConflict(null);
               featuredKey.current = null;
             }}
             placeholder="char_a, char_b"
@@ -294,6 +448,8 @@ export function ContentMerchandisingWorkspace({
             disabled={!canWrite}
             onChange={(event) => {
               setReason(event.target.value);
+              setSaveResult(null);
+              setSaveConflict(null);
               featuredKey.current = null;
             }}
             placeholder="Reason (≥3 chars)"
@@ -305,6 +461,8 @@ export function ContentMerchandisingWorkspace({
             disabled={!canWrite}
             onChange={(event) => {
               setConfirmation(event.target.value);
+              setSaveResult(null);
+              setSaveConflict(null);
               featuredKey.current = null;
             }}
             placeholder={
@@ -338,11 +496,41 @@ export function ContentMerchandisingWorkspace({
             {saveError}
           </p>
         ) : null}
+        {saveConflict ? (
+          <div
+            className="mt-3 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-xs text-[var(--ad-yellow-text)]"
+            role="alert"
+          >
+            <p className="font-semibold">
+              {t("Another operator changed Featured before your save.")}
+            </p>
+            <p className="mt-1">
+              {t(
+                "Latest authority was refreshed. Your draft remains in the fields; review it and save again to apply it.",
+              )}
+            </p>
+            <p className="mt-1 font-mono">
+              {t("Current version")} {saveConflict.settingVersion}
+              {" · "}
+              {t("Current configured IDs")}:{" "}
+              {saveConflict.configuredCharacterIds.join(", ") || t("None")}
+            </p>
+          </div>
+        ) : null}
+        {saveResult ? (
+          <FeaturedWriteResultNotice result={saveResult} t={t} />
+        ) : null}
       </section> : null}
       {featured.data ? <DataTable
-        caption="Currently featured"
-        empty={<EmptyState title="No featured characters" />}
-        headers={["ID", "Name", "Visibility", "Status"]}
+        caption={t("Featured configuration and live status")}
+        empty={<EmptyState title={t("No configured featured characters")} />}
+        headers={[
+          t("Order"),
+          "ID",
+          t("Name"),
+          t("Runtime state"),
+          t("Blockers"),
+        ]}
         rows={featuredRows}
       /> : null}
       {characters.error ? (
@@ -473,14 +661,126 @@ function Select({
   );
 }
 
-function simpleRow(row: Row): DataTableRow {
+function FeaturedCount({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone?: "live" | "blocked";
+}) {
+  return (
+    <div className="bg-[var(--ad-surface)] px-3 py-2">
+      <dt className="text-[11px] font-medium text-[var(--ad-text-muted)]">
+        {label}
+      </dt>
+      <dd
+        className={
+          tone === "live"
+            ? "mt-0.5 text-lg font-semibold tabular-nums text-[var(--ad-green-text)]"
+            : tone === "blocked"
+              ? "mt-0.5 text-lg font-semibold tabular-nums text-[var(--ad-yellow-text)]"
+              : "mt-0.5 text-lg font-semibold tabular-nums"
+        }
+      >
+        {value}
+      </dd>
+    </div>
+  );
+}
+
+export function FeaturedWriteResultNotice({
+  result,
+  t = (key) => key,
+}: {
+  result: FeaturedWriteResult;
+  t?: (key: string) => string;
+}) {
+  const blockedCount =
+    result.configuredCharacterIds.length - result.effectiveCharacterIds.length;
+  const hasInvalid = result.invalid.length > 0 || result.skipped.length > 0;
+  const invalidIds = result.invalid.length > 0
+    ? result.invalid.map((item) => item.id)
+    : result.skipped;
+  return (
+    <div
+      className={
+        hasInvalid
+          ? "mt-3 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-xs text-[var(--ad-yellow-text)]"
+          : "mt-3 rounded-md bg-[var(--ad-green-bg)] px-3 py-2 text-xs text-[var(--ad-green-text)]"
+      }
+      role={hasInvalid ? "alert" : "status"}
+    >
+      <p>
+        <strong>{t("Featured configuration saved")}</strong>
+        {" · "}
+        {result.configuredCharacterIds.length} {t("Configured")}
+        {" · "}
+        {result.effectiveCharacterIds.length} {t("Live featured")}
+        {" · "}
+        {blockedCount} {t("Configured · not live")}
+      </p>
+      {hasInvalid ? (
+        <p className="mt-1">
+          <strong>{t("Skipped invalid character IDs")}:</strong>{" "}
+          <code className="break-all">{invalidIds.join(", ")}</code>.{" "}
+          {t(
+            "These characters were not found or cannot be configured, so they were not saved.",
+          )}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+export function featuredTableRow(
+  item: FeaturedItem,
+  t: (key: string) => string = (key) => key,
+): DataTableRow {
+  const runtimeState: ReactNode = item.effective ? (
+    <strong className="text-xs font-semibold text-[var(--ad-green-text)]">
+      {t("Live featured")}
+    </strong>
+  ) : (
+    <strong className="text-xs font-semibold text-[var(--ad-yellow-text)]">
+      {t("Configured · not live")}
+    </strong>
+  );
+  const blockers: ReactNode = item.effective ? (
+    <span className="text-xs text-[var(--ad-text-muted)]">{t("None")}</span>
+  ) : (
+    <ul className="min-w-72 space-y-2">
+      {item.blockers.map((blocker) => (
+        <li className="text-xs" key={blocker.code}>
+          <span className="block font-medium">
+            {t(blocker.code.replaceAll("_", " "))}
+          </span>
+          <span className="mt-0.5 block text-[var(--ad-text-muted)]">
+            {t(blocker.message)}
+          </span>
+          <Link
+            className="mt-1 inline-flex min-h-8 items-center font-semibold underline"
+            href={blocker.repairDeepLink}
+          >
+            {t("Resolve blocker")}
+          </Link>
+        </li>
+      ))}
+    </ul>
+  );
   return {
-    id: stringValue(row.id),
+    id: item.id,
     cells: [
-      cell(row.id),
-      cell(row.name),
-      cell(row.visibility),
-      cell(row.status),
+      <span className="font-mono text-xs tabular-nums" key="order">
+        {item.configuredPosition + 1}
+      </span>,
+      <span className="font-mono text-xs" key="id">
+        {item.id}
+      </span>,
+      item.name ?? t("Unavailable"),
+      runtimeState,
+      blockers,
     ],
   };
 }
@@ -537,6 +837,30 @@ function stringValue(value: unknown) {
   return typeof value === "string" ? value : "";
 }
 
+export function featuredVersionConflictFromError(
+  cause: unknown,
+): FeaturedVersionConflict | null {
+  if (
+    !(cause instanceof AdminApiRequestError) ||
+    cause.status !== 409 ||
+    !isRecord(cause.details) ||
+    cause.details.reason !== "featured_setting_version_conflict" ||
+    typeof cause.details.settingVersion !== "number" ||
+    !Number.isInteger(cause.details.settingVersion) ||
+    cause.details.settingVersion < 0 ||
+    !Array.isArray(cause.details.configuredCharacterIds) ||
+    !cause.details.configuredCharacterIds.every(
+      (id) => typeof id === "string",
+    )
+  ) {
+    return null;
+  }
+  return {
+    settingVersion: cause.details.settingVersion,
+    configuredCharacterIds: cause.details.configuredCharacterIds,
+  };
+}
+
 function parseCsv(value: string) {
   return [
     ...new Set(
@@ -546,6 +870,10 @@ function parseCsv(value: string) {
         .filter(Boolean),
     ),
   ];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function currentQuery() {

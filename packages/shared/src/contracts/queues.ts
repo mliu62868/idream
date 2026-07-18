@@ -6,6 +6,7 @@
 /** Generation workers (gen/image, gen/video) — payload self-contained, no DB authority. */
 export const GEN_QUEUES = {
   imageGenerate: "ai.image.generate",
+  characterPreview: "character.preview",
   videoGenerate: "ai.video.generate",
 } as const;
 

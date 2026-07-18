@@ -1,16 +1,13 @@
-import { PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
 import { buildCharacterSystemPrompt } from "@idream/shared";
-import {
-  categoryFilters,
-  getOurdreamRoute,
-  ourdreamRoutePaths,
-} from "../src/lib/ourdream-data";
+import { categoryFilters } from "../src/lib/ourdream-data";
 import { createPrismaClientOptions } from "../src/server/lib/prisma-adapter";
 import { safetyDocuments } from "../src/lib/ourdream-safety-data";
 import {
   officialCharacterSeeds,
   officialFeedbackItems,
 } from "../src/lib/official-cold-start-content";
+import { ensureOfficialEditorialCatalogQualification } from "../src/server/modules/ourdream/public-catalog-qualification";
 
 process.env.DB_PROVIDER ??= "postgresql";
 process.env.DATABASE_URL ??= "postgresql://postgres:postgres@localhost:5433/idream";
@@ -43,19 +40,16 @@ const sensitiveTags = new Set(["teen", "bdsm", "virgin"]);
 const communityCollections = [
   {
     id: "seed-collection-slow-burn-favorites",
-    ownerHandle: "@some1cool",
     name: "Slow Burn Favorites",
     characterIds: ["melissa-burke", "sarah-mercer", "raya-reyes", "emily-coming-home"],
   },
   {
     id: "seed-collection-high-drama",
-    ownerHandle: "@thebigbadwolf",
     name: "High Drama Roleplay",
     characterIds: ["truth-confessional", "truth-stepmother", "eleanor-dawn", "bailey-price"],
   },
   {
     id: "seed-collection-fantasy-escapes",
-    ownerHandle: "@fuze",
     name: "Fantasy Escapes",
     characterIds: ["summoned-world", "lola-moonstruck", "diana-weird-girl", "kennedy-graham"],
   },
@@ -69,21 +63,21 @@ function slugify(value: string) {
     .replace(/^-|-$/g, "");
 }
 
-function creatorSlug(handle: string) {
-  return slugify(handle.replace(/^@/, ""));
-}
-
-function creatorIdForHandle(handle: string) {
-  return `seed-creator-${creatorSlug(handle)}`;
-}
-
-function creatorEmailForHandle(handle: string) {
-  return `${creatorSlug(handle)}@creators.idream.local`;
-}
-
 function parseAge(value: string) {
   const age = Number.parseInt(value, 10);
   return Number.isFinite(age) && age >= 18 ? age : 18;
+}
+
+function inputJsonObject(value: unknown): Prisma.InputJsonObject {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Prisma.InputJsonObject)
+    : {};
+}
+
+function nonBlankJsonString(value: unknown) {
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : null;
 }
 
 function tagCategory(label: string) {
@@ -245,21 +239,6 @@ async function seedUsers() {
     },
   });
 
-  const handles = [...new Set(officialCharacterSeeds.map((card) => card.creator))];
-  for (const handle of handles) {
-    await prisma.user.upsert({
-      where: { id: creatorIdForHandle(handle) },
-      update: {},
-      create: {
-        id: creatorIdForHandle(handle),
-        email: creatorEmailForHandle(handle),
-        emailVerified: true,
-        displayName: handle,
-        role: "user",
-        dataClass: "internal",
-      },
-    });
-  }
 }
 
 async function seedTags() {
@@ -288,7 +267,6 @@ async function seedTags() {
 async function seedCharacters() {
   for (const card of officialCharacterSeeds) {
     const mediaAssetId = `seed-image-${card.id}`;
-    const creatorId = creatorIdForHandle(card.creator);
     const age = parseAge(card.age);
     const tags = inferredTagSlugs(card);
     const systemPrompt = buildCharacterSystemPrompt({
@@ -301,13 +279,55 @@ async function seedCharacters() {
       appearance: { sourceImage: card.image },
       advancedDetails: {},
     });
+    const [existingAsset, existingCharacter] = await Promise.all([
+      prisma.mediaAsset.findUnique({
+        where: { id: mediaAssetId },
+        select: { metadata: true, ownerId: true },
+      }),
+      prisma.character.findUnique({
+        where: { id: card.id },
+        select: { advancedDetails: true },
+      }),
+    ]);
+    const existingMetadata = inputJsonObject(existingAsset?.metadata);
+    const existingAdvancedDetails = inputJsonObject(
+      existingCharacter?.advancedDetails,
+    );
+    const existingProvenance = inputJsonObject(
+      existingAdvancedDetails.provenance,
+    );
+    const originalOwnerId =
+      nonBlankJsonString(existingMetadata.originalOwnerId) ??
+      nonBlankJsonString(existingProvenance.legacyCreatorId) ??
+      (existingAsset?.ownerId && existingAsset.ownerId !== SYSTEM_USER_ID
+        ? existingAsset.ownerId
+        : null);
+    const officialMetadata: Prisma.InputJsonObject = {
+      ...existingMetadata,
+      seedSource: "src/lib/official-cold-start-content.ts",
+      originalCreator: card.originalCreator,
+      ...(originalOwnerId ? { originalOwnerId } : {}),
+      ownership: "platform_official",
+    };
+    const officialAdvancedDetails: Prisma.InputJsonObject = {
+      ...existingAdvancedDetails,
+      provenance: {
+        ...existingProvenance,
+        seedSource: "src/lib/official-cold-start-content.ts",
+        originalCreator: card.originalCreator,
+        ownership: "platform_official",
+      },
+    };
 
     await prisma.mediaAsset.upsert({
       where: { id: mediaAssetId },
-      update: {},
+      update: {
+        ownerId: SYSTEM_USER_ID,
+        metadata: officialMetadata,
+      },
       create: {
         id: mediaAssetId,
-        ownerId: creatorId,
+        ownerId: SYSTEM_USER_ID,
         type: "image",
         url: card.image,
         thumbnailUrl: card.image,
@@ -316,17 +336,22 @@ async function seedCharacters() {
         safetyStatus: "passed",
         metadata: {
           seedSource: "src/lib/official-cold-start-content.ts",
-          originalCreator: card.creator,
+          originalCreator: card.originalCreator,
+          ownership: "platform_official",
         },
       },
     });
 
     await prisma.character.upsert({
       where: { id: card.id },
-      update: {},
+      update: {
+        creatorId: SYSTEM_USER_ID,
+        relationship: null,
+        advancedDetails: officialAdvancedDetails,
+      },
       create: {
         id: card.id,
-        creatorId,
+        creatorId: SYSTEM_USER_ID,
         name: card.title,
         age,
         description: card.description,
@@ -336,15 +361,33 @@ async function seedCharacters() {
         source: "official",
         style: card.title.toLowerCase().includes("anime") ? "anime" : "realistic",
         gender: "female",
-        relationship: card.creator,
+        relationship: null,
         imageAssetId: mediaAssetId,
         vivid: card.vivid ?? false,
         appearance: {
           sourceImage: card.image,
         },
-        advancedDetails: {},
+        advancedDetails: {
+          provenance: {
+            seedSource: "src/lib/official-cold-start-content.ts",
+            originalCreator: card.originalCreator,
+            ownership: "platform_official",
+          },
+        },
       },
     });
+    const attachedAsset = await prisma.mediaAsset.updateMany({
+      where: {
+        id: mediaAssetId,
+        OR: [{ characterId: null }, { characterId: card.id }],
+      },
+      data: { characterId: card.id },
+    });
+    if (attachedAsset.count !== 1) {
+      throw new Error(
+        `Official seed asset ${mediaAssetId} is already owned by another Character`,
+      );
+    }
 
     await prisma.characterStats.upsert({
       where: { characterId: card.id },
@@ -377,15 +420,27 @@ async function seedCharacters() {
   }
 }
 
+async function seedOfficialCatalogQualifications() {
+  for (const card of officialCharacterSeeds) {
+    await ensureOfficialEditorialCatalogQualification(prisma, {
+      characterId: card.id,
+      expectedAssetId: `seed-image-${card.id}`,
+      expectedSeedSource: "src/lib/official-cold-start-content.ts",
+    });
+  }
+}
+
 async function seedCommunityCollections() {
   for (const collection of communityCollections) {
-    const ownerId = creatorIdForHandle(collection.ownerHandle);
     await prisma.mediaCollection.upsert({
       where: { id: collection.id },
-      update: {},
+      update: {
+        ownerId: SYSTEM_USER_ID,
+        source: "official",
+      },
       create: {
         id: collection.id,
-        ownerId,
+        ownerId: SYSTEM_USER_ID,
         name: collection.name,
         visibility: "public",
         source: "official",
@@ -410,6 +465,7 @@ async function seedOfficialFeedbackItems() {
       update: {},
       create: {
         ...item,
+        source: "official",
         voteCount: 0,
       },
     });
@@ -1309,9 +1365,9 @@ async function seedAdminControlPlane() {
       defaultWidth: 832,
       defaultHeight: 1216,
       allowedOrientations: ["4:5", "16:9"],
-      steps: 20,
-      sampler: "euler",
-      scheduler: "model_default",
+      steps: 4,
+      sampler: "sa_solver",
+      scheduler: "beta",
       cfgScale: 1,      costMultiplier: 1.5,
       requiredEntitlement: null,
       maxCount: 1,
@@ -1346,9 +1402,9 @@ async function seedAdminControlPlane() {
       defaultWidth: 832,
       defaultHeight: 1216,
       allowedOrientations: ["4:5", "16:9"],
-      steps: 20,
-      sampler: "euler",
-      scheduler: "model_default",
+      steps: 4,
+      sampler: "sa_solver",
+      scheduler: "beta",
       cfgScale: 1,      costMultiplier: 1.5,
       requiredEntitlement: null,
       maxCount: 1,
@@ -1360,6 +1416,188 @@ async function seedAdminControlPlane() {
       dryRunSummary: { status: "not_run", source: "seed_configuration_state", notes: "Qwen-Edit img2img profile for chat edit_last_image; landing without a provider test batch." },
       publishedAt: new Date("2026-07-07T00:00:00.000Z"),
     },
+    });
+  }
+
+  if (!existingProfileKeys.has("character-image-variation")) {
+    await prisma.generationModelProfile.upsert({
+      where: { id: "seed-profile-character-image-variation-v1" },
+      update: {
+        profileKey: "character-image-variation",
+        label: "Character Image Variation (Qwen-Edit)",
+        mode: "image",
+        runner: "comfyui",
+        pipelineModel: "qwen-image-edit",
+        workflowKey: "qwen-image-edit-multi-reference",
+        sourceModelPath: null,
+        convertedModelPath: null,
+        modelFormat: "safetensors",
+        runnerConfig: {
+          capabilities: {
+            textToImage: false,
+            stableSeed: true,
+            referenceImages: true,
+            initImage: true,
+            lora: false,
+          },
+        },
+        defaultWidth: 832,
+        defaultHeight: 1216,
+        allowedOrientations: ["4:5", "16:9"],
+        steps: 4,
+        sampler: "sa_solver",
+        scheduler: "beta",
+        cfgScale: 1,
+        costMultiplier: 1.5,
+        requiredEntitlement: null,
+        maxCount: 1,
+        concurrencyLimit: 1,
+        enabled: true,
+        rolloutPercent: 100,
+        version: 1,
+        status: "active",
+        dryRunSummary: {
+          status: "configuration_validated",
+          source: "seed_workflow_contract",
+          notes:
+            "Two concrete Qwen-Edit image slots preserve Character identity while applying an explicit source image.",
+        },
+        publishedAt: new Date("2026-07-17T00:00:00.000Z"),
+      },
+      create: {
+        id: "seed-profile-character-image-variation-v1",
+        profileKey: "character-image-variation",
+        label: "Character Image Variation (Qwen-Edit)",
+        mode: "image",
+        runner: "comfyui",
+        pipelineModel: "qwen-image-edit",
+        workflowKey: "qwen-image-edit-multi-reference",
+        sourceModelPath: null,
+        convertedModelPath: null,
+        modelFormat: "safetensors",
+        runnerConfig: {
+          capabilities: {
+            textToImage: false,
+            stableSeed: true,
+            referenceImages: true,
+            initImage: true,
+            lora: false,
+          },
+        },
+        defaultWidth: 832,
+        defaultHeight: 1216,
+        allowedOrientations: ["4:5", "16:9"],
+        steps: 4,
+        sampler: "sa_solver",
+        scheduler: "beta",
+        cfgScale: 1,
+        costMultiplier: 1.5,
+        requiredEntitlement: null,
+        maxCount: 1,
+        concurrencyLimit: 1,
+        enabled: true,
+        rolloutPercent: 100,
+        version: 1,
+        status: "active",
+        dryRunSummary: {
+          status: "configuration_validated",
+          source: "seed_workflow_contract",
+          notes:
+            "Two concrete Qwen-Edit image slots preserve Character identity while applying an explicit source image.",
+        },
+        publishedAt: new Date("2026-07-17T00:00:00.000Z"),
+      },
+    });
+  }
+
+  if (!existingProfileKeys.has("character-image-multi-identity")) {
+    await prisma.generationModelProfile.upsert({
+      where: { id: "seed-profile-character-image-multi-identity-v1" },
+      update: {
+        profileKey: "character-image-multi-identity",
+        label: "Character Multi-Reference Identity (Qwen-Edit)",
+        mode: "image",
+        runner: "comfyui",
+        pipelineModel: "qwen-image-edit",
+        workflowKey: "qwen-image-edit-multi-identity",
+        sourceModelPath: null,
+        convertedModelPath: null,
+        modelFormat: "safetensors",
+        runnerConfig: {
+          capabilities: {
+            textToImage: false,
+            stableSeed: true,
+            referenceImages: true,
+            initImage: false,
+            lora: false,
+          },
+        },
+        defaultWidth: 832,
+        defaultHeight: 1216,
+        allowedOrientations: ["4:5", "16:9"],
+        steps: 4,
+        sampler: "sa_solver",
+        scheduler: "beta",
+        cfgScale: 1,
+        costMultiplier: 1.4,
+        requiredEntitlement: null,
+        maxCount: 1,
+        concurrencyLimit: 1,
+        enabled: true,
+        rolloutPercent: 100,
+        version: 1,
+        status: "active",
+        dryRunSummary: {
+          status: "configuration_validated",
+          source: "seed_workflow_contract",
+          notes:
+            "Two concrete Qwen-Edit identity slots preserve an anchor plus one supporting identity reference.",
+        },
+        publishedAt: new Date("2026-07-17T00:00:00.000Z"),
+      },
+      create: {
+        id: "seed-profile-character-image-multi-identity-v1",
+        profileKey: "character-image-multi-identity",
+        label: "Character Multi-Reference Identity (Qwen-Edit)",
+        mode: "image",
+        runner: "comfyui",
+        pipelineModel: "qwen-image-edit",
+        workflowKey: "qwen-image-edit-multi-identity",
+        sourceModelPath: null,
+        convertedModelPath: null,
+        modelFormat: "safetensors",
+        runnerConfig: {
+          capabilities: {
+            textToImage: false,
+            stableSeed: true,
+            referenceImages: true,
+            initImage: false,
+            lora: false,
+          },
+        },
+        defaultWidth: 832,
+        defaultHeight: 1216,
+        allowedOrientations: ["4:5", "16:9"],
+        steps: 4,
+        sampler: "sa_solver",
+        scheduler: "beta",
+        cfgScale: 1,
+        costMultiplier: 1.4,
+        requiredEntitlement: null,
+        maxCount: 1,
+        concurrencyLimit: 1,
+        enabled: true,
+        rolloutPercent: 100,
+        version: 1,
+        status: "active",
+        dryRunSummary: {
+          status: "configuration_validated",
+          source: "seed_workflow_contract",
+          notes:
+            "Two concrete Qwen-Edit identity slots preserve an anchor plus one supporting identity reference.",
+        },
+        publishedAt: new Date("2026-07-17T00:00:00.000Z"),
+      },
     });
   }
 
@@ -1478,42 +1716,17 @@ async function seedPolicies() {
   }
 }
 
-async function seedRoutePages() {
-  const paths = ["/", ...ourdreamRoutePaths];
-
-  for (const path of paths) {
-    const route = getOurdreamRoute(path);
-    if (!route) continue;
-
-    await prisma.routePage.upsert({
-      where: { path: route.path },
-      update: {},
-      create: {
-        path: route.path,
-        template: route.path === "/" ? "home" : route.template,
-        title: route.title,
-        description: route.description,
-        canonical: route.path,
-        contentStatus: "template",
-        body: {
-          eyebrow: route.eyebrow,
-        },
-      },
-    });
-  }
-}
-
 async function main() {
   await seedUsers();
   await seedTags();
   await seedCharacters();
+  await seedOfficialCatalogQualifications();
   await seedCommunityCollections();
   await seedOfficialFeedbackItems();
   await seedPlans();
   await seedPresets();
   await seedAdminControlPlane();
   await seedPolicies();
-  await seedRoutePages();
 }
 
 main()

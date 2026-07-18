@@ -282,4 +282,35 @@ describe("legacy content operations media authority", () => {
       }),
     ).resolves.toMatchObject({ status: "approved" });
   });
+
+  it("keeps the latest successful provider authoritative when a later retry fails", async () => {
+    const fixture = await createProductionFixture({
+      label: "failed-retry-after-success",
+      metadata: {},
+      jobProvider: "comfyui",
+      attemptProvider: "comfyui",
+    });
+    await prisma.generationAttempt.create({
+      data: {
+        id: `${prefix}failed-retry-after-success-attempt-2`,
+        requestId: `${prefix}failed-retry-after-success-job`,
+        attemptNo: 2,
+        provider: "mock-image",
+        status: "failed",
+        finishedAt: new Date(),
+      },
+    });
+
+    const response = await api(
+      "GET",
+      `admin/content/assets/${fixture.assetId}`,
+      { userId: adminId, role: "admin" },
+    );
+    expectOk(response);
+    expect(response.data.asset).toMatchObject({
+      id: fixture.assetId,
+      customerPublishable: true,
+      publishabilityReasons: [],
+    });
+  });
 });

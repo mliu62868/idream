@@ -206,8 +206,109 @@ export const adminCommandStatusSchema = z
     status: adminControlPlaneCommandStatusSchema,
     verificationState: adminVerificationStateSchema.optional(),
     needsReconciliation: z.boolean(),
+    error: z.unknown().optional(),
     createdAt: adminIsoDateTimeSchema,
     updatedAt: adminIsoDateTimeSchema,
+  })
+  .strict();
+
+export const adminRecoverableMutationCommandTypeSchema = z.enum([
+  "creative.run.create",
+  "character.project.create",
+  "creative.review.decision",
+  "character.identity.bootstrap",
+  "character.project.draft_image.select",
+]);
+export type AdminRecoverableMutationCommandType = z.infer<
+  typeof adminRecoverableMutationCommandTypeSchema
+>;
+
+export const adminMutationRecoveryRequestSchema =
+  z.discriminatedUnion("commandType", [
+    z.object({
+      commandType: z.literal("creative.run.create"),
+      expectedCharacterId: adminIdSchema.optional(),
+      expectedPurpose: z.enum([
+        "character_cover",
+        "character_hero",
+        "character_chat",
+      ]).optional(),
+    }).strict().superRefine((value, ctx) => {
+      if (value.expectedPurpose && !value.expectedCharacterId) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["expectedCharacterId"],
+          message:
+            "A Character Run purpose requires the expected Character resource",
+        });
+      }
+    }),
+    z.object({
+      commandType: z.literal("character.project.create"),
+    }).strict(),
+    z.object({
+      commandType: z.literal("creative.review.decision"),
+    }).strict(),
+    z.object({
+      commandType: z.literal("character.identity.bootstrap"),
+      expectedCharacterId: adminIdSchema,
+    }).strict(),
+    z.object({
+      commandType: z.literal(
+        "character.project.draft_image.select",
+      ),
+      expectedCharacterId: adminIdSchema,
+    }).strict(),
+  ]);
+export type AdminMutationRecoveryRequest = z.infer<
+  typeof adminMutationRecoveryRequestSchema
+>;
+
+export const adminMutationRecoveryVerificationSchema =
+  z.discriminatedUnion("kind", [
+    z.object({
+      kind: z.literal("creative_run"),
+      runId: adminIdSchema,
+      requestSnapshot: adminJsonValueSchema,
+    }).strict(),
+    z.object({
+      kind: z.literal("character_project"),
+      characterId: adminIdSchema,
+    }).strict(),
+    z.object({
+      kind: z.literal("creative_review_decision"),
+      runId: adminIdSchema,
+      itemId: adminIdSchema,
+      decisionId: adminIdSchema,
+      requestSnapshot: adminJsonValueSchema,
+    }).strict(),
+    z.object({
+      kind: z.literal("character_identity_bootstrap"),
+      characterId: adminIdSchema,
+      referenceSetRevisionId: adminIdSchema,
+      anchorAssetId: adminIdSchema,
+      draftImageAssetId: adminIdSchema,
+    }).strict(),
+    z.object({
+      kind: z.literal("character_draft_image_selection"),
+      characterId: adminIdSchema,
+      selectedPurpose: z.enum([
+        "character_cover",
+        "character_hero",
+        "character_chat",
+      ]),
+      selectedAssetId: adminIdSchema,
+    }).strict(),
+  ]);
+
+export const adminMutationRecoveryResultSchema = z
+  .object({
+    state: z.enum(["committed", "cancelled", "pending", "failed"]),
+    commandType: adminRecoverableMutationCommandTypeSchema,
+    commandId: adminIdSchema,
+    status: adminControlPlaneCommandStatusSchema,
+    committedTargetId: adminIdSchema.nullable(),
+    verification: adminMutationRecoveryVerificationSchema.nullable(),
   })
   .strict();
 

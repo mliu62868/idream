@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { prisma } from "@/server/lib/db";
+import { publicCharacterAudienceWhere } from "@/server/modules/ourdream/public-content-audience";
 
 type ProbeOptions = {
   report: string | null;
@@ -20,6 +21,7 @@ type ProductConfigProbeReport = {
   activeVideoCharacterTemplates: number;
   activeVideoFreeplayTemplates: number;
   activeVideoPricingRules: number;
+  activeVoicePricingRules: number;
   publicCharacters: number;
   publicCharactersWithSystemPrompt: number;
   failureReasons: string[];
@@ -69,6 +71,7 @@ async function runProbe(): Promise<ProductConfigProbeReport> {
       activeVideoCharacterTemplates,
       activeVideoFreeplayTemplates,
       activeVideoPricingRules,
+      activeVoicePricingRules,
       publicCharacters,
       publicCharactersWithSystemPrompt,
     ] = await Promise.all([
@@ -93,15 +96,17 @@ async function runProbe(): Promise<ProductConfigProbeReport> {
         where: { mode: "video", useCase: "freeplay", status: "active" },
       }),
       prisma.pricingRule.count({ where: { mode: "video", status: "active" } }),
+      prisma.pricingRule.count({ where: { mode: "voice", status: "active" } }),
       prisma.character.count({
-        where: { visibility: "public", status: "approved", deletedAt: null },
+        where: publicCharacterAudienceWhere,
       }),
       prisma.character.count({
         where: {
-          visibility: "public",
-          status: "approved",
-          deletedAt: null,
-          AND: [{ systemPrompt: { not: null } }, { systemPrompt: { not: "" } }],
+          AND: [
+            publicCharacterAudienceWhere,
+            { systemPrompt: { not: null } },
+            { systemPrompt: { not: "" } },
+          ],
         },
       }),
     ]);
@@ -115,7 +120,9 @@ async function runProbe(): Promise<ProductConfigProbeReport> {
       activeImageFreeplayTemplates < 1
         ? "missing active image freeplay prompt template"
         : null,
-      activeImagePricingRules < 1 ? "missing active image pricing rule" : null,
+      activeImagePricingRules !== 1
+        ? `image pricing requires exactly one active rule (found ${activeImagePricingRules})`
+        : null,
       videoFeatureEnabled && activeVideoProfiles < 1
         ? "video_gen enabled without active video model profile"
         : null,
@@ -125,8 +132,11 @@ async function runProbe(): Promise<ProductConfigProbeReport> {
       videoFeatureEnabled && activeVideoFreeplayTemplates < 1
         ? "video_gen enabled without active video freeplay prompt template"
         : null,
-      videoFeatureEnabled && activeVideoPricingRules < 1
-        ? "video_gen enabled without active video pricing rule"
+      videoFeatureEnabled && activeVideoPricingRules !== 1
+        ? `video_gen requires exactly one active video pricing rule (found ${activeVideoPricingRules})`
+        : null,
+      activeVoicePricingRules !== 1
+        ? `voice pricing requires exactly one active rule (found ${activeVoicePricingRules})`
         : null,
       publicCharacters > 0 && publicCharactersWithSystemPrompt < 1
         ? "public characters have no chat system prompts"
@@ -146,6 +156,7 @@ async function runProbe(): Promise<ProductConfigProbeReport> {
       activeVideoCharacterTemplates,
       activeVideoFreeplayTemplates,
       activeVideoPricingRules,
+      activeVoicePricingRules,
       publicCharacters,
       publicCharactersWithSystemPrompt,
       failureReasons,
@@ -172,6 +183,7 @@ async function runProbe(): Promise<ProductConfigProbeReport> {
       activeVideoCharacterTemplates: 0,
       activeVideoFreeplayTemplates: 0,
       activeVideoPricingRules: 0,
+      activeVoicePricingRules: 0,
       publicCharacters: 0,
       publicCharactersWithSystemPrompt: 0,
       failureReasons: ["product config probe failed"],

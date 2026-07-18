@@ -123,26 +123,30 @@ export function verifyPassword(password: string, stored: string | null | undefin
 export async function getAuthCtx(request?: Request): Promise<AuthCtx> {
   const headers = request?.headers;
   const cookies = parseCookieHeader(headers?.get("cookie") ?? null);
+  const testAuthHeadersEnabled = env.APP_ENV === "test";
   const anonymousId =
     cookies.get(ANONYMOUS_COOKIE) ??
-    headers?.get("x-idream-anonymous-id") ??
+    (testAuthHeadersEnabled
+      ? headers?.get("x-idream-anonymous-id")
+      : undefined) ??
     undefined;
   const ageGateCookieAccepted = cookies.get(AGE_GATE_COOKIE) === "true";
 
-  const devUserId =
-    env.APP_ENV !== "production" ? headers?.get("x-idream-user-id") : undefined;
-  const devUser = devUserId ? await findActiveUser(devUserId) : null;
+  const testUserId = testAuthHeadersEnabled
+    ? headers?.get("x-idream-user-id")
+    : undefined;
+  const testUser = testUserId ? await findActiveUser(testUserId) : null;
   // 后台登录态优先于普通用户登录态：同一浏览器下后台 cookie 存在时按后台身份解析。
-  const adminCookieUser = devUser
+  const adminCookieUser = testUser
     ? null
     : await userFromCustomSession(cookies.get(ADMIN_SESSION_COOKIE));
   const cookieUser =
-    devUser || adminCookieUser
+    testUser || adminCookieUser
       ? null
       : await userFromCustomSession(cookies.get(SESSION_COOKIE));
   const betterAuthUser =
-    devUser || adminCookieUser || cookieUser ? null : await userFromBetterAuth(request);
-  const user = devUser ?? adminCookieUser ?? cookieUser ?? betterAuthUser;
+    testUser || adminCookieUser || cookieUser ? null : await userFromBetterAuth(request);
+  const user = testUser ?? adminCookieUser ?? cookieUser ?? betterAuthUser;
 
   const acceptedInDb = await hasAgeGateAcceptance({
     userId: user?.id,
@@ -154,7 +158,7 @@ export async function getAuthCtx(request?: Request): Promise<AuthCtx> {
 
   return {
     userId: user?.id,
-    role: roleFromUser(user, headers?.get("x-idream-role")),
+    role: roleFromUser(user),
     anonymousId,
     ageGateAccepted: ageGateCookieAccepted || acceptedInDb,
     ageVerificationStatus: verificationStatus,
@@ -269,13 +273,7 @@ async function userFromBetterAuth(request?: Request) {
   }
 }
 
-function roleFromUser(user: User | null, devRole?: string | null): ActorRole | undefined {
-  if (env.APP_ENV !== "production" && devRole) {
-    if (isActorRole(devRole)) {
-      return devRole;
-    }
-  }
-
+function roleFromUser(user: User | null): ActorRole | undefined {
   if (user && isActorRole(user.role)) return user.role;
   return user ? "user" : undefined;
 }

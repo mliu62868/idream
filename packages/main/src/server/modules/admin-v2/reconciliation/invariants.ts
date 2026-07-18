@@ -3,6 +3,10 @@ import {
   setGauge,
   type AdminInvariantCheck,
 } from "@idream/shared";
+import {
+  characterQaAuthorityMatches,
+  characterQaProvenanceMatchesRun,
+} from "@idream/shared/admin";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { ok } from "@/server/lib/http";
@@ -13,6 +17,7 @@ import {
   characterVisualProfileSnapshotHash,
   referenceSetSnapshotHash,
 } from "../characters/release-snapshot";
+import { PUBLIC_CATALOG_EDITORIAL_IMPORT_POLICY_VERSION } from "@/server/modules/ourdream/public-catalog-qualification";
 
 interface ViolationRow {
   id: string;
@@ -32,6 +37,7 @@ type InvariantDb = Pick<
   | "character"
   | "characterServing"
   | "characterRelease"
+  | "publicCatalogQualification"
   | "characterProject"
   | "characterRevision"
   | "characterContentVersion"
@@ -89,17 +95,29 @@ const sqlChecks: readonly SqlInvariant[] = [
   },
   {
     key: "live_serving_legacy_projection_mismatch",
-    description: "Live official Serving authority must match the legacy runtime projection",
+    description: "Every live public Serving authority must match the runtime Character and Release avatar projection",
     evidence: "CharacterServing live pointer joined to Character status/visibility/avatar and the Release avatar manifest",
     query: Prisma.sql`
       SELECT c.id, count(*) OVER()::int AS total
       FROM character_serving s
       JOIN characters c ON c.id = s."characterId"
       JOIN character_releases r ON r.id = s."currentReleaseId"
-      WHERE c.source = 'official' AND c."deletedAt" IS NULL AND s.state = 'live'
+      JOIN character_projects p ON p.id = r."projectId"
+      LEFT JOIN users creator ON creator.id = c."creatorId"
+      WHERE c."deletedAt" IS NULL AND s.state = 'live'
+        AND c.visibility = 'public' AND c.status = 'approved'
         AND (
-          c.status <> 'approved'
-          OR c.visibility <> 'public'
+          c.source = 'official'
+          OR (
+            c.source = 'user'
+            AND creator."dataClass" = 'customer'
+            AND creator.role = 'user'
+            AND creator.status = 'active'
+            AND creator."deletedAt" IS NULL
+          )
+        )
+        AND (
+          p."characterId" IS DISTINCT FROM c.id
           OR c."imageAssetId" IS DISTINCT FROM (
             SELECT placement->>'assetId'
             FROM jsonb_array_elements(
@@ -118,19 +136,227 @@ const sqlChecks: readonly SqlInvariant[] = [
   },
   {
     key: "serving_validation_stale",
-    description: "Current and scheduled Releases require a passing validation for the exact snapshot and policy",
-    evidence: `ReleaseValidationRun snapshotHash + ${CHARACTER_RELEASE_POLICY_VERSION}`,
+    description: "Current and scheduled Releases require an exact, non-revoked public qualification",
+    evidence: `PublicCatalogQualification plus ReleaseValidationRun snapshotHash + ${CHARACTER_RELEASE_POLICY_VERSION}, or the editorial import policy`,
     query: Prisma.sql`
       SELECT r.id, count(*) OVER()::int AS total
       FROM character_serving s
       JOIN character_releases r ON r.id IN (s."currentReleaseId", s."scheduledReleaseId")
       WHERE NOT EXISTS (
-        SELECT 1 FROM release_validation_runs v
-        WHERE v."releaseId" = r.id AND v."snapshotHash" = r."snapshotHash"
-          AND v."policyVersion" = ${CHARACTER_RELEASE_POLICY_VERSION}
-          AND v.result = 'passed' AND v."finishedAt" IS NOT NULL
+        SELECT 1
+        FROM public_catalog_qualifications q
+        WHERE q."releaseId" = r.id
+          AND q."releaseSnapshotHash" = r."snapshotHash"
+          AND q."revokedAt" IS NULL
+          AND (
+            (
+              q.kind = 'generated_release'
+              AND r.legacy = FALSE
+              AND r.readiness = 'ready'
+              AND EXISTS (
+                SELECT 1 FROM release_validation_runs v
+                WHERE v.id = q."validationRunId"
+                  AND v."releaseId" = r.id
+                  AND v."snapshotHash" = r."snapshotHash"
+                  AND v."policyVersion" = ${CHARACTER_RELEASE_POLICY_VERSION}
+                  AND v.result = 'passed'
+                  AND v."finishedAt" IS NOT NULL
+              )
+            )
+            OR (
+              q.kind = 'editorial_import'
+              AND r.legacy = TRUE
+              AND r.status = 'published'
+              AND r."publishedAt" IS NOT NULL
+              AND r.readiness = 'ready'
+              AND r."generationProvenance"->>'schemaVersion' =
+                'character-release-editorial-import-v1'
+              AND q."validationRunId" IS NULL
+              AND q.evidence->>'schemaVersion' =
+                'public-catalog-qualification-v1'
+              AND q.evidence->>'policyVersion' =
+                ${PUBLIC_CATALOG_EDITORIAL_IMPORT_POLICY_VERSION}
+              AND r.id = s."currentReleaseId"
+            )
+          )
       )
       ORDER BY r.id LIMIT 20
+    `,
+  },
+  {
+    key: "live_public_current_release_not_ready",
+    description: "Every live public Character current Release must be published and ready",
+    evidence: "Character public projection joined to CharacterServing live current Release status/readiness",
+    query: Prisma.sql`
+      SELECT c.id, count(*) OVER()::int AS total
+      FROM characters c
+      JOIN character_serving s ON s."characterId" = c.id
+      JOIN character_releases r ON r.id = s."currentReleaseId"
+      WHERE c.visibility = 'public'
+        AND c.status = 'approved'
+        AND c."deletedAt" IS NULL
+        AND s.state = 'live'
+        AND (
+          r.status <> 'published'
+          OR r."publishedAt" IS NULL
+          OR r.readiness <> 'ready'
+        )
+      ORDER BY c.id LIMIT 20
+    `,
+  },
+  {
+    key: "editorial_import_authority_mismatch",
+    description: "Live official editorial imports require one exact qualification, provenance, avatar, and asset authority",
+    evidence: "Current legacy Release strict editorial sum type joined to Character, qualification, manifest, and MediaAsset",
+    query: Prisma.sql`
+      SELECT r.id, count(*) OVER()::int AS total
+      FROM character_serving s
+      JOIN characters c ON c.id = s."characterId"
+      JOIN character_releases r ON r.id = s."currentReleaseId"
+      LEFT JOIN character_projects p ON p.id = r."projectId"
+      LEFT JOIN character_revisions revision ON revision.id = r."revisionId"
+      LEFT JOIN character_content_versions content
+        ON content.id = r."characterContentVersionId"
+      LEFT JOIN public_catalog_qualifications q ON q."releaseId" = r.id
+      LEFT JOIN media_assets asset
+        ON asset.id = r."generationProvenance"->>'sourceAssetId'
+      WHERE c.source = 'official'
+        AND c.visibility = 'public'
+        AND c.status = 'approved'
+        AND c."deletedAt" IS NULL
+        AND s.state = 'live'
+        AND r.legacy = TRUE
+        AND (
+          r.status <> 'published'
+          OR r."publishedAt" IS NULL
+          OR r.readiness <> 'ready'
+          OR r."visualProfileId" IS NOT NULL
+          OR r."visualProfileVersion" IS NOT NULL
+          OR r."referenceSetRevisionId" IS NOT NULL
+          OR p."characterId" IS DISTINCT FROM c.id
+          OR revision."projectId" IS DISTINCT FROM r."projectId"
+          OR revision."characterContentVersionId"
+            IS DISTINCT FROM r."characterContentVersionId"
+          OR content."characterId" IS DISTINCT FROM c.id
+          OR r."generationProvenance"->>'schemaVersion'
+            IS DISTINCT FROM 'character-release-editorial-import-v1'
+          OR r."generationProvenance"->>'recordId' IS DISTINCT FROM c.id
+          OR NULLIF(r."generationProvenance"->>'dataset', '') IS NULL
+          OR q.kind IS DISTINCT FROM 'editorial_import'
+          OR q."validationRunId" IS NOT NULL
+          OR q."revokedAt" IS NOT NULL
+          OR q."releaseSnapshotHash" IS DISTINCT FROM r."snapshotHash"
+          OR q.evidence->>'schemaVersion'
+            IS DISTINCT FROM 'public-catalog-qualification-v1'
+          OR q.evidence->>'policyVersion'
+            IS DISTINCT FROM ${PUBLIC_CATALOG_EDITORIAL_IMPORT_POLICY_VERSION}
+          OR q.evidence->>'characterId' IS DISTINCT FROM c.id
+          OR q.evidence->>'sourceAssetId' IS DISTINCT FROM asset.id
+          OR q.evidence#>>'{checks,exactSeedRecord}' IS DISTINCT FROM 'true'
+          OR q.evidence#>>'{checks,nonSynthetic}' IS DISTINCT FROM 'true'
+          OR q.evidence#>>'{checks,safetyPassed}' IS DISTINCT FROM 'true'
+          OR q.evidence#>>'{checks,publicPack}' IS DISTINCT FROM 'true'
+          OR q.evidence#>>'{checks,imageAvailable}' IS DISTINCT FROM 'true'
+          OR r."releasePlacementManifest"->>'schemaVersion'
+            IS DISTINCT FROM '1'
+          OR r."releasePlacementManifest"->>'kind'
+            IS DISTINCT FROM 'editorial_import'
+          OR 1 <> (
+            SELECT count(*)
+            FROM jsonb_array_elements(
+              CASE
+                WHEN jsonb_typeof(r."releasePlacementManifest"->'placements') = 'array'
+                  THEN r."releasePlacementManifest"->'placements'
+                ELSE '[]'::jsonb
+              END
+            ) placement
+          )
+          OR 1 <> (
+            SELECT count(*)
+            FROM jsonb_array_elements(
+              CASE
+                WHEN jsonb_typeof(r."releasePlacementManifest"->'placements') = 'array'
+                  THEN r."releasePlacementManifest"->'placements'
+                ELSE '[]'::jsonb
+              END
+            ) placement
+            WHERE placement->>'slotKey' = 'character_avatar'
+              AND placement->>'assetId' =
+                r."generationProvenance"->>'sourceAssetId'
+              AND placement->>'slotVersion' = '1'
+          )
+          OR c."imageAssetId" IS DISTINCT FROM asset.id
+          OR asset."characterId" IS DISTINCT FROM c.id
+          OR asset.type IS DISTINCT FROM 'image'
+          OR asset."deletedAt" IS NOT NULL
+          OR asset.visibility IS DISTINCT FROM 'public_pack'
+          OR asset."safetyStatus" IS DISTINCT FROM 'passed'
+          OR NULLIF(asset.url, '') IS NULL
+          OR asset.metadata->>'seedSource'
+            IS DISTINCT FROM r."generationProvenance"->>'dataset'
+          OR COALESCE(asset.metadata->'synthetic', 'null'::jsonb)
+            NOT IN ('false'::jsonb, 'null'::jsonb)
+          OR LOWER(COALESCE(asset.metadata#>>'{platformAsset,status}', ''))
+            IN ('archived', 'rejected', 'blocked')
+        )
+      ORDER BY r.id LIMIT 20
+    `,
+  },
+  {
+    key: "editorial_import_route_qualification_misclassified",
+    description: "Editorial imports must not retain generation-route staleness as an open operational action",
+    evidence: "Editorial current Release route monitor plus stale/repair event history",
+    query: Prisma.sql`
+      WITH violations AS (
+        SELECT r.id
+        FROM character_serving s
+        JOIN character_releases r ON r.id = s."currentReleaseId"
+        JOIN public_catalog_qualifications q ON q."releaseId" = r.id
+        JOIN release_monitors monitor
+          ON monitor."releaseId" = r.id
+          AND monitor.window = 'route_qualification'
+        WHERE r.legacy = TRUE
+          AND q.kind = 'editorial_import'
+          AND q."revokedAt" IS NULL
+          AND monitor.status <> 'completed'
+        UNION
+        SELECT r.id
+        FROM character_serving s
+        JOIN character_releases r ON r.id = s."currentReleaseId"
+        JOIN public_catalog_qualifications q ON q."releaseId" = r.id
+        WHERE r.legacy = TRUE
+          AND q.kind = 'editorial_import'
+          AND q."revokedAt" IS NULL
+          AND EXISTS (
+            SELECT 1 FROM character_release_events stale_event
+            WHERE stale_event."releaseId" = r.id
+              AND stale_event.type =
+                'generation_route_qualification_stale'
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM character_release_events repair_event
+            WHERE repair_event."releaseId" = r.id
+              AND repair_event.type =
+                'editorial_import_route_staleness_repaired'
+          )
+      )
+      SELECT id, count(*) OVER()::int AS total
+      FROM violations ORDER BY id LIMIT 20
+    `,
+  },
+  {
+    key: "official_seed_asset_character_mismatch",
+    description: "Every official seed Character image asset must be attached to that exact Character",
+    evidence: "Official Character imageAssetId joined to seedSource MediaAsset.characterId",
+    query: Prisma.sql`
+      SELECT c.id, count(*) OVER()::int AS total
+      FROM characters c
+      JOIN media_assets asset ON asset.id = c."imageAssetId"
+      WHERE c.source = 'official'
+        AND asset.metadata->>'seedSource' =
+          'src/lib/official-cold-start-content.ts'
+        AND asset."characterId" IS DISTINCT FROM c.id
+      ORDER BY c.id LIMIT 20
     `,
   },
   {
@@ -141,7 +367,8 @@ const sqlChecks: readonly SqlInvariant[] = [
       SELECT r.id, count(*) OVER()::int AS total
       FROM character_serving s
       JOIN character_releases r ON r.id IN (s."currentReleaseId", s."scheduledReleaseId")
-      WHERE NOT EXISTS (
+      WHERE r.legacy = FALSE
+      AND NOT EXISTS (
         SELECT 1 FROM generation_route_qualifications q
         WHERE q."routeFingerprint" = r."generationProvenance"->>'routeFingerprint'
           AND q."matrixKey" = r."generationProvenance"->>'matrixKey'
@@ -493,6 +720,34 @@ function isPositiveInteger(value: unknown): value is number {
 
 function hasCompleteGenerationProvenance(value: unknown) {
   if (!isRecord(value) || !isRecord(value.characterQa)) return false;
+  if (value.schemaVersion === "character-release-generation-provenance-v2") {
+    if (!isRecord(value.requiredReleaseRoute) || !isRecord(value.visualAuthority)) return false;
+    const route = value.requiredReleaseRoute;
+    const visual = value.visualAuthority;
+    const qa = value.characterQa;
+    return isNonEmptyString(route.routeFingerprint)
+      && isNonEmptyString(route.matrixKey)
+      && isNonEmptyString(route.generationProfileKey)
+      && isPositiveInteger(route.generationProfileVersion)
+      && isNonEmptyString(route.workflowKey)
+      && isPositiveInteger(route.workflowVersion)
+      && isNonEmptyString(visual.visualProfileId)
+      && isPositiveInteger(visual.visualProfileVersion)
+      && isNonEmptyString(visual.visualProfileHash)
+      && isNonEmptyString(visual.referenceSetRevisionId)
+      && isNonEmptyString(visual.referenceSetHash)
+      && qa.status === "passed"
+      && isNonEmptyString(qa.qaRunId)
+      && isNonEmptyString(qa.evidenceHash)
+      && isPositiveInteger(qa.projectVersion)
+      && isNonEmptyString(qa.visualProfileId)
+      && isPositiveInteger(qa.visualProfileVersion)
+      && isNonEmptyString(qa.visualProfileHash)
+      && isNonEmptyString(qa.referenceSetRevisionId)
+      && isPositiveInteger(qa.referenceSetRevision)
+      && isNonEmptyString(qa.referenceSetHash)
+      && isNonEmptyString(qa.draftAssetPackHash);
+  }
   return isNonEmptyString(value.routeFingerprint)
     && isNonEmptyString(value.matrixKey)
     && isNonEmptyString(value.generationProfileKey)
@@ -611,6 +866,15 @@ async function inspectServingReleaseBatch(
     where: { id: { in: releaseIds } },
   });
   const releaseById = new Map(releases.map((release) => [release.id, release]));
+  const publicQualifications = await db.publicCatalogQualification.findMany({
+    where: { releaseId: { in: releaseIds } },
+  });
+  const publicQualificationByReleaseId = new Map(
+    publicQualifications.map((qualification) => [
+      qualification.releaseId,
+      qualification,
+    ]),
+  );
   const projectIds = [...new Set(releases.map((release) => release.projectId))];
   const revisionIds = [...new Set(releases.map((release) => release.revisionId))];
   const contentIds = [...new Set(releases.map((release) => release.characterContentVersionId))];
@@ -673,44 +937,76 @@ async function inspectServingReleaseBatch(
     ) {
       recordViolation(violations.joinInvalid, release.id);
     }
+    const provenance = isRecord(release.generationProvenance)
+      ? release.generationProvenance
+      : {};
+    const publicQualification =
+      publicQualificationByReleaseId.get(release.id);
+    const editorialQualificationIsExact = Boolean(
+      pointer.pointer === "current" &&
+      release.legacy &&
+      release.status === "published" &&
+      release.publishedAt !== null &&
+      release.readiness === "ready" &&
+      release.visualProfileId === null &&
+      release.visualProfileVersion === null &&
+      release.referenceSetRevisionId === null &&
+      provenance.schemaVersion === "character-release-editorial-import-v1" &&
+      publicQualification?.kind === "editorial_import" &&
+      publicQualification.validationRunId === null &&
+      publicQualification.releaseSnapshotHash === release.snapshotHash &&
+      publicQualification.revokedAt === null &&
+      isRecord(publicQualification.evidence) &&
+      publicQualification.evidence.schemaVersion ===
+        "public-catalog-qualification-v1" &&
+      publicQualification.evidence.policyVersion ===
+        PUBLIC_CATALOG_EDITORIAL_IMPORT_POLICY_VERSION,
+    );
 
-    {
-      const profile = release.visualProfileId
-        ? profileById.get(release.visualProfileId)
-        : undefined;
-      const referenceSet = release.referenceSetRevisionId
-        ? referenceSetById.get(release.referenceSetRevisionId)
-        : undefined;
-      const profileIsExact = Boolean(
-        project
-        && profile
-        && release.visualProfileVersion === profile.version
-        && profile.characterId === project.characterId
-        && isNonEmptyString(profile.immutableHash)
-        && profile.immutableHash === characterVisualProfileSnapshotHash(profile),
-      );
-      const referenceIsExact = Boolean(
-        profile
-        && referenceSet
-        && referenceSet.visualProfileId === profile.id
-        && referenceSet.references.length > 0
-        && referenceSet.references.every((reference) => reference.mediaAsset.deletedAt === null)
-        && isNonEmptyString(referenceSet.snapshotHash)
-        && referenceSet.snapshotHash === referenceSetSnapshotHash({
+    const profile = release.visualProfileId
+      ? profileById.get(release.visualProfileId)
+      : undefined;
+    const referenceSet = release.referenceSetRevisionId
+      ? referenceSetById.get(release.referenceSetRevisionId)
+      : undefined;
+    const currentVisualHash = profile
+      ? characterVisualProfileSnapshotHash(profile)
+      : null;
+    const currentReferenceHash = referenceSet
+      ? referenceSetSnapshotHash({
           visualProfileId: referenceSet.visualProfileId,
           revision: referenceSet.revision,
           selectorVersion: referenceSet.selectorVersion,
           references: referenceSet.references,
-        }),
+        })
+      : null;
+    const profileIsExact = Boolean(
+      project
+      && profile
+      && release.visualProfileVersion === profile.version
+      && profile.characterId === project.characterId
+      && isNonEmptyString(profile.immutableHash)
+      && profile.immutableHash === currentVisualHash,
+    );
+    const referenceIsExact = Boolean(
+      profile
+      && referenceSet
+      && referenceSet.visualProfileId === profile.id
+      && referenceSet.references.length > 0
+      && referenceSet.references.every((reference) => reference.mediaAsset.deletedAt === null)
+      && isNonEmptyString(referenceSet.snapshotHash)
+      && referenceSet.snapshotHash === currentReferenceHash,
+    );
+    if (
+      !editorialQualificationIsExact &&
+      (!profileIsExact || !referenceIsExact)
+    ) {
+      recordViolation(
+        pointer.pointer === "current"
+          ? violations.currentIdentityInvalid
+          : violations.scheduledIdentityInvalid,
+        release.id,
       );
-      if (!profileIsExact || !referenceIsExact) {
-        recordViolation(
-          pointer.pointer === "current"
-            ? violations.currentIdentityInvalid
-            : violations.scheduledIdentityInvalid,
-          release.id,
-        );
-      }
     }
 
     const snapshotHash = characterReleaseSnapshotHash({
@@ -723,24 +1019,44 @@ async function inspectServingReleaseBatch(
       generationProvenance: release.generationProvenance,
       releasePlacementManifest: release.releasePlacementManifest,
     });
-    const provenance = isRecord(release.generationProvenance) ? release.generationProvenance : {};
     const qa = isRecord(provenance.characterQa) ? provenance.characterQa : {};
     const qaRun = isNonEmptyString(qa.qaRunId) ? qaRunById.get(qa.qaRunId) : undefined;
+    const strictCharacterQa = provenance.schemaVersion === "character-release-generation-provenance-v2";
     const qaIsExact = Boolean(
       project && qaRun && qaRun.status === "passed"
       && qaRun.characterId === project.characterId
       && qaRun.projectId === release.projectId
       && qaRun.characterContentVersionId === release.characterContentVersionId
-      && qaRun.evidenceHash === qa.evidenceHash,
+      && qaRun.evidenceHash === qa.evidenceHash
+      && (!strictCharacterQa || (
+        characterQaProvenanceMatchesRun(qa, qaRun)
+        && characterQaAuthorityMatches(qaRun, {
+          characterId: project.characterId,
+          projectId: release.projectId,
+          characterContentVersionId: release.characterContentVersionId,
+          projectVersion: qaRun.projectVersion,
+          visualProfileId: release.visualProfileId,
+          visualProfileVersion: release.visualProfileVersion,
+          visualProfileHash: currentVisualHash,
+          referenceSetRevisionId: release.referenceSetRevisionId,
+          referenceSetRevision: referenceSet?.revision ?? null,
+          referenceSetHash: currentReferenceHash,
+          draftAssetPackHash: qaRun.draftAssetPackHash,
+        })
+      )),
     );
-    const manifestIsComplete = hasCompleteGenerationProvenance(release.generationProvenance)
-      && qaIsExact
-      && hasCompletePlacementManifest(release.releasePlacementManifest)
-      && isNonEmptyString(release.snapshotHash)
-      && release.snapshotHash === snapshotHash
-      && (pointer.pointer === "current"
-        ? release.status === "published"
-        : release.status === "approved");
+    const manifestIsComplete = editorialQualificationIsExact
+      ? hasCompletePlacementManifest(release.releasePlacementManifest) &&
+        isNonEmptyString(release.snapshotHash) &&
+        release.snapshotHash === snapshotHash
+      : hasCompleteGenerationProvenance(release.generationProvenance) &&
+        qaIsExact &&
+        hasCompletePlacementManifest(release.releasePlacementManifest) &&
+        isNonEmptyString(release.snapshotHash) &&
+        release.snapshotHash === snapshotHash &&
+        (pointer.pointer === "current"
+          ? release.status === "published"
+          : release.status === "approved");
     if (!manifestIsComplete) {
       recordViolation(
         pointer.pointer === "current"

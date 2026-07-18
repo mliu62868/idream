@@ -10,16 +10,30 @@ import {
   actorWithPermission,
   clampInt,
   jsonBody,
-  writeAudit,
+  toInputJson,
 } from "@/server/modules/admin/shared/legacy-primitives";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
 import {
+  isMediaAssetOperationalForAuthority,
+  isSyntheticMediaAsset,
+  resolveMediaAssetBlobLocator,
+} from "@/server/lib/media-asset-authority";
+import { executeIdempotentDomainCommand } from "@/server/modules/admin/shared/domain-command";
+import {
+  lockCharacterGenerationAuthority,
+  lockMediaAssetAuthority,
+} from "@/server/modules/admin-v2/characters/generation-authority-lock";
+import {
   decodeAdminListCursor,
   encodeAdminListCursor,
   parseIsoCursorKey,
 } from "@/server/modules/admin-v2/shared/list-cursor";
+import {
+  operationalCharacterSubmissionWhere,
+  operationalContentReportWhere,
+} from "@/server/modules/admin/shared/metric-data-scope";
 
 const characterSelect = {
   id: true,
@@ -29,6 +43,7 @@ const characterSelect = {
   visibility: true,
   status: true,
   description: true,
+  imageAssetId: true,
   createdAt: true,
 } as const;
 
@@ -46,7 +61,7 @@ export async function listReviewQueue(request: Request): Promise<Response> {
   const reportFilter = z.enum(["all", "reported", "clean"]).catch("all").parse(url.searchParams.get("reportFilter") ?? "all");
   const limit = clampInt(url.searchParams.get("limit"), 1, 100, 25);
   const reportedCharacterIds = reportFilter === "all" ? [] : (await prisma.contentReport.findMany({
-    where: { targetType: "character" },
+    where: operationalContentReportWhere({ targetType: "character" }),
     distinct: ["targetId"],
     select: { targetId: true },
   })).map((report) => report.targetId);
@@ -58,7 +73,7 @@ export async function listReviewQueue(request: Request): Promise<Response> {
     ? [parseIsoCursorKey(cursorKeys[0], "character_review_queue"), z.string().min(1).parse(cursorKeys[1])]
     : [null, null];
   const submissions = await prisma.characterSubmission.findMany({
-    where: {
+    where: operationalCharacterSubmissionWhere({
       status: "pending",
       characterId: reportFilter === "reported"
         ? { in: reportedCharacterIds }
@@ -79,7 +94,7 @@ export async function listReviewQueue(request: Request): Promise<Response> {
         { submittedAt: { gt: cursorAt } },
         { submittedAt: cursorAt, id: { gt: cursorId } },
       ] }] } : {}),
-    },
+    }),
     orderBy: [{ submittedAt: "asc" }, { id: "asc" }],
     take: limit + 1,
     include: { character: { select: characterSelect } },
@@ -93,7 +108,10 @@ export async function listReviewQueue(request: Request): Promise<Response> {
       submittedAt: submission.submittedAt,
       character: submission.character,
       reportCount: await prisma.contentReport.count({
-        where: { targetType: "character", targetId: submission.characterId },
+        where: operationalContentReportWhere({
+          targetType: "character",
+          targetId: submission.characterId,
+        }),
       }),
     })),
   );
@@ -119,48 +137,130 @@ export async function reviewSubmission(request: Request, id: string): Promise<Re
     throw Errors.badRequest("Confirmation did not match review decision");
   }
 
-  const submission = await prisma.characterSubmission.findUnique({
-    where: { id },
-    include: { character: { select: characterSelect } },
+  const locator = await prisma.characterSubmission.findFirst({
+    where: operationalCharacterSubmissionWhere({ id }),
+    select: { characterId: true },
   });
-  if (!submission) throw Errors.notFound("Character submission not found");
-  if (submission.status !== "pending") {
-    throw Errors.badRequest("Submission already reviewed");
-  }
+  if (!locator) throw Errors.notFound("Character submission not found");
 
-  const nextStatus = body.decision === "approve" ? "approved" : "rejected";
-  const reviewedAt = new Date();
+  const result = await executeIdempotentDomainCommand({
+    request,
+    actor,
+    commandType: "content.submission.review",
+    targetType: "character_submission",
+    targetId: id,
+    payload: body,
+    execute: async (tx, requestId) => {
+      await lockCharacterGenerationAuthority(tx, locator.characterId);
+      const submission = await tx.characterSubmission.findFirst({
+        where: operationalCharacterSubmissionWhere({ id }),
+        include: { character: { select: characterSelect } },
+      });
+      if (!submission) throw Errors.notFound("Character submission not found");
+      if (submission.status !== "pending") {
+        throw Errors.conflict("Submission already has a terminal review decision");
+      }
+      if (
+        submission.character.visibility !== "public" ||
+        submission.character.status !== "pending_review"
+      ) {
+        throw Errors.conflict("Character is no longer awaiting public review");
+      }
 
-  const updated = await prisma.$transaction(async (tx) => {
-    await tx.character.update({
-      where: { id: submission.characterId },
-      data: { status: nextStatus },
-    });
-    return tx.characterSubmission.update({
-      where: { id: submission.id },
-      data: {
-        status: nextStatus,
-        reviewerId: actor.id,
-        reviewedAt,
-        reviewReason: body.reviewReason,
-      },
-    });
-  });
+      const imageAssetId = submission.character.imageAssetId;
+      if (imageAssetId) {
+        await lockMediaAssetAuthority(tx, imageAssetId);
+      }
+      if (body.decision === "approve" && imageAssetId) {
+        const imageAsset = await tx.mediaAsset.findFirst({
+          where: {
+            id: imageAssetId,
+            characterId: submission.characterId,
+            deletedAt: null,
+            type: "image",
+          },
+          select: {
+            id: true,
+            storageKey: true,
+            safetyStatus: true,
+            metadata: true,
+          },
+        });
+        if (
+          !imageAsset ||
+          imageAsset.safetyStatus !== "passed" ||
+          !isMediaAssetOperationalForAuthority(imageAsset.metadata) ||
+          isSyntheticMediaAsset(imageAsset.metadata)
+        ) {
+          throw Errors.conflict("Character identity image is not independently approved");
+        }
+        if (
+          isDuplicateMedia(imageAsset.metadata) &&
+          resolveMediaAssetBlobLocator(imageAsset)?.kind !== "shared_immutable"
+        ) {
+          throw Errors.conflict("Duplicate Character identity bytes are not serviceable");
+        }
+      }
 
-  await writeAudit(request, actor, {
-    action: "content.submission.review",
-    targetType: "character",
-    targetId: submission.characterId,
-    reason: body.reason,
-    before: {
-      characterStatus: submission.character.status,
-      submissionStatus: submission.status,
+      const nextStatus = body.decision === "approve" ? "approved" : "rejected";
+      const reviewedAt = new Date();
+      await tx.character.update({
+        where: { id: submission.characterId },
+        data: { status: nextStatus },
+      });
+      const updated = await tx.characterSubmission.update({
+        where: { id: submission.id },
+        data: {
+          status: nextStatus,
+          reviewerId: actor.id,
+          reviewedAt,
+          reviewReason: body.reviewReason,
+        },
+      });
+      await tx.adminAuditLog.create({
+        data: {
+          actorId: actor.id,
+          actorRole: actor.role,
+          action: "content.submission.review",
+          targetType: "character",
+          targetId: submission.characterId,
+          reason: body.reason,
+          before: toInputJson({
+            characterStatus: submission.character.status,
+            submissionStatus: submission.status,
+            imageAssetId,
+          }),
+          after: toInputJson({
+            characterStatus: nextStatus,
+            submissionStatus: nextStatus,
+            imageAssetId,
+          }),
+          requestId,
+        },
+      });
+      await tx.mainOutboxEvent.create({
+        data: {
+          eventType: "admin.character_submission.reviewed.v1",
+          aggregateType: "character",
+          aggregateId: submission.characterId,
+          payload: toInputJson({
+            submissionId: submission.id,
+            characterId: submission.characterId,
+            decision: body.decision,
+            imageAssetId,
+            actorId: actor.id,
+            requestId,
+          }),
+        },
+      });
+      return { submission: updated };
     },
-    after: {
-      characterStatus: nextStatus,
-      submissionStatus: nextStatus,
-    },
   });
+  return ok(result);
+}
 
-  return ok({ submission: updated });
+function isDuplicateMedia(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const lineage = (value as Record<string, unknown>).duplicateLineage;
+  return Boolean(lineage && typeof lineage === "object" && !Array.isArray(lineage));
 }

@@ -6,6 +6,7 @@ import { GET as listRuns } from "@/app/api/v2/admin/creative/runs/route";
 import { POST as decideItem } from "@/app/api/v2/admin/creative/runs/[id]/items/[itemId]/decisions/route";
 import { POST as publishPlacement } from "@/app/api/v2/admin/creative/runs/[id]/placements/route";
 import { POST as verifyPlacement } from "@/app/api/v2/admin/creative/runs/[id]/placements/[placementId]/verification/route";
+import { POST as withdrawPlacement } from "@/app/api/v2/admin/creative/runs/[id]/placements/[placementId]/withdrawal/route";
 import { prisma } from "@/server/lib/db";
 import { verifyCreativePlacement } from "./workflow";
 import {
@@ -27,14 +28,18 @@ describe("Creative retry through verified placement", () => {
   const assetId = `creative-asset-${suffix}`;
   let commandId = "";
   let placementId = "";
-  const request = (path: string, body?: unknown) => {
+  let withdrawnPlacementId = "";
+  const request = (path: string, body?: unknown, idempotencyKey?: string) => {
     const headers: Record<string, string> = {
       "content-type": "application/json",
       "x-idream-user-id": adminId,
       "x-idream-role": "admin",
       "x-request-id": randomUUID(),
     };
-    if (body) headers["idempotency-key"] = `creative-loop-${suffix}-${randomUUID()}`;
+    if (body) {
+      headers["idempotency-key"] = idempotencyKey ??
+        `creative-loop-${suffix}-${randomUUID()}`;
+    }
     return new Request(`http://localhost${path}`, {
       method: body ? "POST" : "GET",
       headers,
@@ -101,7 +106,7 @@ describe("Creative retry through verified placement", () => {
       data: {
         id: runId,
         title: "Creative closed-loop fixture",
-        purpose: "feed",
+        purpose: "campaign",
         targetType: "campaign",
         targetId: `campaign-${suffix}`,
         profileId,
@@ -127,7 +132,9 @@ describe("Creative retry through verified placement", () => {
   afterAll(async () => {
     await jobQueue.removeByDedupePrefix(`generation:${jobId}:attempt:`, ["ai.image.generate"]);
     await prisma.creativeReviewDecision.deleteMany({ where: { runItemId: itemId } });
-    await prisma.mediaAssetPlacement.deleteMany({ where: { id: placementId } });
+    await prisma.mediaAssetPlacement.deleteMany({
+      where: { id: { in: [placementId || "missing", withdrawnPlacementId || "missing"] } },
+    });
     await prisma.generationDelivery.deleteMany({ where: { requestId: jobId } });
     await prisma.generationArtifact.deleteMany({
       where: { attemptId: { in: (await prisma.generationAttempt.findMany({ where: { requestId: jobId }, select: { id: true } })).map((row) => row.id) } },
@@ -195,10 +202,24 @@ describe("Creative retry through verified placement", () => {
       verificationState: "verifying",
       version: 3,
     });
-    expect(await dispatchCreativeRetryOutbox(prisma, {
-      limit: 10,
-      outboxIds: [`creative_retry_${commandId}_${itemId}`],
-    })).toMatchObject({ delivered: 1, failed: 0 });
+    const dispatchResults = await Promise.all([
+      dispatchCreativeRetryOutbox(prisma, {
+        limit: 10,
+        outboxIds: [`creative_retry_${commandId}_${itemId}`],
+      }),
+      dispatchCreativeRetryOutbox(prisma, {
+        limit: 10,
+        outboxIds: [`creative_retry_${commandId}_${itemId}`],
+      }),
+    ]);
+    expect(dispatchResults.reduce((sum, result) => sum + result.delivered, 0)).toBe(1);
+    expect(dispatchResults.reduce((sum, result) => sum + result.failed, 0)).toBe(0);
+    expect(await prisma.mainOutboxEvent.findUnique({
+      where: { id: `creative_retry_${commandId}_${itemId}` },
+    })).toMatchObject({
+      status: "delivered",
+      attempts: 1,
+    });
     expect(await jobQueue.getByDedupeKey("ai.image.generate", `generation:${jobId}:attempt:2`)).toMatchObject({
       payload: expect.objectContaining({
         generationJobId: jobId,
@@ -268,8 +289,9 @@ describe("Creative retry through verified placement", () => {
       }),
       { params: Promise.resolve({ id: runId, itemId }) },
     );
-    expect(reviewResponse.status).toBe(200);
-    const reviewed = (await reviewResponse.json()).data;
+    const reviewPayload = await reviewResponse.json();
+    expect(reviewResponse.status, JSON.stringify(reviewPayload)).toBe(200);
+    const reviewed = reviewPayload.data;
     expect(reviewed).toMatchObject({ workflowStage: "placement", version: 5 });
     expect(await prisma.creativeReviewDecision.count({ where: { runItemId: itemId } })).toBe(1);
 
@@ -281,18 +303,112 @@ describe("Creative retry through verified placement", () => {
         slot: "campaign",
         targetType: "campaign",
         targetId: `campaign-${suffix}`,
+        eyebrow: "  Featured  ",
+        title: "  Operator-authored campaign  ",
+        ctaLabel: "  Open collection  ",
+        href: "  /community?collection=featured  ",
         reason: "Publish approved campaign card",
       }),
       { params: Promise.resolve({ id: runId }) },
     );
     expect(placementResponse.status).toBe(200);
     const placement = (await placementResponse.json()).data;
-    placementId = placement.placementId;
+    withdrawnPlacementId = placement.placementId;
     expect(placement).toMatchObject({ verificationState: "verifying", runVersion: 6 });
+    await expect(prisma.mediaAssetPlacement.findUniqueOrThrow({
+      where: { id: placement.placementId },
+    })).resolves.toMatchObject({
+      metadata: expect.objectContaining({
+        eyebrow: "Featured",
+        title: "Operator-authored campaign",
+        ctaLabel: "Open collection",
+        href: "/community?collection=featured",
+      }),
+    });
+
+    const withdrawalKey = `creative-loop-withdrawal-${suffix}`;
+    const withdraw = () => withdrawPlacement(
+      request(
+        `/api/v2/admin/creative/runs/${runId}/placements/${withdrawnPlacementId}/withdrawal`,
+        {
+          entityVersion: 6,
+          reason: "Withdraw the staged candidate before changing the campaign decision",
+        },
+        withdrawalKey,
+      ),
+      { params: Promise.resolve({ id: runId, placementId: withdrawnPlacementId }) },
+    );
+    const firstWithdrawalResponse = await withdraw();
+    const firstWithdrawalPayload = await firstWithdrawalResponse.json();
+    expect(firstWithdrawalResponse.status, JSON.stringify(firstWithdrawalPayload)).toBe(200);
+    expect(firstWithdrawalPayload.data).toMatchObject({
+      placementId: withdrawnPlacementId,
+      verificationState: "overridden",
+      runVersion: 7,
+    });
+    const replayedWithdrawalResponse = await withdraw();
+    const replayedWithdrawalPayload = await replayedWithdrawalResponse.json();
+    expect(replayedWithdrawalResponse.status, JSON.stringify(replayedWithdrawalPayload)).toBe(200);
+    expect(replayedWithdrawalPayload.data).toEqual(firstWithdrawalPayload.data);
+    await expect(prisma.mediaAssetPlacement.findUniqueOrThrow({
+      where: { id: withdrawnPlacementId },
+    })).resolves.toMatchObject({
+      status: "archived",
+      verificationState: "overridden",
+    });
+    await expect(prisma.adminAuditLog.count({
+      where: { targetId: withdrawnPlacementId, action: "creative.placement.withdrawn" },
+    })).resolves.toBe(1);
+    await expect(prisma.mainOutboxEvent.count({
+      where: { aggregateId: runId, eventType: "creative.placement.withdrawn.v2" },
+    })).resolves.toBe(1);
+    await expect(prisma.controlPlaneCommand.count({
+      where: {
+        actorId: adminId,
+        commandType: "creative.placement.withdraw",
+        idempotencyKey: withdrawalKey,
+      },
+    })).resolves.toBe(1);
+
+    const withdrawnDetailResponse = await getRun(
+      request(`/api/v2/admin/creative/runs/${runId}`),
+      { params: Promise.resolve({ id: runId }) },
+    );
+    await expect(withdrawnDetailResponse.json()).resolves.toMatchObject({
+      data: {
+        id: runId,
+        deploymentState: "unplaced",
+        verificationState: "pending",
+        version: 7,
+        items: [{ placement: null }],
+      },
+    });
+
+    const restagedPlacementResponse = await publishPlacement(
+      request(`/api/v2/admin/creative/runs/${runId}/placements`, {
+        entityVersion: 7,
+        itemId,
+        assetId,
+        slot: "campaign",
+        targetType: "campaign",
+        targetId: `campaign-${suffix}`,
+        eyebrow: "Featured",
+        title: "Restaged operator-authored campaign",
+        reason: "Restage the reviewed candidate after operator reconsideration",
+      }),
+      { params: Promise.resolve({ id: runId }) },
+    );
+    expect(restagedPlacementResponse.status).toBe(200);
+    const restagedPlacement = (await restagedPlacementResponse.json()).data;
+    placementId = restagedPlacement.placementId;
+    expect(restagedPlacement).toMatchObject({
+      verificationState: "verifying",
+      runVersion: 8,
+    });
 
     const verificationResponse = await verifyPlacement(
       request(`/api/v2/admin/creative/runs/${runId}/placements/${placementId}/verification`, {
-        entityVersion: 6,
+        entityVersion: 8,
         reason: "Observed the current distribution slot serving the expected asset",
       }),
       { params: Promise.resolve({ id: runId, placementId }) },
@@ -301,7 +417,7 @@ describe("Creative retry through verified placement", () => {
     const verified = (await verificationResponse.json()).data;
     expect(verified).toMatchObject({
       verificationState: "passed",
-      runVersion: 7,
+      runVersion: 9,
       checks: {
         runtimeSurfaceSupported: true,
         placementVisibleInRuntime: true,
@@ -316,14 +432,14 @@ describe("Creative retry through verified placement", () => {
       runId,
       placementId,
       actor: { id: adminId, role: "admin" },
-      expectedVersion: 7,
+      expectedVersion: 9,
       reason: "A passed verification is terminal and cannot be rewritten",
       requestId: `creative-terminal-verification-${suffix}`,
-    })).rejects.toThrow("verification transition");
+    })).rejects.toThrow("Only a staged placement can be verified");
     await expect(prisma.contentProductionBatch.findUniqueOrThrow({ where: { id: runId } })).resolves.toMatchObject({
       workflowStage: "verification",
       verificationState: "passed",
-      version: 7,
+      version: 9,
     });
     await expect(prisma.mediaAssetPlacement.findUniqueOrThrow({ where: { id: placementId } })).resolves.toMatchObject({
       verificationState: "passed",
@@ -348,7 +464,7 @@ describe("Creative retry through verified placement", () => {
       deploymentState: "placed",
       verificationState: "passed",
       counts: { generated: 1, failed: 0, reviewed: 1, approved: 1, placed: 1, total: 1 },
-      version: 7,
+      version: 9,
     });
     expect(detail.items[0].lineage).toMatchObject({
       requestId: jobId,
@@ -367,15 +483,27 @@ describe("Creative retry through verified placement", () => {
         items: [{ id: runId, executionOutcome: "succeeded", verificationState: "passed" }],
       },
     });
+    const scopedListResponse = await listRuns(request(
+      `/api/v2/admin/creative/runs?targetType=campaign&targetId=campaign-${suffix}&sort=updated_desc&limit=10`,
+    ));
+    await expect(scopedListResponse.json()).resolves.toMatchObject({
+      data: { items: [{ id: runId }] },
+    });
+    const wrongTargetResponse = await listRuns(request(
+      "/api/v2/admin/creative/runs?targetType=campaign&targetId=another-campaign&sort=updated_desc&limit=10",
+    ));
+    await expect(wrongTargetResponse.json()).resolves.toMatchObject({ data: { items: [] } });
 
     const closedPlacementResponse = await publishPlacement(
       request(`/api/v2/admin/creative/runs/${runId}/placements`, {
-        entityVersion: 7,
+        entityVersion: 9,
         itemId,
         assetId,
-        slot: "feed_card",
+        slot: "campaign",
         targetType: "campaign",
         targetId: `campaign-${suffix}`,
+        eyebrow: "Featured",
+        title: "Closed campaign",
         reason: "A closed Run cannot publish another placement",
       }),
       { params: Promise.resolve({ id: runId }) },
@@ -383,7 +511,7 @@ describe("Creative retry through verified placement", () => {
     expect(closedPlacementResponse.status).toBe(409);
     expect(await prisma.mediaAssetPlacement.count({
       where: { metadata: { path: ["creativeRunId"], equals: runId } },
-    })).toBe(1);
+    })).toBe(2);
 
     const mutationReceipts = await prisma.controlPlaneCommand.findMany({
       where: {
@@ -395,12 +523,12 @@ describe("Creative retry through verified placement", () => {
       select: { commandType: true },
     });
     expect(mutationReceipts.filter(({ commandType }) => commandType === "creative.review.decision")).toHaveLength(1);
-    expect(mutationReceipts.filter(({ commandType }) => commandType === "creative.placement.publish")).toHaveLength(1);
+    expect(mutationReceipts.filter(({ commandType }) => commandType === "creative.placement.publish")).toHaveLength(2);
     expect(mutationReceipts.filter(({ commandType }) => commandType === "creative.placement.verify")).toHaveLength(1);
 
     const publishedReview = await decideItem(
       request(`/api/v2/admin/creative/runs/${runId}/items/${itemId}/decisions`, {
-        entityVersion: 7,
+        entityVersion: 9,
         decision: "rejected",
         identityConsistency: "failed",
         reason: "A published immutable item cannot be rewritten by a later review",

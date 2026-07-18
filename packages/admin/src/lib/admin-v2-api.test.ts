@@ -54,6 +54,23 @@ describe("admin v2 client", () => {
     expect(init?.method).toBe("PUT");
     expect(new Headers(init?.headers).get("idempotency-key")).toBe("watch-1");
   });
+
+  it("forwards cancellation to projection reads", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      void input;
+      void init;
+      return Response.json({ ok: true, data: { id: "case-1" } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const controller = new AbortController();
+
+    await adminV2Request("/api/v2/admin/cases/case-1", {
+      signal: controller.signal,
+    });
+
+    const [, init] = fetchMock.mock.calls[0] ?? [];
+    expect(init?.signal).toBe(controller.signal);
+  });
 });
 
 describe("setWorkspaceUrl", () => {

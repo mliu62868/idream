@@ -10,12 +10,20 @@
 import { randomUUID } from "node:crypto";
 import { assertGeneratedImageSanity } from "../generated-image-sanity";
 import { logger } from "../logger";
-import { bindComfySlots } from "./workflow";
+import { syncComfyUiWorkflow } from "./comfyui-workflow";
+import { assignWorkflowReferenceSlots, bindComfySlots } from "./workflow";
+import type { WorkflowDescriptor } from "./workflow";
 import type { BackendHandle, BackendHealth, BackendResult, Capabilities, GenBackend, ResolvedGenJob } from "./types";
 
 type JsonRecord = Record<string, unknown>;
+type ComfyDescriptor = Extract<WorkflowDescriptor, { backendKind: "comfyui" }>;
 type ReferenceImage = NonNullable<ResolvedGenJob["referenceImages"]>[number];
 type UploadedImage = { name: string; subfolder: string; type: string };
+type WorkflowSync = (input: {
+  apiUrl: string;
+  descriptor: ComfyDescriptor;
+  timeoutMs: number;
+}) => Promise<JsonRecord>;
 
 // health() is a readiness probe (launch checks, monitoring), not a generation
 // request — bound it to a short fixed timeout instead of the (much larger) per-job
@@ -41,11 +49,14 @@ export class ComfyUIBackend implements GenBackend {
 
   private readonly apiUrl: string;
   private readonly pollIntervalMs: number;
+  private readonly workflowSync: WorkflowSync;
+  private readonly workflowGraphs = new Map<string, Promise<JsonRecord>>();
   private readonly pending = new Map<string, PendingJob>();
 
-  constructor(opts: { apiUrl: string; pollIntervalMs?: number }) {
+  constructor(opts: { apiUrl: string; pollIntervalMs?: number; workflowSync?: WorkflowSync }) {
     this.apiUrl = trimTrailingSlash(opts.apiUrl);
     this.pollIntervalMs = opts.pollIntervalMs ?? 1_000;
+    this.workflowSync = opts.workflowSync ?? syncComfyUiWorkflow;
   }
 
   capabilities(): Capabilities {
@@ -59,8 +70,15 @@ export class ComfyUIBackend implements GenBackend {
   }
 
   async submit(job: ResolvedGenJob): Promise<BackendHandle> {
+    if (job.descriptor.backendKind !== "comfyui") {
+      throw new Error(
+        `comfyui: workflow ${job.descriptor.workflowKey} targets ${job.descriptor.backendKind}`,
+      );
+    }
+    const descriptor = job.descriptor;
+    const workflow = await this.getWorkflowGraph(descriptor, job.timeoutMs);
     const slots = await this.bindReferenceImageSlots(job);
-    const prompt = bindComfySlots(job.descriptor, slots);
+    const prompt = bindComfySlots(descriptor, slots);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), job.timeoutMs);
     let response: Response;
@@ -71,6 +89,16 @@ export class ComfyUIBackend implements GenBackend {
         body: JSON.stringify({
           prompt,
           client_id: `idream-comfyui-backend-${randomUUID()}`,
+          extra_data: {
+            extra_pnginfo: {
+              workflow,
+            },
+            idream_workflow: {
+              key: descriptor.workflowKey,
+              model_id: descriptor.modelId,
+              version: descriptor.version,
+            },
+          },
         }),
         signal: controller.signal,
       });
@@ -91,6 +119,15 @@ export class ComfyUIBackend implements GenBackend {
     }
     this.pending.set(promptId, { timeoutMs: job.timeoutMs, slots: job.slots });
     return { id: promptId };
+  }
+
+  private getWorkflowGraph(descriptor: ComfyDescriptor, timeoutMs: number): Promise<JsonRecord> {
+    const existing = this.workflowGraphs.get(descriptor.comfyWorkflow.id);
+    if (existing) return existing;
+    const syncing = this.workflowSync({ apiUrl: this.apiUrl, descriptor, timeoutMs });
+    this.workflowGraphs.set(descriptor.comfyWorkflow.id, syncing);
+    void syncing.catch(() => this.workflowGraphs.delete(descriptor.comfyWorkflow.id));
+    return syncing;
   }
 
   async poll(handle: BackendHandle): Promise<BackendResult> {
@@ -145,19 +182,56 @@ export class ComfyUIBackend implements GenBackend {
   }
 
   // SPEC: image-type descriptor slots (e.g. LoadImage nodes) take a ComfyUI-side
-  // filename, not raw bytes. Pair the i-th declared image slot (inputs declaration
-  // order) with the i-th job.referenceImages entry, upload its bytes via ComfyUI's
-  // /upload/image, and inject the returned filename into the slot values.
-  // INTENT: a slot with no paired reference image is left unset here so
-  // bindComfySlots's own missing-required-slot error fires downstream — one source
-  // of truth for "this slot is required", not a duplicate pre-check.
+  // filename, not raw bytes. Bind references by their declared semantic role;
+  // array order is never authority because source and identity may intentionally
+  // point at the same physical asset.
+  // INTENT: the descriptor/reference cardinality and role mapping must be exact.
+  // Missing, extra, or ambiguous references fail before any prompt is submitted.
   private async bindReferenceImageSlots(job: ResolvedGenJob): Promise<ResolvedGenJob["slots"]> {
-    const imageSlots = job.descriptor.inputs.filter((slot) => slot.type === "image");
-    if (imageSlots.length === 0 || !job.referenceImages?.length) return job.slots;
+    if (job.descriptor.backendKind !== "comfyui") {
+      throw new Error(
+        `comfyui: workflow ${job.descriptor.workflowKey} targets ${job.descriptor.backendKind}`,
+      );
+    }
+    const descriptor = job.descriptor;
+    const imageSlots = descriptor.inputs.filter((slot) => slot.type === "image");
+    const referenceImages = job.referenceImages ?? [];
+    const slotAuthority = assignWorkflowReferenceSlots(
+      descriptor,
+      referenceImages.map((reference) => reference.role),
+    );
+    if (
+      !slotAuthority.ok &&
+      slotAuthority.reason === "reference_cardinality_mismatch"
+    ) {
+      const cardinality = slotAuthority.minReferences === slotAuthority.maxReferences
+        ? String(slotAuthority.maxReferences)
+        : `${slotAuthority.minReferences}-${slotAuthority.maxReferences}`;
+      throw new Error(
+        `workflow ${descriptor.workflowKey} requires ${cardinality} semantic image references but received ${referenceImages.length}`,
+      );
+    }
+    if (!slotAuthority.ok) {
+      throw new Error(
+        `workflow ${descriptor.workflowKey} cannot assign reference roles ${referenceImages.map((reference) => reference.role).join(",")} to its semantic image slots`,
+      );
+    }
+    if (imageSlots.length === 0) return job.slots;
+    const assignments = new Map<string, ReferenceImage>(
+      slotAuthority.assignments.map((assignment) => [
+        assignment.slotKey,
+        referenceImages[assignment.referenceIndex]!,
+      ]),
+    );
     const uploaded: ResolvedGenJob["slots"] = {};
     for (let i = 0; i < imageSlots.length; i++) {
-      const reference = job.referenceImages[i];
-      if (!reference) continue;
+      const reference = assignments.get(imageSlots[i].key);
+      if (!reference && imageSlots[i].required === false) continue;
+      if (!reference) {
+        throw new Error(
+          `workflow ${descriptor.workflowKey} image slot ${imageSlots[i].key} was not bound`,
+        );
+      }
       const bytes = await this.referenceImageBytes(reference, job.timeoutMs);
       const image = await this.uploadImage(
         bytes,

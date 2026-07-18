@@ -9,6 +9,7 @@ import {
   jsonBody,
   writeAudit,
 } from "@/server/modules/admin/shared/legacy-primitives";
+import { operationalSupportRequestWhere } from "@/server/modules/admin/shared/metric-data-scope";
 import { synchronizeSupportCaseFromRequest } from "@/server/modules/admin-v2/cases/service";
 import {
   decodeAdminListCursor,
@@ -129,7 +130,7 @@ export async function listSupportRequests(request: Request) {
   let exhausted = false;
   while (matches.length <= limit && !exhausted) {
     const items = await prisma.supportRequest.findMany({
-      where: {
+      where: operationalSupportRequestWhere({
         AND: [
           where,
           ...(scanPriority !== null && scanAt && scanTicketId
@@ -148,7 +149,7 @@ export async function listSupportRequests(request: Request) {
               ]
             : []),
         ],
-      },
+      }),
       include: supportRequestIncludes,
       orderBy: [{ priority: "asc" }, { createdAt: "asc" }, { ticketId: "asc" }],
       take: batchSize,

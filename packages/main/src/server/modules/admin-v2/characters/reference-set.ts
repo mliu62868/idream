@@ -8,6 +8,12 @@ import { Errors } from "@/server/lib/errors";
 import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { referenceSetSnapshotHash } from "./release-snapshot";
+import { lockCharacterGenerationAndMediaAssetAuthorities } from "./generation-authority-lock";
+import { invalidateCharacterDraftAssetPack } from "./draft-asset-authority";
+import {
+  hasHydratableMediaBlobAuthority,
+  isMediaAssetOperationalForAuthority,
+} from "@/server/lib/media-asset-authority";
 
 export async function publishCharacterReferenceSet(input: {
   characterId: string;
@@ -25,23 +31,92 @@ export async function publishCharacterReferenceSet(input: {
     throw Errors.badRequest("Reference assets must be unique within a published snapshot");
   }
 
+  await lockCharacterGenerationAndMediaAssetAuthorities(
+    input.tx,
+    input.characterId,
+    uniqueAssetIds,
+  );
   await input.tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`character-reference-set:${request.visualProfileId}`}))`;
+  const project = await input.tx.characterProject.findFirst({
+    where: { characterId: input.characterId },
+    orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+    select: { id: true },
+  });
+  const activeRelease = project
+    ? await input.tx.characterRelease.findFirst({
+        where: {
+          projectId: project.id,
+          status: { in: ["draft", "validating", "in_review", "approved"] },
+        },
+        select: { id: true, status: true },
+      })
+    : null;
+  if (activeRelease) {
+    throw Errors.conflict(
+      "Withdraw or finish the active Character Release before publishing a new Reference Set",
+      {
+        releaseId: activeRelease.id,
+        releaseStatus: activeRelease.status,
+        deepLink: `/admin/characters/${input.characterId}?tab=release`,
+      },
+    );
+  }
   const profile = await input.tx.characterVisualProfile.findFirst({
     where: { id: request.visualProfileId, characterId: input.characterId, status: "active" },
   });
   if (!profile) throw Errors.conflict("The selected Visual Identity is not the active Character identity");
+  const currentReferenceSet = await input.tx.referenceSetRevision.findFirst({
+    where: { visualProfileId: profile.id, status: "active" },
+    include: { references: { orderBy: { position: "asc" } } },
+    orderBy: { revision: "desc" },
+  });
+  if (
+    (currentReferenceSet?.id ?? null) !==
+      request.expectedActiveReferenceSetRevisionId ||
+    (currentReferenceSet?.revision ?? 0) !==
+      request.expectedActiveReferenceSetRevision
+  ) {
+    throw Errors.conflict(
+      "The active Reference Set changed after this workspace was loaded",
+      {
+        expectedReferenceSetRevisionId:
+          request.expectedActiveReferenceSetRevisionId,
+        expectedReferenceSetRevision:
+          request.expectedActiveReferenceSetRevision,
+        currentReferenceSetRevisionId: currentReferenceSet?.id ?? null,
+        currentReferenceSetRevision: currentReferenceSet?.revision ?? 0,
+        deepLink: `/admin/characters/${input.characterId}?tab=visual`,
+      },
+    );
+  }
   const eligibleIds = new Set([
     ...jsonStringArray(profile.anchorAssetIds),
-    ...jsonStringArray(profile.referenceAssetIds),
+    ...(currentReferenceSet
+      ? currentReferenceSet.references.map((reference) => reference.mediaAssetId)
+      : jsonStringArray(profile.referenceAssetIds)),
   ]);
   if (uniqueAssetIds.some((id) => !eligibleIds.has(id))) {
     throw Errors.conflict("A selected reference is not pinned by the active Visual Identity");
   }
   const assets = await input.tx.mediaAsset.findMany({
-    where: { id: { in: uniqueAssetIds }, deletedAt: null, type: "image" },
+    where: {
+      id: { in: uniqueAssetIds },
+      deletedAt: null,
+      type: "image",
+      safetyStatus: "passed",
+      characterId: input.characterId,
+    },
   });
-  if (assets.length !== uniqueAssetIds.length) {
-    throw Errors.conflict("Every selected reference asset must still be available");
+  if (
+    assets.length !== uniqueAssetIds.length ||
+    assets.some((asset) =>
+      !isMediaAssetOperationalForAuthority(asset.metadata) ||
+      !hasHydratableMediaBlobAuthority(asset)
+    )
+  ) {
+    throw Errors.conflict(
+      "Every selected reference asset must be operational, safety-passed, and owned by this Character",
+    );
   }
   const latest = await input.tx.referenceSetRevision.aggregate({
     where: { visualProfileId: profile.id },
@@ -82,6 +157,10 @@ export async function publishCharacterReferenceSet(input: {
     },
     include: { references: { include: { mediaAsset: true }, orderBy: { position: "asc" } } },
   });
+  const invalidatedDraftAssets = await invalidateCharacterDraftAssetPack(
+    input.tx,
+    input.characterId,
+  );
   await input.tx.referenceCandidate.updateMany({
     where: { visualProfileId: profile.id, mediaAssetId: { in: uniqueAssetIds } },
     data: { status: "promoted", promotedRevisionId: created.id },
@@ -94,7 +173,14 @@ export async function publishCharacterReferenceSet(input: {
       targetType: "reference_set_revision",
       targetId: created.id,
       reason: `${request.reason.code}: ${request.reason.summary}`,
-      after: toInputJson({ characterId: input.characterId, visualProfileId: profile.id, revision, snapshotHash, references }),
+      after: toInputJson({
+        characterId: input.characterId,
+        visualProfileId: profile.id,
+        revision,
+        snapshotHash,
+        references,
+        draftAssetInvalidation: invalidatedDraftAssets,
+      }),
       requestId: input.requestId,
     },
   });

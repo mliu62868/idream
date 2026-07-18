@@ -1,5 +1,11 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import type { PaymentProvider, ProviderResult } from "../types";
+import type {
+  PaymentInvoiceAdditionalStatus,
+  PaymentInvoiceStatus,
+  PaymentProvider,
+  ProviderResult,
+} from "../types";
+import { paymentProviderCapabilities } from "./capabilities";
 
 export interface BtcPayPaymentProviderConfig {
   baseUrl: string;
@@ -14,6 +20,8 @@ type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Respo
 const confirmedEventTypes = new Set(["InvoiceSettled"]);
 
 export class BtcPayPaymentProvider implements PaymentProvider {
+  readonly capabilities = paymentProviderCapabilities("btcpay");
+
   private readonly baseUrl: URL;
   private readonly storeId: string;
   private readonly apiKey: string;
@@ -33,6 +41,7 @@ export class BtcPayPaymentProvider implements PaymentProvider {
     try {
       const response = await this.fetchImpl(endpoint, {
         method: "POST",
+        signal: input.signal,
         headers: {
           authorization: `token ${this.apiKey}`,
           "content-type": "application/json",
@@ -43,35 +52,64 @@ export class BtcPayPaymentProvider implements PaymentProvider {
           metadata: {
             userId: input.userId,
             ...(input.metadata ?? {}),
+            orderId: input.orderId,
           },
         }),
       });
       const json = (await response.json().catch(() => ({}))) as unknown;
       if (!response.ok) return paymentFailure("invoice_create_failed", response.status, json);
-      const record = asRecord(json);
-      const invoiceId = stringField(record, "id");
-      const checkoutUrl = stringField(record, "checkoutLink");
-      if (!invoiceId || !checkoutUrl) {
-        return {
-          ok: false as const,
-          error: {
-            code: "invoice_create_failed",
-            message: "BTCPay invoice response missing id or checkoutLink",
-            retryable: true,
-          },
-        };
+      const invoice = invoiceFromRecord(asRecord(json), input.orderId);
+      if (
+        !invoice ||
+        invoice.amountCents !== input.amountCents ||
+        invoice.currency !== input.currency.toLowerCase()
+      ) {
+        return invalidInvoice(
+          "invoice_create_invalid",
+          "BTCPay create response did not prove the requested order, amount, currency, and status",
+        );
       }
       return {
         ok: true as const,
-        data: {
-          provider: "btcpay" as const,
-          invoiceId,
-          checkoutUrl,
-          status: "created" as const,
-        },
+        data: invoice,
       };
     } catch (error) {
       return networkFailure("invoice_create_failed", error);
+    }
+  }
+
+  async findInvoiceByOrderId(
+    input: Parameters<PaymentProvider["findInvoiceByOrderId"]>[0],
+  ) {
+    const endpoint = this.apiUrl(
+      `/api/v1/stores/${encodeURIComponent(this.storeId)}/invoices`,
+    );
+    endpoint.searchParams.set("orderId", input.orderId);
+    endpoint.searchParams.set("take", "1");
+    try {
+      const response = await this.fetchImpl(endpoint, {
+        method: "GET",
+        signal: input.signal,
+        headers: { authorization: `token ${this.apiKey}` },
+      });
+      const json = (await response.json().catch(() => [])) as unknown;
+      if (!response.ok) {
+        return paymentFailure("invoice_lookup_failed", response.status, json);
+      }
+      const first = Array.isArray(json) ? json[0] : undefined;
+      if (!first) return { ok: true as const, data: null };
+      const invoice = invoiceFromRecord(asRecord(first), input.orderId);
+      if (!invoice) {
+        return invalidLookup(
+          "BTCPay invoice lookup response was missing authoritative identity, amount, currency, or status",
+        );
+      }
+      return {
+        ok: true as const,
+        data: invoice,
+      };
+    } catch (error) {
+      return networkFailure("invoice_lookup_failed", error);
     }
   }
 
@@ -82,18 +120,25 @@ export class BtcPayPaymentProvider implements PaymentProvider {
     const payload = asRecord(input.payload);
     const invoiceId = invoiceIdFromPayload(payload);
     const eventType = stringField(payload, "type") ?? stringField(payload, "eventType");
-    const providerEventId =
+    const deliveryId =
       stringField(payload, "deliveryId") ??
       stringField(payload, "id") ??
       input.providerEventId;
+    const providerEventId =
+      stringField(payload, "originalDeliveryId") ??
+      deliveryId;
+    const metadata = asRecord(payload.metadata);
+    const orderId = stringField(metadata, "orderId");
 
     if (!eventType || !confirmedEventTypes.has(eventType)) {
       return {
         ok: true as const,
         data: {
           providerEventId,
+          deliveryId,
           type: "invoice.ignored" as const,
           invoiceId,
+          ...(orderId ? { orderId } : {}),
         },
       };
     }
@@ -112,8 +157,10 @@ export class BtcPayPaymentProvider implements PaymentProvider {
       ok: true as const,
       data: {
         providerEventId,
+        deliveryId,
         type: "invoice.confirmed" as const,
         invoiceId,
+        ...(orderId ? { orderId } : {}),
       },
     };
   }
@@ -177,6 +224,114 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function stringField(record: Record<string, unknown>, key: string) {
   const value = record[key];
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function invoiceStatus(value: string | undefined): PaymentInvoiceStatus | null {
+  switch (value?.trim().toLowerCase()) {
+    case "new":
+      return "created";
+    case "processing":
+      return "processing";
+    case "settled":
+      return "settled";
+    case "expired":
+      return "expired";
+    case "invalid":
+      return "invalid";
+    default:
+      return null;
+  }
+}
+
+function invoiceAdditionalStatus(
+  value: string | undefined,
+): PaymentInvoiceAdditionalStatus | null {
+  switch (value?.replace(/[^a-z]/gi, "").toLowerCase()) {
+    case "none":
+      return "none";
+    case "marked":
+      return "marked";
+    case "paidlate":
+      return "paid_late";
+    case "paidover":
+      return "paid_over";
+    case "paidpartial":
+      return "paid_partial";
+    default:
+      return null;
+  }
+}
+
+function decimalAmountCents(value: unknown) {
+  const numeric =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && value.trim()
+        ? Number(value)
+        : Number.NaN;
+  if (!Number.isFinite(numeric) || numeric < 0) return null;
+  const cents = Math.round(numeric * 100);
+  return Math.abs(cents / 100 - numeric) < 1e-9 ? cents : null;
+}
+
+function invoiceFromRecord(
+  record: Record<string, unknown>,
+  expectedOrderId: string,
+) {
+  const invoiceId = stringField(record, "id");
+  const checkoutUrl = stringField(record, "checkoutLink");
+  const status = invoiceStatus(stringField(record, "status"));
+  const additionalStatus = invoiceAdditionalStatus(
+    stringField(record, "additionalStatus"),
+  );
+  const metadata = asRecord(record.metadata);
+  const orderId =
+    stringField(metadata, "orderId") ?? stringField(record, "orderId");
+  const amountCents = decimalAmountCents(record.amount);
+  const currency = stringField(record, "currency")?.toLowerCase();
+  if (
+    !invoiceId ||
+    !checkoutUrl ||
+    !status ||
+    !additionalStatus ||
+    orderId !== expectedOrderId ||
+    amountCents === null ||
+    !currency
+  ) {
+    return null;
+  }
+  return {
+    provider: "btcpay" as const,
+    invoiceId,
+    checkoutUrl,
+    status,
+    additionalStatus,
+    orderId,
+    amountCents,
+    currency,
+  };
+}
+
+function invalidLookup(message: string): ProviderResult<never> {
+  return {
+    ok: false,
+    error: {
+      code: "invoice_lookup_invalid",
+      message,
+      retryable: false,
+    },
+  };
+}
+
+function invalidInvoice(code: string, message: string): ProviderResult<never> {
+  return {
+    ok: false,
+    error: {
+      code,
+      message,
+      retryable: false,
+    },
+  };
 }
 
 function isHexSignature(value: string) {

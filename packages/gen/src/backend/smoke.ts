@@ -4,9 +4,11 @@
 // targets ComfyUI; pass a Draw Things model id to drive draw-things-cli through
 // the same provider seam the gen worker uses in production.
 // Defaults to the txt2img redcraft path; pass --model <modelId> to target any
-// other registered descriptor (e.g. qwen-image-edit), --ref <png path> to drive
-// an img2img/edit workflow off a local reference image, and --prompt to
-// override the default smoke prompt.
+// other registered descriptor (e.g. qwen-image-edit), --ref <image path> to
+// drive an img2img/edit workflow off a local reference image, and --prompt to
+// override the default smoke prompt. Multi-reference workflows use repeated
+// --ref plus one matching --ref-role per reference so semantic graph slots are
+// exercised explicitly instead of inferred from array order.
 // INTENT: Manual-only dev script, not part of `vitest run` (no live server in
 // CI; see package.json's `smoke:backend` script). Forces GEN_IMAGE_PROVIDER to
 // "backend" unconditionally — env.ts's getter checks GEN_IMAGE_PROVIDER before
@@ -25,6 +27,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveSmokeReferences } from "./smoke-args";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -45,17 +48,17 @@ const SMOKE_PROMPT =
 async function main() {
   const outPath = resolveOutPath();
   const modelId = resolveArg("--model") ?? "redcraft-krea2-comfyui";
-  const refPath = resolveArg("--ref");
   const promptOverride = resolveArg("--prompt");
-  const referenceImages = refPath
-    ? [
-        {
-          assetId: "smoke-ref",
-          role: "source_image" as const,
-          b64Json: (await readFile(refPath)).toString("base64"),
-        },
-      ]
+  const referenceSpecs = resolveSmokeReferences(process.argv.slice(2));
+  const referenceImages = referenceSpecs.length > 0
+    ? await Promise.all(referenceSpecs.map(async (reference, index) => ({
+        assetId: `smoke-ref-${index + 1}`,
+        role: reference.role,
+        b64Json: (await readFile(reference.path)).toString("base64"),
+        contentType: contentTypeFromPath(reference.path),
+      })))
     : undefined;
+  const hasReferences = referenceSpecs.length > 0;
 
   const startedAt = Date.now();
 
@@ -69,12 +72,12 @@ async function main() {
     // values that override those declared defaults, so whenever a reference
     // image drives the run, omit orientation entirely (undefined) and let the
     // descriptor's own declared slot defaults apply instead.
-    orientation: refPath ? undefined : "4:5",
+    orientation: hasReferences ? undefined : "4:5",
     seed: "42",
     // Same reasoning as orientation above: redcraft's txt2img default is 10
     // steps, but qwen-image-edit's P0-validated recipe is 4 steps — don't
     // clobber a ref-driven descriptor's own steps default.
-    controls: refPath ? {} : { steps: 10 },
+    controls: hasReferences ? {} : { steps: 10 },
     ...(referenceImages ? { referenceImages } : {}),
   });
 
@@ -135,6 +138,18 @@ function suffixPath(target: string, index: number): string {
   const ext = path.extname(target);
   const base = target.slice(0, target.length - ext.length);
   return `${base}-${index + 1}${ext}`;
+}
+
+function contentTypeFromPath(filePath: string): string {
+  switch (path.extname(filePath).toLowerCase()) {
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    case ".webp":
+      return "image/webp";
+    default:
+      return "image/png";
+  }
 }
 
 main().catch((error: unknown) => {

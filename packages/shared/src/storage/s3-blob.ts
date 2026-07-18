@@ -45,6 +45,7 @@ export class S3CompatibleBlobStore {
       target,
       payloadHash,
       extraHeaders: {
+        "cache-control": "private, no-store, max-age=0",
         "content-type": input.contentType,
         "x-amz-content-sha256": payloadHash,
       },
@@ -82,6 +83,7 @@ export class S3CompatibleBlobStore {
       "X-Amz-Date": dates.longDate,
       "X-Amz-Expires": String(expires),
       "X-Amz-SignedHeaders": "host",
+      "response-cache-control": "private, no-store, max-age=0",
     });
     if (input.downloadFilename) {
       query.set(

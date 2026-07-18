@@ -26,8 +26,18 @@ describe("Creative customer media authority", () => {
   const servingSyntheticAssetId = `creative-authority-serving-synthetic-${suffix}`;
   const servingMalformedAssetId = `creative-authority-serving-malformed-${suffix}`;
   const servingPlacementId = `creative-authority-serving-placement-${suffix}`;
+  const servingV2MissingPinPlacementId = `creative-authority-serving-v2-missing-pin-${suffix}`;
+  const servingV2MalformedPinPlacementId = `creative-authority-serving-v2-malformed-pin-${suffix}`;
+  const servingV2AllNullPinPlacementId = `creative-authority-serving-v2-all-null-pin-${suffix}`;
   const servingSyntheticPlacementId = `creative-authority-serving-synthetic-placement-${suffix}`;
   const servingMalformedPlacementId = `creative-authority-serving-malformed-placement-${suffix}`;
+  const missingAuthorityRunId = `creative-authority-missing-run-${suffix}`;
+  const missingAuthorityItemId = `creative-authority-missing-item-${suffix}`;
+  const missingAuthorityAssetId = `creative-authority-missing-asset-${suffix}`;
+  const missingVerificationRunId = `creative-authority-missing-verification-run-${suffix}`;
+  const missingVerificationItemId = `creative-authority-missing-verification-item-${suffix}`;
+  const missingVerificationAssetId = `creative-authority-missing-verification-asset-${suffix}`;
+  const missingVerificationPlacementId = `creative-authority-missing-verification-placement-${suffix}`;
   const providerReviewRunId = `creative-authority-provider-review-run-${suffix}`;
   const providerReviewItemId = `creative-authority-provider-review-item-${suffix}`;
   const providerReviewAssetId = `creative-authority-provider-review-asset-${suffix}`;
@@ -38,12 +48,14 @@ describe("Creative customer media authority", () => {
   const providerPlacementAssetId = `creative-authority-provider-placement-asset-${suffix}`;
   const providerPlacementJobId = `creative-authority-provider-placement-job-${suffix}`;
   const providerPlacementAttemptId = `creative-authority-provider-placement-attempt-${suffix}`;
+  const providerPlacementFailedAttemptId = `creative-authority-provider-placement-failed-attempt-${suffix}`;
   const providerVerificationRunId = `creative-authority-provider-verification-run-${suffix}`;
   const providerVerificationItemId = `creative-authority-provider-verification-item-${suffix}`;
   const providerVerificationAssetId = `creative-authority-provider-verification-asset-${suffix}`;
   const providerVerificationJobId = `creative-authority-provider-verification-job-${suffix}`;
   const providerVerificationAttemptId = `creative-authority-provider-verification-attempt-${suffix}`;
   const providerVerificationDriftAttemptId = `creative-authority-provider-verification-drift-${suffix}`;
+  const providerVerificationFailedAttemptId = `creative-authority-provider-verification-failed-${suffix}`;
   const providerVerificationPlacementId = `creative-authority-provider-verification-placement-${suffix}`;
 
   beforeAll(async () => {
@@ -191,6 +203,119 @@ describe("Creative customer media authority", () => {
         metadata: {
           creativeRunId: verificationRunId,
           creativeRunItemId: verificationItemId,
+          [CREATIVE_MEDIA_AUTHORITY_METADATA_KEY]: {
+            sourceJobId: null,
+            jobProvider: null,
+            latestAttemptProvider: null,
+          },
+        },
+        verificationState: "verifying",
+      },
+    });
+    await prisma.mediaAsset.create({
+      data: {
+        id: missingAuthorityAssetId,
+        ownerId: adminId,
+        type: "image",
+        url: `memory://${missingAuthorityAssetId}`,
+        visibility: "private",
+        safetyStatus: "passed",
+        metadata: { synthetic: false },
+      },
+    });
+    await prisma.contentProductionBatch.create({
+      data: {
+        id: missingAuthorityRunId,
+        title: "Missing provider stage authority fixture",
+        purpose: "campaign",
+        targetType: "campaign",
+        targetId: `missing-authority-campaign-${suffix}`,
+        presetIds: [],
+        totalItems: 1,
+        completedItems: 1,
+        approvedItems: 1,
+        status: "reviewing",
+        workflowStage: "placement",
+        verificationState: "pending",
+        version: 1,
+        createdById: adminId,
+        items: {
+          create: {
+            id: missingAuthorityItemId,
+            itemIndex: 0,
+            status: "approved",
+            mediaAssetId: missingAuthorityAssetId,
+            tags: [],
+          },
+        },
+      },
+    });
+    await prisma.creativeReviewDecision.create({
+      data: {
+        runItemId: missingAuthorityItemId,
+        artifactId: missingAuthorityAssetId,
+        decision: "approved",
+        identityConsistency: "unscored",
+        score: 90,
+        reason: "Missing provider authority decision fixture",
+        reviewerId: adminId,
+      },
+    });
+    await prisma.mediaAsset.create({
+      data: {
+        id: missingVerificationAssetId,
+        ownerId: adminId,
+        type: "image",
+        url: `memory://${missingVerificationAssetId}`,
+        visibility: "private",
+        safetyStatus: "passed",
+        metadata: { synthetic: false },
+      },
+    });
+    await prisma.contentProductionBatch.create({
+      data: {
+        id: missingVerificationRunId,
+        title: "Missing provider verification authority fixture",
+        purpose: "campaign",
+        targetType: "campaign",
+        targetId: `missing-verification-campaign-${suffix}`,
+        presetIds: [],
+        totalItems: 1,
+        completedItems: 1,
+        approvedItems: 1,
+        status: "reviewing",
+        workflowStage: "verification",
+        verificationState: "verifying",
+        version: 1,
+        createdById: adminId,
+        items: {
+          create: {
+            id: missingVerificationItemId,
+            itemIndex: 0,
+            status: "approved",
+            mediaAssetId: missingVerificationAssetId,
+            tags: [],
+          },
+        },
+      },
+    });
+    await prisma.mediaAssetPlacement.create({
+      data: {
+        id: missingVerificationPlacementId,
+        mediaAssetId: missingVerificationAssetId,
+        slot: "campaign",
+        targetType: "campaign",
+        targetId: `missing-verification-campaign-${suffix}`,
+        status: "scheduled",
+        createdById: adminId,
+        metadata: {
+          creativeRunId: missingVerificationRunId,
+          creativeRunItemId: missingVerificationItemId,
+          [CREATIVE_MEDIA_AUTHORITY_METADATA_KEY]: {
+            sourceJobId: null,
+            jobProvider: null,
+            latestAttemptProvider: null,
+          },
         },
         verificationState: "verifying",
       },
@@ -237,7 +362,72 @@ describe("Creative customer media authority", () => {
           status: "published",
           publishedAt: new Date("2099-01-01T00:00:00.000Z"),
           createdById: adminId,
-          metadata: {},
+          metadata: {
+            eyebrow: "Featured",
+            title: "Authoritative campaign",
+          },
+          verificationState: "passed",
+          verifiedAt: new Date(),
+        },
+        {
+          id: servingV2MissingPinPlacementId,
+          mediaAssetId: servingAssetId,
+          slot: "campaign",
+          targetType: "campaign",
+          targetId: `serving-v2-missing-pin-${suffix}`,
+          status: "published",
+          publishedAt: new Date("2099-01-01T00:00:00.000Z"),
+          createdById: adminId,
+          metadata: {
+            eyebrow: "Featured",
+            title: "Missing pin campaign",
+            creativeRunId: `missing-pin-run-${suffix}`,
+            creativeRunItemId: `missing-pin-item-${suffix}`,
+          },
+          verificationState: "passed",
+          verifiedAt: new Date(),
+        },
+        {
+          id: servingV2MalformedPinPlacementId,
+          mediaAssetId: servingAssetId,
+          slot: "campaign",
+          targetType: "campaign",
+          targetId: `serving-v2-malformed-pin-${suffix}`,
+          status: "published",
+          publishedAt: new Date("2099-01-01T00:00:00.000Z"),
+          createdById: adminId,
+          metadata: {
+            eyebrow: "Featured",
+            title: "Malformed pin campaign",
+            creativeRunId: `malformed-pin-run-${suffix}`,
+            creativeRunItemId: `malformed-pin-item-${suffix}`,
+            [CREATIVE_MEDIA_AUTHORITY_METADATA_KEY]: {
+              sourceJobId: null,
+            },
+          },
+          verificationState: "passed",
+          verifiedAt: new Date(),
+        },
+        {
+          id: servingV2AllNullPinPlacementId,
+          mediaAssetId: servingAssetId,
+          slot: "campaign",
+          targetType: "campaign",
+          targetId: `serving-v2-all-null-pin-${suffix}`,
+          status: "published",
+          publishedAt: new Date("2099-01-01T00:00:00.000Z"),
+          createdById: adminId,
+          metadata: {
+            eyebrow: "Featured",
+            title: "Null pin campaign",
+            creativeRunId: `all-null-pin-run-${suffix}`,
+            creativeRunItemId: `all-null-pin-item-${suffix}`,
+            [CREATIVE_MEDIA_AUTHORITY_METADATA_KEY]: {
+              sourceJobId: null,
+              jobProvider: null,
+              latestAttemptProvider: null,
+            },
+          },
           verificationState: "passed",
           verifiedAt: new Date(),
         },
@@ -250,7 +440,10 @@ describe("Creative customer media authority", () => {
           status: "published",
           publishedAt: new Date("2099-01-01T00:00:00.000Z"),
           createdById: adminId,
-          metadata: {},
+          metadata: {
+            eyebrow: "Featured",
+            title: "Synthetic campaign",
+          },
           verificationState: "passed",
           verifiedAt: new Date(),
         },
@@ -263,7 +456,10 @@ describe("Creative customer media authority", () => {
           status: "published",
           publishedAt: new Date("2099-01-01T00:00:00.000Z"),
           createdById: adminId,
-          metadata: {},
+          metadata: {
+            eyebrow: "Featured",
+            title: "Malformed campaign",
+          },
           verificationState: "passed",
           verifiedAt: new Date(),
         },
@@ -351,6 +547,16 @@ describe("Creative customer media authority", () => {
         attemptNo: 1,
         provider: "mock-worker",
         status: "succeeded",
+        finishedAt: new Date(),
+      },
+    });
+    await prisma.generationAttempt.create({
+      data: {
+        id: providerPlacementFailedAttemptId,
+        requestId: providerPlacementJobId,
+        attemptNo: 2,
+        provider: "comfyui",
+        status: "failed",
         finishedAt: new Date(),
       },
     });
@@ -494,6 +700,7 @@ describe("Creative customer media authority", () => {
           in: [
             reviewItemId,
             placementItemId,
+            missingAuthorityItemId,
             providerReviewItemId,
             providerPlacementItemId,
           ],
@@ -506,6 +713,8 @@ describe("Creative customer media authority", () => {
           in: [
             placementAssetId,
             verificationAssetId,
+            missingAuthorityAssetId,
+            missingVerificationAssetId,
             servingAssetId,
             servingSyntheticAssetId,
             servingMalformedAssetId,
@@ -523,6 +732,8 @@ describe("Creative customer media authority", () => {
             reviewRunId,
             placementRunId,
             verificationRunId,
+            missingAuthorityRunId,
+            missingVerificationRunId,
             providerReviewRunId,
             providerPlacementRunId,
             providerVerificationRunId,
@@ -538,6 +749,8 @@ describe("Creative customer media authority", () => {
             reviewRunId,
             placementRunId,
             verificationRunId,
+            missingAuthorityRunId,
+            missingVerificationRunId,
             providerReviewRunId,
             providerPlacementRunId,
             providerVerificationRunId,
@@ -552,6 +765,8 @@ describe("Creative customer media authority", () => {
             reviewRunId,
             placementRunId,
             verificationRunId,
+            missingAuthorityRunId,
+            missingVerificationRunId,
             providerReviewRunId,
             providerPlacementRunId,
             providerVerificationRunId,
@@ -566,6 +781,8 @@ describe("Creative customer media authority", () => {
             reviewAssetId,
             placementAssetId,
             verificationAssetId,
+            missingAuthorityAssetId,
+            missingVerificationAssetId,
             servingAssetId,
             servingSyntheticAssetId,
             servingMalformedAssetId,
@@ -648,6 +865,8 @@ describe("Creative customer media authority", () => {
       slot: "campaign",
       targetType: "campaign",
       targetId: `provider-placement-campaign-${suffix}`,
+      eyebrow: "Featured",
+      title: "Provider authority campaign",
       reason: "Publish a mock-attempt campaign asset",
       requestId: `creative-authority-provider-placement-${suffix}`,
     })).rejects.toMatchObject({
@@ -669,15 +888,55 @@ describe("Creative customer media authority", () => {
       slot: "campaign",
       targetType: "campaign",
       targetId: `campaign-${suffix}`,
+      eyebrow: "Featured",
+      title: "Synthetic authority campaign",
       reason: "Publish a malformed legacy asset",
       requestId: `creative-authority-placement-${suffix}`,
     })).rejects.toMatchObject({
       status: 400,
       details: {
         mediaAssetId: placementAssetId,
-        reasons: ["metadata_synthetic_marker_invalid"],
+        reasons: expect.arrayContaining(["metadata_synthetic_marker_invalid"]),
       },
     });
+  });
+
+  it("rejects placement when v2 provider authority is structurally absent", async () => {
+    await expect(publishDistributionPlacement({
+      runId: missingAuthorityRunId,
+      itemId: missingAuthorityItemId,
+      assetId: missingAuthorityAssetId,
+      actor: { id: adminId, role: "admin" },
+      expectedVersion: 1,
+      slot: "campaign",
+      targetType: "campaign",
+      targetId: `missing-authority-campaign-${suffix}`,
+      eyebrow: "Featured",
+      title: "Missing authority campaign",
+      reason: "Stage a candidate whose provider authority is missing",
+      requestId: `creative-authority-missing-stage-${suffix}`,
+    })).rejects.toMatchObject({
+      status: 400,
+      details: {
+        mediaAssetId: missingAuthorityAssetId,
+        reasons: expect.arrayContaining([
+          "pinned_provider_missing",
+          "job_provider_missing",
+          "latest_successful_attempt_provider_missing",
+          "source_job_missing",
+        ]),
+      },
+    });
+    await expect(prisma.contentProductionBatch.findUniqueOrThrow({
+      where: { id: missingAuthorityRunId },
+    })).resolves.toMatchObject({
+      version: 1,
+      workflowStage: "placement",
+      verificationState: "pending",
+    });
+    await expect(prisma.mediaAssetPlacement.count({
+      where: { mediaAssetId: missingAuthorityAssetId },
+    })).resolves.toBe(0);
   });
 
   it("rejects verification when a staged asset is synthetic", async () => {
@@ -692,11 +951,40 @@ describe("Creative customer media authority", () => {
       status: 400,
       details: {
         mediaAssetId: verificationAssetId,
-        reasons: ["metadata_synthetic"],
+        reasons: expect.arrayContaining(["metadata_synthetic"]),
       },
     });
     await expect(prisma.mediaAssetPlacement.findUniqueOrThrow({
       where: { id: verificationPlacementId },
+    })).resolves.toMatchObject({
+      status: "scheduled",
+      verificationState: "verifying",
+      publishedAt: null,
+    });
+  });
+
+  it("rejects verification when pinned v2 provider authority is all null", async () => {
+    await expect(verifyCreativePlacement({
+      runId: missingVerificationRunId,
+      placementId: missingVerificationPlacementId,
+      actor: { id: adminId, role: "admin" },
+      expectedVersion: 1,
+      reason: "Verify a placement whose provider authority is missing",
+      requestId: `creative-authority-missing-verification-${suffix}`,
+    })).rejects.toMatchObject({
+      status: 400,
+      details: {
+        mediaAssetId: missingVerificationAssetId,
+        reasons: expect.arrayContaining([
+          "pinned_provider_missing",
+          "job_provider_missing",
+          "latest_successful_attempt_provider_missing",
+          "source_job_missing",
+        ]),
+      },
+    });
+    await expect(prisma.mediaAssetPlacement.findUniqueOrThrow({
+      where: { id: missingVerificationPlacementId },
     })).resolves.toMatchObject({
       status: "scheduled",
       verificationState: "verifying",
@@ -712,6 +1000,16 @@ describe("Creative customer media authority", () => {
         attemptNo: 2,
         provider: "mock-worker",
         status: "succeeded",
+        finishedAt: new Date(),
+      },
+    });
+    await prisma.generationAttempt.create({
+      data: {
+        id: providerVerificationFailedAttemptId,
+        requestId: providerVerificationJobId,
+        attemptNo: 3,
+        provider: "comfyui",
+        status: "failed",
         finishedAt: new Date(),
       },
     });
@@ -742,6 +1040,9 @@ describe("Creative customer media authority", () => {
     const placements = await resolveCommunityCampaignPlacements(prisma, 100);
     const placementIds = new Set(placements.map((placement) => placement.id));
     expect(placementIds.has(servingPlacementId)).toBe(true);
+    expect(placementIds.has(servingV2MissingPinPlacementId)).toBe(false);
+    expect(placementIds.has(servingV2MalformedPinPlacementId)).toBe(false);
+    expect(placementIds.has(servingV2AllNullPinPlacementId)).toBe(false);
     expect(placementIds.has(providerServingPlacementId)).toBe(false);
     expect(placementIds.has(servingSyntheticPlacementId)).toBe(false);
     expect(placementIds.has(servingMalformedPlacementId)).toBe(false);
@@ -750,11 +1051,14 @@ describe("Creative customer media authority", () => {
         id: {
           in: [
             providerServingPlacementId,
+            servingV2MissingPinPlacementId,
+            servingV2MalformedPinPlacementId,
+            servingV2AllNullPinPlacementId,
             servingSyntheticPlacementId,
             servingMalformedPlacementId,
           ],
         },
       },
-    })).resolves.toBe(3);
+    })).resolves.toBe(6);
   });
 });

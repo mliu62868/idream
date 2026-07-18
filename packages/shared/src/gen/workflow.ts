@@ -24,8 +24,21 @@ const slotBaseSchema = z.object({
   default: z.union([z.string(), z.number()]).optional(),
 });
 
+export const workflowReferenceRoleSchema = z.enum([
+  "identity_anchor",
+  "identity_reference",
+  "look_reference",
+  "source_image",
+]);
+export type WorkflowReferenceRole = z.infer<typeof workflowReferenceRoleSchema>;
+
 const comfySlotSchema = slotBaseSchema.extend({
   target: z.object({ nodeId: z.string(), field: z.string() }),
+  referenceRoles: z.array(workflowReferenceRoleSchema).min(1).optional(),
+  // Reserved for a future graph-level onAbsent contract. `false` is rejected
+  // below because leaving a LoadImage value untouched is not executable
+  // optionality.
+  required: z.boolean().optional(),
 });
 
 const commandSlotSchema = slotBaseSchema.extend({
@@ -37,9 +50,36 @@ type WorkflowSlot = z.infer<typeof comfySlotSchema> | z.infer<typeof commandSlot
 export const workflowIdentityCapabilitySchema = z.object({
   mode: z.enum(["none", "single_reference", "multi_reference", "adapter", "multi_identity"]),
   maxReferences: z.number().int().min(0).max(16),
-  acceptedRoles: z.array(z.enum(["identity_anchor", "identity_reference", "source_image"])),
+  acceptedRoles: z.array(workflowReferenceRoleSchema),
   supportsLookReference: z.boolean(),
   supportsSourceImageWithIdentity: z.boolean(),
+}).superRefine((contract, context) => {
+  if (
+    contract.supportsLookReference !==
+      contract.acceptedRoles.includes("look_reference")
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["supportsLookReference"],
+      message:
+        "supportsLookReference must exactly match acceptance of the look_reference role",
+    });
+  }
+  if (!contract.supportsSourceImageWithIdentity) return;
+  if (!contract.acceptedRoles.includes("source_image")) {
+    context.addIssue({
+      code: "custom",
+      path: ["acceptedRoles"],
+      message: "source+identity workflows must accept the source_image role",
+    });
+  }
+  if (!contract.acceptedRoles.some((role) => role === "identity_anchor" || role === "identity_reference")) {
+    context.addIssue({
+      code: "custom",
+      path: ["acceptedRoles"],
+      message: "source+identity workflows must accept an identity role",
+    });
+  }
 });
 
 export const workflowQualityCapabilitySchema = z.object({
@@ -67,6 +107,10 @@ const workflowDescriptorBaseSchema = z.object({
 
 const comfyWorkflowDescriptorSchema = workflowDescriptorBaseSchema.extend({
   backendKind: z.literal("comfyui"),
+  comfyWorkflow: z.object({
+    id: z.string().uuid(),
+    name: z.string().trim().min(1),
+  }),
   apiPrompt: z.record(z.string(), comfyNodeSchema),
   inputs: z.array(comfySlotSchema),
 });
@@ -91,8 +135,322 @@ export const workflowDescriptorSchema = z.discriminatedUnion("backendKind", [
   comfyWorkflowDescriptorSchema,
   sdcppWorkflowDescriptorSchema,
   drawThingsWorkflowDescriptorSchema,
-]);
+]).superRefine((descriptor, context) => {
+  const inputIndexByKey = new Map<string, number>();
+  for (const [index, slot] of descriptor.inputs.entries()) {
+    const previousIndex = inputIndexByKey.get(slot.key);
+    if (previousIndex !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["inputs", index, "key"],
+        message:
+          `Workflow input key ${slot.key} duplicates inputs[${previousIndex}].key`,
+      });
+    } else {
+      inputIndexByKey.set(slot.key, index);
+    }
+  }
+  if (descriptor.backendKind !== "comfyui") return;
+  const imageSlots = descriptor.inputs.filter((slot) => slot.type === "image");
+  const inputIndexByTarget = new Map<string, number>();
+  if (descriptor.identity.maxReferences !== imageSlots.length) {
+    context.addIssue({
+      code: "custom",
+      path: ["identity", "maxReferences"],
+      message:
+        `ComfyUI identity.maxReferences must equal the ${imageSlots.length} declared semantic image slots`,
+    });
+  }
+  if (
+    descriptor.identity.mode === "none" &&
+    (imageSlots.length !== 0 || descriptor.identity.acceptedRoles.length !== 0)
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["identity", "mode"],
+      message: "ComfyUI workflows with identity mode none cannot declare reference image authority",
+    });
+  }
+  if (
+    imageSlots.length > 0 &&
+    !descriptor.capabilities.includes("referenceImages")
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["capabilities"],
+      message: "ComfyUI workflows with image slots must declare referenceImages capability",
+    });
+  }
+  for (const [index, slot] of descriptor.inputs.entries()) {
+    const targetKey = `${slot.target.nodeId}\u0000${slot.target.field}`;
+    const previousTargetIndex = inputIndexByTarget.get(targetKey);
+    if (previousTargetIndex !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["inputs", index, "target"],
+        message:
+          `ComfyUI target ${slot.target.nodeId}.${slot.target.field} duplicates inputs[${previousTargetIndex}].target`,
+      });
+    } else {
+      inputIndexByTarget.set(targetKey, index);
+    }
+    const targetNode = descriptor.apiPrompt[slot.target.nodeId];
+    if (!targetNode) {
+      context.addIssue({
+        code: "custom",
+        path: ["inputs", index, "target", "nodeId"],
+        message: `ComfyUI input targets missing node ${slot.target.nodeId}`,
+      });
+    } else if (!Object.hasOwn(targetNode.inputs, slot.target.field)) {
+      context.addIssue({
+        code: "custom",
+        path: ["inputs", index, "target", "field"],
+        message:
+          `ComfyUI input targets missing field ${slot.target.nodeId}.${slot.target.field}`,
+      });
+    }
+    if (slot.type !== "image" && slot.required !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["inputs", index, "required"],
+        message: "required may only be declared on image slots",
+      });
+    }
+    if (slot.type !== "image" && slot.referenceRoles !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["inputs", index, "referenceRoles"],
+        message: "referenceRoles may only be declared on image slots",
+      });
+      continue;
+    }
+    if (slot.type !== "image") continue;
+    if (slot.required === false) {
+      context.addIssue({
+        code: "custom",
+        path: ["inputs", index, "required"],
+        message:
+          "Optional image slots require an explicit graph-level onAbsent contract and are not supported",
+      });
+    }
+    if (!slot.referenceRoles?.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["inputs", index, "referenceRoles"],
+        message: "ComfyUI image slots must declare their accepted reference roles",
+      });
+      continue;
+    }
+    if (new Set(slot.referenceRoles).size !== slot.referenceRoles.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["inputs", index, "referenceRoles"],
+        message: "ComfyUI image slot reference roles must be unique",
+      });
+    }
+    const unsupportedRole = slot.referenceRoles.find(
+      (role) => !descriptor.identity.acceptedRoles.includes(role),
+    );
+    if (unsupportedRole) {
+      context.addIssue({
+        code: "custom",
+        path: ["inputs", index, "referenceRoles"],
+        message: `ComfyUI image slot role ${unsupportedRole} is not accepted by the workflow identity contract`,
+      });
+    }
+  }
+  for (const acceptedRole of descriptor.identity.acceptedRoles) {
+    if (!imageSlots.some((slot) => slot.referenceRoles?.includes(acceptedRole))) {
+      context.addIssue({
+        code: "custom",
+        path: ["identity", "acceptedRoles"],
+        message:
+          `ComfyUI identity role ${acceptedRole} has no declared semantic image slot`,
+      });
+    }
+  }
+  if (!descriptor.identity.supportsSourceImageWithIdentity) return;
+  const representativeIdentityRole =
+    descriptor.identity.acceptedRoles.find((role) =>
+      role === "identity_anchor" || role === "identity_reference"
+    );
+  const mixedAssignment = representativeIdentityRole
+    ? assignWorkflowReferenceSlots(
+        descriptor,
+        [representativeIdentityRole, "source_image"],
+      )
+    : null;
+  if (!mixedAssignment?.ok) {
+    context.addIssue({
+      code: "custom",
+      path: ["inputs"],
+      message:
+        "source+identity workflows must assign representative source and identity references to distinct concrete slots",
+    });
+  }
+});
 export type WorkflowDescriptor = z.infer<typeof workflowDescriptorSchema>;
+
+export type WorkflowReferenceContractView = {
+  readonly backendKind: string;
+  readonly identity: {
+    readonly maxReferences: number;
+    readonly acceptedRoles: readonly WorkflowReferenceRole[];
+  };
+  readonly inputs: readonly {
+    readonly key: string;
+    readonly type: string;
+    readonly referenceRoles?: readonly WorkflowReferenceRole[];
+    readonly required?: boolean;
+  }[];
+};
+
+export type WorkflowReferenceSlotAssignment =
+  | {
+      readonly ok: true;
+      readonly assignments: readonly {
+        readonly slotKey: string;
+        readonly referenceIndex: number;
+      }[];
+      readonly minReferences: number;
+      readonly maxReferences: number;
+    }
+  | {
+      readonly ok: false;
+      readonly reason:
+        | "reference_cardinality_mismatch"
+        | "reference_role_unsupported"
+        | "reference_slot_assignment_impossible";
+      readonly minReferences: number;
+      readonly maxReferences: number;
+    };
+
+/**
+ * SSoT for runtime reference cardinality and semantic slot assignment.
+ *
+ * ComfyUI graph inputs are concrete: every image slot must be filled and every
+ * reference must map to one compatible slot. Command backends have no graph
+ * slots, so their declared maxReferences remains an upper-bound capability
+ * contract.
+ */
+export function assignWorkflowReferenceSlots(
+  descriptor: WorkflowReferenceContractView,
+  referenceRoles: readonly WorkflowReferenceRole[],
+): WorkflowReferenceSlotAssignment {
+  if (descriptor.backendKind !== "comfyui") {
+    if (referenceRoles.length > descriptor.identity.maxReferences) {
+      return {
+        ok: false,
+        reason: "reference_cardinality_mismatch",
+        minReferences: 0,
+        maxReferences: descriptor.identity.maxReferences,
+      };
+    }
+    const unsupportedRole = referenceRoles.find(
+      (role) => !descriptor.identity.acceptedRoles.includes(role),
+    );
+    if (unsupportedRole) {
+      return {
+        ok: false,
+        reason: "reference_role_unsupported",
+        minReferences: 0,
+        maxReferences: descriptor.identity.maxReferences,
+      };
+    }
+    return {
+      ok: true,
+      assignments: [],
+      minReferences: 0,
+      maxReferences: descriptor.identity.maxReferences,
+    };
+  }
+
+  const imageSlots = descriptor.inputs.filter((slot) => slot.type === "image");
+  const requiredSlotKeys = new Set(imageSlots.map((slot) => slot.key));
+  const minReferences = requiredSlotKeys.size;
+  const maxReferences = imageSlots.length;
+  if (
+    referenceRoles.length < minReferences ||
+    referenceRoles.length > maxReferences
+  ) {
+    return {
+      ok: false,
+      reason: "reference_cardinality_mismatch",
+      minReferences,
+      maxReferences,
+    };
+  }
+  const unsupportedRole = referenceRoles.find(
+    (role) => !descriptor.identity.acceptedRoles.includes(role),
+  );
+  if (unsupportedRole) {
+    return {
+      ok: false,
+      reason: "reference_role_unsupported",
+      minReferences,
+      maxReferences,
+    };
+  }
+
+  const realItems = referenceRoles.map((role, referenceIndex) => ({
+    kind: "reference" as const,
+    referenceIndex,
+    compatibleSlotIndexes: imageSlots.flatMap((slot, slotIndex) =>
+      slot.referenceRoles?.includes(role) ? [slotIndex] : []
+    ),
+  }));
+  if (realItems.some((item) => item.compatibleSlotIndexes.length === 0)) {
+    return {
+      ok: false,
+      reason: "reference_slot_assignment_impossible",
+      minReferences,
+      maxReferences,
+    };
+  }
+  const items = [...realItems].sort((left, right) =>
+    left.compatibleSlotIndexes.length - right.compatibleSlotIndexes.length ||
+    left.referenceIndex - right.referenceIndex
+  );
+  const itemIndexBySlot = Array<number>(imageSlots.length).fill(-1);
+  const bindItem = (itemIndex: number, visitedSlotIndexes: Set<number>): boolean => {
+    for (const slotIndex of items[itemIndex]!.compatibleSlotIndexes) {
+      if (visitedSlotIndexes.has(slotIndex)) continue;
+      visitedSlotIndexes.add(slotIndex);
+      const occupyingItemIndex = itemIndexBySlot[slotIndex]!;
+      if (
+        occupyingItemIndex === -1 ||
+        bindItem(occupyingItemIndex, visitedSlotIndexes)
+      ) {
+        itemIndexBySlot[slotIndex] = itemIndex;
+        return true;
+      }
+    }
+    return false;
+  };
+  if (items.some((_, itemIndex) => !bindItem(itemIndex, new Set()))) {
+    return {
+      ok: false,
+      reason: "reference_slot_assignment_impossible",
+      minReferences,
+      maxReferences,
+    };
+  }
+
+  return {
+    ok: true,
+    assignments: itemIndexBySlot.flatMap((itemIndex, slotIndex) => {
+      const item = items[itemIndex];
+      return item
+        ? [{
+            slotKey: imageSlots[slotIndex]!.key,
+            referenceIndex: item.referenceIndex,
+          }]
+        : [];
+    }),
+    minReferences,
+    maxReferences,
+  };
+}
 
 function resolveValue(slot: WorkflowSlot, values: SlotValues) {
   const v = values[slot.key] ?? slot.default;

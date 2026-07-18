@@ -15,7 +15,7 @@ describe("Creative Run Incident attachment", () => {
   const incidentId = `creative-incident-${suffix}-incident`;
 
   beforeAll(async () => {
-    await createUser({ id: actorId, role: "admin" });
+    await createUser({ id: actorId, role: "admin", dataClass: "internal" });
     await prisma.contentProductionBatch.create({
       data: {
         id: runId,

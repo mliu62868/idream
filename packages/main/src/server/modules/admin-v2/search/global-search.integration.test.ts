@@ -9,13 +9,15 @@ describe("permission-trimmed global Admin search", () => {
   const adminId = `global-search-admin-${suffix}`;
   const supportId = `global-search-support-${suffix}`;
   const customerId = `global-search-customer-${suffix}`;
+  const fixtureCustomerId = `global-search-fixture-customer-${suffix}`;
   const characterId = `global-search-character-${suffix}`;
 
   beforeAll(async () => {
     await prisma.user.createMany({ data: [
-      { id: adminId, email: `${adminId}@idream.internal`, role: "admin", status: "active" },
-      { id: supportId, email: `${supportId}@idream.internal`, role: "support", status: "active" },
-      { id: customerId, email: `${term.toLowerCase()}@customer.local`, displayName: `${term} Customer`, role: "user", status: "active" },
+      { id: adminId, email: `${adminId}@idream.internal`, role: "admin", status: "active", dataClass: "internal" },
+      { id: supportId, email: `${supportId}@idream.internal`, role: "support", status: "active", dataClass: "internal" },
+      { id: customerId, email: `${term.toLowerCase()}@customer.invalid`, displayName: `${term} Customer`, role: "user", status: "active", dataClass: "customer" },
+      { id: fixtureCustomerId, email: `${term.toLowerCase()}-fixture@example.test`, displayName: `${term} Fixture`, role: "user", status: "active", dataClass: "fixture" },
     ] });
     await prisma.character.create({ data: {
       id: characterId,
@@ -32,7 +34,7 @@ describe("permission-trimmed global Admin search", () => {
 
   afterAll(async () => {
     await prisma.character.delete({ where: { id: characterId } });
-    await prisma.user.deleteMany({ where: { id: { in: [adminId, supportId, customerId] } } });
+    await prisma.user.deleteMany({ where: { id: { in: [adminId, supportId, customerId, fixtureCustomerId] } } });
     await prisma.$disconnect();
   });
 
@@ -48,6 +50,9 @@ describe("permission-trimmed global Admin search", () => {
     expect(admin.data.items).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: "customer", id: customerId }),
       expect.objectContaining({ kind: "character", id: characterId }),
+    ]));
+    expect(admin.data.items).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "customer", id: fixtureCustomerId }),
     ]));
     const support = await search(supportId, "support");
     expect(support.data.items).toEqual(expect.arrayContaining([

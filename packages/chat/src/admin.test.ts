@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { FREE_DAILY_MESSAGES } from "@idream/shared/chat/limits";
 import { Pool } from "pg";
 import { dispatchChatAdmin } from "./admin.js";
 import { chatPrisma } from "./db.js";
@@ -125,7 +126,7 @@ beforeAll(async () => {
       id: `${P}usage1`,
       userId: AUTHORITY_USER,
       sessionId: `${P}s1`,
-      messagesUsed: 29,
+      messagesUsed: FREE_DAILY_MESSAGES - 1,
       periodStart,
       periodEnd: new Date(periodStart.getTime() + 24 * 60 * 60 * 1000),
     },
@@ -303,9 +304,9 @@ describe("chat internal admin api", () => {
     });
     expect(res.status).toBe(200);
     const body = res.body as { items: Array<Record<string, unknown>>; freeDailyLimit: number };
-    expect(body.freeDailyLimit).toBe(30);
+    expect(body.freeDailyLimit).toBe(FREE_DAILY_MESSAGES);
     expect(body.items).toHaveLength(1);
-    expect(body.items[0]?.messagesUsed).toBe(29);
+    expect(body.items[0]?.messagesUsed).toBe(FREE_DAILY_MESSAGES - 1);
     expect(body.items[0]?.freeRemaining).toBe(1);
     expect(body.items[0]?.quotaStatus).toBe("free_remaining");
     expect(JSON.stringify(body)).not.toContain(SECRET);

@@ -1,4 +1,10 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
+import { env } from "@/server/lib/env";
+import {
+  evaluateMediaAssetCustomerPublishability,
+  hasHydratableMediaBlobAuthority,
+  nonSyntheticMediaAssetWhere,
+} from "@/server/lib/media-asset-authority";
 import { claimControlPlaneCommand } from "../shared/control-plane-command";
 import { transitionControlPlaneCommandAttempt } from "../shared/control-plane-command-attempt";
 import { transitionControlPlaneCommand } from "../shared/control-plane-command-transition";
@@ -8,12 +14,31 @@ import {
   characterVisualProfileSnapshotHash,
   referenceSetSnapshotHash,
 } from "./release-snapshot";
+import { canonicalSha256 } from "../shared/canonical-json";
 import { releaseMonitorDueAt } from "./release-monitor";
 import {
   isCharacterProjectPhaseTransitionAllowed,
   isCharacterReleaseTransitionAllowed,
   isCharacterServingTransitionAllowed,
 } from "../shared/state-transition-authority";
+import { creativeReviewQualityPassed } from "../shared/creative-review-quality";
+import {
+  characterQaAuthorityMatches,
+  characterQaProvenanceMatchesRun,
+  parseCharacterReleaseAssetManifest,
+} from "@idream/shared/admin";
+import {
+  lockCharacterGenerationAuthority,
+  lockCharacterMediaAssetAuthorities,
+} from "./generation-authority-lock";
+import {
+  characterReferenceMediaAuthoritySelect,
+  unavailableCharacterReferenceMediaIds,
+} from "./reference-media-authority";
+import { findLatestCharacterQaAuthorityRun } from "./qa-authority";
+import { PUBLIC_CATALOG_QUALIFICATION_SCHEMA_VERSION } from "@/server/modules/ourdream/public-catalog-qualification";
+import { evaluateEditorialReleaseAuthorityInTransaction } from "@/server/modules/ourdream/public-release-authority";
+import { evaluateEffectiveGenerationRouteAuthority } from "./generation-route-authority";
 
 export const CHARACTER_RELEASE_POLICY_VERSION = "character-release-policy-v2";
 
@@ -86,19 +111,69 @@ function stringValue(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
 }
 
-function placementAssetId(value: Prisma.JsonValue): string | null {
+interface ReleasePlacement {
+  readonly slotKey: string;
+  readonly assetId: string;
+  readonly runId: string | null;
+  readonly itemId: string | null;
+  readonly reviewDecisionId: string | null;
+  readonly generationJobId: string | null;
+  readonly bootstrapIdentity: boolean;
+}
+
+function releasePlacements(value: Prisma.JsonValue): ReleasePlacement[] {
   const placements = record(value).placements;
-  if (!Array.isArray(placements)) return null;
-  const primary = placements.find(
-    (item) =>
-      item &&
-      typeof item === "object" &&
-      !Array.isArray(item) &&
-      (item as Record<string, unknown>).slotKey === "character_avatar",
-  );
-  return primary && typeof primary === "object" && !Array.isArray(primary)
-    ? stringValue((primary as Record<string, unknown>).assetId)
-    : null;
+  if (!Array.isArray(placements)) return [];
+  return placements.flatMap((item) => {
+    const placement = record(item);
+    const slotKey = stringValue(placement.slotKey);
+    const assetId = stringValue(placement.assetId);
+    if (!slotKey || !assetId) return [];
+    return [{
+      slotKey,
+      assetId,
+      runId: stringValue(placement.runId),
+      itemId: stringValue(placement.itemId),
+      reviewDecisionId: stringValue(placement.reviewDecisionId),
+      generationJobId: stringValue(placement.generationJobId),
+      bootstrapIdentity: placement.bootstrapIdentity === true,
+    }];
+  });
+}
+
+function jsonStringArray(value: Prisma.JsonValue | null): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+function referenceManifestEntries(value: Prisma.JsonValue | null) {
+  return Array.isArray(value) ? value.map(record) : [];
+}
+
+function requiredReleaseRoute(value: Prisma.JsonValue) {
+  const provenance = record(value);
+  return record(provenance.requiredReleaseRoute);
+}
+
+function hasCanonicalRequiredReleaseRoute(
+  route: Record<string, unknown>,
+) {
+  const positiveVersion = (value: unknown) =>
+    (typeof value === "number" && Number.isInteger(value) && value > 0) ||
+    (typeof value === "string" &&
+      value.trim().length > 0 &&
+      value !== "unavailable");
+  return stringValue(route.routeFingerprint) !== null &&
+    stringValue(route.matrixKey) !== null &&
+    stringValue(route.generationProfileKey) !== null &&
+    positiveVersion(route.generationProfileVersion) &&
+    stringValue(route.workflowKey) !== null &&
+    positiveVersion(route.workflowVersion);
+}
+
+function placementAssetId(value: Prisma.JsonValue): string | null {
+  return releasePlacements(value).find((item) => item.slotKey === "character_avatar")?.assetId ?? null;
 }
 
 function releasedCharacterProjection(content: {
@@ -161,6 +236,31 @@ export async function validateCharacterReleaseSnapshot(
 ) {
   // Interactive transactions use one connection; keep reads sequential so the
   // pg adapter never multiplexes queries on an already-busy client.
+  const manifestPlacements = releasePlacements(release.releasePlacementManifest);
+  const authorityProject = await tx.characterProject.findUnique({
+    where: { id: release.projectId },
+    select: { characterId: true },
+  });
+  if (authorityProject) {
+    await lockCharacterGenerationAuthority(tx, authorityProject.characterId);
+  }
+  const referenceAuthority = release.referenceSetRevisionId
+    ? await tx.referenceSetRevision.findUnique({
+        where: { id: release.referenceSetRevisionId },
+        select: {
+          references: {
+            select: { mediaAssetId: true },
+            orderBy: { position: "asc" },
+          },
+        },
+      })
+    : null;
+  await lockCharacterMediaAssetAuthorities(tx, [
+    ...manifestPlacements.map((placement) => placement.assetId),
+    ...(referenceAuthority?.references.map(
+      (reference) => reference.mediaAssetId,
+    ) ?? []),
+  ]);
   const project = await tx.characterProject.findUnique({
     where: { id: release.projectId },
   });
@@ -180,14 +280,19 @@ export async function validateCharacterReleaseSnapshot(
         where: { id: release.referenceSetRevisionId },
         include: {
           references: {
-            include: { mediaAsset: { select: { id: true, deletedAt: true } } },
+            include: {
+              mediaAsset: {
+                select: characterReferenceMediaAuthoritySelect,
+              },
+            },
             orderBy: { position: "asc" },
           },
         },
       })
     : null;
   const provenance = record(release.generationProvenance);
-  const routeFingerprint = stringValue(provenance.routeFingerprint);
+  const releaseRoute = requiredReleaseRoute(release.generationProvenance);
+  const routeFingerprint = stringValue(releaseRoute.routeFingerprint);
   const route = routeFingerprint
     ? await tx.generationRouteQualification.findFirst({
         where: {
@@ -199,6 +304,15 @@ export async function validateCharacterReleaseSnapshot(
         orderBy: { evaluatedAt: "desc" },
       })
     : null;
+  const effectiveRoute = await evaluateEffectiveGenerationRouteAuthority(tx, {
+    qualification: route,
+    currentPolicyVersion: policyVersion,
+    currentEvaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,
+    now,
+    requiredReferenceCount: referenceSet?.references.length ?? 0,
+    requiredReferenceRoles:
+      referenceSet?.references.map((reference) => reference.role) ?? [],
+  });
   const canonicalSnapshotHash = characterReleaseSnapshotHash({
     projectId: release.projectId,
     revisionId: release.revisionId,
@@ -215,21 +329,316 @@ export async function validateCharacterReleaseSnapshot(
   const currentReferenceHash = referenceSet
     ? referenceSetSnapshotHash(referenceSet)
     : null;
+  const unavailableReferenceMediaIds =
+    referenceSet && project
+      ? unavailableCharacterReferenceMediaIds(
+          referenceSet.references,
+          project.characterId,
+        )
+      : [];
   const characterQa = record(provenance.characterQa);
+  const strictCharacterQa =
+    release.legacy === false &&
+    provenance.schemaVersion ===
+      "character-release-generation-provenance-v2" &&
+    provenance.policyVersion === CHARACTER_RELEASE_POLICY_VERSION &&
+    policyVersion === CHARACTER_RELEASE_POLICY_VERSION &&
+    hasCanonicalRequiredReleaseRoute(releaseRoute);
   const characterQaRunId = stringValue(characterQa.qaRunId);
   const characterQaRun = characterQaRunId
     ? await tx.characterQaRun.findUnique({ where: { id: characterQaRunId } })
     : null;
-  const avatarAssetId = placementAssetId(release.releasePlacementManifest);
-  const avatarAsset = avatarAssetId
-    ? await tx.mediaAsset.findFirst({
-        where: { id: avatarAssetId, deletedAt: null },
-        select: { id: true },
+  const latestCharacterQaRun = strictCharacterQa && characterQaRun
+    ? await findLatestCharacterQaAuthorityRun(tx, {
+        characterId: characterQaRun.characterId,
+        projectId: characterQaRun.projectId,
+        characterContentVersionId: characterQaRun.characterContentVersionId,
+        projectVersion: characterQaRun.projectVersion,
+        visualProfileId: characterQaRun.visualProfileId,
+        visualProfileVersion: characterQaRun.visualProfileVersion,
+        visualProfileHash: characterQaRun.visualProfileHash,
+        referenceSetRevisionId: characterQaRun.referenceSetRevisionId,
+        referenceSetRevision: characterQaRun.referenceSetRevision,
+        referenceSetHash: characterQaRun.referenceSetHash,
+        draftAssetPackHash: characterQaRun.draftAssetPackHash,
       })
-    : null;
+    : characterQaRun;
+  const strictAssetManifest = parseCharacterReleaseAssetManifest(
+    release.releasePlacementManifest,
+  );
+  const avatarAssetId = placementAssetId(release.releasePlacementManifest);
+  const placementAssets = await tx.mediaAsset.findMany({
+    where: { id: { in: [...new Set(manifestPlacements.map((placement) => placement.assetId))] } },
+    select: {
+      id: true,
+      characterId: true,
+      deletedAt: true,
+      safetyStatus: true,
+      storageKey: true,
+      url: true,
+      sourceJobId: true,
+      metadata: true,
+    },
+  });
+  const placementAssetById = new Map(placementAssets.map((asset) => [asset.id, asset]));
+  const placementItems = await tx.contentProductionItem.findMany({
+    where: { id: { in: manifestPlacements.flatMap((placement) => placement.itemId ? [placement.itemId] : []) } },
+    include: { batch: true, job: true },
+  });
+  const placementItemById = new Map(placementItems.map((item) => [item.id, item]));
+  const placementAttempts = await tx.generationAttempt.findMany({
+    where: {
+      requestId: {
+        in: manifestPlacements.flatMap((placement) => placement.generationJobId ? [placement.generationJobId] : []),
+      },
+      status: "succeeded",
+    },
+    orderBy: [{ requestId: "asc" }, { attemptNo: "desc" }],
+  });
+  const latestAttemptByJobId = new Map<string, (typeof placementAttempts)[number]>();
+  for (const attempt of placementAttempts) {
+    if (!latestAttemptByJobId.has(attempt.requestId)) {
+      latestAttemptByJobId.set(attempt.requestId, attempt);
+    }
+  }
+  const placementDecisions = await tx.creativeReviewDecision.findMany({
+    where: { runItemId: { in: manifestPlacements.flatMap((placement) => placement.itemId ? [placement.itemId] : []) } },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+  });
+  const latestDecisionByItemId = new Map<string, (typeof placementDecisions)[number]>();
+  for (const decision of placementDecisions) {
+    if (!latestDecisionByItemId.has(decision.runItemId)) {
+      latestDecisionByItemId.set(decision.runItemId, decision);
+    }
+  }
+  const expectedPurposeBySlot: Record<string, string> = {
+    character_avatar: "character_cover",
+    character_hero: "character_hero",
+    character_chat: "character_chat",
+  };
+  const rawPlacementProvenance = Array.isArray(provenance.placements)
+    ? provenance.placements.map(record)
+    : [];
+  const manifestIsWellFormed =
+    strictCharacterQa &&
+    strictAssetManifest !== null &&
+    manifestPlacements.length === strictAssetManifest.placements.length;
+  const unavailablePlacementSlots = manifestPlacements.flatMap((placement) => {
+    const asset = placementAssetById.get(placement.assetId);
+    return !asset ||
+      asset.deletedAt !== null ||
+      asset.safetyStatus !== "passed" ||
+      !hasHydratableMediaBlobAuthority(asset)
+      ? [placement.slotKey]
+      : [];
+  });
+  const customerPublishabilityFailures = manifestPlacements.flatMap((placement) => {
+    const asset = placementAssetById.get(placement.assetId);
+    const item = placement.itemId
+      ? placementItemById.get(placement.itemId)
+      : null;
+    const job = item?.job ?? null;
+    const latestAttempt = placement.generationJobId
+      ? latestAttemptByJobId.get(placement.generationJobId)
+      : null;
+    const pinnedCandidates = rawPlacementProvenance.filter((candidate) =>
+      candidate.slotKey === placement.slotKey
+    );
+    const pinned = pinnedCandidates.length === 1
+      ? pinnedCandidates[0]
+      : undefined;
+    const publishability = evaluateMediaAssetCustomerPublishability({
+      metadata: asset?.metadata,
+      pinnedProvider: pinned?.provider,
+      pinnedProviderRequired: strictCharacterQa,
+      pinnedProviderDuplicate: pinnedCandidates.length > 1,
+      pinnedProviderAssetMismatch: Boolean(
+        pinned &&
+        (
+          pinned.assetId !== placement.assetId ||
+          pinned.generationJobId !== placement.generationJobId
+        )
+      ),
+      jobProvider: job?.provider,
+      jobProviderRequired: strictCharacterQa,
+      latestAttemptProvider: latestAttempt?.provider,
+      latestAttemptProviderRequired: strictCharacterQa,
+    });
+    return publishability.publishable
+      ? []
+      : [{
+          slotKey: placement.slotKey,
+          assetId: placement.assetId,
+          reasons: publishability.reasons,
+          providers: {
+            pinned: stringValue(pinned?.provider),
+            job: job?.provider ?? null,
+            latestAttempt: latestAttempt?.provider ?? null,
+          },
+        }];
+  });
+  const syntheticPlacementSlots = customerPublishabilityFailures
+    .filter((failure) => failure.reasons.includes("metadata_synthetic"))
+    .map((failure) => failure.slotKey);
+  const invalidReviewAuthoritySlots = manifestPlacements.flatMap((placement) => {
+    const lineage = [placement.runId, placement.itemId, placement.reviewDecisionId];
+    const hasLineage = lineage.some((value) => value !== null);
+    if (!hasLineage) return [placement.slotKey];
+    if (lineage.some((value) => value === null) || !placement.itemId) return [placement.slotKey];
+    const item = placementItemById.get(placement.itemId);
+    const decision = latestDecisionByItemId.get(placement.itemId);
+    const asset = placementAssetById.get(placement.assetId);
+    return !item ||
+      item.batchId !== placement.runId ||
+      item.mediaAssetId !== placement.assetId ||
+      item.batch.targetType !== "character" ||
+      item.batch.targetId !== project?.characterId ||
+      item.batch.purpose !== expectedPurposeBySlot[placement.slotKey] ||
+      !["approved", "published"].includes(item.status) ||
+      asset?.characterId !== project?.characterId ||
+      !decision ||
+      decision.id !== placement.reviewDecisionId ||
+      decision.artifactId !== placement.assetId ||
+      decision.decision !== "approved" ||
+      decision.identityConsistency !== (placement.bootstrapIdentity ? "unscored" : "passed") ||
+      !creativeReviewQualityPassed(decision.evidence)
+      ? [placement.slotKey]
+      : [];
+  });
+  const invalidGenerationAuthoritySlots = manifestPlacements.flatMap((placement) => {
+    if (!placement.generationJobId) {
+      return [placement.slotKey];
+    }
+    if (!placement.itemId) return [placement.slotKey];
+    const item = placementItemById.get(placement.itemId);
+    const job = item?.job ?? null;
+    const attempt = latestAttemptByJobId.get(placement.generationJobId);
+    const asset = placementAssetById.get(placement.assetId);
+    const pinnedCandidates = rawPlacementProvenance.filter((candidate) =>
+      candidate.slotKey === placement.slotKey
+    );
+    const pinned = pinnedCandidates.length === 1 &&
+        pinnedCandidates[0]?.assetId === placement.assetId &&
+        pinnedCandidates[0]?.generationJobId === placement.generationJobId
+      ? pinnedCandidates[0]
+      : undefined;
+    const sourceMeta = record(job?.sourceMeta);
+    const manifestEntries = referenceManifestEntries(job?.referenceManifest ?? null);
+    const manifestAssetIds = manifestEntries.flatMap((manifestEntry) =>
+      typeof manifestEntry.mediaAssetId === "string" ? [manifestEntry.mediaAssetId] : []
+    );
+    const referenceAssetIds = jsonStringArray(job?.referenceAssetIds ?? null);
+    const commonAuthorityMatches = Boolean(
+      item &&
+      job &&
+      attempt &&
+      pinned &&
+      pinned.bootstrapIdentity === placement.bootstrapIdentity &&
+      item.jobId === placement.generationJobId &&
+      job.id === placement.generationJobId &&
+      job.status === "completed" &&
+      job.mode === "image" &&
+      job.deliveredOutputCount >= 1 &&
+      job.profileId !== null &&
+      job.profileVersion !== null &&
+      job.model !== null &&
+      job.provider !== null &&
+      pinned.provider === job.provider &&
+      job.characterId === project?.characterId &&
+      job.sourceType === "content_production_item" &&
+      job.sourceId === item.id &&
+      sourceMeta.batchId === item.batchId &&
+      sourceMeta.purpose === expectedPurposeBySlot[placement.slotKey] &&
+      sourceMeta.targetType === "character" &&
+      sourceMeta.targetId === project?.characterId &&
+      sourceMeta.bootstrapIdentity === placement.bootstrapIdentity &&
+      asset?.sourceJobId === job.id &&
+      attempt.status === "succeeded" &&
+      attempt.provider === job.provider &&
+      attempt.profileKey === job.profileId &&
+      attempt.profileVersion === job.profileVersion &&
+      attempt.workflowKey === job.model &&
+      pinned.attemptId === attempt.id &&
+      pinned.attemptNo === attempt.attemptNo &&
+      pinned.generationProfileKey === job.profileId &&
+      pinned.generationProfileVersion === job.profileVersion &&
+      pinned.workflowKey === job.model &&
+      pinned.workflowVersion === attempt.workflowVersion &&
+      pinned.visualProfileId === job.visualProfileId &&
+      pinned.visualProfileVersion === job.visualProfileVersion &&
+      pinned.referenceSetRevisionId === job.referenceSetRevisionId &&
+      pinned.referenceManifestHash === (
+        job.referenceManifest ? canonicalSha256(job.referenceManifest) : null
+      ),
+    );
+    const bootstrapAuthorityMatches = Boolean(
+      commonAuthorityMatches &&
+      placement.bootstrapIdentity &&
+      placement.slotKey === "character_avatar" &&
+      job &&
+      profile &&
+      referenceSet &&
+      sourceMeta.bootstrapIdentity === true &&
+      job.visualProfileId === null &&
+      job.referenceSetRevisionId === null &&
+      referenceAssetIds.length === 0 &&
+      manifestEntries.length === 0 &&
+      profile.createdFrom === `identity_bootstrap:${job.id}` &&
+      profile.evidenceState === "reviewed_bootstrap" &&
+      record(profile.adapterRefs).bootstrapIdentity === true &&
+      record(profile.adapterRefs).generationJobId === job.id &&
+      referenceSet.createdFrom === `identity_bootstrap:${job.id}` &&
+      referenceSet.references.some((reference) => reference.mediaAssetId === placement.assetId),
+    );
+    const identityRouteAuthorityMatches = Boolean(
+      commonAuthorityMatches &&
+      !placement.bootstrapIdentity &&
+      job &&
+      attempt &&
+      profile &&
+      referenceSet &&
+      route &&
+      job.visualProfileId === release.visualProfileId &&
+      job.visualProfileVersion === release.visualProfileVersion &&
+      job.referenceSetRevisionId === release.referenceSetRevisionId &&
+      referenceAssetIds.length > 0 &&
+      manifestEntries.length > 0 &&
+      canonicalSha256([...referenceAssetIds].sort()) === canonicalSha256([...manifestAssetIds].sort()) &&
+      manifestEntries.every((manifestEntry) =>
+        manifestEntry.referenceSetRevisionId === release.referenceSetRevisionId &&
+        manifestEntry.snapshotHash === referenceSet.snapshotHash
+      ) &&
+      sourceMeta.referenceSetRevisionId === release.referenceSetRevisionId &&
+      job.profileId === releaseRoute.generationProfileKey &&
+      job.profileVersion === releaseRoute.generationProfileVersion &&
+      job.model === releaseRoute.workflowKey &&
+      attempt.profileKey === releaseRoute.generationProfileKey &&
+      attempt.profileVersion === releaseRoute.generationProfileVersion &&
+      attempt.workflowKey === releaseRoute.workflowKey &&
+      attempt.workflowVersion === releaseRoute.workflowVersion,
+    );
+    return bootstrapAuthorityMatches || identityRouteAuthorityMatches
+      ? []
+      : [placement.slotKey];
+  });
+  const avatarAsset = avatarAssetId ? placementAssetById.get(avatarAssetId) ?? null : null;
   const persona = content ? record(content.personaSnapshot) : {};
   const opening = content ? record(content.openingSnapshot) : {};
   const checks: ValidationCheck[] = [
+    {
+      key: "release_generation_authority_kind",
+      passed: strictCharacterQa,
+      evidence: {
+        legacy: release.legacy,
+        provenanceSchemaVersion: provenance.schemaVersion ?? null,
+        provenancePolicyVersion: provenance.policyVersion ?? null,
+        requiredPolicyVersion: CHARACTER_RELEASE_POLICY_VERSION,
+        canonicalRequiredReleaseRoute:
+          hasCanonicalRequiredReleaseRoute(releaseRoute),
+        requiredSchemaVersion:
+          "character-release-generation-provenance-v2",
+      },
+    },
     {
       key: "project_character_authority",
       passed: project !== null,
@@ -291,33 +700,36 @@ export async function validateCharacterReleaseSnapshot(
         referenceSet.snapshotHash !== null &&
         referenceSet.snapshotHash === currentReferenceHash &&
         referenceSet.references.length > 0 &&
-        referenceSet.references.every(
-          (item) => item.mediaAsset.deletedAt === null,
-        ),
+        unavailableReferenceMediaIds.length === 0,
       evidence: {
         referenceSetRevisionId: release.referenceSetRevisionId,
         referenceCount: referenceSet?.references.length ?? 0,
         snapshotHash: referenceSet?.snapshotHash ?? null,
         currentReferenceHash,
+        unavailableReferenceMediaIds,
       },
     },
     {
       key: "generation_route_qualified",
       passed:
+        effectiveRoute.state === "qualified" &&
         route !== null &&
         route.sampleCount >= 40 &&
         route.identityMatch >= 0.9 &&
-        route.generationProfileKey === provenance.generationProfileKey &&
+        route.generationProfileKey === releaseRoute.generationProfileKey &&
         route.generationProfileVersion ===
-          provenance.generationProfileVersion &&
-        route.workflowKey === provenance.workflowKey &&
-        route.workflowVersion === provenance.workflowVersion,
+          releaseRoute.generationProfileVersion &&
+        route.workflowKey === releaseRoute.workflowKey &&
+        route.workflowVersion === releaseRoute.workflowVersion,
       evidence: {
         routeFingerprint,
         qualificationId: route?.id ?? null,
         sampleCount: route?.sampleCount ?? null,
         identityMatch: route?.identityMatch ?? null,
         policyVersion,
+        evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,
+        effectiveState: effectiveRoute.state,
+        effectiveReason: effectiveRoute.reason,
       },
     },
     {
@@ -329,18 +741,80 @@ export async function validateCharacterReleaseSnapshot(
         characterQaRun.characterId === project?.characterId &&
         characterQaRun.projectId === release.projectId &&
         characterQaRun.characterContentVersionId === release.characterContentVersionId &&
-        characterQaRun.evidenceHash === stringValue(characterQa.evidenceHash),
+        characterQaRun.evidenceHash === stringValue(characterQa.evidenceHash) &&
+        latestCharacterQaRun?.id === characterQaRun.id &&
+        (!strictCharacterQa || (
+          characterQaProvenanceMatchesRun(characterQa, characterQaRun) &&
+          characterQaAuthorityMatches(characterQaRun, {
+            characterId: project?.characterId ?? null,
+            projectId: release.projectId,
+            characterContentVersionId: release.characterContentVersionId,
+            projectVersion: characterQaRun.projectVersion,
+            visualProfileId: release.visualProfileId,
+            visualProfileVersion: release.visualProfileVersion,
+            visualProfileHash: currentVisualHash,
+            referenceSetRevisionId: release.referenceSetRevisionId,
+            referenceSetRevision: referenceSet?.revision ?? null,
+            referenceSetHash: currentReferenceHash,
+            draftAssetPackHash: characterQaRun.draftAssetPackHash,
+          })
+        )),
       evidence: {
         status: characterQa.status ?? null,
         qaRunId: characterQaRunId,
         evidenceHash: characterQa.evidenceHash ?? null,
         authorityStatus: characterQaRun?.status ?? null,
+        latestAuthorityQaRunId: latestCharacterQaRun?.id ?? null,
+        latestAuthorityStatus: latestCharacterQaRun?.status ?? null,
+        latestAuthorityCreatedAt:
+          latestCharacterQaRun?.createdAt.toISOString() ?? null,
+        schemaVersion: provenance.schemaVersion ?? null,
+        projectVersion: characterQaRun?.projectVersion ?? null,
+        visualProfileId: characterQaRun?.visualProfileId ?? null,
+        visualProfileVersion: characterQaRun?.visualProfileVersion ?? null,
+        visualProfileHash: characterQaRun?.visualProfileHash ?? null,
+        referenceSetRevisionId: characterQaRun?.referenceSetRevisionId ?? null,
+        referenceSetRevision: characterQaRun?.referenceSetRevision ?? null,
+        referenceSetHash: characterQaRun?.referenceSetHash ?? null,
+        draftAssetPackHash: characterQaRun?.draftAssetPackHash ?? null,
       },
     },
     {
       key: "release_avatar_manifest_available",
-      passed: avatarAsset !== null,
+      passed:
+        avatarAsset !== null &&
+        avatarAsset.deletedAt === null &&
+        avatarAsset.safetyStatus === "passed" &&
+        hasHydratableMediaBlobAuthority(avatarAsset),
       evidence: { avatarAssetId },
+    },
+    {
+      key: "release_asset_manifest_available",
+      passed: manifestIsWellFormed && unavailablePlacementSlots.length === 0,
+      evidence: {
+        placementCount: manifestPlacements.length,
+        unavailablePlacementSlots,
+        manifestIsWellFormed,
+      },
+    },
+    {
+      key: "release_assets_customer_publishable",
+      passed: customerPublishabilityFailures.length === 0,
+      evidence: {
+        syntheticPlacementSlots,
+        placements: customerPublishabilityFailures,
+        failures: customerPublishabilityFailures,
+      },
+    },
+    {
+      key: "release_asset_review_authority",
+      passed: invalidReviewAuthoritySlots.length === 0,
+      evidence: { invalidReviewAuthoritySlots },
+    },
+    {
+      key: "release_asset_generation_authority",
+      passed: invalidGenerationAuthoritySlots.length === 0,
+      evidence: { invalidGenerationAuthoritySlots },
     },
     {
       key: "snapshot_hash_matches",
@@ -822,6 +1296,39 @@ async function publishRelease(
       );
     }
   }
+  const publishedAssetIds = [
+    ...new Set(
+      releasePlacements(release.releasePlacementManifest).map(
+        (placement) => placement.assetId,
+      ),
+    ),
+  ];
+  const promotedAssets = await tx.mediaAsset.updateMany({
+    where: {
+      id: { in: publishedAssetIds },
+      type: "image",
+      deletedAt: null,
+      safetyStatus: "passed",
+      AND: [
+        {
+          OR: [{ characterId }, { characterId: null }],
+        },
+        nonSyntheticMediaAssetWhere,
+      ],
+    },
+    data: { visibility: "public_pack" },
+  });
+  if (promotedAssets.count !== publishedAssetIds.length) {
+    throw new ReleaseCommandError(
+      "release_asset_promotion_failed",
+      "Every published Release asset must become customer-readable",
+      {
+        expectedAssetIds: publishedAssetIds,
+        promotedCount: promotedAssets.count,
+      },
+      true,
+    );
+  }
   await tx.character.update({
     where: { id: characterId },
     data: {
@@ -831,6 +1338,40 @@ async function publishRelease(
       imageAssetId: validation.avatarAssetId,
     },
   });
+  // Keep the write order compatible with databases that still have the
+  // original statement-time qualification trigger: the Release assets and
+  // Character avatar projection must exist before qualification is inserted.
+  // The current migration also checks the complete cross-row invariant at
+  // transaction commit, so partial publication still cannot escape atomically.
+  const publicQualification = await tx.publicCatalogQualification.upsert({
+    where: { releaseId: release.id },
+    update: {},
+    create: {
+      id: `catalog-qualification:${release.id}`,
+      releaseId: release.id,
+      releaseSnapshotHash: release.snapshotHash,
+      kind: "generated_release",
+      validationRunId: validation.run.id,
+      evidence: {
+        schemaVersion: PUBLIC_CATALOG_QUALIFICATION_SCHEMA_VERSION,
+        policyVersion: validation.run.policyVersion,
+        validationRunId: validation.run.id,
+        commandId: command.id,
+      },
+      qualifiedAt: validation.run.finishedAt ?? now,
+    },
+  });
+  if (
+    publicQualification.revokedAt !== null ||
+    publicQualification.kind !== "generated_release"
+  ) {
+    throw new ReleaseCommandError(
+      "public_catalog_qualification_conflict",
+      "Release public qualification is revoked or has a conflicting provenance kind",
+      { qualificationId: publicQualification.id },
+      true,
+    );
+  }
   for (const window of ["24h", "72h"] as const) {
     await tx.releaseMonitor.upsert({
       where: { releaseId_window: { releaseId: release.id, window } },
@@ -961,8 +1502,24 @@ async function executeServingState(
       Prisma.TransactionClient["controlPlaneCommand"]["findUniqueOrThrow"]
     >
   >,
+  policyVersion: string,
   now: Date,
 ) {
+  await lockCharacterGenerationAuthority(tx, command.targetId);
+  const character = await tx.character.findFirst({
+    where: {
+      id: command.targetId,
+      deletedAt: null,
+      status: { not: "removed" },
+    },
+    select: { id: true },
+  });
+  if (!character) {
+    throw new ReleaseCommandError(
+      "serving_character_unavailable",
+      "Archived or removed Characters cannot change serving state",
+    );
+  }
   const serving = await tx.characterServing.findUnique({
     where: { characterId: command.targetId },
   });
@@ -985,6 +1542,7 @@ async function executeServingState(
   if (
     !release ||
     release.status !== "published" ||
+    release.publishedAt === null ||
     project?.characterId !== command.targetId
   ) {
     throw new ReleaseCommandError(
@@ -1007,13 +1565,129 @@ async function executeServingState(
   }
   if (
     retiring &&
-    !isCharacterProjectPhaseTransitionAllowed(project.phase, "retired")
+    project.phase !== "live_management"
   ) {
     throw new ReleaseCommandError(
       "project_phase_conflict",
       "Character Project must be in live management before retirement",
       { projectPhase: project.phase },
     );
+  }
+  const resuming = !pausing && !retiring;
+  let resumeEvidence: Record<string, unknown> | null = null;
+  if (resuming) {
+    if (release.legacy) {
+      const authority =
+        await evaluateEditorialReleaseAuthorityInTransaction(tx, {
+          releaseId: release.id,
+          projectionState: "paused",
+        });
+      // INTENT: editorial Releases have no generated validation run that can
+      // independently clear a hard readiness block. Resume may heal only the
+      // known false-staleness shape (the exact authority is otherwise intact
+      // and readiness alone is `stale`). `blocked` and `unknown` always require
+      // an explicit authority repair/review workflow.
+      const staleReadinessOnly =
+        release.readiness === "stale" &&
+        authority.failures.length === 1 &&
+        authority.failures[0]?.code === "release_not_ready";
+      if (!authority.valid && !staleReadinessOnly) {
+        throw new ReleaseCommandError(
+          "serving_resume_qualification_invalid",
+          "Character Serving cannot resume because its editorial Release authority drifted",
+          {
+            blockers: authority.failures.map((item) => item.code),
+            authorityKind: "editorial_import",
+          },
+        );
+      }
+      const qualification =
+        await tx.publicCatalogQualification.findUniqueOrThrow({
+          where: { releaseId: release.id },
+          select: { id: true },
+        });
+      resumeEvidence = {
+        authorityKind: "editorial_import",
+        qualificationId: qualification.id,
+        validationRunId: null,
+      };
+    } else {
+      const validation = await validateCharacterReleaseSnapshot(
+        tx,
+        release,
+        policyVersion,
+        now,
+      );
+      if (validation.failed.length > 0) {
+        throw new ReleaseCommandError(
+          "serving_resume_validation_failed",
+          "Character Serving cannot resume because the current Release authority drifted",
+          {
+            blockers: validation.failed.map((item) => item.key),
+            validationRunId: validation.run.id,
+          },
+        );
+      }
+      const qualification = await tx.publicCatalogQualification.findUnique({
+        where: { releaseId: release.id },
+        include: { validationRun: true },
+      });
+      const qualificationEvidence = record(qualification?.evidence);
+      const pinnedValidation = qualification?.validationRun ?? null;
+      if (
+        !qualification ||
+        qualification.kind !== "generated_release" ||
+        qualification.validationRunId === null ||
+        qualification.revokedAt !== null ||
+        qualification.releaseSnapshotHash !== release.snapshotHash ||
+        qualificationEvidence.schemaVersion !==
+          PUBLIC_CATALOG_QUALIFICATION_SCHEMA_VERSION ||
+        qualificationEvidence.policyVersion !== policyVersion ||
+        !pinnedValidation ||
+        pinnedValidation.releaseId !== release.id ||
+        pinnedValidation.snapshotHash !== release.snapshotHash ||
+        pinnedValidation.policyVersion !== policyVersion ||
+        pinnedValidation.result !== "passed" ||
+        pinnedValidation.finishedAt === null
+      ) {
+        throw new ReleaseCommandError(
+          "serving_resume_qualification_invalid",
+          "Character Serving cannot resume without its exact current generated Release qualification",
+          {
+            qualificationId: qualification?.id ?? null,
+            qualificationKind: qualification?.kind ?? null,
+            validationRunId: qualification?.validationRunId ?? null,
+          },
+        );
+      }
+      resumeEvidence = {
+        authorityKind: "generated_release",
+        qualificationId: qualification.id,
+        qualificationValidationRunId: qualification.validationRunId,
+        resumeValidationRunId: validation.run.id,
+      };
+    }
+    if (release.readiness !== "ready") {
+      const restored = await tx.characterRelease.updateMany({
+        where: {
+          id: release.id,
+          version: release.version,
+          readiness: release.readiness,
+        },
+        data: {
+          readiness: "ready",
+          version: { increment: 1 },
+        },
+      });
+      if (restored.count !== 1) {
+        throw new ReleaseCommandError(
+          "release_version_conflict",
+          "Current Release changed while restoring resume readiness",
+          {},
+          true,
+        );
+      }
+    }
   }
   const resumeAssetId = pausing || retiring
     ? null
@@ -1026,7 +1700,16 @@ async function executeServingState(
   }
   const updated = await tx.characterServing.updateMany({
     where: { id: serving.id, version: serving.version, state: expectedState },
-    data: { state: nextState, version: { increment: 1 } },
+    data: {
+      state: nextState,
+      ...(retiring
+        ? {
+            scheduledReleaseId: null,
+            scheduledAt: null,
+          }
+        : {}),
+      version: { increment: 1 },
+    },
   });
   if (updated.count !== 1)
     throw new ReleaseCommandError(
@@ -1066,15 +1749,53 @@ async function executeServingState(
     commandType: command.commandType as ReleaseCommandType,
     releaseId: release.id,
     characterId: command.targetId,
-    before: { servingState: serving.state, servingVersion: serving.version },
-    after: { servingState: nextState, servingVersion: serving.version + 1, retired: retiring },
+    before: {
+      servingState: serving.state,
+      servingVersion: serving.version,
+      releaseReadiness: release.readiness,
+      releaseVersion: release.version,
+      scheduledReleaseId: serving.scheduledReleaseId,
+      scheduledAt: serving.scheduledAt?.toISOString() ?? null,
+    },
+    after: {
+      servingState: nextState,
+      servingVersion: serving.version + 1,
+      releaseReadiness:
+        resuming ? "ready" : release.readiness,
+      releaseVersion:
+        resuming && release.readiness !== "ready"
+          ? release.version + 1
+          : release.version,
+      resumeEvidence,
+      retired: retiring,
+      scheduledReleaseId: retiring ? null : serving.scheduledReleaseId,
+      scheduledAt: retiring
+        ? null
+        : serving.scheduledAt?.toISOString() ?? null,
+      cancelledScheduledReleaseId: retiring
+        ? serving.scheduledReleaseId
+        : null,
+    },
     eventType: retiring
       ? "character.serving.retired"
       : pausing
         ? "character.serving.paused"
         : "character.serving.resumed",
     now,
-    result: { servingState: nextState, retired: retiring },
+    result: {
+      servingState: nextState,
+      releaseReadiness:
+        resuming ? "ready" : release.readiness,
+      releaseVersion:
+        resuming && release.readiness !== "ready"
+          ? release.version + 1
+          : release.version,
+      resumeEvidence,
+      retired: retiring,
+      cancelledScheduledReleaseId: retiring
+        ? serving.scheduledReleaseId
+        : null,
+    },
   });
   return release.id;
 }
@@ -1153,7 +1874,12 @@ export async function executeCharacterReleaseCommand(
             : command.commandType === "character.serving.pause" ||
                 command.commandType === "character.serving.resume" ||
                 command.commandType === "character.serving.retire"
-              ? await executeServingState(tx, command, now)
+              ? await executeServingState(
+                  tx,
+                  command,
+                  input.policyVersion ?? CHARACTER_RELEASE_POLICY_VERSION,
+                  now,
+                )
               : command.commandType === "character.release.rollback"
                 ? await executeRollback(
                     tx,

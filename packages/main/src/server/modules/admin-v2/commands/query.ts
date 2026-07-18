@@ -45,6 +45,7 @@ export async function getControlPlaneCommand(request: Request, commandId: string
       status: command.status,
       verificationState: verificationState(command.status),
       needsReconciliation: command.needsReconciliation,
+      ...(command.error === null ? {} : { error: command.error }),
       createdAt: command.createdAt.toISOString(),
       updatedAt: command.updatedAt.toISOString(),
     });

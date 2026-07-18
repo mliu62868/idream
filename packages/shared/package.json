@@ -19,6 +19,7 @@
     "./admin/workspace-access": "./src/admin/workspace-access.ts",
     "./admin/errors": "./src/admin/errors.ts",
     "./admin/release-gate": "./src/admin/release-gate.ts",
+    "./chat/limits": "./src/chat/limits.ts",
     "./bff": "./src/bff/signing.ts",
     "./media/generated-image-sanity": "./src/media/generated-image-sanity.ts",
     "./media/mock-video": "./src/media/mock-video.ts",

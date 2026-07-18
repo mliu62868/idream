@@ -2,7 +2,7 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { incrementCounter, observeHistogram } from "@idream/shared";
 import { canonicalSha256 } from "./canonical-json";
 import { toInputJson } from "./prisma-json";
-import { Errors } from "@/server/lib/errors";
+import { AppError, Errors } from "@/server/lib/errors";
 import { logger } from "@/server/lib/logger";
 import { transitionControlPlaneCommandAttempt } from "./control-plane-command-attempt";
 import { transitionControlPlaneCommand } from "./control-plane-command-transition";
@@ -21,10 +21,17 @@ export interface AcceptControlPlaneCommandInput extends CanonicalCommandRequest 
   readonly environment: string;
   readonly actor: { readonly id: string; readonly role: string };
   readonly idempotencyKey: string;
+  readonly coordinationKey?: string;
   readonly reason: string;
   readonly requestId: string;
   readonly maxAttempts?: number;
 }
+
+export const ACTIVE_CONTROL_PLANE_COMMAND_STATUSES = [
+  "accepted",
+  "running",
+  "verifying",
+] as const;
 
 export class IdempotencyConflictError extends Error {
   readonly code = "idempotency_conflict";
@@ -92,7 +99,7 @@ async function consumeBoundApproval(tx: Prisma.TransactionClient, input: AcceptC
 }
 
 async function resolveExisting(
-  db: PrismaClient,
+  db: Pick<PrismaClient, "controlPlaneCommand">,
   scope: string,
   idempotencyKey: string,
   requestHash: string,
@@ -126,65 +133,100 @@ export async function acceptControlPlaneCommand(
     }
 
     try {
-      const result = await db.$transaction(async (tx) => {
-        await consumeBoundApproval(tx, input);
-        const command = await tx.controlPlaneCommand.create({
-          data: {
-            scope,
-            idempotencyKey: input.idempotencyKey,
-            commandType: input.commandType,
-            targetType: input.target.type,
-            targetId: input.target.id,
-            actorId: input.actor.id,
-            requestId: input.requestId,
-            requestHash,
-            requestPayload: toInputJson(input.payload),
-            expectedVersion: input.expectedVersion,
-            approvalId: input.approvalId,
-            retryMode: input.retryMode ?? "non_replayable",
-            status: "accepted",
-            maxAttempts: input.maxAttempts ?? 3,
-          },
-        });
-        await tx.adminAuditLog.create({
-          data: {
-            actorId: input.actor.id,
-            actorRole: input.actor.role,
-            action: input.commandType,
-            targetType: input.target.type,
-            targetId: input.target.id,
-            reason: input.reason,
-            after: toInputJson({
-              commandId: command.id,
-              expectedVersion: input.expectedVersion ?? null,
-              approvalId: input.approvalId ?? null,
-              retryMode: input.retryMode ?? "non_replayable",
-              requestHash,
-              status: command.status,
-            }),
-            requestId: input.requestId,
-          },
-        });
-        await tx.mainOutboxEvent.create({
-          data: {
-            eventType: "admin.command.accepted.v2",
-            aggregateType: input.target.type,
-            aggregateId: input.target.id,
-            payload: toInputJson({
-              commandId: command.id,
+      const result = await db.$transaction(
+        async (tx) => {
+          if (input.coordinationKey) {
+            await tx.$executeRaw`
+              SELECT pg_advisory_xact_lock(
+                hashtext(${`control-plane-command:${input.coordinationKey}`})
+              )
+            `;
+          }
+          const raced = await resolveExisting(tx, scope, input.idempotencyKey, requestHash);
+          if (raced) return raced;
+          if (input.coordinationKey) {
+            const active = await tx.controlPlaneCommand.findFirst({
+              where: {
+                coordinationKey: input.coordinationKey,
+                status: { in: [...ACTIVE_CONTROL_PLANE_COMMAND_STATUSES] },
+              },
+              orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+              select: { id: true, commandType: true, status: true },
+            });
+            if (active) {
+              throw Errors.conflict(
+                "Another command is already active for this authority",
+                {
+                  activeCommandId: active.id,
+                  activeCommandType: active.commandType,
+                  activeCommandStatus: active.status,
+                },
+              );
+            }
+          }
+          await consumeBoundApproval(tx, input);
+          const command = await tx.controlPlaneCommand.create({
+            data: {
+              scope,
+              idempotencyKey: input.idempotencyKey,
+              coordinationKey: input.coordinationKey,
               commandType: input.commandType,
-              target: input.target,
-              expectedVersion: input.expectedVersion ?? null,
-              payload: input.payload,
-              approvalId: input.approvalId ?? null,
-              retryMode: input.retryMode ?? "non_replayable",
+              targetType: input.target.type,
+              targetId: input.target.id,
+              actorId: input.actor.id,
+              requestId: input.requestId,
               requestHash,
-            }),
-          },
-        });
-        return { commandId: command.id, status: command.status, replayed: false as const };
-      });
-      outcome = "accepted";
+              requestPayload: toInputJson(input.payload),
+              expectedVersion: input.expectedVersion,
+              approvalId: input.approvalId,
+              retryMode: input.retryMode ?? "non_replayable",
+              status: "accepted",
+              maxAttempts: input.maxAttempts ?? 3,
+            },
+          });
+          await tx.adminAuditLog.create({
+            data: {
+              actorId: input.actor.id,
+              actorRole: input.actor.role,
+              action: input.commandType,
+              targetType: input.target.type,
+              targetId: input.target.id,
+              reason: input.reason,
+              after: toInputJson({
+                commandId: command.id,
+                expectedVersion: input.expectedVersion ?? null,
+                approvalId: input.approvalId ?? null,
+                retryMode: input.retryMode ?? "non_replayable",
+                coordinationKey: input.coordinationKey ?? null,
+                requestHash,
+                status: command.status,
+              }),
+              requestId: input.requestId,
+            },
+          });
+          await tx.mainOutboxEvent.create({
+            data: {
+              eventType: "admin.command.accepted.v2",
+              aggregateType: input.target.type,
+              aggregateId: input.target.id,
+              payload: toInputJson({
+                commandId: command.id,
+                commandType: input.commandType,
+                target: input.target,
+                expectedVersion: input.expectedVersion ?? null,
+                payload: input.payload,
+                approvalId: input.approvalId ?? null,
+                retryMode: input.retryMode ?? "non_replayable",
+                coordinationKey: input.coordinationKey ?? null,
+                requestHash,
+              }),
+            },
+          });
+          return { commandId: command.id, status: command.status, replayed: false as const };
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+      );
+      outcome = result.replayed ? "replayed" : "accepted";
       commandId = result.commandId;
       return result;
     } catch (error) {
@@ -199,7 +241,10 @@ export async function acceptControlPlaneCommand(
       throw error;
     }
   } catch (error) {
-    outcome = error instanceof IdempotencyConflictError ? "conflict" : "error";
+    outcome = error instanceof IdempotencyConflictError ||
+      (error instanceof AppError && error.code === "conflict")
+      ? "conflict"
+      : "error";
     errorCode = error instanceof IdempotencyConflictError
       ? error.code
       : error && typeof error === "object" && "code" in error
@@ -224,6 +269,7 @@ export async function acceptControlPlaneCommand(
       module: "admin.control_plane",
       operation: input.commandType,
       target: `${input.target.type}:${input.target.id}`,
+      coordinationKey: input.coordinationKey ?? null,
       expectedVersion: input.expectedVersion ?? null,
       outcome,
       errorCode,

@@ -1,8 +1,18 @@
-import { durableAckSchema, MAIN_TO_CHAT_EVENTS, type DurableEventEnvelope } from "@idream/shared/contracts";
+import type { Prisma, PrismaClient } from "@prisma/client";
+import {
+  durableAckSchema,
+  idempotencyKeys,
+  MAIN_TO_CHAT_EVENTS,
+  MAIN_TO_CHAT_QUEUE,
+  type DurableEventEnvelope,
+} from "@idream/shared/contracts";
 import { setGauge } from "@idream/shared";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
+import { jobQueue } from "@/server/jobs/queue";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
+
+type Db = PrismaClient | Prisma.TransactionClient;
 
 export async function recordMainToChatEvent(input: {
   eventId: string;
@@ -10,7 +20,7 @@ export async function recordMainToChatEvent(input: {
   aggregateType?: string;
   aggregateId?: string;
   payload: Record<string, unknown>;
-}): Promise<void> {
+}, db: Db = prisma): Promise<void> {
   const envelope: DurableEventEnvelope = {
     sourceService: "main",
     sourceEventId: input.eventId,
@@ -21,7 +31,7 @@ export async function recordMainToChatEvent(input: {
     aggregateId: input.aggregateId ?? input.eventId,
     payload: input.payload,
   };
-  await prisma.mainOutboxEvent.upsert({
+  await db.mainOutboxEvent.upsert({
     where: { id: input.eventId },
     create: {
       id: input.eventId,
@@ -97,7 +107,17 @@ export function durableChatIngressEnabled(
 
 async function deliverToChat(event: DurableEventEnvelope): Promise<void> {
   if (!env.CHAT_DURABLE_INGEST_URL) {
-    throw new Error("CHAT_DURABLE_INGEST_URL is required for durable chat delivery");
+    await jobQueue.enqueue({
+      queue: MAIN_TO_CHAT_QUEUE,
+      payload: {
+        eventId: event.sourceEventId,
+        eventType: event.eventType,
+        payload: event.payload,
+        sourceService: event.sourceService,
+      } as Prisma.InputJsonValue,
+      dedupeKey: idempotencyKeys.chatInbox(event.sourceEventId),
+    });
+    return;
   }
   const response = await fetch(env.CHAT_DURABLE_INGEST_URL, {
     method: "POST",

@@ -20,6 +20,69 @@ export type AssetSourceBatch = {
   status: string;
 };
 
+export type AssetAuthorityDependency =
+  | {
+      kind: "character_primary_image";
+      characterId: string;
+      repairPath: string;
+    }
+  | {
+      kind: "character_project_draft";
+      characterId: string;
+      projectId: string;
+      repairPath: string;
+    }
+  | {
+      kind: "character_visual_identity";
+      characterId: string;
+      visualProfileId: string;
+      repairPath: string;
+    }
+  | {
+      kind: "character_reference_set";
+      characterId: string;
+      visualProfileId: string;
+      referenceSetRevisionId: string;
+      repairPath: string;
+    }
+  | {
+      kind: "character_generation_job";
+      characterId: string | null;
+      generationJobId: string;
+      runId: string | null;
+      repairPath: string;
+    }
+  | {
+      kind: "character_look";
+      characterId: string;
+      lookId: string;
+      status: string;
+      repairPath: string;
+    }
+  | {
+      kind: "creative_run_asset";
+      runId: string;
+      itemId: string;
+      status: string;
+      characterId: string | null;
+      repairPath: string;
+    }
+  | {
+      kind: "character_release";
+      characterId: string;
+      releaseId: string;
+      releaseState: "current" | "scheduled";
+      slot: string;
+      repairPath: string;
+    }
+  | {
+      kind: "verified_campaign" | "placement_verification";
+      placementId: string;
+      runId: string | null;
+      targetId: string;
+      repairPath: string;
+    };
+
 export type ContentAsset = {
   id: string;
   type: string;
@@ -41,9 +104,91 @@ export type ContentAsset = {
   description: string | null;
   sourceJob: AssetSourceJob | null;
   sourceBatch: AssetSourceBatch | null;
+  placements: Array<{
+    id: string;
+    slot: string;
+    targetType: string;
+    targetId: string;
+    status: string;
+    publishedAt: string | null;
+  }>;
+  authorityDependencies?: AssetAuthorityDependency[];
 };
 
+export function assetAuthorityDependencyView(
+  dependency: AssetAuthorityDependency,
+): { detail: string; key: string; title: string } {
+  switch (dependency.kind) {
+    case "character_primary_image":
+      return {
+        detail: dependency.characterId,
+        key: `${dependency.kind}:${dependency.characterId}`,
+        title: "Character primary image",
+      };
+    case "character_project_draft":
+      return {
+        detail: `${dependency.characterId} · ${dependency.projectId}`,
+        key: `${dependency.kind}:${dependency.projectId}`,
+        title: "Character project draft",
+      };
+    case "character_visual_identity":
+      return {
+        detail: `${dependency.characterId} · ${dependency.visualProfileId}`,
+        key: `${dependency.kind}:${dependency.visualProfileId}`,
+        title: "Active visual identity",
+      };
+    case "character_reference_set":
+      return {
+        detail: `${dependency.characterId} · ${dependency.referenceSetRevisionId}`,
+        key: `${dependency.kind}:${dependency.referenceSetRevisionId}`,
+        title: "Published character reference set",
+      };
+    case "character_generation_job":
+      return {
+        detail: dependency.characterId
+          ? `${dependency.characterId} · ${dependency.generationJobId}`
+          : dependency.generationJobId,
+        key: `${dependency.kind}:${dependency.generationJobId}`,
+        title: "Active character generation job",
+      };
+    case "character_look":
+      return {
+        detail: `${dependency.status} · ${dependency.characterId} · ${dependency.lookId}`,
+        key: `${dependency.kind}:${dependency.lookId}`,
+        title: "Active character look",
+      };
+    case "creative_run_asset":
+      return {
+        detail: `${dependency.status} · ${dependency.runId} · ${dependency.itemId}`,
+        key: `${dependency.kind}:${dependency.itemId}`,
+        title: "Creative Run asset in use",
+      };
+    case "character_release":
+      return {
+        detail: `${dependency.slot} · ${dependency.releaseId}`,
+        key: `${dependency.kind}:${dependency.releaseState}:${dependency.releaseId}:${dependency.slot}`,
+        title: dependency.releaseState === "scheduled"
+          ? "Scheduled Character Release"
+          : "Current Character Release",
+      };
+    case "verified_campaign":
+      return {
+        detail: `${dependency.targetId} · ${dependency.placementId}`,
+        key: `${dependency.kind}:${dependency.placementId}`,
+        title: "Verified live campaign",
+      };
+    case "placement_verification":
+      return {
+        detail: `${dependency.targetId} · ${dependency.placementId}`,
+        key: `${dependency.kind}:${dependency.placementId}`,
+        title: "Campaign verification in progress",
+      };
+  }
+}
+
 export const ASSETS_LIST = "/api/v1/admin/content/assets";
+export const ASSETS_BULK = `${ASSETS_LIST}/bulk`;
+export const ASSETS_BULK_PREFLIGHT = `${ASSETS_BULK}/preflight`;
 
 // 与后端 assetReviewStatusSchema 一致，但排除 "draft"——图片库筛选历来只覆盖已产出的资产
 // （沿用 旧图片库视图 原有的筛选项，未新增未删减）。
@@ -104,8 +249,15 @@ export function assetPatchPayload(params: {
   id: string;
   draft: AssetDraft;
   reason: string;
-  status?: (typeof ASSET_STATUSES)[number];
+  status?: "archived";
 }): Record<string, unknown> {
+  if (params.status === "archived") {
+    return {
+      status: "archived",
+      reason: params.reason,
+      confirmation: params.id,
+    };
+  }
   return {
     status: params.status,
     tags: splitTags(params.draft.tags),
@@ -113,4 +265,152 @@ export function assetPatchPayload(params: {
     reason: params.reason,
     confirmation: params.id,
   };
+}
+
+export type AssetBulkArchiveErrorDetails = {
+  code?: string;
+  assetId?: string;
+  dependencies: AssetAuthorityDependency[];
+  missingAssetIds: string[];
+  repairPath?: string;
+};
+
+export type AssetArchivePreflightBlocker = {
+  assetId: string;
+  dependencies: AssetAuthorityDependency[];
+};
+
+export type AssetArchivePreflight = {
+  assetIds: string[];
+  blockers: AssetArchivePreflightBlocker[];
+};
+
+export class AssetBulkArchiveError extends Error {
+  readonly details: AssetBulkArchiveErrorDetails;
+
+  constructor(message: string, details?: unknown) {
+    super(message);
+    this.name = "AssetBulkArchiveError";
+    this.details = assetBulkArchiveErrorDetails(details);
+  }
+}
+
+const ASSET_AUTHORITY_DEPENDENCY_KINDS = new Set<AssetAuthorityDependency["kind"]>([
+  "character_primary_image",
+  "character_project_draft",
+  "character_visual_identity",
+  "character_reference_set",
+  "character_generation_job",
+  "character_look",
+  "creative_run_asset",
+  "character_release",
+  "verified_campaign",
+  "placement_verification",
+]);
+
+function isAssetAuthorityDependency(value: unknown): value is AssetAuthorityDependency {
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.kind === "string"
+    && ASSET_AUTHORITY_DEPENDENCY_KINDS.has(record.kind as AssetAuthorityDependency["kind"])
+    && typeof record.repairPath === "string";
+}
+
+function assetBulkArchiveErrorDetails(value: unknown): AssetBulkArchiveErrorDetails {
+  const record = typeof value === "object" && value !== null
+    ? value as Record<string, unknown>
+    : {};
+  return {
+    code: typeof record.code === "string" ? record.code : undefined,
+    assetId: typeof record.assetId === "string" ? record.assetId : undefined,
+    dependencies: Array.isArray(record.dependencies)
+      ? record.dependencies.filter(isAssetAuthorityDependency)
+      : [],
+    missingAssetIds: Array.isArray(record.missingAssetIds)
+      ? record.missingAssetIds.filter((id): id is string => typeof id === "string")
+      : [],
+    repairPath: typeof record.repairPath === "string" ? record.repairPath : undefined,
+  };
+}
+
+export function canonicalAssetIds(assetIds: readonly string[]): string[] {
+  return [...new Set(assetIds.map((id) => id.trim()).filter(Boolean))].sort();
+}
+
+export function assetBulkArchivePayload(params: {
+  assetIds: readonly string[];
+  reason: string;
+}): {
+  assetIds: string[];
+  confirmation: string;
+  reason: string;
+  status: "archived";
+} {
+  const assetIds = canonicalAssetIds(params.assetIds);
+  return {
+    assetIds,
+    status: "archived",
+    reason: params.reason.trim(),
+    confirmation: assetIds.join(","),
+  };
+}
+
+type AssetBulkArchiveEnvelope =
+  | { ok: true; data: { updatedIds: string[] } }
+  | {
+      ok: false;
+      error: {
+        code?: string;
+        message?: string;
+        details?: unknown;
+      };
+    };
+
+export async function bulkArchiveAssets(params: {
+  assetIds: readonly string[];
+  reason: string;
+}): Promise<{ updatedIds: string[] }> {
+  const response = await fetch(ASSETS_BULK, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(assetBulkArchivePayload(params)),
+  });
+  const payload = await response.json() as AssetBulkArchiveEnvelope;
+  if (!payload.ok) {
+    throw new AssetBulkArchiveError(
+      payload.error.message ?? payload.error.code ?? "Bulk archive failed",
+      payload.error.details,
+    );
+  }
+  return payload.data;
+}
+
+type AssetArchivePreflightEnvelope =
+  | { ok: true; data: AssetArchivePreflight }
+  | {
+      ok: false;
+      error: {
+        code?: string;
+        message?: string;
+        details?: unknown;
+      };
+    };
+
+export async function preflightArchiveAssets(
+  assetIds: readonly string[],
+): Promise<AssetArchivePreflight> {
+  const canonicalIds = canonicalAssetIds(assetIds);
+  const response = await fetch(ASSETS_BULK_PREFLIGHT, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ assetIds: canonicalIds }),
+  });
+  const payload = await response.json() as AssetArchivePreflightEnvelope;
+  if (!payload.ok) {
+    throw new AssetBulkArchiveError(
+      payload.error.message ?? payload.error.code ?? "Bulk archive preflight failed",
+      payload.error.details,
+    );
+  }
+  return payload.data;
 }

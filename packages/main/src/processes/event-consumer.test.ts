@@ -1,6 +1,11 @@
 // main-event-consumer effects: chat→main events update main authority tables.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { CHAT_TO_MAIN_EVENTS, idempotencyKeys } from "@idream/shared/contracts";
+import {
+  CHAT_TO_MAIN_EVENTS,
+  MAIN_TO_CHAT_EVENTS,
+  idempotencyKeys,
+  type DurableEventEnvelope,
+} from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
 import { jobQueue } from "@/server/jobs/queue";
 import {
@@ -12,6 +17,7 @@ import {
   runQueuedGenerationJobs,
 } from "@/server/test/helpers";
 import { applyChatEvent } from "./event-consumer";
+import { dispatchPendingChatEvents } from "./chat-outbox";
 import { findReusableChatImage } from "@/server/modules/ourdream/chat-image-reuse";
 
 const P = "zt-chatimg-";
@@ -26,8 +32,13 @@ afterAll(async () => {
 
 describe("applyChatEvent", () => {
   it("chat.message.completed bumps character chatsCount", async () => {
+    const user = await createUser({
+      id: `${P}engagement-customer`,
+      dataClass: "customer",
+    });
     const character = await prisma.character.create({
       data: {
+        id: `${P}engagement-character`,
         name: "EC Test",
         age: 24,
         description: "d",
@@ -42,11 +53,38 @@ describe("applyChatEvent", () => {
       eventId: "ec1",
       eventType: "chat.message.completed",
       aggregateId: "msg1",
-      payload: { characterId: character.id },
+      payload: { userId: user.id, characterId: character.id },
     });
 
     const stats = await prisma.characterStats.findUnique({ where: { characterId: character.id } });
     expect(stats?.chatsCount).toBe(1);
+  });
+
+  it("does not turn fixture chat traffic into public engagement", async () => {
+    const user = await createUser({ id: `${P}engagement-fixture` });
+    const character = await prisma.character.create({
+      data: {
+        id: `${P}fixture-engagement-character`,
+        name: "Fixture traffic target",
+        age: 24,
+        description: "d",
+        appearance: {},
+        advancedDetails: {},
+        stats: { create: { chatsCount: 0 } },
+      },
+    });
+
+    await applyChatEvent({
+      eventId: `${P}fixture-message`,
+      eventType: CHAT_TO_MAIN_EVENTS.messageCompleted,
+      aggregateId: `${P}fixture-message`,
+      payload: { userId: user.id, characterId: character.id },
+    });
+
+    const stats = await prisma.characterStats.findUniqueOrThrow({
+      where: { characterId: character.id },
+    });
+    expect(stats.chatsCount).toBe(0);
   });
 
   it("chat.safety.flagged records a moderation event", async () => {
@@ -147,7 +185,10 @@ describe("applyChatEvent", () => {
     const acceptedEventId = `chat_image_accepted_${attachmentId}_${jobs[0].id}`;
     expect(await jobQueue.getByDedupeKey("chat.inbound", idempotencyKeys.chatInbox(acceptedEventId))).toBeTruthy();
 
-    await runQueuedGenerationJobs(8);
+    await runQueuedGenerationJobs(8, [
+      "ai.image.generate",
+      "app.ai.finalize",
+    ]);
     const asset = await prisma.mediaAsset.findFirst({ where: { sourceJobId: jobs[0].id } });
     expect(asset?.id).toBeTruthy();
     const completedEventId = `chat_image_completed_${attachmentId}_${jobs[0].id}_${asset?.id}`;
@@ -185,7 +226,7 @@ describe("applyChatEvent", () => {
         anchorAssetIds: [],
         referenceAssetIds: [],
         adapterRefs: {},
-        createdFrom: "test",
+        createdFrom: "generation_bootstrap:test",
       },
     });
 
@@ -202,6 +243,7 @@ describe("applyChatEvent", () => {
         messageId: `${P}vp-msg`,
         userId,
         characterId,
+        characterReleaseId: `${P}vp-release`,
         promptHint: "send me a photo at sunset",
         conversationContext: "user: send me a photo at sunset",
         controls: { orientation: "4:5", outputCount: 1 },
@@ -214,6 +256,9 @@ describe("applyChatEvent", () => {
       where: { sourceType: "chat_image", sourceId: attachmentId },
     });
     expect(job.visualProfileId).toBe(visualProfile.id);
+    expect(job.sourceMeta).toMatchObject({
+      characterReleaseId: `${P}vp-release`,
+    });
   });
 
   it("routes a chat.image.requested payload carrying controls.sourceImageAssetId to the chat-image-edit profile", async () => {
@@ -253,6 +298,7 @@ describe("applyChatEvent", () => {
         characterId,
         type: "image",
         url: "/images/ourdream/card-sarah-mercer.webp",
+        storageKey: `test-fixtures/${P}edit-source-asset-${suffix}.webp`,
         width: 512,
         height: 640,
         visibility: "private",
@@ -288,7 +334,7 @@ describe("applyChatEvent", () => {
     expect(job.controls).toMatchObject({ sourceImageAssetId: sourceAsset.id });
   });
 
-  it("drops sourceImageAssetId when the chat-image-edit profile is unavailable and falls back to a different pipeline", async () => {
+  it("fails closed without dropping source intent when no compatible edit profile is available", async () => {
     const suffix = `${Date.now()}`;
     const userId = `${P}fallback-user-${suffix}`;
     const characterId = `${P}fallback-char-${suffix}`;
@@ -304,6 +350,7 @@ describe("applyChatEvent", () => {
         characterId,
         type: "image",
         url: "/images/ourdream/card-sarah-mercer.webp",
+        storageKey: `test-fixtures/${P}fallback-source-asset-${suffix}.webp`,
         width: 512,
         height: 640,
         visibility: "private",
@@ -312,12 +359,9 @@ describe("applyChatEvent", () => {
       },
     });
 
-    // seed.ts always seeds "chat-image-edit" as active — simulate it being unavailable
-    // (missing/disabled) by disabling it just for this test, restoring it afterward so
-    // other tests in this sequential (fileParallelism: false) run are unaffected. Only
-    // the globally-seeded default active image profile (profile_image_default_v1,
-    // costMultiplier 1, initImage:true) remains, so selectGenerationProfile must fall
-    // back to it.
+    // Simulate the dedicated source-edit route being unavailable. A different
+    // text-to-image profile must never be allowed to reinterpret the request
+    // after silently removing sourceImageAssetId.
     await prisma.generationModelProfile.updateMany({
       where: { profileKey: "chat-image-edit" },
       data: { enabled: false },
@@ -342,12 +386,25 @@ describe("applyChatEvent", () => {
         },
       });
 
-      const job = await prisma.generationJob.findFirstOrThrow({
+      const jobs = await prisma.generationJob.findMany({
         where: { sourceType: "chat_image", sourceId: attachmentId },
       });
-      expect(job.profileId).not.toBe("chat-image-edit");
-      expect(job.profileId).toBe("profile_image_default_v1");
-      expect(job.controls).not.toHaveProperty("sourceImageAssetId");
+      expect(jobs).toHaveLength(0);
+      await expect(dreamcoinBalance(userId)).resolves.toBe(100);
+      const failedEventId = `chat_image_failed_${attachmentId}`;
+      const failure = await jobQueue.getByDedupeKey(
+        "chat.inbound",
+        idempotencyKeys.chatInbox(failedEventId),
+      );
+      expect(failure?.payload).toMatchObject({
+        eventType: "chat.image.failed",
+        payload: {
+          attachmentId,
+          generationJobId: null,
+          status: "failed",
+          errorCode: "conflict",
+        },
+      });
     } finally {
       await prisma.generationModelProfile.updateMany({
         where: { profileKey: "chat-image-edit" },
@@ -356,12 +413,16 @@ describe("applyChatEvent", () => {
     }
   });
 
-  it("reuses approved character chat assets before creating a new generation job", async () => {
+  it("reuses only the exact chat asset pinned by the session Release", async () => {
     const suffix = `${Date.now()}`;
     const userId = `${P}reuse-user-${suffix}`;
     const operatorId = `${P}reuse-ops-${suffix}`;
     const characterId = `${P}reuse-char-${suffix}`;
     const attachmentId = `${P}reuse-att-${suffix}`;
+    const projectId = `${P}reuse-project-${suffix}`;
+    const releaseId = `${P}reuse-release-${suffix}`;
+    const wrongReleaseId = `${P}reuse-release-wrong-${suffix}`;
+    const itemId = `${P}reuse-item-${suffix}`;
     await createUser({ id: userId });
     await createUser({ id: operatorId, role: "ops" });
     await createCharacter({ id: characterId, creatorId: userId, visibility: "public", status: "approved" });
@@ -374,14 +435,14 @@ describe("applyChatEvent", () => {
         type: "image",
         url: "/images/ourdream/card-sarah-mercer.webp",
         thumbnailUrl: "/images/ourdream/card-sarah-mercer.webp",
+        storageKey: `test-fixtures/${P}reuse-asset-${suffix}.webp`,
         width: 512,
         height: 640,
-        visibility: "public_pack",
+        visibility: "private",
         safetyStatus: "passed",
         prompt: "sunset beach selfie",
         metadata: {
           platformAsset: {
-            status: "approved",
             purpose: "character_chat",
             tags: ["sunset", "beach", "selfie"],
             description: "Candid sunset beach selfie in warm light.",
@@ -407,7 +468,7 @@ describe("applyChatEvent", () => {
     });
     await prisma.contentProductionItem.create({
       data: {
-        id: `${P}reuse-item-${suffix}`,
+        id: itemId,
         batchId: batch.id,
         mediaAssetId: asset.id,
         status: "approved",
@@ -421,6 +482,7 @@ describe("applyChatEvent", () => {
       type: "image",
       url: "/images/ourdream/card-sarah-mercer.webp",
       thumbnailUrl: "/images/ourdream/card-sarah-mercer.webp",
+      storageKey: `test-fixtures/${P}reuse-distractor-${String(index).padStart(3, "0")}-${suffix}.webp`,
       width: 512,
       height: 640,
       visibility: "public_pack",
@@ -445,6 +507,88 @@ describe("applyChatEvent", () => {
         status: "approved",
         tags: ["studio", "portrait"],
       })),
+    });
+    await prisma.characterProject.create({
+      data: {
+        id: projectId,
+        characterId,
+        phase: "live_management",
+        audience: {},
+        successCriteria: [],
+      },
+    });
+    const placement = (
+      slotKey: "character_avatar" | "character_hero" | "character_chat",
+      assetId: string,
+      productionItemId: string,
+    ) => ({
+      slotKey,
+      assetId,
+      slotVersion: 1,
+      runId: batch.id,
+      itemId: productionItemId,
+      reviewDecisionId: `${P}${slotKey}-decision-${suffix}`,
+      generationJobId: `${P}${slotKey}-job-${suffix}`,
+    });
+    await prisma.characterRelease.createMany({
+      data: [
+        {
+          id: releaseId,
+          projectId,
+          revisionId: `${P}reuse-revision-${suffix}`,
+          characterContentVersionId: `${P}reuse-content-${suffix}`,
+          generationProvenance: {},
+          releasePlacementManifest: {
+            schemaVersion: 2,
+            placements: [
+              placement(
+                "character_avatar",
+                distractorAssets[1]!.id,
+                `${P}reuse-item-001-${suffix}`,
+              ),
+              placement(
+                "character_hero",
+                distractorAssets[2]!.id,
+                `${P}reuse-item-002-${suffix}`,
+              ),
+              placement("character_chat", asset.id, itemId),
+            ],
+          },
+          snapshotHash: `${P}reuse-snapshot-${suffix}`,
+          readiness: "ready",
+          status: "published",
+        },
+        {
+          id: wrongReleaseId,
+          projectId,
+          revisionId: `${P}reuse-revision-wrong-${suffix}`,
+          characterContentVersionId: `${P}reuse-content-${suffix}`,
+          generationProvenance: {},
+          releasePlacementManifest: {
+            schemaVersion: 2,
+            placements: [
+              placement(
+                "character_avatar",
+                distractorAssets[1]!.id,
+                `${P}reuse-item-001-${suffix}`,
+              ),
+              placement(
+                "character_hero",
+                distractorAssets[2]!.id,
+                `${P}reuse-item-002-${suffix}`,
+              ),
+              placement(
+                "character_chat",
+                distractorAssets[0]!.id,
+                `${P}reuse-item-000-${suffix}`,
+              ),
+            ],
+          },
+          snapshotHash: `${P}reuse-snapshot-wrong-${suffix}`,
+          readiness: "ready",
+          status: "published",
+        },
+      ],
     });
     const setAssetStatus = (status: string) =>
       prisma.mediaAsset.update({
@@ -474,6 +618,7 @@ describe("applyChatEvent", () => {
         messageId: `${P}reuse-msg-${suffix}`,
         userId,
         characterId,
+        characterReleaseId: releaseId,
         promptHint: "send me a sunset beach selfie",
         conversationContext: "user: send me a sunset beach selfie",
         controls: { orientation: "4:5", outputCount: 1 },
@@ -486,19 +631,63 @@ describe("applyChatEvent", () => {
     await expect(dreamcoinBalance(userId)).resolves.toBe(0);
 
     const completedEventId = `chat_image_completed_${attachmentId}_reused_${asset.id}`;
-    const snapshot = await jobQueue.getByDedupeKey(
-      "chat.inbound",
-      idempotencyKeys.chatInbox(completedEventId),
+    const durableCallback = await prisma.mainOutboxEvent.findUniqueOrThrow({
+      where: { id: completedEventId },
+    });
+    expect(durableCallback).toMatchObject({
+      eventType: MAIN_TO_CHAT_EVENTS.chatImageCompleted,
+      aggregateType: "chat_effect",
+      aggregateId: completedEventId,
+    });
+    expect(durableCallback.payload).toMatchObject({
+      sourceService: "main",
+      sourceEventId: completedEventId,
+      eventType: MAIN_TO_CHAT_EVENTS.chatImageCompleted,
+      payload: {
+        mediaAssetId: asset.id,
+        generationJobId: null,
+        reused: true,
+        summary: "Candid sunset beach selfie in warm light.",
+      },
+    });
+
+    await prisma.mainOutboxEvent.update({
+      where: { id: completedEventId },
+      data: {
+        status: "pending",
+        attempts: 0,
+        nextRunAt: new Date(0),
+        createdAt: new Date(0),
+        deliveredAt: null,
+        lastError: undefined,
+      },
+    });
+    const delivered: DurableEventEnvelope[] = [];
+    const delivery = await dispatchPendingChatEvents(1, async (envelope) => {
+      delivered.push(envelope);
+    });
+    expect(delivery).toEqual({ delivered: 1, failed: 0 });
+    expect(delivered).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceService: "main",
+          sourceEventId: completedEventId,
+          eventType: MAIN_TO_CHAT_EVENTS.chatImageCompleted,
+          payload: expect.objectContaining({
+            mediaAssetId: asset.id,
+            generationJobId: null,
+            reused: true,
+          }),
+        }),
+      ]),
     );
-    expect(snapshot).toBeTruthy();
-    const callback = snapshot?.payload as {
-      payload?: { mediaAssetId?: string; generationJobId?: string | null; reused?: boolean; summary?: string };
-    } | null;
-    expect(callback?.payload).toMatchObject({
-      mediaAssetId: asset.id,
-      generationJobId: null,
-      reused: true,
-      summary: "Candid sunset beach selfie in warm light.",
+    await expect(
+      prisma.mainOutboxEvent.findUniqueOrThrow({
+        where: { id: completedEventId },
+      }),
+    ).resolves.toMatchObject({
+      status: "delivered",
+      deliveredAt: expect.any(Date),
     });
 
     const request = {
@@ -510,6 +699,7 @@ describe("applyChatEvent", () => {
       messageId: `${P}reuse-eligibility-msg-${suffix}`,
       userId,
       characterId,
+      characterReleaseId: releaseId,
       promptHint: "send me a sunset beach selfie",
       conversationContext: "user: send me a sunset beach selfie",
       controls: { orientation: "4:5", outputCount: 1 },
@@ -523,12 +713,25 @@ describe("applyChatEvent", () => {
 
     await setAssetStatus("approved");
     await expect(
+      findReusableChatImage({ ...request, characterReleaseId: undefined }),
+    ).resolves.toBeNull();
+    await expect(
+      findReusableChatImage({ ...request, characterReleaseId: wrongReleaseId }),
+    ).resolves.toBeNull();
+    await expect(
       findReusableChatImage({
         ...request,
         promptHint: "send a photo",
         conversationContext: "user: send me a sunset beach selfie",
       }),
     ).resolves.toMatchObject({ asset: { id: asset.id } });
+    await prisma.characterRelease.update({
+      where: { id: releaseId },
+      data: { status: "superseded" },
+    });
+    await expect(findReusableChatImage(request)).resolves.toMatchObject({
+      asset: { id: asset.id },
+    });
     await expect(
       findReusableChatImage({
         ...request,

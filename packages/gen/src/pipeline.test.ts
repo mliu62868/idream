@@ -5,13 +5,18 @@
 import { deflateSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  type CharacterPreviewGeneratePayload,
   idempotencyKeys,
   type ImageGeneratePayload,
   MAIN_QUEUES,
   type VideoGeneratePayload,
 } from "@idream/shared/contracts";
 import { mockVideoMp4Bytes } from "@idream/shared";
-import { processImageGenerate, processVideoGenerate } from "./pipeline";
+import {
+  processCharacterPreviewGenerate,
+  processImageGenerate,
+  processVideoGenerate,
+} from "./pipeline";
 import type { GenProviders } from "./providers";
 import type { EnqueueInput } from "./queue";
 
@@ -59,6 +64,27 @@ function videoPayload(overrides: Partial<VideoGeneratePayload> = {}): VideoGener
   };
 }
 
+function previewPayload(
+  overrides: Partial<CharacterPreviewGeneratePayload> = {},
+): CharacterPreviewGeneratePayload {
+  return {
+    version: 1,
+    kind: "character.preview",
+    requestId: "preview-request-1",
+    previewJobId: "preview-job-1",
+    draftId: "draft-1",
+    userId: "user-1",
+    prompt: "adult character identity portrait",
+    negativePrompt: null,
+    controls: { width: 832, height: 1024 },
+    orientation: "4:5",
+    seed: "draft-1:preview-job-1",
+    model: "redcraft-krea2-comfyui",
+    outputPrefix: "preview/preview-job-1/",
+    ...overrides,
+  };
+}
+
 function makeProviders(over: Partial<GenProviders> = {}): GenProviders {
   return {
     image: {
@@ -67,8 +93,20 @@ function makeProviders(over: Partial<GenProviders> = {}): GenProviders {
         ok: true as const,
         data: {
           assets: [
-            { key: "mock/images/seed_1-1.png", width: 1024, height: 1024 },
-            { key: "mock/images/seed_1-2.png", width: 1024, height: 1024 },
+            {
+              key: "mock/images/seed_1-1.png",
+              width: 1024,
+              height: 1024,
+              contentType: "image/png",
+              body: patternedPng(4, 4),
+            },
+            {
+              key: "mock/images/seed_1-2.png",
+              width: 1024,
+              height: 1024,
+              contentType: "image/png",
+              body: patternedPng(4, 4),
+            },
           ],
         },
       })),
@@ -118,6 +156,8 @@ describe("processImageGenerate", () => {
     const payload = input.payload as Record<string, unknown>;
     expect(payload.kind).toBe("generation.completed");
     expect(payload.mode).toBe("image");
+    expect(payload.provider).toBe("backend");
+    expect(payload.model).toBe("mock-image");
     expect(payload.generationJobId).toBe("job_img_1");
     expect(payload.assets).toEqual([
       {
@@ -146,8 +186,20 @@ describe("processImageGenerate", () => {
           ok: true as const,
           data: {
             assets: [
-              { key: "mock/images/seed_1-1.png", width: 1024, height: 1024 },
-              { key: "mock/images/seed_1-2.png", width: 1024, height: 1024 },
+              {
+                key: "mock/images/seed_1-1.png",
+                width: 1024,
+                height: 1024,
+                contentType: "image/png",
+                body: patternedPng(4, 4),
+              },
+              {
+                key: "mock/images/seed_1-2.png",
+                width: 1024,
+                height: 1024,
+                contentType: "image/png",
+                body: patternedPng(4, 4),
+              },
             ],
           },
           invocation: {
@@ -233,7 +285,13 @@ describe("processImageGenerate", () => {
     const imageGenerate = vi.fn(async () => ({
       ok: true as const,
       data: {
-        assets: [{ key: "mock/images/seed_1-1.png", width: 1024, height: 1024 }],
+        assets: [{
+          key: "mock/images/seed_1-1.png",
+          width: 1024,
+          height: 1024,
+          contentType: "image/png",
+          body: patternedPng(4, 4),
+        }],
       },
     }));
     const providers = makeProviders({
@@ -281,6 +339,73 @@ describe("processImageGenerate", () => {
         ],
       }),
     );
+  });
+
+  it("fails closed before the provider when any pinned reference cannot be hydrated", async () => {
+    const enqueue = vi.fn(async (_: EnqueueInput) => {});
+    const imageGenerate = vi.fn(async () => ({
+      ok: true as const,
+      data: {
+        assets: [{
+          key: "mock/images/partial-reference.png",
+          width: 1024,
+          height: 1024,
+          contentType: "image/png",
+          body: patternedPng(4, 4),
+        }],
+      },
+    }));
+    const providers = makeProviders({
+      image: { generate: imageGenerate },
+      blob: {
+        putPrivate: vi.fn(async (input) => ({
+          ok: true as const,
+          data: { key: input.key, size: input.body.byteLength },
+        })),
+        signGetUrl: vi.fn(async (input) =>
+          input.key === "identity/unavailable.webp"
+            ? {
+                ok: false as const,
+                error: {
+                  code: "not_found",
+                  message: "reference object missing",
+                  retryable: false,
+                },
+              }
+            : {
+                ok: true as const,
+                data: {
+                  url: `https://blob.test/${encodeURIComponent(input.key)}`,
+                },
+              }
+        ),
+      },
+    });
+
+    await expect(
+      processImageGenerate(
+        imagePayload({
+          count: 1,
+          referenceImages: [
+            {
+              assetId: "anchor-unavailable",
+              role: "identity_anchor",
+              storageKey: "identity/unavailable.webp",
+            },
+            {
+              assetId: "anchor-available",
+              role: "identity_reference",
+              storageKey: "identity/available.webp",
+            },
+          ],
+        }),
+        { enqueue, providers },
+      ),
+    ).rejects.toThrow(
+      "Pinned image references could not be hydrated: anchor-unavailable",
+    );
+    expect(imageGenerate).not.toHaveBeenCalled();
+    expect(enqueue).not.toHaveBeenCalled();
   });
 
   it("downloads provider asset URLs before writing blobs", async () => {
@@ -344,6 +469,41 @@ describe("processImageGenerate", () => {
     expect(((input.payload as Record<string, unknown>).error as Record<string, unknown>).code).toBe(
       "empty_provider_result",
     );
+  });
+
+  it("fails instead of fabricating pixels when the provider returns no bytes or URL", async () => {
+    const enqueue = vi.fn(async (_: EnqueueInput) => {});
+    const providers = makeProviders({
+      image: {
+        generate: vi.fn(async () => ({
+          ok: true as const,
+          data: {
+            assets: [{
+              key: "provider/missing-image.webp",
+              width: 768,
+              height: 1024,
+              contentType: "image/webp",
+            }],
+          },
+        })),
+      },
+    });
+
+    await processImageGenerate(imagePayload({ count: 1 }), {
+      enqueue,
+      providers,
+      attemptsMade: 0,
+      maxAttempts: 1,
+    });
+
+    expect(providers.blob.putPrivate).not.toHaveBeenCalled();
+    expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({
+      dedupeKey: idempotencyKeys.generationFinalize("job_img_1", "failed"),
+      payload: expect.objectContaining({
+        kind: "generation.failed",
+        error: expect.objectContaining({ code: "asset_body_missing" }),
+      }),
+    }));
   });
 
   it("enqueues generation.failed when an image provider returns a degenerate PNG", async () => {
@@ -542,6 +702,111 @@ describe("processImageGenerate", () => {
   });
 });
 
+describe("processCharacterPreviewGenerate", () => {
+  it("persists a real provider asset and returns a preview completion to main", async () => {
+    const enqueue = vi.fn(async (_: EnqueueInput) => {});
+    const providers = makeProviders({
+      image: {
+        generate: vi.fn(async () => ({
+          ok: true as const,
+          data: {
+            assets: [{
+              key: "provider/preview.png",
+              width: 832,
+              height: 1024,
+              contentType: "image/png",
+              body: patternedPng(4, 4),
+            }],
+          },
+        })),
+      },
+    });
+
+    await processCharacterPreviewGenerate(previewPayload(), { enqueue, providers });
+
+    expect(providers.blob.putPrivate).toHaveBeenCalledWith({
+      key: "preview/preview-job-1/image-1.png",
+      body: expect.anything(),
+      contentType: "image/png",
+    });
+    expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({
+      queue: MAIN_QUEUES.aiFinalize,
+      dedupeKey: idempotencyKeys.characterPreviewFinalize(
+        "preview-job-1",
+        "completed",
+      ),
+      payload: expect.objectContaining({
+        kind: "character.preview.completed",
+        provider: "backend",
+        previewJobId: "preview-job-1",
+      }),
+    }));
+  });
+
+  it("fails closed when a provider returns only a key without bytes or URL", async () => {
+    const enqueue = vi.fn(async (_: EnqueueInput) => {});
+    const providers = makeProviders({
+      image: {
+        generate: vi.fn(async () => ({
+          ok: true as const,
+          data: {
+            assets: [{
+              key: "provider/missing-preview.png",
+              width: 832,
+              height: 1024,
+              contentType: "image/png",
+            }],
+          },
+        })),
+      },
+    });
+
+    await processCharacterPreviewGenerate(previewPayload(), {
+      enqueue,
+      providers,
+      attemptsMade: 0,
+      maxAttempts: 1,
+    });
+
+    expect(providers.blob.putPrivate).not.toHaveBeenCalled();
+    expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({
+      dedupeKey: idempotencyKeys.characterPreviewFinalize(
+        "preview-job-1",
+        "failed",
+      ),
+      payload: expect.objectContaining({
+        kind: "character.preview.failed",
+        error: expect.objectContaining({ code: "asset_body_missing" }),
+      }),
+    }));
+  });
+});
+
+function patternedPng(width: number, height: number) {
+  const rows = Array.from({ length: height }, (_, y) => {
+    const row = Buffer.alloc(1 + width * 3);
+    row[0] = 0;
+    for (let x = 0; x < width; x += 1) {
+      const offset = 1 + x * 3;
+      row[offset] = (x * 67 + y * 19) % 256;
+      row[offset + 1] = (x * 29 + y * 83) % 256;
+      row[offset + 2] = (x * 11 + y * 47) % 256;
+    }
+    return row;
+  });
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 2;
+  return new Uint8Array(Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", deflateSync(Buffer.concat(rows))),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]));
+}
+
 function whitePng(width: number, height: number) {
   const rows = Array.from({ length: height }, () => {
     const row = Buffer.alloc(1 + width * 3, 255);
@@ -617,6 +882,8 @@ describe("processVideoGenerate", () => {
     const payload = input.payload as Record<string, unknown>;
     expect(payload.kind).toBe("generation.completed");
     expect(payload.mode).toBe("video");
+    expect(payload.provider).toBe("mock");
+    expect(payload.model).toBe("mock-video");
     expect(payload.assets).toEqual([
       {
         key: "gen/job_vid_1/video.mp4",

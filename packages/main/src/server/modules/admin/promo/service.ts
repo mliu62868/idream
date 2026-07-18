@@ -4,6 +4,8 @@ import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
 import {
+  MAX_REDEEM_CODE_DREAMCOINS,
+  MIN_REDEEM_CODE_DREAMCOINS,
   redeemCodeHash,
   redeemCodeHashCandidates,
 } from "@/server/lib/redeem-codes";
@@ -24,7 +26,12 @@ const redeemCodeCreateSchema = z.object({
   code: z.string().trim().min(4).max(80),
   reward: z
     .object({
-      dreamcoins: z.number().int().min(0).max(1_000_000).optional(),
+      dreamcoins: z
+        .number()
+        .finite()
+        .int()
+        .min(MIN_REDEEM_CODE_DREAMCOINS)
+        .max(MAX_REDEEM_CODE_DREAMCOINS),
       note: z.string().trim().max(200).optional(),
     })
     .passthrough(),

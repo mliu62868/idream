@@ -36,11 +36,11 @@ describe("Admin v2 permission contract", () => {
     expect(adminPermissionKeySchema.safeParse("creative.run.delete_everything").success).toBe(false);
   });
 
-  it("expands work-mode grant bundles without smuggling publish or export rights", () => {
+  it("expands work-mode grant bundles with only their intended execution rights", () => {
     expect(expandAdminGrantBundles(["character_producer"])).toEqual(
       new Set(ADMIN_GRANT_BUNDLES.character_producer.permissions),
     );
-    expect(expandAdminGrantBundles(["creative_operator"])).not.toContain("creative.placement.publish");
+    expect(expandAdminGrantBundles(["creative_operator"])).toContain("creative.placement.publish");
     expect(expandAdminGrantBundles(["growth_operator"])).not.toContain("analytics.metric.export");
   });
 

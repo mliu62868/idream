@@ -36,6 +36,8 @@ export const creativeRunCreateRequestSchema = z
     profileId: adminIdSchema,
     recipeId: adminIdSchema.optional(),
     presetIds: z.array(adminIdSchema).max(12).default([]),
+    referenceAssetIds: z.array(adminIdSchema).max(4).default([]),
+    bootstrapIdentity: z.boolean().default(false),
     orientation: z.string().trim().min(1).max(20).optional(),
     count: z.number().int().min(1).max(24).default(4),
     brief: z.string().trim().min(1).max(2_000),
@@ -57,17 +59,59 @@ export const creativeRunCreateRequestSchema = z
   })
   .strict()
   .superRefine((request, ctx) => {
+    const characterPurpose = ["character_cover", "character_hero", "character_chat"]
+      .includes(request.purpose);
+    const genericPurpose = ["feed", "homepage", "seo", "template_cover", "campaign"]
+      .includes(request.purpose);
     if (request.targetType !== "none" && !request.targetId) {
       ctx.addIssue({ code: "custom", path: ["targetId"], message: "Target ID is required for this target type" });
     }
     if (request.targetType === "none" && request.targetId) {
       ctx.addIssue({ code: "custom", path: ["targetId"], message: "Target ID must be omitted for a targetless Run" });
     }
+    if (characterPurpose && request.targetType !== "character") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["targetType"],
+        message: "Character image purposes must use the dedicated Character target workflow",
+      });
+    }
+    if (genericPurpose && request.targetType !== "none") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["targetType"],
+        message: "Generic image Runs must remain targetless until an artifact is reviewed",
+      });
+    }
     if (!request.directions && request.outputsPerDirection !== undefined) {
       ctx.addIssue({ code: "custom", path: ["outputsPerDirection"], message: "Outputs per direction requires persisted directions" });
     }
     if (request.directions && request.directions.length * (request.outputsPerDirection ?? 1) > 24) {
       ctx.addIssue({ code: "custom", path: ["outputsPerDirection"], message: "A Creative Run cannot exceed 24 outputs" });
+    }
+    if (
+      request.bootstrapIdentity &&
+      (request.targetType !== "character" || request.purpose !== "character_cover")
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["bootstrapIdentity"],
+        message: "Identity bootstrap is only valid for a Character primary portrait Run",
+      });
+    }
+    if (request.bootstrapIdentity && request.referenceAssetIds.length > 0) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["referenceAssetIds"],
+        message: "Identity bootstrap cannot depend on an existing Character reference",
+      });
+    }
+    if (request.targetType !== "character" && request.referenceAssetIds.length > 0) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["referenceAssetIds"],
+        message: "Generic image production is text-to-image only and cannot accept reference assets",
+      });
     }
   });
 
@@ -76,25 +120,115 @@ export const creativeRunCreateResultSchema = z.object({
   replayed: z.boolean(),
 }).strict();
 
+export const creativeRunGenericPurposeSchema = z.enum([
+  "campaign",
+  "homepage",
+  "feed",
+  "seo",
+  "template_cover",
+]);
+
+export const creativeRunCreateOptionsSchema = z.object({
+  purposes: z.array(z.object({
+    value: creativeRunGenericPurposeSchema,
+    label: z.string().trim().min(1),
+    description: z.string().trim().min(1),
+    defaultOrientation: z.string().trim().min(1),
+    runtimePlacementSupported: z.boolean(),
+  }).strict()).min(1).readonly(),
+  profiles: z.array(z.object({
+    profileKey: adminIdSchema,
+    profileVersion: z.number().int().positive(),
+    label: z.string().trim().min(1),
+    workflowKey: z.string().trim().min(1),
+    workflowVersion: z.number().int().positive(),
+    allowedOrientations: z.array(z.string().trim().min(1)).min(1).readonly(),
+    recommended: z.boolean(),
+  }).strict()).readonly(),
+  readiness: z.object({
+    ready: z.boolean(),
+    blocker: z.string().trim().min(1).nullable(),
+  }).strict(),
+  characterAssetStudioHref: z.string().trim().min(1),
+}).strict();
+
+export const creativeReviewQualityEvidenceSchema = z.object({
+  artifactFree: z.boolean(),
+  singleSubject: z.boolean(),
+  intentMatch: z.boolean(),
+  noVisibleText: z.boolean(),
+}).strict();
+
+export const creativeReviewEvidenceSchema = z.object({
+  quality: creativeReviewQualityEvidenceSchema,
+}).strict();
+
 export const creativeReviewDecisionRequestSchema = z.object({
   entityVersion: z.number().int().nonnegative(),
+  supersedesDecisionId: adminIdSchema.optional(),
   decision: z.enum(["approved", "rejected"]),
   identityConsistency: z.enum(["passed", "failed", "unscored"]),
   score: z.number().int().min(0).max(100).optional(),
+  quality: creativeReviewQualityEvidenceSchema.optional(),
   reason: z.string().trim().min(3).max(2_000),
 });
+
+function isSafeCampaignHref(value: string) {
+  if (
+    value.startsWith("//") ||
+    value.includes("\\") ||
+    /[\u0000-\u001F\u007F]/.test(value)
+  ) {
+    return false;
+  }
+  if (value.startsWith("/")) {
+    try {
+      return new URL(value, "https://community.invalid").origin ===
+        "https://community.invalid";
+    } catch {
+      return false;
+    }
+  }
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" &&
+      url.username === "" &&
+      url.password === "";
+  } catch {
+    return false;
+  }
+}
 
 export const creativePlacementPublishRequestSchema = z.object({
   entityVersion: z.number().int().nonnegative(),
   itemId: adminIdSchema,
   assetId: adminIdSchema,
-  slot: z.string().trim().min(1).max(120),
-  targetType: z.string().trim().min(1).max(120),
+  slot: z.literal("campaign"),
+  targetType: z.literal("campaign"),
   targetId: adminIdSchema,
+  eyebrow: z.string().trim().min(1).max(80),
+  title: z.string().trim().min(1).max(120),
+  ctaLabel: z.string().trim().min(1).max(60).optional(),
+  href: z.string().trim().min(1).max(512).refine(
+    isSafeCampaignHref,
+    "Expected a safe internal path or HTTPS URL",
+  ).optional(),
   reason: z.string().trim().min(3).max(2_000),
+}).strict().superRefine((value, context) => {
+  if (Boolean(value.ctaLabel) === Boolean(value.href)) return;
+  context.addIssue({
+    code: "custom",
+    message: "CTA label and href must be provided together",
+    path: value.ctaLabel ? ["href"] : ["ctaLabel"],
+  });
 });
 
 export const creativePlacementVerificationRequestSchema = z.object({
+  entityVersion: z.number().int().nonnegative(),
+  reason: z.string().trim().min(3).max(2_000),
+});
+
+export const creativePlacementWithdrawalRequestSchema = z.object({
   entityVersion: z.number().int().nonnegative(),
   reason: z.string().trim().min(3).max(2_000),
 });
@@ -137,6 +271,13 @@ export const creativePlacementVerificationResultSchema = z.object({
   runVersion: z.number().int().positive(),
 }).strict();
 
+export const creativePlacementWithdrawalResultSchema = z.object({
+  runId: adminIdSchema,
+  placementId: adminIdSchema,
+  verificationState: z.literal("overridden"),
+  runVersion: z.number().int().positive(),
+}).strict();
+
 export const creativeLifecycleStateSchema = z.enum(["draft", "active", "closed", "archived"]);
 export const creativeRunItemStatusSchema = z.enum([
   "queued",
@@ -146,6 +287,19 @@ export const creativeRunItemStatusSchema = z.enum([
   "regenerate_requested",
   "published",
   "failed",
+]);
+export const creativeRunItemExecutionStateSchema = z.enum([
+  "dispatching",
+  "provider_queued",
+  "generating",
+  "finalizing",
+  "ready",
+  "failed",
+]);
+export const creativeIdentityReviewModeSchema = z.enum([
+  "defines_identity",
+  "preserves_identity",
+  "not_applicable",
 ]);
 export const creativeWorkflowStageSchema = z.enum([
   "brief",
@@ -297,6 +451,9 @@ export const creativeRunQuerySchema = adminCursorQuerySchema.extend({
   executionOutcome: creativeExecutionOutcomeSchema.optional(),
   ownerId: adminIdSchema.optional(),
   priority: adminPrioritySchema.optional(),
+  targetType: z.enum(["character", "route_page", "campaign", "template", "none"]).optional(),
+  targetId: adminIdSchema.optional(),
+  sort: z.enum(["id_asc", "updated_desc"]).default("id_asc"),
 });
 
 export const creativeRunListResponseSchema = adminListResponseSchema(creativeRunSchema);
@@ -306,8 +463,19 @@ export const creativeRunItemDetailSchema = z
     id: adminIdSchema,
     ordinal: z.number().int().nonnegative(),
     status: creativeRunItemStatusSchema,
+    executionState: creativeRunItemExecutionStateSchema,
+    identityReviewMode: creativeIdentityReviewModeSchema,
     version: z.number().int().nonnegative(),
     retryability: z.string(),
+    direction: z.object({
+      title: z.string().trim().min(1),
+      scenePrompt: z.string().trim().min(1),
+      mood: z.string().trim().min(1),
+      setting: z.string().trim().min(1),
+      outfit: z.string().trim().min(1),
+      camera: z.string().trim().min(1),
+      lighting: z.string().trim().min(1),
+    }).strict().nullable(),
     lineage: z
       .object({
         briefId: adminIdSchema,
@@ -319,6 +487,7 @@ export const creativeRunItemDetailSchema = z
         workflowVersion: z.string().trim().min(1).nullable(),
         requestId: adminIdSchema.nullable(),
         attemptId: adminIdSchema.nullable(),
+        providerRequestId: z.string().trim().min(1).nullable(),
         assetId: adminIdSchema.nullable(),
         reviewDecisionId: adminIdSchema.nullable(),
         placementVersionId: adminIdSchema.nullable(),
@@ -337,9 +506,11 @@ export const creativeRunItemDetailSchema = z
     review: z
       .object({
         id: adminIdSchema,
+        supersedesDecisionId: adminIdSchema.nullable(),
         decision: z.enum(["approved", "rejected"]),
         identityConsistency: z.enum(["passed", "failed", "unscored"]),
         score: z.number().int().min(0).max(100).nullable(),
+        quality: creativeReviewQualityEvidenceSchema.nullable(),
         reason: z.string(),
         reviewerId: adminIdSchema,
         createdAt: adminIsoDateTimeSchema,
@@ -366,6 +537,21 @@ export const creativeRunDetailSchema = creativeRunBaseSchema
   .omit({ errorClusters: true })
   .extend({
     title: z.string().trim().min(1),
+    reviewContext: z.object({
+      brief: z.string().trim().min(1),
+      orientation: z.string().trim().min(1).nullable(),
+      profile: z.object({
+        key: z.string().trim().min(1).nullable(),
+        version: z.number().int().positive().nullable(),
+        label: z.string().trim().min(1).nullable(),
+      }).strict(),
+      recipe: z.object({
+        key: z.string().trim().min(1).nullable(),
+        version: z.number().int().positive().nullable(),
+        label: z.string().trim().min(1).nullable(),
+      }).strict(),
+      referenceAssetCount: z.number().int().nonnegative(),
+    }).strict(),
     settlementView: creativeSettlementViewSchema,
     retryEligibility: creativeRetryEligibilitySchema,
     legacyState: z.string().trim().min(1),
@@ -375,6 +561,7 @@ export const creativeRunDetailSchema = creativeRunBaseSchema
   .superRefine(validateCreativeRunOutcome);
 
 export type CreativeRun = z.infer<typeof creativeRunSchema>;
+export type CreativeRunCreateOptions = z.infer<typeof creativeRunCreateOptionsSchema>;
 export type CreativeAssetLineage = z.infer<typeof creativeAssetLineageSchema>;
 export type CreativeRunQuery = z.infer<typeof creativeRunQuerySchema>;
 export type CreativeRunDetail = z.infer<typeof creativeRunDetailSchema>;
@@ -384,7 +571,9 @@ export type CreativeRunRetryFailedCommandRequest = z.infer<
 export type CreativeReviewDecisionRequest = z.infer<typeof creativeReviewDecisionRequestSchema>;
 export type CreativePlacementPublishRequest = z.infer<typeof creativePlacementPublishRequestSchema>;
 export type CreativePlacementVerificationRequest = z.infer<typeof creativePlacementVerificationRequestSchema>;
+export type CreativePlacementWithdrawalRequest = z.infer<typeof creativePlacementWithdrawalRequestSchema>;
 export type CreativeRunAttachIncidentResult = z.infer<typeof creativeRunAttachIncidentResultSchema>;
 export type CreativeReviewDecisionResult = z.infer<typeof creativeReviewDecisionResultSchema>;
 export type CreativePlacementPublishResult = z.infer<typeof creativePlacementPublishResultSchema>;
 export type CreativePlacementVerificationResult = z.infer<typeof creativePlacementVerificationResultSchema>;
+export type CreativePlacementWithdrawalResult = z.infer<typeof creativePlacementWithdrawalResultSchema>;

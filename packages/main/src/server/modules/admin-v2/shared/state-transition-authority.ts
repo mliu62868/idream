@@ -38,11 +38,11 @@ export const CHARACTER_RELEASE_STATES = characterReleaseStatusSchema.options;
 export const CHARACTER_PROJECT_PHASE_STATES = characterProjectPhaseSchema.options;
 
 const CHARACTER_PROJECT_PHASE_AUTHORITY = defineTransitionAuthority(CHARACTER_PROJECT_PHASE_STATES, {
-  idea: ["planned", "producing", "qa", "live_management"],
-  planned: ["producing", "qa"],
-  producing: ["qa"],
-  qa: ["producing", "launch_ready"],
-  launch_ready: ["producing", "live_management"],
+  idea: ["planned", "producing", "qa", "live_management", "retired"],
+  planned: ["producing", "qa", "retired"],
+  producing: ["qa", "retired"],
+  qa: ["producing", "launch_ready", "retired"],
+  launch_ready: ["producing", "live_management", "retired"],
   live_management: ["producing", "retired"],
   retired: [],
 });
@@ -54,7 +54,7 @@ export function isCharacterProjectPhaseTransitionAllowed(from: string, to: strin
 const CHARACTER_RELEASE_AUTHORITY = defineTransitionAuthority(CHARACTER_RELEASE_STATES, {
   draft: ["validating"],
   validating: ["in_review"],
-  in_review: ["draft", "approved"],
+  in_review: ["withdrawn", "approved"],
   approved: ["published"],
   published: ["superseded", "withdrawn"],
   superseded: [],
@@ -129,9 +129,9 @@ export const CREATIVE_RUN_WORKFLOW_STAGES = creativeWorkflowStageSchema.options;
 const CREATIVE_RUN_WORKFLOW_AUTHORITY = defineTransitionAuthority(CREATIVE_RUN_WORKFLOW_STAGES, {
   brief: ["directions"],
   directions: ["generation"],
-  generation: ["generation", "review"],
-  review: ["generation", "review", "placement"],
-  placement: ["generation", "review", "verification"],
+  generation: ["generation", "review", "placement", "verification"],
+  review: ["generation", "review", "placement", "verification"],
+  placement: ["generation", "review", "placement", "verification"],
   verification: ["generation", "review", "placement", "verification"],
 });
 
@@ -142,7 +142,7 @@ export function isCreativeRunWorkflowTransitionAllowed(from: string, to: string)
 export const CREATIVE_RUN_VERIFICATION_STATES = adminVerificationStateSchema.options;
 
 const CREATIVE_RUN_VERIFICATION_AUTHORITY = defineTransitionAuthority(CREATIVE_RUN_VERIFICATION_STATES, {
-  pending: ["pending", "verifying"],
+  pending: ["pending", "verifying", "passed"],
   verifying: ["pending", "passed", "failed"],
   passed: ["verifying"],
   failed: ["verifying"],
@@ -157,7 +157,7 @@ export const CREATIVE_PLACEMENT_VERIFICATION_STATES = adminVerificationStateSche
 
 const CREATIVE_PLACEMENT_VERIFICATION_AUTHORITY = defineTransitionAuthority(CREATIVE_PLACEMENT_VERIFICATION_STATES, {
   pending: ["verifying"],
-  verifying: ["passed", "failed"],
+  verifying: ["passed", "failed", "overridden"],
   passed: [],
   failed: ["verifying"],
   overridden: [],

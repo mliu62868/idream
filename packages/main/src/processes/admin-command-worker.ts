@@ -277,7 +277,13 @@ export function stopAdminCommandWorkerLoop() {
   running = false;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+export function isDirectAdminCommandWorkerInvocation(argvEntry = process.argv[1]) {
+  const normalized = argvEntry?.replaceAll("\\", "/") ?? "";
+  return normalized.endsWith("/admin-command-worker.ts") ||
+    normalized.endsWith("/admin-command-worker.js");
+}
+
+if (isDirectAdminCommandWorkerInvocation()) {
   const shutdown = () => {
     stopAdminCommandWorkerLoop();
     setTimeout(() => process.exit(0), 200);

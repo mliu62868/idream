@@ -1,9 +1,15 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { VisualIdentityPanel, type VisualIdentityPanelData } from "./CharacterWorkspace";
+import {
+  referenceIdsRemovedFromPublishedSet,
+  requiresReviewedIdentityBootstrap,
+  uniqueAvailableVisualAssets,
+  VisualIdentityPanel,
+  type VisualIdentityPanelData,
+} from "./CharacterWorkspace";
 
 const data = {
-  character: { id: "character-1", style: "realistic" },
+  character: { id: "character-1", style: "realistic", imageUrl: null },
   visual: {
     activeIdentity: {
       id: "identity-2", version: 2, status: "active", style: "realistic",
@@ -15,37 +21,157 @@ const data = {
     anchors: [{ mediaAssetId: "anchor-1", role: "identity_anchor", available: true, url: "/anchor.webp", thumbnailUrl: null, qualityScore: null, identityScore: null }],
     references: [],
     activeReferenceSet: null,
+    looks: [{
+      id: "look-1",
+      ownerId: "owner-1",
+      label: "Evening Look",
+      status: "active",
+      visualProfileId: "identity-2",
+      referenceAssetId: "anchor-1",
+      rebasedFromLookId: null,
+      updatedAt: "2026-07-12T12:00:00.000Z",
+    }],
     routeQualifications: [{
       id: "qualification-1", routeFingerprint: "fingerprint", generationProfileKey: "portrait", generationProfileVersion: 3,
       workflowKey: "identity", workflowVersion: 2, style: "realistic", matrixKey: "realistic-default-v1",
       sampleCount: 40, passCount: 38, identityMatch: 0.94, result: "qualified", evidence: { batchIds: ["batch-1"] },
       policyVersion: "character-release-policy-v2", evaluatedAt: "2026-07-12T12:00:00.000Z", expiresAt: null, stale: false,
     }],
+    identityBootstrap: {
+      state: "blocked_existing_authority",
+      allowed: false,
+      nextIdentityVersion: 3,
+      blockers: ["grounded_or_unknown_identity_history_exists"],
+      profile: null,
+    },
     readiness: {
       ready: false,
       qualificationPolicyVersion: "character-release-policy-v2",
       blockers: [{ code: "reference_set_not_active", message: "No active Reference Set revision is pinned.", deepLink: "/admin/characters/character-1?tab=visual" }],
-      productionDeepLink: "/admin/content/production?characterId=character-1",
+      productionDeepLink: "/admin/characters/character-1?tab=assets",
     },
   },
 } satisfies VisualIdentityPanelData;
 
+const runCommittedMutation = async <T,>(input: {
+    action: string;
+    commit: () => Promise<T>;
+    afterRefresh?: () => void;
+  }) => {
+    const result = await input.commit();
+    input.afterRefresh?.();
+    return { result, refreshed: true };
+  };
+
 describe("Visual Identity operator workbench", () => {
+  it("offers each available asset once when an anchor is also a published reference", () => {
+    expect(uniqueAvailableVisualAssets([
+      { mediaAssetId: "asset-1", available: true, role: "identity_anchor" },
+      { mediaAssetId: "asset-1", available: true, role: "primary_face" },
+      { mediaAssetId: "asset-2", available: false, role: "secondary" },
+    ])).toEqual([
+      { mediaAssetId: "asset-1", available: true, role: "identity_anchor" },
+    ]);
+  });
+
+  it("makes the exact references removed by the next published revision explicit", () => {
+    expect(referenceIdsRemovedFromPublishedSet(
+      ["anchor-1", "reference-2", "reference-3"],
+      ["anchor-1", "reference-3"],
+    )).toEqual(["reference-2"]);
+  });
+
   it("renders distinct identity, reference and qualification evidence with actionable blockers", () => {
-    const html = renderToStaticMarkup(<VisualIdentityPanel data={data} permissions={{ writeVisual: true, evaluateRoute: true }} reload={async () => undefined} />);
+    const html = renderToStaticMarkup(<VisualIdentityPanel data={data} permissions={{ writeVisual: true, evaluateRoute: true }} runCommittedMutation={runCommittedMutation} />);
     expect(html).toContain("Visual Identity authority");
     expect(html).toContain("reference set not active");
     expect(html).toContain("Open role image production");
     expect(html).toContain("Publish Reference Set");
+    expect(html).toContain("Character Looks using role images");
+    expect(html).toContain("Evening Look");
+    expect(html).toContain("Archive Look");
+    expect(html).toContain("Unchecked images leave runtime authority");
     expect(html).toContain("38/40 passed");
     expect(html).toContain("Submit route evaluation");
   });
 
   it("fails writes closed when the matching effective grants are absent", () => {
-    const html = renderToStaticMarkup(<VisualIdentityPanel data={data} permissions={{ writeVisual: false, evaluateRoute: false }} reload={async () => undefined} />);
+    const html = renderToStaticMarkup(<VisualIdentityPanel data={data} permissions={{ writeVisual: false, evaluateRoute: false }} runCommittedMutation={runCommittedMutation} />);
     expect(html).toContain("content.official.write is not granted");
     expect(html).toContain("content.production.write is not granted");
     expect(html).toMatch(/disabled=""[^>]*>Create &amp; activate version/);
     expect(html).toMatch(/disabled=""[^>]*>Publish Reference Set/);
+  });
+
+  it("routes an unanchored legacy identity back to reviewed Asset bootstrap", () => {
+    const html = renderToStaticMarkup(<VisualIdentityPanel
+      data={{
+        ...data,
+        visual: {
+          ...data.visual,
+          anchors: [],
+          references: [],
+          identityBootstrap: {
+            state: "recoverable_empty_history",
+            allowed: true,
+            nextIdentityVersion: 3,
+            blockers: [],
+            profile: {
+              profileKey: "bootstrap-profile",
+              profileVersion: 1,
+              label: "Bootstrap portrait",
+              workflowKey: "bootstrap-workflow",
+              workflowVersion: 1,
+              orientation: "4:5",
+            },
+          },
+        },
+      }}
+      navigateToTab={() => undefined}
+      permissions={{ writeVisual: true, evaluateRoute: true }}
+      runCommittedMutation={runCommittedMutation}
+    />);
+
+    expect(html).toContain("Establish a reviewed portrait anchor in Character Assets");
+    expect(html).toContain("Open Character Assets");
+    expect(html).toMatch(/disabled=""[^>]*>Create &amp; activate version/);
+  });
+
+  it("lets an existing Character image repair an unanchored legacy profile", () => {
+    const html = renderToStaticMarkup(<VisualIdentityPanel
+      data={{
+        ...data,
+        character: { ...data.character, imageUrl: "/legacy-character.webp" },
+        visual: {
+          ...data.visual,
+          anchors: [],
+          references: [],
+          identityBootstrap: {
+            state: "blocked_existing_authority",
+            allowed: false,
+            nextIdentityVersion: 2,
+            blockers: ["character_image_already_selected"],
+            profile: null,
+          },
+        },
+      }}
+      permissions={{ writeVisual: true, evaluateRoute: true }}
+      runCommittedMutation={runCommittedMutation}
+    />);
+
+    expect(html).toContain("current Character image is available");
+    expect(html).not.toContain("Establish a reviewed portrait anchor in Character Assets");
+    expect(requiresReviewedIdentityBootstrap({
+      hasActiveIdentity: true,
+      hasCurrentCharacterImage: true,
+      availableReferenceCount: 0,
+      hasActiveReferenceSet: false,
+    })).toBe(false);
+    expect(requiresReviewedIdentityBootstrap({
+      hasActiveIdentity: true,
+      hasCurrentCharacterImage: false,
+      availableReferenceCount: 0,
+      hasActiveReferenceSet: false,
+    })).toBe(true);
   });
 });

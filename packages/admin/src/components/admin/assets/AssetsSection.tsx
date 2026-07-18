@@ -8,5 +8,5 @@ import { AssetsDetailPage } from "./AssetsDetailPage";
 // 两件套范围内；view.kind === "new" 时回落列表页，而不是渲染一个不存在的表单。
 export function AssetsSection({ canReview, view }: { canReview: boolean; view: AdminSubview }) {
   if (view.kind === "detail") return <AssetsDetailPage canReview={canReview} id={view.id} />;
-  return <AssetsListPage />;
+  return <AssetsListPage canReview={canReview} />;
 }

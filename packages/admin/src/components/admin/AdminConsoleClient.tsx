@@ -734,6 +734,7 @@ export function AdminConsoleClient({
                 permissions,
                 canRead: canAccessActiveSection,
                 workMode,
+                actorId: actor?.id ?? "anonymous",
               })
             )}
           </div>
@@ -952,6 +953,7 @@ function renderSection(
     permissions: ReadonlySet<AdminPermissionKey>;
     canRead: boolean;
     workMode: WorkMode;
+    actorId: string;
   },
 ) {
   if (!section) return null;
@@ -966,7 +968,7 @@ function renderSection(
       return <GenerationJobsWorkspace />;
     }
     if (section.view === "production") {
-      return <CreativeRunWorkspace permissions={{
+      return <CreativeRunWorkspace actorId={ctx.actorId} permissions={{
         read: ctx.canRead,
         write: ctx.permissions.has("creative.run.write"),
         review: ctx.permissions.has("creative.run.review"),
@@ -977,7 +979,7 @@ function renderSection(
     if (section.view === "assets") return <AssetsSection canReview={ctx.permissions.has("content.asset.review")} view={subview} />;
     if (section.view === "placements") return <PlacementsSection canPublish={ctx.permissions.has("creative.placement.publish")} view={subview} />;
     if (section.view === "official") {
-      return <CharacterWorkspace permissions={{
+      return <CharacterWorkspace actorId={ctx.actorId} permissions={{
         read: ctx.canRead,
         writeProject: ctx.permissions.has("character.project.write"),
         proposeRelease: ctx.permissions.has("character.release.propose"),
@@ -985,6 +987,9 @@ function renderSection(
         reviewRelease: ctx.permissions.has("character.release.review"),
         writeVisual: ctx.permissions.has("content.official.write"),
         evaluateRoute: ctx.permissions.has("content.production.write"),
+        readAssets: ctx.permissions.has("creative.run.read"),
+        createAssets: ctx.permissions.has("creative.run.write"),
+        reviewAssets: ctx.permissions.has("creative.run.review"),
       }} view={subview} />;
     }
     if (section.view === "templates") return <StartersSection view={subview} />;
@@ -1028,7 +1033,14 @@ function renderSection(
       />;
     }
     if (section.view === "pricing") return <PricingWorkspace canWrite={ctx.permissions.has("config.pricing.write")} />;
-    if (section.view === "billing") return <BillingWorkspace canAdjust={ctx.permissions.has("billing.ledger.adjust")} />;
+    if (section.view === "billing") {
+      return (
+        <BillingWorkspace
+          canAdjust={ctx.permissions.has("billing.ledger.adjust")}
+          canReconcile={ctx.permissions.has("billing.checkout.reconcile")}
+        />
+      );
+    }
     if (section.view === "config") {
       return <GenerationConfigWorkspace permissions={{
         manageProfiles: ctx.permissions.has("generation.config.write"),

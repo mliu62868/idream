@@ -5,6 +5,7 @@ import { drainAdminCommands } from "@/processes/admin-command-worker";
 import { prisma } from "@/server/lib/db";
 import { buildTodayProjection } from "@/server/modules/admin-v2/today/query";
 import {
+  CHARACTER_RELEASE_MONITOR_POLICY_VERSION,
   collectReleaseMonitorFacts,
   dispatchDueReleaseMonitors,
   dispatchStaleReleaseRoutes,
@@ -16,24 +17,57 @@ describe("Release route qualification and post-publish monitor", () => {
   const characterId = `monitor-character-${suffix}`;
   const projectId = `monitor-project-${suffix}`;
   const releaseId = `monitor-release-${suffix}`;
+  const editorialReleaseId = `monitor-editorial-release-${suffix}`;
+  const editorialSnapshotHash = `monitor-editorial-snapshot-${suffix}`;
   const contentId = `monitor-content-${suffix}`;
   const qualificationId = `monitor-qualification-${suffix}`;
   const ownerId = `monitor-owner-${suffix}`;
   const assetId = `monitor-avatar-${suffix}`;
+  const heroAssetId = `monitor-hero-${suffix}`;
+  const chatAssetId = `monitor-chat-${suffix}`;
+  const routeFingerprint = `route-${suffix}`;
   const publishedAt = new Date("2026-07-07T00:00:00.000Z");
   const now = new Date("2026-07-11T00:00:00.000Z");
 
+  function releaseGenerationProvenance(
+    providers: Partial<Record<
+      "character_avatar" | "character_hero" | "character_chat",
+      string
+    >> = {},
+  ) {
+    return {
+      routeFingerprint,
+      placements: [
+        {
+          slotKey: "character_avatar",
+          assetId,
+          provider: providers.character_avatar ?? "comfyui",
+        },
+        {
+          slotKey: "character_hero",
+          assetId: heroAssetId,
+          provider: providers.character_hero ?? "comfyui",
+        },
+        {
+          slotKey: "character_chat",
+          assetId: chatAssetId,
+          provider: providers.character_chat ?? "comfyui",
+        },
+      ],
+    };
+  }
+
   beforeAll(async () => {
     await prisma.user.create({ data: { id: ownerId, email: `${ownerId}@example.test`, role: "admin" } });
-    await prisma.mediaAsset.create({ data: {
-      id: assetId,
+    await prisma.mediaAsset.createMany({ data: [assetId, heroAssetId, chatAssetId].map((id) => ({
+      id,
       ownerId,
       type: "image",
-      url: `/user-content/${assetId}/content.webp`,
-      visibility: "unlisted",
+      url: `/user-content/${id}/content.webp`,
+      visibility: "public_pack",
       safetyStatus: "passed",
       metadata: {},
-    } });
+    })) });
     await prisma.character.create({
       data: {
         id: characterId,
@@ -47,6 +81,10 @@ describe("Release route qualification and post-publish monitor", () => {
         appearance: {},
         advancedDetails: {},
       },
+    });
+    await prisma.mediaAsset.updateMany({
+      where: { id: { in: [assetId, heroAssetId, chatAssetId] } },
+      data: { characterId },
     });
     await prisma.characterProject.create({
       data: { id: projectId, characterId, phase: "live_management", audience: {}, successCriteria: [] },
@@ -67,13 +105,91 @@ describe("Release route qualification and post-publish monitor", () => {
         projectId,
         revisionId: `revision-${suffix}`,
         characterContentVersionId: contentId,
-        generationProvenance: { routeFingerprint: `route-${suffix}` },
-        releasePlacementManifest: { placements: [{ slotKey: "character_avatar", assetId, slotVersion: 1 }] },
+        generationProvenance: releaseGenerationProvenance(),
+        releasePlacementManifest: {
+          schemaVersion: 2,
+          placements: [
+            {
+              slotKey: "character_avatar",
+              assetId,
+              slotVersion: 1,
+              runId: `monitor-avatar-run-${suffix}`,
+              itemId: `monitor-avatar-item-${suffix}`,
+              reviewDecisionId: `monitor-avatar-decision-${suffix}`,
+              generationJobId: `monitor-avatar-job-${suffix}`,
+            },
+            {
+              slotKey: "character_hero",
+              assetId: heroAssetId,
+              slotVersion: 1,
+              runId: `monitor-hero-run-${suffix}`,
+              itemId: `monitor-hero-item-${suffix}`,
+              reviewDecisionId: `monitor-hero-decision-${suffix}`,
+              generationJobId: `monitor-hero-job-${suffix}`,
+            },
+            {
+              slotKey: "character_chat",
+              assetId: chatAssetId,
+              slotVersion: 1,
+              runId: `monitor-chat-run-${suffix}`,
+              itemId: `monitor-chat-item-${suffix}`,
+              reviewDecisionId: `monitor-chat-decision-${suffix}`,
+              generationJobId: `monitor-chat-job-${suffix}`,
+            },
+          ],
+        },
         snapshotHash: `snapshot-${suffix}`,
         readiness: "ready",
         status: "published",
         publishedAt,
         version: 3,
+      },
+    });
+    await prisma.characterRelease.create({
+      data: {
+        id: editorialReleaseId,
+        projectId,
+        revisionId: `editorial-revision-${suffix}`,
+        characterContentVersionId: contentId,
+        generationProvenance: {
+          schemaVersion: "character-release-editorial-import-v1",
+          dataset: "seed-characters.json",
+          recordId: characterId,
+          sourceAssetId: assetId,
+        },
+        releasePlacementManifest: {
+          schemaVersion: 1,
+          kind: "editorial_import",
+          placements: [{
+            slotKey: "character_avatar",
+            assetId,
+            slotVersion: 1,
+          }],
+        },
+        snapshotHash: editorialSnapshotHash,
+        readiness: "ready",
+        legacy: true,
+        status: "published",
+        publishedAt,
+      },
+    });
+    await prisma.publicCatalogQualification.create({
+      data: {
+        id: `monitor-editorial-qualification-${suffix}`,
+        releaseId: editorialReleaseId,
+        releaseSnapshotHash: editorialSnapshotHash,
+        kind: "editorial_import",
+        evidence: {
+          schemaVersion: "public-catalog-qualification-v1",
+          policyVersion: "public-catalog-editorial-import-v1",
+          checks: {
+            exactSeedRecord: true,
+            nonSynthetic: true,
+            safetyPassed: true,
+            publicPack: true,
+            imageAvailable: true,
+          },
+        },
       },
     });
     await prisma.characterServing.create({
@@ -87,7 +203,7 @@ describe("Release route qualification and post-publish monitor", () => {
     await prisma.generationRouteQualification.create({
       data: {
         id: qualificationId,
-        routeFingerprint: `route-${suffix}`,
+        routeFingerprint,
         generationProfileKey: "profile",
         generationProfileVersion: 1,
         workflowKey: "workflow",
@@ -141,13 +257,43 @@ describe("Release route qualification and post-publish monitor", () => {
     await prisma.chatExchangeFact.deleteMany({ where: { characterReleaseId: releaseId } });
     await prisma.characterServing.delete({ where: { characterId } });
     await prisma.generationRouteQualification.delete({ where: { id: qualificationId } });
+    await prisma.publicCatalogQualification.deleteMany({
+      where: { releaseId: { in: [editorialReleaseId, releaseId] } },
+    });
+    await prisma.characterRelease.delete({ where: { id: editorialReleaseId } });
     await prisma.characterRelease.delete({ where: { id: releaseId } });
     await prisma.characterContentVersion.delete({ where: { id: contentId } });
     await prisma.characterProject.delete({ where: { id: projectId } });
     await prisma.character.delete({ where: { id: characterId } });
-    await prisma.mediaAsset.delete({ where: { id: assetId } });
+    await prisma.mediaAsset.deleteMany({ where: { id: { in: [assetId, heroAssetId, chatAssetId] } } });
     await prisma.user.delete({ where: { id: ownerId } });
     await prisma.$disconnect();
+  });
+
+  it("does not apply generation-route authority to a qualified editorial import", async () => {
+    await expect(dispatchStaleReleaseRoutes(prisma, {
+      currentPolicyVersion: "policy-v2",
+      currentEvaluatorVersion: "eval-v2",
+      now,
+      releaseIds: [editorialReleaseId],
+    })).resolves.toEqual({
+      examined: 0,
+      stale: 0,
+      nextCursor: null,
+    });
+    await expect(prisma.characterRelease.findUniqueOrThrow({
+      where: { id: editorialReleaseId },
+    })).resolves.toMatchObject({
+      readiness: "ready",
+      legacy: true,
+      status: "published",
+    });
+    await expect(prisma.releaseMonitor.count({
+      where: {
+        releaseId: editorialReleaseId,
+        window: "route_qualification",
+      },
+    })).resolves.toBe(0);
   });
 
   it("derives staleness without rewriting historical qualification or taking serving offline", async () => {
@@ -182,9 +328,16 @@ describe("Release route qualification and post-publish monitor", () => {
     expect(await prisma.generationRouteQualification.findUniqueOrThrow({ where: { id: qualificationId } })).toMatchObject({
       result: "qualified",
     });
+    await expect(
+      prisma.character.findUniqueOrThrow({ where: { id: characterId } }),
+    ).resolves.toMatchObject({ visibility: "unlisted", status: "approved" });
   });
 
   it("runs qualification invalidation from the persistent command worker", async () => {
+    await prisma.character.update({
+      where: { id: characterId },
+      data: { visibility: "public" },
+    });
     await prisma.characterRelease.update({
       where: { id: releaseId },
       data: { readiness: "ready" },
@@ -205,12 +358,17 @@ describe("Release route qualification and post-publish monitor", () => {
   });
 
   it("collects mature 72h facts with an explicit keep decision", async () => {
+    await prisma.character.update({
+      where: { id: characterId },
+      data: { visibility: "public" },
+    });
     await prisma.characterRelease.update({ where: { id: releaseId }, data: { readiness: "ready" } });
     const result = await collectReleaseMonitorFacts(prisma, { releaseId, window: "72h", now });
     expect(result).toMatchObject({
       mature: true,
       recommendation: "keep",
       observed: {
+        policyVersion: CHARACTER_RELEASE_MONITOR_POLICY_VERSION,
         exchangeCount: 1,
         uniqueUsers: 1,
         engagementSessions: 1,
@@ -219,11 +377,295 @@ describe("Release route qualification and post-publish monitor", () => {
           publicProjectionLive: true,
           immutableContentAvailable: true,
           releaseAvatarRenderable: true,
+          releaseAvatarVisible: true,
+          releaseHeroRenderable: true,
+          releaseHeroVisible: true,
+          releaseChatRenderable: true,
+          releaseChatVisible: true,
           chatAuthorityReady: true,
         },
       },
     });
-    expect(result.monitor).toMatchObject({ status: "completed", window: "72h" });
+    expect(result.monitor).toMatchObject({
+      status: "completed",
+      window: "72h",
+      verification: {
+        policyVersion: CHARACTER_RELEASE_MONITOR_POLICY_VERSION,
+      },
+    });
+  });
+
+  it("fails closed when a strict Release hero or chat asset stops serving", async () => {
+    await prisma.characterRelease.update({
+      where: { id: releaseId },
+      data: { readiness: "ready", status: "published" },
+    });
+    await prisma.characterServing.update({
+      where: { characterId },
+      data: { state: "live", currentReleaseId: releaseId },
+    });
+
+    await prisma.mediaAsset.update({
+      where: { id: heroAssetId },
+      data: { visibility: "unlisted" },
+    });
+    await expect(
+      collectReleaseMonitorFacts(prisma, { releaseId, window: "24h", now }),
+    ).resolves.toMatchObject({
+      recommendation: "rollback_review",
+      observed: {
+        operationalChecks: {
+          releaseHeroRenderable: true,
+          releaseHeroVisible: false,
+        },
+      },
+      monitor: { status: "action_required" },
+    });
+    await prisma.mediaAsset.update({
+      where: { id: heroAssetId },
+      data: { visibility: "public_pack" },
+    });
+
+    await prisma.mediaAsset.update({
+      where: { id: chatAssetId },
+      data: { deletedAt: now },
+    });
+    await expect(
+      collectReleaseMonitorFacts(prisma, { releaseId, window: "24h", now }),
+    ).resolves.toMatchObject({
+      recommendation: "rollback_review",
+      observed: {
+        operationalChecks: {
+          releaseChatRenderable: false,
+          chatAuthorityReady: false,
+        },
+      },
+      monitor: { status: "action_required" },
+    });
+    await prisma.mediaAsset.update({
+      where: { id: chatAssetId },
+      data: { deletedAt: null },
+    });
+  });
+
+  it("uses immutable generation providers to fail closed for mock avatar, hero, and chat slots", async () => {
+    await prisma.characterRelease.update({
+      where: { id: releaseId },
+      data: {
+        generationProvenance: releaseGenerationProvenance({
+          character_avatar: "mock",
+          character_hero: "mock-image",
+          character_chat: "mocked-provider",
+        }),
+      },
+    });
+    try {
+      const result = await collectReleaseMonitorFacts(prisma, {
+        releaseId,
+        window: "72h",
+        now,
+      });
+      expect(result).toMatchObject({
+        recommendation: "rollback_review",
+        observed: {
+          releaseAssetSlots: {
+            character_avatar: {
+              provider: "mock",
+              metadataSynthetic: false,
+              metadataSyntheticMarkerInvalid: false,
+              mockProvider: true,
+              synthetic: true,
+              syntheticReasons: ["pinned_provider_mock"],
+              customerReadable: false,
+            },
+            character_hero: {
+              provider: "mock-image",
+              metadataSynthetic: false,
+              metadataSyntheticMarkerInvalid: false,
+              mockProvider: true,
+              synthetic: true,
+              syntheticReasons: ["pinned_provider_mock"],
+              customerReadable: false,
+            },
+            character_chat: {
+              provider: "mocked-provider",
+              metadataSynthetic: false,
+              metadataSyntheticMarkerInvalid: false,
+              mockProvider: true,
+              synthetic: true,
+              syntheticReasons: ["pinned_provider_mock"],
+              customerReadable: false,
+            },
+          },
+          operationalChecks: {
+            releaseAvatarRenderable: true,
+            releaseAvatarVisible: false,
+            releaseHeroRenderable: true,
+            releaseHeroVisible: false,
+            releaseChatRenderable: true,
+            releaseChatVisible: false,
+            chatAuthorityReady: false,
+          },
+        },
+        monitor: { status: "action_required" },
+      });
+    } finally {
+      await prisma.characterRelease.update({
+        where: { id: releaseId },
+        data: { generationProvenance: releaseGenerationProvenance() },
+      });
+    }
+  });
+
+  it("fails closed when strict v2 provider evidence is missing or duplicated", async () => {
+    const valid = releaseGenerationProvenance();
+    await prisma.characterRelease.update({
+      where: { id: releaseId },
+      data: {
+        generationProvenance: {
+          ...valid,
+          placements: [
+            valid.placements[0],
+            valid.placements[1],
+            valid.placements[1],
+          ],
+        },
+      },
+    });
+    try {
+      await expect(
+        collectReleaseMonitorFacts(prisma, {
+          releaseId,
+          window: "72h",
+          now,
+        }),
+      ).resolves.toMatchObject({
+        recommendation: "rollback_review",
+        observed: {
+          releaseAssetSlots: {
+            character_hero: {
+              provider: null,
+              providerMissing: true,
+              providerDuplicate: true,
+              syntheticReasons: [
+                "pinned_provider_missing",
+                "pinned_provider_duplicate",
+              ],
+              customerReadable: false,
+            },
+            character_chat: {
+              provider: null,
+              providerMissing: true,
+              providerDuplicate: false,
+              syntheticReasons: ["pinned_provider_missing"],
+              customerReadable: false,
+            },
+          },
+          operationalChecks: {
+            releaseHeroVisible: false,
+            releaseChatVisible: false,
+            chatAuthorityReady: false,
+          },
+        },
+        monitor: { status: "action_required" },
+      });
+    } finally {
+      await prisma.characterRelease.update({
+        where: { id: releaseId },
+        data: { generationProvenance: releaseGenerationProvenance() },
+      });
+    }
+  });
+
+  it("keeps metadata-only synthetic assets customer-unreadable", async () => {
+    await prisma.mediaAsset.update({
+      where: { id: heroAssetId },
+      data: {
+        metadata: {
+          synthetic: true,
+          source: "mock",
+        },
+      },
+    });
+    try {
+      await expect(
+        collectReleaseMonitorFacts(prisma, {
+          releaseId,
+          window: "72h",
+          now,
+        }),
+      ).resolves.toMatchObject({
+        recommendation: "rollback_review",
+        observed: {
+          releaseAssetSlots: {
+            character_hero: {
+              provider: "comfyui",
+              metadataSynthetic: true,
+              metadataSyntheticMarkerInvalid: false,
+              mockProvider: false,
+              synthetic: true,
+              syntheticReasons: ["metadata_synthetic"],
+              customerReadable: false,
+            },
+          },
+          operationalChecks: {
+            releaseHeroRenderable: true,
+            releaseHeroVisible: false,
+          },
+        },
+        monitor: { status: "action_required" },
+      });
+    } finally {
+      await prisma.mediaAsset.update({
+        where: { id: heroAssetId },
+        data: { metadata: {} },
+      });
+    }
+  });
+
+  it("fails closed for malformed synthetic metadata markers", async () => {
+    await prisma.mediaAsset.update({
+      where: { id: heroAssetId },
+      data: {
+        metadata: {
+          synthetic: "unknown",
+        },
+      },
+    });
+    try {
+      await expect(
+        collectReleaseMonitorFacts(prisma, {
+          releaseId,
+          window: "72h",
+          now,
+        }),
+      ).resolves.toMatchObject({
+        recommendation: "rollback_review",
+        observed: {
+          releaseAssetSlots: {
+            character_hero: {
+              provider: "comfyui",
+              metadataSynthetic: false,
+              metadataSyntheticMarkerInvalid: true,
+              mockProvider: false,
+              synthetic: true,
+              syntheticReasons: ["metadata_synthetic_marker_invalid"],
+              customerReadable: false,
+            },
+          },
+          operationalChecks: {
+            releaseHeroRenderable: true,
+            releaseHeroVisible: false,
+          },
+        },
+        monitor: { status: "action_required" },
+      });
+    } finally {
+      await prisma.mediaAsset.update({
+        where: { id: heroAssetId },
+        data: { metadata: {} },
+      });
+    }
   });
 
   it("opens action-required work when the actual serving pointer is unavailable", async () => {
@@ -312,6 +754,196 @@ describe("Release route qualification and post-publish monitor", () => {
     await expect(prisma.mainOutboxEvent.count({
       where: { aggregateId: releaseId, eventType: "character.release.monitor_evaluated.v2" },
     })).resolves.toBe(2);
+  });
+
+  it("requeues old and missing completed monitor policies once and emits versioned evidence", async () => {
+    const monitor24hId = `${releaseId}:24h`;
+    const monitor72hId = `${releaseId}:72h`;
+    const oldPolicyVersion = "character-release-monitor-policy-v0";
+    const oldOccurrenceKey =
+      `release-monitor:${releaseId}:24h:${monitor24hId}:${oldPolicyVersion}`;
+    const current24hOccurrenceKey =
+      `release-monitor:${releaseId}:24h:${monitor24hId}:${CHARACTER_RELEASE_MONITOR_POLICY_VERSION}`;
+    const current72hOccurrenceKey =
+      `release-monitor:${releaseId}:72h:${monitor72hId}:${CHARACTER_RELEASE_MONITOR_POLICY_VERSION}`;
+
+    await prisma.characterRelease.update({
+      where: { id: releaseId },
+      data: { readiness: "ready", status: "published" },
+    });
+    await prisma.characterServing.update({
+      where: { characterId },
+      data: { state: "live", currentReleaseId: releaseId },
+    });
+    await prisma.releaseMonitor.deleteMany({ where: { releaseId } });
+    await prisma.adminAuditLog.deleteMany({
+      where: { targetType: "release_monitor", targetId: { startsWith: releaseId } },
+    });
+    await prisma.mainOutboxEvent.deleteMany({
+      where: {
+        aggregateId: releaseId,
+        eventType: "character.release.monitor_evaluated.v2",
+      },
+    });
+    await prisma.releaseMonitor.createMany({
+      data: [
+        {
+          id: monitor24hId,
+          releaseId,
+          window: "24h",
+          status: "completed",
+          baseline: {},
+          observed: {},
+          verification: {
+            policyVersion: oldPolicyVersion,
+            maturity: "mature",
+            recommendation: "keep",
+          },
+          startedAt: publishedAt,
+          dueAt: new Date(publishedAt.getTime() + 24 * 60 * 60 * 1_000),
+          finishedAt: now,
+        },
+        {
+          id: monitor72hId,
+          releaseId,
+          window: "72h",
+          status: "completed",
+          baseline: {},
+          observed: {},
+          verification: {
+            maturity: "mature",
+            recommendation: "keep",
+          },
+          startedAt: publishedAt,
+          dueAt: new Date(publishedAt.getTime() + 72 * 60 * 60 * 1_000),
+          finishedAt: now,
+        },
+      ],
+    });
+    await prisma.adminAuditLog.create({
+      data: {
+        id: `audit:${oldOccurrenceKey}`,
+        actorId: "system:release-monitor-dispatcher",
+        actorRole: "system",
+        action: "character.release.monitor.evaluated",
+        targetType: "release_monitor",
+        targetId: monitor24hId,
+        reason: "Legacy policy evidence",
+        after: { occurrenceKey: oldOccurrenceKey, policyVersion: oldPolicyVersion },
+        requestId: oldOccurrenceKey,
+        createdAt: publishedAt,
+      },
+    });
+    await prisma.mainOutboxEvent.create({
+      data: {
+        id: `outbox:${oldOccurrenceKey}`,
+        eventType: "character.release.monitor_evaluated.v2",
+        aggregateType: "character_release",
+        aggregateId: releaseId,
+        payload: { occurrenceKey: oldOccurrenceKey, policyVersion: oldPolicyVersion },
+        nextRunAt: publishedAt,
+        createdAt: publishedAt,
+      },
+    });
+
+    await expect(dispatchDueReleaseMonitors(prisma, {
+      workerId: "monitor-policy-upgrade",
+      now,
+    })).resolves.toMatchObject({
+      requeued: 2,
+      claimed: 2,
+      evaluated: 2,
+      completed: 2,
+      failed: 0,
+    });
+    const rescanned = await prisma.releaseMonitor.findMany({
+      where: { releaseId },
+      orderBy: { window: "asc" },
+    });
+    expect(rescanned).toHaveLength(2);
+    expect(rescanned).toEqual([
+      expect.objectContaining({
+        id: monitor24hId,
+        status: "completed",
+        attemptCount: 1,
+        verification: expect.objectContaining({
+          policyVersion: CHARACTER_RELEASE_MONITOR_POLICY_VERSION,
+        }),
+      }),
+      expect.objectContaining({
+        id: monitor72hId,
+        status: "completed",
+        attemptCount: 1,
+        verification: expect.objectContaining({
+          policyVersion: CHARACTER_RELEASE_MONITOR_POLICY_VERSION,
+        }),
+      }),
+    ]);
+    await expect(prisma.adminAuditLog.findUnique({
+      where: { id: `audit:${current24hOccurrenceKey}` },
+    })).resolves.toMatchObject({
+      requestId: current24hOccurrenceKey,
+      after: {
+        policyVersion: CHARACTER_RELEASE_MONITOR_POLICY_VERSION,
+      },
+    });
+    await expect(prisma.adminAuditLog.findUnique({
+      where: { id: `audit:${current72hOccurrenceKey}` },
+    })).resolves.toMatchObject({
+      requestId: current72hOccurrenceKey,
+      after: {
+        policyVersion: CHARACTER_RELEASE_MONITOR_POLICY_VERSION,
+      },
+    });
+    await expect(prisma.mainOutboxEvent.findUnique({
+      where: { id: `outbox:${current24hOccurrenceKey}` },
+    })).resolves.toMatchObject({
+      payload: {
+        occurrenceKey: current24hOccurrenceKey,
+        policyVersion: CHARACTER_RELEASE_MONITOR_POLICY_VERSION,
+      },
+    });
+    await expect(prisma.mainOutboxEvent.findUnique({
+      where: { id: `outbox:${current72hOccurrenceKey}` },
+    })).resolves.toMatchObject({
+      payload: {
+        occurrenceKey: current72hOccurrenceKey,
+        policyVersion: CHARACTER_RELEASE_MONITOR_POLICY_VERSION,
+      },
+    });
+    await expect(prisma.adminAuditLog.count({
+      where: {
+        action: "character.release.monitor.evaluated",
+        targetId: { startsWith: releaseId },
+      },
+    })).resolves.toBe(3);
+    await expect(prisma.mainOutboxEvent.count({
+      where: {
+        aggregateId: releaseId,
+        eventType: "character.release.monitor_evaluated.v2",
+      },
+    })).resolves.toBe(3);
+
+    await expect(dispatchDueReleaseMonitors(prisma, {
+      workerId: "monitor-policy-upgrade-repeat",
+      now,
+    })).resolves.toMatchObject({
+      requeued: 0,
+      claimed: 0,
+      evaluated: 0,
+    });
+    await expect(prisma.adminAuditLog.count({
+      where: {
+        action: "character.release.monitor.evaluated",
+        targetId: { startsWith: releaseId },
+      },
+    })).resolves.toBe(3);
+    await expect(prisma.mainOutboxEvent.count({
+      where: {
+        aggregateId: releaseId,
+        eventType: "character.release.monitor_evaluated.v2",
+      },
+    })).resolves.toBe(3);
   });
 
   it("reclaims an expired lease after worker restart without replaying evidence", async () => {

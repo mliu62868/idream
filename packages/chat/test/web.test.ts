@@ -1072,6 +1072,23 @@ describe("dispatchChat router", () => {
         },
       });
 
+      const storedAttachment = await prisma.messageAttachment.findUniqueOrThrow({
+        where: { id: editAttachment!.id },
+      });
+      await prisma.messageAttachment.update({
+        where: { id: editAttachment!.id },
+        data: {
+          metadata: {
+            ...((storedAttachment.metadata ?? {}) as Record<string, unknown>),
+            characterReleaseId: "release-attachment-old",
+          },
+        },
+      });
+      await prisma.chatSession.update({
+        where: { id: sessionId },
+        data: { characterReleaseId: "release-session-new" },
+      });
+
       // The user retries via the confirm endpoint (service.ts confirmImageAttachment).
       const confirmed = await dispatchChat({
         method: "POST",
@@ -1087,6 +1104,7 @@ describe("dispatchChat router", () => {
       // The original request from generate.ts + the retry from confirmImageAttachment.
       expect(retryOutbox.length).toBeGreaterThanOrEqual(2);
       expect(retryOutbox[0]?.payload).toMatchObject({
+        characterReleaseId: "release-attachment-old",
         controls: { sourceImageAssetId: "media_retry_source_1" },
       });
     } finally {

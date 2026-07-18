@@ -13,6 +13,7 @@ import {
   expectError,
   expectOk,
   grantCoins,
+  publishCharacterForPublicAudience,
   purgeTestData,
 } from "@/server/test/helpers";
 
@@ -35,6 +36,10 @@ beforeAll(async () => {
   await purgeTestData(P);
   await createUser({ id: SYS });
   await createCharacter({ id: CHAR, creatorId: SYS, visibility: "public", status: "approved" });
+  await publishCharacterForPublicAudience({
+    characterId: CHAR,
+    ownerId: SYS,
+  });
 });
 
 afterAll(async () => {

@@ -1,91 +1,172 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { usePathname } from "next/navigation";
+import { createContext, useContext, useEffect, useState } from "react";
+import { AGE_GATE_COOKIE_NAME } from "@/lib/age-gate";
+import { parseViewerAuthorityResponse } from "@/lib/public-api-contracts";
 import { AgeGate } from "./AgeGate";
 
-type AgeGateState = "checking" | "accepted" | "blocked";
+export type AgeGateState = "checking" | "accepted" | "blocked";
 
 const AGE_GATE_STORAGE_KEY = "AdultContentAcceptedOD";
-const AGE_GATE_COOKIE_NAME = "AdultContentAcceptedOD";
 const AGE_GATE_COOKIE =
   "AdultContentAcceptedOD=true; path=/; max-age=31536000; samesite=lax";
 const ageGateBypassPrefixes = ["/safety", "/internal-preview"];
 const ageGateBypassExact = new Set(["/terms"]);
 
-type MePayload = {
-  ok?: boolean;
-  data?: {
-    ageGate?: { accepted?: boolean };
-  };
-};
+const AgeGateAccessContext = createContext<AgeGateState>("accepted");
 
 export function AgeGateBoundary({
   children,
-  initialAccepted,
+  initialAccepted = false,
 }: Readonly<{
   children: React.ReactNode;
-  initialAccepted: boolean;
+  initialAccepted?: boolean;
 }>) {
-  const [state, setState] = useState<AgeGateState>(
-    initialAccepted ? "accepted" : "checking",
-  );
+  const pathname = usePathname();
+  const [authoritativeAccepted, setAuthoritativeAccepted] =
+    useState(initialAccepted);
+  const [resolution, setResolution] = useState<{
+    pathname: string;
+    state: AgeGateState;
+  }>({
+    pathname,
+    state: initialAccepted ? "accepted" : "checking",
+  });
+  const bypass =
+    isAgeGateBypassPath(pathname) || pathname.startsWith("/admin");
+  const state: AgeGateState =
+    bypass || authoritativeAccepted
+      ? "accepted"
+      : resolution.pathname === pathname
+        ? resolution.state
+        : "checking";
 
   useEffect(() => {
-    const pathname = window.location.pathname;
+    if (
+      isAgeGateBypassPath(pathname) ||
+      pathname.startsWith("/admin") ||
+      authoritativeAccepted
+    ) {
+      return;
+    }
 
-    if (isAgeGateBypassPath(pathname) || pathname.startsWith("/admin")) {
-      const timer = window.setTimeout(() => setState("accepted"), 0);
+    if (hasAgeGateCookie()) {
+      const timer = window.setTimeout(
+        () => setAuthoritativeAccepted(true),
+        0,
+      );
       return () => window.clearTimeout(timer);
     }
 
-    const localAccepted = localStorage.getItem(AGE_GATE_STORAGE_KEY) === "true";
-    const cookieAccepted = hasAgeGateCookie();
-
-    if (cookieAccepted) {
-      const timer = window.setTimeout(() => setState("accepted"), 0);
-      return () => window.clearTimeout(timer);
-    }
-
-    if (localAccepted) {
+    if (readLocalAcceptance()) {
       let alive = true;
+      let acceptedExternally = false;
+      const accept = () => {
+        acceptedExternally = true;
+        setAuthoritativeAccepted(true);
+      };
+      window.addEventListener("idream-age-gate-accepted", accept);
       restoreAgeGateCookie()
         .then(() => {
-          if (alive) setState("accepted");
+          if (alive && !acceptedExternally) {
+            setAuthoritativeAccepted(true);
+          }
         })
         .catch(() => {
-          if (alive) setState("blocked");
+          if (alive && !acceptedExternally) {
+            setResolution({ pathname, state: "blocked" });
+          }
         });
       return () => {
         alive = false;
+        window.removeEventListener("idream-age-gate-accepted", accept);
       };
     }
 
     let alive = true;
+    let acceptedExternally = false;
+    const accept = () => {
+      acceptedExternally = true;
+      setAuthoritativeAccepted(true);
+    };
+    window.addEventListener("idream-age-gate-accepted", accept);
     fetch("/api/v1/me", { cache: "no-store" })
-      .then((response) => (response.ok ? response.json() : null))
-      .then((payload: MePayload | null) => {
-        if (!alive) return;
-        setState(payload?.data?.ageGate?.accepted ? "accepted" : "blocked");
+      .then((response) => {
+        if (!response.ok) throw new Error("Age authority unavailable");
+        return response.json();
+      })
+      .then((raw) => {
+        if (!alive || acceptedExternally) return;
+        const payload = parseViewerAuthorityResponse(raw);
+        if (payload.ageGate?.accepted === true) {
+          setAuthoritativeAccepted(true);
+        } else {
+          setResolution({ pathname, state: "blocked" });
+        }
       })
       .catch(() => {
-        if (alive) setState("blocked");
+        if (alive && !acceptedExternally) {
+          setResolution({ pathname, state: "blocked" });
+        }
       });
 
-    const accept = () => setState("accepted");
-    window.addEventListener("idream-age-gate-accepted", accept);
     return () => {
       alive = false;
       window.removeEventListener("idream-age-gate-accepted", accept);
     };
-  }, []);
+  }, [authoritativeAccepted, pathname]);
 
-  if (state === "accepted") return <>{children}</>;
+  useEffect(() => {
+    if (state === "accepted") return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [state]);
 
-  if (state === "checking") {
-    return <div className="min-h-screen bg-black" aria-hidden="true" />;
+  return (
+    <AgeGateAccessContext.Provider value={state}>
+      <div
+        data-age-gate-content=""
+        inert={state === "accepted" ? undefined : true}
+      >
+        {children}
+      </div>
+      {state === "checking" ? (
+        <div
+          aria-label="Checking age access"
+          className="fixed inset-0 z-50 grid place-items-center bg-black"
+          role="status"
+        >
+          <span className="sr-only">Checking age access</span>
+        </div>
+      ) : null}
+      {state === "blocked" ? (
+        <AgeGate
+          forceVisible
+          onAccepted={() => setAuthoritativeAccepted(true)}
+        />
+      ) : null}
+    </AgeGateAccessContext.Provider>
+  );
+}
+
+export function useAgeGateAccess() {
+  const state = useContext(AgeGateAccessContext);
+  return {
+    accepted: state === "accepted",
+    state,
+  } as const;
+}
+
+function readLocalAcceptance() {
+  try {
+    return localStorage.getItem(AGE_GATE_STORAGE_KEY) === "true";
+  } catch {
+    return false;
   }
-
-  return <AgeGate forceVisible onAccepted={() => setState("accepted")} />;
 }
 
 function hasAgeGateCookie() {

@@ -79,6 +79,7 @@ playwright-report/
 # Local temp files
 temp/
 .tmp/
+local-backups/
 packages/chat/data/
 packages/admin/data/
 packages/main/data/

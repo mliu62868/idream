@@ -1,5 +1,6 @@
 import { defineConfig } from "vitest/config";
 import { defaultTestDatabaseUrl } from "./test-database-url";
+import { testBullMqPrefixForDatabase } from "./test-redis";
 
 // SPEC: Integration tests run against a dedicated, freshly-seeded test database
 // (Postgres in TEST_DATABASE_URL, or the local compose Postgres by default),
@@ -9,6 +10,7 @@ import { defaultTestDatabaseUrl } from "./test-database-url";
 const DATABASE_URL =
   process.env.TEST_DATABASE_URL ??
   defaultTestDatabaseUrl();
+const BULLMQ_PREFIX = testBullMqPrefixForDatabase(DATABASE_URL);
 
 export default defineConfig({
   test: {
@@ -33,7 +35,7 @@ export default defineConfig({
       INTERNAL_TOKEN: "test-internal-token-0123456789",
       CRON_SECRET: "test-cron-token-0123456789",
       REDIS_URL: process.env.REDIS_URL ?? "redis://127.0.0.1:6379/15",
-      BULLMQ_PREFIX: process.env.BULLMQ_PREFIX ?? "idream:test",
+      BULLMQ_PREFIX,
     },
     coverage: {
       provider: "v8",
@@ -86,6 +88,10 @@ export default defineConfig({
       ).pathname,
       "@idream/shared/admin": new URL("../shared/src/admin/index.ts", import.meta.url).pathname,
       "@idream/shared/bff": new URL("../shared/src/bff/signing.ts", import.meta.url).pathname,
+      "@idream/shared/chat/limits": new URL(
+        "../shared/src/chat/limits.ts",
+        import.meta.url,
+      ).pathname,
       "@idream/shared/media/generated-image-sanity": new URL(
         "../shared/src/media/generated-image-sanity.ts",
         import.meta.url,

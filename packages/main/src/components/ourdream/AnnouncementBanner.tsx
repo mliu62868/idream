@@ -4,18 +4,16 @@
 //       显示最靠前一条；可关闭（localStorage 记 dismissed id）；无公告 → null。
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { ArrowRight, ExternalLink, X } from "lucide-react";
-
-type PublicAnnouncement = {
-  id: string;
-  title: string;
-  body: string;
-  level: "info" | "promo" | "warning";
-  href: string | null;
-};
+import { ArrowRight, ExternalLink, RefreshCw, X } from "lucide-react";
+import {
+  isSafeExternalHref,
+  isSafeInternalPath,
+  parseAnnouncementsResponse,
+  type PublicAnnouncement,
+} from "@/lib/public-api-contracts";
+import { useAgeGateAccess } from "./AgeGateBoundary";
 
 const DISMISS_KEY = "od-dismissed-announcements";
-const SAFE_EXTERNAL_PROTOCOL_RE = /^(https?:)?\/\//i;
 
 function readDismissed(): string[] {
   try {
@@ -28,30 +26,62 @@ function readDismissed(): string[] {
 }
 
 export function AnnouncementBanner() {
+  const { accepted: ageGateAccepted } = useAgeGateAccess();
   const [items, setItems] = useState<PublicAnnouncement[]>([]);
   const [dismissed, setDismissed] = useState<string[]>([]);
+  const [loadState, setLoadState] = useState<
+    "loading" | "ready" | "error"
+  >("loading");
+  const [loadAttempt, setLoadAttempt] = useState(0);
 
   useEffect(() => {
+    if (!ageGateAccepted) return;
     let cancelled = false;
     fetch("/api/v1/announcements", { cache: "no-store" })
-      .then((response) => response.json())
+      .then((response) => {
+        if (!response.ok) throw new Error("Announcements unavailable");
+        return response.json();
+      })
       .then((payload) => {
         if (cancelled) return;
         // 在 async 回调里 setState（非 effect 体内同步），并一并读取已关闭列表。
         setDismissed(readDismissed());
-        if (payload?.ok && Array.isArray(payload.data?.items)) {
-          setItems(payload.data.items as PublicAnnouncement[]);
-        }
+        setItems(parseAnnouncementsResponse(payload).items);
+        setLoadState("ready");
       })
       .catch(() => {
-        // 公告非关键路径：拉取失败静默（不影响页面）。
+        if (!cancelled) setLoadState("error");
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [ageGateAccepted, loadAttempt]);
 
   const next = items.find((item) => !dismissed.includes(item.id));
+  if (loadState === "error") {
+    return (
+      <div
+        className="border-b border-white/10 bg-neutral-900 text-white"
+        data-testid="announcement-unavailable"
+        role="status"
+      >
+        <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-2 text-xs">
+          <span>Announcements are temporarily unavailable.</span>
+          <button
+            className="inline-flex items-center gap-1.5 rounded px-2 py-1 font-semibold hover:bg-white/10"
+            onClick={() => {
+              setLoadState("loading");
+              setLoadAttempt((attempt) => attempt + 1);
+            }}
+            type="button"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
   if (!next) return null;
 
   function dismiss(id: string) {
@@ -122,9 +152,9 @@ function AnnouncementLink({ href }: { href: string }) {
 }
 
 function isSafeAnnouncementHref(href: string) {
-  return href.startsWith("/") || SAFE_EXTERNAL_PROTOCOL_RE.test(href);
+  return isSafeInternalPath(href) || isSafeExternalHref(href);
 }
 
 function isExternalHref(href: string) {
-  return SAFE_EXTERNAL_PROTOCOL_RE.test(href);
+  return isSafeExternalHref(href);
 }

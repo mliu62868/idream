@@ -27,8 +27,8 @@ async function resolveExisting(input: {
   actorId: string;
   idempotencyKey: string;
   requestHash: string;
-}): Promise<CharacterProjectCreateResponse | null> {
-  const existing = await prisma.controlPlaneCommand.findUnique({
+}, db: typeof prisma | Prisma.TransactionClient = prisma): Promise<CharacterProjectCreateResponse | null> {
+  const existing = await db.controlPlaneCommand.findUnique({
     where: {
       scope_idempotencyKey: {
         scope: commandScope(input.actorId),
@@ -99,7 +99,18 @@ export async function createCharacterProject(input: {
   });
 
   try {
-    await prisma.$transaction(async (tx) => {
+    return await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`
+        SELECT pg_advisory_xact_lock(
+          hashtext(${`${commandScope(input.actor.id)}:${input.idempotencyKey}`})
+        )
+      `;
+      const existing = await resolveExisting({
+        actorId: input.actor.id,
+        idempotencyKey: input.idempotencyKey,
+        requestHash,
+      }, tx);
+      if (existing) return existing;
       await tx.controlPlaneCommand.create({
         data: {
           id: commandId,
@@ -247,8 +258,8 @@ export async function createCharacterProject(input: {
           }),
         },
       });
+      return response;
     });
-    return response;
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
       const raced = await resolveExisting({

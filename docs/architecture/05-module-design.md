@@ -172,9 +172,9 @@
 
 ## 13. seo（路由内容）
 
-**职责**：164 条静态路由的 metadata 与文章正文运营。
+**职责**：169 条 RoutePage 运营库存的 metadata 与 CMS 发布；库存条目本身不构成公开正文权威。
 
-**关键流程**：`route_pages` 存 path/template/title/description/canonical/contentStatus/body；公开页 SSR + `generateMetadata` 读它；`use cache` + tag 失效。文章正文从"模板"升级为"published"是内容运营任务（PRD SE-06）。
+**关键流程**：`route_pages` 存 path/template/title/description/canonical/contentStatus/indexingStatus/body；只有满足版本化 published authority 的记录才参与公开 SSR、metadata 与 sitemap，`use cache` + tag 失效。当前 169 条库存均为 `template/noindex`、published CMS 为 0；三个真正撰写的静态文章和专用产品页由精确正向 registry 授权，其余泛化路径返回 404。文章正文从“库存模板”升级为“published”是内容运营任务（PRD SE-06）。
 
 ---
 

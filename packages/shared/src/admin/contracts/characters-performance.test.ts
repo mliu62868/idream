@@ -61,6 +61,37 @@ describe("Character Portfolio v2 contracts", () => {
     expect(result.success).toBe(false);
   });
 
+  it("keeps impossible raw cohort counts only as an explicit fail-closed diagnostic", () => {
+    const result = characterPerformanceSummarySchema.safeParse({
+      characterContentVersionId: "content-v2",
+      characterReleaseId: "release-v2",
+      placementId: "feed.hero",
+      window: "7d",
+      windowStart: "2026-07-04T00:00:00.000Z",
+      windowEnd: "2026-07-11T00:00:00.000Z",
+      eligibleImpressions: 0,
+      detailViews: 0,
+      firstSuccessfulExchanges: 4,
+      qceCount: 3,
+      relationshipActivations: 2,
+      sameCharacterD7EligiblePairs: 2,
+      sameCharacterD7Returns: 1,
+      paidAttributions: 0,
+      detailCtr: null,
+      chatStartRate: null,
+      qceRate: null,
+      sameCharacterD7: null,
+      sampleSize: 0,
+      maturity: "insufficient_data",
+      qualityState: "invalid",
+      coverageState: "invalid",
+      latestDataAt: "2026-07-10T00:00:00.000Z",
+      evidence: ["numerator_outside_denominator_cohort"],
+      contributionMargin: invalidMargin,
+    });
+    expect(result.success).toBe(true);
+  });
+
   it("requires evidence and review criteria for all five portfolio decisions", () => {
     for (const decision of ["Promote", "Maintain", "Improve", "Pause", "Retire"] as const) {
       expect(characterPortfolioDecisionRequestSchema.parse({

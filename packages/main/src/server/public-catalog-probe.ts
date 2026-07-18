@@ -92,7 +92,33 @@ const characterInclude = {
       url: true,
       thumbnailUrl: true,
       prompt: true,
+      type: true,
+      deletedAt: true,
+      visibility: true,
+      safetyStatus: true,
       metadata: true,
+    },
+  },
+  serving: {
+    select: {
+      state: true,
+      currentRelease: {
+        select: {
+          id: true,
+          status: true,
+          publishedAt: true,
+          readiness: true,
+          legacy: true,
+          releasePlacementManifest: true,
+          publicCatalogQualification: {
+            select: {
+              kind: true,
+              validationRunId: true,
+              revokedAt: true,
+            },
+          },
+        },
+      },
     },
   },
   stats: {
@@ -122,6 +148,9 @@ const collectionInclude = {
           prompt: true,
           url: true,
           thumbnailUrl: true,
+          deletedAt: true,
+          visibility: true,
+          safetyStatus: true,
           metadata: true,
         },
       },
@@ -140,6 +169,20 @@ const feedbackInclude = {
     },
   },
 } as const satisfies Prisma.ProductFeedbackItemInclude;
+
+function characterAvatarAssetId(value: unknown): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const placements = (value as { placements?: unknown }).placements;
+  if (!Array.isArray(placements)) return null;
+  const avatars = placements.filter((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+    const placement = item as Record<string, unknown>;
+    return placement.slotKey === "character_avatar" &&
+      typeof placement.assetId === "string" &&
+      placement.assetId.length > 0;
+  }) as Array<Record<string, unknown>>;
+  return avatars.length === 1 ? avatars[0].assetId as string : null;
+}
 
 export async function runPublicCatalogProbe(
   db: CatalogProbeDb,
@@ -207,32 +250,96 @@ export async function runPublicCatalogProbe(
 
     for (const character of excludedCharacters) {
       const syntheticImage = isSyntheticMediaAsset(character.imageAsset?.metadata);
+      const currentRelease = character.serving?.currentRelease ?? null;
+      const qualification = currentRelease?.publicCatalogQualification ?? null;
+      const imageUnavailable =
+        !character.imageAsset ||
+        character.imageAsset.type !== "image" ||
+        character.imageAsset.deletedAt !== null ||
+        character.imageAsset.visibility !== "public_pack" ||
+        character.imageAsset.safetyStatus !== "passed";
+      const releaseProjectionUnavailable =
+        Boolean(currentRelease) &&
+        characterAvatarAssetId(currentRelease?.releasePlacementManifest) !==
+          (character.imageAsset?.id ?? null);
+      const qualificationUnavailable =
+        character.serving?.state !== "live" ||
+        !currentRelease ||
+        currentRelease.status !== "published" ||
+        currentRelease.publishedAt === null ||
+        !qualification ||
+        qualification.revokedAt !== null ||
+        (
+          currentRelease.legacy
+            ? qualification.kind !== "editorial_import" ||
+              qualification.validationRunId !== null
+            : currentRelease.readiness !== "ready" ||
+              qualification.kind !== "generated_release" ||
+              qualification.validationRunId === null
+        );
       issues.push({
         severity: "fail",
         entity: "character",
         id: character.id,
-        field: syntheticImage ? "imageAsset" : "audience",
+        field:
+          syntheticImage || imageUnavailable
+            ? "imageAsset"
+            : releaseProjectionUnavailable
+              ? "releaseProjection"
+            : qualificationUnavailable
+              ? "publicQualification"
+              : "audience",
         message: syntheticImage
           ? "Public character references a synthetic image authority."
-          : "Public user character is owned by a non-customer actor.",
+          : imageUnavailable
+            ? "Public character has no complete publishable image authority."
+            : releaseProjectionUnavailable
+              ? "Public character image does not match the exact current Release avatar."
+            : qualificationUnavailable
+              ? "Public character has no exact live Release qualification."
+              : "Public user character is owned by a non-customer actor.",
         value: syntheticImage
           ? character.imageAsset?.id ?? "missing_image_asset"
-          : character.creator?.dataClass ?? "missing_creator",
+          : imageUnavailable
+            ? character.imageAsset?.id ?? "missing_image_asset"
+            : releaseProjectionUnavailable
+              ? characterAvatarAssetId(currentRelease?.releasePlacementManifest) ??
+                "missing_release_avatar"
+            : qualificationUnavailable
+              ? currentRelease?.id ?? "missing_current_release"
+              : character.creator?.dataClass ?? "missing_creator",
       });
     }
     for (const collection of excludedCollections) {
       const syntheticItem = collection.items.find(
         (item) => isSyntheticMediaAsset(item.mediaAsset.metadata),
       );
+      const unavailableItem = collection.items.find(
+        (item) =>
+          item.mediaAsset.deletedAt !== null ||
+          item.mediaAsset.visibility !== "public_pack" ||
+          item.mediaAsset.safetyStatus !== "passed",
+      );
       issues.push({
         severity: "fail",
         entity: "collection",
         id: collection.id,
-        field: syntheticItem ? "items" : "audience",
-        message: syntheticItem
-          ? "Public collection contains a synthetic media authority."
-          : "Public user collection is owned by a non-customer actor.",
-        value: syntheticItem?.mediaAsset.id ?? collection.owner.dataClass,
+        field:
+          collection.items.length === 0 || syntheticItem || unavailableItem
+            ? "items"
+            : "audience",
+        message:
+          collection.items.length === 0
+            ? "Public collection is empty."
+            : syntheticItem
+              ? "Public collection contains a synthetic media authority."
+              : unavailableItem
+                ? "Public collection contains unavailable or unreviewed media."
+                : "Public user collection is owned by a non-customer actor.",
+        value:
+          syntheticItem?.mediaAsset.id ??
+          unavailableItem?.mediaAsset.id ??
+          (collection.items.length === 0 ? 0 : collection.owner.dataClass),
       });
     }
     for (const item of excludedFeedbackItems) {

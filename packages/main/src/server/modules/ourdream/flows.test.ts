@@ -2,10 +2,13 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import {
   api,
+  completeQueuedCharacterPreview,
+  createCharacter,
   createUser,
   expectError,
   expectOk,
   grantCoins,
+  publishCharacterForPublicAudience,
   purgeTestData,
   runQueuedGenerationJobs,
 } from "@/server/test/helpers";
@@ -31,28 +34,50 @@ async function seedChar(opts: {
   age?: number;
   gender?: string;
   tagSlug?: string;
+  generationBootstrap?: boolean;
 }) {
-  await prisma.character.create({
-    data: {
-      id: opts.id,
-      creatorId: opts.creatorId,
-      name: opts.name,
-      age: opts.age ?? 24,
-      description: "Flow fixture.",
-      visibility: "public",
-      status: "approved",
-      gender: opts.gender ?? "female",
-      appearance: {},
-      advancedDetails: {},
-      createdAt: opts.createdAt,
-    },
+  await createCharacter({
+    id: opts.id,
+    creatorId: opts.creatorId,
+    name: opts.name,
+    age: opts.age ?? 24,
+    visibility: "public",
+    status: "approved",
+    source: "official",
+    gender: opts.gender ?? "female",
+    chats: opts.chats ?? 0,
+    likes: opts.likes ?? 0,
   });
-  await prisma.characterStats.create({
-    data: {
-      characterId: opts.id,
-      chatsCount: opts.chats ?? 0,
-      likesCount: opts.likes ?? 0,
-    },
+  if (opts.createdAt) {
+    await prisma.character.update({
+      where: { id: opts.id },
+      data: { createdAt: opts.createdAt },
+    });
+  }
+  if (opts.generationBootstrap) {
+    await prisma.characterVisualProfile.create({
+      data: {
+        id: `${opts.id}-bootstrap-visual-profile`,
+        characterId: opts.id,
+        version: 1,
+        status: "active",
+        style: "realistic",
+        identityPrompt: `${opts.name}, adult woman`,
+        faceTraits: {},
+        hairTraits: {},
+        bodyTraits: {},
+        signatureTraits: {},
+        styleTraits: {},
+        anchorAssetIds: [],
+        referenceAssetIds: [],
+        adapterRefs: {},
+        createdFrom: "generation_bootstrap:test",
+      },
+    });
+  }
+  await publishCharacterForPublicAudience({
+    characterId: opts.id,
+    ownerId: opts.creatorId,
   });
   if (opts.tagSlug) {
     const tag = await prisma.tag.create({
@@ -298,7 +323,7 @@ describe("explore: search, filter, sort, pagination", () => {
     expectOk(generatorRes);
     expect(
       (generatorRes.data.routes as Array<{ href: string }>).map((route) => route.href),
-    ).toContain("/generator/ai-roleplay-generator");
+    ).not.toContain("/generator/ai-roleplay-generator");
   });
 });
 
@@ -329,7 +354,11 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
     expectOk(preview);
     // Preview is async now: enqueued queued, settled by the worker, polled via GET.
     expect(preview.data.previewJob.status).toBe("queued");
-    await runQueuedGenerationJobs(8);
+    await completeQueuedCharacterPreview({
+      previewJobId: preview.data.previewJob.id as string,
+      draftId,
+      userId,
+    });
     const previewState = await api("GET", `character-drafts/${draftId}/preview`, {
       userId,
       ageGate: true,
@@ -363,7 +392,11 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
       ageGate: true,
     });
     expectOk(refreshedPreview);
-    await runQueuedGenerationJobs(8);
+    await completeQueuedCharacterPreview({
+      previewJobId: refreshedPreview.data.previewJob.id as string,
+      draftId,
+      userId,
+    });
     const refreshedPreviewState = await api("GET", `character-drafts/${draftId}/preview`, {
       userId,
       ageGate: true,
@@ -414,7 +447,11 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
       ageGate: true,
     });
     expectOk(preview);
-    await runQueuedGenerationJobs(8);
+    await completeQueuedCharacterPreview({
+      previewJobId: preview.data.previewJob.id as string,
+      draftId,
+      userId,
+    });
     const previewState = await api("GET", `character-drafts/${draftId}/preview`, {
       userId,
       ageGate: true,
@@ -442,7 +479,12 @@ describe("generation → media gallery", () => {
     const userId = `${P}gen-user`;
     const charId = `${P}gen-char`;
     await createUser({ id: userId });
-    await seedChar({ id: charId, name: `${P} Gen Char`, creatorId: `${P}sys` });
+    await seedChar({
+      id: charId,
+      name: `${P} Gen Char`,
+      creatorId: `${P}sys`,
+      generationBootstrap: true,
+    });
     await grantCoins(userId, 100, "seed");
 
     const gen = await api("POST", "generation/jobs", {
@@ -452,7 +494,10 @@ describe("generation → media gallery", () => {
     });
     expectOk(gen, 202);
     expect(gen.data.job.status).toBe("queued");
-    await runQueuedGenerationJobs(8);
+    await runQueuedGenerationJobs(8, [
+      "ai.image.generate",
+      "app.ai.finalize",
+    ]);
 
     const poll = await api("GET", `generation/jobs/${gen.data.job.id}`, {
       userId,

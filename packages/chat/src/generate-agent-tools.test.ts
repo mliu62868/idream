@@ -123,6 +123,7 @@ function fakePrisma(
         characterId: "char_1",
         memoryEnabled: true,
         status: "active",
+        characterReleaseId: "release_current_v4",
         entryExposureId: "detail_v1",
         entryJourneyId: "journey_v1",
         entryPlacementId: "feed.hero",
@@ -259,6 +260,9 @@ describe("chat generate agent image tool", () => {
       kind: "generated_image",
       status: "requesting",
       promptHint: expect.stringContaining("sunlit window"),
+      metadata: expect.objectContaining({
+        characterReleaseId: "release_v3",
+      }),
     });
     const imageOutbox = outboxCreates.find((call) => call.data.eventType === CHAT_TO_MAIN_EVENTS.imageRequested);
     expect(imageOutbox?.data).toMatchObject({
@@ -267,6 +271,7 @@ describe("chat generate agent image tool", () => {
     });
     expect(imageOutbox?.data.payload).toMatchObject({
       kind: "chat.image.requested",
+      characterReleaseId: "release_v3",
       promptHint: expect.stringContaining("sunlit window"),
       controls: { orientation: "4:5", outputCount: 1 },
     });

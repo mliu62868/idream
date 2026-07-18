@@ -2,26 +2,14 @@
   "name": "@idream/main",
   "version": "0.3.1",
   "private": true,
-  "description": "Clone any website into a clean, modern Next.js codebase using AI coding agents",
-  "author": "JCodesMore",
+  "description": "iDream main web application and core-domain API.",
   "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/JCodesMore/ai-website-cloner-template.git"
-  },
-  "homepage": "https://github.com/JCodesMore/ai-website-cloner-template",
-  "bugs": {
-    "url": "https://github.com/JCodesMore/ai-website-cloner-template/issues"
-  },
   "keywords": [
-    "claude-code",
-    "website-clone",
-    "reverse-engineering",
+    "idream",
+    "ai-companion",
     "nextjs",
-    "ai",
-    "template",
-    "tailwindcss",
-    "shadcn-ui"
+    "prisma",
+    "postgresql"
   ],
   "engines": {
     "node": ">=22"
@@ -35,11 +23,12 @@
     "check": "npm run lint && npm run typecheck && npm run build",
     "check:launch": "tsx src/server/launch-readiness.ts",
     "test": "vitest run",
+    "test:pure": "vitest run --config vitest.pure.config.ts",
     "test:unit": "vitest run",
     "test:watch": "vitest",
     "test:postgres": "vitest run",
     "coverage": "vitest run --coverage",
-    "test:e2e": "playwright test",
+    "test:e2e": "PW_WEBSERVER=1 playwright test",
     "db:generate": "prisma generate",
     "db:push": "node scripts/db-push.mjs",
     "db:migrate:dev": "prisma migrate dev",
@@ -99,7 +88,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@playwright/test": "^1.60.0",
+    "@playwright/test": "1.61.0",
     "@prisma/engines": "7.6.0",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^24",

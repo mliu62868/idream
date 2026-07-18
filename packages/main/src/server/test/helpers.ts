@@ -38,6 +38,7 @@ export interface ApiResult {
   data: any;
   error: { code?: string; message?: string; details?: any } | undefined;
   json: any;
+  headers: Headers;
   setCookies: string[];
 }
 
@@ -93,6 +94,7 @@ export async function api(
     data: json?.data,
     error: json?.error,
     json,
+    headers: response.headers,
     setCookies: response.headers.getSetCookie(),
   };
 }
@@ -119,15 +121,22 @@ export interface CreateUserInput {
 }
 
 export async function createUser(input: CreateUserInput) {
+  const dataClass = input.dataClass ?? "fixture";
+  const defaultEmailDomain =
+    dataClass === "customer"
+      ? "customer.invalid"
+      : dataClass === "fixture"
+        ? "test.local"
+        : "idream.internal";
   return prisma.user.create({
     data: {
       id: input.id,
-      email: input.email ?? `${input.id}@test.local`,
+      email: input.email ?? `${input.id}@${defaultEmailDomain}`,
       emailVerified: true,
       displayName: input.displayName ?? "Test User",
       role: input.role ?? "user",
       status: input.status ?? "active",
-      dataClass: input.dataClass ?? "fixture",
+      dataClass,
     },
   });
 }
@@ -135,6 +144,7 @@ export async function createUser(input: CreateUserInput) {
 export interface CreateCharacterInput {
   id: string;
   creatorId?: string;
+  source?: "official" | "user";
   name?: string;
   age?: number;
   description?: string;
@@ -154,6 +164,7 @@ export async function createCharacter(input: CreateCharacterInput) {
     data: {
       id: input.id,
       creatorId: input.creatorId,
+      source: input.source ?? "official",
       name: input.name ?? "Test Character",
       age: input.age ?? 24,
       description: input.description ?? "A seeded character for integration tests.",
@@ -176,6 +187,126 @@ export async function createCharacter(input: CreateCharacterInput) {
     },
   });
   return character;
+}
+
+/**
+ * Explicitly publishes an existing official Character into the customer
+ * audience. `createCharacter` intentionally does not do this: public
+ * visibility is only a presentation field until the immutable Release,
+ * catalog qualification, serving pointer, and publishable avatar all agree.
+ */
+export async function publishCharacterForPublicAudience(input: {
+  characterId: string;
+  ownerId: string;
+}) {
+  const assetId = `${input.characterId}-public-avatar`;
+  const projectId = `${input.characterId}-public-project`;
+  const releaseId = `${input.characterId}-public-release`;
+  const snapshotHash = `${releaseId}-snapshot`;
+
+  await prisma.$transaction(async (tx) => {
+    const character = await tx.character.findUnique({
+      where: { id: input.characterId },
+      select: {
+        source: true,
+        visibility: true,
+        status: true,
+        deletedAt: true,
+      },
+    });
+    if (
+      !character ||
+      character.source !== "official" ||
+      character.visibility !== "public" ||
+      character.status !== "approved" ||
+      character.deletedAt !== null
+    ) {
+      throw new Error(
+        "Public editorial fixture requires an existing approved official Character",
+      );
+    }
+    await tx.mediaAsset.create({
+      data: {
+        id: assetId,
+        ownerId: input.ownerId,
+        characterId: input.characterId,
+        type: "image",
+        url: `/user-content/${assetId}/content.webp`,
+        thumbnailUrl: `/user-content/${assetId}/thumbnail.webp`,
+        visibility: "public_pack",
+        safetyStatus: "passed",
+        metadata: {
+          source: "editorial_import",
+          synthetic: false,
+          platformAsset: { status: "approved" },
+        },
+      },
+    });
+    await tx.character.update({
+      where: { id: input.characterId },
+      data: { imageAssetId: assetId },
+    });
+    await tx.characterProject.create({
+      data: {
+        id: projectId,
+        characterId: input.characterId,
+        phase: "live_management",
+        audience: {},
+        successCriteria: [],
+      },
+    });
+    await tx.characterRelease.create({
+      data: {
+        id: releaseId,
+        projectId,
+        revisionId: `${releaseId}-revision`,
+        characterContentVersionId: `${releaseId}-content`,
+        generationProvenance: {
+          schemaVersion: "character-release-editorial-import-v1",
+          sourceAssetId: assetId,
+        },
+        releasePlacementManifest: {
+          schemaVersion: 1,
+          kind: "editorial_import",
+          placements: [
+            {
+              slotKey: "character_avatar",
+              assetId,
+              slotVersion: 1,
+            },
+          ],
+        },
+        snapshotHash,
+        readiness: "ready",
+        legacy: true,
+        status: "published",
+        publishedAt: new Date(),
+      },
+    });
+    await tx.publicCatalogQualification.create({
+      data: {
+        id: `${releaseId}-qualification`,
+        releaseId,
+        releaseSnapshotHash: snapshotHash,
+        kind: "editorial_import",
+        evidence: {
+          schemaVersion: "public-catalog-qualification-v1",
+          policyVersion: "public-catalog-editorial-import-v1",
+          sourceAssetId: assetId,
+        },
+      },
+    });
+    await tx.characterServing.create({
+      data: {
+        id: `${releaseId}-serving`,
+        characterId: input.characterId,
+        currentReleaseId: releaseId,
+        state: "live",
+      },
+    });
+  });
+
+  return { assetId, projectId, releaseId };
 }
 
 export interface CreatePlanInput {
@@ -215,6 +346,8 @@ export interface CreateMediaInput {
   ownerId: string;
   type?: "image" | "video";
   url?: string;
+  storageKey?: string | null;
+  contentType?: string;
   visibility?: string;
   safetyStatus?: string;
   prompt?: string;
@@ -229,6 +362,13 @@ export async function createMedia(input: CreateMediaInput) {
       type: input.type ?? "image",
       url: input.url ?? "/images/ourdream/card-sarah-mercer.webp",
       thumbnailUrl: input.url ?? "/images/ourdream/card-sarah-mercer.webp",
+      storageKey:
+        input.storageKey === undefined
+          ? `test-fixtures/${input.id}.${input.type === "video" ? "mp4" : "webp"}`
+          : input.storageKey,
+      contentType:
+        input.contentType ??
+        (input.type === "video" ? "video/mp4" : "image/webp"),
       visibility: input.visibility ?? "private",
       safetyStatus: input.safetyStatus ?? "passed",
       prompt: input.prompt,
@@ -281,22 +421,121 @@ export async function dreamcoinBalance(userId: string) {
   return aggregate._sum.delta ?? 0;
 }
 
-export async function runQueuedGenerationJobs(limit = 25) {
+export async function runQueuedGenerationJobs(
+  limit = 25,
+  queues: readonly string[] = localAiQueueNames,
+) {
   return drainLocalAiPipeline({
-    // Mirror the live drain set (image/video/finalize + character.preview) so
-    // tests settle async preview jobs exactly as the worker does.
-    queues: [...localAiQueueNames],
+    // Mirror the main-side drain set. Character previews are consumed by
+    // packages/gen and return here through app.ai.finalize.
+    queues: [...queues],
     limit,
     workerId: "test-generation-worker",
   });
+}
+
+export async function completeQueuedCharacterPreview(input: {
+  previewJobId: string;
+  draftId: string;
+  userId: string;
+  provider?: string;
+  model?: string;
+}) {
+  const generateDedupeKey = `character-preview:${input.previewJobId}`;
+  const queued = await jobQueue.getByDedupeKey(
+    "character.preview",
+    generateDedupeKey,
+  );
+  expect(queued?.payload).toMatchObject({
+    kind: "character.preview",
+    previewJobId: input.previewJobId,
+    draftId: input.draftId,
+    userId: input.userId,
+  });
+  await jobQueue.removeByDedupePrefix(generateDedupeKey, ["character.preview"]);
+  await jobQueue.enqueue({
+    queue: "app.ai.finalize",
+    payload: {
+      version: 1,
+      kind: "character.preview.completed",
+      requestId: `character-preview:${input.previewJobId}`,
+      previewJobId: input.previewJobId,
+      draftId: input.draftId,
+      userId: input.userId,
+      provider: input.provider ?? "backend",
+      model: input.model ?? "redcraft-krea2-comfyui",
+      asset: {
+        key: `preview/${input.previewJobId}/image-1.webp`,
+        width: 832,
+        height: 1024,
+        contentType: "image/webp",
+      },
+    },
+    dedupeKey: `character-preview-finalize:${input.previewJobId}:completed`,
+  });
+  const result = await drainLocalAiPipeline({
+    queues: ["app.ai.finalize"],
+    limit: 2,
+    workerId: `test-preview-finalizer-${input.previewJobId}`,
+  });
+  await jobQueue.removeByDedupePrefix(
+    `character-preview-finalize:${input.previewJobId}:`,
+    ["app.ai.finalize"],
+  );
+  return result;
 }
 
 // ---------------------------------------------------------------------------
 // Cleanup — delete everything created under a test-file prefix, FK-safe order.
 // ---------------------------------------------------------------------------
 
+export async function purgeQueuedGenerationJobs(
+  generationJobIds: readonly string[],
+) {
+  let removed = 0;
+  for (const jobId of new Set(generationJobIds)) {
+    removed += await jobQueue.removeByDedupePrefix(`generation:${jobId}`, [
+      "ai.image.generate",
+      "ai.video.generate",
+    ]);
+    removed += await jobQueue.removeByDedupePrefix(
+      `generation-finalize:${jobId}:`,
+      ["app.ai.finalize"],
+    );
+  }
+  return removed;
+}
+
 export async function purgeTestData(prefix: string) {
   const sw = { startsWith: prefix } as const;
+  const purgeUsers = await prisma.user.findMany({
+    where: { OR: [{ id: sw }, { email: sw }] },
+    select: { id: true },
+  });
+  const purgeUserIds = purgeUsers.map((user) => user.id);
+  const purgeGenerationJobs = await prisma.generationJob.findMany({
+    where: {
+      OR: [
+        ...(purgeUserIds.length > 0
+          ? [{ userId: { in: purgeUserIds } }]
+          : []),
+        { id: sw },
+        { characterId: sw },
+        { visualProfileId: sw },
+        { referenceSetRevisionId: sw },
+        { lookId: sw },
+        { sourceId: sw },
+      ],
+    },
+    select: { id: true },
+  });
+
+  // GenerationJob IDs are generated independently from the test prefix. User
+  // cascade removes their database rows, but BullMQ has no FK and would retain
+  // `generation:<random-id>` work forever. Remove the exact work and finalize
+  // keys before deleting the owning users so later test files cannot consume
+  // orphan image work instead of their own video/image job.
+  await purgeQueuedGenerationJobs(purgeGenerationJobs.map((job) => job.id));
   await jobQueue.removeByDedupePrefix(prefix, [
     "ai.image.generate",
     "ai.video.generate",
@@ -441,6 +680,9 @@ export async function purgeTestData(prefix: string) {
     : [];
   const releaseIds = releases.map((release) => release.id);
   if (releaseIds.length > 0) {
+    await prisma.publicCatalogQualification.deleteMany({
+      where: { releaseId: { in: releaseIds } },
+    });
     const validationRuns = await prisma.releaseValidationRun.findMany({ where: { releaseId: { in: releaseIds } }, select: { id: true } });
     await prisma.releaseCheckResult.deleteMany({ where: { validationRunId: { in: validationRuns.map((run) => run.id) } } });
     await prisma.releaseValidationRun.deleteMany({ where: { releaseId: { in: releaseIds } } });

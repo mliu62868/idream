@@ -23,6 +23,7 @@ let fsRoot: string;
 const USER = "u_hot";
 const TURN_USER = "u_hot_turn";
 const EDIT_USER = "u_hot_edit";
+const IDEMPOTENCY_USER = "u_hot_idempotency";
 const CHAR = "c_hot";
 
 beforeAll(async () => {
@@ -46,7 +47,12 @@ beforeAll(async () => {
      VALUES ($1, $2, 'active', now(), now()) ON CONFLICT (id) DO NOTHING`,
     [EDIT_USER, "hot-edit@test.dev"],
   );
-  await acceptAgeGate(superPool, [USER, TURN_USER, EDIT_USER]);
+  await superPool.query(
+    `INSERT INTO public.users (id, email, status, "createdAt", "updatedAt")
+     VALUES ($1, $2, 'active', now(), now()) ON CONFLICT (id) DO NOTHING`,
+    [IDEMPOTENCY_USER, "hot-idempotency@test.dev"],
+  );
+  await acceptAgeGate(superPool, [USER, TURN_USER, EDIT_USER, IDEMPOTENCY_USER]);
   await superPool.query(
     `INSERT INTO public.characters (id, name, age, description, visibility, status, style, gender, appearance, "advancedDetails", "createdAt", "updatedAt")
      VALUES ($1, 'Hot', 22, 'desc', 'public', 'approved', 'realistic', 'female', '{}', '{}', now(), now())
@@ -62,6 +68,61 @@ afterAll(async () => {
 });
 
 describe("chat hot path (P0-3)", () => {
+  it("converges sequential and concurrent retries on one immutable turn receipt", async () => {
+    const session = await createSession(
+      { userId: IDEMPOTENCY_USER, characterId: CHAR },
+      { prisma },
+    );
+    const idempotencyKey = "hot-path-idempotency-key-0001";
+    const input = {
+      userId: IDEMPOTENCY_USER,
+      sessionId: session.id,
+      content: "one canonical turn",
+      idempotencyKey,
+    };
+    const [first, concurrentReplay] = await Promise.all([
+      sendMessage(input, { prisma }),
+      sendMessage(input, { prisma }),
+    ]);
+    const sequentialReplay = await sendMessage(input, { prisma });
+
+    expect(concurrentReplay).toMatchObject({
+      userMessageId: first.userMessageId,
+      assistantMessageId: first.assistantMessageId,
+    });
+    expect(sequentialReplay).toMatchObject({
+      userMessageId: first.userMessageId,
+      assistantMessageId: first.assistantMessageId,
+      idempotentReplay: true,
+    });
+    expect(
+      await prisma.chatSendReceipt.count({
+        where: { userId: IDEMPOTENCY_USER, idempotencyKey },
+      }),
+    ).toBe(1);
+    expect(
+      await prisma.message.count({ where: { sessionId: session.id } }),
+    ).toBe(2);
+    expect(
+      await drainQueue(CHAT_QUEUES.generate, async (job) => {
+        await processGenerate(
+          job.payload as Parameters<typeof processGenerate>[0],
+          prisma,
+        );
+      }),
+    ).toBe(1);
+
+    await expect(
+      sendMessage(
+        { ...input, content: "different payload with the same key" },
+        { prisma },
+      ),
+    ).rejects.toMatchObject({ code: "idempotency_conflict", status: 409 });
+    expect(
+      await prisma.message.count({ where: { sessionId: session.id } }),
+    ).toBe(2);
+  });
+
   it("send → generate → finalize: message sent, usage++, jsonl, outbox", async () => {
     const session = await createSession({ userId: USER, characterId: CHAR }, { prisma });
     const res = await sendMessage(
@@ -221,8 +282,17 @@ describe("chat hot path (P0-3)", () => {
 
   it("blocks unsafe input: status=blocked, no streamUrl, no generation enqueued (P0-B)", async () => {
     const session = await createSession({ userId: USER, characterId: CHAR }, { prisma });
+    const messageCountBefore = await prisma.message.count({
+      where: { sessionId: session.id },
+    });
+    const idempotencyKey = "hot-path-blocked-send-key-0001";
     const res = await sendMessage(
-      { userId: USER, sessionId: session.id, content: "this mentions csam content" },
+      {
+        userId: USER,
+        sessionId: session.id,
+        content: "this mentions csam content",
+        idempotencyKey,
+      },
       { prisma },
     );
     // The send response itself declares the block — no empty stream to await.
@@ -233,6 +303,24 @@ describe("chat hot path (P0-3)", () => {
 
     const assistant = await prisma.message.findUnique({ where: { id: res.assistantMessageId } });
     expect(assistant?.status).toBe("blocked");
+    const replay = await sendMessage(
+      {
+        userId: USER,
+        sessionId: session.id,
+        content: "this mentions csam content",
+        idempotencyKey,
+      },
+      { prisma },
+    );
+    expect(replay).toMatchObject({
+      userMessageId: res.userMessageId,
+      assistantMessageId: res.assistantMessageId,
+      status: "blocked",
+      idempotentReplay: true,
+    });
+    expect(await prisma.message.count({ where: { sessionId: session.id } })).toBe(
+      messageCountBefore + 2,
+    );
     const handled = await drainQueue(CHAT_QUEUES.generate, async () => {});
     expect(handled).toBe(0); // nothing enqueued for blocked input
   });

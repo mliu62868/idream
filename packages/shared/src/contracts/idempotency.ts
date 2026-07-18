@@ -19,6 +19,9 @@ export const idempotencyKeys = {
   generation: (jobId: string) => `generation:${jobId}`,
   generationFinalize: (jobId: string, state: "completed" | "failed" | "blocked") =>
     `generation-finalize:${jobId}:${state}`,
+  characterPreview: (previewJobId: string) => `character-preview:${previewJobId}`,
+  characterPreviewFinalize: (previewJobId: string, state: "completed" | "failed") =>
+    `character-preview-finalize:${previewJobId}:${state}`,
 } as const;
 
 export type IdempotencyKeyBuilder = typeof idempotencyKeys;

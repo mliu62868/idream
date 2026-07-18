@@ -2,10 +2,9 @@ import { expect, test, type Page } from "@playwright/test";
 
 const publicRoutes = [
   { path: "/", title: /ourdream\.ai/i },
-  { path: "/explore", title: /explore/i },
+  { path: "/explore", title: /ourdream\.ai/i },
   { path: "/create", title: /create/i },
   { path: "/generate", title: /ai image generator/i },
-  { path: "/generate/ai-porn", title: /ai porn/i },
   { path: "/chat", title: /chat/i },
   { path: "/custom", title: /dream ai characters|my ai/i },
   { path: "/profile", title: /profile/i },
@@ -16,26 +15,8 @@ const publicRoutes = [
   { path: "/feed", title: /feed/i },
   { path: "/community", title: /community/i },
   { path: "/helpdesk", title: /help desk/i },
-  { path: "/ai-girl", title: /ai girl/i },
-  { path: "/ai-girlfriend", title: /ai girlfriend/i },
-  { path: "/ai-boyfriend", title: /ai boyfriend/i },
-  { path: "/affiliate", title: /affiliate/i },
-  { path: "/authors/lizzie-od", title: /lizzie od/i },
-  { path: "/site/rprp-ai", title: /rprp ai/i },
-  { path: "/nude-ai", title: /nude ai/i },
-  { path: "/free-ai-girlfriend", title: /free ai girlfriend/i },
-  { path: "/lovescape-ai-alternatives", title: /lovescape ai alternatives/i },
   { path: "/resources-hub", title: /resources hub/i },
-  { path: "/type", title: /ai girlfriend types/i },
   { path: "/comparison", title: /compare ai girlfriend platforms/i },
-  { path: "/videos", title: /ai video guides/i },
-  { path: "/ai-instructions", title: /ai instructions/i },
-  { path: "/games", title: /ai games/i },
-  { path: "/romantasy", title: /ai romantasy/i },
-  { path: "/type/anime-ai-girlfriend", title: /anime ai girlfriend/i },
-  { path: "/guides/how-to-use-character-ai", title: /how to use character ai/i },
-  { path: "/comparison/character-ai-alternative", title: /character ai alternative/i },
-  { path: "/videos/ai-porn-videos", title: /ai porn videos/i },
   { path: "/terms", title: /terms/i },
   { path: "/safety/introduction", title: /safety/i },
 ] as const;
@@ -97,6 +78,9 @@ test.describe("public route smoke", () => {
 
       await page.goto(route.path);
       await dismissAgeGateIfPresent(page);
+      if (route.path === "/explore") {
+        await expect(page).toHaveURL(/\/$/);
+      }
       await expect(page).toHaveTitle(route.title);
       await expect(page.locator("main")).toBeVisible();
 
@@ -108,7 +92,18 @@ test.describe("public route smoke", () => {
             ?.getAttribute("content") ?? "";
         const searchableText = `${bodyText}\n${metaDescription}`.toLowerCase();
         const brokenImages = Array.from(document.images)
-          .filter((image) => image.complete && image.naturalWidth === 0)
+          .filter((image) => {
+            const styles = window.getComputedStyle(image);
+            const bounds = image.getBoundingClientRect();
+            const userVisible =
+              styles.display !== "none" &&
+              styles.visibility !== "hidden" &&
+              Number(styles.opacity) > 0 &&
+              bounds.width > 0 &&
+              bounds.height > 0;
+
+            return userVisible && image.complete && image.naturalWidth === 0;
+          })
           .map((image) => image.currentSrc || image.src || image.alt || "unknown");
 
         return {
@@ -174,10 +169,33 @@ test.describe("public route smoke", () => {
     );
   });
 
-  test("comparison pages explain feature differences and mirror the live plan authority", async ({
+  test("unpublished route inventory does not render generic fake content", async ({
     page,
   }) => {
-    await startSignedInAdultSession(page, "/comparison/character-ai-alternative");
+    await startSignedInAdultSession(page, "/guides/how-to-use-character-ai");
+    for (const path of [
+      "/guides/how-to-use-character-ai",
+      "/generate/ai-porn",
+      "/comparison/character-ai-alternative",
+      "/affiliate",
+      "/games",
+    ]) {
+      await page.goto(path);
+      await expect(
+        page.getByRole("heading", { name: "Page not found", exact: true }),
+      ).toBeVisible();
+      await expect
+        .poll(() =>
+          page.locator('meta[name="robots"][content*="noindex" i]').count(),
+        )
+        .toBeGreaterThan(0);
+    }
+  });
+
+  test("comparison hub explains feature differences and mirrors the live plan authority", async ({
+    page,
+  }) => {
+    await startSignedInAdultSession(page, "/comparison");
     const plansResponse = await page.request.get("/api/v1/plans");
     const plansBody = await plansResponse.text();
     expect(plansResponse.ok(), plansBody).toBeTruthy();
@@ -195,11 +213,11 @@ test.describe("public route smoke", () => {
     const plans = plansPayload.data?.items ?? [];
     expect(plans.length).toBeGreaterThan(0);
 
-    await page.goto("/comparison/character-ai-alternative");
+    await page.goto("/comparison");
     await dismissAgeGateIfPresent(page);
 
     await expect(
-      page.getByRole("heading", { name: /compare character ai by the workflow/i }),
+      page.getByRole("heading", { name: /compare ai companion platforms by the workflow/i }),
     ).toBeVisible();
     await expect(page.getByText("Image generation tools", { exact: true })).toBeVisible();
     await expect(page.getByText("Live plan snapshot", { exact: true })).toBeVisible();
@@ -239,11 +257,19 @@ test.describe("public route smoke", () => {
     await expect(
       page.getByRole("heading", { name: "Resources Hub", exact: true }),
     ).toBeVisible();
-    await expect(page.getByRole("link", { name: /How To Use Character AI/i })).toBeVisible();
     await expect(
-      page.getByText("How To Use Character AI explains the workflow", {
-        exact: false,
-      }),
+      page.getByRole("link", { name: "Character Cards", exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("link", { name: "Character Card Creator", exact: true }),
+    ).toBeVisible();
+    await expect(
+      page
+        .locator('a[href="/guides/sillytavern-setup-guide"]')
+        .getByRole("heading", {
+          name: "SillyTavern Setup Guide",
+          exact: true,
+        }),
     ).toBeVisible();
 
     const visibleCopy = await page.locator("main").innerText();
@@ -251,28 +277,46 @@ test.describe("public route smoke", () => {
     expect(visibleCopy).not.toContain("character-ai-alternative");
   });
 
-  test("library routes without child paths still expose curated cards", async ({
+  test("community campaign failure is explicit and does not impersonate authority", async ({
+    page,
+  }) => {
+    await startSignedInAdultSession(page, "/community");
+    await page.route("**/api/v1/community/campaigns", (route) =>
+      route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: false,
+          error: { message: "Campaign authority unavailable" },
+        }),
+      }),
+    );
+
+    await page.goto("/community");
+    await expect(
+      page.getByTestId("community-campaign-authority-status"),
+    ).toHaveText("Campaigns unavailable · Editorial community overview");
+    await expect(
+      page.getByTestId("community-campaign-authority-status"),
+    ).not.toHaveText("Live community campaign");
+  });
+
+  test("unpublished library collections remain unpublished", async ({
     page,
   }) => {
     await startSignedInAdultSession(page, "/games");
 
-    await page.goto("/games");
-    await dismissAgeGateIfPresent(page);
-    await expect(
-      page.getByRole("heading", { name: "AI Games", exact: true }),
-    ).toBeVisible();
-    await expect(page.locator('main a[href="/generator/ai-roleplay-generator"]')).toBeVisible();
-    await expect(page.locator('main a[href="/sex-chat/ai-sex-chat-roleplay"]')).toBeVisible();
-    await expect(page.locator('main a[href="/type/roleplay-ai-girlfriend"]')).toBeVisible();
-
-    await page.goto("/romantasy");
-    await dismissAgeGateIfPresent(page);
-    await expect(
-      page.getByRole("heading", { name: "AI Romantasy", exact: true }),
-    ).toBeVisible();
-    await expect(page.locator('main a[href="/guides/character-card-creator"]')).toBeVisible();
-    await expect(page.locator('main a[href="/type/angel-ai-girlfriend"]')).toBeVisible();
-    await expect(page.locator('main a[href="/type/goth-ai-girlfriend"]')).toBeVisible();
+    for (const path of ["/games", "/romantasy"]) {
+      await page.goto(path);
+      await expect(
+        page.getByRole("heading", { name: "Page not found", exact: true }),
+      ).toBeVisible();
+      await expect
+        .poll(() =>
+          page.locator('meta[name="robots"][content*="noindex" i]').count(),
+        )
+        .toBeGreaterThan(0);
+    }
   });
 
   test("/terms is readable before age-gate acceptance", async ({ page }) => {
@@ -320,7 +364,7 @@ test.describe("public route smoke", () => {
     );
   });
 
-  test("help desk support links distinguish internal routes from external community", async ({
+  test("help desk support links only promise local, available destinations", async ({
     page,
   }) => {
     await startSignedInAdultSession(page, "/helpdesk");
@@ -342,28 +386,21 @@ test.describe("public route smoke", () => {
     await expect(trustLink.locator("svg.lucide-arrow-right")).toHaveCount(1);
     await expect(trustLink.locator("svg.lucide-external-link")).toHaveCount(0);
 
-    const discordLink = supportLinks.locator('a[data-link-kind="external"]').filter({
-      hasText: "Discord",
-    });
-    await expect(discordLink).toHaveAttribute("href", "https://discord.gg/P47YU7je5D");
-    await expect(discordLink).toHaveAttribute("data-link-kind", "external");
-    await expect(discordLink).toHaveAttribute("target", "_blank");
-    await expect(discordLink).toHaveAttribute("rel", "noopener noreferrer");
-    await expect(discordLink.locator("svg.lucide-external-link")).toHaveCount(1);
-    await expect(discordLink.locator("svg.lucide-arrow-right")).toHaveCount(0);
+    const policiesLink = supportLinks.getByRole("link", { name: "Policies" });
+    await expect(policiesLink).toHaveAttribute("href", "/terms");
+    await expect(policiesLink).toHaveAttribute("data-link-kind", "internal");
+    await expect(policiesLink.locator("svg.lucide-arrow-right")).toHaveCount(1);
+    await expect(supportLinks.locator('a[data-link-kind="external"]')).toHaveCount(0);
   });
 
-  test("global navigation and footer expose external links explicitly", async ({ page }) => {
+  test("global navigation and footer omit unconfigured external identities", async ({ page }) => {
     await startSignedInAdultSession(page, "/helpdesk");
     await page.goto("/helpdesk");
     await dismissAgeGateIfPresent(page);
 
-    const sidebarDiscord = page.locator("aside").getByRole("link", { name: "Discord" });
-    await expect(sidebarDiscord).toHaveAttribute("href", "https://discord.gg/P47YU7je5D");
-    await expect(sidebarDiscord).toHaveAttribute("data-link-kind", "external");
-    await expect(sidebarDiscord).toHaveAttribute("target", "_blank");
-    await expect(sidebarDiscord).toHaveAttribute("rel", "noopener noreferrer");
-    await expect(sidebarDiscord.locator("svg.lucide-external-link")).toHaveCount(1);
+    await expect(
+      page.locator("aside").getByRole("link", { name: "Discord" }),
+    ).toHaveCount(0);
 
     const sidebarHelpDesk = page.locator("aside").getByRole("link", { name: "Help Desk" });
     await expect(sidebarHelpDesk).toHaveAttribute("href", "/helpdesk");
@@ -371,31 +408,22 @@ test.describe("public route smoke", () => {
     await expect(sidebarHelpDesk).not.toHaveAttribute("target", "_blank");
 
     const footer = page.locator("footer");
-    const helpCentre = footer.locator('a[href="https://help.ourdream.ai/"]');
-    await expect(helpCentre).toHaveAttribute("href", "https://help.ourdream.ai/");
-    await expect(helpCentre).toHaveAttribute("data-link-kind", "external");
-    await expect(helpCentre).toHaveAttribute("target", "_blank");
-    await expect(helpCentre).toHaveAttribute("rel", "noopener noreferrer");
-
     const helpDesk = footer.locator('a[href="/helpdesk"]');
     await expect(helpDesk).toHaveAttribute("href", "/helpdesk");
     await expect(helpDesk).toHaveAttribute("data-link-kind", "internal");
     await expect(helpDesk).not.toHaveAttribute("target", "_blank");
-
-    const footerDiscord = footer.getByLabel("Discord");
-    await expect(footerDiscord).toHaveAttribute("href", "https://discord.gg/P47YU7je5D");
-    await expect(footerDiscord).toHaveAttribute("data-link-kind", "external");
-    await expect(footerDiscord).toHaveAttribute("target", "_blank");
-    await expect(footerDiscord).toHaveAttribute("rel", "noopener noreferrer");
+    await expect(footer.locator('a[data-link-kind="external"]')).toHaveCount(0);
   });
 
-  test("promised catch-all marketing and comparison pages keep More active", async ({
+  test("unpublished marketing inventory fails closed instead of rendering invented content", async ({
     page,
   }) => {
     await startSignedInAdultSession(page, "/ai-girl");
 
-    const promisedContentRoutes = [
+    const unpublishedMarketingRoutes = [
       "/ai-girl",
+      "/ai-girlfriend",
+      "/ai-boyfriend",
       "/affiliate",
       "/authors/lizzie-od",
       "/site/rprp-ai",
@@ -404,19 +432,57 @@ test.describe("public route smoke", () => {
       "/lovescape-ai-alternatives",
     ] as const;
 
-    for (const routePath of promisedContentRoutes) {
+    for (const routePath of unpublishedMarketingRoutes) {
       await page.goto(routePath);
-      await dismissAgeGateIfPresent(page);
-      await expect(page.locator("main")).toBeVisible();
-      await expect(page.locator("aside").getByRole("link", { name: "More" })).toHaveAttribute(
-        "aria-current",
-        "page",
-      );
-      await expect(page.locator("aside").getByRole("link", { name: "Explore" })).not.toHaveAttribute(
-        "aria-current",
-        "page",
+      await expect(
+        page.getByRole("heading", { name: "Page not found", exact: true }),
+      ).toBeVisible();
+      await expect
+        .poll(() =>
+          page.locator('meta[name="robots"][content*="noindex" i]').count(),
+        )
+        .toBeGreaterThan(0);
+      await expect(
+        page.getByRole("link", { name: "Create your AI", exact: true }),
+      ).toHaveAttribute(
+        "href",
+        "/create",
       );
     }
+  });
+
+  test("SEO authority exposes only canonical published routes", async ({ page }) => {
+    await startSignedInAdultSession(page, "/resources-hub");
+
+    const robots = await page.request.get("/robots.txt");
+    expect(robots.ok(), await robots.text()).toBeTruthy();
+    const robotsText = await robots.text();
+    expect(robotsText).toContain("Disallow: /api/");
+    expect(robotsText).toContain("Disallow: /chat/");
+    expect(robotsText).toContain("Sitemap:");
+
+    const sitemap = await page.request.get("/sitemap.xml");
+    expect(sitemap.ok(), await sitemap.text()).toBeTruthy();
+    const sitemapText = await sitemap.text();
+    const origin = new URL(sitemap.url()).origin;
+    expect(sitemapText).toContain(`<loc>${origin}/resources-hub</loc>`);
+    expect(sitemapText).toContain(`<loc>${origin}/guides/character-cards</loc>`);
+    expect(sitemapText).not.toContain(`<loc>${origin}/games</loc>`);
+    expect(sitemapText).not.toContain(`<loc>${origin}/ai-girl</loc>`);
+
+    await page.goto("/resources-hub");
+    await expect(page.locator('link[rel="canonical"]')).toHaveAttribute(
+      "href",
+      `${origin}/resources-hub`,
+    );
+    await expect(page.locator('meta[property="og:url"]')).toHaveAttribute(
+      "content",
+      `${origin}/resources-hub`,
+    );
+    const robotsContent = await page
+      .locator('meta[name="robots"]')
+      .getAttribute("content");
+    expect(robotsContent).not.toContain("noindex");
   });
 
   test("account shell routes expose exactly one current sidebar destination", async ({
@@ -447,42 +513,41 @@ test.describe("public route smoke", () => {
     }
   });
 
-test("active app copy avoids unavailable video and unsupported sale promises", async ({
-  page,
-}) => {
-  await startSignedInAdultSession(page, "/");
-  await page.goto("/");
-  await dismissAgeGateIfPresent(page);
+  test("active app copy avoids unavailable video and unsupported sale promises", async ({
+    page,
+  }) => {
+    await startSignedInAdultSession(page, "/");
+    await page.goto("/");
+    await dismissAgeGateIfPresent(page);
 
-  const homeCopy = await page.evaluate(() => document.body.innerText.toLowerCase());
-  expect(homeCopy).not.toContain("chat, image, and video tools");
-  expect(homeCopy).not.toContain("generating images and videos");
-  expect(homeCopy).not.toContain("image and video generation access");
-  expect(homeCopy).not.toContain("75% pride sale");
+    const homeCopy = await page.evaluate(() => document.body.innerText.toLowerCase());
+    expect(homeCopy).not.toContain("chat, image, and video tools");
+    expect(homeCopy).not.toContain("generating images and videos");
+    expect(homeCopy).not.toContain("image and video generation access");
+    expect(homeCopy).not.toContain("75% pride sale");
 
-  await expect(page.getByRole("link", { name: "Pride offer - view plans" })).toBeVisible({
-    timeout: 10_000,
-  });
-  const homePromotionalLabels = await page.evaluate(() =>
-    Array.from(document.querySelectorAll("a, img"))
-      .map((element) =>
-        [
-          element.textContent,
-          element.getAttribute("aria-label"),
-          element.getAttribute("alt"),
-          element.getAttribute("src"),
-        ].join(" "),
-      )
-      .join(" ")
-      .toLowerCase(),
-  );
-  expect(homePromotionalLabels).toContain("pride offer");
-  expect(homePromotionalLabels).not.toContain("75%");
-  expect(homePromotionalLabels).not.toContain("pride sale");
-  expect(homePromotionalLabels).not.toContain("pride-card-female");
-  expect(homePromotionalLabels).not.toContain("pride-banner-female");
+    await expect(page.getByRole("link", { name: "Compare upgrade plans" })).toBeVisible({
+      timeout: 10_000,
+    });
+    const homePromotionalLabels = await page.evaluate(() =>
+      Array.from(document.querySelectorAll("a, img"))
+        .map((element) =>
+          [
+            element.textContent,
+            element.getAttribute("aria-label"),
+            element.getAttribute("alt"),
+            element.getAttribute("src"),
+          ].join(" "),
+        )
+        .join(" ")
+        .toLowerCase(),
+    );
+    expect(homePromotionalLabels).not.toContain("75%");
+    expect(homePromotionalLabels).not.toContain("pride sale");
+    expect(homePromotionalLabels).not.toContain("pride-card-female");
+    expect(homePromotionalLabels).not.toContain("pride-banner-female");
 
-  await page.goto("/generate");
+    await page.goto("/generate");
     await expect(page).toHaveTitle(/ai image generator/i);
     const generateMetadata = await page.evaluate(() => ({
       title: document.title.toLowerCase(),
@@ -494,17 +559,41 @@ test("active app copy avoids unavailable video and unsupported sale promises", a
     expect(generateMetadata.description).not.toContain("video");
 
     await page.goto("/comparison");
+    await expect(
+      page.getByText("Image generation tools", { exact: true }),
+    ).toBeVisible();
     const comparisonCopy = await page.evaluate(() => document.body.innerText.toLowerCase());
     expect(comparisonCopy).not.toContain("image and video tools");
     expect(comparisonCopy).toContain("image generation tools");
 
+    const plansResponse = await page.request.get("/api/v1/plans");
+    const plansPayload = (await plansResponse.json()) as {
+      data: {
+        items: Array<{
+          billingPeriod: string;
+          includedDreamcoins: number;
+          name: string;
+          priceCents: number;
+        }>;
+      };
+    };
     await page.goto("/upgrade");
-    await expect(page.locator("article").filter({ hasText: "Premium monthly" })).toBeVisible({
-      timeout: 10_000,
-    });
+    for (const plan of plansPayload.data.items) {
+      const planCard = page.locator("article").filter({
+        has: page.getByRole("heading", {
+          name: `${plan.name} ${plan.billingPeriod}`,
+          exact: true,
+        }),
+      });
+      await expect(planCard).toBeVisible({ timeout: 10_000 });
+      await expect(planCard).toContainText(
+        `$${(plan.priceCents / 100).toFixed(2)}`,
+      );
+      await expect(planCard).toContainText(
+        `${plan.includedDreamcoins.toLocaleString()} dreamcoins`,
+      );
+    }
     const planCardCopy = (await page.locator("article").allInnerTexts()).join("\n").toLowerCase();
-    expect(planCardCopy).toContain("includes 1,500 dreamcoins");
-    expect(planCardCopy).toContain("unlimited text messages & audio");
     expect(planCardCopy).not.toContain("video");
     expect(planCardCopy).not.toContain("videos");
   });

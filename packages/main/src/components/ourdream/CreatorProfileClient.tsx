@@ -4,88 +4,102 @@ import Image from "next/image";
 import Link from "next/link";
 import { ArrowLeft, HeartHandshake } from "lucide-react";
 import { useEffect, useState } from "react";
+import {
+  parseCreatorResponse,
+  parseFollowMutationResponse,
+  type PublicCreator,
+} from "@/lib/public-api-contracts";
 import type { CharacterCardData } from "@/types/ourdream";
 import { AppSidebar } from "./AppSidebar";
+import { useAgeGateAccess } from "./AgeGateBoundary";
 import { CharacterCard } from "./CharacterCard";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { SiteFooter } from "./SiteFooter";
 import { authHrefForTarget } from "./authRedirect";
 
-type CreatorProfile = {
-  id: string;
-  displayName: string;
-  image: string | null;
-  isFollowing: boolean;
-  isSelf: boolean;
-  stats: { characters: number; followers: number; likes: string; chats: string };
-};
-
-type CreatorResponse = {
-  ok: boolean;
-  data?: { creator: CreatorProfile; characters: CharacterCardData[] };
-  error?: { message?: string };
-};
+type CreatorProfile = PublicCreator["creator"];
 
 export function CreatorProfileClient({ id }: Readonly<{ id: string }>) {
+  const { accepted: ageGateAccepted } = useAgeGateAccess();
   const [creator, setCreator] = useState<CreatorProfile>();
   const [characters, setCharacters] = useState<CharacterCardData[]>([]);
   const [status, setStatus] = useState("Loading creator...");
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const [retryAvailable, setRetryAvailable] = useState(false);
+  const [followPending, setFollowPending] = useState(false);
 
   useEffect(() => {
-    fetch(`/api/v1/creators/${id}`)
+    if (!ageGateAccepted) return;
+    const controller = new AbortController();
+    fetch(`/api/v1/creators/${id}`, { signal: controller.signal })
       .then(async (response) => {
-        if (!response.ok) throw new Error("Creator unavailable");
-        return (await response.json()) as CreatorResponse;
-      })
-      .then((payload) => {
-        if (payload.data?.creator) {
-          setCreator(payload.data.creator);
-          setCharacters(payload.data.characters ?? []);
-          setStatus("");
+        const rawPayload: unknown = await response.json().catch(() => null);
+        if (!response.ok) {
+          const serverMessage = apiErrorMessage(rawPayload);
+          if (!controller.signal.aborted) {
+            setStatus(creatorLoadErrorMessage(response.status, serverMessage));
+            setRetryAvailable(response.status >= 500);
+          }
+          return;
         }
+        const payload = parseCreatorResponse(rawPayload);
+        if (controller.signal.aborted) return;
+        setCreator(payload.creator);
+        setCharacters(payload.characters);
+        setStatus("");
       })
-      .catch(() => setStatus("Accept the age gate or sign in to view this creator."));
-  }, [id]);
+      .catch(() => {
+        if (controller.signal.aborted) return;
+        setStatus(creatorLoadErrorMessage(null));
+        setRetryAvailable(true);
+      });
+    return () => controller.abort();
+  }, [ageGateAccepted, id, loadAttempt]);
 
   async function toggleFollow() {
-    if (!creator || creator.isSelf) return;
+    if (!creator || creator.isSelf || followPending) return;
     const next = !creator.isFollowing;
-    setCreator((current) =>
-      current
-        ? {
-            ...current,
-            isFollowing: next,
-            stats: {
-              ...current.stats,
-              followers: Math.max(0, current.stats.followers + (next ? 1 : -1)),
-            },
-          }
-        : current,
-    );
-    const response = await fetch(`/api/v1/users/${creator.id}/follow`, {
-      method: next ? "POST" : "DELETE",
-    });
-    if (!response.ok) {
+    setFollowPending(true);
+    try {
+      const response = await fetch(`/api/v1/users/${creator.id}/follow`, {
+        method: next ? "POST" : "DELETE",
+      });
+      if (!response.ok) {
+        if (response.status === 401) {
+          window.location.assign(
+            authHrefForTarget("/signup", `/creators/${encodeURIComponent(id)}`),
+          );
+          return;
+        }
+        setStatus("Could not update follow. Please try again.");
+        return;
+      }
+      const authority = parseFollowMutationResponse(await response.json());
       setCreator((current) =>
         current
           ? {
               ...current,
-              isFollowing: !next,
+              isFollowing: authority.following,
               stats: {
                 ...current.stats,
-                followers: Math.max(0, current.stats.followers + (next ? -1 : 1)),
+                followers: authority.followers,
               },
             }
           : current,
       );
-      if (response.status === 401) {
-        window.location.assign(
-          authHrefForTarget("/signup", `/creators/${encodeURIComponent(id)}`),
-        );
-        return;
-      }
+    } catch {
       setStatus("Could not update follow. Please try again.");
+    } finally {
+      setFollowPending(false);
     }
+  }
+
+  function retryLoad() {
+    setCreator(undefined);
+    setCharacters([]);
+    setStatus("Loading creator...");
+    setRetryAvailable(false);
+    setLoadAttempt((attempt) => attempt + 1);
   }
 
   return (
@@ -123,8 +137,13 @@ export function CreatorProfileClient({ id }: Readonly<{ id: string }>) {
                     {creator.displayName}
                   </h1>
                   <p className="mt-2 text-[13px] font-medium text-[rgb(170,170,170)]">
-                    {creator.stats.characters} characters · {creator.stats.followers} followers ·{" "}
-                    {creator.stats.likes} likes · {creator.stats.chats} chats
+                    {creator.stats.characters} characters · {creator.stats.followers} followers
+                    {(creator.stats.likesCount ?? 0) > 0
+                      ? ` · ${creator.stats.likes} likes`
+                      : ""}
+                    {(creator.stats.chatsCount ?? 0) > 0
+                      ? ` · ${creator.stats.chats} chats`
+                      : ""}
                   </p>
                 </div>
                 {!creator.isSelf && (
@@ -136,6 +155,7 @@ export function CreatorProfileClient({ id }: Readonly<{ id: string }>) {
                         : "bg-white text-[rgb(13,13,13)]"
                     }`}
                     data-testid="creator-follow"
+                    disabled={followPending}
                     onClick={() => void toggleFollow()}
                     type="button"
                   >
@@ -180,6 +200,15 @@ export function CreatorProfileClient({ id }: Readonly<{ id: string }>) {
               role="status"
             >
               {status}
+              {retryAvailable ? (
+                <button
+                  className="ml-3 rounded-full border border-white/20 px-3 py-1 text-white"
+                  onClick={retryLoad}
+                  type="button"
+                >
+                  Retry
+                </button>
+              ) : null}
             </p>
           )}
         </section>
@@ -192,4 +221,23 @@ export function CreatorProfileClient({ id }: Readonly<{ id: string }>) {
 
 function isPrivateMediaUrl(url: string) {
   return url.startsWith("/api/v1/media/") || url.startsWith("/user-content/");
+}
+
+function apiErrorMessage(payload: unknown) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+  const error = (payload as { error?: unknown }).error;
+  if (!error || typeof error !== "object" || Array.isArray(error)) return undefined;
+  const message = (error as { message?: unknown }).message;
+  return typeof message === "string" ? message : undefined;
+}
+
+export function creatorLoadErrorMessage(
+  status: number | null,
+  serverMessage?: string,
+): string {
+  if (status === 401) return "Sign in to view this creator.";
+  if (status === 403) return "Accept the age gate to view this creator.";
+  if (status === 404) return "Creator not found or not public.";
+  if (status !== null && status < 500 && serverMessage) return serverMessage;
+  return "Creator is temporarily unavailable. Please try again.";
 }

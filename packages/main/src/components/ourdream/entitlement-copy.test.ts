@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { FREE_DAILY_MESSAGES } from "@idream/shared/chat/limits";
 
 import {
   activeEntitlementSummary,
   configuredEntitlementBenefits,
+  FREE_CHAT_SUMMARY,
 } from "./entitlement-copy";
 
 describe("entitlement copy", () => {
@@ -45,13 +47,11 @@ describe("entitlement copy", () => {
     expect(activeEntitlementSummary({}, true)).toBe(
       "No additional entitlements are configured for this plan.",
     );
-    expect(activeEntitlementSummary({}, false)).toBe(
-      "Free: 30 text messages per day.",
-    );
+    expect(activeEntitlementSummary({}, false)).toBe(FREE_CHAT_SUMMARY);
     expect(
       activeEntitlementSummary({ image_generation: true }, false),
     ).toBe(
-      "Free chat quota: 30 text messages per day · Additional entitlements: Image generation.",
+      `Free chat quota: ${FREE_DAILY_MESSAGES} text messages per day · Additional entitlements: Image generation.`,
     );
   });
 });

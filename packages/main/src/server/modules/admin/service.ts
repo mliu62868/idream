@@ -7,6 +7,7 @@ export {
   writeAudit,
   type AdminActor,
 } from "@/server/modules/admin/shared/legacy-primitives";
+import { retiredCreativeWrite } from "./shared/retired-creative-write";
 import {
   listOfficialCharacters,
   createOfficialCharacter,
@@ -28,7 +29,6 @@ import {
   createCharacterVisualProfile,
 } from "./characters/visual-profiles";
 import {
-  createCharacterPregenBatch,
   listCharacterPregenBatches,
 } from "./characters/pregen";
 import { setCharacterChatTools } from "./characters/chat-tools";
@@ -37,7 +37,6 @@ import {
   approveProductionItem,
   bulkPatchContentAssets,
   createPlacement,
-  createProductionBatch,
   estimateProductionBatch,
   getContentAsset,
   getPlacement,
@@ -47,9 +46,11 @@ import {
   listProductionBatches,
   patchContentAsset,
   patchPlacement,
+  preflightContentAssetArchive,
   regenerateProductionItem,
   rejectProductionItem,
 } from "./content-ops";
+
 import { listCmsPages, getCmsPage, createCmsPage, patchCmsPage, publishCmsPage } from "./cms";
 import {
   exportUserData,
@@ -73,7 +74,10 @@ import {
 } from "./announcements";
 import { listExperiments } from "./experiments";
 import { auditLog } from "./audit/query";
-import { billingAdjustment } from "./billing/command";
+import {
+  billingAdjustment,
+  resolveCheckoutReconciliation,
+} from "./billing/command";
 import { billingLedger, billingReconciliation, listSubscriptions } from "./billing/query";
 import { listFeatureFlags, patchFeatureFlag } from "./config/feature-flags";
 import {
@@ -114,7 +118,12 @@ import {
   rollbackModelProfile,
   uploadModelImport,
 } from "./generation/config/service";
-import { appealDecision, moderationDecision, moderationQueue } from "./moderation/service";
+import {
+  appealDecision,
+  mediaReviewDecision,
+  moderationDecision,
+  moderationQueue,
+} from "./moderation/service";
 import {
   escalateSupportRequest,
   listSupportRequests,
@@ -264,6 +273,9 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
 
   if (resource === "moderation") {
     if (id === "queue" && !action && method === "GET") return moderationQueue(request);
+    if (id === "media" && action && child === "decision" && method === "POST") {
+      return mediaReviewDecision(request, action);
+    }
     if (id && action === "decision" && method === "POST") {
       return moderationDecision(request, id);
     }
@@ -277,6 +289,14 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
     if (id === "subscriptions" && !action && method === "GET") return listSubscriptions(request);
     if (id === "reconciliation" && !action && method === "GET") {
       return billingReconciliation(request);
+    }
+    if (
+      id === "reconciliation" &&
+      action &&
+      child === "resolve" &&
+      method === "POST"
+    ) {
+      return resolveCheckoutReconciliation(request, action);
     }
     if (id === "adjustments" && !action && method === "POST") {
       return billingAdjustment(request);
@@ -339,7 +359,9 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
       return listCharacterPregenBatches(request, action);
     }
     if (action && child === "pregen" && method === "POST") {
-      return createCharacterPregenBatch(request, action);
+      return retiredCreativeWrite(request, {
+        deepLink: `/admin/characters/${action}?tab=assets`,
+      });
     }
     if (action && child === "chat-tools" && method === "POST") {
       return setCharacterChatTools(request, action);
@@ -357,7 +379,11 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
       return estimateProductionBatch(request);
     }
     if (action === "batches" && !child && method === "GET") return listProductionBatches(request);
-    if (action === "batches" && !child && method === "POST") return createProductionBatch(request);
+    if (action === "batches" && !child && method === "POST") {
+      return retiredCreativeWrite(request, {
+        deepLink: "/admin/creative/runs",
+      });
+    }
     if (action === "batches" && child && !grandchild && method === "GET") {
       return getProductionBatch(request, child);
     }
@@ -373,6 +399,9 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
   }
   if (resource === "content" && id === "assets") {
     if (!action && method === "GET") return listContentAssets(request);
+    if (action === "bulk" && child === "preflight" && method === "POST") {
+      return preflightContentAssetArchive(request);
+    }
     if (action === "bulk" && !child && method === "POST") return bulkPatchContentAssets(request);
     if (action && !child && method === "GET") return getContentAsset(request, action);
     if (action && !child && method === "PATCH") return patchContentAsset(request, action);

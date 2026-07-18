@@ -63,7 +63,10 @@ describe("Admin v2 authority execution matrix", () => {
       outcomes.push({ id: operation.id, status: response.status });
     }
 
-    expect(outcomes).toHaveLength(85);
+    const protectedOperationIds = ADMIN_V2_API_OPERATIONS
+      .filter((operation) => operation.authorization.kind !== "bootstrap")
+      .map((operation) => operation.id);
+    expect(outcomes.map((outcome) => outcome.id)).toEqual(protectedOperationIds);
     expect(outcomes.filter((outcome) => outcome.status !== 401)).toEqual([]);
   });
 });

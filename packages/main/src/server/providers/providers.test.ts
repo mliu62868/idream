@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createProviderRegistry } from "./index";
+import { paymentProviderCapabilities } from "./payment/capabilities";
 import type { BlobStore } from "./types";
 import { PipelineVoiceModel } from "./voice/pipeline";
 
@@ -12,10 +13,22 @@ afterEach(() => {
 });
 
 describe("mock providers", () => {
+  it("fails closed for an unknown persisted payment provider", () => {
+    expect(paymentProviderCapabilities("legacy-processor")).toEqual({
+      billingModel: "unknown",
+      renewalCapability: "none",
+    });
+  });
+
   it("returns deterministic mock provider results", async () => {
     const registry = createProviderRegistry();
 
     const image = await registry.image.generate({
+      prompt: "portrait",
+      count: 2,
+      seed: "fixed",
+    });
+    const repeatedImage = await registry.image.generate({
       prompt: "portrait",
       count: 2,
       seed: "fixed",
@@ -25,20 +38,34 @@ describe("mock providers", () => {
       content: "safe prompt",
     });
     const payment = await registry.payment.createInvoice({
+      orderId: "checkout-1",
       userId: "user-1",
       amountCents: 1999,
       currency: "usd",
     });
 
-    expect(image).toEqual({
+    expect(image).toMatchObject({
       ok: true,
       data: {
         assets: [
-          { key: "mock/images/fixed-1.png", width: 1024, height: 1024 },
-          { key: "mock/images/fixed-2.png", width: 1024, height: 1024 },
+          {
+            key: "mock/images/fixed-1.png",
+            width: 256,
+            height: 320,
+            contentType: "image/png",
+            body: expect.any(Uint8Array),
+          },
+          {
+            key: "mock/images/fixed-2.png",
+            width: 256,
+            height: 320,
+            contentType: "image/png",
+            body: expect.any(Uint8Array),
+          },
         ],
       },
     });
+    expect(repeatedImage).toEqual(image);
     expect(moderation).toMatchObject({
       ok: true,
       data: { status: "passed" },
@@ -47,8 +74,12 @@ describe("mock providers", () => {
       ok: true,
       data: {
         provider: "mock",
-        invoiceId: "mock-invoice-user-1-1999-usd",
+        invoiceId: "mock-invoice-checkout-1",
       },
+    });
+    expect(registry.payment.capabilities).toEqual({
+      billingModel: "prepaid_period",
+      renewalCapability: "none",
     });
   });
 
@@ -59,6 +90,7 @@ describe("mock providers", () => {
       APP_ENV: "production",
       DATABASE_URL: "postgresql://postgres:postgres@localhost:5433/idream",
       BETTER_AUTH_URL: "https://ourdream.ai",
+      MAIN_WEB_URL: "https://ourdream.ai",
       BETTER_AUTH_SECRET: "production-secret-please-change-0123456789abcdef",
       INTERNAL_TOKEN: "production-internal-token-0123456789",
       CRON_SECRET: "production-cron-token-0123456789",
@@ -85,6 +117,7 @@ describe("mock providers", () => {
       APP_ENV: "production",
       DATABASE_URL: "postgresql://postgres:postgres@localhost:5433/idream",
       BETTER_AUTH_URL: "https://ourdream.ai",
+      MAIN_WEB_URL: "https://ourdream.ai",
       BETTER_AUTH_SECRET: "production-secret-please-change-0123456789abcdef",
       INTERNAL_TOKEN: "production-internal-token-0123456789",
       CRON_SECRET: "production-cron-token-0123456789",
@@ -158,6 +191,23 @@ describe("mock providers", () => {
     await expect(import("./index")).rejects.toThrow("BETTER_AUTH_URL");
   });
 
+  it("rejects production startup when Better Auth uses IPv6 loopback", async () => {
+    vi.resetModules();
+    process.env = {
+      ...oldEnv,
+      APP_ENV: "production",
+      DATABASE_URL: "postgresql://postgres:postgres@localhost:5433/idream",
+      BETTER_AUTH_URL: "https://[::1]:3000",
+      BETTER_AUTH_SECRET: "production-secret-please-change-0123456789abcdef",
+      INTERNAL_TOKEN: "production-internal-token-0123456789",
+      CRON_SECRET: "production-cron-token-0123456789",
+      CHAT_SERVICE_URL: "https://chat.internal.example",
+      CHAT_BFF_SIGNING_SECRET: "production-bff-secret-0123456789abcdef",
+    };
+
+    await expect(import("./index")).rejects.toThrow("BETTER_AUTH_URL");
+  });
+
   it("can wire an S3-compatible blob provider for generated media storage", async () => {
     vi.resetModules();
     const fetchMock = vi.fn(async () => new Response(null, { status: 200 }));
@@ -205,6 +255,11 @@ describe("mock providers", () => {
         return Response.json({
           id: "btcpay-invoice-1",
           checkoutLink: "https://btcpay.example.com/i/btcpay-invoice-1",
+          status: "New",
+          additionalStatus: "None",
+          amount: "9.99",
+          currency: "USD",
+          metadata: { orderId: "checkout-1" },
         });
       },
     );
@@ -221,6 +276,7 @@ describe("mock providers", () => {
     const { createProviderRegistry: createFreshRegistry } = await import("./index");
     const registry = createFreshRegistry();
     const invoice = await registry.payment.createInvoice({
+      orderId: "checkout-1",
       userId: "user-1",
       amountCents: 999,
       currency: "usd",
@@ -234,6 +290,10 @@ describe("mock providers", () => {
         invoiceId: "btcpay-invoice-1",
         checkoutUrl: "https://btcpay.example.com/i/btcpay-invoice-1",
         status: "created",
+        additionalStatus: "none",
+        orderId: "checkout-1",
+        amountCents: 999,
+        currency: "usd",
       },
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);

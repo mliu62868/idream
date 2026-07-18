@@ -14,7 +14,8 @@
     "paths": {
       "@idream/shared": ["../shared/src/index.ts"],
       "@idream/shared/contracts": ["../shared/src/contracts/index.ts"],
-      "@idream/shared/bff": ["../shared/src/bff/signing.ts"]
+      "@idream/shared/bff": ["../shared/src/bff/signing.ts"],
+      "@idream/shared/chat/limits": ["../shared/src/chat/limits.ts"]
     }
   },
   "include": ["src/**/*.ts", "prisma.config.ts"],

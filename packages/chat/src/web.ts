@@ -19,11 +19,18 @@ const MAX_BODY_BYTES = 64 * 1024;
 
 class BodyTooLargeError extends Error {}
 
+const privateJsonHeaders = {
+  "cache-control": "private, no-store, max-age=0",
+  "content-type": "application/json",
+  pragma: "no-cache",
+  vary: "Authorization, Cookie, X-iDream-BFF, X-iDream-BFF-User",
+};
+
 export function createChatServer() {
   return createServer((req, res) => {
     handle(req, res).catch((error) => {
       logger.error({ err: error }, "unhandled request error");
-      if (!res.headersSent) res.writeHead(500, { "content-type": "application/json" });
+      if (!res.headersSent) res.writeHead(500, privateJsonHeaders);
       res.end(JSON.stringify({ error: "internal" }));
     });
   });
@@ -32,7 +39,7 @@ export function createChatServer() {
 async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? "/", "http://internal");
   if (url.pathname === "/healthz") {
-    res.writeHead(200, { "content-type": "application/json" });
+    res.writeHead(200, privateJsonHeaders);
     res.end(JSON.stringify({ ok: true, service: "chat" }));
     return;
   }
@@ -42,7 +49,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   if (url.pathname.startsWith("/internal/")) {
     const token = header(req, "x-internal-token");
     if (!env.INTERNAL_TOKEN || token !== env.INTERNAL_TOKEN) {
-      res.writeHead(401, { "content-type": "application/json" });
+      res.writeHead(401, privateJsonHeaders);
       res.end(JSON.stringify({ error: "unauthorized" }));
       return;
     }
@@ -57,7 +64,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
           dedupeKey: idempotencyKeys.chatInbox(ack.receiptId),
         }).catch(() => undefined);
       }
-      res.writeHead(ack.acknowledged ? 200 : 409, { "content-type": "application/json" });
+      res.writeHead(ack.acknowledged ? 200 : 409, privateJsonHeaders);
       res.end(JSON.stringify(ack));
       return;
     }
@@ -66,7 +73,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       path: url.pathname,
       query: Object.fromEntries(url.searchParams.entries()),
     });
-    res.writeHead(result.status, { "content-type": "application/json" });
+    res.writeHead(result.status, privateJsonHeaders);
     res.end(jsonStringify(result.body));
     return;
   }
@@ -76,14 +83,26 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     raw = await readBody(req);
   } catch (error) {
     if (!(error instanceof BodyTooLargeError)) throw error;
-    res.writeHead(413, { "content-type": "application/json" });
+    res.writeHead(413, privateJsonHeaders);
     res.end(JSON.stringify({ error: "payload_too_large" }));
     return;
   }
   const auth = resolveUser(req, raw, url.pathname);
   if (!auth.ok) {
-    res.writeHead(401, { "content-type": "application/json" });
+    res.writeHead(401, privateJsonHeaders);
     res.end(JSON.stringify({ error: "unauthorized", reason: auth.reason }));
+    return;
+  }
+  const isMessageSend =
+    req.method === "POST" &&
+    /^\/api\/v1\/chat\/sessions\/[^/]+\/messages\/?$/.test(url.pathname);
+  const idempotencyKey = header(req, "idempotency-key")?.trim();
+  if (isMessageSend && !idempotencyKey) {
+    res.writeHead(400, privateJsonHeaders);
+    res.end(JSON.stringify({
+      error: "idempotency_key_required",
+      message: "Idempotency-Key is required",
+    }));
     return;
   }
 
@@ -93,6 +112,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     userId: auth.userId,
     body: raw ? safeJson(raw) : undefined,
     query: Object.fromEntries(url.searchParams.entries()),
+    idempotencyKey,
   };
 
   const result = await dispatchChat(request);
@@ -100,8 +120,10 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   if (result.kind === "sse") {
     res.writeHead(200, {
       "content-type": "text/event-stream; charset=utf-8",
-      "cache-control": "no-cache, no-transform",
+      "cache-control": "private, no-cache, no-store, no-transform",
       connection: "keep-alive",
+      pragma: "no-cache",
+      vary: "Authorization, Cookie, X-iDream-BFF, X-iDream-BFF-User",
       "x-accel-buffering": "no",
     });
     // Resume cursor precedence: explicit ?lastEventId= → EventSource's Last-Event-ID
@@ -117,7 +139,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     return;
   }
 
-  res.writeHead(result.status, { "content-type": "application/json" });
+  res.writeHead(result.status, privateJsonHeaders);
   res.end(jsonStringify(result.body));
 }
 
@@ -129,10 +151,19 @@ function jsonStringify(value: unknown): string {
 interface AuthOk { ok: true; userId: string }
 interface AuthFail { ok: false; reason: string }
 
-function resolveUser(req: IncomingMessage, body: string, path: string): AuthOk | AuthFail {
+export function resolveUser(
+  req: IncomingMessage,
+  body: string,
+  path: string,
+): AuthOk | AuthFail {
   const secret = env.BFF_SIGNING_SECRET;
-  // Dev/test escape hatch: no secret configured → trust the user header.
+  // Test-only escape hatch. Development and preview use the same signed
+  // trust boundary as production so a reachable chat port never trusts a
+  // caller-provided identity.
   if (!secret) {
+    if (process.env.APP_ENV !== "test") {
+      return { ok: false, reason: "missing_bff_secret" };
+    }
     const userId = header(req, "x-idream-user-id");
     return userId ? { ok: true, userId } : { ok: false, reason: "no_user" };
   }
@@ -195,16 +226,12 @@ function safeJson(raw: string): unknown {
   }
 }
 
-// SPEC: in production the BFF signature is the ONLY trust boundary — main-web signs
-// the user context and chat verifies it. With no secret, resolveUser() falls back to
-// trusting the plaintext x-idream-user-id header (a dev/test convenience). Refuse to
-// boot a production chat service in that fail-OPEN state. INVARIANT: APP_ENV/NODE_ENV
-// === "production" ⇒ CHAT_BFF_SIGNING_SECRET must be set.
-function assertBffSecretReady(): void {
-  const isProd = process.env.APP_ENV === "production" || process.env.NODE_ENV === "production";
-  if (isProd && !env.BFF_SIGNING_SECRET) {
+// SPEC: signed BFF context is the runtime trust boundary in every environment.
+// Only APP_ENV=test may use the plaintext header fixture.
+export function assertBffSecretReady(): void {
+  if (process.env.APP_ENV !== "test" && !env.BFF_SIGNING_SECRET) {
     throw new Error(
-      "CHAT_BFF_SIGNING_SECRET is required in production (refusing to trust plaintext x-idream-user-id headers)",
+      "CHAT_BFF_SIGNING_SECRET is required outside APP_ENV=test (refusing to trust plaintext x-idream-user-id headers)",
     );
   }
 }

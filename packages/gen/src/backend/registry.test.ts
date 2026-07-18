@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { buildBackendRegistry } from "./registry";
+import { bindComfySlots } from "./workflow";
 
 function descriptorJson(
   modelId: string,
@@ -15,7 +16,10 @@ function descriptorJson(
     backendKind,
     version: 1,
     capabilities: ["textToImage"],
-    ...(backendKind === "comfyui" ? { apiPrompt: {} } : {}),
+    ...(backendKind === "comfyui" ? {
+      comfyWorkflow: { id: "11111111-1111-4111-8111-111111111111", name: workflowKey },
+      apiPrompt: {},
+    } : {}),
     ...(backendKind === "drawthings" ? { drawThings: { model: `${modelId}.ckpt` } } : {}),
     inputs: [],
   });
@@ -166,5 +170,66 @@ describe("buildBackendRegistry", () => {
     const byModel = registry.resolveForModel("solo-model");
     expect(byModel.descriptor.modelId).toBe("solo-model");
     expect(byModel.descriptor.workflowKey).toBe("solo-model");
+  });
+
+  it("binds production ComfyUI workflow slots, including both identity references", async () => {
+    const registry = await buildBackendRegistry({
+      comfyApiUrl: "http://127.0.0.1:8188",
+      sdcppCli: "/bin/true",
+      workflowDir: path.resolve(import.meta.dirname, "../../workflows"),
+    });
+    const qwen = registry.resolveForModel("qwen-image-edit-img2img").descriptor;
+    const qwenPrompt = bindComfySlots(qwen, {
+      prompt: "same adult character in a cafe",
+      negative: "text, watermark, duplicate person",
+      source_image: "anchor.png",
+      seed: 7,
+    });
+    expect(qwenPrompt["4"].inputs.prompt).toBe("text, watermark, duplicate person");
+
+    const multiIdentity = registry.resolveForModel(
+      "qwen-image-edit-multi-identity",
+    ).descriptor;
+    const multiIdentityPrompt = bindComfySlots(multiIdentity, {
+      prompt: "preserve the same adult character",
+      negative: "text, watermark, duplicate person",
+      identity_anchor: "anchor.png",
+      identity_reference: "look.png",
+      seed: 8,
+    });
+    expect(multiIdentityPrompt["3"].inputs).toMatchObject({
+      image1: ["8", 0],
+      image2: ["12", 0],
+    });
+    expect(multiIdentityPrompt["8"].inputs.image).toBe("anchor.png");
+    expect(multiIdentityPrompt["12"].inputs.image).toBe("look.png");
+
+    const multiReference = registry.resolveForModel(
+      "qwen-image-edit-multi-reference",
+    ).descriptor;
+    const multiReferencePrompt = bindComfySlots(multiReference, {
+      prompt: "preserve identity while following the source composition",
+      negative: "text, watermark, duplicate person",
+      identity_image: "identity.png",
+      source_image: "source.png",
+      seed: 9,
+    });
+    expect(multiReferencePrompt["3"].inputs).toMatchObject({
+      image1: ["8", 0],
+      image2: ["12", 0],
+    });
+    expect(multiReferencePrompt["8"].inputs.image).toBe("identity.png");
+    expect(multiReferencePrompt["12"].inputs.image).toBe("source.png");
+
+    const redcraft = registry.resolveForModel("redcraft-krea2-txt2img").descriptor;
+    const redcraftPrompt = bindComfySlots(redcraft, {
+      prompt: "editorial portrait",
+      negative: "text, watermark, extra subject",
+      seed: 10,
+    });
+    expect(redcraftPrompt["5"]).toMatchObject({
+      class_type: "CLIPTextEncode",
+      inputs: { text: "text, watermark, extra subject" },
+    });
   });
 });

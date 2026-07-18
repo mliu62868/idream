@@ -39,6 +39,7 @@ describe("S3CompatibleBlobStore", () => {
     );
     expect(init?.method).toBe("PUT");
     expect(init?.headers).toMatchObject({
+      "cache-control": "private, no-store, max-age=0",
       "content-type": "image/webp",
       host: "account.r2.cloudflarestorage.com",
     });
@@ -66,6 +67,9 @@ describe("S3CompatibleBlobStore", () => {
     expect(url.pathname).toBe("/private-media/images/user%201/result.webp");
     expect(url.searchParams.get("X-Amz-Algorithm")).toBe("AWS4-HMAC-SHA256");
     expect(url.searchParams.get("X-Amz-Expires")).toBe("900");
+    expect(url.searchParams.get("response-cache-control")).toBe(
+      "private, no-store, max-age=0",
+    );
     expect(url.searchParams.get("X-Amz-Signature")).toMatch(/^[a-f0-9]{64}$/);
     expect(fetchImpl).not.toHaveBeenCalled();
   });

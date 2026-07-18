@@ -20,7 +20,10 @@ export type Placement = {
   targetType: string;
   targetId: string;
   status: string;
+  version: number;
   publishedAt: string | null;
+  verificationState: string;
+  managedRunId: string | null;
   asset: PlacementAsset;
 };
 
@@ -29,6 +32,8 @@ export type ApprovedAsset = {
   id: string;
   purpose: string | null;
   targetId: string | null;
+  customerPublishable: boolean;
+  publishabilityReasons: string[];
 };
 
 export const PLACEMENTS_BASE = "/api/v1/admin/content/placements";
@@ -48,11 +53,11 @@ export const SLOTS = [
 // 原有下拉顺序。
 export const TARGET_TYPES = ["character", "template", "route_page", "campaign"] as const;
 
-// 新建表单可选状态（沿用 旧内容运营视图 create() 表单的三个选项）。
-export const CREATE_STATUSES = ["draft", "scheduled", "published"] as const;
+// 新建表单只创建非运行时 draft；发布权由 Character Release 或 Creative Run verification 持有。
+export const CREATE_STATUSES = ["draft"] as const;
 
-// 详情页三个状态流转动作（沿用 旧内容运营视图 patchPlacement() 的三个按钮）。
-export const PATCH_ACTIONS = ["published", "paused", "archived"] as const;
+// Legacy 详情页只保留 pause/archive；archive 是终态。
+export const PATCH_ACTIONS = ["paused", "archived"] as const;
 
 // 列表页筛选覆盖 placementStatusSchema 全部取值（含流转动作到不了的 draft/scheduled）。
 export const ALL_STATUSES = ["draft", "scheduled", "published", "paused", "archived"] as const;
@@ -79,9 +84,15 @@ export const defaultPlacementDraft: PlacementDraft = {
   slot: "feed_card",
   targetType: "character",
   targetId: "",
-  status: "published",
+  status: "draft",
   reason: "",
 };
+
+export function publishableApprovedAssets(
+  assets: readonly ApprovedAsset[],
+) {
+  return assets.filter((asset) => asset.customerPublishable);
+}
 
 // SPEC: 原样搬运 create()（ContentOpsViews.tsx:536-543）的 POST body；reason 原逻辑硬编码为
 // "Created from Placements"，现在改为 FormFooter 采集的真实原因。

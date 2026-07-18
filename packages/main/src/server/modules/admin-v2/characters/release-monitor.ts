@@ -1,54 +1,106 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
+import {
+  characterReleaseAssetPlacement,
+  parseCharacterReleaseAssetManifest,
+  type CharacterReleaseAssetSlot,
+} from "@idream/shared/admin";
+import {
+  evaluateMediaAssetCustomerPublishability,
+  isMockGenerationProvider,
+  type MediaAssetCustomerPublishabilityReason,
+} from "@/server/lib/media-asset-authority";
 import { toInputJson } from "../shared/prisma-json";
+import {
+  evaluateEffectiveGenerationRouteAuthority,
+} from "./generation-route-authority";
+
+export { evaluateRouteQualification } from "./generation-route-authority";
 
 export type ReleaseMonitorWindow = "24h" | "72h";
 
+export const CHARACTER_RELEASE_MONITOR_POLICY_VERSION =
+  "character-release-monitor-policy-v1";
+
 const MONITOR_WINDOWS = ["24h", "72h"] as const satisfies readonly ReleaseMonitorWindow[];
+const RELEASE_ASSET_SLOTS = [
+  "character_avatar",
+  "character_hero",
+  "character_chat",
+] as const satisfies readonly CharacterReleaseAssetSlot[];
 const DEFAULT_LEASE_MS = 5 * 60 * 1_000;
 const DEFAULT_RETRY_DELAY_MS = 30 * 1_000;
 const MONITOR_AUDIT_ACTION = "character.release.monitor.evaluated";
 const MONITOR_OUTBOX_EVENT = "character.release.monitor_evaluated.v2";
 const MONITOR_ACTOR_ID = "system:release-monitor-dispatcher";
 
-function record(value: Prisma.JsonValue | null | undefined): Record<string, unknown> {
+function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
 }
 
-export function evaluateRouteQualification(input: {
-  readonly qualification: {
-    readonly result: string;
-    readonly sampleCount: number;
-    readonly identityMatch: number;
-    readonly policyVersion: string;
-    readonly expiresAt: Date | null;
-    readonly evidence: Prisma.JsonValue;
-  } | null;
-  readonly currentPolicyVersion: string;
-  readonly currentEvaluatorVersion: string;
-  readonly now: Date;
-}) {
-  const qualification = input.qualification;
-  if (!qualification) return { state: "unqualified" as const, reason: "missing_qualification" };
-  if (qualification.expiresAt && qualification.expiresAt.getTime() <= input.now.getTime()) {
-    return { state: "expired" as const, reason: "qualification_expired" };
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : null;
+}
+
+function immutableGenerationProviders(value: Prisma.JsonValue) {
+  const provenance = record(value);
+  const placements = Array.isArray(provenance.placements)
+    ? provenance.placements
+    : [];
+  const placementEntries = new Map<
+    CharacterReleaseAssetSlot,
+    Array<{ assetId: string | null; provider: string | null }>
+  >();
+  for (const slot of RELEASE_ASSET_SLOTS) placementEntries.set(slot, []);
+  for (const value of placements) {
+    const placement = record(value);
+    const slotKey = stringValue(placement.slotKey);
+    const assetId = stringValue(placement.assetId);
+    const provider = stringValue(placement.provider);
+    if (
+      !slotKey ||
+      !RELEASE_ASSET_SLOTS.some((slot) => slot === slotKey)
+    ) {
+      continue;
+    }
+    placementEntries.get(slotKey as CharacterReleaseAssetSlot)?.push({
+      assetId,
+      provider,
+    });
   }
-  if (qualification.policyVersion !== input.currentPolicyVersion) {
-    return { state: "stale" as const, reason: "policy_version_changed" };
+  return {
+    placementEntries,
+    legacyProvider: stringValue(provenance.provider),
+  };
+}
+
+function immutableProviderAuthority(
+  providers: ReturnType<typeof immutableGenerationProviders>,
+  input: {
+    readonly slot: CharacterReleaseAssetSlot;
+    readonly assetId: string;
+    readonly strict: boolean;
+  },
+) {
+  if (!input.strict) {
+    return {
+      provider: providers.legacyProvider,
+      missing: false,
+      duplicate: false,
+      assetMismatch: false,
+    };
   }
-  const evaluatorVersion = record(qualification.evidence).evaluatorVersion;
-  if (evaluatorVersion !== input.currentEvaluatorVersion) {
-    return { state: "stale" as const, reason: "evaluator_version_changed" };
-  }
-  if (
-    qualification.result !== "qualified" ||
-    qualification.sampleCount < 40 ||
-    qualification.identityMatch < 0.9
-  ) {
-    return { state: "unqualified" as const, reason: "qualification_threshold_failed" };
-  }
-  return { state: "qualified" as const, reason: null };
+  const entries = providers.placementEntries.get(input.slot) ?? [];
+  const entry = entries.length === 1 ? entries[0] ?? null : null;
+  return {
+    provider: entry?.provider ?? null,
+    missing: entries.length === 0 || !entry?.provider,
+    duplicate: entries.length > 1,
+    assetMismatch: Boolean(entry && entry.assetId !== input.assetId),
+  };
 }
 
 export async function dispatchStaleReleaseRoutes(
@@ -67,6 +119,11 @@ export async function dispatchStaleReleaseRoutes(
   const releases = await db.characterRelease.findMany({
     where: {
       status: "published",
+      // Generation-route qualification is an authority of modern generated
+      // Releases only. Legacy/editorial Releases have a separate catalog
+      // authority and must never be reclassified as a missing generation
+      // route, even when that independent authority needs repair.
+      legacy: false,
       readiness: { not: "stale" },
       AND: [
         ...(input.releaseIds ? [{ id: { in: [...input.releaseIds] } }] : []),
@@ -78,18 +135,32 @@ export async function dispatchStaleReleaseRoutes(
   });
   let stale = 0;
   for (const release of releases) {
-    const routeFingerprint = record(release.generationProvenance).routeFingerprint;
+    const provenance = record(release.generationProvenance);
+    const requiredRoute = record(provenance.requiredReleaseRoute);
+    const routeFingerprint = typeof requiredRoute.routeFingerprint === "string"
+      ? requiredRoute.routeFingerprint
+      : provenance.routeFingerprint;
     const qualification = typeof routeFingerprint === "string"
       ? await db.generationRouteQualification.findFirst({
           where: { routeFingerprint },
           orderBy: { evaluatedAt: "desc" },
         })
       : null;
-    const effective = evaluateRouteQualification({
+    const requiredReferences = release.referenceSetRevisionId
+      ? await db.characterVisualReferenceSnapshot.findMany({
+          where: { referenceSetRevisionId: release.referenceSetRevisionId },
+          select: { role: true },
+          orderBy: { position: "asc" },
+        })
+      : [];
+    const effective = await evaluateEffectiveGenerationRouteAuthority(db, {
       qualification,
       currentPolicyVersion: input.currentPolicyVersion,
       currentEvaluatorVersion: input.currentEvaluatorVersion,
       now,
+      requiredReferenceCount: requiredReferences.length,
+      requiredReferenceRoles:
+        requiredReferences.map((reference) => reference.role),
     });
     if (effective.state === "qualified") continue;
     const project = await db.characterProject.findUnique({ where: { id: release.projectId } });
@@ -100,6 +171,25 @@ export async function dispatchStaleReleaseRoutes(
         data: { readiness: "stale", version: { increment: 1 } },
       });
       if (changed.count !== 1) return;
+      const serving = await tx.characterServing.findUnique({
+        where: { characterId: project.characterId },
+        select: { state: true, currentReleaseId: true },
+      });
+      const catalogProjectionChanged =
+        serving?.state === "live" &&
+        serving.currentReleaseId === release.id
+          ? (
+              await tx.character.updateMany({
+                where: {
+                  id: project.characterId,
+                  visibility: "public",
+                  status: "approved",
+                  deletedAt: null,
+                },
+                data: { visibility: "unlisted" },
+              })
+            ).count === 1
+          : false;
       await tx.characterReleaseEvent.create({
         data: {
           releaseId: release.id,
@@ -107,7 +197,12 @@ export async function dispatchStaleReleaseRoutes(
           type: "generation_route_qualification_stale",
           reason: effective.reason,
           fromState: toInputJson({ readiness: release.readiness, routeFingerprint }),
-          toState: toInputJson({ readiness: "stale", effectiveQualification: effective.state }),
+          toState: toInputJson({
+            readiness: "stale",
+            effectiveQualification: effective.state,
+            catalogVisibility:
+              catalogProjectionChanged ? "unlisted" : "unchanged",
+          }),
           evidence: toInputJson({
             qualificationId: qualification?.id ?? null,
             historicalResult: qualification?.result ?? null,
@@ -125,13 +220,21 @@ export async function dispatchStaleReleaseRoutes(
           status: "action_required",
           baseline: {},
           observed: toInputJson({ effectiveQualification: effective.state, reason: effective.reason }),
-          verification: toInputJson({ servingChanged: false, checkedAt: now.toISOString() }),
+          verification: toInputJson({
+            servingChanged: false,
+            catalogProjectionChanged,
+            checkedAt: now.toISOString(),
+          }),
           startedAt: now,
         },
         update: {
           status: "action_required",
           observed: toInputJson({ effectiveQualification: effective.state, reason: effective.reason }),
-          verification: toInputJson({ servingChanged: false, checkedAt: now.toISOString() }),
+          verification: toInputJson({
+            servingChanged: false,
+            catalogProjectionChanged,
+            checkedAt: now.toISOString(),
+          }),
         },
       });
       await tx.mainOutboxEvent.create({
@@ -144,6 +247,7 @@ export async function dispatchStaleReleaseRoutes(
             characterId: project.characterId,
             effectiveQualification: effective.state,
             reason: effective.reason,
+            catalogProjectionChanged,
             occurredAt: now.toISOString(),
           }),
         },
@@ -195,12 +299,45 @@ export async function collectReleaseMonitorFacts(
   const observationEnd = now < windowEnd ? now : windowEnd;
   const project = await db.characterProject.findUnique({ where: { id: release.projectId } });
   if (!project) throw new Error("Release Project authority is required for monitoring");
-  const avatarAssetId = releaseAvatarAssetId(release.releasePlacementManifest);
+  const projectCharacterId = project.characterId;
+  const rawManifest = record(release.releasePlacementManifest);
+  const strictManifestDeclared = rawManifest.schemaVersion === 2;
+  const strictManifest = parseCharacterReleaseAssetManifest(
+    release.releasePlacementManifest,
+  );
+  const manifestMode = strictManifest
+    ? "v2"
+    : strictManifestDeclared
+      ? "invalid_v2"
+      : "legacy";
+  const generationProviders = immutableGenerationProviders(
+    release.generationProvenance,
+  );
+  const legacyAvatarAssetId = releaseAvatarAssetId(
+    release.releasePlacementManifest,
+  );
+  const placementBySlot = new Map<
+    CharacterReleaseAssetSlot,
+    { assetId: string }
+  >();
+  if (strictManifest) {
+    for (const slot of RELEASE_ASSET_SLOTS) {
+      const placement = characterReleaseAssetPlacement(strictManifest, slot);
+      if (placement) placementBySlot.set(slot, placement);
+    }
+  } else if (!strictManifestDeclared && legacyAvatarAssetId) {
+    placementBySlot.set("character_avatar", {
+      assetId: legacyAvatarAssetId,
+    });
+  }
+  const placementAssetIds = [
+    ...new Set([...placementBySlot.values()].map((placement) => placement.assetId)),
+  ];
   const previousRelease = await db.characterRelease.findFirst({
     where: { projectId: release.projectId, id: { not: release.id }, publishedAt: { lt: release.publishedAt } },
     orderBy: { publishedAt: "desc" },
   });
-  const [exchanges, generations, serving, character, contentVersion, avatarAsset, usageFacts, previousMonitor] = await Promise.all([
+  const [exchanges, generations, serving, character, contentVersion, placementAssets, usageFacts, previousMonitor] = await Promise.all([
     db.chatExchangeFact.findMany({
       where: {
         characterReleaseId: release.id,
@@ -217,10 +354,12 @@ export async function collectReleaseMonitorFacts(
       },
       select: { outcome: true, deliveredOutputCount: true, expectedOutputCount: true, occurredAt: true },
     }),
-    db.characterServing.findUnique({ where: { characterId: project.characterId } }),
-    db.character.findUnique({ where: { id: project.characterId } }),
+    db.characterServing.findUnique({ where: { characterId: projectCharacterId } }),
+    db.character.findUnique({ where: { id: projectCharacterId } }),
     db.characterContentVersion.findUnique({ where: { id: release.characterContentVersionId } }),
-    avatarAssetId ? db.mediaAsset.findUnique({ where: { id: avatarAssetId } }) : Promise.resolve(null),
+    placementAssetIds.length > 0
+      ? db.mediaAsset.findMany({ where: { id: { in: placementAssetIds } } })
+      : Promise.resolve([]),
     db.aiUsageFact.findMany({
       where: {
         releaseId: release.id,
@@ -240,13 +379,123 @@ export async function collectReleaseMonitorFacts(
   const generationFailureRate = generations.length > 0 ? failedGenerations / generations.length : null;
   const latencyP95Ms = percentile95(usageFacts.flatMap((fact) => fact.latencyMs === null ? [] : [fact.latencyMs]));
   const variableCostMicros = usageFacts.reduce((sum, fact) => sum + Number(fact.costMicros ?? 0), 0);
+  const placementAssetById = new Map(
+    placementAssets.map((asset) => [asset.id, asset]),
+  );
+  type ReleaseAssetSlotEvidence = {
+    assetId: string | null;
+    exists: boolean;
+    characterMatch: boolean;
+    renderable: boolean;
+    customerReadable: boolean;
+    provider: string | null;
+    providerMissing: boolean;
+    providerDuplicate: boolean;
+    providerAssetMismatch: boolean;
+    metadataSynthetic: boolean;
+    metadataSyntheticMarkerInvalid: boolean;
+    mockProvider: boolean;
+    synthetic: boolean;
+    syntheticReasons: readonly MediaAssetCustomerPublishabilityReason[];
+  };
+  function releaseAssetSlotEvidence(
+    slot: CharacterReleaseAssetSlot,
+  ): ReleaseAssetSlotEvidence {
+    const placement = placementBySlot.get(slot);
+    const asset = placement
+      ? placementAssetById.get(placement.assetId) ?? null
+      : null;
+    const providerAuthority = placement
+      ? immutableProviderAuthority(generationProviders, {
+          slot,
+          assetId: placement.assetId,
+          strict: manifestMode === "v2",
+        })
+      : {
+          provider: null,
+          missing: manifestMode === "v2",
+          duplicate: false,
+          assetMismatch: false,
+        };
+    const provider = providerAuthority.provider;
+    const renderable = Boolean(
+      placement &&
+      asset &&
+      asset.characterId === projectCharacterId &&
+      asset.type === "image" &&
+      asset.deletedAt === null &&
+      asset.safetyStatus === "passed" &&
+      (asset.storageKey || asset.url),
+    );
+    const publishability = evaluateMediaAssetCustomerPublishability({
+      metadata: asset?.metadata,
+      pinnedProvider: provider,
+      pinnedProviderRequired: manifestMode === "v2",
+      pinnedProviderDuplicate: providerAuthority.duplicate,
+      pinnedProviderAssetMismatch: providerAuthority.assetMismatch,
+    });
+    const mockProvider = isMockGenerationProvider(provider);
+    const syntheticReasons = publishability.reasons;
+    const synthetic = syntheticReasons.length > 0;
+    const customerReadable = Boolean(
+      renderable &&
+      asset?.visibility === "public_pack" &&
+      !synthetic,
+    );
+    return {
+      assetId: placement?.assetId ?? null,
+      exists: Boolean(asset),
+      characterMatch: asset?.characterId === projectCharacterId,
+      renderable,
+      customerReadable,
+      provider,
+      providerMissing: providerAuthority.missing,
+      providerDuplicate: providerAuthority.duplicate,
+      providerAssetMismatch: providerAuthority.assetMismatch,
+      metadataSynthetic: syntheticReasons.includes("metadata_synthetic"),
+      metadataSyntheticMarkerInvalid: syntheticReasons.includes(
+        "metadata_synthetic_marker_invalid",
+      ),
+      mockProvider,
+      synthetic,
+      syntheticReasons,
+    };
+  }
+  const releaseAssetSlots = {
+    character_avatar: releaseAssetSlotEvidence("character_avatar"),
+    character_hero: releaseAssetSlotEvidence("character_hero"),
+    character_chat: releaseAssetSlotEvidence("character_chat"),
+  } satisfies Record<CharacterReleaseAssetSlot, ReleaseAssetSlotEvidence>;
+  const avatarSlot = releaseAssetSlots.character_avatar;
+  const heroSlot = releaseAssetSlots.character_hero;
+  const chatSlot = releaseAssetSlots.character_chat;
   const operationalChecks = {
     releaseReadinessReady: release.readiness === "ready",
+    releaseAssetManifestComplete: strictManifest
+      ? placementBySlot.size === 3
+      : !strictManifestDeclared && Boolean(legacyAvatarAssetId),
     servingPointerLive: serving?.state === "live" && serving.currentReleaseId === release.id,
-    publicProjectionLive: character?.status === "approved" && character.visibility === "public" && character.deletedAt === null,
-    immutableContentAvailable: contentVersion?.characterId === project.characterId,
-    releaseAvatarRenderable: Boolean(avatarAssetId && avatarAsset && !avatarAsset.deletedAt && avatarAsset.safetyStatus === "passed"),
-    chatAuthorityReady: serving?.state === "live" && contentVersion?.characterId === project.characterId,
+    publicProjectionLive:
+      character?.status === "approved" &&
+      character.visibility === "public" &&
+      character.deletedAt === null &&
+      character.imageAssetId === avatarSlot.assetId,
+    immutableContentAvailable: contentVersion?.characterId === projectCharacterId,
+    releaseAvatarRenderable: avatarSlot.renderable,
+    releaseAvatarVisible: avatarSlot.customerReadable,
+    ...(strictManifest
+      ? {
+          releaseHeroRenderable: heroSlot.renderable,
+          releaseHeroVisible: heroSlot.customerReadable,
+          releaseChatRenderable: chatSlot.renderable,
+          releaseChatVisible: chatSlot.customerReadable,
+        }
+      : {}),
+    chatAuthorityReady:
+      serving?.state === "live" &&
+      contentVersion?.characterId === projectCharacterId &&
+      (!strictManifest ||
+        (chatSlot.renderable && chatSlot.customerReadable)),
   };
   const operationalPassed = Object.values(operationalChecks).every(Boolean);
   const recommendation = !operationalPassed
@@ -262,6 +511,7 @@ export async function collectReleaseMonitorFacts(
     .map((row) => row.occurredAt)
     .sort((left, right) => right.getTime() - left.getTime())[0] ?? null;
   const observed = {
+    policyVersion: CHARACTER_RELEASE_MONITOR_POLICY_VERSION,
     exchangeCount: exchanges.length,
     uniqueUsers: new Set(exchanges.map((row) => row.userId)).size,
     engagementSessions: new Set(exchanges.map((row) => row.engagementSessionId)).size,
@@ -270,6 +520,8 @@ export async function collectReleaseMonitorFacts(
     generationFailureRate,
     latencyP95Ms,
     variableCostMicros,
+    releaseAssetManifestMode: manifestMode,
+    releaseAssetSlots,
     operationalChecks,
     latestObservedAt: latestObservedAt?.toISOString() ?? null,
   };
@@ -285,6 +537,7 @@ export async function collectReleaseMonitorFacts(
       }),
       observed: toInputJson(observed),
       verification: toInputJson({
+        policyVersion: CHARACTER_RELEASE_MONITOR_POLICY_VERSION,
         maturity: mature ? "mature" : "immature",
         recommendation,
         asOf: now.toISOString(),
@@ -304,6 +557,7 @@ export async function collectReleaseMonitorFacts(
       }),
       observed: toInputJson(observed),
       verification: toInputJson({
+        policyVersion: CHARACTER_RELEASE_MONITOR_POLICY_VERSION,
         maturity: mature ? "mature" : "immature",
         recommendation,
         asOf: now.toISOString(),
@@ -315,7 +569,13 @@ export async function collectReleaseMonitorFacts(
       finishedAt: mature ? now : null,
     },
   });
-  return { monitor, observed, mature, recommendation };
+  return {
+    monitor,
+    observed,
+    mature,
+    recommendation,
+    policyVersion: CHARACTER_RELEASE_MONITOR_POLICY_VERSION,
+  };
 }
 
 type DispatchFailure = {
@@ -327,8 +587,11 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function monitorOccurrenceKey(monitor: { id: string; releaseId: string; window: string }): string {
-  return `release-monitor:${monitor.releaseId}:${monitor.window}:${monitor.id}`;
+function monitorOccurrenceKey(
+  monitor: { id: string; releaseId: string; window: string },
+  policyVersion: string,
+): string {
+  return `release-monitor:${monitor.releaseId}:${monitor.window}:${monitor.id}:${policyVersion}`;
 }
 
 async function appendMonitorEvaluationEvidence(
@@ -339,11 +602,16 @@ async function appendMonitorEvaluationEvidence(
     readonly recommendation: string;
     readonly characterId: string | null;
     readonly observedAt: Date;
+    readonly policyVersion: string;
   },
 ) {
-  const occurrenceKey = monitorOccurrenceKey(input.monitor);
+  const occurrenceKey = monitorOccurrenceKey(
+    input.monitor,
+    input.policyVersion,
+  );
   const evidence = {
     occurrenceKey,
+    policyVersion: input.policyVersion,
     monitorId: input.monitor.id,
     releaseId: input.monitor.releaseId,
     characterId: input.characterId,
@@ -352,8 +620,8 @@ async function appendMonitorEvaluationEvidence(
     recommendation: input.recommendation,
     observedAt: input.observedAt.toISOString(),
   };
-  await tx.adminAuditLog.create({
-    data: {
+  await tx.adminAuditLog.createMany({
+    data: [{
       id: `audit:${occurrenceKey}`,
       actorId: MONITOR_ACTOR_ID,
       actorRole: "system",
@@ -364,10 +632,11 @@ async function appendMonitorEvaluationEvidence(
       after: toInputJson(evidence),
       requestId: occurrenceKey,
       createdAt: input.observedAt,
-    },
+    }],
+    skipDuplicates: true,
   });
-  await tx.mainOutboxEvent.create({
-    data: {
+  await tx.mainOutboxEvent.createMany({
+    data: [{
       id: `outbox:${occurrenceKey}`,
       eventType: MONITOR_OUTBOX_EVENT,
       aggregateType: "character_release",
@@ -375,8 +644,74 @@ async function appendMonitorEvaluationEvidence(
       payload: toInputJson(evidence),
       nextRunAt: input.observedAt,
       createdAt: input.observedAt,
-    },
+    }],
+    skipDuplicates: true,
   });
+}
+
+async function requeueOutdatedCompletedReleaseMonitors(
+  db: PrismaClient,
+  input: {
+    readonly now: Date;
+    readonly limit: number;
+  },
+) {
+  const requeued = await db.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    WITH candidates AS (
+      SELECT monitor."id"
+      FROM "release_monitors" AS monitor
+      INNER JOIN "character_releases" AS release
+        ON release."id" = monitor."releaseId"
+      INNER JOIN "character_projects" AS project
+        ON project."id" = release."projectId"
+      INNER JOIN "character_serving" AS serving
+        ON serving."characterId" = project."characterId"
+      WHERE monitor."status" = 'completed'
+        AND monitor."window" IN ('24h', '72h')
+        AND COALESCE(
+          monitor."verification" ->> 'policyVersion',
+          ''
+        ) <> ${CHARACTER_RELEASE_MONITOR_POLICY_VERSION}
+        AND release."status" = 'published'
+        AND release."publishedAt" IS NOT NULL
+        AND serving."state" = 'live'
+        AND serving."currentReleaseId" = release."id"
+        AND (
+          monitor."leaseOwner" IS NULL
+          OR monitor."leaseExpiresAt" IS NULL
+          OR monitor."leaseExpiresAt" <= ${input.now}
+        )
+      ORDER BY
+        COALESCE(monitor."dueAt", monitor."startedAt") ASC,
+        monitor."id" ASC
+      FOR UPDATE OF monitor SKIP LOCKED
+      LIMIT ${input.limit}
+    )
+    UPDATE "release_monitors" AS monitor
+    SET
+      "status" = 'pending',
+      "finishedAt" = NULL,
+      "dueAt" = ${input.now},
+      "leaseOwner" = NULL,
+      "leaseExpiresAt" = NULL,
+      "nextAttemptAt" = NULL,
+      "lastError" = NULL,
+      "verification" = monitor."verification" || jsonb_build_object(
+        'state',
+        'pending_policy_recheck',
+        'previousPolicyVersion',
+        monitor."verification" ->> 'policyVersion',
+        'requestedPolicyVersion',
+        CAST(${CHARACTER_RELEASE_MONITOR_POLICY_VERSION} AS text),
+        'requeuedAt',
+        CAST(${input.now.toISOString()} AS text)
+      )
+    FROM candidates
+    WHERE monitor."id" = candidates."id"
+      AND monitor."status" = 'completed'
+    RETURNING monitor."id"
+  `);
+  return requeued.length;
 }
 
 export async function dispatchDueReleaseMonitors(
@@ -390,6 +725,11 @@ export async function dispatchDueReleaseMonitors(
   },
 ) {
   const now = input.now ?? new Date();
+  const limit = Math.min(500, Math.max(1, input.limit ?? 100));
+  const requeued = await requeueOutdatedCompletedReleaseMonitors(db, {
+    now,
+    limit,
+  });
   const leaseMs = Math.max(1_000, input.leaseMs ?? DEFAULT_LEASE_MS);
   const retryDelayMs = Math.max(1_000, input.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS);
   const leaseExpiresAt = new Date(now.getTime() + leaseMs);
@@ -404,7 +744,7 @@ export async function dispatchDueReleaseMonitors(
       ],
     },
     orderBy: [{ dueAt: "asc" }, { id: "asc" }],
-    take: Math.min(500, Math.max(1, input.limit ?? 100)),
+    take: limit,
     select: { id: true },
   });
   let claimed = 0;
@@ -460,6 +800,7 @@ export async function dispatchDueReleaseMonitors(
         if (!release?.publishedAt || !project || !isCurrentRelease) {
           const verification = {
             state: "superseded",
+            policyVersion: CHARACTER_RELEASE_MONITOR_POLICY_VERSION,
             recommendation: "no_longer_serving",
             asOf: now.toISOString(),
             releaseStatus: release?.status ?? "missing",
@@ -483,6 +824,7 @@ export async function dispatchDueReleaseMonitors(
             recommendation: "no_longer_serving",
             characterId: project?.characterId ?? null,
             observedAt: now,
+            policyVersion: CHARACTER_RELEASE_MONITOR_POLICY_VERSION,
           });
           return "superseded" as const;
         }
@@ -507,6 +849,7 @@ export async function dispatchDueReleaseMonitors(
           recommendation: result.recommendation,
           characterId: project.characterId,
           observedAt: now,
+          policyVersion: result.policyVersion,
         });
         return result.monitor.status === "action_required" ? "action_required" as const : "completed" as const;
       });
@@ -532,6 +875,7 @@ export async function dispatchDueReleaseMonitors(
 
   return {
     examined: candidates.length,
+    requeued,
     claimed,
     evaluated,
     completed,

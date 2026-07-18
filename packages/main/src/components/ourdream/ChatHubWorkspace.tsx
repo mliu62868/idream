@@ -3,8 +3,14 @@
 import Image from "next/image";
 import Link from "next/link";
 import { ArrowRight, Compass, MessageCircle, Plus, Sparkles } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import {
+  parseCharacterListResponse,
+  parseChatSessionsResponse,
+  type PublicChatSession as SessionRow,
+} from "@/lib/public-api-contracts";
 import type { CharacterCardData } from "@/types/ourdream";
+import { useAgeGateAccess } from "./AgeGateBoundary";
 import { authHrefForTarget } from "./authRedirect";
 import {
   fetchProtectedForViewer,
@@ -17,16 +23,6 @@ import {
 //       (ChatSessionListDrawer), so returning users need this entry point.
 // NOTE: GET /api/v1/chat/sessions passes through the BFF raw (a JSON array, not
 //       {ok,data}); a logged-out request returns 401.
-type SessionRow = {
-  id: string;
-  title: string | null;
-  characterId: string;
-  status: string;
-  memoryEnabled: boolean;
-  lastMessageAt: string | null;
-  memorySummary: string | null;
-};
-
 type HubState = "loading" | "ready" | "error" | "signed-out";
 type FeaturedState = "loading" | "ready" | "error";
 
@@ -39,10 +35,12 @@ export function loadChatSessionsForViewer(fetcher: ViewerFetcher = fetch) {
 }
 
 export function ChatHubWorkspace() {
+  const { accepted: ageGateAccepted } = useAgeGateAccess();
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [state, setState] = useState<HubState>("loading");
 
-  async function load() {
+  const load = useCallback(async () => {
+    if (!ageGateAccepted) return;
     setState("loading");
     try {
       const result = await loadChatSessionsForViewer();
@@ -58,7 +56,7 @@ export function ChatHubWorkspace() {
         return;
       }
       if (!res.ok) throw new Error("sessions unavailable");
-      const rows = (await res.json()) as SessionRow[];
+      const rows = parseChatSessionsResponse(await res.json());
       setSessions(
         rows
           .filter((row) => row.status !== "deleted")
@@ -69,14 +67,15 @@ export function ChatHubWorkspace() {
     } catch {
       setState("error");
     }
-  }
+  }, [ageGateAccepted]);
 
   // Defer the first fetch past a macrotask so the initial render commits before any
   // setState (matches ExploreWorkspace/ProfileWorkspace; avoids set-state-in-effect).
   useEffect(() => {
+    if (!ageGateAccepted) return;
     const timer = window.setTimeout(() => void load(), 0);
     return () => window.clearTimeout(timer);
-  }, []);
+  }, [ageGateAccepted, load]);
 
   return (
     <section className="px-4 py-10 md:px-[60px]">
@@ -226,31 +225,32 @@ export function ChatHubWorkspace() {
 }
 
 function ChatStartPanel() {
+  const { accepted: ageGateAccepted } = useAgeGateAccess();
   const [featuredCharacters, setFeaturedCharacters] = useState<
     CharacterCardData[]
   >([]);
   const [featuredState, setFeaturedState] = useState<FeaturedState>("loading");
 
-  async function loadFeaturedCharacters() {
+  const loadFeaturedCharacters = useCallback(async () => {
+    if (!ageGateAccepted) return;
     setFeaturedState("loading");
     try {
       const response = await fetch("/api/v1/characters?sort=for-you&limit=3");
       if (!response.ok) throw new Error("characters unavailable");
-      const payload = (await response.json()) as {
-        data?: { items?: CharacterCardData[] };
-      };
-      setFeaturedCharacters((payload.data?.items ?? []).slice(0, 3));
+      const payload = parseCharacterListResponse(await response.json());
+      setFeaturedCharacters(payload.items.slice(0, 3));
       setFeaturedState("ready");
     } catch {
       setFeaturedCharacters([]);
       setFeaturedState("error");
     }
-  }
+  }, [ageGateAccepted]);
 
   useEffect(() => {
+    if (!ageGateAccepted) return;
     const timer = window.setTimeout(() => void loadFeaturedCharacters(), 0);
     return () => window.clearTimeout(timer);
-  }, []);
+  }, [ageGateAccepted, loadFeaturedCharacters]);
 
   return (
     <aside

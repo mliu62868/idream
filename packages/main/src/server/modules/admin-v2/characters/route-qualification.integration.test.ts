@@ -2,8 +2,11 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { POST as evaluateRoute } from "@/app/api/v2/admin/characters/route-qualifications/commands/evaluate/route";
 import { prisma } from "@/server/lib/db";
+import { env } from "@/server/lib/env";
 import { createCharacter, createUser, purgeTestData } from "@/server/test/helpers";
 import { evaluateGenerationRouteQualification } from "./route-qualification";
+import { findQualifiedGenerationRoute } from "./visual-authority";
+import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-executor";
 
 describe("production Generation Route Qualification writer", () => {
   const prefix = `zt-route-qualification-${randomUUID()}-`;
@@ -49,9 +52,12 @@ describe("production Generation Route Qualification writer", () => {
         runner: "comfyui",
         pipelineModel: workflowKey,
         workflowKey,
+        runnerConfig: { capabilities: { referenceImages: true } },
         allowedOrientations: ["portrait"],
         version: 1,
         status: "active",
+        enabled: true,
+        rolloutPercent: 100,
       },
     });
     await prisma.contentProductionBatch.create({
@@ -210,6 +216,101 @@ describe("production Generation Route Qualification writer", () => {
         confirmation: `QUALIFY ${incompleteMatrixKey}`,
       },
     })).rejects.toMatchObject({ code: "conflict" });
+  });
+
+  it("keyset-scans beyond 20 newer disabled routes to recover the older viable authority", async () => {
+    const viableId = `${prefix}older-viable-route`;
+    const newerIds = Array.from({ length: 21 }, (_, index) =>
+      `${prefix}newer-disabled-route-${index}`
+    );
+    const base = Date.now() + 120_000;
+    await prisma.generationRouteQualification.createMany({
+      data: [{
+        id: viableId,
+        routeFingerprint: `${prefix}older-viable-fingerprint`,
+        generationProfileKey,
+        generationProfileVersion: 1,
+        workflowKey,
+        workflowVersion: 1,
+        style: "realistic",
+        matrixKey: `${prefix}older-viable-matrix`,
+        sampleCount: 40,
+        passCount: 40,
+        identityMatch: 0.98,
+        result: "qualified",
+        evidence: { evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION },
+        policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
+        evaluatedAt: new Date(base),
+      }, ...newerIds.map((id, index) => ({
+        id,
+        routeFingerprint: `${prefix}newer-disabled-fingerprint-${index}`,
+        generationProfileKey: `${prefix}disabled-profile-${index}`,
+        generationProfileVersion: 1,
+        workflowKey,
+        workflowVersion: 1,
+        style: "realistic",
+        matrixKey: `${prefix}newer-disabled-matrix-${index}`,
+        sampleCount: 40,
+        passCount: 40,
+        identityMatch: 0.99,
+        result: "qualified",
+        evidence: { evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION },
+        policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
+        evaluatedAt: new Date(base + index + 1),
+      }))],
+    });
+    try {
+      await expect(findQualifiedGenerationRoute(prisma, {
+        style: "realistic",
+        policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
+        evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,
+        at: new Date(),
+        requiredReferenceCount: 1,
+        requiredReferenceRoles: ["primary_face"],
+      })).resolves.toMatchObject({
+        id: viableId,
+        routeFingerprint: `${prefix}older-viable-fingerprint`,
+      });
+      await expect(findQualifiedGenerationRoute(prisma, {
+        style: "realistic",
+        policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
+        evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,
+        at: new Date(),
+        requiredReferenceCount: 2,
+        requiredReferenceRoles: ["primary_face", "identity_reference"],
+      })).resolves.toBeNull();
+      await prisma.generationModelProfile.update({
+        where: { id: modelProfileId },
+        data: {
+          runnerConfig: {
+            capabilities: {
+              initImage: true,
+              referenceImages: false,
+            },
+          },
+        },
+      });
+      await expect(findQualifiedGenerationRoute(prisma, {
+        style: "realistic",
+        policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
+        evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,
+        at: new Date(),
+        requiredReferenceCount: 1,
+        requiredReferenceRoles: ["primary_face"],
+      })).resolves.toBeNull();
+    } finally {
+      await prisma.generationModelProfile.update({
+        where: { id: modelProfileId },
+        data: {
+          runnerConfig: {
+            capabilities: { referenceImages: true },
+          },
+        },
+      });
+      await prisma.generationRouteQualification.deleteMany({
+        where: { id: { in: [viableId, ...newerIds] } },
+      });
+    }
   });
 
   it("enforces the route permission before parsing evidence", async () => {

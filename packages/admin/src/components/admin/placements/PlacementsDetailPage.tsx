@@ -42,16 +42,20 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
   const [rows, setRows] = useState<Placement[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [refreshWarning, setRefreshWarning] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingAction>(null);
+  const [transitionKeys, setTransitionKeys] = useState<Record<string, string>>({});
 
-  const reload = useCallback(async () => {
+  const reload = useCallback(async (propagateError = false) => {
     setLoading(true);
     setError(null);
     try {
       const data = await apiGet<{ placement: Placement }>(`${PLACEMENTS_BASE}/${encodeURIComponent(id)}`);
       setRows([data.placement]);
+      setRefreshWarning(null);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : t("Request failed"));
+      if (propagateError) throw loadError;
     } finally {
       setLoading(false);
     }
@@ -68,23 +72,41 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
 
   const confirmSpec: ConfirmSpec | null = useMemo(() => {
     if (!row || !pending) return null;
-    if (pending === "published") {
-      return {
-        title: t("Publish"),
-        submitLabel: t("Publish"),
-        onSubmit: async (reason) => {
-          await apiWrite(`${PLACEMENTS_BASE}/${id}`, "PATCH", placementPatchPayload(id, "published", reason));
-          await reload();
-        },
-      };
-    }
     if (pending === "paused") {
       return {
         title: t("Pause"),
         submitLabel: t("Pause"),
         onSubmit: async (reason) => {
-          await apiWrite(`${PLACEMENTS_BASE}/${id}`, "PATCH", placementPatchPayload(id, "paused", reason));
-          await reload();
+          const signature = `${id}:${row.version}:paused`;
+          const idempotencyKey = transitionKeys[signature] ?? crypto.randomUUID();
+          setTransitionKeys((current) => ({
+            ...current,
+            [signature]: current[signature] ?? idempotencyKey,
+          }));
+          await apiWrite(
+            `${PLACEMENTS_BASE}/${id}`,
+            "PATCH",
+            placementPatchPayload(id, "paused", reason),
+            {
+              "idempotency-key": idempotencyKey,
+              "if-match": `"${row.version}"`,
+            },
+          );
+          setTransitionKeys((current) => {
+            const next = { ...current };
+            delete next[signature];
+            return next;
+          });
+          try {
+            await reload(true);
+          } catch (refreshError) {
+            setError(null);
+            setRefreshWarning(
+              refreshError instanceof Error
+                ? `${t("Placement pause was committed, but the latest projection could not be refreshed:")} ${refreshError.message}. ${t("Use Refresh before another write.")}`
+                : t("Placement pause was committed, but the latest projection could not be refreshed. Use Refresh before another write."),
+            );
+          }
         },
       };
     }
@@ -93,17 +115,55 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
       destructive: { expectedName: row.slot },
       submitLabel: t("Archive"),
       onSubmit: async (reason) => {
-        await apiWrite(`${PLACEMENTS_BASE}/${id}`, "PATCH", placementPatchPayload(id, "archived", reason));
-        await reload();
+        const signature = `${id}:${row.version}:archived`;
+        const idempotencyKey = transitionKeys[signature] ?? crypto.randomUUID();
+        setTransitionKeys((current) => ({
+          ...current,
+          [signature]: current[signature] ?? idempotencyKey,
+        }));
+        await apiWrite(
+          `${PLACEMENTS_BASE}/${id}`,
+          "PATCH",
+          placementPatchPayload(id, "archived", reason),
+          {
+            "idempotency-key": idempotencyKey,
+            "if-match": `"${row.version}"`,
+            },
+          );
+        setTransitionKeys((current) => {
+          const next = { ...current };
+          delete next[signature];
+          return next;
+        });
+        try {
+          await reload(true);
+          } catch (refreshError) {
+            setError(null);
+            setRefreshWarning(
+              refreshError instanceof Error
+              ? `${t("Placement archival was committed, but the latest projection could not be refreshed:")} ${refreshError.message}. ${t("Use Refresh before another write.")}`
+              : t("Placement archival was committed, but the latest projection could not be refreshed. Use Refresh before another write."),
+            );
+        }
       },
     };
-  }, [pending, row, id, t, reload]);
+  }, [pending, row, id, t, reload, transitionKeys]);
 
   if (loading) {
     return <p className="text-sm text-[var(--ad-text-muted)]">{t("Loading…")}</p>;
   }
 
   if (!row) {
+    if (error) {
+      return (
+        <div className="rounded-lg bg-[var(--ad-red-bg)] p-4 text-sm text-[var(--ad-red-text)]" role="alert">
+          {error}{" "}
+          <button className="font-semibold underline" onClick={() => void reload()} type="button">
+            {t("Retry")}
+          </button>
+        </div>
+      );
+    }
     return (
       <EmptyState
         action={
@@ -117,11 +177,17 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
     );
   }
 
-  const actions = canPublish ? (
+  const canPause = canPublish &&
+    !row.managedRunId &&
+    !["paused", "archived"].includes(row.status);
+  const canArchive = canPublish &&
+    !row.managedRunId &&
+    row.status !== "archived";
+  const actions = canPause || canArchive || refreshWarning ? (
     <>
-      <GhostButton onClick={() => setPending("paused")}>{t("Pause")}</GhostButton>
-      <PrimaryButton onClick={() => setPending("published")}>{t("Publish")}</PrimaryButton>
-      <DangerButton onClick={() => setPending("archived")}>{t("Archive")}</DangerButton>
+      {refreshWarning ? <GhostButton onClick={() => void reload()}>{t("Refresh")}</GhostButton> : null}
+      {canPause ? <GhostButton disabled={Boolean(refreshWarning)} onClick={() => setPending("paused")}>{t("Pause")}</GhostButton> : null}
+      {canArchive ? <DangerButton disabled={Boolean(refreshWarning)} onClick={() => setPending("archived")}>{t("Archive")}</DangerButton> : null}
     </>
   ) : null;
 
@@ -134,6 +200,16 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
       title={value(row.slot)}
     >
       {error ? <p role="alert" className="text-sm text-[var(--ad-red-text)]">{error}</p> : null}
+      {refreshWarning ? <p role="status" className="rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]">{refreshWarning}</p> : null}
+
+      {row.managedRunId ? (
+        <div className="rounded-lg bg-[var(--ad-blue-bg)] p-3 text-sm text-[var(--ad-blue-text)]">
+          {t("This placement is managed by Creative Run verification and is read-only here.")}{" "}
+          <Link className="font-semibold underline" href={`/admin/creative/runs/${row.managedRunId}`}>
+            {t("Open Creative Run")}
+          </Link>
+        </div>
+      ) : null}
 
       <AssetImage asset={row.asset} />
 
@@ -143,6 +219,7 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
             { label: t("Slot"), value: value(row.slot) },
             { label: t("Target type"), value: value(row.targetType) },
             { label: t("Target ID"), value: row.targetId },
+            { label: t("Verification"), value: value(row.verificationState) },
             { label: t("Published"), value: row.publishedAt ? new Date(row.publishedAt).toLocaleString() : "—" },
           ]}
         />

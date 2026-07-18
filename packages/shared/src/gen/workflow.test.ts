@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   workflowDescriptorSchema,
+  assignWorkflowReferenceSlots,
   bindComfySlots,
   bindSdcppArgs,
   loadWorkflowDescriptors,
@@ -13,6 +14,7 @@ const comfyDescriptor = workflowDescriptorSchema.parse({
   workflowKey: "t2i",
   modelId: "redcraft-krea2-comfyui",
   backendKind: "comfyui",
+  comfyWorkflow: { id: "11111111-1111-4111-8111-111111111111", name: "Test T2I" },
   version: 1,
   capabilities: ["textToImage", "stableSeed"],
   apiPrompt: {
@@ -50,6 +52,7 @@ describe("workflow identity capability contract", () => {
       workflowKey: "identity-edit",
       modelId: "identity-model",
       backendKind: "comfyui",
+      comfyWorkflow: { id: "22222222-2222-4222-8222-222222222222", name: "Identity Edit" },
       version: 1,
       capabilities: ["referenceImages"],
       identity: {
@@ -63,8 +66,15 @@ describe("workflow identity capability contract", () => {
         maxCandidates: 2,
         evaluatorDimensions: ["artifact", "identity", "intent"],
       },
-      apiPrompt: {},
-      inputs: [],
+      apiPrompt: {
+        "8": { class_type: "LoadImage", inputs: { image: "" } },
+      },
+      inputs: [{
+        key: "identity_image",
+        type: "image",
+        referenceRoles: ["identity_anchor", "source_image"],
+        target: { nodeId: "8", field: "image" },
+      }],
     });
 
     expect(descriptor.identity).toMatchObject({
@@ -73,6 +83,335 @@ describe("workflow identity capability contract", () => {
       acceptedRoles: ["identity_anchor", "source_image"],
     });
     expect(descriptor.quality.evaluatorDimensions).toEqual(["artifact", "identity", "intent"]);
+  });
+
+  it("requires and assigns two canonical identity references without a source image", () => {
+    const descriptor = workflowDescriptorSchema.parse({
+      workflowKey: "multi-identity-edit",
+      modelId: "multi-identity-model",
+      backendKind: "comfyui",
+      comfyWorkflow: {
+        id: "22222222-2222-4222-8222-222222222229",
+        name: "Two Identity References",
+      },
+      version: 1,
+      capabilities: ["edit", "referenceImages"],
+      identity: {
+        mode: "multi_identity",
+        maxReferences: 2,
+        acceptedRoles: [
+          "identity_anchor",
+          "identity_reference",
+          "look_reference",
+        ],
+        supportsLookReference: true,
+        supportsSourceImageWithIdentity: false,
+      },
+      apiPrompt: {
+        "3": {
+          class_type: "TextEncodeQwenImageEditPlus",
+          inputs: { image1: ["8", 0], image2: ["12", 0] },
+        },
+        "8": { class_type: "LoadImage", inputs: { image: "" } },
+        "12": { class_type: "LoadImage", inputs: { image: "" } },
+      },
+      inputs: [
+        {
+          key: "identity_anchor",
+          type: "image",
+          required: true,
+          referenceRoles: ["identity_anchor"],
+          target: { nodeId: "8", field: "image" },
+        },
+        {
+          key: "identity_reference",
+          type: "image",
+          required: true,
+          referenceRoles: ["identity_reference", "look_reference"],
+          target: { nodeId: "12", field: "image" },
+        },
+      ],
+    });
+
+    expect(descriptor.identity.mode).toBe("multi_identity");
+    expect(descriptor.inputs.filter((input) => input.type === "image")).toEqual([
+      expect.objectContaining({
+        key: "identity_anchor",
+        required: true,
+        referenceRoles: ["identity_anchor"],
+      }),
+      expect.objectContaining({
+        key: "identity_reference",
+        required: true,
+        referenceRoles: ["identity_reference", "look_reference"],
+      }),
+    ]);
+    expect(
+      assignWorkflowReferenceSlots(
+        descriptor,
+        ["identity_reference", "identity_anchor"],
+      ),
+    ).toEqual({
+      ok: true,
+      assignments: [
+        { slotKey: "identity_anchor", referenceIndex: 1 },
+        { slotKey: "identity_reference", referenceIndex: 0 },
+      ],
+      minReferences: 2,
+      maxReferences: 2,
+    });
+    expect(
+      assignWorkflowReferenceSlots(
+        descriptor,
+        ["identity_anchor", "look_reference"],
+      ),
+    ).toEqual({
+      ok: true,
+      assignments: [
+        { slotKey: "identity_anchor", referenceIndex: 0 },
+        { slotKey: "identity_reference", referenceIndex: 1 },
+      ],
+      minReferences: 2,
+      maxReferences: 2,
+    });
+    expect(
+      assignWorkflowReferenceSlots(descriptor, ["identity_anchor"]),
+    ).toMatchObject({
+      ok: false,
+      reason: "reference_cardinality_mismatch",
+      minReferences: 2,
+      maxReferences: 2,
+    });
+    expect(
+      assignWorkflowReferenceSlots(
+        descriptor,
+        ["identity_anchor", "source_image"],
+      ),
+    ).toMatchObject({
+      ok: false,
+      reason: "reference_role_unsupported",
+    });
+  });
+
+  it("rejects an incoherent source-plus-identity capability declaration", () => {
+    expect(() => workflowDescriptorSchema.parse({
+      workflowKey: "broken-source-identity",
+      modelId: "identity-model",
+      backendKind: "comfyui",
+      comfyWorkflow: { id: "22222222-2222-4222-8222-222222222223", name: "Broken Identity Edit" },
+      version: 1,
+      capabilities: ["referenceImages"],
+      identity: {
+        mode: "single_reference",
+        maxReferences: 2,
+        acceptedRoles: ["identity_anchor"],
+        supportsLookReference: false,
+        supportsSourceImageWithIdentity: true,
+      },
+      apiPrompt: {},
+      inputs: [],
+    })).toThrow("source_image");
+  });
+
+  it("requires every ComfyUI image slot to declare semantic reference roles", () => {
+    expect(() => workflowDescriptorSchema.parse({
+      workflowKey: "untyped-image-slot",
+      modelId: "identity-model",
+      backendKind: "comfyui",
+      comfyWorkflow: {
+        id: "22222222-2222-4222-8222-222222222224",
+        name: "Untyped Image Slot",
+      },
+      version: 1,
+      capabilities: ["referenceImages"],
+      identity: {
+        mode: "single_reference",
+        maxReferences: 1,
+        acceptedRoles: ["source_image"],
+        supportsLookReference: false,
+        supportsSourceImageWithIdentity: false,
+      },
+      apiPrompt: {
+        "8": { class_type: "LoadImage", inputs: { image: "" } },
+      },
+      inputs: [
+        {
+          key: "source_image",
+          type: "image",
+          target: { nodeId: "8", field: "image" },
+        },
+      ],
+    })).toThrow("accepted reference roles");
+  });
+
+  it("requires combined source and identity images to use distinct slots", () => {
+    expect(() => workflowDescriptorSchema.parse({
+      workflowKey: "mixed-image-slot",
+      modelId: "identity-model",
+      backendKind: "comfyui",
+      comfyWorkflow: {
+        id: "22222222-2222-4222-8222-222222222225",
+        name: "Mixed Image Slot",
+      },
+      version: 1,
+      capabilities: ["referenceImages"],
+      identity: {
+        mode: "multi_reference",
+        maxReferences: 2,
+        acceptedRoles: ["identity_anchor", "source_image"],
+        supportsLookReference: false,
+        supportsSourceImageWithIdentity: true,
+      },
+      apiPrompt: {
+        "8": { class_type: "LoadImage", inputs: { image: "" } },
+      },
+      inputs: [
+        {
+          key: "mixed_image",
+          type: "image",
+          referenceRoles: ["identity_anchor", "source_image"],
+          target: { nodeId: "8", field: "image" },
+        },
+      ],
+    })).toThrow("distinct concrete slots");
+  });
+
+  it("rejects declared reference capacity that exceeds concrete ComfyUI image slots", () => {
+    expect(() => workflowDescriptorSchema.parse({
+      workflowKey: "drifted-reference-capacity",
+      modelId: "identity-model",
+      backendKind: "comfyui",
+      comfyWorkflow: {
+        id: "22222222-2222-4222-8222-222222222226",
+        name: "Drifted Reference Capacity",
+      },
+      version: 1,
+      capabilities: ["referenceImages"],
+      identity: {
+        mode: "multi_reference",
+        maxReferences: 4,
+        acceptedRoles: ["identity_anchor", "source_image"],
+        supportsLookReference: false,
+        supportsSourceImageWithIdentity: true,
+      },
+      apiPrompt: {
+        "8": { class_type: "LoadImage", inputs: { image: "" } },
+        "9": { class_type: "LoadImage", inputs: { image: "" } },
+      },
+      inputs: [
+        {
+          key: "identity_image",
+          type: "image",
+          referenceRoles: ["identity_anchor"],
+          target: { nodeId: "8", field: "image" },
+        },
+        {
+          key: "source_image",
+          type: "image",
+          referenceRoles: ["source_image"],
+          target: { nodeId: "9", field: "image" },
+        },
+      ],
+    })).toThrow("must equal the 2 declared semantic image slots");
+  });
+
+  it("rejects optional image slots until a graph-level onAbsent contract exists", () => {
+    expect(() => workflowDescriptorSchema.parse({
+      workflowKey: "optional-source",
+      modelId: "identity-model",
+      backendKind: "comfyui",
+      comfyWorkflow: {
+        id: "22222222-2222-4222-8222-222222222227",
+        name: "Optional Source",
+      },
+      version: 1,
+      capabilities: ["referenceImages"],
+      identity: {
+        mode: "multi_reference",
+        maxReferences: 2,
+        acceptedRoles: ["identity_anchor", "source_image"],
+        supportsLookReference: false,
+        supportsSourceImageWithIdentity: true,
+      },
+      apiPrompt: {
+        "8": { class_type: "LoadImage", inputs: { image: "" } },
+        "9": { class_type: "LoadImage", inputs: { image: "" } },
+      },
+      inputs: [
+        {
+          key: "identity_image",
+          type: "image",
+          referenceRoles: ["identity_anchor"],
+          target: { nodeId: "8", field: "image" },
+        },
+        {
+          key: "source_image",
+          type: "image",
+          referenceRoles: ["source_image"],
+          required: false,
+          target: { nodeId: "9", field: "image" },
+        },
+      ],
+    })).toThrow("Optional image slots require an explicit graph-level onAbsent contract");
+  });
+
+  it("rejects duplicate slot keys and duplicate ComfyUI node-field targets", () => {
+    const base = {
+      workflowKey: "duplicate-slot-authority",
+      modelId: "identity-model",
+      backendKind: "comfyui",
+      comfyWorkflow: {
+        id: "22222222-2222-4222-8222-222222222228",
+        name: "Duplicate Slot Authority",
+      },
+      version: 1,
+      capabilities: ["referenceImages"],
+      identity: {
+        mode: "multi_reference",
+        maxReferences: 2,
+        acceptedRoles: ["identity_anchor", "source_image"],
+        supportsLookReference: false,
+        supportsSourceImageWithIdentity: true,
+      },
+      apiPrompt: {
+        "8": { class_type: "LoadImage", inputs: { image: "" } },
+        "9": { class_type: "LoadImage", inputs: { image: "" } },
+      },
+    } as const;
+    expect(() => workflowDescriptorSchema.parse({
+      ...base,
+      inputs: [
+        {
+          key: "same_key",
+          type: "image",
+          referenceRoles: ["identity_anchor"],
+          target: { nodeId: "8", field: "image" },
+        },
+        {
+          key: "same_key",
+          type: "image",
+          referenceRoles: ["source_image"],
+          target: { nodeId: "9", field: "image" },
+        },
+      ],
+    })).toThrow("duplicates inputs[0].key");
+    expect(() => workflowDescriptorSchema.parse({
+      ...base,
+      inputs: [
+        {
+          key: "identity_image",
+          type: "image",
+          referenceRoles: ["identity_anchor"],
+          target: { nodeId: "8", field: "image" },
+        },
+        {
+          key: "source_image",
+          type: "image",
+          referenceRoles: ["source_image"],
+          target: { nodeId: "8", field: "image" },
+        },
+      ],
+    })).toThrow("duplicates inputs[0].target");
   });
 });
 
@@ -102,8 +441,23 @@ describe("workflow backend contracts", () => {
         workflowKey: "missing-comfy-prompt",
         modelId: "broken-comfy",
         backendKind: "comfyui",
+        comfyWorkflow: { id: "33333333-3333-4333-8333-333333333333", name: "Missing Prompt" },
         version: 1,
         capabilities: ["textToImage"],
+        inputs: [],
+      }),
+    ).toThrow();
+  });
+
+  it("requires stable ComfyUI workflow identity metadata", () => {
+    expect(() =>
+      workflowDescriptorSchema.parse({
+        workflowKey: "missing-comfy-identity",
+        modelId: "broken-comfy-identity",
+        backendKind: "comfyui",
+        version: 1,
+        capabilities: ["textToImage"],
+        apiPrompt: {},
         inputs: [],
       }),
     ).toThrow();
@@ -131,6 +485,7 @@ describe("workflow backend contracts", () => {
         workflowKey: "broken-comfy",
         modelId: "broken-comfy",
         backendKind: "comfyui",
+        comfyWorkflow: { id: "44444444-4444-4444-8444-444444444444", name: "Broken Comfy" },
         version: 1,
         capabilities: ["textToImage"],
         apiPrompt: {},

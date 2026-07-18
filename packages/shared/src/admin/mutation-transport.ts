@@ -12,6 +12,14 @@ export type AdminV2ImplementedMutationTransport =
       readonly status: "implemented";
       readonly kind: "if_match";
       readonly staleWrite: "reject";
+    }
+  | {
+      readonly status: "implemented";
+      readonly kind: "idempotency_key_and_if_match";
+      readonly replay: "same_result";
+      readonly collision: "reject_payload_mismatch";
+      readonly failure: "retryable_without_double_apply";
+      readonly staleWrite: "reject";
     };
 
 export type AdminV2PendingMutationTransport = {
@@ -36,6 +44,15 @@ const idempotencyKey = (): AdminV2ImplementedMutationTransport => ({
 const ifMatch = (): AdminV2ImplementedMutationTransport => ({
   status: "implemented",
   kind: "if_match",
+  staleWrite: "reject",
+});
+
+const idempotencyKeyAndIfMatch = (): AdminV2ImplementedMutationTransport => ({
+  status: "implemented",
+  kind: "idempotency_key_and_if_match",
+  replay: "same_result",
+  collision: "reject_payload_mismatch",
+  failure: "retryable_without_double_apply",
   staleWrite: "reject",
 });
 
@@ -65,19 +82,23 @@ export const ADMIN_V2_MUTATION_TRANSPORT = {
   "POST /api/v2/admin/characters/:id/commands/retire": idempotencyKey(),
   "POST /api/v2/admin/characters/:id/portfolio-decisions": idempotencyKey(),
   "POST /api/v2/admin/characters/:id/reference-sets": idempotencyKey(),
+  "PATCH /api/v2/admin/characters/:id/looks/:lookId": idempotencyKey(),
+  "POST /api/v2/admin/characters/:id/identity-bootstrap": idempotencyKeyAndIfMatch(),
   "PATCH /api/v2/admin/characters/:id/project": ifMatch(),
-  "POST /api/v2/admin/characters/:id/qa-runs": idempotencyKey(),
-  "POST /api/v2/admin/characters/:id/releases": idempotencyKey(),
+  "PATCH /api/v2/admin/characters/:id/draft-image": idempotencyKeyAndIfMatch(),
+  "POST /api/v2/admin/characters/:id/qa-runs": idempotencyKeyAndIfMatch(),
+  "POST /api/v2/admin/characters/:id/releases": idempotencyKeyAndIfMatch(),
   "POST /api/v2/admin/characters/:id/releases/:releaseId/commands/publish": idempotencyKey(),
   "POST /api/v2/admin/characters/:id/releases/:releaseId/commands/rollback": idempotencyKey(),
   "POST /api/v2/admin/characters/:id/releases/:releaseId/commands/schedule": idempotencyKey(),
   "POST /api/v2/admin/characters/:id/releases/:releaseId/monitors/:window/refresh": idempotencyKey(),
-  "POST /api/v2/admin/characters/:id/releases/:releaseId/review": ifMatch(),
+  "POST /api/v2/admin/characters/:id/releases/:releaseId/review": idempotencyKeyAndIfMatch(),
   "POST /api/v2/admin/characters/:id/releases/:releaseId/validation": idempotencyKey(),
 
   "POST /api/v2/admin/chat/sessions/:sessionId/commands/migrate-release": idempotencyKey(),
   "POST /api/v2/admin/collaboration/:targetType/:targetId/activity": idempotencyKey(),
   "PUT /api/v2/admin/collaboration/:targetType/:targetId/watch": idempotencyKey(),
+  "POST /api/v2/admin/mutation-receipts/reconcile": idempotencyKey(),
 
   "POST /api/v2/admin/creative/runs": idempotencyKey(),
   "POST /api/v2/admin/creative/runs/:id/commands/attach-incident": idempotencyKey(),
@@ -85,6 +106,7 @@ export const ADMIN_V2_MUTATION_TRANSPORT = {
   "POST /api/v2/admin/creative/runs/:id/items/:itemId/decisions": idempotencyKey(),
   "POST /api/v2/admin/creative/runs/:id/placements": idempotencyKey(),
   "POST /api/v2/admin/creative/runs/:id/placements/:placementId/verification": idempotencyKey(),
+  "POST /api/v2/admin/creative/runs/:id/placements/:placementId/withdrawal": idempotencyKey(),
 
   "POST /api/v2/admin/experiments": idempotencyKey(),
   "POST /api/v2/admin/experiments/:id/commands/start": idempotencyKey(),

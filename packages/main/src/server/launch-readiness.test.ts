@@ -293,6 +293,7 @@ function passingProductConfigProbe(
     activeVideoCharacterTemplates: 0,
     activeVideoFreeplayTemplates: 0,
     activeVideoPricingRules: 0,
+    activeVoicePricingRules: 1,
     publicCharacters: 16,
     publicCharactersWithSystemPrompt: 16,
     error: null,
@@ -780,6 +781,55 @@ describe("launch readiness", () => {
       env: {
         ...productionEnv,
         BETTER_AUTH_URL: "http://localhost:3000",
+      },
+      imagePipelineProbe: passingImageProbe(),
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingProductConfigProbe(),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
+      now,
+    });
+
+    expect(report.ok).toBe(false);
+    expect(failedIds(report)).toContain("better-auth-url");
+  });
+
+  it("does not substitute Better Auth for a missing main-site origin", () => {
+    const report = assessLaunchReadiness({
+      env: {
+        ...productionEnv,
+        MAIN_WEB_URL: undefined,
+      },
+      imagePipelineProbe: passingImageProbe(),
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingProductConfigProbe(),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
+      now,
+    });
+
+    expect(report.ok).toBe(false);
+    expect(failedIds(report)).toContain("main-web-url");
+    expect(failedIds(report)).toContain("web-surface-live-probe");
+  });
+
+  it("does not classify bracketed IPv6 loopback as a public production origin", () => {
+    const report = assessLaunchReadiness({
+      env: {
+        ...productionEnv,
+        BETTER_AUTH_URL: "https://[::1]:3000",
       },
       imagePipelineProbe: passingImageProbe(),
       ageVerificationProbe: passingAgeProbe(),

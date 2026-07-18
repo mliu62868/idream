@@ -8,6 +8,7 @@ export interface CharacterCardData {
   likesCount?: number;
   chatsCount?: number;
   source?: "official" | "user";
+  creatorType?: "official" | "user";
   creator: string;
   creatorId?: string | null;
   creatorName?: string | null;

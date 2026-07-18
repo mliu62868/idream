@@ -390,11 +390,90 @@ describe("Admin API v2 public contracts", () => {
       entityVersion: 5,
       itemId: "item_1",
       assetId: "asset_1",
+      slot: "campaign",
+      targetType: "campaign",
+      targetId: "campaign_1",
+      eyebrow: "  Featured  ",
+      title: "  Summer dreamers  ",
+      ctaLabel: "  Open collection  ",
+      href: "  /community?collection=summer  ",
+      reason: "Publish the approved asset",
+    })).toMatchObject({
+      success: true,
+      data: {
+        eyebrow: "Featured",
+        title: "Summer dreamers",
+        ctaLabel: "Open collection",
+        href: "/community?collection=summer",
+      },
+    });
+    expect(creativePlacementPublishRequestSchema.safeParse({
+      entityVersion: 5,
+      itemId: "item_1",
+      assetId: "asset_1",
+      slot: "campaign",
+      targetType: "campaign",
+      targetId: "campaign_1",
+      eyebrow: "Featured",
+      title: "Summer dreamers",
+      reason: "Publish an informational campaign without a CTA",
+    }).success).toBe(true);
+    expect(creativePlacementPublishRequestSchema.safeParse({
+      entityVersion: 5,
+      itemId: "item_1",
+      assetId: "asset_1",
+      slot: "campaign",
+      targetType: "campaign",
+      targetId: "campaign_1",
+      eyebrow: "Featured",
+      title: "Summer dreamers",
+      ctaLabel: "Open collection",
+      reason: "A CTA label without a destination is incomplete",
+    }).success).toBe(false);
+    expect(creativePlacementPublishRequestSchema.safeParse({
+      entityVersion: 5,
+      itemId: "item_1",
+      assetId: "asset_1",
+      slot: "campaign",
+      targetType: "campaign",
+      targetId: "campaign_1",
+      eyebrow: "Featured",
+      title: "Summer dreamers",
+      href: "/community?collection=summer",
+      reason: "A CTA destination without a label is incomplete",
+    }).success).toBe(false);
+    expect(creativePlacementPublishRequestSchema.safeParse({
+      entityVersion: 5,
+      itemId: "item_1",
+      assetId: "asset_1",
+      slot: "campaign",
+      targetType: "campaign",
+      targetId: "campaign_1",
+      reason: "Missing authored copy cannot become runtime authority",
+    }).success).toBe(false);
+    expect(creativePlacementPublishRequestSchema.safeParse({
+      entityVersion: 5,
+      itemId: "item_1",
+      assetId: "asset_1",
+      slot: "campaign",
+      targetType: "campaign",
+      targetId: "campaign_1",
+      eyebrow: "Featured",
+      title: "Summer dreamers",
+      href: "javascript:alert(1)",
+      reason: "Unsafe authored links cannot become runtime authority",
+    }).success).toBe(false);
+    expect(creativePlacementPublishRequestSchema.safeParse({
+      entityVersion: 5,
+      itemId: "item_1",
+      assetId: "asset_1",
       slot: "feed_card",
       targetType: "campaign",
       targetId: "campaign_1",
-      reason: "Publish the approved asset",
-    }).success).toBe(true);
+      eyebrow: "Featured",
+      title: "Summer dreamers",
+      reason: "Legacy surfaces cannot bypass runtime verification",
+    }).success).toBe(false);
     expect(creativePlacementVerificationRequestSchema.safeParse({
       entityVersion: 6,
       reason: "Observed expected asset in the current slot",

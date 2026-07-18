@@ -9,7 +9,7 @@ import { z } from "zod";
 import { Prisma } from "../generated/client/client.js";
 import { chatPrisma } from "./db.js";
 import { env } from "./env.js";
-import { FREE_DAILY_MESSAGES } from "./limits.js";
+import { FREE_DAILY_MESSAGES } from "@idream/shared/chat/limits";
 
 export interface ChatAdminRequest {
   method: string;

@@ -16,8 +16,23 @@
 // ecosystem.config.js --only <app>` resolves each app's working dir — and thus its
 // dotenv-loaded .env — identically to a full start. Relative cwds resolve against
 // the pm2 daemon's cwd under `--only`, which silently breaks per-app .env loading.
+const { existsSync, readFileSync } = require("node:fs");
 const path = require("path");
 const dir = (rel) => path.join(__dirname, rel);
+const localEnvValue = (envPath, key) => {
+  if (!existsSync(envPath)) return undefined;
+  for (const line of readFileSync(envPath, "utf8").split(/\r?\n/)) {
+    const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)?\s*$/);
+    if (!match || match[1] !== key) continue;
+    const rawValue = (match[2] ?? "").trim();
+    const quote = rawValue[0];
+    if ((quote === "\"" || quote === "'") && rawValue.at(-1) === quote) {
+      return rawValue.slice(1, -1);
+    }
+    return rawValue.replace(/\s+#.*$/, "");
+  }
+  return undefined;
+};
 // REDIS_URL must resolve IDENTICALLY across main-web (which enqueues) and the main-side
 // workers gen-finalizer / main-event-consumer (which consume) — otherwise jobs and chat→main
 // events are produced on one Redis and consumed on another (split-brain: jobs stick forever,
@@ -27,6 +42,12 @@ const dir = (rel) => path.join(__dirname, rel);
 // three. When unset, none are injected and all three fall back to packages/main/.env.
 const mainRedisUrl = process.env.MAIN_REDIS_URL ?? process.env.REDIS_URL;
 const mainRedisEnv = mainRedisUrl ? { REDIS_URL: mainRedisUrl } : {};
+// INTERNAL_TOKEN is a cross-service credential, not a main-only setting. In
+// deployed environments the secret manager injects it. For local pm2 runs,
+// reuse the main .env value selectively so gen callbacks cannot silently run
+// with an empty token while main-web validates a populated one.
+const internalToken = process.env.INTERNAL_TOKEN ?? localEnvValue(dir("packages/main/.env"), "INTERNAL_TOKEN");
+const sharedInternalEnv = internalToken ? { INTERNAL_TOKEN: internalToken } : {};
 
 module.exports = {
   apps: [
@@ -44,6 +65,7 @@ module.exports = {
       env: {
         PORT: process.env.MAIN_WEB_PORT ?? "3000",
         ...mainRedisEnv,
+        ...sharedInternalEnv,
       },
       // config from packages/main/.env (next + dotenv load it)
     },
@@ -57,6 +79,7 @@ module.exports = {
       instances: 1,
       env: {
         PORT: process.env.ADMIN_WEB_PORT ?? "3001",
+        ...sharedInternalEnv,
       },
       // config from packages/admin/.env (next + dotenv load it)
     },
@@ -68,6 +91,9 @@ module.exports = {
       args: "src/main.ts",
       exec_mode: "fork",
       instances: 1, // ⚠️ local FS single-writer
+      env: {
+        ...sharedInternalEnv,
+      },
       // config from packages/chat/.env (CHAT_PORT, CHAT_DATABASE_URL, …)
     },
     // slow · async — pure generation, only writes blob, horizontally scalable
@@ -80,6 +106,9 @@ module.exports = {
       // Draw Things serializes within one worker. Set GEN_IMAGE_INSTANCES=1 for
       // strict host-wide single-process model loading; other backends may scale out.
       instances: process.env.GEN_IMAGE_INSTANCES ?? 2,
+      env: {
+        ...sharedInternalEnv,
+      },
     },
     // gen-video is DEFERRED to V1.1 (video_gen flag is off; see docs/architecture/12-roadmap.md).
     // Keep it out of the running topology until a real video provider is enabled, so we
@@ -102,11 +131,12 @@ module.exports = {
       instances: 1,
       env: {
         ...mainRedisEnv,
-        // Finalize + character.preview — do NOT add ai.image/video.generate, or this
+        ...sharedInternalEnv,
+        // Finalize only — do NOT add ai.image/video.generate, or this
         // main-side process (IMAGE_PROVIDER defaults to mock) races the dedicated
         // gen-image worker (GEN_IMAGE_PROVIDER=backend) → nondeterministic mock output.
-        // character.preview is main-only (no gen worker owns it), so it is safe here.
-        GEN_FINALIZER_QUEUES: "app.ai.finalize,character.preview",
+        // Character previews are owned by gen-image and return through app.ai.finalize.
+        GEN_FINALIZER_QUEUES: "app.ai.finalize",
       },
     },
     {
@@ -118,6 +148,7 @@ module.exports = {
       instances: 1,
       env: {
         ...mainRedisEnv,
+        ...sharedInternalEnv,
       },
     },
     // medium · async — authoritative Admin command execution and lease recovery
@@ -130,6 +161,7 @@ module.exports = {
       instances: 1,
       env: {
         ...mainRedisEnv,
+        ...sharedInternalEnv,
       },
     },
   ],

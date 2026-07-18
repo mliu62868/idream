@@ -12,11 +12,28 @@ export type ApiEnvelope<T> =
   | { ok: true; data: T }
   | { ok: false; error: ApiError };
 
+export class AdminApiRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+    readonly details?: unknown,
+  ) {
+    super(message);
+    this.name = "AdminApiRequestError";
+  }
+}
+
 export async function apiGet<T>(path: string): Promise<T> {
   const response = await fetch(path, { cache: "no-store" });
   const payload = (await response.json()) as ApiEnvelope<T>;
   if (!payload.ok) {
-    throw new Error(formatApiError(payload.error, "Request failed"));
+    throw new AdminApiRequestError(
+      formatApiError(payload.error, "Request failed"),
+      response.status,
+      payload.error.code,
+      payload.error.details,
+    );
   }
   return payload.data;
 }
@@ -34,7 +51,12 @@ export async function apiWrite<T>(
   });
   const payload = (await response.json()) as ApiEnvelope<T>;
   if (!payload.ok) {
-    throw new Error(formatApiError(payload.error, "Request failed"));
+    throw new AdminApiRequestError(
+      formatApiError(payload.error, "Request failed"),
+      response.status,
+      payload.error.code,
+      payload.error.details,
+    );
   }
   return payload.data;
 }
@@ -46,7 +68,12 @@ export async function apiDelete<T>(
   const response = await fetch(path, { method: "DELETE", headers });
   const payload = (await response.json()) as ApiEnvelope<T>;
   if (!payload.ok) {
-    throw new Error(formatApiError(payload.error, "Request failed"));
+    throw new AdminApiRequestError(
+      formatApiError(payload.error, "Request failed"),
+      response.status,
+      payload.error.code,
+      payload.error.details,
+    );
   }
   return payload.data;
 }
@@ -58,7 +85,12 @@ export async function apiForm<T>(path: string, body: FormData): Promise<T> {
   });
   const payload = (await response.json()) as ApiEnvelope<T>;
   if (!payload.ok) {
-    throw new Error(formatApiError(payload.error, "Request failed"));
+    throw new AdminApiRequestError(
+      formatApiError(payload.error, "Request failed"),
+      response.status,
+      payload.error.code,
+      payload.error.details,
+    );
   }
   return payload.data;
 }
@@ -71,6 +103,23 @@ export function formatApiError(error: ApiError, fallback: string) {
 
 function apiErrorDetailsText(details: unknown) {
   if (typeof details !== "object" || details === null) return "";
+  const issues = (details as { issues?: unknown }).issues;
+  if (Array.isArray(issues)) {
+    const messages = issues
+      .flatMap((issue) => {
+        if (typeof issue !== "object" || issue === null) return [];
+        const path = (issue as { path?: unknown }).path;
+        const message = (issue as { message?: unknown }).message;
+        if (typeof message !== "string") return [];
+        return [
+          typeof path === "string" && path
+            ? `${path}: ${message}`
+            : message,
+        ];
+      })
+      .slice(0, 3);
+    if (messages.length > 0) return messages.join("; ");
+  }
   const fieldErrors = (details as { fieldErrors?: unknown }).fieldErrors;
   if (typeof fieldErrors !== "object" || fieldErrors === null) return "";
   const messages = Object.entries(fieldErrors as Record<string, unknown>)

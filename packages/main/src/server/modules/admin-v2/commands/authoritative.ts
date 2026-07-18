@@ -22,9 +22,12 @@ import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority"
 import type { PermissionKey } from "@/server/admin/permissions";
 import {
   acceptControlPlaneCommand,
+  canonicalRequestHash,
   IdempotencyConflictError,
 } from "../shared/control-plane-command";
+import { canonicalSha256 } from "../shared/canonical-json";
 import { CHARACTER_RELEASE_POLICY_VERSION } from "../characters/release-executor";
+import { characterCommandCoordinationKey } from "../characters/command-coordination";
 import { executeAcceptedAdminCommand } from "./executor";
 import { generationProfileHealth } from "../creative/retry-executor";
 
@@ -117,12 +120,14 @@ async function acceptCommand(input: {
   readonly parsed: ParsedCommand<AdminCommandRequest>;
   readonly definition: CommandDefinition;
   readonly targetId: string;
+  readonly coordinationKey?: string;
   readonly executeInline?: boolean;
 }) {
   const accepted = await acceptControlPlaneCommand(prisma, {
     environment: env.APP_ENV,
     actor: input.actor,
     idempotencyKey: input.parsed.idempotencyKey,
+    coordinationKey: input.coordinationKey,
     commandType: input.definition.commandType,
     target: { type: input.definition.targetType, id: input.targetId },
     expectedVersion: input.parsed.body.entityVersion,
@@ -149,6 +154,117 @@ async function acceptCommand(input: {
     verificationDeepLink: `/admin/system/audit?commandId=${encodeURIComponent(accepted.commandId)}`,
   });
   return ok(envelope, { status: 202, headers: { "Cache-Control": "no-store" } });
+}
+
+function jsonObject(value: unknown): JsonObject | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as JsonObject
+    : null;
+}
+
+async function replayCommandBeforeMutablePreflight(input: {
+  readonly actor: { readonly id: string; readonly role: string };
+  readonly parsed: ParsedCommand<AdminCommandRequest>;
+  readonly definition: CommandDefinition;
+  readonly targetId: string;
+}) {
+  const scope = `${env.APP_ENV}:${input.actor.id}`;
+  const existing = await prisma.controlPlaneCommand.findUnique({
+    where: {
+      scope_idempotencyKey: {
+        scope,
+        idempotencyKey: input.parsed.idempotencyKey,
+      },
+    },
+  });
+  if (!existing) return null;
+
+  const existingPayload = jsonObject(existing.requestPayload);
+  const existingClientPayload = existingPayload
+    ? {
+        reason: existingPayload.reason,
+        confirmation: existingPayload.confirmation ?? null,
+      }
+    : null;
+  const submittedHash = canonicalRequestHash({
+    commandType: input.definition.commandType,
+    target: {
+      type: input.definition.targetType,
+      id: input.targetId,
+    },
+    expectedVersion: input.parsed.body.entityVersion,
+    payload: input.parsed.payload,
+    approvalId: input.parsed.body.approvalId,
+    approvalPermissionKey: input.definition.permission,
+    retryMode: input.definition.retryMode,
+  });
+  const matches =
+    existingPayload !== null &&
+    existing.actorId === input.actor.id &&
+    existing.commandType === input.definition.commandType &&
+    existing.targetType === input.definition.targetType &&
+    existing.targetId === input.targetId &&
+    existing.expectedVersion === input.parsed.body.entityVersion &&
+    existing.approvalId === (input.parsed.body.approvalId ?? null) &&
+    existing.retryMode === input.definition.retryMode &&
+    canonicalSha256(existingClientPayload) ===
+      canonicalSha256(input.parsed.payload);
+  if (!matches) {
+    throw new IdempotencyConflictError(
+      existing.id,
+      existing.requestHash,
+      submittedHash,
+    );
+  }
+
+  return acceptCommand({
+    ...input,
+    parsed: {
+      ...input.parsed,
+      payload: existingPayload,
+    },
+  });
+}
+
+async function replayExactCommandBeforeMutablePreflight(input: {
+  readonly actor: { readonly id: string; readonly role: string };
+  readonly parsed: ParsedCommand<AdminCommandRequest>;
+  readonly definition: CommandDefinition;
+  readonly targetId: string;
+  readonly coordinationKey?: string;
+  readonly executeInline?: boolean;
+}) {
+  const scope = `${env.APP_ENV}:${input.actor.id}`;
+  const existing = await prisma.controlPlaneCommand.findUnique({
+    where: {
+      scope_idempotencyKey: {
+        scope,
+        idempotencyKey: input.parsed.idempotencyKey,
+      },
+    },
+  });
+  if (!existing) return null;
+
+  const submittedHash = canonicalRequestHash({
+    commandType: input.definition.commandType,
+    target: {
+      type: input.definition.targetType,
+      id: input.targetId,
+    },
+    expectedVersion: input.parsed.body.entityVersion,
+    payload: input.parsed.payload,
+    approvalId: input.parsed.body.approvalId,
+    approvalPermissionKey: input.definition.permission,
+    retryMode: input.definition.retryMode,
+  });
+  if (existing.requestHash !== submittedHash) {
+    throw new IdempotencyConflictError(
+      existing.id,
+      existing.requestHash,
+      submittedHash,
+    );
+  }
+  return acceptCommand(input);
 }
 
 function versionConflict(requestId: string, currentSnapshot: unknown, expectedVersion: number) {
@@ -238,6 +354,14 @@ export function publishCharacterRelease(request: Request, characterId: string, r
     const actor = await actorWithPermission(request, publishReleaseDefinition.permission, { characterId });
     const parsed = await parseCommand(request, characterReleasePublishCommandRequestSchema);
     requireConfirmation(parsed.body.confirmation, `${characterId}:${releaseId}:publish`);
+    const replay = await replayExactCommandBeforeMutablePreflight({
+      actor,
+      parsed,
+      definition: publishReleaseDefinition,
+      targetId: releaseId,
+      coordinationKey: characterCommandCoordinationKey(characterId),
+    });
+    if (replay) return replay;
     const release = await prisma.characterRelease.findUnique({ where: { id: releaseId } });
     if (!release) throw Errors.notFound("Character release not found", { releaseId });
     const project = await prisma.characterProject.findUnique({ where: { id: release.projectId } });
@@ -264,7 +388,13 @@ export function publishCharacterRelease(request: Request, characterId: string, r
     if (blockers.length > 0) {
       throw new InvariantFailedError(blockers, `/admin/characters/${characterId}?releaseId=${releaseId}`);
     }
-    return acceptCommand({ actor, parsed, definition: publishReleaseDefinition, targetId: releaseId });
+    return acceptCommand({
+      actor,
+      parsed,
+      definition: publishReleaseDefinition,
+      targetId: releaseId,
+      coordinationKey: characterCommandCoordinationKey(characterId),
+    });
   });
 }
 
@@ -280,6 +410,15 @@ export function scheduleCharacterRelease(request: Request, characterId: string, 
     const actor = await actorWithPermission(request, scheduleReleaseDefinition.permission, { characterId });
     const parsed = await parseCommand(request, characterReleaseScheduleCommandRequestSchema);
     requireConfirmation(parsed.body.confirmation, `${characterId}:${releaseId}:schedule`);
+    parsed.payload.scheduledAt = parsed.body.scheduledAt;
+    const replay = await replayExactCommandBeforeMutablePreflight({
+      actor,
+      parsed,
+      definition: scheduleReleaseDefinition,
+      targetId: releaseId,
+      coordinationKey: characterCommandCoordinationKey(characterId),
+    });
+    if (replay) return replay;
     const release = await prisma.characterRelease.findUnique({ where: { id: releaseId } });
     if (!release) throw Errors.notFound("Character release not found", { releaseId });
     const project = await prisma.characterProject.findUnique({ where: { id: release.projectId } });
@@ -296,8 +435,13 @@ export function scheduleCharacterRelease(request: Request, characterId: string, 
         `/admin/characters/${characterId}?releaseId=${releaseId}`,
       );
     }
-    parsed.payload.scheduledAt = parsed.body.scheduledAt;
-    return acceptCommand({ actor, parsed, definition: scheduleReleaseDefinition, targetId: releaseId });
+    return acceptCommand({
+      actor,
+      parsed,
+      definition: scheduleReleaseDefinition,
+      targetId: releaseId,
+      coordinationKey: characterCommandCoordinationKey(characterId),
+    });
   });
 }
 
@@ -313,6 +457,15 @@ export function rollbackCharacterRelease(request: Request, characterId: string, 
     const actor = await actorWithPermission(request, rollbackReleaseDefinition.permission, { characterId });
     const parsed = await parseCommand(request, characterReleaseRollbackCommandRequestSchema);
     requireConfirmation(parsed.body.confirmation, `${characterId}:${sourceReleaseId}:rollback`);
+    parsed.payload.sourceReleaseId = sourceReleaseId;
+    const replay = await replayExactCommandBeforeMutablePreflight({
+      actor,
+      parsed,
+      definition: rollbackReleaseDefinition,
+      targetId: characterId,
+      coordinationKey: characterCommandCoordinationKey(characterId),
+    });
+    if (replay) return replay;
     const source = await prisma.characterRelease.findUnique({ where: { id: sourceReleaseId } });
     if (!source) throw Errors.notFound("Rollback source Release not found", { sourceReleaseId });
     const project = await prisma.characterProject.findUnique({ where: { id: source.projectId } });
@@ -340,8 +493,13 @@ export function rollbackCharacterRelease(request: Request, characterId: string, 
         `/admin/characters/${characterId}?releaseId=${sourceReleaseId}`,
       );
     }
-    parsed.payload.sourceReleaseId = sourceReleaseId;
-    return acceptCommand({ actor, parsed, definition: rollbackReleaseDefinition, targetId: characterId });
+    return acceptCommand({
+      actor,
+      parsed,
+      definition: rollbackReleaseDefinition,
+      targetId: characterId,
+      coordinationKey: characterCommandCoordinationKey(characterId),
+    });
   });
 }
 
@@ -374,6 +532,17 @@ export function changeCharacterServingState(
     const actor = await actorWithPermission(request, definition.permission, { characterId });
     const parsed = await parseCommand(request, adminCommandRequestSchema);
     requireConfirmation(parsed.body.confirmation, `${characterId}:${action}`);
+    parsed.payload.retireProject = action === "retire";
+    parsed.payload.characterId = characterId;
+    parsed.payload.action = action;
+    const replay = await replayExactCommandBeforeMutablePreflight({
+      actor,
+      parsed,
+      definition,
+      targetId: characterId,
+      coordinationKey: characterCommandCoordinationKey(characterId),
+    });
+    if (replay) return replay;
     const serving = await prisma.characterServing.findUnique({ where: { characterId } });
     if (!serving) throw Errors.notFound("Character Serving authority not found", { characterId });
     if (serving.version !== parsed.body.entityVersion) {
@@ -385,10 +554,13 @@ export function changeCharacterServingState(
         `/admin/characters/${characterId}?tab=release`,
       );
     }
-    parsed.payload.retireProject = action === "retire";
-    parsed.payload.characterId = characterId;
-    parsed.payload.action = action;
-    return acceptCommand({ actor, parsed, definition, targetId: characterId });
+    return acceptCommand({
+      actor,
+      parsed,
+      definition,
+      targetId: characterId,
+      coordinationKey: characterCommandCoordinationKey(characterId),
+    });
   });
 }
 
@@ -407,6 +579,21 @@ export function migrateChatSessionRelease(request: Request, sessionId: string) {
       parsed.body.confirmation,
       `${sessionId}:${parsed.body.toCharacterReleaseId}:migrate`,
     );
+    parsed.payload.characterId = parsed.body.characterId;
+    parsed.payload.fromCharacterContentVersionId = parsed.body.fromCharacterContentVersionId;
+    parsed.payload.fromCharacterReleaseId = parsed.body.fromCharacterReleaseId;
+    parsed.payload.toCharacterContentVersionId = parsed.body.toCharacterContentVersionId;
+    parsed.payload.toCharacterReleaseId = parsed.body.toCharacterReleaseId;
+    parsed.payload.compatibilityQa = parsed.body.compatibilityQa;
+    parsed.payload.requestedById = actor.id;
+    const replay = await replayExactCommandBeforeMutablePreflight({
+      actor,
+      parsed,
+      definition: migrateSessionReleaseDefinition,
+      targetId: sessionId,
+      executeInline: true,
+    });
+    if (replay) return replay;
     const [content, release] = await Promise.all([
       prisma.characterContentVersion.findUnique({
         where: { id: parsed.body.toCharacterContentVersionId },
@@ -439,13 +626,6 @@ export function migrateChatSessionRelease(request: Request, sessionId: string) {
         parsed.body.entityVersion,
       );
     }
-    parsed.payload.characterId = parsed.body.characterId;
-    parsed.payload.fromCharacterContentVersionId = parsed.body.fromCharacterContentVersionId;
-    parsed.payload.fromCharacterReleaseId = parsed.body.fromCharacterReleaseId;
-    parsed.payload.toCharacterContentVersionId = parsed.body.toCharacterContentVersionId;
-    parsed.payload.toCharacterReleaseId = parsed.body.toCharacterReleaseId;
-    parsed.payload.compatibilityQa = parsed.body.compatibilityQa;
-    parsed.payload.requestedById = actor.id;
     return acceptCommand({
       actor,
       parsed,
@@ -468,6 +648,13 @@ export function retryFailedCreativeRun(request: Request, runId: string) {
     const actor = await actorWithPermission(request, retryFailedDefinition.permission);
     const parsed = await parseCommand(request, creativeRunRetryFailedCommandRequestSchema);
     requireConfirmation(parsed.body.confirmation, `${runId}:retry-failed`);
+    const replay = await replayCommandBeforeMutablePreflight({
+      actor,
+      parsed,
+      definition: retryFailedDefinition,
+      targetId: runId,
+    });
+    if (replay) return replay;
     const run = await prisma.contentProductionBatch.findUnique({
       where: { id: runId },
       include: {

@@ -18,7 +18,7 @@ function manifestBaseRefs() {
 }
 
 describe("Admin v2 executable contract registry", () => {
-  it("resolves every request and response ref in the 84-operation manifest", () => {
+  it("resolves every request and response ref in the current manifest", () => {
     for (const ref of manifestRefs()) {
       expect(resolveAdminV2Contract(ref), ref).not.toBeNull();
     }

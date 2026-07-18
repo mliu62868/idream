@@ -317,6 +317,8 @@ function finalizePayload(input: GenerationManifestIngest) {
     completionManifestRef: input.manifestRef,
     completionManifestChecksum: input.manifestChecksum,
     mode: input.manifest.mode,
+    provider: input.manifest.provider,
+    model: input.manifest.model,
     assets: input.manifest.assets.map((asset) => ({
       key: asset.key,
       contentType: asset.contentType,

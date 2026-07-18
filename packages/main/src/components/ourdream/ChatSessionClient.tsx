@@ -15,6 +15,14 @@ import {
   X,
 } from "lucide-react";
 import { FormEvent, useEffect, useRef, useState } from "react";
+import {
+  parseChatSendResponse,
+  parseChatSessionDetailResponse,
+  type RuntimeChatAttachment as ChatAttachment,
+  type RuntimeChatMessage as ChatMessage,
+  type RuntimeChatSession as ChatSession,
+} from "@/lib/public-api-contracts";
+import { useAgeGateAccess } from "./AgeGateBoundary";
 import { AppSidebar } from "./AppSidebar";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { ChatHeaderControls } from "./chat/ChatHeaderControls";
@@ -24,49 +32,6 @@ import { MessageActions } from "./chat/MessageActions";
 import { authHrefForTarget } from "./authRedirect";
 import { LegacyTestAssetBadge } from "./LegacyTestAssetBadge";
 
-type ChatMessage = {
-  id: string;
-  role: string;
-  content: string;
-  status?: string;
-  attachments?: ChatAttachment[];
-};
-
-type ChatAttachment = {
-  id: string;
-  kind: string;
-  status: string;
-  mediaAssetId?: string | null;
-  mediaUrl?: string | null;
-  thumbnailUrl?: string | null;
-  isSynthetic?: boolean;
-  costDreamcoins?: number | null;
-  promptHint?: string | null;
-  width?: number | null;
-  height?: number | null;
-  errorCode?: string | null;
-};
-
-type ChatSession = {
-  id: string;
-  title: string | null;
-  characterId?: string;
-  memoryEnabled?: boolean;
-  messages: ChatMessage[];
-  character: { canUpdateIdentity?: boolean; name: string };
-};
-
-type ChatPayload = {
-  data?: {
-    session?: ChatSession;
-    userMessage?: ChatMessage;
-    assistant?: ChatMessage;
-    assistantMessageId?: string;
-    streamUrl?: string | null;
-    safety?: { layer: "input" | "output"; policyCode?: string };
-  };
-};
-
 type ChatLoadState = "loading" | "ready" | "signed-out" | "error";
 
 const BLOCKED_ASSISTANT_NOTICE = "I can’t help with that request.";
@@ -75,7 +40,21 @@ function upgradeHrefForChatSession(sessionId: string) {
   return `/upgrade?returnTo=${encodeURIComponent(`/chat/${encodeURIComponent(sessionId)}`)}`;
 }
 
+function mergeCanonicalMessages(
+  current: ChatMessage[],
+  incoming: ChatMessage[],
+): ChatMessage[] {
+  const replacements = new Map(incoming.map((message) => [message.id, message]));
+  const merged = current.map((message) => replacements.get(message.id) ?? message);
+  const existingIds = new Set(current.map((message) => message.id));
+  return [
+    ...merged,
+    ...incoming.filter((message) => !existingIds.has(message.id)),
+  ];
+}
+
 export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
+  const { accepted: ageGateAccepted } = useAgeGateAccess();
   const [title, setTitle] = useState("Chat");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loadState, setLoadState] = useState<ChatLoadState>("loading");
@@ -96,10 +75,27 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   const [editingContent, setEditingContent] = useState("");
   const [editingPending, setEditingPending] = useState(false);
   const [deleteConfirmMessageId, setDeleteConfirmMessageId] = useState<string | null>(null);
+  const sendIntentRef = useRef<{
+    sessionId: string;
+    content: string;
+    idempotencyKey: string;
+  } | null>(null);
   const streamSources = useRef<Map<string, EventSource>>(new Map());
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const sessionMutationEpochRef = useRef(0);
   const canSend = content.trim().length > 0 && !pending;
+  const hasActiveAttachment = messages.some((message) =>
+    (message.attachments ?? []).some((attachment) =>
+      ["requesting", "queued", "running"].includes(attachment.status),
+    ),
+  );
+  const hasEmptyGeneratingReply = messages.some(
+    (message) =>
+      message.role === "assistant" &&
+      !message.content.trim() &&
+      (message.status === "generating" || message.status === "pending"),
+  );
 
   // SPEC: Keep the newest message (and its streaming deltas) in view; without this
   //       the reply renders below the fold and the input is pushed off-screen.
@@ -108,13 +104,24 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   }, [messages]);
 
   useEffect(() => {
+    if (!ageGateAccepted) return;
     let cancelled = false;
+    const controller = new AbortController();
     const timer = window.setTimeout(() => {
+      for (const source of streamSources.current.values()) source.close();
+      streamSources.current.clear();
+      audioRef.current?.pause();
+      audioRef.current = null;
+      sessionMutationEpochRef.current += 1;
+      setTitle("Chat");
+      setMessages([]);
       setLoadState("loading");
       setStatus(null);
-      fetchSession()
+      setCharacterId(null);
+      setCanUpdateIdentity(false);
+      fetchSession(controller.signal)
         .then((session) => {
-          if (cancelled) return;
+          if (cancelled || session.id !== id) return;
           applySession(session);
           resumePendingStreams(session.messages);
           setLoadState("ready");
@@ -127,11 +134,12 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     }, 0);
     return () => {
       cancelled = true;
+      controller.abort();
       window.clearTimeout(timer);
     };
     // The loader intentionally reruns only when the route session id changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  }, [ageGateAccepted, id]);
 
   useEffect(() => {
     const sources = streamSources.current;
@@ -144,49 +152,90 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   }, []);
 
   useEffect(() => {
-    const hasActiveAttachment = messages.some((message) =>
-      (message.attachments ?? []).some((attachment) =>
-        ["requesting", "queued", "running"].includes(attachment.status),
-      ),
-    );
-    if (!hasActiveAttachment) return;
-    const timer = window.setInterval(() => {
-      fetchSession().then(applySession).catch(() => {});
-    }, 2_000);
-    return () => window.clearInterval(timer);
-    // Attachment polling is intentionally driven by message attachment state.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages]);
+    if (!ageGateAccepted) return;
+    if (
+      (!hasActiveAttachment && !hasEmptyGeneratingReply) ||
+      pending ||
+      editingPending ||
+      memoryPending
+    ) {
+      return;
+    }
+    let cancelled = false;
+    let timer: number | undefined;
+    let controller: AbortController | null = null;
+    let failureCount = 0;
 
-  useEffect(() => {
-    const hasEmptyGeneratingReply = messages.some(
-      (message) =>
-        message.role === "assistant" &&
-        !message.content.trim() &&
-        (message.status === "generating" || message.status === "pending"),
-    );
-    if (!hasEmptyGeneratingReply) return;
-
-    const timer = window.setInterval(() => {
-      fetchSession()
-        .then((session) => {
-          applySession(session);
-          const failedEmptyReply = session.messages.some(
-            (message) =>
-              message.role === "assistant" &&
-              !message.content.trim() &&
-              message.status &&
-              !["generating", "pending"].includes(message.status),
-          );
-          if (failedEmptyReply) setStatus("Reply failed to load. Please try again.");
-        })
-        .catch(() => {});
-    }, 1_500);
-    return () => window.clearInterval(timer);
-    // Empty assistant polling is a fallback for missed SSE events; streamed
-    // deltas stop the poll because the assistant content is no longer empty.
+    const schedule = (delay: number) => {
+      if (cancelled) return;
+      timer = window.setTimeout(() => void poll(), delay);
+    };
+    const poll = async () => {
+      if (cancelled) return;
+      if (document.hidden) {
+        schedule(2_000);
+        return;
+      }
+      controller = new AbortController();
+      const mutationEpoch = sessionMutationEpochRef.current;
+      try {
+        const session = await fetchSession(controller.signal);
+        if (
+          cancelled ||
+          session.id !== id ||
+          mutationEpoch !== sessionMutationEpochRef.current
+        ) {
+          return;
+        }
+        applySession(session);
+        failureCount = 0;
+        const failedEmptyReply = session.messages.some(
+          (message) =>
+            message.role === "assistant" &&
+            !message.content.trim() &&
+            Boolean(message.status) &&
+            !["generating", "pending"].includes(message.status ?? ""),
+        );
+        if (failedEmptyReply) {
+          setStatus("Reply failed to load. Please try again.");
+        }
+      } catch (error) {
+        if (
+          !(error instanceof DOMException && error.name === "AbortError")
+        ) {
+          failureCount += 1;
+        }
+      } finally {
+        controller = null;
+        if (!cancelled) {
+          schedule(Math.min(12_000, 1_500 * 2 ** failureCount));
+        }
+      }
+    };
+    const onVisibilityChange = () => {
+      if (document.hidden || cancelled) return;
+      if (timer !== undefined) window.clearTimeout(timer);
+      schedule(0);
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    schedule(1_500);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+      controller?.abort();
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+    // The serialized poller is keyed by session and whether reconciliation is needed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages]);
+  }, [
+    ageGateAccepted,
+    editingPending,
+    hasActiveAttachment,
+    hasEmptyGeneratingReply,
+    id,
+    memoryPending,
+    pending,
+  ]);
 
   function stopVoice() {
     const audio = audioRef.current;
@@ -256,10 +305,24 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     setQuotaReached(false);
     setContent("");
     setPending(true);
+    sessionMutationEpochRef.current += 1;
+    const previousIntent = sendIntentRef.current;
+    const intent =
+      previousIntent?.sessionId === id && previousIntent.content === text
+        ? previousIntent
+        : {
+            sessionId: id,
+            content: text,
+            idempotencyKey: crypto.randomUUID(),
+          };
+    sendIntentRef.current = intent;
     try {
       const response = await fetch(`/api/v1/chat/sessions/${id}/messages`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": intent.idempotencyKey,
+        },
         body: JSON.stringify({ content: text }),
       });
       // Quota exhausted: keep the user's input and surface the upgrade path (P0-C).
@@ -274,29 +337,28 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
         setContent(text);
         return;
       }
-      const payload = (await response.json()) as ChatPayload;
-      const userMessage = payload.data?.userMessage;
-      const assistant = payload.data?.assistant;
-      const streamUrl = payload.data?.streamUrl;
-      if (!userMessage || !assistant) {
-        setStatus("Message failed to send. Please try again.");
-        setContent(text);
-        return;
-      }
+      const payload = parseChatSendResponse(await response.json());
+      const userMessage = payload.userMessage;
+      const assistant = payload.assistant;
+      const streamUrl = payload.streamUrl;
+      sendIntentRef.current = null;
 
       // Blocked input (P0-B): the assistant turn is a terminal safety notice with no
       // stream. Render it in place; do NOT open an EventSource that would never fill.
       if (assistant.status === "blocked" || !streamUrl) {
-        setMessages((current) => [...current, userMessage, assistant]);
+        setMessages((current) =>
+          mergeCanonicalMessages(current, [userMessage, assistant]),
+        );
         if (assistant.status === "blocked") {
           setStatus("That message was blocked by our safety policy.");
         }
       } else {
-        setMessages((current) => [
-          ...current,
-          userMessage,
-          { ...assistant, content: "" },
-        ]);
+        setMessages((current) =>
+          mergeCanonicalMessages(current, [
+            userMessage,
+            { ...assistant, content: "" },
+          ]),
+        );
         streamAssistant(streamUrl, assistant.id, assistant.content);
       }
     } catch {
@@ -348,6 +410,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     setDeleteConfirmMessageId(null);
     setQuotaReached(false);
     setEditingPending(true);
+    sessionMutationEpochRef.current += 1;
     try {
       const response = await fetch(`/api/v1/messages/${encodeURIComponent(messageId)}`, {
         method: "PATCH",
@@ -389,17 +452,22 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     }
   }
 
-  async function fetchSession(): Promise<ChatSession> {
-    const response = await fetch(`/api/v1/chat/sessions/${id}`);
+  async function fetchSession(signal?: AbortSignal): Promise<ChatSession> {
+    const response = await fetch(`/api/v1/chat/sessions/${id}`, {
+      cache: "no-store",
+      signal,
+    });
     if (response.status === 401) throw chatSessionFetchError(401);
     if (!response.ok) throw new Error("Chat unavailable");
-    const payload = (await response.json()) as ChatPayload;
-    const session = payload.data?.session;
-    if (!session) throw new Error("Chat unavailable");
+    const session = parseChatSessionDetailResponse(
+      await response.json(),
+    ).session;
+    if (session.id !== id) throw new Error("Chat unavailable");
     return session;
   }
 
   function applySession(session: ChatSession) {
+    if (session.id !== id) return;
     setTitle(session.title ?? session.character.name);
     setMessages(session.messages);
     setDeleteConfirmMessageId(null);
@@ -415,6 +483,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     setDeleteConfirmMessageId(null);
     const next = !memoryEnabled;
     setMemoryPending(true);
+    sessionMutationEpochRef.current += 1;
     try {
       const response = await fetch(`/api/v1/chat/sessions/${id}/memory`, {
         method: "POST",
@@ -439,6 +508,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
       setStatus("Press Confirm delete to remove this message.");
       return;
     }
+    sessionMutationEpochRef.current += 1;
     try {
       const response = await fetch(`/api/v1/messages/${encodeURIComponent(messageId)}`, {
         method: "DELETE",
@@ -459,6 +529,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   async function confirmImageAttachment(attachmentId: string) {
     setStatus(null);
     setDeleteConfirmMessageId(null);
+    sessionMutationEpochRef.current += 1;
     setMessages((current) => updateAttachmentStatus(current, attachmentId, "requesting"));
     try {
       const response = await fetch(
@@ -541,6 +612,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     if (pending) return;
     setStatus(null);
     setDeleteConfirmMessageId(null);
+    sessionMutationEpochRef.current += 1;
     try {
       const response = await fetch(
         `/api/v1/messages/${encodeURIComponent(messageId)}/regenerate`,
@@ -1055,6 +1127,7 @@ function ChatImageAttachmentCard({
         <img
           alt={attachment.promptHint ? `Generated image: ${attachment.promptHint}` : "Generated chat image"}
           className="aspect-[4/5] w-full max-w-[260px] object-cover"
+          data-asset-id={attachment.mediaAssetId ?? undefined}
           data-testid="chat-image-attachment"
           height={attachment.height ?? 640}
           onError={() => setInvalidPreviewKey(previewKey)}

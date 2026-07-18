@@ -186,6 +186,11 @@ export async function publishPricingRule(request: Request, id: string) {
     await enforceApproval("config.pricing.publish", id, tx);
     const previous = await tx.pricingRule.findFirst({ where: { mode: rule.mode, status: "active" } });
     const effectiveFrom = body.effectiveFrom ? new Date(body.effectiveFrom) : (rule.effectiveFrom ?? new Date());
+    if (effectiveFrom.getTime() > Date.now()) {
+      throw Errors.badRequest("Pricing publish is immediate; effectiveFrom cannot be in the future", {
+        effectiveFrom: effectiveFrom.toISOString(),
+      });
+    }
     await tx.pricingRule.updateMany({
       where: { mode: rule.mode, status: "active" },
       data: { status: "archived", archivedAt: new Date() },

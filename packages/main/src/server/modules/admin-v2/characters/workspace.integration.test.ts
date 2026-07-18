@@ -7,10 +7,12 @@ import { GET as listActivityRoute } from "@/app/api/v2/admin/collaboration/[targ
 import { PATCH as patchCharacterProjectRoute } from "@/app/api/v2/admin/characters/[id]/project/route";
 import { GET as getCharacterWorkspaceRoute } from "@/app/api/v2/admin/characters/[id]/route";
 import { getCharacterWorkspace, updateCharacterProjectDraft } from "./workspace";
-import { loadCharacterRendererPreview } from "./renderer-preview";
 import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-executor";
 import { env } from "@/server/lib/env";
 import { characterVisualProfileSnapshotHash, referenceSetSnapshotHash } from "./release-snapshot";
+import { canonicalSha256 } from "../shared/canonical-json";
+import { toInputJson } from "../shared/prisma-json";
+import { characterCommandCoordinationKey } from "./command-coordination";
 
 describe("Character operator workspace", () => {
   const suffix = randomUUID();
@@ -75,11 +77,26 @@ describe("Character operator workspace", () => {
         advancedDetails: { firstMessage: "You made it. What do you need to put down tonight?" },
       },
     });
+    await prisma.mediaAsset.update({
+      where: { id: previewAssetId },
+      data: { characterId },
+    });
     await prisma.characterProject.create({
       data: {
         id: projectId,
         characterId,
         phase: "qa",
+        draftImageAssetId: previewAssetId,
+        draftAssetPack: {
+          character_cover: {
+            assetId: previewAssetId,
+            runId: `workspace-run-${suffix}`,
+            itemId: `workspace-item-${suffix}`,
+            reviewDecisionId: `workspace-review-${suffix}`,
+            generationJobId: `workspace-job-${suffix}`,
+            bootstrapIdentity: false,
+          },
+        },
         audience: {
           audience: "People decompressing after demanding work",
           companionNeed: "A reliable transition out of work mode",
@@ -118,12 +135,20 @@ describe("Character operator workspace", () => {
         projectId,
         revisionId,
         characterContentVersionId: contentId,
-        generationProvenance: {},
+        generationProvenance: {
+          schemaVersion: "character-release-editorial-import-v1",
+          dataset: "workspace-fixture",
+          recordId: characterId,
+          sourceAssetId: previewAssetId,
+        },
         releasePlacementManifest: {
+          schemaVersion: 1,
+          kind: "editorial_import",
           placements: [{ slotKey: "character_avatar", assetId: previewAssetId, slotVersion: 1 }],
         },
         snapshotHash: `workspace-snapshot-${suffix}`,
         readiness: "blocked",
+        legacy: true,
         status: "draft",
       },
     });
@@ -153,13 +178,31 @@ describe("Character operator workspace", () => {
       createdFrom: "workspace_test",
       references: { create: { mediaAssetId: previewAssetId, position: 0, role: "identity_anchor", selectionReason: "workspace fixture" } },
     } });
-    await prisma.generationModelProfile.create({ data: { id: generationProfileId, profileKey: generationProfileKey, label: "Workspace test", pipelineModel: "redcraft-krea2-txt2img", workflowKey: "redcraft-krea2-txt2img", allowedOrientations: ["portrait"], status: "active" } });
+    await prisma.generationModelProfile.create({ data: {
+      id: generationProfileId,
+      profileKey: generationProfileKey,
+      label: "Workspace identity route",
+      runner: "comfyui",
+      pipelineModel: "qwen-image-edit",
+      workflowKey: "qwen-image-edit-img2img",
+      runnerConfig: {
+        capabilities: {
+          textToImage: false,
+          stableSeed: true,
+          referenceImages: true,
+          initImage: true,
+          lora: false,
+        },
+      },
+      allowedOrientations: ["4:5"],
+      status: "active",
+    } });
     await prisma.generationRouteQualification.create({ data: {
       id: qualificationId,
       routeFingerprint: `workspace-route-${suffix}`,
       generationProfileKey,
       generationProfileVersion: 1,
-      workflowKey: "redcraft-krea2-txt2img",
+      workflowKey: "qwen-image-edit-img2img",
       workflowVersion: 1,
       style: "realistic",
       matrixKey: `workspace-matrix-${suffix}`,
@@ -173,6 +216,9 @@ describe("Character operator workspace", () => {
   });
 
   afterAll(async () => {
+    await prisma.controlPlaneCommand.deleteMany({
+      where: { coordinationKey: characterCommandCoordinationKey(characterId) },
+    });
     await prisma.adminUserPermission.deleteMany({ where: { userId: readOnlyActorId } });
     await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: projectId } });
     await prisma.adminCollaborationActivity.deleteMany({ where: { targetId: projectId } });
@@ -195,28 +241,407 @@ describe("Character operator workspace", () => {
 
   it("returns a truthful draft preview and incomplete release evidence", async () => {
     const detail = characterWorkspaceDetailSchema.parse(await getCharacterWorkspace(characterId));
+    expect(detail.activeCommand).toBeNull();
     expect(detail.preview).toMatchObject({
       live: null,
-      draft: { label: "Draft Preview", contentVersionId: contentId, releaseId, imageUrl: previewAssetUrl, renderUrl: expect.any(String) },
+      draft: {
+        label: "Draft Preview",
+        contentVersionId: contentId,
+        releaseId,
+        imageUrl: previewAssetUrl,
+        assetPack: {
+          character_cover: {
+            assetId: previewAssetId,
+            imageUrl: previewAssetUrl,
+            status: "available",
+          },
+          character_hero: {
+            assetId: null,
+            imageUrl: null,
+            status: "missing",
+          },
+          character_chat: {
+            assetId: null,
+            imageUrl: null,
+            status: "missing",
+          },
+        },
+        assetPackReady: false,
+        renderUrl: null,
+      },
       changedFields: ["new_release"],
     });
-    const renderUrl = new URL(detail.preview.draft.renderUrl ?? "");
-    const token = renderUrl.pathname.split("/").at(-1);
-    if (!token) throw new Error("Expected a signed renderer token");
-    await expect(loadCharacterRendererPreview(token)).resolves.toMatchObject({
-      authority: { characterId, contentVersionId: contentId, releaseId, label: "Draft Preview" },
-      character: { title: "Mara", image: previewAssetUrl },
-      openingMessage: "You made it.",
+    expect(detail.project).toMatchObject({
+      productionPackage: "",
+      qaPlan: "",
+      draftAssetPackHash: canonicalSha256({
+        character_cover: {
+          assetId: previewAssetId,
+          runId: `workspace-run-${suffix}`,
+          itemId: `workspace-item-${suffix}`,
+          reviewDecisionId: `workspace-review-${suffix}`,
+          generationJobId: `workspace-job-${suffix}`,
+          bootstrapIdentity: false,
+        },
+      }),
+      draftAssetPack: { character_cover: previewAssetId },
+      draftAssetSelections: {
+        character_cover: {
+          assetId: previewAssetId,
+          runId: `workspace-run-${suffix}`,
+          itemId: `workspace-item-${suffix}`,
+          reviewDecisionId: `workspace-review-${suffix}`,
+          generationJobId: `workspace-job-${suffix}`,
+          bootstrapIdentity: false,
+        },
+      },
     });
-    expect(detail.project).toMatchObject({ productionPackage: "", qaPlan: "" });
     expect(detail.releases[0]).toMatchObject({ release: { readiness: "blocked" }, checks: [], monitors: [] });
     expect(detail.visual).toMatchObject({
       activeIdentity: { id: visualProfileId, version: 1, evidenceState: "candidate" },
       anchors: [{ mediaAssetId: previewAssetId, available: true }],
       activeReferenceSet: { id: referenceSetId, revision: 1, references: [{ mediaAssetId: previewAssetId, available: true }] },
-      routeQualifications: [{ id: qualificationId, result: "qualified", stale: false, sampleCount: 40 }],
-      readiness: { ready: true, blockers: [], productionDeepLink: `/admin/content/production?characterId=${characterId}` },
+      routeQualifications: [{
+        id: qualificationId,
+        result: "qualified",
+        stale: false,
+        sampleCount: 40,
+        identityContract: {
+          maxReferences: 1,
+          acceptedRoles: ["identity_anchor", "identity_reference", "source_image"],
+          supportsSourceImageWithIdentity: false,
+        },
+        profileCapabilities: {
+          referenceImages: true,
+          initImage: true,
+        },
+        sourceVariationAuthority: {
+          routeFingerprint: `workspace-route-${suffix}`,
+          ready: false,
+          blocker: "workflow_source_identity_combination_unsupported",
+        },
+      }],
+      readiness: { ready: true, blockers: [], productionDeepLink: `/admin/characters/${characterId}?tab=assets` },
     });
+  });
+
+  it("discovers the latest active command for the character authority only", async () => {
+    const commandId = `workspace-command-${suffix}`;
+    await prisma.controlPlaneCommand.create({
+      data: {
+        id: commandId,
+        scope: `test:${readOnlyActorId}`,
+        idempotencyKey: `workspace-command-${suffix}`,
+        coordinationKey: characterCommandCoordinationKey(characterId),
+        commandType: "character.release.publish",
+        targetType: "character_release",
+        targetId: releaseId,
+        actorId: readOnlyActorId,
+        requestId,
+        requestHash: canonicalSha256({ commandId }),
+        requestPayload: {},
+        retryMode: "idempotent",
+        status: "verifying",
+      },
+    });
+    try {
+      const active = characterWorkspaceDetailSchema.parse(await getCharacterWorkspace(characterId));
+      expect(active.activeCommand).toMatchObject({
+        commandId,
+        requestId,
+        commandType: "character.release.publish",
+        target: { type: "character_release", id: releaseId },
+        status: "verifying",
+        verificationState: "verifying",
+        needsReconciliation: false,
+      });
+
+      await prisma.controlPlaneCommand.update({
+        where: { id: commandId },
+        data: { status: "succeeded", finishedAt: new Date() },
+      });
+      const terminal = characterWorkspaceDetailSchema.parse(await getCharacterWorkspace(characterId));
+      expect(terminal.activeCommand).toBeNull();
+    } finally {
+      await prisma.controlPlaneCommand.deleteMany({ where: { id: commandId } });
+    }
+  });
+
+  it("always projects the current qualified route even after newer failed evidence exceeds the history page", async () => {
+    const noisyQualificationIds = Array.from(
+      { length: 21 },
+      (_, index) => `workspace-noisy-qualification-${index}-${suffix}`,
+    );
+    await prisma.generationRouteQualification.createMany({
+      data: noisyQualificationIds.map((id, index) => ({
+        id,
+        routeFingerprint: `workspace-noisy-route-${index}-${suffix}`,
+        generationProfileKey,
+        generationProfileVersion: 1,
+        workflowKey: "qwen-image-edit-img2img",
+        workflowVersion: 1,
+        style: "realistic",
+        matrixKey: `workspace-noisy-matrix-${index}-${suffix}`,
+        sampleCount: 40,
+        passCount: 12,
+        identityMatch: 0.4,
+        result: "candidate",
+        evidence: {
+          reviewerId: readOnlyActorId,
+          batchIds: [`noisy-batch-${index}`],
+          evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,
+        },
+        policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
+        evaluatedAt: new Date(Date.now() + index + 1_000),
+      })),
+    });
+    try {
+      const detail = characterWorkspaceDetailSchema.parse(
+        await getCharacterWorkspace(characterId),
+      );
+      expect(detail.visual.readiness).toMatchObject({ ready: true });
+      expect(detail.visual.routeQualifications[0]).toMatchObject({
+        id: qualificationId,
+        result: "qualified",
+        stale: false,
+        identityContract: {
+          acceptedRoles: expect.arrayContaining(["identity_anchor"]),
+        },
+      });
+      expect(detail.visual.routeQualifications).toHaveLength(21);
+    } finally {
+      await prisma.generationRouteQualification.deleteMany({
+        where: { id: { in: noisyQualificationIds } },
+      });
+    }
+  });
+
+  it("projects complete QA, Release lineage, checks, and every monitor window without lossy remapping", async () => {
+    const qaRunId = `workspace-qa-${suffix}`;
+    const validationRunId = `workspace-validation-${suffix}`;
+    const reviewDecisionId = `workspace-lineage-review-${suffix}`;
+    const generationJobId = `workspace-lineage-job-${suffix}`;
+    const runId = `workspace-lineage-run-${suffix}`;
+    const itemId = `workspace-lineage-item-${suffix}`;
+    const qaChecks = [
+      "explore_feed_card_desktop",
+      "explore_feed_card_mobile",
+      "character_detail_desktop",
+      "character_detail_mobile",
+      "opening_message",
+      "five_turn_conversation",
+      "chat_image",
+    ].map((key) => ({
+      key,
+      result: "passed",
+      evidenceRef: `evidence://workspace/${key}`,
+      comment: `Verified ${key} without projection loss.`,
+      fixDeepLink: `/admin/characters/${characterId}?tab=preview`,
+      ownerId: readOnlyActorId,
+    }));
+    const visualProfile = await prisma.characterVisualProfile.findUniqueOrThrow({
+      where: { id: visualProfileId },
+    });
+    const project = await prisma.characterProject.findUniqueOrThrow({
+      where: { id: projectId },
+    });
+    const originalRelease = await prisma.characterRelease.findUniqueOrThrow({
+      where: { id: releaseId },
+      select: {
+        generationProvenance: true,
+        releasePlacementManifest: true,
+      },
+    });
+    const draftAssetPackHash = canonicalSha256(project.draftAssetPack);
+    const generationProvenance = {
+      schemaVersion: "character-release-editorial-import-v1",
+      dataset: "workspace-fixture",
+      recordId: characterId,
+      sourceAssetId: previewAssetId,
+      characterQa: {
+        qaRunId,
+        evidenceHash: `workspace-qa-evidence-${suffix}`,
+      },
+      placements: [{
+        slotKey: "character_avatar",
+        assetId: previewAssetId,
+        runId,
+        itemId,
+        reviewDecisionId,
+        generationJobId,
+      }],
+    };
+    const releasePlacementManifest = {
+      schemaVersion: 1,
+      kind: "editorial_import",
+      placements: [{
+        slotKey: "character_avatar",
+        assetId: previewAssetId,
+        slotVersion: 1,
+        runId,
+        itemId,
+        reviewDecisionId,
+        generationJobId,
+      }],
+    };
+    await prisma.characterQaRun.create({
+      data: {
+        id: qaRunId,
+        characterId,
+        projectId,
+        characterContentVersionId: contentId,
+        projectVersion: project.version,
+        visualProfileId,
+        visualProfileVersion: visualProfile.version,
+        visualProfileHash: visualProfile.immutableHash,
+        referenceSetRevisionId: referenceSetId,
+        referenceSetRevision: 1,
+        referenceSetHash: referenceSnapshotHash,
+        draftAssetPackHash,
+        ownerId: readOnlyActorId,
+        status: "passed",
+        checks: qaChecks,
+        evidenceHash: `workspace-qa-evidence-${suffix}`,
+      },
+    });
+    await prisma.releaseValidationRun.create({
+      data: {
+        id: validationRunId,
+        releaseId,
+        snapshotHash: `workspace-snapshot-${suffix}`,
+        policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
+        result: "passed",
+        finishedAt: new Date(),
+      },
+    });
+    await prisma.releaseCheckResult.create({
+      data: {
+        id: `workspace-check-${suffix}`,
+        validationRunId,
+        checkKey: "release_asset_lineage",
+        result: "passed",
+        evidence: {
+          runId,
+          itemId,
+          reviewDecisionId,
+          generationJobId,
+        },
+      },
+    });
+    await prisma.releaseMonitor.createMany({
+      data: [
+        {
+          id: `workspace-monitor-route-${suffix}`,
+          releaseId,
+          window: "route_qualification",
+          status: "action_required",
+          baseline: { policyVersion: CHARACTER_RELEASE_POLICY_VERSION },
+          observed: { routeFingerprint: `workspace-route-${suffix}`, qualification: "expired" },
+          verification: { recommendation: "refresh_route_qualification" },
+          finishedAt: new Date(),
+        },
+        {
+          id: `workspace-monitor-24h-${suffix}`,
+          releaseId,
+          window: "24h",
+          status: "monitoring",
+          baseline: { conversations: 10 },
+          observed: { conversations: 12 },
+          verification: { recommendation: "continue_monitoring" },
+        },
+        {
+          id: `workspace-monitor-custom-${suffix}`,
+          releaseId,
+          window: "7d_custom",
+          status: "passed",
+          baseline: { retention: 0.2 },
+          observed: { retention: 0.24 },
+          verification: { recommendation: "keep_live" },
+          finishedAt: new Date(),
+        },
+      ],
+    });
+    await prisma.characterRelease.update({
+      where: { id: releaseId },
+      data: { generationProvenance, releasePlacementManifest },
+    });
+    try {
+      const detail = characterWorkspaceDetailSchema.parse(
+        await getCharacterWorkspace(characterId),
+      );
+      expect(detail.qaRuns[0]).toMatchObject({
+        id: qaRunId,
+        characterId,
+        projectId,
+        characterContentVersionId: contentId,
+        projectVersion: project.version,
+        visualProfileId,
+        visualProfileVersion: visualProfile.version,
+        visualProfileHash: visualProfile.immutableHash,
+        referenceSetRevisionId: referenceSetId,
+        referenceSetRevision: 1,
+        referenceSetHash: referenceSnapshotHash,
+        draftAssetPackHash,
+        ownerId: readOnlyActorId,
+        status: "passed",
+        evidenceHash: `workspace-qa-evidence-${suffix}`,
+        checks: qaChecks,
+      });
+      const projectedRelease = detail.releases.find(({ release }) =>
+        release.id === releaseId
+      );
+      expect(projectedRelease?.release).toMatchObject({
+        generationProvenance,
+        releasePlacementManifest,
+      });
+      expect(projectedRelease?.checks).toEqual([
+        expect.objectContaining({
+          checkKey: "release_asset_lineage",
+          result: "passed",
+          evidence: {
+            runId,
+            itemId,
+            reviewDecisionId,
+            generationJobId,
+          },
+        }),
+      ]);
+      expect(projectedRelease?.monitors).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          window: "route_qualification",
+          status: "action_required",
+          observed: {
+            routeFingerprint: `workspace-route-${suffix}`,
+            qualification: "expired",
+          },
+          verification: { recommendation: "refresh_route_qualification" },
+        }),
+        expect.objectContaining({
+          window: "24h",
+          status: "monitoring",
+          observed: { conversations: 12 },
+          verification: { recommendation: "continue_monitoring" },
+        }),
+        expect.objectContaining({
+          window: "7d_custom",
+          status: "passed",
+          observed: { retention: 0.24 },
+          verification: { recommendation: "keep_live" },
+        }),
+      ]));
+    } finally {
+      await prisma.releaseMonitor.deleteMany({ where: { releaseId } });
+      await prisma.releaseCheckResult.deleteMany({ where: { validationRunId } });
+      await prisma.releaseValidationRun.deleteMany({ where: { id: validationRunId } });
+      await prisma.characterQaRun.deleteMany({ where: { id: qaRunId } });
+      await prisma.characterRelease.update({
+        where: { id: releaseId },
+        data: {
+          generationProvenance: toInputJson(originalRelease.generationProvenance),
+          releasePlacementManifest: toInputJson(originalRelease.releasePlacementManifest),
+        },
+      });
+    }
   });
 
   it("fails visual readiness closed when traits, reference snapshot or route capability drifts", async () => {
@@ -231,6 +656,127 @@ describe("Character operator workspace", () => {
     expect(detail.visual.readiness.blockers.map((blocker) => blocker.code)).toContain("reference_set_unsealed");
     await prisma.referenceSetRevision.update({ where: { id: referenceSetId }, data: { snapshotHash: referenceSnapshotHash } });
 
+    const secondaryReferenceAssetId = `workspace-secondary-reference-${suffix}`;
+    const secondaryReference = {
+      mediaAssetId: secondaryReferenceAssetId,
+      position: 1,
+      role: "identity_reference",
+      weight: 0.8,
+    };
+    const originalProfile = await prisma.characterVisualProfile.findUniqueOrThrow({
+      where: { id: visualProfileId },
+    });
+    await prisma.mediaAsset.create({
+      data: {
+        id: secondaryReferenceAssetId,
+        ownerId: readOnlyActorId,
+        characterId,
+        type: "image",
+        url: `/user-content/${secondaryReferenceAssetId}/content.webp`,
+        safetyStatus: "passed",
+        metadata: {},
+      },
+    });
+    const twoReferenceSnapshotHash = referenceSetSnapshotHash({
+      visualProfileId,
+      revision: 1,
+      selectorVersion: "workspace-v1",
+      references: [
+        { mediaAssetId: previewAssetId, position: 0, role: "identity_anchor", weight: 1 },
+        secondaryReference,
+      ],
+    });
+    try {
+      const nextReferenceAssetIds = [previewAssetId, secondaryReferenceAssetId];
+      await prisma.characterVisualProfile.update({
+        where: { id: visualProfileId },
+        data: {
+          referenceAssetIds: nextReferenceAssetIds,
+          immutableHash: characterVisualProfileSnapshotHash({
+            ...originalProfile,
+            referenceAssetIds: nextReferenceAssetIds,
+          }),
+        },
+      });
+      await prisma.characterVisualReferenceSnapshot.create({
+        data: {
+          referenceSetRevisionId: referenceSetId,
+          ...secondaryReference,
+          selectorVersion: "workspace-v1",
+          selectionReason: "Partial drift regression fixture",
+        },
+      });
+      await prisma.referenceSetRevision.update({
+        where: { id: referenceSetId },
+        data: { snapshotHash: twoReferenceSnapshotHash },
+      });
+      detail = characterWorkspaceDetailSchema.parse(
+        await getCharacterWorkspace(characterId),
+      );
+      expect(detail.visual.activeReferenceSet?.references).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            mediaAssetId: previewAssetId,
+            available: true,
+          }),
+          expect.objectContaining({
+            mediaAssetId: secondaryReferenceAssetId,
+            available: true,
+          }),
+        ]),
+      );
+      expect(detail.visual.readiness).toMatchObject({ ready: false });
+      expect(detail.visual.readiness.blockers.map((blocker) => blocker.code))
+        .toContain("generation_route_unqualified");
+      expect(detail.visual.routeQualifications[0]).toMatchObject({
+        id: qualificationId,
+        stale: true,
+        identityContract: { maxReferences: 1 },
+        profileCapabilities: {
+          referenceImages: true,
+          initImage: true,
+        },
+        sourceVariationAuthority: {
+          routeFingerprint: `workspace-route-${suffix}`,
+          ready: false,
+          blocker: "no_qualified_route",
+        },
+      });
+      expect(detail.project.draftAssetRouteAuthority).toMatchObject({
+        currentRouteFingerprint: null,
+        qaReady: false,
+      });
+
+      await prisma.mediaAsset.update({
+        where: { id: secondaryReferenceAssetId },
+        data: { safetyStatus: "blocked" },
+      });
+      detail = characterWorkspaceDetailSchema.parse(await getCharacterWorkspace(characterId));
+      expect(detail.visual.activeReferenceSet?.references).toEqual(expect.arrayContaining([
+        expect.objectContaining({ mediaAssetId: previewAssetId, available: true }),
+        expect.objectContaining({ mediaAssetId: secondaryReferenceAssetId, available: false }),
+      ]));
+      expect(detail.visual.readiness).toMatchObject({ ready: false });
+      expect(detail.visual.readiness.blockers.map((blocker) => blocker.code))
+        .toContain("reference_assets_unavailable");
+    } finally {
+      await prisma.characterVisualReferenceSnapshot.deleteMany({
+        where: { referenceSetRevisionId: referenceSetId, mediaAssetId: secondaryReferenceAssetId },
+      });
+      await prisma.referenceSetRevision.update({
+        where: { id: referenceSetId },
+        data: { snapshotHash: referenceSnapshotHash },
+      });
+      await prisma.characterVisualProfile.update({
+        where: { id: visualProfileId },
+        data: {
+          referenceAssetIds: toInputJson(originalProfile.referenceAssetIds),
+          immutableHash: originalProfile.immutableHash,
+        },
+      });
+      await prisma.mediaAsset.delete({ where: { id: secondaryReferenceAssetId } });
+    }
+
     await prisma.generationModelProfile.update({ where: { id: generationProfileId }, data: { status: "archived" } });
     detail = characterWorkspaceDetailSchema.parse(await getCharacterWorkspace(characterId));
     expect(detail.visual.readiness.blockers.map((blocker) => blocker.code)).toContain("generation_route_unqualified");
@@ -244,6 +790,103 @@ describe("Character operator workspace", () => {
     detail = characterWorkspaceDetailSchema.parse(await getCharacterWorkspace(characterId));
     expect(detail.visual.readiness.blockers.map((blocker) => blocker.code)).toContain("generation_route_unqualified");
     await prisma.generationRouteQualification.update({ where: { id: qualificationId }, data: { workflowVersion: 1 } });
+  });
+
+  it("only projects bootstrap profiles that explicitly declare text-to-image capability", async () => {
+    const missingCapabilityId = `workspace-bootstrap-missing-${suffix}`;
+    const explicitCapabilityId = `workspace-bootstrap-explicit-${suffix}`;
+    const bootstrapCharacterId = `workspace-bootstrap-character-${suffix}`;
+    const bootstrapProjectId = `workspace-bootstrap-project-${suffix}`;
+    const bootstrapContentId = `workspace-bootstrap-content-${suffix}`;
+    await prisma.character.create({
+      data: {
+        id: bootstrapCharacterId,
+        name: "Blank Bootstrap Character",
+        age: 27,
+        description: "Needs a reviewed first portrait.",
+        source: "official",
+        appearance: {},
+        advancedDetails: {},
+      },
+    });
+    await prisma.characterProject.create({
+      data: {
+        id: bootstrapProjectId,
+        characterId: bootstrapCharacterId,
+        phase: "producing",
+        audience: {},
+        successCriteria: [],
+      },
+    });
+    await prisma.characterContentVersion.create({
+      data: {
+        id: bootstrapContentId,
+        characterId: bootstrapCharacterId,
+        version: 1,
+        contentHash: `workspace-bootstrap-content-hash-${suffix}`,
+        personaSnapshot: {},
+        openingSnapshot: {},
+        appearanceSnapshot: {},
+        sourceType: "test",
+      },
+    });
+    try {
+      await prisma.generationModelProfile.createMany({
+        data: [
+          {
+            id: missingCapabilityId,
+            profileKey: `000-missing-bootstrap-${suffix}`,
+            label: "Missing explicit bootstrap capability",
+            runner: "comfyui",
+            pipelineModel: "redcraft-krea2-txt2img",
+            workflowKey: "redcraft-krea2-txt2img",
+            runnerConfig: { capabilities: {} },
+            allowedOrientations: ["4:5"],
+            status: "active",
+            enabled: true,
+            rolloutPercent: 100,
+          },
+          {
+            id: explicitCapabilityId,
+            profileKey: `001-explicit-bootstrap-${suffix}`,
+            label: "Explicit bootstrap capability",
+            runner: "comfyui",
+            pipelineModel: "redcraft-krea2-txt2img",
+            workflowKey: "redcraft-krea2-txt2img",
+            runnerConfig: { capabilities: { textToImage: true } },
+            allowedOrientations: ["4:5"],
+            status: "active",
+            enabled: true,
+            rolloutPercent: 100,
+          },
+        ],
+      });
+      let detail = characterWorkspaceDetailSchema.parse(await getCharacterWorkspace(bootstrapCharacterId));
+      expect(detail.visual.identityBootstrap.profile?.profileKey).toBe(`001-explicit-bootstrap-${suffix}`);
+      expect(detail.visual.identityBootstrap).toMatchObject({
+        state: "new",
+        allowed: true,
+        nextIdentityVersion: 1,
+      });
+
+      await prisma.generationModelProfile.update({
+        where: { id: explicitCapabilityId },
+        data: { status: "archived" },
+      });
+      detail = characterWorkspaceDetailSchema.parse(await getCharacterWorkspace(bootstrapCharacterId));
+      expect(detail.visual.identityBootstrap).toMatchObject({
+        state: "new",
+        allowed: true,
+      });
+      expect(detail.visual.identityBootstrap.profile?.profileKey).not.toBe(`000-missing-bootstrap-${suffix}`);
+    } finally {
+      await prisma.generationModelProfile.deleteMany({
+        where: { id: { in: [missingCapabilityId, explicitCapabilityId] } },
+      });
+      await prisma.characterContentVersion.deleteMany({ where: { id: bootstrapContentId } });
+      await prisma.characterProject.deleteMany({ where: { id: bootstrapProjectId } });
+      await prisma.character.deleteMany({ where: { id: bootstrapCharacterId } });
+    }
   });
 
   it("autosaves with optimistic concurrency and writes audit/outbox atomically", async () => {

@@ -303,8 +303,14 @@ function RedeemCodeForm({ onCreated }: { onCreated: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const idempotencyKey = useRef<string | null>(null);
   const trimmedCode = code.trim();
+  const dreamcoinValue = strictIntegerFromText(dreamcoins, 1, 1_000_000);
+  const maxRedemptionsValue = maxRedemptions.trim()
+    ? strictIntegerFromText(maxRedemptions, 1, 1_000_000)
+    : null;
   const ready =
     trimmedCode.length >= 4 &&
+    dreamcoinValue !== null &&
+    (!maxRedemptions.trim() || maxRedemptionsValue !== null) &&
     reason.trim().length >= 3 &&
     confirmation.trim() === trimmedCode;
 
@@ -319,10 +325,8 @@ function RedeemCodeForm({ onCreated }: { onCreated: () => void }) {
         "POST",
         {
           code: trimmedCode,
-          reward: { dreamcoins: intFromText(dreamcoins, 0) },
-          maxRedemptions: maxRedemptions.trim()
-            ? intFromText(maxRedemptions, 1)
-            : null,
+          reward: { dreamcoins: dreamcoinValue },
+          maxRedemptions: maxRedemptionsValue,
           reason: reason.trim(),
           confirmation: confirmation.trim(),
         },
@@ -380,6 +384,16 @@ function RedeemCodeForm({ onCreated }: { onCreated: () => void }) {
       {error ? (
         <p className="mt-2 text-xs text-[var(--ad-red-text)]" role="alert">
           {error}
+        </p>
+      ) : null}
+      {dreamcoins.length > 0 && dreamcoinValue === null ? (
+        <p className="mt-2 text-xs text-[var(--ad-red-text)]" role="alert">
+          Dreamcoins must be a whole number from 1 to 1,000,000.
+        </p>
+      ) : null}
+      {maxRedemptions.length > 0 && maxRedemptionsValue === null ? (
+        <p className="mt-2 text-xs text-[var(--ad-red-text)]" role="alert">
+          Max uses must be a whole number from 1 to 1,000,000.
         </p>
       ) : null}
     </section>
@@ -642,9 +656,22 @@ function currentQuery() {
     : promoQueryFromSearch(window.location.search);
 }
 
-function intFromText(value: string, fallback: number) {
-  const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) ? parsed : fallback;
+export function strictIntegerFromText(
+  value: string,
+  min: number,
+  max: number,
+) {
+  const normalized = value.trim();
+  if (!/^\d+$/.test(normalized)) return null;
+  const parsed = Number(normalized);
+  if (
+    !Number.isSafeInteger(parsed) ||
+    parsed < min ||
+    parsed > max
+  ) {
+    return null;
+  }
+  return parsed;
 }
 
 function text(value: unknown) {

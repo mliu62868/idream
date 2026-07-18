@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   adminCursorQuerySchema,
+  adminCommandStatusSchema,
   adminCommandRequestSchema,
   adminCommandReasonSchema,
   adminIdSchema,
@@ -144,6 +145,37 @@ export const characterVisualAssetSchema = z
   })
   .strict();
 
+export const characterLookWorkspaceSchema = z
+  .object({
+    id: adminIdSchema,
+    ownerId: adminIdSchema,
+    label: z.string().trim().min(1),
+    status: z.enum(["active", "needs_rebase"]),
+    visualProfileId: adminIdSchema,
+    referenceAssetId: adminIdSchema.nullable(),
+    rebasedFromLookId: adminIdSchema.nullable(),
+    updatedAt: adminIsoDateTimeSchema,
+  })
+  .strict();
+
+export const characterLookArchiveRequestSchema = z
+  .object({
+    operation: z.literal("archive"),
+    expectedUpdatedAt: adminIsoDateTimeSchema,
+    reason: adminCommandReasonSchema,
+    confirmation: z.string().trim().min(1).max(240),
+  })
+  .strict();
+
+export const characterLookArchiveResponseSchema = z
+  .object({
+    id: adminIdSchema,
+    characterId: adminIdSchema,
+    status: z.literal("archived"),
+    updatedAt: adminIsoDateTimeSchema,
+  })
+  .strict();
+
 export const characterVisualReferenceSetSchema = z
   .object({
     id: adminIdSchema,
@@ -159,6 +191,8 @@ export const characterVisualReferenceSetSchema = z
 
 export const characterReferenceSetPublishRequestSchema = z.object({
   visualProfileId: adminIdSchema,
+  expectedActiveReferenceSetRevisionId: adminIdSchema.nullable(),
+  expectedActiveReferenceSetRevision: z.number().int().nonnegative(),
   selectorVersion: z.string().trim().min(1).max(80),
   references: z.array(z.object({
     mediaAssetId: adminIdSchema,
@@ -167,7 +201,20 @@ export const characterReferenceSetPublishRequestSchema = z.object({
   }).strict()).min(1).max(24),
   reason: adminCommandReasonSchema,
   confirmation: z.string().trim().min(1).max(240),
-}).strict();
+}).strict().superRefine((value, context) => {
+  const expectsNoActiveRevision =
+    value.expectedActiveReferenceSetRevisionId === null;
+  const hasInitialRevision =
+    value.expectedActiveReferenceSetRevision === 0;
+  if (expectsNoActiveRevision !== hasInitialRevision) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["expectedActiveReferenceSetRevision"],
+      message:
+        "Expected active Reference Set id and revision must describe the same authority state.",
+    });
+  }
+});
 
 export const characterReferenceSetPublishResponseSchema = characterVisualReferenceSetSchema.extend({
   replayed: z.boolean(),
@@ -192,6 +239,72 @@ export const characterRouteQualificationEvidenceSchema = z
     evaluatedAt: adminIsoDateTimeSchema,
     expiresAt: adminIsoDateTimeSchema.nullable(),
     stale: z.boolean(),
+    identityContract: z.object({
+      maxReferences: z.number().int().nonnegative(),
+      acceptedRoles: z.array(z.enum([
+        "identity_anchor",
+        "identity_reference",
+        "look_reference",
+        "source_image",
+      ])).readonly(),
+      supportsLookReference: z.boolean(),
+      supportsSourceImageWithIdentity: z.boolean(),
+    }).strict().optional(),
+    profileCapabilities: z.object({
+      referenceImages: z.boolean(),
+      initImage: z.boolean(),
+    }).strict().optional(),
+    sourceVariationAuthority: z.object({
+      routeFingerprint: z.string().trim().min(1),
+      ready: z.boolean(),
+      blocker: z.enum([
+        "no_qualified_route",
+        "profile_init_image_unsupported",
+        "workflow_source_image_unsupported",
+        "workflow_source_identity_combination_unsupported",
+        "reference_capacity_insufficient",
+        "reference_slot_assignment_unsupported",
+      ]).nullable(),
+    }).strict().optional(),
+  })
+  .strict()
+  .superRefine((qualification, ctx) => {
+    const authority = qualification.sourceVariationAuthority;
+    if (!authority) return;
+    if (authority.routeFingerprint !== qualification.routeFingerprint) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["sourceVariationAuthority", "routeFingerprint"],
+        message: "Source variation authority must belong to this exact route fingerprint",
+      });
+    }
+    if (authority.ready !== (authority.blocker === null)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["sourceVariationAuthority", "ready"],
+        message: "Source variation readiness must match its blocker",
+      });
+    }
+  });
+
+export const characterBootstrapGenerationProfileSchema = z
+  .object({
+    profileKey: adminIdSchema,
+    profileVersion: z.number().int().positive(),
+    label: z.string().trim().min(1),
+    workflowKey: z.string().trim().min(1),
+    workflowVersion: z.number().int().positive(),
+    orientation: z.string().trim().min(1).max(20),
+  })
+  .strict();
+
+export const characterIdentityBootstrapWorkspaceSchema = z
+  .object({
+    state: z.enum(["new", "recoverable_empty_history", "blocked_existing_authority"]),
+    allowed: z.boolean(),
+    nextIdentityVersion: z.number().int().positive(),
+    blockers: z.array(z.string().trim().min(1)).readonly(),
+    profile: characterBootstrapGenerationProfileSchema.nullable(),
   })
   .strict();
 
@@ -201,7 +314,9 @@ export const characterVisualWorkspaceSchema = z
     anchors: z.array(characterVisualAssetSchema).readonly(),
     references: z.array(characterVisualAssetSchema).readonly(),
     activeReferenceSet: characterVisualReferenceSetSchema.nullable(),
+    looks: z.array(characterLookWorkspaceSchema).readonly().optional(),
     routeQualifications: z.array(characterRouteQualificationEvidenceSchema).readonly(),
+    identityBootstrap: characterIdentityBootstrapWorkspaceSchema,
     readiness: z.object({
       ready: z.boolean(),
       qualificationPolicyVersion: z.string().trim().min(1),
@@ -471,6 +586,10 @@ export const characterPerformanceSummarySchema = z
   })
   .strict()
   .superRefine((summary, ctx) => {
+    const explicitInvalidCohortDiagnostic =
+      summary.qualityState === "invalid" &&
+      summary.coverageState === "invalid" &&
+      summary.evidence.includes("numerator_outside_denominator_cohort");
     const cohortPairs: ReadonlyArray<readonly [number, number, string]> = [
       [summary.detailViews, summary.eligibleImpressions, "detailViews"],
       [summary.firstSuccessfulExchanges, summary.detailViews, "firstSuccessfulExchanges"],
@@ -478,7 +597,7 @@ export const characterPerformanceSummarySchema = z
       [summary.sameCharacterD7Returns, summary.sameCharacterD7EligiblePairs, "sameCharacterD7Returns"],
     ];
     for (const [numerator, denominator, field] of cohortPairs) {
-      if (numerator > denominator) {
+      if (numerator > denominator && !explicitInvalidCohortDiagnostic) {
         ctx.addIssue({
           code: "custom",
           path: [field],
@@ -665,11 +784,123 @@ export const characterWorkspaceProjectSchema = z
     successCriteria: z.array(z.string()).readonly(),
     productionPackage: z.string(),
     qaPlan: z.string(),
+    draftImageAssetId: adminIdSchema.nullable(),
+    draftAssetPackHash: z.string().trim().min(1),
+    draftAssetPack: z.object({
+      character_cover: adminIdSchema.optional(),
+      character_hero: adminIdSchema.optional(),
+      character_chat: adminIdSchema.optional(),
+    }).strict(),
+    draftAssetSelections: z.object({
+      character_cover: z.object({
+        assetId: adminIdSchema,
+        runId: adminIdSchema.nullable(),
+        itemId: adminIdSchema.nullable(),
+        reviewDecisionId: adminIdSchema.nullable(),
+        generationJobId: adminIdSchema.nullable(),
+        bootstrapIdentity: z.boolean(),
+        generationRouteFingerprint: z.string().trim().min(1).nullable(),
+        routeCurrent: z.boolean(),
+      }).strict().optional(),
+      character_hero: z.object({
+        assetId: adminIdSchema,
+        runId: adminIdSchema.nullable(),
+        itemId: adminIdSchema.nullable(),
+        reviewDecisionId: adminIdSchema.nullable(),
+        generationJobId: adminIdSchema.nullable(),
+        bootstrapIdentity: z.boolean(),
+        generationRouteFingerprint: z.string().trim().min(1).nullable(),
+        routeCurrent: z.boolean(),
+      }).strict().optional(),
+      character_chat: z.object({
+        assetId: adminIdSchema,
+        runId: adminIdSchema.nullable(),
+        itemId: adminIdSchema.nullable(),
+        reviewDecisionId: adminIdSchema.nullable(),
+        generationJobId: adminIdSchema.nullable(),
+        bootstrapIdentity: z.boolean(),
+        generationRouteFingerprint: z.string().trim().min(1).nullable(),
+        routeCurrent: z.boolean(),
+      }).strict().optional(),
+    }).strict().optional(),
+    draftAssetRouteAuthority: z.object({
+      status: z.enum(["empty", "current", "stale", "route_unavailable"]),
+      currentRouteFingerprint: z.string().trim().min(1).nullable(),
+      stalePurposes: z.array(z.enum([
+        "character_cover",
+        "character_hero",
+        "character_chat",
+      ])).readonly(),
+      missingPurposes: z.array(z.enum([
+        "character_cover",
+        "character_hero",
+        "character_chat",
+      ])).readonly(),
+      recoveryPurpose: z.enum([
+        "character_cover",
+        "character_hero",
+        "character_chat",
+      ]).nullable(),
+      qaReady: z.boolean(),
+      qaBlockers: z.array(z.enum([
+        "draft_asset_pack_incomplete",
+        "draft_asset_bootstrap_scope_invalid",
+        "qualified_generation_route_missing",
+        "draft_asset_generation_route_stale",
+      ])).readonly(),
+    }).strict(),
     plannedLaunchAt: adminIsoDateTimeSchema.nullable(),
     version: z.number().int().nonnegative(),
     updatedAt: adminIsoDateTimeSchema,
   })
   .strict();
+
+export const characterDraftImageSelectionRequestSchema = z.object({
+  entityVersion: z.number().int().nonnegative(),
+  purpose: z.enum(["character_cover", "character_hero", "character_chat"]),
+  runId: adminIdSchema,
+  itemId: adminIdSchema,
+  assetId: adminIdSchema,
+  reviewDecisionId: adminIdSchema,
+  reason: z.string().trim().min(3).max(2_000),
+}).strict();
+
+export const characterDraftImageSelectionResultSchema = z.object({
+  characterId: adminIdSchema,
+  projectVersion: z.number().int().positive(),
+  selectedPurpose: z.enum(["character_cover", "character_hero", "character_chat"]),
+  selectedAssetId: adminIdSchema,
+  draftImageAssetId: adminIdSchema.nullable(),
+  draftAssetPack: z.object({
+    character_cover: adminIdSchema.optional(),
+    character_hero: adminIdSchema.optional(),
+    character_chat: adminIdSchema.optional(),
+  }).strict(),
+  deepLink: z.string().startsWith("/admin/characters/"),
+}).strict();
+
+export const characterIdentityBootstrapRequestSchema = z.object({
+  entityVersion: z.number().int().positive(),
+  runId: adminIdSchema,
+  itemId: adminIdSchema,
+  assetId: adminIdSchema,
+  reviewDecisionId: adminIdSchema,
+  reason: z.string().trim().min(3).max(2_000),
+  confirmation: z.string().trim().min(1).max(240),
+}).strict();
+
+export const characterIdentityBootstrapResponseSchema = z.object({
+  characterId: adminIdSchema,
+  projectVersion: z.number().int().positive(),
+  visualProfileId: adminIdSchema,
+  visualProfileVersion: z.number().int().positive(),
+  referenceSetRevisionId: adminIdSchema,
+  referenceSetRevision: z.number().int().positive(),
+  anchorAssetId: adminIdSchema,
+  draftImageAssetId: adminIdSchema,
+  deepLink: z.string().startsWith("/admin/characters/"),
+  replayed: z.boolean(),
+}).strict();
 
 export const characterReleaseCheckSchema = z
   .object({
@@ -720,6 +951,13 @@ export const characterQaRunSchema = z.object({
   projectId: adminIdSchema,
   characterContentVersionId: adminIdSchema,
   projectVersion: z.number().int().positive(),
+  visualProfileId: adminIdSchema.nullable(),
+  visualProfileVersion: z.number().int().positive().nullable(),
+  visualProfileHash: z.string().trim().min(1).nullable(),
+  referenceSetRevisionId: adminIdSchema.nullable(),
+  referenceSetRevision: z.number().int().positive().nullable(),
+  referenceSetHash: z.string().trim().min(1).nullable(),
+  draftAssetPackHash: z.string().trim().min(1).nullable(),
   ownerId: adminIdSchema,
   status: z.enum(["passed", "failed"]),
   checks: z.array(characterQaCheckSchema).length(7).readonly(),
@@ -772,6 +1010,24 @@ export const characterReleaseMonitorSchema = z
   })
   .strict();
 
+const characterPreviewAssetSlotSchema = z.object({
+  assetId: adminIdSchema.nullable(),
+  imageUrl: z.string().nullable(),
+  status: z.enum(["missing", "available", "unavailable"]),
+}).strict().superRefine((value, ctx) => {
+  const consistent = value.status === "available"
+    ? value.assetId !== null && value.imageUrl !== null
+    : value.status === "missing"
+      ? value.assetId === null && value.imageUrl === null
+      : value.assetId !== null && value.imageUrl === null;
+  if (!consistent) {
+    ctx.addIssue({
+      code: "custom",
+      message: `Preview asset slot fields do not match ${value.status} status`,
+    });
+  }
+});
+
 export const characterPreviewSnapshotSchema = z
   .object({
     releaseId: adminIdSchema.nullable(),
@@ -783,9 +1039,49 @@ export const characterPreviewSnapshotSchema = z
     opening: z.record(z.string(), z.unknown()),
     appearance: z.record(z.string(), z.unknown()),
     imageUrl: z.string().nullable(),
+    assetPack: z.object({
+      character_cover: characterPreviewAssetSlotSchema,
+      character_hero: characterPreviewAssetSlotSchema,
+      character_chat: characterPreviewAssetSlotSchema,
+    }).strict(),
+    assetPackReady: z.boolean(),
     renderUrl: z.string().url().nullable(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    const slots = [
+      value.assetPack.character_cover,
+      value.assetPack.character_hero,
+      value.assetPack.character_chat,
+    ];
+    const availableAssetIds = slots.flatMap((slot) =>
+      slot.status === "available" && slot.assetId ? [slot.assetId] : []
+    );
+    const exactlyReady =
+      availableAssetIds.length === 3 &&
+      new Set(availableAssetIds).size === 3;
+    if (value.assetPackReady !== exactlyReady) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["assetPackReady"],
+        message: "assetPackReady must represent three distinct available assets",
+      });
+    }
+    if (value.imageUrl !== value.assetPack.character_cover.imageUrl) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["imageUrl"],
+        message: "imageUrl compatibility field must match character_cover",
+      });
+    }
+    if (value.renderUrl !== null && !exactlyReady) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["renderUrl"],
+        message: "Renderer URL requires an exact available three-slot pack",
+      });
+    }
+  });
 
 export const characterWorkspaceReleaseSchema = z
   .object({
@@ -836,6 +1132,7 @@ export const characterWorkspaceDetailSchema = z
     project: characterWorkspaceProjectSchema,
     visual: characterVisualWorkspaceSchema,
     serving: characterServingSchema.nullable(),
+    activeCommand: adminCommandStatusSchema.nullable(),
     releases: z.array(characterWorkspaceReleaseSchema).readonly(),
     qaRuns: z.array(characterQaRunSchema).readonly(),
     preview: z
@@ -891,9 +1188,17 @@ export type CharacterPerformanceReconciliation = z.infer<typeof characterPerform
 export type CharacterProjectDraftPatchRequest = z.infer<typeof characterProjectDraftPatchRequestSchema>;
 export type CharacterWorkspaceDetail = z.infer<typeof characterWorkspaceDetailSchema>;
 export type CharacterReferenceSetPublishRequest = z.infer<typeof characterReferenceSetPublishRequestSchema>;
+export type CharacterLookArchiveRequest = z.infer<typeof characterLookArchiveRequestSchema>;
+export type CharacterDraftImageSelectionRequest = z.infer<typeof characterDraftImageSelectionRequestSchema>;
+export type CharacterIdentityBootstrapRequest = z.infer<typeof characterIdentityBootstrapRequestSchema>;
+export type CharacterIdentityBootstrapResponse = z.infer<typeof characterIdentityBootstrapResponseSchema>;
 export type CharacterQaCheck = z.infer<typeof characterQaCheckSchema>;
 export type CharacterQaCheckInput = z.infer<typeof characterQaCheckInputSchema>;
+export type CharacterQaRunCreateRequest = z.infer<typeof characterQaRunCreateRequestSchema>;
 export type CharacterQaRun = z.infer<typeof characterQaRunSchema>;
+export type CharacterReleaseProposalRequest = z.infer<typeof characterReleaseProposalRequestSchema>;
+export type CharacterReleaseReviewRequest = z.infer<typeof characterReleaseReviewRequestSchema>;
+export type CharacterReleaseValidationRequest = z.infer<typeof characterReleaseValidationRequestSchema>;
 export type CharacterReleasePublishCommandRequest = z.infer<
   typeof characterReleasePublishCommandRequestSchema
 >;

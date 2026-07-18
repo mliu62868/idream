@@ -74,6 +74,9 @@ describe("Character Portfolio authority/read model", () => {
           generationProvenance: { generationProfileKey: "profile", generationProfileVersion: "1", workflowKey: "workflow", workflowVersion: "1", policyVersion: "policy-v1" },
           releasePlacementManifest: { placements: [{ slotKey: "feed.hero", slotVersion: 2, assetId: `asset-a-${suffix}` }] },
           snapshotHash: `snapshot-a-${suffix}`,
+          // This fixture intentionally exercises the tolerant historical
+          // portfolio projection rather than the strict v2 release lane.
+          legacy: true,
           readiness: "ready",
           status: "published",
           publishedAt: new Date("2026-06-01T00:00:00.000Z"),
@@ -86,6 +89,7 @@ describe("Character Portfolio authority/read model", () => {
           generationProvenance: {},
           releasePlacementManifest: {},
           snapshotHash: `snapshot-b-${suffix}`,
+          legacy: true,
           readiness: "ready",
           status: "published",
           publishedAt: new Date("2026-06-01T00:00:00.000Z"),
@@ -252,6 +256,88 @@ describe("Character Portfolio authority/read model", () => {
     });
     expect(item.performance.find((row) => row.window === "7d" && row.placementId === "feed.hero")?.eligibleImpressions)
       .toBe(120);
+  });
+
+  it("uses one complete UTC product-day cohort and excludes the current partial day", async () => {
+    const partialDayFactId = `portfolio-partial-day-${suffix}`;
+    await prisma.characterFunnelDaily.create({
+      data: {
+        characterId: characterA,
+        characterContentVersionId: contentA,
+        characterReleaseId: releaseA,
+        placementId: "feed.hero",
+        productDay: new Date("2026-07-17T00:00:00.000Z"),
+        metricVersion: 1,
+        eligibleImpressions: 999,
+        detailViews: 999,
+        firstSuccessfulExchanges: 999,
+        qceCount: 999,
+        relationshipActivations: 999,
+        sameCharacterD7EligiblePairs: 999,
+        sameCharacterD7Returns: 999,
+        paidAttributions: 999,
+        coverageState: "exact",
+        sourceEvidence: [partialDayFactId],
+      },
+    });
+    await prisma.characterExposureFact.create({
+      data: {
+        id: partialDayFactId,
+        exposureId: partialDayFactId,
+        sourceService: "web",
+        sourceEventId: `${partialDayFactId}-event`,
+        userId: `${partialDayFactId}-user`,
+        journeyId: `${partialDayFactId}-journey`,
+        characterId: characterA,
+        characterContentVersionId: contentA,
+        characterReleaseId: releaseA,
+        placementId: "feed.hero",
+        eventType: "eligible_impression",
+        visibleRatio: 1,
+        visibleDurationMs: 1_000,
+        environment: "production",
+        dataClass: "customer",
+        trustClass: "typed_client",
+        eligible: true,
+        occurredAt: new Date("2026-07-17T00:15:00.000Z"),
+        validFrom: new Date("2026-07-17T00:15:00.000Z"),
+        coverageState: "exact",
+      },
+    });
+    try {
+      const data = await listCharacterPortfolioData(prisma, characterPortfolioQuerySchema.parse({
+        search: "Astra",
+        limit: 20,
+        placementId: "feed.hero",
+      }), { asOf: new Date("2026-07-17T12:30:00.000Z") });
+      const summary = data.items[0].performance.find((row) =>
+        row.window === "7d" && row.placementId === "feed.hero"
+      );
+
+      expect(summary).toMatchObject({
+        windowStart: "2026-07-10T00:00:00.000Z",
+        windowEnd: "2026-07-17T00:00:00.000Z",
+        eligibleImpressions: 120,
+        detailViews: 60,
+        qualityState: "certified",
+        coverageState: "exact",
+        detailCtr: 0.5,
+        chatStartRate: 0.5,
+        qceRate: 0.5,
+      });
+      expect(summary?.evidence).toContain("window_grain:utc_product_day");
+      expect(summary?.evidence).not.toContain("detail_view_parent_outside_reporting_cohort");
+    } finally {
+      await prisma.characterExposureFact.deleteMany({ where: { id: partialDayFactId } });
+      await prisma.characterFunnelDaily.deleteMany({
+        where: {
+          characterId: characterA,
+          characterReleaseId: releaseA,
+          placementId: "feed.hero",
+          productDay: new Date("2026-07-17T00:00:00.000Z"),
+        },
+      });
+    }
   });
 
   it("uses deterministic server-side cursor pagination and assigned producer scope", async () => {

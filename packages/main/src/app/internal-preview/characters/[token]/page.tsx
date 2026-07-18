@@ -24,7 +24,7 @@ export default async function CharacterRendererPreviewPage({
     <main className="min-h-screen bg-[rgb(13,13,13)] px-4 py-6 text-white md:px-10" data-testid="character-renderer-preview">
       <header className="sticky top-0 z-20 -mx-4 -mt-6 flex flex-wrap items-center justify-between gap-2 border-b border-amber-300/30 bg-amber-300 px-4 py-3 text-xs font-black uppercase tracking-[0.16em] text-black md:-mx-10 md:px-10">
         <span>{preview.authority.label}</span>
-        <span>Read-only · ContentVersion {preview.authority.contentVersionId}</span>
+        <span>Read-only · exact avatar / hero / chat pack · ContentVersion {preview.authority.contentVersionId}</span>
       </header>
 
       <section aria-labelledby="card-preview-title" className="mx-auto mt-8 max-w-6xl">
@@ -58,8 +58,8 @@ export default async function CharacterRendererPreviewPage({
         <h2 className="text-sm font-black uppercase tracking-[0.16em]" id="chat-image-preview-title">Chat image scenario</h2>
         <div className="mt-4 grid gap-4 rounded-[20px] border border-white/10 bg-[rgb(18,18,18)] p-4 sm:grid-cols-[180px_1fr]">
           {/* eslint-disable-next-line @next/next/no-img-element -- signed operator preview can resolve private media */}
-          <img alt={`${preview.character.title} chat image preview`} className="aspect-square w-full rounded-xl object-cover object-top" src={preview.character.image} />
-          <div className="self-center"><p className="font-bold">Pinned visual presentation</p><p className="mt-2 text-sm leading-6 text-white/60">This surface renders the candidate image and immutable appearance snapshot without creating a chat, media asset, or online placement.</p><pre className="mt-3 max-h-32 overflow-auto whitespace-pre-wrap rounded bg-black/30 p-3 text-xs">{JSON.stringify(preview.appearance, null, 2)}</pre></div>
+          <img alt={`${preview.character.title} chat image preview`} className="aspect-square w-full rounded-xl object-cover object-top" src={preview.assetPack.character_chat.url} />
+          <div className="self-center"><p className="font-bold">Pinned visual presentation</p><p className="mt-2 text-sm leading-6 text-white/60">This surface renders the exact chat-slot asset and immutable appearance snapshot without creating a chat, media asset, or online placement.</p><pre className="mt-3 max-h-32 overflow-auto whitespace-pre-wrap rounded bg-black/30 p-3 text-xs">{JSON.stringify({ appearance: preview.appearance, assetPack: preview.authority.assetPack }, null, 2)}</pre></div>
         </div>
       </section>
     </main>

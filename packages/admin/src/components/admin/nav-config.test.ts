@@ -47,6 +47,11 @@ describe("admin navigation information architecture", () => {
   it("maps canonical routes and query-backed saved views onto domain workspaces", () => {
     expect(parseAdminPath("today")).toEqual({ sectionId: "dashboard", view: { kind: "list" } });
     expect(parseAdminPath("characters/new")).toEqual({ sectionId: "content/official", view: { kind: "new" } });
+    expect(parseAdminPath("characters/releases")).toEqual({ sectionId: "content/official", view: { kind: "list" } });
+    expect(parseAdminPath("characters/calendar")).toEqual({ sectionId: "content/official", view: { kind: "list" } });
+    expect(parseAdminPath("characters/review")).toEqual({ sectionId: "content/review-queue", view: { kind: "list" } });
+    expect(parseAdminPath("characters/starters")).toEqual({ sectionId: "content/templates", view: { kind: "list" } });
+    expect(parseAdminPath("characters/taxonomy")).toEqual({ sectionId: "content/tags", view: { kind: "list" } });
     expect(parseAdminPath("characters/char-1")).toEqual({ sectionId: "content/official", view: { kind: "detail", id: "char-1" } });
     expect(parseAdminPath("cases?view=overdue").sectionId).toBe("cases");
     expect(parseAdminPath("cases/case-1")).toEqual({ sectionId: "cases", view: { kind: "detail", id: "case-1" } });

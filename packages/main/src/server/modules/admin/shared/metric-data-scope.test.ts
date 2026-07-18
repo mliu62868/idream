@@ -12,8 +12,15 @@ import {
   customerSubscriptionWhere,
   customerUserWhere,
   operationalAnalyticsEventWhere,
+  operationalAppealWhere,
+  operationalCharacterWhere,
+  operationalContentProductionBatchWhere,
+  operationalContentReportWhere,
   operationalGenerationJobWhere,
+  operationalMediaAssetWhere,
   operationalMediaAssetPlacementWhere,
+  operationalSupportRequestWhere,
+  operationalUserWhere,
 } from "./metric-data-scope";
 
 describe("legacy admin metric data scopes", () => {
@@ -73,6 +80,85 @@ describe("legacy admin metric data scopes", () => {
           },
         },
         { status: "failed" },
+      ],
+    });
+    expect(operationalUserWhere({ role: "user" })).toEqual({
+      AND: [
+        { dataClass: { in: ["customer", "internal"] } },
+        { role: "user" },
+      ],
+    });
+    expect(operationalContentReportWhere({ status: "open" })).toEqual({
+      AND: [
+        {
+          OR: [
+            { reporterId: null },
+            {
+              reporter: {
+                is: { dataClass: { in: ["customer", "internal"] } },
+              },
+            },
+          ],
+        },
+        { status: "open" },
+      ],
+    });
+    expect(operationalMediaAssetWhere({ safetyStatus: "blocked" })).toEqual({
+      AND: [
+        {
+          owner: {
+            is: { dataClass: { in: ["customer", "internal"] } },
+          },
+        },
+        { safetyStatus: "blocked" },
+      ],
+    });
+    expect(operationalAppealWhere({ status: "open" })).toEqual({
+      AND: [
+        {
+          user: {
+            is: { dataClass: { in: ["customer", "internal"] } },
+          },
+        },
+        { status: "open" },
+      ],
+    });
+    expect(operationalSupportRequestWhere({ status: "open" })).toEqual({
+      AND: [
+        {
+          user: {
+            is: { dataClass: { in: ["customer", "internal"] } },
+          },
+        },
+        { status: "open" },
+      ],
+    });
+    expect(operationalCharacterWhere({ status: "approved" })).toEqual({
+      AND: [
+        {
+          OR: [
+            { source: "official" },
+            {
+              source: "user",
+              creator: {
+                is: { dataClass: { in: ["customer", "internal"] } },
+              },
+            },
+          ],
+        },
+        { status: "approved" },
+      ],
+    });
+    expect(
+      operationalContentProductionBatchWhere({ status: "reviewing" }),
+    ).toEqual({
+      AND: [
+        {
+          createdBy: {
+            is: { dataClass: { in: ["customer", "internal"] } },
+          },
+        },
+        { status: "reviewing" },
       ],
     });
     expect(operationalAnalyticsEventWhere({ name: "placement_click" })).toEqual({

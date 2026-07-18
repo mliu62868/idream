@@ -6,10 +6,20 @@ import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
 import { actorWithPermission, clampInt, jsonBody, toInputJson, type AdminActor } from "@/server/modules/admin/shared/legacy-primitives";
+import {
+  operationalAppealWhere,
+  operationalContentReportWhere,
+  operationalMediaAssetWhere,
+} from "@/server/modules/admin/shared/metric-data-scope";
 import { ensureReviewCaseForAppeal, ensureReviewCaseForReport, recordReviewCaseDecision } from "@/server/modules/admin-v2/cases/service";
 import { canonicalRequestHash } from "@/server/modules/admin-v2/shared/control-plane-command";
 import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
 import { decodeAdminListCursor, encodeAdminListCursor } from "@/server/modules/admin-v2/shared/list-cursor";
+import {
+  lockCharacterGenerationAuthority,
+  lockMediaAssetAuthority,
+} from "@/server/modules/admin-v2/characters/generation-authority-lock";
+import { resolveMediaAssetBlobLocator } from "@/server/lib/media-asset-authority";
 const adminDecisionSchema = z.object({
   decision: z.enum(["actioned", "no_violation", "duplicate", "escalated", "closed"]),
   policyCode: z.string().max(120).optional(),
@@ -25,11 +35,17 @@ const appealDecisionSchema = z.object({
   confirmation: z.string().trim().min(1).max(160),
 });
 
+const mediaReviewDecisionSchema = z.object({
+  decision: z.enum(["passed", "blocked"]),
+  reason: z.string().trim().min(3).max(2_000),
+  confirmation: z.string().trim().min(1).max(160),
+});
+
 type ModerationCommandInput = {
   request: Request;
   actor: AdminActor;
   commandType: string;
-  targetType: "content_report" | "appeal";
+  targetType: "content_report" | "appeal" | "media";
   targetId: string;
   payload: unknown;
   execute: (tx: Prisma.TransactionClient, requestId: string) => Promise<Record<string, unknown>>;
@@ -95,7 +111,7 @@ export async function moderationQueue(request: Request) {
     ? adminListCursorKeys(url, "moderation_reports", queryIdentity, "reportCursor")
     : undefined;
   const mediaCursorKeys = !scope || scope === "media"
-    ? adminListCursorKeys(url, "moderation_blocked_media", queryIdentity, "mediaCursor")
+    ? adminListCursorKeys(url, "moderation_media_review", queryIdentity, "mediaCursor")
     : undefined;
   const appealCursorKeys = !scope || scope === "appeals"
     ? adminListCursorKeys(url, "moderation_appeals", queryIdentity, "appealCursor")
@@ -125,29 +141,56 @@ export async function moderationQueue(request: Request) {
     })() : undefined,
   };
   const reports = scope && scope !== "reports" ? [] : await prisma.contentReport.findMany({
-    where: reportWhere,
+    where: operationalContentReportWhere(reportWhere),
     include: { reporter: true, reviews: true },
     orderBy: [{ priority: "asc" }, { createdAt: "desc" }, { id: "desc" }],
     take: limit + 1,
   });
-  const blockedMedia = scope && scope !== "media" ? [] : await prisma.mediaAsset.findMany({
-    where: {
-      safetyStatus: "blocked",
+  const mediaReview = scope && scope !== "media" ? [] : await prisma.mediaAsset.findMany({
+    where: operationalMediaAssetWhere({
       deletedAt: null,
-      OR: search
-        ? [{ id: { contains: search } }, { ownerId: { contains: search } }, { type: { contains: search } }]
-        : undefined,
-      AND: mediaCursorKeys ? (() => {
-        const createdAt = adminCursorDate(mediaCursorKeys, 0, "moderation_blocked_media");
-        const cursorId = adminCursorString(mediaCursorKeys, 1, "moderation_blocked_media");
-        return { OR: [{ createdAt: { gt: createdAt } }, { createdAt, id: { gt: cursorId } }] };
-      })() : undefined,
-    },
+      AND: [
+        {
+          OR: [
+            { safetyStatus: "blocked" },
+            {
+              safetyStatus: { in: ["unknown", "flagged"] },
+              metadata: {
+                path: ["duplicateLineage", "schemaVersion"],
+                equals: 1,
+              },
+              characterImageOf: {
+                some: { deletedAt: null },
+              },
+            },
+          ],
+        },
+        ...(search
+          ? [{
+              OR: [
+                { id: { contains: search } },
+                { ownerId: { contains: search } },
+                { characterId: { contains: search } },
+                { type: { contains: search } },
+              ],
+            }]
+          : []),
+        ...(mediaCursorKeys
+          ? [{
+              OR: (() => {
+                const createdAt = adminCursorDate(mediaCursorKeys, 0, "moderation_media_review");
+                const cursorId = adminCursorString(mediaCursorKeys, 1, "moderation_media_review");
+                return [{ createdAt: { gt: createdAt } }, { createdAt, id: { gt: cursorId } }];
+              })(),
+            }]
+          : []),
+      ],
+    }),
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     take: limit + 1,
   });
   const appeals = scope && scope !== "appeals" ? [] : await prisma.appeal.findMany({
-    where: {
+    where: operationalAppealWhere({
       status: "open",
       OR: search
         ? [
@@ -162,22 +205,42 @@ export async function moderationQueue(request: Request) {
         const cursorId = adminCursorString(appealCursorKeys, 1, "moderation_appeals");
         return { OR: [{ createdAt: { gt: createdAt } }, { createdAt, id: { gt: cursorId } }] };
       })() : undefined,
-    },
+    }),
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     take: limit + 1,
   });
   const reportPage = reports.slice(0, limit);
-  const mediaPage = blockedMedia.slice(0, limit);
+  const mediaPage = mediaReview.slice(0, limit);
   const appealPage = appeals.slice(0, limit);
-  return ok({
-    reports: reportPage,
-    blockedMedia: mediaPage.map((asset) => ({
+  const serializedMedia = mediaPage.map((asset) => {
+    const lineage = duplicateLineage(asset.metadata);
+    return {
       id: asset.id,
       ownerId: asset.ownerId,
+      characterId: asset.characterId,
       type: asset.type,
+      url: asset.url,
+      thumbnailUrl: asset.thumbnailUrl,
       safetyStatus: asset.safetyStatus,
+      reviewKind: lineage ? "independent_duplicate" : "blocked",
+      sourceAssetId: lineage?.sourceAssetId ?? null,
+      sourceCharacterId: lineage?.sourceCharacterId ?? null,
       createdAt: asset.createdAt,
-    })),
+    };
+  });
+  const mediaPageInfo = adminListPageInfo(
+    "moderation_media_review",
+    queryIdentity,
+    mediaPage,
+    mediaReview.length > limit,
+    (row) => [row.createdAt.toISOString(), row.id],
+  );
+  return ok({
+    reports: reportPage,
+    mediaReview: serializedMedia,
+    // Compatibility alias for older Admin clients. The canonical field is
+    // `mediaReview`, which also carries independently pending duplicate media.
+    blockedMedia: serializedMedia,
     appeals: appealPage,
     pageInfo: {
       reports: adminListPageInfo("moderation_reports", queryIdentity, reportPage, reports.length > limit, (row) => [
@@ -185,19 +248,137 @@ export async function moderationQueue(request: Request) {
         row.createdAt.toISOString(),
         row.id,
       ]),
-      blockedMedia: adminListPageInfo(
-        "moderation_blocked_media",
-        queryIdentity,
-        mediaPage,
-        blockedMedia.length > limit,
-        (row) => [row.createdAt.toISOString(), row.id],
-      ),
+      mediaReview: mediaPageInfo,
+      blockedMedia: mediaPageInfo,
       appeals: adminListPageInfo("moderation_appeals", queryIdentity, appealPage, appeals.length > limit, (row) => [
         row.createdAt.toISOString(),
         row.id,
       ]),
     },
   });
+}
+
+export async function mediaReviewDecision(request: Request, mediaAssetId: string) {
+  const actor = await actorWithPermission(request, "safety.review.write");
+  const body = mediaReviewDecisionSchema.parse(await jsonBody(request));
+  if (body.confirmation !== mediaAssetId) {
+    throw Errors.badRequest("Confirmation did not match the media asset");
+  }
+
+  const locator = await prisma.mediaAsset.findFirst({
+    where: operationalMediaAssetWhere({
+      id: mediaAssetId,
+      deletedAt: null,
+    }),
+    select: { characterId: true },
+  });
+  if (!locator) throw Errors.notFound("Media asset not found");
+  if (!locator.characterId) {
+    throw Errors.conflict("Media asset is not attached to a Character");
+  }
+  const characterId = locator.characterId;
+
+  const result = await executeIdempotentModerationCommand({
+    request,
+    actor,
+    commandType: "safety.media.review",
+    targetType: "media",
+    targetId: mediaAssetId,
+    payload: body,
+    execute: async (tx, requestId) => {
+      await lockCharacterGenerationAuthority(tx, characterId);
+      await lockMediaAssetAuthority(tx, mediaAssetId);
+      const asset = await tx.mediaAsset.findFirst({
+        where: operationalMediaAssetWhere({
+          id: mediaAssetId,
+          characterId,
+          deletedAt: null,
+        }),
+      });
+      const character = await tx.character.findFirst({
+        where: {
+          id: characterId,
+          deletedAt: null,
+          imageAssetId: mediaAssetId,
+        },
+        select: { id: true, creatorId: true, imageAssetId: true },
+      });
+      if (!asset || !character) {
+        throw Errors.conflict("Media asset is no longer the Character identity image");
+      }
+      const lineage = duplicateLineage(asset.metadata);
+      if (
+        !lineage ||
+        lineage.duplicateCharacterId !== character.id ||
+        lineage.duplicatedByUserId !== asset.ownerId ||
+        character.creatorId !== asset.ownerId
+      ) {
+        throw Errors.badRequest("Media asset is not an independently reviewable Character duplicate");
+      }
+      if (!["unknown", "flagged"].includes(asset.safetyStatus)) {
+        throw Errors.conflict("Media asset already has a terminal review decision");
+      }
+      if (
+        body.decision === "passed" &&
+        resolveMediaAssetBlobLocator(asset)?.kind !== "shared_immutable"
+      ) {
+        throw Errors.conflict("Duplicate media bytes are not backed by a valid immutable locator");
+      }
+
+      const updated = await tx.mediaAsset.update({
+        where: { id: mediaAssetId },
+        data: {
+          safetyStatus: body.decision,
+          visibility: body.decision === "blocked" ? "private" : undefined,
+        },
+      });
+      const review = await tx.moderationReview.create({
+        data: {
+          reviewerId: actor.id,
+          decision: body.decision,
+          policyCode: "independent_duplicate_media_review",
+          notes: body.reason,
+        },
+      });
+      await tx.adminAuditLog.create({
+        data: {
+          actorId: actor.id,
+          actorRole: actor.role,
+          action: "safety.media.review",
+          targetType: "media",
+          targetId: mediaAssetId,
+          reason: body.reason,
+          before: toInputJson({
+            safetyStatus: asset.safetyStatus,
+            characterId: character.id,
+            sourceAssetId: lineage.sourceAssetId,
+          }),
+          after: toInputJson({
+            safetyStatus: updated.safetyStatus,
+            characterId: character.id,
+            reviewId: review.id,
+          }),
+          requestId,
+        },
+      });
+      await tx.mainOutboxEvent.create({
+        data: {
+          eventType: "admin.moderation.media_reviewed.v1",
+          aggregateType: "media",
+          aggregateId: mediaAssetId,
+          payload: toInputJson({
+            mediaAssetId,
+            characterId: character.id,
+            decision: body.decision,
+            actorId: actor.id,
+            requestId,
+          }),
+        },
+      });
+      return { asset: updated, review };
+    },
+  });
+  return ok(result);
 }
 
 export async function moderationDecision(request: Request, reportId: string) {
@@ -348,6 +529,7 @@ async function applyModerationAction(
     return;
   }
   if (targetType === "media") {
+    await lockMediaAssetAuthority(db, targetId);
     await db.mediaAsset.updateMany({
       where: { id: targetId },
       data: { safetyStatus: "blocked", visibility: "private" },
@@ -392,6 +574,7 @@ async function restoreAppealTarget(
     return { targetRestored: result.count > 0, restoredTargetType: targetType, restoredTargetId: characterId };
   }
   if (targetType === "media") {
+    await lockMediaAssetAuthority(db, targetId);
     const result = await db.mediaAsset.updateMany({
       where: { id: targetId },
       data: { safetyStatus: "passed" },
@@ -412,6 +595,28 @@ async function restoreAppealTarget(
 function feedItemCharacterId(itemId: string) {
   const decoded = decodeURIComponent(itemId);
   return decoded.startsWith("character:") ? decoded.slice("character:".length) : null;
+}
+
+function duplicateLineage(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const lineage = (value as Record<string, unknown>).duplicateLineage;
+  if (!lineage || typeof lineage !== "object" || Array.isArray(lineage)) return null;
+  const record = lineage as Record<string, unknown>;
+  if (
+    record.schemaVersion !== 1 ||
+    typeof record.sourceAssetId !== "string" ||
+    typeof record.sourceCharacterId !== "string" ||
+    typeof record.duplicateCharacterId !== "string" ||
+    typeof record.duplicatedByUserId !== "string"
+  ) {
+    return null;
+  }
+  return {
+    sourceAssetId: record.sourceAssetId,
+    sourceCharacterId: record.sourceCharacterId,
+    duplicateCharacterId: record.duplicateCharacterId,
+    duplicatedByUserId: record.duplicatedByUserId,
+  };
 }
 
 function adminListCursorKeys(

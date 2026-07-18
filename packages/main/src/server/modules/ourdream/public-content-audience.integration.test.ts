@@ -39,8 +39,34 @@ describe("public content audience", () => {
     hero: `audience-release-hero-${suffix}`,
     chat: `audience-release-chat-${suffix}`,
   };
+  const officialAssetId = `audience-official-asset-${suffix}`;
   const releaseProjectId = `audience-release-project-${suffix}`;
   const releaseId = `audience-release-${suffix}`;
+  const releaseValidationRunId = `${releaseId}:validation`;
+  const releaseQualificationId = `${releaseId}:catalog-qualification`;
+  const officialReleaseProjectId = `audience-official-release-project-${suffix}`;
+  const officialReleaseId = `audience-official-release-${suffix}`;
+  const officialReleaseQualificationId = `${officialReleaseId}:catalog-qualification`;
+  const releasePlacement = (
+    slotKey: "character_avatar" | "character_hero" | "character_chat",
+    assetId: string,
+  ) => ({
+    slotKey,
+    assetId,
+    slotVersion: 1,
+    runId: `${releaseId}:${slotKey}:run`,
+    itemId: `${releaseId}:${slotKey}:item`,
+    reviewDecisionId: `${releaseId}:${slotKey}:decision`,
+    generationJobId: `${releaseId}:${slotKey}:job`,
+  });
+  const strictReleaseManifest = () => ({
+    schemaVersion: 2 as const,
+    placements: [
+      releasePlacement("character_avatar", releaseAssetIds.avatar),
+      releasePlacement("character_hero", releaseAssetIds.hero),
+      releasePlacement("character_chat", releaseAssetIds.chat),
+    ],
+  });
 
   beforeAll(async () => {
     await prisma.user.createMany({
@@ -63,16 +89,29 @@ describe("public content audience", () => {
       ],
     });
     await prisma.mediaAsset.createMany({
-      data: Object.entries(releaseAssetIds).map(([slot, id]) => ({
-        id,
-        ownerId: userIds.customer,
-        type: "image",
-        url: `/user-content/${id}/content.webp`,
-        thumbnailUrl: `/user-content/${id}/thumbnail.webp`,
-        visibility: "public_pack",
-        safetyStatus: "passed",
-        metadata: { slot },
-      })),
+      data: [
+        ...Object.entries(releaseAssetIds).map(([slot, id]) => ({
+          id,
+          ownerId: userIds.customer,
+          type: "image",
+          url: `/user-content/${id}/content.webp`,
+          thumbnailUrl: `/user-content/${id}/thumbnail.webp`,
+          storageKey: `tests/${id}/content.webp`,
+          visibility: "public_pack",
+          safetyStatus: "passed",
+          metadata: { slot, synthetic: false, provider: "pipeline" },
+        })),
+        {
+          id: officialAssetId,
+          ownerId: userIds.internal,
+          type: "image",
+          url: `/user-content/${officialAssetId}/content.webp`,
+          thumbnailUrl: `/user-content/${officialAssetId}/thumbnail.webp`,
+          visibility: "public_pack",
+          safetyStatus: "passed",
+          metadata: { source: "editorial_import", synthetic: false },
+        },
+      ],
     });
     await prisma.character.createMany({
       data: [
@@ -87,6 +126,7 @@ describe("public content audience", () => {
           source: "official",
           style: "hybrid",
           gender: "male",
+          imageAssetId: officialAssetId,
           appearance: {},
           advancedDetails: {},
         },
@@ -138,17 +178,14 @@ describe("public content audience", () => {
         successCriteria: [],
       },
     });
-    const releasePlacement = (
-      slotKey: "character_avatar" | "character_hero" | "character_chat",
-      assetId: string,
-    ) => ({
-      slotKey,
-      assetId,
-      slotVersion: 1,
-      runId: `${releaseId}:${slotKey}:run`,
-      itemId: `${releaseId}:${slotKey}:item`,
-      reviewDecisionId: `${releaseId}:${slotKey}:decision`,
-      generationJobId: `${releaseId}:${slotKey}:job`,
+    await prisma.characterProject.create({
+      data: {
+        id: officialReleaseProjectId,
+        characterId: characterIds.official,
+        phase: "live_management",
+        audience: {},
+        successCriteria: [],
+      },
     });
     await prisma.characterRelease.create({
       data: {
@@ -156,19 +193,104 @@ describe("public content audience", () => {
         projectId: releaseProjectId,
         revisionId: `${releaseId}:revision`,
         characterContentVersionId: `${releaseId}:content`,
-        generationProvenance: {},
-        releasePlacementManifest: {
-          schemaVersion: 2,
+        generationProvenance: {
+          schemaVersion: "character-release-generation-provenance-v2",
+          policyVersion: "character-release-policy-v2",
+          requiredReleaseRoute: {
+            routeFingerprint: `${releaseId}:route`,
+            matrixKey: "public-audience-test",
+            generationProfileKey: "public-audience-profile",
+            generationProfileVersion: 1,
+            workflowKey: "public-audience-workflow",
+            workflowVersion: 1,
+          },
           placements: [
-            releasePlacement("character_avatar", releaseAssetIds.avatar),
-            releasePlacement("character_hero", releaseAssetIds.hero),
-            releasePlacement("character_chat", releaseAssetIds.chat),
+            {
+              slotKey: "character_avatar",
+              assetId: releaseAssetIds.avatar,
+              provider: "pipeline",
+            },
+            {
+              slotKey: "character_hero",
+              assetId: releaseAssetIds.hero,
+              provider: "pipeline",
+            },
+            {
+              slotKey: "character_chat",
+              assetId: releaseAssetIds.chat,
+              provider: "pipeline",
+            },
           ],
         },
+        releasePlacementManifest: strictReleaseManifest(),
         snapshotHash: `${releaseId}:snapshot`,
         readiness: "ready",
         status: "published",
         publishedAt: new Date(),
+      },
+    });
+    await prisma.releaseValidationRun.create({
+      data: {
+        id: releaseValidationRunId,
+        releaseId,
+        snapshotHash: `${releaseId}:snapshot`,
+        policyVersion: "character-release-policy-v2",
+        result: "passed",
+        finishedAt: new Date(),
+      },
+    });
+    await prisma.publicCatalogQualification.create({
+      data: {
+        id: releaseQualificationId,
+        releaseId,
+        releaseSnapshotHash: `${releaseId}:snapshot`,
+        kind: "generated_release",
+        validationRunId: releaseValidationRunId,
+        evidence: {
+          schemaVersion: "public-catalog-qualification-v1",
+          policyVersion: "character-release-policy-v2",
+        },
+      },
+    });
+    await prisma.characterRelease.create({
+      data: {
+        id: officialReleaseId,
+        projectId: officialReleaseProjectId,
+        revisionId: `${officialReleaseId}:revision`,
+        characterContentVersionId: `${officialReleaseId}:content`,
+        generationProvenance: {
+          schemaVersion: "character-release-editorial-import-v1",
+          sourceAssetId: officialAssetId,
+        },
+        releasePlacementManifest: {
+          schemaVersion: 1,
+          kind: "editorial_import",
+          placements: [
+            {
+              slotKey: "character_avatar",
+              assetId: officialAssetId,
+              slotVersion: 1,
+            },
+          ],
+        },
+        snapshotHash: `${officialReleaseId}:snapshot`,
+        readiness: "ready",
+        legacy: true,
+        status: "published",
+        publishedAt: new Date(),
+      },
+    });
+    await prisma.publicCatalogQualification.create({
+      data: {
+        id: officialReleaseQualificationId,
+        releaseId: officialReleaseId,
+        releaseSnapshotHash: `${officialReleaseId}:snapshot`,
+        kind: "editorial_import",
+        evidence: {
+          schemaVersion: "public-catalog-qualification-v1",
+          policyVersion: "public-catalog-editorial-import-v1",
+          sourceAssetId: officialAssetId,
+        },
       },
     });
     await prisma.characterServing.create({
@@ -176,6 +298,14 @@ describe("public content audience", () => {
         id: `${releaseId}:serving`,
         characterId: characterIds.customer,
         currentReleaseId: releaseId,
+        state: "live",
+      },
+    });
+    await prisma.characterServing.create({
+      data: {
+        id: `${officialReleaseId}:serving`,
+        characterId: characterIds.official,
+        currentReleaseId: officialReleaseId,
         state: "live",
       },
     });
@@ -222,6 +352,7 @@ describe("public content audience", () => {
         {
           id: feedbackIds.official,
           sourceKey: `official-${suffix}`,
+          source: "official",
           createdById: userIds.internal,
           title: "Official roadmap item",
           description: "Editorial cold-start content.",
@@ -246,19 +377,39 @@ describe("public content audience", () => {
         },
       ],
     });
+    await prisma.mediaCollectionItem.createMany({
+      data: [
+        {
+          collectionId: collectionIds.official,
+          mediaAssetId: officialAssetId,
+        },
+        {
+          collectionId: collectionIds.customer,
+          mediaAssetId: releaseAssetIds.hero,
+        },
+      ],
+    });
   });
 
   afterAll(async () => {
     await prisma.characterServing.deleteMany({
-      where: { characterId: characterIds.customer },
+      where: { characterId: { in: [characterIds.customer, characterIds.official] } },
     });
-    await prisma.characterRelease.deleteMany({ where: { id: releaseId } });
-    await prisma.characterProject.deleteMany({ where: { id: releaseProjectId } });
+    await prisma.publicCatalogQualification.deleteMany({
+      where: { id: { in: [releaseQualificationId, officialReleaseQualificationId] } },
+    });
+    await prisma.releaseValidationRun.deleteMany({ where: { id: releaseValidationRunId } });
+    await prisma.characterRelease.deleteMany({
+      where: { id: { in: [releaseId, officialReleaseId] } },
+    });
+    await prisma.characterProject.deleteMany({
+      where: { id: { in: [releaseProjectId, officialReleaseProjectId] } },
+    });
     await prisma.productFeedbackItem.deleteMany({ where: { id: { in: Object.values(feedbackIds) } } });
     await prisma.mediaCollection.deleteMany({ where: { id: { in: Object.values(collectionIds) } } });
     await prisma.character.deleteMany({ where: { id: { in: Object.values(characterIds) } } });
     await prisma.mediaAsset.deleteMany({
-      where: { id: { in: Object.values(releaseAssetIds) } },
+      where: { id: { in: [...Object.values(releaseAssetIds), officialAssetId] } },
     });
     await prisma.user.deleteMany({ where: { id: { in: Object.values(userIds) } } });
   });
@@ -280,6 +431,36 @@ describe("public content audience", () => {
     );
   });
 
+  it("fails closed for an official character without a qualified live Release", async () => {
+    const characterId = `audience-unqualified-official-${suffix}`;
+    await prisma.character.create({
+      data: {
+        id: characterId,
+        creatorId: userIds.internal,
+        name: `Audience Unqualified Official ${suffix}`,
+        age: 24,
+        description: "Editorial ownership alone is not publication evidence.",
+        visibility: "public",
+        status: "approved",
+        source: "official",
+        style: "hybrid",
+        gender: "female",
+        appearance: {},
+        advancedDetails: {},
+      },
+    });
+
+    try {
+      await expect(
+        prisma.character.count({
+          where: { AND: [publicCharacterAudienceWhere, { id: characterId }] },
+        }),
+      ).resolves.toBe(0);
+    } finally {
+      await prisma.character.delete({ where: { id: characterId } });
+    }
+  });
+
   it("includes official and customer-owned collections only", async () => {
     const rows = await prisma.mediaCollection.findMany({
       where: {
@@ -295,6 +476,29 @@ describe("public content audience", () => {
     expect(rows.map((row) => row.id).sort()).toEqual(
       [collectionIds.official, collectionIds.customer].sort(),
     );
+  });
+
+  it("does not publish an empty collection", async () => {
+    const collectionId = `audience-empty-collection-${suffix}`;
+    await prisma.mediaCollection.create({
+      data: {
+        id: collectionId,
+        ownerId: userIds.customer,
+        name: "Empty public collection",
+        visibility: "public",
+        source: "user",
+      },
+    });
+
+    try {
+      await expect(
+        prisma.mediaCollection.count({
+          where: { AND: [publicCollectionAudienceWhere, { id: collectionId }] },
+        }),
+      ).resolves.toBe(0);
+    } finally {
+      await prisma.mediaCollection.delete({ where: { id: collectionId } });
+    }
   });
 
   it.each([
@@ -381,6 +585,29 @@ describe("public content audience", () => {
     expect(rows.map((row) => row.id).sort()).toEqual(
       [feedbackIds.official, feedbackIds.customer].sort(),
     );
+  });
+
+  it("does not treat an arbitrary sourceKey as official feedback provenance", async () => {
+    const feedbackId = `audience-source-key-spoof-${suffix}`;
+    await prisma.productFeedbackItem.create({
+      data: {
+        id: feedbackId,
+        sourceKey: `spoofed-official-${suffix}`,
+        createdById: userIds.internal,
+        title: "Internal source-key spoof",
+        description: "A source key is identity, not provenance.",
+      },
+    });
+
+    try {
+      await expect(
+        prisma.productFeedbackItem.count({
+          where: { AND: [publicFeedbackAudienceWhere, { id: feedbackId }] },
+        }),
+      ).resolves.toBe(0);
+    } finally {
+      await prisma.productFeedbackItem.delete({ where: { id: feedbackId } });
+    }
   });
 
   it("applies the audience boundary across catalog, search, feed, community, and creator reads", async () => {
@@ -479,6 +706,92 @@ describe("public content audience", () => {
     expect(after.viewsCount).toBe(before.viewsCount);
   });
 
+  it("fails closed generated malformed manifests from the public list while preserving legacy", async () => {
+    const strictManifest = strictReleaseManifest();
+    const malformedManifest = {
+      ...strictManifest,
+      placements: strictManifest.placements.map((placement) =>
+        placement.slotKey === "character_chat"
+          ? {
+              slotKey: placement.slotKey,
+              assetId: placement.assetId,
+              slotVersion: placement.slotVersion,
+              runId: placement.runId,
+              itemId: placement.itemId,
+              reviewDecisionId: placement.reviewDecisionId,
+            }
+          : placement
+      ),
+    };
+    await prisma.characterRelease.update({
+      where: { id: releaseId },
+      data: { releasePlacementManifest: malformedManifest },
+    });
+    try {
+      const catalog = await api("GET", "characters", {
+        ageGate: true,
+        query: { q: suffix, style: "hybrid", gender: "male", limit: 60 },
+      });
+      expectOk(catalog);
+      expect(
+        (catalog.data.items as Array<{ id: string }>).map((item) => item.id),
+      ).toEqual([characterIds.official]);
+
+      const malformedDetail = await api(
+        "GET",
+        `characters/${characterIds.customer}`,
+        { ageGate: true },
+      );
+      expect(malformedDetail.status).toBe(404);
+      expectOk(await api("GET", `characters/${characterIds.official}`, {
+        ageGate: true,
+      }));
+    } finally {
+      await prisma.characterRelease.update({
+        where: { id: releaseId },
+        data: { releasePlacementManifest: strictReleaseManifest() },
+      });
+    }
+  });
+
+  it.each([
+    ["hero", "archived"],
+    ["chat", "blocked"],
+  ] as const)(
+    "returns no public detail when the current Release %s is %s in asset authority",
+    async (slot, status) => {
+      const assetId = releaseAssetIds[slot];
+      await prisma.mediaAsset.update({
+        where: { id: assetId },
+        data: {
+          metadata: {
+            slot,
+            synthetic: false,
+            provider: "pipeline",
+            platformAsset: { status },
+          },
+        },
+      });
+      try {
+        const response = await api("GET", `characters/${characterIds.customer}`, {
+          ageGate: true,
+        });
+        expect(response.status).toBe(404);
+      } finally {
+        await prisma.mediaAsset.update({
+          where: { id: assetId },
+          data: {
+            metadata: {
+              slot,
+              synthetic: false,
+              provider: "pipeline",
+            },
+          },
+        });
+      }
+    },
+  );
+
   it("serves the current Release hero on the public character detail", async () => {
     const response = await api("GET", `characters/${characterIds.customer}`, {
       ageGate: true,
@@ -488,11 +801,37 @@ describe("public content audience", () => {
       imageAssetId: releaseAssetIds.avatar,
       currentReleaseId: releaseId,
       heroImageAssetId: releaseAssetIds.hero,
-      heroImage: `/user-content/${releaseAssetIds.hero}/content.webp`,
+      heroImage:
+        `/user-content/${Buffer.from(releaseAssetIds.hero, "utf8").toString("base64url")}/content.webp`,
       imageAuthority: {
         source: "release",
         releaseId,
       },
+    });
+  });
+
+  it("excludes a generated Release after its public qualification is revoked", async () => {
+    await prisma.publicCatalogQualification.update({
+      where: { id: releaseQualificationId },
+      data: { revokedAt: new Date() },
+    });
+    await expect(
+      prisma.character.count({
+        where: {
+          AND: [
+            publicCharacterAudienceWhere,
+            { id: characterIds.customer },
+          ],
+        },
+      }),
+    ).resolves.toBe(0);
+    await expect(
+      prisma.publicCatalogQualification.findUniqueOrThrow({
+        where: { id: releaseQualificationId },
+      }),
+    ).resolves.toMatchObject({
+      releaseId,
+      revokedAt: expect.any(Date),
     });
   });
 });

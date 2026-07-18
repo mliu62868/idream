@@ -1,16 +1,51 @@
 import { randomUUID } from "node:crypto";
 import type { Prisma } from "@prisma/client";
+import {
+  assignWorkflowReferenceSlots,
+  type WorkflowDescriptor,
+} from "@idream/shared/gen-workflow";
 import type { ImageGeneratePayload, VideoGeneratePayload } from "@/server/ai/schemas";
-import { imageReferenceInputsForGenerationJob } from "@/server/ai/reference-images";
+import {
+  imageReferenceInputsForGenerationJob,
+  type ImageReferenceInput,
+} from "@/server/ai/reference-images";
 import { recordGenerationAttemptQueuedEvent } from "@/server/ai/generation-attempt-events";
 import { jobQueue } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
+import { generationWorkflowDescriptor } from "@/server/modules/admin/generation-catalog";
+import { normalizedGenerationReferenceRole } from "@/server/modules/admin-v2/characters/generation-route-authority";
+import { lockCharacterGenerationAuthority } from "@/server/modules/admin-v2/characters/generation-authority-lock";
+import {
+  PUBLIC_CATALOG_EDITORIAL_IMPORT_POLICY_VERSION,
+  PUBLIC_CATALOG_QUALIFICATION_SCHEMA_VERSION,
+} from "@/server/modules/ourdream/public-catalog-qualification";
+import { publicCharacterAudienceWhere } from "@/server/modules/ourdream/public-content-audience";
+
+export const LEGACY_CHARACTER_GENERATION_AUTHORITY_SCHEMA_VERSION =
+  "legacy-character-generation-authority-v1";
+
+const EDITORIAL_RELEASE_PROVENANCE_SCHEMA_VERSION =
+  "character-release-editorial-import-v1";
+
+export type LegacyCharacterGenerationAuthority = {
+  readonly schemaVersion: typeof LEGACY_CHARACTER_GENERATION_AUTHORITY_SCHEMA_VERSION;
+  readonly characterId: string;
+  readonly releaseId: string;
+  readonly releaseSnapshotHash: string;
+  readonly releaseProvenanceSchemaVersion: typeof EDITORIAL_RELEASE_PROVENANCE_SCHEMA_VERSION;
+  readonly qualificationId: string;
+  readonly qualificationKind: "editorial_import";
+  readonly qualificationEvidenceSchemaVersion: typeof PUBLIC_CATALOG_QUALIFICATION_SCHEMA_VERSION;
+  readonly qualificationPolicyVersion: typeof PUBLIC_CATALOG_EDITORIAL_IMPORT_POLICY_VERSION;
+};
 
 export type ExistingGenerationJob = {
   id: string;
   userId: string;
   characterId: string | null;
+  visualProfileId?: string | null;
+  visualProfileVersion?: number | null;
   mode: string;
   prompt: string | null;
   negativePrompt: string | null;
@@ -23,14 +58,213 @@ export type ExistingGenerationJob = {
   orientation: string | null;
   outputCount: number;
   seed?: string | null;
+  sourceType?: string | null;
   referenceAssetIds?: Prisma.JsonValue | null;
+  referenceSetRevisionId?: string | null;
+  referenceManifest?: Prisma.JsonValue | null;
 };
+
+export function legacyCharacterGenerationAuthorityFromControls(
+  controls: unknown,
+): LegacyCharacterGenerationAuthority | null {
+  const authority = jsonRecord(
+    jsonRecord(controls).legacyReleaseAuthority,
+  );
+  const characterId = stringFromRecord(authority, "characterId");
+  const releaseId = stringFromRecord(authority, "releaseId");
+  const releaseSnapshotHash = stringFromRecord(
+    authority,
+    "releaseSnapshotHash",
+  );
+  const qualificationId = stringFromRecord(authority, "qualificationId");
+  if (
+    authority.schemaVersion !==
+      LEGACY_CHARACTER_GENERATION_AUTHORITY_SCHEMA_VERSION ||
+    !characterId ||
+    !releaseId ||
+    !releaseSnapshotHash ||
+    authority.releaseProvenanceSchemaVersion !==
+      EDITORIAL_RELEASE_PROVENANCE_SCHEMA_VERSION ||
+    !qualificationId ||
+    authority.qualificationKind !== "editorial_import" ||
+    authority.qualificationEvidenceSchemaVersion !==
+      PUBLIC_CATALOG_QUALIFICATION_SCHEMA_VERSION ||
+    authority.qualificationPolicyVersion !==
+      PUBLIC_CATALOG_EDITORIAL_IMPORT_POLICY_VERSION
+  ) {
+    return null;
+  }
+  return {
+    schemaVersion: LEGACY_CHARACTER_GENERATION_AUTHORITY_SCHEMA_VERSION,
+    characterId,
+    releaseId,
+    releaseSnapshotHash,
+    releaseProvenanceSchemaVersion:
+      EDITORIAL_RELEASE_PROVENANCE_SCHEMA_VERSION,
+    qualificationId,
+    qualificationKind: "editorial_import",
+    qualificationEvidenceSchemaVersion:
+      PUBLIC_CATALOG_QUALIFICATION_SCHEMA_VERSION,
+    qualificationPolicyVersion:
+      PUBLIC_CATALOG_EDITORIAL_IMPORT_POLICY_VERSION,
+  };
+}
+
+export async function loadLockedLiveEditorialLegacyGenerationAuthority(
+  tx: Prisma.TransactionClient,
+  characterId: string,
+): Promise<LegacyCharacterGenerationAuthority | null> {
+  await lockCharacterGenerationAuthority(tx, characterId);
+  const serving = await tx.characterServing.findUnique({
+    where: { characterId },
+    select: {
+      state: true,
+      currentRelease: {
+        select: {
+          id: true,
+          snapshotHash: true,
+          legacy: true,
+          status: true,
+          readiness: true,
+          publishedAt: true,
+          visualProfileId: true,
+          visualProfileVersion: true,
+          referenceSetRevisionId: true,
+          generationProvenance: true,
+          publicCatalogQualification: {
+            select: {
+              id: true,
+              releaseSnapshotHash: true,
+              kind: true,
+              validationRunId: true,
+              evidence: true,
+              revokedAt: true,
+            },
+          },
+        },
+      },
+    },
+  });
+  const release = serving?.currentRelease ?? null;
+  const qualification = release?.publicCatalogQualification ?? null;
+  const provenance = jsonRecord(release?.generationProvenance);
+  const qualificationEvidence = jsonRecord(qualification?.evidence);
+  if (
+    serving?.state !== "live" ||
+    !release ||
+    release.legacy !== true ||
+    release.status !== "published" ||
+    release.readiness !== "ready" ||
+    release.publishedAt === null ||
+    release.visualProfileId !== null ||
+    release.visualProfileVersion !== null ||
+    release.referenceSetRevisionId !== null ||
+    provenance.schemaVersion !==
+      EDITORIAL_RELEASE_PROVENANCE_SCHEMA_VERSION ||
+    !qualification ||
+    qualification.kind !== "editorial_import" ||
+    qualification.validationRunId !== null ||
+    qualification.revokedAt !== null ||
+    qualification.releaseSnapshotHash !== release.snapshotHash ||
+    qualificationEvidence.schemaVersion !==
+      PUBLIC_CATALOG_QUALIFICATION_SCHEMA_VERSION ||
+    qualificationEvidence.policyVersion !==
+      PUBLIC_CATALOG_EDITORIAL_IMPORT_POLICY_VERSION
+  ) {
+    return null;
+  }
+  return {
+    schemaVersion: LEGACY_CHARACTER_GENERATION_AUTHORITY_SCHEMA_VERSION,
+    characterId,
+    releaseId: release.id,
+    releaseSnapshotHash: release.snapshotHash,
+    releaseProvenanceSchemaVersion:
+      EDITORIAL_RELEASE_PROVENANCE_SCHEMA_VERSION,
+    qualificationId: qualification.id,
+    qualificationKind: "editorial_import",
+    qualificationEvidenceSchemaVersion:
+      PUBLIC_CATALOG_QUALIFICATION_SCHEMA_VERSION,
+    qualificationPolicyVersion:
+      PUBLIC_CATALOG_EDITORIAL_IMPORT_POLICY_VERSION,
+  };
+}
+
+export async function assertPinnedLegacyCharacterGenerationAuthority(
+  tx: Prisma.TransactionClient,
+  input: {
+    readonly generationJobId: string;
+    readonly characterId: string;
+    readonly controls: unknown;
+  },
+) {
+  const pinned = legacyCharacterGenerationAuthorityFromControls(
+    input.controls,
+  );
+  const current =
+    await loadLockedLiveEditorialLegacyGenerationAuthority(
+      tx,
+      input.characterId,
+    );
+  if (
+    !pinned ||
+    !current ||
+    pinned.characterId !== input.characterId ||
+    !legacyCharacterGenerationAuthoritiesEqual(pinned, current)
+  ) {
+    throw Errors.conflict(
+      "Pinned legacy Character Release authority no longer matches live serving authority",
+      {
+        generationJobId: input.generationJobId,
+        characterId: input.characterId,
+        pinnedReleaseId: pinned?.releaseId ?? null,
+        pinnedReleaseSnapshotHash: pinned?.releaseSnapshotHash ?? null,
+        currentReleaseId: current?.releaseId ?? null,
+        currentReleaseSnapshotHash:
+          current?.releaseSnapshotHash ?? null,
+      },
+    );
+  }
+  return current;
+}
+
+export function unavailablePinnedManifestReferenceRoles(input: {
+  readonly referenceManifest: unknown;
+  readonly referenceImages: readonly Pick<ImageReferenceInput, "assetId" | "role">[];
+}) {
+  const manifestReferenceRoles = referenceManifestEntries(
+    input.referenceManifest,
+  ).flatMap((entry) => {
+    const assetId = stringFromRecord(entry, "mediaAssetId");
+    const rawRole = stringFromRecord(entry, "role");
+    if (!assetId || !rawRole) return [];
+    return [{
+      assetId,
+      rawRole,
+      normalizedRole: normalizedGenerationReferenceRole(rawRole),
+    }];
+  });
+  const dispatchedReferenceRoleKeys = new Set(input.referenceImages.map(
+    (image) => referenceRoleKey(image.assetId, image.role),
+  ));
+  return manifestReferenceRoles
+    .filter((reference) =>
+      reference.normalizedRole === null ||
+      !dispatchedReferenceRoleKeys.has(
+        referenceRoleKey(reference.assetId, reference.normalizedRole),
+      )
+    )
+    .map((reference) => ({
+      assetId: reference.assetId,
+      role: reference.rawRole,
+    }));
+}
 
 export async function enqueueGenerationAttempt(
   job: ExistingGenerationJob,
   suppliedAttempt?: { readonly attemptId: string; readonly attemptNo: number },
 ) {
   const attempt = await prisma.$transaction(async (tx) => {
+    await assertGenerationCharacterDispatchable(tx, job);
     const row = suppliedAttempt
       ? await tx.generationAttempt.findUniqueOrThrow({ where: { id: suppliedAttempt.attemptId } })
       : await tx.generationAttempt.upsert({
@@ -44,20 +278,147 @@ export async function enqueueGenerationAttempt(
   if (attempt.requestId !== job.id || (suppliedAttempt && attempt.attemptNo !== suppliedAttempt.attemptNo)) {
     throw Errors.conflict("Generation Attempt does not belong to the requested generation authority");
   }
-  const controls = await existingGenerationControls(job);
+  const runtime = await existingGenerationRuntime(job, attempt);
+  const controls = runtime.controls;
   const modelCapabilities = modelCapabilitiesFromControls(controls);
-  const referenceImages =
-    job.mode === "image" && (modelCapabilities.referenceImages || modelCapabilities.initImage)
-      ? filterReferenceImagesForCapabilities(
-          await imageReferenceInputsForGenerationJob({
-            userId: job.userId,
-            characterId: job.characterId,
-            controls,
-            referenceAssetIds: job.referenceAssetIds,
-          }),
-          modelCapabilities,
-        )
-      : [];
+  const requestedSourceImageAssetId = stringFromRecord(
+    controls,
+    "sourceImageAssetId",
+  );
+  const requestedLookReferenceAssetId = stringFromRecord(
+    controls,
+    "lookReferenceAssetId",
+  );
+  const resolvedReferenceImages = job.mode === "image"
+    ? await imageReferenceInputsForGenerationJob({
+        userId: job.userId,
+        characterId: job.characterId,
+        controls,
+        referenceAssetIds: job.referenceAssetIds,
+        referenceManifest: job.referenceManifest,
+        maxReferences: Number.MAX_SAFE_INTEGER,
+      })
+    : [];
+  const manifestEntries = referenceManifestEntries(job.referenceManifest);
+  const manifestSourceImageAssetIds = [
+    ...new Set(manifestEntries.flatMap((entry) =>
+      entry.role === "source_image" &&
+      typeof entry.mediaAssetId === "string"
+        ? [entry.mediaAssetId]
+        : []
+    )),
+  ];
+  const unresolvedManifestSourceImageAssetIds =
+    manifestSourceImageAssetIds.filter((assetId) =>
+      !resolvedReferenceImages.some(
+        (image) => image.assetId === assetId && image.role === "source_image",
+      )
+    );
+  if (
+    job.mode === "image" &&
+    unresolvedManifestSourceImageAssetIds.length > 0
+  ) {
+    throw Errors.conflict(
+      "Generation dispatch could not resolve every source_image pinned by the reference manifest",
+      {
+        generationJobId: job.id,
+        referenceSetRevisionId: job.referenceSetRevisionId,
+        unavailableSourceImageAssetIds: unresolvedManifestSourceImageAssetIds,
+      },
+    );
+  }
+  const pinnedReferenceAssetIds = [
+    ...new Set([
+      ...jsonStringArray(job.referenceAssetIds),
+      ...referenceManifestAssetIds(job.referenceManifest),
+    ]),
+  ];
+  const dispatchedReferenceAssetIds = new Set(
+    resolvedReferenceImages.map((image) => image.assetId),
+  );
+  const unavailablePinnedReferenceAssetIds = pinnedReferenceAssetIds.filter(
+    (assetId) => !dispatchedReferenceAssetIds.has(assetId),
+  );
+  if (
+    job.mode === "image" &&
+    job.referenceSetRevisionId &&
+    (
+      pinnedReferenceAssetIds.length === 0 ||
+      unavailablePinnedReferenceAssetIds.length > 0
+    )
+  ) {
+    throw Errors.conflict(
+      "Generation dispatch could not resolve the complete pinned Character reference authority",
+      {
+        generationJobId: job.id,
+        referenceSetRevisionId: job.referenceSetRevisionId,
+        unavailableReferenceAssetIds: unavailablePinnedReferenceAssetIds,
+      },
+    );
+  }
+  const unavailableManifestReferenceRoles =
+    unavailablePinnedManifestReferenceRoles({
+      referenceManifest: job.referenceManifest,
+      referenceImages: resolvedReferenceImages,
+    });
+  if (
+    job.mode === "image" &&
+    unavailableManifestReferenceRoles.length > 0
+  ) {
+    throw Errors.conflict(
+      "Generation dispatch could not preserve every asset-role tuple pinned by the reference manifest",
+      {
+        generationJobId: job.id,
+        referenceSetRevisionId: job.referenceSetRevisionId,
+        unavailableManifestReferenceRoles,
+      },
+    );
+  }
+  if (
+    job.mode === "image" &&
+    requestedSourceImageAssetId &&
+    !resolvedReferenceImages.some(
+      (image) =>
+        image.assetId === requestedSourceImageAssetId &&
+        image.role === "source_image",
+    )
+  ) {
+    throw Errors.conflict(
+      "Generation dispatch could not resolve the pinned source image authority",
+      {
+        generationJobId: job.id,
+        sourceImageAssetId: requestedSourceImageAssetId,
+      },
+    );
+  }
+  if (
+    job.mode === "image" &&
+    requestedLookReferenceAssetId &&
+    !resolvedReferenceImages.some(
+      (image) =>
+        image.assetId === requestedLookReferenceAssetId &&
+        image.role === "look_reference",
+    )
+  ) {
+    throw Errors.conflict(
+      "Generation dispatch could not resolve the pinned Character Look image authority",
+      {
+        generationJobId: job.id,
+        lookReferenceAssetId: requestedLookReferenceAssetId,
+      },
+    );
+  }
+  const referenceImages = job.mode === "image"
+    ? runtimeReferenceImagesForDispatch({
+        generationJobId: job.id,
+        images: resolvedReferenceImages,
+        capabilities: modelCapabilities,
+        workflow: runtime.workflow,
+        workflowKey: runtime.workflowKey,
+        storedWorkflowKey: runtime.storedWorkflowKey,
+        storedWorkflowVersion: runtime.storedWorkflowVersion,
+      })
+    : [];
   const common = {
     version: 1 as const,
     requestId: `admin_requeue_${randomUUID()}`,
@@ -70,7 +431,10 @@ export async function enqueueGenerationAttempt(
     negativePrompt: job.negativePrompt,
     controls,
     seed: job.seed ?? job.id,
-    model: job.model ?? (job.mode === "video" ? "mock-video" : "mock-image"),
+    model:
+      job.model
+      ?? job.profileId
+      ?? (job.mode === "video" ? "unresolved-video-model" : "unresolved-image-model"),
     outputPrefix: `gen/${job.id}/`,
   };
   const payload: ImageGeneratePayload | VideoGeneratePayload =
@@ -94,24 +458,88 @@ export async function enqueueGenerationAttempt(
   });
 }
 
-async function existingGenerationControls(job: Pick<ExistingGenerationJob, "controls" | "profileId" | "profileVersion">) {
-  const controls = jsonRecord(job.controls);
-  if (!job.profileId || !job.profileVersion) return controls;
+async function existingGenerationRuntime(
+  job: Pick<ExistingGenerationJob, "controls" | "profileId" | "profileVersion">,
+  attempt: {
+    profileKey: string | null;
+    profileVersion: number | null;
+    workflowKey: string | null;
+    workflowVersion: number | null;
+  },
+) {
+  const storedControls = jsonRecord(job.controls);
+  const storedWorkflowKey =
+    attempt.workflowKey ?? stringFromRecord(storedControls, "workflowKey");
+  const storedWorkflowVersion =
+    attempt.workflowVersion ??
+    (nonnegativeIntegerFromRecord(storedControls, "workflowVersion") ||
+      undefined);
+  if (!job.profileId || !job.profileVersion) {
+    return {
+      controls: storedControls,
+      workflow: null,
+      workflowKey: null,
+      storedWorkflowKey,
+      storedWorkflowVersion,
+    };
+  }
   const profile = await prisma.generationModelProfile.findFirst({
     where: {
       version: job.profileVersion,
       OR: [{ profileKey: job.profileId }, { id: job.profileId }],
     },
   });
-  if (!profile) return controls;
-  return pruneUndefined({
-    ...controls,
+  if (!profile) {
+    return {
+      controls: storedControls,
+      workflow: null,
+      workflowKey: null,
+      storedWorkflowKey,
+      storedWorkflowVersion,
+    };
+  }
+  if (
+    (attempt.profileKey && attempt.profileKey !== profile.profileKey) ||
+    (
+      attempt.profileVersion !== null &&
+      attempt.profileVersion !== profile.version
+    )
+  ) {
+    throw Errors.conflict(
+      "Generation Attempt profile pin does not match the Generation Job",
+      {
+        generationJobProfileKey: profile.profileKey,
+        generationJobProfileVersion: profile.version,
+        attemptProfileKey: attempt.profileKey,
+        attemptProfileVersion: attempt.profileVersion,
+      },
+    );
+  }
+  const workflowKey = profile.workflowKey ?? profile.pipelineModel;
+  const workflow = await generationWorkflowDescriptor(workflowKey);
+  const controls = pruneUndefined({
+    ...storedControls,
+    generationProfileKey: profile.profileKey,
+    generationProfileVersion: profile.version,
+    workflowKey,
+    workflowVersion: workflow?.version,
+    workflowIdentity: workflow?.identity,
     modelCapabilities: normalizedModelCapabilities(profile.runnerConfig, profile.runner === "sd_cpp"),
     sdcpp: profile.runner === "sd_cpp" ? sdcppProfileRuntimeConfig(profile) : undefined,
   });
+  return {
+    controls,
+    workflow,
+    workflowKey,
+    storedWorkflowKey,
+    storedWorkflowVersion,
+  };
 }
 
-function normalizedModelCapabilities(runnerConfig: Prisma.JsonValue | null, sdCppDefault: boolean) {
+export function normalizedModelCapabilities(
+  runnerConfig: Prisma.JsonValue | null,
+  sdCppDefault: boolean,
+) {
   const config = jsonRecord(runnerConfig);
   const capabilities = jsonRecord(config.capabilities);
   return {
@@ -131,12 +559,197 @@ function modelCapabilitiesFromControls(controls: Record<string, unknown>) {
   };
 }
 
-function filterReferenceImagesForCapabilities(
-  images: Awaited<ReturnType<typeof imageReferenceInputsForGenerationJob>>,
-  capabilities: ReturnType<typeof modelCapabilitiesFromControls>,
+export function runtimeReferenceImagesForDispatch(input: {
+  generationJobId: string;
+  images: readonly ImageReferenceInput[];
+  capabilities: ReturnType<typeof modelCapabilitiesFromControls>;
+  workflow: WorkflowDescriptor | null;
+  workflowKey: string | null;
+  storedWorkflowKey?: string;
+  storedWorkflowVersion?: number;
+}) {
+  const sourceCount = input.images.filter(
+    (image) => image.role === "source_image",
+  ).length;
+  const lookCount = input.images.filter(
+    (image) => image.role === "look_reference",
+  ).length;
+  const identityCount = input.images.length - sourceCount;
+  if (
+    (sourceCount > 0 && !input.capabilities.initImage) ||
+    (identityCount > 0 && !input.capabilities.referenceImages)
+  ) {
+    throw Errors.conflict(
+      "Generation dispatch profile cannot consume every pinned image reference",
+      {
+        generationJobId: input.generationJobId,
+        sourceReferenceCount: sourceCount,
+        identityReferenceCount: identityCount,
+      },
+    );
+  }
+  if (!input.workflow) {
+    if (input.images.length === 0) return [];
+    throw Errors.conflict(
+      "Generation dispatch requires a concrete workflow descriptor for image references",
+      {
+        generationJobId: input.generationJobId,
+        workflowKey: input.workflowKey,
+      },
+    );
+  }
+  if (
+    input.storedWorkflowKey &&
+    input.storedWorkflowKey !== input.workflow.workflowKey
+  ) {
+    throw Errors.conflict(
+      "Generation dispatch workflow no longer matches the pinned job workflow",
+      {
+        generationJobId: input.generationJobId,
+        pinnedWorkflowKey: input.storedWorkflowKey,
+        effectiveWorkflowKey: input.workflow.workflowKey,
+      },
+    );
+  }
+  if (
+    input.storedWorkflowVersion !== undefined &&
+    input.storedWorkflowVersion !== input.workflow.version
+  ) {
+    throw Errors.conflict(
+      "Generation dispatch workflow version drifted after the job was created",
+      {
+        generationJobId: input.generationJobId,
+        pinnedWorkflowVersion: input.storedWorkflowVersion,
+        effectiveWorkflowVersion: input.workflow.version,
+      },
+    );
+  }
+  if (
+    lookCount > 0 &&
+    !input.workflow?.identity.supportsLookReference
+  ) {
+    throw Errors.conflict(
+      "Generation workflow cannot consume the pinned Character Look image reference",
+      {
+        generationJobId: input.generationJobId,
+        workflowKey: input.workflowKey,
+      },
+    );
+  }
+  if (
+    sourceCount > 0 &&
+    identityCount > 0 &&
+    !input.workflow.identity.supportsSourceImageWithIdentity
+  ) {
+    throw Errors.conflict(
+      "Generation workflow cannot combine source and identity image references",
+      {
+        generationJobId: input.generationJobId,
+        workflowKey: input.workflow.workflowKey,
+        workflowVersion: input.workflow.version,
+      },
+    );
+  }
+  const slotAuthority = assignWorkflowReferenceSlots(
+    input.workflow,
+    input.images.map((image) => image.role),
+  );
+  if (!slotAuthority.ok) {
+    throw Errors.conflict(
+      "Generation workflow cannot assign every pinned image reference to a semantic slot",
+      {
+        generationJobId: input.generationJobId,
+        workflowKey: input.workflow.workflowKey,
+        workflowVersion: input.workflow.version,
+        referenceRoles: input.images.map((image) => image.role),
+        slotAuthority,
+      },
+    );
+  }
+  return [...input.images];
+}
+
+async function assertGenerationCharacterDispatchable(
+  tx: Prisma.TransactionClient,
+  job: Pick<
+    ExistingGenerationJob,
+    | "id"
+    | "userId"
+    | "characterId"
+    | "controls"
+    | "mode"
+    | "sourceType"
+    | "visualProfileId"
+  >,
 ) {
-  return images.filter((image) =>
-    image.role === "source_image" ? capabilities.initImage : capabilities.referenceImages,
+  if (!job.characterId) return;
+  await lockCharacterGenerationAuthority(tx, job.characterId);
+  const character = await tx.character.findFirst({
+    where: job.sourceType === "content_production_item"
+      ? {
+          id: job.characterId,
+          deletedAt: null,
+          status: { notIn: ["archived", "removed"] },
+        }
+      : {
+        AND: [
+          {
+            id: job.characterId,
+            deletedAt: null,
+            age: { gte: 18 },
+            status: "approved",
+          },
+          {
+            OR: [
+              { creatorId: job.userId },
+              publicCharacterAudienceWhere,
+            ],
+          },
+        ],
+      },
+    select: { id: true },
+  });
+  if (!character) {
+    throw Errors.conflict(
+      "Generation dispatch rejected a Character that is no longer active for its owner",
+      {
+        generationJobId: job.id,
+        characterId: job.characterId,
+      },
+    );
+  }
+  if (
+    job.mode === "image" &&
+    job.visualProfileId == null &&
+    (
+      job.sourceType !== "content_production_item" ||
+      legacyCharacterGenerationAuthorityFromControls(job.controls) !== null
+    )
+  ) {
+    await assertPinnedLegacyCharacterGenerationAuthority(tx, {
+      generationJobId: job.id,
+      characterId: job.characterId,
+      controls: job.controls,
+    });
+  }
+}
+
+function legacyCharacterGenerationAuthoritiesEqual(
+  left: LegacyCharacterGenerationAuthority,
+  right: LegacyCharacterGenerationAuthority,
+) {
+  return (
+    left.schemaVersion === right.schemaVersion &&
+    left.characterId === right.characterId &&
+    left.releaseId === right.releaseId &&
+    left.releaseSnapshotHash === right.releaseSnapshotHash &&
+    left.releaseProvenanceSchemaVersion ===
+      right.releaseProvenanceSchemaVersion &&
+    left.qualificationId === right.qualificationId &&
+    left.qualificationKind === right.qualificationKind &&
+    left.qualificationEvidenceSchemaVersion ===
+      right.qualificationEvidenceSchemaVersion &&
+    left.qualificationPolicyVersion === right.qualificationPolicyVersion
   );
 }
 
@@ -246,4 +859,31 @@ function jsonStringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string")
     : [];
+}
+
+function referenceManifestAssetIds(value: unknown): string[] {
+  return referenceManifestEntries(value).flatMap((item) => {
+    const mediaAssetId = stringFromRecord(item, "mediaAssetId");
+    return mediaAssetId ? [mediaAssetId] : [];
+  });
+}
+
+function referenceManifestEntries(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value) ? value.map(jsonRecord) : [];
+}
+
+function nonnegativeIntegerFromRecord(
+  value: Record<string, unknown>,
+  key: string,
+) {
+  const child = value[key];
+  return typeof child === "number" &&
+    Number.isSafeInteger(child) &&
+    child >= 0
+    ? child
+    : 0;
+}
+
+function referenceRoleKey(assetId: string, role: string) {
+  return `${assetId}\u0000${role}`;
 }

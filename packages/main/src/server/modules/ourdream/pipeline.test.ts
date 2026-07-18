@@ -11,6 +11,7 @@ import {
   dreamcoinBalance,
   expectOk,
   grantCoins,
+  publishCharacterForPublicAudience,
   purgeTestData,
   runQueuedGenerationJobs,
 } from "@/server/test/helpers";
@@ -23,13 +24,36 @@ const cleanupModerationTargetIds: string[] = [];
 
 beforeAll(async () => {
   await purgeTestData(P);
-  await createUser({ id: SYS });
+  await createUser({ id: SYS, dataClass: "customer" });
   await createCharacter({
     id: CHAR,
     creatorId: SYS,
     visibility: "public",
     status: "approved",
     systemPrompt: "Stay warm and concise.",
+  });
+  await prisma.characterVisualProfile.create({
+    data: {
+      id: `${P}bootstrap-visual-profile`,
+      characterId: CHAR,
+      version: 1,
+      status: "active",
+      style: "realistic",
+      identityPrompt: "Test Character, adult woman",
+      faceTraits: {},
+      hairTraits: {},
+      bodyTraits: {},
+      signatureTraits: {},
+      styleTraits: {},
+      anchorAssetIds: [],
+      referenceAssetIds: [],
+      adapterRefs: {},
+      createdFrom: "generation_bootstrap:test",
+    },
+  });
+  await publishCharacterForPublicAudience({
+    characterId: CHAR,
+    ownerId: SYS,
   });
 });
 
@@ -62,21 +86,6 @@ async function requeueAsFinalAttempt(queue: "ai.image.generate" | "ai.video.gene
   await jobQueue.removeByDedupePrefix(dedupeKey, [queue]);
   await jobQueue.enqueue({
     queue,
-    payload: queued.payload as Prisma.InputJsonValue,
-    dedupeKey,
-    maxAttempts: 1,
-  });
-}
-
-async function requeuePreviewAsFinalAttempt(previewJobId: string) {
-  const dedupeKey = `character.preview:${previewJobId}`;
-  const queued = await jobQueue.getByDedupeKey("character.preview", dedupeKey);
-  expect(queued).not.toBeNull();
-  if (!queued) throw new Error(`Missing queued character.preview job for ${previewJobId}`);
-
-  await jobQueue.removeByDedupePrefix(dedupeKey, ["character.preview"]);
-  await jobQueue.enqueue({
-    queue: "character.preview",
     payload: queued.payload as Prisma.InputJsonValue,
     dedupeKey,
     maxAttempts: 1,
@@ -147,8 +156,9 @@ describe("local AI service pipeline", () => {
       where: { sourceJobId: jobId },
     });
     expect(asset.metadata).toMatchObject({
-      provider: "mock-pipeline",
+      provider: "mock",
       contentType: "image/png",
+      synthetic: true,
     });
   });
 
@@ -202,7 +212,7 @@ describe("local AI service pipeline", () => {
     await expect(prisma.generationSettlementLink.count({ where: { requestId: jobId } })).resolves.toBe(2);
   });
 
-  it("settles async character preview as failed when the worker throws on its final attempt", async () => {
+  it("keeps character preview provider work out of the main mock drain", async () => {
     const userId = `${P}preview-throw-user`;
     await createUser({ id: userId });
 
@@ -219,10 +229,79 @@ describe("local AI service pipeline", () => {
     });
     expectOk(preview);
     const previewJobId = preview.data.previewJob.id as string;
-    cleanupJobDedupeKeys.push(`character.preview:${previewJobId}`);
+    cleanupJobDedupeKeys.push(`character-preview:${previewJobId}`);
 
-    await requeuePreviewAsFinalAttempt(previewJobId);
-    vi.spyOn(providers.image, "generate").mockRejectedValueOnce(new Error("preview provider down"));
+    await runQueuedGenerationJobs(4);
+
+    const status = await api("GET", `character-drafts/${draftId}/preview`, {
+      userId,
+      ageGate: true,
+    });
+    expectOk(status);
+    expect(status.data.previewJob).toMatchObject({
+      status: "queued",
+      provider: "generation_service",
+    });
+
+    const previewQueueJob = await jobQueue.getByDedupeKey(
+      "character.preview",
+      `character-preview:${previewJobId}`,
+    );
+    expect(previewQueueJob).toMatchObject({
+      queue: "character.preview",
+      state: "waiting",
+      payload: expect.objectContaining({
+        kind: "character.preview",
+        previewJobId,
+        draftId,
+        userId,
+        model: expect.not.stringContaining("mock"),
+      }),
+    });
+  });
+
+  it("settles a generation-service character preview failure through main authority", async () => {
+    const userId = `${P}preview-no-body-user`;
+    await createUser({ id: userId });
+
+    const draft = await api("POST", "character-drafts", {
+      userId,
+      ageGate: true,
+      body: { name: "Preview Missing Bytes", gender: "female", style: "realistic" },
+    });
+    expectOk(draft);
+    const draftId = draft.data.draft.id as string;
+    const preview = await api("POST", `character-drafts/${draftId}/preview`, {
+      userId,
+      ageGate: true,
+    });
+    expectOk(preview);
+    const previewJobId = preview.data.previewJob.id as string;
+    cleanupJobDedupeKeys.push(
+      `character-preview:${previewJobId}`,
+      `character-preview-finalize:${previewJobId}:failed`,
+    );
+    await jobQueue.removeByDedupePrefix(
+      `character-preview:${previewJobId}`,
+      ["character.preview"],
+    );
+    await jobQueue.enqueue({
+      queue: "app.ai.finalize",
+      payload: {
+        version: 1,
+        kind: "character.preview.failed",
+        requestId: `character-preview:${previewJobId}`,
+        previewJobId,
+        draftId,
+        userId,
+        error: {
+          code: "preview_provider_down",
+          message: "Image backend unavailable",
+          retryable: false,
+        },
+      },
+      dedupeKey: `character-preview-finalize:${previewJobId}:failed`,
+    });
 
     await runQueuedGenerationJobs(4);
 
@@ -233,14 +312,9 @@ describe("local AI service pipeline", () => {
     expectOk(status);
     expect(status.data.previewJob).toMatchObject({
       status: "failed",
-      errorCode: "preview_worker_error",
+      errorCode: "preview_provider_down",
     });
-
-    const previewQueueJob = await jobQueue.getByDedupeKey(
-      "character.preview",
-      `character.preview:${previewJobId}`,
-    );
-    expect(previewQueueJob).toMatchObject({ queue: "character.preview", state: "completed" });
+    expect(status.data.asset).toBeNull();
   });
 
   it("fails and refunds image jobs when generated assets cannot be persisted", async () => {
@@ -291,6 +365,53 @@ describe("local AI service pipeline", () => {
     expect(finalizeJob).toMatchObject({ queue: "app.ai.finalize", state: "completed" });
   });
 
+  it("fails and refunds image jobs when the provider returns keys without asset bytes", async () => {
+    const userId = `${P}image-no-body-user`;
+    await createUser({ id: userId });
+    await grantCoins(userId, 100, "seed");
+
+    const gen = await api("POST", "generation/jobs", {
+      userId,
+      ageGate: true,
+      body: { mode: "image", characterId: CHAR, outputCount: 1 },
+    });
+    expectOk(gen, 202);
+    const jobId = gen.data.job.id as string;
+    cleanupJobDedupeKeys.push(
+      `generation:${jobId}`,
+      `generation-finalize:${jobId}:failed`,
+      `generation-finalize:${jobId}:completed`,
+    );
+    cleanupModerationTargetIds.push(jobId);
+
+    await requeueAsFinalAttempt("ai.image.generate", jobId);
+    vi.spyOn(providers.image, "generate").mockResolvedValueOnce({
+      ok: true,
+      data: {
+        assets: [{
+          key: "provider/image-without-body.png",
+          width: 1024,
+          height: 1024,
+          contentType: "image/png",
+        }],
+      },
+    });
+    const blobPut = vi.spyOn(providers.blob, "putPrivate");
+
+    await runQueuedGenerationJobs(8);
+
+    const failed = await api("GET", `generation/jobs/${jobId}`, { userId, ageGate: true });
+    expectOk(failed);
+    expect(failed.data.job).toMatchObject({
+      status: "failed",
+      errorCode: "asset_body_missing",
+    });
+    expect(failed.data.assets).toHaveLength(0);
+    expect(blobPut).not.toHaveBeenCalled();
+    expect(await dreamcoinBalance(userId)).toBe(100);
+    expect(await prisma.mediaAsset.count({ where: { sourceJobId: jobId } })).toBe(0);
+  });
+
   it("fails empty image provider results without charging the user", async () => {
     const userId = `${P}empty-result-user`;
     await createUser({ id: userId });
@@ -336,6 +457,15 @@ describe("local AI service pipeline", () => {
     await prisma.featureFlag.update({
       where: { key: "video_gen" },
       data: { enabled: true, rolloutPercent: 100 },
+    });
+    const previousVideoProfile =
+      await prisma.generationModelProfile.findUniqueOrThrow({
+        where: { id: "seed-profile-video-beta-v1" },
+        select: { rolloutPercent: true },
+      });
+    await prisma.generationModelProfile.update({
+      where: { id: "seed-profile-video-beta-v1" },
+      data: { rolloutPercent: 100 },
     });
 
     try {
@@ -396,6 +526,70 @@ describe("local AI service pipeline", () => {
       await prisma.featureFlag.update({
         where: { key: "video_gen" },
         data: { enabled: false, rolloutPercent: 0 },
+      });
+      await prisma.generationModelProfile.update({
+        where: { id: "seed-profile-video-beta-v1" },
+        data: previousVideoProfile,
+      });
+    }
+  });
+
+  it("serves generated video bytes instead of an unrelated image placeholder", async () => {
+    const userId = `${P}video-success`;
+    await createUser({ id: userId });
+    await grantCoins(userId, 300, "seed");
+    await prisma.entitlement.create({
+      data: { userId, key: "video_generation", value: true, source: "test" },
+    });
+    await prisma.featureFlag.update({
+      where: { key: "video_gen" },
+      data: { enabled: true, rolloutPercent: 100 },
+    });
+    const previousVideoProfile =
+      await prisma.generationModelProfile.findUniqueOrThrow({
+        where: { id: "seed-profile-video-beta-v1" },
+        select: { rolloutPercent: true },
+      });
+    await prisma.generationModelProfile.update({
+      where: { id: "seed-profile-video-beta-v1" },
+      data: { rolloutPercent: 100 },
+    });
+
+    try {
+      const gen = await api("POST", "generation/jobs", {
+        userId,
+        ageGate: true,
+        body: { mode: "video", characterId: CHAR, outputCount: 1 },
+      });
+      expectOk(gen, 202);
+      const jobId = gen.data.job.id as string;
+      cleanupJobDedupeKeys.push(
+        `generation:${jobId}`,
+        `generation-finalize:${jobId}:completed`,
+      );
+      cleanupModerationTargetIds.push(jobId);
+
+      await runQueuedGenerationJobs(8);
+
+      const asset = await prisma.mediaAsset.findFirstOrThrow({
+        where: { sourceJobId: jobId },
+      });
+      expect(asset.type).toBe("video");
+      expect(asset.url).toMatch(/^\/user-content\/.+\/content\.mp4$/);
+      expect(asset.thumbnailUrl).toBeNull();
+      expect(asset.url).not.toContain("promo-card");
+      expect(asset.metadata).toMatchObject({
+        provider: "mock",
+        synthetic: true,
+      });
+    } finally {
+      await prisma.featureFlag.update({
+        where: { key: "video_gen" },
+        data: { enabled: false, rolloutPercent: 0 },
+      });
+      await prisma.generationModelProfile.update({
+        where: { id: "seed-profile-video-beta-v1" },
+        data: previousVideoProfile,
       });
     }
   });

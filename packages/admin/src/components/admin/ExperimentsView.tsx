@@ -106,7 +106,7 @@ export function ExperimentsView() {
 
       <section aria-labelledby="managed-experiments-heading" className="space-y-3">
         <h3 className="text-sm font-semibold" id="managed-experiments-heading">{t("Experiment definitions")} ({experiments.length})</h3>
-        {!loading && experiments.length === 0 ? <p className="rounded-lg border border-dashed border-[var(--ad-border)] p-6 text-sm text-[var(--ad-text-muted)]">{t("No managed experiments yet. Create an immutable draft to begin.")}</p> : null}
+        {!loading && !error && experiments.length === 0 ? <p className="rounded-lg border border-dashed border-[var(--ad-border)] p-6 text-sm text-[var(--ad-text-muted)]">{t("No managed experiments yet. Create an immutable draft to begin.")}</p> : null}
         <div className="grid gap-3">
           {experiments.map((row) => {
             const result = analysis[row.id];

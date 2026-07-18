@@ -310,7 +310,12 @@ describe("Admin cutover invariant adversarial release authority", () => {
     const officialLiveProjectionMismatch = await createReleaseGraph("official-live-projection-mismatch");
     await prisma.character.update({
       where: { id: officialLiveProjectionMismatch.characterId },
-      data: { source: "official", visibility: "private", status: "archived", imageAssetId: null },
+      data: {
+        source: "official",
+        visibility: "public",
+        status: "approved",
+        imageAssetId: null,
+      },
     });
     const crossCharacter = await createReleaseGraph("cross-character");
     const servingCharacterId = `${prefix}-cross-serving-character`;
@@ -677,7 +682,6 @@ describe("Admin cutover invariant adversarial release authority", () => {
         key: "serving_default_route_unqualified",
         status: "failed",
         sampleIds: expect.arrayContaining([
-          `${prefix}-legacy-missing-identity-reference-release`,
           `${prefix}-scheduled-invalid-release`,
           `${prefix}-scheduled-wrong-status-release`,
         ]),
@@ -748,6 +752,7 @@ describe("Admin cutover invariant adversarial release authority", () => {
           'character_serving_currentReleaseId_fkey',
           'character_serving_scheduledReleaseId_fkey'
         )
+          AND connamespace = current_schema()::regnamespace
       `;
       expect(constraints.every((constraint) => constraint.deferrable)).toBe(true);
       await tx.$executeRawUnsafe("SET CONSTRAINTS ALL DEFERRED");

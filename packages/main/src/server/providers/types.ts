@@ -81,19 +81,56 @@ export interface ModerationProvider {
   >;
 }
 
+export type PaymentInvoiceStatus =
+  | "created"
+  | "processing"
+  | "settled"
+  | "expired"
+  | "invalid";
+
+export type PaymentInvoiceAdditionalStatus =
+  | "none"
+  | "marked"
+  | "paid_late"
+  | "paid_over"
+  | "paid_partial";
+
+export type PaymentInvoice = {
+  provider: "mock" | "btcpay";
+  invoiceId: string;
+  checkoutUrl: string;
+  status: PaymentInvoiceStatus;
+  additionalStatus: PaymentInvoiceAdditionalStatus;
+  orderId: string;
+  amountCents: number;
+  currency: string;
+};
+
+export type BillingModel = "prepaid_period" | "recurring" | "unknown";
+export type RenewalCapability = "none" | "cancel_resume";
+
+export type PaymentProviderCapabilities = {
+  billingModel: BillingModel;
+  renewalCapability: RenewalCapability;
+};
+
 export interface PaymentProvider {
+  readonly capabilities: PaymentProviderCapabilities;
   createInvoice(input: {
+    orderId: string;
     userId: string;
     amountCents: number;
     currency: string;
     metadata?: Record<string, string>;
+    signal?: AbortSignal;
   }): Promise<
-    ProviderResult<{
-      provider: "mock" | "btcpay";
-      invoiceId: string;
-      checkoutUrl: string;
-      status: "created";
-    }>
+    ProviderResult<PaymentInvoice>
+  >;
+  findInvoiceByOrderId(input: {
+    orderId: string;
+    signal?: AbortSignal;
+  }): Promise<
+    ProviderResult<PaymentInvoice | null>
   >;
   parseWebhook(input: {
     providerEventId: string;
@@ -103,8 +140,10 @@ export interface PaymentProvider {
   }): Promise<
     ProviderResult<{
       providerEventId: string;
+      deliveryId: string;
       type: "invoice.confirmed" | "invoice.ignored";
       invoiceId?: string;
+      orderId?: string;
     }>
   >;
 }

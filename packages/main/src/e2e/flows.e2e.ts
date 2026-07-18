@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import { randomUUID } from "node:crypto";
 
 // SPEC (docs/architecture/11-testing.md §5): L4 critical user journeys against a
 // real `next dev` server + seeded Postgres + configured providers. UI flows drive the
@@ -20,6 +21,10 @@ async function dismissAgeGate(page: Page) {
 
 function uniqueEmail(tag: string) {
   return `e2e-${tag}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@test.local`;
+}
+
+function uniqueCustomerEmail(tag: string) {
+  return `e2e-${tag}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@e2e.example.net`;
 }
 
 function internalToken() {
@@ -105,9 +110,15 @@ test("flow 1: age gate → explore grid → character detail", async ({ page }) 
 
   const enter = page.getByRole("button", { name: /over 18/i });
   await expect(enter).toBeVisible();
-  await expect(page.locator("main")).toHaveCount(0);
+  await expect(page.locator("main")).toHaveCount(1);
+  await expect(page.locator("[data-age-gate-content]")).toHaveAttribute(
+    "inert",
+    "",
+  );
   await expect(page.locator('a[href^="/characters/"]')).toHaveCount(0);
-  await expect(page.getByRole("link", { name: "Terms" })).toHaveAttribute("href", "/terms");
+  await expect(
+    page.getByRole("link", { name: "Terms", exact: true }),
+  ).toHaveAttribute("href", "/terms");
   await expect(page.getByRole("link", { name: "Leave site" })).toHaveAttribute(
     "href",
     "https://www.google.com/",
@@ -116,6 +127,13 @@ test("flow 1: age gate → explore grid → character detail", async ({ page }) 
   expect(preGateApiRequests).toEqual([]);
   await enter.click();
   await expect(enter).toBeHidden();
+  await expect(page.locator("[data-age-gate-content]")).not.toHaveAttribute(
+    "inert",
+    "",
+  );
+  await expect(page.getByRole("main")).toHaveCount(1);
+  await expect(page.getByRole("main").locator("footer")).toHaveCount(0);
+  await expect(page.getByRole("contentinfo")).toHaveCount(1);
 
   const firstCard = page.locator('a[href^="/characters/"]').first();
   await expect(firstCard).toBeVisible();
@@ -124,6 +142,27 @@ test("flow 1: age gate → explore grid → character detail", async ({ page }) 
   await expect(page).toHaveURL(/\/characters\//);
   // Detail fetched successfully (age gate cookie present) → action buttons render.
   await expect(page.getByRole("button", { name: "Chat" })).toBeVisible();
+  const characterName = (
+    await page.getByRole("heading", { level: 1 }).textContent()
+  )?.trim();
+  expect(characterName).toBeTruthy();
+  await expect(page).toHaveTitle(`${characterName} | ourdream.ai`);
+  await expect(page.locator('link[rel="canonical"]')).toHaveAttribute(
+    "href",
+    page.url(),
+  );
+  await expect(page.locator('meta[property="og:url"]')).toHaveAttribute(
+    "content",
+    page.url(),
+  );
+  await expect(page.locator('meta[property="og:image"]')).toHaveAttribute(
+    "content",
+    /^https?:\/\//,
+  );
+  await expect(page.locator('meta[name="robots"]')).toHaveAttribute(
+    "content",
+    /noindex/i,
+  );
 });
 
 test("age gate blocks generator workspace and protected API fetches before acceptance", async ({
@@ -145,9 +184,65 @@ test("age gate blocks generator workspace and protected API fetches before accep
 
   const enter = page.getByRole("button", { name: /over 18/i });
   await expect(enter).toBeVisible();
-  await expect(page.locator("main")).toHaveCount(0);
+  await expect(page.locator("main")).toHaveCount(1);
+  await expect(page.locator("[data-age-gate-content]")).toHaveAttribute(
+    "inert",
+    "",
+  );
   await page.waitForTimeout(300);
   expect(preGateApiRequests).toEqual([]);
+});
+
+test("age gate blocks plan authorities before acceptance", async ({ page }) => {
+  const planRequests: string[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/v1/plans") planRequests.push(url.pathname);
+  });
+
+  for (const path of ["/comparison", "/upgrade"]) {
+    await page.goto(path);
+    await expect(
+      page.getByRole("button", { name: /over 18/i }),
+    ).toBeVisible();
+    await page.waitForTimeout(300);
+    expect(planRequests, `${path} fetched plan authority before acceptance`).toEqual(
+      [],
+    );
+  }
+});
+
+test("age gate is re-evaluated across both directions of client navigation", async ({
+  context,
+  page,
+}) => {
+  await context.clearCookies();
+  await page.addInitScript(() => {
+    localStorage.removeItem("AdultContentAcceptedOD");
+  });
+
+  await page.goto("/terms");
+  await expect(page.getByRole("dialog", { name: "Adults Only" })).toHaveCount(
+    0,
+  );
+
+  await page.locator('aside a[href="/"]').first().click();
+  await expect(page).toHaveURL(/\/$/);
+  const dialog = page.getByRole("dialog", { name: "Adults Only" });
+  await expect(dialog).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: /over 18/i }),
+  ).toBeFocused();
+
+  await dialog.getByRole("link", { name: "Terms" }).click();
+  await expect(page).toHaveURL(/\/terms$/);
+  await expect(dialog).toHaveCount(0);
+
+  await page.locator('aside a[href="/"]').first().click();
+  await expect(page).toHaveURL(/\/$/);
+  await expect(
+    page.getByRole("dialog", { name: "Adults Only" }),
+  ).toBeVisible();
 });
 
 test("age gate accept failures are announced as assertive alerts and can retry", async ({
@@ -181,11 +276,15 @@ test("age gate accept failures are announced as assertive alerts and can retry",
   await expect(status).toHaveAttribute("role", "alert");
   await expect(status).toHaveAttribute("aria-live", "assertive");
   await expect(enter).toBeVisible();
-  await expect(page.locator("main")).toHaveCount(0);
+  await expect(page.locator("main")).toHaveCount(1);
+  await expect(page.locator("[data-age-gate-content]")).toHaveAttribute(
+    "inert",
+    "",
+  );
 
   await enter.click();
   await expect(enter).toBeHidden();
-  await expect(page.locator("main")).toBeVisible();
+  await expect(page.getByRole("main")).toBeVisible();
   expect(acceptAttempts).toBeGreaterThanOrEqual(2);
 });
 
@@ -213,9 +312,15 @@ test("flow 2: signup through the UI creates an authenticated session", async ({ 
   await page.goto("/signup");
   await dismissAgeGate(page);
 
-  await page.getByLabel("Display name").fill("E2E Signup User");
-  await page.locator('input[type="email"]').fill(email);
-  await page.locator('input[type="password"]').fill("password123");
+  await page
+    .getByLabel("Display name")
+    .filter({ visible: true })
+    .fill("E2E Signup User");
+  await page.getByLabel("Email").filter({ visible: true }).fill(email);
+  await page
+    .getByLabel("Password")
+    .filter({ visible: true })
+    .fill("password123");
   await page.getByRole("button", { name: /join free/i }).click();
 
   // AuthWorkspace redirects to "/" on success.
@@ -237,8 +342,11 @@ test("auth UI handles invalid login, duplicate signup recovery, logout, returnin
   await page.request.post("/api/v1/age-gate/accept", { data: { sourcePath: "/" } });
 
   await page.goto("/login");
-  await page.getByLabel("Email").fill(email);
-  await page.getByLabel("Password").fill("wrong-password");
+  await page.getByLabel("Email").filter({ visible: true }).fill(email);
+  await page
+    .getByLabel("Password")
+    .filter({ visible: true })
+    .fill("wrong-password");
   await page.getByRole("button", { name: "Login" }).click();
   await expect(page.getByText("Invalid email or password")).toBeVisible();
   await expect(page.getByTestId("auth-status")).toHaveAttribute("role", "alert");
@@ -250,9 +358,15 @@ test("auth UI handles invalid login, duplicate signup recovery, logout, returnin
   await expect(page).toHaveURL(/\/login$/);
 
   await page.goto("/signup");
-  await page.getByLabel("Display name").fill("E2E Returning User");
-  await page.getByLabel("Email").fill(email);
-  await page.getByLabel("Password").fill("password123");
+  await page
+    .getByLabel("Display name")
+    .filter({ visible: true })
+    .fill("E2E Returning User");
+  await page.getByLabel("Email").filter({ visible: true }).fill(email);
+  await page
+    .getByLabel("Password")
+    .filter({ visible: true })
+    .fill("password123");
   await page.getByRole("button", { name: "Join Free" }).click();
   await expect(page).toHaveURL(/\/$/);
   await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
@@ -269,9 +383,15 @@ test("auth UI handles invalid login, duplicate signup recovery, logout, returnin
   expect(body.data.user).toBeNull();
 
   await page.goto(`/signup?next=${encodedGenerateTarget}`);
-  await page.getByLabel("Display name").fill("E2E Returning User");
-  await page.getByLabel("Email").fill(email);
-  await page.getByLabel("Password").fill("password123");
+  await page
+    .getByLabel("Display name")
+    .filter({ visible: true })
+    .fill("E2E Returning User");
+  await page.getByLabel("Email").filter({ visible: true }).fill(email);
+  await page
+    .getByLabel("Password")
+    .filter({ visible: true })
+    .fill("password123");
   await page.getByRole("button", { name: "Join Free" }).click();
   await expect(page.getByText("Email already registered")).toBeVisible();
   await expect(page.getByTestId("auth-status")).toHaveAttribute("role", "alert");
@@ -283,8 +403,11 @@ test("auth UI handles invalid login, duplicate signup recovery, logout, returnin
 
   await page.getByRole("link", { name: "Log in instead" }).click();
   await expect(page).toHaveURL(new RegExp(`/login\\?next=${encodedGenerateTarget}$`));
-  await page.getByLabel("Email").fill(email);
-  await page.getByLabel("Password").fill("password123");
+  await page.getByLabel("Email").filter({ visible: true }).fill(email);
+  await page
+    .getByLabel("Password")
+    .filter({ visible: true })
+    .fill("password123");
   await page.getByRole("button", { name: "Login" }).click();
   await expect(page).toHaveURL(/\/generate\?characterId=melissa-burke$/);
   await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
@@ -316,6 +439,7 @@ test("flow 3: chat session persists through the real server", async ({ page }) =
   const sessionId = (await session.json()).data.session.id as string;
 
   const sent = await ctx.post(`/api/v1/chat/sessions/${sessionId}/messages`, {
+    headers: { "idempotency-key": randomUUID() },
     data: { content: "hello from e2e" },
   });
   expect(sent.ok()).toBeTruthy();
@@ -342,7 +466,10 @@ test("flow 4/5/6: generation, billing, and moderation via the real server", asyn
 }) => {
   test.setTimeout(120_000);
   const ctx = page.request;
-  const email = uniqueEmail("api");
+  // This flow proves that a real customer report reaches the operational admin
+  // queue. Reserved @test.local accounts are fixture-class data and are
+  // intentionally excluded from that queue.
+  const email = uniqueCustomerEmail("api");
 
   // Age gate must come first — proxy 403s every other /api/v1 path until accepted.
   await ctx.post("/api/v1/age-gate/accept", { data: { sourcePath: "/" } });
@@ -367,6 +494,7 @@ test("flow 4/5/6: generation, billing, and moderation via the real server", asyn
 
   // Flow 5 — billing: mock checkout activates the premium entitlement server-side.
   const checkout = await ctx.post("/api/v1/billing/checkout", {
+    headers: { "idempotency-key": `e2e-checkout-${crypto.randomUUID()}` },
     data: { slug: "premium", billingPeriod: "monthly", autoConfirm: true },
   });
   expect(checkout.ok()).toBeTruthy();
@@ -377,25 +505,29 @@ test("flow 4/5/6: generation, billing, and moderation via the real server", asyn
   const report = await ctx.post(`/api/v1/characters/${characterId}/report`, {
     data: { category: "spam", description: "e2e report" },
   });
-  const reportId = (await report.json()).data.report.id as string;
+  const reportBody = await report.json();
+  expect(report.ok(), JSON.stringify(reportBody)).toBeTruthy();
+  const reportId = reportBody.data.report.id as string;
 
   const queue = await ctx.get("/api/v1/admin/moderation/queue", {
     headers: { "x-idream-user-id": "seed-admin-user", "x-idream-role": "admin" },
     params: { id: reportId },
   });
-  const reports = (await queue.json()).data.reports as Array<{ id: string }>;
+  const queueBody = await queue.json();
+  expect(queue.ok(), JSON.stringify(queueBody)).toBeTruthy();
+  const reports = queueBody.data.reports as Array<{ id: string }>;
   expect(reports.some((r) => r.id === reportId)).toBe(true);
 });
 
 test("smoke: creator and generator workspaces render", async ({ page }) => {
   await page.goto("/create");
   await dismissAgeGate(page);
-  await expect(page.locator("main")).toBeVisible();
+  await expect(page.getByRole("main")).toBeVisible();
   await expect(page).toHaveURL(/\/create/);
 
   await page.goto("/generate");
   await dismissAgeGate(page);
-  await expect(page.locator("main")).toBeVisible();
+  await expect(page.getByRole("main")).toBeVisible();
   await expect(page).toHaveURL(/\/generate/);
 });
 

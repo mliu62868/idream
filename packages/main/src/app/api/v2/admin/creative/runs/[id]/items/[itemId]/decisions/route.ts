@@ -30,19 +30,29 @@ export async function POST(request: Request, context: Context) {
       target: { type: "creative_run_item", id: itemId },
       expectedVersion: body.entityVersion,
       payload: { runId: id, ...body },
-      mutate: async (tx) => creativeReviewDecisionResultSchema.parse(
-        await recordCreativeReviewDecision({
+      mutate: async (tx) => {
+        const result = await recordCreativeReviewDecision({
           runId: id,
           itemId,
           actor,
           expectedVersion: body.entityVersion,
+          supersedesDecisionId: body.supersedesDecisionId,
           decision: body.decision,
           identityConsistency: body.identityConsistency,
           score: body.score,
+          quality: body.quality,
           reason: body.reason,
           requestId,
-        }, tx),
-      ),
+        }, tx);
+        return creativeReviewDecisionResultSchema.parse({
+          runId: result.runId,
+          itemId: result.itemId,
+          decisionId: result.decisionId,
+          decision: result.decision,
+          workflowStage: result.workflowStage,
+          version: result.version,
+        });
+      },
     });
   });
 }

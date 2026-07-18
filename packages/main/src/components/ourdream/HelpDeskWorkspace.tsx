@@ -26,6 +26,13 @@ import {
   type FormEvent,
   type ReactNode,
 } from "react";
+import {
+  parseFeedbackItemResponse,
+  parseFeedbackItemsResponse,
+  parseViewerAuthorityResponse,
+  type PublicFeedbackItem as FeedbackItem,
+} from "@/lib/public-api-contracts";
+import { useAgeGateAccess } from "./AgeGateBoundary";
 import { authHrefForTarget } from "./authRedirect";
 
 type SupportPayload = {
@@ -37,25 +44,6 @@ type SupportPayload = {
       status: string;
       category: string;
     };
-  };
-  error?: { message?: string };
-};
-
-type FeedbackItem = {
-  id: string;
-  title: string;
-  description: string;
-  category: "bug" | "feature" | "improvement";
-  status: string;
-  voteCount: number;
-  userVoted: boolean;
-};
-
-type FeedbackPayload = {
-  ok?: boolean;
-  data?: {
-    items?: FeedbackItem[];
-    item?: FeedbackItem;
   };
   error?: { message?: string };
 };
@@ -141,7 +129,6 @@ type PendingFeedbackVote = {
 };
 
 const FEEDBACK_DRAFT_STORAGE_KEY = "ourdream.helpdesk.feedbackDraft.v1";
-const FEEDBACK_VOTE_STORAGE_KEY = "ourdream.helpdesk.pendingFeedbackVote.v1";
 const APPEAL_DRAFT_STORAGE_KEY = "ourdream.helpdesk.appealDraft.v1";
 const INITIAL_FEEDBACK_DRAFT: FeedbackDraft = {
   category: "feature",
@@ -159,12 +146,12 @@ const faqs = [
   {
     question: "I cannot start chat or generation.",
     answer:
-      "Check that the age gate is accepted and that you are signed in. Generation also requires enough dreamcoins or an active plan.",
+      "Check that the age gate is accepted and that you are signed in. Generation requires enough dreamcoins and an available model; plan entitlements may control access to specific models.",
   },
   {
-    question: "Where do I manage billing?",
+    question: "Where can I see billing and access?",
     answer:
-      "Open Profile to see your current plan, renewal state, balance, and local beta billing actions.",
+      "Open Profile → Billing & access to see your current plan, balance, and benefits end date. Current purchases are prepaid for one selected period and do not renew automatically.",
   },
   {
     question: "How do I report a character or media item?",
@@ -197,6 +184,7 @@ const roadmapItems = [
 ] as const;
 
 export function HelpDeskWorkspace() {
+  const { accepted: ageGateAccepted } = useAgeGateAccess();
   const [supportDraft, setSupportDraft] = useState<SupportDraft>(INITIAL_SUPPORT_DRAFT);
   const [status, setStatus] = useState("");
   const [ticketId, setTicketId] = useState("");
@@ -213,6 +201,9 @@ export function HelpDeskWorkspace() {
   const [appealDraft, setAppealDraft] = useState<AppealDraft>(INITIAL_APPEAL_DRAFT);
   const [appealStatus, setAppealStatus] = useState("");
   const [appealSubmitting, setAppealSubmitting] = useState(false);
+  const [viewerScope, setViewerScope] = useState<string | null>(null);
+  const viewerScopeRef = useRef<string | null>(null);
+  const hydratedViewerScopeRef = useRef<string | null>(null);
   const { category, description, diagnosticConsent, subject } = supportDraft;
   const {
     category: feedbackCategory,
@@ -269,61 +260,124 @@ export function HelpDeskWorkspace() {
   );
 
   const loadFeedbackItems = useCallback(async () => {
+    if (!ageGateAccepted) return;
     setFeedbackLoading(true);
     setFeedbackLoadError("");
     try {
       const response = await fetch("/api/v1/feedback/items", { method: "GET" });
-      const payload = (await response.json()) as FeedbackPayload;
-      if (!response.ok || payload.ok === false) {
+      const raw = await response.json();
+      if (!response.ok) {
         setFeedbackItems([]);
-        setFeedbackLoadError(payload.error?.message ?? "Could not load feature voting.");
+        setFeedbackLoadError(
+          apiErrorMessage(raw) ?? "Could not load feature voting.",
+        );
         return;
       }
-      setFeedbackItems(payload.data?.items ?? []);
+      setFeedbackItems(parseFeedbackItemsResponse(raw).items);
     } catch {
       setFeedbackItems([]);
       setFeedbackLoadError("Could not load feature voting.");
     } finally {
       setFeedbackLoading(false);
     }
-  }, []);
+  }, [ageGateAccepted]);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      void loadFeedbackItems();
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, [loadFeedbackItems]);
+    if (!ageGateAccepted) return;
+    const controller = new AbortController();
+    fetch("/api/v1/me", {
+      cache: "no-store",
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Viewer authority could not load.");
+        const payload = parseViewerAuthorityResponse(await response.json());
+        const user = payload.user;
+        const nextScope =
+          user
+            ? `user:${user.id}`
+            : typeof payload.anonymousId === "string"
+              ? `anonymous:${payload.anonymousId}`
+              : null;
+        if (!nextScope) throw new Error("Viewer authority was incomplete.");
+        viewerScopeRef.current = nextScope;
+        setViewerScope(nextScope);
+      })
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        viewerScopeRef.current = null;
+        setViewerScope(null);
+        setStatus("Viewer authority could not load. Draft recovery is paused.");
+      });
+    return () => controller.abort();
+  }, [ageGateAccepted]);
 
   useEffect(() => {
-    const restored = loadSupportDraft();
-    if (!restored) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot browser storage hydration
-    setSupportDraft(restored);
-    if (restored.subject || restored.description) {
-      setStatus("Your support draft was restored. Submit it after signing in.");
+    if (!viewerScope) return;
+    const previousScope = hydratedViewerScopeRef.current;
+    hydratedViewerScopeRef.current = viewerScope;
+    if (previousScope && previousScope !== viewerScope) {
+      setSupportDraft(INITIAL_SUPPORT_DRAFT);
+      setFeedbackDraft(INITIAL_FEEDBACK_DRAFT);
+      setAppealDraft(INITIAL_APPEAL_DRAFT);
+      setPendingFeedbackVote(null);
+      pendingFeedbackVoteApplyingRef.current = null;
+      setStatus("");
+      setFeedbackStatus("");
+      setAppealStatus("");
     }
-  }, []);
 
-  useEffect(() => {
-    const restoredVote = loadPendingFeedbackVote();
-    const restoredFeedback = loadFeedbackDraft();
-    const restoredAppeal = loadAppealDraft();
-    if (!restoredVote && !restoredFeedback && !restoredAppeal) return;
+    const resumed = consumeHelpDeskResume(viewerScope);
+    const restoredSupport =
+      resumed?.kind === "support"
+        ? parseSupportDraft(JSON.stringify(resumed.value))
+        : loadSupportDraft(viewerScope);
+    const restoredFeedback =
+      resumed?.kind === "feedback"
+        ? parseFeedbackDraft(JSON.stringify(resumed.value))
+        : loadFeedbackDraft(viewerScope);
+    const restoredAppeal =
+      resumed?.kind === "appeal"
+        ? parseAppealDraft(JSON.stringify(resumed.value))
+        : loadAppealDraft(viewerScope);
+    const restoredVote =
+      resumed?.kind === "vote" && viewerScope.startsWith("user:")
+        ? parsePendingFeedbackVote(JSON.stringify(resumed.value))
+        : null;
+    if (resumed?.kind === "support" && restoredSupport) {
+      if (saveSupportDraft(viewerScope, restoredSupport)) {
+        clearSupportDraft(resumed.sourceScope);
+      }
+    }
+    if (resumed?.kind === "feedback" && restoredFeedback) {
+      if (saveFeedbackDraft(viewerScope, restoredFeedback)) {
+        clearFeedbackDraft(resumed.sourceScope);
+      }
+    }
+    if (resumed?.kind === "appeal" && restoredAppeal) {
+      if (saveAppealDraft(viewerScope, restoredAppeal)) {
+        clearAppealDraft(resumed.sourceScope);
+      }
+    }
 
     const timer = window.setTimeout(() => {
-      if (restoredVote) setPendingFeedbackVote(restoredVote);
+      if (restoredSupport) {
+        setSupportDraft(restoredSupport);
+        setStatus("Your support draft was restored. Submit it when ready.");
+      }
       if (restoredFeedback) {
         setFeedbackDraft(restoredFeedback);
-        setFeedbackStatus("Your roadmap draft was restored. Submit it after signing in.");
+        setFeedbackStatus("Your roadmap draft was restored. Submit it when ready.");
       }
       if (restoredAppeal) {
         setAppealDraft(restoredAppeal);
-        setAppealStatus("Your appeal draft was restored. Submit it after signing in.");
+        setAppealStatus("Your appeal draft was restored. Submit it when ready.");
       }
+      if (restoredVote) setPendingFeedbackVote(restoredVote);
+      void loadFeedbackItems();
     }, 0);
     return () => window.clearTimeout(timer);
-  }, []);
+  }, [loadFeedbackItems, viewerScope]);
 
   useEffect(() => {
     const draft = appealDraftFromSearch(window.location.search);
@@ -343,6 +397,7 @@ export function HelpDeskWorkspace() {
   useEffect(() => {
     if (
       !pendingFeedbackVote ||
+      !viewerScope?.startsWith("user:") ||
       feedbackLoading ||
       pendingFeedbackVoteApplyingRef.current === pendingFeedbackVote.itemId ||
       !feedbackItems.some((item) => item.id === pendingFeedbackVote.itemId)
@@ -358,21 +413,23 @@ export function HelpDeskWorkspace() {
         const response = await fetch(`/api/v1/feedback/items/${vote.itemId}/vote`, {
           method: vote.action === "unvote" ? "DELETE" : "POST",
         });
-        const payload = (await response.json()) as FeedbackPayload;
+        const raw = await response.json();
         if (cancelled) return;
-        if (!response.ok || payload.ok === false || !payload.data?.item) {
+        if (!response.ok) {
           if (response.status === 401) {
             setPendingFeedbackVote(null);
             setFeedbackStatus("Sign in to finish voting on roadmap items.");
             return;
           }
           setPendingFeedbackVote(null);
-          setFeedbackStatus(feedbackErrorMessage(response.status, payload.error?.message));
+          setFeedbackStatus(
+            feedbackErrorMessage(response.status, apiErrorMessage(raw)),
+          );
           return;
         }
-        setFeedbackItems((items) => upsertFeedbackItem(items, payload.data!.item!));
+        const item = parseFeedbackItemResponse(raw).item;
+        setFeedbackItems((items) => upsertFeedbackItem(items, item));
         setFeedbackStatus(vote.action === "unvote" ? "Vote removed." : "Vote counted.");
-        clearPendingFeedbackVote();
         setPendingFeedbackVote(null);
       } catch {
         if (!cancelled) {
@@ -400,7 +457,7 @@ export function HelpDeskWorkspace() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [feedbackItems, feedbackLoading, pendingFeedbackVote]);
+  }, [feedbackItems, feedbackLoading, pendingFeedbackVote, viewerScope]);
 
   async function submitRequest(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -424,8 +481,18 @@ export function HelpDeskWorkspace() {
       const payload = (await response.json()) as SupportPayload;
       if (!response.ok || payload.ok === false) {
         if (response.status === 401) {
-          saveSupportDraft(supportDraft);
-          window.location.assign(authHrefForTarget("/signup", "/helpdesk"));
+          const scope = viewerScopeRef.current;
+          if (!scope) {
+            setStatus("Viewer authority could not be confirmed. Refresh and try again.");
+            return;
+          }
+          saveSupportDraft(scope, supportDraft);
+          window.location.assign(
+            authHrefForTarget(
+              "/signup",
+              helpDeskAuthReturnTarget(scope, "support", supportDraft),
+            ),
+          );
           return;
         }
         setStatus(helpdeskErrorMessage(response.status, payload.error?.message));
@@ -435,7 +502,7 @@ export function HelpDeskWorkspace() {
       const request = payload.data?.request;
       setTicketId(request?.ticketId ?? "");
       setStatus(`Support request ${request?.ticketId ?? "received"} received.`);
-      clearSupportDraft();
+      if (viewerScopeRef.current) clearSupportDraft(viewerScopeRef.current);
       setSupportDraft(INITIAL_SUPPORT_DRAFT);
     } catch {
       setStatus("Support request failed. Try again.");
@@ -460,19 +527,32 @@ export function HelpDeskWorkspace() {
           description: feedbackDescription.trim(),
         }),
       });
-      const payload = (await response.json()) as FeedbackPayload;
-      if (!response.ok || payload.ok === false || !payload.data?.item) {
+      const raw = await response.json();
+      if (!response.ok) {
         if (response.status === 401) {
-          saveFeedbackDraft(feedbackDraft);
-          window.location.assign(authHrefForTarget("/signup", "/helpdesk"));
+          const scope = viewerScopeRef.current;
+          if (!scope) {
+            setFeedbackStatus("Viewer authority could not be confirmed. Refresh and try again.");
+            return;
+          }
+          saveFeedbackDraft(scope, feedbackDraft);
+          window.location.assign(
+            authHrefForTarget(
+              "/signup",
+              helpDeskAuthReturnTarget(scope, "feedback", feedbackDraft),
+            ),
+          );
           return;
         }
-        setFeedbackStatus(feedbackErrorMessage(response.status, payload.error?.message));
+        setFeedbackStatus(
+          feedbackErrorMessage(response.status, apiErrorMessage(raw)),
+        );
         return;
       }
-      setFeedbackItems((items) => upsertFeedbackItem(items, payload.data!.item!));
+      const item = parseFeedbackItemResponse(raw).item;
+      setFeedbackItems((items) => upsertFeedbackItem(items, item));
       setFeedbackStatus("Feature idea submitted and your vote was counted.");
-      clearFeedbackDraft();
+      if (viewerScopeRef.current) clearFeedbackDraft(viewerScopeRef.current);
       setFeedbackDraft(INITIAL_FEEDBACK_DRAFT);
     } catch {
       setFeedbackStatus("Feature idea failed. Try again.");
@@ -489,21 +569,34 @@ export function HelpDeskWorkspace() {
       const response = await fetch(`/api/v1/feedback/items/${item.id}/vote`, {
         method: item.userVoted ? "DELETE" : "POST",
       });
-      const payload = (await response.json()) as FeedbackPayload;
-      if (!response.ok || payload.ok === false || !payload.data?.item) {
+      const raw = await response.json();
+      if (!response.ok) {
         if (response.status === 401) {
-          savePendingFeedbackVote({
+          const scope = viewerScopeRef.current;
+          const vote = {
             itemId: item.id,
             action: item.userVoted ? "unvote" : "vote",
             title: item.title,
-          });
-          window.location.assign(authHrefForTarget("/signup", "/helpdesk"));
+          } satisfies PendingFeedbackVote;
+          if (!scope) {
+            setFeedbackStatus("Viewer authority could not be confirmed. Refresh and try again.");
+            return;
+          }
+          window.location.assign(
+            authHrefForTarget(
+              "/signup",
+              helpDeskAuthReturnTarget(scope, "vote", vote),
+            ),
+          );
           return;
         }
-        setFeedbackStatus(feedbackErrorMessage(response.status, payload.error?.message));
+        setFeedbackStatus(
+          feedbackErrorMessage(response.status, apiErrorMessage(raw)),
+        );
         return;
       }
-      setFeedbackItems((items) => upsertFeedbackItem(items, payload.data!.item!));
+      const next = parseFeedbackItemResponse(raw).item;
+      setFeedbackItems((items) => upsertFeedbackItem(items, next));
       setFeedbackStatus(item.userVoted ? "Vote removed." : "Vote counted.");
     } catch {
       setFeedbackStatus("Vote failed. Try again.");
@@ -532,15 +625,25 @@ export function HelpDeskWorkspace() {
       const payload = (await response.json()) as AppealPayload;
       if (!response.ok || payload.ok === false || !payload.data?.appeal) {
         if (response.status === 401) {
-          saveAppealDraft(appealDraft);
-          window.location.assign(authHrefForTarget("/signup", "/helpdesk"));
+          const scope = viewerScopeRef.current;
+          if (!scope) {
+            setAppealStatus("Viewer authority could not be confirmed. Refresh and try again.");
+            return;
+          }
+          saveAppealDraft(scope, appealDraft);
+          window.location.assign(
+            authHrefForTarget(
+              "/signup",
+              helpDeskAuthReturnTarget(scope, "appeal", appealDraft),
+            ),
+          );
           return;
         }
         setAppealStatus(appealErrorMessage(response.status, payload.error?.message));
         return;
       }
       setAppealStatus(`Appeal ${payload.data.appeal.id} submitted.`);
-      clearAppealDraft();
+      if (viewerScopeRef.current) clearAppealDraft(viewerScopeRef.current);
       setAppealDraft(INITIAL_APPEAL_DRAFT);
     } catch {
       setAppealStatus("Appeal failed. Try again.");
@@ -576,10 +679,9 @@ export function HelpDeskWorkspace() {
               label="Trust contact"
             />
             <SupportLink
-              external
-              href="https://discord.gg/P47YU7je5D"
-              icon={<MessageCircle className="h-5 w-5" />}
-              label="Discord"
+              href="/terms"
+              icon={<Scale className="h-5 w-5" />}
+              label="Policies"
             />
           </div>
         </div>
@@ -1035,100 +1137,208 @@ function SupportLink({
   );
 }
 
-function loadSupportDraft(): SupportDraft | null {
+const HELP_DESK_RESUME_STORAGE_KEY = "ourdream.helpdesk.resume.v1";
+const HELP_DESK_DRAFT_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
+const HELP_DESK_RESUME_TTL_MS = 20 * 60 * 1_000;
+type HelpDeskResumeKind = "support" | "feedback" | "appeal" | "vote";
+
+function scopedHelpDeskStorageKey(base: string, viewerScope: string) {
+  return `${base}:${viewerScope}`;
+}
+
+function readScopedHelpDeskValue(base: string, viewerScope: string) {
   try {
-    return parseSupportDraft(window.localStorage.getItem(SUPPORT_DRAFT_STORAGE_KEY));
+    const key = scopedHelpDeskStorageKey(base, viewerScope);
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return null;
+    const envelope = JSON.parse(raw) as unknown;
+    if (
+      !envelope ||
+      typeof envelope !== "object" ||
+      Array.isArray(envelope)
+    ) {
+      window.localStorage.removeItem(key);
+      return null;
+    }
+    const record = envelope as Record<string, unknown>;
+    if (
+      record.ownerScope !== viewerScope ||
+      typeof record.expiresAt !== "number" ||
+      record.expiresAt <= Date.now()
+    ) {
+      window.localStorage.removeItem(key);
+      return null;
+    }
+    return JSON.stringify(record.value);
   } catch {
     return null;
   }
 }
 
-function saveSupportDraft(draft: SupportDraft) {
+function writeScopedHelpDeskValue(
+  base: string,
+  viewerScope: string,
+  value: unknown,
+) {
   try {
-    window.localStorage.setItem(SUPPORT_DRAFT_STORAGE_KEY, JSON.stringify(draft));
+    window.localStorage.setItem(
+      scopedHelpDeskStorageKey(base, viewerScope),
+      JSON.stringify({
+        ownerScope: viewerScope,
+        expiresAt: Date.now() + HELP_DESK_DRAFT_TTL_MS,
+        value,
+      }),
+    );
+    return true;
   } catch {
-    // Ignore unavailable or full local storage; the auth redirect still works.
+    // Storage is an optional resume aid; form submission remains authoritative.
+    return false;
   }
 }
 
-function clearSupportDraft() {
+function clearScopedHelpDeskValue(base: string, viewerScope: string) {
   try {
-    window.localStorage.removeItem(SUPPORT_DRAFT_STORAGE_KEY);
+    window.localStorage.removeItem(
+      scopedHelpDeskStorageKey(base, viewerScope),
+    );
   } catch {
     // Ignore unavailable local storage.
   }
 }
 
-function loadFeedbackDraft(): FeedbackDraft | null {
+function loadSupportDraft(viewerScope: string): SupportDraft | null {
+  return parseSupportDraft(
+    readScopedHelpDeskValue(SUPPORT_DRAFT_STORAGE_KEY, viewerScope),
+  );
+}
+
+function saveSupportDraft(viewerScope: string, draft: SupportDraft) {
+  return writeScopedHelpDeskValue(
+    SUPPORT_DRAFT_STORAGE_KEY,
+    viewerScope,
+    draft,
+  );
+}
+
+function clearSupportDraft(viewerScope: string) {
+  clearScopedHelpDeskValue(SUPPORT_DRAFT_STORAGE_KEY, viewerScope);
+}
+
+function loadFeedbackDraft(viewerScope: string): FeedbackDraft | null {
+  return parseFeedbackDraft(
+    readScopedHelpDeskValue(FEEDBACK_DRAFT_STORAGE_KEY, viewerScope),
+  );
+}
+
+function saveFeedbackDraft(viewerScope: string, draft: FeedbackDraft) {
+  return writeScopedHelpDeskValue(
+    FEEDBACK_DRAFT_STORAGE_KEY,
+    viewerScope,
+    draft,
+  );
+}
+
+function clearFeedbackDraft(viewerScope: string) {
+  clearScopedHelpDeskValue(FEEDBACK_DRAFT_STORAGE_KEY, viewerScope);
+}
+
+function loadAppealDraft(viewerScope: string): AppealDraft | null {
+  return parseAppealDraft(
+    readScopedHelpDeskValue(APPEAL_DRAFT_STORAGE_KEY, viewerScope),
+  );
+}
+
+function saveAppealDraft(viewerScope: string, draft: AppealDraft) {
+  return writeScopedHelpDeskValue(
+    APPEAL_DRAFT_STORAGE_KEY,
+    viewerScope,
+    draft,
+  );
+}
+
+function clearAppealDraft(viewerScope: string) {
+  clearScopedHelpDeskValue(APPEAL_DRAFT_STORAGE_KEY, viewerScope);
+}
+
+function helpDeskAuthReturnTarget(
+  sourceScope: string,
+  kind: HelpDeskResumeKind,
+  value: unknown,
+) {
+  const nonce = createHelpDeskResume(sourceScope, kind, value);
+  return nonce
+    ? `/helpdesk?resume=${encodeURIComponent(nonce)}`
+    : "/helpdesk";
+}
+
+function createHelpDeskResume(
+  sourceScope: string,
+  kind: HelpDeskResumeKind,
+  value: unknown,
+) {
+  if (!sourceScope.startsWith("anonymous:")) return null;
   try {
-    return parseFeedbackDraft(window.localStorage.getItem(FEEDBACK_DRAFT_STORAGE_KEY));
+    const nonce = crypto.randomUUID();
+    window.sessionStorage.setItem(
+      HELP_DESK_RESUME_STORAGE_KEY,
+      JSON.stringify({
+        nonce,
+        sourceScope,
+        kind,
+        value,
+        expiresAt: Date.now() + HELP_DESK_RESUME_TTL_MS,
+      }),
+    );
+    return nonce;
   } catch {
     return null;
   }
 }
 
-function saveFeedbackDraft(draft: FeedbackDraft) {
+function consumeHelpDeskResume(targetScope: string): {
+  kind: HelpDeskResumeKind;
+  sourceScope: string;
+  value: unknown;
+} | null {
+  if (!targetScope.startsWith("user:")) return null;
   try {
-    window.localStorage.setItem(FEEDBACK_DRAFT_STORAGE_KEY, JSON.stringify(draft));
-  } catch {
-    // Ignore unavailable or full local storage; the auth redirect still works.
-  }
-}
-
-function clearFeedbackDraft() {
-  try {
-    window.localStorage.removeItem(FEEDBACK_DRAFT_STORAGE_KEY);
-  } catch {
-    // Ignore unavailable local storage.
-  }
-}
-
-function loadPendingFeedbackVote(): PendingFeedbackVote | null {
-  try {
-    return parsePendingFeedbackVote(window.localStorage.getItem(FEEDBACK_VOTE_STORAGE_KEY));
-  } catch {
-    return null;
-  }
-}
-
-function savePendingFeedbackVote(vote: PendingFeedbackVote) {
-  try {
-    window.localStorage.setItem(FEEDBACK_VOTE_STORAGE_KEY, JSON.stringify(vote));
-  } catch {
-    // Ignore unavailable or full local storage; the auth redirect still works.
-  }
-}
-
-function clearPendingFeedbackVote() {
-  try {
-    window.localStorage.removeItem(FEEDBACK_VOTE_STORAGE_KEY);
-  } catch {
-    // Ignore unavailable local storage.
-  }
-}
-
-function loadAppealDraft(): AppealDraft | null {
-  try {
-    return parseAppealDraft(window.localStorage.getItem(APPEAL_DRAFT_STORAGE_KEY));
+    const nonce = new URLSearchParams(window.location.search).get("resume");
+    if (!nonce) return null;
+    const raw = window.sessionStorage.getItem(HELP_DESK_RESUME_STORAGE_KEY);
+    if (!raw) return null;
+    const value = JSON.parse(raw) as unknown;
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const record = value as Record<string, unknown>;
+    if (
+      record.nonce !== nonce ||
+      typeof record.sourceScope !== "string" ||
+      !record.sourceScope.startsWith("anonymous:") ||
+      typeof record.expiresAt !== "number" ||
+      record.expiresAt <= Date.now() ||
+      !isHelpDeskResumeKind(record.kind)
+    ) {
+      return null;
+    }
+    window.sessionStorage.removeItem(HELP_DESK_RESUME_STORAGE_KEY);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("resume");
+    window.history.replaceState(
+      null,
+      "",
+      `${url.pathname}${url.search}${url.hash}`,
+    );
+    return {
+      kind: record.kind,
+      sourceScope: record.sourceScope,
+      value: record.value,
+    };
   } catch {
     return null;
   }
 }
 
-function saveAppealDraft(draft: AppealDraft) {
-  try {
-    window.localStorage.setItem(APPEAL_DRAFT_STORAGE_KEY, JSON.stringify(draft));
-  } catch {
-    // Ignore unavailable or full local storage; the auth redirect still works.
-  }
-}
-
-function clearAppealDraft() {
-  try {
-    window.localStorage.removeItem(APPEAL_DRAFT_STORAGE_KEY);
-  } catch {
-    // Ignore unavailable local storage.
-  }
+function isHelpDeskResumeKind(value: unknown): value is HelpDeskResumeKind {
+  return ["support", "feedback", "appeal", "vote"].includes(String(value));
 }
 
 function parseSupportDraft(raw: string | null): SupportDraft | null {
@@ -1276,6 +1486,18 @@ function feedbackErrorMessage(status: number, fallback?: string) {
   if (status === 401) return "Sign in to submit ideas and vote.";
   if (status === 403) return "Accept the age gate before voting.";
   return fallback ?? "Feature voting failed. Try again.";
+}
+
+function apiErrorMessage(payload: unknown) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return undefined;
+  }
+  const error = (payload as Record<string, unknown>).error;
+  if (!error || typeof error !== "object" || Array.isArray(error)) {
+    return undefined;
+  }
+  const message = (error as Record<string, unknown>).message;
+  return typeof message === "string" ? message : undefined;
 }
 
 function appealErrorMessage(status: number, fallback?: string) {

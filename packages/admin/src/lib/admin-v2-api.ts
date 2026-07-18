@@ -32,6 +32,7 @@ export async function adminV2Request<T>(
     idempotencyKey?: string;
     ifMatch?: number;
     schema?: RuntimeSchema<T>;
+    signal?: AbortSignal;
   } = {},
 ) {
   const headers = new Headers();
@@ -44,6 +45,7 @@ export async function adminV2Request<T>(
     headers,
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
     cache: "no-store",
+    signal: options.signal,
   });
   const raw = await response.text();
   let payload: ApiEnvelope<T>;

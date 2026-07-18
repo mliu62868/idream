@@ -13,32 +13,18 @@ import {
   type FocusEvent,
   type KeyboardEvent,
 } from "react";
+import {
+  parseSearchSuggestResponse,
+  type PublicSearchSuggestions,
+} from "@/lib/public-api-contracts";
 import { cn } from "@/lib/utils";
 import type { CharacterCardData, OurdreamRouteTemplate } from "@/types/ourdream";
+import { useAgeGateAccess } from "./AgeGateBoundary";
 
 const MIN_SUGGEST_QUERY_LENGTH = 2;
 
-type SearchTagSuggestion = {
-  category?: string | null;
-  label: string;
-  slug: string;
-};
-
-type SearchRouteSuggestion = {
-  description: string;
-  href: string;
-  template: OurdreamRouteTemplate;
-  title: string;
-};
-
-type SearchSuggestResponse = {
-  ok: boolean;
-  data?: {
-    characters?: CharacterCardData[];
-    routes?: SearchRouteSuggestion[];
-    tags?: SearchTagSuggestion[];
-  };
-};
+type SearchTagSuggestion = PublicSearchSuggestions["tags"][number];
+type SearchRouteSuggestion = PublicSearchSuggestions["routes"][number];
 
 type SearchSuggestion =
   | {
@@ -68,6 +54,7 @@ type SearchSuggestion =
 type SuggestStatus = "idle" | "loading" | "ready" | "error";
 
 export function AppSearch() {
+  const { accepted: ageGateAccepted } = useAgeGateAccess();
   const [activeIndex, setActiveIndex] = useState(-1);
   const [characters, setCharacters] = useState<CharacterCardData[]>([]);
   const [focused, setFocused] = useState(false);
@@ -132,7 +119,11 @@ export function AppSearch() {
   }, []);
 
   useEffect(() => {
-    if (!focused || trimmedQuery.length < MIN_SUGGEST_QUERY_LENGTH) {
+    if (
+      !ageGateAccepted ||
+      !focused ||
+      trimmedQuery.length < MIN_SUGGEST_QUERY_LENGTH
+    ) {
       return;
     }
 
@@ -155,10 +146,10 @@ export function AppSearch() {
           return;
         }
 
-        const payload = (await response.json()) as SearchSuggestResponse;
-        setCharacters(payload.data?.characters ?? []);
-        setRoutes(payload.data?.routes ?? []);
-        setTags(payload.data?.tags ?? []);
+        const payload = parseSearchSuggestResponse(await response.json());
+        setCharacters(payload.characters);
+        setRoutes(payload.routes);
+        setTags(payload.tags);
         setStatus("ready");
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") return;
@@ -173,7 +164,7 @@ export function AppSearch() {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [focused, trimmedQuery]);
+  }, [ageGateAccepted, focused, trimmedQuery]);
 
   function handleBlur(event: FocusEvent<HTMLDivElement>) {
     const nextTarget = event.relatedTarget;

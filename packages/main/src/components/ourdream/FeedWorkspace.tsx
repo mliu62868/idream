@@ -3,48 +3,23 @@
 import Image from "next/image";
 import Link from "next/link";
 import { Flag, Heart, Images, MessageCircle, RefreshCcw, Repeat2, Share2 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  parseFeedResponse,
+  type PublicFeedItem,
+} from "@/lib/public-api-contracts";
+import { useAgeGateAccess } from "./AgeGateBoundary";
 import { authHrefForTarget } from "./authRedirect";
 
-type FeedCharacterItem = {
-  id: string;
-  type: "character";
-  character: {
-    id: string;
-    title: string;
-    age: string;
-    description: string;
-    image: string;
-    likes: string;
-    chats: string;
-    creator: string;
-    creatorId?: string | null;
-    creatorName?: string | null;
-    liked?: boolean;
-  };
-};
-
-type FeedCollectionItem = {
-  id: string;
-  type: "collection";
-  collection: {
-    id: string;
-    name: string;
-    ownerId: string;
-    ownerName?: string | null;
-    itemCount: number;
-    previews: string[];
-    createdAt: string;
-  };
-};
-
-type FeedItem = FeedCharacterItem | FeedCollectionItem;
+type FeedCharacterItem = Extract<PublicFeedItem, { type: "character" }>;
+type FeedCollectionItem = Extract<PublicFeedItem, { type: "collection" }>;
+type FeedItem = PublicFeedItem;
 
 function countLabel(count: number, singular: string, plural = `${singular}s`) {
   return `${count} ${count === 1 ? singular : plural}`;
 }
 
-type FeedPayload = {
+type FeedActionPayload = {
   ok?: boolean;
   data?: {
     items?: FeedItem[];
@@ -58,6 +33,7 @@ type FeedPayload = {
 };
 
 export function FeedWorkspace() {
+  const { accepted: ageGateAccepted } = useAgeGateAccess();
   const [items, setItems] = useState<FeedItem[]>([]);
   const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(true);
@@ -66,22 +42,50 @@ export function FeedWorkspace() {
   const [focusedItemId, setFocusedItemId] = useState<string | null>(null);
   const [likedIds, setLikedIds] = useState<ReadonlySet<string>>(() => new Set());
   const [likePending, setLikePending] = useState<ReadonlySet<string>>(() => new Set());
+  const [snapshotStale, setSnapshotStale] = useState(false);
+  const requestSerialRef = useRef(0);
+  const requestControllerRef = useRef<AbortController | null>(null);
+  const loadedScopeRef = useRef<string | null>(null);
 
   const loadFeed = useCallback(async (cursor?: string) => {
+    if (!ageGateAccepted) return;
+    const requestSerial = requestSerialRef.current + 1;
+    requestSerialRef.current = requestSerial;
+    requestControllerRef.current?.abort();
+    const controller = new AbortController();
+    requestControllerRef.current = controller;
+    const sharedItemId = cursor ? "" : new URLSearchParams(window.location.search).get("item") ?? "";
+    if (
+      !cursor &&
+      loadedScopeRef.current !== null &&
+      loadedScopeRef.current !== sharedItemId
+    ) {
+      loadedScopeRef.current = null;
+      setItems([]);
+      setLikedIds(new Set());
+      setNextCursor(null);
+      setFocusedItemId(null);
+    }
     if (cursor) setLoadingMore(true);
     else setLoading(true);
     try {
-      const sharedItemId = cursor ? "" : new URLSearchParams(window.location.search).get("item") ?? "";
-      const payload = await fetchFeedPayload(cursor, sharedItemId);
+      const payload = await fetchFeedPayload(
+        cursor,
+        sharedItemId,
+        controller.signal,
+      );
+      if (requestSerial !== requestSerialRef.current) return;
       if (payload.ok === false) {
-        setStatus(payload.error?.message ?? "Accept the age gate to view feed.");
-        return;
+        throw new FeedLoadError(
+          payload.error?.message ?? "Accept the age gate to view feed.",
+        );
       }
-      const fresh = payload.data?.items ?? [];
+      const fresh = payload.data.items;
       if (!cursor) {
-        const nextFocusedItemId = payload.data?.focusedItemId ?? null;
+        loadedScopeRef.current = sharedItemId;
+        const nextFocusedItemId = payload.data.focusedItemId;
         setFocusedItemId(nextFocusedItemId);
-        if (nextFocusedItemId) setStatus("Showing shared dream.");
+        setStatus(nextFocusedItemId ? "Showing shared dream." : "");
       }
       setItems((current) => (cursor ? [...current, ...fresh] : fresh));
       setLikedIds((current) => {
@@ -91,16 +95,34 @@ export function FeedWorkspace() {
         }
         return next;
       });
-      setNextCursor(payload.data?.nextCursor ?? null);
-    } catch {
-      setStatus(cursor ? "Could not load more dreams." : "Feed unavailable.");
+      setNextCursor(payload.data.nextCursor);
+      setSnapshotStale(false);
+    } catch (error) {
+      if (
+        controller.signal.aborted ||
+        requestSerial !== requestSerialRef.current
+      ) {
+        return;
+      }
+      const message =
+        error instanceof FeedLoadError ? error.message : "Feed unavailable.";
+      if (cursor) {
+        setStatus("Could not load more dreams. Showing the loaded results.");
+      } else if (loadedScopeRef.current !== null) {
+        setSnapshotStale(true);
+        setStatus(`${message} Showing the last loaded results.`);
+      } else {
+        setStatus(message);
+      }
     } finally {
+      if (requestSerial !== requestSerialRef.current) return;
       if (cursor) setLoadingMore(false);
       else setLoading(false);
     }
-  }, []);
+  }, [ageGateAccepted]);
 
   useEffect(() => {
+    if (!ageGateAccepted) return;
     const timer = window.setTimeout(() => void loadFeed(), 0);
     // 接受年龄门后，feed 后端会放行内容：监听事件并重新拉取，避免停留在旧的拦截态。
     function reload() {
@@ -110,9 +132,10 @@ export function FeedWorkspace() {
     window.addEventListener("idream-age-gate-accepted", reload);
     return () => {
       window.clearTimeout(timer);
+      requestControllerRef.current?.abort();
       window.removeEventListener("idream-age-gate-accepted", reload);
     };
-  }, [loadFeed]);
+  }, [ageGateAccepted, loadFeed]);
 
   async function startChat(characterId: string) {
     try {
@@ -157,8 +180,8 @@ export function FeedWorkspace() {
       const response = await fetch(`/api/v1/feed/items/${encodeURIComponent(itemId)}/like`, {
         method: liked ? "DELETE" : "POST",
       });
-      const payload = (await response.json()) as FeedPayload;
-      if (!response.ok || payload.ok === false) {
+      const payload = (await response.json()) as FeedActionPayload;
+      if (!response.ok || payload.ok !== true) {
         setLikedIds((current) => {
           const next = new Set(current);
           if (liked) next.add(itemId);
@@ -194,9 +217,9 @@ export function FeedWorkspace() {
       const response = await fetch(`/api/v1/feed/items/${encodeURIComponent(item.id)}/remix`, {
         method: "POST",
       });
-      const payload = (await response.json()) as FeedPayload;
+      const payload = (await response.json()) as FeedActionPayload;
       const remixUrl = payload.data?.remixUrl;
-      if (!response.ok || payload.ok === false || !remixUrl) {
+      if (!response.ok || payload.ok !== true || !remixUrl) {
         setStatus(payload.error?.message ?? "Remix unavailable.");
         return;
       }
@@ -216,18 +239,22 @@ export function FeedWorkspace() {
             ? JSON.stringify({ category: "other_prohibited_content", description: "Feed report" })
             : undefined,
       });
-      const payload = (await response.json()) as FeedPayload;
-      if (!response.ok || payload.ok === false) {
+      const payload = (await response.json()) as FeedActionPayload;
+      if (!response.ok || payload.ok !== true) {
         setStatus(payload.error?.message ?? `${name} failed`);
         return;
       }
-      if (payload.data?.shareUrl) {
+      if (name === "share") {
+        if (!payload.data?.shareUrl) {
+          setStatus("Share unavailable.");
+          return;
+        }
         const shareUrl = new URL(payload.data.shareUrl, window.location.origin).toString();
         const copied = await copyShareUrl(shareUrl);
         setStatus(copied ? "Share link copied." : `Share link: ${shareUrl}`);
         return;
       }
-      setStatus(name === "report" ? "Report submitted." : `${name} saved.`);
+      setStatus("Report submitted.");
     } catch {
       setStatus(`${name} failed`);
     }
@@ -247,6 +274,7 @@ export function FeedWorkspace() {
           </div>
           <button
             className="inline-flex h-10 items-center gap-2 rounded-full bg-[rgb(36,36,36)] px-4 text-[13px] font-bold text-white"
+            disabled={loading || loadingMore}
             onClick={() => {
               setStatus("");
               void loadFeed();
@@ -267,7 +295,10 @@ export function FeedWorkspace() {
             {status}
           </p>
         )}
-        <div className="grid gap-4 md:grid-cols-2">
+        <div
+          className="grid gap-4 md:grid-cols-2"
+          data-stale={snapshotStale ? "true" : "false"}
+        >
           {items.map((item, index) => (
             <article
               className={`overflow-hidden rounded-[16px] border bg-[rgb(18,18,18)] ${
@@ -479,14 +510,37 @@ async function copyShareUrl(url: string) {
   }
 }
 
-async function fetchFeedPayload(cursor?: string, sharedItemId?: string) {
+class FeedLoadError extends Error {}
+
+async function fetchFeedPayload(
+  cursor?: string,
+  sharedItemId?: string,
+  signal?: AbortSignal,
+) {
   const params = new URLSearchParams();
   if (cursor) params.set("cursor", cursor);
   if (sharedItemId) params.set("item", sharedItemId);
   const query = params.toString() ? `?${params.toString()}` : "";
-  const response = await fetch(`/api/v1/feed${query}`);
-  const payload = (await response.json()) as FeedPayload;
-  return response.ok ? payload : { ...payload, ok: false };
+  const response = await fetch(`/api/v1/feed${query}`, { signal });
+  const payload: unknown = await response.json();
+  if (!response.ok) {
+    return {
+      ok: false as const,
+      error: { message: publicApiErrorMessage(payload) },
+    };
+  }
+  return {
+    ok: true as const,
+    data: parseFeedResponse(payload),
+  };
+}
+
+function publicApiErrorMessage(payload: unknown) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+  const error = (payload as { error?: unknown }).error;
+  if (!error || typeof error !== "object" || Array.isArray(error)) return undefined;
+  const message = (error as { message?: unknown }).message;
+  return typeof message === "string" ? message : undefined;
 }
 
 function isUserContentUrl(url: string) {

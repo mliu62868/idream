@@ -13,6 +13,8 @@
 //   - non-retryable error → enqueue generation.failed (terminal, refund main-side)
 import {
   type AiFinalizePayload,
+  characterPreviewGeneratePayloadSchema,
+  type CharacterPreviewGeneratePayload,
   type GenerationManifestIngest,
   type GenerationTransportExecutionEvent,
   idempotencyKeys,
@@ -37,13 +39,6 @@ import type { EnqueueFn, JsonPayload } from "./queue";
 import { hydratedImageReferenceInputs } from "./reference-images";
 import { loadPersistedCompletionManifest, persistCompletionManifest } from "./completion-manifest";
 
-const placeholderImagePng = Uint8Array.from(
-  Buffer.from(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
-    "base64",
-  ),
-);
-
 export interface PipelineDeps {
   enqueue: EnqueueFn;
   providers?: GenProviders;
@@ -51,6 +46,15 @@ export interface PipelineDeps {
   maxAttempts?: number;
   acknowledgeCompletion?: (input: GenerationManifestIngest) => Promise<void>;
   recordTransportExecution?: (input: GenerationTransportExecutionEvent) => Promise<void>;
+}
+
+class GeneratedAssetBodyMissingError extends Error {
+  readonly code = "asset_body_missing";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "GeneratedAssetBodyMissingError";
+  }
 }
 
 function asPayload(value: AiFinalizePayload): JsonPayload {
@@ -312,7 +316,10 @@ export async function processImageGenerate(
     await enqueueGenerationFailed(
       deps,
       payload,
-      error instanceof GeneratedImageSanityError ? error.code : "asset_persist_failed",
+      error instanceof GeneratedImageSanityError ||
+        error instanceof GeneratedAssetBodyMissingError
+        ? error.code
+        : "asset_persist_failed",
       error instanceof Error ? error.message : "Generated asset persistence failed",
     );
     return;
@@ -326,6 +333,8 @@ export async function processImageGenerate(
     attemptId: payload.attemptId,
     attemptNo: payload.attemptNo,
     mode: "image" as const,
+    provider: imageProvider,
+    model: payload.model,
     assets,
     usage: { gpuSeconds: assets.length * 1.2, model: payload.model },
   };
@@ -358,11 +367,157 @@ export async function processImageGenerate(
   });
 }
 
+export async function processCharacterPreviewGenerate(
+  rawPayload: unknown,
+  deps: PipelineDeps,
+): Promise<void> {
+  const payload = characterPreviewGeneratePayloadSchema.parse(rawPayload);
+  const providers = deps.providers ?? defaultProviders;
+  const inputModeration = await providers.moderation.check({
+    targetType: "text",
+    content: `${payload.prompt} ${payload.negativePrompt ?? ""}`,
+  });
+  if (!inputModeration.ok) {
+    await enqueueCharacterPreviewFailed(
+      deps,
+      payload,
+      inputModeration.error.code,
+      inputModeration.error.message,
+    );
+    return;
+  }
+  if (inputModeration.data.status === "blocked") {
+    await enqueueCharacterPreviewFailed(
+      deps,
+      payload,
+      inputModeration.data.policyCode ?? "content_blocked",
+      "Character preview input was blocked",
+    );
+    return;
+  }
+
+  const imageModel = providers.image;
+  const result = await imageModel.generate({
+    prompt: payload.prompt,
+    count: 1,
+    seed: payload.seed,
+    negativePrompt: payload.negativePrompt,
+    model: payload.model,
+    controls: payload.controls,
+    requestId: idempotencyKeys.characterPreview(payload.previewJobId),
+    orientation: payload.orientation,
+  });
+  if (!result.ok) {
+    if (canAutomaticallyRetry(imageModel, result.error) && !isFinalAttempt(deps)) {
+      throw new Error(result.error.message);
+    }
+    await enqueueCharacterPreviewFailed(
+      deps,
+      payload,
+      result.error.code,
+      result.error.message,
+    );
+    return;
+  }
+
+  const generated = result.data.assets[0];
+  if (!generated) {
+    await enqueueCharacterPreviewFailed(
+      deps,
+      payload,
+      "empty_provider_result",
+      "Image provider returned no character preview",
+    );
+    return;
+  }
+
+  try {
+    const contentType = generated.contentType ?? "image/webp";
+    const body = await imageAssetBody(generated);
+    assertGeneratedImageSanity(
+      Buffer.from(body),
+      `${payload.previewJobId} character preview`,
+    );
+    const key = generatedAssetStorageKey(
+      payload.outputPrefix,
+      "image-1",
+      contentType,
+      ".png",
+    );
+    const persisted = await providers.blob.putPrivate({ key, body, contentType });
+    if (!persisted.ok) throw new Error(persisted.error.message);
+
+    await deps.enqueue({
+      queue: MAIN_QUEUES.aiFinalize,
+      payload: asPayload({
+        version: 1,
+        kind: "character.preview.completed",
+        requestId: payload.requestId,
+        previewJobId: payload.previewJobId,
+        draftId: payload.draftId,
+        userId: payload.userId,
+        provider: env.IMAGE_PROVIDER,
+        model: payload.model,
+        asset: {
+          key,
+          width: generated.width,
+          height: generated.height,
+          contentType,
+          providerKey: generated.key ?? null,
+        },
+      } satisfies AiFinalizePayload),
+      dedupeKey: idempotencyKeys.characterPreviewFinalize(
+        payload.previewJobId,
+        "completed",
+      ),
+    });
+  } catch (error) {
+    if (!isFinalAttempt(deps)) throw error;
+    await enqueueCharacterPreviewFailed(
+      deps,
+      payload,
+      error instanceof GeneratedImageSanityError ||
+        error instanceof GeneratedAssetBodyMissingError
+        ? error.code
+        : "asset_persist_failed",
+      error instanceof Error ? error.message : "Character preview persistence failed",
+    );
+  }
+}
+
+async function enqueueCharacterPreviewFailed(
+  deps: PipelineDeps,
+  payload: CharacterPreviewGeneratePayload,
+  code: string,
+  message: string,
+) {
+  await deps.enqueue({
+    queue: MAIN_QUEUES.aiFinalize,
+    payload: asPayload({
+      version: 1,
+      kind: "character.preview.failed",
+      requestId: payload.requestId,
+      previewJobId: payload.previewJobId,
+      draftId: payload.draftId,
+      userId: payload.userId,
+      error: { code, message, retryable: false },
+    } satisfies AiFinalizePayload),
+    dedupeKey: idempotencyKeys.characterPreviewFinalize(
+      payload.previewJobId,
+      "failed",
+    ),
+  });
+}
+
 async function imageAssetBody(
   asset: { body?: Uint8Array; sourceUrl?: string },
 ) {
   if (asset.body) return asset.body;
-  if (!asset.sourceUrl) return new Uint8Array(placeholderImagePng);
+  if (!asset.sourceUrl) {
+    throw new GeneratedAssetBodyMissingError(
+      "Generated image asset has neither bytes nor a source URL",
+    );
+  }
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), env.PIPELINE_TIMEOUT_MS);
@@ -486,6 +641,8 @@ export async function processVideoGenerate(
     attemptId: payload.attemptId,
     attemptNo: payload.attemptNo,
     mode: "video" as const,
+    provider: videoProvider,
+    model: payload.model,
     assets: [{
       key: assetKey,
       seconds: result.data.asset.seconds,

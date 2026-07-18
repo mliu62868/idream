@@ -4,30 +4,27 @@ import { ArrowRight } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
-type Plan = {
-  id: string;
-  slug: string;
-  name: string;
-  billingPeriod: string;
-  priceCents: number;
-  includedDreamcoins: number;
-};
+import {
+  parsePlansResponse,
+  type PublicPlan as Plan,
+} from "@/lib/public-api-contracts";
+import { useAgeGateAccess } from "./AgeGateBoundary";
 
 type PlansState = "loading" | "ready" | "error";
 
 export function ComparisonPlanSnapshot() {
+  const { accepted: ageGateAccepted } = useAgeGateAccess();
   const [plans, setPlans] = useState<Plan[]>([]);
   const [state, setState] = useState<PlansState>("loading");
 
   useEffect(() => {
+    if (!ageGateAccepted) return;
     const timer = window.setTimeout(() => {
       void fetch("/api/v1/plans")
         .then(async (response) => {
           if (!response.ok) throw new Error("plans unavailable");
-          const payload = (await response.json()) as {
-            data?: { items?: Plan[] };
-          };
-          setPlans(payload.data?.items ?? []);
+          const payload = parsePlansResponse(await response.json());
+          setPlans(payload.items);
           setState("ready");
         })
         .catch(() => {
@@ -36,7 +33,7 @@ export function ComparisonPlanSnapshot() {
         });
     }, 0);
     return () => window.clearTimeout(timer);
-  }, []);
+  }, [ageGateAccepted]);
 
   return (
     <section className="px-4 py-10 md:px-[60px] md:py-12">

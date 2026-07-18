@@ -25,7 +25,13 @@ describe("Admin API v2 authoritative command routes", () => {
   function request(
     path: string,
     body: { entityVersion: number; approvalId?: string },
-    options: { actorId?: string; role?: string; key?: string; confirmation: string } = {
+    options: {
+      actorId?: string;
+      role?: string;
+      key?: string;
+      confirmation: string;
+      reasonSummary?: string;
+    } = {
       confirmation: "",
     },
   ) {
@@ -41,7 +47,12 @@ describe("Admin API v2 authoritative command routes", () => {
       },
       body: JSON.stringify({
         ...body,
-        reason: { code: "operator_verified", summary: "Verified command preconditions" },
+        reason: {
+          code: "operator_verified",
+          summary:
+            options.reasonSummary ??
+            "Verified command preconditions",
+        },
         confirmation: options.confirmation,
       }),
     });
@@ -261,20 +272,48 @@ describe("Admin API v2 authoritative command routes", () => {
       request("/api/v2/admin/creative/runs/x/commands/retry-failed", { entityVersion: 2 }, { key, confirmation: `${runId}:retry-failed` }),
       { params: Promise.resolve({ id: runId }) },
     );
-    const replay = await retryFailed(
-      request("/api/v2/admin/creative/runs/x/commands/retry-failed", { entityVersion: 2 }, { key, confirmation: `${runId}:retry-failed` }),
-      { params: Promise.resolve({ id: runId }) },
-    );
-    expect(first.status).toBe(202);
-    expect(replay.status).toBe(202);
-    expect((await replay.json()).data.commandId).toBe((await first.json()).data.commandId);
+    await prisma.contentProductionBatch.update({
+      where: { id: runId },
+      data: { version: 3 },
+    });
+    try {
+      const replay = await retryFailed(
+        request("/api/v2/admin/creative/runs/x/commands/retry-failed", { entityVersion: 2 }, { key, confirmation: `${runId}:retry-failed` }),
+        { params: Promise.resolve({ id: runId }) },
+      );
+      expect(first.status).toBe(202);
+      expect(replay.status).toBe(202);
+      expect((await replay.json()).data.commandId).toBe((await first.json()).data.commandId);
 
-    const conflict = await resolveIncident(
-      request("/api/v2/admin/incidents/x/commands/resolve", { entityVersion: 4 }, { key, confirmation: `${incidentId}:resolve` }),
-      { params: Promise.resolve({ id: incidentId }) },
-    );
-    expect(conflict.status).toBe(409);
-    expect((await conflict.json()).error.code).toBe("idempotency_conflict");
+      const changedBody = await retryFailed(
+        request(
+          "/api/v2/admin/creative/runs/x/commands/retry-failed",
+          { entityVersion: 2 },
+          {
+            key,
+            confirmation: `${runId}:retry-failed`,
+            reasonSummary: "Changed retry intent",
+          },
+        ),
+        { params: Promise.resolve({ id: runId }) },
+      );
+      expect(changedBody.status).toBe(409);
+      expect((await changedBody.json()).error.code).toBe(
+        "idempotency_conflict",
+      );
+
+      const conflict = await resolveIncident(
+        request("/api/v2/admin/incidents/x/commands/resolve", { entityVersion: 4 }, { key, confirmation: `${incidentId}:resolve` }),
+        { params: Promise.resolve({ id: incidentId }) },
+      );
+      expect(conflict.status).toBe(409);
+      expect((await conflict.json()).error.code).toBe("idempotency_conflict");
+    } finally {
+      await prisma.contentProductionBatch.update({
+        where: { id: runId },
+        data: { version: 2 },
+      });
+    }
   });
 
   it("rejects missing permission, stale versions, and unmet domain invariants", async () => {

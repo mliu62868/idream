@@ -119,7 +119,7 @@ export function TopControls({
 
       <section className="w-full px-2 pt-0 md:px-[60px] md:pt-[14px]">
         <Link
-          aria-label="Pride offer - view plans"
+          aria-label="Compare upgrade plans"
           className="relative mb-3 flex h-[58px] overflow-hidden rounded-[12px] bg-[rgb(36,36,36)] md:hidden"
           href="/upgrade"
         >
@@ -134,10 +134,10 @@ export function TopControls({
           <span className="absolute inset-0 bg-[linear-gradient(90deg,rgba(0,0,0,.78),rgba(0,0,0,.35)_58%,rgba(0,0,0,.08))]" />
           <span className="relative flex h-full flex-col justify-center px-4">
             <span className="text-[17px] font-black uppercase leading-5 text-white">
-              Pride offer
+              Upgrade options
             </span>
             <span className="text-[11px] font-bold leading-4 text-white/80">
-              View upgrade plans
+              Compare current plans
             </span>
           </span>
         </Link>

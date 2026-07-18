@@ -4,6 +4,13 @@ import Image from "next/image";
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { ArrowLeft, ArrowRight, Check, ImageIcon, Loader2, Sparkles, Wand2 } from "lucide-react";
+import {
+  isRenderableMediaSource,
+  parseTemplatesResponse,
+  parseViewerAuthorityResponse,
+  type PublicCharacterTemplate as CreateTemplate,
+} from "@/lib/public-api-contracts";
+import { useAgeGateAccess } from "./AgeGateBoundary";
 
 type DraftPayload = {
   ok?: boolean;
@@ -11,7 +18,7 @@ type DraftPayload = {
   data?: {
     draft?: { id: string };
     character?: { id: string; name: string; status?: string };
-    asset?: { id?: string; url: string };
+    asset?: { id?: string; url: string; isSynthetic?: boolean };
     previewJob?: { id: string; status: string };
   };
 };
@@ -22,17 +29,7 @@ type PreviewCandidate = {
   previewJobId: string;
   assetId: string;
   url: string;
-};
-
-type CreateTemplate = {
-  id: string;
-  name: string;
-  summary?: string | null;
-  gender?: string | null;
-  style?: string | null;
-  appearance?: unknown;
-  advancedDetails?: unknown;
-  tags?: unknown;
+  isSynthetic: boolean;
 };
 
 // Templates store free-form Json; pull a usable string for the draft's prompt-shaped fields.
@@ -53,8 +50,10 @@ function pickTags(value: unknown): string {
   return "";
 }
 
-const DEFAULT_PREVIEW = "/images/ourdream/card-sarah-mercer.webp";
-const STORAGE_KEY = "ourdream.create.draft.v1";
+const DEFAULT_PREVIEW = "/images/ourdream/character-placeholder.svg";
+const STORAGE_KEY_PREFIX = "ourdream.create.draft.v2";
+const CREATE_DRAFT_TRANSFER_KEY = "ourdream.create.draft.transfer.v1";
+const CREATE_DRAFT_TRANSFER_TTL_MS = 20 * 60 * 1_000;
 
 const STEPS = ["Identity", "Appearance", "Personality", "Preview", "Publish"] as const;
 
@@ -80,19 +79,20 @@ const INITIAL: WizardState = {
   confirmedPreviewJobId: "",
   confirmedPreviewUrl: "",
   step: 0,
-  name: "Nova Vale",
+  name: "",
   age: 21,
   gender: "female",
   style: "realistic",
-  appearance: "cinematic brunette with soft lighting",
-  hair: "long wavy hair",
-  body: "athletic",
-  description: "A warm, cinematic companion with a confident personality.",
-  tags: "romantic,caring,slow-burn",
+  appearance: "",
+  hair: "",
+  body: "",
+  description: "",
+  tags: "",
   visibility: "private",
 };
 
 export function CreateWorkspace() {
+  const { accepted: ageGateAccepted } = useAgeGateAccess();
   const [state, setState] = useState<WizardState>(INITIAL);
   const [preview, setPreview] = useState(DEFAULT_PREVIEW);
   const [previewStatus, setPreviewStatus] = useState<PreviewStatus>("idle");
@@ -103,8 +103,17 @@ export function CreateWorkspace() {
   const [createdStatus, setCreatedStatus] = useState("");
   const [pending, setPending] = useState(false);
   const [hydrated, setHydrated] = useState(false);
+  const [storageKey, setStorageKey] = useState<string | null>(null);
+  const [viewerAuthorityState, setViewerAuthorityState] = useState<
+    "loading" | "ready" | "error"
+  >("loading");
+  const [viewerAuthorityAttempt, setViewerAuthorityAttempt] = useState(0);
   const [templates, setTemplates] = useState<CreateTemplate[]>([]);
   const [templateId, setTemplateId] = useState("");
+  const [templatesState, setTemplatesState] = useState<
+    "loading" | "ready" | "error"
+  >("loading");
+  const [templatesAttempt, setTemplatesAttempt] = useState(0);
 
   const step = state.step;
   const set = useCallback(
@@ -112,17 +121,50 @@ export function CreateWorkspace() {
       setState((current) => ({ ...current, [key]: value })),
     [],
   );
+  const requestApi = (path: string, body?: unknown, method = "POST") =>
+    api(path, body, method, () => createDraftTransfer(storageKey, state));
 
-  // Resume a draft after refresh: client-persisted wizard state (the draft API has no GET).
-  // localStorage is browser-only, so we hydrate post-mount rather than in a lazy initializer
-  // (a lazy initializer would diverge from the SSR markup and break hydration).
+  // Resolve a stable viewer identity before touching local storage so drafts never
+  // leak from one signed-in account to another on a shared browser.
   useEffect(() => {
+    if (!ageGateAccepted) return;
+    const controller = new AbortController();
+    fetch("/api/v1/me", { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Viewer authority unavailable");
+        return parseViewerAuthorityResponse(await response.json());
+      })
+      .then((payload) => {
+        if (controller.signal.aborted) return;
+        const userId = payload.user?.id;
+        const anonymousId = payload.anonymousId;
+        const nextStorageKey = userId
+          ? `${STORAGE_KEY_PREFIX}:user:${userId}`
+          : anonymousId
+            ? `${STORAGE_KEY_PREFIX}:anonymous:${anonymousId}`
+            : null;
+        if (nextStorageKey) {
+          if (userId) consumeDraftTransfer(nextStorageKey);
+          setStorageKey(nextStorageKey);
+          setViewerAuthorityState("ready");
+        } else {
+          setViewerAuthorityState("error");
+        }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setViewerAuthorityState("error");
+      });
+    return () => controller.abort();
+  }, [ageGateAccepted, viewerAuthorityAttempt]);
+
+  // Resume a draft after refresh once the viewer-scoped storage key is known.
+  useEffect(() => {
+    if (!storageKey) return;
     let restored: WizardState | null = null;
     try {
-      const raw = window.localStorage.getItem(STORAGE_KEY);
+      const raw = window.localStorage.getItem(storageKey);
       if (raw) {
-        restored = { ...INITIAL, ...(JSON.parse(raw) as Partial<WizardState>) };
-        if (restored.step > 3 && !restored.confirmedPreviewJobId) restored.step = 3;
+        restored = parseWizardDraft(JSON.parse(raw));
       }
     } catch {
       // ignore malformed storage
@@ -137,35 +179,39 @@ export function CreateWorkspace() {
     }
     setHydrated(true);
     /* eslint-enable react-hooks/set-state-in-effect */
-  }, []);
+  }, [storageKey]);
 
   useEffect(() => {
-    if (!hydrated) return;
+    if (!hydrated || !storageKey) return;
     try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      window.localStorage.setItem(storageKey, JSON.stringify(state));
     } catch {
       // ignore quota/serialization errors
     }
-  }, [state, hydrated]);
+  }, [state, hydrated, storageKey]);
 
-  // Load admin-curated starting templates (public, active only). Best-effort: the create
-  // flow stays fully usable from scratch if none exist or the fetch fails.
+  // Load admin-curated starting templates (public, active only). Templates are
+  // optional, but an unavailable authority is distinct from an intentional empty set.
   useEffect(() => {
+    if (!ageGateAccepted) return;
     let alive = true;
     (async () => {
       try {
         const res = await fetch("/api/v1/character-templates");
-        if (!res.ok) return;
-        const payload = (await res.json()) as { data?: { items?: CreateTemplate[] } };
-        if (alive && Array.isArray(payload.data?.items)) setTemplates(payload.data.items);
+        if (!res.ok) throw new Error("Templates unavailable");
+        const payload = parseTemplatesResponse(await res.json());
+        if (alive) {
+          setTemplates(payload.items);
+          setTemplatesState("ready");
+        }
       } catch {
-        // ignore — templates are optional scaffolding
+        if (alive) setTemplatesState("error");
       }
     })();
     return () => {
       alive = false;
     };
-  }, []);
+  }, [ageGateAccepted, templatesAttempt]);
 
   function applyTemplate(template: CreateTemplate) {
     // Selecting a template seeds the draft; the user is then free to edit everything (no runtime link).
@@ -206,7 +252,7 @@ export function CreateWorkspace() {
 
   async function ensureDraft(): Promise<string> {
     if (state.draftId) return state.draftId;
-    const created = await api("/api/v1/character-drafts", {
+    const created = await requestApi("/api/v1/character-drafts", {
       name: state.name,
       style: state.style,
       gender: state.gender,
@@ -219,7 +265,7 @@ export function CreateWorkspace() {
 
   async function saveStep(nextStep: number) {
     const draftId = await ensureDraft();
-    await api(
+    await requestApi(
       `/api/v1/character-drafts/${draftId}`,
       {
         step: Math.min(nextStep, 12),
@@ -278,7 +324,10 @@ export function CreateWorkspace() {
         // Preview generation is async (worker-backed): enqueue, then poll the job
         // status until it settles. We generate candidates one-by-one so GET .../preview
         // always points at the job we just created.
-        const queued = await api(`/api/v1/character-drafts/${draftId}/preview`, {});
+        const queued = await requestApi(
+          `/api/v1/character-drafts/${draftId}/preview`,
+          {},
+        );
         const previewJobId = queued.data?.previewJob?.id;
         if (!previewJobId) throw new Error("Preview generation failed. Try again.");
         const result = await pollPreview(draftId, previewJobId);
@@ -287,6 +336,7 @@ export function CreateWorkspace() {
           previewJobId,
           assetId: result.asset.id,
           url: result.asset.url,
+          isSynthetic: result.asset.isSynthetic === true,
         };
         generated.push(candidate);
         setPreviewCandidates([...generated]);
@@ -315,9 +365,15 @@ export function CreateWorkspace() {
   async function pollPreview(
     draftId: string,
     previewJobId: string,
-  ): Promise<{ asset?: { id?: string; url?: string } | null } | null> {
+  ): Promise<{
+    asset?: { id?: string; url?: string; isSynthetic?: boolean } | null;
+  } | null> {
     for (let attempt = 0; attempt < 50; attempt += 1) {
-      const status = await api(`/api/v1/character-drafts/${draftId}/preview`, undefined, "GET");
+      const status = await requestApi(
+        `/api/v1/character-drafts/${draftId}/preview`,
+        undefined,
+        "GET",
+      );
       const job = status.data?.previewJob;
       if (job?.id !== previewJobId) {
         await new Promise((resolve) => setTimeout(resolve, 500));
@@ -346,11 +402,15 @@ export function CreateWorkspace() {
       setStatus("Choose an identity candidate first.");
       return;
     }
+    if (candidate.isSynthetic) {
+      setStatus("Demo previews cannot be used as a published character identity.");
+      return;
+    }
     setPending(true);
     setStatus("");
     try {
       const draftId = await ensureDraft();
-      await api(`/api/v1/character-drafts/${draftId}/preview-anchor`, {
+      await requestApi(`/api/v1/character-drafts/${draftId}/preview-anchor`, {
         previewJobId: candidate.previewJobId,
       });
       setState((current) => ({
@@ -382,8 +442,10 @@ export function CreateWorkspace() {
     try {
       const draftId = await ensureDraft();
       await saveStep(STEPS.length);
-      await api(`/api/v1/character-drafts/${draftId}/tags`, { tags: normalizedTags(state.tags) });
-      const submitted = await api(`/api/v1/character-drafts/${draftId}/submit`, {
+      await requestApi(`/api/v1/character-drafts/${draftId}/tags`, {
+        tags: normalizedTags(state.tags),
+      });
+      const submitted = await requestApi(`/api/v1/character-drafts/${draftId}/submit`, {
         visibility: state.visibility,
         description: state.description,
         age: state.age,
@@ -401,7 +463,7 @@ export function CreateWorkspace() {
           : "Character submitted.",
       );
       try {
-        window.localStorage.removeItem(STORAGE_KEY);
+        if (storageKey) window.localStorage.removeItem(storageKey);
       } catch {
         // ignore
       }
@@ -422,6 +484,47 @@ export function CreateWorkspace() {
     } finally {
       setPending(false);
     }
+  }
+
+  if (!hydrated) {
+    if (viewerAuthorityState === "error") {
+      return (
+        <section
+          className="mx-auto my-16 max-w-xl rounded-[16px] border border-white/10 bg-[rgb(18,18,18)] p-6 text-center"
+          data-testid="create-viewer-authority-error"
+          role="alert"
+        >
+          <h1 className="text-lg font-black text-white">
+            Your private draft could not be opened
+          </h1>
+          <p className="mt-2 text-[13px] leading-5 text-[rgb(170,170,170)]">
+            We could not confirm which account or private browser draft owns
+            this workspace. Retry before entering character details.
+          </p>
+          <button
+            className="mt-4 h-10 rounded-full bg-white px-5 text-[13px] font-black text-[rgb(13,13,13)]"
+            onClick={() => {
+              setViewerAuthorityState("loading");
+              setStorageKey(null);
+              setViewerAuthorityAttempt((attempt) => attempt + 1);
+            }}
+            type="button"
+          >
+            Retry private draft
+          </button>
+        </section>
+      );
+    }
+    return (
+      <section
+        aria-live="polite"
+        className="flex min-h-[420px] items-center justify-center px-4 text-[13px] font-semibold text-[rgb(170,170,170)]"
+        role="status"
+      >
+        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+        Loading your private draft...
+      </section>
+    );
   }
 
   return (
@@ -476,12 +579,41 @@ export function CreateWorkspace() {
           </div>
 
           <div className="rounded-[20px] border border-white/10 bg-[rgb(18,18,18)] p-4 md:p-6">
-            {step === 0 && templates.length > 0 && (
+            {step === 0 && (
               <div className="mb-4" data-testid="create-templates">
                 <p className="text-[12px] font-bold uppercase leading-4 text-[rgb(114,113,112)]">
                   Start from a template
                 </p>
-                <div className="mt-2 flex flex-wrap gap-2">
+                {templatesState === "loading" ? (
+                  <p className="mt-2 text-[12px] text-[rgb(170,170,170)]">
+                    Loading curated templates…
+                  </p>
+                ) : null}
+                {templatesState === "error" ? (
+                  <div
+                    className="mt-2 flex items-center justify-between gap-3 rounded-lg border border-white/10 p-3 text-[12px] text-[rgb(170,170,170)]"
+                    role="status"
+                  >
+                    <span>Curated templates are unavailable. You can still start from scratch.</span>
+                    <button
+                      className="shrink-0 rounded-full bg-white px-3 py-1.5 font-black text-[rgb(13,13,13)]"
+                      onClick={() => {
+                        setTemplatesState("loading");
+                        setTemplatesAttempt((attempt) => attempt + 1);
+                      }}
+                      type="button"
+                    >
+                      Retry
+                    </button>
+                  </div>
+                ) : null}
+                {templatesState === "ready" && templates.length === 0 ? (
+                  <p className="mt-2 text-[12px] text-[rgb(170,170,170)]">
+                    No curated templates are published right now. Start from scratch.
+                  </p>
+                ) : null}
+                {templatesState === "ready" && templates.length > 0 ? (
+                  <div className="mt-2 flex flex-wrap gap-2">
                   <button
                     className={`h-9 rounded-full px-3 text-[12px] font-bold ${
                       templateId === ""
@@ -511,7 +643,8 @@ export function CreateWorkspace() {
                       {template.name}
                     </button>
                   ))}
-                </div>
+                  </div>
+                ) : null}
               </div>
             )}
 
@@ -648,7 +781,13 @@ export function CreateWorkspace() {
                             src={candidate.url}
                           />
                           <span className="absolute left-2 top-2 rounded-full bg-black/70 px-2 py-1 text-[11px] font-black text-white">
-                            {confirmed ? "Identity confirmed" : selected ? "Selected" : `Option ${index + 1}`}
+                            {candidate.isSynthetic
+                              ? "Demo sample"
+                              : confirmed
+                                ? "Identity confirmed"
+                                : selected
+                                  ? "Selected"
+                                  : `Option ${index + 1}`}
                           </span>
                           {selected && (
                             <span className="absolute bottom-2 left-2 inline-flex items-center gap-1 rounded-full bg-[rgb(253,95,194)] px-2 py-1 text-[11px] font-black text-white">
@@ -677,7 +816,15 @@ export function CreateWorkspace() {
                       <button
                         className="inline-flex h-10 items-center gap-2 rounded-full bg-[rgb(253,95,194)] px-4 text-[12px] font-black text-white disabled:opacity-50"
                         data-testid="create-confirm-identity"
-                        disabled={!selectedPreviewJobId || pending}
+                        disabled={
+                          !selectedPreviewJobId ||
+                          pending ||
+                          previewCandidates.some(
+                            (candidate) =>
+                              candidate.previewJobId === selectedPreviewJobId &&
+                              candidate.isSynthetic,
+                          )
+                        }
                         onClick={() => void confirmPreviewCandidate()}
                         type="button"
                       >
@@ -701,7 +848,11 @@ export function CreateWorkspace() {
                   </div>
                 )}
                 {previewStatus === "complete" && (
-                  <p className="text-[13px] font-semibold text-[rgb(120,220,170)]">Preview ready.</p>
+                  <p className="text-[13px] font-semibold text-[rgb(120,220,170)]">
+                    {previewCandidates.some((candidate) => candidate.isSynthetic)
+                      ? "Demo samples cannot be confirmed. Connect the real image provider and regenerate."
+                      : "Preview ready."}
+                  </p>
                 )}
                 {previewStatus === "failed" && (
                   <p className="text-[13px] font-semibold text-[rgb(255,140,140)]">
@@ -845,7 +996,12 @@ function Field({
   );
 }
 
-async function api(path: string, body?: unknown, method = "POST") {
+async function api(
+  path: string,
+  body?: unknown,
+  method = "POST",
+  createResumeTarget?: () => string | null,
+) {
   const response = await fetch(path, {
     method,
     headers: { "content-type": "application/json" },
@@ -855,7 +1011,9 @@ async function api(path: string, body?: unknown, method = "POST") {
   // Logged-out users can't create drafts; send them to sign up instead of
   // dead-ending on a 401 (mirrors CharacterDetailClient.startChat).
   if (response.status === 401) {
-    const next = encodeURIComponent(`${window.location.pathname}${window.location.search}${window.location.hash}`);
+    const resumeTarget = createResumeTarget?.();
+    const currentTarget = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    const next = encodeURIComponent(resumeTarget ?? (currentTarget || "/create"));
     window.location.href = `/signup?next=${next || "%2Fcreate"}`;
     throw new Error("Sign in to create a character. Redirecting…");
   }
@@ -864,6 +1022,139 @@ async function api(path: string, body?: unknown, method = "POST") {
     throw new Error(payload.error?.message ?? "Sign in, accept the age gate, then try again.");
   }
   return payload;
+}
+
+function createDraftTransfer(
+  sourceStorageKey: string | null,
+  draft: WizardState,
+) {
+  if (
+    !sourceStorageKey?.startsWith(`${STORAGE_KEY_PREFIX}:anonymous:`)
+  ) {
+    return null;
+  }
+  try {
+    window.localStorage.setItem(sourceStorageKey, JSON.stringify(draft));
+    const nonce = crypto.randomUUID();
+    window.sessionStorage.setItem(
+      CREATE_DRAFT_TRANSFER_KEY,
+      JSON.stringify({
+        nonce,
+        sourceStorageKey,
+        expiresAt: Date.now() + CREATE_DRAFT_TRANSFER_TTL_MS,
+        draft,
+      }),
+    );
+    return `/create?draftResume=${encodeURIComponent(nonce)}`;
+  } catch {
+    return null;
+  }
+}
+
+function consumeDraftTransfer(targetStorageKey: string) {
+  if (!targetStorageKey.startsWith(`${STORAGE_KEY_PREFIX}:user:`)) {
+    return false;
+  }
+  try {
+    const nonce = new URLSearchParams(window.location.search).get(
+      "draftResume",
+    );
+    if (!nonce) return false;
+    const raw = window.sessionStorage.getItem(CREATE_DRAFT_TRANSFER_KEY);
+    if (!raw) return false;
+    const transfer = JSON.parse(raw) as unknown;
+    if (
+      !isRecord(transfer) ||
+      transfer.nonce !== nonce ||
+      typeof transfer.sourceStorageKey !== "string" ||
+      !transfer.sourceStorageKey.startsWith(
+        `${STORAGE_KEY_PREFIX}:anonymous:`,
+      ) ||
+      typeof transfer.expiresAt !== "number" ||
+      transfer.expiresAt <= Date.now()
+    ) {
+      return false;
+    }
+    const restored = parseWizardDraft(transfer.draft);
+    if (!restored) return false;
+
+    window.localStorage.setItem(
+      targetStorageKey,
+      JSON.stringify(restored),
+    );
+    window.localStorage.removeItem(transfer.sourceStorageKey);
+    window.sessionStorage.removeItem(CREATE_DRAFT_TRANSFER_KEY);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("draftResume");
+    window.history.replaceState(
+      null,
+      "",
+      `${url.pathname}${url.search}${url.hash}`,
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function parseWizardDraft(value: unknown): WizardState | null {
+  if (!isRecord(value)) return null;
+  const restored: WizardState = {
+    draftId: draftString(value.draftId, 200),
+    confirmedPreviewJobId: draftString(
+      value.confirmedPreviewJobId,
+      200,
+    ),
+    confirmedPreviewUrl:
+      typeof value.confirmedPreviewUrl === "string" &&
+      isRenderableMediaSource(value.confirmedPreviewUrl)
+        ? value.confirmedPreviewUrl
+        : "",
+    step:
+      typeof value.step === "number" &&
+      Number.isInteger(value.step) &&
+      value.step >= 0 &&
+      value.step < STEPS.length
+        ? value.step
+        : INITIAL.step,
+    name: draftString(value.name, 120),
+    age:
+      typeof value.age === "number" &&
+      Number.isInteger(value.age) &&
+      value.age >= 18 &&
+      value.age <= 99
+        ? value.age
+        : INITIAL.age,
+    gender: draftString(value.gender, 80) || INITIAL.gender,
+    style: draftString(value.style, 80) || INITIAL.style,
+    appearance: draftString(value.appearance, 4000),
+    hair: draftString(value.hair, 2000),
+    body: draftString(value.body, 2000),
+    description: draftString(value.description, 8000),
+    tags: draftString(value.tags, 2000),
+    visibility:
+      value.visibility === "public" || value.visibility === "private"
+        ? value.visibility
+        : INITIAL.visibility,
+  };
+  if (restored.step > 3 && !restored.confirmedPreviewJobId) {
+    restored.step = 3;
+  }
+  return restored;
+}
+
+function draftString(value: unknown, maximumLength: number) {
+  return typeof value === "string"
+    ? value.slice(0, maximumLength)
+    : "";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value)
+  );
 }
 
 function messageFrom(error: unknown) {

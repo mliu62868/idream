@@ -6,3 +6,5 @@ export * from "./mutation-transport";
 export * from "./workspace-access";
 export * from "./errors";
 export * from "./operational-slo";
+export * from "./character-qa-authority";
+export * from "./character-release-assets";

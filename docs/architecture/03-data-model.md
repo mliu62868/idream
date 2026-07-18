@@ -772,15 +772,19 @@ model AnalyticsEvent {                                  // 产品埋点（也可
 }
 
 model RoutePage {                                       // SEO 路由内容/状态（对齐 PRD §7 RoutePage）
-  path          String   @id
-  template      String                                  /// enum: article|comparison|create|generator|library|marketing|profile|safety|terms|upgrade|home
-  title         String
-  description   String
-  canonical     String?
-  contentStatus String   @default("template")           /// enum: template | drafted | published
-  body          Json     @default("{}")
-  updatedAt     DateTime @updatedAt
+  path                 String    @id
+  template             String                           /// enum: article|comparison|create|generator|library|marketing|profile|safety|terms|upgrade|home
+  title                String
+  description          String
+  canonical            String?
+  contentStatus        String    @default("template")   /// enum: template | drafted | published
+  contentSchemaVersion Int?
+  indexingStatus       String    @default("noindex")
+  body                 Json
+  publishedAt          DateTime?
+  updatedAt            DateTime  @updatedAt
   @@index([template])
+  @@index([contentStatus, indexingStatus])
   @@map("route_pages")
 }
 ```
@@ -1056,7 +1060,7 @@ CREATE INDEX characters_name_trgm ON characters USING gin (name gin_trgm_ops);
 3. **Plans**：Premium/Deluxe × Monthly/Yearly，价格与权益按 `ProductFeatureMap §5.5` 与 `seed.ts`（Premium $19.99/mo 或 $99.90/yr，Deluxe $59.99/mo 或 $299.90/yr；`includedDreamcoins` 顶层字段；`features` 为 image/voice/video entitlement，不再有 image/video quota 计数器）。
 4. **GenerationPreset（built_in）**：background/pose/outfit/mode 各若干内置 preset。
 5. **PolicyVersion**：从 `packages/main/src/lib/ourdream-safety-data.ts` 导入镜像政策。
-6. **RoutePage**：从既有 164 条静态路由导入 path/template/title/description。
+6. **RoutePage**：从既有路由清单导入 169 条 path/template/title/description 作为 `template/noindex` 运营库存；只有显式发布版本才形成 CMS 公开权威，库存本身不能绕过 published gate。
 7. **Dev 账号**：一个 `admin`、一个普通 `user`（带 signup_bonus ledger 条目）。
 
 > Seed 把现有静态数据"接管"为后台数据源，是 P0 里程碑 M2 的关键一步（见 12）。

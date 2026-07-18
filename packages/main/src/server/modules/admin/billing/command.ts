@@ -3,6 +3,8 @@ import { z } from "zod";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
+import { executeIdempotentDomainCommand } from "@/server/modules/admin/shared/domain-command";
+import { persistTransactionalAdminMutation } from "@/server/modules/admin/shared/transactional-mutation";
 import { appendLedger } from "./ledger";
 import { enforceApproval, LEDGER_APPROVAL_THRESHOLD } from "@/server/modules/admin/shared/legacy-approval";
 import {
@@ -19,6 +21,15 @@ const ledgerAdjustmentSchema = z.object({
   sourceId: z.string().trim().max(160).optional(),
   confirmation: z.string().trim().min(1).max(160),
 });
+
+const checkoutReconciliationSchema = z
+  .object({
+    resolution: z.literal("refund_acknowledged"),
+    providerReference: z.string().trim().min(3).max(240),
+    reason: z.string().trim().min(3).max(2_000),
+    confirmation: z.string().trim().min(1).max(240),
+  })
+  .strict();
 
 export async function billingAdjustment(request: Request) {
   const actor = await actorWithPermission(request, "billing.ledger.adjust");
@@ -71,4 +82,137 @@ export async function billingAdjustment(request: Request) {
     return { entry, replayed: false };
   });
   return ok({ ledgerEntry: result.entry, replayed: result.replayed });
+}
+
+export async function resolveCheckoutReconciliation(
+  request: Request,
+  checkoutId: string,
+) {
+  const actor = await actorWithPermission(
+    request,
+    "billing.checkout.reconcile",
+  );
+  const body = checkoutReconciliationSchema.parse(await jsonBody(request));
+  const confirmation = `${checkoutId}:refund_acknowledged`;
+  if (body.confirmation !== confirmation) {
+    throw Errors.badRequest(
+      "Confirmation did not match the checkout refund acknowledgement",
+    );
+  }
+  const result = await executeIdempotentDomainCommand({
+    request,
+    actor,
+    commandType: "billing.checkout.reconcile_refund",
+    targetType: "checkout_session",
+    targetId: checkoutId,
+    payload: {
+      resolution: body.resolution,
+      providerReference: body.providerReference,
+      reason: body.reason,
+    },
+    execute: async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "checkout_sessions" WHERE id = ${checkoutId} FOR UPDATE`;
+      const before = await tx.checkoutSession.findUnique({
+        where: { id: checkoutId },
+        include: { user: { select: { dataClass: true } } },
+      });
+      if (!before) throw Errors.notFound("Checkout reconciliation not found");
+      if (before.user.dataClass !== "customer") {
+        throw Errors.conflict(
+          "Checkout reconciliation is outside customer billing authority",
+        );
+      }
+      if (
+        before.status !== "provider_unknown" ||
+        before.failureCode !==
+          "provider_invoice_settled_after_abandonment" ||
+        before.needsReconciliation !== true ||
+        before.providerInvoiceStatus !== "settled" ||
+        !before.providerSessionId
+      ) {
+        throw Errors.conflict(
+          "Checkout is not an unresolved abandoned late settlement",
+          {
+            checkoutId,
+            failureCode: before.failureCode,
+            needsReconciliation: before.needsReconciliation,
+            providerInvoiceStatus: before.providerInvoiceStatus,
+            status: before.status,
+          },
+        );
+      }
+      const acknowledgedAt = new Date();
+      const evidence = isRecord(before.reconciliationEvidence)
+        ? before.reconciliationEvidence
+        : {};
+      const resolution = {
+        type: body.resolution,
+        providerReference: body.providerReference,
+        acknowledgedAt: acknowledgedAt.toISOString(),
+        acknowledgedBy: actor.id,
+      };
+      const checkout = await tx.checkoutSession.update({
+        where: { id: checkoutId },
+        data: {
+          status: "canceled",
+          failureCode: "provider_invoice_refund_acknowledged",
+          needsReconciliation: false,
+          reconciliationEvidence: toInputJson({
+            ...evidence,
+            resolution,
+          }),
+        },
+      });
+      await persistTransactionalAdminMutation(tx, request, actor, {
+        audit: {
+          action: "billing.checkout.reconcile_refund",
+          targetType: "checkout_session",
+          targetId: checkoutId,
+          reason: body.reason,
+          before: {
+            status: before.status,
+            failureCode: before.failureCode,
+            needsReconciliation: before.needsReconciliation,
+            providerInvoiceStatus: before.providerInvoiceStatus,
+            providerSessionId: before.providerSessionId,
+          },
+          after: {
+            status: checkout.status,
+            failureCode: checkout.failureCode,
+            needsReconciliation: checkout.needsReconciliation,
+            providerInvoiceStatus: checkout.providerInvoiceStatus,
+            providerSessionId: checkout.providerSessionId,
+            resolution,
+          },
+        },
+        event: {
+          eventType: "billing.checkout.reconciliation_resolved.v1",
+          aggregateType: "checkout_session",
+          aggregateId: checkoutId,
+          payload: {
+            checkoutId,
+            provider: checkout.provider,
+            providerInvoiceId: checkout.providerSessionId,
+            resolution,
+          },
+        },
+      });
+      return {
+        checkout: {
+          id: checkout.id,
+          status: checkout.status,
+          failureCode: checkout.failureCode,
+          needsReconciliation: checkout.needsReconciliation,
+          providerInvoiceStatus: checkout.providerInvoiceStatus,
+          providerSessionId: checkout.providerSessionId,
+        },
+        resolution,
+      };
+    },
+  });
+  return ok(result);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

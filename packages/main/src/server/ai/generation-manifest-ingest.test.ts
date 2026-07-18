@@ -98,6 +98,10 @@ describe("generation completion manifest durable ingest", () => {
     expect(await prisma.generationArtifact.count({ where: { attemptId } })).toBe(1);
     expect(await prisma.mainOutboxEvent.findUnique({ where: { id: outboxId } })).toMatchObject({
       eventType: "generation.manifest.accepted.v1",
+      payload: expect.objectContaining({
+        provider: manifest.provider,
+        model: manifest.model,
+      }),
     });
   });
 

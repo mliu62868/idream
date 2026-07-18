@@ -4,35 +4,40 @@ import { Check, Crown } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
+import {
+  parseCheckoutResponse,
+  parsePlansResponse,
+  parseProfileResponse,
+  parsePublicApiError,
+  parseViewerAuthorityResponse,
+  type PublicBillingMode as BillingMode,
+  type PublicPlan as Plan,
+} from "@/lib/public-api-contracts";
+import {
+  checkoutIntentFingerprint,
+  createPendingCheckoutIntent,
+  readPendingCheckoutIntents,
+  removePendingCheckoutIntent,
+  shouldRemovePendingCheckoutIntent,
+  upsertPendingCheckoutIntent,
+  writePendingCheckoutIntents,
+  type PendingCheckoutIntent,
+} from "@/lib/billing-checkout-intent";
+import { useAgeGateAccess } from "./AgeGateBoundary";
 import { safeInternalAuthRedirect } from "./authRedirect";
 import {
   fetchProtectedForViewer,
   type ViewerFetcher,
 } from "./viewer-auth";
-import { configuredEntitlementBenefits } from "./entitlement-copy";
-
-type Plan = {
-  id: string;
-  slug: string;
-  name: string;
-  billingPeriod: string;
-  priceCents: number;
-  includedDreamcoins: number;
-  features: unknown;
-};
-
-type BillingMode = {
-  provider: "mock" | "btcpay";
-  demoMode: boolean;
-  autoConfirmAvailable: boolean;
-};
+import {
+  configuredEntitlementBenefits,
+  FREE_CHAT_SUMMARY,
+} from "./entitlement-copy";
 
 type CheckoutResult =
   | { kind: "success"; message: string; plan: Plan }
   | { kind: "redirect"; message: string; url: string }
   | { kind: "error"; message: string };
-
-const FREE_CHAT_SUMMARY = "Free: 30 text messages per day.";
 
 export function loadUpgradeProfileForViewer(fetcher: ViewerFetcher = fetch) {
   return fetchProtectedForViewer(
@@ -43,49 +48,78 @@ export function loadUpgradeProfileForViewer(fetcher: ViewerFetcher = fetch) {
 }
 
 export function UpgradeWorkspace() {
+  const { accepted: ageGateAccepted } = useAgeGateAccess();
   const [plans, setPlans] = useState<Plan[]>([]);
   const [billingMode, setBillingMode] = useState<BillingMode | null>(null);
   const [checkoutResult, setCheckoutResult] = useState<CheckoutResult | null>(null);
   const [pendingPlan, setPendingPlan] = useState("");
   const [returnTarget, setReturnTarget] = useState("/generate");
+  const [returnTargetReady, setReturnTargetReady] = useState(false);
   // Lowercased "name billingPeriod" of the user's active plan; "" when unknown
   // (logged out / free / fetch failed) so no card gets marked as current.
   const [activePlan, setActivePlan] = useState("");
+  const [viewerId, setViewerId] = useState<string | null>(null);
+  const [viewerResolved, setViewerResolved] = useState(false);
+  const [checkoutIntents, setCheckoutIntents] = useState<
+    PendingCheckoutIntent[]
+  >([]);
   // P1-D: a failed/slow plans fetch must not masquerade as "no plans". Track
   // load lifecycle so we can show a spinner and a retryable error instead of
   // a blank grid.
   const [plansState, setPlansState] = useState<"loading" | "ready" | "error">("loading");
 
   const loadPlans = useCallback(async () => {
+    if (!ageGateAccepted) return;
     setPlansState("loading");
     try {
       const response = await fetch("/api/v1/plans");
       if (!response.ok) throw new Error(`plans request failed (${response.status})`);
-      const payload = (await response.json()) as {
-        data?: { items?: Plan[]; billing?: BillingMode };
-      };
-      setPlans(payload.data?.items ?? []);
-      setBillingMode(payload.data?.billing ?? null);
+      const payload = parsePlansResponse(await response.json());
+      setPlans(payload.items);
+      setBillingMode(payload.billing);
       setPlansState("ready");
     } catch {
       setPlansState("error");
     }
-  }, []);
+  }, [ageGateAccepted]);
 
   useEffect(() => {
+    if (!ageGateAccepted) return;
     const timer = window.setTimeout(() => void loadPlans(), 0);
     return () => window.clearTimeout(timer);
-  }, [loadPlans]);
+  }, [ageGateAccepted, loadPlans]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
       setReturnTarget(upgradeReturnTarget());
+      setReturnTargetReady(true);
     }, 0);
     return () => window.clearTimeout(timer);
   }, []);
 
+  useEffect(() => {
+    if (!ageGateAccepted) return;
+    const controller = new AbortController();
+    void loadUpgradeViewerId(fetch, controller.signal)
+      .then((id) => {
+        if (controller.signal.aborted) return;
+        setViewerId(id);
+        setViewerResolved(true);
+        setCheckoutIntents(
+          id
+            ? readPendingCheckoutIntents(window.sessionStorage, id)
+            : [],
+        );
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setViewerResolved(false);
+      });
+    return () => controller.abort();
+  }, [ageGateAccepted]);
+
   // Best-effort current-plan lookup; any failure simply leaves the cards unmarked.
   useEffect(() => {
+    if (!ageGateAccepted) return;
     let alive = true;
     const timer = window.setTimeout(() => {
       void loadUpgradeProfileForViewer()
@@ -94,70 +128,145 @@ export function UpgradeWorkspace() {
             ? result.response.json()
             : null,
         )
-        .then(
-          (
-            payload: {
-              data?: {
-                subscription?: { plan?: { name: string; billingPeriod: string } } | null;
-              };
-            } | null,
-          ) => {
-            if (!alive) return;
-            const plan = payload?.data?.subscription?.plan;
-            if (plan) setActivePlan(`${plan.name} ${plan.billingPeriod}`.toLowerCase());
-          },
-        )
+        .then((payload: unknown) => {
+          if (!alive || payload === null) return;
+          const plan = parseProfileResponse(payload).subscription?.plan;
+          if (plan) {
+            setActivePlan(
+              `${plan.name} ${plan.billingPeriod}`.toLowerCase(),
+            );
+          }
+        })
         .catch(() => undefined);
     }, 0);
     return () => {
       alive = false;
       window.clearTimeout(timer);
     };
-  }, []);
+  }, [ageGateAccepted]);
+
+  function persistCheckoutIntents(
+    authorityViewerId: string,
+    next: PendingCheckoutIntent[],
+  ) {
+    writePendingCheckoutIntents(
+      window.sessionStorage,
+      authorityViewerId,
+      next,
+    );
+    setCheckoutIntents(next);
+  }
 
   async function checkout(plan: Plan) {
     setPendingPlan(plan.id);
     setCheckoutResult(null);
+    const autoConfirm = billingMode?.autoConfirmAvailable === true;
+    const intentInput = {
+      planId: plan.id,
+      autoConfirm,
+      returnPath: returnTarget,
+    };
+    const intentFingerprint = checkoutIntentFingerprint(intentInput);
     try {
-      const response = await fetch("/api/v1/billing/checkout", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ planId: plan.id, autoConfirm: billingMode?.autoConfirmAvailable === true }),
-      });
-      const payload = (await response.json()) as {
-        ok: boolean;
-        data?: {
-          invoice?: { checkoutUrl?: string };
-          subscription?: unknown;
-          billing?: BillingMode;
-        };
-        error?: { code?: string; message: string };
-      };
-      if (response.status === 401 || payload.error?.code === "unauthorized") {
+      let authorityViewerId = viewerId;
+      if (!viewerResolved) {
+        authorityViewerId = await loadUpgradeViewerId();
+        setViewerId(authorityViewerId);
+        setViewerResolved(true);
+      }
+      if (!authorityViewerId) {
         window.location.assign(signupUrlForCheckout(plan, returnTarget));
         return;
       }
-      if (payload.data?.billing) setBillingMode(payload.data.billing);
-      if (response.ok && payload.ok && payload.data?.subscription) {
+
+      const restored = readPendingCheckoutIntents(
+        window.sessionStorage,
+        authorityViewerId,
+      );
+      const existing = restored.find(
+        (intent) => intent.fingerprint === intentFingerprint,
+      );
+      const intent: PendingCheckoutIntent =
+        existing ??
+        createPendingCheckoutIntent(intentInput, crypto.randomUUID());
+      const pendingIntents = upsertPendingCheckoutIntent(restored, intent);
+      persistCheckoutIntents(authorityViewerId, pendingIntents);
+
+      const response = await fetch("/api/v1/billing/checkout", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": intent.idempotencyKey,
+        },
+        body: JSON.stringify({
+          planId: plan.id,
+          autoConfirm,
+          returnPath: returnTarget,
+        }),
+      });
+      const rawPayload: unknown = await response.json().catch(() => null);
+      const error = parsePublicApiError(rawPayload);
+      if (response.status === 401 || error?.code === "unauthorized") {
+        window.location.assign(signupUrlForCheckout(plan, returnTarget));
+        return;
+      }
+      if (!response.ok) {
+        if (
+          response.status === 409 &&
+          shouldRemovePendingCheckoutIntent(error?.idempotencyAction)
+        ) {
+          persistCheckoutIntents(
+            authorityViewerId,
+            removePendingCheckoutIntent(pendingIntents, intentFingerprint),
+          );
+        }
+        setCheckoutResult({
+          kind: "error",
+          message: error?.message ?? "Checkout failed",
+        });
+        return;
+      }
+
+      const payload = parseCheckoutResponse(rawPayload);
+      setBillingMode(payload.billing);
+      if (payload.subscription) {
+        persistCheckoutIntents(
+          authorityViewerId,
+          removePendingCheckoutIntent(pendingIntents, intentFingerprint),
+        );
         setActivePlan(`${plan.name} ${plan.billingPeriod}`.toLowerCase());
+        const endLabel = formatBillingDate(
+          payload.billingAccess?.benefitsEndAt ?? null,
+        );
         setCheckoutResult({
           kind: "success",
-          message: `${plan.name} ${plan.billingPeriod} is active. ${plan.includedDreamcoins.toLocaleString()} dreamcoins were added.`,
+          message:
+            payload.billingAccess?.billingModel === "prepaid_period"
+              ? `${plan.name} ${plan.billingPeriod} access is active${endLabel ? ` until ${endLabel}` : ""}. It will not renew automatically.`
+              : `${plan.name} ${plan.billingPeriod} access is active.`,
           plan,
         });
-      } else if (response.ok && payload.ok && payload.data?.invoice?.checkoutUrl) {
+      } else {
+        const continued = {
+          ...intent,
+          checkoutUrl: payload.invoice.checkoutUrl,
+        };
+        persistCheckoutIntents(
+          authorityViewerId,
+          upsertPendingCheckoutIntent(pendingIntents, continued),
+        );
         setCheckoutResult({
           kind: "redirect",
-          message: "Checkout created. Continue to the payment provider to finish activation.",
-          url: payload.data.invoice.checkoutUrl,
+          message:
+            "One-time checkout created. Continue to the payment provider to activate the selected access period.",
+          url: payload.invoice.checkoutUrl,
         });
-      } else {
-        setCheckoutResult({ kind: "error", message: payload.error?.message ?? "Checkout failed" });
       }
     } catch {
       setCheckoutResult({
         kind: "error",
-        message: "Checkout failed. Please check your connection and try again.",
+        message:
+          "Checkout state could not be verified or saved. Retry to resume the same purchase intent when the connection and browser storage are available.",
       });
     } finally {
       setPendingPlan("");
@@ -215,7 +324,9 @@ export function UpgradeWorkspace() {
             Demo checkout
           </p>
           <p className="mt-2 text-[13px] font-semibold leading-5 text-white">
-            Local mock billing activates plans immediately for testing. No real payment is collected.
+            Local mock billing activates one selected access period immediately
+            for testing. No real payment is collected and there is no automatic
+            renewal.
           </p>
         </div>
       )}
@@ -224,6 +335,17 @@ export function UpgradeWorkspace() {
           const isActive =
             activePlan !== "" &&
             `${plan.name} ${plan.billingPeriod}`.toLowerCase() === activePlan;
+          const storedIntent = billingMode
+            ? checkoutIntents.find(
+                (intent) =>
+                  intent.fingerprint ===
+                  checkoutIntentFingerprint({
+                    planId: plan.id,
+                    autoConfirm: billingMode.autoConfirmAvailable,
+                    returnPath: returnTarget,
+                  }),
+              )
+            : undefined;
           const benefits = configuredEntitlementBenefits(plan.features);
           return (
           <article
@@ -249,7 +371,10 @@ export function UpgradeWorkspace() {
               ${(plan.priceCents / 100).toFixed(2)}
             </p>
             <p className="mt-3 text-[14px] leading-6 text-[rgb(170,170,170)]">
-              Includes {plan.includedDreamcoins.toLocaleString()} dreamcoins.
+              One-time payment for one{" "}
+              {plan.billingPeriod === "monthly" ? "month" : "year"} of access.
+              No automatic renewal. Includes{" "}
+              {plan.includedDreamcoins.toLocaleString()} dreamcoins.
             </p>
             <ul className="mt-3 space-y-1.5">
               {benefits.map((benefit) => (
@@ -266,7 +391,11 @@ export function UpgradeWorkspace() {
             ) : null}
             <button
               className="mt-6 h-11 w-full rounded-full bg-white text-[14px] font-black text-[rgb(13,13,13)] disabled:opacity-70"
-              disabled={pendingPlan === plan.id || isActive}
+              disabled={
+                pendingPlan !== "" ||
+                isActive ||
+                !returnTargetReady
+              }
               onClick={() => checkout(plan)}
               type="button"
             >
@@ -276,9 +405,13 @@ export function UpgradeWorkspace() {
                   ? billingMode?.autoConfirmAvailable
                     ? "Activating..."
                     : "Creating checkout..."
-                  : billingMode?.autoConfirmAvailable
-                    ? "Demo upgrade"
-                    : "Continue checkout"}
+                  : storedIntent
+                    ? storedIntent.checkoutUrl
+                      ? "Continue payment"
+                      : "Resume checkout"
+                    : billingMode?.autoConfirmAvailable
+                      ? "Demo activate"
+                      : "Buy access"}
             </button>
           </article>
           );
@@ -302,7 +435,7 @@ export function UpgradeWorkspace() {
                 className="inline-flex h-10 items-center justify-center rounded-full bg-white px-5 text-[13px] font-black text-[rgb(13,13,13)]"
                 href="/profile#billing"
               >
-                View billing
+                View billing &amp; access
               </Link>
               <Link
                 className="inline-flex h-10 items-center justify-center rounded-full bg-[rgb(253,95,194)] px-5 text-[13px] font-black text-[rgb(13,13,13)]"
@@ -345,8 +478,27 @@ function upgradeReturnTarget() {
   return target === "/" ? "/generate" : target;
 }
 
+function formatBillingDate(value: string | null) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return null;
+  return new Intl.DateTimeFormat("en", { dateStyle: "medium" }).format(date);
+}
+
 function returnTargetActionLabel(returnTarget: string) {
   if (returnTarget.startsWith("/chat/")) return "Continue chat";
   if (returnTarget.startsWith("/generate")) return "Start generating";
   return "Continue";
+}
+
+async function loadUpgradeViewerId(
+  fetcher: ViewerFetcher = fetch,
+  signal?: AbortSignal,
+) {
+  const response = await fetcher("/api/v1/me", {
+    cache: "no-store",
+    signal,
+  });
+  if (!response.ok) throw new Error("Viewer authority unavailable");
+  return parseViewerAuthorityResponse(await response.json()).user?.id ?? null;
 }

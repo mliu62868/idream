@@ -23,6 +23,8 @@ export interface CharacterFunnelRow {
 }
 
 export interface CharacterExposureRow {
+  readonly exposureId: string;
+  readonly parentExposureId: string | null;
   readonly eventType: string;
   readonly coverageState: string;
   readonly occurredAt: Date;
@@ -47,6 +49,32 @@ export interface EconomicsAuthorityCoverage {
 
 function windowDays(window: CharacterPerformanceWindow) {
   return window === "7d" ? 7 : 28;
+}
+
+export function completedUtcCharacterPerformanceWindow(input: {
+  readonly asOf: Date;
+  readonly window: CharacterPerformanceWindow;
+}) {
+  const end = new Date(Date.UTC(
+    input.asOf.getUTCFullYear(),
+    input.asOf.getUTCMonth(),
+    input.asOf.getUTCDate(),
+  ));
+  return {
+    start: new Date(end.getTime() - windowDays(input.window) * DAY_MS),
+    end,
+  } as const;
+}
+
+export function utcProductDayCeiling(value: Date) {
+  const start = new Date(Date.UTC(
+    value.getUTCFullYear(),
+    value.getUTCMonth(),
+    value.getUTCDate(),
+  ));
+  return start.getTime() === value.getTime()
+    ? start
+    : new Date(start.getTime() + DAY_MS);
 }
 
 function ratio(numerator: number, denominator: number) {
@@ -127,8 +155,15 @@ export function evaluateCharacterPerformance(input: {
   const days = windowDays(input.window);
   const windowStart = new Date(input.asOf.getTime() - days * DAY_MS);
   const exactExposures = input.exposureRows.filter((row) => row.coverageState === "exact");
-  const eligibleImpressions = exactExposures.filter((row) => row.eventType === "eligible_impression").length;
-  const detailViews = exactExposures.filter((row) => row.eventType === "detail_view").length;
+  const exactImpressions = exactExposures.filter((row) => row.eventType === "eligible_impression");
+  const impressionCohort = new Set(exactImpressions.map((row) => row.exposureId));
+  const exactDetails = exactExposures.filter((row) => row.eventType === "detail_view");
+  const cohortDetails = exactDetails.filter((row) =>
+    row.parentExposureId !== null && impressionCohort.has(row.parentExposureId)
+  );
+  const detailParentOutsideCohort = cohortDetails.length !== exactDetails.length;
+  const eligibleImpressions = exactImpressions.length;
+  const detailViews = cohortDetails.length;
   const sum = (key: keyof Omit<CharacterFunnelRow, "coverageState" | "latestDataAt" | "sourceEvidence">) =>
     input.funnelRows.reduce((total, row) => total + row[key], 0);
   const firstSuccessfulExchanges = sum("firstSuccessfulExchanges");
@@ -146,7 +181,9 @@ export function evaluateCharacterPerformance(input: {
     row.coverageState === "exact" ||
     row.coverageState === "exact_through_same_character_d7_paid_attribution_unavailable",
   );
-  const exactExposure = input.exposureRows.length > 0 && exactExposures.length === input.exposureRows.length;
+  const exactExposure = input.exposureRows.length > 0 &&
+    exactExposures.length === input.exposureRows.length &&
+    !detailParentOutsideCohort;
   const qualityState = impossible || !directionalFunnel || !exactExposure
     ? "invalid" as const
     : exactFunnel
@@ -164,8 +201,10 @@ export function evaluateCharacterPerformance(input: {
   ];
   const evidence = [
     `grain:${input.characterContentVersionId}/${input.characterReleaseId}/${input.placementId ?? "all"}`,
+    "window_grain:utc_product_day",
     ...input.funnelRows.flatMap((row) => evidenceStrings(row.sourceEvidence)),
     ...(!exactExposure ? ["eligible_impression_or_detail_chain_not_exact"] : []),
+    ...(detailParentOutsideCohort ? ["detail_view_parent_outside_reporting_cohort"] : []),
     ...(!directionalFunnel ? ["funnel_projection_not_exact"] : []),
     ...(directionalFunnel && !exactFunnel ? ["paid_attribution_unavailable"] : []),
     ...(impossible ? ["numerator_outside_denominator_cohort"] : []),

@@ -19,10 +19,10 @@ export type Health = {
     failed: number;
     blocked: number;
     successRate: number | null;
-    blockedRate: number;
-    refundRate: number;
-    latencyP50Ms: number;
-    latencyP95Ms: number;
+    blockedRate: number | null;
+    refundRate: number | null;
+    latencyP50Ms: number | null;
+    latencyP95Ms: number | null;
   };
 };
 type DryRunDraft = {
@@ -223,14 +223,22 @@ export function ProfileHealthMetrics({ health }: { health: Health }) {
             : `${health.metrics.successRate}%`
         }
       />
-      <Metric label="Blocked" value={`${health.metrics.blockedRate}%`} />
-      <Metric label="Refund" value={`${health.metrics.refundRate}%`} />
-      <Metric label="p50" value={`${health.metrics.latencyP50Ms}ms`} />
-      <Metric label="p95" value={`${health.metrics.latencyP95Ms}ms`} />
+      <Metric label="Blocked" value={percent(health.metrics.blockedRate)} />
+      <Metric label="Refund" value={percent(health.metrics.refundRate)} />
+      <Metric label="p50" value={milliseconds(health.metrics.latencyP50Ms)} />
+      <Metric label="p95" value={milliseconds(health.metrics.latencyP95Ms)} />
       <Metric label="Failed" value={health.metrics.failed} />
       <Metric label="Completed" value={health.metrics.completed} />
     </div>
   );
+}
+
+function percent(value: number | null) {
+  return value === null ? "—" : `${value}%`;
+}
+
+function milliseconds(value: number | null) {
+  return value === null ? "—" : `${value}ms`;
 }
 
 function canConfirmDryRun(draft: DryRunDraft) {

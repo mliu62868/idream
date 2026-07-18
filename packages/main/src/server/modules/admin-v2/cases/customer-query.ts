@@ -34,6 +34,7 @@ export async function listCustomers(request: Request) {
   const rows = await prisma.user.findMany({
     where: {
       role: "user",
+      dataClass: "customer",
       ...(query.status ? { status: query.status } : {}),
       ...(query.search ? {
         OR: [
@@ -123,7 +124,9 @@ export async function listCustomers(request: Request) {
 export async function getCustomer360(request: Request, customerId: string) {
   const actor = await actorWithPermission(request, "customer.read");
   const customer = await prisma.user.findUnique({ where: { id: customerId } });
-  if (!customer || customer.role !== "user") throw Errors.notFound("Customer not found");
+  if (!customer || customer.role !== "user" || customer.dataClass !== "customer") {
+    throw Errors.notFound("Customer not found");
+  }
 
   const since30d = new Date(Date.now() - 30 * 24 * 60 * 60 * 1_000);
   const [subscription, ledger, recentChats, generations, adminCases, failedGenerationCount30d] = await Promise.all([

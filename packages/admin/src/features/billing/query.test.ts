@@ -2,11 +2,13 @@ import { describe, expect, it } from "vitest";
 import {
   billingAdjustmentConfirmation,
   billingLedgerPath,
+  billingRefundAcknowledgementConfirmation,
   billingQueryFromSearch,
   billingSubscriptionsPath,
   billingWorkspaceUrl,
   defaultBillingQuery,
   isBillingQueryFiltered,
+  isRefundAcknowledgementCandidate,
   parseLedgerAdjustmentDelta,
 } from "./query";
 
@@ -56,5 +58,26 @@ describe("billing workspace query", () => {
     expect(parseLedgerAdjustmentDelta("1.5")).toBeNull();
     expect(parseLedgerAdjustmentDelta("1e3")).toBeNull();
     expect(parseLedgerAdjustmentDelta("9007199254740992")).toBeNull();
+  });
+
+  it("exposes refund acknowledgement only for unresolved settled abandonment", () => {
+    const candidate = {
+      id: "checkout-1",
+      failureCode: "provider_invoice_settled_after_abandonment",
+      needsReconciliation: true,
+      providerInvoiceStatus: "settled",
+      providerSessionId: "invoice-1",
+      status: "provider_unknown",
+    };
+    expect(isRefundAcknowledgementCandidate(candidate)).toBe(true);
+    expect(
+      isRefundAcknowledgementCandidate({
+        ...candidate,
+        needsReconciliation: false,
+      }),
+    ).toBe(false);
+    expect(
+      billingRefundAcknowledgementConfirmation(" checkout-1 "),
+    ).toBe("checkout-1:refund_acknowledged");
   });
 });

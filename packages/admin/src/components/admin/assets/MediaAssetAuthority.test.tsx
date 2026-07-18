@@ -68,10 +68,24 @@ describe("MediaAssetAuthority", () => {
     );
 
     expect(listSource).toContain("MediaAssetAuthorityNotice");
+    expect(listSource).toContain("createLatestRequestGate");
+    expect(listSource).toContain("requestGate.current.invalidate()");
+    expect(listSource).toContain("setRows([])");
+    expect(listSource).toContain("aria-busy={loading}");
+    expect(listSource).toContain("eager={index < 4}");
     expect(detailSource).toContain("MediaAssetAuthorityNotice");
-    expect(detailSource).toContain("disabled={hasActiveAuthority}");
+    expect(detailSource).toContain(
+      "disabled={hasActiveAuthority || Boolean(refreshWarning)}",
+    );
     expect(detailSource).not.toContain('setPending("approve")');
     expect(detailSource).not.toContain('setPending("reject")');
     expect(detailSource).toContain("/admin/creative/runs/${row.sourceBatch.id}");
+    expect(detailSource).toContain("assetAuthorityDependencyView(dependency)");
+    expect(detailSource).toContain(
+      "This asset is not referenced by an active production, Character, Release, or Campaign authority.",
+    );
+    expect(detailSource).toContain("Asset changes were committed, but the latest projection could not be refreshed");
+    expect(detailSource).toContain("Asset archival was committed, but the latest projection could not be refreshed");
+    expect(detailSource).toContain("await reload(true)");
   });
 });

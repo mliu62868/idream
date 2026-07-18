@@ -16,6 +16,7 @@ describe("Support and billing Case depth", () => {
   const suffix = randomUUID();
   const actorId = `support-actor-${suffix}`;
   const customerId = `support-customer-${suffix}`;
+  const fixtureCustomerId = `support-fixture-customer-${suffix}`;
   const supportRequestId = `support-request-${suffix}`;
   const billingRequestId = `billing-request-${suffix}`;
   const planId = `support-plan-${suffix}`;
@@ -30,8 +31,9 @@ describe("Support and billing Case depth", () => {
   beforeAll(async () => {
     await prisma.user.createMany({
       data: [
-        { id: actorId, email: `${actorId}@example.test`, role: "support", status: "active" },
-        { id: customerId, email: `${customerId}@example.test`, role: "user", status: "active", displayName: "Case Customer" },
+        { id: actorId, email: `${actorId}@idream.internal`, role: "support", status: "active", dataClass: "internal" },
+        { id: customerId, email: `${customerId}@customer.invalid`, role: "user", status: "active", dataClass: "customer", displayName: "Case Customer" },
+        { id: fixtureCustomerId, email: `${fixtureCustomerId}@example.test`, role: "user", status: "active", dataClass: "fixture", displayName: "Case Customer Fixture" },
       ],
     });
     await prisma.plan.create({
@@ -114,7 +116,7 @@ describe("Support and billing Case depth", () => {
     await prisma.subscription.deleteMany({ where: { id: subscriptionId } });
     await prisma.plan.deleteMany({ where: { id: planId } });
     await prisma.adminUserPermission.deleteMany({ where: { userId: actorId } });
-    await prisma.user.deleteMany({ where: { id: { in: [actorId, customerId] } } });
+    await prisma.user.deleteMany({ where: { id: { in: [actorId, customerId, fixtureCustomerId] } } });
     await prisma.$disconnect();
   });
 
@@ -288,6 +290,19 @@ describe("Support and billing Case depth", () => {
       query: { search: "Case Customer", status: "active", limit: 1, cursor: null },
       freshness: "fresh",
     });
+  });
+
+  it("keeps fixture users out of Customer list and Customer 360", async () => {
+    const response = await listCustomers(new Request(
+      `http://localhost/api/v2/admin/customers?search=${encodeURIComponent(fixtureCustomerId)}&status=active&limit=20`,
+      { headers },
+    ));
+    const body = await response.json();
+    expect(body.data.items).toEqual([]);
+    await expect(getCustomer360(new Request(
+      `http://localhost/api/v2/admin/customers/${fixtureCustomerId}`,
+      { headers },
+    ), fixtureCustomerId)).rejects.toMatchObject({ code: "not_found" });
   });
 
   it("returns a permission-gated authoritative Customer 360 read model", async () => {

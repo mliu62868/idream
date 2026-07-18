@@ -23,7 +23,6 @@ export const primaryNavItems: NavItem[] = [
 export const secondaryNavItems: NavItem[] = [
   { label: "Help Desk", href: "/helpdesk" },
   { label: "Safety Center", href: safetyRootHref },
-  { label: "Discord", href: "https://discord.gg/P47YU7je5D" },
   { label: "More", href: "/resources-hub" },
 ];
 
@@ -62,12 +61,12 @@ export const homeFaqs = [
   {
     question: "How do you create an AI girlfriend on ourdream?",
     answer:
-      "Use the creator to choose appearance, style, voice, personality traits, interests, and relationship dynamics. The character starts from that profile and adapts through conversation.",
+      "Use the creator to choose a name, appearance, visual style, personality details, tags, and visibility. Preview the character image before creating the final private or public character.",
   },
   {
     question: "What is ourdream.ai's pricing?",
     answer:
-      "Ourdream offers monthly and yearly upgrade options with unlimited messages, image generation access, and recurring dreamcoin allowances.",
+      "The Upgrade page loads the currently active plans, billing periods, prices, included dreamcoins, and configured entitlements from the live plan catalog.",
   },
   {
     question: "Is ourdream ai legit and safe to use?",
@@ -85,9 +84,9 @@ export const homeFaqs = [
       "The generator pages focus on realistic and anime-style AI images for created companions, with premium controls for prompts and character selection.",
   },
   {
-    question: "Why is ourdream more expensive than others?",
+    question: "What do Ourdream upgrades include?",
     answer:
-      "Ourdream pairs unlimited messaging with included dreamcoins, so plan value is based on both chat access and media-generation allowance.",
+      "Upgrade benefits vary by plan. The live plan cards show the exact message, voice, image, video, model, control, and dreamcoin entitlements currently configured.",
   },
 ];
 
@@ -96,35 +95,33 @@ export const footerGroups: FooterGroup[] = [
     title: "Learn",
     links: [
       { label: "Resources Hub", href: "/resources-hub" },
-      { label: "AI Girlfriend Types", href: "/type" },
       { label: "Comparisons", href: "/comparison" },
-      { label: "Videos", href: "/videos" },
-      { label: "AI Instructions", href: "/ai-instructions" },
+      { label: "Character Cards", href: "/guides/character-cards" },
+      { label: "Character Card Creator", href: "/guides/character-card-creator" },
+      { label: "SillyTavern Setup", href: "/guides/sillytavern-setup-guide" },
     ],
   },
   {
     title: "Popular",
     links: [
-      { label: "AI Girlfriend", href: "/ai-girlfriend" },
-      { label: "AI Boyfriend", href: "/ai-boyfriend" },
-      { label: "AI Anime", href: "/type/anime-ai-girlfriend" },
-      { label: "Games", href: "/games" },
-      { label: "Romantasy", href: "/romantasy" },
-      { label: "our dream ai", href: "/" },
+      { label: "Explore Characters", href: "/" },
+      { label: "Create a Character", href: "/create" },
+      { label: "Generate Images", href: "/generate" },
+      { label: "Community", href: "/community" },
+      { label: "Upgrade", href: "/upgrade" },
     ],
   },
   {
     title: "Help",
     links: [
-      { label: "Help Centre", href: "https://help.ourdream.ai/" },
-      { label: "Affiliates", href: "https://www.ourdreamaiaffiliate.com/" },
       { label: "Help Desk", href: "/helpdesk" },
       { label: "Safety", href: safetyRootHref },
+      { label: "Terms & Policies", href: "/terms" },
     ],
   },
 ];
 
-const sitemapPaths = [
+const renderableCatalogPaths = [
   "/",
   "/chat",
   "/create",
@@ -284,7 +281,7 @@ const linkedNonSitemapPaths = [
 ] as const;
 
 export const ourdreamRoutePaths = [
-  ...sitemapPaths,
+  ...renderableCatalogPaths,
   ...linkedNonSitemapPaths,
   ...safetyRoutePaths,
 ].filter((path) => path !== "/");
@@ -346,13 +343,13 @@ const routeOverrides: Record<
   "/upgrade": {
     title: "Upgrade Ourdream",
     description:
-      "Subscription upgrade page with yearly and monthly plan cards, dreamcoin allowances, and premium generation controls.",
+      "Prepaid upgrade page with plan cards, access periods, dreamcoin allowances, and premium generation controls from the live catalog.",
     template: "upgrade",
   },
   "/ai-girlfriend": {
     title: "AI Girlfriend Characters",
     description:
-      "Long-form AI girlfriend landing page with a character browser, creator CTA, feature sections, reviews, and FAQs.",
+      "AI girlfriend landing page with a character browser, creator CTA, feature sections, and related discovery paths.",
     template: "marketing",
   },
   "/ai-boyfriend": {
@@ -362,8 +359,14 @@ const routeOverrides: Record<
   "/resources-hub": {
     title: "Resources Hub",
     description:
-      "A dark resource index linking guides, comparisons, generator pages, AI girlfriend types, video guides, and creator pages.",
+      "Published guides for character cards, character creation, SillyTavern setup, platform comparisons, and the live creation tools.",
     template: "library",
+  },
+  "/guides/sillytavern-setup-guide": {
+    title: "SillyTavern Setup Guide",
+    description:
+      "A practical guide for translating SillyTavern-style character cards into focused Ourdream character, chat, and image-generation fields.",
+    template: "article",
   },
   "/type": {
     title: "AI Girlfriend Types",
@@ -386,13 +389,13 @@ const routeOverrides: Record<
   "/games": {
     title: "AI Games",
     description:
-      "Game-style roleplay landing page with character cards and themed story entries.",
+      "A reserved library for future game-style roleplay guides; no game guide is published here yet.",
     template: "library",
   },
   "/romantasy": {
     title: "AI Romantasy",
     description:
-      "Fantasy romance and slow-burn AI story landing page using featured story cards and editor picks.",
+      "A reserved library for future fantasy-romance guides; no romantasy guide is published here yet.",
     template: "library",
   },
   "/terms": {
@@ -404,7 +407,7 @@ const routeOverrides: Record<
   "/helpdesk": {
     title: "Help Desk",
     description:
-      "Support requests, FAQ, Discord, account and billing help, and beta feedback paths for bugs, features, and changelog updates.",
+      "Support requests, account and billing help, product FAQs, roadmap voting, appeals, and beta feedback paths.",
     template: "marketing",
   },
 };

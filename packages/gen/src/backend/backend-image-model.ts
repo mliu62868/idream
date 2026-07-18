@@ -20,7 +20,10 @@
 import { env } from "../env";
 import { logger } from "../logger";
 import { stableNumericSeed, type ImageModel } from "../providers";
-import type { SlotValues } from "./workflow";
+import {
+  assignWorkflowReferenceSlots,
+  type SlotValues,
+} from "./workflow";
 import type { BackendRegistry } from "./registry";
 
 type GenerateInput = Parameters<ImageModel["generate"]>[0];
@@ -122,6 +125,17 @@ export class BackendImageModel implements ImageModel {
     }
 
     const { backend, descriptor } = resolved;
+    const workflowPinError = validateWorkflowPin(descriptor, input.controls);
+    if (workflowPinError) {
+      return {
+        ok: false,
+        error: {
+          code: "workflow_version_mismatch",
+          message: workflowPinError,
+          retryable: false,
+        },
+      };
+    }
     const referenceContractError = validateReferenceContract(
       descriptor,
       input.referenceImages ?? [],
@@ -141,6 +155,7 @@ export class BackendImageModel implements ImageModel {
     const count = Math.max(1, Math.min(input.count, 4));
     const stepsOverride = numericControl(input.controls, "steps");
 
+    const providerRequestIds: string[] = [];
     try {
       const assets: ImageAsset[] = [];
       for (let index = 0; index < count; index += 1) {
@@ -159,6 +174,7 @@ export class BackendImageModel implements ImageModel {
           requestId: input.requestId,
           timeoutMs: env.PIPELINE_TIMEOUT_MS,
         });
+        providerRequestIds.push(handle.id);
         const result = await backend.poll(handle);
         for (const asset of result.assets) {
           assets.push({
@@ -169,7 +185,16 @@ export class BackendImageModel implements ImageModel {
           });
         }
       }
-      return { ok: true, data: { assets } };
+      return {
+        ok: true,
+        data: { assets },
+        invocation: {
+          providerRequestId: providerRequestIds[0] ?? null,
+          usage: { providerRequestIds },
+          costMicros: null,
+          pricingVersion: null,
+        },
+      };
     } catch (error) {
       return {
         ok: false,
@@ -178,28 +203,49 @@ export class BackendImageModel implements ImageModel {
           message: error instanceof Error ? error.message : String(error),
           retryable: true,
         },
+        invocation: {
+          providerRequestId: providerRequestIds[0] ?? null,
+          usage: { providerRequestIds },
+          costMicros: null,
+          pricingVersion: null,
+        },
       };
     }
   }
+}
+
+function validateWorkflowPin(
+  descriptor: ReturnType<BackendRegistry["resolveForModel"]>["descriptor"],
+  controls: GenerateInput["controls"],
+) {
+  const workflowKey = controls?.workflowKey;
+  const workflowVersion = controls?.workflowVersion;
+  if (workflowKey === undefined && workflowVersion === undefined) return null;
+  if (
+    workflowKey !== descriptor.workflowKey ||
+    workflowVersion !== descriptor.version
+  ) {
+    return `Pinned workflow ${String(workflowKey)}@${String(workflowVersion)} does not match worker descriptor ${descriptor.workflowKey}@${descriptor.version}`;
+  }
+  return null;
 }
 
 function validateReferenceContract(
   descriptor: ReturnType<BackendRegistry["resolveForModel"]>["descriptor"],
   images: NonNullable<GenerateInput["referenceImages"]>,
 ) {
-  if (images.length === 0) return null;
   const identityImages = images.filter((image) => image.role !== "source_image");
   const sourceImages = images.filter((image) => image.role === "source_image");
+  const lookImages = images.filter((image) => image.role === "look_reference");
   const contract = descriptor.identity;
-  if (contract.mode === "none") {
+  if (images.length > 0 && contract.mode === "none") {
     return `Workflow ${descriptor.workflowKey} does not accept reference images`;
   }
-  const unsupportedRole = images.find((image) => !contract.acceptedRoles.includes(image.role));
-  if (unsupportedRole) {
-    return `Workflow ${descriptor.workflowKey} does not accept reference role ${unsupportedRole.role}`;
-  }
-  if (identityImages.length > contract.maxReferences) {
-    return `Workflow ${descriptor.workflowKey} accepts at most ${contract.maxReferences} identity references`;
+  if (
+    lookImages.length > 0 &&
+    !contract.supportsLookReference
+  ) {
+    return `Workflow ${descriptor.workflowKey} does not accept Character Look image references`;
   }
   if (
     identityImages.length > 0 &&
@@ -207,6 +253,19 @@ function validateReferenceContract(
     !contract.supportsSourceImageWithIdentity
   ) {
     return `Workflow ${descriptor.workflowKey} cannot combine a source image with identity references`;
+  }
+  const slotAuthority = assignWorkflowReferenceSlots(
+    descriptor,
+    images.map((image) => image.role),
+  );
+  if (!slotAuthority.ok) {
+    if (slotAuthority.reason === "reference_cardinality_mismatch") {
+      return `Workflow ${descriptor.workflowKey} requires ${slotAuthority.minReferences}-${slotAuthority.maxReferences} semantic image references`;
+    }
+    if (slotAuthority.reason === "reference_role_unsupported") {
+      return `Workflow ${descriptor.workflowKey} does not accept one or more reference roles`;
+    }
+    return `Workflow ${descriptor.workflowKey} cannot assign the requested roles to semantic image slots`;
   }
   return null;
 }

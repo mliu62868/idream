@@ -8,7 +8,14 @@ import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
-import { isSyntheticMediaAsset } from "@/server/lib/media-asset-authority";
+import {
+  isMediaAssetOperationalForAuthority,
+  isSyntheticMediaAsset,
+} from "@/server/lib/media-asset-authority";
+import {
+  mediaAssetAuthorityDependencies,
+  mediaAssetAuthorityDependenciesBatch,
+} from "@/server/modules/admin-v2/shared/media-asset-authority-dependencies";
 import {
   assertMediaAssetCustomerPublishable,
   resolveMediaAssetAuthorityMap,
@@ -19,9 +26,9 @@ import {
   clampInt,
   jsonBody,
   toInputJson,
-  writeAudit,
   type AdminActor,
 } from "./service";
+import { adminAuditData } from "./shared/legacy-primitives";
 import {
   deriveCreativeRunState,
   refreshContentProductionBatchStats,
@@ -29,13 +36,28 @@ import {
 } from "./content-production-state";
 import { dispatchCreativeRetryOutbox } from "@/server/modules/admin-v2/creative/retry-executor";
 import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
+import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
 import {
   decodeAdminListCursor,
   encodeAdminListCursor,
   parseIsoCursorKey,
 } from "@/server/modules/admin-v2/shared/list-cursor";
-import { isCreativeRunItemTransitionAllowed } from "@/server/modules/admin-v2/shared/state-transition-authority";
 import { generationWorkflowDescriptor } from "./generation-catalog";
+import { findQualifiedGenerationRoute } from "@/server/modules/admin-v2/characters/visual-authority";
+import { CHARACTER_RELEASE_POLICY_VERSION } from "@/server/modules/admin-v2/characters/release-executor";
+import {
+  characterVisualProfileSnapshotHash,
+  referenceSetSnapshotHash,
+} from "@/server/modules/admin-v2/characters/release-snapshot";
+import { loadCharacterIdentityBootstrapAuthority } from "@/server/modules/admin-v2/characters/identity-bootstrap-authority";
+import {
+  lockCharacterGenerationAndMediaAssetAuthorities,
+} from "@/server/modules/admin-v2/characters/generation-authority-lock";
+import { generationSourceVariationAuthority } from "@/server/modules/admin-v2/characters/generation-route-authority";
+import {
+  operationalMediaAssetPlacementWhere,
+  operationalMediaAssetWhere,
+} from "@/server/modules/admin/shared/metric-data-scope";
 
 const productionPurposeSchema = z.enum([
   "character_cover",
@@ -60,6 +82,7 @@ const productionTargetTypeSchema = z.enum([
 const placementSlotSchema = z.enum([
   "character_avatar",
   "character_hero",
+  "character_chat",
   "feed_card",
   "homepage_strip",
   "seo_article",
@@ -67,8 +90,7 @@ const placementSlotSchema = z.enum([
   "campaign",
 ]);
 
-const placementStatusSchema = z.enum(["draft", "scheduled", "published", "paused", "archived"]);
-const releaseOwnedPlacementSlots = new Set(["character_avatar", "character_hero"]);
+const releaseOwnedPlacementSlots = new Set(["character_avatar", "character_hero", "character_chat"]);
 const assetReviewStatusSchema = z.enum(["draft", "generated", "approved", "rejected", "published", "archived"]);
 const consistencyModeSchema = z.enum(["strict", "balanced", "creative"]);
 const productionDirectionSchema = z.object({
@@ -96,6 +118,8 @@ const productionBatchCreateBaseSchema = z.object({
   profileId: z.string().trim().min(1).max(180),
   recipeId: optionalText(180),
   presetIds: z.array(z.string().trim().min(1).max(180)).max(12).default([]),
+  referenceAssetIds: z.array(z.string().trim().min(1).max(180)).max(4).default([]),
+  bootstrapIdentity: z.boolean().default(false),
   orientation: optionalText(20),
   count: z.number().int().min(1).max(24).default(4),
   brief: optionalText(2_000),
@@ -108,11 +132,59 @@ const productionBatchCreateBaseSchema = z.object({
 });
 
 const productionBatchCreateSchema = productionBatchCreateBaseSchema.superRefine((value, ctx) => {
+  const characterPurpose = ["character_cover", "character_hero", "character_chat"]
+    .includes(value.purpose);
+  const genericPurpose = ["feed", "homepage", "seo", "template_cover", "campaign"]
+    .includes(value.purpose);
+  if (value.targetType !== "none" && !value.targetId) {
+    ctx.addIssue({ code: "custom", path: ["targetId"], message: "Target ID is required for this target type" });
+  }
+  if (value.targetType === "none" && value.targetId) {
+    ctx.addIssue({ code: "custom", path: ["targetId"], message: "Target ID must be omitted for a targetless Run" });
+  }
+  if (characterPurpose && value.targetType !== "character") {
+    ctx.addIssue({
+      code: "custom",
+      path: ["targetType"],
+      message: "Character image purposes must use the dedicated Character target workflow",
+    });
+  }
+  if (genericPurpose && value.targetType !== "none") {
+    ctx.addIssue({
+      code: "custom",
+      path: ["targetType"],
+      message: "Generic image Runs must remain targetless until an artifact is reviewed",
+    });
+  }
   if (!value.directions && value.outputsPerDirection !== undefined) {
     ctx.addIssue({ code: "custom", path: ["outputsPerDirection"], message: "Outputs per direction requires persisted directions" });
   }
   if (value.directions && value.directions.length * (value.outputsPerDirection ?? 1) > 24) {
     ctx.addIssue({ code: "custom", path: ["outputsPerDirection"], message: "A Creative Run cannot exceed 24 outputs" });
+  }
+  if (
+    value.bootstrapIdentity &&
+    (value.targetType !== "character" || value.purpose !== "character_cover")
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["bootstrapIdentity"],
+      message: "Identity bootstrap is only valid for a Character primary portrait Run",
+    });
+  }
+  if (value.bootstrapIdentity && value.referenceAssetIds.length > 0) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["referenceAssetIds"],
+      message: "Identity bootstrap cannot depend on an existing Character reference",
+    });
+  }
+  if (value.targetType !== "character" && value.referenceAssetIds.length > 0) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["referenceAssetIds"],
+      message: "Generic image production is text-to-image only and cannot accept reference assets",
+    });
   }
 });
 
@@ -138,13 +210,11 @@ const itemRegenerateSchema = z.object({
 
 const assetPatchSchema = z.object({
   status: assetReviewStatusSchema.optional(),
-  purpose: productionPurposeSchema.optional(),
   tags: z.array(z.string().trim().min(1).max(60)).max(48).optional(),
   description: optionalText(2_000),
-  reviewNote: optionalText(2_000),
   reason: z.string().trim().min(3).max(2_000),
   confirmation: z.string().trim().min(1).max(160),
-});
+}).strict();
 
 const assetBulkSchema = z.object({
   assetIds: z.array(z.string().trim().min(1).max(180)).min(1).max(100),
@@ -155,24 +225,38 @@ const assetBulkSchema = z.object({
   confirmation: z.string().trim().min(1).max(20_000),
 });
 
+const assetBulkPreflightSchema = z.object({
+  assetIds: z.array(z.string().trim().min(1).max(180)).min(1).max(100),
+}).strict();
+
 const placementCreateSchema = z.object({
   mediaAssetId: z.string().trim().min(1).max(180),
   slot: placementSlotSchema,
   targetType: productionTargetTypeSchema.exclude(["none"]),
   targetId: z.string().trim().min(1).max(180),
-  status: placementStatusSchema.default("published"),
-  scheduledAt: optionalText(80),
+  status: z.literal("draft").default("draft"),
   metadata: z.record(z.string(), z.unknown()).default({}),
   reason: z.string().trim().min(3).max(2_000),
 });
 
 const placementPatchSchema = z.object({
-  status: placementStatusSchema.optional(),
-  scheduledAt: optionalText(80),
+  status: z.enum(["paused", "archived"]),
   metadata: z.record(z.string(), z.unknown()).optional(),
   reason: z.string().trim().min(3).max(2_000),
   confirmation: z.string().trim().min(1).max(160),
 });
+
+function requirePlacementVersion(request: Request) {
+  const value = request.headers
+    .get("if-match")
+    ?.trim()
+    .replace(/^W\//, "")
+    .replace(/^"|"$/g, "");
+  if (!value || !/^\d+$/.test(value)) {
+    throw Errors.badRequest("If-Match must contain the current Placement version");
+  }
+  return Number(value);
+}
 
 export const productionBatchInclude = {
   createdBy: { select: { id: true, email: true, displayName: true, name: true } },
@@ -185,16 +269,6 @@ export const productionBatchInclude = {
   },
 } satisfies Prisma.ContentProductionBatchInclude;
 
-const contentAssetInclude = {
-  sourceJob: true,
-  productionItems: {
-    include: { batch: true },
-    orderBy: { createdAt: "desc" },
-    take: 1,
-  },
-  placements: { orderBy: { createdAt: "desc" } },
-} satisfies Prisma.MediaAssetInclude;
-
 const placementInclude = {
   mediaAsset: true,
   createdBy: { select: { id: true, email: true, displayName: true, name: true } },
@@ -205,12 +279,80 @@ type ProductionBatchWithItems = Prisma.ContentProductionBatchGetPayload<{
 }>;
 
 type ContentAssetWithRelations = Prisma.MediaAssetGetPayload<{
-  include: typeof contentAssetInclude;
+  include: {
+    sourceJob: true;
+    productionItems: { include: { batch: true } };
+    placements: true;
+  };
 }>;
 
 type PlacementWithRelations = Prisma.MediaAssetPlacementGetPayload<{
   include: typeof placementInclude;
 }>;
+
+type ContentAssetBase = Omit<
+  ContentAssetWithRelations,
+  "sourceJob" | "productionItems" | "placements"
+>;
+
+async function hydrateContentAssets(
+  db: Prisma.TransactionClient | typeof prisma,
+  assets: readonly ContentAssetBase[],
+): Promise<ContentAssetWithRelations[]> {
+  if (assets.length === 0) return [];
+  const assetIds = assets.map((asset) => asset.id);
+  const sourceJobIds = [
+    ...new Set(
+      assets.flatMap((asset) => asset.sourceJobId ? [asset.sourceJobId] : []),
+    ),
+  ];
+  const jobs = sourceJobIds.length > 0
+    ? await db.generationJob.findMany({
+        where: { id: { in: sourceJobIds } },
+      })
+    : [];
+  const items = await db.contentProductionItem.findMany({
+    where: { mediaAssetId: { in: assetIds } },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+  });
+  const batchIds = [...new Set(items.map((item) => item.batchId))];
+  const batches = batchIds.length > 0
+    ? await db.contentProductionBatch.findMany({
+        where: { id: { in: batchIds } },
+      })
+    : [];
+  const placements = await db.mediaAssetPlacement.findMany({
+    where: { mediaAssetId: { in: assetIds } },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+  });
+  const jobById = new Map(jobs.map((job) => [job.id, job] as const));
+  const batchById = new Map(batches.map((batch) => [batch.id, batch] as const));
+  const latestItemByAssetId = new Map<string, (typeof items)[number]>();
+  for (const item of items) {
+    if (item.mediaAssetId && !latestItemByAssetId.has(item.mediaAssetId)) {
+      latestItemByAssetId.set(item.mediaAssetId, item);
+    }
+  }
+  const placementsByAssetId = new Map<string, typeof placements>();
+  for (const placement of placements) {
+    const existing = placementsByAssetId.get(placement.mediaAssetId) ?? [];
+    existing.push(placement);
+    placementsByAssetId.set(placement.mediaAssetId, existing);
+  }
+
+  return assets.map((asset) => {
+    const item = latestItemByAssetId.get(asset.id);
+    const batch = item ? batchById.get(item.batchId) : null;
+    return {
+      ...asset,
+      sourceJob: asset.sourceJobId
+        ? jobById.get(asset.sourceJobId) ?? null
+        : null,
+      productionItems: item && batch ? [{ ...item, batch }] : [],
+      placements: placementsByAssetId.get(asset.id) ?? [],
+    };
+  });
+}
 
 export async function listProductionBatches(request: Request) {
   await actorWithPermission(request, "content.asset.read");
@@ -260,9 +402,8 @@ export async function estimateProductionBatch(request: Request) {
 
 export type ProductionBatchCreateInput = z.infer<typeof productionBatchCreateSchema>;
 
-// NOTE: takes `request` + full `AdminActor` (not just `actor: {id}`) because writeAudit()
-// below needs actor.role plus request headers (x-request-id/x-forwarded-for/user-agent)
-// for the audit row — callers extracted after actorWithPermission() already have both.
+// NOTE: takes `request` + full `AdminActor` (not just `actor: {id}`) because
+// the atomic Audit row needs actor.role plus request headers.
 export async function createProductionBatchCore(
   request: Request,
   actor: AdminActor,
@@ -271,6 +412,39 @@ export async function createProductionBatchCore(
   const idempotencyKey = request.headers.get("idempotency-key")?.trim() || null;
   const commandScope = `${env.APP_ENV}:${actor.id}:creative.run.create`;
   const requestHash = canonicalSha256({ commandType: "creative.run.create", payload: body });
+  if (idempotencyKey) {
+    const existing = await prisma.controlPlaneCommand.findUnique({
+      where: { scope_idempotencyKey: { scope: commandScope, idempotencyKey } },
+    });
+    if (existing) {
+      if (existing.requestHash !== requestHash) {
+        throw Errors.conflict("Idempotency key was reused with a different Creative Run brief", {
+          commandId: existing.id,
+        });
+      }
+      const result = existing.result && typeof existing.result === "object" && !Array.isArray(existing.result)
+        ? existing.result as Record<string, unknown>
+        : {};
+      if (existing.status !== "succeeded" || typeof result.batchId !== "string") {
+        throw Errors.conflict("The original Creative Run create command has not completed", {
+          commandId: existing.id,
+          status: existing.status,
+        });
+      }
+      const batch = await prisma.contentProductionBatch.findUniqueOrThrow({
+        where: { id: result.batchId },
+        include: productionBatchInclude,
+      });
+      const mediaAuthorityById = await productionBatchMediaAuthority([batch]);
+      return ok(
+        {
+          batch: productionBatchDTO(batch, [], mediaAuthorityById),
+          replayed: true,
+        },
+        { status: 200 },
+      );
+    }
+  }
   const profile = await resolveProductionProfile(body.profileId);
   const workflowKey = profile.workflowKey ?? profile.pipelineModel;
   const workflow = await generationWorkflowDescriptor(workflowKey);
@@ -285,7 +459,213 @@ export async function createProductionBatchCore(
   }
   const recipe = await resolveProductionRecipe(body.recipeId, body.targetType);
   const target = await resolveProductionTarget(body.targetType, body.targetId);
-  const visualProfile = await resolveProductionVisualProfile(body.targetType, body.targetId);
+  const visualProfile = await resolveProductionVisualProfile(prisma, body.targetType, body.targetId);
+  const bootstrapAuthority = body.bootstrapIdentity && body.targetId
+    ? await resolveProductionBootstrapAuthority(prisma, body.targetId, body.brief ?? null)
+    : null;
+  const identityBootstrapAuthority = body.bootstrapIdentity && body.targetId
+    ? await loadCharacterIdentityBootstrapAuthority(prisma, body.targetId)
+    : null;
+  const characterTargetRun = body.targetType === "character";
+  let generationRouteAuthority: {
+    readonly qualificationId: string;
+    readonly routeFingerprint: string;
+  } | null = null;
+  const profileCapabilities = generationProfileCapabilities(profile.runnerConfig);
+  if (body.bootstrapIdentity) {
+    if (!bootstrapAuthority) {
+      throw Errors.conflict("Character identity bootstrap requires a current Project and Content draft");
+    }
+    if (!identityBootstrapAuthority?.allowed) {
+      throw Errors.conflict("This Character already has identity authority that cannot be bootstrapped", {
+        visualProfileId: visualProfile?.id ?? null,
+        visualProfileVersion: visualProfile?.version ?? null,
+        blockers: identityBootstrapAuthority?.blockers ?? ["identity_bootstrap_authority_unavailable"],
+      });
+    }
+    if (
+      !workflow ||
+      workflow.identity.mode !== "none" ||
+      workflow.identity.maxReferences !== 0 ||
+      !workflow.capabilities.includes("textToImage") ||
+      profileCapabilities.textToImage !== true
+    ) {
+      throw Errors.conflict("The selected profile is not an explicit text-to-image identity bootstrap route", {
+        profileKey: profile.profileKey,
+        workflowKey,
+      });
+    }
+  } else if (characterTargetRun) {
+    if (!visualProfile) {
+      throw Errors.conflict("Character asset production requires an active sealed Visual Identity", {
+        deepLink: `/admin/characters/${body.targetId}?tab=assets`,
+      });
+    }
+    if (
+      visualProfile.immutableHash === null ||
+      visualProfile.immutableHash !== characterVisualProfileSnapshotHash(visualProfile)
+    ) {
+      throw Errors.conflict("Character asset production requires a sealed, non-drifted Visual Identity", {
+        visualProfileId: visualProfile.id,
+        visualProfileVersion: visualProfile.version,
+        deepLink: `/admin/characters/${body.targetId}?tab=visual`,
+      });
+    }
+    if (
+      !workflow ||
+      workflow.identity.mode === "none" ||
+      workflow.identity.maxReferences < 1 ||
+      !workflow.capabilities.includes("referenceImages") ||
+      profileCapabilities.referenceImages !== true
+    ) {
+      throw Errors.conflict("The selected generation route cannot apply Character identity references", {
+        profileKey: profile.profileKey,
+        workflowKey,
+      });
+    }
+  } else if (
+    !workflow ||
+    workflow.identity.mode !== "none" ||
+    workflow.identity.maxReferences !== 0 ||
+    !workflow.capabilities.includes("textToImage") ||
+    profileCapabilities.textToImage !== true
+  ) {
+    throw Errors.conflict("Generic image production requires an explicit text-to-image route", {
+      profileKey: profile.profileKey,
+      workflowKey,
+    });
+  }
+  const additionalReferenceAssets = body.referenceAssetIds.length > 0
+    ? await prisma.mediaAsset.findMany({
+        where: operationalMediaAssetWhere({
+          id: { in: body.referenceAssetIds },
+          type: "image",
+          safetyStatus: "passed",
+          deletedAt: null,
+        }),
+        select: {
+          id: true,
+          characterId: true,
+          metadata: true,
+          sourceJob: {
+            select: {
+              id: true,
+              sourceType: true,
+              sourceId: true,
+              visualProfileId: true,
+              visualProfileVersion: true,
+              referenceSetRevisionId: true,
+            },
+          },
+        },
+      })
+    : [];
+  if (
+    additionalReferenceAssets.length !== body.referenceAssetIds.length ||
+    additionalReferenceAssets.some((asset) =>
+      !isMediaAssetOperationalForAuthority(asset.metadata)
+    )
+  ) {
+    throw Errors.badRequest("Additional Creative Run references must be available image assets");
+  }
+  if (
+    body.targetType === "character" &&
+    additionalReferenceAssets.some((asset) => asset.characterId !== body.targetId)
+  ) {
+    throw Errors.badRequest("Additional Creative Run references must belong to the target Character");
+  }
+  const activeReferenceSet = visualProfile && characterTargetRun && !body.bootstrapIdentity
+    ? await resolveProductionReferenceSet(prisma, visualProfile.id)
+    : null;
+  if (characterTargetRun && !body.bootstrapIdentity) {
+    if (
+      !visualProfile ||
+      !activeReferenceSet ||
+      activeReferenceSet.snapshotHash === null ||
+      activeReferenceSet.snapshotHash !== referenceSetSnapshotHash(activeReferenceSet) ||
+      activeReferenceSet.references.length < 1 ||
+      activeReferenceSet.references.some((reference) =>
+        reference.mediaAsset.deletedAt !== null ||
+        reference.mediaAsset.safetyStatus !== "passed" ||
+        !isMediaAssetOperationalForAuthority(reference.mediaAsset.metadata) ||
+        reference.mediaAsset.characterId !== body.targetId
+      )
+    ) {
+      throw Errors.conflict("Character asset production requires an active sealed and available Reference Set", {
+        deepLink: `/admin/characters/${body.targetId}?tab=visual`,
+      });
+    }
+    const requiredRouteReferenceRoles = [
+      ...activeReferenceSet.references.map((reference) => reference.role),
+      ...additionalReferenceAssets.map(() => "source_image" as const),
+    ];
+    const qualifiedRoute = await findQualifiedGenerationRoute(prisma, {
+      style: visualProfile.style,
+      policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
+      evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,
+      at: new Date(),
+      requiredReferenceCount: requiredRouteReferenceRoles.length,
+      requiredReferenceRoles: requiredRouteReferenceRoles,
+    });
+    if (
+      !qualifiedRoute ||
+      qualifiedRoute.generationProfileKey !== profile.profileKey ||
+      qualifiedRoute.generationProfileVersion !== profile.version ||
+      qualifiedRoute.workflowKey !== workflowKey ||
+      qualifiedRoute.workflowVersion !== workflowVersion
+    ) {
+      throw Errors.conflict("The selected profile is not the current qualified Character identity route", {
+        profileKey: profile.profileKey,
+        workflowKey,
+        qualifiedProfileKey: qualifiedRoute?.generationProfileKey ?? null,
+      });
+    }
+    generationRouteAuthority = {
+      qualificationId: qualifiedRoute.id,
+      routeFingerprint: qualifiedRoute.routeFingerprint,
+    };
+    if (additionalReferenceAssets.some((asset) =>
+      asset.sourceJob?.visualProfileId !== visualProfile.id ||
+      asset.sourceJob.visualProfileVersion !== visualProfile.version ||
+      asset.sourceJob.referenceSetRevisionId !== activeReferenceSet.id
+    )) {
+      throw Errors.conflict("A variation source must be derived from the active Character identity authority");
+    }
+    const variationSourceItems = additionalReferenceAssets.map((asset) => ({
+      assetId: asset.id,
+      itemId: asset.sourceJob?.sourceType === "content_production_item"
+        ? asset.sourceJob.sourceId
+        : null,
+    }));
+    if (variationSourceItems.some((source) => !source.itemId)) {
+      throw Errors.conflict("A variation source must come from a reviewed Creative Run candidate");
+    }
+    const latestVariationDecisions = await prisma.creativeReviewDecision.findMany({
+      where: {
+        runItemId: {
+          in: variationSourceItems.flatMap((source) =>
+            source.itemId ? [source.itemId] : []
+          ),
+        },
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    });
+    const latestDecisionByItemId = new Map<string, (typeof latestVariationDecisions)[number]>();
+    for (const decision of latestVariationDecisions) {
+      if (!latestDecisionByItemId.has(decision.runItemId)) {
+        latestDecisionByItemId.set(decision.runItemId, decision);
+      }
+    }
+    if (variationSourceItems.some((source) => {
+      if (!source.itemId) return true;
+      const decision = latestDecisionByItemId.get(source.itemId);
+      return decision?.artifactId !== source.assetId || decision.decision !== "approved";
+    })) {
+      throw Errors.conflict(
+        "A variation source requires the latest immutable Creative Run decision to be approved",
+      );
+    }
+  }
   const presets = await prisma.generationPreset.findMany({
     where: { id: { in: body.presetIds }, scope: "built_in", status: "active" },
   });
@@ -309,22 +689,92 @@ export async function createProductionBatchCore(
     body.title ??
     `${purposeLabel(body.purpose)} ${new Date().toISOString().slice(0, 10)}`;
   const presetFragment = presetPromptFragment(body.presetIds, presets);
+  // A recoverable empty candidate is history, not generation authority. The
+  // bootstrap image must remain a true no-reference/no-profile definition.
+  const generationVisualProfile = body.bootstrapIdentity ? null : visualProfile;
+  const canonicalReferenceManifest = activeReferenceSet
+    ? activeReferenceSet.references.map((reference) => ({
+        mediaAssetId: reference.mediaAssetId,
+        position: reference.position,
+        role: reference.role,
+        weight: reference.weight,
+        selectorVersion: reference.selectorVersion,
+        selectionReason: reference.selectionReason,
+        qualityScore: reference.qualityScore,
+        identityScore: reference.identityScore,
+        referenceSetRevisionId: activeReferenceSet.id,
+        referenceSetRevision: activeReferenceSet.revision,
+        snapshotHash: activeReferenceSet.snapshotHash,
+      }))
+    : [];
+  // Source intent is a role, not an asset-identity distinction. The same
+  // approved asset may intentionally occupy both a canonical identity slot
+  // and the source_image slot for a More-like request.
+  const variationSourceCount = additionalReferenceAssets.length;
+  const sourceVariationAuthority = generationSourceVariationAuthority({
+    routeFingerprint: generationRouteAuthority?.routeFingerprint ?? null,
+    routeQualified: generationRouteAuthority !== null,
+    workflow,
+    qualificationWorkflowVersion: workflowVersion,
+    profileCapabilities,
+    canonicalReferenceRoles: canonicalReferenceManifest.map(
+      (reference) => reference.role,
+    ),
+    sourceReferenceCount: variationSourceCount,
+  });
+  if (variationSourceCount > 0 && !sourceVariationAuthority.ready) {
+    throw Errors.conflict(
+      "The current qualified route cannot create a More-like variation from this Character asset",
+      {
+        sourceVariationAuthority,
+        workflowKey,
+        deepLink: `/admin/characters/${body.targetId}?tab=visual`,
+      },
+    );
+  }
+  const nextReferencePosition = Math.max(
+    -1,
+    ...canonicalReferenceManifest.map((reference) => reference.position),
+  ) + 1;
+  const sourceReferenceManifest = additionalReferenceAssets
+    .map((asset, index) => ({
+      mediaAssetId: asset.id,
+      position: nextReferencePosition + index,
+      role: "source_image",
+      weight: body.consistencyMode === "strict" ? 0.9 : body.consistencyMode === "creative" ? 0.7 : 0.8,
+      selectorVersion: activeReferenceSet?.selectorVersion ?? "operator-source-v1",
+      selectionReason: "Operator-selected identity-consistent variation source",
+      sourceJobId: asset.sourceJob?.id ?? null,
+      referenceSetRevisionId: activeReferenceSet?.id ?? null,
+      referenceSetRevision: activeReferenceSet?.revision ?? null,
+      snapshotHash: activeReferenceSet?.snapshotHash ?? null,
+    }));
+  const referenceManifest = [
+    ...canonicalReferenceManifest,
+    ...sourceReferenceManifest,
+  ];
+  const referenceAssetIds = referenceManifest.map((reference) => reference.mediaAssetId);
+  if (
+    workflow &&
+    referenceAssetIds.length > workflow.identity.maxReferences
+  ) {
+    throw Errors.conflict("The selected identity route cannot accept the required reference set", {
+      referenceCount: referenceAssetIds.length,
+      maxReferences: workflow.identity.maxReferences,
+      workflowKey,
+    });
+  }
   const controls = productionControls({
     orientation,
     dimensions,
     profile,
     presets,
-    visualProfile,
+    visualProfile: generationVisualProfile,
     consistencyMode: body.consistencyMode,
+    referenceAssetIds,
+    workflowIdentity: workflow?.identity,
+    generationRouteFingerprint: generationRouteAuthority?.routeFingerprint,
   });
-  const referenceAssetIds = visualProfile
-    ? Array.from(
-        new Set([
-          ...jsonStringArray(visualProfile.anchorAssetIds),
-          ...jsonStringArray(visualProfile.referenceAssetIds),
-        ]),
-      )
-    : [];
   const perItemCostDreamcoins = await generationCostDreamcoins(
     "image",
     1,
@@ -364,6 +814,265 @@ export async function createProductionBatchCore(
         return tx.contentProductionBatch.findUniqueOrThrow({
           where: { id: result.batchId },
           include: productionBatchInclude,
+        });
+      }
+    }
+    if (body.targetType === "character" && body.targetId) {
+      await lockCharacterGenerationAndMediaAssetAuthorities(
+        tx,
+        body.targetId,
+        referenceAssetIds,
+      );
+      const lockedCharacter = await tx.character.findFirst({
+        where: {
+          id: body.targetId,
+          deletedAt: null,
+          status: { notIn: ["archived", "removed"] },
+        },
+        select: { id: true },
+      });
+      if (!lockedCharacter) {
+        throw Errors.conflict(
+          "Character was archived before the Creative Run could pin production authority",
+          {
+            characterId: body.targetId,
+            deepLink: `/admin/characters/${body.targetId}?tab=assets`,
+          },
+        );
+      }
+    }
+    let verifiedBootstrapAuthority = bootstrapAuthority;
+    let verifiedIdentityBootstrapAuthority = identityBootstrapAuthority;
+    if (body.bootstrapIdentity && body.targetId) {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`character-identity-bootstrap:${body.targetId}`}))`;
+      if (bootstrapAuthority) {
+        await tx.$queryRaw`
+          SELECT "id"
+          FROM "character_projects"
+          WHERE "id" = ${bootstrapAuthority.projectId}
+          FOR UPDATE
+        `;
+      }
+      const [currentBootstrapAuthority, currentIdentityBootstrapAuthority] = await Promise.all([
+        resolveProductionBootstrapAuthority(tx, body.targetId, body.brief ?? null),
+        loadCharacterIdentityBootstrapAuthority(tx, body.targetId),
+      ]);
+      const existingBootstrapJob = await tx.generationJob.findFirst({
+        where: {
+          characterId: body.targetId,
+          sourceMeta: { path: ["bootstrapIdentity"], equals: true },
+          status: { in: ["queued", "moderating_input", "running", "moderating_output"] },
+        },
+        select: { id: true, sourceId: true, status: true },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      });
+      if (
+        existingBootstrapJob ||
+        !currentBootstrapAuthority ||
+        !currentIdentityBootstrapAuthority.allowed ||
+        currentBootstrapAuthority.projectId !== bootstrapAuthority?.projectId ||
+        currentBootstrapAuthority.projectVersion !== bootstrapAuthority?.projectVersion ||
+        currentBootstrapAuthority.characterContentVersionId !== bootstrapAuthority?.characterContentVersionId ||
+        currentBootstrapAuthority.visualBriefHash !== bootstrapAuthority?.visualBriefHash ||
+        currentIdentityBootstrapAuthority.state !== identityBootstrapAuthority?.state ||
+        currentIdentityBootstrapAuthority.nextVersion !== identityBootstrapAuthority?.nextVersion ||
+        currentIdentityBootstrapAuthority.historyFingerprint !== identityBootstrapAuthority?.historyFingerprint
+      ) {
+        throw Errors.conflict(
+          "Character identity authority changed before the first-portrait Run was committed",
+          {
+            deepLink: `/admin/characters/${body.targetId}?tab=assets`,
+            blockers: currentIdentityBootstrapAuthority.blockers,
+            existingBootstrapJob,
+          },
+        );
+      }
+      verifiedBootstrapAuthority = currentBootstrapAuthority;
+      verifiedIdentityBootstrapAuthority = currentIdentityBootstrapAuthority;
+    } else if (body.targetType === "character" && body.targetId) {
+      if (!visualProfile || !activeReferenceSet) {
+        throw Errors.conflict("Character generation authority disappeared before the Run was committed", {
+          deepLink: `/admin/characters/${body.targetId}?tab=visual`,
+        });
+      }
+      const currentVisualProfile = await resolveProductionVisualProfile(
+        tx,
+        "character",
+        body.targetId,
+      );
+      const currentReferenceSet = await resolveProductionReferenceSet(tx, visualProfile.id);
+      const currentProfile = await tx.generationModelProfile.findUnique({
+        where: { id: profile.id },
+        select: {
+          id: true,
+          profileKey: true,
+          version: true,
+          status: true,
+          enabled: true,
+          runnerConfig: true,
+        },
+      });
+      const currentContent = await tx.characterContentVersion.findFirst({
+        where: { characterId: body.targetId },
+        orderBy: { version: "desc" },
+        select: { id: true, version: true },
+      });
+      const currentAdditionalReferenceAssets = body.referenceAssetIds.length > 0
+        ? await tx.mediaAsset.findMany({
+            where: operationalMediaAssetWhere({
+              id: { in: body.referenceAssetIds },
+              type: "image",
+              safetyStatus: "passed",
+              deletedAt: null,
+              characterId: body.targetId,
+            }),
+            select: {
+              id: true,
+              characterId: true,
+              sourceJob: {
+                select: {
+                  id: true,
+                  sourceType: true,
+                  sourceId: true,
+                  visualProfileId: true,
+                  visualProfileVersion: true,
+                  referenceSetRevisionId: true,
+                },
+              },
+            },
+          })
+        : [];
+      const currentRequiredRouteReferenceRoles = [
+        ...(currentReferenceSet?.references.map(
+          (reference) => reference.role,
+        ) ?? []),
+        ...currentAdditionalReferenceAssets.map(
+          () => "source_image" as const,
+        ),
+      ];
+      const currentQualifiedRoute = await findQualifiedGenerationRoute(tx, {
+        style: visualProfile.style,
+        policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
+        evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,
+        at: new Date(),
+        requiredReferenceCount: currentRequiredRouteReferenceRoles.length,
+        requiredReferenceRoles: currentRequiredRouteReferenceRoles,
+      });
+      const currentCanonicalReferenceIds = currentReferenceSet?.references
+        .map((reference) => reference.mediaAssetId) ?? [];
+      const preflightCanonicalReferenceIds = activeReferenceSet.references
+        .map((reference) => reference.mediaAssetId);
+      const identityAuthorityChanged =
+        !currentVisualProfile ||
+        currentVisualProfile.id !== visualProfile.id ||
+        currentVisualProfile.version !== visualProfile.version ||
+        currentVisualProfile.immutableHash !== visualProfile.immutableHash ||
+        currentVisualProfile.immutableHash !== characterVisualProfileSnapshotHash(currentVisualProfile) ||
+        !currentReferenceSet ||
+        currentReferenceSet.id !== activeReferenceSet.id ||
+        currentReferenceSet.revision !== activeReferenceSet.revision ||
+        currentReferenceSet.snapshotHash !== activeReferenceSet.snapshotHash ||
+        currentReferenceSet.snapshotHash !== referenceSetSnapshotHash(currentReferenceSet) ||
+        currentCanonicalReferenceIds.length === 0 ||
+        currentCanonicalReferenceIds.length !== preflightCanonicalReferenceIds.length ||
+        currentCanonicalReferenceIds.some((id, index) => id !== preflightCanonicalReferenceIds[index]) ||
+        currentReferenceSet.references.some((reference) =>
+          reference.mediaAsset.deletedAt !== null ||
+          reference.mediaAsset.type !== "image" ||
+          reference.mediaAsset.safetyStatus !== "passed" ||
+          !isMediaAssetOperationalForAuthority(reference.mediaAsset.metadata) ||
+          reference.mediaAsset.characterId !== body.targetId
+        );
+      const routeChanged =
+        !currentProfile ||
+        currentProfile.profileKey !== profile.profileKey ||
+        currentProfile.version !== profile.version ||
+        currentProfile.status !== "active" ||
+        !currentProfile.enabled ||
+        !currentQualifiedRoute ||
+        currentQualifiedRoute.id !== generationRouteAuthority?.qualificationId ||
+        currentQualifiedRoute.routeFingerprint !== generationRouteAuthority?.routeFingerprint ||
+        currentQualifiedRoute.generationProfileKey !== profile.profileKey ||
+        currentQualifiedRoute.generationProfileVersion !== profile.version ||
+        currentQualifiedRoute.workflowKey !== workflowKey ||
+        currentQualifiedRoute.workflowVersion !== workflowVersion;
+      const pinnedContentId =
+        target?.type === "character" ? target.contentVersionId : null;
+      const pinnedContentVersion =
+        target?.type === "character" ? target.contentVersion : null;
+      const contentChanged =
+        (currentContent?.id ?? null) !== pinnedContentId ||
+        (currentContent?.version ?? null) !== pinnedContentVersion;
+      const currentSourceVariationAuthority =
+        generationSourceVariationAuthority({
+          routeFingerprint: currentQualifiedRoute?.routeFingerprint ?? null,
+          routeQualified: !routeChanged,
+          workflow,
+          qualificationWorkflowVersion: workflowVersion,
+          profileCapabilities: generationProfileCapabilities(
+            currentProfile?.runnerConfig ?? null,
+          ),
+          canonicalReferenceRoles:
+            currentReferenceSet?.references.map((reference) => reference.role) ??
+            [],
+          sourceReferenceCount: currentAdditionalReferenceAssets.length,
+        });
+      const sourceRuntimeChanged =
+        variationSourceCount > 0 &&
+        !currentSourceVariationAuthority.ready;
+      if (
+        identityAuthorityChanged ||
+        routeChanged ||
+        contentChanged ||
+        sourceRuntimeChanged
+      ) {
+        throw Errors.conflict("Character generation authority changed before the Run was committed", {
+          identityAuthorityChanged,
+          routeChanged,
+          contentChanged,
+          sourceRuntimeChanged,
+          sourceVariationAuthority: currentSourceVariationAuthority,
+          deepLink: `/admin/characters/${body.targetId}?tab=assets`,
+        });
+      }
+      const currentSourceItems = currentAdditionalReferenceAssets.map((asset) => ({
+        assetId: asset.id,
+        itemId: asset.sourceJob?.sourceType === "content_production_item"
+          ? asset.sourceJob.sourceId
+          : null,
+        sourceJob: asset.sourceJob,
+      }));
+      const currentSourceDecisions = currentSourceItems.length > 0
+        ? await tx.creativeReviewDecision.findMany({
+            where: {
+              runItemId: {
+                in: currentSourceItems.flatMap((source) => source.itemId ? [source.itemId] : []),
+              },
+            },
+            orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+          })
+        : [];
+      const currentLatestDecisionByItemId = new Map<string, (typeof currentSourceDecisions)[number]>();
+      for (const decision of currentSourceDecisions) {
+        if (!currentLatestDecisionByItemId.has(decision.runItemId)) {
+          currentLatestDecisionByItemId.set(decision.runItemId, decision);
+        }
+      }
+      const sourceAuthorityChanged =
+        currentAdditionalReferenceAssets.length !== additionalReferenceAssets.length ||
+        currentSourceItems.some((source) => {
+          if (
+            !source.itemId ||
+            source.sourceJob?.visualProfileId !== visualProfile.id ||
+            source.sourceJob.visualProfileVersion !== visualProfile.version ||
+            source.sourceJob.referenceSetRevisionId !== activeReferenceSet.id
+          ) return true;
+          const decision = currentLatestDecisionByItemId.get(source.itemId);
+          return decision?.artifactId !== source.assetId || decision.decision !== "approved";
+        });
+      if (sourceAuthorityChanged) {
+        throw Errors.conflict("Variation source authority changed before the Run was committed", {
+          deepLink: `/admin/characters/${body.targetId}?tab=assets`,
         });
       }
     }
@@ -416,7 +1125,7 @@ export async function createProductionBatchCore(
         recipeBody: recipe.body,
         presetFragment,
         brief: directionBrief,
-        visualProfile,
+        visualProfile: generationVisualProfile,
         consistencyMode: body.consistencyMode,
       });
       const item = await tx.contentProductionItem.create({
@@ -434,14 +1143,20 @@ export async function createProductionBatchCore(
         data: {
           userId: actor.id,
           characterId: body.targetType === "character" ? body.targetId ?? null : null,
-          visualProfileId: visualProfile?.id,
-          visualProfileVersion: visualProfile?.version,
-          consistencyMode: visualProfile ? body.consistencyMode : null,
-          seed: visualProfile?.defaultSeed,
-          referenceAssetIds: visualProfile ? toInputJson(referenceAssetIds) : undefined,
+          visualProfileId: generationVisualProfile?.id,
+          visualProfileVersion: generationVisualProfile?.version,
+          consistencyMode: generationVisualProfile ? body.consistencyMode : null,
+          seed: generationVisualProfile?.defaultSeed,
+          referenceAssetIds: referenceAssetIds.length > 0 ? toInputJson(referenceAssetIds) : undefined,
+          referenceSetRevisionId: activeReferenceSet?.id,
+          referenceManifest: referenceManifest.length > 0 ? toInputJson(referenceManifest) : undefined,
           mode: "image",
           prompt,
-          negativePrompt: productionNegativePrompt(recipe.negativeBase, visualProfile?.negativeIdentityPrompt),
+          negativePrompt: productionNegativePrompt(
+            recipe.negativeBase,
+            generationVisualProfile?.negativeIdentityPrompt,
+            body.purpose,
+          ),
           controls: toInputJson(controls),
           presetIds: toInputJson(body.presetIds),
           model: workflowKey,
@@ -465,6 +1180,19 @@ export async function createProductionBatchCore(
             directionId: direction?.id ?? null,
             directionHash,
             consistencyMode: visualProfile ? body.consistencyMode : null,
+            bootstrapIdentity: body.bootstrapIdentity,
+            bootstrapProjectVersion: verifiedBootstrapAuthority?.projectVersion ?? null,
+            characterContentVersionId:
+              verifiedBootstrapAuthority?.characterContentVersionId ??
+              (target?.type === "character" ? target.contentVersionId : null),
+            visualBriefHash: verifiedBootstrapAuthority?.visualBriefHash ?? null,
+            bootstrapAuthorityState: verifiedIdentityBootstrapAuthority?.state ?? null,
+            expectedIdentityHistoryFingerprint:
+              verifiedIdentityBootstrapAuthority?.historyFingerprint ?? null,
+            expectedIdentityVersion: verifiedIdentityBootstrapAuthority?.nextVersion ?? null,
+            referenceSetRevisionId: activeReferenceSet?.id ?? null,
+            generationRouteQualificationId: generationRouteAuthority?.qualificationId ?? null,
+            generationRouteFingerprint: generationRouteAuthority?.routeFingerprint ?? null,
           }),
         },
       });
@@ -551,7 +1279,12 @@ export async function createProductionBatchCore(
       include: productionBatchInclude,
     });
   });
-  if (!replayed) await dispatchCreativeRetryOutbox(prisma, { limit: totalOutputCount });
+  if (!replayed) {
+    await dispatchCreativeRetryOutbox(prisma, {
+      limit: totalOutputCount,
+      outboxIds: batch.items.map((item) => `creative_initial_${batch.id}_${item.id}`),
+    });
+  }
   const mediaAuthorityById = await productionBatchMediaAuthority([batch]);
   return ok(
     { batch: productionBatchDTO(batch, [], mediaAuthorityById), replayed },
@@ -581,102 +1314,38 @@ export async function getProductionBatch(request: Request, id: string) {
   });
 }
 
-export async function approveProductionItem(request: Request, id: string) {
-  const actor = await actorWithPermission(request, "content.asset.review");
+export async function approveProductionItem(request: Request, id: string): Promise<Response> {
+  await actorWithPermission(request, "content.asset.review");
   const body = itemReviewSchema.parse(await jsonBody(request));
   if (body.confirmation !== id) {
     throw Errors.badRequest("Confirmation did not match production item");
   }
-  const item = await itemWithAsset(id);
-  const asset = item.mediaAsset ?? item.job?.assets[0] ?? null;
-  if (!asset) throw Errors.badRequest("Production item has no generated asset to approve");
-
-  const updated = await auditedTransaction("content.production.item.approve", async (tx) => {
-    await transitionContentProductionItem(tx, item, "approved", {
-        mediaAssetId: asset.id,
-        reviewNote: body.reviewNote,
-        rating: body.rating,
-        tags: toInputJson(body.tags),
-        reviewedById: actor.id,
-        reviewedAt: new Date(),
-    });
-    await patchAssetMetadata(tx, asset.id, {
-      status: "approved",
-      purpose: item.batch.purpose,
-      tags: body.tags,
-      reviewNote: body.reviewNote,
-      description: body.description,
-      sourceBatchId: item.batchId,
-    });
-    await refreshContentProductionBatchStats(tx, item.batchId);
-    await tx.adminAuditLog.create({
-      data: transactionAuditData(request, actor, {
-        action: "content.production.item.approve",
-        targetType: "content_production_item",
-        targetId: id,
-        reason: body.reason,
-        after: { mediaAssetId: asset.id, tags: body.tags, rating: body.rating ?? null },
-      }),
-    });
-    return tx.contentProductionItem.findUniqueOrThrow({
-      where: { id },
-      include: {
-        batch: true,
-        job: { include: { assets: true } },
-        mediaAsset: true,
-      },
-    });
+  const item = await prisma.contentProductionItem.findUnique({
+    where: { id },
+    select: { batchId: true },
   });
-  return ok({ item: productionItemDTO(updated) });
+  if (!item) throw Errors.notFound("Production item not found");
+  throw Errors.conflict("Legacy item approval is disabled; record an immutable Creative Run decision", {
+    code: "creative_run_review_required",
+    repairPath: `/admin/creative/runs/${item.batchId}`,
+  });
 }
 
-export async function rejectProductionItem(request: Request, id: string) {
-  const actor = await actorWithPermission(request, "content.asset.review");
+export async function rejectProductionItem(request: Request, id: string): Promise<Response> {
+  await actorWithPermission(request, "content.asset.review");
   const body = itemReviewSchema.parse(await jsonBody(request));
   if (body.confirmation !== id) {
     throw Errors.badRequest("Confirmation did not match production item");
   }
-  const item = await itemWithAsset(id);
-  const asset = item.mediaAsset ?? item.job?.assets[0] ?? null;
-  const updated = await auditedTransaction("content.production.item.reject", async (tx) => {
-    await transitionContentProductionItem(tx, item, "rejected", {
-        mediaAssetId: asset?.id,
-        reviewNote: body.reviewNote,
-        rating: body.rating,
-        tags: toInputJson(body.tags),
-        reviewedById: actor.id,
-        reviewedAt: new Date(),
-    });
-    if (asset) {
-      await patchAssetMetadata(tx, asset.id, {
-        status: "rejected",
-        purpose: item.batch.purpose,
-        tags: body.tags,
-        reviewNote: body.reviewNote,
-        description: body.description,
-        sourceBatchId: item.batchId,
-      });
-    }
-    await refreshContentProductionBatchStats(tx, item.batchId);
-    await tx.adminAuditLog.create({
-      data: transactionAuditData(request, actor, {
-        action: "content.production.item.reject",
-        targetType: "content_production_item",
-        targetId: id,
-        reason: body.reason,
-        after: { mediaAssetId: asset?.id ?? null, tags: body.tags },
-      }),
-    });
-    return tx.contentProductionItem.findUniqueOrThrow({
-      where: { id },
-      include: {
-        batch: true,
-        job: { include: { assets: true } },
-        mediaAsset: true,
-      },
-    });
+  const item = await prisma.contentProductionItem.findUnique({
+    where: { id },
+    select: { batchId: true },
   });
-  return ok({ item: productionItemDTO(updated) });
+  if (!item) throw Errors.notFound("Production item not found");
+  throw Errors.conflict("Legacy item rejection is disabled; record an immutable Creative Run decision", {
+    code: "creative_run_review_required",
+    repairPath: `/admin/creative/runs/${item.batchId}`,
+  });
 }
 
 export async function regenerateProductionItem(request: Request, id: string): Promise<Response> {
@@ -723,22 +1392,22 @@ export async function listContentAssets(request: Request) {
   let scanId = cursorId;
   let exhausted = false;
   while (matches.length <= limit && !exhausted) {
-    const assets = await prisma.mediaAsset.findMany({
-      where: {
+    const baseAssets = await prisma.mediaAsset.findMany({
+      where: operationalMediaAssetWhere({
         type: "image",
         deletedAt: null,
         sourceJob: profileId ? { profileId } : undefined,
         productionItems: { some: { status: productionItemStatus, batch: { purpose, targetId } } },
         ...(scanAt && scanId ? { OR: [{ createdAt: { lt: scanAt } }, { createdAt: scanAt, id: { lt: scanId } }] } : {}),
-      },
-      include: contentAssetInclude,
+      }),
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       take: batchSize,
     });
-    if (assets.length === 0) {
+    if (baseAssets.length === 0) {
       exhausted = true;
       break;
     }
+    const assets = await hydrateContentAssets(prisma, baseAssets);
     for (const asset of assets) {
       const metadata = platformAssetMetadata(asset);
       const tags = assetTags(asset);
@@ -752,7 +1421,7 @@ export async function listContentAssets(request: Request) {
       }
       matches.push(asset);
     }
-    const last = assets.at(-1)!;
+    const last = baseAssets.at(-1)!;
     scanAt = last.createdAt;
     scanId = last.id;
     exhausted = assets.length < batchSize;
@@ -776,17 +1445,107 @@ export async function listContentAssets(request: Request) {
   });
 }
 
+async function assertAssetLibraryMutationAllowed(
+  db: Prisma.TransactionClient,
+  assetId: string,
+  status: z.infer<typeof assetReviewStatusSchema> | undefined,
+) {
+  if (status && status !== "archived") {
+    const item = await db.contentProductionItem.findUnique({
+      where: { mediaAssetId: assetId },
+      select: { batchId: true },
+    });
+    throw Errors.conflict(
+      "Image Library cannot create or replace Creative review authority",
+      {
+        code: "creative_run_review_required",
+        repairPath: item ? `/admin/creative/runs/${item.batchId}` : "/admin/creative/runs",
+      },
+    );
+  }
+  if (status !== "archived") return;
+  const dependencies = await mediaAssetAuthorityDependencies(db, assetId);
+  if (dependencies.length > 0) {
+    throw Errors.conflict(
+      "A live or staged authority must be rolled back or replaced before this asset can be archived",
+      {
+        code: "asset_authority_dependency_active",
+        assetId,
+        dependencies,
+        repairPath: dependencies[0]?.repairPath ?? "/admin/creative/runs",
+      },
+    );
+  }
+}
+
+async function assertAssetLibraryMutationsAllowed(
+  db: Prisma.TransactionClient,
+  assetIds: readonly string[],
+  status: z.infer<typeof assetReviewStatusSchema> | undefined,
+) {
+  if (status && status !== "archived") {
+    const item = await db.contentProductionItem.findFirst({
+      where: { mediaAssetId: { in: [...assetIds] } },
+      select: { mediaAssetId: true, batchId: true },
+    });
+    throw Errors.conflict(
+      "Image Library cannot create or replace Creative review authority",
+      {
+        code: "creative_run_review_required",
+        assetId: item?.mediaAssetId ?? assetIds[0],
+        repairPath: item ? `/admin/creative/runs/${item.batchId}` : "/admin/creative/runs",
+      },
+    );
+  }
+  if (status !== "archived") return;
+  const dependenciesByAssetId = await mediaAssetAuthorityDependenciesBatch(
+    db,
+    assetIds,
+  );
+  for (const assetId of assetIds) {
+    const dependencies = dependenciesByAssetId.get(assetId) ?? [];
+    if (dependencies.length === 0) continue;
+    throw Errors.conflict(
+      "A live or staged authority must be rolled back or replaced before this asset can be archived",
+      {
+        code: "asset_authority_dependency_active",
+        assetId,
+        dependencies,
+        repairPath: dependencies[0]?.repairPath ?? "/admin/creative/runs",
+      },
+    );
+  }
+}
+
+function missingOrDeletedAssetIds(
+  requestedAssetIds: readonly string[],
+  assets: readonly { id: string; deletedAt: Date | null }[],
+) {
+  const availableAssetIds = new Set(
+    assets
+      .filter((asset) => asset.deletedAt === null)
+      .map((asset) => asset.id),
+  );
+  return requestedAssetIds.filter((assetId) => !availableAssetIds.has(assetId));
+}
+
 export async function getContentAsset(request: Request, id: string) {
   await actorWithPermission(request, "creative.asset.read");
-  const asset = await prisma.mediaAsset.findUnique({
-    where: { id },
-    include: contentAssetInclude,
+  const baseAsset = await prisma.mediaAsset.findFirst({
+    where: operationalMediaAssetWhere({ id, deletedAt: null }),
   });
-  if (!asset || asset.deletedAt) throw Errors.notFound("Content asset not found");
+  if (!baseAsset) throw Errors.notFound("Content asset not found");
+  const [asset] = await hydrateContentAssets(prisma, [baseAsset]);
+  if (!asset) throw Errors.notFound("Content asset not found");
   const authority = (
     await resolveMediaAssetAuthorityMap(prisma, [asset])
   ).get(asset.id);
-  return ok({ asset: contentAssetDTO(asset, authority) });
+  return ok({
+    asset: {
+      ...contentAssetDTO(asset, authority),
+      authorityDependencies: await mediaAssetAuthorityDependencies(prisma, id),
+    },
+  });
 }
 
 export async function patchContentAsset(request: Request, id: string) {
@@ -795,55 +1554,39 @@ export async function patchContentAsset(request: Request, id: string) {
   if (body.confirmation !== id) {
     throw Errors.badRequest("Confirmation did not match asset");
   }
-  const asset = await prisma.mediaAsset.findUnique({ where: { id } });
-  if (!asset || asset.deletedAt) throw Errors.notFound("Content asset not found");
-  const updated = await prisma.$transaction(async (tx) => {
+  const updated = await auditedTransaction("content.asset.update", async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`media-asset-authority:${id}`}))`;
+    const asset = await tx.mediaAsset.findFirst({
+      where: operationalMediaAssetWhere({ id, deletedAt: null }),
+    });
+    if (!asset) throw Errors.notFound("Content asset not found");
+    await assertAssetLibraryMutationAllowed(tx, id, body.status);
     await patchAssetMetadata(tx, id, {
       status: body.status,
-      purpose: body.purpose,
-      tags: body.tags,
-      description: body.description,
-      reviewNote: body.reviewNote,
+      // Archival is a lifecycle-only action. Never replay metadata from an
+      // operator's stale detail-page draft over a newer curator write.
+      tags: body.status === "archived" ? undefined : body.tags,
+      description: body.status === "archived" ? undefined : body.description,
     });
-    if (body.tags !== undefined || body.reviewNote !== undefined) {
-      await tx.contentProductionItem.updateMany({
-        where: { mediaAssetId: id },
-        data: {
-          tags: body.tags ? toInputJson(body.tags) : undefined,
-          reviewNote: body.reviewNote,
-        },
-      });
-    }
-    if (body.status && ["approved", "rejected", "published"].includes(body.status)) {
-      const item = await tx.contentProductionItem.findUnique({ where: { mediaAssetId: id } });
-      if (item) {
-        await transitionContentProductionItem(tx, item, body.status, {
-          reviewedById: actor.id,
-          reviewedAt: new Date(),
-          tags: body.tags ? toInputJson(body.tags) : undefined,
-          reviewNote: body.reviewNote,
-        });
-      }
-      const items = await tx.contentProductionItem.findMany({
-        where: { mediaAssetId: id },
-        select: { batchId: true },
-      });
-      for (const batchId of new Set(items.map((item) => item.batchId))) {
-        await refreshContentProductionBatchStats(tx, batchId);
-      }
-    }
-    return tx.mediaAsset.findUniqueOrThrow({
+    const nextBase = await tx.mediaAsset.findUniqueOrThrow({
       where: { id },
-      include: contentAssetInclude,
     });
-  });
-  await writeAudit(request, actor, {
-    action: "content.asset.update",
-    targetType: "media_asset",
-    targetId: id,
-    reason: body.reason,
-    before: { metadata: asset.metadata },
-    after: { status: body.status ?? null, purpose: body.purpose ?? null, tags: body.tags ?? null },
+    const [next] = await hydrateContentAssets(tx, [nextBase]);
+    if (!next) throw Errors.notFound("Content asset not found");
+    await tx.adminAuditLog.create({
+      data: adminAuditData(request, actor, {
+        action: "content.asset.update",
+        targetType: "media_asset",
+        targetId: id,
+        reason: body.reason,
+        before: { metadata: asset.metadata },
+        after: {
+          status: body.status ?? null,
+          tags: body.status === "archived" ? null : body.tags ?? null,
+        },
+      }),
+    });
+    return next;
   });
   const authority = (
     await resolveMediaAssetAuthorityMap(prisma, [updated])
@@ -851,58 +1594,95 @@ export async function patchContentAsset(request: Request, id: string) {
   return ok({ asset: contentAssetDTO(updated, authority) });
 }
 
+export async function preflightContentAssetArchive(request: Request) {
+  await actorWithPermission(request, "content.asset.review");
+  const body = assetBulkPreflightSchema.parse(await jsonBody(request));
+  const requestedAssetIds = [...new Set(body.assetIds)].sort();
+  const assets = await prisma.mediaAsset.findMany({
+    where: operationalMediaAssetWhere({
+      id: { in: requestedAssetIds },
+    }),
+    select: { id: true, deletedAt: true },
+  });
+  const missingAssetIds = missingOrDeletedAssetIds(requestedAssetIds, assets);
+  if (missingAssetIds.length > 0) {
+    throw Errors.notFound("One or more content assets were not found", {
+      missingAssetIds,
+    });
+  }
+  const dependenciesByAssetId = await mediaAssetAuthorityDependenciesBatch(
+    prisma,
+    requestedAssetIds,
+  );
+  return ok({
+    assetIds: requestedAssetIds,
+    blockers: requestedAssetIds.flatMap((assetId) => {
+      const dependencies = dependenciesByAssetId.get(assetId) ?? [];
+      return dependencies.length > 0 ? [{ assetId, dependencies }] : [];
+    }),
+  });
+}
+
 export async function bulkPatchContentAssets(request: Request) {
   const actor = await actorWithPermission(request, "content.asset.review");
   const body = assetBulkSchema.parse(await jsonBody(request));
-  if (body.confirmation !== body.assetIds.join(",")) {
+  const requestedAssetIds = [...new Set(body.assetIds)].sort();
+  const canonicalTargets = requestedAssetIds.length === body.assetIds.length
+    && requestedAssetIds.every((assetId, index) => assetId === body.assetIds[index]);
+  if (!canonicalTargets) {
+    throw Errors.badRequest("Bulk asset targets must be sorted and unique", {
+      expectedAssetIds: requestedAssetIds,
+    });
+  }
+  if (body.confirmation !== requestedAssetIds.join(",")) {
     throw Errors.badRequest("Confirmation did not match bulk asset targets");
   }
-  const updatedIds: string[] = [];
-  await prisma.$transaction(async (tx) => {
+  const updatedIds = await auditedTransaction("content.asset.bulk_update", async (tx) => {
+    for (const assetId of requestedAssetIds) {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`media-asset-authority:${assetId}`}))`;
+    }
+    // The row snapshot is intentionally loaded only after every authority
+    // lock is held. A concurrent customer delete/private mutation can finish
+    // before the locks are acquired, but can no longer turn this into a
+    // partial or misleading success.
     const assets = await tx.mediaAsset.findMany({
-      where: { id: { in: body.assetIds }, deletedAt: null },
-      select: { id: true, sourceJobId: true, metadata: true },
+      where: operationalMediaAssetWhere({
+        id: { in: requestedAssetIds },
+      }),
+      select: { id: true, deletedAt: true, metadata: true },
     });
+    const missingAssetIds = missingOrDeletedAssetIds(requestedAssetIds, assets);
+    if (
+      assets.length !== requestedAssetIds.length
+      || missingAssetIds.length > 0
+    ) {
+      throw Errors.notFound("One or more content assets were not found", {
+        missingAssetIds,
+      });
+    }
+    await assertAssetLibraryMutationsAllowed(tx, requestedAssetIds, body.status);
     for (const asset of assets) {
       await patchAssetMetadata(tx, asset.id, {
         status: body.status,
-        tags: body.tags,
-        description: body.description,
+        tags: body.status === "archived" ? undefined : body.tags,
+        description: body.status === "archived" ? undefined : body.description,
       });
-      if (body.tags !== undefined) {
-        await tx.contentProductionItem.updateMany({
-          where: { mediaAssetId: asset.id },
-          data: { tags: toInputJson(body.tags) },
-        });
-      }
-      if (body.status && ["approved", "rejected", "published"].includes(body.status)) {
-        const item = await tx.contentProductionItem.findUnique({
-          where: { mediaAssetId: asset.id },
-        });
-        if (item) {
-          await transitionContentProductionItem(tx, item, body.status, {
-            tags: body.tags ? toInputJson(body.tags) : undefined,
-            reviewedById: actor.id,
-            reviewedAt: new Date(),
-          });
-        }
-      }
-      updatedIds.push(asset.id);
     }
-    const items = await tx.contentProductionItem.findMany({
-      where: { mediaAssetId: { in: updatedIds } },
-      select: { batchId: true },
+    const committedIds = [...requestedAssetIds];
+    await tx.adminAuditLog.create({
+      data: adminAuditData(request, actor, {
+        action: "content.asset.bulk_update",
+        targetType: "media_asset_batch",
+        targetId: `${committedIds.length} assets`,
+        reason: body.reason,
+        after: {
+          assetIds: committedIds,
+          status: body.status ?? null,
+          tags: body.tags ?? null,
+        },
+      }),
     });
-    for (const batchId of new Set(items.map((item) => item.batchId))) {
-      await refreshContentProductionBatchStats(tx, batchId);
-    }
-  });
-  await writeAudit(request, actor, {
-    action: "content.asset.bulk_update",
-    targetType: "media_asset_batch",
-    targetId: `${updatedIds.length} assets`,
-    reason: body.reason,
-    after: { assetIds: updatedIds, status: body.status ?? null, tags: body.tags ?? null },
+    return committedIds;
   });
   return ok({ updatedIds });
 }
@@ -923,7 +1703,7 @@ export async function listPlacements(request: Request) {
     ? [parseIsoCursorKey(cursorKeys[0], "placements"), z.string().min(1).parse(cursorKeys[1])]
     : [null, null];
   const placements = await prisma.mediaAssetPlacement.findMany({
-    where: {
+    where: operationalMediaAssetPlacementWhere({
       status,
       slot,
       targetId,
@@ -938,7 +1718,7 @@ export async function listPlacements(request: Request) {
         { createdAt: { lt: cursorAt } },
         { createdAt: cursorAt, id: { lt: cursorId } },
       ] }] } : {}),
-    },
+    }),
     include: placementInclude,
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     take: limit + 1,
@@ -970,7 +1750,10 @@ export async function listPlacements(request: Request) {
 
 export async function getPlacement(request: Request, id: string) {
   await actorWithPermission(request, "creative.placement.read");
-  const placement = await prisma.mediaAssetPlacement.findUnique({ where: { id }, include: placementInclude });
+  const placement = await prisma.mediaAssetPlacement.findFirst({
+    where: operationalMediaAssetPlacementWhere({ id }),
+    include: placementInclude,
+  });
   if (!placement) throw Errors.notFound("Placement not found");
   const authority = (
     await resolveMediaAssetAuthorityMap(prisma, [placement.mediaAsset])
@@ -981,14 +1764,89 @@ export async function getPlacement(request: Request, id: string) {
 export async function createPlacement(request: Request) {
   const actor = await actorWithPermission(request, "creative.placement.publish");
   const body = placementCreateSchema.parse(await jsonBody(request));
-  assertLegacyPlacementAuthority(body.slot);
-  const scheduledAt = parseOptionalDate(body.scheduledAt);
+  assertLegacyPlacementAuthority(body.slot, body.status);
   validatePlacementTarget(body.slot, body.targetType);
-  const placement = await auditedTransaction("content.placement.create", async (tx) => {
-    await assertApprovedAsset(tx, body.mediaAssetId);
-    if (body.status === "published") {
-      await archiveCurrentPlacement(tx, body.slot, body.targetType, body.targetId);
+  const idempotencyKey = requireIdempotencyKey(request);
+  const commandScope = `${env.APP_ENV}:${actor.id}:content.placement.create`;
+  const requestHash = canonicalSha256({
+    commandType: "content.placement.create",
+    payload: body,
+  });
+  const placementIdFromCommand = (command: {
+    id: string;
+    status: string;
+    requestHash: string;
+    result: Prisma.JsonValue | null;
+  }) => {
+    if (command.requestHash !== requestHash) {
+      throw Errors.conflict(
+        "Idempotency key was reused with a different Placement request",
+        { commandId: command.id },
+      );
     }
+    const result = jsonRecord(command.result);
+    if (
+      command.status !== "succeeded" ||
+      typeof result.placementId !== "string"
+    ) {
+      throw Errors.conflict(
+        "The original Placement create command has not completed",
+        { commandId: command.id, status: command.status },
+      );
+    }
+    return result.placementId;
+  };
+  const existing = await prisma.controlPlaneCommand.findUnique({
+    where: {
+      scope_idempotencyKey: {
+        scope: commandScope,
+        idempotencyKey,
+      },
+    },
+  });
+  if (existing) {
+    const placementId = placementIdFromCommand(existing);
+    const replayedPlacement = await prisma.mediaAssetPlacement.findFirst({
+      where: operationalMediaAssetPlacementWhere({ id: placementId }),
+      include: placementInclude,
+    });
+    if (!replayedPlacement) {
+      throw Errors.conflict(
+        "The idempotent Placement result is no longer operational",
+        { commandId: existing.id, placementId },
+      );
+    }
+    const authority = (
+      await resolveMediaAssetAuthorityMap(prisma, [
+        replayedPlacement.mediaAsset,
+      ])
+    ).get(replayedPlacement.mediaAssetId);
+    return ok({
+      placement: placementDTO(replayedPlacement, authority),
+      replayed: true,
+    });
+  }
+  let replayed = false;
+  const placement = await auditedTransaction("content.placement.create", async (tx) => {
+    await tx.$queryRaw`SELECT 1::int AS locked FROM pg_advisory_xact_lock(hashtext(${`${commandScope}:${idempotencyKey}`}))`;
+    const concurrentExisting = await tx.controlPlaneCommand.findUnique({
+      where: {
+        scope_idempotencyKey: {
+          scope: commandScope,
+          idempotencyKey,
+        },
+      },
+    });
+    if (concurrentExisting) {
+      replayed = true;
+      const placementId = placementIdFromCommand(concurrentExisting);
+      return tx.mediaAssetPlacement.findFirstOrThrow({
+        where: operationalMediaAssetPlacementWhere({ id: placementId }),
+        include: placementInclude,
+      });
+    }
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`media-asset-authority:${body.mediaAssetId}`}))`;
+    await assertApprovedAsset(tx, body.mediaAssetId);
     const created = await tx.mediaAssetPlacement.create({
       data: {
         mediaAssetId: body.mediaAssetId,
@@ -996,19 +1854,13 @@ export async function createPlacement(request: Request) {
         targetType: body.targetType,
         targetId: body.targetId,
         status: body.status,
-        scheduledAt,
-        publishedAt: body.status === "published" ? new Date() : null,
         createdById: actor.id,
         metadata: toInputJson(body.metadata),
       },
     });
-    if (created.status === "published") {
-      await syncPlacementTarget(tx, created);
-      await markPlacementItemPublished(tx, created.mediaAssetId);
-    }
     await tx.adminAuditLog.create({
       data: transactionAuditData(request, actor, {
-        action: body.status === "published" ? "content.placement.publish" : "content.placement.create",
+        action: "content.placement.create",
         targetType: "media_asset_placement",
         targetId: created.id,
         reason: body.reason,
@@ -1021,6 +1873,24 @@ export async function createPlacement(request: Request) {
         },
       }),
     });
+    await tx.controlPlaneCommand.create({
+      data: {
+        scope: commandScope,
+        idempotencyKey,
+        commandType: "content.placement.create",
+        targetType: "media_asset_placement",
+        targetId: created.id,
+        actorId: actor.id,
+        requestId:
+          request.headers.get("x-request-id") ?? crypto.randomUUID(),
+        requestHash,
+        requestPayload: toInputJson(body),
+        retryMode: "idempotent",
+        status: "succeeded",
+        result: toInputJson({ placementId: created.id }),
+        finishedAt: new Date(),
+      },
+    });
     return tx.mediaAssetPlacement.findUniqueOrThrow({
       where: { id: created.id },
       include: placementInclude,
@@ -1029,7 +1899,7 @@ export async function createPlacement(request: Request) {
   const authority = (
     await resolveMediaAssetAuthorityMap(prisma, [placement.mediaAsset])
   ).get(placement.mediaAssetId);
-  return ok({ placement: placementDTO(placement, authority) });
+  return ok({ placement: placementDTO(placement, authority), replayed });
 }
 
 export async function patchPlacement(request: Request, id: string) {
@@ -1038,32 +1908,146 @@ export async function patchPlacement(request: Request, id: string) {
   if (body.confirmation !== id) {
     throw Errors.badRequest("Confirmation did not match placement");
   }
-  const before = await prisma.mediaAssetPlacement.findUnique({ where: { id } });
-  if (!before) throw Errors.notFound("Placement not found");
-  assertLegacyPlacementAuthority(before.slot);
-  const scheduledAt = parseOptionalDate(body.scheduledAt);
+  const idempotencyKey = requireIdempotencyKey(request);
+  const expectedVersion = requirePlacementVersion(request);
+  const commandScope = `${env.APP_ENV}:${actor.id}:content.placement.patch:${id}`;
+  const requestHash = canonicalSha256({
+    commandType: "content.placement.patch",
+    targetId: id,
+    expectedVersion,
+    payload: body,
+  });
+  const placementIdFromCommand = (command: {
+    id: string;
+    status: string;
+    requestHash: string;
+    result: Prisma.JsonValue | null;
+  }) => {
+    if (command.requestHash !== requestHash) {
+      throw Errors.conflict(
+        "Idempotency key was reused with a different Placement transition",
+        { commandId: command.id },
+      );
+    }
+    const result = jsonRecord(command.result);
+    if (
+      command.status !== "succeeded" ||
+      result.placementId !== id
+    ) {
+      throw Errors.conflict(
+        "The original Placement transition has not completed",
+        { commandId: command.id, status: command.status },
+      );
+    }
+    return id;
+  };
+  const existing = await prisma.controlPlaneCommand.findUnique({
+    where: {
+      scope_idempotencyKey: {
+        scope: commandScope,
+        idempotencyKey,
+      },
+    },
+  });
+  if (existing) {
+    const placementId = placementIdFromCommand(existing);
+    const replayedPlacement = await prisma.mediaAssetPlacement.findFirst({
+      where: operationalMediaAssetPlacementWhere({ id: placementId }),
+      include: placementInclude,
+    });
+    if (!replayedPlacement) {
+      throw Errors.conflict(
+        "The idempotent Placement transition result is no longer operational",
+        { commandId: existing.id, placementId },
+      );
+    }
+    const authority = (
+      await resolveMediaAssetAuthorityMap(prisma, [replayedPlacement.mediaAsset])
+    ).get(replayedPlacement.mediaAssetId);
+    return ok({
+      placement: placementDTO(replayedPlacement, authority),
+      replayed: true,
+    });
+  }
+  let replayed = false;
   const placement = await auditedTransaction("content.placement.update", async (tx) => {
-    if (body.status === "published") {
-      await assertApprovedAsset(tx, before.mediaAssetId);
+    await tx.$queryRaw`
+      SELECT 1::int AS locked
+      FROM pg_advisory_xact_lock(hashtext(${`${commandScope}:${idempotencyKey}`}))
+    `;
+    const concurrentExisting = await tx.controlPlaneCommand.findUnique({
+      where: {
+        scope_idempotencyKey: {
+          scope: commandScope,
+          idempotencyKey,
+        },
+      },
+    });
+    if (concurrentExisting) {
+      replayed = true;
+      const placementId = placementIdFromCommand(concurrentExisting);
+      return tx.mediaAssetPlacement.findFirstOrThrow({
+        where: operationalMediaAssetPlacementWhere({ id: placementId }),
+        include: placementInclude,
+      });
     }
-    if (body.status === "published") {
-      await archiveCurrentPlacement(tx, before.slot, before.targetType, before.targetId, id);
+    await tx.$queryRaw`
+      SELECT 1::int AS locked
+      FROM pg_advisory_xact_lock(hashtext(${`legacy-placement:${id}`}))
+    `;
+    const before = await tx.mediaAssetPlacement.findFirst({
+      where: operationalMediaAssetPlacementWhere({ id }),
+    });
+    if (!before) throw Errors.notFound("Placement not found");
+    const beforeMetadata = jsonRecord(before.metadata);
+    const managedRunId = typeof beforeMetadata.creativeRunId === "string"
+      ? beforeMetadata.creativeRunId
+      : null;
+    if (
+      managedRunId ||
+      typeof beforeMetadata.creativeRunItemId === "string" ||
+      Object.hasOwn(beforeMetadata, "customerMediaAuthority")
+    ) {
+      throw Errors.conflict("Creative Run placements are immutable through the legacy Placement editor", {
+        code: "creative_run_placement_required",
+        repairPath: managedRunId ? `/admin/creative/runs/${managedRunId}` : "/admin/creative/runs",
+      });
     }
-    const updated = await tx.mediaAssetPlacement.update({
-      where: { id },
+    if (before.version !== expectedVersion) {
+      throw Errors.conflict("Placement changed after this operator view was loaded", {
+        code: "legacy_placement_version_mismatch",
+        expectedVersion,
+        currentVersion: before.version,
+        currentStatus: before.status,
+      });
+    }
+    assertLegacyPlacementAuthority(before.slot, body.status);
+    assertLegacyPlacementTransition(before.status, body.status);
+    const changed = await tx.mediaAssetPlacement.updateMany({
+      where: {
+        id,
+        status: before.status,
+        version: expectedVersion,
+      },
       data: {
         status: body.status,
-        scheduledAt: body.scheduledAt === undefined ? undefined : scheduledAt,
-        publishedAt: body.status === "published" ? new Date() : undefined,
         pausedAt: body.status === "paused" ? new Date() : undefined,
         archivedAt: body.status === "archived" ? new Date() : undefined,
         metadata: body.metadata ? toInputJson(body.metadata) : undefined,
+        version: { increment: 1 },
       },
     });
-    if (updated.status === "published") {
-      await syncPlacementTarget(tx, updated);
-      await markPlacementItemPublished(tx, updated.mediaAssetId);
+    if (changed.count !== 1) {
+      throw Errors.conflict("Legacy Placement changed during transition", {
+        code: "legacy_placement_transition_changed",
+        currentStatus: before.status,
+        nextStatus: body.status,
+        expectedVersion,
+      });
     }
+    const updated = await tx.mediaAssetPlacement.findUniqueOrThrow({
+      where: { id },
+    });
     await tx.adminAuditLog.create({
       data: transactionAuditData(request, actor, {
         action: body.status ? `content.placement.${body.status}` : "content.placement.update",
@@ -1084,6 +2068,30 @@ export async function patchPlacement(request: Request, id: string) {
         },
       }),
     });
+    await tx.controlPlaneCommand.create({
+      data: {
+        scope: commandScope,
+        idempotencyKey,
+        coordinationKey: `legacy-placement:${id}`,
+        commandType: "content.placement.patch",
+        targetType: "media_asset_placement",
+        targetId: id,
+        actorId: actor.id,
+        requestId:
+          request.headers.get("x-request-id") ?? crypto.randomUUID(),
+        requestHash,
+        requestPayload: toInputJson({ body, expectedVersion }),
+        expectedVersion,
+        retryMode: "idempotent",
+        status: "succeeded",
+        result: toInputJson({
+          placementId: id,
+          status: updated.status,
+          version: updated.version,
+        }),
+        finishedAt: new Date(),
+      },
+    });
     return tx.mediaAssetPlacement.findUniqueOrThrow({
       where: { id },
       include: placementInclude,
@@ -1092,7 +2100,7 @@ export async function patchPlacement(request: Request, id: string) {
   const authority = (
     await resolveMediaAssetAuthorityMap(prisma, [placement.mediaAsset])
   ).get(placement.mediaAssetId);
-  return ok({ placement: placementDTO(placement, authority) });
+  return ok({ placement: placementDTO(placement, authority), replayed });
 }
 
 function transactionAuditData(
@@ -1136,15 +2144,34 @@ async function auditedTransaction<T>(
   }
 }
 
-function assertLegacyPlacementAuthority(slot: string) {
-  if (!releaseOwnedPlacementSlots.has(slot)) return;
+function assertLegacyPlacementAuthority(slot: string, nextStatus?: string) {
+  if (!releaseOwnedPlacementSlots.has(slot) && nextStatus !== "published") return;
   throw Errors.conflict(
-    "Character avatar and hero placements are owned by immutable Character Release commands",
+    releaseOwnedPlacementSlots.has(slot)
+      ? "Character image placements are owned by immutable Character Release commands"
+      : "Customer-visible placements require a verified runtime authority",
     {
-      code: "character_release_authority_required",
-      repairPath: "/admin/characters",
+      code: releaseOwnedPlacementSlots.has(slot)
+        ? "character_release_authority_required"
+        : "creative_placement_verification_required",
+      repairPath: releaseOwnedPlacementSlots.has(slot) ? "/admin/characters" : "/admin/creative/runs",
     },
   );
+}
+
+function assertLegacyPlacementTransition(
+  currentStatus: string,
+  nextStatus: "paused" | "archived",
+) {
+  const allowed = nextStatus === "archived"
+    ? currentStatus !== "archived"
+    : !["paused", "archived"].includes(currentStatus);
+  if (allowed) return;
+  throw Errors.conflict("Legacy Placement transition is not allowed", {
+    code: "legacy_placement_transition_invalid",
+    currentStatus,
+    nextStatus,
+  });
 }
 
 async function resolveProductionProfile(profileId: string, version?: number) {
@@ -1153,6 +2180,7 @@ async function resolveProductionProfile(profileId: string, version?: number) {
       mode: "image",
       status: "active",
       enabled: true,
+      rolloutPercent: { gt: 0 },
       version,
       OR: [{ id: profileId }, { profileKey: profileId }],
     },
@@ -1190,23 +2218,47 @@ async function resolveProductionRecipe(
 async function resolveProductionTarget(targetType: string, targetId?: string) {
   if (targetType === "none" || !targetId) return null;
   if (targetType === "character") {
-    const character = await prisma.character.findUnique({
-      where: { id: targetId },
-      select: {
-        id: true,
-        name: true,
-        age: true,
-        gender: true,
-        style: true,
-        description: true,
-      },
-    });
+    const [character, content] = await Promise.all([
+      prisma.character.findUnique({
+        where: { id: targetId },
+        select: {
+          id: true,
+          name: true,
+          age: true,
+          gender: true,
+          style: true,
+          description: true,
+        },
+      }),
+      prisma.characterContentVersion.findFirst({
+        where: { characterId: targetId },
+        orderBy: { version: "desc" },
+        select: {
+          id: true,
+          version: true,
+          personaSnapshot: true,
+          appearanceSnapshot: true,
+        },
+      }),
+    ]);
     if (!character) throw Errors.badRequest("Target character not found");
+    const persona = jsonRecord(content?.personaSnapshot);
+    const appearance = jsonRecord(content?.appearanceSnapshot);
+    const name = stringFromRecord(persona, "name") ?? character.name;
+    const age = numberFromRecord(persona, "age") ?? character.age;
+    const gender = stringFromRecord(persona, "gender") ?? character.gender;
+    const style = stringFromRecord(appearance, "style") ?? character.style;
+    const description =
+      stringFromRecord(persona, "characterPromise") ??
+      stringFromRecord(persona, "description") ??
+      character.description;
     return {
       type: "character",
       id: character.id,
-      label: character.name,
-      detail: `${character.age}, ${character.gender}, ${character.style}. ${character.description}`,
+      label: name,
+      detail: `${age}, ${gender}, ${style}. ${description}`,
+      contentVersionId: content?.id ?? null,
+      contentVersion: content?.version ?? null,
     };
   }
   if (targetType === "template") {
@@ -1225,21 +2277,88 @@ async function resolveProductionTarget(targetType: string, targetId?: string) {
   return { type: targetType, id: targetId, label: targetId, detail: "" };
 }
 
-async function resolveProductionVisualProfile(targetType: string, targetId?: string) {
+async function resolveProductionVisualProfile(
+  db: Pick<Prisma.TransactionClient, "characterVisualProfile">,
+  targetType: string,
+  targetId?: string,
+) {
   if (targetType !== "character" || !targetId) return null;
-  return prisma.characterVisualProfile.findFirst({
+  return db.characterVisualProfile.findFirst({
     where: { characterId: targetId, status: "active" },
     orderBy: { version: "desc" },
     select: {
       id: true,
       version: true,
+      style: true,
       identityPrompt: true,
       negativeIdentityPrompt: true,
+      faceTraits: true,
+      hairTraits: true,
+      bodyTraits: true,
+      signatureTraits: true,
+      styleTraits: true,
       defaultSeed: true,
       anchorAssetIds: true,
       referenceAssetIds: true,
+      immutableHash: true,
+      evidenceState: true,
     },
   });
+}
+
+async function resolveProductionReferenceSet(
+  db: Pick<Prisma.TransactionClient, "referenceSetRevision">,
+  visualProfileId: string,
+) {
+  return db.referenceSetRevision.findFirst({
+    where: { visualProfileId, status: "active" },
+    include: {
+      references: {
+        include: { mediaAsset: true },
+        orderBy: { position: "asc" },
+      },
+    },
+    orderBy: { revision: "desc" },
+  });
+}
+
+async function resolveProductionBootstrapAuthority(
+  db: Pick<Prisma.TransactionClient, "characterProject" | "characterContentVersion">,
+  characterId: string,
+  brief: string | null,
+) {
+  const [project, content] = await Promise.all([
+    db.characterProject.findFirst({
+      where: { characterId },
+      orderBy: { updatedAt: "desc" },
+      select: { id: true, version: true, phase: true },
+    }),
+    db.characterContentVersion.findFirst({
+      where: { characterId },
+      orderBy: { version: "desc" },
+      select: { id: true, appearanceSnapshot: true },
+    }),
+  ]);
+  if (!project || !content || !["idea", "planned", "producing"].includes(project.phase)) return null;
+  return {
+    projectId: project.id,
+    projectVersion: project.version,
+    characterContentVersionId: content.id,
+    visualBriefHash: canonicalSha256({
+      characterContentVersionId: content.id,
+      appearanceSnapshot: content.appearanceSnapshot,
+      brief,
+    }),
+  };
+}
+
+function generationProfileCapabilities(value: Prisma.JsonValue | null) {
+  const capabilities = jsonRecord(jsonRecord(value).capabilities);
+  return {
+    textToImage: capabilities.textToImage === true,
+    referenceImages: capabilities.referenceImages === true,
+    initImage: capabilities.initImage === true,
+  };
 }
 
 function productionConsistencyPrompt(mode: z.infer<typeof consistencyModeSchema>) {
@@ -1269,6 +2388,9 @@ function productionPrompt(input: {
     `Recipe: ${input.recipeBody}`,
     input.presetFragment ? `Presets: ${input.presetFragment}` : "",
     input.brief ? `Operator brief: ${input.brief}` : "",
+    input.target?.type === "character"
+      ? "Composition guard: exactly one intended character in one coherent scene; never output a collage, contact sheet, split panel, comparison grid, or duplicated person."
+      : "",
     "Generate a polished, reusable platform image with clear subject framing and no text overlay.",
   ]
     .filter(Boolean)
@@ -1297,13 +2419,20 @@ function productionControls(input: {
   presets: Array<{ id: string; type: string }>;
   visualProfile: Awaited<ReturnType<typeof resolveProductionVisualProfile>>;
   consistencyMode: z.infer<typeof consistencyModeSchema>;
+  referenceAssetIds: readonly string[];
+  workflowIdentity: {
+    mode: string;
+    maxReferences: number;
+    acceptedRoles: readonly string[];
+    supportsLookReference: boolean;
+    supportsSourceImageWithIdentity: boolean;
+  } | undefined;
+  generationRouteFingerprint?: string;
 }) {
   const anchorAssetIds = input.visualProfile
     ? jsonStringArray(input.visualProfile.anchorAssetIds)
     : [];
-  const referenceAssetIds = input.visualProfile
-    ? jsonStringArray(input.visualProfile.referenceAssetIds)
-    : [];
+  const referenceAssetIds = [...new Set(input.referenceAssetIds)];
   return pruneUndefined({
     orientation: input.orientation,
     model: input.profile.profileKey,
@@ -1315,6 +2444,8 @@ function productionControls(input: {
     outfitPresetId: presetIdForType(input.presets, "outfit"),
     modePresetId: presetIdForType(input.presets, "mode"),
     consistencyMode: input.visualProfile ? input.consistencyMode : undefined,
+    workflowIdentity: input.workflowIdentity,
+    generationRouteFingerprint: input.generationRouteFingerprint,
     visualIdentity: input.visualProfile
       ? {
           visualProfileId: input.visualProfile.id,
@@ -1330,8 +2461,15 @@ function productionControls(input: {
   });
 }
 
-function productionNegativePrompt(base: string | null, identity: string | null | undefined) {
-  return [base?.trim(), identity?.trim()].filter(Boolean).join(", ") || null;
+function productionNegativePrompt(
+  base: string | null,
+  identity: string | null | undefined,
+  purpose: z.infer<typeof productionPurposeSchema>,
+) {
+  const characterCompositionGuard = purpose.startsWith("character_")
+    ? "collage, contact sheet, split screen, multiple panels, comparison grid, duplicate person, extra people"
+    : null;
+  return [base?.trim(), identity?.trim(), characterCompositionGuard].filter(Boolean).join(", ") || null;
 }
 
 function presetIdForType(presets: Array<{ id: string; type: string }>, type: string) {
@@ -1428,43 +2566,6 @@ function normalizeSdcppLoras(value: unknown) {
   return loras.length ? loras : undefined;
 }
 
-async function itemWithAsset(id: string) {
-  const item = await prisma.contentProductionItem.findUnique({
-    where: { id },
-    include: {
-      batch: true,
-      job: { include: { assets: { orderBy: { createdAt: "asc" }, take: 1 } } },
-      mediaAsset: true,
-    },
-  });
-  if (!item) throw Errors.notFound("Production item not found");
-  return item;
-}
-
-async function transitionContentProductionItem(
-  db: Prisma.TransactionClient,
-  current: { readonly id: string; readonly status: string; readonly version: number },
-  nextStatus: string,
-  data: Omit<Prisma.ContentProductionItemUncheckedUpdateManyInput, "status" | "version">,
-) {
-  if (!isCreativeRunItemTransitionAllowed(current.status, nextStatus)) {
-    throw Errors.conflict("Content production item transition is not allowed", {
-      itemId: current.id,
-      from: current.status,
-      to: nextStatus,
-    });
-  }
-  const changed = await db.contentProductionItem.updateMany({
-    where: { id: current.id, status: current.status, version: current.version },
-    data: { ...data, status: nextStatus, version: { increment: 1 } },
-  });
-  if (changed.count !== 1) {
-    throw Errors.conflict("Content production item changed during transition", {
-      itemId: current.id,
-    });
-  }
-}
-
 async function patchAssetMetadata(
   db: Prisma.TransactionClient,
   assetId: string,
@@ -1490,7 +2591,7 @@ async function patchAssetMetadata(
           ...platformAsset,
           status: patch.status ?? platformAsset.status ?? "generated",
           purpose: patch.purpose ?? platformAsset.purpose,
-          tags: patch.tags ?? platformAsset.tags ?? [],
+          tags: patch.tags ?? platformAsset.tags,
           description: patch.description ?? platformAsset.description,
           reviewNote: patch.reviewNote ?? platformAsset.reviewNote,
           sourceBatchId: patch.sourceBatchId ?? platformAsset.sourceBatchId,
@@ -1505,103 +2606,35 @@ async function assertApprovedAsset(
   db: typeof prisma | Prisma.TransactionClient,
   mediaAssetId: string,
 ) {
-  const approved = await db.contentProductionItem.findFirst({
+  const item = await db.contentProductionItem.findFirst({
     where: {
       mediaAssetId,
       status: { in: ["approved", "published"] },
+      mediaAsset: {
+        is: operationalMediaAssetWhere({ deletedAt: null }),
+      },
     },
     include: { mediaAsset: true },
   });
-  if (!approved?.mediaAsset || platformAssetMetadata(approved.mediaAsset).status === "archived") {
+  const latestDecision = item
+    ? await db.creativeReviewDecision.findFirst({
+        where: { runItemId: item.id },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      })
+    : null;
+  const platformStatus = item?.mediaAsset
+    ? platformAssetMetadata(item.mediaAsset).status
+    : null;
+  if (
+    !item?.mediaAsset ||
+    (typeof platformStatus === "string" && ["archived", "rejected"].includes(platformStatus)) ||
+    !latestDecision ||
+    latestDecision.artifactId !== mediaAssetId ||
+    latestDecision.decision !== "approved"
+  ) {
     throw Errors.badRequest("Only approved content assets can be placed");
   }
-  await assertMediaAssetCustomerPublishable(db, approved.mediaAsset);
-}
-
-async function archiveCurrentPlacement(
-  db: Prisma.TransactionClient,
-  slot: string,
-  targetType: string,
-  targetId: string,
-  excludeId?: string,
-) {
-  await db.mediaAssetPlacement.updateMany({
-    where: {
-      slot,
-      targetType,
-      targetId,
-      status: "published",
-      id: excludeId ? { not: excludeId } : undefined,
-    },
-    data: {
-      status: "archived",
-      archivedAt: new Date(),
-    },
-  });
-}
-
-async function syncPlacementTarget(
-  db: Prisma.TransactionClient,
-  placement: { slot: string; targetType: string; targetId: string; mediaAssetId: string },
-) {
-  if (placement.slot === "character_avatar" || placement.slot === "character_hero") {
-    if (placement.targetType !== "character") {
-      throw Errors.badRequest("Character image placements require character target type");
-    }
-    const updated = await db.character.updateMany({
-      where: { id: placement.targetId, deletedAt: null },
-      data: { imageAssetId: placement.mediaAssetId },
-    });
-    if (updated.count !== 1) throw Errors.notFound("Placement target character not found");
-    const activeVisualProfile = await db.characterVisualProfile.findFirst({
-      where: { characterId: placement.targetId, status: "active" },
-      orderBy: { version: "desc" },
-      select: { id: true, anchorAssetIds: true, referenceAssetIds: true },
-    });
-    if (activeVisualProfile) {
-      const field = placement.slot === "character_avatar" ? "anchorAssetIds" : "referenceAssetIds";
-      const currentIds = jsonStringArray(activeVisualProfile[field]);
-      await db.characterVisualProfile.update({
-        where: { id: activeVisualProfile.id },
-        data: { [field]: toInputJson(Array.from(new Set([...currentIds, placement.mediaAssetId]))) },
-      });
-    }
-    return;
-  }
-  if (placement.slot === "template_cover") {
-    if (placement.targetType !== "template") {
-      throw Errors.badRequest("Template cover placements require template target type");
-    }
-    const updated = await db.characterTemplate.updateMany({
-      where: { id: placement.targetId },
-      data: { coverAssetId: placement.mediaAssetId },
-    });
-    if (updated.count !== 1) throw Errors.notFound("Placement target template not found");
-  }
-}
-
-async function markPlacementItemPublished(db: Prisma.TransactionClient, mediaAssetId: string) {
-  const item = await db.contentProductionItem.findUnique({
-    where: { mediaAssetId },
-    select: { id: true, batchId: true, status: true, version: true },
-  });
-  if (!item || !isCreativeRunItemTransitionAllowed(item.status, "published")) {
-    throw Errors.conflict("Placement source item is not approved for publication", {
-      mediaAssetId,
-      itemStatus: item?.status ?? null,
-    });
-  }
-  const changed = await db.contentProductionItem.updateMany({
-    where: { id: item.id, status: item.status, version: item.version },
-    data: { status: "published", version: { increment: 1 } },
-  });
-  if (changed.count !== 1) {
-    throw Errors.conflict("Placement source item changed during publication", {
-      mediaAssetId,
-    });
-  }
-  await patchAssetMetadata(db, mediaAssetId, { status: "published" });
-  await refreshContentProductionBatchStats(db, item.batchId);
+  await assertMediaAssetCustomerPublishable(db, item.mediaAsset);
 }
 
 function validatePlacementTarget(slot: string, targetType: string) {
@@ -1783,6 +2816,7 @@ function contentAssetDTO(
 ) {
   const item = asset.productionItems[0] ?? null;
   const platform = platformAssetMetadata(asset);
+  const platformHasTags = Object.hasOwn(platform, "tags");
   const platformStatus = platform.status === "archived" ? "archived" : (item?.status ?? platform.status);
   return {
     ...mediaAssetDTO(asset, authority),
@@ -1790,7 +2824,7 @@ function contentAssetDTO(
     purpose: item?.batch.purpose ?? platform.purpose ?? null,
     targetType: item?.batch.targetType ?? null,
     targetId: item?.batch.targetId ?? null,
-    tags: item ? jsonStringArray(item.tags) : assetTags(asset),
+    tags: platformHasTags ? assetTags(asset) : item ? jsonStringArray(item.tags) : [],
     description: assetDescription(asset),
     sourceJob: asset.sourceJob
       ? {
@@ -1828,6 +2862,7 @@ function placementDTO(
   placement: PlacementWithRelations,
   authority?: ResolvedMediaAssetAuthority,
 ) {
+  const metadata = jsonRecord(placement.metadata);
   return {
     id: placement.id,
     mediaAssetId: placement.mediaAssetId,
@@ -1835,6 +2870,9 @@ function placementDTO(
     targetType: placement.targetType,
     targetId: placement.targetId,
     status: placement.status,
+    version: placement.version,
+    verificationState: placement.verificationState,
+    managedRunId: typeof metadata.creativeRunId === "string" ? metadata.creativeRunId : null,
     scheduledAt: placement.scheduledAt,
     publishedAt: placement.publishedAt,
     pausedAt: placement.pausedAt,
@@ -1930,6 +2968,11 @@ function jsonStringArray(value: unknown): string[] {
 function stringFromRecord(value: Record<string, unknown>, key: string) {
   const child = value[key];
   return typeof child === "string" && child.trim() ? child.trim() : undefined;
+}
+
+function numberFromRecord(value: Record<string, unknown>, key: string) {
+  const child = value[key];
+  return typeof child === "number" && Number.isFinite(child) ? child : undefined;
 }
 
 function pruneUndefined(value: Record<string, unknown>) {

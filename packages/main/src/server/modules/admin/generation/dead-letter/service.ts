@@ -58,8 +58,8 @@ export async function listGenerationJobs(request: Request) {
 
 export async function getGenerationJobDetail(request: Request, jobId: string) {
   await actorWithPermission(request, "generation.job.read");
-  const job = await prisma.generationJob.findUnique({
-    where: { id: jobId },
+  const job = await prisma.generationJob.findFirst({
+    where: operationalGenerationJobWhere({ id: jobId }),
     include: { user: true, character: true, assets: true, events: { orderBy: { createdAt: "asc" } } },
   });
   if (!job) throw Errors.notFound("Generation job not found");
@@ -105,8 +105,8 @@ export async function requeueGenerationJob(request: Request, jobId: string) {
   const actor = await actorWithPermission(request, "generation.job.requeue");
   const body = requeueSchema.parse(await jsonBody(request));
   if (body.confirmation !== jobId) throw Errors.badRequest("Confirmation did not match requeue target");
-  const job = await prisma.generationJob.findUnique({
-    where: { id: jobId },
+  const job = await prisma.generationJob.findFirst({
+    where: operationalGenerationJobWhere({ id: jobId }),
     include: { assets: true, events: { orderBy: { createdAt: "asc" } } },
   });
   if (!job) throw Errors.notFound("Generation job not found");
@@ -136,7 +136,9 @@ export async function discardGenerationJob(request: Request, jobId: string) {
   const actor = await actorWithPermission(request, "ops.deadletter.write");
   const body = discardSchema.parse(await jsonBody(request));
   if (body.confirmation !== jobId) throw Errors.badRequest("Confirmation did not match discard target");
-  const job = await prisma.generationJob.findUnique({ where: { id: jobId } });
+  const job = await prisma.generationJob.findFirst({
+    where: operationalGenerationJobWhere({ id: jobId }),
+  });
   if (!job) throw Errors.notFound("Generation job not found");
   if (!["failed", "blocked", "refunded"].includes(job.status)) {
     throw Errors.badRequest("Only failed, blocked, or refunded jobs can be discarded");
@@ -225,7 +227,7 @@ export async function requeueDeadLetterBatch(request: Request) {
     throw Errors.badRequest("Batch requeue confirmation did not match selected jobs");
   }
   const jobs = await prisma.generationJob.findMany({
-    where: { id: { in: body.jobIds } },
+    where: operationalGenerationJobWhere({ id: { in: body.jobIds } }),
     include: { assets: true, events: { orderBy: { createdAt: "asc" } } },
   });
   const refundedIds = await refundedJobIds(body.jobIds);
@@ -268,7 +270,9 @@ export async function discardDeadLetterBatch(request: Request) {
   if (body.confirmation !== deadLetterBatchConfirmation(body.jobIds)) {
     throw Errors.badRequest("Batch discard confirmation did not match selected jobs");
   }
-  const jobs = await prisma.generationJob.findMany({ where: { id: { in: body.jobIds } } });
+  const jobs = await prisma.generationJob.findMany({
+    where: operationalGenerationJobWhere({ id: { in: body.jobIds } }),
+  });
   const discarded: string[] = [];
   const refundedNow: string[] = [];
   const skipped: { id: string; reason: string }[] = [];

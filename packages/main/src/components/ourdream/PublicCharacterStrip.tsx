@@ -3,23 +3,25 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { parseCharacterListResponse } from "@/lib/public-api-contracts";
 import type { CharacterCardData } from "@/types/ourdream";
+import { useAgeGateAccess } from "./AgeGateBoundary";
 
 type StripState = "loading" | "ready" | "error";
 
 export function PublicCharacterStrip() {
+  const { accepted: ageGateAccepted } = useAgeGateAccess();
   const [characters, setCharacters] = useState<CharacterCardData[]>([]);
   const [state, setState] = useState<StripState>("loading");
 
   useEffect(() => {
+    if (!ageGateAccepted) return;
     const timer = window.setTimeout(() => {
       void fetch("/api/v1/characters?sort=for-you&limit=4")
         .then(async (response) => {
           if (!response.ok) throw new Error("characters unavailable");
-          const payload = (await response.json()) as {
-            data?: { items?: CharacterCardData[] };
-          };
-          setCharacters((payload.data?.items ?? []).slice(0, 4));
+          const payload = parseCharacterListResponse(await response.json());
+          setCharacters(payload.items.slice(0, 4));
           setState("ready");
         })
         .catch(() => {
@@ -28,7 +30,7 @@ export function PublicCharacterStrip() {
         });
     }, 0);
     return () => window.clearTimeout(timer);
-  }, []);
+  }, [ageGateAccepted]);
 
   return (
     <section className="px-4 py-8 md:px-[60px] md:py-12">
@@ -129,7 +131,11 @@ export function PublicCharacterStrip() {
                     <span className="ml-2 text-[14px]">{card.age}</span>
                   </h3>
                   <p className="mt-1 text-[12px] font-medium leading-4 text-[rgb(170,170,170)]">
-                    {card.chats} plays
+                    {typeof card.chatsCount === "number" && card.chatsCount > 0
+                      ? `${card.chats} chats`
+                      : card.source === "official"
+                        ? "Official character"
+                        : "New public character"}
                   </p>
                 </div>
               </div>

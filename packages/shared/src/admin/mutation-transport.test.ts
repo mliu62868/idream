@@ -34,12 +34,23 @@ describe("Admin v2 mutation transport invariant", () => {
 
       if (transport.status !== "implemented") continue;
 
-      if (transport.kind === "idempotency_key") {
-        expect(operation.contract.request).toMatch(/\+idempotency-key$/);
+      if (
+        transport.kind === "idempotency_key" ||
+        transport.kind === "idempotency_key_and_if_match"
+      ) {
+        if (transport.kind === "idempotency_key_and_if_match") {
+          expect(operation.contract.request).toMatch(/\+idempotency-key\+if-match$/);
+        } else {
+          expect(operation.contract.request).toMatch(/\+idempotency-key$/);
+        }
         expect(transport.replay).toBe("same_result");
         expect(transport.collision).toBe("reject_payload_mismatch");
         expect(transport.failure).toBe("retryable_without_double_apply");
-      } else {
+      }
+      if (
+        transport.kind === "if_match" ||
+        transport.kind === "idempotency_key_and_if_match"
+      ) {
         expect(operation.contract.request).toMatch(/(?:\+if-match|^if-match$)/);
         expect(transport.staleWrite).toBe("reject");
       }

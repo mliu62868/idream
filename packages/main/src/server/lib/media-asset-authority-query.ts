@@ -29,19 +29,22 @@ export async function resolveMediaAssetAuthorityMap(
       ),
     ),
   ];
-  const [jobs, attempts] = sourceJobIds.length > 0
-    ? await Promise.all([
-        db.generationJob.findMany({
-          where: { id: { in: sourceJobIds } },
-          select: { id: true, provider: true },
-        }),
-        db.generationAttempt.findMany({
-          where: { requestId: { in: sourceJobIds } },
-          orderBy: [{ requestId: "asc" }, { attemptNo: "desc" }],
-          select: { requestId: true, provider: true },
-        }),
-      ])
-    : [[], []];
+  const jobs = sourceJobIds.length > 0
+    ? await db.generationJob.findMany({
+        where: { id: { in: sourceJobIds } },
+        select: { id: true, provider: true },
+      })
+    : [];
+  const attempts = sourceJobIds.length > 0
+    ? await db.generationAttempt.findMany({
+        where: {
+          requestId: { in: sourceJobIds },
+          status: "succeeded",
+        },
+        orderBy: [{ requestId: "asc" }, { attemptNo: "desc" }],
+        select: { requestId: true, provider: true },
+      })
+    : [];
   const jobProviderById = new Map(
     jobs.map((job) => [job.id, job.provider] as const),
   );
@@ -59,9 +62,11 @@ export async function resolveMediaAssetAuthorityMap(
         jobProvider: asset.sourceJobId
           ? jobProviderById.get(asset.sourceJobId) ?? null
           : null,
+        jobProviderRequired: true,
         latestAttemptProvider: asset.sourceJobId
           ? latestAttemptProviderByJobId.get(asset.sourceJobId) ?? null
           : null,
+        latestAttemptProviderRequired: true,
       });
       return [asset.id, authority] as const;
     }),

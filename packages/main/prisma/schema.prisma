@@ -598,39 +598,40 @@ model GenerationFeedback {
 }
 
 model MediaAsset {
-  id                  String                             @id @default(cuid())
-  ownerId             String
-  sourceJobId         String?
-  characterId         String?
-  type                String // enum: image | video
-  url                 String
-  thumbnailUrl        String?
-  storageKey          String?                            @unique
-  contentType         String?
-  width               Int?
-  height              Int?
-  providerAssetId     String?
-  sourcePromptHash    String?
-  prompt              String?
-  visibility          String                             @default("private") // enum: private | public_pack | unlisted
-  safetyStatus        String                             @default("unknown") // enum: unknown | passed | flagged | blocked
-  metadata            Json
-  liked               Boolean                            @default(false)
-  createdAt           DateTime                           @default(now())
-  deletedAt           DateTime?
-  owner               User                               @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  sourceJob           GenerationJob?                     @relation(fields: [sourceJobId], references: [id], onDelete: SetNull)
-  character           Character?                         @relation("CharacterAssets", fields: [characterId], references: [id], onDelete: SetNull)
-  likes               MediaLike[]
-  collections         MediaCollectionItem[]
-  productionItems     ContentProductionItem[]
-  placements          MediaAssetPlacement[]
-  characterImageOf    Character[]                        @relation("CharacterImage")
-  templateCoverOf     CharacterTemplate[]                @relation("TemplateCover")
-  referenceSnapshots  CharacterVisualReferenceSnapshot[]
-  lookReferences      CharacterLook[]
-  referenceCandidates ReferenceCandidate[]
-  generationFeedback  GenerationFeedback[]
+  id                     String                             @id @default(cuid())
+  ownerId                String
+  sourceJobId            String?
+  characterId            String?
+  type                   String // enum: image | video
+  url                    String
+  thumbnailUrl           String?
+  storageKey             String?                            @unique
+  contentType            String?
+  width                  Int?
+  height                 Int?
+  providerAssetId        String?
+  sourcePromptHash       String?
+  prompt                 String?
+  visibility             String                             @default("private") // enum: private | public_pack | unlisted
+  safetyStatus           String                             @default("unknown") // enum: unknown | passed | flagged | blocked
+  metadata               Json
+  liked                  Boolean                            @default(false)
+  createdAt              DateTime                           @default(now())
+  deletedAt              DateTime?
+  owner                  User                               @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  sourceJob              GenerationJob?                     @relation(fields: [sourceJobId], references: [id], onDelete: SetNull)
+  character              Character?                         @relation("CharacterAssets", fields: [characterId], references: [id], onDelete: SetNull)
+  likes                  MediaLike[]
+  collections            MediaCollectionItem[]
+  productionItems        ContentProductionItem[]
+  placements             MediaAssetPlacement[]
+  characterImageOf       Character[]                        @relation("CharacterImage")
+  templateCoverOf        CharacterTemplate[]                @relation("TemplateCover")
+  referenceSnapshots     CharacterVisualReferenceSnapshot[]
+  lookReferences         CharacterLook[]
+  referenceCandidates    ReferenceCandidate[]
+  generationFeedback     GenerationFeedback[]
+  draftCharacterProjects CharacterProject[]                 @relation("CharacterProjectDraftImage")
 
   @@index([ownerId, type, createdAt])
   @@index([sourceJobId])
@@ -697,7 +698,7 @@ model ContentProductionItem {
   version           Int                    @default(1)
   batch             ContentProductionBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
   job               GenerationJob?         @relation(fields: [jobId], references: [id], onDelete: SetNull)
-  mediaAsset        MediaAsset?             @relation(fields: [mediaAssetId], references: [id], onDelete: SetNull)
+  mediaAsset        MediaAsset?            @relation(fields: [mediaAssetId], references: [id], onDelete: SetNull)
   createdAt         DateTime               @default(now())
   updatedAt         DateTime               @updatedAt
 
@@ -737,18 +738,21 @@ model MediaAssetPlacement {
 }
 
 model CreativeReviewDecision {
-  id                  String   @id @default(cuid())
-  runItemId           String
-  artifactId          String
-  decision            String
-  identityConsistency String
-  score               Int?
-  reason              String
-  reviewerId          String
-  createdAt           DateTime @default(now())
+  id                   String   @id @default(cuid())
+  runItemId            String
+  artifactId           String
+  supersedesDecisionId String?
+  decision             String
+  identityConsistency  String
+  score                Int?
+  reason               String
+  evidence             Json     @default("{}")
+  reviewerId           String
+  createdAt            DateTime @default(now())
 
   @@index([runItemId, createdAt])
   @@index([artifactId, createdAt])
+  @@index([supersedesDecisionId])
   @@map("creative_review_decisions")
 }
 
@@ -791,16 +795,17 @@ model MediaCollectionItem {
 }
 
 model Plan {
-  id                 String         @id @default(cuid())
+  id                 String            @id @default(cuid())
   slug               String // enum: premium | deluxe
   name               String
   billingPeriod      String // enum: monthly | yearly
   priceCents         Int
-  currency           String         @default("usd")
-  includedDreamcoins Int            @default(0)
+  currency           String            @default("usd")
+  includedDreamcoins Int               @default(0)
   features           Json
-  active             Boolean        @default(true)
+  active             Boolean           @default(true)
   subscriptions      Subscription[]
+  checkoutSessions   CheckoutSession[]
 
   @@unique([slug, billingPeriod])
   @@map("plans")
@@ -858,16 +863,41 @@ model DreamcoinLedger {
 }
 
 model CheckoutSession {
-  id                String   @id @default(cuid())
-  userId            String
-  provider          String
-  providerSessionId String?
-  status            String   @default("created") // enum: created | completed | expired | canceled
-  returnPath        String?
-  createdAt         DateTime @default(now())
-  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                              String    @id @default(cuid())
+  userId                          String
+  planId                          String?
+  provider                        String
+  providerSessionId               String?
+  providerInvoiceStatus           String?
+  providerInvoiceAdditionalStatus String?
+  idempotencyKey                  String?
+  requestHash                     String?
+  checkoutUrl                     String?
+  amountCents                     Int?
+  currency                        String?
+  offerSnapshot                   Json?
+  autoConfirm                     Boolean   @default(false)
+  status                          String    @default("provider_pending") // provider_pending | provider_dispatching | provider_unknown | created | completed | expired | canceled
+  dispatchToken                   String?
+  dispatchLeaseUntil              DateTime?
+  providerAttemptedAt             DateTime?
+  providerLastLookupAt            DateTime?
+  providerLookupMissCount         Int       @default(0)
+  failureCode                     String?
+  needsReconciliation             Boolean   @default(false)
+  reconciliationEvidence          Json?
+  returnPath                      String?
+  createdAt                       DateTime  @default(now())
+  updatedAt                       DateTime  @default(now()) @updatedAt
+  user                            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan                            Plan?     @relation(fields: [planId], references: [id], onDelete: Restrict)
 
+  @@unique([userId, idempotencyKey])
+  @@unique([provider, providerSessionId])
   @@index([userId])
+  @@index([status, dispatchLeaseUntil])
+  @@index([needsReconciliation, updatedAt])
+  @@index([planId, createdAt])
   @@map("checkout_sessions")
 }
 
@@ -970,6 +1000,7 @@ model SupportRequest {
 model ProductFeedbackItem {
   id          String                @id @default(cuid())
   sourceKey   String?               @unique
+  source      String                @default("user") // enum: official | user
   createdById String?
   title       String
   description String
@@ -983,6 +1014,7 @@ model ProductFeedbackItem {
   votes       ProductFeedbackVote[]
 
   @@index([status, voteCount, createdAt])
+  @@index([source, visibility, status])
   @@index([visibility, status, createdAt])
   @@index([createdById])
   @@map("product_feedback_items")
@@ -1071,16 +1103,32 @@ model Follow {
 }
 
 model ProviderEvent {
-  id              String    @id @default(cuid())
+  id              String                  @id @default(cuid())
   provider        String
   providerEventId String
   type            String?
   payload         Json
+  targetHash      String?
   processedAt     DateTime?
-  createdAt       DateTime  @default(now())
+  createdAt       DateTime                @default(now())
+  deliveries      ProviderEventDelivery[]
 
   @@unique([provider, providerEventId])
   @@map("provider_events")
+}
+
+model ProviderEventDelivery {
+  id          String        @id @default(cuid())
+  eventId     String
+  deliveryId  String
+  payload     Json
+  payloadHash String
+  receivedAt  DateTime      @default(now())
+  event       ProviderEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, deliveryId])
+  @@index([deliveryId, receivedAt])
+  @@map("provider_event_deliveries")
 }
 
 model AnalyticsEvent {
@@ -1111,16 +1159,20 @@ model AnalyticsEvent {
 }
 
 model RoutePage {
-  path          String   @id
-  template      String
-  title         String
-  description   String
-  canonical     String?
-  contentStatus String   @default("template")
-  body          Json
-  updatedAt     DateTime @updatedAt
+  path                 String    @id
+  template             String
+  title                String
+  description          String
+  canonical            String?
+  contentStatus        String    @default("template")
+  contentSchemaVersion Int?
+  indexingStatus       String    @default("noindex")
+  body                 Json
+  publishedAt          DateTime?
+  updatedAt            DateTime  @updatedAt
 
   @@index([template])
+  @@index([contentStatus, indexingStatus])
   @@map("route_pages")
 }
 
@@ -1320,7 +1372,7 @@ model AdminCollaborationActivity {
   createdAt      DateTime @default(now())
 
   @@unique([actorId, idempotencyKey])
-  @@index([targetType, targetId, createdAt, id])
+  @@index([targetType, targetId, createdAt, id], map: "admin_collaboration_activities_targetType_targetId_createdAt_id")
   @@index([mentionedIds], type: Gin)
   @@map("admin_collaboration_activities")
 }
@@ -1394,22 +1446,26 @@ model LegalHold {
 // Admin v2 additive authority. These models intentionally coexist with legacy
 // tables during Expand -> Backfill -> Shadow -> Cutover.
 model CharacterProject {
-  id              String    @id @default(cuid())
-  characterId     String
-  ownerId         String?
-  phase           String    @default("idea")
-  audience        Json
-  hypothesis      String?
-  differentiation String?
-  successCriteria Json
-  plannedLaunchAt DateTime?
-  activeKey       String?   @unique
-  version         Int       @default(1)
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  id                String      @id @default(cuid())
+  characterId       String
+  ownerId           String?
+  phase             String      @default("idea")
+  audience          Json
+  hypothesis        String?
+  differentiation   String?
+  successCriteria   Json
+  plannedLaunchAt   DateTime?
+  draftImageAssetId String?
+  draftImageAsset   MediaAsset? @relation("CharacterProjectDraftImage", fields: [draftImageAssetId], references: [id], onDelete: SetNull)
+  draftAssetPack    Json        @default("{}")
+  activeKey         String?     @unique
+  version           Int         @default(1)
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
 
   @@index([characterId, phase])
   @@index([ownerId, phase])
+  @@index([draftImageAssetId])
   @@map("character_projects")
 }
 
@@ -1447,28 +1503,30 @@ model CharacterRevision {
 }
 
 model CharacterRelease {
-  id                        String    @id @default(cuid())
-  projectId                 String
-  revisionId                String
-  characterContentVersionId String
-  visualProfileId           String?
-  visualProfileVersion      Int?
-  referenceSetRevisionId    String?
-  generationProvenance      Json
-  releasePlacementManifest  Json
-  snapshotHash              String
-  readiness                 String    @default("unknown")
-  legacy                    Boolean   @default(false)
-  status                    String    @default("draft")
-  publishedAt               DateTime?
-  supersedesId              String?
-  rollbackOfReleaseId       String?
-  version                   Int       @default(1)
-  createdAt                 DateTime  @default(now())
-  updatedAt                 DateTime  @updatedAt
-  currentServing   CharacterServing? @relation("CurrentCharacterServing")
-  scheduledServing CharacterServing? @relation("ScheduledCharacterServing")
+  id                         String                      @id @default(cuid())
+  projectId                  String
+  revisionId                 String
+  characterContentVersionId  String
+  visualProfileId            String?
+  visualProfileVersion       Int?
+  referenceSetRevisionId     String?
+  generationProvenance       Json
+  releasePlacementManifest   Json
+  snapshotHash               String
+  readiness                  String                      @default("unknown")
+  legacy                     Boolean                     @default(false)
+  status                     String                      @default("draft")
+  publishedAt                DateTime?
+  supersedesId               String?
+  rollbackOfReleaseId        String?
+  version                    Int                         @default(1)
+  createdAt                  DateTime                    @default(now())
+  updatedAt                  DateTime                    @updatedAt
+  currentServing             CharacterServing?           @relation("CurrentCharacterServing")
+  scheduledServing           CharacterServing?           @relation("ScheduledCharacterServing")
+  publicCatalogQualification PublicCatalogQualification?
 
+  @@unique([id, snapshotHash])
   @@index([projectId, snapshotHash])
   @@index([projectId, status])
   @@index([characterContentVersionId])
@@ -1478,35 +1536,71 @@ model CharacterRelease {
 }
 
 model CharacterServing {
-  id                 String    @id @default(cuid())
-  characterId        String    @unique
-  currentReleaseId   String?   @unique
-  state              String    @default("inactive")
-  scheduledReleaseId String?   @unique
+  id                 String            @id @default(cuid())
+  characterId        String            @unique
+  currentReleaseId   String?           @unique
+  state              String            @default("inactive")
+  scheduledReleaseId String?           @unique
   scheduledAt        DateTime?
-  version            Int       @default(1)
-  createdAt          DateTime  @default(now())
-  updatedAt          DateTime  @updatedAt
-  character        Character         @relation(fields: [characterId], references: [id], onDelete: Cascade, onUpdate: Cascade, map: "character_serving_characterId_fkey")
-  currentRelease   CharacterRelease? @relation("CurrentCharacterServing", fields: [currentReleaseId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "character_serving_currentReleaseId_fkey")
-  scheduledRelease CharacterRelease? @relation("ScheduledCharacterServing", fields: [scheduledReleaseId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "character_serving_scheduledReleaseId_fkey")
+  version            Int               @default(1)
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+  character          Character         @relation(fields: [characterId], references: [id], onDelete: Cascade, onUpdate: Cascade, map: "character_serving_characterId_fkey")
+  currentRelease     CharacterRelease? @relation("CurrentCharacterServing", fields: [currentReleaseId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "character_serving_currentReleaseId_fkey")
+  scheduledRelease   CharacterRelease? @relation("ScheduledCharacterServing", fields: [scheduledReleaseId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "character_serving_scheduledReleaseId_fkey")
 
   @@index([state, scheduledAt])
   @@map("character_serving")
 }
 
 model ReleaseValidationRun {
-  id            String    @id @default(cuid())
-  releaseId     String
-  snapshotHash  String
-  policyVersion String
-  result        String
-  startedAt     DateTime  @default(now())
-  finishedAt    DateTime?
+  id                         String                      @id @default(cuid())
+  releaseId                  String
+  snapshotHash               String
+  policyVersion              String
+  result                     String
+  startedAt                  DateTime                    @default(now())
+  finishedAt                 DateTime?
+  publicCatalogQualification PublicCatalogQualification?
 
   @@index([releaseId, startedAt])
   @@index([policyVersion, result])
   @@map("release_validation_runs")
+}
+
+model PublicCatalogQualification {
+  id                  String                @id @default(cuid())
+  releaseId           String                @unique
+  releaseSnapshotHash String
+  kind                String // enum: generated_release | editorial_import
+  validationRunId     String?               @unique
+  evidence            Json
+  qualifiedAt         DateTime              @default(now())
+  revokedAt           DateTime?
+  release             CharacterRelease      @relation(fields: [releaseId, releaseSnapshotHash], references: [id, snapshotHash], onDelete: Restrict, map: "public_catalog_qualifications_release_fkey")
+  validationRun       ReleaseValidationRun? @relation(fields: [validationRunId], references: [id], onDelete: Restrict)
+
+  @@unique([releaseId, releaseSnapshotHash])
+  @@index([kind, revokedAt, qualifiedAt])
+  @@map("public_catalog_qualifications")
+}
+
+model PublicContentRepairItem {
+  id          String    @id @default(cuid())
+  entityType  String
+  entityId    String
+  reasonCodes Json
+  evidence    Json
+  repairPath  String
+  status      String    @default("open") // enum: open | resolved | waived
+  activeKey   String?   @unique
+  detectedAt  DateTime  @default(now())
+  resolvedAt  DateTime?
+  updatedAt   DateTime  @default(now()) @updatedAt
+
+  @@index([status, entityType, detectedAt])
+  @@index([entityType, entityId])
+  @@map("public_content_repair_items")
 }
 
 model CharacterQaRun {
@@ -1515,6 +1609,13 @@ model CharacterQaRun {
   projectId                 String
   characterContentVersionId String
   projectVersion            Int
+  visualProfileId           String?
+  visualProfileVersion      Int?
+  visualProfileHash         String?
+  referenceSetRevisionId    String?
+  referenceSetRevision      Int?
+  referenceSetHash          String?
+  draftAssetPackHash        String?
   ownerId                   String
   status                    String
   checks                    Json
@@ -1522,7 +1623,8 @@ model CharacterQaRun {
   createdAt                 DateTime @default(now())
 
   @@index([characterId, createdAt])
-  @@index([projectId, characterContentVersionId, status])
+  @@index([projectId, characterContentVersionId, status], map: "character_qa_runs_projectId_characterContentVersionId_status_id")
+  @@index([visualProfileId, referenceSetRevisionId])
   @@map("character_qa_runs")
 }
 
@@ -1603,7 +1705,7 @@ model GenerationRouteQualification {
 }
 
 model GenerationAttempt {
-  id                    String    @id @default(cuid())
+  id                    String                   @id @default(cuid())
   requestId             String
   attemptNo             Int
   provider              String?
@@ -1611,7 +1713,7 @@ model GenerationAttempt {
   profileVersion        Int?
   workflowKey           String?
   workflowVersion       Int?
-  status                String    @default("queued")
+  status                String                   @default("queued")
   terminalSequence      Int?
   errorClass            String?
   errorCode             String?
@@ -1623,7 +1725,7 @@ model GenerationAttempt {
   completionManifestRef String?
   startedAt             DateTime?
   finishedAt            DateTime?
-  createdAt             DateTime  @default(now())
+  createdAt             DateTime                 @default(now())
   events                GenerationAttemptEvent[]
 
   @@unique([requestId, attemptNo])
@@ -1765,7 +1867,7 @@ model OpsIncidentOccurrenceAssignment {
   createdAt      DateTime @default(now())
 
   @@index([occurrenceId, createdAt])
-  @@index([fromIncidentId, createdAt])
+  @@index([fromIncidentId, createdAt], map: "ops_incident_occurrence_assignments_fromIncidentId_createdAt_id")
   @@index([toIncidentId, createdAt])
   @@map("ops_incident_occurrence_assignments")
 }
@@ -1885,13 +1987,14 @@ model ControlPlaneCommand {
   id                  String    @id @default(cuid())
   scope               String
   idempotencyKey      String
+  coordinationKey     String?
   commandType         String
   targetType          String
   targetId            String
   actorId             String
   requestId           String
   requestHash         String
-  requestPayload      Json
+  requestPayload      Json      @default("{}")
   expectedVersion     Int?
   approvalId          String?
   retryMode           String    @default("non_replayable")
@@ -1911,6 +2014,7 @@ model ControlPlaneCommand {
   @@unique([scope, idempotencyKey])
   @@index([status, leaseExpiresAt])
   @@index([targetType, targetId, createdAt])
+  @@index([coordinationKey, status, createdAt])
   @@map("control_plane_commands")
 }
 
@@ -2005,24 +2109,24 @@ model MainOutboxEvent {
 }
 
 model ExperimentDefinition {
-  id          String   @id @default(cuid())
-  key         String
-  version     Int
-  hypothesis  String
-  eligibility Json
-  variants    Json
-  salt        String
-  metrics     Json
-  status      String   @default("draft")
-  stateVersion Int     @default(1)
-  startedAt   DateTime?
-  startedById String?
-  stoppedAt   DateTime?
-  stoppedById String?
-  createdById String?
+  id                   String    @id @default(cuid())
+  key                  String
+  version              Int
+  hypothesis           String
+  eligibility          Json
+  variants             Json
+  salt                 String
+  metrics              Json
+  status               String    @default("draft")
+  stateVersion         Int       @default(1)
+  startedAt            DateTime?
+  startedById          String?
+  stoppedAt            DateTime?
+  stoppedById          String?
+  createdById          String?
   createIdempotencyKey String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @default(now()) @updatedAt
 
   @@unique([key, version])
   @@unique([createdById, createIdempotencyKey])
@@ -2140,7 +2244,7 @@ model ChatExchangeFact {
   @@index([userId, characterId, productDay, engagementSessionId])
   @@index([eligible, occurredAt])
   @@index([characterContentVersionId, characterReleaseId, occurredAt])
-  @@index([characterReleaseId, placementId, productDay])
+  @@index([characterReleaseId, placementId, productDay], map: "chat_exchange_facts_characterReleaseId_placementId_productDay_i")
   @@index([entryExposureId])
   @@map("chat_exchange_facts")
 }
@@ -2323,8 +2427,8 @@ model CharacterEconomicsFact {
   createdAt                 DateTime @default(now())
 
   @@unique([authorityType, authorityId, kind])
-  @@index([characterId, characterContentVersionId, characterReleaseId, placementId, occurredAt])
-  @@index([auditState, coverageState, occurredAt])
+  @@index([characterId, characterContentVersionId, characterReleaseId, placementId, occurredAt], map: "character_economics_facts_characterId_characterContentVersionId")
+  @@index([auditState, coverageState, occurredAt], map: "character_economics_facts_auditState_coverageState_occurredAt_i")
   @@map("character_economics_facts")
 }
 

@@ -1,6 +1,9 @@
--- Phase 4 canonical chat exchange facts. RUN view statement AS core_owner and
--- chat table statements AS chat_owner. Additive and idempotent; SQL must land
--- before a chat build that emits chat.exchange.completed.v2.
+-- Phase 4 canonical chat exchange facts. RUN AS a database superuser; this file
+-- switches to the least-privileged owners for each authority boundary.
+-- Additive and idempotent; SQL must land before a chat build that emits
+-- chat.exchange.completed.v2.
+
+SET ROLE chat_owner;
 
 ALTER TABLE chat.messages
   ADD COLUMN IF NOT EXISTS engagement_session_id text,
@@ -9,6 +12,9 @@ ALTER TABLE chat.messages
 
 ALTER TABLE chat.chat_outbox_events
   ADD COLUMN IF NOT EXISTS schema_version integer NOT NULL DEFAULT 1;
+
+RESET ROLE;
+SET ROLE core_owner;
 
 CREATE OR REPLACE VIEW core.chat_character_view AS
 SELECT
@@ -38,3 +44,5 @@ LEFT JOIN public.character_releases cr
   ON cr.id = cs."currentReleaseId";
 
 GRANT SELECT ON core.chat_character_view TO chat_service;
+
+RESET ROLE;

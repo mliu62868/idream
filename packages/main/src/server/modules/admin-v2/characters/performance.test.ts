@@ -1,16 +1,25 @@
 import { describe, expect, it } from "vitest";
-import { evaluateCharacterPerformance, evaluateContributionMargin } from "./performance";
+import {
+  completedUtcCharacterPerformanceWindow,
+  evaluateCharacterPerformance,
+  evaluateContributionMargin,
+  utcProductDayCeiling,
+} from "./performance";
 
 const asOf = new Date("2026-07-11T00:00:00.000Z");
 
 function exposureRows(impressions: number, details: number) {
   return [
-    ...Array.from({ length: impressions }, () => ({
+    ...Array.from({ length: impressions }, (_, index) => ({
+      exposureId: `impression-${index}`,
+      parentExposureId: null,
       eventType: "eligible_impression",
       coverageState: "exact",
       occurredAt: new Date("2026-07-10T00:00:00.000Z"),
     })),
-    ...Array.from({ length: details }, () => ({
+    ...Array.from({ length: details }, (_, index) => ({
+      exposureId: `detail-${index}`,
+      parentExposureId: `impression-${index}`,
       eventType: "detail_view",
       coverageState: "exact",
       occurredAt: new Date("2026-07-10T01:00:00.000Z"),
@@ -19,6 +28,20 @@ function exposureRows(impressions: number, details: number) {
 }
 
 describe("canonical Character Performance", () => {
+  it("uses only complete UTC product days for daily and timestamp facts", () => {
+    expect(completedUtcCharacterPerformanceWindow({
+      asOf: new Date("2026-07-17T12:34:56.000Z"),
+      window: "7d",
+    })).toEqual({
+      start: new Date("2026-07-10T00:00:00.000Z"),
+      end: new Date("2026-07-17T00:00:00.000Z"),
+    });
+    expect(utcProductDayCeiling(new Date("2026-07-17T00:00:00.000Z")))
+      .toEqual(new Date("2026-07-17T00:00:00.000Z"));
+    expect(utcProductDayCeiling(new Date("2026-07-17T00:00:00.001Z")))
+      .toEqual(new Date("2026-07-18T00:00:00.000Z"));
+  });
+
   it("computes a golden exact 7d release/placement cohort without inventing margin", () => {
     const summary = evaluateCharacterPerformance({
       characterContentVersionId: "content-v2",
@@ -82,7 +105,13 @@ describe("canonical Character Performance", () => {
       releasePublishedAt: new Date("2026-06-01T00:00:00.000Z"),
       window: "28d",
       asOf,
-      exposureRows: [{ eventType: "eligible_impression", coverageState: "exact_unattributed", occurredAt: asOf }],
+      exposureRows: [{
+        exposureId: "unattributed-impression",
+        parentExposureId: null,
+        eventType: "eligible_impression",
+        coverageState: "exact_unattributed",
+        occurredAt: asOf,
+      }],
       funnelRows: [],
       economicsRows: [],
       economicsAuthority: {
@@ -140,6 +169,39 @@ describe("canonical Character Performance", () => {
       sameCharacterD7: 0.4,
     });
     expect(summary.evidence).toContain("paid_attribution_unavailable");
+  });
+
+  it("excludes a detail view whose parent impression is outside the reporting cohort", () => {
+    const summary = evaluateCharacterPerformance({
+      characterContentVersionId: "content-v2",
+      characterReleaseId: "release-v2",
+      placementId: "feed.hero",
+      releasePublishedAt: new Date("2026-06-01T00:00:00.000Z"),
+      window: "7d",
+      asOf,
+      exposureRows: [{
+        exposureId: "detail-inside-window",
+        parentExposureId: "impression-before-window",
+        eventType: "detail_view",
+        coverageState: "exact",
+        occurredAt: new Date("2026-07-10T01:00:00.000Z"),
+      }],
+      funnelRows: [],
+      economicsRows: [],
+      economicsAuthority: {
+        cashCaptureComplete: false,
+        refundsComplete: false,
+        creditsComplete: false,
+        variableCostsComplete: false,
+      },
+    });
+
+    expect(summary).toMatchObject({
+      eligibleImpressions: 0,
+      detailViews: 0,
+      qualityState: "invalid",
+    });
+    expect(summary.evidence).toContain("detail_view_parent_outside_reporting_cohort");
   });
 
   it("can certify margin only when every audited authority is complete", () => {

@@ -10,10 +10,12 @@ import {
 
 const P = "zt-admin-config-atomic-";
 const actorId = `${P}admin`;
+const seedVoicePricingRuleId = "seed-pricing-voice-default-v1";
 
 beforeAll(async () => {
   await installFaultInjectionTriggers();
   await purgeTestData(P);
+  await restoreSeedVoicePricingAuthority();
   await createUser({ id: actorId, role: "admin" });
 });
 
@@ -22,6 +24,7 @@ afterAll(async () => {
     where: { aggregateId: { startsWith: P } },
   });
   await purgeTestData(P);
+  await restoreSeedVoicePricingAuthority();
   await removeFaultInjectionTriggers();
   await prisma.$disconnect();
 });
@@ -251,6 +254,23 @@ async function seedPricingRule(input: {
       archivedAt: input.status === "archived" ? new Date() : null,
     },
   });
+}
+
+async function restoreSeedVoicePricingAuthority() {
+  await prisma.$transaction([
+    prisma.pricingRule.updateMany({
+      where: {
+        mode: "voice",
+        status: "active",
+        id: { not: seedVoicePricingRuleId },
+      },
+      data: { status: "archived", archivedAt: new Date() },
+    }),
+    prisma.pricingRule.update({
+      where: { id: seedVoicePricingRuleId },
+      data: { status: "active", archivedAt: null },
+    }),
+  ]);
 }
 
 async function installFaultInjectionTriggers() {

@@ -33,6 +33,7 @@ export interface ChatRequest {
   userId: string;
   body?: unknown;
   query?: Record<string, string>;
+  idempotencyKey?: string;
 }
 
 export type ChatResponse =
@@ -104,7 +105,12 @@ async function route(req: ChatRequest): Promise<ChatResponse> {
     }
     if (segs.length === 3 && segs[2] === "messages" && method === "POST") {
       const b = body(req);
-      return json(202, await sendMessage({ userId, sessionId, content: str(b.content) }));
+      return json(202, await sendMessage({
+        userId,
+        sessionId,
+        content: str(b.content),
+        idempotencyKey: req.idempotencyKey,
+      }));
     }
     if (segs.length === 3 && segs[2] === "archive" && method === "POST") {
       return json(200, await archiveSession({ userId, sessionId }));

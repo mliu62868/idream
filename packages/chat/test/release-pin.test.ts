@@ -4,7 +4,11 @@ import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { buildContext } from "../src/context.js";
 import { createChatPrisma } from "../src/db.js";
 import { consumeInbound } from "../src/inbox.js";
-import { createSession, sendMessage } from "../src/service.js";
+import {
+  attachmentReleaseIdForRetry,
+  createSession,
+  sendMessage,
+} from "../src/service.js";
 import { acceptAgeGate } from "./fixtures.js";
 
 const prisma = createChatPrisma();
@@ -102,6 +106,15 @@ afterAll(async () => {
 });
 
 describe("Character Release → Chat serving pin", () => {
+  it("keeps an attachment retry on its original Release after the session migrates", () => {
+    expect(
+      attachmentReleaseIdForRetry(
+        { characterReleaseId: "release-pin-v2" },
+        "release-pin-v3",
+      ),
+    ).toBe("release-pin-v2");
+    expect(attachmentReleaseIdForRetry({}, "release-pin-v3")).toBe("release-pin-v3");
+  });
   it("pins complete entry attribution without treating it as release authority", async () => {
     const session = await createSession({
       userId: USERS[4],

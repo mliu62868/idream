@@ -44,7 +44,7 @@ export async function billingLedger(request: Request) {
     ? descendingCursorWhere(cursorKeys, "billing_ledger")
     : undefined;
   const entries = await prisma.dreamcoinLedger.findMany({
-    where: {
+    where: customerDreamcoinLedgerWhere({
       userId,
       reason,
       OR: search
@@ -56,13 +56,14 @@ export async function billingLedger(request: Request) {
           ]
         : undefined,
       AND: cursorWhere,
-    },
+    }),
     include: { user: true },
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     take: limit + 1,
   });
   const page = entries.slice(0, limit);
   return ok({
+    dataScope: CUSTOMER_METRIC_DATA_SCOPE,
     items: page.map((entry) => ({
       id: entry.id,
       userId: entry.userId,
@@ -89,7 +90,7 @@ export async function listSubscriptions(request: Request) {
     ? descendingCursorWhere(cursorKeys, "billing_subscriptions")
     : undefined;
   const subscriptions = await prisma.subscription.findMany({
-    where: {
+    where: customerSubscriptionWhere({
       userId,
       status,
       OR: search
@@ -102,13 +103,14 @@ export async function listSubscriptions(request: Request) {
           ]
         : undefined,
       AND: cursorWhere,
-    },
+    }),
     include: { plan: true, user: true },
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     take: limit + 1,
   });
   const page = subscriptions.slice(0, limit);
   return ok({
+    dataScope: CUSTOMER_METRIC_DATA_SCOPE,
     items: page.map((subscription) => ({
       id: subscription.id,
       userId: subscription.userId,
@@ -133,7 +135,7 @@ export async function billingReconciliation(request: Request) {
   const to = query.to ? new Date(query.to) : now;
   const from = query.from ? new Date(query.from) : new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
   if (from > to) throw Errors.badRequest("Reconciliation start must not be after end");
-  const [grouped, activeSubscriptions] = await Promise.all([
+  const [grouped, activeSubscriptions, checkoutExceptions] = await Promise.all([
     prisma.dreamcoinLedger.groupBy({
       by: ["reason"],
       where: customerDreamcoinLedgerWhere({
@@ -144,6 +146,32 @@ export async function billingReconciliation(request: Request) {
     }),
     prisma.subscription.count({
       where: customerSubscriptionWhere({ status: "active" }),
+    }),
+    prisma.checkoutSession.findMany({
+      where: {
+        user: {
+          is: {
+            dataClass: "customer",
+            status: "active",
+            deletedAt: null,
+          },
+        },
+        OR: [
+          { needsReconciliation: true },
+          { status: "provider_unknown" },
+          {
+            failureCode: {
+              in: [
+                "provider_invoice_not_found_after_grace",
+                "provider_invoice_settled_after_abandonment",
+              ],
+            },
+          },
+        ],
+      },
+      include: { plan: true, user: true },
+      orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+      take: 100,
     }),
   ]);
   const byReason = grouped
@@ -157,6 +185,26 @@ export async function billingReconciliation(request: Request) {
     dataScope: CUSTOMER_METRIC_DATA_SCOPE,
     window: { from: from.toISOString(), to: to.toISOString() },
     activeSubscriptions,
+    checkoutExceptions: checkoutExceptions.map((checkout) => ({
+      id: checkout.id,
+      userId: checkout.userId,
+      userEmail: checkout.user.email,
+      plan: checkout.plan?.slug ?? null,
+      billingPeriod: checkout.plan?.billingPeriod ?? null,
+      provider: checkout.provider,
+      providerSessionId: checkout.providerSessionId,
+      providerInvoiceStatus: checkout.providerInvoiceStatus,
+      providerInvoiceAdditionalStatus:
+        checkout.providerInvoiceAdditionalStatus,
+      status: checkout.status,
+      failureCode: checkout.failureCode,
+      needsReconciliation: checkout.needsReconciliation,
+      providerLookupMissCount: checkout.providerLookupMissCount,
+      providerAttemptedAt: checkout.providerAttemptedAt,
+      providerLastLookupAt: checkout.providerLastLookupAt,
+      createdAt: checkout.createdAt,
+      updatedAt: checkout.updatedAt,
+    })),
     byReason,
     totals,
   });

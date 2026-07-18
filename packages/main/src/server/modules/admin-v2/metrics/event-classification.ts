@@ -1,14 +1,10 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
+import {
+  isReservedFixtureEmail,
+  type UserDataClass,
+} from "@/server/lib/user-data-provenance";
 
 type Db = PrismaClient | Prisma.TransactionClient;
-
-type UserDataClass = "customer" | "internal" | "fixture" | "audit";
-
-function isFixtureEmail(email: string) {
-  const normalized = email.trim().toLowerCase();
-  const domain = normalized.split("@").at(-1) ?? "";
-  return domain === "test.local" || domain.endsWith(".test") || domain === "example.com";
-}
 
 function normalizeDataClass(dataClass: string): UserDataClass {
   if (
@@ -30,7 +26,7 @@ export function classifyExistingCustomerMetricActor(user: {
   readonly deletedAt: Date | null;
   readonly dataClass: string;
 }) {
-  const fixture = isFixtureEmail(user.email);
+  const fixture = isReservedFixtureEmail(user.email);
   const storedDataClass = normalizeDataClass(user.dataClass);
   const isInactiveOrPrivileged =
     user.role !== "user" || user.status !== "active" || user.deletedAt !== null;

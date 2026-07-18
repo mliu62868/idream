@@ -2,6 +2,7 @@
 // These tests intentionally cross the public service/worker seams with real Postgres,
 // Redis, and the file-backed memory layer.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { FREE_DAILY_MESSAGES } from "@idream/shared/chat/limits";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -143,7 +144,7 @@ describe("core chat command invariants", () => {
         id: "usage_core_quota_race",
         userId: USERS.quotaRace,
         sessionId: session.id,
-        messagesUsed: 29,
+        messagesUsed: FREE_DAILY_MESSAGES - 1,
         periodStart,
         periodEnd,
       },

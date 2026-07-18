@@ -13,7 +13,6 @@ import {
   UserRound,
 } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
-import { CharacterPregenPanel } from "@/components/admin/CharacterPregenPanel";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { DetailPage, DetailSection } from "@/components/admin/ui/DetailPage";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
@@ -349,18 +348,17 @@ export function OfficialDetailPage({ id }: { id: string }) {
           {tab === "visual" ? <VisualPassportPanel characterId={row.id} /> : null}
 
           {tab === "assets" ? (
-            <>
-              <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-                <div>
-                  <p className="text-sm font-semibold text-[var(--ad-ink)]">Creative production studio</p>
-                  <p className="mt-1 text-xs text-[var(--ad-text-muted)]">Explore multiple image directions with this character already selected.</p>
-                </div>
-                <Link href={{ pathname: "/admin/content/production", query: { characterId: row.id } }}>
-                  <PrimaryButton>Open studio</PrimaryButton>
-                </Link>
+            <div className="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-5">
+              <div className="max-w-2xl">
+                <p className="text-sm font-semibold text-[var(--ad-ink)]">Character Asset Studio</p>
+                <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">
+                  Create the identity portrait, hero, and chat image pack in the dedicated workspace. Review decisions, draft selection, Release publication, and live Serving remain separate facts.
+                </p>
               </div>
-              <CharacterPregenPanel characterId={row.id} />
-            </>
+              <Link href={`/admin/characters/${row.id}?tab=assets`}>
+                <PrimaryButton>Open Character Asset Studio</PrimaryButton>
+              </Link>
+            </div>
           ) : null}
 
           {tab === "preview" ? (

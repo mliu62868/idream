@@ -89,7 +89,11 @@ function refImageArgs(images: MaterializedSdcppReferenceImage[]) {
 }
 
 function referenceRole(value: string | undefined): SdcppReferenceRole {
-  if (value === "identity_anchor" || value === "source_image") return value;
+  if (
+    value === "identity_anchor" ||
+    value === "look_reference" ||
+    value === "source_image"
+  ) return value;
   return "identity_reference";
 }
 

@@ -225,6 +225,7 @@ export interface ProductConfigProbeEvidence {
   activeVideoCharacterTemplates?: number;
   activeVideoFreeplayTemplates?: number;
   activeVideoPricingRules?: number;
+  activeVoicePricingRules?: number;
   publicCharacters?: number;
   publicCharactersWithSystemPrompt?: number;
   loadError?: string;
@@ -407,9 +408,10 @@ function isPublicHttpsUrl(value: string | undefined) {
   if (!value || isPlaceholderValue(value)) return false;
   try {
     const url = new URL(value);
+    const hostname = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
     return (
       url.protocol === "https:" &&
-      !new Set(["localhost", "127.0.0.1", "::1"]).has(url.hostname)
+      !new Set(["localhost", "127.0.0.1", "::1"]).has(hostname)
     );
   } catch {
     return false;
@@ -1363,8 +1365,11 @@ function addProductConfigProbeCheck(
     if ((probe.activeImageFreeplayTemplates ?? 0) < 1) {
       problems.push("no active image freeplay prompt template is configured");
     }
-    if ((probe.activeImagePricingRules ?? 0) < 1) {
-      problems.push("no active image pricing rule is configured");
+    if ((probe.activeImagePricingRules ?? 0) !== 1) {
+      problems.push("image pricing does not have exactly one active rule");
+    }
+    if ((probe.activeVoicePricingRules ?? 0) !== 1) {
+      problems.push("voice pricing does not have exactly one active rule");
     }
     if (
       (probe.publicCharacters ?? 0) > 0 &&
@@ -1383,8 +1388,8 @@ function addProductConfigProbeCheck(
       if ((probe.activeVideoFreeplayTemplates ?? 0) < 1) {
         problems.push("video_gen is enabled but no active video freeplay prompt template is configured");
       }
-      if ((probe.activeVideoPricingRules ?? 0) < 1) {
-        problems.push("video_gen is enabled but no active video pricing rule is configured");
+      if ((probe.activeVideoPricingRules ?? 0) !== 1) {
+        problems.push("video_gen is enabled but video pricing does not have exactly one active rule");
       }
     }
 
@@ -1492,13 +1497,13 @@ function addWebSurfaceProbeCheck(
   now: Date,
 ) {
   const problems: string[] = [];
-  const expectedMainUrl = env.MAIN_WEB_URL ?? env.BETTER_AUTH_URL;
+  const expectedMainUrl = env.MAIN_WEB_URL;
 
   if (!env.WEB_SURFACE_PROBE_REPORT) {
     problems.push("WEB_SURFACE_PROBE_REPORT is not set");
   }
-  if (!isUrl(expectedMainUrl)) {
-    problems.push("MAIN_WEB_URL or BETTER_AUTH_URL is missing or invalid");
+  if (!isPublicHttpsUrl(expectedMainUrl)) {
+    problems.push("MAIN_WEB_URL must be a public HTTPS URL");
   }
   if (!isUrl(env.ADMIN_WEB_URL)) {
     problems.push("ADMIN_WEB_URL is missing or invalid");
@@ -2434,6 +2439,10 @@ function normalizeProductConfigProbeEvidence(value: unknown): ProductConfigProbe
       typeof value.activeVideoPricingRules === "number"
         ? value.activeVideoPricingRules
         : undefined,
+    activeVoicePricingRules:
+      typeof value.activeVoicePricingRules === "number"
+        ? value.activeVoicePricingRules
+        : undefined,
     publicCharacters:
       typeof value.publicCharacters === "number" ? value.publicCharacters : undefined,
     publicCharactersWithSystemPrompt:
@@ -2663,6 +2672,19 @@ export function assessLaunchReadiness(
       ? "DATABASE_URL is a Postgres connection string."
       : "DATABASE_URL is missing or not Postgres.",
     remediation: "Set DATABASE_URL to the production Postgres pooled URL.",
+  });
+
+  addCheck(checks, {
+    id: "main-web-url",
+    area: "Runtime",
+    status: isPublicHttpsUrl(env.MAIN_WEB_URL)
+      ? "pass"
+      : "fail",
+    message: isPublicHttpsUrl(env.MAIN_WEB_URL)
+      ? "MAIN_WEB_URL resolves to a public HTTPS origin."
+      : "MAIN_WEB_URL is missing, non-HTTPS, localhost, or a placeholder.",
+    remediation:
+      "Set MAIN_WEB_URL to the public main-site origin, for example https://ourdream.ai.",
   });
 
   addCheck(checks, {

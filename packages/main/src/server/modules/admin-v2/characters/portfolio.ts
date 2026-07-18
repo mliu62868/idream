@@ -20,12 +20,21 @@ import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 import { effectiveCharacterIdsForPermission } from "@/server/admin/effective-permissions";
+import { operationalCharacterWhere } from "@/server/modules/admin/shared/metric-data-scope";
 import { toInputJson } from "../shared/prisma-json";
-import { evaluateCharacterPerformance } from "./performance";
+import {
+  characterReleaseContract,
+  characterReleasePlacements,
+} from "./character-release-contract";
+import {
+  completedUtcCharacterPerformanceWindow,
+  evaluateCharacterPerformance,
+  utcProductDayCeiling,
+} from "./performance";
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 
-function record(value: Prisma.JsonValue | null | undefined): Record<string, unknown> {
+function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
@@ -37,32 +46,6 @@ function strings(value: Prisma.JsonValue | null | undefined): string[] {
 
 function stringValue(value: unknown, fallback: string) {
   return typeof value === "string" && value.trim().length > 0 ? value : fallback;
-}
-
-function releasePlacements(release: { releasePlacementManifest: Prisma.JsonValue }) {
-  const root = record(release.releasePlacementManifest);
-  const raw = Array.isArray(release.releasePlacementManifest)
-    ? release.releasePlacementManifest
-    : Array.isArray(root.placements)
-      ? root.placements
-      : [];
-  return raw.flatMap((item) => {
-    const placement = record(item as Prisma.JsonValue);
-    const slotKey = typeof placement.slotKey === "string"
-      ? placement.slotKey
-      : typeof placement.placementId === "string"
-        ? placement.placementId
-        : null;
-    const assetId = typeof placement.assetId === "string" ? placement.assetId : null;
-    if (!slotKey || !assetId) return [];
-    return [{
-      slotKey,
-      slotVersion: typeof placement.slotVersion === "number" && placement.slotVersion > 0
-        ? Math.floor(placement.slotVersion)
-        : 1,
-      assetId,
-    }];
-  });
 }
 
 function projectDto(project: CharacterProject) {
@@ -85,40 +68,6 @@ function projectDto(project: CharacterProject) {
     version: project.version,
     createdAt: project.createdAt.toISOString(),
     updatedAt: project.updatedAt.toISOString(),
-  };
-}
-
-function releaseDto(release: CharacterRelease) {
-  const provenance = record(release.generationProvenance);
-  const placements = releasePlacements(release);
-  return {
-    id: release.id,
-    projectId: release.projectId,
-    revisionId: release.revisionId,
-    characterContentVersionId: release.characterContentVersionId,
-    visualIdentity: {
-      visualProfileId: release.visualProfileId ?? "unavailable",
-      visualProfileVersion: release.visualProfileVersion && release.visualProfileVersion > 0 ? release.visualProfileVersion : 1,
-      anchorAssetId: placements[0]?.assetId ?? "unavailable",
-      referenceSetRevisionId: release.referenceSetRevisionId ?? "unavailable",
-    },
-    generationRoute: {
-      generationProfileKey: stringValue(provenance.generationProfileKey, "unavailable"),
-      generationProfileVersion: stringValue(provenance.generationProfileVersion, "unavailable"),
-      workflowKey: stringValue(provenance.workflowKey, "unavailable"),
-      workflowVersion: stringValue(provenance.workflowVersion, "unavailable"),
-    },
-    releaseOwnedPlacements: placements,
-    snapshotHash: release.snapshotHash,
-    policyVersion: stringValue(provenance.policyVersion, "character-release-policy-v1"),
-    legacy: release.legacy,
-    status: release.status,
-    publishedAt: release.publishedAt?.toISOString() ?? null,
-    supersedesId: release.supersedesId,
-    rollbackOfReleaseId: release.rollbackOfReleaseId,
-    version: release.version,
-    createdAt: release.createdAt.toISOString(),
-    updatedAt: release.updatedAt.toISOString(),
   };
 }
 
@@ -151,8 +100,10 @@ async function performanceSummary(
     readonly asOf: Date;
   },
 ): Promise<CharacterPerformanceSummary> {
-  const days = input.window === "7d" ? 7 : 28;
-  const windowStart = new Date(input.asOf.getTime() - days * DAY_MS);
+  const reportingWindow = completedUtcCharacterPerformanceWindow({
+    asOf: input.asOf,
+    window: input.window,
+  });
   const placementWhere = input.placementId === null ? {} : { placementId: input.placementId };
   const [funnelRows, exposureRows, economicsRows, relevantCosts, projectedCosts] = await Promise.all([
     db.characterFunnelDaily.findMany({
@@ -163,7 +114,7 @@ async function performanceSummary(
         // Null is the canonical all-placement aggregate. Placement rows are
         // queried individually and must never be summed into it a second time.
         placementId: input.placementId,
-        productDay: { gte: windowStart, lt: input.asOf },
+        productDay: { gte: reportingWindow.start, lt: reportingWindow.end },
       },
     }),
     db.characterExposureFact.findMany({
@@ -173,9 +124,15 @@ async function performanceSummary(
         characterReleaseId: input.release.id,
         ...placementWhere,
         eligible: true,
-        occurredAt: { gte: windowStart, lt: input.asOf },
+        occurredAt: { gte: reportingWindow.start, lt: reportingWindow.end },
       },
-      select: { eventType: true, coverageState: true, occurredAt: true },
+      select: {
+        exposureId: true,
+        parentExposureId: true,
+        eventType: true,
+        coverageState: true,
+        occurredAt: true,
+      },
     }),
     db.characterEconomicsFact.findMany({
       where: {
@@ -183,7 +140,7 @@ async function performanceSummary(
         characterContentVersionId: input.release.characterContentVersionId,
         characterReleaseId: input.release.id,
         ...placementWhere,
-        occurredAt: { gte: windowStart, lt: input.asOf },
+        occurredAt: { gte: reportingWindow.start, lt: reportingWindow.end },
       },
     }),
     db.aiUsageFact.count({
@@ -196,7 +153,7 @@ async function performanceSummary(
         dataClass: "customer",
         trustClass: "canonical",
         actorIsInternal: false,
-        occurredAt: { gte: windowStart, lt: input.asOf },
+        occurredAt: { gte: reportingWindow.start, lt: reportingWindow.end },
       },
     }),
     db.characterEconomicsFact.count({
@@ -207,7 +164,7 @@ async function performanceSummary(
         authorityType: "ai_usage_fact",
         auditState: "audited",
         coverageState: "exact",
-        occurredAt: { gte: windowStart, lt: input.asOf },
+        occurredAt: { gte: reportingWindow.start, lt: reportingWindow.end },
       },
     }),
   ]);
@@ -217,7 +174,7 @@ async function performanceSummary(
     placementId: input.placementId,
     releasePublishedAt: input.release.publishedAt ?? input.release.createdAt,
     window: input.window,
-    asOf: input.asOf,
+    asOf: reportingWindow.end,
     funnelRows,
     exposureRows,
     economicsRows,
@@ -242,9 +199,13 @@ async function changeMarkers(
 ) {
   return Promise.all((["7d", "28d"] as const).map(async (window) => {
     const days = window === "7d" ? 7 : 28;
-    const currentMatureAt = new Date((current.publishedAt ?? current.createdAt).getTime() + days * DAY_MS);
+    const currentMatureAt = utcProductDayCeiling(
+      new Date((current.publishedAt ?? current.createdAt).getTime() + days * DAY_MS),
+    );
     const previousMatureAt = previous
-      ? new Date((previous.publishedAt ?? previous.createdAt).getTime() + days * DAY_MS)
+      ? utcProductDayCeiling(
+          new Date((previous.publishedAt ?? previous.createdAt).getTime() + days * DAY_MS),
+        )
       : null;
     const currentSummary = await performanceSummary(db, {
       characterId,
@@ -303,14 +264,14 @@ async function filteredCharacterIds(
   if (authorizedCharacterIds !== null) filters.push([...authorizedCharacterIds]);
   if (query.search) {
     filters.push((await db.character.findMany({
-      where: {
+      where: operationalCharacterWhere({
         deletedAt: null,
         OR: [
           { id: { contains: query.search, mode: "insensitive" } },
           { name: { contains: query.search, mode: "insensitive" } },
           { description: { contains: query.search, mode: "insensitive" } },
         ],
-      },
+      }),
       select: { id: true },
     })).map((row) => row.id));
   }
@@ -370,8 +331,17 @@ export async function listCharacterPortfolioData(
   const page = projects.slice(0, query.limit);
   const orphanProjectIds: string[] = [];
   const projectedItems = await Promise.all(page.map(async (project) => {
-    const [character, serving, latestDecision] = await Promise.all([
-      db.character.findUnique({ where: { id: project.characterId } }),
+    const [character, rawCharacter, serving, latestDecision] = await Promise.all([
+      db.character.findFirst({
+        where: operationalCharacterWhere({
+          id: project.characterId,
+          deletedAt: null,
+        }),
+      }),
+      db.character.findUnique({
+        where: { id: project.characterId },
+        select: { id: true },
+      }),
       db.characterServing.findUnique({ where: { characterId: project.characterId } }),
       db.decisionRecord.findFirst({
         where: { sourceType: "character_portfolio", sourceId: project.characterId },
@@ -379,7 +349,7 @@ export async function listCharacterPortfolioData(
       }),
     ]);
     if (!character) {
-      orphanProjectIds.push(project.id);
+      if (!rawCharacter) orphanProjectIds.push(project.id);
       return null;
     }
     const currentRelease = serving?.currentReleaseId
@@ -407,7 +377,7 @@ export async function listCharacterPortfolioData(
           })
       : null;
     const availablePlacements = currentRelease
-      ? [...new Set([null, ...releasePlacements(currentRelease).map((placement) => placement.slotKey)])]
+      ? [...new Set([null, ...characterReleasePlacements(currentRelease).map((placement) => placement.slotKey)])]
       : [];
     const placements = query.placementId
       ? availablePlacements.filter((placementId) => placementId === query.placementId)
@@ -444,8 +414,8 @@ export async function listCharacterPortfolioData(
         version: serving?.version ?? 0,
         updatedAt: (serving?.updatedAt ?? project.updatedAt).toISOString(),
       },
-      currentRelease: currentRelease ? releaseDto(currentRelease) : null,
-      candidateRelease: candidateRelease ? releaseDto(candidateRelease) : null,
+      currentRelease: currentRelease ? characterReleaseContract(currentRelease) : null,
+      candidateRelease: candidateRelease ? characterReleaseContract(candidateRelease) : null,
       readiness,
       verificationState: validation?.result === "passed" ? "passed" : validation ? "failed" : "pending",
       priority: readiness === "blocked" ? "urgent" : readiness === "stale" ? "high" : "normal",

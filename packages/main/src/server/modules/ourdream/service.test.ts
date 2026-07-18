@@ -1,9 +1,13 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { drainLocalAiPipeline } from "@/server/ai/local-pipeline";
+import {
+  publishCharacterForPublicAudience,
+  purgeTestData,
+} from "@/server/test/helpers";
 import { dispatchV1 } from "./service";
 
-const testEmail = "api-smoke@idream.local";
+const testEmail = "api-smoke@customer.invalid";
 const testCharacterId = "api-smoke-character";
 const testPlanId = "api-smoke-plan";
 
@@ -18,28 +22,16 @@ describe("ourdream API dispatcher", () => {
         displayName: "API Smoke Owner",
       },
     });
-    await prisma.mediaAsset.create({
-      data: {
-        id: "api-smoke-image",
-        ownerId: "api-smoke-owner",
-        type: "image",
-        url: "/images/ourdream/card-sarah-mercer.webp",
-        thumbnailUrl: "/images/ourdream/card-sarah-mercer.webp",
-        visibility: "public_pack",
-        safetyStatus: "passed",
-        metadata: {},
-      },
-    });
     await prisma.character.create({
       data: {
         id: testCharacterId,
         creatorId: "api-smoke-owner",
+        source: "official",
         name: "API Smoke Character",
         age: 24,
         description: "A seeded public character for API tests.",
         visibility: "public",
         status: "approved",
-        imageAssetId: "api-smoke-image",
         appearance: {},
         advancedDetails: {},
       },
@@ -50,6 +42,29 @@ describe("ourdream API dispatcher", () => {
         likesCount: 10,
         chatsCount: 20,
       },
+    });
+    await prisma.characterVisualProfile.create({
+      data: {
+        id: "api-smoke-bootstrap-visual-profile",
+        characterId: testCharacterId,
+        version: 1,
+        status: "active",
+        style: "realistic",
+        identityPrompt: "API Smoke Character, adult woman",
+        faceTraits: {},
+        hairTraits: {},
+        bodyTraits: {},
+        signatureTraits: {},
+        styleTraits: {},
+        anchorAssetIds: [],
+        referenceAssetIds: [],
+        adapterRefs: {},
+        createdFrom: "generation_bootstrap:test",
+      },
+    });
+    await publishCharacterForPublicAudience({
+      characterId: testCharacterId,
+      ownerId: "api-smoke-owner",
     });
     await prisma.plan.create({
       data: {
@@ -91,8 +106,12 @@ describe("ourdream API dispatcher", () => {
         items: expect.arrayContaining([
           expect.objectContaining({
             id: testCharacterId,
-            creator: "API Smoke Owner",
-            creatorName: "API Smoke Owner",
+            source: "official",
+            creatorType: "official",
+            creatorId: null,
+            creator: "Official",
+            creatorName: "Official",
+            canEditIdentity: false,
           }),
         ]),
       },
@@ -132,7 +151,10 @@ describe("ourdream API dispatcher", () => {
       "POST",
       "/billing/checkout",
       { planId: testPlanId, autoConfirm: true },
-      { cookie: cookies },
+      {
+        cookie: cookies,
+        "idempotency-key": "api-smoke-checkout-key",
+      },
     );
     expect(checkout.status).toBe(200);
     const activeSubscription = await prisma.subscription.findFirstOrThrow({
@@ -170,7 +192,7 @@ describe("ourdream API dispatcher", () => {
       },
     });
     const generationBody = generation.json as { data: { job: { id: string } } };
-    await drainLocalAiPipeline({ limit: 8, workerId: "service-smoke-worker" });
+    await drainGenerationToCompletion(generationBody.data.job.id);
     const poll = await call(
       "GET",
       `/generation/jobs/${generationBody.data.job.id}`,
@@ -186,6 +208,28 @@ describe("ourdream API dispatcher", () => {
     });
   });
 });
+
+async function drainGenerationToCompletion(jobId: string) {
+  for (let pass = 0; pass < 12; pass += 1) {
+    await drainLocalAiPipeline({
+      limit: 8,
+      workerId: `service-smoke-worker-${pass}`,
+    });
+    const job = await prisma.generationJob.findUnique({
+      where: { id: jobId },
+      select: { status: true },
+    });
+    if (job?.status === "completed") return;
+    if (job && ["blocked", "cancelled", "failed", "refunded"].includes(job.status)) {
+      throw new Error(`Generation ${jobId} terminated as ${job.status}`);
+    }
+  }
+  const job = await prisma.generationJob.findUnique({
+    where: { id: jobId },
+    select: { status: true },
+  });
+  throw new Error(`Generation ${jobId} did not complete; final status=${job?.status ?? "missing"}`);
+}
 
 async function call(
   method: string,
@@ -218,6 +262,10 @@ function cookieHeader(setCookies: string[]) {
 }
 
 async function cleanup() {
+  // The signup user's id is generated, so match its `api-smoke@…` email as
+  // well as the deterministic `api-smoke-*` fixture ids. This deletes that
+  // user's cascading Subscription before purge removes the prefixed Plan.
+  await purgeTestData("api-smoke");
   const users = await prisma.user.findMany({
     where: { email: { in: [testEmail, "api-smoke-owner@idream.local"] } },
     select: { id: true },

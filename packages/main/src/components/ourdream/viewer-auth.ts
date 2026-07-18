@@ -1,17 +1,9 @@
+import { parseViewerAuthorityResponse } from "@/lib/public-api-contracts";
+
 export type ViewerFetcher = (
   input: RequestInfo | URL,
   init?: RequestInit,
 ) => Promise<Response>;
-
-type ViewerAuthorityPayload = {
-  ok?: boolean;
-  data?: {
-    user?: unknown | null;
-  };
-  error?: {
-    message?: string;
-  };
-};
 
 export type ProtectedViewerResponse =
   | { viewer: "anonymous"; response: null }
@@ -23,34 +15,32 @@ export async function fetchProtectedForViewer(
   fetcher: ViewerFetcher = fetch,
 ): Promise<ProtectedViewerResponse> {
   const viewerResponse = await fetcher("/api/v1/me", { cache: "no-store" });
-  const viewerPayload = (await viewerResponse.json().catch(() => null)) as
-    | ViewerAuthorityPayload
-    | null;
-
-  if (
-    !viewerResponse.ok ||
-    viewerPayload?.ok === false ||
-    !viewerPayload?.data ||
-    !Object.hasOwn(viewerPayload.data, "user")
-  ) {
+  const raw = await viewerResponse.json().catch(() => null);
+  if (!viewerResponse.ok) {
     throw new Error(
-      viewerPayload?.error?.message ?? "Viewer authority could not load.",
+      apiErrorMessage(raw) ?? "Viewer authority could not load.",
     );
   }
+  const viewerPayload = parseViewerAuthorityResponse(raw);
 
-  if (viewerPayload.data.user === null) {
+  if (viewerPayload.user === null) {
     return { viewer: "anonymous", response: null };
-  }
-
-  if (
-    typeof viewerPayload.data.user !== "object" ||
-    Array.isArray(viewerPayload.data.user)
-  ) {
-    throw new Error("Viewer authority was incomplete.");
   }
 
   return {
     viewer: "authenticated",
     response: await fetcher(protectedPath, init),
   };
+}
+
+function apiErrorMessage(payload: unknown) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return undefined;
+  }
+  const error = (payload as Record<string, unknown>).error;
+  if (!error || typeof error !== "object" || Array.isArray(error)) {
+    return undefined;
+  }
+  const message = (error as Record<string, unknown>).message;
+  return typeof message === "string" ? message : undefined;
 }

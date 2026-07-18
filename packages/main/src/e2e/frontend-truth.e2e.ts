@@ -1,5 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
 
+const publishedCharacterStripPath = "/resources-hub";
+const publishedComparisonPath = "/comparison";
+
 async function acceptAgeGate(page: Page) {
   const baseURL = test.info().project.use.baseURL;
   if (typeof baseURL !== "string") {
@@ -84,7 +87,14 @@ test("chat start panel shows at most three characters from the public catalog", 
 
   await page.goto("/chat");
 
-  await expect(page.getByRole("heading", { name: "No chats yet" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Your chats", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page
+      .getByTestId("chat-hub-auth-required")
+      .getByRole("heading", { name: "Sign in to see your chats" }),
+  ).toBeVisible();
   const featuredCards = page.getByTestId("chat-hub-character-card");
   await expect(featuredCards).toHaveCount(3);
   await expect(featuredCards.nth(0)).toContainText("Authority One");
@@ -121,7 +131,11 @@ test("chat start panel exposes a loading state without blocking sessions", async
 
   await page.goto("/chat");
 
-  await expect(page.getByRole("heading", { name: "No chats yet" })).toBeVisible();
+  await expect(
+    page
+      .getByTestId("chat-hub-auth-required")
+      .getByRole("heading", { name: "Sign in to see your chats" }),
+  ).toBeVisible();
   await expect(page.getByTestId("chat-hub-featured-status")).toHaveText(
     "Loading featured characters...",
   );
@@ -153,14 +167,18 @@ test("chat start panel explains when the public catalog is empty", async ({
 
   await page.goto("/chat");
 
-  await expect(page.getByRole("heading", { name: "No chats yet" })).toBeVisible();
+  await expect(
+    page
+      .getByTestId("chat-hub-auth-required")
+      .getByRole("heading", { name: "Sign in to see your chats" }),
+  ).toBeVisible();
   await expect(page.getByTestId("chat-hub-featured-status")).toHaveText(
     "No public characters are available yet.",
   );
   await expect(page.getByTestId("chat-hub-character-card")).toHaveCount(0);
 });
 
-test("chat sessions remain usable when featured characters cannot load", async ({
+test("chat start actions remain usable when featured characters cannot load", async ({
   page,
 }) => {
   await acceptAgeGate(page);
@@ -183,7 +201,11 @@ test("chat sessions remain usable when featured characters cannot load", async (
 
   await page.goto("/chat");
 
-  await expect(page.getByRole("heading", { name: "No chats yet" })).toBeVisible();
+  await expect(
+    page
+      .getByTestId("chat-hub-auth-required")
+      .getByRole("heading", { name: "Sign in to see your chats" }),
+  ).toBeVisible();
   await expect(page.getByTestId("chat-hub-featured-status")).toHaveText(
     "Featured characters are temporarily unavailable.",
   );
@@ -194,7 +216,7 @@ test("chat sessions remain usable when featured characters cannot load", async (
   ).toBeVisible();
 });
 
-test("marketing character strip renders only public catalog results", async ({
+test("published resource hub character strip renders only public catalog results", async ({
   page,
 }) => {
   await acceptAgeGate(page);
@@ -217,7 +239,8 @@ test("marketing character strip renders only public catalog results", async ({
     });
   });
 
-  await page.goto("/ai-girl");
+  const response = await page.goto(publishedCharacterStripPath);
+  expect(response?.status()).toBe(200);
 
   const characterCards = page.getByTestId("public-character-strip-card");
   await expect(characterCards).toHaveCount(4);
@@ -228,7 +251,7 @@ test("marketing character strip renders only public catalog results", async ({
   await expect(page.getByText("Strip Five", { exact: true })).toHaveCount(0);
 });
 
-test("marketing pages keep a useful next step when the public catalog is empty", async ({
+test("published resource hub keeps a useful next step when the public catalog is empty", async ({
   page,
 }) => {
   await acceptAgeGate(page);
@@ -242,7 +265,8 @@ test("marketing pages keep a useful next step when the public catalog is empty",
     });
   });
 
-  await page.goto("/ai-girl");
+  const response = await page.goto(publishedCharacterStripPath);
+  expect(response?.status()).toBe(200);
 
   await expect(page.getByTestId("public-character-strip-status")).toContainText(
     "The public showcase is being curated",
@@ -254,7 +278,7 @@ test("marketing pages keep a useful next step when the public catalog is empty",
   ).toHaveAttribute("href", "/create");
 });
 
-test("marketing pages keep their calls to action when the catalog is unavailable", async ({
+test("published resource hub keeps its calls to action when the catalog is unavailable", async ({
   page,
 }) => {
   await acceptAgeGate(page);
@@ -269,7 +293,8 @@ test("marketing pages keep their calls to action when the catalog is unavailable
     });
   });
 
-  await page.goto("/ai-girl");
+  const response = await page.goto(publishedCharacterStripPath);
+  expect(response?.status()).toBe(200);
 
   await expect(page.getByTestId("public-character-strip-status")).toContainText(
     "Character showcase is temporarily unavailable",
@@ -299,6 +324,7 @@ test("comparison plan snapshot reflects only the plans authority", async ({
               billingPeriod: "monthly",
               priceCents: 1234,
               includedDreamcoins: 321,
+              features: {},
             },
             {
               id: "plan-honest-max",
@@ -307,14 +333,23 @@ test("comparison plan snapshot reflects only the plans authority", async ({
               billingPeriod: "yearly",
               priceCents: 9876,
               includedDreamcoins: 6543,
+              features: {},
             },
           ],
+          billing: {
+            provider: "mock",
+            demoMode: true,
+            autoConfirmAvailable: true,
+            billingModel: "prepaid_period",
+            renewalCapability: "none",
+          },
         },
       }),
     });
   });
 
-  await page.goto("/comparison/character-ai-alternative");
+  const response = await page.goto(publishedComparisonPath);
+  expect(response?.status()).toBe(200);
 
   const planCards = page.getByTestId("comparison-plan-card");
   await expect(planCards).toHaveCount(2);
@@ -341,12 +376,22 @@ test("comparison page stays useful when no plans are available", async ({
       contentType: "application/json",
       body: JSON.stringify({
         ok: true,
-        data: { items: [] },
+        data: {
+          items: [],
+          billing: {
+            provider: "mock",
+            demoMode: true,
+            autoConfirmAvailable: true,
+            billingModel: "prepaid_period",
+            renewalCapability: "none",
+          },
+        },
       }),
     });
   });
 
-  await page.goto("/comparison/character-ai-alternative");
+  const response = await page.goto(publishedComparisonPath);
+  expect(response?.status()).toBe(200);
 
   await expect(page.getByTestId("comparison-plans-status")).toContainText(
     "No upgrade plans are available right now.",
@@ -373,7 +418,8 @@ test("comparison page keeps a truthful fallback when plans cannot load", async (
     });
   });
 
-  await page.goto("/comparison/character-ai-alternative");
+  const response = await page.goto(publishedComparisonPath);
+  expect(response?.status()).toBe(200);
 
   await expect(page.getByTestId("comparison-plans-status")).toContainText(
     "Plan details are temporarily unavailable.",
@@ -392,7 +438,9 @@ function publicCharacter(id: string, title: string, chats: string) {
     age: "25",
     description: `${title} description`,
     likes: "12",
+    likesCount: 12,
     chats,
+    chatsCount: Number(chats),
     creator: "Public Creator",
     creatorId: "public-creator",
     creatorName: "Public Creator",

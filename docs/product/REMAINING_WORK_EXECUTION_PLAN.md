@@ -1,6 +1,6 @@
 # iDream Remaining Work Execution Plan
 
-Updated: 2026-07-11
+Updated: 2026-07-17
 
 ## Current State
 
@@ -14,15 +14,33 @@ Use these documents as the current source of truth:
 - `docs/product-audits/current-implementation/pm-audit.md`: PM/UX gaps.
 - `docs/product/ADMIN_CONSOLE_FIRST_PRINCIPLES_REMEDIATION_PLAN.md`: management-console correctness, operating model, migration gates, and 90-day remediation sequence.
 
+### 2026-07-17 current local truth
+
+The code-owned controlled-beta gates are complete on the 2026-07-17 local revision: database/data authority, the full test suite, lint, typecheck, production build, fresh focused Playwright, PM2, HTTP/product probes, Chat, and the local ComfyUI reference routes all have same-day evidence. This is a local controlled-beta conclusion, not a public-launch claim.
+
+- The recovered development database now has a repository-local ignored recovery copy at `.tmp/backups/idream-main-health-20260717.dump`; SHA-256 is `b0b0900c498a778cebd54da7a6c43a53492a168a537b50ed59b6fe6d09e10e1e`, and the custom archive completed a full restore into a disposable PostgreSQL database with matching migration and business counts.
+- All 51 Main migrations pass fresh replay, existing-snapshot upgrade, repeat deploy, application rollback/forward-fix rehearsal, current deploy/status, and zero drift.
+- Current Main DB truth is 19 users; 16 characters, official characters, public-approved characters, bound image assets, ready editorial-import Releases, live Servings, and active qualifications; 3 official collections; 169 RoutePages; 3 feedback items; zero character likes, media likes, follows, and open repairs; 13 functions; and 27 triggers. `Release.legacy=true` is an editorial-import discriminator, not legacy serving authority.
+- Real engagement remains empty. Product surfaces use taskful empty states and never seed likes, follows, chats, revenue, retention, or other “realistic” metrics. Curated official editorial supply remains separate from user history and counters.
+- Generate contract parsing, request-scoped stale authority, fail-closed source/profile capability handling, and retry recovery are repaired. Dynamic character metadata now reads the character SSoT while preserving the established `noindex` rule.
+- Every protected Admin v2 operation now authenticates before body parsing or data access; the authority execution matrix locks unauthenticated requests to 401. Prisma 7 `P2034` and adapter-pg `TransactionWriteConflict` are classified through one serializable-conflict seam; atomic idempotent mutations retry at most three times and concurrent reconciliation/mutation regressions prove convergence to one tombstone or committed result.
+- Chat boundary SQL passed two consecutive idempotent applications. The final postfix signed-BFF probe on the standard PM2 Chat instance, `.tmp/final-chat-service-postfix.json`, completed with `ok=true` in `12.852s`: health 200, signed sessions 200/3, unsigned 401, create 201, send 202, SSE `start/delta/done`, reloaded assistant `sent`, no-memory 202, and blocked 202.
+- Four ComfyUI workflows are visible after sync/readback (`qwen-image-edit-img2img`, `qwen-image-edit-multi-identity`, `qwen-image-edit-multi-reference`, `redcraft-krea2-txt2img`), with successful single-reference, dual-identity, and identity-plus-source artifacts. These are local runtime proofs, not publish qualification or production-capacity evidence.
+- The final full suite passed: Shared `34 files / 168 tests`, Gen `14 / 117`, Admin `87 / 377`, Chat `25 / 190`, and Main `205 passed files + 2 skipped files / 1,405 passed + 3 skipped tests`; the root run completed `6/6 tasks` in `2m24.184s`. Root lint passed `2/2` with no warnings, typecheck passed `6/6`, and the final production build passed `5/5` in `17.027s`.
+- Fresh focused Playwright passed `2/2` in `28.9s`: age gate → Explore → character detail, and truthful Generator config failure → Retry recovery. `IDREAM_NEXT_DIST_DIR` now isolates Main/Admin Next distDir by Playwright port so the run can coexist with another Codex Next dev; the environment unit regression passed `6/6`.
+- Final PM2 state was 8 instances online with restart 0: `main-web`, `admin-web`, `chat`, two `gen-image` workers, `gen-finalizer`, `main-event-consumer`, and `admin-command-worker`. An old task-owned PM2 orphan Chat on port 3100 was precisely removed; the final observation showed Chat stable for 4 minutes and the other instances stable for 6 minutes, all with restart 0, while `/healthz` returned 200 with `Cache-Control` containing `private, no-store`.
+- Live web probes passed: `/` and `/generate` returned 200, the unauthorized age API path returned the expected 403, protected Admin UI returned 200, and unauthenticated Admin API returned 401. Catalog truth was `16 characters / 3 collections / 1 creator / 3 feedback / 16 distinct images / 0 issues`; product config was `5 image profiles / 1 template / 1 freeplay / 1 pricing`, with 16 public characters/prompts. The Chat model report remains same-day passing evidence.
+- Production providers, production canaries, production data backfills, and public-launch readiness remain `NOT_EVALUATED`.
+
 The 2026-07-11 Admin correctness review found that several Admin surfaces were interactively covered without certified state/metric semantics. The local implementation now closes the principal code-owned authority paths: shared v2 contracts/permissions; source-decoupled fail-closed Admin BFF; reconstructable Today/search/SavedViews plus pageable All Work; official Character creation and immutable Release/Serving/Visual Qualification lifecycle; Creative direction snapshots/review/placement with end-to-end lineage; Generation Request/Attempt/Transport/Artifact/Delivery/Settlement, provider-native cost facts and idempotent cancellation; Incident detect/assign/action/verify/split/merge/postmortem-close with versioned correlation policy; typed Case wait/reopen/recurrence and Incident linking; Customer 360; monotonic Chat correction facts; canonical events/facts/metrics/experiments; atomic approval/Command/Audit/Outbox; database-enforced immutable evidence; executable §19.4 reconciliation and SLO readiness; and independent Next 16 Admin routes with an accessible responsive shell. Incident, Customer Case, and Review Case now share one durable production backfill runner/CLI with persisted pause/resume, crash continuation, idempotent rerun, and mismatch-failing reports; this closes the code-owned execution seam only, while running it against a dedicated production snapshot and proving zero mismatches remain external Gate evidence. The schema-v5 final Gate now requires immutable digested artifacts signed by trusted collectors, independent role-bound Product/Engineering/Release approvals of one canonical digest, a final release envelope, fixed representative read/write canaries with Command/Audit/Outbox authority, two zero-legacy cycles and the mature observation window. Data/Design/Operations remain mandatory Gate contributors through the evidence they own and may add optional role attestations; they are not extra final Go approvers. Trust comes only from an external public-key registry; release-key possession alone cannot create collector or DRI authority. Remaining work is external/production evidence and authority: provision the release, collector and three required DRI key pairs plus independent trust registry outside the repository; run the production backfills and reach zero-mismatch shadow on a dedicated snapshot; establish real Character/exposure/journey/D7 and payment attribution coverage; ingest provider-native dispute facts; mature canonical experiment guardrails across two shadow windows; execute and immutably collect production browser/API and fixed read/write canaries; reach legacy traffic zero; sustain the error-budget observation window; collect the Data/Design/Operations Gate results; and obtain Product/Engineering/Release approval. Local code, fixture data, unsigned manifests, one-time smoke results, or release-key-only envelopes must not be counted as final cutover. The remediation plan above remains the execution SSoT.
 
 Local Admin closure inventory on 2026-07-12: 76 v2 route files expose exactly 84 HTTP operations; 130/130 unique request/response refs are executable with pending=0; 55/55 mutations have declared idempotency or optimistic-concurrency transport with pending=0. The BFF validates every successful v2 response against that manifest in the serving path. Phase 5 catch-alls are reduced to a 983-line frontend shell and 494-line main route table. These are code-owned completion facts, not production Go evidence.
 
-Current launch gate in the current non-production shell: `7 pass / 50 fail / 2 warn`.
+Historical launch-gate snapshot from 2026-07-11: `7 pass / 50 fail / 2 warn`.
 
-That failure is expected while the deferred production providers below remain out of scope. The additional 2026-07-04 failure is the stricter `PUBLIC_CATALOG_PROBE_REPORT` requirement in the current shell; the fresh catalog probe itself passes and is saved in `docs/product-audits/2026-07-04-launch-catalog-gate-audit/public-catalog-probe.json`.
+That historical failure was expected while the deferred production providers below remained out of scope. The additional 2026-07-04 failure was the stricter `PUBLIC_CATALOG_PROBE_REPORT` requirement; its catalog report is retained at `docs/product-audits/2026-07-04-launch-catalog-gate-audit/public-catalog-probe.json` and is not presented as a current launch verdict.
 
-Latest current-state product proof on 2026-07-05:
+Historical product/browser evidence snapshot from 2026-07-05:
 
 - Core Playwright E2E: `flows.e2e.ts` passed `9/9`.
 - Current full Playwright E2E: `PW_WEBSERVER=1 PW_BASE_URL=http://127.0.0.1:3214 PW_ADMIN_BASE_URL=http://127.0.0.1:3006 BULLMQ_PREFIX=idream:e2e:3214-full bun --cwd packages/main playwright test src/e2e` passed `137/137`.
@@ -58,12 +76,12 @@ Latest current-state product proof on 2026-07-05:
 - Evidence: `docs/product-audits/2026-07-05-age-gate-status-audit/`.
 - Article content route proof: guide routes now render data-driven readable sections and a real FAQ target instead of repeating one generic paragraph across Overview/How it works/Best practices. Focused Playwright verified `/guides/character-cards` specific intro/body/FAQ copy, `FAQ -> #faq`, no old repeated template paragraph, no overflow, and no console warnings/errors.
 - Evidence: `docs/product-audits/2026-07-04-article-content-routes-audit/`.
-- Comparison route content proof: comparison pages now render a decision checklist, image-generation/tooling comparison, Free/Premium/Deluxe price and entitlement snapshot, and explicit conversion CTAs instead of repeated generic feature cards. Focused E2E verified `/comparison/character-ai-alternative` feature/pricing copy and CTA hrefs; Playwright screenshot/evidence verified no overflow and no console warnings/errors.
-- Evidence: `docs/product-audits/2026-07-04-comparison-route-content-audit/`.
+- Comparison route authority: the dedicated `/comparison` product page remains available. The earlier `/comparison/character-ai-alternative` template proof is historical only; that inventory path is no longer treated as authored content and now returns 404 until an explicit CMS version is published.
+- Historical evidence: `docs/product-audits/2026-07-04-comparison-route-content-audit/`.
 - Resources Hub readable card proof: `/resources-hub` now sources card titles/descriptions from route metadata instead of path suffixes, so visible cards show readable titles like `How To Use Character AI` and no raw slug copy like `how-to-use-character-ai`. Focused E2E and Playwright evidence verified readable copy, no overflow, and no console warnings/errors.
 - Evidence: `docs/product-audits/2026-07-04-resources-hub-readable-cards-audit/`.
-- Library curated route proof: `/games` and `/romantasy` no longer render an empty card grid when there is no child-path prefix. They now expose curated cards backed by existing catalog routes, and focused E2E/Playwright evidence verifies visible cards, no overflow, and no console warnings/errors.
-- Evidence: `docs/product-audits/2026-07-04-library-curated-route-cards-audit/`.
+- Library route authority: the earlier `/games` and `/romantasy` curated-template proof is historical only. Route inventory is not publication authority; those generic paths now return 404 until dedicated content or an explicit CMS version exists.
+- Historical evidence: `docs/product-audits/2026-07-04-library-curated-route-cards-audit/`.
 - Chat hub entry proof: `/chat` remains the real session hub, but signed-in empty and signed-out states now include a `Start a conversation` rail with three real character routes plus Explore/Create actions. Focused E2E verified signup return and card/action hrefs; Chrome verified signed-in empty, signed-out, and featured-character handoff states with console warnings/errors `[]`.
 - Evidence: `docs/product-audits/2026-07-04-chat-hub-entry-rail-audit/`.
 - Chat composer empty-send proof: Chrome first reproduced that an empty composer exposed an enabled `Send message` button with no visible feedback; the fixed state keeps empty and whitespace-only drafts disabled and enables Send only after real text. Focused chat E2E now locks empty/whitespace disabled, typed enabled, send/report/reply/reload persistence, and Chrome post-fix console warnings/errors are `[]`.
@@ -88,7 +106,7 @@ Latest current-state product proof on 2026-07-05:
 - Evidence: `docs/product-audits/2026-07-05-chat-image-current-audit/`.
 - Profile account-management proof: Chrome verified signup return to `/profile/account-management`, sign-out-all returning to `/login`, destructive delete disabled until exact `DELETE`, wrong confirmation staying disabled, account deletion returning to `/login`, deleted-account credential login blocked with an assertive auth alert, browser warning/error logs `[]`, DB terminal state, and fixture cleanup.
 - Evidence: `docs/product-audits/2026-07-05-profile-account-management-current-audit/`.
-- Upgrade billing proof: Chrome verified signup return into `/upgrade?plan=premium&billing=monthly&returnTo=/profile%23billing`, Premium monthly demo activation, polite checkout status, `View billing` to `/profile#billing`, active Profile billing card, renewal cancel/resume while current-period benefits remain active, Manage feedback, browser warning/error logs `[]`, DB subscription/ledger/analytics terminal state, and fixture cleanup.
+- Upgrade billing proof: Chrome verified signup return into `/upgrade?plan=premium&billing=monthly&returnTo=/profile%23billing`, Premium monthly demo activation, polite checkout status, `View billing` to `/profile#billing`, active Profile billing card with `benefitsEndAt` and explicit no-automatic-renewal copy, no cancel/resume/manage controls for prepaid providers, browser warning/error logs `[]`, DB subscription/ledger/analytics terminal state, and fixture cleanup.
 - Evidence: `docs/product-audits/2026-07-05-upgrade-billing-current-audit/`.
 - Character detail status proof: Chrome first reproduced that signed-in `Like` success feedback on `/characters/melissa-burke` was visible but had no live status semantics or stable test id; the fixed state exposes `Character liked.` as `role="status"` with `aria-live="polite"` and `data-testid="character-detail-status"`. Focused Character detail Like E2E now locks those attributes, and Chrome post-fix console warnings/errors are `[]`.
 - Evidence: `docs/product-audits/2026-07-05-character-detail-status-audit/`.
@@ -106,7 +124,7 @@ Current internal Pipeline probe:
 bun run launch:probe:pipeline
 ```
 
-Latest local result on 2026-06-30:
+Historical local result from 2026-06-30:
 
 - web surface: pass.
 - product config: pass.
@@ -129,6 +147,12 @@ Latest local result on 2026-06-30:
   machine, so it is not the active smoke path. MOSS-TTS v1.5 remains the target
   for product-quality voice; use `PIPELINE_VOICE_API_URL` for the MOSS endpoint
   when that runner is available.
+
+Current 2026-07-17 runtime supplement:
+
+- Chat boundary SQL is double-application idempotent, and the signed-BFF live SSE probe passes through DB-finalized `done` and reload.
+- ComfyUI sync/readback exposes four iDream workflows. The successful artifacts are `/private/tmp/idream-qwen-img2img-smoke.png` (SHA-256 `3e0bdfa40aa9f70fa7c6fbaeb38f360254c89febf31988221ae2ef2b54fc5ea5`), `/private/tmp/idream-qwen-multi-identity-smoke/sample-01.png` (SHA-256 `965c9f20dd71cd294429bc7c87e940328d441fd48380599aee533343162cb512`), and `/private/tmp/idream-qwen-identity-source-smoke.png` (SHA-256 `b2361c115cf2b8351303cc468d82661f0a40074bee4b026927bcf4e9a889d6e5`), each 832×1216.
+- Descriptor validation, ComfyUI visibility, artifact execution, profile publish qualification, and production capacity are distinct gates; no local smoke substitutes for the latter two.
 
 ## Deferred External Provider Decision
 
@@ -259,7 +283,7 @@ Required work:
 
 - Add a catalog health probe that fails on e2e/test fixture content in public characters, dreamers, public collections, and media. **Status: implemented as `@idream/main probe:catalog`; 2026-07-04 hardening added public media collections and manual Chrome/Playwright audit markers.**
 - Separate test fixtures from demo/seed content.
-- Provide a production seed/import path with curated characters and realistic metrics.
+- Provide an idempotent editorial import path for curated official characters, assets, Releases, Servings, and qualifications. Metrics must remain real authority facts or taskful empty states; never seed “realistic” engagement.
 - Add a cleanup runbook for preview/demo DBs polluted by e2e data.
 
 Acceptance:
@@ -270,22 +294,23 @@ bun run --filter @idream/main probe:catalog -- --report .tmp/public-catalog-prob
 
 The probe must pass before customer-facing demos or launch.
 
-Latest local result on 2026-07-04 after removing the exact manual Chrome audit public collection:
+Current local catalog/data result on 2026-07-17; the 2026-07-04 browser cleanup below is retained only as historical evidence:
 
 - `ok=true`
 - `publicCharacters=16`
 - `publicCollections=3`
-- `publicCreators=13`
+- `publicCreators=1` (system/editorial identity)
+- `publicFeedback=3`
 - `distinctImages=16`
+- `excluded=0`
 - `issueTotals.fail=0`
 - `issueTotals.warn=0`
 
-The earlier PM audit finding about demo data polluted by e2e/test fixtures is resolved
-for the current local dataset, and the 2026-07-04 post-E2E audit proved the
-probe now catches manual browser audit residue in public Feed/Community
-collections. Keep `db:seed` + catalog probe in the pre-demo checklist so future
-seed/test-data drift is caught before customer-facing walkthroughs. Latest
-report: `docs/product-audits/2026-07-04-public-catalog-post-e2e-cleanliness-audit/catalog-probe-after-cleanup.json`.
+The current dataset contains curated official supply but zero fabricated interaction.
+The historical 2026-07-04 post-E2E audit proved the probe catches manual browser
+residue in public Feed/Community collections. Keep the catalog probe in the pre-demo
+checklist so future seed/test-data drift is caught before customer-facing walkthroughs.
+Historical report: `docs/product-audits/2026-07-04-public-catalog-post-e2e-cleanliness-audit/catalog-probe-after-cleanup.json`.
 
 ### C. Create Experience Depth — ✅ 已落地（2026-06-28）
 
@@ -375,20 +400,20 @@ Acceptance:
 - Official characters expose active/missing identity state and version CVP on identity edits. **Covered by `official.test.ts`.**
 - A 20-image manual smoke for a demo character reaches at least 80% "same character" judgment in Balanced mode. **Covered for Redcraft locked-seed Balanced: 17/20, 85%. Strict-vs-Balanced comparison remains future profile tuning rather than an internal beta blocker.**
 
-### E. Billing And Entitlements — ✅ local portal behavior landed (2026-06-29)
+### E. Billing And Entitlements — ✅ prepaid access authority landed
 
 Owner: backend/ops.
 
-Goal: keep local entitlement behavior coherent for demos. Real payment provider work is deferred.
+Goal: keep purchased access, entitlements, ledger and public billing copy on one
+immutable purchase authority.
 
-Landed for local/internal beta: Profile now distinguishes free vs active billing states.
-Inactive users get a Compare plans path; active users see plan + renewal date and can
-cancel or resume renewal without losing current-period entitlements. API coverage:
-`billing/portal`, `billing/cancel`, and `billing/resume`; E2E covers the free and
-Premium profile states. Real payment-provider portal behavior remains future
-public-launch work.
+Current providers sell one-time monthly/yearly prepaid access and advertise no
+automatic renewal. Profile distinguishes free vs active access, shows the purchased
+offer and `benefitsEndAt`, and offers Change plan / repurchase without exposing
+Manage, Cancel renewal or Resume renewal controls. The cancel/resume endpoints fail
+closed for providers whose `renewalCapability` is `none`.
 
-Also landed on 2026-06-29: local/mock checkout is explicitly labeled as demo-only in
+Local/mock checkout is explicitly labeled as demo-only in
 Upgrade (`Demo checkout`, `Demo upgrade`, and "No real payment is collected").
 The server gates checkout auto-confirm to `PAYMENT_PROVIDER=mock`; non-auto-confirm
 checkout creates an invoice/checkout URL without activating a subscription or
@@ -396,16 +421,16 @@ granting dreamcoins.
 
 Required work:
 
-- Keep BTCPay checkout creation and webhook settlement in the future public-launch checklist.
 - Remove or hide auto-confirm checkout before any external beta or public traffic. **Status: auto-confirm is now mock-provider-only and presented as demo behavior.**
-- Confirm entitlement derivation and dreamcoin grant idempotency. **Status: covered.**
-- Add billing portal behavior for active/inactive subscriptions. **Status: local/mock behavior covered.**
+- Confirm settlement, entitlement derivation and dreamcoin grant idempotency from the immutable offer snapshot. **Status: covered.**
+- Keep late or replayed invoices monotonic: they cannot shorten or downgrade newer paid access. **Status: covered by billing integration regression.**
+- Add billing access projection for active/inactive prepaid purchases. **Status: covered.**
 
 Acceptance:
 
 - Local/mock checkout remains clearly marked as demo-only. **Status: covered.**
 - Profile reflects plan and dreamcoin balance. **Status: covered.**
-- Profile reflects inactive billing, active renewal date, cancel-at-period-end, and resume-renewal states. **Status: covered.**
+- Profile reflects inactive billing or active prepaid `benefitsEndAt`, explicitly says there is no automatic renewal, and omits renewal-management controls. **Status: covered.**
 - Entitlement derivation and dreamcoin grant behavior remain idempotent in tests. **Status: covered.**
 - Auto-confirm checkout is not presented as production behavior. **Status: covered for current mock/local mode.**
 

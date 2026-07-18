@@ -3,12 +3,13 @@
 // locally, then in ONE transaction writes user msg(sent) + assistant
 // placeholder(pending) + bumps session; chat.generate owns pending→generating.
 // {assistantMessageId, streamUrl}. NO synchronous generation in the request.
+import { createHash } from "node:crypto";
 import type { ChatPrismaClient } from "./db.js";
 import type { Prisma } from "../generated/client/client.js";
 import { chatPrisma } from "./db.js";
 import { providers } from "./providers.js";
 import { createId } from "./id.js";
-import { FREE_DAILY_MESSAGES } from "./limits.js";
+import { FREE_DAILY_MESSAGES } from "@idream/shared/chat/limits";
 import { enqueue } from "./queue.js";
 import { streamKey } from "./stream.js";
 import { recordOutbox, scheduleOutboxDelivery } from "./outbox.js";
@@ -183,11 +184,14 @@ export interface SendResult {
   streamUrl: string | null;
   status: "generating" | "blocked";
   safety?: { layer: "input" | "output"; policyCode?: string };
+  idempotentReplay?: boolean;
 }
 
 export type EditMessageResult = SendResult;
 
 const MAX_MESSAGE_LENGTH = 12_000;
+const MIN_IDEMPOTENCY_KEY_LENGTH = 8;
+const MAX_IDEMPOTENCY_KEY_LENGTH = 200;
 const ENGAGEMENT_INACTIVITY_MS_V1 = 30 * 60 * 1_000;
 
 function normalizeMessageContent(value: string): string {
@@ -197,6 +201,83 @@ function normalizeMessageContent(value: string): string {
     throw new ChatError("message_too_long", `message exceeds ${MAX_MESSAGE_LENGTH} characters`, 400);
   }
   return content;
+}
+
+function normalizeIdempotencyKey(value: string): string {
+  const key = value.trim();
+  if (
+    key.length < MIN_IDEMPOTENCY_KEY_LENGTH ||
+    key.length > MAX_IDEMPOTENCY_KEY_LENGTH
+  ) {
+    throw new ChatError(
+      "invalid_idempotency_key",
+      `Idempotency-Key must be ${MIN_IDEMPOTENCY_KEY_LENGTH}-${MAX_IDEMPOTENCY_KEY_LENGTH} characters`,
+      400,
+    );
+  }
+  return key;
+}
+
+function chatSendRequestHash(sessionId: string, content: string): string {
+  return createHash("sha256")
+    .update(`idream-chat-send-v1\0${sessionId}\0${content}`)
+    .digest("hex");
+}
+
+function sendResultFromReceipt(
+  receipt: {
+    assistantMessageId: string;
+    userMessageId: string;
+    responseStatus: string;
+    safetyPolicyCode: string | null;
+  },
+  idempotentReplay: boolean,
+): SendResult {
+  if (receipt.responseStatus === "blocked") {
+    return {
+      assistantMessageId: receipt.assistantMessageId,
+      userMessageId: receipt.userMessageId,
+      streamUrl: null,
+      status: "blocked",
+      safety: {
+        layer: "input",
+        ...(receipt.safetyPolicyCode
+          ? { policyCode: receipt.safetyPolicyCode }
+          : {}),
+      },
+      ...(idempotentReplay ? { idempotentReplay: true } : {}),
+    };
+  }
+  if (receipt.responseStatus !== "generating") {
+    throw new ChatError(
+      "idempotency_receipt_corrupt",
+      "stored send receipt has an invalid response status",
+      500,
+    );
+  }
+  return {
+    assistantMessageId: receipt.assistantMessageId,
+    userMessageId: receipt.userMessageId,
+    streamUrl: `/api/v1/chat/messages/${receipt.assistantMessageId}/stream?key=${encodeURIComponent(streamKey(receipt.assistantMessageId))}`,
+    status: "generating",
+    ...(idempotentReplay ? { idempotentReplay: true } : {}),
+  };
+}
+
+function assertMatchingSendReceipt(
+  receipt: { sessionId: string; requestHash: string },
+  input: { sessionId: string; requestHash: string },
+): void {
+  if (
+    receipt.sessionId !== input.sessionId ||
+    receipt.requestHash !== input.requestHash
+  ) {
+    throw new ChatError(
+      "idempotency_conflict",
+      "Idempotency-Key was already used for a different chat send intent",
+      409,
+    );
+  }
 }
 
 async function allocateEngagementSessionId(
@@ -319,7 +400,13 @@ async function resolveSessionPin(
 }
 
 export async function sendMessage(
-  input: { userId: string; sessionId: string; content: string },
+  input: {
+    userId: string;
+    sessionId: string;
+    content: string;
+    /** Required by the HTTP boundary; trusted in-process callers get a one-shot key. */
+    idempotencyKey?: string;
+  },
   override?: Partial<ChatContext>,
 ): Promise<SendResult> {
   const { prisma } = ctx(override);
@@ -327,9 +414,29 @@ export async function sendMessage(
   if (!session || session.userId !== input.userId || session.status !== "active") {
     throw new ChatError("session_not_found", "session not found", 404);
   }
-  await assertEligible(prisma, input.userId, session.characterId);
 
   const content = normalizeMessageContent(input.content);
+  const idempotencyKey = normalizeIdempotencyKey(
+    input.idempotencyKey ?? createId("send-request"),
+  );
+  const requestHash = chatSendRequestHash(session.id, content);
+  const existingReceipt = await prisma.chatSendReceipt.findUnique({
+    where: {
+      userId_idempotencyKey: {
+        userId: input.userId,
+        idempotencyKey,
+      },
+    },
+  });
+  if (existingReceipt) {
+    assertMatchingSendReceipt(existingReceipt, {
+      sessionId: session.id,
+      requestHash,
+    });
+    return sendResultFromReceipt(existingReceipt, true);
+  }
+
+  await assertEligible(prisma, input.userId, session.characterId);
 
   const entitlement = await prisma.chatEntitlementView.findUnique({ where: { userId: input.userId } });
   const policy = resolvePolicy(snapshotFromView(entitlement), { memoryEnabled: session.memoryEnabled });
@@ -340,11 +447,38 @@ export async function sendMessage(
   const userMessageId = createId("msg");
   const assistantMessageId = createId("msg");
 
-  await prisma.$transaction(async (tx) => {
+  const committed = await prisma.$transaction(async (tx) => {
+    await advisoryLock(tx, `send:${input.userId}:${idempotencyKey}`);
     await lockTurn(tx, input.userId, session.id);
     const currentSession = await tx.chatSession.findUnique({ where: { id: session.id } });
     if (!currentSession || currentSession.userId !== input.userId || currentSession.status !== "active") {
       throw new ChatError("session_not_found", "session not found", 404);
+    }
+    const replay = await tx.chatSendReceipt.findUnique({
+      where: {
+        userId_idempotencyKey: {
+          userId: input.userId,
+          idempotencyKey,
+        },
+      },
+    });
+    if (replay) {
+      assertMatchingSendReceipt(replay, {
+        sessionId: session.id,
+        requestHash,
+      });
+      const assistant = await tx.message.findUnique({
+        where: { id: replay.assistantMessageId },
+        select: { status: true },
+      });
+      if (!assistant) {
+        throw new ChatError(
+          "idempotency_receipt_corrupt",
+          "stored send receipt does not reference an assistant message",
+          500,
+        );
+      }
+      return { receipt: replay, assistantStatus: assistant.status, replayed: true };
     }
     if (moderation.status !== "blocked") {
       await assertTurnCapacity(tx, input.userId, session.id, policy);
@@ -382,7 +516,7 @@ export async function sendMessage(
     });
     await tx.chatSession.update({
       where: { id: session.id },
-      data: { lastMessageAt: new Date() },
+      data: { lastMessageAt: turnOccurredAt },
     });
     if (moderation.status === "blocked") {
       await tx.chatModerationEvent.create({
@@ -403,28 +537,47 @@ export async function sendMessage(
         payload: { sessionId: session.id, userId: input.userId, layer: "input", policyCode: moderation.policyCode },
       });
     }
+    const receipt = await tx.chatSendReceipt.create({
+      data: {
+        id: createId("send"),
+        userId: input.userId,
+        sessionId: session.id,
+        idempotencyKey,
+        requestHash,
+        userMessageId,
+        assistantMessageId,
+        responseStatus:
+          moderation.status === "blocked" ? "blocked" : "generating",
+        safetyPolicyCode:
+          moderation.status === "blocked"
+            ? moderation.policyCode ?? null
+            : null,
+      },
+    });
+    return {
+      receipt,
+      assistantStatus:
+        moderation.status === "blocked" ? "blocked" : "pending",
+      replayed: false,
+    };
   });
 
-  // Blocked input never generates: no queue job, no stream. The UI shows a safety
-  // notice instead of waiting on an empty EventSource (design P0-B).
-  if (moderation.status === "blocked") {
-    return {
-      assistantMessageId,
-      userMessageId,
-      streamUrl: null,
-      status: "blocked",
-      safety: { layer: "input", policyCode: moderation.policyCode },
-    };
+  // A pending assistant row is the durable queue intent. Replaying after an
+  // HTTP timeout or Redis outage re-dispatches that same canonical assistant;
+  // deterministic BullMQ job ids collapse concurrent enqueue attempts.
+  if (
+    committed.receipt.responseStatus === "generating" &&
+    committed.assistantStatus === "pending"
+  ) {
+    await enqueueGeneration({
+      sessionId: session.id,
+      assistantMessageId: committed.receipt.assistantMessageId,
+      userMessageId: committed.receipt.userMessageId,
+      attempt: 1,
+    });
   }
 
-  await enqueueGeneration({ sessionId: session.id, assistantMessageId, userMessageId, attempt: 1 });
-
-  return {
-    assistantMessageId,
-    userMessageId,
-    streamUrl: `/api/v1/chat/messages/${assistantMessageId}/stream?key=${encodeURIComponent(streamKey(assistantMessageId))}`,
-    status: "generating",
-  };
+  return sendResultFromReceipt(committed.receipt, committed.replayed);
 }
 
 export async function editUserMessage(
@@ -766,6 +919,7 @@ export async function confirmImageAttachment(
   const plannedControls = (attachment.metadata ?? {}) as {
     orientation?: unknown;
     outputCount?: unknown;
+    characterReleaseId?: unknown;
     // P5 Task 2: the img2img source recorded by generate.ts for edit_last_image;
     // carried through a retry so the resend still targets the same photo.
     editSourceAssetId?: unknown;
@@ -786,6 +940,8 @@ export async function confirmImageAttachment(
     messageId: attachment.messageId,
     userId: session.userId,
     characterId: session.characterId,
+    characterReleaseId:
+      attachmentReleaseIdForRetry(plannedControls, session.characterReleaseId) ?? undefined,
     promptHint: attachment.promptHint,
     conversationContext: [...recent]
       .reverse()
@@ -825,6 +981,16 @@ export async function confirmImageAttachment(
 
   await scheduleOutboxDelivery();
   return updated;
+}
+
+export function attachmentReleaseIdForRetry(
+  metadata: { readonly characterReleaseId?: unknown },
+  sessionCharacterReleaseId: string | null,
+) {
+  return typeof metadata.characterReleaseId === "string" &&
+    metadata.characterReleaseId.trim().length > 0
+    ? metadata.characterReleaseId
+    : sessionCharacterReleaseId;
 }
 
 // Paid entitlements set unlimitedMessages and short-circuit this check entirely.

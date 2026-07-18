@@ -541,6 +541,9 @@ async function finalize(input: FinalizeInput): Promise<boolean> {
               assistantCaption: built.assistantCaption,
               orientation: built.controls.orientation,
               outputCount: built.controls.outputCount,
+              ...(context.persona.characterReleaseId
+                ? { characterReleaseId: context.persona.characterReleaseId }
+                : {}),
               // P5 Task 2: carried so a later confirm/retry (service.ts confirmImageAttachment,
               // which re-emits from this metadata) still targets the same source photo.
               ...(built.controls.sourceImageAssetId ? { editSourceAssetId: built.controls.sourceImageAssetId } : {}),
@@ -556,6 +559,7 @@ async function finalize(input: FinalizeInput): Promise<boolean> {
           messageId: payload.assistantMessageId,
           userId: session.userId,
           characterId: session.characterId,
+          characterReleaseId: context.persona.characterReleaseId ?? undefined,
           promptHint: built.promptHint,
           conversationContext: buildConversationContext(context, content),
           controls: built.controls,

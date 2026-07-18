@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import {
   api,
+  completeQueuedCharacterPreview,
   createCharacter,
   createMedia,
   createUser,
@@ -33,7 +34,7 @@ async function freshUser(suffix: string, role: "user" | "admin" = "user") {
 
 beforeAll(async () => {
   await purgeTestData(P);
-  await createUser({ id: SYS });
+  await createUser({ id: SYS, dataClass: "customer" });
   await createCharacter({ id: CHAR, creatorId: SYS, visibility: "public", status: "approved" });
 });
 
@@ -120,7 +121,11 @@ describe("character age hard rule (>= 18)", () => {
       ageGate: true,
     });
     expectOk(preview);
-    await runQueuedGenerationJobs(4);
+    await completeQueuedCharacterPreview({
+      previewJobId: preview.data.previewJob.id as string,
+      draftId: draft.id,
+      userId,
+    });
     const selected = await api("POST", `character-drafts/${draft.id}/preview-anchor`, {
       userId,
       ageGate: true,
@@ -167,6 +172,13 @@ describe("content moderation — input + output", () => {
 
   it("blocks an unsafe generation prompt and refunds the reserved dreamcoins", async () => {
     const userId = await freshUser("mod-gen");
+    const characterId = `${P}char-mod-gen`;
+    await createCharacter({
+      id: characterId,
+      creatorId: userId,
+      visibility: "private",
+      status: "approved",
+    });
     await grantCoins(userId, 500, "seed");
     // Premium controls entitlement required to send a custom prompt at all.
     await prisma.entitlement.create({
@@ -180,7 +192,12 @@ describe("content moderation — input + output", () => {
     const result = await api("POST", "generation/jobs", {
       userId,
       ageGate: true,
-      body: { mode: "image", characterId: CHAR, prompt: "csam content", outputCount: 1 },
+      body: {
+        mode: "image",
+        characterId,
+        prompt: "csam content",
+        outputCount: 1,
+      },
     });
     expectOk(result, 202);
     expect(result.data.job.status).toBe("queued");
@@ -224,6 +241,13 @@ describe("jurisdiction age verification gate", () => {
 
   it("allows gated routes when verification status is verified", async () => {
     const userId = await freshUser("verify-ok");
+    const characterId = `${P}char-verify-ok`;
+    await createCharacter({
+      id: characterId,
+      creatorId: userId,
+      visibility: "private",
+      status: "approved",
+    });
     await grantCoins(userId, 100, "seed");
     await prisma.ageVerification.create({
       data: { userId, provider: "mock", status: "verified", metadata: {} },
@@ -231,7 +255,7 @@ describe("jurisdiction age verification gate", () => {
     const result = await api("POST", "generation/jobs", {
       userId,
       ageGate: true,
-      body: { mode: "image", characterId: CHAR, outputCount: 1 },
+      body: { mode: "image", characterId, outputCount: 1 },
     });
     expectOk(result, 202);
     expect(result.data.job.status).toBe("queued");
@@ -306,6 +330,41 @@ describe("reports, queue, and reporter anonymity", () => {
     const hidden = await prisma.character.findUnique({ where: { id: target } });
     expect(hidden?.status).not.toBe("approved");
   });
+
+  it("serializes automatic media takedown with every MediaAsset authority consumer", async () => {
+    const reporter = await freshUser("reporter-underage-media");
+    const owner = await freshUser("underage-media-owner");
+    const mediaId = `${P}underage-media`;
+    await createMedia({ id: mediaId, ownerId: owner });
+
+    let reportRequest: ReturnType<typeof api> | undefined;
+    await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`media-asset-authority:${mediaId}`}))`;
+      const pendingReport = api("POST", "reports", {
+        userId: reporter,
+        ageGate: true,
+        body: {
+          targetType: "media",
+          targetId: mediaId,
+          category: "underage_content",
+        },
+      });
+      reportRequest = pendingReport;
+      const state = await Promise.race([
+        pendingReport.then(() => "settled" as const),
+        new Promise<"waiting">((resolve) => {
+          setTimeout(() => resolve("waiting"), 75);
+        }),
+      ]);
+      expect(state).toBe("waiting");
+    });
+
+    expect(reportRequest).toBeDefined();
+    expectOk(await reportRequest!);
+    await expect(
+      prisma.mediaAsset.findUniqueOrThrow({ where: { id: mediaId } }),
+    ).resolves.toMatchObject({ safetyStatus: "blocked" });
+  });
 });
 
 describe("admin moderation queue + audit", () => {
@@ -350,7 +409,8 @@ describe("admin moderation queue + audit", () => {
   });
 
   it("requires admin and records an audited decision that actions the target", async () => {
-    const reporter = await freshUser("admin-reporter");
+    const reporter = `${P}u-admin-reporter`;
+    await createUser({ id: reporter, dataClass: "customer" });
     const admin = await freshUser("admin-1", "admin");
     const target = `${P}char-actioned`;
     await createCharacter({ id: target, creatorId: SYS, visibility: "public", status: "approved" });
@@ -408,5 +468,60 @@ describe("admin moderation queue + audit", () => {
         where: { sourceType: "admin_case", sourceId: evidence.caseId, decision: "actioned" },
       }),
     ).not.toBeNull();
+  });
+
+  it("serializes an audited media decision with the shared MediaAsset authority lock", async () => {
+    const reporter = await freshUser("admin-media-reporter");
+    const owner = await freshUser("admin-media-owner");
+    const admin = await freshUser("admin-media-lock", "admin");
+    const mediaId = `${P}admin-actioned-media`;
+    await createMedia({ id: mediaId, ownerId: owner });
+    const report = await prisma.contentReport.create({
+      data: {
+        reporterId: reporter,
+        targetType: "media",
+        targetId: mediaId,
+        category: "prohibited",
+        status: "open",
+        priority: 3,
+      },
+    });
+
+    let decisionRequest: ReturnType<typeof api> | undefined;
+    await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`media-asset-authority:${mediaId}`}))`;
+      const pendingDecision = api(
+        "POST",
+        `admin/moderation/${report.id}/decision`,
+        {
+          userId: admin,
+          role: "admin",
+          body: {
+            decision: "actioned",
+            policyCode: "prohibited_content",
+            notes: "removed",
+            reason: "policy violation confirmed",
+            confirmation: "TAKEDOWN",
+          },
+        },
+      );
+      decisionRequest = pendingDecision;
+      const state = await Promise.race([
+        pendingDecision.then(() => "settled" as const),
+        new Promise<"waiting">((resolve) => {
+          setTimeout(() => resolve("waiting"), 75);
+        }),
+      ]);
+      expect(state).toBe("waiting");
+    });
+
+    expect(decisionRequest).toBeDefined();
+    expectOk(await decisionRequest!);
+    await expect(
+      prisma.mediaAsset.findUniqueOrThrow({ where: { id: mediaId } }),
+    ).resolves.toMatchObject({
+      safetyStatus: "blocked",
+      visibility: "private",
+    });
   });
 });

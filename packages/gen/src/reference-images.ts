@@ -10,8 +10,9 @@ export async function hydratedImageReferenceInputs(
   images: ImageReferenceInput[] | undefined,
   blob: BlobStore,
 ): Promise<ImageReferenceInput[]> {
+  const requested = images ?? [];
   const hydrated = await Promise.all(
-    (images ?? []).map(async (image) => {
+    requested.map(async (image) => {
       if (image.b64Json || isAbsoluteUrl(image.url)) return image;
       if (!image.storageKey) return image;
       const local = await localBlobReference(image);
@@ -24,7 +25,19 @@ export async function hydratedImageReferenceInputs(
       return image;
     }),
   );
-  return hydrated.filter((image) => image.b64Json || isAbsoluteUrl(image.url));
+  const readable = hydrated.filter(
+    (image) => image.b64Json || isAbsoluteUrl(image.url),
+  );
+  if (readable.length !== requested.length) {
+    const readableIds = new Set(readable.map((image) => image.assetId));
+    const unavailableAssetIds = requested.flatMap((image) =>
+      readableIds.has(image.assetId) ? [] : [image.assetId]
+    );
+    throw new Error(
+      `Pinned image references could not be hydrated: ${unavailableAssetIds.join(", ")}`,
+    );
+  }
+  return readable;
 }
 
 async function localBlobReference(image: ImageReferenceInput) {

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   fetchCharacterById,
+  invalidateGeneratorConfigAuthority,
   loadGeneratorLooksForViewer,
   loadGeneratorWorkspaceInitialData,
 } from "./GeneratorWorkspace";
@@ -62,6 +63,53 @@ describe("generator saved Looks authority", () => {
 });
 
 describe("generator viewer data bootstrap", () => {
+  it("revokes stale config and private viewer authority after a refresh failure", () => {
+    const refs = {
+      authenticated: { current: true as boolean | null },
+      epoch: { current: 4 },
+      scope: { current: "user:viewer-1" as string | null },
+    };
+    const actions = {
+      clearConfig: vi.fn(),
+      clearPrivateProjections: vi.fn(),
+      showError: vi.fn(),
+    };
+
+    invalidateGeneratorConfigAuthority(
+      refs,
+      actions,
+      "Generation controls could not load.",
+    );
+
+    expect(refs).toEqual({
+      authenticated: { current: null },
+      epoch: { current: 5 },
+      scope: { current: null },
+    });
+    expect(actions.clearConfig).toHaveBeenCalledOnce();
+    expect(actions.clearPrivateProjections).toHaveBeenCalledOnce();
+    expect(actions.showError).toHaveBeenCalledWith(
+      "Generation controls could not load.",
+    );
+  });
+
+  it("does not load generator data before age acceptance", async () => {
+    const loaders = {
+      loadConfig: vi.fn(async () => false),
+      loadCharacters: vi.fn(async () => undefined),
+      loadJobs: vi.fn(async () => undefined),
+      loadMedia: vi.fn(async () => undefined),
+      loadPresets: vi.fn(async () => undefined),
+      loadIdentityMedia: vi.fn(async () => undefined),
+    };
+
+    await loadGeneratorWorkspaceInitialData(false, loaders);
+
+    for (const loader of Object.values(loaders)) {
+      expect(loader).not.toHaveBeenCalled();
+    }
+  });
+
   it("loads public configuration and characters without anonymous protected requests", async () => {
     const loaders = {
       loadConfig: vi.fn(async () => false),
@@ -72,7 +120,7 @@ describe("generator viewer data bootstrap", () => {
       loadIdentityMedia: vi.fn(async () => undefined),
     };
 
-    await loadGeneratorWorkspaceInitialData(loaders);
+    await loadGeneratorWorkspaceInitialData(true, loaders);
 
     expect(loaders.loadConfig).toHaveBeenCalledOnce();
     expect(loaders.loadCharacters).toHaveBeenCalledOnce();
@@ -92,7 +140,7 @@ describe("generator viewer data bootstrap", () => {
       loadIdentityMedia: vi.fn(async () => undefined),
     };
 
-    await loadGeneratorWorkspaceInitialData(loaders);
+    await loadGeneratorWorkspaceInitialData(true, loaders);
 
     expect(loaders.loadJobs).toHaveBeenCalledOnce();
     expect(loaders.loadMedia).toHaveBeenCalledOnce();
@@ -110,7 +158,7 @@ describe("generator viewer data bootstrap", () => {
       loadIdentityMedia: vi.fn(async () => undefined),
     };
 
-    await loadGeneratorWorkspaceInitialData(loaders);
+    await loadGeneratorWorkspaceInitialData(true, loaders);
 
     expect(loaders.loadJobs).not.toHaveBeenCalled();
     expect(loaders.loadMedia).not.toHaveBeenCalled();
