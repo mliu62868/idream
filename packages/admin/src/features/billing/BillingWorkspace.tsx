@@ -1,5 +1,6 @@
 "use client";
 
+import { useAdminI18n } from "@/components/admin/i18n";
 import type { FormEvent, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -74,6 +75,7 @@ export function BillingWorkspace({
   canAdjust: boolean;
   canReconcile: boolean;
 }) {
+  const { t } = useAdminI18n();
   const [query, setQuery] = useState<BillingQuery>(() => currentQuery());
   const [queryDraft, setQueryDraft] = useState<BillingQuery>(() => currentQuery());
   const [ledgerState, setLedgerState] = useState<AuthorityState<BillingListResponse>>(emptyAuthorityState);
@@ -208,7 +210,7 @@ export function BillingWorkspace({
     const idempotencyKey = crypto.randomUUID();
     setConfirmation({
       title: `Adjust ledger ${userId}`,
-      summary: <span>User {userId} · signed delta {delta}</span>,
+      summary: <span>{t("User")} {userId}  {t("· signed delta")} {delta}</span>,
       destructive: { expectedName: confirmationTarget, inputLabel: "Confirmation" },
       reasonLabel: "Reason",
       submitLabel: "Confirm",
@@ -240,9 +242,8 @@ export function BillingWorkspace({
       title: `Acknowledge provider refund for ${checkoutId}`,
       summary: (
         <span>
-          Invoice {providerInvoiceId}. This records an already-completed
-          provider refund and closes the late-settlement exception; it does not
-          issue a refund.
+
+          {t("Invoice")} {providerInvoiceId}{t(". This records an already-completed provider refund and closes the late-settlement exception; it does not issue a refund.")}
         </span>
       ),
       destructive: {
@@ -309,7 +310,8 @@ export function BillingWorkspace({
                   type="button"
                 >
                   <ReceiptText className="h-4 w-4" />
-                  Acknowledge refund
+
+                  {t("Acknowledge refund")}
                 </button>
               ) : (
                 "—"
@@ -325,37 +327,37 @@ export function BillingWorkspace({
       <div id="billing-workspace-title">
         <PageHeader
           purpose="Reconcile subscription and Dreamcoin authority, then make tightly audited ledger corrections."
-          title="Billing & Ledger"
+          title={t("Billing & Ledger")}
         />
       </div>
       <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--ad-text-muted)]" role="status">
         <div className="flex flex-wrap gap-x-3 gap-y-1">
-          <span>Customer business records · dataClass=customer only · source freshness watermark unavailable</span>
+          <span>{t("Customer business records · dataClass=customer only · source freshness watermark unavailable")}</span>
           <AuthorityFreshness label="Ledger" state={ledgerState} />
           <AuthorityFreshness label="Subscriptions" state={subscriptionState} />
           <AuthorityFreshness label="Reconciliation" state={reconciliationState} />
         </div>
         <div className="flex flex-wrap gap-2">
-          {!canAdjust ? <strong>Ledger read only · billing.ledger.adjust is not granted</strong> : null}
-          {!canReconcile ? <strong>Reconciliation read only · billing.checkout.reconcile is not granted</strong> : null}
+          {!canAdjust ? <strong>{t("Ledger read only · billing.ledger.adjust is not granted")}</strong> : null}
+          {!canReconcile ? <strong>{t("Reconciliation read only · billing.checkout.reconcile is not granted")}</strong> : null}
         </div>
       </div>
 
       <form className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 md:grid-cols-2 xl:grid-cols-[minmax(260px,1fr)_200px_220px_auto]" onSubmit={apply}>
-        <Field label="Search billing authority" onChange={(search) => setQueryDraft((current) => ({ ...current, search }))} placeholder="user, email, subscription, or source" value={queryDraft.search} />
+        <Field label="Search billing authority" onChange={(search) => setQueryDraft((current) => ({ ...current, search }))} placeholder={t("user, email, subscription, or source")} value={queryDraft.search} />
         <Select label="Ledger reason" onChange={(ledgerReason) => setQueryDraft((current) => ({ ...current, ledgerReason }))} options={["", "signup_bonus", "subscription_grant", "generation_spend", "refund", "redeem", "referral", "admin_adjust"]} value={queryDraft.ledgerReason} />
         <Select label="Subscription status" onChange={(subscriptionStatus) => setQueryDraft((current) => ({ ...current, subscriptionStatus }))} options={["", "checkout_created", "checkout_completed", "active", "past_due", "canceled", "expired"]} value={queryDraft.subscriptionStatus} />
         <div className="flex items-end gap-2">
-          <button className="min-h-11 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white" type="submit">Apply</button>
-          {filtered ? <button aria-label="Clear billing filters" className="grid min-h-11 min-w-11 place-items-center rounded-md border border-[var(--ad-border)]" onClick={clearFilters} type="button"><X className="h-4 w-4" /></button> : null}
+          <button className="min-h-11 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white" type="submit">{t("Apply")}</button>
+          {filtered ? <button aria-label={t("Clear billing filters")} className="grid min-h-11 min-w-11 place-items-center rounded-md border border-[var(--ad-border)]" onClick={clearFilters} type="button"><X className="h-4 w-4" /></button> : null}
         </div>
       </form>
 
       {canAdjust ? (
         <section aria-labelledby="billing-adjustment-title" className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
-            <div><h3 className="font-semibold" id="billing-adjustment-title">Adjust Ledger</h3><p className="mt-1 text-xs text-[var(--ad-text-muted)]">Every signed delta requires a reason, target confirmation, unique idempotency key, and server-side audit.</p></div>
-            <button className="inline-flex min-h-11 items-center gap-2 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white disabled:opacity-50" disabled={!canAdjustLedger(adjustment)} onClick={requestAdjustment} type="button"><BadgeDollarSign className="h-4 w-4" />Adjust</button>
+            <div><h3 className="font-semibold" id="billing-adjustment-title">{t("Adjust Ledger")}</h3><p className="mt-1 text-xs text-[var(--ad-text-muted)]">{t("Every signed delta requires a reason, target confirmation, unique idempotency key, and server-side audit.")}</p></div>
+            <button className="inline-flex min-h-11 items-center gap-2 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white disabled:opacity-50" disabled={!canAdjustLedger(adjustment)} onClick={requestAdjustment} type="button"><BadgeDollarSign className="h-4 w-4" />{t("Adjust")}</button>
           </div>
           <div className="mt-4 grid gap-3 md:grid-cols-2">
             <Field label="Adjustment user ID" onChange={(userId) => setAdjustment((current) => ({ ...current, userId }))} value={adjustment.userId} />
@@ -373,17 +375,18 @@ export function BillingWorkspace({
             className="font-semibold"
             id="billing-reconciliation-resolution-title"
           >
-            Late-settlement resolution
+
+            {t("Late-settlement resolution")}
           </h3>
           <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
-            Enter the provider refund transaction or case reference, then
-            acknowledge only after the external refund is complete.
+
+            {t("Enter the provider refund transaction or case reference, then acknowledge only after the external refund is complete.")}
           </p>
           <div className="mt-4 max-w-xl">
             <Field
               label="Provider refund reference"
               onChange={setRefundReference}
-              placeholder="Refund transaction or provider case ID"
+              placeholder={t("Refund transaction or provider case ID")}
               value={refundReference}
             />
           </div>
@@ -406,7 +409,7 @@ export function BillingWorkspace({
           <DataTable caption="Reconciliation by reason" headers={["Reason", "Total delta", "Count"]} rows={tableRows(reconciliation.byReason, ["reason", "totalDelta", "count"], "reconciliation")} />
           <DataTable
             caption="Checkout reconciliation exceptions"
-            empty={<EmptyState hint="No checkout intents currently require provider reconciliation." title="Checkout reconciliation is clear" />}
+            empty={<EmptyState hint="No checkout intents currently require provider reconciliation." title={t("Checkout reconciliation is clear")} />}
             headers={[
               "ID",
               "User",
@@ -444,19 +447,21 @@ export function BillingWorkspace({
 }
 
 function BillingLoading() {
-  return <div aria-label="Loading billing authority" className="space-y-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" role="status"><span className="inline-flex items-center gap-2 text-sm text-[var(--ad-text-muted)]"><Loader2 className="h-4 w-4 animate-spin" />Loading billing authority</span>{[0, 1, 2].map((row) => <span aria-hidden="true" className="block h-12 animate-pulse rounded bg-black/5" key={row} />)}</div>;
+  const { t } = useAdminI18n();
+  return <div aria-label={t("Loading billing authority")} className="space-y-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" role="status"><span className="inline-flex items-center gap-2 text-sm text-[var(--ad-text-muted)]"><Loader2 className="h-4 w-4 animate-spin" />{t("Loading billing authority")}</span>{[0, 1, 2].map((row) => <span aria-hidden="true" className="block h-12 animate-pulse rounded bg-black/5" key={row} />)}</div>;
 }
 
 function AuthorityFreshness<T>({ label, state }: { label: string; state: AuthorityState<T> }) {
+  const { t } = useAdminI18n();
   if (state.loading && state.data) {
-    return <span>{label}: refreshing · showing snapshot from <time dateTime={state.refreshedAt ?? undefined}>{freshnessTime(state.refreshedAt)}</time></span>;
+    return <span>{label}{t(": refreshing · showing snapshot from")} <time dateTime={state.refreshedAt ?? undefined}>{freshnessTime(state.refreshedAt)}</time></span>;
   }
   if (state.error && state.data) {
-    return <span>{label}: stale · last good <time dateTime={state.refreshedAt ?? undefined}>{freshnessTime(state.refreshedAt)}</time></span>;
+    return <span>{label}{t(": stale · last good")} <time dateTime={state.refreshedAt ?? undefined}>{freshnessTime(state.refreshedAt)}</time></span>;
   }
-  if (state.error) return <span>{label}: unavailable</span>;
-  if (state.data) return <span>{label}: current client snapshot · <time dateTime={state.refreshedAt ?? undefined}>{freshnessTime(state.refreshedAt)}</time></span>;
-  return <span>{label}: refreshing · no snapshot yet</span>;
+  if (state.error) return <span>{label}{t(": unavailable")}</span>;
+  if (state.data) return <span>{label}{t(": current client snapshot ·")} <time dateTime={state.refreshedAt ?? undefined}>{freshnessTime(state.refreshedAt)}</time></span>;
+  return <span>{label}{t(": refreshing · no snapshot yet")}</span>;
 }
 
 function AuthorityError<T>({
@@ -468,12 +473,13 @@ function AuthorityError<T>({
   onRetry: () => void;
   state: AuthorityState<T>;
 }) {
+  const { t } = useAdminI18n();
   if (!state.error) return null;
   return (
     <div className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">
-      {label} authority refresh failed: {state.error}
-      <button className="ml-3 min-h-8 rounded border border-current px-2 font-semibold" onClick={onRetry} type="button">Retry {label}</button>
-      {state.data ? <span className="ml-2">The last good snapshot remains visible.</span> : null}
+      {label}  {t("authority refresh failed:")} {state.error}
+      <button className="ml-3 min-h-8 rounded border border-current px-2 font-semibold" onClick={onRetry} type="button">{t("Retry")} {label}</button>
+      {state.data ? <span className="ml-2">{t("The last good snapshot remains visible.")}</span> : null}
     </div>
   );
 }
@@ -483,6 +489,7 @@ function freshnessTime(value: string | null) {
 }
 
 function BillingEmpty({ filtered, kind, onClear }: { filtered: boolean; kind: string; onClear: () => void }) {
+  const { t } = useAdminI18n();
   const title = filtered
     ? kind === "ledger entries"
       ? "No ledger entries match these filters"
@@ -490,7 +497,7 @@ function BillingEmpty({ filtered, kind, onClear }: { filtered: boolean; kind: st
     : kind === "ledger entries"
       ? "No ledger entries exist yet"
       : "No subscriptions exist yet";
-  return <EmptyState action={filtered ? <button className="min-h-11 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" onClick={onClear} type="button">Clear filters</button> : undefined} hint={filtered ? `The complete authority query returned no ${kind}.` : `No ${kind} exist in the authority yet.`} title={title} />;
+  return <EmptyState action={filtered ? <button className="min-h-11 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" onClick={onClear} type="button">{t("Clear filters")}</button> : undefined} hint={filtered ? `The complete authority query returned no ${kind}.` : `No ${kind} exist in the authority yet.`} title={title} />;
 }
 
 function NextPageButton({ label, loading, onClick, pageInfo }: { label: string; loading: boolean; onClick: () => void; pageInfo: BillingPageInfo }) {

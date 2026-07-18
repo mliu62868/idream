@@ -1,5 +1,6 @@
 "use client";
 
+import { useAdminI18n } from "@/components/admin/i18n";
 import { Loader2, RefreshCcw, RotateCcw, Search } from "lucide-react";
 import type { FormEvent } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -68,6 +69,7 @@ function initialStates(): Record<ChatOpsAuthority, AuthorityState> {
 }
 
 export function ChatOpsWorkspace({ canRead }: { canRead: boolean }) {
+  const { t } = useAdminI18n();
   const [query, setQuery] = useState<ChatOpsQuery>(() => currentQuery());
   const [draft, setDraft] = useState<ChatOpsQuery>(() => currentQuery());
   const [states, setStates] =
@@ -173,7 +175,7 @@ export function ChatOpsWorkspace({ canRead }: { canRead: boolean }) {
     <section className="space-y-5">
       <PageHeader
         purpose="Inspect Chat Service health, session metadata, quota usage, and moderation events without exposing message plaintext."
-        title="Chat Ops"
+        title={t("Chat Ops")}
       />
       <div
         className="flex flex-wrap justify-between gap-3 text-xs text-[var(--ad-text-muted)]"
@@ -187,12 +189,12 @@ export function ChatOpsWorkspace({ canRead }: { canRead: boolean }) {
           <Freshness authority="Events" state={states.events} />
         </div>
         {!canRead ? (
-          <strong>No access · chat.ops.read is not granted</strong>
+          <strong>{t("No access · chat.ops.read is not granted")}</strong>
         ) : (
           <strong>
             {connected
-              ? "Chat Service connected"
-              : "Chat Service degraded or disconnected"}
+              ? t("Chat Service connected")
+              : t("Chat Service degraded or disconnected")}
           </strong>
         )}
       </div>
@@ -261,7 +263,8 @@ export function ChatOpsWorkspace({ canRead }: { canRead: boolean }) {
             type="submit"
           >
             <Search className="h-4 w-4" />
-            Filter Chat Ops
+
+            {t("Filter Chat Ops")}
           </button>
           <button
             className="inline-flex min-h-11 items-center gap-2 rounded-md border px-4 text-sm"
@@ -269,7 +272,8 @@ export function ChatOpsWorkspace({ canRead }: { canRead: boolean }) {
             type="button"
           >
             <RotateCcw className="h-4 w-4" />
-            Reset
+
+            {t("Reset")}
           </button>
         </div>
       </form>
@@ -550,22 +554,24 @@ function AuthorityError({
   retry: (query: ChatOpsQuery, authority: ChatOpsAuthority) => Promise<void>;
   state: AuthorityState;
 }) {
+  const { t } = useAdminI18n();
   if (!state.error) return null;
   return (
     <div
       className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]"
       role="alert"
     >
-      {authority} authority refresh failed: {state.error}
+      {authority}  {t("authority refresh failed:")} {state.error}
       <button
         className="ml-3 min-h-8 rounded border border-current px-2"
         onClick={() => void retry(query, authority)}
         type="button"
       >
-        Retry {authority}
+
+        {t("Retry")} {authority}
       </button>
       {state.data ? (
-        <span className="ml-2">The last good snapshot remains visible.</span>
+        <span className="ml-2">{t("The last good snapshot remains visible.")}</span>
       ) : null}
     </div>
   );
@@ -602,29 +608,30 @@ function Freshness({
   authority: string;
   state: AuthorityState;
 }) {
+  const { t } = useAdminI18n();
   const time = state.refreshedAt
     ? new Date(state.refreshedAt).toLocaleTimeString()
     : "unknown";
   if (state.loading && state.data)
     return (
       <span>
-        {authority}: refreshing · showing snapshot from {time}
+        {authority}{t(": refreshing · showing snapshot from")} {time}
       </span>
     );
   if (state.error && state.data)
     return (
       <span>
-        {authority}: stale · last good {time}
+        {authority}{t(": stale · last good")} {time}
       </span>
     );
-  if (state.error) return <span>{authority}: unavailable</span>;
+  if (state.error) return <span>{authority}{t(": unavailable")}</span>;
   if (state.data)
     return (
       <span>
-        {authority}: current client snapshot · {time}
+        {authority}{t(": current client snapshot ·")} {time}
       </span>
     );
-  return <span>{authority}: refreshing · no snapshot yet</span>;
+  return <span>{authority}{t(": refreshing · no snapshot yet")}</span>;
 }
 
 function Loading({
@@ -634,10 +641,12 @@ function Loading({
   authority: string;
   state: AuthorityState;
 }) {
+  const { t } = useAdminI18n();
   return !state.data && state.loading ? (
     <div className="rounded-lg border p-4" role="status">
       <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />
-      Loading {authority} authority
+
+      {t("Loading")} {authority}  {t("authority")}
     </div>
   ) : null;
 }

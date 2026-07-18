@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Admin | iDream",
-  description: "Internal iDream control plane.",
+  title: "iDream 管理后台",
+  description: "iDream 内部控制面。",
   robots: {
     index: false,
     follow: false,

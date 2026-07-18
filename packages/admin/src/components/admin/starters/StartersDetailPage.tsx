@@ -230,7 +230,7 @@ export function StartersDetailPage({ id }: { id: string }) {
                 onChange={(event) => updateDraft("gender", event.target.value)}
                 value={draft.gender}
               >
-                {STARTER_GENDERS.map((item) => <option key={item || "any"} value={item}>{item ? value(item) : "Any gender"}</option>)}
+                {STARTER_GENDERS.map((item) => <option key={item || "any"} value={item}>{item ? value(item) : t("Any gender")}</option>)}
               </select>
             </Field>
             <Field label={t("Style")}>
@@ -239,7 +239,7 @@ export function StartersDetailPage({ id }: { id: string }) {
                 onChange={(event) => updateDraft("style", event.target.value)}
                 value={draft.style}
               >
-                {STARTER_STYLES.map((item) => <option key={item || "any"} value={item}>{item ? value(item) : "Any style"}</option>)}
+                {STARTER_STYLES.map((item) => <option key={item || "any"} value={item}>{item ? value(item) : t("Any style")}</option>)}
               </select>
             </Field>
           </FormSection>
@@ -259,7 +259,7 @@ export function StartersDetailPage({ id }: { id: string }) {
               />
             </Field>
           </FormSection>
-          <FormSection title="Reusable persona">
+          <FormSection title={t("Reusable persona")}>
             <Field full label="Creative brief"><textarea className={TEXTAREA_CLASS} onChange={(event) => updateDraft("creativeBrief", event.target.value)} value={draft.creativeBrief} /></Field>
             <Field label="Archetype"><input className={INPUT_CLASS} onChange={(event) => updateDraft("archetype", event.target.value)} value={draft.archetype} /></Field>
             <Field label="Relationship"><input className={INPUT_CLASS} onChange={(event) => updateDraft("relationship", event.target.value)} value={draft.relationship} /></Field>
@@ -268,7 +268,7 @@ export function StartersDetailPage({ id }: { id: string }) {
             <Field full label="First message"><textarea className={TEXTAREA_CLASS} onChange={(event) => updateDraft("firstMessage", event.target.value)} value={draft.firstMessage} /></Field>
             <Field full label="Example dialogue"><textarea className={TEXTAREA_CLASS} onChange={(event) => updateDraft("exampleDialogue", event.target.value)} value={draft.exampleDialogue} /></Field>
           </FormSection>
-          <FormSection title="Reusable visual direction">
+          <FormSection title={t("Reusable visual direction")}>
             <Field full label="Appearance anchors"><textarea className={TEXTAREA_CLASS} onChange={(event) => updateDraft("appearanceNotes", event.target.value)} value={draft.appearanceNotes} /></Field>
             <Field full label="Art direction"><textarea className={TEXTAREA_CLASS} onChange={(event) => updateDraft("visualBrief", event.target.value)} value={draft.visualBrief} /></Field>
           </FormSection>
@@ -311,18 +311,18 @@ export function StartersDetailPage({ id }: { id: string }) {
             </div>
           </DetailSection>
 
-          <DetailSection title="Reusable character foundation">
+          <DetailSection title={t("Reusable character foundation")}>
             <div className="grid gap-5 md:grid-cols-2">
-              <div><p className="text-xs text-[var(--ad-text-muted)]">Creative brief</p><p className="mt-1 whitespace-pre-wrap text-sm text-[var(--ad-text)]">{starterTextField(row.advancedDetails, "creativeBrief") || "—"}</p></div>
-              <div><p className="text-xs text-[var(--ad-text-muted)]">Personality</p><p className="mt-1 whitespace-pre-wrap text-sm text-[var(--ad-text)]">{starterTextField(row.advancedDetails, "personality") || "—"}</p></div>
-              <div><p className="text-xs text-[var(--ad-text-muted)]">First message</p><p className="mt-1 whitespace-pre-wrap text-sm text-[var(--ad-text)]">{starterTextField(row.advancedDetails, "firstMessage") || "—"}</p></div>
-              <div><p className="text-xs text-[var(--ad-text-muted)]">Visual direction</p><p className="mt-1 whitespace-pre-wrap text-sm text-[var(--ad-text)]">{starterTextField(row.appearance, "visualBrief") || starterTextField(row.advancedDetails, "visualBrief") || "—"}</p></div>
+              <div><p className="text-xs text-[var(--ad-text-muted)]">{t("Creative brief")}</p><p className="mt-1 whitespace-pre-wrap text-sm text-[var(--ad-text)]">{starterTextField(row.advancedDetails, "creativeBrief") || "—"}</p></div>
+              <div><p className="text-xs text-[var(--ad-text-muted)]">{t("Personality")}</p><p className="mt-1 whitespace-pre-wrap text-sm text-[var(--ad-text)]">{starterTextField(row.advancedDetails, "personality") || "—"}</p></div>
+              <div><p className="text-xs text-[var(--ad-text-muted)]">{t("First message")}</p><p className="mt-1 whitespace-pre-wrap text-sm text-[var(--ad-text)]">{starterTextField(row.advancedDetails, "firstMessage") || "—"}</p></div>
+              <div><p className="text-xs text-[var(--ad-text-muted)]">{t("Visual direction")}</p><p className="mt-1 whitespace-pre-wrap text-sm text-[var(--ad-text)]">{starterTextField(row.appearance, "visualBrief") || starterTextField(row.advancedDetails, "visualBrief") || "—"}</p></div>
             </div>
           </DetailSection>
 
           <EngineeringDetails summary={t("Engineering details")}>
-            <div>starter.id = {row.id}</div>
-            <div>scope = {row.scope}</div>
+            <div>{t("starter.id =")} {row.id}</div>
+            <div>{t("scope =")} {row.scope}</div>
           </EngineeringDetails>
         </>
       )}

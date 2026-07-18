@@ -1,5 +1,6 @@
 "use client";
 
+import { useAdminI18n } from "@/components/admin/i18n";
 import {
   savedViewUpdateResponseSchema,
   type CollaborationTargetType,
@@ -30,6 +31,7 @@ export function SavedViewsControl({
   onApply: (view: SavedViewRecord) => void;
   onSelectedChange: (id: string | null) => void;
 }) {
+  const { t } = useAdminI18n();
   const [views, setViews] = useState<SavedViewRecord[]>([]);
   const [label, setLabel] = useState("");
   const [loading, setLoading] = useState(true);
@@ -132,11 +134,11 @@ export function SavedViewsControl({
     <section aria-labelledby={`${scope}-saved-views-title`} className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
         <div className="min-w-0 flex-1">
-          <h3 className="flex items-center gap-2 text-sm font-semibold" id={`${scope}-saved-views-title`}><Bookmark className="h-4 w-4" />Saved Views</h3>
-          <label className="mt-2 grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">Select a server view<select className={fieldClass} disabled={loading} onChange={(event) => select(event.target.value)} value={selectedId ?? ""}><option value="">{loading ? "Loading views…" : views.length === 0 ? "No saved views yet" : "Choose a saved view"}</option>{views.map((view) => <option key={view.id} value={view.id}>{view.label} · v{view.version}</option>)}</select></label>
+          <h3 className="flex items-center gap-2 text-sm font-semibold" id={`${scope}-saved-views-title`}><Bookmark className="h-4 w-4" />{t("Saved Views")}</h3>
+          <label className="mt-2 grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Select a server view")}<select className={fieldClass} disabled={loading} onChange={(event) => select(event.target.value)} value={selectedId ?? ""}><option value="">{loading ? t("Loading views…") : views.length === 0 ? t("No saved views yet") : t("Choose a saved view")}</option>{views.map((view) => <option key={view.id} value={view.id}>{view.label} · v{view.version}</option>)}</select></label>
         </div>
-        <label className="grid min-w-0 flex-1 gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">View label<input className={fieldClass} maxLength={80} onChange={(event) => setLabel(event.target.value)} placeholder="e.g. Critical incidents I own" value={label} /></label>
-        <div className="flex flex-wrap gap-2"><WorkspaceButton disabled={busy || label.trim().length === 0} onClick={() => void saveNew()}><Save className="h-4 w-4" />Save new</WorkspaceButton>{selected ? <WorkspaceButton disabled={busy || label.trim().length === 0} onClick={() => void updateSelected()}>Update v{selected.version}</WorkspaceButton> : null}<WorkspaceButton disabled={loading || busy} onClick={() => void load()}><RefreshCcw className="h-4 w-4" />Reload</WorkspaceButton></div>
+        <label className="grid min-w-0 flex-1 gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("View label")}<input className={fieldClass} maxLength={80} onChange={(event) => setLabel(event.target.value)} placeholder={t("e.g. Critical incidents I own")} value={label} /></label>
+        <div className="flex flex-wrap gap-2"><WorkspaceButton disabled={busy || label.trim().length === 0} onClick={() => void saveNew()}><Save className="h-4 w-4" />{t("Save new")}</WorkspaceButton>{selected ? <WorkspaceButton disabled={busy || label.trim().length === 0} onClick={() => void updateSelected()}>{t("Update v")}{selected.version}</WorkspaceButton> : null}<WorkspaceButton disabled={loading || busy} onClick={() => void load()}><RefreshCcw className="h-4 w-4" />{t("Reload")}</WorkspaceButton></div>
       </div>
       <div aria-atomic="true" aria-live="polite" className="mt-2 min-h-5 text-xs">{error ? <p className="text-[var(--ad-red-text)]" role="alert">{error}</p> : notice ? <p className="text-[var(--ad-green-text)]" role="status">{notice}</p> : null}</div>
     </section>

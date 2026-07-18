@@ -129,7 +129,7 @@ export function AnnouncementsView() {
       }}>
         <input aria-label={t("Search announcements")} className={inputClass} onChange={(event) => setQuery({ ...query, announcementSearch: event.target.value })} placeholder={t("Search")} type="search" value={query.announcementSearch} />
         <select className={inputClass} onChange={(event) => setQuery({ ...query, announcementLevel: event.target.value })} value={query.announcementLevel}>
-          <option value="">{t("All levels")}</option><option value="info">info</option><option value="promo">promo</option><option value="warning">warning</option>
+          <option value="">{t("All levels")}</option><option value="info">{t("info")}</option><option value="promo">{t("promo")}</option><option value="warning">{t("warning")}</option>
         </select>
         <select className={inputClass} onChange={(event) => setQuery({ ...query, announcementActive: event.target.value })} value={query.announcementActive}>
           <option value="">{t("All states")}</option><option value="true">{t("Active")}</option><option value="false">{t("Inactive")}</option>
@@ -200,7 +200,7 @@ export function AnnouncementsView() {
 
       <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
         <table className="w-full text-left text-sm">
-          <caption className="sr-only">Announcements</caption>
+          <caption className="sr-only">{t("Announcements")}</caption>
           <thead className="border-b border-[var(--ad-border)] text-xs text-[var(--ad-text-muted)]">
             <tr>
               <th scope="col" className="px-3 py-2 font-medium">{t("title")}</th>

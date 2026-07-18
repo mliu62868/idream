@@ -1,5 +1,6 @@
 "use client";
 
+import { useAdminI18n } from "@/components/admin/i18n";
 import { RefreshCcw } from "lucide-react";
 
 export function AuthorityRequestError({
@@ -11,6 +12,7 @@ export function AuthorityRequestError({
   onRetry: () => void;
   snapshotAt?: string | null;
 }) {
+  const { t } = useAdminI18n();
   return (
     <div
       className="flex items-center justify-between gap-3 rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]"
@@ -20,7 +22,8 @@ export function AuthorityRequestError({
         <span className="block">{message}</span>
         {snapshotAt ? (
           <span className="mt-1 block text-xs">
-            Showing the last successful snapshot from{" "}
+
+            {t("Showing the last successful snapshot from")}{" "}
             <time dateTime={snapshotAt}>{formatSnapshotTime(snapshotAt)}</time>.
           </span>
         ) : null}
@@ -31,7 +34,8 @@ export function AuthorityRequestError({
         type="button"
       >
         <RefreshCcw className="h-4 w-4" />
-        Retry
+
+        {t("Retry")}
       </button>
     </div>
   );

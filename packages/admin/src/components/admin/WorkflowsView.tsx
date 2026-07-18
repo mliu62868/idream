@@ -100,7 +100,7 @@ export function WorkflowsView() {
 
       {authority.data ? <section className="rounded-lg overflow-hidden border border-[var(--ad-border)] bg-[var(--ad-surface)]">
         <table className="w-full text-left text-sm">
-          <caption className="sr-only">Generation workflows</caption>
+          <caption className="sr-only">{t("Generation workflows")}</caption>
           <thead className="border-b border-[var(--ad-border)] text-xs text-[var(--ad-text-muted)]">
             <tr>
               <th scope="col" className="px-3 py-2 font-medium"><span className="sr-only">{t("Expand")}</span></th>
@@ -210,7 +210,7 @@ function SlotTable({ slots }: { slots: WorkflowSlot[] }) {
 
   return (
     <table className="w-full text-left text-xs">
-      <caption className="sr-only">Workflow inputs</caption>
+      <caption className="sr-only">{t("Workflow inputs")}</caption>
       <thead className="text-[var(--ad-text-muted)]">
         <tr>
           <th scope="col" className="px-2 py-1 font-medium">{t("key")}</th>

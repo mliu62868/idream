@@ -1,5 +1,6 @@
 "use client";
 
+import { useAdminI18n } from "@/components/admin/i18n";
 import {
   ADMIN_DATA_CLASSES,
   accessUserListResponseSchema,
@@ -47,6 +48,7 @@ export function AccessWorkspace({
 }: {
   permissions: { changeStatus: boolean; managePermissions: boolean };
 }) {
+  const { t } = useAdminI18n();
   const [query, setQuery] = useState<AccessQuery>(() => currentQuery());
   const [draft, setDraft] = useState<AccessQuery>(() => currentQuery());
   const [data, setData] = useState<AccessUserListResponse | null>(null);
@@ -153,25 +155,27 @@ export function AccessWorkspace({
     <section className="space-y-5">
       <PageHeader
         purpose="Search the complete user authority, apply narrowly scoped permission overrides, and suspend or restore access through audited commands."
-        title="Team Access"
+        title={t("Team Access")}
       />
       <div
         className="flex flex-wrap justify-between gap-2 text-xs text-[var(--ad-text-muted)]"
         role="status"
       >
         <span>
-          Legacy compatibility authority · source freshness watermark
-          unavailable · {freshness(data, loading, error, refreshedAt)}
+
+          {t("Legacy compatibility authority · source freshness watermark unavailable ·")} {freshness(data, loading, error, refreshedAt)}
         </span>
         <span className="flex gap-3 font-semibold">
           {!permissions.managePermissions ? (
             <span>
-              Permission override unavailable · user.role.write is not granted
+
+              {t("Permission override unavailable · user.role.write is not granted")}
             </span>
           ) : null}
           {!permissions.changeStatus ? (
             <span>
-              Status change unavailable · user.status.write is not granted
+
+              {t("Status change unavailable · user.status.write is not granted")}
             </span>
           ) : null}
         </span>
@@ -222,11 +226,12 @@ export function AccessWorkspace({
             className="min-h-11 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white"
             type="submit"
           >
-            Filter users
+
+            {t("Filter users")}
           </button>
           {filtered ? (
             <button
-              aria-label="Clear access filters"
+              aria-label={t("Clear access filters")}
               className="grid min-h-11 min-w-11 place-items-center rounded-md border border-[var(--ad-border)]"
               onClick={() => navigate(defaultAccessQuery)}
               type="button"
@@ -238,10 +243,10 @@ export function AccessWorkspace({
       </form>
       {permissions.managePermissions ? (
         <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-          <h3 className="font-semibold">Permission override</h3>
+          <h3 className="font-semibold">{t("Permission override")}</h3>
           <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
-            Grant, revoke, or clear one effective permission without changing
-            the user role.
+
+            {t("Grant, revoke, or clear one effective permission without changing the user role.")}
           </p>
           <div className="mt-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_140px_auto]">
             <Field
@@ -293,7 +298,8 @@ export function AccessWorkspace({
               type="button"
             >
               <ShieldCheck className="h-4 w-4" />
-              Apply
+
+              {t("Apply")}
             </button>
           </div>
         </section>
@@ -313,29 +319,33 @@ export function AccessWorkspace({
           className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]"
           role="alert"
         >
-          Access authority refresh failed: {error}
+
+          {t("Access authority refresh failed:")} {error}
           <button
             className="ml-3 min-h-8 rounded border border-current px-2"
             onClick={() => void load(query)}
             type="button"
           >
-            Retry access
+
+            {t("Retry access")}
           </button>
           {data ? (
             <span className="ml-2">
-              The last good snapshot remains visible.
+
+              {t("The last good snapshot remains visible.")}
             </span>
           ) : null}
         </div>
       ) : null}
       {!data && loading ? (
         <div
-          aria-label="Loading access authority"
+          aria-label={t("Loading access authority")}
           className="rounded-lg border border-[var(--ad-border)] p-4"
           role="status"
         >
           <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />
-          Loading access authority
+
+          {t("Loading access authority")}
         </div>
       ) : data ? (
         users.length === 0 ? (
@@ -347,7 +357,8 @@ export function AccessWorkspace({
                   onClick={() => navigate(defaultAccessQuery)}
                   type="button"
                 >
-                  Clear filters
+
+                  {t("Clear filters")}
                 </button>
               ) : undefined
             }
@@ -376,6 +387,7 @@ export function AccessWorkspace({
               users,
               permissions.changeStatus,
               confirmCommand,
+              t,
             )}
           />
         )
@@ -390,7 +402,8 @@ export function AccessWorkspace({
           type="button"
         >
           <RefreshCcw className="h-4 w-4" />
-          Next user page
+
+          {t("Next user page")}
         </button>
       ) : null}
       {confirmation ? (
@@ -412,6 +425,7 @@ function userTableRows(
     expected: string;
     payload: (reason: string) => Record<string, unknown>;
   }) => void,
+  t: (key: string) => string,
 ): DataTableRow[] {
   return users.map((user, index) => {
     const id = text(user.id);
@@ -447,7 +461,7 @@ function userTableRows(
             ) : (
               <Ban className="h-4 w-4" />
             )}
-            {next === "active" ? "Restore" : "Suspend"}
+            {next === "active" ? t("Restore") : t("Suspend")}
           </button>
         ) : (
           "Read only"

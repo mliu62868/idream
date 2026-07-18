@@ -1,5 +1,6 @@
 "use client";
 
+import { AdminText, useAdminI18n } from "@/components/admin/i18n";
 import { Ban, Loader2, Plus, RefreshCcw, X } from "lucide-react";
 import type { FormEvent } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -43,6 +44,7 @@ const emptyAuthority = (): AuthorityState => ({
 });
 
 export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
+  const { t } = useAdminI18n();
   const [query, setQuery] = useState<PromoQuery>(() => currentQuery());
   const [draft, setDraft] = useState<PromoQuery>(() => currentQuery());
   const [codes, setCodes] = useState<AuthorityState>(emptyAuthority);
@@ -158,7 +160,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
     <section className="space-y-5">
       <PageHeader
         purpose="Operate redeem codes and inspect referral authority through independent, server-filtered snapshots."
-        title="Promotions"
+        title={t("Promotions")}
       />
       <div
         className="flex flex-wrap justify-between gap-3 text-xs text-[var(--ad-text-muted)]"
@@ -169,7 +171,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
           <Freshness label="Referrals" state={referrals} />
         </div>
         {!canWrite ? (
-          <strong>Read only · growth.promo.write is not granted</strong>
+          <strong>{t("Read only · growth.promo.write is not granted")}</strong>
         ) : null}
       </div>
       <form
@@ -203,11 +205,12 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
             className="min-h-11 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white"
             type="submit"
           >
-            Filter promotions
+
+            {t("Filter promotions")}
           </button>
           {filtered ? (
             <button
-              aria-label="Clear promotion filters"
+              aria-label={t("Clear promotion filters")}
               className="grid min-h-11 min-w-11 place-items-center rounded-md border"
               onClick={() => navigate(defaultPromoQuery)}
               type="button"
@@ -246,7 +249,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
         loadingLabel="Loading redeem-code authority"
         rows={codeRows(codes.rows ?? [], canWrite, confirmDisable)}
         state={codes}
-        title="Redeem codes"
+        title={t("Redeem codes")}
       />
       <Pager
         label="Next code page"
@@ -270,7 +273,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
         loadingLabel="Loading referral authority"
         rows={referralRows(referrals.rows ?? [])}
         state={referrals}
-        title="Referrals"
+        title={t("Referrals")}
       />
       <Pager
         label="Next referral page"
@@ -294,6 +297,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
 }
 
 function RedeemCodeForm({ onCreated }: { onCreated: () => void }) {
+  const { t } = useAdminI18n();
   const [code, setCode] = useState("");
   const [dreamcoins, setDreamcoins] = useState("");
   const [maxRedemptions, setMaxRedemptions] = useState("");
@@ -348,10 +352,10 @@ function RedeemCodeForm({ onCreated }: { onCreated: () => void }) {
 
   return (
     <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-      <h2 className="text-sm font-semibold">Create redeem code</h2>
+      <h2 className="text-sm font-semibold">{t("Create redeem code")}</h2>
       <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
-        Plaintext code is used only to derive its hash and is not returned by
-        the authority.
+
+        {t("Plaintext code is used only to derive its hash and is not returned by the authority.")}
       </p>
       <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-6">
         <Input label="Code (≥4)" onChange={setCode} value={code} />
@@ -378,7 +382,8 @@ function RedeemCodeForm({ onCreated }: { onCreated: () => void }) {
           ) : (
             <Plus className="h-4 w-4" />
           )}
-          Create
+
+          {t("Create")}
         </button>
       </div>
       {error ? (
@@ -388,12 +393,14 @@ function RedeemCodeForm({ onCreated }: { onCreated: () => void }) {
       ) : null}
       {dreamcoins.length > 0 && dreamcoinValue === null ? (
         <p className="mt-2 text-xs text-[var(--ad-red-text)]" role="alert">
-          Dreamcoins must be a whole number from 1 to 1,000,000.
+
+          {t("Dreamcoins must be a whole number from 1 to 1,000,000.")}
         </p>
       ) : null}
       {maxRedemptions.length > 0 && maxRedemptionsValue === null ? (
         <p className="mt-2 text-xs text-[var(--ad-red-text)]" role="alert">
-          Max uses must be a whole number from 1 to 1,000,000.
+
+          {t("Max uses must be a whole number from 1 to 1,000,000.")}
         </p>
       ) : null}
     </section>
@@ -425,7 +432,8 @@ function codeRows(
             type="button"
           >
             <Ban className="h-4 w-4" />
-            Disable
+
+            <AdminText text="Disable" />
           </button>
         ) : (
           "Read only"
@@ -460,7 +468,7 @@ function AuthoritySection({
   loadingLabel: string;
   rows: DataTableRow[];
   state: AuthorityState;
-  title: "Redeem codes" | "Referrals";
+  title: string;
 }) {
   if (!state.rows && state.loading) {
     return (
@@ -509,51 +517,54 @@ function AuthorityError({
   onRetry: () => void;
   state: AuthorityState;
 }) {
+  const { t } = useAdminI18n();
   if (!state.error) return null;
   return (
     <div
       className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]"
       role="alert"
     >
-      {label} authority refresh failed: {state.error}
+      {label}  {t("authority refresh failed:")} {state.error}
       <button
         className="ml-3 min-h-8 rounded border border-current px-2"
         onClick={onRetry}
         type="button"
       >
-        Retry {label}
+
+        {t("Retry")} {label}
       </button>
       {state.rows ? (
-        <span className="ml-2">The last good snapshot remains visible.</span>
+        <span className="ml-2">{t("The last good snapshot remains visible.")}</span>
       ) : null}
     </div>
   );
 }
 
 function Freshness({ label, state }: { label: string; state: AuthorityState }) {
+  const { t } = useAdminI18n();
   const time = state.refreshedAt
     ? new Date(state.refreshedAt).toLocaleTimeString()
     : "unknown";
   if (state.loading && state.rows)
     return (
       <span>
-        {label}: refreshing · showing snapshot from {time}
+        {label}{t(": refreshing · showing snapshot from")} {time}
       </span>
     );
   if (state.error && state.rows)
     return (
       <span>
-        {label}: stale · last good {time}
+        {label}{t(": stale · last good")} {time}
       </span>
     );
-  if (state.error) return <span>{label}: unavailable</span>;
+  if (state.error) return <span>{label}{t(": unavailable")}</span>;
   if (state.rows)
     return (
       <span>
-        {label}: current client snapshot · {time}
+        {label}{t(": current client snapshot ·")} {time}
       </span>
     );
-  return <span>{label}: refreshing · no snapshot yet</span>;
+  return <span>{label}{t(": refreshing · no snapshot yet")}</span>;
 }
 
 function Pager({

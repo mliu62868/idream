@@ -407,7 +407,7 @@ function BatchCard({
                       <input
                         className={cn(INPUT_CLASS, "mt-1")}
                         onChange={(event) => updateReviewDraft({ tags: event.target.value })}
-                        placeholder="selfie, sunset, beach"
+                        placeholder={t("selfie, sunset, beach")}
                         value={reviewDraft.tags}
                       />
                     </label>

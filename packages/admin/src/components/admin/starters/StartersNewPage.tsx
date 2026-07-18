@@ -118,12 +118,12 @@ export function StartersNewPage() {
       <FormSection title={t("Category")}>
         <Field label={t("Gender")}>
           <select className={INPUT_CLASS} onChange={(e) => patch({ gender: e.target.value })} value={draft.gender}>
-            {STARTER_GENDERS.map((item) => <option key={item || "any"} value={item}>{item ? value(item) : "Any gender"}</option>)}
+            {STARTER_GENDERS.map((item) => <option key={item || "any"} value={item}>{item ? value(item) : t("Any gender")}</option>)}
           </select>
         </Field>
         <Field label={t("Style")}>
           <select className={INPUT_CLASS} onChange={(e) => patch({ style: e.target.value })} value={draft.style}>
-            {STARTER_STYLES.map((item) => <option key={item || "any"} value={item}>{item ? value(item) : "Any style"}</option>)}
+            {STARTER_STYLES.map((item) => <option key={item || "any"} value={item}>{item ? value(item) : t("Any style")}</option>)}
           </select>
         </Field>
       </FormSection>
@@ -135,7 +135,7 @@ export function StartersNewPage() {
           <input className={INPUT_CLASS} onChange={(e) => patch({ tags: e.target.value })} value={draft.tags} />
         </Field>
       </FormSection>
-      <FormSection title="Reusable persona">
+      <FormSection title={t("Reusable persona")}>
         <Field full label="Creative brief">
           <textarea className={TEXTAREA_CLASS} onChange={(e) => patch({ creativeBrief: e.target.value })} value={draft.creativeBrief} />
         </Field>
@@ -158,7 +158,7 @@ export function StartersNewPage() {
           <textarea className={TEXTAREA_CLASS} onChange={(e) => patch({ exampleDialogue: e.target.value })} value={draft.exampleDialogue} />
         </Field>
       </FormSection>
-      <FormSection title="Reusable visual direction">
+      <FormSection title={t("Reusable visual direction")}>
         <Field full label="Appearance anchors">
           <textarea className={TEXTAREA_CLASS} onChange={(e) => patch({ appearanceNotes: e.target.value })} value={draft.appearanceNotes} />
         </Field>
@@ -169,7 +169,8 @@ export function StartersNewPage() {
       <FormFooter error={createError}>
         <PrimaryButton disabled={!canSubmit} onClick={() => void create()}>
           {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-          Save template draft
+
+          {t("Save template draft")}
         </PrimaryButton>
       </FormFooter>
     </FormPage>

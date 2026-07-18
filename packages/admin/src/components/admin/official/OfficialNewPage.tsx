@@ -228,23 +228,25 @@ export function OfficialNewPage() {
     <FormPage
       backHref="/admin/content/official"
       backLabel={t("Back to official characters")}
-      title="Create a character project"
+      title={t("Create a character project")}
     >
       <div className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <p className="text-sm font-semibold text-[var(--ad-ink)]">Private draft</p>
+            <p className="text-sm font-semibold text-[var(--ad-ink)]">{t("Private draft")}</p>
             <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
-              Nothing is published until you finish the character, create artwork, preview it, and choose Publish.
+
+              {t("Nothing is published until you finish the character, create artwork, preview it, and choose Publish.")}
             </p>
           </div>
           <span className="rounded-md bg-black/[0.05] px-2.5 py-1 text-xs font-medium text-[var(--ad-text-muted)]">
-            Autosaved in this browser
+
+            {t("Autosaved in this browser")}
           </span>
         </div>
       </div>
 
-      <nav aria-label="Character creation steps" className="grid gap-px overflow-hidden rounded-lg border border-[var(--ad-border)] bg-[var(--ad-border)] sm:grid-cols-4">
+      <nav aria-label={t("Character creation steps")} className="grid gap-px overflow-hidden rounded-lg border border-[var(--ad-border)] bg-[var(--ad-border)] sm:grid-cols-4">
         {STEPS.map((item, index) => (
           <button
             aria-current={step === index ? "step" : undefined}
@@ -267,10 +269,10 @@ export function OfficialNewPage() {
 
       {step === 0 ? (
         <>
-          <FormSection hint="Use a saved starter or begin with a one-line creative premise." title="Starting point">
+          <FormSection hint="Use a saved starter or begin with a one-line creative premise." title={t("Starting point")}>
             <Field full label="Start from a character starter">
               <select className={INPUT_CLASS} onChange={(event) => applyStarter(event.target.value)} value={selectedStarterId}>
-                <option value="">Blank character</option>
+                <option value="">{t("Blank character")}</option>
                 {starters.map((starter) => <option key={starter.id} value={starter.id}>{starter.name}</option>)}
               </select>
             </Field>
@@ -279,12 +281,13 @@ export function OfficialNewPage() {
                 <textarea
                   className={cn(TEXTAREA_CLASS, "min-h-20")}
                   onChange={(event) => setSeed(event.target.value)}
-                  placeholder="Example: A composed night-shift doctor with a dry sense of humor and a hidden soft side."
+                  placeholder={t("Example: A composed night-shift doctor with a dry sense of humor and a hidden soft side.")}
                   value={seed}
                 />
                 <GhostButton disabled={assisting || seed.trim().length < 3} onClick={() => void assist()}>
                   {assisting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-                  Generate foundation
+
+                  {t("Generate foundation")}
                 </GhostButton>
               </div>
             </Field>
@@ -305,7 +308,7 @@ export function OfficialNewPage() {
               </Field>
             ) : null}
           </FormSection>
-          <FormSection title="Core brief">
+          <FormSection title={t("Core brief")}>
             <Field label={t("Name (≥1)")}>
               <input className={INPUT_CLASS} onChange={(event) => patch({ name: event.target.value })} value={draft.name} />
             </Field>
@@ -326,10 +329,10 @@ export function OfficialNewPage() {
               <textarea className={TEXTAREA_CLASS} onChange={(event) => patch({ creativeBrief: event.target.value })} value={draft.creativeBrief} />
             </Field>
             <Field label="Archetype">
-              <input className={INPUT_CLASS} onChange={(event) => patch({ archetype: event.target.value })} placeholder="Mentor, rival, confidante…" value={draft.archetype} />
+              <input className={INPUT_CLASS} onChange={(event) => patch({ archetype: event.target.value })} placeholder={t("Mentor, rival, confidante…")} value={draft.archetype} />
             </Field>
             <Field label="Relationship to the user">
-              <input className={INPUT_CLASS} onChange={(event) => patch({ relationship: event.target.value })} placeholder="How they know each other" value={draft.relationship} />
+              <input className={INPUT_CLASS} onChange={(event) => patch({ relationship: event.target.value })} placeholder={t("How they know each other")} value={draft.relationship} />
             </Field>
           </FormSection>
         </>
@@ -337,7 +340,7 @@ export function OfficialNewPage() {
 
       {step === 1 ? (
         <>
-          <FormSection title="Persona foundation">
+          <FormSection title={t("Persona foundation")}>
             <Field full label={t("Description")}>
               <textarea className={TEXTAREA_CLASS} onChange={(event) => patch({ description: event.target.value })} value={draft.description} />
             </Field>
@@ -351,12 +354,12 @@ export function OfficialNewPage() {
               <textarea className={TEXTAREA_CLASS} onChange={(event) => patch({ backstory: event.target.value })} value={draft.backstory} />
             </Field>
           </FormSection>
-          <FormSection title="First conversation">
+          <FormSection title={t("First conversation")}>
             <Field full label="First message">
               <textarea className={TEXTAREA_CLASS} onChange={(event) => patch({ firstMessage: event.target.value })} value={draft.firstMessage} />
             </Field>
             <Field full label="Example dialogue">
-              <textarea className={cn(TEXTAREA_CLASS, "min-h-32")} onChange={(event) => patch({ exampleDialogue: event.target.value })} placeholder="User: …\nCharacter: …" value={draft.exampleDialogue} />
+              <textarea className={cn(TEXTAREA_CLASS, "min-h-32")} onChange={(event) => patch({ exampleDialogue: event.target.value })} placeholder={t("User: …\\nCharacter: …")} value={draft.exampleDialogue} />
             </Field>
             <Field full label={t("Tags (comma-separated, ≤12)")}>
               <input className={INPUT_CLASS} onChange={(event) => patch({ tags: event.target.value })} value={draft.tags} />
@@ -367,12 +370,12 @@ export function OfficialNewPage() {
 
       {step === 2 ? (
         <>
-          <FormSection hint="Describe what must remain recognizable across every generated image." title="Visual identity brief">
+          <FormSection hint="Describe what must remain recognizable across every generated image." title={t("Visual identity brief")}>
             <Field full label="Appearance anchors">
               <textarea
                 className={cn(TEXTAREA_CLASS, "min-h-32")}
                 onChange={(event) => patch({ appearanceNotes: event.target.value })}
-                placeholder="Face shape, eyes, hair, body silhouette, signature detail…"
+                placeholder={t("Face shape, eyes, hair, body silhouette, signature detail…")}
                 value={draft.appearanceNotes}
               />
             </Field>
@@ -380,16 +383,16 @@ export function OfficialNewPage() {
               <textarea
                 className={cn(TEXTAREA_CLASS, "min-h-32")}
                 onChange={(event) => patch({ visualBrief: event.target.value })}
-                placeholder="Wardrobe, palette, lighting, camera language, recurring settings…"
+                placeholder={t("Wardrobe, palette, lighting, camera language, recurring settings…")}
                 value={draft.visualBrief}
               />
             </Field>
           </FormSection>
           <div className="rounded-lg border border-[var(--ad-border)] bg-black/[0.025] p-5">
-            <p className="text-sm font-semibold text-[var(--ad-ink)]">Artwork comes next</p>
+            <p className="text-sm font-semibold text-[var(--ad-ink)]">{t("Artwork comes next")}</p>
             <p className="mt-1 max-w-2xl text-sm leading-relaxed text-[var(--ad-text-muted)]">
-              Saving creates a private character project. The next workspace lets you lock the visual identity,
-              generate multiple creative directions, review cover / hero / chat images, and preview the character before publishing.
+
+              {t("Saving creates a private character project. The next workspace lets you lock the visual identity, generate multiple creative directions, review cover / hero / chat images, and preview the character before publishing.")}
             </p>
           </div>
         </>
@@ -399,32 +402,33 @@ export function OfficialNewPage() {
         <>
           <div className="grid gap-4 lg:grid-cols-[1fr_0.8fr]">
             <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-6">
-              <p className="text-xs font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">Character summary</p>
+              <p className="text-xs font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">{t("Character summary")}</p>
               <h3 className="mt-3 text-2xl font-semibold tracking-tight text-[var(--ad-ink)]">{draft.name || "Untitled character"}</h3>
               <p className="mt-2 text-sm text-[var(--ad-text-muted)]">{value(draft.style)} · {value(draft.gender)} · {draft.age}</p>
               <p className="mt-5 whitespace-pre-wrap text-sm leading-relaxed text-[var(--ad-text)]">{draft.description || "Add a description before saving."}</p>
               {draft.firstMessage ? (
                 <div className="mt-5 rounded-lg bg-black/[0.035] p-4">
-                  <p className="text-xs font-semibold text-[var(--ad-text-muted)]">First message preview</p>
+                  <p className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("First message preview")}</p>
                   <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-[var(--ad-text)]">{draft.firstMessage}</p>
                 </div>
               ) : null}
             </section>
             <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-6">
-              <p className="text-sm font-semibold text-[var(--ad-ink)]">Draft readiness</p>
+              <p className="text-sm font-semibold text-[var(--ad-ink)]">{t("Draft readiness")}</p>
               <div className="mt-4 space-y-3">
                 {reviewChecks.map((check) => (
                   <div className="flex items-center justify-between gap-3" key={check.label}>
                     <span className="text-sm text-[var(--ad-text)]">{check.label}</span>
                     <span className={cn("inline-flex items-center gap-1 text-xs font-medium", check.complete ? "text-[var(--ad-green-text)]" : "text-[var(--ad-text-muted)]")}>
                       {check.complete ? <Check className="h-3.5 w-3.5" /> : null}
-                      {check.complete ? "Ready" : "Needs work"}
+                      {check.complete ? t("Ready") : t("Needs work")}
                     </span>
                   </div>
                 ))}
               </div>
               <p className="mt-5 text-xs leading-relaxed text-[var(--ad-text-muted)]">
-                Only name and description are required to save. Publishing remains unavailable until the visual and artwork checks are complete.
+
+                {t("Only name and description are required to save. Publishing remains unavailable until the visual and artwork checks are complete.")}
               </p>
             </section>
           </div>
@@ -434,18 +438,20 @@ export function OfficialNewPage() {
       <FormFooter error={error}>
         <div className="flex w-full flex-wrap items-center justify-between gap-3">
           <GhostButton disabled={step === 0 || creating} onClick={() => setStep((current) => Math.max(0, current - 1))}>
-            <ChevronLeft className="h-4 w-4" /> Back
+            <ChevronLeft className="h-4 w-4" />  {t("Back")}
           </GhostButton>
           <div className="flex items-center gap-3">
-            <span className="text-xs tabular-nums text-[var(--ad-text-muted)]">Step {step + 1} of {STEPS.length}</span>
+            <span className="text-xs tabular-nums text-[var(--ad-text-muted)]">{t("Step")} {step + 1}  {t("of")} {STEPS.length}</span>
             {step < STEPS.length - 1 ? (
               <PrimaryButton onClick={() => setStep((current) => Math.min(STEPS.length - 1, current + 1))}>
-                Continue <ChevronRight className="h-4 w-4" />
+
+                {t("Continue")} <ChevronRight className="h-4 w-4" />
               </PrimaryButton>
             ) : (
               <PrimaryButton disabled={!canSave} onClick={() => void create()}>
                 {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                Save private draft
+
+                {t("Save private draft")}
               </PrimaryButton>
             )}
           </div>

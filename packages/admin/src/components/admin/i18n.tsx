@@ -1,12 +1,26 @@
 "use client";
 
 import { createContext, useContext, type ReactNode } from "react";
+import { adminZhCoverageA } from "./i18n-zh-coverage-a";
+import { adminZhCoverageB } from "./i18n-zh-coverage-b";
+import { adminZhCoverageC } from "./i18n-zh-coverage-c";
+import { adminZhCoverageD } from "./i18n-zh-coverage-d";
+import { adminZhCoverageE } from "./i18n-zh-coverage-e";
+import { adminZhCoverageF } from "./i18n-zh-coverage-f";
+import { adminZhCoverageG } from "./i18n-zh-coverage-g";
 
 export type AdminLocale = "en" | "zh";
 
 const ADMIN_LOCALE_STORAGE_KEY = "idream.admin.locale";
 
 const zh: Record<string, string> = {
+  ...adminZhCoverageA,
+  ...adminZhCoverageB,
+  ...adminZhCoverageC,
+  ...adminZhCoverageD,
+  ...adminZhCoverageE,
+  ...adminZhCoverageF,
+  ...adminZhCoverageG,
   "Access denied": "访问被拒绝",
   "Active immediately": "立即启用",
   "Active sessions": "活跃会话",
@@ -1340,11 +1354,13 @@ const zhColumns: Record<string, string> = {
 
 const zhValues: Record<string, string> = {
   active: "启用",
+  accepted: "已接受",
   actioned: "已处理",
   all: "全部",
   anime: "动漫",
   approved: "已通过",
   archived: "已归档",
+  audit: "审计",
   available: "已就绪",
   blocked: "已拦截",
   built_in: "内置",
@@ -1357,7 +1373,10 @@ const zhValues: Record<string, string> = {
   configured: "已配置",
   diffusers: "Diffusers",
   disconnected: "未连接",
+  detected: "已发现",
+  development: "开发环境",
   draft: "草稿",
+  due_today: "今日到期",
   due_soon: "即将超时",
   expired: "已过期",
   external: "外部",
@@ -1373,14 +1392,23 @@ const zhValues: Record<string, string> = {
   revoke: "撤销",
   clear: "清除",
   hybrid: "混合",
+  high: "高",
   image: "图片",
   info: "信息",
+  in_progress: "进行中",
+  in_review: "审核中",
   input: "输入",
   inspected_not_imported: "已检查但未导入",
+  internal: "内部",
   male: "男性",
   manual_passed: "人工通过",
+  medium: "中",
+  mitigating: "缓解中",
   mlx: "MLX",
   missing: "缺失",
+  monitoring: "监控中",
+  mine: "我的",
+  new: "新建",
   negative: "负向",
   not_required: "无需验证",
   offline: "下线",
@@ -1409,9 +1437,11 @@ const zhValues: Record<string, string> = {
   sd_cpp: "sd.cpp",
   sent: "已发送",
   suspended: "已封禁",
+  succeeded: "已成功",
   trans: "跨性别",
   unlimited: "无限",
   unsupported: "不支持",
+  unknown: "未知",
   verified: "已验证",
   video: "视频",
   voice: "语音",
@@ -1433,6 +1463,16 @@ const zhValues: Record<string, string> = {
   moderating_input: "输入审核中",
   moderating_output: "输出审核中",
   reserved: "已预留",
+  staging: "预发布环境",
+  test: "测试环境",
+  triaged: "已分诊",
+  upcoming: "即将到期",
+  validating: "验证中",
+  verifying: "验证中",
+  waiting: "等待中",
+  production: "生产环境",
+  low: "低",
+  critical: "严重",
   // Image library grid + detail (task 16) — MediaAsset.platformStatus "generated" (approved/
   // rejected/published/archived/draft already exist above), ContentProductionBatch.targetType
   // enum beyond "character" (already exists), and productionPurposeSchema (asset "purpose" +
@@ -1493,14 +1533,36 @@ export function storeAdminLocale(locale: AdminLocale) {
 }
 
 export function translateAdmin(locale: AdminLocale, key: string, values?: TranslationValues) {
-  const template = locale === "zh" ? zh[key] ?? key : key;
+  const template = locale === "zh"
+    ? zh[key] ?? zhValues[key] ?? translateDynamicAdminZh(key) ?? key
+    : key;
   return interpolate(template, values);
 }
 
-// SPEC: does the zh dict have a real translation for `key` (vs. falling back to English)?
+function translateDynamicAdminZh(key: string) {
+  const characterCommand = /^character (.+) command is ([a-z_]+)$/i.exec(key);
+  if (characterCommand) {
+    const [, characterId, status] = characterCommand;
+    return `角色 ${characterId} 的命令状态为 ${zhValues[status] ?? status}`;
+  }
+
+  const openSince = /^([a-z_]+) severity · open since (.+)$/i.exec(key);
+  if (openSince) {
+    const [, severity, since] = openSince;
+    return `${zhValues[severity] ?? severity}严重程度 · 开始于 ${since}`;
+  }
+
+  return undefined;
+}
+
+// SPEC: does the Chinese locale have a real translation for `key`
+// (dictionary text or a translated enum value, rather than falling back to English)?
 // Used by tests to lock that a given nav/label key is actually translated, not just rendered.
 export function hasAdminZh(key: string): boolean {
-  return Object.prototype.hasOwnProperty.call(zh, key);
+  return (
+    Object.prototype.hasOwnProperty.call(zh, key) ||
+    Object.prototype.hasOwnProperty.call(zhValues, key)
+  );
 }
 
 export function adminColumnLabel(locale: AdminLocale, key: string) {
@@ -1538,9 +1600,14 @@ export function AdminI18nProvider({
     value: (key) => adminValueLabel(locale, key),
   };
 
-  return <AdminI18nContext.Provider value={value}>{children}</AdminI18nContext.Provider>;
+  return <AdminI18nContext value={value}>{children}</AdminI18nContext>;
 }
 
 export function useAdminI18n() {
   return useContext(AdminI18nContext);
+}
+
+export function AdminText({ text }: { text: string }) {
+  const { t } = useAdminI18n();
+  return t(text);
 }

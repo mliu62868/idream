@@ -1,5 +1,6 @@
 "use client";
 
+import { useAdminI18n } from "@/components/admin/i18n";
 import {
   characterProjectCreateRequestSchema,
   characterProjectCreateResponseSchema,
@@ -247,6 +248,7 @@ export function CharacterCreateWizard({
   actorId?: string;
   canCreate: boolean;
 }) {
+  const { t } = useAdminI18n();
   const router = useRouter();
   const createScope = `character-project:create:${actorId}`;
   const [createIntent, setCreateIntent] =
@@ -644,8 +646,8 @@ export function CharacterCreateWizard({
     return (
       <section className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-6 sm:p-8">
         <ShieldAlert className="h-6 w-6 text-[var(--ad-text-muted)]" />
-        <h2 className="mt-4 text-lg font-semibold">No permission</h2>
-        <p className="mt-2 text-sm text-[var(--ad-text-muted)]">Your effective grants do not include character.project.write.</p>
+        <h2 className="mt-4 text-lg font-semibold">{t("No permission")}</h2>
+        <p className="mt-2 text-sm text-[var(--ad-text-muted)]">{t("Your effective grants do not include character.project.write.")}</p>
       </section>
     );
   }
@@ -744,20 +746,21 @@ export function CharacterCreateWizard({
     <section className="mx-auto max-w-4xl" data-testid="character-create-wizard">
       <header className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 sm:p-6">
         <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">
-          Character Studio · {authority ? "Server draft" : "Recoverable draft"}
+
+          {t("Character Studio ·")} {authority ? t("Server draft") : t("Recoverable draft")}
         </p>
         <div className="mt-2 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <h2 className="text-2xl font-semibold">Create Character Project</h2>
+            <h2 className="text-2xl font-semibold">{t("Create Character Project")}</h2>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--ad-text-muted)]">
               {authority
-                ? "This server draft autosaves immutable Project and content revisions."
-                : "Complete the required sections without creating placeholder data. This browser keeps the draft until Review creates the Character authority."}
+                ? t("This server draft autosaves immutable Project and content revisions.")
+                : t("Complete the required sections without creating placeholder data. This browser keeps the draft until Review creates the Character authority.")}
             </p>
           </div>
           <SaveIndicator state={saveState} />
         </div>
-        <ol className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-5" aria-label="Character creation progress">
+        <ol className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-5" aria-label={t("Character creation progress")}>
           {steps.map((label, index) => (
             <li aria-current={index === step ? "step" : undefined} className={cn("rounded-md border px-3 py-2 text-xs", index === step ? "border-[var(--ad-ink)] font-semibold" : "border-[var(--ad-border)] text-[var(--ad-text-muted)]")} key={label}>
               <span className="mr-1 tabular-nums">{index + 1}.</span>{label}
@@ -768,7 +771,7 @@ export function CharacterCreateWizard({
 
       <div className="mt-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 sm:p-6">
         <h2 className="text-lg font-semibold">{currentLabel}</h2>
-        <p className="mt-1 text-xs text-[var(--ad-text-muted)]">Project version {authority?.projectVersion ?? "not created"}</p>
+        <p className="mt-1 text-xs text-[var(--ad-text-muted)]">{t("Project version")} {authority?.projectVersion ?? t("not created")}</p>
         <fieldset
           className="mt-5"
           disabled={
@@ -792,15 +795,15 @@ export function CharacterCreateWizard({
           id="character-create-step-requirements"
         >
           {currentStepComplete
-            ? "Required information complete."
+            ? t("Required information complete.")
             : stepRequirements[step]}
         </p>
         {error ? <p className="mt-4 rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">{error}</p> : null}
         {recoveryNotice ? <p className="mt-4 rounded-md bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]" role="status">{recoveryNotice}</p> : null}
         {resumeState === "restore_failed" ? (
           <div className="mt-4 rounded-lg border border-[var(--ad-border)] p-3">
-            <p className="text-sm font-semibold">The requested server draft was not restored.</p>
-            <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">Navigation is locked so this page cannot silently create a second Character.</p>
+            <p className="text-sm font-semibold">{t("The requested server draft was not restored.")}</p>
+            <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">{t("Navigation is locked so this page cannot silently create a second Character.")}</p>
             <div className="mt-3 flex flex-wrap gap-2">
               <WorkspaceButton
                 onClick={() => {
@@ -808,19 +811,23 @@ export function CharacterCreateWizard({
                   if (typeof target === "string") void restoreDraft(target);
                 }}
               >
-                Retry restore
+
+                {t("Retry restore")}
               </WorkspaceButton>
               {!confirmStartNew ? (
                 <WorkspaceButton onClick={() => setConfirmStartNew(true)}>
-                  Start a new Character instead
+
+                  {t("Start a new Character instead")}
                 </WorkspaceButton>
               ) : (
                 <>
                   <WorkspaceButton onClick={() => setConfirmStartNew(false)}>
-                    Keep this draft
+
+                    {t("Keep this draft")}
                   </WorkspaceButton>
                   <WorkspaceButton onClick={startNewCharacter} tone="danger">
-                    Confirm start new
+
+                    {t("Confirm start new")}
                   </WorkspaceButton>
                 </>
               )}
@@ -833,13 +840,13 @@ export function CharacterCreateWizard({
             !characterProjectCreateRequestSchema.safeParse(
               createIntent.requestSnapshot,
             ).success
-              ? "This saved request is aged or no longer matches the active contract. Reconcile its server receipt before editing or creating another Character."
-              : "A Character creation request is unresolved. Resume it to reuse the same request key; form fields remain locked until the authority responds."}
+              ? t("This saved request is aged or no longer matches the active contract. Reconcile its server receipt before editing or creating another Character.")
+              : t("A Character creation request is unresolved. Resume it to reuse the same request key; form fields remain locked until the authority responds.")}
           </p>
         ) : null}
         <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-between">
           <WorkspaceButton disabled={step === 0 || navigationLocked} onClick={() => setStep((current) => Math.max(0, current - 1))}>
-            <ArrowLeft className="h-4 w-4" /> Back
+            <ArrowLeft className="h-4 w-4" />  {t("Back")}
           </WorkspaceButton>
           {step < steps.length - 1 ? (
             <WorkspaceButton
@@ -856,11 +863,11 @@ export function CharacterCreateWizard({
                   !characterProjectCreateRequestSchema.safeParse(
                     createIntent.requestSnapshot,
                   ).success
-                  ? "Reconcile saved request"
-                  : "Resume Character creation"
+                  ? t("Reconcile saved request")
+                  : t("Resume Character creation")
                 : step === 0
-                  ? "Continue to persona"
-                  : "Continue"} <ArrowRight className="h-4 w-4" />
+                  ? t("Continue to persona")
+                  : t("Continue")} <ArrowRight className="h-4 w-4" />
             </WorkspaceButton>
           ) : (
             <WorkspaceButton
@@ -872,7 +879,7 @@ export function CharacterCreateWizard({
               onClick={() => void finish()}
               tone="primary"
             >
-              <Check className="h-4 w-4" /> Save character & open portrait studio
+              <Check className="h-4 w-4" />  {t("Save character & open portrait studio")}
             </WorkspaceButton>
           )}
         </div>
@@ -953,25 +960,29 @@ function Area({
 }
 
 function PositioningStep({ draft, update }: StepProps) {
+  const { t } = useAdminI18n();
   const set = (field: keyof Draft["positioning"], value: string) => update("positioning", { ...draft.positioning, [field]: value });
-  return <Grid><Area label="Audience" onChange={(value) => set("audience", value)} placeholder="Adults winding down after high-pressure work" value={draft.positioning.audience} /><Area label="Companion need" onChange={(value) => set("companionNeed", value)} placeholder="A dependable evening ritual that helps them decompress" value={draft.positioning.companionNeed} /><Area label="Hypothesis" onChange={(value) => set("hypothesis", value)} placeholder="Specific evening rituals improve qualified conversations" value={draft.positioning.hypothesis} /><Area label="Differentiation" onChange={(value) => set("differentiation", value)} placeholder="Calm direction without generic affirmation" value={draft.positioning.differentiation} /></Grid>;
+  return <Grid><Area label="Audience" onChange={(value) => set("audience", value)} placeholder={t("Adults winding down after high-pressure work")} value={draft.positioning.audience} /><Area label="Companion need" onChange={(value) => set("companionNeed", value)} placeholder={t("A dependable evening ritual that helps them decompress")} value={draft.positioning.companionNeed} /><Area label="Hypothesis" onChange={(value) => set("hypothesis", value)} placeholder={t("Specific evening rituals improve qualified conversations")} value={draft.positioning.hypothesis} /><Area label="Differentiation" onChange={(value) => set("differentiation", value)} placeholder={t("Calm direction without generic affirmation")} value={draft.positioning.differentiation} /></Grid>;
 }
 
 type StepProps = { draft: Draft; update: <K extends keyof Draft>(section: K, value: Draft[K]) => void };
 
 function PersonaStep({ draft, update }: StepProps) {
+  const { t } = useAdminI18n();
   const set = <K extends keyof Draft["persona"]>(field: K, value: Draft["persona"][K]) => update("persona", { ...draft.persona, [field]: value });
-  return <div className="space-y-4"><Grid><Field label="Name" onChange={(value) => set("name", value)} placeholder="Mara" value={draft.persona.name} /><Field label="Age (18+)" onChange={(value) => set("age", Math.max(18, Number(value) || 18))} type="number" value={draft.persona.age} /><label className="text-xs font-semibold text-[var(--ad-text-muted)]">Gender<select className={`${fieldClass} mt-1`} onChange={(event) => set("gender", event.target.value as Draft["persona"]["gender"])} value={draft.persona.gender}><option value="female">Female</option><option value="male">Male</option><option value="trans">Trans</option></select></label><Field label="Relationship archetype" onChange={(value) => set("relationshipArchetype", value)} placeholder="Steady confidante" value={draft.persona.relationshipArchetype} /></Grid><Grid><Area label="Character promise" onChange={(value) => set("characterPromise", value)} placeholder="A precise, warm place to put the day down" value={draft.persona.characterPromise} /><Area label="Personality" onChange={(value) => set("personality", value)} placeholder="Observant, measured, gently challenging" value={draft.persona.personality} /><Area label="Tone" onChange={(value) => set("tone", value)} placeholder="Warm, concise, grounded" value={draft.persona.tone} /><Area label="Backstory" onChange={(value) => set("backstory", value)} placeholder="The experiences that shaped this character's point of view" value={draft.persona.backstory} /><Area label="First message" onChange={(value) => set("firstMessage", value)} placeholder="You made it. What do you need to put down tonight?" value={draft.persona.firstMessage} /><Area label="Example dialogue (one per line)" onChange={(value) => set("exampleDialogue", lines(value))} placeholder="Tell me the part you keep replaying." value={draft.persona.exampleDialogue.join("\n")} /></Grid></div>;
+  return <div className="space-y-4"><Grid><Field label="Name" onChange={(value) => set("name", value)} placeholder={t("Mara")} value={draft.persona.name} /><Field label="Age (18+)" onChange={(value) => set("age", Math.max(18, Number(value) || 18))} type="number" value={draft.persona.age} /><label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Gender")}<select className={`${fieldClass} mt-1`} onChange={(event) => set("gender", event.target.value as Draft["persona"]["gender"])} value={draft.persona.gender}><option value="female">{t("Female")}</option><option value="male">{t("Male")}</option><option value="trans">{t("Trans")}</option></select></label><Field label="Relationship archetype" onChange={(value) => set("relationshipArchetype", value)} placeholder={t("Steady confidante")} value={draft.persona.relationshipArchetype} /></Grid><Grid><Area label="Character promise" onChange={(value) => set("characterPromise", value)} placeholder={t("A precise, warm place to put the day down")} value={draft.persona.characterPromise} /><Area label="Personality" onChange={(value) => set("personality", value)} placeholder={t("Observant, measured, gently challenging")} value={draft.persona.personality} /><Area label="Tone" onChange={(value) => set("tone", value)} placeholder={t("Warm, concise, grounded")} value={draft.persona.tone} /><Area label="Backstory" onChange={(value) => set("backstory", value)} placeholder={t("The experiences that shaped this character's point of view")} value={draft.persona.backstory} /><Area label="First message" onChange={(value) => set("firstMessage", value)} placeholder={t("You made it. What do you need to put down tonight?")} value={draft.persona.firstMessage} /><Area label="Example dialogue (one per line)" onChange={(value) => set("exampleDialogue", lines(value))} placeholder={t("Tell me the part you keep replaying.")} value={draft.persona.exampleDialogue.join("\n")} /></Grid></div>;
 }
 
 function VisualStep({ draft, update }: StepProps) {
+  const { t } = useAdminI18n();
   const set = <K extends keyof Draft["visualDirection"]>(field: K, value: Draft["visualDirection"][K]) => update("visualDirection", { ...draft.visualDirection, [field]: value });
-  return <Grid><Area label="Identity anchor" onChange={(value) => set("identityAnchor", value)} placeholder="Composed late-night radio host" value={draft.visualDirection.identityAnchor} /><Area label="Stable traits (one per line)" onChange={(value) => set("stableTraits", lines(value))} placeholder={"Dark wavy hair\nWarm brown eyes"} value={draft.visualDirection.stableTraits.join("\n")} /><label className="text-xs font-semibold text-[var(--ad-text-muted)]">Visual style<select className={`${fieldClass} mt-1`} onChange={(event) => set("style", event.target.value as Draft["visualDirection"]["style"])} value={draft.visualDirection.style}><option value="realistic">Realistic</option><option value="anime">Anime</option><option value="hybrid">Hybrid</option><option value="other">Other</option></select></label><Area label="Reference direction" onChange={(value) => set("referenceDirection", value)} placeholder="Low-key tungsten portraiture with an intimate editorial crop" value={draft.visualDirection.referenceDirection} /></Grid>;
+  return <Grid><Area label="Identity anchor" onChange={(value) => set("identityAnchor", value)} placeholder={t("Composed late-night radio host")} value={draft.visualDirection.identityAnchor} /><Area label="Stable traits (one per line)" onChange={(value) => set("stableTraits", lines(value))} placeholder={"Dark wavy hair\nWarm brown eyes"} value={draft.visualDirection.stableTraits.join("\n")} /><label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Visual style")}<select className={`${fieldClass} mt-1`} onChange={(event) => set("style", event.target.value as Draft["visualDirection"]["style"])} value={draft.visualDirection.style}><option value="realistic">{t("Realistic")}</option><option value="anime">{t("Anime")}</option><option value="hybrid">{t("Hybrid")}</option><option value="other">{t("Other")}</option></select></label><Area label="Reference direction" onChange={(value) => set("referenceDirection", value)} placeholder={t("Low-key tungsten portraiture with an intimate editorial crop")} value={draft.visualDirection.referenceDirection} /></Grid>;
 }
 
 function CommercialStep({ draft, update }: StepProps) {
+  const { t } = useAdminI18n();
   const set = <K extends keyof Draft["commercialIntent"]>(field: K, value: Draft["commercialIntent"][K]) => update("commercialIntent", { ...draft.commercialIntent, [field]: value });
-  return <Grid><Field label="Owner ID (optional)" onChange={(value) => set("ownerId", value.trim() || null)} placeholder="Assign after creation if needed" required={false} value={draft.commercialIntent.ownerId ?? ""} /><Field label="Planned launch (optional)" onChange={(value) => set("plannedLaunchAt", value ? new Date(value).toISOString() : null)} required={false} type="datetime-local" value={dateInput(draft.commercialIntent.plannedLaunchAt)} /><Area label="Target placements (optional, one per line)" onChange={(value) => set("targetPlacementKeys", lines(value))} placeholder={"feed_card\nevening_collection"} required={false} value={draft.commercialIntent.targetPlacementKeys.join("\n")} /><Area label="Success criteria (one per line)" onChange={(value) => set("successCriteria", lines(value))} placeholder="QCE improves without D7 regression" value={draft.commercialIntent.successCriteria.join("\n")} /><Area label="Production package" onChange={(value) => set("productionPackage", value)} placeholder="Primary portrait, hero, and chat image baseline" value={draft.commercialIntent.productionPackage} /><Area label="QA plan" onChange={(value) => set("qaPlan", value)} placeholder="Mobile and desktop preview plus five-turn conversation review" value={draft.commercialIntent.qaPlan} /></Grid>;
+  return <Grid><Field label="Owner ID (optional)" onChange={(value) => set("ownerId", value.trim() || null)} placeholder={t("Assign after creation if needed")} required={false} value={draft.commercialIntent.ownerId ?? ""} /><Field label="Planned launch (optional)" onChange={(value) => set("plannedLaunchAt", value ? new Date(value).toISOString() : null)} required={false} type="datetime-local" value={dateInput(draft.commercialIntent.plannedLaunchAt)} /><Area label="Target placements (optional, one per line)" onChange={(value) => set("targetPlacementKeys", lines(value))} placeholder={"feed_card\nevening_collection"} required={false} value={draft.commercialIntent.targetPlacementKeys.join("\n")} /><Area label="Success criteria (one per line)" onChange={(value) => set("successCriteria", lines(value))} placeholder={t("QCE improves without D7 regression")} value={draft.commercialIntent.successCriteria.join("\n")} /><Area label="Production package" onChange={(value) => set("productionPackage", value)} placeholder={t("Primary portrait, hero, and chat image baseline")} value={draft.commercialIntent.productionPackage} /><Area label="QA plan" onChange={(value) => set("qaPlan", value)} placeholder={t("Mobile and desktop preview plus five-turn conversation review")} value={draft.commercialIntent.qaPlan} /></Grid>;
 }
 
 function ReviewStep({ draft }: { draft: Draft }) {

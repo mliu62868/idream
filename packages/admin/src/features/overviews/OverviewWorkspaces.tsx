@@ -1,5 +1,6 @@
 "use client";
 
+import { useAdminI18n } from "@/components/admin/i18n";
 import type { MetricDashboardResponse } from "@idream/shared/admin";
 import { RefreshCcw } from "lucide-react";
 import type { FormEvent, ReactNode } from "react";
@@ -55,6 +56,7 @@ export function AnalyticsWorkspace({
   canReadCanonical: boolean;
   canReadLegacy: boolean;
 }) {
+  const { t } = useAdminI18n();
   const [query, setQuery] = useState(() => currentQuery("analytics"));
   const [draft, setDraft] = useState(query);
   const [canonical, setCanonical] =
@@ -105,13 +107,13 @@ export function AnalyticsWorkspace({
   }
 
   if (!canReadCanonical && !canReadLegacy) {
-    return <NoPermission title="Product Health" permission="metrics.read" />;
+    return <NoPermission title={t("Product Health")} permission="metrics.read" />;
   }
   return (
     <section className="space-y-5">
       <PageHeader
         purpose="Compare certified product metrics with separately sourced legacy operational diagnostics."
-        title="Product Health"
+        title={t("Product Health")}
       />
       <FreshnessLine
         entries={[
@@ -137,6 +139,7 @@ export function AnalyticsWorkspace({
 }
 
 export function RiskWorkspace({ canRead }: { canRead: boolean }) {
+  const { t } = useAdminI18n();
   return (
     <SingleOverview<RiskData>
       canRead={canRead}
@@ -149,27 +152,28 @@ export function RiskWorkspace({ canRead }: { canRead: boolean }) {
           <Rows
             columns={["anonymousId", "accountCount", "userIds"]}
             rows={data.deviceClusters}
-            title="Multi-account device clusters"
+            title={t("Multi-account device clusters")}
           />
           <Rows
             columns={["inviterId", "referralCount"]}
             rows={data.referralAbuse}
-            title="Referral farming (≥3 invites)"
+            title={t("Referral farming (≥3 invites)")}
           />
           <Rows
             columns={["userId", "count", "totalDelta"]}
             rows={data.adjustAnomalies}
-            title="Manual adjust anomalies"
+            title={t("Manual adjust anomalies")}
           />
         </>
       )}
       scope="risk"
-      title="Risk Cases"
+      title={t("Risk Cases")}
     />
   );
 }
 
 export function ProviderOverviewWorkspace({ canRead }: { canRead: boolean }) {
+  const { t } = useAdminI18n();
   return (
     <SingleOverview<ProviderData>
       canRead={canRead}
@@ -194,12 +198,12 @@ export function ProviderOverviewWorkspace({ canRead }: { canRead: boolean }) {
               "latencySamples",
             ]}
             rows={data.providers}
-            title="Provider health & cost"
+            title={t("Provider health & cost")}
           />
         </>
       )}
       scope="provider"
-      title="Providers"
+      title={t("Providers")}
     />
   );
 }
@@ -333,6 +337,7 @@ function WindowForm({
   onChange: (value: OverviewQuery) => void;
   onSubmit: (value: OverviewQuery) => void;
 }) {
+  const { t } = useAdminI18n();
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     onSubmit(draft);
@@ -356,14 +361,16 @@ function WindowForm({
         className="h-10 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white"
         type="submit"
       >
-        Apply window
+
+        {t("Apply window")}
       </button>
       <button
         className="h-10 rounded-md border border-[var(--ad-border)] px-4 text-sm"
         onClick={() => onSubmit({ from: "", to: "" })}
         type="button"
       >
-        Reset
+
+        {t("Reset")}
       </button>
     </form>
   );
@@ -392,11 +399,13 @@ function DateField({
 }
 
 function CanonicalMetrics({ data }: { data: MetricDashboardResponse }) {
+  const { t } = useAdminI18n();
   return (
     <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-      <h2 className="text-sm font-semibold">Canonical Metrics v2</h2>
+      <h2 className="text-sm font-semibold">{t("Canonical Metrics v2")}</h2>
       <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
-        asOf {formatDate(data.asOf)} · {data.freshness}
+
+        {t("asOf")} {formatDate(data.asOf)} · {data.freshness}
       </p>
       <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
         {data.cards.map((card) => (
@@ -413,7 +422,7 @@ function CanonicalMetrics({ data }: { data: MetricDashboardResponse }) {
                   : card.value}
             </p>
             <p className="mt-2 text-xs text-[var(--ad-text-muted)]">
-              v{card.definitionVersion} · sample {card.sampleSize} ·{" "}
+              v{card.definitionVersion}  {t("· sample")} {card.sampleSize} ·{" "}
               {card.qualityState}
             </p>
           </div>
@@ -424,6 +433,7 @@ function CanonicalMetrics({ data }: { data: MetricDashboardResponse }) {
 }
 
 function LegacyAnalytics({ data }: { data: AnalyticsData }) {
+  const { t } = useAdminI18n();
   return (
     <div className="space-y-4">
       <Window window={data.window} />
@@ -436,12 +446,12 @@ function LegacyAnalytics({ data }: { data: AnalyticsData }) {
       <Rows
         columns={["reason", "totalDelta", "count"]}
         rows={data.economy.byReason}
-        title="Coin economy by reason"
+        title={t("Coin economy by reason")}
       />
       <Rows
         columns={["name", "count"]}
         rows={data.topEvents}
-        title="Top events"
+        title={t("Top events")}
       />
     </div>
   );
@@ -465,6 +475,7 @@ function Rows({
   rows: Row[];
   title: string;
 }) {
+  const { t } = useAdminI18n();
   const tableRows: DataTableRow[] = rows.map((row, index) => ({
     id: stringValue(row.id) || `${title}-${index}`,
     cells: columns.map((column) => cell(row[column])),
@@ -472,7 +483,7 @@ function Rows({
   return (
     <DataTable
       caption={title}
-      empty={<EmptyState title={`No ${title.toLowerCase()}`} />}
+      empty={<EmptyState title={t("No {title}", { title: t(title.toLowerCase()) })} />}
       headers={columns}
       rows={tableRows}
     />
@@ -484,6 +495,7 @@ function FreshnessLine({
 }: {
   entries: Array<[string, State<unknown>, boolean]>;
 }) {
+  const { t } = useAdminI18n();
   return (
     <div
       className="flex flex-wrap gap-3 text-xs text-[var(--ad-text-muted)]"
@@ -495,10 +507,10 @@ function FreshnessLine({
           <span key={label}>
             {label}:{" "}
             {state.loading
-              ? "refreshing"
+              ? t("refreshing")
               : state.error
-                ? "stale · retry available"
-                : `fresh ${state.refreshedAt ? new Date(state.refreshedAt).toLocaleTimeString() : ""}`}
+                ? t("stale · retry available")
+                : t("fresh {time}", { time: state.refreshedAt ? new Date(state.refreshedAt).toLocaleTimeString() : "" })}
           </span>
         ))}
     </div>
@@ -512,6 +524,7 @@ function AuthorityError({
   error: string | null;
   onRetry: () => void;
 }) {
+  const { t } = useAdminI18n();
   if (!error) return null;
   return (
     <div
@@ -525,7 +538,8 @@ function AuthorityError({
         type="button"
       >
         <RefreshCcw className="h-4 w-4" />
-        Retry
+
+        {t("Retry")}
       </button>
     </div>
   );
@@ -550,17 +564,21 @@ function NoPermission({
 }
 
 function PermissionNote({ permission }: { permission: string }) {
+  const { t } = useAdminI18n();
   return (
     <p className="rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 text-sm text-[var(--ad-text-muted)]">
-      No access · {permission} is not granted
+
+      {t("No access ·")} {permission} {t("is not granted")}
     </p>
   );
 }
 
 function Window({ window }: { window: { from: string; to: string } }) {
+  const { t } = useAdminI18n();
   return (
     <p className="text-xs text-[var(--ad-text-muted)]">
-      Window {formatDate(window.from)} → {formatDate(window.to)}
+
+      {t("Window")} {formatDate(window.from)} → {formatDate(window.to)}
     </p>
   );
 }

@@ -1,3 +1,4 @@
+import { useAdminI18n } from "@/components/admin/i18n";
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -35,6 +36,7 @@ export function WorkspaceButton({
 }
 
 export function StatusBadge({ value, tone }: { value: string; tone?: "good" | "warn" | "bad" | "neutral" }) {
+  const { t } = useAdminI18n();
   const resolvedTone = tone ?? statusTone(value);
   return (
     <span
@@ -46,15 +48,16 @@ export function StatusBadge({ value, tone }: { value: string; tone?: "good" | "w
         resolvedTone === "neutral" && "bg-[var(--ad-blue-bg)] text-[var(--ad-blue-text)]",
       )}
     >
-      {value.replaceAll("_", " ")}
+      {t(value.replaceAll("_", " "))}
     </span>
   );
 }
 
 export function LoadingWorkspace({ label }: { label: string }) {
+  const { t } = useAdminI18n();
   return (
-    <div aria-busy="true" aria-label={label} className="space-y-4 rounded-xl bg-[var(--ad-surface)] p-5" role="status">
-      <span className="inline-flex items-center gap-2 text-sm text-[var(--ad-text-muted)]"><Loader2 className="h-4 w-4 animate-spin" /> {label}</span>
+    <div aria-busy="true" aria-label={t(label)} className="space-y-4 rounded-xl bg-[var(--ad-surface)] p-5" role="status">
+      <span className="inline-flex items-center gap-2 text-sm text-[var(--ad-text-muted)]"><Loader2 className="h-4 w-4 animate-spin" /> {t(label)}</span>
       <div aria-hidden="true" className="grid animate-pulse gap-3 sm:grid-cols-3">
         <span className="h-16 rounded-md bg-black/[0.05]" />
         <span className="h-16 rounded-md bg-black/[0.05]" />
@@ -66,23 +69,25 @@ export function LoadingWorkspace({ label }: { label: string }) {
 }
 
 export function EmptyWorkspace({ filtered, onClear }: { filtered: boolean; onClear: () => void }) {
+  const { t } = useAdminI18n();
   return (
     <section className="rounded-xl bg-[var(--ad-surface)] px-6 py-14 text-center">
-      <h3 className="text-base font-semibold">{filtered ? "No work matches these filters" : "The queue is clear"}</h3>
+      <h3 className="text-base font-semibold">{filtered ? t("No work matches these filters") : t("The queue is clear")}</h3>
       <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-[var(--ad-text-muted)]">
         {filtered
-          ? "The authority searched the full queue. Clear filters to return to the default operational view."
-          : "New work appears here when authoritative signals create an incident or case."}
+          ? t("The authority searched the full queue. Clear filters to return to the default operational view.")
+          : t("New work appears here when authoritative signals create an incident or case.")}
       </p>
-      {filtered ? <div className="mt-5"><WorkspaceButton onClick={onClear}>Clear filters</WorkspaceButton></div> : null}
+      {filtered ? <div className="mt-5"><WorkspaceButton onClick={onClear}>{t("Clear filters")}</WorkspaceButton></div> : null}
     </section>
   );
 }
 
 export function RelativeTime({ referenceTime, value }: { referenceTime: string; value: string }) {
+  const { locale } = useAdminI18n();
   const date = new Date(value);
   const diffMinutes = Math.round((date.getTime() - new Date(referenceTime).getTime()) / 60_000);
-  const relative = new Intl.RelativeTimeFormat("en", { numeric: "auto" }).format(
+  const relative = new Intl.RelativeTimeFormat(locale === "zh" ? "zh-CN" : "en", { numeric: "auto" }).format(
     Math.abs(diffMinutes) < 60 ? diffMinutes : Math.round(diffMinutes / 60),
     Math.abs(diffMinutes) < 60 ? "minute" : "hour",
   );

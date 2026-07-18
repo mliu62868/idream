@@ -248,7 +248,7 @@ export function ProductionStudioView() {
         action={<RefreshButton busy={loading} onClick={load} />}
         eyebrow="Media"
         icon={<Play className="h-5 w-5" />}
-        title="Production Studio"
+        title={t("Production Studio")}
       />
       <InlineError message={error} />
 
@@ -459,13 +459,16 @@ function ReviewGrid({
               </p>
               <div className="flex flex-wrap gap-2">
                 <SmallButton disabled={busy || !item.asset} icon={<Check className="h-3.5 w-3.5" />} onClick={() => onReview(item.id, "approve")}>
-                  Approve
+
+                  {t("Approve")}
                 </SmallButton>
                 <SmallButton disabled={busy} icon={<X className="h-3.5 w-3.5" />} onClick={() => onReview(item.id, "reject")}>
-                  Reject
+
+                  {t("Reject")}
                 </SmallButton>
                 <SmallButton disabled={busy} icon={<RotateCcw className="h-3.5 w-3.5" />} onClick={() => onReview(item.id, "regenerate")}>
-                  Regenerate
+
+                  {t("Regenerate")}
                 </SmallButton>
               </div>
             </div>

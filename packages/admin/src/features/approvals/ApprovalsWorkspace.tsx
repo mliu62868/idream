@@ -1,5 +1,6 @@
 "use client";
 
+import { useAdminI18n } from "@/components/admin/i18n";
 import { Check, Loader2, RefreshCcw, X } from "lucide-react";
 import type { FormEvent } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -26,6 +27,7 @@ type PageInfo = { endCursor: string | null; hasNextPage: boolean };
 type ListResponse = { items: Row[]; pageInfo?: PageInfo };
 
 export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
+  const { t } = useAdminI18n();
   const [query, setQuery] = useState<ApprovalQuery>(() => currentQuery());
   const [draft, setDraft] = useState<ApprovalQuery>(() => currentQuery());
   const [data, setData] = useState<ListResponse | null>(null);
@@ -126,17 +128,18 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
     <section className="space-y-5">
       <PageHeader
         purpose="Review high-risk requests from the complete approval authority; requester separation and required permissions remain server-enforced."
-        title="Approvals"
+        title={t("Approvals")}
       />
       <div
         className="flex flex-wrap justify-between gap-2 text-xs text-[var(--ad-text-muted)]"
         role="status"
       >
         <span>
-          Approval authority · {freshness(data, loading, error, refreshedAt)}
+
+          {t("Approval authority ·")} {freshness(data, loading, error, refreshedAt)}
         </span>
         {!canReview ? (
-          <strong>Read only · admin.approval.review is not granted</strong>
+          <strong>{t("Read only · admin.approval.review is not granted")}</strong>
         ) : null}
       </div>
       <form
@@ -159,11 +162,12 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
             className="min-h-11 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white"
             type="submit"
           >
-            Filter approvals
+
+            {t("Filter approvals")}
           </button>
           {filtered ? (
             <button
-              aria-label="Clear approval filters"
+              aria-label={t("Clear approval filters")}
               className="grid min-h-11 min-w-11 place-items-center rounded-md border"
               onClick={() => navigate(defaultApprovalQuery)}
               type="button"
@@ -188,17 +192,20 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
           className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]"
           role="alert"
         >
-          Approval authority refresh failed: {error}
+
+          {t("Approval authority refresh failed:")} {error}
           <button
             className="ml-3 min-h-8 rounded border border-current px-2"
             onClick={() => void load(query)}
             type="button"
           >
-            Retry approvals
+
+            {t("Retry approvals")}
           </button>
           {data ? (
             <span className="ml-2">
-              The last good snapshot remains visible.
+
+              {t("The last good snapshot remains visible.")}
             </span>
           ) : null}
         </div>
@@ -206,7 +213,8 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
       {!data && loading ? (
         <div className="rounded-lg border p-4" role="status">
           <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />
-          Loading approval authority
+
+          {t("Loading approval authority")}
         </div>
       ) : data && !rows.length ? (
         <EmptyState
@@ -244,7 +252,8 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
           type="button"
         >
           <RefreshCcw className="h-4 w-4" />
-          Next approval page
+
+          {t("Next approval page")}
         </button>
       ) : null}
       {confirmation ? (

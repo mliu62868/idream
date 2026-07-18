@@ -245,28 +245,28 @@ export function JobsView() {
         }}
       >
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          <label className="text-xs font-semibold text-[var(--ad-text-muted)] sm:col-span-2">Search authoritative fields<input className={`${fieldClass} mt-1`} onChange={(event) => updateJobQuery({ search: event.target.value })} placeholder="Job, user, character, model, error…" value={jobQuery.search} /></label>
-          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Mode<select className={`${fieldClass} mt-1`} onChange={(event) => updateJobQuery({ mode: event.target.value as GenerationJobQueryDraft["mode"] })} value={jobQuery.mode}><option value="all">All historical records</option><option value="image">Image</option><option value="video">Video (legacy records)</option></select></label>
-          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Legacy status filter<select className={`${fieldClass} mt-1`} onChange={(event) => updateJobQuery({ legacyStatus: event.target.value })} value={jobQuery.legacyStatus}><option value="">All</option>{generationJobStatusOptions.map((status) => <option key={status} value={status}>{value(status)}</option>)}</select></label>
-          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Provider<input className={`${fieldClass} mt-1`} list="job-provider-facets" onChange={(event) => updateJobQuery({ provider: event.target.value })} value={jobQuery.provider} /></label>
+          <label className="text-xs font-semibold text-[var(--ad-text-muted)] sm:col-span-2">{t("Search authoritative fields")}<input className={`${fieldClass} mt-1`} onChange={(event) => updateJobQuery({ search: event.target.value })} placeholder={t("Job, user, character, model, error…")} value={jobQuery.search} /></label>
+          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Mode")}<select className={`${fieldClass} mt-1`} onChange={(event) => updateJobQuery({ mode: event.target.value as GenerationJobQueryDraft["mode"] })} value={jobQuery.mode}><option value="all">{t("All historical records")}</option><option value="image">{t("Image")}</option><option value="video">{t("Video (legacy records)")}</option></select></label>
+          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Legacy status filter")}<select className={`${fieldClass} mt-1`} onChange={(event) => updateJobQuery({ legacyStatus: event.target.value })} value={jobQuery.legacyStatus}><option value="">{t("All")}</option>{generationJobStatusOptions.map((status) => <option key={status} value={status}>{value(status)}</option>)}</select></label>
+          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Provider")}<input className={`${fieldClass} mt-1`} list="job-provider-facets" onChange={(event) => updateJobQuery({ provider: event.target.value })} value={jobQuery.provider} /></label>
           <datalist id="job-provider-facets">{jobs.data?.facets.providers.map((facet) => <option key={facet.value} value={facet.value}>{facet.count}</option>)}</datalist>
-          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Source type<input className={`${fieldClass} mt-1`} list="job-source-facets" onChange={(event) => updateJobQuery({ sourceType: event.target.value })} value={jobQuery.sourceType} /></label>
+          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Source type")}<input className={`${fieldClass} mt-1`} list="job-source-facets" onChange={(event) => updateJobQuery({ sourceType: event.target.value })} value={jobQuery.sourceType} /></label>
           <datalist id="job-source-facets">{jobs.data?.facets.sourceTypes.map((facet) => <option key={facet.value} value={facet.value}>{facet.count}</option>)}</datalist>
-          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">User ID<input className={`${fieldClass} mt-1`} onChange={(event) => updateJobQuery({ userId: event.target.value })} value={jobQuery.userId} /></label>
-          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Character ID<input className={`${fieldClass} mt-1`} onChange={(event) => updateJobQuery({ characterId: event.target.value })} value={jobQuery.characterId} /></label>
-          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Sort<select className={`${fieldClass} mt-1`} onChange={(event) => updateJobQuery({ sort: event.target.value as GenerationJobQueryDraft["sort"] })} value={jobQuery.sort}><option value="created_desc">Newest created</option><option value="created_asc">Oldest created</option><option value="updated_desc">Recently changed</option><option value="cost_desc">Highest cost</option></select></label>
-          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">Page size<select className={`${fieldClass} mt-1`} onChange={(event) => updateJobQuery({ limit: Number(event.target.value) })} value={jobQuery.limit}>{[10, 25, 50, 100].map((limit) => <option key={limit} value={limit}>{limit}</option>)}</select></label>
+          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("User ID")}<input className={`${fieldClass} mt-1`} onChange={(event) => updateJobQuery({ userId: event.target.value })} value={jobQuery.userId} /></label>
+          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Character ID")}<input className={`${fieldClass} mt-1`} onChange={(event) => updateJobQuery({ characterId: event.target.value })} value={jobQuery.characterId} /></label>
+          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Sort")}<select className={`${fieldClass} mt-1`} onChange={(event) => updateJobQuery({ sort: event.target.value as GenerationJobQueryDraft["sort"] })} value={jobQuery.sort}><option value="created_desc">{t("Newest created")}</option><option value="created_asc">{t("Oldest created")}</option><option value="updated_desc">{t("Recently changed")}</option><option value="cost_desc">{t("Highest cost")}</option></select></label>
+          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Page size")}<select className={`${fieldClass} mt-1`} onChange={(event) => updateJobQuery({ limit: Number(event.target.value) })} value={jobQuery.limit}>{[10, 25, 50, 100].map((limit) => <option key={limit} value={limit}>{limit}</option>)}</select></label>
         </div>
         <div className="mt-4 flex flex-wrap gap-2">
-          <button className="min-h-10 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white disabled:opacity-50" disabled={jobs.loading} type="submit">Apply server query</button>
-          <button className="min-h-10 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" disabled={jobs.loading} onClick={() => applyJobQuery(defaultGenerationJobQuery)} type="button">Reset</button>
-          {jobs.loading ? <span className="inline-flex items-center gap-2 text-xs text-[var(--ad-text-muted)]" role="status"><Loader2 className="h-4 w-4 animate-spin" /> Loading complete query</span> : null}
+          <button className="min-h-10 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white disabled:opacity-50" disabled={jobs.loading} type="submit">{t("Apply server query")}</button>
+          <button className="min-h-10 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" disabled={jobs.loading} onClick={() => applyJobQuery(defaultGenerationJobQuery)} type="button">{t("Reset")}</button>
+          {jobs.loading ? <span className="inline-flex items-center gap-2 text-xs text-[var(--ad-text-muted)]" role="status"><Loader2 className="h-4 w-4 animate-spin" />  {t("Loading complete query")}</span> : null}
         </div>
       </form>
 
       {jobs.error ? <AuthorityRequestError message={jobs.error} onRetry={() => void loadJobs(jobQuery)} snapshotAt={jobs.data ? jobs.refreshedAt : null} /> : null}
       {jobs.data ? (
-        <section aria-label="Generation Job query summary" className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+        <section aria-label={t("Generation Job query summary")} className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
           {[
             ["Matching jobs", jobs.data.summary.totalCount],
             ["Dreamcoins cost", jobs.data.summary.totalCostDreamcoins],
@@ -277,16 +277,17 @@ export function JobsView() {
       ) : null}
 
       {jobs.loading && jobs.data === null ? (
-        <p className="text-sm text-[var(--ad-text-muted)]" role="status">Loading authoritative jobs…</p>
+        <p className="text-sm text-[var(--ad-text-muted)]" role="status">{t("Loading authoritative jobs…")}</p>
       ) : null}
-      {jobs.data ? <ReadonlyOpsView columns={columns} empty="No jobs match the server query." rows={rows} title="Generation Jobs" /> : null}
+      {jobs.data ? <ReadonlyOpsView columns={columns} empty="No jobs match the server query." rows={rows} title={t("Generation Jobs")} /> : null}
       {jobs.data ? (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] px-4 py-3">
           <p className="text-xs text-[var(--ad-text-muted)]">
-            Showing {rows.length} of {jobs.data.summary.totalCount} matching jobs
-            {" · "}operational owners: {jobs.data.dataScope.includedDataClasses.join(" + ")}
-            {" · "}excluded: {jobs.data.dataScope.excludedDataClasses.join(" + ")}
-            {" · "}fresh as of {compactDate(jobs.data.asOf, locale)}
+
+            {t("Showing")} {rows.length}  {t("of")} {jobs.data.summary.totalCount}  {t("matching jobs")}
+            {" · "}{t("operational owners:")} {jobs.data.dataScope.includedDataClasses.join(" + ")}
+            {" · "}{t("excluded:")} {jobs.data.dataScope.excludedDataClasses.join(" + ")}
+            {" · "}{t("fresh as of")} {compactDate(jobs.data.asOf, locale)}
           </p>
           <button
             className="min-h-10 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold disabled:opacity-50"
@@ -297,7 +298,8 @@ export function JobsView() {
             }}
             type="button"
           >
-            Next page
+
+            {t("Next page")}
           </button>
         </div>
       ) : null}
@@ -320,10 +322,10 @@ function GenerationJobInspector({ detail, error, jobId, loading, locale, onClose
   return (
     <section aria-labelledby="generation-job-detail-title" className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
       <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[var(--ad-border)] p-4">
-        <div className="min-w-0"><p className="text-xs font-semibold uppercase text-[var(--ad-text-muted)]">Generation Request authority</p><h2 className="mt-1 truncate font-mono text-base font-semibold" id="generation-job-detail-title">{shortId(jobId)}</h2></div>
+        <div className="min-w-0"><p className="text-xs font-semibold uppercase text-[var(--ad-text-muted)]">{t("Generation Request authority")}</p><h2 className="mt-1 truncate font-mono text-base font-semibold" id="generation-job-detail-title">{shortId(jobId)}</h2></div>
         <button aria-label={t("Close")} autoFocus className="grid h-8 w-8 place-items-center rounded-lg border border-[var(--ad-border)] text-[var(--ad-text-muted)] hover:bg-black/[0.04]" onClick={onClose} type="button"><X className="h-4 w-4" /></button>
       </div>
-      {loading ? <div className="flex h-28 items-center justify-center text-sm text-[var(--ad-text-muted)]" role="status"><Loader2 className="mr-2 h-4 w-4 animate-spin" />Loading Request, Attempt, Delivery, and Settlement facts</div> : null}
+      {loading ? <div className="flex h-28 items-center justify-center text-sm text-[var(--ad-text-muted)]" role="status"><Loader2 className="mr-2 h-4 w-4 animate-spin" />{t("Loading Request, Attempt, Delivery, and Settlement facts")}</div> : null}
       {error ? <div className="m-4 rounded-lg border border-[var(--ad-red-text)]/20 bg-[var(--ad-red-bg)] px-3 py-2 text-sm text-[var(--ad-red-text)]" role="alert">{error}</div> : null}
       {request && detail ? (
         <div className="space-y-5 p-4">
@@ -385,12 +387,14 @@ function GenerationJobInspector({ detail, error, jobId, loading, locale, onClose
 }
 
 function AuthorityTable({ caption, headers, rows }: { caption: string; headers: string[]; rows: string[][] }) {
+  const { t } = useAdminI18n();
+  const translatedCaption = t(caption);
   return (
-    <div aria-label={`${caption} scrollable table`} className="overflow-x-auto rounded-lg border border-[var(--ad-border)]" role="region" tabIndex={0}>
+    <div aria-label={t("{caption} scrollable table", { caption: translatedCaption })} className="overflow-x-auto rounded-lg border border-[var(--ad-border)]" role="region" tabIndex={0}>
       <table className="w-full min-w-[560px] text-left text-xs">
-        <caption className="px-3 py-2 text-left text-sm font-semibold">{caption}</caption>
-        <thead className="bg-black/[0.03] text-[var(--ad-text-muted)]"><tr>{headers.map((header) => <th className="px-3 py-2 font-semibold" key={header} scope="col">{header}</th>)}</tr></thead>
-        <tbody>{rows.map((row, rowIndex) => <tr className="border-t border-[var(--ad-border)]" key={`${caption}-${rowIndex}`}>{row.map((cell, cellIndex) => <td className="px-3 py-2" key={`${rowIndex}-${cellIndex}`}>{cell}</td>)}</tr>)}{rows.length === 0 ? <tr><td className="px-3 py-5 text-[var(--ad-text-muted)]" colSpan={headers.length}>No authoritative facts recorded.</td></tr> : null}</tbody>
+        <caption className="px-3 py-2 text-left text-sm font-semibold">{translatedCaption}</caption>
+        <thead className="bg-black/[0.03] text-[var(--ad-text-muted)]"><tr>{headers.map((header) => <th className="px-3 py-2 font-semibold" key={header} scope="col">{t(header)}</th>)}</tr></thead>
+        <tbody>{rows.map((row, rowIndex) => <tr className="border-t border-[var(--ad-border)]" key={`${caption}-${rowIndex}`}>{row.map((cell, cellIndex) => <td className="px-3 py-2" key={`${rowIndex}-${cellIndex}`}>{cell}</td>)}</tr>)}{rows.length === 0 ? <tr><td className="px-3 py-5 text-[var(--ad-text-muted)]" colSpan={headers.length}>{t("No authoritative facts recorded.")}</td></tr> : null}</tbody>
       </table>
     </div>
   );

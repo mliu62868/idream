@@ -1,5 +1,6 @@
 "use client";
 
+import { useAdminI18n } from "@/components/admin/i18n";
 import type { FormEvent, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { RefreshCcw, Search, X } from "lucide-react";
@@ -29,6 +30,7 @@ type AuditPageInfo = { endCursor: string | null; hasNextPage: boolean };
 const emptyPageInfo: AuditPageInfo = { endCursor: null, hasNextPage: false };
 
 export function AuditWorkspace() {
+  const { t } = useAdminI18n();
   const [query, setQuery] = useState<AuditQuery>(() => currentQuery());
   const [draft, setDraft] = useState<AuditQuery>(() => currentQuery());
   const [rows, setRows] = useState<AuditRecord[] | null>(null);
@@ -117,38 +119,39 @@ export function AuditWorkspace() {
       <div id="audit-workspace-title">
         <PageHeader
           purpose="Trace consequential operator decisions to the actor, target, reason, request, and command evidence that produced them."
-          title="Audit Log"
+          title={t("Audit Log")}
         />
       </div>
       <p className="text-xs text-[var(--ad-text-muted)]" role="status">
-        Legacy compatibility authority · freshness watermark unavailable
-        {refreshedAt ? <> · refreshed <time dateTime={refreshedAt}>{new Date(refreshedAt).toLocaleTimeString()}</time></> : null}
+
+        {t("Legacy compatibility authority · freshness watermark unavailable")}
+        {refreshedAt ? <>  {t("· refreshed")} <time dateTime={refreshedAt}>{new Date(refreshedAt).toLocaleTimeString()}</time></> : null}
       </p>
 
       <form className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 md:grid-cols-2 xl:grid-cols-[minmax(220px,1fr)_repeat(3,minmax(150px,0.7fr))_auto]" onSubmit={apply}>
-        <AuditField label="Search audit authority" onChange={(search) => setDraft((current) => ({ ...current, search }))} placeholder="action, target, reason, or request" value={draft.search} />
-        <AuditField label="Exact action" onChange={(action) => setDraft((current) => ({ ...current, action }))} placeholder="character.release.publish" value={draft.action} />
-        <AuditField label="Actor ID" onChange={(actorId) => setDraft((current) => ({ ...current, actorId }))} placeholder="operator ID" value={draft.actorId} />
-        <AuditField label="Target type" onChange={(targetType) => setDraft((current) => ({ ...current, targetType }))} placeholder="character_release" value={draft.targetType} />
+        <AuditField label="Search audit authority" onChange={(search) => setDraft((current) => ({ ...current, search }))} placeholder={t("action, target, reason, or request")} value={draft.search} />
+        <AuditField label="Exact action" onChange={(action) => setDraft((current) => ({ ...current, action }))} placeholder={t("character.release.publish")} value={draft.action} />
+        <AuditField label="Actor ID" onChange={(actorId) => setDraft((current) => ({ ...current, actorId }))} placeholder={t("operator ID")} value={draft.actorId} />
+        <AuditField label="Target type" onChange={(targetType) => setDraft((current) => ({ ...current, targetType }))} placeholder={t("character_release")} value={draft.targetType} />
         <div className="flex items-end gap-2">
-          <button className="inline-flex min-h-11 items-center gap-2 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white disabled:opacity-50" disabled={loading} type="submit"><Search className="h-4 w-4" />Apply</button>
-          {filtered ? <button aria-label="Clear audit filters" className="grid min-h-11 min-w-11 place-items-center rounded-md border border-[var(--ad-border)]" onClick={clearFilters} type="button"><X className="h-4 w-4" /></button> : null}
+          <button className="inline-flex min-h-11 items-center gap-2 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white disabled:opacity-50" disabled={loading} type="submit"><Search className="h-4 w-4" />{t("Apply")}</button>
+          {filtered ? <button aria-label={t("Clear audit filters")} className="grid min-h-11 min-w-11 place-items-center rounded-md border border-[var(--ad-border)]" onClick={clearFilters} type="button"><X className="h-4 w-4" /></button> : null}
         </div>
       </form>
 
-      {error ? <div className="rounded-md bg-[var(--ad-red-bg)] px-4 py-3 text-sm text-[var(--ad-red-text)]" role="alert">{error}<button className="ml-3 min-h-8 rounded border border-current px-2 font-semibold" onClick={() => void load(query)} type="button">Retry</button></div> : null}
+      {error ? <div className="rounded-md bg-[var(--ad-red-bg)] px-4 py-3 text-sm text-[var(--ad-red-text)]" role="alert">{error}<button className="ml-3 min-h-8 rounded border border-current px-2 font-semibold" onClick={() => void load(query)} type="button">{t("Retry")}</button></div> : null}
 
       {command ? <CommandContext command={command} /> : null}
       {loading && rows === null ? <AuditLoading /> : rows?.length === 0 ? (
         <EmptyState
-          action={filtered ? <button className="min-h-11 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" onClick={clearFilters} type="button">Clear filters</button> : undefined}
+          action={filtered ? <button className="min-h-11 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" onClick={clearFilters} type="button">{t("Clear filters")}</button> : undefined}
           hint={filtered ? "The complete server-side query returned no records. Clear filters to inspect the authority." : "Auditable operator actions will appear after the first consequential command is recorded."}
           title={filtered ? "No audit events match these filters" : "No audit events exist yet"}
         />
       ) : rows ? <AuditRecords rows={rows} /> : null}
 
       {pageInfo.hasNextPage && pageInfo.endCursor ? (
-        <button className="inline-flex min-h-11 items-center gap-2 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-4 text-sm font-semibold disabled:opacity-50" disabled={loading} onClick={nextPage} type="button"><RefreshCcw className="h-4 w-4" />Next page</button>
+        <button className="inline-flex min-h-11 items-center gap-2 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-4 text-sm font-semibold disabled:opacity-50" disabled={loading} onClick={nextPage} type="button"><RefreshCcw className="h-4 w-4" />{t("Next page")}</button>
       ) : null}
     </section>
   );
@@ -179,7 +182,8 @@ function AuditRecords({ rows }: { rows: AuditRecord[] }) {
 }
 
 function AuditLoading() {
-  return <div aria-label="Loading audit authority" className="overflow-hidden rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]" role="status"><span className="sr-only">Loading audit authority</span>{[0, 1, 2, 3].map((row) => <div className="grid min-h-14 animate-pulse grid-cols-4 gap-4 border-b border-[var(--ad-border)] px-4 py-3 last:border-0" key={row}>{[0, 1, 2, 3].map((cell) => <span className="h-4 rounded bg-black/5" key={cell} />)}</div>)}</div>;
+  const { t } = useAdminI18n();
+  return <div aria-label={t("Loading audit authority")} className="overflow-hidden rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]" role="status"><span className="sr-only">{t("Loading audit authority")}</span>{[0, 1, 2, 3].map((row) => <div className="grid min-h-14 animate-pulse grid-cols-4 gap-4 border-b border-[var(--ad-border)] px-4 py-3 last:border-0" key={row}>{[0, 1, 2, 3].map((cell) => <span className="h-4 rounded bg-black/5" key={cell} />)}</div>)}</div>;
 }
 
 function currentQuery() {

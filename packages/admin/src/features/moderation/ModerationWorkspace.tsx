@@ -1,5 +1,6 @@
 "use client";
 
+import { useAdminI18n } from "@/components/admin/i18n";
 import Image from "next/image";
 import type { FormEvent, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -59,6 +60,7 @@ const emptyState = (): AuthorityState => ({
 });
 
 export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
+  const { t } = useAdminI18n();
   const [query, setQuery] = useState<ModerationQuery>(() => currentQuery());
   const [draft, setDraft] = useState<ModerationQuery>(() => currentQuery());
   const [reports, setReports] = useState<AuthorityState>(emptyState);
@@ -212,7 +214,7 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
     <section className="space-y-5">
       <PageHeader
         purpose="Review reports, independently pending Character images, blocked media, and appeals from separate authority snapshots; every decision is confirmed, audited, and propagated."
-        title="Moderation Cases"
+        title={t("Moderation Cases")}
       />
       <div
         className="flex flex-wrap justify-between gap-2 text-xs text-[var(--ad-text-muted)]"
@@ -220,15 +222,15 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
       >
         <div className="flex flex-wrap gap-3">
           <span>
-            Legacy compatibility authority · source freshness watermark
-            unavailable
+
+            {t("Legacy compatibility authority · source freshness watermark unavailable")}
           </span>
           <Freshness label="Reports" state={reports} />
           <Freshness label="Media review" state={media} />
           <Freshness label="Appeals" state={appeals} />
         </div>
         {!canDecide ? (
-          <strong>Read only · safety.review.write is not granted</strong>
+          <strong>{t("Read only · safety.review.write is not granted")}</strong>
         ) : null}
       </div>
       <form
@@ -260,11 +262,12 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
             className="min-h-11 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white"
             type="submit"
           >
-            Apply
+
+            {t("Apply")}
           </button>
           {filtered ? (
             <button
-              aria-label="Clear moderation filters"
+              aria-label={t("Clear moderation filters")}
               className="grid min-h-11 min-w-11 place-items-center rounded-md border"
               onClick={() => navigate(defaultModerationQuery)}
               type="button"
@@ -327,7 +330,7 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
         }
         loadingLabel="Loading media-review authority"
         state={media}
-        rows={mediaRows(media.rows ?? [], canDecide, confirmDecision)}
+        rows={mediaRows(media.rows ?? [], canDecide, confirmDecision, t)}
       />
       <Pager
         cursor="mediaCursor"
@@ -386,6 +389,7 @@ function mediaRows(
   rows: Row[],
   canDecide: boolean,
   confirm: ConfirmDecision,
+  t: (key: string, values?: Record<string, string | number>) => string,
 ): DataTableRow[] {
   return rows.map((row, index) => {
     const id = text(row.id);
@@ -408,7 +412,7 @@ function mediaRows(
             id,
             endpoint: `/api/v1/admin/moderation/media/${id}/decision`,
             method: "POST",
-            title: `${label} Character image ${id}`,
+            title: t("{action} Character image {id}", { action: label, id }),
             payload: () => ({ decision }),
           })
         }
@@ -419,7 +423,7 @@ function mediaRows(
       cells: [
         preview ? (
           <Image
-            alt={`Character image ${id}`}
+            alt={t("Character image {id}", { id })}
             className="h-14 w-14 rounded-md border object-cover"
             height={56}
             loading="lazy"
@@ -666,29 +670,30 @@ function AuthoritySection({
   );
 }
 function Freshness({ label, state }: { label: string; state: AuthorityState }) {
+  const { t } = useAdminI18n();
   const time = state.refreshedAt
     ? new Date(state.refreshedAt).toLocaleTimeString()
     : "unknown";
   if (state.loading && state.rows)
     return (
       <span>
-        {label}: refreshing · showing snapshot from {time}
+        {label}{t(": refreshing · showing snapshot from")} {time}
       </span>
     );
   if (state.error && state.rows)
     return (
       <span>
-        {label}: stale · last good {time}
+        {label}{t(": stale · last good")} {time}
       </span>
     );
-  if (state.error) return <span>{label}: unavailable</span>;
+  if (state.error) return <span>{label}{t(": unavailable")}</span>;
   if (state.rows)
     return (
       <span>
-        {label}: current client snapshot · {time}
+        {label}{t(": current client snapshot ·")} {time}
       </span>
     );
-  return <span>{label}: refreshing · no snapshot yet</span>;
+  return <span>{label}{t(": refreshing · no snapshot yet")}</span>;
 }
 function AuthorityError({
   label,
@@ -699,21 +704,23 @@ function AuthorityError({
   onRetry: () => void;
   state: AuthorityState;
 }) {
+  const { t } = useAdminI18n();
   return state.error ? (
     <div
       className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]"
       role="alert"
     >
-      {label} authority refresh failed: {state.error}
+      {label}  {t("authority refresh failed:")} {state.error}
       <button
         className="ml-3 min-h-8 rounded border border-current px-2"
         onClick={onRetry}
         type="button"
       >
-        Retry {label}
+
+        {t("Retry")} {label}
       </button>
       {state.rows ? (
-        <span className="ml-2">The last good snapshot remains visible.</span>
+        <span className="ml-2">{t("The last good snapshot remains visible.")}</span>
       ) : null}
     </div>
   ) : null;

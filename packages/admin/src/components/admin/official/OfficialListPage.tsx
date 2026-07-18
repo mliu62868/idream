@@ -128,7 +128,7 @@ export function OfficialListPage() {
         action={
           <Link href="/admin/content/official/new">
             <PrimaryButton>
-              <Plus className="h-4 w-4" /> New character project
+              <Plus className="h-4 w-4" />  {t("New character project")}
             </PrimaryButton>
           </Link>
         }
@@ -147,13 +147,13 @@ export function OfficialListPage() {
             { name: t("Status"), value: status, onChange: (next) => updateFilter({ status: next as OfficialListQuery["status"] }, "push"), options: [allOption, { value: "draft", label: "Draft" }, { value: "approved", label: value("approved") }, { value: "archived", label: value("archived") }] },
           ]}
         />
-        <p className="text-xs tabular-nums text-[var(--ad-text-muted)]">{total} characters</p>
+        <p className="text-xs tabular-nums text-[var(--ad-text-muted)]">{total}  {t("characters")}</p>
       </div>
 
       {error ? <p role="alert" className="mb-4 text-sm text-[var(--ad-red-text)]">{error}</p> : null}
 
       {loading ? (
-        <div aria-label="Loading characters" className="space-y-2">
+        <div aria-label={t("Loading characters")} className="space-y-2">
           {[0, 1, 2, 3, 4].map((item) => <div className="h-16 animate-pulse rounded-lg bg-black/[0.04]" key={item} />)}
         </div>
       ) : rows.length === 0 ? (
@@ -165,16 +165,16 @@ export function OfficialListPage() {
         <section className="overflow-hidden rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
           <div className="overflow-x-auto">
             <table className="w-full min-w-[980px] border-collapse text-left">
-              <caption className="sr-only">Official characters</caption>
+              <caption className="sr-only">{t("Official characters")}</caption>
               <thead className="bg-black/[0.025] text-[11px] uppercase tracking-wide text-[var(--ad-text-muted)]">
                 <tr>
-                  <th scope="col" className="border-b border-[var(--ad-border)] px-4 py-3 font-semibold">Character</th>
-                  <th scope="col" className="border-b border-[var(--ad-border)] px-3 py-3 font-semibold">Stage</th>
-                  <th scope="col" className="border-b border-[var(--ad-border)] px-3 py-3 font-semibold">Readiness</th>
-                  <th scope="col" className="border-b border-[var(--ad-border)] px-3 py-3 font-semibold">Visuals</th>
-                  <th scope="col" className="border-b border-[var(--ad-border)] px-3 py-3 font-semibold">Performance</th>
-                  <th scope="col" className="border-b border-[var(--ad-border)] px-3 py-3 font-semibold">Updated</th>
-                  <th scope="col" className="border-b border-[var(--ad-border)] px-4 py-3 text-right font-semibold">Next step</th>
+                  <th scope="col" className="border-b border-[var(--ad-border)] px-4 py-3 font-semibold">{t("Character")}</th>
+                  <th scope="col" className="border-b border-[var(--ad-border)] px-3 py-3 font-semibold">{t("Stage")}</th>
+                  <th scope="col" className="border-b border-[var(--ad-border)] px-3 py-3 font-semibold">{t("Readiness")}</th>
+                  <th scope="col" className="border-b border-[var(--ad-border)] px-3 py-3 font-semibold">{t("Visuals")}</th>
+                  <th scope="col" className="border-b border-[var(--ad-border)] px-3 py-3 font-semibold">{t("Performance")}</th>
+                  <th scope="col" className="border-b border-[var(--ad-border)] px-3 py-3 font-semibold">{t("Updated")}</th>
+                  <th scope="col" className="border-b border-[var(--ad-border)] px-4 py-3 text-right font-semibold">{t("Next step")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -203,22 +203,22 @@ export function OfficialListPage() {
                       <td className="px-3 py-3">
                         <div className="flex items-center gap-2">
                           <progress
-                            aria-label={`${readiness.score}% ready`}
+                            aria-label={t("{score}% ready", { score: readiness.score })}
                             className={cn("h-1.5 w-20 overflow-hidden rounded-full accent-[var(--ad-ink)]", readiness.score >= 80 && "accent-[var(--ad-green-text)]")}
                             max={100}
                             value={readiness.score}
                           />
                           <span className="text-xs tabular-nums text-[var(--ad-text)]">{readiness.score}%</span>
                         </div>
-                        <p className="mt-1 max-w-[180px] truncate text-[11px] text-[var(--ad-text-muted)]" title={readiness.missing.join(", ")}>{readiness.missing[0] ? `Next: ${readiness.missing[0]}` : "Ready for release"}</p>
+                        <p className="mt-1 max-w-[180px] truncate text-[11px] text-[var(--ad-text-muted)]" title={readiness.missing.join(", ")}>{readiness.missing[0] ? t("Next: {item}", { item: t(readiness.missing[0]) }) : t("Ready for release")}</p>
                       </td>
                       <td className="px-3 py-3">
-                        <div className="flex items-center gap-2 text-xs text-[var(--ad-text)]"><ImageIcon className="h-3.5 w-3.5 text-[var(--ad-text-muted)]" /> {visualReferenceCount(row)} references</div>
-                        <p className="mt-1 text-[11px] text-[var(--ad-text-muted)]">Identity v{row.visualProfile?.version ?? "—"}</p>
+                        <div className="flex items-center gap-2 text-xs text-[var(--ad-text)]"><ImageIcon className="h-3.5 w-3.5 text-[var(--ad-text-muted)]" /> {visualReferenceCount(row)}  {t("references")}</div>
+                        <p className="mt-1 text-[11px] text-[var(--ad-text-muted)]">{t("Identity v")}{row.visualProfile?.version ?? "—"}</p>
                       </td>
                       <td className="px-3 py-3 text-xs tabular-nums text-[var(--ad-text)]">
-                        <span>{row.stats?.chatsCount.toLocaleString() ?? "—"} chats</span>
-                        <span className="ml-2 text-[var(--ad-text-muted)]">{row.stats?.likesCount.toLocaleString() ?? "—"} likes</span>
+                        <span>{row.stats?.chatsCount.toLocaleString() ?? "—"}  {t("chats")}</span>
+                        <span className="ml-2 text-[var(--ad-text-muted)]">{row.stats?.likesCount.toLocaleString() ?? "—"}  {t("likes")}</span>
                       </td>
                       <td className="px-3 py-3 text-xs text-[var(--ad-text-muted)]">{formatDate(row.updatedAt)}</td>
                       <td className="px-4 py-3 text-right">
@@ -237,10 +237,10 @@ export function OfficialListPage() {
 
       {totalPages > 1 ? (
         <div className="mt-4 flex items-center justify-between gap-3">
-          <p className="text-xs tabular-nums text-[var(--ad-text-muted)]">Page {page} of {totalPages}</p>
+          <p className="text-xs tabular-nums text-[var(--ad-text-muted)]">{t("Page")} {page}  {t("of")} {totalPages}</p>
           <div className="flex gap-2">
-            <GhostButton disabled={page <= 1 || loading} onClick={() => navigate({ ...listQuery, page: Math.max(1, page - 1) }, "push")}><ChevronLeft className="h-4 w-4" /> Previous</GhostButton>
-            <GhostButton disabled={page >= totalPages || loading} onClick={() => navigate({ ...listQuery, page: Math.min(totalPages, page + 1) }, "push")}>Next <ChevronRight className="h-4 w-4" /></GhostButton>
+            <GhostButton disabled={page <= 1 || loading} onClick={() => navigate({ ...listQuery, page: Math.max(1, page - 1) }, "push")}><ChevronLeft className="h-4 w-4" />  {t("Previous")}</GhostButton>
+            <GhostButton disabled={page >= totalPages || loading} onClick={() => navigate({ ...listQuery, page: Math.min(totalPages, page + 1) }, "push")}>{t("Next")} <ChevronRight className="h-4 w-4" /></GhostButton>
           </div>
         </div>
       ) : null}

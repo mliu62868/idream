@@ -1,5 +1,6 @@
 "use client";
 
+import { useAdminI18n } from "@/components/admin/i18n";
 import {
   AlertTriangle,
   Bookmark,
@@ -62,6 +63,7 @@ export function SupportWorkspace({
   canViewPlaintext: boolean;
   canWrite: boolean;
 }) {
+  const { t } = useAdminI18n();
   const [query, setQuery] = useState<SupportQuery>(() => currentQuery());
   const [draft, setDraft] = useState<SupportQuery>(() => currentQuery());
   const [data, setData] = useState<ListResponse | null>(null);
@@ -265,23 +267,25 @@ export function SupportWorkspace({
     <section className="space-y-5">
       <PageHeader
         purpose="Triage the complete support request authority with server filters, SLA state, saved views, and audited resolution commands."
-        title="Support Requests"
+        title={t("Support Requests")}
       />
       <div
         className="flex flex-wrap justify-between gap-2 text-xs text-[var(--ad-text-muted)]"
         role="status"
       >
         <span>
-          Support authority · {data?.freshness ?? "source freshness pending"} ·{" "}
+
+          {t("Support authority ·")} {data?.freshness ?? t("source freshness pending")} ·{" "}
           {freshness(data, loading, error, refreshedAt)}
         </span>
         <span className="flex gap-3 font-semibold">
           {!canWrite ? (
-            <span>Read only · support.request.write is not granted</span>
+            <span>{t("Read only · support.request.write is not granted")}</span>
           ) : null}
           {!canViewPlaintext ? (
             <span>
-              Plaintext unavailable · support.plaintext.view is not granted
+
+              {t("Plaintext unavailable · support.plaintext.view is not granted")}
             </span>
           ) : null}
         </span>
@@ -330,11 +334,12 @@ export function SupportWorkspace({
             onSubmit={(event) => void saveCurrentView(event)}
           >
             <span className="text-xs font-semibold text-[var(--ad-text-muted)]">
-              Saved view
+
+              {t("Saved view")}
             </span>
             <div className="flex gap-2">
               <input
-                aria-label="Support saved view label"
+                aria-label={t("Support saved view label")}
                 className="min-h-10 min-w-0 flex-1 rounded-md border px-3 text-sm"
                 onChange={(event) => {
                   setSavedViewLabel(event.target.value);
@@ -348,7 +353,8 @@ export function SupportWorkspace({
                 type="submit"
               >
                 <Bookmark className="h-4 w-4" />
-                Save view
+
+                {t("Save view")}
               </button>
             </div>
           </form>
@@ -367,7 +373,7 @@ export function SupportWorkspace({
                 {view.label}
               </button>
               <button
-                aria-label={`Delete saved view ${view.label}`}
+                aria-label={t("Delete saved view {label}", { label: view.label })}
                 className="grid h-8 w-8 place-items-center border-l"
                 onClick={() => void deleteSavedView(view)}
                 type="button"
@@ -378,12 +384,14 @@ export function SupportWorkspace({
           ))}
           {savedViewsLoading ? (
             <span className="text-xs text-[var(--ad-text-muted)]">
-              Loading…
+
+              {t("Loading…")}
             </span>
           ) : null}
           {!savedViewsLoading && !savedViews.length ? (
             <span className="text-xs text-[var(--ad-text-muted)]">
-              No saved views.
+
+              {t("No saved views.")}
             </span>
           ) : null}
           {filtered ? (
@@ -392,7 +400,8 @@ export function SupportWorkspace({
               onClick={() => navigate(defaultSupportQuery)}
               type="button"
             >
-              Reset filters
+
+              {t("Reset filters")}
             </button>
           ) : null}
         </div>
@@ -418,17 +427,20 @@ export function SupportWorkspace({
           className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]"
           role="alert"
         >
-          Support authority refresh failed: {error}
+
+          {t("Support authority refresh failed:")} {error}
           <button
             className="ml-3 min-h-8 rounded border border-current px-2"
             onClick={() => void load(query)}
             type="button"
           >
-            Retry support
+
+            {t("Retry support")}
           </button>
           {data ? (
             <span className="ml-2">
-              The last good snapshot remains visible.
+
+              {t("The last good snapshot remains visible.")}
             </span>
           ) : null}
         </div>
@@ -436,7 +448,8 @@ export function SupportWorkspace({
       {!data && loading ? (
         <div className="rounded-lg border p-4" role="status">
           <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />
-          Loading support authority
+
+          {t("Loading support authority")}
         </div>
       ) : data && !rows.length ? (
         <EmptyState
@@ -479,7 +492,8 @@ export function SupportWorkspace({
           type="button"
         >
           <RefreshCcw className="h-4 w-4" />
-          Next support page
+
+          {t("Next support page")}
         </button>
       ) : null}
       {confirmation ? (
@@ -493,6 +507,7 @@ export function SupportWorkspace({
 }
 
 function PlaintextAccessPanel() {
+  const { t } = useAdminI18n();
   const [targetType, setTargetType] =
     useState<PlaintextTargetType>("generation_job");
   const [targetId, setTargetId] = useState("");
@@ -550,14 +565,16 @@ function PlaintextAccessPanel() {
       <form className="space-y-4" onSubmit={(event) => void submit(event)}>
         <div className="flex flex-wrap justify-between gap-3">
           <div>
-            <h2 className="text-base font-semibold">Plaintext access</h2>
+            <h2 className="text-base font-semibold">{t("Plaintext access")}</h2>
             <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
-              Requires active support consent or legal hold.
+
+              {t("Requires active support consent or legal hold.")}
             </p>
           </div>
           <span className="inline-flex items-center gap-2 text-xs text-[var(--ad-text-muted)]">
             <ShieldCheck className="h-4 w-4" />
-            Audit logged
+
+            {t("Audit logged")}
           </span>
         </div>
         <div className="grid gap-3 lg:grid-cols-3">
@@ -599,7 +616,8 @@ function PlaintextAccessPanel() {
           ) : (
             <Search className="h-4 w-4" />
           )}
-          View plaintext
+
+          {t("View plaintext")}
         </button>
         {status ? (
           <span
@@ -622,8 +640,8 @@ function PlaintextAccessPanel() {
           data-testid="admin-plaintext-result"
         >
           <p className="text-xs text-[var(--ad-text-muted)]">
-            Target: {result.target.id} · Owner: {result.target.ownerId} ·
-            Authorization:{" "}
+
+            {t("Target:")} {result.target.id}  {t("· Owner:")} {result.target.ownerId}  {t("· Authorization:")}{" "}
             {result.authorization.legalHoldId ??
               result.authorization.ticketId ??
               "—"}

@@ -40,7 +40,6 @@ import {
   AdminI18nProvider,
   getStoredAdminLocale,
   storeAdminLocale,
-  translateAdmin,
   type AdminLocale,
   useAdminI18n,
 } from "@/components/admin/i18n";
@@ -170,14 +169,45 @@ const WORK_MODE_OPTIONS: Array<{ value: WorkMode; label: string }> = [
   { value: "growth_analyst", label: "Growth analyst" },
 ];
 
-export function AdminConsoleClient({
+export function AdminConsoleClient(props: AdminConsoleClientProps) {
+  const [locale, setLocale] = useState<AdminLocale>("en");
+  const [localeReady, setLocaleReady] = useState(false);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      setLocale(getStoredAdminLocale());
+      setLocaleReady(true);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
+
+  useEffect(() => {
+    if (!localeReady) return;
+    document.documentElement.lang = locale === "zh" ? "zh-CN" : "en";
+    storeAdminLocale(locale);
+  }, [locale, localeReady]);
+
+  return (
+    <AdminI18nProvider locale={locale}>
+      <AdminConsoleContent {...props} locale={locale} setLocale={setLocale} />
+    </AdminI18nProvider>
+  );
+}
+
+function AdminConsoleContent({
   actor,
   initialSection,
   initialAccess,
   initialPermissions,
   shellSignals,
   devLogout = false,
-}: AdminConsoleClientProps) {
+  locale,
+  setLocale,
+}: AdminConsoleClientProps & {
+  locale: AdminLocale;
+  setLocale: (locale: AdminLocale) => void;
+}) {
+  const { t } = useAdminI18n();
   const sidebarNavRef = useRef<HTMLElement | null>(null);
   const mobileNavRef = useRef<HTMLElement | null>(null);
   const mobileNavTriggerRef = useRef<HTMLButtonElement | null>(null);
@@ -200,10 +230,6 @@ export function AdminConsoleClient({
   const [confirmation, setConfirmation] = useState("");
   const [actionStatus, setActionStatus] = useState<string | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
-  const [locale, setLocale] = useState<AdminLocale>("en");
-  const [localeReady, setLocaleReady] = useState(false);
-  const t = (key: string, values?: Record<string, string | number>) =>
-    translateAdmin(locale, key, values);
 
   useEffect(() => {
     if (!mobileNavOpen) return;
@@ -255,20 +281,6 @@ export function AdminConsoleClient({
       first.focus();
     }
   }
-
-  useEffect(() => {
-    const frame = window.requestAnimationFrame(() => {
-      setLocale(getStoredAdminLocale());
-      setLocaleReady(true);
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, []);
-
-  useEffect(() => {
-    if (!localeReady) return;
-    document.documentElement.lang = locale === "zh" ? "zh-CN" : "en";
-    storeAdminLocale(locale);
-  }, [locale, localeReady]);
 
   useEffect(() => {
     if (actor?.role !== "admin") return;
@@ -484,9 +496,9 @@ export function AdminConsoleClient({
   }
 
   return (
-    <AdminI18nProvider locale={locale}>
     <>
-    <a className="admin-skip-link" href="#admin-main-content" id="admin-skip-link">Skip to admin content</a>
+    <title>{`${t(activeItem.label)} | iDream Admin`}</title>
+    <a className="admin-skip-link" href="#admin-main-content" id="admin-skip-link">{t("Skip to admin content")}</a>
     <main className="min-h-screen overflow-x-hidden bg-[var(--ad-canvas)] text-[var(--ad-ink)]">
       <div className="flex min-h-screen" id="admin-shell-background">
         <aside
@@ -497,7 +509,7 @@ export function AdminConsoleClient({
           <div className="flex h-14 shrink-0 items-center border-b border-[var(--ad-border)] px-5">
             <div>
               <p className="text-sm font-semibold">iDream Admin</p>
-              <p className="text-[11px] text-[var(--ad-text-muted)]">{actor.role}</p>
+              <p className="text-[11px] text-[var(--ad-text-muted)]">{t(actor.role)}</p>
             </div>
           </div>
           <nav ref={sidebarNavRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3">
@@ -563,7 +575,7 @@ export function AdminConsoleClient({
               <div className="flex min-h-14 items-center justify-between border-b border-[var(--ad-border)] px-4">
                 <div>
                   <p className="text-sm font-semibold">iDream Admin</p>
-                  <p className="text-[11px] text-[var(--ad-text-muted)]">{actor.role}</p>
+                  <p className="text-[11px] text-[var(--ad-text-muted)]">{t(actor.role)}</p>
                 </div>
                 <button
                   aria-label={t("Close navigation")}
@@ -754,7 +766,7 @@ export function AdminConsoleClient({
             <div className="flex items-center justify-between gap-3">
               <h2 className="text-base font-semibold" id="pending-action-dialog-title">{pendingAction.title}</h2>
               <button
-                aria-label="Close"
+                aria-label={t("Close")}
                 className="grid h-8 w-8 place-items-center rounded-md hover:bg-black/[0.04]"
                 onClick={() => setPendingAction(null)}
                 type="button"
@@ -812,7 +824,6 @@ export function AdminConsoleClient({
       ) : null}
     </main>
     </>
-    </AdminI18nProvider>
   );
 }
 

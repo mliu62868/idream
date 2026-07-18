@@ -1,5 +1,6 @@
 "use client";
 
+import { useAdminI18n } from "@/components/admin/i18n";
 import {
   globalAdminSearchResponseSchema,
   type GlobalAdminSearchResponse,
@@ -59,6 +60,7 @@ export function globalAdminSearchUnavailableMessage(
 }
 
 export function GlobalAdminSearch() {
+  const { t } = useAdminI18n();
   const listboxId = useId();
   const requestId = useRef(0);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -123,7 +125,7 @@ export function GlobalAdminSearch() {
           aria-autocomplete="list"
           aria-controls={listboxId}
           aria-expanded={open}
-          aria-label="Global admin search"
+          aria-label={t("Global admin search")}
           className="h-full min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-[var(--ad-text-muted)]"
           onChange={(event) => {
             const next = event.target.value;
@@ -154,7 +156,7 @@ export function GlobalAdminSearch() {
             if (event.key === "ArrowUp") { event.preventDefault(); setOpen(true); setActiveIndex((current) => items.length ? (current <= 0 ? items.length - 1 : current - 1) : -1); }
             if (event.key === "Enter" && activeIndex >= 0 && items[activeIndex]) { event.preventDefault(); window.location.assign(items[activeIndex].href); }
           }}
-          placeholder="Search customers, characters, Cases, Incidents…"
+          placeholder={t("Search customers, characters, Cases, Incidents…")}
           role="combobox"
           value={query}
         />
@@ -169,11 +171,11 @@ export function GlobalAdminSearch() {
               {globalAdminSearchUnavailableMessage(authority)}
             </div>
           ) : null}
-          <ul aria-label="Global search results" className="max-h-[min(60vh,440px)] overflow-y-auto p-1" id={listboxId} role="listbox">
+          <ul aria-label={t("Global search results")} className="max-h-[min(60vh,440px)] overflow-y-auto p-1" id={listboxId} role="listbox">
             {items.map((item, index) => (
               <li aria-selected={activeIndex === index} id={`${listboxId}-${index}`} key={`${item.kind}:${item.id}`} role="option">
                 <Link className={`grid gap-1 rounded-md px-3 py-2.5 ${activeIndex === index ? "bg-black/[0.06]" : "hover:bg-black/[0.04]"}`} href={item.href} onMouseEnter={() => setActiveIndex(index)}>
-                  <span className="flex items-center justify-between gap-3"><strong className="truncate text-sm">{item.title}</strong><span className="rounded-full bg-black/[0.05] px-2 py-0.5 text-[10px] uppercase text-[var(--ad-text-muted)]">{item.kind.replaceAll("_", " ")}</span></span>
+                  <span className="flex items-center justify-between gap-3"><strong className="truncate text-sm">{item.title}</strong><span className="rounded-full bg-black/[0.05] px-2 py-0.5 text-[10px] uppercase text-[var(--ad-text-muted)]">{t(item.kind.replaceAll("_", " "))}</span></span>
                   <span className="truncate text-xs text-[var(--ad-text-muted)]">{item.subtitle} · {item.status}</span>
                 </Link>
               </li>
@@ -182,7 +184,8 @@ export function GlobalAdminSearch() {
             authority.availability === "available" &&
             items.length === 0 ? (
               <li className="px-3 py-5 text-center text-sm text-[var(--ad-text-muted)]">
-                No permitted records match this search.
+
+                {t("No permitted records match this search.")}
               </li>
             ) : null}
           </ul>

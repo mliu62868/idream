@@ -159,7 +159,7 @@ export function PresetsListPage() {
           current,
           presetsQueryKey(search, type, nextCursor),
         ));
-      }} type="button">Next page</button></div>
+      }} type="button">{t("Next page")}</button></div>
     </div>
   );
 }

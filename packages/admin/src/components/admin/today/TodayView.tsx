@@ -42,7 +42,7 @@ const modeContext: Record<WorkMode, string> = {
 };
 
 export function TodayView({ data, onPreferenceChanged, workMode }: { data: TodayData; onPreferenceChanged?: () => void | Promise<void>; workMode: WorkMode }) {
-  const { t } = useAdminI18n();
+  const { locale, t } = useAdminI18n();
   const { projection } = data;
   const refresh = onPreferenceChanged ?? (() => undefined);
   const [urlState, setUrlState] = useState<TodayUrlState>({ tab: "summary", limit: 25 });
@@ -100,7 +100,7 @@ export function TodayView({ data, onPreferenceChanged, workMode }: { data: Today
           <CheckCircle2 className="h-4 w-4 text-[var(--ad-green-text)]" />
           <p className="text-sm font-semibold text-[var(--ad-green-text)]">{t("Authoritative Today projection")}</p>
           <span className="text-xs text-[var(--ad-text-muted)]">
-            {t("Fresh as of {time}", { time: formatDateTime(projection.asOf) })}
+            {t("Fresh as of {time}", { time: formatDateTime(projection.asOf, locale) })}
           </span>
         </div>
         <p className="mt-1 pl-7 text-xs text-[var(--ad-text-muted)]">
@@ -115,70 +115,70 @@ export function TodayView({ data, onPreferenceChanged, workMode }: { data: Today
 
       {urlState.tab === "summary" ? <>
       <WorkQueue
-        description="Overdue or due-today work owned by you, plus commands awaiting completion or verification."
+        description={t("Overdue or due-today work owned by you, plus commands awaiting completion or verification.")}
         icon={UserRound}
         queue={projection.myShift}
         onPreferenceChanged={refresh}
-        title="My shift"
+        title={t("My shift")}
       />
 
       <WorkQueue
-        description="The ten highest-ranked authorized items. The total is computed from complete server-side counts."
+        description={t("The ten highest-ranked authorized items. The total is computed from complete server-side counts.")}
         icon={Clock3}
         queue={projection.nextBestActions}
         onPreferenceChanged={refresh}
-        title="Next best actions"
+        title={t("Next best actions")}
       />
 
       <div className="grid items-start gap-3 xl:grid-cols-3">
         <WorkQueue
           compact
-          description="Unowned work you are permitted to claim in its source domain."
+          description={t("Unowned work you are permitted to claim in its source domain.")}
           icon={Inbox}
           queue={projection.unassigned}
           onPreferenceChanged={refresh}
-          title="Unassigned work"
+          title={t("Unassigned work")}
         />
         <WorkQueue
           compact
-          description="Authoritative source objects you explicitly watch."
+          description={t("Authoritative source objects you explicitly watch.")}
           icon={Eye}
           queue={projection.watching}
           onPreferenceChanged={refresh}
-          title="Watching"
+          title={t("Watching")}
         />
         <WorkQueue
           compact
-          description="Work completed and verified during the last 24 hours."
+          description={t("Work completed and verified during the last 24 hours.")}
           icon={CheckCircle2}
           queue={projection.recentlyResolved}
           onPreferenceChanged={refresh}
-          title="Recently resolved"
+          title={t("Recently resolved")}
         />
       </div>
 
       <details className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
         <summary className="cursor-pointer px-4 py-3 text-sm font-semibold">{t("Operational context")}</summary>
         <div className="grid gap-px border-t border-[var(--ad-border)] bg-black/[0.05] sm:grid-cols-2 lg:grid-cols-4">
-          <ContextValue label="Active users" value={data.legacy.metrics.users.active} />
-          <ContextValue label="Queued generation jobs" value={data.legacy.metrics.generation.queued} />
-          <ContextValue label="Active subscriptions" value={data.legacy.metrics.billing.activeSubscriptions} />
-          <ContextValue label="Feature flags" value={data.legacy.featureFlags.length} />
+          <ContextValue label={t("Active users")} value={data.legacy.metrics.users.active} />
+          <ContextValue label={t("Queued generation jobs")} value={data.legacy.metrics.generation.queued} />
+          <ContextValue label={t("Active subscriptions")} value={data.legacy.metrics.billing.activeSubscriptions} />
+          <ContextValue label={t("Feature flags")} value={data.legacy.featureFlags.length} />
         </div>
       </details>
       </> : <section className="space-y-4" data-testid="today-all-work">
         <div className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 sm:grid-cols-2 xl:grid-cols-6">
-          <TodayFilter label="Domain" onChange={(value) => updateFilter({ domain: value as TodayUrlState["domain"] })} value={urlState.domain} values={["admin_case", "ops_incident", "control_plane_command", "collaboration_mention", "character_release", "creative_run"]} />
-          <TodayFilter label="Severity" onChange={(value) => updateFilter({ severity: value as TodayUrlState["severity"] })} value={urlState.severity} values={["critical", "high", "medium", "low"]} />
-          <TodayFilter label="SLA" onChange={(value) => updateFilter({ sla: value as TodayUrlState["sla"] })} value={urlState.sla} values={["overdue", "due_today", "upcoming", "none"]} />
-          <TodayFilter label="Owner" onChange={(value) => updateFilter({ owner: value as TodayUrlState["owner"] })} value={urlState.owner} values={["mine", "unassigned", "any"]} />
-          <TodayFilter label="Status" onChange={(value) => updateFilter({ status: value as TodayUrlState["status"] })} value={urlState.status} values={["active", "new", "triaged", "in_progress", "waiting", "detected", "mitigating", "monitoring", "accepted", "running", "verifying", "failed", "draft", "validating", "in_review", "approved"]} />
-          <TodayFilter label="Environment" onChange={(value) => updateFilter({ environment: value as TodayUrlState["environment"] })} value={urlState.environment} values={["production", "staging", "development", "test"]} />
+          <TodayFilter label={t("Domain")} onChange={(value) => updateFilter({ domain: value as TodayUrlState["domain"] })} value={urlState.domain} values={["admin_case", "ops_incident", "control_plane_command", "collaboration_mention", "character_release", "creative_run"]} />
+          <TodayFilter label={t("Severity")} onChange={(value) => updateFilter({ severity: value as TodayUrlState["severity"] })} value={urlState.severity} values={["critical", "high", "medium", "low"]} />
+          <TodayFilter label={t("SLA")} onChange={(value) => updateFilter({ sla: value as TodayUrlState["sla"] })} value={urlState.sla} values={["overdue", "due_today", "upcoming", "none"]} />
+          <TodayFilter label={t("Owner")} onChange={(value) => updateFilter({ owner: value as TodayUrlState["owner"] })} value={urlState.owner} values={["mine", "unassigned", "any"]} />
+          <TodayFilter label={t("Status")} onChange={(value) => updateFilter({ status: value as TodayUrlState["status"] })} value={urlState.status} values={["active", "new", "triaged", "in_progress", "waiting", "detected", "mitigating", "monitoring", "accepted", "running", "verifying", "failed", "draft", "validating", "in_review", "approved"]} />
+          <TodayFilter label={t("Environment")} onChange={(value) => updateFilter({ environment: value as TodayUrlState["environment"] })} value={urlState.environment} values={["production", "staging", "development", "test"]} />
         </div>
         {allWorkError ? <p className="rounded-lg bg-[var(--ad-red-bg)] p-4 text-sm text-[var(--ad-red-text)]" role="alert">{t(allWorkError)}</p> : null}
         {!allWork && !allWorkError ? <p className="p-4 text-sm text-[var(--ad-text-muted)]">{t("Loading All Work…")}</p> : null}
         {allWork ? <>
-          <WorkQueue description="Complete authorized work, filtered and ranked by the same authority as Summary." icon={Inbox} onPreferenceChanged={refreshAllWork} queue={{ totalCount: allWork.totalCount, items: allWork.items }} title="All work" />
+          <WorkQueue description={t("Complete authorized work, filtered and ranked by the same authority as Summary.")} icon={Inbox} onPreferenceChanged={refreshAllWork} queue={{ totalCount: allWork.totalCount, items: allWork.items }} title={t("All work")} />
           {allWork.pageInfo.hasNextPage && allWork.pageInfo.endCursor ? <button className="min-h-11 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" onClick={() => navigate({ ...urlState, cursor: allWork.pageInfo.endCursor ?? undefined })} type="button">{t("Next page")}</button> : null}
         </> : null}
       </section>}
@@ -236,7 +236,7 @@ function WorkQueue({
 }
 
 function WorkItem({ compact, item, onPreferenceChanged, watched }: { compact: boolean; item: TodayWorkItem; onPreferenceChanged: () => void | Promise<void>; watched: boolean }) {
-  const { t } = useAdminI18n();
+  const { locale, t } = useAdminI18n();
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
   async function updatePreference(patch: { watching?: boolean; pinned?: boolean; snoozedUntil?: string | null }, label: string) {
@@ -293,9 +293,9 @@ function WorkItem({ compact, item, onPreferenceChanged, watched }: { compact: bo
           <p className="mt-2 text-[10px] leading-4 text-[var(--ad-text-muted)]">{t(item.rankingReason)}</p>
           <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-[var(--ad-text-muted)]">
             <span>{t("Owner")}: {item.ownerId ?? t("Unassigned")}</span>
-            <span>{t("SLA")}: {item.slaDueAt ? formatDateTime(item.slaDueAt) : t("No deadline")}</span>
+            <span>{t("SLA")}: {item.slaDueAt ? formatDateTime(item.slaDueAt, locale) : t("No deadline")}</span>
             <span>{t("Verification")}: {t(item.verificationState)}</span>
-            <span>{item.environment} · {item.dataClass}</span>
+            <span>{t(item.environment)} · {t(item.dataClass)}</span>
           </div>
           <div className="mt-3 flex flex-wrap gap-2">
             <button className="inline-flex min-h-9 items-center gap-1 rounded border border-[var(--ad-border)] px-2 text-xs disabled:opacity-50" disabled={busy} onClick={() => void updatePreference({ watching: !watched }, watched ? "Removed from Watching" : "Added to Watching")} type="button"><Eye className="h-3.5 w-3.5" />{watched ? t("Unwatch") : t("Watch")}</button>
@@ -310,8 +310,12 @@ function WorkItem({ compact, item, onPreferenceChanged, watched }: { compact: bo
   );
 }
 
-function formatDateTime(value: string) {
-  return new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" }).format(new Date(value));
+function formatDateTime(value: string, locale: "en" | "zh") {
+  return new Intl.DateTimeFormat(locale === "zh" ? "zh-CN" : "en", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "UTC",
+  }).format(new Date(value));
 }
 
 function ContextValue({ label, value }: { label: string; value: number }) {

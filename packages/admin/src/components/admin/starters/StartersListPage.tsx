@@ -170,7 +170,7 @@ export function StartersListPage() {
           current,
           startersQueryKey(search, scope, status, nextCursor),
         ));
-      }} type="button">Next page</button></div>
+      }} type="button">{t("Next page")}</button></div>
     </div>
   );
 }

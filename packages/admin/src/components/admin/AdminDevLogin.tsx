@@ -78,12 +78,13 @@ export function AdminDevLogin({ accounts, actor }: AdminDevLoginProps) {
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-[var(--ad-canvas)] px-6 py-10 text-[var(--ad-ink)]">
+      <title>后台登录 | iDream Admin</title>
       <div className="rounded-lg w-full max-w-sm border border-[var(--ad-border)] bg-[var(--ad-surface)] p-6">
         <div className="flex items-center gap-3">
           <ShieldCheck className="h-5 w-5 text-[var(--ad-green-text)]" />
           <h1 className="text-lg font-semibold">后台登录</h1>
           <span className="ml-auto rounded bg-[var(--ad-yellow-bg)] px-2 py-0.5 text-[10px] font-medium text-[var(--ad-yellow-text)]">
-            DEV ONLY
+            仅限开发环境
           </span>
         </div>
 
@@ -150,7 +151,11 @@ export function AdminDevLogin({ accounts, actor }: AdminDevLoginProps) {
                 <UserCog className="h-4 w-4 shrink-0 text-[var(--ad-text-muted)]" />
                 <span className="font-medium text-[var(--ad-ink)]">{account.username}</span>
                 <span className="text-[var(--ad-text-muted)]">/ {account.password}</span>
-                <span className="ml-auto text-[var(--ad-text-muted)]">{account.label}</span>
+                <span className="ml-auto text-[var(--ad-text-muted)]">
+                  {account.label
+                    .replace("Admin", "管理员")
+                    .replace("Support", "客服")}
+                </span>
               </button>
             ))}
           </div>

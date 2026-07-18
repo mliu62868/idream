@@ -239,7 +239,7 @@ describe("Character workspace traceability", () => {
   it("renders immutable QA evidence, repair links, and pinned release lineage", () => {
     const source = readFileSync(new URL("./CharacterWorkspace.tsx", import.meta.url), "utf8");
 
-    expect(source).toContain('<option value="">Not run</option>');
+    expect(source).toContain('<option value="">{t("Not run")}</option>');
     expect(source).toContain("Checks, evidence, and repair paths");
     expect(source).toContain("check.comment");
     expect(source).toContain("check.evidenceRef");

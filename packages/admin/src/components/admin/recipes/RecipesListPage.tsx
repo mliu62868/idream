@@ -159,7 +159,7 @@ export function RecipesListPage() {
           current,
           recipesQueryKey(search, status, nextCursor),
         ));
-      }} type="button">Next page</button></div>
+      }} type="button">{t("Next page")}</button></div>
     </div>
   );
 }

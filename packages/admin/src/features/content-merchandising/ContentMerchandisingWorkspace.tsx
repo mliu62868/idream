@@ -15,7 +15,7 @@ import {
   apiGet,
   apiWrite,
 } from "@/components/admin/api";
-import { useAdminI18n } from "@/components/admin/i18n";
+import { AdminText, useAdminI18n } from "@/components/admin/i18n";
 import {
   ConfirmDialog,
   type ConfirmSpec,
@@ -287,7 +287,7 @@ export function ContentMerchandisingWorkspace({
     <section className="space-y-5">
       <PageHeader
         purpose="Search the catalog, control visibility and lifecycle state, and curate the public featured feed."
-        title="Featured Merchandising"
+        title={t("Featured Merchandising")}
       />
       <div
         className="flex flex-wrap justify-between gap-3 text-xs text-[var(--ad-text-muted)]"
@@ -298,7 +298,7 @@ export function ContentMerchandisingWorkspace({
           <Freshness authority="Featured" state={featured} />
         </div>
         {!canWrite ? (
-          <strong>Read only · content.takedown.write is not granted</strong>
+          <strong>{t("Read only · content.takedown.write is not granted")}</strong>
         ) : null}
       </div>
       <form
@@ -338,7 +338,8 @@ export function ContentMerchandisingWorkspace({
             type="submit"
           >
             <Search className="h-4 w-4" />
-            Apply
+
+            {t("Apply")}
           </button>
           <button
             className="inline-flex h-11 items-center gap-2 rounded-md border border-[var(--ad-border)] px-4 text-sm"
@@ -348,7 +349,8 @@ export function ContentMerchandisingWorkspace({
             type="button"
           >
             <RotateCcw className="h-4 w-4" />
-            Reset
+
+            {t("Reset")}
           </button>
         </div>
       </form>
@@ -361,12 +363,13 @@ export function ContentMerchandisingWorkspace({
       ) : null}
       {featured.loading && featured.data === null ? (
         <p className="text-sm text-[var(--ad-text-muted)]" role="status">
-          Loading featured authority…
+
+          {t("Loading featured authority…")}
         </p>
       ) : null}
       {featured.data ? <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-sm font-semibold">Featured curation</h2>
+          <h2 className="text-sm font-semibold">{t("Featured curation")}</h2>
           <span className="font-mono text-[11px] text-[var(--ad-text-muted)]">
             {t("Configuration version")} {featured.data.settingVersion}
           </span>
@@ -440,7 +443,7 @@ export function ContentMerchandisingWorkspace({
               setSaveConflict(null);
               featuredKey.current = null;
             }}
-            placeholder="char_a, char_b"
+            placeholder={t("char_a, char_b")}
             value={featuredInput}
           />
           <input
@@ -452,11 +455,11 @@ export function ContentMerchandisingWorkspace({
               setSaveConflict(null);
               featuredKey.current = null;
             }}
-            placeholder="Reason (≥3 chars)"
+            placeholder={t("Reason (≥3 chars)")}
             value={reason}
           />
           <input
-            aria-label="Featured confirmation"
+            aria-label={t("Featured confirmation")}
             className="h-10 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 font-mono text-sm"
             disabled={!canWrite}
             onChange={(event) => {
@@ -488,7 +491,8 @@ export function ContentMerchandisingWorkspace({
             ) : (
               <Flag className="h-4 w-4" />
             )}
-            Save featured
+
+            {t("Save featured")}
           </button>
         </div>
         {saveError ? (
@@ -542,12 +546,13 @@ export function ContentMerchandisingWorkspace({
       ) : null}
       {characters.loading && characters.data === null ? (
         <p className="text-sm text-[var(--ad-text-muted)]" role="status">
-          Loading character authority…
+
+          {t("Loading character authority…")}
         </p>
       ) : null}
       {characters.data ? <DataTable
         caption="Characters"
-        empty={<EmptyState title="No characters match these filters" />}
+        empty={<EmptyState title={t("No characters match these filters")} />}
         headers={[
           "ID",
           "Name",
@@ -572,7 +577,8 @@ export function ContentMerchandisingWorkspace({
           }
           type="button"
         >
-          Next page
+
+          {t("Next page")}
         </button>
       ) : null}
       {confirmSpec ? (
@@ -592,17 +598,18 @@ function Freshness<T>({
   authority: string;
   state: AuthorityState<T>;
 }) {
-  if (state.loading) return <span>{authority}: refreshing</span>;
+  const { t } = useAdminI18n();
+  if (state.loading) return <span>{authority}{t(": refreshing")}</span>;
   if (state.error) {
     return (
       <span>
-        {authority}: {state.data ? "stale" : "unavailable"} · retry available
+        {authority}: {state.data ? t("stale") : t("unavailable")}  {t("· retry available")}
       </span>
     );
   }
   return (
     <span>
-      {authority}: fresh{" "}
+      {authority}{t(": fresh")}{" "}
       {state.refreshedAt
         ? new Date(state.refreshedAt).toLocaleTimeString()
         : ""}
@@ -799,7 +806,8 @@ function characterTableRow(
         onClick={() => command(id, "visibility", "private")}
         type="button"
       >
-        Make private
+
+        <AdminText text="Make private" />
       </button>
       <button
         className="rounded border border-[var(--ad-border)] px-2 py-1 text-xs disabled:opacity-50"
@@ -807,7 +815,8 @@ function characterTableRow(
         onClick={() => command(id, "status", "removed")}
         type="button"
       >
-        Remove
+
+        <AdminText text="Remove" />
       </button>
     </div>
   );

@@ -124,7 +124,7 @@ export function BackendsView() {
           <div className="flex items-center gap-2">
             <HealthBadge health={backend.health} />
             {typeof backend.health.latencyMs === "number" ? (
-              <span className="font-mono text-xs text-[var(--ad-text-muted)]">{backend.health.latencyMs}ms</span>
+              <span className="font-mono text-xs text-[var(--ad-text-muted)]">{backend.health.latencyMs}{t("ms")}</span>
             ) : null}
           </div>
         );
@@ -167,7 +167,7 @@ export function BackendsView() {
         columns={columns}
         empty={t("No backends.")}
         rows={backends as unknown as Record<string, unknown>[]}
-        title="Backends"
+        title={t("Backends")}
       /> : null}
     </div>
   );

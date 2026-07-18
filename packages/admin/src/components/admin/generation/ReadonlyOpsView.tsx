@@ -30,9 +30,9 @@ export function ReadonlyOpsView({
       <h2 className="text-sm font-semibold" id={titleId}>
         {t(title)} ({rows.length})
       </h2>
-      <div aria-label={`${t(title)} scrollable table`} className="rounded-lg overflow-x-auto border border-[var(--ad-border)]" role="region" tabIndex={0}>
+      <div aria-label={t("{caption} scrollable table", { caption: t(title) })} className="rounded-lg overflow-x-auto border border-[var(--ad-border)]" role="region" tabIndex={0}>
         <table className="w-full text-left text-sm">
-          <caption className="sr-only">{t(title)} authoritative results</caption>
+          <caption className="sr-only">{t(title)}  {t("authoritative results")}</caption>
           <thead className="border-b border-[var(--ad-border)] text-xs text-[var(--ad-text-muted)]">
             <tr>
               {columns.map((c) => (

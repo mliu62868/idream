@@ -1,6 +1,7 @@
 "use client";
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { useAdminI18n } from "@/components/admin/i18n";
 
 export type DataTableRow = { id: string; cells: ReactNode[]; href?: string };
 export type DataTableHeader = string | {
@@ -21,15 +22,18 @@ export function DataTable({
   empty?: ReactNode;
   caption?: string;
 }) {
+  const { t } = useAdminI18n();
+  const translatedCaption = t(caption);
   if (rows.length === 0 && empty) return <>{empty}</>;
   return (
-    <div aria-label={`${caption} scrollable table`} className="overflow-x-auto rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]" role="region" tabIndex={0}>
+    <div aria-label={t("{caption} scrollable table", { caption: translatedCaption })} className="overflow-x-auto rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]" role="region" tabIndex={0}>
       <table className="w-full min-w-[640px] text-left text-sm">
-        <caption className="sr-only">{caption}</caption>
+        <caption className="sr-only">{translatedCaption}</caption>
         <thead>
           <tr className="border-b border-[var(--ad-border)] text-xs uppercase tracking-[0.05em] text-[var(--ad-text-muted)]">
             {headers.map((header) => {
               const definition = typeof header === "string" ? { label: header } : header;
+              const translatedLabel = t(definition.label);
               return (
               <th
                 aria-sort={definition.sortDirection && definition.sortDirection !== "none" ? definition.sortDirection : undefined}
@@ -38,8 +42,8 @@ export function DataTable({
                 scope="col"
               >
                 {definition.onSort ? (
-                  <button className="min-h-8 rounded px-1 text-left hover:text-[var(--ad-ink)] focus-visible:outline focus-visible:outline-2" onClick={definition.onSort} type="button">{definition.label}</button>
-                ) : definition.label}
+                  <button className="min-h-8 rounded px-1 text-left hover:text-[var(--ad-ink)] focus-visible:outline focus-visible:outline-2" onClick={definition.onSort} type="button">{translatedLabel}</button>
+                ) : translatedLabel}
               </th>
               );
             })}

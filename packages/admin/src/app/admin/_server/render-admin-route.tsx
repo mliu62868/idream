@@ -72,9 +72,9 @@ function AdminAuthorityUnavailable() {
   return (
     <main className="grid min-h-screen place-items-center bg-[var(--ad-canvas)] p-6 text-[var(--ad-ink)]">
       <section className="max-w-md rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-6">
-        <h1 className="text-lg font-semibold">Admin authority unavailable</h1>
+        <h1 className="text-lg font-semibold">后台权威服务不可用</h1>
         <p className="mt-2 text-sm text-[var(--ad-text-muted)]">
-          The control plane could not verify identity, permissions, and data provenance. No admin data or actions are available until the authority service recovers.
+          控制面当前无法验证身份、权限和数据来源。权威服务恢复前，后台数据与操作均不可用。
         </p>
       </section>
     </main>

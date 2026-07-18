@@ -300,7 +300,7 @@ export function CmsView() {
 
       <section className="overflow-x-auto rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
         <table className="w-full min-w-[920px] text-left text-sm">
-          <caption className="sr-only">CMS pages</caption>
+          <caption className="sr-only">{t("CMS pages")}</caption>
           <thead className="border-b border-[var(--ad-border)] text-xs text-[var(--ad-text-muted)]">
             <tr>
               <th className="px-3 py-2 font-medium" scope="col">
@@ -333,7 +333,8 @@ export function CmsView() {
                 <td className="px-3 py-3">
                   <p>{page.title}</p>
                   <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
-                    Updated {formatTimestamp(page.updatedAt)}
+
+                    {t("Updated")} {formatTimestamp(page.updatedAt)}
                   </p>
                 </td>
                 <td className="px-3 py-3 text-[var(--ad-text-muted)]">
@@ -485,8 +486,8 @@ function EditPageForm({
           }
           value={draft.indexingStatus}
         >
-          <option value="noindex">noindex</option>
-          <option value="index">index</option>
+          <option value="noindex">{t("noindex")}</option>
+          <option value="index">{t("index")}</option>
         </select>
         <input
           className={`${inputClass} md:col-span-2`}
@@ -620,7 +621,7 @@ function CreatePageForm({ reload }: { reload: () => Promise<void> }) {
         <input
           className={inputClass}
           onChange={(event) => setPath(event.target.value)}
-          placeholder="/guides/example"
+          placeholder={t("/guides/example")}
           value={path}
         />
         <input
@@ -649,8 +650,8 @@ function CreatePageForm({ reload }: { reload: () => Promise<void> }) {
           }
           value={indexingStatus}
         >
-          <option value="noindex">noindex</option>
-          <option value="index">index</option>
+          <option value="noindex">{t("noindex")}</option>
+          <option value="index">{t("index")}</option>
         </select>
         <textarea
           aria-label={t("CMS article body JSON")}

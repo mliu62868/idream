@@ -141,7 +141,7 @@ export function TagsView() {
           <h2 className="text-sm font-semibold">{t("Tag taxonomy")} ({tags.length})</h2>
         </div>
         <table className="w-full text-left text-sm">
-          <caption className="sr-only">Tag taxonomy</caption>
+          <caption className="sr-only">{t("Tag taxonomy")}</caption>
           <thead className="border-b border-[var(--ad-border)] text-xs text-[var(--ad-text-muted)]">
             <tr>
               <th scope="col" className="px-3 py-2 font-medium">{t("slug")}</th>

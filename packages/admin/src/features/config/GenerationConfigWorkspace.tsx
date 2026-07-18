@@ -1,5 +1,6 @@
 "use client";
 
+import { useAdminI18n } from "@/components/admin/i18n";
 import type { FormEvent, ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, Flag, Loader2, Play, RefreshCcw, RotateCcw, UploadCloud, X } from "lucide-react";
@@ -29,6 +30,7 @@ const emptyPageInfo: PageInfo = { endCursor: null, hasNextPage: false };
 const emptyAuthorityState = <T,>(): AuthorityState<T> => ({ data: null, error: null, loading: true, refreshedAt: null });
 
 export function GenerationConfigWorkspace({ permissions }: { permissions: Permissions }) {
+  const { t } = useAdminI18n();
   const [query, setQuery] = useState<GenerationConfigQuery>(() => currentQuery());
   const [draft, setDraft] = useState<GenerationConfigQuery>(() => currentQuery());
   const [profiles, setProfiles] = useState<AuthorityState<ListResponse>>(emptyAuthorityState);
@@ -160,9 +162,9 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
   const initiallyLoading = !profiles.data && !flags.data && !recentJobs.data && (profiles.loading || flags.loading || recentJobs.loading);
   return (
     <section aria-labelledby="generation-config-title" className="space-y-5">
-      <div id="generation-config-title"><PageHeader purpose="Test generation profiles, publish proven versions, and roll feature flags through audited control-plane commands." title="Test and publish generation profiles" /></div>
+      <div id="generation-config-title"><PageHeader purpose="Test generation profiles, publish proven versions, and roll feature flags through audited control-plane commands." title={t("Test and publish generation profiles")} /></div>
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--ad-text-muted)]" role="status">
-        <span>Legacy compatibility authority · source freshness watermark unavailable</span>
+        <span>{t("Legacy compatibility authority · source freshness watermark unavailable")}</span>
         <Freshness label="Profiles" state={profiles} />
         <Freshness label="Feature flags" state={flags} />
         <Freshness label="Recent jobs" state={recentJobs} />
@@ -178,7 +180,7 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
         <Select label="Profile mode" onChange={(profileMode) => setDraft((current) => ({ ...current, profileMode }))} options={["", "image", "video"]} value={draft.profileMode} />
         <Select label="Profile status" onChange={(profileStatus) => setDraft((current) => ({ ...current, profileStatus }))} options={["", "draft", "active", "archived"]} value={draft.profileStatus} />
         <Select label="Flag state" onChange={(flagEnabled) => setDraft((current) => ({ ...current, flagEnabled }))} options={["", "true", "false"]} value={draft.flagEnabled} />
-        <div className="flex items-end gap-2"><button className="min-h-11 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white" type="submit">Apply</button>{filtered ? <button aria-label="Clear generation config filters" className="grid min-h-11 min-w-11 place-items-center rounded-md border border-[var(--ad-border)]" onClick={() => navigate({ ...defaultGenerationConfigQuery, tab: query.tab })} type="button"><X className="h-4 w-4" /></button> : null}</div>
+        <div className="flex items-end gap-2"><button className="min-h-11 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white" type="submit">{t("Apply")}</button>{filtered ? <button aria-label={t("Clear generation config filters")} className="grid min-h-11 min-w-11 place-items-center rounded-md border border-[var(--ad-border)]" onClick={() => navigate({ ...defaultGenerationConfigQuery, tab: query.tab })} type="button"><X className="h-4 w-4" /></button> : null}</div>
       </form>
 
       {notice ? <p className="rounded-md bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]" data-testid="admin-action-status" role="status">{notice}</p> : null}
@@ -187,7 +189,7 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
       <AuthorityError label="recent jobs" onRetry={() => void loadJobs()} state={recentJobs} />
       {initiallyLoading ? <Loading /> : query.tab === "profiles" ? (
         <>
-          {!permissions.manageProfiles ? <p className="text-xs font-semibold text-[var(--ad-text-muted)]">Read only · generation.config.write is not granted</p> : null}
+          {!permissions.manageProfiles ? <p className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Read only · generation.config.write is not granted")}</p> : null}
           {profiles.data ? profileRows.length === 0 ? <EmptyState hint={filtered ? "The complete profile authority query returned no matches." : "No built-in generation profiles are seeded yet."} title={filtered ? "No generation profiles match these filters." : "No built-in generation profiles are seeded yet."} /> : (
             <div className="grid gap-4 lg:grid-cols-[minmax(260px,0.8fr)_minmax(0,1.6fr)]">
               <div className="space-y-2 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3">{profileRows.map((profile) => {
@@ -201,7 +203,7 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
         </>
       ) : (
         <>
-          {!permissions.manageFlags ? <p className="text-xs font-semibold text-[var(--ad-text-muted)]">Read only · config.feature_flag.write is not granted</p> : null}
+          {!permissions.manageFlags ? <p className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Read only · config.feature_flag.write is not granted")}</p> : null}
           {flags.data ? flagRows.length === 0 ? <EmptyState hint={filtered ? "The complete flag authority query returned no matches." : "No feature flags exist in the authority."} title={filtered ? "No feature flags match these filters" : "No feature flags exist yet"} /> : <FlagsTable canWrite={permissions.manageFlags} confirmWrite={confirmWrite} rows={flagRows} /> : null}
           <NextPage label="Next feature-flag page" loading={flags.loading} onClick={() => navigate({ ...query, flagCursor: flags.data?.pageInfo?.endCursor ?? "" })} pageInfo={flags.data?.pageInfo ?? emptyPageInfo} />
         </>
@@ -223,6 +225,7 @@ function ProfileDetail({ canWrite, jobs, onConfirm, onTest, profile, review, set
   testBusy: boolean;
   testPrompt: string;
 }) {
+  const { t } = useAdminI18n();
   const id = text(profile.id);
   const status = text(profile.status);
   const mode = text(profile.mode);
@@ -239,24 +242,28 @@ function ProfileDetail({ canWrite, jobs, onConfirm, onTest, profile, review, set
       {status === "active" ? <Action icon={<RotateCcw className="h-4 w-4" />} label="Rollback" onClick={() => onConfirm({ title: `Rollback profile ${id}`, endpoint: `/api/v1/admin/generation/model-profiles/${id}/rollback`, method: "POST", expected: id, payload: (reason) => ({ reason }) })} /> : null}
       {status === "active" && Boolean(profile.enabled) ? <Action icon={<X className="h-4 w-4" />} label="Disable" onClick={() => onConfirm({ title: `Disable profile ${id}`, endpoint: `/api/v1/admin/generation/model-profiles/${id}`, method: "PATCH", expected: id, payload: (reason) => ({ reason, enabled: false }) })} /> : null}
     </div> : null}
-    {mode === "image" && status !== "archived" ? <div className="grid gap-3 rounded-md border border-[var(--ad-border)] p-3 md:grid-cols-2"><Field label="Test image prompt" onChange={setTestPrompt} value={testPrompt} /><p className="self-end text-xs text-[var(--ad-text-muted)]">{relatedJobs.length} recent profile test job{relatedJobs.length === 1 ? "" : "s"}</p></div> : null}
+    {mode === "image" && status !== "archived" ? <div className="grid gap-3 rounded-md border border-[var(--ad-border)] p-3 md:grid-cols-2"><Field label="Test image prompt" onChange={setTestPrompt} value={testPrompt} /><p className="self-end text-xs text-[var(--ad-text-muted)]">{relatedJobs.length}  {t("recent profile test job")}{relatedJobs.length === 1 ? "" : "s"}</p></div> : null}
     {mode === "image" && status === "draft" ? <div className="grid gap-3 rounded-md border border-[var(--ad-border)] p-3 md:grid-cols-3"><Field label="Consistency samples (≥20)" onChange={(sampleCount) => setReview({ ...review, sampleCount })} value={review.sampleCount} /><Field label="Consistency passes (≥80%)" onChange={(passCount) => setReview({ ...review, passCount })} value={review.passCount} /><Field label="Review evidence URL" onChange={(reviewUrl) => setReview({ ...review, reviewUrl })} value={review.reviewUrl} /></div> : null}
-    <details className="rounded-md border border-[var(--ad-border)] p-3"><summary className="cursor-pointer text-sm font-semibold">Engineering details</summary><pre className="mt-3 overflow-x-auto text-xs text-[var(--ad-text-muted)]">{JSON.stringify(profile, null, 2)}</pre></details>
+    <details className="rounded-md border border-[var(--ad-border)] p-3"><summary className="cursor-pointer text-sm font-semibold">{t("Engineering details")}</summary><pre className="mt-3 overflow-x-auto text-xs text-[var(--ad-text-muted)]">{JSON.stringify(profile, null, 2)}</pre></details>
   </section>;
 }
 
 function FlagsTable({ canWrite, confirmWrite, rows }: { canWrite: boolean; confirmWrite: (input: { title: string; endpoint: string; method: "POST" | "PATCH"; expected: string; payload: (reason: string) => Record<string, unknown>; completed?: string }) => void; rows: RecordRow[] }) {
-  return <div aria-label="Feature Flags scrollable table" className="overflow-x-auto rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]" role="region" tabIndex={0}><table className="w-full min-w-[760px] text-left text-sm"><caption className="sr-only">Feature Flags</caption><thead><tr className="border-b border-[var(--ad-border)] text-xs uppercase text-[var(--ad-text-muted)]">{["Key", "Enabled", "Rollout", "Version", "Hard policy", "Actions"].map((header) => <th className="px-4 py-3 font-medium" key={header} scope="col">{header}</th>)}</tr></thead><tbody>{rows.map((row) => {
+  const { t } = useAdminI18n();
+  return <div aria-label={t("Feature Flags scrollable table")} className="overflow-x-auto rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]" role="region" tabIndex={0}><table className="w-full min-w-[760px] text-left text-sm"><caption className="sr-only">{t("Feature Flags")}</caption><thead><tr className="border-b border-[var(--ad-border)] text-xs uppercase text-[var(--ad-text-muted)]">{["Key", "Enabled", "Rollout", "Version", "Hard policy", "Actions"].map((header) => <th className="px-4 py-3 font-medium" key={header} scope="col">{header}</th>)}</tr></thead><tbody>{rows.map((row) => {
     const key = text(row.key);
     const enabled = Boolean(row.enabled);
     const expected = `${key}:${enabled ? "disabled" : "enabled"}`;
-    return <tr className="border-b border-[var(--ad-border)] last:border-0" key={key}><td className="px-4 py-3 font-mono text-xs">{key}</td><td className="px-4 py-3">{String(enabled)}</td><td className="px-4 py-3">{display(row.rolloutPercent)}</td><td className="px-4 py-3">{display(row.version)}</td><td className="px-4 py-3">{display(row.hardPolicy)}</td><td className="px-4 py-3">{canWrite ? <Action icon={<Flag className="h-4 w-4" />} label={enabled ? "Disable" : "Enable"} onClick={() => confirmWrite({ title: `${enabled ? "Disable" : "Enable"} ${key}`, endpoint: `/api/v1/admin/feature-flags/${key}`, method: "PATCH", expected, payload: (reason) => ({ enabled: !enabled, reason }) })} /> : "Read only"}</td></tr>;
+    return <tr className="border-b border-[var(--ad-border)] last:border-0" key={key}><td className="px-4 py-3 font-mono text-xs">{key}</td><td className="px-4 py-3">{String(enabled)}</td><td className="px-4 py-3">{display(row.rolloutPercent)}</td><td className="px-4 py-3">{display(row.version)}</td><td className="px-4 py-3">{display(row.hardPolicy)}</td><td className="px-4 py-3">{canWrite ? <Action icon={<Flag className="h-4 w-4" />} label={enabled ? "Disable" : "Enable"} onClick={() => confirmWrite({ title: `${enabled ? "Disable" : "Enable"} ${key}`, endpoint: `/api/v1/admin/feature-flags/${key}`, method: "PATCH", expected, payload: (reason) => ({ enabled: !enabled, reason }) })} /> : t("Read only")}</td></tr>;
   })}</tbody></table></div>;
 }
 
-function Freshness<T>({ label, state }: { label: string; state: AuthorityState<T> }) { const time = state.refreshedAt ? new Date(state.refreshedAt).toLocaleTimeString() : "unknown"; if (state.loading && state.data) return <span>{label}: refreshing · showing snapshot from {time}</span>; if (state.error && state.data) return <span>{label}: stale · last good {time}</span>; if (state.error) return <span>{label}: unavailable</span>; if (state.data) return <span>{label}: current client snapshot · {time}</span>; return <span>{label}: refreshing · no snapshot yet</span>; }
-function AuthorityError<T>({ label, onRetry, state }: { label: string; onRetry: () => void; state: AuthorityState<T> }) { return state.error ? <div className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">{label} authority refresh failed: {state.error}<button className="ml-3 min-h-8 rounded border border-current px-2 font-semibold" onClick={onRetry} type="button">Retry {label}</button>{state.data ? <span className="ml-2">The last good snapshot remains visible.</span> : null}</div> : null; }
-function Loading() { return <div aria-label="Loading generation config authority" className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" role="status"><span className="inline-flex items-center gap-2 text-sm text-[var(--ad-text-muted)]"><Loader2 className="h-4 w-4 animate-spin" />Loading generation config authority</span></div>; }
+function Freshness<T>({ label, state }: { label: string; state: AuthorityState<T> }) {
+  const { t } = useAdminI18n(); const time = state.refreshedAt ? new Date(state.refreshedAt).toLocaleTimeString() : "unknown"; if (state.loading && state.data) return <span>{label}{t(": refreshing · showing snapshot from")} {time}</span>; if (state.error && state.data) return <span>{label}{t(": stale · last good")} {time}</span>; if (state.error) return <span>{label}{t(": unavailable")}</span>; if (state.data) return <span>{label}{t(": current client snapshot ·")} {time}</span>; return <span>{label}{t(": refreshing · no snapshot yet")}</span>; }
+function AuthorityError<T>({ label, onRetry, state }: { label: string; onRetry: () => void; state: AuthorityState<T> }) {
+  const { t } = useAdminI18n(); return state.error ? <div className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">{label}  {t("authority refresh failed:")} {state.error}<button className="ml-3 min-h-8 rounded border border-current px-2 font-semibold" onClick={onRetry} type="button">{t("Retry")} {label}</button>{state.data ? <span className="ml-2">{t("The last good snapshot remains visible.")}</span> : null}</div> : null; }
+function Loading() {
+  const { t } = useAdminI18n(); return <div aria-label={t("Loading generation config authority")} className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" role="status"><span className="inline-flex items-center gap-2 text-sm text-[var(--ad-text-muted)]"><Loader2 className="h-4 w-4 animate-spin" />{t("Loading generation config authority")}</span></div>; }
 function Tab({ active, count, label, meta, onClick }: { active: boolean; count: number; label: string; meta: string; onClick: () => void }) { return <button aria-current={active ? "page" : undefined} className={`px-4 py-3 text-left ${active ? "bg-[var(--ad-ink)] text-white" : "bg-[var(--ad-surface)]"}`} onClick={onClick} type="button"><span className="flex justify-between font-semibold"><span>{label}</span><span>{count}</span></span><span className="mt-1 block text-xs opacity-70">{meta}</span></button>; }
 function Field({ label, onChange, search = false, value }: { label: string; onChange: (value: string) => void; search?: boolean; value: string }) { return <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{label}<input className="min-h-11 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm" onChange={(event) => onChange(event.target.value)} role={search ? "searchbox" : undefined} value={value} /></label>; }
 function Select({ label, onChange, options, value }: { label: string; onChange: (value: string) => void; options: string[]; value: string }) { return <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{label}<select className="min-h-11 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm" onChange={(event) => onChange(event.target.value)} value={value}>{options.map((option) => <option key={option || "all"} value={option}>{option || "All"}</option>)}</select></label>; }

@@ -347,7 +347,7 @@ function AgeVerificationSection() {
         <p className="px-3 py-6 text-sm text-[var(--ad-text-muted)]" role="status">{t("Loading…")}</p>
       ) : null}
       {authority.data ? <table className="w-full text-left text-sm">
-        <caption className="sr-only">Compliance records</caption>
+        <caption className="sr-only">{t("Compliance records")}</caption>
         <thead className="border-b border-[var(--ad-border)] text-xs text-[var(--ad-text-muted)]">
           <tr>
             <th scope="col" className="px-3 py-2 font-medium">{t("user")}</th>

@@ -138,7 +138,7 @@ export function VisualPassportPanel({ characterId }: { characterId: string }) {
         ) : (
           <div className="mt-2 overflow-x-auto">
             <table className="w-full text-left text-xs">
-              <caption className="sr-only">Visual passport versions</caption>
+              <caption className="sr-only">{t("Visual passport versions")}</caption>
               <thead className="text-[var(--ad-text-muted)]">
                 <tr className="border-b border-[var(--ad-border)]">
                   <th scope="col" className="py-1.5 pr-3 font-medium">{t("Version")}</th>
@@ -177,7 +177,8 @@ export function VisualPassportPanel({ characterId }: { characterId: string }) {
         <div className="mt-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">
-              Active visual identity
+
+              {t("Active visual identity")}
             </h3>
             <div className="flex flex-wrap items-center gap-2">
               <span className="rounded-md bg-black/[0.05] px-2 py-1 text-xs text-[var(--ad-text)]">
@@ -197,11 +198,11 @@ export function VisualPassportPanel({ characterId }: { characterId: string }) {
             <IdentityMetric label="Consistency score" value={active.consistencyScore ?? "—"} />
           </div>
           <div className="mt-3 rounded-lg bg-black/[0.03] p-4">
-            <p className="text-xs font-semibold text-[var(--ad-text-muted)]">Identity lock</p>
+            <p className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Identity lock")}</p>
             <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-[var(--ad-text)]">{active.identityPrompt}</p>
           </div>
           <details className="mt-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3">
-            <summary className="cursor-pointer text-xs font-semibold text-[var(--ad-text-muted)]">Structured trait details</summary>
+            <summary className="cursor-pointer text-xs font-semibold text-[var(--ad-text-muted)]">{t("Structured trait details")}</summary>
             <div className="mt-3 grid gap-2 md:grid-cols-3">
               <TraitBlock label={t("Face traits")} value={active.faceTraits} />
               <TraitBlock label={t("Hair traits")} value={active.hairTraits} />
@@ -298,41 +299,42 @@ function MintVersionForm({
 
   return (
     <div className="mt-4 border-t border-[var(--ad-border)] pt-4">
-      <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">Create visual identity version</h3>
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">{t("Create visual identity version")}</h3>
       <p className="mt-1 text-xs leading-relaxed text-[var(--ad-text-muted)]">
-        Adjust the identity lock, create a new active version, then use the Assets tab to generate comparison images.
+
+        {t("Adjust the identity lock, create a new active version, then use the Assets tab to generate comparison images.")}
       </p>
       <div className="mt-2 grid gap-3 md:grid-cols-2">
         <label className="block">
-          <span className="mb-1.5 block text-xs font-medium text-[var(--ad-text-muted)]">Identity lock</span>
+          <span className="mb-1.5 block text-xs font-medium text-[var(--ad-text-muted)]">{t("Identity lock")}</span>
           <textarea className={textareaClass} onChange={(event) => setIdentityPrompt(event.target.value)} placeholder={t("Identity prompt (leave blank to derive from traits)")} value={identityPrompt} />
         </label>
         <label className="block">
-          <span className="mb-1.5 block text-xs font-medium text-[var(--ad-text-muted)]">What must not change</span>
+          <span className="mb-1.5 block text-xs font-medium text-[var(--ad-text-muted)]">{t("What must not change")}</span>
           <textarea className={textareaClass} onChange={(event) => setNegativeIdentityPrompt(event.target.value)} placeholder={t("Negative identity prompt")} value={negativeIdentityPrompt} />
         </label>
       </div>
       <div className="mt-3 grid gap-3 md:grid-cols-3">
         <label className="block">
-          <span className="mb-1.5 block text-xs font-medium text-[var(--ad-text-muted)]">Visual style</span>
+          <span className="mb-1.5 block text-xs font-medium text-[var(--ad-text-muted)]">{t("Visual style")}</span>
           <select className={cn(inputClass, "appearance-none")} onChange={(event) => setStyle(event.target.value as (typeof STYLES)[number])} value={style}>
             {STYLES.map((value) => <option key={value} value={value}>{valueLabel(value)}</option>)}
           </select>
         </label>
         <label className="block">
-          <span className="mb-1.5 block text-xs font-medium text-[var(--ad-text-muted)]">Consistency seed</span>
+          <span className="mb-1.5 block text-xs font-medium text-[var(--ad-text-muted)]">{t("Consistency seed")}</span>
           <input className={inputClass} onChange={(event) => setDefaultSeed(event.target.value)} value={defaultSeed} />
         </label>
         <label className="block">
-          <span className="mb-1.5 block text-xs font-medium text-[var(--ad-text-muted)]">Change note</span>
-          <input className={inputClass} onChange={(event) => setReason(event.target.value)} placeholder="What changed and why" value={reason} />
+          <span className="mb-1.5 block text-xs font-medium text-[var(--ad-text-muted)]">{t("Change note")}</span>
+          <input className={inputClass} onChange={(event) => setReason(event.target.value)} placeholder={t("What changed and why")} value={reason} />
         </label>
       </div>
       <label className="mt-3 flex cursor-pointer items-start gap-3 rounded-lg border border-[var(--ad-border)] p-3">
         <input checked={confirmed} className="mt-0.5 h-4 w-4" onChange={(event) => setConfirmed(event.target.checked)} type="checkbox" />
         <span>
-          <span className="flex items-center gap-1.5 text-sm font-medium text-[var(--ad-ink)]"><Check className="h-4 w-4" /> Activate this as a new identity version</span>
-          <span className="mt-1 block text-xs leading-relaxed text-[var(--ad-text-muted)]">The previous active version remains in history. Existing artwork is not deleted.</span>
+          <span className="flex items-center gap-1.5 text-sm font-medium text-[var(--ad-ink)]"><Check className="h-4 w-4" />  {t("Activate this as a new identity version")}</span>
+          <span className="mt-1 block text-xs leading-relaxed text-[var(--ad-text-muted)]">{t("The previous active version remains in history. Existing artwork is not deleted.")}</span>
         </span>
       </label>
       <div className="mt-3 flex items-center gap-3">
@@ -343,7 +345,8 @@ function MintVersionForm({
           type="button"
         >
           {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-          Create and activate version
+
+          {t("Create and activate version")}
         </button>
         {submitError ? <p className="text-xs text-[var(--ad-red-text)]">{submitError}</p> : null}
       </div>

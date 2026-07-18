@@ -229,10 +229,10 @@ function SectionShell({ title, isEmpty, t, children }: { title: string; isEmpty:
 
 function ProfilesTable({ profiles, t }: { profiles: ProfileMetric[]; t: Translate }) {
   return (
-    <SectionShell isEmpty={profiles.length === 0} t={t} title="Profiles">
+    <SectionShell isEmpty={profiles.length === 0} t={t} title={t("Profiles")}>
       <div className="overflow-x-auto">
         <table className="w-full text-left text-xs">
-          <caption className="sr-only">Generation profiles</caption>
+          <caption className="sr-only">{t("Generation profiles")}</caption>
           <thead>
             <tr className="text-[var(--ad-text-muted)]">
               <th scope="col" className="pb-2 pr-4">{t("Label")}</th>
@@ -274,10 +274,10 @@ function ProfilesTable({ profiles, t }: { profiles: ProfileMetric[]; t: Translat
 
 function RecipesTable({ recipes, t }: { recipes: RecipeMetric[]; t: Translate }) {
   return (
-    <SectionShell isEmpty={recipes.length === 0} t={t} title="Recipes">
+    <SectionShell isEmpty={recipes.length === 0} t={t} title={t("Recipes")}>
       <div className="overflow-x-auto">
         <table className="w-full text-left text-xs">
-          <caption className="sr-only">Generation recipes</caption>
+          <caption className="sr-only">{t("Generation recipes")}</caption>
           <thead>
             <tr className="text-[var(--ad-text-muted)]">
               <th scope="col" className="pb-2 pr-4">{t("Recipe")}</th>
@@ -311,10 +311,10 @@ function RecipesTable({ recipes, t }: { recipes: RecipeMetric[]; t: Translate })
 
 function SourcesTable({ sources, t }: { sources: SourceMetric[]; t: Translate }) {
   return (
-    <SectionShell isEmpty={sources.length === 0} t={t} title="Sources">
+    <SectionShell isEmpty={sources.length === 0} t={t} title={t("Sources")}>
       <div className="overflow-x-auto">
         <table className="w-full text-left text-xs">
-          <caption className="sr-only">Generation sources</caption>
+          <caption className="sr-only">{t("Generation sources")}</caption>
           <thead>
             <tr className="text-[var(--ad-text-muted)]">
               <th scope="col" className="pb-2 pr-4">{t("Source")}</th>
@@ -348,10 +348,10 @@ function SourcesTable({ sources, t }: { sources: SourceMetric[]; t: Translate })
 
 function PlacementsTable({ placements, t }: { placements: PlacementMetric[]; t: Translate }) {
   return (
-    <SectionShell isEmpty={placements.length === 0} t={t} title="Placements">
+    <SectionShell isEmpty={placements.length === 0} t={t} title={t("Placements")}>
       <div className="overflow-x-auto">
         <table className="w-full text-left text-xs">
-          <caption className="sr-only">Generation placements</caption>
+          <caption className="sr-only">{t("Generation placements")}</caption>
           <thead>
             <tr className="text-[var(--ad-text-muted)]">
               <th scope="col" className="pb-2 pr-4">{t("Slot")}</th>
@@ -382,10 +382,10 @@ function PlacementEngagementTable({
   t: Translate;
 }) {
   return (
-    <SectionShell isEmpty={engagement.length === 0} t={t} title="Placement Engagement">
+    <SectionShell isEmpty={engagement.length === 0} t={t} title={t("Placement Engagement")}>
       <div className="overflow-x-auto">
         <table className="w-full text-left text-xs">
-          <caption className="sr-only">Placement engagement</caption>
+          <caption className="sr-only">{t("Placement engagement")}</caption>
           <thead>
             <tr className="text-[var(--ad-text-muted)]">
               <th scope="col" className="pb-2 pr-4">{t("Slot")}</th>

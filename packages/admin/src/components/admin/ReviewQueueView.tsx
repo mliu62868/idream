@@ -301,7 +301,7 @@ export function ReviewQueueView() {
         </div>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[860px] border-collapse text-left text-sm">
-            <caption className="sr-only">Pending character submissions</caption>
+            <caption className="sr-only">{t("Pending character submissions")}</caption>
             <thead className="bg-black/[0.03] text-[11px] uppercase text-[var(--ad-text-muted)]">
               <tr>
                 {["name", "gender", "style", "description", "reports", "submittedAt"].map((column) => (
@@ -361,8 +361,8 @@ export function ReviewQueueView() {
                       </div>
                     ) : (
                       <div>
-                        <p className="text-sm font-semibold text-[var(--ad-ink)]">Review queue is clear</p>
-                        <p className="mt-1 text-xs text-[var(--ad-text-muted)]">New pending character submissions will appear here with their report context and decision actions.</p>
+                        <p className="text-sm font-semibold text-[var(--ad-ink)]">{t("Review queue is clear")}</p>
+                        <p className="mt-1 text-xs text-[var(--ad-text-muted)]">{t("New pending character submissions will appear here with their report context and decision actions.")}</p>
                       </div>
                     )}
                   </td>
@@ -372,7 +372,7 @@ export function ReviewQueueView() {
           </table>
         </div>
       </section>
-      <div className="flex justify-end"><button className="min-h-10 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold disabled:opacity-50" disabled={loading || !pageInfo.hasNextPage || !pageInfo.endCursor} onClick={() => setCursor(pageInfo.endCursor ?? undefined)} type="button">Next page</button></div>
+      <div className="flex justify-end"><button className="min-h-10 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold disabled:opacity-50" disabled={loading || !pageInfo.hasNextPage || !pageInfo.endCursor} onClick={() => setCursor(pageInfo.endCursor ?? undefined)} type="button">{t("Next page")}</button></div>
 
       {pending ? (
         <DecisionDialog
