@@ -84,6 +84,7 @@ export const ADMIN_V2_MUTATION_TRANSPORT = {
   "POST /api/v2/admin/characters/:id/reference-sets": idempotencyKey(),
   "PATCH /api/v2/admin/characters/:id/looks/:lookId": idempotencyKey(),
   "POST /api/v2/admin/characters/:id/identity-bootstrap": idempotencyKeyAndIfMatch(),
+  "POST /api/v2/admin/characters/:id/image-readiness/repair": idempotencyKeyAndIfMatch(),
   "PATCH /api/v2/admin/characters/:id/project": ifMatch(),
   "PATCH /api/v2/admin/characters/:id/draft-image": idempotencyKeyAndIfMatch(),
   "POST /api/v2/admin/characters/:id/qa-runs": idempotencyKeyAndIfMatch(),

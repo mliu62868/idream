@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
 
 import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
+import { createRoot, hydrateRoot, type Root } from "react-dom/client";
+import { renderToString } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { adminV2Request, routerPush } = vi.hoisted(() => ({
@@ -43,7 +44,7 @@ const restoredDraft = {
     name: "Mira",
     age: 24,
     gender: "female",
-    relationshipArchetype: "trusted companion",
+    relationshipArchetype: "steady confidante",
     characterPromise: "A dependable conversational presence",
     personality: "Warm and observant",
     tone: "Natural and concise",
@@ -53,7 +54,7 @@ const restoredDraft = {
   },
   visualDirection: {
     identityAnchor: "A recognizable adult companion",
-    stableTraits: ["consistent face"],
+    stableTraits: ["dark wavy hair"],
     style: "realistic",
     referenceDirection: "Natural portrait light",
   },
@@ -146,7 +147,7 @@ describe("Character create wizard restore authority", () => {
     });
 
     const next = [...container.querySelectorAll("button")].find(
-      (button) => button.textContent?.includes("continue"),
+      (button) => button.textContent?.toLowerCase().includes("continue"),
     );
     expect(next?.disabled).toBe(true);
     next?.click();
@@ -155,7 +156,107 @@ describe("Character create wizard restore authority", () => {
     )).toBe(false);
   });
 
-  it("fails closed after restore failure and creates only after explicit start-new confirmation", async () => {
+  it("hydrates a blank server snapshot before restoring a complete local draft", async () => {
+    const browserWindow = window;
+    vi.stubGlobal("window", undefined);
+    const serverMarkup = renderToString(
+      <CharacterCreateWizard actorId="operator-hydration" canCreate />,
+    );
+    vi.unstubAllGlobals();
+    expect(window).toBe(browserWindow);
+    window.localStorage.setItem(
+      "idream.admin.character-create-draft.v1:operator-hydration",
+      JSON.stringify(restoredDraft),
+    );
+
+    const hydrationContainer = document.createElement("div");
+    hydrationContainer.innerHTML = serverMarkup;
+    document.body.append(hydrationContainer);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(
+      () => undefined,
+    );
+    let hydrationRoot: Root | null = null;
+    try {
+      await act(async () => {
+        hydrationRoot = hydrateRoot(
+          hydrationContainer,
+          <CharacterCreateWizard actorId="operator-hydration" canCreate />,
+        );
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      await waitUntil(() =>
+        hydrationContainer.querySelector("textarea")?.value ===
+          "Adult companion audience"
+      );
+      expect(hydrationContainer.textContent).toContain(
+        "Required information complete.",
+      );
+      expect(consoleError).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => hydrationRoot?.unmount());
+      hydrationContainer.remove();
+    }
+  });
+
+  it("keeps edits in memory without claiming local persistence when browser storage rejects writes", async () => {
+    window.localStorage.setItem(
+      "idream.admin.character-create-draft.v1:operator-storage-denied",
+      JSON.stringify(restoredDraft),
+    );
+    vi.spyOn(window.localStorage, "setItem").mockImplementation(() => {
+      throw new DOMException("Storage access denied", "SecurityError");
+    });
+
+    await act(async () => {
+      root.render(
+        <CharacterCreateWizard
+          actorId="operator-storage-denied"
+          canCreate
+        />,
+      );
+    });
+    await waitUntil(() =>
+      container.querySelector("textarea")?.value ===
+        "Adult companion audience"
+    );
+
+    const audience = container.querySelector("textarea");
+    await act(async () => {
+      if (audience) {
+        Object.getOwnPropertyDescriptor(
+          HTMLTextAreaElement.prototype,
+          "value",
+        )?.set?.call(audience, "Updated only in this tab");
+        audience.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+    });
+
+    expect(container.querySelector("textarea")?.value).toBe(
+      "Updated only in this tab",
+    );
+    expect(container.textContent).toContain("In memory only");
+    expect(container.textContent).not.toContain("Saved locally");
+
+    const next = [...container.querySelectorAll("button")].find(
+      (button) =>
+        button.textContent?.includes("Continue to persona") &&
+        !button.disabled,
+    );
+    await act(async () => next?.click());
+    expect(container.textContent).toContain("Persona");
+    expect(container.textContent).toContain("In memory only");
+    expect(container.textContent).not.toContain("Saved locally");
+
+    const back = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.includes("Back") && !button.disabled,
+    );
+    await act(async () => back?.click());
+    expect(container.querySelector("textarea")?.value).toBe(
+      "Updated only in this tab",
+    );
+  });
+
+  it("fails closed after restore failure and returns to a blank local draft only after explicit confirmation", async () => {
     window.history.replaceState(
       null,
       "",
@@ -198,7 +299,7 @@ describe("Character create wizard restore authority", () => {
       ) === true
     );
     const lockedNext = [...container.querySelectorAll("button")].find(
-      (button) => button.textContent?.includes("continue"),
+      (button) => button.textContent?.toLowerCase().includes("continue"),
     );
     expect(lockedNext?.disabled).toBe(true);
     expect(adminV2Request.mock.calls.some(([, options]) =>
@@ -216,22 +317,15 @@ describe("Character create wizard restore authority", () => {
     await act(async () => confirm?.click());
     expect(window.location.search).toBe("");
 
-    const enabledNext = [...container.querySelectorAll("button")].find(
-      (button) => button.textContent?.includes("continue"),
+    const blankNext = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.toLowerCase().includes("continue"),
     );
-    expect(enabledNext?.disabled).toBe(false);
-    await act(async () => {
-      enabledNext?.click();
-      await Promise.resolve();
-    });
-    await waitUntil(() => adminV2Request.mock.calls.some(([path, options]) =>
+    expect(container.querySelector("textarea")?.value).toBe("");
+    expect(blankNext?.disabled).toBe(true);
+    expect(adminV2Request.mock.calls.some(([path, options]) =>
       path === "/api/v2/admin/characters" &&
       options?.method === "POST"
-    ));
-    expect(adminV2Request.mock.calls.filter(([path, options]) =>
-      path === "/api/v2/admin/characters" &&
-      options?.method === "POST"
-    )).toHaveLength(1);
+    )).toBe(false);
   });
 
   it("retries restore and then patches the existing Project without creating another Character", async () => {
@@ -305,7 +399,7 @@ describe("Character create wizard restore authority", () => {
     });
 
     const next = [...container.querySelectorAll("button")].find(
-      (button) => button.textContent?.includes("continue"),
+      (button) => button.textContent?.toLowerCase().includes("continue"),
     );
     await act(async () => {
       next?.click();
@@ -316,6 +410,73 @@ describe("Character create wizard restore authority", () => {
         "/api/v2/admin/characters/existing-character/project" &&
       options?.method === "PATCH"
     ));
+    expect(adminV2Request.mock.calls.some(([path, options]) =>
+      path === "/api/v2/admin/characters" &&
+      options?.method === "POST"
+    )).toBe(false);
+  });
+
+  it("restores a legacy instructional draft but blocks its final production handoff", async () => {
+    window.history.replaceState(
+      null,
+      "",
+      "/admin/characters/new?draft=legacy-character",
+    );
+    adminV2Request.mockImplementation(async (path, options) => {
+      if (
+        path ===
+          "/api/v2/admin/characters/legacy-character/project" &&
+        !options?.method
+      ) {
+        return {
+          authority: {
+            characterId: "legacy-character",
+            projectId: "legacy-project",
+            projectVersion: 2,
+            deepLink: "/admin/characters/legacy-character",
+          },
+          draft: {
+            ...restoredDraft,
+            positioning: {
+              ...restoredDraft.positioning,
+              audience: "Define the adult audience for this companion",
+            },
+          },
+        };
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+
+    await act(async () => {
+      root.render(
+        <CharacterCreateWizard actorId="operator-a" canCreate />,
+      );
+    });
+    await waitUntil(() =>
+      container.querySelector("textarea")?.value ===
+        "Define the adult audience for this companion"
+    );
+    for (let index = 0; index < 4; index += 1) {
+      const advance = [...container.querySelectorAll("button")].find(
+        (button) =>
+          button.textContent?.toLowerCase().includes("continue") &&
+          !button.disabled,
+      );
+      await act(async () => advance?.click());
+    }
+
+    await waitUntil(() => container.textContent?.includes(
+      "Production & launch",
+    ) === true);
+    const finish = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.includes(
+        "Save character & open portrait studio",
+      ),
+    );
+    expect(finish?.disabled).toBe(true);
+    expect(container.textContent).toContain(
+      "Review the complete Character before creating its server authority.",
+    );
     expect(adminV2Request.mock.calls.some(([path, options]) =>
       path === "/api/v2/admin/characters" &&
       options?.method === "POST"
@@ -383,6 +544,10 @@ describe("Character create wizard restore authority", () => {
   });
 
   it("clears the committed creation receipt before non-authoritative URL synchronization", async () => {
+    window.localStorage.setItem(
+      "idream.admin.character-create-draft.v1:operator-a",
+      JSON.stringify(restoredDraft),
+    );
     adminV2Request.mockImplementation(async (path, options) => {
       if (
         path === "/api/v2/admin/characters" &&
@@ -407,26 +572,60 @@ describe("Character create wizard restore authority", () => {
         <CharacterCreateWizard actorId="operator-a" canCreate />,
       );
     });
+    for (const label of [
+      "Continue to persona",
+      "Continue",
+      "Continue",
+      "Continue",
+    ]) {
+      await waitUntil(() =>
+        [...container.querySelectorAll("button")].some((button) =>
+          button.textContent?.includes(label) &&
+          !button.disabled
+        )
+      );
+      const advance = [...container.querySelectorAll("button")].find(
+        (button) =>
+          button.textContent?.includes(label) &&
+          !button.disabled,
+      );
+      await act(async () => {
+        advance?.click();
+        await Promise.resolve();
+      });
+    }
     await waitUntil(() =>
       [...container.querySelectorAll("button")].some((button) =>
-        button.textContent?.includes("Save positioning & continue") &&
+        button.textContent?.includes(
+          "Save character & open portrait studio",
+        ) &&
         !button.disabled
       )
     );
+    expect(adminV2Request.mock.calls.some(([path, options]) =>
+      path === "/api/v2/admin/characters" &&
+      options?.method === "POST"
+    )).toBe(false);
     vi.spyOn(window.history, "replaceState").mockImplementation(() => {
       throw new Error("history unavailable");
     });
-    const next = [...container.querySelectorAll("button")].find(
+    const finish = [...container.querySelectorAll("button")].find(
       (button) =>
-        button.textContent?.includes("Save positioning & continue"),
+        button.textContent?.includes(
+          "Save character & open portrait studio",
+        ),
     );
     await act(async () => {
-      next?.click();
+      finish?.click();
       await Promise.resolve();
     });
     await waitUntil(() =>
-      container.textContent?.includes("Project version 1") === true
+      adminV2Request.mock.calls.some(([path, options]) =>
+        path === "/api/v2/admin/characters" &&
+        options?.method === "POST"
+      )
     );
+    expect(container.textContent).toContain("Project version 1");
     expect(readActiveDurableMutationIntent({
       scope: "character-project:create:operator-a",
     })).toBeNull();
@@ -437,6 +636,12 @@ describe("Character create wizard restore authority", () => {
       path === "/api/v2/admin/characters" &&
       options?.method === "POST"
     )).toHaveLength(1);
+    expect(routerPush).toHaveBeenCalledWith(
+      "/admin/characters/created-character?tab=assets",
+    );
+    expect(window.localStorage.getItem(
+      "idream.admin.character-create-draft.v1:operator-a",
+    )).toBeNull();
   });
 
   it("shows a neutral recovery result and does not advance after sealing an uncommitted Character key", async () => {

@@ -16,7 +16,7 @@
   },
   "scripts": {
     "dev": "next dev",
-    "build": "npm run db:generate && next build && node ../../scripts/prepare-next-standalone.mjs packages/main",
+    "build": "npm run db:generate && node ../../scripts/build-next-standalone.mjs packages/main",
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",

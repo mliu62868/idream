@@ -5,6 +5,16 @@
       "dependsOn": ["^build"],
       "outputs": [".next/**", "!.next/cache/**", "dist/**"]
     },
+    "@idream/main#build": {
+      "dependsOn": ["^build"],
+      "cache": false,
+      "outputs": [".next/**", "!.next/cache/**"]
+    },
+    "@idream/admin#build": {
+      "dependsOn": ["^build"],
+      "cache": false,
+      "outputs": [".next/**", "!.next/cache/**"]
+    },
     "typecheck": {
       "dependsOn": ["^build"]
     },

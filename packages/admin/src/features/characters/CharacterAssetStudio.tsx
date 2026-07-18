@@ -6,6 +6,7 @@ import {
   characterDraftImageSelectionResultSchema,
   characterIdentityBootstrapRequestSchema,
   characterIdentityBootstrapResponseSchema,
+  characterImageReadinessRepairResponseSchema,
   creativeReviewDecisionRequestSchema,
   creativeReviewDecisionResultSchema,
   creativeRunCreateRequestSchema,
@@ -538,12 +539,140 @@ const identityAuthorityBlockerCodes = new Set([
   "reference_assets_unavailable",
 ]);
 
+const imageReadinessActionByBlocker: Readonly<Record<string, string>> = {
+  visual_identity_missing:
+    "Attach or create the portrait that defines this character",
+  visual_anchor_missing:
+    "Attach or create the portrait that defines this character",
+  visual_traits_incomplete:
+    "Complete the stable visual traits for this character",
+  visual_identity_unsealed:
+    "Create a current, sealed visual identity version",
+  reference_set_not_active:
+    "Publish the approved identity references",
+  reference_set_unsealed:
+    "Publish a current, sealed identity reference set",
+  reference_assets_unavailable:
+    "Replace unavailable identity reference images",
+  generation_route_unqualified:
+    "Ask a production administrator to activate a qualified image route",
+  generation_route_stale:
+    "Ask a production administrator to refresh the qualified image route",
+};
+
+export function characterAssetReadinessAction(blockerCode: string) {
+  return imageReadinessActionByBlocker[blockerCode] ??
+    "Review the character's visual setup evidence";
+}
+
+export function characterAssetReadinessSummary(
+  blockerCodes: readonly string[],
+) {
+  const steps = [...new Set(blockerCodes.map(characterAssetReadinessAction))];
+  return {
+    title: steps.length > 0
+      ? "Finish visual setup before generating"
+      : "Image production is ready",
+    steps,
+  };
+}
+
 export function isCharacterIdentityAuthorityReady(input: {
   readonly hasIdentity: boolean;
   readonly blockerCodes: readonly string[];
 }) {
   return input.hasIdentity &&
     !input.blockerCodes.some((code) => identityAuthorityBlockerCodes.has(code));
+}
+
+function ImageProductionReadinessCard({
+  blockers,
+  canRepair,
+  descriptionId,
+  onContinue,
+  onRepair,
+  repairing,
+}: {
+  blockers: CharacterWorkspaceDetail["visual"]["readiness"]["blockers"];
+  canRepair: boolean;
+  descriptionId: string;
+  onContinue: () => void;
+  onRepair: () => void;
+  repairing: boolean;
+}) {
+  const summary = characterAssetReadinessSummary(
+    blockers.map((blocker) => blocker.code),
+  );
+  return (
+    <section
+      className="mt-4 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-yellow-bg)] p-4 text-[var(--ad-yellow-text)]"
+      aria-labelledby={`${descriptionId}-title`}
+    >
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h4 className="text-sm font-semibold" id={`${descriptionId}-title`}>
+            {summary.title}
+          </h4>
+          <p className="mt-1 text-xs leading-5" id={descriptionId}>
+            Complete these steps before starting a generation run. Existing live
+            images and releases will not change.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {canRepair ? (
+            <WorkspaceButton
+              aria-describedby={descriptionId}
+              disabled={repairing}
+              onClick={onRepair}
+              tone="primary"
+            >
+              {repairing ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              Prepare image production
+            </WorkspaceButton>
+          ) : (
+            <WorkspaceButton
+              aria-describedby={descriptionId}
+              onClick={onContinue}
+            >
+              Open visual setup
+            </WorkspaceButton>
+          )}
+        </div>
+      </div>
+      <ol
+        aria-label="Image production readiness"
+        className="mt-3 space-y-2 text-xs"
+      >
+        {summary.steps.map((step, index) => (
+          <li
+            aria-current={index === 0 ? "step" : undefined}
+            className="flex gap-2"
+            key={step}
+          >
+            <span
+              aria-hidden="true"
+              className="grid h-5 w-5 shrink-0 place-items-center rounded-full border border-current text-[10px] font-semibold"
+            >
+              {index + 1}
+            </span>
+            <span className="pt-0.5">{step}</span>
+          </li>
+        ))}
+      </ol>
+      <details className="mt-3 text-xs">
+        <summary className="cursor-pointer font-semibold">
+          Technical diagnostics
+        </summary>
+        <ul className="mt-2 space-y-1">
+          {blockers.map((blocker) => (
+            <li key={blocker.code}>
+              {blocker.code}: {blocker.message}
+            </li>
+          ))}
+        </ul>
+      </details>
+    </section>
+  );
 }
 
 function IdentityRail({
@@ -704,10 +833,13 @@ export function CharacterAssetStudio({
     character_chat: `A warm, candid conversational moment with ${subject.name}, preserving the canonical identity and feeling emotionally present.`,
   }));
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState<"generate" | "review" | "select" | null>(null);
+  const [busy, setBusy] = useState<
+    "generate" | "review" | "select" | "prepare" | null
+  >(null);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [refreshWarning, setRefreshWarning] = useState<string | null>(null);
+  const readinessRepairKeys = useRef<Record<string, string>>({});
   const [reviewDrafts, setReviewDrafts] = useState<Record<string, ReviewDraft>>({});
   const [runCreationIntent, setRunCreationIntent] =
     useState<DurableMutationIntent | null>(() =>
@@ -1030,6 +1162,10 @@ export function CharacterAssetStudio({
       ? Boolean(bootstrapProfile) && activePurpose === "character_cover"
       : Boolean(qualifiedRoute) && data.visual.readiness.ready
   ) && !refreshWarning;
+  const productionBlocked =
+    !bootstrapMode && !data.visual.readiness.ready;
+  const readinessDescriptionId =
+    `character-image-readiness-${data.character.id}`;
   const canUseGenerationAction = runCreationIntent
     ? permissions.create
     : canGenerate;
@@ -1086,6 +1222,60 @@ export function CharacterAssetStudio({
   const canUseDecisionAction = Boolean(selectedItem?.asset) && (
     isSelectedAsset || (isApprovedItem && permissions.selectDraft)
   );
+
+  const prepareImageProduction = async () => {
+    const readiness = data.visual.imageReadiness;
+    if (
+      !readiness ||
+      readiness.state !== "repairable" ||
+      !readiness.repair
+    ) return;
+    setBusy("prepare");
+    setError(null);
+    setMessage(null);
+    const signature = readiness.fingerprint;
+    const idempotencyKey =
+      readinessRepairKeys.current[signature] ?? crypto.randomUUID();
+    readinessRepairKeys.current[signature] = idempotencyKey;
+    try {
+      const committed = await commitProjectMutation({
+        action: "Character image-production preparation",
+        commit: () => adminV2Request(
+          `/api/v2/admin/characters/${data.character.id}/image-readiness/repair`,
+          {
+            method: "POST",
+            idempotencyKey,
+            ifMatch: data.project.version,
+            schema: characterImageReadinessRepairResponseSchema,
+            body: {
+              entityVersion: data.project.version,
+              expectedReadinessFingerprint: readiness.fingerprint,
+              reason:
+                "Adopt the exact live editorial portrait as future image-generation identity authority",
+              confirmation:
+                `PREPARE IMAGE PRODUCTION ${data.character.id}`,
+            },
+          },
+        ),
+      });
+      if (committed.refreshed) {
+        delete readinessRepairKeys.current[signature];
+      }
+      setMessage(
+        committed.result.state === "ready"
+          ? "The live portrait is now the sealed identity reference. Image production is ready."
+          : "The live portrait is now the sealed identity reference. A production administrator still needs to activate a compatible image route.",
+      );
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Image production could not be prepared",
+      );
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const choosePurpose = (
     purpose: CharacterAssetPurpose,
@@ -2250,15 +2440,46 @@ export function CharacterAssetStudio({
       : runCreationIntent?.status === "committed_projection_pending"
         ? "Verify created Run"
         : `Generate ${bootstrapMode ? 4 : activeConfig.count} ${activeConfig.pluralLabel}`;
+  const generationActionDescriptionId =
+    `character-generation-action-${data.character.id}`;
+  const generationActionDisabled =
+    !canUseGenerationAction ||
+    busy !== null ||
+    (!runCreationIntent && !briefs[activePurpose].trim()) ||
+    Boolean(reviewMutationIntent || selectionMutationIntent);
+  const generationActionDescription = busy !== null
+    ? "Wait for the current image-production action to finish."
+    : reviewMutationIntent
+      ? "Resolve the saved review before starting another generation."
+      : selectionMutationIntent
+        ? "Resolve the saved selection before starting another generation."
+        : !permissions.create
+          ? "creative.run.create permission is required."
+          : !runCreationIntent && !briefs[activePurpose].trim()
+            ? "Add a focused generation brief first."
+            : bootstrapMode && !bootstrapProfile
+              ? "Publish an active text-to-image bootstrap profile first."
+              : bootstrapMode && activePurpose !== "character_cover"
+                ? "Commit the first identity portrait before generating the remaining asset pack."
+                : productionBlocked
+                  ? "Complete the Character image-readiness actions first."
+                  : refreshWarning
+                    ? "Refresh the workspace before starting another generation."
+                    : !qualifiedRoute && !bootstrapMode
+                      ? "Qualify a generation route for this Character first."
+                      : "The generation action is available.";
 
   return (
     <div className="space-y-5">
       <section className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 sm:p-5" aria-labelledby="asset-pack-title">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div><p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">{t(bootstrapMode ? "First identity portrait" : "Character asset pack")}</p><h3 className="mt-1 text-xl font-semibold" id="asset-pack-title">{t(bootstrapMode ? "Establish the face customers will recognize" : "Create the images customers will remember")}</h3><p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--ad-text-muted)]">{t(bootstrapMode ? `Generate the first portrait without references, review it as the identity definition, then commit it as identity version ${identityBootstrap.nextIdentityVersion}.` : "Generate against the sealed identity reference set, compare real candidates in customer context, then make one clear decision.")}</p></div>
-          <div className="flex flex-wrap gap-2"><WorkspaceButton disabled={busy !== null} onClick={() => void refreshWorkspace()}><RefreshCcw className="h-4 w-4" /> {t("Refresh")}</WorkspaceButton><WorkspaceButton disabled={!canUseGenerationAction || busy !== null || (!runCreationIntent && !briefs[activePurpose].trim()) || Boolean(reviewMutationIntent || selectionMutationIntent)} onClick={() => void createRun(activePurpose)} tone="primary"><WandSparkles className="h-4 w-4" /> {t(generationActionLabel)}</WorkspaceButton></div>
+          <div className="flex flex-wrap gap-2"><WorkspaceButton disabled={busy !== null} onClick={() => void refreshWorkspace()}><RefreshCcw className="h-4 w-4" /> {t("Refresh")}</WorkspaceButton><WorkspaceButton aria-describedby={generationActionDisabled ? generationActionDescriptionId : undefined} disabled={generationActionDisabled} onClick={() => void createRun(activePurpose)} tone="primary"><WandSparkles className="h-4 w-4" /> {t(generationActionLabel)}</WorkspaceButton></div>
         </div>
-        {bootstrapMode ? <div className={cn("mt-4 rounded-lg p-3 text-sm", bootstrapProfile ? "bg-[var(--ad-blue-bg)] text-[var(--ad-blue-text)]" : "bg-[var(--ad-yellow-bg)] text-[var(--ad-yellow-text)]")}>{bootstrapProfile ? `${bootstrapProfile.label} · ${bootstrapProfile.orientation} · ${t(identityBootstrap.state === "recoverable_empty_history" ? `no reference input. The reviewed result will supersede the unanchored candidate history as identity version ${identityBootstrap.nextIdentityVersion}.` : "no reference input. The reviewed result becomes the reference authority.")}` : t("No active text-to-image bootstrap profile is available. Generation remains blocked until one is published.")}</div> : data.project.draftAssetRouteAuthority?.status === "stale" ? <div className="mt-4 flex flex-col gap-3 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)] sm:flex-row sm:items-center sm:justify-between"><span>{t(`The qualified route changed. ${data.project.draftAssetRouteAuthority.stalePurposes.length} selected asset${data.project.draftAssetRouteAuthority.stalePurposes.length === 1 ? "" : "s"} remain in history but cannot authorize QA.`)}</span><WorkspaceButton disabled={!canGenerate || busy !== null} onClick={regenerateUnderCurrentRoute}>{t("Regenerate under current route")}</WorkspaceButton></div> : identityBootstrap.state === "blocked_existing_authority" && !data.visual.readiness.ready ? <div className="mt-4 flex flex-col gap-3 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)] sm:flex-row sm:items-center sm:justify-between"><span>{t(`Existing identity authority needs repair: ${identityBootstrap.blockers.join(", ") || "visual evidence is incomplete"}.`)}</span><WorkspaceButton onClick={() => onContinue("visual")}>{t("Repair visual authority")}</WorkspaceButton></div> : !data.visual.readiness.ready || !qualifiedRoute ? <div className="mt-4 flex flex-col gap-3 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)] sm:flex-row sm:items-center sm:justify-between"><span>{t("Generation needs a sealed identity, active references, and a reference-capable qualified route.")}</span><WorkspaceButton onClick={() => onContinue("visual")}>{t("Complete visual setup")}</WorkspaceButton></div> : null}
+        <p className="sr-only" id={generationActionDescriptionId}>
+          {t(generationActionDescription)}
+        </p>
+        {bootstrapMode ? <div className={cn("mt-4 rounded-lg p-3 text-sm", bootstrapProfile ? "bg-[var(--ad-blue-bg)] text-[var(--ad-blue-text)]" : "bg-[var(--ad-yellow-bg)] text-[var(--ad-yellow-text)]")}>{bootstrapProfile ? `${bootstrapProfile.label} · ${bootstrapProfile.orientation} · ${t(identityBootstrap.state === "recoverable_empty_history" ? `no reference input. The reviewed result will supersede the unanchored candidate history as identity version ${identityBootstrap.nextIdentityVersion}.` : "no reference input. The reviewed result becomes the reference authority.")}` : t("No active text-to-image bootstrap profile is available. Generation remains blocked until one is published.")}</div> : data.project.draftAssetRouteAuthority?.status === "stale" ? <div className="mt-4 flex flex-col gap-3 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)] sm:flex-row sm:items-center sm:justify-between"><span>{t(`The qualified route changed. ${data.project.draftAssetRouteAuthority.stalePurposes.length} selected asset${data.project.draftAssetRouteAuthority.stalePurposes.length === 1 ? "" : "s"} remain in history but cannot authorize QA.`)}</span><WorkspaceButton disabled={!canGenerate || busy !== null} onClick={regenerateUnderCurrentRoute}>{t("Regenerate under current route")}</WorkspaceButton></div> : productionBlocked ? <ImageProductionReadinessCard blockers={data.visual.readiness.blockers} canRepair={data.visual.imageReadiness?.state === "repairable" && permissions.selectDraft} descriptionId={readinessDescriptionId} onContinue={() => onContinue("visual")} onRepair={() => void prepareImageProduction()} repairing={busy === "prepare"} /> : null}
         <div className="mt-5 grid gap-2 md:grid-cols-3">{characterAssetPurposes.map((purpose, index) => { const routeCurrent = data.project.draftAssetSelections?.[purpose]?.routeCurrent !== false; const adopted = routeCurrent && Boolean(data.project.draftAssetPack[purpose] ?? (purpose === "character_cover" ? data.project.draftImageAssetId : null)); const state = bootstrapMode && purpose !== "character_cover" ? "locked until identity" : !routeCurrent && data.project.draftAssetPack[purpose] ? "regenerate" : runState(recentByPurpose[purpose], adopted); const purposeLocked = mutationContextLocked || (bootstrapMode && purpose !== "character_cover"); return <button aria-disabled={purposeLocked} aria-pressed={activePurpose === purpose} className={cn("flex min-h-20 items-center gap-3 rounded-lg border p-3 text-left transition focus-visible:outline focus-visible:outline-2", activePurpose === purpose ? "border-[var(--ad-ink)] bg-black/[0.035]" : "border-[var(--ad-border)] hover:border-[var(--ad-text-muted)]", purposeLocked && "cursor-not-allowed opacity-50")} disabled={purposeLocked} key={purpose} onClick={() => choosePurpose(purpose)} type="button"><span className={cn("grid h-8 w-8 shrink-0 place-items-center rounded-full border text-xs font-semibold", ["selected", "approved"].includes(state) ? "border-[var(--ad-green-text)] bg-[var(--ad-green-bg)] text-[var(--ad-green-text)]" : "border-[var(--ad-border)]")}>{["selected", "approved"].includes(state) ? <Check className="h-4 w-4" /> : index + 1}</span><span className="min-w-0 flex-1"><strong className="block text-sm">{t(purposeConfig[purpose].label)}</strong><span className="mt-1 block text-xs capitalize text-[var(--ad-text-muted)]">{t(state)}</span></span><ChevronRight className="h-4 w-4 text-[var(--ad-text-muted)]" /></button>; })}</div>
       </section>
 
@@ -2275,8 +2496,13 @@ export function CharacterAssetStudio({
           <section className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" aria-labelledby="candidate-title">
             <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--ad-text-muted)]">{t(activeConfig.label)}</p><h3 className="mt-1 font-semibold" id="candidate-title">{selectedItem ? `${t("Candidate")} ${selectedItem.ordinal + 1}` : t("Ready for a first run")}</h3><p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">{selectedItem ? t(candidateState(selectedItem)) : t(activeConfig.description)}</p></div>{activeRunDetail ? <div className="flex flex-wrap gap-2"><StatusBadge value={activeRunDetail.executionOutcome} /><StatusBadge value={activeRunDetail.reviewState} /></div> : null}</div>
             <div className="mt-4 border-y border-[var(--ad-border)] py-3"><div className="flex flex-wrap gap-2"><WorkspaceButton disabled={mutationContextLocked || bootstrapMode || !variationRouteReady || !canGenerate || busy !== null || !selectedItem?.asset || !isApprovedItem} onClick={() => selectedItem?.asset ? void createRun(activePurpose, [selectedItem.asset.id]) : undefined}><Sparkles className="h-4 w-4" /> {t("More like this")}</WorkspaceButton><WorkspaceButton disabled={mutationContextLocked || !canUseDecisionAction || busy !== null || Boolean(refreshWarning)} onClick={() => void approveAndContinue()} tone="primary">{busy === "select" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />} {t(decisionActionLabel)}</WorkspaceButton></div>{!bootstrapMode && qualifiedRoute && !variationRouteReady ? <div className="mt-2 flex flex-col gap-2 text-xs leading-5 text-[var(--ad-text-muted)] sm:flex-row sm:items-center sm:justify-between"><p>{t(characterSourceVariationBlockerMessage(variationRouteBlocker))}</p><WorkspaceButton onClick={() => onContinue("visual")}>{t("Review generation route")}</WorkspaceButton></div> : null}</div>
-            <div className="mt-4 overflow-hidden rounded-lg bg-[#11110f]">
-              {selectedItem?.asset ? <AssetImage alt={`${subject.name} ${t(activeConfig.label)} ${t("Candidate")} ${selectedItem.ordinal + 1}`} className="max-h-[68vh] min-h-96 w-full object-contain" src={selectedItem.asset.url} /> : <div className="grid min-h-96 place-items-center px-6 text-center text-white/65"><div><Sparkles className="mx-auto h-7 w-7" /><p className="mt-3 text-sm">{t("Generate a focused batch, then decide from real candidates here.")}</p></div></div>}
+            <div className={cn(
+              "mt-4 overflow-hidden rounded-lg",
+              productionBlocked && !selectedItem?.asset
+                ? "border border-dashed border-[var(--ad-border)] bg-black/[0.02]"
+                : "bg-[#11110f]",
+            )}>
+              {selectedItem?.asset ? <AssetImage alt={`${subject.name} ${t(activeConfig.label)} ${t("Candidate")} ${selectedItem.ordinal + 1}`} className="max-h-[68vh] min-h-96 w-full object-contain" src={selectedItem.asset.url} /> : productionBlocked ? <div className="grid min-h-40 place-items-center px-6 py-8 text-center text-[var(--ad-text-muted)]"><div><ShieldAlert className="mx-auto h-6 w-6" /><p className="mt-3 text-sm font-semibold">{t("Image production is waiting for visual setup")}</p><p className="mt-1 max-w-md text-xs leading-5">{t("Complete the readiness steps above; candidate generation will appear here when the character is ready.")}</p></div></div> : <div className="grid min-h-96 place-items-center px-6 text-center text-white/65"><div><Sparkles className="mx-auto h-7 w-7" /><p className="mt-3 text-sm">{t("Generate a focused batch, then decide from real candidates here.")}</p></div></div>}
             </div>
             {activeRunDetail?.items.length ? <div className="mt-3 flex gap-2 overflow-x-auto pb-1" aria-label={t("Generated candidates")}>{activeRunDetail.items.map((item, index) => <button aria-label={`${t("Select candidate")} ${item.ordinal + 1}`} aria-pressed={selectedIndex === index} className={cn("relative h-20 w-16 shrink-0 overflow-hidden rounded-md border-2", selectedIndex === index ? "border-[var(--ad-ink)]" : "border-transparent opacity-75 hover:opacity-100")} disabled={mutationContextLocked} key={item.id} onClick={() => setSelectedIndex(index)} type="button"><AssetImage alt="" className="h-full w-full object-cover" src={item.asset?.thumbnailUrl ?? item.asset?.url} />{item.review?.decision === "approved" ? <span className="absolute right-1 top-1 grid h-5 w-5 place-items-center rounded-full bg-[var(--ad-green-text)] text-white"><Check className="h-3 w-3" /></span> : null}</button>)}</div> : null}
             {selectedItem?.asset && (!hasDecision || !hasCompleteReviewEvidence) ? (
@@ -2441,7 +2667,7 @@ export function CharacterAssetStudio({
           <details className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"><summary className="cursor-pointer text-sm font-semibold">{t("Adjust the creative brief")}</summary><p className="mt-2 text-xs leading-5 text-[var(--ad-text-muted)]">{t("Keep intent human-readable. Identity, references, workflow, and route stay automatic.")}</p><textarea aria-label={`${t(activeConfig.label)} ${t("creative brief")}`} className={`${textAreaClass} mt-3`} disabled={mutationContextLocked} onChange={(event) => setBriefs((current) => ({ ...current, [activePurpose]: event.target.value }))} value={briefs[activePurpose]} /></details>
           <details className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"><summary className="cursor-pointer text-sm font-semibold">{t("Recent runs and technical lineage")}</summary><div className="mt-3 space-y-2">{runs.length ? runs.map((run) => <button className={cn("w-full rounded-lg border p-3 text-left text-xs", selectedRunId === run.id ? "border-[var(--ad-ink)] bg-black/[0.03]" : "border-[var(--ad-border)]")} disabled={mutationContextLocked} key={run.id} onClick={() => { runDetailRequestGate.current.invalidate(); setSelectedRun(null); selectRunId(run.id); if (isCharacterAssetPurpose(run.purpose)) setActivePurpose(run.purpose); }} type="button"><span className="flex items-center justify-between gap-3"><strong>{isCharacterAssetPurpose(run.purpose) ? t(purposeConfig[run.purpose].label) : t(run.purpose)}{pinnedRunIds.has(run.id) ? ` · ${t("Selected in draft")}` : ""}</strong><span>{new Date(run.updatedAt).toLocaleString()}</span></span><span className="mt-1 block break-all text-[var(--ad-text-muted)]">{run.id} · {run.counts.generated}/{run.counts.total} {t("generated")} · {run.counts.approved} {t("approved")}</span></button>) : <p className="text-xs text-[var(--ad-text-muted)]">{t("No production history for this character.")}</p>}</div>{selectedItem ? <dl className="mt-4 grid gap-2 border-t border-[var(--ad-border)] pt-4 text-xs sm:grid-cols-2"><div><dt className="text-[var(--ad-text-muted)]">{t("Generation profile")}</dt><dd className="mt-1 break-all">{selectedItem.lineage.generationProfileKey ?? t("Pending")}</dd></div><div><dt className="text-[var(--ad-text-muted)]">{t("Workflow")}</dt><dd className="mt-1 break-all">{selectedItem.lineage.workflowKey ?? t("Pending")}</dd></div><div><dt className="text-[var(--ad-text-muted)]">{t("Request")}</dt><dd className="mt-1 break-all">{selectedItem.lineage.requestId ?? t("Pending")}</dd></div><div><dt className="text-[var(--ad-text-muted)]">{t("Provider request / Comfy prompt")}</dt><dd className="mt-1 break-all">{selectedItem.lineage.providerRequestId ?? t("Pending")}</dd></div><div><dt className="text-[var(--ad-text-muted)]">{t("Asset")}</dt><dd className="mt-1 break-all">{selectedItem.asset?.id ?? t("Pending")}</dd></div></dl> : null}</details>
         </section>
-        <div className="order-3 lg:col-start-2 2xl:col-start-3 2xl:row-start-1"><CustomerPreviews activePurpose={activePurpose} candidateImageUrl={selectedImageUrl} data={data} /></div>
+        {!productionBlocked || selectedItem?.asset ? <div className="order-3 lg:col-start-2 2xl:col-start-3 2xl:row-start-1"><CustomerPreviews activePurpose={activePurpose} candidateImageUrl={selectedImageUrl} data={data} /></div> : null}
       </div>
     </div>
   );

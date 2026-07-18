@@ -34,6 +34,13 @@ import { lockCharacterGenerationAuthority } from "./generation-authority-lock";
 import { isMediaAssetOperationalForAuthority } from "@/server/lib/media-asset-authority";
 import { evaluateDraftAssetRouteAuthority } from "./draft-asset-route-authority";
 import { generationSourceVariationAuthority } from "./generation-route-authority";
+import {
+  characterImageReadinessFingerprint,
+  inspectCharacterImageGenerationSource,
+} from "./image-readiness-authority";
+import {
+  evaluateEditorialReleaseAuthority,
+} from "@/server/modules/ourdream/public-release-authority";
 
 function record(value: Prisma.JsonValue | null | undefined): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -626,6 +633,9 @@ export async function getCharacterWorkspace(characterId: string) {
       character.imageAsset.characterId === characterId ||
       (character.imageAsset.characterId === null && characterImageReferenceCount === 1)
     );
+  const characterImageGenerationSource = character.imageAsset
+    ? await inspectCharacterImageGenerationSource(character.imageAsset)
+    : null;
   const imageUrl = characterImageAvailable
     ? character.imageAsset?.thumbnailUrl ?? character.imageAsset?.url ?? null
     : null;
@@ -664,7 +674,7 @@ export async function getCharacterWorkspace(characterId: string) {
     limit: 1,
     search: characterId,
     sort: "project_id_asc",
-  });
+  }, { authorizedDraftAssetCharacterIds: [characterId] });
   const performance = portfolio.items.find((item) => item.characterId === characterId)?.performance ?? [];
   const portfolioItem = portfolio.items.find((item) => item.characterId === characterId) ?? null;
   const poolAssetById = new Map(visualPoolAssets.map((asset) => [asset.id, asset]));
@@ -722,6 +732,108 @@ export async function getCharacterWorkspace(characterId: string) {
     "generation_route_unqualified", "generation_route_stale",
   ]);
   const visualBlockers = visualReadiness.blockers.filter((blocker) => visualBlockerCodes.has(blocker.code));
+  const currentReleaseForImageReadiness = serving?.currentReleaseId
+    ? releases.find((release) => release.id === serving.currentReleaseId) ?? null
+    : null;
+  const imageReadinessFingerprint = characterImageReadinessFingerprint({
+    characterId: character.id,
+    characterImageAssetId: character.imageAssetId,
+    sourceAsset: characterImageGenerationSource?.authority ?? null,
+    projectId: project.id,
+    projectVersion: project.version,
+    draftImageAssetId: project.draftImageAssetId,
+    draftAssetPack: project.draftAssetPack,
+    serving: serving ? {
+      currentReleaseId: serving.currentReleaseId,
+      scheduledReleaseId: serving.scheduledReleaseId,
+      version: serving.version,
+    } : null,
+    currentRelease: currentReleaseForImageReadiness ? {
+      id: currentReleaseForImageReadiness.id,
+      version: currentReleaseForImageReadiness.version,
+      snapshotHash: currentReleaseForImageReadiness.snapshotHash,
+    } : null,
+    activeIdentity: activeIdentity ? {
+      id: activeIdentity.id,
+      version: activeIdentity.version,
+      immutableHash: activeIdentity.immutableHash,
+    } : null,
+    activeReferenceSet: activeReferenceSet ? {
+      id: activeReferenceSet.id,
+      revision: activeReferenceSet.revision,
+      snapshotHash: activeReferenceSet.snapshotHash,
+    } : null,
+  });
+  const hasDraftAssetWork =
+    project.draftImageAssetId !== null ||
+    Object.keys(characterAssetPack(project.draftAssetPack)).length > 0;
+  const hasCandidateRelease = releases.some((release) =>
+    ["draft", "validating", "in_review", "approved"].includes(release.status)
+  );
+  const identityBlockerCodes = new Set([
+    "visual_identity_missing",
+    "visual_anchor_missing",
+    "visual_traits_incomplete",
+    "visual_identity_unsealed",
+  ]);
+  const referenceBlockerCodes = new Set([
+    "reference_set_not_active",
+    "reference_set_unsealed",
+    "reference_assets_unavailable",
+  ]);
+  const routeBlockerCodes = new Set([
+    "generation_route_unqualified",
+    "generation_route_stale",
+  ]);
+  const identityBlocked = visualBlockers.some((blocker) =>
+    identityBlockerCodes.has(blocker.code)
+  );
+  const referencesBlocked = visualBlockers.some((blocker) =>
+    referenceBlockerCodes.has(blocker.code)
+  );
+  const routeBlocked = visualBlockers.some((blocker) =>
+    routeBlockerCodes.has(blocker.code)
+  );
+  const automaticLivePortraitRepairEligible = Boolean(
+    characterImageAvailable &&
+    character.imageAssetId &&
+    serving?.state === "live" &&
+    currentReleaseForImageReadiness?.legacy === true &&
+    currentReleaseForImageReadiness.status === "published" &&
+    serving?.currentReleaseId === currentReleaseForImageReadiness.id &&
+    serving.scheduledReleaseId === null &&
+    !hasDraftAssetWork &&
+    !hasCandidateRelease &&
+    activeIdentity === null &&
+    activeReferenceSet === null &&
+    activeLooks.length === 0 &&
+    characterImageGenerationSource?.materializable === true
+  );
+  const editorialAuthority =
+    automaticLivePortraitRepairEligible &&
+      currentReleaseForImageReadiness &&
+      character.imageAssetId
+      ? await evaluateEditorialReleaseAuthority(prisma, {
+          releaseId: currentReleaseForImageReadiness.id,
+          projectionState: "live",
+        })
+      : null;
+  const canAdoptLivePortrait = Boolean(
+    automaticLivePortraitRepairEligible &&
+    editorialAuthority?.valid === true &&
+    editorialAuthority.characterId === characterId &&
+    editorialAuthority.assetId === character.imageAssetId,
+  );
+  const imageReadinessState =
+    visualBlockers.length === 0
+      ? "ready" as const
+      : bootstrapAuthority.allowed
+        ? "bootstrap_required" as const
+        : !identityBlocked && !referencesBlocked && routeBlocked
+          ? "route_pending" as const
+          : canAdoptLivePortrait
+            ? "repairable" as const
+            : "manual_review_required" as const;
   return {
     character: {
       id: character.id,
@@ -835,6 +947,28 @@ export async function getCharacterWorkspace(characterId: string) {
         nextIdentityVersion: bootstrapAuthority.nextVersion,
         blockers: bootstrapAuthority.blockers,
         profile: bootstrapProfile,
+      },
+      imageReadiness: {
+        state: imageReadinessState,
+        fingerprint: imageReadinessFingerprint,
+        steps: {
+          identity: identityBlocked
+            ? canAdoptLivePortrait ? "action_required" : "blocked"
+            : "complete",
+          references: referencesBlocked
+            ? canAdoptLivePortrait ? "action_required" : "blocked"
+            : "complete",
+          route: routeBlocked ? "platform_pending" : "complete",
+        },
+        repair: canAdoptLivePortrait && character.imageAssetId
+          ? {
+              kind: "adopt_live_portrait",
+              sourceAssetId: character.imageAssetId,
+            }
+          : null,
+        nextDeepLink: imageReadinessState === "route_pending"
+          ? `/admin/ops/profiles?characterId=${encodeURIComponent(characterId)}`
+          : `/admin/characters/${encodeURIComponent(characterId)}?tab=assets`,
       },
       readiness: {
         ready: visualBlockers.length === 0,

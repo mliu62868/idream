@@ -84,7 +84,11 @@ describe("Visual Identity operator workbench", () => {
   it("renders distinct identity, reference and qualification evidence with actionable blockers", () => {
     const html = renderToStaticMarkup(<VisualIdentityPanel data={data} permissions={{ writeVisual: true, evaluateRoute: true }} runCommittedMutation={runCommittedMutation} />);
     expect(html).toContain("Visual Identity authority");
-    expect(html).toContain("reference set not active");
+    expect(html).toContain("Publish the approved identity references");
+    expect(html).toContain("reference_set_not_active");
+    expect(html.match(/>Resolve</g)).toHaveLength(1);
+    expect(html).not.toContain("Resolve blocker");
+    expect(html).toContain('aria-current="step"');
     expect(html).toContain("Open role image production");
     expect(html).toContain("Publish Reference Set");
     expect(html).toContain("Character Looks using role images");
@@ -92,6 +96,11 @@ describe("Visual Identity operator workbench", () => {
     expect(html).toContain("Archive Look");
     expect(html).toContain("Unchecked images leave runtime authority");
     expect(html).toContain("38/40 passed");
+    expect(html).toContain("Advanced identity controls");
+    expect(html).toContain("Platform route evidence controls");
+    expect(html).toContain(
+      'href="/admin/ops/profiles?characterId=character-1"',
+    );
     expect(html).toContain("Submit route evaluation");
   });
 

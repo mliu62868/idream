@@ -106,6 +106,12 @@ export async function effectiveCharacterIdsForPermission(
       !isGrantBundleKey(row.bundleKey) ||
       !new Set<string>(ADMIN_GRANT_BUNDLES[row.bundleKey].permissions).has(key)
     ) continue;
+    // Grant-bundle writes only permit Character scope on
+    // `character_producer`. A persisted null scope on every other matching
+    // bundle is therefore the canonical global grant. Historical rows that
+    // incorrectly contain Character ids still narrow access rather than
+    // widening it, while a malformed/missing producer scope remains closed.
+    if (row.bundleKey !== "character_producer" && row.scope === null) return null;
     const scope = row.scope && typeof row.scope === "object" && !Array.isArray(row.scope)
       ? row.scope as Record<string, unknown>
       : {};

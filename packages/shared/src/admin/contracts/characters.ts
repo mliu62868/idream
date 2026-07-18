@@ -308,6 +308,34 @@ export const characterIdentityBootstrapWorkspaceSchema = z
   })
   .strict();
 
+export const characterImageReadinessSchema = z
+  .object({
+    state: z.enum([
+      "ready",
+      "bootstrap_required",
+      "repairable",
+      "route_pending",
+      "manual_review_required",
+    ]),
+    fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+    steps: z
+      .object({
+        identity: z.enum(["complete", "action_required", "blocked"]),
+        references: z.enum(["complete", "action_required", "blocked"]),
+        route: z.enum(["complete", "platform_pending", "blocked"]),
+      })
+      .strict(),
+    repair: z
+      .object({
+        kind: z.enum(["adopt_live_portrait", "publish_existing_anchor"]),
+        sourceAssetId: adminIdSchema,
+      })
+      .strict()
+      .nullable(),
+    nextDeepLink: z.string().startsWith("/admin/"),
+  })
+  .strict();
+
 export const characterVisualWorkspaceSchema = z
   .object({
     activeIdentity: characterVisualIdentityVersionSchema.nullable(),
@@ -317,6 +345,7 @@ export const characterVisualWorkspaceSchema = z
     looks: z.array(characterLookWorkspaceSchema).readonly().optional(),
     routeQualifications: z.array(characterRouteQualificationEvidenceSchema).readonly(),
     identityBootstrap: characterIdentityBootstrapWorkspaceSchema,
+    imageReadiness: characterImageReadinessSchema.optional(),
     readiness: z.object({
       ready: z.boolean(),
       qualificationPolicyVersion: z.string().trim().min(1),
@@ -354,7 +383,7 @@ export const characterDraftVisualDirectionSchema = z
   })
   .strict();
 
-export const characterProjectCreateRequestSchema = z
+const characterProjectDraftObjectSchema = z
   .object({
     positioning: z
       .object({
@@ -376,10 +405,99 @@ export const characterProjectCreateRequestSchema = z
         qaPlan: z.string().trim().min(1).max(4_000),
       })
       .strict(),
-    reason: adminCommandReasonSchema,
-    confirmation: z.literal("CREATE CHARACTER"),
   })
   .strict();
+
+export const characterProjectDraftSchema = characterProjectDraftObjectSchema;
+
+export const characterCreateInstructionalSentinels = [
+  [["positioning", "audience"], "Define the adult audience for this companion"],
+  [["positioning", "companionNeed"], "Define the recurring companionship need"],
+  [["positioning", "hypothesis"], "State the behavior and outcome hypothesis"],
+  [["positioning", "differentiation"], "Explain why users will choose this character"],
+  [["persona", "name"], "Untitled companion"],
+  [["persona", "relationshipArchetype"], "trusted companion"],
+  [["persona", "characterPromise"], "A specific, dependable companionship promise"],
+  [["persona", "personality"], "Warm, observant, and consistent"],
+  [["persona", "tone"], "Natural, concise, and emotionally present"],
+  [["persona", "backstory"], "Draft the experiences that shape this character's point of view."],
+  [["persona", "firstMessage"], "I'm here. Where should we begin?"],
+  [["visualDirection", "identityAnchor"], "A recognizable adult companion identity"],
+  [["visualDirection", "referenceDirection"], "Describe lighting, framing, wardrobe, and reference direction."],
+  [["commercialIntent", "productionPackage"], "Define the required identity, placement, and chat asset package."],
+  [["commercialIntent", "qaPlan"], "Define mobile, desktop, and conversation QA evidence."],
+] as const;
+
+function valueAtPath(
+  value: Record<string, unknown>,
+  path: readonly string[],
+) {
+  let current: unknown = value;
+  for (const segment of path) {
+    if (
+      current === null ||
+      typeof current !== "object" ||
+      Array.isArray(current)
+    ) return undefined;
+    current = (current as Record<string, unknown>)[segment];
+  }
+  return current;
+}
+
+const rejectCharacterCreateInstructionalSentinels: Parameters<
+  typeof characterProjectDraftObjectSchema.superRefine
+>[0] = (value, ctx) => {
+  for (const [path, sentinel] of characterCreateInstructionalSentinels) {
+    if (
+      valueAtPath(value as unknown as Record<string, unknown>, path) ===
+      sentinel
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: [...path],
+        message:
+          "Replace the former instructional default with real Character data",
+      });
+    }
+  }
+  const listSentinels = [
+    ["persona", "exampleDialogue", "Tell me what matters most about that."],
+    ["visualDirection", "stableTraits", "consistent face"],
+    ["visualDirection", "stableTraits", "recognizable silhouette"],
+    ["commercialIntent", "successCriteria", "Define one measurable success criterion"],
+  ] as const;
+  for (const [section, field, sentinel] of listSentinels) {
+    const values = valueAtPath(
+      value as unknown as Record<string, unknown>,
+      [section, field],
+    );
+    if (
+      Array.isArray(values) &&
+      values.some((item) => item === sentinel)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: [section, field],
+        message:
+          "Replace the former instructional default with real Character data",
+      });
+    }
+  }
+};
+
+export const characterProjectProductionReadyDraftSchema =
+  characterProjectDraftObjectSchema.superRefine(
+    rejectCharacterCreateInstructionalSentinels,
+  );
+
+export const characterProjectCreateRequestSchema =
+  characterProjectDraftObjectSchema
+    .extend({
+      reason: adminCommandReasonSchema,
+      confirmation: z.literal("CREATE CHARACTER"),
+    })
+    .strict()
+    .superRefine(rejectCharacterCreateInstructionalSentinels);
 
 export const characterProjectCreateResponseSchema = z
   .object({
@@ -393,13 +511,6 @@ export const characterProjectCreateResponseSchema = z
     replayed: z.boolean(),
   })
   .strict();
-
-export const characterProjectDraftSchema = characterProjectCreateRequestSchema.pick({
-  positioning: true,
-  persona: true,
-  visualDirection: true,
-  commercialIntent: true,
-});
 
 export const characterProjectDraftAuthoritySchema = z
   .object({
@@ -675,6 +786,84 @@ export const characterPortfolioDecisionRequestSchema = z
   })
   .strict();
 
+export const characterPortfolioVisualProductionSchema = z
+  .object({
+    primaryImageUrl: z.string().trim().min(1).nullable(),
+    primaryImageSource: z.enum(["draft", "live"]).nullable(),
+    draftPurposes: z
+      .array(z.enum([
+        "character_cover",
+        "character_hero",
+        "character_chat",
+      ]))
+      .max(3)
+      .readonly(),
+    livePurposes: z
+      .array(z.enum([
+        "character_cover",
+        "character_hero",
+        "character_chat",
+      ]))
+      .max(3)
+      .readonly(),
+    totalPurposes: z.literal(3),
+    deepLink: z.string().startsWith("/admin/characters/"),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    for (const key of ["draftPurposes", "livePurposes"] as const) {
+      if (new Set(value[key]).size !== value[key].length) {
+        ctx.addIssue({
+          code: "custom",
+          path: [key],
+          message: "Role-image purposes must be unique",
+        });
+      }
+    }
+    if ((value.primaryImageUrl === null) !== (value.primaryImageSource === null)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["primaryImageSource"],
+        message: "Primary role-image source must match image availability",
+      });
+    }
+    if (
+      value.primaryImageSource === "draft" &&
+      !value.draftPurposes.includes("character_cover")
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["draftPurposes"],
+        message: "A draft primary image requires an available draft cover",
+      });
+    }
+    if (
+      value.primaryImageSource === "live" &&
+      !value.livePurposes.includes("character_cover")
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["livePurposes"],
+        message: "A live primary image requires an available live cover",
+      });
+    }
+  });
+
+export const characterPortfolioNextActionSchema = z
+  .object({
+    code: z.enum([
+      "create_primary_portrait",
+      "prepare_image_production",
+      "continue_asset_pack",
+      "run_preview_qa",
+      "review_candidate_release",
+      "monitor_live_character",
+    ]),
+    label: z.string().trim().min(1),
+    deepLink: z.string().startsWith("/admin/characters/"),
+  })
+  .strict();
+
 export const characterPortfolioItemSchema = z
   .object({
     characterId: adminIdSchema,
@@ -689,6 +878,8 @@ export const characterPortfolioItemSchema = z
     performance: z.array(characterPerformanceSummarySchema).readonly(),
     changeMarkers: z.array(characterReleaseChangeMarkerSchema).readonly(),
     latestDecision: characterPortfolioDecisionRecordSchema.nullable(),
+    visualProduction: characterPortfolioVisualProductionSchema,
+    nextAction: characterPortfolioNextActionSchema,
     operationalState: operationalStateViewSchema,
   })
   .strict();
@@ -901,6 +1092,37 @@ export const characterIdentityBootstrapResponseSchema = z.object({
   deepLink: z.string().startsWith("/admin/characters/"),
   replayed: z.boolean(),
 }).strict();
+
+export const characterImageReadinessRepairRequestSchema = z
+  .object({
+    entityVersion: z.number().int().positive(),
+    expectedReadinessFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+    reason: z.string().trim().min(3).max(2_000),
+    confirmation: z.string().trim().min(1).max(240),
+  })
+  .strict();
+
+export const characterImageReadinessRepairResponseSchema = z
+  .object({
+    characterId: adminIdSchema,
+    projectVersion: z.number().int().positive(),
+    state: z.enum(["ready", "route_pending"]),
+    action: z.enum([
+      "adopted_live_portrait",
+      "published_existing_anchor",
+      "no_op",
+    ]),
+    visualProfileId: adminIdSchema,
+    visualProfileVersion: z.number().int().positive(),
+    referenceSetRevisionId: adminIdSchema,
+    referenceSetRevision: z.number().int().positive(),
+    routeQualificationId: adminIdSchema.nullable(),
+    routeFingerprint: z.string().trim().min(1).nullable(),
+    remainingBlockers: z.array(z.string().trim().min(1)).readonly(),
+    deepLink: z.string().startsWith("/admin/characters/"),
+    replayed: z.boolean(),
+  })
+  .strict();
 
 export const characterReleaseCheckSchema = z
   .object({
@@ -1192,6 +1414,8 @@ export type CharacterLookArchiveRequest = z.infer<typeof characterLookArchiveReq
 export type CharacterDraftImageSelectionRequest = z.infer<typeof characterDraftImageSelectionRequestSchema>;
 export type CharacterIdentityBootstrapRequest = z.infer<typeof characterIdentityBootstrapRequestSchema>;
 export type CharacterIdentityBootstrapResponse = z.infer<typeof characterIdentityBootstrapResponseSchema>;
+export type CharacterImageReadinessRepairRequest = z.infer<typeof characterImageReadinessRepairRequestSchema>;
+export type CharacterImageReadinessRepairResponse = z.infer<typeof characterImageReadinessRepairResponseSchema>;
 export type CharacterQaCheck = z.infer<typeof characterQaCheckSchema>;
 export type CharacterQaCheckInput = z.infer<typeof characterQaCheckInputSchema>;
 export type CharacterQaRunCreateRequest = z.infer<typeof characterQaRunCreateRequestSchema>;

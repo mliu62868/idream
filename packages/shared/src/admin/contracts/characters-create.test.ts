@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   characterProjectCreateRequestSchema,
   characterProjectCreateResponseSchema,
+  characterProjectDraftSchema,
   characterProjectDraftPatchRequestSchema,
+  characterProjectProductionReadyDraftSchema,
 } from "./characters";
 
 const validCreate = {
@@ -77,6 +79,43 @@ describe("Character Project create contract", () => {
     expect(characterProjectCreateRequestSchema.safeParse({
       ...validCreate,
       clientDraftId: "browser-only",
+    }).success).toBe(false);
+  });
+
+  it("rejects the former instructional defaults without hiding an old server draft", () => {
+    const instructional = {
+      ...validCreate,
+      positioning: {
+        ...validCreate.positioning,
+        audience: "Define the adult audience for this companion",
+      },
+      persona: {
+        ...validCreate.persona,
+        name: "Untitled companion",
+      },
+      visualDirection: {
+        ...validCreate.visualDirection,
+        identityAnchor: "A recognizable adult companion identity",
+      },
+      commercialIntent: {
+        ...validCreate.commercialIntent,
+        successCriteria: ["Define one measurable success criterion"],
+      },
+    };
+    expect(
+      characterProjectCreateRequestSchema.safeParse(instructional).success,
+    ).toBe(false);
+    expect(characterProjectDraftSchema.safeParse({
+      positioning: instructional.positioning,
+      persona: instructional.persona,
+      visualDirection: instructional.visualDirection,
+      commercialIntent: instructional.commercialIntent,
+    }).success).toBe(true);
+    expect(characterProjectProductionReadyDraftSchema.safeParse({
+      positioning: instructional.positioning,
+      persona: instructional.persona,
+      visualDirection: instructional.visualDirection,
+      commercialIntent: instructional.commercialIntent,
     }).success).toBe(false);
   });
 

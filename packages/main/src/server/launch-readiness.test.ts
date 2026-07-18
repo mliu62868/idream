@@ -317,6 +317,7 @@ function passingWebSurfaceProbe(
       contentType: "text/html; charset=utf-8",
       containsBrand: true,
       nextErrorShell: false,
+      assets: { ok: true, checked: 8, failures: [] },
       error: null,
     },
     generate: {
@@ -326,6 +327,7 @@ function passingWebSurfaceProbe(
       contentType: "text/html; charset=utf-8",
       containsGenerator: true,
       nextErrorShell: false,
+      assets: { ok: true, checked: 8, failures: [] },
       error: null,
     },
     apiAgeGate: {
@@ -343,6 +345,7 @@ function passingWebSurfaceProbe(
       protected: true,
       protectedReason: "access_denied",
       nextErrorShell: false,
+      assets: { ok: true, checked: 8, failures: [] },
       error: null,
     },
     adminApi: {
@@ -2035,6 +2038,52 @@ describe("launch readiness", () => {
 
     expect(report.ok).toBe(false);
     expect(failedIds(report)).toContain("web-surface-live-probe");
+  });
+
+  it("fails when HTML is healthy but a linked Next asset is missing", () => {
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      imagePipelineProbe: passingImageProbe(),
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingProductConfigProbe(),
+      webSurfaceProbe: passingWebSurfaceProbe({
+        ok: true,
+        home: {
+          ok: true,
+          status: 200,
+          bytes: 30_000,
+          contentType: "text/html; charset=utf-8",
+          containsBrand: true,
+          nextErrorShell: false,
+          assets: {
+            ok: false,
+            checked: 8,
+            failures: [{
+              url: "https://app.example/_next/static/chunks/missing.js",
+              status: 500,
+              bytes: 21,
+              contentType: "text/plain",
+              error: "Linked Next asset returned HTTP 500",
+            }],
+          },
+          error: null,
+        },
+      }),
+      publicCatalogProbe: passingPublicCatalogProbe(),
+      now,
+    });
+
+    expect(report.ok).toBe(false);
+    expect(failedIds(report)).toContain("web-surface-live-probe");
+    expect(checkById(report, "web-surface-live-probe")?.message).toContain(
+      "complete linked assets",
+    );
   });
 
   it("fails when the web surface probe finds an unlocked admin API", () => {

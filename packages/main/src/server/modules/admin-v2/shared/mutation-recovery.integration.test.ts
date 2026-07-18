@@ -403,6 +403,53 @@ describe("Admin mutation receipt recovery authority", () => {
     })).toBe(1);
   });
 
+  it("prepares external authority before the transaction and skips it on replay", async () => {
+    const idempotencyKey = `prepared-atomic-${suffix}`;
+    const targetId = randomUUID();
+    const sequence: string[] = [];
+    const execute = () => executeAtomicIdempotentMutation({
+      environment: env.APP_ENV,
+      actor: { id: actorId, role: "admin" },
+      idempotencyKey,
+      requestId: randomUUID(),
+      commandType: "test.atomic.prepared",
+      target: { type: "test_target", id: targetId },
+      payload: { targetId },
+      prepare: async () => {
+        sequence.push("prepare:start");
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 20);
+        });
+        sequence.push("prepare:complete");
+        return { immutableKey: `prepared/${targetId}` };
+      },
+      mutate: async (_tx, prepared) => {
+        sequence.push(`mutate:${prepared.immutableKey}`);
+        return { targetId, immutableKey: prepared.immutableKey };
+      },
+      decorateResult: (result, replayed) => ({
+        ...(result as Record<string, unknown>),
+        replayed,
+      }),
+    });
+
+    await expect(execute()).resolves.toMatchObject({
+      targetId,
+      immutableKey: `prepared/${targetId}`,
+      replayed: false,
+    });
+    await expect(execute()).resolves.toMatchObject({
+      targetId,
+      immutableKey: `prepared/${targetId}`,
+      replayed: true,
+    });
+    expect(sequence).toEqual([
+      "prepare:start",
+      "prepare:complete",
+      `mutate:prepared/${targetId}`,
+    ]);
+  });
+
   it("isolates the same receipt key by actor", async () => {
     const idempotencyKey = `actor-isolation-${suffix}`;
     const [first, second] = await Promise.all([

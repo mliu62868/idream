@@ -42,6 +42,11 @@ const nextConfig: NextConfig = {
     ? { typescript: { tsconfigPath: isolatedTsconfigPath } }
     : {}),
   allowedDevOrigins: ["127.0.0.1"],
+  experimental: {
+    // Runtime releases are immutable. Keep ISR/fetch entries in memory instead
+    // of allowing Next to rewrite .next/server after publication.
+    isrFlushToDisk: false,
+  },
   output: "standalone",
   outputFileTracingRoot: workspaceRoot,
   outputFileTracingExcludes: {

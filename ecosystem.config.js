@@ -2,11 +2,11 @@
 // Source-run via tsx's node entry (resolves tsconfig @/ paths); web apps via
 // Next standalone server output.
 //   bun run pm2:start   # start all   bun run pm2:status
-//   pm2 restart main-web admin-web     # after in-place Next builds
-//   pm2 reload main-web admin-web      # only with immutable release dirs
+//   pm2 restart main-web admin-web     # switch both apps to their published release
 //   pm2 restart chat                   # single-instance: brief gap, reconciler heals
-// ⚠️ Do not `pm2 reload` web apps after rebuilding the same .next directory:
-//    old cluster workers can keep references to removed server chunks.
+// Web apps run from immutable .next-runtime releases. Prefer restart after both
+// builds are published; rolling reload still needs deployment-aware routing to
+// keep old clients and workers on the same release during the overlap window.
 // ⚠️ chat is instances:1 — it writes the local file store (sessions/mem). Do NOT
 //    scale it past 1 without moving CHAT_FS_ROOT to shared storage (D1/C1).
 // ⚠️ script paths point at real node entry files (.mjs / next's CJS bin), NOT the

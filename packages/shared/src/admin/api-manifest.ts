@@ -154,6 +154,7 @@ export const ADMIN_V2_API_OPERATIONS = [
   operation("PATCH", "/api/v2/admin/characters/:id/project", allOf("character.project.write"), "characterProjectDraftPatchRequestSchema+if-match", "characterWorkspaceProjectSchema"),
   operation("PATCH", "/api/v2/admin/characters/:id/draft-image", allOf("character.project.write"), "characterDraftImageSelectionRequestSchema+idempotency-key+if-match", "characterDraftImageSelectionResultSchema"),
   operation("POST", "/api/v2/admin/characters/:id/identity-bootstrap", allOf("character.project.write"), "characterIdentityBootstrapRequestSchema+idempotency-key+if-match", "characterIdentityBootstrapResponseSchema"),
+  operation("POST", "/api/v2/admin/characters/:id/image-readiness/repair", allOf("character.project.write"), "characterImageReadinessRepairRequestSchema+idempotency-key+if-match", "characterImageReadinessRepairResponseSchema"),
   operation("POST", "/api/v2/admin/characters/:id/qa-runs", allOf("character.release.review"), "characterQaRunCreateRequestSchema+idempotency-key+if-match", "characterQaRunSchema"),
   operation("POST", "/api/v2/admin/characters/:id/releases", allOf("character.release.propose"), "characterReleaseProposalRequestSchema+idempotency-key+if-match", "characterReleaseSchema"),
   operation("POST", "/api/v2/admin/characters/:id/releases/:releaseId/commands/publish", allOf("character.release.publish"), "characterReleasePublishCommandRequestSchema+idempotency-key", "adminCommandAcceptedSchema"),

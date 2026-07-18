@@ -17,10 +17,13 @@ import {
   type CharacterQaCheckInput,
   type CharacterWorkspaceDetail,
 } from "@idream/shared/admin";
-import { ArrowLeft, Clock3, Plus, RefreshCcw, Rocket, RotateCcw, Save, ShieldAlert } from "lucide-react";
+import { ArrowLeft, Clock3, ImageIcon, Plus, RefreshCcw, Rocket, RotateCcw, Save, ShieldAlert } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { AdminSubview } from "@/components/admin/nav-config";
-import { CharacterAssetStudio } from "@/features/characters/CharacterAssetStudio";
+import {
+  CharacterAssetStudio,
+  characterAssetReadinessAction,
+} from "@/features/characters/CharacterAssetStudio";
 import { CharacterCreateWizard } from "@/features/characters/CharacterCreateWizard";
 import { apiWrite } from "@/components/admin/api";
 import { CollaborationPanel } from "@/features/collaboration/CollaborationPanel";
@@ -550,6 +553,29 @@ function percent(value: number | null) {
   return value === null ? "Unavailable" : `${(value * 100).toFixed(1)}%`;
 }
 
+export function characterPortfolioPerformanceLabel(
+  performance: Pick<
+    CharacterPortfolioItem["performance"][number],
+    "maturity" | "qceRate" | "sameCharacterD7"
+  > | null,
+) {
+  if (!performance) {
+    return "28d performance will appear after sufficient live traffic.";
+  }
+  const metrics = [
+    performance.qceRate === null
+      ? null
+      : `28d QCE ${percent(performance.qceRate)}`,
+    performance.sameCharacterD7 === null
+      ? null
+      : `D7 ${percent(performance.sameCharacterD7)}`,
+  ].filter((metric): metric is string => metric !== null);
+  if (metrics.length === 0) {
+    return "28d performance will appear after sufficient live traffic.";
+  }
+  return `${metrics.join(" · ")} · ${performance.maturity.replaceAll("_", " ")}`;
+}
+
 export function characterMonitorWindows(
   monitors: ReadonlyArray<{ readonly window: string }>,
 ) {
@@ -595,44 +621,146 @@ function permissionDenied(label: string) {
   );
 }
 
-function PortfolioCard({ canOpenProject, item }: { canOpenProject: boolean; item: CharacterPortfolioItem }) {
+export function CharacterPortfolioVisual({
+  canOpenAssets,
+  name,
+  visualProduction,
+}: {
+  canOpenAssets: boolean;
+  name: string;
+  visualProduction: CharacterPortfolioItem["visualProduction"];
+}) {
+  const draftCount = visualProduction.draftPurposes.length;
+  const liveCount = visualProduction.livePurposes.length;
+  const canRenderPrimaryImage =
+    visualProduction.primaryImageUrl !== null &&
+    (canOpenAssets || visualProduction.primaryImageSource !== "draft");
+  const content = (
+    <>
+      <div className="relative h-20 w-20 overflow-hidden rounded-lg bg-black/[0.04]">
+        {canRenderPrimaryImage ? (
+          <Image
+            alt={`${name} primary role portrait`}
+            className="h-full w-full object-cover"
+            height={80}
+            src={visualProduction.primaryImageUrl as string}
+            unoptimized
+            width={80}
+          />
+        ) : (
+          <div className="grid h-full w-full place-items-center text-[var(--ad-text-muted)]">
+            <ImageIcon aria-hidden="true" className="h-5 w-5" />
+            <span className="sr-only">No primary role portrait</span>
+          </div>
+        )}
+        {canRenderPrimaryImage && visualProduction.primaryImageSource ? (
+          <span className="absolute bottom-1 left-1 rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+            {visualProduction.primaryImageSource === "draft"
+              ? "Draft portrait"
+              : "Live portrait"}
+          </span>
+        ) : null}
+      </div>
+      <p className="mt-2 text-[10px] leading-4 text-[var(--ad-text-muted)]">
+        Draft {draftCount} of 3
+        <span aria-hidden="true"> · </span>
+        <span>Live {liveCount} of 3</span>
+      </p>
+    </>
+  );
+  const className =
+    "block w-24 rounded-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]";
+  return canOpenAssets
+    ? (
+        <Link
+          aria-label={`${name}: open role-image assets, Draft ${draftCount} of 3, Live ${liveCount} of 3`}
+          className={`${className} hover:opacity-90`}
+          href={visualProduction.deepLink}
+        >
+          {content}
+        </Link>
+      )
+    : <div className="w-24">{content}</div>;
+}
+
+function PortfolioCard({
+  canOpenAssets,
+  canOpenProject,
+  item,
+}: {
+  canOpenAssets: boolean;
+  canOpenProject: boolean;
+  item: CharacterPortfolioItem;
+}) {
   const performance = item.performance.find((metric) => metric.window === "28d" && metric.placementId === null)
     ?? item.performance.find((metric) => metric.window === "28d")
     ?? null;
-  const content = (
-    <>
-      <div className="grid h-16 w-16 place-items-center rounded-lg bg-black/[0.04] text-xl font-semibold text-[var(--ad-text-muted)]">
-        {item.name.slice(0, 1).toUpperCase()}
-      </div>
+  const nextActionNeedsAssets = [
+    "create_primary_portrait",
+    "prepare_image_production",
+    "continue_asset_pack",
+  ].includes(item.nextAction.code);
+  const canOpenNextAction =
+    canOpenProject && (!nextActionNeedsAssets || canOpenAssets);
+  const className = "grid gap-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 transition-colors sm:grid-cols-[96px_1fr_auto]";
+  return (
+    <article className={className}>
+      <CharacterPortfolioVisual
+        canOpenAssets={canOpenProject && canOpenAssets}
+        name={item.name}
+        visualProduction={item.visualProduction}
+      />
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
-          <h3 className="truncate font-semibold text-[var(--ad-ink)]">{item.name}</h3>
+          <h3 className="truncate font-semibold text-[var(--ad-ink)]">
+            {canOpenProject
+              ? (
+                  <Link
+                    className="hover:underline"
+                    href={`/admin/characters/${encodeURIComponent(item.characterId)}`}
+                  >
+                    {item.name}
+                  </Link>
+                )
+              : item.name}
+          </h3>
           <StatusBadge value={item.serving.state} />
           <StatusBadge value={item.readiness} />
         </div>
         <p className="mt-2 text-sm text-[var(--ad-text-muted)]">{item.project.audience} · {item.project.phase.replaceAll("_", " ")}</p>
         <p className="mt-2 text-xs text-[var(--ad-text-muted)]">
-          28d QCE {performance ? percent(performance.qceRate) : "Unavailable"} · D7 {performance ? percent(performance.sameCharacterD7) : "Unavailable"} · {performance?.maturity ?? "insufficient_data"}
+          {characterPortfolioPerformanceLabel(performance)}
         </p>
       </div>
       <div className="self-center text-right text-xs text-[var(--ad-text-muted)]">
-        {item.latestDecision?.decision ?? "No decision"}<br />
-        <span className="mt-1 inline-block group-hover:text-[var(--ad-ink)]">{canOpenProject ? "Open workspace →" : "Performance only"}</span>
+        {canOpenNextAction
+          ? (
+              <Link
+                className="inline-block font-semibold text-[var(--ad-ink)] hover:underline"
+                href={item.nextAction.deepLink}
+              >
+                {item.nextAction.label} →
+              </Link>
+            )
+          : <span className="inline-block font-semibold">Performance only</span>}
+        {item.latestDecision ? (
+          <span className="mt-1 block">
+            Latest decision: {item.latestDecision.decision}
+          </span>
+        ) : null}
       </div>
-    </>
+    </article>
   );
-  const className = "group grid gap-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 transition-colors sm:grid-cols-[64px_1fr_auto]";
-  return canOpenProject
-    ? <Link className={`${className} hover:border-[var(--ad-ink)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]`} href={`/admin/characters/${item.characterId}`}>{content}</Link>
-    : <article className={className}>{content}</article>;
 }
 
 function CharacterPortfolio({
+  canOpenAssets,
   canCreate,
   canOpenProjects,
   canRead,
   mode,
 }: {
+  canOpenAssets: boolean;
   canCreate: boolean;
   canOpenProjects: boolean;
   canRead: boolean;
@@ -747,7 +875,7 @@ function CharacterPortfolio({
         </form>
       </div>
       {error ? <div className="mt-5 rounded-lg bg-[var(--ad-red-bg)] p-4 text-sm text-[var(--ad-red-text)]" role="alert">{error} <button className="ml-2 underline" onClick={() => void load({ search, phase: phase || undefined, servingState: servingState || undefined, readiness: readiness || undefined, cursor }, "none")} type="button">Retry</button></div> : null}
-      <div className="mt-6">{loading && items.length === 0 ? <LoadingWorkspace label="Loading release-attributed portfolio" /> : items.length === 0 ? error ? null : <EmptyWorkspace filtered={Boolean(search || phase || servingState || readiness)} onClear={() => { setSearch(""); setPhase(""); setServingState(""); setReadiness(""); setCursor(undefined); void load({ search: "" }, "push"); }} /> : <div className="grid gap-3">{items.map((item) => <PortfolioCard canOpenProject={canOpenProjects} item={item} key={item.characterId} />)}</div>}</div>
+      <div className="mt-6">{loading && items.length === 0 ? <LoadingWorkspace label="Loading release-attributed portfolio" /> : items.length === 0 ? error ? null : <EmptyWorkspace filtered={Boolean(search || phase || servingState || readiness)} onClear={() => { setSearch(""); setPhase(""); setServingState(""); setReadiness(""); setCursor(undefined); void load({ search: "" }, "push"); }} /> : <div className="grid gap-3">{items.map((item) => <PortfolioCard canOpenAssets={canOpenAssets} canOpenProject={canOpenProjects} item={item} key={item.characterId} />)}</div>}</div>
       <div className="mt-4 flex items-center justify-between gap-3"><p className="text-xs text-[var(--ad-text-muted)]">{asOf ? `Fresh as of ${new Date(asOf).toLocaleString()}` : "No successful query yet"}</p><WorkspaceButton disabled={loading || !pageInfo.hasNextPage || !pageInfo.endCursor} onClick={() => apply(pageInfo.endCursor ?? undefined)}>Next page</WorkspaceButton></div>
     </section>
   );
@@ -935,6 +1063,23 @@ export function VisualIdentityPanel({ data, navigateToTab, permissions, runCommi
     activeReferenceIds,
     selectedReferenceIds,
   );
+  const readinessActions = useMemo(() => {
+    const grouped = new Map<string, {
+      readonly deepLink: string;
+      readonly messages: string[];
+      readonly codes: string[];
+    }>();
+    for (const blocker of data.visual.readiness.blockers) {
+      const action = characterAssetReadinessAction(blocker.code);
+      const existing = grouped.get(action);
+      grouped.set(action, {
+        deepLink: existing?.deepLink ?? blocker.deepLink,
+        messages: [...(existing?.messages ?? []), blocker.message],
+        codes: [...(existing?.codes ?? []), blocker.code],
+      });
+    }
+    return [...grouped].map(([action, value]) => ({ action, ...value }));
+  }, [data.visual.readiness.blockers]);
   useEffect(() => {
     const timer = window.setTimeout(() => {
       setSelectedReferenceIds(
@@ -1119,7 +1264,61 @@ export function VisualIdentityPanel({ data, navigateToTab, permissions, runCommi
       <section className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" aria-labelledby="visual-authority-title">
         <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-semibold" id="visual-authority-title">Visual Identity authority</h3><p className="mt-1 text-xs text-[var(--ad-text-muted)]">Selection, published references and route qualification are separate evidence.</p></div><StatusBadge value={data.visual.readiness.ready ? "visual ready" : "blocked"} /></div>
         {identity ? <><dl className="mt-4 grid gap-3 text-sm sm:grid-cols-3"><div><dt className="text-xs text-[var(--ad-text-muted)]">Active identity</dt><dd className="mt-1 font-semibold">v{identity.version} · {identity.style}</dd></div><div><dt className="text-xs text-[var(--ad-text-muted)]">Anchors available</dt><dd className="mt-1 font-semibold">{data.visual.anchors.filter((asset) => asset.available).length}/{data.visual.anchors.length}</dd></div><div><dt className="text-xs text-[var(--ad-text-muted)]">Reference Set</dt><dd className="mt-1 font-semibold">{data.visual.activeReferenceSet ? `revision ${data.visual.activeReferenceSet.revision}` : "Not published"}</dd></div></dl><p className="mt-4 rounded-lg bg-black/[0.03] p-3 text-sm">{identity.identityPrompt}</p></> : <p className="mt-4 text-sm text-[var(--ad-text-muted)]">No active immutable Visual Identity version exists.</p>}
-        {data.visual.readiness.blockers.length ? <div className="mt-4"><h4 className="text-xs font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">Blocking evidence</h4><ul className="mt-2 space-y-2">{data.visual.readiness.blockers.map((blocker) => <li className="flex flex-col gap-2 rounded-lg border border-[var(--ad-border)] p-3 text-sm sm:flex-row sm:items-center sm:justify-between" key={blocker.code}><span><strong>{blocker.code.replaceAll("_", " ")}</strong><span className="mt-1 block text-xs text-[var(--ad-text-muted)]">{blocker.message}</span></span><Link className="shrink-0 text-xs font-semibold underline" href={blocker.deepLink}>Resolve blocker</Link></li>)}</ul></div> : <p className="mt-4 text-sm text-[var(--ad-green-text)]">All visual evidence gates currently pass.</p>}
+        {readinessActions.length ? (
+          <div className="mt-4">
+            <h4 className="text-xs font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">
+              Image-production readiness
+            </h4>
+            <ol
+              aria-label="Image production readiness"
+              className="mt-2 space-y-2"
+            >
+              {readinessActions.map((item, index) => (
+                <li
+                  aria-current={index === 0 ? "step" : undefined}
+                  className="flex flex-col gap-2 rounded-lg border border-[var(--ad-border)] p-3 text-sm sm:flex-row sm:items-center sm:justify-between"
+                  key={item.action}
+                >
+                  <span className="flex gap-3">
+                    <span
+                      aria-hidden="true"
+                      className="grid h-6 w-6 shrink-0 place-items-center rounded-full border border-[var(--ad-border)] text-xs font-semibold"
+                    >
+                      {index + 1}
+                    </span>
+                    <span>
+                      <strong>{item.action}</strong>
+                      <span className="mt-1 block text-xs text-[var(--ad-text-muted)]">
+                        {item.messages.join(" ")}
+                      </span>
+                    </span>
+                  </span>
+                  <Link
+                    aria-label={`Resolve: ${item.action}`}
+                    className="shrink-0 text-xs font-semibold underline"
+                    href={item.deepLink}
+                  >
+                    Resolve
+                  </Link>
+                </li>
+              ))}
+            </ol>
+            <details className="mt-3 text-xs text-[var(--ad-text-muted)]">
+              <summary className="cursor-pointer font-semibold">
+                Technical blocker codes
+              </summary>
+              <ul className="mt-2 space-y-1">
+                {readinessActions.flatMap((item) =>
+                  item.codes.map((code) => <li key={code}>{code}</li>)
+                )}
+              </ul>
+            </details>
+          </div>
+        ) : (
+          <p className="mt-4 text-sm text-[var(--ad-green-text)]">
+            All visual evidence gates currently pass.
+          </p>
+        )}
       </section>
 
       <section className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" aria-labelledby="reference-set-title">
@@ -1231,8 +1430,8 @@ export function VisualIdentityPanel({ data, navigateToTab, permissions, runCommi
     </div>
 
     <aside className="space-y-5">
-      <section className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" aria-labelledby="new-identity-title"><h3 className="font-semibold" id="new-identity-title">Create identity version</h3><p className="mt-1 text-xs text-[var(--ad-text-muted)]">Creates a new active immutable version; existing assets are carried forward.</p>{requiresReviewedBootstrap ? <div className="mt-4 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]"><p>Establish a reviewed portrait anchor in Character Assets before creating later identity versions.</p>{navigateToTab ? <div className="mt-3"><WorkspaceButton onClick={() => navigateToTab("assets")}>Open Character Assets</WorkspaceButton></div> : null}</div> : blockedIdentityRepair ? <div className="mt-4 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]"><p>Existing authority must be repaired here before a new identity version can be created.</p><p className="mt-2 text-xs">{data.visual.identityBootstrap.blockers.join(", ") || "Visual identity evidence is incomplete."}</p></div> : usesCurrentCharacterImageAsAnchor ? <p className="mt-4 rounded-lg bg-[var(--ad-blue-bg)] p-3 text-sm text-[var(--ad-blue-text)]">The current Character image is available and will be carried forward as the anchor for this identity version.</p> : null}<label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">Identity lock<textarea className={`${textAreaClass} mt-1`} onChange={(event) => setIdentityPrompt(event.target.value)} value={identityPrompt} /></label><label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">Must not change<textarea className={`${textAreaClass} mt-1`} onChange={(event) => setNegativeIdentityPrompt(event.target.value)} value={negativeIdentityPrompt} /></label><div className="mt-3 grid grid-cols-2 gap-2"><label className="text-xs font-semibold text-[var(--ad-text-muted)]">Style<select className={`${fieldClass} mt-1`} onChange={(event) => setStyle(event.target.value)} value={style}>{["realistic", "anime", "hybrid", "other"].map((value) => <option key={value}>{value}</option>)}</select></label><label className="text-xs font-semibold text-[var(--ad-text-muted)]">Seed<input className={`${fieldClass} mt-1`} onChange={(event) => setDefaultSeed(event.target.value)} value={defaultSeed} /></label></div><label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">Change reason<input className={`${fieldClass} mt-1`} onChange={(event) => setIdentityReason(event.target.value)} value={identityReason} /></label><label className="mt-3 flex items-start gap-2 text-xs"><input checked={identityConfirmed} className="mt-0.5" onChange={(event) => setIdentityConfirmed(event.target.checked)} type="checkbox" /><span>Activate this as a new identity version.</span></label><div className="mt-4"><WorkspaceButton disabled={requiresReviewedBootstrap || blockedIdentityRepair || !permissions.writeVisual || busy !== null || identityReason.trim().length < 3 || !identityConfirmed} onClick={() => void createIdentityVersion()} tone="primary">Create & activate version</WorkspaceButton></div>{!permissions.writeVisual ? <p className="mt-2 text-xs text-[var(--ad-text-muted)]">Read-only: content.official.write is not granted.</p> : null}</section>
-      <section className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" aria-labelledby="evaluate-route-title"><h3 className="font-semibold" id="evaluate-route-title">Evaluate route evidence</h3><p className="mt-1 text-xs text-[var(--ad-text-muted)]">The server derives scores and qualification from completed model_eval batches.</p><label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">Batch IDs<textarea className={`${textAreaClass} mt-1`} onChange={(event) => setBatchIds(event.target.value)} placeholder="Comma or newline separated" value={batchIds} /></label><label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">Matrix key<input className={`${fieldClass} mt-1`} onChange={(event) => setMatrixKey(event.target.value)} value={matrixKey} /></label><label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">Cost/latency evidence reference<input className={`${fieldClass} mt-1`} onChange={(event) => setGuardrailEvidence(event.target.value)} value={guardrailEvidence} /></label><label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">Evaluation reason<input className={`${fieldClass} mt-1`} onChange={(event) => setQualificationReason(event.target.value)} value={qualificationReason} /></label><p className="mt-3 text-xs text-[var(--ad-text-muted)]">Policy: {data.visual.readiness.qualificationPolicyVersion}</p><div className="mt-4"><WorkspaceButton disabled={!permissions.evaluateRoute || busy !== null || !batchIds.trim() || !matrixKey.trim() || !guardrailEvidence.trim() || qualificationReason.trim().length < 3 || !identity} onClick={() => void evaluateRoute()} tone="primary">Submit route evaluation</WorkspaceButton></div>{!permissions.evaluateRoute ? <p className="mt-2 text-xs text-[var(--ad-text-muted)]">Read-only: content.production.write is not granted.</p> : null}</section>
+      <details className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"><summary className="cursor-pointer font-semibold">Advanced identity controls</summary><section className="mt-4" aria-labelledby="new-identity-title"><h3 className="font-semibold" id="new-identity-title">Create identity version</h3><p className="mt-1 text-xs text-[var(--ad-text-muted)]">Creates a new active immutable version; existing assets are carried forward.</p>{requiresReviewedBootstrap ? <div className="mt-4 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]"><p>Establish a reviewed portrait anchor in Character Assets before creating later identity versions.</p>{navigateToTab ? <div className="mt-3"><WorkspaceButton onClick={() => navigateToTab("assets")}>Open Character Assets</WorkspaceButton></div> : null}</div> : blockedIdentityRepair ? <div className="mt-4 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]"><p>This character has earlier visual history but no usable portrait authority. Repair its reviewed image evidence before creating another identity version.</p><details className="mt-2 text-xs"><summary className="cursor-pointer font-semibold">Technical identity diagnostics</summary><ul className="mt-2 space-y-1">{data.visual.identityBootstrap.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul></details></div> : usesCurrentCharacterImageAsAnchor ? <p className="mt-4 rounded-lg bg-[var(--ad-blue-bg)] p-3 text-sm text-[var(--ad-blue-text)]">The current Character image is available and will be carried forward as the anchor for this identity version.</p> : null}<label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">Identity lock<textarea className={`${textAreaClass} mt-1`} onChange={(event) => setIdentityPrompt(event.target.value)} value={identityPrompt} /></label><label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">Must not change<textarea className={`${textAreaClass} mt-1`} onChange={(event) => setNegativeIdentityPrompt(event.target.value)} value={negativeIdentityPrompt} /></label><div className="mt-3 grid grid-cols-2 gap-2"><label className="text-xs font-semibold text-[var(--ad-text-muted)]">Style<select className={`${fieldClass} mt-1`} onChange={(event) => setStyle(event.target.value)} value={style}>{["realistic", "anime", "hybrid", "other"].map((value) => <option key={value}>{value}</option>)}</select></label><label className="text-xs font-semibold text-[var(--ad-text-muted)]">Seed<input className={`${fieldClass} mt-1`} onChange={(event) => setDefaultSeed(event.target.value)} value={defaultSeed} /></label></div><label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">Change reason<input className={`${fieldClass} mt-1`} onChange={(event) => setIdentityReason(event.target.value)} value={identityReason} /></label><label className="mt-3 flex items-start gap-2 text-xs"><input checked={identityConfirmed} className="mt-0.5" onChange={(event) => setIdentityConfirmed(event.target.checked)} type="checkbox" /><span>Activate this as a new identity version.</span></label><div className="mt-4"><WorkspaceButton disabled={requiresReviewedBootstrap || blockedIdentityRepair || !permissions.writeVisual || busy !== null || identityReason.trim().length < 3 || !identityConfirmed} onClick={() => void createIdentityVersion()} tone="primary">Create & activate version</WorkspaceButton></div>{!permissions.writeVisual ? <p className="mt-2 text-xs text-[var(--ad-text-muted)]">Read-only: content.official.write is not granted.</p> : null}</section></details>
+      <details className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"><summary className="cursor-pointer font-semibold">Platform route evidence controls</summary><section className="mt-4" aria-labelledby="evaluate-route-title"><h3 className="font-semibold" id="evaluate-route-title">Evaluate route evidence</h3><p className="mt-1 text-xs text-[var(--ad-text-muted)]">Production administrators derive qualification from completed model-evaluation batches. Routine character image work does not need these controls.</p><Link className="mt-3 inline-flex min-h-11 items-center text-sm font-semibold underline" href={`/admin/ops/profiles?characterId=${encodeURIComponent(data.character.id)}`}>Open Profiles & Rollout</Link><label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">Batch IDs<textarea className={`${textAreaClass} mt-1`} onChange={(event) => setBatchIds(event.target.value)} placeholder="Comma or newline separated" value={batchIds} /></label><label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">Matrix key<input className={`${fieldClass} mt-1`} onChange={(event) => setMatrixKey(event.target.value)} value={matrixKey} /></label><label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">Cost/latency evidence reference<input className={`${fieldClass} mt-1`} onChange={(event) => setGuardrailEvidence(event.target.value)} value={guardrailEvidence} /></label><label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">Evaluation reason<input className={`${fieldClass} mt-1`} onChange={(event) => setQualificationReason(event.target.value)} value={qualificationReason} /></label><p className="mt-3 text-xs text-[var(--ad-text-muted)]">Policy: {data.visual.readiness.qualificationPolicyVersion}</p><div className="mt-4"><WorkspaceButton disabled={!permissions.evaluateRoute || busy !== null || !batchIds.trim() || !matrixKey.trim() || !guardrailEvidence.trim() || qualificationReason.trim().length < 3 || !identity} onClick={() => void evaluateRoute()} tone="primary">Submit route evaluation</WorkspaceButton></div>{!permissions.evaluateRoute ? <p className="mt-2 text-xs text-[var(--ad-text-muted)]">Read-only: content.production.write is not granted.</p> : null}</section></details>
       {error ? <p className="text-sm text-[var(--ad-red-text)]" role="alert">{error}</p> : null}
     </aside>
   </div>;
@@ -2915,9 +3114,25 @@ export function CharacterWorkspace({
   }
   return view.kind === "detail"
     ? <CharacterDetail actorId={actorId} id={view.id} key={`${actorId}:${view.id}`} permissions={permissions} />
-    : <CharacterPortfolio canCreate={permissions.writeProject} canOpenProjects={permissions.read} canRead={permissions.read} mode="studio" />;
+    : (
+        <CharacterPortfolio
+          canOpenAssets={permissions.readAssets}
+          canCreate={permissions.writeProject}
+          canOpenProjects={permissions.read}
+          canRead={permissions.read}
+          mode="studio"
+        />
+      );
 }
 
 export function CharacterPerformanceWorkspace({ canOpenProjects, canRead }: { canOpenProjects: boolean; canRead: boolean }) {
-  return <CharacterPortfolio canCreate={false} canOpenProjects={canOpenProjects} canRead={canRead} mode="performance" />;
+  return (
+    <CharacterPortfolio
+      canOpenAssets={false}
+      canCreate={false}
+      canOpenProjects={canOpenProjects}
+      canRead={canRead}
+      mode="performance"
+    />
+  );
 }

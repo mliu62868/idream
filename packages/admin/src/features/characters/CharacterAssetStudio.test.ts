@@ -11,6 +11,7 @@ import {
   characterAssetPurposes,
   characterAssetStudioLayoutClass,
   characterSourceVariationBlockerMessage,
+  characterAssetReadinessSummary,
   firstIncompleteCharacterAssetPurpose,
   isCharacterIdentityAuthorityReady,
   nextCharacterAssetPurpose,
@@ -20,6 +21,21 @@ import {
 } from "./CharacterAssetStudio";
 
 describe("Character Asset Studio flow", () => {
+  it("summarizes authority blockers as operator actions without leaking raw codes", () => {
+    expect(characterAssetReadinessSummary([
+      "visual_anchor_missing",
+      "reference_set_not_active",
+      "generation_route_unqualified",
+    ])).toEqual({
+      title: "Finish visual setup before generating",
+      steps: [
+        "Attach or create the portrait that defines this character",
+        "Publish the approved identity references",
+        "Ask a production administrator to activate a qualified image route",
+      ],
+    });
+  });
+
   it("keeps the operator on the minimum customer-facing asset sequence", () => {
     expect(characterAssetPurposes).toEqual([
       "character_cover",

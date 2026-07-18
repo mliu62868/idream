@@ -1,8 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { characterPortfolioQuerySchema } from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
+import { env } from "@/server/lib/env";
 import { createUser } from "@/server/test/helpers";
+import { toInputJson } from "../shared/prisma-json";
+import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-executor";
 import {
   createCharacterPortfolioDecision,
   listCharacterPortfolio,
@@ -12,7 +15,11 @@ import {
 describe("Character Portfolio authority/read model", () => {
   const suffix = randomUUID();
   const adminId = `portfolio-admin-${suffix}`;
+  const analystId = `portfolio-analyst-${suffix}`;
   const producerId = `portfolio-producer-${suffix}`;
+  const scopedViewerId = `portfolio-scoped-viewer-${suffix}`;
+  const globalCreativeViewerId = `portfolio-global-creative-viewer-${suffix}`;
+  const unscopedProducerViewerId = `portfolio-unscoped-producer-viewer-${suffix}`;
   const characterA = `portfolio-character-a-${suffix}`;
   const characterB = `portfolio-character-b-${suffix}`;
   const projectA = `portfolio-project-a-${suffix}`;
@@ -21,11 +28,39 @@ describe("Character Portfolio authority/read model", () => {
   const contentB = `portfolio-content-b-${suffix}`;
   const releaseA = `portfolio-release-a-${suffix}`;
   const releaseB = `portfolio-release-b-${suffix}`;
+  const visualProfileId = `portfolio-visual-${suffix}`;
+  const visualProfileBId = `portfolio-visual-b-${suffix}`;
+  const referenceSetId = `portfolio-reference-set-${suffix}`;
+  const referenceSetBId = `portfolio-reference-set-b-${suffix}`;
+  const generationProfileId = `portfolio-generation-profile-${suffix}`;
+  const generationProfileKey = `portfolio-generation-${suffix}`;
+  const qualificationId = `portfolio-qualification-${suffix}`;
+  const routeFingerprint = `portfolio-route-${suffix}`;
+  const staleRouteFingerprint = `portfolio-route-stale-${suffix}`;
+  const routeStyle = `portfolio-style-${suffix}`;
+  const draftCoverAssetId = `portfolio-draft-cover-${suffix}`;
+  const draftHeroAssetId = `portfolio-draft-hero-${suffix}`;
+  const draftChatAssetId = `portfolio-draft-chat-${suffix}`;
+  const liveCoverAssetId = `portfolio-live-cover-${suffix}`;
+  const liveHeroAssetId = `portfolio-live-hero-${suffix}`;
+  const characterBAnchorAssetId = `portfolio-b-anchor-${suffix}`;
+  const mediaAssetIds = [
+    draftCoverAssetId,
+    draftHeroAssetId,
+    draftChatAssetId,
+    liveCoverAssetId,
+    liveHeroAssetId,
+    characterBAnchorAssetId,
+  ];
   const asOf = new Date("2026-07-11T00:00:00.000Z");
 
   beforeAll(async () => {
-    await createUser({ id: adminId, role: "admin" });
-    await createUser({ id: producerId, role: "user" });
+    await createUser({ id: adminId, role: "admin", dataClass: "internal" });
+    await createUser({ id: analystId, role: "analyst", dataClass: "internal" });
+    await createUser({ id: producerId, role: "user", dataClass: "internal" });
+    await createUser({ id: scopedViewerId, role: "user", dataClass: "internal" });
+    await createUser({ id: globalCreativeViewerId, role: "analyst", dataClass: "internal" });
+    await createUser({ id: unscopedProducerViewerId, role: "user", dataClass: "internal" });
     await prisma.character.createMany({
       data: [
         {
@@ -52,6 +87,138 @@ describe("Character Portfolio authority/read model", () => {
         },
       ],
     });
+    await prisma.mediaAsset.createMany({
+      data: mediaAssetIds.map((id) => ({
+        id,
+        ownerId: producerId,
+        characterId: id === characterBAnchorAssetId ? characterB : characterA,
+        type: "image",
+        url: `/media/${id}`,
+        storageKey: `portfolio/${suffix}/${id}.webp`,
+        visibility: "unlisted",
+        safetyStatus: "passed",
+        metadata: {},
+      })),
+    });
+    await prisma.character.update({
+      where: { id: characterA },
+      data: { imageAssetId: liveCoverAssetId },
+    });
+    await prisma.characterVisualProfile.create({
+      data: {
+        id: visualProfileId,
+        characterId: characterA,
+        status: "active",
+        style: routeStyle,
+        identityPrompt: "Astra's stable adult identity",
+        faceTraits: {},
+        hairTraits: {},
+        bodyTraits: {},
+        signatureTraits: {},
+        styleTraits: {},
+        anchorAssetIds: [draftCoverAssetId],
+        referenceAssetIds: [draftCoverAssetId],
+        adapterRefs: {},
+        evidenceState: "reviewed",
+        createdFrom: "portfolio_test",
+      },
+    });
+    await prisma.referenceSetRevision.create({
+      data: {
+        id: referenceSetId,
+        visualProfileId,
+        revision: 1,
+        status: "active",
+        selectorVersion: "portfolio-v1",
+        createdFrom: "portfolio_test",
+        references: {
+          create: {
+            mediaAssetId: draftCoverAssetId,
+            position: 0,
+            role: "identity_anchor",
+            selectionReason: "portfolio fixture",
+          },
+        },
+      },
+    });
+    await prisma.characterVisualProfile.create({
+      data: {
+        id: visualProfileBId,
+        characterId: characterB,
+        status: "active",
+        style: routeStyle,
+        identityPrompt: "Beta's stable adult identity",
+        faceTraits: {},
+        hairTraits: {},
+        bodyTraits: {},
+        signatureTraits: {},
+        styleTraits: {},
+        anchorAssetIds: [characterBAnchorAssetId],
+        referenceAssetIds: [characterBAnchorAssetId],
+        adapterRefs: {},
+        evidenceState: "reviewed",
+        createdFrom: "portfolio_test",
+      },
+    });
+    await prisma.referenceSetRevision.create({
+      data: {
+        id: referenceSetBId,
+        visualProfileId: visualProfileBId,
+        revision: 1,
+        status: "active",
+        selectorVersion: "portfolio-v1",
+        createdFrom: "portfolio_test",
+        references: {
+          create: {
+            mediaAssetId: characterBAnchorAssetId,
+            position: 0,
+            role: "identity_anchor",
+            selectionReason: "portfolio repeated-route fixture",
+          },
+        },
+      },
+    });
+    await prisma.generationModelProfile.create({
+      data: {
+        id: generationProfileId,
+        profileKey: generationProfileKey,
+        label: "Portfolio identity route",
+        runner: "comfyui",
+        pipelineModel: "qwen-image-edit",
+        workflowKey: "qwen-image-edit-img2img",
+        runnerConfig: {
+          capabilities: {
+            textToImage: false,
+            stableSeed: true,
+            referenceImages: true,
+            initImage: true,
+            lora: false,
+          },
+        },
+        allowedOrientations: ["4:5"],
+        status: "active",
+      },
+    });
+    await prisma.generationRouteQualification.create({
+      data: {
+        id: qualificationId,
+        routeFingerprint,
+        generationProfileKey,
+        generationProfileVersion: 1,
+        workflowKey: "qwen-image-edit-img2img",
+        workflowVersion: 1,
+        style: routeStyle,
+        matrixKey: `portfolio-matrix-${suffix}`,
+        sampleCount: 40,
+        passCount: 40,
+        identityMatch: 0.95,
+        result: "qualified",
+        evidence: {
+          evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,
+        },
+        policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
+      },
+    });
     await prisma.characterContentVersion.createMany({
       data: [
         { id: contentA, characterId: characterA, version: 1, contentHash: `hash-a-${suffix}`, personaSnapshot: {}, openingSnapshot: {}, appearanceSnapshot: {}, sourceType: "test" },
@@ -60,7 +227,35 @@ describe("Character Portfolio authority/read model", () => {
     });
     await prisma.characterProject.createMany({
       data: [
-        { id: projectA, characterId: characterA, ownerId: producerId, phase: "live_management", audience: { label: "returning companion users", companionNeed: "continuity", targetPlacementKeys: ["feed.hero"] }, hypothesis: "continuity increases D7", differentiation: "memory", successCriteria: ["D7 improves"] },
+        {
+          id: projectA,
+          characterId: characterA,
+          ownerId: producerId,
+          phase: "live_management",
+          audience: {
+            label: "returning companion users",
+            companionNeed: "continuity",
+            targetPlacementKeys: ["feed.hero"],
+          },
+          hypothesis: "continuity increases D7",
+          differentiation: "memory",
+          successCriteria: ["D7 improves"],
+          draftImageAssetId: draftCoverAssetId,
+          draftAssetPack: {
+            character_cover: {
+              assetId: draftCoverAssetId,
+              bootstrapIdentity: true,
+            },
+            character_hero: {
+              assetId: draftHeroAssetId,
+              generationRouteFingerprint: routeFingerprint,
+            },
+            character_chat: {
+              assetId: draftChatAssetId,
+              generationRouteFingerprint: staleRouteFingerprint,
+            },
+          },
+        },
         { id: projectB, characterId: characterB, phase: "live_management", audience: { label: "new users" }, hypothesis: "test", differentiation: "test", successCriteria: ["test"] },
       ],
     });
@@ -72,7 +267,35 @@ describe("Character Portfolio authority/read model", () => {
           revisionId: `revision-a-${suffix}`,
           characterContentVersionId: contentA,
           generationProvenance: { generationProfileKey: "profile", generationProfileVersion: "1", workflowKey: "workflow", workflowVersion: "1", policyVersion: "policy-v1" },
-          releasePlacementManifest: { placements: [{ slotKey: "feed.hero", slotVersion: 2, assetId: `asset-a-${suffix}` }] },
+          releasePlacementManifest: {
+            placements: [
+              {
+                slotKey: "character_avatar",
+                slotVersion: 2,
+                assetId: liveCoverAssetId,
+              },
+              {
+                slotKey: "character_hero",
+                slotVersion: 2,
+                assetId: liveHeroAssetId,
+              },
+              {
+                slotKey: "character_hero",
+                slotVersion: 2,
+                assetId: liveHeroAssetId,
+              },
+              {
+                slotKey: "character_chat",
+                slotVersion: 2,
+                assetId: liveHeroAssetId,
+              },
+              {
+                slotKey: "feed.hero",
+                slotVersion: 2,
+                assetId: liveHeroAssetId,
+              },
+            ],
+          },
           snapshotHash: `snapshot-a-${suffix}`,
           // This fixture intentionally exercises the tolerant historical
           // portfolio projection rather than the strict v2 release lane.
@@ -100,6 +323,36 @@ describe("Character Portfolio authority/read model", () => {
       data: [
         { id: `serving-a-${suffix}`, characterId: characterA, currentReleaseId: releaseA, state: "live" },
         { id: `serving-b-${suffix}`, characterId: characterB, currentReleaseId: releaseB, state: "live" },
+      ],
+    });
+    await prisma.adminUserGrantBundle.createMany({
+      data: [
+        {
+          userId: scopedViewerId,
+          bundleKey: "character_producer",
+          scope: { characterIds: [characterA, characterB] },
+          reason: "Portfolio cross-scope authorization fixture",
+          createdById: adminId,
+        },
+        {
+          userId: scopedViewerId,
+          bundleKey: "creative_operator",
+          scope: { characterIds: [characterB] },
+          reason: "Portfolio draft image scope fixture",
+          createdById: adminId,
+        },
+        {
+          userId: globalCreativeViewerId,
+          bundleKey: "creative_operator",
+          reason: "Portfolio legal global creative grant fixture",
+          createdById: adminId,
+        },
+        {
+          userId: unscopedProducerViewerId,
+          bundleKey: "character_producer",
+          reason: "Portfolio malformed producer scope fixture",
+          createdById: adminId,
+        },
       ],
     });
     await prisma.characterFunnelDaily.createMany({
@@ -226,10 +479,46 @@ describe("Character Portfolio authority/read model", () => {
     await prisma.characterFunnelDaily.deleteMany({ where: { characterId: { in: [characterA, characterB] } } });
     await prisma.characterServing.deleteMany({ where: { characterId: { in: [characterA, characterB] } } });
     await prisma.characterRelease.deleteMany({ where: { projectId: { in: [projectA, projectB] } } });
+    await prisma.generationRouteQualification.deleteMany({ where: { id: qualificationId } });
+    await prisma.generationModelProfile.deleteMany({ where: { id: generationProfileId } });
+    await prisma.characterVisualReferenceSnapshot.deleteMany({
+      where: { referenceSetRevisionId: { in: [referenceSetId, referenceSetBId] } },
+    });
+    await prisma.referenceSetRevision.deleteMany({
+      where: { id: { in: [referenceSetId, referenceSetBId] } },
+    });
+    await prisma.characterVisualProfile.deleteMany({
+      where: { id: { in: [visualProfileId, visualProfileBId] } },
+    });
     await prisma.characterProject.deleteMany({ where: { id: { in: [projectA, projectB] } } });
     await prisma.characterContentVersion.deleteMany({ where: { characterId: { in: [characterA, characterB] } } });
     await prisma.character.deleteMany({ where: { id: { in: [characterA, characterB] } } });
-    await prisma.user.deleteMany({ where: { id: { in: [adminId, producerId] } } });
+    await prisma.mediaAsset.deleteMany({ where: { id: { in: mediaAssetIds } } });
+    await prisma.adminUserGrantBundle.deleteMany({
+      where: {
+        userId: {
+          in: [
+            scopedViewerId,
+            globalCreativeViewerId,
+            unscopedProducerViewerId,
+          ],
+        },
+      },
+    });
+    await prisma.user.deleteMany({
+      where: {
+        id: {
+          in: [
+            adminId,
+            analystId,
+            producerId,
+            scopedViewerId,
+            globalCreativeViewerId,
+            unscopedProducerViewerId,
+          ],
+        },
+      },
+    });
     await prisma.$disconnect();
   });
 
@@ -238,10 +527,23 @@ describe("Character Portfolio authority/read model", () => {
       search: "Astra",
       limit: 20,
       placementId: "feed.hero",
-    }), { asOf });
+    }), { asOf, authorizedDraftAssetCharacterIds: null });
     expect(data.items).toHaveLength(1);
     const item = data.items[0];
     expect(item.currentRelease?.id).toBe(releaseA);
+    expect(item.visualProduction).toEqual({
+      primaryImageUrl: `/media/${draftCoverAssetId}`,
+      primaryImageSource: "draft",
+      draftPurposes: ["character_cover", "character_hero"],
+      livePurposes: ["character_cover", "character_hero"],
+      totalPurposes: 3,
+      deepLink: `/admin/characters/${characterA}?tab=assets`,
+    });
+    expect(item.nextAction).toEqual({
+      code: "continue_asset_pack",
+      label: "Continue role-image pack",
+      deepLink: `/admin/characters/${characterA}?tab=assets`,
+    });
     expect(item.performance.find((row) => row.window === "7d" && row.placementId === "feed.hero")).toMatchObject({
       characterContentVersionId: contentA,
       characterReleaseId: releaseA,
@@ -256,6 +558,213 @@ describe("Character Portfolio authority/read model", () => {
     });
     expect(item.performance.find((row) => row.window === "7d" && row.placementId === "feed.hero")?.eligibleImpressions)
       .toBe(120);
+  });
+
+  it("never presents an unavailable draft portrait as the primary role image", async () => {
+    await prisma.mediaAsset.update({
+      where: { id: draftCoverAssetId },
+      data: {
+        metadata: {
+          platformAsset: {
+            status: "archived",
+          },
+        },
+      },
+    });
+    try {
+      const data = await listCharacterPortfolioData(
+        prisma,
+        characterPortfolioQuerySchema.parse({
+          search: "Astra",
+          limit: 20,
+        }),
+        { asOf, authorizedDraftAssetCharacterIds: null },
+      );
+      expect(data.items[0].visualProduction).toMatchObject({
+        primaryImageUrl: `/media/${liveCoverAssetId}`,
+        primaryImageSource: "live",
+        draftPurposes: ["character_hero"],
+        livePurposes: ["character_cover", "character_hero"],
+      });
+    } finally {
+      await prisma.mediaAsset.update({
+        where: { id: draftCoverAssetId },
+        data: { metadata: {} },
+      });
+    }
+  });
+
+  it("projects an exact live portrait even when its relative URL is display-only", async () => {
+    await prisma.mediaAsset.update({
+      where: { id: draftCoverAssetId },
+      data: {
+        metadata: {
+          platformAsset: {
+            status: "archived",
+          },
+        },
+      },
+    });
+    await prisma.mediaAsset.update({
+      where: { id: liveCoverAssetId },
+      data: {
+        storageKey: null,
+        url: "/images/ourdream/card-alexa-reeves.webp",
+        thumbnailUrl: "/images/ourdream/card-alexa-reeves.webp",
+      },
+    });
+    try {
+      const data = await listCharacterPortfolioData(
+        prisma,
+        characterPortfolioQuerySchema.parse({
+          search: "Astra",
+          limit: 20,
+        }),
+        { asOf, authorizedDraftAssetCharacterIds: null },
+      );
+      expect(data.items[0].visualProduction).toMatchObject({
+        primaryImageUrl: "/images/ourdream/card-alexa-reeves.webp",
+        primaryImageSource: "live",
+        livePurposes: ["character_cover", "character_hero"],
+      });
+    } finally {
+      await prisma.mediaAsset.update({
+        where: { id: liveCoverAssetId },
+        data: {
+          storageKey: `portfolio/${suffix}/${liveCoverAssetId}.webp`,
+          url: `/media/${liveCoverAssetId}`,
+          thumbnailUrl: null,
+        },
+      });
+      await prisma.mediaAsset.update({
+        where: { id: draftCoverAssetId },
+        data: { metadata: {} },
+      });
+    }
+  });
+
+  it("accepts an unclaimed legacy portrait only while one Character references it", async () => {
+    await prisma.mediaAsset.update({
+      where: { id: draftCoverAssetId },
+      data: {
+        metadata: {
+          platformAsset: {
+            status: "archived",
+          },
+        },
+      },
+    });
+    await prisma.mediaAsset.update({
+      where: { id: liveCoverAssetId },
+      data: { characterId: null },
+    });
+    try {
+      const uniqueReference = await listCharacterPortfolioData(
+        prisma,
+        characterPortfolioQuerySchema.parse({
+          search: "Astra",
+          limit: 20,
+        }),
+        { asOf, authorizedDraftAssetCharacterIds: null },
+      );
+      expect(uniqueReference.items[0].visualProduction).toMatchObject({
+        primaryImageUrl: `/media/${liveCoverAssetId}`,
+        primaryImageSource: "live",
+        livePurposes: ["character_cover", "character_hero"],
+      });
+
+      await prisma.character.update({
+        where: { id: characterB },
+        data: { imageAssetId: liveCoverAssetId },
+      });
+      const sharedReference = await listCharacterPortfolioData(
+        prisma,
+        characterPortfolioQuerySchema.parse({
+          search: "Astra",
+          limit: 20,
+        }),
+        { asOf, authorizedDraftAssetCharacterIds: null },
+      );
+      expect(sharedReference.items[0].visualProduction).toMatchObject({
+        primaryImageUrl: null,
+        primaryImageSource: null,
+        livePurposes: ["character_hero"],
+      });
+    } finally {
+      await prisma.character.update({
+        where: { id: characterB },
+        data: { imageAssetId: null },
+      });
+      await prisma.mediaAsset.update({
+        where: { id: liveCoverAssetId },
+        data: { characterId: characterA },
+      });
+      await prisma.mediaAsset.update({
+        where: { id: draftCoverAssetId },
+        data: { metadata: {} },
+      });
+    }
+  });
+
+  it("keeps only the existing bootstrap-cover exception when route authority is unavailable", async () => {
+    await prisma.generationRouteQualification.update({
+      where: { id: qualificationId },
+      data: { result: "candidate" },
+    });
+    try {
+      const data = await listCharacterPortfolioData(
+        prisma,
+        characterPortfolioQuerySchema.parse({
+          search: "Astra",
+          limit: 20,
+        }),
+        { asOf, authorizedDraftAssetCharacterIds: null },
+      );
+      expect(data.items[0].visualProduction).toMatchObject({
+        primaryImageUrl: `/media/${draftCoverAssetId}`,
+        primaryImageSource: "draft",
+        draftPurposes: ["character_cover"],
+        livePurposes: ["character_cover", "character_hero"],
+      });
+    } finally {
+      await prisma.generationRouteQualification.update({
+        where: { id: qualificationId },
+        data: { result: "qualified" },
+      });
+    }
+  });
+
+  it("resolves a repeated visual route signature once and batches candidate media for the page", async () => {
+    const routeFindMany = vi.spyOn(
+      prisma.generationRouteQualification,
+      "findMany",
+    );
+    const profileFindFirst = vi.spyOn(
+      prisma.generationModelProfile,
+      "findFirst",
+    );
+    const mediaFindMany = vi.spyOn(prisma.mediaAsset, "findMany");
+    try {
+      const data = await listCharacterPortfolioData(
+        prisma,
+        characterPortfolioQuerySchema.parse({ limit: 20 }),
+        {
+          asOf,
+          authorizedCharacterIds: [characterA, characterB],
+        },
+      );
+
+      expect(data.items.map((item) => item.characterId).sort()).toEqual(
+        [characterA, characterB].sort(),
+      );
+      expect(routeFindMany).toHaveBeenCalledTimes(1);
+      expect(profileFindFirst).toHaveBeenCalledTimes(1);
+      expect(mediaFindMany).toHaveBeenCalledTimes(1);
+    } finally {
+      routeFindMany.mockRestore();
+      profileFindFirst.mockRestore();
+      mediaFindMany.mockRestore();
+    }
   });
 
   it("uses one complete UTC product-day cohort and excludes the current partial day", async () => {
@@ -393,6 +902,174 @@ describe("Character Portfolio authority/read model", () => {
       headers: { "x-idream-user-id": adminId, "x-idream-role": "admin" },
     }));
     expect(allowed.status).toBe(200);
+
+    const performanceOnly = await listCharacterPortfolio(new Request(
+      "http://localhost/api/v2/admin/characters/portfolio?search=Astra",
+      {
+        headers: {
+          "x-idream-user-id": analystId,
+          "x-idream-role": "analyst",
+        },
+      },
+    ));
+    expect(performanceOnly.status).toBe(200);
+    const payload = await performanceOnly.json();
+    expect(payload.data.items[0].visualProduction).toMatchObject({
+      primaryImageUrl: `/media/${liveCoverAssetId}`,
+      primaryImageSource: "live",
+      draftPurposes: [],
+      livePurposes: ["character_cover", "character_hero"],
+    });
+  });
+
+  it("projects draft role images only inside the creative.run.read Character scope", async () => {
+    const originalProjectB = await prisma.characterProject.findUniqueOrThrow({
+      where: { id: projectB },
+      select: { draftImageAssetId: true, draftAssetPack: true },
+    });
+    await prisma.characterProject.update({
+      where: { id: projectB },
+      data: {
+        draftImageAssetId: characterBAnchorAssetId,
+        draftAssetPack: {
+          character_cover: {
+            assetId: characterBAnchorAssetId,
+            bootstrapIdentity: true,
+          },
+        },
+      },
+    });
+    try {
+      const response = await listCharacterPortfolio(new Request(
+        "http://localhost/api/v2/admin/characters/portfolio?limit=20",
+        {
+          headers: {
+            "x-idream-user-id": scopedViewerId,
+            "x-idream-role": "user",
+          },
+        },
+      ));
+      expect(response.status).toBe(200);
+      const payload = await response.json();
+      const itemA = payload.data.items.find(
+        (item: { characterId: string }) => item.characterId === characterA,
+      );
+      const itemB = payload.data.items.find(
+        (item: { characterId: string }) => item.characterId === characterB,
+      );
+      expect(itemA.visualProduction).toMatchObject({
+        primaryImageUrl: `/media/${liveCoverAssetId}`,
+        primaryImageSource: "live",
+        draftPurposes: [],
+      });
+      expect(itemB.visualProduction).toMatchObject({
+        primaryImageUrl: `/media/${characterBAnchorAssetId}`,
+        primaryImageSource: "draft",
+        draftPurposes: ["character_cover"],
+      });
+    } finally {
+      await prisma.characterProject.update({
+        where: { id: projectB },
+        data: {
+          draftImageAssetId: originalProjectB.draftImageAssetId,
+          draftAssetPack: toInputJson(originalProjectB.draftAssetPack),
+        },
+      });
+    }
+  });
+
+  it("projects A/B draft role images for a legal global creative_operator grant", async () => {
+    const globalGrant = await prisma.adminUserGrantBundle.findUniqueOrThrow({
+      where: {
+        userId_bundleKey: {
+          userId: globalCreativeViewerId,
+          bundleKey: "creative_operator",
+        },
+      },
+      select: { scope: true },
+    });
+    expect(globalGrant.scope).toBeNull();
+
+    const originalProjectB = await prisma.characterProject.findUniqueOrThrow({
+      where: { id: projectB },
+      select: { draftImageAssetId: true, draftAssetPack: true },
+    });
+    await prisma.characterProject.update({
+      where: { id: projectB },
+      data: {
+        draftImageAssetId: characterBAnchorAssetId,
+        draftAssetPack: {
+          character_cover: {
+            assetId: characterBAnchorAssetId,
+            bootstrapIdentity: true,
+          },
+        },
+      },
+    });
+    try {
+      const response = await listCharacterPortfolio(new Request(
+        "http://localhost/api/v2/admin/characters/portfolio?limit=20",
+        {
+          headers: {
+            "x-idream-user-id": globalCreativeViewerId,
+            "x-idream-role": "analyst",
+          },
+        },
+      ));
+      expect(response.status).toBe(200);
+      const payload = await response.json();
+      const itemA = payload.data.items.find(
+        (item: { characterId: string }) => item.characterId === characterA,
+      );
+      const itemB = payload.data.items.find(
+        (item: { characterId: string }) => item.characterId === characterB,
+      );
+      expect(itemA.visualProduction).toMatchObject({
+        primaryImageUrl: `/media/${draftCoverAssetId}`,
+        primaryImageSource: "draft",
+        draftPurposes: ["character_cover", "character_hero"],
+      });
+      expect(itemB.visualProduction).toMatchObject({
+        primaryImageUrl: `/media/${characterBAnchorAssetId}`,
+        primaryImageSource: "draft",
+        draftPurposes: ["character_cover"],
+      });
+    } finally {
+      await prisma.characterProject.update({
+        where: { id: projectB },
+        data: {
+          draftImageAssetId: originalProjectB.draftImageAssetId,
+          draftAssetPack: toInputJson(originalProjectB.draftAssetPack),
+        },
+      });
+    }
+  });
+
+  it("fails closed when character_producer is persisted without Character scope", async () => {
+    const malformedGrant = await prisma.adminUserGrantBundle.findUniqueOrThrow({
+      where: {
+        userId_bundleKey: {
+          userId: unscopedProducerViewerId,
+          bundleKey: "character_producer",
+        },
+      },
+      select: { scope: true },
+    });
+    expect(malformedGrant.scope).toBeNull();
+
+    const response = await listCharacterPortfolio(new Request(
+      "http://localhost/api/v2/admin/characters/portfolio?limit=20",
+      {
+        headers: {
+          "x-idream-user-id": unscopedProducerViewerId,
+          "x-idream-role": "user",
+        },
+      },
+    ));
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      data: { items: [] },
+    });
   });
 
   it("keeps the Portfolio usable but degraded when reconciliation finds an orphan Project", async () => {

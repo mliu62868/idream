@@ -252,6 +252,18 @@ export interface PublicCatalogProbeEvidence {
   error?: { code?: string; message?: string } | null;
 }
 
+export interface WebSurfaceAssetEvidence {
+  ok?: boolean;
+  checked?: number;
+  failures?: readonly {
+    url?: string;
+    status?: number;
+    bytes?: number;
+    contentType?: string | null;
+    error?: string;
+  }[];
+}
+
 export interface WebSurfaceProbeEvidence {
   ok?: boolean;
   checkedAt?: string | null;
@@ -266,6 +278,7 @@ export interface WebSurfaceProbeEvidence {
     contentType?: string | null;
     containsBrand?: boolean;
     nextErrorShell?: boolean;
+    assets?: WebSurfaceAssetEvidence | null;
     error?: string | null;
   } | null;
   generate?: {
@@ -275,6 +288,7 @@ export interface WebSurfaceProbeEvidence {
     contentType?: string | null;
     containsGenerator?: boolean;
     nextErrorShell?: boolean;
+    assets?: WebSurfaceAssetEvidence | null;
     error?: string | null;
   } | null;
   apiAgeGate?: {
@@ -292,6 +306,7 @@ export interface WebSurfaceProbeEvidence {
     protected?: boolean;
     protectedReason?: string | null;
     nextErrorShell?: boolean;
+    assets?: WebSurfaceAssetEvidence | null;
     error?: string | null;
   } | null;
   adminApi?: {
@@ -1525,17 +1540,25 @@ function addWebSurfaceProbeCheck(
       probe.home?.ok !== true ||
       probe.home.status !== 200 ||
       probe.home.containsBrand !== true ||
-      probe.home.nextErrorShell === true
+      probe.home.nextErrorShell === true ||
+      probe.home.assets?.ok !== true ||
+      !probe.home.assets.checked
     ) {
-      problems.push("main homepage did not return a healthy branded HTML response");
+      problems.push(
+        "main homepage did not return healthy branded HTML with complete linked assets",
+      );
     }
     if (
       probe.generate?.ok !== true ||
       probe.generate.status !== 200 ||
       probe.generate.containsGenerator !== true ||
-      probe.generate.nextErrorShell === true
+      probe.generate.nextErrorShell === true ||
+      probe.generate.assets?.ok !== true ||
+      !probe.generate.assets.checked
     ) {
-      problems.push("generation page did not return a healthy generator HTML response");
+      problems.push(
+        "generation page did not return healthy generator HTML with complete linked assets",
+      );
     }
     if (
       probe.apiAgeGate?.ok !== true ||
@@ -1549,9 +1572,13 @@ function addWebSurfaceProbeCheck(
       probe.admin?.ok !== true ||
       probe.admin.status !== 200 ||
       probe.admin.protected !== true ||
-      probe.admin.nextErrorShell === true
+      probe.admin.nextErrorShell === true ||
+      probe.admin.assets?.ok !== true ||
+      !probe.admin.assets.checked
     ) {
-      problems.push("admin surface did not return the protected unauthenticated state");
+      problems.push(
+        "admin surface did not return the protected unauthenticated state with complete linked assets",
+      );
     }
     if (
       probe.adminApi?.ok !== true ||
@@ -2548,6 +2575,7 @@ function normalizeWebPageEvidence(
       typeof value.nextErrorShell === "boolean"
         ? value.nextErrorShell
         : undefined,
+    assets: normalizeWebAssetEvidence(value.assets),
     error: typeof value.error === "string" ? value.error : null,
   };
 }
@@ -2579,7 +2607,34 @@ function normalizeAdminWebEvidence(value: unknown) {
       typeof value.nextErrorShell === "boolean"
         ? value.nextErrorShell
         : undefined,
+    assets: normalizeWebAssetEvidence(value.assets),
     error: typeof value.error === "string" ? value.error : null,
+  };
+}
+
+function normalizeWebAssetEvidence(
+  value: unknown,
+): WebSurfaceAssetEvidence | null {
+  if (!isRecord(value)) return null;
+  const failures = Array.isArray(value.failures)
+    ? value.failures.filter(isRecord).map((failure) => ({
+        url: typeof failure.url === "string" ? failure.url : undefined,
+        status:
+          typeof failure.status === "number" ? failure.status : undefined,
+        bytes: typeof failure.bytes === "number" ? failure.bytes : undefined,
+        contentType:
+          typeof failure.contentType === "string"
+            ? failure.contentType
+            : null,
+        error:
+          typeof failure.error === "string" ? failure.error : undefined,
+      }))
+    : [];
+  return {
+    ok: typeof value.ok === "boolean" ? value.ok : false,
+    checked:
+      typeof value.checked === "number" ? value.checked : undefined,
+    failures,
   };
 }
 

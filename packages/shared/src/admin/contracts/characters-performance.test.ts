@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   characterContributionMarginSchema,
   characterPerformanceSummarySchema,
+  characterPortfolioItemSchema,
   characterPortfolioDecisionRequestSchema,
   characterReleaseChangeMarkerSchema,
 } from "./characters";
@@ -22,6 +23,43 @@ const invalidMargin = {
 };
 
 describe("Character Portfolio v2 contracts", () => {
+  it("projects role-image production separately from release readiness", () => {
+    const visualProduction = {
+      primaryImageUrl: "/media/mara-cover.webp",
+      primaryImageSource: "draft",
+      draftPurposes: ["character_cover", "character_chat"],
+      livePurposes: ["character_cover"],
+      totalPurposes: 3,
+      deepLink: "/admin/characters/character-1?tab=assets",
+    };
+    const result = characterPortfolioItemSchema.shape.visualProduction.parse(
+      visualProduction,
+    );
+    expect(result).toEqual(visualProduction);
+    expect(characterPortfolioItemSchema.shape.visualProduction.safeParse({
+      ...visualProduction,
+      draftPurposes: ["character_cover", "character_cover"],
+    }).success).toBe(false);
+    expect(characterPortfolioItemSchema.shape.visualProduction.safeParse({
+      ...visualProduction,
+      livePurposes: ["character_cover", "character_cover"],
+    }).success).toBe(false);
+    expect(characterPortfolioItemSchema.shape.visualProduction.safeParse({
+      ...visualProduction,
+      draftPurposes: ["character_chat"],
+    }).success).toBe(false);
+    expect(characterPortfolioItemSchema.shape.visualProduction.safeParse({
+      ...visualProduction,
+      primaryImageSource: "live",
+      livePurposes: ["character_hero"],
+    }).success).toBe(false);
+    expect(characterPortfolioItemSchema.shape.nextAction.parse({
+      code: "prepare_image_production",
+      label: "Prepare image production",
+      deepLink: "/admin/characters/character-1?tab=assets",
+    })).toMatchObject({ code: "prepare_image_production" });
+  });
+
   it("fails closed when contribution margin has no audited revenue authority", () => {
     expect(characterContributionMarginSchema.parse(invalidMargin)).toEqual(invalidMargin);
     expect(characterContributionMarginSchema.safeParse({

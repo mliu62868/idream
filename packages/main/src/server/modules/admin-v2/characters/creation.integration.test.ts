@@ -177,6 +177,42 @@ describe("Character Project creation authority", () => {
     expect(response.status).toBe(400);
   });
 
+  it("rejects the former instructional defaults before creating any authority", async () => {
+    const sentinelKey = `instructional-defaults-${suffix}`;
+    const response = await createCharacterProjectRoute(request(
+      actorId,
+      "admin",
+      {
+        ...body,
+        positioning: {
+          ...body.positioning,
+          audience: "Define the adult audience for this companion",
+        },
+        persona: {
+          ...body.persona,
+          name: "Untitled companion",
+        },
+        visualDirection: {
+          ...body.visualDirection,
+          identityAnchor: "A recognizable adult companion identity",
+        },
+        commercialIntent: {
+          ...body.commercialIntent,
+          successCriteria: ["Define one measurable success criterion"],
+        },
+      },
+      sentinelKey,
+      `instructional-defaults-request-${suffix}`,
+    ));
+    expect(response.status).toBe(400);
+    expect(await prisma.controlPlaneCommand.count({
+      where: { actorId, idempotencyKey: sentinelKey },
+    })).toBe(0);
+    expect(await prisma.character.count({
+      where: { name: "Untitled companion" },
+    })).toBe(0);
+  });
+
   it("blocks a late Character Project create after receipt reconciliation sealed the key", async () => {
     const recoveryKey = `character-create-recovery-${suffix}`;
     const lateName = `Late character ${suffix}`;

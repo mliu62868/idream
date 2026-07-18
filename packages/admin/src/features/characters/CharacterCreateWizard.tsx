@@ -3,7 +3,9 @@
 import {
   characterProjectCreateRequestSchema,
   characterProjectCreateResponseSchema,
+  characterProjectDraftSchema,
   characterProjectDraftResumeSchema,
+  characterProjectProductionReadyDraftSchema,
   characterWorkspaceProjectSchema,
   type CharacterProjectDraft,
   type CharacterProjectDraftAuthority,
@@ -24,7 +26,14 @@ import {
 import { reconcileDurableMutationIntent } from "@/lib/durable-mutation-recovery";
 
 type Draft = CharacterProjectDraft;
-type SaveState = "Not saved" | "Saving" | "Saved" | "Conflict" | "Failed to save";
+type SaveState =
+  | "Not saved"
+  | "Saved locally"
+  | "In memory only"
+  | "Saving"
+  | "Saved"
+  | "Conflict"
+  | "Failed to save";
 type ResumeState =
   | "checking"
   | "restoring"
@@ -38,38 +47,174 @@ const steps = ["Positioning", "Persona", "Visual direction", "Commercial intent"
 
 const initialDraft: Draft = {
   positioning: {
-    audience: "Define the adult audience for this companion",
-    companionNeed: "Define the recurring companionship need",
-    hypothesis: "State the behavior and outcome hypothesis",
-    differentiation: "Explain why users will choose this character",
+    audience: "",
+    companionNeed: "",
+    hypothesis: "",
+    differentiation: "",
   },
   persona: {
-    name: "Untitled companion",
+    name: "",
     age: 18,
     gender: "female",
-    relationshipArchetype: "trusted companion",
-    characterPromise: "A specific, dependable companionship promise",
-    personality: "Warm, observant, and consistent",
-    tone: "Natural, concise, and emotionally present",
-    backstory: "Draft the experiences that shape this character's point of view.",
-    firstMessage: "I'm here. Where should we begin?",
-    exampleDialogue: ["Tell me what matters most about that."],
+    relationshipArchetype: "",
+    characterPromise: "",
+    personality: "",
+    tone: "",
+    backstory: "",
+    firstMessage: "",
+    exampleDialogue: [],
   },
   visualDirection: {
-    identityAnchor: "A recognizable adult companion identity",
-    stableTraits: ["consistent face", "recognizable silhouette"],
+    identityAnchor: "",
+    stableTraits: [],
     style: "realistic",
-    referenceDirection: "Describe lighting, framing, wardrobe, and reference direction.",
+    referenceDirection: "",
   },
   commercialIntent: {
     ownerId: null,
     plannedLaunchAt: null,
     targetPlacementKeys: [],
-    successCriteria: ["Define one measurable success criterion"],
-    productionPackage: "Define the required identity, placement, and chat asset package.",
-    qaPlan: "Define mobile, desktop, and conversation QA evidence.",
+    successCriteria: [],
+    productionPackage: "",
+    qaPlan: "",
   },
 };
+
+const stepRequirements = [
+  "Describe the audience, recurring need, hypothesis, and differentiation.",
+  "Complete every required persona field and add at least one dialogue example.",
+  "Define the identity anchor, stable traits, style, and reference direction.",
+  "Add a measurable success criterion, production package, and QA plan.",
+  "Review the complete Character before creating its server authority.",
+] as const;
+
+export function isCharacterCreateStepComplete(
+  draft: Draft,
+  step: number,
+) {
+  if (step === 0) {
+    return characterProjectDraftSchema.shape.positioning.safeParse(
+      draft.positioning,
+    ).success;
+  }
+  if (step === 1) {
+    return characterProjectDraftSchema.shape.persona.safeParse(
+      draft.persona,
+    ).success;
+  }
+  if (step === 2) {
+    return characterProjectDraftSchema.shape.visualDirection.safeParse(
+      draft.visualDirection,
+    ).success;
+  }
+  if (step === 3) {
+    return characterProjectDraftSchema.shape.commercialIntent.safeParse(
+      draft.commercialIntent,
+    ).success;
+  }
+  return characterProjectProductionReadyDraftSchema.safeParse(draft).success;
+}
+
+export function characterAssetsDeepLink(deepLink: string) {
+  const [path, query = ""] = deepLink.split("?", 2);
+  const params = new URLSearchParams(query);
+  params.set("tab", "assets");
+  return `${path}?${params.toString()}`;
+}
+
+function localDraftStorageKey(actorId: string) {
+  return `idream.admin.character-create-draft.v1:${actorId}`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) &&
+    value.every((item) => typeof item === "string");
+}
+
+function isRecoverableLocalDraft(value: unknown): value is Draft {
+  if (!isRecord(value)) return false;
+  const positioning = value.positioning;
+  const persona = value.persona;
+  const visualDirection = value.visualDirection;
+  const commercialIntent = value.commercialIntent;
+  if (
+    !isRecord(positioning) ||
+    !isRecord(persona) ||
+    !isRecord(visualDirection) ||
+    !isRecord(commercialIntent)
+  ) return false;
+  return [
+    positioning.audience,
+    positioning.companionNeed,
+    positioning.hypothesis,
+    positioning.differentiation,
+    persona.name,
+    persona.relationshipArchetype,
+    persona.characterPromise,
+    persona.personality,
+    persona.tone,
+    persona.backstory,
+    persona.firstMessage,
+    visualDirection.identityAnchor,
+    visualDirection.referenceDirection,
+    commercialIntent.productionPackage,
+    commercialIntent.qaPlan,
+  ].every((item) => typeof item === "string") &&
+    typeof persona.age === "number" &&
+    ["female", "male", "trans"].includes(String(persona.gender)) &&
+    ["realistic", "anime", "hybrid", "other"].includes(
+      String(visualDirection.style),
+    ) &&
+    isStringArray(persona.exampleDialogue) &&
+    isStringArray(visualDirection.stableTraits) &&
+    isStringArray(commercialIntent.targetPlacementKeys) &&
+    isStringArray(commercialIntent.successCriteria) &&
+    (
+      commercialIntent.ownerId === null ||
+      typeof commercialIntent.ownerId === "string"
+    ) &&
+    (
+      commercialIntent.plannedLaunchAt === null ||
+      typeof commercialIntent.plannedLaunchAt === "string"
+    );
+}
+
+function readLocalDraft(actorId: string) {
+  if (typeof window === "undefined" || requestedDraftTarget()) return null;
+  try {
+    const raw = window.localStorage.getItem(localDraftStorageKey(actorId));
+    if (!raw) return null;
+    const value: unknown = JSON.parse(raw);
+    return isRecoverableLocalDraft(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveLocalDraft(actorId: string, draft: Draft): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const key = localDraftStorageKey(actorId);
+    const serialized = JSON.stringify(draft);
+    window.localStorage.setItem(key, serialized);
+    return window.localStorage.getItem(key) === serialized;
+  } catch {
+    // The in-memory draft remains usable when browser storage is unavailable.
+    return false;
+  }
+}
+
+function clearLocalDraft(actorId: string) {
+  try {
+    window.localStorage.removeItem(localDraftStorageKey(actorId));
+  } catch {
+    // Nothing else is required when browser storage is unavailable.
+  }
+}
 
 function draftKey(value: Draft) {
   return JSON.stringify(value);
@@ -105,15 +250,9 @@ export function CharacterCreateWizard({
   const router = useRouter();
   const createScope = `character-project:create:${actorId}`;
   const [createIntent, setCreateIntent] =
-    useState<DurableMutationIntent | null>(() =>
-      requestedDraftTarget()
-        ? null
-        : readActiveDurableMutationIntent({ scope: createScope })
-    );
+    useState<DurableMutationIntent | null>(null);
   const [step, setStep] = useState(0);
-  const [draft, setDraft] = useState<Draft>(
-    () => draftFromCreateIntent(createIntent) ?? initialDraft,
-  );
+  const [draft, setDraft] = useState<Draft>(initialDraft);
   const [authority, setAuthority] = useState<CharacterProjectDraftAuthority | null>(null);
   const [saveState, setSaveState] = useState<SaveState>("Not saved");
   const [error, setError] = useState<string | null>(null);
@@ -126,6 +265,7 @@ export function CharacterCreateWizard({
   const resumeTargetRef = useRef<string | null | undefined>(undefined);
   const lastSavedKeyRef = useRef<string | null>(null);
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const userEditedRef = useRef(false);
 
   const persistNow = useCallback(async (snapshot: Draft, allowCreate: boolean) => {
     const key = draftKey(snapshot);
@@ -472,15 +612,25 @@ export function CharacterCreateWizard({
   useEffect(() => {
     const timer = window.setTimeout(() => {
       const characterId = new URLSearchParams(window.location.search).get("draft");
-      if (!characterId) {
-        resumeTargetRef.current = null;
-        setResumeState("new");
+      if (characterId) {
+        if (!authorityRef.current) void restoreDraft(characterId);
         return;
       }
-      if (!authorityRef.current) void restoreDraft(characterId);
+      const pendingIntent = readActiveDurableMutationIntent({
+        scope: createScope,
+      });
+      if (!authorityRef.current && !userEditedRef.current) {
+        const recoveredDraft =
+          draftFromCreateIntent(pendingIntent) ??
+          (pendingIntent ? null : readLocalDraft(actorId));
+        if (recoveredDraft) setDraft(recoveredDraft);
+        setCreateIntent(pendingIntent);
+      }
+      resumeTargetRef.current = null;
+      setResumeState("new");
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [restoreDraft]);
+  }, [actorId, createScope, restoreDraft]);
 
   useEffect(() => {
     if (!authority) return;
@@ -504,8 +654,17 @@ export function CharacterCreateWizard({
     if (["checking", "restoring", "restore_failed"].includes(resumeState)) {
       return;
     }
+    if (!createIntent && !isCharacterCreateStepComplete(draft, step)) return;
     try {
-      await persist(draft, true);
+      if (authorityRef.current || createIntent) {
+        await persist(draft, Boolean(createIntent));
+      } else {
+        setSaveState(
+          saveLocalDraft(actorId, draft)
+            ? "Saved locally"
+            : "In memory only",
+        );
+      }
       setStep((current) => Math.min(steps.length - 1, current + 1));
     } catch {
       // The persistent state and inline error explain the failure.
@@ -516,20 +675,35 @@ export function CharacterCreateWizard({
     if (["checking", "restoring", "restore_failed"].includes(resumeState)) {
       return;
     }
+    if (!createIntent && !isCharacterCreateStepComplete(draft, 4)) return;
     try {
       await persist(draft, true);
       const destination = authorityRef.current?.deepLink;
-      if (destination) router.push(destination);
+      if (destination) {
+        clearLocalDraft(actorId);
+        router.push(characterAssetsDeepLink(destination));
+      }
     } catch {
       // Stay on Review so the operator can resolve and retry.
     }
   }
 
   const update = <K extends keyof Draft>(section: K, value: Draft[K]) => {
-    setDraft((current) => ({ ...current, [section]: value }));
-    if (authorityRef.current) setSaveState("Not saved");
+    userEditedRef.current = true;
+    const nextDraft = { ...draft, [section]: value };
+    setDraft(nextDraft);
+    if (!authorityRef.current && !createIntent) {
+      setSaveState(
+        saveLocalDraft(actorId, nextDraft)
+          ? "Saved locally"
+          : "In memory only",
+      );
+      return;
+    }
+    setSaveState("Not saved");
   };
   const currentLabel = steps[step];
+  const currentStepComplete = isCharacterCreateStepComplete(draft, step);
   const navigationLocked =
     saveState === "Saving" ||
     ["checking", "restoring", "restore_failed"].includes(resumeState);
@@ -547,12 +721,14 @@ export function CharacterCreateWizard({
     authorityRef.current = null;
     resumeTargetRef.current = null;
     lastSavedKeyRef.current = null;
+    userEditedRef.current = false;
     const pendingIntent = readActiveDurableMutationIntent({
       scope: createScope,
     });
     setAuthority(null);
     setCreateIntent(pendingIntent);
     setDraft(draftFromCreateIntent(pendingIntent) ?? initialDraft);
+    if (!pendingIntent) clearLocalDraft(actorId);
     setStep(0);
     setError(
       pendingIntent
@@ -567,17 +743,23 @@ export function CharacterCreateWizard({
   return (
     <section className="mx-auto max-w-4xl" data-testid="character-create-wizard">
       <header className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 sm:p-6">
-        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">Character Studio · Server draft</p>
+        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">
+          Character Studio · {authority ? "Server draft" : "Recoverable draft"}
+        </p>
         <div className="mt-2 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <h2 className="text-2xl font-semibold">Create Character Project</h2>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--ad-text-muted)]">Each completed step is persisted to the authority. Content autosaves create immutable versions and revisions.</p>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--ad-text-muted)]">
+              {authority
+                ? "This server draft autosaves immutable Project and content revisions."
+                : "Complete the required sections without creating placeholder data. This browser keeps the draft until Review creates the Character authority."}
+            </p>
           </div>
           <SaveIndicator state={saveState} />
         </div>
         <ol className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-5" aria-label="Character creation progress">
           {steps.map((label, index) => (
-            <li className={cn("rounded-md border px-3 py-2 text-xs", index === step ? "border-[var(--ad-ink)] font-semibold" : "border-[var(--ad-border)] text-[var(--ad-text-muted)]")} key={label}>
+            <li aria-current={index === step ? "step" : undefined} className={cn("rounded-md border px-3 py-2 text-xs", index === step ? "border-[var(--ad-ink)] font-semibold" : "border-[var(--ad-border)] text-[var(--ad-text-muted)]")} key={label}>
               <span className="mr-1 tabular-nums">{index + 1}.</span>{label}
             </li>
           ))}
@@ -600,6 +782,19 @@ export function CharacterCreateWizard({
           {step === 3 ? <CommercialStep draft={draft} update={update} /> : null}
           {step === 4 ? <ReviewStep draft={draft} /> : null}
         </fieldset>
+        <p
+          className={cn(
+            "mt-4 text-xs",
+            currentStepComplete
+              ? "text-[var(--ad-green-text)]"
+              : "text-[var(--ad-text-muted)]",
+          )}
+          id="character-create-step-requirements"
+        >
+          {currentStepComplete
+            ? "Required information complete."
+            : stepRequirements[step]}
+        </p>
         {error ? <p className="mt-4 rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">{error}</p> : null}
         {recoveryNotice ? <p className="mt-4 rounded-md bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]" role="status">{recoveryNotice}</p> : null}
         {resumeState === "restore_failed" ? (
@@ -647,7 +842,15 @@ export function CharacterCreateWizard({
             <ArrowLeft className="h-4 w-4" /> Back
           </WorkspaceButton>
           {step < steps.length - 1 ? (
-            <WorkspaceButton disabled={navigationLocked} onClick={() => void next()} tone="primary">
+            <WorkspaceButton
+              aria-describedby="character-create-step-requirements"
+              disabled={
+                navigationLocked ||
+                (!createIntent && !currentStepComplete)
+              }
+              onClick={() => void next()}
+              tone="primary"
+            >
               {createIntent
                 ? createIntent.status === "reconciliation_required" ||
                   !characterProjectCreateRequestSchema.safeParse(
@@ -656,12 +859,20 @@ export function CharacterCreateWizard({
                   ? "Reconcile saved request"
                   : "Resume Character creation"
                 : step === 0
-                  ? "Save positioning & continue"
-                  : "Save & continue"} <ArrowRight className="h-4 w-4" />
+                  ? "Continue to persona"
+                  : "Continue"} <ArrowRight className="h-4 w-4" />
             </WorkspaceButton>
           ) : (
-            <WorkspaceButton disabled={navigationLocked} onClick={() => void finish()} tone="primary">
-              <Check className="h-4 w-4" /> Save and open project
+            <WorkspaceButton
+              aria-describedby="character-create-step-requirements"
+              disabled={
+                navigationLocked ||
+                (!createIntent && !currentStepComplete)
+              }
+              onClick={() => void finish()}
+              tone="primary"
+            >
+              <Check className="h-4 w-4" /> Save character & open portrait studio
             </WorkspaceButton>
           )}
         </div>
@@ -683,46 +894,172 @@ function Grid({ children }: { children: ReactNode }) {
   return <div className="grid gap-4 sm:grid-cols-2">{children}</div>;
 }
 
-function Field({ label, value, onChange, type = "text" }: { label: string; value: string | number; onChange: (value: string) => void; type?: "text" | "number" | "datetime-local" }) {
-  return <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{label}<input className={`${fieldClass} mt-1`} min={type === "number" ? 18 : undefined} onChange={(event) => onChange(event.target.value)} type={type} value={value} /></label>;
+function Field({
+  label,
+  value,
+  onChange,
+  placeholder,
+  required = true,
+  type = "text",
+}: {
+  label: string;
+  value: string | number;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  required?: boolean;
+  type?: "text" | "number" | "datetime-local";
+}) {
+  return (
+    <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
+      {label}
+      <input
+        className={`${fieldClass} mt-1`}
+        min={type === "number" ? 18 : undefined}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+        required={required}
+        type={type}
+        value={value}
+      />
+    </label>
+  );
 }
 
-function Area({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
-  return <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{label}<textarea className={`${textAreaClass} mt-1`} onChange={(event) => onChange(event.target.value)} value={value} /></label>;
+function Area({
+  label,
+  value,
+  onChange,
+  placeholder,
+  required = true,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  required?: boolean;
+}) {
+  return (
+    <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
+      {label}
+      <textarea
+        className={`${textAreaClass} mt-1`}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+        required={required}
+        value={value}
+      />
+    </label>
+  );
 }
 
 function PositioningStep({ draft, update }: StepProps) {
   const set = (field: keyof Draft["positioning"], value: string) => update("positioning", { ...draft.positioning, [field]: value });
-  return <Grid><Area label="Audience" onChange={(value) => set("audience", value)} value={draft.positioning.audience} /><Area label="Companion need" onChange={(value) => set("companionNeed", value)} value={draft.positioning.companionNeed} /><Area label="Hypothesis" onChange={(value) => set("hypothesis", value)} value={draft.positioning.hypothesis} /><Area label="Differentiation" onChange={(value) => set("differentiation", value)} value={draft.positioning.differentiation} /></Grid>;
+  return <Grid><Area label="Audience" onChange={(value) => set("audience", value)} placeholder="Adults winding down after high-pressure work" value={draft.positioning.audience} /><Area label="Companion need" onChange={(value) => set("companionNeed", value)} placeholder="A dependable evening ritual that helps them decompress" value={draft.positioning.companionNeed} /><Area label="Hypothesis" onChange={(value) => set("hypothesis", value)} placeholder="Specific evening rituals improve qualified conversations" value={draft.positioning.hypothesis} /><Area label="Differentiation" onChange={(value) => set("differentiation", value)} placeholder="Calm direction without generic affirmation" value={draft.positioning.differentiation} /></Grid>;
 }
 
 type StepProps = { draft: Draft; update: <K extends keyof Draft>(section: K, value: Draft[K]) => void };
 
 function PersonaStep({ draft, update }: StepProps) {
   const set = <K extends keyof Draft["persona"]>(field: K, value: Draft["persona"][K]) => update("persona", { ...draft.persona, [field]: value });
-  return <div className="space-y-4"><Grid><Field label="Name" onChange={(value) => set("name", value)} value={draft.persona.name} /><Field label="Age (18+)" onChange={(value) => set("age", Math.max(18, Number(value) || 18))} type="number" value={draft.persona.age} /><label className="text-xs font-semibold text-[var(--ad-text-muted)]">Gender<select className={`${fieldClass} mt-1`} onChange={(event) => set("gender", event.target.value as Draft["persona"]["gender"])} value={draft.persona.gender}><option value="female">Female</option><option value="male">Male</option><option value="trans">Trans</option></select></label><Field label="Relationship archetype" onChange={(value) => set("relationshipArchetype", value)} value={draft.persona.relationshipArchetype} /></Grid><Grid><Area label="Character promise" onChange={(value) => set("characterPromise", value)} value={draft.persona.characterPromise} /><Area label="Personality" onChange={(value) => set("personality", value)} value={draft.persona.personality} /><Area label="Tone" onChange={(value) => set("tone", value)} value={draft.persona.tone} /><Area label="Backstory" onChange={(value) => set("backstory", value)} value={draft.persona.backstory} /><Area label="First message" onChange={(value) => set("firstMessage", value)} value={draft.persona.firstMessage} /><Area label="Example dialogue (one per line)" onChange={(value) => set("exampleDialogue", lines(value))} value={draft.persona.exampleDialogue.join("\n")} /></Grid></div>;
+  return <div className="space-y-4"><Grid><Field label="Name" onChange={(value) => set("name", value)} placeholder="Mara" value={draft.persona.name} /><Field label="Age (18+)" onChange={(value) => set("age", Math.max(18, Number(value) || 18))} type="number" value={draft.persona.age} /><label className="text-xs font-semibold text-[var(--ad-text-muted)]">Gender<select className={`${fieldClass} mt-1`} onChange={(event) => set("gender", event.target.value as Draft["persona"]["gender"])} value={draft.persona.gender}><option value="female">Female</option><option value="male">Male</option><option value="trans">Trans</option></select></label><Field label="Relationship archetype" onChange={(value) => set("relationshipArchetype", value)} placeholder="Steady confidante" value={draft.persona.relationshipArchetype} /></Grid><Grid><Area label="Character promise" onChange={(value) => set("characterPromise", value)} placeholder="A precise, warm place to put the day down" value={draft.persona.characterPromise} /><Area label="Personality" onChange={(value) => set("personality", value)} placeholder="Observant, measured, gently challenging" value={draft.persona.personality} /><Area label="Tone" onChange={(value) => set("tone", value)} placeholder="Warm, concise, grounded" value={draft.persona.tone} /><Area label="Backstory" onChange={(value) => set("backstory", value)} placeholder="The experiences that shaped this character's point of view" value={draft.persona.backstory} /><Area label="First message" onChange={(value) => set("firstMessage", value)} placeholder="You made it. What do you need to put down tonight?" value={draft.persona.firstMessage} /><Area label="Example dialogue (one per line)" onChange={(value) => set("exampleDialogue", lines(value))} placeholder="Tell me the part you keep replaying." value={draft.persona.exampleDialogue.join("\n")} /></Grid></div>;
 }
 
 function VisualStep({ draft, update }: StepProps) {
   const set = <K extends keyof Draft["visualDirection"]>(field: K, value: Draft["visualDirection"][K]) => update("visualDirection", { ...draft.visualDirection, [field]: value });
-  return <Grid><Area label="Identity anchor" onChange={(value) => set("identityAnchor", value)} value={draft.visualDirection.identityAnchor} /><Area label="Stable traits (one per line)" onChange={(value) => set("stableTraits", lines(value))} value={draft.visualDirection.stableTraits.join("\n")} /><label className="text-xs font-semibold text-[var(--ad-text-muted)]">Visual style<select className={`${fieldClass} mt-1`} onChange={(event) => set("style", event.target.value as Draft["visualDirection"]["style"])} value={draft.visualDirection.style}><option value="realistic">Realistic</option><option value="anime">Anime</option><option value="hybrid">Hybrid</option><option value="other">Other</option></select></label><Area label="Reference direction" onChange={(value) => set("referenceDirection", value)} value={draft.visualDirection.referenceDirection} /></Grid>;
+  return <Grid><Area label="Identity anchor" onChange={(value) => set("identityAnchor", value)} placeholder="Composed late-night radio host" value={draft.visualDirection.identityAnchor} /><Area label="Stable traits (one per line)" onChange={(value) => set("stableTraits", lines(value))} placeholder={"Dark wavy hair\nWarm brown eyes"} value={draft.visualDirection.stableTraits.join("\n")} /><label className="text-xs font-semibold text-[var(--ad-text-muted)]">Visual style<select className={`${fieldClass} mt-1`} onChange={(event) => set("style", event.target.value as Draft["visualDirection"]["style"])} value={draft.visualDirection.style}><option value="realistic">Realistic</option><option value="anime">Anime</option><option value="hybrid">Hybrid</option><option value="other">Other</option></select></label><Area label="Reference direction" onChange={(value) => set("referenceDirection", value)} placeholder="Low-key tungsten portraiture with an intimate editorial crop" value={draft.visualDirection.referenceDirection} /></Grid>;
 }
 
 function CommercialStep({ draft, update }: StepProps) {
   const set = <K extends keyof Draft["commercialIntent"]>(field: K, value: Draft["commercialIntent"][K]) => update("commercialIntent", { ...draft.commercialIntent, [field]: value });
-  return <Grid><Field label="Owner ID" onChange={(value) => set("ownerId", value.trim() || null)} value={draft.commercialIntent.ownerId ?? ""} /><Field label="Planned launch" onChange={(value) => set("plannedLaunchAt", value ? new Date(value).toISOString() : null)} type="datetime-local" value={dateInput(draft.commercialIntent.plannedLaunchAt)} /><Area label="Target placements (one per line)" onChange={(value) => set("targetPlacementKeys", lines(value))} value={draft.commercialIntent.targetPlacementKeys.join("\n")} /><Area label="Success criteria (one per line)" onChange={(value) => set("successCriteria", lines(value))} value={draft.commercialIntent.successCriteria.join("\n")} /><Area label="Production package" onChange={(value) => set("productionPackage", value)} value={draft.commercialIntent.productionPackage} /><Area label="QA plan" onChange={(value) => set("qaPlan", value)} value={draft.commercialIntent.qaPlan} /></Grid>;
+  return <Grid><Field label="Owner ID (optional)" onChange={(value) => set("ownerId", value.trim() || null)} placeholder="Assign after creation if needed" required={false} value={draft.commercialIntent.ownerId ?? ""} /><Field label="Planned launch (optional)" onChange={(value) => set("plannedLaunchAt", value ? new Date(value).toISOString() : null)} required={false} type="datetime-local" value={dateInput(draft.commercialIntent.plannedLaunchAt)} /><Area label="Target placements (optional, one per line)" onChange={(value) => set("targetPlacementKeys", lines(value))} placeholder={"feed_card\nevening_collection"} required={false} value={draft.commercialIntent.targetPlacementKeys.join("\n")} /><Area label="Success criteria (one per line)" onChange={(value) => set("successCriteria", lines(value))} placeholder="QCE improves without D7 regression" value={draft.commercialIntent.successCriteria.join("\n")} /><Area label="Production package" onChange={(value) => set("productionPackage", value)} placeholder="Primary portrait, hero, and chat image baseline" value={draft.commercialIntent.productionPackage} /><Area label="QA plan" onChange={(value) => set("qaPlan", value)} placeholder="Mobile and desktop preview plus five-turn conversation review" value={draft.commercialIntent.qaPlan} /></Grid>;
 }
 
 function ReviewStep({ draft }: { draft: Draft }) {
-  const rows = [
-    ["Character", `${draft.persona.name}, age ${draft.persona.age}`],
-    ["Audience", draft.positioning.audience],
-    ["Promise", draft.persona.characterPromise],
-    ["Visual anchor", draft.visualDirection.identityAnchor],
-    ["Owner", draft.commercialIntent.ownerId ?? "Unassigned"],
-    ["Success", draft.commercialIntent.successCriteria.join(" · ")],
+  const sections = [
+    {
+      title: "Positioning",
+      rows: [
+        ["Audience", draft.positioning.audience],
+        ["Companion need", draft.positioning.companionNeed],
+        ["Hypothesis", draft.positioning.hypothesis],
+        ["Differentiation", draft.positioning.differentiation],
+      ],
+    },
+    {
+      title: "Persona & conversation",
+      rows: [
+        [
+          "Character",
+          `${draft.persona.name}, age ${draft.persona.age}, ${draft.persona.gender}`,
+        ],
+        ["Relationship", draft.persona.relationshipArchetype],
+        ["Promise", draft.persona.characterPromise],
+        ["Personality", draft.persona.personality],
+        ["Tone", draft.persona.tone],
+        ["Backstory", draft.persona.backstory],
+        ["First message", draft.persona.firstMessage],
+        ["Example dialogue", draft.persona.exampleDialogue.join("\n")],
+      ],
+    },
+    {
+      title: "Visual identity",
+      rows: [
+        ["Identity anchor", draft.visualDirection.identityAnchor],
+        ["Stable traits", draft.visualDirection.stableTraits.join(" · ")],
+        ["Style", draft.visualDirection.style],
+        ["Reference direction", draft.visualDirection.referenceDirection],
+      ],
+    },
+    {
+      title: "Production & launch",
+      rows: [
+        ["Owner", draft.commercialIntent.ownerId ?? "Unassigned"],
+        [
+          "Planned launch",
+          draft.commercialIntent.plannedLaunchAt
+            ? new Date(draft.commercialIntent.plannedLaunchAt).toLocaleString()
+            : "Not scheduled",
+        ],
+        [
+          "Placements",
+          draft.commercialIntent.targetPlacementKeys.join(" · ") ||
+            "No placements selected",
+        ],
+        ["Success criteria", draft.commercialIntent.successCriteria.join("\n")],
+        ["Production package", draft.commercialIntent.productionPackage],
+        ["QA plan", draft.commercialIntent.qaPlan],
+      ],
+    },
   ];
-  return <dl className="divide-y divide-[var(--ad-border)] rounded-lg border border-[var(--ad-border)]">{rows.map(([label, value]) => <div className="grid gap-1 p-3 sm:grid-cols-[140px_1fr]" key={label}><dt className="text-xs font-semibold text-[var(--ad-text-muted)]">{label}</dt><dd className="text-sm">{value}</dd></div>)}</dl>;
+  return (
+    <div className="grid gap-4">
+      {sections.map((section) => (
+        <section
+          className="overflow-hidden rounded-lg border border-[var(--ad-border)]"
+          key={section.title}
+        >
+          <h3 className="border-b border-[var(--ad-border)] bg-black/[0.025] px-3 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-[var(--ad-text-muted)]">
+            {section.title}
+          </h3>
+          <dl className="divide-y divide-[var(--ad-border)]">
+            {section.rows.map(([label, value]) => (
+              <div
+                className="grid gap-1 p-3 sm:grid-cols-[140px_1fr]"
+                key={label}
+              >
+                <dt className="text-xs font-semibold text-[var(--ad-text-muted)]">
+                  {label}
+                </dt>
+                <dd className="whitespace-pre-line text-sm leading-6">
+                  {value}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </section>
+      ))}
+    </div>
+  );
 }
 
 function lines(value: string) {

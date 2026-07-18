@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { ButtonHTMLAttributes, ReactNode } from "react";
 import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -9,16 +9,13 @@ export const textAreaClass = `${fieldClass} min-h-24 resize-y py-2`;
 
 export function WorkspaceButton({
   children,
-  disabled,
-  onClick,
+  className,
   tone = "default",
   type = "button",
-}: {
+  ...buttonProps
+}: ButtonHTMLAttributes<HTMLButtonElement> & {
   children: ReactNode;
-  disabled?: boolean;
-  onClick?: () => void;
   tone?: "default" | "primary" | "danger";
-  type?: "button" | "submit";
 }) {
   return (
     <button
@@ -27,9 +24,9 @@ export function WorkspaceButton({
         tone === "primary" && "border-[var(--ad-ink)] bg-[var(--ad-ink)] text-white hover:bg-[#30322e]",
         tone === "danger" && "border-[var(--ad-red-text)]/25 bg-[var(--ad-red-bg)] text-[var(--ad-red-text)] hover:bg-[var(--ad-red-hover)]",
         tone === "default" && "border-[var(--ad-border)] bg-[var(--ad-surface)] text-[var(--ad-text)] hover:bg-black/[0.04]",
+        className,
       )}
-      disabled={disabled}
-      onClick={onClick}
+      {...buttonProps}
       type={type}
     >
       {children}

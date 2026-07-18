@@ -8,7 +8,9 @@ import {
 } from "./prisma-transaction-conflict";
 import { toInputJson } from "./prisma-json";
 
-export async function executeAtomicIdempotentMutation(input: {
+export async function executeAtomicIdempotentMutation<
+  Prepared = undefined,
+>(input: {
   readonly environment: string;
   readonly actor: { readonly id: string; readonly role: string };
   readonly idempotencyKey: string;
@@ -17,7 +19,11 @@ export async function executeAtomicIdempotentMutation(input: {
   readonly target: { readonly type: string; readonly id: string };
   readonly expectedVersion?: number;
   readonly payload: unknown;
-  readonly mutate: (tx: Prisma.TransactionClient) => Promise<unknown>;
+  readonly prepare?: () => Promise<Prepared>;
+  readonly mutate: (
+    tx: Prisma.TransactionClient,
+    prepared: Prepared,
+  ) => Promise<unknown>;
   readonly decorateResult?: (result: unknown, replayed: boolean) => unknown;
 }) {
   const scope = `${input.environment}:${input.actor.id}`;
@@ -28,6 +34,33 @@ export async function executeAtomicIdempotentMutation(input: {
     payload: input.payload,
     retryMode: "idempotent",
   });
+  if (input.prepare) {
+    const existing = await prisma.controlPlaneCommand.findUnique({
+      where: {
+        scope_idempotencyKey: {
+          scope,
+          idempotencyKey: input.idempotencyKey,
+        },
+      },
+    });
+    if (existing) {
+      if (existing.requestHash !== requestHash) {
+        throw Errors.conflict(
+          "Idempotency key is bound to another mutation",
+          {
+            existingRequestHash: existing.requestHash,
+            submittedRequestHash: requestHash,
+          },
+        );
+      }
+      return input.decorateResult
+        ? input.decorateResult(existing.result, true)
+        : existing.result;
+    }
+  }
+  const prepared = input.prepare
+    ? await input.prepare()
+    : undefined as Prepared;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
       return await prisma.$transaction(async (tx) => {
@@ -47,7 +80,7 @@ export async function executeAtomicIdempotentMutation(input: {
             : existing.result;
         }
 
-        const result = toInputJson(await input.mutate(tx));
+        const result = toInputJson(await input.mutate(tx, prepared));
         await tx.controlPlaneCommand.create({
           data: {
             scope,

@@ -357,6 +357,72 @@ async function login(page: Page) {
   expect(response.ok(), await response.text()).toBeTruthy();
 }
 
+async function completeCharacterCreateDraft(
+  page: Page,
+  name: string,
+  assertNotCreated: () => Promise<void>,
+) {
+  await page.getByLabel("Audience").fill(
+    "Adults who want a calm, dependable evening companion",
+  );
+  await page.getByLabel("Companion need").fill(
+    "A recurring ritual for decompressing and feeling understood",
+  );
+  await page.getByLabel("Hypothesis").fill(
+    "A specific, consistent evening ritual increases qualified conversations",
+  );
+  await page.getByLabel("Differentiation").fill(
+    "Observant guidance with a distinct point of view instead of generic affirmation",
+  );
+  await page.getByRole("button", { name: "Continue to persona" }).click();
+  await assertNotCreated();
+
+  await page.getByLabel("Name", { exact: true }).fill(name);
+  await page.getByLabel("Relationship archetype").fill("Steady confidante");
+  await page.getByLabel("Character promise").fill(
+    "A warm, precise place to put the day down",
+  );
+  await page.getByLabel("Personality").fill(
+    "Observant, measured, and gently challenging",
+  );
+  await page.getByLabel("Tone").fill("Warm, concise, and grounded");
+  await page.getByLabel("Backstory").fill(
+    "Years hosting a late-night radio show taught her to notice what people leave unsaid.",
+  );
+  await page.getByLabel("First message").fill(
+    "You made it. What do you need to put down tonight?",
+  );
+  await page.getByLabel("Example dialogue (one per line)").fill(
+    "Tell me the part you keep replaying.",
+  );
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await assertNotCreated();
+
+  await page.getByLabel("Identity anchor").fill(
+    "Composed late-night radio host with a recognizable adult face",
+  );
+  await page.getByLabel("Stable traits (one per line)").fill(
+    "Dark wavy hair\nWarm brown eyes",
+  );
+  await page.getByLabel("Reference direction").fill(
+    "Low-key tungsten portraiture with an intimate editorial crop",
+  );
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await assertNotCreated();
+
+  await page.getByLabel("Success criteria (one per line)").fill(
+    "Qualified conversations improve without a D7 retention regression",
+  );
+  await page.getByLabel("Production package").fill(
+    "Primary portrait, hero, and chat image baseline",
+  );
+  await page.getByLabel("QA plan").fill(
+    "Mobile and desktop preview plus a five-turn conversation review",
+  );
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await assertNotCreated();
+}
+
 function consoleFailures(page: Page, expected: RegExp[] = []) {
   const failures: string[] = [];
   page.on("console", (message) => {
@@ -1582,17 +1648,48 @@ test.describe.serial("Admin v2 operator workspaces", () => {
 
   test("takes one blank Character through identity, a complete image pack, QA, and a verified Release", async ({ page }) => {
     const failures = consoleFailures(page);
+    const createRequests: string[] = [];
+    page.on("request", (request) => {
+      if (
+        request.method() === "POST" &&
+        new URL(request.url()).pathname === "/api/v2/admin/characters"
+      ) {
+        createRequests.push(request.url());
+      }
+    });
     await login(page);
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.goto(`${adminBaseURL()}/admin/characters/new`);
     await expect(page.getByRole("heading", { level: 2, name: "Create Character Project" })).toBeVisible();
-    await page.getByRole("button", { name: "Save positioning & continue" }).click();
-    await page.getByLabel("Name").fill(characterName);
-    await page.getByRole("button", { name: "Save & continue" }).click();
-    await page.getByRole("button", { name: "Save & continue" }).click();
-    await page.getByRole("button", { name: "Save & continue" }).click();
-    await page.getByRole("button", { name: "Save and open project" }).click();
-    await expect(page).toHaveURL(/\/admin\/characters\/(?!new(?:[/?]|$))[^/?]+/);
+    const assertNotCreated = async () => {
+      expect(createRequests).toHaveLength(0);
+      expect(await prisma.character.count({
+        where: { name: characterName },
+      })).toBe(0);
+    };
+    await completeCharacterCreateDraft(
+      page,
+      characterName,
+      assertNotCreated,
+    );
+    expect(await page.evaluate((key) =>
+      window.localStorage.getItem(key),
+    `idream.admin.character-create-draft.v1:${actorId}`)).not.toBeNull();
+    const characterCreateResponse = page.waitForResponse((response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname === "/api/v2/admin/characters"
+    );
+    await page.getByRole("button", {
+      name: "Save character & open portrait studio",
+    }).click();
+    expect((await characterCreateResponse).status()).toBe(201);
+    await expect(page).toHaveURL(
+      /\/admin\/characters\/(?!new(?:[/?]|$))[^/?]+\?tab=assets$/,
+    );
+    expect(createRequests).toHaveLength(1);
+    expect(await page.evaluate((key) =>
+      window.localStorage.getItem(key),
+    `idream.admin.character-create-draft.v1:${actorId}`)).toBeNull();
     wizardCharacterId = new URL(page.url()).pathname.split("/").at(-1) ?? null;
     if (!wizardCharacterId) throw new Error("Character wizard did not return a Character id");
     const initialProject = await prisma.characterProject.findFirstOrThrow({
@@ -1602,7 +1699,17 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       where: { characterId: wizardCharacterId },
     })).toBe(0);
 
+    await expect(page.getByRole("heading", {
+      name: "Establish the face customers will recognize",
+    })).toBeVisible();
+    await expect(page.getByText(/no reference input/i)).toBeVisible();
+    await expect(page.getByRole("button", {
+      name: "Generate 4 portraits",
+    })).toBeEnabled();
     await page.getByRole("tab", { name: "visual" }).click();
+    await page.getByText("Advanced identity controls", {
+      exact: true,
+    }).click();
     await expect(page.getByText(
       "Establish a reviewed portrait anchor in Character Assets before creating later identity versions.",
     )).toBeVisible();
