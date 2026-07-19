@@ -117,6 +117,68 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
     });
   });
 
+  it("loads the Dark Beast Klein identity-plus-source workflow as a separate Qwen comparison candidate", async () => {
+    const descriptors = await loadWorkflowDescriptors(WORKFLOWS_DIR);
+    const darkBeast = descriptors.find(
+      (descriptor) =>
+        descriptor.workflowKey === "darkbeast-flux2-klein-9b-multi-reference",
+    );
+
+    expect(() => workflowDescriptorSchema.parse(darkBeast)).not.toThrow();
+    expect(darkBeast).toMatchObject({
+      modelId: "darkbeast-flux2-klein-9b-bfs",
+      backendKind: "comfyui",
+      capabilities: ["img2img", "edit", "referenceImages", "stableSeed"],
+      identity: {
+        mode: "multi_reference",
+        maxReferences: 2,
+        acceptedRoles: [
+          "identity_anchor",
+          "identity_reference",
+          "source_image",
+        ],
+        supportsLookReference: false,
+        supportsSourceImageWithIdentity: true,
+      },
+    });
+    if (!darkBeast || darkBeast.backendKind !== "comfyui") {
+      throw new Error("expected Dark Beast Klein ComfyUI descriptor");
+    }
+    expect(
+      darkBeast.inputs.filter((input) => input.type === "image"),
+    ).toEqual([
+      expect.objectContaining({
+        key: "identity_image",
+        required: true,
+        referenceRoles: ["identity_anchor", "identity_reference"],
+        target: { nodeId: "6", field: "image" },
+      }),
+      expect.objectContaining({
+        key: "source_image",
+        required: true,
+        referenceRoles: ["source_image"],
+        target: { nodeId: "10", field: "image" },
+      }),
+    ]);
+    expect(darkBeast.apiPrompt["1"]?.inputs).toEqual({
+      unet_name: "darkBeastINT8Convrot2_dbkleinv2BFS.safetensors",
+      weight_dtype: "default",
+    });
+    expect(darkBeast.apiPrompt["2"]?.inputs).toEqual({
+      clip_name: "qwen_3_8b_fp8mixed.safetensors",
+      type: "flux2",
+      device: "default",
+    });
+    expect(darkBeast.apiPrompt["12"]?.inputs).toMatchObject({
+      conditioning: ["8", 0],
+      latent: ["11", 0],
+    });
+    expect(darkBeast.apiPrompt["13"]?.inputs).toMatchObject({
+      conditioning: ["9", 0],
+      latent: ["11", 0],
+    });
+  });
+
   it("loads the opt-in Draw Things Pornmaster descriptor", async () => {
     const descriptors = await loadWorkflowDescriptors(WORKFLOWS_DIR);
     const drawThings = descriptors.find((d) => d.modelId === "pornmaster-zimage-drawthings");

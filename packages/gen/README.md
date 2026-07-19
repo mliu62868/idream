@@ -52,6 +52,50 @@ which takes priority — see `.env`'s `GEN_IMAGE_PROVIDER`) to route
 `packages/gen/workflows` (repo-root relative); the smoke script below resolves
 it explicitly so it works regardless of cwd.
 
+### Dark Beast FLUX.2 Klein comparison candidate
+
+`darkbeast-flux2-klein-9b-multi-reference` is an opt-in, two-reference
+ComfyUI workflow for Civitai version `2740209` (`DBKleinV2 BFS`). Despite the
+collection slug, this exact version is based on FLUX.2 Klein 9B, not Krea 2.
+It is registered separately from Qwen Image Edit and is not a default route.
+
+Install these files on the target ComfyUI runner before executing it:
+
+- `models/diffusion_models/darkBeastINT8Convrot2_dbkleinv2BFS.safetensors`
+- `models/text_encoders/qwen_3_8b_fp8mixed.safetensors`
+- `models/vae/flux2-vae.safetensors`
+
+The descriptor uses native `VAEEncode → ReferenceLatent` chains for one
+identity image and one source image. Optional LoRA and SeedVR2 nodes from the
+author's showcase workflow are intentionally excluded so later A/B output
+differences remain attributable to Dark Beast versus Qwen Image Edit.
+
+Use the same identity image, source image, prompt, and fixed smoke seed for the
+first comparison:
+
+```bash
+cd packages/gen
+GEN_IMAGE_PROVIDER=backend \
+  COMFYUI_API_URL=http://127.0.0.1:8188 \
+  bun run smoke:backend -- \
+  --model darkbeast-flux2-klein-9b-bfs \
+  --ref /path/to/identity.png --ref-role identity_reference \
+  --ref /path/to/source.png --ref-role source_image \
+  --out /tmp/darkbeast-klein-comparison.png
+
+GEN_IMAGE_PROVIDER=backend \
+  COMFYUI_API_URL=http://127.0.0.1:8188 \
+  bun run smoke:backend -- \
+  --model qwen-image-edit-multi-reference \
+  --ref /path/to/identity.png --ref-role identity_reference \
+  --ref /path/to/source.png --ref-role source_image \
+  --out /tmp/qwen-image-edit-comparison.png
+```
+
+The seeded model profile remains `draft`, disabled, and at zero rollout until
+the exact assets are installed on a compatible runner and a real artifact
+smoke plus identity/intent review passes.
+
 ### Pointing at Draw Things
 
 Install the official `draw-things-cli`, set `DRAWTHINGS_CLI` when it is not on

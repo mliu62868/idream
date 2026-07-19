@@ -115,6 +115,18 @@ export const generationModelCandidateDefinitions: CandidateDefinition[] = [
     requireConsistency: true,
     requireVerification: true,
   },
+  {
+    key: "darkbeast_flux2_klein_bfs",
+    profileId: "seed-profile-sdcpp-darkbeast-krea2-img2img-v1",
+    expectedIntent: "image_edit_identity_source_comparison",
+    expectedRunner: "comfyui",
+    expectedPipelineModel: "darkbeast-flux2-klein-9b-bfs",
+    expectedWorkflowKey: "darkbeast-flux2-klein-9b-multi-reference",
+    minSampleCount: 1,
+    requireActive: false,
+    requireConsistency: true,
+    requireVerification: true,
+  },
 ];
 
 const candidateKeyAliases: Readonly<Record<string, string>> = {

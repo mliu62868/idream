@@ -1,0 +1,314 @@
+{
+  "workflowKey": "darkbeast-flux2-klein-9b-multi-reference",
+  "modelId": "darkbeast-flux2-klein-9b-bfs",
+  "backendKind": "comfyui",
+  "comfyWorkflow": {
+    "id": "b39c5f10-fc13-42e5-a08b-24fe2bab3c5f",
+    "name": "iDream · Dark Beast FLUX.2 Klein 9B · Identity + Source"
+  },
+  "version": 1,
+  "capabilities": [
+    "img2img",
+    "edit",
+    "referenceImages",
+    "stableSeed"
+  ],
+  "identity": {
+    "mode": "multi_reference",
+    "maxReferences": 2,
+    "acceptedRoles": [
+      "identity_anchor",
+      "identity_reference",
+      "source_image"
+    ],
+    "supportsLookReference": false,
+    "supportsSourceImageWithIdentity": true
+  },
+  "quality": {
+    "maxCandidates": 2,
+    "evaluatorDimensions": [
+      "artifact",
+      "face_count",
+      "identity",
+      "intent"
+    ]
+  },
+  "apiPrompt": {
+    "1": {
+      "class_type": "UNETLoader",
+      "inputs": {
+        "unet_name": "darkBeastINT8Convrot2_dbkleinv2BFS.safetensors",
+        "weight_dtype": "default"
+      }
+    },
+    "2": {
+      "class_type": "CLIPLoader",
+      "inputs": {
+        "clip_name": "qwen_3_8b_fp8mixed.safetensors",
+        "type": "flux2",
+        "device": "default"
+      }
+    },
+    "3": {
+      "class_type": "VAELoader",
+      "inputs": {
+        "vae_name": "flux2-vae.safetensors"
+      }
+    },
+    "4": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": [
+          "2",
+          0
+        ],
+        "text": ""
+      }
+    },
+    "5": {
+      "class_type": "ConditioningZeroOut",
+      "inputs": {
+        "conditioning": [
+          "4",
+          0
+        ]
+      }
+    },
+    "6": {
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": ""
+      }
+    },
+    "7": {
+      "class_type": "VAEEncode",
+      "inputs": {
+        "pixels": [
+          "6",
+          0
+        ],
+        "vae": [
+          "3",
+          0
+        ]
+      }
+    },
+    "8": {
+      "class_type": "ReferenceLatent",
+      "inputs": {
+        "conditioning": [
+          "4",
+          0
+        ],
+        "latent": [
+          "7",
+          0
+        ]
+      }
+    },
+    "9": {
+      "class_type": "ReferenceLatent",
+      "inputs": {
+        "conditioning": [
+          "5",
+          0
+        ],
+        "latent": [
+          "7",
+          0
+        ]
+      }
+    },
+    "10": {
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": ""
+      }
+    },
+    "11": {
+      "class_type": "VAEEncode",
+      "inputs": {
+        "pixels": [
+          "10",
+          0
+        ],
+        "vae": [
+          "3",
+          0
+        ]
+      }
+    },
+    "12": {
+      "class_type": "ReferenceLatent",
+      "inputs": {
+        "conditioning": [
+          "8",
+          0
+        ],
+        "latent": [
+          "11",
+          0
+        ]
+      }
+    },
+    "13": {
+      "class_type": "ReferenceLatent",
+      "inputs": {
+        "conditioning": [
+          "9",
+          0
+        ],
+        "latent": [
+          "11",
+          0
+        ]
+      }
+    },
+    "14": {
+      "class_type": "EmptyFlux2LatentImage",
+      "inputs": {
+        "width": 832,
+        "height": 1216,
+        "batch_size": 1
+      }
+    },
+    "15": {
+      "class_type": "Flux2Scheduler",
+      "inputs": {
+        "steps": 5,
+        "width": 832,
+        "height": 1216
+      }
+    },
+    "16": {
+      "class_type": "RandomNoise",
+      "inputs": {
+        "noise_seed": 0
+      }
+    },
+    "17": {
+      "class_type": "KSamplerSelect",
+      "inputs": {
+        "sampler_name": "euler"
+      }
+    },
+    "18": {
+      "class_type": "CFGGuider",
+      "inputs": {
+        "model": [
+          "1",
+          0
+        ],
+        "positive": [
+          "12",
+          0
+        ],
+        "negative": [
+          "13",
+          0
+        ],
+        "cfg": 1
+      }
+    },
+    "19": {
+      "class_type": "SamplerCustomAdvanced",
+      "inputs": {
+        "noise": [
+          "16",
+          0
+        ],
+        "guider": [
+          "18",
+          0
+        ],
+        "sampler": [
+          "17",
+          0
+        ],
+        "sigmas": [
+          "15",
+          0
+        ],
+        "latent_image": [
+          "14",
+          0
+        ]
+      }
+    },
+    "20": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": [
+          "19",
+          0
+        ],
+        "vae": [
+          "3",
+          0
+        ]
+      }
+    },
+    "21": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "images": [
+          "20",
+          0
+        ],
+        "filename_prefix": "idream_darkbeast_flux2_klein_multi"
+      }
+    }
+  },
+  "inputs": [
+    {
+      "key": "prompt",
+      "type": "text",
+      "target": {
+        "nodeId": "4",
+        "field": "text"
+      }
+    },
+    {
+      "key": "identity_image",
+      "type": "image",
+      "required": true,
+      "referenceRoles": [
+        "identity_anchor",
+        "identity_reference"
+      ],
+      "target": {
+        "nodeId": "6",
+        "field": "image"
+      }
+    },
+    {
+      "key": "source_image",
+      "type": "image",
+      "required": true,
+      "referenceRoles": [
+        "source_image"
+      ],
+      "target": {
+        "nodeId": "10",
+        "field": "image"
+      }
+    },
+    {
+      "key": "seed",
+      "type": "int",
+      "target": {
+        "nodeId": "16",
+        "field": "noise_seed"
+      }
+    },
+    {
+      "key": "steps",
+      "type": "int",
+      "target": {
+        "nodeId": "15",
+        "field": "steps"
+      },
+      "default": 5
+    }
+  ]
+}

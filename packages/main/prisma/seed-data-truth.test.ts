@@ -244,6 +244,79 @@ describe("seed data provenance", () => {
     ]);
   });
 
+  it("keeps Dark Beast Klein as a disabled workflow-backed comparison candidate", async () => {
+    const profile = await prisma.generationModelProfile.findFirst({
+      where: { profileKey: "darkbeast-flux2-klein-bfs-comparison" },
+      select: {
+        profileKey: true,
+        pipelineModel: true,
+        workflowKey: true,
+        runner: true,
+        steps: true,
+        sampler: true,
+        scheduler: true,
+        cfgScale: true,
+        enabled: true,
+        rolloutPercent: true,
+        status: true,
+        runnerConfig: true,
+      },
+    });
+
+    expect(profile).toMatchObject({
+      profileKey: "darkbeast-flux2-klein-bfs-comparison",
+      pipelineModel: "darkbeast-flux2-klein-9b-bfs",
+      workflowKey: "darkbeast-flux2-klein-9b-multi-reference",
+      runner: "comfyui",
+      steps: 5,
+      sampler: "euler",
+      scheduler: "flux2",
+      cfgScale: 1,
+      enabled: false,
+      rolloutPercent: 0,
+      status: "draft",
+      runnerConfig: {
+        baseModel: "Flux.2 Klein 9B",
+        civitaiVersionId: 2740209,
+        comparisonBaseline: {
+          modelId: "qwen-image-edit-multi-reference",
+          workflowKey: "qwen-image-edit-multi-reference",
+        },
+        componentStatus: {
+          diffusionModel: {
+            status: "configured",
+            path: expect.stringMatching(
+              /models\/diffusion_models\/darkBeastINT8Convrot2_dbkleinv2BFS\.safetensors$/,
+            ),
+          },
+          qwenTextEncoder: {
+            status: "configured",
+            path: expect.stringMatching(
+              /models\/text_encoders\/qwen_3_8b_fp8mixed\.safetensors$/,
+            ),
+          },
+          flux2Vae: {
+            status: "configured",
+            path: expect.stringMatching(/models\/vae\/flux2-vae\.safetensors$/),
+          },
+          comfyWorkflow: {
+            status: "registered",
+            path: expect.stringMatching(
+              /packages\/gen\/workflows\/darkbeast-flux2-klein-9b-multi-reference\.json$/,
+            ),
+          },
+        },
+        capabilities: {
+          textToImage: false,
+          stableSeed: true,
+          referenceImages: true,
+          initImage: true,
+          lora: false,
+        },
+      },
+    });
+  });
+
   it("only creates missing cold-start rows and preserves operator edits on repeat seed runs", async () => {
     const users = await seedFunctionSource("seedUsers");
     const characters = await seedFunctionSource("seedCharacters");

@@ -20,6 +20,24 @@ describe("generation model candidate authority", () => {
     });
   });
 
+  it("tracks Dark Beast Klein as a quarantined Qwen comparison candidate", () => {
+    expect(
+      generationModelCandidateDefinitions.find(
+        (candidate) => candidate.key === "darkbeast_flux2_klein_bfs",
+      ),
+    ).toMatchObject({
+      profileId: "seed-profile-sdcpp-darkbeast-krea2-img2img-v1",
+      expectedIntent: "image_edit_identity_source_comparison",
+      expectedRunner: "comfyui",
+      expectedPipelineModel: "darkbeast-flux2-klein-9b-bfs",
+      expectedWorkflowKey: "darkbeast-flux2-klein-9b-multi-reference",
+      minSampleCount: 1,
+      requireActive: false,
+      requireConsistency: true,
+      requireVerification: true,
+    });
+  });
+
   it("accepts the historical Pornmaster key only as an input alias", () => {
     expect(
       resolveGenerationModelCandidateKey("pornmaster_zimage_default"),
