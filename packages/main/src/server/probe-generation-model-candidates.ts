@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
-import { existsSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { createReadStream, existsSync } from "node:fs";
 import { mkdir, open, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -18,6 +19,7 @@ type CandidateDefinition = {
   expectedRunner: "sd_cpp" | "comfyui";
   expectedPipelineModel?: string;
   expectedWorkflowKey?: string;
+  expectedSourceSha256?: string;
   minSampleCount: number;
   requireActive: boolean;
   requireConsistency: boolean;
@@ -43,6 +45,7 @@ type AssetInspection = {
   path: string;
   inspected: boolean;
   error: string | null;
+  sha256: string | null;
   headerBytes: number | null;
   tensorCount: number | null;
   metadataKeys: string[];
@@ -122,6 +125,8 @@ export const generationModelCandidateDefinitions: CandidateDefinition[] = [
     expectedRunner: "comfyui",
     expectedPipelineModel: "darkbeast-flux2-klein-9b-bfs",
     expectedWorkflowKey: "darkbeast-flux2-klein-9b-multi-reference",
+    expectedSourceSha256:
+      "B20B6F2744E152FD3EFA2638E88A5FEAB478C778EE25C81B183FD80E03A099C3",
     minSampleCount: 1,
     requireActive: false,
     requireConsistency: true,
@@ -157,6 +162,30 @@ export function evaluateGenerationModelCandidateActivation(input: {
     ready: blockedReasons.length === 0,
     blockedReasons,
   };
+}
+
+export function evaluateGenerationModelCandidateSourceHash(input: {
+  expected: string | undefined;
+  observed: string | null;
+}) {
+  if (!input.expected) {
+    return { ready: true, blockedReason: null };
+  }
+  const expected = input.expected.toUpperCase();
+  const observed = input.observed?.toUpperCase() ?? null;
+  if (!observed) {
+    return {
+      ready: false,
+      blockedReason: "source SHA-256 was not evaluated",
+    };
+  }
+  if (observed !== expected) {
+    return {
+      ready: false,
+      blockedReason: `source SHA-256 is ${observed}, expected ${expected}`,
+    };
+  }
+  return { ready: true, blockedReason: null };
 }
 
 function readArg(name: string) {
@@ -240,7 +269,13 @@ async function runProbe(options: ProbeOptions): Promise<ProbeReport> {
     });
     const profileById = new Map(profiles.map((profile) => [profile.id, profile]));
     const candidates = await Promise.all(
-      definitions.map((candidate) => inspectCandidate(candidate, profileById.get(candidate.profileId))),
+      definitions.map((candidate) =>
+        inspectCandidate(
+          candidate,
+          profileById.get(candidate.profileId),
+          options.requireReady,
+        ),
+      ),
     );
     const failureReasons = candidates.flatMap((candidate) => {
       const reasons: string[] = [];
@@ -358,6 +393,7 @@ async function inspectCandidate(
         mode: string;
       }
     | undefined,
+  verifySourceHash: boolean,
 ): Promise<CandidateReport> {
   if (!profile) {
     return {
@@ -403,7 +439,12 @@ async function inspectCandidate(
   const files = await fileChecksForProfile(profile, runnerConfig);
   const assetInspection = await inspectSafetensorsAsset(
     profile.sourceModelPath ?? stringField(runnerConfig, "diffusionModelPath"),
+    verifySourceHash && Boolean(candidate.expectedSourceSha256),
   );
+  const sourceHash = evaluateGenerationModelCandidateSourceHash({
+    expected: candidate.expectedSourceSha256,
+    observed: assetInspection?.sha256 ?? null,
+  });
   const components = componentChecks(runnerConfig.componentStatus);
   const badComponents = components.filter((component) => component.tone === "bad");
   const activation = evaluateGenerationModelCandidateActivation({
@@ -427,6 +468,12 @@ async function inspectCandidate(
     candidate.expectedIntent && stringField(runnerConfig, "templateIntent") !== candidate.expectedIntent
       ? `templateIntent is ${stringField(runnerConfig, "templateIntent") || "missing"}`
       : null,
+    candidate.expectedSourceSha256 &&
+    stringField(runnerConfig, "civitaiSha256")?.toUpperCase() !==
+      candidate.expectedSourceSha256.toUpperCase()
+      ? `configured source SHA-256 is ${stringField(runnerConfig, "civitaiSha256") || "missing"}`
+      : null,
+    sourceHash.blockedReason,
     candidate.requireVerification && !isPassedVerificationStatus(verificationStatus)
       ? `verificationStatus is ${verificationStatus || "missing"}`
       : null,
@@ -488,13 +535,17 @@ async function inspectCandidate(
   };
 }
 
-async function inspectSafetensorsAsset(filePath: string | null): Promise<AssetInspection | null> {
+async function inspectSafetensorsAsset(
+  filePath: string | null,
+  computeSha256: boolean,
+): Promise<AssetInspection | null> {
   if (!filePath || !filePath.endsWith(".safetensors")) return null;
   if (!existsSync(filePath)) {
     return {
       path: filePath,
       inspected: false,
       error: "file_missing",
+      sha256: null,
       headerBytes: null,
       tensorCount: null,
       metadataKeys: [],
@@ -509,19 +560,33 @@ async function inspectSafetensorsAsset(filePath: string | null): Promise<AssetIn
   }
 
   let handle: Awaited<ReturnType<typeof open>> | null = null;
+  let sha256: string | null = null;
   try {
+    sha256 = computeSha256
+      ? await calculateGenerationModelSourceSha256(filePath)
+      : null;
     handle = await open(filePath, "r");
     const sizeBuffer = Buffer.alloc(8);
     await handle.read(sizeBuffer, 0, 8, 0);
     const headerBytes = Number(sizeBuffer.readBigUInt64LE(0));
     if (!Number.isFinite(headerBytes) || headerBytes <= 0 || headerBytes > 8 * 1024 * 1024) {
-      return failedAssetInspection(filePath, "invalid_or_too_large_header", headerBytes);
+      return failedAssetInspection(
+        filePath,
+        "invalid_or_too_large_header",
+        headerBytes,
+        sha256,
+      );
     }
     const headerBuffer = Buffer.alloc(headerBytes);
     await handle.read(headerBuffer, 0, headerBytes, 8);
     const header = JSON.parse(headerBuffer.toString("utf8")) as unknown;
     if (typeof header !== "object" || header === null || Array.isArray(header)) {
-      return failedAssetInspection(filePath, "invalid_header_json", headerBytes);
+      return failedAssetInspection(
+        filePath,
+        "invalid_header_json",
+        headerBytes,
+        sha256,
+      );
     }
 
     const headerRecord = header as Record<string, unknown>;
@@ -554,6 +619,7 @@ async function inspectSafetensorsAsset(filePath: string | null): Promise<AssetIn
       path: filePath,
       inspected: true,
       error: null,
+      sha256,
       headerBytes,
       tensorCount: tensorKeys.length,
       metadataKeys: Object.keys(metadata),
@@ -566,17 +632,36 @@ async function inspectSafetensorsAsset(filePath: string | null): Promise<AssetIn
       suggestedRuntime,
     };
   } catch (error) {
-    return failedAssetInspection(filePath, error instanceof Error ? error.message : String(error), null);
+    return failedAssetInspection(
+      filePath,
+      error instanceof Error ? error.message : String(error),
+      null,
+      sha256,
+    );
   } finally {
     await handle?.close().catch(() => {});
   }
 }
 
-function failedAssetInspection(filePath: string, error: string, headerBytes: number | null): AssetInspection {
+export async function calculateGenerationModelSourceSha256(filePath: string) {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(filePath)) {
+    hash.update(chunk);
+  }
+  return hash.digest("hex").toUpperCase();
+}
+
+function failedAssetInspection(
+  filePath: string,
+  error: string,
+  headerBytes: number | null,
+  sha256: string | null = null,
+): AssetInspection {
   return {
     path: filePath,
     inspected: false,
     error,
+    sha256,
     headerBytes,
     tensorCount: null,
     metadataKeys: [],

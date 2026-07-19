@@ -1,5 +1,6 @@
 import { Prisma, PrismaClient } from "@prisma/client";
 import { buildCharacterSystemPrompt } from "@idream/shared";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { categoryFilters } from "../src/lib/ourdream-data";
 import { createPrismaClientOptions } from "../src/server/lib/prisma-adapter";
@@ -35,18 +36,130 @@ const REDCRAFT_COMFYUI_WORKFLOW_PATH =
 const REDCRAFT_COMFYUI_TEXT_ENCODER_PATH =
   "/Users/kk/ComfyUI-Shared/models/text_encoders/qwen3vl_4b_fp8_scaled.safetensors";
 const REDCRAFT_COMFYUI_VAE_PATH = "/Users/kk/ComfyUI-Shared/models/vae/qwen_image_vae.safetensors";
-const DARKBEAST_BFS_FLUX2_MODEL_PATH =
-  "/Users/kk/ComfyUI-Shared/models/diffusion_models/darkBeastINT8Convrot2_dbkleinv2BFS.safetensors";
-const DARKBEAST_BFS_FLUX2_TEXT_ENCODER_PATH =
-  "/Users/kk/ComfyUI-Shared/models/text_encoders/qwen_3_8b_fp8mixed.safetensors";
-const DARKBEAST_BFS_FLUX2_VAE_PATH =
-  "/Users/kk/ComfyUI-Shared/models/vae/flux2-vae.safetensors";
+const COMFYUI_MODEL_ROOT =
+  process.env.COMFYUI_MODEL_ROOT ?? "/Users/kk/ComfyUI-Shared/models";
+const DARKBEAST_BFS_FLUX2_MODEL_PATH = path.join(
+  COMFYUI_MODEL_ROOT,
+  "diffusion_models",
+  "darkBeastINT8Convrot2_dbkleinv2BFS.safetensors",
+);
+const DARKBEAST_BFS_FLUX2_TEXT_ENCODER_PATH = path.join(
+  COMFYUI_MODEL_ROOT,
+  "text_encoders",
+  "qwen_3_8b_fp8mixed.safetensors",
+);
+const DARKBEAST_BFS_FLUX2_VAE_PATH = path.join(
+  COMFYUI_MODEL_ROOT,
+  "vae",
+  "flux2-vae.safetensors",
+);
 const DARKBEAST_BFS_FLUX2_WORKFLOW_PATH = fileURLToPath(
   new URL(
     "../../gen/workflows/darkbeast-flux2-klein-9b-multi-reference.json",
     import.meta.url,
   ),
 );
+
+function darkBeastComparisonProfileData() {
+  return {
+    profileKey: "darkbeast-flux2-klein-bfs-comparison",
+    label: "Dark Beast FLUX.2 Klein 9B BFS comparison",
+    mode: "image",
+    runner: "comfyui",
+    pipelineModel: "darkbeast-flux2-klein-9b-bfs",
+    workflowKey: "darkbeast-flux2-klein-9b-multi-reference",
+    sourceModelPath: DARKBEAST_BFS_FLUX2_MODEL_PATH,
+    convertedModelPath: null,
+    modelFormat: "safetensors",
+    runnerConfig: {
+      diffusionModelPath: DARKBEAST_BFS_FLUX2_MODEL_PATH,
+      textEncoderPath: DARKBEAST_BFS_FLUX2_TEXT_ENCODER_PATH,
+      vaePath: DARKBEAST_BFS_FLUX2_VAE_PATH,
+      workflowPath: DARKBEAST_BFS_FLUX2_WORKFLOW_PATH,
+      apiModelId: "darkbeast-flux2-klein-9b-bfs",
+      templateIntent: "image_edit_identity_source_comparison",
+      baseModel: "Flux.2 Klein 9B",
+      civitaiModelId: 2242173,
+      civitaiVersionId: 2740209,
+      civitaiVersionName: "DBKleinV2 BFS",
+      civitaiAutoV2: "B20B6F2744",
+      civitaiSha256:
+        "B20B6F2744E152FD3EFA2638E88A5FEAB478C778EE25C81B183FD80E03A099C3",
+      verificationStatus: "workflow_registered_runtime_assets_missing",
+      comparisonBaseline: {
+        modelId: "qwen-image-edit-multi-reference",
+        workflowKey: "qwen-image-edit-multi-reference",
+      },
+      workflow: {
+        kind: "flux2_klein_native_multi_reference",
+        source: "https://civitai.com/api/v1/model-versions/2740453",
+        identityReferenceRole: "identity_reference",
+        sourceReferenceRole: "source_image",
+        sampler: "euler",
+        scheduler: "flux2",
+        steps: 5,
+        cfgScale: 1,
+        notes:
+          "The comparison descriptor uses two native ReferenceLatent chains without optional BFS LoRA or SeedVR2 post-processing, so model behavior remains attributable during Qwen Image Edit A/B.",
+      },
+      componentStatus: {
+        diffusionModel: {
+          status: "configured",
+          path: DARKBEAST_BFS_FLUX2_MODEL_PATH,
+        },
+        qwenTextEncoder: {
+          status: "configured",
+          path: DARKBEAST_BFS_FLUX2_TEXT_ENCODER_PATH,
+        },
+        flux2Vae: {
+          status: "configured",
+          path: DARKBEAST_BFS_FLUX2_VAE_PATH,
+        },
+        comfyWorkflow: {
+          status: "registered",
+          path: DARKBEAST_BFS_FLUX2_WORKFLOW_PATH,
+        },
+      },
+      requiredComponents: [
+        "darkBeastINT8Convrot2_dbkleinv2BFS.safetensors",
+        "qwen_3_8b_fp8mixed.safetensors",
+        "flux2-vae.safetensors",
+        "ComfyUI 0.28+ native ReferenceLatent workflow",
+      ],
+      capabilities: {
+        textToImage: false,
+        stableSeed: true,
+        referenceImages: true,
+        initImage: true,
+        lora: false,
+      },
+    },
+    defaultWidth: 832,
+    defaultHeight: 1216,
+    allowedOrientations: ["4:5"],
+    steps: 5,
+    sampler: "euler",
+    scheduler: "flux2",
+    cfgScale: 1,
+    costMultiplier: 1.2,
+    requiredEntitlement: null,
+    maxCount: 1,
+    concurrencyLimit: 1,
+    enabled: false,
+    rolloutPercent: 0,
+    version: 1,
+    status: "draft",
+    dryRunSummary: {
+      sampleCount: 0,
+      successRate: 0,
+      failureMode: "runtime_assets_not_verified",
+      testedAt: "2026-07-19",
+      notes:
+        "The exact Civitai 2740209 checkpoint is FLUX.2 Klein 9B, not Krea 2. Its two-reference descriptor is registered for an identity+source A/B against qwen-image-edit-multi-reference. Keep disabled at zero rollout until the exact model, Qwen 8B encoder, and FLUX.2 VAE are installed on a compatible runner and a real artifact smoke passes.",
+    },
+    publishedAt: null,
+  } satisfies Prisma.GenerationModelProfileUncheckedUpdateInput;
+}
 
 const sensitiveTags = new Set(["teen", "bdsm", "virgin"]);
 
@@ -1213,204 +1326,13 @@ async function seedAdminControlPlane() {
   }
 
   if (!existingProfileKeys.has("darkbeast-flux2-klein-bfs-comparison")) {
+    const profileData = darkBeastComparisonProfileData();
     await prisma.generationModelProfile.upsert({
       where: { id: "seed-profile-sdcpp-darkbeast-krea2-img2img-v1" },
-      update: {
-        profileKey: "darkbeast-flux2-klein-bfs-comparison",
-        label: "Dark Beast FLUX.2 Klein 9B BFS comparison",
-        mode: "image",
-        runner: "comfyui",
-        pipelineModel: "darkbeast-flux2-klein-9b-bfs",
-        workflowKey: "darkbeast-flux2-klein-9b-multi-reference",
-        sourceModelPath: DARKBEAST_BFS_FLUX2_MODEL_PATH,
-        convertedModelPath: null,
-        modelFormat: "safetensors",
-        runnerConfig: {
-          diffusionModelPath: DARKBEAST_BFS_FLUX2_MODEL_PATH,
-          textEncoderPath: DARKBEAST_BFS_FLUX2_TEXT_ENCODER_PATH,
-          vaePath: DARKBEAST_BFS_FLUX2_VAE_PATH,
-          workflowPath: DARKBEAST_BFS_FLUX2_WORKFLOW_PATH,
-          apiModelId: "darkbeast-flux2-klein-9b-bfs",
-          templateIntent: "image_edit_identity_source_comparison",
-          baseModel: "Flux.2 Klein 9B",
-          civitaiModelId: 2242173,
-          civitaiVersionId: 2740209,
-          civitaiVersionName: "DBKleinV2 BFS",
-          civitaiAutoV2: "B20B6F2744",
-          civitaiSha256:
-            "B20B6F2744E152FD3EFA2638E88A5FEAB478C778EE25C81B183FD80E03A099C3",
-          verificationStatus: "workflow_registered_runtime_assets_missing",
-          comparisonBaseline: {
-            modelId: "qwen-image-edit-multi-reference",
-            workflowKey: "qwen-image-edit-multi-reference",
-          },
-          workflow: {
-            kind: "flux2_klein_native_multi_reference",
-            source: "https://civitai.com/api/v1/model-versions/2740453",
-            identityReferenceRole: "identity_reference",
-            sourceReferenceRole: "source_image",
-            sampler: "euler",
-            scheduler: "flux2",
-            steps: 5,
-            cfgScale: 1,
-            notes:
-              "The comparison descriptor uses two native ReferenceLatent chains without optional BFS LoRA or SeedVR2 post-processing, so model behavior remains attributable during Qwen Image Edit A/B.",
-          },
-          componentStatus: {
-            diffusionModel: {
-              status: "configured",
-              path: DARKBEAST_BFS_FLUX2_MODEL_PATH,
-            },
-            qwenTextEncoder: {
-              status: "configured",
-              path: DARKBEAST_BFS_FLUX2_TEXT_ENCODER_PATH,
-            },
-            flux2Vae: {
-              status: "configured",
-              path: DARKBEAST_BFS_FLUX2_VAE_PATH,
-            },
-            comfyWorkflow: {
-              status: "registered",
-              path: DARKBEAST_BFS_FLUX2_WORKFLOW_PATH,
-            },
-          },
-          requiredComponents: [
-            "darkBeastINT8Convrot2_dbkleinv2BFS.safetensors",
-            "qwen_3_8b_fp8mixed.safetensors",
-            "flux2-vae.safetensors",
-            "ComfyUI 0.28+ native ReferenceLatent workflow",
-          ],
-          capabilities: {
-            textToImage: false,
-            stableSeed: true,
-            referenceImages: true,
-            initImage: true,
-            lora: false,
-          },
-        },
-        defaultWidth: 832,
-        defaultHeight: 1216,
-        allowedOrientations: ["4:5"],
-        steps: 5,
-        sampler: "euler",
-        scheduler: "flux2",
-        cfgScale: 1,
-        costMultiplier: 1.2,
-        requiredEntitlement: null,
-        maxCount: 1,
-        concurrencyLimit: 1,
-        enabled: false,
-        rolloutPercent: 0,
-        version: 1,
-        status: "draft",
-        dryRunSummary: {
-          sampleCount: 0,
-          successRate: 0,
-          failureMode: "runtime_assets_not_verified",
-          testedAt: "2026-07-19",
-          notes:
-            "The exact Civitai 2740209 checkpoint is FLUX.2 Klein 9B, not Krea 2. Its two-reference descriptor is registered for an identity+source A/B against qwen-image-edit-multi-reference. Keep disabled at zero rollout until the exact model, Qwen 8B encoder, and FLUX.2 VAE are installed on a compatible runner and a real artifact smoke passes.",
-        },
-        publishedAt: null,
-      },
+      update: profileData,
       create: {
         id: "seed-profile-sdcpp-darkbeast-krea2-img2img-v1",
-        profileKey: "darkbeast-flux2-klein-bfs-comparison",
-        label: "Dark Beast FLUX.2 Klein 9B BFS comparison",
-        mode: "image",
-        runner: "comfyui",
-        pipelineModel: "darkbeast-flux2-klein-9b-bfs",
-        workflowKey: "darkbeast-flux2-klein-9b-multi-reference",
-        sourceModelPath: DARKBEAST_BFS_FLUX2_MODEL_PATH,
-        convertedModelPath: null,
-        modelFormat: "safetensors",
-        runnerConfig: {
-          diffusionModelPath: DARKBEAST_BFS_FLUX2_MODEL_PATH,
-          textEncoderPath: DARKBEAST_BFS_FLUX2_TEXT_ENCODER_PATH,
-          vaePath: DARKBEAST_BFS_FLUX2_VAE_PATH,
-          workflowPath: DARKBEAST_BFS_FLUX2_WORKFLOW_PATH,
-          apiModelId: "darkbeast-flux2-klein-9b-bfs",
-          templateIntent: "image_edit_identity_source_comparison",
-          baseModel: "Flux.2 Klein 9B",
-          civitaiModelId: 2242173,
-          civitaiVersionId: 2740209,
-          civitaiVersionName: "DBKleinV2 BFS",
-          civitaiAutoV2: "B20B6F2744",
-          civitaiSha256:
-            "B20B6F2744E152FD3EFA2638E88A5FEAB478C778EE25C81B183FD80E03A099C3",
-          verificationStatus: "workflow_registered_runtime_assets_missing",
-          comparisonBaseline: {
-            modelId: "qwen-image-edit-multi-reference",
-            workflowKey: "qwen-image-edit-multi-reference",
-          },
-          workflow: {
-            kind: "flux2_klein_native_multi_reference",
-            source: "https://civitai.com/api/v1/model-versions/2740453",
-            identityReferenceRole: "identity_reference",
-            sourceReferenceRole: "source_image",
-            sampler: "euler",
-            scheduler: "flux2",
-            steps: 5,
-            cfgScale: 1,
-            notes:
-              "The comparison descriptor uses two native ReferenceLatent chains without optional BFS LoRA or SeedVR2 post-processing, so model behavior remains attributable during Qwen Image Edit A/B.",
-          },
-          componentStatus: {
-            diffusionModel: {
-              status: "configured",
-              path: DARKBEAST_BFS_FLUX2_MODEL_PATH,
-            },
-            qwenTextEncoder: {
-              status: "configured",
-              path: DARKBEAST_BFS_FLUX2_TEXT_ENCODER_PATH,
-            },
-            flux2Vae: {
-              status: "configured",
-              path: DARKBEAST_BFS_FLUX2_VAE_PATH,
-            },
-            comfyWorkflow: {
-              status: "registered",
-              path: DARKBEAST_BFS_FLUX2_WORKFLOW_PATH,
-            },
-          },
-          requiredComponents: [
-            "darkBeastINT8Convrot2_dbkleinv2BFS.safetensors",
-            "qwen_3_8b_fp8mixed.safetensors",
-            "flux2-vae.safetensors",
-            "ComfyUI 0.28+ native ReferenceLatent workflow",
-          ],
-          capabilities: {
-            textToImage: false,
-            stableSeed: true,
-            referenceImages: true,
-            initImage: true,
-            lora: false,
-          },
-        },
-        defaultWidth: 832,
-        defaultHeight: 1216,
-        allowedOrientations: ["4:5"],
-        steps: 5,
-        sampler: "euler",
-        scheduler: "flux2",
-        cfgScale: 1,
-        costMultiplier: 1.2,
-        requiredEntitlement: null,
-        maxCount: 1,
-        concurrencyLimit: 1,
-        enabled: false,
-        rolloutPercent: 0,
-        version: 1,
-        status: "draft",
-        dryRunSummary: {
-          sampleCount: 0,
-          successRate: 0,
-          failureMode: "runtime_assets_not_verified",
-          testedAt: "2026-07-19",
-          notes:
-            "The exact Civitai 2740209 checkpoint is FLUX.2 Klein 9B, not Krea 2. Its two-reference descriptor is registered for an identity+source A/B against qwen-image-edit-multi-reference. Keep disabled at zero rollout until the exact model, Qwen 8B encoder, and FLUX.2 VAE are installed on a compatible runner and a real artifact smoke passes.",
-        },
-        publishedAt: null,
+        ...profileData,
       },
     });
   }

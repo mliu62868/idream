@@ -1,6 +1,11 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  calculateGenerationModelSourceSha256,
   evaluateGenerationModelCandidateActivation,
+  evaluateGenerationModelCandidateSourceHash,
   generationModelCandidateDefinitions,
   resolveGenerationModelCandidateKey,
 } from "./probe-generation-model-candidates";
@@ -31,11 +36,58 @@ describe("generation model candidate authority", () => {
       expectedRunner: "comfyui",
       expectedPipelineModel: "darkbeast-flux2-klein-9b-bfs",
       expectedWorkflowKey: "darkbeast-flux2-klein-9b-multi-reference",
+      expectedSourceSha256:
+        "B20B6F2744E152FD3EFA2638E88A5FEAB478C778EE25C81B183FD80E03A099C3",
       minSampleCount: 1,
       requireActive: false,
       requireConsistency: true,
       requireVerification: true,
     });
+  });
+
+  it("requires the observed checkpoint hash to match the exact model version", () => {
+    expect(
+      evaluateGenerationModelCandidateSourceHash({
+        expected:
+          "B20B6F2744E152FD3EFA2638E88A5FEAB478C778EE25C81B183FD80E03A099C3",
+        observed:
+          "b20b6f2744e152fd3efa2638e88a5feab478c778ee25c81b183fd80e03a099c3",
+      }),
+    ).toEqual({ ready: true, blockedReason: null });
+    expect(
+      evaluateGenerationModelCandidateSourceHash({
+        expected:
+          "B20B6F2744E152FD3EFA2638E88A5FEAB478C778EE25C81B183FD80E03A099C3",
+        observed:
+          "0000000000000000000000000000000000000000000000000000000000000000",
+      }),
+    ).toEqual({
+      ready: false,
+      blockedReason:
+        "source SHA-256 is 0000000000000000000000000000000000000000000000000000000000000000, expected B20B6F2744E152FD3EFA2638E88A5FEAB478C778EE25C81B183FD80E03A099C3",
+    });
+  });
+
+  it("streams checkpoint bytes before applying the exact-version hash gate", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "idream-model-hash-"));
+    const checkpoint = path.join(dir, "candidate.safetensors");
+    try {
+      await writeFile(checkpoint, "wrong checkpoint");
+      const observed =
+        await calculateGenerationModelSourceSha256(checkpoint);
+      expect(observed).toBe(
+        "DB47A400472AE1A7E03D964B820F1EED8077EBD35763FC6430FFB72A136D1DA6",
+      );
+      expect(
+        evaluateGenerationModelCandidateSourceHash({
+          expected:
+            "B20B6F2744E152FD3EFA2638E88A5FEAB478C778EE25C81B183FD80E03A099C3",
+          observed,
+        }),
+      ).toMatchObject({ ready: false });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("accepts the historical Pornmaster key only as an input alias", () => {

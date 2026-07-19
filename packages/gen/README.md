@@ -65,10 +65,19 @@ Install these files on the target ComfyUI runner before executing it:
 - `models/text_encoders/qwen_3_8b_fp8mixed.safetensors`
 - `models/vae/flux2-vae.safetensors`
 
+Set `COMFYUI_MODEL_ROOT` to that runner's absolute `models` directory before
+running `packages/main`'s database seed. It defaults to the local
+`/Users/kk/ComfyUI-Shared/models` layout. The release-readiness probe streams
+the checkpoint once under `--require-ready` and requires SHA-256
+`B20B6F2744E152FD3EFA2638E88A5FEAB478C778EE25C81B183FD80E03A099C3`,
+so a different file with the same name cannot pass the exact-version gate.
+
 The descriptor uses native `VAEEncode → ReferenceLatent` chains for one
 identity image and one source image. Optional LoRA and SeedVR2 nodes from the
 author's showcase workflow are intentionally excluded so later A/B output
-differences remain attributable to Dark Beast versus Qwen Image Edit.
+differences remain attributable to Dark Beast versus Qwen Image Edit. Its
+width and height controls update both `EmptyFlux2LatentImage` and
+`Flux2Scheduler`, keeping explicit orientation requests aligned with Qwen.
 
 Use the same identity image, source image, prompt, and fixed smoke seed for the
 first comparison:

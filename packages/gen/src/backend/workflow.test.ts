@@ -177,6 +177,22 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
       conditioning: ["9", 0],
       latent: ["11", 0],
     });
+    expect(darkBeast.inputs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: "width",
+          target: { nodeId: "14", field: "width" },
+          additionalTargets: [{ nodeId: "15", field: "width" }],
+          default: 832,
+        }),
+        expect.objectContaining({
+          key: "height",
+          target: { nodeId: "14", field: "height" },
+          additionalTargets: [{ nodeId: "15", field: "height" }],
+          default: 1216,
+        }),
+      ]),
+    );
   });
 
   it("loads the opt-in Draw Things Pornmaster descriptor", async () => {

@@ -1,4 +1,6 @@
+import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
@@ -21,6 +23,7 @@ const curatedCharacterIds = [
   "diana-weird-girl",
   "lola-moonstruck",
 ] as const;
+const execFileAsync = promisify(execFile);
 
 async function seedFunctionSource(name: string) {
   const source = await readFile(fileURLToPath(new URL("./seed.ts", import.meta.url)), "utf8");
@@ -316,6 +319,69 @@ describe("seed data provenance", () => {
       },
     });
   });
+
+  it("migrates the legacy Dark Beast row in place using a configurable ComfyUI model root", async () => {
+    const profileId = "seed-profile-sdcpp-darkbeast-krea2-img2img-v1";
+    await prisma.generationModelProfile.update({
+      where: { id: profileId },
+      data: {
+        profileKey: "profile_sdcpp_darkbeast_krea2_img2img_v1",
+        pipelineModel: "darkbeast-reference-candidate",
+        workflowKey: null,
+        runnerConfig: {
+          templateIntent: "image_to_image_identity_reference",
+        },
+        status: "active",
+        enabled: true,
+        rolloutPercent: 100,
+      },
+    });
+
+    const modelRoot = "/tmp/idream-darkbeast-model-root";
+    await execFileAsync("bun", ["run", "db:seed"], {
+      cwd: fileURLToPath(new URL("..", import.meta.url)),
+      env: {
+        ...process.env,
+        COMFYUI_MODEL_ROOT: modelRoot,
+      },
+    });
+
+    const migrated = await prisma.generationModelProfile.findUniqueOrThrow({
+      where: { id: profileId },
+      select: {
+        id: true,
+        profileKey: true,
+        pipelineModel: true,
+        workflowKey: true,
+        runnerConfig: true,
+        status: true,
+        enabled: true,
+        rolloutPercent: true,
+      },
+    });
+    expect(migrated).toMatchObject({
+      id: profileId,
+      profileKey: "darkbeast-flux2-klein-bfs-comparison",
+      pipelineModel: "darkbeast-flux2-klein-9b-bfs",
+      workflowKey: "darkbeast-flux2-klein-9b-multi-reference",
+      status: "draft",
+      enabled: false,
+      rolloutPercent: 0,
+      runnerConfig: {
+        diffusionModelPath: `${modelRoot}/diffusion_models/darkBeastINT8Convrot2_dbkleinv2BFS.safetensors`,
+        textEncoderPath: `${modelRoot}/text_encoders/qwen_3_8b_fp8mixed.safetensors`,
+        vaePath: `${modelRoot}/vae/flux2-vae.safetensors`,
+        civitaiVersionId: 2740209,
+        civitaiSha256:
+          "B20B6F2744E152FD3EFA2638E88A5FEAB478C778EE25C81B183FD80E03A099C3",
+      },
+    });
+    await expect(
+      prisma.generationModelProfile.count({
+        where: { profileKey: "profile_sdcpp_darkbeast_krea2_img2img_v1" },
+      }),
+    ).resolves.toBe(0);
+  }, 15_000);
 
   it("only creates missing cold-start rows and preserves operator edits on repeat seed runs", async () => {
     const users = await seedFunctionSource("seedUsers");

@@ -44,6 +44,41 @@ describe("bindComfySlots", () => {
   it("throws when a required slot (no default) is missing", () => {
     expect(() => bindComfySlots(comfyDescriptor, { prompt: "x" })).toThrow(/seed/);
   });
+
+  it("binds one semantic control to its primary and additional graph targets", () => {
+    const descriptor = workflowDescriptorSchema.parse({
+      workflowKey: "flux2-dynamic-size",
+      modelId: "flux2-model",
+      backendKind: "comfyui",
+      comfyWorkflow: {
+        id: "11111111-1111-4111-8111-111111111112",
+        name: "FLUX.2 Dynamic Size",
+      },
+      version: 1,
+      capabilities: ["textToImage"],
+      apiPrompt: {
+        "14": {
+          class_type: "EmptyFlux2LatentImage",
+          inputs: { width: 832 },
+        },
+        "15": {
+          class_type: "Flux2Scheduler",
+          inputs: { width: 832 },
+        },
+      },
+      inputs: [{
+        key: "width",
+        type: "int",
+        target: { nodeId: "14", field: "width" },
+        additionalTargets: [{ nodeId: "15", field: "width" }],
+        default: 832,
+      }],
+    });
+
+    const prompt = bindComfySlots(descriptor, { width: 1024 });
+    expect(prompt["14"].inputs.width).toBe(1024);
+    expect(prompt["15"].inputs.width).toBe(1024);
+  });
 });
 
 describe("workflow identity capability contract", () => {

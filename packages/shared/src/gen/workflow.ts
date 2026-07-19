@@ -34,6 +34,10 @@ export type WorkflowReferenceRole = z.infer<typeof workflowReferenceRoleSchema>;
 
 const comfySlotSchema = slotBaseSchema.extend({
   target: z.object({ nodeId: z.string(), field: z.string() }),
+  additionalTargets: z
+    .array(z.object({ nodeId: z.string(), field: z.string() }))
+    .min(1)
+    .optional(),
   referenceRoles: z.array(workflowReferenceRoleSchema).min(1).optional(),
   // Reserved for a future graph-level onAbsent contract. `false` is rejected
   // below because leaving a LoadImage value untouched is not executable
@@ -152,7 +156,7 @@ export const workflowDescriptorSchema = z.discriminatedUnion("backendKind", [
   }
   if (descriptor.backendKind !== "comfyui") return;
   const imageSlots = descriptor.inputs.filter((slot) => slot.type === "image");
-  const inputIndexByTarget = new Map<string, number>();
+  const inputPathByTarget = new Map<string, string>();
   if (descriptor.identity.maxReferences !== imageSlots.length) {
     context.addIssue({
       code: "custom",
@@ -182,32 +186,41 @@ export const workflowDescriptorSchema = z.discriminatedUnion("backendKind", [
     });
   }
   for (const [index, slot] of descriptor.inputs.entries()) {
-    const targetKey = `${slot.target.nodeId}\u0000${slot.target.field}`;
-    const previousTargetIndex = inputIndexByTarget.get(targetKey);
-    if (previousTargetIndex !== undefined) {
-      context.addIssue({
-        code: "custom",
-        path: ["inputs", index, "target"],
-        message:
-          `ComfyUI target ${slot.target.nodeId}.${slot.target.field} duplicates inputs[${previousTargetIndex}].target`,
-      });
-    } else {
-      inputIndexByTarget.set(targetKey, index);
-    }
-    const targetNode = descriptor.apiPrompt[slot.target.nodeId];
-    if (!targetNode) {
-      context.addIssue({
-        code: "custom",
-        path: ["inputs", index, "target", "nodeId"],
-        message: `ComfyUI input targets missing node ${slot.target.nodeId}`,
-      });
-    } else if (!Object.hasOwn(targetNode.inputs, slot.target.field)) {
-      context.addIssue({
-        code: "custom",
-        path: ["inputs", index, "target", "field"],
-        message:
-          `ComfyUI input targets missing field ${slot.target.nodeId}.${slot.target.field}`,
-      });
+    const targets = [slot.target, ...(slot.additionalTargets ?? [])];
+    for (const [targetIndex, target] of targets.entries()) {
+      const targetPath = targetIndex === 0
+        ? `inputs[${index}].target`
+        : `inputs[${index}].additionalTargets[${targetIndex - 1}]`;
+      const issuePath = targetIndex === 0
+        ? ["inputs", index, "target"]
+        : ["inputs", index, "additionalTargets", targetIndex - 1];
+      const targetKey = `${target.nodeId}\u0000${target.field}`;
+      const previousTargetPath = inputPathByTarget.get(targetKey);
+      if (previousTargetPath !== undefined) {
+        context.addIssue({
+          code: "custom",
+          path: issuePath,
+          message:
+            `ComfyUI target ${target.nodeId}.${target.field} duplicates ${previousTargetPath}`,
+        });
+      } else {
+        inputPathByTarget.set(targetKey, targetPath);
+      }
+      const targetNode = descriptor.apiPrompt[target.nodeId];
+      if (!targetNode) {
+        context.addIssue({
+          code: "custom",
+          path: [...issuePath, "nodeId"],
+          message: `ComfyUI input targets missing node ${target.nodeId}`,
+        });
+      } else if (!Object.hasOwn(targetNode.inputs, target.field)) {
+        context.addIssue({
+          code: "custom",
+          path: [...issuePath, "field"],
+          message:
+            `ComfyUI input targets missing field ${target.nodeId}.${target.field}`,
+        });
+      }
     }
     if (slot.type !== "image" && slot.required !== undefined) {
       context.addIssue({
@@ -465,9 +478,16 @@ export function bindComfySlots(d: WorkflowDescriptor, values: SlotValues): Recor
   const prompt = structuredClone(d.apiPrompt);
   for (const slot of d.inputs) {
     if (!("nodeId" in slot.target)) continue;
-    const node = prompt[slot.target.nodeId];
-    if (!node) throw new Error(`workflow ${d.workflowKey}: slot ${slot.key} targets missing node ${slot.target.nodeId}`);
-    node.inputs[slot.target.field] = resolveValue(slot, values);
+    const value = resolveValue(slot, values);
+    for (const target of [slot.target, ...(slot.additionalTargets ?? [])]) {
+      const node = prompt[target.nodeId];
+      if (!node) {
+        throw new Error(
+          `workflow ${d.workflowKey}: slot ${slot.key} targets missing node ${target.nodeId}`,
+        );
+      }
+      node.inputs[target.field] = value;
+    }
   }
   return prompt;
 }

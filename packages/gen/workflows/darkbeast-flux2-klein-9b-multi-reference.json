@@ -309,6 +309,36 @@
         "field": "steps"
       },
       "default": 5
+    },
+    {
+      "key": "width",
+      "type": "int",
+      "target": {
+        "nodeId": "14",
+        "field": "width"
+      },
+      "additionalTargets": [
+        {
+          "nodeId": "15",
+          "field": "width"
+        }
+      ],
+      "default": 832
+    },
+    {
+      "key": "height",
+      "type": "int",
+      "target": {
+        "nodeId": "14",
+        "field": "height"
+      },
+      "additionalTargets": [
+        {
+          "nodeId": "15",
+          "field": "height"
+        }
+      ],
+      "default": 1216
     }
   ]
 }
