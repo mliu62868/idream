@@ -1,9 +1,9 @@
-import { Prisma } from "@prisma/client";
+import { Prisma, type GenerationJob as GenerationJobRow } from "@prisma/client";
 import { buildCharacterSystemPrompt } from "@idream/shared";
 import { parseCharacterReleaseAssetManifest } from "@idream/shared/admin";
 import { assignWorkflowReferenceSlots } from "@idream/shared/gen-workflow";
 import { resolveLocalBlobPath, resolveLocalBlobRoot } from "@idream/shared/storage/local-blob";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
@@ -87,7 +87,11 @@ import {
 } from "@/server/lib/auth";
 import { prisma } from "@/server/lib/db";
 import { nameMatch } from "@/server/lib/db/search";
-import { generationCostDreamcoins } from "@/server/lib/generation-pricing";
+import {
+  generationCostDreamcoins,
+  generationCostFromAuthority,
+  resolveGenerationPricingAuthority,
+} from "@/server/lib/generation-pricing";
 import { env } from "@/server/lib/env";
 import { AppError, Errors } from "@/server/lib/errors";
 import {
@@ -99,6 +103,7 @@ import {
   SHARED_IMMUTABLE_BLOB_LOCATOR_SCHEMA,
 } from "@/server/lib/media-asset-authority";
 import { mediaAssetAuthorityDependencies } from "@/server/modules/admin-v2/shared/media-asset-authority-dependencies";
+import { canonicalJsonHash } from "@/server/modules/admin-v2/shared/idempotency";
 import { isCharacterProjectPhaseTransitionAllowed } from "@/server/modules/admin-v2/shared/state-transition-authority";
 import {
   isReservedInternalEmail,
@@ -233,6 +238,17 @@ const generationControlsSchema = z
   })
   .strict();
 
+const generationQuoteAuthoritySchema = z
+  .object({
+    profileId: z.string().trim().min(1).max(180),
+    profileVersion: z.number().int().positive(),
+    routeFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+    pricingFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+    outputCount: z.number().int().min(1).max(8),
+    costDreamcoins: z.number().int().nonnegative(),
+  })
+  .strict();
+
 const generationJobSchema = z
   .object({
     mode: z.enum(["image", "video"]).default("image"),
@@ -249,6 +265,7 @@ const generationJobSchema = z
     outputCount: z.number().int().min(1).max(8).default(1),
     model: z.string().max(80).optional(),
     remixFeedItemId: z.string().max(180).optional(),
+    quoteAuthority: generationQuoteAuthoritySchema.optional(),
   })
   .superRefine((value, ctx) => {
     if (Boolean(value.characterId) === value.freeplay) {
@@ -488,7 +505,7 @@ function appendVaryHeader(headers: Headers, value: string) {
 
 async function dispatchV1Unsafe(request: Request, segments: string[]) {
   const method = request.method as ApiMethod;
-  const [resource, id, action, child] = segments;
+  const [resource, id, action, child, grandchild] = segments;
 
   if (!resource) return ok({ service: "idream-api", version: "v1" });
 
@@ -582,11 +599,27 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
 
   if (resource === "generation") {
     if (id === "config" && !action && method === "GET") return generationConfig(request);
+    if (id === "quote" && !action && method === "POST") return generationQuote(request);
     if (id === "jobs" && !action && method === "POST") return createGenerationJob(request);
     if (id === "voice" && !action && method === "POST") return createVoiceClip(request);
     if (id === "jobs" && !action && method === "GET") return listGenerationJobs(request);
     if (id === "jobs" && action && !child && method === "GET") return getGenerationJob(request, action);
-    if (id === "jobs" && action && child === "retry" && method === "POST") {
+    if (
+      id === "jobs" &&
+      action &&
+      child === "retry" &&
+      grandchild === "quote" &&
+      method === "POST"
+    ) {
+      return generationRetryQuote(request, action);
+    }
+    if (
+      id === "jobs" &&
+      action &&
+      child === "retry" &&
+      !grandchild &&
+      method === "POST"
+    ) {
       return retryGenerationJob(request, action);
     }
     if (id === "presets" && !action && method === "GET") return listPresets(request);
@@ -614,7 +647,12 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
     }
     if (id && action === "add-to-identity" && method === "POST") return addMediaToIdentity(request, id);
     if (id && action === "save-as-look" && method === "POST") return saveMediaAsCharacterLook(request, id);
-    if (id && action === "variation" && method === "POST") return createMediaVariation(request, id);
+    if (id && action === "variation" && child === "quote" && method === "POST") {
+      return mediaVariationQuote(request, id);
+    }
+    if (id && action === "variation" && !child && method === "POST") {
+      return createMediaVariation(request, id);
+    }
     if (id && action === "content" && method === "GET") return contentMedia(request, id);
     if (id && action === "download" && method === "GET") return downloadMedia(request, id);
     if (id && !action && method === "DELETE") return deleteMedia(request, id);
@@ -1516,11 +1554,17 @@ async function previewDraft(request: Request, id: string) {
     throw Errors.forbidden("Draft failed safety checks", moderation);
   }
 
-  const profile = await selectGenerationProfile("image", undefined, {
-    pinnedReferences: [],
-    sourceImageAssetId: null,
-    lookReferenceAssetId: null,
-  });
+  const profile = await selectGenerationProfile(
+    "image",
+    undefined,
+    {
+      pinnedReferences: [],
+      sourceImageAssetId: null,
+      lookReferenceAssetId: null,
+    },
+    true,
+    await entitlementMap(user.id),
+  );
   const recipe = await selectRecipe("image", "character");
   const allowedOrientations = jsonStringArray(profile.allowedOrientations);
   const orientation = allowedOrientations.includes("4:5")
@@ -1748,7 +1792,7 @@ async function submitDraft(request: Request, id: string) {
         },
       );
     }
-    await tx.characterVisualProfile.create({
+    const visualProfile = await tx.characterVisualProfile.create({
       data: characterVisualProfileCreateData({
         characterId: created.id,
         version: 1,
@@ -1764,6 +1808,11 @@ async function submitDraft(request: Request, id: string) {
         createdFrom: "create_preview",
       }),
     });
+    await createReferenceSetRevision(
+      tx,
+      visualProfile,
+      "create_preview",
+    );
     await tx.characterStats.create({ data: { characterId: created.id } });
     await tx.characterSubmission.create({
       data: {
@@ -1823,28 +1872,31 @@ async function generationConfig(request: Request) {
   const imageBaseCost = await generationCost("image", 1);
   const videoBaseCost = videoEnabled ? await generationCost("video", 1) : null;
 
-  const executableProfiles = profiles.filter(isExecutableGenerationProfile);
-  const visibleProfiles = executableProfiles.filter((profile) =>
+  const publicImageProfiles = await filterPublicTextToImageGenerationProfiles(
+    profiles.filter((profile) => profile.mode === "image"),
+  );
+  const executableVideoProfiles = profiles.filter(
+    (profile) =>
+      profile.mode === "video" && isExecutableGenerationProfile(profile),
+  );
+  const visibleImageProfiles = publicImageProfiles.filter((profile) =>
     profile.requiredEntitlement
       ? Boolean(entitlements[profile.requiredEntitlement])
       : true,
   );
-  const imageProfiles = visibleProfiles.filter((profile) => profile.mode === "image");
-  const videoProfiles = visibleProfiles.filter((profile) => profile.mode === "video");
-  const globalImageProfiles = executableProfiles.filter(
-    (profile) => profile.mode === "image",
-  );
-  const globalVideoProfiles = executableProfiles.filter(
-    (profile) => profile.mode === "video",
+  const videoProfiles = executableVideoProfiles.filter((profile) =>
+    profile.requiredEntitlement
+      ? Boolean(entitlements[profile.requiredEntitlement])
+      : true,
   );
   const imageRecipes = recipes.filter((recipe) => recipe.mode === "image");
   const videoRecipes = recipes.filter((recipe) => recipe.mode === "video");
-  const defaultImageProfile = imageProfiles[0];
+  const defaultImageProfile = visibleImageProfiles[0];
   const imageAvailability = !defaultImageProfile
     ? {
         state: "unavailable" as const,
         reason:
-          globalImageProfiles.length > 0
+          publicImageProfiles.length > 0
             ? ("entitlement_required" as const)
             : ("no_active_model" as const),
       }
@@ -1861,9 +1913,9 @@ async function generationConfig(request: Request) {
       }
     : videoProfiles.length === 0
       ? {
-          state: "unavailable" as const,
-          reason:
-            globalVideoProfiles.length > 0
+        state: "unavailable" as const,
+        reason:
+            executableVideoProfiles.length > 0
               ? ("entitlement_required" as const)
               : ("no_active_model" as const),
         }
@@ -1905,7 +1957,7 @@ async function generationConfig(request: Request) {
         : [],
       models:
         imageAvailability.state === "available"
-          ? imageProfiles.map(profileConfigDTO)
+          ? visibleImageProfiles.map(profileConfigDTO)
           : [],
       recipes: imageRecipes.map(recipeConfigDTO),
     },
@@ -1928,6 +1980,77 @@ async function generationConfig(request: Request) {
       controls: preset.controls,
       visibility: preset.visibility,
     })),
+  });
+}
+
+async function generationQuote(request: Request) {
+  const ctx = await getAuthCtx(request);
+  const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
+  const body = generationJobSchema.parse(await jsonBody(request));
+  return generationQuoteForUser(user.id, body, "public_generator");
+}
+
+async function generationQuoteForUser(
+  userId: string,
+  body: GenerationCreateBody,
+  profileSelectionAuthority: GenerationProfileSelectionAuthority,
+  options: {
+    source?: GenerationSource;
+  } = {},
+) {
+  const plan = await resolveGenerationPlanForUser(userId, body, {
+    source: options.source,
+    profileSelectionAuthority,
+    bootstrapVisualProfile: false,
+  });
+  const routeFingerprint = generationPlanRouteFingerprint(plan);
+  const pricingAuthority = await resolveGenerationPricingAuthority(body.mode);
+  const pricingFingerprint = generationPricingFingerprint(pricingAuthority);
+  const costs = Array.from(
+    { length: plan.profile.maxCount },
+    (_, index) => {
+      const outputCount = index + 1;
+      return {
+        outputCount,
+        costDreamcoins: generationCostFromAuthority(
+          pricingAuthority,
+          outputCount,
+          plan.profile.costMultiplier,
+        ),
+      };
+    },
+  );
+  const balance = await dreamcoinBalance(userId);
+  const orientations = jsonStringArray(plan.profile.allowedOrientations);
+  const defaultOrientation = orientations[0];
+  if (!defaultOrientation) {
+    throw Errors.unavailable(
+      "No executable orientation is configured for this generation route",
+    );
+  }
+
+  return ok({
+    quote: {
+      mode: body.mode,
+      profileId: plan.profile.profileKey,
+      profileVersion: plan.profile.version,
+      routeFingerprint,
+      pricing: {
+        ruleId: pricingAuthority.id,
+        ruleKey: pricingAuthority.ruleKey,
+        version: pricingAuthority.version,
+        effectiveFrom:
+          pricingAuthority.effectiveFrom?.toISOString() ?? null,
+        fingerprint: pricingFingerprint,
+      },
+      orientations,
+      defaultOrientation,
+      maxCount: plan.profile.maxCount,
+      costs,
+      balance,
+    },
   });
 }
 
@@ -1982,9 +2105,28 @@ async function createGenerationJob(request: Request) {
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   const body = generationJobSchema.parse(await jsonBody(request));
-  const idempotencyKey = normalizeHeader(request.headers.get("idempotency-key"));
-  const source = await resolveFeedRemixGenerationSource(user.id, body, idempotencyKey);
-  const job = await createGenerationJobForUser(user.id, body, { idempotencyKey, source });
+  const idempotencyKey = requireGenerationWriteIdempotencyKey(request);
+  const requestFingerprint = generationWriteRequestFingerprint(
+    "generation.create",
+    body,
+  );
+  const existing = await findExistingGenerationJob(user.id, {
+    idempotencyKey,
+    requestFingerprint,
+  });
+  const job = existing ?? await (async () => {
+    const source = await resolveFeedRemixGenerationSource(
+      user.id,
+      body,
+      idempotencyKey,
+    );
+    return createGenerationJobForUser(user.id, body, {
+      idempotencyKey,
+      requestFingerprint,
+      source,
+      profileSelectionAuthority: "public_generator",
+    });
+  })();
   const queued = await prisma.generationJob.findUniqueOrThrow({
     where: { id: job.id },
     include: generationJobInclude(),
@@ -2000,10 +2142,62 @@ interface GenerationSource {
   sourceMeta?: Prisma.InputJsonValue;
 }
 
+function requireGenerationWriteIdempotencyKey(request: Request) {
+  const value = request.headers.get("idempotency-key")?.trim();
+  if (!value) {
+    throw Errors.badRequest(
+      "Idempotency-Key header is required for generation writes",
+    );
+  }
+  if (value.length < 8 || value.length > 160) {
+    throw Errors.badRequest(
+      "Idempotency-Key must be between 8 and 160 characters",
+    );
+  }
+  return value;
+}
+
+function generationWriteRequestFingerprint(
+  commandType: "generation.create" | "media.variation.create",
+  body: unknown,
+  targetId?: string,
+) {
+  const semanticBody = isRecord(body)
+    ? Object.fromEntries(
+        Object.entries(body).filter(([key]) => key !== "quoteAuthority"),
+      )
+    : body;
+  return canonicalJsonHash({
+    schemaVersion: "generation-write-request-v1",
+    commandType,
+    targetId: targetId ?? null,
+    body: semanticBody,
+  });
+}
+
+function assertGenerationJobRequestFingerprint(
+  job: Pick<GenerationJobRow, "id" | "momentSpec">,
+  requestFingerprint?: string,
+) {
+  if (!requestFingerprint) return;
+  const storedFingerprint = jsonRecord(job.momentSpec).requestFingerprint;
+  // Jobs created before fingerprint binding remain replayable by their durable
+  // user/idempotency tuple. Every new public generation write pins the hash.
+  if (
+    typeof storedFingerprint === "string" &&
+    storedFingerprint !== requestFingerprint
+  ) {
+    throw Errors.conflict(
+      "Idempotency-Key was already used for a different generation request",
+      { generationJobId: job.id },
+    );
+  }
+}
+
 async function resolveFeedRemixGenerationSource(
   userId: string,
   body: GenerationCreateBody,
-  idempotencyKey?: string | null,
+  idempotencyKey: string,
 ): Promise<GenerationSource | undefined> {
   const itemId = body.remixFeedItemId?.trim();
   if (!itemId) return undefined;
@@ -2017,7 +2211,7 @@ async function resolveFeedRemixGenerationSource(
   }
   return {
     sourceType: "feed_remix",
-    sourceId: `feed:${itemId}:user:${userId}:remix:${idempotencyKey ?? cryptoRandomId("feedremix")}`,
+    sourceId: `feed:${itemId}:user:${userId}:remix:${idempotencyKey}`,
     sourceMeta: toInputJson({
       feedItemId: itemId,
       sourceCharacterId: character.id,
@@ -2244,19 +2438,35 @@ function extractVisualTraitRecord(value: Prisma.JsonValue, preferredKey: string)
 // a duplicate request to the SAME existing job.
 async function findExistingGenerationJob(
   userId: string,
-  options: { idempotencyKey?: string | null; source?: GenerationSource },
+  options: {
+    idempotencyKey?: string | null;
+    requestFingerprint?: string;
+    source?: GenerationSource;
+  },
 ) {
   if (options.idempotencyKey) {
     const existing = await prisma.generationJob.findFirst({
       where: { userId, idempotencyKey: options.idempotencyKey },
     });
-    if (existing) return existing;
+    if (existing) {
+      assertGenerationJobRequestFingerprint(
+        existing,
+        options.requestFingerprint,
+      );
+      return existing;
+    }
   }
   if (options.source) {
     const existing = await prisma.generationJob.findFirst({
       where: { sourceType: options.source.sourceType, sourceId: options.source.sourceId },
     });
-    if (existing) return existing;
+    if (existing) {
+      assertGenerationJobRequestFingerprint(
+        existing,
+        options.requestFingerprint,
+      );
+      return existing;
+    }
   }
   return null;
 }
@@ -2268,7 +2478,10 @@ function isUniqueConstraintError(error: unknown): boolean {
 async function resolveGenerationVisualProfile(
   character: GenerationPromptCharacter,
   requestedProfileId?: string,
-  opts: { fallbackToActiveOnStale?: boolean } = {},
+  opts: {
+    fallbackToActiveOnStale?: boolean;
+    bootstrapIfMissing?: boolean;
+  } = {},
 ): Promise<GenerationVisualProfile | null> {
   if (requestedProfileId) {
     const profile = await prisma.characterVisualProfile.findFirst({
@@ -2278,17 +2491,27 @@ async function resolveGenerationVisualProfile(
     if (!profile) {
       // Chat path (fallbackToActiveOnStale): async fire-and-forget, so a stale/unknown
       // passport id must never fail the image — fall back to whatever is active now.
-      if (opts.fallbackToActiveOnStale) return resolveActiveVisualProfile(character);
+      if (opts.fallbackToActiveOnStale) {
+        return resolveActiveVisualProfile(character, {
+          bootstrapIfMissing: opts.bootstrapIfMissing,
+        });
+      }
       throw Errors.notFound("Character visual profile not found");
     }
     if (profile.status === "archived") {
-      if (opts.fallbackToActiveOnStale) return resolveActiveVisualProfile(character);
+      if (opts.fallbackToActiveOnStale) {
+        return resolveActiveVisualProfile(character, {
+          bootstrapIfMissing: opts.bootstrapIfMissing,
+        });
+      }
       throw Errors.badRequest("Character visual profile is archived", { visualProfileId: requestedProfileId });
     }
     return profile;
   }
 
-  return resolveActiveVisualProfile(character);
+  return resolveActiveVisualProfile(character, {
+    bootstrapIfMissing: opts.bootstrapIfMissing,
+  });
 }
 
 async function resolveGenerationLook(
@@ -2508,6 +2731,7 @@ async function assertRetryGenerationReferenceAuthoritiesInTx(
 
 async function resolveActiveVisualProfile(
   character: GenerationPromptCharacter,
+  options: { bootstrapIfMissing?: boolean } = {},
 ): Promise<GenerationVisualProfile | null> {
   const legacyReleaseAuthority = await prisma.$transaction((tx) =>
     loadLockedLiveEditorialLegacyGenerationAuthority(tx, character.id)
@@ -2522,6 +2746,7 @@ async function resolveActiveVisualProfile(
     orderBy: { version: "desc" },
   });
   if (active) return active;
+  if (options.bootstrapIfMissing === false) return null;
   return bootstrapCharacterVisualProfile(character);
 }
 
@@ -2557,18 +2782,20 @@ async function bootstrapCharacterVisualProfile(
   });
 }
 
-async function createGenerationJobForUser(
+type GenerationProfileSelectionAuthority =
+  | "public_generator"
+  | "specialized";
+
+async function resolveGenerationPlanForUser(
   userId: string,
   body: GenerationCreateBody,
   options: {
-    idempotencyKey?: string | null;
     source?: GenerationSource;
     fallbackToActiveOnStaleVisualProfile?: boolean;
+    profileSelectionAuthority?: GenerationProfileSelectionAuthority;
+    bootstrapVisualProfile?: boolean;
   } = {},
 ) {
-  const preexisting = await findExistingGenerationJob(userId, options);
-  if (preexisting) return preexisting;
-
   const entitlements = await entitlementMap(userId);
   const selectedModel = body.model ?? body.controls.model;
   if (body.mode === "video" && !entitlements.video_generation) {
@@ -2577,10 +2804,16 @@ async function createGenerationJobForUser(
   if (body.mode === "video" && !(await featureFlagEnabled("video_gen"))) {
     throw Errors.forbidden("Video generation is disabled");
   }
-  const preflightProfile = await selectGenerationProfile(
-    body.mode,
-    selectedModel,
-  );
+  const preflightProfile =
+    body.mode === "video"
+      ? await selectGenerationProfile(
+          body.mode,
+          selectedModel,
+          undefined,
+          false,
+          entitlements,
+        )
+      : null;
   const systemPromptSource = isTrustedGenerationPromptSource(
     options.source?.sourceType,
   );
@@ -2597,12 +2830,16 @@ async function createGenerationJobForUser(
     body.mode,
     body.characterId ? "character" : "freeplay",
   );
-  const character = body.characterId ? await generationCharacter(body.characterId, userId) : null;
+  const character = body.characterId
+    ? await generationCharacter(body.characterId, userId)
+    : null;
   const consistencyMode = body.consistencyMode ?? "balanced";
   const visualProfile =
     body.mode === "image" && character
       ? await resolveGenerationVisualProfile(character, body.visualProfileId, {
-          fallbackToActiveOnStale: options.fallbackToActiveOnStaleVisualProfile,
+          fallbackToActiveOnStale:
+            options.fallbackToActiveOnStaleVisualProfile,
+          bootstrapIfMissing: options.bootstrapVisualProfile !== false,
         })
       : null;
   const selectedLook = await resolveGenerationLook(
@@ -2611,10 +2848,12 @@ async function createGenerationJobForUser(
     visualProfile?.id ?? null,
     body.controls.lookId,
   );
-  const lookSnapshot = selectedLook ? characterLookSnapshot(selectedLook) : null;
-  const requestedLookReferenceAssetId = selectedLook?.referenceAssetId ?? null;
-  const requestedSourceImageAssetId = (body.controls as Record<string, unknown>).sourceImageAssetId;
-  const preflightReferenceRequirements =
+  const requestedLookReferenceAssetId =
+    selectedLook?.referenceAssetId ?? null;
+  const requestedSourceImageAssetId = (
+    body.controls as Record<string, unknown>
+  ).sourceImageAssetId;
+  const referenceRequirements =
     body.mode === "image" && character && visualProfile
       ? await generationReferenceRouteRequirements(visualProfile.id)
       : [];
@@ -2622,42 +2861,64 @@ async function createGenerationJobForUser(
     typeof requestedSourceImageAssetId === "string";
   const requiresReferenceRouting =
     body.mode === "image" &&
-    (preflightReferenceRequirements.length > 0 ||
+    (referenceRequirements.length > 0 ||
       hasRequestedSourceImage ||
       requestedLookReferenceAssetId !== null);
+  const requirePublicTextToImageProfile =
+    body.mode === "image" &&
+    (
+      !requiresReferenceRouting ||
+      (
+        options.profileSelectionAuthority === "public_generator" &&
+        Boolean(selectedModel)
+      )
+    );
   const profile = requiresReferenceRouting
-    ? await selectGenerationProfile(body.mode, selectedModel, {
-        pinnedReferences: preflightReferenceRequirements,
-        sourceImageAssetId: hasRequestedSourceImage
-          ? requestedSourceImageAssetId
-          : null,
-        lookReferenceAssetId: requestedLookReferenceAssetId,
-      })
+    ? await selectGenerationProfile(
+        body.mode,
+        selectedModel,
+        {
+          pinnedReferences: referenceRequirements,
+          sourceImageAssetId: hasRequestedSourceImage
+            ? requestedSourceImageAssetId
+            : null,
+          lookReferenceAssetId: requestedLookReferenceAssetId,
+        },
+        requirePublicTextToImageProfile,
+        entitlements,
+      )
     : body.mode === "image"
-      ? await selectGenerationProfile(body.mode, selectedModel, {
-          pinnedReferences: [],
-          sourceImageAssetId: null,
-          lookReferenceAssetId: null,
-        })
-      : preflightProfile;
-  if (profile.requiredEntitlement && !entitlements[profile.requiredEntitlement]) {
+      ? await selectGenerationProfile(
+          body.mode,
+          selectedModel,
+          {
+            pinnedReferences: [],
+            sourceImageAssetId: null,
+            lookReferenceAssetId: null,
+          },
+          requirePublicTextToImageProfile,
+          entitlements,
+        )
+      : preflightProfile!;
+  if (
+    profile.requiredEntitlement &&
+    !entitlements[profile.requiredEntitlement]
+  ) {
     throw Errors.paymentRequired("Selected model requires entitlement", {
       entitlement: profile.requiredEntitlement,
     });
   }
-  if (body.outputCount > profile.maxCount) {
-    throw Errors.badRequest("Output count exceeds selected model limit", {
-      maxCount: profile.maxCount,
-    });
-  }
 
-  const workflowDescriptor = body.mode === "image"
-    ? await generationWorkflowDescriptor(profile.workflowKey ?? profile.pipelineModel)
-    : null;
+  const workflowDescriptor =
+    body.mode === "image"
+      ? await generationWorkflowDescriptor(
+          profile.workflowKey ?? profile.pipelineModel,
+        )
+      : null;
   if (
     body.mode === "image" &&
     hasRequestedSourceImage &&
-    preflightReferenceRequirements.length === 0
+    referenceRequirements.length === 0
   ) {
     assertGenerationProfileCanDispatchReferences({
       profile,
@@ -2667,11 +2928,227 @@ async function createGenerationJobForUser(
       lookReferenceAssetId: requestedLookReferenceAssetId,
     });
   }
+
+  return {
+    character,
+    consistencyMode,
+    entitlements,
+    hasRequestedSourceImage,
+    profile,
+    recipe,
+    referenceRequirements,
+    requestedLookReferenceAssetId,
+    requestedSourceImageAssetId,
+    selectedLook,
+    selectedModel,
+    visualProfile,
+    workflowDescriptor,
+  };
+}
+
+function generationPlanRouteFingerprint(
+  plan: Awaited<ReturnType<typeof resolveGenerationPlanForUser>>,
+) {
+  return createHash("sha256")
+    .update(JSON.stringify({
+      schemaVersion: "generation-plan-v1",
+      mode: plan.profile.mode,
+      profileId: plan.profile.profileKey,
+      profileVersion: plan.profile.version,
+      workflowKey:
+        plan.profile.workflowKey ?? plan.profile.pipelineModel,
+      workflowVersion:
+        plan.workflowDescriptor?.version ?? null,
+      workflowIdentity:
+        plan.workflowDescriptor?.identity ?? null,
+      recipeId: plan.recipe.recipeKey,
+      recipeVersion: plan.recipe.version,
+      characterId: plan.character?.id ?? null,
+      visualProfileId: plan.visualProfile?.id ?? null,
+      visualProfileVersion: plan.visualProfile?.version ?? null,
+      referenceRequirements: plan.referenceRequirements,
+      sourceImageAssetId:
+        typeof plan.requestedSourceImageAssetId === "string"
+          ? plan.requestedSourceImageAssetId
+          : null,
+      lookId: plan.selectedLook?.id ?? null,
+      lookUpdatedAt: plan.selectedLook?.updatedAt.toISOString() ?? null,
+      lookReferenceAssetId:
+        plan.selectedLook?.referenceAssetId ?? null,
+      allowedOrientations: jsonStringArray(
+        plan.profile.allowedOrientations,
+      ),
+      maxCount: plan.profile.maxCount,
+      costMultiplier: plan.profile.costMultiplier,
+    }))
+    .digest("hex");
+}
+
+function generationPricingFingerprint(
+  authority: Awaited<ReturnType<typeof resolveGenerationPricingAuthority>>,
+) {
+  return createHash("sha256")
+    .update(JSON.stringify({
+      schemaVersion: "generation-pricing-v1",
+      id: authority.id,
+      ruleKey: authority.ruleKey,
+      version: authority.version,
+      baseCost: authority.baseCost,
+      effectiveFrom: authority.effectiveFrom?.toISOString() ?? null,
+      updatedAt: authority.updatedAt.toISOString(),
+    }))
+    .digest("hex");
+}
+
+async function createGenerationJobForUser(
+  userId: string,
+  body: GenerationCreateBody,
+  options: {
+    idempotencyKey?: string | null;
+    requestFingerprint?: string;
+    source?: GenerationSource;
+    fallbackToActiveOnStaleVisualProfile?: boolean;
+    profileSelectionAuthority?: GenerationProfileSelectionAuthority;
+    requireQuoteAuthority?: boolean;
+  } = {},
+) {
+  const preexisting = await findExistingGenerationJob(userId, options);
+  if (preexisting) return preexisting;
+  if (
+    (
+      options.profileSelectionAuthority === "public_generator" ||
+      options.requireQuoteAuthority
+    ) &&
+    !body.quoteAuthority
+  ) {
+    throw Errors.conflict(
+      "An exact generation quote is required before submitting.",
+    );
+  }
+
+  const plan = await resolveGenerationPlanForUser(userId, body, {
+    source: options.source,
+    fallbackToActiveOnStaleVisualProfile:
+      options.fallbackToActiveOnStaleVisualProfile,
+    profileSelectionAuthority: options.profileSelectionAuthority,
+    // A public write validates route, price, count, orientation, and balance
+    // before a legacy Character bootstrap can create any row.
+    bootstrapVisualProfile:
+      options.profileSelectionAuthority !== "public_generator" &&
+      !options.requireQuoteAuthority,
+  });
+  const {
+    character,
+    consistencyMode,
+    entitlements,
+    profile,
+    recipe,
+    requestedLookReferenceAssetId,
+    requestedSourceImageAssetId,
+    selectedLook,
+    workflowDescriptor,
+  } = plan;
+  const lookSnapshot = selectedLook ? characterLookSnapshot(selectedLook) : null;
+  const allowedOrientations = jsonStringArray(profile.allowedOrientations);
   const orientation =
     body.orientation ??
     body.controls.orientation ??
-    jsonStringArray(profile.allowedOrientations)[0] ??
+    allowedOrientations[0] ??
     "4:5";
+  const pricingAuthority = await resolveGenerationPricingAuthority(body.mode);
+  const pricingFingerprint = generationPricingFingerprint(pricingAuthority);
+  const cost = generationCostFromAuthority(
+    pricingAuthority,
+    body.outputCount,
+    profile.costMultiplier,
+  );
+  const routeFingerprint = generationPlanRouteFingerprint(plan);
+  if (
+    body.quoteAuthority &&
+    (
+      body.quoteAuthority.profileId !== profile.profileKey ||
+      body.quoteAuthority.profileVersion !== profile.version ||
+      body.quoteAuthority.routeFingerprint !== routeFingerprint ||
+      body.quoteAuthority.pricingFingerprint !== pricingFingerprint ||
+      body.quoteAuthority.outputCount !== body.outputCount ||
+      body.quoteAuthority.costDreamcoins !== cost
+    )
+  ) {
+    throw Errors.conflict(
+      "Generation quote changed. Refresh the exact quote before submitting.",
+      {
+        quoted: body.quoteAuthority,
+        current: {
+          profileId: profile.profileKey,
+          profileVersion: profile.version,
+          routeFingerprint,
+          pricingFingerprint,
+          outputCount: body.outputCount,
+          costDreamcoins: cost,
+        },
+      },
+    );
+  }
+  if (body.outputCount > profile.maxCount) {
+    throw Errors.badRequest("Output count exceeds selected model limit", {
+      maxCount: profile.maxCount,
+      profileId: profile.profileKey,
+      profileVersion: profile.version,
+    });
+  }
+  if (!allowedOrientations.includes(orientation)) {
+    throw Errors.badRequest(
+      "Orientation is unavailable for the selected generation route",
+      {
+        orientation,
+        allowedOrientations,
+        profileId: profile.profileKey,
+        profileVersion: profile.version,
+      },
+    );
+  }
+  const availableBalance = await dreamcoinBalance(userId);
+  if (availableBalance < cost) {
+    throw Errors.paymentRequired("Insufficient DreamCoins", {
+      required: cost,
+      available: availableBalance,
+    });
+  }
+  const acceptedQuoteAuthority = body.quoteAuthority
+    ? {
+        schemaVersion: "generation-quote-authority-v1",
+        profileId: profile.profileKey,
+        profileVersion: profile.version,
+        routeFingerprint,
+        pricing: {
+          ruleId: pricingAuthority.id,
+          ruleKey: pricingAuthority.ruleKey,
+          version: pricingAuthority.version,
+          effectiveFrom:
+            pricingAuthority.effectiveFrom?.toISOString() ?? null,
+          fingerprint: pricingFingerprint,
+        },
+        outputCount: body.outputCount,
+        costDreamcoins: cost,
+      }
+    : null;
+
+  let visualProfile = plan.visualProfile;
+  if (
+    (
+      options.profileSelectionAuthority === "public_generator" ||
+      options.requireQuoteAuthority
+    ) &&
+    body.mode === "image" &&
+    character &&
+    !visualProfile
+  ) {
+    visualProfile = await resolveGenerationVisualProfile(
+      character,
+      body.visualProfileId,
+      { bootstrapIfMissing: true },
+    );
+  }
   const dimensions =
     body.mode === "image"
       ? dimensionsForImageOrientation({
@@ -2680,9 +3157,12 @@ async function createGenerationJobForUser(
           defaultHeight: profile.defaultHeight,
         })
       : { width: profile.defaultWidth, height: profile.defaultHeight };
-  const momentSpec = buildMomentSpec(body, options.source);
+  const momentSpec = buildMomentSpec(
+    body,
+    options.source,
+    options.requestFingerprint,
+  );
   const seed = body.seed ?? visualProfile?.defaultSeed ?? null;
-  const cost = await generationCost(body.mode, body.outputCount, profile.costMultiplier);
   const presetFragment = await resolvePresetPromptFragment(body.controls, userId);
   const prompt = buildGenerationPrompt({
     mode: body.mode,
@@ -2713,7 +3193,13 @@ async function createGenerationJobForUser(
       const existing = await tx.generationJob.findFirst({
         where: { sourceType: options.source.sourceType, sourceId: options.source.sourceId },
       });
-      if (existing) return existing;
+      if (existing) {
+        assertGenerationJobRequestFingerprint(
+          existing,
+          options.requestFingerprint,
+        );
+        return existing;
+      }
     }
     if (character) {
       await lockCharacterGenerationAuthority(tx, character.id);
@@ -2835,6 +3321,7 @@ async function createGenerationJobForUser(
       lookReferenceAssetId: requestedLookReferenceAssetId ?? undefined,
       workflowIdentity: workflowDescriptor?.identity,
       consistencyMode: visualProfile ? consistencyMode : undefined,
+      generationQuoteAuthority: acceptedQuoteAuthority ?? undefined,
       legacyReleaseAuthority: legacyReleaseAuthority ?? undefined,
       visualIdentity: visualProfile
         ? {
@@ -3002,6 +3489,7 @@ export async function createChatImageGenerationJob(payload: ChatImageRequestedPa
         sourceId: payload.attachmentId,
         sourceMeta: toInputJson({
           sessionId: payload.sessionId,
+          exchangeId: payload.exchangeId ?? null,
           messageId: payload.messageId,
           characterReleaseId: payload.characterReleaseId ?? null,
           promptHint: payload.promptHint,
@@ -3381,7 +3869,11 @@ function resolvedReferenceWeight(
   return anchor ? 0.65 : 0.45;
 }
 
-function buildMomentSpec(body: GenerationCreateBody, source?: GenerationSource) {
+function buildMomentSpec(
+  body: GenerationCreateBody,
+  source?: GenerationSource,
+  requestFingerprint?: string,
+) {
   const controls = body.controls as Record<string, unknown>;
   const rawInput = cleanPromptText(body.prompt, 2_000) || "A natural in-character moment";
   const continuitySources: string[] = [];
@@ -3394,6 +3886,7 @@ function buildMomentSpec(body: GenerationCreateBody, source?: GenerationSource) 
   return pruneUndefined({
     schemaVersion: "1",
     parserVersion: "moment-direct-v1",
+    requestFingerprint,
     rawInput,
     scene: rawInput,
     action: typeof controls.pose === "string" ? controls.pose : undefined,
@@ -3742,6 +4235,234 @@ function requireGenerationRetryIdempotencyKey(request: Request) {
   return value;
 }
 
+function assertGenerationJobIsRetryable(
+  job: GenerationJobRow,
+): asserts job is GenerationJobRow & { mode: "image" | "video" } {
+  if (job.status === "blocked") {
+    throw Errors.forbidden("Blocked generation jobs cannot be retried");
+  }
+  if (job.status !== "failed") {
+    throw Errors.badRequest("Only failed generation jobs can be retried");
+  }
+  if (job.mode !== "image" && job.mode !== "video") {
+    throw Errors.badRequest("Unsupported generation mode");
+  }
+}
+
+async function resolveGenerationRetryAuthority(
+  userId: string,
+  job: GenerationJobRow & { mode: "image" | "video" },
+) {
+  const entitlements = await entitlementMap(userId);
+  const controls = jsonRecord(job.controls);
+  const retrySourceImageAssetId = stringFromRecord(
+    controls,
+    "sourceImageAssetId",
+  );
+  const retryLookReferenceAssetId =
+    stringFromRecord(controls, "lookReferenceAssetId") ??
+    stringFromRecord(jsonRecord(job.lookSnapshot), "referenceAssetId");
+  const retryPinnedReferences = generationRequirementsFromManifest(
+    job.referenceManifest,
+  );
+  const retryReferenceRequirements =
+    job.mode === "image"
+      ? {
+          pinnedReferences: retryPinnedReferences,
+          sourceImageAssetId: retrySourceImageAssetId ?? null,
+          lookReferenceAssetId: retryLookReferenceAssetId ?? null,
+        }
+      : undefined;
+  const exactProfiles =
+    job.profileId && job.profileVersion !== null
+      ? await prisma.generationModelProfile.findMany({
+          where: {
+            mode: job.mode,
+            version: job.profileVersion,
+            status: "active",
+            enabled: true,
+            OR: [
+              { profileKey: job.profileId },
+              { id: job.profileId },
+            ],
+          },
+          take: 2,
+        })
+      : [];
+  const exactProfile =
+    exactProfiles.find(
+      (candidate) => candidate.profileKey === job.profileId,
+    ) ?? exactProfiles[0];
+  const profile = exactProfile && isExecutableGenerationProfile(exactProfile)
+    ? exactProfile
+    : generationJobRequiresPinnedLegacyAuthority(job) &&
+        !job.profileId &&
+        job.profileVersion === null
+      ? await selectGenerationProfile(
+          job.mode,
+          job.model ?? undefined,
+          retryReferenceRequirements,
+          false,
+          entitlements,
+        )
+      : null;
+  if (!profile) {
+    throw Errors.conflict(
+      "The failed generation job's pinned profile version is unavailable",
+      {
+        generationJobId: job.id,
+        pinnedProfileId: job.profileId,
+        pinnedProfileVersion: job.profileVersion,
+        resolvedProfileId: null,
+        resolvedProfileVersion: null,
+      },
+    );
+  }
+  if (generationJobRequiresPinnedLegacyAuthority(job)) {
+    await prisma.$transaction((tx) =>
+      assertPinnedLegacyCharacterGenerationAuthority(tx, {
+        generationJobId: job.id,
+        characterId: job.characterId!,
+        controls: job.controls,
+      })
+    );
+  }
+  const workflowDescriptor =
+    job.mode === "image"
+      ? await generationWorkflowDescriptor(
+          profile.workflowKey ?? profile.pipelineModel,
+        )
+      : null;
+  if (
+    job.mode === "image" &&
+    (
+      retryPinnedReferences.length > 0 ||
+      retrySourceImageAssetId ||
+      retryLookReferenceAssetId
+    )
+  ) {
+    assertGenerationProfileCanDispatchReferences({
+      profile,
+      workflowDescriptor,
+      pinnedReferences: retryPinnedReferences,
+      sourceImageAssetId: retrySourceImageAssetId ?? null,
+      lookReferenceAssetId: retryLookReferenceAssetId ?? null,
+    });
+  }
+  if (
+    profile.requiredEntitlement &&
+    !entitlements[profile.requiredEntitlement]
+  ) {
+    throw Errors.paymentRequired("Selected model requires entitlement", {
+      entitlement: profile.requiredEntitlement,
+    });
+  }
+  const allowedOrientations = jsonStringArray(profile.allowedOrientations);
+  if (
+    job.outputCount > profile.maxCount ||
+    job.orientation === null ||
+    !allowedOrientations.includes(job.orientation)
+  ) {
+    throw Errors.conflict(
+      "The failed generation job no longer fits its pinned retry route",
+      {
+        generationJobId: job.id,
+        outputCount: job.outputCount,
+        maxCount: profile.maxCount,
+        orientation: job.orientation,
+        allowedOrientations,
+      },
+    );
+  }
+  const pricingAuthority = await resolveGenerationPricingAuthority(job.mode);
+  const pricingFingerprint =
+    generationPricingFingerprint(pricingAuthority);
+  const cost = generationCostFromAuthority(
+    pricingAuthority,
+    job.outputCount,
+    profile.costMultiplier,
+  );
+  const retryReferenceAssetIds = [
+    ...new Set([
+      ...jsonStringArray(job.referenceAssetIds),
+      ...retryPinnedReferences.map((reference) => reference.assetId),
+    ]),
+  ];
+  const routeFingerprint = createHash("sha256")
+    .update(JSON.stringify({
+      schemaVersion: "generation-retry-plan-v1",
+      generationJobId: job.id,
+      generationJobVersion: job.version,
+      mode: job.mode,
+      profileId: profile.profileKey,
+      profileVersion: profile.version,
+      workflowKey:
+        profile.workflowKey ?? profile.pipelineModel,
+      workflowVersion: workflowDescriptor?.version ?? null,
+      characterId: job.characterId,
+      visualProfileId: job.visualProfileId,
+      visualProfileVersion: job.visualProfileVersion,
+      referenceSetRevisionId: job.referenceSetRevisionId,
+      retryPinnedReferences,
+      sourceImageAssetId: retrySourceImageAssetId ?? null,
+      lookReferenceAssetId: retryLookReferenceAssetId ?? null,
+      orientation: job.orientation,
+      outputCount: job.outputCount,
+      costMultiplier: profile.costMultiplier,
+    }))
+    .digest("hex");
+
+  return {
+    allowedOrientations,
+    controls,
+    cost,
+    entitlements,
+    pricingAuthority,
+    pricingFingerprint,
+    profile,
+    retryLookReferenceAssetId,
+    retryPinnedReferences,
+    retryReferenceAssetIds,
+    retrySourceImageAssetId,
+    routeFingerprint,
+    workflowDescriptor,
+  };
+}
+
+async function generationRetryQuote(request: Request, id: string) {
+  const ctx = await getAuthCtx(request);
+  const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
+  const job = await prisma.generationJob.findFirst({
+    where: { id, userId: user.id },
+  });
+  if (!job) throw Errors.notFound("Generation job not found");
+  assertGenerationJobIsRetryable(job);
+  const authority = await resolveGenerationRetryAuthority(user.id, job);
+  const balance = await dreamcoinBalance(user.id);
+  return ok({
+    quote: {
+      mode: job.mode,
+      generationJobId: job.id,
+      profileId: authority.profile.profileKey,
+      profileVersion: authority.profile.version,
+      routeFingerprint: authority.routeFingerprint,
+      pricing: {
+        ruleId: authority.pricingAuthority.id,
+        ruleKey: authority.pricingAuthority.ruleKey,
+        version: authority.pricingAuthority.version,
+        effectiveFrom:
+          authority.pricingAuthority.effectiveFrom?.toISOString() ?? null,
+        fingerprint: authority.pricingFingerprint,
+      },
+      outputCount: job.outputCount,
+      costDreamcoins: authority.cost,
+      balance,
+    },
+  });
+}
+
 async function retryGenerationJob(request: Request, id: string) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
@@ -3762,86 +4483,85 @@ async function retryGenerationJob(request: Request, id: string) {
         "Idempotency-Key was already used for a different generation request",
       );
     }
-    if (generationJobRequiresPinnedLegacyAuthority(job)) {
-      await prisma.$transaction((tx) =>
-        assertPinnedLegacyCharacterGenerationAuthority(tx, {
-          generationJobId: job.id,
-          characterId: job.characterId!,
-          controls: job.controls,
-        })
-      );
-    }
     const existing = await prisma.generationJob.findUniqueOrThrow({
       where: { id: replay.id },
       include: generationJobInclude(),
     });
     return ok(generationJobResponse(existing), { status: 202 });
   }
-  if (job.status === "blocked") {
-    throw Errors.forbidden("Blocked generation jobs cannot be retried");
+  assertGenerationJobIsRetryable(job);
+  const body = z
+    .object({
+      quoteAuthority: generationQuoteAuthoritySchema.optional(),
+    })
+    .strict()
+    .parse(await jsonBody(request));
+  if (!body.quoteAuthority) {
+    throw Errors.conflict(
+      "An exact generation retry quote is required before retrying.",
+    );
   }
-  if (job.status !== "failed") {
-    throw Errors.badRequest("Only failed generation jobs can be retried");
-  }
-  if (job.mode !== "image" && job.mode !== "video") {
-    throw Errors.badRequest("Unsupported generation mode");
-  }
-  const entitlements = await entitlementMap(user.id);
-  const controls = jsonRecord(job.controls);
-  const retrySourceImageAssetId = stringFromRecord(
+  const authority = await resolveGenerationRetryAuthority(user.id, job);
+  const {
     controls,
-    "sourceImageAssetId",
-  );
-  const retryLookReferenceAssetId =
-    stringFromRecord(controls, "lookReferenceAssetId") ??
-    stringFromRecord(jsonRecord(job.lookSnapshot), "referenceAssetId");
-  const retryPinnedReferences = generationRequirementsFromManifest(
-    job.referenceManifest,
-  );
-  const profile = await selectGenerationProfile(
-    job.mode,
-    job.profileId ?? job.model ?? undefined,
-    job.mode === "image"
-      ? {
-          pinnedReferences: retryPinnedReferences,
-          sourceImageAssetId: retrySourceImageAssetId ?? null,
-          lookReferenceAssetId: retryLookReferenceAssetId ?? null,
-        }
-      : undefined,
-  );
-  const workflowDescriptor = job.mode === "image"
-    ? await generationWorkflowDescriptor(
-        profile.workflowKey ?? profile.pipelineModel,
-      )
-    : null;
+    cost,
+    entitlements,
+    pricingAuthority,
+    pricingFingerprint,
+    profile,
+    retryLookReferenceAssetId,
+    retryReferenceAssetIds,
+    retrySourceImageAssetId,
+    routeFingerprint,
+    workflowDescriptor,
+  } = authority;
   if (
-    job.mode === "image" &&
-    (
-      retryPinnedReferences.length > 0 ||
-      retrySourceImageAssetId ||
-      retryLookReferenceAssetId
-    )
+    body.quoteAuthority.profileId !== profile.profileKey ||
+    body.quoteAuthority.profileVersion !== profile.version ||
+    body.quoteAuthority.routeFingerprint !== routeFingerprint ||
+    body.quoteAuthority.pricingFingerprint !== pricingFingerprint ||
+    body.quoteAuthority.outputCount !== job.outputCount ||
+    body.quoteAuthority.costDreamcoins !== cost
   ) {
-    assertGenerationProfileCanDispatchReferences({
-      profile,
-      workflowDescriptor,
-      pinnedReferences: retryPinnedReferences,
-      sourceImageAssetId: retrySourceImageAssetId ?? null,
-      lookReferenceAssetId: retryLookReferenceAssetId ?? null,
+    throw Errors.conflict(
+      "Generation retry quote changed. Refresh the exact quote before retrying.",
+      {
+        quoted: body.quoteAuthority,
+        current: {
+          profileId: profile.profileKey,
+          profileVersion: profile.version,
+          routeFingerprint,
+          pricingFingerprint,
+          outputCount: job.outputCount,
+          costDreamcoins: cost,
+        },
+      },
+    );
+  }
+  const availableBalance = await dreamcoinBalance(user.id);
+  if (availableBalance < cost) {
+    throw Errors.paymentRequired("Insufficient DreamCoins", {
+      required: cost,
+      available: availableBalance,
     });
   }
-  if (profile.requiredEntitlement && !entitlements[profile.requiredEntitlement]) {
-    throw Errors.paymentRequired("Selected model requires entitlement", {
-      entitlement: profile.requiredEntitlement,
-    });
-  }
-  const cost = await generationCost(job.mode, job.outputCount, profile.costMultiplier);
-  const retryReferenceAssetIds = [
-    ...new Set([
-      ...jsonStringArray(job.referenceAssetIds),
-      ...retryPinnedReferences.map((reference) => reference.assetId),
-    ]),
-  ];
+  const acceptedRetryQuoteAuthority = {
+    schemaVersion: "generation-retry-quote-authority-v1",
+    generationJobId: job.id,
+    profileId: profile.profileKey,
+    profileVersion: profile.version,
+    routeFingerprint,
+    pricing: {
+      ruleId: pricingAuthority.id,
+      ruleKey: pricingAuthority.ruleKey,
+      version: pricingAuthority.version,
+      effectiveFrom:
+        pricingAuthority.effectiveFrom?.toISOString() ?? null,
+      fingerprint: pricingFingerprint,
+    },
+    outputCount: job.outputCount,
+    costDreamcoins: cost,
+  };
   const reservation = await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`generation-retry-idempotency:${user.id}:${retryIdempotencyKey}`}))`;
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`generation-retry-authority:${job.id}`}))`;
@@ -3982,6 +4702,8 @@ async function retryGenerationJob(request: Request, id: string) {
           workflowVersion: workflowDescriptor?.version,
           workflowIdentity: workflowDescriptor?.identity,
           lookReferenceAssetId: retryLookReferenceAssetId,
+          generationRetryQuoteAuthority:
+            acceptedRetryQuoteAuthority,
         })),
         presetIds: toInputJson(jsonStringArray(job.presetIds)),
         model: profile.workflowKey ?? profile.pipelineModel,
@@ -4925,6 +5647,101 @@ function assertHydratableLookReferenceAsset(asset: {
   );
 }
 
+async function resolveMediaVariationGenerationInput(
+  userId: string,
+  id: string,
+  input: {
+    outputCount: number;
+    consistencyMode: "balanced" | "strict" | "creative";
+    orientation?: string;
+  },
+) {
+  const asset = await assertIdentityImageMedia(id, userId);
+  const sourceJob = asset.sourceJobId
+    ? await prisma.generationJob.findFirst({
+        where: { id: asset.sourceJobId, userId },
+      })
+    : null;
+  const characterId =
+    asset.characterId ?? sourceJob?.characterId ?? undefined;
+  const sourceControls = jsonRecord(sourceJob?.controls);
+  const sourceOrientation = normalizeImageOrientation(
+    sourceJob?.orientation ??
+      stringControl(
+        sourceControls,
+        "orientation",
+        stringFromMediaDimensions(asset.width, asset.height),
+      ),
+    "4:5",
+  );
+  const orientation = normalizeImageOrientation(
+    input.orientation,
+    sourceOrientation,
+  );
+  const controls = pruneUndefined({
+    orientation,
+    backgroundPresetId: stringFromRecord(
+      sourceControls,
+      "backgroundPresetId",
+    ),
+    posePresetId: stringFromRecord(sourceControls, "posePresetId"),
+    outfitPresetId: stringFromRecord(
+      sourceControls,
+      "outfitPresetId",
+    ),
+    sourceImageAssetId: asset.id,
+  });
+  return {
+    asset,
+    sourceJob,
+    body: {
+      mode: "image" as const,
+      characterId,
+      freeplay: !characterId,
+      consistencyMode: input.consistencyMode,
+      prompt: variationScenePrompt(asset.prompt ?? sourceJob?.prompt),
+      controls,
+      presetIds: sourceJob ? jsonStringArray(sourceJob.presetIds) : [],
+      orientation,
+      outputCount: input.outputCount,
+    },
+  };
+}
+
+async function mediaVariationQuote(request: Request, id: string) {
+  const ctx = await getAuthCtx(request);
+  const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
+  const input = z
+    .object({
+      consistencyMode: z
+        .enum(["balanced", "strict", "creative"])
+        .default("balanced"),
+    })
+    .strict()
+    .parse(await jsonBody(request));
+  const variation = await resolveMediaVariationGenerationInput(
+    user.id,
+    id,
+    {
+      outputCount: 1,
+      consistencyMode: input.consistencyMode,
+    },
+  );
+  return generationQuoteForUser(
+    user.id,
+    variation.body,
+    "specialized",
+    {
+      source: {
+        sourceType: "media_variation",
+        sourceId: `media:${variation.asset.id}:variation:quote`,
+      },
+    },
+  );
+}
+
 async function createMediaVariation(request: Request, id: string) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
@@ -4934,59 +5751,52 @@ async function createMediaVariation(request: Request, id: string) {
     .object({
       outputCount: z.number().int().min(1).max(4).default(1),
       consistencyMode: z.enum(["balanced", "strict", "creative"]).default("balanced"),
+      orientation: z.enum(imageOrientations).optional(),
+      quoteAuthority: generationQuoteAuthoritySchema,
     })
     .parse(await jsonBody(request));
-  const asset = await assertIdentityImageMedia(id, user.id);
-  const sourceJob = asset.sourceJobId
-    ? await prisma.generationJob.findFirst({
-        where: { id: asset.sourceJobId, userId: user.id },
-      })
-    : null;
-  const characterId = asset.characterId ?? sourceJob?.characterId ?? undefined;
-  const sourceControls = jsonRecord(sourceJob?.controls);
-  const orientation = normalizeImageOrientation(
-    sourceJob?.orientation ?? stringControl(sourceControls, "orientation", stringFromMediaDimensions(asset.width, asset.height)),
-    "4:5",
+  const idempotencyKey = requireGenerationWriteIdempotencyKey(request);
+  const requestFingerprint = generationWriteRequestFingerprint(
+    "media.variation.create",
+    body,
+    id,
   );
-  const controls = pruneUndefined({
-    orientation,
-    backgroundPresetId: stringFromRecord(sourceControls, "backgroundPresetId"),
-    posePresetId: stringFromRecord(sourceControls, "posePresetId"),
-    outfitPresetId: stringFromRecord(sourceControls, "outfitPresetId"),
-    sourceImageAssetId: asset.id,
+  const existing = await findExistingGenerationJob(user.id, {
+    idempotencyKey,
+    requestFingerprint,
   });
-  const idempotencyKey = normalizeHeader(request.headers.get("idempotency-key"));
-  const sourceId = idempotencyKey
-    ? `media:${asset.id}:variation:${idempotencyKey}`
-    : `media:${asset.id}:variation:${cryptoRandomId("variation")}`;
-  const job = await createGenerationJobForUser(
-    user.id,
-    {
-      mode: "image",
-      characterId,
-      freeplay: !characterId,
-      consistencyMode: body.consistencyMode,
-      // Select against the complete identity + source reference shape. Forcing
-      // the single-input chat edit route makes Character variations
-      // structurally impossible once workflow slots are enforced.
-      prompt: variationScenePrompt(asset.prompt ?? sourceJob?.prompt),
-      controls,
-      presetIds: sourceJob ? jsonStringArray(sourceJob.presetIds) : [],
-      orientation,
-      outputCount: body.outputCount,
-    },
-    {
-      idempotencyKey,
-      source: {
-        sourceType: "media_variation",
-        sourceId,
-        sourceMeta: toInputJson({
-          sourceMediaId: asset.id,
-          sourceJobId: sourceJob?.id ?? null,
-        }),
+  const job = existing ?? await (async () => {
+    const variation = await resolveMediaVariationGenerationInput(
+      user.id,
+      id,
+      {
+        outputCount: body.outputCount,
+        consistencyMode: body.consistencyMode,
+        orientation: body.orientation,
       },
-    },
-  );
+    );
+    const { asset, sourceJob } = variation;
+    return createGenerationJobForUser(
+      user.id,
+      {
+        ...variation.body,
+        quoteAuthority: body.quoteAuthority,
+      },
+      {
+        idempotencyKey,
+        requestFingerprint,
+        source: {
+          sourceType: "media_variation",
+          sourceId: `media:${asset.id}:variation:${idempotencyKey}`,
+          sourceMeta: toInputJson({
+            sourceMediaId: asset.id,
+            sourceJobId: sourceJob?.id ?? null,
+          }),
+        },
+        requireQuoteAuthority: true,
+      },
+    );
+  })();
   const queued = await prisma.generationJob.findUniqueOrThrow({
     where: { id: job.id },
     include: generationJobInclude(),
@@ -7715,81 +8525,199 @@ async function feed(request: Request, segments: string[]) {
     // recent public collections are interleaved on the first page so Feed is not just a catalog mirror.
     const url = new URL(request.url);
     const limit = clampInt(url.searchParams.get("limit"), 1, 60, 20);
-    const cursor = decodeCursor(url.searchParams.get("cursor"));
-    const requestedItemId = url.searchParams.get("item")?.trim() ?? "";
+    const cursorState = decodeFeedCursor(url.searchParams.get("cursor"));
+    const requestedScopeItemId = feedScopeItemId(url.searchParams.get("item"));
+    if (
+      cursorState &&
+      requestedScopeItemId &&
+      cursorState.scopeItemId !== requestedScopeItemId
+    ) {
+      throw Errors.badRequest("Feed cursor does not match the requested item");
+    }
+    const requestedItemId =
+      cursorState?.scopeItemId ?? requestedScopeItemId;
+    const publicWhere = publicCharacterAudienceWhere;
+
+    if (cursorState) {
+      const stablePage = await prisma.character.findMany({
+        where: {
+          AND: [
+            publicWhere,
+            { createdAt: { lte: cursorState.snapshotAt } },
+            cursorState.excludedCharacterIds.length > 0
+              ? { id: { notIn: cursorState.excludedCharacterIds } }
+              : {},
+            cursorState.lastCreatedAt && cursorState.lastId
+              ? {
+                  OR: [
+                    { createdAt: { lt: cursorState.lastCreatedAt } },
+                    {
+                      createdAt: cursorState.lastCreatedAt,
+                      id: { lt: cursorState.lastId },
+                    },
+                  ],
+                }
+              : {},
+          ],
+        },
+        include: characterInclude(ctx.userId),
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        take: limit + 1,
+      });
+      const page = stablePage.slice(0, limit);
+      const lastCharacter = page.at(-1);
+      return ok({
+        items: page.map(feedCharacterItemDTO),
+        focusedItemId: null,
+        nextCursor:
+          stablePage.length > limit && lastCharacter
+            ? encodeFeedCursor({
+                scopeItemId: cursorState.scopeItemId,
+                snapshotAt: cursorState.snapshotAt,
+                expiresAt: cursorState.expiresAt,
+                excludedCharacterIds: cursorState.excludedCharacterIds,
+                lastCreatedAt: lastCharacter.createdAt,
+                lastId: lastCharacter.id,
+              })
+            : null,
+      });
+    }
+
+    const snapshotAt = new Date();
     const focusedCharacterId = requestedItemId ? feedCharacterId(requestedItemId) : null;
     const focusedCollectionId = requestedItemId ? feedCollectionId(requestedItemId) : null;
-    const featuredSetting = await prisma.appSetting.findUnique({
-      where: { key: FEATURED_SETTING_KEY },
-    });
-    const featuredIds = parseFeaturedSetting(featuredSetting?.value).characterIds;
-    const excludedIds = [...new Set([...featuredIds, focusedCharacterId].filter((id): id is string => Boolean(id)))];
-    const publicWhere = publicCharacterAudienceWhere;
-    const collectionLimit = cursor === 0 ? Math.min(3, Math.floor(limit / 4)) : 0;
-    const [popular, featured, focusedCharacter, recentCollections, focusedCollection] = await Promise.all([
-      // 热度游标分页：排除置顶角色，稳定排序（热度→新→id）。
-      prisma.character.findMany({
-        where: { ...publicWhere, id: { notIn: excludedIds } },
-        include: characterInclude(ctx.userId),
-        orderBy: [{ stats: { chatsCount: "desc" } }, { createdAt: "desc" }, { id: "desc" }],
-        skip: cursor,
-        take: limit + 1,
+    const snapshotPublicWhere = {
+      AND: [publicWhere, { createdAt: { lte: snapshotAt } }],
+    } satisfies Prisma.CharacterWhereInput;
+    const [featuredSetting, focusedCharacter, focusedCollection] = await Promise.all([
+      prisma.appSetting.findUnique({
+        where: { key: FEATURED_SETTING_KEY },
       }),
-      // 置顶角色只在首页（cursor=0）拉取；后续分页排除它们，避免重复。
-      cursor === 0 && featuredIds.length > 0
-        ? prisma.character.findMany({
-            where: { ...publicWhere, id: { in: featuredIds } },
-            include: characterInclude(ctx.userId),
-          })
-        : [],
-      cursor === 0 && focusedCharacterId
+      focusedCharacterId
         ? prisma.character.findFirst({
-            where: { ...publicWhere, id: focusedCharacterId },
+            where: { AND: [snapshotPublicWhere, { id: focusedCharacterId }] },
             include: characterInclude(ctx.userId),
           })
         : null,
-      cursor === 0 && collectionLimit > 0
-        ? prisma.mediaCollection.findMany({
-            where: feedPublicCollectionWhere(focusedCollectionId ? [focusedCollectionId] : []),
-            include: mediaCollectionInclude(true),
-            orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-            take: collectionLimit,
-          })
-        : [],
-      cursor === 0 && focusedCollectionId
+      focusedCollectionId
         ? prisma.mediaCollection.findFirst({
-            where: feedPublicCollectionWhere([], focusedCollectionId),
+            where: {
+              AND: [
+                feedPublicCollectionWhere([], focusedCollectionId),
+                { createdAt: { lte: snapshotAt } },
+              ],
+            },
             include: mediaCollectionInclude(true),
           })
         : null,
     ]);
-    const featuredById = new Map(featured.map((character) => [character.id, character]));
-    const orderedFeatured = featuredIds
-      .map((id) => featuredById.get(id))
-      .filter((character): character is (typeof featured)[number] => character !== undefined)
-      .filter((character) => character.id !== focusedCharacter?.id);
-    const popularPage = popular.slice(0, limit);
-    const popularItemIds = new Set(popularPage.map((character) => `character:${character.id}`));
-    const characterItems = [...orderedFeatured, ...popularPage].map(feedCharacterItemDTO);
-    const collectionItems = recentCollections
-      .filter((collection) => collection.id !== focusedCollection?.id)
-      .map(feedCollectionItemDTO);
     const focusedItem = focusedCharacter
       ? feedCharacterItemDTO(focusedCharacter)
       : focusedCollection
         ? feedCollectionItemDTO(focusedCollection)
         : null;
+    const focusedItemSlotCount = focusedItem ? 1 : 0;
+    const collectionLimit = Math.min(
+      2,
+      Math.floor(limit / 4),
+      Math.max(0, limit - focusedItemSlotCount),
+    );
+    const characterBudget = Math.max(
+      0,
+      limit - focusedItemSlotCount - collectionLimit,
+    );
+    const featuredIds = parseFeaturedSetting(featuredSetting?.value).characterIds;
+    // Keep at least one live-ranked character in a character-bearing first page.
+    // The immutable continuation cursor owns every first-page exclusion, so later
+    // requests never recalculate this budget when the client changes `limit`.
+    const maxPinnedFeatured = Math.max(0, characterBudget - 1);
+    const pinnedFeaturedIds = [
+      ...new Set(featuredIds.filter((id) => id !== focusedCharacter?.id)),
+    ].slice(0, maxPinnedFeatured);
+    const excludedFirstQueryIds = [
+      ...new Set(
+        [...pinnedFeaturedIds, focusedCharacter?.id].filter(
+          (id): id is string => Boolean(id),
+        ),
+      ),
+    ];
+    const [popular, featured, recentCollections, publicCharacterCount] = await Promise.all([
+      prisma.character.findMany({
+        where: {
+          AND: [
+            snapshotPublicWhere,
+            excludedFirstQueryIds.length > 0
+              ? { id: { notIn: excludedFirstQueryIds } }
+              : {},
+          ],
+        },
+        include: characterInclude(ctx.userId),
+        orderBy: [{ stats: { chatsCount: "desc" } }, { createdAt: "desc" }, { id: "desc" }],
+        take: characterBudget + 1,
+      }),
+      pinnedFeaturedIds.length > 0
+        ? prisma.character.findMany({
+            where: {
+              AND: [
+                snapshotPublicWhere,
+                { id: { in: pinnedFeaturedIds } },
+              ],
+            },
+            include: characterInclude(ctx.userId),
+          })
+        : [],
+      collectionLimit > 0
+        ? prisma.mediaCollection.findMany({
+            where: {
+              AND: [
+                feedPublicCollectionWhere(
+                  focusedCollection ? [focusedCollection.id] : [],
+                ),
+                { createdAt: { lte: snapshotAt } },
+              ],
+            },
+            include: mediaCollectionInclude(true),
+            orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+            take: collectionLimit,
+          })
+        : [],
+      prisma.character.count({ where: snapshotPublicWhere }),
+    ]);
+    const featuredById = new Map(featured.map((character) => [character.id, character]));
+    const orderedFeatured = pinnedFeaturedIds
+      .map((id) => featuredById.get(id))
+      .filter((character): character is (typeof featured)[number] => character !== undefined)
+      .slice(0, characterBudget);
+    const popularPage = popular.slice(
+      0,
+      Math.max(0, characterBudget - orderedFeatured.length),
+    );
+    const characterItems = [...orderedFeatured, ...popularPage].map(feedCharacterItemDTO);
+    const collectionItems = recentCollections.map(feedCollectionItemDTO);
     const items = [
       ...(focusedItem ? [focusedItem] : []),
       ...interleaveFeedItems(characterItems, collectionItems),
-    ].slice(0, limit);
-    const renderedPopularCount = items.filter((item) => popularItemIds.has(item.id)).length;
+    ];
+    const renderedCharacterIds = [
+      ...new Set(
+        items.flatMap((item) =>
+          item.type === "character" ? [item.character.id] : [],
+        ),
+      ),
+    ];
     return ok({
       items,
       focusedItemId: focusedItem?.id ?? null,
       nextCursor:
-        renderedPopularCount > 0 && popular.length > renderedPopularCount
-          ? encodeCursor(cursor + renderedPopularCount)
+        publicCharacterCount > renderedCharacterIds.length
+          ? encodeFeedCursor({
+              scopeItemId: requestedScopeItemId,
+              snapshotAt,
+              expiresAt: new Date(snapshotAt.getTime() + FEED_CURSOR_TTL_MS),
+              excludedCharacterIds: renderedCharacterIds,
+              lastCreatedAt: null,
+              lastId: null,
+            })
           : null,
     });
   }
@@ -7877,6 +8805,160 @@ function feedCharacterId(itemId: string) {
     return null;
   }
   return decoded.startsWith("character:") ? decoded.slice("character:".length) : null;
+}
+
+function feedScopeItemId(value: string | null) {
+  if (value === null) return null;
+  const normalized = value.trim();
+  if (normalized.length === 0) return null;
+  const isCharacter =
+    normalized.startsWith("character:") &&
+    normalized.length > "character:".length;
+  const isCollection =
+    normalized.startsWith("collection:") &&
+    normalized.length > "collection:".length;
+  if (normalized.length > 512 || (!isCharacter && !isCollection)) {
+    throw Errors.badRequest("Invalid Feed item scope");
+  }
+  return normalized;
+}
+
+type FeedCursorState = {
+  scopeItemId: string | null;
+  snapshotAt: Date;
+  expiresAt: Date;
+  excludedCharacterIds: string[];
+  lastCreatedAt: Date | null;
+  lastId: string | null;
+};
+
+const FEED_CURSOR_TTL_MS = 30 * 60 * 1_000;
+
+function decodeFeedCursor(value: string | null): FeedCursorState | null {
+  if (!value) return null;
+  if (value.length > 8_192) {
+    throw Errors.badRequest("Invalid or expired Feed cursor");
+  }
+  try {
+    const [encodedPayload, suppliedSignature, extra] = value.split(".");
+    if (!encodedPayload || !suppliedSignature || extra) {
+      throw Errors.badRequest("Invalid or expired Feed cursor");
+    }
+    const expected = Buffer.from(feedCursorSignature(encodedPayload));
+    const supplied = Buffer.from(suppliedSignature);
+    if (
+      expected.length !== supplied.length ||
+      !timingSafeEqual(expected, supplied)
+    ) {
+      throw Errors.badRequest("Invalid or expired Feed cursor");
+    }
+    const decoded: unknown = JSON.parse(
+      Buffer.from(encodedPayload, "base64url").toString("utf8"),
+    );
+    if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) {
+      throw Errors.badRequest("Invalid or expired Feed cursor");
+    }
+    const candidate = decoded as Record<string, unknown>;
+    if (candidate.v !== 2) {
+      throw Errors.badRequest("Invalid or expired Feed cursor");
+    }
+    const scopeItemId =
+      candidate.scopeItemId === null
+        ? null
+        : typeof candidate.scopeItemId === "string" &&
+            candidate.scopeItemId.length > 0 &&
+            candidate.scopeItemId.length <= 512
+        ? feedScopeItemId(candidate.scopeItemId)
+        : undefined;
+    const snapshotAt =
+      typeof candidate.snapshotAt === "string"
+        ? new Date(candidate.snapshotAt)
+        : new Date(Number.NaN);
+    const expiresAt =
+      typeof candidate.expiresAt === "string"
+        ? new Date(candidate.expiresAt)
+        : new Date(Number.NaN);
+    const lastCreatedAt =
+      candidate.lastCreatedAt === null
+        ? null
+        : typeof candidate.lastCreatedAt === "string"
+          ? new Date(candidate.lastCreatedAt)
+          : new Date(Number.NaN);
+    const lastId =
+      candidate.lastId === null
+        ? null
+        : typeof candidate.lastId === "string" &&
+            candidate.lastId.length > 0 &&
+            candidate.lastId.length <= 512
+          ? candidate.lastId
+          : undefined;
+    const excludedCharacterIds = Array.isArray(candidate.excludedCharacterIds)
+      ? candidate.excludedCharacterIds
+      : null;
+    if (
+      scopeItemId === undefined ||
+      !Number.isFinite(snapshotAt.getTime()) ||
+      snapshotAt.getTime() > Date.now() + 60_000 ||
+      !Number.isFinite(expiresAt.getTime()) ||
+      expiresAt <= snapshotAt ||
+      expiresAt.getTime() - snapshotAt.getTime() > FEED_CURSOR_TTL_MS ||
+      !excludedCharacterIds ||
+      excludedCharacterIds.length > 60 ||
+      excludedCharacterIds.some(
+        (id) => typeof id !== "string" || id.length === 0 || id.length > 512,
+      ) ||
+      new Set(excludedCharacterIds).size !== excludedCharacterIds.length ||
+      lastId === undefined ||
+      !Number.isFinite(lastCreatedAt?.getTime() ?? snapshotAt.getTime()) ||
+      (lastCreatedAt === null) !== (lastId === null) ||
+      (lastCreatedAt !== null && lastCreatedAt > snapshotAt)
+    ) {
+      throw Errors.badRequest("Invalid or expired Feed cursor");
+    }
+    if (expiresAt.getTime() <= Date.now()) {
+      throw Errors.gone("Feed cursor expired; refresh the Feed");
+    }
+    return {
+      scopeItemId,
+      snapshotAt,
+      expiresAt,
+      excludedCharacterIds: excludedCharacterIds as string[],
+      lastCreatedAt,
+      lastId,
+    };
+  } catch (error) {
+    if (error instanceof AppError) throw error;
+    throw Errors.badRequest("Invalid or expired Feed cursor");
+  }
+}
+
+function encodeFeedCursor(state: {
+  scopeItemId: string | null;
+  snapshotAt: Date;
+  expiresAt: Date;
+  excludedCharacterIds: string[];
+  lastCreatedAt: Date | null;
+  lastId: string | null;
+}) {
+  const encodedPayload = Buffer.from(
+    JSON.stringify({
+      v: 2,
+      scopeItemId: state.scopeItemId,
+      snapshotAt: state.snapshotAt.toISOString(),
+      expiresAt: state.expiresAt.toISOString(),
+      excludedCharacterIds: state.excludedCharacterIds,
+      lastCreatedAt: state.lastCreatedAt?.toISOString() ?? null,
+      lastId: state.lastId,
+    }),
+    "utf8",
+  ).toString("base64url");
+  return `${encodedPayload}.${feedCursorSignature(encodedPayload)}`;
+}
+
+function feedCursorSignature(encodedPayload: string) {
+  return createHmac("sha256", env.INTERNAL_TOKEN)
+    .update(`feed-pagination-v2\n${encodedPayload}`)
+    .digest("base64url");
 }
 
 async function feedPublicCharacterByItemId(itemId: string) {
@@ -7979,6 +9061,46 @@ async function community(request: Request, segments: string[]) {
   requireAgeGate(ctx);
   const [, view] = segments;
   const url = new URL(request.url);
+
+  if (view === "collections") {
+    const focusedCollectionId = url.searchParams.get("collection")?.trim() ?? "";
+    const [recentCollections, focusedCollection] = await Promise.all([
+      prisma.mediaCollection.findMany({
+        where: publicCollectionAudienceWhere,
+        include: mediaCollectionInclude(true),
+        orderBy: { createdAt: "desc" },
+        take: 20,
+      }),
+      focusedCollectionId
+        ? prisma.mediaCollection.findFirst({
+            where: {
+              AND: [
+                publicCollectionAudienceWhere,
+                { id: focusedCollectionId },
+              ],
+            },
+            include: mediaCollectionInclude(true),
+          })
+        : Promise.resolve(null),
+    ]);
+    const collections =
+      focusedCollection &&
+      !recentCollections.some((collection) => collection.id === focusedCollection.id)
+        ? [...recentCollections, focusedCollection]
+        : recentCollections;
+    return ok({ collections: collections.map(mediaCollectionDTO) });
+  }
+
+  if (view === "campaigns") {
+    const campaigns = await resolveCommunityCampaignPlacements(prisma);
+    return ok({
+      campaigns: campaigns.flatMap((placement) => {
+        const campaign = communityCampaignDTO(placement);
+        return campaign ? [campaign] : [];
+      }),
+    });
+  }
+
   const exposureSubject = metricExposureSubject(ctx.userId, ctx.anonymousId);
   let rankingAssignment: Awaited<ReturnType<typeof assignExperiment>> | null = null;
   if (exposureSubject) {
@@ -7993,27 +9115,6 @@ async function community(request: Request, segments: string[]) {
     }
   }
   const publicCharacterWhere = publicCharacterAudienceWhere;
-
-  if (view === "collections") {
-    const collections = await prisma.mediaCollection.findMany({
-      where: publicCollectionAudienceWhere,
-      include: mediaCollectionInclude(true),
-      orderBy: { createdAt: "desc" },
-      take: 20,
-    });
-    return ok({ collections: collections.map(mediaCollectionDTO) });
-  }
-
-  if (view === "campaigns") {
-    const campaigns = await resolveCommunityCampaignPlacements(prisma);
-    return ok({
-      campaigns: campaigns.flatMap((placement) => {
-        const campaign = communityCampaignDTO(placement);
-        return campaign ? [campaign] : [];
-      }),
-    });
-  }
-
   const followedCreatorIds = ctx.userId ? await communityFollowedCreatorIds(ctx.userId) : [];
   const [characters, topDreamerRows, followedDreamerRows] = await Promise.all([
     prisma.character.findMany({
@@ -9085,9 +10186,14 @@ function generationJobDTO(job: GenerationJobWithRelations) {
 function generationJobResponse(job: GenerationJobWithRelations) {
   const refunded = generationRefundAmount(job.events);
   const missingOutputs = Math.max(0, job.outputCount - job.assets.length);
+  const sourceJob = {
+    sourceType: job.sourceType,
+    sourceId: job.sourceId,
+    sourceMeta: job.sourceMeta,
+  };
   return {
     job: generationJobDTO(job),
-    assets: job.assets.map((asset) => mediaDTO(asset)),
+    assets: job.assets.map((asset) => mediaDTO({ ...asset, sourceJob })),
     events: job.events.map((event) => ({
       id: event.id,
       type: event.type,
@@ -9260,11 +10366,6 @@ function stringControl(
   return typeof value === "string" && value.trim() ? value : fallback;
 }
 
-function normalizeHeader(value: string | null) {
-  const trimmed = value?.trim();
-  return trimmed ? trimmed.slice(0, 160) : null;
-}
-
 function slugify(value: string) {
   return value
     .trim()
@@ -9390,8 +10491,7 @@ async function assertReadableMediaAsset(id: string, userId: string) {
   });
   if (
     !media ||
-    !isMediaAssetOperationalForAuthority(media.metadata) ||
-    isSyntheticMediaAsset(media.metadata)
+    !isMediaAssetOperationalForAuthority(media.metadata)
   ) {
     throw Errors.notFound("Media not found");
   }
@@ -10150,6 +11250,8 @@ async function selectGenerationProfile(
     readonly sourceImageAssetId: string | null;
     readonly lookReferenceAssetId: string | null;
   },
+  requirePublicTextToImageProfile = false,
+  accessibleEntitlements?: Readonly<Record<string, Prisma.JsonValue>>,
 ) {
   const where: Prisma.GenerationModelProfileWhereInput = {
     mode,
@@ -10159,30 +11261,58 @@ async function selectGenerationProfile(
       ? [{ profileKey: requested }, { id: requested }, { pipelineModel: requested }]
       : undefined,
   };
-  const candidates = (
-    await prisma.generationModelProfile.findMany({
-      where,
-      orderBy: requested
-        ? [{ version: "desc" }]
-        : [{ costMultiplier: "asc" }, { version: "desc" }],
-    })
-  ).filter(isExecutableGenerationProfile);
+  const queriedCandidates = await prisma.generationModelProfile.findMany({
+    where,
+    orderBy: requested
+      ? [{ version: "desc" }]
+      : [{ costMultiplier: "asc" }, { version: "desc" }],
+  });
+  const eligibleCandidates = requirePublicTextToImageProfile
+    ? await filterPublicTextToImageGenerationProfiles(queriedCandidates)
+    : queriedCandidates.filter(isExecutableGenerationProfile);
+  const accessibleCandidates =
+    !requested && accessibleEntitlements
+      ? eligibleCandidates.filter(
+          (candidate) =>
+            !candidate.requiredEntitlement ||
+            Boolean(
+              accessibleEntitlements[candidate.requiredEntitlement],
+            ),
+        )
+      : eligibleCandidates;
+  const gatedCandidates =
+    !requested && accessibleEntitlements
+      ? eligibleCandidates.filter(
+          (candidate) => !accessibleCandidates.includes(candidate),
+        )
+      : [];
   if (referenceRequirements) {
-    for (const candidate of candidates) {
-      const workflowDescriptor = await generationWorkflowDescriptor(
-        candidate.workflowKey ?? candidate.pipelineModel,
-      );
-      if (
-        generationProfileReferenceIncompatibilities({
-          profile: candidate,
-          workflowDescriptor,
-          ...referenceRequirements,
-        }).length === 0
-      ) {
-        return candidate;
+    // Prefer an accessible compatible route. Only if none exists do we return
+    // a gated compatible route so the caller can surface the exact entitlement
+    // requirement instead of silently selecting it ahead of an accessible one.
+    for (const candidateGroup of [accessibleCandidates, gatedCandidates]) {
+      for (const candidate of candidateGroup) {
+        const workflowDescriptor = await generationWorkflowDescriptor(
+          candidate.workflowKey ?? candidate.pipelineModel,
+        );
+        if (
+          generationProfileReferenceIncompatibilities({
+            profile: candidate,
+            workflowDescriptor,
+            ...referenceRequirements,
+          }).length === 0
+        ) {
+          return candidate;
+        }
       }
     }
-    if (candidates.length === 0 && !requested) {
+    if (eligibleCandidates.length === 0) {
+      if (requested) {
+        throw Errors.conflict("Requested generation profile is unavailable", {
+          mode,
+          requestedProfile: requested,
+        });
+      }
       throw Errors.unavailable(
         "No active generation model profile is configured",
         { mode, reason: "no_active_model" },
@@ -10202,14 +11332,18 @@ async function selectGenerationProfile(
       },
     );
   }
-  const requestedProfile = requested ? candidates[0] : null;
+  const requestedProfile = requested ? eligibleCandidates[0] : null;
   if (requested && !requestedProfile) {
     throw Errors.conflict("Requested generation profile is unavailable", {
       mode,
       requestedProfile: requested,
     });
   }
-  const fallbackProfile = requestedProfile ?? candidates[0];
+  const fallbackProfile =
+    requestedProfile ??
+    accessibleCandidates[0] ??
+    gatedCandidates[0] ??
+    eligibleCandidates[0];
   if (!fallbackProfile) {
     throw Errors.unavailable(
       "No active generation model profile is configured",
@@ -10352,6 +11486,63 @@ function isExecutableGenerationProfile(profile: {
     profile.maxCount >= 1 &&
     profile.maxCount <= 8 &&
     supportedProfileOrientations(profile.allowedOrientations).length > 0
+  );
+}
+
+type PublicTextToImageGenerationProfile = {
+  readonly mode: string;
+  readonly runner: string;
+  readonly runnerConfig: Prisma.JsonValue | null;
+  readonly workflowKey: string | null;
+  readonly pipelineModel: string;
+  readonly allowedOrientations: Prisma.JsonValue;
+  readonly maxCount: number;
+  readonly rolloutPercent: number;
+};
+
+async function isPublicTextToImageGenerationProfile(
+  profile: PublicTextToImageGenerationProfile,
+) {
+  if (
+    profile.mode !== "image" ||
+    !isExecutableGenerationProfile(profile)
+  ) {
+    return false;
+  }
+
+  const configuredCapabilities = jsonRecord(
+    jsonRecord(profile.runnerConfig).capabilities,
+  );
+  const configuredTextToImage = configuredCapabilities.textToImage;
+  if (configuredTextToImage === false) return false;
+
+  const workflow = await generationWorkflowDescriptor(
+    profile.workflowKey ?? profile.pipelineModel,
+  );
+  if (workflow) {
+    return (
+      workflow.capabilities.includes("textToImage") &&
+      !workflow.inputs.some((input) => input.type === "image")
+    );
+  }
+
+  // A profile without a declarative workflow still needs affirmative runtime
+  // authority. sd.cpp is intrinsically text-to-image unless explicitly
+  // disabled; every other runner must declare the capability itself.
+  return configuredTextToImage === true || profile.runner === "sd_cpp";
+}
+
+async function filterPublicTextToImageGenerationProfiles<
+  T extends PublicTextToImageGenerationProfile,
+>(profiles: readonly T[]): Promise<T[]> {
+  const eligibility = await Promise.all(
+    profiles.map(async (profile) => ({
+      profile,
+      eligible: await isPublicTextToImageGenerationProfile(profile),
+    })),
+  );
+  return eligibility.flatMap(({ profile, eligible }) =>
+    eligible ? [profile] : [],
   );
 }
 

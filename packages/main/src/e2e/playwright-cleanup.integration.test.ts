@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
-import { access, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import IORedis from "ioredis";
 import { describe, expect, it } from "vitest";
@@ -40,19 +41,34 @@ describe("Playwright resource lifecycle", () => {
       adminPackageRoot,
       environment.adminTsconfigPath,
     );
+    const ownedBlobPath = path.join(environment.blobRoot, "owned.bin");
+    const staleBlobPath = path.join(environment.blobRoot, "stale.bin");
+    const unownedSiblingRoot = path.resolve(
+      tmpdir(),
+      "idream-playwright-blobs",
+      `playwright-blob-sentinel-${runId}`,
+    );
+    const unownedSiblingPath = path.join(unownedSiblingRoot, "preserved.bin");
 
     try {
       await lifecycleVerifier.setup();
       await redis.mset(sentinelKey, "preserved", ownedKey, "stale");
+      await mkdir(environment.blobRoot, { recursive: true });
+      await writeFile(staleBlobPath, "stale");
+      await mkdir(unownedSiblingRoot, { recursive: true });
+      await writeFile(unownedSiblingPath, "preserved");
       await preparePlaywrightResources(plan);
       expect(await redis.get(sentinelKey)).toBe("preserved");
       expect(await redis.get(ownedKey)).toBeNull();
+      await expect(access(environment.blobRoot)).resolves.toBeUndefined();
+      await expect(access(staleBlobPath)).rejects.toThrow();
       expect(JSON.parse(await readFile(mainTsconfigPath, "utf8"))).toEqual({
         extends: "../../tsconfig.json",
       });
       expect(JSON.parse(await readFile(adminTsconfigPath, "utf8"))).toEqual({
         extends: "../../tsconfig.json",
       });
+      await writeFile(ownedBlobPath, "owned");
 
       await redis.set(ownedKey, "runtime");
       await cleanupPlaywrightResources(plan);
@@ -60,6 +76,10 @@ describe("Playwright resource lifecycle", () => {
       expect(await redis.get(ownedKey)).toBeNull();
       await expect(access(mainTsconfigPath)).rejects.toThrow();
       await expect(access(adminTsconfigPath)).rejects.toThrow();
+      await expect(access(environment.blobRoot)).rejects.toThrow();
+      await expect(readFile(unownedSiblingPath, "utf8")).resolves.toBe(
+        "preserved",
+      );
       await writePlaywrightLifecycleReceipt(plan, {
         status: "passed",
         phase: "teardown",
@@ -70,6 +90,7 @@ describe("Playwright resource lifecycle", () => {
       await redis.del(sentinelKey, ownedKey);
       await cleanupPlaywrightResources(plan).catch(() => undefined);
       await lifecycleVerifier.setup();
+      await rm(unownedSiblingRoot, { recursive: true, force: true });
       await redis.quit();
     }
   });
@@ -99,6 +120,33 @@ describe("Playwright resource lifecycle", () => {
     await expect(lifecycleVerifier.teardown()).rejects.toThrow(
       "injected cleanup failure",
     );
+  });
+
+  it("rejects and removes a run-owned blob root left behind after cleanup", async () => {
+    const runId = randomBytes(4).toString("hex");
+    const environment = resolvePlaywrightEnvironment({
+      PW_BASE_URL: "http://127.0.0.1:3530",
+      PW_DATABASE_URL:
+        "postgresql://postgres:postgres@localhost:5433/idream_test_playwright_manual",
+      PW_REDIS_URL: "redis://127.0.0.1:6379/15",
+      PW_RUN_ID: runId,
+    });
+    const plan = createPlaywrightCleanupPlan(environment);
+    const lifecycleVerifier = createPlaywrightLifecycleVerifier(plan);
+
+    await lifecycleVerifier.setup();
+    await writePlaywrightLifecycleReceipt(plan, {
+      status: "passed",
+      phase: "teardown",
+      message: null,
+    });
+    await mkdir(environment.blobRoot, { recursive: true });
+    await writeFile(path.join(environment.blobRoot, "late-writer.bin"), "late");
+
+    await expect(lifecycleVerifier.teardown()).rejects.toThrow(
+      "run-owned blob root still exists",
+    );
+    await expect(access(environment.blobRoot)).rejects.toThrow();
   });
 
   it("serializes workspace runs and restores both Next environment declarations", async () => {

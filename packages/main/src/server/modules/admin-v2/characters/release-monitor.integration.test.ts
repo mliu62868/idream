@@ -331,6 +331,15 @@ describe("Release route qualification and post-publish monitor", () => {
     await expect(
       prisma.character.findUniqueOrThrow({ where: { id: characterId } }),
     ).resolves.toMatchObject({ visibility: "unlisted", status: "approved" });
+    await expect(prisma.mainOutboxEvent.findFirstOrThrow({
+      where: {
+        aggregateId: releaseId,
+        eventType: "character.release.qualification_stale.v2",
+      },
+    })).resolves.toMatchObject({
+      status: "delivered",
+      deliveredAt: now,
+    });
   });
 
   it("runs qualification invalidation from the persistent command worker", async () => {

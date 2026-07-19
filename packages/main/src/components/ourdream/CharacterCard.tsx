@@ -6,6 +6,7 @@ import {
   HeartOutlineIcon,
   SparkleBadgeIcon,
 } from "@/components/icons";
+import { shouldBypassNextImageOptimizer } from "@/lib/image-delivery";
 
 export function CharacterCard({
   card,
@@ -51,7 +52,7 @@ export function CharacterCard({
         loading={imageLoading}
         sizes="(max-width: 767px) 183px, 210px"
         className="object-cover object-top"
-        unoptimized={imageUnoptimized || isPrivateMediaUrl(card.image)}
+        unoptimized={imageUnoptimized || shouldBypassNextImageOptimizer(card.image)}
       />
       <div className="absolute inset-0 bg-[linear-gradient(0deg,rgba(0,0,0,.72),rgba(0,0,0,.58)_24%,rgba(0,0,0,.22)_48%,rgba(0,0,0,0)_70%)]" />
 
@@ -95,8 +96,4 @@ export function CharacterCard({
       </div>
     </Link>
   );
-}
-
-function isPrivateMediaUrl(url: string) {
-  return url.startsWith("/api/v1/media/") || url.startsWith("/user-content/");
 }

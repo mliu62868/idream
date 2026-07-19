@@ -25,6 +25,14 @@ import {
 const P = "zt-cgx-";
 const SYS = `${P}sys`;
 const CHAR = `${P}char`;
+const PINNED_RETRY_JOB_AUTHORITY = {
+  model: "redcraft-krea2-txt2img",
+  profileId: "profile_image_default_v1",
+  profileVersion: 1,
+  orientation: "1:1",
+  outputCount: 1,
+  provider: "comfyui",
+} as const;
 
 beforeAll(async () => {
   await purgeTestData(P);
@@ -256,6 +264,7 @@ describe("generation retry", () => {
         id: `${P}job-failed`,
         userId,
         mode: "image",
+        ...PINNED_RETRY_JOB_AUTHORITY,
         status: "failed",
         costDreamcoins: 5,
         controls: {},
@@ -281,6 +290,7 @@ describe("generation retry", () => {
         id: `${P}job-completed`,
         userId,
         mode: "image",
+        ...PINNED_RETRY_JOB_AUTHORITY,
         status: "completed",
         costDreamcoins: 10,
         controls: {},
@@ -304,6 +314,7 @@ describe("generation retry", () => {
         id: failedJobId,
         userId,
         mode: "image",
+        ...PINNED_RETRY_JOB_AUTHORITY,
         status: "failed",
         costDreamcoins: 5,
         controls: {},
@@ -343,6 +354,7 @@ describe("generation retry", () => {
         id: failedJobId,
         userId,
         mode: "image",
+        ...PINNED_RETRY_JOB_AUTHORITY,
         status: "failed",
         costDreamcoins: 5,
         controls: {},
@@ -397,6 +409,7 @@ describe("generation retry", () => {
         id: failedJobId,
         userId,
         mode: "image",
+        ...PINNED_RETRY_JOB_AUTHORITY,
         status: "failed",
         costDreamcoins: 5,
         controls: {},

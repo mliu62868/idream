@@ -1386,6 +1386,36 @@ export async function listContentAssets(request: Request) {
   const [cursorAt, cursorId] = cursorKeys
     ? [parseIsoCursorKey(cursorKeys[0], "content_assets"), z.string().min(1).parse(cursorKeys[1])]
     : [null, null];
+  const productionAssetScope: Prisma.MediaAssetWhereInput = {
+    productionItems: { some: { status: productionItemStatus, batch: { purpose, targetId } } },
+  };
+  const standalonePlatformAssetScope: Prisma.MediaAssetWhereInput | null = targetId
+    ? null
+    : {
+        productionItems: { none: {} },
+        AND: [
+          {
+            OR: (status ? [status] : assetReviewStatusSchema.options).map((platformStatus) => ({
+              metadata: {
+                path: ["platformAsset", "status"],
+                equals: platformStatus,
+              },
+            })),
+          },
+          ...(purpose
+            ? [{
+                metadata: {
+                  path: ["platformAsset", "purpose"],
+                  equals: purpose,
+                },
+              }]
+            : []),
+        ],
+      };
+  const assetAuthorityScopes = [
+    productionAssetScope,
+    ...(standalonePlatformAssetScope ? [standalonePlatformAssetScope] : []),
+  ];
   const matches: ContentAssetWithRelations[] = [];
   const batchSize = 100;
   let scanAt = cursorAt;
@@ -1397,8 +1427,12 @@ export async function listContentAssets(request: Request) {
         type: "image",
         deletedAt: null,
         sourceJob: profileId ? { profileId } : undefined,
-        productionItems: { some: { status: productionItemStatus, batch: { purpose, targetId } } },
-        ...(scanAt && scanId ? { OR: [{ createdAt: { lt: scanAt } }, { createdAt: scanAt, id: { lt: scanId } }] } : {}),
+        AND: [
+          { OR: assetAuthorityScopes },
+          ...(scanAt && scanId
+            ? [{ OR: [{ createdAt: { lt: scanAt } }, { createdAt: scanAt, id: { lt: scanId } }] }]
+            : []),
+        ],
       }),
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       take: batchSize,

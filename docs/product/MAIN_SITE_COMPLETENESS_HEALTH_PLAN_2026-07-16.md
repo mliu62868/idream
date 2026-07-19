@@ -2,16 +2,16 @@
 
 # 主站完整性与健康闭环计划（2026-07-16）
 
-状态：**code-owned controlled-beta Gate 正在按最新源码统一复验。** 数据库恢复、57 个 migration、公开内容权威、全量测试、静态检查与 production build 已有 2026-07-17 同日证据；fresh Playwright、PM2 与 HTTP/产品探针必须全部使用同一源码状态，才能关闭本地 Gate。公开生产环境继续为 `NOT_EVALUATED`，本文不宣称 public launch。
+状态：**code-owned controlled-beta Gate 已完成当前源码的数据库、静态、全量测试、fresh Playwright、immutable build、PM2、HTTP、本地浏览器与三层一致性备份/恢复阶段。** Main migrations `60/60`、Chat boundary 正向 + 15 负向、根 lint `2/2`、typecheck `6/6`、五包全量 `2,486 passed + 3 skipped tests` 与 fresh Playwright `164/164` 已通过；最终 Main/Admin releases、7 logical PM2 apps / 8 processes、HTTP、1440/834/375 响应式复验，以及 Main DB + Chat FS + local Blob 的静默备份/隔离恢复均已收口。公开生产环境继续为 `NOT_EVALUATED`，本文不宣称 public launch。
 
 > 本文后续 Phase 1–3.5 与末尾 GSTACK verdict 是实施前的审查快照。当前执行事实与未完成 Gate 以本节和 `CURRENT_FUNCTIONAL_COVERAGE.md` 为准。
 
-## 0. 2026-07-17 已验证执行记录
+## 0. 2026-07-18 已验证执行记录
 
 ### 0.1 数据保护、迁移与主库终态
 
-- 当前开发库已重新落盘为仓库内 ignored 的最终本地恢复副本 `local-backups/idream-main-final-20260717-57.dump`；SHA-256 为 `98a3e01662bacec87f034811c90e89a61f4d537ed9f0ce5cea51811833ae363e`。PostgreSQL 16 兼容 SQL `local-backups/idream-main-final-20260717-57-pg16.sql` 的 SHA-256 为 `299660a05961b5cb828fc2e956c1532f3d4227f13e703c77635dadbb12f5c992`，原始 SQL SHA-256 为 `cd0b4d8362adbe090688cb9a2a86170d0cef4ddd92464438ad26cf03bf741c11`；该 SQL 已在一次性干净 PostgreSQL 数据库完成全量恢复与业务计数复核，临时库删除后存在性为 0。
-- 57 个 Prisma migration 已完成空白库 fresh replay、现有快照 upgrade、重复 deploy、应用回滚/前滚演练，并在当前 Main 开发库完成 deploy；migration status 为 `57/57`，schema drift 结果为 `No difference`。
+- 2026-07-17 的仓库内 ignored 数据库恢复副本及 SHA-256/一次性恢复演练只是事故后的 Main DB checkpoint，不是 reset 前原始数据备份。2026-07-18 的最终静默 checkpoint 已同时捕获 Main PostgreSQL、`CHAT_FS_ROOT` 与 local Blob，artifact base 为 `/Users/kk/code/idream/local-backups/idream-main-final-20260718-60/idream-main-final-20260718-60`；bundle 目录 mode `0700`、23 个文件均为 `0600`、总大小 171M，bundle SHA 校验全部通过。
+- 60 个 Prisma migration 已完成空白库 fresh replay、现有快照 upgrade、重复 deploy、应用回滚/前滚演练，并在当前 Main 开发库完成 deploy；migration status 为 `60/60`，schema drift 结果为 `No difference`。
 - 下列业务指纹在 deploy 前后完全一致，证明本次 additive migration 没有改写这些既有数据：
 
 | 保护面 | before = after 指纹 |
@@ -24,30 +24,32 @@
 | Dreamcoin ledger | `2\|30628529ba89bc5ad3c4699a6a734b4d` |
 | CharacterLike / MediaLike / Follow（各自） | `0\|d41d8cd98f00b204e9800998ecf8427e` |
 
-- 当前 Main 开发库终态为：19 users、16 characters；official、public approved、bound character image assets、ready editorial-import Releases、live Servings、active PublicCatalogQualifications 各 16；collections 3 且均为 official；RoutePage inventory 169 且均为 `template/noindex`、published CMS 0；3 feedback、CharacterLike / MediaLike / Follow 各 0、0 open `public_content_repair_items`、21 functions、29 triggers。Release 的 `legacy=true` 是 editorial import discriminator，不表示仍由 legacy serving authority 对外服务。
+- 最终 checkpoint 源端为 migrations `60`（latest `20260718012000`）、20 users；characters、Releases、live Servings、active PublicCatalogQualifications、MediaAssets 各 16；base tables `234`、views `7`、sequence `1`；16 项 authority assertion 全部成立，broken chain 为 0。Main outbox `3,936`（pending `0`、failed `0`）、inbound `5,738`（received `0`）；Chat sessions `294`、messages `818`、attachments `4`，outbox `1,552` / inbox `488`（均 pending `0`、failed `0`），file mutations `5`（pending `0`）；Redis operational queues pending/failed 均为 0。Release 的 `legacy=true` 是 editorial import discriminator，不表示仍由 legacy serving authority 对外服务。
 - 16 个 official Character 均逐一具备 canonical image asset、published ready Release、live Serving 和 active qualification；没有用 synthetic fallback 或 repair 占位维持目录数量。
 - 当前库 invariant ledger 返回 `qualityState=certified`、`decisionUse=allowed`、`totalViolations=0`、`unavailableChecks=0`、`failed=[]`。这是当前开发库的权威终态证明，不冒充外部生产环境认证。
 
 ### 0.2 已完成的代码正确性修复
 
-- 真实数据：公开角色、合集、反馈和媒体读取改为服从 canonical provenance / publishability / Release / Serving / qualification；移除角色图片的 synthetic fallback。个人数据为空时保持任务型空态，官方编辑供给独立存在，不混入个人历史或计数。
+- 真实数据：公开角色、合集、反馈和媒体读取改为服从 canonical provenance / publishability / Release / Serving / qualification；移除角色图片的 synthetic fallback。官方编辑 seed 是经 DB → Release → Serving → Qualification 治理的冷启动供给，不是测试 fixture 或自然用户活动；actor-scoped 个人数据为空时保持任务型空态，不混入官方供给或虚构计数。当前关键页面 Gate 后未发现确定性的 P0/P1 假数据路径。
 - 错误与缓存：私有 API 响应统一为 `private, no-store`；CMS 明确区分 absent、invalid 与 unavailable，媒体存储或签名失败不再回退到可能失真的 URL；异步页面以当前 viewer/query/request scope 为准，失败和晚到响应不能冒充当前成功数据。
 - Billing：CheckoutSession 在 provider 副作用前持久化 intent、offer snapshot 和 idempotency identity；前端可恢复 pending intent；provider invoice、webhook、activation 与 entitlement/ledger 在锁和 reconciliation lifecycle 下幂等处理，未知或无法对账的状态 fail closed。
 - Generate：触达 DTO、viewer/query/request scope、stale response 和 retry/recovery 使用同一 authority；malformed/旧 scope 不再降级为空成功，source/profile/capability 缺失在建 Job 和预留币前 fail closed，可重试终态复用原设置但创建新的权威尝试。
 - Admin v2：所有 protected operation 在 body parse 与 data access 之前完成 authentication；authority execution matrix 锁定未登录请求统一返回 401，避免以 malformed body 绕过认证顺序或形成 validation oracle。
 - 并发写：Prisma 7 adapter 的 `P2034` 与 adapter-pg `TransactionWriteConflict` 被统一归类为 serializable write conflict；原子幂等 mutation 最多自动重试 3 次，耗尽后返回稳定 authority conflict。并发 reconciliation / atomic mutation 回归证明竞争请求只收敛到一个 tombstone 或 committed result。
-- Chat：boundary SQL 已在目标库幂等应用两次并通过校验；标准 PM2 Chat 实例上的最终 postfix signed-BFF 探针 `.tmp/final-chat-service-postfix.json` 为 `ok=true`，耗时 `12.852s`，覆盖 health 200、signed sessions 200/3、unsigned 401、create 201、send 202、SSE `start/delta/done`、reload 后 assistant `sent`、no-memory 202 与 blocked 202；`done` 不早于持久化终态。
+- Chat：boundary SQL 已在目标库通过正向能力检查与 15 项负向拒绝检查；`chat_service` 请求角色只能写 durable file intent，显式 `chat_projector` 连接执行文件副作用并完成 receipt，DB trigger/grant 拒绝请求路径伪造完成或删除未完成 intent。
 - CMS / SEO：169 条既有 RoutePage 被保留为未发布模板库存，不冒充公开正文；只有满足版本化 publish authority 的 CMS 才能公开，当前 published CMS 为 0。三个真正撰写的静态文章与专用产品页由精确正向 registry 授权，其余泛化 SEO/template 路径返回 404。publish/unpublish 会同时失效 path/tag 与 sitemap cache；公开读取、canonical、indexing status 和 sitemap distribution 使用同一已发布 authority。动态角色 metadata 已改为读取角色 SSoT，既定 `noindex` 规则继续保留。
 
 ### 0.3 最终自动化、浏览器与运行证据
 
-- 最新统一全量测试为 Shared `36 files / 172 tests`、Gen `14 / 117`、Admin `87 / 382`、Chat `25 / 190`、Main `212 passed files + 2 skipped files / 1,464 passed + 3 skipped tests`；五包合计 `2,325 passed / 3 explicitly skipped`，根 test `6/6 tasks`。
-- 根 lint `2/2`、typecheck `6/6`；最终 production build `5/5`，耗时 `16.09s`，`git diff --check` 通过。首次 sandbox build 的 Turbopack 端口绑定被操作系统拒绝；沙箱外同一源码完整构建通过。
-- fresh focused Playwright 为 `2/2`、耗时 `28.9s`：age gate → Explore → Character detail，以及 Generator config failure truthful state → Retry recovery。`IDREAM_NEXT_DIST_DIR` 已按 Playwright 端口隔离 Main/Admin Next distDir，允许与另一 Codex Next dev 共存；对应 `playwright-environment` unit regression 为 `6/6`。
-- 最终 PM2 快照为 8 instances online、restart 均为 0：`main-web`、`admin-web`、`chat`、2 个 `gen-image`、`gen-finalizer`、`main-event-consumer`、`admin-command-worker`。本任务旧临时 PM2 orphan Chat 曾占用 3100，精确清理后最终观测时 Chat 已稳定 4 分钟、其余实例已稳定 6 分钟且 restart 均为 0；`/healthz` 为 200，`Cache-Control` 包含 `private, no-store`。先前 errored restart loop 是已排除的旧进程冲突，不是最终状态。
-- 实时 web probe 通过：Main `/` 与 `/generate` 为 200，age API 的未授权路径为预期 403，受保护 Admin UI 为 200、未登录 Admin API 为 401。catalog probe 返回 `16 public characters / 3 public collections / 1 public creator / 3 public feedback / 16 distinct images / 0 issues`；product config probe 返回 `5 image profiles / 1 template / 1 freeplay / 1 pricing`，public characters/prompts 均为 16。Chat 模型报告也是同日通过证据。
+- 最新统一全量测试为 Shared `36 files / 175 tests`、Admin `89 / 397`、Gen `14 / 117`、Main `219 passed files + 2 skipped files / 1,585 passed + 3 skipped tests`、Chat `27 / 212`；五包合计 `385 passed files + 2 skipped files / 2,486 passed tests + 3 skipped tests`。
+- 根 lint `2/2`、typecheck `6/6` 与 scoped `git diff --check` 通过。根 production build `5/5` 通过；834px 修复后执行 Main-only final immutable build。最终 Main release 为 `idream-f7579f81-cc0e-419f-a259-9f6f78c962f9` / `build-TfctsWXpff2fKS`，Admin release 为 `idream-8838f3a3-c801-47cd-8df7-36c96cb88447` / 同一 build ID。
+- fresh Playwright 以 `PW_RUN_ID=c3d4e5f6` 在隔离端口 3880–3883 完成 `164/164`，耗时 4.5m。该运行真实拉起 Main、Admin、Chat 与 worker，证明测试 DB、Redis namespace、Next distDir 和显式 Chat projector connection 都按 run 隔离；此前 focused `2/2` 与 `f17a2034` `9/9` 保留为 scoped historical evidence。
+- PM2 最终为 7 logical apps / 8 processes online；`/`、`/explore`、`/admin/today` 为 200，Chat `/healthz` 为 `ok`。Main 关键页 1440px/375px 无 overflow/console error；834px 审查先捕获首页 `scrollWidth=1047`，TopControls breakpoint 修复经独立 E2E `1/1` 后，最终 runtime 为 `scrollWidth=834` 且 filters 均在 viewport 内。Admin Today/Characters/Creative/Incidents/Cases 为 `zh-CN`，375px/834px 无 overflow，console error 为 0。
+- `redcraft_krea2_default` candidate ready；真实 workflow-native `BackendImageModel → ComfyUI 0.28.0` MPS smoke 为 832×1024、880,175 bytes、132,649ms 并通过。当前生产 worker 使用 `GEN_IMAGE_PROVIDER=backend` 和 ComfyUI 8188。
+- `launch:probe:pipeline --include-catalog` 结果为 `6/7`：web/product/chat-service/chat-model/voice/catalog 通过，legacy `pipeline@8091` image check 因网关未运行失败。它不是当前 backend/ComfyUI failure，pipeline suite 也不能宣称通过。
+- 三层一致性备份及隔离恢复已通过：`CHAT_FS_ROOT` 为 429 files / 550,987 bytes；Blob 为 13,634 files / 162,163,688 bytes，Main/Gen effective mock root 一致。PostgreSQL client `18.3` 对 server `16.14` 完成恢复；source 与 restore 的 counts、schema、logical DB、Chat FS、Blob 比较均为 `0` difference（equal），disposable restore DB 清理后 remaining `0`。
 - 4 个 ComfyUI UI workflow 已完成 sync/readback：`qwen-image-edit-img2img`、`qwen-image-edit-multi-identity`、`qwen-image-edit-multi-reference`、`redcraft-krea2-txt2img`。真实 smoke artifact 为 `/private/tmp/idream-qwen-img2img-smoke.png`（832×1216，SHA-256 `3e0bdfa40aa9f70fa7c6fbaeb38f360254c89febf31988221ae2ef2b54fc5ea5`）、`/private/tmp/idream-qwen-multi-identity-smoke/sample-01.png`（832×1216，SHA-256 `965c9f20dd71cd294429bc7c87e940328d441fd48380599aee533343162cb512`）与 `/private/tmp/idream-qwen-identity-source-smoke.png`（832×1216，SHA-256 `b2361c115cf2b8351303cc468d82661f0a40074bee4b026927bcf4e9a889d6e5`）。它们不替代 publish/qualification/生产容量 Gate。
-- 上述证据完成本地 code-owned controlled-beta Gate。production providers、production canary/backfill、生产容量与 public-launch readiness 继续为 `NOT_EVALUATED`。
+- 恢复后 PM2 回到 7 logical apps / 8 processes 且全部 online，Main/Admin HTTP 为 200、Chat health 为 `ok`。上述证据完成本地 code-owned controlled-beta Gate 的 DB/static/test/E2E/build/runtime/browser/backup 阶段；production providers、production canary/backfill、生产容量与 public-launch readiness 继续为 `NOT_EVALUATED`。
 
 ## 1. 第一性原理定义
 
@@ -1104,7 +1106,11 @@ JSONL artifact：`/Users/kk/.gstack/projects/mliu62868-idream/tasks-devex-review
 **What already exists**
 
 - Root scripts 已清楚分 package，Turbo 负责 workspace 调度。
-- Main Playwright config 已能管理四个隔离服务、端口、DB、Redis 与 Chat FS。
+- Main Playwright config 已能管理四个隔离 URL 服务与一个无端口的 Gen
+  image/character-preview worker；后者使用 Playwright 1.61 原生
+  `wait.stdout` readiness 与 graceful `SIGTERM`。五个进程受同一 run scope
+  约束并共享隔离的 Redis/BullMQ 与 provider 配置；Main/Chat DB 和 Chat FS
+  继续由该 run 独占。
 - launch probes 普遍已有 `--report` 产物，适合被 runner 组合。
 - migration/readiness/PM2/HTTP/Chat/Gen probes 已有各自权威，不需重写。
 - Vitest 4.1.9 支持 global teardown 与 Projects/tags，可用于 lease 和 fast/integration 分层。

@@ -1,30 +1,33 @@
 # iDream 当前功能覆盖审计
 
-更新日期：2026-07-17
+更新日期：2026-07-18
 
 ## 结论
 
 这份文档是当前代码态的功能覆盖表，覆盖的是“用户能否完整使用”和“有没有测试证据”。它补充并修正 `ProductFeatureMap.md` 里 2026-06-13 的旧状态描述。
 
-当前状态：**主站与 Admin 图片/角色资产的 code-owned controlled-beta Gate 已形成 2026-07-17 同日证据。主站 focused Playwright 2/2 与 Admin 图片/角色资产 checkpoint `f17a2034` 隔离 Playwright 9/9 均已通过；后者真实覆盖空白角色、三类角色资产、严格 v2 发布、恢复、响应式、键盘与 WCAG 门禁。9/9 后共享工作区仍有 Main/Shared/Chat 修复写入，因此 build、PM2、HTTP/数据库与 Playwright 必须统一复跑后才能称为当前全仓最终态。公开生产环境仍为 `NOT_EVALUATED`，不等于 public launch。**
+当前状态：**当前源码的数据库、静态检查、全量测试、fresh Playwright、immutable build、PM2、HTTP、本地浏览器与三层一致性备份/恢复 Gate 已统一通过：Main migrations `60/60`，Chat 数据库边界正向检查与 15 项负向检查通过，根 lint `2/2`、typecheck `6/6`，五包共 `385 passed files + 2 skipped files / 2,486 passed tests + 3 skipped tests`，fresh `PW_RUN_ID=c3d4e5f6` 在隔离端口 3880–3883 完成 `164/164`（4.5m）。最终 Main release 为 `idream-f7579f81-cc0e-419f-a259-9f6f78c962f9`，Admin release 为 `idream-8838f3a3-c801-47cd-8df7-36c96cb88447`，二者 build ID 均为 `build-TfctsWXpff2fKS`；备份恢复后 PM2 7 个 logical apps / 8 个 processes 全部 online。公开生产环境仍为 `NOT_EVALUATED`，不等于 public launch。**
 
-## 2026-07-17 主站数据真相与健康修复
+## 2026-07-17–18 主站数据真相与健康修复
 
-- 当前开发库已重新落盘到仓库内 ignored 的最终本地恢复副本 `local-backups/idream-main-final-20260717-57.dump`，SHA-256 为 `98a3e01662bacec87f034811c90e89a61f4d537ed9f0ce5cea51811833ae363e`；同时保留 PostgreSQL 16 兼容 SQL `local-backups/idream-main-final-20260717-57-pg16.sql`，SHA-256 为 `299660a05961b5cb828fc2e956c1532f3d4227f13e703c77635dadbb12f5c992`，原始 SQL SHA-256 为 `cd0b4d8362adbe090688cb9a2a86170d0cef4ddd92464438ad26cf03bf741c11`。该 SQL 已在一次性干净 PostgreSQL 数据库完成真实恢复，并复核 57 migrations、19 users、16 characters / assets / Releases / Servings / Qualifications、169 RoutePage inventory、21 functions 与 29 triggers；临时库随后删除且存在性复核为 0。当前 57 个 Prisma migration 已完成 fresh replay、现有快照 upgrade、重复 deploy、应用回滚/前滚演练与 Main 开发库 deploy；status `57/57`，drift 为 `No difference`。
+- Main 当前 60 个 Prisma migration 已完成 fresh replay、现有快照 upgrade、重复 deploy、应用回滚/前滚演练与开发库 deploy；status `60/60`，drift 为 `No difference`。2026-07-17 的仓库内 ignored 数据库恢复副本及 SHA-256/一次性恢复演练只是事故后 Main DB checkpoint，不是 reset 前原始数据备份。2026-07-18 已另行完成 Main PostgreSQL + `CHAT_FS_ROOT` + local Blob 的静默一致性备份与隔离恢复，artifact base 为 `/Users/kk/code/idream/local-backups/idream-main-final-20260718-60/idream-main-final-20260718-60`；bundle 目录权限 `0700`，23 个文件均为 `0600`，总大小 171M，bundle SHA 校验全部通过。
 - deploy 前后业务指纹一致：RoutePage 正文 `169|40013884913dcfebc68551487c65eabb`、RoutePage legacy columns `169|f8d09bc9a4a75b809fecee9bb9924df1`、ProductFeedback（排除本次新增列）`3|569a7e78632ee0fe8c31655fdd4750c5`、Subscription `0|d41d8cd98f00b204e9800998ecf8427e`、Entitlement `1|58bcf35022a8d1fde65aacb6a9f45287`、Dreamcoin ledger `2|30628529ba89bc5ad3c4699a6a734b4d`；CharacterLike、MediaLike、Follow 各为 `0|d41d8cd98f00b204e9800998ecf8427e`。
-- 当前 Main 开发库有 19 users、16 characters；official、public approved、bound image assets、ready editorial-import Releases、live Servings、active PublicCatalogQualifications 各 16；collections 3 且均为 official；RoutePage inventory 169 且全部为 `template/noindex`、published CMS 为 0；feedback 3、CharacterLike / MediaLike / Follow 各 0、open repair 0、functions 21、triggers 29。Release 的 `legacy=true` 是 editorial import discriminator，不表示仍由 legacy serving authority 对外服务。16 个 official Character 均具备完整 Release → Serving → Qualification 权威链；未用 synthetic fallback 或 repair 占位填充公开目录。
-- invariant ledger 在当前恢复库上实跑为 `qualityState=certified`、`decisionUse=allowed`、`totalViolations=0`、`unavailableChecks=0`、`failed=[]`。该结论只描述当前开发库，不替代生产 canary、外部 provider 或公开上线 Gate。
-- 真实数据与页面状态已收紧：公开角色/合集/反馈/媒体只消费 canonical publishability authority；当前真实互动为空，不制造点赞、关注、聊天或经营指标，个人页面使用有明确下一步的任务型 empty state，官方编辑供给与个人历史/计数分域。私有响应 `no-store`，CMS 和媒体明确区分 absent / invalid / unavailable，失败或晚到响应不再伪装成成功/空数据。
+- 当前 Main 开发库有 20 users；characters、Releases、live Servings、active PublicCatalogQualifications 各 16。16 项 authority assertion 全部成立，broken authority chain 为 0；16 个 official Character 均具备完整 Release → Serving → Qualification 权威链，未用 synthetic fallback 或 repair 占位填充公开目录。Release 的 `legacy=true` 是 editorial import discriminator，不表示仍由 legacy serving authority 对外服务。
+- 最终 checkpoint 源端为 migrations `60`（latest `20260718012000`）、users `20`、characters / Releases / live Servings / active Qualifications / MediaAssets 各 `16`，base tables `234`、views `7`、sequence `1`；Main outbox `3,936`（pending `0`、failed `0`），Main inbound `5,738`（received `0`）。Chat 为 sessions `294`、messages `818`、attachments `4`，outbox `1,552`（pending `0`、failed `0`）、inbox `488`（pending `0`、failed `0`）、file mutations `5`（pending `0`）。`CHAT_FS_ROOT` 为 429 files / 550,987 bytes；Blob 为 13,634 files / 162,163,688 bytes，Main/Gen effective mock root 一致。Redis operational queues 的 pending/failed 均为 0。该结论描述当前本地运行态，不替代生产 canary、外部 provider 或公开上线 Gate。
+- 真实数据与页面状态已收紧：公开角色/合集/反馈/媒体只消费 canonical publishability authority。官方编辑 seed 是经 DB → Release → Serving → Qualification 治理的冷启动供给，不是测试 fixture，也不代表自然用户活动；actor-scoped 的个人聊天、互动、历史与计数没有事实时保持真实 empty state，不制造点赞、关注、聊天或经营指标。私有响应 `no-store`，CMS 和媒体明确区分 absent / invalid / unavailable，失败或晚到响应不再伪装成成功/空数据。当前 Gate 后关键页面未发现确定性的 P0/P1 假数据路径。
 - Billing 已建立 provider 副作用之前的 durable checkout intent、offer snapshot、幂等 replay、invoice/webhook 锁与 reconciliation lifecycle，前端能恢复 pending intent，未知 entitlement 或无法对账状态 fail closed。CMS / SEO 保留 169 条 RoutePage 作为未发布模板库存，而不是公开正文；只有满足版本化 publish authority 的 CMS 才能公开，当前 published CMS 为 0。三个真正撰写的静态文章与专用产品页由精确正向 registry 授权，其余泛化 SEO/template 路径返回 404；动态角色 metadata 读取同一角色 SSoT，既定 `noindex` 规则继续保留。
 - Generate 的触达契约、viewer/query/request scope stale-response authority 与 retry/recovery 已收紧：malformed/旧 scope 不再降级成空成功，source/profile/capability 缺失在建 Job 和预留币前 fail closed；可重试终态复用原设置但创建新的权威尝试，不静默丢 source image。
 - Admin v2 的 protected operation 统一先完成 authentication，再解析 body 或访问数据；authority execution matrix 对全部受保护操作锁定未登录响应为 401，malformed body 不再成为认证前的 validation oracle。
 - Prisma 7 adapter 的 serializable 写冲突已统一识别 `P2034` 与 adapter-pg `DriverAdapterError.cause.kind=TransactionWriteConflict`；原子幂等 mutation 最多重试 3 次，耗尽后返回稳定的 authority conflict。并发 reconciliation / atomic mutation 回归证明竞争请求收敛到唯一 tombstone 或 committed result，不重复产生权威副作用。
-- Chat boundary SQL 已在目标库幂等应用两次并通过校验。标准 PM2 Chat 实例上的最终 postfix signed-BFF 探针 `.tmp/final-chat-service-postfix.json` 为 `ok=true`，耗时 `12.852s`：health 200、signed sessions 200/3、unsigned 401、create 201、send 202、SSE `start/delta/done`、reload 后 assistant 为 `sent`、no-memory 202、blocked 202；`done` 不早于持久化终态。
-- 最新统一全量测试为 Shared `36 files / 172 tests`、Gen `14 / 117`、Admin `87 / 382`、Chat `25 / 190`、Main `212 passed files + 2 skipped files / 1,464 passed + 3 skipped tests`，五包合计 `2,325 passed / 3 explicitly skipped`。同一源码状态下根 lint `2/2`、typecheck `6/6`、production build `5/5` 与 `git diff --check` 均通过；最初 Turbopack build 只因沙箱禁止本地端口绑定而失败，沙箱外同一命令完整通过。
-- 本轮较早同日的主站 focused Playwright 为 `2/2`、耗时 `28.9s`：一条覆盖 age gate → Explore → Character detail，另一条覆盖 Generator config failure 的 truthful state → Retry recovery。Admin 图片/角色资产 checkpoint `f17a2034` 的隔离 Playwright 为 `9/9`、耗时 `1.6m`；`IDREAM_NEXT_DIST_DIR` 现按 Playwright 端口隔离 Main/Admin 的 Next distDir，可与另一 Codex Next dev 共存，`playwright-environment` pure regression 为 `10/10`。之后的共享源码仍须纳入统一复跑。
-- 最终 PM2 快照为 8 instances online：`main-web`、`admin-web`、`chat`、2 个 `gen-image`、`gen-finalizer`、`main-event-consumer`、`admin-command-worker`。Main/Admin 已执行有意的产物刷新重启，现有 restart counter 反映该 rollout；最终页面/API 探针后没有新增错误日志或重启漂移。排查中发现的旧临时 PM2 orphan Chat 已精确清理，先前 restart loop 是旧临时进程冲突，不是最终运行态。
-- 实时 web probe 通过：Main `/` 与 `/generate` 为 200，age API 在未满足授权条件时按契约返回 403，受保护 Admin UI 为 200、未登录 Admin API 为 401。catalog probe 为 `16 public characters / 3 public collections / 1 public creator / 3 public feedback / 16 distinct images / 0 issues`；product config probe 为 `5 image profiles / 1 template / 1 freeplay / 1 pricing`，public characters/prompts 均为 16。Chat 模型报告也是同日通过证据。
-- 以上完成 code-owned controlled-beta Gate；production providers、production canary、production backfill 与 public-launch readiness 继续为 **NOT_EVALUATED**。详细证据边界见 [`MAIN_SITE_COMPLETENESS_HEALTH_PLAN_2026-07-16.md`](./MAIN_SITE_COMPLETENESS_HEALTH_PLAN_2026-07-16.md) §0。
+- Chat boundary SQL 已在目标库通过正向能力检查与 15 项负向拒绝检查。`chat_service` 只负责请求事务与写入 durable file intent；`chat_projector` 使用独立连接完成文件副作用、收敛 mutation receipt，并受数据库 trigger/grant 约束，不能由请求路径伪造已完成文件事实。
+- 最新统一全量测试为 Shared `36 files / 175 tests`、Admin `89 / 397`、Gen `14 / 117`、Main `219 passed files + 2 skipped files / 1,585 passed + 3 skipped tests`、Chat `27 / 212`；五包合计 `385 passed files + 2 skipped files / 2,486 passed tests + 3 skipped tests`。同一源码状态下根 lint `2/2`、typecheck `6/6` 与 scoped `git diff --check` 通过。
+- fresh Playwright 使用 `PW_RUN_ID=c3d4e5f6` 与隔离端口 3880–3883，`164/164` 在 4.5m 内通过；环境真实拉起 Main、Admin、Chat 与 worker，并证明显式 `CHAT_PROJECTOR_DATABASE_URL` wiring 生效。此前 focused `2/2` 与图片/角色资产 checkpoint `f17a2034` 的 `9/9` 仅保留为历史 scoped evidence，不再承担当前统一结论。
+- 根 production build 先完成 `5/5`；834px 浏览器审查发现首页 `scrollWidth=1047` 后修复 TopControls breakpoint，并以独立 E2E `1/1` 锁定，再执行 Main-only final immutable build。最终 Main release 为 `idream-f7579f81-cc0e-419f-a259-9f6f78c962f9` / `build-TfctsWXpff2fKS`；Admin release 为 `idream-8838f3a3-c801-47cd-8df7-36c96cb88447` / `build-TfctsWXpff2fKS`。
+- PM2 最终为 7 个 logical apps / 8 个 processes online；Main `/`、`/explore`、Admin `/admin/today` 均为 200，Chat `/healthz` 为 `ok`。Main 关键页在 1440px 与 375px 无 overflow/console error；最终 runtime 834px 的首页 `scrollWidth=834` 且 filters 均在 viewport 内。Admin Today、Characters、Creative、Incidents、Cases 均为 `zh-CN`，375px/834px 无 overflow，console error 为 0。
+- generation model candidate `redcraft_krea2_default` 为 ready。真实 workflow-native `BackendImageModel → ComfyUI 0.28.0` MPS smoke 通过，产物为 832×1024、880,175 bytes、132,649ms；当前生产 worker 的 `GEN_IMAGE_PROVIDER=backend` 直接走 `COMFYUI_API_URL=http://127.0.0.1:8188`。
+- `launch:probe:pipeline --include-catalog` 当前结果是 `6/7`，不是全绿：web、product config、chat service、chat model、voice、catalog 通过；legacy `pipeline@8091` image check 因该 OpenAI-compatible gateway 未运行而失败。当前生产图片 worker 使用 workflow-native `backend`，因此这项 legacy 8091 失败不能表述为当前 backend/ComfyUI 失败，也不能把整个 pipeline suite 宣称为通过。
+- 完整备份已使用 PostgreSQL client `18.3` 对 server `16.14` 完成隔离恢复；source 与 restore 的 counts、schema、logical DB、Chat FS、Blob 比较均为 `0` difference（equal），restore DB 清理后 remaining `0`。备份恢复后 PM2 恢复为 7 logical apps / 8 processes 全部 online，Main `/`、`/explore`、Admin `/admin/today` 均为 200，Chat `/healthz` 为 `ok`。
+- production providers、production canary、production backfill、生产容量与 public-launch readiness 继续为 **NOT_EVALUATED**。详细证据边界见 [`MAIN_SITE_COMPLETENESS_HEALTH_PLAN_2026-07-16.md`](./MAIN_SITE_COMPLETENESS_HEALTH_PLAN_2026-07-16.md) §0。
 
 ## 2026-07-16–17 Admin 图片与角色资产生产闭环
 
@@ -45,30 +48,15 @@
 - 通用 Creative Run 创建、Character Asset Studio 的生成/审核/采用，以及 Character Create 都在第一次 POST 前持久化 actor/environment/scope、规范化请求快照和 idempotency key。响应丢失后只能用同一 body/key Resume；一旦已有 committed receipt，Verify 只做 GET 投影核对，不会再 POST。Web Locks 让同 actor/scope 的第二个标签页采用第一个 recoverable intent，而不是覆盖它；actor 切换会重挂工作区，显式 `?draft=` 恢复也不会被无关的新建意图劫持。超过 24 小时或快照不再可安全重放时，receipt/key 不会被浏览器删除，而是进入 `reconciliation_required` 并保持写锁。Character 对账必须携带 `expectedCharacterId`，先通过该资源的 `character.project.write`，再把可信 receipt target/result 绑定回同一角色；已提交 bootstrap 需精确核对 identity/reference/anchor/draft/cover，selection 需核对 exact purpose slot + asset。若未提交则原子写入 cancelled tombstone 阻止迟到 writer；旧 tombstone 的错误 command-type 初猜只返回可信 `existingCommandType` 供安全重试，不新增 command/audit/domain write；pending/failed 与不可信 target 均不会伪装成成功或新请求。
 - Reference Set 发布现在要求提交操作者所见的 active id/revision，并在应用 advisory lock 后再次比较；数据库 partial unique index 独立保证一个 Visual Identity 只有一个 active revision。两个并发 writer 只会有一个成功，另一个得到带 current authority/deep link 的稳定 409；P2034 serialization 与 P2002 uniqueness 也被映射为同一可恢复冲突，不向用户泄漏 Prisma 错误。
 - Character publish/schedule/rollback/Serving 与 Creative 创建会先解析 exact idempotency receipt，再执行可变 preflight，因此“服务端已提交但响应丢失”不会因为后续 profile、price 或 authority 漂移而变成假失败；同 key 不同 body 仍明确冲突。旧 v1 batch-create / Character pregen-create 在认证和权限检查后返回 `410 Gone` 与 canonical v2 replacement；旧 item approve/reject/regenerate 返回 `409` 与 repair path，均不再形成旁路写权威。
-- 最新统一自动化结果：Shared 36 files / 172 tests、Admin 87 / 382、Gen 14 / 117、Chat 25 / 190、Main 212 files / 1,464 tests passed，另 2 files / 3 tests explicitly skipped，五包合计 2,325 passed / 3 explicitly skipped。发布权威 focused 回归为 Main 7 files / 65 tests、Shared strict manifest 7/7；开发库为 57/57 migrations、drift `No difference`，16 条 Qualification 对应的 live/public 断链为 0，malformed generated qualification 为 0。named Reference Set partial unique index 存在，重复 active 分组为 0；fresh/upgrade rehearsal 同时验证第二条 active insert 以 PostgreSQL `23505` 失败，以及缺失精确 policy、顶层 route fallback、qualification primary/secondary DELETE、immutable mutation / un-revocation、非 hydratable/private/blocked/deleted 三槽资产、malformed manifest、unsafe `slotVersion` 与 ECMAScript-whitespace-only lineage 均在 COMMIT 被拒绝且事实保留。
+- 最新统一自动化结果：Shared 36 files / 175 tests、Admin 89 / 397、Gen 14 / 117、Chat 27 / 212、Main 219 passed files / 1,585 passed tests，另 2 files / 3 tests explicitly skipped；五包合计 385 passed files / 2,486 passed tests，另 2 files / 3 tests explicitly skipped。发布权威 focused 回归为 Main 7 files / 65 tests、Shared strict manifest 7/7；开发库为 60/60 migrations、drift `No difference`，16 条 Qualification 对应的 live/public 断链为 0，malformed generated qualification 为 0。named Reference Set partial unique index 存在，重复 active 分组为 0；fresh/upgrade rehearsal 同时验证第二条 active insert 以 PostgreSQL `23505` 失败，以及缺失精确 policy、顶层 route fallback、qualification primary/secondary DELETE、immutable mutation / un-revocation、非 hydratable/private/blocked/deleted 三槽资产、malformed manifest、unsafe `slotVersion` 与 ECMAScript-whitespace-only lineage 均在 COMMIT 被拒绝且事实保留。
 - 4 个 ComfyUI UI workflow 已完成 sync 与 readback：`qwen-image-edit-img2img`、`qwen-image-edit-multi-identity`、`qwen-image-edit-multi-reference`、`redcraft-krea2-txt2img`。真实 artifact smoke 分别为 single reference `/private/tmp/idream-qwen-img2img-smoke.png`（832×1216，SHA-256 `3e0bdfa40aa9f70fa7c6fbaeb38f360254c89febf31988221ae2ef2b54fc5ea5`）、dual identity `/private/tmp/idream-qwen-multi-identity-smoke/sample-01.png`（832×1216，SHA-256 `965c9f20dd71cd294429bc7c87e940328d441fd48380599aee533343162cb512`）与 identity + source `/private/tmp/idream-qwen-identity-source-smoke.png`（832×1216，SHA-256 `b2361c115cf2b8351303cc468d82661f0a40074bee4b026927bcf4e9a889d6e5`）。这些只证明 descriptor → ComfyUI → artifact，不替代 profile publish、route qualification 或生产容量 Gate。
 
 ### 本轮最终验证结论
 
-- 图片/角色资产 checkpoint `f17a2034` 已完成全量测试、lint、typecheck、
-  production build、PM2、HTTP/产品探针与隔离 Admin Playwright 9/9。
-  浏览器闭环覆盖空白 Character → reviewed
-  identity bootstrap → Portrait/Hero/Chat 三槽生成/审核/采用 → 真实 Draft
-  Preview → immutable QA → strict-v2 Release → public Serving，并证明 legacy
-  avatar-only Release fail closed、不进入写路径；375px/834px 的键盘、WCAG、
-  overflow、console/LCP 门禁同步通过。9/9 后的共享 Main/Shared/Chat 改动
-  仍须完成统一 build、PM2、HTTP/数据库与 Playwright 复跑，届时方可关闭
-  当前全仓 code-owned controlled-beta Gate。
-- Playwright 的 Next distDir 已按端口隔离；旧临时 orphan Chat 已精确清理。因此先前
-  browser/build blocker 与 PM2 errored restart loop 均是已解决的环境冲突，
-  不再是当前 concern。
-- 测试守卫加固早期曾错误接受本地开发 `DATABASE_URL`。当前 schema/seed 已恢复并形成
-  校验过 SHA-256 的事后当前状态备份，再以一次性数据库完成恢复验证，并重新确认
-  19 users / 16 official characters 等终态；该备份不是 reset 前原始数据的备份，
-  reset 前未备份的本地记录仍可能不可恢复。测试守卫现只接受明确 test-scoped
-  数据库；恢复后的数据权威与迁移状态以本节顶部的当前终态为准。
-- 外部 production provider、真实生产 canary/backfill、容量和 public-launch Gate 没有在
-  本地验证中被替代，继续保持 `NOT_EVALUATED`。
+- 当前源码已通过 60/60 migration、Chat boundary 正向 + 15 负向、根 lint/typecheck、五包全量测试、fresh Playwright 164/164、最终 immutable builds、PM2、HTTP 与浏览器响应式 Gate。图片/角色资产 checkpoint `f17a2034` 的空白 Character → reviewed identity bootstrap → Portrait/Hero/Chat → Draft Preview → immutable QA → strict-v2 Release → public Serving、legacy avatar-only fail close 与 375px/834px/WCAG 证据继续作为补充证明。
+- `IDREAM_NEXT_DIST_DIR` 与测试数据库按 run/端口隔离；fresh E2E 已证明 Main/Admin/Chat/worker 与显式 projector connection 可以从空白测试环境一致启动。834px runtime 漂移已通过 TopControls breakpoint 修复、独立 E2E 1/1 与 final Main release 复验闭环；三层一致性备份也已通过隔离恢复、逐层等价比较和恢复后运行复验。
+- 测试守卫加固早期曾错误接受本地开发 DATABASE_URL，导致开发库被 reset。当前备份是事故后恢复并验证的 current-state backup，不是 reset 前原始数据备份；reset 前未单独备份的本地记录仍可能不可恢复。测试守卫现只接受明确 test-scoped 数据库。当前 60/60 schema、恢复后业务终态与备份恢复能力均已验证，但这不等于所有 reset 前历史都已恢复。
+- 外部 production provider、真实生产 canary/backfill、容量和 public-launch Gate 没有在本地验证中被替代，继续保持 `NOT_EVALUATED`。
 
 ## 2026-07-13 角色身份确认与视觉时刻闭环
 
@@ -407,7 +395,7 @@ Chrome 实测通过的流程：年龄门禁（拦截 fresh 访客）、注册(�
 - **Generate My Presets 匿名回跳与删除确认（新增）**：匿名用户在 `/generate` 保存 My Presets 不再停在 raw `Unauthorized`；401 时保存 mode/background/pose/outfit/prompt 草稿并进入 `/signup?next=/generate`，注册后回到 Generate、恢复 preset name 与控制值，二次 Save 后持久化 `GenerationPreset` 并清除草稿。My Presets 删除现在需要第二次点击 `Confirm delete`，首击只进入确认态且 DB 保持 `GenerationPreset.status=active`，确认后才归档为 `archived`。Chrome 证据：`generate-anon-preset-auth-deadend-current-full.png` 暴露旧死端，`generate-anon-preset-signup-next-final.png`、`generate-anon-preset-returned-draft-final.png`、`generate-anon-preset-saved-final.png` 验证修复闭环，console errors `[]`；`docs/product-audits/2026-07-04-generate-preset-delete-confirmation-audit/` 记录删除确认截图与 DB 状态；focused E2E `generate preset signup redirect preserves anonymous preset draft` 断言 UI 恢复与 DB controls。
 - **Help Desk Roadmap Vote 匿名回跳（新增）**：匿名用户点击已有 roadmap item 的 `Vote` 不再只回到 `/helpdesk` 后丢失投票意图；401 时保存 item/action，进入 `/signup?next=/helpdesk`，注册后自动重放投票、显示 `Vote counted.`、同一卡片变为 `Voted 1`，并清除 pending vote 草稿。Chrome 证据：`helpdesk-anon-vote-returned-current.png` 暴露旧回跳后仍为 `Vote`，`helpdesk-anon-vote-clean-signup-next-final.png`、`helpdesk-anon-vote-clean-returned-voted-final.png` 验证修复闭环，DB 确认 `ProductFeedbackVote` 与 `voteCount=1`，fixture cleanup 后剩余临时用户/条目为 0；focused E2E `help desk signup redirect applies anonymous roadmap vote intent` 锁定 UI、localStorage 清理与 DB vote row。
 - **角色详情 Generate 入口补齐（新增）**：角色详情 action row 不再只有 Chat/Like/Report；现在有上下文 `Generate` CTA，直达 `/generate?characterId=<id>`，Generate 的 Character selector 会预选该角色，匿名用户点击 `Join Free` 时保留完整 query，注册后仍回到同一角色的生成器。Chrome 证据：`character-detail-generate-missing-current.png` 暴露旧缺口，`character-detail-generate-cta-final.png`、`character-detail-generate-selected-final.png`、`character-detail-generate-signup-next-final.png`、`character-detail-generate-returned-final.png` 验证修复闭环，console errors `[]`；focused E2E `character detail generate signup redirect preserves character intent` 锁定 detail -> Generate -> signup -> returned Generate selector。
-- **Launch probe 可靠性补强（新增）**：chat-service probe 的 SSE 等待从 8s 提高到默认 90s，并可用 `CHAT_SERVICE_PROBE_STREAM_TIMEOUT_MS` 覆盖；reload 校验绑定本次 assistant message；chat worker 现在在 DB finalize 后发送 `done`。当前本机 `bun run launch:probe:pipeline` 已复验 6/6 通过。
+- **Launch probe 可靠性补强（新增）**：chat-service probe 的 SSE 等待从 8s 提高到默认 90s，并可用 `CHAT_SERVICE_PROBE_STREAM_TIMEOUT_MS` 覆盖；reload 校验绑定本次 assistant message；chat worker 现在在 DB finalize 后发送 `done`。本段原 `6/6` 是 2026-06-30 legacy pipeline checkpoint；2026-07-18 当前组合探针为 6/7，精确边界见本文件顶部与“当前已验证但非公开上线口径”。
 - **构建可靠性补强（新增）**：main/admin App Router layout 不再使用 `next/font/google` 的远程 Google font build-time fetch，改为本地系统字体栈，避免生产构建在无法访问 `fonts.gstatic.com` 时失败；`turbo.json` 已给 `@idream/admin#build` 与 `@idream/admin#typecheck` 加入 `packages/main` admin UI/server/schema 跨包输入，避免 admin 包从旧缓存恢复 stale bundle；main/admin build 与 `bun run check` 已复验通过。
 
 剩余/已知（非 beta 阻断，见 REMAINING_WORK / 下方“延后”）：2026-06-30 已重跑 `bun run --filter @idream/main db:seed`，运行库的 `voice_gen` flag 与计划 `voiceEnabled` features 已回到 seed SSoT，并用 catalog/product-config/voice probe 复验通过；每次重置 preview/demo DB 后仍需重复 seed + probes。公开上线仍需真实 provider + secrets（Go.cam/BTCPay/R2/Sentry）+ prod 应用 `db/sql` 公共 schema 文件 + `APP_ENV=production`(关闭 dev-header 鉴权旁路、避免 admin/main 同源 cookie 串)。
@@ -443,6 +431,13 @@ Chrome 实测通过的流程：年龄门禁（拦截 fresh 访客）、注册(�
 > snapshot，并明确 `benefitsEndAt` 与 no automatic renewal。泛化 comparison、
 > games、romantasy 等库存路由的旧截图也只是历史证据；当前未获 dedicated/CMS
 > publication authority 的路径返回 404。
+>
+> 2026-07-18 image runtime correction：下表 Generate image 长行中的
+> `pipeline reference_images`、Pornmaster default、`--provider pipeline` 与
+> 2026-06-30 image probe 均是历史实现/证据。当前 worker authority 是
+> `GEN_IMAGE_PROVIDER=backend` → workflow-native `BackendImageModel` → ComfyUI
+> 8188；当前真实 smoke 和 pipeline 6/7 边界以本文件顶部及下方
+> “当前已验证但非公开上线口径”为准。
 
 | 用户/运营流程 | 当前状态 | 证据 |
 | --- | --- | --- |
@@ -489,7 +484,7 @@ Chrome 实测通过的流程：年龄门禁（拦截 fresh 访客）、注册(�
 
 | 范围 | 为什么不能直接当线上完成 |
 | --- | --- |
-| 图片生成 | 本地/internal pipeline 已通过 `sdcpp-image` + `pornmaster-zimage-turbo` 并产出 asset；不能直接当线上完成，因为公开上线仍需生产 pipeline URL/token/capacity、对象存储与 live probe |
+| 图片生成 | 当前生产 worker 使用 `GEN_IMAGE_PROVIDER=backend`，通过 workflow-native `BackendImageModel` 直接连接 ComfyUI 0.28.0 / MPS (`COMFYUI_API_URL=http://127.0.0.1:8188`)；Redcraft 真实 smoke 为 832×1024、880,175 bytes、132,649ms。legacy `pipeline@8091` gateway 当前未运行，因此 `launch:probe:pipeline --include-catalog` 为 6/7；这不是 backend 失败，也不能宣称整套 pipeline pass。公开上线仍需生产容量、对象存储与 live canary |
 | Chat | 本地已经通过 `CHAT_MODEL_PROVIDER=pipeline` + OpenAI-compatible oMLX endpoint probe；chat service BFF probe 强制覆盖 conversation smoke，跳过会话不再算通过，且 reload 必须命中本次 assistant message；Chat 图片附件当前态已用 Chrome 验证 signup -> Melissa Chat -> image request -> completed attachment -> More-like-this variation -> Generate handoff -> ledger/jobs/media persistence，且空白/不可用完成图会显示 `Preview unavailable` fallback |
 | Voice | `PipelineVoiceModel` adapter 已存在；目标模型仍选 MOSS-TTS v1.5。当前 Apple Silicon 本地 smoke path 为 `Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit`、`http://127.0.0.1:8061/v1`、speaker `serena`，`launch:probe:pipeline` 已通过 voice step。Chat UI 已有 focused E2E 和 Chrome 证据：Play voice 会生成/复用 `audio/wav` media asset，message/session metadata 对齐 assistant turn，`costDreamcoins=0`，播放中为 active Stop 状态，结束后回到 Play。`Kokoro-82M-bf16` 当前本机 oMLX 会 500，不作为本地默认 |
 | Payment | 本地 mock checkout 可验证权益闭环且 UI 明确标为 demo-only；BTCPay 已延后，公开上线前必须恢复 BTCPay Greenfield credentials、webhook secret、provider live probe；payment live probe 现在必须创建 launch-test invoice 并返回 HTTPS checkout URL，避免只读 store 权限误判为可收款 |

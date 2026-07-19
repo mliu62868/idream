@@ -2,6 +2,7 @@ import { Buffer } from "node:buffer";
 import { existsSync } from "node:fs";
 import { mkdir, open, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { prisma } from "@/server/lib/db";
 
 type ProbeOptions = {
@@ -15,6 +16,8 @@ type CandidateDefinition = {
   profileId: string;
   expectedIntent?: string;
   expectedRunner: "sd_cpp" | "comfyui";
+  expectedPipelineModel?: string;
+  expectedWorkflowKey?: string;
   minSampleCount: number;
   requireActive: boolean;
   requireConsistency: boolean;
@@ -59,6 +62,7 @@ type CandidateReport = {
   found: boolean;
   runner: string | null;
   pipelineModel: string | null;
+  workflowKey: string | null;
   status: string | null;
   enabled: boolean;
   rolloutPercent: number | null;
@@ -89,11 +93,13 @@ type ProbeReport = {
   error: { code: string; message: string; retryable?: boolean } | null;
 };
 
-const candidateDefinitions: CandidateDefinition[] = [
+export const generationModelCandidateDefinitions: CandidateDefinition[] = [
   {
-    key: "pornmaster_zimage_default",
+    key: "redcraft_krea2_default",
     profileId: "seed-profile-image-default-v1",
-    expectedRunner: "sd_cpp",
+    expectedRunner: "comfyui",
+    expectedPipelineModel: "redcraft-krea2-comfyui",
+    expectedWorkflowKey: "redcraft-krea2-txt2img",
     minSampleCount: 1,
     requireActive: true,
     requireConsistency: false,
@@ -110,6 +116,36 @@ const candidateDefinitions: CandidateDefinition[] = [
     requireVerification: true,
   },
 ];
+
+const candidateKeyAliases: Readonly<Record<string, string>> = {
+  pornmaster_zimage_default: "redcraft_krea2_default",
+};
+
+export function resolveGenerationModelCandidateKey(key: string) {
+  return candidateKeyAliases[key] ?? key;
+}
+
+export function evaluateGenerationModelCandidateActivation(input: {
+  requireActive: boolean;
+  status: string;
+  enabled: boolean;
+  rolloutPercent: number;
+}) {
+  const blockedReasons = [
+    input.requireActive && input.status !== "active"
+      ? `status is ${input.status}, expected active`
+      : null,
+    input.requireActive && !input.enabled ? "profile is disabled" : null,
+    input.requireActive && input.rolloutPercent !== 100
+      ? `rolloutPercent is ${input.rolloutPercent}, expected 100`
+      : null,
+  ].filter((reason): reason is string => Boolean(reason));
+
+  return {
+    ready: blockedReasons.length === 0,
+    blockedReasons,
+  };
+}
 
 function readArg(name: string) {
   const prefix = `--${name}=`;
@@ -157,7 +193,10 @@ async function runProbe(options: ProbeOptions): Promise<ProbeReport> {
   try {
     const definitions = selectedCandidateDefinitions(options.candidateKeys);
     const unknownCandidateKeys = options.candidateKeys.filter(
-      (key) => !candidateDefinitions.some((candidate) => candidate.key === key),
+      (key) =>
+        !generationModelCandidateDefinitions.some(
+          (candidate) => candidate.key === key,
+        ),
     );
     if (unknownCandidateKeys.length > 0) {
       return failedReport({
@@ -176,6 +215,7 @@ async function runProbe(options: ProbeOptions): Promise<ProbeReport> {
         label: true,
         runner: true,
         pipelineModel: true,
+        workflowKey: true,
         sourceModelPath: true,
         convertedModelPath: true,
         status: true,
@@ -228,7 +268,7 @@ async function runProbe(options: ProbeOptions): Promise<ProbeReport> {
       durationMs: Date.now() - startedAt,
       candidateKeys: options.candidateKeys.length > 0
         ? options.candidateKeys
-        : candidateDefinitions.map((candidate) => candidate.key),
+        : generationModelCandidateDefinitions.map((candidate) => candidate.key),
       requireReady: options.requireReady,
       candidates: [],
       failureReasons: ["generation model candidate probe failed"],
@@ -244,16 +284,23 @@ async function runProbe(options: ProbeOptions): Promise<ProbeReport> {
 }
 
 function parseCandidateKeys(value: string) {
-  return value
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
+  return [
+    ...new Set(
+      value
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean)
+        .map(resolveGenerationModelCandidateKey),
+    ),
+  ];
 }
 
 function selectedCandidateDefinitions(candidateKeys: string[]) {
-  if (candidateKeys.length === 0) return candidateDefinitions;
+  if (candidateKeys.length === 0) return generationModelCandidateDefinitions;
   const wanted = new Set(candidateKeys);
-  return candidateDefinitions.filter((candidate) => wanted.has(candidate.key));
+  return generationModelCandidateDefinitions.filter((candidate) =>
+    wanted.has(candidate.key),
+  );
 }
 
 function failedReport(input: {
@@ -288,6 +335,7 @@ async function inspectCandidate(
         label: string;
         runner: string;
         pipelineModel: string;
+        workflowKey: string | null;
         sourceModelPath: string | null;
         convertedModelPath: string | null;
         status: string;
@@ -307,6 +355,7 @@ async function inspectCandidate(
       found: false,
       runner: null,
       pipelineModel: null,
+      workflowKey: null,
       status: null,
       enabled: false,
       rolloutPercent: null,
@@ -345,9 +394,23 @@ async function inspectCandidate(
   );
   const components = componentChecks(runnerConfig.componentStatus);
   const badComponents = components.filter((component) => component.tone === "bad");
+  const activation = evaluateGenerationModelCandidateActivation({
+    requireActive: candidate.requireActive,
+    status: profile.status,
+    enabled: profile.enabled,
+    rolloutPercent: profile.rolloutPercent,
+  });
   const blockedReasons = [
     profile.runner !== candidate.expectedRunner
       ? `runner is ${profile.runner}, expected ${candidate.expectedRunner}`
+      : null,
+    candidate.expectedPipelineModel &&
+    profile.pipelineModel !== candidate.expectedPipelineModel
+      ? `pipelineModel is ${profile.pipelineModel}, expected ${candidate.expectedPipelineModel}`
+      : null,
+    candidate.expectedWorkflowKey &&
+    profile.workflowKey !== candidate.expectedWorkflowKey
+      ? `workflowKey is ${profile.workflowKey ?? "missing"}, expected ${candidate.expectedWorkflowKey}`
       : null,
     candidate.expectedIntent && stringField(runnerConfig, "templateIntent") !== candidate.expectedIntent
       ? `templateIntent is ${stringField(runnerConfig, "templateIntent") || "missing"}`
@@ -360,13 +423,7 @@ async function inspectCandidate(
       ? `sampleCount is ${sampleCount ?? "missing"}`
       : null,
     successRate !== null && successRate < 0.8 ? `successRate is ${successRate}` : null,
-    candidate.requireActive && profile.status !== "active"
-      ? `status is ${profile.status}, expected active`
-      : null,
-    candidate.requireActive && !profile.enabled ? "profile is disabled" : null,
-    candidate.requireActive && profile.rolloutPercent <= 0
-      ? `rolloutPercent is ${profile.rolloutPercent}`
-      : null,
+    ...activation.blockedReasons,
     candidate.requireConsistency && profile.mode === "image" && (consistencyRate === null || consistencyRate < 0.8)
       ? `consistencyRate is ${consistencyRate ?? "missing"}`
       : null,
@@ -394,6 +451,7 @@ async function inspectCandidate(
     found: true,
     runner: profile.runner,
     pipelineModel: profile.pipelineModel,
+    workflowKey: profile.workflowKey,
     status: profile.status,
     enabled: profile.enabled,
     rolloutPercent: profile.rolloutPercent,
@@ -667,7 +725,15 @@ function workspaceRoot() {
   }
 }
 
-main().catch((error: unknown) => {
-  process.stderr.write(error instanceof Error ? `${error.message}\n` : `${String(error)}\n`);
-  process.exitCode = 1;
-});
+const entryPath = process.argv[1];
+if (
+  entryPath &&
+  import.meta.url === pathToFileURL(path.resolve(entryPath)).href
+) {
+  main().catch((error: unknown) => {
+    process.stderr.write(
+      error instanceof Error ? `${error.message}\n` : `${String(error)}\n`,
+    );
+    process.exitCode = 1;
+  });
+}

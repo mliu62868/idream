@@ -1,5 +1,6 @@
 import { availabilityErrorBudget, evaluateAdminOperationalSlos, metricSnapshot } from "@idream/shared";
 import { prisma } from "@/server/lib/db";
+import { pendingMainOutboxTransportWhere } from "@/server/events/main-outbox-transport";
 import { auditAdminCutoverInvariants } from "@/server/modules/admin-v2/reconciliation/invariants";
 
 function histogramP95UpperBound(series: { count?: number; buckets?: ReadonlyArray<{ le: number; count: number }> }) {
@@ -21,7 +22,11 @@ export async function adminSloReadiness(now = new Date()) {
   const commandFailures = commandCounter?.series.filter((series) => ["error", "conflict"].includes(String(series.labels.outcome))).reduce((sum, series) => sum + (series.value ?? 0), 0) ?? 0;
   const [invariants, oldestOutbox, incidents, metricSnapshots, failedAttempts, unknownAttempts] = await Promise.all([
     auditAdminCutoverInvariants(prisma, now),
-    prisma.mainOutboxEvent.findFirst({ where: { status: { in: ["pending", "dispatched"] } }, orderBy: { createdAt: "asc" }, select: { createdAt: true } }),
+    prisma.mainOutboxEvent.findFirst({
+      where: pendingMainOutboxTransportWhere(),
+      orderBy: { createdAt: "asc" },
+      select: { createdAt: true },
+    }),
     prisma.opsIncident.findMany({ orderBy: { createdAt: "desc" }, take: 1_000, select: { firstSeen: true, createdAt: true } }),
     prisma.metricSnapshot.findMany({ orderBy: { asOf: "desc" }, take: 1, select: { asOf: true } }),
     prisma.generationAttempt.count({ where: { status: { in: ["failed", "unknown"] } } }),

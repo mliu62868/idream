@@ -104,11 +104,67 @@ async function mountRetryableGenerator(
       data: { items: [], nextCursor: null },
     }),
   );
+  await page.route("**/api/v1/generation/quote", (route) =>
+    fulfillJson(route, {
+      ok: true,
+      data: {
+        quote: {
+          mode: "image",
+          profileId: "generator-retry-ui-image",
+          profileVersion: 1,
+          routeFingerprint: "a".repeat(64),
+          pricing: {
+            ruleId: "generator-retry-ui-price",
+            ruleKey: "image-default",
+            version: 1,
+            effectiveFrom: null,
+            fingerprint: "b".repeat(64),
+          },
+          orientations: ["4:5"],
+          defaultOrientation: "4:5",
+          maxCount: 4,
+          costs: [
+            { outputCount: 1, costDreamcoins: 5 },
+            { outputCount: 2, costDreamcoins: 10 },
+            { outputCount: 3, costDreamcoins: 15 },
+            { outputCount: 4, costDreamcoins: 20 },
+          ],
+          balance: 100,
+        },
+      },
+    }),
+  );
   await page.route("**/api/v1/generation/jobs?limit=20", (route) =>
     fulfillJson(route, {
       ok: true,
       data: { items: [failedJob] },
     }),
+  );
+  await page.route(
+    "**/api/v1/generation/jobs/*/retry/quote",
+    (route) =>
+      fulfillJson(route, {
+        ok: true,
+        data: {
+          quote: {
+            mode: "image",
+            generationJobId: failedJobId,
+            profileId: "hidden-specialized-image-profile",
+            profileVersion: 3,
+            routeFingerprint: "c".repeat(64),
+            pricing: {
+              ruleId: "generator-retry-ui-price",
+              ruleKey: "image-default",
+              version: 2,
+              effectiveFrom: null,
+              fingerprint: "d".repeat(64),
+            },
+            outputCount: 1,
+            costDreamcoins: 8,
+            balance: 100,
+          },
+        },
+      }),
   );
   await page.route("**/api/v1/media?*", (route) =>
     fulfillJson(route, {
@@ -259,6 +315,17 @@ test("generator retry locks double-clicks and preserves intent keys across netwo
       if (!key) {
         throw new Error("Generator retry request omitted Idempotency-Key");
       }
+      const body = route.request().postDataJSON() as {
+        quoteAuthority?: Record<string, unknown>;
+      };
+      expect(body.quoteAuthority).toEqual({
+        profileId: "hidden-specialized-image-profile",
+        profileVersion: 3,
+        routeFingerprint: "c".repeat(64),
+        pricingFingerprint: "d".repeat(64),
+        outputCount: 1,
+        costDreamcoins: 8,
+      });
       idempotencyKeys.push(key);
       if (idempotencyKeys.length === 1) {
         await failFirstRequest;
@@ -289,7 +356,7 @@ test("generator retry locks double-clicks and preserves intent keys across netwo
   );
   await expect(failedCard).toBeVisible();
   const retryButton = failedCard.getByRole("button");
-  await expect(retryButton).toHaveText("Retry");
+  await expect(retryButton).toHaveText("Retry · 8 coins");
   await expect(retryButton).toBeEnabled();
 
   await retryButton.dblclick();
@@ -303,7 +370,7 @@ test("generator retry locks double-clicks and preserves intent keys across netwo
   await expect(page.getByTestId("generator-status")).toHaveText(
     "Retry failed. Check your connection and try again.",
   );
-  await expect(retryButton).toHaveText("Retry");
+  await expect(retryButton).toHaveText("Retry · 8 coins");
   await expect(retryButton).toBeEnabled();
 
   await retryButton.click();

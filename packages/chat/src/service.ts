@@ -6,7 +6,7 @@
 import { createHash } from "node:crypto";
 import type { ChatPrismaClient } from "./db.js";
 import type { Prisma } from "../generated/client/client.js";
-import { chatPrisma } from "./db.js";
+import { chatPrisma, chatProjectorPrisma } from "./db.js";
 import { providers } from "./providers.js";
 import { createId } from "./id.js";
 import { FREE_DAILY_MESSAGES } from "@idream/shared/chat/limits";
@@ -14,6 +14,17 @@ import { enqueue } from "./queue.js";
 import { streamKey } from "./stream.js";
 import { recordOutbox, scheduleOutboxDelivery } from "./outbox.js";
 import { recordExchangeCorrection } from "./exchange-corrections.js";
+import { advisoryLock, lockTurn, lockUser } from "./turn-lock.js";
+import {
+  assertNoPendingChatFileMutationsTx,
+  projectChatFileMutations,
+  recordChatFileMutation,
+  runWithProjectedChatFiles,
+} from "./file-mutations.js";
+import {
+  relationshipMessageSelect,
+  resolveRelationshipLinkage,
+} from "./relationship-authority.js";
 import { resolvePolicy, snapshotFromView } from "./policy.js";
 import type { ChatPolicy } from "./policy.js";
 import { logger } from "./logger.js";
@@ -37,14 +48,31 @@ export class ChatError extends Error {
 
 export interface ChatContext {
   prisma: ChatPrismaClient;
+  projectorPrisma: ChatPrismaClient;
+}
+
+export interface CreateSessionHooks {
+  beforeAuthorityLock?: () => Promise<void> | void;
+}
+
+export interface RegenerateHooks {
+  beforeAuthorityLock?: () => Promise<void> | void;
 }
 
 function ctx(override?: Partial<ChatContext>): ChatContext {
-  return { prisma: override?.prisma ?? chatPrisma };
+  return {
+    prisma: override?.prisma ?? chatPrisma,
+    projectorPrisma:
+      override?.projectorPrisma ?? chatProjectorPrisma,
+  };
 }
 
 /** Verify the user may chat with this character (views are authority). */
-async function assertEligible(prisma: ChatPrismaClient, userId: string, characterId: string) {
+async function assertEligible(
+  prisma: ChatPrismaClient | Prisma.TransactionClient,
+  userId: string,
+  characterId: string,
+) {
   const [user, character, eligibility] = await Promise.all([
     prisma.chatUserView.findUnique({ where: { userId } }),
     prisma.chatCharacterView.findUnique({ where: { characterId } }),
@@ -70,6 +98,16 @@ async function assertEligible(prisma: ChatPrismaClient, userId: string, characte
   return { user, character };
 }
 
+async function assertActiveUserAuthority(
+  prisma: ChatPrismaClient | Prisma.TransactionClient,
+  userId: string,
+): Promise<void> {
+  const user = await prisma.chatUserView.findUnique({ where: { userId } });
+  if (!user || user.status !== "active" || user.deletedAt) {
+    throw new ChatError("user_inactive", "user not active", 403);
+  }
+}
+
 export async function createSession(
   input: {
     userId: string;
@@ -80,21 +118,33 @@ export async function createSession(
     entryPlacementId?: string;
   },
   override?: Partial<ChatContext>,
+  hooks: CreateSessionHooks = {},
 ) {
-  const { prisma } = ctx(override);
-  const { character } = await assertEligible(prisma, input.userId, input.characterId);
+  const { prisma, projectorPrisma } = ctx(override);
+  await assertEligible(prisma, input.userId, input.characterId);
   const attributionValues = [input.entryExposureId, input.entryJourneyId, input.entryPlacementId];
   const attributionCount = attributionValues.filter(Boolean).length;
   if (attributionCount !== 0 && attributionCount !== attributionValues.length) {
     throw new ChatError("invalid_entry_attribution", "entry attribution must be complete or absent", 400);
   }
+  await hooks.beforeAuthorityLock?.();
 
   // The product exposes one active conversation per user/character pair. The
-  // advisory lock makes the read-then-create invariant true under concurrent
-  // requests without coupling the independently deployable chat schema to a
-  // partial-unique-index-specific error path.
-  return prisma.$transaction(async (tx) => {
+  // user lock serializes account erasure with the entire read-then-create
+  // decision. Re-checking the Main user/character views after that lock means a
+  // request that passed preflight before account deletion cannot recreate chat
+  // rows after the erasure commits.
+  return runWithProjectedChatFiles(
+    input.userId,
+    () => prisma.$transaction(async (tx) => {
+    await lockUser(tx, input.userId);
+    await assertNoPendingChatFileMutationsTx(tx, input.userId);
     await advisoryLock(tx, `session:${input.userId}:${input.characterId}`);
+    const { character } = await assertEligible(
+      tx,
+      input.userId,
+      input.characterId,
+    );
     const existing = await tx.chatSession.findFirst({
       where: { userId: input.userId, characterId: input.characterId, status: "active" },
       orderBy: { lastMessageAt: "desc" },
@@ -131,7 +181,9 @@ export async function createSession(
       },
     });
     return created;
-  });
+    }),
+    projectorPrisma,
+  );
 }
 
 export async function listSessions(userId: string, override?: Partial<ChatContext>) {
@@ -409,7 +461,7 @@ export async function sendMessage(
   },
   override?: Partial<ChatContext>,
 ): Promise<SendResult> {
-  const { prisma } = ctx(override);
+  const { prisma, projectorPrisma } = ctx(override);
   const session = await prisma.chatSession.findUnique({ where: { id: input.sessionId } });
   if (!session || session.userId !== input.userId || session.status !== "active") {
     throw new ChatError("session_not_found", "session not found", 404);
@@ -439,7 +491,6 @@ export async function sendMessage(
   await assertEligible(prisma, input.userId, session.characterId);
 
   const entitlement = await prisma.chatEntitlementView.findUnique({ where: { userId: input.userId } });
-  const policy = resolvePolicy(snapshotFromView(entitlement), { memoryEnabled: session.memoryEnabled });
 
   // input moderation (design §3 step 4) — block before persisting an assistant turn
   const moderation = await providers.moderation.check({ targetType: "text", content });
@@ -447,9 +498,13 @@ export async function sendMessage(
   const userMessageId = createId("msg");
   const assistantMessageId = createId("msg");
 
-  const committed = await prisma.$transaction(async (tx) => {
-    await advisoryLock(tx, `send:${input.userId}:${idempotencyKey}`);
+  const committed = await runWithProjectedChatFiles(
+    input.userId,
+    () => prisma.$transaction(async (tx) => {
     await lockTurn(tx, input.userId, session.id);
+    await assertNoPendingChatFileMutationsTx(tx, input.userId);
+    await advisoryLock(tx, `send:${input.userId}:${idempotencyKey}`);
+    await assertActiveUserAuthority(tx, input.userId);
     const currentSession = await tx.chatSession.findUnique({ where: { id: session.id } });
     if (!currentSession || currentSession.userId !== input.userId || currentSession.status !== "active") {
       throw new ChatError("session_not_found", "session not found", 404);
@@ -480,8 +535,11 @@ export async function sendMessage(
       }
       return { receipt: replay, assistantStatus: assistant.status, replayed: true };
     }
+    const turnPolicy = resolvePolicy(snapshotFromView(entitlement), {
+      memoryEnabled: currentSession.memoryEnabled,
+    });
     if (moderation.status !== "blocked") {
-      await assertTurnCapacity(tx, input.userId, session.id, policy);
+      await assertTurnCapacity(tx, input.userId, session.id, turnPolicy);
     }
     const pin = await resolveSessionPin(tx, currentSession);
     const turnOccurredAt = new Date();
@@ -510,13 +568,17 @@ export async function sendMessage(
         status: moderation.status === "blocked" ? "blocked" : "pending",
         attempt: 1,
         replyToMessageId: userMessageId,
+        memoryAuthority: currentSession.memoryEnabled ? "enabled" : "disabled",
         createdAt: turnOccurredAt,
         updatedAt: turnOccurredAt,
       },
     });
     await tx.chatSession.update({
       where: { id: session.id },
-      data: { lastMessageAt: turnOccurredAt },
+      data: {
+        lastMessageAt: turnOccurredAt,
+        contextRevision: { increment: 1 },
+      },
     });
     if (moderation.status === "blocked") {
       await tx.chatModerationEvent.create({
@@ -560,7 +622,9 @@ export async function sendMessage(
         moderation.status === "blocked" ? "blocked" : "pending",
       replayed: false,
     };
-  });
+    }),
+    projectorPrisma,
+  );
 
   // A pending assistant row is the durable queue intent. Replaying after an
   // HTTP timeout or Redis outage re-dispatches that same canonical assistant;
@@ -584,7 +648,7 @@ export async function editUserMessage(
   input: { userId: string; messageId: string; content: string },
   override?: Partial<ChatContext>,
 ): Promise<EditMessageResult> {
-  const { prisma } = ctx(override);
+  const { prisma, projectorPrisma } = ctx(override);
   const message = await prisma.message.findUnique({ where: { id: input.messageId } });
   if (!message || message.role !== "user" || message.deletedAt || message.status === "deleted") {
     throw new ChatError("message_not_found", "user message not found", 404);
@@ -608,26 +672,54 @@ export async function editUserMessage(
     throw new ChatError("message_not_editable", "only the latest user message can be edited", 409);
   }
 
-  let assistant = await prisma.message.findFirst({
-    where: {
-      sessionId: session.id,
-      role: "assistant",
-      replyToMessageId: message.id,
-      deletedAt: null,
-    },
-    orderBy: { createdAt: "asc" },
-  });
-  // Compatibility for rows created before reply_to_message_id existed.
-  assistant ??= await prisma.message.findFirst({
-    where: {
-      sessionId: session.id,
-      role: "assistant",
-      replyToMessageId: null,
-      deletedAt: null,
-      createdAt: { gte: message.createdAt },
-    },
-    orderBy: { createdAt: "asc" },
-  });
+  const [editMessages, editReceipts] = await Promise.all([
+    prisma.message.findMany({
+      where: { sessionId: session.id },
+      select: relationshipMessageSelect,
+    }),
+    prisma.chatSendReceipt.findMany({
+      where: { sessionId: session.id },
+      select: {
+        userMessageId: true,
+        assistantMessageId: true,
+      },
+    }),
+  ]);
+  const editLinkage = resolveRelationshipLinkage(
+    editMessages,
+    editReceipts,
+  );
+  const ambiguousLinkedAssistants = editLinkage.ambiguousAssistantIds.filter(
+    (assistantId) =>
+      editLinkage.candidateSourceIds
+        .get(assistantId)
+        ?.includes(message.id),
+  );
+  if (ambiguousLinkedAssistants.length > 0) {
+    throw new ChatError(
+      "message_conflict",
+      "message has ambiguous assistant linkage",
+      409,
+    );
+  }
+  const linkedAssistants = editMessages.filter(
+    (candidate) =>
+      candidate.role === "assistant" &&
+      !candidate.deletedAt &&
+      editLinkage.sources.get(candidate.id)?.id === message.id,
+  );
+  if (linkedAssistants.length > 1) {
+    throw new ChatError(
+      "message_conflict",
+      "message has ambiguous assistant linkage",
+      409,
+    );
+  }
+  let assistant = linkedAssistants[0]
+    ? await prisma.message.findUnique({
+        where: { id: linkedAssistants[0].id },
+      })
+    : null;
   if (assistant && ["generating", "pending"].includes(assistant.status)) {
     throw new ChatError("message_generating", "reply is still generating", 409);
   }
@@ -641,13 +733,144 @@ export async function editUserMessage(
   const attempt = (assistant?.attempt ?? 0) + 1;
   const assistantHadEligibleExchange = assistant?.status === "sent";
 
-  await prisma.$transaction(async (tx) => {
+  await runWithProjectedChatFiles(
+    input.userId,
+    () => prisma.$transaction(async (tx) => {
     await lockTurn(tx, input.userId, session.id);
+    await assertNoPendingChatFileMutationsTx(tx, input.userId);
+    await assertActiveUserAuthority(tx, input.userId);
+    const [
+      currentSession,
+      currentMessage,
+      currentMessages,
+      currentReceipts,
+      currentLatestUser,
+    ] =
+      await Promise.all([
+        tx.chatSession.findUnique({ where: { id: session.id } }),
+        tx.message.findUnique({ where: { id: message.id } }),
+        tx.message.findMany({
+          where: { sessionId: session.id },
+          select: relationshipMessageSelect,
+        }),
+        tx.chatSendReceipt.findMany({
+          where: { sessionId: session.id },
+          select: {
+            userMessageId: true,
+            assistantMessageId: true,
+          },
+        }),
+        tx.message.findFirst({
+          where: {
+            sessionId: session.id,
+            role: "user",
+            deletedAt: null,
+            status: { not: "deleted" },
+          },
+          orderBy: { createdAt: "desc" },
+          select: { id: true },
+        }),
+      ]);
+    const currentLinkage = resolveRelationshipLinkage(
+      currentMessages,
+      currentReceipts,
+    );
+    if (
+      currentLinkage.ambiguousAssistantIds.some((assistantId) =>
+        currentLinkage.candidateSourceIds
+          .get(assistantId)
+          ?.includes(message.id),
+      )
+    ) {
+      throw new ChatError(
+        "message_conflict",
+        "message has ambiguous assistant linkage",
+        409,
+      );
+    }
+    const currentLinkedAssistants = currentMessages.filter(
+      (candidate) =>
+        candidate.role === "assistant" &&
+        !candidate.deletedAt &&
+        currentLinkage.sources.get(candidate.id)?.id === message.id,
+    );
+    if (currentLinkedAssistants.length > 1) {
+      throw new ChatError(
+        "message_conflict",
+        "message has ambiguous assistant linkage",
+        409,
+      );
+    }
+    const currentAssistant = currentLinkedAssistants[0]
+      ? await tx.message.findUnique({
+          where: { id: currentLinkedAssistants[0].id },
+        })
+      : null;
+    if (
+      !currentSession ||
+      currentSession.userId !== input.userId ||
+      currentSession.status !== "active"
+    ) {
+      throw new ChatError("session_not_active", "session is not active", 409);
+    }
+    if (
+      !currentMessage ||
+      currentMessage.role !== "user" ||
+      currentMessage.deletedAt ||
+      currentMessage.status === "deleted" ||
+      currentMessage.content !== message.content
+    ) {
+      throw new ChatError("message_not_found", "user message not found", 404);
+    }
+    if (currentLatestUser?.id !== currentMessage.id) {
+      throw new ChatError(
+        "message_not_editable",
+        "only the latest user message can be edited",
+        409,
+      );
+    }
+    if (
+      (assistant &&
+        (
+          !currentAssistant ||
+          currentAssistant.id !== assistant.id ||
+          currentAssistant.attempt !== assistant.attempt ||
+          currentAssistant.status !== assistant.status
+        )) ||
+      (!assistant && currentAssistant)
+    ) {
+      throw new ChatError(
+        "message_conflict",
+        "message changed before the edit could commit",
+        409,
+      );
+    }
     if (moderation.status !== "blocked") {
       await assertTurnCapacity(tx, input.userId, session.id, policy, assistantMessageId);
     }
+    await recordChatFileMutation(
+      tx,
+      input.userId,
+      {
+        kind: "turn_forget",
+        sessionId: currentSession.id,
+        characterId: currentSession.characterId,
+        messageIds: [
+          currentMessage.id,
+          ...(currentAssistant ? [currentAssistant.id] : []),
+        ],
+      },
+    );
+    await recordChatFileMutation(
+      tx,
+      input.userId,
+      {
+        kind: "relationship_rebuild",
+        characterId: currentSession.characterId,
+      },
+    );
     await tx.message.update({
-      where: { id: message.id },
+      where: { id: currentMessage.id },
       data: {
         content,
         status: moderation.status === "blocked" ? "blocked" : "sent",
@@ -684,6 +907,9 @@ export async function editUserMessage(
           attempt,
           replyToMessageId: message.id,
           safetyStatus: moderation.status === "blocked" ? "blocked" : "unknown",
+          memoryAuthority: currentSession.memoryEnabled
+            ? "enabled"
+            : "disabled",
         },
       });
     }
@@ -706,7 +932,11 @@ export async function editUserMessage(
 
     await tx.chatSession.update({
       where: { id: session.id },
-      data: { lastMessageAt: new Date() },
+      data: {
+        lastMessageAt: new Date(),
+        memorySummary: null,
+        contextRevision: { increment: 1 },
+      },
     });
 
     if (moderation.status === "blocked") {
@@ -728,7 +958,10 @@ export async function editUserMessage(
         payload: { sessionId: session.id, userId: input.userId, layer: "input", policyCode: moderation.policyCode },
       });
     }
-  });
+    }),
+    projectorPrisma,
+  );
+  await projectChatFileMutations(input.userId, projectorPrisma);
 
   if (moderation.status === "blocked") {
     return {
@@ -753,8 +986,9 @@ export async function editUserMessage(
 export async function regenerate(
   input: { userId: string; messageId: string },
   override?: Partial<ChatContext>,
+  hooks: RegenerateHooks = {},
 ): Promise<{ assistantMessageId: string; attempt: number; streamUrl: string }> {
-  const { prisma } = ctx(override);
+  const { prisma, projectorPrisma } = ctx(override);
   const message = await prisma.message.findUnique({ where: { id: input.messageId } });
   if (!message || message.role !== "assistant") {
     throw new ChatError("message_not_found", "assistant message not found", 404);
@@ -780,35 +1014,128 @@ export async function regenerate(
   const entitlement = await prisma.chatEntitlementView.findUnique({ where: { userId: input.userId } });
   const policy = resolvePolicy(snapshotFromView(entitlement), { memoryEnabled: session.memoryEnabled });
 
-  const lastUser = message.replyToMessageId
-    ? await prisma.message.findUnique({ where: { id: message.replyToMessageId } })
-    : await prisma.message.findFirst({
-        // Compatibility for rows created before reply_to_message_id existed.
-        where: { sessionId: session.id, role: "user", createdAt: { lte: message.createdAt }, deletedAt: null },
-        orderBy: [{ createdAt: "desc" }, { role: "desc" }],
-      });
+  const [messages, receipts] = await Promise.all([
+    prisma.message.findMany({
+      where: { sessionId: session.id },
+      select: relationshipMessageSelect,
+    }),
+    prisma.chatSendReceipt.findMany({
+      where: { sessionId: session.id },
+      select: {
+        userMessageId: true,
+        assistantMessageId: true,
+      },
+    }),
+  ]);
+  const lastUser = resolveRelationshipLinkage(
+    messages,
+    receipts,
+  ).sources.get(message.id);
   if (!lastUser) {
     throw new ChatError("missing_user_turn", "assistant message has no user turn", 409);
   }
+  await hooks.beforeAuthorityLock?.();
 
-  const attempt = message.attempt + 1;
-  await prisma.$transaction(async (tx) => {
+  const attempt = await runWithProjectedChatFiles(
+    input.userId,
+    () => prisma.$transaction(async (tx) => {
     await lockTurn(tx, input.userId, session.id);
+    await assertNoPendingChatFileMutationsTx(tx, input.userId);
+    await assertActiveUserAuthority(tx, input.userId);
     await assertTurnCapacity(tx, input.userId, session.id, policy, message.id);
-    const current = await tx.message.findUnique({ where: { id: message.id } });
-    if (!current || ["pending", "generating"].includes(current.status)) {
+    const [
+      currentSession,
+      current,
+      currentSource,
+      currentMessages,
+      currentReceipts,
+    ] = await Promise.all([
+      tx.chatSession.findUnique({ where: { id: session.id } }),
+      tx.message.findUnique({ where: { id: message.id } }),
+      tx.message.findUnique({ where: { id: lastUser.id } }),
+      tx.message.findMany({
+        where: { sessionId: session.id },
+        select: relationshipMessageSelect,
+      }),
+      tx.chatSendReceipt.findMany({
+        where: { sessionId: session.id },
+        select: {
+          userMessageId: true,
+          assistantMessageId: true,
+        },
+      }),
+    ]);
+    const currentLinkage = resolveRelationshipLinkage(
+      currentMessages,
+      currentReceipts,
+    );
+    if (
+      !currentSession ||
+      currentSession.userId !== input.userId ||
+      currentSession.status !== "active" ||
+      currentSession.deletedAt
+    ) {
+      throw new ChatError("session_not_active", "session is not active", 409);
+    }
+    if (
+      !current ||
+      current.role !== "assistant" ||
+      current.sessionId !== currentSession.id ||
+      current.deletedAt ||
+      ["blocked", "deleted"].includes(current.status)
+    ) {
+      throw new ChatError(
+        "message_not_regenerable",
+        "message cannot be regenerated",
+        409,
+      );
+    }
+    if (["pending", "generating"].includes(current.status)) {
       throw new ChatError("message_generating", "message is already generating", 409);
     }
+    if (
+      current.attempt !== message.attempt ||
+      current.replyToMessageId !== message.replyToMessageId
+    ) {
+      throw new ChatError(
+        "message_conflict",
+        "message changed before regeneration could commit",
+        409,
+      );
+    }
+    if (
+      !currentSource ||
+      currentSource.id !== lastUser.id ||
+      currentSource.sessionId !== currentSession.id ||
+      currentSource.role !== "user" ||
+      currentSource.deletedAt ||
+      currentSource.status !== "sent" ||
+      currentLinkage.sources.get(current.id)?.id !== currentSource.id ||
+      (
+        current.replyToMessageId !== null &&
+        current.replyToMessageId !== currentSource.id
+      )
+    ) {
+      throw new ChatError(
+        "missing_user_turn",
+        "assistant message has no active user turn",
+        409,
+      );
+    }
+    const nextAttempt = current.attempt + 1;
     await tx.message.update({
       where: { id: message.id },
       data: {
         status: "pending",
-        attempt,
+        attempt: nextAttempt,
         content: "",
         replyToMessageId: lastUser.id,
       },
     });
-  });
+    return nextAttempt;
+    }),
+    projectorPrisma,
+  );
 
   // dedupeKey carries :attempt so regenerate is NOT swallowed (PLAN §3, the bug fix).
   await enqueueGeneration({
@@ -874,18 +1201,30 @@ export async function setNoMemory(
   input: { userId: string; sessionId: string; memoryEnabled: boolean },
   override?: Partial<ChatContext>,
 ) {
-  const { prisma } = ctx(override);
-  const session = await prisma.chatSession.findUnique({ where: { id: input.sessionId } });
-  if (!session || session.userId !== input.userId) {
-    throw new ChatError("session_not_found", "session not found", 404);
-  }
-  return prisma.chatSession.update({
-    where: { id: session.id },
-    data: {
-      memoryEnabled: input.memoryEnabled,
-      ...(!input.memoryEnabled ? { memorySummary: null } : {}),
-    },
-  });
+  const { prisma, projectorPrisma } = ctx(override);
+  return runWithProjectedChatFiles(
+    input.userId,
+    () => prisma.$transaction(async (tx) => {
+    // The same lock as sendMessage gives preference toggles and turn creation a
+    // total order. The assistant row then permanently records which side won.
+    await lockTurn(tx, input.userId, input.sessionId);
+    await assertNoPendingChatFileMutationsTx(tx, input.userId);
+    await assertActiveUserAuthority(tx, input.userId);
+    const session = await tx.chatSession.findUnique({ where: { id: input.sessionId } });
+    if (!session || session.userId !== input.userId) {
+      throw new ChatError("session_not_found", "session not found", 404);
+    }
+    return tx.chatSession.update({
+      where: { id: session.id },
+      data: {
+        memoryEnabled: input.memoryEnabled,
+        ...(!input.memoryEnabled ? { memorySummary: null } : {}),
+        contextRevision: { increment: 1 },
+      },
+    });
+    }),
+    projectorPrisma,
+  );
 }
 
 export async function confirmImageAttachment(
@@ -920,6 +1259,7 @@ export async function confirmImageAttachment(
     orientation?: unknown;
     outputCount?: unknown;
     characterReleaseId?: unknown;
+    sourceUserMessageId?: unknown;
     // P5 Task 2: the img2img source recorded by generate.ts for edit_last_image;
     // carried through a retry so the resend still targets the same photo.
     editSourceAssetId?: unknown;
@@ -937,6 +1277,10 @@ export async function confirmImageAttachment(
     requestId: createId("chat_img_req"),
     attachmentId: attachment.id,
     sessionId: session.id,
+    exchangeId:
+      typeof plannedControls.sourceUserMessageId === "string"
+        ? plannedControls.sourceUserMessageId
+        : undefined,
     messageId: attachment.messageId,
     userId: session.userId,
     characterId: session.characterId,
@@ -1003,20 +1347,8 @@ async function currentUsage(prisma: Pick<ChatPrismaClient, "chatUsage">, userId:
   return row?.messagesUsed ?? 0;
 }
 
-type TurnTransaction = Prisma.TransactionClient;
-
-async function advisoryLock(tx: TurnTransaction, key: string): Promise<void> {
-  await tx.$queryRaw`SELECT 1::int AS locked FROM pg_advisory_xact_lock(hashtext(${`idream-chat:${key}`}))`;
-}
-
-async function lockTurn(tx: TurnTransaction, userId: string, sessionId: string): Promise<void> {
-  // Stable lock order prevents deadlocks when different sessions for one user race.
-  await advisoryLock(tx, `user:${userId}`);
-  await advisoryLock(tx, `turn:${sessionId}`);
-}
-
 async function assertTurnCapacity(
-  tx: TurnTransaction,
+  tx: Prisma.TransactionClient,
   userId: string,
   sessionId: string,
   policy: ChatPolicy,

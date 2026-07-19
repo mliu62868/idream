@@ -5,11 +5,16 @@
 // INVARIANTS: in-flight work lives in PG placeholder + Redis stream, so a restart
 // never loses a message — reconcile finishes the job.
 import type { ChatPrismaClient } from "./db.js";
-import { chatPrisma } from "./db.js";
+import { chatPrisma, chatProjectorPrisma } from "./db.js";
 import { appendStreamEvent, streamKey } from "./stream.js";
 import { deliverPendingOutbox } from "./outbox.js";
 import { reprocessPendingInbox } from "./inbox.js";
 import { enqueue } from "./queue.js";
+import { projectChatFileMutations } from "./file-mutations.js";
+import {
+  relationshipMessageSelect,
+  resolveRelationshipLinkage,
+} from "./relationship-authority.js";
 import {
   CHAT_QUEUES,
   idempotencyKeys,
@@ -23,15 +28,47 @@ const PENDING_REQUEUE_MS = 5_000;
 export async function reconcile(
   prisma: ChatPrismaClient = chatPrisma,
   now: Date = new Date(),
+  projectorPrisma: ChatPrismaClient = chatProjectorPrisma,
 ): Promise<{
   requeuedPending: number;
   failedStuck: number;
   scheduledMemory: number;
+  projectedFileMutations: number;
+  fileProjectionErrors: number;
+  pendingFileMutations: number;
+  oldestPendingFileMutationMs: number | null;
+  unresolvedMemoryAuthorities: number;
   outboxDelivered: number;
   inboxApplied: number;
 }> {
   const cutoff = new Date(now.getTime() - STUCK_GENERATING_MS);
   const pendingCutoff = new Date(now.getTime() - PENDING_REQUEUE_MS);
+  const pendingFileUsers = await prisma.$queryRaw<
+    Array<{ userId: string; firstSequence: bigint }>
+  >`
+    SELECT
+      user_id AS "userId",
+      MIN(sequence) AS "firstSequence"
+    FROM chat.chat_file_mutations
+    WHERE status = 'pending'
+    GROUP BY user_id
+    ORDER BY MIN(sequence) ASC
+    LIMIT 200
+  `;
+  let projectedFileMutations = 0;
+  let fileProjectionErrors = 0;
+  for (const row of pendingFileUsers) {
+    try {
+      projectedFileMutations += await projectChatFileMutations(
+        row.userId,
+        projectorPrisma,
+      );
+    } catch {
+      // One poisoned user must remain fail-closed for that user's file reads,
+      // but it must not starve unrelated recovery, outbox, or inbox work.
+      fileProjectionErrors += 1;
+    }
+  }
 
   // `pending` is the durable queue intent. If the request committed while Redis
   // was unavailable (or the process died between commit and enqueue), redispatch
@@ -87,30 +124,102 @@ export async function reconcile(
   // Finalization is durable before this derived job is scheduled. Re-enqueue any
   // selected attempt whose file-memory watermark lags, covering a crash or Redis
   // outage after the assistant was committed.
-  const sent = await prisma.message.findMany({
-    where: { role: "assistant", status: "sent", deletedAt: null, session: { memoryEnabled: true } },
-    include: { session: true },
-    orderBy: { updatedAt: "desc" },
-    take: 200,
-  });
+  // Apply the watermark predicate before LIMIT. Filtering in JavaScript after
+  // selecting the newest 200 lets already-extracted rows permanently starve an
+  // older lagging turn.
+  const sent = await prisma.$queryRaw<Array<{
+    attempt: number;
+    id: string;
+    sessionId: string;
+  }>>`
+    SELECT
+      attempt,
+      id,
+      session_id AS "sessionId"
+    FROM chat.messages
+    WHERE role = 'assistant'
+      AND status = 'sent'
+      AND deleted_at IS NULL
+      AND memory_authority = 'enabled'
+      AND memory_extracted_attempt < attempt
+    ORDER BY updated_at DESC
+    LIMIT 200
+  `;
   let scheduledMemory = 0;
+  let unresolvedMemoryAuthorities = 0;
+  const sentBySession = new Map<string, typeof sent>();
   for (const message of sent) {
-    if (message.memoryExtractedAttempt >= message.attempt || !message.replyToMessageId) continue;
-    await enqueue({
-      queue: CHAT_QUEUES.memoryExtract,
-      payload: {
-        sessionId: message.sessionId,
-        assistantMessageId: message.id,
-        userMessageId: message.replyToMessageId,
-        attempt: message.attempt,
-      } satisfies ChatMemoryExtractPayload,
-      dedupeKey: idempotencyKeys.chatMemoryExtract(message.id, message.attempt),
-    });
-    scheduledMemory += 1;
+    const rows = sentBySession.get(message.sessionId) ?? [];
+    rows.push(message);
+    sentBySession.set(message.sessionId, rows);
+  }
+  for (const [sessionId, lagging] of sentBySession) {
+    const [messages, receipts] = await Promise.all([
+      prisma.message.findMany({
+        where: { sessionId },
+        select: relationshipMessageSelect,
+      }),
+      prisma.chatSendReceipt.findMany({
+        where: { sessionId },
+        select: {
+          userMessageId: true,
+          assistantMessageId: true,
+        },
+      }),
+    ]);
+    const linkage = resolveRelationshipLinkage(messages, receipts);
+    for (const message of lagging) {
+      const source = linkage.sources.get(message.id);
+      if (
+        !source ||
+        source.status !== "sent" ||
+        source.deletedAt ||
+        !["passed", "unknown"].includes(source.safetyStatus)
+      ) {
+        unresolvedMemoryAuthorities += 1;
+        continue;
+      }
+      await enqueue({
+        queue: CHAT_QUEUES.memoryExtract,
+        payload: {
+          sessionId: message.sessionId,
+          assistantMessageId: message.id,
+          userMessageId: source.id,
+          attempt: message.attempt,
+        } satisfies ChatMemoryExtractPayload,
+        dedupeKey: idempotencyKeys.chatMemoryExtract(
+          message.id,
+          message.attempt,
+        ),
+      });
+      scheduledMemory += 1;
+    }
   }
 
   const { delivered } = await deliverPendingOutbox(prisma);
   const inboxApplied = await reprocessPendingInbox(prisma);
+  const [pendingFileMutations, oldestPendingFileMutation] =
+    await Promise.all([
+      prisma.chatFileMutation.count({ where: { status: "pending" } }),
+      prisma.chatFileMutation.findFirst({
+        where: { status: "pending" },
+        orderBy: { sequence: "asc" },
+        select: { createdAt: true },
+      }),
+    ]);
 
-  return { requeuedPending, failedStuck, scheduledMemory, outboxDelivered: delivered, inboxApplied };
+  return {
+    requeuedPending,
+    failedStuck,
+    scheduledMemory,
+    projectedFileMutations,
+    fileProjectionErrors,
+    pendingFileMutations,
+    oldestPendingFileMutationMs: oldestPendingFileMutation
+      ? Math.max(0, now.getTime() - oldestPendingFileMutation.createdAt.getTime())
+      : null,
+    unresolvedMemoryAuthorities,
+    outboxDelivered: delivered,
+    inboxApplied,
+  };
 }

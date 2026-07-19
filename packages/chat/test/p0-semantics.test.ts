@@ -12,6 +12,7 @@ import { createChatPrisma } from "../src/db.js";
 import { ChatError, createSession, sendMessage, setNoMemory } from "../src/service.js";
 import { processGenerate, type GeneratePayload } from "../src/generate.js";
 import { processMemoryExtract } from "../src/memory.js";
+import { reconcile } from "../src/reconcile.js";
 import { modelForTier } from "../src/policy.js";
 import { setRelationship } from "../src/relationship.js";
 import { consumeInbound } from "../src/inbox.js";
@@ -27,6 +28,9 @@ const USERS = [
   "u_p0_quota",
   "u_p0_nomem",
   "u_p0_nomem_summary",
+  "u_p0_nomem_inflight",
+  "u_p0_legacy_memory",
+  "u_p0_nomem_replay",
   "u_p0_bound",
   "u_p0_bound_nomem",
   "u_p0_erase",
@@ -109,6 +113,15 @@ describe("P0-E: no-memory / incognito", () => {
       { prisma },
     );
     expect(sent.status).toBe("generating");
+
+    const captured = await prisma.message.findUniqueOrThrow({
+      where: { id: sent.assistantMessageId },
+    });
+    expect(captured.memoryAuthority).toBe("disabled");
+
+    // Re-enable before either worker runs. The immutable turn authority must
+    // still win over this later session preference.
+    await setNoMemory({ userId: user, sessionId: session.id, memoryEnabled: true }, { prisma });
     expect(await generateOnce()).toBe(1);
 
     // No agent trace file for an incognito session.
@@ -118,6 +131,34 @@ describe("P0-E: no-memory / incognito", () => {
     // No memory.extract job enqueued, and no memory file written.
     expect(await drainQueue(CHAT_QUEUES.memoryExtract, async () => {})).toBe(0);
     expect(await exists(path.join(fsRoot, "mem", user, CHAR, "memory.md"))).toBe(false);
+    expect(await exists(path.join(fsRoot, "mem", user, CHAR, "relationship.md"))).toBe(false);
+
+    const manual = await processMemoryExtract(
+      {
+        sessionId: session.id,
+        assistantMessageId: sent.assistantMessageId,
+        userMessageId: sent.userMessageId,
+        attempt: 1,
+      },
+      prisma,
+    );
+    expect(manual).toEqual({ written: 0, skipped: "turn_memory_disabled" });
+
+    // Compensation must use the same immutable authority, not the restored flag.
+    // Other sequential test files can leave unrelated recoverable rows in this
+    // shared throwaway DB, so inspect exact scheduled payloads instead of a
+    // process-global count.
+    await obliterate(CHAT_QUEUES.memoryExtract);
+    await reconcile(prisma);
+    const reconciledAssistantIds: string[] = [];
+    await drainQueue(CHAT_QUEUES.memoryExtract, async (job) => {
+      reconciledAssistantIds.push(
+        (job.payload as { assistantMessageId: string }).assistantMessageId,
+      );
+    });
+    expect(reconciledAssistantIds).not.toContain(sent.assistantMessageId);
+    await obliterate(CHAT_QUEUES.memoryExtract);
+    await obliterate(CHAT_QUEUES.generate);
 
     // The PG message history still exists for the active session.
     const msgs = await prisma.message.findMany({ where: { sessionId: session.id } });
@@ -146,6 +187,89 @@ describe("P0-E: no-memory / incognito", () => {
     );
     expect(await generateOnce()).toBe(1);
     expect((await prisma.chatSession.findUnique({ where: { id: session.id } }))?.memorySummary).toBeNull();
+  });
+
+  it("replays the original disabled authority after the session is restored", async () => {
+    const user = "u_p0_nomem_replay";
+    const session = await createSession({ userId: user, characterId: CHAR }, { prisma });
+    await setNoMemory({ userId: user, sessionId: session.id, memoryEnabled: false }, { prisma });
+    const request = {
+      userId: user,
+      sessionId: session.id,
+      content: "do not remember this replay",
+      idempotencyKey: "p0-no-memory-replay",
+    };
+    const first = await sendMessage(request, { prisma });
+    await setNoMemory({ userId: user, sessionId: session.id, memoryEnabled: true }, { prisma });
+    const replay = await sendMessage(request, { prisma });
+
+    expect(replay.assistantMessageId).toBe(first.assistantMessageId);
+    expect(replay.userMessageId).toBe(first.userMessageId);
+    expect(
+      (await prisma.message.findUniqueOrThrow({ where: { id: first.assistantMessageId } }))
+        .memoryAuthority,
+    ).toBe("disabled");
+    expect(await prisma.message.count({ where: { sessionId: session.id } })).toBe(2);
+    expect(await generateOnce()).toBe(1);
+  });
+
+  it("does not repopulate a cleared summary from an enabled in-flight turn", async () => {
+    const user = "u_p0_nomem_inflight";
+    const session = await createSession({ userId: user, characterId: CHAR }, { prisma });
+    const sent = await sendMessage(
+      { userId: user, sessionId: session.id, content: "enabled before the toggle" },
+      { prisma },
+    );
+    expect(
+      (await prisma.message.findUniqueOrThrow({ where: { id: sent.assistantMessageId } }))
+        .memoryAuthority,
+    ).toBe("enabled");
+
+    await setNoMemory({ userId: user, sessionId: session.id, memoryEnabled: false }, { prisma });
+    expect(await generateOnce()).toBe(1);
+    expect((await prisma.chatSession.findUnique({ where: { id: session.id } }))?.memorySummary).toBeNull();
+    await obliterate(CHAT_QUEUES.memoryExtract);
+  });
+
+  it("fails historical unknown turn authority closed", async () => {
+    const user = "u_p0_legacy_memory";
+    const session = await createSession({ userId: user, characterId: CHAR }, { prisma });
+    const source = await prisma.message.create({
+      data: {
+        id: "msg_p0_legacy_memory_user",
+        sessionId: session.id,
+        role: "user",
+        content: "call me Historical",
+        status: "sent",
+        safetyStatus: "passed",
+      },
+    });
+    const assistant = await prisma.message.create({
+      data: {
+        id: "msg_p0_legacy_memory_assistant",
+        sessionId: session.id,
+        role: "assistant",
+        content: "Hello.",
+        status: "sent",
+        safetyStatus: "passed",
+        replyToMessageId: source.id,
+      },
+    });
+
+    expect(assistant.memoryAuthority).toBe("legacy_unknown");
+    expect(
+      await processMemoryExtract(
+        {
+          sessionId: session.id,
+          assistantMessageId: assistant.id,
+          userMessageId: source.id,
+          attempt: 1,
+        },
+        prisma,
+      ),
+    ).toEqual({ written: 0, skipped: "turn_memory_legacy_unknown" });
+    expect(await exists(path.join(fsRoot, "mem", user, CHAR, "memory.md"))).toBe(false);
+    expect(await exists(path.join(fsRoot, "mem", user, CHAR, "relationship.md"))).toBe(false);
   });
 });
 

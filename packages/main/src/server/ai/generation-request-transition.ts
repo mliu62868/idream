@@ -30,6 +30,19 @@ export interface GenerationRequestTransitionResult {
   readonly disposition: "applied" | "duplicate";
 }
 
+export function updateGenerationRequestSourceMeta(
+  tx: Prisma.TransactionClient,
+  input: {
+    readonly requestId: string;
+    readonly sourceMeta: Prisma.InputJsonValue;
+  },
+): Promise<GenerationJob> {
+  return tx.generationJob.update({
+    where: { id: input.requestId },
+    data: { sourceMeta: input.sourceMeta },
+  });
+}
+
 function expectedStates(expected: GenerationRequestTransitionExpectation | undefined) {
   if (!expected?.from) return null;
   return Array.isArray(expected.from) ? expected.from : [expected.from];

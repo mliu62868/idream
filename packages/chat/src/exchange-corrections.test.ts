@@ -37,4 +37,23 @@ describe("recordExchangeCorrection", () => {
       userId: "user_1",
     })).rejects.toThrow("Selection corrections require the selected assistant message id");
   });
+
+  it("preserves optional privacy authority for downstream derived-data redaction", async () => {
+    const tx = {} as Parameters<typeof recordExchangeCorrection>[0];
+    await recordExchangeCorrection(tx, {
+      exchangeId: "exchange_1",
+      correctionType: "deleted",
+      correctionRevision: 2,
+      userId: "user_1",
+      sessionId: "session_1",
+      messageIds: ["exchange_1", "assistant_2"],
+    });
+
+    expect(recordOutboxMock).toHaveBeenLastCalledWith(tx, expect.objectContaining({
+      payload: expect.objectContaining({
+        sessionId: "session_1",
+        messageIds: ["exchange_1", "assistant_2"],
+      }),
+    }));
+  });
 });

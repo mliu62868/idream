@@ -837,6 +837,94 @@ function hasCompleteRecipeSet(
 
 const generationConfigResponseSchema = successEnvelope(generationConfigSchema);
 
+const generationQuoteSchema = z
+  .object({
+    mode: z.enum(["image", "video"]),
+    profileId: nonEmptyString,
+    profileVersion: z.number().int().positive(),
+    routeFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+    pricing: z
+      .object({
+        ruleId: nonEmptyString,
+        ruleKey: nonEmptyString,
+        version: z.number().int().positive(),
+        effectiveFrom: timestamp.nullable(),
+        fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+      })
+      .strict(),
+    orientations: z.array(nonEmptyString).min(1),
+    defaultOrientation: nonEmptyString,
+    maxCount: z.number().int().min(1).max(8),
+    costs: z
+      .array(
+        z
+          .object({
+            outputCount: z.number().int().min(1).max(8),
+            costDreamcoins: nonNegativeInteger,
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(8),
+    balance: nonNegativeInteger,
+  })
+  .strict()
+  .superRefine((quote, ctx) => {
+    if (
+      quote.orientations[0] !== quote.defaultOrientation ||
+      !quote.orientations.includes(quote.defaultOrientation)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["defaultOrientation"],
+        message: "default orientation must be the first allowed orientation",
+      });
+    }
+    if (
+      quote.costs.length !== quote.maxCount ||
+      quote.costs.some(
+        (cost, index) => cost.outputCount !== index + 1,
+      )
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["costs"],
+        message:
+          "quote must contain one exact ordered cost for every allowed output count",
+      });
+    }
+  });
+
+const generationQuoteResponseSchema = successEnvelope(
+  z.object({ quote: generationQuoteSchema }).strict(),
+);
+
+const generationRetryQuoteSchema = z
+  .object({
+    mode: z.enum(["image", "video"]),
+    generationJobId: nonEmptyString,
+    profileId: nonEmptyString,
+    profileVersion: z.number().int().positive(),
+    routeFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+    pricing: z
+      .object({
+        ruleId: nonEmptyString,
+        ruleKey: nonEmptyString,
+        version: z.number().int().positive(),
+        effectiveFrom: timestamp.nullable(),
+        fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+      })
+      .strict(),
+    outputCount: z.number().int().min(1).max(8),
+    costDreamcoins: nonNegativeInteger,
+    balance: nonNegativeInteger,
+  })
+  .strict();
+
+const generationRetryQuoteResponseSchema = successEnvelope(
+  z.object({ quote: generationRetryQuoteSchema }).strict(),
+);
+
 const generationJobSchema = z
   .object({
     id: nonEmptyString,
@@ -1068,6 +1156,10 @@ export type CommunityCollection = z.infer<typeof communityCollectionSchema>;
 export type CommunityCampaign = z.infer<typeof communityCampaignSchema>;
 export type RankingExperiment = z.infer<typeof rankingExperimentSchema>;
 export type RuntimeGenerationConfig = z.infer<typeof generationConfigSchema>;
+export type RuntimeGenerationQuote = z.infer<typeof generationQuoteSchema>;
+export type RuntimeGenerationRetryQuote = z.infer<
+  typeof generationRetryQuoteSchema
+>;
 export type RuntimeGenerationJob = z.infer<typeof generationJobSchema>;
 export type RuntimeWorkspaceMediaItem = z.infer<
   typeof workspaceMediaItemSchema
@@ -1274,6 +1366,22 @@ export function parseGenerationConfigResponse(payload: unknown) {
     generationConfigResponseSchema,
     payload,
     "generation config",
+  ).data;
+}
+
+export function parseGenerationQuoteResponse(payload: unknown) {
+  return parseContract(
+    generationQuoteResponseSchema,
+    payload,
+    "generation quote",
+  ).data;
+}
+
+export function parseGenerationRetryQuoteResponse(payload: unknown) {
+  return parseContract(
+    generationRetryQuoteResponseSchema,
+    payload,
+    "generation retry quote",
   ).data;
 }
 

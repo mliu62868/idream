@@ -82,6 +82,7 @@ async function overview() {
           u.user_id IS NOT NULL
           AND u.status = 'active'
           AND u.deleted_at IS NULL
+          AND u.data_class = 'customer'
         ) AS included
       FROM chat.chat_sessions s
       LEFT JOIN core.chat_user_view u ON u.user_id = s.user_id
@@ -93,6 +94,7 @@ async function overview() {
           u.user_id IS NOT NULL
           AND u.status = 'active'
           AND u.deleted_at IS NULL
+          AND u.data_class = 'customer'
         ) AS included
       FROM chat.messages m
       JOIN chat.chat_sessions s ON s.id = m.session_id
@@ -106,6 +108,7 @@ async function overview() {
           u.user_id IS NOT NULL
           AND u.status = 'active'
           AND u.deleted_at IS NULL
+          AND u.data_class = 'customer'
         ) AS included
       FROM chat.chat_moderation_events e
       LEFT JOIN chat.messages m
@@ -132,6 +135,7 @@ async function overview() {
           u.user_id IS NOT NULL
           AND u.status = 'active'
           AND u.deleted_at IS NULL
+          AND u.data_class = 'customer'
         ) AS included
       FROM chat.chat_usage cu
       LEFT JOIN core.chat_user_view u ON u.user_id = cu.user_id
@@ -144,6 +148,7 @@ async function overview() {
           u.user_id IS NOT NULL
           AND u.status = 'active'
           AND u.deleted_at IS NULL
+          AND u.data_class = 'customer'
         ) AS included
       FROM billing.chat_entitlement_view ce
       LEFT JOIN core.chat_user_view u ON u.user_id = ce.user_id
@@ -228,7 +233,9 @@ async function overview() {
     authority_metrics AS (
       SELECT count(*)::int AS active_authority_users
       FROM core.chat_user_view
-      WHERE status = 'active' AND deleted_at IS NULL
+      WHERE status = 'active'
+        AND deleted_at IS NULL
+        AND data_class = 'customer'
     )
     SELECT
       session_metrics.active_sessions AS "activeSessions",
@@ -279,6 +286,7 @@ async function overview() {
       userAuthority: "core.chat_user_view",
       includedUserStatus: "active",
       includedDeletedAt: null,
+      includedDataClass: "customer",
       activeAuthorityUsers: scoped.activeAuthorityUsers,
       excluded: {
         activeSessions: scoped.excludedActiveSessions,
@@ -411,6 +419,7 @@ async function sessions(rawQuery?: Record<string, string>) {
   const conditions: Prisma.Sql[] = [
     Prisma.sql`u.status = 'active'`,
     Prisma.sql`u.deleted_at IS NULL`,
+    Prisma.sql`u.data_class = 'customer'`,
   ];
   if (userId) conditions.push(Prisma.sql`s.user_id = ${userId}`);
   if (characterId) conditions.push(Prisma.sql`s.character_id = ${characterId}`);
@@ -535,6 +544,7 @@ async function usage(rawQuery?: Record<string, string>) {
   const conditions: Prisma.Sql[] = [
     Prisma.sql`u.status = 'active'`,
     Prisma.sql`u.deleted_at IS NULL`,
+    Prisma.sql`u.data_class = 'customer'`,
     Prisma.sql`cu.period_start = ${periodStart}`,
   ];
   if (userId) conditions.push(Prisma.sql`cu.user_id = ${userId}`);
@@ -643,6 +653,7 @@ async function moderationEvents(rawQuery?: Record<string, string>) {
   const conditions: Prisma.Sql[] = [
     Prisma.sql`u.status = 'active'`,
     Prisma.sql`u.deleted_at IS NULL`,
+    Prisma.sql`u.data_class = 'customer'`,
   ];
   if (status && status !== "all") {
     conditions.push(Prisma.sql`e.status = ${status}`);

@@ -1496,7 +1496,14 @@ test("admin character templates require inline confirmation for public writes", 
   try {
     await page.goto(`${adminURL}/admin/content/templates`);
     await expectAdminShellReady(page, "Character Starters");
-    await page.getByRole("link", { name: "New starter template" }).first().click();
+    const createTemplateLink = page
+      .getByRole("link", { name: "New starter template" })
+      .first();
+    await expect(createTemplateLink).toHaveAttribute(
+      "href",
+      "/admin/content/templates/new",
+    );
+    await page.goto(`${adminURL}/admin/content/templates/new`);
     await expect(page.getByRole("heading", { level: 2, name: "New starter template" })).toBeVisible();
     await page.getByLabel("Name (≥1)").fill(templateName);
     await page.getByLabel("Summary (≤200)").fill("Template confirmation test");

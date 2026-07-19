@@ -159,6 +159,16 @@ afterEach(() => {
 });
 
 describe("immutable Next standalone runtime releases", () => {
+  it("keeps immutable runtime releases outside the ESLint source scope", () => {
+    for (const packageName of ["main", "admin"]) {
+      const config = readFileSync(
+        path.join(workspaceRoot, "packages", packageName, "eslint.config.mjs"),
+        "utf8",
+      );
+      expect(config).toContain('".next-runtime/**"');
+    }
+  });
+
   it("never lets Turbo cache away the release publication side effect", () => {
     const turbo = JSON.parse(
       readFileSync(path.join(workspaceRoot, "turbo.json"), "utf8"),

@@ -14,6 +14,7 @@ export function AuthWorkspace({
   const [name, setName] = useState("");
   const [status, setStatus] = useState("");
   const [pending, setPending] = useState(false);
+  const [interactive, setInteractive] = useState(false);
   const [loginRecoveryHref, setLoginRecoveryHref] = useState("/login");
   const shouldShowSignupLoginRecovery =
     mode === "signup" && status === "Email already registered";
@@ -32,7 +33,9 @@ export function AuthWorkspace({
   }, []);
 
   useEffect(() => {
+    const frame = window.requestAnimationFrame(() => setInteractive(true));
     void redirectIfAlreadyAuthenticated();
+    return () => window.cancelAnimationFrame(frame);
   }, [redirectIfAlreadyAuthenticated]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -88,7 +91,9 @@ export function AuthWorkspace({
           </p>
         </div>
         <form
+          aria-busy={!interactive || pending}
           className="rounded-[20px] border border-white/10 bg-[rgb(18,18,18)] p-5"
+          data-auth-ready={interactive ? "true" : "false"}
           onSubmit={submit}
         >
           {mode === "signup" && (
@@ -96,6 +101,7 @@ export function AuthWorkspace({
               Display name
               <input
                 className="mt-2 h-12 w-full rounded-[12px] bg-[rgb(36,36,36)] px-4 text-[14px] normal-case text-white outline-none"
+                disabled={!interactive}
                 onChange={(event) => setName(event.target.value)}
                 value={name}
               />
@@ -105,6 +111,7 @@ export function AuthWorkspace({
             Email
             <input
               className="mt-2 h-12 w-full rounded-[12px] bg-[rgb(36,36,36)] px-4 text-[14px] normal-case text-white outline-none"
+              disabled={!interactive}
               onChange={(event) => setEmail(event.target.value)}
               type="email"
               value={email}
@@ -114,6 +121,7 @@ export function AuthWorkspace({
             Password
             <input
               className="mt-2 h-12 w-full rounded-[12px] bg-[rgb(36,36,36)] px-4 text-[14px] normal-case text-white outline-none"
+              disabled={!interactive}
               onChange={(event) => setPassword(event.target.value)}
               type="password"
               value={password}
@@ -121,7 +129,7 @@ export function AuthWorkspace({
           </label>
           <button
             className="mt-5 flex h-12 w-full items-center justify-center gap-2 rounded-full bg-[linear-gradient(0deg,#ff1cac,#fd5fc2_50%,#ff79d1)] text-[14px] font-black text-white disabled:opacity-70"
-            disabled={pending}
+            disabled={!interactive || pending}
             type="submit"
           >
             {pending ? "Working..." : mode === "signup" ? "Join Free" : "Login"}

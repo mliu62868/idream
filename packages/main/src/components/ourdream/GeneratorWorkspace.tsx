@@ -23,12 +23,16 @@ import {
   parseCharacterDetailResponse,
   parseCharacterLooksResponse,
   parseGenerationConfigResponse,
+  parseGenerationQuoteResponse,
+  parseGenerationRetryQuoteResponse,
   parseGenerationJobDetailResponse,
   parseGenerationJobsResponse,
   parseGeneratorCharactersResponse,
   parseUserPresetsResponse,
   parseWorkspaceMediaResponse,
   type RuntimeGenerationConfig,
+  type RuntimeGenerationQuote,
+  type RuntimeGenerationRetryQuote,
 } from "@/lib/public-api-contracts";
 import {
   authorityShowsEmpty,
@@ -40,6 +44,18 @@ import {
 import { useAgeGateAccess } from "./AgeGateBoundary";
 import { authHrefForTarget } from "./authRedirect";
 import { LegacyTestAssetBadge } from "./LegacyTestAssetBadge";
+import {
+  GenerationRequestError,
+  exactGenerationQuoteForCount,
+  requestGenerationJobWithExactAuthority,
+  requestMediaVariationWithExactQuote,
+} from "@/lib/generation-write-client";
+
+export {
+  exactGenerationQuoteForCount,
+  requestGenerationJobWithExactAuthority,
+  requestMediaVariationWithExactQuote,
+} from "@/lib/generation-write-client";
 
 type MediaItem = {
   id: string;
@@ -158,17 +174,105 @@ type GeneratorConfigFailureActions = {
   showError: (message: string) => void;
 };
 
+type GeneratorConfigSuspensionActions = Omit<
+  GeneratorConfigFailureActions,
+  "showError"
+>;
+
+type GeneratorViewerRevalidationGate = {
+  current: Promise<void> | null;
+};
+
+type GeneratorModelSelection = {
+  readonly id: string;
+  readonly explicit: boolean;
+};
+
+type GeneratorModelOption = {
+  readonly id: string;
+  readonly label: string;
+};
+
+export function projectGeneratorModelSelection(
+  selection: GeneratorModelSelection,
+  models: readonly GeneratorModelOption[],
+) {
+  const selected = selection.explicit
+    ? models.find((model) => model.id === selection.id)
+    : undefined;
+  return selected
+    ? {
+        displayedLabel: selected.label,
+        requestModelId: selected.id,
+        selectValue: selected.id,
+      }
+    : {
+        displayedLabel: "Auto (identity-aware)",
+        requestModelId: undefined,
+        selectValue: "",
+      };
+}
+
+export function generatorRouteAfterRemixExit(
+  currentUrl: string,
+  nextCharacterId?: string | null,
+) {
+  const url = new URL(currentUrl, "http://localhost");
+  url.searchParams.delete("remixFeedItemId");
+  if (typeof nextCharacterId === "string" && nextCharacterId) {
+    url.searchParams.set("characterId", nextCharacterId);
+  } else if (nextCharacterId === null) {
+    url.searchParams.delete("characterId");
+  }
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
 export function invalidateGeneratorConfigAuthority(
   refs: GeneratorConfigAuthorityRefs,
   actions: GeneratorConfigFailureActions,
   message: string,
 ) {
+  suspendGeneratorConfigAuthority(refs, actions);
+  actions.showError(message);
+}
+
+export function suspendGeneratorConfigAuthority(
+  refs: GeneratorConfigAuthorityRefs,
+  actions: GeneratorConfigSuspensionActions,
+) {
+  const previousScope = refs.scope.current;
   refs.epoch.current += 1;
   refs.authenticated.current = null;
   refs.scope.current = null;
   actions.clearConfig();
   actions.clearPrivateProjections();
-  actions.showError(message);
+  return previousScope;
+}
+
+export function revalidateGeneratorViewerAuthority(
+  gate: GeneratorViewerRevalidationGate,
+  actions: {
+    refresh: () => Promise<void>;
+    suspend: () => void;
+  },
+) {
+  if (gate.current) return gate.current;
+  actions.suspend();
+  const task = Promise.resolve()
+    .then(actions.refresh)
+    .finally(() => {
+      if (gate.current === task) gate.current = null;
+    });
+  gate.current = task;
+  return task;
+}
+
+export function generatorConfigRequestIsCurrent(
+  controller: AbortController,
+  requestSerial: number,
+  currentSerial: number,
+) {
+  return !controller.signal.aborted && requestSerial === currentSerial;
 }
 
 export async function loadGeneratorWorkspaceInitialData(
@@ -192,17 +296,66 @@ export async function loadGeneratorWorkspaceInitialData(
 
 export async function loadGeneratorLooksForViewer(
   viewerAuthenticated: boolean | undefined,
+  canEditIdentity: boolean,
   loadLooks: () => Promise<void>,
 ) {
-  if (viewerAuthenticated !== true) return;
+  if (viewerAuthenticated !== true || !canEditIdentity) return;
   await loadLooks();
+}
+
+export function removeGeneratorCharacterViewerAuthority(
+  characters: readonly CharacterCardData[],
+) {
+  return characters.map((character) => ({
+    ...character,
+    canEditIdentity: false,
+  }));
+}
+
+export function refreshGenerationQuoteAfterBalanceChange(actions: {
+  clearQuote: () => void;
+  clearQuoteFailure: () => void;
+  refreshBalance: () => void;
+  requestQuoteRefresh: () => void;
+}) {
+  actions.clearQuote();
+  actions.clearQuoteFailure();
+  actions.requestQuoteRefresh();
+  actions.refreshBalance();
+}
+
+export function generationErrorAuthorityAction(
+  status: number,
+): "refresh_balance_and_quote" | "refresh_quote" | "none" {
+  if (status === 402) return "refresh_balance_and_quote";
+  if (status === 409) return "refresh_quote";
+  return "none";
 }
 
 export function GeneratorWorkspace() {
   const { accepted: ageGateAccepted } = useAgeGateAccess();
   const [config, setConfig] = useState<RuntimeGenerationConfig | null>(null);
+  const [generationQuoteState, setGenerationQuoteState] = useState<{
+    key: string;
+    quote: RuntimeGenerationQuote;
+  } | null>(null);
+  const [generationQuoteFailure, setGenerationQuoteFailure] = useState<{
+    key: string;
+    message: string;
+  } | null>(null);
+  const [generationQuoteRequestNonce, setGenerationQuoteRequestNonce] =
+    useState(0);
+  const [retryQuotes, setRetryQuotes] = useState<
+    Record<string, RuntimeGenerationRetryQuote>
+  >({});
+  const [retryQuoteFailures, setRetryQuoteFailures] = useState<
+    Record<string, string>
+  >({});
+  const [retryQuoteRequestNonce, setRetryQuoteRequestNonce] =
+    useState(0);
   const [characters, setCharacters] = useState<CharacterCardData[]>([]);
   const [charactersAuthority, setCharactersAuthority] = useState(initialAuthorityStatus);
+  const [charactersRefreshNonce, setCharactersRefreshNonce] = useState(0);
   const [characterId, setCharacterId] = useState("");
   const [freeplay, setFreeplay] = useState(false);
   const [mode, setMode] = useState<GenerationMode>("image");
@@ -211,7 +364,10 @@ export function GeneratorWorkspace() {
   const [negativePrompt, setNegativePrompt] = useState("");
   const [orientation, setOrientation] = useState("4:5");
   const [count, setCount] = useState(1);
-  const [model, setModel] = useState("");
+  const [modelSelection, setModelSelection] = useState({
+    id: "",
+    explicit: false,
+  });
   const [consistencyMode, setConsistencyMode] = useState<ConsistencyMode>("balanced");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [modePresetId, setModePresetId] = useState("");
@@ -231,6 +387,9 @@ export function GeneratorWorkspace() {
   const [configError, setConfigError] = useState("");
   const [pending, setPending] = useState(false);
   const [retryingJobIds, setRetryingJobIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [variationPendingIds, setVariationPendingIds] = useState<Set<string>>(
     () => new Set(),
   );
   const [failedMediaIds, setFailedMediaIds] = useState<Set<string>>(() => new Set());
@@ -263,34 +422,108 @@ export function GeneratorWorkspace() {
   const viewerScopeRef = useRef<string | null>(null);
   const viewerEpochRef = useRef(0);
   const privateRequestControllersRef = useRef<Set<AbortController>>(new Set());
+  const charactersRequestControllerRef = useRef<AbortController | null>(null);
+  const charactersRequestSerialRef = useRef(0);
   const configRequestControllerRef = useRef<AbortController | null>(null);
+  const configRequestSerialRef = useRef(0);
+  const viewerRevalidationGateRef =
+    useRef<Promise<void> | null>(null);
+  const generationQuoteRequestControllerRef =
+    useRef<AbortController | null>(null);
+  const retryQuoteRequestControllerRef =
+    useRef<AbortController | null>(null);
   const generationPollInFlightRef = useRef(false);
   const retryIdempotencyKeysRef = useRef<Map<string, string>>(new Map());
+  const generationSubmissionIdempotencyKeysRef =
+    useRef<Map<string, string>>(new Map());
+  const variationSubmissionIdempotencyKeysRef =
+    useRef<Map<string, string>>(new Map());
+  const clearRemixIntent = useCallback(
+    (nextCharacterId?: string | null) => {
+      const currentUrl = new URL(window.location.href);
+      const hadRouteIntent =
+        Boolean(remixFeedItemId) ||
+        currentUrl.searchParams.has("remixFeedItemId");
+      setRemixFeedItemId("");
+      if (!hadRouteIntent) return;
+      setStatus((current) =>
+        current.startsWith("Remix ready from Feed") ? "" : current,
+      );
+      const nextUrl = generatorRouteAfterRemixExit(
+        currentUrl.toString(),
+        nextCharacterId,
+      );
+      window.history.replaceState(window.history.state, "", nextUrl);
+    },
+    [remixFeedItemId],
+  );
 
   const videoModeEnabled =
     config?.video.availability.state === "available" &&
     config.video.models.length > 0;
+  const imageEditMode =
+    mode === "image" && imageWorkflow === "image-edit";
+  const characterImageMode =
+    mode === "image" && !freeplay && !imageEditMode;
   const availableModels = useMemo(
     () => (mode === "video" && videoModeEnabled ? (config?.video.models ?? []) : (config?.image.models ?? [])),
     [config, mode, videoModeEnabled],
   );
-  const selectedModel = useMemo(
-    () => availableModels.find((item) => item.id === model) ?? availableModels[0],
-    [availableModels, model],
+  const modelSelectionProjection = useMemo(
+    () => projectGeneratorModelSelection(modelSelection, availableModels),
+    [availableModels, modelSelection],
   );
-  const maxCount = selectedModel?.maxCount ?? 1;
-  const outputCount = mode === "video" ? 1 : Math.max(1, Math.min(count, maxCount));
-  const baseCost = mode === "video"
-    ? config?.pricing.video.baseCost
-    : config?.pricing.image.baseCost;
   const modeAvailable =
     mode === "image"
       ? config?.image.availability.state === "available" &&
         config.image.models.length > 0
       : videoModeEnabled;
-  const estimatedCost = modeAvailable && selectedModel && typeof baseCost === "number"
-    ? Math.ceil(baseCost * outputCount * (selectedModel?.costMultiplier ?? 1))
-    : null;
+  const generationQuoteKey =
+    modeAvailable &&
+    config?.viewer.authenticated === true &&
+    (
+      imageEditMode
+        ? Boolean(editSourceMediaId)
+        : freeplay || Boolean(characterId)
+    )
+      ? JSON.stringify({
+          viewerScope: config.viewer.scope,
+          mode,
+          sourceMediaId: imageEditMode ? editSourceMediaId : null,
+          characterId:
+            imageEditMode || freeplay ? null : characterId,
+          freeplay: imageEditMode ? true : freeplay,
+          consistencyMode,
+          lookId:
+            characterImageMode && selectedLookId
+              ? selectedLookId
+              : null,
+          explicitModelId:
+            modelSelectionProjection.requestModelId ?? null,
+        })
+      : null;
+  const generationQuote =
+    generationQuoteKey &&
+    generationQuoteState?.key === generationQuoteKey
+      ? generationQuoteState.quote
+      : null;
+  const generationQuoteError =
+    generationQuoteKey &&
+    generationQuoteFailure?.key === generationQuoteKey
+      ? generationQuoteFailure.message
+      : "";
+  const maxCount = generationQuote?.maxCount ?? 1;
+  const allowedGeneratorOrientations =
+    generationQuote?.orientations ?? [];
+  const outputCount =
+    mode === "video"
+      ? 1
+      : Math.max(1, Math.min(count, maxCount));
+  const exactQuote = exactGenerationQuoteForCount(
+    generationQuote,
+    outputCount,
+  );
+  const estimatedCost = exactQuote?.costDreamcoins ?? null;
   const modeUnavailableMessage = generationModeUnavailableMessage(config, mode);
   const galleryTabs = useMemo<GalleryTab[]>(
     () => (videoModeEnabled ? ["image", "video", "liked"] : ["image", "liked"]),
@@ -300,9 +533,7 @@ export function GeneratorWorkspace() {
   const insufficientBalance =
     Boolean(config) &&
     estimatedCost !== null &&
-    estimatedCost > (config?.dreamcoins.balance ?? 0);
-  const imageEditMode = mode === "image" && imageWorkflow === "image-edit";
-  const characterImageMode = mode === "image" && !freeplay && !imageEditMode;
+    exactQuote?.affordable === false;
   const canDescribeMoment = canUsePrompt || characterImageMode;
   const anonymousViewer = config?.viewer?.authenticated === false;
   const upgradeHref = upgradeHrefForTarget(authReturnTarget);
@@ -367,6 +598,14 @@ export function GeneratorWorkspace() {
     modeAvailable &&
     (!imageEditMode || Boolean(selectedEditSource)) &&
     !insufficientBalance;
+  const retryQuoteScopeKey =
+    config?.viewer.authenticated === true
+      ? jobs
+          .filter((job) => job.status === "failed")
+          .map((job) => job.id)
+          .sort()
+          .join("|")
+      : "";
   const selectedMediaConfirmKey = Array.from(selectedMediaIds).sort().join("|");
   const bulkDeleteArmed =
     selectedMediaIds.size > 0 && bulkDeleteConfirmKey === selectedMediaConfirmKey;
@@ -378,6 +617,20 @@ export function GeneratorWorkspace() {
     setSelectedLookId("");
     setLooksAuthority(initialAuthorityStatus());
   }, []);
+
+  const invalidateViewerRelativeCharacterAuthority = useCallback(
+    (refresh: boolean) => {
+      charactersRequestSerialRef.current += 1;
+      charactersRequestControllerRef.current?.abort();
+      charactersRequestControllerRef.current = null;
+      setCharacters(removeGeneratorCharacterViewerAuthority);
+      invalidateLookScope();
+      if (refresh) {
+        setCharactersRefreshNonce((current) => current + 1);
+      }
+    },
+    [invalidateLookScope],
+  );
 
   const abortPrivateViewerRequests = useCallback(() => {
     for (const controller of privateRequestControllersRef.current) {
@@ -406,7 +659,11 @@ export function GeneratorWorkspace() {
     setDeleteConfirmPresetId(null);
     setLookEditorMediaId(null);
     retryIdempotencyKeysRef.current.clear();
+    generationSubmissionIdempotencyKeysRef.current.clear();
+    variationSubmissionIdempotencyKeysRef.current.clear();
     setRetryingJobIds(new Set());
+    setRetryQuotes({});
+    setRetryQuoteFailures({});
     invalidateLookScope();
     setLooksAuthority(readyAuthorityStatus());
   }, [abortPrivateViewerRequests, invalidateLookScope]);
@@ -420,7 +677,6 @@ export function GeneratorWorkspace() {
     setOutfitPresetId("");
     setPrompt("");
     setNegativePrompt("");
-    setRemixFeedItemId("");
   }, [clearPrivateViewerProjections]);
 
   const beginPrivateViewerRequest = useCallback(() => {
@@ -489,7 +745,10 @@ export function GeneratorWorkspace() {
 
   useEffect(
     () => () => {
+      charactersRequestControllerRef.current?.abort();
       configRequestControllerRef.current?.abort();
+      generationQuoteRequestControllerRef.current?.abort();
+      retryQuoteRequestControllerRef.current?.abort();
       abortPrivateViewerRequests();
     },
     [abortPrivateViewerRequests],
@@ -510,20 +769,61 @@ export function GeneratorWorkspace() {
         },
         message,
       );
+      invalidateViewerRelativeCharacterAuthority(false);
     },
-    [clearPrivateViewerProjections],
+    [
+      clearPrivateViewerProjections,
+      invalidateViewerRelativeCharacterAuthority,
+    ],
   );
+
+  const suspendViewerAuthority = useCallback(() => {
+    configRequestSerialRef.current += 1;
+    configRequestControllerRef.current?.abort();
+    configRequestControllerRef.current = null;
+    const previousScope = suspendGeneratorConfigAuthority(
+      {
+        authenticated: viewerAuthenticatedRef,
+        epoch: viewerEpochRef,
+        scope: viewerScopeRef,
+      },
+      {
+        clearConfig: () => setConfig(null),
+        clearPrivateProjections: clearPrivateViewerProjections,
+      },
+    );
+    // Keeping the opaque previous token only for response comparison avoids
+    // erasing an in-progress form on a same-viewer focus refresh. It cannot
+    // authorize requests while authenticated=null and the epoch has advanced.
+    viewerScopeRef.current = previousScope;
+    setConfigError("");
+    invalidateViewerRelativeCharacterAuthority(false);
+  }, [
+    clearPrivateViewerProjections,
+    invalidateViewerRelativeCharacterAuthority,
+  ]);
 
   const refreshConfig = useCallback(async () => {
     configRequestControllerRef.current?.abort();
     const controller = new AbortController();
     configRequestControllerRef.current = controller;
+    const requestSerial = configRequestSerialRef.current + 1;
+    configRequestSerialRef.current = requestSerial;
     try {
       const response = await fetch("/api/v1/generation/config", {
         cache: "no-store",
         signal: controller.signal,
       });
       const raw = await response.json().catch(() => null);
+      if (
+        !generatorConfigRequestIsCurrent(
+          controller,
+          requestSerial,
+          configRequestSerialRef.current,
+        )
+      ) {
+        return null;
+      }
       if (!response.ok) {
         failConfigAuthority(
           apiPayloadErrorMessage(raw) ??
@@ -537,6 +837,7 @@ export function GeneratorWorkspace() {
         viewerEpochRef.current += 1;
         viewerScopeRef.current = nextScope;
         resetPrivateViewerData();
+        invalidateViewerRelativeCharacterAuthority(true);
       }
       viewerAuthenticatedRef.current = data.viewer.authenticated;
       if (!data.viewer.authenticated) resetPrivateViewerData();
@@ -553,11 +854,11 @@ export function GeneratorWorkspace() {
         setMode((current) => (current === "video" ? "image" : current));
         setGalleryTab((current) => (current === "video" ? "image" : current));
       }
-      const firstModel = data.image.models[0]?.id ?? "";
-      setModel((current) =>
-        data.image.models.some((item) => item.id === current)
+      setModelSelection((current) =>
+        current.explicit &&
+        data.image.models.some((item) => item.id === current.id)
           ? current
-          : firstModel,
+          : { id: "", explicit: false },
       );
       setOrientation((current) =>
         data.image.orientations.includes(current)
@@ -571,7 +872,14 @@ export function GeneratorWorkspace() {
       );
       return data.viewer.authenticated;
     } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") {
+      if (
+        !generatorConfigRequestIsCurrent(
+          controller,
+          requestSerial,
+          configRequestSerialRef.current,
+        ) ||
+        (error instanceof DOMException && error.name === "AbortError")
+      ) {
         return null;
       }
       failConfigAuthority(
@@ -579,11 +887,206 @@ export function GeneratorWorkspace() {
       );
       return null;
     } finally {
-      if (configRequestControllerRef.current === controller) {
+      if (
+        requestSerial === configRequestSerialRef.current &&
+        configRequestControllerRef.current === controller
+      ) {
         configRequestControllerRef.current = null;
       }
     }
-  }, [failConfigAuthority, resetPrivateViewerData]);
+  }, [
+    failConfigAuthority,
+    invalidateViewerRelativeCharacterAuthority,
+    resetPrivateViewerData,
+  ]);
+
+  const refreshBalanceAndQuoteAuthority = useCallback(() => {
+    refreshGenerationQuoteAfterBalanceChange({
+      clearQuote: () => setGenerationQuoteState(null),
+      clearQuoteFailure: () => setGenerationQuoteFailure(null),
+      requestQuoteRefresh: () =>
+        {
+          setGenerationQuoteRequestNonce((current) => current + 1);
+          setRetryQuoteRequestNonce((current) => current + 1);
+        },
+      refreshBalance: () => {
+        void refreshConfig();
+      },
+    });
+  }, [refreshConfig]);
+
+  useEffect(() => {
+    generationQuoteRequestControllerRef.current?.abort();
+    if (!generationQuoteKey) return;
+
+    const controller = new AbortController();
+    generationQuoteRequestControllerRef.current = controller;
+    setGenerationQuoteState(null);
+    setGenerationQuoteFailure(null);
+
+    void (async () => {
+      try {
+        const response = await fetch(
+          imageEditMode
+            ? `/api/v1/media/${encodeURIComponent(editSourceMediaId)}/variation/quote`
+            : "/api/v1/generation/quote",
+          {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          cache: "no-store",
+          signal: controller.signal,
+          body: JSON.stringify(
+            imageEditMode
+              ? { consistencyMode }
+              : {
+                  mode,
+                  characterId: freeplay ? undefined : characterId,
+                  freeplay,
+                  consistencyMode,
+                  outputCount: 1,
+                  controls: {
+                    model: modelSelectionProjection.requestModelId,
+                    lookId:
+                      characterImageMode && selectedLookId
+                        ? selectedLookId
+                        : undefined,
+                  },
+                },
+          ),
+        },
+        );
+        const raw = await response.json().catch(() => null);
+        if (!response.ok) {
+          throw new Error(
+            apiPayloadErrorMessage(raw) ??
+              "The exact generation price is unavailable.",
+          );
+        }
+        const data = parseGenerationQuoteResponse(raw);
+        if (controller.signal.aborted) return;
+        setGenerationQuoteState({
+          key: generationQuoteKey,
+          quote: data.quote,
+        });
+        setGenerationQuoteFailure(null);
+        setCount((current) =>
+          Math.max(1, Math.min(current, data.quote.maxCount)),
+        );
+        setOrientation((current) =>
+          data.quote.orientations.includes(current)
+            ? current
+            : data.quote.defaultOrientation,
+        );
+      } catch (error) {
+        if (
+          controller.signal.aborted ||
+          (error instanceof DOMException && error.name === "AbortError")
+        ) {
+          return;
+        }
+        setGenerationQuoteState(null);
+        setGenerationQuoteFailure({
+          key: generationQuoteKey,
+          message: requestErrorMessage(
+            error,
+            "The exact generation price is unavailable.",
+          ),
+        });
+      } finally {
+        if (generationQuoteRequestControllerRef.current === controller) {
+          generationQuoteRequestControllerRef.current = null;
+        }
+      }
+    })();
+
+    return () => controller.abort();
+  }, [
+    characterId,
+    characterImageMode,
+    consistencyMode,
+    editSourceMediaId,
+    freeplay,
+    generationQuoteKey,
+    generationQuoteRequestNonce,
+    imageEditMode,
+    mode,
+    modelSelectionProjection.requestModelId,
+    selectedLookId,
+  ]);
+
+  useEffect(() => {
+    retryQuoteRequestControllerRef.current?.abort();
+    if (!retryQuoteScopeKey) {
+      setRetryQuotes({});
+      setRetryQuoteFailures({});
+      return;
+    }
+    const controller = new AbortController();
+    retryQuoteRequestControllerRef.current = controller;
+    const jobIds = retryQuoteScopeKey.split("|").filter(Boolean);
+    setRetryQuotes({});
+    setRetryQuoteFailures({});
+
+    void (async () => {
+      const results = await Promise.all(
+        jobIds.map(async (jobId) => {
+          try {
+            const response = await fetch(
+              `/api/v1/generation/jobs/${encodeURIComponent(jobId)}/retry/quote`,
+              {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                cache: "no-store",
+                signal: controller.signal,
+                body: "{}",
+              },
+            );
+            const raw: unknown = await response.json().catch(() => null);
+            if (!response.ok) {
+              throw new Error(
+                apiPayloadErrorMessage(raw) ??
+                  "The exact retry price is unavailable.",
+              );
+            }
+            return {
+              jobId,
+              quote:
+                parseGenerationRetryQuoteResponse(raw).quote,
+              error: null,
+            };
+          } catch (error) {
+            if (
+              controller.signal.aborted ||
+              (error instanceof DOMException &&
+                error.name === "AbortError")
+            ) {
+              return null;
+            }
+            return {
+              jobId,
+              quote: null,
+              error: requestErrorMessage(
+                error,
+                "The exact retry price is unavailable.",
+              ),
+            };
+          }
+        }),
+      );
+      if (controller.signal.aborted) return;
+      const nextQuotes: Record<string, RuntimeGenerationRetryQuote> = {};
+      const nextFailures: Record<string, string> = {};
+      for (const result of results) {
+        if (!result) continue;
+        if (result.quote) nextQuotes[result.jobId] = result.quote;
+        if (result.error) nextFailures[result.jobId] = result.error;
+      }
+      setRetryQuotes(nextQuotes);
+      setRetryQuoteFailures(nextFailures);
+    })();
+
+    return () => controller.abort();
+  }, [retryQuoteRequestNonce, retryQuoteScopeKey]);
 
   const refreshJobs = useCallback(async () => {
     const viewerRequest = beginPrivateViewerRequest();
@@ -760,7 +1263,11 @@ export function GeneratorWorkspace() {
     }
     const requestSerial = looksRequestSerialRef.current + 1;
     looksRequestSerialRef.current = requestSerial;
-    if (!characterId || freeplay) {
+    if (
+      !characterId ||
+      freeplay ||
+      selectedCharacter?.canEditIdentity !== true
+    ) {
       setLooks([]);
       setSelectedLookId("");
       looksCharacterIdRef.current = "";
@@ -829,13 +1336,28 @@ export function GeneratorWorkspace() {
     freeplay,
     invalidateLookScope,
     privateViewerRequestIsCurrent,
+    selectedCharacter?.canEditIdentity,
   ]);
 
   const refreshCharacters = useCallback(async () => {
+    charactersRequestControllerRef.current?.abort();
+    const controller = new AbortController();
+    charactersRequestControllerRef.current = controller;
+    const requestSerial = charactersRequestSerialRef.current + 1;
+    charactersRequestSerialRef.current = requestSerial;
     setCharactersAuthority(loadingAuthorityStatus);
     try {
-      const response = await fetch("/api/v1/characters?limit=12");
+      const response = await fetch("/api/v1/characters?limit=12", {
+        cache: "no-store",
+        signal: controller.signal,
+      });
       const raw = await response.json().catch(() => null);
+      if (
+        controller.signal.aborted ||
+        requestSerial !== charactersRequestSerialRef.current
+      ) {
+        return;
+      }
       if (!response.ok) {
         throw new Error(
           apiPayloadErrorMessage(raw) ??
@@ -845,6 +1367,10 @@ export function GeneratorWorkspace() {
       const searchParams = new URLSearchParams(window.location.search);
       const desired = searchParams.get("characterId");
       const nextRemixFeedItemId = searchParams.get("remixFeedItemId") ?? "";
+      // Remix is canonical route intent, not a private viewer projection.
+      // Keep it independent from concurrent viewer-scope resets and also clear
+      // stale intent when this workspace is reached without the route param.
+      setRemixFeedItemId(nextRemixFeedItemId);
       const listedItems = parseGeneratorCharactersResponse(raw).items;
       const desiredListed = Boolean(
         desired && listedItems.some((character) => character.id === desired),
@@ -853,6 +1379,12 @@ export function GeneratorWorkspace() {
         desired && !desiredListed
           ? await fetchCharacterById(desired)
           : null;
+      if (
+        controller.signal.aborted ||
+        requestSerial !== charactersRequestSerialRef.current
+      ) {
+        return;
+      }
       const items = desiredCharacter ? [desiredCharacter, ...listedItems] : listedItems;
       setCharacters(items);
       setCharactersAuthority(readyAuthorityStatus());
@@ -872,21 +1404,39 @@ export function GeneratorWorkspace() {
         return;
       }
       if (nextRemixFeedItemId) {
-        setRemixFeedItemId(nextRemixFeedItemId);
+        setModelSelection({ id: "", explicit: false });
         setStatus((current) => current || "Remix ready from Feed. Adjust details and generate.");
       }
       const preset = desired && items.some((c) => c.id === desired) ? desired : "";
       if (preset) setFreeplay(false);
       setCharacterId((current) => current || preset || items[0]?.id || "");
     } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      if (requestSerial !== charactersRequestSerialRef.current) return;
       setCharactersAuthority((current) =>
         failedAuthorityStatus(
           current,
           requestErrorMessage(error, "Character catalog could not load."),
         ),
       );
+    } finally {
+      if (charactersRequestControllerRef.current === controller) {
+        charactersRequestControllerRef.current = null;
+      }
     }
   }, [invalidateLookScope]);
+
+  useEffect(() => {
+    if (!ageGateAccepted || charactersRefreshNonce === 0) return;
+    const timer = window.setTimeout(() => {
+      void refreshCharacters();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [
+    ageGateAccepted,
+    charactersRefreshNonce,
+    refreshCharacters,
+  ]);
 
   const refreshWorkspaceAuthority = useCallback(
     () =>
@@ -930,12 +1480,12 @@ export function GeneratorWorkspace() {
         setStatus("Generation complete.");
         setLatestResults(assets);
         setGalleryTab(job.mode);
-        void refreshConfig();
+        refreshBalanceAndQuoteAuthority();
         void refreshMedia(job.mode);
       }
       if (job.status === "failed" || job.status === "blocked" || job.status === "refunded") {
         setStatus(statusMessage(job));
-        void refreshConfig();
+        refreshBalanceAndQuoteAuthority();
       }
     } catch (error) {
       if (!(error instanceof DOMException && error.name === "AbortError")) {
@@ -948,7 +1498,7 @@ export function GeneratorWorkspace() {
     beginPrivateViewerRequest,
     finishPrivateViewerRequest,
     privateViewerRequestIsCurrent,
-    refreshConfig,
+    refreshBalanceAndQuoteAuthority,
     refreshMedia,
   ]);
 
@@ -962,16 +1512,48 @@ export function GeneratorWorkspace() {
 
   useEffect(() => {
     if (!ageGateAccepted) return;
+    const revalidate = () => {
+      if (document.hidden) return;
+      void revalidateGeneratorViewerAuthority(
+        viewerRevalidationGateRef,
+        {
+          suspend: suspendViewerAuthority,
+          refresh: refreshWorkspaceAuthority,
+        },
+      );
+    };
+    window.addEventListener("focus", revalidate);
+    window.addEventListener("pageshow", revalidate);
+    document.addEventListener("visibilitychange", revalidate);
+    return () => {
+      window.removeEventListener("focus", revalidate);
+      window.removeEventListener("pageshow", revalidate);
+      document.removeEventListener("visibilitychange", revalidate);
+    };
+  }, [
+    ageGateAccepted,
+    refreshWorkspaceAuthority,
+    suspendViewerAuthority,
+  ]);
+
+  useEffect(() => {
+    if (!ageGateAccepted) return;
     const timer = window.setTimeout(
       () =>
         void loadGeneratorLooksForViewer(
           config?.viewer.authenticated,
+          selectedCharacter?.canEditIdentity === true,
           refreshLooks,
         ),
       0,
     );
     return () => window.clearTimeout(timer);
-  }, [ageGateAccepted, config?.viewer.authenticated, refreshLooks]);
+  }, [
+    ageGateAccepted,
+    config?.viewer.authenticated,
+    refreshLooks,
+    selectedCharacter?.canEditIdentity,
+  ]);
 
   useEffect(() => {
     if (!ageGateAccepted) return;
@@ -1032,27 +1614,28 @@ export function GeneratorWorkspace() {
     setStatus("");
     try {
       if (imageEditMode && selectedEditSource) {
-        await createMediaVariation(selectedEditSource, { outputCount });
+        await createMediaVariation(selectedEditSource, {
+          outputCount,
+          quote: generationQuote,
+        });
         return;
       }
-      const response = await fetch("/api/v1/generation/jobs", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "idempotency-key": crypto.randomUUID(),
-        },
-        body: JSON.stringify({
+      const result = await requestGenerationJobWithExactAuthority({
+        idempotencyKeys: generationSubmissionIdempotencyKeysRef.current,
+        body: {
           mode,
           characterId: freeplay ? undefined : characterId,
           freeplay,
           consistencyMode,
           outputCount,
+          quoteAuthority:
+            imageEditMode ? undefined : exactQuote?.authority,
           prompt: canDescribeMoment && prompt ? prompt : undefined,
           negativePrompt: canUsePrompt && negativePrompt ? negativePrompt : undefined,
           remixFeedItemId: remixFeedItemId || undefined,
           controls: {
             orientation,
-            model: selectedModel?.id,
+            model: modelSelectionProjection.requestModelId,
             seconds: mode === "video" ? 4 : undefined,
             modePresetId: mode === "image" && modePresetId ? modePresetId : undefined,
             backgroundPresetId: mode === "image" && backgroundPresetId ? backgroundPresetId : undefined,
@@ -1060,25 +1643,33 @@ export function GeneratorWorkspace() {
             outfitPresetId: mode === "image" && outfitPresetId ? outfitPresetId : undefined,
             lookId: characterImageMode && selectedLookId ? selectedLookId : undefined,
           },
-        }),
+        },
       });
-      const payload = (await response.json()) as ApiPayload<{
-        job: GenerationJob;
-        assets: MediaItem[];
-      }>;
-      if (!response.ok || !payload.ok || !payload.data?.job) {
-        setStatus(payload.error?.message ?? "Generation failed");
-        return;
-      }
-      const job = payload.data.job;
+      const job = result.job;
       setJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
       setStatus("Generation queued.");
       showJobsView();
-      void refreshConfig();
+      refreshBalanceAndQuoteAuthority();
       void pollGeneration(job.id);
-    } catch {
-      // Network/server failure: surface a clear message instead of a silent no-op.
-      setStatus("Generation request failed. Check your connection and try again.");
+    } catch (error) {
+      const message = requestErrorMessage(
+        error,
+        "Generation request failed. Check your connection and try again.",
+      );
+      setStatus(message);
+      const authorityAction =
+        error instanceof GenerationRequestError
+          ? generationErrorAuthorityAction(error.status)
+          : "none";
+      if (authorityAction === "refresh_quote") {
+        setGenerationQuoteState(null);
+        setGenerationQuoteFailure(
+          generationQuoteKey ? { key: generationQuoteKey, message } : null,
+        );
+        setGenerationQuoteRequestNonce((current) => current + 1);
+      } else if (authorityAction === "refresh_balance_and_quote") {
+        refreshBalanceAndQuoteAuthority();
+      }
     } finally {
       setPending(false);
     }
@@ -1086,6 +1677,20 @@ export function GeneratorWorkspace() {
 
   async function retryJob(jobId: string) {
     if (retryingJobIds.has(jobId)) return;
+    const quote = retryQuotes[jobId];
+    if (!quote) {
+      setStatus(
+        retryQuoteFailures[jobId] ??
+          "Wait for the exact retry price before retrying.",
+      );
+      return;
+    }
+    if (quote.costDreamcoins > quote.balance) {
+      setStatus(
+        `Need ${quote.costDreamcoins} coins · you have ${quote.balance}.`,
+      );
+      return;
+    }
     setRetryingJobIds((current) => new Set(current).add(jobId));
     const idempotencyKey =
       retryIdempotencyKeysRef.current.get(jobId) ?? crypto.randomUUID();
@@ -1094,14 +1699,36 @@ export function GeneratorWorkspace() {
       const response = await fetch(`/api/v1/generation/jobs/${jobId}/retry`, {
         method: "POST",
         headers: {
+          "content-type": "application/json",
           "idempotency-key": idempotencyKey,
         },
+        body: JSON.stringify({
+          quoteAuthority: {
+            profileId: quote.profileId,
+            profileVersion: quote.profileVersion,
+            routeFingerprint: quote.routeFingerprint,
+            pricingFingerprint: quote.pricing.fingerprint,
+            outputCount: quote.outputCount,
+            costDreamcoins: quote.costDreamcoins,
+          },
+        }),
       });
       const payload = (await response.json().catch(() => null)) as ApiPayload<{
         job: GenerationJob;
       }> | null;
       if (!response.ok || !payload?.data?.job) {
-        setStatus(payload?.error?.message ?? "Retry failed");
+        const message = payload?.error?.message ?? "Retry failed";
+        setStatus(message);
+        if (response.status >= 400 && response.status < 500) {
+          retryIdempotencyKeysRef.current.delete(jobId);
+        }
+        const authorityAction =
+          generationErrorAuthorityAction(response.status);
+        if (authorityAction === "refresh_balance_and_quote") {
+          refreshBalanceAndQuoteAuthority();
+        } else if (authorityAction === "refresh_quote") {
+          setRetryQuoteRequestNonce((current) => current + 1);
+        }
         return;
       }
       const job = payload.data.job;
@@ -1111,7 +1738,7 @@ export function GeneratorWorkspace() {
         ...current.filter((item) => item.id !== job.id),
       ]);
       setStatus("Retry queued.");
-      void refreshConfig();
+      refreshBalanceAndQuoteAuthority();
     } catch {
       setStatus("Retry failed. Check your connection and try again.");
     } finally {
@@ -1231,6 +1858,10 @@ export function GeneratorWorkspace() {
   }
 
   function startNewMomentFromResult(item: MediaItem) {
+    clearRemixIntent(
+      item.characterId ?? (freeplay ? null : characterId || null),
+    );
+    setModelSelection({ id: "", explicit: false });
     if (item.characterId) {
       invalidateLookScope();
       setCharacterId(item.characterId);
@@ -1313,32 +1944,62 @@ export function GeneratorWorkspace() {
     return Boolean(targetCharacterId && editableIdentityCharacterIds.has(targetCharacterId));
   }
 
-  async function createMediaVariation(item: MediaItem, options?: { outputCount?: number }) {
+  async function createMediaVariation(
+    item: MediaItem,
+    options?: {
+      outputCount?: number;
+      quote?: RuntimeGenerationQuote | null;
+    },
+  ) {
     if (item.type !== "image") return;
+    if (variationPendingIds.has(item.id)) return;
+    setVariationPendingIds((current) => new Set(current).add(item.id));
+    if (!options?.quote) {
+      setStatus("Checking the exact variation price…");
+    }
     try {
-      const response = await fetch(`/api/v1/media/${item.id}/variation`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "idempotency-key": crypto.randomUUID(),
-        },
-        body: JSON.stringify({ outputCount: options?.outputCount ?? 1, consistencyMode }),
+      const result = await requestMediaVariationWithExactQuote({
+        mediaId: item.id,
+        outputCount: options?.outputCount ?? 1,
+        consistencyMode,
+        quote: options?.quote,
+        idempotencyKeys: variationSubmissionIdempotencyKeysRef.current,
       });
-      const payload = (await response.json().catch(() => null)) as
-        | ApiPayload<{ job: GenerationJob; assets: MediaItem[] }>
-        | null;
-      if (!response.ok || !payload?.ok || !payload.data?.job) {
-        setStatus(payload?.error?.message ?? "Variation failed.");
-        return;
-      }
-      const job = payload.data.job;
+      const job = result.job;
       setJobs((current) => [job, ...current.filter((itemJob) => itemJob.id !== job.id)]);
       setStatus(imageEditMode ? "Image edit queued." : "Variation queued.");
       showJobsView();
-      void refreshConfig();
+      refreshBalanceAndQuoteAuthority();
       void pollGeneration(job.id);
-    } catch {
-      setStatus("Variation failed. Check your connection and try again.");
+    } catch (error) {
+      const message = requestErrorMessage(
+        error,
+        "Variation failed. Check your connection and try again.",
+      );
+      setStatus(message);
+      const authorityAction =
+        error instanceof GenerationRequestError
+          ? generationErrorAuthorityAction(error.status)
+          : "none";
+      if (
+        authorityAction === "refresh_quote" &&
+        imageEditMode &&
+        selectedEditSource?.id === item.id
+      ) {
+        setGenerationQuoteState(null);
+        setGenerationQuoteFailure(
+          generationQuoteKey ? { key: generationQuoteKey, message } : null,
+        );
+        setGenerationQuoteRequestNonce((current) => current + 1);
+      } else if (authorityAction === "refresh_balance_and_quote") {
+        refreshBalanceAndQuoteAuthority();
+      }
+    } finally {
+      setVariationPendingIds((current) => {
+        const next = new Set(current);
+        next.delete(item.id);
+        return next;
+      });
     }
   }
 
@@ -1605,7 +2266,10 @@ export function GeneratorWorkspace() {
                   }`}
                   onClick={() => {
                     setMode("image");
-                    setModel(config?.image.models[0]?.id ?? "");
+                    setModelSelection({
+                      id: "",
+                      explicit: false,
+                    });
                     setOrientation(config?.image.orientations[0] ?? "");
                   }}
                   type="button"
@@ -1619,7 +2283,10 @@ export function GeneratorWorkspace() {
                   onClick={() => {
                     const firstVideoModel = config?.video.models[0];
                     setMode("video");
-                    setModel(firstVideoModel?.id ?? "");
+                    setModelSelection({
+                      id: "",
+                      explicit: false,
+                    });
                     setOrientation(firstVideoModel?.orientations?.[0] ?? "");
                     setCount(1);
                   }}
@@ -1766,6 +2433,8 @@ export function GeneratorWorkspace() {
                     onChange={(event) => {
                       const nextCharacterId = event.target.value;
                       if (nextCharacterId === characterId) return;
+                      clearRemixIntent(nextCharacterId);
+                      setModelSelection({ id: "", explicit: false });
                       invalidateLookScope();
                       setCharacterId(nextCharacterId);
                     }}
@@ -1812,7 +2481,12 @@ export function GeneratorWorkspace() {
                     name="freeplay"
                     onChange={(event) => {
                       const nextFreeplay = event.target.checked;
-                      if (nextFreeplay) invalidateLookScope();
+                      if (nextFreeplay) {
+                        clearRemixIntent(null);
+                        invalidateLookScope();
+                      } else {
+                        setModelSelection({ id: "", explicit: false });
+                      }
                       setFreeplay(nextFreeplay);
                     }}
                     type="checkbox"
@@ -1833,16 +2507,24 @@ export function GeneratorWorkspace() {
                     <span className="truncate">
                       {selectedCharacter?.visualProfile
                         ? "Identity locked"
-                        : "Set up identity image"}
+                        : selectedCharacter?.canEditIdentity
+                          ? "Set up identity image"
+                          : "No locked identity profile"}
                     </span>
                   </span>
                   <span className="shrink-0 text-[rgb(170,170,170)]">
-                    {selectedCharacter?.visualProfile ? "We keep them recognizable" : "No anchor"}
+                    {selectedCharacter?.visualProfile
+                      ? "We keep them recognizable"
+                      : selectedCharacter?.canEditIdentity
+                        ? "No anchor"
+                        : "Published character"}
                   </span>
                 </div>
                 {!selectedCharacter?.visualProfile && (
                   <div className="mt-2 rounded-[10px] border border-[rgb(255,184,112)]/30 bg-[rgb(36,28,18)] p-3 text-[12px] font-semibold leading-5 text-[rgb(255,184,112)]">
-                    This legacy character has no confirmed identity image. New characters establish identity before publishing; results for this character may vary.
+                    {selectedCharacter?.canEditIdentity
+                      ? "This legacy character has no confirmed identity image. Set one up before relying on consistent results."
+                      : "This published character has no locked identity profile. Generation can continue, but visual consistency may vary."}
                   </div>
                 )}
                 {anonymousViewer ? (
@@ -1916,16 +2598,13 @@ export function GeneratorWorkspace() {
                   Orientation
                   <select
                     className="mt-2 h-11 w-full rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] font-semibold text-white outline-none"
-                    disabled={!modeAvailable}
+                    disabled={!modeAvailable || !generationQuote}
                     id="generator-orientation"
                     name="orientation"
                     onChange={(event) => setOrientation(event.target.value)}
                     value={orientation}
                   >
-                    {(selectedModel?.orientations?.length
-                      ? selectedModel.orientations
-                      : config?.image.orientations ?? []
-                    ).map((item) => (
+                    {allowedGeneratorOrientations.map((item) => (
                       <option key={item} value={item}>
                         {item}
                       </option>
@@ -1943,7 +2622,11 @@ export function GeneratorWorkspace() {
                     onChange={(event) =>
                       setCount(Math.max(1, Math.min(maxCount, Number(event.target.value))))
                     }
-                    disabled={mode === "video" || !modeAvailable}
+                    disabled={
+                      mode === "video" ||
+                      !modeAvailable ||
+                      !generationQuote
+                    }
                     type="number"
                     value={outputCount}
                   />
@@ -1961,14 +2644,14 @@ export function GeneratorWorkspace() {
                   onChange={(event) =>
                     setCount(Math.max(1, Math.min(maxCount, Number(event.target.value))))
                   }
-                  disabled={!modeAvailable}
+                  disabled={!modeAvailable || !generationQuote}
                   type="number"
                   value={outputCount}
                 />
               </label>
             )}
 
-            {!imageEditMode && (!characterImageMode || advancedOpen) && (
+            {!imageEditMode && !characterImageMode && (
               <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
                 Model
                 <select
@@ -1978,8 +2661,12 @@ export function GeneratorWorkspace() {
                   name="modelId"
                   onChange={(event) => {
                     const nextId = event.target.value;
+                    if (!nextId) {
+                      setModelSelection({ id: "", explicit: false });
+                      return;
+                    }
                     const nextModel = availableModels.find((item) => item.id === nextId);
-                    setModel(nextId);
+                    setModelSelection({ id: nextId, explicit: true });
                     if (nextModel?.orientations?.[0]) {
                       setOrientation((current) =>
                         nextModel.orientations?.includes(current)
@@ -1988,8 +2675,9 @@ export function GeneratorWorkspace() {
                       );
                     }
                   }}
-                  value={model}
+                  value={modelSelectionProjection.selectValue}
                 >
+                  <option value="">Auto (identity-aware)</option>
                   {availableModels.map((item) => (
                     <option key={item.id} value={item.id}>
                       {item.label}
@@ -1997,6 +2685,20 @@ export function GeneratorWorkspace() {
                   ))}
                 </select>
               </label>
+            )}
+            {characterImageMode && advancedOpen && (
+              <div className="mt-4 rounded-[10px] bg-[rgb(36,36,36)] px-3 py-3">
+                <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
+                  Model
+                </p>
+                <p className="mt-1 text-[13px] font-semibold text-white">
+                  Auto (identity-aware)
+                </p>
+                <p className="mt-1 text-[12px] leading-5 text-[rgb(170,170,170)]">
+                  The generation route selects a model that can use this character&apos;s
+                  identity references.
+                </p>
+              </div>
             )}
 
             {mode === "image" &&
@@ -2051,7 +2753,7 @@ export function GeneratorWorkspace() {
                   />
                   <button
                     className="h-11 shrink-0 rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)] disabled:bg-[rgb(64,64,64)] disabled:text-[rgb(150,150,150)]"
-                    disabled={anonymousViewer || !presetName.trim()}
+                    disabled={!presetName.trim()}
                     onClick={() => void saveCurrentPreset()}
                     type="button"
                   >
@@ -2278,9 +2980,9 @@ export function GeneratorWorkspace() {
                 <span>
                   {anonymousViewer
                     ? remixFeedItemId
-                      ? "Join free to get starter coins for this remix."
+                    ? "Join free to get starter coins for this remix."
                       : "Join free to get starter coins before generating."
-                    : `Need ${estimatedCost ?? "an available price"} coins · you have ${config?.dreamcoins.balance ?? 0}.`}
+                    : `Need ${estimatedCost ?? "an available price"} coins · you have ${generationQuote?.balance ?? config?.dreamcoins.balance ?? 0}.`}
                 </span>
                 <span className="rounded-full bg-[rgb(255,48,170)] px-3 py-1 text-[11px] font-black text-white">
                   {anonymousViewer ? "Join Free" : "Get coins"}
@@ -2288,26 +2990,62 @@ export function GeneratorWorkspace() {
               </Link>
             )}
 
-            <button
-              className="mt-4 flex h-12 w-full items-center justify-center gap-2 rounded-full bg-[rgb(255,48,170)] text-[14px] font-black text-white disabled:bg-[rgb(64,64,64)] disabled:text-[rgb(150,150,150)]"
-              disabled={!canSubmit}
-              type="submit"
-            >
-              <WandSparkles className="h-4 w-4" />
-              {pending
-                ? imageEditMode
-                  ? "Queuing edit..."
-                  : "Queuing..."
-                : config && !modeAvailable
-                  ? `${mode === "image" ? "Image" : "Video"} generation unavailable`
-                : imageEditMode
-                  ? "Create edit"
-                  : characterImageMode
-                    ? estimatedCost === null
-                      ? "Generation price unavailable"
-                      : `Generate this moment · ${estimatedCost} coins`
-                    : "Generate"}
-            </button>
+            {anonymousViewer ? (
+              <Link
+                className="mt-4 flex h-12 w-full items-center justify-center gap-2 rounded-full bg-[rgb(255,48,170)] px-4 text-center text-[14px] font-black text-white"
+                data-testid="generator-insufficient-balance"
+                href={authHrefForTarget("/signup", authReturnTarget)}
+              >
+                <WandSparkles className="h-4 w-4" />
+                {remixFeedItemId
+                  ? "Join free to get starter coins for this remix."
+                  : "Join free to generate"}
+              </Link>
+            ) : (
+              <button
+                className="mt-4 flex h-12 w-full items-center justify-center gap-2 rounded-full bg-[rgb(255,48,170)] text-[14px] font-black text-white disabled:bg-[rgb(64,64,64)] disabled:text-[rgb(150,150,150)]"
+                disabled={!canSubmit}
+                type="submit"
+              >
+                <WandSparkles className="h-4 w-4" />
+                {pending
+                  ? imageEditMode
+                    ? "Queuing edit..."
+                    : "Queuing..."
+                  : config && !modeAvailable
+                    ? `${mode === "image" ? "Image" : "Video"} generation unavailable`
+                    : configError
+                      ? "Generator unavailable"
+                      : imageEditMode && !selectedEditSource
+                        ? "Select a source image"
+                        : estimatedCost === null
+                          ? generationQuoteError
+                            ? "Exact price unavailable"
+                            : "Checking exact price…"
+                          : `${imageEditMode ? "Create edit" : characterImageMode ? "Generate this moment" : "Generate"} · ${estimatedCost} coins`}
+              </button>
+            )}
+            {generationQuoteError && (
+              <div
+                aria-live="assertive"
+                className="mt-4 flex items-center justify-between gap-3 text-[13px] font-medium text-[rgb(255,184,112)]"
+                data-testid="generator-quote-error"
+                role="alert"
+              >
+                <span>{generationQuoteError}</span>
+                <button
+                  className="shrink-0 rounded-full border border-[rgb(255,184,112)]/50 px-3 py-1 text-[11px] font-black"
+                  onClick={() => {
+                    setGenerationQuoteState(null);
+                    setGenerationQuoteFailure(null);
+                    setGenerationQuoteRequestNonce((current) => current + 1);
+                  }}
+                  type="button"
+                >
+                  Retry quote
+                </button>
+              </div>
+            )}
             {configError && (
               <p
                 aria-live="assertive"
@@ -2414,10 +3152,13 @@ export function GeneratorWorkspace() {
                           {item.type === "image" && (
                             <button
                               className="min-h-10 rounded-full bg-[rgb(255,48,170)] px-3 text-[11px] font-black text-white"
+                              disabled={variationPendingIds.has(item.id)}
                               onClick={() => void createMediaVariation(item)}
                               type="button"
                             >
-                              More like this
+                              {variationPendingIds.has(item.id)
+                                ? "Checking price…"
+                                : "More like this"}
                             </button>
                           )}
                           <button
@@ -2498,26 +3239,47 @@ export function GeneratorWorkspace() {
                           className="h-9 w-fit rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)] disabled:bg-[rgb(64,64,64)] disabled:text-[rgb(150,150,150)]"
                           disabled={
                             retryingJobIds.has(job.id) ||
-                            !config ||
-                            (job.mode === "image"
-                              ? typeof config.pricing.image.baseCost !== "number"
-                              : typeof config.pricing.video.baseCost !== "number")
+                            !retryQuotes[job.id] ||
+                            (
+                              retryQuotes[job.id]!.costDreamcoins >
+                              retryQuotes[job.id]!.balance
+                            )
                           }
                           onClick={() => retryJob(job.id)}
                           type="button"
                         >
                           {retryingJobIds.has(job.id)
                             ? "Retrying…"
-                            : "Retry"}
+                            : retryQuotes[job.id]
+                              ? `Retry · ${retryQuotes[job.id]!.costDreamcoins} coins`
+                              : retryQuoteFailures[job.id]
+                                ? "Retry price unavailable"
+                                : "Checking retry price…"}
                         </button>
                         <p className="text-[12px] font-medium text-[rgb(170,170,170)]">
-                          {!config ||
-                          (job.mode === "image"
-                            ? typeof config.pricing.image.baseCost !== "number"
-                            : typeof config.pricing.video.baseCost !== "number")
-                            ? "Retry is unavailable until current pricing loads."
-                            : "Provider hiccup — your coins were refunded. Retry will reserve the current price again."}
+                          {retryQuoteFailures[job.id]
+                            ? retryQuoteFailures[job.id]
+                            : retryQuotes[job.id] &&
+                                retryQuotes[job.id]!.costDreamcoins >
+                                  retryQuotes[job.id]!.balance
+                              ? `Need ${retryQuotes[job.id]!.costDreamcoins} coins · you have ${retryQuotes[job.id]!.balance}.`
+                              : retryQuotes[job.id]
+                                ? "Provider hiccup — your coins were refunded. The exact retry price is pinned above."
+                                : "Loading the exact retry route and price…"}
                         </p>
+                        {retryQuoteFailures[job.id] && (
+                          <button
+                            className="w-fit rounded-full border border-white/20 px-3 py-1 text-[11px] font-black text-white"
+                            onClick={() =>
+                              setRetryQuoteRequestNonce(
+                                (current) => current + 1,
+                              )
+                            }
+                            type="button"
+                          >
+                            Retry price check
+                          </button>
+                        )}
                       </div>
                     )}
                     {job.status === "blocked" && (
@@ -2796,8 +3558,13 @@ export function GeneratorWorkspace() {
                                 </>
                               )}
                               <IconButton
-                                label="Create variation"
+                                label={
+                                  variationPendingIds.has(item.id)
+                                    ? "Checking variation price"
+                                    : "Create variation"
+                                }
                                 onClick={() => void createMediaVariation(item)}
+                                disabled={variationPendingIds.has(item.id)}
                               >
                                 <WandSparkles className="h-4 w-4" />
                               </IconButton>
@@ -3010,9 +3777,11 @@ function MediaPreview({
 
 function IconButton({
   children,
+  disabled = false,
   label,
   onClick,
 }: {
+  disabled?: boolean;
   label: string;
   onClick: () => void;
   children: ReactNode;
@@ -3020,7 +3789,8 @@ function IconButton({
   return (
     <button
       aria-label={label}
-      className="grid h-9 w-9 place-items-center rounded-full bg-black/70 text-white"
+      className="grid h-9 w-9 place-items-center rounded-full bg-black/70 text-white disabled:cursor-wait disabled:text-white/50"
+      disabled={disabled}
       onClick={onClick}
       title={label}
       type="button"

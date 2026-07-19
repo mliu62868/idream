@@ -1,14 +1,8 @@
 import { incrementCounter, setGauge } from "@idream/shared";
-import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
+import { MAIN_OUTBOX_TRANSPORT_QUEUES } from "@/server/events/main-outbox-transport";
 import { auditAdminCutoverInvariants } from "@/server/modules/admin-v2/reconciliation/invariants";
-
-const outboxQueues = [
-  { queue: "chat", eventTypes: Object.values(MAIN_TO_CHAT_EVENTS) },
-  { queue: "product_event", eventTypes: ["product.event.persisted.v2"] },
-  { queue: "generation_manifest", eventTypes: ["generation.manifest.accepted.v1"] },
-] as const;
 
 const activeCaseStatuses = ["new", "triaged", "in_progress", "waiting", "reopened"];
 const activeIncidentStatuses = ["detected", "triaged", "mitigating", "monitoring"];
@@ -35,7 +29,7 @@ export async function collectAdminOperationalMetrics(
     creativeOutcomes,
   ] = await Promise.all([
     auditAdminCutoverInvariants(db, now),
-    Promise.all(outboxQueues.map(async ({ queue, eventTypes }) => ({
+    Promise.all(MAIN_OUTBOX_TRANSPORT_QUEUES.map(async ({ queue, eventTypes }) => ({
       queue,
       oldest: await db.mainOutboxEvent.findFirst({
         where: {

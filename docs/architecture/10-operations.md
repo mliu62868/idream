@@ -1,6 +1,6 @@
 # 10 · 运维：环境 · 部署 · 迁移 · CI · 可观测性
 
-更新日期：2026-06-28
+更新日期：2026-07-18
 
 ## 1. 环境矩阵
 
@@ -24,14 +24,18 @@
 | `DIRECT_URL` | prod | Postgres **direct** URL（迁移用，绕过 pooler） |
 | `REDIS_URL` | all | BullMQ + 跨服务事件总线（dev=Docker redis） |
 | `BULLMQ_PREFIX` | all | 队列前缀；main↔chat 必须一致（见 06 §9） |
-| `CHAT_DATABASE_URL` / `CHAT_FS_ROOT` | all | chat 服务库连接 + 文件层根（记忆/会话日志，见 03 §3.4） |
+| `CHAT_DATABASE_URL` | all | Chat 请求连接；必须使用 `chat_service` role，只能创建 durable file intent，不能伪造投影完成 |
+| `CHAT_PROJECTOR_DATABASE_URL` | all | Chat 文件投影连接；必须使用独立 `chat_projector` role，完成文件副作用后收敛 mutation receipt |
+| `CHAT_FS_ROOT` | all | Chat 文件权威根（session trace、记忆、关系、边界；必须是 durable volume，见 03 §3.4） |
 | `BETTER_AUTH_SECRET` | all | ≥32 字节随机 |
 | `BETTER_AUTH_URL` | all | 站点 URL |
 | `INTERNAL_TOKEN` | all | 保护 `/api/internal/*` |
 | `UPSTASH_REDIS_REST_URL`/`_TOKEN` | prod | 限流（dev 可空走 DB 令牌桶） |
 | `PAYMENT_PROVIDER` + 处理器密钥 | prod | 加密处理器；支持 `btcpay`，需要 base URL、store id、Greenfield API key、webhook secret |
-| `PIPELINE_API_URL` / `PIPELINE_API_TOKEN` | prod | 内部自托管开源模型流水线（chat/image/video/voice 共用，OpenAI 兼容；dev 可空走 mock）；main 已支持 chat/voice pipeline adapter |
-| `GEN_IMAGE_PROVIDER` | all | `mock` / `pipeline`；主站和 `packages/gen` 只切 provider adapter，不直接切 MLX 或 sd.cpp |
+| `PIPELINE_API_URL` / `PIPELINE_API_TOKEN` | prod | OpenAI-compatible adapter 地址/凭据；当前 chat/voice 使用，8091 image gateway 仅为 legacy 可选路径 |
+| `GEN_IMAGE_PROVIDER` | all | `mock` / `pipeline` / `backend`；当前生产 worker 使用 `backend`，经 workflow descriptor 直连 ComfyUI |
+| `COMFYUI_API_URL` | backend | workflow-native ComfyUI API；当前本地 runtime 为 `http://127.0.0.1:8188` |
+| `GEN_WORKFLOW_DIR` | backend | workflow descriptor JSON 根；未显式设置时使用仓库 `packages/gen/workflows` |
 | `MODERATION_PROVIDER=safety-gateway` + `MODERATION_SERVICE_URL`/`MODERATION_API_KEY` | prod | 审核/CSAM 检测（**独立密钥/服务**，07 §3）；main 与 gen 复用同一 adapter |
 | `BLOB_PROVIDER` + `BLOB_*` | prod | 私有对象存储；支持 `r2` / `s3`，需要 endpoint、bucket、region、access key、secret key |
 | `AGE_VERIFICATION_PROVIDER=gocam` + `AGE_VERIFY_SERVICE_URL`/`AGE_VERIFY_API_KEY`/`AGE_VERIFY_WEBHOOK_SECRET` | prod | Go.cam 身份年龄验证；主站调内部 gateway，gateway 持有 Go.cam SDK/partner keys |
@@ -52,25 +56,18 @@ bun run --silent launch:secrets
 当前逐项审计见 [LAUNCH_READINESS_AUDIT.md](../product/LAUNCH_READINESS_AUDIT.md)；
 只有 direct launch gate 与 Chrome 真实流程都通过时，才可以判定为可公开上线运营。
 
+当前图片 worker 的真实 smoke 直接走与生产相同的 workflow-native provider seam：
+
 ```bash
-SDCPP_IMAGE_PORT=8091 \
-SDCPP_IMAGE_MODEL_ID=pornmaster-zimage-turbo \
-SDCPP_CLI=/Users/kk/bin/sd-cli \
-SDCPP_DIFFUSION_MODEL=/Users/kk/Downloads/models/pornmasterZImage_turboV35Bf16.safetensors \
-SDCPP_LLM=/Users/kk/.localai/models/z-image-components/Qwen3-4B-Instruct-2507-Q4_K_M.gguf \
-SDCPP_VAE=/Users/kk/.localai/models/z-image-components/split_files/vae/ae.safetensors \
-SDCPP_STEPS=1 \
-SDCPP_MAX_COUNT=1 \
-SDCPP_REFERENCE_MODE=auto \
-SDCPP_REFERENCE_STRENGTH=0.62 \
-SDCPP_MAX_REFERENCE_IMAGES=4 \
-SDCPP_TIMEOUT_MS=300000 \
-bun run --filter @idream/gen serve:sdcpp-image
+COMFYUI_API_URL=http://127.0.0.1:8188 \
+bun run --filter @idream/gen smoke:backend -- \
+  --model redcraft-krea2-comfyui \
+  --out /private/tmp/idream-backend-smoke.png
 ```
 
-新版 sd.cpp macOS binary 依赖 `libstable-diffusion.dylib`。本地把
-`sd-cli`、`sd-server` 和 `libstable-diffusion.dylib` 放在同一个目录
-（当前默认 `/Users/kk/bin`），否则 `sd-cli` 会在启动时因 dyld 找不到动态库退出。
+2026-07-18 证据为 `BackendImageModel → BackendRegistry → ComfyUI 0.28.0/MPS`，
+832×1024、880,175 bytes、132,649ms。仓库当前不存在 `serve:sdcpp-image` 脚本；
+旧 sd.cpp gateway/8091 命令只能作为历史架构记录，不能用于当前启动或健康判断。
 
 另开一个 shell 先跑内部 Pipeline beta 探针：
 
@@ -79,18 +76,23 @@ bun run launch:probe:pipeline
 ```
 
 该命令会加载 `packages/main/.env`、`packages/chat/.env` 和
-`packages/gen/.env`，验证 main/admin web surface、产品生成配置、chat service
-BFF 签名、`CHAT_MODEL_PROVIDER=pipeline` 的 chat model，以及
-`GEN_IMAGE_PROVIDER=pipeline` 的图片生成。voice 默认跳过，除非已配置
+`packages/gen/.env`，组合验证 web/product/chat 等能力。它的 legacy image step
+仍检查 `GEN_IMAGE_PROVIDER=pipeline` / 8091 gateway，与当前生产 worker 的
+`GEN_IMAGE_PROVIDER=backend` 是两个独立 gate。voice 默认跳过，除非已配置
 Pipeline `/audio/speech` gateway，或显式要求：
 
 ```bash
 bun run launch:probe:pipeline -- --include-voice
 ```
 
+2026-07-18 的 `launch:probe:pipeline --include-catalog` 为 `6/7`：web、product
+config、chat service、chat model、voice、catalog 通过；legacy 8091 image check
+因 gateway 未运行失败。当前 `backend` smoke 独立通过，所以不能把该失败解释为
+ComfyUI/backend failure；同样不能把组合 pipeline suite 宣称为 pass。
+
 ### Local voice runner
 
-Voice 使用独立的 OpenAI-compatible endpoint，不复用 `sdcpp-image`：
+Voice 使用独立的 OpenAI-compatible endpoint，不复用 legacy 8091 image gateway：
 
 ```bash
 PIPELINE_VOICE_API_URL=http://127.0.0.1:8000/v1 \
@@ -136,14 +138,14 @@ bun run launch:probe:voice:local
 
 Runner 选择：
 
-- **不要用 sd.cpp 跑 MOSS-TTS**。sd.cpp 只保留为图片 `sdcpp-image` gateway。
+- **不要用 sd.cpp 跑 MOSS-TTS**。历史 `sdcpp-image` gateway 已不是当前图片 runtime。
 - **生产/共享 GPU 优先 SGLang-Omni**。MOSS-TTS 官方说明 Local-Transformer-v1.5
   有 SGLang-Omni Day-0 支持，并暴露 OpenAI-compatible `/v1/audio/speech`、
   streaming 和 voice cloning。
 - **Apple Silicon 本地实验可用 MLX / mlx-audio**。这适合开发机验证音色和延迟，
   但当前产品接入仍只认 `PIPELINE_VOICE_API_URL`。
 - `PIPELINE_VOICE_API_URL` 优先级高于 `PIPELINE_API_URL`，避免 voice probe 误打到
-  `http://127.0.0.1:8091` 的图片 gateway。
+  legacy `http://127.0.0.1:8091` image gateway。
 
 之后再按需要跑真实图片探针和上线门禁：
 
@@ -170,7 +172,9 @@ send, and blocked-input handling). If `CHAT_SERVICE_PROBE_CHARACTER_ID` is unset
 the probe auto-selects a public approved adult character from the main DB; use
 `--character-id=...` when a fixed production probe character is required.
 
-等价的显式命令如下，适合临时改 gateway、模型或输出路径时使用：
+以下 8091 显式命令只用于需要审计旧 OpenAI-compatible image adapter 的场景；
+它要求另行提供外部 gateway，仓库没有可启动它的 `serve:sdcpp-image` 脚本。当前
+workflow-native backend 的健康检查使用本节顶部 `smoke:backend` 命令。
 
 ```bash
 mkdir -p .tmp
@@ -236,11 +240,15 @@ bun run check:launch:direct -- --launch-env-file .tmp/production-launch.env
 chat/voice/moderation/payment/blob/age-verification provider，且必须配置
 `CHAT_SERVICE_URL` 与 `CHAT_BFF_SIGNING_SECRET`。`check:launch` 会进一步
 检查 Postgres、Redis、Sentry、对象存储、支付 webhook、审核、年龄验证和图片
-Pipeline 配置，并要求 `PIPELINE_IMAGE_PROBE_REPORT` 指向最近一次真实图片
-pipeline probe 报告。报告必须证明 provider 为 `pipeline`、模型和
+Pipeline 配置。当前 `check:launch` 仍保留 legacy
+`PIPELINE_IMAGE_PROBE_REPORT` 合同：报告必须证明 provider 为 `pipeline`、模型和
 `PIPELINE_API_URL` 匹配、finalizer payload 为 `generation.completed`，且至少
-产出 1 个 asset；否则 `check:launch` 失败。这样配置完整但模型服务超时的环境
-不能误报为可上线。门禁还要求 `WEB_SURFACE_PROBE_REPORT` 指向最近一次 web surface
+产出 1 个 asset；否则 `check:launch` 失败。该门禁尚未随 controlled-beta 的当前
+`backend -> ComfyUI :8188` runtime 一起切换；因此 2026-07-18 未运行 legacy
+`:8091` gateway 时组合探针为 6/7，不能把这一项写成 backend 健康失败，也不能把
+整套 launch gate 写成已通过。当前 backend 能力由 `smoke:backend` 的真实
+workflow-native 出图独立证明；公开上线前仍需提供合格的 pipeline 报告，或在代码审查后
+显式更新 launch 合同。门禁还要求 `WEB_SURFACE_PROBE_REPORT` 指向最近一次 web surface
 probe 报告，证明 main-web 首页和 `/generate` 返回健康 HTML、未过 age gate 的公开 API
 按 403 fail-closed、admin-web 未登录时返回 protected state，且 admin JSON API 未登录时按
 401 fail-closed；否则服务进程在线但用户入口或管理入口不可用时不能误报为可上线。门禁还要求
@@ -291,23 +299,25 @@ session，gateway 负责 Go.cam SDK/partnerId/cipherKey/HMAC key；回调到
 `/api/v1/age-verification/webhooks/gocam` 时必须带
 `x-age-verify-signature`、`x-gocam-signature` 或 `x-signature` HMAC 签名。
 
-图片 worker 在 production 下拒绝 `GEN_IMAGE_PROVIDER=mock`；使用 `pipeline`
-时必须配置 `PIPELINE_API_URL`。本地 ComfyUI/Z-Image、MLX 或 sd.cpp 都应挂在
-内部 Pipeline API 后面，产品服务只调用 pipeline adapter。`probe:image` 必须返回
-`ok: true` 且 finalizer payload 为 `generation.completed`，并把 `--report`
-写出的 JSON 提供给 `check:launch` 后，才能继续跑主站 E2E。
+图片 worker 在 production 下拒绝 `GEN_IMAGE_PROVIDER=mock`。当前生产配置使用
+`GEN_IMAGE_PROVIDER=backend`：`BackendImageModel` 依据 workflow descriptor 通过
+`BackendRegistry` 选择 ComfyUI/sd.cpp/Draw Things backend；当前
+`redcraft-krea2-comfyui` 直连 `COMFYUI_API_URL=http://127.0.0.1:8188`。
+只有显式选择 legacy `pipeline` adapter 时才要求 `PIPELINE_API_URL`。
+`smoke:backend` 必须返回真实可解码图片；worker/finalizer 闭环另需证明
+`generation.completed` 与 blob 写入。
 `pornmasterZImage_turboV35Bf16.safetensors` 不是可直接传给 LocalAI 的完整
 model id；它是 Z-Image diffusion model，需要匹配的 Qwen3 4B text encoder
-和 Flux/Z-Image VAE。`serve:sdcpp-image` 用这些组件包装成
-OpenAI-compatible `/images/generations` / `/v1/images/generations` 接口，
-产品层仍只配置 `PIPELINE_API_URL` 与稳定 alias（例如
-`pornmaster-zimage-turbo`）。
+和 Flux/Z-Image VAE。历史 `serve:sdcpp-image` 曾把这些组件包装成
+OpenAI-compatible `/images/generations` 接口，但该脚本现已不存在；这段仅解释
+legacy profile 数据，不能作为当前运行命令。当前 Redcraft 走 workflow-native
+ComfyUI descriptor。
 后台 `GenerationModelProfile.runnerConfig` 是 sdcpp 运行态配置入口：
 管理员可登记 `.safetensors` source、`.gguf` converted target、LLM/VAE 组件、
 `conversion.enabled` 和 LoRA 栈。main 创建 job 时不会把这些本地路径写入用户可见
-`generation_jobs.controls`；只在内部队列 payload 中注入 `controls.sdcpp`，由
-`serve:sdcpp-image` 读取。gateway 在 `SDCPP_ALLOW_REQUEST_CONFIG=true`（默认）时按
-请求 profile 覆盖 env 单模型配置；没有该块时继续使用 env fallback。
+`generation_jobs.controls`；历史 sdcpp adapter 会在内部队列 payload 中消费
+`controls.sdcpp`。当前 Redcraft descriptor 由 backend registry 消费语义化 slots，
+不依赖已经移除的 `serve:sdcpp-image` gateway。
 同一个 `runnerConfig` 也声明角色一致性能力，队列入口会用它过滤 reference payload：
 
 ```json
@@ -327,8 +337,8 @@ OpenAI-compatible `/images/generations` / `/v1/images/generations` 接口，
 `initImage`，但不默认支持 identity `referenceImages`；需要 identity reference 的 runner
 必须显式声明并通过 smoke。所有 runner 都保留 text+seed 路径。`lora` 当前只是未来
 adapter 消费开关。
-角色一致性 reference 图从 `ImageGeneratePayload.referenceImages` 进入 pipeline：
-gateway 在 `SDCPP_REFERENCE_MODE=auto` 下把 Gallery `More like this` 的 source image
+历史 sdcpp 角色一致性 reference 图从 `ImageGeneratePayload.referenceImages` 进入
+legacy pipeline gateway：在 `SDCPP_REFERENCE_MODE=auto` 下把 Gallery `More like this` 的 source image
 映射为 `--init-img` + `--strength`；只有明确支持 reference 的 profile 才会收到
 identity anchor/reference，并映射为 `sd-cli --ref-image`。可用
 `SDCPP_REFERENCE_MODE=disabled|ref_image|init_img` 收紧或关闭该行为；
@@ -361,8 +371,9 @@ bun run launch:probe:character-consistency -- \
 ```
 
 每次运行会输出图片样本、`manifest.json` 和 `review.html`。`--provider mock` 只验证
-流程产物和 reference transport；真实质量复核要改用 `--provider pipeline`，并按需传
-`--pipeline-url http://127.0.0.1:8091`、`--model ...`。通过标准仍是人工确认至少 80%
+流程产物和 reference transport；当前真实质量复核使用 `--provider backend` 与
+`--model redcraft-krea2-comfyui`。`--provider pipeline --pipeline-url
+http://127.0.0.1:8091` 仅保留为 legacy adapter 审计。通过标准仍是人工确认至少 80%
 样本“像同一角色”；mock provider 不能作为质量证据。
 Admin 的 `Generation Config` 页面不再作为模型资产管理入口。产品面只展示内置
 profile、draft readiness、test job、publish/rollback 和 prompt recipe；模型文件路径、
@@ -386,11 +397,11 @@ Krea2 文件进入内置候选前，工程侧必须先固定 runner 模板与组
 方向的默认候选；`qwen_image_vae` 已在本地探针中被证明会产出纯白图，不应作为
 Krea2 sd.cpp 默认组件。
 
-2026-06-30 本地 sd.cpp 模板验证结果：
+2026-06-30 本地 sd.cpp 模板历史验证结果：
 
-- `pornmaster-zimage-turbo` 是当前已跑通的 active/default sd.cpp 图片链路；主站普通生图
+- `pornmaster-zimage-turbo` 是当时已跑通的 active/default sd.cpp 图片链路；主站普通生图
   和 admin test-job 已验证 512x640 PNG，`cfgScale=1` 保持为该链路默认值。
-- Redcraft Krea2 候选：当前是 ComfyUI/Krea2 fp8 checkpoint candidate，不是 sd.cpp
+- Redcraft Krea2 候选：当时是 ComfyUI/Krea2 fp8 checkpoint candidate，不是 sd.cpp
   text template。历史 sd.cpp 探针按 Krea 官方近似参数、按 ComfyUI 元数据参数、直接跑
   safetensors、跑本地 gguf，均生成纯白 PNG；官方 sd.cpp Krea2 组件
   `Qwen3VL GGUF + Wan2.1 VAE` 需要
@@ -408,12 +419,13 @@ Krea2 sd.cpp 默认组件。
   ComfyUI FP8 checkpoint，而不是可直接发布的 sd.cpp 内置模板。2026-06-30 已用
   `packages/gen/workflows/redcraft-krea2-comfyui-text.json` 的拆分节点 workflow
   在本机 ComfyUI `--cpu` 路径跑通 256x384、2 steps smoke，输出 PNG 通过
-  sanity guard；随后通过 `serve:comfyui-image` OpenAI-compatible gateway 和
+  sanity guard；随后通过当时存在、现已移除的 `serve:comfyui-image`
+  OpenAI-compatible gateway 和
   `launch:probe:redcraft-image:local` 走完 gen `probe:image`/blob 写入链路。
-  `launch:probe:redcraft-consistency:local` 现在默认锁定角色 seed，已生成 20 张样本并
+  `launch:probe:redcraft-consistency:local` 当时默认锁定角色 seed，已生成 20 张样本并
   人工评审为 17/20 同一角色，`consistencyRate=0.85`。seed 中仍保留 draft profile，
-  `enabled=false`、`rolloutPercent=0`；这表示内置候选已通过发布门槛，但在部署托管
-  ComfyUI gateway 前不自动导流。
+  `enabled=false`、`rolloutPercent=0`；这是 2026-06-30 历史 candidate 状态，不描述
+  2026-07-18 的 `redcraft_krea2_default`。
 - DarkBeast reference 候选：本地 `darkBeastKrea2_dbkleinv2BFS.safetensors`
   是 Civitai `modelVersionId=2740209`，AutoV2 `B20B6F2744`，baseModel 为
   `Flux.2 Klein 9B`；同一 Dark Beast 集合另有 Krea 2 version `3078453`，但该文件
@@ -428,79 +440,58 @@ Krea2 sd.cpp 默认组件。
 结论：可以保留“内置模板”产品策略，但只能发布已通过真实图像 smoke 的模板；sd.cpp
 内置模板和未来 ComfyUI/external 模板都通过 `GenerationModelProfile.runner` 与
 `runnerConfig.capabilities` 暴露能力。
-`serve:sdcpp-image` 在 `sd-cli` 退出码为 0 后还会解析 PNG 像素，拒绝纯白、纯黑或
-近乎纯色的退化输出；gen worker 在写入 blob 前也会对 provider 返回的 PNG bytes
-执行同样检查。这类任务应视作模型/profile 失败，而不是成功出图。
+历史 sdcpp adapter 会在 `sd-cli` 退出码为 0 后解析 PNG 像素，拒绝纯白、纯黑或
+近乎纯色的退化输出；当前 workflow-native backend 与 gen worker 同样在接受/写入
+blob 前执行图片 sanity。这类任务应视作模型/profile 失败，而不是成功出图。
 
 内置模型状态用独立 probe 固化，避免依赖人工会话记忆：
 
 ```bash
-# 日常门禁：确认 Pornmaster active/default 可用，Redcraft 可发布但默认不导流。
-# redcraft_krea2_text 是历史兼容 candidate key，当前期望 runner 是 comfyui。
+# 日常门禁：确认当前 Redcraft Krea2 default 可用，同时审计隔离的旧候选。
+# redcraft_krea2_text 是历史兼容 candidate key，必须保持 draft/disabled/0%。
 bun run launch:probe:generation-model-candidates -- \
-  --candidate pornmaster_zimage_default,redcraft_krea2_text \
+  --candidate redcraft_krea2_default,redcraft_krea2_text \
   --report .tmp/launch-generation-model-candidates.json
 
-# 验收当前默认内置模板：Pornmaster 必须 active、路径存在且 dry-run 通过。
+# 验收当前默认模板：必须是 canonical Redcraft Krea2 ComfyUI workflow，
+# active/enabled/100%，模型与 descriptor 文件存在且 readyForPublish=true。
 bun run launch:probe:generation-model-candidates -- \
-  --candidate pornmaster_zimage_default \
+  --candidate redcraft_krea2_default \
   --require-ready \
-  --report .tmp/launch-pornmaster-zimage-ready.json
+  --report .tmp/launch-redcraft-krea2-default-ready.json
 
-# 验收 Redcraft ComfyUI/Krea2 checkpoint candidate 能否发布：必须 ready，否则返回非 0。
-# 当前不是 sd.cpp text template；发布门槛包括非退化图、20 张一致性评审与 runner policy。
+# 审计旧 Redcraft candidate 的隔离状态。它不是当前默认模板，且预期不 ready；
+# 不要对这个命令加 --require-ready。
 bun run launch:probe:generation-model-candidates -- \
   --candidate redcraft_krea2_text \
-  --require-ready \
-  --report .tmp/launch-redcraft-krea2-ready.json
+  --report .tmp/launch-redcraft-krea2-legacy-candidate.json
 
-# 只验证 Redcraft 当前 ComfyUI CPU workflow 能否出非退化图：
-# 需要先启动 ComfyUI，并加载 packages/gen/workflows/comfy-extra-models-idream.yaml 指向 ComfyUI-Shared。
-cd "/Users/kk/ComfyUI-Installs/idream (1)/ComfyUI"
-".venv/bin/python" main.py \
-  --listen 127.0.0.1 \
-  --port 8191 \
-  --extra-model-paths-config /Users/kk/code/idream/packages/gen/workflows/comfy-extra-models-idream.yaml \
-  --cpu \
-  --force-fp32 \
-  --fp32-vae \
-  --fp32-text-enc \
-  --preview-method none \
-  --disable-auto-launch
+# 当前 runtime：使用已运行的 ComfyUI 8188，走与 gen-image 相同的 backend seam。
+COMFYUI_API_URL=http://127.0.0.1:8188 \
+bun run --filter @idream/gen smoke:backend -- \
+  --model redcraft-krea2-comfyui \
+  --out /private/tmp/idream-backend-smoke.png
 
-cd /Users/kk/code/idream
-bun run launch:probe:redcraft-comfyui -- \
-  --report .tmp/launch-redcraft-comfyui-cpu-smoke.json \
-  --output .tmp/redcraft-comfyui-cpu-smoke.png
+# 需要把 descriptors 同步到 ComfyUI UI 时：
+COMFYUI_API_URL=http://127.0.0.1:8188 \
+bun run --filter @idream/gen sync:comfyui-workflows
 
-# 验证 Redcraft 能否通过统一 gen image pipeline 写入 blob：
-# 保持上面的 ComfyUI 8191 运行，另起本地 OpenAI-compatible image gateway。
-COMFYUI_API_URL=http://127.0.0.1:8191 \
-COMFYUI_IMAGE_PORT=8092 \
-bun run --filter @idream/gen serve:comfyui-image
-
-# 再运行：
-bun run launch:probe:redcraft-image:local -- \
-  --report .tmp/launch-redcraft-image-probe.json \
-  --count 1
-
-# 生成 Redcraft 的 20 张角色一致性 review 包；默认 seedMode=locked，当前已生成在 .tmp/redcraft-consistency-review。
+# 生成 Redcraft 的 20 张角色一致性 review 包：
 bun run launch:probe:redcraft-consistency:local -- \
+  --provider backend \
+  --model redcraft-krea2-comfyui \
   --output .tmp/redcraft-consistency-review \
   --samples 20
 
 ```
 
-当前输出应显示 Pornmaster `readyForPublish=true`，Redcraft `runner=comfyui`、
-`readyForPublish=true`、`verificationStatus=manual_passed`、`consistencyRate=0.85`；
-同时 Redcraft 仍保持 `status=draft`、`enabled=false`、`rolloutPercent=0`，表示候选
-已验证但未导流。
-`launch:probe:redcraft-image:local` 应完成一个 `provider=pipeline` 的 generation job，
-并在 `.tmp/probe-blob/` 下写入 PNG；这只证明候选 runner 接入了统一生图链路，不替代
-20 张一致性样本门禁。`launch:probe:redcraft-consistency:local` 会走同一个 Redcraft
-gateway 生成 `manifest.json`、20 张样本和 `review.html`；当前样本包在
+当前 `redcraft_krea2_default` candidate probe 必须为 ready；真实
+workflow-native backend smoke 已通过，结果为 ComfyUI 0.28.0/MPS、832×1024、
+880,175 bytes、132,649ms。它直接验证生产 `BackendImageModel` seam，不依赖 8091
+legacy gateway。`launch:probe:redcraft-consistency:local` 可走同一个 Redcraft
+backend 生成 `manifest.json`、20 张样本和 `review.html`；历史样本包在
 `.tmp/redcraft-consistency-review`，并已补 `manual-review.json` 与 `contact-sheet.jpg`。
-本次人工 review 写回 `sampleCount=20`、`consistencyPassCount=17`、`consistencyRate=0.85`、
+2026-06-30 人工 review 写回 `sampleCount=20`、`consistencyPassCount=17`、`consistencyRate=0.85`、
 `seedMode=locked`。
 probe 还会只读 safetensors header 并输出 `assetInspection`。Pornmaster 当前应显示
 `suggestedRuntime=sd_cpp_external_components`；Redcraft 当前应显示
@@ -553,6 +544,12 @@ export default defineConfig({
 | `gen-image` | `packages/gen` | n/a | 异步图片生成 worker（当前 2 实例） |
 | `gen-video` | `packages/gen` | n/a | V1.1 延后；`video_gen=false` 时不在 PM2 拓扑中启动 |
 | `gen-finalizer` / `main-event-consumer` | `packages/main` | n/a | 主站侧权威写回和事件消费 |
+| `admin-command-worker` | `packages/main` | n/a | Admin durable command 执行 |
+
+2026-07-18 最终备份恢复后的 runtime 是 7 个 logical apps / 8 个 processes online：
+`main-web`、`admin-web`、`chat`、`gen-image`（2 processes）、`gen-finalizer`、
+`main-event-consumer`、`admin-command-worker`。`/`、`/explore`、`/admin/today`
+为 200，Chat `/healthz` 为 `ok`；Redis operational queues pending/failed 均为 0。
 
 运行命令：
 
@@ -606,14 +603,18 @@ Next.js 服务使用 `output: "standalone"`，构建后会把 `.next/static` 和
 
 **破坏性变更**（删列/改类型）：分两步（先兼容加列/双写 → 迁移数据 → 再删旧），避免停机。
 
-> `db/sql/` 是跨服务库边界的 SSoT：chat 服务以 `chat_service` 角色连接、只读 main 的 core/billing/compliance 视图、读写 `chat.*` 表（见 03 §3.4）。这些 DDL 不归 Prisma `db push` 管。
+> `db/sql/` 是跨服务库边界的 SSoT：Chat 请求路径以 `chat_service` 连接，只读 Main 的 core/billing/compliance 视图并写请求事务/文件 intent；文件投影器以独立 `chat_projector` 连接，只有实际完成 `CHAT_FS_ROOT` 副作用后才能推进 mutation receipt。两种角色均由 grant/trigger 强制，不能用一个全权运行时连接替代。这些 DDL 不归 Prisma `db push` 管。
 
 ## 7. 备份与容灾
 
-- Neon/Supabase 自带 PITR/快照；设保留期。
-- 对象存储（R2）跨区/版本化。
-- ledger/审核/CSAM 证据等审计数据**长期保留**（07 §6/§3）。
-- 定期演练恢复。
+- 一份可恢复的 iDream checkpoint 是同一静默边界下的**一致性集合**：Main PostgreSQL、`CHAT_FS_ROOT` 与媒体 Blob。只备份数据库不能称为完整 current-state backup，因为 Chat 的 session trace / memory / relationship 权威在文件层，local/mock Blob 的媒体字节也不在 PostgreSQL。
+- 备份前先停止所有写入进程并确认 Main/Chat outbox、inbox、生成队列及 `chat_file_mutations` pending 均已清空；同时确认 Main/Admin/Chat 端口无 listener。不能在请求角色仍能新增 intent、projector 仍在改文件或 worker 仍在写 Blob 时分别抓取三个副本。
+- PostgreSQL 使用与目标服务兼容的 `pg_dump` / `pg_restore`；`CHAT_FS_ROOT` 和本地 `BLOB_ROOT` 分别生成归档与逐文件 manifest/checksum。使用 R2/S3 时启用版本化/跨区复制，并把精确 object-version inventory 与 DB/Chat FS checkpoint 绑定。
+- 每个 checkpoint 必须写明数据库名/schema migration count、Chat FS root、Blob provider/root、静默时间、artifact id 与 SHA-256；不得覆盖已有备份。
+- 恢复演练必须进入隔离的 disposable DB/Chat FS/Blob root，校验全部 checksum、目录 manifest、migration status、业务计数和无悬空引用后再删除临时目标。只证明 `pg_restore` 成功不等于 Chat 文件和媒体可恢复。
+- 2026-07-18 controlled-beta 最终 checkpoint 已按上述合同完成。Artifact base 为 `/Users/kk/code/idream/local-backups/idream-main-final-20260718-60/idream-main-final-20260718-60`；bundle 目录 mode `0700`、23 个文件均为 `0600`、总大小 171M，bundle SHA checks 全部通过。源端为 migrations `60`（latest `20260718012000`）、20 users、characters / Releases / Servings / Qualifications / MediaAssets 各 16、234 base tables / 7 views / 1 sequence；Main outbox `3,936`（pending/failed `0`）、inbound `5,738`（received `0`）。Chat 为 294 sessions / 818 messages / 4 attachments、outbox `1,552` / inbox `488`（pending/failed `0`）、file mutations `5`（pending `0`）；Chat FS 为 429 files / 550,987 bytes，Blob 为 13,634 files / 162,163,688 bytes，Main/Gen effective mock root 一致。
+- PostgreSQL client `18.3` 对 server `16.14` 的隔离恢复中，source/restore counts、schema、logical DB、Chat FS 与 Blob 比较全部为 `0` difference（equal），disposable restore DB 清理后 remaining `0`。恢复后 PM2 7 logical apps / 8 processes 全部 online，Main/Admin HTTP 200、Chat health `ok`。演练过程捕获并修复了 zero-dim ACL、`psql -c` substitution、null `datacl` marker 与 `bsdtar` umask mode 四类 fail-closed 缺陷；最终 artifact 不含这些失败状态。本次自动证明是 same-cluster throwaway restore；bundle 提供 role/database authority manifests 与 fresh-cluster runbook，但角色密码和外部 secrets 仍须由 secret manager 注入，不能把本地证明扩大为无前置条件的 fresh-cluster/public-production 恢复认证。
+- ledger、审核与其他审计证据按既定保留策略长期保存；定期执行上述三层恢复演练。
 
 ## 8. 可观测性
 

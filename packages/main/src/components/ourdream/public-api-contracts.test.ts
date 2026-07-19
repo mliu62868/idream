@@ -17,6 +17,8 @@ import {
   parseFeedbackItemsResponse,
   parseFollowMutationResponse,
   parseGenerationConfigResponse,
+  parseGenerationQuoteResponse,
+  parseGenerationRetryQuoteResponse,
   parseGenerationJobsResponse,
   parseChatSessionDetailResponse,
   parseLibraryResponse,
@@ -720,6 +722,80 @@ describe("public API runtime contracts", () => {
         },
       }),
     ).toThrow(PublicApiContractError);
+  });
+
+  it("requires one exact server price for every count in a generation quote", () => {
+    const payload = {
+      ok: true,
+      data: {
+        quote: {
+          mode: "image",
+          profileId: "character-image-multi-identity",
+          profileVersion: 1,
+          routeFingerprint: "a".repeat(64),
+          pricing: {
+            ruleId: "image-price-v1",
+            ruleKey: "image-default",
+            version: 1,
+            effectiveFrom: null,
+            fingerprint: "b".repeat(64),
+          },
+          orientations: ["4:5", "16:9"],
+          defaultOrientation: "4:5",
+          maxCount: 1,
+          costs: [{ outputCount: 1, costDreamcoins: 7 }],
+          balance: 5,
+        },
+      },
+    };
+
+    expect(parseGenerationQuoteResponse(payload).quote).toMatchObject({
+      profileId: "character-image-multi-identity",
+      maxCount: 1,
+      balance: 5,
+    });
+    expect(() =>
+      parseGenerationQuoteResponse({
+        ...payload,
+        data: {
+          quote: {
+            ...payload.data.quote,
+            maxCount: 2,
+          },
+        },
+      }),
+    ).toThrow(PublicApiContractError);
+  });
+
+  it("pins the exact failed job, route, and price in a retry quote", () => {
+    expect(
+      parseGenerationRetryQuoteResponse({
+        ok: true,
+        data: {
+          quote: {
+            mode: "image",
+            generationJobId: "failed-job-1",
+            profileId: "character-image-multi-identity",
+            profileVersion: 2,
+            routeFingerprint: "a".repeat(64),
+            pricing: {
+              ruleId: "image-price-v1",
+              ruleKey: "image-default",
+              version: 1,
+              effectiveFrom: null,
+              fingerprint: "b".repeat(64),
+            },
+            outputCount: 1,
+            costDreamcoins: 8,
+            balance: 20,
+          },
+        },
+      }).quote,
+    ).toMatchObject({
+      generationJobId: "failed-job-1",
+      costDreamcoins: 8,
+      balance: 20,
+    });
   });
 
   it("rejects malformed generation, profile, and chat collection members", () => {

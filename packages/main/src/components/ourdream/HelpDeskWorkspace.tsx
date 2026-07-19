@@ -34,6 +34,7 @@ import {
 } from "@/lib/public-api-contracts";
 import { useAgeGateAccess } from "./AgeGateBoundary";
 import { authHrefForTarget } from "./authRedirect";
+import { fetchViewerScope } from "./viewer-auth";
 
 type SupportPayload = {
   ok?: boolean;
@@ -237,6 +238,14 @@ export function HelpDeskWorkspace() {
     },
     [],
   );
+
+  const resolveViewerScope = useCallback(async () => {
+    if (viewerScopeRef.current) return viewerScopeRef.current;
+    const scope = await fetchViewerScope();
+    viewerScopeRef.current = scope;
+    setViewerScope(scope);
+    return scope;
+  }, []);
 
   const canSubmit = useMemo(
     () => subject.trim().length >= 3 && description.trim().length >= 10 && !submitting,
@@ -481,7 +490,7 @@ export function HelpDeskWorkspace() {
       const payload = (await response.json()) as SupportPayload;
       if (!response.ok || payload.ok === false) {
         if (response.status === 401) {
-          const scope = viewerScopeRef.current;
+          const scope = await resolveViewerScope().catch(() => null);
           if (!scope) {
             setStatus("Viewer authority could not be confirmed. Refresh and try again.");
             return;
@@ -530,7 +539,7 @@ export function HelpDeskWorkspace() {
       const raw = await response.json();
       if (!response.ok) {
         if (response.status === 401) {
-          const scope = viewerScopeRef.current;
+          const scope = await resolveViewerScope().catch(() => null);
           if (!scope) {
             setFeedbackStatus("Viewer authority could not be confirmed. Refresh and try again.");
             return;
@@ -572,7 +581,7 @@ export function HelpDeskWorkspace() {
       const raw = await response.json();
       if (!response.ok) {
         if (response.status === 401) {
-          const scope = viewerScopeRef.current;
+          const scope = await resolveViewerScope().catch(() => null);
           const vote = {
             itemId: item.id,
             action: item.userVoted ? "unvote" : "vote",
@@ -625,7 +634,7 @@ export function HelpDeskWorkspace() {
       const payload = (await response.json()) as AppealPayload;
       if (!response.ok || payload.ok === false || !payload.data?.appeal) {
         if (response.status === 401) {
-          const scope = viewerScopeRef.current;
+          const scope = await resolveViewerScope().catch(() => null);
           if (!scope) {
             setAppealStatus("Viewer authority could not be confirmed. Refresh and try again.");
             return;

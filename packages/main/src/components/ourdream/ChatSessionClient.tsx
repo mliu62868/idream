@@ -31,6 +31,10 @@ import { MemoryPanel } from "./chat/MemoryPanel";
 import { MessageActions } from "./chat/MessageActions";
 import { authHrefForTarget } from "./authRedirect";
 import { LegacyTestAssetBadge } from "./LegacyTestAssetBadge";
+import {
+  GenerationRequestError,
+  requestMediaVariationWithExactQuote,
+} from "@/lib/generation-write-client";
 
 type ChatLoadState = "loading" | "ready" | "signed-out" | "error";
 
@@ -75,11 +79,15 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   const [editingContent, setEditingContent] = useState("");
   const [editingPending, setEditingPending] = useState(false);
   const [deleteConfirmMessageId, setDeleteConfirmMessageId] = useState<string | null>(null);
+  const [variationPendingMediaId, setVariationPendingMediaId] =
+    useState<string | null>(null);
   const sendIntentRef = useRef<{
     sessionId: string;
     content: string;
     idempotencyKey: string;
   } | null>(null);
+  const variationIdempotencyKeysRef =
+    useRef<Map<string, string>>(new Map());
   const streamSources = useRef<Map<string, EventSource>>(new Map());
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
@@ -113,6 +121,8 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
       audioRef.current?.pause();
       audioRef.current = null;
       sessionMutationEpochRef.current += 1;
+      variationIdempotencyKeysRef.current.clear();
+      setVariationPendingMediaId(null);
       setTitle("Chat");
       setMessages([]);
       setLoadState("loading");
@@ -587,21 +597,28 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   }
 
   async function createAttachmentVariation(mediaAssetId: string) {
-    setStatus(null);
+    if (variationPendingMediaId === mediaAssetId) return;
+    setVariationPendingMediaId(mediaAssetId);
+    setStatus("Checking the exact variation price…");
     setDeleteConfirmMessageId(null);
     try {
-      const response = await fetch(`/api/v1/media/${encodeURIComponent(mediaAssetId)}/variation`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ outputCount: 1, consistencyMode: "balanced" }),
+      await requestMediaVariationWithExactQuote({
+        mediaId: mediaAssetId,
+        outputCount: 1,
+        consistencyMode: "balanced",
+        idempotencyKeys: variationIdempotencyKeysRef.current,
       });
-      if (!response.ok) {
-        setStatus("Couldn't queue variation.");
-        return;
-      }
       setStatus("Variation queued. It will appear in Generate and Gallery.");
-    } catch {
-      setStatus("Couldn't queue variation.");
+    } catch (error) {
+      setStatus(
+        error instanceof GenerationRequestError
+          ? error.message
+          : "Couldn't queue variation. Check your connection and try again.",
+      );
+    } finally {
+      setVariationPendingMediaId((current) =>
+        current === mediaAssetId ? null : current,
+      );
     }
   }
 
@@ -860,6 +877,10 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
                                   ? () => createAttachmentVariation(attachment.mediaAssetId as string)
                                   : undefined
                               }
+                              moreLikeThisPending={
+                                attachment.mediaAssetId ===
+                                variationPendingMediaId
+                              }
                             />
                           ))}
                         </div>
@@ -1104,6 +1125,7 @@ function ChatImageAttachmentCard({
   onIdentityMatch,
   onIdentityMismatch,
   onMoreLikeThis,
+  moreLikeThisPending,
 }: Readonly<{
   attachment: ChatAttachment;
   canAddToIdentity: boolean;
@@ -1113,6 +1135,7 @@ function ChatImageAttachmentCard({
   onIdentityMatch?: () => void;
   onIdentityMismatch?: () => void;
   onMoreLikeThis?: () => void;
+  moreLikeThisPending: boolean;
 }>) {
   const source = attachment.thumbnailUrl ?? attachment.mediaUrl;
   const previewKey = `${attachment.id}:${source ?? ""}`;
@@ -1146,6 +1169,7 @@ function ChatImageAttachmentCard({
             onIdentityMatch={onIdentityMatch}
             onIdentityMismatch={onIdentityMismatch}
             onMoreLikeThis={onMoreLikeThis}
+            moreLikeThisPending={moreLikeThisPending}
           />
         ) : null}
       </figure>
@@ -1209,6 +1233,7 @@ function ChatImageAttachmentCard({
           onIdentityMatch={onIdentityMatch}
           onIdentityMismatch={onIdentityMismatch}
           onMoreLikeThis={onMoreLikeThis}
+          moreLikeThisPending={moreLikeThisPending}
         />
       ) : null}
     </div>
@@ -1222,6 +1247,7 @@ function ChatImageAttachmentActions({
   onIdentityMatch,
   onIdentityMismatch,
   onMoreLikeThis,
+  moreLikeThisPending,
 }: Readonly<{
   canAddToIdentity: boolean;
   characterId: string | null;
@@ -1229,6 +1255,7 @@ function ChatImageAttachmentActions({
   onIdentityMatch?: () => void;
   onIdentityMismatch?: () => void;
   onMoreLikeThis?: () => void;
+  moreLikeThisPending: boolean;
 }>) {
   return (
     <div className="grid gap-2 border-t border-white/10 p-2">
@@ -1253,11 +1280,18 @@ function ChatImageAttachmentActions({
       <div className={`grid gap-2 ${canAddToIdentity ? "grid-cols-2" : "grid-cols-1"}`}>
         <button
           className="inline-flex h-8 items-center justify-center gap-1.5 rounded-full bg-white px-3 text-[11px] font-black text-[rgb(13,13,13)]"
+          disabled={moreLikeThisPending}
           onClick={onMoreLikeThis}
           type="button"
         >
-          <WandSparkles className="h-3.5 w-3.5" />
-          More like this
+          {moreLikeThisPending ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <WandSparkles className="h-3.5 w-3.5" />
+          )}
+          {moreLikeThisPending
+            ? "Checking price…"
+            : "More like this"}
         </button>
         {canAddToIdentity && (
           <button

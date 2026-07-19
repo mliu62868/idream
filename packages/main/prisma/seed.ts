@@ -17,6 +17,7 @@ const prisma = new PrismaClient(createPrismaClientOptions());
 const SYSTEM_USER_ID = "seed-system-creator";
 const ADMIN_USER_ID = "seed-admin-user";
 const DEV_USER_ID = "seed-dev-user";
+const CHAT_PROBE_USER_ID = "seed-chat-probe-user";
 const SUPPORT_USER_ID = "seed-support-user";
 const OPS_USER_ID = "seed-ops-user";
 const ANALYST_USER_ID = "seed-analyst-user";
@@ -26,6 +27,8 @@ const KREA2_VAE_PATH = "/Users/kk/.localai/models/krea2/vae/wan_2.1_vae.safetens
 const REDCRAFT_KREA2_MODEL_PATH =
   "/Users/kk/Downloads/models/redcraftKREA2RedMix_krea2Edition.safetensors";
 const REDCRAFT_COMFYUI_RUNTIME_PATH = "/Users/kk/ComfyUI-Installs/idream (1)/ComfyUI";
+const REDCRAFT_CANONICAL_WORKFLOW_PATH =
+  "/Users/kk/code/idream/packages/gen/workflows/redcraft-krea2-txt2img.json";
 const REDCRAFT_COMFYUI_WORKFLOW_PATH =
   "/Users/kk/code/idream/packages/gen/workflows/redcraft-krea2-comfyui-text.json";
 const REDCRAFT_COMFYUI_TEXT_ENCODER_PATH =
@@ -141,19 +144,39 @@ async function seedUsers() {
     },
   });
 
-  // The launch chat-service probe uses DEV_USER_ID for a real conversation.
+  await prisma.user.upsert({
+    where: { id: CHAT_PROBE_USER_ID },
+    update: {
+      role: "user",
+      status: "active",
+      dataClass: "audit",
+      deletedAt: null,
+    },
+    create: {
+      id: CHAT_PROBE_USER_ID,
+      email: "chat-probe@idream.local",
+      emailVerified: true,
+      displayName: "Chat Launch Probe",
+      role: "user",
+      status: "active",
+      dataClass: "audit",
+    },
+  });
+
+  // The launch chat-service probe has a dedicated audit actor. It is never a
+  // dev-login account and never shares a customer/developer conversation.
   // Keep its eligibility deterministic so a fresh seed can exercise the full
   // create → send → stream → read path instead of stopping at the age gate.
   await prisma.ageGateAcceptance.upsert({
-    where: { id: "seed-dev-user-age-gate" },
+    where: { id: "seed-chat-probe-user-age-gate" },
     update: {
-      userId: DEV_USER_ID,
+      userId: CHAT_PROBE_USER_ID,
       sourcePath: "/launch-probe",
       policyVersion: "seed-v1",
     },
     create: {
-      id: "seed-dev-user-age-gate",
-      userId: DEV_USER_ID,
+      id: "seed-chat-probe-user-age-gate",
+      userId: CHAT_PROBE_USER_ID,
       sourcePath: "/launch-probe",
       policyVersion: "seed-v1",
     },
@@ -163,11 +186,11 @@ async function seedUsers() {
   // entitlement, the deterministic probe user reaches the daily message cap
   // after repeated health checks and turns a healthy service red.
   await prisma.entitlement.upsert({
-    where: { userId_key: { userId: DEV_USER_ID, key: "unlimited_messages" } },
+    where: { userId_key: { userId: CHAT_PROBE_USER_ID, key: "unlimited_messages" } },
     update: { value: true, source: "manual", expiresAt: null },
     create: {
-      id: "seed-dev-user-unlimited-messages",
-      userId: DEV_USER_ID,
+      id: "seed-chat-probe-user-unlimited-messages",
+      userId: CHAT_PROBE_USER_ID,
       key: "unlimited_messages",
       value: true,
       source: "manual",
@@ -814,7 +837,7 @@ async function seedAdminControlPlane() {
       runnerConfig: {
         modelPath: REDCRAFT_KREA2_MODEL_PATH,
         apiModelId: "redcraft-krea2-comfyui",
-        workflowPath: REDCRAFT_COMFYUI_WORKFLOW_PATH,
+        workflowPath: REDCRAFT_CANONICAL_WORKFLOW_PATH,
         capabilities: {
           textToImage: true,
           stableSeed: true,
@@ -854,7 +877,7 @@ async function seedAdminControlPlane() {
       runnerConfig: {
         modelPath: REDCRAFT_KREA2_MODEL_PATH,
         apiModelId: "redcraft-krea2-comfyui",
-        workflowPath: REDCRAFT_COMFYUI_WORKFLOW_PATH,
+        workflowPath: REDCRAFT_CANONICAL_WORKFLOW_PATH,
         capabilities: {
           textToImage: true,
           stableSeed: true,
@@ -899,7 +922,7 @@ async function seedAdminControlPlane() {
       runnerConfig: {
         modelPath: REDCRAFT_KREA2_MODEL_PATH,
         apiModelId: "redcraft-krea2-comfyui",
-        workflowPath: REDCRAFT_COMFYUI_WORKFLOW_PATH,
+        workflowPath: REDCRAFT_CANONICAL_WORKFLOW_PATH,
         capabilities: {
           textToImage: true,
           stableSeed: true,
@@ -939,7 +962,7 @@ async function seedAdminControlPlane() {
       runnerConfig: {
         modelPath: REDCRAFT_KREA2_MODEL_PATH,
         apiModelId: "redcraft-krea2-comfyui",
-        workflowPath: REDCRAFT_COMFYUI_WORKFLOW_PATH,
+        workflowPath: REDCRAFT_CANONICAL_WORKFLOW_PATH,
         capabilities: {
           textToImage: true,
           stableSeed: true,

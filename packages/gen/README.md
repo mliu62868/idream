@@ -4,6 +4,19 @@ Generation Service — image + video. Slow async workers: payload self-contained
 write blob only, no DB authority. Finalize happens main-side via
 `app.ai.finalize` → gen-finalizer.
 
+## Playwright-managed image worker
+
+Main's Playwright configuration owns one `start:image` process and one
+Main-side `gen-finalizer` process in addition to its four URL services. The Gen
+process consumes both `ai.image.generate` and character-preview jobs from the
+run-scoped Redis/BullMQ namespace. Because the workers have no HTTP ports,
+Playwright 1.61 waits for their stable stdout readiness records and stops them
+with graceful `SIGTERM`. The harness explicitly pins the higher-priority
+`GEN_*` variables so Gen cannot inherit `packages/gen/.env` Redis or provider
+authority. The finalizer mirrors production ownership (`app.ai.finalize`
+only), dispatching durable completion manifests without racing the Gen image
+queue.
+
 ## Backend abstraction (`IMAGE_PROVIDER=backend`)
 
 `providers.image` (see `src/providers.ts`) supports a `backend` provider that

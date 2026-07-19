@@ -1,11 +1,15 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 import { PrismaPg } from "@prisma/adapter-pg";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { deflateSync } from "node:zlib";
 import path from "node:path";
 import { mockVideoMp4Bytes } from "@idream/shared";
 import { resolveLocalBlobPath } from "@idream/shared/storage/local-blob";
 import { localAiQueueNames } from "@/server/ai/local-pipeline";
+import {
+  characterVisualProfileSnapshotHash,
+  referenceSetSnapshotHash,
+} from "@/server/modules/admin-v2/characters/release-snapshot";
 import { jobQueue } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
 import { redeemCodeHash } from "@/server/lib/redeem-codes";
@@ -40,7 +44,7 @@ function chatDatabaseUrl() {
 }
 
 function uniqueEmail(tag: string) {
-  return `e2e-ui-${tag}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@test.local`;
+  return `e2e-ui-${tag}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@customer.invalid`;
 }
 
 function uniqueName(tag: string) {
@@ -51,6 +55,13 @@ function helpDeskResumeTarget(page: Page) {
   const next = new URL(page.url()).searchParams.get("next");
   expect(next).toMatch(/^\/helpdesk\?resume=[\w-]+$/);
   return next!;
+}
+
+async function waitForAuthWorkspaceReady(page: Page) {
+  const readyForm = page
+    .locator('form[data-auth-ready="true"]')
+    .filter({ visible: true });
+  await expect(readyForm).toHaveCount(1);
 }
 
 async function localStorageKeysStartingWith(page: Page, prefix: string) {
@@ -339,6 +350,8 @@ async function seedCommunityCampaigns(email: string) {
         status: "published",
         publishedAt: new Date(Date.now() + index),
         createdById: user.id,
+        verificationState: "passed",
+        verifiedAt: new Date(Date.now() + index),
         metadata: {
           ctaLabel: "Open Community",
           eyebrow: "Featured",
@@ -358,6 +371,7 @@ async function seedOwnedIdentityMedia(email: string) {
   });
   const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
   const characterId = `e2e-ui-owned-gallery-character-${suffix}`;
+  const characterName = `E2E Owned Gallery ${suffix}`;
   const mediaId = `e2e-ui-owned-gallery-media-${suffix}`;
   const storageKey = `e2e/generate/${mediaId}.png`;
   const target = resolveLocalBlobPath(storageKey);
@@ -373,7 +387,7 @@ async function seedOwnedIdentityMedia(email: string) {
     data: {
       id: characterId,
       creatorId: user.id,
-      name: `E2E Owned Gallery ${suffix}`,
+      name: characterName,
       age: 25,
       description: "Owned character used to verify Gallery identity actions.",
       visibility: "private",
@@ -401,7 +415,78 @@ async function seedOwnedIdentityMedia(email: string) {
       metadata: { e2e: true, providerKey: storageKey },
     },
   });
-  return { characterId, mediaId };
+  return { characterId, characterName, mediaId };
+}
+
+async function seedOwnedCharacterGenerationAuthority(email: string) {
+  const character = await seedOwnedIdentityMedia(email);
+  const visualProfileId = `${character.characterId}:visual-profile`;
+  const referenceSetRevisionId = `${character.characterId}:reference-set`;
+  const visualProfile = {
+    id: visualProfileId,
+    characterId: character.characterId,
+    version: 1,
+    status: "active",
+    style: "realistic",
+    identityPrompt: `Stable identity for ${character.characterName}`,
+    negativeIdentityPrompt:
+      "different face, different hairstyle, identity drift",
+    faceTraits: {},
+    hairTraits: {},
+    bodyTraits: {},
+    signatureTraits: {},
+    styleTraits: { style: "realistic" },
+    anchorAssetIds: [character.mediaId],
+    referenceAssetIds: [],
+    adapterRefs: {},
+    evidenceState: "qualified",
+    createdFrom: "playwright_chat_variation_authority",
+  };
+  await prisma.character.update({
+    where: { id: character.characterId },
+    data: { imageAssetId: character.mediaId },
+  });
+  await prisma.characterVisualProfile.create({
+    data: {
+      ...visualProfile,
+      immutableHash: characterVisualProfileSnapshotHash(visualProfile),
+    },
+  });
+  const referenceSnapshot = {
+    visualProfileId,
+    revision: 1,
+    selectorVersion: "playwright-v1",
+    references: [
+      {
+        mediaAssetId: character.mediaId,
+        position: 0,
+        role: "primary_face",
+        weight: 1,
+      },
+    ],
+  };
+  await prisma.referenceSetRevision.create({
+    data: {
+      id: referenceSetRevisionId,
+      visualProfileId,
+      revision: 1,
+      status: "active",
+      selectorVersion: referenceSnapshot.selectorVersion,
+      snapshotHash: referenceSetSnapshotHash(referenceSnapshot),
+      createdFrom: "playwright_chat_variation_authority",
+      references: {
+        create: referenceSnapshot.references.map((reference) => ({
+          ...reference,
+          selectionReason: "Playwright canonical chat variation identity anchor",
+        })),
+      },
+    },
+  });
+  return {
+    ...character,
+    visualProfileId,
+    referenceSetRevisionId,
+  };
 }
 
 async function seedBlankGalleryMedia(email: string) {
@@ -507,16 +592,27 @@ async function seedCompletedChatImageAttachment(input: {
   const attachmentId = `e2e-ui-chat-image-attachment-${suffix}`;
   const generationJobId = `e2e-ui-chat-image-job-${suffix}`;
   const fixture = input.fixture ?? "valid";
-  const storageKey = fixture === "blank" ? `e2e/chat/${mediaId}.png` : null;
-  if (storageKey) {
-    const target = resolveLocalBlobPath(storageKey);
-    await mkdir(path.dirname(target), { recursive: true });
-    await writeFile(target, whitePng(16, 16));
-  }
-  const mediaUrl =
+  const contentType = fixture === "blank" ? "image/png" : "image/jpeg";
+  const extension = fixture === "blank" ? "png" : "jpg";
+  const storageKey = `e2e/chat/${mediaId}.${extension}`;
+  const target = resolveLocalBlobPath(storageKey);
+  await mkdir(path.dirname(target), { recursive: true });
+  await writeFile(
+    target,
     fixture === "blank"
-      ? `/user-content/${Buffer.from(mediaId, "utf8").toString("base64url")}/content.png`
-      : "/images/ourdream/card-sarah-mercer.webp";
+      ? whitePng(16, 16)
+      : await readFile(
+          path.resolve(
+            process.cwd(),
+            "public",
+            "images",
+            "ourdream",
+            "card-sarah-mercer.webp",
+          ),
+        ),
+  );
+  const mediaUrl =
+    `/user-content/${Buffer.from(mediaId, "utf8").toString("base64url")}/content.${extension}`;
   await prisma.generationJob.create({
     data: {
       id: generationJobId,
@@ -541,7 +637,7 @@ async function seedCompletedChatImageAttachment(input: {
       url: mediaUrl,
       thumbnailUrl: fixture === "blank" ? null : mediaUrl,
       storageKey,
-      contentType: fixture === "blank" ? "image/png" : "image/webp",
+      contentType,
       width: fixture === "blank" ? 16 : 512,
       height: fixture === "blank" ? 16 : 640,
       prompt: fixture === "blank" ? "E2E blank completed chat image" : "E2E completed chat image",
@@ -799,7 +895,7 @@ async function cleanupPublicE2EFixtures() {
     creatorIds.length > 0
       ? await prisma.mediaAsset.findMany({
           where: { ownerId: { in: creatorIds } },
-          select: { id: true },
+          select: { id: true, storageKey: true },
         })
       : [];
   const mediaCollections =
@@ -846,6 +942,13 @@ async function cleanupPublicE2EFixtures() {
       rm(path.join(chatFsRoot(), "sessions", user.id), { recursive: true, force: true }),
     ]),
   );
+  await Promise.all(
+    mediaAssets.flatMap((asset) =>
+      asset.storageKey
+        ? [rm(resolveLocalBlobPath(asset.storageKey), { force: true })]
+        : [],
+    ),
+  );
 
   const moderationTargets = [
     ...(characterIds.length > 0 ? [{ targetId: { in: characterIds } }] : []),
@@ -857,6 +960,11 @@ async function cleanupPublicE2EFixtures() {
   ];
   if (moderationTargets.length > 0) {
     await prisma.moderationEvent.deleteMany({ where: { OR: moderationTargets } });
+  }
+  if (mediaAssetIds.length > 0) {
+    await prisma.characterVisualReferenceSnapshot.deleteMany({
+      where: { mediaAssetId: { in: mediaAssetIds } },
+    });
   }
 
   if (characterIds.length > 0) {
@@ -966,7 +1074,7 @@ test("help desk submits a tracked support request", async ({ page }) => {
   await page.goto("/helpdesk");
   await expect(page.getByRole("heading", { name: /get support without losing context/i })).toBeVisible();
   const feedbackListStatus = page.getByTestId("feedback-list-status");
-  await expect(feedbackListStatus).toContainText("forced roadmap failure", { timeout: 10_000 });
+  await expect(feedbackListStatus).toContainText("Could not load feature voting.", { timeout: 10_000 });
   await expect(feedbackListStatus).toHaveAttribute("role", "alert");
   await expect(feedbackListStatus).toHaveAttribute("aria-live", "assertive");
   await feedbackListStatus.getByRole("button", { name: "Retry" }).click();
@@ -1081,6 +1189,7 @@ test("help desk signup redirect preserves anonymous support request draft", asyn
     )
     .not.toBeNull();
 
+  await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Display name").fill("E2E Helpdesk Signup Redirect");
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");
@@ -1180,6 +1289,7 @@ test("help desk signup redirect preserves anonymous roadmap idea draft", async (
   );
   expect(anonymousFeedbackKeys).toHaveLength(1);
 
+  await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Display name").fill("E2E Helpdesk Feedback Signup Redirect");
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");
@@ -1297,6 +1407,7 @@ test("help desk signup redirect applies anonymous roadmap vote intent", async ({
       ),
     )
     .toContain(itemId);
+  await waitForAuthWorkspaceReady(page);
 
   await page.getByLabel("Display name").fill("E2E Helpdesk Vote Signup Redirect");
   await page.getByLabel("Email").fill(email);
@@ -1376,6 +1487,7 @@ test("help desk signup redirect preserves anonymous appeal draft", async ({ page
   );
   expect(anonymousAppealKeys).toHaveLength(1);
 
+  await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Display name").fill("E2E Helpdesk Appeal Signup Redirect");
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");
@@ -1561,7 +1673,11 @@ async function seedCommunityDreamer() {
       viewsCount: score,
     },
   });
-  return { id, displayName, characterId };
+  const authority = await seedStrictPublicCharacterAuthority({
+    characterId,
+    ownerId: id,
+  });
+  return { id, displayName, characterId, avatarUrl: authority.avatarUrl };
 }
 
 async function seedFeedCollection() {
@@ -1688,6 +1804,10 @@ async function seedExploreCharacters(token: string) {
         },
       },
     });
+    await seedStrictPublicCharacterAuthority({
+      characterId: id,
+      ownerId: spec.suffix === "delta" ? otherCreatorId : creatorId,
+    });
   }
   return { ...ids, creatorId, otherCreatorId } as {
     alpha: string;
@@ -1696,6 +1816,233 @@ async function seedExploreCharacters(token: string) {
     delta: string;
     creatorId: string;
     otherCreatorId: string;
+  };
+}
+
+async function seedStrictPublicCharacterAuthority(input: {
+  characterId: string;
+  ownerId: string;
+}) {
+  const releaseId = `${input.characterId}:release`;
+  const projectId = `${input.characterId}:project`;
+  const validationRunId = `${releaseId}:validation`;
+  const snapshotHash = `${releaseId}:snapshot`;
+  const sourceFiles = {
+    character_avatar: "card-sarah-mercer.webp",
+    character_hero: "card-alexa-reeves.webp",
+    character_chat: "card-lola-moonstruck.webp",
+  } as const;
+  const placements = await Promise.all(
+    Object.entries(sourceFiles).map(async ([slotKey, sourceFile], index) => {
+      const assetId = `${input.characterId}:${slotKey}`;
+      const storageKey = `e2e/public-characters/${input.characterId}/${slotKey}.jpg`;
+      const target = resolveLocalBlobPath(storageKey);
+      const source = path.resolve(
+        process.cwd(),
+        "public",
+        "images",
+        "ourdream",
+        sourceFile,
+      );
+      await mkdir(path.dirname(target), { recursive: true });
+      await writeFile(target, await readFile(source));
+      await prisma.mediaAsset.create({
+        data: {
+          id: assetId,
+          ownerId: input.ownerId,
+          type: "image",
+          url: `/user-content/${Buffer.from(assetId, "utf8").toString("base64url")}/content.jpg`,
+          thumbnailUrl: null,
+          storageKey,
+          contentType: "image/jpeg",
+          width: 512,
+          height: 640,
+          prompt: `E2E strict public ${slotKey}`,
+          visibility: "public_pack",
+          safetyStatus: "passed",
+          metadata: {
+            e2e: true,
+            provider: "pipeline",
+            providerKey: storageKey,
+            synthetic: false,
+          },
+        },
+      });
+      return {
+        slotKey: slotKey as keyof typeof sourceFiles,
+        assetId,
+        slotVersion: 1,
+        runId: `${releaseId}:run:${index}`,
+        itemId: `${releaseId}:item:${index}`,
+        reviewDecisionId: `${releaseId}:decision:${index}`,
+        generationJobId: `${releaseId}:job:${index}`,
+      };
+    }),
+  );
+  const avatar = placements.find(
+    (placement) => placement.slotKey === "character_avatar",
+  )!;
+  const visualProfileId = `${input.characterId}:visual-profile`;
+  const referenceSetRevisionId = `${input.characterId}:reference-set`;
+  await prisma.character.update({
+    where: { id: input.characterId },
+    data: { imageAssetId: avatar.assetId },
+  });
+  await prisma.mediaAsset.updateMany({
+    where: { id: { in: placements.map((placement) => placement.assetId) } },
+    data: { characterId: input.characterId },
+  });
+  const visualProfile = {
+    id: visualProfileId,
+    characterId: input.characterId,
+    version: 1,
+    status: "active",
+    style: "realistic",
+    identityPrompt: `Stable identity for ${input.characterId}`,
+    negativeIdentityPrompt:
+      "different face, different hairstyle, identity drift",
+    faceTraits: {},
+    hairTraits: {},
+    bodyTraits: {},
+    signatureTraits: {},
+    styleTraits: { style: "realistic" },
+    anchorAssetIds: [avatar.assetId],
+    referenceAssetIds: [
+      placements.find(
+        (placement) => placement.slotKey === "character_hero",
+      )!.assetId,
+    ],
+    adapterRefs: {},
+    evidenceState: "qualified",
+    createdFrom: "playwright_strict_public_authority",
+  };
+  await prisma.characterVisualProfile.create({
+    data: {
+      ...visualProfile,
+      immutableHash: characterVisualProfileSnapshotHash(visualProfile),
+    },
+  });
+  const referenceSnapshot = {
+    visualProfileId,
+    revision: 1,
+    selectorVersion: "playwright-v1",
+    references: [
+      {
+        mediaAssetId: avatar.assetId,
+        position: 0,
+        role: "primary_face",
+        weight: 1,
+      },
+      {
+        mediaAssetId: placements.find(
+          (placement) => placement.slotKey === "character_hero",
+        )!.assetId,
+        position: 1,
+        role: "identity_reference",
+        weight: 0.8,
+      },
+    ],
+  };
+  await prisma.referenceSetRevision.create({
+    data: {
+      id: referenceSetRevisionId,
+      visualProfileId,
+      revision: 1,
+      status: "active",
+      selectorVersion: referenceSnapshot.selectorVersion,
+      snapshotHash: referenceSetSnapshotHash(referenceSnapshot),
+      createdFrom: "playwright_strict_public_authority",
+      references: {
+        create: referenceSnapshot.references.map((reference) => ({
+          ...reference,
+          selectionReason:
+            reference.role === "primary_face"
+              ? "Playwright canonical identity anchor"
+              : "Playwright supporting identity reference",
+        })),
+      },
+    },
+  });
+  await prisma.characterProject.create({
+    data: {
+      id: projectId,
+      characterId: input.characterId,
+      phase: "live_management",
+      audience: {},
+      successCriteria: [],
+    },
+  });
+  await prisma.characterRelease.create({
+    data: {
+      id: releaseId,
+      projectId,
+      revisionId: `${releaseId}:revision`,
+      characterContentVersionId: `${releaseId}:content`,
+      visualProfileId,
+      visualProfileVersion: 1,
+      referenceSetRevisionId,
+      generationProvenance: {
+        schemaVersion: "character-release-generation-provenance-v2",
+        policyVersion: "character-release-policy-v2",
+        requiredReleaseRoute: {
+          routeFingerprint: `${releaseId}:route`,
+          matrixKey: "e2e-public-character",
+          generationProfileKey: "e2e-public-profile",
+          generationProfileVersion: 1,
+          workflowKey: "e2e-public-workflow",
+          workflowVersion: 1,
+        },
+        placements: placements.map((placement) => ({
+          slotKey: placement.slotKey,
+          assetId: placement.assetId,
+          generationJobId: placement.generationJobId,
+          provider: "pipeline",
+        })),
+      },
+      releasePlacementManifest: {
+        schemaVersion: 2,
+        placements,
+      },
+      snapshotHash,
+      readiness: "ready",
+      status: "published",
+      publishedAt: new Date(),
+    },
+  });
+  await prisma.releaseValidationRun.create({
+    data: {
+      id: validationRunId,
+      releaseId,
+      snapshotHash,
+      policyVersion: "character-release-policy-v2",
+      result: "passed",
+      finishedAt: new Date(),
+    },
+  });
+  await prisma.publicCatalogQualification.create({
+    data: {
+      id: `${releaseId}:qualification`,
+      releaseId,
+      releaseSnapshotHash: snapshotHash,
+      kind: "generated_release",
+      validationRunId,
+      evidence: {
+        schemaVersion: "public-catalog-qualification-v1",
+        policyVersion: "character-release-policy-v2",
+      },
+    },
+  });
+  await prisma.characterServing.create({
+    data: {
+      id: `${releaseId}:serving`,
+      characterId: input.characterId,
+      currentReleaseId: releaseId,
+      state: "live",
+    },
+  });
+  return {
+    avatarAssetId: avatar.assetId,
+    avatarUrl: `/user-content/${Buffer.from(avatar.assetId, "utf8").toString("base64url")}/content.jpg`,
   };
 }
 
@@ -1818,6 +2165,13 @@ async function drainWorker(ctx: APIRequestContext, jobId: string) {
   );
 }
 
+async function expectGenerationAccepted(page: Page, timeout = 10_000) {
+  const status = page.getByTestId("generator-status");
+  await expect(status).toHaveAttribute("role", "status");
+  await expect(status).toHaveAttribute("aria-live", "polite");
+  await expect(status).toHaveText(/Generation (?:queued|complete)\./, { timeout });
+}
+
 async function generateAndConfirmCharacterIdentity(page: Page) {
   await page.getByRole("button", { name: "Generate preview candidates" }).click();
   const candidates = page.getByTestId("create-preview-candidates").locator("button");
@@ -1921,7 +2275,9 @@ test("explore UI syncs filters to URL and paginates results", async ({ page }) =
 
   await page.setViewportSize({ width: 390, height: 812 });
   await expect(page.getByRole("textbox", { name: "Search characters" })).toBeVisible();
-  await expect(page.getByRole("navigation").filter({ hasText: "Explore" })).toBeVisible();
+  await expect(
+    page.getByRole("navigation", { name: "Primary mobile navigation" }),
+  ).toBeVisible();
 });
 
 test("explore character grid exposes retryable load errors and empty results", async ({
@@ -1985,6 +2341,17 @@ test("mobile explore keeps bottom nav fixed and cards unobscured", async ({ page
   await page.setViewportSize({ width: 390, height: 812 });
   const token = `E2E Mobile ${Date.now()} ${Math.floor(Math.random() * 1e6)}`;
   const ids = await seedExploreCharacters(token);
+  const optimizedStaticMediaRequests: string[] = [];
+  page.on("request", (request) => {
+    const requestUrl = request.url().toLowerCase();
+    if (
+      requestUrl.includes("/_next/image?") &&
+      requestUrl.includes("%2fimages%2fourdream%2f") &&
+      (requestUrl.includes(".webp") || requestUrl.includes(".avif"))
+    ) {
+      optimizedStaticMediaRequests.push(request.url());
+    }
+  });
 
   await page.goto(`/?q=${encodeURIComponent(token)}&gender=any&limit=4`);
   const bottomNav = page.getByRole("navigation", { name: "Primary mobile navigation" });
@@ -2011,6 +2378,24 @@ test("mobile explore keeps bottom nav fixed and cards unobscured", async ({ page
     expect(box!.x + box!.width).toBeLessThanOrEqual(390);
   }
 
+  await page.setViewportSize({ width: 834, height: 1_112 });
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          document.documentElement.scrollWidth <=
+          document.documentElement.clientWidth + 1,
+      ),
+    )
+    .toBe(true);
+  for (const name of ["Gender filter", "Style filter", "Age filter"] as const) {
+    const box = await page.getByRole("combobox", { name }).boundingBox();
+    expect(box).not.toBeNull();
+    expect(box!.x).toBeGreaterThanOrEqual(0);
+    expect(box!.x + box!.width).toBeLessThanOrEqual(834);
+  }
+  await page.setViewportSize({ width: 390, height: 812 });
+
   const cards = [ids.delta, ids.alpha, ids.beta, ids.gamma].map((id) =>
     page.locator(`a[href="/characters/${id}"]`),
   );
@@ -2035,6 +2420,7 @@ test("mobile explore keeps bottom nav fixed and cards unobscured", async ({ page
     "color",
     "rgb(255, 255, 255)",
   );
+  expect(optimizedStaticMediaRequests).toEqual([]);
 });
 
 test("mobile app shell menu exposes the full product navigation", async ({ page }) => {
@@ -2088,12 +2474,25 @@ test("mobile explore menu shares the full product navigation", async ({ page }) 
   }
 });
 
-test("explore eagerly loads above-the-fold character and promo images", async ({ page }) => {
+test("explore budgets above-the-fold images and bypasses redundant static optimization", async ({
+  page,
+}) => {
   await startSignedInAdultSession(page, "explore-lcp");
   const lcpWarnings: string[] = [];
+  const optimizedStaticMediaRequests: string[] = [];
   page.on("console", (message) => {
     if (message.text().includes("Largest Contentful Paint")) {
       lcpWarnings.push(message.text());
+    }
+  });
+  page.on("request", (request) => {
+    const requestUrl = request.url().toLowerCase();
+    if (
+      requestUrl.includes("/_next/image?") &&
+      requestUrl.includes("%2fimages%2fourdream%2f") &&
+      (requestUrl.includes(".webp") || requestUrl.includes(".avif"))
+    ) {
+      optimizedStaticMediaRequests.push(request.url());
     }
   });
 
@@ -2101,37 +2500,33 @@ test("explore eagerly loads above-the-fold character and promo images", async ({
   await expect.poll(() => page.locator('a[href^="/characters/"]').count(), {
     timeout: 10_000,
   }).toBeGreaterThanOrEqual(10);
-  await expect(page.locator('img[src*="promo-card-female"]')).toBeVisible();
+  const promoImage = page
+    .getByRole("link", { name: "Compare upgrade plans" })
+    .first()
+    .locator('img[src*="promo-card-female"]');
+  await expect(promoImage).toBeVisible();
 
-  const imageLoading = await page.evaluate(() => {
-    const characterImages = Array.from(
-      document.querySelectorAll<HTMLImageElement>('a[href^="/characters/"] img'),
-    )
-      .slice(0, 10)
-      .map((image) => image.getAttribute("loading"));
-    const promoImage = document.querySelector<HTMLImageElement>(
-      'img[src*="promo-card-female"]',
+  const characterImages = await page
+    .locator('a[href^="/characters/"] img')
+    .evaluateAll((images) =>
+      images.slice(0, 10).map((image) => image.getAttribute("loading")),
     );
-    return {
-      characterImages,
-      promoImage: promoImage?.getAttribute("loading") ?? null,
-    };
-  });
 
-  expect(imageLoading.characterImages).toEqual([
+  expect(characterImages).toEqual([
     "eager",
     "eager",
     "eager",
     "eager",
     "eager",
-    "eager",
-    "eager",
-    "eager",
-    "eager",
-    "eager",
+    "lazy",
+    "lazy",
+    "lazy",
+    "lazy",
+    "lazy",
   ]);
-  expect(imageLoading.promoImage).toBe("eager");
+  await expect(promoImage).toHaveAttribute("loading", "eager");
   expect(lcpWarnings).toEqual([]);
+  expect(optimizedStaticMediaRequests).toEqual([]);
 });
 
 test("global header search routes app pages into Explore results", async ({ page }) => {
@@ -2301,6 +2696,7 @@ test("global header signup redirect returns anonymous generator intent", async (
     .getAttribute("class");
   expect(authExploreClass?.split(/\s+/)).not.toContain("bg-[rgb(46,46,46)]");
 
+  await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Display name").fill("E2E Generate Signup Redirect");
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");
@@ -2367,6 +2763,7 @@ test("generate preset signup redirect preserves anonymous preset draft", async (
   const presetLabel = uniqueName("Generate preset signup redirect");
 
   await page.goto("/generate");
+  await page.getByTestId("generator-advanced-toggle").click();
   await expect(page.getByTestId("my-presets")).toBeVisible({ timeout: 10_000 });
   await page.getByLabel("Background").selectOption("seed-preset-background-studio");
   await page.getByTestId("my-presets").getByLabel("Preset name").fill(presetLabel);
@@ -2396,6 +2793,7 @@ test("generate preset signup redirect preserves anonymous preset draft", async (
     .getAttribute("class");
   expect(authExploreClass?.split(/\s+/)).not.toContain("bg-[rgb(46,46,46)]");
 
+  await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Display name").fill("E2E Generate Preset Signup Redirect");
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");
@@ -2406,6 +2804,7 @@ test("generate preset signup redirect preserves anonymous preset draft", async (
   await expect(page.getByText("Preset draft restored. Save it to add it to My Presets.")).toBeVisible({
     timeout: 10_000,
   });
+  await page.getByTestId("generator-advanced-toggle").click();
   await expect(page.getByTestId("my-presets").getByLabel("Preset name")).toHaveValue(presetLabel);
   await expect(page.getByLabel("Background")).toHaveValue("seed-preset-background-studio");
 
@@ -2484,6 +2883,7 @@ test("create signup redirect returns anonymous draft to the builder", async ({ p
     .getAttribute("class");
   expect(authExploreClass?.split(/\s+/)).not.toContain("bg-[rgb(46,46,46)]");
 
+  await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Display name").fill("E2E Create Signup Redirect");
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");
@@ -2744,6 +3144,7 @@ test("character detail signup redirect returns anonymous chat intent to the char
     .getAttribute("class");
   expect(authExploreClass?.split(/\s+/)).not.toContain("bg-[rgb(46,46,46)]");
 
+  await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Display name").fill("E2E Character Signup Redirect");
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");
@@ -2780,6 +3181,7 @@ test("character detail like signup redirect returns anonymous intent and persist
     .getAttribute("class");
   expect(authExploreClass?.split(/\s+/)).not.toContain("bg-[rgb(46,46,46)]");
 
+  await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Display name").fill("E2E Character Like Signup Redirect");
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");
@@ -2856,6 +3258,7 @@ test("character detail generate signup redirect preserves character intent", asy
     "/generate?characterId=melissa-burke",
   );
 
+  await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Display name").fill("E2E Character Generate Signup Redirect");
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");
@@ -2915,11 +3318,12 @@ test("chat UI opens Generate with character context and renders chat image attac
   page,
 }) => {
   const { email } = await startSignedInAdultSession(page, "chat-image-ui");
-  const characterId = "melissa-burke";
+  const character = await seedOwnedCharacterGenerationAuthority(email);
+  const characterId = character.characterId;
   const message = `please make an image from this chat ${Date.now()}`;
 
   await page.goto(`/characters/${characterId}`);
-  await expect(page.getByRole("heading", { name: "Melissa Burke" })).toBeVisible({
+  await expect(page.getByRole("heading", { name: character.characterName })).toBeVisible({
     timeout: 10_000,
   });
   await page.getByRole("button", { name: "Chat" }).click();
@@ -2959,12 +3363,12 @@ test("chat UI opens Generate with character context and renders chat image attac
 
   const completedImage = page.getByTestId("chat-image-attachment");
   await expect(completedImage).toBeVisible({ timeout: 10_000 });
-  await expect(completedImage).toHaveAttribute("src", /card-sarah-mercer\.webp/);
+  await expect(completedImage).toHaveAttribute("src", /\/user-content\/.+\/content\.jpg/);
   await expect(completedImage).toHaveAttribute("alt", /Generated image:/);
   await expect(assistantBubble.getByRole("button", { name: "More like this" })).toBeVisible();
   await expect(assistantBubble.getByRole("button", { name: "Looks like them" })).toBeVisible();
   await expect(assistantBubble.getByRole("button", { name: "Doesn't match" })).toBeVisible();
-  await expect(assistantBubble.getByRole("button", { name: "Use for identity" })).toHaveCount(0);
+  await expect(assistantBubble.getByRole("button", { name: "Use for identity" })).toBeVisible();
   await assistantBubble.getByRole("button", { name: "Looks like them" }).click();
   await expect(page.getByText("Thanks — this image looks like the character.")).toBeVisible();
   const feedbackUser = await prisma.user.findUniqueOrThrow({
@@ -3017,8 +3421,18 @@ test("chat UI opens Generate with character context and renders chat image attac
   );
   expect(variationJob.prompt).toContain("More like this image:");
   expect(variationJob.momentSpec).toBeTruthy();
-  expect(variationJob.referenceSetRevisionId).toBeTruthy();
+  expect(variationJob.referenceSetRevisionId).toBe(character.referenceSetRevisionId);
   expect(variationJob.referenceManifest).not.toBeNull();
+  expect(variationJob.idempotencyKey).toBeTruthy();
+  expect(variationJob.controls).toMatchObject({
+    generationQuoteAuthority: {
+      schemaVersion: "generation-quote-authority-v1",
+      profileId: variationJob.profileId,
+      profileVersion: variationJob.profileVersion,
+      outputCount: variationJob.outputCount,
+      costDreamcoins: variationJob.costDreamcoins,
+    },
+  });
 
   const attachmentGenerate = assistantBubble.getByRole("link", { name: "Open in Generate" }).first();
   await expect(attachmentGenerate).toHaveAttribute("href", `/generate?characterId=${characterId}`);
@@ -3051,10 +3465,10 @@ test("chat hub signup redirect returns anonymous user to the hub", async ({ page
   );
   const startPanel = page.getByTestId("chat-hub-start-panel");
   await expect(startPanel).toBeVisible();
-  await expect(startPanel.getByRole("link", { name: "Chat with Melissa Burke" })).toHaveAttribute(
-    "href",
-    "/characters/melissa-burke",
-  );
+  const featuredCharacter = startPanel.getByTestId("chat-hub-character-card").first();
+  await expect(featuredCharacter).toBeVisible({ timeout: 10_000 });
+  await expect(featuredCharacter).toHaveAttribute("aria-label", /^Chat with .+/);
+  await expect(featuredCharacter).toHaveAttribute("href", /^\/characters\/[^/]+$/);
   await expect(startPanel.getByRole("link", { name: "Explore characters" })).toHaveAttribute(
     "href",
     "/",
@@ -3068,6 +3482,7 @@ test("chat hub signup redirect returns anonymous user to the hub", async ({ page
   await expect.poll(() => new URL(page.url()).pathname).toBe("/signup");
   expect(new URL(page.url()).searchParams.get("next")).toBe("/chat");
 
+  await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Display name").fill("E2E Chat Hub Signup Redirect");
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");
@@ -3515,7 +3930,8 @@ test("generator UI explains config load failures instead of showing a fake zero 
   await expect(page.getByText("0 coins", { exact: true })).toHaveCount(0);
   await expect(
     page.getByRole("button", {
-      name: "Generation price unavailable",
+      name: "Generator unavailable",
+      exact: true,
     }),
   ).toBeDisabled();
 
@@ -3590,15 +4006,37 @@ test("generator UI explains failed and blocked job recovery states", async ({ pa
   const failedCard = page.locator(`[data-generation-job-id="${failedJobId}"]`);
   await expect(failedCard).toBeVisible({ timeout: 45_000 });
   await expect(failedCard).toContainText("Failed: provider_timeout");
-  await expect(failedCard.getByRole("button", { name: "Retry" })).toBeVisible();
+  await expect(
+    failedCard.getByRole("button", {
+      name: "Retry price unavailable",
+      exact: true,
+    }),
+  ).toBeDisabled();
   await expect(failedCard).toContainText(
-    "Provider hiccup — your coins were refunded. Retry will reserve the normal cost again.",
+    "The failed generation job's pinned profile version is unavailable",
   );
+  await expect(
+    failedCard.getByRole("button", {
+      name: "Retry price check",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    failedCard.getByRole("button", {
+      name: "Retry",
+      exact: true,
+    }),
+  ).toHaveCount(0);
 
   const blockedCard = page.locator(`[data-generation-job-id="${blockedJobId}"]`);
   await expect(blockedCard).toBeVisible({ timeout: 10_000 });
   await expect(blockedCard).toContainText("Blocked: request_blocked");
-  await expect(blockedCard.getByRole("button", { name: "Retry" })).toHaveCount(0);
+  await expect(
+    blockedCard.getByRole("button", {
+      name: "Retry",
+      exact: true,
+    }),
+  ).toHaveCount(0);
   const helpLink = blockedCard.getByRole("link", { name: "Get help" });
   await expect(helpLink).toBeVisible();
   await expect(helpLink).toHaveAttribute("href", "/helpdesk");
@@ -3616,13 +4054,20 @@ test("generator Image Edit queues a variation from a gallery source", async ({ p
 
   const panel = page.getByTestId("image-edit-panel");
   await expect(panel).toBeVisible({ timeout: 10_000 });
-  const createEdit = page.getByRole("button", { name: "Create edit" });
-  await expect(createEdit).toBeDisabled();
+  await expect(
+    page.getByRole("button", {
+      name: "Select a source image",
+      exact: true,
+    }),
+  ).toBeDisabled();
 
   const sourceCard = panel.locator(`[data-media-id="${sourceMediaId}"]`);
   await expect(sourceCard).toBeVisible({ timeout: 10_000 });
   await sourceCard.click();
   await expect(sourceCard).toHaveAttribute("aria-pressed", "true");
+  const createEdit = page.getByRole("button", {
+    name: /^Create edit · \d[\d,]* coins$/,
+  });
   await expect(createEdit).toBeEnabled({ timeout: 10_000 });
 
   await createEdit.click();
@@ -3671,6 +4116,7 @@ test("generator UI queues an image job and surfaces completed media in the galle
   test.setTimeout(120_000);
   const { email } = await startSignedInAdultSession(page, "generate");
   const publicCharacter = await seedCommunityDreamer();
+  const ownedIdentityMedia = await seedOwnedCharacterGenerationAuthority(email);
   const legacyMediaId = await seedLegacyPlaceholderMedia(email);
   await page.addInitScript(() => {
     window.open = function () {
@@ -3692,9 +4138,7 @@ test("generator UI queues an image job and surfaces completed media in the galle
   await expect(page.getByRole("button", { name: "Videos", exact: true })).toHaveCount(0);
   await generate.click();
 
-  await expect(page.getByText("Generation queued.")).toBeVisible({ timeout: 10_000 });
-  await expect(page.getByTestId("generator-status")).toHaveAttribute("role", "status");
-  await expect(page.getByTestId("generator-status")).toHaveAttribute("aria-live", "polite");
+  await expectGenerationAccepted(page);
   const job = await latestImageJob(page.request);
   await drainWorker(page.request, job.id);
 
@@ -3751,7 +4195,6 @@ test("generator UI queues an image job and surfaces completed media in the galle
   await expect(page.getByText("Download started.")).toBeVisible({ timeout: 10_000 });
   await expect(page).toHaveURL(new RegExp(`/generate\\?characterId=${publicCharacter.characterId}$`));
 
-  const ownedIdentityMedia = await seedOwnedIdentityMedia(email);
   await page.getByRole("button", { name: "Liked" }).click();
   await page.getByRole("button", { name: "Images" }).click();
   const ownedMediaCard = page.locator(`[data-media-id="${ownedIdentityMedia.mediaId}"]`);
@@ -3821,7 +4264,7 @@ test("generator UI queues a video job and surfaces completed video in the galler
     await expect(generate).toBeEnabled({ timeout: 45_000 });
     await generate.click();
 
-    await expect(page.getByText("Generation queued.")).toBeVisible({ timeout: 30_000 });
+    await expectGenerationAccepted(page, 30_000);
     const job = await latestGenerationJob(page.request, "video");
     await drainWorker(page.request, job.id);
 
@@ -3864,6 +4307,7 @@ test("generator user-preset round-trip and bulk media route are wired", async ({
 
   try {
     await page.goto("/generate");
+    await page.getByTestId("generator-advanced-toggle").click();
     await expect(page.getByTestId("my-presets")).toBeVisible({ timeout: 10_000 });
     await expect(page.getByLabel("Mode preset")).toBeVisible();
     const backgroundSelect = page.getByTestId("preset-select-background");
@@ -3962,6 +4406,7 @@ test("upgrade signup redirect returns anonymous checkout intent to plans", async
     .getAttribute("class");
   expect(authExploreClass?.split(/\s+/)).not.toContain("bg-[rgb(46,46,46)]");
 
+  await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Display name").fill("E2E Upgrade Signup Redirect");
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");
@@ -4040,7 +4485,9 @@ test("upgrade checkout failures are announced as assertive alerts", async ({ pag
   await expect(checkoutResult).toHaveAttribute("aria-live", "assertive");
 });
 
-test("character generator keeps identity controls behind Advanced settings", async ({ page }) => {
+test("character generator keeps presets, prompt, and identity controls behind Advanced settings", async ({
+  page,
+}) => {
   await startSignedInAdultSession(page, "generate-character-first");
   await page.goto("/generate?characterId=melissa-burke");
 
@@ -4048,6 +4495,7 @@ test("character generator keeps identity controls behind Advanced settings", asy
   await expect(page.getByText("Describe the moment", { exact: true })).toBeVisible();
   await expect(page.getByText("Presets", { exact: true })).toHaveCount(0);
   await expect(page.getByText("My Presets", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Auto (identity-aware)", { exact: true })).toHaveCount(0);
   await expect(page.locator("#generator-model")).toHaveCount(0);
   await expect(page.getByRole("textbox", { name: "Negative Prompt" })).toHaveCount(0);
 
@@ -4055,7 +4503,14 @@ test("character generator keeps identity controls behind Advanced settings", asy
 
   await expect(page.getByText("Presets", { exact: true })).toBeVisible();
   await expect(page.getByText("My Presets", { exact: true })).toBeVisible();
-  await expect(page.locator("#generator-model")).toBeVisible();
+  await expect(page.locator("#generator-model")).toHaveCount(0);
+  await expect(page.getByText("Auto (identity-aware)", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText(
+      "The generation route selects a model that can use this character's identity references.",
+      { exact: true },
+    ),
+  ).toBeVisible();
   await expect(page.getByRole("textbox", { name: "Negative Prompt" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Closest match" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Natural" })).toBeVisible();
@@ -4129,9 +4584,10 @@ test("upgrade UI activates Premium, grants dreamcoins, and unlocks prompt contro
   await expect(page.locator("#generator-model")).toHaveCount(0);
   await page.getByTestId("generator-advanced-toggle").click();
   await expect(page.getByRole("textbox", { name: "Negative Prompt" })).toBeEnabled();
-  await expect(page.locator("#generator-model")).toBeVisible();
+  await expect(page.locator("#generator-model")).toHaveCount(0);
+  await expect(page.getByText("Auto (identity-aware)", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Generate" }).click();
-  await expect(page.getByText("Generation queued.")).toBeVisible({ timeout: 10_000 });
+  await expectGenerationAccepted(page);
   const job = await latestImageJob(page.request);
   await drainWorker(page.request, job.id);
   await expect(page.getByText("Generation complete.")).toBeVisible({ timeout: 10_000 });
@@ -4177,6 +4633,7 @@ test("creator profile signup redirect returns anonymous follow intent to creator
     .getAttribute("class");
   expect(authExploreClass?.split(/\s+/)).not.toContain("bg-[rgb(46,46,46)]");
 
+  await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Display name").fill("E2E Creator Follow Signup Redirect");
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");
@@ -4220,6 +4677,7 @@ test("community signup redirect returns anonymous follow intent to creator", asy
     .getAttribute("class");
   expect(authExploreClass?.split(/\s+/)).not.toContain("bg-[rgb(46,46,46)]");
 
+  await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Display name").fill("E2E Community Follow Signup Redirect");
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");
@@ -4268,10 +4726,10 @@ test("community UI lists dreamers and reports user profiles", async ({ page }) =
   await expect(creatorCharacterCard).toBeVisible({ timeout: 10_000 });
   const creatorCharacterImage = creatorCharacterCard.locator("img").first();
   await expect(creatorCharacterImage).toHaveAttribute("loading", "eager");
-  await expect(creatorCharacterImage).toHaveAttribute(
-    "src",
-    /^\/images\/ourdream\/card-[a-z-]+\.webp$/,
-  );
+  await expect(creatorCharacterImage).toHaveAttribute("src", dreamer.avatarUrl);
+  const avatarResponse = await page.request.get(dreamer.avatarUrl);
+  expect(avatarResponse.ok(), await avatarResponse.text()).toBeTruthy();
+  expect(avatarResponse.headers()["content-type"]).toContain("image/jpeg");
   await expect.poll(() =>
     creatorCharacterImage.evaluate((element) => {
       const image = element as HTMLImageElement;
@@ -4283,10 +4741,7 @@ test("community UI lists dreamers and reports user profiles", async ({ page }) =
   await page.reload();
   await expect(page.getByTestId("creator-follow")).toHaveText(/Following/, { timeout: 10_000 });
   await expect(creatorCharacterImage).toHaveAttribute("loading", "eager");
-  await expect(creatorCharacterImage).toHaveAttribute(
-    "src",
-    /^\/images\/ourdream\/card-[a-z-]+\.webp$/,
-  );
+  await expect(creatorCharacterImage).toHaveAttribute("src", dreamer.avatarUrl);
 });
 
 test("community UI filters characters and shows collections", async ({ page }) => {
@@ -4295,9 +4750,18 @@ test("community UI filters characters and shows collections", async ({ page }) =
   await seedExploreCharacters(token);
   const campaign = await seedCommunityCampaigns(email);
   const lcpWarnings: string[] = [];
+  const optimizedStaticMediaRequests: string[] = [];
   page.on("console", (message) => {
     if (message.text().includes("Largest Contentful Paint")) {
       lcpWarnings.push(message.text());
+    }
+  });
+  page.on("request", (request) => {
+    if (
+      request.url().includes("/_next/image?") &&
+      request.url().toLowerCase().includes("%2fimages%2fourdream%2f")
+    ) {
+      optimizedStaticMediaRequests.push(request.url());
     }
   });
 
@@ -4331,6 +4795,10 @@ test("community UI filters characters and shows collections", async ({ page }) =
     .getByTestId("community-character-card")
     .filter({ hasText: `${token} Delta` });
   await expect(alphaCard).toBeVisible({ timeout: 10_000 });
+  expect(await page.getByTestId("community-dreamer-card").count()).toBeLessThanOrEqual(3);
+  await expect(page.getByTestId("community-character-card")).toHaveCount(8);
+  await page.getByRole("button", { name: "Show more characters" }).click();
+  await expect(page.getByTestId("community-character-card")).toHaveCount(16);
 
   const releaseFilter = page.getByLabel("Release", { exact: true });
   const genderFilter = page.getByLabel("Gender", { exact: true });
@@ -4346,10 +4814,23 @@ test("community UI filters characters and shows collections", async ({ page }) =
 
   await styleFilter.selectOption("realistic");
   await expect(styleFilter).toHaveValue("realistic");
+  await expect(alphaCard).toBeVisible({ timeout: 10_000 });
 
+  const filterAuthorityRequests: string[] = [];
+  let captureFilterAuthorityRequests = true;
+  page.on("request", (request) => {
+    if (
+      captureFilterAuthorityRequests &&
+      request.url().includes("/api/v1/community/")
+    ) {
+      filterAuthorityRequests.push(new URL(request.url()).pathname);
+    }
+  });
   await genderFilter.selectOption("female");
   await expect(genderFilter).toHaveValue("female");
   await expect(alphaCard).toBeVisible({ timeout: 10_000 });
+  captureFilterAuthorityRequests = false;
+  expect(filterAuthorityRequests).toEqual(["/api/v1/community/leaderboards"]);
   await expect(deltaCard).toHaveCount(0);
 
   await genderFilter.selectOption("male");
@@ -4361,7 +4842,9 @@ test("community UI filters characters and shows collections", async ({ page }) =
   await expect.poll(() =>
     page.getByTestId("community-collection-card").count(),
   ).toBeGreaterThan(0);
+  expect(await page.getByTestId("community-collection-card").count()).toBeLessThanOrEqual(3);
   expect(lcpWarnings).toEqual([]);
+  expect(optimizedStaticMediaRequests).toEqual([]);
 });
 
 test("community shows explicit empty states when public data is unavailable", async ({
@@ -4405,14 +4888,15 @@ test("feed chat signup redirect returns anonymous intent to character detail", a
   });
   const email = uniqueEmail("feed-chat-signup-redirect");
 
-  await page.goto("/feed");
+  await page.goto("/feed?item=character%3Amelissa-burke");
   await expect(page.getByRole("heading", { name: "Recommended Dreams" })).toBeVisible({
     timeout: 10_000,
   });
   const melissaFeedCard = page
-    .getByTestId("feed-character-card")
+    .locator('[data-testid="feed-character-card"][data-focused="true"]')
     .filter({ has: page.locator('a[href="/characters/melissa-burke"]') });
   await expect(melissaFeedCard).toHaveCount(1, { timeout: 10_000 });
+  await expect(page.getByText("Showing shared dream.")).toBeVisible({ timeout: 10_000 });
   await melissaFeedCard.getByRole("button", { name: "Chat" }).click();
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/signup");
@@ -4423,6 +4907,7 @@ test("feed chat signup redirect returns anonymous intent to character detail", a
     .getAttribute("class");
   expect(authExploreClass?.split(/\s+/)).not.toContain("bg-[rgb(46,46,46)]");
 
+  await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Display name").fill("E2E Feed Chat Signup Redirect");
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");
@@ -4453,14 +4938,15 @@ test("feed like signup redirect returns anonymous intent to focused feed item", 
     pageErrors.push(error.message);
   });
 
-  await page.goto("/feed");
+  await page.goto("/feed?item=character%3Amelissa-burke");
   await expect(page.getByRole("heading", { name: "Recommended Dreams" })).toBeVisible({
     timeout: 10_000,
   });
   const melissaFeedCard = page
-    .getByTestId("feed-character-card")
+    .locator('[data-testid="feed-character-card"][data-focused="true"]')
     .filter({ has: page.locator('a[href="/characters/melissa-burke"]') });
   await expect(melissaFeedCard).toHaveCount(1, { timeout: 10_000 });
+  await expect(page.getByText("Showing shared dream.")).toBeVisible({ timeout: 10_000 });
   await melissaFeedCard.getByRole("button", { name: "Like" }).click();
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/signup");
@@ -4468,6 +4954,7 @@ test("feed like signup redirect returns anonymous intent to focused feed item", 
     "/feed?item=character%3Amelissa-burke",
   );
 
+  await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Display name").fill("E2E Feed Like Signup Redirect");
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");
@@ -4509,14 +4996,15 @@ test("feed remix signup redirect preserves anonymous generator intent", async ({
   });
   const email = uniqueEmail("feed-remix-signup-redirect");
 
-  await page.goto("/feed");
+  await page.goto("/feed?item=character%3Amelissa-burke");
   await expect(page.getByRole("heading", { name: "Recommended Dreams" })).toBeVisible({
     timeout: 10_000,
   });
   const melissaFeedCard = page
-    .getByTestId("feed-character-card")
+    .locator('[data-testid="feed-character-card"][data-focused="true"]')
     .filter({ has: page.locator('a[href="/characters/melissa-burke"]') });
   await expect(melissaFeedCard).toHaveCount(1, { timeout: 10_000 });
+  await expect(page.getByText("Showing shared dream.")).toBeVisible({ timeout: 10_000 });
   await melissaFeedCard.getByRole("button", { name: "Remix" }).click();
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/generate");
@@ -4534,6 +5022,7 @@ test("feed remix signup redirect preserves anonymous generator intent", async ({
   expect(new URL(page.url()).searchParams.get("next")).toBe(
     "/generate?characterId=melissa-burke&remixFeedItemId=character%3Amelissa-burke",
   );
+  await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Display name").fill("E2E Feed Remix Signup Redirect");
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");
@@ -4553,17 +5042,30 @@ test("feed UI supports share, report, and remix actions", async ({ page }) => {
   await startSignedInAdultSession(page, "feed-actions");
   const token = `E2E Feed ${Date.now()} ${Math.floor(Math.random() * 1e6)}`;
   const ids = await seedExploreCharacters(token);
+  const alternateCollection = await seedFeedCollection();
   const collection = await seedFeedCollection();
   const characterId = ids.delta;
+  const optimizedStaticMediaRequests: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.url().includes("/_next/image?") &&
+      request.url().toLowerCase().includes("%2fimages%2fourdream%2f")
+    ) {
+      optimizedStaticMediaRequests.push(request.url());
+    }
+  });
 
   await page.goto("/feed");
+  const feedCards = page.locator(
+    '[data-testid="feed-character-card"], [data-testid="feed-collection-card"]',
+  );
   await expect(page.locator('aside nav a[href="/feed"]')).toHaveClass(/bg-\[rgb\(46,46,46\)\]/);
-  await expect(page.locator("article").first().locator("img").first()).toHaveAttribute("loading", "eager", {
+  await expect(feedCards.first().locator("img").first()).toHaveAttribute("loading", "eager", {
     timeout: 10_000,
   });
   await expect
     .poll(() =>
-      page.locator("article").evaluateAll((articles) =>
+      feedCards.evaluateAll((articles) =>
         articles.slice(0, 10).map((article) => article.querySelector("img")?.getAttribute("loading")),
       ),
     )
@@ -4572,18 +5074,17 @@ test("feed UI supports share, report, and remix actions", async ({ page }) => {
       "eager",
       "eager",
       "eager",
-      "eager",
-      "eager",
-      "eager",
-      "eager",
-      "eager",
-      "eager",
+      "lazy",
+      "lazy",
+      "lazy",
+      "lazy",
     ]);
+  await expect(feedCards).toHaveCount(8);
+  expect(optimizedStaticMediaRequests).toEqual([]);
   const collectionCard = page.getByTestId("feed-collection-card").filter({ hasText: collection.name });
   await expect(collectionCard).toBeVisible({ timeout: 10_000 });
   await expect(collectionCard.getByText("Creator collection")).toBeVisible();
   await expect(collectionCard.getByText("1 item")).toBeVisible();
-  await expect(collectionCard.locator("img").first()).toHaveAttribute("loading", "eager");
   const collectionCommunityHref = `/community?collection=${encodeURIComponent(collection.id)}`;
   await expect(collectionCard.getByRole("link", { name: "View" })).toHaveAttribute(
     "href",
@@ -4603,8 +5104,39 @@ test("feed UI supports share, report, and remix actions", async ({ page }) => {
   await expect(focusedCommunityCollection).toHaveAttribute("data-focused", "true", {
     timeout: 10_000,
   });
+  const alternateCollectionHref =
+    `/community?collection=${encodeURIComponent(alternateCollection.id)}`;
+  await page.evaluate((href) => {
+    window.history.pushState(null, "", href);
+  }, alternateCollectionHref);
+  await expect.poll(() => {
+    const current = new URL(page.url());
+    return `${current.pathname}${current.search}`;
+  }).toBe(alternateCollectionHref);
+  await expect(
+    page.getByText(`Showing collection: ${alternateCollection.name}.`),
+  ).toBeVisible({ timeout: 10_000 });
+  await expect(
+    page
+      .getByTestId("community-collection-card")
+      .filter({ hasText: alternateCollection.name }),
+  ).toHaveAttribute("data-focused", "true", { timeout: 10_000 });
+  await expect(focusedCommunityCollection).toHaveAttribute(
+    "data-focused",
+    "false",
+  );
+  await page.locator('aside nav a[href="/community"]').click();
+  await expect.poll(() => {
+    const current = new URL(page.url());
+    return `${current.pathname}${current.search}`;
+  }).toBe("/community");
+  await expect(page.getByText(`Showing collection: ${collection.name}.`)).toHaveCount(0);
+  await expect(
+    page.locator('[data-testid="community-collection-card"][data-focused="true"]'),
+  ).toHaveCount(0);
 
-  await page.goto("/feed");
+  await page.locator('aside nav a[href="/feed"]').click();
+  await expect.poll(() => new URL(page.url()).pathname).toBe("/feed");
   await expect(collectionCard).toBeVisible({ timeout: 10_000 });
   await collectionCard.getByRole("button", { name: "Share" }).click();
   await expect(page.getByText(/Share link copied\.|Share link:/)).toBeVisible({ timeout: 10_000 });
@@ -4618,7 +5150,12 @@ test("feed UI supports share, report, and remix actions", async ({ page }) => {
   await expect(page.getByTestId("feed-status")).toHaveAttribute("aria-live", "polite");
   await expectContentReport("feed_item", collection.itemId);
 
-  await page.goto("/feed");
+  await page.locator('aside nav a[href="/feed"]').click();
+  await expect.poll(() => {
+    const current = new URL(page.url());
+    return `${current.pathname}${current.search}`;
+  }).toBe("/feed");
+  await expect(page.getByText("Showing shared dream.")).toHaveCount(0);
   const feedCard = page.locator("article").filter({
     has: page.locator(`a[href="/characters/${characterId}"]`),
   });
@@ -4662,6 +5199,32 @@ test("feed UI supports share, report, and remix actions", async ({ page }) => {
   await expect(sharedFeedCard.locator("img").first()).toHaveAttribute("loading", "eager");
   await expect(sharedFeedCard.getByText("Shared dream")).toBeVisible();
   await expect(sharedFeedCard.locator(`a[href="/characters/${characterId}"]`)).toBeVisible();
+  const focusedPaginationRequests: string[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (
+      url.pathname === "/api/v1/feed" &&
+      url.searchParams.has("cursor")
+    ) {
+      focusedPaginationRequests.push(request.url());
+    }
+  });
+  await page.getByRole("button", { name: "Load more" }).click();
+  await expect.poll(() => focusedPaginationRequests.length).toBe(1);
+  expect(
+    new URL(focusedPaginationRequests[0]!).searchParams.get("item"),
+  ).toBe(`character:${characterId}`);
+  await expect.poll(() => feedCards.count()).toBeGreaterThan(8);
+  const paginatedFeedHrefs = await feedCards.evaluateAll((cards) =>
+    cards.map((card) =>
+      card
+        .querySelector<HTMLAnchorElement>(
+          'a[href^="/characters/"], a[href^="/community?collection="]',
+        )
+        ?.getAttribute("href"),
+    ),
+  );
+  expect(new Set(paginatedFeedHrefs).size).toBe(paginatedFeedHrefs.length);
 
   await sharedFeedCard.getByRole("button", { name: "Report" }).click();
   await expect(page.getByText("Report submitted.")).toBeVisible({ timeout: 10_000 });
@@ -4682,14 +5245,44 @@ test("feed UI supports share, report, and remix actions", async ({ page }) => {
   const generate = page.getByRole("button", { name: "Generate" });
   await expect(generate).toBeEnabled({ timeout: 45_000 });
   await generate.click();
-  await expect(page.getByText("Generation queued.")).toBeVisible({ timeout: 10_000 });
+  await expectGenerationAccepted(page);
   const job = await latestImageJob(page.request);
+  const storedRemixJob = await prisma.generationJob.findUniqueOrThrow({
+    where: { id: job.id },
+    select: {
+      sourceMeta: true,
+      sourceType: true,
+    },
+  });
+  expect(storedRemixJob.sourceType).toBe("feed_remix");
+  expect(storedRemixJob.sourceMeta).toMatchObject({
+    feedItemId: `character:${characterId}`,
+    sourceCharacterId: characterId,
+  });
   await drainWorker(page.request, job.id);
+  const generatedMedia = await prisma.mediaAsset.findFirstOrThrow({
+    where: { sourceJobId: job.id },
+    select: { id: true },
+  });
   await expect(page.getByText("Generation complete.")).toBeVisible({ timeout: 10_000 });
+  const startNewMoment = page
+    .getByRole("button", { name: "Create a new moment" })
+    .first();
+  await expect(startNewMoment).toBeVisible();
+  await startNewMoment.click();
+  await expect
+    .poll(() => new URL(page.url()).searchParams.get("remixFeedItemId"))
+    .toBeNull();
+  await expect(
+    page.getByText("Describe the next moment. The character identity stays locked."),
+  ).toBeVisible();
   await page.getByRole("button", { name: "Images" }).click();
-  const galleryImage = page.getByTestId("gallery-media-image").first();
+  const generatedMediaCard = page.locator(
+    `[data-testid="gallery-media-card"][data-media-id="${generatedMedia.id}"]`,
+  );
+  const galleryImage = generatedMediaCard.getByTestId("gallery-media-image");
   await expect(galleryImage).toHaveAttribute("loading", "eager", { timeout: 10_000 });
-  const provenance = page.getByTestId("gallery-provenance-link").first();
+  const provenance = generatedMediaCard.getByTestId("gallery-provenance-link");
   await expect(provenance).toBeVisible({ timeout: 10_000 });
   await expect(provenance).toContainText("Remixed from Feed");
   await expect(provenance).toHaveAttribute(
@@ -4700,6 +5293,7 @@ test("feed UI supports share, report, and remix actions", async ({ page }) => {
   await expect.poll(() => new URL(page.url()).pathname).toBe("/feed");
   await expect(page.getByText("Showing shared dream.")).toBeVisible({ timeout: 10_000 });
   await expect(page.locator("article").first().locator(`a[href="/characters/${characterId}"]`)).toBeVisible();
+  expect(optimizedStaticMediaRequests).toEqual([]);
 });
 
 test("profile UI handles redeem, referral, billing, and media actions", async ({ page }) => {
@@ -4793,7 +5387,7 @@ test("profile UI handles redeem, referral, billing, and media actions", async ({
   });
 
   const billingCard = page.getByTestId("profile-billing-card");
-  await expect(billingCard.getByText("No active subscription")).toBeVisible({ timeout: 10_000 });
+  await expect(billingCard.getByText("No active paid access")).toBeVisible({ timeout: 10_000 });
   await expect(billingCard.getByRole("link", { name: "Compare plans" })).toHaveAttribute(
     "href",
     "/upgrade",
@@ -4946,6 +5540,7 @@ test("profile prompts anonymous visitors to sign in before showing private contr
   await expect.poll(() => new URL(page.url()).pathname).toBe("/signup");
   expect(new URL(page.url()).searchParams.get("next")).toBe("/profile#billing");
 
+  await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Display name").fill("E2E Profile Signup Redirect");
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");
@@ -4991,6 +5586,7 @@ test("profile subroutes preserve anonymous auth return targets", async ({ page }
   await expect.poll(() => new URL(page.url()).pathname).toBe("/signup");
   expect(new URL(page.url()).searchParams.get("next")).toBe("/profile/redeem-code");
 
+  await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Display name").fill("E2E Profile Subroute Signup Redirect");
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("password123");

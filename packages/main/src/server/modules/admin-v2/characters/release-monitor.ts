@@ -242,6 +242,8 @@ export async function dispatchStaleReleaseRoutes(
           eventType: "character.release.qualification_stale.v2",
           aggregateType: "character_release",
           aggregateId: release.id,
+          status: "delivered",
+          deliveredAt: now,
           payload: toInputJson({
             releaseId: release.id,
             characterId: project.characterId,

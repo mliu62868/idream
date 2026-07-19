@@ -6,12 +6,19 @@
 --   * Base tables stay in `public` (owned by core_owner / the main app).
 --   * core/billing/compliance are VIEW-ONLY schemas exposing minimal read models.
 --   * chat schema holds the chat service's authority tables.
---   * chat_service runtime role: SELECT on the 4 views + CRUD on chat.*; it has
---     NO grant on public.* base tables, so the only way it reads main data is
---     through the views (least privilege, enforced by the DB, not code review).
+--   * chat_service is the request/domain role: it reads the Main views, writes
+--     normal chat transactions, and may create durable file intents only through
+--     the narrow columns granted in 04_grants.sql. It cannot forge completion.
+--   * chat_projector is the durable-file projection role: after applying the
+--     CHAT_FS_ROOT side effect it may advance the mutation receipt under the
+--     file-ledger trigger. Direct intent INSERT/DELETE is denied; account erasure
+--     uses only the narrow function that validates the canonical erasure intent.
+--   * Neither runtime role receives a grant on public.* base tables; Main data is
+--     exposed only through the read models granted to chat_service.
 --
 -- Passwords below are PLACEHOLDERS. Set real secrets (or use IAM/peer auth) before
--- production. The app connects with the chat_service role only.
+-- production. Runtime config must provide distinct chat_service request and
+-- chat_projector projector credentials; do not collapse them into one app role.
 
 -- ---- roles -------------------------------------------------------------------
 DO $$
@@ -24,6 +31,9 @@ BEGIN
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'chat_service') THEN
     CREATE ROLE chat_service LOGIN PASSWORD 'chat_service_change_me';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'chat_projector') THEN
+    CREATE ROLE chat_projector LOGIN PASSWORD 'chat_projector_change_me';
   END IF;
 END
 $$;
@@ -46,3 +56,4 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO core_owner;
 -- granted in 04_grants.sql). It must NOT get USAGE on public.
 GRANT USAGE ON SCHEMA core, billing, compliance TO chat_service;
 GRANT USAGE ON SCHEMA chat TO chat_service;
+GRANT USAGE ON SCHEMA chat TO chat_projector;

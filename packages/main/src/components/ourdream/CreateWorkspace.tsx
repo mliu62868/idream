@@ -554,7 +554,15 @@ export function CreateWorkspace() {
 
         <div className="mt-8 grid gap-4 md:grid-cols-[360px_1fr]">
           <div className="relative min-h-[560px] overflow-hidden rounded-[20px] bg-[rgb(18,18,18)]">
-            <Image alt="" className="object-cover object-top" fill loading="eager" sizes="360px" src={preview} />
+            <Image
+              alt=""
+              className="object-cover object-top"
+              fill
+              loading="eager"
+              sizes="360px"
+              src={preview}
+              unoptimized={isProtectedMediaUrl(preview)}
+            />
             <div className="absolute inset-0 bg-[linear-gradient(0deg,rgba(0,0,0,.82),rgba(0,0,0,.1)_62%,transparent)]" />
             {previewStatus === "generating" && (
               <div className="absolute inset-0 grid place-items-center bg-black/50 text-[13px] font-bold text-white">
@@ -779,6 +787,7 @@ export function CreateWorkspace() {
                             fill
                             sizes="180px"
                             src={candidate.url}
+                            unoptimized={isProtectedMediaUrl(candidate.url)}
                           />
                           <span className="absolute left-2 top-2 rounded-full bg-black/70 px-2 py-1 text-[11px] font-black text-white">
                             {candidate.isSynthetic
@@ -1167,4 +1176,8 @@ function normalizedTags(value: string) {
     .map((tag) => tag.trim())
     .filter(Boolean)
     .slice(0, 12);
+}
+
+function isProtectedMediaUrl(url: string) {
+  return url.startsWith("/api/v1/media/") || url.startsWith("/user-content/");
 }

@@ -23,6 +23,7 @@ view ChatUserView {
   status      String
   deletedAt   DateTime? @map("deleted_at")
   updatedAt   DateTime  @map("updated_at")
+  dataClass   String    @map("data_class")
 
   @@map("chat_user_view")
   @@schema("core")
@@ -122,6 +123,7 @@ model ChatSession {
   memoryEnabled             Boolean   @default(true) @map("memory_enabled")
   memorySummary             String?   @map("memory_summary")
   logExtractedSeq           BigInt    @default(0) @map("log_extracted_seq")
+  contextRevision           BigInt    @default(0) @map("context_revision")
   lastMessageAt             DateTime? @map("last_message_at")
   createdAt                 DateTime  @default(now()) @map("created_at")
   updatedAt                 DateTime  @default(now()) @updatedAt @map("updated_at")
@@ -201,6 +203,7 @@ model Message {
   engagementSessionId       String?   @map("engagement_session_id")
   characterContentVersionId String?   @map("character_content_version_id")
   characterReleaseId        String?   @map("character_release_id")
+  memoryAuthority           String    @default("legacy_unknown") @map("memory_authority")
   memoryExtractedAttempt    Int       @default(0) @map("memory_extracted_attempt")
   createdAt                 DateTime  @default(now()) @map("created_at")
   updatedAt                 DateTime  @default(now()) @updatedAt @map("updated_at")
@@ -307,6 +310,23 @@ model ChatOutboxEvent {
 
   @@index([status, nextRunAt], map: "chat_outbox_pending_idx")
   @@map("chat_outbox_events")
+  @@schema("chat")
+}
+
+model ChatFileMutation {
+  id        String    @id
+  sequence  BigInt    @unique @default(autoincrement())
+  userId    String    @map("user_id")
+  kind      String
+  payload   Json      @default("{}")
+  status    String    @default("pending")
+  attempts  Int       @default(0)
+  lastError String?   @map("last_error")
+  createdAt DateTime  @default(now()) @map("created_at")
+  appliedAt DateTime? @map("applied_at")
+
+  @@index([userId, status, sequence], map: "chat_file_mutations_user_pending_idx")
+  @@map("chat_file_mutations")
   @@schema("chat")
 }
 

@@ -1,12 +1,35 @@
 # iDream 上线可用性审计
 
-更新日期：2026-07-04
+更新日期：2026-07-18
+
+> **2026-07-18 当前默认模型更正**：本页 2026-07-03 的
+> `pornmaster_zimage_default` 记录是历史证据，不再描述当前开发库。
+> 当前 canonical key 是 `redcraft_krea2_default`，精确绑定
+> `runner=comfyui`、`pipelineModel=redcraft-krea2-comfyui` 与
+> `workflowKey=redcraft-krea2-txt2img`；真实候选探针已确认
+> active/enabled/100%、模型与 workflow 文件存在、`readyForPublish=true`。
+> 公开生产环境仍未因此被评估或放行。
+
+## 2026-07-18 当前源码补充
+
+本节是当前事实补充；下方 2026-07-03–05 的构建、E2E、PM2、Chrome、provider 与 launch-gate 数字均为历史审计证据，不是当前 revision 的 live verdict。
+
+- Main migration rehearsal/deploy/status/drift 为 `60/60` 且无 drift；Chat DB boundary 正向能力与 15 项负向拒绝检查通过，运行时使用 `chat_service` 请求角色和独立 `chat_projector` 投影角色。
+- 根 lint `2/2`、typecheck `6/6`；全量测试为 Shared `36 files / 175 tests`、Admin `89 / 397`、Gen `14 / 117`、Main `219 passed files + 2 skipped files / 1,585 passed + 3 skipped tests`、Chat `27 / 212`，总计 `385 passed files + 2 skipped files / 2,486 passed tests + 3 skipped tests`。
+- fresh `PW_RUN_ID=c3d4e5f6` 在隔离端口 3880–3883 完成 `164/164`（4.5m），并证明显式 Chat projector wiring 进入真实 Playwright service graph。
+- 关键页面的数据边界未发现确定性的 P0/P1 假数据路径：官方编辑 seed 是经过 DB → Release → Serving → Qualification 的治理型冷启动供给，不是测试 fixture 或自然用户活动；actor-scoped 个人页面在没有事实时保持真实 empty state。
+- 根 production build `5/5` 后，834px 浏览器审查发现并修复 TopControls overflow，独立 E2E `1/1` 通过，再执行 Main-only final build。Main release 为 `idream-f7579f81-cc0e-419f-a259-9f6f78c962f9`，Admin release 为 `idream-8838f3a3-c801-47cd-8df7-36c96cb88447`，build ID 均为 `build-TfctsWXpff2fKS`。
+- PM2 7 logical apps / 8 processes online；`/`、`/explore`、`/admin/today` 为 200，Chat `/healthz` 为 `ok`。Main 1440px/375px 无 overflow/console error，最终 834px `scrollWidth=834` 且 filters in bounds；Admin Today/Characters/Creative/Incidents/Cases 为 `zh-CN`，375px/834px 无 overflow、console error 0。
+- 最终 checkpoint 源端为 60 migrations（latest `20260718012000`）、20 users、16 characters/Releases/live Servings/active Qualifications/media、234 base tables、7 views、1 sequence，16 authority assertions / 0 broken；Main outbox `3,936`（pending `0`、failed `0`）、inbound `5,738`（received `0`）。Chat sessions/messages/attachments 为 `294/818/4`，outbox `1,552`、inbox `488`（均 pending `0`、failed `0`），file mutations `5`（pending `0`）；Redis operational pending/failed 均为 0。
+- `redcraft_krea2_default` ready；真实 workflow-native `BackendImageModel → ComfyUI 0.28.0` MPS smoke 为 832×1024、880,175 bytes、132,649ms 并通过。当前 worker 使用 `GEN_IMAGE_PROVIDER=backend` 与 ComfyUI 8188。
+- `launch:probe:pipeline --include-catalog` 当前是 `6/7`：web/product/chat-service/chat-model/voice/catalog 通过，legacy `pipeline@8091` image check 因网关未运行失败。它不是当前 backend/ComfyUI 失败，也不能把 pipeline suite 宣称为通过。
+- Main DB + Chat FS + local Blob 的最终静默备份与隔离恢复已通过。Artifact base 为 `/Users/kk/code/idream/local-backups/idream-main-final-20260718-60/idream-main-final-20260718-60`；bundle 目录 `0700`、23 files 全部 `0600`、171M，SHA checks 全部通过。Chat FS 为 429 files / 550,987 bytes，Blob 为 13,634 files / 162,163,688 bytes；source/restore 的 counts、schema、logical DB、Chat FS、Blob 比较均为 zero difference，restore DB remaining `0`。PostgreSQL client/server 为 `18.3/16.14`。恢复后 PM2 7 logical apps / 8 processes 全部 online，Main/Admin HTTP 200、Chat health `ok`。公开生产 providers、canary、backfill、容量与 public-launch readiness 仍为 `NOT_EVALUATED`。
 
 ## 结论
 
-当前状态：**DONE_WITH_CONCERNS，不能判定为可公开上线运营**。按 2026-06-26 范围决策，当前目标收窄为内部演示/受控 beta。
+历史状态（2026-07-04）：**DONE_WITH_CONCERNS，不能判定为可公开上线运营**。按 2026-06-26 范围决策，当前目标收窄为内部演示/受控 beta。
 
-本地产品主流程、构建、E2E、Chrome smoke、web surface、产品生成配置、public catalog、默认图片模型候选、chat service、chat model、图片 pipeline、voice pipeline 已通过验证；2026-07-05 Gallery 当前质量复验补上 PNG checksum sanity 与浏览器可解码性证据；公开 launch gate 仍为红灯。未来公开上线阻断集中在真实生产外部依赖尚未配置或尚未用真实 provider probe 证明可用：生产 chat service、payment、blob、age verification、Sentry、生产 model gateway 与 live probe report。
+下方记录的是当时本地产品主流程、构建、E2E、Chrome smoke、web surface、产品生成配置、public catalog、默认图片模型候选、chat service、chat model、图片 pipeline 与 voice pipeline 的审计快照；2026-07-05 Gallery 质量复验补上 PNG checksum sanity 与浏览器可解码性证据。它们不能替代顶部列出的当前 revision live Gate，公开 launch gate 仍保持严格。
 
 ## 2026-06-26 范围决策
 
@@ -25,7 +48,7 @@
 
 **视频生成（第一期不上线）**：与上述"延后集成"不同，这是产品功能层面的延期——因视频生成耗时过长排入 V1.1（见 `docs/architecture/12-roadmap.md` 2026-06-27 范围决策）。第一期 `video_gen` 功能位保持 `false`，readiness 检查以"视频禁用"为预期通过（产品配置 probe 见 `video_gen=false`），不计为公开上线阻断项。前端关闭态不再展示 `Video Beta` 或 `Videos` 死入口；video 只在功能位、entitlement、video models 同时满足时曝光。
 
-## 已验证通过
+## 历史已验证通过（2026-07-03–05）
 
 | 范围 | 证据 |
 | --- | --- |
@@ -46,30 +69,32 @@
 | 默认图片模型候选 | 2026-07-03 `.tmp/generation-model-candidates-2026-07-03-continuation.json`，`pornmaster_zimage_default` active/enabled/rollout 100%，`readyForPublish=true`，所需本地模型组件存在 |
 | launch gate | 2026-07-04 `docs/product-audits/2026-07-04-launch-catalog-gate-audit/check-launch-current-root.json`：`bun run check:launch -- --json` 为 `7 pass / 50 fail / 2 warn`，且根命令写出可解析 JSON；新增失败是当前 shell 未设置 `PUBLIC_CATALOG_PROBE_REPORT`。`docs/product-audits/2026-07-04-launch-catalog-gate-audit/check-launch-production-example-fresh.json`：`bun run check:launch:direct -- --launch-env-file packages/main/.env.production.example --json` 在新鲜 catalog 报告下为 `31 pass / 34 fail / 0 warn`，`public-catalog-live-probe` 通过；`.tmp/check-launch-production-example-fresh-mock-2026-07-04-goal.json` 仍证明新鲜 mock payment/blob/age 报告会被 production-shaped gate 拒绝；`.tmp/check-launch-production-example-2026-07-04-video-template.json` 证明 production example 下 video provider check 以“video disabled”通过。三者都仍未达到公开上线 gate |
 
-## 图片服务链路
+## 当前图片服务链路
 
-产品服务不直接加载 `.safetensors`，也不直接调用 sd.cpp。稳定边界是 OpenAI-compatible Pipeline API：
+当前生产 worker 不依赖 8091 OpenAI-compatible image gateway，而是通过 workflow-native backend registry 选择 descriptor 并直连 ComfyUI：
 
 ```text
-main-web / packages/gen
-  -> GEN_IMAGE_PROVIDER=pipeline
-  -> PIPELINE_API_URL
-  -> local/internal pipeline gateway
-  -> sd.cpp runner
-  -> ~/Downloads/models/pornmasterZImage_turboV35Bf16.safetensors
+main-web -> BullMQ -> gen-image
+  -> GEN_IMAGE_PROVIDER=backend
+  -> BackendImageModel -> BackendRegistry
+  -> redcraft-krea2-txt2img descriptor
+  -> COMFYUI_API_URL=http://127.0.0.1:8188
+  -> ComfyUI 0.28.0 / MPS
 ```
 
-当前本地 `sdcpp-image` 进程把 `stable-diffusion.cpp` 包装成 OpenAI-compatible image API，使用模型 alias `pornmaster-zimage-turbo`。这符合产品边界：线上仍然只暴露 `PIPELINE_API_URL`、`PIPELINE_API_TOKEN` 和模型 alias，不把 runner 或模型文件路径写进产品服务。
+真实 backend smoke 已产出 832×1024、880,175-byte PNG，耗时 132,649ms。下方 `sdcpp-image` / `pipeline@8091` 记录只描述 2026-06-30 的 legacy adapter；当前仓库没有 `serve:sdcpp-image` 运行脚本，不得把它当作当前启动命令。
 
 ## 当前 Pipeline 状态
 
-Pipeline 不在 2026-06-26 延后清单里。当前内部 beta 必须继续跑通：
+当前组合探针结果必须按子能力报告：
 
 ```bash
-bun run launch:probe:pipeline
+bun run launch:probe:pipeline -- --include-catalog
 ```
 
-当前本地结果（2026-06-30 复验）：
+2026-07-18 当前结果为 `6/7`：web surface、product config、chat service、chat model、voice 与 catalog 通过；legacy image step 访问未运行的 8091 gateway 失败。当前生产图片 worker 是已独立 smoke 通过的 workflow-native `backend`，所以这不是 backend failure；但组合探针仍是 6/7，不能宣称 pass。
+
+### 2026-06-30 legacy pipeline checkpoint
 
 - `bun run launch:probe:pipeline` 通过，6/6。
 - image pipeline 已通：`@idream/gen` 调 `http://127.0.0.1:8091/images/generations`，返回 `generation.completed`，产出 1 个 asset，最新耗时约 97.3s。

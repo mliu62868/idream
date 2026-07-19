@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Prisma } from "@prisma/client";
 import type { AiFinalizePayload } from "@/server/ai/schemas";
 import { drainLocalAiPipeline, reconcileStaleGenerationJobs } from "@/server/ai/local-pipeline";
@@ -6,6 +6,7 @@ import { enqueueGenerationAttempt } from "@/server/modules/generation/attempt-di
 import { jobQueue } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
 import { referenceSetSnapshotHash } from "@/server/modules/admin-v2/characters/release-snapshot";
+import * as generationCatalog from "@/server/modules/admin/generation-catalog";
 import {
   api,
   createCharacter,
@@ -25,6 +26,64 @@ const CHAR = `${P}char`;
 
 function asInputJson(value: AiFinalizePayload): Prisma.InputJsonValue {
   return value as unknown as Prisma.InputJsonValue;
+}
+
+type ExactGenerationQuote = {
+  profileId: string;
+  profileVersion: number;
+  routeFingerprint: string;
+  pricing: {
+    ruleId: string;
+    ruleKey: string;
+    version: number;
+    effectiveFrom: string | null;
+    fingerprint: string;
+  };
+  costs: Array<{
+    outputCount: number;
+    costDreamcoins: number;
+  }>;
+};
+
+type ExactGenerationRetryQuote = Omit<
+  ExactGenerationQuote,
+  "costs"
+> & {
+  generationJobId: string;
+  outputCount: number;
+  costDreamcoins: number;
+  balance: number;
+};
+
+function quoteAuthority(
+  quote: ExactGenerationQuote,
+  outputCount = 1,
+) {
+  const exactCost = quote.costs.find(
+    (cost) => cost.outputCount === outputCount,
+  );
+  if (!exactCost) {
+    throw new Error(`Quote has no cost for outputCount=${outputCount}`);
+  }
+  return {
+    profileId: quote.profileId,
+    profileVersion: quote.profileVersion,
+    routeFingerprint: quote.routeFingerprint,
+    pricingFingerprint: quote.pricing.fingerprint,
+    outputCount,
+    costDreamcoins: exactCost.costDreamcoins,
+  };
+}
+
+function retryQuoteAuthority(quote: ExactGenerationRetryQuote) {
+  return {
+    profileId: quote.profileId,
+    profileVersion: quote.profileVersion,
+    routeFingerprint: quote.routeFingerprint,
+    pricingFingerprint: quote.pricing.fingerprint,
+    outputCount: quote.outputCount,
+    costDreamcoins: quote.costDreamcoins,
+  };
 }
 
 async function createSealedReferenceSet(input: {
@@ -270,6 +329,701 @@ afterAll(async () => {
 });
 
 describe("image generation service contract", () => {
+  it("keeps implicit no-reference routes on public T2I and skips cheaper inaccessible profiles", async () => {
+    const userId = `${P}implicit-route-user`;
+    const characterId = `${P}implicit-route-character`;
+    const hiddenProfileId = `${P}cheaper-hidden-source-profile`;
+    const gatedTextProfileId = `${P}cheaper-gated-text-profile`;
+    const gatedReferenceProfileId = `${P}cheaper-gated-reference-profile`;
+    const accessibleReferenceProfileId =
+      `${P}accessible-reference-profile`;
+    await createUser({ id: userId });
+    await createCharacter({
+      id: characterId,
+      creatorId: userId,
+      visibility: "private",
+      status: "approved",
+    });
+    await grantCoins(userId, 500, "seed");
+    const imageRunnerConfig = {
+      workflowVersion: 1,
+      capabilities: {
+        textToImage: true,
+        stableSeed: true,
+        referenceImages: true,
+        initImage: true,
+        lora: false,
+      },
+    };
+    await prisma.generationModelProfile.createMany({
+      data: [
+        {
+          id: hiddenProfileId,
+          profileKey: hiddenProfileId,
+          label: "Cheaper hidden source-only route",
+          mode: "image",
+          runner: "comfyui",
+          pipelineModel: "qwen-image-edit",
+          workflowKey: "qwen-image-edit-img2img",
+          runnerConfig: {
+            ...imageRunnerConfig,
+            capabilities: {
+              ...imageRunnerConfig.capabilities,
+              referenceImages: false,
+            },
+          },
+          allowedOrientations: ["4:5"],
+          costMultiplier: 0.001,
+          maxCount: 1,
+          status: "active",
+          enabled: true,
+          rolloutPercent: 100,
+          version: 1,
+        },
+        {
+          id: gatedTextProfileId,
+          profileKey: gatedTextProfileId,
+          label: "Cheaper gated public T2I route",
+          mode: "image",
+          runner: "comfyui",
+          pipelineModel: "redcraft-krea2",
+          workflowKey: "redcraft-krea2-txt2img",
+          runnerConfig: {
+            workflowVersion: 1,
+            capabilities: {
+              textToImage: true,
+              stableSeed: true,
+              referenceImages: false,
+              initImage: false,
+              lora: false,
+            },
+          },
+          allowedOrientations: ["4:5"],
+          costMultiplier: 0.002,
+          requiredEntitlement: `${P}premium-model-access`,
+          maxCount: 1,
+          status: "active",
+          enabled: true,
+          rolloutPercent: 100,
+          version: 1,
+        },
+        {
+          id: gatedReferenceProfileId,
+          profileKey: gatedReferenceProfileId,
+          label: "Cheaper gated Character reference route",
+          mode: "image",
+          runner: "comfyui",
+          pipelineModel: "qwen-image-edit",
+          workflowKey: "qwen-image-edit-img2img",
+          runnerConfig: imageRunnerConfig,
+          allowedOrientations: ["4:5"],
+          costMultiplier: 0.003,
+          requiredEntitlement: `${P}premium-model-access`,
+          maxCount: 1,
+          status: "active",
+          enabled: true,
+          rolloutPercent: 100,
+          version: 1,
+        },
+        {
+          id: accessibleReferenceProfileId,
+          profileKey: accessibleReferenceProfileId,
+          label: "Accessible Character reference route",
+          mode: "image",
+          runner: "comfyui",
+          pipelineModel: "qwen-image-edit",
+          workflowKey: "qwen-image-edit-img2img",
+          runnerConfig: imageRunnerConfig,
+          allowedOrientations: ["4:5"],
+          costMultiplier: 0.004,
+          maxCount: 1,
+          status: "active",
+          enabled: true,
+          rolloutPercent: 100,
+          version: 1,
+        },
+      ],
+    });
+
+    try {
+      const freeplayBody = {
+        mode: "image" as const,
+        freeplay: true,
+        outputCount: 1,
+      };
+      const freeplayQuoteResponse = await api(
+        "POST",
+        "generation/quote",
+        {
+          userId,
+          ageGate: true,
+          body: freeplayBody,
+        },
+      );
+      expectOk(freeplayQuoteResponse);
+      const freeplayQuote =
+        freeplayQuoteResponse.data.quote as ExactGenerationQuote;
+      expect(freeplayQuote.profileId).toBe("profile_image_default_v1");
+      const freeplayCreated = await api("POST", "generation/jobs", {
+        userId,
+        ageGate: true,
+        body: {
+          ...freeplayBody,
+          quoteAuthority: quoteAuthority(freeplayQuote),
+        },
+      });
+      expectOk(freeplayCreated, 202);
+      expect(freeplayCreated.data.job.profileId).toBe(
+        "profile_image_default_v1",
+      );
+
+      const characterBody = {
+        mode: "image" as const,
+        characterId,
+        outputCount: 1,
+      };
+      const characterQuoteResponse = await api(
+        "POST",
+        "generation/quote",
+        {
+          userId,
+          ageGate: true,
+          body: characterBody,
+        },
+      );
+      expectOk(characterQuoteResponse);
+      const characterQuote =
+        characterQuoteResponse.data.quote as ExactGenerationQuote;
+      expect(characterQuote.profileId).toBe("profile_image_default_v1");
+      const characterCreated = await api("POST", "generation/jobs", {
+        userId,
+        ageGate: true,
+        body: {
+          ...characterBody,
+          quoteAuthority: quoteAuthority(characterQuote),
+        },
+      });
+      expectOk(characterCreated, 202);
+      expect(characterCreated.data.job.profileId).toBe(
+        "profile_image_default_v1",
+      );
+
+      const referenceBody = {
+        mode: "image" as const,
+        characterId: CHAR,
+        outputCount: 1,
+      };
+      const referenceQuoteResponse = await api(
+        "POST",
+        "generation/quote",
+        {
+          userId,
+          ageGate: true,
+          body: referenceBody,
+        },
+      );
+      expectOk(referenceQuoteResponse);
+      const referenceQuote =
+        referenceQuoteResponse.data.quote as ExactGenerationQuote;
+      expect(referenceQuote.profileId).toBe(
+        accessibleReferenceProfileId,
+      );
+      const referenceCreated = await api("POST", "generation/jobs", {
+        userId,
+        ageGate: true,
+        body: {
+          ...referenceBody,
+          quoteAuthority: quoteAuthority(referenceQuote),
+        },
+      });
+      expectOk(referenceCreated, 202);
+      expect(referenceCreated.data.job.profileId).toBe(
+        accessibleReferenceProfileId,
+      );
+      await runQueuedGenerationJobs(8);
+    } finally {
+      await prisma.generationModelProfile.deleteMany({
+        where: {
+          id: {
+            in: [
+              hiddenProfileId,
+              gatedTextProfileId,
+              gatedReferenceProfileId,
+              accessibleReferenceProfileId,
+            ],
+          },
+        },
+      });
+    }
+  });
+
+  it("quotes from read-only authority and rejects missing, forged, and unaffordable writes before mutations", async () => {
+    const userId = `${P}exact-quote-guard-user`;
+    const characterId = `${P}exact-quote-guard-character`;
+    await createUser({ id: userId });
+    await createCharacter({
+      id: characterId,
+      creatorId: userId,
+      visibility: "private",
+      status: "approved",
+    });
+    const body = {
+      mode: "image" as const,
+      characterId,
+      outputCount: 1,
+    };
+    const balanceBefore = await dreamcoinBalance(userId);
+
+    const quoted = await api("POST", "generation/quote", {
+      userId,
+      ageGate: true,
+      body,
+    });
+    expectOk(quoted);
+    const quote = quoted.data.quote as ExactGenerationQuote;
+    expect(quote.costs[0]?.costDreamcoins).toBeGreaterThan(0);
+    await expect(
+      prisma.characterVisualProfile.count({ where: { characterId } }),
+    ).resolves.toBe(0);
+    await expect(
+      prisma.generationJob.count({ where: { userId } }),
+    ).resolves.toBe(0);
+    await expect(dreamcoinBalance(userId)).resolves.toBe(balanceBefore);
+
+    const missing = await api("POST", "generation/jobs", {
+      userId,
+      ageGate: true,
+      autoGenerationQuote: false,
+      body,
+    });
+    expectError(missing, 409, "conflict");
+
+    const forgedRoute = await api("POST", "generation/jobs", {
+      userId,
+      ageGate: true,
+      body: {
+        ...body,
+        quoteAuthority: {
+          ...quoteAuthority(quote),
+          routeFingerprint: "0".repeat(64),
+        },
+      },
+    });
+    expectError(forgedRoute, 409, "conflict");
+
+    const forgedPricing = await api("POST", "generation/jobs", {
+      userId,
+      ageGate: true,
+      body: {
+        ...body,
+        quoteAuthority: {
+          ...quoteAuthority(quote),
+          pricingFingerprint: "1".repeat(64),
+        },
+      },
+    });
+    expectError(forgedPricing, 409, "conflict");
+
+    const unaffordable = await api("POST", "generation/jobs", {
+      userId,
+      ageGate: true,
+      body: {
+        ...body,
+        quoteAuthority: quoteAuthority(quote),
+      },
+    });
+    expectError(unaffordable, 402, "payment_required");
+
+    for (const rejected of [missing, forgedRoute, forgedPricing, unaffordable]) {
+      expect(rejected.data).toBeUndefined();
+    }
+    await expect(
+      prisma.characterVisualProfile.count({ where: { characterId } }),
+    ).resolves.toBe(0);
+    await expect(
+      prisma.generationJob.count({ where: { userId } }),
+    ).resolves.toBe(0);
+    await expect(dreamcoinBalance(userId)).resolves.toBe(balanceBefore);
+  });
+
+  it("returns quote drift as 409 before current max-count or orientation validation", async () => {
+    const userId = `${P}quote-drift-user`;
+    await createUser({ id: userId });
+    await grantCoins(userId, 1_000, "seed");
+    const body = {
+      mode: "image" as const,
+      freeplay: true,
+      outputCount: 1,
+    };
+    const quoted = await api("POST", "generation/quote", {
+      userId,
+      ageGate: true,
+      body,
+    });
+    expectOk(quoted);
+    const quote = quoted.data.quote as ExactGenerationQuote & {
+      maxCount: number;
+      orientations: string[];
+    };
+    expect(quote.maxCount).toBeGreaterThan(1);
+    expect(quote.orientations.length).toBeGreaterThan(1);
+    const profile = await prisma.generationModelProfile.findFirstOrThrow({
+      where: {
+        profileKey: quote.profileId,
+        version: quote.profileVersion,
+        status: "active",
+      },
+    });
+    const originalMaxCount = profile.maxCount;
+    const originalOrientations = Array.isArray(profile.allowedOrientations)
+      ? profile.allowedOrientations.filter(
+          (orientation): orientation is string =>
+            typeof orientation === "string",
+        )
+      : [];
+    const balanceBefore = await dreamcoinBalance(userId);
+
+    try {
+      await prisma.generationModelProfile.update({
+        where: { id: profile.id },
+        data: { maxCount: 1 },
+      });
+      const maxDrift = await api("POST", "generation/jobs", {
+        userId,
+        ageGate: true,
+        body: {
+          ...body,
+          outputCount: quote.maxCount,
+          quoteAuthority: quoteAuthority(quote, quote.maxCount),
+        },
+      });
+      expectError(maxDrift, 409, "conflict");
+
+      await prisma.generationModelProfile.update({
+        where: { id: profile.id },
+        data: {
+          maxCount: originalMaxCount,
+          allowedOrientations: [quote.orientations[0]],
+        },
+      });
+      const orientationDrift = await api("POST", "generation/jobs", {
+        userId,
+        ageGate: true,
+        body: {
+          ...body,
+          controls: { orientation: quote.orientations[1] },
+          quoteAuthority: quoteAuthority(quote),
+        },
+      });
+      expectError(orientationDrift, 409, "conflict");
+    } finally {
+      await prisma.generationModelProfile.update({
+        where: { id: profile.id },
+        data: {
+          maxCount: originalMaxCount,
+          allowedOrientations: originalOrientations,
+        },
+      });
+    }
+
+    await expect(
+      prisma.generationJob.count({ where: { userId } }),
+    ).resolves.toBe(0);
+    await expect(dreamcoinBalance(userId)).resolves.toBe(balanceBefore);
+  });
+
+  it("quotes and creates the same single-anchor character route, cost, count, and orientation authority", async () => {
+    const userId = `${P}single-anchor-quote-user`;
+    await createUser({ id: userId });
+    await grantCoins(userId, 100, "seed");
+    const body = {
+      mode: "image" as const,
+      characterId: CHAR,
+      outputCount: 1,
+    };
+    const quoted = await api("POST", "generation/quote", {
+      userId,
+      ageGate: true,
+      body,
+    });
+    expectOk(quoted);
+    const quote = quoted.data.quote as ExactGenerationQuote & {
+      defaultOrientation: string;
+      maxCount: number;
+      orientations: string[];
+    };
+    expect(quote.maxCount).toBeGreaterThan(0);
+    expect(quote.orientations).toContain(quote.defaultOrientation);
+    expect(quote.costs).toHaveLength(quote.maxCount);
+    const balanceBefore = await dreamcoinBalance(userId);
+
+    const created = await api("POST", "generation/jobs", {
+      userId,
+      ageGate: true,
+      body: {
+        ...body,
+        controls: { orientation: quote.defaultOrientation },
+        quoteAuthority: quoteAuthority(quote),
+      },
+    });
+    expectOk(created, 202);
+    expect(created.data.job).toMatchObject({
+      profileId: quote.profileId,
+      profileVersion: quote.profileVersion,
+      orientation: quote.defaultOrientation,
+      outputCount: 1,
+      costDreamcoins: quote.costs[0]?.costDreamcoins,
+      controls: {
+        generationQuoteAuthority: {
+          schemaVersion: "generation-quote-authority-v1",
+          profileId: quote.profileId,
+          profileVersion: quote.profileVersion,
+          routeFingerprint: quote.routeFingerprint,
+          pricing: {
+            ruleId: quote.pricing.ruleId,
+            ruleKey: quote.pricing.ruleKey,
+            version: quote.pricing.version,
+            effectiveFrom: quote.pricing.effectiveFrom,
+            fingerprint: quote.pricing.fingerprint,
+          },
+          outputCount: 1,
+          costDreamcoins: quote.costs[0]?.costDreamcoins,
+        },
+      },
+    });
+    await expect(dreamcoinBalance(userId)).resolves.toBe(
+      balanceBefore - (quote.costs[0]?.costDreamcoins ?? 0),
+    );
+    await runQueuedGenerationJobs(4);
+  });
+
+  it("quotes failed-job retry without writes, rejects stale authority, and replays a committed retry without revalidation", async () => {
+    const userId = `${P}retry-quote-user`;
+    const retryKey = `${P}retry-quote-key`;
+    await createUser({ id: userId });
+    await grantCoins(userId, 200, "seed");
+    const generationBody = {
+      mode: "image" as const,
+      characterId: CHAR,
+      outputCount: 1,
+    };
+    const initialQuoteResponse = await api(
+      "POST",
+      "generation/quote",
+      {
+        userId,
+        ageGate: true,
+        body: generationBody,
+      },
+    );
+    expectOk(initialQuoteResponse);
+    const initialQuote =
+      initialQuoteResponse.data.quote as ExactGenerationQuote;
+    const initial = await api("POST", "generation/jobs", {
+      userId,
+      ageGate: true,
+      body: {
+        ...generationBody,
+        quoteAuthority: quoteAuthority(initialQuote),
+      },
+    });
+    expectOk(initial, 202);
+    const failedJobId = initial.data.job.id as string;
+    await jobQueue.removeByDedupePrefix(
+      `generation:${failedJobId}`,
+      ["ai.image.generate"],
+    );
+    await prisma.generationJob.update({
+      where: { id: failedJobId },
+      data: {
+        status: "failed",
+        errorCode: "retry_quote_fixture",
+      },
+    });
+    const balanceBeforeQuote = await dreamcoinBalance(userId);
+    const ledgerBeforeQuote = await prisma.dreamcoinLedger.count({
+      where: { userId },
+    });
+
+    const quoted = await api(
+      "POST",
+      `generation/jobs/${failedJobId}/retry/quote`,
+      {
+        userId,
+        ageGate: true,
+        body: {},
+      },
+    );
+    expectOk(quoted);
+    const retryQuote =
+      quoted.data.quote as ExactGenerationRetryQuote;
+    expect(retryQuote).toMatchObject({
+      generationJobId: failedJobId,
+      profileId: initial.data.job.profileId,
+      profileVersion: initial.data.job.profileVersion,
+      outputCount: 1,
+    });
+    await expect(dreamcoinBalance(userId)).resolves.toBe(
+      balanceBeforeQuote,
+    );
+    await expect(
+      prisma.dreamcoinLedger.count({ where: { userId } }),
+    ).resolves.toBe(ledgerBeforeQuote);
+    await expect(
+      prisma.generationJob.count({
+        where: { derivedFromJobId: failedJobId },
+      }),
+    ).resolves.toBe(0);
+
+    const missing = await api(
+      "POST",
+      `generation/jobs/${failedJobId}/retry`,
+      {
+        userId,
+        ageGate: true,
+        autoGenerationQuote: false,
+        headers: { "idempotency-key": `${retryKey}-missing` },
+        body: {},
+      },
+    );
+    expectError(missing, 409, "conflict");
+    const forged = await api(
+      "POST",
+      `generation/jobs/${failedJobId}/retry`,
+      {
+        userId,
+        ageGate: true,
+        headers: { "idempotency-key": `${retryKey}-forged` },
+        body: {
+          quoteAuthority: {
+            ...retryQuoteAuthority(retryQuote),
+            routeFingerprint: "0".repeat(64),
+          },
+        },
+      },
+    );
+    expectError(forged, 409, "conflict");
+    const quotedProfile =
+      await prisma.generationModelProfile.findFirstOrThrow({
+        where: {
+          profileKey: retryQuote.profileId,
+          version: retryQuote.profileVersion,
+        },
+      });
+    await prisma.generationModelProfile.update({
+      where: { id: quotedProfile.id },
+      data: {
+        costMultiplier: quotedProfile.costMultiplier + 0.25,
+      },
+    });
+    try {
+      const stale = await api(
+        "POST",
+        `generation/jobs/${failedJobId}/retry`,
+        {
+          userId,
+          ageGate: true,
+          headers: { "idempotency-key": `${retryKey}-stale` },
+          body: {
+            quoteAuthority: retryQuoteAuthority(retryQuote),
+          },
+        },
+      );
+      expectError(stale, 409, "conflict");
+    } finally {
+      await prisma.generationModelProfile.update({
+        where: { id: quotedProfile.id },
+        data: {
+          costMultiplier: quotedProfile.costMultiplier,
+        },
+      });
+    }
+    await expect(
+      prisma.generationJob.count({
+        where: { derivedFromJobId: failedJobId },
+      }),
+    ).resolves.toBe(0);
+    await expect(dreamcoinBalance(userId)).resolves.toBe(
+      balanceBeforeQuote,
+    );
+
+    const retried = await api(
+      "POST",
+      `generation/jobs/${failedJobId}/retry`,
+      {
+        userId,
+        ageGate: true,
+        headers: { "idempotency-key": retryKey },
+        body: {
+          quoteAuthority: retryQuoteAuthority(retryQuote),
+        },
+      },
+    );
+    expectOk(retried, 202);
+    expect(retried.data.job).toMatchObject({
+      derivedFromJobId: failedJobId,
+      profileId: retryQuote.profileId,
+      profileVersion: retryQuote.profileVersion,
+      costDreamcoins: retryQuote.costDreamcoins,
+      controls: {
+        generationRetryQuoteAuthority: {
+          schemaVersion: "generation-retry-quote-authority-v1",
+          generationJobId: failedJobId,
+          profileId: retryQuote.profileId,
+          profileVersion: retryQuote.profileVersion,
+          routeFingerprint: retryQuote.routeFingerprint,
+          pricing: {
+            ruleId: retryQuote.pricing.ruleId,
+            ruleKey: retryQuote.pricing.ruleKey,
+            version: retryQuote.pricing.version,
+            effectiveFrom: retryQuote.pricing.effectiveFrom,
+            fingerprint: retryQuote.pricing.fingerprint,
+          },
+          outputCount: retryQuote.outputCount,
+          costDreamcoins: retryQuote.costDreamcoins,
+        },
+      },
+    });
+    await expect(dreamcoinBalance(userId)).resolves.toBe(
+      balanceBeforeQuote - retryQuote.costDreamcoins,
+    );
+
+    const profile = quotedProfile;
+    await prisma.generationModelProfile.update({
+      where: { id: profile.id },
+      data: { enabled: false },
+    });
+    try {
+      const replay = await api(
+        "POST",
+        `generation/jobs/${failedJobId}/retry`,
+        {
+          userId,
+          ageGate: true,
+          autoGenerationQuote: false,
+          headers: { "idempotency-key": retryKey },
+          body: {},
+        },
+      );
+      expectOk(replay, 202);
+      expect(replay.data.job.id).toBe(retried.data.job.id);
+    } finally {
+      await prisma.generationModelProfile.update({
+        where: { id: profile.id },
+        data: { enabled: true },
+      });
+    }
+    await expect(
+      prisma.generationJob.count({
+        where: { derivedFromJobId: failedJobId },
+      }),
+    ).resolves.toBe(1);
+    await expect(dreamcoinBalance(userId)).resolves.toBe(
+      balanceBeforeQuote - retryQuote.costDreamcoins,
+    );
+    await runQueuedGenerationJobs(4);
+  });
+
   it("queues a live legacy editorial Character without inventing identity authority", async () => {
     const userId = `${P}legacy-editorial-user`;
     const characterId = `${P}legacy-editorial-character`;
@@ -401,7 +1155,7 @@ describe("image generation service contract", () => {
     await runQueuedGenerationJobs(8);
   });
 
-  it("fails legacy replay, retry, and dispatch closed after serving switches release authority", async () => {
+  it("replays a committed legacy retry but fails new retry and dispatch after serving switches authority", async () => {
     const userId = `${P}legacy-switch-user`;
     const characterId = `${P}legacy-switch-character`;
     const profileId = `${P}legacy-switch-profile`;
@@ -536,16 +1290,22 @@ describe("image generation service contract", () => {
       });
     });
 
+    const balanceBeforeReplay = await dreamcoinBalance(userId);
     const replay = await api(
       "POST",
       `generation/jobs/${generationJobId}/retry`,
       {
         userId,
         ageGate: true,
+        autoGenerationQuote: false,
         headers: { "idempotency-key": retryKey },
       },
     );
-    expectError(replay, 409, "conflict");
+    expectOk(replay, 202);
+    expect(replay.data.job.id).toBe(retryJobId);
+    await expect(dreamcoinBalance(userId)).resolves.toBe(
+      balanceBeforeReplay,
+    );
 
     const newRetry = await api(
       "POST",
@@ -656,6 +1416,24 @@ describe("image generation service contract", () => {
     expect(visualProfile.identityPrompt).toContain("hazel");
     expect(visualProfile.anchorAssetIds).toEqual([character.imageAssetId]);
     expect(character.imageAssetId).toBeTruthy();
+    await expect(
+      prisma.referenceSetRevision.findFirst({
+        where: {
+          visualProfileId: visualProfile.id,
+          status: "active",
+        },
+        include: { references: true },
+      }),
+    ).resolves.toMatchObject({
+      createdFrom: "create_preview",
+      references: [
+        {
+          mediaAssetId: character.imageAssetId,
+          position: 0,
+          role: "primary_face",
+        },
+      ],
+    });
   });
 
   it("atomically rejects draft submission when the selected preview was already claimed by another Character", async () => {
@@ -840,6 +1618,8 @@ describe("image generation service contract", () => {
 
     const firstAssetId = `${P}selected-preview-asset-1`;
     const secondAssetId = `${P}selected-preview-asset-2`;
+    const firstStorageKey = `${P}selected-preview-asset-1.webp`;
+    const secondStorageKey = `${P}selected-preview-asset-2.webp`;
     await prisma.mediaAsset.createMany({
       data: [
         {
@@ -848,9 +1628,13 @@ describe("image generation service contract", () => {
           type: "image",
           url: "/images/ourdream/card-sarah-mercer.webp",
           thumbnailUrl: "/images/ourdream/card-sarah-mercer.webp",
+          storageKey: firstStorageKey,
           visibility: "private",
           safetyStatus: "passed",
-          metadata: {},
+          metadata: {
+            providerKey: firstStorageKey,
+            synthetic: false,
+          },
         },
         {
           id: secondAssetId,
@@ -858,9 +1642,13 @@ describe("image generation service contract", () => {
           type: "image",
           url: "/images/ourdream/card-sophie.webp",
           thumbnailUrl: "/images/ourdream/card-sophie.webp",
+          storageKey: secondStorageKey,
           visibility: "private",
           safetyStatus: "passed",
-          metadata: {},
+          metadata: {
+            providerKey: secondStorageKey,
+            synthetic: false,
+          },
         },
       ],
     });
@@ -910,27 +1698,86 @@ describe("image generation service contract", () => {
     expect(visualProfile.anchorAssetIds).toEqual([firstAssetId]);
   });
 
-  it("dedupes POST by Idempotency-Key and does not double reserve", async () => {
+  it("requires a bounded Idempotency-Key before reserving a generation write", async () => {
+    const userId = `${P}missing-idem-user`;
+    await createUser({ id: userId });
+    await grantCoins(userId, 100, "seed");
+
+    const missing = await api("POST", "generation/jobs", {
+      userId,
+      ageGate: true,
+      autoGenerationIdempotencyKey: false,
+      body: { mode: "image", characterId: CHAR, outputCount: 1 },
+    });
+    expectError(missing, 400, "bad_request");
+    expect(missing.error?.message).toContain("Idempotency-Key");
+
+    const oversized = await api("POST", "generation/jobs", {
+      userId,
+      ageGate: true,
+      autoGenerationIdempotencyKey: false,
+      headers: { "Idempotency-Key": "x".repeat(161) },
+      body: { mode: "image", characterId: CHAR, outputCount: 1 },
+    });
+    expectError(oversized, 400, "bad_request");
+    expect(oversized.error?.message).toContain("between 8 and 160");
+    await expect(
+      prisma.generationJob.count({ where: { userId } }),
+    ).resolves.toBe(0);
+    await expect(dreamcoinBalance(userId)).resolves.toBe(100);
+  });
+
+  it("dedupes POST by Idempotency-Key, binds its request, and does not double reserve", async () => {
     const userId = `${P}idem-user`;
     await createUser({ id: userId });
     await grantCoins(userId, 100, "seed");
+    const quoted = await api("POST", "generation/quote", {
+      userId,
+      ageGate: true,
+      body: { mode: "image", characterId: CHAR, outputCount: 1 },
+    });
+    expectOk(quoted);
+    const quote = quoted.data.quote as ExactGenerationQuote;
+    const generationBody = {
+      mode: "image" as const,
+      characterId: CHAR,
+      outputCount: 1,
+      quoteAuthority: quoteAuthority(quote),
+    };
 
     const first = await api("POST", "generation/jobs", {
       userId,
       ageGate: true,
       headers: { "Idempotency-Key": `${P}idem-key` },
-      body: { mode: "image", characterId: CHAR, outputCount: 1 },
+      body: generationBody,
     });
     const second = await api("POST", "generation/jobs", {
       userId,
       ageGate: true,
       headers: { "Idempotency-Key": `${P}idem-key` },
-      body: { mode: "image", characterId: CHAR, outputCount: 1 },
+      body: {
+        ...generationBody,
+        quoteAuthority: {
+          ...generationBody.quoteAuthority,
+          pricingFingerprint: "f".repeat(64),
+        },
+      },
     });
 
     expectOk(first, 202);
     expectOk(second, 202);
     expect(second.data.job.id).toBe(first.data.job.id);
+
+    const conflicting = await api("POST", "generation/jobs", {
+      userId,
+      ageGate: true,
+      headers: { "Idempotency-Key": `${P}idem-key` },
+      body: { mode: "image", characterId: CHAR, outputCount: 2 },
+    });
+    expectError(conflicting, 409, "conflict");
+    expect(conflicting.error?.message).toContain(
+      "different generation request",
+    );
     expect(await prisma.generationJob.count({ where: { userId } })).toBe(1);
     expect(await dreamcoinBalance(userId)).toBe(95);
     await runQueuedGenerationJobs(8);
@@ -1050,7 +1897,7 @@ describe("image generation service contract", () => {
     ]);
   });
 
-  it("returns a same-origin download URL for local private storage", async () => {
+  it("lets the owner download private synthetic output without making it public", async () => {
     const userId = `${P}ttl-user`;
     const mediaId = `${P}media-ttl`;
     await createUser({ id: userId });
@@ -1065,7 +1912,7 @@ describe("image generation service contract", () => {
         contentType: "image/webp",
         visibility: "private",
         safetyStatus: "passed",
-        metadata: {},
+        metadata: { synthetic: true, source: "mock" },
       },
     });
 
@@ -1413,7 +2260,6 @@ describe("image generation service contract", () => {
       body: {
         mode: "image",
         characterId,
-        model: modelKey,
         outputCount: 1,
         consistencyMode: "strict",
       },
@@ -3011,7 +3857,6 @@ describe("image generation service contract", () => {
       body: {
         mode: "image",
         characterId,
-        model: "chat-image-edit",
         outputCount: 1,
       },
     });
@@ -3055,7 +3900,6 @@ describe("image generation service contract", () => {
       body: {
         mode: "image",
         characterId,
-        model: "chat-image-edit",
         outputCount: 1,
       },
     });
@@ -3074,7 +3918,6 @@ describe("image generation service contract", () => {
       body: {
         mode: "image",
         characterId,
-        model: "chat-image-edit",
         outputCount: 1,
       },
     });
@@ -3776,23 +4619,52 @@ describe("image generation service contract", () => {
     });
 
     await grantCoins(userId, 100, "seed");
+    const lookGenerationBody = {
+      mode: "image" as const,
+      characterId,
+      controls: { lookId: savedFromMedia.data.look.id as string },
+      outputCount: 1,
+    };
+    const quotedLookGeneration = await api(
+      "POST",
+      "generation/quote",
+      {
+        userId,
+        ageGate: true,
+        body: lookGenerationBody,
+      },
+    );
+    expectOk(quotedLookGeneration);
+    const lookQuote =
+      quotedLookGeneration.data.quote as ExactGenerationQuote & {
+        maxCount: number;
+        orientations: string[];
+      };
+    expect(lookQuote.maxCount).toBeGreaterThan(0);
+    expect(lookQuote.orientations).toContain("4:5");
     const generated = await api("POST", "generation/jobs", {
       userId,
       ageGate: true,
       body: {
-        mode: "image",
-        characterId,
-        model: "character-image-multi-identity",
-        controls: { lookId: savedFromMedia.data.look.id },
-        outputCount: 1,
+        ...lookGenerationBody,
+        quoteAuthority: quoteAuthority(lookQuote),
       },
     });
     expectOk(generated, 202);
+    const routedProfileId = generated.data.job.profileId as string;
+    const routedProfileVersion = generated.data.job.profileVersion as number;
+    expect(routedProfileId).toBeTruthy();
+    expect(routedProfileVersion).toBeGreaterThan(0);
+    expect(routedProfileId).toBe(lookQuote.profileId);
+    expect(routedProfileVersion).toBe(lookQuote.profileVersion);
+    expect(generated.data.job.costDreamcoins).toBe(
+      lookQuote.costs[0]?.costDreamcoins,
+    );
     expect(generated.data.job).toMatchObject({
       lookId: savedFromMedia.data.look.id,
       model: "qwen-image-edit-multi-identity",
-      profileId: "character-image-multi-identity",
-      profileVersion: 1,
+      profileId: routedProfileId,
+      profileVersion: routedProfileVersion,
       lookSnapshot: {
         label: "Evening dress",
         appearanceDelta: { outfit: "midnight blue evening dress" },
@@ -3801,8 +4673,8 @@ describe("image generation service contract", () => {
       controls: {
         lookId: savedFromMedia.data.look.id,
         lookReferenceAssetId: lookMediaId,
-        generationProfileKey: "character-image-multi-identity",
-        generationProfileVersion: 1,
+        generationProfileKey: routedProfileId,
+        generationProfileVersion: routedProfileVersion,
         workflowKey: "qwen-image-edit-multi-identity",
         workflowVersion: 1,
       },
@@ -3816,7 +4688,7 @@ describe("image generation service contract", () => {
     expect(queuedLookGeneration?.payload).toMatchObject({
       controls: {
         lookReferenceAssetId: lookMediaId,
-        generationProfileKey: "character-image-multi-identity",
+        generationProfileKey: routedProfileId,
         workflowKey: "qwen-image-edit-multi-identity",
       },
       referenceImages: expect.arrayContaining([
@@ -3860,16 +4732,16 @@ describe("image generation service contract", () => {
       derivedFromJobId: generatedJobId,
       lookId: savedFromMedia.data.look.id,
       model: "qwen-image-edit-multi-identity",
-      profileId: "character-image-multi-identity",
-      profileVersion: 1,
+      profileId: routedProfileId,
+      profileVersion: routedProfileVersion,
       lookSnapshot: {
         referenceAssetId: lookMediaId,
       },
       controls: {
         lookId: savedFromMedia.data.look.id,
         lookReferenceAssetId: lookMediaId,
-        generationProfileKey: "character-image-multi-identity",
-        generationProfileVersion: 1,
+        generationProfileKey: routedProfileId,
+        generationProfileVersion: routedProfileVersion,
         workflowKey: "qwen-image-edit-multi-identity",
         workflowVersion: 1,
       },
@@ -3882,7 +4754,7 @@ describe("image generation service contract", () => {
     expect(queuedLookRetry?.payload).toMatchObject({
       controls: {
         lookReferenceAssetId: lookMediaId,
-        generationProfileKey: "character-image-multi-identity",
+        generationProfileKey: routedProfileId,
         workflowKey: "qwen-image-edit-multi-identity",
       },
       referenceImages: expect.arrayContaining([
@@ -4130,7 +5002,7 @@ describe("image generation service contract", () => {
         storageKey: `${P}variation/source.webp`,
         contentType: "image/webp",
         width: 1024,
-        height: 1280,
+        height: 1024,
         prompt: "Requested scene: sitting in a lantern-lit library. clean composition",
         visibility: "private",
         safetyStatus: "passed",
@@ -4151,10 +5023,38 @@ describe("image generation service contract", () => {
     });
     await grantCoins(userId, 100, "seed");
 
+    const quotedVariation = await api(
+      "POST",
+      `media/${mediaId}/variation/quote`,
+      {
+        userId,
+        ageGate: true,
+        body: { consistencyMode: "creative" },
+      },
+    );
+    expectOk(quotedVariation);
+    const variationQuote =
+      quotedVariation.data.quote as ExactGenerationQuote & {
+        defaultOrientation: string;
+        maxCount: number;
+        orientations: string[];
+      };
+    expect(variationQuote.maxCount).toBeGreaterThan(0);
+    expect(variationQuote.orientations).toContain("4:5");
+    const balanceBefore = await dreamcoinBalance(userId);
+
+    const variationIdempotencyKey = `${P}variation-idempotency`;
+    const variationBody = {
+      outputCount: 1,
+      consistencyMode: "creative" as const,
+      orientation: variationQuote.defaultOrientation,
+      quoteAuthority: quoteAuthority(variationQuote),
+    };
     const variation = await api("POST", `media/${mediaId}/variation`, {
       userId,
       ageGate: true,
-      body: { outputCount: 1, consistencyMode: "creative" },
+      headers: { "Idempotency-Key": variationIdempotencyKey },
+      body: variationBody,
     });
     expectOk(variation, 202);
 
@@ -4166,6 +5066,84 @@ describe("image generation service contract", () => {
     expect(job.characterId).toBe(characterId);
     expect(job.visualProfileId).toBe(`${P}variation-cvp`);
     expect(job.consistencyMode).toBe("creative");
+    expect(job.orientation).toBe(variationQuote.defaultOrientation);
+    expect(job.profileId).toBe(variationQuote.profileId);
+    expect(job.profileVersion).toBe(variationQuote.profileVersion);
+    expect(job.costDreamcoins).toBe(
+      variationQuote.costs[0]?.costDreamcoins,
+    );
+    expect(job.controls).toMatchObject({
+      generationQuoteAuthority: {
+        schemaVersion: "generation-quote-authority-v1",
+        profileId: variationQuote.profileId,
+        profileVersion: variationQuote.profileVersion,
+        routeFingerprint: variationQuote.routeFingerprint,
+        pricing: {
+          ruleId: variationQuote.pricing.ruleId,
+          ruleKey: variationQuote.pricing.ruleKey,
+          version: variationQuote.pricing.version,
+          effectiveFrom: variationQuote.pricing.effectiveFrom,
+          fingerprint: variationQuote.pricing.fingerprint,
+        },
+        outputCount: 1,
+        costDreamcoins: variationQuote.costs[0]?.costDreamcoins,
+      },
+    });
+    await expect(dreamcoinBalance(userId)).resolves.toBe(
+      balanceBefore - job.costDreamcoins,
+    );
+    const balanceAfterCreate = await dreamcoinBalance(userId);
+    await prisma.mediaAsset.update({
+      where: { id: mediaId },
+      data: { deletedAt: new Date() },
+    });
+    const replayAfterSourceDeletion = await api(
+      "POST",
+      `media/${mediaId}/variation`,
+      {
+        userId,
+        ageGate: true,
+        headers: { "Idempotency-Key": variationIdempotencyKey },
+        body: {
+          ...variationBody,
+          quoteAuthority: {
+            ...variationBody.quoteAuthority,
+            pricingFingerprint: "f".repeat(64),
+          },
+        },
+      },
+    );
+    expectOk(replayAfterSourceDeletion, 202);
+    expect(replayAfterSourceDeletion.data.job.id).toBe(job.id);
+    await expect(dreamcoinBalance(userId)).resolves.toBe(balanceAfterCreate);
+    await expect(
+      prisma.generationJob.count({
+        where: { userId, idempotencyKey: variationIdempotencyKey },
+      }),
+    ).resolves.toBe(1);
+    const conflictingVariation = await api(
+      "POST",
+      `media/${mediaId}/variation`,
+      {
+        userId,
+        ageGate: true,
+        headers: { "Idempotency-Key": variationIdempotencyKey },
+        body: {
+          ...variationBody,
+          consistencyMode: "balanced",
+        },
+      },
+    );
+    expectError(conflictingVariation, 409, "conflict");
+    expect(conflictingVariation.error?.message).toContain(
+      "different generation request",
+    );
+    await expect(dreamcoinBalance(userId)).resolves.toBe(balanceAfterCreate);
+    await expect(
+      prisma.generationJob.count({
+        where: { userId, idempotencyKey: variationIdempotencyKey },
+      }),
+    ).resolves.toBe(1);
     expect(job.prompt).toContain("Locked identity");
     expect(job.prompt).toContain("pearl-white hair");
     expect(job.prompt).toContain("lantern-lit library");
@@ -4192,6 +5170,240 @@ describe("image generation service contract", () => {
         selectionReason: "primary_identity_anchor",
       }),
     ]);
+    await runQueuedGenerationJobs(4);
+  });
+
+  it("quotes and creates a non-premium source-only variation with the same trusted source intent", async () => {
+    const userId = `${P}freeplay-variation-user`;
+    const mediaId = `${P}freeplay-variation-media`;
+    await createUser({ id: userId });
+    await prisma.mediaAsset.create({
+      data: {
+        id: mediaId,
+        ownerId: userId,
+        type: "image",
+        url: "/images/ourdream/card-sarah-mercer.webp",
+        thumbnailUrl: "/images/ourdream/card-sarah-mercer.webp",
+        storageKey: `${P}freeplay-variation/source.webp`,
+        contentType: "image/webp",
+        width: 1024,
+        height: 1280,
+        prompt: "A lantern-lit library with warm cinematic shadows.",
+        visibility: "private",
+        safetyStatus: "passed",
+        metadata: {},
+      },
+    });
+    await grantCoins(userId, 100, "seed");
+
+    const quoted = await api(
+      "POST",
+      `media/${mediaId}/variation/quote`,
+      {
+        userId,
+        ageGate: true,
+        body: { consistencyMode: "balanced" },
+      },
+    );
+    expectOk(quoted);
+    const quote =
+      quoted.data.quote as ExactGenerationQuote & {
+        maxCount: number;
+        orientations: string[];
+      };
+    expect(quote.maxCount).toBeGreaterThan(0);
+    expect(quote.orientations).toContain("4:5");
+
+    const created = await api(
+      "POST",
+      `media/${mediaId}/variation`,
+      {
+        userId,
+        ageGate: true,
+        body: {
+          outputCount: 1,
+          consistencyMode: "balanced",
+          quoteAuthority: quoteAuthority(quote),
+        },
+      },
+    );
+    expectOk(created, 202);
+    expect(created.data.job).toMatchObject({
+      characterId: null,
+      sourceType: "media_variation",
+      profileId: quote.profileId,
+      profileVersion: quote.profileVersion,
+      costDreamcoins: quote.costs[0]?.costDreamcoins,
+    });
+    await runQueuedGenerationJobs(4);
+  });
+
+  it("keeps a no-profile Character variation quote read-only and bootstraps only after exact authority is accepted", async () => {
+    const userId = `${P}no-profile-variation-user`;
+    const characterId = `${P}no-profile-variation-character`;
+    const mediaId = `${P}no-profile-variation-media`;
+    await createUser({ id: userId });
+    await createCharacter({
+      id: characterId,
+      creatorId: userId,
+      visibility: "private",
+      status: "approved",
+    });
+    await prisma.mediaAsset.create({
+      data: {
+        id: mediaId,
+        ownerId: userId,
+        characterId,
+        type: "image",
+        url: "/images/ourdream/card-sarah-mercer.webp",
+        thumbnailUrl: "/images/ourdream/card-sarah-mercer.webp",
+        storageKey: `${P}no-profile-variation/source.webp`,
+        contentType: "image/webp",
+        width: 1024,
+        height: 1280,
+        prompt: "A sunlit conservatory portrait.",
+        visibility: "private",
+        safetyStatus: "passed",
+        metadata: {},
+      },
+    });
+    await grantCoins(userId, 100, "seed");
+    const balanceBefore = await dreamcoinBalance(userId);
+
+    const quoted = await api(
+      "POST",
+      `media/${mediaId}/variation/quote`,
+      {
+        userId,
+        ageGate: true,
+        body: { consistencyMode: "balanced" },
+      },
+    );
+    expectOk(quoted);
+    const quote =
+      quoted.data.quote as ExactGenerationQuote;
+    await expect(
+      prisma.characterVisualProfile.count({ where: { characterId } }),
+    ).resolves.toBe(0);
+
+    const forged = await api(
+      "POST",
+      `media/${mediaId}/variation`,
+      {
+        userId,
+        ageGate: true,
+        body: {
+          outputCount: 1,
+          consistencyMode: "balanced",
+          quoteAuthority: {
+            ...quoteAuthority(quote),
+            routeFingerprint: "0".repeat(64),
+          },
+        },
+      },
+    );
+    expectError(forged, 409, "conflict");
+    const selectedProfile =
+      await prisma.generationModelProfile.findFirstOrThrow({
+        where: {
+          profileKey: quote.profileId,
+          version: quote.profileVersion,
+        },
+      });
+    const selectedWorkflowKey =
+      selectedProfile.workflowKey ?? selectedProfile.pipelineModel;
+    const originalWorkflowResolver =
+      generationCatalog.generationWorkflowDescriptor;
+    const quotedWorkflow = await originalWorkflowResolver(
+      selectedWorkflowKey,
+    );
+    expect(quotedWorkflow).not.toBeNull();
+    const workflowSpy = vi
+      .spyOn(generationCatalog, "generationWorkflowDescriptor")
+      .mockImplementation(async (workflowKey) => {
+        const descriptor = await originalWorkflowResolver(workflowKey);
+        return workflowKey === selectedWorkflowKey && descriptor
+          ? { ...descriptor, version: descriptor.version + 1 }
+          : descriptor;
+      });
+    try {
+      const workflowDrift = await api(
+        "POST",
+        `media/${mediaId}/variation`,
+        {
+          userId,
+          ageGate: true,
+          body: {
+            outputCount: 1,
+            consistencyMode: "balanced",
+            quoteAuthority: quoteAuthority(quote),
+          },
+        },
+      );
+      expectError(workflowDrift, 409, "conflict");
+    } finally {
+      workflowSpy.mockRestore();
+    }
+    await prisma.generationModelProfile.update({
+      where: { id: selectedProfile.id },
+      data: {
+        costMultiplier: selectedProfile.costMultiplier + 0.25,
+      },
+    });
+    try {
+      const stale = await api(
+        "POST",
+        `media/${mediaId}/variation`,
+        {
+          userId,
+          ageGate: true,
+          body: {
+            outputCount: 1,
+            consistencyMode: "balanced",
+            quoteAuthority: quoteAuthority(quote),
+          },
+        },
+      );
+      expectError(stale, 409, "conflict");
+    } finally {
+      await prisma.generationModelProfile.update({
+        where: { id: selectedProfile.id },
+        data: {
+          costMultiplier: selectedProfile.costMultiplier,
+        },
+      });
+    }
+    await expect(
+      prisma.characterVisualProfile.count({ where: { characterId } }),
+    ).resolves.toBe(0);
+    await expect(
+      prisma.generationJob.count({ where: { userId } }),
+    ).resolves.toBe(0);
+    await expect(dreamcoinBalance(userId)).resolves.toBe(balanceBefore);
+
+    const created = await api(
+      "POST",
+      `media/${mediaId}/variation`,
+      {
+        userId,
+        ageGate: true,
+        body: {
+          outputCount: 1,
+          consistencyMode: "balanced",
+          quoteAuthority: quoteAuthority(quote),
+        },
+      },
+    );
+    expectOk(created, 202);
+    await expect(
+      prisma.characterVisualProfile.count({ where: { characterId } }),
+    ).resolves.toBe(1);
+    expect(created.data.job).toMatchObject({
+      characterId,
+      profileId: quote.profileId,
+      profileVersion: quote.profileVersion,
+      costDreamcoins: quote.costs[0]?.costDreamcoins,
+    });
     await runQueuedGenerationJobs(4);
   });
 });

@@ -11,6 +11,7 @@ import {
   bulkPatchContentAssets,
   createPlacement,
   getContentAsset,
+  listContentAssets,
   patchContentAsset,
   patchPlacement,
 } from "./content-ops";
@@ -26,6 +27,7 @@ describe("Image Library and legacy Placement authority", () => {
   const releaseAssetId = `content-authority-release-asset-${suffix}`;
   const scheduledReleaseAssetId = `content-authority-scheduled-release-asset-${suffix}`;
   const campaignAssetId = `content-authority-campaign-asset-${suffix}`;
+  const standaloneAssetId = `content-authority-standalone-asset-${suffix}`;
   const freeAssetId = `content-authority-free-asset-${suffix}`;
   const bulkFreeAssetId = `content-authority-bulk-free-asset-${suffix}`;
   const primaryImageAssetId = `content-authority-primary-image-asset-${suffix}`;
@@ -119,6 +121,7 @@ describe("Image Library and legacy Placement authority", () => {
         releaseAssetId,
         scheduledReleaseAssetId,
         campaignAssetId,
+        standaloneAssetId,
         freeAssetId,
         bulkFreeAssetId,
         primaryImageAssetId,
@@ -129,7 +132,16 @@ describe("Image Library and legacy Placement authority", () => {
         type: "image",
         url: `memory://${id}`,
         safetyStatus: "passed",
-        metadata: {},
+        metadata: id === standaloneAssetId
+          ? {
+              platformAsset: {
+                status: "approved",
+                purpose: "character_chat",
+                tags: ["standalone-authority"],
+                description: "Platform-managed standalone Image Library asset.",
+              },
+            }
+          : {},
         sourceJobId: id === approvedAssetId ? approvedJobId : null,
       })),
     });
@@ -525,6 +537,7 @@ describe("Image Library and legacy Placement authority", () => {
             releaseAssetId,
             scheduledReleaseAssetId,
             campaignAssetId,
+            standaloneAssetId,
             freeAssetId,
             bulkFreeAssetId,
             primaryImageAssetId,
@@ -542,6 +555,49 @@ describe("Image Library and legacy Placement authority", () => {
     });
     await prisma.user.deleteMany({ where: { id: actorId } });
     await prisma.$disconnect();
+  });
+
+  it("lists platform-managed standalone assets without inventing Creative Run lineage", async () => {
+    const response = await listContentAssets(
+      request(
+        "GET",
+        `admin/content/assets?status=approved&purpose=character_chat&search=${standaloneAssetId}`,
+      ),
+    );
+    await expect(response.json()).resolves.toMatchObject({
+      data: {
+        items: [
+          {
+            id: standaloneAssetId,
+            platformStatus: "approved",
+            purpose: "character_chat",
+            tags: ["standalone-authority"],
+            description: "Platform-managed standalone Image Library asset.",
+            sourceBatch: null,
+          },
+        ],
+      },
+    });
+
+    const wrongStatus = await listContentAssets(
+      request(
+        "GET",
+        `admin/content/assets?status=generated&search=${standaloneAssetId}`,
+      ),
+    );
+    await expect(wrongStatus.json()).resolves.toMatchObject({
+      data: { items: [] },
+    });
+
+    const ungovernedOperationalMedia = await listContentAssets(
+      request(
+        "GET",
+        `admin/content/assets?search=${bulkFreeAssetId}`,
+      ),
+    );
+    await expect(ungovernedOperationalMedia.json()).resolves.toMatchObject({
+      data: { items: [] },
+    });
   });
 
   it("projects live Character Release dependencies and blocks Library review or archive", async () => {

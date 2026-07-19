@@ -9,6 +9,22 @@ export type ProtectedViewerResponse =
   | { viewer: "anonymous"; response: null }
   | { viewer: "authenticated"; response: Response };
 
+export async function fetchViewerScope(
+  fetcher: ViewerFetcher = fetch,
+): Promise<string> {
+  const response = await fetcher("/api/v1/me", { cache: "no-store" });
+  const raw = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(apiErrorMessage(raw) ?? "Viewer authority could not load.");
+  }
+  const payload = parseViewerAuthorityResponse(raw);
+  if (payload.user) return `user:${payload.user.id}`;
+  if (typeof payload.anonymousId === "string" && payload.anonymousId.length > 0) {
+    return `anonymous:${payload.anonymousId}`;
+  }
+  throw new Error("Viewer authority was incomplete.");
+}
+
 export async function fetchProtectedForViewer(
   protectedPath: string,
   init?: RequestInit,

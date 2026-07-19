@@ -18,6 +18,17 @@ export const AGE_GATE_COOKIE_HEADER = `${AGE_GATE_COOKIE}=true`;
 
 export interface ApiOptions {
   body?: unknown;
+  /**
+   * Public generation writes require a durable idempotency key. Integration
+   * clients add one by default; set false only to exercise the missing-key
+   * fail-closed contract.
+   */
+  autoGenerationIdempotencyKey?: boolean;
+  /**
+   * Integration clients follow the same quote -> submit contract as the UI.
+   * Set false only when a test intentionally exercises a missing quote.
+   */
+  autoGenerationQuote?: boolean;
   headers?: Record<string, string>;
   query?: Record<string, string | number | boolean | undefined>;
   /** Sets x-idream-user-id (dev auth) — authenticates as this user. */
@@ -58,16 +69,98 @@ export async function api(
   path: string,
   options: ApiOptions = {},
 ): Promise<ApiResult> {
+  let requestBody = options.body;
+  const requestBodyObject = isJsonObject(requestBody) ? requestBody : {};
+  const retryPath = /^generation\/jobs\/[^/]+\/retry$/.test(path);
+  if (
+    method === "POST" &&
+    options.autoGenerationQuote !== false &&
+    (isJsonObject(requestBody) || retryPath) &&
+    !isJsonObject(requestBodyObject.quoteAuthority)
+  ) {
+    const quotePath =
+      path === "generation/jobs"
+        ? "generation/quote"
+        : /^media\/[^/]+\/variation$/.test(path)
+          ? `${path}/quote`
+          : retryPath
+            ? `${path}/quote`
+          : null;
+    if (quotePath) {
+      const quoteBody =
+        path === "generation/jobs"
+          ? requestBodyObject
+          : /^media\/[^/]+\/variation$/.test(path)
+            ? {
+              consistencyMode:
+                typeof requestBodyObject.consistencyMode === "string"
+                  ? requestBodyObject.consistencyMode
+                  : "balanced",
+              }
+            : {};
+      const quote = await api("POST", quotePath, {
+        ...options,
+        autoGenerationQuote: false,
+        body: quoteBody,
+      });
+      if (!quote.ok) return quote;
+      const outputCount =
+        typeof quote.data?.quote?.outputCount === "number"
+          ? quote.data.quote.outputCount
+          : typeof requestBodyObject.outputCount === "number"
+            ? requestBodyObject.outputCount
+            : 1;
+      const exactCost = Array.isArray(quote.data?.quote?.costs)
+        ? quote.data.quote.costs.find(
+            (cost: unknown) =>
+              isJsonObject(cost) &&
+              cost.outputCount === outputCount,
+          )
+        : undefined;
+      requestBody = {
+        ...requestBodyObject,
+        quoteAuthority: {
+          profileId: quote.data.quote.profileId,
+          profileVersion: quote.data.quote.profileVersion,
+          routeFingerprint: quote.data.quote.routeFingerprint,
+          pricingFingerprint: quote.data.quote.pricing.fingerprint,
+          outputCount,
+          costDreamcoins:
+            typeof quote.data.quote.costDreamcoins === "number"
+              ? quote.data.quote.costDreamcoins
+              : isJsonObject(exactCost) &&
+            typeof exactCost.costDreamcoins === "number"
+              ? exactCost.costDreamcoins
+              : 0,
+        },
+      };
+    }
+  }
+
   const url = buildUrl(path, options.query);
   const headers: Record<string, string> = { ...options.headers };
-  if (options.body !== undefined) headers["content-type"] = "application/json";
+  const hasIdempotencyKey = Object.keys(headers).some(
+    (name) => name.toLowerCase() === "idempotency-key",
+  );
+  if (requestBody !== undefined) headers["content-type"] = "application/json";
   if (options.userId) headers["x-idream-user-id"] = options.userId;
   if (options.role) headers["x-idream-role"] = options.role;
   if (options.anonymousId) headers["x-idream-anonymous-id"] = options.anonymousId;
   if (
     path.startsWith("admin/") &&
     ["POST", "PATCH", "PUT", "DELETE"].includes(method) &&
-    !headers["idempotency-key"]
+    !hasIdempotencyKey
+  ) {
+    headers["idempotency-key"] = crypto.randomUUID();
+  }
+  if (
+    method === "POST" &&
+    options.autoGenerationIdempotencyKey !== false &&
+    (
+      path === "generation/jobs" ||
+      /^media\/[^/]+\/variation$/.test(path)
+    ) &&
+    !hasIdempotencyKey
   ) {
     headers["idempotency-key"] = crypto.randomUUID();
   }
@@ -80,7 +173,7 @@ export async function api(
   const request = new Request(url, {
     method,
     headers,
-    body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+    body: requestBody !== undefined ? JSON.stringify(requestBody) : undefined,
   });
 
   const segments = path.split("/").filter(Boolean);
@@ -97,6 +190,10 @@ export async function api(
     headers: response.headers,
     setCookies: response.headers.getSetCookie(),
   };
+}
+
+function isJsonObject(value: unknown): value is Record<string, any> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** Reduce Set-Cookie headers to a single Cookie request header value. */
@@ -513,6 +610,22 @@ export async function purgeTestData(prefix: string) {
     select: { id: true },
   });
   const purgeUserIds = purgeUsers.map((user) => user.id);
+  const purgeAnalyticsWhere: Prisma.AnalyticsEventWhereInput = {
+    OR: [
+      ...(purgeUserIds.length > 0 ? [{ userId: { in: purgeUserIds } }] : []),
+      { userId: sw },
+      { anonymousId: sw },
+    ],
+  };
+  const purgeAnalyticsEvents = await prisma.analyticsEvent.findMany({
+    where: purgeAnalyticsWhere,
+    select: {
+      id: true,
+      sourceService: true,
+      sourceEventId: true,
+    },
+  });
+  const purgeAnalyticsEventIds = purgeAnalyticsEvents.map((event) => event.id);
   const purgeGenerationJobs = await prisma.generationJob.findMany({
     where: {
       OR: [
@@ -572,6 +685,28 @@ export async function purgeTestData(prefix: string) {
     await prisma.adminCase.deleteMany({ where: { id: { in: derivedCaseIds } } });
   }
 
+  if (purgeAnalyticsEventIds.length > 0) {
+    const projectionReceiptKeys = purgeAnalyticsEvents
+      .filter((event) => event.sourceEventId !== null)
+      .map((event) => ({
+        sourceService: `main.product_projection:${event.sourceService}`,
+        sourceEventId: event.sourceEventId as string,
+      }));
+    await prisma.metricProjectionReceipt.deleteMany({
+      where: { canonicalEventId: { in: purgeAnalyticsEventIds } },
+    });
+    if (projectionReceiptKeys.length > 0) {
+      await prisma.inboundEventReceipt.deleteMany({
+        where: { OR: projectionReceiptKeys },
+      });
+    }
+    await prisma.mainOutboxEvent.deleteMany({
+      where: {
+        eventType: "product.event.persisted.v2",
+        aggregateId: { in: purgeAnalyticsEventIds },
+      },
+    });
+  }
   await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: sw } });
   await prisma.moderationReview.deleteMany({ where: { OR: [{ id: sw }, { reportId: sw }] } });
   await prisma.adminAuditLog.deleteMany({
@@ -643,9 +778,7 @@ export async function purgeTestData(prefix: string) {
   await prisma.providerEvent.deleteMany({
     where: { OR: [{ id: sw }, { providerEventId: sw }] },
   });
-  await prisma.analyticsEvent.deleteMany({
-    where: { OR: [{ userId: sw }, { anonymousId: sw }] },
-  });
+  await prisma.analyticsEvent.deleteMany({ where: purgeAnalyticsWhere });
   await prisma.redeemCodeRedemption.deleteMany({
     where: { OR: [{ userId: sw }, { redeemCodeId: sw }] },
   });

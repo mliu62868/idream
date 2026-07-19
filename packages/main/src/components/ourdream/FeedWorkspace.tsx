@@ -2,18 +2,22 @@
 
 import Image from "next/image";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { Flag, Heart, Images, MessageCircle, RefreshCcw, Repeat2, Share2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   parseFeedResponse,
   type PublicFeedItem,
 } from "@/lib/public-api-contracts";
+import { shouldBypassNextImageOptimizer } from "@/lib/image-delivery";
 import { useAgeGateAccess } from "./AgeGateBoundary";
 import { authHrefForTarget } from "./authRedirect";
 
 type FeedCharacterItem = Extract<PublicFeedItem, { type: "character" }>;
 type FeedCollectionItem = Extract<PublicFeedItem, { type: "collection" }>;
 type FeedItem = PublicFeedItem;
+
+const FEED_PAGE_SIZE = 8;
 
 function countLabel(count: number, singular: string, plural = `${singular}s`) {
   return `${count} ${count === 1 ? singular : plural}`;
@@ -34,6 +38,8 @@ type FeedActionPayload = {
 
 export function FeedWorkspace() {
   const { accepted: ageGateAccepted } = useAgeGateAccess();
+  const searchParams = useSearchParams();
+  const sharedItemId = searchParams.get("item")?.trim() ?? "";
   const [items, setItems] = useState<FeedItem[]>([]);
   const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(true);
@@ -54,11 +60,11 @@ export function FeedWorkspace() {
     requestControllerRef.current?.abort();
     const controller = new AbortController();
     requestControllerRef.current = controller;
-    const sharedItemId = cursor ? "" : new URLSearchParams(window.location.search).get("item") ?? "";
+    const requestedItemId = sharedItemId;
     if (
       !cursor &&
       loadedScopeRef.current !== null &&
-      loadedScopeRef.current !== sharedItemId
+      loadedScopeRef.current !== requestedItemId
     ) {
       loadedScopeRef.current = null;
       setItems([]);
@@ -66,12 +72,17 @@ export function FeedWorkspace() {
       setNextCursor(null);
       setFocusedItemId(null);
     }
-    if (cursor) setLoadingMore(true);
-    else setLoading(true);
+    if (cursor) {
+      setLoading(false);
+      setLoadingMore(true);
+    } else {
+      setLoadingMore(false);
+      setLoading(true);
+    }
     try {
       const payload = await fetchFeedPayload(
         cursor,
-        sharedItemId,
+        requestedItemId,
         controller.signal,
       );
       if (requestSerial !== requestSerialRef.current) return;
@@ -82,7 +93,7 @@ export function FeedWorkspace() {
       }
       const fresh = payload.data.items;
       if (!cursor) {
-        loadedScopeRef.current = sharedItemId;
+        loadedScopeRef.current = requestedItemId;
         const nextFocusedItemId = payload.data.focusedItemId;
         setFocusedItemId(nextFocusedItemId);
         setStatus(nextFocusedItemId ? "Showing shared dream." : "");
@@ -119,7 +130,7 @@ export function FeedWorkspace() {
       if (cursor) setLoadingMore(false);
       else setLoading(false);
     }
-  }, [ageGateAccepted]);
+  }, [ageGateAccepted, sharedItemId]);
 
   useEffect(() => {
     if (!ageGateAccepted) return;
@@ -312,7 +323,7 @@ export function FeedWorkspace() {
             >
               {item.type === "character" ? (
                 <CharacterFeedCard
-                  eager={index < 24}
+                  eager={index < 4}
                   focused={item.id === focusedItemId}
                   item={item}
                   liked={likedIds.has(item.id)}
@@ -325,7 +336,7 @@ export function FeedWorkspace() {
                 />
               ) : (
                 <CollectionFeedCard
-                  eager={index < 24}
+                  eager={index < 4}
                   focused={item.id === focusedItemId}
                   item={item}
                   onReport={() => action(item.id, "report")}
@@ -399,6 +410,7 @@ function CharacterFeedCard({
           loading={eager ? "eager" : "lazy"}
           sizes="480px"
           src={item.character.image}
+          unoptimized={shouldBypassNextImageOptimizer(item.character.image)}
         />
         <div className="absolute inset-0 bg-[linear-gradient(0deg,rgba(0,0,0,.82),rgba(0,0,0,.12)_65%,transparent)]" />
         <div className="absolute inset-x-0 bottom-0 p-4">
@@ -462,7 +474,7 @@ function CollectionFeedCard({
                 loading={eager && previewIndex === 0 ? "eager" : "lazy"}
                 sizes="240px"
                 src={src}
-                unoptimized={isUserContentUrl(src)}
+                unoptimized={shouldBypassNextImageOptimizer(src)}
               />
             </div>
           ))}
@@ -518,6 +530,7 @@ async function fetchFeedPayload(
   signal?: AbortSignal,
 ) {
   const params = new URLSearchParams();
+  params.set("limit", String(FEED_PAGE_SIZE));
   if (cursor) params.set("cursor", cursor);
   if (sharedItemId) params.set("item", sharedItemId);
   const query = params.toString() ? `?${params.toString()}` : "";
@@ -541,10 +554,6 @@ function publicApiErrorMessage(payload: unknown) {
   if (!error || typeof error !== "object" || Array.isArray(error)) return undefined;
   const message = (error as { message?: unknown }).message;
   return typeof message === "string" ? message : undefined;
-}
-
-function isUserContentUrl(url: string) {
-  return url.startsWith("/user-content/") || url.startsWith("/api/v1/media/");
 }
 
 function signupUrlForFeedChat(characterId: string) {

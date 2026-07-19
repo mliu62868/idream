@@ -20,6 +20,14 @@ export const env = {
   get DATABASE_URL() {
     return required("CHAT_DATABASE_URL", process.env.DATABASE_URL);
   },
+  get PROJECTOR_DATABASE_URL() {
+    const explicit = process.env.CHAT_PROJECTOR_DATABASE_URL;
+    if (explicit) return explicit;
+    const url = new URL(this.DATABASE_URL);
+    url.username = "chat_projector";
+    url.password = required("CHAT_PROJECTOR_PASSWORD");
+    return url.toString();
+  },
   get REDIS_URL() {
     return process.env.CHAT_REDIS_URL ?? process.env.REDIS_URL ?? "redis://127.0.0.1:6379/0";
   },

@@ -1,11 +1,54 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   extractLinkedNextAssetUrls,
+  isAdminAccessDeniedHtml,
+  isAdminDevLoginWallHtml,
   probeLinkedNextAssets,
   runProbe,
 } from "./probe-web-surface";
 
 describe("web-surface linked Next asset closure", () => {
+  it("recognizes the protected Admin login wall in both supported locales", () => {
+    expect(
+      isAdminDevLoginWallHtml(
+        '<main><p>DEV ONLY</p><h1>Admin login</h1><input type="password"></main>',
+      ),
+    ).toBe(true);
+    expect(
+      isAdminDevLoginWallHtml(
+        "<main><p>仅限开发环境</p><h1>后台登录</h1><input type='password'></main>",
+      ),
+    ).toBe(true);
+    expect(
+      isAdminDevLoginWallHtml(
+        '<main data-admin-auth-wall="dev-login-v1"></main>',
+      ),
+    ).toBe(true);
+  });
+
+  it("does not treat login-themed copy without a password control as protection", () => {
+    expect(
+      isAdminDevLoginWallHtml(
+        "<main><p>仅限开发环境</p><h1>后台登录</h1></main>",
+      ),
+    ).toBe(false);
+    expect(
+      isAdminDevLoginWallHtml(
+        '<main><p>仅限开发环境</p><h1>后台登录</h1><div type="password"></div></main>',
+      ),
+    ).toBe(false);
+  });
+
+  it("recognizes versioned and localized Admin access-denied walls", () => {
+    expect(
+      isAdminAccessDeniedHtml(
+        '<main data-admin-auth-wall="access-denied-v1"></main>',
+      ),
+    ).toBe(true);
+    expect(isAdminAccessDeniedHtml("<h1>Admin access denied</h1>")).toBe(true);
+    expect(isAdminAccessDeniedHtml("<h1>无后台访问权限</h1>")).toBe(true);
+  });
+
   it("checks each distinct linked JavaScript and stylesheet with query identity intact", async () => {
     const html = `
       <link rel="stylesheet" href="/_next/static/css/app.css?dpl=release-a">

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { fetchProtectedForViewer } from "./viewer-auth";
+import { fetchProtectedForViewer, fetchViewerScope } from "./viewer-auth";
 
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -10,6 +10,41 @@ function jsonResponse(body: unknown, status = 200) {
 }
 
 describe("protected viewer requests", () => {
+  it("resolves actor-scoped draft authority for both anonymous and authenticated viewers", async () => {
+    const anonymousFetcher = vi.fn(async () =>
+      jsonResponse({
+        ok: true,
+        data: { user: null, anonymousId: "anon-1" },
+      }),
+    );
+    const authenticatedFetcher = vi.fn(async () =>
+      jsonResponse({
+        ok: true,
+        data: { user: { id: "user-1" }, anonymousId: "anon-1" },
+      }),
+    );
+
+    await expect(fetchViewerScope(anonymousFetcher)).resolves.toBe(
+      "anonymous:anon-1",
+    );
+    await expect(fetchViewerScope(authenticatedFetcher)).resolves.toBe(
+      "user:user-1",
+    );
+    expect(anonymousFetcher).toHaveBeenCalledWith("/api/v1/me", {
+      cache: "no-store",
+    });
+  });
+
+  it("fails closed when actor-scoped draft authority is incomplete", async () => {
+    const fetcher = vi.fn(async () =>
+      jsonResponse({ ok: true, data: { user: null, anonymousId: null } }),
+    );
+
+    await expect(fetchViewerScope(fetcher)).rejects.toThrow(
+      "Viewer authority was incomplete.",
+    );
+  });
+
   it("does not request the protected resource for an anonymous viewer", async () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       expect(String(input)).toBe("/api/v1/me");

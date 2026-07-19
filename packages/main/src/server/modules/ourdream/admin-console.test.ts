@@ -747,7 +747,43 @@ describe("generation config control plane", () => {
         }),
       ]),
     );
+    expect(config.data.image.models.map((model: { profileId: string }) => model.profileId)).not.toEqual(
+      expect.arrayContaining([
+        "character-image-multi-identity",
+        "character-image-variation",
+        "chat-image-edit",
+      ]),
+    );
     expect(JSON.stringify(config.data.image.models)).not.toContain("profile_image_premium_v1");
+
+    const beforeRejectedJobs = await prisma.generationJob.count({ where: { userId } });
+    const beforeRejectedBalance = await dreamcoinBalance(userId);
+    const beforeRejectedVisualProfiles = await prisma.characterVisualProfile.count({
+      where: { characterId },
+    });
+    const referenceOnlyProfile = await api("POST", "generation/jobs", {
+      userId,
+      ageGate: true,
+      body: {
+        mode: "image",
+        characterId,
+        outputCount: 1,
+        model: "character-image-variation",
+      },
+    });
+    expectError(referenceOnlyProfile, 409, "conflict");
+    expect(referenceOnlyProfile.error?.message).toBe(
+      "Requested generation profile is unavailable",
+    );
+    expect(referenceOnlyProfile.error?.details).toMatchObject({
+      mode: "image",
+      requestedProfile: "character-image-variation",
+    });
+    expect(await prisma.generationJob.count({ where: { userId } })).toBe(beforeRejectedJobs);
+    expect(await dreamcoinBalance(userId)).toBe(beforeRejectedBalance);
+    expect(
+      await prisma.characterVisualProfile.count({ where: { characterId } }),
+    ).toBe(beforeRejectedVisualProfiles);
 
     const gen = await api("POST", "generation/jobs", {
       userId,

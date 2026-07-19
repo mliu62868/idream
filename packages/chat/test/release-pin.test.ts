@@ -157,7 +157,7 @@ describe("Character Release → Chat serving pin", () => {
       userId: USERS[0],
       characterId: CHARACTER_ID,
       sessionId: oldSession.id,
-      memoryEnabled: true,
+      turnMemoryEnabled: true,
       userMessageId: oldTurn.userMessageId,
     });
     expect(oldContext.persona.systemPrompt).toBe("Immutable persona version one");

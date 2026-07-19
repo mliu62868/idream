@@ -125,8 +125,10 @@ export default async function setup() {
   try {
     process.env.CHAT_TEST_DB = target.database;
     process.env.BULLMQ_PREFIX = chatTestBullMqPrefix(target);
-    const { chatServiceUrl, superUrl } = provisionChatTestDb();
+    const { chatProjectorUrl, chatServiceUrl, superUrl } =
+      provisionChatTestDb();
     process.env.CHAT_DATABASE_URL = chatServiceUrl;
+    process.env.CHAT_PROJECTOR_DATABASE_URL = chatProjectorUrl;
     process.env.CHAT_TEST_SUPER_URL = superUrl;
 
     const redisIsolation = dedicatedChatTestRedis({

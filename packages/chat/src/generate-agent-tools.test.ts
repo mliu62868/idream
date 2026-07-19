@@ -67,6 +67,22 @@ function fakePrisma(
   const rootMessageUpdates: CreateCall[] = [];
 
   const tx = {
+    $queryRaw: async () => [{ locked: 1 }],
+    $executeRaw: async () => 1,
+    chatFileMutation: {
+      findMany: async () => [],
+      findFirst: async () => null,
+      count: async () => 0,
+      create: async () => ({}),
+      updateMany: async () => ({ count: 0 }),
+    },
+    chatUserView: {
+      findUnique: async () => ({
+        userId: "user_1",
+        status: "active",
+        deletedAt: null,
+      }),
+    },
     messageAttachment: {
       create: async (call: CreateCall) => {
         attachmentCreates.push(call);
@@ -76,8 +92,23 @@ function fakePrisma(
     },
     message: {
       findUnique: async (call: { where: { id: string } }) => call.where.id === "msg_user"
-        ? { id: "msg_user", ...typedSourceTurn }
-        : { id: "msg_assistant", status: "generating", attempt: 1 },
+        ? {
+            id: "msg_user",
+            role: "user",
+            sessionId: "sess_1",
+            status: "sent",
+            deletedAt: null,
+            ...typedSourceTurn,
+          }
+        : {
+            id: "msg_assistant",
+            role: "assistant",
+            sessionId: "sess_1",
+            status: "generating",
+            attempt: 1,
+            replyToMessageId: "msg_user",
+            deletedAt: null,
+          },
       updateMany: async (call: CreateCall) => {
         messageUpdates.push(call);
         return { count: 1 };
@@ -95,7 +126,16 @@ function fakePrisma(
       upsert: async () => ({}),
     },
     chatSession: {
+      findUnique: async () => ({
+        id: "sess_1",
+        userId: "user_1",
+        characterId: "char_1",
+        status: "active",
+        deletedAt: null,
+        contextRevision: 0n,
+      }),
       update: async () => ({}),
+      updateMany: async () => ({ count: 1 }),
     },
     chatModerationEvent: {
       create: async () => ({}),
@@ -110,7 +150,24 @@ function fakePrisma(
 
   const prisma = {
     message: {
-      findUnique: async () => ({ id: "msg_assistant", status: "generating", attempt: 1 }),
+      findUnique: async (call: { where: { id: string } }) =>
+        call.where.id === "msg_user"
+          ? {
+              id: "msg_user",
+              role: "user",
+              sessionId: "sess_1",
+              status: "sent",
+              deletedAt: null,
+            }
+          : {
+              id: "msg_assistant",
+              role: "assistant",
+              sessionId: "sess_1",
+              status: "generating",
+              attempt: 1,
+              replyToMessageId: "msg_user",
+              memoryAuthority: "enabled",
+            },
       updateMany: async (call: CreateCall) => {
         rootMessageUpdates.push(call);
         return { count: 1 };
@@ -123,11 +180,18 @@ function fakePrisma(
         characterId: "char_1",
         memoryEnabled: true,
         status: "active",
+        deletedAt: null,
+        contextRevision: 0n,
         characterReleaseId: "release_current_v4",
         entryExposureId: "detail_v1",
         entryJourneyId: "journey_v1",
         entryPlacementId: "feed.hero",
       }),
+    },
+    chatFileMutation: {
+      findFirst: async () => null,
+      count: async () => 0,
+      updateMany: async () => ({ count: 0 }),
     },
     $transaction: async <T>(callback: (client: typeof tx) => Promise<T>) => callback(tx),
   } as unknown as ChatPrismaClient;
@@ -174,6 +238,8 @@ const context = {
   longTermMemories: [],
   relationship: null,
   canUpdateSessionSummary: true,
+  sessionContextRevision: 0n,
+  fileContextRevision: 0n,
 };
 
 describe("chat generate agent image tool", () => {
@@ -207,6 +273,7 @@ describe("chat generate agent image tool", () => {
       const generation = processGenerate(
         { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
         prisma,
+        { projectorPrisma: prisma },
       );
       await vi.advanceTimersByTimeAsync(61_000);
 
@@ -247,6 +314,7 @@ describe("chat generate agent image tool", () => {
     const result = await processGenerate(
       { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
       prisma,
+      { projectorPrisma: prisma },
     );
 
     expect(result.status).toBe("sent");
@@ -271,6 +339,8 @@ describe("chat generate agent image tool", () => {
     });
     expect(imageOutbox?.data.payload).toMatchObject({
       kind: "chat.image.requested",
+      exchangeId: "msg_user",
+      messageId: "msg_assistant",
       characterReleaseId: "release_v3",
       promptHint: expect.stringContaining("sunlit window"),
       controls: { orientation: "4:5", outputCount: 1 },
@@ -291,6 +361,7 @@ describe("chat generate agent image tool", () => {
     await expect(processGenerate(
       { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
       prisma,
+      { projectorPrisma: prisma },
     )).resolves.toEqual({ status: "sent" });
 
     expect(outboxCreates.find((call) => call.data.eventType === CHAT_TO_MAIN_EVENTS.exchangeCompletedV2)?.data).toMatchObject({
@@ -323,6 +394,7 @@ describe("chat generate agent image tool", () => {
     const result = await processGenerate(
       { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
       prisma,
+      { projectorPrisma: prisma },
     );
 
     expect(result.status).toBe("failed");
@@ -361,6 +433,7 @@ describe("chat generate agent image tool", () => {
     const result = await processGenerate(
       { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
       prisma,
+      { projectorPrisma: prisma },
     );
 
     expect(result.status).toBe("sent");
@@ -397,6 +470,7 @@ describe("chat generate agent image tool", () => {
     const result = await processGenerate(
       { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
       prisma,
+      { projectorPrisma: prisma },
     );
 
     expect(result.status).toBe("sent");
@@ -430,6 +504,7 @@ describe("chat generate agent image tool", () => {
     const result = await processGenerate(
       { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
       prisma,
+      { projectorPrisma: prisma },
     );
 
     expect(result.status).toBe("sent");
@@ -469,6 +544,7 @@ describe("chat generate agent image tool", () => {
     const result = await processGenerate(
       { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
       prisma,
+      { projectorPrisma: prisma },
     );
 
     expect(result.status).toBe("sent");

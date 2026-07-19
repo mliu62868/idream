@@ -4,6 +4,8 @@ import { pathToFileURL } from "node:url";
 import { looksLikeMockChatResponse } from "@idream/shared";
 import { parse as parseDotenv } from "dotenv";
 
+const DEDICATED_CHAT_PROBE_USER_ID = "seed-chat-probe-user";
+
 export type LaunchReadinessStatus = "pass" | "fail" | "warn";
 
 export interface LaunchReadinessCheck {
@@ -110,6 +112,8 @@ export interface ChatServiceProbeEvidence {
   durationMs?: number;
   serviceUrl?: string | null;
   userId?: string | null;
+  actorDataClass?: string | null;
+  dedicatedActor?: boolean;
   characterId?: string | null;
   characterSource?: string | null;
   usedSignedBff?: boolean;
@@ -134,6 +138,11 @@ export interface ChatServiceProbeEvidence {
   conversation?: {
     ok?: boolean;
     attempted?: boolean;
+    preflightCleanup?: {
+      ok?: boolean;
+      status?: number;
+      error?: string | null;
+    } | null;
     createSession?: { ok?: boolean; status?: number; error?: string | null } | null;
     sendMessage?: { ok?: boolean; status?: number; error?: string | null } | null;
     stream?: {
@@ -152,11 +161,31 @@ export interface ChatServiceProbeEvidence {
       assistantStatus?: string | null;
       error?: string | null;
     } | null;
-    noMemory?: { ok?: boolean; status?: number; error?: string | null } | null;
+    noMemory?: {
+      ok?: boolean;
+      status?: number;
+      assistantMessageId?: string;
+      authorityPinned?: boolean;
+      relationshipUnchanged?: boolean;
+      memorySourceAbsent?: boolean;
+      error?: string | null;
+    } | null;
     blockedInput?: {
       ok?: boolean;
       status?: number;
       status_?: string | null;
+      error?: string | null;
+    } | null;
+    cleanup?: {
+      ok?: boolean;
+      status?: number;
+      memoryGone?: boolean;
+      memoriesDeleted?: number;
+      relationshipDeleted?: boolean;
+      relationshipsDeleted?: number;
+      relationshipsGone?: boolean;
+      sessionDeleted?: boolean;
+      sessionGone?: boolean;
       error?: string | null;
     } | null;
     error?: string | null;
@@ -724,8 +753,16 @@ function addChatServiceProbeCheck(
     if (!sameUrl(probe.serviceUrl, env.CHAT_SERVICE_URL)) {
       problems.push("probe service URL does not match CHAT_SERVICE_URL");
     }
-    if (!hasTrimmedText(probe.userId)) {
-      problems.push("probe user id is missing");
+    if (probe.userId !== DEDICATED_CHAT_PROBE_USER_ID) {
+      problems.push(
+        `probe user id is not the dedicated actor ${DEDICATED_CHAT_PROBE_USER_ID}`,
+      );
+    }
+    if (probe.actorDataClass !== "audit") {
+      problems.push("probe actor is not classified as audit");
+    }
+    if (probe.dedicatedActor !== true) {
+      problems.push("probe did not use a dedicated actor");
     }
     if (probe.usedSignedBff !== true) {
       problems.push("probe did not use signed BFF headers");
@@ -742,6 +779,9 @@ function addChatServiceProbeCheck(
     if (probe.conversation?.attempted !== true || probe.conversation.ok !== true) {
       problems.push("conversation smoke did not complete");
     } else {
+      if (probe.conversation.preflightCleanup?.ok !== true) {
+        problems.push("conversation smoke did not clean prior audit state");
+      }
       if (probe.conversation.createSession?.ok !== true) {
         problems.push("conversation smoke did not create a session");
       }
@@ -762,14 +802,29 @@ function addChatServiceProbeCheck(
       ) {
         problems.push("conversation smoke did not reload the assistant message");
       }
-      if (probe.conversation.noMemory?.ok !== true) {
-        problems.push("conversation smoke did not send a no-memory message");
+      if (
+        probe.conversation.noMemory?.ok !== true ||
+        probe.conversation.noMemory.authorityPinned !== true ||
+        probe.conversation.noMemory.relationshipUnchanged !== true ||
+        probe.conversation.noMemory.memorySourceAbsent !== true
+      ) {
+        problems.push("conversation smoke did not prove no-memory turn authority");
       }
       if (
         probe.conversation.blockedInput?.ok !== true ||
         probe.conversation.blockedInput.status_ !== "blocked"
       ) {
         problems.push("conversation smoke did not prove blocked input handling");
+      }
+      if (
+        probe.conversation.cleanup?.ok !== true ||
+        probe.conversation.cleanup.sessionDeleted !== true ||
+        probe.conversation.cleanup.memoryGone !== true ||
+        probe.conversation.cleanup.relationshipDeleted !== true ||
+        probe.conversation.cleanup.relationshipsGone !== true ||
+        probe.conversation.cleanup.sessionGone !== true
+      ) {
+        problems.push("conversation smoke did not clean its audit state");
       }
     }
     const checkedAt = parseProbeDate(probe.checkedAt);
@@ -792,7 +847,7 @@ function addChatServiceProbeCheck(
     status: problems.length === 0 ? "pass" : "fail",
     message:
       problems.length === 0
-        ? "Recent chat service probe reached healthz, signed BFF endpoints, unsigned rejection, and a conversation smoke."
+        ? "Recent chat service probe used a dedicated audit actor, reached signed/unsigned boundaries, proved per-turn no-memory authority, and cleaned visible audit state."
         : `Chat service probe evidence is missing or invalid: ${problems.join("; ")}.`,
     remediation:
       problems.length === 0
@@ -1838,10 +1893,6 @@ function parseProbeDate(value: string | null | undefined) {
   return Number.isFinite(date.getTime()) ? date : null;
 }
 
-function hasTrimmedText(value: string | null | undefined) {
-  return typeof value === "string" && value.trim().length > 0;
-}
-
 function probeMaxAgeMs(env: EnvLike, key: string) {
   const parsed = Number.parseInt(env[key] ?? "1440", 10);
   return (Number.isFinite(parsed) && parsed > 0 ? parsed : 1440) * 60_000;
@@ -2248,12 +2299,18 @@ function normalizeChatServiceProbeEvidence(value: unknown): ChatServiceProbeEvid
           typeof value.conversation.attempted === "boolean"
             ? value.conversation.attempted
             : false,
+        preflightCleanup: normalizeProbeOperation(
+          value.conversation.preflightCleanup,
+        ),
         createSession: normalizeProbeOperation(value.conversation.createSession),
         sendMessage: normalizeProbeOperation(value.conversation.sendMessage),
         stream: normalizeChatStreamProbeOperation(value.conversation.stream),
         getSession: normalizeChatGetSessionProbeOperation(value.conversation.getSession),
-        noMemory: normalizeProbeOperation(value.conversation.noMemory),
+        noMemory: normalizeChatNoMemoryProbeOperation(
+          value.conversation.noMemory,
+        ),
         blockedInput: normalizeChatBlockedInputProbeOperation(value.conversation.blockedInput),
+        cleanup: normalizeChatCleanupProbeOperation(value.conversation.cleanup),
         error:
           typeof value.conversation.error === "string"
             ? value.conversation.error
@@ -2267,6 +2324,10 @@ function normalizeChatServiceProbeEvidence(value: unknown): ChatServiceProbeEvid
     durationMs: typeof value.durationMs === "number" ? value.durationMs : undefined,
     serviceUrl: typeof value.serviceUrl === "string" ? value.serviceUrl : null,
     userId: typeof value.userId === "string" ? value.userId : null,
+    actorDataClass:
+      typeof value.actorDataClass === "string" ? value.actorDataClass : null,
+    dedicatedActor:
+      typeof value.dedicatedActor === "boolean" ? value.dedicatedActor : false,
     characterId: typeof value.characterId === "string" ? value.characterId : null,
     characterSource:
       typeof value.characterSource === "string" ? value.characterSource : null,
@@ -2322,6 +2383,58 @@ function normalizeChatBlockedInputProbeOperation(value: unknown) {
   return {
     ...operation,
     status_: typeof value.status_ === "string" ? value.status_ : null,
+  };
+}
+
+function normalizeChatNoMemoryProbeOperation(value: unknown) {
+  const operation = normalizeProbeOperation(value);
+  if (!operation || !isRecord(value)) return operation;
+  return {
+    ...operation,
+    assistantMessageId:
+      typeof value.assistantMessageId === "string"
+        ? value.assistantMessageId
+        : undefined,
+    authorityPinned:
+      typeof value.authorityPinned === "boolean" ? value.authorityPinned : false,
+    relationshipUnchanged:
+      typeof value.relationshipUnchanged === "boolean"
+        ? value.relationshipUnchanged
+        : false,
+    memorySourceAbsent:
+      typeof value.memorySourceAbsent === "boolean"
+        ? value.memorySourceAbsent
+        : false,
+  };
+}
+
+function normalizeChatCleanupProbeOperation(value: unknown) {
+  const operation = normalizeProbeOperation(value);
+  if (!operation || !isRecord(value)) return operation;
+  return {
+    ...operation,
+    relationshipDeleted:
+      typeof value.relationshipDeleted === "boolean"
+        ? value.relationshipDeleted
+        : false,
+    memoryGone:
+      typeof value.memoryGone === "boolean" ? value.memoryGone : false,
+    memoriesDeleted:
+      typeof value.memoriesDeleted === "number"
+        ? value.memoriesDeleted
+        : undefined,
+    relationshipsDeleted:
+      typeof value.relationshipsDeleted === "number"
+        ? value.relationshipsDeleted
+        : undefined,
+    relationshipsGone:
+      typeof value.relationshipsGone === "boolean"
+        ? value.relationshipsGone
+        : false,
+    sessionDeleted:
+      typeof value.sessionDeleted === "boolean" ? value.sessionDeleted : false,
+    sessionGone:
+      typeof value.sessionGone === "boolean" ? value.sessionGone : false,
   };
 }
 

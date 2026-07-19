@@ -4,13 +4,22 @@
 // blocked/deleted/no-memory content must NEVER become long-term memory (PRD §7.2).
 // Each memory line carries source_message_ids back-linking PG.
 import type { ChatPrismaClient } from "./db.js";
-import { chatPrisma } from "./db.js";
-import { updateRelationshipOnce } from "./relationship.js";
-import { consolidateMemories } from "./memories.js";
+import { chatPrisma, chatProjectorPrisma } from "./db.js";
+import { relationshipTurnSummary } from "./relationship.js";
 import { extractCandidates } from "./extract.js";
 import { resolvePolicy, snapshotFromView } from "./policy.js";
-import { recordOutbox } from "./outbox.js";
-import { CHAT_TO_MAIN_EVENTS, type ChatMemoryExtractPayload } from "@idream/shared/contracts";
+import {
+  assertNoPendingChatFileMutationsTx,
+  projectChatFileMutations,
+  recordChatFileMutation,
+  runWithProjectedChatFiles,
+} from "./file-mutations.js";
+import { lockTurn } from "./turn-lock.js";
+import type { ChatMemoryExtractPayload } from "@idream/shared/contracts";
+import {
+  relationshipMessageSelect,
+  resolveRelationshipLinkage,
+} from "./relationship-authority.js";
 
 // Re-export the extractor surface so existing importers keep their path.
 export { deriveCandidates } from "./extract.js";
@@ -18,31 +27,65 @@ export type { MemoryCandidate } from "./extract.js";
 
 export type MemoryExtractPayload = ChatMemoryExtractPayload;
 
+export interface MemoryExtractHooks {
+  beforeAuthorityLock?: () => Promise<void> | void;
+  afterAuthorityLocked?: () => Promise<void> | void;
+  projectorPrisma?: ChatPrismaClient;
+}
+
 export async function processMemoryExtract(
   payload: MemoryExtractPayload,
   prisma: ChatPrismaClient = chatPrisma,
+  hooks: MemoryExtractHooks = {},
 ): Promise<{ written: number; skipped: string | null }> {
+  const projectorPrisma =
+    hooks.projectorPrisma ?? chatProjectorPrisma;
   const session = await prisma.chatSession.findUnique({ where: { id: payload.sessionId } });
   if (!session) return { written: 0, skipped: "no_session" };
-
-  // No-memory gate: never derive from an incognito session (PRD §7.2).
-  if (!session.memoryEnabled) return { written: 0, skipped: "no_memory_session" };
+  // A prior committed mutation may have crashed before its file projection.
+  // Reads and new derivations first drain that durable ledger or fail closed.
+  await projectChatFileMutations(session.userId, projectorPrisma);
 
   // Find the user turn that preceded this assistant message.
   const assistant = await prisma.message.findUnique({ where: { id: payload.assistantMessageId } });
   if (!assistant) return { written: 0, skipped: "no_assistant" };
+  if (assistant.sessionId !== session.id || assistant.role !== "assistant") {
+    return { written: 0, skipped: "wrong_assistant" };
+  }
   if (assistant.attempt !== payload.attempt) return { written: 0, skipped: "stale_attempt" };
   if (assistant.memoryExtractedAttempt >= payload.attempt) return { written: 0, skipped: "already_extracted" };
-  const sourceId = payload.userMessageId || assistant.replyToMessageId;
-  const userMessage = sourceId
-    ? await prisma.message.findUnique({ where: { id: sourceId } })
-    : await prisma.message.findFirst({
-        // Compatibility only for jobs/rows created before reply_to_message_id.
-        where: { sessionId: session.id, role: "user", createdAt: { lte: assistant.createdAt }, deletedAt: null },
-        orderBy: [{ createdAt: "desc" }, { role: "desc" }],
-      });
+  if (assistant.memoryAuthority === "disabled") {
+    return { written: 0, skipped: "turn_memory_disabled" };
+  }
+  if (assistant.memoryAuthority !== "enabled") {
+    return { written: 0, skipped: "turn_memory_legacy_unknown" };
+  }
+  const [messages, receipts] = await Promise.all([
+    prisma.message.findMany({
+      where: { sessionId: session.id },
+      select: relationshipMessageSelect,
+    }),
+    prisma.chatSendReceipt.findMany({
+      where: { sessionId: session.id },
+      select: {
+        userMessageId: true,
+        assistantMessageId: true,
+      },
+    }),
+  ]);
+  const linkage = resolveRelationshipLinkage(messages, receipts);
+  const userMessage = linkage.sources.get(assistant.id);
   if (!userMessage) return { written: 0, skipped: "no_user_turn" };
+  if (
+    payload.userMessageId &&
+    payload.userMessageId !== userMessage.id
+  ) {
+    return { written: 0, skipped: "wrong_user_turn" };
+  }
   if (userMessage.sessionId !== session.id || userMessage.role !== "user") {
+    return { written: 0, skipped: "wrong_user_turn" };
+  }
+  if (assistant.replyToMessageId && userMessage.id !== assistant.replyToMessageId) {
     return { written: 0, skipped: "wrong_user_turn" };
   }
 
@@ -50,14 +93,6 @@ export async function processMemoryExtract(
   if (!canMemorize(userMessage) || !canMemorize(assistant)) {
     return { written: 0, skipped: "blocked_or_deleted" };
   }
-
-  // Relationship narrative is derived every allowed turn (file authority, P1-2).
-  await updateRelationshipOnce(
-    session.userId,
-    session.characterId,
-    `${assistant.id}:${payload.attempt}`,
-    { summaryDelta: clampTurn(userMessage.content) },
-  );
 
   // Semantic extraction (igrep mem derive) when enabled, regex floor otherwise —
   // off the hot path, so a slow LLM only delays this worker, never a reply.
@@ -67,56 +102,158 @@ export async function processMemoryExtract(
     userId: session.userId,
     characterId: session.characterId,
   });
-  let changedMemories = 0;
-  if (candidates.length > 0) {
-    // Consolidate INTO the authority files (dedup + confidence merge + tier cap)
-    // instead of blind-appending, so repeated preferences never stack duplicates
-    // and storage stays bounded by the entitlement (P1-C).
-    const entitlement = await prisma.chatEntitlementView.findUnique({ where: { userId: session.userId } });
-    const policy = resolvePolicy(snapshotFromView(entitlement), { memoryEnabled: true });
-    const { added, merged } = await consolidateMemories(
-      session.userId,
-      session.characterId,
-      candidates,
-      { maxStored: policy.maxStoredMemories },
+  await hooks.beforeAuthorityLock?.();
+
+  // The same user+turn advisory lock serializes extraction with send, edit,
+  // regenerate, memory preference changes, and privacy deletion. Re-read the
+  // exact source rows under that lock before any file-layer side effect.
+  const committed = await runWithProjectedChatFiles(
+    session.userId,
+    () => prisma.$transaction(async (tx) => {
+    await lockTurn(tx, session.userId, session.id);
+    await assertNoPendingChatFileMutationsTx(tx, session.userId);
+    const [
+      currentSession,
+      currentAssistant,
+      currentUserMessage,
+      currentMessages,
+      currentReceipts,
+    ] =
+      await Promise.all([
+        tx.chatSession.findUnique({ where: { id: session.id } }),
+        tx.message.findUnique({ where: { id: assistant.id } }),
+        tx.message.findUnique({ where: { id: userMessage.id } }),
+        tx.message.findMany({
+          where: { sessionId: session.id },
+          select: relationshipMessageSelect,
+        }),
+        tx.chatSendReceipt.findMany({
+          where: { sessionId: session.id },
+          select: {
+            userMessageId: true,
+            assistantMessageId: true,
+          },
+        }),
+      ]);
+    const currentLinkage = resolveRelationshipLinkage(
+      currentMessages,
+      currentReceipts,
     );
-    changedMemories = added + merged;
-  }
-
-  // Claim completion and publish derived events atomically. File writes above are
-  // idempotent, so a crash before this TX safely retries without double-advancing
-  // the relationship or duplicating memories.
-  await prisma.$transaction(async (tx) => {
-    const claimed = await tx.message.updateMany({
-      where: {
-        id: assistant.id,
-        attempt: payload.attempt,
-        memoryExtractedAttempt: { lt: payload.attempt },
-      },
-      data: { memoryExtractedAttempt: payload.attempt },
-    });
-    if (claimed.count === 0) return;
-    await tx.chatSession.update({
-      where: { id: session.id },
-      data: { logExtractedSeq: { increment: 1 } },
-    });
-    await recordOutbox(tx, {
-      eventType: CHAT_TO_MAIN_EVENTS.relationshipUpdated,
-      aggregateType: "character",
-      aggregateId: session.characterId,
-      payload: { userId: session.userId },
-    });
-    if (changedMemories > 0) {
-      await recordOutbox(tx, {
-        eventType: CHAT_TO_MAIN_EVENTS.memoryUpdated,
-        aggregateType: "user",
-        aggregateId: session.userId,
-        payload: { characterId: session.characterId, count: changedMemories },
-      });
+    if (
+      !currentSession ||
+      currentSession.userId !== session.userId ||
+      currentSession.characterId !== session.characterId ||
+      currentSession.status === "deleted" ||
+      currentSession.deletedAt
+    ) {
+      return {
+        result: { written: 0, skipped: "no_session" },
+        mutationId: null,
+      };
     }
-  });
+    if (
+      !currentAssistant ||
+      currentAssistant.sessionId !== session.id ||
+      currentAssistant.role !== "assistant"
+    ) {
+      return {
+        result: { written: 0, skipped: "wrong_assistant" },
+        mutationId: null,
+      };
+    }
+    if (currentAssistant.attempt !== payload.attempt) {
+      return {
+        result: { written: 0, skipped: "stale_attempt" },
+        mutationId: null,
+      };
+    }
+    if (currentAssistant.memoryExtractedAttempt >= payload.attempt) {
+      return {
+        result: { written: 0, skipped: "already_extracted" },
+        mutationId: null,
+      };
+    }
+    if (currentAssistant.memoryAuthority === "disabled") {
+      return {
+        result: { written: 0, skipped: "turn_memory_disabled" },
+        mutationId: null,
+      };
+    }
+    if (currentAssistant.memoryAuthority !== "enabled") {
+      return {
+        result: { written: 0, skipped: "turn_memory_legacy_unknown" },
+        mutationId: null,
+      };
+    }
+    if (
+      !currentUserMessage ||
+      currentUserMessage.sessionId !== session.id ||
+      currentUserMessage.role !== "user" ||
+      currentLinkage.sources.get(currentAssistant.id)?.id !==
+        currentUserMessage.id ||
+      (
+        currentAssistant.replyToMessageId !== null &&
+        currentAssistant.replyToMessageId !== currentUserMessage.id
+      ) ||
+      currentUserMessage.content !== userMessage.content
+    ) {
+      return {
+        result: { written: 0, skipped: "stale_source" },
+        mutationId: null,
+      };
+    }
+    if (
+      !canMemorize(currentUserMessage) ||
+      !canMemorize(currentAssistant)
+    ) {
+      return {
+        result: { written: 0, skipped: "blocked_or_deleted" },
+        mutationId: null,
+      };
+    }
 
-  return { written: candidates.length, skipped: null };
+    await hooks.afterAuthorityLocked?.();
+
+    const entitlement = await tx.chatEntitlementView.findUnique({
+      where: { userId: currentSession.userId },
+    });
+    const policy = resolvePolicy(snapshotFromView(entitlement), {
+      memoryEnabled: true,
+    });
+    // Commit only the immutable intent here. The projector advances the DB
+    // watermark in the same completion transaction that marks this intent
+    // applied, so `memoryExtractedAttempt` never claims a file write that has
+    // not actually succeeded.
+    const mutationId = await recordChatFileMutation(
+      tx,
+      currentSession.userId,
+      {
+        kind: "memory_extract",
+        sessionId: currentSession.id,
+        userMessageId: currentUserMessage.id,
+        characterId: currentSession.characterId,
+        turnKey: currentAssistant.id,
+        attempt: payload.attempt,
+        summaryDelta: relationshipTurnSummary(currentUserMessage.content),
+        candidates,
+        maxStored: policy.maxStoredMemories,
+      },
+    );
+
+    return {
+      result: { written: candidates.length, skipped: null },
+      mutationId,
+    };
+    }),
+    projectorPrisma,
+  );
+  if (committed.mutationId) {
+    await projectChatFileMutations(
+      session.userId,
+      projectorPrisma,
+    );
+  }
+  return committed.result;
 }
 
 interface MemorableMessage {
@@ -132,9 +269,4 @@ export function canMemorize(message: MemorableMessage): boolean {
     message.deletedAt === null &&
     (message.safetyStatus === "passed" || message.safetyStatus === "unknown")
   );
-}
-
-function clampTurn(text: string): string {
-  const t = text.trim().replace(/\s+/g, " ");
-  return t.length <= 200 ? `User: ${t}` : `User: ${t.slice(0, 199)}…`;
 }

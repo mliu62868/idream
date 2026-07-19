@@ -316,6 +316,15 @@ describe("official editorial Release authority repair", () => {
         },
       }),
     ).resolves.toBe(1);
+    await expect(prisma.mainOutboxEvent.findFirstOrThrow({
+      where: {
+        aggregateId: releaseId,
+        eventType: "character.editorial_authority_repaired.v1",
+      },
+    })).resolves.toMatchObject({
+      status: "delivered",
+      deliveredAt: new Date("2026-07-17T12:10:00.000Z"),
+    });
 
     const afterRelease = await prisma.characterRelease.findUniqueOrThrow({
       where: { id: releaseId },

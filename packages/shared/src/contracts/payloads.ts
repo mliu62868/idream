@@ -119,6 +119,10 @@ export const chatImageRequestedPayloadSchema = z
     requestId: z.string(),
     attachmentId: z.string(),
     sessionId: z.string(),
+    // Logical user turn that owns this assistant attachment. Optional for
+    // rolling compatibility; it lets later privacy corrections find derived
+    // generation jobs without retaining conversation text.
+    exchangeId: z.string().min(1).optional(),
     messageId: z.string(),
     userId: z.string(),
     characterId: z.string(),

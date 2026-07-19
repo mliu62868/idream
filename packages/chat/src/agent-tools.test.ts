@@ -58,6 +58,8 @@ const context = {
   longTermMemories: [],
   relationship: null,
   canUpdateSessionSummary: true,
+  sessionContextRevision: 0n,
+  fileContextRevision: 0n,
 } satisfies BuiltContext;
 
 describe("agent image tool planning", () => {

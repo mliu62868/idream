@@ -1,7 +1,11 @@
 import { readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  assertPlaywrightBlobRoot,
   assertPlaywrightChatDatabaseUrl,
+  assertPlaywrightChatProjectorDatabaseUrl,
   assertPlaywrightDatabaseUrl,
   managedPlaywrightWebServers,
   resolvePlaywrightEnvironment,
@@ -23,7 +27,7 @@ describe("managed Playwright environment", () => {
     expect(configSource).toContain("createPlaywrightLifecycleVerifier");
   });
 
-  it("derives one Playwright-only authority database and five non-reused managed processes", () => {
+  it("derives one Playwright-only authority database and six non-reused managed processes", () => {
     const first = resolvePlaywrightEnvironment({
       TEST_DATABASE_URL:
         "postgresql://postgres:postgres@localhost:5433/idream_test_workspace",
@@ -32,6 +36,7 @@ describe("managed Playwright environment", () => {
       CHAT_SERVICE_URL: "http://127.0.0.1:3100",
       CHAT_DATABASE_URL:
         "postgresql://chat_service:chat_service_change_me@localhost:5433/idream",
+      BLOB_ROOT: path.resolve(import.meta.dirname, "../../../..", "data/blob"),
       PW_RUN_ID: "a1b2c3d4",
     });
     const second = resolvePlaywrightEnvironment({
@@ -43,6 +48,9 @@ describe("managed Playwright environment", () => {
     });
     const databaseName = decodeURIComponent(new URL(first.databaseURL).pathname.slice(1));
     const chatDatabase = new URL(first.chatDatabaseURL);
+    const chatProjectorDatabase = new URL(
+      first.chatProjectorDatabaseURL,
+    );
     const servers = managedPlaywrightWebServers(first);
 
     expect(first.databaseURL).toBe(second.databaseURL);
@@ -52,16 +60,21 @@ describe("managed Playwright environment", () => {
     expect(databaseName.length).toBeLessThanOrEqual(63);
     expect(chatDatabase.pathname).toBe(new URL(first.databaseURL).pathname);
     expect(chatDatabase.username).toBe("chat_service");
+    expect(chatProjectorDatabase.pathname).toBe(
+      new URL(first.databaseURL).pathname,
+    );
+    expect(chatProjectorDatabase.username).toBe("chat_projector");
     expect(first.chatBaseURL).toBe("http://127.0.0.1:3113");
     expect(first.chatBaseURL).not.toBe("http://127.0.0.1:3100");
     expect(chatDatabase.pathname).not.toBe("/idream");
-    expect(servers).toHaveLength(5);
+    expect(servers).toHaveLength(6);
     expect(servers.every((server) => server.reuseExistingServer === false)).toBe(true);
     expect(servers.map((server) => server.url)).toEqual([
       `${first.chatBaseURL}/healthz`,
       first.mainBaseURL,
       first.adminBaseURL,
       `${first.pipelineBaseURL}/health`,
+      undefined,
       undefined,
     ]);
     expect(servers.filter((server) => server.url)).toHaveLength(4);
@@ -71,9 +84,14 @@ describe("managed Playwright environment", () => {
       timeout: 30_000,
     });
     expect(servers[0]?.env.CHAT_DATABASE_URL).toBe(first.chatDatabaseURL);
+    expect(servers[0]?.env.CHAT_PROJECTOR_DATABASE_URL).toBe(
+      first.chatProjectorDatabaseURL,
+    );
     expect(servers[0]?.env.CHAT_REDIS_URL).toBe(first.redisURL);
     expect(servers[0]?.env.CHAT_FS_ROOT).toBe(first.chatFsRoot);
+    expect(servers[0]?.env.BLOB_ROOT).toBe(first.blobRoot);
     expect(servers[1]?.env.CHAT_SERVICE_URL).toBe(first.chatBaseURL);
+    expect(servers[1]?.env.BLOB_ROOT).toBe(first.blobRoot);
     expect(servers[1]?.env.IDREAM_NEXT_DIST_DIR).toBe(
       ".next/playwright-main-3110-a1b2c3d4",
     );
@@ -86,6 +104,7 @@ describe("managed Playwright environment", () => {
     expect(servers[2]?.env.IDREAM_NEXT_TSCONFIG).toBe(
       ".next/playwright-config-admin-3111-a1b2c3d4/tsconfig.json",
     );
+    expect(servers[2]?.env.BLOB_ROOT).toBe(first.blobRoot);
     expect(servers[4]?.command).toBe("bun run --cwd ../gen start:image");
     expect(servers[4]?.wait).toEqual({
       stdout: /gen\/image workers started/,
@@ -100,12 +119,40 @@ describe("managed Playwright environment", () => {
     expect(servers[4]?.env.GEN_IMAGE_PROVIDER).toBe("pipeline");
     expect(servers[4]?.env.GEN_MODERATION_PROVIDER).toBe("mock");
     expect(servers[4]?.env.GEN_BLOB_PROVIDER).toBe("mock");
+    expect(servers[4]?.env.BLOB_ROOT).toBe(first.blobRoot);
     expect(servers[4]?.env.PIPELINE_API_URL).toBe(first.pipelineBaseURL);
     expect(servers[4]?.env.MAIN_WEB_URL).toBe(first.mainBaseURL);
     expect(servers[4]?.env.INTERNAL_TOKEN).toBe(
       first.serviceEnv.INTERNAL_TOKEN,
     );
     expect(servers[4]?.env.LOG_LEVEL).toBe("info");
+    expect(servers[5]?.command).toBe("bun src/processes/finalizer.ts");
+    expect(servers[5]?.wait).toEqual({
+      stdout: /gen-finalizer started/,
+    });
+    expect(servers[5]?.gracefulShutdown).toEqual({
+      signal: "SIGTERM",
+      timeout: 30_000,
+    });
+    expect(servers[5]?.env.REDIS_URL).toBe(first.redisURL);
+    expect(servers[5]?.env.BULLMQ_PREFIX).toBe(first.bullmqPrefix);
+    expect(servers[5]?.env.GEN_FINALIZER_QUEUES).toBe("app.ai.finalize");
+    expect(servers[5]?.env.INTERNAL_TOKEN).toBe(
+      first.serviceEnv.INTERNAL_TOKEN,
+    );
+    expect(servers[5]?.env.BLOB_ROOT).toBe(first.blobRoot);
+    expect(servers[5]?.env.LOG_LEVEL).toBe("info");
+    expect(first.serviceEnv.BLOB_ROOT).toBe(first.blobRoot);
+    expect(first.blobRoot).toBe(
+      path.resolve(
+        tmpdir(),
+        "idream-playwright-blobs",
+        "playwright-blob-3110-a1b2c3d4-1d8aa2ea1ee7",
+      ),
+    );
+    expect(first.blobRoot).not.toBe(
+      path.resolve(import.meta.dirname, "../../../..", "data/blob"),
+    );
     expect(first.bullmqPrefix).toBe("idream:e2e:3110:a1b2c3d4");
     expect(first.ownsDatabase).toBe(true);
     expect(
@@ -131,6 +178,28 @@ describe("managed Playwright environment", () => {
         ),
       }),
     ).toThrow("does not match this run");
+  });
+
+  it("rejects a cleanup plan whose blob root is not the exact run authority", () => {
+    const environment = resolvePlaywrightEnvironment({
+      TEST_DATABASE_URL:
+        "postgresql://postgres:postgres@localhost:5433/idream_test",
+      PW_BASE_URL: "http://127.0.0.1:3110",
+      PW_RUN_ID: "a1b2c3d4",
+    });
+    const plan = createPlaywrightCleanupPlan(environment);
+
+    expect(() =>
+      assertPlaywrightCleanupPlan({
+        ...plan,
+        blobRoot: path.resolve(import.meta.dirname, "../../../..", "data/blob"),
+      }),
+    ).toThrow("blob root does not match this run");
+    expect(() =>
+      assertPlaywrightBlobRoot(
+        path.resolve(import.meta.dirname, "../../../..", "data/blob/e2e"),
+      ),
+    ).toThrow("outside the repository data/blob authority");
   });
 
   it("requires CI, explicit authority, and exact confirmation before dropping a remote owned database", () => {
@@ -227,6 +296,8 @@ describe("managed Playwright environment", () => {
     expect(first.chatBaseURL).not.toBe(second.chatBaseURL);
     expect(first.chatFsRoot).not.toBe(second.chatFsRoot);
     expect(first.chatFsRoot).not.toBe(third.chatFsRoot);
+    expect(first.blobRoot).not.toBe(second.blobRoot);
+    expect(first.blobRoot).not.toBe(third.blobRoot);
     expect(first.bullmqPrefix).not.toBe(third.bullmqPrefix);
     expect(first.mainDistDir).not.toBe(third.mainDistDir);
     expect(first.mainTsconfigPath).not.toBe(third.mainTsconfigPath);
@@ -256,6 +327,10 @@ describe("managed Playwright environment", () => {
       "postgresql://chat_service:chat_service_change_me@localhost:5433/idream_test_playwright_manual",
       authority,
     )).toContain("idream_test_playwright_manual");
+    expect(assertPlaywrightChatProjectorDatabaseUrl(
+      "postgresql://chat_projector:chat_projector_change_me@localhost:5433/idream_test_playwright_manual",
+      authority,
+    )).toContain("idream_test_playwright_manual");
     expect(() => assertPlaywrightDatabaseUrl(
       "postgresql://postgres:postgres@localhost:5433/idream_test",
     )).toThrow("both test and playwright");
@@ -274,6 +349,14 @@ describe("managed Playwright environment", () => {
       authority,
       authority,
     )).toThrow("chat_service role");
+    expect(() => assertPlaywrightChatProjectorDatabaseUrl(
+      "postgresql://chat_service:chat_service_change_me@localhost:5433/idream_test_playwright_manual",
+      authority,
+    )).toThrow("chat_projector role");
+    expect(() => assertPlaywrightChatProjectorDatabaseUrl(
+      "postgresql://chat_projector:chat_projector_change_me@localhost:5433/idream_test_playwright_other",
+      authority,
+    )).toThrow("same database");
   });
 
   it("rejects external services, ambient overrides, and unmanaged mode", () => {

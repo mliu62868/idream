@@ -77,7 +77,10 @@ export function AdminDevLogin({ accounts, actor }: AdminDevLoginProps) {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-[var(--ad-canvas)] px-6 py-10 text-[var(--ad-ink)]">
+    <main
+      className="flex min-h-screen items-center justify-center bg-[var(--ad-canvas)] px-6 py-10 text-[var(--ad-ink)]"
+      data-admin-auth-wall="dev-login-v1"
+    >
       <title>后台登录 | iDream Admin</title>
       <div className="rounded-lg w-full max-w-sm border border-[var(--ad-border)] bg-[var(--ad-surface)] p-6">
         <div className="flex items-center gap-3">

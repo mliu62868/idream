@@ -6,11 +6,18 @@ import { Errors } from "@/server/lib/errors";
 
 export type BillableGenerationMode = "image" | "video" | "voice";
 
-export async function generationCostDreamcoins(
+export type GenerationPricingAuthority = {
+  readonly id: string;
+  readonly ruleKey: string;
+  readonly version: number;
+  readonly baseCost: number;
+  readonly effectiveFrom: Date | null;
+  readonly updatedAt: Date;
+};
+
+export async function resolveGenerationPricingAuthority(
   mode: BillableGenerationMode,
-  outputCount: number,
-  multiplier = 1,
-): Promise<number> {
+): Promise<GenerationPricingAuthority> {
   const now = new Date();
   const activeRules = await prisma.pricingRule.findMany({
     where: {
@@ -18,7 +25,14 @@ export async function generationCostDreamcoins(
       status: "active",
       OR: [{ effectiveFrom: null }, { effectiveFrom: { lte: now } }],
     },
-    select: { baseCost: true },
+    select: {
+      id: true,
+      ruleKey: true,
+      version: true,
+      baseCost: true,
+      effectiveFrom: true,
+      updatedAt: true,
+    },
     take: 2,
   });
   if (activeRules.length !== 1) {
@@ -27,5 +41,22 @@ export async function generationCostDreamcoins(
       reason: activeRules.length === 0 ? "missing_active_rule" : "ambiguous_active_rules",
     });
   }
-  return Math.ceil(activeRules[0].baseCost * outputCount * multiplier);
+  return activeRules[0];
+}
+
+export function generationCostFromAuthority(
+  authority: GenerationPricingAuthority,
+  outputCount: number,
+  multiplier = 1,
+): number {
+  return Math.ceil(authority.baseCost * outputCount * multiplier);
+}
+
+export async function generationCostDreamcoins(
+  mode: BillableGenerationMode,
+  outputCount: number,
+  multiplier = 1,
+): Promise<number> {
+  const authority = await resolveGenerationPricingAuthority(mode);
+  return generationCostFromAuthority(authority, outputCount, multiplier);
 }

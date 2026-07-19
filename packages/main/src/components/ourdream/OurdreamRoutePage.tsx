@@ -1,5 +1,6 @@
 import Image from "next/image";
 import Link from "next/link";
+import { Suspense } from "react";
 import {
   ArrowRight,
   Check,
@@ -209,6 +210,7 @@ function MarketingPage({ route }: Readonly<{ route: OurdreamRoute }>) {
             height={288}
             loading="eager"
             src="/images/ourdream/promo-card-female.webp"
+            unoptimized
             width={1440}
           />
           <div className="relative max-w-xl p-6 md:p-10">
@@ -267,7 +269,17 @@ function ProfilePage({ route }: Readonly<{ route: OurdreamRoute }>) {
   if (route.path === "/feed") {
     return (
       <RouteShell route={route}>
-        <FeedWorkspace />
+        <Suspense
+          fallback={
+            <section className="px-4 py-8 md:px-[60px] md:py-12">
+              <p className="mx-auto max-w-5xl text-[13px] font-medium text-[rgb(170,170,170)]">
+                Loading feed…
+              </p>
+            </section>
+          }
+        >
+          <FeedWorkspace />
+        </Suspense>
       </RouteShell>
     );
   }
@@ -275,7 +287,17 @@ function ProfilePage({ route }: Readonly<{ route: OurdreamRoute }>) {
   if (route.path === "/community") {
     return (
       <RouteShell route={route}>
-        <CommunityWorkspace />
+        <Suspense
+          fallback={
+            <section className="px-4 py-8 md:px-[60px] md:py-12">
+              <p className="mx-auto max-w-6xl text-[13px] font-medium text-[rgb(170,170,170)]">
+                Loading community…
+              </p>
+            </section>
+          }
+        >
+          <CommunityWorkspace />
+        </Suspense>
       </RouteShell>
     );
   }

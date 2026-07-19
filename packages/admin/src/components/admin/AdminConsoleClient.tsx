@@ -481,7 +481,10 @@ function AdminConsoleContent({
 
   if (!actor || !initialAccess) {
     return (
-      <main className="min-h-screen bg-[var(--ad-canvas)] px-6 py-8 text-[var(--ad-ink)]">
+      <main
+        className="min-h-screen bg-[var(--ad-canvas)] px-6 py-8 text-[var(--ad-ink)]"
+        data-admin-auth-wall="access-denied-v1"
+      >
         <div className="mx-auto max-w-xl rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-6">
           <div className="flex items-center gap-3">
             <Ban className="h-5 w-5 text-[var(--ad-red-text)]" />

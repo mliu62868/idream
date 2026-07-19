@@ -130,6 +130,7 @@ export function TopControls({
             loading="eager"
             sizes="(max-width: 767px) calc(100vw - 16px), 0px"
             src="/images/ourdream/promo-card-female.webp"
+            unoptimized
           />
           <span className="absolute inset-0 bg-[linear-gradient(90deg,rgba(0,0,0,.78),rgba(0,0,0,.35)_58%,rgba(0,0,0,.08))]" />
           <span className="relative flex h-full flex-col justify-center px-4">
@@ -154,7 +155,7 @@ export function TopControls({
           />
         </label>
 
-        <div className="flex flex-col gap-2 pb-2 md:grid md:grid-cols-[1fr_320px_1fr] md:items-center md:gap-3 md:pb-0">
+        <div className="flex flex-col gap-2 pb-2 xl:grid xl:grid-cols-[auto_minmax(240px,1fr)_auto] xl:items-center xl:gap-3 xl:pb-0">
           <div className="relative flex justify-start">
             <button
               aria-expanded={sortMenuOpen}
@@ -209,7 +210,7 @@ export function TopControls({
             />
           </label>
 
-          <div className="grid grid-cols-3 gap-2 md:flex md:justify-end">
+          <div className="grid grid-cols-3 gap-2 xl:flex xl:justify-end">
             <SelectPill
               ariaLabel="Gender filter"
               name="gender"

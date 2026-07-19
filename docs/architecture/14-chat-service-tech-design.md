@@ -1,6 +1,6 @@
 # 14. Chat Service 技术架构设计
 
-更新日期：2026-06-28
+更新日期：2026-07-18
 
 > 本文是 `docs/product/CHAT_SERVICE_PRD.md`（产品/数据边界）和 `docs/research/SERVICE_INTEGRATION.md`（跨服务传输）的**落地技术设计**。
 > PRD 定义 *what*，本文定义 *how*：服务拆分 → 物理拓扑、权限、热路径、可靠性、存储/记忆、事件 → 服务目录、服务间协议、进程管理。**拆分已落地**，本文是已实现的目标设计。
@@ -15,7 +15,7 @@
 | 记忆检索 | **按"谁读"分存**：账本(messages/usage/审核)入 Postgres，agent session.jsonl/记忆/关系/边界入**本地文件夹**（直接 fs 读写）+ igrep 索引 | 记忆权威=文件本身（agent 友好）；账本权威=PG（ACID/计费/查询）；同一事实只有一个 canonical；不做存储接口抽象（YAGNI），fs 读写集中在一个模块 |
 | P0 第一刀 | **边界重构**：schema 隔离 + 双 role + 只读 view | 写权威成为 DB 层强约束，而非 code review 纪律；也是物理拆分前置 |
 
-> 现状（as-built）：**拆分已落地**。Chat Service 是独立部署单元（`packages/chat`，pm2 `chat` 进程内同时起 HTTP/SSE + BullMQ worker），拥有自己的 `chat.*` schema（`chat_service` 角色连接，只读 main 的 core/billing/compliance 视图，见 03 §3.4 / `db/sql/`），账本入 PG、记忆/会话日志入文件层（`packages/chat/src/chat-fs.ts`）。main 不再同步 drain chat 生成；chat↔main 经 outbox/inbox 事件（BullMQ + Redis）交互。本文档其余部分描述的即这套已实现的设计。
+> 现状（as-built）：**拆分已落地**。Chat Service 是独立部署单元（`packages/chat`，pm2 `chat` 进程内同时起 HTTP/SSE + BullMQ worker），拥有自己的 `chat.*` schema 和两个数据库能力：`chat_service` 是请求/领域事务角色，只读 Main 的 core/billing/compliance 视图并创建 durable file intent；`chat_projector` 是独立文件投影角色，只有实际完成文件副作用后才能推进 mutation receipt。账本入 PG，记忆/会话日志入文件层（`packages/chat/src/chat-fs.ts`）。Main 不再同步 drain chat 生成；Chat ↔ Main 经 outbox/inbox 事件（BullMQ + Redis）交互。
 
 ---
 
@@ -29,13 +29,13 @@ Browser
                       │  /api/v1/chat/* 反代(BFF)：验 cookie，注入已签名内部用户上下文
                       ▼
                  Chat Service (单进程 chat = chat/web + chat/worker)
-                      │  role = chat_service
-                      ├─ chat/web:    chat API + SSE；落 user msg/placeholder(PG TX) + 入队
-                      ├─ chat/worker: chat.generate(含 session.jsonl 写入) / memory.extract
-                      │               / outbox.deliver / inbox.consume / reconcile / maintain
-                      ├─ SELECT core.chat_user_view / chat_character_view
-                      ├─ SELECT billing.chat_entitlement_view / compliance.chat_user_eligibility_view
-                      ├─ CRUD   chat.*
+                      ├─ request pool, role = chat_service
+                      │   ├─ chat/web: chat API + SSE；落 user msg/placeholder(PG TX) + 入队
+                      │   ├─ 普通 worker domain/outbox/inbox/reconcile transaction
+                      │   ├─ SELECT Main read-only views + normal chat tables
+                      │   └─ INSERT durable file intent（不能标记 applied）
+                      ├─ projector pool, role = chat_projector
+                      │   └─ 执行 CHAT_FS_ROOT 副作用 → 完成/失败 mutation receipt
                       └─ Redis Stream: chat:stream:<assistantMessageId>
 
 Postgres cluster (单实例, 多 schema)  ── 账本/事务/计费/查询
@@ -51,6 +51,10 @@ Postgres cluster (单实例, 多 schema)  ── 账本/事务/计费/查询
 Redis (Chat Service 专用, CHAT_REDIS_URL): BullMQ 内部队列 + token Stream
 ```
 
+`CHAT_FS_ROOT` 是不可由 PostgreSQL 完整重建的权威层。运维 checkpoint 必须在静默写入后同时捕获 Main PostgreSQL、`CHAT_FS_ROOT` 与 local Blob（或远端版本化 object inventory），并以目录 manifest/checksum 做隔离恢复；数据库单项 dump 不是完整 Chat 恢复证据。
+
+2026-07-18 最终 controlled-beta checkpoint 已执行该合同：artifact base 为 `/Users/kk/code/idream/local-backups/idream-main-final-20260718-60/idream-main-final-20260718-60`，bundle 目录 `0700`、23 files 全部 `0600`、171M，SHA checks 全部通过。源端 Chat 为 294 sessions / 818 messages / 4 attachments、outbox `1,552` / inbox `488`（pending/failed 均为 `0`）、file mutations `5`（pending `0`）；`CHAT_FS_ROOT` 为 429 files / 550,987 bytes。隔离恢复后的 Chat FS 与源端逐文件比较为 `0` difference，且与 Main DB、Blob 的 counts/schema/logical/目录比较一起全部 equal；恢复后 Chat health 为 `ok`。这证明当前本地 checkpoint 可恢复，不替代 public production Gate。
+
 **部署单元**（完整 6 进程见 §10 服务目录）
 - `main-web`：主站，含 `/api/v1/chat/*` BFF 反代（只验签 + 转发，不拼 prompt、不写 chat 表）。
 - `chat`：**单进程**，进程内同时起 `chat/web`（chat API + SSE）和 `chat/worker`（消费 `chat.generate` 生成+落账本+**写 session.jsonl** / `chat.memory.extract` / `chat.outbox.deliver` / `chat.inbox.consume` / `chat.reconcile` / `chat.maintain`）。写本地文件 ⇒ `instances:1`。
@@ -63,13 +67,14 @@ Redis (Chat Service 专用, CHAT_REDIS_URL): BullMQ 内部队列 + token Stream
 
 ## 2. 权限模型（P0 第一刀）
 
-物理拆分后只有一个运行时 role：`chat_service`。三类 role 分工：
+物理拆分后有两个运行时 role。四类 role 分工：
 
 | Role | 用途 | 权限 |
 |------|------|------|
 | `core_owner` | 主站迁移 | core/billing/compliance 全权 + 建只读 view + GRANT |
 | `chat_owner` | chat 迁移 | `chat` schema DDL（建表/索引/迁移） |
-| `chat_service` | chat 运行时 | SELECT on 4 个 view；CRUD on `chat.*`；**无** core/billing/compliance 写权 |
+| `chat_service` | 请求/领域事务运行时 | SELECT on Main read views；普通 `chat.*` domain transaction；对 `chat_file_mutations` 仅 SELECT + intent columns INSERT；不能直接完成/删除 intent，账户擦除只走校验 canonical intent 的窄函数；**无** Main base-table 写权 |
+| `chat_projector` | durable file projector | 使用独立连接；普通 `chat.*` 投影事务，对 `chat_file_mutations` 仅 SELECT/UPDATE，不能直接 INSERT/DELETE；trigger 只允许合法 pending → applied/failed，擦除只走窄函数 |
 
 ```sql
 -- 由 core_owner 执行（主站迁移）：建 schema、view、授权
@@ -80,29 +85,29 @@ GRANT SELECT ON core.chat_character_view         TO chat_service;
 GRANT SELECT ON billing.chat_entitlement_view    TO chat_service;
 GRANT SELECT ON compliance.chat_user_eligibility_view TO chat_service;
 
--- 由 chat_owner 执行（chat 迁移）：运行时读写权
-GRANT USAGE ON SCHEMA chat TO chat_service;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA chat TO chat_service;
-ALTER DEFAULT PRIVILEGES IN SCHEMA chat
-  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chat_service;
+-- 完整 grant/revoke 顺序以 db/sql/04_grants.sql 为准：
+-- chat_service 可写普通 domain 表，但对 file ledger 只可读并插入 intent columns。
+-- chat_projector 使用独立连接完成 file ledger UPDATE；直接 INSERT/DELETE 被拒，
+-- 账户擦除只能调用校验 canonical intent 的 SECURITY DEFINER 窄函数。
 ```
 
 > **数据库 SQL 由你执行**（schema 变更红线）。本文只给脚本。view DDL 见 PRD §5。
 
-**Prisma 形态**：两套独立 schema/client。
+**Prisma 形态**：Main 与 Chat 两套独立 schema/client；Chat 同一 generated client shape 建两个连接池。
 - 主站 Prisma：core/billing/compliance + view 定义 + outbox 消费侧读模型。
-- Chat Service Prisma：`chat.*` 模型（读写）+ 4 个 view 映射为 `view` block（只读）。单 datasource，连接串用 `chat_service` role。开 `multiSchema`。
+- Chat Service request Prisma：`chat.*` 模型 + Main views，连接串使用 `CHAT_DATABASE_URL` / `chat_service`。
+- Chat file-projector Prisma：同一模型 shape，但连接串使用 `CHAT_PROJECTOR_DATABASE_URL` / `chat_projector`；仅由 projector seam 调用。
 
 ```prisma
 // packages/chat/prisma/schema.prisma（节选）
-datasource db { provider = "postgresql"; url = env("DATABASE_URL"); schemas = ["chat","core","billing","compliance"] }
+datasource db { provider = "postgresql"; schemas = ["chat","core","billing","compliance"] }
 generator client { provider = "prisma-client-js"; previewFeatures = ["multiSchema","views"] }
 
 view ChatUserView { user_id String @id ... @@schema("core") @@map("chat_user_view") }
 model ChatSession  { id String @id ... @@schema("chat") @@map("chat_sessions") }
 ```
 
-**验收测试（负向，P0 必须）**：以 `chat_service` 连接执行 ① `INSERT INTO core.users ...` ② `INSERT/UPDATE INTO core.chat_user_view ...`（可更新视图默认可写，必须也被拒）均应被 DB 拒绝。同时确认 `core.character_tags_for_chat`（PRD §5.2）等视图底表没有误授 chat_service 任何写权。这道测试是"边界有牙齿"的证明。
+**验收测试（负向，P0 必须）**：除拒绝 `chat_service` 写 Main base table/read-only view 外，还必须拒绝请求角色完成/删除 intent、注入 sequence、修改 applied receipt，以及 projector 插入/删除 intent、越权 purge 或非法 lifecycle transition。2026-07-18 当前目标库已通过正向能力路径和 15 项负向拒绝检查；这道 migration-applied 测试是“边界有牙齿”的证明。
 
 ---
 
@@ -283,7 +288,8 @@ user_fact/pref  → 按 character + recency + confidence 取 top maxMemories
 CHAT_SERVICE_URL=https://chat.internal
 CHAT_BFF_SIGNING_SECRET=...        # 与 chat 侧一致，签内部用户上下文
 # chat（单进程：chat/web + chat/worker）
-DATABASE_URL=postgres://chat_service:...@.../app   # 仅 chat_service role
+CHAT_DATABASE_URL=postgres://chat_service:...@.../app
+CHAT_PROJECTOR_DATABASE_URL=postgres://chat_projector:...@.../app
 CHAT_REDIS_URL=redis://...
 CHAT_BFF_SIGNING_SECRET=...
 CHAT_MODEL_PROVIDER=pipeline
@@ -325,7 +331,7 @@ session.jsonl append-only 会无限增长，且含 raw/敏感内容——按"数
 | 服务 | 层 | 职责 | 入口 | 实例 | 主要依赖 |
 |------|----|------|------|------|----------|
 | `main-web` | 快·同步 | 公开页/角色/billing/library/提交 generation/**chat BFF 反代** | Next.js | cluster(max) | PG(core/billing/compliance RW)、Redis、Blob 签 URL |
-| `chat` | 快I/O + 慢生成 | **单进程**：`chat/web`(API+SSE+落 user msg/placeholder+入队) + `chat/worker`(chat.generate / memory.extract / outbox.deliver / inbox.consume / reconcile / maintain) | node | **1（写本地文件 ⇒ 单写节点!）** | PG(chat_service)、Redis、**本地 fs(sessions/mem)**、igrep(P1)、LLM |
+| `chat` | 快I/O + 慢生成 | **单进程**：`chat/web`(API+SSE+落 user msg/placeholder+入队) + `chat/worker`(chat.generate / memory.extract / file projector / outbox.deliver / inbox.consume / reconcile / maintain) | node | **1（写本地文件 ⇒ 单写节点!）** | PG(`chat_service` request + `chat_projector` projector)、Redis、**本地 fs(sessions/mem)**、igrep(P1)、LLM |
 | `gen/image` | 慢·异步 | ai.image.generate → Blob（纯生成，无 DB 权威） | node | N 可扩 | Redis、Blob、图像模型 |
 | `gen/video` | 慢·异步 | ai.video.generate → Blob（纯生成，无 DB 权威） | node | N 可扩 | Redis、Blob、视频模型 |
 | `gen-finalizer` | 中·异步 | app.ai.finalize：输出审核 + 落 MediaAsset + 结算 dreamcoin | node | 1–2 | PG(core RW)、Redis、Blob |
@@ -341,7 +347,7 @@ session.jsonl append-only 会无限增长，且含 raw/敏感内容——按"数
 packages/
   shared/   → @idream/shared：contracts(事件/payload/队列名/幂等键 SSoT)、providers 接口、moderation、db helpers
   main/     → main-web (Next.js) + main-event-consumer + gen-finalizer   (core/billing 权威)
-  chat/     → chat/web + chat/worker（单进程入口同起）、prisma-chat、chat-fs、memory   (chat_service role + 本地文件)
+  chat/     → chat/web + chat/worker（单进程入口同起）、prisma-chat、chat-fs、memory   (request/projector 双 role + 本地文件)
   gen/      → gen/image + gen/video                                       (只写 blob，无 DB 权威)
 ```
 
@@ -408,7 +414,8 @@ module.exports = {
       args: 'src/processes/finalizer.ts', exec_mode: 'fork', instances: 1 },
     { name: 'main-event-consumer', cwd: dir('packages/main'), script: 'node_modules/tsx/dist/cli.mjs',
       args: 'src/processes/event-consumer.ts', exec_mode: 'fork', instances: 1 },
-    // 还有 sdcpp-image（本地 SD runner gateway，见 10 §2）
+    // 图片由 gen-image 的 workflow-native backend 直连 ComfyUI 8188；
+    // 当前没有 sdcpp-image PM2 app 或 serve:sdcpp-image 脚本。
   ],
 }
 ```

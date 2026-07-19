@@ -19,6 +19,13 @@ async function dismissAgeGate(page: Page) {
   await expect(enter).toBeHidden();
 }
 
+async function waitForAuthWorkspaceReady(page: Page) {
+  const readyForm = page
+    .locator('form[data-auth-ready="true"]')
+    .filter({ visible: true });
+  await expect(readyForm).toHaveCount(1);
+}
+
 function uniqueEmail(tag: string) {
   return `e2e-${tag}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@test.local`;
 }
@@ -311,6 +318,7 @@ test("flow 2: signup through the UI creates an authenticated session", async ({ 
   const email = uniqueEmail("signup");
   await page.goto("/signup");
   await dismissAgeGate(page);
+  await waitForAuthWorkspaceReady(page);
 
   await page
     .getByLabel("Display name")
@@ -342,6 +350,7 @@ test("auth UI handles invalid login, duplicate signup recovery, logout, returnin
   await page.request.post("/api/v1/age-gate/accept", { data: { sourcePath: "/" } });
 
   await page.goto("/login");
+  await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Email").filter({ visible: true }).fill(email);
   await page
     .getByLabel("Password")
@@ -358,6 +367,7 @@ test("auth UI handles invalid login, duplicate signup recovery, logout, returnin
   await expect(page).toHaveURL(/\/login$/);
 
   await page.goto("/signup");
+  await waitForAuthWorkspaceReady(page);
   await page
     .getByLabel("Display name")
     .filter({ visible: true })
@@ -383,6 +393,7 @@ test("auth UI handles invalid login, duplicate signup recovery, logout, returnin
   expect(body.data.user).toBeNull();
 
   await page.goto(`/signup?next=${encodedGenerateTarget}`);
+  await waitForAuthWorkspaceReady(page);
   await page
     .getByLabel("Display name")
     .filter({ visible: true })
@@ -403,6 +414,7 @@ test("auth UI handles invalid login, duplicate signup recovery, logout, returnin
 
   await page.getByRole("link", { name: "Log in instead" }).click();
   await expect(page).toHaveURL(new RegExp(`/login\\?next=${encodedGenerateTarget}$`));
+  await waitForAuthWorkspaceReady(page);
   await page.getByLabel("Email").filter({ visible: true }).fill(email);
   await page
     .getByLabel("Password")
@@ -482,8 +494,52 @@ test("flow 4/5/6: generation, billing, and moderation via the real server", asyn
   const characterId = (await list.json()).data.items[0].id as string;
 
   // Flow 4 — generation: the signup bonus (250) covers an image job; media lands.
+  const generationInput = {
+    mode: "image" as const,
+    characterId,
+    outputCount: 1,
+  };
+  const generationQuote = await ctx.post("/api/v1/generation/quote", {
+    data: generationInput,
+  });
+  expect(generationQuote.ok()).toBeTruthy();
+  const generationQuoteBody = (await generationQuote.json()) as {
+    data: {
+      quote: {
+        profileId: string;
+        profileVersion: number;
+        routeFingerprint: string;
+        pricing: { fingerprint: string };
+        costs: Array<{
+          outputCount: number;
+          costDreamcoins: number;
+        }>;
+      };
+    };
+  };
+  const exactGenerationCost =
+    generationQuoteBody.data.quote.costs.find(
+      (cost) => cost.outputCount === generationInput.outputCount,
+    );
+  expect(exactGenerationCost).toBeTruthy();
   const gen = await ctx.post("/api/v1/generation/jobs", {
-    data: { mode: "image", characterId, outputCount: 1 },
+    headers: {
+      "idempotency-key": `playwright-generation-${crypto.randomUUID()}`,
+    },
+    data: {
+      ...generationInput,
+      quoteAuthority: {
+        profileId: generationQuoteBody.data.quote.profileId,
+        profileVersion:
+          generationQuoteBody.data.quote.profileVersion,
+        routeFingerprint:
+          generationQuoteBody.data.quote.routeFingerprint,
+        pricingFingerprint:
+          generationQuoteBody.data.quote.pricing.fingerprint,
+        outputCount: generationInput.outputCount,
+        costDreamcoins: exactGenerationCost?.costDreamcoins,
+      },
+    },
   });
   const genBody = await gen.json();
   expect(gen.status()).toBe(202);

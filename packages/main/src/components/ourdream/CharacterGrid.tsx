@@ -30,7 +30,7 @@ export function CharacterGrid({
       <div className="grid grid-cols-2 gap-2 md:grid-cols-5 md:gap-3">
         {cards.map((card, index) => (
           <div key={card.id} className="contents">
-            <CharacterCard card={card} imageLoading={index < 10 ? "eager" : "lazy"} />
+            <CharacterCard card={card} imageLoading={index < 5 ? "eager" : "lazy"} />
             {index === 5 && (
               <Link
                 aria-label="Compare upgrade plans"
@@ -44,6 +44,7 @@ export function CharacterGrid({
                   loading="eager"
                   sizes="(max-width: 767px) 0px, calc((100vw - 168px) / 5)"
                   src="/images/ourdream/promo-card-female.webp"
+                  unoptimized
                 />
                 <span className="absolute inset-0 bg-[linear-gradient(0deg,rgba(0,0,0,.78),rgba(0,0,0,.18)_60%,transparent)]" />
                 <span className="absolute inset-x-0 bottom-0 p-4">

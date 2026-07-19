@@ -6,7 +6,7 @@ WITH synthetic_preview_assets AS (
   SELECT id
   FROM "media_assets"
   WHERE COALESCE("metadata"->>'source', '') = 'character_preview'
-    AND LOWER(COALESCE("metadata"->>'synthetic', 'false')) IN ('true', '1', 'yes')
+    AND COALESCE(("metadata"->>'synthetic')::boolean, FALSE) = TRUE
 )
 UPDATE "character_visual_profiles" profiles
 SET "status" = 'archived'
@@ -21,7 +21,7 @@ WITH synthetic_preview_assets AS (
   SELECT id
   FROM "media_assets"
   WHERE COALESCE("metadata"->>'source', '') = 'character_preview'
-    AND LOWER(COALESCE("metadata"->>'synthetic', 'false')) IN ('true', '1', 'yes')
+    AND COALESCE(("metadata"->>'synthetic')::boolean, FALSE) = TRUE
 )
 UPDATE "characters" characters
 SET
@@ -36,7 +36,7 @@ WITH synthetic_preview_jobs AS (
   FROM "character_preview_jobs" jobs
   JOIN "media_assets" assets ON assets.id = jobs."resultAssetId"
   WHERE COALESCE("assets"."metadata"->>'source', '') = 'character_preview'
-    AND LOWER(COALESCE("assets"."metadata"->>'synthetic', 'false')) IN ('true', '1', 'yes')
+    AND COALESCE(("assets"."metadata"->>'synthetic')::boolean, FALSE) = TRUE
 )
 UPDATE "character_drafts" drafts
 SET "previewJobId" = NULL
@@ -53,4 +53,4 @@ SET
     'quarantineReason', 'synthetic_character_preview'
   )
 WHERE COALESCE("metadata"->>'source', '') = 'character_preview'
-  AND LOWER(COALESCE("metadata"->>'synthetic', 'false')) IN ('true', '1', 'yes');
+  AND COALESCE(("metadata"->>'synthetic')::boolean, FALSE) = TRUE;

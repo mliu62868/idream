@@ -85,13 +85,17 @@ export function AgeGateBoundary({
     }
 
     let alive = true;
+    const controller = new AbortController();
     let acceptedExternally = false;
     const accept = () => {
       acceptedExternally = true;
       setAuthoritativeAccepted(true);
     };
     window.addEventListener("idream-age-gate-accepted", accept);
-    fetch("/api/v1/me", { cache: "no-store" })
+    fetch("/api/v1/me", {
+      cache: "no-store",
+      signal: controller.signal,
+    })
       .then((response) => {
         if (!response.ok) throw new Error("Age authority unavailable");
         return response.json();
@@ -106,13 +110,14 @@ export function AgeGateBoundary({
         }
       })
       .catch(() => {
-        if (alive && !acceptedExternally) {
+        if (alive && !acceptedExternally && !controller.signal.aborted) {
           setResolution({ pathname, state: "blocked" });
         }
       });
 
     return () => {
       alive = false;
+      controller.abort();
       window.removeEventListener("idream-age-gate-accepted", accept);
     };
   }, [authoritativeAccepted, pathname]);

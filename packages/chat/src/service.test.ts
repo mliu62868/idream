@@ -29,14 +29,38 @@ interface FakeData {
 
 function fakePrisma(data: FakeData): ChatPrismaClient {
   const unique = (value: unknown) => async () => value;
+  const sourceMessage = data.lastUser ?? {
+    id: "msg_user",
+    role: "user",
+    sessionId: "sess1",
+    status: "sent",
+    safetyStatus: "passed",
+    attempt: 1,
+    content: "hello",
+    replyToMessageId: null,
+    memoryAuthority: "legacy_unknown",
+    memoryExtractedAttempt: 0,
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+    deletedAt: null,
+  };
+  const messages = [sourceMessage, data.message].filter(Boolean);
   const fake = {
     message: {
-      findUnique: unique(data.message ?? null),
-      findFirst: unique(data.lastUser ?? { id: "msg_user" }),
+      findUnique: async (call: { where: { id: string } }) =>
+        call.where.id === "msg_user" ? sourceMessage : (data.message ?? null),
+      findFirst: unique(sourceMessage),
+      findMany: async () => messages,
       count: async () => 0,
       update: async () => ({}),
     },
     chatSession: { findUnique: unique(data.session ?? null) },
+    chatSendReceipt: { findMany: async () => [] },
+    chatFileMutation: {
+      findMany: async () => [],
+      findFirst: async () => null,
+      count: async () => 0,
+      updateMany: async () => ({ count: 0 }),
+    },
     chatUserView: { findUnique: unique(data.user ?? null) },
     chatCharacterView: { findUnique: unique(data.character ?? null) },
     chatUserEligibilityView: { findUnique: unique(data.eligibility ?? null) },
@@ -44,6 +68,7 @@ function fakePrisma(data: FakeData): ChatPrismaClient {
     chatUsage: { findUnique: unique(data.usage ?? null) },
     messageVersion: { count: async () => 0 },
     $queryRaw: async () => [{ locked: 1 }],
+    $executeRaw: async () => 1,
   };
   return {
     ...fake,
@@ -55,10 +80,24 @@ const assistantMessage = {
   id: "msg_a",
   role: "assistant",
   sessionId: "sess1",
+  status: "sent",
+  safetyStatus: "passed",
+  content: "reply",
+  replyToMessageId: "msg_user",
+  memoryAuthority: "enabled",
+  memoryExtractedAttempt: 0,
+  deletedAt: null,
   createdAt: new Date("2026-01-01T00:00:00Z"),
   attempt: 1,
 };
-const session = { id: "sess1", userId: "u1", characterId: "c1", memoryEnabled: true, status: "active" };
+const session = {
+  id: "sess1",
+  userId: "u1",
+  characterId: "c1",
+  memoryEnabled: true,
+  status: "active",
+  deletedAt: null,
+};
 const activeUser = { userId: "u1", status: "active", deletedAt: null };
 const approvedCharacter = { characterId: "c1", status: "approved", visibility: "public", creatorId: "creator", age: 22 };
 const noRestriction = { userId: "u1", ageGateAccepted: true, restrictedReason: null };
@@ -84,7 +123,7 @@ describe("regenerate quota + eligibility guard (P0-C)", () => {
       usage: { messagesUsed: FREE_DAILY_MESSAGES },
     });
 
-    await expect(regenerate({ userId: "u1", messageId: "msg_a" }, { prisma })).rejects.toMatchObject({
+    await expect(regenerate({ userId: "u1", messageId: "msg_a" }, { prisma, projectorPrisma: prisma })).rejects.toMatchObject({
       code: "quota_exceeded",
       status: 402,
     });
@@ -101,7 +140,7 @@ describe("regenerate quota + eligibility guard (P0-C)", () => {
       entitlement: freeEntitlement,
     });
 
-    await expect(regenerate({ userId: "u1", messageId: "msg_a" }, { prisma })).rejects.toMatchObject({
+    await expect(regenerate({ userId: "u1", messageId: "msg_a" }, { prisma, projectorPrisma: prisma })).rejects.toMatchObject({
       code: "user_inactive",
       status: 403,
     });
@@ -119,7 +158,10 @@ describe("regenerate quota + eligibility guard (P0-C)", () => {
       usage: { messagesUsed: 5 },
     });
 
-    const result = await regenerate({ userId: "u1", messageId: "msg_a" }, { prisma });
+    const result = await regenerate(
+      { userId: "u1", messageId: "msg_a" },
+      { prisma, projectorPrisma: prisma },
+    );
 
     expect(result.attempt).toBe(2);
     expect(result.assistantMessageId).toBe("msg_a");
@@ -137,7 +179,7 @@ describe("regenerate quota + eligibility guard (P0-C)", () => {
       usage: { messagesUsed: 999 },
     });
 
-    await expect(regenerate({ userId: "u1", messageId: "msg_a" }, { prisma })).rejects.toBeInstanceOf(
+    await expect(regenerate({ userId: "u1", messageId: "msg_a" }, { prisma, projectorPrisma: prisma })).rejects.toBeInstanceOf(
       ChatError,
     );
   });
@@ -153,7 +195,7 @@ describe("regenerate quota + eligibility guard (P0-C)", () => {
       session,
     });
 
-    await expect(regenerate({ userId: "u1", messageId: "msg_a" }, { prisma })).rejects.toMatchObject({
+    await expect(regenerate({ userId: "u1", messageId: "msg_a" }, { prisma, projectorPrisma: prisma })).rejects.toMatchObject({
       status: 409,
     });
     expect(enqueueMock).not.toHaveBeenCalled();

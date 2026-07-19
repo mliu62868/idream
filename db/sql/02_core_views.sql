@@ -11,7 +11,8 @@ SELECT
   COALESCE(p.locale, 'en')   AS locale,
   u.status                   AS status,
   u."deletedAt"              AS deleted_at,
-  u."updatedAt"              AS updated_at
+  u."updatedAt"              AS updated_at,
+  u."dataClass"              AS data_class
 FROM public.users u
 LEFT JOIN public.user_preferences p ON p."userId" = u.id;
 

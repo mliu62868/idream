@@ -20,6 +20,34 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA chat
 GRANT USAGE ON ALL SEQUENCES IN SCHEMA chat TO chat_service;
 ALTER DEFAULT PRIVILEGES IN SCHEMA chat GRANT USAGE ON SEQUENCES TO chat_service;
 
+-- The file projector is a separate capability. It may complete durable file
+-- intents and atomically write their chat-domain receipts/outbox effects, while
+-- the request role cannot claim a side effect it did not perform.
+GRANT SELECT, INSERT, UPDATE, DELETE
+  ON ALL TABLES IN SCHEMA chat TO chat_projector;
+GRANT USAGE ON ALL SEQUENCES IN SCHEMA chat TO chat_projector;
+
+-- File intents are an immutable runtime ledger. Account/relationship erasure
+-- uses narrow SECURITY DEFINER functions; the service role cannot drop a
+-- pending intent or forge completion by deleting the row.
+REVOKE DELETE ON chat.chat_file_mutations FROM chat_service;
+REVOKE INSERT ON chat.chat_file_mutations FROM chat_service;
+REVOKE UPDATE ON chat.chat_file_mutations FROM chat_service;
+GRANT SELECT ON chat.chat_file_mutations TO chat_service;
+GRANT INSERT (id, user_id, kind, payload)
+  ON chat.chat_file_mutations TO chat_service;
+GRANT EXECUTE ON FUNCTION
+  chat.purge_file_mutations_for_account(text, text)
+  TO chat_service, chat_projector;
+REVOKE EXECUTE ON FUNCTION
+  chat.purge_applied_relationship_sets(text, text, bigint)
+  FROM chat_service;
+GRANT EXECUTE ON FUNCTION
+  chat.purge_applied_relationship_sets(text, text, bigint)
+  TO chat_projector;
+GRANT SELECT, UPDATE ON chat.chat_file_mutations TO chat_projector;
+REVOKE INSERT, DELETE ON chat.chat_file_mutations FROM chat_projector;
+
 -- ---- explicit deny posture (belt-and-suspenders) -----------------------------
 -- chat_service is NOT granted anything on public.* base tables, so it cannot read
 -- or write users/characters/entitlements directly. Revoke any inherited PUBLIC

@@ -1,5 +1,6 @@
 import Image from "next/image";
 import type { ReactNode } from "react";
+import { shouldBypassNextImageOptimizer } from "@/lib/image-delivery";
 import type { CharacterCardData } from "@/types/ourdream";
 
 export type CharacterDetailPresentationData = CharacterCardData & {
@@ -32,7 +33,7 @@ export function CharacterDetailHero({
           loading="eager"
           sizes="(min-width: 1280px) 1152px, 100vw"
           src={heroImage}
-          unoptimized={isPrivateMediaUrl(heroImage)}
+          unoptimized={shouldBypassNextImageOptimizer(heroImage)}
         />
         <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(8,8,8,.88)_0%,rgba(8,8,8,.48)_48%,rgba(8,8,8,.08)_78%),linear-gradient(0deg,rgba(8,8,8,.84)_0%,transparent_58%)]" />
       </div>
@@ -69,8 +70,4 @@ export function CharacterDetailHero({
       </div>
     </div>
   );
-}
-
-function isPrivateMediaUrl(url: string) {
-  return url.startsWith("/api/v1/media/") || url.startsWith("/user-content/");
 }

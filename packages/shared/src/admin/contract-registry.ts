@@ -245,6 +245,7 @@ function stringFixture(schema: z.ZodType): string {
     "https://example.test/evidence",
     "00000000-0000-4000-8000-000000000001",
     "/admin/characters/fixture",
+    "/admin/characters/fixture?tab=assets",
     "/admin/cases/fixture",
     "/admin/ops/incidents/fixture",
     "a".repeat(64),

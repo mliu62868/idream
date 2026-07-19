@@ -9,6 +9,7 @@ const SECRET = "SUPER-SECRET-PLAINTEXT-CONTENT";
 const AUTHORITY_USER = `${P}u1`;
 const ORPHAN_USER = `${P}u2`;
 const PAGINATION_USER = `${P}u3`;
+const AUDIT_USER = `${P}audit`;
 const superPool = new Pool({ connectionString: process.env.CHAT_TEST_SUPER_URL });
 
 async function purge() {
@@ -38,6 +39,12 @@ beforeAll(async () => {
       `${PAGINATION_USER}@chat-admin.test`,
     ],
   );
+  await superPool.query(
+    `INSERT INTO public.users
+       (id,email,status,"dataClass","createdAt","updatedAt")
+     VALUES ($1,$2,'active','audit',now(),now())`,
+    [AUDIT_USER, `${AUDIT_USER}@chat-admin.test`],
+  );
   await chatPrisma.chatSession.create({
     data: {
       id: `${P}s1`,
@@ -45,6 +52,15 @@ beforeAll(async () => {
       characterId: `${P}c1`,
       status: "active",
       lastMessageAt: new Date("2099-01-01T00:00:00.000Z"),
+    },
+  });
+  await chatPrisma.chatSession.create({
+    data: {
+      id: `${P}s-audit`,
+      userId: AUDIT_USER,
+      characterId: `${P}c-audit`,
+      status: "active",
+      lastMessageAt: new Date("2101-01-01T00:00:00.000Z"),
     },
   });
   await chatPrisma.chatSession.create({
@@ -68,6 +84,17 @@ beforeAll(async () => {
       status: "sent",
       safetyStatus: "ok",
       createdAt: new Date("2099-01-01T00:00:00.000Z"),
+    },
+  });
+  await chatPrisma.message.create({
+    data: {
+      id: `${P}m-audit`,
+      sessionId: `${P}s-audit`,
+      role: "user",
+      content: "audit probe",
+      status: "sent",
+      safetyStatus: "ok",
+      createdAt: new Date("2101-01-01T00:00:00.000Z"),
     },
   });
   await chatPrisma.message.create({
@@ -120,6 +147,19 @@ beforeAll(async () => {
       createdAt: new Date("2100-01-01T00:00:00.000Z"),
     })),
   });
+  await chatPrisma.chatModerationEvent.create({
+    data: {
+      id: `${P}e-audit`,
+      targetType: "message",
+      targetId: `${P}m-audit`,
+      layer: "input",
+      status: "blocked",
+      policyCode: "audit_probe",
+      confidence: 1,
+      details: {},
+      createdAt: new Date("2101-01-01T00:00:00.000Z"),
+    },
+  });
   const periodStart = today();
   await chatPrisma.chatUsage.create({
     data: {
@@ -127,6 +167,16 @@ beforeAll(async () => {
       userId: AUTHORITY_USER,
       sessionId: `${P}s1`,
       messagesUsed: FREE_DAILY_MESSAGES - 1,
+      periodStart,
+      periodEnd: new Date(periodStart.getTime() + 24 * 60 * 60 * 1000),
+    },
+  });
+  await chatPrisma.chatUsage.create({
+    data: {
+      id: `${P}usage-audit`,
+      userId: AUDIT_USER,
+      sessionId: `${P}s-audit`,
+      messagesUsed: 999_999,
       periodStart,
       periodEnd: new Date(periodStart.getTime() + 24 * 60 * 60 * 1000),
     },
@@ -182,6 +232,7 @@ describe("chat internal admin api", () => {
           JOIN core.chat_user_view u ON u.user_id = s.user_id
           WHERE u.status = 'active'
             AND u.deleted_at IS NULL
+            AND u.data_class = 'customer'
             AND s.status = 'active'
             AND s.deleted_at IS NULL
         ) AS active_sessions,
@@ -192,6 +243,7 @@ describe("chat internal admin api", () => {
           JOIN core.chat_user_view u ON u.user_id = s.user_id
           WHERE u.status = 'active'
             AND u.deleted_at IS NULL
+            AND u.data_class = 'customer'
             AND m.created_at >= now() - interval '24 hours'
         ) AS messages_24h,
         (
@@ -202,6 +254,7 @@ describe("chat internal admin api", () => {
           JOIN core.chat_user_view u ON u.user_id = s.user_id
           WHERE u.status = 'active'
             AND u.deleted_at IS NULL
+            AND u.data_class = 'customer'
             AND e.created_at >= now() - interval '24 hours'
         ) AS moderation_events_24h,
         (
@@ -210,6 +263,7 @@ describe("chat internal admin api", () => {
           JOIN core.chat_user_view u ON u.user_id = cu.user_id
           WHERE u.status = 'active'
             AND u.deleted_at IS NULL
+            AND u.data_class = 'customer'
             AND cu.period_start = date_trunc('day', now() AT TIME ZONE 'UTC')
         ) AS messages_used_today`,
     );
@@ -223,6 +277,7 @@ describe("chat internal admin api", () => {
       userAuthority: "core.chat_user_view",
       includedUserStatus: "active",
       includedDeletedAt: null,
+      includedDataClass: "customer",
       excluded: {
         activeSessions: expect.any(Number),
         messages24h: expect.any(Number),
@@ -288,6 +343,12 @@ describe("chat internal admin api", () => {
       query: { userId: ORPHAN_USER, status: "active" },
     });
     expect(orphan.body).toMatchObject({ items: [] });
+    const audit = await dispatchChatAdmin({
+      method: "GET",
+      path: "/internal/admin/sessions",
+      query: { userId: AUDIT_USER, status: "active" },
+    });
+    expect(audit.body).toMatchObject({ items: [] });
   });
 
   it("rejects malformed or unknown canonical list query parameters", async () => {
@@ -333,6 +394,12 @@ describe("chat internal admin api", () => {
       query: { userId: ORPHAN_USER },
     });
     expect(orphan.body).toMatchObject({ items: [] });
+    const audit = await dispatchChatAdmin({
+      method: "GET",
+      path: "/internal/admin/usage",
+      query: { userId: AUDIT_USER },
+    });
+    expect(audit.body).toMatchObject({ items: [] });
   });
 
   it("requires authority users to remain active and not deleted", async () => {

@@ -2113,6 +2113,20 @@ describe("feed, community, policies, analytics", () => {
       status: "running",
     } });
     try {
+      const collections = await api("GET", "community/collections", {
+        userId,
+        ageGate: true,
+      });
+      expectOk(collections);
+      const campaigns = await api("GET", "community/campaigns", {
+        userId,
+        ageGate: true,
+      });
+      expectOk(campaigns);
+      await expect(
+        prisma.experimentAssignment.count({ where: { experimentId } }),
+      ).resolves.toBe(0);
+
       const community = await api("GET", "community/leaderboards", { userId, ageGate: true });
       expectOk(community);
       const assignment = community.data.experimentAssignment as {

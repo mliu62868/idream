@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
+  assertPlaywrightBlobRootRemoved,
   assertPlaywrightCleanupPlan,
   type PlaywrightCleanupPlan,
 } from "./playwright-cleanup";
@@ -53,13 +54,18 @@ export function createPlaywrightLifecycleVerifier(
       try {
         const rawReceipt = await readFile(receiptPath, "utf8");
         receipt = parseLifecycleReceipt(rawReceipt, plan.runId);
+        await assertPlaywrightBlobRootRemoved(plan);
       } catch (error) {
+        const detail = error instanceof Error ? `: ${error.message}` : "";
         throw new Error(
-          `Playwright lifecycle cleanup proof is missing or invalid for run ${plan.runId}`,
+          `Playwright lifecycle cleanup proof is missing or invalid for run ${plan.runId}${detail}`,
           { cause: error },
         );
       } finally {
-        await rm(receiptDirectory, { recursive: true, force: true });
+        await Promise.all([
+          rm(plan.blobRoot, { recursive: true, force: true }),
+          rm(receiptDirectory, { recursive: true, force: true }),
+        ]);
       }
       if (receipt.status !== "passed") {
         throw new Error(

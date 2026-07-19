@@ -2,6 +2,7 @@
 // testable without a socket; web.ts is a thin Node http adapter around it.
 // Auth: the caller (web.ts) has already verified the BFF signature and resolved
 // userId — the router re-checks authz against views inside each service call.
+import type { Prisma } from "../generated/client/client.js";
 import {
   ChatError,
   archiveSession,
@@ -17,15 +18,22 @@ import {
   setNoMemory,
 } from "./service.js";
 import { deleteMessage, deleteSession } from "./privacy.js";
-import { deleteMemory, listMemories, updateMemory } from "./memories.js";
+import { listMemories } from "./memories.js";
 import {
-  deleteRelationship,
   getRelationshipState,
   listRelationships,
-  setRelationship,
   type RelationshipStage,
 } from "./relationship.js";
+import { chatPrisma } from "./db.js";
+import {
+  assertNoPendingChatFileMutationsTx,
+  projectChatFileMutations,
+  recordChatFileMutation,
+  runWithProjectedChatFiles,
+  withReadableChatFileSnapshot,
+} from "./file-mutations.js";
 import { streamKey } from "./stream.js";
+import { lockUser } from "./turn-lock.js";
 
 export interface ChatRequest {
   method: string;
@@ -156,45 +164,129 @@ async function route(req: ChatRequest): Promise<ChatResponse> {
 
   // /memories  and  /memories/:id  (long-term memory management, PRD §8.2)
   if (segs[0] === "memories" && segs.length === 1 && method === "GET") {
-    return json(200, { memories: await listMemories(userId, req.query?.characterId) });
+    const memories = await withReadableChatFileSnapshot(userId, () =>
+      listMemories(userId, req.query?.characterId),
+    );
+    return json(200, { memories });
   }
   if (segs[0] === "memories" && segs.length === 2) {
     const memoryId = segs[1];
     if (method === "PATCH") {
-      const updated = await updateMemory(userId, memoryId, limitedStr(body(req).text, 500, "memory text"));
+      const text = limitedStr(body(req).text, 500, "memory text");
+      const found = await withActiveUserFileIntent(
+        userId,
+        async (tx) => {
+          const existing = (await listMemories(userId)).some(
+            (memory) => memory.id === memoryId,
+          );
+          if (!existing) return false;
+          await recordChatFileMutation(tx, userId, {
+            kind: "memory_update",
+            memoryId,
+            text,
+          });
+          return true;
+        },
+      );
+      if (!found) return json(404, { error: "memory_not_found" });
+      const updated = await withReadableChatFileSnapshot(userId, async () =>
+        (await listMemories(userId)).find(
+          (memory) => memory.id === memoryId,
+        ),
+      );
       if (!updated) return json(404, { error: "memory_not_found" });
       return json(200, updated);
     }
     if (method === "DELETE") {
-      const removed = await deleteMemory(userId, memoryId);
+      const removed = await withActiveUserFileIntent(
+        userId,
+        async (tx) => {
+          const existing = (await listMemories(userId)).some(
+            (memory) => memory.id === memoryId,
+          );
+          if (!existing) return false;
+          await recordChatFileMutation(tx, userId, {
+            kind: "memory_delete",
+            memoryId,
+          });
+          return true;
+        },
+      );
       return json(removed ? 200 : 404, removed ? { ok: true } : { error: "memory_not_found" });
     }
   }
 
   // /relationships  and  /relationships/:characterId  (companion bond, PRD §8.2)
   if (segs[0] === "relationships" && segs.length === 1 && method === "GET") {
-    return json(200, { relationships: await listRelationships(userId) });
+    const relationships = await withReadableChatFileSnapshot(
+      userId,
+      () => listRelationships(userId),
+    );
+    return json(200, { relationships });
   }
   if (segs[0] === "relationships" && segs.length === 2) {
     const characterId = segs[1];
-    if (method === "GET") return json(200, await getRelationshipState(userId, characterId));
+    if (method === "GET") {
+      const relationship = await withReadableChatFileSnapshot(
+        userId,
+        () => getRelationshipState(userId, characterId),
+      );
+      return json(200, relationship);
+    }
     if (method === "PATCH") {
       const b = body(req);
-      return json(
-        200,
-        await setRelationship(userId, characterId, {
-          summary: optLimitedStr(b.summary, 1_200, "relationship summary"),
-          stage: optStr(b.stage) as RelationshipStage | undefined,
-        }),
+      const summary = optLimitedStr(
+        b.summary,
+        1_200,
+        "relationship summary",
       );
+      const stage = optStr(b.stage) as RelationshipStage | undefined;
+      await withActiveUserFileIntent(userId, async (tx) => {
+        await recordChatFileMutation(tx, userId, {
+          kind: "relationship_set",
+          characterId,
+          ...(summary !== undefined ? { summary } : {}),
+          ...(stage !== undefined ? { stage } : {}),
+        });
+      });
+      const relationship = await withReadableChatFileSnapshot(
+        userId,
+        () => getRelationshipState(userId, characterId),
+      );
+      return json(200, relationship);
     }
     if (method === "DELETE") {
-      await deleteRelationship(userId, characterId);
+      await withActiveUserFileIntent(userId, async (tx) => {
+        await recordChatFileMutation(tx, userId, {
+          kind: "relationship_delete",
+          characterId,
+        });
+      });
       return json(200, { ok: true });
     }
   }
 
   return json(404, { error: "not_found", path: req.path });
+}
+
+async function withActiveUserFileIntent<T>(
+  userId: string,
+  plan: (tx: Prisma.TransactionClient) => Promise<T>,
+): Promise<T> {
+  const result = await runWithProjectedChatFiles(
+    userId,
+    () => chatPrisma.$transaction(async (tx) => {
+      await lockUser(tx, userId);
+      await assertNoPendingChatFileMutationsTx(tx, userId);
+      const user = await tx.chatUserView.findUnique({ where: { userId } });
+      if (!user || user.status !== "active" || user.deletedAt) {
+        throw new ChatError("user_inactive", "user not active", 403);
+      }
+      return plan(tx);
+    }),
+  );
+  await projectChatFileMutations(userId);
+  return result;
 }
 
 function json(status: number, body: unknown): ChatResponse {

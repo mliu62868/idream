@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import "dotenv/config";
 import {
   BFF_HEADER,
@@ -24,12 +25,30 @@ type OperationEvidence = {
   error?: string | null;
 };
 
+type NoMemoryEvidence = OperationEvidence & {
+  assistantMessageId?: string;
+  authorityPinned?: boolean;
+  memorySourceAbsent?: boolean;
+  relationshipUnchanged?: boolean;
+};
+
+type CleanupEvidence = OperationEvidence & {
+  memoryGone?: boolean;
+  memoriesDeleted?: number;
+  relationshipDeleted?: boolean;
+  relationshipsDeleted?: number;
+  relationshipsGone?: boolean;
+  sessionDeleted?: boolean;
+  sessionGone?: boolean;
+};
+
 // End-to-end conversation smoke (design §10.4): create → send → stream → get,
 // plus a no-memory smoke and a blocked-input smoke. Each sub-step carries its own
 // evidence so a failure is diagnosable from the report alone.
 type ConversationEvidence = {
   ok: boolean;
   attempted: boolean;
+  preflightCleanup: OperationEvidence;
   createSession: OperationEvidence;
   sendMessage: OperationEvidence;
   stream: OperationEvidence & { sawStart?: boolean; sawDelta?: boolean; sawDone?: boolean };
@@ -38,8 +57,9 @@ type ConversationEvidence = {
     assistantSent?: boolean;
     assistantStatus?: string | null;
   };
-  noMemory: OperationEvidence;
+  noMemory: NoMemoryEvidence;
   blockedInput: OperationEvidence & { status_?: string };
+  cleanup: CleanupEvidence;
   error?: string | null;
 };
 
@@ -49,6 +69,8 @@ type ChatServiceProbeReport = {
   durationMs: number;
   serviceUrl: string | null;
   userId: string;
+  actorDataClass: string | null;
+  dedicatedActor: boolean;
   characterId: string | null;
   characterSource: "argument" | "database" | "missing";
   usedSignedBff: boolean;
@@ -58,6 +80,8 @@ type ChatServiceProbeReport = {
   conversation: ConversationEvidence;
   error: { code: string; message: string; retryable?: boolean } | null;
 };
+
+const CHAT_PROBE_USER_ID = "seed-chat-probe-user";
 
 function readArg(name: string) {
   const prefix = `--${name}=`;
@@ -71,7 +95,7 @@ function readOptions(): ProbeOptions {
   return {
     report: readArg("report") ?? process.env.CHAT_SERVICE_PROBE_REPORT ?? null,
     serviceUrl: readArg("service-url") ?? process.env.CHAT_SERVICE_URL ?? null,
-    userId: readArg("user-id") ?? process.env.CHAT_SERVICE_PROBE_USER_ID ?? "seed-dev-user",
+    userId: readArg("user-id") ?? process.env.CHAT_SERVICE_PROBE_USER_ID ?? CHAT_PROBE_USER_ID,
     characterId: readArg("character-id") ?? process.env.CHAT_SERVICE_PROBE_CHARACTER_ID ?? null,
   };
 }
@@ -105,17 +129,48 @@ function skippedConversation(reason: string): ConversationEvidence {
   return {
     ok: true,
     attempted: false,
+    preflightCleanup: SKIPPED_OP,
     createSession: SKIPPED_OP,
     sendMessage: SKIPPED_OP,
     stream: SKIPPED_OP,
     getSession: SKIPPED_OP,
     noMemory: SKIPPED_OP,
     blockedInput: SKIPPED_OP,
+    cleanup: SKIPPED_OP,
     error: reason,
   };
 }
 
-async function runProbe(input: {
+export function assertDedicatedChatProbeActor(
+  actor: {
+    dataClass: string;
+    deletedAt: Date | null;
+    id: string;
+    role: string;
+    status: string;
+  } | null,
+  expectedUserId: string,
+) {
+  if (
+    !actor ||
+    actor.id !== expectedUserId ||
+    actor.id !== CHAT_PROBE_USER_ID ||
+    actor.dataClass !== "audit" ||
+    actor.role !== "user" ||
+    actor.status !== "active" ||
+    actor.deletedAt !== null
+  ) {
+    throw new Error(
+      `CHAT_SERVICE_PROBE_USER_ID must resolve to the dedicated active audit actor "${CHAT_PROBE_USER_ID}"`,
+    );
+  }
+  return {
+    actorDataClass: actor.dataClass,
+    dedicatedActor: true,
+  } as const;
+}
+
+export async function runProbe(input: {
   serviceUrl: string | null;
   userId: string;
   characterId: string | null;
@@ -127,6 +182,8 @@ async function runProbe(input: {
     checkedAt,
     serviceUrl: input.serviceUrl,
     userId: input.userId,
+    actorDataClass: null as string | null,
+    dedicatedActor: false,
     characterId: input.characterId,
     characterSource: (input.characterId?.trim() ? "argument" : "missing") as
       | "argument"
@@ -155,6 +212,19 @@ async function runProbe(input: {
     if (!input.secret?.trim()) {
       throw new Error("CHAT_BFF_SIGNING_SECRET is required for chat service probe");
     }
+    const actor = await prisma.user.findUnique({
+      where: { id: input.userId },
+      select: {
+        id: true,
+        role: true,
+        status: true,
+        dataClass: true,
+        deletedAt: true,
+      },
+    });
+    const actorAuthority = assertDedicatedChatProbeActor(actor, input.userId);
+    baseReport.actorDataClass = actorAuthority.actorDataClass;
+    baseReport.dedicatedActor = actorAuthority.dedicatedActor;
 
     signedRequest = await probeSignedSessions({
       serviceUrl: input.serviceUrl,
@@ -173,6 +243,7 @@ async function runProbe(input: {
         secret: input.secret,
         userId: input.userId,
         characterId: character.id,
+        runId: randomUUID(),
       });
     }
   } catch (error) {
@@ -201,6 +272,8 @@ async function runProbe(input: {
     // own exit code has to agree or an operator/CI trusting it gets a false PASS.
     conversation.attempted &&
     conversation.ok &&
+    baseReport.actorDataClass === "audit" &&
+    baseReport.dedicatedActor &&
     Boolean(input.secret?.trim());
 
   return {
@@ -300,34 +373,50 @@ async function probeConversation(input: {
   secret: string;
   userId: string;
   characterId: string;
+  runId: string;
 }): Promise<ConversationEvidence> {
   const evidence: ConversationEvidence = {
     ok: false,
     attempted: true,
+    preflightCleanup: { ok: false, error: "not attempted" },
     createSession: { ok: false, error: "not attempted" },
     sendMessage: { ok: false, error: "not attempted" },
     stream: { ok: false, error: "not attempted" },
     getSession: { ok: false, error: "not attempted" },
     noMemory: { ok: false, error: "not attempted" },
     blockedInput: { ok: false, error: "not attempted" },
+    cleanup: { ok: false, error: "not attempted" },
   };
+  let sessionId: string | null = null;
   try {
-    // 1) create session
+    // A failed prior probe may have left an active audit session. Remove only
+    // this dedicated actor's visible state before creating a fresh run.
+    evidence.preflightCleanup = await cleanupExistingProbeState(input);
+    if (!evidence.preflightCleanup.ok) {
+      throw new Error(
+        evidence.preflightCleanup.error ?? "probe preflight cleanup failed",
+      );
+    }
+
+    // 1) create a fresh audit-only session
     const createRes = await signedFetch({
       ...input, method: "POST", path: "/api/v1/chat/sessions",
       body: JSON.stringify({ characterId: input.characterId }),
     });
     const session = (await createRes.json().catch(() => ({}))) as { id?: string };
     evidence.createSession = { ok: createRes.status === 201 && Boolean(session.id), status: createRes.status };
-    if (!session.id) return finalizeConversation(evidence);
+    if (!session.id) throw new Error(`create session returned HTTP ${createRes.status}`);
+    sessionId = session.id;
 
     // 2) send message
     const sendRes = await signedFetch({
-      ...input, method: "POST", path: `/api/v1/chat/sessions/${session.id}/messages`,
+      ...input, method: "POST", path: `/api/v1/chat/sessions/${sessionId}/messages`,
       body: JSON.stringify({ content: "hello from the launch probe" }),
+      idempotencyKey: `chat-probe:${input.runId}:normal`,
     });
     const sent = (await sendRes.json().catch(() => ({}))) as {
       assistantMessageId?: string;
+      userMessageId?: string;
       streamUrl?: string | null;
       status?: string;
     };
@@ -335,70 +424,112 @@ async function probeConversation(input: {
       ok: sendRes.status === 202 && Boolean(sent.assistantMessageId) && sent.status !== "blocked",
       status: sendRes.status,
     };
-
-    // 3) stream: expect start + delta + done
-    if (sent.assistantMessageId) {
-      evidence.stream = await probeStream({
-        ...input, assistantMessageId: sent.assistantMessageId,
-      });
+    if (!sent.assistantMessageId) {
+      throw new Error(`normal send returned HTTP ${sendRes.status} without assistantMessageId`);
     }
 
-    // 4) GET session: the specific assistant turn from this probe should be
-    // present and finalized. createSession reuses active character sessions, so
-    // checking for "any assistant message" can be a false positive from history.
-    const getRes = await signedFetch({ ...input, method: "GET", path: `/api/v1/chat/sessions/${session.id}` });
-    const got = (await getRes.json().catch(() => ({}))) as {
-      messages?: Array<{ id?: string; role: string; status?: string; content?: string }>;
-    };
-    const assistant = (got.messages ?? []).find((m) => m.id === sent.assistantMessageId);
+    // 3) stream: expect start + delta + done
+    evidence.stream = await probeStream({
+      ...input, assistantMessageId: sent.assistantMessageId,
+    });
+
+    // 4) Wait through memory.extract for the normal turn before taking the
+    // relationship baseline. SSE done is emitted before that derived job.
+    const normal = await waitForSessionMessage({
+      ...input,
+      sessionId,
+      assistantMessageId: sent.assistantMessageId,
+      requireMemoryExtracted: true,
+    });
+    const assistant = normal.message;
     const assistantSent =
       assistant?.role === "assistant" &&
       assistant.status === "sent" &&
       Boolean(assistant.content?.trim());
     evidence.getSession = {
-      ok: getRes.status === 200 && assistantSent,
-      status: getRes.status,
+      ok: normal.status === 200 && assistantSent,
+      status: normal.status,
       assistantMessageId: sent.assistantMessageId,
       assistantSent,
       assistantStatus: assistant?.status ?? null,
     };
 
-    // 5) no-memory smoke: toggle memory off then send — must still 202.
+    const relationshipBefore = await readProbeRelationship(input);
+
+    // 5) no-memory smoke: the assistant row must pin disabled even though the
+    // session is later restored, with no relationship or memory derivation.
     const disableMemory = await signedFetch({
-      ...input, method: "POST", path: `/api/v1/chat/sessions/${session.id}/memory`,
+      ...input, method: "POST", path: `/api/v1/chat/sessions/${sessionId}/memory`,
       body: JSON.stringify({ memoryEnabled: false }),
     });
     const noMemSend = await signedFetch({
-      ...input, method: "POST", path: `/api/v1/chat/sessions/${session.id}/messages`,
-      body: JSON.stringify({ content: "incognito turn from probe" }),
+      ...input, method: "POST", path: `/api/v1/chat/sessions/${sessionId}/messages`,
+      body: JSON.stringify({
+        content: "incognito probe: please call me ProbeSecret and I like probe tea",
+      }),
+      idempotencyKey: `chat-probe:${input.runId}:no-memory`,
     });
-    const noMemTurn = (await noMemSend.json().catch(() => ({}))) as { assistantMessageId?: string };
+    const noMemTurn = (await noMemSend.json().catch(() => ({}))) as {
+      assistantMessageId?: string;
+      userMessageId?: string;
+    };
     const noMemStream = noMemTurn.assistantMessageId
       ? await probeStream({ ...input, assistantMessageId: noMemTurn.assistantMessageId })
       : { ok: false, error: "missing assistantMessageId" };
-    // The probe reuses one active session per character. Restore memory only
-    // after the incognito turn is terminal, otherwise the worker could observe
-    // the restored flag and derive memory for a turn submitted as no-memory.
-    const restoreMemory = await signedFetch({
-      ...input, method: "POST", path: `/api/v1/chat/sessions/${session.id}/memory`,
-      body: JSON.stringify({ memoryEnabled: true }),
-    });
+    const noMemState = noMemTurn.assistantMessageId
+      ? await waitForSessionMessage({
+          ...input,
+          sessionId,
+          assistantMessageId: noMemTurn.assistantMessageId,
+          requireMemoryExtracted: false,
+        })
+      : { status: 0, message: null };
+    await delay(
+      readPositiveIntEnv("CHAT_SERVICE_PROBE_NO_MEMORY_SETTLE_MS", 1_000),
+    );
+    const [relationshipAfter, memoriesAfter] = await Promise.all([
+      readProbeRelationship(input),
+      readProbeMemories(input),
+    ]);
+    const authorityPinned =
+      noMemState.message?.memoryAuthority === "disabled" &&
+      noMemState.message.memoryExtractedAttempt === 0;
+    const relationshipUnchanged =
+      relationshipFingerprint(relationshipAfter) ===
+      relationshipFingerprint(relationshipBefore);
+    const memorySourceAbsent =
+      Boolean(noMemTurn.userMessageId) &&
+      !memoriesAfter.some((memory) =>
+        memory.sourceMessageIds.includes(noMemTurn.userMessageId!),
+      );
     evidence.noMemory = {
       ok:
         disableMemory.status === 200 &&
         noMemSend.status === 202 &&
         noMemStream.ok &&
-        restoreMemory.status === 200,
+        authorityPinned &&
+        relationshipUnchanged &&
+        memorySourceAbsent,
       status: noMemSend.status,
-      error: disableMemory.status === 200 && noMemStream.ok && restoreMemory.status === 200
+      assistantMessageId: noMemTurn.assistantMessageId,
+      authorityPinned,
+      relationshipUnchanged,
+      memorySourceAbsent,
+      error:
+        disableMemory.status === 200 &&
+        noMemStream.ok &&
+        authorityPinned &&
+        relationshipUnchanged &&
+        memorySourceAbsent
         ? null
-        : `disable=${disableMemory.status}; stream=${noMemStream.ok}; restore=${restoreMemory.status}`,
+        : `disable=${disableMemory.status}; stream=${noMemStream.ok}; authority=${authorityPinned}; relationship=${relationshipUnchanged}; memory=${memorySourceAbsent}`,
     };
 
     // 6) blocked-input smoke: the mock/safety provider blocks the underage keyword.
     const blockedRes = await signedFetch({
-      ...input, method: "POST", path: `/api/v1/chat/sessions/${session.id}/messages`,
+      ...input, method: "POST", path: `/api/v1/chat/sessions/${sessionId}/messages`,
       body: JSON.stringify({ content: "this references csam content" }),
+      idempotencyKey: `chat-probe:${input.runId}:blocked`,
     });
     const blocked = (await blockedRes.json().catch(() => ({}))) as { status?: string; streamUrl?: string | null };
     evidence.blockedInput = {
@@ -406,22 +537,411 @@ async function probeConversation(input: {
       status: blockedRes.status,
       status_: blocked.status,
     };
-
-    return finalizeConversation(evidence);
   } catch (error) {
     evidence.error = error instanceof Error ? error.message : String(error);
-    return finalizeConversation(evidence);
+  } finally {
+    evidence.cleanup = await cleanupCompletedProbeState({
+      ...input,
+      sessionId,
+    });
   }
+  return finalizeConversation(evidence);
+}
+
+type ProbeSessionMessage = {
+  attempt?: number;
+  content?: string;
+  id?: string;
+  memoryAuthority?: string;
+  memoryExtractedAttempt?: number;
+  role?: string;
+  status?: string;
+};
+
+async function cleanupExistingProbeState(input: {
+  serviceUrl: string;
+  secret: string;
+  userId: string;
+  characterId: string;
+}): Promise<OperationEvidence> {
+  try {
+    const list = await signedFetch({
+      ...input,
+      method: "GET",
+      path: "/api/v1/chat/sessions",
+    });
+    const sessions = (await list.json().catch(() => [])) as Array<{
+      id?: string;
+    }>;
+    if (list.status !== 200 || !Array.isArray(sessions)) {
+      return { ok: false, status: list.status, error: "could not list prior audit sessions" };
+    }
+    for (const session of sessions) {
+      if (!session.id) continue;
+      const deleted = await signedFetch({
+        ...input,
+        method: "DELETE",
+        path: `/api/v1/chat/sessions/${session.id}`,
+      });
+      if (deleted.status !== 200) {
+        return {
+          ok: false,
+          status: deleted.status,
+          error: `could not delete prior audit session ${session.id}`,
+        };
+      }
+    }
+    const fileAuthority = await clearProbeFileAuthority(input);
+    const verify = await signedFetch({
+      ...input,
+      method: "GET",
+      path: "/api/v1/chat/sessions",
+    });
+    const remaining = (await verify.json().catch(() => [])) as unknown;
+    const ok =
+      fileAuthority.ok &&
+      verify.status === 200 &&
+      Array.isArray(remaining) &&
+      remaining.length === 0;
+    return {
+      ok,
+      status: verify.status,
+      error: ok
+        ? null
+        : `fileAuthority=${fileAuthority.error ?? fileAuthority.ok}; verify=${verify.status}; remaining=${Array.isArray(remaining) ? remaining.length : "invalid"}`,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+async function cleanupCompletedProbeState(input: {
+  serviceUrl: string;
+  secret: string;
+  userId: string;
+  characterId: string;
+  sessionId: string | null;
+}): Promise<CleanupEvidence> {
+  if (!input.sessionId) {
+    return {
+      ok: false,
+      memoryGone: false,
+      relationshipDeleted: false,
+      relationshipsGone: false,
+      sessionDeleted: false,
+      sessionGone: false,
+      error: "probe did not create a session to clean up",
+    };
+  }
+  try {
+    const restore = await signedFetch({
+      ...input,
+      method: "POST",
+      path: `/api/v1/chat/sessions/${input.sessionId}/memory`,
+      body: JSON.stringify({ memoryEnabled: true }),
+    });
+    const deleted = await signedFetch({
+      ...input,
+      method: "DELETE",
+      path: `/api/v1/chat/sessions/${input.sessionId}`,
+    });
+    const fileAuthority = await clearProbeFileAuthority(input);
+    const verify = await signedFetch({
+      ...input,
+      method: "GET",
+      path: `/api/v1/chat/sessions/${input.sessionId}`,
+    });
+    const sessionDeleted = deleted.status === 200;
+    const relationshipDeleted = fileAuthority.relationshipsGone === true;
+    const sessionGone = verify.status === 404;
+    const ok =
+      restore.status === 200 &&
+      sessionDeleted &&
+      fileAuthority.ok &&
+      relationshipDeleted &&
+      sessionGone;
+    return {
+      ok,
+      status: verify.status,
+      memoryGone: fileAuthority.memoryGone,
+      memoriesDeleted: fileAuthority.memoriesDeleted,
+      sessionDeleted,
+      relationshipDeleted,
+      relationshipsDeleted: fileAuthority.relationshipsDeleted,
+      relationshipsGone: fileAuthority.relationshipsGone,
+      sessionGone,
+      error: ok
+        ? null
+        : `restore=${restore.status}; delete=${deleted.status}; fileAuthority=${fileAuthority.error ?? fileAuthority.ok}; verify=${verify.status}`,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      memoryGone: false,
+      relationshipDeleted: false,
+      relationshipsGone: false,
+      sessionDeleted: false,
+      sessionGone: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+async function clearProbeFileAuthority(input: {
+  serviceUrl: string;
+  secret: string;
+  userId: string;
+}): Promise<CleanupEvidence> {
+  try {
+    const [memoryResponse, relationshipResponse] = await Promise.all([
+      signedFetch({
+        ...input,
+        method: "GET",
+        path: "/api/v1/chat/memories",
+      }),
+      signedFetch({
+        ...input,
+        method: "GET",
+        path: "/api/v1/chat/relationships",
+      }),
+    ]);
+    const memoryBody = (await memoryResponse.json().catch(() => ({}))) as {
+      memories?: Array<{ id?: string }>;
+    };
+    const relationshipBody = (
+      await relationshipResponse.json().catch(() => ({}))
+    ) as {
+      relationships?: Array<{ characterId?: string }>;
+    };
+    if (
+      memoryResponse.status !== 200 ||
+      relationshipResponse.status !== 200 ||
+      !Array.isArray(memoryBody.memories) ||
+      !Array.isArray(relationshipBody.relationships)
+    ) {
+      return {
+        ok: false,
+        memoryGone: false,
+        relationshipDeleted: false,
+        relationshipsGone: false,
+        error: `list memories=${memoryResponse.status}; relationships=${relationshipResponse.status}`,
+      };
+    }
+
+    let memoriesDeleted = 0;
+    for (const memory of memoryBody.memories) {
+      if (!memory.id) continue;
+      const response = await signedFetch({
+        ...input,
+        method: "DELETE",
+        path: `/api/v1/chat/memories/${encodeURIComponent(memory.id)}`,
+      });
+      if (response.status !== 200) {
+        return {
+          ok: false,
+          memoriesDeleted,
+          memoryGone: false,
+          relationshipDeleted: false,
+          relationshipsGone: false,
+          error: `could not delete audit memory ${memory.id}: HTTP ${response.status}`,
+        };
+      }
+      memoriesDeleted += 1;
+    }
+
+    let relationshipsDeleted = 0;
+    for (const relationship of relationshipBody.relationships) {
+      if (!relationship.characterId) continue;
+      const response = await signedFetch({
+        ...input,
+        method: "DELETE",
+        path: `/api/v1/chat/relationships/${encodeURIComponent(relationship.characterId)}`,
+      });
+      if (response.status !== 200) {
+        return {
+          ok: false,
+          memoriesDeleted,
+          memoryGone: false,
+          relationshipsDeleted,
+          relationshipDeleted: false,
+          relationshipsGone: false,
+          error: `could not delete audit relationship ${relationship.characterId}: HTTP ${response.status}`,
+        };
+      }
+      relationshipsDeleted += 1;
+    }
+
+    const [memoryVerify, relationshipVerify] = await Promise.all([
+      signedFetch({
+        ...input,
+        method: "GET",
+        path: "/api/v1/chat/memories",
+      }),
+      signedFetch({
+        ...input,
+        method: "GET",
+        path: "/api/v1/chat/relationships",
+      }),
+    ]);
+    const verifiedMemories = (await memoryVerify.json().catch(() => ({}))) as {
+      memories?: unknown[];
+    };
+    const verifiedRelationships = (
+      await relationshipVerify.json().catch(() => ({}))
+    ) as {
+      relationships?: unknown[];
+    };
+    const memoryGone =
+      memoryVerify.status === 200 &&
+      Array.isArray(verifiedMemories.memories) &&
+      verifiedMemories.memories.length === 0;
+    const relationshipsGone =
+      relationshipVerify.status === 200 &&
+      Array.isArray(verifiedRelationships.relationships) &&
+      verifiedRelationships.relationships.length === 0;
+    return {
+      ok: memoryGone && relationshipsGone,
+      status: memoryVerify.status,
+      memoryGone,
+      memoriesDeleted,
+      relationshipDeleted: relationshipsGone,
+      relationshipsDeleted,
+      relationshipsGone,
+      error:
+        memoryGone && relationshipsGone
+          ? null
+          : `verify memories=${memoryGone}; relationships=${relationshipsGone}`,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      memoryGone: false,
+      relationshipDeleted: false,
+      relationshipsGone: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+async function waitForSessionMessage(input: {
+  serviceUrl: string;
+  secret: string;
+  userId: string;
+  sessionId: string;
+  assistantMessageId: string;
+  requireMemoryExtracted: boolean;
+}): Promise<{ status: number; message: ProbeSessionMessage | null }> {
+  const deadline =
+    Date.now() +
+    readPositiveIntEnv("CHAT_SERVICE_PROBE_SETTLE_TIMEOUT_MS", 15_000);
+  let lastStatus = 0;
+  let lastMessage: ProbeSessionMessage | null = null;
+  while (Date.now() < deadline) {
+    const response = await signedFetch({
+      ...input,
+      method: "GET",
+      path: `/api/v1/chat/sessions/${input.sessionId}`,
+    });
+    lastStatus = response.status;
+    const body = (await response.json().catch(() => ({}))) as {
+      messages?: ProbeSessionMessage[];
+    };
+    lastMessage =
+      body.messages?.find(
+        (message) => message.id === input.assistantMessageId,
+      ) ?? null;
+    const sent = lastMessage?.status === "sent";
+    const memoryComplete =
+      !input.requireMemoryExtracted ||
+      (
+        typeof lastMessage?.attempt === "number" &&
+        typeof lastMessage.memoryExtractedAttempt === "number" &&
+        lastMessage.memoryExtractedAttempt >= lastMessage.attempt
+      );
+    if (response.status === 200 && sent && memoryComplete) {
+      return { status: response.status, message: lastMessage };
+    }
+    await delay(100);
+  }
+  return { status: lastStatus, message: lastMessage };
+}
+
+async function readProbeRelationship(input: {
+  serviceUrl: string;
+  secret: string;
+  userId: string;
+  characterId: string;
+}) {
+  const response = await signedFetch({
+    ...input,
+    method: "GET",
+    path: `/api/v1/chat/relationships/${input.characterId}`,
+  });
+  if (response.status !== 200) {
+    throw new Error(`relationship read returned HTTP ${response.status}`);
+  }
+  return (await response.json()) as {
+    signals?: { turns?: number };
+    stage?: string;
+    summary?: string;
+    version?: number;
+  };
+}
+
+async function readProbeMemories(input: {
+  serviceUrl: string;
+  secret: string;
+  userId: string;
+  characterId: string;
+}) {
+  const response = await signedFetch({
+    ...input,
+    method: "GET",
+    path: "/api/v1/chat/memories",
+    query: `characterId=${encodeURIComponent(input.characterId)}`,
+  });
+  if (response.status !== 200) {
+    throw new Error(`memory read returned HTTP ${response.status}`);
+  }
+  const body = (await response.json()) as {
+    memories?: Array<{ sourceMessageIds?: string[] }>;
+  };
+  return (body.memories ?? []).map((memory) => ({
+    sourceMessageIds: memory.sourceMessageIds ?? [],
+  }));
+}
+
+function relationshipFingerprint(value: {
+  signals?: { turns?: number };
+  stage?: string;
+  summary?: string;
+  version?: number;
+}) {
+  return JSON.stringify({
+    signals: value.signals ?? null,
+    stage: value.stage ?? null,
+    summary: value.summary ?? null,
+    version: value.version ?? null,
+  });
+}
+
+function delay(ms: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
 function finalizeConversation(evidence: ConversationEvidence): ConversationEvidence {
   evidence.ok =
+    evidence.preflightCleanup.ok &&
     evidence.createSession.ok &&
     evidence.sendMessage.ok &&
     evidence.stream.ok &&
     evidence.getSession.ok &&
     evidence.noMemory.ok &&
-    evidence.blockedInput.ok;
+    evidence.blockedInput.ok &&
+    evidence.cleanup.ok;
   return evidence;
 }
 
@@ -587,7 +1107,12 @@ function workspaceRoot() {
   }
 }
 
-main().catch((error: unknown) => {
-  process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`);
-  process.exitCode = 1;
-});
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  main().catch((error: unknown) => {
+    process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`);
+    process.exitCode = 1;
+  });
+}

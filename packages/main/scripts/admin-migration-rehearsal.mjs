@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import pg from "pg";
@@ -8,6 +9,12 @@ const runId = Date.now();
 const freshDatabaseName = `idream_admin_rehearsal_fresh_${runId}`;
 const upgradeDatabaseName = `idream_admin_rehearsal_upgrade_${runId}`;
 const baselineMigration = "20260711000000_baseline";
+const localEvidenceTerminalMigration =
+  "20260718010000_main_outbox_local_evidence_terminal";
+const imageReadinessLocalEvidenceTerminalMigration =
+  "20260718011000_main_outbox_image_readiness_local_evidence_terminal";
+const syntheticPreviewQuarantineForwardFixMigration =
+  "20260718012000_synthetic_character_preview_quarantine_forward_fix";
 const migrationsDirectory = path.join(process.cwd(), "prisma", "migrations");
 const adminUrl = new URL(sourceUrl);
 adminUrl.pathname = "/postgres";
@@ -40,6 +47,82 @@ function deploy(databaseName) {
 
 function isNoopDeploy(output) {
   return output.includes("No pending migrations") || output.includes("already in sync");
+}
+
+async function loadExpectedMigrationHistory() {
+  const migrations = (await readdir(migrationsDirectory, { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort();
+  return Promise.all(migrations.map(async (migrationName) => {
+    const sql = await readFile(
+      path.join(migrationsDirectory, migrationName, "migration.sql"),
+    );
+    return {
+      migrationName,
+      checksum: createHash("sha256").update(sql).digest("hex"),
+    };
+  }));
+}
+
+function evaluateMigrationHistory(rows, expectedMigrations) {
+  const expectedByName = new Map(
+    expectedMigrations.map((migration) => [
+      migration.migrationName,
+      migration.checksum,
+    ]),
+  );
+  const actualByName = new Map(
+    rows.map((migration) => [
+      migration.migration_name,
+      migration.checksum,
+    ]),
+  );
+  const localOnly = expectedMigrations
+    .map((migration) => migration.migrationName)
+    .filter((migrationName) => !actualByName.has(migrationName));
+  const databaseOnly = rows
+    .map((migration) => migration.migration_name)
+    .filter((migrationName) => !expectedByName.has(migrationName));
+  const checksumMismatches = rows.flatMap((migration) => {
+    const expectedChecksum = expectedByName.get(migration.migration_name);
+    if (!expectedChecksum || expectedChecksum === migration.checksum) return [];
+    return [{
+      migrationName: migration.migration_name,
+      databaseChecksum: migration.checksum,
+      fileChecksum: expectedChecksum,
+    }];
+  });
+  return {
+    localCount: expectedMigrations.length,
+    databaseCount: rows.length,
+    localOnly,
+    databaseOnly,
+    checksumMismatches,
+    complete:
+      localOnly.length === 0
+      && databaseOnly.length === 0
+      && rows.length === expectedMigrations.length,
+    checksumsMatch: checksumMismatches.length === 0,
+  };
+}
+
+async function inspectMigrationHistory(connectionString) {
+  const expectedMigrations = await loadExpectedMigrationHistory();
+  const db = new pg.Client({ connectionString });
+  await db.connect();
+  try {
+    const migrationHistory = await db.query(
+      `SELECT migration_name, checksum
+       FROM _prisma_migrations
+       WHERE finished_at IS NOT NULL
+         AND rolled_back_at IS NULL
+       ORDER BY migration_name`,
+    );
+    return evaluateMigrationHistory(migrationHistory.rows, expectedMigrations);
+  } finally {
+    await db.end();
+  }
 }
 
 async function createDatabase(admin, databaseName) {
@@ -714,6 +797,220 @@ async function exerciseDeferredPublicCatalogQualificationAuthority(
   };
 }
 
+async function exerciseLocalEvidenceTerminalMigration(db, databaseName) {
+  const fixture = `migration-rehearsal-local-evidence-${runId}-${databaseName}`;
+  const fixtures = [
+    {
+      id: `${fixture}-qualification`,
+      eventType: "character.release.qualification_stale.v2",
+      status: "pending",
+      attempts: 3,
+      payload: { evidence: "qualification" },
+      lastError: { message: "historical pending transport" },
+      createdAt: new Date("2026-07-17T09:44:40.000Z"),
+    },
+    {
+      id: `${fixture}-editorial`,
+      eventType: "character.editorial_authority_repaired.v1",
+      status: "dispatched",
+      attempts: 5,
+      payload: { evidence: "editorial" },
+      lastError: "historical scalar error",
+      createdAt: new Date("2026-07-17T11:21:44.000Z"),
+    },
+    {
+      id: `${fixture}-image-readiness`,
+      eventType: "character.image_readiness.repaired.v1",
+      status: "pending",
+      attempts: 2,
+      payload: { evidence: "image-readiness" },
+      lastError: null,
+      createdAt: new Date("2026-07-18T01:10:00.000Z"),
+    },
+    {
+      id: `${fixture}-unrelated`,
+      eventType: "character.release.monitor_evaluated.v2",
+      status: "pending",
+      attempts: 7,
+      payload: { evidence: "unrelated" },
+      lastError: null,
+      createdAt: new Date("2000-01-01T00:00:00.000Z"),
+    },
+  ];
+  for (const row of fixtures) {
+    await db.query(
+      `INSERT INTO main_outbox_events
+        (id, "eventType", "aggregateType", "aggregateId", payload,
+         status, attempts, "nextRunAt", "lastError", "createdAt", "updatedAt")
+       VALUES
+        ($1, $2, 'character_release', $3, $4::jsonb,
+         $5, $6, $7, $8::jsonb, $7, $7)`,
+      [
+        row.id,
+        row.eventType,
+        `${fixture}-release`,
+        JSON.stringify(row.payload),
+        row.status,
+        row.attempts,
+        row.createdAt,
+        row.lastError === null ? null : JSON.stringify(row.lastError),
+      ],
+    );
+  }
+
+  const migrationSql = await Promise.all([
+    localEvidenceTerminalMigration,
+    imageReadinessLocalEvidenceTerminalMigration,
+  ].map((migration) => readFile(
+    path.join(migrationsDirectory, migration, "migration.sql"),
+    "utf8",
+  )));
+  for (const sql of migrationSql) await db.query(sql);
+  const first = await db.query(
+    `SELECT
+       id, "eventType", payload, status, attempts, "deliveredAt",
+       "lastError", "createdAt", "updatedAt"
+     FROM main_outbox_events
+     WHERE id LIKE $1
+     ORDER BY id`,
+    [`${fixture}%`],
+  );
+  for (const sql of migrationSql) await db.query(sql);
+  const second = await db.query(
+    `SELECT
+       id, "eventType", payload, status, attempts, "deliveredAt",
+       "lastError", "createdAt", "updatedAt"
+     FROM main_outbox_events
+     WHERE id LIKE $1
+     ORDER BY id`,
+    [`${fixture}%`],
+  );
+  const firstById = new Map(first.rows.map((row) => [row.id, row]));
+  const terminalRows = fixtures.slice(0, 3).map((row) => ({
+    fixture: row,
+    persisted: firstById.get(row.id),
+  }));
+  const unrelated = firstById.get(fixtures[3].id);
+  return {
+    rows: first.rows,
+    targetRowsTerminal: terminalRows.every(({ fixture: expected, persisted }) =>
+      persisted?.status === "delivered"
+      && persisted.deliveredAt instanceof Date
+      && persisted.deliveredAt.getTime() === expected.createdAt.getTime()
+    ),
+    targetEvidencePreserved: terminalRows.every(
+      ({ fixture: expected, persisted }) =>
+        persisted?.attempts === expected.attempts
+        && persisted.payload?.evidence === expected.payload.evidence,
+    ),
+    terminalReasonRecorded: terminalRows.every(
+      ({ fixture: expected, persisted }) =>
+        persisted?.lastError?.outcome === "local_evidence"
+        && persisted.lastError.reason ===
+          "local_evidence_has_no_transport_sink"
+        && persisted.lastError.terminalizedBy === (
+          expected.eventType === "character.image_readiness.repaired.v1"
+            ? imageReadinessLocalEvidenceTerminalMigration
+            : localEvidenceTerminalMigration
+        ),
+    ),
+    previousErrorPreserved:
+      firstById.get(fixtures[0].id)?.lastError?.message ===
+        "historical pending transport"
+      && firstById.get(fixtures[1].id)?.lastError?.previousLastError ===
+        "historical scalar error",
+    unrelatedRowPreserved:
+      unrelated?.status === "pending"
+      && unrelated.deliveredAt === null
+      && unrelated.attempts === fixtures[3].attempts
+      && unrelated.payload?.evidence === fixtures[3].payload.evidence
+      && unrelated.lastError === null,
+    repeatedApplicationNoop:
+      JSON.stringify(first.rows) === JSON.stringify(second.rows),
+  };
+}
+
+async function exerciseSyntheticPreviewQuarantineForwardFix(
+  db,
+  databaseName,
+) {
+  const fixture =
+    `migration-rehearsal-synthetic-preview-${runId}-${databaseName}`;
+  const userId = `${fixture}-user`;
+  const tolerantAssetId = `${fixture}-yes`;
+  const unrelatedAssetId = `${fixture}-unrelated`;
+  await db.query(
+    `INSERT INTO users (id, email, "emailVerified", role, status, "updatedAt")
+     VALUES ($1, $2, false, 'user', 'active', NOW())`,
+    [userId, `${userId}@example.test`],
+  );
+  for (const [assetId, synthetic] of [
+    [tolerantAssetId, "yes"],
+    [unrelatedAssetId, "legacy"],
+  ]) {
+    await db.query(
+      `INSERT INTO media_assets
+        (id, "ownerId", type, url, "storageKey", "contentType",
+         visibility, "safetyStatus", metadata)
+       VALUES ($1, $2, 'image', $3, $4, 'image/png',
+         'private', 'passed', $5::jsonb)`,
+      [
+        assetId,
+        userId,
+        `https://example.test/${fixture}/${synthetic}.png`,
+        `${fixture}/${synthetic}.png`,
+        JSON.stringify({
+          source: "character_preview",
+          synthetic,
+        }),
+      ],
+    );
+  }
+
+  const migrationSql = await readFile(
+    path.join(
+      migrationsDirectory,
+      syntheticPreviewQuarantineForwardFixMigration,
+      "migration.sql",
+    ),
+    "utf8",
+  );
+  await db.query(migrationSql);
+  const first = await db.query(
+    `SELECT id, visibility, "characterId", metadata
+     FROM media_assets
+     WHERE id = ANY($1::text[])
+     ORDER BY id`,
+    [[tolerantAssetId, unrelatedAssetId]],
+  );
+  await db.query(migrationSql);
+  const second = await db.query(
+    `SELECT id, visibility, "characterId", metadata
+     FROM media_assets
+     WHERE id = ANY($1::text[])
+     ORDER BY id`,
+    [[tolerantAssetId, unrelatedAssetId]],
+  );
+  const firstById = new Map(first.rows.map((row) => [row.id, row]));
+  const tolerant = firstById.get(tolerantAssetId);
+  const unrelated = firstById.get(unrelatedAssetId);
+  return {
+    tolerantSyntheticValueQuarantined:
+      tolerant?.visibility === "unlisted"
+      && tolerant.characterId === null
+      && tolerant.metadata?.quarantined === true
+      && tolerant.metadata?.quarantineReason ===
+        "synthetic_character_preview",
+    unrelatedValuePreserved:
+      unrelated?.visibility === "private"
+      && unrelated.characterId === null
+      && unrelated.metadata?.synthetic === "legacy"
+      && unrelated.metadata?.quarantined === undefined,
+    repeatedApplicationNoop:
+      JSON.stringify(first.rows) === JSON.stringify(second.rows),
+  };
+}
+
 async function inspectExpandedSchema(databaseName) {
   const db = new pg.Client({ connectionString: databaseUrl(databaseName).toString() });
   await db.connect();
@@ -772,7 +1069,7 @@ async function inspectExpandedSchema(databaseName) {
        ORDER BY conname`,
     );
     const migrationHistory = await db.query(
-      `SELECT migration_name, finished_at, rolled_back_at
+      `SELECT migration_name, checksum, finished_at, rolled_back_at
        FROM _prisma_migrations
        ORDER BY migration_name`,
     );
@@ -814,6 +1111,13 @@ async function inspectExpandedSchema(databaseName) {
     );
     const publicQualificationAuthority =
       await exerciseDeferredPublicCatalogQualificationAuthority(
+        db,
+        databaseName,
+      );
+    const localEvidenceTerminal =
+      await exerciseLocalEvidenceTerminalMigration(db, databaseName);
+    const syntheticPreviewQuarantineForwardFix =
+      await exerciseSyntheticPreviewQuarantineForwardFix(
         db,
         databaseName,
       );
@@ -876,10 +1180,13 @@ async function inspectExpandedSchema(databaseName) {
     } finally {
       await db.query("ROLLBACK");
     }
-    const expectedMigrations = (await readdir(migrationsDirectory, { withFileTypes: true }))
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name)
-      .sort();
+    const expectedMigrations = await loadExpectedMigrationHistory();
+    const migrationHistoryAuthority = evaluateMigrationHistory(
+      migrationHistory.rows.filter(
+        (row) => row.finished_at !== null && row.rolled_back_at === null,
+      ),
+      expectedMigrations,
+    );
     const qaRunId = `migration-rehearsal-qa-${runId}`;
     await db.query(
       `INSERT INTO character_qa_runs
@@ -907,14 +1214,13 @@ async function inspectExpandedSchema(databaseName) {
       livePublicMediaAssetAuthorityTriggers:
         livePublicMediaAssetAuthorityTriggers.rows,
       publicQualificationAuthority,
+      localEvidenceTerminal,
+      syntheticPreviewQuarantineForwardFix,
       checks: {
         migrationHistoryComplete:
-          migrationHistory.rowCount === expectedMigrations.length
-          && migrationHistory.rows.every(
-            (row, index) => row.migration_name === expectedMigrations[index]
-              && row.finished_at !== null
-              && row.rolled_back_at === null,
-          ),
+          migrationHistoryAuthority.complete,
+        migrationHistoryChecksumsMatch:
+          migrationHistoryAuthority.checksumsMatch,
         expandedTablesPresent: tables.rowCount === 6,
         databaseGuardsPresent: triggers.rowCount === 6,
         qaImmutableUpdateRejected,
@@ -935,6 +1241,24 @@ async function inspectExpandedSchema(databaseName) {
             "'active'::text",
           ),
         duplicateActiveReferenceSetRejected,
+        localEvidenceRowsTerminal:
+          localEvidenceTerminal.targetRowsTerminal,
+        localEvidencePayloadAndAttemptsPreserved:
+          localEvidenceTerminal.targetEvidencePreserved,
+        localEvidenceTerminalReasonRecorded:
+          localEvidenceTerminal.terminalReasonRecorded
+          && localEvidenceTerminal.previousErrorPreserved,
+        unrelatedOutboxRowPreserved:
+          localEvidenceTerminal.unrelatedRowPreserved,
+        localEvidenceTerminalMigrationIdempotent:
+          localEvidenceTerminal.repeatedApplicationNoop,
+        tolerantSyntheticPreviewQuarantined:
+          syntheticPreviewQuarantineForwardFix
+            .tolerantSyntheticValueQuarantined,
+        unrelatedSyntheticMetadataPreserved:
+          syntheticPreviewQuarantineForwardFix.unrelatedValuePreserved,
+        syntheticPreviewForwardFixIdempotent:
+          syntheticPreviewQuarantineForwardFix.repeatedApplicationNoop,
         publicQualificationAuthorityDeferred: (() => {
           const trigger = publicQualificationAuthorityTriggers.rows.find(
             (candidate) =>
@@ -1107,6 +1431,22 @@ async function exercisePreviousAppWriteShape(databaseName) {
   }
 }
 
+const sourceMigrationHistory = await inspectMigrationHistory(
+  sourceUrl.toString(),
+);
+if (process.argv.includes("--history-only")) {
+  const report = {
+    status:
+      sourceMigrationHistory.complete
+      && sourceMigrationHistory.checksumsMatch
+        ? "pass"
+        : "fail",
+    sourceMigrationHistory,
+  };
+  process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+  process.exit(report.status === "pass" ? 0 : 1);
+}
+
 const admin = new pg.Client({ connectionString: adminUrl.toString() });
 await admin.connect();
 try {
@@ -1139,6 +1479,9 @@ try {
   await db.end();
 
   const checks = {
+    sourceMigrationHistoryComplete: sourceMigrationHistory.complete,
+    sourceMigrationHistoryChecksumsMatch:
+      sourceMigrationHistory.checksumsMatch,
     freshDeployAppliedEveryMigration:
       !freshFirstDeploy.includes("failed") && freshSchema.checks.expandedTablesPresent,
     freshRedeployIsIdempotent: isNoopDeploy(freshSecondDeploy),
@@ -1161,6 +1504,10 @@ try {
   const report = {
     status: Object.values(checks).every(Boolean) ? "pass" : "fail",
     scenarios: {
+      source: {
+        databaseName: sourceUrl.pathname.slice(1),
+        migrationHistory: sourceMigrationHistory,
+      },
       fresh: {
         databaseName: freshDatabaseName,
         schema: freshSchema,

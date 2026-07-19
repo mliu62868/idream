@@ -314,6 +314,7 @@ function ChatStartPanel() {
                     fill
                     sizes="64px"
                     src={card.image}
+                    unoptimized={isProtectedMediaUrl(card.image)}
                   />
                 </span>
                 <span className="min-w-0">
@@ -374,4 +375,8 @@ function formatRelative(iso: string | null): string {
   const days = Math.round(hours / 24);
   if (days < 7) return `${days}d ago`;
   return new Date(then).toLocaleDateString();
+}
+
+function isProtectedMediaUrl(url: string) {
+  return url.startsWith("/api/v1/media/") || url.startsWith("/user-content/");
 }

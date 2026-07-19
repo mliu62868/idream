@@ -301,7 +301,10 @@ describe("premium entitlement gates (402)", () => {
       body: { mode: "image", characterId: charId, outputCount: 1 },
     });
     expectError(result, 402, "payment_required");
-    expect(result.error?.details).toMatchObject({ cost: 5 });
+    expect(result.error?.details).toMatchObject({
+      required: 5,
+      available: 0,
+    });
 
     const entries = await prisma.dreamcoinLedger.count({ where: { userId } });
     expect(entries).toBe(0);

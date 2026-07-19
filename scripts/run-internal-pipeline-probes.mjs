@@ -33,6 +33,10 @@ const adminWebUrl =
   process.env.ADMIN_WEB_URL ?? mainEnv.ADMIN_WEB_URL ?? "http://127.0.0.1:3001";
 const chatServiceUrl =
   process.env.CHAT_SERVICE_URL ?? mainEnv.CHAT_SERVICE_URL ?? "http://127.0.0.1:3100";
+const chatServiceProbeUserId =
+  process.env.CHAT_SERVICE_PROBE_USER_ID ??
+  mainEnv.CHAT_SERVICE_PROBE_USER_ID ??
+  "seed-chat-probe-user";
 const chatBffSigningSecret =
   process.env.CHAT_BFF_SIGNING_SECRET ??
   mainEnv.CHAT_BFF_SIGNING_SECRET ??
@@ -139,6 +143,7 @@ const steps = [
       ...baseEnv,
       CHAT_SERVICE_URL: chatServiceUrl,
       CHAT_BFF_SIGNING_SECRET: chatBffSigningSecret,
+      CHAT_SERVICE_PROBE_USER_ID: chatServiceProbeUserId,
     },
   },
   {
@@ -277,6 +282,7 @@ const report = {
     mainWebUrl,
     adminWebUrl,
     chatServiceUrl,
+    chatServiceProbeUserId,
     chatModelBaseUrl,
     chatModelName,
     imagePipelineUrl,

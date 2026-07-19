@@ -9,16 +9,23 @@
 //   - session.jsonl append is the agent trace (separate fact; user-visible = PG).
 import type { Prisma } from "../generated/client/client.js";
 import type { ChatPrismaClient } from "./db.js";
-import { chatPrisma } from "./db.js";
+import { chatPrisma, chatProjectorPrisma } from "./db.js";
 import { providers } from "./providers.js";
 import type { ChatToolCall, ModelMessage } from "./providers.js";
 import { buildContext, type BuiltContext } from "./context.js";
 import { appendStreamEvent, streamKey } from "./stream.js";
-import { appendLine, chatFsPaths } from "./chat-fs.js";
 import { recordOutbox, scheduleOutboxDelivery } from "./outbox.js";
 import { createId } from "./id.js";
 import { enqueue } from "./queue.js";
 import { logger } from "./logger.js";
+import { lockTurn } from "./turn-lock.js";
+import {
+  assertNoPendingChatFileMutationsTx,
+  CHAT_CONTEXT_INVALIDATING_FILE_MUTATIONS,
+  projectChatFileMutations,
+  recordChatFileMutation,
+  runWithProjectedChatFiles,
+} from "./file-mutations.js";
 import {
   EDIT_LAST_IMAGE_TOOL,
   findAgentTool,
@@ -42,18 +49,43 @@ import {
 
 export type GeneratePayload = ChatGeneratePayload;
 
+export interface GenerateHooks {
+  afterContextBuilt?: (context: BuiltContext) => Promise<void> | void;
+  projectorPrisma?: ChatPrismaClient;
+}
+
 export async function processGenerate(
   payload: GeneratePayload,
   prisma: ChatPrismaClient = chatPrisma,
+  hooks: GenerateHooks = {},
 ): Promise<{ status: "sent" | "blocked" | "skipped" | "failed" }> {
+  const projectorPrisma =
+    hooks.projectorPrisma ?? chatProjectorPrisma;
   const assistant = await prisma.message.findUnique({ where: { id: payload.assistantMessageId } });
   if (!assistant) return { status: "skipped" };
+  if (
+    assistant.role !== "assistant" ||
+    assistant.sessionId !== payload.sessionId ||
+    assistant.replyToMessageId !== payload.userMessageId
+  ) {
+    return { status: "skipped" };
+  }
+  const sourceTurn = await prisma.message.findUnique({
+    where: { id: payload.userMessageId },
+    select: { role: true, sessionId: true },
+  });
+  if (sourceTurn?.role !== "user" || sourceTurn.sessionId !== payload.sessionId) {
+    return { status: "skipped" };
+  }
+  const session = await prisma.chatSession.findUnique({ where: { id: payload.sessionId } });
+  if (!session) return { status: "skipped" };
+  // Crash recovery: a prior terminal DB commit may still have a pending trace
+  // projection. Drain it before treating a terminal assistant as a no-op.
+  await projectChatFileMutations(session.userId, projectorPrisma);
   // Idempotency: terminal states are final.
   if (["sent", "blocked", "deleted", "failed"].includes(assistant.status)) return { status: "skipped" };
   if (assistant.attempt !== payload.attempt) return { status: "skipped" };
 
-  const session = await prisma.chatSession.findUnique({ where: { id: payload.sessionId } });
-  if (!session) return { status: "skipped" };
   if (session.status !== "active") {
     await failAssistant(prisma, payload.assistantMessageId);
     await appendStreamEvent(streamKey(payload.assistantMessageId), {
@@ -64,11 +96,18 @@ export async function processGenerate(
     }).catch(() => {});
     return { status: "failed" };
   }
+  const turnMemoryEnabled = assistant.memoryAuthority === "enabled";
 
-  await prisma.message.updateMany({
-    where: { id: payload.assistantMessageId, status: { in: ["pending", "generating"] }, attempt: payload.attempt },
+  const claimed = await prisma.message.updateMany({
+    where: {
+      id: payload.assistantMessageId,
+      status: { in: ["pending", "generating"] },
+      attempt: payload.attempt,
+      deletedAt: null,
+    },
     data: { status: "generating", updatedAt: new Date() },
   });
+  if (claimed.count === 0) return { status: "skipped" };
   let lastHeartbeatAt = Date.now();
   const heartbeat = async (force = false): Promise<void> => {
     const now = Date.now();
@@ -102,9 +141,10 @@ export async function processGenerate(
     userId: session.userId,
     characterId: session.characterId,
     sessionId: session.id,
-    memoryEnabled: session.memoryEnabled,
+    turnMemoryEnabled,
     userMessageId: payload.userMessageId,
   });
+  await hooks.afterContextBuilt?.(context);
 
   await appendStreamEvent(key, { type: "start", attempt: payload.attempt });
 
@@ -284,6 +324,24 @@ export async function processGenerate(
   // Output moderation (design §3 step 10).
   const moderation = await providers.moderation.check({ targetType: "text", content });
   const blocked = moderation.status === "blocked";
+  const traceEntry: Record<string, unknown> | null = turnMemoryEnabled
+    ? JSON.parse(JSON.stringify({
+        ts: new Date().toISOString(),
+        kind: "chat.turn",
+        attempt: payload.attempt,
+        assistantMessageId: payload.assistantMessageId,
+        userMessageId: payload.userMessageId,
+        system:
+          modelMessages.find((message) => message.role === "system")?.content ??
+          "",
+        injectedMemories: context.longTermMemories,
+        boundaries: context.boundaries,
+        rawOutput: content,
+        toolCalls: imageToolCall ? [imageToolCall] : [],
+        moderation,
+        model,
+      })) as Record<string, unknown>
+    : null;
 
   await heartbeat(true);
   const finalized = await finalize({
@@ -298,39 +356,26 @@ export async function processGenerate(
     context,
     imageToolCall,
     toolCallTrigger,
+    traceEntry,
+    projectorPrisma,
   });
-  if (!finalized) return { status: "skipped" };
+  if (finalized === "stale") {
+    await appendStreamEvent(key, {
+      type: "error",
+      attempt: payload.attempt,
+      code: "context_changed",
+      retryable: true,
+    }).catch(() => {});
+    return { status: "failed" };
+  }
+  if (finalized === "skipped") return { status: "skipped" };
+  await projectChatFileMutations(session.userId, projectorPrisma);
 
   await appendStreamEvent(key, { type: "done", attempt: payload.attempt, usage });
 
-  // Agent trace (separate fact). Append-only; raw content kept here, PG holds the
-  // user-visible version. Idempotent-ish: one append per attempt.
-  // No-memory / incognito sessions write NO long-term agent trace (design P0-E):
-  // the PG message history is the only record and is cleared with the session.
-  if (session.memoryEnabled) {
-    await appendLine(chatFsPaths.sessionLog(session.userId, session.id), JSON.stringify({
-      ts: new Date().toISOString(),
-      kind: "chat.turn",
-      attempt: payload.attempt,
-      assistantMessageId: payload.assistantMessageId,
-      userMessageId: payload.userMessageId,
-      system: modelMessages.find((m) => m.role === "system")?.content ?? "",
-      injectedMemories: context.longTermMemories,
-      boundaries: context.boundaries,
-      rawOutput: content,
-      toolCalls: imageToolCall ? [imageToolCall] : [],
-      moderation,
-      model,
-    })).catch((error) => {
-      // The PG ledger is already terminal. Trace persistence is diagnostic and
-      // must not prevent memory scheduling or make BullMQ retry a completed turn.
-      logger.error({ err: error, assistantMessageId: payload.assistantMessageId }, "agent trace append failed");
-    });
-  }
-
   // Derive long-term memory off the hot path from the exact authoritative PG turn.
   // session.jsonl is diagnostic only and is deliberately not an availability dependency.
-  if (!blocked && session.memoryEnabled) {
+  if (!blocked && turnMemoryEnabled) {
     await enqueue({
       queue: CHAT_QUEUES.memoryExtract,
       payload: {
@@ -372,16 +417,88 @@ interface FinalizeInput {
   context: BuiltContext;
   imageToolCall: ImageAgentToolCall | null;
   toolCallTrigger: "agent_fc" | "agent_tool_call";
+  traceEntry: Record<string, unknown> | null;
+  projectorPrisma: ChatPrismaClient;
 }
 
-async function finalize(input: FinalizeInput): Promise<boolean> {
-  const { prisma, payload, session, content, model, usage, moderation, blocked, context, imageToolCall, toolCallTrigger } = input;
+async function finalize(
+  input: FinalizeInput,
+): Promise<"finalized" | "stale" | "skipped"> {
+  const { prisma, payload, session, content, model, usage, moderation, blocked, context, imageToolCall, toolCallTrigger, traceEntry, projectorPrisma } = input;
 
-  return prisma.$transaction(async (tx) => {
-    // Re-read inside the TX for idempotency under concurrency.
-    const current = await tx.message.findUnique({ where: { id: payload.assistantMessageId } });
-    if (!current || current.status !== "generating" || current.attempt !== payload.attempt) return false;
-    const sourceTurn = await tx.message.findUnique({ where: { id: payload.userMessageId } });
+  return runWithProjectedChatFiles(
+    session.userId,
+    () => prisma.$transaction(async (tx) => {
+    // Account/session/message privacy operations use the same lock. Re-read all
+    // authority after acquiring it so a deleted user turn or session cannot be
+    // finalized by a worker that started from an older snapshot.
+    await lockTurn(tx, session.userId, session.id);
+    await assertNoPendingChatFileMutationsTx(tx, session.userId);
+    const [
+      currentUser,
+      currentSession,
+      current,
+      sourceTurn,
+      latestInvalidatingMutation,
+    ] =
+      await Promise.all([
+        tx.chatUserView.findUnique({ where: { userId: session.userId } }),
+        tx.chatSession.findUnique({ where: { id: session.id } }),
+        tx.message.findUnique({
+          where: { id: payload.assistantMessageId },
+        }),
+        tx.message.findUnique({ where: { id: payload.userMessageId } }),
+        tx.chatFileMutation.findFirst({
+          where: {
+            userId: session.userId,
+            status: "applied",
+            kind: {
+              in: [...CHAT_CONTEXT_INVALIDATING_FILE_MUTATIONS],
+            },
+          },
+          orderBy: { sequence: "desc" },
+          select: { sequence: true },
+        }),
+      ]);
+    if (
+      !currentUser ||
+      currentUser.status !== "active" ||
+      currentUser.deletedAt ||
+      !currentSession ||
+      currentSession.userId !== session.userId ||
+      currentSession.status !== "active" ||
+      currentSession.deletedAt ||
+      !current ||
+      current.role !== "assistant" ||
+      current.sessionId !== currentSession.id ||
+      current.replyToMessageId !== payload.userMessageId ||
+      current.deletedAt ||
+      current.status !== "generating" ||
+      current.attempt !== payload.attempt ||
+      !sourceTurn ||
+      sourceTurn.role !== "user" ||
+      sourceTurn.sessionId !== currentSession.id ||
+      sourceTurn.deletedAt ||
+      sourceTurn.status !== "sent"
+    ) {
+      return "skipped";
+    }
+    if (
+      currentSession.contextRevision !==
+        context.sessionContextRevision ||
+      (latestInvalidatingMutation?.sequence ?? 0n) !==
+        context.fileContextRevision
+    ) {
+      await tx.message.updateMany({
+        where: {
+          id: payload.assistantMessageId,
+          status: "generating",
+          attempt: payload.attempt,
+        },
+        data: { status: "failed", content: "" },
+      });
+      return "stale";
+    }
 
     const tokenCount = usage.completionTokens;
     const updated = await tx.message.updateMany({
@@ -394,7 +511,7 @@ async function finalize(input: FinalizeInput): Promise<boolean> {
         safetyStatus: blocked ? "blocked" : moderation.status === "flagged" ? "flagged" : "passed",
       },
     });
-    if (updated.count === 0) return false;
+    if (updated.count === 0) return "skipped";
 
     if (!blocked) {
       // flip previous selected off, add the new selected version
@@ -429,14 +546,19 @@ async function finalize(input: FinalizeInput): Promise<boolean> {
         },
       });
 
-      // rolling session summary (PG authority)
+      // lastMessageAt is ordinary session state. The rolling summary additionally
+      // requires both immutable turn authority and the current preference, so a
+      // disable that cleared the summary cannot be repopulated by an in-flight turn.
       await tx.chatSession.update({
         where: { id: session.id },
-        data: {
-          ...(context.canUpdateSessionSummary ? { memorySummary: buildSummary(context, content) } : {}),
-          lastMessageAt: new Date(),
-        },
+        data: { lastMessageAt: new Date() },
       });
+      if (context.canUpdateSessionSummary) {
+        await tx.chatSession.updateMany({
+          where: { id: session.id, memoryEnabled: true },
+          data: { memorySummary: buildSummary(context, content) },
+        });
+      }
     }
 
     // moderation trail (always)
@@ -556,6 +678,7 @@ async function finalize(input: FinalizeInput): Promise<boolean> {
           requestId: createId("chat_img_req"),
           attachmentId,
           sessionId: session.id,
+          exchangeId: payload.userMessageId,
           messageId: payload.assistantMessageId,
           userId: session.userId,
           characterId: session.characterId,
@@ -577,8 +700,17 @@ async function finalize(input: FinalizeInput): Promise<boolean> {
         });
       }
     }
-    return true;
-  });
+    if (traceEntry) {
+      await recordChatFileMutation(tx, session.userId, {
+        kind: "trace_append",
+        sessionId: session.id,
+        entry: traceEntry,
+      });
+    }
+    return "finalized";
+    }),
+    projectorPrisma,
+  );
 }
 
 async function failAssistant(prisma: ChatPrismaClient, assistantMessageId: string): Promise<void> {

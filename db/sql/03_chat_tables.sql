@@ -2,6 +2,12 @@
 -- IDs are app-generated cuids (text). No cross-schema FKs (independent-DB ready).
 -- companion_memories / relationship_states are intentionally ABSENT — long-term
 -- memory & relationship moved to the file layer (design §5). IDEMPOTENT.
+\set ON_ERROR_STOP on
+
+-- The ledger trigger must be replaced during upgrades. Keep that replacement
+-- and every data normalization in one transaction so runtime never observes an
+-- unguarded table if this file is applied while the service is online.
+BEGIN;
 
 CREATE TABLE IF NOT EXISTS chat.chat_sessions (
   id                 text PRIMARY KEY,
@@ -12,6 +18,7 @@ CREATE TABLE IF NOT EXISTS chat.chat_sessions (
   memory_enabled     boolean NOT NULL DEFAULT true,
   memory_summary     text,                              -- rolling summary (PG)
   log_extracted_seq  bigint NOT NULL DEFAULT 0,         -- session.jsonl derive watermark (D3)
+  context_revision   bigint NOT NULL DEFAULT 0,         -- generation privacy/context fence
   last_message_at    timestamp,
   created_at         timestamp NOT NULL DEFAULT (timezone('utc', now())),
   updated_at         timestamp NOT NULL DEFAULT (timezone('utc', now())),
@@ -20,7 +27,8 @@ CREATE TABLE IF NOT EXISTS chat.chat_sessions (
 ALTER TABLE chat.chat_sessions
   ADD COLUMN IF NOT EXISTS character_content_version_id text,
   ADD COLUMN IF NOT EXISTS character_release_id text,
-  ADD COLUMN IF NOT EXISTS release_pinned_at timestamp;
+  ADD COLUMN IF NOT EXISTS release_pinned_at timestamp,
+  ADD COLUMN IF NOT EXISTS context_revision bigint NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS chat_sessions_user_last_idx
   ON chat.chat_sessions (user_id, last_message_at DESC);
 CREATE INDEX IF NOT EXISTS chat_sessions_character_idx
@@ -84,10 +92,13 @@ CREATE TABLE IF NOT EXISTS chat.messages (
   engagement_session_id text,                            -- versioned 30m inactivity grouping, assigned on user turn
   character_content_version_id text,                     -- exact immutable content used by this turn
   character_release_id text,                             -- exact release when present; never inferred later
+  memory_authority text NOT NULL DEFAULT 'legacy_unknown', -- enabled|disabled captured on the assistant turn
   memory_extracted_attempt integer NOT NULL DEFAULT 0,  -- latest attempt derived into file memory
   created_at    timestamp NOT NULL DEFAULT (timezone('utc', now())),
   updated_at    timestamp NOT NULL DEFAULT (timezone('utc', now())),
-  deleted_at    timestamp
+  deleted_at    timestamp,
+  CONSTRAINT messages_memory_authority_check
+    CHECK (memory_authority IN ('enabled', 'disabled', 'legacy_unknown'))
 );
 ALTER TABLE chat.messages
   ADD COLUMN IF NOT EXISTS reply_to_message_id text;
@@ -97,6 +108,22 @@ ALTER TABLE chat.messages
   ADD COLUMN IF NOT EXISTS character_release_id text;
 ALTER TABLE chat.messages
   ADD COLUMN IF NOT EXISTS memory_extracted_attempt integer NOT NULL DEFAULT 0;
+ALTER TABLE chat.messages
+  ADD COLUMN IF NOT EXISTS memory_authority text NOT NULL DEFAULT 'legacy_unknown';
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conrelid = 'chat.messages'::regclass
+      AND conname = 'messages_memory_authority_check'
+  ) THEN
+    ALTER TABLE chat.messages
+      ADD CONSTRAINT messages_memory_authority_check
+      CHECK (memory_authority IN ('enabled', 'disabled', 'legacy_unknown'));
+  END IF;
+END
+$$;
 CREATE INDEX IF NOT EXISTS messages_session_created_idx
   ON chat.messages (session_id, created_at);
 -- reconciler hot scan: stuck `generating`
@@ -189,6 +216,409 @@ CREATE INDEX IF NOT EXISTS chat_outbox_pending_idx
 ALTER TABLE chat.chat_outbox_events
   ADD COLUMN IF NOT EXISTS schema_version integer NOT NULL DEFAULT 1;
 
+-- Durable intent ledger for the local session/memory/relationship projection.
+-- Domain transactions only append immutable intents; the idempotent projector
+-- applies them to CHAT_FS_ROOT after commit and marks them applied.
+CREATE TABLE IF NOT EXISTS chat.chat_file_mutations (
+  id         text PRIMARY KEY,
+  sequence   bigserial NOT NULL UNIQUE,
+  user_id    text NOT NULL,
+  kind       text NOT NULL,
+  payload    jsonb NOT NULL DEFAULT '{}'::jsonb,
+  status     text NOT NULL DEFAULT 'pending',
+  attempts   integer NOT NULL DEFAULT 0,
+  last_error text,
+  created_at timestamp NOT NULL DEFAULT (timezone('utc', now())),
+  applied_at timestamp,
+  CONSTRAINT chat_file_mutations_status_check
+    CHECK (status IN ('pending', 'applied'))
+);
+
+ALTER TABLE chat.chat_file_mutations
+  ADD COLUMN IF NOT EXISTS id text,
+  ADD COLUMN IF NOT EXISTS sequence bigint,
+  ADD COLUMN IF NOT EXISTS user_id text,
+  ADD COLUMN IF NOT EXISTS kind text,
+  ADD COLUMN IF NOT EXISTS payload jsonb,
+  ADD COLUMN IF NOT EXISTS status text,
+  ADD COLUMN IF NOT EXISTS attempts integer,
+  ADD COLUMN IF NOT EXISTS last_error text,
+  ADD COLUMN IF NOT EXISTS created_at timestamp,
+  ADD COLUMN IF NOT EXISTS applied_at timestamp;
+
+DROP TRIGGER IF EXISTS chat_file_mutations_immutable
+  ON chat.chat_file_mutations;
+
+CREATE SEQUENCE IF NOT EXISTS chat.chat_file_mutations_sequence_seq;
+ALTER SEQUENCE chat.chat_file_mutations_sequence_seq
+  OWNED BY chat.chat_file_mutations.sequence;
+ALTER TABLE chat.chat_file_mutations
+  ALTER COLUMN sequence
+    SET DEFAULT nextval('chat.chat_file_mutations_sequence_seq'::regclass),
+  ALTER COLUMN payload SET DEFAULT '{}'::jsonb,
+  ALTER COLUMN status SET DEFAULT 'pending',
+  ALTER COLUMN attempts SET DEFAULT 0,
+  ALTER COLUMN created_at SET DEFAULT (timezone('utc', now()));
+
+UPDATE chat.chat_file_mutations
+SET payload = CASE
+      WHEN jsonb_typeof(COALESCE(payload, '{}'::jsonb)) = 'object'
+        THEN jsonb_set(
+          COALESCE(payload, '{}'::jsonb),
+          '{kind}',
+          to_jsonb(kind),
+          true
+        )
+      ELSE jsonb_build_object('kind', kind)
+    END,
+    status = COALESCE(status, 'pending'),
+    attempts = COALESCE(attempts, 0),
+    created_at = COALESCE(created_at, timezone('utc', now()));
+
+-- A partially deployed predecessor may already have assigned sequence values
+-- next to NULLs. Align the sequence before backfilling so nextval cannot collide
+-- with an existing row.
+SELECT setval(
+  'chat.chat_file_mutations_sequence_seq'::regclass,
+  GREATEST(
+    COALESCE((SELECT MAX(sequence) FROM chat.chat_file_mutations), 1),
+    (SELECT last_value FROM chat.chat_file_mutations_sequence_seq),
+    1
+  ),
+  (SELECT is_called FROM chat.chat_file_mutations_sequence_seq)
+    OR EXISTS (
+      SELECT 1
+      FROM chat.chat_file_mutations
+      WHERE sequence IS NOT NULL
+    )
+);
+
+DO $$
+DECLARE
+  mutation record;
+BEGIN
+  FOR mutation IN
+    SELECT id
+    FROM chat.chat_file_mutations
+    WHERE sequence IS NULL
+    ORDER BY created_at, id
+  LOOP
+    UPDATE chat.chat_file_mutations
+    SET sequence =
+      nextval('chat.chat_file_mutations_sequence_seq'::regclass)
+    WHERE id = mutation.id;
+  END LOOP;
+END
+$$;
+
+SELECT setval(
+  'chat.chat_file_mutations_sequence_seq'::regclass,
+  GREATEST(
+    COALESCE((SELECT MAX(sequence) FROM chat.chat_file_mutations), 1),
+    (SELECT last_value FROM chat.chat_file_mutations_sequence_seq),
+    1
+  ),
+  (SELECT is_called FROM chat.chat_file_mutations_sequence_seq)
+    OR EXISTS (SELECT 1 FROM chat.chat_file_mutations)
+);
+
+ALTER TABLE chat.chat_file_mutations
+  ALTER COLUMN id SET NOT NULL,
+  ALTER COLUMN sequence SET NOT NULL,
+  ALTER COLUMN user_id SET NOT NULL,
+  ALTER COLUMN kind SET NOT NULL,
+  ALTER COLUMN payload SET NOT NULL,
+  ALTER COLUMN status SET NOT NULL,
+  ALTER COLUMN attempts SET NOT NULL,
+  ALTER COLUMN created_at SET NOT NULL;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conrelid = 'chat.chat_file_mutations'::regclass
+      AND contype = 'p'
+  ) THEN
+    ALTER TABLE chat.chat_file_mutations
+      ADD PRIMARY KEY (id);
+  END IF;
+END
+$$;
+
+CREATE UNIQUE INDEX IF NOT EXISTS chat_file_mutations_sequence_key
+  ON chat.chat_file_mutations (sequence);
+CREATE INDEX IF NOT EXISTS chat_file_mutations_user_pending_idx
+  ON chat.chat_file_mutations (user_id, status, sequence);
+
+CREATE OR REPLACE FUNCTION chat.redact_file_mutation_payload(
+  mutation_kind text,
+  mutation_payload jsonb
+)
+RETURNS jsonb
+LANGUAGE sql
+IMMUTABLE
+PARALLEL SAFE
+AS $$
+  SELECT CASE mutation_kind
+    WHEN 'memory_extract' THEN jsonb_build_object(
+      'kind', mutation_kind,
+      'sessionId', mutation_payload -> 'sessionId',
+      'userMessageId', mutation_payload -> 'userMessageId',
+      'characterId', mutation_payload -> 'characterId',
+      'turnKey', mutation_payload -> 'turnKey',
+      'attempt', mutation_payload -> 'attempt'
+    )
+    WHEN 'relationship_set' THEN mutation_payload
+    WHEN 'relationship_delete' THEN mutation_payload
+    WHEN 'turn_forget' THEN jsonb_build_object(
+      'kind', mutation_kind,
+      'sessionId', mutation_payload -> 'sessionId',
+      'characterId', mutation_payload -> 'characterId'
+    )
+    WHEN 'session_delete' THEN jsonb_build_object(
+      'kind', mutation_kind,
+      'sessionId', mutation_payload -> 'sessionId',
+      'characterId', mutation_payload -> 'characterId'
+    )
+    WHEN 'memory_update' THEN jsonb_build_object(
+      'kind', mutation_kind,
+      'memoryId', mutation_payload -> 'memoryId'
+    )
+    WHEN 'memory_delete' THEN jsonb_build_object(
+      'kind', mutation_kind,
+      'memoryId', mutation_payload -> 'memoryId'
+    )
+    WHEN 'relationship_rebuild' THEN jsonb_build_object(
+      'kind', mutation_kind,
+      'characterId', mutation_payload -> 'characterId'
+    )
+    WHEN 'trace_append' THEN jsonb_build_object(
+      'kind', mutation_kind,
+      'sessionId', mutation_payload -> 'sessionId'
+    )
+    ELSE jsonb_build_object('kind', mutation_kind)
+  END
+$$;
+
+-- Applied rows from the pre-receipt implementation may contain model prompts,
+-- memory candidates, or deleted source text. Convert them one-way to the same
+-- content-free receipt the runtime writes at completion.
+UPDATE chat.chat_file_mutations
+SET payload = chat.redact_file_mutation_payload(kind, payload),
+    attempts = GREATEST(attempts, 1),
+    applied_at = COALESCE(applied_at, created_at),
+    last_error = NULL
+WHERE status = 'applied';
+
+-- A relationship reset is terminal for older manual summaries; do not retain
+-- reset content in the durable ledger.
+DELETE FROM chat.chat_file_mutations AS older
+USING chat.chat_file_mutations AS reset
+WHERE older.user_id = reset.user_id
+  AND older.status = 'applied'
+  AND reset.status = 'applied'
+  AND older.kind = 'relationship_set'
+  AND reset.kind = 'relationship_delete'
+  AND older.sequence < reset.sequence
+  AND older.payload ->> 'characterId' =
+      reset.payload ->> 'characterId';
+
+ALTER TABLE chat.chat_file_mutations
+  DROP CONSTRAINT IF EXISTS chat_file_mutations_status_check,
+  DROP CONSTRAINT IF EXISTS chat_file_mutations_attempts_check,
+  DROP CONSTRAINT IF EXISTS chat_file_mutations_lifecycle_check,
+  DROP CONSTRAINT IF EXISTS chat_file_mutations_payload_kind_check;
+ALTER TABLE chat.chat_file_mutations
+  ADD CONSTRAINT chat_file_mutations_status_check
+    CHECK (status IN ('pending', 'applied')),
+  ADD CONSTRAINT chat_file_mutations_attempts_check
+    CHECK (attempts >= 0),
+  ADD CONSTRAINT chat_file_mutations_lifecycle_check
+    CHECK (
+      (status = 'pending' AND applied_at IS NULL)
+      OR
+      (status = 'applied' AND applied_at IS NOT NULL AND attempts > 0)
+    ),
+  ADD CONSTRAINT chat_file_mutations_payload_kind_check
+    CHECK (
+      jsonb_typeof(payload) = 'object'
+      AND payload ->> 'kind' IS NOT DISTINCT FROM kind
+    );
+
+CREATE OR REPLACE FUNCTION chat.assert_file_mutation_update()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.status <> 'pending'
+       OR NEW.attempts <> 0
+       OR NEW.applied_at IS NOT NULL
+       OR NEW.payload ->> 'kind' IS DISTINCT FROM NEW.kind THEN
+      RAISE EXCEPTION 'new chat file mutation must be a pending canonical intent';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF TG_OP = 'DELETE' THEN
+    IF current_setting(
+         'idream.account_erasure_file_mutation_user',
+         true
+       ) IS DISTINCT FROM OLD.user_id THEN
+      RAISE EXCEPTION 'chat file mutation deletion requires controlled erasure';
+    END IF;
+    RETURN OLD;
+  END IF;
+  IF current_user <> 'chat_projector' THEN
+    RAISE EXCEPTION
+      'chat file mutation completion requires projector authority';
+  END IF;
+  IF NEW.id IS DISTINCT FROM OLD.id
+     OR NEW.sequence IS DISTINCT FROM OLD.sequence
+     OR NEW.user_id IS DISTINCT FROM OLD.user_id
+     OR NEW.kind IS DISTINCT FROM OLD.kind
+     OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+    RAISE EXCEPTION 'chat file mutation identity is immutable';
+  END IF;
+  IF OLD.status = 'applied' THEN
+    RAISE EXCEPTION 'applied chat file mutation receipt is immutable';
+  END IF;
+  IF NEW.attempts < OLD.attempts THEN
+    RAISE EXCEPTION 'chat file mutation attempts cannot decrease';
+  END IF;
+  IF NEW.status = 'pending' THEN
+    IF NEW.payload IS DISTINCT FROM OLD.payload
+       OR NEW.applied_at IS NOT NULL THEN
+      RAISE EXCEPTION 'pending chat file mutation payload is immutable';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF NEW.status <> 'applied'
+     OR NEW.attempts <= OLD.attempts
+     OR NEW.applied_at IS NULL
+     OR NEW.last_error IS NOT NULL
+     OR NEW.payload IS DISTINCT FROM
+        chat.redact_file_mutation_payload(OLD.kind, OLD.payload) THEN
+    RAISE EXCEPTION 'chat file mutation completion evidence is invalid';
+  END IF;
+  RETURN NEW;
+END
+$$;
+CREATE TRIGGER chat_file_mutations_immutable
+BEFORE INSERT OR UPDATE OR DELETE ON chat.chat_file_mutations
+FOR EACH ROW EXECUTE FUNCTION chat.assert_file_mutation_update();
+
+DROP FUNCTION IF EXISTS chat.purge_file_mutations_for_account(text);
+
+CREATE OR REPLACE FUNCTION chat.purge_file_mutations_for_account(
+  target_user_id text,
+  authority_mutation_id text
+)
+RETURNS integer
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, chat
+AS $$
+DECLARE
+  purged integer;
+  authority_status text;
+BEGIN
+  SELECT status
+  INTO authority_status
+  FROM chat.chat_file_mutations
+  WHERE id = authority_mutation_id
+    AND user_id = target_user_id
+    AND kind = 'account_delete'
+    AND payload ->> 'kind' = 'account_delete'
+    AND status IN ('pending', 'applied');
+  IF authority_status IS NULL THEN
+    RAISE EXCEPTION
+      'account file purge requires its canonical erasure intent';
+  END IF;
+  PERFORM set_config(
+    'idream.account_erasure_file_mutation_user',
+    target_user_id,
+    true
+  );
+  DELETE FROM chat.chat_file_mutations
+  WHERE user_id = target_user_id
+    AND (
+      id <> authority_mutation_id
+      OR authority_status = 'applied'
+    );
+  GET DIAGNOSTICS purged = ROW_COUNT;
+  RETURN purged;
+END
+$$;
+
+CREATE OR REPLACE FUNCTION chat.purge_applied_relationship_sets(
+  target_user_id text,
+  target_character_id text,
+  before_sequence bigint
+)
+RETURNS integer
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, chat
+AS $$
+DECLARE
+  purged integer;
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM chat.chat_file_mutations
+    WHERE user_id = target_user_id
+      AND sequence = before_sequence
+      AND kind = 'relationship_delete'
+      AND status = 'pending'
+      AND payload ->> 'kind' = 'relationship_delete'
+      AND payload ->> 'characterId' = target_character_id
+  ) THEN
+    RAISE EXCEPTION
+      'relationship file purge requires its canonical pending reset intent';
+  END IF;
+  PERFORM set_config(
+    'idream.account_erasure_file_mutation_user',
+    target_user_id,
+    true
+  );
+  DELETE FROM chat.chat_file_mutations
+  WHERE user_id = target_user_id
+    AND status = 'applied'
+    AND kind = 'relationship_set'
+    AND sequence < before_sequence
+    AND payload ->> 'characterId' = target_character_id;
+  GET DIAGNOSTICS purged = ROW_COUNT;
+  RETURN purged;
+END
+$$;
+
+REVOKE ALL ON FUNCTION
+  chat.purge_file_mutations_for_account(text, text)
+  FROM PUBLIC;
+REVOKE ALL ON FUNCTION
+  chat.purge_applied_relationship_sets(text, text, bigint)
+  FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION
+  chat.purge_applied_relationship_sets(text, text, bigint)
+  FROM chat_service;
+GRANT EXECUTE ON FUNCTION
+  chat.purge_file_mutations_for_account(text, text)
+  TO chat_service, chat_projector;
+GRANT EXECUTE ON FUNCTION
+  chat.purge_applied_relationship_sets(text, text, bigint)
+  TO chat_projector;
+GRANT SELECT ON chat.chat_file_mutations TO chat_service;
+REVOKE INSERT ON chat.chat_file_mutations FROM chat_service;
+GRANT INSERT (id, user_id, kind, payload)
+  ON chat.chat_file_mutations TO chat_service;
+REVOKE UPDATE ON chat.chat_file_mutations FROM chat_service;
+REVOKE DELETE
+  ON chat.chat_file_mutations
+  FROM chat_service;
+GRANT SELECT, UPDATE ON chat.chat_file_mutations TO chat_projector;
+REVOKE INSERT, DELETE ON chat.chat_file_mutations FROM chat_projector;
+
 -- Inbox (main → chat). Commands consumed idempotently on event_id.
 CREATE TABLE IF NOT EXISTS chat.chat_inbox_events (
   id           text PRIMARY KEY,                        -- chat-local receipt id
@@ -226,3 +656,5 @@ CREATE UNIQUE INDEX IF NOT EXISTS chat_inbox_source_key
   ON chat.chat_inbox_events (source_service, source_event_id);
 CREATE INDEX IF NOT EXISTS chat_inbox_pending_idx
   ON chat.chat_inbox_events (status, created_at);
+
+COMMIT;

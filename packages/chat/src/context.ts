@@ -8,6 +8,10 @@ import { env } from "./env.js";
 import { resolvePolicy, snapshotFromView, type ChatPolicy } from "./policy.js";
 import { readBoundaries, retrieveMemories } from "./retrieval.js";
 import { getRelationshipState } from "./relationship.js";
+import {
+  CHAT_CONTEXT_INVALIDATING_FILE_MUTATIONS,
+  withReadableChatFileSnapshot,
+} from "./file-mutations.js";
 
 const MEMORY_READ_TIMEOUT_MS = 250;
 
@@ -32,6 +36,9 @@ export interface BuiltContext {
   relationship: { stage: string; summary: string } | null;
   /** False for no-memory sessions and old-turn regenerations. */
   canUpdateSessionSummary: boolean;
+  /** Privacy/context fence revalidated after the model returns. */
+  sessionContextRevision: bigint;
+  fileContextRevision: bigint;
 }
 
 export interface BuildContextInput {
@@ -39,13 +46,24 @@ export interface BuildContextInput {
   userId: string;
   characterId: string;
   sessionId: string;
-  memoryEnabled: boolean;
+  /** Immutable authority captured on the assistant turn, not the mutable session preference. */
+  turnMemoryEnabled: boolean;
   /** Anchor the model context to the user turn being answered/regenerated. */
   userMessageId?: string;
 }
 
 export async function buildContext(input: BuildContextInput): Promise<BuiltContext> {
-  const { prisma, userId, characterId, sessionId, memoryEnabled, userMessageId } = input;
+  return withReadableChatFileSnapshot(
+    input.userId,
+    () => buildContextSnapshot(input),
+    input.prisma,
+  );
+}
+
+async function buildContextSnapshot(
+  input: BuildContextInput,
+): Promise<BuiltContext> {
+  const { prisma, userId, characterId, sessionId, turnMemoryEnabled, userMessageId } = input;
 
   const [currentPersona, entitlementRow, session, anchorUserMessage, latestUserMessage] = await Promise.all([
     prisma.chatCharacterView.findUnique({ where: { characterId } }),
@@ -104,7 +122,7 @@ export async function buildContext(input: BuildContextInput): Promise<BuiltConte
     : currentPersona;
 
   const policy = resolvePolicy(snapshotFromView(entitlementRow), {
-    memoryEnabled,
+    memoryEnabled: turnMemoryEnabled,
     characterImageToolEnabled: persona.imageToolEnabled,
   });
 
@@ -167,27 +185,53 @@ export async function buildContext(input: BuildContextInput): Promise<BuiltConte
   // turn rather than silently generating without them.
   boundaries = await readBoundaries(userId);
 
-  if (memoryEnabled && policy.maxMemories > 0) {
-    const query = [...recentMessages].reverse().find((m) => m.role === "user")?.content ?? "";
-    const read = retrieveMemories({ userId, characterId, query, max: policy.maxMemories });
-    // Outer hot-path cap. recency = 250ms; igrep mode gets its own budget + margin
-    // (retrieveMemories self-degrades to recency on its internal igrep timeout).
+  if (turnMemoryEnabled && policy.maxMemories > 0) {
+    const query =
+      [...recentMessages]
+        .reverse()
+        .find((message) => message.role === "user")?.content ?? "";
+    const read = retrieveMemories({
+      userId,
+      characterId,
+      query,
+      max: policy.maxMemories,
+    });
+    // Outer hot-path cap. recency = 250ms; igrep mode gets its own budget +
+    // margin (retrieveMemories self-degrades to recency on its own timeout).
     const budget =
       env.MEMORY_RETRIEVAL === "igrep"
         ? env.MEMORY_RETRIEVAL_TIMEOUT_MS + MEMORY_READ_TIMEOUT_MS
         : MEMORY_READ_TIMEOUT_MS;
     longTermMemories = await withTimeout(read, budget, []);
 
-    // Relationship: qualitative bond for tone/continuity (P1-B). Degradable like
-    // memories — a slow/failed read drops to null, never blocks the reply. Only
-    // injected once a bond has actually formed (version > 0).
-    const relRead = getRelationshipState(userId, characterId).then((r) =>
-      r.version > 0 ? { stage: r.stage, summary: r.summary } : null,
+    // Relationship is degradable like ordinary memories. A committed pending
+    // mutation is not: buildContext's shared user lock makes this one coherent
+    // PG + file authority snapshot.
+    const relRead = getRelationshipState(userId, characterId).then((value) =>
+      value.version > 0
+        ? { stage: value.stage, summary: value.summary }
+        : null,
     );
-    relationship = await withTimeout(relRead, MEMORY_READ_TIMEOUT_MS, null);
+    relationship = await withTimeout(
+      relRead,
+      MEMORY_READ_TIMEOUT_MS,
+      null,
+    );
   }
 
   const anchoredToLatestTurn = !anchor || anchor.id === latestUserMessage?.id;
+  const latestInvalidatingMutation =
+    await prisma.chatFileMutation.findFirst({
+      where: {
+        userId,
+        status: "applied",
+        kind: {
+          in: [...CHAT_CONTEXT_INVALIDATING_FILE_MUTATIONS],
+        },
+      },
+      orderBy: { sequence: "desc" },
+      select: { sequence: true },
+    });
 
   return {
     persona,
@@ -195,14 +239,16 @@ export async function buildContext(input: BuildContextInput): Promise<BuiltConte
     // No-memory means no derived context. When regenerating an older turn, skip the
     // rolling summary too: it may contain future turns after the anchor message.
     sessionSummary:
-      memoryEnabled && anchoredToLatestTurn
+      turnMemoryEnabled && anchoredToLatestTurn
         ? session?.memorySummary ?? null
         : null,
     recentMessages,
     boundaries,
     longTermMemories,
     relationship,
-    canUpdateSessionSummary: memoryEnabled && anchoredToLatestTurn,
+    canUpdateSessionSummary: turnMemoryEnabled && anchoredToLatestTurn,
+    sessionContextRevision: session?.contextRevision ?? 0n,
+    fileContextRevision: latestInvalidatingMutation?.sequence ?? 0n,
   };
 }
 

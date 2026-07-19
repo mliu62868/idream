@@ -1987,11 +1987,12 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       "chat_image",
     ] as const;
     for (const key of qaKeys) {
-      await page.getByLabel(`${key} result`).selectOption("passed");
-      await page.getByLabel(`${key} evidence reference`).fill(
+      const label = key.replaceAll("_", " ");
+      await page.getByLabel(`${label} result`).selectOption("passed");
+      await page.getByLabel(`${label} evidence reference`).fill(
         `playwright://${wizardCharacterId}/${key}`,
       );
-      await page.getByLabel(`${key} comment`).fill(
+      await page.getByLabel(`${label} comment`).fill(
         `Verified ${key} against the signed draft renderer and pinned character asset pack.`,
       );
     }

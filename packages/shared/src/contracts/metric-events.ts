@@ -37,6 +37,11 @@ export const chatExchangeCorrectionV2Schema = z
     correctionRevision: z.number().int().positive(),
     userId: z.string().min(1),
     selectedAssistantMessageId: z.string().min(1).optional(),
+    // Optional privacy authority carried by newer Chat producers. Keeping
+    // these optional preserves rolling compatibility with already persisted
+    // correction rows; Main can fall back to its exchange fact for old rows.
+    sessionId: z.string().min(1).optional(),
+    messageIds: z.array(z.string().min(1)).min(1).optional(),
   })
   .superRefine((event, ctx) => {
     if (event.correctionType === "selected" && !event.selectedAssistantMessageId) {

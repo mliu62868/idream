@@ -10,9 +10,9 @@ import {
 import { createPlaywrightCleanupPlan } from "./src/e2e/playwright-cleanup";
 import { createPlaywrightLifecycleVerifier } from "./src/e2e/playwright-lifecycle-receipt";
 
-// Browser tests own every writable dependency. Ambient Main/Admin/Chat processes,
-// CHAT_SERVICE_URL, CHAT_DATABASE_URL, Redis db 0, and the live chat file store
-// are never reused.
+// Browser tests own every writable dependency. Ambient Main/Admin/Chat/Gen
+// processes, Main's generation finalizer, CHAT_SERVICE_URL, CHAT_DATABASE_URL,
+// Redis db 0, and the live chat file store are never reused.
 const environment = resolvePlaywrightEnvironment(process.env);
 const cleanupPlan = createPlaywrightCleanupPlan(environment);
 Object.assign(process.env, environment.serviceEnv, {
@@ -30,8 +30,9 @@ const config: PlaywrightTestConfig & {
 } = {
   // Playwright appends webServer plugins after configured plugins and tears
   // them down in reverse order. This verifier therefore runs after every
-  // managed server has stopped and turns a missing/failed cleanup receipt into
-  // a test-run failure, independently of CLI reporter overrides.
+  // managed URL service and background worker has stopped and turns a
+  // missing/failed cleanup receipt into a test-run failure, independently of
+  // CLI reporter overrides.
   "@playwright/test": {
     plugins: [() => createPlaywrightLifecycleVerifier(cleanupPlan)],
   },

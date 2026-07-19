@@ -31,7 +31,7 @@ async function seedFunctionSource(name: string) {
 }
 
 describe("seed data provenance", () => {
-  it("marks system, probe, and operator users as internal without fake creator accounts", async () => {
+  it("separates the dedicated audit probe from internal operator users", async () => {
     const users = await prisma.user.findMany({
       where: {
         OR: [
@@ -39,6 +39,7 @@ describe("seed data provenance", () => {
             "seed-system-creator",
             "seed-admin-user",
             "seed-dev-user",
+            "seed-chat-probe-user",
             "seed-support-user",
             "seed-ops-user",
             "seed-analyst-user",
@@ -48,8 +49,18 @@ describe("seed data provenance", () => {
       select: { id: true, dataClass: true },
     });
 
-    expect(users).toHaveLength(6);
-    expect(new Set(users.map((user) => user.dataClass))).toEqual(new Set(["internal"]));
+    expect(users).toHaveLength(7);
+    expect(
+      users.find((user) => user.id === "seed-chat-probe-user"),
+    ).toEqual({
+      id: "seed-chat-probe-user",
+      dataClass: "audit",
+    });
+    expect(
+      users
+        .filter((user) => user.id !== "seed-chat-probe-user")
+        .every((user) => user.dataClass === "internal"),
+    ).toBe(true);
     await expect(
       prisma.user.count({ where: { id: { startsWith: "seed-creator-" } } }),
     ).resolves.toBe(0);

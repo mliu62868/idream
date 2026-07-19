@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import IORedis from "ioredis";
 import pg from "pg";
 import {
+  assertPlaywrightBlobRoot,
   assertPlaywrightDatabaseUrl,
   assertPlaywrightRedisUrl,
   type ResolvedPlaywrightEnvironment,
@@ -20,6 +22,7 @@ export type PlaywrightCleanupPlan = {
   readonly redisURL: string;
   readonly bullmqPrefix: string;
   readonly chatFsRoot: string;
+  readonly blobRoot: string;
   readonly mainPort: string;
   readonly adminPort: string;
   readonly runId: string;
@@ -44,6 +47,7 @@ export function createPlaywrightCleanupPlan(
     redisURL: environment.redisURL,
     bullmqPrefix: environment.bullmqPrefix,
     chatFsRoot: environment.chatFsRoot,
+    blobRoot: environment.blobRoot,
     mainPort: environment.mainPort,
     adminPort: environment.adminPort,
     runId: environment.runId,
@@ -106,6 +110,18 @@ export function assertPlaywrightCleanupPlan(
       "Playwright cleanup chat filesystem root does not match this run",
     );
   }
+  const expectedBlobRoot = assertPlaywrightBlobRoot(
+    path.resolve(
+      tmpdir(),
+      "idream-playwright-blobs",
+      `playwright-blob-${plan.mainPort}-${plan.runId}-${isolationHash}`,
+    ),
+  );
+  if (path.resolve(plan.blobRoot) !== expectedBlobRoot) {
+    throw new Error(
+      "Playwright cleanup blob root does not match this run",
+    );
+  }
   if (plan.ownsDatabase) {
     const parsedDatabase = new URL(databaseURL);
     const databaseName = decodeURIComponent(
@@ -145,6 +161,7 @@ export async function cleanupPlaywrightResources(
     ...(plan.ownsDatabase ? [dropOwnedDatabase(plan.databaseURL)] : []),
     cleanupRedis(plan.redisURL, plan.bullmqPrefix),
     rm(plan.chatFsRoot, { recursive: true, force: true }),
+    rm(plan.blobRoot, { recursive: true, force: true }),
     rm(path.resolve(MAIN_PACKAGE_ROOT, plan.mainDistDir), {
       recursive: true,
       force: true,
@@ -177,6 +194,7 @@ export async function preparePlaywrightResources(
   const prepareResults = await Promise.allSettled([
     cleanupRedis(plan.redisURL, plan.bullmqPrefix),
     rm(plan.chatFsRoot, { recursive: true, force: true }),
+    rm(plan.blobRoot, { recursive: true, force: true }),
     rm(path.resolve(MAIN_PACKAGE_ROOT, plan.mainDistDir), {
       recursive: true,
       force: true,
@@ -206,9 +224,25 @@ export async function preparePlaywrightResources(
   }
   await Promise.all([
     mkdir(plan.chatFsRoot, { recursive: true }),
+    mkdir(plan.blobRoot, { recursive: true }),
     writeIsolatedTsconfig(MAIN_PACKAGE_ROOT, plan.mainTsconfigPath),
     writeIsolatedTsconfig(ADMIN_PACKAGE_ROOT, plan.adminTsconfigPath),
   ]);
+}
+
+export async function assertPlaywrightBlobRootRemoved(
+  unsafePlan: PlaywrightCleanupPlan,
+) {
+  const plan = assertPlaywrightCleanupPlan(unsafePlan);
+  try {
+    await access(plan.blobRoot);
+  } catch (error) {
+    if (isMissingPathError(error)) return;
+    throw error;
+  }
+  throw new Error(
+    `Playwright run-owned blob root still exists after cleanup: ${plan.blobRoot}`,
+  );
 }
 
 async function writeIsolatedTsconfig(
@@ -272,4 +306,12 @@ async function dropOwnedDatabase(databaseURL: string) {
 
 function quoteIdentifier(value: string) {
   return `"${value.replaceAll('"', '""')}"`;
+}
+
+function isMissingPathError(error: unknown) {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    (error as NodeJS.ErrnoException).code === "ENOENT"
+  );
 }

@@ -7,6 +7,7 @@
 import { rename, stat, readdir, rm, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { env } from "./env.js";
+import { chatFsPaths, withFileMutationLock } from "./chat-fs.js";
 
 const DEFAULT_MAX_BYTES = 5 * 1024 * 1024; // 5 MB
 const DEFAULT_TTL_MS = 180 * 24 * 60 * 60 * 1000; // 180 days
@@ -21,26 +22,33 @@ export async function rollSessionLog(
   sessionId: string,
   maxBytes = DEFAULT_MAX_BYTES,
 ): Promise<boolean> {
-  const dir = path.join(sessionsDir(), userId);
-  const active = path.join(dir, `${sessionId}.jsonl`);
-  let size = 0;
-  try {
-    size = (await stat(active)).size;
-  } catch {
-    return false;
-  }
-  if (size < maxBytes) return false;
+  return withFileMutationLock(
+    chatFsPaths.sessionLog(userId, sessionId),
+    async () => {
+      const dir = path.join(sessionsDir(), userId);
+      const active = path.join(dir, `${sessionId}.jsonl`);
+      let size = 0;
+      try {
+        size = (await stat(active)).size;
+      } catch {
+        return false;
+      }
+      if (size < maxBytes) return false;
 
-  // find next segment number
-  const entries = await readdir(dir).catch(() => [] as string[]);
-  const seqs = entries
-    .map((f) => f.match(new RegExp(`^${escapeRe(sessionId)}\\.(\\d+)\\.jsonl$`)))
-    .filter(Boolean)
-    .map((m) => Number.parseInt((m as RegExpMatchArray)[1], 10));
-  const next = (seqs.length ? Math.max(...seqs) : 0) + 1;
-  await mkdir(dir, { recursive: true });
-  await rename(active, path.join(dir, `${sessionId}.${next}.jsonl`));
-  return true;
+      // find next segment number
+      const entries = await readdir(dir).catch(() => [] as string[]);
+      const seqs = entries
+        .map((f) =>
+          f.match(new RegExp(`^${escapeRe(sessionId)}\\.(\\d+)\\.jsonl$`)),
+        )
+        .filter(Boolean)
+        .map((m) => Number.parseInt((m as RegExpMatchArray)[1], 10));
+      const next = (seqs.length ? Math.max(...seqs) : 0) + 1;
+      await mkdir(dir, { recursive: true });
+      await rename(active, path.join(dir, `${sessionId}.${next}.jsonl`));
+      return true;
+    },
+  );
 }
 
 /** Delete archived segments older than ttlMs across all users (TTL hard-expire). */
@@ -58,7 +66,10 @@ export async function pruneExpiredSegments(ttlMs = DEFAULT_TTL_MS, now = Date.no
       const full = path.join(dir, f);
       const st = await stat(full).catch(() => null);
       if (st && now - st.mtimeMs > ttlMs) {
-        await rm(full, { force: true });
+        await withFileMutationLock(
+          ["sessions", u.name, f],
+          () => rm(full, { force: true }),
+        );
         removed += 1;
       }
     }

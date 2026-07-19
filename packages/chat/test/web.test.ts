@@ -1156,7 +1156,7 @@ describe("memory.extract (P1-1)", () => {
     await drainGen();
 
     const res = await processMemoryExtract({ sessionId, assistantMessageId, attempt: 1 });
-    expect(res.skipped).toBe("no_memory_session");
+    expect(res.skipped).toBe("turn_memory_disabled");
     expect(res.written).toBe(0);
   });
 });

@@ -11,13 +11,15 @@ import { reconcile } from "../src/reconcile.js";
 import { rollSessionLog, pruneExpiredSegments } from "../src/maintain.js";
 import { deleteMessage, deleteSession, deleteAccount } from "../src/privacy.js";
 import { appendLine, chatFsPaths, listPrefix } from "../src/chat-fs.js";
-import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
+import { drainQueue, obliterate } from "../src/queue.js";
+import { CHAT_QUEUES, MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { acceptAgeGate } from "./fixtures.js";
 
 const prisma = createChatPrisma();
 const superPool = new Pool({ connectionString: process.env.CHAT_TEST_SUPER_URL });
 let fsRoot: string;
 const USER = "u_rel";
+const STARVATION_USER = "u_rel_memory_starvation";
 const CHAR = "c_rel";
 
 beforeAll(async () => {
@@ -27,7 +29,11 @@ beforeAll(async () => {
     `INSERT INTO public.users (id,email,status,"createdAt","updatedAt") VALUES ($1,$2,'active',now(),now()) ON CONFLICT (id) DO NOTHING`,
     [USER, "rel@test.dev"],
   );
-  await acceptAgeGate(superPool, [USER]);
+  await superPool.query(
+    `INSERT INTO public.users (id,email,status,"createdAt","updatedAt") VALUES ($1,$2,'active',now(),now()) ON CONFLICT (id) DO NOTHING`,
+    [STARVATION_USER, "rel-memory-starvation@test.dev"],
+  );
+  await acceptAgeGate(superPool, [USER, STARVATION_USER]);
   await superPool.query(
     `INSERT INTO public.characters (id,name,age,description,visibility,status,style,gender,appearance,"advancedDetails","createdAt","updatedAt")
      VALUES ($1,'Rel',24,'d','public','approved','realistic','female','{}','{}',now(),now()) ON CONFLICT (id) DO NOTHING`,
@@ -124,6 +130,240 @@ describe("reconcile (P0-4 convergence)", () => {
     expect(result.failedStuck).toBeGreaterThanOrEqual(1);
     expect((await prisma.message.findUnique({ where: { id: "rel_m_stuck" } }))?.status).toBe("failed");
   });
+
+  it("selects lagging enabled turns before LIMIT and excludes legacy unknown turns", async () => {
+    const session = await prisma.chatSession.create({
+      data: {
+        id: "rel_memory_starvation_session",
+        userId: STARVATION_USER,
+        characterId: CHAR,
+        status: "active",
+      },
+    });
+    const source = await prisma.message.create({
+      data: {
+        id: "rel_memory_starvation_source",
+        sessionId: session.id,
+        role: "user",
+        content: "remember this",
+        status: "sent",
+        safetyStatus: "passed",
+        createdAt: new Date("2026-01-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+      },
+    });
+    const unknownSource = await prisma.message.create({
+      data: {
+        id: "rel_memory_starvation_unknown_source",
+        sessionId: session.id,
+        role: "user",
+        content: "legacy unknown source",
+        status: "sent",
+        safetyStatus: "passed",
+      },
+    });
+    await prisma.message.create({
+      data: {
+        id: "rel_memory_starvation_lagging",
+        sessionId: session.id,
+        role: "assistant",
+        content: "lagging",
+        status: "sent",
+        safetyStatus: "passed",
+        replyToMessageId: source.id,
+        memoryAuthority: "enabled",
+        memoryExtractedAttempt: 0,
+        attempt: 1,
+        createdAt: new Date("2026-01-01T00:00:01.000Z"),
+        updatedAt: new Date("2026-01-01T00:00:01.000Z"),
+      },
+    });
+    await prisma.message.create({
+      data: {
+        id: "rel_memory_starvation_unknown",
+        sessionId: session.id,
+        role: "assistant",
+        content: "unknown",
+        status: "sent",
+        safetyStatus: "passed",
+        replyToMessageId: unknownSource.id,
+        memoryExtractedAttempt: 0,
+        attempt: 1,
+      },
+    });
+    await prisma.message.createMany({
+      data: Array.from({ length: 201 }, (_, index) => {
+        const createdAt = new Date(
+          Date.UTC(2026, 6, 18, 0, 0, index),
+        );
+        const userMessageId =
+          `rel_memory_starvation_extracted_source_${index}`;
+        return [
+          {
+            id: userMessageId,
+            sessionId: session.id,
+            role: "user",
+            content: "already extracted source",
+            status: "sent",
+            safetyStatus: "passed",
+            createdAt,
+            updatedAt: createdAt,
+          },
+          {
+            id: `rel_memory_starvation_extracted_${index}`,
+            sessionId: session.id,
+            role: "assistant",
+            content: "already extracted",
+            status: "sent",
+            safetyStatus: "passed",
+            replyToMessageId: userMessageId,
+            memoryAuthority: "enabled",
+            memoryExtractedAttempt: 1,
+            attempt: 1,
+            createdAt,
+            updatedAt: createdAt,
+          },
+        ];
+      }).flat(),
+    });
+
+    await obliterate(CHAT_QUEUES.memoryExtract);
+    await reconcile(prisma);
+    const scheduled: string[] = [];
+    await drainQueue(CHAT_QUEUES.memoryExtract, async (job) => {
+      scheduled.push((job.payload as { assistantMessageId: string }).assistantMessageId);
+    }, 250);
+    expect(scheduled).toContain("rel_memory_starvation_lagging");
+    expect(scheduled).not.toContain("rel_memory_starvation_unknown");
+    expect(scheduled.some((id) => id.startsWith("rel_memory_starvation_extracted_"))).toBe(false);
+    await obliterate(CHAT_QUEUES.memoryExtract);
+  });
+
+  it("recovers a null-link turn from its exact send receipt", async () => {
+    const sessionId = "rel_receipt_reconcile_session";
+    const userMessageId = "rel_receipt_reconcile_user";
+    const assistantMessageId = "rel_receipt_reconcile_assistant";
+    await prisma.chatSession.create({
+      data: {
+        id: sessionId,
+        userId: USER,
+        characterId: CHAR,
+        status: "active",
+      },
+    });
+    await prisma.message.create({
+      data: {
+        id: userMessageId,
+        sessionId,
+        role: "user",
+        content: "receipt-linked source",
+        status: "sent",
+        safetyStatus: "passed",
+      },
+    });
+    await prisma.message.create({
+      data: {
+        id: assistantMessageId,
+        sessionId,
+        role: "assistant",
+        content: "reply",
+        status: "sent",
+        safetyStatus: "passed",
+        replyToMessageId: null,
+        memoryAuthority: "enabled",
+        memoryExtractedAttempt: 0,
+      },
+    });
+    await prisma.chatSendReceipt.create({
+      data: {
+        id: "rel_receipt_reconcile_receipt",
+        userId: USER,
+        sessionId,
+        idempotencyKey: "rel-receipt-reconcile",
+        requestHash: "hash",
+        userMessageId,
+        assistantMessageId,
+        responseStatus: "generating",
+      },
+    });
+
+    await obliterate(CHAT_QUEUES.memoryExtract);
+    const result = await reconcile(prisma);
+    const scheduled: string[] = [];
+    await drainQueue(CHAT_QUEUES.memoryExtract, async (job) => {
+      scheduled.push(
+        (job.payload as { assistantMessageId: string })
+          .assistantMessageId,
+      );
+    }, 250);
+    expect(result.unresolvedMemoryAuthorities).toBeGreaterThanOrEqual(0);
+    expect(scheduled).toContain(assistantMessageId);
+    await obliterate(CHAT_QUEUES.memoryExtract);
+  });
+
+  it("isolates a poisoned user while projecting later users", async () => {
+    const poisonUser = "rel_poison_file_user";
+    const healthyUser = "rel_healthy_file_user";
+    const poisonPayload = JSON.stringify({
+      kind: "memory_extract",
+      sessionId: "missing_session",
+      userMessageId: "missing_user",
+      characterId: CHAR,
+      turnKey: "missing_assistant",
+      attempt: 1,
+      summaryDelta: "must never project",
+      candidates: [],
+      maxStored: 0,
+    });
+    await prisma.$executeRaw`
+      INSERT INTO chat.chat_file_mutations (
+        id,
+        user_id,
+        kind,
+        payload
+      )
+      VALUES (
+        'rel_poison_file_intent',
+        ${poisonUser},
+        'memory_extract',
+        ${poisonPayload}::jsonb
+      )
+    `;
+    const healthyPayload = JSON.stringify({
+      kind: "memory_delete",
+      memoryId: "already_absent",
+    });
+    await prisma.$executeRaw`
+      INSERT INTO chat.chat_file_mutations (
+        id,
+        user_id,
+        kind,
+        payload
+      )
+      VALUES (
+        'rel_healthy_file_intent',
+        ${healthyUser},
+        'memory_delete',
+        ${healthyPayload}::jsonb
+      )
+    `;
+
+    const result = await reconcile(prisma);
+    expect(result.fileProjectionErrors).toBeGreaterThanOrEqual(1);
+    expect(
+      await prisma.chatFileMutation.findUnique({
+        where: { id: "rel_healthy_file_intent" },
+        select: { status: true },
+      }),
+    ).toEqual({ status: "applied" });
+    expect(
+      await prisma.chatFileMutation.findUnique({
+        where: { id: "rel_poison_file_intent" },
+        select: { status: true, attempts: true },
+      }),
+    ).toMatchObject({ status: "pending", attempts: 1 });
+    await deleteAccount({ userId: poisonUser }, prisma);
+  });
 });
 
 describe("maintain (P0-5 rolling/TTL)", () => {
@@ -165,11 +405,61 @@ describe("privacy deletion (P0-5, PG + files)", () => {
         replyToMessageId: "rel_del_m",
       },
     });
+    await prisma.messageVersion.createMany({
+      data: [
+        { id: "rel_del_m_v1", messageId: "rel_del_m", content: "hi", attempt: 1 },
+        { id: "rel_del_a_v1", messageId: "rel_del_a", content: "hello", attempt: 2 },
+      ],
+    });
+    await prisma.messageAttachment.create({
+      data: {
+        id: "rel_del_att",
+        sessionId: s.id,
+        messageId: "rel_del_a",
+        kind: "generated_image",
+        status: "requesting",
+        promptHint: "private session prompt",
+      },
+    });
+    await prisma.chatOutboxEvent.createMany({
+      data: [
+        {
+          id: "rel_del_img_pending",
+          eventType: "chat.image.requested",
+          aggregateType: "message_attachment",
+          aggregateId: "rel_del_att",
+          status: "pending",
+          payload: {
+            sessionId: s.id,
+            messageId: "rel_del_a",
+            promptHint: "private session prompt",
+            conversationContext: "user: private session prompt",
+          },
+        },
+        {
+          id: "rel_del_img_delivered",
+          eventType: "chat.image.requested",
+          aggregateType: "message_attachment",
+          aggregateId: "rel_del_att",
+          status: "delivered",
+          deliveredAt: new Date(),
+          payload: {
+            sessionId: s.id,
+            messageId: "rel_del_a",
+            promptHint: "private delivered prompt",
+            conversationContext: "user: private delivered prompt",
+          },
+        },
+      ],
+    });
     await appendLine(chatFsPaths.sessionLog(USER, s.id), JSON.stringify({ k: 1 }));
 
     await deleteSession({ userId: USER, sessionId: s.id }, prisma);
 
     expect(await prisma.message.findUnique({ where: { id: "rel_del_m" } })).toBeNull();
+    expect(await prisma.messageVersion.count({
+      where: { messageId: { in: ["rel_del_m", "rel_del_a"] } },
+    })).toBe(0);
     expect((await prisma.chatSession.findUnique({ where: { id: s.id } }))?.status).toBe("deleted");
     const files = await readdir(path.join(fsRoot, "sessions", USER)).catch(() => []);
     expect(files).not.toContain(`${s.id}.jsonl`);
@@ -177,33 +467,176 @@ describe("privacy deletion (P0-5, PG + files)", () => {
       where: { eventType: "chat.exchange.corrected.v2", aggregateId: "rel_del_m" },
     });
     expect(correction?.payload).toMatchObject({ correctionType: "superseded", correctionRevision: 2 });
+    expect(await prisma.chatOutboxEvent.findUnique({
+      where: { id: "rel_del_img_pending" },
+    })).toBeNull();
+    expect(await prisma.chatOutboxEvent.findUnique({
+      where: { id: "rel_del_img_delivered" },
+    })).toMatchObject({
+      status: "delivered",
+      payload: {
+        sessionId: s.id,
+        messageId: "rel_del_a",
+        promptHint: null,
+        conversationContext: null,
+        privacyRedaction: {
+          reason: "session_deleted",
+        },
+      },
+    });
   });
 
-  it("deleteMessage emits a typed deleted correction for the logical exchange", async () => {
+  it.each(["user", "assistant"] as const)(
+    "deleteMessage on the %s side scrubs the complete logical exchange",
+    async (deletedRole) => {
+    const suffix = deletedRole;
     const s = await prisma.chatSession.create({
-      data: { id: "rel_delete_message", userId: USER, characterId: CHAR, status: "active" },
-    });
-    await prisma.message.create({
-      data: { id: "rel_delete_user", sessionId: s.id, role: "user", content: "hi", status: "sent" },
+      data: { id: `rel_delete_message_${suffix}`, userId: USER, characterId: CHAR, status: "active" },
     });
     await prisma.message.create({
       data: {
-        id: "rel_delete_assistant",
+        id: `rel_delete_user_${suffix}`,
+        sessionId: s.id,
+        role: "user",
+        content: "private user text",
+        status: "sent",
+      },
+    });
+    await prisma.message.create({
+      data: {
+        id: `rel_delete_assistant_${suffix}`,
         sessionId: s.id,
         role: "assistant",
-        content: "hello",
+        content: "private assistant text",
         status: "sent",
         attempt: 3,
-        replyToMessageId: "rel_delete_user",
+        replyToMessageId: `rel_delete_user_${suffix}`,
+      },
+    });
+    await prisma.messageVersion.createMany({
+      data: [
+        {
+          id: `rel_delete_user_version_${suffix}`,
+          messageId: `rel_delete_user_${suffix}`,
+          content: "private old user text",
+        },
+        {
+          id: `rel_delete_assistant_version_${suffix}`,
+          messageId: `rel_delete_assistant_${suffix}`,
+          content: "private old assistant text",
+          attempt: 3,
+        },
+      ],
+    });
+    const attachmentId = `rel_delete_attachment_${suffix}`;
+    await prisma.messageAttachment.create({
+      data: {
+        id: attachmentId,
+        sessionId: s.id,
+        messageId: `rel_delete_assistant_${suffix}`,
+        kind: "generated_image",
+        status: "requesting",
+        promptHint: "private image hint",
+      },
+    });
+    await prisma.chatOutboxEvent.createMany({
+      data: [
+        {
+          id: `rel_delete_image_pending_${suffix}`,
+          eventType: "chat.image.requested",
+          aggregateType: "message_attachment",
+          aggregateId: attachmentId,
+          status: "pending",
+          payload: {
+            sessionId: s.id,
+            messageId: `rel_delete_assistant_${suffix}`,
+            promptHint: "private image hint",
+            conversationContext: "user: private user text\nassistant: private assistant text",
+          },
+        },
+        {
+          id: `rel_delete_image_delivered_${suffix}`,
+          eventType: "chat.image.requested",
+          aggregateType: "message_attachment",
+          aggregateId: attachmentId,
+          status: "delivered",
+          deliveredAt: new Date(),
+          payload: {
+            sessionId: s.id,
+            messageId: `rel_delete_assistant_${suffix}`,
+            promptHint: "private delivered hint",
+            conversationContext: "user: private delivered context",
+          },
+        },
+      ],
+    });
+
+    await deleteMessage({
+      userId: USER,
+      messageId:
+        deletedRole === "user"
+          ? `rel_delete_user_${suffix}`
+          : `rel_delete_assistant_${suffix}`,
+    }, prisma);
+
+    const exchangeMessageIds = [
+      `rel_delete_user_${suffix}`,
+      `rel_delete_assistant_${suffix}`,
+    ];
+    expect(await prisma.message.findMany({
+      where: { id: { in: exchangeMessageIds } },
+      orderBy: { role: "asc" },
+      select: { id: true, status: true, content: true, deletedAt: true },
+    })).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: `rel_delete_user_${suffix}`,
+        status: "deleted",
+        content: "",
+        deletedAt: expect.any(Date),
+      }),
+      expect.objectContaining({
+        id: `rel_delete_assistant_${suffix}`,
+        status: "deleted",
+        content: "",
+        deletedAt: expect.any(Date),
+      }),
+    ]));
+    expect(await prisma.messageVersion.count({
+      where: { messageId: { in: exchangeMessageIds } },
+    })).toBe(0);
+    expect(await prisma.messageAttachment.findUnique({
+      where: { id: attachmentId },
+    })).toBeNull();
+    expect(await prisma.chatOutboxEvent.findUnique({
+      where: { id: `rel_delete_image_pending_${suffix}` },
+    })).toBeNull();
+    expect(await prisma.chatOutboxEvent.findUnique({
+      where: { id: `rel_delete_image_delivered_${suffix}` },
+    })).toMatchObject({
+      status: "delivered",
+      payload: {
+        sessionId: s.id,
+        messageId: `rel_delete_assistant_${suffix}`,
+        promptHint: null,
+        conversationContext: null,
+        privacyRedaction: {
+          reason: "logical_exchange_deleted",
+        },
       },
     });
 
-    await deleteMessage({ userId: USER, messageId: "rel_delete_assistant" }, prisma);
-
     const correction = await prisma.chatOutboxEvent.findFirst({
-      where: { eventType: "chat.exchange.corrected.v2", aggregateId: "rel_delete_user" },
+      where: {
+        eventType: "chat.exchange.corrected.v2",
+        aggregateId: `rel_delete_user_${suffix}`,
+      },
     });
-    expect(correction?.payload).toMatchObject({ correctionType: "deleted", correctionRevision: 3 });
+    expect(correction?.payload).toMatchObject({
+      correctionType: "deleted",
+      correctionRevision: 3,
+      sessionId: s.id,
+      messageIds: expect.arrayContaining(exchangeMessageIds),
+    });
   });
 
   it("deleteAccount wipes chat rows + both file prefixes + emits erasure", async () => {

@@ -184,7 +184,9 @@ function passingChatServiceProbe(
     checkedAt: "2026-06-24T23:57:30.000Z",
     durationMs: 234,
     serviceUrl: productionEnv.CHAT_SERVICE_URL,
-    userId: "seed-dev-user",
+    userId: "seed-chat-probe-user",
+    actorDataClass: "audit",
+    dedicatedActor: true,
     usedSignedBff: true,
     health: {
       ok: true,
@@ -206,6 +208,7 @@ function passingChatServiceProbe(
     conversation: {
       ok: true,
       attempted: true,
+      preflightCleanup: { ok: true, status: 200, error: null },
       createSession: { ok: true, status: 201, error: null },
       sendMessage: { ok: true, status: 202, error: null },
       stream: {
@@ -224,11 +227,31 @@ function passingChatServiceProbe(
         assistantStatus: "sent",
         error: null,
       },
-      noMemory: { ok: true, status: 202, error: null },
+      noMemory: {
+        ok: true,
+        status: 202,
+        assistantMessageId: "msg_probe_no_memory_assistant",
+        authorityPinned: true,
+        relationshipUnchanged: true,
+        memorySourceAbsent: true,
+        error: null,
+      },
       blockedInput: {
         ok: true,
         status: 202,
         status_: "blocked",
+        error: null,
+      },
+      cleanup: {
+        ok: true,
+        status: 404,
+        memoryGone: true,
+        memoriesDeleted: 0,
+        relationshipDeleted: true,
+        relationshipsDeleted: 1,
+        relationshipsGone: true,
+        sessionDeleted: true,
+        sessionGone: true,
         error: null,
       },
       error: null,
@@ -1317,6 +1340,42 @@ describe("launch readiness", () => {
     expect(failedIds(report)).toContain("chat-service-live-probe");
   });
 
+  it("preserves dedicated actor, no-memory authority, and cleanup evidence when loading a probe report", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "idream-chat-probe-"));
+    try {
+      const reportPath = path.join(dir, "chat-service.json");
+      writeFileSync(
+        reportPath,
+        JSON.stringify(passingChatServiceProbe()),
+      );
+      const report = assessLaunchReadiness({
+        env: {
+          ...productionEnv,
+          CHAT_SERVICE_PROBE_REPORT: reportPath,
+        },
+        imagePipelineProbe: passingImageProbe(),
+        ageVerificationProbe: passingAgeProbe(),
+        blobStorageProbe: passingBlobProbe(),
+        chatModelProbe: passingChatProbe(),
+        voiceModelProbe: passingVoiceProbe(),
+        paymentProviderProbe: passingPaymentProbe(),
+        safetyGatewayProbe: passingSafetyProbe(),
+        productConfigProbe: passingProductConfigProbe(),
+        webSurfaceProbe: passingWebSurfaceProbe(),
+        publicCatalogProbe: passingPublicCatalogProbe(),
+        now,
+      });
+
+      expect(
+        report.checks.find((check) => check.id === "chat-service-live-probe"),
+      ).toMatchObject({
+        status: "pass",
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("fails when the live chat service probe cannot complete a signed request", () => {
     const report = assessLaunchReadiness({
       env: productionEnv,
@@ -1347,6 +1406,36 @@ describe("launch readiness", () => {
 
     expect(report.ok).toBe(false);
     expect(failedIds(report)).toContain("chat-service-live-probe");
+  });
+
+  it("fails when the live chat service probe does not use the dedicated audit actor", () => {
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      imagePipelineProbe: passingImageProbe(),
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      chatServiceProbe: passingChatServiceProbe({
+        userId: "seed-dev-user",
+        actorDataClass: "internal",
+        dedicatedActor: false,
+      }),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingProductConfigProbe(),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
+      now,
+    });
+
+    expect(report.ok).toBe(false);
+    expect(
+      report.checks.find((check) => check.id === "chat-service-live-probe")?.message,
+    ).toContain("probe actor is not classified as audit");
+    expect(
+      report.checks.find((check) => check.id === "chat-service-live-probe")?.message,
+    ).toContain("probe user id is not the dedicated actor seed-chat-probe-user");
   });
 
   it("fails when the live chat service probe does not prove unsigned requests are rejected", () => {
@@ -1412,6 +1501,48 @@ describe("launch readiness", () => {
     expect(
       report.checks.find((check) => check.id === "chat-service-live-probe")?.message,
     ).toContain("conversation smoke did not complete");
+  });
+
+  it("fails when the live chat service probe cannot prove no-memory authority or cleanup", () => {
+    const passing = passingChatServiceProbe();
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      imagePipelineProbe: passingImageProbe(),
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      chatServiceProbe: passingChatServiceProbe({
+        conversation: {
+          ...passing.conversation,
+          noMemory: {
+            ...passing.conversation?.noMemory,
+            ok: false,
+            relationshipUnchanged: false,
+          },
+          cleanup: {
+            ...passing.conversation?.cleanup,
+            ok: false,
+            sessionGone: false,
+          },
+        },
+      }),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingProductConfigProbe(),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
+      now,
+    });
+
+    expect(report.ok).toBe(false);
+    const message = report.checks.find(
+      (check) => check.id === "chat-service-live-probe",
+    )?.message;
+    expect(message).toContain(
+      "conversation smoke did not prove no-memory turn authority",
+    );
+    expect(message).toContain("conversation smoke did not clean its audit state");
   });
 
   it("fails when the live chat service probe is stale", () => {

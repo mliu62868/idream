@@ -172,16 +172,57 @@ describe("ourdream API dispatcher", () => {
       userId: signedUpUser.id,
     });
 
+    const generationInput = {
+      characterId: testCharacterId,
+      mode: "image",
+      outputCount: 1,
+      prompt: "cinematic portrait",
+    };
+    const quotedGeneration = await call(
+      "POST",
+      "/generation/quote",
+      generationInput,
+      { cookie: cookies },
+    );
+    expect(quotedGeneration.status).toBe(200);
+    const quote = (
+      quotedGeneration.json as {
+        data: {
+          quote: {
+            profileId: string;
+            profileVersion: number;
+            routeFingerprint: string;
+            pricing: { fingerprint: string };
+            costs: Array<{
+              outputCount: number;
+              costDreamcoins: number;
+            }>;
+          };
+        };
+      }
+    ).data.quote;
+    const exactCost = quote.costs.find(
+      (cost) => cost.outputCount === generationInput.outputCount,
+    );
+    expect(exactCost).toBeTruthy();
     const generation = await call(
       "POST",
       "/generation/jobs",
       {
-        characterId: testCharacterId,
-        mode: "image",
-        outputCount: 1,
-        prompt: "cinematic portrait",
+        ...generationInput,
+        quoteAuthority: {
+          profileId: quote.profileId,
+          profileVersion: quote.profileVersion,
+          routeFingerprint: quote.routeFingerprint,
+          pricingFingerprint: quote.pricing.fingerprint,
+          outputCount: generationInput.outputCount,
+          costDreamcoins: exactCost?.costDreamcoins,
+        },
       },
-      { cookie: cookies },
+      {
+        cookie: cookies,
+        "idempotency-key": "api-smoke-generation",
+      },
     );
     expect(generation.status).toBe(202);
     expect(generation.json).toMatchObject({

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { jobQueue } from "@/server/jobs/queue";
@@ -19,6 +20,74 @@ afterAll(async () => {
 });
 
 describe("purgeTestData generation queue ownership", () => {
+  it("removes canonical product-event evidence owned by a random-id fixture user", async () => {
+    const userId = randomUUID();
+    const sourceEventId = `signup:${userId}`;
+    const user = await prisma.user.create({
+      data: {
+        id: userId,
+        email: `${prefix}${randomUUID()}@customer.invalid`,
+      },
+    });
+    const event = await prisma.analyticsEvent.create({
+      data: {
+        userId: user.id,
+        name: "customer.signup.completed.v2",
+        props: { userId: user.id },
+        sourceService: "main",
+        sourceEventId,
+        schemaVersion: 2,
+        actor: { userId: user.id, isInternal: false },
+      },
+    });
+    await prisma.metricProjectionReceipt.create({
+      data: {
+        sourceService: "main",
+        sourceEventId,
+        canonicalEventId: event.id,
+        eventType: event.name,
+        outcome: "applied",
+        factType: "customer_signup",
+        factId: user.id,
+        occurredAt: new Date(),
+      },
+    });
+    await prisma.inboundEventReceipt.create({
+      data: {
+        sourceService: "main.product_projection:main",
+        sourceEventId,
+        payloadHash: "a".repeat(64),
+        processingState: "processed",
+        processedAt: new Date(),
+      },
+    });
+    const outbox = await prisma.mainOutboxEvent.create({
+      data: {
+        eventType: "product.event.persisted.v2",
+        aggregateType: "product_event",
+        aggregateId: event.id,
+        payload: { eventId: event.id, sourceService: "main", sourceEventId },
+      },
+    });
+
+    await purgeTestData(prefix);
+
+    await expect(prisma.user.findUnique({ where: { id: user.id } })).resolves.toBeNull();
+    await expect(prisma.analyticsEvent.findUnique({ where: { id: event.id } })).resolves.toBeNull();
+    await expect(prisma.mainOutboxEvent.findUnique({ where: { id: outbox.id } })).resolves.toBeNull();
+    await expect(prisma.metricProjectionReceipt.findUnique({
+      where: { sourceService_sourceEventId: { sourceService: "main", sourceEventId } },
+    })).resolves.toBeNull();
+    await expect(prisma.inboundEventReceipt.findUnique({
+      where: {
+        sourceService_sourceEventId: {
+          sourceService: "main.product_projection:main",
+          sourceEventId,
+        },
+      },
+    })).resolves.toBeNull();
+  });
+
   it("removes random-id work and finalize jobs before the owning user cascades", async () => {
     const userId = `${prefix}owner`;
     await createUser({ id: userId });

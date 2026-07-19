@@ -150,6 +150,93 @@ describe("age verification webhook", () => {
 });
 
 describe("community collections", () => {
+  it("keeps an explicitly focused public collection addressable beyond the recent page", async () => {
+    const ownerId = `${P}coll-focus-owner`;
+    const mediaId = `${P}coll-focus-media`;
+    const focusedCollectionId = `${P}coll-focus-old`;
+    const hiddenCollectionId = `${P}coll-focus-hidden`;
+    const recentCollectionIds = Array.from(
+      { length: 20 },
+      (_, index) => `${P}coll-focus-recent-${index}`,
+    );
+    const collectionIds = [
+      focusedCollectionId,
+      hiddenCollectionId,
+      ...recentCollectionIds,
+    ];
+    await createUser({ id: ownerId, dataClass: "customer" });
+    await createMedia({
+      id: mediaId,
+      ownerId,
+      visibility: "public_pack",
+    });
+    await prisma.mediaCollection.createMany({
+      data: [
+        {
+          id: focusedCollectionId,
+          ownerId,
+          name: "Older focused collection",
+          visibility: "public",
+          createdAt: new Date("2020-01-01T00:00:00.000Z"),
+        },
+        {
+          id: hiddenCollectionId,
+          ownerId,
+          name: "Hidden focused collection",
+          visibility: "private",
+          createdAt: new Date("2020-01-02T00:00:00.000Z"),
+        },
+        ...recentCollectionIds.map((id, index) => ({
+          id,
+          ownerId,
+          name: `Recent collection ${index}`,
+          visibility: "public",
+          createdAt: new Date(Date.now() + index * 1_000),
+        })),
+      ],
+    });
+    await prisma.mediaCollectionItem.createMany({
+      data: collectionIds.map((collectionId) => ({
+        collectionId,
+        mediaAssetId: mediaId,
+      })),
+    });
+
+    try {
+      const recent = await api("GET", "community/collections", { ageGate: true });
+      expectOk(recent);
+      expect(
+        (recent.data.collections as Array<{ id: string }>).map((collection) => collection.id),
+      ).not.toContain(focusedCollectionId);
+
+      const focused = await api("GET", "community/collections", {
+        ageGate: true,
+        query: { collection: focusedCollectionId },
+      });
+      expectOk(focused);
+      const focusedIds = (focused.data.collections as Array<{ id: string }>).map(
+        (collection) => collection.id,
+      );
+      expect(focusedIds).toContain(focusedCollectionId);
+      expect(new Set(focusedIds).size).toBe(focusedIds.length);
+
+      const hidden = await api("GET", "community/collections", {
+        ageGate: true,
+        query: { collection: hiddenCollectionId },
+      });
+      expectOk(hidden);
+      expect(
+        (hidden.data.collections as Array<{ id: string }>).map((collection) => collection.id),
+      ).not.toContain(hiddenCollectionId);
+    } finally {
+      await prisma.mediaCollection.deleteMany({
+        where: { id: { in: collectionIds } },
+      });
+      await prisma.mediaAsset.deleteMany({ where: { id: mediaId } });
+      await prisma.user.deleteMany({ where: { id: ownerId } });
+    }
+  });
+
   it("does not list an empty public collection", async () => {
     const owner = `${P}coll-owner`;
     await createUser({ id: owner, dataClass: "customer" });
@@ -284,15 +371,23 @@ describe("community collections", () => {
 
   it("keeps synthetic media private and outside public collection authority", async () => {
     const owner = `${P}synthetic-collection-owner`;
+    const other = `${P}synthetic-collection-other`;
     const syntheticMediaId = `${P}synthetic-collection-media`;
     const realMediaId = `${P}synthetic-collection-real-media`;
+    const syntheticStorageKey = `${P}synthetic-collection.webp`;
+    const syntheticTarget = resolveLocalBlobPath(syntheticStorageKey);
+    await mkdir(dirname(syntheticTarget), { recursive: true });
+    await writeFile(syntheticTarget, Buffer.from("private synthetic preview"));
     await createUser({ id: owner, dataClass: "customer" });
+    await createUser({ id: other, dataClass: "customer" });
     await prisma.mediaAsset.create({
       data: {
         id: syntheticMediaId,
         ownerId: owner,
         type: "image",
-        url: `/user-content/${syntheticMediaId}/content.webp`,
+        url: `/user-content/${Buffer.from(syntheticMediaId, "utf8").toString("base64url")}/content.webp`,
+        storageKey: syntheticStorageKey,
+        contentType: "image/webp",
         visibility: "private",
         safetyStatus: "passed",
         metadata: { synthetic: true, source: "mock" },
@@ -386,6 +481,29 @@ describe("community collections", () => {
     expect(
       (community.data.collections as Array<{ id: string }>).map((item) => item.id),
     ).not.toContain(privateCollection.data.collection.id);
+
+    const ownerContent = await dispatchV1(
+      new Request(`http://localhost/api/v1/media/${syntheticMediaId}/content`, {
+        headers: {
+          cookie: AGE_GATE_COOKIE_HEADER,
+          "x-idream-user-id": owner,
+        },
+      }),
+      ["media", syntheticMediaId, "content"],
+    );
+    expect(ownerContent.status).toBe(200);
+    expect(await ownerContent.text()).toBe("private synthetic preview");
+
+    const nonOwnerContent = await dispatchV1(
+      new Request(`http://localhost/api/v1/media/${syntheticMediaId}/content`, {
+        headers: {
+          cookie: AGE_GATE_COOKIE_HEADER,
+          "x-idream-user-id": other,
+        },
+      }),
+      ["media", syntheticMediaId, "content"],
+    );
+    expect(nonOwnerContent.status).toBe(404);
 
     const publicContent = await dispatchV1(
       new Request(`http://localhost/api/v1/media/${syntheticMediaId}/content`, {
@@ -767,7 +885,7 @@ describe("feed share and remix provenance", () => {
           .filter((item) => item.type === "character")
           .map((item) => item.character?.id)
           .slice(0, 2),
-      ).toEqual([`${P}feed-cursor-3`, `${P}feed-cursor-4`]);
+      ).toEqual([`${P}feed-cursor-4`, `${P}feed-cursor-3`]);
     } finally {
       if (previousFeatured) {
         const value = appSettingJsonInput(previousFeatured.value);
@@ -785,6 +903,283 @@ describe("feed share and remix provenance", () => {
             status: previousFeatured.status,
           },
         });
+      }
+    }
+  });
+
+  it("keeps focused feed pagination reachable when featured characters fill the first page", async () => {
+    const owner = `${P}feed-featured-owner`;
+    const userId = `${P}feed-featured-user`;
+    const collectionIds = [
+      `${P}feed-featured-coll-a`,
+      `${P}feed-featured-coll-b`,
+    ];
+    const mediaId = `${P}feed-featured-media`;
+    const previousFeatured = await prisma.appSetting.findUnique({
+      where: { key: "feed.featured" },
+    });
+    const characterIds: string[] = [];
+    await createUser({
+      id: owner,
+      displayName: "Feed Featured Creator",
+      dataClass: "customer",
+    });
+    await createUser({ id: userId });
+    await createMedia({
+      id: mediaId,
+      ownerId: owner,
+      visibility: "public_pack",
+      url: "/images/ourdream/card-alexa-reeves.webp",
+    });
+    for (const [index, collectionId] of collectionIds.entries()) {
+      await prisma.mediaCollection.create({
+        data: {
+          id: collectionId,
+          ownerId: owner,
+          name: `Feed Featured Board ${index + 1}`,
+          visibility: "public",
+          items: { create: { mediaAssetId: mediaId, sortOrder: 0 } },
+        },
+      });
+    }
+    try {
+      for (let index = 0; index < 12; index += 1) {
+        const characterId = `${P}feed-featured-${index}`;
+        characterIds.push(characterId);
+        await createCharacter({
+          id: characterId,
+          creatorId: owner,
+          name: `Feed Featured ${index}`,
+          source: "official",
+          visibility: "public",
+          status: "approved",
+          chats: 1_800_000_000 - index,
+        });
+        await publishCharacterForPublicAudience({
+          characterId,
+          ownerId: owner,
+        });
+      }
+      await prisma.appSetting.upsert({
+        where: { key: "feed.featured" },
+        update: {
+          value: {
+            characterIds: [
+              characterIds[0],
+              characterIds[0],
+              ...characterIds.slice(1, 8),
+            ],
+          },
+          version: (previousFeatured?.version ?? 0) + 1,
+          status: "active",
+        },
+        create: {
+          key: "feed.featured",
+          value: {
+            characterIds: [
+              characterIds[0],
+              characterIds[0],
+              ...characterIds.slice(1, 8),
+            ],
+          },
+          version: 1,
+          status: "active",
+        },
+      });
+
+      const focusedItemId = `character:${characterIds[11]}`;
+      const first = await api("GET", "feed", {
+        userId,
+        ageGate: true,
+        query: { item: focusedItemId, limit: 8 },
+      });
+      expectOk(first);
+      expect(first.data.focusedItemId).toBe(focusedItemId);
+      expect(first.data.items[0]).toMatchObject({
+        id: focusedItemId,
+        type: "character",
+      });
+      expect(
+        (first.data.items as Array<{ id: string }>).map((item) => item.id),
+      ).toEqual(expect.arrayContaining(collectionIds.map((id) => `collection:${id}`)));
+      expect(first.data.nextCursor).toBeTruthy();
+
+      const observedIds: string[] = (
+        first.data.items as Array<{
+          type: string;
+          character?: { id: string };
+        }>
+      )
+        .flatMap((item) => item.character?.id ? [item.character.id] : [])
+        .filter((id) => id.startsWith(`${P}feed-featured-`));
+      // Real chat events can reorder the live popularity ranking between pages.
+      // The continuation must remain a snapshot/keyset traversal, independent
+      // of both that mutation and later page-size changes.
+      await prisma.characterStats.update({
+        where: { characterId: characterIds[10] },
+        data: { chatsCount: 2_100_000_000 },
+      });
+      await prisma.characterStats.update({
+        where: { characterId: characterIds[0] },
+        data: { chatsCount: 0 },
+      });
+      let cursor = first.data.nextCursor as string | null;
+      const continuationLimits = [3, 11, 2, 5, 13, 60];
+      for (let page = 0; page < 20 && cursor; page += 1) {
+        const next = await api("GET", "feed", {
+          userId,
+          ageGate: true,
+          // The opaque cursor owns the focused scope. A client may safely omit
+          // the original item query on subsequent pages.
+          query: {
+            cursor,
+            limit: continuationLimits[page % continuationLimits.length],
+          },
+        });
+        expectOk(next);
+        observedIds.push(
+          ...(next.data.items as Array<{
+            type: string;
+            character?: { id: string };
+          }>)
+            .flatMap((item) => item.character?.id ? [item.character.id] : [])
+            .filter((id) => id.startsWith(`${P}feed-featured-`)),
+        );
+        cursor = next.data.nextCursor as string | null;
+      }
+
+      expect(new Set(observedIds).size).toBe(observedIds.length);
+      expect([...new Set(observedIds)].sort()).toEqual([...characterIds].sort());
+
+      const focusedSingleItem = await api("GET", "feed", {
+        userId,
+        ageGate: true,
+        query: { item: focusedItemId, limit: 1 },
+      });
+      expectOk(focusedSingleItem);
+      expect(focusedSingleItem.data.items).toEqual([
+        expect.objectContaining({ id: focusedItemId, type: "character" }),
+      ]);
+      expect(focusedSingleItem.data.nextCursor).toBeTruthy();
+
+      const afterFocusedSingleItem = await api("GET", "feed", {
+        userId,
+        ageGate: true,
+        query: { cursor: focusedSingleItem.data.nextCursor, limit: 7 },
+      });
+      expectOk(afterFocusedSingleItem);
+      expect(afterFocusedSingleItem.data.items.length).toBeGreaterThan(0);
+      expect(
+        (afterFocusedSingleItem.data.items as Array<{ id: string }>).map(
+          (item) => item.id,
+        ),
+      ).not.toContain(focusedItemId);
+
+      const mismatchedScope = await api("GET", "feed", {
+        userId,
+        ageGate: true,
+        query: {
+          cursor: focusedSingleItem.data.nextCursor,
+          item: `character:${characterIds[0]}`,
+          limit: 7,
+        },
+      });
+      expectError(mismatchedScope, 400, "bad_request");
+
+      const hiddenCharacterId = `${P}feed-featured-hidden`;
+      await createCharacter({
+        id: hiddenCharacterId,
+        creatorId: owner,
+        name: "Feed Hidden Deep Link",
+        source: "user",
+        visibility: "private",
+        status: "approved",
+        chats: 0,
+      });
+      const hiddenItemId = `character:${hiddenCharacterId}`;
+      const staleLinkFirstPage = await api("GET", "feed", {
+        userId,
+        ageGate: true,
+        query: { item: hiddenItemId, limit: 8 },
+      });
+      expectOk(staleLinkFirstPage);
+      expect(staleLinkFirstPage.data.focusedItemId).toBeNull();
+      expect(staleLinkFirstPage.data.nextCursor).toBeTruthy();
+
+      const staleLinkContinuation = await api("GET", "feed", {
+        userId,
+        ageGate: true,
+        query: {
+          cursor: staleLinkFirstPage.data.nextCursor,
+          item: hiddenItemId,
+          limit: 8,
+        },
+      });
+      expectOk(staleLinkContinuation);
+      expect(staleLinkContinuation.data.items.length).toBeGreaterThan(0);
+
+      const staleLinkMismatchedScope = await api("GET", "feed", {
+        userId,
+        ageGate: true,
+        query: {
+          cursor: staleLinkFirstPage.data.nextCursor,
+          item: `character:${characterIds[0]}`,
+          limit: 8,
+        },
+      });
+      expectError(staleLinkMismatchedScope, 400, "bad_request");
+
+      const duplicateExclusionCursor = Buffer.from(
+        JSON.stringify({
+          v: 2,
+          scopeItemId: null,
+          snapshotAt: new Date().toISOString(),
+          excludedCharacterIds: [characterIds[0], characterIds[0]],
+          lastCreatedAt: null,
+          lastId: null,
+        }),
+        "utf8",
+      ).toString("base64url");
+      const duplicateExclusions = await api("GET", "feed", {
+        userId,
+        ageGate: true,
+        query: { cursor: duplicateExclusionCursor, limit: 7 },
+      });
+      expectError(duplicateExclusions, 400, "bad_request");
+
+      const legacyOffsetCursor = Buffer.from(
+        JSON.stringify({
+          v: 1,
+          scopeItemId: null,
+          offset: Number.MAX_SAFE_INTEGER,
+          pinnedFeaturedIds: [characterIds[0]],
+        }),
+        "utf8",
+      ).toString("base64url");
+      const legacyOffset = await api("GET", "feed", {
+        userId,
+        ageGate: true,
+        query: { cursor: legacyOffsetCursor, limit: 7 },
+      });
+      expectError(legacyOffset, 400, "bad_request");
+    } finally {
+      if (previousFeatured) {
+        await prisma.appSetting.upsert({
+          where: { key: "feed.featured" },
+          update: {
+            value: appSettingJsonInput(previousFeatured.value),
+            version: previousFeatured.version,
+            status: previousFeatured.status,
+          },
+          create: {
+            key: previousFeatured.key,
+            value: appSettingJsonInput(previousFeatured.value),
+            version: previousFeatured.version,
+            status: previousFeatured.status,
+          },
+        });
+      } else {
+        await prisma.appSetting.deleteMany({ where: { key: "feed.featured" } });
       }
     }
   });
@@ -900,11 +1295,42 @@ describe("feed share and remix provenance", () => {
       remixUrl: `/generate?characterId=${characterId}&remixFeedItemId=character%3A${characterId}`,
     });
 
+    const generationInput = {
+      mode: "image" as const,
+      characterId,
+      outputCount: 1,
+      remixFeedItemId: itemId,
+    };
+    const quote = await api("POST", "generation/quote", {
+      userId,
+      ageGate: true,
+      body: generationInput,
+    });
+    expectOk(quote);
+    const quotedCost = (
+      quote.data.quote.costs as Array<{
+        outputCount: number;
+        costDreamcoins: number;
+      }>
+    ).find((cost) => cost.outputCount === 1);
+    expect(quotedCost).toBeTruthy();
+    const generationBody = {
+      ...generationInput,
+      quoteAuthority: {
+        profileId: quote.data.quote.profileId as string,
+        profileVersion: quote.data.quote.profileVersion as number,
+        routeFingerprint: quote.data.quote.routeFingerprint as string,
+        pricingFingerprint: quote.data.quote.pricing.fingerprint as string,
+        outputCount: 1,
+        costDreamcoins: quotedCost?.costDreamcoins as number,
+      },
+    };
+    const remixIdempotencyKey = `${P}feed-remix-idem`;
     const job = await api("POST", "generation/jobs", {
       userId,
       ageGate: true,
-      headers: { "Idempotency-Key": `${P}feed-remix-idem` },
-      body: { mode: "image", characterId, outputCount: 1, remixFeedItemId: itemId },
+      headers: { "Idempotency-Key": remixIdempotencyKey },
+      body: generationBody,
     });
     expectOk(job, 202);
     const stored = await prisma.generationJob.findUniqueOrThrow({
@@ -926,6 +1352,31 @@ describe("feed share and remix provenance", () => {
     const asset = await prisma.mediaAsset.findFirstOrThrow({
       where: { sourceJobId: job.data.job.id as string },
     });
+    const expectedProvenance = {
+      sourceType: "feed_remix",
+      label: "Remixed from Feed",
+      feedItemId: itemId,
+      sourceCharacterId: characterId,
+      sourceCharacterName: "Feed Remix Source",
+      href: `/feed?item=${encodeURIComponent(itemId)}`,
+    };
+    const completedJob = await api(
+      "GET",
+      `generation/jobs/${job.data.job.id as string}`,
+      {
+        userId,
+        ageGate: true,
+      },
+    );
+    expectOk(completedJob);
+    const completedAsset = (
+      completedJob.data.assets as Array<{
+        id: string;
+        provenance?: Record<string, unknown> | null;
+      }>
+    ).find((item) => item.id === asset.id);
+    expect(completedAsset?.provenance).toMatchObject(expectedProvenance);
+
     const media = await api("GET", "media", {
       userId,
       ageGate: true,
@@ -938,14 +1389,51 @@ describe("feed share and remix provenance", () => {
         provenance?: Record<string, unknown> | null;
       }>
     ).find((item) => item.id === asset.id);
-    expect(remixedMedia?.provenance).toMatchObject({
-      sourceType: "feed_remix",
-      label: "Remixed from Feed",
-      feedItemId: itemId,
-      sourceCharacterId: characterId,
-      sourceCharacterName: "Feed Remix Source",
-      href: `/feed?item=${encodeURIComponent(itemId)}`,
+    expect(remixedMedia?.provenance).toMatchObject(expectedProvenance);
+    expect(completedAsset?.provenance).toEqual(remixedMedia?.provenance);
+
+    const balanceAfterCreate = await prisma.dreamcoinLedger.findFirstOrThrow({
+      where: { userId },
+      orderBy: { createdAt: "desc" },
+      select: { balanceAfter: true },
     });
+    const serving = await prisma.characterServing.findUniqueOrThrow({
+      where: { characterId },
+      select: { currentReleaseId: true },
+    });
+    expect(serving.currentReleaseId).toBeTruthy();
+    await prisma.$transaction(async (tx) => {
+      await tx.characterServing.update({
+        where: { characterId },
+        data: { state: "paused" },
+      });
+      await tx.publicCatalogQualification.update({
+        where: { releaseId: serving.currentReleaseId as string },
+        data: { revokedAt: new Date() },
+      });
+    });
+    const replayAfterFeedWithdrawal = await api("POST", "generation/jobs", {
+      userId,
+      ageGate: true,
+      autoGenerationQuote: false,
+      headers: { "Idempotency-Key": remixIdempotencyKey },
+      body: generationBody,
+    });
+    expectOk(replayAfterFeedWithdrawal, 202);
+    expect(replayAfterFeedWithdrawal.data.job.id).toBe(job.data.job.id);
+    await expect(
+      prisma.generationJob.count({
+        where: { userId, idempotencyKey: remixIdempotencyKey },
+      }),
+    ).resolves.toBe(1);
+    const balanceAfterReplay = await prisma.dreamcoinLedger.findFirstOrThrow({
+      where: { userId },
+      orderBy: { createdAt: "desc" },
+      select: { balanceAfter: true },
+    });
+    expect(balanceAfterReplay.balanceAfter).toBe(
+      balanceAfterCreate.balanceAfter,
+    );
   });
 
   it("rejects feed remix provenance for private or mismatched items", async () => {

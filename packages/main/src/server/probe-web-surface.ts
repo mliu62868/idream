@@ -90,6 +90,27 @@ type WebSurfaceProbeReport = {
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_TOTAL_TIMEOUT_MS = 45_000;
 
+export function isAdminDevLoginWallHtml(html: string) {
+  if (html.includes('data-admin-auth-wall="dev-login-v1"')) return true;
+  const hasEnvironmentMarker =
+    html.includes("DEV ONLY") ||
+    html.includes("仅限开发环境");
+  const hasLoginHeading =
+    html.includes("Admin login") ||
+    html.includes("后台登录");
+  const hasPasswordControl =
+    /<input\b[^>]*\btype\s*=\s*(?:"password"|'password')[^>]*>/i.test(html);
+  return hasEnvironmentMarker && hasLoginHeading && hasPasswordControl;
+}
+
+export function isAdminAccessDeniedHtml(html: string) {
+  return (
+    html.includes('data-admin-auth-wall="access-denied-v1"') ||
+    html.includes("Admin access denied") ||
+    html.includes("无后台访问权限")
+  );
+}
+
 function readArg(name: string) {
   const prefix = `--${name}=`;
   const inline = process.argv.find((arg) => arg.startsWith(prefix));
@@ -365,10 +386,8 @@ async function probeAdmin(
       signal: runtime.totalSignal,
     });
     const text = await response.text();
-    const accessDenied = text.includes("Admin access denied");
-    const devLoginWall =
-      text.includes("DEV ONLY") &&
-      (text.includes("后台登录") || text.includes("Admin login"));
+    const accessDenied = isAdminAccessDeniedHtml(text);
+    const devLoginWall = isAdminDevLoginWallHtml(text);
     const protectedSurface = accessDenied || devLoginWall;
     const protectedReason = accessDenied
       ? "access_denied"

@@ -293,6 +293,8 @@ async function applyExactRepair(
         eventType: "character.editorial_authority_repaired.v1",
         aggregateType: "character_release",
         aggregateId: authority.releaseId,
+        status: "delivered",
+        deliveredAt: input.now,
         payload: toInputJson({
           releaseId: authority.releaseId,
           characterId: authority.characterId,

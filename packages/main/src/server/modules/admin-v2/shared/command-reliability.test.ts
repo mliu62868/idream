@@ -14,22 +14,87 @@ import { canonicalSha256 } from "./canonical-json";
 import { transitionControlPlaneCommandAttempt } from "./control-plane-command-attempt";
 import { transitionControlPlaneCommand } from "./control-plane-command-transition";
 
+const reliabilityActorIds = ["admin-v2-test", "approval-requester"] as const;
+
+async function cleanupReliabilityFixtures() {
+  const [commands, productEvents] = await Promise.all([
+    prisma.controlPlaneCommand.findMany({
+      where: { actorId: { in: [...reliabilityActorIds] } },
+      select: { id: true },
+    }),
+    prisma.analyticsEvent.findMany({
+      where: { sourceService: "admin-test" },
+      select: { id: true },
+    }),
+  ]);
+  const commandIds = commands.map((command) => command.id);
+  const productEventIds = productEvents.map((event) => event.id);
+  if (commandIds.length > 0) {
+    await prisma.mainOutboxEvent.deleteMany({
+      where: {
+        eventType: "admin.command.accepted.v2",
+        OR: commandIds.map((commandId) => ({
+          payload: { path: ["commandId"], equals: commandId },
+        })),
+      },
+    });
+    await prisma.controlPlaneCommandAttempt.deleteMany({
+      where: { commandId: { in: commandIds } },
+    });
+    await prisma.controlPlaneCommand.deleteMany({
+      where: { id: { in: commandIds } },
+    });
+  }
+  if (productEventIds.length > 0) {
+    await prisma.metricProjectionReceipt.deleteMany({
+      where: { canonicalEventId: { in: productEventIds } },
+    });
+    await prisma.mainOutboxEvent.deleteMany({
+      where: {
+        eventType: "product.event.persisted.v2",
+        aggregateId: { in: productEventIds },
+      },
+    });
+    await prisma.analyticsEvent.deleteMany({
+      where: { id: { in: productEventIds } },
+    });
+  }
+  await prisma.inboundEventReceipt.deleteMany({
+    where: {
+      sourceService: {
+        in: ["admin-test", "main.product_projection:admin-test"],
+      },
+    },
+  });
+  await prisma.adminAuditLog.deleteMany({
+    where: { actorId: { in: [...reliabilityActorIds] } },
+  });
+  await prisma.adminActionRequest.deleteMany({
+    where: { requestedById: "approval-requester" },
+  });
+}
+
+beforeEach(async () => {
+  resetMetricsForTests();
+  await cleanupReliabilityFixtures();
+});
+
+afterAll(async () => {
+  await cleanupReliabilityFixtures();
+  await expect(prisma.analyticsEvent.count({
+    where: { sourceService: "admin-test" },
+  })).resolves.toBe(0);
+  await expect(prisma.inboundEventReceipt.count({
+    where: {
+      sourceService: {
+        in: ["admin-test", "main.product_projection:admin-test"],
+      },
+    },
+  })).resolves.toBe(0);
+  await prisma.$disconnect();
+});
+
 describe("Admin v2 command reliability", () => {
-  beforeEach(async () => {
-    resetMetricsForTests();
-    await prisma.mainOutboxEvent.deleteMany();
-    await prisma.controlPlaneCommandAttempt.deleteMany();
-    await prisma.controlPlaneCommand.deleteMany();
-    await prisma.inboundEventReceipt.deleteMany();
-    await prisma.analyticsEvent.deleteMany({ where: { sourceService: "admin-test" } });
-    await prisma.adminAuditLog.deleteMany({ where: { actorId: "admin-v2-test" } });
-    await prisma.adminActionRequest.deleteMany({ where: { requestedById: "approval-requester" } });
-  });
-
-  afterAll(async () => {
-    await prisma.$disconnect();
-  });
-
   it("hashes the complete canonical command request independent of object key order", () => {
     const base = {
       commandType: "character.release.publish",
@@ -86,10 +151,17 @@ describe("Admin v2 command reliability", () => {
 
     expect(first.replayed).toBe(false);
     expect(replay).toMatchObject({ commandId: first.commandId, replayed: true });
-    expect(await prisma.controlPlaneCommand.count()).toBe(1);
+    expect(await prisma.controlPlaneCommand.count({
+      where: { id: first.commandId },
+    })).toBe(1);
     await expect(prisma.controlPlaneCommand.findUnique({ where: { id: first.commandId } }))
       .resolves.toMatchObject({ coordinationKey: "incident:incident-1" });
-    expect(await prisma.mainOutboxEvent.count()).toBe(1);
+    expect(await prisma.mainOutboxEvent.count({
+      where: {
+        eventType: "admin.command.accepted.v2",
+        payload: { path: ["commandId"], equals: first.commandId },
+      },
+    })).toBe(1);
     expect(await prisma.adminAuditLog.count({ where: { actorId: "admin-v2-test" } })).toBe(1);
     const metrics = renderPrometheusMetrics();
     expect(metrics).toContain('admin_command_total{outcome="accepted",type="incident.resolve"} 1');
@@ -387,12 +459,23 @@ describe("canonical product event durable ingest", () => {
     const replay = await ingestProductEvent(prisma, event);
 
     expect(first).toMatchObject({ status: "persisted" });
+    if (first.status !== "persisted") {
+      throw new Error(`Expected a persisted product event, received ${first.status}`);
+    }
     expect(replay).toMatchObject({ status: "duplicate", eventId: first.eventId });
     expect(
       await prisma.inboundEventReceipt.count({ where: { sourceService: "admin-test", sourceEventId } }),
     ).toBe(1);
     expect(
       await prisma.analyticsEvent.count({ where: { sourceService: "admin-test", sourceEventId } }),
+    ).toBe(1);
+    expect(
+      await prisma.mainOutboxEvent.count({
+        where: {
+          eventType: "product.event.persisted.v2",
+          aggregateId: first.eventId,
+        },
+      }),
     ).toBe(1);
     const metrics = renderPrometheusMetrics();
     expect(metrics).toContain('main_inbound_events_total{outcome="persisted",source="admin-test"} 1');
@@ -432,6 +515,23 @@ describe("canonical product event durable ingest", () => {
     ).toMatchObject({ processingState: "quarantined", quarantinedAt: expect.any(Date) });
     expect(
       await prisma.analyticsEvent.count({ where: { sourceService: "admin-test", sourceEventId } }),
+    ).toBe(1);
+    const canonical = await prisma.analyticsEvent.findUniqueOrThrow({
+      where: {
+        sourceService_sourceEventId: {
+          sourceService: "admin-test",
+          sourceEventId,
+        },
+      },
+      select: { id: true },
+    });
+    expect(
+      await prisma.mainOutboxEvent.count({
+        where: {
+          eventType: "product.event.persisted.v2",
+          aggregateId: canonical.id,
+        },
+      }),
     ).toBe(1);
   });
 });

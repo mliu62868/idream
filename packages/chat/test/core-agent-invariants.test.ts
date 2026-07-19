@@ -32,6 +32,7 @@ const USERS = {
   summary: "u_core_summary",
   memory: "u_core_memory",
   recovery: "u_core_recovery",
+  poisonedPayload: "u_core_poisoned_payload",
   exactMemory: "u_core_exact_memory",
   inputLimit: "u_core_input_limit",
   contextBudget: "u_core_context_budget",
@@ -184,6 +185,56 @@ describe("core chat command invariants", () => {
     expect((await prisma.message.findUnique({ where: { id: sent.assistantMessageId } }))?.status).toBe("sent");
   });
 
+  it("fails a generation payload closed when it points at a different source turn", async () => {
+    const session = await createSession(
+      { userId: USERS.poisonedPayload, characterId: CHARACTER },
+      { prisma },
+    );
+    const sent = await sendMessage(
+      { userId: USERS.poisonedPayload, sessionId: session.id, content: "authoritative source" },
+      { prisma },
+    );
+    await obliterate(CHAT_QUEUES.generate);
+    const foreignSource = await prisma.message.create({
+      data: {
+        id: "msg_core_poisoned_foreign_source",
+        sessionId: session.id,
+        role: "user",
+        content: "wrong source",
+        status: "sent",
+        safetyStatus: "passed",
+      },
+    });
+
+    await expect(
+      processGenerate(
+        {
+          sessionId: session.id,
+          assistantMessageId: sent.assistantMessageId,
+          userMessageId: foreignSource.id,
+          attempt: 1,
+        },
+        prisma,
+      ),
+    ).resolves.toEqual({ status: "skipped" });
+    expect(
+      (await prisma.message.findUniqueOrThrow({ where: { id: sent.assistantMessageId } }))
+        .status,
+    ).toBe("pending");
+
+    await expect(
+      processGenerate(
+        {
+          sessionId: session.id,
+          assistantMessageId: sent.assistantMessageId,
+          userMessageId: sent.userMessageId,
+          attempt: 1,
+        },
+        prisma,
+      ),
+    ).resolves.toEqual({ status: "sent" });
+  });
+
   it("revives a failed deterministic queue job when reconcile re-enqueues it", async () => {
     const queue = "chat.test.retry-dedupe";
     await obliterate(queue).catch(() => {});
@@ -314,6 +365,7 @@ describe("core context continuity invariants", () => {
         content: "Of course, River.",
         status: "sent",
         safetyStatus: "passed",
+        memoryAuthority: "enabled",
         createdAt: user.createdAt,
       },
     });
@@ -361,6 +413,7 @@ describe("core context continuity invariants", () => {
           status: "sent",
           safetyStatus: "passed",
           replyToMessageId: "msg_core_exact_right",
+          memoryAuthority: "enabled",
           createdAt,
         },
       ],

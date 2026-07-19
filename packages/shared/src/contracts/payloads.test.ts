@@ -16,6 +16,15 @@ const request = {
 };
 
 describe("chat image request Release pin", () => {
+  it("preserves the logical exchange id used by downstream privacy correction", () => {
+    expect(
+      chatImageRequestedPayloadSchema.parse({
+        ...request,
+        exchangeId: "exchange-1",
+      }).exchangeId,
+    ).toBe("exchange-1");
+  });
+
   it("preserves a non-empty pinned Character Release", () => {
     expect(
       chatImageRequestedPayloadSchema.parse({

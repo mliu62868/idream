@@ -46,6 +46,7 @@ export function PromoToast() {
           loading="eager"
           sizes="276px"
           className="object-cover"
+          unoptimized
         />
         <button
           aria-label="Close promotion"

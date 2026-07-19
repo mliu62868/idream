@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
 type PlaywrightEnvironmentInput = Readonly<Record<string, string | undefined>>;
@@ -14,9 +15,11 @@ export type ResolvedPlaywrightEnvironment = {
   readonly chatPort: string;
   readonly databaseURL: string;
   readonly chatDatabaseURL: string;
+  readonly chatProjectorDatabaseURL: string;
   readonly redisURL: string;
   readonly bullmqPrefix: string;
   readonly chatFsRoot: string;
+  readonly blobRoot: string;
   readonly runId: string;
   readonly ownsDatabase: boolean;
   readonly remoteDatabaseAuthority: {
@@ -51,6 +54,7 @@ export type ManagedPlaywrightWebServer = {
 const TEST_DATABASE_TOKEN = /(^|[_-])test([_-]|$)/i;
 const PLAYWRIGHT_DATABASE_TOKEN = /(^|[_-])playwright([_-]|$)/i;
 const CHAT_SERVICE_PASSWORD = "chat_service_change_me";
+const CHAT_PROJECTOR_PASSWORD = "chat_projector_change_me";
 const DEFAULT_TEST_DATABASE_URL =
   "postgresql://postgres:postgres@localhost:5433/idream_test";
 
@@ -115,6 +119,8 @@ export function resolvePlaywrightEnvironment(
     runId,
   );
   const chatDatabaseURL = derivedPlaywrightChatDatabaseUrl(databaseURL);
+  const chatProjectorDatabaseURL =
+    derivedPlaywrightChatProjectorDatabaseUrl(databaseURL);
   const redisURL = assertPlaywrightRedisUrl(
     input.PW_REDIS_URL ?? "redis://127.0.0.1:6379/14",
   );
@@ -127,6 +133,16 @@ export function resolvePlaywrightEnvironment(
     mainPackageRoot(),
     "data",
     `playwright-chat-${mainPort}-${isolationHash}`,
+  );
+  // Blob bytes are the one writable fixture that must never share the repo's
+  // persistent data/blob authority. The absolute temp leaf is deterministic
+  // for this run so preparation, services, teardown, and the verifier agree.
+  const blobRoot = assertPlaywrightBlobRoot(
+    path.resolve(
+      tmpdir(),
+      "idream-playwright-blobs",
+      `playwright-blob-${mainPort}-${runId}-${isolationHash}`,
+    ),
   );
   const bffSecret = `playwright-bff-${isolationHash}`;
   const internalToken = `playwright-internal-${isolationHash}`;
@@ -156,8 +172,10 @@ export function resolvePlaywrightEnvironment(
     CHAT_MODEL_PROVIDER: input.PW_CHAT_PROVIDER ?? "mock",
     CHAT_SERVICE_URL: chatBaseURL,
     CHAT_DATABASE_URL: chatDatabaseURL,
+    CHAT_PROJECTOR_DATABASE_URL: chatProjectorDatabaseURL,
     CHAT_REDIS_URL: redisURL,
     CHAT_FS_ROOT: chatFsRoot,
+    BLOB_ROOT: blobRoot,
     CHAT_PORT: chatPort,
     CHAT_BFF_SIGNING_SECRET: bffSecret,
     INTERNAL_TOKEN: internalToken,
@@ -193,9 +211,11 @@ export function resolvePlaywrightEnvironment(
     chatPort,
     databaseURL,
     chatDatabaseURL,
+    chatProjectorDatabaseURL,
     redisURL,
     bullmqPrefix,
     chatFsRoot,
+    blobRoot,
     runId,
     ownsDatabase,
     remoteDatabaseAuthority,
@@ -216,6 +236,7 @@ export function managedPlaywrightWebServers(
   ManagedPlaywrightWebServer,
   ManagedPlaywrightWebServer,
   ManagedPlaywrightWebServer,
+  ManagedPlaywrightWebServer,
 ] {
   return [
     {
@@ -231,6 +252,8 @@ export function managedPlaywrightWebServers(
         ...environment.serviceEnv,
         DATABASE_URL: environment.chatDatabaseURL,
         CHAT_DATABASE_URL: environment.chatDatabaseURL,
+        CHAT_PROJECTOR_DATABASE_URL:
+          environment.chatProjectorDatabaseURL,
         CHAT_PORT: environment.chatPort,
         CHAT_SERVICE_URL: environment.chatBaseURL,
         MAIN_WEB_URL: environment.mainBaseURL,
@@ -297,6 +320,26 @@ export function managedPlaywrightWebServers(
         LOG_LEVEL: "info",
       },
     },
+    {
+      // Gen durably acknowledges completion manifests into Main's outbox.
+      // Production uses gen-finalizer to dispatch those manifests onto
+      // app.ai.finalize and project terminal GenerationJob state.
+      command: "bun src/processes/finalizer.ts",
+      reuseExistingServer: false,
+      timeout: 30_000,
+      wait: {
+        stdout: /gen-finalizer started/,
+      },
+      gracefulShutdown: {
+        signal: "SIGTERM",
+        timeout: 30_000,
+      },
+      env: {
+        ...environment.serviceEnv,
+        GEN_FINALIZER_QUEUES: "app.ai.finalize",
+        LOG_LEVEL: "info",
+      },
+    },
   ];
 }
 
@@ -332,12 +375,50 @@ export function assertPlaywrightChatDatabaseUrl(
   return parsed.toString();
 }
 
+export function assertPlaywrightChatProjectorDatabaseUrl(
+  value: string,
+  authorityDatabaseUrl: string,
+) {
+  const authority = new URL(assertPlaywrightDatabaseUrl(authorityDatabaseUrl));
+  const parsed = postgresUrl(value, "Playwright Chat projector database");
+  const databaseName = databaseNameFromUrl(parsed);
+  assertPlaywrightDatabaseName(databaseName);
+  if (decodeURIComponent(parsed.username) !== "chat_projector") {
+    throw new Error(
+      "Playwright Chat projector database must connect with the chat_projector role",
+    );
+  }
+  if (
+    parsed.hostname !== authority.hostname ||
+    normalizedPort(parsed) !== normalizedPort(authority) ||
+    parsed.pathname !== authority.pathname
+  ) {
+    throw new Error(
+      "Playwright Chat projector must use the same database authority as Playwright Main",
+    );
+  }
+  return parsed.toString();
+}
+
 function derivedPlaywrightChatDatabaseUrl(authorityDatabaseUrl: string) {
   const parsed = new URL(assertPlaywrightDatabaseUrl(authorityDatabaseUrl));
   parsed.username = "chat_service";
   parsed.password = CHAT_SERVICE_PASSWORD;
   parsed.searchParams.delete("schema");
   return assertPlaywrightChatDatabaseUrl(
+    parsed.toString(),
+    authorityDatabaseUrl,
+  );
+}
+
+function derivedPlaywrightChatProjectorDatabaseUrl(
+  authorityDatabaseUrl: string,
+) {
+  const parsed = new URL(assertPlaywrightDatabaseUrl(authorityDatabaseUrl));
+  parsed.username = "chat_projector";
+  parsed.password = CHAT_PROJECTOR_PASSWORD;
+  parsed.searchParams.delete("schema");
+  return assertPlaywrightChatProjectorDatabaseUrl(
     parsed.toString(),
     authorityDatabaseUrl,
   );
@@ -405,6 +486,28 @@ export function assertPlaywrightRedisUrl(value: string) {
     );
   }
   return parsed.toString();
+}
+
+export function assertPlaywrightBlobRoot(value: string) {
+  const resolved = path.resolve(value);
+  const repositoryBlobRoot = path.resolve(
+    mainPackageRoot(),
+    "../..",
+    "data",
+    "blob",
+  );
+  const relative = path.relative(repositoryBlobRoot, resolved);
+  const isRepositoryBlobPath =
+    relative === "" ||
+    (relative !== ".." &&
+      !relative.startsWith(`..${path.sep}`) &&
+      !path.isAbsolute(relative));
+  if (isRepositoryBlobPath) {
+    throw new Error(
+      "Playwright blob root must stay outside the repository data/blob authority",
+    );
+  }
+  return resolved;
 }
 
 function playwrightRunId(value: string | undefined) {

@@ -21,17 +21,36 @@ import { dispatchPendingChatEvents } from "./chat-outbox";
 import { findReusableChatImage } from "@/server/modules/ourdream/chat-image-reuse";
 
 const P = "zt-chatimg-";
+const CHAT_PROJECTION_RECEIPT_SOURCE = "main.product_projection:chat";
 
 beforeAll(async () => {
+  await prisma.chatExchangeFact.deleteMany({
+    where: { exchangeId: { startsWith: P } },
+  });
+  await prisma.inboundEventReceipt.deleteMany({
+    where: {
+      sourceService: CHAT_PROJECTION_RECEIPT_SOURCE,
+      sourceEventId: { startsWith: P },
+    },
+  });
   await purgeTestData(P);
 });
 
 afterAll(async () => {
   await purgeTestData(P);
+  await prisma.chatExchangeFact.deleteMany({
+    where: { exchangeId: { startsWith: P } },
+  });
+  await prisma.inboundEventReceipt.deleteMany({
+    where: {
+      sourceService: CHAT_PROJECTION_RECEIPT_SOURCE,
+      sourceEventId: { startsWith: P },
+    },
+  });
 });
 
 describe("applyChatEvent", () => {
-  it("chat.message.completed bumps character chatsCount", async () => {
+  it("applies chat.message.completed exactly once when the same source event is replayed", async () => {
     const user = await createUser({
       id: `${P}engagement-customer`,
       dataClass: "customer",
@@ -49,15 +68,207 @@ describe("applyChatEvent", () => {
       include: { stats: true },
     });
 
-    await applyChatEvent({
-      eventId: "ec1",
-      eventType: "chat.message.completed",
-      aggregateId: "msg1",
+    const event = {
+      eventId: `${P}engagement-message`,
+      eventType: CHAT_TO_MAIN_EVENTS.messageCompleted,
+      aggregateId: `${P}engagement-message`,
+      occurredAt: "2026-07-16T12:45:40Z",
       payload: { userId: user.id, characterId: character.id },
+    };
+
+    await expect(applyChatEvent(event)).resolves.toEqual({ status: "applied" });
+    await expect(applyChatEvent({
+      ...event,
+      occurredAt: "2026-07-16T12:45:40.000Z",
+      sourceService: "chat",
+      schemaVersion: 1,
+    })).resolves.toEqual({
+      status: "duplicate",
+      outcome: "applied",
     });
 
     const stats = await prisma.characterStats.findUnique({ where: { characterId: character.id } });
     expect(stats?.chatsCount).toBe(1);
+    await expect(prisma.inboundEventReceipt.findUnique({
+      where: {
+        sourceService_sourceEventId: {
+          sourceService: CHAT_PROJECTION_RECEIPT_SOURCE,
+          sourceEventId: event.eventId,
+        },
+      },
+    })).resolves.toMatchObject({
+      payloadHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      processingState: "processed",
+      processedAt: expect.any(Date),
+      quarantinedAt: null,
+    });
+  });
+
+  it("serializes concurrent delivery of one source event across database transactions", async () => {
+    const user = await createUser({
+      id: `${P}concurrent-customer`,
+      dataClass: "customer",
+    });
+    const character = await prisma.character.create({
+      data: {
+        id: `${P}concurrent-character`,
+        name: "Concurrent delivery target",
+        age: 24,
+        description: "d",
+        appearance: {},
+        advancedDetails: {},
+        stats: { create: { chatsCount: 0 } },
+      },
+    });
+    const event = {
+      eventId: `${P}concurrent-message`,
+      eventType: CHAT_TO_MAIN_EVENTS.messageCompleted,
+      aggregateId: `${P}concurrent-message`,
+      payload: { userId: user.id, characterId: character.id },
+    };
+
+    const results = await Promise.all([
+      applyChatEvent(event),
+      applyChatEvent(event),
+    ]);
+
+    expect(results).toEqual(expect.arrayContaining([
+      { status: "applied" },
+      { status: "duplicate", outcome: "applied" },
+    ]));
+    await expect(prisma.characterStats.findUniqueOrThrow({
+      where: { characterId: character.id },
+    })).resolves.toMatchObject({ chatsCount: 1 });
+    await expect(prisma.inboundEventReceipt.count({
+      where: {
+        sourceService: CHAT_PROJECTION_RECEIPT_SOURCE,
+        sourceEventId: event.eventId,
+      },
+    })).resolves.toBe(1);
+  });
+
+  it("quarantines a reused source event id whose projection payload changes", async () => {
+    const user = await createUser({
+      id: `${P}conflict-customer`,
+      dataClass: "customer",
+    });
+    const [firstCharacter, secondCharacter] = await Promise.all([
+      prisma.character.create({
+        data: {
+          id: `${P}conflict-character-a`,
+          name: "Conflict target A",
+          age: 24,
+          description: "d",
+          appearance: {},
+          advancedDetails: {},
+          stats: { create: { chatsCount: 0 } },
+        },
+      }),
+      prisma.character.create({
+        data: {
+          id: `${P}conflict-character-b`,
+          name: "Conflict target B",
+          age: 24,
+          description: "d",
+          appearance: {},
+          advancedDetails: {},
+          stats: { create: { chatsCount: 0 } },
+        },
+      }),
+    ]);
+    const eventId = `${P}conflicting-message`;
+    const originalEvent = {
+      eventId,
+      eventType: CHAT_TO_MAIN_EVENTS.messageCompleted,
+      aggregateId: eventId,
+      payload: { userId: user.id, characterId: firstCharacter.id },
+    };
+    const conflictingEvent = {
+      ...originalEvent,
+      payload: { userId: user.id, characterId: secondCharacter.id },
+    };
+
+    await expect(applyChatEvent(originalEvent)).resolves.toEqual({ status: "applied" });
+    await expect(applyChatEvent(conflictingEvent)).resolves.toEqual({
+      status: "quarantined",
+      reason: "payload_hash_conflict",
+    });
+    await expect(applyChatEvent(originalEvent)).resolves.toEqual({
+      status: "quarantined",
+      reason: "source_event_quarantined",
+    });
+
+    await expect(prisma.characterStats.findMany({
+      where: { characterId: { in: [firstCharacter.id, secondCharacter.id] } },
+      orderBy: { characterId: "asc" },
+      select: { characterId: true, chatsCount: true },
+    })).resolves.toEqual([
+      { characterId: firstCharacter.id, chatsCount: 1 },
+      { characterId: secondCharacter.id, chatsCount: 0 },
+    ]);
+    await expect(prisma.inboundEventReceipt.findUniqueOrThrow({
+      where: {
+        sourceService_sourceEventId: {
+          sourceService: CHAT_PROJECTION_RECEIPT_SOURCE,
+          sourceEventId: eventId,
+        },
+      },
+    })).resolves.toMatchObject({
+      processingState: "quarantined",
+      processedAt: expect.any(Date),
+      quarantinedAt: expect.any(Date),
+      error: {
+        code: "payload_hash_conflict",
+        expectedHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        receivedHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
+    });
+  });
+
+  it("rolls back the domain effect when processing crashes before its receipt commits", async () => {
+    const user = await createUser({
+      id: `${P}crash-customer`,
+      dataClass: "customer",
+    });
+    const character = await prisma.character.create({
+      data: {
+        id: `${P}crash-character`,
+        name: "Crash rollback target",
+        age: 24,
+        description: "d",
+        appearance: {},
+        advancedDetails: {},
+        stats: { create: { chatsCount: 0 } },
+      },
+    });
+    const event = {
+      eventId: `${P}crash-message`,
+      eventType: CHAT_TO_MAIN_EVENTS.messageCompleted,
+      aggregateId: `${P}crash-message`,
+      payload: { userId: user.id, characterId: character.id },
+    };
+
+    await expect(applyChatEvent(event, {
+      afterEffect: async () => {
+        throw new Error("injected crash before projection receipt");
+      },
+    })).rejects.toThrow("injected crash before projection receipt");
+    await expect(prisma.characterStats.findUniqueOrThrow({
+      where: { characterId: character.id },
+    })).resolves.toMatchObject({ chatsCount: 0 });
+    await expect(prisma.inboundEventReceipt.findUnique({
+      where: {
+        sourceService_sourceEventId: {
+          sourceService: CHAT_PROJECTION_RECEIPT_SOURCE,
+          sourceEventId: event.eventId,
+        },
+      },
+    })).resolves.toBeNull();
+
+    await expect(applyChatEvent(event)).resolves.toEqual({ status: "applied" });
+    await expect(prisma.characterStats.findUniqueOrThrow({
+      where: { characterId: character.id },
+    })).resolves.toMatchObject({ chatsCount: 1 });
   });
 
   it("does not turn fixture chat traffic into public engagement", async () => {
@@ -87,29 +298,126 @@ describe("applyChatEvent", () => {
     expect(stats.chatsCount).toBe(0);
   });
 
+  it("typed-skips recent-chat projection when customer or character authority is missing", async () => {
+    const customer = await createUser({
+      id: `${P}projection-authority-customer`,
+      dataClass: "customer",
+    });
+    const character = await prisma.character.create({
+      data: {
+        id: `${P}projection-authority-character`,
+        name: "Projection authority",
+        age: 24,
+        description: "d",
+        appearance: {},
+        advancedDetails: {},
+      },
+    });
+    const missingCustomerSessionId = `${P}missing-customer-session`;
+    const missingCharacterSessionId = `${P}missing-character-session`;
+
+    await expect(applyChatEvent({
+      eventId: `${P}missing-customer-event`,
+      eventType: CHAT_TO_MAIN_EVENTS.sessionCreated,
+      aggregateId: missingCustomerSessionId,
+      payload: {
+        userId: `${P}missing-customer`,
+        characterId: character.id,
+      },
+    })).resolves.toEqual({
+      status: "skipped",
+      reason: "chat_projection_customer_authority_missing",
+    });
+    await expect(applyChatEvent({
+      eventId: `${P}missing-character-event`,
+      eventType: CHAT_TO_MAIN_EVENTS.messageCompleted,
+      aggregateId: `${P}missing-character-message`,
+      payload: {
+        sessionId: missingCharacterSessionId,
+        userId: customer.id,
+        characterId: `${P}missing-character`,
+      },
+    })).resolves.toEqual({
+      status: "skipped",
+      reason: "chat_projection_character_authority_missing",
+    });
+    await expect(prisma.recentChat.findMany({
+      where: {
+        sessionId: {
+          in: [missingCustomerSessionId, missingCharacterSessionId],
+        },
+      },
+    })).resolves.toHaveLength(0);
+  });
+
   it("chat.safety.flagged records a moderation event", async () => {
+    const user = await createUser({
+      id: `${P}safety-customer`,
+      dataClass: "customer",
+    });
+    const targetId = `${P}flagged-message`;
     await applyChatEvent({
-      eventId: "ec2",
+      eventId: `${P}safety-event`,
       eventType: "chat.safety.flagged",
-      aggregateId: "msg_flagged",
-      payload: { layer: "output", policyCode: "unsafe_request" },
+      aggregateId: targetId,
+      payload: {
+        userId: user.id,
+        layer: "output",
+        policyCode: "unsafe_request",
+      },
     });
     const event = await prisma.moderationEvent.findFirst({
-      where: { targetId: "msg_flagged", status: "flagged" },
+      where: { targetId, status: "flagged" },
     });
     expect(event?.policyCode).toBe("unsafe_request");
   });
 
-  it("maintains the recent-chats projection across created → completed → deleted", async () => {
-    const user = await prisma.user.create({ data: { email: `ec-proj-${Date.now()}@t.dev`, status: "active" } });
-    const character = await prisma.character.create({
-      data: { name: "ProjChar", age: 24, description: "d", appearance: {}, advancedDetails: {} },
+  it("does not project audit probe safety traffic into customer moderation", async () => {
+    const user = await createUser({
+      id: `${P}safety-audit`,
+      dataClass: "audit",
     });
-    const sessionId = `sess_proj_${Date.now()}`;
+    const targetId = `${P}flagged-audit-message`;
+
+    await expect(applyChatEvent({
+      eventId: `${P}safety-audit-event`,
+      eventType: CHAT_TO_MAIN_EVENTS.safetyFlagged,
+      aggregateId: targetId,
+      payload: {
+        userId: user.id,
+        layer: "input",
+        policyCode: "audit_probe",
+      },
+    })).resolves.toEqual({
+      status: "skipped",
+      reason: "chat_projection_customer_authority_missing",
+    });
+    await expect(prisma.moderationEvent.findFirst({
+      where: { targetId },
+    })).resolves.toBeNull();
+  });
+
+  it("maintains the recent-chats projection across created → completed → deleted", async () => {
+    const suffix = `${Date.now()}`;
+    const user = await createUser({
+      id: `${P}projection-customer-${suffix}`,
+      dataClass: "customer",
+    });
+    const character = await prisma.character.create({
+      data: {
+        id: `${P}projection-character-${suffix}`,
+        name: "ProjChar",
+        age: 24,
+        description: "d",
+        appearance: {},
+        advancedDetails: {},
+      },
+    });
+    const sessionId = `${P}projection-session-${suffix}`;
 
     // session.created seeds the projection row
     await applyChatEvent({
-      eventId: "p1",
+      eventId: `${P}projection-created-${suffix}`,
       eventType: "chat.session.created",
       aggregateId: sessionId,
       payload: { userId: user.id, characterId: character.id },
@@ -120,7 +428,7 @@ describe("applyChatEvent", () => {
 
     // message.completed bumps lastMessageAt
     await applyChatEvent({
-      eventId: "p2",
+      eventId: `${P}projection-completed-${suffix}`,
       eventType: "chat.message.completed",
       aggregateId: "msg_x",
       payload: { sessionId, userId: user.id, characterId: character.id },
@@ -129,9 +437,323 @@ describe("applyChatEvent", () => {
     expect(row?.lastMessageAt).toBeTruthy();
 
     // session.deleted hides it from the library
-    await applyChatEvent({ eventId: "p3", eventType: "chat.session.deleted", aggregateId: sessionId, payload: { userId: user.id } });
+    await applyChatEvent({
+      eventId: `${P}projection-deleted-${suffix}`,
+      eventType: "chat.session.deleted",
+      aggregateId: sessionId,
+      payload: { userId: user.id },
+    });
     row = await prisma.recentChat.findUnique({ where: { sessionId } });
     expect(row?.status).toBe("deleted");
+  });
+
+  it("redacts chat-image source text when a logical exchange correction arrives", async () => {
+    const user = await createUser({
+      id: `${P}privacy-correction-user`,
+      dataClass: "customer",
+    });
+    const sessionId = `${P}privacy-correction-session`;
+    const userMessageId = `${P}privacy-correction-user-message`;
+    const assistantMessageId = `${P}privacy-correction-assistant-message`;
+    const matching = await prisma.generationJob.create({
+      data: {
+        id: `${P}privacy-correction-job`,
+        userId: user.id,
+        mode: "image",
+        controls: {},
+        presetIds: [],
+        sourceType: "chat_image",
+        sourceId: `${P}privacy-correction-attachment`,
+        sourceMeta: {
+          sessionId,
+          exchangeId: userMessageId,
+          messageId: assistantMessageId,
+          characterReleaseId: null,
+          promptHint: "private correction prompt",
+          conversationContext: "user: private correction context",
+        },
+      },
+    });
+    const unaffected = await prisma.generationJob.create({
+      data: {
+        id: `${P}privacy-unaffected-job`,
+        userId: user.id,
+        mode: "image",
+        controls: {},
+        presetIds: [],
+        sourceType: "chat_image",
+        sourceId: `${P}privacy-unaffected-attachment`,
+        sourceMeta: {
+          sessionId: `${P}privacy-unaffected-session`,
+          exchangeId: `${P}privacy-unaffected-exchange`,
+          messageId: `${P}privacy-unaffected-message`,
+          promptHint: "keep this prompt",
+          conversationContext: "keep this context",
+        },
+      },
+    });
+    const eventId = `${P}privacy-correction-event`;
+
+    await expect(applyChatEvent({
+      eventId,
+      eventType: CHAT_TO_MAIN_EVENTS.exchangeCorrectedV2,
+      aggregateId: userMessageId,
+      occurredAt: "2026-07-18T20:00:00.000Z",
+      payload: {
+        exchangeId: userMessageId,
+        correctionType: "deleted",
+        correctionRevision: 1,
+        userId: user.id,
+        sessionId,
+        messageIds: [userMessageId, assistantMessageId],
+      },
+    })).resolves.toEqual({ status: "applied" });
+
+    await expect(prisma.generationJob.findUniqueOrThrow({
+      where: { id: matching.id },
+      select: { sourceMeta: true },
+    })).resolves.toEqual({
+      sourceMeta: {
+        sessionId,
+        exchangeId: userMessageId,
+        messageId: assistantMessageId,
+        characterReleaseId: null,
+        promptHint: null,
+        conversationContext: null,
+        privacyRedaction: {
+          reason: "logical_exchange_deleted",
+          sourceEventId: eventId,
+          redactedAt: "2026-07-18T20:00:00.000Z",
+        },
+      },
+    });
+    await expect(prisma.generationJob.findUniqueOrThrow({
+      where: { id: unaffected.id },
+      select: { sourceMeta: true },
+    })).resolves.toMatchObject({
+      sourceMeta: {
+        promptHint: "keep this prompt",
+        conversationContext: "keep this context",
+      },
+    });
+  });
+
+  it("uses the existing exchange fact to redact legacy chat-image jobs", async () => {
+    const user = await createUser({
+      id: `${P}privacy-legacy-user`,
+      dataClass: "customer",
+    });
+    const exchangeId = `${P}privacy-legacy-exchange`;
+    const sessionId = `${P}privacy-legacy-session`;
+    const assistantMessageId = `${P}privacy-legacy-assistant`;
+    const characterId = `${P}privacy-legacy-character`;
+    await createCharacter({
+      id: characterId,
+      creatorId: user.id,
+      visibility: "public",
+      status: "approved",
+    });
+    await grantCoins(user.id, 100, "privacy-race-seed");
+    await prisma.chatExchangeFact.create({
+      data: {
+        exchangeId,
+        sourceService: "chat",
+        sourceEventId: `${P}privacy-legacy-completed-event`,
+        userMessageId: exchangeId,
+        assistantMessageId,
+        selectedAssistantMessageId: assistantMessageId,
+        assistantAttemptNo: 1,
+        correctionRevision: 2,
+        correctionType: "deleted",
+        sessionId,
+        engagementSessionId: `${P}privacy-legacy-engagement`,
+        userId: user.id,
+        characterId,
+        characterContentVersionId: `${P}privacy-legacy-content`,
+        environment: "development",
+        dataClass: "customer",
+        trustClass: "canonical",
+        actorIsInternal: false,
+        eligible: true,
+        occurredAt: new Date("2026-07-18T19:00:00.000Z"),
+        productDay: new Date("2026-07-18T00:00:00.000Z"),
+        sourceUpdatedAt: new Date("2026-07-18T19:00:00.000Z"),
+        validFrom: new Date("2026-07-18T19:00:00.000Z"),
+      },
+    });
+    const job = await prisma.generationJob.create({
+      data: {
+        id: `${P}privacy-legacy-job`,
+        userId: user.id,
+        mode: "image",
+        controls: {},
+        presetIds: [],
+        sourceType: "chat_image",
+        sourceId: `${P}privacy-legacy-attachment`,
+        sourceMeta: {
+          sessionId,
+          messageId: assistantMessageId,
+          promptHint: "legacy private prompt",
+          conversationContext: "legacy private context",
+        },
+      },
+    });
+
+    await applyChatEvent({
+      eventId: `${P}privacy-legacy-correction-event`,
+      eventType: CHAT_TO_MAIN_EVENTS.exchangeCorrectedV2,
+      aggregateId: exchangeId,
+      payload: {
+        exchangeId,
+        correctionType: "deleted",
+        correctionRevision: 2,
+        userId: user.id,
+      },
+    });
+
+    await expect(prisma.generationJob.findUniqueOrThrow({
+      where: { id: job.id },
+      select: { sourceMeta: true },
+    })).resolves.toMatchObject({
+      sourceMeta: {
+        sessionId,
+        messageId: assistantMessageId,
+        promptHint: null,
+        conversationContext: null,
+        privacyRedaction: { reason: "logical_exchange_deleted" },
+      },
+    });
+
+    const lateAttachmentId = `${P}privacy-legacy-late-attachment`;
+    await applyChatEvent({
+      eventId: `${P}privacy-legacy-late-image-event`,
+      eventType: CHAT_TO_MAIN_EVENTS.imageRequested,
+      aggregateId: lateAttachmentId,
+      payload: {
+        version: 1,
+        kind: "chat.image.requested",
+        requestId: `${P}privacy-legacy-late-request`,
+        attachmentId: lateAttachmentId,
+        sessionId,
+        exchangeId,
+        messageId: assistantMessageId,
+        userId: user.id,
+        characterId,
+        promptHint: "must not be resurrected",
+        conversationContext: "user: must not be resurrected",
+        controls: { orientation: "4:5", outputCount: 1 },
+      },
+    });
+    await expect(prisma.generationJob.count({
+      where: { sourceType: "chat_image", sourceId: lateAttachmentId },
+    })).resolves.toBe(0);
+    await expect(dreamcoinBalance(user.id)).resolves.toBe(100);
+  });
+
+  it("redacts every derived chat-image source text when a session is deleted", async () => {
+    const user = await createUser({
+      id: `${P}privacy-session-user`,
+      dataClass: "customer",
+    });
+    const sessionId = `${P}privacy-session-id`;
+    const characterId = `${P}privacy-session-character`;
+    await createCharacter({
+      id: characterId,
+      creatorId: user.id,
+      visibility: "public",
+      status: "approved",
+    });
+    await grantCoins(user.id, 100, "privacy-session-race-seed");
+    await prisma.recentChat.create({
+      data: {
+        sessionId,
+        userId: user.id,
+        characterId,
+        status: "active",
+      },
+    });
+    const jobs = await Promise.all(
+      ["one", "two"].map((suffix) => prisma.generationJob.create({
+        data: {
+          id: `${P}privacy-session-job-${suffix}`,
+          userId: user.id,
+          mode: "image",
+          controls: {},
+          presetIds: [],
+          sourceType: "chat_image",
+          sourceId: `${P}privacy-session-attachment-${suffix}`,
+          sourceMeta: {
+            sessionId,
+            messageId: `${P}privacy-session-message-${suffix}`,
+            promptHint: `private session prompt ${suffix}`,
+            conversationContext: `private session context ${suffix}`,
+          },
+        },
+      })),
+    );
+
+    await applyChatEvent({
+      eventId: `${P}privacy-session-deleted-event`,
+      eventType: CHAT_TO_MAIN_EVENTS.sessionDeleted,
+      aggregateId: sessionId,
+      occurredAt: "2026-07-18T21:00:00.000Z",
+      payload: { userId: user.id },
+    });
+
+    await expect(prisma.generationJob.findMany({
+      where: { id: { in: jobs.map((job) => job.id) } },
+      orderBy: { id: "asc" },
+      select: { sourceMeta: true },
+    })).resolves.toEqual([
+      {
+        sourceMeta: expect.objectContaining({
+          sessionId,
+          promptHint: null,
+          conversationContext: null,
+          privacyRedaction: {
+            reason: "session_deleted",
+            sourceEventId: `${P}privacy-session-deleted-event`,
+            redactedAt: "2026-07-18T21:00:00.000Z",
+          },
+        }),
+      },
+      {
+        sourceMeta: expect.objectContaining({
+          sessionId,
+          promptHint: null,
+          conversationContext: null,
+          privacyRedaction: {
+            reason: "session_deleted",
+            sourceEventId: `${P}privacy-session-deleted-event`,
+            redactedAt: "2026-07-18T21:00:00.000Z",
+          },
+        }),
+      },
+    ]);
+
+    const lateAttachmentId = `${P}privacy-session-late-attachment`;
+    await applyChatEvent({
+      eventId: `${P}privacy-session-late-image-event`,
+      eventType: CHAT_TO_MAIN_EVENTS.imageRequested,
+      aggregateId: lateAttachmentId,
+      payload: {
+        version: 1,
+        kind: "chat.image.requested",
+        requestId: `${P}privacy-session-late-request`,
+        attachmentId: lateAttachmentId,
+        sessionId,
+        messageId: `${P}privacy-session-late-message`,
+        userId: user.id,
+        characterId,
+        promptHint: "must not survive session deletion",
+        conversationContext: "user: must not survive session deletion",
+        controls: { orientation: "4:5", outputCount: 1 },
+      },
+    });
+    await expect(prisma.generationJob.count({
+      where: { sourceType: "chat_image", sourceId: lateAttachmentId },
+    })).resolves.toBe(0);
+    await expect(dreamcoinBalance(user.id)).resolves.toBe(100);
   });
 
   it("creates an idempotent generation job for chat image requests and emits completion callback", async () => {
