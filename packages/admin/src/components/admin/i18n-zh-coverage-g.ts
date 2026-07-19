@@ -1,4 +1,6 @@
 export const adminZhCoverageG: Record<string, string> = {
+  "Character stage": "角色阶段",
+  "Filter by character stage": "按角色阶段筛选",
   "{caption} scrollable table": "{caption} 可滚动表格",
   "{action} Character image {id}": "{action}角色图片 {id}",
   "{cost} DC": "{cost} 梦币",

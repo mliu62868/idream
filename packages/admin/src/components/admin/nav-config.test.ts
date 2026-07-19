@@ -44,6 +44,10 @@ describe("admin navigation information architecture", () => {
     expect(navItems.filter((item) => item.legacyHref !== null)).toHaveLength(34);
   });
 
+  it("presents Character as the primary admin object", () => {
+    expect(navItems.find((item) => item.id === "content/official")?.label).toBe("Characters");
+  });
+
   it("maps canonical routes and query-backed saved views onto domain workspaces", () => {
     expect(parseAdminPath("today")).toEqual({ sectionId: "dashboard", view: { kind: "list" } });
     expect(parseAdminPath("characters/new")).toEqual({ sectionId: "content/official", view: { kind: "new" } });

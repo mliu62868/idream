@@ -37,15 +37,20 @@ describe("Character and Creative operator workspaces", () => {
     expect(readOnly).not.toContain("Create and launch");
   });
 
-  it("renders server-authority search controls while portfolio data is loading", () => {
+  it("renders Character-first search controls while Character data is loading", () => {
     const html = renderToStaticMarkup(<CharacterWorkspace actorId="test-admin" permissions={{ read: true, writeProject: true, proposeRelease: true, publishRelease: true, reviewRelease: true, writeVisual: true, evaluateRoute: true, readAssets: true, createAssets: true, reviewAssets: true }} view={{ kind: "list" }} />);
+    expect(html).toContain("Characters");
+    expect(html).not.toContain("Portfolio &amp; Projects");
     expect(html).toContain("Search authority");
-    expect(html).toContain("Project phase");
+    expect(html).toContain("Search name or character ID");
+    expect(html).toContain("Character stage");
+    expect(html).not.toContain("Project phase");
     expect(html).toContain("Serving state");
     expect(html).toContain("Readiness");
     expect(html).toContain('href="/admin/characters/new"');
     expect(html).toContain("Create Character");
-    expect(html).toContain("Loading release-attributed portfolio");
+    expect(html).toContain("Loading characters");
+    expect(html).not.toContain("Loading release-attributed portfolio");
   });
 
   it("renders the analyst Character Performance route without granting Project access", () => {

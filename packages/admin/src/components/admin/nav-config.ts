@@ -108,7 +108,7 @@ function apiTargetItem(
 export const navItems: NavItem[] = [
   apiItem({ id: "dashboard", label: "Today", href: "/admin/today", icon: Gauge, group: "Today", apiWorkspace: "today" }),
 
-  apiItem({ id: "content/official", label: "Portfolio & Projects", href: "/admin/characters", icon: ShieldCheck, group: "Character Studio", apiWorkspace: "character_workspace" }),
+  apiItem({ id: "content/official", label: "Characters", href: "/admin/characters", icon: ShieldCheck, group: "Character Studio", apiWorkspace: "character_workspace" }),
   item({ id: "content/review-queue", label: "Character Review", href: "/admin/characters/review", icon: ClipboardCheck, group: "Character Studio", read: read("safety.review.read") }),
   item({ id: "content/templates", label: "Character Starters", href: "/admin/characters/starters", icon: Sparkles, group: "Character Studio", read: read("content.read") }),
   item({ id: "content/tags", label: "Taxonomy", href: "/admin/characters/taxonomy", icon: Flag, group: "Character Studio", read: read("content.read") }),

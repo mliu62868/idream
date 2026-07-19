@@ -856,12 +856,12 @@ function CharacterPortfolio({
   if (!canRead) return permissionDenied(mode === "performance" ? "character.performance.read" : "character.project.read");
   const performanceMode = mode === "performance";
   return (
-    <section aria-labelledby="character-portfolio-title">
+    <section aria-labelledby="character-list-title">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">{performanceMode ? t("Growth") : t("Character Studio")}</p>
-          <h2 className="mt-1 text-2xl font-semibold" id="character-portfolio-title">{performanceMode ? t("Character Performance") : t("Portfolio & Projects")}</h2>
-          <p className="mt-2 max-w-2xl text-sm text-[var(--ad-text-muted)]">{performanceMode ? t("Compare release-attributed value, maturity, and portfolio decisions without expanding Project authority.") : t("Decide what to promote, improve, pause, or retire from release-attributed evidence.")}</p>
+          <h2 className="mt-1 text-2xl font-semibold" id="character-list-title">{performanceMode ? t("Character Performance") : t("Characters")}</h2>
+          <p className="mt-2 max-w-2xl text-sm text-[var(--ad-text-muted)]">{performanceMode ? t("Compare release-attributed value, maturity, and portfolio decisions without expanding Project authority.") : t("Manage official character profiles and publishing.")}</p>
           {!performanceMode && canCreate ? (
             <Link
               className="mt-4 inline-flex min-h-11 items-center gap-2 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-[var(--ad-surface)] hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]"
@@ -874,15 +874,15 @@ function CharacterPortfolio({
           ) : null}
         </div>
         <form className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5 lg:items-end" onSubmit={(event) => { event.preventDefault(); apply(); }}>
-          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Search authority")}<input aria-label={t("Search characters")} className={`${fieldClass} mt-1`} onChange={(event) => setSearch(event.target.value)} placeholder={t("Name, character or project ID")} value={search} /></label>
-          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Project phase")}<select aria-label={t("Filter by project phase")} className={`${fieldClass} mt-1`} onChange={(event) => setPhase(event.target.value)} value={phase}><option value="">{t("All phases")}</option>{CHARACTER_PORTFOLIO_PHASES.map((value) => <option key={value} value={value}>{t(value.replaceAll("_", " "))}</option>)}</select></label>
+          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Search authority")}<input aria-label={t("Search characters")} className={`${fieldClass} mt-1`} onChange={(event) => setSearch(event.target.value)} placeholder={t("Search name or character ID")} value={search} /></label>
+          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Character stage")}<select aria-label={t("Filter by character stage")} className={`${fieldClass} mt-1`} onChange={(event) => setPhase(event.target.value)} value={phase}><option value="">{t("All phases")}</option>{CHARACTER_PORTFOLIO_PHASES.map((value) => <option key={value} value={value}>{t(value.replaceAll("_", " "))}</option>)}</select></label>
           <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Serving state")}<select aria-label={t("Filter by serving state")} className={`${fieldClass} mt-1`} onChange={(event) => setServingState(event.target.value)} value={servingState}><option value="">{t("All serving states")}</option>{CHARACTER_PORTFOLIO_SERVING_STATES.map((value) => <option key={value} value={value}>{t(value.replaceAll("_", " "))}</option>)}</select></label>
           <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Readiness")}<select aria-label={t("Filter by readiness")} className={`${fieldClass} mt-1`} onChange={(event) => setReadiness(event.target.value)} value={readiness}><option value="">{t("All readiness")}</option>{CHARACTER_PORTFOLIO_READINESS_STATES.map((value) => <option key={value} value={value}>{t(value.replaceAll("_", " "))}</option>)}</select></label>
           <WorkspaceButton tone="primary" type="submit">{t("Apply")}</WorkspaceButton>
         </form>
       </div>
       {error ? <div className="mt-5 rounded-lg bg-[var(--ad-red-bg)] p-4 text-sm text-[var(--ad-red-text)]" role="alert">{error} <button className="ml-2 underline" onClick={() => void load({ search, phase: phase || undefined, servingState: servingState || undefined, readiness: readiness || undefined, cursor }, "none")} type="button">{t("Retry")}</button></div> : null}
-      <div className="mt-6">{loading && items.length === 0 ? <LoadingWorkspace label="Loading release-attributed portfolio" /> : items.length === 0 ? error ? null : <EmptyWorkspace filtered={Boolean(search || phase || servingState || readiness)} onClear={() => { setSearch(""); setPhase(""); setServingState(""); setReadiness(""); setCursor(undefined); void load({ search: "" }, "push"); }} /> : <div className="grid gap-3">{items.map((item) => <PortfolioCard canOpenAssets={canOpenAssets} canOpenProject={canOpenProjects} item={item} key={item.characterId} />)}</div>}</div>
+      <div className="mt-6">{loading && items.length === 0 ? <LoadingWorkspace label={performanceMode ? "Loading release-attributed portfolio" : "Loading characters"} /> : items.length === 0 ? error ? null : <EmptyWorkspace filtered={Boolean(search || phase || servingState || readiness)} onClear={() => { setSearch(""); setPhase(""); setServingState(""); setReadiness(""); setCursor(undefined); void load({ search: "" }, "push"); }} /> : <div className="grid gap-3">{items.map((item) => <PortfolioCard canOpenAssets={canOpenAssets} canOpenProject={canOpenProjects} item={item} key={item.characterId} />)}</div>}</div>
       <div className="mt-4 flex items-center justify-between gap-3"><p className="text-xs text-[var(--ad-text-muted)]">{asOf ? t("Fresh as of {time}", { time: new Date(asOf).toLocaleString(locale === "zh" ? "zh-CN" : "en-US") }) : t("No successful query yet")}</p><WorkspaceButton disabled={loading || !pageInfo.hasNextPage || !pageInfo.endCursor} onClick={() => apply(pageInfo.endCursor ?? undefined)}>{t("Next page")}</WorkspaceButton></div>
     </section>
   );
