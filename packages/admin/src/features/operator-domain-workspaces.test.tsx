@@ -41,7 +41,8 @@ describe("Character and Creative operator workspaces", () => {
     const html = renderToStaticMarkup(<CharacterWorkspace actorId="test-admin" permissions={{ read: true, writeProject: true, proposeRelease: true, publishRelease: true, reviewRelease: true, writeVisual: true, evaluateRoute: true, readAssets: true, createAssets: true, reviewAssets: true }} view={{ kind: "list" }} />);
     expect(html).toContain("Characters");
     expect(html).not.toContain("Portfolio &amp; Projects");
-    expect(html).toContain("Search authority");
+    expect(html).toContain("Search characters");
+    expect(html).not.toContain("Search authority");
     expect(html).toContain("Search name or character ID");
     expect(html).toContain("Character stage");
     expect(html).not.toContain("Project phase");

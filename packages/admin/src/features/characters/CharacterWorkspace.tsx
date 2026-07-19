@@ -686,16 +686,19 @@ export function CharacterPortfolioVisual({
     : <div className="w-24">{content}</div>;
 }
 
-function PortfolioCard({
+export function CharacterPortfolioCard({
   canOpenAssets,
   canOpenProject,
   item,
+  mode,
 }: {
   canOpenAssets: boolean;
   canOpenProject: boolean;
   item: CharacterPortfolioItem;
+  mode: "studio" | "performance";
 }) {
   const { t } = useAdminI18n();
+  const performanceMode = mode === "performance";
   const performance = item.performance.find((metric) => metric.window === "28d" && metric.placementId === null)
     ?? item.performance.find((metric) => metric.window === "28d")
     ?? null;
@@ -732,9 +735,11 @@ function PortfolioCard({
           <StatusBadge value={item.readiness} />
         </div>
         <p className="mt-2 text-sm text-[var(--ad-text-muted)]">{t(item.project.audience)} · {t(item.project.phase.replaceAll("_", " "))}</p>
-        <p className="mt-2 text-xs text-[var(--ad-text-muted)]">
-          {characterPortfolioPerformanceLabel(performance)}
-        </p>
+        {performanceMode ? (
+          <p className="mt-2 text-xs text-[var(--ad-text-muted)]">
+            {characterPortfolioPerformanceLabel(performance)}
+          </p>
+        ) : null}
       </div>
       <div className="self-center text-right text-xs text-[var(--ad-text-muted)]">
         {canOpenNextAction
@@ -747,7 +752,7 @@ function PortfolioCard({
               </Link>
             )
           : <span className="inline-block font-semibold">{t("Performance only")}</span>}
-        {item.latestDecision ? (
+        {performanceMode && item.latestDecision ? (
           <span className="mt-1 block">
 
             {t("Latest decision:")} {item.latestDecision.decision}
@@ -755,6 +760,33 @@ function PortfolioCard({
         ) : null}
       </div>
     </article>
+  );
+}
+
+export function CharacterListEmptyState({
+  filtered,
+  onClear,
+}: {
+  filtered: boolean;
+  onClear: () => void;
+}) {
+  const { t } = useAdminI18n();
+  return (
+    <section className="rounded-xl bg-[var(--ad-surface)] px-6 py-14 text-center">
+      <h3 className="text-base font-semibold">
+        {filtered ? t("No characters match these filters") : t("No characters yet")}
+      </h3>
+      <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-[var(--ad-text-muted)]">
+        {filtered
+          ? t("Clear filters to return to all characters.")
+          : t("Create the first official character to get started.")}
+      </p>
+      {filtered ? (
+        <div className="mt-5">
+          <WorkspaceButton onClick={onClear}>{t("Clear filters")}</WorkspaceButton>
+        </div>
+      ) : null}
+    </section>
   );
 }
 
@@ -772,6 +804,7 @@ function CharacterPortfolio({
   mode: "studio" | "performance";
 }) {
   const { locale, t } = useAdminI18n();
+  const performanceMode = mode === "performance";
   const [items, setItems] = useState<CharacterPortfolioItem[]>([]);
   const [search, setSearch] = useState("");
   const [phase, setPhase] = useState("");
@@ -814,12 +847,16 @@ function CharacterPortfolio({
       successfulQueryKey.current = queryKey;
     } catch (reason) {
       if (request.isCurrent()) {
-        setError(reason instanceof Error ? reason.message : "Character portfolio could not be loaded");
+        setError(reason instanceof Error
+          ? reason.message
+          : performanceMode
+            ? "Character portfolio could not be loaded"
+            : "Characters could not be loaded");
       }
     } finally {
       if (request.isCurrent()) setLoading(false);
     }
-  }, [canRead]);
+  }, [canRead, performanceMode]);
 
   useEffect(() => {
     const gate = requestGate.current;
@@ -854,7 +891,6 @@ function CharacterPortfolio({
   }
 
   if (!canRead) return permissionDenied(mode === "performance" ? "character.performance.read" : "character.project.read");
-  const performanceMode = mode === "performance";
   return (
     <section aria-labelledby="character-list-title">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
@@ -874,7 +910,7 @@ function CharacterPortfolio({
           ) : null}
         </div>
         <form className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5 lg:items-end" onSubmit={(event) => { event.preventDefault(); apply(); }}>
-          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Search authority")}<input aria-label={t("Search characters")} className={`${fieldClass} mt-1`} onChange={(event) => setSearch(event.target.value)} placeholder={t("Search name or character ID")} value={search} /></label>
+          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Search characters")}<input aria-label={t("Search characters")} className={`${fieldClass} mt-1`} onChange={(event) => setSearch(event.target.value)} placeholder={t("Search name or character ID")} value={search} /></label>
           <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Character stage")}<select aria-label={t("Filter by character stage")} className={`${fieldClass} mt-1`} onChange={(event) => setPhase(event.target.value)} value={phase}><option value="">{t("All phases")}</option>{CHARACTER_PORTFOLIO_PHASES.map((value) => <option key={value} value={value}>{t(value.replaceAll("_", " "))}</option>)}</select></label>
           <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Serving state")}<select aria-label={t("Filter by serving state")} className={`${fieldClass} mt-1`} onChange={(event) => setServingState(event.target.value)} value={servingState}><option value="">{t("All serving states")}</option>{CHARACTER_PORTFOLIO_SERVING_STATES.map((value) => <option key={value} value={value}>{t(value.replaceAll("_", " "))}</option>)}</select></label>
           <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Readiness")}<select aria-label={t("Filter by readiness")} className={`${fieldClass} mt-1`} onChange={(event) => setReadiness(event.target.value)} value={readiness}><option value="">{t("All readiness")}</option>{CHARACTER_PORTFOLIO_READINESS_STATES.map((value) => <option key={value} value={value}>{t(value.replaceAll("_", " "))}</option>)}</select></label>
@@ -882,7 +918,7 @@ function CharacterPortfolio({
         </form>
       </div>
       {error ? <div className="mt-5 rounded-lg bg-[var(--ad-red-bg)] p-4 text-sm text-[var(--ad-red-text)]" role="alert">{error} <button className="ml-2 underline" onClick={() => void load({ search, phase: phase || undefined, servingState: servingState || undefined, readiness: readiness || undefined, cursor }, "none")} type="button">{t("Retry")}</button></div> : null}
-      <div className="mt-6">{loading && items.length === 0 ? <LoadingWorkspace label={performanceMode ? "Loading release-attributed portfolio" : "Loading characters"} /> : items.length === 0 ? error ? null : <EmptyWorkspace filtered={Boolean(search || phase || servingState || readiness)} onClear={() => { setSearch(""); setPhase(""); setServingState(""); setReadiness(""); setCursor(undefined); void load({ search: "" }, "push"); }} /> : <div className="grid gap-3">{items.map((item) => <PortfolioCard canOpenAssets={canOpenAssets} canOpenProject={canOpenProjects} item={item} key={item.characterId} />)}</div>}</div>
+      <div className="mt-6">{loading && items.length === 0 ? <LoadingWorkspace label={performanceMode ? "Loading release-attributed portfolio" : "Loading characters"} /> : items.length === 0 ? error ? null : <CharacterListEmptyState filtered={Boolean(search || phase || servingState || readiness)} onClear={() => { setSearch(""); setPhase(""); setServingState(""); setReadiness(""); setCursor(undefined); void load({ search: "" }, "push"); }} /> : <div className="grid gap-3">{items.map((item) => <CharacterPortfolioCard canOpenAssets={canOpenAssets} canOpenProject={canOpenProjects} item={item} key={item.characterId} mode={mode} />)}</div>}</div>
       <div className="mt-4 flex items-center justify-between gap-3"><p className="text-xs text-[var(--ad-text-muted)]">{asOf ? t("Fresh as of {time}", { time: new Date(asOf).toLocaleString(locale === "zh" ? "zh-CN" : "en-US") }) : t("No successful query yet")}</p><WorkspaceButton disabled={loading || !pageInfo.hasNextPage || !pageInfo.endCursor} onClick={() => apply(pageInfo.endCursor ?? undefined)}>{t("Next page")}</WorkspaceButton></div>
     </section>
   );

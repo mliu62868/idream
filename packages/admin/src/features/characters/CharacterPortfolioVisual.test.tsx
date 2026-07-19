@@ -1,11 +1,83 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import type { CharacterPortfolioItem } from "@idream/shared/admin";
 import {
+  CharacterListEmptyState,
+  CharacterPortfolioCard,
   CharacterPortfolioVisual,
   characterPortfolioPerformanceLabel,
 } from "./CharacterWorkspace";
 
 describe("Character Portfolio role-image summary", () => {
+  const item = {
+    characterId: "character-1",
+    name: "Mara",
+    serving: { state: "live" },
+    readiness: "ready",
+    project: { audience: "Companion", phase: "live_management" },
+    visualProduction: {
+      primaryImageUrl: "/media/mara.webp",
+      primaryImageSource: "live",
+      draftPurposes: ["character_cover"],
+      livePurposes: ["character_cover", "character_hero"],
+      totalPurposes: 3,
+      deepLink: "/admin/characters/character-1?tab=assets",
+    },
+    performance: [{
+      window: "28d",
+      placementId: null,
+      maturity: "mature",
+      qceRate: 0.75,
+      sameCharacterD7: null,
+    }],
+    nextAction: {
+      code: "continue_asset_pack",
+      deepLink: "/admin/characters/character-1?tab=assets",
+      label: "Complete Character Assets",
+    },
+    latestDecision: { decision: "promote" },
+  } as unknown as CharacterPortfolioItem;
+
+  it("keeps portfolio evidence out of the primary Character workspace", () => {
+    const studio = renderToStaticMarkup(
+      <CharacterPortfolioCard
+        canOpenAssets
+        canOpenProject
+        item={item}
+        mode="studio"
+      />,
+    );
+    const performance = renderToStaticMarkup(
+      <CharacterPortfolioCard
+        canOpenAssets
+        canOpenProject
+        item={item}
+        mode="performance"
+      />,
+    );
+
+    expect(studio).toContain("Mara");
+    expect(studio).not.toContain("28d QCE");
+    expect(studio).not.toContain("Latest decision:");
+    expect(performance).toContain("28d QCE 75.0%");
+    expect(performance).toContain("Latest decision:");
+  });
+
+  it("uses Character-specific empty states instead of operations queue language", () => {
+    const empty = renderToStaticMarkup(
+      <CharacterListEmptyState filtered={false} onClear={() => undefined} />,
+    );
+    const filtered = renderToStaticMarkup(
+      <CharacterListEmptyState filtered onClear={() => undefined} />,
+    );
+
+    expect(empty).toContain("No characters yet");
+    expect(empty).toContain("Create the first official character to get started.");
+    expect(filtered).toContain("No characters match these filters");
+    expect(filtered).toContain("Clear filters to return to all characters.");
+    expect(`${empty}${filtered}`).not.toMatch(/queue|incident|case|authority/i);
+  });
+
   it("collapses an immature empty metric into one useful sentence", () => {
     expect(characterPortfolioPerformanceLabel({
       maturity: "immature",

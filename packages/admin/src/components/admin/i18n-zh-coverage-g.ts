@@ -1,6 +1,9 @@
 export const adminZhCoverageG: Record<string, string> = {
   "Character stage": "角色阶段",
+  "Characters could not be loaded": "角色加载失败",
+  "Clear filters to return to all characters.": "清除筛选条件即可返回全部角色。",
   "Filter by character stage": "按角色阶段筛选",
+  "No characters yet": "尚无角色",
   "{caption} scrollable table": "{caption} 可滚动表格",
   "{action} Character image {id}": "{action}角色图片 {id}",
   "{cost} DC": "{cost} 梦币",
