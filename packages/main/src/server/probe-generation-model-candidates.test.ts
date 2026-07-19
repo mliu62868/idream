@@ -8,6 +8,7 @@ import {
   evaluateGenerationModelCandidateSourceHash,
   generationModelCandidateDefinitions,
   resolveGenerationModelCandidateKey,
+  shouldVerifyGenerationModelCandidateSourceHash,
 } from "./probe-generation-model-candidates";
 
 describe("generation model candidate authority", () => {
@@ -88,6 +89,41 @@ describe("generation model candidate authority", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+
+  it("always rechecks source integrity once a candidate has traffic exposure", () => {
+    expect(
+      shouldVerifyGenerationModelCandidateSourceHash({
+        requireReady: false,
+        status: "active",
+        enabled: false,
+        rolloutPercent: 0,
+      }),
+    ).toBe(true);
+    expect(
+      shouldVerifyGenerationModelCandidateSourceHash({
+        requireReady: false,
+        status: "draft",
+        enabled: true,
+        rolloutPercent: 0,
+      }),
+    ).toBe(true);
+    expect(
+      shouldVerifyGenerationModelCandidateSourceHash({
+        requireReady: false,
+        status: "draft",
+        enabled: false,
+        rolloutPercent: 1,
+      }),
+    ).toBe(true);
+    expect(
+      shouldVerifyGenerationModelCandidateSourceHash({
+        requireReady: false,
+        status: "draft",
+        enabled: false,
+        rolloutPercent: 0,
+      }),
+    ).toBe(false);
   });
 
   it("accepts the historical Pornmaster key only as an input alias", () => {

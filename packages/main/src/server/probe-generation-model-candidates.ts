@@ -188,6 +188,20 @@ export function evaluateGenerationModelCandidateSourceHash(input: {
   return { ready: true, blockedReason: null };
 }
 
+export function shouldVerifyGenerationModelCandidateSourceHash(input: {
+  requireReady: boolean;
+  status: string;
+  enabled: boolean;
+  rolloutPercent: number;
+}) {
+  return (
+    input.requireReady ||
+    input.status === "active" ||
+    input.enabled ||
+    input.rolloutPercent > 0
+  );
+}
+
 function readArg(name: string) {
   const prefix = `--${name}=`;
   const inline = process.argv.find((arg) => arg.startsWith(prefix));
@@ -393,7 +407,7 @@ async function inspectCandidate(
         mode: string;
       }
     | undefined,
-  verifySourceHash: boolean,
+  requireReady: boolean,
 ): Promise<CandidateReport> {
   if (!profile) {
     return {
@@ -437,12 +451,20 @@ async function inspectCandidate(
     "manualConsistencyRate",
   ]);
   const files = await fileChecksForProfile(profile, runnerConfig);
+  const verifySourceHash =
+    Boolean(candidate.expectedSourceSha256) &&
+    shouldVerifyGenerationModelCandidateSourceHash({
+      requireReady,
+      status: profile.status,
+      enabled: profile.enabled,
+      rolloutPercent: profile.rolloutPercent,
+    });
   const assetInspection = await inspectSafetensorsAsset(
     profile.sourceModelPath ?? stringField(runnerConfig, "diffusionModelPath"),
-    verifySourceHash && Boolean(candidate.expectedSourceSha256),
+    verifySourceHash,
   );
   const sourceHash = evaluateGenerationModelCandidateSourceHash({
-    expected: candidate.expectedSourceSha256,
+    expected: verifySourceHash ? candidate.expectedSourceSha256 : undefined,
     observed: assetInspection?.sha256 ?? null,
   });
   const components = componentChecks(runnerConfig.componentStatus);
