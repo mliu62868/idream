@@ -17,6 +17,130 @@ export const creativeRunAttachIncidentRequestSchema = z.object({
   reason: z.string().trim().min(3).max(2_000),
 }).strict();
 
+export const characterRouteEvaluationMatrixSchemaVersion =
+  "character-identity-v1";
+export const characterRouteEvaluationOutputsPerDirection = 4;
+export const characterRouteEvaluationMatrixDirections = [
+  {
+    id: "eval-front-soft",
+    title: "Front portrait, soft light",
+    scenePrompt: "Front-facing portrait with a calm expression and clean soft lighting.",
+    mood: "calm",
+    setting: "neutral studio",
+    outfit: "signature everyday outfit",
+    camera: "portrait close-up",
+    lighting: "soft frontal light",
+  },
+  {
+    id: "eval-three-quarter",
+    title: "Three-quarter portrait",
+    scenePrompt: "Three-quarter portrait preserving the exact face, hair, and body identity.",
+    mood: "warm",
+    setting: "quiet interior",
+    outfit: "signature everyday outfit",
+    camera: "three-quarter medium portrait",
+    lighting: "soft window light",
+  },
+  {
+    id: "eval-profile",
+    title: "Side profile",
+    scenePrompt: "Natural side-profile portrait with the character identity clearly visible.",
+    mood: "reflective",
+    setting: "minimal interior",
+    outfit: "simple fitted outfit",
+    camera: "side-profile close-up",
+    lighting: "gentle rim light",
+  },
+  {
+    id: "eval-smile",
+    title: "Expressive smile",
+    scenePrompt: "Warm smiling portrait without changing the character's stable identity.",
+    mood: "playful",
+    setting: "bright living room",
+    outfit: "casual companion look",
+    camera: "eye-level medium close-up",
+    lighting: "bright natural light",
+  },
+  {
+    id: "eval-low-light",
+    title: "Low-light portrait",
+    scenePrompt: "Intimate low-light portrait that keeps facial identity and hairstyle stable.",
+    mood: "intimate",
+    setting: "evening bedroom",
+    outfit: "elegant evening look",
+    camera: "cinematic close-up",
+    lighting: "warm practical low light",
+  },
+  {
+    id: "eval-outdoor",
+    title: "Outdoor daylight",
+    scenePrompt: "Outdoor daylight portrait preserving the exact canonical identity.",
+    mood: "confident",
+    setting: "city garden",
+    outfit: "daytime street style",
+    camera: "waist-up portrait",
+    lighting: "open shade daylight",
+  },
+  {
+    id: "eval-seated",
+    title: "Seated medium shot",
+    scenePrompt: "Relaxed seated medium shot with natural hands and stable body proportions.",
+    mood: "comfortable",
+    setting: "cozy lounge",
+    outfit: "soft casual outfit",
+    camera: "seated medium shot",
+    lighting: "balanced interior light",
+  },
+  {
+    id: "eval-standing",
+    title: "Standing full body",
+    scenePrompt: "Standing full-body portrait preserving face, hair, body type, and signature traits.",
+    mood: "self-assured",
+    setting: "clean apartment",
+    outfit: "signature full-body look",
+    camera: "full-body portrait",
+    lighting: "soft directional light",
+  },
+  {
+    id: "eval-dynamic",
+    title: "Natural movement",
+    scenePrompt: "A natural walking moment with stable identity and realistic body structure.",
+    mood: "lively",
+    setting: "sunlit corridor",
+    outfit: "casual movement-friendly outfit",
+    camera: "dynamic medium-full shot",
+    lighting: "directional daylight",
+  },
+  {
+    id: "eval-chat",
+    title: "Companion chat moment",
+    scenePrompt: "Close companion chat moment with direct eye contact and exact identity preservation.",
+    mood: "affectionate",
+    setting: "private conversational space",
+    outfit: "relaxed companion outfit",
+    camera: "chat-ready close-up",
+    lighting: "warm flattering light",
+  },
+] as const;
+export const characterRouteEvaluationSampleCount =
+  characterRouteEvaluationMatrixDirections.length *
+  characterRouteEvaluationOutputsPerDirection;
+
+export function characterRouteEvaluationMatrixKey(style: string) {
+  return `${style}-identity-v1`;
+}
+
+function isCanonicalCharacterRouteEvaluationMatrix(input: {
+  readonly directions?: readonly unknown[];
+  readonly outputsPerDirection?: number;
+  readonly count: number;
+}) {
+  return input.count === characterRouteEvaluationSampleCount &&
+    input.outputsPerDirection === characterRouteEvaluationOutputsPerDirection &&
+    JSON.stringify(input.directions) ===
+      JSON.stringify(characterRouteEvaluationMatrixDirections);
+}
+
 export const creativeRunCreateRequestSchema = z
   .object({
     title: z.string().trim().min(1).max(160).optional(),
@@ -39,7 +163,7 @@ export const creativeRunCreateRequestSchema = z
     referenceAssetIds: z.array(adminIdSchema).max(4).default([]),
     bootstrapIdentity: z.boolean().default(false),
     orientation: z.string().trim().min(1).max(20).optional(),
-    count: z.number().int().min(1).max(24).default(4),
+    count: z.number().int().min(1).max(40).default(4),
     brief: z.string().trim().min(1).max(2_000),
     directions: z.array(z.object({
       id: adminIdSchema,
@@ -52,6 +176,7 @@ export const creativeRunCreateRequestSchema = z
       lighting: z.string().trim().min(1).max(120),
     }).strict()).min(1).max(12).optional(),
     outputsPerDirection: z.number().int().min(1).max(24).optional(),
+    routeEvaluationMatrixKey: z.string().trim().min(1).max(160).optional(),
     consistencyMode: z.enum(["strict", "balanced", "creative"]).default("balanced"),
     dueAt: adminIsoDateTimeSchema.optional(),
     priority: adminPrioritySchema.default("normal"),
@@ -86,8 +211,16 @@ export const creativeRunCreateRequestSchema = z
     if (!request.directions && request.outputsPerDirection !== undefined) {
       ctx.addIssue({ code: "custom", path: ["outputsPerDirection"], message: "Outputs per direction requires persisted directions" });
     }
-    if (request.directions && request.directions.length * (request.outputsPerDirection ?? 1) > 24) {
-      ctx.addIssue({ code: "custom", path: ["outputsPerDirection"], message: "A Creative Run cannot exceed 24 outputs" });
+    const outputLimit = request.purpose === "model_eval" ? 40 : 24;
+    if (request.count > outputLimit) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["count"],
+        message: `A ${request.purpose === "model_eval" ? "model evaluation" : "Creative"} Run cannot exceed ${outputLimit} outputs`,
+      });
+    }
+    if (request.directions && request.directions.length * (request.outputsPerDirection ?? 1) > outputLimit) {
+      ctx.addIssue({ code: "custom", path: ["outputsPerDirection"], message: `This Run cannot exceed ${outputLimit} outputs` });
     }
     if (
       request.bootstrapIdentity &&
@@ -111,6 +244,50 @@ export const creativeRunCreateRequestSchema = z
         code: "custom",
         path: ["referenceAssetIds"],
         message: "Generic image production is text-to-image only and cannot accept reference assets",
+      });
+    }
+    if (request.purpose === "model_eval" && request.targetType !== "character") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["targetType"],
+        message: "Identity route evaluation must pin a Character and its current reference authority",
+      });
+    }
+    if (request.purpose === "model_eval" && request.referenceAssetIds.length > 0) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["referenceAssetIds"],
+        message: "Route evaluation uses only the Character's sealed canonical Reference Set",
+      });
+    }
+    if (
+      request.purpose === "model_eval" &&
+      !isCanonicalCharacterRouteEvaluationMatrix(request)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["directions"],
+        message: "Route evaluation must use the canonical 10-direction, 40-sample matrix",
+      });
+    }
+    if (
+      request.purpose === "model_eval" &&
+      !request.routeEvaluationMatrixKey
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["routeEvaluationMatrixKey"],
+        message: "Route evaluation must pin the canonical matrix key",
+      });
+    }
+    if (
+      request.purpose !== "model_eval" &&
+      request.routeEvaluationMatrixKey !== undefined
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["routeEvaluationMatrixKey"],
+        message: "Only route evaluation Runs may pin a route evaluation matrix key",
       });
     }
   });

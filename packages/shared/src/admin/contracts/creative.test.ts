@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  characterRouteEvaluationMatrixDirections,
+  characterRouteEvaluationMatrixKey,
+  characterRouteEvaluationOutputsPerDirection,
+  characterRouteEvaluationSampleCount,
   creativePlacementWithdrawalRequestSchema,
   creativePlacementWithdrawalResultSchema,
   creativeRunCreateOptionsSchema,
@@ -61,6 +65,66 @@ describe("Creative Run create contract", () => {
     expect(creativeRunCreateRequestSchema.safeParse({
       ...request,
       outputsPerDirection: 2,
+    }).success).toBe(false);
+  });
+
+  it("reserves the 40-sample limit for Character identity route evaluation", () => {
+    expect(creativeRunCreateRequestSchema.safeParse({
+      ...request,
+      purpose: "model_eval",
+      targetType: "character",
+      targetId: "character-1",
+      count: characterRouteEvaluationSampleCount,
+      referenceAssetIds: [],
+      directions: characterRouteEvaluationMatrixDirections,
+      outputsPerDirection: characterRouteEvaluationOutputsPerDirection,
+      routeEvaluationMatrixKey: characterRouteEvaluationMatrixKey("realistic"),
+    }).success).toBe(true);
+    expect(creativeRunCreateRequestSchema.safeParse({
+      ...request,
+      count: 40,
+    }).success).toBe(false);
+    expect(creativeRunCreateRequestSchema.safeParse({
+      ...request,
+      purpose: "model_eval",
+      targetType: "none",
+      count: 40,
+    }).success).toBe(false);
+  });
+
+  it("rejects model evaluation requests that mutate or repeat the canonical matrix", () => {
+    const evaluationRequest = {
+      ...request,
+      purpose: "model_eval" as const,
+      targetType: "character" as const,
+      targetId: "character-1",
+      count: characterRouteEvaluationSampleCount,
+      referenceAssetIds: [],
+      directions: characterRouteEvaluationMatrixDirections,
+      outputsPerDirection: characterRouteEvaluationOutputsPerDirection,
+      routeEvaluationMatrixKey: characterRouteEvaluationMatrixKey("realistic"),
+    };
+    expect(creativeRunCreateRequestSchema.safeParse({
+      ...evaluationRequest,
+      directions: characterRouteEvaluationMatrixDirections.map(
+        (direction, index) => index === 0
+          ? { ...direction, scenePrompt: `${direction.scenePrompt} Mutated.` }
+          : direction,
+      ),
+    }).success).toBe(false);
+    expect(creativeRunCreateRequestSchema.safeParse({
+      ...evaluationRequest,
+      directions: characterRouteEvaluationMatrixDirections.map(
+        () => characterRouteEvaluationMatrixDirections[0],
+      ),
+    }).success).toBe(false);
+    expect(creativeRunCreateRequestSchema.safeParse({
+      ...evaluationRequest,
+      outputsPerDirection: 3,
+    }).success).toBe(false);
+    expect(creativeRunCreateRequestSchema.safeParse({
+      ...evaluationRequest,
+      routeEvaluationMatrixKey: undefined,
     }).success).toBe(false);
   });
 

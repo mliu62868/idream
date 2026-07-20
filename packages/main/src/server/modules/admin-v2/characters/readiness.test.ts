@@ -40,6 +40,19 @@ describe("character release readiness", () => {
     expect(result.blockers.map((blocker) => blocker.code)).toContain(expectedCheck);
   });
 
+  it("reports a missing route once instead of also calling it stale", () => {
+    const result = evaluateReleaseReadiness({
+      ...readyCandidate,
+      routeQualification: null,
+    });
+
+    expect(result.blockers.filter((blocker) =>
+      blocker.code.startsWith("generation_route_")
+    )).toEqual([
+      expect.objectContaining({ code: "generation_route_unqualified" }),
+    ]);
+  });
+
   it("rejects a serving pointer that targets another character or the scheduled pointer", () => {
     expect(() =>
       validateServingPointer({

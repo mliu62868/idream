@@ -33,7 +33,10 @@ import { loadCharacterIdentityBootstrapAuthority } from "./identity-bootstrap-au
 import { lockCharacterGenerationAuthority } from "./generation-authority-lock";
 import { isMediaAssetOperationalForAuthority } from "@/server/lib/media-asset-authority";
 import { evaluateDraftAssetRouteAuthority } from "./draft-asset-route-authority";
-import { generationSourceVariationAuthority } from "./generation-route-authority";
+import {
+  generationRouteRuntimeCompatibility,
+  generationSourceVariationAuthority,
+} from "./generation-route-authority";
 import {
   characterImageReadinessFingerprint,
   inspectCharacterImageGenerationSource,
@@ -240,6 +243,74 @@ async function findBootstrapGenerationProfile() {
     };
   }
   return null;
+}
+
+async function findRouteEvaluationGenerationProfiles(
+  requiredReferenceRoles: readonly string[],
+) {
+  if (requiredReferenceRoles.length === 0) return [];
+  const profiles = await prisma.generationModelProfile.findMany({
+    where: {
+      mode: "image",
+      status: "active",
+      enabled: true,
+      rolloutPercent: { gt: 0 },
+    },
+    orderBy: [
+      { publishedAt: "desc" },
+      { version: "desc" },
+      { profileKey: "asc" },
+    ],
+    take: 80,
+  });
+  const compatible: Array<{
+    profileKey: string;
+    profileVersion: number;
+    label: string;
+    workflowKey: string;
+    workflowVersion: number;
+    orientation: string;
+    requiredEntitlement: string | null;
+  }> = [];
+  for (const profile of profiles) {
+    const workflowKey = profile.workflowKey ?? profile.pipelineModel;
+    const workflow = await generationWorkflowDescriptor(workflowKey);
+    const incompatibility = generationRouteRuntimeCompatibility({
+      workflow,
+      qualificationWorkflowVersion: workflow?.version ?? 0,
+      profileCapabilities: record(profile.runnerConfig).capabilities,
+      requiredReferenceCount: requiredReferenceRoles.length,
+      requiredReferenceRoles,
+    });
+    if (incompatibility || !workflow) continue;
+    const allowedOrientations = strings(profile.allowedOrientations);
+    compatible.push({
+      profileKey: profile.profileKey,
+      profileVersion: profile.version,
+      label: profile.label,
+      workflowKey,
+      workflowVersion: workflow.version,
+      orientation: allowedOrientations.includes("4:5")
+        ? "4:5"
+        : allowedOrientations[0] ?? "4:5",
+      requiredEntitlement: profile.requiredEntitlement,
+    });
+  }
+  compatible.sort((left, right) =>
+    Number(Boolean(left.requiredEntitlement)) -
+      Number(Boolean(right.requiredEntitlement)) ||
+    left.profileKey.localeCompare(right.profileKey) ||
+    right.profileVersion - left.profileVersion
+  );
+  return compatible.map((profile, index) => ({
+    profileKey: profile.profileKey,
+    profileVersion: profile.profileVersion,
+    label: profile.label,
+    workflowKey: profile.workflowKey,
+    workflowVersion: profile.workflowVersion,
+    orientation: profile.orientation,
+    recommended: index === 0,
+  }));
 }
 
 type VisualAssetProjectionSource = {
@@ -534,7 +605,14 @@ export async function getCharacterWorkspace(characterId: string) {
     ? [...new Set([...strings(activeIdentity.anchorAssetIds), ...activeReferenceAssetIds])]
     : [];
   const visualAsOf = new Date();
-  const [visualPoolAssets, routeQualifications, qualifiedRoute, bootstrapProfile, characterImageReferenceCount] = await Promise.all([
+  const [
+    visualPoolAssets,
+    routeQualifications,
+    qualifiedRoute,
+    bootstrapProfile,
+    routeEvaluationProfiles,
+    characterImageReferenceCount,
+  ] = await Promise.all([
     prisma.mediaAsset.findMany({
       where: operationalMediaAssetWhere({
         id: { in: visualPoolIds },
@@ -559,6 +637,11 @@ export async function getCharacterWorkspace(characterId: string) {
         activeReferenceSet?.references.map((reference) => reference.role) ?? [],
     }) : Promise.resolve(null),
     bootstrapAuthority.allowed ? findBootstrapGenerationProfile() : Promise.resolve(null),
+    activeIdentity && activeReferenceSet
+      ? findRouteEvaluationGenerationProfiles(
+          activeReferenceSet.references.map((reference) => reference.role),
+        )
+      : Promise.resolve([]),
     character.imageAsset?.characterId === null
       ? prisma.character.count({ where: { imageAssetId: character.imageAsset.id } })
       : Promise.resolve(0),
@@ -941,6 +1024,19 @@ export async function getCharacterWorkspace(characterId: string) {
           }),
         };
       }),
+      routeEvaluation: {
+        ready: routeEvaluationProfiles.length > 0,
+        blocker: !activeIdentity
+          ? "Create and seal a Visual Identity before evaluating an image route."
+          : !activeReferenceSet || activeReferenceSet.references.length === 0
+            ? "Publish a sealed Reference Set before evaluating an image route."
+            : routeEvaluationProfiles.length === 0
+              ? "No active reference-capable image profile can consume this Reference Set."
+              : null,
+        sampleMinimum: 40,
+        evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,
+        profiles: routeEvaluationProfiles,
+      },
       identityBootstrap: {
         state: bootstrapAuthority.state,
         allowed: bootstrapAuthority.allowed,
@@ -967,7 +1063,7 @@ export async function getCharacterWorkspace(characterId: string) {
             }
           : null,
         nextDeepLink: imageReadinessState === "route_pending"
-          ? `/admin/ops/profiles?characterId=${encodeURIComponent(characterId)}`
+          ? `/admin/characters/${encodeURIComponent(characterId)}?tab=visual#route-qualification-workbench`
           : `/admin/characters/${encodeURIComponent(characterId)}?tab=assets`,
       },
       readiness: {
@@ -975,7 +1071,10 @@ export async function getCharacterWorkspace(characterId: string) {
         qualificationPolicyVersion: CHARACTER_RELEASE_POLICY_VERSION,
         blockers: visualBlockers.map((blocker) => ({
           ...blocker,
-          deepLink: blocker.deepLink.replace("?tab=visual-identity", "?tab=visual"),
+          deepLink: ["generation_route_unqualified", "generation_route_stale"]
+            .includes(blocker.code)
+            ? `/admin/characters/${encodeURIComponent(characterId)}?tab=visual#route-qualification-workbench`
+            : blocker.deepLink.replace("?tab=visual-identity", "?tab=visual"),
         })),
         productionDeepLink: `/admin/characters/${encodeURIComponent(characterId)}?tab=assets`,
       },

@@ -386,6 +386,9 @@ export function creativeIdentityReviewMode(input: {
   readonly purpose: string;
   readonly sourceMeta: unknown;
 }) {
+  if (input.purpose === "model_eval") {
+    return "preserves_identity" as const;
+  }
   if (!["character_cover", "character_hero", "character_chat"].includes(input.purpose)) {
     return "not_applicable" as const;
   }
@@ -572,6 +575,7 @@ export async function recordCreativeReviewDecision(input: {
       throw Errors.conflict("Creative Run is not active for review", { lifecycleState: run.lifecycleState });
     }
     const characterAssetReview = ["character_cover", "character_hero", "character_chat"].includes(run.purpose);
+    const routeEvaluationReview = run.purpose === "model_eval";
     if (characterAssetReview) {
       if (!input.quality) {
         throw Errors.badRequest("Character asset review requires the complete visible quality checklist");
@@ -588,6 +592,17 @@ export async function recordCreativeReviewDecision(input: {
       if (input.decision === "approved" && input.score === undefined) {
         throw Errors.badRequest("Character asset approval requires an explicit score");
       }
+    }
+    if (
+      routeEvaluationReview &&
+      (
+        input.identityConsistency === "unscored" ||
+        input.score === undefined
+      )
+    ) {
+      throw Errors.badRequest(
+        "Model evaluation review requires an explicit identity result and identity match score",
+      );
     }
     const itemLocator = await tx.contentProductionItem.findFirst({
       where: { id: input.itemId, batchId: run.id },

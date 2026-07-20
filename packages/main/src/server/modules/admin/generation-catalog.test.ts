@@ -75,6 +75,7 @@ describe("generation catalog (admin, read-only)", () => {
     const items = res.data.items as Array<Record<string, unknown>>;
     const keys = items.map((item) => item.workflowKey);
     expect(keys).toContain("redcraft-krea2-txt2img");
+    expect(keys).toContain("redcraft-krea2-redmix3-txt2img");
     expect(keys).toContain("qwen-image-edit-img2img");
     expect(keys).toContain("qwen-image-edit-multi-identity");
     expect(keys).toContain("pornmaster-zimage-drawthings-txt2img");

@@ -1,12 +1,26 @@
 import { randomUUID } from "node:crypto";
+import {
+  characterRouteEvaluationMatrixDirections,
+  characterRouteEvaluationMatrixKey,
+  characterRouteEvaluationMatrixSchemaVersion,
+  characterRouteEvaluationOutputsPerDirection,
+  characterRouteEvaluationSampleCount,
+} from "@idream/shared/admin";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { POST as evaluateRoute } from "@/app/api/v2/admin/characters/route-qualifications/commands/evaluate/route";
+import { POST as createCreativeRun } from "@/app/api/v2/admin/creative/runs/route";
+import { jobQueue } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { createCharacter, createUser, purgeTestData } from "@/server/test/helpers";
 import { evaluateGenerationRouteQualification } from "./route-qualification";
 import { findQualifiedGenerationRoute } from "./visual-authority";
 import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-executor";
+import { canonicalSha256 } from "../shared/canonical-json";
+import {
+  characterVisualProfileSnapshotHash,
+  referenceSetSnapshotHash,
+} from "./release-snapshot";
 
 describe("production Generation Route Qualification writer", () => {
   const prefix = `zt-route-qualification-${randomUUID()}-`;
@@ -18,14 +32,30 @@ describe("production Generation Route Qualification writer", () => {
   const generationProfileKey = `${prefix}profile`;
   const workflowKey = "qwen-image-edit-img2img";
   const batchId = `${prefix}batch`;
-  const matrixKey = `${prefix}matrix`;
+  const matrixKey = characterRouteEvaluationMatrixKey("realistic");
+  const anchorAssetId = `${prefix}anchor`;
+  const referenceSetId = `${prefix}reference-set`;
+  const recipeKey = `${prefix}character-recipe`;
+  let evaluationBatchId: string | null = null;
 
   beforeAll(async () => {
     await purgeTestData(prefix);
     await createUser({ id: actorId, role: "admin" });
     await createUser({ id: supportId, role: "support" });
     await createCharacter({ id: characterId, creatorId: actorId, status: "draft", visibility: "private" });
-    await prisma.characterVisualProfile.create({
+    await prisma.mediaAsset.create({
+      data: {
+        id: anchorAssetId,
+        ownerId: actorId,
+        characterId,
+        type: "image",
+        url: `/test/${anchorAssetId}.webp`,
+        visibility: "private",
+        safetyStatus: "passed",
+        metadata: { operational: true },
+      },
+    });
+    const visualProfile = await prisma.characterVisualProfile.create({
       data: {
         id: visualProfileId,
         characterId,
@@ -38,10 +68,47 @@ describe("production Generation Route Qualification writer", () => {
         bodyTraits: {},
         signatureTraits: {},
         styleTraits: {},
-        anchorAssetIds: [],
-        referenceAssetIds: [],
+        anchorAssetIds: [anchorAssetId],
+        referenceAssetIds: [anchorAssetId],
         adapterRefs: {},
         createdFrom: "test",
+      },
+    });
+    await prisma.characterVisualProfile.update({
+      where: { id: visualProfileId },
+      data: {
+        immutableHash: characterVisualProfileSnapshotHash(visualProfile),
+      },
+    });
+    await prisma.referenceSetRevision.create({
+      data: {
+        id: referenceSetId,
+        visualProfileId,
+        revision: 1,
+        status: "active",
+        selectorVersion: "route-evaluation-test-v1",
+        snapshotHash: referenceSetSnapshotHash({
+          visualProfileId,
+          revision: 1,
+          selectorVersion: "route-evaluation-test-v1",
+          references: [{
+            mediaAssetId: anchorAssetId,
+            position: 0,
+            role: "primary_face",
+            weight: 1,
+          }],
+        }),
+        createdFrom: "route_evaluation_test",
+        references: {
+          create: {
+            mediaAssetId: anchorAssetId,
+            position: 0,
+            role: "primary_face",
+            weight: 1,
+            selectorVersion: "route-evaluation-test-v1",
+            selectionReason: "Canonical route evaluation anchor",
+          },
+        },
       },
     });
     await prisma.generationModelProfile.create({
@@ -60,6 +127,22 @@ describe("production Generation Route Qualification writer", () => {
         rolloutPercent: 100,
       },
     });
+    await prisma.generationRecipe.create({
+      data: {
+        id: `${recipeKey}-v1`,
+        recipeKey,
+        label: "Character route evaluation recipe",
+        mode: "image",
+        useCase: "character",
+        body: "Preserve the exact Character identity in the requested shot.",
+        presetOrder: [],
+        safetyHints: {},
+        sampleMatrix: [],
+        version: 1,
+        status: "active",
+        publishedAt: new Date(),
+      },
+    });
     await prisma.contentProductionBatch.create({
       data: {
         id: batchId,
@@ -70,18 +153,39 @@ describe("production Generation Route Qualification writer", () => {
         profileId: generationProfileKey,
         profileVersion: 1,
         presetIds: [],
-        count: 40,
-        totalItems: 40,
+        count: characterRouteEvaluationSampleCount,
+        totalItems: characterRouteEvaluationSampleCount,
         status: "completed",
         createdById: actorId,
       },
     });
-    for (let index = 0; index < 40; index += 1) {
+    for (
+      let index = 0;
+      index < characterRouteEvaluationSampleCount;
+      index += 1
+    ) {
       const itemId = `${prefix}item-${index}`;
       const jobId = `${prefix}job-${index}`;
       const assetId = `${prefix}asset-${index}`;
+      const direction =
+        characterRouteEvaluationMatrixDirections[
+          Math.floor(index / characterRouteEvaluationOutputsPerDirection)
+        ];
+      const variantIndex =
+        index % characterRouteEvaluationOutputsPerDirection;
+      if (!direction) throw new Error("Expected canonical evaluation direction");
+      const directionHash = canonicalSha256(direction);
       await prisma.contentProductionItem.create({
-        data: { id: itemId, batchId, itemIndex: index, status: "generated", tags: [] },
+        data: {
+          id: itemId,
+          batchId,
+          itemIndex: index,
+          directionId: direction.id,
+          directionSnapshot: direction,
+          directionHash,
+          status: "generated",
+          tags: [],
+        },
       });
       await prisma.generationJob.create({
         data: {
@@ -96,11 +200,26 @@ describe("production Generation Route Qualification writer", () => {
           model: workflowKey,
           profileId: generationProfileKey,
           profileVersion: 1,
+          seed: `${prefix}seed-${index}`,
           outputCount: 1,
           deliveredOutputCount: 1,
           status: "completed",
           sourceType: "content_production_item",
           sourceId: itemId,
+          sourceMeta: {
+            batchId,
+            routeQualificationEvaluationCandidate: true,
+            routeQualificationMatrixKey: matrixKey,
+            routeQualificationMatrixSchemaVersion:
+              characterRouteEvaluationMatrixSchemaVersion,
+            routeQualificationPolicyVersion:
+              CHARACTER_RELEASE_POLICY_VERSION,
+            routeQualificationEvaluatorVersion:
+              env.GENERATION_ROUTE_EVALUATOR_VERSION,
+            directionId: direction.id,
+            directionHash,
+            variantIndex,
+          },
         },
       });
       await prisma.mediaAsset.create({
@@ -133,13 +252,43 @@ describe("production Generation Route Qualification writer", () => {
   });
 
   afterAll(async () => {
+    if (evaluationBatchId) {
+      const evaluationItems = await prisma.contentProductionItem.findMany({
+        where: { batchId: evaluationBatchId },
+        select: { jobId: true },
+      });
+      const evaluationJobIds = evaluationItems.flatMap((item) =>
+        item.jobId ? [item.jobId] : []
+      );
+      for (const jobId of evaluationJobIds) {
+        await jobQueue.removeByDedupePrefix(`generation:${jobId}`, [
+          "ai.image.generate",
+        ]);
+      }
+      await prisma.mainOutboxEvent.deleteMany({
+        where: { aggregateId: evaluationBatchId },
+      });
+      await prisma.generationAttemptEvent.deleteMany({
+        where: { attempt: { requestId: { in: evaluationJobIds } } },
+      });
+      await prisma.generationAttempt.deleteMany({
+        where: { requestId: { in: evaluationJobIds } },
+      });
+      await prisma.contentProductionBatch.deleteMany({
+        where: { id: evaluationBatchId },
+      });
+      await prisma.generationJob.deleteMany({
+        where: { id: { in: evaluationJobIds } },
+      });
+    }
     const qualifications = await prisma.generationRouteQualification.findMany({
-      where: { matrixKey: { startsWith: prefix } },
+      where: { generationProfileKey },
       select: { id: true },
     });
     const qualificationIds = qualifications.map((qualification) => qualification.id);
     await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: { in: qualificationIds } } });
     await prisma.generationRouteQualification.deleteMany({ where: { id: { in: qualificationIds } } });
+    await prisma.generationRecipe.deleteMany({ where: { recipeKey } });
     await prisma.generationModelProfile.deleteMany({ where: { id: modelProfileId } });
     await purgeTestData(prefix);
     await prisma.$disconnect();
@@ -149,12 +298,34 @@ describe("production Generation Route Qualification writer", () => {
     batchIds: [batchId],
     matrixKey,
     style: "realistic" as const,
-    policyVersion: "character-release-v2",
+    policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
     costLatencyGuardrail: { status: "passed" as const, evidenceRef: `${prefix}cost-latency-report` },
     expiresAt: null,
     reason: { code: "eval_complete", summary: "Publish computed route evidence." },
     confirmation: `QUALIFY ${matrixKey}`,
   };
+
+  async function clearRecordedQualifications() {
+    const qualifications = await prisma.generationRouteQualification.findMany({
+      where: { generationProfileKey },
+      select: { id: true },
+    });
+    const qualificationIds = qualifications.map(
+      (qualification) => qualification.id,
+    );
+    await prisma.mainOutboxEvent.deleteMany({
+      where: { aggregateId: { in: qualificationIds } },
+    });
+    await prisma.adminAuditLog.deleteMany({
+      where: {
+        targetType: "generation_route_qualification",
+        targetId: { in: qualificationIds },
+      },
+    });
+    await prisma.generationRouteQualification.deleteMany({
+      where: { id: { in: qualificationIds } },
+    });
+  }
 
   it("computes a qualified result from 40 exact production assets and replays immutable evidence", async () => {
     const result = await evaluateGenerationRouteQualification({
@@ -193,6 +364,25 @@ describe("production Generation Route Qualification writer", () => {
     })).resolves.toMatchObject({ qualificationId: result.qualificationId, replayed: true });
   });
 
+  it("rejects a completed batch when its persisted direction matrix is mutated", async () => {
+    const itemId = `${prefix}item-0`;
+    const canonicalDirection =
+      characterRouteEvaluationMatrixDirections[0];
+    await prisma.contentProductionItem.update({
+      where: { id: itemId },
+      data: { directionHash: `${prefix}mutated-direction-hash` },
+    });
+    await expect(evaluateGenerationRouteQualification({
+      actor: { id: actorId, role: "admin" },
+      requestId: `${prefix}request-mutated-matrix`,
+      request,
+    })).rejects.toMatchObject({ code: "conflict" });
+    await prisma.contentProductionItem.update({
+      where: { id: itemId },
+      data: { directionHash: canonicalSha256(canonicalDirection) },
+    });
+  });
+
   it("fails closed when a sample has unscored identity evidence", async () => {
     await prisma.mediaAsset.update({
       where: { id: `${prefix}asset-0` },
@@ -206,16 +396,155 @@ describe("production Generation Route Qualification writer", () => {
         },
       },
     });
-    const incompleteMatrixKey = `${prefix}incomplete-matrix`;
     await expect(evaluateGenerationRouteQualification({
       actor: { id: actorId, role: "admin" },
       requestId: `${prefix}request-incomplete`,
+      request,
+    })).rejects.toMatchObject({ code: "conflict" });
+  });
+
+  it("accepts exact human identity reviews when the automatic evaluator is unavailable", async () => {
+    await clearRecordedQualifications();
+    const assets = Array.from({ length: 40 }, (_, index) =>
+      `${prefix}asset-${index}`
+    );
+    await prisma.mediaAsset.updateMany({
+      where: { id: { in: assets } },
+      data: {
+        metadata: {
+          quality: {
+            schemaVersion: "1",
+            evaluatorVersion: "not_provided",
+            identity: {
+              status: "unscored",
+              reason: "evaluator_unavailable",
+            },
+          },
+        },
+      },
+    });
+    await prisma.creativeReviewDecision.createMany({
+      data: Array.from({ length: 40 }, (_, index) => ({
+        id: `${prefix}manual-decision-${index}`,
+        runItemId: `${prefix}item-${index}`,
+        artifactId: `${prefix}asset-${index}`,
+        decision: index < 38 ? "approved" : "rejected",
+        identityConsistency: index < 38 ? "passed" : "failed",
+        score: index < 38 ? 95 : 50,
+        reason: "Human review against the sealed identity anchor.",
+        reviewerId: actorId,
+      })),
+    });
+    const result = await evaluateGenerationRouteQualification({
+      actor: { id: actorId, role: "admin" },
+      requestId: `${prefix}request-human-reviewed`,
       request: {
         ...request,
-        matrixKey: incompleteMatrixKey,
-        confirmation: `QUALIFY ${incompleteMatrixKey}`,
+        policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
       },
-    })).rejects.toMatchObject({ code: "conflict" });
+    });
+    expect(result).toMatchObject({
+      result: "qualified",
+      sampleCount: 40,
+      passCount: 38,
+      evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,
+    });
+    expect(result.identityMatch).toBeCloseTo(0.9275);
+    await expect(prisma.generationRouteQualification.findUniqueOrThrow({
+      where: { id: result.qualificationId },
+      select: { evidence: true },
+    })).resolves.toMatchObject({
+      evidence: {
+        evidenceSchemaVersion: "2",
+        qualitySchemaVersion: null,
+        creativeReviewSchemaVersion: "1",
+        evidenceSources: ["creative_review"],
+        reviewerIds: [actorId],
+        reviewDecisionIds: expect.arrayContaining([
+          `${prefix}manual-decision-0`,
+          `${prefix}manual-decision-39`,
+        ]),
+      },
+    });
+  });
+
+  it("creates the 40-sample candidate matrix without requiring the route to qualify itself first", async () => {
+    await prisma.generationRouteQualification.updateMany({
+      where: {
+        generationProfileKey,
+        matrixKey,
+      },
+      data: {
+        result: "paused",
+      },
+    });
+    const response = await createCreativeRun(new Request(
+      "http://localhost/api/v2/admin/creative/runs",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": `${prefix}create-evaluation-run`,
+          "x-idream-user-id": actorId,
+          "x-idream-role": "admin",
+          "x-request-id": randomUUID(),
+        },
+        body: JSON.stringify({
+          title: "Candidate route evaluation",
+          purpose: "model_eval",
+          targetType: "character",
+          targetId: characterId,
+          profileId: generationProfileKey,
+          presetIds: [],
+          referenceAssetIds: [],
+          orientation: "portrait",
+          count: characterRouteEvaluationSampleCount,
+          brief: "Evaluate exact identity preservation across the fixed matrix.",
+          directions: characterRouteEvaluationMatrixDirections,
+          outputsPerDirection:
+            characterRouteEvaluationOutputsPerDirection,
+          routeEvaluationMatrixKey: matrixKey,
+          consistencyMode: "balanced",
+          priority: "high",
+          reason: "Create the route qualification matrix before this route is qualified",
+        }),
+      },
+    ));
+    expect(response.status).toBe(202);
+    const payload = await response.json();
+    evaluationBatchId = payload.data.batch.id as string;
+    const jobs = await prisma.generationJob.findMany({
+      where: {
+        sourceType: "content_production_item",
+        sourceMeta: {
+          path: ["batchId"],
+          equals: evaluationBatchId,
+        },
+      },
+    });
+    expect(jobs).toHaveLength(characterRouteEvaluationSampleCount);
+    expect(new Set(jobs.map((job) => job.seed)).size).toBe(
+      characterRouteEvaluationSampleCount,
+    );
+    expect(jobs).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        visualProfileId,
+        visualProfileVersion: 1,
+        referenceSetRevisionId: referenceSetId,
+        referenceAssetIds: [anchorAssetId],
+        sourceMeta: expect.objectContaining({
+          generationRouteQualificationId: null,
+          generationRouteFingerprint: null,
+          routeQualificationEvaluationCandidate: true,
+          routeQualificationMatrixKey: matrixKey,
+          routeQualificationMatrixSchemaVersion:
+            characterRouteEvaluationMatrixSchemaVersion,
+          routeQualificationPolicyVersion: CHARACTER_RELEASE_POLICY_VERSION,
+          routeQualificationEvaluatorVersion:
+            env.GENERATION_ROUTE_EVALUATOR_VERSION,
+        }),
+      }),
+    ]));
   });
 
   it("keyset-scans beyond 20 newer disabled routes to recover the older viable authority", async () => {

@@ -348,6 +348,21 @@ describe("Creative Run v2 brief and launch", () => {
       "direction-story",
       "direction-story",
     ]);
+    const directedJobs = await prisma.generationJob.findMany({
+      where: {
+        id: {
+          in: items.flatMap((item) => item.jobId ? [item.jobId] : []),
+        },
+      },
+      select: { seed: true, sourceMeta: true },
+    });
+    expect(new Set(directedJobs.map((job) => job.seed)).size).toBe(4);
+    expect(directedJobs.map((job) => job.sourceMeta)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ variantIndex: 0 }),
+        expect.objectContaining({ variantIndex: 1 }),
+      ]),
+    );
     expect(items.every((item) => typeof item.directionHash === "string" && item.directionHash.length > 20)).toBe(true);
     expect(items[0]?.directionSnapshot).toMatchObject({ title: "Intimate close-up" });
     const detail = await getCreativeRunDetail({

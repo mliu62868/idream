@@ -120,7 +120,7 @@ export function evaluateReleaseReadiness(input: ReleaseReadinessInput) {
       `/admin/ops/profiles?characterId=${input.releaseCharacterId}`,
     ),
     check(
-      input.routeQualification?.stale === false,
+      input.routeQualification === null || input.routeQualification.stale === false,
       "generation_route_stale",
       "The pinned generation route qualification is stale.",
       `/admin/ops/profiles?characterId=${input.releaseCharacterId}`,

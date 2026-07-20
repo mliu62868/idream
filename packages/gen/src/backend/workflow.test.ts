@@ -26,6 +26,41 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
     expect(() => workflowDescriptorSchema.parse(redcraft)).not.toThrow();
   });
 
+  it("loads RedMix3 as an isolated 12-step Krea2 comparison workflow", async () => {
+    const descriptors = await loadWorkflowDescriptors(WORKFLOWS_DIR);
+    const redMix3 = descriptors.find(
+      (descriptor) =>
+        descriptor.workflowKey === "redcraft-krea2-redmix3-txt2img",
+    );
+
+    expect(() => workflowDescriptorSchema.parse(redMix3)).not.toThrow();
+    expect(redMix3).toMatchObject({
+      modelId: "redcraft-krea2-redmix3-bf16",
+      backendKind: "comfyui",
+      version: 1,
+      capabilities: ["textToImage", "stableSeed"],
+      identity: {
+        mode: "none",
+        maxReferences: 0,
+        acceptedRoles: [],
+      },
+    });
+    if (!redMix3 || redMix3.backendKind !== "comfyui") {
+      throw new Error("expected RedMix3 ComfyUI descriptor");
+    }
+    expect(redMix3.apiPrompt["1"]?.inputs).toEqual({
+      unet_name: "redcraftKREA2RedMix3.0-bf16.safetensors",
+      weight_dtype: "default",
+    });
+    expect(redMix3.apiPrompt["7"]?.inputs).toMatchObject({
+      steps: 12,
+      cfg: 1,
+      sampler_name: "euler",
+      scheduler: "simple",
+      denoise: 1,
+    });
+  });
+
   it("loads the qwen-image-edit img2img descriptor and validates it against the schema", async () => {
     const descriptors = await loadWorkflowDescriptors(WORKFLOWS_DIR);
     const qwenEdit = descriptors.find((d) => d.workflowKey === "qwen-image-edit-img2img");

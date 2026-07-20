@@ -1,10 +1,16 @@
 import type { Prisma } from "@prisma/client";
 import type { z } from "zod";
 import {
+  characterRouteEvaluationMatrixDirections,
+  characterRouteEvaluationMatrixKey,
+  characterRouteEvaluationMatrixSchemaVersion,
+  characterRouteEvaluationOutputsPerDirection,
+  characterRouteEvaluationSampleCount,
   generationRouteQualificationEvaluateRequestSchema,
   generationRouteQualificationEvaluateResponseSchema,
 } from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
+import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { generationWorkflowDescriptor } from "@/server/modules/admin/generation-catalog";
@@ -18,6 +24,9 @@ type QualityEvidence = {
   readonly evaluatorVersion: string;
   readonly identityStatus: "passed" | "failed";
   readonly identityScore: number;
+  readonly source: "generated_quality" | "creative_review";
+  readonly reviewDecisionId?: string;
+  readonly reviewerId?: string;
 };
 
 function record(value: Prisma.JsonValue | unknown): Record<string, unknown> {
@@ -26,7 +35,9 @@ function record(value: Prisma.JsonValue | unknown): Record<string, unknown> {
     : {};
 }
 
-function qualityEvidence(asset: { id: string; metadata: Prisma.JsonValue }): QualityEvidence {
+function generatedQualityEvidence(
+  asset: { id: string; metadata: Prisma.JsonValue },
+): QualityEvidence | null {
   const quality = record(record(asset.metadata).quality);
   const identity = record(quality.identity);
   const evaluatorVersion = quality.evaluatorVersion;
@@ -42,16 +53,52 @@ function qualityEvidence(asset: { id: string; metadata: Prisma.JsonValue }): Qua
     identityScore < 0 ||
     identityScore > 1
   ) {
-    throw Errors.conflict("Evaluation asset lacks exact, scored identity evidence", {
-      assetId: asset.id,
-      requiredQualitySchemaVersion: "1",
-    });
+    return null;
   }
   return {
     assetId: asset.id,
     evaluatorVersion: evaluatorVersion.trim(),
     identityStatus,
     identityScore,
+    source: "generated_quality",
+  };
+}
+
+function reviewedQualityEvidence(input: {
+  readonly asset: { readonly id: string };
+  readonly decision: {
+    readonly id: string;
+    readonly artifactId: string;
+    readonly identityConsistency: string;
+    readonly score: number | null;
+    readonly reviewerId: string;
+  } | undefined;
+}): QualityEvidence {
+  const decision = input.decision;
+  if (
+    !decision ||
+    decision.artifactId !== input.asset.id ||
+    (decision.identityConsistency !== "passed" &&
+      decision.identityConsistency !== "failed") ||
+    decision.score === null ||
+    !Number.isInteger(decision.score) ||
+    decision.score < 0 ||
+    decision.score > 100
+  ) {
+    throw Errors.conflict("Evaluation asset lacks exact, scored identity evidence", {
+      assetId: input.asset.id,
+      requiredQualitySchemaVersion: "1",
+      acceptedSources: ["generated_quality", "creative_review"],
+    });
+  }
+  return {
+    assetId: input.asset.id,
+    evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,
+    identityStatus: decision.identityConsistency,
+    identityScore: decision.score / 100,
+    source: "creative_review",
+    reviewDecisionId: decision.id,
+    reviewerId: decision.reviewerId,
   };
 }
 
@@ -65,6 +112,17 @@ export async function evaluateGenerationRouteQualification(input: {
   const request = generationRouteQualificationEvaluateRequestSchema.parse(input.request);
   if (request.confirmation !== `QUALIFY ${request.matrixKey}`) {
     throw Errors.badRequest("Confirmation did not match the route qualification matrix");
+  }
+  if (
+    request.matrixKey !== characterRouteEvaluationMatrixKey(request.style)
+  ) {
+    throw Errors.badRequest(
+      "Route qualification must use the canonical matrix key for the requested style",
+      {
+        expectedMatrixKey: characterRouteEvaluationMatrixKey(request.style),
+        receivedMatrixKey: request.matrixKey,
+      },
+    );
   }
   const expiresAt = request.expiresAt ? new Date(request.expiresAt) : null;
   if (expiresAt && expiresAt.getTime() <= Date.now()) {
@@ -89,12 +147,114 @@ export async function evaluateGenerationRouteQualification(input: {
   if (batches.some((batch) => batch.purpose !== "model_eval")) {
     throw Errors.conflict("Only model_eval batches can publish route qualification evidence");
   }
+  const expectedMatrixItems =
+    characterRouteEvaluationMatrixDirections.flatMap((direction) =>
+      Array.from(
+        { length: characterRouteEvaluationOutputsPerDirection },
+        (_, variantIndex) => ({
+          direction,
+          directionHash: canonicalSha256(direction),
+          variantIndex,
+        }),
+      )
+    );
+  const invalidMatrixBatch = batches.map((batch) => {
+    const violations: string[] = [];
+    if (batch.targetType !== "character") violations.push("target_type");
+    if (!batch.targetId) violations.push("target_id");
+    if (batch.count !== characterRouteEvaluationSampleCount) {
+      violations.push("batch_count");
+    }
+    if (batch.totalItems !== characterRouteEvaluationSampleCount) {
+      violations.push("batch_total_items");
+    }
+    if (batch.items.length !== characterRouteEvaluationSampleCount) {
+      violations.push("persisted_item_count");
+    }
+    const seeds = new Set(
+      batch.items.flatMap((item) =>
+        item.job?.seed && item.job.seed.trim().length > 0 ? [item.job.seed] : []
+      ),
+    );
+    if (seeds.size !== characterRouteEvaluationSampleCount) {
+      violations.push("distinct_candidate_seeds");
+    }
+    batch.items.forEach((item, index) => {
+      const expected = expectedMatrixItems[index];
+      const sourceMeta = record(item.job?.sourceMeta);
+      if (!expected) {
+        violations.push(`item_${index}:unexpected`);
+        return;
+      }
+      const itemViolations = [
+        item.itemIndex !== index ? "index" : null,
+        item.directionId !== expected.direction.id ? "direction_id" : null,
+        item.directionHash !== expected.directionHash ? "direction_hash" : null,
+        canonicalSha256(item.directionSnapshot) !== expected.directionHash
+          ? "direction_snapshot"
+          : null,
+        item.job?.characterId !== batch.targetId ? "character_id" : null,
+        sourceMeta.routeQualificationEvaluationCandidate !== true
+          ? "candidate_marker"
+          : null,
+        sourceMeta.routeQualificationMatrixKey !== request.matrixKey
+          ? "matrix_key"
+          : null,
+        sourceMeta.routeQualificationMatrixSchemaVersion !==
+          characterRouteEvaluationMatrixSchemaVersion
+          ? "matrix_schema"
+          : null,
+        sourceMeta.routeQualificationPolicyVersion !== request.policyVersion
+          ? "policy_version"
+          : null,
+        sourceMeta.routeQualificationEvaluatorVersion !==
+          env.GENERATION_ROUTE_EVALUATOR_VERSION
+          ? "evaluator_version"
+          : null,
+        sourceMeta.directionId !== expected.direction.id
+          ? "source_direction_id"
+          : null,
+        sourceMeta.directionHash !== expected.directionHash
+          ? "source_direction_hash"
+          : null,
+        sourceMeta.variantIndex !== expected.variantIndex
+          ? "variant_index"
+          : null,
+      ].filter((violation): violation is string => violation !== null);
+      violations.push(...itemViolations.map(
+        (violation) => `item_${index}:${violation}`,
+      ));
+    });
+    return { batch, violations };
+  }).find((candidate) => candidate.violations.length > 0);
+  if (invalidMatrixBatch) {
+    throw Errors.conflict(
+      `Evaluation batch does not match the canonical 10-direction, 40-sample matrix authority: ${invalidMatrixBatch.violations.slice(0, 5).join(", ")}`,
+      {
+        batchId: invalidMatrixBatch.batch.id,
+        matrixKey: request.matrixKey,
+        matrixSchemaVersion: characterRouteEvaluationMatrixSchemaVersion,
+        violations: invalidMatrixBatch.violations,
+      },
+    );
+  }
 
-  const jobs = batches.flatMap((batch) => batch.items.map((item) => item.job));
-  if (jobs.length === 0 || jobs.some((job) => !job || job.status !== "completed")) {
+  const samples = batches.flatMap((batch) =>
+    batch.items.map((item) => ({ itemId: item.id, job: item.job }))
+  );
+  if (
+    samples.length === 0 ||
+    samples.some((sample) => !sample.job || sample.job.status !== "completed")
+  ) {
     throw Errors.conflict("Every evaluation matrix item must have a completed generation job");
   }
-  const completedJobs = jobs.filter((job): job is NonNullable<typeof job> => job !== null);
+  const completedSamples = samples.filter(
+    (sample): sample is {
+      itemId: string;
+      job: NonNullable<typeof sample.job>;
+    } => sample.job !== null,
+  );
+  const completedJobs = completedSamples.map((sample) => sample.job);
   const profileKeys = new Set(completedJobs.map((job) => job.profileId));
   const profileVersions = new Set(completedJobs.map((job) => job.profileVersion));
   const workflowKeys = new Set(completedJobs.map((job) => job.model));
@@ -144,7 +304,41 @@ export async function evaluateGenerationRouteQualification(input: {
   if (assets.length !== completedJobs.length || uniqueAssetIds.length !== assets.length) {
     throw Errors.conflict("Every matrix sample must resolve to exactly one distinct generated asset");
   }
-  const evidence = assets.map(qualityEvidence).sort((left, right) => left.assetId.localeCompare(right.assetId));
+  const decisions = await db.creativeReviewDecision.findMany({
+    where: {
+      runItemId: {
+        in: completedSamples.map((sample) => sample.itemId),
+      },
+    },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+  });
+  const latestDecisionByItemId = new Map<
+    string,
+    (typeof decisions)[number]
+  >();
+  for (const decision of decisions) {
+    if (!latestDecisionByItemId.has(decision.runItemId)) {
+      latestDecisionByItemId.set(decision.runItemId, decision);
+    }
+  }
+  const evidence = completedSamples.map((sample) => {
+    const asset = sample.job.assets[0] as (typeof assets)[number];
+    const generated = generatedQualityEvidence(asset);
+    const decision = latestDecisionByItemId.get(sample.itemId);
+    if (
+      generated &&
+      (
+        generated.evaluatorVersion === env.GENERATION_ROUTE_EVALUATOR_VERSION ||
+        !decision
+      )
+    ) {
+      return generated;
+    }
+    return reviewedQualityEvidence({
+      asset,
+      decision,
+    });
+  }).sort((left, right) => left.assetId.localeCompare(right.assetId));
   const evaluatorVersions = new Set(evidence.map((item) => item.evaluatorVersion));
   if (evaluatorVersions.size !== 1) {
     throw Errors.conflict("Evaluation evidence mixes evaluator versions");
@@ -208,12 +402,25 @@ export async function evaluateGenerationRouteQualification(input: {
         policyVersion: request.policyVersion,
         expiresAt,
         evidence: toInputJson({
+          evidenceSchemaVersion: "2",
           evidenceHash,
           evaluatorVersion,
-          qualitySchemaVersion: "1",
+          qualitySchemaVersion: evidence.every((item) =>
+            item.source === "generated_quality"
+          ) ? "1" : null,
+          creativeReviewSchemaVersion: evidence.some((item) =>
+            item.source === "creative_review"
+          ) ? "1" : null,
           reviewerId: input.actor.id,
           batchIds,
           assetIds: evidence.map((item) => item.assetId),
+          evidenceSources: [...new Set(evidence.map((item) => item.source))],
+          reviewDecisionIds: evidence.flatMap((item) =>
+            item.reviewDecisionId ? [item.reviewDecisionId] : []
+          ),
+          reviewerIds: [...new Set(evidence.flatMap((item) =>
+            item.reviewerId ? [item.reviewerId] : []
+          ))],
           passRate,
           costLatencyGuardrail: request.costLatencyGuardrail,
         }),

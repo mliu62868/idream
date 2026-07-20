@@ -559,7 +559,7 @@ describe("Creative retry through verified placement", () => {
     await prisma.contentProductionBatch.createMany({ data: failedRunIds.map((id) => ({
       id,
       title: id,
-      purpose: "model_eval",
+      purpose: "feed",
       targetType: "none",
       presetIds: [],
       count: 1,
@@ -571,7 +571,7 @@ describe("Creative retry through verified placement", () => {
     await prisma.contentProductionBatch.create({ data: {
       id: succeededRunId,
       title: succeededRunId,
-      purpose: "model_eval",
+      purpose: "feed",
       targetType: "none",
       presetIds: [],
       count: 1,

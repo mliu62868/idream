@@ -37,6 +37,21 @@ const data = {
       sampleCount: 40, passCount: 38, identityMatch: 0.94, result: "qualified", evidence: { batchIds: ["batch-1"] },
       policyVersion: "character-release-policy-v2", evaluatedAt: "2026-07-12T12:00:00.000Z", expiresAt: null, stale: false,
     }],
+    routeEvaluation: {
+      ready: true,
+      blocker: null,
+      sampleMinimum: 40,
+      evaluatorVersion: "identity-match-v1",
+      profiles: [{
+        profileKey: "portrait",
+        profileVersion: 3,
+        label: "Portrait identity route",
+        workflowKey: "identity",
+        workflowVersion: 2,
+        orientation: "4:5",
+        recommended: true,
+      }],
+    },
     identityBootstrap: {
       state: "blocked_existing_authority",
       allowed: false,
@@ -98,10 +113,11 @@ describe("Visual Identity operator workbench", () => {
     expect(html).toContain("38/40 passed");
     expect(html).toContain("Advanced identity controls");
     expect(html).toContain("Platform route evidence controls");
-    expect(html).toContain(
-      'href="/admin/ops/profiles?characterId=character-1"',
-    );
+    expect(html).toContain("Create 40-sample matrix");
+    expect(html).toContain("Candidate image route");
     expect(html).toContain("Submit route evaluation");
+    expect(html).toContain('aria-readonly="true"');
+    expect(html).toContain("realistic-identity-v1");
   });
 
   it("fails writes closed when the matching effective grants are absent", () => {

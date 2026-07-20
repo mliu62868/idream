@@ -1,6 +1,13 @@
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
-import { incrementCounter } from "@idream/shared";
+import {
+  characterRouteEvaluationMatrixDirections,
+  characterRouteEvaluationMatrixKey,
+  characterRouteEvaluationMatrixSchemaVersion,
+  characterRouteEvaluationOutputsPerDirection,
+  characterRouteEvaluationSampleCount,
+  incrementCounter,
+} from "@idream/shared";
 import { recordGenerationAttemptQueuedEvent } from "@/server/ai/generation-attempt-events";
 import { dimensionsForImageOrientation } from "@/server/modules/ourdream/generation-dimensions";
 import { generationCostDreamcoins } from "@/server/lib/generation-pricing";
@@ -121,10 +128,11 @@ const productionBatchCreateBaseSchema = z.object({
   referenceAssetIds: z.array(z.string().trim().min(1).max(180)).max(4).default([]),
   bootstrapIdentity: z.boolean().default(false),
   orientation: optionalText(20),
-  count: z.number().int().min(1).max(24).default(4),
+  count: z.number().int().min(1).max(40).default(4),
   brief: optionalText(2_000),
   directions: z.array(productionDirectionSchema).min(1).max(12).optional(),
   outputsPerDirection: z.number().int().min(1).max(24).optional(),
+  routeEvaluationMatrixKey: optionalText(160),
   consistencyMode: consistencyModeSchema.default("balanced"),
   dueAt: optionalText(80),
   priority: z.enum(["low", "normal", "high", "urgent"]).default("normal"),
@@ -159,8 +167,16 @@ const productionBatchCreateSchema = productionBatchCreateBaseSchema.superRefine(
   if (!value.directions && value.outputsPerDirection !== undefined) {
     ctx.addIssue({ code: "custom", path: ["outputsPerDirection"], message: "Outputs per direction requires persisted directions" });
   }
-  if (value.directions && value.directions.length * (value.outputsPerDirection ?? 1) > 24) {
-    ctx.addIssue({ code: "custom", path: ["outputsPerDirection"], message: "A Creative Run cannot exceed 24 outputs" });
+  const outputLimit = value.purpose === "model_eval" ? 40 : 24;
+  if (value.count > outputLimit) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["count"],
+      message: `A ${value.purpose === "model_eval" ? "model evaluation" : "Creative"} Run cannot exceed ${outputLimit} outputs`,
+    });
+  }
+  if (value.directions && value.directions.length * (value.outputsPerDirection ?? 1) > outputLimit) {
+    ctx.addIssue({ code: "custom", path: ["outputsPerDirection"], message: `This Run cannot exceed ${outputLimit} outputs` });
   }
   if (
     value.bootstrapIdentity &&
@@ -184,6 +200,53 @@ const productionBatchCreateSchema = productionBatchCreateBaseSchema.superRefine(
       code: "custom",
       path: ["referenceAssetIds"],
       message: "Generic image production is text-to-image only and cannot accept reference assets",
+    });
+  }
+  if (value.purpose === "model_eval" && value.targetType !== "character") {
+    ctx.addIssue({
+      code: "custom",
+      path: ["targetType"],
+      message: "Identity route evaluation must pin a Character and its current reference authority",
+    });
+  }
+  if (value.purpose === "model_eval" && value.referenceAssetIds.length > 0) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["referenceAssetIds"],
+      message: "Route evaluation uses only the Character's sealed canonical Reference Set",
+    });
+  }
+  if (
+    value.purpose === "model_eval" &&
+    (
+      value.count !== characterRouteEvaluationSampleCount ||
+      value.outputsPerDirection !==
+        characterRouteEvaluationOutputsPerDirection ||
+      JSON.stringify(value.directions) !==
+        JSON.stringify(characterRouteEvaluationMatrixDirections)
+    )
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["directions"],
+      message: "Route evaluation must use the canonical 10-direction, 40-sample matrix",
+    });
+  }
+  if (value.purpose === "model_eval" && !value.routeEvaluationMatrixKey) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["routeEvaluationMatrixKey"],
+      message: "Route evaluation must pin the canonical matrix key",
+    });
+  }
+  if (
+    value.purpose !== "model_eval" &&
+    value.routeEvaluationMatrixKey !== undefined
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["routeEvaluationMatrixKey"],
+      message: "Only route evaluation Runs may pin a route evaluation matrix key",
     });
   }
 });
@@ -402,6 +465,21 @@ export async function estimateProductionBatch(request: Request) {
 
 export type ProductionBatchCreateInput = z.infer<typeof productionBatchCreateSchema>;
 
+export function productionCandidateSeed(input: {
+  readonly baseSeed: string | null | undefined;
+  readonly batchId: string;
+  readonly directionId: string | null;
+  readonly variantIndex: number;
+}) {
+  const baseSeed = input.baseSeed?.trim() || "candidate";
+  return [
+    baseSeed,
+    `batch:${input.batchId}`,
+    `direction:${input.directionId ?? "default"}`,
+    `variant:${input.variantIndex + 1}`,
+  ].join(":");
+}
+
 // NOTE: takes `request` + full `AdminActor` (not just `actor: {id}`) because
 // the atomic Audit row needs actor.role plus request headers.
 export async function createProductionBatchCore(
@@ -467,6 +545,8 @@ export async function createProductionBatchCore(
     ? await loadCharacterIdentityBootstrapAuthority(prisma, body.targetId)
     : null;
   const characterTargetRun = body.targetType === "character";
+  const routeEvaluationRun =
+    characterTargetRun && body.purpose === "model_eval";
   let generationRouteAuthority: {
     readonly qualificationId: string;
     readonly routeFingerprint: string;
@@ -522,6 +602,20 @@ export async function createProductionBatchCore(
         profileKey: profile.profileKey,
         workflowKey,
       });
+    }
+    if (
+      routeEvaluationRun &&
+      body.routeEvaluationMatrixKey !==
+        characterRouteEvaluationMatrixKey(visualProfile.style)
+    ) {
+      throw Errors.badRequest(
+        "Route evaluation matrix key does not match the active Character identity style",
+        {
+          expectedMatrixKey:
+            characterRouteEvaluationMatrixKey(visualProfile.style),
+          receivedMatrixKey: body.routeEvaluationMatrixKey ?? null,
+        },
+      );
     }
   } else if (
     !workflow ||
@@ -599,31 +693,33 @@ export async function createProductionBatchCore(
       ...activeReferenceSet.references.map((reference) => reference.role),
       ...additionalReferenceAssets.map(() => "source_image" as const),
     ];
-    const qualifiedRoute = await findQualifiedGenerationRoute(prisma, {
-      style: visualProfile.style,
-      policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
-      evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,
-      at: new Date(),
-      requiredReferenceCount: requiredRouteReferenceRoles.length,
-      requiredReferenceRoles: requiredRouteReferenceRoles,
-    });
-    if (
-      !qualifiedRoute ||
-      qualifiedRoute.generationProfileKey !== profile.profileKey ||
-      qualifiedRoute.generationProfileVersion !== profile.version ||
-      qualifiedRoute.workflowKey !== workflowKey ||
-      qualifiedRoute.workflowVersion !== workflowVersion
-    ) {
-      throw Errors.conflict("The selected profile is not the current qualified Character identity route", {
-        profileKey: profile.profileKey,
-        workflowKey,
-        qualifiedProfileKey: qualifiedRoute?.generationProfileKey ?? null,
+    if (!routeEvaluationRun) {
+      const qualifiedRoute = await findQualifiedGenerationRoute(prisma, {
+        style: visualProfile.style,
+        policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
+        evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,
+        at: new Date(),
+        requiredReferenceCount: requiredRouteReferenceRoles.length,
+        requiredReferenceRoles: requiredRouteReferenceRoles,
       });
+      if (
+        !qualifiedRoute ||
+        qualifiedRoute.generationProfileKey !== profile.profileKey ||
+        qualifiedRoute.generationProfileVersion !== profile.version ||
+        qualifiedRoute.workflowKey !== workflowKey ||
+        qualifiedRoute.workflowVersion !== workflowVersion
+      ) {
+        throw Errors.conflict("The selected profile is not the current qualified Character identity route", {
+          profileKey: profile.profileKey,
+          workflowKey,
+          qualifiedProfileKey: qualifiedRoute?.generationProfileKey ?? null,
+        });
+      }
+      generationRouteAuthority = {
+        qualificationId: qualifiedRoute.id,
+        routeFingerprint: qualifiedRoute.routeFingerprint,
+      };
     }
-    generationRouteAuthority = {
-      qualificationId: qualifiedRoute.id,
-      routeFingerprint: qualifiedRoute.routeFingerprint,
-    };
     if (additionalReferenceAssets.some((asset) =>
       asset.sourceJob?.visualProfileId !== visualProfile.id ||
       asset.sourceJob.visualProfileVersion !== visualProfile.version ||
@@ -783,9 +879,12 @@ export async function createProductionBatchCore(
   const workItems = body.directions
     ? body.directions.flatMap((direction) => Array.from(
         { length: body.outputsPerDirection ?? 1 },
-        () => direction,
+        (_, variantIndex) => ({ direction, variantIndex }),
       ))
-    : Array.from({ length: body.count }, () => null);
+    : Array.from(
+        { length: body.count },
+        (_, variantIndex) => ({ direction: null, variantIndex }),
+      );
   const totalOutputCount = workItems.length;
 
   let replayed = false;
@@ -950,14 +1049,16 @@ export async function createProductionBatchCore(
           () => "source_image" as const,
         ),
       ];
-      const currentQualifiedRoute = await findQualifiedGenerationRoute(tx, {
-        style: visualProfile.style,
-        policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
-        evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,
-        at: new Date(),
-        requiredReferenceCount: currentRequiredRouteReferenceRoles.length,
-        requiredReferenceRoles: currentRequiredRouteReferenceRoles,
-      });
+      const currentQualifiedRoute = routeEvaluationRun
+        ? null
+        : await findQualifiedGenerationRoute(tx, {
+            style: visualProfile.style,
+            policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
+            evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,
+            at: new Date(),
+            requiredReferenceCount: currentRequiredRouteReferenceRoles.length,
+            requiredReferenceRoles: currentRequiredRouteReferenceRoles,
+          });
       const currentCanonicalReferenceIds = currentReferenceSet?.references
         .map((reference) => reference.mediaAssetId) ?? [];
       const preflightCanonicalReferenceIds = activeReferenceSet.references
@@ -983,19 +1084,23 @@ export async function createProductionBatchCore(
           !isMediaAssetOperationalForAuthority(reference.mediaAsset.metadata) ||
           reference.mediaAsset.characterId !== body.targetId
         );
-      const routeChanged =
+      const profileChanged =
         !currentProfile ||
         currentProfile.profileKey !== profile.profileKey ||
         currentProfile.version !== profile.version ||
         currentProfile.status !== "active" ||
-        !currentProfile.enabled ||
-        !currentQualifiedRoute ||
-        currentQualifiedRoute.id !== generationRouteAuthority?.qualificationId ||
-        currentQualifiedRoute.routeFingerprint !== generationRouteAuthority?.routeFingerprint ||
-        currentQualifiedRoute.generationProfileKey !== profile.profileKey ||
-        currentQualifiedRoute.generationProfileVersion !== profile.version ||
-        currentQualifiedRoute.workflowKey !== workflowKey ||
-        currentQualifiedRoute.workflowVersion !== workflowVersion;
+        !currentProfile.enabled;
+      const routeChanged = profileChanged || (
+        !routeEvaluationRun && (
+          !currentQualifiedRoute ||
+          currentQualifiedRoute.id !== generationRouteAuthority?.qualificationId ||
+          currentQualifiedRoute.routeFingerprint !== generationRouteAuthority?.routeFingerprint ||
+          currentQualifiedRoute.generationProfileKey !== profile.profileKey ||
+          currentQualifiedRoute.generationProfileVersion !== profile.version ||
+          currentQualifiedRoute.workflowKey !== workflowKey ||
+          currentQualifiedRoute.workflowVersion !== workflowVersion
+        )
+      );
       const pinnedContentId =
         target?.type === "character" ? target.contentVersionId : null;
       const pinnedContentVersion =
@@ -1104,7 +1209,7 @@ export async function createProductionBatchCore(
     });
 
     for (let itemIndex = 0; itemIndex < workItems.length; itemIndex += 1) {
-      const direction = workItems[itemIndex];
+      const { direction, variantIndex } = workItems[itemIndex];
       const directionSnapshot = direction ? toInputJson(direction) : undefined;
       const directionHash = direction ? canonicalSha256(direction) : null;
       const directionBrief = direction
@@ -1146,7 +1251,12 @@ export async function createProductionBatchCore(
           visualProfileId: generationVisualProfile?.id,
           visualProfileVersion: generationVisualProfile?.version,
           consistencyMode: generationVisualProfile ? body.consistencyMode : null,
-          seed: generationVisualProfile?.defaultSeed,
+          seed: productionCandidateSeed({
+            baseSeed: generationVisualProfile?.defaultSeed,
+            batchId: createdBatch.id,
+            directionId: direction?.id ?? null,
+            variantIndex,
+          }),
           referenceAssetIds: referenceAssetIds.length > 0 ? toInputJson(referenceAssetIds) : undefined,
           referenceSetRevisionId: activeReferenceSet?.id,
           referenceManifest: referenceManifest.length > 0 ? toInputJson(referenceManifest) : undefined,
@@ -1179,6 +1289,7 @@ export async function createProductionBatchCore(
             itemIndex,
             directionId: direction?.id ?? null,
             directionHash,
+            variantIndex,
             consistencyMode: visualProfile ? body.consistencyMode : null,
             bootstrapIdentity: body.bootstrapIdentity,
             bootstrapProjectVersion: verifiedBootstrapAuthority?.projectVersion ?? null,
@@ -1193,6 +1304,17 @@ export async function createProductionBatchCore(
             referenceSetRevisionId: activeReferenceSet?.id ?? null,
             generationRouteQualificationId: generationRouteAuthority?.qualificationId ?? null,
             generationRouteFingerprint: generationRouteAuthority?.routeFingerprint ?? null,
+            routeQualificationEvaluationCandidate: routeEvaluationRun,
+            routeQualificationMatrixKey:
+              routeEvaluationRun ? body.routeEvaluationMatrixKey ?? null : null,
+            routeQualificationMatrixSchemaVersion:
+              routeEvaluationRun
+                ? characterRouteEvaluationMatrixSchemaVersion
+                : null,
+            routeQualificationPolicyVersion:
+              routeEvaluationRun ? CHARACTER_RELEASE_POLICY_VERSION : null,
+            routeQualificationEvaluatorVersion:
+              routeEvaluationRun ? env.GENERATION_ROUTE_EVALUATOR_VERSION : null,
           }),
         },
       });

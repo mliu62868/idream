@@ -231,5 +231,27 @@ describe("buildBackendRegistry", () => {
       class_type: "CLIPTextEncode",
       inputs: { text: "text, watermark, extra subject" },
     });
+
+    const redMix3 = registry.resolveForModel(
+      "redcraft-krea2-redmix3-bf16",
+    ).descriptor;
+    const redMix3Prompt = bindComfySlots(redMix3, {
+      prompt: "editorial portrait with dramatic foreground perspective",
+      negative: "text, watermark, extra subject",
+      seed: 11,
+    });
+    expect(redMix3Prompt["1"]?.inputs).toEqual({
+      unet_name: "redcraftKREA2RedMix3.0-bf16.safetensors",
+      weight_dtype: "default",
+    });
+    expect(redMix3Prompt["5"]?.inputs.text).toBe(
+      "text, watermark, extra subject",
+    );
+    expect(redMix3Prompt["7"]?.inputs).toMatchObject({
+      seed: 11,
+      steps: 12,
+      sampler_name: "euler",
+      scheduler: "simple",
+    });
   });
 });

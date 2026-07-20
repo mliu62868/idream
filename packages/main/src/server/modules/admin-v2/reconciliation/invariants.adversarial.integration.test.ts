@@ -406,7 +406,7 @@ describe("Admin cutover invariant adversarial release authority", () => {
       data: {
         id: creativeMismatchId,
         title: "Deliberately stale child projection",
-        purpose: "model_eval",
+        purpose: "feed",
         targetType: "none",
         presetIds: [],
         totalItems: 2,

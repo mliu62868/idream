@@ -52,6 +52,62 @@ which takes priority — see `.env`'s `GEN_IMAGE_PROVIDER`) to route
 `packages/gen/workflows` (repo-root relative); the smoke script below resolves
 it explicitly so it works regardless of cwd.
 
+### RedCraft Krea2 RedMix3 comparison candidate
+
+`redcraft-krea2-redmix3-txt2img` is an opt-in RedMix3 text-to-image workflow
+for Civitai model `958009`, version `3139241`, file `3019490`. It remains
+separate from the serving `redcraft-krea2-txt2img` workflow so the current
+RedCraft BF16 model stays available as the default and rollback path.
+
+The exact source file is the 12.24 GiB scaled-FP8 variant:
+
+- upstream filename: `redcraft23INT8INT4FP8_30Krea2.safetensors`
+- normalized local filename:
+  `Krea2RedMix3.0-fp8-scaled-ComfyUI.safetensors`
+- SHA-256:
+  `F6088960C0FEBD27CBD372FC758BB07D012F2D8AE3CD10C45C903D48B94409EA`
+- Civitai download:
+  `https://civitai.red/api/download/models/3139241?fileId=3019490`
+
+Header inspection must show 256 FP8 weights, 256 matching `weight_scale`
+sidecars, and 256 `comfy_quant` tags before using the existing converter. On
+Apple MPS, convert that source to the exact filename expected by the
+descriptor:
+
+```bash
+python3 packages/gen/scripts/dequant_fp8_to_bf16.py \
+  /Users/kk/ComfyUI-Shared/models/diffusion_models/Krea2RedMix3.0-fp8-scaled-ComfyUI.safetensors \
+  /Users/kk/ComfyUI-Shared/models/diffusion_models/redcraftKREA2RedMix3.0-bf16.safetensors
+```
+
+The candidate also requires:
+
+- `models/text_encoders/qwen3vl_4b_bf16.safetensors`
+- `models/vae/qwen_image_vae.safetensors`
+
+Its controlled graph uses 12 steps, Euler, Simple, and CFG 1. Author showcase
+LoRA, SeedVR2, sharpening, and upscalers are intentionally excluded. The
+current route uses 10-step ER-SDE, so a same-prompt/seed/dimensions comparison
+still compares two version-native recipes; it is not a model-weight-only
+experiment. Run a local artifact smoke with:
+
+```bash
+cd packages/gen
+GEN_IMAGE_PROVIDER=backend \
+  COMFYUI_API_URL=http://127.0.0.1:8188 \
+  bun run smoke:backend -- \
+  --model redcraft-krea2-redmix3-bf16 \
+  --prompt "editorial portrait, dramatic foreground perspective, natural skin texture" \
+  --seed 486071801727172 \
+  --steps 12 \
+  --out /private/tmp/idream-redmix3-mps-smoke.png
+```
+
+The seeded profile `redcraft-krea2-redmix3-comparison` stays `draft`, disabled,
+and at zero rollout. A successful artifact smoke proves runtime compatibility;
+it does not switch the serving default or establish character-consistency
+qualification.
+
 ### Dark Beast FLUX.2 Klein comparison candidate
 
 `darkbeast-flux2-klein-9b-multi-reference` is an opt-in, two-reference

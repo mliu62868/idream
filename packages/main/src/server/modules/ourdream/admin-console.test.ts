@@ -2967,7 +2967,7 @@ describe("generation config control plane", () => {
       role: "admin",
       body: {
         title: `${P}production-refund-batch`,
-        purpose: "model_eval",
+        purpose: "feed",
         targetType: "none",
         profileId: `${P}production-refund-profile`,
         recipeId: `${P}production-refund-recipe`,

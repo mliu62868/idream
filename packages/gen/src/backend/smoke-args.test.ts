@@ -1,5 +1,32 @@
 import { describe, expect, it } from "vitest";
-import { resolveSmokeReferences } from "./smoke-args";
+import {
+  resolveSmokeGenerationOverrides,
+  resolveSmokeReferences,
+} from "./smoke-args";
+
+describe("backend smoke generation arguments", () => {
+  it("parses an explicit seed and positive integer step override", () => {
+    expect(
+      resolveSmokeGenerationOverrides([
+        "--seed",
+        "486071801727172",
+        "--steps=12",
+      ]),
+    ).toEqual({
+      seed: "486071801727172",
+      steps: 12,
+    });
+  });
+
+  it.each(["0", "-1", "1.5", "abc"])(
+    "rejects invalid --steps=%s",
+    (steps) => {
+      expect(() =>
+        resolveSmokeGenerationOverrides([`--steps=${steps}`]),
+      ).toThrow("--steps must be a positive integer");
+    },
+  );
+});
 
 describe("backend smoke reference arguments", () => {
   it("keeps the single-reference command backward compatible as source_image", () => {

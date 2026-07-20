@@ -119,6 +119,20 @@ export const generationModelCandidateDefinitions: CandidateDefinition[] = [
     requireVerification: true,
   },
   {
+    key: "redcraft_krea2_redmix3",
+    profileId: "seed-profile-redcraft-krea2-redmix3-v1",
+    expectedIntent: "redmix3_text_to_image_comparison",
+    expectedRunner: "comfyui",
+    expectedPipelineModel: "redcraft-krea2-redmix3-bf16",
+    expectedWorkflowKey: "redcraft-krea2-redmix3-txt2img",
+    expectedSourceSha256:
+      "F6088960C0FEBD27CBD372FC758BB07D012F2D8AE3CD10C45C903D48B94409EA",
+    minSampleCount: 1,
+    requireActive: false,
+    requireConsistency: false,
+    requireVerification: true,
+  },
+  {
     key: "darkbeast_flux2_klein_bfs",
     profileId: "seed-profile-sdcpp-darkbeast-krea2-img2img-v1",
     expectedIntent: "image_edit_identity_source_comparison",

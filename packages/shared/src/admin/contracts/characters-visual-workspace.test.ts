@@ -23,6 +23,13 @@ describe("Character Visual workspace contract", () => {
       references: [],
       activeReferenceSet: null,
       routeQualifications: [],
+      routeEvaluation: {
+        ready: false,
+        blocker: "Publish a sealed Reference Set before evaluating an image route.",
+        sampleMinimum: 40,
+        evaluatorVersion: "identity-match-v1",
+        profiles: [],
+      },
       identityBootstrap: {
         state: "blocked_existing_authority",
         allowed: false,
@@ -123,6 +130,13 @@ describe("Character Visual workspace contract", () => {
       references: [],
       activeReferenceSet: null,
       routeQualifications: [],
+      routeEvaluation: {
+        ready: false,
+        blocker: "Create and seal a Visual Identity before evaluating an image route.",
+        sampleMinimum: 40,
+        evaluatorVersion: "identity-match-v1",
+        profiles: [],
+      },
       identityBootstrap: {
         state: "new",
         allowed: true,
@@ -158,6 +172,13 @@ describe("Character Visual workspace contract", () => {
       references: [],
       activeReferenceSet: null,
       routeQualifications: [],
+      routeEvaluation: {
+        ready: false,
+        blocker: "Create and seal a Visual Identity before evaluating an image route.",
+        sampleMinimum: 40,
+        evaluatorVersion: "identity-match-v1",
+        profiles: [],
+      },
       identityBootstrap: {
         state: "new",
         allowed: true,

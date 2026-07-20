@@ -27,7 +27,10 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolveSmokeReferences } from "./smoke-args";
+import {
+  resolveSmokeGenerationOverrides,
+  resolveSmokeReferences,
+} from "./smoke-args";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -49,7 +52,9 @@ async function main() {
   const outPath = resolveOutPath();
   const modelId = resolveArg("--model") ?? "redcraft-krea2-comfyui";
   const promptOverride = resolveArg("--prompt");
-  const referenceSpecs = resolveSmokeReferences(process.argv.slice(2));
+  const cliArgs = process.argv.slice(2);
+  const generationOverrides = resolveSmokeGenerationOverrides(cliArgs);
+  const referenceSpecs = resolveSmokeReferences(cliArgs);
   const referenceImages = referenceSpecs.length > 0
     ? await Promise.all(referenceSpecs.map(async (reference, index) => ({
         assetId: `smoke-ref-${index + 1}`,
@@ -73,11 +78,15 @@ async function main() {
     // image drives the run, omit orientation entirely (undefined) and let the
     // descriptor's own declared slot defaults apply instead.
     orientation: hasReferences ? undefined : "4:5",
-    seed: "42",
+    seed: generationOverrides.seed ?? "42",
     // Same reasoning as orientation above: redcraft's txt2img default is 10
     // steps, but qwen-image-edit's P0-validated recipe is 4 steps — don't
     // clobber a ref-driven descriptor's own steps default.
-    controls: hasReferences ? {} : { steps: 10 },
+    controls: generationOverrides.steps === undefined
+      ? hasReferences
+        ? {}
+        : { steps: 10 }
+      : { steps: generationOverrides.steps },
     ...(referenceImages ? { referenceImages } : {}),
   });
 

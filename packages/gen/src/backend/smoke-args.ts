@@ -8,6 +8,36 @@ export type SmokeReference = {
   role: WorkflowReferenceRole;
 };
 
+export type SmokeGenerationOverrides = {
+  seed?: string;
+  steps?: number;
+};
+
+export function resolveSmokeGenerationOverrides(
+  argv: string[],
+): SmokeGenerationOverrides {
+  const seeds = repeatedFlagValues(argv, "--seed");
+  const stepValues = repeatedFlagValues(argv, "--steps");
+  if (seeds.length > 1) throw new Error("--seed may only be specified once");
+  if (stepValues.length > 1) {
+    throw new Error("--steps may only be specified once");
+  }
+
+  const rawSteps = stepValues[0];
+  const steps = rawSteps === undefined ? undefined : Number(rawSteps);
+  if (
+    steps !== undefined &&
+    (!Number.isSafeInteger(steps) || steps <= 0)
+  ) {
+    throw new Error("--steps must be a positive integer");
+  }
+
+  return {
+    ...(seeds[0] === undefined ? {} : { seed: seeds[0] }),
+    ...(steps === undefined ? {} : { steps }),
+  };
+}
+
 export function resolveSmokeReferences(argv: string[]): SmokeReference[] {
   const paths = repeatedFlagValues(argv, "--ref");
   const roleValues = repeatedFlagValues(argv, "--ref-role");

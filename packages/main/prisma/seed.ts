@@ -59,6 +59,32 @@ const DARKBEAST_BFS_FLUX2_WORKFLOW_PATH = fileURLToPath(
     import.meta.url,
   ),
 );
+const REDMIX3_FP8_MODEL_PATH = path.join(
+  COMFYUI_MODEL_ROOT,
+  "diffusion_models",
+  "Krea2RedMix3.0-fp8-scaled-ComfyUI.safetensors",
+);
+const REDMIX3_BF16_MODEL_PATH = path.join(
+  COMFYUI_MODEL_ROOT,
+  "diffusion_models",
+  "redcraftKREA2RedMix3.0-bf16.safetensors",
+);
+const REDMIX3_TEXT_ENCODER_PATH = path.join(
+  COMFYUI_MODEL_ROOT,
+  "text_encoders",
+  "qwen3vl_4b_bf16.safetensors",
+);
+const REDMIX3_VAE_PATH = path.join(
+  COMFYUI_MODEL_ROOT,
+  "vae",
+  "qwen_image_vae.safetensors",
+);
+const REDMIX3_WORKFLOW_PATH = fileURLToPath(
+  new URL(
+    "../../gen/workflows/redcraft-krea2-redmix3-txt2img.json",
+    import.meta.url,
+  ),
+);
 
 function darkBeastComparisonProfileData() {
   return {
@@ -156,6 +182,120 @@ function darkBeastComparisonProfileData() {
       testedAt: "2026-07-19",
       notes:
         "The exact Civitai 2740209 checkpoint is FLUX.2 Klein 9B, not Krea 2. Its two-reference descriptor is registered for an identity+source A/B against qwen-image-edit-multi-reference. Keep disabled at zero rollout until the exact model, Qwen 8B encoder, and FLUX.2 VAE are installed on a compatible runner and a real artifact smoke passes.",
+    },
+    publishedAt: null,
+  } satisfies Prisma.GenerationModelProfileUncheckedUpdateInput;
+}
+
+function redMix3ComparisonProfileData() {
+  return {
+    profileKey: "redcraft-krea2-redmix3-comparison",
+    label: "RedCraft Krea2 RedMix3 BF16 comparison",
+    mode: "image",
+    runner: "comfyui",
+    pipelineModel: "redcraft-krea2-redmix3-bf16",
+    workflowKey: "redcraft-krea2-redmix3-txt2img",
+    sourceModelPath: REDMIX3_FP8_MODEL_PATH,
+    convertedModelPath: REDMIX3_BF16_MODEL_PATH,
+    modelFormat: "safetensors",
+    runnerConfig: {
+      sourceFp8Path: REDMIX3_FP8_MODEL_PATH,
+      diffusionModelPath: REDMIX3_BF16_MODEL_PATH,
+      textEncoderPath: REDMIX3_TEXT_ENCODER_PATH,
+      vaePath: REDMIX3_VAE_PATH,
+      workflowPath: REDMIX3_WORKFLOW_PATH,
+      apiModelId: "redcraft-krea2-redmix3-bf16",
+      templateIntent: "redmix3_text_to_image_comparison",
+      baseModel: "Krea 2",
+      civitaiModelId: 958009,
+      civitaiVersionId: 3139241,
+      civitaiVersionName: "赤佬 3.0 (Krea2)",
+      civitaiFileId: 3019490,
+      civitaiFileName: "redcraft23INT8INT4FP8_30Krea2.safetensors",
+      civitaiPrecision: "fp8",
+      civitaiAutoV2: "F6088960C0",
+      civitaiSha256:
+        "F6088960C0FEBD27CBD372FC758BB07D012F2D8AE3CD10C45C903D48B94409EA",
+      conversion: {
+        sourceFormat: "scaled_fp8_e4m3",
+        targetFormat: "bf16",
+        script: "packages/gen/scripts/dequant_fp8_to_bf16.py",
+        expectedFp8Weights: 256,
+        expectedWeightScales: 256,
+        expectedComfyQuantSidecars: 256,
+      },
+      verificationStatus: "artifact_smoke_pending",
+      comparisonBaseline: {
+        modelId: "redcraft-krea2-comfyui",
+        workflowKey: "redcraft-krea2-txt2img",
+      },
+      workflow: {
+        sampler: "euler",
+        scheduler: "simple",
+        steps: 12,
+        cfgScale: 1,
+        notes:
+          "The candidate graph excludes author showcase LoRA and upscalers. The current route uses 10-step ER-SDE, so paired artifacts compare version-native recipes rather than model weights alone.",
+      },
+      componentStatus: {
+        sourceFp8: {
+          status: "download_pending",
+          path: REDMIX3_FP8_MODEL_PATH,
+        },
+        convertedDiffusionModel: {
+          status: "conversion_pending",
+          path: REDMIX3_BF16_MODEL_PATH,
+        },
+        qwenTextEncoder: {
+          status: "present",
+          path: REDMIX3_TEXT_ENCODER_PATH,
+        },
+        qwenVae: {
+          status: "present",
+          path: REDMIX3_VAE_PATH,
+        },
+        comfyWorkflow: {
+          status: "registered",
+          path: REDMIX3_WORKFLOW_PATH,
+        },
+      },
+      requiredComponents: [
+        "Krea2RedMix3.0-fp8-scaled-ComfyUI.safetensors",
+        "redcraftKREA2RedMix3.0-bf16.safetensors",
+        "qwen3vl_4b_bf16.safetensors",
+        "qwen_image_vae.safetensors",
+        "ComfyUI 0.28+ MPS workflow",
+      ],
+      capabilities: {
+        textToImage: true,
+        stableSeed: true,
+        referenceImages: false,
+        initImage: false,
+        lora: false,
+      },
+    },
+    defaultWidth: 832,
+    defaultHeight: 1216,
+    allowedOrientations: ["3:4", "4:5", "1:1"],
+    steps: 12,
+    sampler: "euler",
+    scheduler: "simple",
+    cfgScale: 1,
+    costMultiplier: 1.2,
+    requiredEntitlement: null,
+    maxCount: 1,
+    concurrencyLimit: 1,
+    enabled: false,
+    rolloutPercent: 0,
+    version: 1,
+    status: "draft",
+    dryRunSummary: {
+      sampleCount: 0,
+      successRate: 0,
+      failureMode: "artifact_smoke_pending",
+      testedAt: "2026-07-19",
+      notes:
+        "RedMix3 is registered as an isolated BF16 conversion candidate. Keep disabled at zero rollout until the exact FP8 hash, conversion integrity, and a real MPS artifact smoke pass.",
     },
     publishedAt: null,
   } satisfies Prisma.GenerationModelProfileUncheckedUpdateInput;
@@ -1332,6 +1472,18 @@ async function seedAdminControlPlane() {
       update: profileData,
       create: {
         id: "seed-profile-sdcpp-darkbeast-krea2-img2img-v1",
+        ...profileData,
+      },
+    });
+  }
+
+  if (!existingProfileKeys.has("redcraft-krea2-redmix3-comparison")) {
+    const profileData = redMix3ComparisonProfileData();
+    await prisma.generationModelProfile.upsert({
+      where: { id: "seed-profile-redcraft-krea2-redmix3-v1" },
+      update: profileData,
+      create: {
+        id: "seed-profile-redcraft-krea2-redmix3-v1",
         ...profileData,
       },
     });

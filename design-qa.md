@@ -258,3 +258,105 @@ final result: DONE_WITH_CONCERNS
   the local `idream` development database. Schema and seed data were restored,
   and the harness now refuses non-test-scoped database names. Unbacked local
   records from before the reset may be unrecoverable.
+
+---
+
+# Design QA — Character Asset Studio 2.1
+
+## Comparison target
+
+- Selected source visual:
+  `/Users/kk/code/idream/output/product-design/character-asset-studio/contact-sheet-triage.png`
+- Desktop implementation:
+  `/Users/kk/code/idream/output/product-design/character-asset-studio/implementation-candidate-grid.png`
+- Two-candidate comparison:
+  `/Users/kk/code/idream/output/product-design/character-asset-studio/implementation-comparison.png`
+- Tablet and mobile:
+  `/Users/kk/code/idream/output/product-design/character-asset-studio/implementation-tablet.png`
+  and
+  `/Users/kk/code/idream/output/product-design/character-asset-studio/implementation-mobile.png`
+- Combined source and implementation evidence:
+  `/Users/kk/code/idream/output/product-design/character-asset-studio/reference-vs-implementation.png`
+- Route:
+  `http://localhost:3001/admin/characters/alexa-reeves?tab=assets`
+- Viewports: 1440 × 1024, 1024 × 900, and 390 × 844.
+
+## First-principles fidelity
+
+- The candidate batch remains the dominant work surface: a dense 3 × 2 contact
+  sheet at desktop width, a narrow decision inspector, and an always-visible
+  bottom decision bar.
+- The selected visual's multi-select state is intentionally refined into one
+  active decision target plus at most one comparison candidate. Comparison is
+  a local viewing mode and does not mutate review, draft, or Release authority.
+- Approval, draft-slot adoption, and Release publication remain three separate
+  states and actions. The UI does not imply that reviewing a candidate changes
+  the live Character.
+- The compact identity ribbon preserves the locked identity, reference set, and
+  qualified route context without competing with the candidate images.
+- Portrait, Hero, and Chat remain explicit production outcomes in the
+  three-step rail. Customer context shows the active candidate in the relevant
+  real surface rather than a generic preview.
+
+## Mandatory comparison passes
+
+- Typography and spacing: the implementation retains the existing Admin
+  typography and warm neutral shell. Candidate numbers, state labels, evidence
+  controls, and the fixed action bar preserve the source hierarchy without
+  oversized headings or ornamental treatment.
+- Layout and surfaces: the desktop split activates at 1280px, uses thin borders
+  and restrained radii, and gives the contact sheet materially more space than
+  the inspector. There is no document-level horizontal overflow at any tested
+  viewport.
+- Colors and states: active, comparison, draft, approved, rejected, and ready
+  are distinct semantic states. Active selection uses ink; comparison uses the
+  existing blue token; approval and draft authority use green.
+- Images: the UI renders real `MediaAsset` URLs through `AssetImage`. The local
+  QA fixture uses existing Character images only to exercise crop, density, and
+  mixed visual content; no placeholder art or CSS illustration was added to
+  the product.
+- Icons: Lucide outline icons are used for comparison, pinning, rejection,
+  approval, refresh, generation, and authority status with consistent stroke
+  weight and button alignment.
+- Copy: the new operator-facing copy is Chinese and explicitly distinguishes
+  current candidate, comparison candidate, review evidence, draft adoption,
+  and Release publication.
+- Accessibility: candidate cards are semantic buttons with pressed state and
+  exact accessible names; compare pins are separate controls; the evidence
+  checklist, score, identity consistency, and reason are labeled; visible focus
+  treatment is preserved.
+- Responsiveness: desktop uses the 3 × 2 sheet and sticky inspector; tablet
+  stacks the inspector; mobile becomes a single-column flow with compact fixed
+  action labels. Measured `scrollWidth === clientWidth` at 1440, 1024, and
+  390px.
+
+## Interaction and implementation evidence
+
+- Selecting a candidate changes the only active review target.
+- Pinning candidate 2 opens the two-candidate comparison stage; returning to the
+  batch preserves the active candidate.
+- The decision action bar remains visible while scanning the batch and becomes
+  compact on mobile.
+- The inspector shows customer context and requires explicit quality,
+  consistency, score, and reason evidence before approval.
+- Admin full suite: 89 files and 401 tests passed.
+- Focused Character Asset Studio and i18n suite: 3 files and 37 tests passed.
+- Admin typecheck, focused lint, production build, and `git diff --check`
+  passed.
+- Browser console had no application errors. One earlier development-only LCP
+  warning came from the Character list page before entering this route; the
+  Studio interaction emitted no new warning.
+
+## Remaining differences
+
+- The source visual is a standalone studio, while the implementation keeps the
+  existing Character Project header and tabs so project and Release authority
+  remain visible.
+- The source uses one consistent generated identity set. The browser QA fixture
+  deliberately reuses distinct local Character assets to stress-test mixed
+  crops and state legibility; this is test data, not shipped UI content.
+- A Character that is not image-ready still shows the existing readiness
+  repair card before the contact sheet. This is truthful authority state and
+  does not block review of an already projected batch.
+
+final result: passed

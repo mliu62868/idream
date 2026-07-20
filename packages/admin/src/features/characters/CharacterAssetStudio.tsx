@@ -20,13 +20,17 @@ import {
 import {
   Check,
   ChevronRight,
+  Columns2,
   ImageIcon,
   Loader2,
+  LockKeyhole,
+  Pin,
   RefreshCcw,
   ShieldAlert,
   Sparkles,
   ThumbsDown,
   WandSparkles,
+  X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -55,7 +59,7 @@ import { useAdminI18n } from "@/components/admin/i18n";
 export const characterAssetPurposes = ["character_cover", "character_hero", "character_chat"] as const;
 export type CharacterAssetPurpose = typeof characterAssetPurposes[number];
 export const characterAssetStudioLayoutClass =
-  "grid gap-5 lg:grid-cols-[minmax(0,1fr)_300px] 2xl:grid-cols-[250px_minmax(0,1fr)_320px]";
+  "grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_320px]";
 
 export type CharacterSourceVariationBlocker =
   | "no_qualified_route"
@@ -516,6 +520,28 @@ function candidateState(item: CreativeRunDetail["items"][number]) {
   }[item.executionState];
 }
 
+export type CharacterCandidateVisualState =
+  | "active"
+  | "comparison"
+  | "draft"
+  | "approved"
+  | "rejected"
+  | "ready";
+
+export function resolveCharacterCandidateVisualState(input: {
+  readonly active: boolean;
+  readonly comparison: boolean;
+  readonly draft: boolean;
+  readonly decision: "approved" | "rejected" | null;
+}): CharacterCandidateVisualState {
+  if (input.active) return "active";
+  if (input.comparison) return "comparison";
+  if (input.draft) return "draft";
+  if (input.decision === "approved") return "approved";
+  if (input.decision === "rejected") return "rejected";
+  return "ready";
+}
+
 function AssetImage({ alt, className, src }: { alt: string; className: string; src: string | null | undefined }) {
   const { t } = useAdminI18n();
   if (!src) return (
@@ -556,9 +582,9 @@ const imageReadinessActionByBlocker: Readonly<Record<string, string>> = {
   reference_assets_unavailable:
     "Replace unavailable identity reference images",
   generation_route_unqualified:
-    "Ask a production administrator to activate a qualified image route",
+    "Create and qualify the platform image route",
   generation_route_stale:
-    "Ask a production administrator to refresh the qualified image route",
+    "Refresh the platform image route qualification",
 };
 
 export function characterAssetReadinessAction(blockerCode: string) {
@@ -613,7 +639,7 @@ function ImageProductionReadinessCard({
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <h4 className="text-sm font-semibold" id={`${descriptionId}-title`}>
-            {summary.title}
+            {t(summary.title)}
           </h4>
           <p className="mt-1 text-xs leading-5" id={descriptionId}>
 
@@ -659,7 +685,7 @@ function ImageProductionReadinessCard({
             >
               {index + 1}
             </span>
-            <span className="pt-0.5">{step}</span>
+            <span className="pt-0.5">{t(step)}</span>
           </li>
         ))}
       </ol>
@@ -671,7 +697,7 @@ function ImageProductionReadinessCard({
         <ul className="mt-2 space-y-1">
           {blockers.map((blocker) => (
             <li key={blocker.code}>
-              {blocker.code}: {blocker.message}
+              {blocker.code}: {t(blocker.message)}
             </li>
           ))}
         </ul>
@@ -705,45 +731,73 @@ function IdentityRail({
   const referenceAssets = data.visual.activeReferenceSet?.references.length
     ? data.visual.activeReferenceSet.references
     : [...data.visual.anchors, ...data.visual.references];
-  const unavailableReferenceCount = referenceAssets.filter((asset) => !asset.available).length;
   const canonicalImageUrl = referenceAssets.find((asset) => asset.available)?.thumbnailUrl ??
     referenceAssets.find((asset) => asset.available)?.url ??
     data.preview.draft?.imageUrl ??
     data.character.imageUrl;
-  const traitEntries = identity
-    ? Object.entries(identity.traits)
-      .flatMap(([group, values]) => Object.entries(values).map(([key, value]) => ({ group, key, value })))
-      .filter((entry) => typeof entry.value === "string" || typeof entry.value === "number")
-      .slice(0, 6)
-    : [];
+  const availableReferenceCount = referenceAssets.filter((asset) => asset.available).length;
+  const qualifiedRoute = data.visual.routeQualifications.find(
+    (route) => route.result === "qualified" && !route.stale,
+  );
 
   return (
-    <aside className="space-y-4 2xl:sticky 2xl:top-5 2xl:self-start" aria-labelledby="identity-lock-title">
-      <section className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--ad-text-muted)]">{t("Canonical identity")}</p>
-            <h3 className="mt-1 font-semibold" id="identity-lock-title">{subject.name}</h3>
-          </div>
-          <StatusBadge value={identityEstablished && identity ? `locked v${identity.version}` : identity ? "needs repair" : "not locked"} tone={identityEstablished ? "good" : "warn"} />
-        </div>
+    <aside
+      aria-labelledby="identity-lock-title"
+      className="flex flex-col gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 py-3 lg:flex-row lg:items-center lg:justify-between"
+    >
+      <div className="flex min-w-0 items-center gap-3">
         <AssetImage
           alt={t("{name} canonical portrait", { name: subject.name })}
-          className={cn(
-            "mt-4 w-full rounded-lg object-cover",
-            canonicalImageUrl ? "aspect-[4/5]" : "h-36",
-          )}
+          className="h-12 w-12 shrink-0 rounded-md object-cover"
           src={canonicalImageUrl}
         />
-        {identityEstablished && identity ? <p className="mt-4 text-sm leading-6 text-[var(--ad-text)]">{identity.identityPrompt}</p> : <p className="mt-4 text-sm leading-6 text-[var(--ad-text-muted)]">{bootstrapMode && identity ? t("Identity v{version} is an unanchored candidate, not customer authority. Generate and review the first portrait here; the selected result will supersede it as version {nextVersion}.", { version: identity.version, nextVersion: identityBootstrap.nextIdentityVersion }) : bootstrapMode ? t("No identity exists yet. Generate and review the first portrait here; the selected result will become identity version {nextVersion} without changing the live character.", { nextVersion: identityBootstrap.nextIdentityVersion }) : t("Identity authority needs repair before new customer assets can be generated.")}</p>}
-        {identityEstablished && traitEntries.length ? <dl className="mt-4 space-y-2 border-t border-[var(--ad-border)] pt-4 text-xs">{traitEntries.map((entry) => <div className="grid grid-cols-[74px_1fr] gap-2" key={`${entry.group}-${entry.key}`}><dt className="capitalize text-[var(--ad-text-muted)]">{t(entry.key.replaceAll("_", " "))}</dt><dd className="line-clamp-2">{String(entry.value)}</dd></div>)}</dl> : null}
-      </section>
-      <section className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-        <div className="flex items-center justify-between"><h3 className="text-sm font-semibold">{identityEstablished ? t("Identity references") : identity ? t("References need repair") : t("Bootstrap route")}</h3><span className="text-xs text-[var(--ad-text-muted)]">{identityEstablished ? t("{count} active", { count: referenceAssets.length }) : unavailableReferenceCount > 0 ? t("{count} unavailable", { count: unavailableReferenceCount }) : t("No references yet")}</span></div>
-        <div className="mt-3 grid grid-cols-3 gap-2">{referenceAssets.filter((asset) => asset.available).slice(0, 3).map((asset) => <AssetImage alt={t("{name} identity reference", { name: subject.name })} className="aspect-square w-full rounded-md object-cover" key={asset.mediaAssetId} src={asset.thumbnailUrl ?? asset.url} />)}</div>
-        <p className="mt-3 text-xs leading-5 text-[var(--ad-text-muted)]">{identityEstablished ? t("The sealed Reference Set is applied automatically and pinned into every generated candidate.") : bootstrapMode && bootstrapProfile ? t("{profile} creates the first portrait without pretending an identity reference already exists.", { profile: bootstrapProfile.label }) : bootstrapMode ? t("No active text-to-image bootstrap profile is available.") : unavailableReferenceCount > 0 ? t("The Reference Set is only partially available, so generation is blocked until every reference is repaired or removed.") : t("Open Visual Identity to resolve the existing authority blockers.")}</p>
-        {!identityEstablished && identity ? <div className="mt-3"><WorkspaceButton onClick={onRepair}>{t("Repair visual authority")}</WorkspaceButton></div> : null}
-      </section>
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <LockKeyhole aria-hidden="true" className="h-4 w-4 text-[var(--ad-text-muted)]" />
+            <h3 className="truncate text-sm font-semibold" id="identity-lock-title">
+              {subject.name}
+            </h3>
+            <StatusBadge
+              tone={identityEstablished ? "good" : "warn"}
+              value={identityEstablished && identity
+                ? `locked v${identity.version}`
+                : identity
+                  ? "needs repair"
+                  : "not locked"}
+            />
+          </div>
+          <p className="mt-1 line-clamp-1 text-xs text-[var(--ad-text-muted)]">
+            {identityEstablished
+              ? t("Identity, references, and route are protected for this batch.")
+              : bootstrapMode && bootstrapProfile
+                ? t("This batch will establish the first reviewed identity anchor.")
+                : t("Visual authority must be repaired before production can continue.")}
+          </p>
+        </div>
+      </div>
+      <dl className="flex shrink-0 flex-wrap items-center gap-x-5 gap-y-2 text-xs">
+        <div>
+          <dt className="text-[var(--ad-text-muted)]">{t("References")}</dt>
+          <dd className="mt-0.5 font-semibold">
+            {identityEstablished
+              ? t("{count} locked", { count: availableReferenceCount })
+              : t("Pending")}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-[var(--ad-text-muted)]">{t("Image route")}</dt>
+          <dd className="mt-0.5 max-w-44 truncate font-semibold">
+            {bootstrapMode
+              ? bootstrapProfile?.label ?? t("Unavailable")
+              : qualifiedRoute?.generationProfileKey ?? t("Unavailable")}
+          </dd>
+        </div>
+        {!identityEstablished && identity ? (
+          <WorkspaceButton className="min-h-9" onClick={onRepair}>
+            {t("Repair visual authority")}
+          </WorkspaceButton>
+        ) : null}
+      </dl>
     </aside>
   );
 }
@@ -773,27 +827,285 @@ function CustomerPreviews({
   const heroImageUrl = previewAssets.character_hero;
   const chatImageUrl = previewAssets.character_chat;
   return (
-    <aside className="space-y-4 2xl:sticky 2xl:top-5 2xl:self-start" aria-labelledby="customer-preview-title">
-      <div>
+    <section aria-labelledby="customer-preview-title">
+      <div className="flex items-start justify-between gap-3">
+        <div>
         <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--ad-text-muted)]">{t("Customer surfaces")}</p>
-        <h3 className="mt-1 font-semibold" id="customer-preview-title">{t("See the decision in context")}</h3>
+          <h3 className="mt-1 font-semibold" id="customer-preview-title">{t("Customer context")}</h3>
+        </div>
+        <StatusBadge tone="neutral" value={purposeConfig[activePurpose].shortLabel} />
       </div>
-      <section className="overflow-hidden rounded-xl border border-[var(--ad-border)] bg-[#181816] text-white">
-        <AssetImage alt={t("{name} discovery card preview", { name })} className="aspect-[4/3] w-full object-cover" src={coverImageUrl} />
-        <div className="p-4"><p className="text-[11px] uppercase tracking-[0.14em] text-white/55">{t("Discovery card · portrait slot")}</p><h4 className="mt-1 text-lg font-semibold">{name}</h4><p className="mt-1 line-clamp-2 text-xs leading-5 text-white/65">{description}</p>{!coverImageUrl ? <p className="mt-3 text-xs font-semibold text-amber-200">{t("Primary portrait not selected")}</p> : null}</div>
-      </section>
-      <section className="relative min-h-52 overflow-hidden rounded-xl border border-[var(--ad-border)] bg-[#24231f] text-white">
-        <AssetImage alt={t("{name} character hero preview", { name })} className="absolute inset-0 h-full w-full object-cover opacity-70" src={heroImageUrl} />
-        <div className="absolute inset-x-0 bottom-0 bg-black/70 p-4"><p className="text-[11px] uppercase tracking-[0.14em] text-white/60">{t("Character hero · hero slot")}</p><h4 className="mt-1 text-xl font-semibold">{t("Meet")} {name}</h4>{!heroImageUrl ? <p className="mt-2 text-xs font-semibold text-amber-200">{t("Hero image not selected")}</p> : null}<span className="mt-3 inline-flex min-h-9 items-center rounded-full bg-white px-4 text-xs font-semibold text-black">{t("Start chatting")}</span></div>
-      </section>
-      <section className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3">
-        <div className="flex items-center gap-3 border-b border-[var(--ad-border)] pb-3"><AssetImage alt={t("{name} chat avatar preview", { name })} className="h-11 w-11 rounded-full object-cover" src={coverImageUrl} /><div><p className="text-[11px] uppercase tracking-[0.12em] text-[var(--ad-text-muted)]">{t("Chat header · portrait slot")}</p><p className="font-semibold">{name}</p></div></div>
-        <AssetImage alt={t("{name} chat moment preview", { name })} className="mt-3 aspect-[4/5] max-h-64 w-full rounded-lg object-cover" src={chatImageUrl} />
-        {!chatImageUrl ? <p className="mt-2 text-xs font-semibold text-[var(--ad-yellow-text)]">{t("Chat image not selected")}</p> : null}
-        <div className="mt-3 max-w-[88%] rounded-2xl rounded-tl-sm bg-black/[0.05] px-3 py-2 text-xs leading-5">{String(data.preview.draft?.opening.firstMessage ?? t("Opening message unavailable"))}</div>
-      </section>
-      <p className="text-xs leading-5 text-[var(--ad-text-muted)]">{t("The selected candidate is shown only in its intended slot. Every other surface uses its own exact draft slot or shows that the slot is missing. Nothing live changes until a reviewed Release is published.")}</p>
-    </aside>
+      {activePurpose === "character_cover" ? (
+        <div className="mt-3 overflow-hidden rounded-lg border border-[var(--ad-border)] bg-[#181816] text-white">
+          <AssetImage alt={t("{name} discovery card preview", { name })} className="aspect-[4/3] w-full object-cover" src={coverImageUrl} />
+          <div className="p-3">
+            <p className="text-[10px] uppercase tracking-[0.14em] text-white/55">{t("Discovery card · portrait slot")}</p>
+            <h4 className="mt-1 font-semibold">{name}</h4>
+            <p className="mt-1 line-clamp-2 text-xs leading-5 text-white/65">{description}</p>
+          </div>
+        </div>
+      ) : activePurpose === "character_hero" ? (
+        <div className="relative mt-3 min-h-52 overflow-hidden rounded-lg border border-[var(--ad-border)] bg-[#24231f] text-white">
+          <AssetImage alt={t("{name} character hero preview", { name })} className="absolute inset-0 h-full w-full object-cover opacity-75" src={heroImageUrl} />
+          <div className="absolute inset-x-0 bottom-0 bg-black/70 p-3">
+            <p className="text-[10px] uppercase tracking-[0.14em] text-white/60">{t("Character hero · hero slot")}</p>
+            <h4 className="mt-1 text-lg font-semibold">{t("Meet")} {name}</h4>
+            <span className="mt-3 inline-flex min-h-9 items-center rounded-full bg-white px-4 text-xs font-semibold text-black">{t("Start chatting")}</span>
+          </div>
+        </div>
+      ) : (
+        <div className="mt-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3">
+          <div className="flex items-center gap-3 border-b border-[var(--ad-border)] pb-3">
+            <AssetImage alt={t("{name} chat avatar preview", { name })} className="h-10 w-10 rounded-full object-cover" src={coverImageUrl} />
+            <div>
+              <p className="text-[10px] uppercase tracking-[0.12em] text-[var(--ad-text-muted)]">{t("Chat header · portrait slot")}</p>
+              <p className="text-sm font-semibold">{name}</p>
+            </div>
+          </div>
+          <AssetImage alt={t("{name} chat moment preview", { name })} className="mt-3 aspect-[4/5] max-h-56 w-full rounded-md object-cover" src={chatImageUrl} />
+          <div className="mt-3 max-w-[92%] rounded-2xl rounded-tl-sm bg-black/[0.05] px-3 py-2 text-xs leading-5">{String(data.preview.draft?.opening.firstMessage ?? t("Opening message unavailable"))}</div>
+        </div>
+      )}
+      <p className="mt-3 text-xs leading-5 text-[var(--ad-text-muted)]">
+        {t("This preview uses the active candidate only in the current draft slot. Nothing live changes until a reviewed Release is published.")}
+      </p>
+    </section>
+  );
+}
+
+function CandidateBatchGrid({
+  activeItemId,
+  activePurpose,
+  comparisonItemId,
+  disabled,
+  items,
+  onActivate,
+  onCompare,
+  selectedPackAssetId,
+  subjectName,
+}: {
+  activeItemId: string | null;
+  activePurpose: CharacterAssetPurpose;
+  comparisonItemId: string | null;
+  disabled: boolean;
+  items: CreativeRunDetail["items"];
+  onActivate: (index: number) => void;
+  onCompare: (itemId: string) => void;
+  selectedPackAssetId: string | null | undefined;
+  subjectName: string;
+}) {
+  const { t } = useAdminI18n();
+  return (
+    <div
+      aria-label={t("Batch candidates")}
+      className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3"
+      role="list"
+    >
+      {items.map((item, index) => {
+        const active = item.id === activeItemId;
+        const comparison = item.id === comparisonItemId;
+        const draft = Boolean(
+          item.asset?.id && item.asset.id === selectedPackAssetId,
+        );
+        const visualState = resolveCharacterCandidateVisualState({
+          active,
+          comparison,
+          draft,
+          decision: item.review?.decision ?? null,
+        });
+        return (
+          <article
+            className={cn(
+              "group relative min-w-0 overflow-hidden rounded-lg border bg-[var(--ad-surface)] transition",
+              visualState === "active" &&
+                "border-[var(--ad-ink)] ring-1 ring-[var(--ad-ink)]",
+              visualState === "comparison" &&
+                "border-[var(--ad-blue-text)] ring-1 ring-[var(--ad-blue-text)]",
+              visualState === "draft" &&
+                "border-[var(--ad-green-text)]",
+              visualState === "approved" &&
+                "border-[var(--ad-green-text)]/45",
+              visualState === "rejected" &&
+                "border-[var(--ad-red-text)]/35 opacity-75",
+              visualState === "ready" &&
+                "border-[var(--ad-border)] hover:border-[var(--ad-text-muted)]",
+            )}
+            data-candidate-state={visualState}
+            key={item.id}
+            role="listitem"
+          >
+            <button
+              aria-label={t("View candidate {number}", {
+                number: item.ordinal + 1,
+              })}
+              aria-pressed={active}
+              className="block w-full text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--ad-ink)]"
+              disabled={disabled}
+              onClick={() => onActivate(index)}
+              type="button"
+            >
+              <div className="relative overflow-hidden bg-black/[0.04]">
+                <AssetImage
+                  alt={t("{name} {purpose} candidate {number}", {
+                    name: subjectName,
+                    purpose: t(purposeConfig[activePurpose].label),
+                    number: item.ordinal + 1,
+                  })}
+                  className={cn(
+                    "w-full object-cover",
+                    activePurpose === "character_hero"
+                      ? "aspect-video"
+                      : "aspect-[4/5]",
+                  )}
+                  src={item.asset?.thumbnailUrl ?? item.asset?.url}
+                />
+                <span className="absolute left-2 top-2 inline-flex min-h-7 items-center rounded-md bg-white/92 px-2 text-xs font-semibold text-[var(--ad-ink)] shadow-sm">
+                  {String(item.ordinal + 1).padStart(2, "0")}
+                </span>
+                {draft ? (
+                  <span className="absolute bottom-2 left-2 rounded-sm bg-[var(--ad-green-text)] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-white">
+                    {t("Draft slot")}
+                  </span>
+                ) : item.review?.decision === "approved" ? (
+                  <span className="absolute bottom-2 left-2 rounded-sm bg-[var(--ad-green-text)] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-white">
+                    {t("Approved")}
+                  </span>
+                ) : item.review?.decision === "rejected" ? (
+                  <span className="absolute bottom-2 left-2 rounded-sm bg-[var(--ad-red-text)] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-white">
+                    {t("Rejected")}
+                  </span>
+                ) : null}
+              </div>
+              <span className="flex items-center justify-between gap-2 px-3 py-2">
+                <span className="min-w-0">
+                  <strong className="block truncate text-sm">
+                    {active
+                      ? t("Current candidate")
+                      : comparison
+                        ? t("Comparison candidate")
+                        : `${t("Candidate")} ${item.ordinal + 1}`}
+                  </strong>
+                  <span className="mt-0.5 block truncate text-xs text-[var(--ad-text-muted)]">
+                    {t(candidateState(item))}
+                  </span>
+                </span>
+                {active ? (
+                  <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-[var(--ad-ink)]" />
+                ) : comparison ? (
+                  <Columns2 aria-hidden="true" className="h-4 w-4 shrink-0 text-[var(--ad-blue-text)]" />
+                ) : null}
+              </span>
+            </button>
+            <button
+              aria-label={comparison
+                ? t("Remove candidate {number} from comparison", {
+                    number: item.ordinal + 1,
+                  })
+                : t("Compare candidate {number} with current candidate", {
+                    number: item.ordinal + 1,
+                  })}
+              aria-pressed={comparison}
+              className={cn(
+                "absolute right-2 top-2 grid h-8 w-8 place-items-center rounded-md border bg-white/92 text-[var(--ad-text)] transition hover:bg-white focus-visible:outline focus-visible:outline-2",
+                comparison
+                  ? "border-[var(--ad-blue-text)] text-[var(--ad-blue-text)]"
+                  : "border-white/60",
+                active && "hidden",
+              )}
+              disabled={disabled || active || !item.asset}
+              onClick={() => onCompare(item.id)}
+              type="button"
+            >
+              {comparison ? <X aria-hidden="true" className="h-4 w-4" /> : <Pin aria-hidden="true" className="h-4 w-4" />}
+            </button>
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
+function CandidateComparisonStage({
+  activeItem,
+  activePurpose,
+  comparisonItem,
+  onClose,
+  onUseComparison,
+  subjectName,
+}: {
+  activeItem: CreativeRunDetail["items"][number];
+  activePurpose: CharacterAssetPurpose;
+  comparisonItem: CreativeRunDetail["items"][number];
+  onClose: () => void;
+  onUseComparison: () => void;
+  subjectName: string;
+}) {
+  const { t } = useAdminI18n();
+  const imageClass = cn(
+    "w-full bg-black/[0.04] object-cover",
+    activePurpose === "character_hero"
+      ? "aspect-video"
+      : "aspect-[4/5]",
+  );
+  return (
+    <section aria-labelledby="candidate-comparison-title">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--ad-blue-text)]">
+            {t("Two-candidate comparison")}
+          </p>
+          <h4 className="mt-1 font-semibold" id="candidate-comparison-title">
+            {t("Compare the current decision without changing authority")}
+          </h4>
+        </div>
+        <WorkspaceButton className="min-h-9" onClick={onClose}>
+          <X aria-hidden="true" className="h-4 w-4" />
+          {t("Back to batch")}
+        </WorkspaceButton>
+      </div>
+      <div className="grid gap-3 md:grid-cols-2">
+        <figure className="overflow-hidden rounded-lg border border-[var(--ad-ink)] bg-[var(--ad-surface)]">
+          <AssetImage
+            alt={t("{name} current candidate {number}", {
+              name: subjectName,
+              number: activeItem.ordinal + 1,
+            })}
+            className={imageClass}
+            src={activeItem.asset?.url ?? activeItem.asset?.thumbnailUrl}
+          />
+          <figcaption className="flex items-center justify-between gap-2 px-3 py-3 text-sm">
+            <span>
+              <strong>{t("Current candidate")}</strong>
+              <span className="ml-2 text-[var(--ad-text-muted)]">
+                {String(activeItem.ordinal + 1).padStart(2, "0")}
+              </span>
+            </span>
+            <span className="h-2.5 w-2.5 rounded-full bg-[var(--ad-ink)]" />
+          </figcaption>
+        </figure>
+        <figure className="overflow-hidden rounded-lg border border-[var(--ad-blue-text)] bg-[var(--ad-surface)]">
+          <AssetImage
+            alt={t("{name} comparison candidate {number}", {
+              name: subjectName,
+              number: comparisonItem.ordinal + 1,
+            })}
+            className={imageClass}
+            src={comparisonItem.asset?.url ?? comparisonItem.asset?.thumbnailUrl}
+          />
+          <figcaption className="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
+            <span className="text-sm">
+              <strong>{t("Comparison candidate")}</strong>
+              <span className="ml-2 text-[var(--ad-text-muted)]">
+                {String(comparisonItem.ordinal + 1).padStart(2, "0")}
+              </span>
+            </span>
+            <WorkspaceButton className="min-h-9" onClick={onUseComparison}>
+              {t("Make current")}
+            </WorkspaceButton>
+          </figcaption>
+        </figure>
+      </div>
+    </section>
   );
 }
 
@@ -824,6 +1136,7 @@ export function CharacterAssetStudio({
   const selectedRunIdRef = useRef<string | null>(null);
   const [selectedRun, setSelectedRun] = useState<CreativeRunDetail | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [comparisonItemId, setComparisonItemId] = useState<string | null>(null);
   const [activePurpose, setActivePurpose] = useState<CharacterAssetPurpose>(() =>
     data.project.draftAssetRouteAuthority?.recoveryPurpose ??
     firstIncompleteCharacterAssetPurpose(
@@ -875,6 +1188,7 @@ export function CharacterAssetStudio({
   const selectRunId = useCallback((runId: string | null) => {
     selectedRunIdRef.current = runId;
     setSelectedRunId(runId);
+    setComparisonItemId(null);
   }, []);
   const updateRunCreationIntentState = useCallback(
     (intent: DurableMutationIntent | null) => {
@@ -1147,6 +1461,21 @@ export function CharacterAssetStudio({
   const recentByPurpose = useMemo(() => Object.fromEntries(characterAssetPurposes.map((purpose) => [purpose, runs.find((run) => run.purpose === purpose)])) as Record<CharacterAssetPurpose, CreativeRun | undefined>, [runs]);
   const activeRunDetail = selectedRun?.id === selectedRunId ? selectedRun : null;
   const selectedItem = activeRunDetail?.items[selectedIndex] ?? null;
+  const comparisonItem = comparisonItemId
+    ? activeRunDetail?.items.find((item) => item.id === comparisonItemId) ?? null
+    : null;
+  const activateCandidate = (index: number) => {
+    const nextItem = activeRunDetail?.items[index];
+    if (!nextItem || mutationContextLocked) return;
+    if (nextItem.id === comparisonItemId) {
+      setComparisonItemId(selectedItem?.id ?? null);
+    }
+    setSelectedIndex(index);
+  };
+  const toggleCandidateComparison = (itemId: string) => {
+    if (mutationContextLocked || itemId === selectedItem?.id) return;
+    setComparisonItemId((current) => current === itemId ? null : itemId);
+  };
   const reviewDraft = selectedItem
     ? reviewDrafts[selectedItem.id] ?? emptyReviewDraft(bootstrapMode)
     : emptyReviewDraft(bootstrapMode);
@@ -1229,6 +1558,14 @@ export function CharacterAssetStudio({
   const canUseDecisionAction = Boolean(selectedItem?.asset) && (
     isSelectedAsset || (isApprovedItem && permissions.selectDraft)
   );
+  const approvalEvidenceReady =
+    reviewDraft.score.trim().length > 0 &&
+    reviewDraft.reason.trim().length >= 3 &&
+    Number.isInteger(Number(reviewDraft.score)) &&
+    Number(reviewDraft.score) >= 0 &&
+    Number(reviewDraft.score) <= 100 &&
+    Object.values(reviewDraft.quality).every(Boolean);
+  const rejectionEvidenceReady = reviewDraft.reason.trim().length >= 3;
 
   const prepareImageProduction = async () => {
     const readiness = data.visual.imageReadiness;
@@ -2447,6 +2784,13 @@ export function CharacterAssetStudio({
       : runCreationIntent?.status === "committed_projection_pending"
         ? "Verify created Run"
         : `Generate ${bootstrapMode ? 4 : activeConfig.count} ${activeConfig.pluralLabel}`;
+  const generationActionText =
+    generationActionLabel.startsWith("Generate ")
+      ? t("Generate {count} {assetType}", {
+          count: bootstrapMode ? 4 : activeConfig.count,
+          assetType: t(activeConfig.pluralLabel),
+        })
+      : t(generationActionLabel);
   const generationActionDescriptionId =
     `character-generation-action-${data.character.id}`;
   const generationActionDisabled =
@@ -2477,18 +2821,142 @@ export function CharacterAssetStudio({
                       : "The generation action is available.";
 
   return (
-    <div className="space-y-5">
-      <section className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 sm:p-5" aria-labelledby="asset-pack-title">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-          <div><p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">{t(bootstrapMode ? "First identity portrait" : "Character asset pack")}</p><h3 className="mt-1 text-xl font-semibold" id="asset-pack-title">{t(bootstrapMode ? "Establish the face customers will recognize" : "Create the images customers will remember")}</h3><p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--ad-text-muted)]">{t(bootstrapMode ? `Generate the first portrait without references, review it as the identity definition, then commit it as identity version ${identityBootstrap.nextIdentityVersion}.` : "Generate against the sealed identity reference set, compare real candidates in customer context, then make one clear decision.")}</p></div>
-          <div className="flex flex-wrap gap-2"><WorkspaceButton disabled={busy !== null} onClick={() => void refreshWorkspace()}><RefreshCcw className="h-4 w-4" /> {t("Refresh")}</WorkspaceButton><WorkspaceButton aria-describedby={generationActionDisabled ? generationActionDescriptionId : undefined} disabled={generationActionDisabled} onClick={() => void createRun(activePurpose)} tone="primary"><WandSparkles className="h-4 w-4" /> {t(generationActionLabel)}</WorkspaceButton></div>
+    <div className="space-y-4 pb-40 sm:pb-28">
+      <section
+        aria-labelledby="asset-pack-title"
+        className="overflow-hidden rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)]"
+      >
+        <div className="flex flex-col gap-4 p-4 sm:p-5 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">
+              {t(bootstrapMode ? "First identity portrait" : "Character asset pack")}
+            </p>
+            <h3 className="mt-1 text-xl font-semibold" id="asset-pack-title">
+              {t(bootstrapMode
+                ? "Establish the face customers will recognize"
+                : "Create the images customers will remember")}
+            </h3>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--ad-text-muted)]">
+              {t(bootstrapMode
+                ? `Generate the first portrait without references, review it as the identity definition, then commit it as identity version ${identityBootstrap.nextIdentityVersion}.`
+                : "Scan the batch, compare two candidates when needed, then review and adopt one exact asset into the current draft slot.")}
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <WorkspaceButton disabled={busy !== null} onClick={() => void refreshWorkspace()}>
+              <RefreshCcw className="h-4 w-4" /> {t("Refresh")}
+            </WorkspaceButton>
+            <WorkspaceButton
+              aria-describedby={generationActionDisabled ? generationActionDescriptionId : undefined}
+              disabled={generationActionDisabled}
+              onClick={() => void createRun(activePurpose)}
+              tone="primary"
+            >
+              <WandSparkles className="h-4 w-4" /> {generationActionText}
+            </WorkspaceButton>
+          </div>
         </div>
         <p className="sr-only" id={generationActionDescriptionId}>
           {t(generationActionDescription)}
         </p>
-        {bootstrapMode ? <div className={cn("mt-4 rounded-lg p-3 text-sm", bootstrapProfile ? "bg-[var(--ad-blue-bg)] text-[var(--ad-blue-text)]" : "bg-[var(--ad-yellow-bg)] text-[var(--ad-yellow-text)]")}>{bootstrapProfile ? `${bootstrapProfile.label} · ${bootstrapProfile.orientation} · ${t(identityBootstrap.state === "recoverable_empty_history" ? `no reference input. The reviewed result will supersede the unanchored candidate history as identity version ${identityBootstrap.nextIdentityVersion}.` : "no reference input. The reviewed result becomes the reference authority.")}` : t("No active text-to-image bootstrap profile is available. Generation remains blocked until one is published.")}</div> : data.project.draftAssetRouteAuthority?.status === "stale" ? <div className="mt-4 flex flex-col gap-3 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)] sm:flex-row sm:items-center sm:justify-between"><span>{t(`The qualified route changed. ${data.project.draftAssetRouteAuthority.stalePurposes.length} selected asset${data.project.draftAssetRouteAuthority.stalePurposes.length === 1 ? "" : "s"} remain in history but cannot authorize QA.`)}</span><WorkspaceButton disabled={!canGenerate || busy !== null} onClick={regenerateUnderCurrentRoute}>{t("Regenerate under current route")}</WorkspaceButton></div> : productionBlocked ? <ImageProductionReadinessCard blockers={data.visual.readiness.blockers} canRepair={data.visual.imageReadiness?.state === "repairable" && permissions.selectDraft} descriptionId={readinessDescriptionId} onContinue={() => onContinue("visual")} onRepair={() => void prepareImageProduction()} repairing={busy === "prepare"} /> : null}
-        <div className="mt-5 grid gap-2 md:grid-cols-3">{characterAssetPurposes.map((purpose, index) => { const routeCurrent = data.project.draftAssetSelections?.[purpose]?.routeCurrent !== false; const adopted = routeCurrent && Boolean(data.project.draftAssetPack[purpose] ?? (purpose === "character_cover" ? data.project.draftImageAssetId : null)); const state = bootstrapMode && purpose !== "character_cover" ? "locked until identity" : !routeCurrent && data.project.draftAssetPack[purpose] ? "regenerate" : runState(recentByPurpose[purpose], adopted); const purposeLocked = mutationContextLocked || (bootstrapMode && purpose !== "character_cover"); return <button aria-disabled={purposeLocked} aria-pressed={activePurpose === purpose} className={cn("flex min-h-20 items-center gap-3 rounded-lg border p-3 text-left transition focus-visible:outline focus-visible:outline-2", activePurpose === purpose ? "border-[var(--ad-ink)] bg-black/[0.035]" : "border-[var(--ad-border)] hover:border-[var(--ad-text-muted)]", purposeLocked && "cursor-not-allowed opacity-50")} disabled={purposeLocked} key={purpose} onClick={() => choosePurpose(purpose)} type="button"><span className={cn("grid h-8 w-8 shrink-0 place-items-center rounded-full border text-xs font-semibold", ["selected", "approved"].includes(state) ? "border-[var(--ad-green-text)] bg-[var(--ad-green-bg)] text-[var(--ad-green-text)]" : "border-[var(--ad-border)]")}>{["selected", "approved"].includes(state) ? <Check className="h-4 w-4" /> : index + 1}</span><span className="min-w-0 flex-1"><strong className="block text-sm">{t(purposeConfig[purpose].label)}</strong><span className="mt-1 block text-xs capitalize text-[var(--ad-text-muted)]">{t(state)}</span></span><ChevronRight className="h-4 w-4 text-[var(--ad-text-muted)]" /></button>; })}</div>
+        {bootstrapMode ? (
+          <div className={cn(
+            "mx-4 mb-4 rounded-lg p-3 text-sm sm:mx-5",
+            bootstrapProfile
+              ? "bg-[var(--ad-blue-bg)] text-[var(--ad-blue-text)]"
+              : "bg-[var(--ad-yellow-bg)] text-[var(--ad-yellow-text)]",
+          )}>
+            {bootstrapProfile
+              ? `${bootstrapProfile.label} · ${bootstrapProfile.orientation} · ${t(
+                  identityBootstrap.state === "recoverable_empty_history"
+                    ? `no reference input. The reviewed result will supersede the unanchored candidate history as identity version ${identityBootstrap.nextIdentityVersion}.`
+                    : "no reference input. The reviewed result becomes the reference authority.",
+                )}`
+              : t("No active text-to-image bootstrap profile is available. Generation remains blocked until one is published.")}
+          </div>
+        ) : data.project.draftAssetRouteAuthority?.status === "stale" ? (
+          <div className="mx-4 mb-4 flex flex-col gap-3 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)] sm:mx-5 sm:flex-row sm:items-center sm:justify-between">
+            <span>
+              {t(`The qualified route changed. ${data.project.draftAssetRouteAuthority.stalePurposes.length} selected asset${data.project.draftAssetRouteAuthority.stalePurposes.length === 1 ? "" : "s"} remain in history but cannot authorize QA.`)}
+            </span>
+            <WorkspaceButton disabled={!canGenerate || busy !== null} onClick={regenerateUnderCurrentRoute}>
+              {t("Regenerate under current route")}
+            </WorkspaceButton>
+          </div>
+        ) : productionBlocked ? (
+          <div className="mx-4 mb-4 sm:mx-5">
+            <ImageProductionReadinessCard
+              blockers={data.visual.readiness.blockers}
+              canRepair={data.visual.imageReadiness?.state === "repairable" && permissions.selectDraft}
+              descriptionId={readinessDescriptionId}
+              onContinue={() => onContinue("visual")}
+              onRepair={() => void prepareImageProduction()}
+              repairing={busy === "prepare"}
+            />
+          </div>
+        ) : null}
+        <nav
+          aria-label={t("Character asset pack progress")}
+          className="grid border-t border-[var(--ad-border)] md:grid-cols-3"
+        >
+          {characterAssetPurposes.map((purpose, index) => {
+            const routeCurrent =
+              data.project.draftAssetSelections?.[purpose]?.routeCurrent !== false;
+            const adopted = routeCurrent && Boolean(
+              data.project.draftAssetPack[purpose] ??
+              (purpose === "character_cover"
+                ? data.project.draftImageAssetId
+                : null),
+            );
+            const state = bootstrapMode && purpose !== "character_cover"
+              ? "locked until identity"
+              : !routeCurrent && data.project.draftAssetPack[purpose]
+                ? "regenerate"
+                : runState(recentByPurpose[purpose], adopted);
+            const purposeLocked =
+              mutationContextLocked ||
+              (bootstrapMode && purpose !== "character_cover");
+            return (
+              <button
+                aria-current={activePurpose === purpose ? "step" : undefined}
+                className={cn(
+                  "flex min-h-20 items-center gap-3 border-b-2 px-4 py-3 text-left transition focus-visible:outline focus-visible:outline-2 md:border-r md:last:border-r-0",
+                  activePurpose === purpose
+                    ? "border-b-[var(--ad-green-text)] bg-[var(--ad-green-bg)]/45"
+                    : "border-b-transparent hover:bg-black/[0.025]",
+                  purposeLocked && "cursor-not-allowed opacity-50",
+                )}
+                disabled={purposeLocked}
+                key={purpose}
+                onClick={() => choosePurpose(purpose)}
+                type="button"
+              >
+                <span className={cn(
+                  "grid h-8 w-8 shrink-0 place-items-center rounded-full border text-xs font-semibold",
+                  ["selected", "approved"].includes(state)
+                    ? "border-[var(--ad-green-text)] bg-[var(--ad-green-text)] text-white"
+                    : activePurpose === purpose
+                      ? "border-[var(--ad-green-text)] text-[var(--ad-green-text)]"
+                      : "border-[var(--ad-border)]",
+                )}>
+                  {["selected", "approved"].includes(state)
+                    ? <Check className="h-4 w-4" />
+                    : index + 1}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <strong className="block text-sm">{t(purposeConfig[purpose].label)}</strong>
+                  <span className="mt-1 block text-xs capitalize text-[var(--ad-text-muted)]">
+                    {t(state)}
+                  </span>
+                </span>
+                <ChevronRight className="h-4 w-4 text-[var(--ad-text-muted)]" />
+              </button>
+            );
+          })}
+        </nav>
       </section>
+
+      <IdentityRail data={data} onRepair={() => onContinue("visual")} />
 
       {error ? <p className="rounded-lg bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">{error}</p> : null}
       {runCreationIntent?.committedTargetId ? <p className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3 text-sm" role="status">{t("Created Run receipt:")} <span className="font-medium">{runCreationIntent.committedTargetId}</span>{t(". Verify its projection before starting another generation intent.")}</p> : null}
@@ -2498,184 +2966,408 @@ export function CharacterAssetStudio({
       {message ? <p className="rounded-lg bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]" role="status">{message}</p> : null}
 
       <div className={characterAssetStudioLayoutClass}>
-        <div className="order-2 lg:col-start-2 lg:row-start-1 2xl:order-1 2xl:col-start-1"><IdentityRail data={data} onRepair={() => onContinue("visual")} /></div>
-        <section className="order-1 min-w-0 space-y-4 lg:col-start-1 lg:row-span-2 lg:row-start-1 2xl:order-2 2xl:col-start-2 2xl:row-span-1" aria-label={t("Asset candidates and decisions")}>
-          <section className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" aria-labelledby="candidate-title">
-            <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--ad-text-muted)]">{t(activeConfig.label)}</p><h3 className="mt-1 font-semibold" id="candidate-title">{selectedItem ? `${t("Candidate")} ${selectedItem.ordinal + 1}` : t("Ready for a first run")}</h3><p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">{selectedItem ? t(candidateState(selectedItem)) : t(activeConfig.description)}</p></div>{activeRunDetail ? <div className="flex flex-wrap gap-2"><StatusBadge value={activeRunDetail.executionOutcome} /><StatusBadge value={activeRunDetail.reviewState} /></div> : null}</div>
-            <div className="mt-4 border-y border-[var(--ad-border)] py-3"><div className="flex flex-wrap gap-2"><WorkspaceButton disabled={mutationContextLocked || bootstrapMode || !variationRouteReady || !canGenerate || busy !== null || !selectedItem?.asset || !isApprovedItem} onClick={() => selectedItem?.asset ? void createRun(activePurpose, [selectedItem.asset.id]) : undefined}><Sparkles className="h-4 w-4" /> {t("More like this")}</WorkspaceButton><WorkspaceButton disabled={mutationContextLocked || !canUseDecisionAction || busy !== null || Boolean(refreshWarning)} onClick={() => void approveAndContinue()} tone="primary">{busy === "select" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />} {t(decisionActionLabel)}</WorkspaceButton></div>{!bootstrapMode && qualifiedRoute && !variationRouteReady ? <div className="mt-2 flex flex-col gap-2 text-xs leading-5 text-[var(--ad-text-muted)] sm:flex-row sm:items-center sm:justify-between"><p>{t(characterSourceVariationBlockerMessage(variationRouteBlocker))}</p><WorkspaceButton onClick={() => onContinue("visual")}>{t("Review generation route")}</WorkspaceButton></div> : null}</div>
-            <div className={cn(
-              "mt-4 overflow-hidden rounded-lg",
-              productionBlocked && !selectedItem?.asset
-                ? "border border-dashed border-[var(--ad-border)] bg-black/[0.02]"
-                : "bg-[#11110f]",
-            )}>
-              {selectedItem?.asset ? <AssetImage alt={`${subject.name} ${t(activeConfig.label)} ${t("Candidate")} ${selectedItem.ordinal + 1}`} className="max-h-[68vh] min-h-96 w-full object-contain" src={selectedItem.asset.url} /> : productionBlocked ? <div className="grid min-h-40 place-items-center px-6 py-8 text-center text-[var(--ad-text-muted)]"><div><ShieldAlert className="mx-auto h-6 w-6" /><p className="mt-3 text-sm font-semibold">{t("Image production is waiting for visual setup")}</p><p className="mt-1 max-w-md text-xs leading-5">{t("Complete the readiness steps above; candidate generation will appear here when the character is ready.")}</p></div></div> : <div className="grid min-h-96 place-items-center px-6 text-center text-white/65"><div><Sparkles className="mx-auto h-7 w-7" /><p className="mt-3 text-sm">{t("Generate a focused batch, then decide from real candidates here.")}</p></div></div>}
+        <section
+          aria-labelledby="candidate-title"
+          className="min-w-0 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"
+        >
+          <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[var(--ad-border)] pb-3">
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--ad-text-muted)]">
+                {t("Batch candidates")} · {t(activeConfig.label)}
+              </p>
+              <h3 className="mt-1 font-semibold" id="candidate-title">
+                {activeRunDetail?.items.length
+                  ? t("{count} candidates ready to compare", {
+                      count: activeRunDetail.items.length,
+                    })
+                  : t("Ready for a first run")}
+              </h3>
+              <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">
+                {selectedItem
+                  ? t("Candidate {number} is the only active decision target.", {
+                      number: selectedItem.ordinal + 1,
+                    })
+                  : t(activeConfig.description)}
+              </p>
             </div>
-            {activeRunDetail?.items.length ? <div className="mt-3 flex gap-2 overflow-x-auto pb-1" aria-label={t("Generated candidates")}>{activeRunDetail.items.map((item, index) => <button aria-label={`${t("Select candidate")} ${item.ordinal + 1}`} aria-pressed={selectedIndex === index} className={cn("relative h-20 w-16 shrink-0 overflow-hidden rounded-md border-2", selectedIndex === index ? "border-[var(--ad-ink)]" : "border-transparent opacity-75 hover:opacity-100")} disabled={mutationContextLocked} key={item.id} onClick={() => setSelectedIndex(index)} type="button"><AssetImage alt="" className="h-full w-full object-cover" src={item.asset?.thumbnailUrl ?? item.asset?.url} />{item.review?.decision === "approved" ? <span className="absolute right-1 top-1 grid h-5 w-5 place-items-center rounded-full bg-[var(--ad-green-text)] text-white"><Check className="h-3 w-3" /></span> : null}</button>)}</div> : null}
-            {selectedItem?.asset && (!hasDecision || !hasCompleteReviewEvidence) ? (
-              <section
-                aria-labelledby="character-candidate-review-title"
-                className="mt-4 rounded-lg border border-[var(--ad-border)] bg-black/[0.02] p-4"
-              >
-                <h4 className="text-sm font-semibold" id="character-candidate-review-title">{t("Record the visible review evidence")}</h4>
-                <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">
-                  {t(hasDecision
-                    ? "The earlier immutable decision is preserved, but it is missing required visible evidence. Record a superseding review to make this candidate actionable."
-                    : bootstrapMode
-                    ? "This portrait defines identity, so identity consistency is intentionally unscored. Judge artifacts, subject count, composition, and customer intent."
-                    : "Score the artifact and state identity consistency separately. A composition rejection does not automatically mean identity failed.")}
-                </p>
-                {hasDecision && selectedItem.review ? (
-                  <p className="mt-3 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-xs text-[var(--ad-yellow-text)]">
-                    {t("Earlier decision")}: {t(selectedItem.review.decision)} · {t(selectedItem.review.identityConsistency)} · {selectedItem.review.reason}
+            {activeRunDetail ? (
+              <div className="flex flex-wrap gap-2">
+                <StatusBadge value={activeRunDetail.executionOutcome} />
+                <StatusBadge value={activeRunDetail.reviewState} />
+              </div>
+            ) : null}
+          </div>
+
+          {!bootstrapMode && qualifiedRoute && !variationRouteReady ? (
+            <div className="mt-3 flex flex-col gap-2 rounded-lg bg-[var(--ad-blue-bg)] p-3 text-xs leading-5 text-[var(--ad-blue-text)] sm:flex-row sm:items-center sm:justify-between">
+              <p>{t(characterSourceVariationBlockerMessage(variationRouteBlocker))}</p>
+              <WorkspaceButton onClick={() => onContinue("visual")}>{t("Review generation route")}</WorkspaceButton>
+            </div>
+          ) : null}
+
+          <div className="mt-4">
+            {selectedItem?.asset && comparisonItem?.asset ? (
+              <CandidateComparisonStage
+                activeItem={selectedItem}
+                activePurpose={activePurpose}
+                comparisonItem={comparisonItem}
+                onClose={() => setComparisonItemId(null)}
+                onUseComparison={() => {
+                  const comparisonIndex = activeRunDetail?.items.findIndex(
+                    (item) => item.id === comparisonItem.id,
+                  ) ?? -1;
+                  if (comparisonIndex >= 0) activateCandidate(comparisonIndex);
+                }}
+                subjectName={subject.name}
+              />
+            ) : activeRunDetail?.items.length ? (
+              <CandidateBatchGrid
+                activeItemId={selectedItem?.id ?? null}
+                activePurpose={activePurpose}
+                comparisonItemId={comparisonItemId}
+                disabled={mutationContextLocked}
+                items={activeRunDetail.items}
+                onActivate={activateCandidate}
+                onCompare={toggleCandidateComparison}
+                selectedPackAssetId={selectedPackAssetId}
+                subjectName={subject.name}
+              />
+            ) : productionBlocked ? (
+              <div className="grid min-h-64 place-items-center rounded-lg border border-dashed border-[var(--ad-border)] bg-black/[0.02] px-6 py-8 text-center text-[var(--ad-text-muted)]">
+                <div>
+                  <ShieldAlert className="mx-auto h-6 w-6" />
+                  <p className="mt-3 text-sm font-semibold">{t("Image production is waiting for visual setup")}</p>
+                  <p className="mt-1 max-w-md text-xs leading-5">{t("Complete the readiness steps above; candidate generation will appear here when the character is ready.")}</p>
+                </div>
+              </div>
+            ) : (
+              <div className="grid min-h-64 place-items-center rounded-lg border border-dashed border-[var(--ad-border)] bg-black/[0.02] px-6 text-center text-[var(--ad-text-muted)]">
+                <div>
+                  <Sparkles className="mx-auto h-7 w-7" />
+                  <p className="mt-3 text-sm">{t("Generate a focused batch, then decide from real candidates here.")}</p>
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
+
+        {selectedItem?.asset ? (
+          <aside className="space-y-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 xl:sticky xl:top-4" aria-label={t("Current candidate decision inspector")}>
+            <CustomerPreviews
+              activePurpose={activePurpose}
+              candidateImageUrl={selectedImageUrl}
+              data={data}
+            />
+            <section className="border-t border-[var(--ad-border)] pt-4" aria-labelledby="character-candidate-review-title">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--ad-text-muted)]">
+                    {t("Review evidence")}
                   </p>
-                ) : null}
-                <fieldset className="mt-3 grid gap-2 sm:grid-cols-2">
-                  <legend className="sr-only">{t("Required visible quality checks")}</legend>
-                  {reviewQualityChecks.map(([key, label]) => (
-                    <label className="flex min-h-11 items-center gap-3 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-xs" key={key}>
+                  <h4 className="mt-1 text-sm font-semibold" id="character-candidate-review-title">
+                    {t("Candidate {number}", { number: selectedItem.ordinal + 1 })}
+                  </h4>
+                </div>
+                {selectedItem.review ? (
+                  <StatusBadge
+                    tone={selectedItem.review.decision === "approved" ? "good" : "bad"}
+                    value={selectedItem.review.decision}
+                  />
+                ) : (
+                  <StatusBadge tone="warn" value="pending" />
+                )}
+              </div>
+              {(!hasDecision || !hasCompleteReviewEvidence) ? (
+                <>
+                  <p className="mt-2 text-xs leading-5 text-[var(--ad-text-muted)]">
+                    {t(hasDecision
+                      ? "The earlier immutable decision is preserved, but it is missing required visible evidence. Record a superseding review to make this candidate actionable."
+                      : bootstrapMode
+                        ? "This portrait defines identity, so identity consistency is intentionally unscored. Judge artifacts, subject count, composition, and customer intent."
+                        : "Score the artifact and state identity consistency separately. A composition rejection does not automatically mean identity failed.")}
+                  </p>
+                  {hasDecision && selectedItem.review ? (
+                    <p className="mt-3 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-xs text-[var(--ad-yellow-text)]">
+                      {t("Earlier decision")}: {t(selectedItem.review.decision)} · {t(selectedItem.review.identityConsistency)} · {selectedItem.review.reason}
+                    </p>
+                  ) : null}
+                  <fieldset className="mt-3 space-y-2">
+                    <legend className="sr-only">{t("Required visible quality checks")}</legend>
+                    {reviewQualityChecks.map(([key, label]) => (
+                      <label className="flex min-h-10 items-center gap-3 rounded-md border border-[var(--ad-border)] px-3 text-xs" key={key}>
+                        <input
+                          checked={reviewDraft.quality[key]}
+                          onChange={(event) => updateReviewDraft((current) => ({
+                            ...current,
+                            quality: {
+                              ...current.quality,
+                              [key]: event.target.checked,
+                            },
+                          }))}
+                          type="checkbox"
+                        />
+                        <span>{t(label)}</span>
+                      </label>
+                    ))}
+                  </fieldset>
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
+                      {t("Score")}
                       <input
-                        checked={reviewDraft.quality[key]}
+                        className={`${fieldClass} mt-1`}
+                        max={100}
+                        min={0}
                         onChange={(event) => updateReviewDraft((current) => ({
                           ...current,
-                          quality: { ...current.quality, [key]: event.target.checked },
+                          score: event.target.value,
                         }))}
-                        type="checkbox"
+                        placeholder="0–100"
+                        step={1}
+                        type="number"
+                        value={reviewDraft.score}
                       />
-                      <span>{t(label)}</span>
                     </label>
-                  ))}
-                </fieldset>
-                <div className="mt-3 grid gap-3 sm:grid-cols-[120px_180px_1fr]">
-                  <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
-                    {t("Score")}
-                    <input
-                      className={`${fieldClass} mt-1`}
-                      max={100}
-                      min={0}
-                      onChange={(event) => updateReviewDraft((current) => ({ ...current, score: event.target.value }))}
-                      placeholder="0–100"
-                      step={1}
-                      type="number"
-                      value={reviewDraft.score}
-                    />
-                  </label>
-                  <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
-                    {t("Identity consistency")}
-                    <select
-                      className={`${fieldClass} mt-1`}
-                      disabled={bootstrapMode}
-                      onChange={(event) => updateReviewDraft((current) => ({
-                        ...current,
-                        identity: event.target.value as ReviewDraft["identity"],
-                      }))}
-                      value={reviewDraft.identity}
-                    >
-                      {bootstrapMode ? (
-                        <option value="unscored">{t("Unscored · defines identity")}</option>
-                      ) : (
-                        <>
-                          <option value="passed">{t("Passed")}</option>
-                          <option value="failed">{t("Failed")}</option>
-                          <option value="unscored">{t("Unscored")}</option>
-                        </>
-                      )}
-                    </select>
-                  </label>
-                  <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
+                    <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
+                      {t("Identity consistency")}
+                      <select
+                        className={`${fieldClass} mt-1`}
+                        disabled={bootstrapMode}
+                        onChange={(event) => updateReviewDraft((current) => ({
+                          ...current,
+                          identity: event.target.value as ReviewDraft["identity"],
+                        }))}
+                        value={reviewDraft.identity}
+                      >
+                        {bootstrapMode ? (
+                          <option value="unscored">{t("Unscored · defines identity")}</option>
+                        ) : (
+                          <>
+                            <option value="passed">{t("Passed")}</option>
+                            <option value="failed">{t("Failed")}</option>
+                            <option value="unscored">{t("Unscored")}</option>
+                          </>
+                        )}
+                      </select>
+                    </label>
+                  </div>
+                  <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">
                     {t("Evidence and reason")}
                     <textarea
                       className={`${textAreaClass} mt-1`}
-                      onChange={(event) => updateReviewDraft((current) => ({ ...current, reason: event.target.value }))}
+                      onChange={(event) => updateReviewDraft((current) => ({
+                        ...current,
+                        reason: event.target.value,
+                      }))}
                       placeholder={t("Describe artifacts, subject count, identity markers, composition, and intended customer context")}
                       value={reviewDraft.reason}
                     />
                   </label>
-                </div>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <WorkspaceButton
-                    disabled={
-                      mutationContextLocked ||
-                      !permissions.review ||
-                      busy !== null ||
-                      Boolean(refreshWarning) ||
-                      !reviewDraft.score.trim() ||
-                      reviewDraft.reason.trim().length < 3 ||
-                      !Number.isInteger(Number(reviewDraft.score)) ||
-                      Number(reviewDraft.score) < 0 ||
-                      Number(reviewDraft.score) > 100 ||
-                      Object.values(reviewDraft.quality).some((passed) => !passed)
-                    }
-                    onClick={() => void reviewItem("approved")}
-                    tone="primary"
-                  >
-                    <Check className="h-4 w-4" /> {t(hasDecision ? "Record superseding approval" : "Approve with evidence")}
-                  </WorkspaceButton>
-                  <WorkspaceButton
-                    disabled={mutationContextLocked || !permissions.review || busy !== null || Boolean(refreshWarning) || reviewDraft.reason.trim().length < 3}
-                    onClick={() => void reviewItem("rejected")}
-                    tone="danger"
-                  >
-                    <ThumbsDown className="h-4 w-4" /> {t(hasDecision ? "Record superseding rejection" : "Reject with reason")}
-                  </WorkspaceButton>
-                </div>
-              </section>
-            ) : selectedItem?.review ? (
-              <div className="mt-4 rounded-lg bg-black/[0.035] p-3 text-xs leading-5">
-                <strong className="capitalize">{t(selectedItem.review.decision)}</strong> · {t("identity")} {t(selectedItem.review.identityConsistency)}
-                {selectedItem.review.score !== null ? ` · ${selectedItem.review.score}/100` : ""}
-                <br />
-                <span className="text-[var(--ad-text-muted)]">{selectedItem.review.reason}</span>
-                {selectedItem.review.supersedesDecisionId ? <><br /><span className="break-all text-[var(--ad-text-muted)]">{t("Supersedes")} {selectedItem.review.supersedesDecisionId}</span></> : null}
-                {canRecordTerminalRejection ? (
-                  <div className="mt-4 border-t border-[var(--ad-border)] pt-4">
-                    <h4 className="text-sm font-semibold">{t("Terminal disposition")}</h4>
-                    <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">
-                      {t("If this approved candidate will not be used, record a superseding rejection so its Run can close with an explicit outcome. The original score, identity result, and visible-quality evidence stay preserved.")}
-                    </p>
-                    <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">
-                      {t("Withdrawal reason")}
-                      <textarea
-                        className={`${textAreaClass} mt-1`}
-                        onChange={(event) => updateReviewDraft((current) => ({
-                          ...current,
-                          reason: event.target.value,
-                        }))}
-                        placeholder={t("Explain why this approved candidate will not be used")}
-                        value={reviewDraft.reason}
-                      />
-                    </label>
-                    <div className="mt-3">
-                      <WorkspaceButton
-                        disabled={
-                          mutationContextLocked ||
-                          !permissions.review ||
-                          busy !== null ||
-                          Boolean(refreshWarning) ||
-                          reviewDraft.reason.trim().length < 3
-                        }
-                        onClick={() => void reviewItem("rejected")}
-                        tone="danger"
-                      >
-                        <ThumbsDown className="h-4 w-4" /> {t("Record superseding rejection")}
-                      </WorkspaceButton>
-                    </div>
-                  </div>
-                ) : selectedItem.review.decision === "approved" && isDraftAuthorityAsset ? (
-                  <p className="mt-4 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-xs text-[var(--ad-yellow-text)]">
-                    {t("This candidate is selected by the Character draft. Select a replacement in this slot before recording a superseding rejection.")}
+                  <p className="mt-2 text-xs leading-5 text-[var(--ad-text-muted)]">
+                    {t("Review actions apply only to the current candidate and stay separate from draft adoption.")}
                   </p>
-                ) : null}
-              </div>
-            ) : null}
-            {!permissions.review || !permissions.selectDraft ? <p className="mt-3 text-xs text-[var(--ad-text-muted)]">{t("Review and project-write grants control approval and primary image selection.")}</p> : null}
-          </section>
-
-          <details className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"><summary className="cursor-pointer text-sm font-semibold">{t("Adjust the creative brief")}</summary><p className="mt-2 text-xs leading-5 text-[var(--ad-text-muted)]">{t("Keep intent human-readable. Identity, references, workflow, and route stay automatic.")}</p><textarea aria-label={`${t(activeConfig.label)} ${t("creative brief")}`} className={`${textAreaClass} mt-3`} disabled={mutationContextLocked} onChange={(event) => setBriefs((current) => ({ ...current, [activePurpose]: event.target.value }))} value={briefs[activePurpose]} /></details>
-          <details className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"><summary className="cursor-pointer text-sm font-semibold">{t("Recent runs and technical lineage")}</summary><div className="mt-3 space-y-2">{runs.length ? runs.map((run) => <button className={cn("w-full rounded-lg border p-3 text-left text-xs", selectedRunId === run.id ? "border-[var(--ad-ink)] bg-black/[0.03]" : "border-[var(--ad-border)]")} disabled={mutationContextLocked} key={run.id} onClick={() => { runDetailRequestGate.current.invalidate(); setSelectedRun(null); selectRunId(run.id); if (isCharacterAssetPurpose(run.purpose)) setActivePurpose(run.purpose); }} type="button"><span className="flex items-center justify-between gap-3"><strong>{isCharacterAssetPurpose(run.purpose) ? t(purposeConfig[run.purpose].label) : t(run.purpose)}{pinnedRunIds.has(run.id) ? ` · ${t("Selected in draft")}` : ""}</strong><span>{new Date(run.updatedAt).toLocaleString()}</span></span><span className="mt-1 block break-all text-[var(--ad-text-muted)]">{run.id} · {run.counts.generated}/{run.counts.total} {t("generated")} · {run.counts.approved} {t("approved")}</span></button>) : <p className="text-xs text-[var(--ad-text-muted)]">{t("No production history for this character.")}</p>}</div>{selectedItem ? <dl className="mt-4 grid gap-2 border-t border-[var(--ad-border)] pt-4 text-xs sm:grid-cols-2"><div><dt className="text-[var(--ad-text-muted)]">{t("Generation profile")}</dt><dd className="mt-1 break-all">{selectedItem.lineage.generationProfileKey ?? t("Pending")}</dd></div><div><dt className="text-[var(--ad-text-muted)]">{t("Workflow")}</dt><dd className="mt-1 break-all">{selectedItem.lineage.workflowKey ?? t("Pending")}</dd></div><div><dt className="text-[var(--ad-text-muted)]">{t("Request")}</dt><dd className="mt-1 break-all">{selectedItem.lineage.requestId ?? t("Pending")}</dd></div><div><dt className="text-[var(--ad-text-muted)]">{t("Provider request / Comfy prompt")}</dt><dd className="mt-1 break-all">{selectedItem.lineage.providerRequestId ?? t("Pending")}</dd></div><div><dt className="text-[var(--ad-text-muted)]">{t("Asset")}</dt><dd className="mt-1 break-all">{selectedItem.asset?.id ?? t("Pending")}</dd></div></dl> : null}</details>
-        </section>
-        {!productionBlocked || selectedItem?.asset ? <div className="order-3 lg:col-start-2 2xl:col-start-3 2xl:row-start-1"><CustomerPreviews activePurpose={activePurpose} candidateImageUrl={selectedImageUrl} data={data} /></div> : null}
+                </>
+              ) : selectedItem.review ? (
+                <div className="mt-3 rounded-lg bg-black/[0.035] p-3 text-xs leading-5">
+                  <strong className="capitalize">{t(selectedItem.review.decision)}</strong> · {t("identity")} {t(selectedItem.review.identityConsistency)}
+                  {selectedItem.review.score !== null ? ` · ${selectedItem.review.score}/100` : ""}
+                  <br />
+                  <span className="text-[var(--ad-text-muted)]">{selectedItem.review.reason}</span>
+                  {selectedItem.review.supersedesDecisionId ? <><br /><span className="break-all text-[var(--ad-text-muted)]">{t("Supersedes")} {selectedItem.review.supersedesDecisionId}</span></> : null}
+                  {canRecordTerminalRejection ? (
+                    <div className="mt-4 border-t border-[var(--ad-border)] pt-4">
+                      <h4 className="text-sm font-semibold">{t("Terminal disposition")}</h4>
+                      <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">
+                        {t("If this approved candidate will not be used, record a superseding rejection so its Run can close with an explicit outcome. The original score, identity result, and visible-quality evidence stay preserved.")}
+                      </p>
+                      <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">
+                        {t("Withdrawal reason")}
+                        <textarea
+                          className={`${textAreaClass} mt-1`}
+                          onChange={(event) => updateReviewDraft((current) => ({
+                            ...current,
+                            reason: event.target.value,
+                          }))}
+                          placeholder={t("Explain why this approved candidate will not be used")}
+                          value={reviewDraft.reason}
+                        />
+                      </label>
+                      <div className="mt-3">
+                        <WorkspaceButton
+                          disabled={
+                            mutationContextLocked ||
+                            !permissions.review ||
+                            busy !== null ||
+                            Boolean(refreshWarning) ||
+                            !rejectionEvidenceReady
+                          }
+                          onClick={() => void reviewItem("rejected")}
+                          tone="danger"
+                        >
+                          <ThumbsDown className="h-4 w-4" /> {t("Record superseding rejection")}
+                        </WorkspaceButton>
+                      </div>
+                    </div>
+                  ) : selectedItem.review.decision === "approved" && isDraftAuthorityAsset ? (
+                    <p className="mt-4 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-xs text-[var(--ad-yellow-text)]">
+                      {t("This candidate is selected by the Character draft. Select a replacement in this slot before recording a superseding rejection.")}
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+              {!permissions.review || !permissions.selectDraft ? (
+                <p className="mt-3 text-xs text-[var(--ad-text-muted)]">
+                  {t("Review and project-write grants control approval and primary image selection.")}
+                </p>
+              ) : null}
+            </section>
+          </aside>
+        ) : null}
       </div>
+
+      {selectedItem ? (
+        <section
+          aria-label={t("Current candidate actions")}
+          className="fixed inset-x-3 bottom-3 z-40 flex flex-col gap-3 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)]/95 p-3 shadow-[0_10px_32px_rgb(50_47_38/0.12)] backdrop-blur sm:flex-row sm:items-center sm:justify-between lg:left-[260px]"
+        >
+        <div className="min-w-0">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--ad-text-muted)]">
+            {t("Current decision")}
+          </p>
+          <p className="mt-1 truncate text-sm font-semibold">
+            {selectedItem
+              ? t("Candidate {number} · {state}", {
+                  number: selectedItem.ordinal + 1,
+                  state: t(candidateState(selectedItem)),
+                })
+              : t("No active candidate")}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {comparisonItem ? (
+            <WorkspaceButton onClick={() => setComparisonItemId(null)}>
+              <X className="h-4 w-4" />
+              <span className="sm:hidden">{t("Batch")}</span>
+              <span className="hidden sm:inline">{t("Back to batch")}</span>
+            </WorkspaceButton>
+          ) : null}
+          <WorkspaceButton
+            disabled={mutationContextLocked || bootstrapMode || !variationRouteReady || !canGenerate || busy !== null || !selectedItem?.asset || !isApprovedItem}
+            onClick={() => selectedItem?.asset
+              ? void createRun(activePurpose, [selectedItem.asset.id])
+              : undefined}
+          >
+            <Sparkles className="h-4 w-4" />
+            <span className="sm:hidden">{t("Similar")}</span>
+            <span className="hidden sm:inline">{t("More like this")}</span>
+          </WorkspaceButton>
+          {selectedItem?.asset && (!hasDecision || !hasCompleteReviewEvidence) ? (
+            <>
+              <WorkspaceButton
+                disabled={
+                  mutationContextLocked ||
+                  !permissions.review ||
+                  busy !== null ||
+                  Boolean(refreshWarning) ||
+                  !rejectionEvidenceReady
+                }
+                onClick={() => void reviewItem("rejected")}
+                tone="danger"
+              >
+                <ThumbsDown className="h-4 w-4" />
+                <span className="sm:hidden">{t("Reject")}</span>
+                <span className="hidden sm:inline">{t(hasDecision ? "Record superseding rejection" : "Reject current")}</span>
+              </WorkspaceButton>
+              <WorkspaceButton
+                disabled={
+                  mutationContextLocked ||
+                  !permissions.review ||
+                  busy !== null ||
+                  Boolean(refreshWarning) ||
+                  !approvalEvidenceReady
+                }
+                onClick={() => void reviewItem("approved")}
+                tone="primary"
+              >
+                {busy === "review"
+                  ? <Loader2 className="h-4 w-4 animate-spin" />
+                  : <Check className="h-4 w-4" />}
+                <span className="sm:hidden">{t("Approve")}</span>
+                <span className="hidden sm:inline">{t(hasDecision ? "Record superseding approval" : "Approve current candidate")}</span>
+              </WorkspaceButton>
+            </>
+          ) : selectedItem?.review?.decision === "approved" ? (
+            <WorkspaceButton
+              disabled={mutationContextLocked || !canUseDecisionAction || busy !== null || Boolean(refreshWarning)}
+              onClick={() => void approveAndContinue()}
+              tone="primary"
+            >
+              {busy === "select"
+                ? <Loader2 className="h-4 w-4 animate-spin" />
+                : <Check className="h-4 w-4" />}
+              {t(decisionActionLabel)}
+            </WorkspaceButton>
+          ) : selectedItem?.review?.decision === "rejected" ? (
+            <StatusBadge tone="bad" value="rejected" />
+          ) : null}
+        </div>
+        </section>
+      ) : null}
+
+      <details className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
+        <summary className="cursor-pointer text-sm font-semibold">{t("Adjust the creative brief")}</summary>
+        <p className="mt-2 text-xs leading-5 text-[var(--ad-text-muted)]">{t("Keep intent human-readable. Identity, references, workflow, and route stay automatic.")}</p>
+        <textarea
+          aria-label={`${t(activeConfig.label)} ${t("creative brief")}`}
+          className={`${textAreaClass} mt-3`}
+          disabled={mutationContextLocked}
+          onChange={(event) => setBriefs((current) => ({
+            ...current,
+            [activePurpose]: event.target.value,
+          }))}
+          value={briefs[activePurpose]}
+        />
+      </details>
+      <details className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
+        <summary className="cursor-pointer text-sm font-semibold">{t("Recent runs and technical lineage")}</summary>
+        <div className="mt-3 space-y-2">
+          {runs.length ? runs.map((run) => (
+            <button
+              className={cn(
+                "w-full rounded-lg border p-3 text-left text-xs",
+                selectedRunId === run.id
+                  ? "border-[var(--ad-ink)] bg-black/[0.03]"
+                  : "border-[var(--ad-border)]",
+              )}
+              disabled={mutationContextLocked}
+              key={run.id}
+              onClick={() => {
+                runDetailRequestGate.current.invalidate();
+                setSelectedRun(null);
+                selectRunId(run.id);
+                if (isCharacterAssetPurpose(run.purpose)) setActivePurpose(run.purpose);
+              }}
+              type="button"
+            >
+              <span className="flex items-center justify-between gap-3">
+                <strong>{isCharacterAssetPurpose(run.purpose) ? t(purposeConfig[run.purpose].label) : t(run.purpose)}{pinnedRunIds.has(run.id) ? ` · ${t("Selected in draft")}` : ""}</strong>
+                <span>{new Date(run.updatedAt).toLocaleString()}</span>
+              </span>
+              <span className="mt-1 block break-all text-[var(--ad-text-muted)]">
+                {run.id} · {run.counts.generated}/{run.counts.total} {t("generated")} · {run.counts.approved} {t("approved")}
+              </span>
+            </button>
+          )) : <p className="text-xs text-[var(--ad-text-muted)]">{t("No production history for this character.")}</p>}
+        </div>
+        {selectedItem ? (
+          <dl className="mt-4 grid gap-2 border-t border-[var(--ad-border)] pt-4 text-xs sm:grid-cols-2">
+            <div><dt className="text-[var(--ad-text-muted)]">{t("Generation profile")}</dt><dd className="mt-1 break-all">{selectedItem.lineage.generationProfileKey ?? t("Pending")}</dd></div>
+            <div><dt className="text-[var(--ad-text-muted)]">{t("Workflow")}</dt><dd className="mt-1 break-all">{selectedItem.lineage.workflowKey ?? t("Pending")}</dd></div>
+            <div><dt className="text-[var(--ad-text-muted)]">{t("Request")}</dt><dd className="mt-1 break-all">{selectedItem.lineage.requestId ?? t("Pending")}</dd></div>
+            <div><dt className="text-[var(--ad-text-muted)]">{t("Provider request / Comfy prompt")}</dt><dd className="mt-1 break-all">{selectedItem.lineage.providerRequestId ?? t("Pending")}</dd></div>
+            <div><dt className="text-[var(--ad-text-muted)]">{t("Asset")}</dt><dd className="mt-1 break-all">{selectedItem.asset?.id ?? t("Pending")}</dd></div>
+          </dl>
+        ) : null}
+      </details>
     </div>
   );
 }

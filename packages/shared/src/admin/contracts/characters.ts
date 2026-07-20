@@ -298,6 +298,37 @@ export const characterBootstrapGenerationProfileSchema = z
   })
   .strict();
 
+export const characterRouteEvaluationProfileSchema = z
+  .object({
+    profileKey: adminIdSchema,
+    profileVersion: z.number().int().positive(),
+    label: z.string().trim().min(1),
+    workflowKey: z.string().trim().min(1),
+    workflowVersion: z.number().int().positive(),
+    orientation: z.string().trim().min(1).max(20),
+    recommended: z.boolean(),
+  })
+  .strict();
+
+export const characterRouteEvaluationWorkspaceSchema = z
+  .object({
+    ready: z.boolean(),
+    blocker: z.string().trim().min(1).nullable(),
+    sampleMinimum: z.number().int().positive(),
+    evaluatorVersion: z.string().trim().min(1),
+    profiles: z.array(characterRouteEvaluationProfileSchema).readonly(),
+  })
+  .strict()
+  .superRefine((workspace, context) => {
+    if (workspace.ready !== (workspace.blocker === null && workspace.profiles.length > 0)) {
+      context.addIssue({
+        code: "custom",
+        path: ["ready"],
+        message: "Route evaluation readiness must match its profiles and blocker",
+      });
+    }
+  });
+
 export const characterIdentityBootstrapWorkspaceSchema = z
   .object({
     state: z.enum(["new", "recoverable_empty_history", "blocked_existing_authority"]),
@@ -344,6 +375,7 @@ export const characterVisualWorkspaceSchema = z
     activeReferenceSet: characterVisualReferenceSetSchema.nullable(),
     looks: z.array(characterLookWorkspaceSchema).readonly().optional(),
     routeQualifications: z.array(characterRouteQualificationEvidenceSchema).readonly(),
+    routeEvaluation: characterRouteEvaluationWorkspaceSchema,
     identityBootstrap: characterIdentityBootstrapWorkspaceSchema,
     imageReadiness: characterImageReadinessSchema.optional(),
     readiness: z.object({

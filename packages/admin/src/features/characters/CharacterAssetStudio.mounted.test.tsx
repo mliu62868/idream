@@ -19,7 +19,14 @@ vi.mock("@/lib/admin-v2-api", async (importOriginal) => {
 });
 vi.mock("@/components/admin/i18n", () => ({
   useAdminI18n: () => ({
-    t: (value: string) => value,
+    t: (
+      value: string,
+      values?: Readonly<Record<string, string | number>>,
+    ) => Object.entries(values ?? {}).reduce(
+      (text, [key, replacement]) =>
+        text.replaceAll(`{${key}}`, String(replacement)),
+      value,
+    ),
     value: (value: string) => value.replaceAll("_", " "),
   }),
 }));
@@ -193,8 +200,8 @@ describe("Character Asset Studio bootstrap route projection", () => {
       executionOutcome: "succeeded",
       reviewState: "pending",
       counts: {
-        total: 1,
-        generated: 1,
+        total: 2,
+        generated: 2,
         reviewed: 0,
         approved: 0,
         placed: 0,
@@ -206,24 +213,44 @@ describe("Character Asset Studio bootstrap route projection", () => {
       ...run,
       lifecycleState: "active",
       version: 1,
-      items: [{
-        id: "committed-first-portrait-item",
-        ordinal: 0,
-        status: "generated",
-        executionState: "ready",
-        version: 1,
-        asset: {
-          id: "committed-first-portrait-asset",
-          url: "/committed-first-portrait.webp",
-          thumbnailUrl: "/committed-first-portrait-thumb.webp",
+      items: [
+        {
+          id: "committed-first-portrait-item",
+          ordinal: 0,
+          status: "generated",
+          executionState: "ready",
+          version: 1,
+          asset: {
+            id: "committed-first-portrait-asset",
+            url: "/committed-first-portrait.webp",
+            thumbnailUrl: "/committed-first-portrait-thumb.webp",
+          },
+          lineage: {
+            generationProfileKey: "bootstrap-profile-v1",
+            workflowKey: "bootstrap-workflow",
+            requestId: "committed-first-portrait-request",
+            providerRequestId: "committed-first-portrait-provider",
+          },
         },
-        lineage: {
-          generationProfileKey: "bootstrap-profile-v1",
-          workflowKey: "bootstrap-workflow",
-          requestId: "committed-first-portrait-request",
-          providerRequestId: "committed-first-portrait-provider",
+        {
+          id: "comparison-first-portrait-item",
+          ordinal: 1,
+          status: "generated",
+          executionState: "ready",
+          version: 1,
+          asset: {
+            id: "comparison-first-portrait-asset",
+            url: "/comparison-first-portrait.webp",
+            thumbnailUrl: "/comparison-first-portrait-thumb.webp",
+          },
+          lineage: {
+            generationProfileKey: "bootstrap-profile-v1",
+            workflowKey: "bootstrap-workflow",
+            requestId: "comparison-first-portrait-request",
+            providerRequestId: "comparison-first-portrait-provider",
+          },
         },
-      }],
+      ],
     };
     const recentRuns = Array.from({ length: 20 }, (_, index) => ({
       ...run,
@@ -278,9 +305,23 @@ describe("Character Asset Studio bootstrap route projection", () => {
     const selectCandidate = [...container.querySelectorAll<HTMLButtonElement>(
       "button",
     )].find((button) =>
-      button.getAttribute("aria-label") === "Select candidate 1"
+      button.getAttribute("aria-label") === "View candidate 1"
     );
     expect(selectCandidate?.disabled).toBe(false);
+
+    const compareCandidate = [...container.querySelectorAll<HTMLButtonElement>(
+      "button",
+    )].find((button) =>
+      button.getAttribute("aria-label") ===
+        "Compare candidate 2 with current candidate"
+    );
+    expect(compareCandidate?.disabled).toBe(false);
+    await act(async () => compareCandidate?.click());
+    expect(container.textContent).toContain("Two-candidate comparison");
+    expect(container.textContent).toContain(
+      "Compare the current decision without changing authority",
+    );
+    expect(container.textContent).toContain("Make current");
   });
 
   it("keeps a committed Run receipt locked when the detail belongs to another Character", async () => {

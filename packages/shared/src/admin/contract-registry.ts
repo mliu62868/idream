@@ -55,7 +55,7 @@ const fixtureOverrides: Readonly<Record<string, unknown>> = {
     reason: "Complete release QA fixture",
   },
   creativeRunCreateRequestSchema: {
-    purpose: "model_eval",
+    purpose: "feed",
     targetType: "none",
     profileId: "profile-fixture",
     brief: "Executable Creative Run contract fixture",

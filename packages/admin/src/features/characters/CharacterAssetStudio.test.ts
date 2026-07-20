@@ -15,6 +15,7 @@ import {
   firstIncompleteCharacterAssetPurpose,
   isCharacterIdentityAuthorityReady,
   nextCharacterAssetPurpose,
+  resolveCharacterCandidateVisualState,
   resolveCharacterCustomerPreviewAssets,
   resolveCharacterAssetReviewEvidence,
   resolveCharacterAssetSubject,
@@ -31,7 +32,7 @@ describe("Character Asset Studio flow", () => {
       steps: [
         "Attach or create the portrait that defines this character",
         "Publish the approved identity references",
-        "Ask a production administrator to activate a qualified image route",
+        "Create and qualify the platform image route",
       ],
     });
   });
@@ -121,6 +122,39 @@ describe("Character Asset Studio flow", () => {
       score: 96,
       quality: approvedQuality,
     });
+  });
+
+  it("keeps current, comparison, review, and draft states semantically distinct", () => {
+    expect(resolveCharacterCandidateVisualState({
+      active: true,
+      comparison: true,
+      draft: true,
+      decision: "approved",
+    })).toBe("active");
+    expect(resolveCharacterCandidateVisualState({
+      active: false,
+      comparison: true,
+      draft: true,
+      decision: "approved",
+    })).toBe("comparison");
+    expect(resolveCharacterCandidateVisualState({
+      active: false,
+      comparison: false,
+      draft: true,
+      decision: "approved",
+    })).toBe("draft");
+    expect(resolveCharacterCandidateVisualState({
+      active: false,
+      comparison: false,
+      draft: false,
+      decision: "approved",
+    })).toBe("approved");
+    expect(resolveCharacterCandidateVisualState({
+      active: false,
+      comparison: false,
+      draft: false,
+      decision: "rejected",
+    })).toBe("rejected");
   });
 
   it("starts with the first unfinished customer-facing asset and keeps bootstrap on portrait", () => {
@@ -391,13 +425,11 @@ describe("Character Asset Studio flow", () => {
     });
   });
 
-  it("uses a two-column desktop workbench and expands to three columns on wide screens", () => {
+  it("keeps the batch dominant and adds a sticky decision inspector only on wide screens", () => {
     expect(characterAssetStudioLayoutClass).toContain(
-      "lg:grid-cols-[minmax(0,1fr)_300px]",
+      "xl:grid-cols-[minmax(0,1fr)_320px]",
     );
-    expect(characterAssetStudioLayoutClass).toContain(
-      "2xl:grid-cols-[250px_minmax(0,1fr)_320px]",
-    );
+    expect(characterAssetStudioLayoutClass).not.toContain("250px");
   });
 
   it("does not invent an opening message when the draft has none", () => {

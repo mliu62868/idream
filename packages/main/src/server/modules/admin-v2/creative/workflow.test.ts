@@ -106,4 +106,15 @@ describe("Creative Run identity review semantics", () => {
     expect(mode).toBe("preserves_identity");
     expect(approvedIdentityConsistencyForMode(mode)).toBe("passed");
   });
+
+  it("treats every route-evaluation sample as an identity-preservation judgment", () => {
+    const mode = creativeIdentityReviewMode({
+      purpose: "model_eval",
+      sourceMeta: {
+        routeQualificationEvaluationCandidate: true,
+      },
+    });
+    expect(mode).toBe("preserves_identity");
+    expect(approvedIdentityConsistencyForMode(mode)).toBe("passed");
+  });
 });

@@ -1130,6 +1130,10 @@ describe("Character image Creative Run authority", () => {
       orderBy: { createdAt: "asc" },
     });
     expect(jobs).toHaveLength(2);
+    expect(new Set(jobs.map((job) => job.seed)).size).toBe(2);
+    expect(jobs.every((job) =>
+      job.seed?.startsWith(`mara-${suffix}:batch:${batchId}:`) === true
+    )).toBe(true);
     for (const job of jobs) {
       expect(job).toMatchObject({
         characterId,
