@@ -112,8 +112,20 @@ describe("DrawThingsBackend", () => {
       timeoutMs: 5_000,
     });
 
-    expect(state.calls).toHaveLength(1);
-    const [{ command, args }] = state.calls;
+    expect(state.calls).toHaveLength(2);
+    const [ensureCall, { command, args }] = state.calls;
+    expect(ensureCall).toEqual({
+      command: "/usr/local/bin/draw-things-cli",
+      args: [
+        "models",
+        "ensure",
+        "--model",
+        "pornmasterzimage_turbov35bf16_f16.ckpt",
+        "--models-dir",
+        "/draw-things-models",
+        "--offline",
+      ],
+    });
     expect(command).toBe("/usr/local/bin/draw-things-cli");
     expect(args.slice(0, 3)).toEqual([
       "generate",
@@ -168,7 +180,7 @@ describe("DrawThingsBackend", () => {
       timeoutMs: 5_000,
     });
 
-    const args = state.calls[0]?.args ?? [];
+    const args = state.calls[1]?.args ?? [];
     const sourcePath = valueAfter(args, "--image");
     expect(sourcePath).toBeTruthy();
     expect(valueAfter(args, "--strength")).toBe("0.7");
@@ -214,7 +226,7 @@ describe("DrawThingsBackend", () => {
     });
 
     expect(fetchMock).toHaveBeenCalledOnce();
-    const sourcePath = valueAfter(state.calls[0]?.args ?? [], "--image");
+    const sourcePath = valueAfter(state.calls[1]?.args ?? [], "--image");
     expect(sourcePath).toBeTruthy();
     await expect(access(sourcePath as string)).rejects.toThrow();
   });
@@ -238,6 +250,31 @@ describe("DrawThingsBackend", () => {
     await expect(backend.poll(handle)).rejects.toThrow(/no cached result/);
   });
 
+  it("checks the model and all dependencies only once before generation", async () => {
+    const backend = new DrawThingsBackend({
+      cli: "/bin/true",
+      modelsDir: "/draw-things-models",
+      outputDir,
+      offline: true,
+    });
+
+    await backend.submit({
+      descriptor,
+      slots: { prompt: "first", seed: 1 },
+      timeoutMs: 5_000,
+    });
+    await backend.submit({
+      descriptor,
+      slots: { prompt: "second", seed: 2 },
+      timeoutMs: 5_000,
+    });
+
+    const ensureCalls = state.calls.filter(({ args }) => args[0] === "models");
+    const generateCalls = state.calls.filter(({ args }) => args[0] === "generate");
+    expect(ensureCalls).toHaveLength(1);
+    expect(generateCalls).toHaveLength(2);
+  });
+
   it("aborts a CLI process that exceeds the job timeout", async () => {
     state.hang = true;
     const backend = new DrawThingsBackend({ cli: "/bin/false", outputDir });
@@ -254,7 +291,7 @@ describe("DrawThingsBackend", () => {
       backend.submit({ descriptor, slots: { prompt: "second", seed: 2 }, timeoutMs: 5_000 }),
     ]);
 
-    expect(state.calls).toHaveLength(2);
+    expect(state.calls).toHaveLength(3);
     expect(state.maxActive).toBe(1);
   });
 });

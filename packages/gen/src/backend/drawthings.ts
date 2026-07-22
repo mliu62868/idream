@@ -38,6 +38,7 @@ export class DrawThingsBackend implements GenBackend {
   private readonly outputDir: string;
   private readonly offline: boolean;
   private readonly results = new Map<string, BackendResult>();
+  private readonly validatedModels = new Set<string>();
   private generationTail: Promise<void> = Promise.resolve();
 
   constructor(opts: {
@@ -87,6 +88,8 @@ export class DrawThingsBackend implements GenBackend {
     if (references.some((image) => image.role !== "source_image") || references.length > 1) {
       throw new Error("drawthings: version 1 accepts at most one source_image reference");
     }
+
+    await this.ensureModelAvailable(job.descriptor.drawThings.model, job.timeoutMs);
 
     const id = randomUUID();
     await mkdir(this.outputDir, { recursive: true });
@@ -160,6 +163,22 @@ export class DrawThingsBackend implements GenBackend {
       "--output",
       outputPath,
     ];
+  }
+
+  private async ensureModelAvailable(model: string, timeoutMs: number): Promise<void> {
+    if (this.validatedModels.has(model)) return;
+    await this.runCli(
+      [
+        "models",
+        "ensure",
+        "--model",
+        model,
+        ...(this.modelsDir ? ["--models-dir", this.modelsDir] : []),
+        ...(this.offline ? ["--offline"] : []),
+      ],
+      timeoutMs,
+    );
+    this.validatedModels.add(model);
   }
 
   private runCli(args: string[], timeoutMs: number): Promise<void> {

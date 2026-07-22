@@ -236,4 +236,27 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
     expect(drawThings).toBeDefined();
     expect(drawThings?.backendKind).toBe("drawthings");
   });
+
+  it("loads RedCraft Krea2 as an isolated Draw Things candidate", async () => {
+    const descriptors = await loadWorkflowDescriptors(WORKFLOWS_DIR);
+    const redcraft = descriptors.find(
+      (descriptor) => descriptor.modelId === "redcraft-krea2-drawthings",
+    );
+
+    expect(() => workflowDescriptorSchema.parse(redcraft)).not.toThrow();
+    expect(redcraft).toMatchObject({
+      workflowKey: "redcraft-krea2-drawthings-txt2img",
+      backendKind: "drawthings",
+      capabilities: ["textToImage", "stableSeed"],
+      drawThings: {
+        model: "redcraftkrea2redmix_krea2edition_bf16_f16.ckpt",
+      },
+    });
+    expect(redcraft?.inputs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: "steps", default: 10 }),
+        expect.objectContaining({ key: "cfg", default: 1 }),
+      ]),
+    );
+  });
 });
