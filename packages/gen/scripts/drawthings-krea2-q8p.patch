@@ -1,0 +1,50 @@
+diff --git a/Apps/ModelQuantizer/Quantizer.swift b/Apps/ModelQuantizer/Quantizer.swift
+index 02081fc..097622d 100644
+--- a/Apps/ModelQuantizer/Quantizer.swift
++++ b/Apps/ModelQuantizer/Quantizer.swift
+@@ -208,7 +208,15 @@ struct Quantizer: ParsableCommand {
+                 $0.write(key, tensor: fp16, codec: .ezm7)
+               }
+             }
+-          case .qwenImage, .krea2, .ernieImage, .seedvr2_3b, .seedvr2_7b:
++          case .krea2:
++            if key.contains("embedder") || key.contains("pos_embed") || key.contains("-linear-") {
++              $0.write(key, tensor: fp16)
++            } else if squeezedDims > 1 {
++              $0.write(key, tensor: fp16, codec: [.q8p, .ezm7])
++            } else {
++              $0.write(key, tensor: fp16, codec: .ezm7)
++            }
++          case .qwenImage, .ernieImage, .seedvr2_3b, .seedvr2_7b:
+             if key.contains("embedder") || key.contains("pos_embed") || key.contains("-linear-") {
+               $0.write(key, tensor: fp16)
+             } else {
+diff --git a/Package.swift b/Package.swift
+index 60e51b9..d046e09 100644
+--- a/Package.swift
++++ b/Package.swift
+@@ -8,6 +8,7 @@ let package = Package(
+   products: [
+     .executable(name: "gRPCServerCLI", targets: ["gRPCServerCLI"]),
+     .executable(name: "draw-things-cli", targets: ["DrawThingsCLI"]),
++    .executable(name: "model-quantizer", targets: ["ModelQuantizer"]),
+     .library(name: "_MediaGenerationKit", targets: ["_MediaGenerationKit"]),
+   ],
+   dependencies: [
+@@ -483,6 +484,16 @@ let package = Package(
+       exclude: ["SupportingFiles"],
+       sources: ["gRPCServerCLI.swift"]
+     ),
++    .executableTarget(
++      name: "ModelQuantizer",
++      dependencies: [
++        "Diffusion",
++        .product(name: "ArgumentParser", package: "swift-argument-parser"),
++        .product(name: "NNC", package: "s4nnc"),
++      ],
++      path: "Apps/ModelQuantizer",
++      sources: ["Quantizer.swift"]
++    ),
+     .executableTarget(
+       name: "DrawThingsCLI",
+       dependencies: [

@@ -259,4 +259,27 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
       ]),
     );
   });
+
+  it("loads the independent RedCraft Krea2 Q8P Draw Things candidate", async () => {
+    const descriptors = await loadWorkflowDescriptors(WORKFLOWS_DIR);
+    const redcraftQ8p = descriptors.find(
+      (descriptor) => descriptor.modelId === "redcraft-krea2-drawthings-q8p",
+    );
+
+    expect(() => workflowDescriptorSchema.parse(redcraftQ8p)).not.toThrow();
+    expect(redcraftQ8p).toMatchObject({
+      workflowKey: "redcraft-krea2-drawthings-q8p-txt2img",
+      backendKind: "drawthings",
+      capabilities: ["textToImage", "stableSeed"],
+      drawThings: {
+        model: "redcraftkrea2redmix_krea2edition_bf16_q8p.ckpt",
+      },
+    });
+    expect(redcraftQ8p?.inputs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: "steps", default: 10 }),
+        expect.objectContaining({ key: "cfg", default: 1 }),
+      ]),
+    );
+  });
 });
