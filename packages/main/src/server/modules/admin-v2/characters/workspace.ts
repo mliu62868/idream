@@ -1108,6 +1108,17 @@ export async function getCharacterWorkspace(characterId: string) {
       provider: providersVoiceKey(),
       cloningAvailable: voiceRuntimeStatus === "ready",
       runtimeStatus: voiceRuntimeStatus,
+      runtimeEngine:
+        env.VOICE_PROVIDER !== "pocket-tts"
+          ? "inactive"
+          : voiceCapabilities?.ok &&
+              voiceCapabilities.data.runtime === "pocket_tts_mlx"
+            ? "pocket_tts_mlx"
+            : "unknown",
+      runtimeVersion:
+        voiceCapabilities?.ok
+          ? voiceCapabilities.data.runtimeVersion ?? null
+          : null,
       runtimeLanguage: env.POCKET_TTS_LANGUAGE,
       currentVoiceId: character.voiceId,
       activeProfile: activeVoiceProfile

@@ -17,7 +17,9 @@ to take it from `mock` to a **publishable production** state.
 - **UI** — play / loading / stop control on each assistant message in chat; 402 routes
   to upgrade.
 - **Provider** — `PocketTtsVoiceModel` is the active product adapter and calls the
-  co-located Pocket TTS gateway. `MockVoiceModel` remains for isolated tests and
+  co-located `pocket-tts-mlx==0.2.1` gateway on Apple Silicon. Main rejects a
+  healthy-but-legacy gateway without `runtime=pocket_tts_mlx`,
+  `runtime_version=0.2.1`, and `acceleration=mlx`. `MockVoiceModel` remains for isolated tests and
   `PipelineVoiceModel` remains as an explicit rollback adapter.
 - **Voice clone authority** — Admin Character Workspace → Voice uploads a reference,
   renders a preview, and creates a versioned candidate `CharacterVoiceProfile` without
@@ -31,10 +33,11 @@ to take it from `mock` to a **publishable production** state.
 
 1. **Authorize the model** — accept the `kyutai/pocket-tts` model terms and provision
    `HF_TOKEN` on the Pocket TTS host. A healthy catalog-voice runner is not enough:
-   `/v1/health` must return `voice_cloning: true`.
+   `/v1/health` must return `runtime: pocket_tts_mlx`, `acceleration: mlx`, and
+   `voice_cloning: true`.
 2. **Start the gateway** — run the co-located Pocket TTS process from
    `ecosystem.config.js`. It exposes `/v1/audio/speech` plus the private clone registry
-   and persists cloned voice states under `.data/pocket-tts/voices`.
+   and persists MLX-native cloned voice states under `.data/pocket-tts/voices`.
 3. **Set env** (see `packages/main/.env.production.example`):
    ```
    VOICE_PROVIDER=pocket-tts
@@ -42,6 +45,7 @@ to take it from `mock` to a **publishable production** state.
    POCKET_TTS_API_TOKEN=<shared-internal-token>
    POCKET_TTS_MODEL=kyutai/pocket-tts
    POCKET_TTS_DEFAULT_VOICE_ID=alba
+   POCKET_TTS_MLX_WARMUP_FRAMES=1
    HF_TOKEN=<hugging-face-token>
    VOICE_MODEL_PROBE_REPORT=.tmp/launch-voice-probe.json
    ```
@@ -73,6 +77,7 @@ to take it from `mock` to a **publishable production** state.
 | Free minutes per plan | plan `voiceMinutes` feature | 30 / 120 / 360 / 1440 |
 | Default delivery model | `POCKET_TTS_MODEL` | `kyutai/pocket-tts` |
 | Default catalog voice | `POCKET_TTS_DEFAULT_VOICE_ID` | `alba` |
+| Mimi decoder warmup | `POCKET_TTS_MLX_WARMUP_FRAMES` | `1` |
 | Clone state directory | `POCKET_TTS_VOICE_DIR` | `.data/pocket-tts/voices` |
 | Signed-URL TTL for playback | `SIGNED_URL_TTL_SECONDS` | 900s |
 
@@ -82,3 +87,6 @@ to take it from `mock` to a **publishable production** state.
   follow-up (the `tone` field already carries it end-to-end).
 - The play button is shown to all users and gates server-side via 402; no client-side
   entitlement pre-check.
+- The MLX runtime is Apple Silicon/macOS-only and currently serves the English variant.
+- Voice states created by the retired PyTorch gateway must be recreated from their
+  Admin reference audio; the gateway rejects them instead of silently misloading them.

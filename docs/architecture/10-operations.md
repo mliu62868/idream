@@ -92,7 +92,8 @@ ComfyUI/backend failure；同样不能把组合 pipeline suite 宣称为 pass。
 
 ### Local voice runner
 
-Voice 当前使用 Pocket TTS。仓库内 gateway 在 `8062` 暴露 OpenAI-compatible
+Voice 当前使用 Pocket TTS MLX。仓库内 gateway 在 Apple Silicon 的 MLX GPU 上
+运行，并在 `8062` 暴露 OpenAI-compatible
 `/v1/audio/speech`，并额外提供声音克隆管理接口；它不复用 legacy 8091 image
 gateway：
 
@@ -103,11 +104,14 @@ curl -fsS http://127.0.0.1:8062/health
 bun run launch:probe:voice:local
 ```
 
-第一次启动会由 `uv` 创建隔离环境并下载固定版本 `pocket-tts==2.1.0` 及
-`kyutai/pocket-tts` 权重。若 Hugging Face 要求身份，先接受模型页条件并提供
+第一次启动会由 `uv` 创建隔离环境并下载固定版本 `pocket-tts-mlx==0.2.1` 及
+`kyutai/pocket-tts` 权重；这个 runtime 要求 Apple Silicon macOS，且当前只服务
+English variant。若 Hugging Face 要求身份，先接受模型页条件并提供
 `HF_TOKEN`。未认证时公开权重仍可使用 catalog voices 做普通 TTS，但 `/health`
-会报告 `voice_cloning: false`，Admin 会禁用克隆提交，不能把“进程健康”误报为
-“克隆就绪”。默认配置：
+会报告 `runtime: pocket_tts_mlx`、`acceleration: mlx` 和
+`voice_cloning: false`，Admin 会禁用克隆提交，不能把“进程健康”误报为“克隆就绪”。
+Main 的 capability check 会拒绝没有 MLX runtime identity 的旧 gateway，也会拒绝
+不是当前固定版本 `0.2.1` 的 runtime。默认配置：
 
 ```dotenv
 VOICE_PROVIDER=pocket-tts
@@ -115,13 +119,15 @@ POCKET_TTS_API_URL=http://127.0.0.1:8062/v1
 POCKET_TTS_MODEL=kyutai/pocket-tts
 POCKET_TTS_LANGUAGE=english
 POCKET_TTS_DEFAULT_VOICE_ID=alba
+POCKET_TTS_MLX_WARMUP_FRAMES=1
 ```
 
 声音克隆入口在 Admin 的 Character Workspace → Voice，分成候选制作和明确启用
 两段 authority。候选制作会：
 
 - 读取最多前 30 秒的单人参考录音；
-- 将 Pocket TTS voice state 持久化到 `.data/pocket-tts/voices/*.safetensors`；
+- 用 MLX 原生 safetensors 将 FlowLM KV voice state 持久化到
+  `.data/pocket-tts/voices/*.safetensors`，进程重启后直接恢复；
 - 保存原始参考音频和试听 WAV 为 `MediaAsset`；
 - 创建状态为 `candidate` 的版本化 `CharacterVoiceProfile`，但不修改
   `Character.voiceId`。
@@ -131,6 +137,8 @@ POCKET_TTS_DEFAULT_VOICE_ID=alba
 `Character.voiceId`；新生成的聊天语音立即使用新声音，已有缓存 clip 保持不变。
 
 `POCKET_TTS_API_TOKEN` 可保护 gateway；Main 和 PM2 runner 必须使用同一值。
+旧 PyTorch gateway 生成的 voice-state 文件与 MLX state 格式不兼容；切换后需从
+Admin 参考音频重新创建一次候选，不能静默把旧 state 当成 MLX state。
 旧 `pipeline` voice adapter 仍保留为回滚路径，但不再是当前默认。
 
 之后再按需要跑真实图片探针和上线门禁：

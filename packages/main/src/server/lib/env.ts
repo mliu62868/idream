@@ -102,22 +102,7 @@ const EnvSchema = z.object({
   POCKET_TTS_API_URL: z.string().url().default("http://127.0.0.1:8062/v1"),
   POCKET_TTS_API_TOKEN: z.string().optional(),
   POCKET_TTS_MODEL: z.string().min(1).default("kyutai/pocket-tts"),
-  POCKET_TTS_LANGUAGE: z
-    .enum([
-      "english",
-      "english_2026-01",
-      "english_2026-04",
-      "french_24l",
-      "german",
-      "german_24l",
-      "portuguese",
-      "portuguese_24l",
-      "italian",
-      "italian_24l",
-      "spanish",
-      "spanish_24l",
-    ])
-    .default("english"),
+  POCKET_TTS_LANGUAGE: z.literal("english").default("english"),
   POCKET_TTS_DEFAULT_VOICE_ID: z.string().min(1).default("alba"),
   POCKET_TTS_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
   AGE_VERIFY_SERVICE_URL: z.string().url().optional(),

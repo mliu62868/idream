@@ -148,7 +148,13 @@ export function CharacterVoicePanel({
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <StatusBadge value={data.voice.provider} />
+            <StatusBadge
+              value={
+                data.voice.runtimeEngine === "pocket_tts_mlx"
+                  ? `Pocket TTS · MLX ${data.voice.runtimeVersion ?? ""}`.trim()
+                  : data.voice.provider
+              }
+            />
             <StatusBadge
               tone={data.voice.cloningAvailable ? "good" : "warn"}
               value={voiceRuntimeLabel(data.voice.runtimeStatus)}
@@ -261,7 +267,7 @@ export function CharacterVoicePanel({
               {candidate ? t("Replace voice candidate") : t("Create voice candidate")}
             </h3>
             <p className="mt-1 text-sm text-[var(--ad-text-muted)]">
-              {t("Use a clean single-speaker recording. Pocket TTS uses up to the first 30 seconds.")}
+              {t("Use a clean single-speaker recording. Pocket TTS MLX uses up to the first 30 seconds.")}
             </p>
           </div>
         </div>
@@ -400,11 +406,11 @@ function voiceRuntimeLabel(status: CharacterWorkspaceDetail["voice"]["runtimeSta
 
 function voiceRuntimeMessage(status: CharacterWorkspaceDetail["voice"]["runtimeStatus"]) {
   return {
-    ready: "Pocket TTS voice cloning is ready.",
+    ready: "Pocket TTS MLX voice cloning is ready.",
     model_access_required:
-      "Pocket TTS speech is running, but clone weights require model access. Accept the kyutai/pocket-tts model terms, provide HF_TOKEN, and restart the Pocket TTS process.",
+      "Pocket TTS MLX speech is running, but clone weights require model access. Accept the kyutai/pocket-tts model terms, provide HF_TOKEN, and restart the Pocket TTS process.",
     unavailable:
-      "Pocket TTS is configured but unreachable. Start or restart the Pocket TTS process.",
+      "Pocket TTS MLX is configured but unreachable. Start or restart the Pocket TTS process.",
     inactive:
       "Pocket TTS is not the active voice provider. Set VOICE_PROVIDER=pocket-tts and start the Pocket TTS process.",
   }[status];

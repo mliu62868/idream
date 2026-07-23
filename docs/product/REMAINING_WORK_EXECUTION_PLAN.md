@@ -145,7 +145,8 @@ Historical local result from 2026-06-30:
   `pornmaster-zimage-turbo`; combined pipeline probe produced 1 image asset in
   about 97.3s.
 - voice: the former pipeline/Qwen smoke remains historical evidence. Current
-  authority is `VOICE_PROVIDER=pocket-tts` through the local `8062` gateway,
+  authority is `VOICE_PROVIDER=pocket-tts` through the local Apple Silicon
+  `pocket-tts-mlx==0.2.1` gateway on `8062`,
   with a real clone→synthesize→delete probe plus Admin candidate→preview→activate
   persistence proof required before voice cloning is included in a demo. The
   2026-07-23 local WAV probe
@@ -212,7 +213,8 @@ Required work:
   Gallery asset. If prior runs were interrupted, clear stale `ai.image.generate`
   active jobs, restart `gen-image` and `sdcpp-image`, and confirm Prisma schema
   is synced before the probe.
-- Keep the Pocket TTS `8062` gateway healthy, run the real voice probe, and
+- Keep the Pocket TTS MLX `8062` gateway healthy with
+  `runtime=pocket_tts_mlx` and `acceleration=mlx`, run the real voice probe, and
   verify one Admin clone creates a playable candidate preview without changing
   `Character.voiceId`, then separately activate that reviewed profile and verify
   the active voice pointer before promising voice in a demo.

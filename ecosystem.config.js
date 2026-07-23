@@ -59,7 +59,7 @@ const huggingFaceToken = mainEnvValue("HF_TOKEN");
 
 module.exports = {
   apps: [
-    // fast CPU inference — Pocket TTS + durable cloned voice-state registry
+    // Apple Silicon MLX inference — Pocket TTS + durable cloned voice-state registry
     {
       name: "pocket-tts",
       cwd: dir("."),
@@ -78,7 +78,8 @@ module.exports = {
           mainEnvValue("POCKET_TTS_DEFAULT_VOICE_ID", "alba"),
         POCKET_TTS_VOICE_DIR:
           mainEnvValue("POCKET_TTS_VOICE_DIR", dir(".data/pocket-tts/voices")),
-        POCKET_TTS_QUANTIZE: mainEnvValue("POCKET_TTS_QUANTIZE", "false"),
+        POCKET_TTS_MLX_WARMUP_FRAMES:
+          mainEnvValue("POCKET_TTS_MLX_WARMUP_FRAMES", "1"),
         ...(pocketTtsApiToken ? { POCKET_TTS_API_TOKEN: pocketTtsApiToken } : {}),
         ...(huggingFaceToken ? { HF_TOKEN: huggingFaceToken } : {}),
       },

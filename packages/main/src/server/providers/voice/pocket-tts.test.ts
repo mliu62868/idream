@@ -7,6 +7,9 @@ describe("PocketTtsVoiceModel", () => {
     const fetchMock = vi.fn(async () =>
       Response.json({
         status: "healthy",
+        runtime: "pocket_tts_mlx",
+        runtime_version: "0.2.1",
+        acceleration: "mlx",
         voice_cloning: false,
       }),
     );
@@ -20,11 +23,63 @@ describe("PocketTtsVoiceModel", () => {
 
     await expect(voice.inspectCapabilities()).resolves.toEqual({
       ok: true,
-      data: { voiceCloning: false },
+      data: {
+        voiceCloning: false,
+        runtime: "pocket_tts_mlx",
+        runtimeVersion: "0.2.1",
+        acceleration: "mlx",
+      },
     });
     const [endpoint, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
     expect(endpoint.toString()).toBe("http://127.0.0.1:8062/v1/health");
     expect(init.method).toBe("GET");
+  });
+
+  it("rejects a legacy Pocket gateway that is not running the MLX backend", async () => {
+    const voice = new PocketTtsVoiceModel({
+      baseUrl: "http://127.0.0.1:8062/v1",
+      model: "kyutai/pocket-tts",
+      language: "english",
+      blob: stubBlobStore(),
+      fetchImpl: async () =>
+        Response.json({
+          status: "healthy",
+          voice_cloning: true,
+        }),
+    });
+
+    await expect(voice.inspectCapabilities()).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "invalid_voice_health_response",
+        retryable: true,
+      },
+    });
+  });
+
+  it("rejects an unsupported Pocket TTS MLX runtime version", async () => {
+    const voice = new PocketTtsVoiceModel({
+      baseUrl: "http://127.0.0.1:8062/v1",
+      model: "kyutai/pocket-tts",
+      language: "english",
+      blob: stubBlobStore(),
+      fetchImpl: async () =>
+        Response.json({
+          status: "healthy",
+          runtime: "pocket_tts_mlx",
+          runtime_version: "0.3.0",
+          acceleration: "mlx",
+          voice_cloning: true,
+        }),
+    });
+
+    await expect(voice.inspectCapabilities()).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "invalid_voice_health_response",
+        retryable: true,
+      },
+    });
   });
 
   it("creates a reusable Pocket TTS voice from uploaded reference audio", async () => {

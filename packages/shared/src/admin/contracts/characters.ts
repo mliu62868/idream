@@ -1419,6 +1419,8 @@ export const characterVoiceWorkspaceSchema = z
       "unavailable",
       "inactive",
     ]),
+    runtimeEngine: z.enum(["pocket_tts_mlx", "unknown", "inactive"]),
+    runtimeVersion: z.string().trim().min(1).nullable(),
     runtimeLanguage: z.string().trim().min(1),
     currentVoiceId: z.string().nullable(),
     activeProfile: characterVoiceProfileSchema.nullable(),

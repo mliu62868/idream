@@ -87,6 +87,9 @@ export interface VoiceModel {
   inspectCapabilities?(): Promise<
     ProviderResult<{
       voiceCloning: boolean;
+      runtime?: string;
+      runtimeVersion?: string;
+      acceleration?: string;
     }>
   >;
 }

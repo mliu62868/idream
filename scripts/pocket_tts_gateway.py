@@ -1,42 +1,54 @@
-"""iDream Pocket TTS gateway.
+"""iDream Pocket TTS MLX gateway.
 
-Keeps the official Kyutai model and cloned voice states warm, exposes the
-existing OpenAI-compatible speech seam, and adds a durable voice-clone endpoint.
+Keeps Pocket TTS warm on Apple Silicon through the torch-free MLX backend,
+exposes the existing OpenAI-compatible speech seam, and persists cloned FlowLM
+voice states in MLX-native safetensors files.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import tempfile
 import threading
+from collections import OrderedDict
 from pathlib import Path
 from queue import Queue
 from typing import Iterator
 
+import mlx.core as mx
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-
-from pocket_tts.data.audio import stream_audio_chunks
-from pocket_tts.models.tts_model import TTSModel, export_model_state
+from pocket_tts_mlx import TTSModel, __version__ as MLX_RUNTIME_VERSION
+from pocket_tts_mlx.data.audio import stream_audio_chunks
 
 
 MODEL_ID = os.getenv("POCKET_TTS_MODEL", "kyutai/pocket-tts")
 LANGUAGE = os.getenv("POCKET_TTS_LANGUAGE", "english")
 DEFAULT_VOICE = os.getenv("POCKET_TTS_DEFAULT_VOICE_ID", "alba")
 API_TOKEN = os.getenv("POCKET_TTS_API_TOKEN", "").strip()
+MLX_WARMUP_FRAMES = int(os.getenv("POCKET_TTS_MLX_WARMUP_FRAMES", "1"))
+STATE_FORMAT = "pocket_tts_mlx_model_state_v1"
+VOICE_STATE_CACHE_CAPACITY = 2
 VOICE_DIR = Path(
     os.getenv("POCKET_TTS_VOICE_DIR", ".data/pocket-tts/voices")
 ).resolve()
 VOICE_DIR.mkdir(parents=True, exist_ok=True)
 
-model = TTSModel.load_model(
-    language=LANGUAGE,
-    quantize=os.getenv("POCKET_TTS_QUANTIZE", "false").lower() == "true",
-)
+if LANGUAGE != "english":
+    raise RuntimeError(
+        "pocket-tts-mlx 0.2.1 currently serves the English Pocket TTS variant only"
+    )
+if MLX_WARMUP_FRAMES < 0:
+    raise RuntimeError("POCKET_TTS_MLX_WARMUP_FRAMES must be zero or greater")
+
+model = TTSModel.load_model()
 inference_lock = threading.Lock()
-app = FastAPI(title="iDream Pocket TTS gateway", version="1.0.0")
+VoiceState = dict[str, dict[str, mx.array]]
+voice_state_cache: OrderedDict[str, VoiceState] = OrderedDict()
+app = FastAPI(title="iDream Pocket TTS MLX gateway", version="2.0.0")
 
 
 class SpeechRequest(BaseModel):
@@ -64,11 +76,104 @@ def voice_path(voice_id: str) -> Path:
     return VOICE_DIR / f"{safe_voice_id(voice_id)}.safetensors"
 
 
-def model_state(voice_id: str):
-    stored = voice_path(voice_id)
+def save_mlx_model_state(
+    model_state: VoiceState,
+    target: Path,
+) -> None:
+    arrays: dict[str, mx.array] = {}
+    entries: list[dict[str, object]] = []
+    for module_index, (module_name, module_state) in enumerate(model_state.items()):
+        for state_index, (state_name, value) in enumerate(module_state.items()):
+            tensor_key = f"state_{module_index}_{state_index}"
+            shape = [int(dimension) for dimension in value.shape]
+            empty = value.size == 0
+            arrays[tensor_key] = (
+                mx.zeros((1,), dtype=value.dtype) if empty else value
+            )
+            entries.append(
+                {
+                    "tensor": tensor_key,
+                    "module": module_name,
+                    "state": state_name,
+                    "shape": shape,
+                    "empty": empty,
+                }
+            )
+    if not arrays:
+        raise RuntimeError("Pocket TTS MLX produced an empty cloned voice state")
+    mx.save_safetensors(
+        target,
+        arrays,
+        metadata={
+            "idream_format": STATE_FORMAT,
+            "runtime": "pocket_tts_mlx",
+            "runtime_version": MLX_RUNTIME_VERSION,
+            "state_entries": json.dumps(entries, separators=(",", ":")),
+        },
+    )
+
+
+def load_mlx_model_state(path: Path) -> VoiceState:
+    loaded, metadata = mx.load(path, return_metadata=True)
+    if metadata.get("idream_format") != STATE_FORMAT:
+        raise RuntimeError(
+            "Stored voice state predates the MLX runtime; recreate its voice candidate"
+        )
+    raw_entries = metadata.get("state_entries")
+    if not isinstance(raw_entries, str):
+        raise RuntimeError("Stored MLX voice state is missing its state manifest")
+    entries = json.loads(raw_entries)
+    if not isinstance(entries, list):
+        raise RuntimeError("Stored MLX voice state manifest is invalid")
+    model_state: VoiceState = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise RuntimeError("Stored MLX voice state entry is invalid")
+        tensor_key = entry.get("tensor")
+        module_name = entry.get("module")
+        state_name = entry.get("state")
+        shape = entry.get("shape")
+        empty = entry.get("empty")
+        if (
+            not isinstance(tensor_key, str)
+            or not isinstance(module_name, str)
+            or not isinstance(state_name, str)
+            or not isinstance(shape, list)
+            or not all(isinstance(dimension, int) for dimension in shape)
+            or not isinstance(empty, bool)
+            or tensor_key not in loaded
+        ):
+            raise RuntimeError("Stored MLX voice state entry is incomplete")
+        value = loaded[tensor_key]
+        expected_shape = tuple(shape)
+        if empty:
+            value = value[:0].reshape(expected_shape)
+        elif value.shape != expected_shape:
+            raise RuntimeError("Stored MLX voice state tensor shape is invalid")
+        model_state.setdefault(module_name, {})[state_name] = value
+    if not model_state:
+        raise RuntimeError("Stored MLX voice state is empty")
+    mx.eval(*loaded.values())
+    return model_state
+
+
+def cache_voice_state(voice_id: str, state: VoiceState) -> None:
+    voice_state_cache.pop(voice_id, None)
+    voice_state_cache[voice_id] = state
+    while len(voice_state_cache) > VOICE_STATE_CACHE_CAPACITY:
+        voice_state_cache.popitem(last=False)
+
+
+def model_state(voice_id: str) -> VoiceState:
+    normalized_id = safe_voice_id(voice_id)
+    stored = voice_path(normalized_id)
     if stored.exists():
-        return model.get_state_for_audio_prompt(stored)
-    return model.get_state_for_audio_prompt(voice_id)
+        cached = voice_state_cache.pop(normalized_id, None)
+        if cached is None:
+            cached = load_mlx_model_state(stored)
+        cache_voice_state(normalized_id, cached)
+        return cached
+    return model.get_state_for_audio_prompt(normalized_id)
 
 
 class QueueWriter:
@@ -102,6 +207,7 @@ def generate_to_queue(
             chunks = model.generate_audio_stream(
                 model_state=model_state(voice_id),
                 text_to_generate=text,
+                warmup_frames=MLX_WARMUP_FRAMES,
             )
             stream_audio_chunks(
                 QueueWriter(queue),
@@ -140,6 +246,9 @@ def health() -> dict[str, object]:
     return {
         "status": "healthy",
         "provider": "pocket_tts",
+        "runtime": "pocket_tts_mlx",
+        "runtime_version": MLX_RUNTIME_VERSION,
+        "acceleration": "mlx",
         "model": MODEL_ID,
         "language": LANGUAGE,
         "voice_cloning": model.has_voice_cloning,
@@ -188,8 +297,9 @@ def clone_voice(
     try:
         with inference_lock:
             state = model.get_state_for_audio_prompt(source_path, truncate=True)
-            export_model_state(state, temporary_target)
-        temporary_target.replace(target)
+            save_mlx_model_state(state, temporary_target)
+            temporary_target.replace(target)
+            cache_voice_state(normalized_id, state)
     finally:
         source_path.unlink(missing_ok=True)
         temporary_target.unlink(missing_ok=True)
@@ -198,5 +308,8 @@ def clone_voice(
 
 @app.delete("/v1/voices/{voice_id}", dependencies=[Depends(authorize)])
 def delete_voice(voice_id: str) -> dict[str, bool]:
-    voice_path(voice_id).unlink(missing_ok=True)
+    normalized_id = safe_voice_id(voice_id)
+    with inference_lock:
+        voice_state_cache.pop(normalized_id, None)
+        voice_path(normalized_id).unlink(missing_ok=True)
     return {"deleted": True}

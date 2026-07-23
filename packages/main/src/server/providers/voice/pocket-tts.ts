@@ -23,7 +23,12 @@ type PocketVoiceResponse = {
 
 type PocketHealthResponse = {
   voice_cloning?: unknown;
+  runtime?: unknown;
+  runtime_version?: unknown;
+  acceleration?: unknown;
 };
+
+const POCKET_TTS_MLX_RUNTIME_VERSION = "0.2.1";
 
 export class PocketTtsVoiceModel implements VoiceModel {
   readonly providerKey = "pocket_tts" as const;
@@ -153,16 +158,27 @@ export class PocketTtsVoiceModel implements VoiceModel {
     );
     if (!response.ok) return response;
     const raw = await response.data.json().catch(() => null) as PocketHealthResponse | null;
-    if (!raw || typeof raw.voice_cloning !== "boolean") {
+    if (
+      !raw ||
+      typeof raw.voice_cloning !== "boolean" ||
+      raw.runtime !== "pocket_tts_mlx" ||
+      raw.runtime_version !== POCKET_TTS_MLX_RUNTIME_VERSION ||
+      raw.acceleration !== "mlx"
+    ) {
       return pocketFailure(
         "invalid_voice_health_response",
-        "Pocket TTS health response is incomplete",
+        "Pocket TTS gateway is not running the required MLX backend",
         true,
       );
     }
     return {
       ok: true as const,
-      data: { voiceCloning: raw.voice_cloning },
+      data: {
+        voiceCloning: raw.voice_cloning,
+        runtime: raw.runtime,
+        runtimeVersion: raw.runtime_version,
+        acceleration: raw.acceleration,
+      },
     };
   }
 
