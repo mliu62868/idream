@@ -282,4 +282,27 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
       ]),
     );
   });
+
+  it("loads the independent RedCraft Krea2 I8X Draw Things candidate", async () => {
+    const descriptors = await loadWorkflowDescriptors(WORKFLOWS_DIR);
+    const redcraftI8x = descriptors.find(
+      (descriptor) => descriptor.modelId === "redcraft-krea2-drawthings-i8x",
+    );
+
+    expect(() => workflowDescriptorSchema.parse(redcraftI8x)).not.toThrow();
+    expect(redcraftI8x).toMatchObject({
+      workflowKey: "redcraft-krea2-drawthings-i8x-txt2img",
+      backendKind: "drawthings",
+      capabilities: ["textToImage", "stableSeed"],
+      drawThings: {
+        model: "redcraftkrea2redmix_krea2edition_bf16_i8x.ckpt",
+      },
+    });
+    expect(redcraftI8x?.inputs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: "steps", default: 10 }),
+        expect.objectContaining({ key: "cfg", default: 1 }),
+      ]),
+    );
+  });
 });
