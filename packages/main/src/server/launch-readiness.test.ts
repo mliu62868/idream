@@ -1771,6 +1771,48 @@ describe("launch readiness", () => {
     expect(checkById(cloneReady, "voice-model-live-probe")?.status).toBe("pass");
   });
 
+  it("preserves Pocket TTS clone evidence when loading the voice probe report", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "idream-voice-probe-"));
+    try {
+      const reportPath = path.join(dir, "voice-model.json");
+      const pocketEnv = {
+        ...productionEnv,
+        VOICE_PROVIDER: "pocket-tts",
+        POCKET_TTS_API_URL: "https://voice.ourdream.internal/v1",
+        POCKET_TTS_MODEL: "kyutai/pocket-tts",
+        VOICE_MODEL_PROBE_REPORT: reportPath,
+      };
+      writeFileSync(
+        reportPath,
+        JSON.stringify(passingVoiceProbe({
+          provider: "pocket-tts",
+          baseUrl: pocketEnv.POCKET_TTS_API_URL,
+          model: pocketEnv.POCKET_TTS_MODEL,
+          voiceCloningAvailable: true,
+          voiceCloneVerified: true,
+        })),
+      );
+      const report = assessLaunchReadiness({
+        env: pocketEnv,
+        imagePipelineProbe: passingImageProbe(),
+        ageVerificationProbe: passingAgeProbe(),
+        blobStorageProbe: passingBlobProbe(),
+        chatModelProbe: passingChatProbe(),
+        chatServiceProbe: passingChatServiceProbe(),
+        paymentProviderProbe: passingPaymentProbe(),
+        safetyGatewayProbe: passingSafetyProbe(),
+        productConfigProbe: passingProductConfigProbe(),
+        webSurfaceProbe: passingWebSurfaceProbe(),
+        publicCatalogProbe: passingPublicCatalogProbe(),
+        now,
+      });
+
+      expect(checkById(report, "voice-model-live-probe")?.status).toBe("pass");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("fails when the live voice model probe is stale", () => {
     const report = assessLaunchReadiness({
       env: productionEnv,

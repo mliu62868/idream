@@ -332,6 +332,13 @@ export async function activateCharacterVoiceProfile(input: {
   requestId: string;
   request: unknown;
 }) {
+  const voice = providers.voice;
+  if (voice.providerKey !== "pocket_tts") {
+    throw Errors.unavailable(
+      "Voice activation requires VOICE_PROVIDER=pocket-tts",
+      { configuredProvider: voice.providerKey },
+    );
+  }
   const request = characterVoiceActivationRequestSchema.parse(input.request);
   const result = await executeAtomicIdempotentMutation({
     environment: env.APP_ENV,

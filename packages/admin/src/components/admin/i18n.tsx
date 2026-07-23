@@ -247,6 +247,7 @@ const zh: Record<string, string> = {
   "Activate reviewed voice": "启用已审核声音",
   "Activating reviewed voice…": "正在启用已审核声音…",
   "Read-only: character.release.publish is required to activate a voice.": "只读：启用声音需要 character.release.publish 权限。",
+  "Pocket TTS must be the active voice provider before this candidate can be activated.": "启用此候选声音前，必须先将 Pocket TTS 设为当前声音供应器。",
   "Replace voice candidate": "替换候选声音",
   "Create voice candidate": "创建候选声音",
   "Use a clean single-speaker recording. Pocket TTS uses up to the first 30 seconds.": "请使用干净的单人录音；Pocket TTS 最多使用前 30 秒。",

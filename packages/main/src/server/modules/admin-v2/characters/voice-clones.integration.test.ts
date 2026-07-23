@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/server/lib/db";
 
 const providerState = vi.hoisted(() => ({
+  providerKey: "pocket_tts",
   cloneCalls: 0,
   synthesizeCalls: 0,
   failSynthesizeCall: null as number | null,
@@ -13,7 +14,9 @@ const providerState = vi.hoisted(() => ({
 vi.mock("@/server/providers", () => ({
   providers: {
     voice: {
-      providerKey: "pocket_tts",
+      get providerKey() {
+        return providerState.providerKey;
+      },
       supportsVoiceCloning: true,
       async cloneVoice(input: {
         voiceId: string;
@@ -320,6 +323,53 @@ describe("Character Pocket TTS voice clone authority", () => {
     );
     expect((await prisma.characterVoiceProfile.findUniqueOrThrow({
       where: { id: winner.value.profile.id },
+    })).status).toBe("candidate");
+  });
+
+  it("refuses to activate a Pocket candidate while another voice provider is active", async () => {
+    providerState.providerKey = "pocket_tts";
+    providerState.synthesizeCalls = 0;
+    providerState.failSynthesizeCall = null;
+    const candidate = await createCharacterVoiceClone({
+      characterId,
+      actor: { id: actorId, role: "admin" },
+      idempotencyKey: `voice-clone-provider-switch-${suffix}`,
+      requestId: `voice-request-provider-switch-${suffix}`,
+      form: cloneForm("provider-switch-reference.wav", "Provider switch preview."),
+    });
+    const character = await prisma.character.findUniqueOrThrow({
+      where: { id: characterId },
+      select: { voiceId: true },
+    });
+    const active = await prisma.characterVoiceProfile.findFirst({
+      where: { characterId, status: "active" },
+      select: { id: true },
+    });
+
+    providerState.providerKey = "pipeline";
+    try {
+      await expect(activateCharacterVoiceProfile({
+        characterId,
+        profileId: candidate.profile.id,
+        actor: { id: actorId, role: "admin" },
+        idempotencyKey: `voice-activate-provider-switch-${suffix}`,
+        requestId: `voice-activate-request-provider-switch-${suffix}`,
+        request: {
+          reason: "This must not cross provider authority",
+          expectedActiveProfileId: active?.id ?? null,
+          expectedCurrentVoiceId: character.voiceId,
+        },
+      })).rejects.toMatchObject({ status: 503 });
+    } finally {
+      providerState.providerKey = "pocket_tts";
+    }
+    expect((await prisma.character.findUniqueOrThrow({
+      where: { id: characterId },
+      select: { voiceId: true },
+    })).voiceId).toBe(character.voiceId);
+    expect((await prisma.characterVoiceProfile.findUniqueOrThrow({
+      where: { id: candidate.profile.id },
+      select: { status: true },
     })).status).toBe("candidate");
   });
 });

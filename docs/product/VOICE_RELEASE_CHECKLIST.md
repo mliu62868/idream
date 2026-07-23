@@ -20,8 +20,10 @@ to take it from `mock` to a **publishable production** state.
   co-located Pocket TTS gateway. `MockVoiceModel` remains for isolated tests and
   `PipelineVoiceModel` remains as an explicit rollback adapter.
 - **Voice clone authority** — Admin Character Workspace → Voice uploads a reference,
-  renders a preview, versions `CharacterVoiceProfile`, archives the previous active
-  profile, and atomically updates `Character.voiceId`.
+  renders a preview, and creates a versioned candidate `CharacterVoiceProfile` without
+  changing `Character.voiceId`. A separate publish-authority action activates the
+  reviewed candidate, archives the previous active profile, updates the character
+  pointer, and records Audit/Outbox evidence.
 - **Launch gates** — `VOICE_PROVIDER` is a launch-critical provider: production refuses
   to start on `mock`, and `check:launch` requires a fresh live voice-model probe.
 
@@ -48,9 +50,11 @@ to take it from `mock` to a **publishable production** state.
    `voice_gen` feature flag, the `mode=voice` `PricingRule`, and the `voiceEnabled` /
    `voiceMinutes` plan features exist. Existing subscribers only gain voice after their
    plan features include `voiceEnabled` — reseed plans or edit them in the admin console.
-5. **Clone and verify one character** — use Admin Character Workspace → Voice and
-   confirm the preview plays, the new profile is active, and `Character.voiceId` matches
-   its Pocket voice id. Unset characters continue to use the catalog default.
+5. **Clone and verify one character** — use Admin Character Workspace → Voice to create
+   a candidate and confirm its preview plays while `Character.voiceId` remains unchanged.
+   Then activate the reviewed candidate and confirm the profile is active and the
+   character pointer matches its Pocket voice id. Unset characters continue to use the
+   catalog default.
 6. **Run the live probe**:
    ```
    bun run --filter @idream/main probe:voice -- --report .tmp/launch-voice-probe.json

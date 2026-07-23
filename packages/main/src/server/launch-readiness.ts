@@ -2494,6 +2494,14 @@ function normalizeVoiceModelProbeEvidence(value: unknown): VoiceModelProbeEviden
     model: typeof value.model === "string" ? value.model : null,
     voiceId: typeof value.voiceId === "string" ? value.voiceId : null,
     key: typeof value.key === "string" ? value.key : null,
+    voiceCloningAvailable:
+      typeof value.voiceCloningAvailable === "boolean"
+        ? value.voiceCloningAvailable
+        : null,
+    voiceCloneVerified:
+      typeof value.voiceCloneVerified === "boolean"
+        ? value.voiceCloneVerified
+        : null,
     audioDurationMs:
       typeof value.audioDurationMs === "number" ? value.audioDurationMs : undefined,
     bytes: typeof value.bytes === "number" ? value.bytes : undefined,

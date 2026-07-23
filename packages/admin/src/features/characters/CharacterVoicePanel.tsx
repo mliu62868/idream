@@ -46,6 +46,9 @@ export function CharacterVoicePanel({
   const [error, setError] = useState<string | null>(null);
   const active = data.voice.activeProfile;
   const candidate = data.voice.candidateProfile;
+  const activationProviderAvailable =
+    data.voice.provider === "pocket_tts" &&
+    data.voice.runtimeStatus !== "inactive";
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -209,7 +212,7 @@ export function CharacterVoicePanel({
               {t("Activation reason")}
               <input
                 className={`${fieldClass} mt-1`}
-                disabled={!canActivate || busy}
+                disabled={!canActivate || !activationProviderAvailable || busy}
                 minLength={3}
                 onChange={(event) => setActivationReason(event.target.value)}
                 value={activationReason}
@@ -218,6 +221,7 @@ export function CharacterVoicePanel({
             <WorkspaceButton
               disabled={
                 !canActivate ||
+                !activationProviderAvailable ||
                 busy ||
                 activationReason.trim().length < 3
               }
@@ -232,6 +236,11 @@ export function CharacterVoicePanel({
           {!canActivate ? (
             <p className="mt-3 text-xs text-[var(--ad-text-muted)]">
               {t("Read-only: character.release.publish is required to activate a voice.")}
+            </p>
+          ) : null}
+          {canActivate && !activationProviderAvailable ? (
+            <p className="mt-3 text-xs text-[var(--ad-yellow-text)]" role="alert">
+              {t("Pocket TTS must be the active voice provider before this candidate can be activated.")}
             </p>
           ) : null}
         </section>
