@@ -75,6 +75,7 @@ vi.mock("@/server/providers", () => ({
 import {
   activateCharacterVoiceProfile,
   createCharacterVoiceClone,
+  parseVoiceCloneForm,
 } from "./voice-clones";
 
 describe("Character Pocket TTS voice clone authority", () => {
@@ -116,6 +117,24 @@ describe("Character Pocket TTS voice clone authority", () => {
     await prisma.character.deleteMany({ where: { id: characterId } });
     await prisma.user.deleteMany({ where: { id: actorId } });
     await prisma.$disconnect();
+  });
+
+  it("rejects audio containers that the installed soundfile runtime cannot decode", async () => {
+    const form = new FormData();
+    form.set("language", "english");
+    form.set("sampleText", "Preview this voice candidate.");
+    form.set("reason", "Verify the supported upload contract");
+    form.set(
+      "audio",
+      new File([new Uint8Array(2_048)], "unsupported.m4a", {
+        type: "audio/mp4",
+      }),
+    );
+
+    await expect(parseVoiceCloneForm(new Request("http://localhost", {
+      method: "POST",
+      body: form,
+    }))).rejects.toMatchObject({ status: 400 });
   });
 
   it("creates a candidate idempotently, then activates it with a distinct authority", async () => {

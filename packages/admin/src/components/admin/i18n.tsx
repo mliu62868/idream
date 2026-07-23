@@ -252,7 +252,7 @@ const zh: Record<string, string> = {
   "Use a clean single-speaker recording. Pocket TTS uses up to the first 30 seconds.": "请使用干净的单人录音；Pocket TTS 最多使用前 30 秒。",
   "Pocket TTS is not the active voice provider. Set VOICE_PROVIDER=pocket-tts and start the Pocket TTS process.": "Pocket TTS 当前不是生效的声音供应器。请设置 VOICE_PROVIDER=pocket-tts 并启动 Pocket TTS 进程。",
   "Voice reference audio": "声音参考音频",
-  "WAV, MP3, FLAC, OGG, or M4A · maximum 15 MB": "支持 WAV、MP3、FLAC、OGG 或 M4A · 最大 15 MB",
+  "WAV, MP3, FLAC, or OGG · maximum 15 MB": "支持 WAV、MP3、FLAC 或 OGG · 最大 15 MB",
   "Preview script": "试听文案",
   "Cloning and rendering preview…": "正在克隆并生成试听…",
   "Clone and render preview": "克隆并生成试听",

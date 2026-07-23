@@ -263,7 +263,7 @@ export function CharacterVoicePanel({
           <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
             {t("Voice reference audio")}
             <input
-              accept=".wav,.mp3,.flac,.ogg,.m4a,audio/*"
+              accept=".wav,.mp3,.flac,.ogg,audio/wav,audio/mpeg,audio/flac,audio/ogg"
               className={`${fieldClass} mt-1 file:mr-3 file:rounded file:border-0 file:bg-[var(--ad-surface-subtle)] file:px-3 file:py-2 file:text-xs file:font-semibold`}
               disabled={!canWrite || !data.voice.cloningAvailable || busy}
               onChange={(event) => setFile(event.target.files?.[0] ?? null)}
@@ -272,7 +272,7 @@ export function CharacterVoicePanel({
               type="file"
             />
             <span className="mt-1 block font-normal">
-              {t("WAV, MP3, FLAC, OGG, or M4A · maximum 15 MB")}
+              {t("WAV, MP3, FLAC, or OGG · maximum 15 MB")}
             </span>
           </label>
           <label className="text-xs font-semibold text-[var(--ad-text-muted)]">

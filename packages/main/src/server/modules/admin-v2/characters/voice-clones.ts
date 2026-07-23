@@ -21,13 +21,10 @@ const MAX_REFERENCE_BYTES = 15 * 1024 * 1024;
 const MIN_REFERENCE_BYTES = 1_024;
 const ALLOWED_AUDIO_TYPES = new Set([
   "audio/flac",
-  "audio/m4a",
-  "audio/mp4",
   "audio/mpeg",
   "audio/ogg",
   "audio/wav",
   "audio/wave",
-  "audio/x-m4a",
   "audio/x-wav",
 ]);
 
@@ -67,7 +64,7 @@ export async function parseVoiceCloneForm(request: Request): Promise<ParsedVoice
   }
   const contentType = normalizedAudioContentType(audio.type, audio.name);
   if (!ALLOWED_AUDIO_TYPES.has(contentType)) {
-    throw Errors.badRequest("Voice reference must be WAV, MP3, FLAC, OGG, or M4A audio");
+    throw Errors.badRequest("Voice reference must be WAV, MP3, FLAC, or OGG audio");
   }
   const body = new Uint8Array(await audio.arrayBuffer());
   return {
@@ -552,7 +549,6 @@ function normalizedAudioContentType(contentType: string, filename: string) {
     mp3: "audio/mpeg",
     flac: "audio/flac",
     ogg: "audio/ogg",
-    m4a: "audio/mp4",
   }[extension ?? ""] ?? "application/octet-stream";
 }
 
@@ -560,7 +556,6 @@ function extensionFor(contentType: string) {
   if (contentType.includes("mpeg")) return ".mp3";
   if (contentType.includes("flac")) return ".flac";
   if (contentType.includes("ogg")) return ".ogg";
-  if (contentType.includes("m4a") || contentType.includes("mp4")) return ".m4a";
   return ".wav";
 }
 
