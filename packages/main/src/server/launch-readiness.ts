@@ -979,7 +979,7 @@ function addVoiceModelProbeCheck(
         problems.push("probe model does not match POCKET_TTS_MODEL");
       }
       if (probe.voiceCloningAvailable !== true) {
-        problems.push("Pocket TTS probe did not confirm voice cloning model access");
+        problems.push("Pocket TTS probe did not confirm oMLX voice cloning");
       }
       if (probe.voiceCloneVerified !== true) {
         problems.push("Pocket TTS probe did not complete clone, synthesize, and delete");

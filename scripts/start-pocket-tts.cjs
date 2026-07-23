@@ -2,12 +2,6 @@ const { existsSync } = require("node:fs");
 const { spawn } = require("node:child_process");
 const path = require("node:path");
 
-if (process.platform !== "darwin" || process.arch !== "arm64") {
-  throw new Error(
-    `Pocket TTS MLX requires Apple Silicon macOS; received ${process.platform}/${process.arch}`,
-  );
-}
-
 const candidates = [
   process.env.UV_BIN,
   path.join(process.env.HOME || "", ".local/bin/uv"),
@@ -24,7 +18,7 @@ const child = spawn(
   [
     "run",
     "--with",
-    "pocket-tts-mlx==0.2.1",
+    "httpx",
     "--with",
     "python-multipart",
     "--with",

@@ -1372,6 +1372,7 @@ export const characterWorkspaceReleaseSchema = z
 export const characterVoiceCloneCreateRequestSchema = z
   .object({
     language: z.string().trim().min(1).max(40).default("english"),
+    referenceText: z.string().trim().min(3).max(2_000),
     sampleText: z.string().trim().min(3).max(500),
     reason: z.string().trim().min(3).max(2_000),
   })
@@ -1392,6 +1393,7 @@ export const characterVoiceProfileSchema = z
         filename: z.string().trim().min(1),
         contentType: z.string().trim().min(1),
         sizeBytes: z.number().int().nonnegative(),
+        transcript: z.string().trim().min(1).nullable(),
       })
       .strict(),
     preview: z
@@ -1413,13 +1415,8 @@ export const characterVoiceWorkspaceSchema = z
   .object({
     provider: z.enum(["mock", "pipeline", "pocket_tts"]),
     cloningAvailable: z.boolean(),
-    runtimeStatus: z.enum([
-      "ready",
-      "model_access_required",
-      "unavailable",
-      "inactive",
-    ]),
-    runtimeEngine: z.enum(["pocket_tts_mlx", "unknown", "inactive"]),
+    runtimeStatus: z.enum(["ready", "unavailable", "inactive"]),
+    runtimeEngine: z.enum(["omlx", "unknown", "inactive"]),
     runtimeVersion: z.string().trim().min(1).nullable(),
     runtimeLanguage: z.string().trim().min(1),
     currentVoiceId: z.string().nullable(),

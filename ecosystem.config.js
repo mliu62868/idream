@@ -55,11 +55,14 @@ const pocketTtsApiUrl = new URL(
   mainEnvValue("POCKET_TTS_API_URL", "http://127.0.0.1:8062/v1"),
 );
 const pocketTtsApiToken = mainEnvValue("POCKET_TTS_API_TOKEN");
-const huggingFaceToken = mainEnvValue("HF_TOKEN");
+const pocketTtsOmlxApiToken =
+  mainEnvValue("POCKET_TTS_OMLX_API_TOKEN") ??
+  mainEnvValue("PIPELINE_VOICE_API_TOKEN") ??
+  mainEnvValue("PIPELINE_API_TOKEN");
 
 module.exports = {
   apps: [
-    // Apple Silicon MLX inference — Pocket TTS + durable cloned voice-state registry
+    // Durable Pocket voice registry + thin adapter to the oMLX audio runtime.
     {
       name: "pocket-tts",
       cwd: dir("."),
@@ -72,16 +75,22 @@ module.exports = {
           "POCKET_TTS_PORT",
           pocketTtsApiUrl.port || (pocketTtsApiUrl.protocol === "https:" ? "443" : "80"),
         ),
-        POCKET_TTS_MODEL: mainEnvValue("POCKET_TTS_MODEL", "kyutai/pocket-tts"),
+        POCKET_TTS_MODEL: mainEnvValue("POCKET_TTS_MODEL", "pocket-tts-4bit"),
         POCKET_TTS_LANGUAGE: mainEnvValue("POCKET_TTS_LANGUAGE", "english"),
         POCKET_TTS_DEFAULT_VOICE_ID:
           mainEnvValue("POCKET_TTS_DEFAULT_VOICE_ID", "alba"),
         POCKET_TTS_VOICE_DIR:
           mainEnvValue("POCKET_TTS_VOICE_DIR", dir(".data/pocket-tts/voices")),
-        POCKET_TTS_MLX_WARMUP_FRAMES:
-          mainEnvValue("POCKET_TTS_MLX_WARMUP_FRAMES", "1"),
+        POCKET_TTS_OMLX_API_URL:
+          mainEnvValue("POCKET_TTS_OMLX_API_URL", "http://127.0.0.1:8061/v1"),
+        POCKET_TTS_OMLX_RUNTIME_VERSION:
+          mainEnvValue("POCKET_TTS_OMLX_RUNTIME_VERSION", "0.5.3"),
+        POCKET_TTS_OMLX_TIMEOUT_MS:
+          mainEnvValue("POCKET_TTS_OMLX_TIMEOUT_MS", "120000"),
         ...(pocketTtsApiToken ? { POCKET_TTS_API_TOKEN: pocketTtsApiToken } : {}),
-        ...(huggingFaceToken ? { HF_TOKEN: huggingFaceToken } : {}),
+        ...(pocketTtsOmlxApiToken
+          ? { POCKET_TTS_OMLX_API_TOKEN: pocketTtsOmlxApiToken }
+          : {}),
       },
     },
     // fast · synchronous — public pages, characters, billing, library, chat BFF

@@ -98,7 +98,7 @@ async function main() {
     ? process.env.POCKET_TTS_API_URL ?? "http://127.0.0.1:8062/v1"
     : process.env.PIPELINE_VOICE_API_URL ?? process.env.PIPELINE_API_URL ?? null;
   const model = provider === "pocket-tts"
-    ? process.env.POCKET_TTS_MODEL ?? "kyutai/pocket-tts"
+    ? process.env.POCKET_TTS_MODEL ?? "pocket-tts-4bit"
     : process.env.PIPELINE_VOICE_MODEL_DEFAULT ??
       (provider === "mock" ? "mock-voice-probe" : "voice-default");
   const options = readOptions(defaultVoiceForModel(model));
@@ -207,6 +207,7 @@ async function runProbe(input: {
         contentType: reference.contentType,
         filename: "pocket-tts-probe-reference.wav",
         language: process.env.POCKET_TTS_LANGUAGE ?? "english",
+        referenceText: input.text,
       });
       if (!clone.ok) {
         return {

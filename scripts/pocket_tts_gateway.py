@@ -1,54 +1,69 @@
-"""iDream Pocket TTS MLX gateway.
+"""iDream Pocket TTS gateway backed by oMLX.
 
-Keeps Pocket TTS warm on Apple Silicon through the torch-free MLX backend,
-exposes the existing OpenAI-compatible speech seam, and persists cloned FlowLM
-voice states in MLX-native safetensors files.
+oMLX owns model discovery, MLX execution, and request-scoped reference-audio
+cloning. This adapter owns the product-facing durable voice registry so Admin
+can create, preview, activate, reuse, and delete versioned character voices.
 """
 
 from __future__ import annotations
 
+import base64
+import io
 import json
 import os
 import re
+import shutil
+import subprocess
 import tempfile
 import threading
-from collections import OrderedDict
+import wave
 from pathlib import Path
-from queue import Queue
-from typing import Iterator
+from typing import Any
+from uuid import uuid4
 
-import mlx.core as mx
+import httpx
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
-from pocket_tts_mlx import TTSModel, __version__ as MLX_RUNTIME_VERSION
-from pocket_tts_mlx.data.audio import stream_audio_chunks
 
 
-MODEL_ID = os.getenv("POCKET_TTS_MODEL", "kyutai/pocket-tts")
-LANGUAGE = os.getenv("POCKET_TTS_LANGUAGE", "english")
-DEFAULT_VOICE = os.getenv("POCKET_TTS_DEFAULT_VOICE_ID", "alba")
+MODEL_ID = os.getenv("POCKET_TTS_MODEL", "pocket-tts-4bit").strip()
+LANGUAGE = os.getenv("POCKET_TTS_LANGUAGE", "english").strip()
+DEFAULT_VOICE = os.getenv("POCKET_TTS_DEFAULT_VOICE_ID", "alba").strip()
 API_TOKEN = os.getenv("POCKET_TTS_API_TOKEN", "").strip()
-MLX_WARMUP_FRAMES = int(os.getenv("POCKET_TTS_MLX_WARMUP_FRAMES", "1"))
-STATE_FORMAT = "pocket_tts_mlx_model_state_v1"
-VOICE_STATE_CACHE_CAPACITY = 2
+OMLX_API_URL = os.getenv(
+    "POCKET_TTS_OMLX_API_URL",
+    "http://127.0.0.1:8061/v1",
+).rstrip("/")
+OMLX_API_TOKEN = os.getenv("POCKET_TTS_OMLX_API_TOKEN", "").strip()
+OMLX_RUNTIME_VERSION = os.getenv(
+    "POCKET_TTS_OMLX_RUNTIME_VERSION",
+    "0.5.3",
+).strip()
+OMLX_TIMEOUT_SECONDS = (
+    int(os.getenv("POCKET_TTS_OMLX_TIMEOUT_MS", "120000")) / 1_000
+)
 VOICE_DIR = Path(
     os.getenv("POCKET_TTS_VOICE_DIR", ".data/pocket-tts/voices")
 ).resolve()
-VOICE_DIR.mkdir(parents=True, exist_ok=True)
 
+VOICE_MANIFEST_FORMAT = "idream_omlx_voice_reference_v1"
+MAX_REFERENCE_BYTES = 15 * 1024 * 1024
+MAX_REFERENCE_SECONDS = 30
+MIN_REFERENCE_BYTES = 1_024
+registry_lock = threading.RLock()
+
+if not MODEL_ID:
+    raise RuntimeError("POCKET_TTS_MODEL is required")
 if LANGUAGE != "english":
-    raise RuntimeError(
-        "pocket-tts-mlx 0.2.1 currently serves the English Pocket TTS variant only"
-    )
-if MLX_WARMUP_FRAMES < 0:
-    raise RuntimeError("POCKET_TTS_MLX_WARMUP_FRAMES must be zero or greater")
+    raise RuntimeError("Pocket TTS currently serves the English model only")
+if not OMLX_RUNTIME_VERSION:
+    raise RuntimeError("POCKET_TTS_OMLX_RUNTIME_VERSION is required")
+if OMLX_TIMEOUT_SECONDS <= 0:
+    raise RuntimeError("POCKET_TTS_OMLX_TIMEOUT_MS must be positive")
 
-model = TTSModel.load_model()
-inference_lock = threading.Lock()
-VoiceState = dict[str, dict[str, mx.array]]
-voice_state_cache: OrderedDict[str, VoiceState] = OrderedDict()
-app = FastAPI(title="iDream Pocket TTS MLX gateway", version="2.0.0")
+VOICE_DIR.mkdir(parents=True, exist_ok=True)
+app = FastAPI(title="iDream Pocket TTS oMLX adapter", version="3.0.0")
 
 
 class SpeechRequest(BaseModel):
@@ -72,196 +87,266 @@ def safe_voice_id(value: str) -> str:
     return normalized
 
 
-def voice_path(voice_id: str) -> Path:
-    return VOICE_DIR / f"{safe_voice_id(voice_id)}.safetensors"
+def voice_audio_path(voice_id: str) -> Path:
+    return VOICE_DIR / f"{safe_voice_id(voice_id)}.wav"
 
 
-def save_mlx_model_state(
-    model_state: VoiceState,
-    target: Path,
-) -> None:
-    arrays: dict[str, mx.array] = {}
-    entries: list[dict[str, object]] = []
-    for module_index, (module_name, module_state) in enumerate(model_state.items()):
-        for state_index, (state_name, value) in enumerate(module_state.items()):
-            tensor_key = f"state_{module_index}_{state_index}"
-            shape = [int(dimension) for dimension in value.shape]
-            empty = value.size == 0
-            arrays[tensor_key] = (
-                mx.zeros((1,), dtype=value.dtype) if empty else value
-            )
-            entries.append(
-                {
-                    "tensor": tensor_key,
-                    "module": module_name,
-                    "state": state_name,
-                    "shape": shape,
-                    "empty": empty,
-                }
-            )
-    if not arrays:
-        raise RuntimeError("Pocket TTS MLX produced an empty cloned voice state")
-    mx.save_safetensors(
-        target,
-        arrays,
-        metadata={
-            "idream_format": STATE_FORMAT,
-            "runtime": "pocket_tts_mlx",
-            "runtime_version": MLX_RUNTIME_VERSION,
-            "state_entries": json.dumps(entries, separators=(",", ":")),
-        },
-    )
+def voice_manifest_path(voice_id: str) -> Path:
+    return VOICE_DIR / f"{safe_voice_id(voice_id)}.json"
 
 
-def load_mlx_model_state(path: Path) -> VoiceState:
-    loaded, metadata = mx.load(path, return_metadata=True)
-    if metadata.get("idream_format") != STATE_FORMAT:
-        raise RuntimeError(
-            "Stored voice state predates the MLX runtime; recreate its voice candidate"
+def omlx_headers() -> dict[str, str]:
+    headers = {"accept": "application/json"}
+    if OMLX_API_TOKEN:
+        headers["authorization"] = f"Bearer {OMLX_API_TOKEN}"
+    return headers
+
+
+def omlx_request(
+    method: str,
+    path: str,
+    *,
+    payload: dict[str, object] | None = None,
+    timeout: float | None = None,
+) -> httpx.Response:
+    try:
+        response = httpx.request(
+            method,
+            f"{OMLX_API_URL}/{path.lstrip('/')}",
+            headers=omlx_headers(),
+            json=payload,
+            timeout=timeout or OMLX_TIMEOUT_SECONDS,
         )
-    raw_entries = metadata.get("state_entries")
-    if not isinstance(raw_entries, str):
-        raise RuntimeError("Stored MLX voice state is missing its state manifest")
-    entries = json.loads(raw_entries)
-    if not isinstance(entries, list):
-        raise RuntimeError("Stored MLX voice state manifest is invalid")
-    model_state: VoiceState = {}
-    for entry in entries:
-        if not isinstance(entry, dict):
-            raise RuntimeError("Stored MLX voice state entry is invalid")
-        tensor_key = entry.get("tensor")
-        module_name = entry.get("module")
-        state_name = entry.get("state")
-        shape = entry.get("shape")
-        empty = entry.get("empty")
-        if (
-            not isinstance(tensor_key, str)
-            or not isinstance(module_name, str)
-            or not isinstance(state_name, str)
-            or not isinstance(shape, list)
-            or not all(isinstance(dimension, int) for dimension in shape)
-            or not isinstance(empty, bool)
-            or tensor_key not in loaded
-        ):
-            raise RuntimeError("Stored MLX voice state entry is incomplete")
-        value = loaded[tensor_key]
-        expected_shape = tuple(shape)
-        if empty:
-            value = value[:0].reshape(expected_shape)
-        elif value.shape != expected_shape:
-            raise RuntimeError("Stored MLX voice state tensor shape is invalid")
-        model_state.setdefault(module_name, {})[state_name] = value
-    if not model_state:
-        raise RuntimeError("Stored MLX voice state is empty")
-    mx.eval(*loaded.values())
-    return model_state
-
-
-def cache_voice_state(voice_id: str, state: VoiceState) -> None:
-    voice_state_cache.pop(voice_id, None)
-    voice_state_cache[voice_id] = state
-    while len(voice_state_cache) > VOICE_STATE_CACHE_CAPACITY:
-        voice_state_cache.popitem(last=False)
-
-
-def model_state(voice_id: str) -> VoiceState:
-    normalized_id = safe_voice_id(voice_id)
-    stored = voice_path(normalized_id)
-    if stored.exists():
-        cached = voice_state_cache.pop(normalized_id, None)
-        if cached is None:
-            cached = load_mlx_model_state(stored)
-        cache_voice_state(normalized_id, cached)
-        return cached
-    return model.get_state_for_audio_prompt(normalized_id)
-
-
-class QueueWriter:
-    def __init__(self, queue: Queue[bytes | Exception | None]):
-        self.queue = queue
-
-    def write(self, data: bytes) -> int:
-        self.queue.put(data)
-        return len(data)
-
-    def flush(self) -> None:
-        pass
-
-    def close(self) -> None:
-        pass
-
-    def __enter__(self) -> QueueWriter:
-        return self
-
-    def __exit__(self, *_args: object) -> bool:
-        return False
-
-
-def generate_to_queue(
-    queue: Queue[bytes | Exception | None],
-    text: str,
-    voice_id: str,
-) -> None:
-    try:
-        with inference_lock:
-            chunks = model.generate_audio_stream(
-                model_state=model_state(voice_id),
-                text_to_generate=text,
-                warmup_frames=MLX_WARMUP_FRAMES,
-            )
-            stream_audio_chunks(
-                QueueWriter(queue),
-                chunks,
-                model.config.mimi.sample_rate,
-            )
-    except Exception as error:
-        queue.put(error)
-    finally:
-        queue.put(None)
-
-
-def wav_stream(text: str, voice_id: str) -> Iterator[bytes]:
-    queue: Queue[bytes | Exception | None] = Queue()
-    worker = threading.Thread(
-        target=generate_to_queue,
-        args=(queue, text, voice_id),
-        daemon=True,
+    except httpx.HTTPError as error:
+        raise HTTPException(
+            status_code=503,
+            detail=f"oMLX Pocket TTS is unreachable: {error}",
+        ) from error
+    if response.is_success:
+        return response
+    detail = response.text.strip()
+    raise HTTPException(
+        status_code=502 if response.status_code < 500 else 503,
+        detail=detail or f"oMLX returned HTTP {response.status_code}",
     )
-    worker.start()
+
+
+def available_omlx_model() -> bool:
+    response = omlx_request("GET", "/models", timeout=2.0)
     try:
-        while True:
-            item = queue.get()
-            if item is None:
-                break
-            if isinstance(item, Exception):
-                raise item
-            yield item
+        payload = response.json()
+    except ValueError as error:
+        raise HTTPException(
+            status_code=503,
+            detail="oMLX returned an invalid model list",
+        ) from error
+    models = payload.get("data") if isinstance(payload, dict) else None
+    return isinstance(models, list) and any(
+        isinstance(item, dict) and item.get("id") == MODEL_ID for item in models
+    )
+
+
+def load_voice_manifest(voice_id: str) -> dict[str, str] | None:
+    audio_path = voice_audio_path(voice_id)
+    manifest_path = voice_manifest_path(voice_id)
+    if not audio_path.is_file() and not manifest_path.is_file():
+        return None
+    if not audio_path.is_file() or not manifest_path.is_file():
+        raise HTTPException(
+            status_code=503,
+            detail=f"Stored voice '{voice_id}' is incomplete",
+        )
+    try:
+        raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Stored voice '{voice_id}' has an invalid manifest",
+        ) from error
+    if (
+        not isinstance(raw, dict)
+        or raw.get("format") != VOICE_MANIFEST_FORMAT
+        or not isinstance(raw.get("ref_text"), str)
+        or not raw["ref_text"].strip()
+        or not isinstance(raw.get("language"), str)
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail=f"Stored voice '{voice_id}' has an incompatible manifest",
+        )
+    return {
+        "ref_text": raw["ref_text"].strip(),
+        "language": raw["language"],
+    }
+
+
+def stored_voice_count() -> int:
+    return sum(
+        1
+        for manifest_path in VOICE_DIR.glob("*.json")
+        if manifest_path.with_suffix(".wav").is_file()
+    )
+
+
+def validate_wav(reference: bytes) -> float:
+    try:
+        with wave.open(io.BytesIO(reference), "rb") as wav:
+            frame_rate = wav.getframerate()
+            frames = wav.getnframes()
+            channels = wav.getnchannels()
+            sample_width = wav.getsampwidth()
+    except (EOFError, wave.Error) as error:
+        raise ValueError("Reference audio is not a valid WAV file") from error
+    if frame_rate <= 0 or frames <= 0 or channels not in (1, 2) or sample_width <= 0:
+        raise ValueError("Reference WAV has invalid audio metadata")
+    return frames / frame_rate
+
+
+def normalize_reference_audio(
+    reference: bytes,
+    filename: str,
+) -> bytes:
+    if reference.startswith(b"RIFF") and reference[8:12] == b"WAVE":
+        duration = validate_wav(reference)
+        if duration <= MAX_REFERENCE_SECONDS:
+            return reference
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise HTTPException(
+            status_code=503,
+            detail="ffmpeg is required to normalize voice reference audio",
+        )
+    suffix = Path(filename).suffix.lower()
+    if not re.fullmatch(r"\.[a-z0-9]{1,8}", suffix):
+        suffix = ".audio"
+    with tempfile.TemporaryDirectory(prefix="idream-pocket-voice-") as directory:
+        source = Path(directory) / f"reference{suffix}"
+        target = Path(directory) / "reference.wav"
+        source.write_bytes(reference)
+        try:
+            completed = subprocess.run(
+                [
+                    ffmpeg,
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-y",
+                    "-i",
+                    str(source),
+                    "-t",
+                    str(MAX_REFERENCE_SECONDS),
+                    "-ac",
+                    "1",
+                    "-ar",
+                    "24000",
+                    "-c:a",
+                    "pcm_s16le",
+                    str(target),
+                ],
+                capture_output=True,
+                check=False,
+                timeout=45,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise HTTPException(
+                status_code=422,
+                detail="Voice reference audio normalization timed out",
+            ) from error
+        if completed.returncode != 0 or not target.is_file():
+            detail = completed.stderr.decode("utf-8", errors="replace").strip()
+            raise HTTPException(
+                status_code=422,
+                detail=detail or "Voice reference audio could not be decoded",
+            )
+        normalized = target.read_bytes()
+    try:
+        validate_wav(normalized)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return normalized
+
+
+def atomic_write(path: Path, content: bytes) -> None:
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        temporary.write_bytes(content)
+        temporary.chmod(0o600)
+        os.replace(temporary, path)
     finally:
-        worker.join()
+        temporary.unlink(missing_ok=True)
+
+
+def synthesize_payload(request: SpeechRequest) -> dict[str, object]:
+    voice_id = safe_voice_id(request.voice)
+    with registry_lock:
+        manifest = load_voice_manifest(voice_id)
+        reference_audio = (
+            voice_audio_path(voice_id).read_bytes()
+            if manifest is not None
+            else None
+        )
+    payload: dict[str, object] = {
+        "model": MODEL_ID,
+        "input": request.input.strip(),
+        "response_format": "wav",
+    }
+    if manifest is None:
+        if voice_id.startswith("idream-"):
+            raise HTTPException(status_code=404, detail="Stored voice not found")
+        payload["voice"] = voice_id
+        return payload
+    assert reference_audio is not None
+    payload.update(
+        {
+            "ref_audio": base64.b64encode(reference_audio).decode("ascii"),
+            "ref_text": manifest["ref_text"],
+        }
+    )
+    return payload
 
 
 @app.get("/health")
 @app.get("/v1/health")
 def health() -> dict[str, object]:
+    if not available_omlx_model():
+        raise HTTPException(
+            status_code=503,
+            detail=f"oMLX model '{MODEL_ID}' is not available",
+        )
     return {
         "status": "healthy",
         "provider": "pocket_tts",
-        "runtime": "pocket_tts_mlx",
-        "runtime_version": MLX_RUNTIME_VERSION,
+        "runtime": "omlx",
+        "runtime_version": OMLX_RUNTIME_VERSION,
         "acceleration": "mlx",
         "model": MODEL_ID,
         "language": LANGUAGE,
-        "voice_cloning": model.has_voice_cloning,
-        "stored_voice_count": len(list(VOICE_DIR.glob("*.safetensors"))),
+        "voice_cloning": True,
+        "stored_voice_count": stored_voice_count(),
     }
 
 
 @app.post("/v1/audio/speech", dependencies=[Depends(authorize)])
-def synthesize(request: SpeechRequest) -> StreamingResponse:
+def synthesize(request: SpeechRequest) -> Response:
     if request.response_format != "wav":
         raise HTTPException(status_code=400, detail="Only WAV output is supported")
-    return StreamingResponse(
-        wav_stream(request.input.strip(), request.voice),
+    if request.model != MODEL_ID:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Configured model is '{MODEL_ID}', received '{request.model}'",
+        )
+    response = omlx_request("POST", "/audio/speech", payload=synthesize_payload(request))
+    content_type = response.headers.get("content-type", "audio/wav")
+    if "audio/" not in content_type:
+        raise HTTPException(
+            status_code=502,
+            detail="oMLX returned a non-audio speech response",
+        )
+    if not response.content:
+        raise HTTPException(status_code=502, detail="oMLX returned empty audio")
+    return Response(
+        content=response.content,
         media_type="audio/wav",
         headers={"Content-Disposition": "inline; filename=generated_speech.wav"},
     )
@@ -271,45 +356,60 @@ def synthesize(request: SpeechRequest) -> StreamingResponse:
 def clone_voice(
     voice_id: str = Form(...),
     language: str = Form(default=LANGUAGE),
+    ref_text: str = Form(...),
     audio: UploadFile = File(...),
 ) -> dict[str, str]:
-    if not model.has_voice_cloning:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "Pocket TTS is running with catalog voices, but clone weights "
-                "are unavailable. Accept the kyutai/pocket-tts model terms and "
-                "authenticate the runner with HF_TOKEN."
-            ),
-        )
     normalized_id = safe_voice_id(voice_id)
+    normalized_text = ref_text.strip()
     if language != LANGUAGE:
         raise HTTPException(
             status_code=409,
             detail=f"This gateway serves {LANGUAGE}; requested {language}",
         )
-    suffix = Path(audio.filename or "reference.wav").suffix or ".wav"
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as source:
-        source.write(audio.file.read())
-        source_path = Path(source.name)
-    target = voice_path(normalized_id)
-    temporary_target = target.with_suffix(".tmp.safetensors")
-    try:
-        with inference_lock:
-            state = model.get_state_for_audio_prompt(source_path, truncate=True)
-            save_mlx_model_state(state, temporary_target)
-            temporary_target.replace(target)
-            cache_voice_state(normalized_id, state)
-    finally:
-        source_path.unlink(missing_ok=True)
-        temporary_target.unlink(missing_ok=True)
+    if len(normalized_text) < 3 or len(normalized_text) > 2_000:
+        raise HTTPException(
+            status_code=400,
+            detail="ref_text must contain 3 to 2000 characters",
+        )
+    reference = audio.file.read(MAX_REFERENCE_BYTES + 1)
+    if len(reference) < MIN_REFERENCE_BYTES:
+        raise HTTPException(status_code=400, detail="Voice reference audio is too small")
+    if len(reference) > MAX_REFERENCE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail="Voice reference audio must be 15 MB or smaller",
+        )
+    normalized_audio = normalize_reference_audio(
+        reference,
+        audio.filename or "reference.audio",
+    )
+    manifest: dict[str, Any] = {
+        "format": VOICE_MANIFEST_FORMAT,
+        "runtime": "omlx",
+        "runtime_version": OMLX_RUNTIME_VERSION,
+        "model": MODEL_ID,
+        "language": LANGUAGE,
+        "ref_text": normalized_text,
+        "source_filename": Path(audio.filename or "reference.audio").name,
+        "source_content_type": audio.content_type or "application/octet-stream",
+    }
+    with registry_lock:
+        atomic_write(voice_audio_path(normalized_id), normalized_audio)
+        atomic_write(
+            voice_manifest_path(normalized_id),
+            json.dumps(
+                manifest,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8"),
+        )
     return {"voice_id": normalized_id, "model": MODEL_ID, "language": LANGUAGE}
 
 
 @app.delete("/v1/voices/{voice_id}", dependencies=[Depends(authorize)])
 def delete_voice(voice_id: str) -> dict[str, bool]:
     normalized_id = safe_voice_id(voice_id)
-    with inference_lock:
-        voice_state_cache.pop(normalized_id, None)
-        voice_path(normalized_id).unlink(missing_ok=True)
+    with registry_lock:
+        voice_audio_path(normalized_id).unlink(missing_ok=True)
+        voice_manifest_path(normalized_id).unlink(missing_ok=True)
     return {"deleted": True}

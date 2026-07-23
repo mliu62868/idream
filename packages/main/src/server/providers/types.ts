@@ -74,6 +74,7 @@ export interface VoiceModel {
     contentType: string;
     filename: string;
     language: string;
+    referenceText: string;
   }): Promise<
     ProviderResult<{
       voiceId: string;

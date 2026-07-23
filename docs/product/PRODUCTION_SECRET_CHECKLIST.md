@@ -84,11 +84,11 @@ Store these generated values:
 | `PIPELINE_VOICE_API_URL` | Explicit rollback voice gateway only |
 | `PIPELINE_VOICE_API_TOKEN` | Explicit rollback voice gateway token only |
 | `PIPELINE_VOICE_MODEL_DEFAULT` | Explicit rollback voice model alias only |
-| `POCKET_TTS_API_URL` | Co-located Pocket TTS MLX gateway on Apple Silicon, normally `http://127.0.0.1:8062/v1` |
-| `POCKET_TTS_API_TOKEN` | Shared internal token used by Main and the Pocket TTS process |
-| `POCKET_TTS_MODEL` | Pocket TTS model id, currently `kyutai/pocket-tts` |
-| `POCKET_TTS_MLX_WARMUP_FRAMES` | Mimi decoder warmup frames; default `1` |
-| `HF_TOKEN` | Hugging Face token with accepted Pocket TTS clone-model access |
+| `POCKET_TTS_API_URL` | Co-located voice registry adapter, normally `http://127.0.0.1:8062/v1` |
+| `POCKET_TTS_API_TOKEN` | Shared internal token used by Main and the registry adapter |
+| `POCKET_TTS_MODEL` | oMLX model id, currently `pocket-tts-4bit` |
+| `POCKET_TTS_OMLX_API_URL` | oMLX OpenAI-compatible endpoint, normally `http://127.0.0.1:8061/v1` |
+| `POCKET_TTS_OMLX_API_TOKEN` | oMLX API token used only by the registry adapter |
 
 ## Generation Worker Values
 

@@ -35,6 +35,7 @@ type VoiceProfileWithAssets = CharacterVoiceProfileRecord & {
 
 export type ParsedVoiceCloneForm = {
   language: string;
+  referenceText: string;
   sampleText: string;
   reason: string;
   reference: {
@@ -49,6 +50,7 @@ export async function parseVoiceCloneForm(request: Request): Promise<ParsedVoice
   const form = await request.formData();
   const fields = characterVoiceCloneCreateRequestSchema.parse({
     language: stringField(form, "language") || "english",
+    referenceText: stringField(form, "referenceText"),
     sampleText: stringField(form, "sampleText"),
     reason: stringField(form, "reason"),
   });
@@ -134,6 +136,7 @@ export async function createCharacterVoiceClone(input: {
         sampleText: input.form.sampleText,
         reason: input.form.reason,
         referenceFilename: input.form.reference.filename,
+        referenceText: input.form.referenceText,
         referenceContentType: input.form.reference.contentType,
         referenceSizeBytes: input.form.reference.body.byteLength,
         referenceSha256: input.form.reference.sha256,
@@ -145,6 +148,7 @@ export async function createCharacterVoiceClone(input: {
           contentType: input.form.reference.contentType,
           filename: input.form.reference.filename,
           language: input.form.language,
+          referenceText: input.form.referenceText,
         });
         if (!cloned.ok) {
           throw Errors.unavailable("Pocket TTS could not clone the reference voice", cloned.error);
@@ -214,6 +218,7 @@ export async function createCharacterVoiceClone(input: {
             metadata: toInputJson({
               purpose: "voice_clone_reference",
               filename: input.form.reference.filename,
+              referenceText: input.form.referenceText,
               sizeBytes: input.form.reference.body.byteLength,
               sha256: input.form.reference.sha256,
               provider: "pocket_tts",
@@ -494,6 +499,10 @@ export function characterVoiceProfileDto(profile: VoiceProfileWithAssets): Chara
         typeof referenceMetadata.sizeBytes === "number"
           ? referenceMetadata.sizeBytes
           : 0,
+      transcript:
+        typeof referenceMetadata.referenceText === "string"
+          ? referenceMetadata.referenceText
+          : null,
     },
     preview: profile.previewAsset
       ? {

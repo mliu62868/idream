@@ -602,11 +602,9 @@ export async function getCharacterWorkspace(characterId: string) {
     : undefined;
   const voiceRuntimeStatus = env.VOICE_PROVIDER !== "pocket-tts"
     ? "inactive"
-    : !voiceCapabilities?.ok
+    : !voiceCapabilities?.ok || !voiceCapabilities.data.voiceCloning
       ? "unavailable"
-      : voiceCapabilities.data.voiceCloning
-        ? "ready"
-        : "model_access_required";
+      : "ready";
   const releases = await prisma.characterRelease.findMany({
     where: { projectId: project.id },
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
@@ -1112,8 +1110,8 @@ export async function getCharacterWorkspace(characterId: string) {
         env.VOICE_PROVIDER !== "pocket-tts"
           ? "inactive"
           : voiceCapabilities?.ok &&
-              voiceCapabilities.data.runtime === "pocket_tts_mlx"
-            ? "pocket_tts_mlx"
+              voiceCapabilities.data.runtime === "omlx"
+            ? "omlx"
             : "unknown",
       runtimeVersion:
         voiceCapabilities?.ok

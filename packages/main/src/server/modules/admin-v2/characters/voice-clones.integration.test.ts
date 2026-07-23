@@ -8,6 +8,7 @@ const providerState = vi.hoisted(() => ({
   synthesizeCalls: 0,
   failSynthesizeCall: null as number | null,
   deletedVoiceIds: [] as string[],
+  referenceTexts: [] as string[],
   storedKeys: [] as string[],
 }));
 
@@ -21,13 +22,15 @@ vi.mock("@/server/providers", () => ({
       async cloneVoice(input: {
         voiceId: string;
         language: string;
+        referenceText: string;
       }) {
         providerState.cloneCalls += 1;
+        providerState.referenceTexts.push(input.referenceText);
         return {
           ok: true as const,
           data: {
             voiceId: input.voiceId,
-            model: "kyutai/pocket-tts",
+            model: "pocket-tts-4bit",
             language: input.language,
           },
         };
@@ -125,6 +128,7 @@ describe("Character Pocket TTS voice clone authority", () => {
   it("rejects audio containers that the installed soundfile runtime cannot decode", async () => {
     const form = new FormData();
     form.set("language", "english");
+    form.set("referenceText", "Unsupported container reference transcript.");
     form.set("sampleText", "Preview this voice candidate.");
     form.set("reason", "Verify the supported upload contract");
     form.set(
@@ -140,11 +144,38 @@ describe("Character Pocket TTS voice clone authority", () => {
     }))).rejects.toMatchObject({ status: 400 });
   });
 
+  it("parses the exact transcript required by the oMLX reference-audio contract", async () => {
+    const form = new FormData();
+    form.set("language", "english");
+    form.set("referenceText", "The rain in Spain stays mainly in the plain.");
+    form.set("sampleText", "Preview this voice candidate.");
+    form.set("reason", "Verify the oMLX reference transcript");
+    form.set(
+      "audio",
+      new File([new Uint8Array(2_048)], "reference.wav", {
+        type: "audio/wav",
+      }),
+    );
+
+    await expect(parseVoiceCloneForm(new Request("http://localhost", {
+      method: "POST",
+      body: form,
+    }))).resolves.toMatchObject({
+      referenceText: "The rain in Spain stays mainly in the plain.",
+      reference: {
+        filename: "reference.wav",
+        contentType: "audio/wav",
+        body: expect.any(Uint8Array),
+      },
+    });
+  });
+
   it("creates a candidate idempotently, then activates it with a distinct authority", async () => {
     providerState.cloneCalls = 0;
     providerState.synthesizeCalls = 0;
     providerState.failSynthesizeCall = null;
     providerState.deletedVoiceIds = [];
+    providerState.referenceTexts = [];
     providerState.storedKeys = [];
     const firstKey = `voice-clone-first-${suffix}`;
     const first = await createCharacterVoiceClone({
@@ -166,6 +197,9 @@ describe("Character Pocket TTS voice clone authority", () => {
     expect(replay).toEqual({ ...first, replayed: true });
     expect(providerState.cloneCalls).toBe(1);
     expect(providerState.synthesizeCalls).toBe(1);
+    expect(providerState.referenceTexts).toEqual([
+      "The reference speaker reads this exact transcript.",
+    ]);
     expect(first.profile).toMatchObject({
       version: 1,
       provider: "pocket_tts",
@@ -173,6 +207,7 @@ describe("Character Pocket TTS voice clone authority", () => {
       reference: {
         filename: "first-reference.wav",
         sizeBytes: 2_048,
+        transcript: "The reference speaker reads this exact transcript.",
       },
       preview: {
         url: expect.stringMatching(/^\/user-content\/.+\/content\.wav$/),
@@ -382,6 +417,7 @@ function cloneForm(
   const body = new Uint8Array(2_048);
   return {
     language: "english",
+    referenceText: "The reference speaker reads this exact transcript.",
     sampleText,
     reason: "Create the character voice authority",
     reference: {

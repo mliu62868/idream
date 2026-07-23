@@ -28,8 +28,6 @@ type PocketHealthResponse = {
   acceleration?: unknown;
 };
 
-const POCKET_TTS_MLX_RUNTIME_VERSION = "0.2.1";
-
 export class PocketTtsVoiceModel implements VoiceModel {
   readonly providerKey = "pocket_tts" as const;
   readonly supportsVoiceCloning = true;
@@ -101,6 +99,7 @@ export class PocketTtsVoiceModel implements VoiceModel {
     const form = new FormData();
     form.set("voice_id", input.voiceId);
     form.set("language", input.language || this.language);
+    form.set("ref_text", input.referenceText);
     form.set(
       "audio",
       new Blob([arrayBuffer(input.audio)], { type: input.contentType }),
@@ -161,8 +160,9 @@ export class PocketTtsVoiceModel implements VoiceModel {
     if (
       !raw ||
       typeof raw.voice_cloning !== "boolean" ||
-      raw.runtime !== "pocket_tts_mlx" ||
-      raw.runtime_version !== POCKET_TTS_MLX_RUNTIME_VERSION ||
+      raw.runtime !== "omlx" ||
+      typeof raw.runtime_version !== "string" ||
+      raw.runtime_version.trim().length === 0 ||
       raw.acceleration !== "mlx"
     ) {
       return pocketFailure(

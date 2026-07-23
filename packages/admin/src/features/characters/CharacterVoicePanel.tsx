@@ -36,6 +36,7 @@ export function CharacterVoicePanel({
   const { t, locale } = useAdminI18n();
   const fileInput = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
+  const [referenceText, setReferenceText] = useState("");
   const [sampleText, setSampleText] = useState(
     `Hello, I’m ${data.character.name}. It’s good to hear from you.`,
   );
@@ -59,6 +60,7 @@ export function CharacterVoicePanel({
     const form = new FormData();
     form.set("audio", file, file.name);
     form.set("language", data.voice.runtimeLanguage);
+    form.set("referenceText", referenceText.trim());
     form.set("sampleText", sampleText.trim());
     form.set("reason", reason.trim());
     try {
@@ -75,17 +77,18 @@ export function CharacterVoicePanel({
           ),
         afterRefresh: () => {
           setFile(null);
+          setReferenceText("");
           setReason("");
           if (fileInput.current) fileInput.current.value = "";
         },
       });
       setMessage(
         mutation.result.replayed
-          ? t("The existing voice candidate result was recovered.")
-          : t("The voice candidate is ready. Review its preview before activation."),
+          ? "The existing voice candidate result was recovered."
+          : "The voice candidate is ready. Review its preview before activation.",
       );
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t("Voice cloning failed"));
+      setError(cause instanceof Error ? cause.message : "Voice cloning failed");
     } finally {
       setBusy(false);
     }
@@ -117,11 +120,11 @@ export function CharacterVoicePanel({
       });
       setMessage(
         mutation.result.replayed
-          ? t("The existing voice activation result was recovered.")
-          : t("The reviewed voice is now active for new chat speech."),
+          ? "The existing voice activation result was recovered."
+          : "The reviewed voice is now active for new chat speech.",
       );
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t("Voice activation failed"));
+      setError(cause instanceof Error ? cause.message : "Voice activation failed");
     } finally {
       setBusy(false);
     }
@@ -150,8 +153,8 @@ export function CharacterVoicePanel({
           <div className="flex flex-wrap gap-2">
             <StatusBadge
               value={
-                data.voice.runtimeEngine === "pocket_tts_mlx"
-                  ? `Pocket TTS · MLX ${data.voice.runtimeVersion ?? ""}`.trim()
+                data.voice.runtimeEngine === "omlx"
+                  ? `Pocket TTS · oMLX ${data.voice.runtimeVersion ?? ""}`.trim()
                   : data.voice.provider
               }
             />
@@ -172,6 +175,13 @@ export function CharacterVoicePanel({
                 {t(active.language)} · {new Date(active.createdAt).toLocaleString(locale === "zh" ? "zh-CN" : "en-US")}
               </p>
               <p className="mt-2 text-sm">{active.sampleText}</p>
+              {active.reference.transcript ? (
+                <p className="mt-2 text-xs text-[var(--ad-text-muted)]">
+                  {t("Reference transcript: {text}", {
+                    text: active.reference.transcript,
+                  })}
+                </p>
+              ) : null}
             </div>
             {active.preview ? (
               <audio
@@ -202,6 +212,13 @@ export function CharacterVoicePanel({
               <p className="mt-2 text-sm text-[var(--ad-text-muted)]">
                 {t("Listen to the preview before changing the live character voice. Creating a candidate never changes Character.voiceId.")}
               </p>
+              {candidate.reference.transcript ? (
+                <p className="mt-2 text-xs text-[var(--ad-text-muted)]">
+                  {t("Reference transcript: {text}", {
+                    text: candidate.reference.transcript,
+                  })}
+                </p>
+              ) : null}
             </div>
             {candidate.preview ? (
               <audio
@@ -267,7 +284,7 @@ export function CharacterVoicePanel({
               {candidate ? t("Replace voice candidate") : t("Create voice candidate")}
             </h3>
             <p className="mt-1 text-sm text-[var(--ad-text-muted)]">
-              {t("Use a clean single-speaker recording. Pocket TTS MLX uses up to the first 30 seconds.")}
+              {t("Use a clean single-speaker recording. Pocket TTS on oMLX uses up to the first 30 seconds.")}
             </p>
           </div>
         </div>
@@ -292,6 +309,24 @@ export function CharacterVoicePanel({
             />
             <span className="mt-1 block font-normal">
               {t("WAV, MP3, FLAC, or OGG · maximum 15 MB")}
+            </span>
+          </label>
+          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
+            {t("Reference transcript")}
+            <textarea
+              className={`${textAreaClass} mt-1`}
+              disabled={!canWrite || !data.voice.cloningAvailable || busy}
+              id="character-voice-reference-transcript"
+              maxLength={2_000}
+              minLength={3}
+              name="referenceText"
+              onChange={(event) => setReferenceText(event.target.value)}
+              placeholder={t("Enter the exact words spoken in the reference recording.")}
+              required
+              value={referenceText}
+            />
+            <span className="mt-1 block font-normal">
+              {t("This transcript is stored with the voice reference and sent to oMLX when synthesizing.")}
             </span>
           </label>
           <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
@@ -324,12 +359,12 @@ export function CharacterVoicePanel({
         </div>
         {error ? (
           <p className="mt-4 rounded-lg bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">
-            {error}
+            {t(error)}
           </p>
         ) : null}
         {message ? (
           <p className="mt-4 rounded-lg bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]" role="status">
-            {message}
+            {t(message)}
           </p>
         ) : null}
         <div className="mt-5">
@@ -339,6 +374,7 @@ export function CharacterVoicePanel({
               !data.voice.cloningAvailable ||
               busy ||
               !file ||
+              referenceText.trim().length < 3 ||
               sampleText.trim().length < 3 ||
               reason.trim().length < 3
             }
@@ -398,7 +434,6 @@ function formatBytes(value: number, locale: "en" | "zh") {
 function voiceRuntimeLabel(status: CharacterWorkspaceDetail["voice"]["runtimeStatus"]) {
   return {
     ready: "clone ready",
-    model_access_required: "model access required",
     unavailable: "clone service unavailable",
     inactive: "clone provider inactive",
   }[status];
@@ -406,11 +441,9 @@ function voiceRuntimeLabel(status: CharacterWorkspaceDetail["voice"]["runtimeSta
 
 function voiceRuntimeMessage(status: CharacterWorkspaceDetail["voice"]["runtimeStatus"]) {
   return {
-    ready: "Pocket TTS MLX voice cloning is ready.",
-    model_access_required:
-      "Pocket TTS MLX speech is running, but clone weights require model access. Accept the kyutai/pocket-tts model terms, provide HF_TOKEN, and restart the Pocket TTS process.",
+    ready: "Pocket TTS voice cloning through oMLX is ready.",
     unavailable:
-      "Pocket TTS MLX is configured but unreachable. Start or restart the Pocket TTS process.",
+      "Pocket TTS on oMLX is configured but unavailable. Verify oMLX, the pocket-tts-4bit model, and the voice adapter.",
     inactive:
       "Pocket TTS is not the active voice provider. Set VOICE_PROVIDER=pocket-tts and start the Pocket TTS process.",
   }[status];

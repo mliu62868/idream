@@ -1712,12 +1712,12 @@ describe("launch readiness", () => {
     expect(failedIds(report)).toContain("voice-model-live-probe");
   });
 
-  it("requires Pocket TTS probe evidence to include real clone-weight access", () => {
+  it("requires Pocket TTS probe evidence to include real oMLX voice cloning", () => {
     const pocketEnv = {
       ...productionEnv,
       VOICE_PROVIDER: "pocket-tts",
       POCKET_TTS_API_URL: "https://voice.ourdream.internal/v1",
-      POCKET_TTS_MODEL: "kyutai/pocket-tts",
+      POCKET_TTS_MODEL: "pocket-tts-4bit",
     };
     const input = {
       env: pocketEnv,
@@ -1765,7 +1765,7 @@ describe("launch readiness", () => {
     });
 
     expect(checkById(missingAccess, "voice-model-live-probe")?.message)
-      .toContain("did not confirm voice cloning model access");
+      .toContain("did not confirm oMLX voice cloning");
     expect(checkById(cloneBroken, "voice-model-live-probe")?.message)
       .toContain("did not complete clone, synthesize, and delete");
     expect(checkById(cloneReady, "voice-model-live-probe")?.status).toBe("pass");
@@ -1779,7 +1779,7 @@ describe("launch readiness", () => {
         ...productionEnv,
         VOICE_PROVIDER: "pocket-tts",
         POCKET_TTS_API_URL: "https://voice.ourdream.internal/v1",
-        POCKET_TTS_MODEL: "kyutai/pocket-tts",
+        POCKET_TTS_MODEL: "pocket-tts-4bit",
         VOICE_MODEL_PROBE_REPORT: reportPath,
       };
       writeFileSync(
@@ -2604,7 +2604,8 @@ describe("launch readiness", () => {
 
     expect(mainValues.VOICE_PROVIDER).toBe("pocket-tts");
     expect(mainValues.POCKET_TTS_API_URL).toBe("http://127.0.0.1:8062/v1");
-    expect(mainValues.POCKET_TTS_MODEL).toBe("kyutai/pocket-tts");
-    expect(mainValues.HF_TOKEN).toBeTruthy();
+    expect(mainValues.POCKET_TTS_MODEL).toBe("pocket-tts-4bit");
+    expect(mainValues.POCKET_TTS_OMLX_API_URL).toBe("http://127.0.0.1:8061/v1");
+    expect(mainValues.POCKET_TTS_OMLX_API_TOKEN).toBeTruthy();
   });
 });

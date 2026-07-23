@@ -23,7 +23,7 @@ const voiceToken = pocketTts
     process.env.PIPELINE_API_TOKEN ??
     "";
 const voiceModel = pocketTts
-  ? process.env.POCKET_TTS_MODEL ?? "kyutai/pocket-tts"
+  ? process.env.POCKET_TTS_MODEL ?? "pocket-tts-4bit"
   : process.env.PIPELINE_VOICE_MODEL_DEFAULT ??
     process.env.MOSS_TTS_MODEL ??
     "OpenMOSS/MOSS-TTS-Local-Transformer-v1.5";

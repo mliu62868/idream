@@ -146,13 +146,9 @@ Historical local result from 2026-06-30:
   about 97.3s.
 - voice: the former pipeline/Qwen smoke remains historical evidence. Current
   authority is `VOICE_PROVIDER=pocket-tts` through the local Apple Silicon
-  `pocket-tts-mlx==0.2.1` gateway on `8062`,
+  oMLX `pocket-tts-4bit` runtime on `8061` plus durable registry adapter on `8062`,
   with a real clone→synthesize→delete probe plus Admin candidate→preview→activate
-  persistence proof required before voice cloning is included in a demo. The
-  2026-07-23 local WAV probe
-  passes, but the unauthenticated runner reports `voice_cloning:false`; accept
-  the model terms, provide `HF_TOKEN`, restart `pocket-tts`, then capture the
-  remaining real clone and candidate activation proof.
+  persistence proof required before voice cloning is included in a demo.
 
 Current 2026-07-17 runtime supplement:
 
@@ -213,8 +209,8 @@ Required work:
   Gallery asset. If prior runs were interrupted, clear stale `ai.image.generate`
   active jobs, restart `gen-image` and `sdcpp-image`, and confirm Prisma schema
   is synced before the probe.
-- Keep the Pocket TTS MLX `8062` gateway healthy with
-  `runtime=pocket_tts_mlx` and `acceleration=mlx`, run the real voice probe, and
+- Keep oMLX `8061` and the Pocket registry adapter `8062` healthy with
+  `runtime=omlx` and `acceleration=mlx`, run the real voice probe, and
   verify one Admin clone creates a playable candidate preview without changing
   `Character.voiceId`, then separately activate that reviewed profile and verify
   the active voice pointer before promising voice in a demo.

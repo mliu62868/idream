@@ -17,9 +17,9 @@ to take it from `mock` to a **publishable production** state.
 - **UI** — play / loading / stop control on each assistant message in chat; 402 routes
   to upgrade.
 - **Provider** — `PocketTtsVoiceModel` is the active product adapter and calls the
-  co-located `pocket-tts-mlx==0.2.1` gateway on Apple Silicon. Main rejects a
-  healthy-but-legacy gateway without `runtime=pocket_tts_mlx`,
-  `runtime_version=0.2.1`, and `acceleration=mlx`. `MockVoiceModel` remains for isolated tests and
+  co-located registry adapter on `8062`; that adapter forwards inference to oMLX
+  `pocket-tts-4bit` on `8061`. Main rejects a healthy-but-legacy gateway without
+  `runtime=omlx` and `acceleration=mlx`. `MockVoiceModel` remains for isolated tests and
   `PipelineVoiceModel` remains as an explicit rollback adapter.
 - **Voice clone authority** — Admin Character Workspace → Voice uploads a reference,
   renders a preview, and creates a versioned candidate `CharacterVoiceProfile` without
@@ -31,22 +31,23 @@ to take it from `mock` to a **publishable production** state.
 
 ## Production cutover steps (ops)
 
-1. **Authorize the model** — accept the `kyutai/pocket-tts` model terms and provision
-   `HF_TOKEN` on the Pocket TTS host. A healthy catalog-voice runner is not enough:
-   `/v1/health` must return `runtime: pocket_tts_mlx`, `acceleration: mlx`, and
-   `voice_cloning: true`.
-2. **Start the gateway** — run the co-located Pocket TTS process from
-   `ecosystem.config.js`. It exposes `/v1/audio/speech` plus the private clone registry
-   and persists MLX-native cloned voice states under `.data/pocket-tts/voices`.
+1. **Prepare oMLX** — use oMLX Admin → Downloads to download
+   `mlx-community/pocket-tts-4bit`; confirm `/v1/models` exposes
+   `pocket-tts-4bit`.
+2. **Start the adapter** — run the co-located Pocket TTS process from
+   `ecosystem.config.js`. It exposes `/v1/audio/speech` plus the private voice registry,
+   persists reference WAV + transcript manifests under `.data/pocket-tts/voices`,
+   and forwards each request to oMLX.
 3. **Set env** (see `packages/main/.env.production.example`):
    ```
    VOICE_PROVIDER=pocket-tts
    POCKET_TTS_API_URL=http://127.0.0.1:8062/v1
    POCKET_TTS_API_TOKEN=<shared-internal-token>
-   POCKET_TTS_MODEL=kyutai/pocket-tts
+   POCKET_TTS_MODEL=pocket-tts-4bit
    POCKET_TTS_DEFAULT_VOICE_ID=alba
-   POCKET_TTS_MLX_WARMUP_FRAMES=1
-   HF_TOKEN=<hugging-face-token>
+   POCKET_TTS_OMLX_API_URL=http://127.0.0.1:8061/v1
+   POCKET_TTS_OMLX_API_TOKEN=<omlx-api-token>
+   POCKET_TTS_OMLX_RUNTIME_VERSION=0.5.3
    VOICE_MODEL_PROBE_REPORT=.tmp/launch-voice-probe.json
    ```
 4. **Seed / migrate data** — deploy Prisma migrations and run `db:seed` (or apply
@@ -64,7 +65,7 @@ to take it from `mock` to a **publishable production** state.
    bun run --filter @idream/main probe:voice -- --report .tmp/launch-voice-probe.json
    ```
    then `bun run check:launch` — `voice-model-live-probe` must confirm both playable
-   WAV output and clone-model access.
+   WAV output and the clone→synthesize→delete path through oMLX.
 7. **Flip the flag** — `voice_gen` ships enabled. To stage rollout, set it disabled in
    the admin console and enable when ready (kill-switch is the same flag).
 
@@ -75,10 +76,10 @@ to take it from `mock` to a **publishable production** state.
 | Voice on/off, rollout, target plans | `voice_gen` feature flag (admin) | enabled, premium+deluxe |
 | Overflow price per clip | `PricingRule` mode `voice` (admin) | 2 Dreamcoins |
 | Free minutes per plan | plan `voiceMinutes` feature | 30 / 120 / 360 / 1440 |
-| Default delivery model | `POCKET_TTS_MODEL` | `kyutai/pocket-tts` |
+| Default delivery model | `POCKET_TTS_MODEL` | `pocket-tts-4bit` |
 | Default catalog voice | `POCKET_TTS_DEFAULT_VOICE_ID` | `alba` |
-| Mimi decoder warmup | `POCKET_TTS_MLX_WARMUP_FRAMES` | `1` |
-| Clone state directory | `POCKET_TTS_VOICE_DIR` | `.data/pocket-tts/voices` |
+| oMLX API | `POCKET_TTS_OMLX_API_URL` | `http://127.0.0.1:8061/v1` |
+| Voice reference directory | `POCKET_TTS_VOICE_DIR` | `.data/pocket-tts/voices` |
 | Signed-URL TTL for playback | `SIGNED_URL_TTL_SECONDS` | 900s |
 
 ## Known scope boundaries (intentional)
@@ -87,6 +88,6 @@ to take it from `mock` to a **publishable production** state.
   follow-up (the `tone` field already carries it end-to-end).
 - The play button is shown to all users and gates server-side via 402; no client-side
   entitlement pre-check.
-- The MLX runtime is Apple Silicon/macOS-only and currently serves the English variant.
-- Voice states created by the retired PyTorch gateway must be recreated from their
-  Admin reference audio; the gateway rejects them instead of silently misloading them.
+- The oMLX runtime is Apple Silicon/macOS-only and Pocket TTS currently serves English.
+- Voice states created by retired gateways must be recreated from their Admin reference
+  audio; only reference WAV + manifest pairs are valid in the current registry.
