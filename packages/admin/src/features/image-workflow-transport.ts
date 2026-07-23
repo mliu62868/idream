@@ -10,6 +10,7 @@ export const characterWorkspaceTabs = [
   "project",
   "visual",
   "assets",
+  "voice",
   "preview",
   "release",
   "monitor",

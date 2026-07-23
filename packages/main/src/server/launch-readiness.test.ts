@@ -1712,6 +1712,51 @@ describe("launch readiness", () => {
     expect(failedIds(report)).toContain("voice-model-live-probe");
   });
 
+  it("requires Pocket TTS probe evidence to include real clone-weight access", () => {
+    const pocketEnv = {
+      ...productionEnv,
+      VOICE_PROVIDER: "pocket-tts",
+      POCKET_TTS_API_URL: "https://voice.ourdream.internal/v1",
+      POCKET_TTS_MODEL: "kyutai/pocket-tts",
+    };
+    const input = {
+      env: pocketEnv,
+      imagePipelineProbe: passingImageProbe(),
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingProductConfigProbe(),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
+      now,
+    };
+    const missingAccess = assessLaunchReadiness({
+      ...input,
+      voiceModelProbe: passingVoiceProbe({
+        provider: "pocket-tts",
+        baseUrl: pocketEnv.POCKET_TTS_API_URL,
+        model: pocketEnv.POCKET_TTS_MODEL,
+        voiceCloningAvailable: false,
+      }),
+    });
+    const cloneReady = assessLaunchReadiness({
+      ...input,
+      voiceModelProbe: passingVoiceProbe({
+        provider: "pocket-tts",
+        baseUrl: pocketEnv.POCKET_TTS_API_URL,
+        model: pocketEnv.POCKET_TTS_MODEL,
+        voiceCloningAvailable: true,
+      }),
+    });
+
+    expect(checkById(missingAccess, "voice-model-live-probe")?.message)
+      .toContain("did not confirm voice cloning model access");
+    expect(checkById(cloneReady, "voice-model-live-probe")?.status).toBe("pass");
+  });
+
   it("fails when the live voice model probe is stale", () => {
     const report = assessLaunchReadiness({
       env: productionEnv,

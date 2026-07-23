@@ -3,6 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { MockVoiceModel } from "./providers/voice/mock";
 import { PipelineVoiceModel } from "./providers/voice/pipeline";
+import { PocketTtsVoiceModel } from "./providers/voice/pocket-tts";
 import type { BlobStore, ProviderResult, VoiceModel } from "./providers/types";
 
 type ProbeOptions = {
@@ -21,6 +22,7 @@ type VoiceProbeReport = {
   voiceId: string;
   key: string | null;
   audioDurationMs: number | null;
+  voiceCloningAvailable: boolean | null;
   bytes?: number;
   contentType?: string | null;
   error: { code: string; message: string; retryable?: boolean } | null;
@@ -88,10 +90,13 @@ function readOptions(defaultVoiceId: string): ProbeOptions {
 async function main() {
   const startedAt = Date.now();
   const provider = process.env.VOICE_PROVIDER ?? "mock";
-  const baseUrl = process.env.PIPELINE_VOICE_API_URL ?? process.env.PIPELINE_API_URL ?? null;
-  const model =
-    process.env.PIPELINE_VOICE_MODEL_DEFAULT ??
-    (provider === "mock" ? "mock-voice-probe" : "voice-default");
+  const baseUrl = provider === "pocket-tts"
+    ? process.env.POCKET_TTS_API_URL ?? "http://127.0.0.1:8062/v1"
+    : process.env.PIPELINE_VOICE_API_URL ?? process.env.PIPELINE_API_URL ?? null;
+  const model = provider === "pocket-tts"
+    ? process.env.POCKET_TTS_MODEL ?? "kyutai/pocket-tts"
+    : process.env.PIPELINE_VOICE_MODEL_DEFAULT ??
+      (provider === "mock" ? "mock-voice-probe" : "voice-default");
   const options = readOptions(defaultVoiceForModel(model));
   const report = await runProbe({
     provider,
@@ -129,6 +134,7 @@ async function runProbe(input: {
     voiceId: input.voiceId,
   };
   const blob = new ProbeBlobStore();
+  let voiceCloningAvailable: boolean | null = null;
 
   try {
     const voice = createVoiceModel({
@@ -137,6 +143,12 @@ async function runProbe(input: {
       model: input.model,
       blob,
     });
+    if (voice.inspectCapabilities) {
+      const capabilities = await voice.inspectCapabilities();
+      voiceCloningAvailable = capabilities.ok
+        ? capabilities.data.voiceCloning
+        : null;
+    }
     const result = await voice.synthesize({
       text: input.text,
       voiceId: input.voiceId,
@@ -148,6 +160,7 @@ async function runProbe(input: {
         durationMs: Date.now() - input.startedAt,
         key: null,
         audioDurationMs: null,
+        voiceCloningAvailable,
         error: {
           code: result.error.code,
           message: result.error.message,
@@ -162,6 +175,7 @@ async function runProbe(input: {
       durationMs: Date.now() - input.startedAt,
       key: result.data.key,
       audioDurationMs: result.data.durationMs,
+      voiceCloningAvailable,
       bytes: blob.stored?.size,
       contentType: blob.stored?.contentType,
       error: null,
@@ -173,6 +187,7 @@ async function runProbe(input: {
       durationMs: Date.now() - input.startedAt,
       key: null,
       audioDurationMs: null,
+      voiceCloningAvailable,
       error: {
         code: "voice_model_probe_failed",
         message: error instanceof Error ? error.message : String(error),
@@ -189,6 +204,18 @@ function createVoiceModel(input: {
   blob: BlobStore;
 }): VoiceModel {
   if (input.provider === "mock") return new MockVoiceModel();
+  if (input.provider === "pocket-tts") {
+    return new PocketTtsVoiceModel({
+      baseUrl: requireValue("POCKET_TTS_API_URL", input.baseUrl),
+      apiKey: process.env.POCKET_TTS_API_TOKEN,
+      model: requireValue("POCKET_TTS_MODEL", input.model),
+      language: process.env.POCKET_TTS_LANGUAGE ?? "english",
+      defaultVoiceId: process.env.POCKET_TTS_DEFAULT_VOICE_ID ?? "alba",
+      maxInputChars: readIntEnv("PIPELINE_VOICE_MAX_INPUT_CHARS", 900, 1),
+      timeoutMs: readIntEnv("POCKET_TTS_TIMEOUT_MS", 120_000, 250),
+      blob: input.blob,
+    });
+  }
   if (input.provider !== "pipeline") {
     throw new Error(`Unsupported voice model provider: ${input.provider}`);
   }
@@ -229,6 +256,7 @@ function defaultVoiceForModel(model: string | null) {
   const normalized = model?.toLowerCase() ?? "";
   if (normalized.includes("qwen3-tts")) return "serena";
   if (normalized.includes("kokoro")) return "af_heart";
+  if (normalized.includes("pocket-tts")) return "alba";
   return "default";
 }
 

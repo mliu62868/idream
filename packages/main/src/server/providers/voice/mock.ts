@@ -7,6 +7,9 @@ import type { BlobStore, VoiceModel } from "../types";
 //       returned key always points at stored bytes).
 // INTENT: a short silent WAV is trivial to synthesize and every browser decodes it.
 export class MockVoiceModel implements VoiceModel {
+  readonly providerKey = "mock" as const;
+  readonly supportsVoiceCloning = false;
+
   constructor(private readonly blob?: BlobStore) {}
 
   async synthesize(input: Parameters<VoiceModel["synthesize"]>[0]) {

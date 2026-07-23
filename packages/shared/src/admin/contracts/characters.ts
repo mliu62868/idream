@@ -1369,6 +1369,71 @@ export const characterWorkspaceReleaseSchema = z
   })
   .strict();
 
+export const characterVoiceCloneCreateRequestSchema = z
+  .object({
+    language: z.string().trim().min(1).max(40).default("english"),
+    sampleText: z.string().trim().min(3).max(500),
+    reason: z.string().trim().min(3).max(2_000),
+  })
+  .strict();
+
+export const characterVoiceProfileSchema = z
+  .object({
+    id: adminIdSchema,
+    version: z.number().int().positive(),
+    provider: z.literal("pocket_tts"),
+    providerVoiceId: z.string().trim().min(1),
+    model: z.string().trim().min(1),
+    language: z.string().trim().min(1),
+    status: z.enum(["active", "archived", "failed"]),
+    reference: z
+      .object({
+        assetId: adminIdSchema,
+        filename: z.string().trim().min(1),
+        contentType: z.string().trim().min(1),
+        sizeBytes: z.number().int().nonnegative(),
+      })
+      .strict(),
+    preview: z
+      .object({
+        assetId: adminIdSchema,
+        url: z.string().trim().min(1),
+        durationMs: z.number().int().nonnegative(),
+      })
+      .strict()
+      .nullable(),
+    sampleText: z.string(),
+    createdById: adminIdSchema,
+    createdAt: adminIsoDateTimeSchema,
+    archivedAt: adminIsoDateTimeSchema.nullable(),
+  })
+  .strict();
+
+export const characterVoiceWorkspaceSchema = z
+  .object({
+    provider: z.enum(["mock", "pipeline", "pocket_tts"]),
+    cloningAvailable: z.boolean(),
+    runtimeStatus: z.enum([
+      "ready",
+      "model_access_required",
+      "unavailable",
+      "inactive",
+    ]),
+    runtimeLanguage: z.string().trim().min(1),
+    currentVoiceId: z.string().nullable(),
+    activeProfile: characterVoiceProfileSchema.nullable(),
+    history: z.array(characterVoiceProfileSchema).readonly(),
+  })
+  .strict();
+
+export const characterVoiceCloneCreateResponseSchema = z
+  .object({
+    profile: characterVoiceProfileSchema,
+    replacedProfileId: adminIdSchema.nullable(),
+    replayed: z.boolean(),
+  })
+  .strict();
+
 export const characterWorkspaceDetailSchema = z
   .object({
     character: z
@@ -1387,6 +1452,7 @@ export const characterWorkspaceDetailSchema = z
       .strict(),
     project: characterWorkspaceProjectSchema,
     visual: characterVisualWorkspaceSchema,
+    voice: characterVoiceWorkspaceSchema,
     serving: characterServingSchema.nullable(),
     activeCommand: adminCommandStatusSchema.nullable(),
     releases: z.array(characterWorkspaceReleaseSchema).readonly(),
@@ -1443,6 +1509,14 @@ export type CharacterPerformanceBackfillRequest = z.infer<typeof characterPerfor
 export type CharacterPerformanceReconciliation = z.infer<typeof characterPerformanceReconciliationSchema>;
 export type CharacterProjectDraftPatchRequest = z.infer<typeof characterProjectDraftPatchRequestSchema>;
 export type CharacterWorkspaceDetail = z.infer<typeof characterWorkspaceDetailSchema>;
+export type CharacterVoiceProfile = z.infer<typeof characterVoiceProfileSchema>;
+export type CharacterVoiceWorkspace = z.infer<typeof characterVoiceWorkspaceSchema>;
+export type CharacterVoiceCloneCreateRequest = z.infer<
+  typeof characterVoiceCloneCreateRequestSchema
+>;
+export type CharacterVoiceCloneCreateResponse = z.infer<
+  typeof characterVoiceCloneCreateResponseSchema
+>;
 export type CharacterReferenceSetPublishRequest = z.infer<typeof characterReferenceSetPublishRequestSchema>;
 export type CharacterLookArchiveRequest = z.infer<typeof characterLookArchiveRequestSchema>;
 export type CharacterDraftImageSelectionRequest = z.infer<typeof characterDraftImageSelectionRequestSchema>;

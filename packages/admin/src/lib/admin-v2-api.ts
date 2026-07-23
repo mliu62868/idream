@@ -65,6 +65,44 @@ export async function adminV2Request<T>(
   return options.schema ? options.schema.parse(payload.data) : payload.data;
 }
 
+export async function adminV2FormRequest<T>(
+  path: string,
+  options: {
+    form: FormData;
+    idempotencyKey: string;
+    schema?: RuntimeSchema<T>;
+    signal?: AbortSignal;
+  },
+) {
+  const headers = new Headers({
+    "x-request-id": crypto.randomUUID(),
+    "idempotency-key": options.idempotencyKey,
+  });
+  const response = await fetch(path, {
+    method: "POST",
+    headers,
+    body: options.form,
+    cache: "no-store",
+    signal: options.signal,
+  });
+  const raw = await response.text();
+  let payload: ApiEnvelope<T>;
+  try {
+    payload = JSON.parse(raw) as ApiEnvelope<T>;
+  } catch {
+    throw new Error(`Admin authority request failed (${response.status})`);
+  }
+  if (!payload.ok) {
+    throw new AdminV2RequestError(
+      payload.error.message ?? payload.error.code ?? "Admin request failed",
+      response.status,
+      payload.error.code,
+      payload.error.details,
+    );
+  }
+  return options.schema ? options.schema.parse(payload.data) : payload.data;
+}
+
 export type WorkspaceHistoryMode = "push" | "replace";
 
 export function setWorkspaceUrl(

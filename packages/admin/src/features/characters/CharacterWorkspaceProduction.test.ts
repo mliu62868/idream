@@ -74,6 +74,7 @@ describe("Character production entry", () => {
   it("uses operator-facing tab labels instead of raw route keys", () => {
     expect(characterWorkspaceTabLabel("project")).toBe("Overview");
     expect(characterWorkspaceTabLabel("assets")).toBe("Image assets");
+    expect(characterWorkspaceTabLabel("voice")).toBe("Voice");
     expect(characterWorkspaceTabLabel("preview")).toBe("Launch preview");
   });
 });

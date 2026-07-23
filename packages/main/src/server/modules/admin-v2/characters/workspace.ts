@@ -11,6 +11,7 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
+import { providers } from "@/server/providers";
 import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { listCharacterPortfolioData } from "./portfolio";
 import { collectReleaseMonitorFacts } from "./release-monitor";
@@ -44,6 +45,7 @@ import {
 import {
   evaluateEditorialReleaseAuthority,
 } from "@/server/modules/ourdream/public-release-authority";
+import { characterVoiceProfileDto } from "./voice-clones";
 
 function record(value: Prisma.JsonValue | null | undefined): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -549,7 +551,7 @@ function changedFields(
 }
 
 export async function getCharacterWorkspace(characterId: string) {
-  const [character, project, serving, activeCommand, activeLooks] = await Promise.all([
+  const [character, project, serving, activeCommand, activeLooks, voiceProfiles] = await Promise.all([
     prisma.character.findFirst({
       where: operationalCharacterWhere({ id: characterId, deletedAt: null }),
       include: { imageAsset: true, stats: true },
@@ -580,8 +582,29 @@ export async function getCharacterWorkspace(characterId: string) {
       },
       orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
     }),
+    prisma.characterVoiceProfile.findMany({
+      where: { characterId },
+      include: {
+        referenceAsset: true,
+        previewAsset: true,
+      },
+      orderBy: [{ version: "desc" }, { id: "desc" }],
+      take: 20,
+    }),
   ]);
   if (!character || !project) throw Errors.notFound("Character Project not found");
+  const activeVoiceProfile =
+    voiceProfiles.find((profile) => profile.status === "active") ?? null;
+  const voiceCapabilities = env.VOICE_PROVIDER === "pocket-tts"
+    ? await providers.voice.inspectCapabilities?.()
+    : undefined;
+  const voiceRuntimeStatus = env.VOICE_PROVIDER !== "pocket-tts"
+    ? "inactive"
+    : !voiceCapabilities?.ok
+      ? "unavailable"
+      : voiceCapabilities.data.voiceCloning
+        ? "ready"
+        : "model_access_required";
   const releases = await prisma.characterRelease.findMany({
     where: { projectId: project.id },
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
@@ -1079,6 +1102,17 @@ export async function getCharacterWorkspace(characterId: string) {
         productionDeepLink: `/admin/characters/${encodeURIComponent(characterId)}?tab=assets`,
       },
     },
+    voice: {
+      provider: providersVoiceKey(),
+      cloningAvailable: voiceRuntimeStatus === "ready",
+      runtimeStatus: voiceRuntimeStatus,
+      runtimeLanguage: env.POCKET_TTS_LANGUAGE,
+      currentVoiceId: character.voiceId,
+      activeProfile: activeVoiceProfile
+        ? characterVoiceProfileDto(activeVoiceProfile)
+        : null,
+      history: voiceProfiles.map(characterVoiceProfileDto),
+    },
     serving: servingDto(serving),
     activeCommand: activeCommand ? adminCommandStatusSchema.parse({
       commandId: activeCommand.id,
@@ -1125,6 +1159,10 @@ export async function getCharacterWorkspace(characterId: string) {
       changeMarkers: portfolioItem?.changeMarkers ?? [],
     },
   };
+}
+
+function providersVoiceKey(): "mock" | "pipeline" | "pocket_tts" {
+  return env.VOICE_PROVIDER === "pocket-tts" ? "pocket_tts" : env.VOICE_PROVIDER;
 }
 
 export async function getCharacterProjectDraftForResume(characterId: string) {

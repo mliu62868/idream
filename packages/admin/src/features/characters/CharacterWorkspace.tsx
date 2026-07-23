@@ -31,6 +31,7 @@ import {
   characterAssetReadinessAction,
 } from "@/features/characters/CharacterAssetStudio";
 import { CharacterCreateWizard } from "@/features/characters/CharacterCreateWizard";
+import { CharacterVoicePanel } from "@/features/characters/CharacterVoicePanel";
 import { apiWrite } from "@/components/admin/api";
 import { CollaborationPanel } from "@/features/collaboration/CollaborationPanel";
 import {
@@ -84,6 +85,7 @@ const characterWorkspaceTabLabels: Record<Tab, string> = {
   project: "Overview",
   visual: "Visual identity",
   assets: "Image assets",
+  voice: "Voice",
   preview: "Launch preview",
   release: "Release",
   monitor: "Monitor",
@@ -3524,6 +3526,12 @@ function CharacterDetail({
               review: guardedPermissions.reviewAssets,
               selectDraft: guardedPermissions.writeProject,
             }}
+          />
+        ) : tab === "voice" ? (
+          <CharacterVoicePanel
+            canWrite={guardedPermissions.writeProject}
+            data={data}
+            runCommittedMutation={runCommittedMutation}
           />
         ) : tab === "preview" ? (
           <PreviewDiff data={data} permissions={guardedPermissions} runCommittedMutation={runCommittedMutation} />

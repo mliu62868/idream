@@ -7,24 +7,30 @@ import { fileURLToPath } from "node:url";
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "..");
 
+const provider = process.env.VOICE_PROVIDER ?? "pocket-tts";
+const pocketTts = provider === "pocket-tts";
 const voiceUrl = trimTrailingSlash(
-  process.env.PIPELINE_VOICE_API_URL ??
-    process.env.MOSS_TTS_API_URL ??
-    "http://127.0.0.1:8000/v1",
+  pocketTts
+    ? process.env.POCKET_TTS_API_URL ?? "http://127.0.0.1:8062/v1"
+    : process.env.PIPELINE_VOICE_API_URL ??
+      process.env.MOSS_TTS_API_URL ??
+      "http://127.0.0.1:8000/v1",
 );
-const voiceToken =
-  process.env.PIPELINE_VOICE_API_TOKEN ??
-  process.env.MOSS_TTS_API_TOKEN ??
-  process.env.PIPELINE_API_TOKEN ??
-  "";
-const voiceModel =
-  process.env.PIPELINE_VOICE_MODEL_DEFAULT ??
-  process.env.MOSS_TTS_MODEL ??
-  "OpenMOSS/MOSS-TTS-Local-Transformer-v1.5";
+const voiceToken = pocketTts
+  ? process.env.POCKET_TTS_API_TOKEN ?? ""
+  : process.env.PIPELINE_VOICE_API_TOKEN ??
+    process.env.MOSS_TTS_API_TOKEN ??
+    process.env.PIPELINE_API_TOKEN ??
+    "";
+const voiceModel = pocketTts
+  ? process.env.POCKET_TTS_MODEL ?? "kyutai/pocket-tts"
+  : process.env.PIPELINE_VOICE_MODEL_DEFAULT ??
+    process.env.MOSS_TTS_MODEL ??
+    "OpenMOSS/MOSS-TTS-Local-Transformer-v1.5";
 const report = process.env.VOICE_MODEL_PROBE_REPORT ?? ".tmp/launch-voice-probe.json";
 const text =
   process.env.VOICE_MODEL_PROBE_TEXT ??
-  "Internal beta voice probe. MOSS TTS should return a short audio sample.";
+  "Internal beta voice probe. Pocket TTS should return a short audio sample.";
 const voice = process.env.VOICE_MODEL_PROBE_VOICE_ID ?? defaultVoiceForModel(voiceModel);
 
 mkdirSync(path.join(repoRoot, ".tmp"), { recursive: true });
@@ -67,11 +73,19 @@ const result = spawnSync("bun", probeArgs, {
   cwd: repoRoot,
   env: {
     ...process.env,
-    VOICE_PROVIDER: "pipeline",
-    PIPELINE_VOICE_API_URL: voiceUrl,
-    PIPELINE_VOICE_API_TOKEN: voiceToken,
-    PIPELINE_API_TOKEN: voiceToken,
-    PIPELINE_VOICE_MODEL_DEFAULT: voiceModel,
+    VOICE_PROVIDER: provider,
+    ...(pocketTts
+      ? {
+          POCKET_TTS_API_URL: voiceUrl,
+          POCKET_TTS_API_TOKEN: voiceToken,
+          POCKET_TTS_MODEL: voiceModel,
+        }
+      : {
+          PIPELINE_VOICE_API_URL: voiceUrl,
+          PIPELINE_VOICE_API_TOKEN: voiceToken,
+          PIPELINE_API_TOKEN: voiceToken,
+          PIPELINE_VOICE_MODEL_DEFAULT: voiceModel,
+        }),
   },
   stdio: "inherit",
 });
@@ -100,5 +114,6 @@ function defaultVoiceForModel(model) {
   const normalized = model.toLowerCase();
   if (normalized.includes("qwen3-tts")) return "serena";
   if (normalized.includes("kokoro")) return "af_heart";
+  if (normalized.includes("pocket-tts")) return "alba";
   return "default";
 }

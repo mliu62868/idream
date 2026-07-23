@@ -92,60 +92,42 @@ ComfyUI/backend failure；同样不能把组合 pipeline suite 宣称为 pass。
 
 ### Local voice runner
 
-Voice 使用独立的 OpenAI-compatible endpoint，不复用 legacy 8091 image gateway：
+Voice 当前使用 Pocket TTS。仓库内 gateway 在 `8062` 暴露 OpenAI-compatible
+`/v1/audio/speech`，并额外提供声音克隆管理接口；它不复用 legacy 8091 image
+gateway：
 
 ```bash
-PIPELINE_VOICE_API_URL=http://127.0.0.1:8000/v1 \
-PIPELINE_VOICE_MODEL_DEFAULT=OpenMOSS/MOSS-TTS-Local-Transformer-v1.5 \
+pm2 start ecosystem.config.js --only pocket-tts --update-env
+pm2 save
+curl -fsS http://127.0.0.1:8062/health
 bun run launch:probe:voice:local
 ```
 
-本地默认 smoke path 使用 oMLX 上的 `Kokoro-82M-bf16`。该模型需要 oMLX
-识别为 `audio_tts`，并且权重文件名需要有 OpenAI-compatible gateway 预期的
-`model.safetensors`：
+第一次启动会由 `uv` 创建隔离环境并下载固定版本 `pocket-tts==2.1.0` 及
+`kyutai/pocket-tts` 权重。若 Hugging Face 要求身份，先接受模型页条件并提供
+`HF_TOKEN`。未认证时公开权重仍可使用 catalog voices 做普通 TTS，但 `/health`
+会报告 `voice_cloning: false`，Admin 会禁用克隆提交，不能把“进程健康”误报为
+“克隆就绪”。默认配置：
 
-```bash
-set -a; source packages/main/.env; set +a
-bun run launch:prepare:voice:kokoro
-bun run launch:probe:voice:local
+```dotenv
+VOICE_PROVIDER=pocket-tts
+POCKET_TTS_API_URL=http://127.0.0.1:8062/v1
+POCKET_TTS_MODEL=kyutai/pocket-tts
+POCKET_TTS_LANGUAGE=english
+POCKET_TTS_DEFAULT_VOICE_ID=alba
 ```
 
-`launch:prepare:voice:kokoro` 会在 `~/.omlx/models` 下定位
-`Kokoro-82M-bf16`，补齐 `config.json` 的 `model_type: "kokoro"`，并在缺失时创建
-`model.safetensors -> kokoro*.safetensors`。如果命令报告做了修改，先重启一次
-oMLX server 再跑 probe；`launch:probe:voice:local` 会在模型名包含 `kokoro` 时自动
-执行同一个预检，避免继续打到未刷新模型缓存的服务。
+声音克隆入口在 Admin 的 Character Workspace → Voice。每次提交会：
 
-Kokoro 的本地配置保持 `PIPELINE_VOICE_CHUNK_CHARS=0`，不要再按固定 400 字符切段。
-用 `PIPELINE_VOICE_MAX_INPUT_CHARS` 控制送入 TTS 的总长度；超限时优先保留完整句子并
-丢弃尾部句子，只有第一句本身超过上限时才退到逗号/分号/词边界，避免一句话被拆进不同
-chunk 造成发音不连贯。
+- 读取最多前 30 秒的单人参考录音；
+- 将 Pocket TTS voice state 持久化到 `.data/pocket-tts/voices/*.safetensors`；
+- 保存原始参考音频和试听 WAV 为 `MediaAsset`；
+- 创建版本化 `CharacterVoiceProfile`，归档旧 active profile；
+- 原子更新 `Character.voiceId`，因此新生成的聊天语音立即使用新声音，已有缓存
+  clip 保持不变。
 
-Apple Silicon 上已经验证过一个更小的 oMLX 路径：
-
-```bash
-set -a; source packages/chat/.env; set +a
-PIPELINE_VOICE_API_URL=http://127.0.0.1:8061/v1 \
-PIPELINE_VOICE_API_TOKEN="$CHAT_MODEL_API_KEY" \
-PIPELINE_VOICE_MODEL_DEFAULT=Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit \
-VOICE_MODEL_PROBE_VOICE_ID=serena \
-bun run launch:probe:voice:local
-```
-
-该模型的可用 speaker 包括 `serena`、`vivian`、`uncle_fu`、`ryan`、`aiden`、
-`ono_anna`、`sohee`、`eric`、`dylan`。探针会在模型名包含 `Qwen3-TTS` 时默认用
-`serena`。
-
-Runner 选择：
-
-- **不要用 sd.cpp 跑 MOSS-TTS**。历史 `sdcpp-image` gateway 已不是当前图片 runtime。
-- **生产/共享 GPU 优先 SGLang-Omni**。MOSS-TTS 官方说明 Local-Transformer-v1.5
-  有 SGLang-Omni Day-0 支持，并暴露 OpenAI-compatible `/v1/audio/speech`、
-  streaming 和 voice cloning。
-- **Apple Silicon 本地实验可用 MLX / mlx-audio**。这适合开发机验证音色和延迟，
-  但当前产品接入仍只认 `PIPELINE_VOICE_API_URL`。
-- `PIPELINE_VOICE_API_URL` 优先级高于 `PIPELINE_API_URL`，避免 voice probe 误打到
-  legacy `http://127.0.0.1:8091` image gateway。
+`POCKET_TTS_API_TOKEN` 可保护 gateway；Main 和 PM2 runner 必须使用同一值。
+旧 `pipeline` voice adapter 仍保留为回滚路径，但不再是当前默认。
 
 之后再按需要跑真实图片探针和上线门禁：
 
@@ -291,9 +273,10 @@ gen worker 用同一配置写入生成产物。
 审核请求投到 `MODERATION_SERVICE_URL`（根路径默认 `/moderation/check`），用
 `MODERATION_API_KEY` Bearer token 鉴权，并统一解析 `passed/flagged/blocked`、
 `policyCode` 和 `confidence`。
-chat/voice provider 已支持 `pipeline`：chat 调 OpenAI-compatible
-`/chat/completions`（SSE 或 JSON 均可），voice 调 `/audio/speech`，音频可由
-Pipeline 返回对象存储 key，或由 main 写入私有 blob。
+chat provider 支持 `pipeline`，调用 OpenAI-compatible `/chat/completions`
+（SSE 或 JSON 均可）。voice 当前使用 `pocket-tts`，调用本地
+`/v1/audio/speech` 并由 main 写入私有 blob；旧 `pipeline` voice adapter 保留为
+显式回滚路径。
 年龄验证已支持 `gocam` adapter：main-web 调内部 age gateway 创建验证
 session，gateway 负责 Go.cam SDK/partnerId/cipherKey/HMAC key；回调到
 `/api/v1/age-verification/webhooks/gocam` 时必须带

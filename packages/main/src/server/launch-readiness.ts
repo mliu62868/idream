@@ -203,6 +203,7 @@ export interface VoiceModelProbeEvidence {
   voiceId?: string | null;
   key?: string | null;
   audioDurationMs?: number;
+  voiceCloningAvailable?: boolean | null;
   bytes?: number;
   contentType?: string | null;
   loadError?: string;
@@ -401,7 +402,7 @@ export const currentLaunchCapabilities: LaunchReadinessCapabilities = {
   mainProviderImplementations: {
     CHAT_PROVIDER: ["mock", "pipeline"],
     IMAGE_PROVIDER: ["mock", "pipeline", "backend"],
-    VOICE_PROVIDER: ["mock", "pipeline"],
+    VOICE_PROVIDER: ["mock", "pipeline", "pocket-tts"],
     MODERATION_PROVIDER: ["mock", "safety-gateway"],
     PAYMENT_PROVIDER: ["mock", "btcpay"],
     BLOB_PROVIDER: ["mock", "r2", "s3"],
@@ -940,8 +941,12 @@ function addVoiceModelProbeCheck(
   const problems: string[] = [];
   const reportPath = env.VOICE_MODEL_PROBE_REPORT;
   const configuredProvider = env.VOICE_PROVIDER ?? "mock";
-  const configuredBaseUrl = env.PIPELINE_VOICE_API_URL ?? env.PIPELINE_API_URL;
-  const configuredModel = env.PIPELINE_VOICE_MODEL_DEFAULT;
+  const configuredBaseUrl = configuredProvider === "pocket-tts"
+    ? env.POCKET_TTS_API_URL
+    : env.PIPELINE_VOICE_API_URL ?? env.PIPELINE_API_URL;
+  const configuredModel = configuredProvider === "pocket-tts"
+    ? env.POCKET_TTS_MODEL
+    : env.PIPELINE_VOICE_MODEL_DEFAULT;
 
   if (!reportPath) {
     problems.push("VOICE_MODEL_PROBE_REPORT is not set");
@@ -963,6 +968,17 @@ function addVoiceModelProbeCheck(
       }
       if (hasMinLength(configuredModel, 1) && probe.model !== configuredModel) {
         problems.push("probe model does not match PIPELINE_VOICE_MODEL_DEFAULT");
+      }
+    }
+    if (configuredProvider === "pocket-tts") {
+      if (!sameUrl(probe.baseUrl, configuredBaseUrl)) {
+        problems.push("probe base URL does not match POCKET_TTS_API_URL");
+      }
+      if (hasMinLength(configuredModel, 1) && probe.model !== configuredModel) {
+        problems.push("probe model does not match POCKET_TTS_MODEL");
+      }
+      if (probe.voiceCloningAvailable !== true) {
+        problems.push("Pocket TTS probe did not confirm voice cloning model access");
       }
     }
     if (!hasMinLength(probe.key ?? undefined, 1)) {

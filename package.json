@@ -49,6 +49,7 @@
     "launch:probe:redcraft-image:local": "node scripts/run-local-redcraft-image-probe.mjs",
     "launch:prepare:voice:kokoro": "node scripts/prepare-omlx-kokoro.mjs",
     "launch:probe:voice:local": "node scripts/run-local-voice-probe.mjs",
+    "voice:pocket:start": "node scripts/start-pocket-tts.cjs",
     "launch:probe:payment": "bun run --filter @idream/main probe:payment",
     "launch:probe:product-config": "bun run --filter @idream/main probe:product-config",
     "launch:probe:safety": "bun run --filter @idream/main probe:safety",

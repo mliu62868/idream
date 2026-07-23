@@ -184,6 +184,7 @@ model Character {
   mediaAssets    MediaAsset[]             @relation("CharacterAssets")
   visualProfiles CharacterVisualProfile[]
   looks          CharacterLook[]
+  voiceProfiles  CharacterVoiceProfile[]
   likes          CharacterLike[]
   serving        CharacterServing?
 
@@ -193,6 +194,30 @@ model Character {
   @@index([gender, style])
   @@index([createdAt])
   @@map("characters")
+}
+
+model CharacterVoiceProfile {
+  id                 String     @id @default(cuid())
+  characterId        String
+  version            Int
+  provider           String     @default("pocket_tts")
+  providerVoiceId    String     @unique
+  model              String
+  language           String
+  status             String     @default("active") // enum: active | archived | failed
+  referenceAssetId   String
+  previewAssetId     String?
+  sampleText         String
+  createdById        String
+  createdAt          DateTime   @default(now())
+  archivedAt         DateTime?
+  character          Character  @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  referenceAsset     MediaAsset @relation("VoiceReferenceAsset", fields: [referenceAssetId], references: [id], onDelete: Restrict)
+  previewAsset       MediaAsset? @relation("VoicePreviewAsset", fields: [previewAssetId], references: [id], onDelete: SetNull)
+
+  @@unique([characterId, version])
+  @@index([characterId, status, version])
+  @@map("character_voice_profiles")
 }
 
 model CharacterDraft {
@@ -602,7 +627,7 @@ model MediaAsset {
   ownerId                String
   sourceJobId            String?
   characterId            String?
-  type                   String // enum: image | video
+  type                   String // enum: image | video | voice
   url                    String
   thumbnailUrl           String?
   storageKey             String?                            @unique
@@ -632,6 +657,8 @@ model MediaAsset {
   referenceCandidates    ReferenceCandidate[]
   generationFeedback     GenerationFeedback[]
   draftCharacterProjects CharacterProject[]                 @relation("CharacterProjectDraftImage")
+  voiceReferenceProfiles CharacterVoiceProfile[]            @relation("VoiceReferenceAsset")
+  voicePreviewProfiles   CharacterVoiceProfile[]            @relation("VoicePreviewAsset")
 
   @@index([ownerId, type, createdAt])
   @@index([sourceJobId])

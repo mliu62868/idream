@@ -11,6 +11,7 @@ import {
 describe("image workflow browser transport", () => {
   it("restores the Character workspace tab from the URL and fails unknown values closed", () => {
     expect(characterWorkspaceTabFromSearch("?tab=assets")).toBe("assets");
+    expect(characterWorkspaceTabFromSearch("?tab=voice")).toBe("voice");
     expect(characterWorkspaceTabFromSearch("?tab=release")).toBe("release");
     expect(characterWorkspaceTabFromSearch("?tab=made-up")).toBe("project");
     expect(characterWorkspaceTabFromSearch("")).toBe("project");

@@ -14,6 +14,7 @@ import { MockAgeVerificationProvider } from "./verify/mock";
 import { MockVideoModel } from "./video/mock";
 import { MockVoiceModel } from "./voice/mock";
 import { PipelineVoiceModel } from "./voice/pipeline";
+import { PocketTtsVoiceModel } from "./voice/pocket-tts";
 
 // SPEC: main only ever constructs mock|pipeline image adapters — never "backend".
 // INTENT: "backend" (GenBackend/ComfyUI) is deliberately gen-worker-only (see
@@ -26,7 +27,7 @@ function assertMockProvidersConfigured() {
   const unsupported = [
     unsupportedProvider("CHAT_PROVIDER", env.CHAT_PROVIDER, ["mock", "pipeline"]),
     unsupportedProvider("IMAGE_PROVIDER", env.IMAGE_PROVIDER, ["mock", "pipeline"]),
-    unsupportedProvider("VOICE_PROVIDER", env.VOICE_PROVIDER, ["mock", "pipeline"]),
+    unsupportedProvider("VOICE_PROVIDER", env.VOICE_PROVIDER, ["mock", "pipeline", "pocket-tts"]),
     unsupportedProvider("MODERATION_PROVIDER", env.MODERATION_PROVIDER, ["mock", "safety-gateway"]),
     unsupportedProvider("PAYMENT_PROVIDER", env.PAYMENT_PROVIDER, ["mock", "btcpay"]),
     unsupportedProvider("BLOB_PROVIDER", env.BLOB_PROVIDER, ["mock", "r2", "s3"]),
@@ -126,6 +127,18 @@ function createImageProvider() {
 
 function createVoiceProvider(blob: BlobStore) {
   if (env.VOICE_PROVIDER === "mock") return new MockVoiceModel(blob);
+  if (env.VOICE_PROVIDER === "pocket-tts") {
+    return new PocketTtsVoiceModel({
+      baseUrl: env.POCKET_TTS_API_URL,
+      apiKey: env.POCKET_TTS_API_TOKEN,
+      model: env.POCKET_TTS_MODEL,
+      language: env.POCKET_TTS_LANGUAGE,
+      defaultVoiceId: env.POCKET_TTS_DEFAULT_VOICE_ID,
+      maxInputChars: env.PIPELINE_VOICE_MAX_INPUT_CHARS,
+      timeoutMs: env.POCKET_TTS_TIMEOUT_MS,
+      blob,
+    });
+  }
 
   return new PipelineVoiceModel({
     baseUrl: requireProviderEnv(

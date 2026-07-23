@@ -242,6 +242,13 @@ describe("Character operator workspace", () => {
   it("returns a truthful draft preview and incomplete release evidence", async () => {
     const detail = characterWorkspaceDetailSchema.parse(await getCharacterWorkspace(characterId));
     expect(detail.activeCommand).toBeNull();
+    expect(detail.voice).toMatchObject({
+      provider: "mock",
+      cloningAvailable: false,
+      runtimeStatus: "inactive",
+      activeProfile: null,
+      history: [],
+    });
     expect(detail.preview).toMatchObject({
       live: null,
       draft: {

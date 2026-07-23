@@ -59,6 +59,8 @@ export interface VideoModel {
 }
 
 export interface VoiceModel {
+  readonly providerKey: "mock" | "pipeline" | "pocket_tts";
+  readonly supportsVoiceCloning: boolean;
   synthesize(input: {
     text: string;
     voiceId?: string;
@@ -66,6 +68,27 @@ export interface VoiceModel {
     // character today; later a per-message emotion tag from chat can flow in here.
     tone?: string;
   }): Promise<ProviderResult<{ key: string; durationMs: number }>>;
+  cloneVoice?(input: {
+    voiceId: string;
+    audio: Uint8Array;
+    contentType: string;
+    filename: string;
+    language: string;
+  }): Promise<
+    ProviderResult<{
+      voiceId: string;
+      model: string;
+      language: string;
+    }>
+  >;
+  deleteVoice?(input: {
+    voiceId: string;
+  }): Promise<ProviderResult<{ deleted: true }>>;
+  inspectCapabilities?(): Promise<
+    ProviderResult<{
+      voiceCloning: boolean;
+    }>
+  >;
 }
 
 export interface ModerationProvider {

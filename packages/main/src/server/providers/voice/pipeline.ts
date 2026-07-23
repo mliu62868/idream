@@ -38,6 +38,9 @@ type JsonSpeechChunk = {
 type SpeechChunk = BinarySpeechChunk | JsonSpeechChunk;
 
 export class PipelineVoiceModel implements VoiceModel {
+  readonly providerKey = "pipeline" as const;
+  readonly supportsVoiceCloning = false;
+
   private readonly endpoint: URL;
   private readonly apiKey: string | undefined;
   private readonly model: string;
