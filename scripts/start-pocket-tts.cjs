@@ -18,7 +18,7 @@ const child = spawn(
   [
     "run",
     "--with",
-    "pocket-tts==2.1.0",
+    "pocket-tts[audio]==2.1.0",
     "--with",
     "python-multipart",
     "uvicorn",

@@ -50,6 +50,8 @@ const EnvSchema = z.object({
   CHAT_PROVIDER: z.enum(["mock", "pipeline"]).default("mock"),
   IMAGE_PROVIDER: z.enum(["mock", "pipeline", "backend"]).default("mock"),
   VIDEO_PROVIDER: z.enum(["mock", "pipeline"]).default("mock"),
+  // Tests with no environment remain isolated on mock. Versioned local and
+  // production env templates select Pocket TTS as the product authority.
   VOICE_PROVIDER: z.enum(["mock", "pipeline", "pocket-tts"]).default("mock"),
   MODERATION_PROVIDER: z.enum(["mock", "pipeline", "safety-gateway"]).default("mock"),
   PAYMENT_PROVIDER: z.enum(["mock", "btcpay"]).default("mock"),
@@ -105,7 +107,6 @@ const EnvSchema = z.object({
       "english",
       "english_2026-01",
       "english_2026-04",
-      "french",
       "french_24l",
       "german",
       "german_24l",

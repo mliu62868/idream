@@ -49,10 +49,13 @@ const mainRedisEnv = mainRedisUrl ? { REDIS_URL: mainRedisUrl } : {};
 const internalToken = process.env.INTERNAL_TOKEN ?? localEnvValue(dir("packages/main/.env"), "INTERNAL_TOKEN");
 const sharedInternalEnv = internalToken ? { INTERNAL_TOKEN: internalToken } : {};
 const mainEnvPath = dir("packages/main/.env");
-const pocketTtsApiToken =
-  process.env.POCKET_TTS_API_TOKEN ?? localEnvValue(mainEnvPath, "POCKET_TTS_API_TOKEN");
-const huggingFaceToken =
-  process.env.HF_TOKEN ?? localEnvValue(mainEnvPath, "HF_TOKEN");
+const mainEnvValue = (key, fallback) =>
+  process.env[key] ?? localEnvValue(mainEnvPath, key) ?? fallback;
+const pocketTtsApiUrl = new URL(
+  mainEnvValue("POCKET_TTS_API_URL", "http://127.0.0.1:8062/v1"),
+);
+const pocketTtsApiToken = mainEnvValue("POCKET_TTS_API_TOKEN");
+const huggingFaceToken = mainEnvValue("HF_TOKEN");
 
 module.exports = {
   apps: [
@@ -64,15 +67,18 @@ module.exports = {
       exec_mode: "fork",
       instances: 1,
       env: {
-        POCKET_TTS_HOST: process.env.POCKET_TTS_HOST ?? "127.0.0.1",
-        POCKET_TTS_PORT: process.env.POCKET_TTS_PORT ?? "8062",
-        POCKET_TTS_MODEL: process.env.POCKET_TTS_MODEL ?? "kyutai/pocket-tts",
-        POCKET_TTS_LANGUAGE: process.env.POCKET_TTS_LANGUAGE ?? "english",
+        POCKET_TTS_HOST: mainEnvValue("POCKET_TTS_HOST", pocketTtsApiUrl.hostname),
+        POCKET_TTS_PORT: mainEnvValue(
+          "POCKET_TTS_PORT",
+          pocketTtsApiUrl.port || (pocketTtsApiUrl.protocol === "https:" ? "443" : "80"),
+        ),
+        POCKET_TTS_MODEL: mainEnvValue("POCKET_TTS_MODEL", "kyutai/pocket-tts"),
+        POCKET_TTS_LANGUAGE: mainEnvValue("POCKET_TTS_LANGUAGE", "english"),
         POCKET_TTS_DEFAULT_VOICE_ID:
-          process.env.POCKET_TTS_DEFAULT_VOICE_ID ?? "alba",
+          mainEnvValue("POCKET_TTS_DEFAULT_VOICE_ID", "alba"),
         POCKET_TTS_VOICE_DIR:
-          process.env.POCKET_TTS_VOICE_DIR ?? dir(".data/pocket-tts/voices"),
-        POCKET_TTS_QUANTIZE: process.env.POCKET_TTS_QUANTIZE ?? "false",
+          mainEnvValue("POCKET_TTS_VOICE_DIR", dir(".data/pocket-tts/voices")),
+        POCKET_TTS_QUANTIZE: mainEnvValue("POCKET_TTS_QUANTIZE", "false"),
         ...(pocketTtsApiToken ? { POCKET_TTS_API_TOKEN: pocketTtsApiToken } : {}),
         ...(huggingFaceToken ? { HF_TOKEN: huggingFaceToken } : {}),
       },

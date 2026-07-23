@@ -204,7 +204,7 @@ model CharacterVoiceProfile {
   providerVoiceId    String     @unique
   model              String
   language           String
-  status             String     @default("active") // enum: active | archived | failed
+  status             String     @default("candidate") // enum: candidate | active | archived | failed
   referenceAssetId   String
   previewAssetId     String?
   sampleText         String

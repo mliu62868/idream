@@ -145,6 +145,7 @@ export const ADMIN_V2_API_OPERATIONS = [
   operation("POST", "/api/v2/admin/characters/route-qualifications/commands/evaluate", allOf("content.production.write"), "generationRouteQualificationEvaluateRequestSchema+idempotency-key", "generationRouteQualificationEvaluateResponseSchema"),
   operation("GET", "/api/v2/admin/characters/:id", allOf("character.project.read", "character.release.read", "character.performance.read"), "path:id", "characterWorkspaceDetailSchema"),
   operation("POST", "/api/v2/admin/characters/:id/voice-clones", allOf("character.project.write"), "characterVoiceCloneCreateRequestSchema+idempotency-key", "characterVoiceCloneCreateResponseSchema"),
+  operation("POST", "/api/v2/admin/characters/:id/voice-clones/:profileId/activate", allOf("character.release.publish"), "characterVoiceActivationRequestSchema+idempotency-key", "characterVoiceActivationResponseSchema"),
   operation("POST", "/api/v2/admin/characters/:id/reference-sets", allOf("content.official.write"), "characterReferenceSetPublishRequestSchema+idempotency-key", "characterReferenceSetPublishResponseSchema"),
   operation("PATCH", "/api/v2/admin/characters/:id/looks/:lookId", allOf("content.official.write"), "characterLookArchiveRequestSchema+idempotency-key", "characterLookArchiveResponseSchema"),
   operation("POST", "/api/v2/admin/characters/:id/commands/pause", allOf("character.release.publish"), "adminCommandRequestSchema+idempotency-key", "adminCommandAcceptedSchema"),

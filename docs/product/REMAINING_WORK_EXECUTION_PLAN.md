@@ -146,11 +146,12 @@ Historical local result from 2026-06-30:
   about 97.3s.
 - voice: the former pipeline/Qwen smoke remains historical evidence. Current
   authority is `VOICE_PROVIDER=pocket-tts` through the local `8062` gateway,
-  with a real WAV probe plus Admin clone/profile persistence proof required
-  before voice cloning is included in a demo. The 2026-07-23 local WAV probe
+  with a real clone→synthesize→delete probe plus Admin candidate→preview→activate
+  persistence proof required before voice cloning is included in a demo. The
+  2026-07-23 local WAV probe
   passes, but the unauthenticated runner reports `voice_cloning:false`; accept
   the model terms, provide `HF_TOKEN`, restart `pocket-tts`, then capture the
-  remaining real clone/profile proof.
+  remaining real clone and candidate activation proof.
 
 Current 2026-07-17 runtime supplement:
 
@@ -212,8 +213,9 @@ Required work:
   active jobs, restart `gen-image` and `sdcpp-image`, and confirm Prisma schema
   is synced before the probe.
 - Keep the Pocket TTS `8062` gateway healthy, run the real voice probe, and
-  verify one Admin clone creates a preview, versioned profile, and active
-  `Character.voiceId` before promising voice in a demo.
+  verify one Admin clone creates a playable candidate preview without changing
+  `Character.voiceId`, then separately activate that reviewed profile and verify
+  the active voice pointer before promising voice in a demo.
 - Keep any demo-only moderation, billing, storage, age, and observability behavior clearly marked as non-production.
 
 Deferred from this milestone:
@@ -513,7 +515,8 @@ Exit criteria:
 1. Keep active Pipeline-backed image and chat paths passing through `bun run launch:probe:pipeline`.
 2. Keep BTCPay, R2/S3, Go.cam, and Sentry documented as deferred, not missing current tasks.
 3. If voice is in the internal demo promise, require a healthy Pocket TTS gateway,
-   a passing real WAV probe, and one Admin clone/profile persistence proof.
+   a passing real clone→synthesize→delete probe, and one Admin
+   candidate→preview→activate persistence proof.
 4. Run catalog probe and clean demo data until it passes.
 5. Record expected public-launch gate failures caused by deferred providers.
 
@@ -578,8 +581,8 @@ The current internal-demo milestone is complete when:
 - Public catalog probe passes.
 - PM screenshot audit shows no test data and no dead promises.
 - Active Pipeline-backed runtime paths have probe evidence from `bun run launch:probe:pipeline`.
-- If voice is visible/promised, Pocket TTS has a passing `/audio/speech` probe and
-  Admin clone/profile persistence evidence.
+- If voice is visible/promised, Pocket TTS has a passing clone→synthesize→delete
+  probe and Admin candidate→preview→activate persistence evidence.
 - Deferred provider gaps are documented and not represented as publicly launch-ready.
 - Product docs describe the current state without stale contradictions.
 

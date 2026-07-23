@@ -72,18 +72,22 @@ Store these generated values:
 | `CHAT_MODEL_API_KEY` | Chat gateway token |
 | `CHAT_MODERATION_PROVIDER` | Current product scope uses `mock`; service URL/API key are not required unless this changes |
 
-## Pipeline Values
+## Pipeline and Voice Values
 
 | Key | Notes |
 | --- | --- |
-| `PIPELINE_API_URL` | OpenAI-compatible chat/voice or legacy image adapter URL; current image worker does not require 8091 |
-| `PIPELINE_VOICE_API_URL` | OpenAI-compatible voice gateway |
+| `PIPELINE_API_URL` | OpenAI-compatible chat or legacy image adapter URL; current image worker does not require 8091 |
 | `PIPELINE_IMAGE_MODEL_DEFAULT` | Legacy pipeline image alias only; not the current backend model authority |
 | `PIPELINE_CHAT_MODEL_DEFAULT` | Chat model alias exposed by pipeline |
-| `PIPELINE_VOICE_MODEL_DEFAULT` | Voice model alias exposed by voice gateway |
 | `PIPELINE_VIDEO_MODEL_DEFAULT` | Required only when video is launched |
 | `PIPELINE_TIMEOUT_MS` | Image/chat timeout budget |
-| `PIPELINE_VOICE_TIMEOUT_MS` | Voice timeout budget |
+| `PIPELINE_VOICE_API_URL` | Explicit rollback voice gateway only |
+| `PIPELINE_VOICE_API_TOKEN` | Explicit rollback voice gateway token only |
+| `PIPELINE_VOICE_MODEL_DEFAULT` | Explicit rollback voice model alias only |
+| `POCKET_TTS_API_URL` | Co-located Pocket TTS gateway, normally `http://127.0.0.1:8062/v1` |
+| `POCKET_TTS_API_TOKEN` | Shared internal token used by Main and the Pocket TTS process |
+| `POCKET_TTS_MODEL` | Pocket TTS model id, currently `kyutai/pocket-tts` |
+| `HF_TOKEN` | Hugging Face token with accepted Pocket TTS clone-model access |
 
 ## Generation Worker Values
 

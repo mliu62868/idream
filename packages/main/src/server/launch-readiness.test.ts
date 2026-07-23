@@ -1740,6 +1740,17 @@ describe("launch readiness", () => {
         baseUrl: pocketEnv.POCKET_TTS_API_URL,
         model: pocketEnv.POCKET_TTS_MODEL,
         voiceCloningAvailable: false,
+        voiceCloneVerified: false,
+      }),
+    });
+    const cloneBroken = assessLaunchReadiness({
+      ...input,
+      voiceModelProbe: passingVoiceProbe({
+        provider: "pocket-tts",
+        baseUrl: pocketEnv.POCKET_TTS_API_URL,
+        model: pocketEnv.POCKET_TTS_MODEL,
+        voiceCloningAvailable: true,
+        voiceCloneVerified: false,
       }),
     });
     const cloneReady = assessLaunchReadiness({
@@ -1749,11 +1760,14 @@ describe("launch readiness", () => {
         baseUrl: pocketEnv.POCKET_TTS_API_URL,
         model: pocketEnv.POCKET_TTS_MODEL,
         voiceCloningAvailable: true,
+        voiceCloneVerified: true,
       }),
     });
 
     expect(checkById(missingAccess, "voice-model-live-probe")?.message)
       .toContain("did not confirm voice cloning model access");
+    expect(checkById(cloneBroken, "voice-model-live-probe")?.message)
+      .toContain("did not complete clone, synthesize, and delete");
     expect(checkById(cloneReady, "voice-model-live-probe")?.status).toBe("pass");
   });
 
@@ -2541,5 +2555,14 @@ describe("launch readiness", () => {
 
     expect(mainValues.GEN_VIDEO_PROVIDER).toBe("mock");
     expect(genValues.GEN_VIDEO_PROVIDER).toBe("mock");
+  });
+
+  it("keeps Pocket TTS as the production voice authority", () => {
+    const mainValues = envTemplateValues("../../.env.production.example");
+
+    expect(mainValues.VOICE_PROVIDER).toBe("pocket-tts");
+    expect(mainValues.POCKET_TTS_API_URL).toBe("http://127.0.0.1:8062/v1");
+    expect(mainValues.POCKET_TTS_MODEL).toBe("kyutai/pocket-tts");
+    expect(mainValues.HF_TOKEN).toBeTruthy();
   });
 });

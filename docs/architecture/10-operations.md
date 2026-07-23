@@ -117,14 +117,18 @@ POCKET_TTS_LANGUAGE=english
 POCKET_TTS_DEFAULT_VOICE_ID=alba
 ```
 
-声音克隆入口在 Admin 的 Character Workspace → Voice。每次提交会：
+声音克隆入口在 Admin 的 Character Workspace → Voice，分成候选制作和明确启用
+两段 authority。候选制作会：
 
 - 读取最多前 30 秒的单人参考录音；
 - 将 Pocket TTS voice state 持久化到 `.data/pocket-tts/voices/*.safetensors`；
 - 保存原始参考音频和试听 WAV 为 `MediaAsset`；
-- 创建版本化 `CharacterVoiceProfile`，归档旧 active profile；
-- 原子更新 `Character.voiceId`，因此新生成的聊天语音立即使用新声音，已有缓存
-  clip 保持不变。
+- 创建状态为 `candidate` 的版本化 `CharacterVoiceProfile`，但不修改
+  `Character.voiceId`。
+
+操作者试听后，只有具备 `character.release.publish` 的账号才能明确启用候选。
+启用事务会归档旧 active profile、激活同一份已试听候选、写 Audit/Outbox，并原子更新
+`Character.voiceId`；新生成的聊天语音立即使用新声音，已有缓存 clip 保持不变。
 
 `POCKET_TTS_API_TOKEN` 可保护 gateway；Main 和 PM2 runner 必须使用同一值。
 旧 `pipeline` voice adapter 仍保留为回滚路径，但不再是当前默认。
@@ -245,9 +249,9 @@ active video profile、video prompt template 和 video pricing rule，并且 `GE
 `CHAT_SERVICE_PROBE_REPORT` 指向最近一次 chat
 service probe 报告，证明 `/healthz` 可达、BFF 签名的只读 chat 请求返回 200、
 未签名请求返回 401；否则 chat split 不能误报为可上线。`VOICE_MODEL_PROBE_REPORT`
-也必须指向最近一次 voice
-probe 报告，证明当前 `VOICE_PROVIDER` 能通过同一个 pipeline gateway 生成可用
-voice asset；否则语音能力不能误报为可上线。门禁也要求 `BLOB_STORAGE_PROBE_REPORT` 指向最近一次对象存储
+也必须指向最近一次 voice probe 报告，证明当前 `VOICE_PROVIDER` 能生成可用
+voice asset；使用 Pocket TTS 时还必须确认 clone 权重可用，否则语音克隆不能误报为
+可上线。门禁也要求 `BLOB_STORAGE_PROBE_REPORT` 指向最近一次对象存储
 probe 报告，证明当前 `BLOB_PROVIDER` 能对真实 bucket 完成 PUT、signed GET
 读回校验和 DELETE；否则对象存储 env 填了但 credentials、bucket policy 或 endpoint
 不可用时会失败。门禁还要求 `SAFETY_GATEWAY_PROBE_REPORT` 指向最近一次 safety gateway

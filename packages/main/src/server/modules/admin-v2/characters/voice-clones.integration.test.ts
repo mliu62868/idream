@@ -5,6 +5,8 @@ import { prisma } from "@/server/lib/db";
 const providerState = vi.hoisted(() => ({
   cloneCalls: 0,
   synthesizeCalls: 0,
+  failSynthesizeCall: null as number | null,
+  deletedVoiceIds: [] as string[],
   storedKeys: [] as string[],
 }));
 
@@ -29,6 +31,16 @@ vi.mock("@/server/providers", () => ({
       },
       async synthesize(input: { voiceId?: string }) {
         providerState.synthesizeCalls += 1;
+        if (providerState.synthesizeCalls === providerState.failSynthesizeCall) {
+          return {
+            ok: false as const,
+            error: {
+              code: "preview_failed",
+              message: "Synthetic concurrent preview failure",
+              retryable: true,
+            },
+          };
+        }
         return {
           ok: true as const,
           data: {
@@ -37,7 +49,8 @@ vi.mock("@/server/providers", () => ({
           },
         };
       },
-      async deleteVoice() {
+      async deleteVoice(input: { voiceId: string }) {
+        providerState.deletedVoiceIds.push(input.voiceId);
         return { ok: true as const, data: { deleted: true as const } };
       },
     },
@@ -59,7 +72,10 @@ vi.mock("@/server/providers", () => ({
   },
 }));
 
-import { createCharacterVoiceClone } from "./voice-clones";
+import {
+  activateCharacterVoiceProfile,
+  createCharacterVoiceClone,
+} from "./voice-clones";
 
 describe("Character Pocket TTS voice clone authority", () => {
   const suffix = randomUUID();
@@ -89,7 +105,11 @@ describe("Character Pocket TTS voice clone authority", () => {
 
   afterAll(async () => {
     await prisma.controlPlaneCommand.deleteMany({
-      where: { targetType: "character", targetId: characterId },
+      where: { actorId },
+    });
+    await prisma.adminAuditLog.deleteMany({ where: { actorId } });
+    await prisma.mainOutboxEvent.deleteMany({
+      where: { aggregateType: "character", aggregateId: characterId },
     });
     await prisma.characterVoiceProfile.deleteMany({ where: { characterId } });
     await prisma.mediaAsset.deleteMany({ where: { characterId } });
@@ -98,9 +118,11 @@ describe("Character Pocket TTS voice clone authority", () => {
     await prisma.$disconnect();
   });
 
-  it("binds a cloned voice idempotently and archives the replaced voice", async () => {
+  it("creates a candidate idempotently, then activates it with a distinct authority", async () => {
     providerState.cloneCalls = 0;
     providerState.synthesizeCalls = 0;
+    providerState.failSynthesizeCall = null;
+    providerState.deletedVoiceIds = [];
     providerState.storedKeys = [];
     const firstKey = `voice-clone-first-${suffix}`;
     const first = await createCharacterVoiceClone({
@@ -125,15 +147,51 @@ describe("Character Pocket TTS voice clone authority", () => {
     expect(first.profile).toMatchObject({
       version: 1,
       provider: "pocket_tts",
-      status: "active",
+      status: "candidate",
       reference: {
         filename: "first-reference.wav",
         sizeBytes: 2_048,
       },
       preview: {
+        url: expect.stringMatching(/^\/user-content\/.+\/content\.wav$/),
         durationMs: 1_500,
       },
     });
+    expect(await prisma.character.findUniqueOrThrow({
+      where: { id: characterId },
+      select: { voiceId: true },
+    })).toEqual({ voiceId: null });
+    const firstActivationKey = `voice-activate-first-${suffix}`;
+    const firstActivation = await activateCharacterVoiceProfile({
+      characterId,
+      profileId: first.profile.id,
+      actor: { id: actorId, role: "admin" },
+      idempotencyKey: firstActivationKey,
+      requestId: `voice-activate-request-first-${suffix}`,
+      request: {
+        reason: "The reviewed preview matches the character",
+        expectedActiveProfileId: null,
+        expectedCurrentVoiceId: null,
+      },
+    });
+    const activationReplay = await activateCharacterVoiceProfile({
+      characterId,
+      profileId: first.profile.id,
+      actor: { id: actorId, role: "admin" },
+      idempotencyKey: firstActivationKey,
+      requestId: `voice-activate-request-replay-${suffix}`,
+      request: {
+        reason: "The reviewed preview matches the character",
+        expectedActiveProfileId: null,
+        expectedCurrentVoiceId: null,
+      },
+    });
+    expect(firstActivation).toMatchObject({
+      replayed: false,
+      replacedActiveProfileId: null,
+      profile: { id: first.profile.id, status: "active" },
+    });
+    expect(activationReplay).toEqual({ ...firstActivation, replayed: true });
 
     const second = await createCharacterVoiceClone({
       characterId,
@@ -145,12 +203,45 @@ describe("Character Pocket TTS voice clone authority", () => {
 
     expect(second).toMatchObject({
       replayed: false,
-      replacedProfileId: first.profile.id,
+      replacedCandidateProfileId: null,
       profile: {
         version: 2,
-        status: "active",
+        status: "candidate",
         reference: { filename: "second-reference.mp3" },
       },
+    });
+    expect((await prisma.character.findUniqueOrThrow({
+      where: { id: characterId },
+      select: { voiceId: true },
+    })).voiceId).toBe(first.profile.providerVoiceId);
+    await expect(activateCharacterVoiceProfile({
+      characterId,
+      profileId: second.profile.id,
+      actor: { id: actorId, role: "admin" },
+      idempotencyKey: `voice-activate-stale-${suffix}`,
+      requestId: `voice-activate-request-stale-${suffix}`,
+      request: {
+        reason: "Stale operator review should not win",
+        expectedActiveProfileId: null,
+        expectedCurrentVoiceId: null,
+      },
+    })).rejects.toMatchObject({ status: 409 });
+    const secondActivation = await activateCharacterVoiceProfile({
+      characterId,
+      profileId: second.profile.id,
+      actor: { id: actorId, role: "admin" },
+      idempotencyKey: `voice-activate-second-${suffix}`,
+      requestId: `voice-activate-request-second-${suffix}`,
+      request: {
+        reason: "The replacement preview passed review",
+        expectedActiveProfileId: first.profile.id,
+        expectedCurrentVoiceId: first.profile.providerVoiceId,
+      },
+    });
+    expect(secondActivation).toMatchObject({
+      replayed: false,
+      replacedActiveProfileId: first.profile.id,
+      profile: { id: second.profile.id, status: "active" },
     });
     const [character, profiles] = await Promise.all([
       prisma.character.findUniqueOrThrow({ where: { id: characterId } }),
@@ -168,6 +259,49 @@ describe("Character Pocket TTS voice clone authority", () => {
       { version: 1, status: "archived", archived: true },
       { version: 2, status: "active", archived: false },
     ]);
+    expect(await prisma.adminAuditLog.findMany({
+      where: { actorId },
+      select: { action: true },
+      orderBy: { createdAt: "asc" },
+    })).toEqual([
+      { action: "character.voice_candidate.created" },
+      { action: "character.voice.activated" },
+      { action: "character.voice_candidate.created" },
+      { action: "character.voice.activated" },
+    ]);
+    expect(await prisma.mainOutboxEvent.count({
+      where: { aggregateType: "character", aggregateId: characterId },
+    })).toBe(4);
+  });
+
+  it("isolates concurrent idempotent preparations so a loser cannot delete the winner", async () => {
+    providerState.cloneCalls = 0;
+    providerState.synthesizeCalls = 0;
+    providerState.failSynthesizeCall = 2;
+    providerState.deletedVoiceIds = [];
+    const key = `voice-clone-concurrent-${suffix}`;
+    const request = () => createCharacterVoiceClone({
+      characterId,
+      actor: { id: actorId, role: "admin" },
+      idempotencyKey: key,
+      requestId: randomUUID(),
+      form: cloneForm("concurrent-reference.wav", "Concurrent preview sentence."),
+    });
+
+    const settled = await Promise.allSettled([request(), request()]);
+    const winner = settled.find(
+      (item): item is PromiseFulfilledResult<Awaited<ReturnType<typeof request>>> =>
+        item.status === "fulfilled",
+    );
+    expect(winner).toBeDefined();
+    if (!winner) throw new Error("Expected one concurrent clone to succeed");
+    expect(settled.some((item) => item.status === "rejected")).toBe(true);
+    expect(providerState.deletedVoiceIds).not.toContain(
+      winner.value.profile.providerVoiceId,
+    );
+    expect((await prisma.characterVoiceProfile.findUniqueOrThrow({
+      where: { id: winner.value.profile.id },
+    })).status).toBe("candidate");
   });
 });
 

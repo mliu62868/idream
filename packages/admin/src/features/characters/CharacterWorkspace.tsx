@@ -3529,6 +3529,7 @@ function CharacterDetail({
           />
         ) : tab === "voice" ? (
           <CharacterVoicePanel
+            canActivate={guardedPermissions.publishRelease}
             canWrite={guardedPermissions.writeProject}
             data={data}
             runCommittedMutation={runCommittedMutation}

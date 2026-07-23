@@ -204,6 +204,7 @@ export interface VoiceModelProbeEvidence {
   key?: string | null;
   audioDurationMs?: number;
   voiceCloningAvailable?: boolean | null;
+  voiceCloneVerified?: boolean | null;
   bytes?: number;
   contentType?: string | null;
   loadError?: string;
@@ -979,6 +980,9 @@ function addVoiceModelProbeCheck(
       }
       if (probe.voiceCloningAvailable !== true) {
         problems.push("Pocket TTS probe did not confirm voice cloning model access");
+      }
+      if (probe.voiceCloneVerified !== true) {
+        problems.push("Pocket TTS probe did not complete clone, synthesize, and delete");
       }
     }
     if (!hasMinLength(probe.key ?? undefined, 1)) {

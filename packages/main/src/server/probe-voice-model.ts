@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -23,6 +24,7 @@ type VoiceProbeReport = {
   key: string | null;
   audioDurationMs: number | null;
   voiceCloningAvailable: boolean | null;
+  voiceCloneVerified: boolean | null;
   bytes?: number;
   contentType?: string | null;
   error: { code: string; message: string; retryable?: boolean } | null;
@@ -32,6 +34,7 @@ type StoredBlob = {
   key: string;
   size: number;
   contentType: string;
+  body: Uint8Array;
 };
 
 class ProbeBlobStore implements BlobStore {
@@ -42,6 +45,7 @@ class ProbeBlobStore implements BlobStore {
       key: input.key,
       size: input.body.byteLength,
       contentType: input.contentType,
+      body: input.body,
     };
     return {
       ok: true as const,
@@ -135,6 +139,7 @@ async function runProbe(input: {
   };
   const blob = new ProbeBlobStore();
   let voiceCloningAvailable: boolean | null = null;
+  let voiceCloneVerified: boolean | null = null;
 
   try {
     const voice = createVoiceModel({
@@ -161,6 +166,7 @@ async function runProbe(input: {
         key: null,
         audioDurationMs: null,
         voiceCloningAvailable,
+        voiceCloneVerified,
         error: {
           code: result.error.code,
           message: result.error.message,
@@ -168,14 +174,116 @@ async function runProbe(input: {
         },
       };
     }
+    let synthesized = result.data;
+    if (input.provider === "pocket-tts") {
+      if (
+        voiceCloningAvailable !== true ||
+        !voice.cloneVoice ||
+        !voice.deleteVoice ||
+        !blob.stored?.body
+      ) {
+        return {
+          ...baseReport,
+          ok: false,
+          durationMs: Date.now() - input.startedAt,
+          key: result.data.key,
+          audioDurationMs: result.data.durationMs,
+          voiceCloningAvailable,
+          voiceCloneVerified: false,
+          bytes: blob.stored?.size,
+          contentType: blob.stored?.contentType,
+          error: {
+            code: "voice_clone_unavailable",
+            message: "Pocket TTS did not expose a usable voice-cloning capability",
+            retryable: false,
+          },
+        };
+      }
+      const reference = blob.stored;
+      const probeVoiceId = `idream-probe-${randomUUID()}`;
+      const clone = await voice.cloneVoice({
+        voiceId: probeVoiceId,
+        audio: reference.body,
+        contentType: reference.contentType,
+        filename: "pocket-tts-probe-reference.wav",
+        language: process.env.POCKET_TTS_LANGUAGE ?? "english",
+      });
+      if (!clone.ok) {
+        return {
+          ...baseReport,
+          ok: false,
+          durationMs: Date.now() - input.startedAt,
+          key: result.data.key,
+          audioDurationMs: result.data.durationMs,
+          voiceCloningAvailable,
+          voiceCloneVerified: false,
+          bytes: blob.stored?.size,
+          contentType: blob.stored?.contentType,
+          error: {
+            code: clone.error.code,
+            message: clone.error.message,
+            retryable: clone.error.retryable,
+          },
+        };
+      }
+      let clonedSpeech: Awaited<ReturnType<VoiceModel["synthesize"]>>;
+      let deleted: Awaited<ReturnType<NonNullable<VoiceModel["deleteVoice"]>>>;
+      try {
+        clonedSpeech = await voice.synthesize({
+          text: input.text,
+          voiceId: clone.data.voiceId,
+        });
+      } finally {
+        deleted = await voice.deleteVoice({ voiceId: clone.data.voiceId });
+      }
+      if (!clonedSpeech.ok) {
+        return {
+          ...baseReport,
+          ok: false,
+          durationMs: Date.now() - input.startedAt,
+          key: null,
+          audioDurationMs: null,
+          voiceCloningAvailable,
+          voiceCloneVerified: false,
+          bytes: blob.stored?.size,
+          contentType: blob.stored?.contentType,
+          error: {
+            code: clonedSpeech.error.code,
+            message: clonedSpeech.error.message,
+            retryable: clonedSpeech.error.retryable,
+          },
+        };
+      }
+      if (!deleted.ok) {
+        return {
+          ...baseReport,
+          ok: false,
+          durationMs: Date.now() - input.startedAt,
+          key: clonedSpeech.data.key,
+          audioDurationMs: clonedSpeech.data.durationMs,
+          voiceCloningAvailable,
+          voiceCloneVerified: false,
+          bytes: blob.stored?.size,
+          contentType: blob.stored?.contentType,
+          error: {
+            code: deleted.error.code,
+            message: deleted.error.message,
+            retryable: deleted.error.retryable,
+          },
+        };
+      }
+      synthesized = clonedSpeech.data;
+      voiceCloneVerified = true;
+    }
 
     return {
       ...baseReport,
-      ok: hasText(result.data.key) && result.data.durationMs > 0,
+      ok: hasText(synthesized.key) && synthesized.durationMs > 0,
       durationMs: Date.now() - input.startedAt,
-      key: result.data.key,
-      audioDurationMs: result.data.durationMs,
+      key: synthesized.key,
+      audioDurationMs: synthesized.durationMs,
       voiceCloningAvailable,
+      voiceCloneVerified,
       bytes: blob.stored?.size,
       contentType: blob.stored?.contentType,
       error: null,
@@ -188,6 +296,7 @@ async function runProbe(input: {
       key: null,
       audioDurationMs: null,
       voiceCloningAvailable,
+      voiceCloneVerified,
       error: {
         code: "voice_model_probe_failed",
         message: error instanceof Error ? error.message : String(error),

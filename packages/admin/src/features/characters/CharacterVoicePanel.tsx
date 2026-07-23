@@ -1,10 +1,11 @@
 "use client";
 
 import {
+  characterVoiceActivationResponseSchema,
   characterVoiceCloneCreateResponseSchema,
   type CharacterWorkspaceDetail,
 } from "@idream/shared/admin";
-import { AudioLines, Mic2, Upload } from "lucide-react";
+import { AudioLines, CheckCircle2, Mic2, Upload } from "lucide-react";
 import { useRef, useState, type FormEvent } from "react";
 import { useAdminI18n } from "@/components/admin/i18n";
 import {
@@ -13,7 +14,7 @@ import {
   fieldClass,
   textAreaClass,
 } from "@/features/operations/WorkspaceUi";
-import { adminV2FormRequest } from "@/lib/admin-v2-api";
+import { adminV2FormRequest, adminV2Request } from "@/lib/admin-v2-api";
 
 type RunCommittedMutation = <T>(input: {
   readonly action: string;
@@ -24,10 +25,12 @@ type RunCommittedMutation = <T>(input: {
 export function CharacterVoicePanel({
   data,
   canWrite,
+  canActivate,
   runCommittedMutation,
 }: {
   data: CharacterWorkspaceDetail;
   canWrite: boolean;
+  canActivate: boolean;
   runCommittedMutation: RunCommittedMutation;
 }) {
   const { t, locale } = useAdminI18n();
@@ -37,10 +40,12 @@ export function CharacterVoicePanel({
     `Hello, I’m ${data.character.name}. It’s good to hear from you.`,
   );
   const [reason, setReason] = useState("");
+  const [activationReason, setActivationReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const active = data.voice.activeProfile;
+  const candidate = data.voice.candidateProfile;
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -73,11 +78,47 @@ export function CharacterVoicePanel({
       });
       setMessage(
         mutation.result.replayed
-          ? t("The existing voice clone result was recovered.")
-          : t("The cloned voice is now active for new chat speech."),
+          ? t("The existing voice candidate result was recovered.")
+          : t("The voice candidate is ready. Review its preview before activation."),
       );
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t("Voice cloning failed"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function activateCandidate() {
+    if (!candidate || busy || activationReason.trim().length < 3) return;
+    setBusy(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const mutation = await runCommittedMutation({
+        action: "Activate Pocket TTS voice",
+        commit: () =>
+          adminV2Request(
+            `/api/v2/admin/characters/${encodeURIComponent(data.character.id)}/voice-clones/${encodeURIComponent(candidate.id)}/activate`,
+            {
+              method: "POST",
+              idempotencyKey: crypto.randomUUID(),
+              body: {
+                reason: activationReason.trim(),
+                expectedActiveProfileId: active?.id ?? null,
+                expectedCurrentVoiceId: data.voice.currentVoiceId,
+              },
+              schema: characterVoiceActivationResponseSchema,
+            },
+          ),
+        afterRefresh: () => setActivationReason(""),
+      });
+      setMessage(
+        mutation.result.replayed
+          ? t("The existing voice activation result was recovered.")
+          : t("The reviewed voice is now active for new chat speech."),
+      );
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : t("Voice activation failed"));
     } finally {
       setBusy(false);
     }
@@ -136,6 +177,66 @@ export function CharacterVoicePanel({
         ) : null}
       </section>
 
+      {candidate ? (
+        <section
+          aria-labelledby="voice-candidate-review"
+          className="rounded-xl border border-[var(--ad-blue-border)] bg-[var(--ad-blue-bg)] p-5"
+        >
+          <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--ad-blue-text)]">
+                {t("Candidate preview")}
+              </p>
+              <h3 className="mt-1 text-lg font-semibold" id="voice-candidate-review">
+                {t("Review voice version {version}", { version: candidate.version })}
+              </h3>
+              <p className="mt-2 text-sm text-[var(--ad-text-muted)]">
+                {t("Listen to the preview before changing the live character voice. Creating a candidate never changes Character.voiceId.")}
+              </p>
+            </div>
+            {candidate.preview ? (
+              <audio
+                aria-label={t("Candidate voice preview")}
+                className="w-full md:w-72"
+                controls
+                preload="metadata"
+                src={candidate.preview.url}
+              />
+            ) : null}
+          </div>
+          <div className="mt-4 grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
+            <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
+              {t("Activation reason")}
+              <input
+                className={`${fieldClass} mt-1`}
+                disabled={!canActivate || busy}
+                minLength={3}
+                onChange={(event) => setActivationReason(event.target.value)}
+                value={activationReason}
+              />
+            </label>
+            <WorkspaceButton
+              disabled={
+                !canActivate ||
+                busy ||
+                activationReason.trim().length < 3
+              }
+              onClick={() => void activateCandidate()}
+              tone="primary"
+              type="button"
+            >
+              <CheckCircle2 aria-hidden="true" className="h-4 w-4" />
+              {busy ? t("Activating reviewed voice…") : t("Activate reviewed voice")}
+            </WorkspaceButton>
+          </div>
+          {!canActivate ? (
+            <p className="mt-3 text-xs text-[var(--ad-text-muted)]">
+              {t("Read-only: character.release.publish is required to activate a voice.")}
+            </p>
+          ) : null}
+        </section>
+      ) : null}
+
       <form
         className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-5"
         onSubmit={(event) => void submit(event)}
@@ -145,7 +246,9 @@ export function CharacterVoicePanel({
             <Mic2 aria-hidden="true" className="h-5 w-5" />
           </div>
           <div>
-            <h3 className="font-semibold">{active ? t("Replace cloned voice") : t("Clone a voice")}</h3>
+            <h3 className="font-semibold">
+              {candidate ? t("Replace voice candidate") : t("Create voice candidate")}
+            </h3>
             <p className="mt-1 text-sm text-[var(--ad-text-muted)]">
               {t("Use a clean single-speaker recording. Pocket TTS uses up to the first 30 seconds.")}
             </p>
@@ -224,29 +327,35 @@ export function CharacterVoicePanel({
             ) : (
               <Upload aria-hidden="true" className="h-4 w-4" />
             )}
-            {busy ? t("Cloning and rendering preview…") : t("Clone and activate voice")}
+            {busy ? t("Cloning and rendering preview…") : t("Clone and render preview")}
           </WorkspaceButton>
         </div>
       </form>
 
-      {data.voice.history.length > 1 ? (
+      {data.voice.history.filter((profile) =>
+        profile.id !== active?.id && profile.id !== candidate?.id
+      ).length > 0 ? (
         <section
           aria-labelledby="voice-history"
           className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-5"
         >
           <h3 className="font-semibold" id="voice-history">{t("Voice history")}</h3>
           <div className="mt-4 grid gap-3">
-            {data.voice.history.slice(1).map((profile) => (
-              <article className="rounded-lg bg-[var(--ad-surface-subtle)] p-3 text-sm" key={profile.id}>
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <strong>{t("Voice version {version}", { version: profile.version })}</strong>
-                  <StatusBadge value={profile.status} />
-                </div>
-                <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
-                  {profile.reference.filename} · {new Date(profile.createdAt).toLocaleString(locale === "zh" ? "zh-CN" : "en-US")}
-                </p>
-              </article>
-            ))}
+            {data.voice.history
+              .filter((profile) =>
+                profile.id !== active?.id && profile.id !== candidate?.id
+              )
+              .map((profile) => (
+                <article className="rounded-lg bg-[var(--ad-surface-subtle)] p-3 text-sm" key={profile.id}>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <strong>{t("Voice version {version}", { version: profile.version })}</strong>
+                    <StatusBadge value={profile.status} />
+                  </div>
+                  <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
+                    {profile.reference.filename} · {new Date(profile.createdAt).toLocaleString(locale === "zh" ? "zh-CN" : "en-US")}
+                  </p>
+                </article>
+              ))}
           </div>
         </section>
       ) : null}

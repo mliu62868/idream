@@ -595,6 +595,8 @@ export async function getCharacterWorkspace(characterId: string) {
   if (!character || !project) throw Errors.notFound("Character Project not found");
   const activeVoiceProfile =
     voiceProfiles.find((profile) => profile.status === "active") ?? null;
+  const candidateVoiceProfile =
+    voiceProfiles.find((profile) => profile.status === "candidate") ?? null;
   const voiceCapabilities = env.VOICE_PROVIDER === "pocket-tts"
     ? await providers.voice.inspectCapabilities?.()
     : undefined;
@@ -1110,6 +1112,9 @@ export async function getCharacterWorkspace(characterId: string) {
       currentVoiceId: character.voiceId,
       activeProfile: activeVoiceProfile
         ? characterVoiceProfileDto(activeVoiceProfile)
+        : null,
+      candidateProfile: candidateVoiceProfile
+        ? characterVoiceProfileDto(candidateVoiceProfile)
         : null,
       history: voiceProfiles.map(characterVoiceProfileDto),
     },

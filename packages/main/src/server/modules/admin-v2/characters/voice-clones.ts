@@ -1,5 +1,7 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
+  characterVoiceActivationRequestSchema,
+  characterVoiceActivationResponseSchema,
   characterVoiceCloneCreateRequestSchema,
   characterVoiceCloneCreateResponseSchema,
   characterVoiceProfileSchema,
@@ -102,7 +104,10 @@ export async function createCharacterVoiceClone(input: {
   });
   if (!character) throw Errors.notFound("Character not found");
 
-  const voiceId = deterministicVoiceId(input.actor.id, input.idempotencyKey);
+  // Every external preparation attempt owns a distinct provider voice. The
+  // idempotency receipt decides which attempt wins; losing attempts can then be
+  // cleaned up without deleting the committed voice.
+  const voiceId = `idream-${randomUUID()}`;
   const referenceAssetId = `media_voice_reference_${voiceId}`;
   const previewAssetId = `media_voice_preview_${voiceId}`;
   const profileId = `voice_profile_${voiceId}`;
@@ -177,9 +182,9 @@ export async function createCharacterVoiceClone(input: {
       },
       mutate: async (tx, prepared) => {
         await tx.$queryRaw`SELECT "id" FROM "characters" WHERE "id" = ${input.characterId} FOR UPDATE`;
-        const [current, latest] = await Promise.all([
+        const [currentCandidate, latest] = await Promise.all([
           tx.characterVoiceProfile.findFirst({
-            where: { characterId: input.characterId, status: "active" },
+            where: { characterId: input.characterId, status: "candidate" },
             orderBy: [{ version: "desc" }, { id: "desc" }],
           }),
           tx.characterVoiceProfile.findFirst({
@@ -189,9 +194,9 @@ export async function createCharacterVoiceClone(input: {
           }),
         ]);
         const now = new Date();
-        if (current) {
+        if (currentCandidate) {
           await tx.characterVoiceProfile.update({
-            where: { id: current.id },
+            where: { id: currentCandidate.id },
             data: { status: "archived", archivedAt: now },
           });
         }
@@ -201,7 +206,10 @@ export async function createCharacterVoiceClone(input: {
             ownerId: input.actor.id,
             characterId: input.characterId,
             type: "voice",
-            url: `/api/v1/media/${referenceAssetId}/content`,
+            url: mediaViewUrl(
+              referenceAssetId,
+              extensionFor(input.form.reference.contentType),
+            ),
             storageKey: referenceKey,
             contentType: input.form.reference.contentType,
             visibility: "private",
@@ -222,7 +230,7 @@ export async function createCharacterVoiceClone(input: {
             ownerId: input.actor.id,
             characterId: input.characterId,
             type: "voice",
-            url: `/api/v1/media/${previewAssetId}/content`,
+            url: mediaViewUrl(previewAssetId, ".wav"),
             storageKey: prepared.preview.key,
             contentType: "audio/wav",
             visibility: "private",
@@ -244,7 +252,7 @@ export async function createCharacterVoiceClone(input: {
             providerVoiceId: prepared.cloned.voiceId,
             model: prepared.cloned.model,
             language: prepared.cloned.language,
-            status: "active",
+            status: "candidate",
             referenceAssetId,
             previewAssetId,
             sampleText: input.form.sampleText,
@@ -255,13 +263,41 @@ export async function createCharacterVoiceClone(input: {
             previewAsset: true,
           },
         });
-        await tx.character.update({
-          where: { id: input.characterId },
-          data: { voiceId: prepared.cloned.voiceId },
+        await tx.adminAuditLog.create({
+          data: {
+            actorId: input.actor.id,
+            actorRole: input.actor.role,
+            action: "character.voice_candidate.created",
+            targetType: "character_voice_profile",
+            targetId: profile.id,
+            reason: input.form.reason,
+            after: toInputJson({
+              characterId: input.characterId,
+              profileId: profile.id,
+              version: profile.version,
+              providerVoiceId: profile.providerVoiceId,
+              replacedCandidateProfileId: currentCandidate?.id ?? null,
+            }),
+            requestId: input.requestId,
+          },
+        });
+        await tx.mainOutboxEvent.create({
+          data: {
+            eventType: "character.voice_candidate.created.v2",
+            aggregateType: "character",
+            aggregateId: input.characterId,
+            payload: toInputJson({
+              characterId: input.characterId,
+              profileId: profile.id,
+              version: profile.version,
+              providerVoiceId: profile.providerVoiceId,
+              actorId: input.actor.id,
+            }),
+          },
         });
         return {
           profile: characterVoiceProfileDto(profile),
-          replacedProfileId: current?.id ?? null,
+          replacedCandidateProfileId: currentCandidate?.id ?? null,
         };
       },
       decorateResult: (result, replayed) => ({
@@ -272,24 +308,162 @@ export async function createCharacterVoiceClone(input: {
     mutationCompleted = true;
     const parsed = characterVoiceCloneCreateResponseSchema.parse(result);
     if (parsed.replayed && preparedArtifacts.previewKey) {
-      await providers.blob.delete({ key: preparedArtifacts.previewKey });
+      await cleanupPreparedArtifacts({
+        voice,
+        preparedArtifacts,
+        referenceKey,
+      });
     }
     return parsed;
   } catch (cause) {
     if (!mutationCompleted && preparedArtifacts.voiceId) {
-      const cleanup: Promise<unknown>[] = [];
-      const voiceCleanup = voice.deleteVoice?.({ voiceId: preparedArtifacts.voiceId });
-      if (voiceCleanup) cleanup.push(voiceCleanup);
-      if (preparedArtifacts.previewKey) {
-        cleanup.push(providers.blob.delete({ key: preparedArtifacts.previewKey }));
-      }
-      if (preparedArtifacts.referenceStored) {
-        cleanup.push(providers.blob.delete({ key: referenceKey }));
-      }
-      await Promise.allSettled(cleanup);
+      await cleanupPreparedArtifacts({
+        voice,
+        preparedArtifacts,
+        referenceKey,
+      });
     }
     throw cause;
   }
+}
+
+export async function activateCharacterVoiceProfile(input: {
+  characterId: string;
+  profileId: string;
+  actor: AdminActor;
+  idempotencyKey: string;
+  requestId: string;
+  request: unknown;
+}) {
+  const request = characterVoiceActivationRequestSchema.parse(input.request);
+  const result = await executeAtomicIdempotentMutation({
+    environment: env.APP_ENV,
+    actor: input.actor,
+    idempotencyKey: input.idempotencyKey,
+    requestId: input.requestId,
+    commandType: "character.voice.activate",
+    target: { type: "character_voice_profile", id: input.profileId },
+    payload: {
+      characterId: input.characterId,
+      profileId: input.profileId,
+      ...request,
+    },
+    mutate: async (tx) => {
+      const lockedCharacters = await tx.$queryRaw<Array<{
+        id: string;
+        voiceId: string | null;
+      }>>`SELECT "id", "voiceId" FROM "characters" WHERE "id" = ${input.characterId} FOR UPDATE`;
+      const lockedCharacter = lockedCharacters[0];
+      if (!lockedCharacter) throw Errors.notFound("Character not found");
+      const [candidate, current] = await Promise.all([
+        tx.characterVoiceProfile.findFirst({
+          where: {
+            id: input.profileId,
+            characterId: input.characterId,
+            status: "candidate",
+          },
+          include: {
+            referenceAsset: true,
+            previewAsset: true,
+          },
+        }),
+        tx.characterVoiceProfile.findFirst({
+          where: { characterId: input.characterId, status: "active" },
+          orderBy: [{ version: "desc" }, { id: "desc" }],
+        }),
+      ]);
+      if (!candidate) {
+        throw Errors.conflict("Voice profile is no longer an activatable candidate", {
+          characterId: input.characterId,
+          profileId: input.profileId,
+        });
+      }
+      if ((current?.id ?? null) !== request.expectedActiveProfileId) {
+        throw Errors.conflict("Active voice changed while this candidate was under review", {
+          expectedActiveProfileId: request.expectedActiveProfileId,
+          currentActiveProfileId: current?.id ?? null,
+        });
+      }
+      if (lockedCharacter.voiceId !== request.expectedCurrentVoiceId) {
+        throw Errors.conflict("Character voice pointer changed while this candidate was under review", {
+          expectedCurrentVoiceId: request.expectedCurrentVoiceId,
+          currentVoiceId: lockedCharacter.voiceId,
+        });
+      }
+      if (current && lockedCharacter.voiceId !== current.providerVoiceId) {
+        throw Errors.conflict("Active voice profile and character voice pointer disagree", {
+          activeProfileId: current.id,
+          activeProfileVoiceId: current.providerVoiceId,
+          currentVoiceId: lockedCharacter.voiceId,
+        });
+      }
+      const now = new Date();
+      if (current) {
+        await tx.characterVoiceProfile.update({
+          where: { id: current.id },
+          data: { status: "archived", archivedAt: now },
+        });
+      }
+      const activated = await tx.characterVoiceProfile.update({
+        where: { id: candidate.id },
+        data: { status: "active", archivedAt: null },
+        include: {
+          referenceAsset: true,
+          previewAsset: true,
+        },
+      });
+      await tx.character.update({
+        where: { id: input.characterId },
+        data: { voiceId: activated.providerVoiceId },
+      });
+      await tx.adminAuditLog.create({
+        data: {
+          actorId: input.actor.id,
+          actorRole: input.actor.role,
+          action: "character.voice.activated",
+          targetType: "character_voice_profile",
+          targetId: activated.id,
+          reason: request.reason,
+          before: toInputJson({
+            characterId: input.characterId,
+            activeProfileId: current?.id ?? null,
+            providerVoiceId: current?.providerVoiceId ?? null,
+          }),
+          after: toInputJson({
+            characterId: input.characterId,
+            activeProfileId: activated.id,
+            providerVoiceId: activated.providerVoiceId,
+            version: activated.version,
+          }),
+          requestId: input.requestId,
+        },
+      });
+      await tx.mainOutboxEvent.create({
+        data: {
+          eventType: "character.voice.activated.v2",
+          aggregateType: "character",
+          aggregateId: input.characterId,
+          payload: toInputJson({
+            characterId: input.characterId,
+            profileId: activated.id,
+            providerVoiceId: activated.providerVoiceId,
+            version: activated.version,
+            replacedActiveProfileId: current?.id ?? null,
+            actorId: input.actor.id,
+          }),
+        },
+      });
+      return {
+        profile: characterVoiceProfileDto(activated),
+        replacedActiveProfileId: current?.id ?? null,
+      };
+    },
+    decorateResult: (value, replayed) => ({
+      ...(value as Record<string, unknown>),
+      replayed,
+    }),
+  });
+  return characterVoiceActivationResponseSchema.parse(result);
 }
 
 export function characterVoiceProfileDto(profile: VoiceProfileWithAssets): CharacterVoiceProfile {
@@ -334,12 +508,34 @@ export function characterVoiceProfileDto(profile: VoiceProfileWithAssets): Chara
   });
 }
 
-function deterministicVoiceId(actorId: string, idempotencyKey: string) {
-  const digest = createHash("sha256")
-    .update(`${env.APP_ENV}:${actorId}:${idempotencyKey}`)
-    .digest("hex")
-    .slice(0, 32);
-  return `idream-${digest}`;
+async function cleanupPreparedArtifacts(input: {
+  voice: typeof providers.voice;
+  preparedArtifacts: {
+    voiceId: string | null;
+    previewKey: string | null;
+    referenceStored: boolean;
+  };
+  referenceKey: string;
+}) {
+  const cleanup: Promise<unknown>[] = [];
+  if (input.preparedArtifacts.voiceId) {
+    const voiceCleanup = input.voice.deleteVoice?.({
+      voiceId: input.preparedArtifacts.voiceId,
+    });
+    if (voiceCleanup) cleanup.push(voiceCleanup);
+  }
+  if (input.preparedArtifacts.previewKey) {
+    cleanup.push(providers.blob.delete({ key: input.preparedArtifacts.previewKey }));
+  }
+  if (input.preparedArtifacts.referenceStored) {
+    cleanup.push(providers.blob.delete({ key: input.referenceKey }));
+  }
+  await Promise.allSettled(cleanup);
+}
+
+function mediaViewUrl(assetId: string, extension: string) {
+  const token = Buffer.from(assetId, "utf8").toString("base64url");
+  return `/user-content/${token}/content${extension}`;
 }
 
 function stringField(form: FormData, key: string) {

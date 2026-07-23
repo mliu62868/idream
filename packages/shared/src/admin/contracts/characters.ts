@@ -1385,7 +1385,7 @@ export const characterVoiceProfileSchema = z
     providerVoiceId: z.string().trim().min(1),
     model: z.string().trim().min(1),
     language: z.string().trim().min(1),
-    status: z.enum(["active", "archived", "failed"]),
+    status: z.enum(["candidate", "active", "archived", "failed"]),
     reference: z
       .object({
         assetId: adminIdSchema,
@@ -1422,6 +1422,7 @@ export const characterVoiceWorkspaceSchema = z
     runtimeLanguage: z.string().trim().min(1),
     currentVoiceId: z.string().nullable(),
     activeProfile: characterVoiceProfileSchema.nullable(),
+    candidateProfile: characterVoiceProfileSchema.nullable(),
     history: z.array(characterVoiceProfileSchema).readonly(),
   })
   .strict();
@@ -1429,7 +1430,23 @@ export const characterVoiceWorkspaceSchema = z
 export const characterVoiceCloneCreateResponseSchema = z
   .object({
     profile: characterVoiceProfileSchema,
-    replacedProfileId: adminIdSchema.nullable(),
+    replacedCandidateProfileId: adminIdSchema.nullable(),
+    replayed: z.boolean(),
+  })
+  .strict();
+
+export const characterVoiceActivationRequestSchema = z
+  .object({
+    reason: z.string().trim().min(3).max(2_000),
+    expectedActiveProfileId: adminIdSchema.nullable(),
+    expectedCurrentVoiceId: z.string().trim().min(1).nullable(),
+  })
+  .strict();
+
+export const characterVoiceActivationResponseSchema = z
+  .object({
+    profile: characterVoiceProfileSchema,
+    replacedActiveProfileId: adminIdSchema.nullable(),
     replayed: z.boolean(),
   })
   .strict();
@@ -1516,6 +1533,12 @@ export type CharacterVoiceCloneCreateRequest = z.infer<
 >;
 export type CharacterVoiceCloneCreateResponse = z.infer<
   typeof characterVoiceCloneCreateResponseSchema
+>;
+export type CharacterVoiceActivationRequest = z.infer<
+  typeof characterVoiceActivationRequestSchema
+>;
+export type CharacterVoiceActivationResponse = z.infer<
+  typeof characterVoiceActivationResponseSchema
 >;
 export type CharacterReferenceSetPublishRequest = z.infer<typeof characterReferenceSetPublishRequestSchema>;
 export type CharacterLookArchiveRequest = z.infer<typeof characterLookArchiveRequestSchema>;
