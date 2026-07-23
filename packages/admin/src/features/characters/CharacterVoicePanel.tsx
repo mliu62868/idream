@@ -213,7 +213,9 @@ export function CharacterVoicePanel({
               <input
                 className={`${fieldClass} mt-1`}
                 disabled={!canActivate || !activationProviderAvailable || busy}
+                id="character-voice-activation-reason"
                 minLength={3}
+                name="activationReason"
                 onChange={(event) => setActivationReason(event.target.value)}
                 value={activationReason}
               />
@@ -275,6 +277,8 @@ export function CharacterVoicePanel({
               accept=".wav,.mp3,.flac,.ogg,audio/wav,audio/mpeg,audio/flac,audio/ogg"
               className={`${fieldClass} mt-1 file:mr-3 file:rounded file:border-0 file:bg-[var(--ad-surface-subtle)] file:px-3 file:py-2 file:text-xs file:font-semibold`}
               disabled={!canWrite || !data.voice.cloningAvailable || busy}
+              id="character-voice-reference"
+              name="audio"
               onChange={(event) => setFile(event.target.files?.[0] ?? null)}
               ref={fileInput}
               required
@@ -289,8 +293,10 @@ export function CharacterVoicePanel({
             <textarea
               className={`${textAreaClass} mt-1`}
               disabled={!canWrite || busy}
+              id="character-voice-preview-script"
               maxLength={500}
               minLength={3}
+              name="sampleText"
               onChange={(event) => setSampleText(event.target.value)}
               required
               value={sampleText}
@@ -301,7 +307,9 @@ export function CharacterVoicePanel({
             <input
               className={`${fieldClass} mt-1`}
               disabled={!canWrite || busy}
+              id="character-voice-change-reason"
               minLength={3}
+              name="reason"
               onChange={(event) => setReason(event.target.value)}
               required
               value={reason}
