@@ -160,6 +160,142 @@ describe("Character Asset Studio bootstrap route projection", () => {
     expect(generate).toBeDefined();
     expect(generate?.disabled).toBe(true);
     expect(container.textContent).not.toContain("Complete visual setup");
+    expect(container.textContent).not.toContain("New image batch");
+  });
+
+  it("opens ready characters in the recurring image library with a new-batch composer", async () => {
+    const readyData = {
+      ...data,
+      character: {
+        ...data.character,
+        id: "character-ready-library",
+        name: "Alexa Reeves",
+        imageUrl: "/alexa.webp",
+      },
+      project: {
+        ...data.project,
+        draftAssetRouteAuthority: {
+          status: "current",
+          missingPurposes: [],
+          stalePurposes: [],
+          blockers: [],
+        },
+      },
+      preview: {
+        ...data.preview,
+        draft: {
+          ...data.preview.draft,
+          name: "Alexa Reeves",
+          imageUrl: "/alexa.webp",
+        },
+      },
+      visual: {
+        ...data.visual,
+        activeIdentity: {
+          id: "identity-alexa-v1",
+          version: 1,
+          immutableHash: "identity-alexa-v1-hash",
+        },
+        identityBootstrap: {
+          state: "blocked_existing_authority",
+          allowed: false,
+          nextIdentityVersion: 2,
+          blockers: ["grounded_or_unknown_identity_history_exists"],
+          profile: null,
+        },
+        readiness: { ...data.visual.readiness, ready: true, blockers: [] },
+        routeQualifications: [{
+          id: "qualification-alexa",
+          generationProfileKey: "profile-alexa",
+          result: "qualified",
+          stale: false,
+          sourceVariationAuthority: { ready: true },
+        }],
+      },
+    } as unknown as CharacterWorkspaceDetail;
+
+    await act(async () => root.render(<CharacterAssetStudio
+      commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
+      data={readyData}
+      onContinue={() => undefined}
+      onProjectReload={async () => undefined}
+      permissions={{ read: true, create: true, review: true, selectDraft: true }}
+    />));
+    await waitUntil(() => container.textContent?.includes("New image batch") === true);
+
+    expect(container.textContent).toContain("Image purpose filters");
+    expect(container.textContent).toContain("Image library");
+    expect(container.textContent).toContain("The locked visual identity stays unchanged.");
+    expect(container.textContent).not.toContain("Adjust the creative brief");
+    const generate = [...container.querySelectorAll("button")]
+      .find((button) => button.textContent?.includes("Generate 6 portraits"));
+    expect(generate?.disabled).toBe(false);
+  });
+
+  it("explains live-portrait enablement and keeps a failed repair beside the action", async () => {
+    const repairableData = {
+      ...data,
+      character: {
+        ...data.character,
+        id: "character-repairable-live-portrait",
+        name: "Alexa Reeves",
+        imageUrl: "/alexa.webp",
+      },
+      visual: {
+        ...data.visual,
+        identityBootstrap: {
+          state: "blocked_existing_authority",
+          allowed: false,
+          nextIdentityVersion: 1,
+          blockers: ["live_portrait_available"],
+          profile: null,
+        },
+        readiness: {
+          ...data.visual.readiness,
+          ready: false,
+          blockers: [{
+            code: "identity_missing",
+            message: "No immutable Visual Identity version is pinned.",
+          }],
+        },
+        imageReadiness: {
+          state: "repairable",
+          fingerprint: "repairable-live-portrait-fingerprint",
+          repair: {
+            kind: "adopt_live_portrait",
+            sourceAssetId: "alexa-live-portrait",
+          },
+        },
+      },
+    } as unknown as CharacterWorkspaceDetail;
+    adminV2Request.mockImplementation(async (path) => {
+      if (path.includes("/image-readiness/repair")) {
+        throw new Error("Admin authority request failed (500)");
+      }
+      return { items: [], pageInfo: { endCursor: null, hasNextPage: false } };
+    });
+
+    await act(async () => root.render(<CharacterAssetStudio
+      commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
+      data={repairableData}
+      onContinue={() => undefined}
+      onProjectReload={async () => undefined}
+      permissions={{ read: true, create: true, review: true, selectDraft: true }}
+    />));
+    await waitUntil(() => container.textContent?.includes("Use existing portrait") === true);
+
+    const enable = [...container.querySelectorAll("button")]
+      .find((button) => button.textContent?.includes("Use existing portrait"));
+    expect(enable).toBeDefined();
+    await act(async () => enable?.click());
+    await waitUntil(() => container.textContent?.includes(
+      "Image production could not be enabled. Your live images were not changed. Try again.",
+    ) === true);
+
+    const alert = container.querySelector('[role="alert"]');
+    expect(alert).not.toBeNull();
+    expect(container.firstElementChild?.firstElementChild).toBe(alert);
+    expect(container.textContent).not.toContain("Admin authority request failed (500)");
   });
 
   it("direct-loads and releases an exact committed Run after it falls outside the recent 20", async () => {
@@ -589,7 +725,11 @@ describe("Character Asset Studio bootstrap route projection", () => {
       onProjectReload={async () => undefined}
       permissions={{ read: true, create: true, review: true, selectDraft: true }}
     />));
-    await waitUntil(() => container.textContent?.includes("Candidate 1") === true);
+    await waitUntil(() => container.textContent?.includes("Current candidate") === true);
+    const openCandidate = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.getAttribute("aria-label") === "View candidate 1");
+    await act(async () => openCandidate?.click());
+    await waitUntil(() => container.textContent?.includes("More like this") === true);
 
     const blockedButton = [...container.querySelectorAll("button")]
       .find((button) => button.textContent?.includes("More like this"));
@@ -795,7 +935,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
     />));
     await waitUntil(() => container.textContent?.includes("Regenerate under current route") === true);
     expect(container.textContent).toContain("remain in history but cannot authorize QA");
-    expect(container.textContent).toContain("regenerate");
+    expect(container.textContent).toContain("New image batch");
 
     const regenerate = [...container.querySelectorAll("button")]
       .find((button) => button.textContent?.includes("Regenerate under current route"));

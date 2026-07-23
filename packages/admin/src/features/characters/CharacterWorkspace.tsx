@@ -23,7 +23,7 @@ import {
   type CharacterQaCheckInput,
   type CharacterWorkspaceDetail,
 } from "@idream/shared/admin";
-import { ArrowLeft, Clock3, ImageIcon, Plus, RefreshCcw, Rocket, RotateCcw, Save, ShieldAlert } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, Clock3, ImageIcon, LockKeyhole, Plus, RefreshCcw, Rocket, RotateCcw, Save, ShieldAlert } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { AdminSubview } from "@/components/admin/nav-config";
 import {
@@ -79,6 +79,197 @@ type ProjectDraft = Pick<CharacterWorkspaceDetail["project"],
   "targetPlacementKeys" | "successCriteria" | "productionPackage" | "qaPlan" | "plannedLaunchAt">;
 
 type Tab = CharacterWorkspaceTab;
+
+const characterWorkspaceTabLabels: Record<Tab, string> = {
+  project: "Overview",
+  visual: "Visual identity",
+  assets: "Image assets",
+  preview: "Launch preview",
+  release: "Release",
+  monitor: "Monitor",
+  portfolio: "Performance",
+};
+
+export function characterWorkspaceTabLabel(tab: Tab) {
+  return characterWorkspaceTabLabels[tab];
+}
+
+export type CharacterProductionEntry = {
+  readonly activeStep: 1 | 2 | 3 | 4 | 5;
+  readonly status: string;
+  readonly title: string;
+  readonly description: string;
+  readonly action: string;
+  readonly tab: Exclude<Tab, "project" | "portfolio">;
+};
+
+export function resolveCharacterProductionEntry(
+  data: CharacterWorkspaceDetail,
+): CharacterProductionEntry {
+  if (data.visual.identityBootstrap.allowed) {
+    return {
+      activeStep: 1,
+      status: "First-time setup",
+      title: "Create the first identity portrait",
+      description:
+        "Define the face customers will recognize, review it, and lock it as the reusable identity baseline.",
+      action: "Open first portrait setup",
+      tab: "assets",
+    };
+  }
+  if (!data.visual.readiness.ready) {
+    if (
+      data.serving?.state === "live" &&
+      data.character.imageUrl &&
+      data.visual.imageReadiness?.state === "repairable"
+    ) {
+      return {
+        activeStep: 1,
+        status: "Enable image production",
+        title: "Use the current live portrait for future image batches",
+        description:
+          "Seal the existing live portrait as the reusable identity reference. Current live images and releases will not change.",
+        action: "Use current portrait",
+        tab: "assets",
+      };
+    }
+    return {
+      activeStep: 1,
+      status: "Image production blocked",
+      title: "Finish visual setup before creating more images",
+      description:
+        "Repair the identity, reference set, or image route that currently blocks consistent generation.",
+      action: "Continue visual setup",
+      tab: "visual",
+    };
+  }
+  const missingPurposes = data.project.draftAssetRouteAuthority?.missingPurposes ?? [];
+  if (missingPurposes.length > 0) {
+    return {
+      activeStep: 2,
+      status: "Image pack in progress",
+      title: "Continue the character image asset pack",
+      description:
+        "Create, review, and adopt the remaining portrait, hero, or chat images without changing the locked identity.",
+      action: "Continue creating images",
+      tab: "assets",
+    };
+  }
+  if (data.serving?.state === "live") {
+    return {
+      activeStep: 2,
+      status: "Ready for ongoing image production",
+      title: "Create more images for this character",
+      description:
+        "The identity and image route are locked. Start another focused batch without repeating first-time setup.",
+      action: "Create more images",
+      tab: "assets",
+    };
+  }
+  const releaseCandidate = data.releases.find(({ release }) =>
+    !["published", "superseded", "withdrawn"].includes(release.status)
+  );
+  if (releaseCandidate) {
+    return {
+      activeStep: 4,
+      status: "Release in progress",
+      title: "Finish the current release decision",
+      description:
+        "Review the exact QA and release evidence before changing the live character.",
+      action: "Open release",
+      tab: "release",
+    };
+  }
+  return {
+    activeStep: 3,
+    status: "Ready for launch review",
+    title: "Preview the draft before release",
+    description:
+      "Check the customer-facing character and image placements before recording QA and proposing a release.",
+    action: "Open launch preview",
+    tab: "preview",
+  };
+}
+
+const characterProductionSteps = [
+  { label: "Lock visual identity", tab: "visual" },
+  { label: "Create image assets", tab: "assets" },
+  { label: "Review launch preview", tab: "preview" },
+  { label: "Publish a release", tab: "release" },
+  { label: "Monitor the live character", tab: "monitor" },
+] as const satisfies readonly {
+  label: string;
+  tab: CharacterProductionEntry["tab"];
+}[];
+
+function CharacterProductionOverview({
+  data,
+  onNavigate,
+}: {
+  data: CharacterWorkspaceDetail;
+  onNavigate: (tab: CharacterWorkspaceTab) => void;
+}) {
+  const { t } = useAdminI18n();
+  const entry = resolveCharacterProductionEntry(data);
+  const live = data.serving?.state === "live";
+
+  return (
+    <section aria-labelledby="character-production-next-action">
+      <div className="overflow-hidden rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)]">
+        <div className="grid gap-6 p-5 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end lg:p-6">
+          <div>
+            <div className="inline-flex items-center gap-2 rounded-full bg-[var(--ad-green-bg)] px-3 py-1 text-xs font-semibold text-[var(--ad-green-text)]">
+              {live ? <LockKeyhole aria-hidden="true" className="h-3.5 w-3.5" /> : <Clock3 aria-hidden="true" className="h-3.5 w-3.5" />}
+              {t(entry.status)}
+            </div>
+            <h3 className="mt-4 text-xl font-semibold" id="character-production-next-action">
+              {t(entry.title)}
+            </h3>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--ad-text-muted)]">
+              {t(entry.description)}
+            </p>
+          </div>
+          <WorkspaceButton onClick={() => onNavigate(entry.tab)} tone="primary">
+            {t(entry.action)} <ArrowRight aria-hidden="true" className="h-4 w-4" />
+          </WorkspaceButton>
+        </div>
+        <ol aria-label={t("Character production workflow")} className="grid border-t border-[var(--ad-border)] md:grid-cols-5">
+          {characterProductionSteps.map((step, index) => {
+            const stepNumber = index + 1;
+            const complete = stepNumber < entry.activeStep;
+            const current = stepNumber === entry.activeStep;
+            return (
+              <li className="border-b border-[var(--ad-border)] p-4 last:border-b-0 md:border-b-0 md:border-r md:last:border-r-0" key={step.tab}>
+                <button
+                  className="flex min-h-11 w-full items-center gap-3 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]"
+                  onClick={() => onNavigate(step.tab)}
+                  type="button"
+                >
+                  <span className={cn(
+                    "grid h-7 w-7 shrink-0 place-items-center rounded-full border text-xs font-semibold",
+                    complete
+                      ? "border-[var(--ad-green-text)] bg-[var(--ad-green-text)] text-white"
+                      : current
+                        ? "border-[var(--ad-ink)] text-[var(--ad-ink)]"
+                        : "border-[var(--ad-border)] text-[var(--ad-text-muted)]",
+                  )}>
+                    {complete ? <Check aria-hidden="true" className="h-3.5 w-3.5" /> : stepNumber}
+                  </span>
+                  <span className="min-w-0">
+                    <strong className="block text-xs">{t(step.label)}</strong>
+                    <span className="mt-1 block text-[11px] text-[var(--ad-text-muted)]">
+                      {t(complete ? "Completed" : current ? "Current step" : live ? "Available when needed" : "Upcoming")}
+                    </span>
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+        </ol>
+      </div>
+    </section>
+  );
+}
 
 type CharacterMutationNotice =
   | {
@@ -691,6 +882,89 @@ export function CharacterPortfolioVisual({
     : <div className="w-24">{content}</div>;
 }
 
+type CharacterPortfolioPrimaryAction = {
+  readonly description: string;
+  readonly eyebrow: string;
+  readonly href: string;
+  readonly label: string;
+  readonly requiresAssets: boolean;
+};
+
+const characterPortfolioPrimaryActionCopy: Record<
+  Exclude<CharacterPortfolioItem["nextAction"]["code"], "monitor_live_character">,
+  Omit<CharacterPortfolioPrimaryAction, "href">
+> = {
+  create_primary_portrait: {
+    description: "Start here: lock the face once, then reuse it for every image batch.",
+    eyebrow: "First-time setup",
+    label: "Create first identity portrait",
+    requiresAssets: true,
+  },
+  prepare_image_production: {
+    description: "Use the existing live portrait once, then create future image batches without changing the live character.",
+    eyebrow: "Enable image production",
+    label: "Use existing portrait",
+    requiresAssets: true,
+  },
+  complete_image_route: {
+    description: "The identity portrait is locked. Activate a compatible image route before creating batches.",
+    eyebrow: "Image route setup",
+    label: "Complete image route setup",
+    requiresAssets: false,
+  },
+  continue_image_run: {
+    description: "Return to the latest unfinished batch without starting over.",
+    eyebrow: "Batch in progress",
+    label: "Continue last batch",
+    requiresAssets: true,
+  },
+  continue_asset_pack: {
+    description: "Complete the portrait, hero, and chat image set.",
+    eyebrow: "Image pack in progress",
+    label: "Continue filling image pack",
+    requiresAssets: true,
+  },
+  run_preview_qa: {
+    description: "Check the customer-facing draft before publishing.",
+    eyebrow: "Ready for launch review",
+    label: "Review launch preview",
+    requiresAssets: false,
+  },
+  review_candidate_release: {
+    description: "Confirm the candidate version and release evidence.",
+    eyebrow: "Release in progress",
+    label: "Continue release review",
+    requiresAssets: false,
+  },
+};
+
+export function resolveCharacterPortfolioPrimaryAction(
+  item: CharacterPortfolioItem,
+  mode: "studio" | "performance",
+): CharacterPortfolioPrimaryAction {
+  if (item.nextAction.code === "monitor_live_character") {
+    return mode === "studio"
+      ? {
+          description: "Start a new batch without repeating first-time setup.",
+          eyebrow: "Ongoing production",
+          href: item.visualProduction.deepLink,
+          label: "Create more images",
+          requiresAssets: true,
+        }
+      : {
+          description: "Open live monitoring and performance evidence.",
+          eyebrow: "Live character",
+          href: item.nextAction.deepLink,
+          label: "Review live character",
+          requiresAssets: false,
+        };
+  }
+  return {
+    ...characterPortfolioPrimaryActionCopy[item.nextAction.code],
+    href: item.nextAction.deepLink,
+  };
+}
+
 export function CharacterPortfolioCard({
   canOpenAssets,
   canOpenProject,
@@ -707,14 +981,10 @@ export function CharacterPortfolioCard({
   const performance = item.performance.find((metric) => metric.window === "28d" && metric.placementId === null)
     ?? item.performance.find((metric) => metric.window === "28d")
     ?? null;
-  const nextActionNeedsAssets = [
-    "create_primary_portrait",
-    "prepare_image_production",
-    "continue_asset_pack",
-  ].includes(item.nextAction.code);
+  const primaryAction = resolveCharacterPortfolioPrimaryAction(item, mode);
   const canOpenNextAction =
-    canOpenProject && (!nextActionNeedsAssets || canOpenAssets);
-  const className = "grid gap-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 transition-colors sm:grid-cols-[96px_1fr_auto]";
+    canOpenProject && (!primaryAction.requiresAssets || canOpenAssets);
+  const className = "grid gap-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 transition-colors md:grid-cols-[96px_minmax(0,1fr)_minmax(220px,280px)]";
   return (
     <article className={className}>
       <CharacterPortfolioVisual
@@ -746,19 +1016,24 @@ export function CharacterPortfolioCard({
           </p>
         ) : null}
       </div>
-      <div className="self-center text-right text-xs text-[var(--ad-text-muted)]">
+      <div className="self-center rounded-lg border border-[var(--ad-border)] bg-black/[0.02] p-3 text-left text-xs text-[var(--ad-text-muted)]">
+        <p className="font-semibold uppercase tracking-[0.14em]">
+          {t(primaryAction.eyebrow)}
+        </p>
         {canOpenNextAction
           ? (
               <Link
-                className="inline-block font-semibold text-[var(--ad-ink)] hover:underline"
-                href={item.nextAction.deepLink}
+                className="mt-1 inline-flex min-h-8 items-center gap-1.5 text-sm font-semibold text-[var(--ad-ink)] hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]"
+                href={primaryAction.href}
               >
-                {item.nextAction.label} →
+                {t(primaryAction.label)}
+                <ArrowRight aria-hidden="true" className="h-4 w-4" />
               </Link>
             )
-          : <span className="inline-block font-semibold">{t("Performance only")}</span>}
+          : <span className="mt-1 block font-semibold text-[var(--ad-ink)]">{t(performanceMode ? "Performance only" : "Image access required")}</span>}
+        <p className="mt-1 leading-5">{t(primaryAction.description)}</p>
         {performanceMode && item.latestDecision ? (
-          <span className="mt-1 block">
+          <span className="mt-2 block border-t border-[var(--ad-border)] pt-2">
 
             {t("Latest decision:")} {item.latestDecision.decision}
           </span>
@@ -929,8 +1204,9 @@ function CharacterPortfolio({
   );
 }
 
-function ProjectEditor({ data, permissions, onReload, runCommittedMutation }: {
+function ProjectEditor({ data, onNavigate, permissions, onReload, runCommittedMutation }: {
   data: CharacterWorkspaceDetail;
+  onNavigate: (tab: CharacterWorkspaceTab) => void;
   permissions: Permissions;
   onReload: () => Promise<void>;
   runCommittedMutation: RunCommittedCharacterMutation;
@@ -992,8 +1268,14 @@ function ProjectEditor({ data, permissions, onReload, runCommittedMutation }: {
   const set = <K extends keyof ProjectDraft>(key: K, value: ProjectDraft[K]) => setDraft((current) => ({ ...current, [key]: value }));
   const disabled = !permissions.writeProject;
   return (
-    <div className="grid gap-5 xl:grid-cols-[1fr_320px]">
-      <fieldset className="grid gap-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 sm:grid-cols-2" disabled={disabled}>
+    <div className="space-y-5">
+      <CharacterProductionOverview data={data} onNavigate={onNavigate} />
+      <details className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)]">
+        <summary className="cursor-pointer px-4 py-4 text-sm font-semibold sm:px-5">
+          {t("Character positioning and project details")}
+        </summary>
+        <div className="grid gap-5 border-t border-[var(--ad-border)] p-4 sm:p-5 xl:grid-cols-[1fr_320px]">
+      <fieldset className="grid gap-4 sm:grid-cols-2" disabled={disabled}>
         <legend className="px-2 text-sm font-semibold">{t("Strategy and release intent")}</legend>
         <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Owner ID")}<input className={`${fieldClass} mt-1`} onChange={(event) => set("ownerId", event.target.value || null)} value={draft.ownerId ?? ""} /></label>
         <label className="text-xs font-semibold text-[var(--ad-text-muted)] sm:col-span-2">{t("Audience")}<textarea className={`${textAreaClass} mt-1`} onChange={(event) => set("audience", event.target.value)} value={draft.audience} /></label>
@@ -1006,16 +1288,21 @@ function ProjectEditor({ data, permissions, onReload, runCommittedMutation }: {
         <label className="text-xs font-semibold text-[var(--ad-text-muted)] sm:col-span-2">{t("Production package")}<textarea className={`${textAreaClass} mt-1`} onChange={(event) => set("productionPackage", event.target.value)} value={draft.productionPackage} /></label>
         <label className="text-xs font-semibold text-[var(--ad-text-muted)] sm:col-span-2">{t("QA plan")}<textarea className={`${textAreaClass} mt-1`} onChange={(event) => set("qaPlan", event.target.value)} value={draft.qaPlan} /></label>
       </fieldset>
-      <aside className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
+      <aside className="rounded-xl border border-[var(--ad-border)] bg-black/[0.02] p-4">
         <p className="text-xs font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">{t("Server draft")}</p>
         <div className="mt-4 flex items-center gap-2" role="status"><Save className="h-4 w-4" /><strong>{disabled ? t("Read only") : state}</strong></div>
         <p className="mt-2 text-xs text-[var(--ad-text-muted)]">{t("Project revision")} {data.project.version}{t(". Autosave uses If-Match; conflicts never overwrite a newer revision.")}</p>
         {message ? <p className="mt-4 rounded-md bg-[var(--ad-yellow-bg)] p-3 text-xs text-[var(--ad-yellow-text)]" role={state === "Failed to save" ? "alert" : "status"}>{message}</p> : null}
         {state === "Conflict" ? <div className="mt-3"><WorkspaceButton onClick={() => void onReload().catch(() => undefined)}><RefreshCcw className="h-4 w-4" />  {t("Load server revision")}</WorkspaceButton></div> : null}
       </aside>
-      <div className="xl:col-span-2">
-        <CollaborationPanel canWrite={permissions.writeProject} targetId={data.project.id} targetType="character_project" targetVersion={data.project.version} />
-      </div>
+        </div>
+      </details>
+      <details className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)]">
+        <summary className="cursor-pointer px-4 py-4 text-sm font-semibold sm:px-5">{t("Project collaboration")}</summary>
+        <div className="border-t border-[var(--ad-border)] p-4 sm:p-5">
+          <CollaborationPanel canWrite={permissions.writeProject} targetId={data.project.id} targetType="character_project" targetVersion={data.project.version} />
+        </div>
+      </details>
     </div>
   );
 }
@@ -3072,16 +3359,26 @@ function CharacterDetail({
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
     if (mutationNotice || pendingCommand || data.activeCommand) return;
+    const visibleTabs = characterWorkspaceTabs.filter((item) => item !== "portfolio" || tab === "portfolio");
     const nextIndex = event.key === "Home"
       ? 0
       : event.key === "End"
-        ? characterWorkspaceTabs.length - 1
-        : (current + (event.key === "ArrowRight" ? 1 : -1) + characterWorkspaceTabs.length) % characterWorkspaceTabs.length;
-    const next = characterWorkspaceTabs[nextIndex];
+        ? visibleTabs.length - 1
+        : (current + (event.key === "ArrowRight" ? 1 : -1) + visibleTabs.length) % visibleTabs.length;
+    const next = visibleTabs[nextIndex];
     selectTab(next);
     document.getElementById(`character-tab-${next}`)?.focus();
   };
   const workspaceName = data.preview.draft?.name ?? data.preview.live?.name ?? data.character.name;
+  const workspaceImageUrl = data.preview.draft?.imageUrl ?? data.preview.live?.imageUrl ?? data.character.imageUrl;
+  const productionEntry = resolveCharacterProductionEntry(data);
+  const assetLibraryMode = tab === "assets" &&
+    data.visual.readiness.ready &&
+    !data.visual.identityBootstrap.allowed;
+  const workspaceTitle = assetLibraryMode
+    ? t("{name}'s images", { name: workspaceName })
+    : workspaceName;
+  const visibleTabs = characterWorkspaceTabs.filter((item) => item !== "portfolio" || tab === "portfolio");
   const writesLocked = mutationNotice !== null ||
     pendingCommand !== null ||
     data.activeCommand !== null;
@@ -3101,17 +3398,30 @@ function CharacterDetail({
       <Link className="inline-flex min-h-11 items-center gap-2 text-sm text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]" href="/admin/characters">
         <ArrowLeft className="h-4 w-4" />  {t("Portfolio")}
       </Link>
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <p className="text-xs uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">{t("Character Project ·")} {data.project.id}</p>
-          <h2 className="mt-1 text-2xl font-semibold" id="character-workspace-title">{workspaceName}</h2>
-          <div className="mt-2 flex flex-wrap gap-2">
-            <StatusBadge value={data.project.phase} />
-            <StatusBadge value={data.serving?.state ?? "inactive"} />
-            <StatusBadge value={data.character.visibility} />
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex min-w-0 items-center gap-4">
+          {workspaceImageUrl ? (
+            <Image alt={t("{name} primary role portrait", { name: workspaceName })} className="h-16 w-16 shrink-0 rounded-xl object-cover" height={64} src={workspaceImageUrl} unoptimized width={64} />
+          ) : (
+            <div className="grid h-16 w-16 shrink-0 place-items-center rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] text-[var(--ad-text-muted)]">
+              <ImageIcon aria-hidden="true" className="h-5 w-5" />
+            </div>
+          )}
+          <div className="min-w-0">
+            <p className="text-xs font-semibold text-[var(--ad-green-text)]">{t(productionEntry.status)}</p>
+            <h2 className="mt-1 truncate text-2xl font-semibold" id="character-workspace-title">{workspaceTitle}</h2>
+            <p className="mt-1 text-sm text-[var(--ad-text-muted)]">
+              {t(assetLibraryMode
+                ? "Visual identity and image route are ready"
+                : "Character image production workspace")}
+            </p>
           </div>
         </div>
-        <p className="text-xs text-[var(--ad-text-muted)]">{t("Project v")}{data.project.version}  {t("· Serving v")}{data.serving?.version ?? 0}</p>
+        <details className="text-xs text-[var(--ad-text-muted)] sm:text-right">
+          <summary className="cursor-pointer font-semibold">{t("Technical status")}</summary>
+          <p className="mt-2">{t("Project v")}{data.project.version} {t("· Serving v")}{data.serving?.version ?? 0}</p>
+          <p className="mt-1">{data.project.id}</p>
+        </details>
       </div>
       {error ? (
         <p className="mt-4 rounded-lg bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">
@@ -3157,7 +3467,7 @@ function CharacterDetail({
         </div>
       ) : null}
       <div className="mt-6 flex gap-1 overflow-x-auto border-b border-[var(--ad-border)]" role="tablist" aria-label={t("Character workspace")}>
-        {characterWorkspaceTabs.map((item, index) => (
+        {visibleTabs.map((item, index) => (
           <button
             aria-controls={`character-panel-${item}`}
             aria-selected={tab === item}
@@ -3176,7 +3486,7 @@ function CharacterDetail({
             tabIndex={tab === item ? 0 : -1}
             type="button"
           >
-            {item}
+            {t(characterWorkspaceTabLabel(item))}
           </button>
         ))}
       </div>
@@ -3185,6 +3495,7 @@ function CharacterDetail({
           <ProjectEditor
             data={data}
             key={data.project.version}
+            onNavigate={selectTab}
             onReload={async () => {
               await loadAuthoritative();
             }}

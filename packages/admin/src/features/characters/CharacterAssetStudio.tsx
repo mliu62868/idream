@@ -25,6 +25,7 @@ import {
   Loader2,
   LockKeyhole,
   Pin,
+  Plus,
   RefreshCcw,
   ShieldAlert,
   Sparkles,
@@ -639,11 +640,14 @@ function ImageProductionReadinessCard({
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <h4 className="text-sm font-semibold" id={`${descriptionId}-title`}>
-            {t(summary.title)}
+            {t(canRepair
+              ? "Enable image production with the current portrait"
+              : summary.title)}
           </h4>
           <p className="mt-1 text-xs leading-5" id={descriptionId}>
-
-            {t("Complete these steps before starting a generation run. Existing live images and releases will not change.")}
+            {t(canRepair
+              ? "The current live portrait will become the sealed identity reference for future batches. Existing live images and releases will not change."
+              : "Complete these steps before starting a generation run. Existing live images and releases will not change.")}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -656,7 +660,7 @@ function ImageProductionReadinessCard({
             >
               {repairing ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
 
-              {t("Prepare image production")}
+              {t("Use existing portrait")}
             </WorkspaceButton>
           ) : (
             <WorkspaceButton
@@ -671,24 +675,39 @@ function ImageProductionReadinessCard({
       </div>
       <ol
         aria-label={t("Image production readiness")}
-        className="mt-3 space-y-2 text-xs"
+        className="mt-4 text-xs"
       >
-        {summary.steps.map((step, index) => (
+        {summary.steps.slice(0, 1).map((step) => (
           <li
-            aria-current={index === 0 ? "step" : undefined}
-            className="flex gap-2"
+            aria-current="step"
+            className="flex gap-3 rounded-lg border border-current/20 bg-white/35 p-3"
             key={step}
           >
             <span
               aria-hidden="true"
-              className="grid h-5 w-5 shrink-0 place-items-center rounded-full border border-current text-[10px] font-semibold"
+              className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-current text-[10px] font-semibold"
             >
-              {index + 1}
+              <span className="text-[var(--ad-surface)]">1</span>
             </span>
-            <span className="pt-0.5">{t(step)}</span>
+            <span>
+              <strong className="block">{t("Do this next")}</strong>
+              <span className="mt-1 block leading-5">{t(step)}</span>
+            </span>
           </li>
         ))}
       </ol>
+      {summary.steps.length > 1 ? (
+        <details className="mt-3 text-xs">
+          <summary className="cursor-pointer font-semibold">
+            {t("Then {count} more setup steps", { count: summary.steps.length - 1 })}
+          </summary>
+          <ol className="mt-2 space-y-2 pl-4">
+            {summary.steps.slice(1).map((step, index) => (
+              <li key={step}>{index + 2}. {t(step)}</li>
+            ))}
+          </ol>
+        </details>
+      ) : null}
       <details className="mt-3 text-xs">
         <summary className="cursor-pointer font-semibold">
 
@@ -760,7 +779,7 @@ function IdentityRail({
             <StatusBadge
               tone={identityEstablished ? "good" : "warn"}
               value={identityEstablished && identity
-                ? `locked v${identity.version}`
+                ? t("Locked v{version}", { version: identity.version })
                 : identity
                   ? "needs repair"
                   : "not locked"}
@@ -1006,7 +1025,7 @@ function CandidateBatchGrid({
                   })}
               aria-pressed={comparison}
               className={cn(
-                "absolute right-2 top-2 grid h-8 w-8 place-items-center rounded-md border bg-white/92 text-[var(--ad-text)] transition hover:bg-white focus-visible:outline focus-visible:outline-2",
+                "absolute right-2 top-2 grid h-11 w-11 place-items-center rounded-md border bg-white/92 text-[var(--ad-text)] transition hover:bg-white focus-visible:outline focus-visible:outline-2",
                 comparison
                   ? "border-[var(--ad-blue-text)] text-[var(--ad-blue-text)]"
                   : "border-white/60",
@@ -1137,6 +1156,9 @@ export function CharacterAssetStudio({
   const [selectedRun, setSelectedRun] = useState<CreativeRunDetail | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [comparisonItemId, setComparisonItemId] = useState<string | null>(null);
+  const [workspaceMode, setWorkspaceMode] = useState<"library" | "review">(
+    () => data.visual.identityBootstrap.allowed ? "review" : "library",
+  );
   const [activePurpose, setActivePurpose] = useState<CharacterAssetPurpose>(() =>
     data.project.draftAssetRouteAuthority?.recoveryPurpose ??
     firstIncompleteCharacterAssetPurpose(
@@ -1148,9 +1170,9 @@ export function CharacterAssetStudio({
     ),
   );
   const [briefs, setBriefs] = useState<Record<CharacterAssetPurpose, string>>(() => ({
-    character_cover: `A definitive primary portrait of ${subject.name}. ${subject.description}`,
-    character_hero: `A cinematic but natural hero scene for ${subject.name}, preserving the canonical identity and personality.`,
-    character_chat: `A warm, candid conversational moment with ${subject.name}, preserving the canonical identity and feeling emotionally present.`,
+    character_cover: t("Create a definitive primary portrait of {name}, preserving the locked identity and personality.", { name: subject.name }),
+    character_hero: t("Create a cinematic but natural hero scene for {name}, preserving the locked identity and personality.", { name: subject.name }),
+    character_chat: t("Create a warm, candid conversational moment with {name}, preserving the locked identity and emotional presence.", { name: subject.name }),
   }));
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<
@@ -1189,7 +1211,7 @@ export function CharacterAssetStudio({
     selectedRunIdRef.current = runId;
     setSelectedRunId(runId);
     setComparisonItemId(null);
-  }, []);
+  }, [setComparisonItemId]);
   const updateRunCreationIntentState = useCallback(
     (intent: DurableMutationIntent | null) => {
       runCreationIntentRef.current = intent;
@@ -1360,7 +1382,7 @@ export function CharacterAssetStudio({
         runDetailInFlight.current.delete(runId);
       }
     }
-  }, [data.character.id, data.project.draftAssetSelections, pinnedRunIds, updateRunCreationIntentState]);
+  }, [data.character.id, data.project.draftAssetSelections, pinnedRunIds, setActivePurpose, setSelectedRun, updateRunCreationIntentState]);
 
   useEffect(() => {
     if (!permissions.read) return;
@@ -1471,10 +1493,12 @@ export function CharacterAssetStudio({
       setComparisonItemId(selectedItem?.id ?? null);
     }
     setSelectedIndex(index);
+    setWorkspaceMode("review");
   };
   const toggleCandidateComparison = (itemId: string) => {
     if (mutationContextLocked || itemId === selectedItem?.id) return;
     setComparisonItemId((current) => current === itemId ? null : itemId);
+    setWorkspaceMode("review");
   };
   const reviewDraft = selectedItem
     ? reviewDrafts[selectedItem.id] ?? emptyReviewDraft(bootstrapMode)
@@ -1500,6 +1524,11 @@ export function CharacterAssetStudio({
   ) && !refreshWarning;
   const productionBlocked =
     !bootstrapMode && !data.visual.readiness.ready;
+  const imageProductionRepairable =
+    productionBlocked &&
+    data.visual.imageReadiness?.state === "repairable" &&
+    Boolean(data.visual.imageReadiness.repair);
+  const recurringProductionReady = !bootstrapMode && !productionBlocked;
   const readinessDescriptionId =
     `character-image-readiness-${data.character.id}`;
   const canUseGenerationAction = runCreationIntent
@@ -1610,11 +1639,9 @@ export function CharacterAssetStudio({
           ? "The live portrait is now the sealed identity reference. Image production is ready."
           : "The live portrait is now the sealed identity reference. A production administrator still needs to activate a compatible image route.",
       );
-    } catch (cause) {
+    } catch {
       setError(
-        cause instanceof Error
-          ? cause.message
-          : "Image production could not be prepared",
+        "Image production could not be enabled. Your live images were not changed. Try again.",
       );
     } finally {
       setBusy(null);
@@ -1640,6 +1667,7 @@ export function CharacterAssetStudio({
     selectRunId(nextRunId);
     if (!nextRunId || nextRunId !== selectedRun?.id) setSelectedRun(null);
     setSelectedIndex(0);
+    if (!bootstrapMode) setWorkspaceMode("library");
   };
 
   const createRun = async (purpose: CharacterAssetPurpose, referenceAssetIds: string[] = []) => {
@@ -2821,41 +2849,85 @@ export function CharacterAssetStudio({
                       : "The generation action is available.";
 
   return (
-    <div className="space-y-4 pb-40 sm:pb-28">
+    <div className="space-y-4 pb-12">
+      {error ? (
+        <p
+          className="rounded-lg bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]"
+          role="alert"
+        >
+          {t(error)}
+        </p>
+      ) : null}
+      {message ? (
+        <p
+          className="rounded-lg bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]"
+          role="status"
+        >
+          {t(message)}
+        </p>
+      ) : null}
       <section
         aria-labelledby="asset-pack-title"
         className="overflow-hidden rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)]"
       >
-        <div className="flex flex-col gap-4 p-4 sm:p-5 lg:flex-row lg:items-end lg:justify-between">
-          <div>
+        {recurringProductionReady ? (
+          workspaceMode === "review" ? (
+            <div className="flex items-center justify-between gap-3 border-b border-[var(--ad-border)] p-3">
+              <h3 className="text-sm font-semibold" id="asset-pack-title">{t("Candidate review")}</h3>
+              <WorkspaceButton onClick={() => {
+                setComparisonItemId(null);
+                setWorkspaceMode("library");
+              }}>
+                {t("Back to image library")}
+              </WorkspaceButton>
+            </div>
+          ) : <h3 className="sr-only" id="asset-pack-title">{t("Image purpose filters")}</h3>
+        ) : <div className="flex flex-col gap-4 p-4 sm:p-5 lg:flex-row lg:items-end lg:justify-between">
+          <div className="min-w-0">
             <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">
-              {t(bootstrapMode ? "First identity portrait" : "Character asset pack")}
+              {t(bootstrapMode
+                ? "First identity portrait"
+                : productionBlocked
+                  ? imageProductionRepairable
+                    ? "Enable image production"
+                    : "Image production setup"
+                  : "Ready for ongoing image production")}
             </p>
             <h3 className="mt-1 text-xl font-semibold" id="asset-pack-title">
               {t(bootstrapMode
                 ? "Establish the face customers will recognize"
-                : "Create the images customers will remember")}
+                : productionBlocked
+                  ? imageProductionRepairable
+                    ? "Use the current live portrait for future image batches"
+                    : "Finish visual setup before creating more images"
+                  : "{name}'s images", { name: subject.name })}
             </h3>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--ad-text-muted)]">
               {t(bootstrapMode
                 ? `Generate the first portrait without references, review it as the identity definition, then commit it as identity version ${identityBootstrap.nextIdentityVersion}.`
-                : "Scan the batch, compare two candidates when needed, then review and adopt one exact asset into the current draft slot.")}
+                : productionBlocked
+                  ? imageProductionRepairable
+                    ? "Seal the existing live portrait as the reusable identity reference. Current live images and releases will not change."
+                    : "Complete the current visual setup action once. Existing live images and releases will not change."
+                  : "Create another focused batch from the locked identity, then review candidates separately before changing any draft slot.")}
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
             <WorkspaceButton disabled={busy !== null} onClick={() => void refreshWorkspace()}>
               <RefreshCcw className="h-4 w-4" /> {t("Refresh")}
             </WorkspaceButton>
-            <WorkspaceButton
-              aria-describedby={generationActionDisabled ? generationActionDescriptionId : undefined}
-              disabled={generationActionDisabled}
-              onClick={() => void createRun(activePurpose)}
-              tone="primary"
-            >
-              <WandSparkles className="h-4 w-4" /> {generationActionText}
-            </WorkspaceButton>
+            {bootstrapMode ? (
+              <WorkspaceButton
+                aria-describedby={generationActionDisabled ? generationActionDescriptionId : undefined}
+                disabled={generationActionDisabled}
+                onClick={() => void createRun(activePurpose)}
+                tone="primary"
+              >
+                <WandSparkles className="h-4 w-4" /> {generationActionText}
+              </WorkspaceButton>
+            ) : null}
           </div>
-        </div>
+        </div>}
         <p className="sr-only" id={generationActionDescriptionId}>
           {t(generationActionDescription)}
         </p>
@@ -2896,7 +2968,7 @@ export function CharacterAssetStudio({
           </div>
         ) : null}
         <nav
-          aria-label={t("Character asset pack progress")}
+          aria-label={t(recurringProductionReady ? "Image purpose filters" : "Character asset pack progress")}
           className="grid border-t border-[var(--ad-border)] md:grid-cols-3"
         >
           {characterAssetPurposes.map((purpose, index) => {
@@ -2915,6 +2987,7 @@ export function CharacterAssetStudio({
                 : runState(recentByPurpose[purpose], adopted);
             const purposeLocked =
               mutationContextLocked ||
+              productionBlocked ||
               (bootstrapMode && purpose !== "character_cover");
             return (
               <button
@@ -2933,20 +3006,22 @@ export function CharacterAssetStudio({
               >
                 <span className={cn(
                   "grid h-8 w-8 shrink-0 place-items-center rounded-full border text-xs font-semibold",
-                  ["selected", "approved"].includes(state)
+                  !recurringProductionReady && ["selected", "approved"].includes(state)
                     ? "border-[var(--ad-green-text)] bg-[var(--ad-green-text)] text-white"
                     : activePurpose === purpose
                       ? "border-[var(--ad-green-text)] text-[var(--ad-green-text)]"
                       : "border-[var(--ad-border)]",
                 )}>
-                  {["selected", "approved"].includes(state)
+                  {!recurringProductionReady && ["selected", "approved"].includes(state)
                     ? <Check className="h-4 w-4" />
                     : index + 1}
                 </span>
                 <span className="min-w-0 flex-1">
                   <strong className="block text-sm">{t(purposeConfig[purpose].label)}</strong>
-                  <span className="mt-1 block text-xs capitalize text-[var(--ad-text-muted)]">
-                    {t(state)}
+                  <span className="mt-1 block text-xs text-[var(--ad-text-muted)]">
+                    {recurringProductionReady
+                      ? t("{count} per batch", { count: purposeConfig[purpose].count })
+                      : t(state)}
                   </span>
                 </span>
                 <ChevronRight className="h-4 w-4 text-[var(--ad-text-muted)]" />
@@ -2958,13 +3033,10 @@ export function CharacterAssetStudio({
 
       <IdentityRail data={data} onRepair={() => onContinue("visual")} />
 
-      {error ? <p className="rounded-lg bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">{error}</p> : null}
       {runCreationIntent?.committedTargetId ? <p className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3 text-sm" role="status">{t("Created Run receipt:")} <span className="font-medium">{runCreationIntent.committedTargetId}</span>{t(". Verify its projection before starting another generation intent.")}</p> : null}
       {reviewMutationIntent ? <div className="flex flex-col gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3 text-sm sm:flex-row sm:items-center sm:justify-between" role="status"><span>{reviewIntentNeedsReconciliation ? t("This saved review is aged or no longer matches the active contract. Reconcile its server receipt before another decision.") : reviewMutationIntent.status === "committed_projection_pending" ? t("Review receipt is committed; verify the exact decision in the latest Run projection.") : t("Review submission is ready to resume with the same request key.")}</span><WorkspaceButton disabled={!permissions.review || busy !== null} onClick={() => void resumeReviewMutation()}>{reviewIntentNeedsReconciliation ? t("Reconcile review") : reviewMutationIntent.status === "committed_projection_pending" ? t("Verify review") : t("Resume review")}</WorkspaceButton></div> : null}
       {selectionMutationIntent ? <div className="flex flex-col gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3 text-sm sm:flex-row sm:items-center sm:justify-between" role="status"><span>{selectionIntentNeedsReconciliation ? t("This saved selection is aged or no longer matches the active contract. Reconcile its server receipt before another selection.") : selectionMutationIntent.status === "committed_projection_pending" ? t("Selection receipt is committed; verify it against current Character authority.") : t("Asset selection is ready to resume with the same request key.")}</span><WorkspaceButton disabled={!permissions.selectDraft || busy !== null} onClick={() => void resumeSelectionMutation()}>{selectionIntentNeedsReconciliation ? t("Reconcile selection") : selectionMutationIntent.status === "committed_projection_pending" ? t("Verify selection") : t("Resume selection")}</WorkspaceButton></div> : null}
       {refreshWarning ? <p className="rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]" role="status">{refreshWarning}</p> : null}
-      {message ? <p className="rounded-lg bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]" role="status">{message}</p> : null}
-
       <div className={characterAssetStudioLayoutClass}>
         <section
           aria-labelledby="candidate-title"
@@ -2973,17 +3045,25 @@ export function CharacterAssetStudio({
           <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[var(--ad-border)] pb-3">
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--ad-text-muted)]">
-                {t("Batch candidates")} · {t(activeConfig.label)}
+                {t(recurringProductionReady && workspaceMode === "library" ? "Image library" : "Batch candidates")} · {t(activeConfig.label)}
               </p>
               <h3 className="mt-1 font-semibold" id="candidate-title">
-                {activeRunDetail?.items.length
-                  ? t("{count} candidates ready to compare", {
-                      count: activeRunDetail.items.length,
-                    })
+                {productionBlocked
+                  ? t("Candidate history is paused")
+                  : activeRunDetail?.items.length
+                  ? recurringProductionReady && workspaceMode === "library"
+                    ? t("{count} recent images", { count: activeRunDetail.items.length })
+                    : t("{count} candidates ready to compare", {
+                        count: activeRunDetail.items.length,
+                      })
                   : t("Ready for a first run")}
               </h3>
               <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">
-                {selectedItem
+                {productionBlocked
+                  ? t("Finish the setup action above before reviewing or creating candidates.")
+                  : recurringProductionReady && workspaceMode === "library"
+                  ? t("Open an image to review it. Creating a new batch never changes the live character automatically.")
+                  : selectedItem
                   ? t("Candidate {number} is the only active decision target.", {
                       number: selectedItem.ordinal + 1,
                     })
@@ -3006,7 +3086,15 @@ export function CharacterAssetStudio({
           ) : null}
 
           <div className="mt-4">
-            {selectedItem?.asset && comparisonItem?.asset ? (
+            {productionBlocked ? (
+              <div className="grid min-h-64 place-items-center rounded-lg border border-dashed border-[var(--ad-border)] bg-black/[0.02] px-6 py-8 text-center text-[var(--ad-text-muted)]">
+                <div>
+                  <ShieldAlert className="mx-auto h-6 w-6" />
+                  <p className="mt-3 text-sm font-semibold">{t("Image production is waiting for visual setup")}</p>
+                  <p className="mt-1 max-w-md text-xs leading-5">{t("Complete the readiness steps above; candidate generation will appear here when the character is ready.")}</p>
+                </div>
+              </div>
+            ) : selectedItem?.asset && comparisonItem?.asset ? (
               <CandidateComparisonStage
                 activeItem={selectedItem}
                 activePurpose={activePurpose}
@@ -3032,14 +3120,6 @@ export function CharacterAssetStudio({
                 selectedPackAssetId={selectedPackAssetId}
                 subjectName={subject.name}
               />
-            ) : productionBlocked ? (
-              <div className="grid min-h-64 place-items-center rounded-lg border border-dashed border-[var(--ad-border)] bg-black/[0.02] px-6 py-8 text-center text-[var(--ad-text-muted)]">
-                <div>
-                  <ShieldAlert className="mx-auto h-6 w-6" />
-                  <p className="mt-3 text-sm font-semibold">{t("Image production is waiting for visual setup")}</p>
-                  <p className="mt-1 max-w-md text-xs leading-5">{t("Complete the readiness steps above; candidate generation will appear here when the character is ready.")}</p>
-                </div>
-              </div>
             ) : (
               <div className="grid min-h-64 place-items-center rounded-lg border border-dashed border-[var(--ad-border)] bg-black/[0.02] px-6 text-center text-[var(--ad-text-muted)]">
                 <div>
@@ -3051,14 +3131,82 @@ export function CharacterAssetStudio({
           </div>
         </section>
 
-        {selectedItem?.asset ? (
+        {recurringProductionReady && workspaceMode === "library" ? (
+          <aside className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 xl:sticky xl:top-4" aria-labelledby="new-image-batch-title">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--ad-text-muted)]">
+                  {t("Ongoing production")}
+                </p>
+                <h3 className="mt-1 font-semibold" id="new-image-batch-title">{t("New image batch")}</h3>
+              </div>
+              <span className="grid h-9 w-9 place-items-center rounded-full bg-[var(--ad-green-bg)] text-[var(--ad-green-text)]">
+                <Plus aria-hidden="true" className="h-4 w-4" />
+              </span>
+            </div>
+            <p className="mt-2 text-xs leading-5 text-[var(--ad-text-muted)]">
+              {t("Choose one customer purpose and describe only what should change in this batch.")}
+            </p>
+            <label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">
+              {t("Image purpose")}
+              <select
+                className={`${fieldClass} mt-1`}
+                disabled={mutationContextLocked}
+                onChange={(event) => choosePurpose(event.target.value as CharacterAssetPurpose)}
+                value={activePurpose}
+              >
+                {characterAssetPurposes.map((purpose) => (
+                  <option key={purpose} value={purpose}>{t(purposeConfig[purpose].label)}</option>
+                ))}
+              </select>
+            </label>
+            <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">
+              {t("Batch size")}
+              <select className={`${fieldClass} mt-1`} disabled value={activeConfig.count}>
+                <option value={activeConfig.count}>{t("{count} images", { count: activeConfig.count })}</option>
+              </select>
+            </label>
+            <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">
+              {t("What should be different this time?")}
+              <textarea
+                aria-label={`${t(activeConfig.label)} ${t("creative brief")}`}
+                className={`${textAreaClass} mt-1 min-h-32`}
+                disabled={mutationContextLocked}
+                onChange={(event) => setBriefs((current) => ({
+                  ...current,
+                  [activePurpose]: event.target.value,
+                }))}
+                value={briefs[activePurpose]}
+              />
+            </label>
+            <div className="mt-3 flex items-center gap-2 rounded-lg bg-black/[0.03] px-3 py-2 text-xs text-[var(--ad-text-muted)]">
+              <LockKeyhole aria-hidden="true" className="h-4 w-4 shrink-0" />
+              <span>{t("The locked visual identity stays unchanged.")}</span>
+            </div>
+            <WorkspaceButton
+              aria-describedby={generationActionDisabled ? generationActionDescriptionId : undefined}
+              className="mt-4 w-full justify-center"
+              disabled={generationActionDisabled}
+              onClick={() => void createRun(activePurpose)}
+              tone="primary"
+            >
+              <WandSparkles className="h-4 w-4" /> {generationActionText}
+            </WorkspaceButton>
+            <p className="mt-3 text-center text-[11px] leading-4 text-[var(--ad-text-muted)]">
+              {t("Review is a separate next step. Nothing is published automatically.")}
+            </p>
+          </aside>
+        ) : !productionBlocked && selectedItem?.asset ? (
           <aside className="space-y-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 xl:sticky xl:top-4" aria-label={t("Current candidate decision inspector")}>
             <CustomerPreviews
               activePurpose={activePurpose}
               candidateImageUrl={selectedImageUrl}
               data={data}
             />
-            <section className="border-t border-[var(--ad-border)] pt-4" aria-labelledby="character-candidate-review-title">
+            <section
+              aria-label={t("Record the visible review evidence")}
+              className="border-t border-[var(--ad-border)] pt-4"
+            >
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <div>
                   <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--ad-text-muted)]">
@@ -3224,10 +3372,13 @@ export function CharacterAssetStudio({
         ) : null}
       </div>
 
-      {selectedItem ? (
+      {selectedItem && !productionBlocked && (!recurringProductionReady || workspaceMode === "review") ? (
         <section
           aria-label={t("Current candidate actions")}
-          className="fixed inset-x-3 bottom-3 z-40 flex flex-col gap-3 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)]/95 p-3 shadow-[0_10px_32px_rgb(50_47_38/0.12)] backdrop-blur sm:flex-row sm:items-center sm:justify-between lg:left-[260px]"
+          className={cn(
+            "flex flex-col gap-3 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)]/95 p-3 shadow-[0_10px_32px_rgb(50_47_38/0.12)] backdrop-blur sm:flex-row sm:items-center sm:justify-between",
+            productionBlocked ? "relative" : "sticky bottom-3 z-40",
+          )}
         >
         <div className="min-w-0">
           <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--ad-text-muted)]">
@@ -3313,7 +3464,7 @@ export function CharacterAssetStudio({
         </section>
       ) : null}
 
-      <details className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
+      {bootstrapMode ? <details className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
         <summary className="cursor-pointer text-sm font-semibold">{t("Adjust the creative brief")}</summary>
         <p className="mt-2 text-xs leading-5 text-[var(--ad-text-muted)]">{t("Keep intent human-readable. Identity, references, workflow, and route stay automatic.")}</p>
         <textarea
@@ -3326,7 +3477,7 @@ export function CharacterAssetStudio({
           }))}
           value={briefs[activePurpose]}
         />
-      </details>
+      </details> : null}
       <details className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
         <summary className="cursor-pointer text-sm font-semibold">{t("Recent runs and technical lineage")}</summary>
         <div className="mt-3 space-y-2">

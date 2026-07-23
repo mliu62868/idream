@@ -146,6 +146,9 @@ function assetIds(pack: CharacterAssetPack) {
 function portfolioNextAction(input: {
   readonly characterId: string;
   readonly hasCandidateRelease: boolean;
+  readonly hasActiveImageRun: boolean;
+  readonly hasVisualAuthority: boolean;
+  readonly imageProductionReady: boolean;
   readonly draftPurposeCount: number;
   readonly livePurposeCount: number;
   readonly hasLivePortrait: boolean;
@@ -172,18 +175,42 @@ function portfolioNextAction(input: {
       deepLink: `${base}?tab=assets`,
     };
   }
+  if (input.hasVisualAuthority && !input.imageProductionReady) {
+    return {
+      code: "complete_image_route" as const,
+      label: "Complete image route setup",
+      deepLink: `${base}?tab=visual#route-qualification-workbench`,
+    };
+  }
+  if (!input.hasVisualAuthority && input.hasLivePortrait) {
+    return {
+      code: "prepare_image_production" as const,
+      label: "Prepare image production",
+      deepLink: `${base}?tab=assets`,
+    };
+  }
+  if (input.hasActiveImageRun) {
+    return {
+      code: "continue_image_run" as const,
+      label: "Continue active image run",
+      deepLink: `${base}?tab=assets`,
+    };
+  }
+  if (
+    input.imageProductionReady &&
+    input.livePurposeCount < characterAssetPurposes.length
+  ) {
+    return {
+      code: "continue_asset_pack" as const,
+      label: "Continue role-image pack",
+      deepLink: `${base}?tab=assets`,
+    };
+  }
   if (input.livePurposeCount === characterAssetPurposes.length) {
     return {
       code: "monitor_live_character" as const,
       label: "Review live character",
       deepLink: `${base}?tab=monitor`,
-    };
-  }
-  if (input.hasLivePortrait) {
-    return {
-      code: "prepare_image_production" as const,
-      label: "Prepare image production",
-      deepLink: `${base}?tab=assets`,
     };
   }
   return {
@@ -513,7 +540,12 @@ export async function listCharacterPortfolioData(
       activeVisualAuthorityByCharacter.set(authority.characterId, authority);
     }
   }
-  const [pageCharacters, rawPageCharacters, pageServings] =
+  const [
+    pageCharacters,
+    rawPageCharacters,
+    pageServings,
+    pageActiveImageRuns,
+  ] =
     pageCharacterIds.length > 0
       ? await Promise.all([
           db.character.findMany({
@@ -529,8 +561,19 @@ export async function listCharacterPortfolioData(
           db.characterServing.findMany({
             where: { characterId: { in: pageCharacterIds } },
           }),
+          db.contentProductionBatch.findMany({
+            where: {
+              targetType: "character",
+              targetId: { in: pageCharacterIds },
+              purpose: { in: [...characterAssetPurposes] },
+              lifecycleState: "active",
+              status: { in: ["draft", "queued", "reviewing"] },
+            },
+            orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+            select: { id: true, targetId: true },
+          }),
         ])
-      : [[], [], []];
+      : [[], [], [], []];
   const pageCharacterById = new Map(
     pageCharacters.map((character) => [character.id, character]),
   );
@@ -539,6 +582,9 @@ export async function listCharacterPortfolioData(
   );
   const pageServingByCharacter = new Map(
     pageServings.map((serving) => [serving.characterId, serving]),
+  );
+  const activeImageRunCharacterIds = new Set(
+    pageActiveImageRuns.flatMap((run) => run.targetId ? [run.targetId] : []),
   );
   const currentReleaseIds = [...new Set(pageServings.flatMap((serving) =>
     serving.currentReleaseId ? [serving.currentReleaseId] : []
@@ -791,6 +837,12 @@ export async function listCharacterPortfolioData(
       nextAction: portfolioNextAction({
         characterId: character.id,
         hasCandidateRelease: candidateRelease !== null,
+        hasActiveImageRun: activeImageRunCharacterIds.has(character.id),
+        hasVisualAuthority: activeVisualAuthority !== null,
+        imageProductionReady:
+          activeVisualAuthority !== null &&
+          activeReferences.length > 0 &&
+          qualifiedRoute !== null,
         draftPurposeCount: draftPurposes.length,
         livePurposeCount: livePurposes.length,
         hasLivePortrait:

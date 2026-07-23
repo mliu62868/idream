@@ -492,7 +492,11 @@ export async function repairCharacterImageReadiness(input: {
         sourceAssetId: asset.id,
       }),
       immutableHash: characterVisualProfileSnapshotHash(profileSnapshot),
-      evidenceState: "editorial_seed_adopted",
+      // This portrait has already passed the published editorial Release
+      // authority checks above. Keep the evidence state inside the persisted
+      // database contract; provenance remains explicit in adapterRefs and
+      // createdFrom.
+      evidenceState: "qualified",
       createdFrom: `editorial_live_portrait:${currentRelease.id}`,
     },
   });

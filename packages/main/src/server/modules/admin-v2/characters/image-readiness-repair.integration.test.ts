@@ -496,7 +496,7 @@ describe("Character image-readiness repair", () => {
       where: { characterId, status: "active" },
     });
     expect(profile).toMatchObject({
-      evidenceState: "editorial_seed_adopted",
+      evidenceState: "qualified",
       anchorAssetIds: [assetId],
       referenceAssetIds: [assetId],
     });

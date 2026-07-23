@@ -472,6 +472,9 @@ describe("Character Portfolio authority/read model", () => {
   });
 
   afterAll(async () => {
+    await prisma.contentProductionBatch.deleteMany({
+      where: { targetId: { in: [characterA, characterB] } },
+    });
     await prisma.adminAuditLog.deleteMany({ where: { actorId: { in: [adminId, producerId] } } });
     await prisma.decisionRecord.deleteMany({ where: { sourceType: "character_portfolio", sourceId: { in: [characterA, characterB] } } });
     await prisma.characterEconomicsFact.deleteMany({ where: { characterId: { in: [characterA, characterB] } } });
@@ -558,6 +561,82 @@ describe("Character Portfolio authority/read model", () => {
     });
     expect(item.performance.find((row) => row.window === "7d" && row.placementId === "feed.hero")?.eligibleImpressions)
       .toBe(120);
+  });
+
+  it("returns an unfinished image run to the latest batch before ongoing production", async () => {
+    const runId = `portfolio-active-image-run-${suffix}`;
+    const originalProject = await prisma.characterProject.findUniqueOrThrow({
+      where: { id: projectA },
+      select: { draftImageAssetId: true, draftAssetPack: true },
+    });
+    await prisma.characterProject.update({
+      where: { id: projectA },
+      data: { draftImageAssetId: null, draftAssetPack: {} },
+    });
+    await prisma.contentProductionBatch.create({
+      data: {
+        id: runId,
+        title: "Astra unfinished hero batch",
+        purpose: "character_hero",
+        targetType: "character",
+        targetId: characterA,
+        presetIds: [],
+        status: "reviewing",
+        createdById: producerId,
+      },
+    });
+    try {
+      const data = await listCharacterPortfolioData(
+        prisma,
+        characterPortfolioQuerySchema.parse({ search: "Astra", limit: 20 }),
+        { asOf, authorizedDraftAssetCharacterIds: null },
+      );
+      expect(data.items[0].nextAction).toEqual({
+        code: "continue_image_run",
+        label: "Continue active image run",
+        deepLink: `/admin/characters/${characterA}?tab=assets`,
+      });
+    } finally {
+      await prisma.contentProductionBatch.deleteMany({ where: { id: runId } });
+      await prisma.characterProject.update({
+        where: { id: projectA },
+        data: {
+          draftImageAssetId: originalProject.draftImageAssetId,
+          draftAssetPack: toInputJson(originalProject.draftAssetPack),
+        },
+      });
+    }
+  });
+
+  it("continues the image pack after visual production is ready instead of repeating setup", async () => {
+    const originalProject = await prisma.characterProject.findUniqueOrThrow({
+      where: { id: projectA },
+      select: { draftImageAssetId: true, draftAssetPack: true },
+    });
+    await prisma.characterProject.update({
+      where: { id: projectA },
+      data: { draftImageAssetId: null, draftAssetPack: {} },
+    });
+    try {
+      const data = await listCharacterPortfolioData(
+        prisma,
+        characterPortfolioQuerySchema.parse({ search: "Astra", limit: 20 }),
+        { asOf, authorizedDraftAssetCharacterIds: null },
+      );
+      expect(data.items[0].nextAction).toEqual({
+        code: "continue_asset_pack",
+        label: "Continue role-image pack",
+        deepLink: `/admin/characters/${characterA}?tab=assets`,
+      });
+    } finally {
+      await prisma.characterProject.update({
+        where: { id: projectA },
+        data: {
+          draftImageAssetId: originalProject.draftImageAssetId,
+          draftAssetPack: toInputJson(originalProject.draftAssetPack),
+        },
+      });
+    }
   });
 
   it("never presents an unavailable draft portrait as the primary role image", async () => {

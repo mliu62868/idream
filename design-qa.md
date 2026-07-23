@@ -64,6 +64,156 @@ final result: passed
 
 ---
 
+# Design QA — Character List Production Entry
+
+## Comparison target and evidence
+
+- Selected visual truth:
+  `/Users/kk/.codex/generated_images/019f7f31-e4e0-7841-a9c8-beb5e76b82af/exec-8890ff3f-2000-4659-9cb2-91c13bf455b1.png`
+- Existing combined source/implementation comparison for the selected recurring
+  production direction:
+  `/Users/kk/code/idream/output/product-design/alexa-character-production/reference-vs-implementation-top.png`
+- Authoritative first-time Character-list state:
+  `/Users/kk/code/idream/output/product-design/alexa-character-production/character-list-next-action.png`
+- Session-only recurring Character-list projection:
+  `/Users/kk/code/idream/output/product-design/alexa-character-production/character-list-create-more.png`
+- Mobile Character-list entry:
+  `/Users/kk/code/idream/output/product-design/alexa-character-production/character-list-mobile.png`
+- Live route: `http://127.0.0.1:3001/admin/characters`
+- Source pixels: 1672 × 941. List screenshots: 1680 × 941 at a 1680 ×
+  941 CSS viewport and device scale factor 1. The selected direction and list
+  are different screens, so the source is used for design-language grounding;
+  the two equal-size list screenshots are used for exact state comparison.
+
+## Focused state comparison
+
+- First-time state: the Alexa card exposes one compact action region labeled
+  `首次设置`, with `完成图片生产设置` as the only next action and a one-sentence
+  explanation of identity, references, and route setup.
+- Recurring state: the same card and layout change only the production intent:
+  `后续图片生产`, `创建更多图片`, and an explicit note that first-time setup is
+  not repeated. The action deep-links to the same Character image workspace.
+- Performance mode continues to use live monitoring rather than the Studio
+  production override, preserving the separation between making images and
+  evaluating a live Character.
+- The API-provided English label is no longer rendered directly. Chinese state,
+  readiness, serving, phase, action, and helper copy are all localized.
+- Focused regions were sufficient because this continuation changes only the
+  right-side action region within otherwise identical cards. The full 1680 ×
+  941 captures confirm card rhythm, alignment, wrapping, and above-the-fold
+  density remain stable.
+
+## Required fidelity surfaces
+
+- Typography: reuses the existing Admin font, weights, compact uppercase state
+  label, and 14px action hierarchy; no oversized or decorative type was added.
+- Spacing and layout: the three-column card reserves a 220–280px action region;
+  first-time and recurring copy remain aligned without changing card height.
+- Colors and tokens: action cards use the existing warm surface, border, ink,
+  muted text, and status tokens from the selected direction.
+- Images: genuine Character primary portraits remain unchanged; no placeholder
+  or generated replacement asset was introduced.
+- Copy: each card now answers current production state, exact next action, and
+  why it is next. The raw `Prepare image production` label is absent.
+- Accessibility and interaction: action links retain visible focus treatment;
+  permission-gated image actions do not expose inaccessible deep links. Browser
+  activation verified both first-time and recurring links navigate to
+  `/admin/characters/alexa-reeves?tab=assets`.
+- Responsive layout: the mobile list stacks the image, Character summary, and
+  next-action region; the 390 × 844 check measured `scrollWidth === clientWidth
+  === 390`, with no document-level horizontal overflow.
+
+## Verification and result
+
+- Browser QA used the real Alexa first-time authority for the first capture.
+  Recurring QA modified only the browser-session response and changed no API,
+  database, draft, review, Release, or Serving authority; interception was
+  disabled before the final clean page was opened.
+- Final clean-page browser console: zero errors and zero warnings.
+- Focused Character and i18n suite: 6 files / 43 tests passed. Admin typecheck,
+  focused lint, Next 16 production build, PM2 `admin-web` restart, and HTTP 200
+  probe passed.
+- No actionable P0, P1, or P2 visual, interaction, localization, or responsive
+  findings remain.
+
+final result: passed
+
+---
+
+# Design QA — Adaptive Character Image Production Entry
+
+## Selected direction and comparison evidence
+
+- Selected recurring-production direction:
+  `/Users/kk/.codex/generated_images/019f7f31-e4e0-7841-a9c8-beb5e76b82af/exec-8890ff3f-2000-4659-9cb2-91c13bf455b1.png`
+- Combined selected direction and final implementation:
+  `/Users/kk/code/idream/output/product-design/alexa-character-production/reference-vs-implementation-top.png`
+- Final project overview:
+  `/Users/kk/code/idream/output/product-design/alexa-character-production/final-project-overview.png`
+- Final first-time guidance:
+  `/Users/kk/code/idream/output/product-design/alexa-character-production/final-first-time-guidance.png`
+- Final recurring image library:
+  `/Users/kk/code/idream/output/product-design/alexa-character-production/final-recurring-library-top.png`
+- Live route:
+  `http://127.0.0.1:3001/admin/characters/alexa-reeves?tab=project`
+
+## Product-state result
+
+- The Project landing state now answers three questions immediately: current
+  production status, the single next action, and where that action sits in the
+  Character production sequence. Strategy fields and collaboration evidence
+  remain available in collapsed secondary sections.
+- The first-time/blocked Assets state exposes one prominent visual-setup action,
+  collapses later setup steps, disables purpose wandering, pauses candidate
+  history, and does not render the candidate review inspector or action bar.
+- Once visual identity and the image route are ready, Assets becomes the
+  recurring image workspace: purpose filters, image library, locked-identity
+  ribbon, and a right-side New image batch composer. It does not repeat the
+  first-time setup or duplicate the Character page title.
+- Candidate review is a separate mode. Opening an image hides the batch composer
+  and exposes review evidence; Back to image library restores recurring
+  production. Review, draft adoption, Release, and live publication remain
+  separate authority actions.
+
+## Visual comparison
+
+- The implementation preserves the real Admin shell, warm neutral tokens,
+  typography, borders, radii, Lucide icon language, and genuine Character
+  assets. No placeholder art or new visual system was introduced.
+- Against the selected direction, the final recurring state keeps the same
+  hierarchy: compact Character status, purpose filters, locked visual identity,
+  dominant image grid, and a narrow new-batch composer.
+- The production UI intentionally uses the real Alexa candidate history rather
+  than the direction's uniform concept images. The differing image content is
+  data, not a layout mismatch.
+- The previous redundant recurring hero was removed after the combined-image
+  comparison, leaving one `Alexa Reeves 的图片` page heading and more room for
+  the library/composer pair.
+
+## Interaction and runtime evidence
+
+- Project overview uses translated operator-facing tabs and contains no raw
+  `project`, `visual`, `assets`, or `preview` tab labels.
+- Real Alexa authority on the local database exercised the first-time/repair
+  state: one next action is visible, candidate history is paused, and no review
+  inspector is mounted.
+- The local database contains no active visual profile/reference-set pair, so
+  recurring-state browser QA used a session-only intercepted Character detail
+  response. It changed no API, database, draft, review, or Release authority.
+- In that non-persistent ready state, purpose selection changed Portrait to Hero,
+  batch size changed from 6 to 4, and the Chinese brief changed with the purpose.
+  Opening candidate 1 entered review and hid New image batch; returning restored
+  the composer.
+- Final browser console: zero errors and zero warnings in both the authoritative
+  first-time state and the session-only recurring projection.
+- Focused Character/i18n regression suite: 100/100 passed before final polish;
+  final focused suite: 41/41 passed. Admin typecheck, focused lint, Next 16
+  production build, PM2 `admin-web` restart, and HTTP 200 probe passed.
+
+final result: passed
+
+---
+
 # Design QA — Character Asset Studio
 
 ## Comparison target
@@ -268,18 +418,19 @@ final result: DONE_WITH_CONCERNS
 - Selected source visual:
   `/Users/kk/code/idream/output/product-design/character-asset-studio/contact-sheet-triage.png`
 - Desktop implementation:
-  `/Users/kk/code/idream/output/product-design/character-asset-studio/implementation-candidate-grid.png`
+  `/Users/kk/code/idream/output/product-design/character-asset-studio/implementation-candidate-grid-final.png`
 - Two-candidate comparison:
-  `/Users/kk/code/idream/output/product-design/character-asset-studio/implementation-comparison.png`
-- Tablet and mobile:
-  `/Users/kk/code/idream/output/product-design/character-asset-studio/implementation-tablet.png`
+  `/Users/kk/code/idream/output/product-design/character-asset-studio/implementation-comparison-final.png`
+- Mobile workspace and candidate controls:
+  `/Users/kk/code/idream/output/product-design/character-asset-studio/implementation-mobile-viewport-final.png`
   and
-  `/Users/kk/code/idream/output/product-design/character-asset-studio/implementation-mobile.png`
+  `/Users/kk/code/idream/output/product-design/character-asset-studio/implementation-mobile-candidate-controls-final.png`
 - Combined source and implementation evidence:
-  `/Users/kk/code/idream/output/product-design/character-asset-studio/reference-vs-implementation.png`
+  `/Users/kk/code/idream/output/product-design/character-asset-studio/reference-vs-implementation-final.png`
 - Route:
-  `http://localhost:3001/admin/characters/alexa-reeves?tab=assets`
-- Viewports: 1440 × 1024, 1024 × 900, and 390 × 844.
+  `http://localhost:3011/admin/characters/alexa-reeves?tab=assets`
+- Viewports: default 1280 × 720 plus explicit 1440 × 1024, 1024 × 900,
+  and 390 × 844 checks.
 
 ## First-principles fidelity
 
@@ -318,34 +469,42 @@ final result: DONE_WITH_CONCERNS
 - Icons: Lucide outline icons are used for comparison, pinning, rejection,
   approval, refresh, generation, and authority status with consistent stroke
   weight and button alignment.
-- Copy: the new operator-facing copy is Chinese and explicitly distinguishes
+- Copy: localized Chinese and English operator copy explicitly distinguishes
   current candidate, comparison candidate, review evidence, draft adoption,
   and Release publication.
 - Accessibility: candidate cards are semantic buttons with pressed state and
   exact accessible names; compare pins are separate controls; the evidence
   checklist, score, identity consistency, and reason are labeled; visible focus
-  treatment is preserved.
+  treatment is preserved. The review-evidence region also has a stable
+  accessible name independent of the active candidate number.
 - Responsiveness: desktop uses the 3 × 2 sheet and sticky inspector; tablet
   stacks the inspector; mobile becomes a single-column flow with compact fixed
   action labels. Measured `scrollWidth === clientWidth` at 1440, 1024, and
-  390px.
+  390px. Candidate comparison controls measure 44 × 44px on mobile.
 
 ## Interaction and implementation evidence
 
 - Selecting a candidate changes the only active review target.
 - Pinning candidate 2 opens the two-candidate comparison stage; returning to the
-  batch preserves the active candidate.
+  batch preserves the active candidate. `Make current` moves the single active
+  authority target to candidate 2 and updates the inspector and fixed action
+  bar together.
+- The full browser journey proves that comparison and local candidate
+  activation create no review decision and do not advance the Character
+  Project version before an explicit review or draft-adoption action.
 - The decision action bar remains visible while scanning the batch and becomes
   compact on mobile.
 - The inspector shows customer context and requires explicit quality,
   consistency, score, and reason evidence before approval.
 - Admin full suite: 89 files and 401 tests passed.
 - Focused Character Asset Studio and i18n suite: 3 files and 37 tests passed.
-- Admin typecheck, focused lint, production build, and `git diff --check`
-  passed.
-- Browser console had no application errors. One earlier development-only LCP
-  warning came from the Character list page before entering this route; the
-  Studio interaction emitted no new warning.
+- Isolated Admin v2 workspace Playwright suite: 9/9 passed in 1.5 minutes,
+  including the blank-Character Portrait/Hero/Chat pack, immutable QA and
+  Release path, keyboard operation, WCAG 2.2 AA gates, 375px mobile and 834px
+  tablet workflows.
+- Admin and Main typecheck, focused lint, Admin production build, and
+  `git diff --check` passed.
+- Browser console had zero errors and zero warnings on the final Studio route.
 
 ## Remaining differences
 
@@ -358,5 +517,24 @@ final result: DONE_WITH_CONCERNS
 - A Character that is not image-ready still shows the existing readiness
   repair card before the contact sheet. This is truthful authority state and
   does not block review of an already projected batch.
+
+final result: passed
+
+---
+
+# Final closeout — Adaptive Character Entry
+
+The later adaptive-entry QA above supersedes the earlier concern about showing
+the contact sheet while image production is blocked. The authoritative Alexa
+state now pauses candidate history and exposes one setup action; the recurring
+state uses the selected image-library and new-batch-composer direction. Final
+browser, comparison-image, interaction, localization, test, build, HTTP, PM2,
+and zero-console-error evidence all passed.
+
+The Character list now carries the same adaptive intent into discovery: real
+first-time authority shows `完成图片生产设置`, while an image-ready Studio card
+shows `创建更多图片` and Performance retains monitoring. Desktop and 390px
+browser evidence, exact deep-link activation, permission gating, localization,
+and a final clean-console reload passed without changing persistent authority.
 
 final result: passed

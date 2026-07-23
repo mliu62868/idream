@@ -6,6 +6,7 @@ import {
   CharacterPortfolioCard,
   CharacterPortfolioVisual,
   characterPortfolioPerformanceLabel,
+  resolveCharacterPortfolioPrimaryAction,
 } from "./CharacterWorkspace";
 
 describe("Character Portfolio role-image summary", () => {
@@ -59,8 +60,73 @@ describe("Character Portfolio role-image summary", () => {
     expect(studio).toContain("Mara");
     expect(studio).not.toContain("28d QCE");
     expect(studio).not.toContain("Latest decision:");
+    expect(studio).toContain("Continue filling image pack");
+    expect(studio).not.toContain("Complete Character Assets");
     expect(performance).toContain("28d QCE 75.0%");
     expect(performance).toContain("Latest decision:");
+  });
+
+  it("treats an existing live portrait as enablement instead of first-time setup", () => {
+    const action = resolveCharacterPortfolioPrimaryAction({
+      ...item,
+      nextAction: {
+        code: "prepare_image_production",
+        deepLink: "/admin/characters/character-1?tab=assets",
+        label: "Prepare image production",
+      },
+    }, "studio");
+
+    expect(action).toMatchObject({
+      eyebrow: "Enable image production",
+      label: "Use existing portrait",
+      href: "/admin/characters/character-1?tab=assets",
+      requiresAssets: true,
+    });
+  });
+
+  it("returns an unfinished image run to the last batch", () => {
+    expect(resolveCharacterPortfolioPrimaryAction({
+      ...item,
+      nextAction: {
+        code: "continue_image_run",
+        deepLink: "/admin/characters/character-1?tab=assets",
+        label: "Continue active image run",
+      },
+    }, "studio")).toMatchObject({
+      eyebrow: "Batch in progress",
+      label: "Continue last batch",
+      href: "/admin/characters/character-1?tab=assets",
+      requiresAssets: true,
+    });
+  });
+
+  it("routes a completed live character to more images in Studio and monitoring in Performance", () => {
+    const liveItem = {
+      ...item,
+      visualProduction: {
+        ...item.visualProduction,
+        draftPurposes: [],
+        livePurposes: ["character_cover", "character_hero", "chat_moment"],
+      },
+      nextAction: {
+        code: "monitor_live_character",
+        deepLink: "/admin/characters/character-1?tab=monitor",
+        label: "Review live character",
+      },
+    } as CharacterPortfolioItem;
+
+    expect(resolveCharacterPortfolioPrimaryAction(liveItem, "studio")).toMatchObject({
+      eyebrow: "Ongoing production",
+      label: "Create more images",
+      href: "/admin/characters/character-1?tab=assets",
+      requiresAssets: true,
+    });
+    expect(resolveCharacterPortfolioPrimaryAction(liveItem, "performance")).toMatchObject({
+      eyebrow: "Live character",
+      label: "Review live character",
+      href: "/admin/characters/character-1?tab=monitor",
+      requiresAssets: false,
+    });
   });
 
   it("uses Character-specific empty states instead of operations queue language", () => {

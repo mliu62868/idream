@@ -886,6 +886,8 @@ export const characterPortfolioNextActionSchema = z
     code: z.enum([
       "create_primary_portrait",
       "prepare_image_production",
+      "complete_image_route",
+      "continue_image_run",
       "continue_asset_pack",
       "run_preview_qa",
       "review_candidate_release",

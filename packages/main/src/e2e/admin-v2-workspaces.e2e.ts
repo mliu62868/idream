@@ -195,10 +195,40 @@ async function generateCharacterAssetRun(
     name: "Refresh",
     exact: true,
   }).click();
-  await expect(page.getByRole("button", { name: /Select candidate/ })).toHaveCount(
+  await expect(page.getByRole("button", { name: /View candidate/ })).toHaveCount(
     expectedItemCount,
   );
+  await compareAndActivateCandidate(page, 2);
   return runId;
+}
+
+function currentCandidateActions(page: Page) {
+  return page.getByRole("region", { name: "Current candidate actions" });
+}
+
+async function compareAndActivateCandidate(
+  page: Page,
+  candidateNumber: number,
+) {
+  const actions = currentCandidateActions(page);
+  await expect(actions).toContainText("Candidate 1");
+  await page.getByRole("button", {
+    name: `Compare candidate ${candidateNumber} with current candidate`,
+    exact: true,
+  }).click();
+
+  const comparison = page.getByRole("region", {
+    name: "Compare the current decision without changing authority",
+  });
+  await expect(comparison).toBeVisible();
+  await expect(comparison.getByRole("figure")).toHaveCount(2);
+  await comparison.getByRole("button", { name: "Make current" }).click();
+  await expect(actions).toContainText(`Candidate ${candidateNumber}`);
+  await actions.getByRole("button", { name: "Back to batch" }).click();
+  await expect(page.getByRole("button", {
+    name: `View candidate ${candidateNumber}`,
+    exact: true,
+  })).toHaveAttribute("aria-pressed", "true");
 }
 
 type SelectedAssetLineage = {
@@ -295,7 +325,9 @@ async function approveCurrentCharacterCandidate(
   await reviewRegion.getByLabel("No visible text, watermark, or contact sheet").check();
   await reviewRegion.getByLabel("Score", { exact: true }).fill(String(score));
   await reviewRegion.getByLabel("Evidence and reason").fill(reason);
-  await reviewRegion.getByRole("button", { name: "Approve with evidence" }).click();
+  await currentCandidateActions(page).getByRole("button", {
+    name: "Approve current candidate",
+  }).click();
 }
 
 async function completeGenericCreativeReview(
@@ -1782,10 +1814,18 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     });
     await expect(assetStudioRefresh).toBeEnabled();
     await assetStudioRefresh.click();
-    await expect(page.getByRole("button", { name: /Select candidate/ })).toHaveCount(4);
+    await expect(page.getByRole("button", { name: /View candidate/ })).toHaveCount(4);
     await expect(page.getByRole("img", {
       name: /Primary portrait Candidate 1$/i,
     })).toHaveJSProperty("complete", true);
+    await compareAndActivateCandidate(page, 2);
+    expect(await prisma.creativeReviewDecision.count({
+      where: { runItemId: { in: createdRun.items.map((item) => item.id) } },
+    })).toBe(0);
+    expect(await prisma.characterProject.findUniqueOrThrow({
+      where: { id: initialProject.id },
+      select: { version: true },
+    })).toEqual({ version: initialProject.version });
 
     const reviewRegion = page.getByRole("region", {
       name: "Record the visible review evidence",
@@ -1800,7 +1840,9 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await reviewRegion.getByLabel("Evidence and reason").fill(
       "Single intended subject, clean face and hands, no visible text, and a clear primary portrait composition.",
     );
-    await reviewRegion.getByRole("button", { name: "Approve with evidence" }).click();
+    await currentCandidateActions(page).getByRole("button", {
+      name: "Approve current candidate",
+    }).click();
     await expect(page.getByRole("button", { name: "Set as identity anchor" })).toBeEnabled();
 
     await prisma.generationRouteQualification.create({
