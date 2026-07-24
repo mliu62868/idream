@@ -65,6 +65,14 @@ function fakePrisma(
   const outboxCreates: CreateCall[] = [];
   const messageUpdates: CreateCall[] = [];
   const rootMessageUpdates: CreateCall[] = [];
+  const character = {
+    characterId: "char_1",
+    creatorId: "creator_1",
+    age: 38,
+    visibility: "public",
+    status: "approved",
+    deletedAt: null,
+  };
 
   const tx = {
     $queryRaw: async () => [{ locked: 1 }],
@@ -82,6 +90,9 @@ function fakePrisma(
         status: "active",
         deletedAt: null,
       }),
+    },
+    chatCharacterView: {
+      findUnique: async () => character,
     },
     messageAttachment: {
       create: async (call: CreateCall) => {
@@ -188,6 +199,9 @@ function fakePrisma(
         entryPlacementId: "feed.hero",
       }),
     },
+    chatCharacterView: {
+      findUnique: async () => character,
+    },
     chatFileMutation: {
       findFirst: async () => null,
       count: async () => 0,
@@ -210,6 +224,7 @@ const context = {
     relationship: "companion",
     visibility: "public",
     status: "approved",
+    deletedAt: null,
     voiceId: null,
     updatedAt: new Date("2026-01-01T00:00:00Z"),
     characterContentVersionId: "content_v4",

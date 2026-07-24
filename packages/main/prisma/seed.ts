@@ -555,15 +555,24 @@ async function seedCharacters() {
     const mediaAssetId = `seed-image-${card.id}`;
     const age = parseAge(card.age);
     const tags = inferredTagSlugs(card);
+    const personaDetails: Prisma.InputJsonObject = {
+      relationshipArchetype: card.relationship,
+      personality: card.personality,
+      tone: card.tone,
+      backstory: card.backstory,
+      firstMessage: card.firstMessage,
+      exampleDialogue: [...card.exampleDialogue],
+    };
     const systemPrompt = buildCharacterSystemPrompt({
       name: card.title,
       age,
       description: card.description,
+      relationship: card.relationship,
       style: card.title.toLowerCase().includes("anime") ? "anime" : "realistic",
       gender: "female",
       tags,
       appearance: { sourceImage: card.image },
-      advancedDetails: {},
+      advancedDetails: personaDetails,
     });
     const [existingAsset, existingCharacter] = await Promise.all([
       prisma.mediaAsset.findUnique({
@@ -572,7 +581,11 @@ async function seedCharacters() {
       }),
       prisma.character.findUnique({
         where: { id: card.id },
-        select: { advancedDetails: true },
+        select: {
+          advancedDetails: true,
+          relationship: true,
+          systemPrompt: true,
+        },
       }),
     ]);
     const existingMetadata = inputJsonObject(existingAsset?.metadata);
@@ -582,6 +595,20 @@ async function seedCharacters() {
     const existingProvenance = inputJsonObject(
       existingAdvancedDetails.provenance,
     );
+    const hasExistingStructuredPersona =
+      Boolean(existingCharacter?.relationship?.trim()) &&
+      [
+        "personality",
+        "tone",
+        "backstory",
+        "firstMessage",
+      ].every((key) =>
+        Boolean(nonBlankJsonString(existingAdvancedDetails[key])),
+      ) &&
+      Array.isArray(existingAdvancedDetails.exampleDialogue) &&
+      existingAdvancedDetails.exampleDialogue.some(
+        (line) => typeof line === "string" && line.trim(),
+      );
     const originalOwnerId =
       nonBlankJsonString(existingMetadata.originalOwnerId) ??
       nonBlankJsonString(existingProvenance.legacyCreatorId) ??
@@ -596,6 +623,7 @@ async function seedCharacters() {
       ownership: "platform_official",
     };
     const officialAdvancedDetails: Prisma.InputJsonObject = {
+      ...personaDetails,
       ...existingAdvancedDetails,
       provenance: {
         ...existingProvenance,
@@ -632,7 +660,13 @@ async function seedCharacters() {
       where: { id: card.id },
       update: {
         creatorId: SYSTEM_USER_ID,
-        relationship: null,
+        relationship:
+          existingCharacter?.relationship?.trim() || card.relationship,
+        systemPrompt:
+          hasExistingStructuredPersona &&
+          existingCharacter?.systemPrompt?.trim()
+            ? existingCharacter.systemPrompt
+            : systemPrompt,
         advancedDetails: officialAdvancedDetails,
       },
       create: {
@@ -647,19 +681,13 @@ async function seedCharacters() {
         source: "official",
         style: card.title.toLowerCase().includes("anime") ? "anime" : "realistic",
         gender: "female",
-        relationship: null,
+        relationship: card.relationship,
         imageAssetId: mediaAssetId,
         vivid: card.vivid ?? false,
         appearance: {
           sourceImage: card.image,
         },
-        advancedDetails: {
-          provenance: {
-            seedSource: "src/lib/official-cold-start-content.ts",
-            originalCreator: card.originalCreator,
-            ownership: "platform_official",
-          },
-        },
+        advancedDetails: officialAdvancedDetails,
       },
     });
     const attachedAsset = await prisma.mediaAsset.updateMany({

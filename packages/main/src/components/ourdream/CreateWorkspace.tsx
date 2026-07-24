@@ -50,6 +50,13 @@ function pickTags(value: unknown): string {
   return "";
 }
 
+function pickLines(value: unknown): string {
+  if (Array.isArray(value)) {
+    return value.filter((line) => typeof line === "string" && line.trim()).join("\n");
+  }
+  return typeof value === "string" ? value : "";
+}
+
 const DEFAULT_PREVIEW = "/images/ourdream/character-placeholder.svg";
 const STORAGE_KEY_PREFIX = "ourdream.create.draft.v2";
 const CREATE_DRAFT_TRANSFER_KEY = "ourdream.create.draft.transfer.v1";
@@ -70,6 +77,12 @@ type WizardState = {
   hair: string;
   body: string;
   description: string;
+  relationshipArchetype: string;
+  personality: string;
+  tone: string;
+  backstory: string;
+  firstMessage: string;
+  exampleDialogue: string;
   tags: string;
   visibility: string;
 };
@@ -87,6 +100,12 @@ const INITIAL: WizardState = {
   hair: "",
   body: "",
   description: "",
+  relationshipArchetype: "",
+  personality: "",
+  tone: "",
+  backstory: "",
+  firstMessage: "",
+  exampleDialogue: "",
   tags: "",
   visibility: "private",
 };
@@ -225,6 +244,19 @@ export function CreateWorkspace() {
       appearance: pickString(template.appearance, "prompt", "summary") || current.appearance,
       description:
         pickString(template.advancedDetails, "description") || template.summary || current.description,
+      relationshipArchetype:
+        pickString(template.advancedDetails, "relationshipArchetype", "relationship") ||
+        current.relationshipArchetype,
+      personality: pickString(template.advancedDetails, "personality") || current.personality,
+      tone: pickString(template.advancedDetails, "tone") || current.tone,
+      backstory: pickString(template.advancedDetails, "backstory") || current.backstory,
+      firstMessage: pickString(template.advancedDetails, "firstMessage") || current.firstMessage,
+      exampleDialogue:
+        pickLines(
+          isRecord(template.advancedDetails)
+            ? template.advancedDetails.exampleDialogue
+            : undefined,
+        ) || current.exampleDialogue,
       tags: pickTags(template.tags) || current.tags,
     }));
     setPreview(DEFAULT_PREVIEW);
@@ -249,6 +281,7 @@ export function CreateWorkspace() {
 
   const nameError = state.name.trim().length < 2 ? "Name needs at least 2 characters." : "";
   const ageError = state.age < 18 || state.age > 99 ? "Age must be between 18 and 99." : "";
+  const personaError = requiredPersonaMessage(state);
 
   async function ensureDraft(): Promise<string> {
     if (state.draftId) return state.draftId;
@@ -275,7 +308,15 @@ export function CreateWorkspace() {
         appearance: { prompt: state.appearance },
         hair: { prompt: state.hair },
         body: { type: state.body },
-        advancedDetails: { description: state.description },
+        advancedDetails: {
+          description: state.description,
+          relationshipArchetype: state.relationshipArchetype,
+          personality: state.personality,
+          tone: state.tone,
+          backstory: state.backstory,
+          firstMessage: state.firstMessage,
+          exampleDialogue: normalizedDialogue(state.exampleDialogue),
+        },
         tags: normalizedTags(state.tags),
       },
       "PATCH",
@@ -285,6 +326,10 @@ export function CreateWorkspace() {
   async function next() {
     if (step === 0 && (nameError || ageError)) {
       setStatus(nameError || ageError);
+      return;
+    }
+    if (step === 2 && personaError) {
+      setStatus(personaError);
       return;
     }
     if (step === 3 && !state.confirmedPreviewJobId) {
@@ -731,11 +776,82 @@ export function CreateWorkspace() {
 
             {step === 2 && (
               <div className="grid gap-3" data-testid="create-step-personality">
-                <Field label="Advanced Details">
+                <div>
+                  <h2 className="text-[18px] font-black text-white">Define who they are with you</h2>
+                  <p className="mt-1 text-[13px] leading-5 text-[rgb(170,170,170)]">
+                    These details become the character&apos;s stable chat persona, not just profile copy.
+                  </p>
+                </div>
+                <Field
+                  hint="A one- or two-sentence profile shown to people who meet this character."
+                  label="Description"
+                >
                   <textarea
                     className="mt-3 min-h-28 w-full rounded-[12px] border border-white/10 bg-[rgb(13,13,13)] p-4 text-[14px] font-medium leading-6 text-white outline-none"
                     onChange={(event) => setIdentityField("description", event.target.value)}
+                    placeholder="A perceptive night-shift radio host who makes difficult conversations feel easy."
                     value={state.description}
+                  />
+                </Field>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <Field
+                    hint="This anchors how the character relates to the user in every conversation."
+                    label="Relationship to you"
+                  >
+                    <input
+                      className="mt-2 w-full bg-transparent text-[14px] font-semibold leading-6 text-white outline-none"
+                      onChange={(event) =>
+                        setIdentityField("relationshipArchetype", event.target.value)
+                      }
+                      placeholder="Trusted confidante and longtime friend"
+                      value={state.relationshipArchetype}
+                    />
+                  </Field>
+                  <Field label="Voice and tone">
+                    <input
+                      className="mt-2 w-full bg-transparent text-[14px] font-semibold leading-6 text-white outline-none"
+                      onChange={(event) => setIdentityField("tone", event.target.value)}
+                      placeholder="Warm, teasing, concise, emotionally attentive"
+                      value={state.tone}
+                    />
+                  </Field>
+                </div>
+                <Field label="Personality">
+                  <textarea
+                    className="mt-3 min-h-24 w-full rounded-[12px] border border-white/10 bg-[rgb(13,13,13)] p-4 text-[14px] font-medium leading-6 text-white outline-none"
+                    onChange={(event) => setIdentityField("personality", event.target.value)}
+                    placeholder="Patient and observant; asks one thoughtful question at a time; playful without dismissing serious feelings."
+                    value={state.personality}
+                  />
+                </Field>
+                <Field label="Backstory">
+                  <textarea
+                    className="mt-3 min-h-24 w-full rounded-[12px] border border-white/10 bg-[rgb(13,13,13)] p-4 text-[14px] font-medium leading-6 text-white outline-none"
+                    onChange={(event) => setIdentityField("backstory", event.target.value)}
+                    placeholder="How you met, what they do, and the experiences that shape how they speak and act."
+                    value={state.backstory}
+                  />
+                </Field>
+                <Field
+                  hint="This is the exact opening line for a new conversation."
+                  label="First message"
+                >
+                  <textarea
+                    className="mt-3 min-h-20 w-full rounded-[12px] border border-white/10 bg-[rgb(13,13,13)] p-4 text-[14px] font-medium leading-6 text-white outline-none"
+                    onChange={(event) => setIdentityField("firstMessage", event.target.value)}
+                    placeholder="There you are. What has been on your mind tonight?"
+                    value={state.firstMessage}
+                  />
+                </Field>
+                <Field
+                  hint="One example per line. These examples teach rhythm and word choice without being repeated verbatim."
+                  label="Example dialogue"
+                >
+                  <textarea
+                    className="mt-3 min-h-28 w-full rounded-[12px] border border-white/10 bg-[rgb(13,13,13)] p-4 text-[14px] font-medium leading-6 text-white outline-none"
+                    onChange={(event) => setIdentityField("exampleDialogue", event.target.value)}
+                    placeholder={"Tell me the part you keep replaying.\nYou can be honest with me; I can handle the messy version."}
+                    value={state.exampleDialogue}
                   />
                 </Field>
                 <Field label="Tags">
@@ -1140,9 +1256,17 @@ function parseWizardDraft(value: unknown): WizardState | null {
     hair: draftString(value.hair, 2000),
     body: draftString(value.body, 2000),
     description: draftString(value.description, 8000),
+    relationshipArchetype: draftString(value.relationshipArchetype, 500),
+    personality: draftString(value.personality, 4000),
+    tone: draftString(value.tone, 2000),
+    backstory: draftString(value.backstory, 8000),
+    firstMessage: draftString(value.firstMessage, 4000),
+    exampleDialogue: draftString(value.exampleDialogue, 12_000),
     tags: draftString(value.tags, 2000),
     visibility:
-      value.visibility === "public" || value.visibility === "private"
+      value.visibility === "public" ||
+      value.visibility === "private" ||
+      value.visibility === "unlisted"
         ? value.visibility
         : INITIAL.visibility,
   };
@@ -1176,6 +1300,31 @@ function normalizedTags(value: string) {
     .map((tag) => tag.trim())
     .filter(Boolean)
     .slice(0, 12);
+}
+
+function normalizedDialogue(value: string) {
+  return value
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 24);
+}
+
+function requiredPersonaMessage(state: WizardState) {
+  const requirements: ReadonlyArray<[keyof WizardState, string]> = [
+    ["description", "Add a short character description before continuing."],
+    ["relationshipArchetype", "Define the character's relationship to you before continuing."],
+    ["personality", "Describe the character's personality before continuing."],
+    ["tone", "Describe the character's voice and tone before continuing."],
+    ["backstory", "Add the character's backstory before continuing."],
+    ["firstMessage", "Write the character's first message before continuing."],
+    ["exampleDialogue", "Add at least one example dialogue line before continuing."],
+  ];
+  for (const [key, message] of requirements) {
+    const value = state[key];
+    if (typeof value !== "string" || !value.trim()) return message;
+  }
+  return "";
 }
 
 function isProtectedMediaUrl(url: string) {

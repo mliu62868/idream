@@ -34,7 +34,8 @@ SELECT
   vp."identityPrompt" AS identity_prompt,
   COALESCE((c."advancedDetails"->>'imageToolEnabled')::boolean, true) AS image_tool_enabled,
   cr."characterContentVersionId" AS character_content_version_id,
-  cr.id AS character_release_id
+  cr.id AS character_release_id,
+  c."deletedAt" AS deleted_at
 FROM public.characters c
 LEFT JOIN public.character_visual_profiles vp
   ON vp."characterId" = c.id AND vp.status = 'active'

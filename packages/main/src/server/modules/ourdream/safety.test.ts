@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
 import {
   api,
@@ -25,6 +26,15 @@ import {
 const P = "zt-safe-";
 const SYS = `${P}sys`;
 const CHAR = `${P}char`;
+const COMPLETE_PERSONA_DETAILS = {
+  description: "A thoughtful adult companion.",
+  relationshipArchetype: "trusted confidante",
+  personality: "Patient, observant, and honest.",
+  tone: "Warm and direct.",
+  backstory: "You met through a shared creative project.",
+  firstMessage: "I am glad you are here. What is on your mind?",
+  exampleDialogue: ["Tell me the part that matters most to you."],
+};
 
 async function freshUser(suffix: string, role: "user" | "admin" = "user") {
   const id = `${P}u-${suffix}`;
@@ -91,7 +101,7 @@ describe("character age hard rule (>= 18)", () => {
         appearance: {},
         hair: {},
         body: {},
-        advancedDetails: {},
+        advancedDetails: COMPLETE_PERSONA_DETAILS,
         tags: [],
       },
     });
@@ -112,7 +122,7 @@ describe("character age hard rule (>= 18)", () => {
         appearance: {},
         hair: {},
         body: {},
-        advancedDetails: {},
+        advancedDetails: COMPLETE_PERSONA_DETAILS,
         tags: [],
       },
     });
@@ -456,6 +466,20 @@ describe("admin moderation queue + audit", () => {
 
     const removed = await prisma.character.findUnique({ where: { id: target } });
     expect(removed?.status).toBe("removed");
+    await expect(
+      prisma.mainOutboxEvent.findFirstOrThrow({
+        where: {
+          eventType: MAIN_TO_CHAT_EVENTS.characterRemoved,
+          aggregateType: "character",
+          aggregateId: target,
+        },
+        orderBy: { createdAt: "desc" },
+      }),
+    ).resolves.toMatchObject({
+      eventType: MAIN_TO_CHAT_EVENTS.characterRemoved,
+      aggregateType: "character",
+      aggregateId: target,
+    });
     const evidence = await prisma.caseEvidence.findFirstOrThrow({
       where: { sourceType: "content_report", sourceId: reportId },
     });

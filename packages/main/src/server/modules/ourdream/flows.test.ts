@@ -343,7 +343,21 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
     const patched = await api("PATCH", `character-drafts/${draftId}`, {
       userId,
       ageGate: true,
-      body: { step: 3, appearance: { hair: "red" } },
+      body: {
+        step: 3,
+        appearance: { hair: "red" },
+        advancedDetails: {
+          description: "My private companion.",
+          relationshipArchetype: "childhood friend",
+          personality: "Bold, observant, and protective.",
+          tone: "Direct, teasing, and emotionally attentive.",
+          backstory: "You grew up on the same street and never lost touch.",
+          exampleDialogue: [
+            "I know that look. Tell me what you are avoiding.",
+          ],
+          firstMessage: "There you are. What took you so long?",
+        },
+      },
     });
     expectOk(patched);
 
@@ -417,13 +431,27 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
     expectOk(submit);
     expect(submit.data.character).toMatchObject({ status: "approved", visibility: "private" });
     const characterId = submit.data.character.id as string;
+    await expect(
+      prisma.character.findUniqueOrThrow({ where: { id: characterId } }),
+    ).resolves.toMatchObject({
+      relationship: "childhood friend",
+      advancedDetails: expect.objectContaining({
+        personality: "Bold, observant, and protective.",
+        tone: "Direct, teasing, and emotionally attentive.",
+        backstory: "You grew up on the same street and never lost touch.",
+        firstMessage: "There you are. What took you so long?",
+      }),
+      systemPrompt: expect.stringContaining(
+        "Bold, observant, and protective.",
+      ),
+    });
 
     const library = await api("GET", "library/created", { userId, ageGate: true });
     expectOk(library);
     expect((library.data.items as Array<{ id: string }>).map((c) => c.id)).toContain(characterId);
   });
 
-  it("requires an explicitly selected identity image before publishing", async () => {
+  it("requires an identity image and a complete chat persona before publishing", async () => {
     const userId = `${P}creator-public`;
     await createUser({ id: userId });
     const draftRes = await api("POST", "character-drafts", {
@@ -463,6 +491,44 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
       body: { previewJobId: previewState.data.previewJob.id },
     });
     expectOk(selected);
+
+    const incompletePersonaSubmit = await api("POST", `character-drafts/${draftId}/submit`, {
+      userId,
+      ageGate: true,
+      body: { age: 25, visibility: "public" },
+    });
+    expectError(incompletePersonaSubmit, 400, "bad_request");
+    expect(incompletePersonaSubmit.error?.message).toBe(
+      "Complete the character persona before publishing",
+    );
+    expect(incompletePersonaSubmit.error?.details).toMatchObject({
+      missingFields: [
+        "description",
+        "relationship",
+        "personality",
+        "tone",
+        "backstory",
+        "firstMessage",
+        "exampleDialogue",
+      ],
+    });
+
+    const completedPersona = await api("PATCH", `character-drafts/${draftId}`, {
+      userId,
+      ageGate: true,
+      body: {
+        advancedDetails: {
+          description: "A sharp-witted investigative reporter who values honest answers.",
+          relationshipArchetype: "trusted confidante",
+          personality: "Curious, perceptive, and quietly protective.",
+          tone: "Direct, warm, and lightly teasing.",
+          backstory: "You met while chasing the same late-night story and stayed close.",
+          firstMessage: "You are late. Tell me what happened.",
+          exampleDialogue: ["Start with the detail everyone else missed."],
+        },
+      },
+    });
+    expectOk(completedPersona);
 
     const submit = await api("POST", `character-drafts/${draftId}/submit`, {
       userId,

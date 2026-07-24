@@ -50,6 +50,7 @@ view ChatCharacterView {
   imageToolEnabled          Boolean  @map("image_tool_enabled")
   characterContentVersionId String?  @map("character_content_version_id")
   characterReleaseId        String?  @map("character_release_id")
+  deletedAt                 DateTime? @map("deleted_at")
 
   @@map("chat_character_view")
   @@schema("core")

@@ -10,7 +10,15 @@ export interface CharacterSystemPromptInput {
   advancedDetails?: unknown;
 }
 
-const MAX_SYSTEM_PROMPT_CHARS = 1800;
+export interface ResolvedCharacterPersonaSnapshot {
+  name: string;
+  age: number;
+  description: string;
+  systemPrompt: string;
+  relationship: string | null;
+}
+
+const MAX_SYSTEM_PROMPT_CHARS = 6000;
 const MAX_DETAIL_ITEMS = 10;
 
 export function companionRole(relationship?: string | null): string {
@@ -57,6 +65,51 @@ export function buildCharacterSystemPrompt(input: CharacterSystemPromptInput): s
   );
 }
 
+/**
+ * Resolve the immutable serving persona from either the legacy editorial
+ * snapshot shape or the structured Admin V2 shape. Pinned sessions must never
+ * borrow persona fields from the mutable Character projection.
+ */
+export function resolveCharacterPersonaSnapshot(
+  value: unknown,
+): ResolvedCharacterPersonaSnapshot | null {
+  if (!isRecord(value)) return null;
+  const name = nonBlankString(value.name);
+  const age = integerAdultAge(value.age);
+  const description =
+    nonBlankString(value.characterPromise) ??
+    nonBlankString(value.description);
+  if (!name || age === null || !description) return null;
+
+  const relationship =
+    nonBlankString(value.relationshipArchetype) ??
+    nonBlankString(value.relationship);
+  const explicitPrompt = nonBlankString(value.systemPrompt);
+  const systemPrompt =
+    explicitPrompt ??
+    buildCharacterSystemPrompt({
+      name,
+      age,
+      description,
+      relationship,
+      gender: nonBlankString(value.gender),
+      advancedDetails: {
+        personality: value.personality,
+        tone: value.tone,
+        backstory: value.backstory,
+        exampleDialogue: value.exampleDialogue,
+      },
+    });
+
+  return {
+    name,
+    age,
+    description,
+    systemPrompt,
+    relationship,
+  };
+}
+
 export function looksLikeMockChatResponse(text: string): boolean {
   const normalized = text.trim();
   return /^Mock\s+/i.test(normalized) || /^Mock probe response:/i.test(normalized);
@@ -97,6 +150,20 @@ function detailValue(key: string, value: unknown): string[] {
 
 function cleanText(value: string): string {
   return value.replace(/\s+/g, " ").trim();
+}
+
+function nonBlankString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const cleaned = cleanText(value);
+  return cleaned || null;
+}
+
+function integerAdultAge(value: unknown): number | null {
+  return typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= 18
+    ? value
+    : null;
 }
 
 function clamp(value: string, max: number): string {

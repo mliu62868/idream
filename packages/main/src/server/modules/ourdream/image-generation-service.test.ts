@@ -23,6 +23,15 @@ import {
 const P = "zt-imgsvc-";
 const SYS = `${P}sys`;
 const CHAR = `${P}char`;
+const COMPLETE_PERSONA_DETAILS = {
+  description: "A grounded companion who notices the details other people miss.",
+  relationshipArchetype: "trusted confidante",
+  personality: "Perceptive, curious, and quietly protective.",
+  tone: "Warm, direct, and lightly teasing.",
+  backstory: "You became close after solving a difficult problem together.",
+  firstMessage: "There you are. Tell me what happened.",
+  exampleDialogue: ["Start with the detail everyone else missed."],
+};
 
 function asInputJson(value: AiFinalizePayload): Prisma.InputJsonValue {
   return value as unknown as Prisma.InputJsonValue;
@@ -1372,7 +1381,10 @@ describe("image generation service contract", () => {
       body: {
         appearance: { face: { eyes: "hazel" }, hair: { color: "auburn", style: "long waves" } },
         body: { build: "athletic" },
-        advancedDetails: { signature: { freckles: true } },
+        advancedDetails: {
+          ...COMPLETE_PERSONA_DETAILS,
+          signature: { freckles: true },
+        },
       },
     });
     expectOk(patchResponse);
@@ -1476,6 +1488,12 @@ describe("image generation service contract", () => {
     });
     expectOk(draftResponse);
     const draftId = draftResponse.data.draft.id as string;
+    const completedPersona = await api("PATCH", `character-drafts/${draftId}`, {
+      userId,
+      ageGate: true,
+      body: { advancedDetails: COMPLETE_PERSONA_DETAILS },
+    });
+    expectOk(completedPersona);
     const preview = await prisma.characterPreviewJob.create({
       data: {
         draftId,
@@ -1612,7 +1630,10 @@ describe("image generation service contract", () => {
       body: {
         appearance: { face: { eyes: "blue" }, hair: { color: "black" } },
         body: { build: "soft athletic" },
-        advancedDetails: { signature: "silver necklace" },
+        advancedDetails: {
+          ...COMPLETE_PERSONA_DETAILS,
+          signature: "silver necklace",
+        },
       },
     });
 

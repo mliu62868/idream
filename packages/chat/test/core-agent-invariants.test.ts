@@ -40,6 +40,7 @@ const USERS = {
   privateIntruder: "u_core_private_intruder",
 } as const;
 const PRIVATE_CHARACTER = "c_core_private";
+const ARCHIVED_PRIVATE_CHARACTER = "c_core_private_archived";
 let fsRoot: string;
 
 beforeAll(async () => {
@@ -70,6 +71,13 @@ beforeAll(async () => {
      ON CONFLICT (id) DO NOTHING`,
     [PRIVATE_CHARACTER, USERS.privateOwner],
   );
+  await superPool.query(
+    `INSERT INTO public.characters
+       (id,"creatorId",name,age,description,visibility,status,style,gender,appearance,"advancedDetails","createdAt","updatedAt","deletedAt")
+     VALUES ($1,$2,'Archived Private Agent',24,'Archived companion','private','archived','realistic','female','{}','{}',now(),now(),now())
+     ON CONFLICT (id) DO NOTHING`,
+    [ARCHIVED_PRIVATE_CHARACTER, USERS.privateOwner],
+  );
 });
 
 afterAll(async () => {
@@ -83,6 +91,18 @@ describe("core chat command invariants", () => {
     await expect(
       createSession(
         { userId: USERS.privateIntruder, characterId: PRIVATE_CHARACTER },
+        { prisma },
+      ),
+    ).rejects.toMatchObject({ code: "character_unavailable", status: 403 });
+  });
+
+  it("does not let a creator chat with an archived or deleted character", async () => {
+    await expect(
+      createSession(
+        {
+          userId: USERS.privateOwner,
+          characterId: ARCHIVED_PRIVATE_CHARACTER,
+        },
         { prisma },
       ),
     ).rejects.toMatchObject({ code: "character_unavailable", status: 403 });

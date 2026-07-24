@@ -1513,7 +1513,7 @@ async function updateDraft(request: Request, id: string) {
     jsonFieldChanged(body.appearance, currentDraft.appearance) ||
     jsonFieldChanged(body.hair, currentDraft.hair) ||
     jsonFieldChanged(body.body, currentDraft.body) ||
-    jsonFieldChanged(body.advancedDetails, currentDraft.advancedDetails);
+    advancedDetailsIdentityChanged(body.advancedDetails, currentDraft.advancedDetails);
 
   const draft = await prisma.characterDraft.update({
     where: { id },
@@ -1536,6 +1536,29 @@ async function updateDraft(request: Request, id: string) {
 
 function jsonFieldChanged(next: Record<string, unknown> | undefined, current: unknown) {
   return next !== undefined && JSON.stringify(next) !== JSON.stringify(current ?? {});
+}
+
+const personaDetailFields = new Set([
+  "description",
+  "relationshipArchetype",
+  "relationship",
+  "personality",
+  "tone",
+  "backstory",
+  "firstMessage",
+  "exampleDialogue",
+]);
+
+function advancedDetailsIdentityChanged(
+  next: Record<string, unknown> | undefined,
+  current: unknown,
+) {
+  if (next === undefined) return false;
+  const identityDetails = (value: unknown) =>
+    Object.fromEntries(
+      Object.entries(jsonRecord(value)).filter(([key]) => !personaDetailFields.has(key)),
+    );
+  return JSON.stringify(identityDetails(next)) !== JSON.stringify(identityDetails(current));
 }
 
 async function previewDraft(request: Request, id: string) {
@@ -1684,21 +1707,23 @@ async function submitDraft(request: Request, id: string) {
   const draft = await assertDraftOwner(id, user.id);
   if (!draft.name) throw Errors.badRequest("Draft name is required before submit");
   const draftName = draft.name;
+  const advancedDetails = jsonRecord(draft.advancedDetails);
+  const relationship =
+    jsonNonBlankString(advancedDetails.relationshipArchetype) ??
+    jsonNonBlankString(advancedDetails.relationship);
 
-  const description =
+  const personaDescription =
     body.description ??
+    jsonNonBlankString(advancedDetails.description);
+  const description =
+    personaDescription ??
     `Custom ${draft.style ?? "realistic"} companion created from the Ourdream creator.`;
   const style = draft.style ?? "realistic";
   const gender = draft.gender ?? "female";
-  const systemPrompt = buildCharacterSystemPrompt({
-    name: draftName,
-    age: body.age,
-    description,
-    style,
-    gender,
-    tags: jsonStringArray(draft.tags),
-    appearance: draft.appearance,
-    advancedDetails: draft.advancedDetails,
+  const missingPersonaFields = requiredCharacterPersonaFields({
+    description: personaDescription,
+    relationship,
+    advancedDetails,
   });
   const moderation = await moderateText(
     "character_draft",
@@ -1738,6 +1763,22 @@ async function submitDraft(request: Request, id: string) {
     anchorAsset,
     "Demo preview images cannot be published as a character identity",
   );
+  if (missingPersonaFields.length > 0) {
+    throw Errors.badRequest("Complete the character persona before publishing", {
+      missingFields: missingPersonaFields,
+    });
+  }
+  const systemPrompt = buildCharacterSystemPrompt({
+    name: draftName,
+    age: body.age,
+    description,
+    relationship,
+    style,
+    gender,
+    tags: jsonStringArray(draft.tags),
+    appearance: draft.appearance,
+    advancedDetails: draft.advancedDetails,
+  });
 
   const character = await prisma.$transaction(async (tx) => {
     await lockCharacterMediaAssetAuthorities(tx, [anchorAssetId]);
@@ -1767,6 +1808,7 @@ async function submitDraft(request: Request, id: string) {
         status: body.visibility === "public" ? "pending_review" : "approved",
         style,
         gender,
+        relationship,
         imageAssetId: anchorAssetId,
         appearance: toInputJson(draft.appearance ?? {}),
         advancedDetails: toInputJson(draft.advancedDetails ?? {}),
@@ -9763,13 +9805,14 @@ async function archiveCharacter(request: Request, id: string) {
   const user = requireUser(ctx);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
-  await prisma.$transaction(async (tx) => {
+  const archived = await prisma.$transaction(async (tx) => {
     await lockCharacterGenerationAuthority(tx, id);
     const character = await tx.character.findFirst({
       where: { id, creatorId: user.id },
-      select: { id: true, imageAssetId: true },
+      select: { id: true, imageAssetId: true, status: true },
     });
-    if (!character) return;
+    if (!character) return false;
+    if (character.status === "archived") return false;
     const activeGeneration = await tx.generationJob.findFirst({
       where: {
         characterId: character.id,
@@ -9840,7 +9883,25 @@ async function archiveCharacter(request: Request, id: string) {
         version: { increment: 1 },
       },
     });
+    await recordMainToChatEvent({
+      eventId: `character_removed_${character.id}_${randomUUID()}`,
+      eventType: MAIN_TO_CHAT_EVENTS.characterRemoved,
+      aggregateType: "character",
+      aggregateId: character.id,
+      payload: { characterId: character.id },
+    }, tx);
+    return true;
   });
+  if (archived) {
+    try {
+      await dispatchPendingChatEvents();
+    } catch (error) {
+      logger.error(
+        { error, characterId: id },
+        "failed to dispatch durable Chat character removal",
+      );
+    }
+  }
   return ok({ archived: true });
 }
 
@@ -10259,10 +10320,35 @@ function jsonRecord(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
 }
 
+function jsonNonBlankString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  return normalized || null;
+}
+
 function jsonStringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string")
     : [];
+}
+
+function requiredCharacterPersonaFields(input: {
+  description: string | null;
+  relationship: string | null;
+  advancedDetails: Record<string, unknown>;
+}) {
+  const missingFields: string[] = [];
+  if (!input.description) missingFields.push("description");
+  if (!input.relationship) missingFields.push("relationship");
+  for (const field of ["personality", "tone", "backstory", "firstMessage"] as const) {
+    if (!jsonNonBlankString(input.advancedDetails[field])) missingFields.push(field);
+  }
+  const exampleDialogue = input.advancedDetails.exampleDialogue;
+  const hasExampleDialogue =
+    jsonNonBlankString(exampleDialogue) !== null ||
+    jsonStringArray(exampleDialogue).some((line) => line.trim().length > 0);
+  if (!hasExampleDialogue) missingFields.push("exampleDialogue");
+  return missingFields;
 }
 
 function normalizeMutedTags(values: readonly string[]) {
@@ -12304,12 +12390,14 @@ async function applyModerationAction(
   // INVARIANT: a takedown must actually remove something. Feed items wrap a
   // character, so resolve and take that down; unknown target types throw so the
   // caller can escalate instead of recording a false "blocked" event.
-  await prisma.$transaction(async (tx) => {
+  const removedCharacterId = await prisma.$transaction(async (tx) => {
+    let characterId: string | null = null;
     if (targetType === "character") {
-      await tx.character.updateMany({
+      const removed = await tx.character.updateMany({
         where: { id: targetId },
         data: { status: "removed" },
       });
+      if (removed.count > 0) characterId = targetId;
     } else if (targetType === "media") {
       await lockMediaAssetAuthority(tx, targetId);
       await tx.mediaAsset.updateMany({
@@ -12317,13 +12405,23 @@ async function applyModerationAction(
         data: { safetyStatus: "blocked" },
       });
     } else if (targetType === "feed_item") {
-      const characterId = feedCharacterId(targetId);
+      const feedTargetCharacterId = feedCharacterId(targetId);
       const collectionId = feedCollectionId(targetId);
-      if (characterId) {
-        await tx.character.updateMany({
-          where: { id: characterId },
+      if (feedTargetCharacterId) {
+        const removed = await tx.character.updateMany({
+          where: { id: feedTargetCharacterId },
           data: { status: "removed" },
         });
+        if (removed.count > 0) {
+          characterId = feedTargetCharacterId;
+          await recordMainToChatEvent({
+            eventId: `character_removed_${feedTargetCharacterId}_${randomUUID()}`,
+            eventType: MAIN_TO_CHAT_EVENTS.characterRemoved,
+            aggregateType: "character",
+            aggregateId: feedTargetCharacterId,
+            payload: { characterId: feedTargetCharacterId },
+          }, tx);
+        }
       } else if (collectionId) {
         await tx.mediaCollection.updateMany({
           where: { id: collectionId },
@@ -12345,7 +12443,27 @@ async function applyModerationAction(
         details: {},
       },
     });
+    if (characterId && targetType === "character") {
+      await recordMainToChatEvent({
+        eventId: `character_removed_${characterId}_${randomUUID()}`,
+        eventType: MAIN_TO_CHAT_EVENTS.characterRemoved,
+        aggregateType: "character",
+        aggregateId: characterId,
+        payload: { characterId },
+      }, tx);
+    }
+    return characterId;
   });
+  if (removedCharacterId) {
+    try {
+      await dispatchPendingChatEvents();
+    } catch (error) {
+      logger.error(
+        { error, characterId: removedCharacterId },
+        "failed to dispatch durable Chat character removal",
+      );
+    }
+  }
 }
 
 async function trackEvent(

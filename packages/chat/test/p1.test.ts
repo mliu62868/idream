@@ -9,7 +9,11 @@ import { dispatchChat } from "../src/router.js";
 import { processGenerate, type GeneratePayload } from "../src/generate.js";
 import { processMemoryExtract } from "../src/memory.js";
 import { drainQueue } from "../src/queue.js";
-import { updateRelationship, parseRelationship } from "../src/relationship.js";
+import {
+  parseRelationship,
+  relationshipSignalForTurn,
+  updateRelationship,
+} from "../src/relationship.js";
 import { exportAccount } from "../src/export.js";
 import { readWhole, chatFsPaths } from "../src/chat-fs.js";
 import { CHAT_QUEUES } from "@idream/shared/contracts";
@@ -43,6 +47,59 @@ afterAll(async () => {
 });
 
 describe("relationship.md (P1-2)", () => {
+  it("does not turn neutral message volume into intimacy", async () => {
+    let state = await updateRelationship(
+      USER,
+      "c_p1_neutral",
+      { summaryDelta: "User: hello from the launch probe" },
+    );
+    for (let turn = 1; turn < 30; turn += 1) {
+      state = await updateRelationship(
+        USER,
+        "c_p1_neutral",
+        { summaryDelta: `User: routine probe ${turn}` },
+      );
+    }
+
+    expect(state.signals).toEqual({
+      warmth: 0,
+      familiarity: 0,
+      turns: 30,
+    });
+    expect(state.stage).toBe("new");
+  });
+
+  it("derives conservative relationship signals from meaningful user language", () => {
+    expect(relationshipSignalForTurn("hello from the launch probe")).toEqual({
+      warmth: 0,
+      familiarity: 0,
+    });
+    expect(relationshipSignalForTurn("I want a photo by the window.")).toEqual({
+      warmth: 0,
+      familiarity: 0,
+    });
+    expect(relationshipSignalForTurn("我需要一张窗边的照片。")).toEqual({
+      warmth: 0,
+      familiarity: 0,
+    });
+    expect(relationshipSignalForTurn("我想你帮我生成一张窗边的照片。")).toEqual({
+      warmth: 0,
+      familiarity: 0,
+    });
+    expect(
+      relationshipSignalForTurn(
+        "I miss you and I trust you. My favorite place is the coast.",
+      ),
+    ).toEqual({
+      warmth: 1,
+      familiarity: 1,
+    });
+    expect(relationshipSignalForTurn("我想你，也很信任你。我最喜欢爵士乐。")).toEqual({
+      warmth: 1,
+      familiarity: 1,
+    });
+  });
+
   it("merges signals + advances stage across turns", async () => {
     let state = await updateRelationship(USER, CHAR, { warmth: 1, familiarity: 1, summaryDelta: "first" });
     expect(state.stage).toBe("new"); // score 2 < familiar(6)

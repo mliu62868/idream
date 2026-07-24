@@ -3,6 +3,7 @@
 // views. Long-term memory + boundaries from the file layer, with a TIMEOUT budget:
 // on timeout/error we degrade to "recent messages only" and never block the reply
 // (design §5 hot-path degradation). memory_enabled=false reads NO long-term memory.
+import { resolveCharacterPersonaSnapshot } from "@idream/shared";
 import type { ChatPrismaClient, ChatCharacterView } from "./db.js";
 import { env } from "./env.js";
 import { resolvePolicy, snapshotFromView, type ChatPolicy } from "./policy.js";
@@ -252,16 +253,6 @@ async function buildContextSnapshot(
   };
 }
 
-function jsonRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {};
-}
-
-function stringValue(value: unknown): string | null {
-  return typeof value === "string" ? value : null;
-}
-
 function personaFromImmutableContent(
   current: ChatCharacterView,
   snapshotValue: unknown,
@@ -270,16 +261,19 @@ function personaFromImmutableContent(
     readonly characterReleaseId: string | null;
   },
 ): ChatCharacterView {
-  const snapshot = jsonRecord(snapshotValue);
-  const age = typeof snapshot.age === "number" && Number.isInteger(snapshot.age)
-    ? snapshot.age
-    : current.age;
+  const snapshot = resolveCharacterPersonaSnapshot(snapshotValue);
+  if (!snapshot) {
+    throw new Error(
+      `character content ${pin.characterContentVersionId} has no complete immutable persona`,
+    );
+  }
   return {
     ...current,
-    name: stringValue(snapshot.name) ?? current.name,
-    age,
-    description: stringValue(snapshot.description) ?? current.description,
-    systemPrompt: stringValue(snapshot.systemPrompt) ?? current.systemPrompt,
+    name: snapshot.name,
+    age: snapshot.age,
+    description: snapshot.description,
+    systemPrompt: snapshot.systemPrompt,
+    relationship: snapshot.relationship,
     characterContentVersionId: pin.characterContentVersionId,
     characterReleaseId: pin.characterReleaseId,
   };

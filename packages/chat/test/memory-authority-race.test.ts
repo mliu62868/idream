@@ -598,8 +598,8 @@ describe("canonical relationship rebuild", () => {
       CHAR,
     );
     expect(state.signals).toEqual({
-      warmth: 1,
-      familiarity: 1,
+      warmth: 0,
+      familiarity: 0,
       turns: 1,
     });
     expect(state.summary).toContain(
@@ -683,8 +683,8 @@ describe("canonical relationship rebuild", () => {
       CHAR,
     );
     expect(state.signals).toEqual({
-      warmth: 1,
-      familiarity: 1,
+      warmth: 0,
+      familiarity: 0,
       turns: 1,
     });
     expect(state.summary).toContain(
@@ -839,8 +839,8 @@ describe("canonical relationship rebuild", () => {
 
     const state = await getRelationshipState(USERS.scale, CHAR);
     expect(state.signals).toEqual({
-      warmth: 300,
-      familiarity: 300,
+      warmth: 0,
+      familiarity: 0,
       turns: 300,
     });
     const raw =

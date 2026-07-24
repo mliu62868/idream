@@ -26,6 +26,7 @@ const context = {
     relationship: "companion",
     visibility: "public",
     status: "approved",
+    deletedAt: null,
     voiceId: null,
     updatedAt: new Date("2026-01-01T00:00:00Z"),
     visualProfileId: "cvp_1",

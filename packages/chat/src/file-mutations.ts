@@ -65,6 +65,8 @@ const fileMutationSchema = z.discriminatedUnion("kind", [
     turnKey: z.string().min(1),
     attempt: z.number().int().positive(),
     summaryDelta: z.string(),
+    warmth: z.number().int().min(0).max(1).optional(),
+    familiarity: z.number().int().min(0).max(1).optional(),
     candidates: z.array(memoryCandidateSchema),
     maxStored: z.number().int().nonnegative(),
   }),
@@ -464,7 +466,11 @@ async function applyFileMutation(
         userId,
         mutation.characterId,
         mutation.turnKey,
-        { summaryDelta: mutation.summaryDelta },
+        {
+          summaryDelta: mutation.summaryDelta,
+          warmth: mutation.warmth ?? 0,
+          familiarity: mutation.familiarity ?? 0,
+        },
       );
       if (mutation.candidates.length > 0) {
         await consolidateMemories(
@@ -511,7 +517,11 @@ async function applyFileMutation(
             userId,
             mutation.characterId,
             operation.turnKey,
-            { summaryDelta: operation.summaryDelta },
+            {
+              summaryDelta: operation.summaryDelta,
+              warmth: operation.warmth,
+              familiarity: operation.familiarity,
+            },
           );
         } else {
           await setRelationshipOnce(

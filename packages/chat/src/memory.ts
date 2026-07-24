@@ -5,7 +5,10 @@
 // Each memory line carries source_message_ids back-linking PG.
 import type { ChatPrismaClient } from "./db.js";
 import { chatPrisma, chatProjectorPrisma } from "./db.js";
-import { relationshipTurnSummary } from "./relationship.js";
+import {
+  relationshipSignalForTurn,
+  relationshipTurnSummary,
+} from "./relationship.js";
 import { extractCandidates } from "./extract.js";
 import { resolvePolicy, snapshotFromView } from "./policy.js";
 import {
@@ -220,6 +223,9 @@ export async function processMemoryExtract(
     const policy = resolvePolicy(snapshotFromView(entitlement), {
       memoryEnabled: true,
     });
+    const relationshipSignal = relationshipSignalForTurn(
+      currentUserMessage.content,
+    );
     // Commit only the immutable intent here. The projector advances the DB
     // watermark in the same completion transaction that marks this intent
     // applied, so `memoryExtractedAttempt` never claims a file write that has
@@ -235,6 +241,8 @@ export async function processMemoryExtract(
         turnKey: currentAssistant.id,
         attempt: payload.attempt,
         summaryDelta: relationshipTurnSummary(currentUserMessage.content),
+        warmth: relationshipSignal.warmth,
+        familiarity: relationshipSignal.familiarity,
         candidates,
         maxStored: policy.maxStoredMemories,
       },

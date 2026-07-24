@@ -13,6 +13,7 @@ import { chatPrisma, chatProjectorPrisma } from "./db.js";
 import { providers } from "./providers.js";
 import type { ChatToolCall, ModelMessage } from "./providers.js";
 import { buildContext, type BuiltContext } from "./context.js";
+import { characterAvailableToUser } from "./character-eligibility.js";
 import { appendStreamEvent, streamKey } from "./stream.js";
 import { recordOutbox, scheduleOutboxDelivery } from "./outbox.js";
 import { createId } from "./id.js";
@@ -92,6 +93,23 @@ export async function processGenerate(
       type: "error",
       attempt: payload.attempt,
       code: "session_inactive",
+      retryable: false,
+    }).catch(() => {});
+    return { status: "failed" };
+  }
+  const character = await prisma.chatCharacterView.findUnique({
+    where: { characterId: session.characterId },
+  });
+  if (
+    !character ||
+    character.age < 18 ||
+    !characterAvailableToUser(character, session.userId)
+  ) {
+    await failAssistant(prisma, payload.assistantMessageId);
+    await appendStreamEvent(streamKey(payload.assistantMessageId), {
+      type: "error",
+      attempt: payload.attempt,
+      code: "character_unavailable",
       retryable: false,
     }).catch(() => {});
     return { status: "failed" };
@@ -437,6 +455,7 @@ async function finalize(
     const [
       currentUser,
       currentSession,
+      currentCharacter,
       current,
       sourceTurn,
       latestInvalidatingMutation,
@@ -444,6 +463,9 @@ async function finalize(
       await Promise.all([
         tx.chatUserView.findUnique({ where: { userId: session.userId } }),
         tx.chatSession.findUnique({ where: { id: session.id } }),
+        tx.chatCharacterView.findUnique({
+          where: { characterId: session.characterId },
+        }),
         tx.message.findUnique({
           where: { id: payload.assistantMessageId },
         }),
@@ -468,6 +490,9 @@ async function finalize(
       currentSession.userId !== session.userId ||
       currentSession.status !== "active" ||
       currentSession.deletedAt ||
+      !currentCharacter ||
+      currentCharacter.age < 18 ||
+      !characterAvailableToUser(currentCharacter, session.userId) ||
       !current ||
       current.role !== "assistant" ||
       current.sessionId !== currentSession.id ||

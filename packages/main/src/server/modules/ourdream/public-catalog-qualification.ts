@@ -156,7 +156,15 @@ export async function ensureOfficialEditorialCatalogQualification(
       );
     }
 
+    const contentSnapshot = officialEditorialContentSnapshot(character);
+    const contentHash = canonicalSha256(contentSnapshot);
     const currentRelease = character.serving?.currentRelease ?? null;
+    const currentReleaseContent = currentRelease
+      ? await tx.characterContentVersion.findUnique({
+          where: { id: currentRelease.characterContentVersionId },
+          select: { contentHash: true },
+        })
+      : null;
     const currentQualification =
       currentRelease?.publicCatalogQualification ?? null;
     const currentProvenance = record(currentRelease?.generationProvenance);
@@ -181,7 +189,8 @@ export async function ensureOfficialEditorialCatalogQualification(
       currentQualificationEvidence.schemaVersion ===
         PUBLIC_CATALOG_QUALIFICATION_SCHEMA_VERSION &&
       currentQualificationEvidence.policyVersion ===
-        PUBLIC_CATALOG_EDITORIAL_IMPORT_POLICY_VERSION
+        PUBLIC_CATALOG_EDITORIAL_IMPORT_POLICY_VERSION &&
+      currentReleaseContent?.contentHash === contentHash
     ) {
       return {
         releaseId: currentRelease.id,
@@ -190,7 +199,10 @@ export async function ensureOfficialEditorialCatalogQualification(
         replayed: true,
       };
     }
-    if (currentRelease) {
+    if (
+      currentRelease &&
+      currentReleaseContent?.contentHash === contentHash
+    ) {
       const attached = await attachExistingModernQualification(
         tx,
         currentRelease,
@@ -205,8 +217,6 @@ export async function ensureOfficialEditorialCatalogQualification(
       }
     }
 
-    const contentSnapshot = officialEditorialContentSnapshot(character);
-    const contentHash = canonicalSha256(contentSnapshot);
     const existingContent = await tx.characterContentVersion.findUnique({
       where: {
         characterId_contentHash: {
@@ -250,21 +260,32 @@ export async function ensureOfficialEditorialCatalogQualification(
         successCriteria: [],
       },
     });
-    const revision = await tx.characterRevision.upsert({
-      where: { id: `editorial-revision:${character.id}:${contentHash.slice(0, 16)}` },
-      update: {},
-      create: {
-        id: `editorial-revision:${character.id}:${contentHash.slice(0, 16)}`,
-        projectId: project.id,
-        revision: 1,
-        characterContentVersionId: content.id,
-        projectSnapshot: {
-          source: "official_editorial_import",
-          characterId: character.id,
-          contentHash,
-        },
-      },
+    const revisionId =
+      `editorial-revision:${character.id}:${contentHash.slice(0, 16)}`;
+    const existingRevision = await tx.characterRevision.findUnique({
+      where: { id: revisionId },
     });
+    const latestRevision = existingRevision
+      ? null
+      : await tx.characterRevision.aggregate({
+          where: { projectId: project.id },
+          _max: { revision: true },
+        });
+    const revision =
+      existingRevision ??
+      await tx.characterRevision.create({
+        data: {
+          id: revisionId,
+          projectId: project.id,
+          revision: (latestRevision?._max.revision ?? 0) + 1,
+          characterContentVersionId: content.id,
+          projectSnapshot: {
+            source: "official_editorial_import",
+            characterId: character.id,
+            contentHash,
+          },
+        },
+      });
     const generationProvenance = {
       schemaVersion: "character-release-editorial-import-v1",
       dataset: input.expectedSeedSource,

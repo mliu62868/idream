@@ -131,7 +131,36 @@ describe("seed data provenance", () => {
       characters.every(
         (character) =>
           character.creatorId === "seed-system-creator" &&
-          character.relationship === null &&
+          Boolean(character.relationship?.trim()) &&
+          Boolean(
+            (character.advancedDetails as {
+              personality?: string;
+              tone?: string;
+              backstory?: string;
+              firstMessage?: string;
+              exampleDialogue?: string[];
+            }).personality?.trim(),
+          ) &&
+          Boolean(
+            (character.advancedDetails as {
+              tone?: string;
+            }).tone?.trim(),
+          ) &&
+          Boolean(
+            (character.advancedDetails as {
+              backstory?: string;
+            }).backstory?.trim(),
+          ) &&
+          Boolean(
+            (character.advancedDetails as {
+              firstMessage?: string;
+            }).firstMessage?.trim(),
+          ) &&
+          Boolean(
+            (character.advancedDetails as {
+              exampleDialogue?: string[];
+            }).exampleDialogue?.length,
+          ) &&
           (character.advancedDetails as {
             provenance?: { ownership?: string; originalCreator?: string };
           }).provenance?.ownership === "platform_official" &&
@@ -459,7 +488,11 @@ describe("seed data provenance", () => {
     expect(characters).toContain('ownership: "platform_official"');
     expect(characters).toContain("existingProvenance.legacyCreatorId");
     expect(characters).toContain("originalOwnerId");
-    expect(characters).toContain("relationship: null");
+    expect(characters).toContain("hasExistingStructuredPersona");
+    expect(characters).toContain("existingCharacter?.relationship?.trim()");
+    expect(characters).toMatch(
+      /officialAdvancedDetails:[\s\S]*?\.\.\.personaDetails,[\s\S]*?\.\.\.existingAdvancedDetails,/,
+    );
     expect(characters).toMatch(
       /characterStats\.upsert\(\{[\s\S]*?update: \{\},/,
     );

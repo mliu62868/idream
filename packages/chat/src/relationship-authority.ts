@@ -1,6 +1,7 @@
 import type { Prisma } from "../generated/client/client.js";
 import {
   getRelationshipRepairSnapshot,
+  relationshipSignalForTurn,
   relationshipTurnSummary,
   type RelationshipCutoverBaseline,
   type RelationshipRepairSnapshot,
@@ -219,6 +220,8 @@ export type RelationshipProjectionOperation =
       sequence: bigint;
       turnKey: string;
       summaryDelta: string;
+      warmth: number;
+      familiarity: number;
     }
   | {
       kind: "manual";
@@ -379,11 +382,14 @@ export async function buildRelationshipProjection(
     ) {
       continue;
     }
+    const signal = relationshipSignalForTurn(source.content);
     canonicalTurns.push({
       kind: "turn",
       sequence: extraction.sequence,
       turnKey: assistant.id,
       summaryDelta: relationshipTurnSummary(source.content),
+      warmth: signal.warmth,
+      familiarity: signal.familiarity,
     });
     replayedAssistantIds.add(assistant.id);
   }
@@ -480,12 +486,17 @@ export async function buildRelationshipProjection(
     )
     .map<
       Extract<RelationshipProjectionOperation, { kind: "turn" }>
-    >((eligible, index, all) => ({
+    >((eligible, index, all) => {
+      const signal = relationshipSignalForTurn(eligible.source.content);
+      return {
         kind: "turn",
         sequence: BigInt(index - all.length),
         turnKey: eligible.assistant.id,
         summaryDelta: relationshipTurnSummary(eligible.source.content),
-      }));
+        warmth: signal.warmth,
+        familiarity: signal.familiarity,
+      };
+    });
 
   const resetSequence = lastReset?.toString() ?? null;
   let baseline: RelationshipCutoverBaseline | null = null;

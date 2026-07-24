@@ -135,7 +135,7 @@ export async function createCharacterProject(input: {
           name: persona.name,
           age: persona.age,
           description: persona.characterPromise,
-          systemPrompt: [persona.personality, persona.tone, persona.backstory].join("\n\n"),
+          systemPrompt: personaSnapshot.systemPrompt,
           visibility: "private",
           status: "draft",
           source: "official",

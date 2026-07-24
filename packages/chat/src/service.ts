@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import type { ChatPrismaClient } from "./db.js";
 import type { Prisma } from "../generated/client/client.js";
 import { chatPrisma, chatProjectorPrisma } from "./db.js";
+import { characterAvailableToUser } from "./character-eligibility.js";
 import { providers } from "./providers.js";
 import { createId } from "./id.js";
 import { FREE_DAILY_MESSAGES } from "@idream/shared/chat/limits";
@@ -82,10 +83,7 @@ async function assertEligible(
     throw new ChatError("user_inactive", "user not active", 403);
   }
   if (!character) throw new ChatError("character_not_found", "character not found", 404);
-  if (character.visibility !== "public" && character.creatorId !== userId) {
-    throw new ChatError("character_unavailable", "character not available", 403);
-  }
-  if (character.status !== "approved" && character.creatorId !== userId) {
+  if (!characterAvailableToUser(character, userId)) {
     throw new ChatError("character_unavailable", "character not available", 403);
   }
   if (character.age < 18) throw new ChatError("character_underage", "character not allowed", 403);
@@ -504,7 +502,7 @@ export async function sendMessage(
     await lockTurn(tx, input.userId, session.id);
     await assertNoPendingChatFileMutationsTx(tx, input.userId);
     await advisoryLock(tx, `send:${input.userId}:${idempotencyKey}`);
-    await assertActiveUserAuthority(tx, input.userId);
+    await assertEligible(tx, input.userId, session.characterId);
     const currentSession = await tx.chatSession.findUnique({ where: { id: session.id } });
     if (!currentSession || currentSession.userId !== input.userId || currentSession.status !== "active") {
       throw new ChatError("session_not_found", "session not found", 404);

@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { Prisma } from "@prisma/client";
+import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { z } from "zod";
+import { recordMainToChatEvent } from "@/processes/chat-outbox";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
@@ -522,10 +524,13 @@ async function applyModerationAction(
   // character, so resolve and remove it; unknown target types throw so the
   // decision transaction rolls back instead of marking a report falsely handled.
   if (targetType === "character") {
-    await db.character.updateMany({
+    const removed = await db.character.updateMany({
       where: { id: targetId },
       data: { status: "removed" },
     });
+    if (removed.count > 0) {
+      await recordCharacterRemoved(db, targetId);
+    }
     return;
   }
   if (targetType === "media") {
@@ -541,13 +546,29 @@ async function applyModerationAction(
     if (!characterId) {
       throw Errors.badRequest(`Cannot resolve feed_item moderation target: ${targetId}`);
     }
-    await db.character.updateMany({
+    const removed = await db.character.updateMany({
       where: { id: characterId },
       data: { status: "removed" },
     });
+    if (removed.count > 0) {
+      await recordCharacterRemoved(db, characterId);
+    }
     return;
   }
   throw Errors.badRequest(`Unsupported moderation target type: ${targetType}`);
+}
+
+async function recordCharacterRemoved(
+  db: Prisma.TransactionClient | typeof prisma,
+  characterId: string,
+) {
+  await recordMainToChatEvent({
+    eventId: `character_removed_${characterId}_${randomUUID()}`,
+    eventType: MAIN_TO_CHAT_EVENTS.characterRemoved,
+    aggregateType: "character",
+    aggregateId: characterId,
+    payload: { characterId },
+  }, db);
 }
 
 async function restoreAppealTarget(

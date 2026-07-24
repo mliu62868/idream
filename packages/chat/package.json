@@ -13,6 +13,7 @@
     "build": "echo 'source-only (tsx runtime), no build'",
     "db:generate": "prisma generate",
     "db:apply": "DB=${DB:-idream} SUPER=${SUPER:-kk} bash ../../db/sql/apply-validate.sh",
+    "repair:relationship-signals": "tsx src/repair-relationship-signals.ts",
     "start": "tsx src/main.ts"
   },
   "dependencies": {

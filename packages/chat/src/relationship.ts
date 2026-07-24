@@ -43,6 +43,16 @@ const STAGE_THRESHOLDS: Record<RelationshipStage, number> = {
   committed: 50,
 };
 
+const WARMTH_SIGNAL_PATTERNS = [
+  /\b(?:i\s+(?:really\s+)?(?:love|miss|trust|adore)\s+you|i\s+care\s+about\s+you|you\s+(?:mean|matter)\s+(?:so\s+)?much\s+to\s+me|i\s+feel\s+safe\s+with\s+you)\b/i,
+  /我(?:很|真的|好)?(?:爱|喜欢|想念|信任|在乎)你|我(?:很|真的|好)?想你(?:了|啦|啊|呀|哦|呢)?(?:$|[，。！？])|你对我(?:很)?重要|和你在一起[^。！？]*安心/u,
+];
+
+const FAMILIARITY_SIGNAL_PATTERNS = [
+  /\b(?:call\s+me|my\s+(?:favorite|name|job|work|family|home|birthday|hobby|fear|dream)|i\s+(?:like|prefer|work|live|grew\s+up|feel|am\s+from))\b/i,
+  /我(?:叫|喜欢|偏好|住在|来自|最喜欢|害怕)|我的(?:家人|工作|生日|爱好|梦想|家乡)/u,
+];
+
 const EMPTY: RelationshipState = {
   stage: "new",
   signals: { warmth: 0, familiarity: 0, turns: 0 },
@@ -107,8 +117,11 @@ async function updateRelationshipDocument(
     }
     const current = document.state;
     const signals = {
-      warmth: current.signals.warmth + (patch.warmth ?? 1),
-      familiarity: current.signals.familiarity + (patch.familiarity ?? 1),
+      warmth: Math.max(0, current.signals.warmth + (patch.warmth ?? 0)),
+      familiarity: Math.max(
+        0,
+        current.signals.familiarity + (patch.familiarity ?? 0),
+      ),
       turns: current.signals.turns + 1,
     };
     const score = signals.familiarity + signals.warmth;
@@ -205,6 +218,28 @@ export function relationshipTurnSummary(text: string): string {
   return normalized.length <= 200
     ? `User: ${normalized}`
     : `User: ${normalized.slice(0, 199)}…`;
+}
+
+/**
+ * Relationship progression is deliberately conservative: message volume alone
+ * is not a bond. Only explicit relational warmth or meaningful self-disclosure
+ * contributes signals; turns remain a separate continuity counter.
+ */
+export function relationshipSignalForTurn(text: string): {
+  warmth: number;
+  familiarity: number;
+} {
+  const normalized = text.trim().replace(/\s+/g, " ");
+  return {
+    warmth: WARMTH_SIGNAL_PATTERNS.some((pattern) => pattern.test(normalized))
+      ? 1
+      : 0,
+    familiarity: FAMILIARITY_SIGNAL_PATTERNS.some((pattern) =>
+      pattern.test(normalized)
+    )
+      ? 1
+      : 0,
+  };
 }
 
 // ---- user-facing management API (PRD §7.3, §8.2) ----------------------------

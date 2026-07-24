@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { resolveLocalBlobPath } from "@idream/shared/storage/local-blob";
 import { prisma } from "@/server/lib/db";
 import { dispatchV1 } from "@/server/modules/ourdream/service";
@@ -520,6 +521,24 @@ describe("Character archive and generation authority", () => {
       status: "archived",
       deletedAt: expect.any(Date),
       imageAssetId: null,
+    });
+    await expect(
+      prisma.mainOutboxEvent.findFirstOrThrow({
+        where: {
+          eventType: MAIN_TO_CHAT_EVENTS.characterRemoved,
+          aggregateType: "character",
+          aggregateId: characterId,
+        },
+        orderBy: { createdAt: "desc" },
+      }),
+    ).resolves.toMatchObject({
+      eventType: MAIN_TO_CHAT_EVENTS.characterRemoved,
+      aggregateType: "character",
+      aggregateId: characterId,
+      payload: expect.objectContaining({
+        eventType: MAIN_TO_CHAT_EVENTS.characterRemoved,
+        payload: { characterId },
+      }),
     });
 
     const createAfterArchive = await api("POST", "generation/jobs", {
