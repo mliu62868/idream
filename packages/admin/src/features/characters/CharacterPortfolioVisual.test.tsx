@@ -3,10 +3,12 @@ import { describe, expect, it } from "vitest";
 import type { CharacterPortfolioItem } from "@idream/shared/admin";
 import {
   CharacterListEmptyState,
+  CharacterOperationsSummary,
   CharacterPortfolioCard,
   CharacterPortfolioVisual,
   characterPortfolioPerformanceLabel,
   resolveCharacterPortfolioPrimaryAction,
+  summarizeCharacterOperations,
 } from "./CharacterWorkspace";
 
 describe("Character Portfolio role-image summary", () => {
@@ -127,6 +129,66 @@ describe("Character Portfolio role-image summary", () => {
       href: "/admin/characters/character-1?tab=monitor",
       requiresAssets: false,
     });
+  });
+
+  it("turns the current page into an operator-oriented next-step overview", () => {
+    const items = [
+      {
+        ...item,
+        characterId: "route-character",
+        name: "Route Character",
+        nextAction: {
+          code: "complete_image_route",
+          deepLink: "/admin/characters/route-character?tab=visual",
+          label: "Complete image route",
+        },
+      },
+      {
+        ...item,
+        characterId: "portrait-character",
+        name: "Portrait Character",
+        nextAction: {
+          code: "prepare_image_production",
+          deepLink: "/admin/characters/portrait-character?tab=assets",
+          label: "Prepare image production",
+        },
+      },
+      {
+        ...item,
+        characterId: "live-character",
+        name: "Live Character",
+        nextAction: {
+          code: "monitor_live_character",
+          deepLink: "/admin/characters/live-character?tab=monitor",
+          label: "Monitor live character",
+        },
+      },
+    ] as CharacterPortfolioItem[];
+    const summary = summarizeCharacterOperations(items);
+    const html = renderToStaticMarkup(
+      <CharacterOperationsSummary
+        canOpenAssets
+        canOpenProject
+        items={items}
+      />,
+    );
+
+    expect(summary).toMatchObject({
+      awaitingAction: 2,
+      counts: { setup: 2, production: 0, launch: 0, live: 1 },
+      focusItem: { characterId: "portrait-character" },
+      total: 3,
+    });
+    expect(html).toContain("Character operations overview");
+    expect(html).toContain("2 characters need an operator next step");
+    expect(html).toContain("Suggested first");
+    expect(html).toContain("Portrait Character");
+    expect(html).toContain("Use existing portrait");
+    expect(html).toContain("One-time setup");
+    expect(html).toContain("Live monitoring");
+    expect(html).toContain(
+      'href="/admin/characters/portrait-character?tab=assets"',
+    );
   });
 
   it("uses Character-specific empty states instead of operations queue language", () => {

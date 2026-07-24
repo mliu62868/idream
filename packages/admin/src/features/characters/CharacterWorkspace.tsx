@@ -967,6 +967,152 @@ export function resolveCharacterPortfolioPrimaryAction(
   };
 }
 
+type CharacterOperationsBucket = "setup" | "production" | "launch" | "live";
+
+const characterOperationsPriority: Record<
+  CharacterPortfolioItem["nextAction"]["code"],
+  number
+> = {
+  create_primary_portrait: 0,
+  prepare_image_production: 1,
+  complete_image_route: 2,
+  continue_image_run: 3,
+  continue_asset_pack: 4,
+  run_preview_qa: 5,
+  review_candidate_release: 6,
+  monitor_live_character: 7,
+};
+
+function characterOperationsBucket(
+  code: CharacterPortfolioItem["nextAction"]["code"],
+): CharacterOperationsBucket {
+  if (
+    code === "create_primary_portrait" ||
+    code === "prepare_image_production" ||
+    code === "complete_image_route"
+  ) {
+    return "setup";
+  }
+  if (code === "continue_image_run" || code === "continue_asset_pack") {
+    return "production";
+  }
+  if (code === "run_preview_qa" || code === "review_candidate_release") {
+    return "launch";
+  }
+  return "live";
+}
+
+export function summarizeCharacterOperations(
+  items: readonly CharacterPortfolioItem[],
+) {
+  const counts: Record<CharacterOperationsBucket, number> = {
+    setup: 0,
+    production: 0,
+    launch: 0,
+    live: 0,
+  };
+  for (const item of items) {
+    counts[characterOperationsBucket(item.nextAction.code)] += 1;
+  }
+  const focusItem = [...items]
+    .filter((item) => item.nextAction.code !== "monitor_live_character")
+    .sort((left, right) =>
+      characterOperationsPriority[left.nextAction.code] -
+      characterOperationsPriority[right.nextAction.code]
+    )[0] ?? null;
+  return {
+    awaitingAction: items.length - counts.live,
+    counts,
+    focusItem,
+    total: items.length,
+  };
+}
+
+export function CharacterOperationsSummary({
+  canOpenAssets,
+  canOpenProject,
+  items,
+}: {
+  canOpenAssets: boolean;
+  canOpenProject: boolean;
+  items: readonly CharacterPortfolioItem[];
+}) {
+  const { t } = useAdminI18n();
+  const summary = summarizeCharacterOperations(items);
+  const focusAction = summary.focusItem
+    ? resolveCharacterPortfolioPrimaryAction(summary.focusItem, "studio")
+    : null;
+  const canOpenFocus = Boolean(
+    summary.focusItem &&
+    focusAction &&
+    canOpenProject &&
+    (!focusAction.requiresAssets || canOpenAssets),
+  );
+  const metrics = [
+    { label: "One-time setup", value: summary.counts.setup },
+    { label: "Image production", value: summary.counts.production },
+    { label: "Launch and release", value: summary.counts.launch },
+    { label: "Live monitoring", value: summary.counts.live },
+  ] as const;
+
+  return (
+    <section
+      aria-labelledby="character-operations-overview-title"
+      className="mt-6 overflow-hidden rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)]"
+    >
+      <div className="grid gap-5 p-5 lg:grid-cols-[minmax(0,1fr)_minmax(260px,340px)] lg:items-center">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">
+            {t("Character operations overview")}
+          </p>
+          <h3 className="mt-2 text-xl font-semibold" id="character-operations-overview-title">
+            {summary.awaitingAction > 0
+              ? t("{count} characters need an operator next step", {
+                  count: summary.awaitingAction,
+                })
+              : t("All characters are in live monitoring")}
+          </h3>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--ad-text-muted)]">
+            {t("Finish one-time setup first, then continue active batches, asset packs, and releases.")}
+          </p>
+        </div>
+        {summary.focusItem && focusAction ? (
+          <div className="rounded-lg bg-black/[0.035] p-4">
+            <p className="text-xs font-semibold text-[var(--ad-text-muted)]">
+              {t("Suggested first")}
+            </p>
+            <p className="mt-1 truncate font-semibold">{summary.focusItem.name}</p>
+            {canOpenFocus ? (
+              <Link
+                className="mt-3 inline-flex min-h-11 items-center gap-2 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-[var(--ad-surface)] hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]"
+                href={focusAction.href}
+              >
+                {t(focusAction.label)}
+                <ArrowRight aria-hidden="true" className="h-4 w-4" />
+              </Link>
+            ) : (
+              <p className="mt-2 text-sm text-[var(--ad-text-muted)]">
+                {t(focusAction.requiresAssets ? "Image access required" : "Project access required")}
+              </p>
+            )}
+          </div>
+        ) : null}
+      </div>
+      <dl className="grid border-t border-[var(--ad-border)] sm:grid-cols-2 xl:grid-cols-4">
+        {metrics.map((metric) => (
+          <div
+            className="flex items-center justify-between gap-4 border-b border-[var(--ad-border)] px-5 py-4 last:border-b-0 sm:border-r sm:[&:nth-child(2)]:border-r-0 xl:border-b-0 xl:[&:nth-child(2)]:border-r xl:last:border-r-0"
+            key={metric.label}
+          >
+            <dt className="text-xs font-semibold text-[var(--ad-text-muted)]">{t(metric.label)}</dt>
+            <dd className="text-lg font-semibold">{metric.value}</dd>
+          </div>
+        ))}
+      </dl>
+    </section>
+  );
+}
+
 export function CharacterPortfolioCard({
   canOpenAssets,
   canOpenProject,
@@ -1172,35 +1318,109 @@ function CharacterPortfolio({
     }, "push");
   }
 
+  const activeStatusFilterCount = [phase, servingState, readiness].filter(Boolean).length;
+
+  function clearStatusFilters() {
+    setPhase("");
+    setServingState("");
+    setReadiness("");
+    setCursor(undefined);
+    void load({ search }, "push");
+  }
+
   if (!canRead) return permissionDenied(mode === "performance" ? "character.performance.read" : "character.project.read");
   return (
     <section aria-labelledby="character-list-title">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">{performanceMode ? t("Growth") : t("Character Studio")}</p>
           <h2 className="mt-1 text-2xl font-semibold" id="character-list-title">{performanceMode ? t("Character Performance") : t("Characters")}</h2>
-          <p className="mt-2 max-w-2xl text-sm text-[var(--ad-text-muted)]">{performanceMode ? t("Compare release-attributed value, maturity, and portfolio decisions without expanding Project authority.") : t("Manage official character profiles and publishing.")}</p>
-          {!performanceMode && canCreate ? (
-            <Link
-              className="mt-4 inline-flex min-h-11 items-center gap-2 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-[var(--ad-surface)] hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]"
-              href="/admin/characters/new"
-            >
-              <Plus aria-hidden="true" className="h-4 w-4" />
-
-              {t("Create Character")}
-            </Link>
-          ) : null}
+          <p className="mt-2 max-w-2xl text-sm text-[var(--ad-text-muted)]">{performanceMode ? t("Compare release-attributed value, maturity, and portfolio decisions without expanding Project authority.") : t("Operate each character from identity setup through images, release, and live care.")}</p>
         </div>
-        <form className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5 lg:items-end" onSubmit={(event) => { event.preventDefault(); apply(); }}>
-          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Search characters")}<input aria-label={t("Search characters")} className={`${fieldClass} mt-1`} onChange={(event) => setSearch(event.target.value)} placeholder={t("Search name or character ID")} value={search} /></label>
-          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Character stage")}<select aria-label={t("Filter by character stage")} className={`${fieldClass} mt-1`} onChange={(event) => setPhase(event.target.value)} value={phase}><option value="">{t("All phases")}</option>{CHARACTER_PORTFOLIO_PHASES.map((value) => <option key={value} value={value}>{t(value.replaceAll("_", " "))}</option>)}</select></label>
-          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Serving state")}<select aria-label={t("Filter by serving state")} className={`${fieldClass} mt-1`} onChange={(event) => setServingState(event.target.value)} value={servingState}><option value="">{t("All serving states")}</option>{CHARACTER_PORTFOLIO_SERVING_STATES.map((value) => <option key={value} value={value}>{t(value.replaceAll("_", " "))}</option>)}</select></label>
-          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Readiness")}<select aria-label={t("Filter by readiness")} className={`${fieldClass} mt-1`} onChange={(event) => setReadiness(event.target.value)} value={readiness}><option value="">{t("All readiness")}</option>{CHARACTER_PORTFOLIO_READINESS_STATES.map((value) => <option key={value} value={value}>{t(value.replaceAll("_", " "))}</option>)}</select></label>
-          <WorkspaceButton tone="primary" type="submit">{t("Apply")}</WorkspaceButton>
-        </form>
+        {!performanceMode && canCreate ? (
+          <Link
+            className="inline-flex min-h-11 shrink-0 items-center gap-2 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-[var(--ad-surface)] hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]"
+            href="/admin/characters/new"
+          >
+            <Plus aria-hidden="true" className="h-4 w-4" />
+
+            {t("Create Character")}
+          </Link>
+        ) : null}
       </div>
+      {!performanceMode && items.length > 0 ? (
+        <CharacterOperationsSummary
+          canOpenAssets={canOpenAssets}
+          canOpenProject={canOpenProjects}
+          items={items}
+        />
+      ) : null}
+      <form
+        aria-label={t("Search and filter characters")}
+        className="mt-5 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3"
+        onSubmit={(event) => {
+          event.preventDefault();
+          apply();
+        }}
+      >
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
+          <label className="min-w-0 flex-1 text-xs font-semibold text-[var(--ad-text-muted)]">
+            {t("Search characters")}
+            <input
+              aria-label={t("Search characters")}
+              className={`${fieldClass} mt-1`}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder={t("Search name or character ID")}
+              value={search}
+            />
+          </label>
+          <WorkspaceButton tone="primary" type="submit">{t("Search")}</WorkspaceButton>
+          <details className="min-w-0 rounded-lg border border-[var(--ad-border)] lg:w-[420px]">
+            <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 px-3 text-sm font-semibold">
+              <span>{t("More filters")}</span>
+              {activeStatusFilterCount > 0 ? (
+                <span className="rounded-full bg-[var(--ad-blue-bg)] px-2 py-1 text-xs text-[var(--ad-blue-text)]">
+                  {t("{count} active filters", { count: activeStatusFilterCount })}
+                </span>
+              ) : null}
+            </summary>
+            <div className="grid gap-3 border-t border-[var(--ad-border)] p-3 sm:grid-cols-3">
+              <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
+                {t("Character stage")}
+                <select aria-label={t("Filter by character stage")} className={`${fieldClass} mt-1`} onChange={(event) => setPhase(event.target.value)} value={phase}>
+                  <option value="">{t("All phases")}</option>
+                  {CHARACTER_PORTFOLIO_PHASES.map((value) => <option key={value} value={value}>{t(value.replaceAll("_", " "))}</option>)}
+                </select>
+              </label>
+              <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
+                {t("Serving state")}
+                <select aria-label={t("Filter by serving state")} className={`${fieldClass} mt-1`} onChange={(event) => setServingState(event.target.value)} value={servingState}>
+                  <option value="">{t("All serving states")}</option>
+                  {CHARACTER_PORTFOLIO_SERVING_STATES.map((value) => <option key={value} value={value}>{t(value.replaceAll("_", " "))}</option>)}
+                </select>
+              </label>
+              <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
+                {t("Readiness")}
+                <select aria-label={t("Filter by readiness")} className={`${fieldClass} mt-1`} onChange={(event) => setReadiness(event.target.value)} value={readiness}>
+                  <option value="">{t("All readiness")}</option>
+                  {CHARACTER_PORTFOLIO_READINESS_STATES.map((value) => <option key={value} value={value}>{t(value.replaceAll("_", " "))}</option>)}
+                </select>
+              </label>
+              {activeStatusFilterCount > 0 ? (
+                <button
+                  className="min-h-11 text-left text-xs font-semibold underline sm:col-span-3"
+                  onClick={clearStatusFilters}
+                  type="button"
+                >
+                  {t("Clear status filters")}
+                </button>
+              ) : null}
+            </div>
+          </details>
+        </div>
+      </form>
       {error ? <div className="mt-5 rounded-lg bg-[var(--ad-red-bg)] p-4 text-sm text-[var(--ad-red-text)]" role="alert">{error} <button className="ml-2 underline" onClick={() => void load({ search, phase: phase || undefined, servingState: servingState || undefined, readiness: readiness || undefined, cursor }, "none")} type="button">{t("Retry")}</button></div> : null}
-      <div className="mt-6">{loading && items.length === 0 ? <LoadingWorkspace label={performanceMode ? "Loading release-attributed portfolio" : "Loading characters"} /> : items.length === 0 ? error ? null : <CharacterListEmptyState filtered={Boolean(search || phase || servingState || readiness)} onClear={() => { setSearch(""); setPhase(""); setServingState(""); setReadiness(""); setCursor(undefined); void load({ search: "" }, "push"); }} /> : <div className="grid gap-3">{items.map((item) => <CharacterPortfolioCard canOpenAssets={canOpenAssets} canOpenProject={canOpenProjects} item={item} key={item.characterId} mode={mode} />)}</div>}</div>
+      <div className="mt-5">{loading && items.length === 0 ? <LoadingWorkspace label={performanceMode ? "Loading release-attributed portfolio" : "Loading characters"} /> : items.length === 0 ? error ? null : <CharacterListEmptyState filtered={Boolean(search || phase || servingState || readiness)} onClear={() => { setSearch(""); setPhase(""); setServingState(""); setReadiness(""); setCursor(undefined); void load({ search: "" }, "push"); }} /> : <div className="grid gap-3">{items.map((item) => <CharacterPortfolioCard canOpenAssets={canOpenAssets} canOpenProject={canOpenProjects} item={item} key={item.characterId} mode={mode} />)}</div>}</div>
       <div className="mt-4 flex items-center justify-between gap-3"><p className="text-xs text-[var(--ad-text-muted)]">{asOf ? t("Fresh as of {time}", { time: new Date(asOf).toLocaleString(locale === "zh" ? "zh-CN" : "en-US") }) : t("No successful query yet")}</p><WorkspaceButton disabled={loading || !pageInfo.hasNextPage || !pageInfo.endCursor} onClick={() => apply(pageInfo.endCursor ?? undefined)}>{t("Next page")}</WorkspaceButton></div>
     </section>
   );
@@ -1375,6 +1595,7 @@ export function VisualIdentityPanel({ data, navigateToTab, permissions, runCommi
   const [routeWorkbenchOpen, setRouteWorkbenchOpen] = useState(
     data.visual.imageReadiness?.state === "route_pending",
   );
+  const [qualificationStepOpen, setQualificationStepOpen] = useState(false);
   const [batchIds, setBatchIds] = useState("");
   const matrixKey = characterRouteEvaluationMatrixKey(
     identity?.style ?? data.character.style,
@@ -1576,6 +1797,7 @@ export function VisualIdentityPanel({ data, navigateToTab, permissions, runCommi
       delete idempotencyKeys.current[requestIdentity.signature];
       setBatchIds(result.batch.id);
       setCreatedEvaluationRunId(result.batch.id);
+      setQualificationStepOpen(true);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Route evaluation Run could not be created");
     } finally {
@@ -1845,7 +2067,152 @@ export function VisualIdentityPanel({ data, navigateToTab, permissions, runCommi
 
     <aside className="space-y-5">
       <details className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"><summary className="cursor-pointer font-semibold">{t("Advanced identity controls")}</summary><section className="mt-4" aria-labelledby="new-identity-title"><h3 className="font-semibold" id="new-identity-title">{t("Create identity version")}</h3><p className="mt-1 text-xs text-[var(--ad-text-muted)]">{t("Creates a new active immutable version; existing assets are carried forward.")}</p>{requiresReviewedBootstrap ? <div className="mt-4 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]"><p>{t("Establish a reviewed portrait anchor in Character Assets before creating later identity versions.")}</p>{navigateToTab ? <div className="mt-3"><WorkspaceButton onClick={() => navigateToTab("assets")}>{t("Open Character Assets")}</WorkspaceButton></div> : null}</div> : blockedIdentityRepair ? <div className="mt-4 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]"><p>{t("This character has earlier visual history but no usable portrait authority. Repair its reviewed image evidence before creating another identity version.")}</p><details className="mt-2 text-xs"><summary className="cursor-pointer font-semibold">{t("Technical identity diagnostics")}</summary><ul className="mt-2 space-y-1">{data.visual.identityBootstrap.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul></details></div> : usesCurrentCharacterImageAsAnchor ? <p className="mt-4 rounded-lg bg-[var(--ad-blue-bg)] p-3 text-sm text-[var(--ad-blue-text)]">{t("The current Character image is available and will be carried forward as the anchor for this identity version.")}</p> : null}<label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">{t("Identity lock")}<textarea className={`${textAreaClass} mt-1`} onChange={(event) => setIdentityPrompt(event.target.value)} value={identityPrompt} /></label><label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">{t("Must not change")}<textarea className={`${textAreaClass} mt-1`} onChange={(event) => setNegativeIdentityPrompt(event.target.value)} value={negativeIdentityPrompt} /></label><div className="mt-3 grid grid-cols-2 gap-2"><label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Style")}<select className={`${fieldClass} mt-1`} onChange={(event) => setStyle(event.target.value)} value={style}>{["realistic", "anime", "hybrid", "other"].map((value) => <option key={value}>{value}</option>)}</select></label><label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Seed")}<input className={`${fieldClass} mt-1`} onChange={(event) => setDefaultSeed(event.target.value)} value={defaultSeed} /></label></div><label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">{t("Change reason")}<input className={`${fieldClass} mt-1`} onChange={(event) => setIdentityReason(event.target.value)} value={identityReason} /></label><label className="mt-3 flex items-start gap-2 text-xs"><input checked={identityConfirmed} className="mt-0.5" onChange={(event) => setIdentityConfirmed(event.target.checked)} type="checkbox" /><span>{t("Activate this as a new identity version.")}</span></label><div className="mt-4"><WorkspaceButton disabled={requiresReviewedBootstrap || blockedIdentityRepair || !permissions.writeVisual || busy !== null || identityReason.trim().length < 3 || !identityConfirmed} onClick={() => void createIdentityVersion()} tone="primary">{t("Create & activate version")}</WorkspaceButton></div>{!permissions.writeVisual ? <p className="mt-2 text-xs text-[var(--ad-text-muted)]">{t("Read-only: content.official.write is not granted.")}</p> : null}</section></details>
-      <details className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" id="route-qualification-workbench" onToggle={(event) => setRouteWorkbenchOpen(event.currentTarget.open)} open={routeWorkbenchOpen}><summary className="cursor-pointer font-semibold">{t("Platform route evidence controls")}</summary><section className="mt-4" aria-labelledby="evaluate-route-title"><h3 className="font-semibold" id="evaluate-route-title">{t("Evaluate route evidence")}</h3><p className="mt-1 text-xs text-[var(--ad-text-muted)]">{t("Create the fixed 40-image identity matrix, review every image, then publish the measured route result. Character image production unlocks only after the evidence reaches the policy threshold.")}</p><div className="mt-4 rounded-lg border border-[var(--ad-border)] p-3"><div className="flex items-center justify-between gap-3"><strong className="text-sm">{t("1. Create evaluation matrix")}</strong><StatusBadge value={routeEvaluation.ready ? "ready" : "blocked"} /></div>{routeEvaluation.ready ? <><label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">{t("Candidate image route")}<select className={`${fieldClass} mt-1`} onChange={(event) => setEvaluationProfileKey(event.target.value)} value={resolvedEvaluationProfileKey}>{routeEvaluation.profiles.map((profile) => <option key={`${profile.profileKey}:${profile.profileVersion}`} value={profile.profileKey}>{profile.label} · v{profile.profileVersion}{profile.recommended ? ` · ${t("Recommended")}` : ""}</option>)}</select></label><p className="mt-2 text-xs text-[var(--ad-text-muted)]">{t("{count} fixed samples · evaluator {version}", { count: routeEvaluation.sampleMinimum, version: routeEvaluation.evaluatorVersion })}</p><div className="mt-3 flex flex-wrap gap-2"><WorkspaceButton disabled={!permissions.evaluateRoute || busy !== null || !identity || !resolvedEvaluationProfileKey} onClick={() => void createRouteEvaluationRun()} tone="primary">{busy === "evaluation-run" ? t("Creating matrix…") : t("Create 40-sample matrix")}</WorkspaceButton>{createdEvaluationRunId ? <Link className="inline-flex min-h-11 items-center text-sm font-semibold underline" href={`/admin/creative/runs/${createdEvaluationRunId}`}>{t("Review generated samples")}</Link> : null}</div></> : <p className="mt-3 text-xs text-[var(--ad-yellow-text)]">{t(routeEvaluation.blocker ?? "Route evaluation is not ready.")}</p>}</div><div className="mt-3 rounded-lg border border-[var(--ad-border)] p-3"><strong className="text-sm">{t("2. Publish measured result")}</strong><p className="mt-1 text-xs text-[var(--ad-text-muted)]">{t("Batch IDs are immutable Creative Run IDs. Every sample must have a completed generation and exact automatic or human identity evidence.")}</p><label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">{t("Batch IDs")}<textarea className={`${textAreaClass} mt-1`} onChange={(event) => setBatchIds(event.target.value)} placeholder={t("Comma or newline separated")} value={batchIds} /></label><label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">{t("Matrix key")}<input aria-readonly="true" className={`${fieldClass} mt-1`} readOnly value={matrixKey} /></label><label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">{t("Cost/latency evidence reference")}<input className={`${fieldClass} mt-1`} onChange={(event) => setGuardrailEvidence(event.target.value)} value={guardrailEvidence} /></label><label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">{t("Evaluation reason")}<input className={`${fieldClass} mt-1`} onChange={(event) => setQualificationReason(event.target.value)} value={qualificationReason} /></label><p className="mt-3 text-xs text-[var(--ad-text-muted)]">{t("Policy:")} {data.visual.readiness.qualificationPolicyVersion}</p><div className="mt-4"><WorkspaceButton disabled={!permissions.evaluateRoute || busy !== null || !batchIds.trim() || !guardrailEvidence.trim() || qualificationReason.trim().length < 3 || !identity} onClick={() => void evaluateRoute()} tone="primary">{t("Submit route evaluation")}</WorkspaceButton></div></div>{!permissions.evaluateRoute ? <p className="mt-2 text-xs text-[var(--ad-text-muted)]">{t("Read-only: content.production.write is not granted.")}</p> : null}</section></details>
+      <details
+        className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"
+        id="route-qualification-workbench"
+        onToggle={(event) => setRouteWorkbenchOpen(event.currentTarget.open)}
+        open={routeWorkbenchOpen}
+      >
+        <summary className="cursor-pointer font-semibold">
+          {t("Image route validation")}
+        </summary>
+        <section className="mt-4" aria-labelledby="evaluate-route-title">
+          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[var(--ad-text-muted)]">
+            {t("Current setup task")}
+          </p>
+          <h3 className="mt-2 text-lg font-semibold" id="evaluate-route-title">
+            {t("Validate this image route")}
+          </h3>
+          <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">
+            {t("Generate and review a fixed 40-image test. Submit the measured result only after every image has review evidence.")}
+          </p>
+          <div className="mt-4 rounded-lg border border-[var(--ad-border)] p-4">
+            <div className="flex items-center justify-between gap-3">
+              <strong className="text-sm">{t("1. Generate route test images")}</strong>
+              <StatusBadge value={routeEvaluation.ready ? "ready" : "blocked"} />
+            </div>
+            {routeEvaluation.ready ? (
+              <>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <WorkspaceButton
+                    disabled={!permissions.evaluateRoute || busy !== null || !identity || !resolvedEvaluationProfileKey}
+                    onClick={() => void createRouteEvaluationRun()}
+                    tone="primary"
+                  >
+                    {busy === "evaluation-run"
+                      ? t("Creating route test…")
+                      : t("Generate 40 route test images")}
+                  </WorkspaceButton>
+                  {createdEvaluationRunId ? (
+                    <Link
+                      className="inline-flex min-h-11 items-center text-sm font-semibold underline"
+                      href={`/admin/creative/runs/${createdEvaluationRunId}`}
+                    >
+                      {t("Review generated samples")}
+                    </Link>
+                  ) : null}
+                </div>
+                <details className="mt-3 border-t border-[var(--ad-border)] pt-3">
+                  <summary className="cursor-pointer text-xs font-semibold text-[var(--ad-text-muted)]">
+                    {t("Route and test details")}
+                  </summary>
+                  <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">
+                    {t("Candidate image route")}
+                    <select
+                      className={`${fieldClass} mt-1`}
+                      onChange={(event) => setEvaluationProfileKey(event.target.value)}
+                      value={resolvedEvaluationProfileKey}
+                    >
+                      {routeEvaluation.profiles.map((profile) => (
+                        <option
+                          key={`${profile.profileKey}:${profile.profileVersion}`}
+                          value={profile.profileKey}
+                        >
+                          {profile.label} · v{profile.profileVersion}
+                          {profile.recommended ? ` · ${t("Recommended")}` : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <p className="mt-2 text-xs text-[var(--ad-text-muted)]">
+                    {t("{count} fixed samples · evaluator {version}", {
+                      count: routeEvaluation.sampleMinimum,
+                      version: routeEvaluation.evaluatorVersion,
+                    })}
+                  </p>
+                </details>
+              </>
+            ) : (
+              <p className="mt-3 text-xs text-[var(--ad-yellow-text)]">
+                {t(routeEvaluation.blocker ?? "Route evaluation is not ready.")}
+              </p>
+            )}
+          </div>
+          <details
+            className="mt-3 rounded-lg border border-[var(--ad-border)]"
+            onToggle={(event) => setQualificationStepOpen(event.currentTarget.open)}
+            open={qualificationStepOpen}
+          >
+            <summary className="flex min-h-12 cursor-pointer list-none items-center justify-between gap-3 px-4 text-sm font-semibold">
+              <span>{t("2. Submit the reviewed result")}</span>
+              <span className="text-xs font-normal text-[var(--ad-text-muted)]">
+                {batchIds.trim() ? t("Test batch ready") : t("After image review")}
+              </span>
+            </summary>
+            <div className="border-t border-[var(--ad-border)] p-4">
+              <p className="text-xs leading-5 text-[var(--ad-text-muted)]">
+                {t("Open this after every test image has been reviewed. Existing batch IDs can also be entered here.")}
+              </p>
+              <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">
+                {t("Batch IDs")}
+                <textarea
+                  className={`${textAreaClass} mt-1`}
+                  onChange={(event) => setBatchIds(event.target.value)}
+                  placeholder={t("Comma or newline separated")}
+                  value={batchIds}
+                />
+              </label>
+              <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">
+                {t("Matrix key")}
+                <input aria-readonly="true" className={`${fieldClass} mt-1`} readOnly value={matrixKey} />
+              </label>
+              <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">
+                {t("Cost/latency evidence reference")}
+                <input
+                  className={`${fieldClass} mt-1`}
+                  onChange={(event) => setGuardrailEvidence(event.target.value)}
+                  value={guardrailEvidence}
+                />
+              </label>
+              <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">
+                {t("Evaluation reason")}
+                <input
+                  className={`${fieldClass} mt-1`}
+                  onChange={(event) => setQualificationReason(event.target.value)}
+                  value={qualificationReason}
+                />
+              </label>
+              <p className="mt-3 text-xs text-[var(--ad-text-muted)]">
+                {t("Policy:")} {data.visual.readiness.qualificationPolicyVersion}
+              </p>
+              <div className="mt-4">
+                <WorkspaceButton
+                  disabled={!permissions.evaluateRoute || busy !== null || !batchIds.trim() || !guardrailEvidence.trim() || qualificationReason.trim().length < 3 || !identity}
+                  onClick={() => void evaluateRoute()}
+                  tone="primary"
+                >
+                  {t("Submit route evaluation")}
+                </WorkspaceButton>
+              </div>
+            </div>
+          </details>
+          {!permissions.evaluateRoute ? (
+            <p className="mt-2 text-xs text-[var(--ad-text-muted)]">
+              {t("Read-only: content.production.write is not granted.")}
+            </p>
+          ) : null}
+        </section>
+      </details>
       {error ? <p className="text-sm text-[var(--ad-red-text)]" role="alert">{error}</p> : null}
     </aside>
   </div>;

@@ -112,10 +112,17 @@ describe("Visual Identity operator workbench", () => {
     expect(html).toContain("Unchecked images leave runtime authority");
     expect(html).toContain("38/40 passed");
     expect(html).toContain("Advanced identity controls");
-    expect(html).toContain("Platform route evidence controls");
-    expect(html).toContain("Create 40-sample matrix");
+    expect(html).toContain("Image route validation");
+    expect(html).toContain("Validate this image route");
+    expect(html).toContain("Generate 40 route test images");
+    expect(html).toContain("2. Submit the reviewed result");
+    expect(html).toContain("After image review");
+    expect(html).toContain("Route and test details");
     expect(html).toContain("Candidate image route");
     expect(html).toContain("Submit route evaluation");
+    expect(html.indexOf("Generate 40 route test images")).toBeLessThan(
+      html.indexOf("Batch IDs"),
+    );
     expect(html).toContain('aria-readonly="true"');
     expect(html).toContain("realistic-identity-v1");
   });
