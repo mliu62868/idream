@@ -3633,7 +3633,7 @@ test("chat UI preserves input and shows upgrade path at the free daily limit", a
   });
 });
 
-test("chat UI plays assistant voice clips for entitled users", async ({ page }) => {
+test("chat UI prewarms and plays assistant voice clips for entitled users", async ({ page }) => {
   await page.addInitScript(() => {
     const originalPause = window.HTMLMediaElement.prototype.pause;
     window.HTMLMediaElement.prototype.play = function play() {
@@ -3666,11 +3666,6 @@ test("chat UI plays assistant voice clips for entitled users", async ({ page }) 
 
   const playButton = assistantBubble.getByRole("button", { name: "Play voice" });
   await expect(playButton).toBeVisible();
-  await playButton.click();
-  const stopButton = assistantBubble.getByRole("button", { name: "Stop voice" });
-  await expect(stopButton).toBeVisible({ timeout: 30_000 });
-  await expect(stopButton).toHaveAttribute("data-state", "playing");
-  await expect(stopButton).toHaveAttribute("aria-pressed", "true");
   await expect
     .poll(async () => {
       const asset = await prisma.mediaAsset.findFirst({
@@ -3695,6 +3690,11 @@ test("chat UI plays assistant voice clips for entitled users", async ({ page }) 
       cost: 0,
       url: expect.stringContaining("/api/v1/media/"),
     });
+  await playButton.click();
+  const stopButton = assistantBubble.getByRole("button", { name: "Stop voice" });
+  await expect(stopButton).toBeVisible({ timeout: 30_000 });
+  await expect(stopButton).toHaveAttribute("data-state", "playing");
+  await expect(stopButton).toHaveAttribute("aria-pressed", "true");
 });
 
 // P1-A management controls (plan §10.3): edit latest user turn, regenerate,

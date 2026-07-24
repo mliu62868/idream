@@ -38,6 +38,17 @@ import {
 
 type ChatLoadState = "loading" | "ready" | "signed-out" | "error";
 
+type VoiceClipRequestResult = {
+  url: string | null;
+  reason:
+    | "allowance_exhausted"
+    | "disabled"
+    | "failed"
+    | "not_entitled"
+    | "payment_required"
+    | null;
+};
+
 const BLOCKED_ASSISTANT_NOTICE = "I can’t help with that request.";
 
 function upgradeHrefForChatSession(sessionId: string) {
@@ -73,7 +84,9 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [relationshipRefreshKey, setRelationshipRefreshKey] = useState(0);
-  const [voiceLoadingId, setVoiceLoadingId] = useState<string | null>(null);
+  const [voicePreparingIds, setVoicePreparingIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const [voicePlayingId, setVoicePlayingId] = useState<string | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingContent, setEditingContent] = useState("");
@@ -90,6 +103,10 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     useRef<Map<string, string>>(new Map());
   const streamSources = useRef<Map<string, EventSource>>(new Map());
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const automaticVoiceAttemptIdsRef = useRef<Set<string>>(new Set());
+  const voiceClipRequestsRef =
+    useRef<Map<string, Promise<VoiceClipRequestResult>>>(new Map());
+  const voiceClipUrlsRef = useRef<Map<string, string>>(new Map());
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const sessionMutationEpochRef = useRef(0);
   const canSend = content.trim().length > 0 && !pending;
@@ -120,6 +137,11 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
       streamSources.current.clear();
       audioRef.current?.pause();
       audioRef.current = null;
+      automaticVoiceAttemptIdsRef.current.clear();
+      voiceClipRequestsRef.current.clear();
+      voiceClipUrlsRef.current.clear();
+      setVoicePreparingIds(new Set());
+      setVoicePlayingId(null);
       sessionMutationEpochRef.current += 1;
       variationIdempotencyKeysRef.current.clear();
       setVariationPendingMediaId(null);
@@ -247,6 +269,33 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     pending,
   ]);
 
+  useEffect(() => {
+    if (!ageGateAccepted || loadState !== "ready" || !characterId) return;
+    const latestCompletedAssistant = messages.findLast(
+      (message) =>
+        message.role === "assistant" &&
+        message.content.trim().length > 0 &&
+        message.status !== "blocked" &&
+        message.status !== "generating" &&
+        message.status !== "pending",
+    );
+    if (
+      !latestCompletedAssistant ||
+      automaticVoiceAttemptIdsRef.current.has(latestCompletedAssistant.id)
+    ) {
+      return;
+    }
+    automaticVoiceAttemptIdsRef.current.add(latestCompletedAssistant.id);
+    void requestVoiceClip(
+      latestCompletedAssistant.id,
+      latestCompletedAssistant.content,
+      "prewarm",
+    );
+    // requestVoiceClip intentionally coalesces requests by message id. Re-run only
+    // when canonical message state changes or a new session/character loads.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ageGateAccepted, characterId, id, loadState, messages]);
+
   function stopVoice() {
     const audio = audioRef.current;
     if (audio) {
@@ -257,9 +306,67 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     setVoicePlayingId(null);
   }
 
-  // SPEC: On-demand TTS playback for an assistant turn. POSTs the message to the
-  //       voice endpoint (server caches per messageId), then streams the audio.
-  // INTENT: clicking again toggles playback off; 402 surfaces the upgrade path.
+  async function requestVoiceClip(
+    messageId: string,
+    text: string,
+    intent: "play" | "prewarm",
+  ): Promise<VoiceClipRequestResult> {
+    const cachedUrl = voiceClipUrlsRef.current.get(messageId);
+    if (cachedUrl) return { url: cachedUrl, reason: null };
+    const existingRequest = voiceClipRequestsRef.current.get(messageId);
+    if (existingRequest) return existingRequest;
+
+    setVoicePreparingIds((current) => new Set(current).add(messageId));
+    const request = (async (): Promise<VoiceClipRequestResult> => {
+      try {
+        const response = await fetch("/api/v1/generation/voice", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            characterId,
+            messageId,
+            sessionId: id,
+            text,
+            intent,
+          }),
+        });
+        if (response.status === 402) {
+          return { url: null, reason: "payment_required" };
+        }
+        if (!response.ok) return { url: null, reason: "failed" };
+        const payload = (await response.json()) as {
+          data?: {
+            contentUrl?: string;
+            reason?: "allowance_exhausted" | "disabled" | "not_entitled";
+          };
+        };
+        const url = payload.data?.contentUrl;
+        if (url) {
+          voiceClipUrlsRef.current.set(messageId, url);
+          return { url, reason: null };
+        }
+        return {
+          url: null,
+          reason: payload.data?.reason ?? "failed",
+        };
+      } catch {
+        return { url: null, reason: "failed" };
+      }
+    })().finally(() => {
+      voiceClipRequestsRef.current.delete(messageId);
+      setVoicePreparingIds((current) => {
+        const next = new Set(current);
+        next.delete(messageId);
+        return next;
+      });
+    });
+    voiceClipRequestsRef.current.set(messageId, request);
+    return request;
+  }
+
+  // SPEC: Every completed assistant turn is already prewarmed. The play action
+  //       reuses that result (or its in-flight request) and only falls back to an
+  //       explicit paid request when included voice minutes are exhausted.
   async function playMessage(messageId: string, text: string) {
     if (!characterId || !text.trim()) return;
     if (voicePlayingId === messageId) {
@@ -268,29 +375,24 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     }
     stopVoice();
     setStatus(null);
-    setVoiceLoadingId(messageId);
     try {
-      const response = await fetch("/api/v1/generation/voice", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ characterId, messageId, sessionId: id, text }),
-      });
-      if (response.status === 402) {
+      let result = await requestVoiceClip(messageId, text, "play");
+      if (result.reason === "allowance_exhausted") {
+        result = await requestVoiceClip(messageId, text, "play");
+      }
+      if (
+        result.reason === "not_entitled" ||
+        result.reason === "payment_required"
+      ) {
         setQuotaReached(true);
         setStatus("Voice playback needs a plan with voice enabled.");
         return;
       }
-      if (!response.ok) {
+      if (!result.url) {
         setStatus("Voice playback failed. Please try again.");
         return;
       }
-      const payload = (await response.json()) as { data?: { contentUrl?: string } };
-      const url = payload.data?.contentUrl;
-      if (!url) {
-        setStatus("Voice playback failed. Please try again.");
-        return;
-      }
-      const audio = new Audio(url);
+      const audio = new Audio(result.url);
       audioRef.current = audio;
       audio.onended = () =>
         setVoicePlayingId((current) => (current === messageId ? null : current));
@@ -302,8 +404,6 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
       setVoicePlayingId(messageId);
     } catch {
       setStatus("Voice playback failed. Please try again.");
-    } finally {
-      setVoiceLoadingId((current) => (current === messageId ? null : current));
     }
   }
 
@@ -890,7 +990,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
                           isUser={isUser}
                           pending={pending || editingPending}
                           voiceState={
-                            voiceLoadingId === message.id
+                            voicePreparingIds.has(message.id)
                               ? "loading"
                               : voicePlayingId === message.id
                                 ? "playing"

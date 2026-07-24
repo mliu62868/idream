@@ -6,9 +6,14 @@ to take it from `mock` to a **publishable production** state.
 
 ## What ships in code (already done)
 
-- **API** — `POST /api/v1/generation/voice` `{characterId, messageId, sessionId?, text}`
+- **API** — `POST /api/v1/generation/voice`
+  `{characterId, messageId, sessionId?, text, intent: "prewarm" | "play"}`
   → `{assetId, contentUrl, durationMs}`. Auth + age-gate + `voice_gen` flag +
   `voice_enabled` entitlement gated. Per-message cached (one clip per `messageId`).
+- **Chat delivery** — each completed assistant turn prewarms its clip in the
+  background without delaying text. Prewarm uses included `voice_minutes` only and
+  never spends Dreamcoins automatically; explicit Play reuses the cache and retains
+  the existing overflow-price path when the allowance is exhausted.
 - **Billing** — plan `voice_minutes` allowance is spent first (rolling 30-day window);
   overflow falls back to a per-clip Dreamcoin charge (`PricingRule` mode `voice`,
   default 2). Debit + asset write are atomic; concurrent double-clicks are de-duped.

@@ -4003,18 +4003,20 @@ function clampPrompt(value: string, max: number) {
   return value.length <= max ? value : `${value.slice(0, max - 3).trimEnd()}...`;
 }
 
-// SPEC: On-demand TTS for a single assistant chat turn ("play voice" button).
-// INTENT: synchronous + cached — voice is fast, so skip the async job pipeline.
-//         One MediaAsset per messageId acts as the cache; replays cost nothing.
-// INVARIANTS: gated by the `voice_enabled` entitlement; charges Dreamcoins once
-//         (refunded if synthesis fails); character must be age>=18.
-// EXAMPLE: POST /api/v1/generation/voice {characterId, messageId, text}
+// SPEC: Cached TTS for one assistant chat turn. The client prewarms each completed
+//       reply and the play button reuses the same endpoint and MediaAsset.
+// INTENT: synchronous at this seam, but prewarming runs off the reply-rendering
+//         path so text is never delayed by speech generation.
+// INVARIANTS: prewarm uses included minutes only and never spends Dreamcoins
+//         without a play action; character must be age>=18.
+// EXAMPLE: POST /api/v1/generation/voice {characterId, messageId, text, intent}
 //          → {assetId, contentUrl, durationMs}
 const voiceClipSchema = z.object({
   characterId: z.string().min(1),
   messageId: z.string().min(1),
   sessionId: z.string().min(1).optional(),
   text: z.string().trim().min(1).max(2_000),
+  intent: z.enum(["play", "prewarm"]).default("play"),
 });
 
 const voiceClipCacheVersion = 5;
@@ -4025,15 +4027,18 @@ async function createVoiceClip(request: Request) {
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   const body = voiceClipSchema.parse(await jsonBody(request));
+  const prewarming = body.intent === "prewarm";
 
   // Release gate: a single flag fronts all voice traffic for controlled rollout /
   // kill-switch, mirroring video_gen.
   if (!(await featureFlagEnabled("voice_gen"))) {
+    if (prewarming) return ok(voicePrewarmSkipped(body.messageId, "disabled"));
     throw Errors.forbidden("Voice generation is disabled");
   }
 
   const entitlements = await entitlementMap(user.id);
   if (entitlements.voice_enabled !== true) {
+    if (prewarming) return ok(voicePrewarmSkipped(body.messageId, "not_entitled"));
     throw Errors.paymentRequired("Voice playback requires a plan with voice enabled", {
       entitlement: "voice_enabled",
     });
@@ -4061,12 +4066,24 @@ async function createVoiceClip(request: Request) {
   const tone = characterVoiceTone(character);
 
   const overflowCost = await voiceClipCost();
+  const remainingBeforeSynthesis = await voiceMinutesRemainingMs(
+    user.id,
+    entitlements,
+  );
+  if (
+    prewarming &&
+    !hasStaleCachedClip &&
+    remainingBeforeSynthesis <= 0
+  ) {
+    return ok(voicePrewarmSkipped(body.messageId, "allowance_exhausted"));
+  }
   // Fast-fail only when the allowance is already exhausted. The authoritative
   // metering decision happens after synthesis because duration determines coverage.
   if (
+    !prewarming &&
     !hasStaleCachedClip &&
     overflowCost > 0 &&
-    (await voiceMinutesRemainingMs(user.id, entitlements)) <= 0 &&
+    remainingBeforeSynthesis <= 0 &&
     (await dreamcoinBalance(user.id)) < overflowCost
   ) {
     throw Errors.paymentRequired("Insufficient dreamcoins", {
@@ -4086,65 +4103,81 @@ async function createVoiceClip(request: Request) {
   // Debit + persist atomically under the per-user ledger lock. The lock also makes
   // the cache re-check race-free, so a concurrent double-click can neither create a
   // duplicate clip nor double-charge; a create failure rolls the charge back.
-  const asset = await prisma.$transaction(async (tx) => {
-    await lockUserLedger(tx, user.id);
-    const racedAssets = await tx.mediaAsset.findMany({
-      where: cacheWhere,
-      orderBy: { createdAt: "desc" },
-    });
-    const raced = racedAssets.find(isCurrentVoiceClip);
-    if (raced) return raced;
-    const staleAssetIds = racedAssets.map((asset) => asset.id);
-    if (staleAssetIds.length > 0) {
-      await tx.mediaAsset.updateMany({
-        where: { id: { in: staleAssetIds } },
-        data: { deletedAt: new Date() },
+  let asset: Awaited<ReturnType<typeof prisma.mediaAsset.create>> | null = null;
+  try {
+    asset = await prisma.$transaction(async (tx) => {
+      await lockUserLedger(tx, user.id);
+      const racedAssets = await tx.mediaAsset.findMany({
+        where: cacheWhere,
+        orderBy: { createdAt: "desc" },
       });
-    }
-    const durationMs = Math.max(0, result.data.durationMs);
-    const remainingMs = await voiceMinutesRemainingMs(user.id, entitlements, tx);
-    const cost = staleAssetIds.length > 0 || remainingMs >= durationMs ? 0 : overflowCost;
-    if (cost > 0) {
-      const balance = await dreamcoinBalance(user.id, tx);
-      if (balance < cost) {
-        throw Errors.paymentRequired("Insufficient dreamcoins", { balance, cost, required: cost });
+      const raced = racedAssets.find(isCurrentVoiceClip);
+      if (raced) return raced;
+      const staleAssetIds = racedAssets.map((existingAsset) => existingAsset.id);
+      const durationMs = Math.max(0, result.data.durationMs);
+      const remainingMs = await voiceMinutesRemainingMs(user.id, entitlements, tx);
+      const cost = staleAssetIds.length > 0 || remainingMs >= durationMs ? 0 : overflowCost;
+      if (prewarming && cost > 0) return null;
+      if (staleAssetIds.length > 0) {
+        await tx.mediaAsset.updateMany({
+          where: { id: { in: staleAssetIds } },
+          data: { deletedAt: new Date() },
+        });
       }
-      await appendLedger(
-        tx,
-        user.id,
-        -cost,
-        "generation_spend",
-        mediaId,
-        `voice:${body.messageId}:spend`,
-      );
-    }
-    return tx.mediaAsset.create({
-      data: {
-        id: mediaId,
-        ownerId: user.id,
-        characterId: character.id,
-        type: "voice",
-        url: `/api/v1/media/${mediaId}/content`,
-        storageKey: result.data.key,
-        contentType: voiceContentType(result.data.key),
-        providerAssetId: result.data.key,
-        prompt: body.text.slice(0, 500),
-        visibility: "private",
-        safetyStatus: "passed",
-        metadata: toInputJson({
-          cacheVersion: voiceClipCacheVersion,
-          messageId: body.messageId,
-          sessionId: body.sessionId ?? null,
-          voiceId: character.voiceId ?? null,
-          tone,
-          durationMs,
-          providerKey: result.data.key,
-          costDreamcoins: cost,
-          replacedAssetIds: staleAssetIds,
-        }),
-      },
+      if (cost > 0) {
+        const balance = await dreamcoinBalance(user.id, tx);
+        if (balance < cost) {
+          throw Errors.paymentRequired("Insufficient dreamcoins", { balance, cost, required: cost });
+        }
+        await appendLedger(
+          tx,
+          user.id,
+          -cost,
+          "generation_spend",
+          mediaId,
+          `voice:${body.messageId}:spend`,
+        );
+      }
+      return tx.mediaAsset.create({
+        data: {
+          id: mediaId,
+          ownerId: user.id,
+          characterId: character.id,
+          type: "voice",
+          url: `/api/v1/media/${mediaId}/content`,
+          storageKey: result.data.key,
+          contentType: voiceContentType(result.data.key),
+          providerAssetId: result.data.key,
+          prompt: body.text.slice(0, 500),
+          visibility: "private",
+          safetyStatus: "passed",
+          metadata: toInputJson({
+            cacheVersion: voiceClipCacheVersion,
+            messageId: body.messageId,
+            sessionId: body.sessionId ?? null,
+            voiceId: character.voiceId ?? null,
+            tone,
+            durationMs,
+            providerKey: result.data.key,
+            costDreamcoins: cost,
+            generationIntent: prewarming ? "automatic" : "requested",
+            replacedAssetIds: staleAssetIds,
+          }),
+        },
+      });
     });
-  });
+  } catch (cause) {
+    await providers.blob.delete({ key: result.data.key });
+    throw cause;
+  }
+
+  if (!asset) {
+    await providers.blob.delete({ key: result.data.key });
+    return ok(voicePrewarmSkipped(body.messageId, "allowance_exhausted"));
+  }
+  if (asset.id !== mediaId) {
+    await providers.blob.delete({ key: result.data.key });
+  }
 
   // 201 when we created the clip; 200 when a concurrent request beat us to it.
   return ok(voiceClipResponse(asset), { status: asset.id === mediaId ? 201 : 200 });
@@ -4213,6 +4246,17 @@ function voiceClipResponse(asset: { id: string; url: string; metadata: Prisma.Js
     contentUrl: asset.url,
     durationMs: typeof metadata.durationMs === "number" ? metadata.durationMs : 0,
     messageId: typeof metadata.messageId === "string" ? metadata.messageId : null,
+  };
+}
+
+function voicePrewarmSkipped(
+  messageId: string,
+  reason: "allowance_exhausted" | "disabled" | "not_entitled",
+) {
+  return {
+    messageId,
+    prewarmed: false as const,
+    reason,
   };
 }
 

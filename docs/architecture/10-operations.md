@@ -133,6 +133,9 @@ POCKET_TTS_OMLX_RUNTIME_VERSION=0.5.3
 操作者试听后，只有具备 `character.release.publish` 的账号才能明确启用候选。
 启用事务会归档旧 active profile、激活同一份已试听候选、写 Audit/Outbox，并原子更新
 `Character.voiceId`；新生成的聊天语音立即使用新声音，已有缓存 clip 保持不变。
+聊天页会在每条助手回复完成后后台预生成并按 `messageId` 缓存语音，不阻塞文字回复；
+自动预生成只消耗套餐内 `voice_minutes`，不会自动扣梦币。用户显式点击播放时复用
+已有或进行中的生成；套餐分钟不足时才进入原有的显式溢出计费路径。
 
 `POCKET_TTS_API_TOKEN` 保护 Main → adapter；`POCKET_TTS_OMLX_API_TOKEN`
 保护 adapter → oMLX。旧 PyTorch/独立 MLX gateway 生成的 voice-state 文件不是

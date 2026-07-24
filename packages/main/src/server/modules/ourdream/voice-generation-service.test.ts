@@ -158,6 +158,68 @@ describe("voice generation service contract", () => {
     expect((asset.metadata as { costDreamcoins?: number }).costDreamcoins).toBe(0);
   });
 
+  it("prewarms an entitled assistant reply from included minutes without charging coins", async () => {
+    const userId = `${P}prewarm-user`;
+    await createUser({ id: userId });
+    await grantCoins(userId, 100, "seed");
+    await grantVoice(userId, 30);
+
+    const res = await api("POST", "generation/voice", {
+      userId,
+      ageGate: true,
+      body: {
+        characterId: CHAR,
+        messageId: `${P}msg-prewarm`,
+        sessionId: `${P}session-prewarm`,
+        text: "This completed assistant reply should already be voiced.",
+        intent: "prewarm",
+      },
+    });
+
+    expectOk(res, 201);
+    expect(await dreamcoinBalance(userId)).toBe(100);
+    const asset = await prisma.mediaAsset.findUniqueOrThrow({
+      where: { id: res.data.assetId },
+    });
+    expect(asset.metadata).toMatchObject({
+      costDreamcoins: 0,
+      generationIntent: "automatic",
+      messageId: `${P}msg-prewarm`,
+      sessionId: `${P}session-prewarm`,
+    });
+  });
+
+  it("skips automatic prewarm instead of spending overflow coins", async () => {
+    const userId = `${P}prewarm-overflow-user`;
+    await createUser({ id: userId });
+    await grantCoins(userId, 100, "seed");
+    await grantVoice(userId);
+
+    const res = await api("POST", "generation/voice", {
+      userId,
+      ageGate: true,
+      body: {
+        characterId: CHAR,
+        messageId: `${P}msg-prewarm-overflow`,
+        text: "Do not charge for automatic voice generation.",
+        intent: "prewarm",
+      },
+    });
+
+    expectOk(res, 200);
+    expect(res.data).toEqual({
+      messageId: `${P}msg-prewarm-overflow`,
+      prewarmed: false,
+      reason: "allowance_exhausted",
+    });
+    expect(await dreamcoinBalance(userId)).toBe(100);
+    expect(
+      await prisma.mediaAsset.count({
+        where: { ownerId: userId, type: "voice" },
+      }),
+    ).toBe(0);
+  });
+
   it("honors active plan voice features when derived entitlement rows are missing", async () => {
     const userId = `${P}stale-sub-user`;
     const planId = `${P}stale-plan`;
