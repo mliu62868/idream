@@ -315,6 +315,96 @@ async function findRouteEvaluationGenerationProfiles(
   }));
 }
 
+async function findIdentityCalibrationGenerationProfiles() {
+  const profiles = await prisma.generationModelProfile.findMany({
+    where: {
+      mode: "image",
+      status: "active",
+      enabled: true,
+      rolloutPercent: { gt: 0 },
+    },
+    orderBy: [
+      { publishedAt: "desc" },
+      { version: "desc" },
+      { profileKey: "asc" },
+    ],
+    take: 80,
+  });
+  const compatible: Array<{
+    profileKey: string;
+    profileVersion: number;
+    label: string;
+    workflowKey: string;
+    workflowVersion: number;
+    orientation: string;
+    allowedOrientations: string[];
+    modes: Array<"text_to_image" | "image_to_image">;
+    requiredEntitlement: string | null;
+  }> = [];
+  for (const profile of profiles) {
+    const workflowKey = profile.workflowKey ?? profile.pipelineModel;
+    const workflow = await generationWorkflowDescriptor(workflowKey);
+    if (!workflow) continue;
+    const capabilities = record(
+      record(profile.runnerConfig).capabilities as Prisma.JsonValue | undefined,
+    );
+    const modes: Array<"text_to_image" | "image_to_image"> = [];
+    if (
+      workflow.identity.mode === "none" &&
+      workflow.identity.maxReferences === 0 &&
+      workflow.capabilities.includes("textToImage") &&
+      capabilities.textToImage === true
+    ) {
+      modes.push("text_to_image");
+    }
+    if (
+      workflow.identity.maxReferences >= 1 &&
+      workflow.identity.acceptedRoles.includes("source_image") &&
+      workflow.capabilities.includes("referenceImages") &&
+      capabilities.referenceImages === true &&
+      capabilities.initImage === true
+    ) {
+      modes.push("image_to_image");
+    }
+    if (modes.length === 0) continue;
+    const allowedOrientations = strings(profile.allowedOrientations);
+    compatible.push({
+      profileKey: profile.profileKey,
+      profileVersion: profile.version,
+      label: profile.label,
+      workflowKey,
+      workflowVersion: workflow.version,
+      orientation: allowedOrientations.includes("4:5")
+        ? "4:5"
+        : allowedOrientations[0] ?? "4:5",
+      allowedOrientations: allowedOrientations.length > 0
+        ? allowedOrientations
+        : ["4:5"],
+      modes,
+      requiredEntitlement: profile.requiredEntitlement,
+    });
+  }
+  compatible.sort((left, right) =>
+    Number(!left.modes.includes("text_to_image")) -
+      Number(!right.modes.includes("text_to_image")) ||
+    Number(Boolean(left.requiredEntitlement)) -
+      Number(Boolean(right.requiredEntitlement)) ||
+    left.profileKey.localeCompare(right.profileKey) ||
+    right.profileVersion - left.profileVersion
+  );
+  return compatible.map((profile, index) => ({
+    profileKey: profile.profileKey,
+    profileVersion: profile.profileVersion,
+    label: profile.label,
+    workflowKey: profile.workflowKey,
+    workflowVersion: profile.workflowVersion,
+    orientation: profile.orientation,
+    allowedOrientations: profile.allowedOrientations,
+    modes: profile.modes,
+    recommended: index === 0,
+  }));
+}
+
 type VisualAssetProjectionSource = {
   id: string;
   url: string;
@@ -634,6 +724,7 @@ export async function getCharacterWorkspace(characterId: string) {
     qualifiedRoute,
     bootstrapProfile,
     routeEvaluationProfiles,
+    identityCalibrationProfiles,
     characterImageReferenceCount,
   ] = await Promise.all([
     prisma.mediaAsset.findMany({
@@ -665,6 +756,7 @@ export async function getCharacterWorkspace(characterId: string) {
           activeReferenceSet.references.map((reference) => reference.role),
         )
       : Promise.resolve([]),
+    findIdentityCalibrationGenerationProfiles(),
     character.imageAsset?.characterId === null
       ? prisma.character.count({ where: { imageAssetId: character.imageAsset.id } })
       : Promise.resolve(0),
@@ -1059,6 +1151,12 @@ export async function getCharacterWorkspace(characterId: string) {
         sampleMinimum: 40,
         evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,
         profiles: routeEvaluationProfiles,
+      },
+      identityCalibration: {
+        profiles: identityCalibrationProfiles,
+        blocker: identityCalibrationProfiles.length === 0
+          ? "No active image route supports identity calibration."
+          : null,
       },
       identityBootstrap: {
         state: bootstrapAuthority.state,

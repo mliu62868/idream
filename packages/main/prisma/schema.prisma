@@ -669,7 +669,7 @@ model MediaAsset {
 model ContentProductionBatch {
   id                      String                  @id @default(cuid())
   title                   String
-  purpose                 String // enum: character_cover | character_hero | character_chat | feed | homepage | seo | template_cover | campaign | model_eval
+  purpose                 String // enum: character_cover | character_hero | character_chat | identity_calibration | feed | homepage | seo | template_cover | campaign | model_eval
   targetType              String                  @default("none") // enum: character | route_page | campaign | template | none
   targetId                String?
   profileId               String?

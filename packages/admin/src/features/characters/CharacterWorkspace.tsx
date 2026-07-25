@@ -32,6 +32,7 @@ import {
 } from "@/features/characters/CharacterAssetStudio";
 import { CharacterCreateWizard } from "@/features/characters/CharacterCreateWizard";
 import { CharacterVoicePanel } from "@/features/characters/CharacterVoicePanel";
+import { VisualIdentityExperimentWorkbench } from "@/features/characters/VisualIdentityExperimentWorkbench";
 import { apiWrite } from "@/components/admin/api";
 import { CollaborationPanel } from "@/features/collaboration/CollaborationPanel";
 import {
@@ -1566,7 +1567,9 @@ export function requiresReviewedIdentityBootstrap(input: {
 
 export function VisualIdentityPanel({ data, navigateToTab, permissions, runCommittedMutation }: {
   data: VisualIdentityPanelData;
-  permissions: Pick<Permissions, "writeVisual" | "evaluateRoute">;
+  permissions:
+    Pick<Permissions, "writeVisual" | "evaluateRoute"> &
+    Partial<Pick<Permissions, "createAssets" | "reviewAssets">>;
   runCommittedMutation: RunCommittedCharacterMutation;
   navigateToTab?: (tab: CharacterWorkspaceTab) => void;
 }) {
@@ -1886,7 +1889,17 @@ export function VisualIdentityPanel({ data, navigateToTab, permissions, runCommi
   };
 
   const publishedAssets = [...data.visual.anchors, ...(data.visual.activeReferenceSet?.references ?? [])];
-  return <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_380px]">
+  return <div className="space-y-5">
+    <VisualIdentityExperimentWorkbench
+      canCreate={permissions.createAssets ?? false}
+      canReview={permissions.reviewAssets ?? false}
+      data={data}
+    />
+    <details className="rounded-xl border border-[var(--ad-border)] bg-black/[0.015]">
+      <summary className="cursor-pointer px-4 py-4 text-sm font-semibold sm:px-5">
+        正式身份与生产设置
+      </summary>
+      <div className="grid gap-5 border-t border-[var(--ad-border)] p-4 xl:grid-cols-[minmax(0,1fr)_380px] sm:p-5">
     <div className="space-y-5">
       <section className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" aria-labelledby="visual-authority-title">
         <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-semibold" id="visual-authority-title">{t("Visual Identity authority")}</h3><p className="mt-1 text-xs text-[var(--ad-text-muted)]">{t("Selection, published references and route qualification are separate evidence.")}</p></div><StatusBadge value={data.visual.readiness.ready ? "visual ready" : "blocked"} /></div>
@@ -2215,6 +2228,8 @@ export function VisualIdentityPanel({ data, navigateToTab, permissions, runCommi
       </details>
       {error ? <p className="text-sm text-[var(--ad-red-text)]" role="alert">{error}</p> : null}
     </aside>
+      </div>
+    </details>
   </div>;
 }
 

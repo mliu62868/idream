@@ -5,6 +5,7 @@ import {
   deriveCreativeItemExecutionState,
   deriveCreativeRunContinuation,
 } from "./workflow";
+import { identityExperimentCandidateSeed } from "@/server/modules/admin/content-ops";
 
 describe("Creative Run item execution projection", () => {
   it("shows provider work as generating while the durable item is still queued", () => {
@@ -116,5 +117,68 @@ describe("Creative Run identity review semantics", () => {
     });
     expect(mode).toBe("preserves_identity");
     expect(approvedIdentityConsistencyForMode(mode)).toBe("passed");
+  });
+
+  it("keeps a visual calibration result as an identity-defining proposal", () => {
+    const mode = creativeIdentityReviewMode({
+      purpose: "identity_calibration",
+      sourceMeta: {
+        identityExperiment: {
+          mode: "text_to_image",
+          seedStrategy: "locked",
+        },
+      },
+    });
+    expect(mode).toBe("defines_identity");
+    expect(approvedIdentityConsistencyForMode(mode)).toBe("unscored");
+  });
+});
+
+describe("Visual identity experiment seeds", () => {
+  it("keeps locked A/B variants stable across Runs while random Runs remain unique", () => {
+    const lockedA = identityExperimentCandidateSeed({
+      strategy: "locked",
+      baseSeed: "184732",
+      sourceSeed: null,
+      batchId: "run-a",
+      variantIndex: 2,
+    });
+    const lockedB = identityExperimentCandidateSeed({
+      strategy: "locked",
+      baseSeed: "184732",
+      sourceSeed: null,
+      batchId: "run-b",
+      variantIndex: 2,
+    });
+    const randomA = identityExperimentCandidateSeed({
+      strategy: "random",
+      baseSeed: "184732",
+      sourceSeed: null,
+      batchId: "run-a",
+      variantIndex: 2,
+    });
+    const randomB = identityExperimentCandidateSeed({
+      strategy: "random",
+      baseSeed: "184732",
+      sourceSeed: null,
+      batchId: "run-b",
+      variantIndex: 2,
+    });
+    expect(lockedA).toBe(lockedB);
+    expect(randomA).not.toBe(randomB);
+  });
+
+  it("derives unique variants when a source seed is reused", () => {
+    const seeds = Array.from({ length: 4 }, (_, variantIndex) =>
+      identityExperimentCandidateSeed({
+        strategy: "reuse_source",
+        baseSeed: null,
+        sourceSeed: "source-seed",
+        batchId: "run-a",
+        variantIndex,
+      })
+    );
+    expect(new Set(seeds).size).toBe(4);
+    expect(seeds[0]).toContain("source-seed:continued");
   });
 });

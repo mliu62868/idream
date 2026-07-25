@@ -389,6 +389,9 @@ export function creativeIdentityReviewMode(input: {
   if (input.purpose === "model_eval") {
     return "preserves_identity" as const;
   }
+  if (input.purpose === "identity_calibration") {
+    return "defines_identity" as const;
+  }
   if (!["character_cover", "character_hero", "character_chat"].includes(input.purpose)) {
     return "not_applicable" as const;
   }
@@ -1808,6 +1811,51 @@ export async function getCreativeRunDetail(input: {
     where: { attemptId: { in: attempts.map((attempt) => attempt.id) } },
     select: { incidentId: true },
   })).map((occurrence) => occurrence.incidentId))];
+  const rawExperiment = record(
+    record(run.items[0]?.job?.sourceMeta).identityExperiment,
+  );
+  const experimentMode = rawExperiment.mode === "image_to_image"
+    ? "image_to_image" as const
+    : rawExperiment.mode === "text_to_image"
+      ? "text_to_image" as const
+      : null;
+  const experimentSeedStrategy = rawExperiment.seedStrategy === "locked"
+    ? "locked" as const
+    : rawExperiment.seedStrategy === "reuse_source"
+      ? "reuse_source" as const
+      : rawExperiment.seedStrategy === "random"
+        ? "random" as const
+        : null;
+  const identityExperiment =
+    run.purpose === "identity_calibration" &&
+    experimentMode &&
+    experimentSeedStrategy
+      ? {
+          mode: experimentMode,
+          positivePrompt:
+            typeof rawExperiment.positivePrompt === "string" &&
+              rawExperiment.positivePrompt.trim()
+              ? rawExperiment.positivePrompt.trim()
+              : run.brief?.trim() || "Identity calibration",
+          negativePrompt:
+            typeof rawExperiment.negativePrompt === "string"
+              ? rawExperiment.negativePrompt
+              : "",
+          seedStrategy: experimentSeedStrategy,
+          baseSeed:
+            typeof rawExperiment.baseSeed === "string"
+              ? rawExperiment.baseSeed
+              : null,
+          sourceAssetId:
+            typeof rawExperiment.sourceAssetId === "string"
+              ? rawExperiment.sourceAssetId
+              : null,
+          strength:
+            typeof rawExperiment.strength === "number"
+              ? rawExperiment.strength
+              : 0.65,
+        }
+      : null;
   return {
     id: run.id,
     title: run.title,
@@ -1828,6 +1876,7 @@ export async function getCreativeRunDetail(input: {
       referenceAssetCount: run.items[0]?.job
         ? new Set(strings(run.items[0].job.referenceAssetIds)).size
         : 0,
+      experiment: identityExperiment,
     },
     target: { type: run.targetType, id: run.targetId ?? run.id },
     ownerId: run.ownerId,
@@ -1882,6 +1931,7 @@ export async function getCreativeRunDetail(input: {
           requestId: item.jobId,
           attemptId: latestAttempt?.id ?? null,
           providerRequestId: latestTransport?.providerRequestId ?? null,
+          seed: item.job?.seed ?? null,
           assetId: asset?.id ?? null,
           reviewDecisionId: latestDecision?.id ?? null,
           placementVersionId: placement?.id ?? null,

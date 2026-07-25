@@ -310,6 +310,36 @@ export const characterRouteEvaluationProfileSchema = z
   })
   .strict();
 
+export const characterIdentityCalibrationProfileSchema = z
+  .object({
+    profileKey: adminIdSchema,
+    profileVersion: z.number().int().positive(),
+    label: z.string().trim().min(1),
+    workflowKey: z.string().trim().min(1),
+    workflowVersion: z.number().int().positive(),
+    orientation: z.string().trim().min(1).max(20),
+    allowedOrientations: z.array(z.string().trim().min(1).max(20)).min(1).readonly(),
+    modes: z.array(z.enum(["text_to_image", "image_to_image"])).min(1).readonly(),
+    recommended: z.boolean(),
+  })
+  .strict();
+
+export const characterIdentityCalibrationWorkspaceSchema = z
+  .object({
+    profiles: z.array(characterIdentityCalibrationProfileSchema).readonly(),
+    blocker: z.string().trim().min(1).nullable(),
+  })
+  .strict()
+  .superRefine((workspace, context) => {
+    if ((workspace.profiles.length === 0) !== (workspace.blocker !== null)) {
+      context.addIssue({
+        code: "custom",
+        path: ["blocker"],
+        message: "Identity calibration blocker must match profile availability",
+      });
+    }
+  });
+
 export const characterRouteEvaluationWorkspaceSchema = z
   .object({
     ready: z.boolean(),
@@ -376,6 +406,7 @@ export const characterVisualWorkspaceSchema = z
     looks: z.array(characterLookWorkspaceSchema).readonly().optional(),
     routeQualifications: z.array(characterRouteQualificationEvidenceSchema).readonly(),
     routeEvaluation: characterRouteEvaluationWorkspaceSchema,
+    identityCalibration: characterIdentityCalibrationWorkspaceSchema.optional(),
     identityBootstrap: characterIdentityBootstrapWorkspaceSchema,
     imageReadiness: characterImageReadinessSchema.optional(),
     readiness: z.object({

@@ -192,6 +192,72 @@ describe("Creative Run create contract", () => {
     }).success).toBe(false);
   });
 
+  it("freezes text-to-image and image-to-image identity calibration snapshots", () => {
+    const calibrationBase = {
+      ...request,
+      purpose: "identity_calibration" as const,
+      targetType: "character" as const,
+      targetId: "character-1",
+      referenceAssetIds: [],
+    };
+    expect(creativeRunCreateRequestSchema.parse({
+      ...calibrationBase,
+      identityExperiment: {
+        mode: "text_to_image",
+        negativePrompt: "different face, watermark",
+        seedStrategy: "locked",
+        baseSeed: "184732",
+        strength: 0.65,
+      },
+    }).identityExperiment).toMatchObject({
+      mode: "text_to_image",
+      seedStrategy: "locked",
+      baseSeed: "184732",
+    });
+    expect(creativeRunCreateRequestSchema.parse({
+      ...calibrationBase,
+      identityExperiment: {
+        mode: "image_to_image",
+        negativePrompt: "different face, watermark",
+        seedStrategy: "reuse_source",
+        sourceAssetId: "candidate-1",
+        strength: 0.55,
+      },
+    }).identityExperiment).toMatchObject({
+      mode: "image_to_image",
+      sourceAssetId: "candidate-1",
+      seedStrategy: "reuse_source",
+    });
+  });
+
+  it("rejects ambiguous identity calibration mode, source, and seed combinations", () => {
+    const calibrationBase = {
+      ...request,
+      purpose: "identity_calibration" as const,
+      targetType: "character" as const,
+      targetId: "character-1",
+      referenceAssetIds: [],
+    };
+    expect(creativeRunCreateRequestSchema.safeParse(calibrationBase).success).toBe(false);
+    expect(creativeRunCreateRequestSchema.safeParse({
+      ...calibrationBase,
+      identityExperiment: {
+        mode: "text_to_image",
+        negativePrompt: "",
+        seedStrategy: "reuse_source",
+        sourceAssetId: "candidate-1",
+      },
+    }).success).toBe(false);
+    expect(creativeRunCreateRequestSchema.safeParse({
+      ...calibrationBase,
+      identityExperiment: {
+        mode: "image_to_image",
+        negativePrompt: "",
+        seedStrategy: "locked",
+      },
+    }).success).toBe(false);
+  });
+
   it("projects only friendly, compatible create options", () => {
     expect(creativeRunCreateOptionsSchema.parse({
       purposes: [{

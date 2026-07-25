@@ -111,6 +111,8 @@ describe("Character image Creative Run authority", () => {
   const variationSourceJobId = `character-image-create-source-job-${suffix}`;
   const variationSourceAssetId = `character-image-create-source-asset-${suffix}`;
   const variationDependentJobId = `character-image-create-dependent-job-${suffix}`;
+  const calibrationSourceJobId = `character-image-calibration-source-job-${suffix}`;
+  const calibrationSourceAssetId = `character-image-calibration-source-asset-${suffix}`;
   const legacyAssetId = `character-image-create-legacy-asset-${suffix}`;
   const legacyQualificationId = `character-image-create-legacy-qualification-${suffix}`;
   const archiveRaceCharacterId =
@@ -310,7 +312,10 @@ describe("Character image Creative Run authority", () => {
       where: { id: { in: [referenceSetId, archiveRaceReferenceSetId] } },
     });
     await prisma.mediaAsset.deleteMany({
-      where: { id: variationSourceAssetId },
+      where: { id: { in: [variationSourceAssetId, calibrationSourceAssetId] } },
+    });
+    await prisma.generationJob.deleteMany({
+      where: { id: calibrationSourceJobId },
     });
     await prisma.characterVisualProfile.deleteMany({
       where: { id: { in: [visualProfileId, archiveRaceVisualProfileId] } },
@@ -330,6 +335,144 @@ describe("Character image Creative Run authority", () => {
     });
     await prisma.user.deleteMany({ where: { id: actorId } });
     await prisma.$disconnect();
+  });
+
+  it("creates a reversible text-to-image identity calibration with frozen prompts and unique seeds", async () => {
+    const response = await createCreativeRun(request({
+      title: "Mara visual identity calibration",
+      purpose: "identity_calibration",
+      targetType: "character",
+      targetId: characterId,
+      profileId: "profile_image_default_v1",
+      orientation: "4:5",
+      count: 4,
+      brief: "A definitive adult portrait with warm brown eyes and dark wavy hair.",
+      identityExperiment: {
+        mode: "text_to_image",
+        negativePrompt: "different person, duplicate subject, watermark",
+        seedStrategy: "random",
+        baseSeed: "184732",
+        strength: 0.65,
+      },
+      consistencyMode: "balanced",
+      priority: "normal",
+      reason: "Explore identity candidates without changing active authority",
+    }, `character-identity-calibration-${suffix}`));
+    expect(response.status).toBe(202);
+    const payload = await response.json();
+    const batchId = payload.data.batch.id as string;
+    batchIds.push(batchId);
+    const jobs = await prisma.generationJob.findMany({
+      where: {
+        sourceType: "content_production_item",
+        sourceMeta: { path: ["batchId"], equals: batchId },
+      },
+      orderBy: { createdAt: "asc" },
+    });
+    expect(jobs).toHaveLength(4);
+    expect(new Set(jobs.map((job) => job.seed)).size).toBe(4);
+    expect(jobs.every((job) =>
+      job.characterId === characterId &&
+      job.visualProfileId === null &&
+      job.referenceSetRevisionId === null &&
+      job.negativePrompt?.includes("different person") === true
+    )).toBe(true);
+    expect(jobs[0]?.sourceMeta).toMatchObject({
+      identityExperiment: {
+        mode: "text_to_image",
+        positivePrompt:
+          "A definitive adult portrait with warm brown eyes and dark wavy hair.",
+        negativePrompt: "different person, duplicate subject, watermark",
+        seedStrategy: "random",
+        baseSeed: "184732",
+        sourceAssetId: null,
+        strength: 0.65,
+      },
+    });
+  });
+
+  it("continues identity calibration from a pinned source image and source seed", async () => {
+    await prisma.generationJob.create({
+      data: {
+        id: calibrationSourceJobId,
+        userId: actorId,
+        characterId,
+        seed: "source-seed-88",
+        mode: "image",
+        prompt: "Reviewed visual exploration source",
+        controls: {},
+        presetIds: [],
+        outputCount: 1,
+        deliveredOutputCount: 1,
+        status: "completed",
+        provider: "comfyui",
+        sourceType: "identity_calibration_fixture",
+        sourceId: calibrationSourceJobId,
+      },
+    });
+    await prisma.mediaAsset.create({
+      data: {
+        id: calibrationSourceAssetId,
+        ownerId: actorId,
+        sourceJobId: calibrationSourceJobId,
+        characterId,
+        type: "image",
+        url: `/assets/${calibrationSourceAssetId}.webp`,
+        storageKey: `test-fixtures/${calibrationSourceAssetId}.webp`,
+        safetyStatus: "passed",
+        metadata: { platformAsset: { status: "generated" } },
+      },
+    });
+    const response = await createCreativeRun(request({
+      title: "Mara image-to-image identity calibration",
+      purpose: "identity_calibration",
+      targetType: "character",
+      targetId: characterId,
+      profileId: profileKey,
+      orientation: "4:5",
+      count: 2,
+      brief: "Keep the same adult face while refining the expression and hair silhouette.",
+      identityExperiment: {
+        mode: "image_to_image",
+        negativePrompt: "different person, duplicate subject, watermark",
+        seedStrategy: "reuse_source",
+        sourceAssetId: calibrationSourceAssetId,
+        strength: 0.55,
+      },
+      consistencyMode: "balanced",
+      priority: "normal",
+      reason: "Continue a reversible identity calibration from the selected source",
+    }, `character-identity-calibration-img2img-${suffix}`));
+    expect(response.status).toBe(202);
+    const payload = await response.json();
+    const batchId = payload.data.batch.id as string;
+    batchIds.push(batchId);
+    const jobs = await prisma.generationJob.findMany({
+      where: {
+        sourceType: "content_production_item",
+        sourceMeta: { path: ["batchId"], equals: batchId },
+      },
+      orderBy: { createdAt: "asc" },
+    });
+    expect(jobs).toHaveLength(2);
+    expect(new Set(jobs.map((job) => job.seed)).size).toBe(2);
+    expect(jobs.every((job) =>
+      job.seed?.startsWith("source-seed-88:continued:variant:") === true
+    )).toBe(true);
+    expect(jobs[0]).toMatchObject({
+      referenceAssetIds: [calibrationSourceAssetId],
+      controls: expect.objectContaining({
+        sourceImageAssetId: calibrationSourceAssetId,
+        strength: 0.55,
+      }),
+      referenceManifest: [
+        expect.objectContaining({
+          mediaAssetId: calibrationSourceAssetId,
+          role: "source_image",
+          weight: 0.55,
+        }),
+      ],
+    });
   });
 
   it("allows exactly one explicit no-reference primary-portrait bootstrap mode", async () => {

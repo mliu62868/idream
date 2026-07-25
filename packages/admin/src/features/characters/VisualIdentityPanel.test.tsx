@@ -52,6 +52,20 @@ const data = {
         recommended: true,
       }],
     },
+    identityCalibration: {
+      blocker: null,
+      profiles: [{
+        profileKey: "portrait",
+        profileVersion: 3,
+        label: "Portrait calibration route",
+        workflowKey: "identity",
+        workflowVersion: 2,
+        orientation: "4:5",
+        allowedOrientations: ["1:1", "4:5"],
+        modes: ["text_to_image", "image_to_image"],
+        recommended: true,
+      }],
+    },
     identityBootstrap: {
       state: "blocked_existing_authority",
       allowed: false,
@@ -99,6 +113,12 @@ describe("Visual Identity operator workbench", () => {
   it("renders distinct identity, reference and qualification evidence with actionable blockers", () => {
     const html = renderToStaticMarkup(<VisualIdentityPanel data={data} permissions={{ writeVisual: true, evaluateRoute: true }} runCommittedMutation={runCommittedMutation} />);
     expect(html).toContain("Visual Identity authority");
+    expect(html).toContain("边生成，边定义视觉身份");
+    expect(html).toContain("负向提示词");
+    expect(html).toContain("锁定种子");
+    expect(html).toContain("从这张继续（图生图）");
+    expect(html).toContain("提交候选身份");
+    expect(html).toContain("正式身份与生产设置");
     expect(html).toContain("Publish the approved identity references");
     expect(html).toContain("reference_set_not_active");
     expect(html.match(/>Resolve</g)).toHaveLength(1);

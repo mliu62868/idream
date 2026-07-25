@@ -64,6 +64,95 @@ final result: passed
 
 ---
 
+# Visual Identity Experiment Workbench
+
+## Evidence
+
+- Source design:
+  `/Users/kk/.codex/generated_images/019f93eb-bb11-7cb3-a87e-70344c562681/call_P7OHFqUFEjdxMYYMxyy1SgRU.png`
+- Final implementation viewport:
+  `/Users/kk/code/idream/output/product-design/visual-identity-experiment/final-workbench.png`
+- Final implementation full page:
+  `/Users/kk/code/idream/output/product-design/visual-identity-experiment/final-workbench-full.png`
+- Same-input comparison:
+  `/Users/kk/code/idream/output/product-design/visual-identity-experiment/reference-vs-implementation.png`
+- Route:
+  `http://127.0.0.1:3001/admin/characters/alexa-reeves?tab=visual`
+- Browser viewport: default 1280 × 720.
+
+## First-principles fidelity
+
+- The primary unit is a reversible experiment round, not an editable identity
+  form. Prompt, negative prompt, generation mode, source image, strength,
+  profile, orientation, consistency mode, and seed strategy are frozen with
+  each run.
+- Exploration and authority are separate. Generating a candidate does not
+  mutate the active identity, Reference Set, asset pack, or live placement.
+  Candidate review is also separate from identity activation.
+- Text-to-image is the first-run path. Any completed candidate can become an
+  image-to-image source while preserving the positive and negative prompts and
+  exposing the real source seed.
+- The active identity and selected candidate remain visible together so the
+  operator can judge identity drift instead of remembering the baseline.
+
+## Mandatory comparison passes
+
+- Layout and hierarchy: the implementation preserves the source's compact
+  experiment composer and dominant comparison canvas inside the existing
+  Character workspace shell. The formal identity and production controls are
+  moved behind a secondary disclosure.
+- Typography, spacing, and surfaces: the warm neutral Admin system, restrained
+  radii, thin borders, compact labels, and dense operator rhythm match the
+  source direction without adding a competing visual language.
+- States and colors: active identity, experiment draft, running, successful,
+  candidate selection, source selection, and immutable review confirmation
+  remain visually distinct.
+- Images: the final canvas uses the real active Character image and a real
+  generated `MediaAsset`; no placeholder artwork or simulated completion state
+  is used.
+- Copy: the Chinese operator copy makes the reversible boundary explicit and
+  names the actual frozen parameters and seed lineage.
+- Accessibility: mode controls expose tab semantics, candidate buttons expose
+  pressed state, form controls are labeled, status and error messages use live
+  regions, and the destructive-looking authority transition requires a reason
+  plus an explicit quality acknowledgment.
+- Layout measurement: `scrollWidth === clientWidth` at 1280px. The final route
+  emitted zero browser console warnings and zero errors.
+
+## Interaction and runtime evidence
+
+- A real text-to-image run completed for Alexa Reeves with locked base seed
+  `184732` and actual item seed `184732:variant:1`.
+- The result survived a fresh page load and appeared in `最近实验轮次`.
+- `从这张继续（图生图）` selected the generated asset as the source, restored
+  both prompts, switched to the image-to-image profile, exposed strength, and
+  selected `沿用所选图` with the source seed.
+- Opening `提交候选身份` exposed the immutable-review explanation, mandatory
+  reason, quality acknowledgment, and disabled final submit before evidence was
+  complete. No review or identity activation was written during QA.
+- The active identity remained `v1` throughout generation, finalization,
+  reload, and image-to-image preparation.
+- Focused shared, Main, and Admin contract, workflow, integration, and UI suites
+  passed. Shared, Main, and Admin typechecks passed; focused lint,
+  `git diff --check`, and both Main/Admin production builds passed.
+- The live Admin route returned HTTP 200. The generation worker completed the
+  real job, and the restarted finalizer projected the durable result into the
+  Admin comparison canvas.
+
+## Remaining differences
+
+- The source design uses a taller presentation canvas; the implementation was
+  verified in the real 1280 × 720 Admin viewport, so the lower prompt controls
+  continue below the fold while baseline and candidate remain visible at the
+  top.
+- The implementation keeps the existing Character workspace header, tabs, data
+  provenance, and authority status because they are part of the real product
+  context rather than decoration in the source concept.
+
+final result: passed
+
+---
+
 # Design QA — Character List Production Entry
 
 ## Comparison target and evidence
@@ -536,5 +625,18 @@ first-time authority shows `完成图片生产设置`, while an image-ready Stud
 shows `创建更多图片` and Performance retains monitoring. Desktop and 390px
 browser evidence, exact deep-link activation, permission gating, localization,
 and a final clean-console reload passed without changing persistent authority.
+
+final result: passed
+
+---
+
+# Final closeout — Visual Identity Experiment Workbench
+
+The source design and live implementation were compared in one image, and the
+real Alexa journey passed: editable positive and negative prompts, random and
+locked seeds, a durable text-to-image result, exact seed lineage, a one-click
+image-to-image continuation with source and strength, and an explicit
+candidate-review gate. The active identity remained `v1`, the page had no
+horizontal overflow, and the Browser console had no warnings or errors.
 
 final result: passed

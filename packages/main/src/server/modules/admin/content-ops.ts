@@ -76,6 +76,7 @@ const productionPurposeSchema = z.enum([
   "template_cover",
   "campaign",
   "model_eval",
+  "identity_calibration",
 ]);
 
 const productionTargetTypeSchema = z.enum([
@@ -133,6 +134,14 @@ const productionBatchCreateBaseSchema = z.object({
   directions: z.array(productionDirectionSchema).min(1).max(12).optional(),
   outputsPerDirection: z.number().int().min(1).max(24).optional(),
   routeEvaluationMatrixKey: optionalText(160),
+  identityExperiment: z.object({
+    mode: z.enum(["text_to_image", "image_to_image"]),
+    negativePrompt: z.string().trim().max(2_000).default(""),
+    seedStrategy: z.enum(["random", "locked", "reuse_source"]),
+    baseSeed: z.string().trim().min(1).max(200).optional(),
+    sourceAssetId: z.string().trim().min(1).max(180).optional(),
+    strength: z.number().min(0.1).max(1).default(0.65),
+  }).strict().optional(),
   consistencyMode: consistencyModeSchema.default("balanced"),
   dueAt: optionalText(80),
   priority: z.enum(["low", "normal", "high", "urgent"]).default("normal"),
@@ -140,7 +149,12 @@ const productionBatchCreateBaseSchema = z.object({
 });
 
 const productionBatchCreateSchema = productionBatchCreateBaseSchema.superRefine((value, ctx) => {
-  const characterPurpose = ["character_cover", "character_hero", "character_chat"]
+  const characterPurpose = [
+    "character_cover",
+    "character_hero",
+    "character_chat",
+    "identity_calibration",
+  ]
     .includes(value.purpose);
   const genericPurpose = ["feed", "homepage", "seo", "template_cover", "campaign"]
     .includes(value.purpose);
@@ -247,6 +261,67 @@ const productionBatchCreateSchema = productionBatchCreateBaseSchema.superRefine(
       code: "custom",
       path: ["routeEvaluationMatrixKey"],
       message: "Only route evaluation Runs may pin a route evaluation matrix key",
+    });
+  }
+  if (value.purpose === "identity_calibration" && !value.identityExperiment) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["identityExperiment"],
+      message: "Identity calibration must preserve an immutable experiment snapshot",
+    });
+  }
+  if (value.purpose !== "identity_calibration" && value.identityExperiment) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["identityExperiment"],
+      message: "Only identity calibration Runs may include an identity experiment snapshot",
+    });
+  }
+  if (value.purpose === "identity_calibration" && value.referenceAssetIds.length > 0) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["referenceAssetIds"],
+      message: "Identity calibration sources must be pinned through the experiment snapshot",
+    });
+  }
+  if (
+    value.identityExperiment?.mode === "text_to_image" &&
+    value.identityExperiment.sourceAssetId
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["identityExperiment", "sourceAssetId"],
+      message: "Text-to-image calibration cannot include a source image",
+    });
+  }
+  if (
+    value.identityExperiment?.mode === "image_to_image" &&
+    !value.identityExperiment.sourceAssetId
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["identityExperiment", "sourceAssetId"],
+      message: "Image-to-image calibration requires a source image",
+    });
+  }
+  if (
+    value.identityExperiment?.seedStrategy === "locked" &&
+    !value.identityExperiment.baseSeed
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["identityExperiment", "baseSeed"],
+      message: "Locked seed calibration requires a base seed",
+    });
+  }
+  if (
+    value.identityExperiment?.seedStrategy === "reuse_source" &&
+    value.identityExperiment.mode !== "image_to_image"
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["identityExperiment", "seedStrategy"],
+      message: "Source seed reuse is only valid for image-to-image calibration",
     });
   }
 });
@@ -480,6 +555,27 @@ export function productionCandidateSeed(input: {
   ].join(":");
 }
 
+export function identityExperimentCandidateSeed(input: {
+  readonly strategy: "random" | "locked" | "reuse_source";
+  readonly baseSeed: string | null | undefined;
+  readonly sourceSeed: string | null | undefined;
+  readonly batchId: string;
+  readonly variantIndex: number;
+}) {
+  const variant = `variant:${input.variantIndex + 1}`;
+  if (input.strategy === "locked") {
+    return [input.baseSeed?.trim() || "locked", variant].join(":");
+  }
+  if (input.strategy === "reuse_source") {
+    return [input.sourceSeed?.trim() || "source", "continued", variant].join(":");
+  }
+  return [
+    input.baseSeed?.trim() || "random",
+    `batch:${input.batchId}`,
+    variant,
+  ].join(":");
+}
+
 // NOTE: takes `request` + full `AdminActor` (not just `actor: {id}`) because
 // the atomic Audit row needs actor.role plus request headers.
 export async function createProductionBatchCore(
@@ -547,6 +643,8 @@ export async function createProductionBatchCore(
   const characterTargetRun = body.targetType === "character";
   const routeEvaluationRun =
     characterTargetRun && body.purpose === "model_eval";
+  const identityExperimentRun =
+    characterTargetRun && body.purpose === "identity_calibration";
   let generationRouteAuthority: {
     readonly qualificationId: string;
     readonly routeFingerprint: string;
@@ -574,6 +672,36 @@ export async function createProductionBatchCore(
         profileKey: profile.profileKey,
         workflowKey,
       });
+    }
+  } else if (identityExperimentRun) {
+    const experiment = body.identityExperiment;
+    if (!experiment) {
+      throw Errors.badRequest("Identity calibration requires an experiment snapshot");
+    }
+    const textToImageCompatible =
+      workflow?.identity.mode === "none" &&
+      workflow.identity.maxReferences === 0 &&
+      workflow.capabilities.includes("textToImage") &&
+      profileCapabilities.textToImage === true;
+    const imageToImageCompatible =
+      Boolean(workflow) &&
+      (workflow?.identity.maxReferences ?? 0) >= 1 &&
+      workflow?.identity.acceptedRoles.includes("source_image") === true &&
+      workflow?.capabilities.includes("referenceImages") === true &&
+      profileCapabilities.referenceImages === true &&
+      profileCapabilities.initImage === true;
+    if (
+      (experiment.mode === "text_to_image" && !textToImageCompatible) ||
+      (experiment.mode === "image_to_image" && !imageToImageCompatible)
+    ) {
+      throw Errors.conflict(
+        `The selected profile cannot run ${experiment.mode.replaceAll("_", "-")} identity calibration`,
+        {
+          profileKey: profile.profileKey,
+          workflowKey,
+          mode: experiment.mode,
+        },
+      );
     }
   } else if (characterTargetRun) {
     if (!visualProfile) {
@@ -629,10 +757,13 @@ export async function createProductionBatchCore(
       workflowKey,
     });
   }
-  const additionalReferenceAssets = body.referenceAssetIds.length > 0
+  const additionalReferenceAssetIds = body.identityExperiment?.sourceAssetId
+    ? [body.identityExperiment.sourceAssetId]
+    : body.referenceAssetIds;
+  const additionalReferenceAssets = additionalReferenceAssetIds.length > 0
     ? await prisma.mediaAsset.findMany({
         where: operationalMediaAssetWhere({
-          id: { in: body.referenceAssetIds },
+          id: { in: additionalReferenceAssetIds },
           type: "image",
           safetyStatus: "passed",
           deletedAt: null,
@@ -644,6 +775,7 @@ export async function createProductionBatchCore(
           sourceJob: {
             select: {
               id: true,
+              seed: true,
               sourceType: true,
               sourceId: true,
               visualProfileId: true,
@@ -655,7 +787,7 @@ export async function createProductionBatchCore(
       })
     : [];
   if (
-    additionalReferenceAssets.length !== body.referenceAssetIds.length ||
+    additionalReferenceAssets.length !== additionalReferenceAssetIds.length ||
     additionalReferenceAssets.some((asset) =>
       !isMediaAssetOperationalForAuthority(asset.metadata)
     )
@@ -668,10 +800,21 @@ export async function createProductionBatchCore(
   ) {
     throw Errors.badRequest("Additional Creative Run references must belong to the target Character");
   }
-  const activeReferenceSet = visualProfile && characterTargetRun && !body.bootstrapIdentity
+  if (identityExperimentRun && additionalReferenceAssets.length > 0) {
+    if (
+      body.identityExperiment?.seedStrategy === "reuse_source" &&
+      !additionalReferenceAssets[0]?.sourceJob?.seed
+    ) {
+      throw Errors.conflict("The selected calibration source has no generation seed to reuse");
+    }
+  }
+  const activeReferenceSet = visualProfile &&
+      characterTargetRun &&
+      !body.bootstrapIdentity &&
+      !identityExperimentRun
     ? await resolveProductionReferenceSet(prisma, visualProfile.id)
     : null;
-  if (characterTargetRun && !body.bootstrapIdentity) {
+  if (characterTargetRun && !body.bootstrapIdentity && !identityExperimentRun) {
     if (
       !visualProfile ||
       !activeReferenceSet ||
@@ -787,7 +930,8 @@ export async function createProductionBatchCore(
   const presetFragment = presetPromptFragment(body.presetIds, presets);
   // A recoverable empty candidate is history, not generation authority. The
   // bootstrap image must remain a true no-reference/no-profile definition.
-  const generationVisualProfile = body.bootstrapIdentity ? null : visualProfile;
+  const generationVisualProfile =
+    body.bootstrapIdentity || identityExperimentRun ? null : visualProfile;
   const canonicalReferenceManifest = activeReferenceSet
     ? activeReferenceSet.references.map((reference) => ({
         mediaAssetId: reference.mediaAssetId,
@@ -818,7 +962,11 @@ export async function createProductionBatchCore(
     ),
     sourceReferenceCount: variationSourceCount,
   });
-  if (variationSourceCount > 0 && !sourceVariationAuthority.ready) {
+  if (
+    variationSourceCount > 0 &&
+    !identityExperimentRun &&
+    !sourceVariationAuthority.ready
+  ) {
     throw Errors.conflict(
       "The current qualified route cannot create a More-like variation from this Character asset",
       {
@@ -837,9 +985,17 @@ export async function createProductionBatchCore(
       mediaAssetId: asset.id,
       position: nextReferencePosition + index,
       role: "source_image",
-      weight: body.consistencyMode === "strict" ? 0.9 : body.consistencyMode === "creative" ? 0.7 : 0.8,
+      weight: identityExperimentRun
+        ? body.identityExperiment?.strength ?? 0.65
+        : body.consistencyMode === "strict"
+          ? 0.9
+          : body.consistencyMode === "creative"
+            ? 0.7
+            : 0.8,
       selectorVersion: activeReferenceSet?.selectorVersion ?? "operator-source-v1",
-      selectionReason: "Operator-selected identity-consistent variation source",
+      selectionReason: identityExperimentRun
+        ? "Operator-selected visual identity calibration source"
+        : "Operator-selected identity-consistent variation source",
       sourceJobId: asset.sourceJob?.id ?? null,
       referenceSetRevisionId: activeReferenceSet?.id ?? null,
       referenceSetRevision: activeReferenceSet?.revision ?? null,
@@ -860,17 +1016,25 @@ export async function createProductionBatchCore(
       workflowKey,
     });
   }
-  const controls = productionControls({
-    orientation,
-    dimensions,
-    profile,
-    presets,
-    visualProfile: generationVisualProfile,
-    consistencyMode: body.consistencyMode,
-    referenceAssetIds,
-    workflowIdentity: workflow?.identity,
-    generationRouteFingerprint: generationRouteAuthority?.routeFingerprint,
-  });
+  const controls = {
+    ...productionControls({
+      orientation,
+      dimensions,
+      profile,
+      presets,
+      visualProfile: generationVisualProfile,
+      consistencyMode: body.consistencyMode,
+      referenceAssetIds,
+      workflowIdentity: workflow?.identity,
+      generationRouteFingerprint: generationRouteAuthority?.routeFingerprint,
+    }),
+    ...(identityExperimentRun && body.identityExperiment?.sourceAssetId
+      ? {
+          sourceImageAssetId: body.identityExperiment.sourceAssetId,
+          strength: body.identityExperiment.strength,
+        }
+      : {}),
+  };
   const perItemCostDreamcoins = await generationCostDreamcoins(
     "image",
     1,
@@ -988,6 +1152,59 @@ export async function createProductionBatchCore(
       }
       verifiedBootstrapAuthority = currentBootstrapAuthority;
       verifiedIdentityBootstrapAuthority = currentIdentityBootstrapAuthority;
+    } else if (identityExperimentRun && body.targetId) {
+      const currentProfile = await tx.generationModelProfile.findUnique({
+        where: { id: profile.id },
+        select: {
+          profileKey: true,
+          version: true,
+          status: true,
+          enabled: true,
+          runnerConfig: true,
+        },
+      });
+      if (
+        !currentProfile ||
+        currentProfile.profileKey !== profile.profileKey ||
+        currentProfile.version !== profile.version ||
+        currentProfile.status !== "active" ||
+        !currentProfile.enabled
+      ) {
+        throw Errors.conflict(
+          "The identity calibration route changed before the Run was committed",
+        );
+      }
+      const currentSource = body.identityExperiment?.sourceAssetId
+        ? await tx.mediaAsset.findFirst({
+            where: operationalMediaAssetWhere({
+              id: body.identityExperiment.sourceAssetId,
+              type: "image",
+              safetyStatus: "passed",
+              deletedAt: null,
+              characterId: body.targetId,
+            }),
+            select: {
+              id: true,
+              metadata: true,
+              sourceJob: { select: { seed: true } },
+            },
+          })
+        : null;
+      if (
+        body.identityExperiment?.sourceAssetId &&
+        (
+          !currentSource ||
+          !isMediaAssetOperationalForAuthority(currentSource.metadata) ||
+          (
+            body.identityExperiment.seedStrategy === "reuse_source" &&
+            !currentSource.sourceJob?.seed
+          )
+        )
+      ) {
+        throw Errors.conflict(
+          "The identity calibration source changed before the Run was committed",
+        );
+      }
     } else if (body.targetType === "character" && body.targetId) {
       if (!visualProfile || !activeReferenceSet) {
         throw Errors.conflict("Character generation authority disappeared before the Run was committed", {
@@ -1251,12 +1468,20 @@ export async function createProductionBatchCore(
           visualProfileId: generationVisualProfile?.id,
           visualProfileVersion: generationVisualProfile?.version,
           consistencyMode: generationVisualProfile ? body.consistencyMode : null,
-          seed: productionCandidateSeed({
-            baseSeed: generationVisualProfile?.defaultSeed,
-            batchId: createdBatch.id,
-            directionId: direction?.id ?? null,
-            variantIndex,
-          }),
+          seed: identityExperimentRun && body.identityExperiment
+            ? identityExperimentCandidateSeed({
+                strategy: body.identityExperiment.seedStrategy,
+                baseSeed: body.identityExperiment.baseSeed,
+                sourceSeed: additionalReferenceAssets[0]?.sourceJob?.seed,
+                batchId: createdBatch.id,
+                variantIndex,
+              })
+            : productionCandidateSeed({
+                baseSeed: generationVisualProfile?.defaultSeed,
+                batchId: createdBatch.id,
+                directionId: direction?.id ?? null,
+                variantIndex,
+              }),
           referenceAssetIds: referenceAssetIds.length > 0 ? toInputJson(referenceAssetIds) : undefined,
           referenceSetRevisionId: activeReferenceSet?.id,
           referenceManifest: referenceManifest.length > 0 ? toInputJson(referenceManifest) : undefined,
@@ -1264,7 +1489,9 @@ export async function createProductionBatchCore(
           prompt,
           negativePrompt: productionNegativePrompt(
             recipe.negativeBase,
-            generationVisualProfile?.negativeIdentityPrompt,
+            identityExperimentRun
+              ? body.identityExperiment?.negativePrompt
+              : generationVisualProfile?.negativeIdentityPrompt,
             body.purpose,
           ),
           controls: toInputJson(controls),
@@ -1315,6 +1542,17 @@ export async function createProductionBatchCore(
               routeEvaluationRun ? CHARACTER_RELEASE_POLICY_VERSION : null,
             routeQualificationEvaluatorVersion:
               routeEvaluationRun ? env.GENERATION_ROUTE_EVALUATOR_VERSION : null,
+            identityExperiment: identityExperimentRun && body.identityExperiment
+              ? {
+                  mode: body.identityExperiment.mode,
+                  positivePrompt: body.brief ?? "",
+                  negativePrompt: body.identityExperiment.negativePrompt,
+                  seedStrategy: body.identityExperiment.seedStrategy,
+                  baseSeed: body.identityExperiment.baseSeed ?? null,
+                  sourceAssetId: body.identityExperiment.sourceAssetId ?? null,
+                  strength: body.identityExperiment.strength,
+                }
+              : null,
           }),
         },
       });
@@ -2622,7 +2860,8 @@ function productionNegativePrompt(
   identity: string | null | undefined,
   purpose: z.infer<typeof productionPurposeSchema>,
 ) {
-  const characterCompositionGuard = purpose.startsWith("character_")
+  const characterCompositionGuard =
+    purpose.startsWith("character_") || purpose === "identity_calibration"
     ? "collage, contact sheet, split screen, multiple panels, comparison grid, duplicate person, extra people"
     : null;
   return [base?.trim(), identity?.trim(), characterCompositionGuard].filter(Boolean).join(", ") || null;

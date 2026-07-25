@@ -154,6 +154,7 @@ export const creativeRunCreateRequestSchema = z
       "template_cover",
       "campaign",
       "model_eval",
+      "identity_calibration",
     ]),
     targetType: z.enum(["character", "route_page", "campaign", "template", "none"]),
     targetId: adminIdSchema.optional(),
@@ -177,6 +178,14 @@ export const creativeRunCreateRequestSchema = z
     }).strict()).min(1).max(12).optional(),
     outputsPerDirection: z.number().int().min(1).max(24).optional(),
     routeEvaluationMatrixKey: z.string().trim().min(1).max(160).optional(),
+    identityExperiment: z.object({
+      mode: z.enum(["text_to_image", "image_to_image"]),
+      negativePrompt: z.string().trim().max(2_000).default(""),
+      seedStrategy: z.enum(["random", "locked", "reuse_source"]),
+      baseSeed: z.string().trim().min(1).max(200).optional(),
+      sourceAssetId: adminIdSchema.optional(),
+      strength: z.number().min(0.1).max(1).default(0.65),
+    }).strict().optional(),
     consistencyMode: z.enum(["strict", "balanced", "creative"]).default("balanced"),
     dueAt: adminIsoDateTimeSchema.optional(),
     priority: adminPrioritySchema.default("normal"),
@@ -184,7 +193,12 @@ export const creativeRunCreateRequestSchema = z
   })
   .strict()
   .superRefine((request, ctx) => {
-    const characterPurpose = ["character_cover", "character_hero", "character_chat"]
+    const characterPurpose = [
+      "character_cover",
+      "character_hero",
+      "character_chat",
+      "identity_calibration",
+    ]
       .includes(request.purpose);
     const genericPurpose = ["feed", "homepage", "seo", "template_cover", "campaign"]
       .includes(request.purpose);
@@ -288,6 +302,67 @@ export const creativeRunCreateRequestSchema = z
         code: "custom",
         path: ["routeEvaluationMatrixKey"],
         message: "Only route evaluation Runs may pin a route evaluation matrix key",
+      });
+    }
+    if (request.purpose === "identity_calibration" && !request.identityExperiment) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["identityExperiment"],
+        message: "Identity calibration must preserve an immutable experiment snapshot",
+      });
+    }
+    if (request.purpose !== "identity_calibration" && request.identityExperiment) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["identityExperiment"],
+        message: "Only identity calibration Runs may include an identity experiment snapshot",
+      });
+    }
+    if (request.purpose === "identity_calibration" && request.referenceAssetIds.length > 0) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["referenceAssetIds"],
+        message: "Identity calibration sources must be pinned through the experiment snapshot",
+      });
+    }
+    if (
+      request.identityExperiment?.mode === "text_to_image" &&
+      request.identityExperiment.sourceAssetId
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["identityExperiment", "sourceAssetId"],
+        message: "Text-to-image calibration cannot include a source image",
+      });
+    }
+    if (
+      request.identityExperiment?.mode === "image_to_image" &&
+      !request.identityExperiment.sourceAssetId
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["identityExperiment", "sourceAssetId"],
+        message: "Image-to-image calibration requires a source image",
+      });
+    }
+    if (
+      request.identityExperiment?.seedStrategy === "locked" &&
+      !request.identityExperiment.baseSeed
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["identityExperiment", "baseSeed"],
+        message: "Locked seed calibration requires a base seed",
+      });
+    }
+    if (
+      request.identityExperiment?.seedStrategy === "reuse_source" &&
+      request.identityExperiment.mode !== "image_to_image"
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["identityExperiment", "seedStrategy"],
+        message: "Source seed reuse is only valid for image-to-image calibration",
       });
     }
   });
@@ -665,6 +740,7 @@ export const creativeRunItemDetailSchema = z
         requestId: adminIdSchema.nullable(),
         attemptId: adminIdSchema.nullable(),
         providerRequestId: z.string().trim().min(1).nullable(),
+        seed: z.string().trim().min(1).nullable().optional(),
         assetId: adminIdSchema.nullable(),
         reviewDecisionId: adminIdSchema.nullable(),
         placementVersionId: adminIdSchema.nullable(),
@@ -728,6 +804,15 @@ export const creativeRunDetailSchema = creativeRunBaseSchema
         label: z.string().trim().min(1).nullable(),
       }).strict(),
       referenceAssetCount: z.number().int().nonnegative(),
+      experiment: z.object({
+        mode: z.enum(["text_to_image", "image_to_image"]),
+        positivePrompt: z.string().trim().min(1),
+        negativePrompt: z.string(),
+        seedStrategy: z.enum(["random", "locked", "reuse_source"]),
+        baseSeed: z.string().nullable(),
+        sourceAssetId: adminIdSchema.nullable(),
+        strength: z.number().min(0.1).max(1),
+      }).strict().nullable().optional(),
     }).strict(),
     settlementView: creativeSettlementViewSchema,
     retryEligibility: creativeRetryEligibilitySchema,
