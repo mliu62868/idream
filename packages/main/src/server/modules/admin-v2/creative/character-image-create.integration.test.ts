@@ -412,6 +412,19 @@ describe("Character image Creative Run authority", () => {
       job.referenceSetRevisionId === null &&
       job.negativePrompt?.includes("different person") === true
     )).toBe(true);
+    expect(jobs[0]?.prompt).toBe([
+      "Single uninterrupted portrait photograph.",
+      "Subject: Mara, an adult 28-year-old female.",
+      "Visual style: realistic.",
+      "Identity traits: Composed late-night radio host; dark wavy hair; warm brown eyes.",
+      "Art direction: Intimate tungsten editorial portrait.",
+      "Operator visual brief: A definitive adult portrait with warm brown eyes and dark wavy hair.",
+      "Composition: one person centered in one continuous camera frame, with a coherent background and clear subject framing.",
+      "Polished reusable portrait photography.",
+    ].join("\n"));
+    expect(jobs[0]?.prompt).not.toMatch(
+      /Production purpose|Recipe:|template|collage|contact sheet|split panel|comparison grid|late-night confidante/i,
+    );
     expect(jobs[0]?.sourceMeta).toMatchObject({
       identityExperiment: {
         mode: "text_to_image",
@@ -423,6 +436,77 @@ describe("Character image Creative Run authority", () => {
         sourceAssetId: null,
         strength: 0.65,
       },
+    });
+  });
+
+  it("rejects identity candidate approval without the visible quality checklist", async () => {
+    const response = await createCreativeRun(request({
+      title: "Mara identity review quality gate",
+      purpose: "identity_calibration",
+      targetType: "character",
+      targetId: characterId,
+      profileId: "profile_image_default_v1",
+      orientation: "4:5",
+      count: 1,
+      brief: "A clean single-person portrait for identity review.",
+      identityExperiment: {
+        mode: "text_to_image",
+        negativePrompt: "different person, duplicate subject, watermark",
+        seedStrategy: "random",
+        baseSeed: "184733",
+        strength: 0.65,
+      },
+      consistencyMode: "balanced",
+      priority: "normal",
+      reason: "Prove identity approval cannot bypass visible image quality checks",
+    }, `character-identity-review-quality-${suffix}`));
+    expect(response.status).toBe(202);
+    const payload = await response.json();
+    const batchId = payload.data.batch.id as string;
+    batchIds.push(batchId);
+    const item = await prisma.contentProductionItem.findFirstOrThrow({
+      where: { batchId },
+      orderBy: { itemIndex: "asc" },
+    });
+    const batch = await prisma.contentProductionBatch.findUniqueOrThrow({
+      where: { id: batchId },
+      select: { version: true },
+    });
+
+    await expect(recordCreativeReviewDecision({
+      runId: batchId,
+      itemId: item.id,
+      actor: { id: actorId, role: "admin" },
+      expectedVersion: batch.version,
+      decision: "approved",
+      identityConsistency: "unscored",
+      reason: "Attempt to approve identity without reviewing the visible image",
+      requestId: `character-identity-review-quality-${suffix}`,
+    })).rejects.toMatchObject({
+      status: 400,
+      message:
+        "Character identity review requires the complete visible quality checklist",
+    });
+
+    await expect(recordCreativeReviewDecision({
+      runId: batchId,
+      itemId: item.id,
+      actor: { id: actorId, role: "admin" },
+      expectedVersion: batch.version,
+      decision: "approved",
+      identityConsistency: "unscored",
+      quality: {
+        artifactFree: true,
+        singleSubject: false,
+        intentMatch: true,
+        noVisibleText: true,
+      },
+      reason: "The candidate contains a composite layout",
+      requestId: `character-identity-review-single-subject-${suffix}`,
+    })).rejects.toMatchObject({
+      status: 400,
+      message:
+        "A Character identity candidate cannot be approved while a required quality check is failing",
     });
   });
 

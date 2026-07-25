@@ -579,10 +579,15 @@ export async function recordCreativeReviewDecision(input: {
       throw Errors.conflict("Creative Run is not active for review", { lifecycleState: run.lifecycleState });
     }
     const characterAssetReview = ["character_cover", "character_hero", "character_chat"].includes(run.purpose);
+    const characterIdentityReview = run.purpose === "identity_calibration";
     const routeEvaluationReview = run.purpose === "model_eval";
-    if (characterAssetReview) {
+    if (characterAssetReview || characterIdentityReview) {
       if (!input.quality) {
-        throw Errors.badRequest("Character asset review requires the complete visible quality checklist");
+        throw Errors.badRequest(
+          characterIdentityReview
+            ? "Character identity review requires the complete visible quality checklist"
+            : "Character asset review requires the complete visible quality checklist",
+        );
       }
       if (
         input.decision === "approved" &&
@@ -591,9 +596,17 @@ export async function recordCreativeReviewDecision(input: {
           !input.quality.intentMatch ||
           !input.quality.noVisibleText)
       ) {
-        throw Errors.badRequest("A Character asset cannot be approved while a required quality check is failing");
+        throw Errors.badRequest(
+          characterIdentityReview
+            ? "A Character identity candidate cannot be approved while a required quality check is failing"
+            : "A Character asset cannot be approved while a required quality check is failing",
+        );
       }
-      if (input.decision === "approved" && input.score === undefined) {
+      if (
+        characterAssetReview &&
+        input.decision === "approved" &&
+        input.score === undefined
+      ) {
         throw Errors.badRequest("Character asset approval requires an explicit score");
       }
     }

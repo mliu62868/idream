@@ -2655,11 +2655,23 @@ async function resolveProductionTarget(targetType: string, targetId?: string) {
       stringFromRecord(persona, "characterPromise") ??
       stringFromRecord(persona, "description") ??
       character.description;
+    const identityTraits = [
+      stringFromRecord(appearance, "identityAnchor"),
+      ...jsonStringArray(appearance.stableTraits),
+    ].filter((value): value is string => Boolean(value));
     return {
       type: "character",
       id: character.id,
       label: name,
       detail: `${age}, ${gender}, ${style}. ${description}`,
+      visualIdentity: {
+        age,
+        gender,
+        style,
+        traits: identityTraits,
+        artDirection:
+          stringFromRecord(appearance, "referenceDirection") ?? null,
+      },
       contentVersionId: content?.id ?? null,
       contentVersion: content?.version ?? null,
     };
@@ -2675,9 +2687,16 @@ async function resolveProductionTarget(targetType: string, targetId?: string) {
       id: template.id,
       label: template.name,
       detail: [template.summary, template.gender, template.style].filter(Boolean).join(", "),
+      visualIdentity: null,
     };
   }
-  return { type: targetType, id: targetId, label: targetId, detail: "" };
+  return {
+    type: targetType,
+    id: targetId,
+    label: targetId,
+    detail: "",
+    visualIdentity: null,
+  };
 }
 
 async function resolveProductionVisualProfile(
@@ -2783,6 +2802,29 @@ function productionPrompt(input: {
   visualProfile: Awaited<ReturnType<typeof resolveProductionVisualProfile>>;
   consistencyMode: z.infer<typeof consistencyModeSchema>;
 }) {
+  if (
+    input.purpose === "identity_calibration" &&
+    input.target?.type === "character" &&
+    input.target.visualIdentity
+  ) {
+    const visualIdentity = input.target.visualIdentity;
+    return [
+      "Single uninterrupted portrait photograph.",
+      `Subject: ${input.target.label}, an adult ${visualIdentity.age}-year-old ${visualIdentity.gender}.`,
+      `Visual style: ${visualIdentity.style}.`,
+      visualIdentity.traits.length > 0
+        ? `Identity traits: ${visualIdentity.traits.join("; ")}.`
+        : "",
+      visualIdentity.artDirection
+        ? `Art direction: ${visualIdentity.artDirection}.`
+        : "",
+      input.brief ? `Operator visual brief: ${input.brief}` : "",
+      "Composition: one person centered in one continuous camera frame, with a coherent background and clear subject framing.",
+      "Polished reusable portrait photography.",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
   const targetPrompt = !input.target
     ? ""
     : input.target.type === "character" && input.visualProfile
