@@ -651,7 +651,7 @@ describe("Character operator workspace", () => {
     }
   });
 
-  it("fails visual readiness closed when traits, reference snapshot or route capability drifts", async () => {
+  it("fails identity/reference drift closed and re-resolves a compatible route when reference capacity changes", async () => {
     await prisma.characterVisualProfile.update({ where: { id: visualProfileId }, data: { faceTraits: {} } });
     let detail = characterWorkspaceDetailSchema.parse(await getCharacterWorkspace(characterId));
     expect(detail.visual.readiness).toMatchObject({ ready: false });
@@ -732,25 +732,26 @@ describe("Character operator workspace", () => {
           }),
         ]),
       );
-      expect(detail.visual.readiness).toMatchObject({ ready: false });
-      expect(detail.visual.readiness.blockers.map((blocker) => blocker.code))
-        .toContain("generation_route_unqualified");
+      expect(detail.visual.readiness).toMatchObject({ ready: true });
+      expect(detail.visual.imageReadiness?.state).toBe("ready");
       expect(detail.visual.routeQualifications[0]).toMatchObject({
-        id: qualificationId,
+        result: "qualified",
+        matrixKey: "operator-single-image-v1",
+        stale: false,
+      });
+      expect(detail.visual.routeQualifications.find(
+        (route) => route.id === qualificationId,
+      )).toMatchObject({
         stale: true,
         identityContract: { maxReferences: 1 },
         profileCapabilities: {
           referenceImages: true,
           initImage: true,
         },
-        sourceVariationAuthority: {
-          routeFingerprint: `workspace-route-${suffix}`,
-          ready: false,
-          blocker: "no_qualified_route",
-        },
       });
       expect(detail.project.draftAssetRouteAuthority).toMatchObject({
-        currentRouteFingerprint: null,
+        status: "stale",
+        currentRouteFingerprint: expect.any(String),
         qaReady: false,
       });
 
@@ -786,16 +787,18 @@ describe("Character operator workspace", () => {
 
     await prisma.generationModelProfile.update({ where: { id: generationProfileId }, data: { status: "archived" } });
     detail = characterWorkspaceDetailSchema.parse(await getCharacterWorkspace(characterId));
-    expect(detail.visual.readiness.blockers.map((blocker) => blocker.code)).toContain("generation_route_unqualified");
-    expect(detail.visual.routeQualifications[0]).toMatchObject({ id: qualificationId, stale: true });
+    expect(detail.visual.readiness.blockers.map((blocker) => blocker.code)).not.toContain("generation_route_unqualified");
+    expect(detail.visual.routeQualifications.find(
+      (route) => route.id === qualificationId,
+    )).toMatchObject({ id: qualificationId, stale: true });
     await prisma.generationModelProfile.update({ where: { id: generationProfileId }, data: { status: "active" } });
 
     await prisma.generationRouteQualification.update({ where: { id: qualificationId }, data: { evidence: { evaluatorVersion: "retired-evaluator" } } });
     detail = characterWorkspaceDetailSchema.parse(await getCharacterWorkspace(characterId));
-    expect(detail.visual.readiness.blockers.map((blocker) => blocker.code)).toContain("generation_route_unqualified");
+    expect(detail.visual.readiness.blockers.map((blocker) => blocker.code)).not.toContain("generation_route_unqualified");
     await prisma.generationRouteQualification.update({ where: { id: qualificationId }, data: { evidence: { evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION }, workflowVersion: 999 } });
     detail = characterWorkspaceDetailSchema.parse(await getCharacterWorkspace(characterId));
-    expect(detail.visual.readiness.blockers.map((blocker) => blocker.code)).toContain("generation_route_unqualified");
+    expect(detail.visual.readiness.blockers.map((blocker) => blocker.code)).not.toContain("generation_route_unqualified");
     await prisma.generationRouteQualification.update({ where: { id: qualificationId }, data: { workflowVersion: 1 } });
   });
 

@@ -58,6 +58,7 @@ const data = {
         profileKey: "portrait",
         profileVersion: 3,
         label: "Portrait calibration route",
+        modelId: "redcraft-krea2-comfyui",
         workflowKey: "identity",
         workflowVersion: 2,
         orientation: "4:5",
@@ -110,14 +111,14 @@ describe("Visual Identity operator workbench", () => {
     )).toEqual(["reference-2"]);
   });
 
-  it("renders distinct identity, reference and qualification evidence with actionable blockers", () => {
+  it("renders identity, references, and a single-image production route with actionable blockers", () => {
     const html = renderToStaticMarkup(<VisualIdentityPanel data={data} permissions={{ writeVisual: true, evaluateRoute: true }} runCommittedMutation={runCommittedMutation} />);
     expect(html).toContain("Visual Identity authority");
     expect(html).toContain("边生成，边定义视觉身份");
     expect(html).toContain("负向提示词");
     expect(html).toContain("锁定种子");
     expect(html).toContain("从这张继续（图生图）");
-    expect(html).toContain("提交候选身份");
+    expect(html).toContain("评审这张候选图");
     expect(html).toContain("正式身份与生产设置");
     expect(html).toContain("Publish the approved identity references");
     expect(html).toContain("reference_set_not_active");
@@ -130,27 +131,57 @@ describe("Visual Identity operator workbench", () => {
     expect(html).toContain("Evening Look");
     expect(html).toContain("Archive Look");
     expect(html).toContain("Unchecked images leave runtime authority");
-    expect(html).toContain("38/40 passed");
+    expect(html).toContain("One image at a time");
+    expect(html).toContain("Every generation creates one candidate");
     expect(html).toContain("Advanced identity controls");
-    expect(html).toContain("Image route validation");
-    expect(html).toContain("Validate this image route");
-    expect(html).toContain("Generate 40 route test images");
-    expect(html).toContain("2. Submit the reviewed result");
-    expect(html).toContain("After image review");
-    expect(html).toContain("Route and test details");
-    expect(html).toContain("Candidate image route");
-    expect(html).toContain("Submit route evaluation");
-    expect(html.indexOf("Generate 40 route test images")).toBeLessThan(
-      html.indexOf("Batch IDs"),
+    expect(html).toContain("Image generation route");
+    expect(html).toContain("portrait");
+    expect(html).toContain("Operators create and review one image at a time");
+    expect(html).not.toContain("Generate 40 route test images");
+    expect(html).not.toContain("Batch IDs");
+  });
+
+  it("opens formal production settings when the image route is the current setup task", () => {
+    const html = renderToStaticMarkup(
+      <VisualIdentityPanel
+        data={{
+          ...data,
+          visual: {
+            ...data.visual,
+            imageReadiness: {
+              state: "route_pending",
+              fingerprint: "a".repeat(64),
+              steps: {
+                identity: "complete",
+                references: "complete",
+                route: "platform_pending",
+              },
+              repair: null,
+              nextDeepLink:
+                "/admin/characters/character-1?tab=visual#route-qualification-workbench",
+            },
+          },
+        }}
+        permissions={{ writeVisual: true, evaluateRoute: true }}
+        runCommittedMutation={runCommittedMutation}
+      />,
     );
-    expect(html).toContain('aria-readonly="true"');
-    expect(html).toContain("realistic-identity-v1");
+    const productionSettingsSummary = html.indexOf(
+      "正式身份与生产设置",
+    );
+
+    expect(productionSettingsSummary).toBeGreaterThan(0);
+    expect(
+      html.slice(
+        Math.max(0, productionSettingsSummary - 220),
+        productionSettingsSummary,
+      ),
+    ).toContain('open=""');
   });
 
   it("fails writes closed when the matching effective grants are absent", () => {
     const html = renderToStaticMarkup(<VisualIdentityPanel data={data} permissions={{ writeVisual: false, evaluateRoute: false }} runCommittedMutation={runCommittedMutation} />);
     expect(html).toContain("content.official.write is not granted");
-    expect(html).toContain("content.production.write is not granted");
     expect(html).toMatch(/disabled=""[^>]*>Create &amp; activate version/);
     expect(html).toMatch(/disabled=""[^>]*>Publish Reference Set/);
   });

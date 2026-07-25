@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  evaluateRouteQualification,
   generationRouteRuntimeCompatibility,
   generationSourceVariationAuthority,
+  identityCalibrationGenerationModes,
 } from "./generation-route-authority";
 
 const workflow = {
@@ -17,6 +19,102 @@ const workflow = {
 };
 
 describe("effective Generation Route runtime compatibility", () => {
+  it("accepts an active operator route without a pre-generated image matrix", () => {
+    expect(evaluateRouteQualification({
+      qualification: {
+        result: "qualified",
+        matrixKey: "operator-single-image-v1",
+        sampleCount: 0,
+        identityMatch: 1,
+        policyVersion: "policy-v1",
+        expiresAt: null,
+        evidence: {
+          evaluatorVersion: "runtime-v1",
+          authorityMode: "operator_single_image",
+        },
+      },
+      currentPolicyVersion: "policy-v1",
+      currentEvaluatorVersion: "runtime-v1",
+      now: new Date("2026-07-24T00:00:00.000Z"),
+    })).toEqual({ state: "qualified", reason: null });
+  });
+
+  it("keeps the evidence threshold for legacy matrix qualifications", () => {
+    expect(evaluateRouteQualification({
+      qualification: {
+        result: "qualified",
+        matrixKey: "realistic-avatar",
+        sampleCount: 1,
+        identityMatch: 1,
+        policyVersion: "policy-v1",
+        expiresAt: null,
+        evidence: { evaluatorVersion: "runtime-v1" },
+      },
+      currentPolicyVersion: "policy-v1",
+      currentEvaluatorVersion: "runtime-v1",
+      now: new Date("2026-07-24T00:00:00.000Z"),
+    })).toEqual({
+      state: "unqualified",
+      reason: "qualification_threshold_failed",
+    });
+  });
+
+  it("only exposes source-only identity calibration when one source can fill the concrete workflow slots", () => {
+    expect(identityCalibrationGenerationModes({
+      workflow: {
+        version: 1,
+        backendKind: "comfyui",
+        capabilities: ["referenceImages"],
+        identity: {
+          mode: "multi_reference",
+          maxReferences: 2,
+          acceptedRoles: ["identity_anchor", "identity_reference", "source_image"],
+          supportsSourceImageWithIdentity: true,
+        },
+        inputs: [
+          {
+            key: "identity_image",
+            type: "image",
+            referenceRoles: ["identity_anchor", "identity_reference"],
+          },
+          {
+            key: "source_image",
+            type: "image",
+            referenceRoles: ["source_image"],
+          },
+        ],
+      },
+      profileCapabilities: {
+        referenceImages: true,
+        initImage: true,
+      },
+    })).toEqual([]);
+  });
+
+  it("exposes image-to-image calibration for a concrete single-source workflow", () => {
+    expect(identityCalibrationGenerationModes({
+      workflow: {
+        version: 1,
+        backendKind: "comfyui",
+        capabilities: ["referenceImages"],
+        identity: {
+          mode: "single_reference",
+          maxReferences: 1,
+          acceptedRoles: ["source_image"],
+        },
+        inputs: [{
+          key: "source_image",
+          type: "image",
+          referenceRoles: ["source_image"],
+        }],
+      },
+      profileCapabilities: {
+        referenceImages: true,
+        initImage: true,
+      },
+    })).toEqual(["image_to_image"]);
+  });
+
   it("normalizes Reference Set roles and rejects a role the workflow cannot consume", () => {
     expect(generationRouteRuntimeCompatibility({
       workflow,

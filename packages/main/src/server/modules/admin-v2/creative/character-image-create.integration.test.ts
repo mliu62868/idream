@@ -103,7 +103,6 @@ describe("Character image Creative Run authority", () => {
     `character-image-create-multi-qwen-${suffix}`;
   const visualProfileId = `character-image-create-visual-${suffix}`;
   const referenceSetId = `character-image-create-reference-set-${suffix}`;
-  const qualificationId = `character-image-create-qualification-${suffix}`;
   const multiReferenceQualificationId =
     `character-image-create-multi-qualification-${suffix}`;
   const variationSourceBatchId = `character-image-create-source-run-${suffix}`;
@@ -299,13 +298,20 @@ describe("Character image Creative Run authority", () => {
     await prisma.adminAuditLog.deleteMany({ where: { actorId } });
     await prisma.generationRouteQualification.deleteMany({
       where: {
-        id: {
-          in: [
-            qualificationId,
-            multiReferenceQualificationId,
-            archiveRaceQualificationId,
-          ],
-        },
+        OR: [
+          {
+            id: {
+              in: [
+                multiReferenceQualificationId,
+                archiveRaceQualificationId,
+              ],
+            },
+          },
+          {
+            matrixKey: "operator-single-image-v1",
+            generationProfileKey: profileKey,
+          },
+        ],
       },
     });
     await prisma.referenceSetRevision.deleteMany({
@@ -337,7 +343,36 @@ describe("Character image Creative Run authority", () => {
     await prisma.$disconnect();
   });
 
-  it("creates a reversible text-to-image identity calibration with frozen prompts and unique seeds", async () => {
+  it("rejects multi-image Character runs before creating production state", async () => {
+    const title = "Mara accidental multi-image run";
+    const response = await createCreativeRun(request({
+      title,
+      purpose: "identity_calibration",
+      targetType: "character",
+      targetId: characterId,
+      profileId: "profile_image_default_v1",
+      orientation: "4:5",
+      count: 2,
+      brief: "This request must be split into individual operator decisions.",
+      identityExperiment: {
+        mode: "text_to_image",
+        negativePrompt: "different person",
+        seedStrategy: "random",
+        baseSeed: "42",
+        strength: 0.65,
+      },
+      consistencyMode: "balanced",
+      priority: "normal",
+      reason: "Prove Character production is one image at a time",
+    }, `character-single-image-policy-${suffix}`));
+
+    expect(response.status).toBe(400);
+    await expect(prisma.contentProductionBatch.count({
+      where: { title },
+    })).resolves.toBe(0);
+  });
+
+  it("creates one reversible text-to-image identity candidate with frozen prompts", async () => {
     const response = await createCreativeRun(request({
       title: "Mara visual identity calibration",
       purpose: "identity_calibration",
@@ -345,7 +380,7 @@ describe("Character image Creative Run authority", () => {
       targetId: characterId,
       profileId: "profile_image_default_v1",
       orientation: "4:5",
-      count: 4,
+      count: 1,
       brief: "A definitive adult portrait with warm brown eyes and dark wavy hair.",
       identityExperiment: {
         mode: "text_to_image",
@@ -369,8 +404,8 @@ describe("Character image Creative Run authority", () => {
       },
       orderBy: { createdAt: "asc" },
     });
-    expect(jobs).toHaveLength(4);
-    expect(new Set(jobs.map((job) => job.seed)).size).toBe(4);
+    expect(jobs).toHaveLength(1);
+    expect(new Set(jobs.map((job) => job.seed)).size).toBe(1);
     expect(jobs.every((job) =>
       job.characterId === characterId &&
       job.visualProfileId === null &&
@@ -430,7 +465,7 @@ describe("Character image Creative Run authority", () => {
       targetId: characterId,
       profileId: profileKey,
       orientation: "4:5",
-      count: 2,
+      count: 1,
       brief: "Keep the same adult face while refining the expression and hair silhouette.",
       identityExperiment: {
         mode: "image_to_image",
@@ -454,8 +489,8 @@ describe("Character image Creative Run authority", () => {
       },
       orderBy: { createdAt: "asc" },
     });
-    expect(jobs).toHaveLength(2);
-    expect(new Set(jobs.map((job) => job.seed)).size).toBe(2);
+    expect(jobs).toHaveLength(1);
+    expect(new Set(jobs.map((job) => job.seed)).size).toBe(1);
     expect(jobs.every((job) =>
       job.seed?.startsWith("source-seed-88:continued:variant:") === true
     )).toBe(true);
@@ -505,7 +540,7 @@ describe("Character image Creative Run authority", () => {
       profileId: "profile_image_default_v1",
       bootstrapIdentity: true,
       orientation: "4:5",
-      count: 4,
+      count: 1,
       brief: "A definitive first portrait that will establish Mara's identity authority.",
       consistencyMode: "strict",
       priority: "normal",
@@ -526,13 +561,13 @@ describe("Character image Creative Run authority", () => {
       where: { sourceType: "content_production_item", sourceMeta: { path: ["batchId"], equals: batchId } },
       orderBy: { createdAt: "asc" },
     });
-    expect(jobs).toHaveLength(4);
+    expect(jobs).toHaveLength(1);
     await expect(prisma.contentProductionBatch.count({
       where: { title: "Mara first identity portrait" },
     })).resolves.toBe(1);
     expect(jobs.every((job) => job.prompt?.includes("Target character: Mara."))).toBe(true);
     expect(jobs.every((job) => !job.prompt?.includes("Legacy character shell"))).toBe(true);
-    expect(jobs.every((job) => job.prompt?.includes("exactly one intended character"))).toBe(true);
+    expect(jobs.every((job) => job.prompt?.includes("render exactly one person total"))).toBe(true);
     expect(jobs.every((job) => job.negativePrompt?.includes("contact sheet"))).toBe(true);
     expect(jobs).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -1094,29 +1129,6 @@ describe("Character image Creative Run authority", () => {
         },
       },
     });
-    await prisma.generationRouteQualification.create({
-      data: {
-        id: qualificationId,
-        routeFingerprint: `character-image-create-route-${suffix}`,
-        generationProfileKey: profileKey,
-        generationProfileVersion: 1,
-        workflowKey: "qwen-image-edit-img2img",
-        workflowVersion: 1,
-        style: "realistic",
-        matrixKey: `character-image-create-matrix-${suffix}`,
-        sampleCount: 40,
-        passCount: 40,
-        identityMatch: 0.96,
-        result: "qualified",
-        evidence: {
-          evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,
-          reviewerId: actorId,
-          batchIds: ["qualified-fixture"],
-        },
-        policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
-      },
-    });
-
     const incompatible = await createCreativeRun(request({
       title: "Mara hero with incapable model",
       purpose: "character_hero",
@@ -1258,7 +1270,7 @@ describe("Character image Creative Run authority", () => {
       targetId: characterId,
       profileId: profileKey,
       orientation: "4:5",
-      count: 2,
+      count: 1,
       brief: "A natural environmental hero scene that preserves Mara's identity.",
       consistencyMode: "strict",
       priority: "normal",
@@ -1272,11 +1284,37 @@ describe("Character image Creative Run authority", () => {
       where: { sourceType: "content_production_item", sourceMeta: { path: ["batchId"], equals: batchId } },
       orderBy: { createdAt: "asc" },
     });
-    expect(jobs).toHaveLength(2);
-    expect(new Set(jobs.map((job) => job.seed)).size).toBe(2);
+    expect(jobs).toHaveLength(1);
+    expect(new Set(jobs.map((job) => job.seed)).size).toBe(1);
     expect(jobs.every((job) =>
       job.seed?.startsWith(`mara-${suffix}:batch:${batchId}:`) === true
     )).toBe(true);
+    expect(jobs.every((job) =>
+      job.prompt?.includes("Operator brief: A natural environmental hero scene") === true
+    )).toBe(true);
+    expect(jobs.every((job) =>
+      !job.prompt?.includes("A grounded late-night confidante.")
+    )).toBe(true);
+    expect(jobs.every((job) =>
+      job.prompt?.includes("render exactly one person total") === true
+    )).toBe(true);
+    const operationalRoute =
+      await prisma.generationRouteQualification.findFirstOrThrow({
+        where: {
+          matrixKey: "operator-single-image-v1",
+          generationProfileKey: profileKey,
+          generationProfileVersion: 1,
+        },
+      });
+    expect(operationalRoute).toMatchObject({
+      sampleCount: 0,
+      passCount: 0,
+      result: "qualified",
+      evidence: expect.objectContaining({
+        authorityMode: "operator_single_image",
+        generationPolicy: "one_image_per_run",
+      }),
+    });
     for (const job of jobs) {
       expect(job).toMatchObject({
         characterId,
@@ -1288,8 +1326,8 @@ describe("Character image Creative Run authority", () => {
         sourceMeta: expect.objectContaining({
           bootstrapIdentity: false,
           characterContentVersionId: contentId,
-          generationRouteQualificationId: qualificationId,
-          generationRouteFingerprint: `character-image-create-route-${suffix}`,
+          generationRouteQualificationId: operationalRoute.id,
+          generationRouteFingerprint: operationalRoute.routeFingerprint,
         }),
       });
       expect(job.referenceManifest).toEqual([

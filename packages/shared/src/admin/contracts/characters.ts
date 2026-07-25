@@ -380,6 +380,7 @@ export const characterIdentityCalibrationProfileSchema = z
     profileKey: adminIdSchema,
     profileVersion: z.number().int().positive(),
     label: z.string().trim().min(1),
+    modelId: z.string().trim().min(1),
     workflowKey: z.string().trim().min(1),
     workflowVersion: z.number().int().positive(),
     orientation: z.string().trim().min(1).max(20),
@@ -1474,6 +1475,114 @@ export const characterVoiceCloneCreateRequestSchema = z
   })
   .strict();
 
+export const pocketTtsCatalogVoiceIdSchema = z.enum([
+  "alba",
+  "marius",
+  "javert",
+  "jean",
+  "fantine",
+  "cosette",
+  "eponine",
+  "azelma",
+]);
+
+export const pocketTtsCatalogVoiceSchema = z
+  .object({
+    id: pocketTtsCatalogVoiceIdSchema,
+    label: z.string().trim().min(1),
+    presentation: z.enum(["female", "male"]),
+  })
+  .strict();
+
+export const voiceDefaultSettingsSchema = z
+  .object({
+    provider: z.literal("pocket_tts"),
+    source: z.enum(["environment", "app_setting"]),
+    settingVersion: z.number().int().nonnegative(),
+    updatedAt: adminIsoDateTimeSchema.nullable(),
+    defaultVoiceId: pocketTtsCatalogVoiceIdSchema,
+    genderVoiceIds: z
+      .object({
+        female: pocketTtsCatalogVoiceIdSchema,
+        male: pocketTtsCatalogVoiceIdSchema,
+        trans: pocketTtsCatalogVoiceIdSchema,
+      })
+      .strict(),
+    catalog: z.array(pocketTtsCatalogVoiceSchema).min(1).readonly(),
+  })
+  .strict();
+
+export const voiceDefaultSettingsUpdateRequestSchema = z
+  .object({
+    expectedVersion: z.number().int().nonnegative(),
+    defaultVoiceId: pocketTtsCatalogVoiceIdSchema,
+    genderVoiceIds: z
+      .object({
+        female: pocketTtsCatalogVoiceIdSchema,
+        male: pocketTtsCatalogVoiceIdSchema,
+        trans: pocketTtsCatalogVoiceIdSchema,
+      })
+      .strict(),
+    reason: z.string().trim().min(3).max(2_000),
+  })
+  .strict();
+
+export const voiceDefaultSettingsUpdateResponseSchema = z
+  .object({
+    settings: voiceDefaultSettingsSchema,
+    replayed: z.boolean(),
+  })
+  .strict();
+
+export const voiceDefaultPreviewRequestSchema = z
+  .object({
+    voiceId: pocketTtsCatalogVoiceIdSchema,
+    text: z.string().trim().min(3).max(240),
+  })
+  .strict();
+
+export const voiceDefaultPreviewResponseSchema = z
+  .object({
+    voiceId: pocketTtsCatalogVoiceIdSchema,
+    contentType: z.literal("audio/wav"),
+    audioBase64: z.string().min(1),
+    durationMs: z.number().int().nonnegative(),
+  })
+  .strict();
+
+export const characterImageSourceUploadRequestSchema = z
+  .object({
+    purpose: z.literal("identity_experiment_source"),
+  })
+  .strict();
+
+export const characterImageSourceAssetSchema = z
+  .object({
+    id: adminIdSchema,
+    url: z.string().trim().min(1),
+    thumbnailUrl: z.string().trim().min(1).nullable(),
+    filename: z.string().trim().min(1),
+    contentType: z.enum(["image/jpeg", "image/png", "image/webp"]),
+    sizeBytes: z.number().int().positive(),
+    width: z.number().int().positive(),
+    height: z.number().int().positive(),
+    createdAt: adminIsoDateTimeSchema,
+  })
+  .strict();
+
+export const characterImageSourceListResponseSchema = z
+  .object({
+    items: z.array(characterImageSourceAssetSchema).readonly(),
+  })
+  .strict();
+
+export const characterImageSourceUploadResponseSchema = z
+  .object({
+    asset: characterImageSourceAssetSchema,
+    replayed: z.boolean(),
+  })
+  .strict();
+
 export const characterVoiceProfileSchema = z
   .object({
     id: adminIdSchema,
@@ -1516,6 +1625,9 @@ export const characterVoiceWorkspaceSchema = z
     runtimeVersion: z.string().trim().min(1).nullable(),
     runtimeLanguage: z.string().trim().min(1),
     currentVoiceId: z.string().nullable(),
+    effectiveVoiceId: z.string().trim().min(1),
+    authoritySource: z.enum(["system_default", "character_clone"]),
+    systemDefaults: voiceDefaultSettingsSchema,
     activeProfile: characterVoiceProfileSchema.nullable(),
     candidateProfile: characterVoiceProfileSchema.nullable(),
     history: z.array(characterVoiceProfileSchema).readonly(),
@@ -1542,6 +1654,22 @@ export const characterVoiceActivationResponseSchema = z
   .object({
     profile: characterVoiceProfileSchema,
     replacedActiveProfileId: adminIdSchema.nullable(),
+    replayed: z.boolean(),
+  })
+  .strict();
+
+export const characterVoiceSystemDefaultResetRequestSchema = z
+  .object({
+    reason: z.string().trim().min(3).max(2_000),
+    expectedActiveProfileId: adminIdSchema.nullable(),
+    expectedCurrentVoiceId: z.string().trim().min(1).nullable(),
+  })
+  .strict();
+
+export const characterVoiceSystemDefaultResetResponseSchema = z
+  .object({
+    currentVoiceId: z.null(),
+    archivedProfileId: adminIdSchema.nullable(),
     replayed: z.boolean(),
   })
   .strict();
@@ -1623,6 +1751,20 @@ export type CharacterProjectDraftPatchRequest = z.infer<typeof characterProjectD
 export type CharacterWorkspaceDetail = z.infer<typeof characterWorkspaceDetailSchema>;
 export type CharacterVoiceProfile = z.infer<typeof characterVoiceProfileSchema>;
 export type CharacterVoiceWorkspace = z.infer<typeof characterVoiceWorkspaceSchema>;
+export type PocketTtsCatalogVoiceId = z.infer<typeof pocketTtsCatalogVoiceIdSchema>;
+export type VoiceDefaultSettings = z.infer<typeof voiceDefaultSettingsSchema>;
+export type CharacterImageSourceAsset = z.infer<
+  typeof characterImageSourceAssetSchema
+>;
+export type CharacterImageSourceListResponse = z.infer<
+  typeof characterImageSourceListResponseSchema
+>;
+export type CharacterImageSourceUploadRequest = z.infer<
+  typeof characterImageSourceUploadRequestSchema
+>;
+export type CharacterImageSourceUploadResponse = z.infer<
+  typeof characterImageSourceUploadResponseSchema
+>;
 export type CharacterVoiceCloneCreateRequest = z.infer<
   typeof characterVoiceCloneCreateRequestSchema
 >;

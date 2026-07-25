@@ -45,7 +45,7 @@ import {
   utcProductDayCeiling,
 } from "./performance";
 import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-executor";
-import { findQualifiedGenerationRoute } from "./visual-authority";
+import { findOperationalGenerationRoute } from "./visual-authority";
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 
@@ -645,7 +645,7 @@ export async function listCharacterPortfolioData(
   }
   const qualifiedRouteByAuthority = new Map<
     string,
-    ReturnType<typeof findQualifiedGenerationRoute>
+    ReturnType<typeof findOperationalGenerationRoute>
   >();
   const orphanProjectIds: string[] = [];
   const authorityAsOf = new Date();
@@ -723,7 +723,7 @@ export async function listCharacterPortfolioData(
       ? qualifiedRouteByAuthority.get(routeAuthorityKey)
       : undefined;
     if (activeVisualAuthority && routeAuthorityKey && !qualifiedRoutePromise) {
-      qualifiedRoutePromise = findQualifiedGenerationRoute(db, {
+      qualifiedRoutePromise = findOperationalGenerationRoute(db, {
         style: activeVisualAuthority.style,
         policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
         evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,

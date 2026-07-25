@@ -82,6 +82,7 @@ import {
   activateCharacterVoiceProfile,
   createCharacterVoiceClone,
   parseVoiceCloneForm,
+  resetCharacterVoiceToSystemDefault,
 } from "./voice-clones";
 
 describe("Character Pocket TTS voice clone authority", () => {
@@ -406,6 +407,69 @@ describe("Character Pocket TTS voice clone authority", () => {
       where: { id: candidate.profile.id },
       select: { status: true },
     })).status).toBe("candidate");
+  });
+
+  it("returns an active character voice to inherited system authority idempotently", async () => {
+    const character = await prisma.character.findUniqueOrThrow({
+      where: { id: characterId },
+      select: { voiceId: true },
+    });
+    const active = await prisma.characterVoiceProfile.findFirstOrThrow({
+      where: { characterId, status: "active" },
+      orderBy: [{ version: "desc" }, { id: "desc" }],
+      select: { id: true },
+    });
+    const idempotencyKey = `voice-reset-system-default-${suffix}`;
+    const request = {
+      reason: "Return the character to the managed system default",
+      expectedActiveProfileId: active.id,
+      expectedCurrentVoiceId: character.voiceId,
+    };
+    const first = await resetCharacterVoiceToSystemDefault({
+      characterId,
+      actor: { id: actorId, role: "admin" },
+      idempotencyKey,
+      requestId: `voice-reset-request-${suffix}`,
+      request,
+    });
+    const replay = await resetCharacterVoiceToSystemDefault({
+      characterId,
+      actor: { id: actorId, role: "admin" },
+      idempotencyKey,
+      requestId: `voice-reset-replay-${suffix}`,
+      request,
+    });
+
+    expect(first).toEqual({
+      replayed: false,
+      currentVoiceId: null,
+      archivedProfileId: active.id,
+    });
+    expect(replay).toEqual({ ...first, replayed: true });
+    expect(await prisma.character.findUniqueOrThrow({
+      where: { id: characterId },
+      select: { voiceId: true },
+    })).toEqual({ voiceId: null });
+    expect(await prisma.characterVoiceProfile.findUniqueOrThrow({
+      where: { id: active.id },
+      select: { status: true, archivedAt: true },
+    })).toMatchObject({
+      status: "archived",
+      archivedAt: expect.any(Date),
+    });
+    expect(await prisma.adminAuditLog.count({
+      where: {
+        actorId,
+        action: "character.voice.reset_to_system_default",
+      },
+    })).toBe(1);
+    expect(await prisma.mainOutboxEvent.count({
+      where: {
+        aggregateType: "character",
+        aggregateId: characterId,
+        eventType: "character.voice.reset_to_system_default.v1",
+      },
+    })).toBe(1);
   });
 });
 

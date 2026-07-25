@@ -156,11 +156,11 @@ describe("Character Asset Studio bootstrap route projection", () => {
 
     expect(container.textContent).toContain("No active text-to-image bootstrap profile is available");
     const generate = [...container.querySelectorAll("button")]
-      .find((button) => button.textContent?.includes("Generate 4 portraits"));
+      .find((button) => button.textContent?.includes("Generate 1 portrait"));
     expect(generate).toBeDefined();
     expect(generate?.disabled).toBe(true);
     expect(container.textContent).not.toContain("Complete visual setup");
-    expect(container.textContent).not.toContain("New image batch");
+    expect(container.textContent).not.toContain("New image");
   });
 
   it("opens ready characters in the recurring image library with a new-batch composer", async () => {
@@ -221,14 +221,15 @@ describe("Character Asset Studio bootstrap route projection", () => {
       onProjectReload={async () => undefined}
       permissions={{ read: true, create: true, review: true, selectDraft: true }}
     />));
-    await waitUntil(() => container.textContent?.includes("New image batch") === true);
+    await waitUntil(() => container.textContent?.includes("New image") === true);
 
     expect(container.textContent).toContain("Image purpose filters");
     expect(container.textContent).toContain("Image library");
+    expect(container.textContent).toContain("One image per generation");
     expect(container.textContent).toContain("The locked visual identity stays unchanged.");
     expect(container.textContent).not.toContain("Adjust the creative brief");
     const generate = [...container.querySelectorAll("button")]
-      .find((button) => button.textContent?.includes("Generate 6 portraits"));
+      .find((button) => button.textContent?.includes("Generate 1 portrait"));
     expect(generate?.disabled).toBe(false);
   });
 
@@ -799,7 +800,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
       .find((button) => button.textContent?.includes("More like this"));
     expect(blockedButton?.disabled).toBe(true);
     expect(container.textContent).toContain(
-      "qualified model profile cannot use the selected image as an init image",
+      "active model profile cannot use the selected image as an init image",
     );
     expect(container.textContent).toContain("Review generation route");
 
@@ -999,7 +1000,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
     />));
     await waitUntil(() => container.textContent?.includes("Regenerate under current route") === true);
     expect(container.textContent).toContain("remain in history but cannot authorize QA");
-    expect(container.textContent).toContain("New image batch");
+    expect(container.textContent).toContain("New image");
 
     const regenerate = [...container.querySelectorAll("button")]
       .find((button) => button.textContent?.includes("Regenerate under current route"));
@@ -1015,6 +1016,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
     );
     expect(createCall?.[1]).toMatchObject({
       body: {
+        count: 1,
         purpose: "character_cover",
         profileId: "profile-q2",
         targetId: "character-stale-pack",
@@ -1149,7 +1151,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
     });
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     const generate = [...container.querySelectorAll("button")]
-      .find((button) => button.textContent?.includes("Generate 6 portraits"));
+      .find((button) => button.textContent?.includes("Generate 1 portrait"));
     expect(generate?.disabled).toBe(false);
 
     await act(async () => {
@@ -1337,9 +1339,9 @@ describe("Character Asset Studio bootstrap route projection", () => {
       );
 
     await renderForActor("operator-a");
-    expect(findButton("Generate 4 portraits")?.disabled).toBe(false);
+    expect(findButton("Generate 1 portrait")?.disabled).toBe(false);
     await act(async () => {
-      findButton("Generate 4 portraits")?.click();
+      findButton("Generate 1 portrait")?.click();
       await Promise.resolve();
     });
     expect(createPosts).toBe(1);
@@ -1387,7 +1389,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
     await renderForActor("operator-b");
     expect(findButton("Resume generation")).toBeUndefined();
     expect(findButton("Verify created Run")).toBeUndefined();
-    expect(findButton("Generate 4 portraits")).toBeDefined();
+    expect(findButton("Generate 1 portrait")).toBeDefined();
     expect(createPosts).toBe(2);
   });
 

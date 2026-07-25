@@ -1004,6 +1004,7 @@ function renderSection(
         readAssets: ctx.permissions.has("creative.run.read"),
         createAssets: ctx.permissions.has("creative.run.write"),
         reviewAssets: ctx.permissions.has("creative.run.review"),
+        manageVoiceDefaults: ctx.permissions.has("generation.config.write"),
       }} view={subview} />;
     }
     if (section.view === "templates") return <StartersSection view={subview} />;

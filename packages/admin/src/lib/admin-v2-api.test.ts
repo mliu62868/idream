@@ -103,4 +103,28 @@ describe("setWorkspaceUrl", () => {
 
     expect(replaceState).toHaveBeenCalledWith(null, "", "/admin/cases/case-7?case=case-7");
   });
+
+  it("preserves an exact in-page repair target for workspace navigation", () => {
+    const pushState = vi.fn();
+    vi.stubGlobal("window", {
+      location: { pathname: "/admin/characters/alexa-reeves" },
+      history: { pushState, replaceState: vi.fn() },
+    });
+
+    setWorkspaceUrl(
+      new URLSearchParams({ tab: "visual" }),
+      {
+        mode: "push",
+        ...({
+          hash: "route-qualification-workbench",
+        } as Parameters<typeof setWorkspaceUrl>[1]),
+      },
+    );
+
+    expect(pushState).toHaveBeenCalledWith(
+      null,
+      "",
+      "/admin/characters/alexa-reeves?tab=visual#route-qualification-workbench",
+    );
+  });
 });

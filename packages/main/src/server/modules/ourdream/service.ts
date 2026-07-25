@@ -115,6 +115,7 @@ import { billingPeriodEnd } from "@/lib/billing-period";
 import { isPublicRouteDiscoverable } from "@/lib/public-route-authority";
 import { activeAnnouncements, readAnnouncements } from "@/server/announcements/store";
 import { logger } from "@/server/lib/logger";
+import { resolveCharacterVoiceAuthority } from "@/server/modules/voice-defaults";
 import {
   redeemCodeDreamcoins,
   redeemCodeHashCandidates,
@@ -4115,9 +4116,13 @@ async function createVoiceClip(request: Request) {
     });
   }
 
+  const voiceAuthority = await resolveCharacterVoiceAuthority({
+    voiceId: character.voiceId,
+    gender: character.gender,
+  });
   const result = await providers.voice.synthesize({
     text: body.text,
-    voiceId: character.voiceId ?? undefined,
+    voiceId: voiceAuthority.voiceId,
     tone,
   });
   if (!result.ok) throw Errors.internal("Voice synthesis failed", result.error);
@@ -4178,7 +4183,9 @@ async function createVoiceClip(request: Request) {
             cacheVersion: voiceClipCacheVersion,
             messageId: body.messageId,
             sessionId: body.sessionId ?? null,
-            voiceId: character.voiceId ?? null,
+            voiceId: voiceAuthority.voiceId,
+            voiceAuthority: voiceAuthority.source,
+            systemVoiceSettingVersion: voiceAuthority.settingVersion,
             tone,
             durationMs,
             providerKey: result.data.key,

@@ -59,6 +59,32 @@ export class PocketTtsVoiceModel implements VoiceModel {
   }
 
   async synthesize(input: Parameters<VoiceModel["synthesize"]>[0]) {
+    const rendered = await this.renderVoice(input);
+    if (!rendered.ok) return rendered;
+    const key = `voice/${randomUUID()}.wav`;
+    const stored = await this.blob.putPrivate({
+      key,
+      body: rendered.data.body,
+      contentType: rendered.data.contentType,
+    });
+    if (!stored.ok) return stored;
+    return {
+      ok: true as const,
+      data: {
+        key,
+        durationMs: rendered.data.durationMs,
+      },
+    };
+  }
+
+  async previewVoice(input: Parameters<NonNullable<VoiceModel["previewVoice"]>>[0]) {
+    return this.renderVoice(input);
+  }
+
+  private async renderVoice(input: {
+    text: string;
+    voiceId?: string;
+  }) {
     const response = await this.request(this.speechEndpoint, {
       method: "POST",
       headers: this.jsonHeaders(),
@@ -83,13 +109,11 @@ export class PocketTtsVoiceModel implements VoiceModel {
     if (body.byteLength === 0) {
       return pocketFailure("invalid_voice_response", "Pocket TTS returned empty audio", true);
     }
-    const key = `voice/${randomUUID()}.wav`;
-    const stored = await this.blob.putPrivate({ key, body, contentType: "audio/wav" });
-    if (!stored.ok) return stored;
     return {
       ok: true as const,
       data: {
-        key,
+        body,
+        contentType: "audio/wav" as const,
         durationMs: wavDurationMs(body) ?? estimateDurationMs(input.text),
       },
     };

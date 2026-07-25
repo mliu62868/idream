@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  characterIdentityCalibrationProfileSchema,
   characterIdentityBootstrapRequestSchema,
   characterIdentityBootstrapResponseSchema,
   characterPreviewSnapshotSchema,
@@ -11,6 +12,23 @@ import {
 } from "./characters";
 
 describe("Character Visual workspace contract", () => {
+  it("exposes the concrete model behind an identity calibration profile", () => {
+    const profile = characterIdentityCalibrationProfileSchema.parse({
+      profileKey: "profile_image_default_v1",
+      profileVersion: 1,
+      label: "Default image",
+      modelId: "redcraft-krea2-comfyui",
+      workflowKey: "redcraft-krea2-txt2img",
+      workflowVersion: 1,
+      orientation: "4:5",
+      allowedOrientations: ["1:1", "4:5"],
+      modes: ["text_to_image"],
+      recommended: true,
+    });
+
+    expect(profile.modelId).toBe("redcraft-krea2-comfyui");
+  });
+
   it("requires an explicit identity prompt when activating a reviewed candidate", () => {
     const candidateAuthority = {
       runId: "run-1",

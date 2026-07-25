@@ -58,19 +58,42 @@ PM2 starts the product topology from `ecosystem.config.js`:
 
 | PM2 app | Default port | Description |
 | --- | --- | --- |
-| `main-web` | 3000 | Public app and `/api/v1/*` |
-| `admin-web` | 3001 | Admin console |
+| `pocket-tts` | 8062 | Pocket TTS registry/adapter |
+| `main-web` | 3000 | Public app and `/api/v1/*` (Next dev + Fast Refresh by default) |
+| `admin-web` | 3001 | Admin console (Next dev + Fast Refresh by default) |
 | `chat` | `CHAT_PORT` | Chat API/SSE |
 | `gen-image` | n/a | Image worker |
-| `gen-video` | n/a | Video worker |
 | `gen-finalizer` | n/a | Main-side generation finalizer |
 | `main-event-consumer` | n/a | Main-side event consumer |
+| `admin-command-worker` | n/a | Admin durable command worker |
 
-After `bun run build`, restart web processes before browser verification:
+The default PM2 mode is development. It runs both web apps from source and
+restarts source-backed services/workers when their relevant source trees change,
+so normal development does not require a build:
 
 ```bash
-pm2 restart main-web admin-web
+bun run pm2:start
+bun run pm2:restart
 ```
+
+Use `pm2 restart <name>` after `.env`, Prisma Client, or other startup-level
+changes. To run immutable production releases, build first and opt in explicitly:
+
+```bash
+bun run build
+bun run pm2:start:production
+```
+
+Switching an existing PM2 app between development and production changes its
+process definition. Delete and start the ecosystem once when switching modes:
+
+```bash
+pm2 delete ecosystem.config.js
+bun run pm2:start:production # or: bun run pm2:start
+pm2 save
+```
+
+Ordinary source changes do not need this.
 
 ## Image Generation
 

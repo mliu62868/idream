@@ -75,21 +75,21 @@ export function characterSourceVariationBlockerMessage(
   blocker: CharacterSourceVariationBlocker,
 ) {
   if (blocker === "profile_init_image_unsupported") {
-    return "More like this is unavailable because the qualified model profile cannot use the selected image as an init image.";
+    return "More like this is unavailable because the active model profile cannot use the selected image as an init image.";
   }
   if (blocker === "workflow_source_image_unsupported") {
-    return "More like this is unavailable because the qualified workflow does not accept a source image.";
+    return "More like this is unavailable because the active workflow does not accept a source image.";
   }
   if (blocker === "workflow_source_identity_combination_unsupported") {
-    return "More like this is unavailable because the qualified workflow cannot combine a source image with the canonical identity references.";
+    return "More like this is unavailable because the active workflow cannot combine a source image with the canonical identity references.";
   }
   if (blocker === "reference_capacity_insufficient") {
-    return "More like this is unavailable because the qualified workflow has no remaining reference capacity after the canonical identity references.";
+    return "More like this is unavailable because the active workflow has no remaining reference capacity after the canonical identity references.";
   }
   if (blocker === "reference_slot_assignment_unsupported") {
-    return "More like this is unavailable because the qualified workflow cannot map the canonical identity and source image into distinct semantic slots.";
+    return "More like this is unavailable because the active workflow cannot map the canonical identity and source image into distinct semantic slots.";
   }
-  return "More like this needs a current qualified Character identity route.";
+  return "More like this needs a compatible active Character identity route.";
 }
 
 export function canOfferCharacterAssetTerminalRejection(input: {
@@ -121,25 +121,25 @@ const purposeConfig: Record<CharacterAssetPurpose, {
   character_cover: {
     label: "Primary portrait",
     shortLabel: "Portrait",
-    pluralLabel: "portraits",
+    pluralLabel: "portrait",
     description: "The face customers recognize across discovery and the character profile.",
-    count: 6,
+    count: 1,
     orientation: "4:5",
   },
   character_hero: {
     label: "Character hero",
     shortLabel: "Hero",
-    pluralLabel: "heroes",
+    pluralLabel: "hero image",
     description: "A wider, expressive scene for the top of the character experience.",
-    count: 4,
+    count: 1,
     orientation: "16:9",
   },
   character_chat: {
     label: "Chat moments",
     shortLabel: "Chat",
-    pluralLabel: "chat assets",
+    pluralLabel: "chat image",
     description: "Natural, conversational moments for the relationship experience.",
-    count: 6,
+    count: 1,
     orientation: "4:5",
   },
 };
@@ -584,9 +584,9 @@ const imageReadinessActionByBlocker: Readonly<Record<string, string>> = {
   reference_assets_unavailable:
     "Replace unavailable identity reference images",
   generation_route_unqualified:
-    "Create and qualify the platform image route",
+    "Activate a compatible platform image route",
   generation_route_stale:
-    "Refresh the platform image route qualification",
+    "Refresh the active platform image route",
 };
 
 export function characterAssetReadinessAction(blockerCode: string) {
@@ -674,7 +674,7 @@ function ImageProductionReadinessCard({
           </h4>
           <p className="mt-1 text-xs leading-5" id={descriptionId}>
             {t(canRepair
-              ? "The current live portrait will become the sealed identity reference for future batches. Existing live images and releases will not change."
+              ? "The current live portrait will become the sealed identity reference for future images. Existing live images and releases will not change."
               : "Complete these steps before starting a generation run. Existing live images and releases will not change.")}
           </p>
         </div>
@@ -816,10 +816,10 @@ function IdentityRail({
           <p className="mt-1 line-clamp-1 text-xs text-[var(--ad-text-muted)]">
             {identityEstablished
               ? qualifiedRoute
-                ? t("Identity, references, and route are protected for this batch.")
+                ? t("Identity, references, and route are protected for this image.")
                 : t("Identity and references are locked; the generation route is not qualified yet.")
               : bootstrapMode && bootstrapProfile
-                ? t("This batch will establish the first reviewed identity anchor.")
+                ? t("This image will establish the first reviewed identity anchor.")
                 : t("Visual authority must be repaired before production can continue.")}
           </p>
         </div>
@@ -946,7 +946,7 @@ function CandidateBatchGrid({
   const { t } = useAdminI18n();
   return (
     <div
-      aria-label={t("Batch candidates")}
+      aria-label={t("Generated candidates")}
       className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3"
       role="list"
     >
@@ -1109,7 +1109,7 @@ function CandidateComparisonStage({
         </div>
         <WorkspaceButton className="min-h-9" onClick={onClose}>
           <X aria-hidden="true" className="h-4 w-4" />
-          {t("Back to batch")}
+          {t("Back to generated image")}
         </WorkspaceButton>
       </div>
       <div className="grid gap-3 md:grid-cols-2">
@@ -1845,11 +1845,7 @@ export function CharacterAssetStudio({
         (bootstrapMode && purpose !== "character_cover")
       )
     ) return;
-    const count = bootstrapMode
-      ? 4
-      : referenceAssetIds.length
-        ? 4
-        : purposeConfig[purpose].count;
+    const count = 1;
     const brief = briefs[purpose].trim();
     const title = `${subject.name} · ${purposeConfig[purpose].label}`;
     const body = recovered?.success
@@ -2850,11 +2846,11 @@ export function CharacterAssetStudio({
       ? "Resume generation"
       : runCreationIntent?.status === "committed_projection_pending"
         ? "Verify created Run"
-        : `Generate ${bootstrapMode ? 4 : activeConfig.count} ${activeConfig.pluralLabel}`;
+        : `Generate 1 ${activeConfig.pluralLabel}`;
   const generationActionText =
     generationActionLabel.startsWith("Generate ")
       ? t("Generate {count} {assetType}", {
-          count: bootstrapMode ? 4 : activeConfig.count,
+          count: 1,
           assetType: t(activeConfig.pluralLabel),
         })
       : t(generationActionLabel);
@@ -2937,7 +2933,7 @@ export function CharacterAssetStudio({
                 ? "Establish the face customers will recognize"
                 : productionBlocked
                   ? imageProductionRepairable
-                    ? "Use the current live portrait for future image batches"
+                    ? "Use the current live portrait for future image generation"
                     : "Finish visual setup before creating more images"
                   : "{name}'s images", { name: subject.name })}
             </h3>
@@ -2948,7 +2944,7 @@ export function CharacterAssetStudio({
                   ? imageProductionRepairable
                     ? "Seal the existing live portrait as the reusable identity reference. Current live images and releases will not change."
                     : "Complete the current visual setup action once. Existing live images and releases will not change."
-                  : "Create another focused batch from the locked identity, then review candidates separately before changing any draft slot.")}
+                  : "Create one image from the locked identity, review it, then decide whether it belongs in the draft asset pack.")}
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -2988,7 +2984,7 @@ export function CharacterAssetStudio({
         ) : data.project.draftAssetRouteAuthority?.status === "stale" ? (
           <div className="mx-4 mb-4 flex flex-col gap-3 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)] sm:mx-5 sm:flex-row sm:items-center sm:justify-between">
             <span>
-              {t(`The qualified route changed. ${data.project.draftAssetRouteAuthority.stalePurposes.length} selected asset${data.project.draftAssetRouteAuthority.stalePurposes.length === 1 ? "" : "s"} remain in history but cannot authorize QA.`)}
+              {t(`The active image route changed. ${data.project.draftAssetRouteAuthority.stalePurposes.length} selected asset${data.project.draftAssetRouteAuthority.stalePurposes.length === 1 ? "" : "s"} remain in history but cannot authorize QA.`)}
             </span>
             <WorkspaceButton disabled={!canGenerate || busy !== null} onClick={regenerateUnderCurrentRoute}>
               {t("Regenerate under current route")}
@@ -3059,7 +3055,7 @@ export function CharacterAssetStudio({
                   <strong className="block text-sm">{t(purposeConfig[purpose].label)}</strong>
                   <span className="mt-1 block text-xs text-[var(--ad-text-muted)]">
                     {recurringProductionReady
-                      ? t("{count} per batch", { count: purposeConfig[purpose].count })
+                      ? t("One image per generation")
                       : t(state)}
                   </span>
                 </span>
@@ -3084,7 +3080,7 @@ export function CharacterAssetStudio({
           <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[var(--ad-border)] pb-3">
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--ad-text-muted)]">
-                {t(recurringProductionReady && workspaceMode === "library" ? "Image library" : "Batch candidates")} · {t(activeConfig.label)}
+                {t(recurringProductionReady && workspaceMode === "library" ? "Image library" : "Generated image")} · {t(activeConfig.label)}
               </p>
               <h3 className="mt-1 font-semibold" id="candidate-title">
                 {productionBlocked
@@ -3101,7 +3097,7 @@ export function CharacterAssetStudio({
                 {productionBlocked
                   ? t("Finish the setup action above before reviewing or creating candidates.")
                   : recurringProductionReady && workspaceMode === "library"
-                  ? t("Open an image to review it. Creating a new batch never changes the live character automatically.")
+                  ? t("Open an image to review it. Creating a new image never changes the live character automatically.")
                   : selectedItem
                   ? t("Candidate {number} is the only active decision target.", {
                       number: selectedItem.ordinal + 1,
@@ -3163,7 +3159,7 @@ export function CharacterAssetStudio({
               <div className="grid min-h-64 place-items-center rounded-lg border border-dashed border-[var(--ad-border)] bg-black/[0.02] px-6 text-center text-[var(--ad-text-muted)]">
                 <div>
                   <Sparkles className="mx-auto h-7 w-7" />
-                  <p className="mt-3 text-sm">{t("Generate a focused batch, then decide from real candidates here.")}</p>
+                  <p className="mt-3 text-sm">{t("Generate one image, then review it here.")}</p>
                 </div>
               </div>
             )}
@@ -3171,20 +3167,20 @@ export function CharacterAssetStudio({
         </section>
 
         {recurringProductionReady && workspaceMode === "library" ? (
-          <aside className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 xl:sticky xl:top-4" aria-labelledby="new-image-batch-title">
+          <aside className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 xl:sticky xl:top-4" aria-labelledby="new-image-title">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--ad-text-muted)]">
                   {t("Ongoing production")}
                 </p>
-                <h3 className="mt-1 font-semibold" id="new-image-batch-title">{t("New image batch")}</h3>
+                <h3 className="mt-1 font-semibold" id="new-image-title">{t("New image")}</h3>
               </div>
               <span className="grid h-9 w-9 place-items-center rounded-full bg-[var(--ad-green-bg)] text-[var(--ad-green-text)]">
                 <Plus aria-hidden="true" className="h-4 w-4" />
               </span>
             </div>
             <p className="mt-2 text-xs leading-5 text-[var(--ad-text-muted)]">
-              {t("Choose one customer purpose and describe only what should change in this batch.")}
+              {t("Choose one customer purpose and describe the image you want now.")}
             </p>
             <label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">
               {t("Image purpose")}
@@ -3199,12 +3195,9 @@ export function CharacterAssetStudio({
                 ))}
               </select>
             </label>
-            <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">
-              {t("Batch size")}
-              <select className={`${fieldClass} mt-1`} disabled value={activeConfig.count}>
-                <option value={activeConfig.count}>{t("{count} images", { count: activeConfig.count })}</option>
-              </select>
-            </label>
+            <p className="mt-3 rounded-lg bg-black/[0.03] px-3 py-2 text-xs text-[var(--ad-text-muted)]">
+              {t("One image per generation")}
+            </p>
             <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">
               {t("What should be different this time?")}
               <textarea
@@ -3442,8 +3435,8 @@ export function CharacterAssetStudio({
           {comparisonItem ? (
             <WorkspaceButton onClick={() => setComparisonItemId(null)}>
               <X className="h-4 w-4" />
-              <span className="sm:hidden">{t("Batch")}</span>
-              <span className="hidden sm:inline">{t("Back to batch")}</span>
+              <span className="sm:hidden">{t("Image")}</span>
+              <span className="hidden sm:inline">{t("Back to generated image")}</span>
             </WorkspaceButton>
           ) : null}
           <WorkspaceButton

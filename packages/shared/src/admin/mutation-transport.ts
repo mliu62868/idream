@@ -81,6 +81,7 @@ export const ADMIN_V2_MUTATION_TRANSPORT = {
   "POST /api/v2/admin/characters/:id/commands/resume": idempotencyKey(),
   "POST /api/v2/admin/characters/:id/commands/retire": idempotencyKey(),
   "POST /api/v2/admin/characters/:id/portfolio-decisions": idempotencyKey(),
+  "POST /api/v2/admin/characters/:id/image-sources": idempotencyKey(),
   "POST /api/v2/admin/characters/:id/voice-clones": idempotencyKey(),
   "POST /api/v2/admin/characters/:id/voice-clones/:profileId/activate": idempotencyKey(),
   "POST /api/v2/admin/characters/:id/reference-sets": idempotencyKey(),

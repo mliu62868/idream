@@ -165,6 +165,36 @@ describe("PocketTtsVoiceModel", () => {
       response_format: "wav",
     });
   });
+
+  it("previews a built-in female voice without writing a chat clip", async () => {
+    const audio = wavBytes(900);
+    const fetchMock = vi.fn(async () =>
+      new Response(audio, { headers: { "content-type": "audio/wav" } }),
+    );
+    const stored: Array<{ key: string; body: Uint8Array; contentType: string }> = [];
+    const voice = new PocketTtsVoiceModel({
+      baseUrl: "http://127.0.0.1:8062/v1",
+      model: "pocket-tts-4bit",
+      language: "english",
+      blob: stubBlobStore(stored),
+      fetchImpl: fetchMock,
+    });
+
+    await expect(voice.previewVoice({
+      text: "Preview the system default female voice.",
+      voiceId: "alba",
+    })).resolves.toMatchObject({
+      ok: true,
+      data: {
+        body: audio,
+        contentType: "audio/wav",
+        durationMs: 900,
+      },
+    });
+    expect(stored).toHaveLength(0);
+    const [, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(JSON.parse(String(init.body))).toMatchObject({ voice: "alba" });
+  });
 });
 
 function stubBlobStore(

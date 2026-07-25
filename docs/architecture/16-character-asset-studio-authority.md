@@ -17,7 +17,7 @@ Character Asset Studio 复用 Creative Run 作为生成 authority、Creative Rev
 | --- | --- | --- |
 | 角色视觉身份 | active `CharacterVisualProfile` | immutable version、identity prompt、traits、anchors |
 | 身份参考集 | active sealed `ReferenceSetRevision` | 精确 reference snapshot |
-| 合格生成路线 | `GenerationRouteQualification` | profile/workflow version、evidence、expiry、stale 状态 |
+| 运行生成路线 | active `GenerationModelProfile` + pinned `GenerationRouteQualification` | 兼容的 profile/workflow version、单图策略、精确 lineage |
 | Creative Run | `ContentProductionBatch` | purpose、targetType/targetId、profile/workflow、brief、count |
 | Run Item | `ContentProductionItem` | ordinal、Job、Asset、status、version、direction lineage |
 | 素材审核 | `CreativeReviewDecision` | decision、identityConsistency、artifactId、reviewer、reason |
@@ -34,8 +34,9 @@ Character Asset Studio 复用 Creative Run 作为生成 authority、Creative Rev
 
 - Run 必须绑定 `targetType=character` 与精确 `targetId`；
 - purpose 只能是 `character_cover`、`character_hero`、`character_chat` 之一；
-- 使用 active Visual Profile、active Reference Set 与当前 qualified、非 stale route；
+- 使用 active Visual Profile、active Reference Set 与当前兼容、非 stale route；
 - 额外 reference 必须是可用图片，且属于同一个 Character；
+- 角色运营 Run 每次必须且只能生成 1 个 Item；旧的模型评测矩阵不是正式生图前置门槛；
 - 生成参数固定到 Run/Item lineage，不能随后静默替换。
 
 ### 3.2 审核与采用
@@ -71,9 +72,9 @@ sequenceDiagram
     participant R as Release authority
     participant S as Serving projection
 
-    O->>A: Generate purpose batch
-    A->>C: POST Creative Run (idempotent)
-    C-->>A: Run + Items + Jobs
+    O->>A: Generate one purpose image
+    A->>C: POST Creative Run count=1 (idempotent)
+    C-->>A: Run + one Item + one Job
     O->>A: Approve candidate identity
     A->>C: Append Review Decision
     O->>A: Select candidate
@@ -182,4 +183,3 @@ bun test packages/main/src/server/modules/admin-v2/characters/release-lifecycle.
 ```
 
 合并前继续执行仓库级 `bun run check` 与完整测试。涉及 schema 时必须在隔离 PostgreSQL 数据库演练 migration；涉及工作台交互时必须完成真实浏览器生成、审核、三类采用、Preview 与控制台检查。
-

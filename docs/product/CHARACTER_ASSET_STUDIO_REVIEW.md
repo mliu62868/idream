@@ -73,18 +73,18 @@
 
 ### 5.1 一条三步资产生产线
 
-| 步骤 | 默认产量 | 客户任务 | 完成条件 |
+| 步骤 | 每次产量 | 客户任务 | 完成条件 |
 | --- | ---: | --- | --- |
-| Primary portrait | 6 | 发现页识别、角色主头像 | 一张候选身份审核通过并被采用 |
-| Character hero | 4 | 角色详情页建立人格和氛围 | 一张宽场景候选审核通过并被采用 |
-| Chat moments | 6 | 聊天前建立自然关系感 | 一张聊天语境候选审核通过并被采用 |
+| Primary portrait | 1 | 发现页识别、角色主头像 | 一张候选身份审核通过并被采用 |
+| Character hero | 1 | 角色详情页建立人格和氛围 | 一张宽场景候选审核通过并被采用 |
+| Chat moments | 1 | 聊天前建立自然关系感 | 一张聊天语境候选审核通过并被采用 |
 
 每一步都遵循同一个自然循环：
 
 ```mermaid
 flowchart LR
-    A["锁定身份与合格路线"] --> B["生成聚焦批次"]
-    B --> C["在客户语境比较候选"]
+    A["锁定身份与兼容线路"] --> B["生成一张候选图"]
+    B --> C["在客户语境审核这张图"]
     C --> D{"判断"}
     D -->|不合格| E["Reject with reason"]
     E --> C
@@ -110,7 +110,7 @@ flowchart LR
 | 动作 | 含义 | 是否改变线上角色 |
 | --- | --- | --- |
 | Generate | 创建一个绑定角色与用途的 Creative Run | 否 |
-| More like this | 仅在 qualified route 可组合 source + canonical references 时，以已通过身份与质量证据门槛的候选作为额外 source 创建变体 Run；不支持时明确禁用 | 否 |
+| More like this | 仅在 active route 可组合 source + canonical references 时，以已通过身份与质量证据门槛的候选作为额外 source 创建单图变体 Run；不支持时明确禁用 | 否 |
 | Reject with reason | 记录不通过的审核决策；被拒候选不能作为变体源 | 否 |
 | Approve with evidence | 记录 `approved + identityConsistency=passed` 与结构化质量证据 | 否 |
 | Select primary/hero/chat | 把精确候选 lineage 写入 Character Project 草稿 | 否 |
@@ -133,10 +133,10 @@ flowchart LR
 已经落地：
 
 - Character Workspace 的 `Assets` 专用页签；
-- 空白角色与严格可恢复的空 candidate 历史共用首肖像 bootstrap：4 张无参考候选 → 结构化审核 → 原子建立 reviewed identity、Reference Set rev1 与 Primary portrait 草稿；
+- 空白角色与严格可恢复的空 candidate 历史共用首肖像 bootstrap：每次 1 张无参考候选 → 结构化审核 → 原子建立 reviewed identity、Reference Set rev1 与 Primary portrait 草稿；
 - `Visual identity` 在缺少受审锚点时只提供返回 Assets 的明确入口，并禁止创建会使流程死锁的纯文字 active identity；
-- 三步资产包、默认 brief 与默认批量；
-- canonical identity / Reference Set / qualified route 自动应用；
+- 三步资产包、默认 brief 与每次单图生成；
+- canonical identity / Reference Set / compatible active route 自动应用；
 - 角色范围的 Creative Run 查询与异步轮询；
 - 单张候选提前审核、拒绝、批准和 `More like this`；
 - discovery、hero、chat 客户语境预览；

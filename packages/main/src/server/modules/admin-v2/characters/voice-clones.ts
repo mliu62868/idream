@@ -5,6 +5,8 @@ import {
   characterVoiceCloneCreateRequestSchema,
   characterVoiceCloneCreateResponseSchema,
   characterVoiceProfileSchema,
+  characterVoiceSystemDefaultResetRequestSchema,
+  characterVoiceSystemDefaultResetResponseSchema,
   type CharacterVoiceProfile,
 } from "@idream/shared/admin";
 import type { CharacterVoiceProfile as CharacterVoiceProfileRecord, MediaAsset, Prisma } from "@prisma/client";
@@ -473,6 +475,118 @@ export async function activateCharacterVoiceProfile(input: {
     }),
   });
   return characterVoiceActivationResponseSchema.parse(result);
+}
+
+export async function resetCharacterVoiceToSystemDefault(input: {
+  characterId: string;
+  actor: AdminActor;
+  idempotencyKey: string;
+  requestId: string;
+  request: unknown;
+}) {
+  const request = characterVoiceSystemDefaultResetRequestSchema.parse(
+    input.request,
+  );
+  const result = await executeAtomicIdempotentMutation({
+    environment: env.APP_ENV,
+    actor: input.actor,
+    idempotencyKey: input.idempotencyKey,
+    requestId: input.requestId,
+    commandType: "character.voice.reset_to_system_default",
+    target: { type: "character", id: input.characterId },
+    payload: request,
+    mutate: async (tx) => {
+      const lockedCharacters = await tx.$queryRaw<Array<{
+        id: string;
+        voiceId: string | null;
+      }>>`SELECT "id", "voiceId" FROM "characters" WHERE "id" = ${input.characterId} FOR UPDATE`;
+      const lockedCharacter = lockedCharacters[0];
+      if (!lockedCharacter) throw Errors.notFound("Character not found");
+      const current = await tx.characterVoiceProfile.findFirst({
+        where: { characterId: input.characterId, status: "active" },
+        orderBy: [{ version: "desc" }, { id: "desc" }],
+      });
+      if ((current?.id ?? null) !== request.expectedActiveProfileId) {
+        throw Errors.conflict(
+          "Active voice changed before the system-default reset",
+          {
+            expectedActiveProfileId: request.expectedActiveProfileId,
+            currentActiveProfileId: current?.id ?? null,
+          },
+        );
+      }
+      if (lockedCharacter.voiceId !== request.expectedCurrentVoiceId) {
+        throw Errors.conflict(
+          "Character voice pointer changed before the system-default reset",
+          {
+            expectedCurrentVoiceId: request.expectedCurrentVoiceId,
+            currentVoiceId: lockedCharacter.voiceId,
+          },
+        );
+      }
+      if (current && lockedCharacter.voiceId !== current.providerVoiceId) {
+        throw Errors.conflict(
+          "Active voice profile and character voice pointer disagree",
+          {
+            activeProfileId: current.id,
+            activeProfileVoiceId: current.providerVoiceId,
+            currentVoiceId: lockedCharacter.voiceId,
+          },
+        );
+      }
+      if (current) {
+        await tx.characterVoiceProfile.update({
+          where: { id: current.id },
+          data: { status: "archived", archivedAt: new Date() },
+        });
+      }
+      await tx.character.update({
+        where: { id: input.characterId },
+        data: { voiceId: null },
+      });
+      await tx.adminAuditLog.create({
+        data: {
+          actorId: input.actor.id,
+          actorRole: input.actor.role,
+          action: "character.voice.reset_to_system_default",
+          targetType: "character",
+          targetId: input.characterId,
+          reason: request.reason,
+          before: toInputJson({
+            activeProfileId: current?.id ?? null,
+            providerVoiceId: lockedCharacter.voiceId,
+          }),
+          after: toInputJson({
+            activeProfileId: null,
+            providerVoiceId: null,
+            authoritySource: "system_default",
+          }),
+          requestId: input.requestId,
+        },
+      });
+      await tx.mainOutboxEvent.create({
+        data: {
+          eventType: "character.voice.reset_to_system_default.v1",
+          aggregateType: "character",
+          aggregateId: input.characterId,
+          payload: toInputJson({
+            characterId: input.characterId,
+            archivedProfileId: current?.id ?? null,
+            actorId: input.actor.id,
+          }),
+        },
+      });
+      return {
+        currentVoiceId: null,
+        archivedProfileId: current?.id ?? null,
+      };
+    },
+    decorateResult: (value, replayed) => ({
+      ...(value as Record<string, unknown>),
+      replayed,
+    }),
+  });
+  return characterVoiceSystemDefaultResetResponseSchema.parse(result);
 }
 
 export function characterVoiceProfileDto(profile: VoiceProfileWithAssets): CharacterVoiceProfile {

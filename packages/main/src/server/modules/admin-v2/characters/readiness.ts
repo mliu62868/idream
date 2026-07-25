@@ -116,13 +116,13 @@ export function evaluateReleaseReadiness(input: ReleaseReadinessInput) {
     check(
       input.routeQualification?.status === "qualified",
       "generation_route_unqualified",
-      "The pinned generation route is not qualified.",
+      "No compatible image generation route is active.",
       `/admin/ops/profiles?characterId=${input.releaseCharacterId}`,
     ),
     check(
       input.routeQualification === null || input.routeQualification.stale === false,
       "generation_route_stale",
-      "The pinned generation route qualification is stale.",
+      "The active image generation route changed.",
       `/admin/ops/profiles?characterId=${input.releaseCharacterId}`,
     ),
     check(

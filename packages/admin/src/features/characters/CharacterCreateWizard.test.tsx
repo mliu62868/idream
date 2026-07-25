@@ -145,7 +145,7 @@ describe("Character create wizard", () => {
     const html = renderToStaticMarkup(createElement(CharacterWorkspace, {
       actorId: "test-admin",
       view: { kind: "new" },
-      permissions: { read: true, writeProject: true, proposeRelease: true, publishRelease: false, reviewRelease: false, writeVisual: true, evaluateRoute: true, readAssets: true, createAssets: true, reviewAssets: true },
+      permissions: { read: true, writeProject: true, proposeRelease: true, publishRelease: false, reviewRelease: false, writeVisual: true, evaluateRoute: true, readAssets: true, createAssets: true, reviewAssets: true, manageVoiceDefaults: true },
     }));
     expect(html).toContain("data-testid=\"character-create-wizard\"");
     expect(html).not.toContain("Portfolio &amp; Projects");

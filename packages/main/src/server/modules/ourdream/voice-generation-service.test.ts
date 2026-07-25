@@ -69,6 +69,11 @@ describe("voice generation service contract", () => {
     // dangling key. This is the path that 404'd before the provider stored bytes.
     const asset = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: first.data.assetId } });
     expect(asset.storageKey).toBeTruthy();
+    expect(asset.metadata).toMatchObject({
+      voiceId: "alba",
+      voiceAuthority: "system_default",
+      systemVoiceSettingVersion: 0,
+    });
     const bytes = await readFile(resolveLocalBlobPath(asset.storageKey as string));
     expect(bytes.byteLength).toBeGreaterThan(44);
     expect(bytes.subarray(0, 4).toString("ascii")).toBe("RIFF");

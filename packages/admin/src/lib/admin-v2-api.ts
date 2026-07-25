@@ -107,9 +107,17 @@ export type WorkspaceHistoryMode = "push" | "replace";
 
 export function setWorkspaceUrl(
   params: URLSearchParams,
-  options: { mode?: WorkspaceHistoryMode; pathname?: string } = {},
+  options: {
+    hash?: string;
+    mode?: WorkspaceHistoryMode;
+    pathname?: string;
+  } = {},
 ) {
   if (typeof window === "undefined") return;
-  const next = `${options.pathname ?? window.location.pathname}${params.size ? `?${params.toString()}` : ""}`;
+  const hash = options.hash?.replace(/^#/, "");
+  const next =
+    `${options.pathname ?? window.location.pathname}` +
+    `${params.size ? `?${params.toString()}` : ""}` +
+    `${hash ? `#${hash}` : ""}`;
   window.history[options.mode === "push" ? "pushState" : "replaceState"](null, "", next);
 }

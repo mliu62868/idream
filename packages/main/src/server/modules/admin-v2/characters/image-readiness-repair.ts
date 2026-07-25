@@ -32,7 +32,7 @@ import {
   characterVisualProfileSnapshotHash,
   referenceSetSnapshotHash,
 } from "./release-snapshot";
-import { findQualifiedGenerationRoute } from "./visual-authority";
+import { findOperationalGenerationRoute } from "./visual-authority";
 
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -1006,7 +1006,7 @@ export async function repairCharacterImageReadiness(input: {
     );
   }
   const repairedAt = new Date();
-  const route = await findQualifiedGenerationRoute(input.tx, {
+  const route = await findOperationalGenerationRoute(input.tx, {
     style,
     policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
     evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,

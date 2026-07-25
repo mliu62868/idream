@@ -530,7 +530,9 @@ export default defineConfig({
 
 ### 4.3 PM2（自托管进程拓扑）
 
-`ecosystem.config.js` 是自托管时的产品服务入口。主站和后台拆成两个独立 Next.js 服务：
+`ecosystem.config.js` 是自托管时的产品服务入口。默认运行开发拓扑；设置
+`IDREAM_PM2_MODE=production` 才运行生产拓扑。主站和后台拆成两个独立
+Next.js 服务：
 
 | PM2 app | package | 默认端口 | 说明 |
 | --- | --- | --- | --- |
@@ -542,22 +544,50 @@ export default defineConfig({
 | `gen-finalizer` / `main-event-consumer` | `packages/main` | n/a | 主站侧权威写回和事件消费 |
 | `admin-command-worker` | `packages/main` | n/a | Admin durable command 执行 |
 
-2026-07-18 最终备份恢复后的 runtime 是 7 个 logical apps / 8 个 processes online：
-`main-web`、`admin-web`、`chat`、`gen-image`（2 processes）、`gen-finalizer`、
-`main-event-consumer`、`admin-command-worker`。`/`、`/explore`、`/admin/today`
-为 200，Chat `/healthz` 为 `ok`；Redis operational queues pending/failed 均为 0。
+当前 `ecosystem.config.js` 是 8 个 logical apps / 9 个 processes：
+`pocket-tts`、`main-web`、`admin-web`、`chat`、`gen-image`（2 processes）、
+`gen-finalizer`、`main-event-consumer`、`admin-command-worker`。ComfyUI 是独立
+运行时，不计入这组 ecosystem 进程。
 
 运行命令：
 
 ```bash
-bun run build
 bun run pm2:start
 bun run pm2:status
 ```
 
+默认开发模式下，`main-web` / `admin-web` 直接运行 `next dev`，页面源码由
+Fast Refresh 更新；`chat`、`gen-image`、`gen-finalizer`、
+`main-event-consumer`、`admin-command-worker` 由 PM2 监听对应源码目录并
+自动重启。日常改代码无需 build；`.env`、Prisma Client、Next 配置等启动级
+变化执行 `bun run pm2:restart`。
+
+生产模式需要先构建不可变发布，再显式启动：
+
+```bash
+bun run build
+bun run pm2:start:production
+```
+
+开发/生产模式之间切换会改变 web 的 script、cwd 和 exec mode，也会改变
+worker watch 设置。PM2 的普通 restart 不会重写这些进程定义，因此切换模式
+时先 delete、再用目标模式 start 一次并 `pm2 save`：
+
+```bash
+pm2 delete ecosystem.config.js
+bun run pm2:start:production # 切回开发态则使用 bun run pm2:start
+pm2 save
+```
+
+同一模式内普通 restart 会直接载入最新源码和环境，无需重新 build。
+
 当 `ecosystem.config.js` 增删进程后，确认 `pm2 list` 与目标拓扑一致，然后执行 `pm2 save`。否则 `pm2 resurrect` 或机器重启可能恢复旧 dump（例如已延后的 `gen-video` 或重复的 `main-web`）。
 
-Next.js 服务使用 `output: "standalone"`，构建后会把 `.next/static` 和 `public` 复制进 standalone 目录。PM2 通过 `scripts/start-next-standalone.cjs` 先加载对应 package 的 `.env`，再运行 standalone `server.js`，不使用 `next start`。
+生产模式的 Next.js 服务使用 `output: "standalone"`，构建后会把 `.next/static`
+和 `public` 复制进 standalone 目录。PM2 通过
+`scripts/start-next-standalone.cjs` 先加载对应 package 的 `.env`，再运行
+standalone `server.js`，不使用 `next start`。默认开发模式不读取
+`.next-runtime`，直接从源码启动 Next dev。
 
 如果是在同一个工作目录内执行 `bun run build`，构建完成后必须对 web 进程执行 `pm2 restart main-web admin-web`。不要在 in-place Next.js build 后对 web 进程执行 `pm2 reload`：旧 cluster worker 可能继续引用已被新构建删除的 server chunk，表现为随机 `ChunkLoadError`、路由超时或 client reference manifest 缺失。只有每个进程都指向不可变 release 目录时，`pm2 reload main-web admin-web` 才适合作为零停机切换。
 

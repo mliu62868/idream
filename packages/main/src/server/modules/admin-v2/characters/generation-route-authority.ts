@@ -13,6 +13,19 @@ type GenerationRouteAuthorityStore = Pick<
   "generationModelProfile"
 >;
 
+export const OPERATOR_SINGLE_IMAGE_ROUTE_MATRIX_KEY =
+  "operator-single-image-v1";
+
+export function isOperatorSingleImageRoute(
+  qualification: {
+    readonly matrixKey?: string;
+    readonly evidence: Prisma.JsonValue;
+  },
+) {
+  return qualification.matrixKey === OPERATOR_SINGLE_IMAGE_ROUTE_MATRIX_KEY &&
+    record(qualification.evidence).authorityMode === "operator_single_image";
+}
+
 export const generationSourceVariationBlockers = [
   "no_qualified_route",
   "profile_init_image_unsupported",
@@ -63,6 +76,38 @@ function generationWorkflowReferenceSlotAuthority(
     identity: workflow.identity,
     inputs: workflow.inputs,
   }, roles);
+}
+
+export function identityCalibrationGenerationModes(input: {
+  readonly workflow: GenerationWorkflowRuntimeView | null;
+  readonly profileCapabilities: unknown;
+}) {
+  const modes: Array<"text_to_image" | "image_to_image"> = [];
+  const workflow = input.workflow;
+  if (!workflow) return modes;
+  const capabilities = record(input.profileCapabilities);
+  if (
+    workflow.identity.mode === "none" &&
+    workflow.identity.maxReferences === 0 &&
+    workflow.capabilities.includes("textToImage") &&
+    capabilities.textToImage === true
+  ) {
+    modes.push("text_to_image");
+  }
+  if (
+    workflow.identity.maxReferences >= 1 &&
+    workflow.identity.acceptedRoles.includes("source_image") &&
+    workflow.capabilities.includes("referenceImages") &&
+    capabilities.referenceImages === true &&
+    capabilities.initImage === true &&
+    generationWorkflowReferenceSlotAuthority(
+      workflow,
+      ["source_image"],
+    ).ok
+  ) {
+    modes.push("image_to_image");
+  }
+  return modes;
 }
 
 /**
@@ -197,6 +242,7 @@ function record(value: unknown): Record<string, unknown> {
 export function evaluateRouteQualification(input: {
   readonly qualification: {
     readonly result: string;
+    readonly matrixKey?: string;
     readonly sampleCount: number;
     readonly identityMatch: number;
     readonly policyVersion: string;
@@ -228,8 +274,13 @@ export function evaluateRouteQualification(input: {
   }
   if (
     qualification.result !== "qualified" ||
-    qualification.sampleCount < 40 ||
-    qualification.identityMatch < 0.9
+    (
+      !isOperatorSingleImageRoute(qualification) &&
+      (
+        qualification.sampleCount < 40 ||
+        qualification.identityMatch < 0.9
+      )
+    )
   ) {
     return {
       state: "unqualified" as const,

@@ -4,7 +4,7 @@
 状态：V2 产品目标、领域对象与跨服务不变量的单一事实来源；可执行 schema/event/runbook 由关联工程契约承载
 适用范围：Create、Character Detail、Chat、Generate、Gallery、Admin、`packages/main`、`packages/chat`、`packages/gen`
 
-> **Admin Character Asset Studio（2026-07-16）**：官方角色图片生产已收敛为 Primary portrait / Character hero / Chat moments 三段决策式工作台。空白角色不会先制造无锚点的纯文字 identity，而是在 Assets 中生成 4 张无参考首肖像，经结构化审核后原子建立 reviewed identity、Reference Set rev1 与 Primary portrait 草稿；已有受审身份的角色继续使用 sealed references 与 qualified route。产品与业界实践结论见 [`CHARACTER_ASSET_STUDIO_REVIEW.md`](./CHARACTER_ASSET_STUDIO_REVIEW.md)，日常操作见 [`CHARACTER_ASSET_STUDIO_OPERATIONS_GUIDE.md`](./CHARACTER_ASSET_STUDIO_OPERATIONS_GUIDE.md)，草稿、审核与发布权威见 [`ADR-12`](../architecture/16-character-asset-studio-authority.md)。
+> **Admin Character Asset Studio（2026-07-24）**：官方角色图片生产已收敛为 Primary portrait / Character hero / Chat moments 三段决策式工作台。无论首肖像实验还是正式资产，运营每次只生成 1 张，逐张审核后再决定是否建立身份或采用到草稿资产包；已有受审身份的角色继续使用 sealed references 与当前兼容的 active route。产品与业界实践结论见 [`CHARACTER_ASSET_STUDIO_REVIEW.md`](./CHARACTER_ASSET_STUDIO_REVIEW.md)，日常操作见 [`CHARACTER_ASSET_STUDIO_OPERATIONS_GUIDE.md`](./CHARACTER_ASSET_STUDIO_OPERATIONS_GUIDE.md)，草稿、审核与发布权威见 [`ADR-12`](../architecture/16-character-asset-studio-authority.md)。
 
 本文收敛并取代下列文档中互相重叠的产品决策；旧文档继续保留历史实现记录：
 
@@ -12,7 +12,7 @@
 - `CHARACTER_IMAGE_GENERATION_FLOW_BLUEPRINT.md`
 - `docs/superpowers/specs/2026-07-07-image-generation-redesign-design.md` 的用户产品面
 
-> **Admin Release 实现补充（2026-07-11）**：`active CharacterVisualProfile`、sealed `ReferenceSetRevision` 与 `qualified GenerationRouteQualification` 是三个独立事实；只有三者与角色级 QA、精确 generation provenance 一起被 immutable Character Release snapshot 固定，才可显示 release ready。route 的 sampleCount 必须 ≥40、identityMatch ≥90%，policy/evaluator/expiry 漂移会使 readiness stale，但不会静默改写历史证据或自动下线当前 Serving。详见 [`ADR-11`](../architecture/15-admin-operating-system-authority-adr.md)。
+> **Admin Release 实现补充（2026-07-24）**：`active CharacterVisualProfile`、sealed `ReferenceSetRevision` 与 pinned compatible generation route 是三个独立事实；只有三者与角色级 QA、精确 generation provenance 一起被 immutable Character Release snapshot 固定，才可显示 release ready。角色运营每个 Run 强制 `count=1`，逐张审核；旧的 40 张模型评测矩阵只保留为可选技术评测证据，不再是正式生图前置门槛。profile/workflow 漂移会使已选草稿 lineage stale，但不会静默改写历史证据或自动下线当前 Serving。详见 [`ADR-11`](../architecture/15-admin-operating-system-authority-adr.md)。
 
 > **ComfyUI runtime 实现补充（2026-07-17）**：`qwen-image-edit-img2img`、`qwen-image-edit-multi-identity`、`qwen-image-edit-multi-reference`、`redcraft-krea2-txt2img` 四个 workflow 已完成 ComfyUI UI sync 与 readback。single reference、dual identity、identity + source 的真实 artifact 均为 832×1216：`/private/tmp/idream-qwen-img2img-smoke.png`（SHA-256 `3e0bdfa40aa9f70fa7c6fbaeb38f360254c89febf31988221ae2ef2b54fc5ea5`）、`/private/tmp/idream-qwen-multi-identity-smoke/sample-01.png`（SHA-256 `965c9f20dd71cd294429bc7c87e940328d441fd48380599aee533343162cb512`）、`/private/tmp/idream-qwen-identity-source-smoke.png`（SHA-256 `b2361c115cf2b8351303cc468d82661f0a40074bee4b026927bcf4e9a889d6e5`）。这只关闭本地 descriptor → ComfyUI → artifact 证明，不自动满足 route qualification、identity-bleed eval、profile publish 或生产容量 Gate。
 

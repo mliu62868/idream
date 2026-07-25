@@ -3,9 +3,22 @@
 import {
   characterVoiceActivationResponseSchema,
   characterVoiceCloneCreateResponseSchema,
+  characterVoiceSystemDefaultResetResponseSchema,
+  voiceDefaultPreviewResponseSchema,
+  voiceDefaultSettingsUpdateResponseSchema,
+  type PocketTtsCatalogVoiceId,
   type CharacterWorkspaceDetail,
 } from "@idream/shared/admin";
-import { AudioLines, CheckCircle2, Mic2, Upload } from "lucide-react";
+import {
+  AudioLines,
+  CheckCircle2,
+  Mic2,
+  Play,
+  RotateCcw,
+  Save,
+  Settings2,
+  Upload,
+} from "lucide-react";
 import { useRef, useState, type FormEvent } from "react";
 import { useAdminI18n } from "@/components/admin/i18n";
 import {
@@ -26,11 +39,13 @@ export function CharacterVoicePanel({
   data,
   canWrite,
   canActivate,
+  canManageDefaults,
   runCommittedMutation,
 }: {
   data: CharacterWorkspaceDetail;
   canWrite: boolean;
   canActivate: boolean;
+  canManageDefaults: boolean;
   runCommittedMutation: RunCommittedMutation;
 }) {
   const { t, locale } = useAdminI18n();
@@ -42,6 +57,32 @@ export function CharacterVoicePanel({
   );
   const [reason, setReason] = useState("");
   const [activationReason, setActivationReason] = useState("");
+  const [resetReason, setResetReason] = useState("");
+  const [defaultReason, setDefaultReason] = useState("");
+  const [defaultDraftOverride, setDefaultDraftOverride] = useState<{
+    settingVersion: number;
+    defaultVoiceId: PocketTtsCatalogVoiceId;
+    genderVoiceIds: {
+      female: PocketTtsCatalogVoiceId;
+      male: PocketTtsCatalogVoiceId;
+      trans: PocketTtsCatalogVoiceId;
+    };
+  } | null>(null);
+  const defaultDraft =
+    defaultDraftOverride?.settingVersion ===
+    data.voice.systemDefaults.settingVersion
+      ? defaultDraftOverride
+      : {
+          settingVersion: data.voice.systemDefaults.settingVersion,
+          defaultVoiceId: data.voice.systemDefaults.defaultVoiceId,
+          genderVoiceIds: { ...data.voice.systemDefaults.genderVoiceIds },
+        };
+  const [previewBusy, setPreviewBusy] =
+    useState<PocketTtsCatalogVoiceId | null>(null);
+  const [catalogPreview, setCatalogPreview] = useState<{
+    voiceId: PocketTtsCatalogVoiceId;
+    src: string;
+  } | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -130,6 +171,123 @@ export function CharacterVoicePanel({
     }
   }
 
+  async function saveSystemDefaults() {
+    if (!canManageDefaults || busy || defaultReason.trim().length < 3) return;
+    setBusy(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const mutation = await runCommittedMutation({
+        action: "Update system voice defaults",
+        commit: () =>
+          adminV2Request("/api/v2/admin/voice-defaults", {
+            method: "PUT",
+            idempotencyKey: crypto.randomUUID(),
+            body: {
+              expectedVersion: data.voice.systemDefaults.settingVersion,
+              defaultVoiceId: defaultDraft.defaultVoiceId,
+              genderVoiceIds: defaultDraft.genderVoiceIds,
+              reason: defaultReason.trim(),
+            },
+            schema: voiceDefaultSettingsUpdateResponseSchema,
+          }),
+        afterRefresh: () => {
+          setDefaultReason("");
+          setDefaultDraftOverride(null);
+        },
+      });
+      setMessage(
+        mutation.result.replayed
+          ? "The saved system voice defaults were recovered."
+          : "System voice defaults were saved. New speech now uses this mapping.",
+      );
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "System voice defaults could not be saved",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function resetToSystemDefault() {
+    if (
+      !canActivate ||
+      busy ||
+      data.voice.currentVoiceId === null ||
+      resetReason.trim().length < 3
+    ) return;
+    setBusy(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const mutation = await runCommittedMutation({
+        action: "Reset character voice to system default",
+        commit: () =>
+          adminV2Request(
+            `/api/v2/admin/characters/${encodeURIComponent(data.character.id)}/voice-defaults/reset`,
+            {
+              method: "POST",
+              idempotencyKey: crypto.randomUUID(),
+              body: {
+                reason: resetReason.trim(),
+                expectedActiveProfileId: active?.id ?? null,
+                expectedCurrentVoiceId: data.voice.currentVoiceId,
+              },
+              schema: characterVoiceSystemDefaultResetResponseSchema,
+            },
+          ),
+        afterRefresh: () => setResetReason(""),
+      });
+      setMessage(
+        mutation.result.replayed
+          ? "The existing reset to system default was recovered."
+          : "This character now inherits the system voice default.",
+      );
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "The character voice could not be reset",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function previewCatalogVoice(voiceId: PocketTtsCatalogVoiceId) {
+    if (previewBusy || busy) return;
+    setPreviewBusy(voiceId);
+    setError(null);
+    try {
+      const preview = await adminV2Request(
+        "/api/v2/admin/voice-defaults/preview",
+        {
+          method: "POST",
+          body: {
+            voiceId,
+            text: `Hello, I’m ${data.character.name}. This is the system voice preview.`,
+          },
+          schema: voiceDefaultPreviewResponseSchema,
+        },
+      );
+      setCatalogPreview({
+        voiceId,
+        src: `data:${preview.contentType};base64,${preview.audioBase64}`,
+      });
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "The system voice preview could not be rendered",
+      );
+    } finally {
+      setPreviewBusy(null);
+    }
+  }
+
   return (
     <div className="space-y-5">
       <section
@@ -142,15 +300,23 @@ export function CharacterVoicePanel({
               {t("Character voice")}
             </p>
             <h3 className="mt-1 text-xl font-semibold" id="character-voice-authority">
-              {active ? t("Active cloned voice") : t("No cloned voice yet")}
+              {data.voice.authoritySource === "character_clone"
+                ? t("Character-specific cloned voice")
+                : t("System default voice")}
             </h3>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--ad-text-muted)]">
-              {active
-                ? t("New chat speech uses this Pocket TTS voice. Existing cached clips remain unchanged.")
-                : t("Upload one clean voice sample, verify the generated preview, and bind it to this character.")}
+              {data.voice.authoritySource === "character_clone"
+                ? t("This character overrides the system default. New chat speech uses the active cloned voice.")
+                : t("This character has no voice override and inherits the system voice selected for its gender.")}
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
+            <StatusBadge
+              tone={data.voice.authoritySource === "system_default" ? "good" : "neutral"}
+              value={data.voice.authoritySource === "system_default"
+                ? t("inherits system default")
+                : t("character override")}
+            />
             <StatusBadge
               value={
                 data.voice.runtimeEngine === "omlx"
@@ -160,7 +326,7 @@ export function CharacterVoicePanel({
             />
             <StatusBadge
               tone={data.voice.cloningAvailable ? "good" : "warn"}
-              value={voiceRuntimeLabel(data.voice.runtimeStatus)}
+              value={t(voiceRuntimeLabel(data.voice.runtimeStatus))}
             />
           </div>
         </div>
@@ -193,8 +359,190 @@ export function CharacterVoicePanel({
               />
             ) : null}
           </div>
+        ) : (
+          <div className="mt-5 grid gap-3 rounded-lg bg-[var(--ad-green-bg)] p-4 sm:grid-cols-[1fr_auto] sm:items-center">
+            <div>
+              <p className="text-sm font-semibold text-[var(--ad-green-text)]">
+                {voiceLabel(data, data.voice.effectiveVoiceId)} ·{" "}
+                {t(characterGenderLabel(data.character.gender))}
+              </p>
+              <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">
+                {t("New speech uses this system default. Existing cached clips remain unchanged.")}
+              </p>
+            </div>
+            <StatusBadge
+              tone="good"
+              value={t("effective voice")}
+            />
+          </div>
+        )}
+        {data.voice.currentVoiceId !== null ? (
+          <div className="mt-4 grid gap-3 border-t border-[var(--ad-border)] pt-4 md:grid-cols-[1fr_auto] md:items-end">
+            <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
+              {t("Reason for restoring system default")}
+              <input
+                className={`${fieldClass} mt-1`}
+                disabled={!canActivate || busy}
+                minLength={3}
+                onChange={(event) => setResetReason(event.target.value)}
+                value={resetReason}
+              />
+            </label>
+            <WorkspaceButton
+              disabled={
+                !canActivate ||
+                busy ||
+                resetReason.trim().length < 3
+              }
+              onClick={() => void resetToSystemDefault()}
+              type="button"
+            >
+              <RotateCcw aria-hidden="true" className="h-4 w-4" />
+              {busy
+                ? t("Restoring system default…")
+                : t("Use system default voice")}
+            </WorkspaceButton>
+          </div>
         ) : null}
       </section>
+
+      <section
+        aria-labelledby="system-voice-defaults"
+        className="overflow-hidden rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)]"
+      >
+        <div className="border-b border-[var(--ad-border)] bg-[var(--ad-surface-subtle)] px-5 py-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="flex items-start gap-3">
+              <div className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-[var(--ad-blue-bg)] text-[var(--ad-blue-text)]">
+                <Settings2 aria-hidden="true" className="h-5 w-5" />
+              </div>
+              <div>
+                <h3 className="font-semibold" id="system-voice-defaults">
+                  {t("System voice defaults")}
+                </h3>
+                <p className="mt-1 max-w-2xl text-sm leading-6 text-[var(--ad-text-muted)]">
+                  {t("These voices apply to every character without a character-specific override. The global fallback is female by default.")}
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <StatusBadge
+                value={data.voice.systemDefaults.source === "app_setting"
+                  ? t("saved in Admin")
+                  : t("environment fallback")}
+              />
+              <StatusBadge
+                value={`${t("version")} ${data.voice.systemDefaults.settingVersion}`}
+              />
+            </div>
+          </div>
+        </div>
+        <div className="p-5">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <VoiceDefaultSelect
+              active={false}
+              busy={previewBusy}
+              catalog={data.voice.systemDefaults.catalog}
+              inputId="system-voice-default-global"
+              label={t("Global fallback")}
+              onChange={(defaultVoiceId) =>
+                setDefaultDraftOverride({
+                  ...defaultDraft,
+                  defaultVoiceId,
+                })}
+              onPreview={previewCatalogVoice}
+              t={t}
+              value={defaultDraft.defaultVoiceId}
+            />
+            {(["female", "male", "trans"] as const).map((gender) => (
+              <VoiceDefaultSelect
+                active={
+                  data.voice.authoritySource === "system_default" &&
+                  data.character.gender === gender
+                }
+                busy={previewBusy}
+                catalog={data.voice.systemDefaults.catalog}
+                inputId={`system-voice-default-${gender}`}
+                key={gender}
+                label={t(characterGenderDefaultLabel(gender))}
+                onChange={(voiceId) =>
+                  setDefaultDraftOverride({
+                    ...defaultDraft,
+                    genderVoiceIds: {
+                      ...defaultDraft.genderVoiceIds,
+                      [gender]: voiceId,
+                    },
+                  })}
+                onPreview={previewCatalogVoice}
+                t={t}
+                value={defaultDraft.genderVoiceIds[gender]}
+              />
+            ))}
+          </div>
+          {catalogPreview ? (
+            <div className="mt-4 grid gap-3 rounded-lg bg-[var(--ad-blue-bg)] p-4 sm:grid-cols-[1fr_auto] sm:items-center">
+              <div>
+                <p className="text-sm font-semibold text-[var(--ad-blue-text)]">
+                  {t("Previewing {voice}", {
+                    voice: voiceLabel(data, catalogPreview.voiceId),
+                  })}
+                </p>
+                <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
+                  {t("Listen before saving the default mapping.")}
+                </p>
+              </div>
+              <audio
+                aria-label={t("System voice preview")}
+                autoPlay
+                className="w-full sm:w-72"
+                controls
+                src={catalogPreview.src}
+              />
+            </div>
+          ) : null}
+          <div className="mt-5 grid gap-3 border-t border-[var(--ad-border)] pt-4 md:grid-cols-[1fr_auto] md:items-end">
+            <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
+              {t("System default change reason")}
+              <input
+                className={`${fieldClass} mt-1`}
+                disabled={!canManageDefaults || busy}
+                minLength={3}
+                onChange={(event) => setDefaultReason(event.target.value)}
+                value={defaultReason}
+              />
+            </label>
+            <WorkspaceButton
+              disabled={
+                !canManageDefaults ||
+                busy ||
+                defaultReason.trim().length < 3
+              }
+              onClick={() => void saveSystemDefaults()}
+              tone="primary"
+              type="button"
+            >
+              <Save aria-hidden="true" className="h-4 w-4" />
+              {busy ? t("Saving defaults…") : t("Save system defaults")}
+            </WorkspaceButton>
+          </div>
+          {!canManageDefaults ? (
+            <p className="mt-3 text-xs text-[var(--ad-text-muted)]">
+              {t("Read-only: generation.config.write is required to change system voice defaults.")}
+            </p>
+          ) : null}
+        </div>
+      </section>
+
+      {error ? (
+        <p className="rounded-lg bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">
+          {t(error)}
+        </p>
+      ) : null}
+      {message ? (
+        <p className="rounded-lg bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]" role="status">
+          {t(message)}
+        </p>
+      ) : null}
 
       {candidate ? (
         <section
@@ -357,16 +705,6 @@ export function CharacterVoicePanel({
             />
           </label>
         </div>
-        {error ? (
-          <p className="mt-4 rounded-lg bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">
-            {t(error)}
-          </p>
-        ) : null}
-        {message ? (
-          <p className="mt-4 rounded-lg bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]" role="status">
-            {t(message)}
-          </p>
-        ) : null}
         <div className="mt-5">
           <WorkspaceButton
             disabled={
@@ -420,6 +758,119 @@ export function CharacterVoicePanel({
       ) : null}
     </div>
   );
+}
+
+function VoiceDefaultSelect({
+  active,
+  busy,
+  catalog,
+  inputId,
+  label,
+  onChange,
+  onPreview,
+  t,
+  value,
+}: {
+  active: boolean;
+  busy: PocketTtsCatalogVoiceId | null;
+  catalog: CharacterWorkspaceDetail["voice"]["systemDefaults"]["catalog"];
+  inputId: string;
+  label: string;
+  onChange: (value: PocketTtsCatalogVoiceId) => void;
+  onPreview: (value: PocketTtsCatalogVoiceId) => Promise<void>;
+  t: (key: string, values?: Record<string, string | number>) => string;
+  value: PocketTtsCatalogVoiceId;
+}) {
+  const selected = catalog.find((voice) => voice.id === value);
+  return (
+    <article
+      className={`rounded-lg border p-3 transition-colors ${
+        active
+          ? "border-[var(--ad-blue-border)] bg-[var(--ad-blue-bg)]"
+          : "border-[var(--ad-border)] bg-[var(--ad-surface)]"
+      }`}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <label
+          className="text-xs font-semibold text-[var(--ad-text-muted)]"
+          htmlFor={inputId}
+        >
+          {label}
+        </label>
+        {active ? <StatusBadge tone="good" value={t("used here")} /> : null}
+      </div>
+      <select
+        className={`${fieldClass} mt-2`}
+        id={inputId}
+        onChange={(event) =>
+          onChange(event.target.value as PocketTtsCatalogVoiceId)}
+        value={value}
+      >
+        {(["female", "male"] as const).map((presentation) => (
+          <optgroup
+            key={presentation}
+            label={t(presentation === "female" ? "Female voices" : "Male voices")}
+          >
+            {catalog
+              .filter((voice) => voice.presentation === presentation)
+              .map((voice) => (
+                <option key={voice.id} value={voice.id}>
+                  {voice.label}
+                </option>
+              ))}
+          </optgroup>
+        ))}
+      </select>
+      <div className="mt-3 flex items-center justify-between gap-2">
+        <span className="text-xs text-[var(--ad-text-muted)]">
+          {selected ? t(presentationLabel(selected.presentation)) : "—"}
+        </span>
+        <WorkspaceButton
+          aria-label={t("Preview {voice}", {
+            voice: selected?.label ?? value,
+          })}
+          disabled={busy !== null}
+          onClick={() => void onPreview(value)}
+          type="button"
+        >
+          {busy === value ? (
+            <AudioLines aria-hidden="true" className="h-4 w-4 animate-pulse" />
+          ) : (
+            <Play aria-hidden="true" className="h-4 w-4" />
+          )}
+          {busy === value ? t("Rendering…") : t("Preview")}
+        </WorkspaceButton>
+      </div>
+    </article>
+  );
+}
+
+function voiceLabel(
+  data: CharacterWorkspaceDetail,
+  voiceId: string,
+) {
+  return data.voice.systemDefaults.catalog.find((voice) => voice.id === voiceId)
+    ?.label ?? voiceId;
+}
+
+function characterGenderLabel(gender: string) {
+  return {
+    female: "female character",
+    male: "male character",
+    trans: "trans character",
+  }[gender] ?? "character";
+}
+
+function characterGenderDefaultLabel(gender: "female" | "male" | "trans") {
+  return {
+    female: "Female characters",
+    male: "Male characters",
+    trans: "Trans characters",
+  }[gender];
+}
+
+function presentationLabel(presentation: "female" | "male") {
+  return presentation === "female" ? "female voice" : "male voice";
 }
 
 function formatBytes(value: number, locale: "en" | "zh") {

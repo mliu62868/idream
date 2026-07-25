@@ -10,7 +10,7 @@ import { parseAdminPath } from "@/components/admin/nav-config";
 
 describe("Character and Creative operator workspaces", () => {
   it("renders explicit effective-permission denial instead of attempting a hidden write", () => {
-    const html = renderToStaticMarkup(<CharacterWorkspace actorId="test-admin" permissions={{ read: false, writeProject: false, proposeRelease: false, publishRelease: false, reviewRelease: false, writeVisual: false, evaluateRoute: false, readAssets: false, createAssets: false, reviewAssets: false }} view={{ kind: "list" }} />);
+    const html = renderToStaticMarkup(<CharacterWorkspace actorId="test-admin" permissions={{ read: false, writeProject: false, proposeRelease: false, publishRelease: false, reviewRelease: false, writeVisual: false, evaluateRoute: false, readAssets: false, createAssets: false, reviewAssets: false, manageVoiceDefaults: false }} view={{ kind: "list" }} />);
     expect(html).toContain("No permission");
     expect(html).toContain("character.project.read");
   });
@@ -38,7 +38,7 @@ describe("Character and Creative operator workspaces", () => {
   });
 
   it("renders Character-first search controls while Character data is loading", () => {
-    const html = renderToStaticMarkup(<CharacterWorkspace actorId="test-admin" permissions={{ read: true, writeProject: true, proposeRelease: true, publishRelease: true, reviewRelease: true, writeVisual: true, evaluateRoute: true, readAssets: true, createAssets: true, reviewAssets: true }} view={{ kind: "list" }} />);
+    const html = renderToStaticMarkup(<CharacterWorkspace actorId="test-admin" permissions={{ read: true, writeProject: true, proposeRelease: true, publishRelease: true, reviewRelease: true, writeVisual: true, evaluateRoute: true, readAssets: true, createAssets: true, reviewAssets: true, manageVoiceDefaults: true }} view={{ kind: "list" }} />);
     expect(html).toContain("Characters");
     expect(html).not.toContain("Portfolio &amp; Projects");
     expect(html).toContain("Search characters");

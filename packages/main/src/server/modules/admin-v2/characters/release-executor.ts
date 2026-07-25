@@ -38,7 +38,10 @@ import {
 import { findLatestCharacterQaAuthorityRun } from "./qa-authority";
 import { PUBLIC_CATALOG_QUALIFICATION_SCHEMA_VERSION } from "@/server/modules/ourdream/public-catalog-qualification";
 import { evaluateEditorialReleaseAuthorityInTransaction } from "@/server/modules/ourdream/public-release-authority";
-import { evaluateEffectiveGenerationRouteAuthority } from "./generation-route-authority";
+import {
+  evaluateEffectiveGenerationRouteAuthority,
+  isOperatorSingleImageRoute,
+} from "./generation-route-authority";
 
 export const CHARACTER_RELEASE_POLICY_VERSION = "character-release-policy-v2";
 
@@ -718,8 +721,13 @@ export async function validateCharacterReleaseSnapshot(
       passed:
         effectiveRoute.state === "qualified" &&
         route !== null &&
-        route.sampleCount >= 40 &&
-        route.identityMatch >= 0.9 &&
+        (
+          isOperatorSingleImageRoute(route) ||
+          (
+            route.sampleCount >= 40 &&
+            route.identityMatch >= 0.9
+          )
+        ) &&
         route.generationProfileKey === releaseRoute.generationProfileKey &&
         route.generationProfileVersion ===
           releaseRoute.generationProfileVersion &&

@@ -372,7 +372,14 @@ const sqlChecks: readonly SqlInvariant[] = [
         SELECT 1 FROM generation_route_qualifications q
         WHERE q."routeFingerprint" = r."generationProvenance"->>'routeFingerprint'
           AND q."matrixKey" = r."generationProvenance"->>'matrixKey'
-          AND q.result = 'qualified' AND q."sampleCount" >= 40 AND q."identityMatch" >= 0.9
+          AND q.result = 'qualified'
+          AND (
+            (
+              q."matrixKey" = 'operator-single-image-v1'
+              AND q.evidence->>'authorityMode' = 'operator_single_image'
+            )
+            OR (q."sampleCount" >= 40 AND q."identityMatch" >= 0.9)
+          )
           AND (q."expiresAt" IS NULL OR q."expiresAt" > now())
       )
       ORDER BY r.id LIMIT 20

@@ -33,7 +33,7 @@ describe("Character Asset Studio flow", () => {
       steps: [
         "Attach or create the portrait that defines this character",
         "Publish the approved identity references",
-        "Create and qualify the platform image route",
+        "Activate a compatible platform image route",
       ],
     });
   });

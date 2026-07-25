@@ -22,7 +22,7 @@ import {
   isMediaAssetOperationalForAuthority,
 } from "@/server/lib/media-asset-authority";
 import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-executor";
-import { findQualifiedGenerationRoute } from "./visual-authority";
+import { findOperationalGenerationRoute } from "./visual-authority";
 
 type CharacterAssetPurpose = "character_cover" | "character_hero" | "character_chat";
 
@@ -198,7 +198,7 @@ export async function selectCharacterDraftImage(input: {
       ? item.job.referenceAssetIds.filter((value): value is string => typeof value === "string")
       : [];
     const currentQualifiedRoute = activeIdentity
-      ? await findQualifiedGenerationRoute(tx, {
+      ? await findOperationalGenerationRoute(tx, {
           style: activeIdentity.style,
           policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
           evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,

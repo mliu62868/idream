@@ -388,7 +388,10 @@ packages/
 
 ## 12. 进程管理（pm2）
 
-多服务用 pm2 统一启停。生产用 `ecosystem.config.js`（**源码直跑**：web 走 Next standalone 输出，服务/worker 走 `tsx` node 入口——非编译后的 `dist/*.js`，也非 `next start`）：
+多服务用 pm2 统一启停。`ecosystem.config.js` 默认是开发模式：web 走
+`next dev`（Fast Refresh），服务/worker 走 `tsx` node 入口并由 PM2 监听源码；
+日常改代码不需要 build。设置 `IDREAM_PM2_MODE=production` 后，web 改为
+Next standalone 不可变发布，服务/worker 继续源码直跑但关闭 watch：
 
 ```js
 // ecosystem.config.js（节选；以实际文件为准）
@@ -396,24 +399,25 @@ const path = require("path");
 const dir = (rel) => path.join(__dirname, rel);
 module.exports = {
   apps: [
-    // 快·同步层 — Next standalone（scripts/start-next-standalone.cjs 先加载该包 .env 再起 server.js）
-    { name: 'main-web',  cwd: dir('.'), script: 'scripts/start-next-standalone.cjs',
-      args: 'packages/main',  exec_mode: 'cluster', instances: 'max', env: { PORT: 3000 } },
-    { name: 'admin-web', cwd: dir('.'), script: 'scripts/start-next-standalone.cjs',
-      args: 'packages/admin', exec_mode: 'cluster', instances: 1,     env: { PORT: 3001 } },
+    // 快·同步层 — 开发默认 next dev；生产改为 standalone（以实际文件为准）
+    { name: 'main-web',  cwd: dir('packages/main'), script: 'node_modules/next/dist/bin/next',
+      args: 'dev', exec_mode: 'fork', instances: 1, env: { PORT: 3000 } },
+    { name: 'admin-web', cwd: dir('packages/admin'), script: 'node_modules/next/dist/bin/next',
+      args: 'dev', exec_mode: 'fork', instances: 1, env: { PORT: 3001 } },
     // chat：单进程 = HTTP/SSE + BullMQ worker 同进程；写本地文件 ⇒ instances:1
     { name: 'chat', cwd: dir('packages/chat'), script: 'node_modules/tsx/dist/cli.mjs',
       args: 'src/main.ts', exec_mode: 'fork', instances: 1 },  // ⚠️ 禁止 >1（本地 FS 单写节点）
     // 慢·异步层（gen：纯生成，只写 blob，可扩）
     { name: 'gen-image', cwd: dir('packages/gen'), script: 'node_modules/tsx/dist/cli.mjs',
       args: 'src/image.ts', exec_mode: 'fork', instances: 2 },
-    { name: 'gen-video', cwd: dir('packages/gen'), script: 'node_modules/tsx/dist/cli.mjs',
-      args: 'src/video.ts', exec_mode: 'fork', instances: 1 },
+    // gen-video 延后，不在当前 PM2 拓扑中。
     // 中·异步层（主站侧权威写回 / 事件消费）
     { name: 'gen-finalizer',       cwd: dir('packages/main'), script: 'node_modules/tsx/dist/cli.mjs',
       args: 'src/processes/finalizer.ts', exec_mode: 'fork', instances: 1 },
     { name: 'main-event-consumer', cwd: dir('packages/main'), script: 'node_modules/tsx/dist/cli.mjs',
       args: 'src/processes/event-consumer.ts', exec_mode: 'fork', instances: 1 },
+    { name: 'admin-command-worker', cwd: dir('packages/main'), script: 'node_modules/tsx/dist/cli.mjs',
+      args: 'src/processes/admin-command-worker.ts', exec_mode: 'fork', instances: 1 },
     // 图片由 gen-image 的 workflow-native backend 直连 ComfyUI 8188；
     // 当前没有 sdcpp-image PM2 app 或 serve:sdcpp-image 脚本。
   ],
@@ -427,10 +431,13 @@ module.exports = {
 ```bash
 pm2 start ecosystem.config.js          # 全部启动
 pm2 stop chat                           # 停 chat
-pm2 reload main-web                     # 零停机重载（仅 cluster 模式）
+pm2 restart main-web                    # 开发态重启并直接读取最新源码
 pm2 restart chat                        # chat 单实例用 restart（有秒级空窗，可接受）
 pm2 status / pm2 logs chat              # 状态 / 日志
 pm2 save && pm2 startup                 # 开机自启
 ```
 
-> 注：`chat` 是单实例（写本地文件），**不能** `reload`（cluster 才支持），只能 `restart`（有秒级生成空窗）；in-flight 那轮活在 Redis Stream + PG placeholder，重启后 reconciler 收敛，不丢消息。`main-web` 是 cluster，可 `reload` 零停机。
+> 注：`chat` 是单实例（写本地文件），**不能** `reload`（cluster 才支持），只能 `restart`（有秒级生成空窗）；in-flight 那轮活在 Redis Stream + PG placeholder，重启后 reconciler 收敛，不丢消息。生产模式的 `main-web` 是 cluster，可 `reload` 零停机。
+> `main-web` 只在 `IDREAM_PM2_MODE=production` 时是 cluster；默认开发态是
+> 单实例 fork，由 Next dev 自己完成 HMR。模式切换会改变 PM2 进程定义，需要
+> delete/start 一次；同一模式内的源码或启动配置变化只需 watch/HMR/restart。

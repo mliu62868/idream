@@ -3,24 +3,29 @@
 import Image from "next/image";
 import {
   CHARACTER_CANONICAL_PORTRAIT_IDENTITY_PROMPT,
+  characterImageSourceListResponseSchema,
+  characterImageSourceUploadResponseSchema,
   creativeReviewDecisionResultSchema,
   creativeRunCreateRequestSchema,
   creativeRunCreateResultSchema,
   creativeRunDetailSchema,
   creativeRunListResponseSchema,
+  type CharacterImageSourceAsset,
   type CharacterVisualProfileCreateRequest,
   type CharacterWorkspaceDetail,
   type CreativeRun,
   type CreativeRunDetail,
 } from "@idream/shared/admin";
+import { Upload } from "lucide-react";
 import {
   useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
+  type ChangeEvent,
 } from "react";
-import { adminV2Request } from "@/lib/admin-v2-api";
+import { adminV2FormRequest, adminV2Request } from "@/lib/admin-v2-api";
 import {
   StatusBadge,
   WorkspaceButton,
@@ -42,9 +47,28 @@ type SeedStrategy = "random" | "locked" | "reuse_source";
 type SourceOption = {
   readonly id: string;
   readonly label: string;
+  readonly provenance: string;
   readonly url: string | null;
   readonly seed: string | null;
 };
+
+function uploadedSourceOption(asset: CharacterImageSourceAsset): SourceOption {
+  return {
+    id: asset.id,
+    label: asset.filename,
+    provenance: "本地上传",
+    url: asset.thumbnailUrl ?? asset.url,
+    seed: null,
+  };
+}
+
+function sourceRoleLabel(
+  role: CharacterWorkspaceDetail["visual"]["anchors"][number]["role"],
+) {
+  if (role === "primary_face") return "主角色肖像";
+  if (role === "identity_anchor") return "身份锚点";
+  return "身份参考图";
+}
 
 function randomSeed() {
   return String(Math.floor(Math.random() * 2_147_483_647));
@@ -70,6 +94,21 @@ function seedStrategyLabel(strategy: SeedStrategy) {
   return "每轮随机";
 }
 
+function generationModelLabel(modelId: string) {
+  if (modelId === "redcraft-krea2-comfyui") return "RedCraft Krea2";
+  if (modelId === "qwen-image-edit") return "Qwen Image Edit";
+  if (modelId === "darkbeast-flux2-klein-9b-bfs") {
+    return "Dark Beast FLUX.2 Klein 9B";
+  }
+  return modelId;
+}
+
+function generationProfileLabel(label: string) {
+  if (label === "Default image") return "默认图片";
+  if (label === "Premium image") return "高级图片";
+  return label;
+}
+
 function identityTraitLines(value: string) {
   return value
     .split(/\r?\n|,/)
@@ -80,12 +119,14 @@ function identityTraitLines(value: string) {
 export function VisualIdentityExperimentWorkbench({
   data,
   canCreate,
+  canUploadSource,
   canReview,
   canActivate,
   onActivateCandidate,
 }: {
   data: VisualIdentityExperimentData;
   canCreate: boolean;
+  canUploadSource: boolean;
   canReview: boolean;
   canActivate: boolean;
   onActivateCandidate?: (
@@ -111,6 +152,17 @@ export function VisualIdentityExperimentWorkbench({
   const selectedProfile =
     compatibleProfiles.find((profile) => profile.profileKey === profileKey) ??
     preferredProfile;
+  const modelOptions = useMemo(
+    () => [...new Set(compatibleProfiles.map((profile) => profile.modelId))],
+    [compatibleProfiles],
+  );
+  const selectedModelId =
+    selectedProfile?.modelId ?? modelOptions[0] ?? "";
+  const selectedModelProfiles = compatibleProfiles.filter(
+    (profile) => profile.modelId === selectedModelId,
+  );
+  const selectedProfileIsDefault =
+    selectedProfile?.profileKey === preferredProfile?.profileKey;
   const [orientation, setOrientation] = useState(
     selectedProfile?.orientation ?? "4:5",
   );
@@ -126,12 +178,18 @@ export function VisualIdentityExperimentWorkbench({
   const [baseSeed, setBaseSeed] = useState(
     identity?.defaultSeed ?? randomSeed(),
   );
-  const [count, setCount] = useState(4);
+  const count = 1;
   const [consistencyMode, setConsistencyMode] = useState<
     "strict" | "balanced" | "creative"
   >("balanced");
   const [strength, setStrength] = useState(0.65);
   const [sourceAssetId, setSourceAssetId] = useState<string | null>(null);
+  const [uploadedSources, setUploadedSources] = useState<SourceOption[]>([]);
+  const [sourceUploadBusy, setSourceUploadBusy] = useState(false);
+  const [pendingSource, setPendingSource] = useState<{
+    filename: string;
+    url: string | null;
+  } | null>(null);
   const [runs, setRuns] = useState<CreativeRun[]>([]);
   const [selectedRun, setSelectedRun] = useState<CreativeRunDetail | null>(null);
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
@@ -159,6 +217,7 @@ export function VisualIdentityExperimentWorkbench({
   const [activationReason, setActivationReason] = useState("");
   const [activationConfirmed, setActivationConfirmed] = useState(false);
   const idempotencyKeys = useRef(new Map<string, string>());
+  const sourceFileInput = useRef<HTMLInputElement>(null);
   const resolvedOrientation =
     selectedProfile?.allowedOrientations.includes(orientation)
       ? orientation
@@ -178,7 +237,7 @@ export function VisualIdentityExperimentWorkbench({
           null
     );
     return detail;
-  }, []);
+  }, [setSelectedItemId]);
 
   const loadRuns = useCallback(async () => {
     const response = await adminV2Request(
@@ -225,6 +284,31 @@ export function VisualIdentityExperimentWorkbench({
   }, [loadRuns]);
 
   useEffect(() => {
+    let active = true;
+    void adminV2Request(
+      `/api/v2/admin/characters/${encodeURIComponent(data.character.id)}/image-sources`,
+      { schema: characterImageSourceListResponseSchema },
+    )
+      .then((response) => {
+        if (active) {
+          setUploadedSources(response.items.map(uploadedSourceOption));
+        }
+      })
+      .catch((cause) => {
+        if (active) {
+          setError(
+            cause instanceof Error
+              ? cause.message
+              : "无法读取最近上传的本地参考图",
+          );
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [data.character.id]);
+
+  useEffect(() => {
     if (!selectedRun || runSettled(selectedRun)) return;
     const timer = window.setTimeout(() => {
       void loadRun(selectedRun.id).catch((cause) => {
@@ -256,33 +340,48 @@ export function VisualIdentityExperimentWorkbench({
     null;
   const visualSources = useMemo<SourceOption[]>(() => {
     const byId = new Map<string, SourceOption>();
-    for (const asset of [
-      ...data.visual.anchors,
-      ...data.visual.references,
-      ...(data.visual.activeReferenceSet?.references ?? []),
-    ]) {
-      if (!asset.available) continue;
-      byId.set(asset.mediaAssetId, {
-        id: asset.mediaAssetId,
-        label: asset.role.replaceAll("_", " "),
-        url: asset.thumbnailUrl ?? asset.url,
-        seed: null,
-      });
+    for (const source of uploadedSources) {
+      byId.set(source.id, source);
     }
+    const addAssets = (
+      assets: CharacterWorkspaceDetail["visual"]["anchors"],
+      provenance: string,
+    ) => {
+      for (const asset of assets) {
+        if (!asset.available || byId.has(asset.mediaAssetId)) continue;
+        byId.set(asset.mediaAssetId, {
+          id: asset.mediaAssetId,
+          label: sourceRoleLabel(asset.role),
+          provenance,
+          url: asset.thumbnailUrl ?? asset.url,
+          seed: null,
+        });
+      }
+    };
+    if (data.visual.activeReferenceSet) {
+      addAssets(
+        data.visual.activeReferenceSet.references,
+        `正式参考集 R${data.visual.activeReferenceSet.revision}`,
+      );
+    }
+    addAssets(data.visual.anchors, "视觉身份");
+    addAssets(data.visual.references, "可用参考图");
     for (const item of selectedRun?.items ?? []) {
-      if (!item.asset) continue;
+      if (!item.asset || byId.has(item.asset.id)) continue;
       byId.set(item.asset.id, {
         id: item.asset.id,
-        label: `第 ${(item.ordinal ?? 0) + 1} 张实验图`,
+        label: `实验候选 ${(item.ordinal ?? 0) + 1}`,
+        provenance: "最近实验",
         url: item.asset.thumbnailUrl ?? item.asset.url,
         seed: item.lineage.seed ?? null,
       });
     }
     return [...byId.values()];
   }, [
-    data.visual.activeReferenceSet?.references,
+    data.visual.activeReferenceSet,
     data.visual.anchors,
     data.visual.references,
+    uploadedSources,
     selectedRun?.items,
   ]);
   const resolvedSourceAssetId =
@@ -296,6 +395,65 @@ export function VisualIdentityExperimentWorkbench({
     seedStrategy === "reuse_source" && !selectedSource?.seed
       ? "random"
       : seedStrategy;
+
+  const uploadSource = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0] ?? null;
+    if (!file || sourceUploadBusy || !canUploadSource) return;
+    event.target.value = "";
+    if (file.size > 15 * 1024 * 1024) {
+      setError("图片不能超过 15 MB");
+      return;
+    }
+    if (
+      file.type &&
+      !["image/jpeg", "image/png", "image/webp"].includes(file.type)
+    ) {
+      setError("请选择 JPG、PNG 或 WebP 图片");
+      return;
+    }
+
+    const previewUrl =
+      typeof URL.createObjectURL === "function"
+        ? URL.createObjectURL(file)
+        : null;
+    setPendingSource({ filename: file.name, url: previewUrl });
+    setSourceUploadBusy(true);
+    setError(null);
+    setNotice(null);
+    const form = new FormData();
+    form.set("purpose", "identity_experiment_source");
+    form.set("image", file, file.name);
+    try {
+      const result = await adminV2FormRequest(
+        `/api/v2/admin/characters/${encodeURIComponent(data.character.id)}/image-sources`,
+        {
+          form,
+          idempotencyKey: crypto.randomUUID(),
+          schema: characterImageSourceUploadResponseSchema,
+        },
+      );
+      const uploaded = uploadedSourceOption(result.asset);
+      setUploadedSources((current) => [
+        uploaded,
+        ...current.filter((source) => source.id !== uploaded.id),
+      ]);
+      setSourceAssetId(uploaded.id);
+      if (seedStrategy === "reuse_source") setSeedStrategy("random");
+      setNotice(
+        result.replayed
+          ? "已恢复这张本地参考图，并设为本轮图生图来源。"
+          : "本地图片已上传并设为本轮来源；正式参考集未改变。",
+      );
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "本地图片上传失败");
+    } finally {
+      if (previewUrl && typeof URL.revokeObjectURL === "function") {
+        URL.revokeObjectURL(previewUrl);
+      }
+      setPendingSource(null);
+      setSourceUploadBusy(false);
+    }
+  };
 
   const generate = async () => {
     if (!selectedProfile) return;
@@ -395,19 +553,23 @@ export function VisualIdentityExperimentWorkbench({
     setNotice("已载入这一轮的参数快照；修改后可创建新一轮。");
   };
 
-  const submitCandidate = async () => {
+  const submitCandidate = async (decision: "approved" | "rejected") => {
     if (
       !selectedRun ||
       !selectedItem?.asset ||
       !proposalConfirmed ||
-      Object.values(proposalQuality).some((passed) => !passed)
+      proposalReason.trim().length < 3 ||
+      (
+        decision === "approved" &&
+        Object.values(proposalQuality).some((passed) => !passed)
+      )
     ) return;
     const body = {
       entityVersion: selectedRun.version,
       ...(selectedItem.review
         ? { supersedesDecisionId: selectedItem.review.id }
         : {}),
-      decision: "approved" as const,
+      decision,
       identityConsistency: "unscored" as const,
       quality: proposalQuality,
       reason: proposalReason.trim(),
@@ -432,6 +594,7 @@ export function VisualIdentityExperimentWorkbench({
       await loadRun(selectedRun.id);
       await loadRuns();
       setProposalOpen(false);
+      setActivationOpen(decision === "approved");
       setProposalConfirmed(false);
       setProposalReason("");
       setProposalQuality({
@@ -440,9 +603,29 @@ export function VisualIdentityExperimentWorkbench({
         intentMatch: false,
         noVisibleText: false,
       });
-      setNotice("候选身份已提交为不可变评审决定；激活身份版本仍需单独执行。");
+      setNotice(
+        decision === "approved"
+          ? "候选身份已通过；请完成身份锁定信息并激活新的视觉身份版本。"
+          : "已记录这张候选图不采用；请调整参数后继续生成下一张。",
+      );
+      window.requestAnimationFrame(() => {
+        document.getElementById(
+          decision === "approved"
+            ? "identity-candidate-activation"
+            : "identity-experiment-composer",
+        )?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        });
+      });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "候选身份提交失败");
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : decision === "approved"
+            ? "候选身份提交失败"
+            : "无法记录不采用决定",
+      );
     } finally {
       setBusy(null);
     }
@@ -498,6 +681,7 @@ export function VisualIdentityExperimentWorkbench({
 
   const canGenerate =
     canCreate &&
+    !sourceUploadBusy &&
     selectedProfile !== null &&
     positivePrompt.trim().length > 0 &&
     (
@@ -517,6 +701,18 @@ export function VisualIdentityExperimentWorkbench({
       selectedItem.review.quality &&
       Object.values(selectedItem.review.quality).every(Boolean),
     );
+  const selectedRejected = selectedItem?.review?.decision === "rejected";
+  const proposalPassedCount =
+    Object.values(proposalQuality).filter(Boolean).length;
+  const proposalFailedCount =
+    Object.values(proposalQuality).length - proposalPassedCount;
+  const proposalAllPassed = proposalFailedCount === 0;
+  const proposalDecision = proposalConfirmed
+    ? proposalAllPassed
+      ? "approved"
+      : "rejected"
+    : null;
+  const proposalReasonValid = proposalReason.trim().length >= 3;
   const selectedIsActiveIdentity = Boolean(
     selectedItem?.asset &&
     identity &&
@@ -580,52 +776,249 @@ export function VisualIdentityExperimentWorkbench({
             ))}
           </div>
 
-          {mode === "image_to_image" ? (
-            <div className="mt-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3">
-              <div className="flex gap-3">
-                <div className="relative h-20 w-16 shrink-0 overflow-hidden rounded-md bg-black/[0.06]">
-                  {selectedSource?.url ? (
-                    <Image
-                      alt="当前图生图来源"
-                      className="object-cover"
-                      fill
-                      sizes="64px"
-                      src={selectedSource.url}
-                      unoptimized
-                    />
-                  ) : null}
-                </div>
-                <label className="min-w-0 flex-1 text-xs font-semibold text-[var(--ad-text-muted)]">
-                  来源图
-                  <select
-                    className={`${fieldClass} mt-1`}
-                    onChange={(event) => {
-                      const nextSourceId = event.target.value || null;
-                      setSourceAssetId(nextSourceId);
-                      const nextSource = visualSources.find(
-                        (source) => source.id === nextSourceId,
-                      );
-                      if (seedStrategy === "reuse_source" && !nextSource?.seed) {
-                        setSeedStrategy("random");
-                      }
-                    }}
-                    value={resolvedSourceAssetId ?? ""}
-                  >
-                    <option value="">选择一张来源图</option>
-                    {visualSources.map((source) => (
-                      <option key={source.id} value={source.id}>
-                        {source.label} · {source.id.slice(0, 10)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-              {visualSources.length === 0 ? (
-                <p className="mt-2 text-xs text-[var(--ad-yellow-text)]">
-                  先完成一轮文生图，或准备可用的角色参考图。
+          <section
+            aria-label={`${modeLabel(mode)}模型选择`}
+            className="mt-4 rounded-xl bg-[var(--ad-blue-bg)] p-3"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-xs font-semibold text-[var(--ad-blue-text)]">
+                  当前{modeLabel(mode)}模型
                 </p>
+                <p className="mt-1 truncate text-sm font-semibold text-[var(--ad-ink)]">
+                  {selectedProfile
+                    ? generationModelLabel(selectedProfile.modelId)
+                    : "暂无可用模型"}
+                </p>
+              </div>
+              {selectedProfile ? (
+                <span className="shrink-0 rounded-full bg-[var(--ad-surface)] px-2.5 py-1 text-[11px] font-semibold text-[var(--ad-blue-text)]">
+                  {selectedProfileIsDefault ? "当前默认" : "当前选择"}
+                </span>
               ) : null}
             </div>
+            {selectedProfile ? (
+              <p className="mt-1 break-all font-mono text-[11px] leading-5 text-[var(--ad-blue-text)]">
+                {selectedProfile.modelId}
+              </p>
+            ) : null}
+            <label className="mt-3 block text-xs font-semibold text-[var(--ad-blue-text)]">
+              模型
+              <select
+                aria-label={`${modeLabel(mode)}模型`}
+                className={`${fieldClass} mt-1`}
+                disabled={modelOptions.length < 2}
+                onChange={(event) => {
+                  const nextProfile = compatibleProfiles.find(
+                    (profile) => profile.modelId === event.target.value,
+                  );
+                  if (nextProfile) {
+                    setProfileKey(nextProfile.profileKey);
+                    setOrientation(nextProfile.orientation);
+                  }
+                }}
+                value={selectedModelId}
+              >
+                {modelOptions.map((modelId) => (
+                  <option key={modelId} value={modelId}>
+                    {generationModelLabel(modelId)}
+                    {modelId === preferredProfile?.modelId ? "（默认）" : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="mt-3 block text-xs font-semibold text-[var(--ad-blue-text)]">
+              配置档位
+              <select
+                aria-label="配置档位"
+                className={`${fieldClass} mt-1`}
+                disabled={selectedModelProfiles.length < 2}
+                onChange={(event) => {
+                  const nextProfile = selectedModelProfiles.find(
+                    (profile) => profile.profileKey === event.target.value,
+                  );
+                  setProfileKey(event.target.value);
+                  if (nextProfile) setOrientation(nextProfile.orientation);
+                }}
+                value={selectedProfile?.profileKey ?? ""}
+              >
+                {selectedModelProfiles.map((profile) => (
+                  <option
+                    key={`${profile.profileKey}:${profile.profileVersion}`}
+                    value={profile.profileKey}
+                  >
+                    {generationProfileLabel(profile.label)} · v
+                    {profile.profileVersion}
+                    {profile.profileKey === preferredProfile?.profileKey
+                      ? "（默认）"
+                      : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <p className="mt-2 text-[11px] leading-5 text-[var(--ad-blue-text)]">
+              {modelOptions.length > 1
+                ? `当前生成方式有 ${modelOptions.length} 个已上线模型可选。`
+                : "当前生成方式只有 1 个已上线模型；新模型通过能力检查后会自动出现在这里。"}
+              配置档位用于选择同一模型的参数和资源规格。
+            </p>
+            {selectedProfile ? (
+              <p className="mt-2 border-t border-black/10 pt-2 text-[11px] leading-5 text-[var(--ad-blue-text)]">
+                工作流 {selectedProfile.workflowKey} v
+                {selectedProfile.workflowVersion}；模型、配置档位和工作流会随本轮冻结。
+              </p>
+            ) : null}
+          </section>
+
+          {mode === "image_to_image" ? (
+            <fieldset
+              aria-describedby="identity-experiment-source-help"
+              className="mt-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3"
+            >
+              <legend className="px-1 text-sm font-semibold">
+                选择参考图
+              </legend>
+              <div className="flex items-start justify-between gap-3">
+                <p
+                  className="text-xs leading-5 text-[var(--ad-text-muted)]"
+                  id="identity-experiment-source-help"
+                >
+                  直接按画面选择本轮来源，不会修改正式参考集。
+                </p>
+                <span className="shrink-0 text-xs text-[var(--ad-text-muted)]">
+                  {visualSources.length} 张可用
+                </span>
+              </div>
+
+              <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2">
+                <button
+                  className="inline-flex min-h-10 items-center gap-2 rounded-md bg-[var(--ad-ink)] px-3 text-xs font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                  disabled={!canUploadSource || sourceUploadBusy}
+                  onClick={() => sourceFileInput.current?.click()}
+                  type="button"
+                >
+                  <Upload aria-hidden="true" size={14} />
+                  {sourceUploadBusy ? "正在上传…" : "上传本地图片"}
+                </button>
+                <input
+                  accept="image/jpeg,image/png,image/webp"
+                  className="hidden"
+                  disabled={!canUploadSource || sourceUploadBusy}
+                  onChange={(event) => void uploadSource(event)}
+                  ref={sourceFileInput}
+                  tabIndex={-1}
+                  type="file"
+                />
+                <span className="text-[11px] leading-5 text-[var(--ad-text-muted)]">
+                  JPG、PNG 或 WebP，最大 15 MB
+                  {!canUploadSource ? "；当前账号没有上传权限" : ""}
+                </span>
+              </div>
+
+              {pendingSource || visualSources.length > 0 ? (
+                <div className="mt-3 grid max-h-[326px] grid-cols-2 gap-2 overflow-y-auto pr-1">
+                  {pendingSource ? (
+                    <div
+                      aria-live="polite"
+                      className="overflow-hidden rounded-lg border border-[var(--ad-ink)] bg-black/[0.02] p-1.5"
+                    >
+                      <span className="relative block aspect-[4/5] overflow-hidden rounded-md bg-black/[0.06]">
+                        {pendingSource.url ? (
+                          <Image
+                            alt=""
+                            className="object-cover opacity-70"
+                            fill
+                            sizes="150px"
+                            src={pendingSource.url}
+                            unoptimized
+                          />
+                        ) : null}
+                        <span className="absolute inset-x-2 bottom-2 rounded-md bg-black/75 px-2 py-1 text-center text-[10px] font-semibold text-white">
+                          正在上传并校验
+                        </span>
+                      </span>
+                      <span className="mt-2 block truncate text-xs font-semibold">
+                        {pendingSource.filename}
+                      </span>
+                      <span className="mt-0.5 block text-[11px] text-[var(--ad-text-muted)]">
+                        上传完成后自动选中
+                      </span>
+                    </div>
+                  ) : null}
+                  {visualSources.map((source) => {
+                    const selected = source.id === resolvedSourceAssetId;
+                    return (
+                      <label
+                        className={cn(
+                          "relative cursor-pointer overflow-hidden rounded-lg border bg-black/[0.02] p-1.5 transition focus-within:ring-2 focus-within:ring-[var(--ad-ink)] focus-within:ring-offset-2 hover:border-[var(--ad-text-muted)]",
+                          selected
+                            ? "border-[var(--ad-ink)] shadow-[0_0_0_1px_var(--ad-ink)]"
+                            : "border-[var(--ad-border)]",
+                        )}
+                        key={source.id}
+                      >
+                        <input
+                          checked={selected}
+                          className="sr-only"
+                          name="identity-experiment-source"
+                          onChange={() => {
+                            setSourceAssetId(source.id);
+                            if (seedStrategy === "reuse_source" && !source.seed) {
+                              setSeedStrategy("random");
+                            }
+                          }}
+                          type="radio"
+                          value={source.id}
+                        />
+                        <span className="relative block aspect-[4/5] overflow-hidden rounded-md bg-black/[0.06]">
+                          {source.url ? (
+                            <Image
+                              alt=""
+                              className="object-cover"
+                              fill
+                              sizes="150px"
+                              src={source.url}
+                              unoptimized
+                            />
+                          ) : (
+                            <span className="grid h-full place-items-center px-2 text-center text-xs text-[var(--ad-text-muted)]">
+                              暂无预览
+                            </span>
+                          )}
+                          {selected ? (
+                            <span
+                              aria-hidden="true"
+                              className="absolute right-1.5 top-1.5 rounded-full bg-[var(--ad-ink)] px-2 py-1 text-[10px] font-semibold text-white"
+                            >
+                              已选
+                            </span>
+                          ) : null}
+                        </span>
+                        <span className="mt-2 block truncate text-xs font-semibold">
+                          {source.label}
+                        </span>
+                        <span className="mt-0.5 block truncate text-[11px] text-[var(--ad-text-muted)]">
+                          {source.provenance}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="mt-3 rounded-lg bg-[var(--ad-yellow-bg)] p-3">
+                  <p className="text-xs leading-5 text-[var(--ad-yellow-text)]">
+                    还没有可用参考图。可以直接上传本地图片，或先创建一轮文生图候选。
+                  </p>
+                  <button
+                    className="mt-2 min-h-9 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-xs font-semibold"
+                    onClick={() => setMode("text_to_image")}
+                    type="button"
+                  >
+                    先创建文生图候选
+                  </button>
+                </div>
+              )}
+            </fieldset>
           ) : null}
 
           <label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">
@@ -649,6 +1042,7 @@ export function VisualIdentityExperimentWorkbench({
             <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
               种子策略
               <select
+                aria-label="种子策略"
                 className={`${fieldClass} mt-1`}
                 onChange={(event) =>
                   setSeedStrategy(event.target.value as SeedStrategy)
@@ -665,18 +1059,10 @@ export function VisualIdentityExperimentWorkbench({
                 </option>
               </select>
             </label>
-            <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
-              每轮张数
-              <select
-                className={`${fieldClass} mt-1`}
-                onChange={(event) => setCount(Number(event.target.value))}
-                value={count}
-              >
-                {[1, 2, 4, 6, 8].map((value) => (
-                  <option key={value} value={value}>{value}</option>
-                ))}
-              </select>
-            </label>
+            <div className="text-xs font-semibold text-[var(--ad-text-muted)]">
+              每次生成
+              <p className={`${fieldClass} mt-1 flex items-center`}>1 张</p>
+            </div>
           </div>
           <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">
             基础种子
@@ -715,6 +1101,7 @@ export function VisualIdentityExperimentWorkbench({
               <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
                 构图比例
                 <select
+                  aria-label="构图比例"
                   className={`${fieldClass} mt-1`}
                   onChange={(event) => setOrientation(event.target.value)}
                   value={resolvedOrientation}
@@ -727,6 +1114,7 @@ export function VisualIdentityExperimentWorkbench({
               <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
                 身份约束
                 <select
+                  aria-label="身份约束"
                   className={`${fieldClass} mt-1`}
                   onChange={(event) =>
                     setConsistencyMode(
@@ -754,27 +1142,6 @@ export function VisualIdentityExperimentWorkbench({
                   />
                 </label>
               ) : null}
-              <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
-                实验线路
-                <select
-                  className={`${fieldClass} mt-1`}
-                  onChange={(event) => setProfileKey(event.target.value)}
-                  value={selectedProfile?.profileKey ?? ""}
-                >
-                  {compatibleProfiles.map((profile) => (
-                    <option key={`${profile.profileKey}:${profile.profileVersion}`} value={profile.profileKey}>
-                      {profile.label} · v{profile.profileVersion}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {selectedProfile ? (
-                <p className="rounded-md bg-black/[0.035] p-3 text-[11px] leading-5 text-[var(--ad-text-muted)]">
-                  {selectedProfile.workflowKey} v{selectedProfile.workflowVersion}
-                  <br />
-                  线路、工作流版本与方向会在创建时冻结；这里不会授予正式生产线路资格。
-                </p>
-              ) : null}
             </div>
           </details>
 
@@ -789,7 +1156,7 @@ export function VisualIdentityExperimentWorkbench({
             onClick={() => void generate()}
             type="button"
           >
-            {busy === "generate" ? "正在创建实验…" : `生成 ${count} 张候选图`}
+            {busy === "generate" ? "正在创建实验…" : "生成 1 张候选图"}
           </button>
           <p className="mt-2 text-center text-[11px] leading-5 text-[var(--ad-text-muted)]">
             生成只创建候选，不修改活动身份、Reference Set、资产包或线上图片。
@@ -949,7 +1316,11 @@ export function VisualIdentityExperimentWorkbench({
               onClick={() => setProposalOpen((current) => !current)}
               tone="primary"
             >
-              {selectedApproved ? "候选身份已提交" : "提交候选身份"}
+              {selectedApproved
+                ? "候选身份已提交"
+                : selectedRejected
+                  ? "重新评审候选"
+                  : "评审这张候选图"}
             </WorkspaceButton>
             {selectedApproved ? (
               <WorkspaceButton
@@ -969,49 +1340,67 @@ export function VisualIdentityExperimentWorkbench({
 
           {proposalOpen && selectedItem?.asset ? (
             <div className="mt-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-              <h4 className="text-sm font-semibold">确认候选身份评审</h4>
-              <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">
-                这会记录不可变的候选评审，但不会自动激活新身份版本，也不会替换 Reference Set 或线上图片。
+              <h4 className="text-base font-semibold">确认候选身份评审</h4>
+              <p className="mt-1 max-w-2xl text-sm leading-6 text-[var(--ad-text-muted)]">
+                逐项判断这张图能否成为人物身份基准。四项全部通过时可以进入身份激活；任一项不通过时也可以记录不采用，然后继续调整。
               </p>
-              <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">
-                决策理由
+              <label className="mt-4 block text-sm font-semibold text-[var(--ad-text)]">
+                评审说明
                 <input
+                  aria-describedby="identity-candidate-review-reason-help"
                   className={`${fieldClass} mt-1`}
                   onChange={(event) => setProposalReason(event.target.value)}
+                  placeholder="至少 3 个字，例如：多人入镜，不适合作为身份基准"
                   value={proposalReason}
                 />
               </label>
-              <fieldset className="mt-3 rounded-lg border border-[var(--ad-border)] p-3">
-                <legend className="px-1 text-xs font-semibold text-[var(--ad-text-muted)]">
-                  可见质量证据（逐项检查）
+              <p
+                className="mt-1 text-xs text-[var(--ad-text-muted)]"
+                id="identity-candidate-review-reason-help"
+              >
+                说明通过或不采用的依据；至少填写 3 个字。
+              </p>
+              <fieldset className="mt-4">
+                <legend className="text-sm font-semibold text-[var(--ad-text)]">
+                  可见质量检查
                 </legend>
-                {([
-                  ["artifactFree", "无明显瑕疵"],
-                  ["singleSubject", "只有一个主体"],
-                  ["intentMatch", "符合本轮身份设计意图"],
-                  ["noVisibleText", "画面没有可见文字"],
-                ] as const).map(([key, label]) => (
-                  <label
-                    className="mt-2 flex items-start gap-2 text-xs leading-5 first:mt-0"
-                    key={key}
-                  >
-                    <input
-                      checked={proposalQuality[key]}
-                      className="mt-1"
-                      onChange={(event) => setProposalQuality((current) => ({
-                        ...current,
-                        [key]: event.target.checked,
-                      }))}
-                      type="checkbox"
-                    />
-                    <span>{label}</span>
-                  </label>
-                ))}
+                <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">
+                  只勾选图片真实满足的条件。未勾选的项目会作为不采用依据保存。
+                </p>
+                <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                  {([
+                    ["artifactFree", "无明显瑕疵"],
+                    ["singleSubject", "只有一个主体"],
+                    ["intentMatch", "符合本轮身份设计意图"],
+                    ["noVisibleText", "画面没有可见文字"],
+                  ] as const).map(([key, label]) => (
+                    <label
+                      className={cn(
+                        "flex min-h-11 cursor-pointer items-center gap-3 rounded-md border px-3 py-2 text-sm leading-5 transition-colors",
+                        proposalQuality[key]
+                          ? "border-[var(--ad-green-text)]/30 bg-[var(--ad-green-bg)] text-[var(--ad-green-text)]"
+                          : "border-[var(--ad-border)] bg-[var(--ad-surface-subtle)] text-[var(--ad-text)] hover:border-[var(--ad-text-muted)]",
+                      )}
+                      key={key}
+                    >
+                      <input
+                        checked={proposalQuality[key]}
+                        className="h-4 w-4 shrink-0 accent-[var(--ad-ink)]"
+                        onChange={(event) => setProposalQuality((current) => ({
+                          ...current,
+                          [key]: event.target.checked,
+                        }))}
+                        type="checkbox"
+                      />
+                      <span>{label}</span>
+                    </label>
+                  ))}
+                </div>
               </fieldset>
-              <label className="mt-3 flex items-start gap-2 text-xs leading-5">
+              <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-md border border-[var(--ad-border)] p-3 text-sm leading-6">
                 <input
                   checked={proposalConfirmed}
-                  className="mt-1"
+                  className="mt-1 h-4 w-4 shrink-0 accent-[var(--ad-ink)]"
                   onChange={(event) => setProposalConfirmed(event.target.checked)}
                   type="checkbox"
                 />
@@ -1019,31 +1408,63 @@ export function VisualIdentityExperimentWorkbench({
                   我确认以上逐项判断将作为不可变评审证据写入。
                 </span>
               </label>
+              <div
+                aria-live="polite"
+                className={cn(
+                  "mt-3 rounded-md px-3 py-2 text-sm leading-6",
+                  proposalDecision === "approved"
+                    ? "bg-[var(--ad-green-bg)] text-[var(--ad-green-text)]"
+                    : proposalDecision === "rejected"
+                      ? "bg-[var(--ad-yellow-bg)] text-[var(--ad-yellow-text)]"
+                      : "bg-[var(--ad-blue-bg)] text-[var(--ad-blue-text)]",
+                )}
+                id="identity-candidate-review-status"
+              >
+                {proposalDecision === "approved"
+                  ? "4/4 项通过。提交后将直接打开身份激活步骤。"
+                  : proposalDecision === "rejected"
+                    ? `${proposalFailedCount} 项未通过，这张图不能进入身份激活；可以记录不采用并继续调整。`
+                    : `已通过 ${proposalPassedCount}/4 项。完成逐项检查并勾选确认后，系统会给出可执行的下一步。`}
+                {!proposalReasonValid ? " 还需要填写评审说明。" : ""}
+              </div>
               <div className="mt-4 flex flex-wrap gap-2">
                 <WorkspaceButton
+                  aria-describedby="identity-candidate-review-status"
                   disabled={
                     busy !== null ||
-                    proposalReason.trim().length < 3 ||
-                    Object.values(proposalQuality).some((passed) => !passed) ||
-                    !proposalConfirmed
+                    !proposalReasonValid ||
+                    proposalDecision === null
                   }
-                  onClick={() => void submitCandidate()}
+                  onClick={() => {
+                    if (proposalDecision) {
+                      void submitCandidate(proposalDecision);
+                    }
+                  }}
                   tone="primary"
                 >
-                  {busy === "review" ? "正在提交…" : "确认提交候选"}
+                  {busy === "review"
+                    ? "正在提交…"
+                    : proposalDecision === "approved"
+                      ? "通过候选并进入下一步"
+                      : proposalDecision === "rejected"
+                        ? "记录不采用并继续调整"
+                        : "完成检查后继续"}
                 </WorkspaceButton>
                 <WorkspaceButton
                   disabled={busy !== null}
                   onClick={() => setProposalOpen(false)}
                 >
-                  取消
+                  暂不评审
                 </WorkspaceButton>
               </div>
             </div>
           ) : null}
 
           {activationOpen && selectedApproved && selectedItem?.asset ? (
-            <div className="mt-4 rounded-xl border border-[var(--ad-ink)] bg-[var(--ad-surface)] p-4">
+            <div
+              className="mt-4 scroll-mt-6 rounded-xl border border-[var(--ad-ink)] bg-[var(--ad-surface)] p-4"
+              id="identity-candidate-activation"
+            >
               <h4 className="text-sm font-semibold">激活新的视觉身份版本</h4>
               <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">
                 候选图将成为新身份的规范肖像和首个 Reference Set。这里填写的是跨场景保持不变的视觉身份，不是剧情、姿势、服装或场景提示词。

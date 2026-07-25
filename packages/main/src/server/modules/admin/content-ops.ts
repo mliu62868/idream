@@ -50,7 +50,10 @@ import {
   parseIsoCursorKey,
 } from "@/server/modules/admin-v2/shared/list-cursor";
 import { generationWorkflowDescriptor } from "./generation-catalog";
-import { findQualifiedGenerationRoute } from "@/server/modules/admin-v2/characters/visual-authority";
+import {
+  ensureOperationalGenerationRoute,
+  findOperationalGenerationRoute,
+} from "@/server/modules/admin-v2/characters/visual-authority";
 import { CHARACTER_RELEASE_POLICY_VERSION } from "@/server/modules/admin-v2/characters/release-executor";
 import {
   characterVisualProfileSnapshotHash,
@@ -60,7 +63,10 @@ import { loadCharacterIdentityBootstrapAuthority } from "@/server/modules/admin-
 import {
   lockCharacterGenerationAndMediaAssetAuthorities,
 } from "@/server/modules/admin-v2/characters/generation-authority-lock";
-import { generationSourceVariationAuthority } from "@/server/modules/admin-v2/characters/generation-route-authority";
+import {
+  generationSourceVariationAuthority,
+  identityCalibrationGenerationModes,
+} from "@/server/modules/admin-v2/characters/generation-route-authority";
 import {
   operationalMediaAssetPlacementWhere,
   operationalMediaAssetWhere,
@@ -645,6 +651,15 @@ export async function createProductionBatchCore(
     characterTargetRun && body.purpose === "model_eval";
   const identityExperimentRun =
     characterTargetRun && body.purpose === "identity_calibration";
+  if (characterTargetRun && !routeEvaluationRun && body.count !== 1) {
+    throw Errors.badRequest(
+      "Character image production creates exactly one image per Run",
+      {
+        requestedCount: body.count,
+        requiredCount: 1,
+      },
+    );
+  }
   let generationRouteAuthority: {
     readonly qualificationId: string;
     readonly routeFingerprint: string;
@@ -678,22 +693,11 @@ export async function createProductionBatchCore(
     if (!experiment) {
       throw Errors.badRequest("Identity calibration requires an experiment snapshot");
     }
-    const textToImageCompatible =
-      workflow?.identity.mode === "none" &&
-      workflow.identity.maxReferences === 0 &&
-      workflow.capabilities.includes("textToImage") &&
-      profileCapabilities.textToImage === true;
-    const imageToImageCompatible =
-      Boolean(workflow) &&
-      (workflow?.identity.maxReferences ?? 0) >= 1 &&
-      workflow?.identity.acceptedRoles.includes("source_image") === true &&
-      workflow?.capabilities.includes("referenceImages") === true &&
-      profileCapabilities.referenceImages === true &&
-      profileCapabilities.initImage === true;
-    if (
-      (experiment.mode === "text_to_image" && !textToImageCompatible) ||
-      (experiment.mode === "image_to_image" && !imageToImageCompatible)
-    ) {
+    const supportedModes = identityCalibrationGenerationModes({
+      workflow,
+      profileCapabilities,
+    });
+    if (!supportedModes.includes(experiment.mode)) {
       throw Errors.conflict(
         `The selected profile cannot run ${experiment.mode.replaceAll("_", "-")} identity calibration`,
         {
@@ -837,7 +841,7 @@ export async function createProductionBatchCore(
       ...additionalReferenceAssets.map(() => "source_image" as const),
     ];
     if (!routeEvaluationRun) {
-      const qualifiedRoute = await findQualifiedGenerationRoute(prisma, {
+      const qualifiedRoute = await findOperationalGenerationRoute(prisma, {
         style: visualProfile.style,
         policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
         evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,
@@ -1268,7 +1272,7 @@ export async function createProductionBatchCore(
       ];
       const currentQualifiedRoute = routeEvaluationRun
         ? null
-        : await findQualifiedGenerationRoute(tx, {
+        : await ensureOperationalGenerationRoute(tx, {
             style: visualProfile.style,
             policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
             evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,
@@ -1310,7 +1314,6 @@ export async function createProductionBatchCore(
       const routeChanged = profileChanged || (
         !routeEvaluationRun && (
           !currentQualifiedRoute ||
-          currentQualifiedRoute.id !== generationRouteAuthority?.qualificationId ||
           currentQualifiedRoute.routeFingerprint !== generationRouteAuthority?.routeFingerprint ||
           currentQualifiedRoute.generationProfileKey !== profile.profileKey ||
           currentQualifiedRoute.generationProfileVersion !== profile.version ||
@@ -1356,6 +1359,12 @@ export async function createProductionBatchCore(
           sourceVariationAuthority: currentSourceVariationAuthority,
           deepLink: `/admin/characters/${body.targetId}?tab=assets`,
         });
+      }
+      if (currentQualifiedRoute) {
+        generationRouteAuthority = {
+          qualificationId: currentQualifiedRoute.id,
+          routeFingerprint: currentQualifiedRoute.routeFingerprint,
+        };
       }
       const currentSourceItems = currentAdditionalReferenceAssets.map((asset) => ({
         assetId: asset.id,
@@ -2774,16 +2783,21 @@ function productionPrompt(input: {
   visualProfile: Awaited<ReturnType<typeof resolveProductionVisualProfile>>;
   consistencyMode: z.infer<typeof consistencyModeSchema>;
 }) {
+  const targetPrompt = !input.target
+    ? ""
+    : input.target.type === "character" && input.visualProfile
+      ? `Target character: ${input.target.label}. The Operator brief is the authority for the current scene; do not import people, setting, or events from the character synopsis.`
+      : `Target ${input.target.type}: ${input.target.label}. ${input.target.detail}`;
   return [
     `Production purpose: ${purposeLabel(input.purpose)}.`,
-    input.target ? `Target ${input.target.type}: ${input.target.label}. ${input.target.detail}` : "",
+    targetPrompt,
     input.visualProfile ? `Locked identity: ${input.visualProfile.identityPrompt}` : "",
     input.visualProfile ? productionConsistencyPrompt(input.consistencyMode) : "",
     `Recipe: ${input.recipeBody}`,
     input.presetFragment ? `Presets: ${input.presetFragment}` : "",
     input.brief ? `Operator brief: ${input.brief}` : "",
     input.target?.type === "character"
-      ? "Composition guard: exactly one intended character in one coherent scene; never output a collage, contact sheet, split panel, comparison grid, or duplicated person."
+      ? "Composition guard: render exactly one person total—the target character—with no background people, duplicated person, collage, contact sheet, split panel, or comparison grid."
       : "",
     "Generate a polished, reusable platform image with clear subject framing and no text overlay.",
   ]

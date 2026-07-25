@@ -20,7 +20,7 @@ import { characterDraftSnapshots } from "./draft-content";
 import { issueCharacterPreviewToken } from "./preview-token";
 import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-executor";
 import { evaluateReleaseReadiness } from "./readiness";
-import { findQualifiedGenerationRoute } from "./visual-authority";
+import { findOperationalGenerationRoute } from "./visual-authority";
 import { characterVisualProfileSnapshotHash, referenceSetSnapshotHash } from "./release-snapshot";
 import { generationWorkflowDescriptor } from "@/server/modules/admin/generation-catalog";
 import { canonicalSha256 } from "../shared/canonical-json";
@@ -37,6 +37,7 @@ import { evaluateDraftAssetRouteAuthority } from "./draft-asset-route-authority"
 import {
   generationRouteRuntimeCompatibility,
   generationSourceVariationAuthority,
+  identityCalibrationGenerationModes,
 } from "./generation-route-authority";
 import {
   characterImageReadinessFingerprint,
@@ -46,6 +47,10 @@ import {
   evaluateEditorialReleaseAuthority,
 } from "@/server/modules/ourdream/public-release-authority";
 import { characterVoiceProfileDto } from "./voice-clones";
+import {
+  getVoiceDefaultSettings,
+  voiceIdForGender,
+} from "@/server/modules/voice-defaults";
 
 function record(value: Prisma.JsonValue | null | undefined): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -334,6 +339,7 @@ async function findIdentityCalibrationGenerationProfiles() {
     profileKey: string;
     profileVersion: number;
     label: string;
+    modelId: string;
     workflowKey: string;
     workflowVersion: number;
     orientation: string;
@@ -348,30 +354,17 @@ async function findIdentityCalibrationGenerationProfiles() {
     const capabilities = record(
       record(profile.runnerConfig).capabilities as Prisma.JsonValue | undefined,
     );
-    const modes: Array<"text_to_image" | "image_to_image"> = [];
-    if (
-      workflow.identity.mode === "none" &&
-      workflow.identity.maxReferences === 0 &&
-      workflow.capabilities.includes("textToImage") &&
-      capabilities.textToImage === true
-    ) {
-      modes.push("text_to_image");
-    }
-    if (
-      workflow.identity.maxReferences >= 1 &&
-      workflow.identity.acceptedRoles.includes("source_image") &&
-      workflow.capabilities.includes("referenceImages") &&
-      capabilities.referenceImages === true &&
-      capabilities.initImage === true
-    ) {
-      modes.push("image_to_image");
-    }
+    const modes = identityCalibrationGenerationModes({
+      workflow,
+      profileCapabilities: capabilities,
+    });
     if (modes.length === 0) continue;
     const allowedOrientations = strings(profile.allowedOrientations);
     compatible.push({
       profileKey: profile.profileKey,
       profileVersion: profile.version,
       label: profile.label,
+      modelId: profile.pipelineModel,
       workflowKey,
       workflowVersion: workflow.version,
       orientation: allowedOrientations.includes("4:5")
@@ -396,6 +389,7 @@ async function findIdentityCalibrationGenerationProfiles() {
     profileKey: profile.profileKey,
     profileVersion: profile.profileVersion,
     label: profile.label,
+    modelId: profile.modelId,
     workflowKey: profile.workflowKey,
     workflowVersion: profile.workflowVersion,
     orientation: profile.orientation,
@@ -687,9 +681,12 @@ export async function getCharacterWorkspace(characterId: string) {
     voiceProfiles.find((profile) => profile.status === "active") ?? null;
   const candidateVoiceProfile =
     voiceProfiles.find((profile) => profile.status === "candidate") ?? null;
-  const voiceCapabilities = env.VOICE_PROVIDER === "pocket-tts"
-    ? await providers.voice.inspectCapabilities?.()
-    : undefined;
+  const [voiceCapabilities, voiceDefaults] = await Promise.all([
+    env.VOICE_PROVIDER === "pocket-tts"
+      ? providers.voice.inspectCapabilities?.()
+      : undefined,
+    getVoiceDefaultSettings(),
+  ]);
   const voiceRuntimeStatus = env.VOICE_PROVIDER !== "pocket-tts"
     ? "inactive"
     : !voiceCapabilities?.ok || !voiceCapabilities.data.voiceCloning
@@ -741,7 +738,7 @@ export async function getCharacterWorkspace(characterId: string) {
       orderBy: { evaluatedAt: "desc" },
       take: 20,
     }) : Promise.resolve([]),
-    activeIdentity ? findQualifiedGenerationRoute(prisma, {
+    activeIdentity ? findOperationalGenerationRoute(prisma, {
       style: activeIdentity.style,
       policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
       evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,
@@ -1217,6 +1214,12 @@ export async function getCharacterWorkspace(characterId: string) {
           : null,
       runtimeLanguage: env.POCKET_TTS_LANGUAGE,
       currentVoiceId: character.voiceId,
+      effectiveVoiceId:
+        character.voiceId ?? voiceIdForGender(voiceDefaults, character.gender),
+      authoritySource: character.voiceId
+        ? "character_clone"
+        : "system_default",
+      systemDefaults: voiceDefaults,
       activeProfile: activeVoiceProfile
         ? characterVoiceProfileDto(activeVoiceProfile)
         : null,
@@ -1307,7 +1310,7 @@ export async function getCharacterProjectDraftForResume(characterId: string) {
   const activeReferences =
     visualAuthority?.referenceSetRevisions[0]?.references ?? [];
   const qualifiedRoute = visualAuthority
-    ? await findQualifiedGenerationRoute(prisma, {
+    ? await findOperationalGenerationRoute(prisma, {
         style: visualAuthority.style,
         policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
         evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,
@@ -1419,7 +1422,7 @@ export async function updateCharacterProjectDraft(input: {
     const activeReferences =
       visualAuthority?.referenceSetRevisions[0]?.references ?? [];
     const qualifiedRoute = visualAuthority
-      ? await findQualifiedGenerationRoute(tx, {
+      ? await findOperationalGenerationRoute(tx, {
           style: visualAuthority.style,
           policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
           evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,

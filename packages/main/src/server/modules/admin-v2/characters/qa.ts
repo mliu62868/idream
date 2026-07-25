@@ -27,7 +27,7 @@ import {
   draftAssetRouteEntries,
   evaluateDraftAssetRouteAuthority,
 } from "./draft-asset-route-authority";
-import { findQualifiedGenerationRoute } from "./visual-authority";
+import { findOperationalGenerationRoute } from "./visual-authority";
 import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-executor";
 import {
   discoverDraftAssetPackSourceAssetIds,
@@ -154,7 +154,7 @@ export async function createCharacterQaRun(
         { unavailableReferenceMediaIds },
       );
     }
-    const currentRoute = await findQualifiedGenerationRoute(tx, {
+    const currentRoute = await findOperationalGenerationRoute(tx, {
       style: visualProfile.style,
       policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
       evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,

@@ -68,6 +68,16 @@ export interface VoiceModel {
     // character today; later a per-message emotion tag from chat can flow in here.
     tone?: string;
   }): Promise<ProviderResult<{ key: string; durationMs: number }>>;
+  previewVoice?(input: {
+    text: string;
+    voiceId: string;
+  }): Promise<
+    ProviderResult<{
+      body: Uint8Array;
+      contentType: "audio/wav";
+      durationMs: number;
+    }>
+  >;
   cloneVoice?(input: {
     voiceId: string;
     audio: Uint8Array;

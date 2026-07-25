@@ -23,10 +23,10 @@
 
 ### 空白角色或可恢复的未锚定历史
 
-页面会显示 `First identity portrait`、`Bootstrap route` 和 `Generate 4 portraits`。此时：
+页面会显示 `First identity portrait`、`Bootstrap route` 和 `Generate 1 portrait`。此时：
 
 1. 不要先去 `Visual identity` 创建纯文字 identity；该入口会明确提示先完成 reviewed portrait，并禁用 `Create & activate version`。
-2. 使用默认 brief 生成 4 张无参考首肖像。
+2. 使用默认 brief 生成 1 张无参考首肖像；需要继续探索时，再发起下一次单图生成。
 3. 对合格候选执行 `Approve with evidence`。首张身份定义的 `identityConsistency` 保持 `unscored`，四项可观察质量证据必须全部通过。
 4. 执行 `Set as identity anchor`。系统在一个事务中归档可恢复的空 candidate 历史，新建 `vN` reviewed-bootstrap identity、Reference Set rev1，并把精确候选写入 Primary portrait 草稿。
 5. 工作台随后解锁 Character hero 与 Chat moments；不要手工重复建立锚点或参考集。
@@ -40,19 +40,19 @@
 - 页面没有 `Complete visual setup` 阻断提示；
 - 你具有本次工作所需权限。
 
-如果已有受审身份但生成仍不可用，再进入 `Visual identity`：发布并启用 Reference Set Revision，确认 Generation Route Qualification 为 qualified 且未 stale，并逐项解决 visual readiness blockers。不要用新建空 identity 绕过阻断。
+如果已有受审身份但生成仍不可用，再进入 `Visual identity`：发布并启用 Reference Set Revision，确认存在兼容的 active image route，并逐项解决 visual readiness blockers。不要用新建空 identity 绕过阻断。
 
 ## 3. 标准生产流程
 
 ### 步骤一：Primary portrait
 
-空白/可恢复角色先按第 2 节的 4 张首肖像 bootstrap 完成 Primary portrait。以下 6 张流程用于已有受审身份与 Reference Set 的角色。
+空白/可恢复角色先按第 2 节的单张首肖像 bootstrap 完成 Primary portrait。已有受审身份与 Reference Set 的角色也遵循相同的逐张流程。
 
 1. 选择 `Primary portrait`。
 2. 先阅读默认 creative brief。只有当角色定位需要更具体的镜头、服装或情绪时，才展开 `Adjust the creative brief` 修改。
-3. 点击 `Generate 6 portraits`。
-4. 候选陆续完成后即可开始浏览，无需等待整批全部结束。
-5. 对每个有潜力的候选按第 4 节标准判断。
+3. 点击 `Generate 1 portrait`。
+4. 图片完成后按第 4 节标准判断；需要继续探索时再生成下一张。
+5. 每一张候选都要独立留下明确的审核结果。
 6. 合格时先点 `Approve with evidence`，填写身份与质量证据并提交，确认状态变为 `Approved identity`。
 7. 再点 `Select primary · next asset`，将它采用到角色草稿。
 
@@ -61,7 +61,7 @@ Primary portrait 应优先保证辨识度：脸部清晰、身份特征稳定、
 ### 步骤二：Character hero
 
 1. 工作台会自动进入 `Character hero`；也可手动点击第二步。
-2. 点击 `Generate 4 heroes`。
+2. 点击 `Generate 1 hero`；需要比较时逐次生成。
 3. 在右侧 Character hero 预览中判断构图、空间和人物表达。
 4. 先批准身份，再点 `Select hero · next asset`。
 
@@ -70,7 +70,7 @@ Hero 应表达角色人格与世界感，不应只是 Primary portrait 的横向
 ### 步骤三：Chat moments
 
 1. 进入 `Chat moments`。
-2. 点击 `Generate 6 chat assets`。
+2. 点击 `Generate 1 chat asset`；需要比较时逐次生成。
 3. 在 Chat header 与对话气泡语境中判断亲近感、自然度和聊天氛围。
 4. 先批准身份，再点 `Select chat asset · preview`。
 5. 工作台会进入 `Preview`，检查完整草稿体验。
@@ -93,11 +93,11 @@ Chat moment 应像关系中的自然瞬间，避免过度海报化或与 opening
 
 ### 候选已达批准门槛，但希望探索更优版本
 
-先完成 `Approve with evidence`，确认身份一致性与四项质量检查全部通过。只有当前 qualified route 明确支持“source image + canonical identity references”并容纳完整 Reference Set 时，`More like this` 才会启用；系统会把已批准候选作为额外 source reference，同时保留 canonical identity 与完整 Reference Set。当前路由不支持组合输入时，按钮会禁用并说明原因，服务端创建前与 worker dispatch 时也会用同一 `sourceVariationAuthority` 再次拒绝，绝不会静默丢掉 canonical references。
+先完成 `Approve with evidence`，确认身份一致性与四项质量检查全部通过。只有当前 active route 明确支持“source image + canonical identity references”并容纳完整 Reference Set 时，`More like this` 才会启用；系统会把已批准候选作为额外 source reference，同时保留 canonical identity 与完整 Reference Set。当前路由不支持组合输入时，按钮会禁用并说明原因，服务端创建前与 worker dispatch 时也会用同一 `sourceVariationAuthority` 再次拒绝，绝不会静默丢掉 canonical references。
 
 常见阻断含义：
 
-- `No qualified route`：当前没有精确合格路线；
+- `No compatible route`：当前没有兼容的 active route；
 - `Profile cannot consume a source image`：profile 不支持 init/source image；
 - `Workflow cannot consume a source image`：workflow 没有 source image 输入；
 - `Workflow cannot combine source and identity`：workflow 不能同时使用变体源与身份参考；

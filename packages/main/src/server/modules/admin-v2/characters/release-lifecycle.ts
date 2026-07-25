@@ -3,7 +3,7 @@ import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 import { CHARACTER_RELEASE_POLICY_VERSION, validateCharacterReleaseSnapshot } from "./release-executor";
-import { findQualifiedGenerationRoute } from "./visual-authority";
+import { findOperationalGenerationRoute } from "./visual-authority";
 import { env } from "@/server/lib/env";
 import {
   characterQaAuthorityMatches,
@@ -191,7 +191,7 @@ export async function proposeCharacterRelease(input: {
     const referenceSetHash = referenceSet
       ? referenceSetSnapshotHash(referenceSet)
       : null;
-    const route = profile ? await findQualifiedGenerationRoute(tx, {
+    const route = profile ? await findOperationalGenerationRoute(tx, {
       style: profile.style,
       policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
       evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,

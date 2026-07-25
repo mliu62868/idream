@@ -6,16 +6,10 @@ import Image from "next/image";
 import {
   adminCommandAcceptedSchema,
   adminCommandStatusSchema,
-  characterRouteEvaluationMatrixDirections,
-  characterRouteEvaluationMatrixKey,
-  characterRouteEvaluationOutputsPerDirection,
-  characterRouteEvaluationSampleCount,
   characterQaAuthorityMatches,
   latestCharacterQaAuthorityRun,
   characterLookArchiveResponseSchema,
   characterReferenceSetPublishResponseSchema,
-  creativeRunCreateResultSchema,
-  generationRouteQualificationEvaluateResponseSchema,
   characterPortfolioResponseSchema,
   characterWorkspaceDetailSchema,
   type AdminCommandStatus,
@@ -77,6 +71,7 @@ type Permissions = {
   readAssets: boolean;
   createAssets: boolean;
   reviewAssets: boolean;
+  manageVoiceDefaults: boolean;
 };
 
 type ProjectDraft = Pick<CharacterWorkspaceDetail["project"],
@@ -132,9 +127,9 @@ export function resolveCharacterProductionEntry(
       return {
         activeStep: 1,
         status: "Enable image production",
-        title: "Use the current live portrait for future image batches",
+        title: "Use the current live portrait for future image generation",
         description:
-          "Seal the existing live portrait as the reusable identity reference. Current live images and releases will not change.",
+          "Seal the existing live portrait as the reusable identity reference. Future images are still created and reviewed one at a time.",
         action: "Use current portrait",
         tab: "assets",
       };
@@ -167,7 +162,7 @@ export function resolveCharacterProductionEntry(
       status: "Ready for ongoing image production",
       title: "Create more images for this character",
       description:
-        "The identity and image route are locked. Start another focused batch without repeating first-time setup.",
+        "The identity and image route are locked. Create and review another image without repeating first-time setup.",
       action: "Create more images",
       tab: "assets",
     };
@@ -901,27 +896,27 @@ const characterPortfolioPrimaryActionCopy: Record<
   Omit<CharacterPortfolioPrimaryAction, "href">
 > = {
   create_primary_portrait: {
-    description: "Start here: lock the face once, then reuse it for every image batch.",
+    description: "Start here: lock the face once, then reuse it for every new image.",
     eyebrow: "First-time setup",
     label: "Create first identity portrait",
     requiresAssets: true,
   },
   prepare_image_production: {
-    description: "Use the existing live portrait once, then create future image batches without changing the live character.",
+    description: "Use the existing live portrait once, then create future images without changing the live character.",
     eyebrow: "Enable image production",
     label: "Use existing portrait",
     requiresAssets: true,
   },
   complete_image_route: {
-    description: "The identity portrait is locked. Activate a compatible image route before creating batches.",
+    description: "The identity portrait is locked. Activate a compatible image route before creating an image.",
     eyebrow: "Image route setup",
     label: "Complete image route setup",
     requiresAssets: false,
   },
   continue_image_run: {
-    description: "Return to the latest unfinished batch without starting over.",
-    eyebrow: "Batch in progress",
-    label: "Continue last batch",
+    description: "Return to the latest unfinished image without starting over.",
+    eyebrow: "Image in progress",
+    label: "Continue current image",
     requiresAssets: true,
   },
   continue_asset_pack: {
@@ -951,7 +946,7 @@ export function resolveCharacterPortfolioPrimaryAction(
   if (item.nextAction.code === "monitor_live_character") {
     return mode === "studio"
       ? {
-          description: "Start a new batch without repeating first-time setup.",
+          description: "Create one new image without repeating first-time setup.",
           eyebrow: "Ongoing production",
           href: item.visualProduction.deepLink,
           label: "Create more images",
@@ -1077,7 +1072,7 @@ export function CharacterOperationsSummary({
               : t("All characters are in live monitoring")}
           </h3>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--ad-text-muted)]">
-            {t("Finish one-time setup first, then continue active batches, asset packs, and releases.")}
+            {t("Finish one-time setup first, then continue images, asset packs, and releases.")}
           </p>
         </div>
         {summary.focusItem && focusAction ? (
@@ -1572,7 +1567,7 @@ export function VisualIdentityPanel({ data, navigateToTab, permissions, runCommi
   data: VisualIdentityPanelData;
   permissions:
     Pick<Permissions, "writeVisual" | "evaluateRoute"> &
-    Partial<Pick<Permissions, "createAssets" | "reviewAssets">>;
+    Partial<Pick<Permissions, "writeProject" | "createAssets" | "reviewAssets">>;
   runCommittedMutation: RunCommittedCharacterMutation;
   navigateToTab?: (tab: CharacterWorkspaceTab) => void;
 }) {
@@ -1585,29 +1580,16 @@ export function VisualIdentityPanel({ data, navigateToTab, permissions, runCommi
   const [identityReason, setIdentityReason] = useState("");
   const [identityConfirmed, setIdentityConfirmed] = useState(false);
   const routeEvaluation = data.visual.routeEvaluation;
-  const recommendedEvaluationProfile =
+  const activeGenerationRoute = data.visual.routeQualifications.find(
+    (route) => route.result === "qualified" && !route.stale,
+  ) ?? null;
+  const recommendedGenerationProfile =
     routeEvaluation.profiles.find((profile) => profile.recommended) ??
     routeEvaluation.profiles[0] ??
     null;
-  const [evaluationProfileKey, setEvaluationProfileKey] = useState(
-    recommendedEvaluationProfile?.profileKey ?? "",
-  );
-  const resolvedEvaluationProfileKey = routeEvaluation.profiles.some((profile) =>
-    profile.profileKey === evaluationProfileKey
-  )
-    ? evaluationProfileKey
-    : recommendedEvaluationProfile?.profileKey ?? "";
-  const [createdEvaluationRunId, setCreatedEvaluationRunId] = useState<string | null>(null);
-  const [routeWorkbenchOpen, setRouteWorkbenchOpen] = useState(
+  const [productionSettingsOpen, setProductionSettingsOpen] = useState(
     data.visual.imageReadiness?.state === "route_pending",
   );
-  const [qualificationStepOpen, setQualificationStepOpen] = useState(false);
-  const [batchIds, setBatchIds] = useState("");
-  const matrixKey = characterRouteEvaluationMatrixKey(
-    identity?.style ?? data.character.style,
-  );
-  const [guardrailEvidence, setGuardrailEvidence] = useState("");
-  const [qualificationReason, setQualificationReason] = useState("");
   const referenceCandidates = useMemo(() => uniqueAvailableVisualAssets([
     ...data.visual.anchors,
     ...data.visual.references,
@@ -1642,7 +1624,7 @@ export function VisualIdentityPanel({ data, navigateToTab, permissions, runCommi
   const [lookArchiveReason, setLookArchiveReason] = useState("");
   const [lookArchiveConfirmation, setLookArchiveConfirmation] = useState("");
   const [busy, setBusy] = useState<
-    "identity" | "references" | "evaluation-run" | "qualification" | "look" | null
+    "identity" | "references" | "look" | null
   >(null);
   const [error, setError] = useState<string | null>(null);
   const idempotencyKeys = useRef<Record<string, string>>({});
@@ -1750,91 +1732,6 @@ export function VisualIdentityPanel({ data, navigateToTab, permissions, runCommi
     });
   };
 
-  const evaluateRoute = async () => {
-    setBusy("qualification");
-    setError(null);
-    const ids = [...new Set(batchIds.split(/[\s,]+/).map((value) => value.trim()).filter(Boolean))];
-    const body = {
-      batchIds: ids,
-      matrixKey: matrixKey.trim(),
-      style: identity?.style ?? style,
-      policyVersion: data.visual.readiness.qualificationPolicyVersion,
-      costLatencyGuardrail: { status: "passed" as const, evidenceRef: guardrailEvidence.trim() },
-      expiresAt: null,
-      reason: { code: "route_eval_complete", summary: qualificationReason.trim() },
-      confirmation: `QUALIFY ${matrixKey.trim()}`,
-    };
-    const requestIdentity = stableIdempotencyKey("route-qualification", body);
-    try {
-      await runCommittedMutation({
-        action: "Route qualification",
-        commit: () => adminV2Request("/api/v2/admin/characters/route-qualifications/commands/evaluate", {
-          method: "POST",
-          idempotencyKey: requestIdentity.key,
-          schema: generationRouteQualificationEvaluateResponseSchema,
-          body,
-        }),
-        afterRefresh: () => {
-          delete idempotencyKeys.current[requestIdentity.signature];
-          setBatchIds("");
-          setGuardrailEvidence("");
-          setQualificationReason("");
-        },
-      });
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Route qualification could not be evaluated");
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const createRouteEvaluationRun = async () => {
-    const selectedProfile = routeEvaluation.profiles.find(
-      (profile) => profile.profileKey === resolvedEvaluationProfileKey,
-    );
-    if (!selectedProfile || !identity) return;
-    const body = {
-      title: `${data.character.id} · ${matrixKey.trim()} · route evaluation`,
-      purpose: "model_eval" as const,
-      targetType: "character" as const,
-      targetId: data.character.id,
-      profileId: selectedProfile.profileKey,
-      presetIds: [],
-      referenceAssetIds: [],
-      bootstrapIdentity: false,
-      orientation: selectedProfile.orientation,
-      count: characterRouteEvaluationSampleCount,
-      brief:
-        `Evaluate ${identity.style} identity preservation for matrix ${matrixKey.trim()}. ` +
-        "Use the sealed Character identity and canonical Reference Set without source variations.",
-      directions: characterRouteEvaluationMatrixDirections,
-      outputsPerDirection: characterRouteEvaluationOutputsPerDirection,
-      routeEvaluationMatrixKey: matrixKey,
-      consistencyMode: "balanced" as const,
-      priority: "high" as const,
-      reason: "Create the canonical 40-sample Character identity route evaluation matrix",
-    };
-    const requestIdentity = stableIdempotencyKey("route-evaluation-run", body);
-    setBusy("evaluation-run");
-    setError(null);
-    try {
-      const result = await adminV2Request("/api/v2/admin/creative/runs", {
-        method: "POST",
-        idempotencyKey: requestIdentity.key,
-        schema: creativeRunCreateResultSchema,
-        body,
-      });
-      delete idempotencyKeys.current[requestIdentity.signature];
-      setBatchIds(result.batch.id);
-      setCreatedEvaluationRunId(result.batch.id);
-      setQualificationStepOpen(true);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Route evaluation Run could not be created");
-    } finally {
-      setBusy(null);
-    }
-  };
-
   const publishReferenceSet = async () => {
     if (!identity) return;
     setBusy("references");
@@ -1920,18 +1817,26 @@ export function VisualIdentityPanel({ data, navigateToTab, permissions, runCommi
     <VisualIdentityExperimentWorkbench
       canActivate={permissions.writeVisual}
       canCreate={permissions.createAssets ?? false}
+      canUploadSource={
+        (permissions.writeProject ?? false) &&
+        (permissions.createAssets ?? false)
+      }
       canReview={permissions.reviewAssets ?? false}
       data={data}
       onActivateCandidate={activateIdentityCandidate}
     />
-    <details className="rounded-xl border border-[var(--ad-border)] bg-black/[0.015]">
+    <details
+      className="rounded-xl border border-[var(--ad-border)] bg-black/[0.015]"
+      onToggle={(event) => setProductionSettingsOpen(event.currentTarget.open)}
+      open={productionSettingsOpen}
+    >
       <summary className="cursor-pointer px-4 py-4 text-sm font-semibold sm:px-5">
         正式身份与生产设置
       </summary>
       <div className="grid gap-5 border-t border-[var(--ad-border)] p-4 xl:grid-cols-[minmax(0,1fr)_380px] sm:p-5">
     <div className="space-y-5">
       <section className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" aria-labelledby="visual-authority-title">
-        <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-semibold" id="visual-authority-title">{t("Visual Identity authority")}</h3><p className="mt-1 text-xs text-[var(--ad-text-muted)]">{t("Selection, published references and route qualification are separate evidence.")}</p></div><StatusBadge value={data.visual.readiness.ready ? "visual ready" : "blocked"} /></div>
+        <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-semibold" id="visual-authority-title">{t("Visual Identity authority")}</h3><p className="mt-1 text-xs text-[var(--ad-text-muted)]">{t("Selection, published references, and the active image route are separate evidence.")}</p></div><StatusBadge value={data.visual.readiness.ready ? "visual ready" : "blocked"} /></div>
         {identity ? <><dl className="mt-4 grid gap-3 text-sm sm:grid-cols-3"><div><dt className="text-xs text-[var(--ad-text-muted)]">{t("Active identity")}</dt><dd className="mt-1 font-semibold">v{identity.version} · {identity.style}</dd></div><div><dt className="text-xs text-[var(--ad-text-muted)]">{t("Anchors available")}</dt><dd className="mt-1 font-semibold">{data.visual.anchors.filter((asset) => asset.available).length}/{data.visual.anchors.length}</dd></div><div><dt className="text-xs text-[var(--ad-text-muted)]">{t("Reference Set")}</dt><dd className="mt-1 font-semibold">{data.visual.activeReferenceSet ? t("revision {version}", { version: data.visual.activeReferenceSet.revision }) : t("Not published")}</dd></div></dl><p className="mt-4 rounded-lg bg-black/[0.03] p-3 text-sm">{identity.identityPrompt}</p></> : <p className="mt-4 text-sm text-[var(--ad-text-muted)]">{t("No active immutable Visual Identity version exists.")}</p>}
         {readinessActions.length ? (
           <div className="mt-4">
@@ -2104,7 +2009,17 @@ export function VisualIdentityPanel({ data, navigateToTab, permissions, runCommi
         ) : null}
       </section>
 
-      <section className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" aria-labelledby="qualification-evidence-title"><h3 className="font-semibold" id="qualification-evidence-title">{t("Route qualification evidence")}</h3>{data.visual.routeQualifications.length === 0 ? <p className="mt-3 text-sm text-[var(--ad-text-muted)]">{t("No evaluation evidence for the active identity style.")}</p> : <div className="mt-3 overflow-x-auto"><table className="min-w-full text-left text-xs"><thead><tr className="border-b border-[var(--ad-border)] text-[var(--ad-text-muted)]"><th className="py-2 pr-3">{t("Route")}</th><th className="py-2 pr-3">{t("Matrix")}</th><th className="py-2 pr-3">{t("Evidence")}</th><th className="py-2">{t("Result")}</th></tr></thead><tbody>{data.visual.routeQualifications.map((route) => <tr className="border-b border-[var(--ad-border)]" key={route.id}><td className="py-3 pr-3">{route.generationProfileKey} v{route.generationProfileVersion}<span className="block text-[var(--ad-text-muted)]">{route.workflowKey} v{route.workflowVersion}</span></td><td className="py-3 pr-3">{route.matrixKey}<span className="block text-[var(--ad-text-muted)]">{route.policyVersion}</span></td><td className="py-3 pr-3">{route.passCount}/{route.sampleCount} {t("passed")}<span className="block text-[var(--ad-text-muted)]">{percent(route.identityMatch)} {t("identity match")}</span></td><td className="py-3"><StatusBadge value={route.stale ? "stale" : route.result} /></td></tr>)}</tbody></table></div>}</section>
+      <section
+        aria-labelledby="single-image-policy-title"
+        className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"
+      >
+        <h3 className="font-semibold" id="single-image-policy-title">
+          {t("One image at a time")}
+        </h3>
+        <p className="mt-2 text-sm leading-6 text-[var(--ad-text-muted)]">
+          {t("Every generation creates one candidate. Review that image before selecting it for the draft asset pack; nothing changes the live character automatically.")}
+        </p>
+      </section>
     </div>
 
     <aside className="space-y-5">
@@ -2112,146 +2027,42 @@ export function VisualIdentityPanel({ data, navigateToTab, permissions, runCommi
       <details
         className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"
         id="route-qualification-workbench"
-        onToggle={(event) => setRouteWorkbenchOpen(event.currentTarget.open)}
-        open={routeWorkbenchOpen}
+        open
       >
         <summary className="cursor-pointer font-semibold">
-          {t("Image route validation")}
+          {t("Image generation route")}
         </summary>
-        <section className="mt-4" aria-labelledby="evaluate-route-title">
-          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[var(--ad-text-muted)]">
-            {t("Current setup task")}
-          </p>
-          <h3 className="mt-2 text-lg font-semibold" id="evaluate-route-title">
-            {t("Validate this image route")}
-          </h3>
-          <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">
-            {t("Generate and review a fixed 40-image test. Submit the measured result only after every image has review evidence.")}
-          </p>
-          <div className="mt-4 rounded-lg border border-[var(--ad-border)] p-4">
-            <div className="flex items-center justify-between gap-3">
-              <strong className="text-sm">{t("1. Generate route test images")}</strong>
-              <StatusBadge value={routeEvaluation.ready ? "ready" : "blocked"} />
-            </div>
-            {routeEvaluation.ready ? (
-              <>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <WorkspaceButton
-                    disabled={!permissions.evaluateRoute || busy !== null || !identity || !resolvedEvaluationProfileKey}
-                    onClick={() => void createRouteEvaluationRun()}
-                    tone="primary"
-                  >
-                    {busy === "evaluation-run"
-                      ? t("Creating route test…")
-                      : t("Generate 40 route test images")}
-                  </WorkspaceButton>
-                  {createdEvaluationRunId ? (
-                    <Link
-                      className="inline-flex min-h-11 items-center text-sm font-semibold underline"
-                      href={`/admin/creative/runs/${createdEvaluationRunId}`}
-                    >
-                      {t("Review generated samples")}
-                    </Link>
-                  ) : null}
-                </div>
-                <details className="mt-3 border-t border-[var(--ad-border)] pt-3">
-                  <summary className="cursor-pointer text-xs font-semibold text-[var(--ad-text-muted)]">
-                    {t("Route and test details")}
-                  </summary>
-                  <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">
-                    {t("Candidate image route")}
-                    <select
-                      className={`${fieldClass} mt-1`}
-                      onChange={(event) => setEvaluationProfileKey(event.target.value)}
-                      value={resolvedEvaluationProfileKey}
-                    >
-                      {routeEvaluation.profiles.map((profile) => (
-                        <option
-                          key={`${profile.profileKey}:${profile.profileVersion}`}
-                          value={profile.profileKey}
-                        >
-                          {profile.label} · v{profile.profileVersion}
-                          {profile.recommended ? ` · ${t("Recommended")}` : ""}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <p className="mt-2 text-xs text-[var(--ad-text-muted)]">
-                    {t("{count} fixed samples · evaluator {version}", {
-                      count: routeEvaluation.sampleMinimum,
-                      version: routeEvaluation.evaluatorVersion,
-                    })}
-                  </p>
-                </details>
-              </>
-            ) : (
-              <p className="mt-3 text-xs text-[var(--ad-yellow-text)]">
-                {t(routeEvaluation.blocker ?? "Route evaluation is not ready.")}
+        <section className="mt-4" aria-labelledby="generation-route-title">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h3 className="text-lg font-semibold" id="generation-route-title">
+                {activeGenerationRoute?.generationProfileKey ??
+                  recommendedGenerationProfile?.label ??
+                  t("No compatible image route")}
+              </h3>
+              <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
+                {activeGenerationRoute
+                  ? `${activeGenerationRoute.workflowKey} · v${activeGenerationRoute.workflowVersion}`
+                  : recommendedGenerationProfile
+                    ? `${recommendedGenerationProfile.workflowKey} · v${recommendedGenerationProfile.workflowVersion}`
+                    : t(routeEvaluation.blocker ?? "No active reference-capable image profile can consume this Reference Set.")}
               </p>
-            )}
+            </div>
+            <StatusBadge
+              value={activeGenerationRoute || recommendedGenerationProfile ? "ready" : "blocked"}
+            />
           </div>
-          <details
-            className="mt-3 rounded-lg border border-[var(--ad-border)]"
-            onToggle={(event) => setQualificationStepOpen(event.currentTarget.open)}
-            open={qualificationStepOpen}
-          >
-            <summary className="flex min-h-12 cursor-pointer list-none items-center justify-between gap-3 px-4 text-sm font-semibold">
-              <span>{t("2. Submit the reviewed result")}</span>
-              <span className="text-xs font-normal text-[var(--ad-text-muted)]">
-                {batchIds.trim() ? t("Test batch ready") : t("After image review")}
-              </span>
-            </summary>
-            <div className="border-t border-[var(--ad-border)] p-4">
-              <p className="text-xs leading-5 text-[var(--ad-text-muted)]">
-                {t("Open this after every test image has been reviewed. Existing batch IDs can also be entered here.")}
-              </p>
-              <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">
-                {t("Batch IDs")}
-                <textarea
-                  className={`${textAreaClass} mt-1`}
-                  onChange={(event) => setBatchIds(event.target.value)}
-                  placeholder={t("Comma or newline separated")}
-                  value={batchIds}
-                />
-              </label>
-              <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">
-                {t("Matrix key")}
-                <input aria-readonly="true" className={`${fieldClass} mt-1`} readOnly value={matrixKey} />
-              </label>
-              <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">
-                {t("Cost/latency evidence reference")}
-                <input
-                  className={`${fieldClass} mt-1`}
-                  onChange={(event) => setGuardrailEvidence(event.target.value)}
-                  value={guardrailEvidence}
-                />
-              </label>
-              <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">
-                {t("Evaluation reason")}
-                <input
-                  className={`${fieldClass} mt-1`}
-                  onChange={(event) => setQualificationReason(event.target.value)}
-                  value={qualificationReason}
-                />
-              </label>
-              <p className="mt-3 text-xs text-[var(--ad-text-muted)]">
-                {t("Policy:")} {data.visual.readiness.qualificationPolicyVersion}
-              </p>
-              <div className="mt-4">
-                <WorkspaceButton
-                  disabled={!permissions.evaluateRoute || busy !== null || !batchIds.trim() || !guardrailEvidence.trim() || qualificationReason.trim().length < 3 || !identity}
-                  onClick={() => void evaluateRoute()}
-                  tone="primary"
-                >
-                  {t("Submit route evaluation")}
-                </WorkspaceButton>
-              </div>
-            </div>
-          </details>
-          {!permissions.evaluateRoute ? (
-            <p className="mt-2 text-xs text-[var(--ad-text-muted)]">
-              {t("Read-only: content.production.write is not granted.")}
-            </p>
+          <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">
+            {t("The platform keeps the compatible route fixed for lineage. Operators create and review one image at a time; no test images are required first.")}
+          </p>
+          {navigateToTab && (activeGenerationRoute || recommendedGenerationProfile) ? (
+            <WorkspaceButton
+              className="mt-4"
+              onClick={() => navigateToTab("assets")}
+              tone="primary"
+            >
+              {t("Generate one image")}
+            </WorkspaceButton>
           ) : null}
         </section>
       </details>
@@ -3045,7 +2856,7 @@ function MonitorPanel({
 
                     {t("Recommendation:")} {String(monitor.verification.recommendation ?? (
                       window === "route_qualification" && monitor.status === "action_required"
-                        ? "refresh route qualification before the next Release"
+                        ? "refresh the active image route before the next Release"
                         : "continue_monitoring"
                     ))}
                   </p>
@@ -3056,14 +2867,14 @@ function MonitorPanel({
                       type="button"
                     >
 
-                      {t("Open route qualification")}
+                      {t("Open image route")}
                     </button>
                   ) : null}
                 </>
               ) : (
                 <p className="mt-4 text-sm text-[var(--ad-text-muted)]">
                   {window === "route_qualification"
-                    ? t("No route qualification action is currently required.")
+                    ? t("No image route action is currently required.")
                     : t("No observation yet. Refresh once the release is published.")}
                 </p>
               )}
@@ -3703,6 +3514,18 @@ function CharacterDetail({
     tabRef.current = tab;
   }, [tab]);
   useEffect(() => {
+    if (
+      tab !== "visual" ||
+      window.location.hash !== "#route-qualification-workbench"
+    ) return;
+    const frame = window.requestAnimationFrame(() => {
+      const target = document.getElementById("route-qualification-workbench");
+      target?.scrollIntoView({ block: "start" });
+      target?.querySelector("summary")?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [tab, data?.visual.imageReadiness?.state]);
+  useEffect(() => {
     const restoreTab = () => {
       if (mutationNoticeRef.current || pendingCommandRef.current || data?.activeCommand) {
         setWorkspaceUrl(new URLSearchParams({ tab: tabRef.current }), { mode: "replace" });
@@ -3765,8 +3588,19 @@ function CharacterDetail({
       (mutationNoticeRef.current || pendingCommandRef.current || data.activeCommand) &&
       next !== tab
     ) return;
+    const visualSetupHash =
+      next === "visual" &&
+      data.visual.imageReadiness?.state === "route_pending"
+        ? new URL(
+            data.visual.imageReadiness.nextDeepLink,
+            window.location.origin,
+          ).hash.replace(/^#/, "") || undefined
+        : undefined;
     setTab(next);
-    setWorkspaceUrl(new URLSearchParams({ tab: next }), { mode: "push" });
+    setWorkspaceUrl(new URLSearchParams({ tab: next }), {
+      hash: visualSetupHash,
+      mode: "push",
+    });
   };
   const onTabKey = (event: KeyboardEvent<HTMLButtonElement>, current: number) => {
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
@@ -3941,6 +3775,7 @@ function CharacterDetail({
         ) : tab === "voice" ? (
           <CharacterVoicePanel
             canActivate={guardedPermissions.publishRelease}
+            canManageDefaults={permissions.manageVoiceDefaults}
             canWrite={guardedPermissions.writeProject}
             data={data}
             runCommittedMutation={runCommittedMutation}
