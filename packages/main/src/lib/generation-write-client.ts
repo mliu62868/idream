@@ -46,6 +46,7 @@ type MediaVariationRequest = {
   createIdempotencyKey?: () => string;
   idempotencyKeys?: Map<string, string>;
   mediaId: string;
+  model?: string;
   outputCount: number;
   quote?: RuntimeGenerationQuote | null;
 };
@@ -171,6 +172,7 @@ export async function requestMediaVariationWithExactQuote(
         cache: "no-store",
         body: JSON.stringify({
           consistencyMode: input.consistencyMode,
+          model: input.model,
         }),
       },
     );
@@ -207,6 +209,7 @@ export async function requestMediaVariationWithExactQuote(
   return requestIdempotentGenerationWrite(
     {
       body: {
+        model: input.model,
         outputCount: input.outputCount,
         consistencyMode: input.consistencyMode,
         orientation: quote.defaultOrientation,

@@ -349,6 +349,46 @@ describe("seed data provenance", () => {
     });
   });
 
+  it("publishes the verified Dark Beast identity-edit route for explicit user selection", async () => {
+    const profile = await prisma.generationModelProfile.findUnique({
+      where: { id: "seed-profile-darkbeast-user-image-edit-v1" },
+      select: {
+        profileKey: true,
+        label: true,
+        pipelineModel: true,
+        workflowKey: true,
+        enabled: true,
+        rolloutPercent: true,
+        status: true,
+        runnerConfig: true,
+        dryRunSummary: true,
+      },
+    });
+
+    expect(profile).toMatchObject({
+      profileKey: "character-image-variation-darkbeast",
+      label: "Dark Beast · Identity Focus",
+      pipelineModel: "darkbeast-flux2-klein-9b-bfs",
+      workflowKey: "darkbeast-flux2-klein-9b-multi-reference",
+      enabled: true,
+      rolloutPercent: 100,
+      status: "active",
+      runnerConfig: {
+        publicSelection: {
+          surface: "generator_image_edit",
+          referenceMode: "identity_source",
+          explicitOnly: true,
+        },
+      },
+      dryRunSummary: {
+        sampleCount: 1,
+        successRate: 1,
+        smokeOutputSha256:
+          "be3f9252c37b9d203d4e4eb98b51d5a1e57e6c5de183a6944e54063b12f59f5a",
+      },
+    });
+  });
+
   it("keeps RedMix3 as a disabled exact-version BF16 comparison candidate", async () => {
     const profile = await prisma.generationModelProfile.findFirst({
       where: { profileKey: "redcraft-krea2-redmix3-comparison" },

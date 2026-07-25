@@ -754,6 +754,19 @@ describe("generation config control plane", () => {
         "chat-image-edit",
       ]),
     );
+    expect(config.data.image.editModels).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          profileId: "character-image-variation-darkbeast",
+          referenceMode: "identity_source",
+        }),
+      ]),
+    );
+    expect(
+      config.data.image.editModels.map(
+        (model: { profileId: string }) => model.profileId,
+      ),
+    ).toEqual(["character-image-variation-darkbeast"]);
     expect(JSON.stringify(config.data.image.models)).not.toContain("profile_image_premium_v1");
 
     const beforeRejectedJobs = await prisma.generationJob.count({ where: { userId } });

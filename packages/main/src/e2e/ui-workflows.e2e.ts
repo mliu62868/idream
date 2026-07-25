@@ -4045,7 +4045,8 @@ test("generator UI explains failed and blocked job recovery states", async ({ pa
 test("generator Image Edit queues a variation from a gallery source", async ({ page }) => {
   test.setTimeout(120_000);
   const { email } = await startSignedInAdultSession(page, "generate-image-edit");
-  const sourceMediaId = await seedDownloadableMedia(email);
+  const { mediaId: sourceMediaId } =
+    await seedOwnedCharacterGenerationAuthority(email);
 
   await page.goto("/generate");
   const imageEdit = page.getByRole("button", { name: "Image Edit" });
@@ -4065,6 +4066,9 @@ test("generator Image Edit queues a variation from a gallery source", async ({ p
   await expect(sourceCard).toBeVisible({ timeout: 10_000 });
   await sourceCard.click();
   await expect(sourceCard).toHaveAttribute("aria-pressed", "true");
+  const modelSelect = page.getByLabel("Model");
+  await expect(modelSelect).toBeVisible();
+  await modelSelect.selectOption("character-image-variation-darkbeast");
   const createEdit = page.getByRole("button", {
     name: /^Create edit · \d[\d,]* coins$/,
   });
@@ -4077,12 +4081,14 @@ test("generator Image Edit queues a variation from a gallery source", async ({ p
     where: { id: job.id },
     select: {
       outputCount: true,
+      profileId: true,
       sourceId: true,
       sourceMeta: true,
       sourceType: true,
     },
   });
   expect(stored.outputCount).toBe(1);
+  expect(stored.profileId).toBe("character-image-variation-darkbeast");
   expect(stored.sourceType).toBe("media_variation");
   expect(stored.sourceId).toContain(`media:${sourceMediaId}:variation:`);
   expect(stored.sourceMeta).toMatchObject({ sourceMediaId });

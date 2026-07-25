@@ -187,6 +187,40 @@ function darkBeastComparisonProfileData() {
   } satisfies Prisma.GenerationModelProfileUncheckedUpdateInput;
 }
 
+function darkBeastUserImageEditProfileData() {
+  const candidate = darkBeastComparisonProfileData();
+  return {
+    ...candidate,
+    profileKey: "character-image-variation-darkbeast",
+    label: "Dark Beast · Identity Focus",
+    runnerConfig: {
+      ...candidate.runnerConfig,
+      verificationStatus: "runtime_verified_mps",
+      publicSelection: {
+        surface: "generator_image_edit",
+        referenceMode: "identity_source",
+        explicitOnly: true,
+      },
+    },
+    enabled: true,
+    rolloutPercent: 100,
+    status: "active",
+    dryRunSummary: {
+      sampleCount: 1,
+      successRate: 1,
+      p95LatencyMs: 116_500,
+      testedAt: "2026-07-19",
+      smokeOutputPath:
+        "/Users/kk/ComfyUI-Shared/output/idream_darkbeast_flux2_klein_multi_00001_.png",
+      smokeOutputSha256:
+        "be3f9252c37b9d203d4e4eb98b51d5a1e57e6c5de183a6944e54063b12f59f5a",
+      notes:
+        "Verified on ComfyUI 0.28.0 with Apple MPS at 832x1216, 5 Euler steps. Published only as an explicit identity-plus-source image-edit choice; automatic routing remains unchanged.",
+    },
+    publishedAt: new Date("2026-07-24T00:00:00.000Z"),
+  } satisfies Prisma.GenerationModelProfileUncheckedUpdateInput;
+}
+
 function redMix3ComparisonProfileData() {
   return {
     profileKey: "redcraft-krea2-redmix3-comparison",
@@ -1500,6 +1534,18 @@ async function seedAdminControlPlane() {
       update: profileData,
       create: {
         id: "seed-profile-sdcpp-darkbeast-krea2-img2img-v1",
+        ...profileData,
+      },
+    });
+  }
+
+  if (!existingProfileKeys.has("character-image-variation-darkbeast")) {
+    const profileData = darkBeastUserImageEditProfileData();
+    await prisma.generationModelProfile.upsert({
+      where: { id: "seed-profile-darkbeast-user-image-edit-v1" },
+      update: profileData,
+      create: {
+        id: "seed-profile-darkbeast-user-image-edit-v1",
         ...profileData,
       },
     });

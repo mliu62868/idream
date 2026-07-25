@@ -667,6 +667,10 @@ const generationModelSchema = z
   })
   .passthrough();
 
+const imageEditGenerationModelSchema = generationModelSchema.extend({
+  referenceMode: z.enum(["source_only", "identity_source"]),
+});
+
 const generationPresetSchema = z
   .object({
     id: nonEmptyString,
@@ -744,6 +748,7 @@ const generationConfigSchema = z
         availability: generationModeAvailabilitySchema,
         orientations: z.array(nonEmptyString),
         models: z.array(generationModelSchema),
+        editModels: z.array(imageEditGenerationModelSchema).default([]),
         recipes: z.array(imageGenerationRecipeSchema).optional(),
       })
       .strict(),
@@ -963,6 +968,7 @@ const workspaceMediaItemSchema = z
     liked: z.boolean(),
     isSynthetic: z.boolean().optional(),
     canEditIdentity: z.boolean().optional(),
+    imageEditModelIds: z.array(nonEmptyString).optional(),
     visualProfileId: z.string().nullable().optional(),
     visualProfileVersion: nonNegativeInteger.nullable().optional(),
     identity: z

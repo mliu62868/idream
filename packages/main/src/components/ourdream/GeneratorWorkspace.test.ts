@@ -3,6 +3,7 @@ import {
   exactGenerationQuoteForCount,
   fetchCharacterById,
   generatorConfigRequestIsCurrent,
+  generatorImageEditModelOptions,
   generatorRouteAfterRemixExit,
   generationErrorAuthorityAction,
   invalidateGeneratorConfigAuthority,
@@ -47,6 +48,38 @@ describe("generator model selection authority", () => {
       requestModelId: "public-t2i",
       selectValue: "public-t2i",
     });
+  });
+
+  it("offers only the image-edit models compatible with the selected source", () => {
+    const editModels = [
+      {
+        id: "chat-image-edit",
+        label: "Qwen source edit",
+        referenceMode: "source_only" as const,
+      },
+      {
+        id: "character-image-variation",
+        label: "Qwen identity edit",
+        referenceMode: "identity_source" as const,
+      },
+      {
+        id: "character-image-variation-darkbeast",
+        label: "Dark Beast identity edit",
+        referenceMode: "identity_source" as const,
+      },
+    ];
+
+    expect(
+      generatorImageEditModelOptions(editModels, [
+        "character-image-variation-darkbeast",
+      ]),
+    ).toEqual([
+      editModels[2],
+    ]);
+    expect(generatorImageEditModelOptions(editModels, [])).toEqual([]);
+    expect(generatorImageEditModelOptions(editModels, null)).toEqual(
+      editModels,
+    );
   });
 });
 
@@ -247,6 +280,7 @@ describe("generator exact quote authority", () => {
         {
           mediaId: "media/with spaces",
           consistencyMode: "balanced",
+          model: "character-image-variation-darkbeast",
           outputCount: 1,
         },
         fetcher,
@@ -257,7 +291,12 @@ describe("generator exact quote authority", () => {
       "/api/v1/media/media%2Fwith%20spaces/variation/quote",
       "/api/v1/media/media%2Fwith%20spaces/variation",
     ]);
+    expect(requests[0]?.body).toMatchObject({
+      consistencyMode: "balanced",
+      model: "character-image-variation-darkbeast",
+    });
     expect(requests[1]?.body).toMatchObject({
+      model: "character-image-variation-darkbeast",
       outputCount: 1,
       orientation: quote.defaultOrientation,
       quoteAuthority: {

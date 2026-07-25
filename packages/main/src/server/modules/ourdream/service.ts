@@ -1917,6 +1917,10 @@ async function generationConfig(request: Request) {
   const publicImageProfiles = await filterPublicTextToImageGenerationProfiles(
     profiles.filter((profile) => profile.mode === "image"),
   );
+  const publicImageEditProfiles =
+    await projectPublicImageEditGenerationProfiles(
+      profiles.filter((profile) => profile.mode === "image"),
+    );
   const executableVideoProfiles = profiles.filter(
     (profile) =>
       profile.mode === "video" && isExecutableGenerationProfile(profile),
@@ -1925,6 +1929,12 @@ async function generationConfig(request: Request) {
     profile.requiredEntitlement
       ? Boolean(entitlements[profile.requiredEntitlement])
       : true,
+  );
+  const visibleImageEditProfiles = publicImageEditProfiles.filter(
+    ({ profile }) =>
+      profile.requiredEntitlement
+        ? Boolean(entitlements[profile.requiredEntitlement])
+        : true,
   );
   const videoProfiles = executableVideoProfiles.filter((profile) =>
     profile.requiredEntitlement
@@ -2001,6 +2011,12 @@ async function generationConfig(request: Request) {
         imageAvailability.state === "available"
           ? visibleImageProfiles.map(profileConfigDTO)
           : [],
+      editModels: visibleImageEditProfiles.map(
+        ({ profile, referenceMode }) => ({
+          ...profileConfigDTO(profile),
+          referenceMode,
+        }),
+      ),
       recipes: imageRecipes.map(recipeConfigDTO),
     },
     video: {
@@ -2826,6 +2842,7 @@ async function bootstrapCharacterVisualProfile(
 
 type GenerationProfileSelectionAuthority =
   | "public_generator"
+  | "public_image_edit"
   | "specialized";
 
 async function resolveGenerationPlanForUser(
@@ -2915,6 +2932,10 @@ async function resolveGenerationPlanForUser(
         Boolean(selectedModel)
       )
     );
+  const requirePublicImageEditProfile =
+    body.mode === "image" &&
+    options.profileSelectionAuthority === "public_image_edit" &&
+    Boolean(selectedModel);
   const profile = requiresReferenceRouting
     ? await selectGenerationProfile(
         body.mode,
@@ -2928,6 +2949,7 @@ async function resolveGenerationPlanForUser(
         },
         requirePublicTextToImageProfile,
         entitlements,
+        requirePublicImageEditProfile,
       )
     : body.mode === "image"
       ? await selectGenerationProfile(
@@ -2940,6 +2962,7 @@ async function resolveGenerationPlanForUser(
           },
           requirePublicTextToImageProfile,
           entitlements,
+          requirePublicImageEditProfile,
         )
       : preflightProfile!;
   if (
@@ -4969,6 +4992,7 @@ async function listMedia(request: Request) {
     include: {
       sourceJob: {
         select: {
+          characterId: true,
           sourceType: true,
           sourceId: true,
           sourceMeta: true,
@@ -4980,19 +5004,102 @@ async function listMedia(request: Request) {
     take: limit + 1,
   });
   const page = assets.slice(0, limit);
-  const mediaCharacterIds = [
-    ...new Set(page.map((asset) => asset.characterId).filter((id): id is string => Boolean(id))),
+  const imageEditCharacterIds = [
+    ...new Set(
+      page
+        .map((asset) => asset.characterId ?? asset.sourceJob?.characterId)
+        .filter((id): id is string => Boolean(id)),
+    ),
   ];
-  const editableCharacters =
-    mediaCharacterIds.length > 0
-      ? await prisma.character.findMany({
-          where: { id: { in: mediaCharacterIds }, creatorId: user.id, deletedAt: null },
+  const [editableCharacters, readableImageEditCharacters, activeImageProfiles] =
+    await Promise.all([
+      imageEditCharacterIds.length > 0
+        ? prisma.character.findMany({
+          where: {
+            id: { in: imageEditCharacterIds },
+            creatorId: user.id,
+            deletedAt: null,
+          },
           select: { id: true },
         })
+        : [],
+      imageEditCharacterIds.length > 0
+        ? prisma.character.findMany({
+          where: {
+            id: { in: imageEditCharacterIds },
+            deletedAt: null,
+            status: "approved",
+            age: { gte: 18 },
+            OR: [
+              publicCharacterAudienceWhere,
+              { creatorId: user.id },
+            ],
+          },
+          select: {
+            id: true,
+            visualProfiles: {
+              where: { status: "active" },
+              orderBy: { version: "desc" },
+              take: 1,
+              select: { id: true },
+            },
+          },
+        })
+        : [],
+      prisma.generationModelProfile.findMany({
+        where: { mode: "image", status: "active", enabled: true },
+        orderBy: [
+          { costMultiplier: "asc" },
+          { version: "desc" },
+        ],
+      }),
+    ]);
+  const editableCharacterIds = new Set(
+    editableCharacters.map((character) => character.id),
+  );
+  const imageEditReferenceRequirementsByCharacterId = new Map(
+    await Promise.all(
+      readableImageEditCharacters.map(async (character) => {
+        const visualProfileId = character.visualProfiles[0]?.id;
+        return [
+          character.id,
+          visualProfileId
+            ? await generationReferenceRouteRequirements(visualProfileId)
+            : [],
+        ] as const;
+      }),
+    ),
+  );
+  const publicImageEditProfiles =
+    await projectPublicImageEditGenerationProfiles(activeImageProfiles);
+  const projectedItems = page.map((asset) => {
+    const imageEditCharacterId =
+      asset.characterId ?? asset.sourceJob?.characterId ?? null;
+    const referenceRequirements = imageEditCharacterId
+      ? imageEditReferenceRequirementsByCharacterId.get(imageEditCharacterId)
       : [];
-  const editableCharacterIds = new Set(editableCharacters.map((character) => character.id));
+    const imageEditModelIds =
+      referenceRequirements === undefined
+        ? []
+        : publicImageEditProfiles.flatMap(
+          ({ profile, workflowDescriptor }) =>
+            generationProfileReferenceIncompatibilities({
+              profile,
+              workflowDescriptor,
+              pinnedReferences: referenceRequirements,
+              sourceImageAssetId: asset.id,
+              lookReferenceAssetId: null,
+            }).length === 0
+              ? [profile.profileKey]
+              : [],
+        );
+    return mediaDTO(asset, {
+      editableCharacterIds,
+      imageEditModelIds,
+    });
+  });
   return ok({
-    items: page.map((asset) => mediaDTO(asset, { editableCharacterIds })),
+    items: projectedItems,
     nextCursor: assets.length > limit ? encodeCursor(offset + limit) : null,
   });
 }
@@ -5739,6 +5846,7 @@ async function resolveMediaVariationGenerationInput(
   input: {
     outputCount: number;
     consistencyMode: "balanced" | "strict" | "creative";
+    model?: string;
     orientation?: string;
   },
 ) {
@@ -5785,6 +5893,7 @@ async function resolveMediaVariationGenerationInput(
       characterId,
       freeplay: !characterId,
       consistencyMode: input.consistencyMode,
+      model: input.model,
       prompt: variationScenePrompt(asset.prompt ?? sourceJob?.prompt),
       controls,
       presetIds: sourceJob ? jsonStringArray(sourceJob.presetIds) : [],
@@ -5804,6 +5913,7 @@ async function mediaVariationQuote(request: Request, id: string) {
       consistencyMode: z
         .enum(["balanced", "strict", "creative"])
         .default("balanced"),
+      model: z.string().trim().min(1).max(120).optional(),
     })
     .strict()
     .parse(await jsonBody(request));
@@ -5813,12 +5923,13 @@ async function mediaVariationQuote(request: Request, id: string) {
     {
       outputCount: 1,
       consistencyMode: input.consistencyMode,
+      model: input.model,
     },
   );
   return generationQuoteForUser(
     user.id,
     variation.body,
-    "specialized",
+    "public_image_edit",
     {
       source: {
         sourceType: "media_variation",
@@ -5837,6 +5948,7 @@ async function createMediaVariation(request: Request, id: string) {
     .object({
       outputCount: z.number().int().min(1).max(4).default(1),
       consistencyMode: z.enum(["balanced", "strict", "creative"]).default("balanced"),
+      model: z.string().trim().min(1).max(120).optional(),
       orientation: z.enum(imageOrientations).optional(),
       quoteAuthority: generationQuoteAuthoritySchema,
     })
@@ -5858,6 +5970,7 @@ async function createMediaVariation(request: Request, id: string) {
       {
         outputCount: body.outputCount,
         consistencyMode: body.consistencyMode,
+        model: body.model,
         orientation: body.orientation,
       },
     );
@@ -5879,6 +5992,7 @@ async function createMediaVariation(request: Request, id: string) {
             sourceJobId: sourceJob?.id ?? null,
           }),
         },
+        profileSelectionAuthority: "public_image_edit",
         requireQuoteAuthority: true,
       },
     );
@@ -10108,11 +10222,15 @@ function mediaDTO(asset: {
   liked: boolean;
   createdAt: Date;
   sourceJob?: {
+    characterId?: string | null;
     sourceType: string;
     sourceId: string | null;
     sourceMeta?: Prisma.JsonValue | null;
   } | null;
-}, options: { editableCharacterIds?: ReadonlySet<string> } = {}) {
+}, options: {
+  editableCharacterIds?: ReadonlySet<string>;
+  imageEditModelIds?: readonly string[];
+} = {}) {
   const displayUrl = asset.storageKey ? mediaViewUrl(asset) : asset.url;
   const metadata = jsonRecord(asset.metadata);
   const quality = jsonRecord(metadata.quality);
@@ -10124,6 +10242,7 @@ function mediaDTO(asset: {
     id: asset.id,
     characterId,
     canEditIdentity: Boolean(characterId && options.editableCharacterIds?.has(characterId)),
+    imageEditModelIds: options.imageEditModelIds ?? [],
     type: asset.type,
     url: displayUrl,
     thumbnailUrl: asset.storageKey ? displayUrl : (asset.thumbnailUrl ?? asset.url),
@@ -11382,6 +11501,7 @@ async function selectGenerationProfile(
   },
   requirePublicTextToImageProfile = false,
   accessibleEntitlements?: Readonly<Record<string, Prisma.JsonValue>>,
+  requirePublicImageEditProfile = false,
 ) {
   const where: Prisma.GenerationModelProfileWhereInput = {
     mode,
@@ -11397,9 +11517,18 @@ async function selectGenerationProfile(
       ? [{ version: "desc" }]
       : [{ costMultiplier: "asc" }, { version: "desc" }],
   });
+  const automaticCandidates = requested
+    ? queriedCandidates
+    : queriedCandidates.filter(
+        (candidate) => !generationProfileIsExplicitSelectionOnly(candidate),
+      );
   const eligibleCandidates = requirePublicTextToImageProfile
-    ? await filterPublicTextToImageGenerationProfiles(queriedCandidates)
-    : queriedCandidates.filter(isExecutableGenerationProfile);
+    ? await filterPublicTextToImageGenerationProfiles(automaticCandidates)
+    : requirePublicImageEditProfile
+      ? (
+          await projectPublicImageEditGenerationProfiles(automaticCandidates)
+        ).map(({ profile }) => profile)
+      : automaticCandidates.filter(isExecutableGenerationProfile);
   const accessibleCandidates =
     !requested && accessibleEntitlements
       ? eligibleCandidates.filter(
@@ -11673,6 +11802,64 @@ async function filterPublicTextToImageGenerationProfiles<
   );
   return eligibility.flatMap(({ profile, eligible }) =>
     eligible ? [profile] : [],
+  );
+}
+
+type PublicImageEditReferenceMode = "source_only" | "identity_source";
+
+function generationProfilePublicSelection(profile: {
+  readonly runnerConfig: Prisma.JsonValue | null;
+}) {
+  return jsonRecord(jsonRecord(profile.runnerConfig).publicSelection);
+}
+
+function generationProfileIsExplicitSelectionOnly(profile: {
+  readonly runnerConfig: Prisma.JsonValue | null;
+}) {
+  return generationProfilePublicSelection(profile).explicitOnly === true;
+}
+
+async function projectPublicImageEditGenerationProfiles<
+  T extends PublicTextToImageGenerationProfile,
+>(profiles: readonly T[]) {
+  const projections = await Promise.all(
+    profiles.map(async (profile) => {
+      const publicSelection = generationProfilePublicSelection(profile);
+      if (
+        publicSelection.surface !== "generator_image_edit" ||
+        profile.mode !== "image" ||
+        !isExecutableGenerationProfile(profile) ||
+        !generationModelCapabilities(
+          profile.runner,
+          profile.runnerConfig ?? {},
+        ).initImage
+      ) {
+        return null;
+      }
+      const workflow = await generationWorkflowDescriptor(
+        profile.workflowKey ?? profile.pipelineModel,
+      );
+      if (
+        !workflow ||
+        !workflow.capabilities.includes("img2img") ||
+        !workflow.inputs.some(
+          (input) =>
+            input.type === "image" &&
+            "referenceRoles" in input &&
+            input.referenceRoles?.includes("source_image"),
+        )
+      ) {
+        return null;
+      }
+      const referenceMode: PublicImageEditReferenceMode =
+        workflow.identity.supportsSourceImageWithIdentity
+          ? "identity_source"
+          : "source_only";
+      return { profile, referenceMode, workflowDescriptor: workflow };
+    }),
+  );
+  return projections.flatMap((projection) =>
+    projection ? [projection] : [],
   );
 }
 

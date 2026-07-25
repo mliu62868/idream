@@ -4964,6 +4964,7 @@ describe("image generation service contract", () => {
     const userId = `${P}variation-user`;
     const characterId = `${P}variation-char`;
     const mediaId = `${P}variation-media`;
+    const publicCharacterMediaId = `${P}variation-public-character-media`;
     const identityAnchorId = `${P}variation-identity-anchor`;
     await createUser({ id: userId });
     await createCharacter({
@@ -5014,6 +5015,23 @@ describe("image generation service contract", () => {
     });
     await prisma.mediaAsset.create({
       data: {
+        id: publicCharacterMediaId,
+        ownerId: userId,
+        characterId: CHAR,
+        type: "image",
+        url: "/images/ourdream/card-sarah-mercer.webp",
+        thumbnailUrl: "/images/ourdream/card-sarah-mercer.webp",
+        storageKey: `${P}variation/public-character-source.webp`,
+        contentType: "image/webp",
+        width: 1024,
+        height: 1280,
+        visibility: "private",
+        safetyStatus: "passed",
+        metadata: {},
+      },
+    });
+    await prisma.mediaAsset.create({
+      data: {
         id: mediaId,
         ownerId: userId,
         characterId,
@@ -5044,13 +5062,69 @@ describe("image generation service contract", () => {
     });
     await grantCoins(userId, 100, "seed");
 
+    const mediaList = await api("GET", "media", {
+      userId,
+      ageGate: true,
+      query: { type: "image" },
+    });
+    expectOk(mediaList);
+    expect(
+      mediaList.data.items.find(
+        (item: { id: string }) => item.id === mediaId,
+      ),
+    ).toMatchObject({
+      characterId,
+      imageEditModelIds: ["character-image-variation-darkbeast"],
+    });
+    expect(
+      mediaList.data.items.find(
+        (item: { id: string }) => item.id === publicCharacterMediaId,
+      ),
+    ).toMatchObject({
+      characterId: CHAR,
+      canEditIdentity: false,
+      imageEditModelIds: ["character-image-variation-darkbeast"],
+    });
+    const automaticVariation = await api(
+      "POST",
+      `media/${mediaId}/variation/quote`,
+      {
+        userId,
+        ageGate: true,
+        body: {
+          consistencyMode: "creative",
+        },
+      },
+    );
+    expectOk(automaticVariation);
+    expect(automaticVariation.data.quote.profileId).toBe(
+      "character-image-variation",
+    );
+
+    const internalProfileVariation = await api(
+      "POST",
+      `media/${mediaId}/variation/quote`,
+      {
+        userId,
+        ageGate: true,
+        body: {
+          consistencyMode: "creative",
+          model: "character-image-variation",
+        },
+      },
+    );
+    expectError(internalProfileVariation, 409, "conflict");
+
     const quotedVariation = await api(
       "POST",
       `media/${mediaId}/variation/quote`,
       {
         userId,
         ageGate: true,
-        body: { consistencyMode: "creative" },
+        body: {
+          consistencyMode: "creative",
+          model: "character-image-variation-darkbeast",
+        },
       },
     );
     expectOk(quotedVariation);
@@ -5062,12 +5136,16 @@ describe("image generation service contract", () => {
       };
     expect(variationQuote.maxCount).toBeGreaterThan(0);
     expect(variationQuote.orientations).toContain("4:5");
+    expect(variationQuote.profileId).toBe(
+      "character-image-variation-darkbeast",
+    );
     const balanceBefore = await dreamcoinBalance(userId);
 
     const variationIdempotencyKey = `${P}variation-idempotency`;
     const variationBody = {
       outputCount: 1,
       consistencyMode: "creative" as const,
+      model: "character-image-variation-darkbeast",
       orientation: variationQuote.defaultOrientation,
       quoteAuthority: quoteAuthority(variationQuote),
     };
@@ -5114,6 +5192,65 @@ describe("image generation service contract", () => {
       balanceBefore - job.costDreamcoins,
     );
     const balanceAfterCreate = await dreamcoinBalance(userId);
+    const secondIdentityReferenceId = `${P}variation-identity-reference`;
+    await prisma.mediaAsset.create({
+      data: {
+        id: secondIdentityReferenceId,
+        ownerId: userId,
+        characterId,
+        type: "image",
+        url: "/images/ourdream/card-amelie-dubois.webp",
+        thumbnailUrl: "/images/ourdream/card-amelie-dubois.webp",
+        storageKey: `${P}variation/identity-reference.webp`,
+        contentType: "image/webp",
+        width: 1024,
+        height: 1280,
+        visibility: "private",
+        safetyStatus: "passed",
+        metadata: {},
+      },
+    });
+    await prisma.referenceSetRevision.updateMany({
+      where: {
+        visualProfileId: `${P}variation-cvp`,
+        status: "active",
+      },
+      data: { status: "superseded" },
+    });
+    await createSealedReferenceSet({
+      id: `${P}variation-reference-set-v2`,
+      visualProfileId: `${P}variation-cvp`,
+      revision: 2,
+      references: [
+        {
+          mediaAssetId: identityAnchorId,
+          role: "primary_face",
+          weight: 1,
+          selectionReason: "primary_identity_anchor",
+        },
+        {
+          mediaAssetId: secondIdentityReferenceId,
+          role: "identity_reference",
+          weight: 0.75,
+          selectionReason: "supporting_identity_angle",
+        },
+      ],
+    });
+    const mediaListWithIncompatibleReferenceCardinality = await api(
+      "GET",
+      "media",
+      {
+        userId,
+        ageGate: true,
+        query: { type: "image" },
+      },
+    );
+    expectOk(mediaListWithIncompatibleReferenceCardinality);
+    expect(
+      mediaListWithIncompatibleReferenceCardinality.data.items.find(
+        (item: { id: string }) => item.id === mediaId,
+      ),
+    ).toMatchObject({ imageEditModelIds: [] });
     await prisma.mediaAsset.update({
       where: { id: mediaId },
       data: { deletedAt: new Date() },

@@ -482,6 +482,16 @@ describe("public API runtime contracts", () => {
                 maxCount: 4,
               },
             ],
+            editModels: [
+              {
+                id: "character-image-variation-darkbeast",
+                label: "Dark Beast · Identity Focus",
+                costMultiplier: 1.2,
+                entitlement: null,
+                maxCount: 1,
+                referenceMode: "identity_source",
+              },
+            ],
             recipes: [
               {
                 id: "image-character",
@@ -521,8 +531,13 @@ describe("public API runtime contracts", () => {
             ],
           },
         },
-      }).viewer.authenticated,
-    ).toBe(false);
+      }).image.editModels,
+    ).toEqual([
+      expect.objectContaining({
+        id: "character-image-variation-darkbeast",
+        referenceMode: "identity_source",
+      }),
+    ]);
 
     expect(() =>
       parseGenerationConfigResponse({
@@ -796,6 +811,45 @@ describe("public API runtime contracts", () => {
       costDreamcoins: 8,
       balance: 20,
     });
+  });
+
+  it("validates the per-source image-edit model projection", () => {
+    const payload = {
+      ok: true,
+      data: {
+        items: [
+          {
+            id: "media-1",
+            characterId: "character-1",
+            type: "image",
+            url: "/media-1.png",
+            thumbnailUrl: "/media-1-thumb.png",
+            prompt: null,
+            liked: false,
+            imageEditModelIds: [
+              "character-image-variation-darkbeast",
+            ],
+          },
+        ],
+      },
+    };
+
+    expect(
+      parseWorkspaceMediaResponse(payload).items[0]?.imageEditModelIds,
+    ).toEqual(["character-image-variation-darkbeast"]);
+    expect(() =>
+      parseWorkspaceMediaResponse({
+        ...payload,
+        data: {
+          items: [
+            {
+              ...payload.data.items[0],
+              imageEditModelIds: [""],
+            },
+          ],
+        },
+      }),
+    ).toThrow(PublicApiContractError);
   });
 
   it("rejects malformed generation, profile, and chat collection members", () => {

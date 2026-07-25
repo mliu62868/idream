@@ -71,6 +71,7 @@ type MediaItem = {
   isSynthetic?: boolean;
   canEditIdentity?: boolean;
   visualProfileId?: string | null;
+  imageEditModelIds?: readonly string[];
   visualProfileVersion?: number | null;
   identity?: {
     selectedAsCharacterImage?: boolean;
@@ -191,6 +192,8 @@ type GeneratorModelSelection = {
 type GeneratorModelOption = {
   readonly id: string;
   readonly label: string;
+  readonly orientations?: readonly string[];
+  readonly referenceMode?: "source_only" | "identity_source";
 };
 
 export function projectGeneratorModelSelection(
@@ -211,6 +214,15 @@ export function projectGeneratorModelSelection(
         requestModelId: undefined,
         selectValue: "",
       };
+}
+
+export function generatorImageEditModelOptions(
+  models: readonly GeneratorModelOption[],
+  compatibleModelIds: readonly string[] | null,
+) {
+  if (compatibleModelIds === null) return models;
+  const compatible = new Set(compatibleModelIds);
+  return models.filter((model) => compatible.has(model.id));
 }
 
 export function generatorRouteAfterRemixExit(
@@ -465,9 +477,31 @@ export function GeneratorWorkspace() {
     mode === "image" && imageWorkflow === "image-edit";
   const characterImageMode =
     mode === "image" && !freeplay && !imageEditMode;
+  const selectedEditSourceForModel = editSourceMediaId
+    ? media.find((item) => item.id === editSourceMediaId) ?? null
+    : null;
   const availableModels = useMemo(
-    () => (mode === "video" && videoModeEnabled ? (config?.video.models ?? []) : (config?.image.models ?? [])),
-    [config, mode, videoModeEnabled],
+    () => {
+      if (mode === "video" && videoModeEnabled) {
+        return config?.video.models ?? [];
+      }
+      if (imageEditMode) {
+        return generatorImageEditModelOptions(
+          config?.image.editModels ?? [],
+          selectedEditSourceForModel
+            ? (selectedEditSourceForModel.imageEditModelIds ?? [])
+            : null,
+        );
+      }
+      return config?.image.models ?? [];
+    },
+    [
+      config,
+      imageEditMode,
+      mode,
+      selectedEditSourceForModel,
+      videoModeEnabled,
+    ],
   );
   const modelSelectionProjection = useMemo(
     () => projectGeneratorModelSelection(modelSelection, availableModels),
@@ -856,7 +890,11 @@ export function GeneratorWorkspace() {
       }
       setModelSelection((current) =>
         current.explicit &&
-        data.image.models.some((item) => item.id === current.id)
+        [
+          ...data.image.models,
+          ...data.image.editModels,
+          ...data.video.models,
+        ].some((item) => item.id === current.id)
           ? current
           : { id: "", explicit: false },
       );
@@ -937,7 +975,10 @@ export function GeneratorWorkspace() {
           signal: controller.signal,
           body: JSON.stringify(
             imageEditMode
-              ? { consistencyMode }
+              ? {
+                  consistencyMode,
+                  model: modelSelectionProjection.requestModelId,
+                }
               : {
                   mode,
                   characterId: freeplay ? undefined : characterId,
@@ -1962,6 +2003,7 @@ export function GeneratorWorkspace() {
         mediaId: item.id,
         outputCount: options?.outputCount ?? 1,
         consistencyMode,
+        model: modelSelectionProjection.requestModelId,
         quote: options?.quote,
         idempotencyKeys: variationSubmissionIdempotencyKeysRef.current,
       });
@@ -2319,6 +2361,9 @@ export function GeneratorWorkspace() {
                     }`}
                     key={item}
                     onClick={() => {
+                      if (imageWorkflow !== item) {
+                        setModelSelection({ id: "", explicit: false });
+                      }
                       setImageWorkflow(item);
                       setStatus("");
                       if (item === "image-edit") {
@@ -2391,7 +2436,15 @@ export function GeneratorWorkspace() {
                           data-media-id={item.id}
                           data-testid="image-edit-source-card"
                           key={item.id}
-                          onClick={() => setEditSourceMediaId(item.id)}
+                          onClick={() => {
+                            if (item.id !== editSourceMediaId) {
+                              setModelSelection({
+                                id: "",
+                                explicit: false,
+                              });
+                            }
+                            setEditSourceMediaId(item.id);
+                          }}
                           type="button"
                         >
                           <Image
@@ -2651,10 +2704,11 @@ export function GeneratorWorkspace() {
               </label>
             )}
 
-            {!imageEditMode && !characterImageMode && (
+            {!characterImageMode && (
               <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
                 Model
                 <select
+                  aria-label="Model"
                   className="mt-2 h-11 w-full rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] font-semibold text-white outline-none"
                   disabled={!modeAvailable}
                   id="generator-model"
