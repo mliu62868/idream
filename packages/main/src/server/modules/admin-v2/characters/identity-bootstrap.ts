@@ -19,6 +19,7 @@ import {
   hasHydratableMediaBlobAuthority,
   isMediaAssetOperationalForAuthority,
 } from "@/server/lib/media-asset-authority";
+import { buildEditorialPortraitIdentity } from "./image-readiness-repair";
 
 function record(value: Prisma.JsonValue | null | undefined): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -26,20 +27,8 @@ function record(value: Prisma.JsonValue | null | undefined): Record<string, unkn
     : {};
 }
 
-function stringArray(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
-    : [];
-}
-
 function text(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
-}
-
-function visualStyle(value: unknown): "realistic" | "anime" | "hybrid" | "other" {
-  return value === "realistic" || value === "anime" || value === "hybrid"
-    ? value
-    : "other";
 }
 
 export async function bootstrapCharacterIdentity(input: {
@@ -196,38 +185,22 @@ export async function bootstrapCharacterIdentity(input: {
   }
 
   const persona = record(content.personaSnapshot);
-  const appearance = record(content.appearanceSnapshot);
-  const identityAnchor = text(appearance.identityAnchor) || text(persona.description) || character.description;
-  const stableTraits = stringArray(appearance.stableTraits);
-  const referenceDirection = text(appearance.referenceDirection);
-  const style = visualStyle(appearance.style || character.style);
-  const identityPrompt = [
-    identityAnchor,
-    stableTraits.length > 0 ? `Stable traits: ${stableTraits.join(", ")}` : "",
-    referenceDirection ? `Visual direction: ${referenceDirection}` : "",
-  ].filter(Boolean).join(". ");
-  const negativeIdentityPrompt = [
-    "different person",
-    "identity drift",
-    "multiple people",
-    "duplicate face",
-    "text",
-    "watermark",
-    "contact sheet",
-  ].join(", ");
-  const faceTraits = {
-    identityAnchor,
-    stableTraits,
-  };
-  const hairTraits = {};
-  const bodyTraits = {};
-  const signatureTraits = {
-    referenceDirection,
-  };
-  const styleTraits = {
+  const {
     style,
+    identityPrompt,
+    negativeIdentityPrompt,
+    faceTraits,
+    hairTraits,
+    bodyTraits,
+    signatureTraits,
+    styleTraits,
+  } = buildEditorialPortraitIdentity({
     characterName: text(persona.name) || character.name,
-  };
+    characterStyle: character.style,
+    appearanceSnapshot: content.appearanceSnapshot,
+    narrativeDescription:
+      text(persona.description) || character.description,
+  });
   const profileSnapshot = {
     version: bootstrapAuthority.nextVersion,
     style,

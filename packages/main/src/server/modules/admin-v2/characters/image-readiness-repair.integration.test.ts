@@ -17,8 +17,10 @@ import {
 } from "@/server/modules/ourdream/public-catalog-qualification";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import {
+  buildEditorialPortraitIdentity,
   prepareCharacterImageReadinessSource,
   repairCharacterImageReadiness,
+  repairLegacyEditorialVisualIdentity,
 } from "./image-readiness-repair";
 import { getCharacterWorkspace } from "./workspace";
 
@@ -31,6 +33,35 @@ describe("Character image-readiness repair", () => {
   const idempotencyKey = `image-readiness-repair-${suffix}`;
   let releaseId = "";
   let projectId = "";
+
+  it("never turns narrative copy into the visual identity prompt", () => {
+    const identity = buildEditorialPortraitIdentity({
+      characterName: "Alexa Reeves",
+      characterStyle: "realistic",
+      appearanceSnapshot: {},
+      narrativeDescription:
+        "Three guys. One girl. A yacht. She knows what she's walking into.",
+    });
+
+    expect(identity.identityPrompt).toContain(
+      "Preserve the exact same adult person shown in the canonical identity portrait",
+    );
+    expect(identity.identityPrompt).not.toContain(
+      "Three guys. One girl. A yacht.",
+    );
+    expect(identity.faceTraits).toMatchObject({
+      canonicalPortraitAuthority: true,
+      stableTraits: [],
+      source: "canonical_portrait",
+    });
+    expect(identity.faceTraits.preservedDimensions).toContain(
+      "facial geometry",
+    );
+    expect(identity.hairTraits.preservedDimensions).toContain("hairline");
+    expect(identity.bodyTraits.preservedDimensions).toContain(
+      "body proportions",
+    );
+  });
 
   beforeAll(async () => {
     await prisma.user.create({
@@ -592,6 +623,83 @@ describe("Character image-readiness repair", () => {
     expect(await prisma.characterVisualProfile.count({
       where: { characterId },
     })).toBe(1);
+  });
+
+  it("repairs a legacy editorial narrative prompt by minting a new immutable version", async () => {
+    const legacy = await prisma.characterVisualProfile.findFirstOrThrow({
+      where: { characterId, status: "active" },
+    });
+    await prisma.characterVisualProfile.update({
+      where: { id: legacy.id },
+      data: {
+        identityPrompt:
+          "Three guys. One girl. A yacht. She knows what she's walking into.",
+        faceTraits: {
+          identityAnchor:
+            "Three guys. One girl. A yacht. She knows what she's walking into.",
+          stableTraits: [],
+        },
+      },
+    });
+
+    const repaired = await prisma.$transaction((tx) =>
+      repairLegacyEditorialVisualIdentity({
+        characterId,
+        actorId,
+        requestId: `legacy-editorial-repair-${suffix}`,
+        tx,
+      })
+    );
+
+    expect(repaired).toMatchObject({
+      state: "repaired",
+      previousVisualProfileId: legacy.id,
+      visualProfileVersion: legacy.version + 1,
+    });
+    const active = await prisma.characterVisualProfile.findFirstOrThrow({
+      where: { characterId, status: "active" },
+      include: {
+        referenceSetRevisions: {
+          where: { status: "active" },
+          include: { references: true },
+        },
+      },
+    });
+    expect(active.identityPrompt).toContain(
+      "Preserve the exact same adult person shown in the canonical identity portrait",
+    );
+    expect(active.identityPrompt).not.toContain("Three guys. One girl.");
+    expect(active).toMatchObject({
+      version: legacy.version + 1,
+      evidenceState: "qualified",
+      createdFrom: `editorial_visual_identity_repair:${legacy.id}`,
+      anchorAssetIds: [assetId],
+      referenceAssetIds: [assetId],
+      hairTraits: {
+        source: "canonical_portrait",
+      },
+      bodyTraits: {
+        source: "canonical_portrait",
+      },
+    });
+    expect(active.referenceSetRevisions[0]?.references).toMatchObject([
+      { mediaAssetId: assetId, role: "primary_face" },
+    ]);
+    await expect(prisma.characterVisualProfile.findUniqueOrThrow({
+      where: { id: legacy.id },
+    })).resolves.toMatchObject({ status: "archived" });
+
+    await expect(prisma.$transaction((tx) =>
+      repairLegacyEditorialVisualIdentity({
+        characterId,
+        actorId,
+        requestId: `legacy-editorial-repair-replay-${suffix}`,
+        tx,
+      })
+    )).resolves.toMatchObject({
+      state: "already_repaired",
+      visualProfileId: active.id,
+    });
   });
 
   it("fails closed when the portrait changes before the authority lock is acquired", async () => {

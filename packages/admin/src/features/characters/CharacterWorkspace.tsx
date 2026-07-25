@@ -32,7 +32,10 @@ import {
 } from "@/features/characters/CharacterAssetStudio";
 import { CharacterCreateWizard } from "@/features/characters/CharacterCreateWizard";
 import { CharacterVoicePanel } from "@/features/characters/CharacterVoicePanel";
-import { VisualIdentityExperimentWorkbench } from "@/features/characters/VisualIdentityExperimentWorkbench";
+import {
+  VisualIdentityExperimentWorkbench,
+  type ActivateIdentityCandidateInput,
+} from "@/features/characters/VisualIdentityExperimentWorkbench";
 import { apiWrite } from "@/components/admin/api";
 import { CollaborationPanel } from "@/features/collaboration/CollaborationPanel";
 import {
@@ -1531,7 +1534,7 @@ function ProjectEditor({ data, onNavigate, permissions, onReload, runCommittedMu
 }
 
 export type VisualIdentityPanelData = Pick<CharacterWorkspaceDetail, "visual"> & {
-  character: Pick<CharacterWorkspaceDetail["character"], "id" | "style" | "imageUrl">;
+  character: Pick<CharacterWorkspaceDetail["character"], "id" | "name" | "style" | "imageUrl">;
 };
 
 export function uniqueAvailableVisualAssets<
@@ -1723,6 +1726,30 @@ export function VisualIdentityPanel({ data, navigateToTab, permissions, runCommi
     }
   };
 
+  const activateIdentityCandidate = async (
+    body: ActivateIdentityCandidateInput,
+  ) => {
+    const requestIdentity = stableIdempotencyKey(
+      "activate-identity-candidate",
+      body,
+    );
+    await runCommittedMutation({
+      action: "Identity candidate activation",
+      commit: () => apiWrite(
+        `/api/v1/admin/content/characters/${data.character.id}/visual-profiles`,
+        "POST",
+        body,
+        {
+          "idempotency-key": requestIdentity.key,
+          "x-request-id": crypto.randomUUID(),
+        },
+      ),
+      afterRefresh: () => {
+        delete idempotencyKeys.current[requestIdentity.signature];
+      },
+    });
+  };
+
   const evaluateRoute = async () => {
     setBusy("qualification");
     setError(null);
@@ -1891,9 +1918,11 @@ export function VisualIdentityPanel({ data, navigateToTab, permissions, runCommi
   const publishedAssets = [...data.visual.anchors, ...(data.visual.activeReferenceSet?.references ?? [])];
   return <div className="space-y-5">
     <VisualIdentityExperimentWorkbench
+      canActivate={permissions.writeVisual}
       canCreate={permissions.createAssets ?? false}
       canReview={permissions.reviewAssets ?? false}
       data={data}
+      onActivateCandidate={activateIdentityCandidate}
     />
     <details className="rounded-xl border border-[var(--ad-border)] bg-black/[0.015]">
       <summary className="cursor-pointer px-4 py-4 text-sm font-semibold sm:px-5">

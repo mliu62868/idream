@@ -41,6 +41,7 @@
     "admin:backfill:characters": "tsx src/processes/admin-character-backfill.ts",
     "admin:backfill:operations": "tsx src/processes/admin-production-backfill.ts",
     "admin:backfill:generation-attempt-events": "tsx src/processes/generation-attempt-event-backfill.ts",
+    "admin:repair:editorial-visual-identities": "tsx src/scripts/repair-editorial-visual-identities.ts",
     "metrics:backfill": "tsx src/scripts/metrics-backfill.ts",
     "metrics:refresh": "tsx src/scripts/metrics-refresh.ts",
     "admin:readiness:load": "tsx src/scripts/admin-production-like-readiness.ts",

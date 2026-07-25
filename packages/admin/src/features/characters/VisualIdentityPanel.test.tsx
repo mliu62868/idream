@@ -9,7 +9,7 @@ import {
 } from "./CharacterWorkspace";
 
 const data = {
-  character: { id: "character-1", style: "realistic", imageUrl: null },
+  character: { id: "character-1", name: "Mira", style: "realistic", imageUrl: null },
   visual: {
     activeIdentity: {
       id: "identity-2", version: 2, status: "active", style: "realistic",

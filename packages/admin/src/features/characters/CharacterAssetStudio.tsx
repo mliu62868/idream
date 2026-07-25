@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  CHARACTER_IDENTITY_APPROVAL_MIN_SCORE,
   adminMutationRecoveryVerificationSchema,
   characterDraftImageSelectionRequestSchema,
   characterDraftImageSelectionResultSchema,
@@ -613,6 +614,33 @@ export function isCharacterIdentityAuthorityReady(input: {
     !input.blockerCodes.some((code) => identityAuthorityBlockerCodes.has(code));
 }
 
+export function isCharacterAssetApprovalActionable(input: {
+  readonly bootstrapIdentity: boolean;
+  readonly decision: string | null;
+  readonly identityConsistency: string | null;
+  readonly score: number | null;
+  readonly quality: {
+    readonly artifactFree: boolean;
+    readonly singleSubject: boolean;
+    readonly intentMatch: boolean;
+    readonly noVisibleText: boolean;
+  } | null;
+}) {
+  if (input.decision !== "approved") return false;
+  if (
+    input.identityConsistency !==
+      (input.bootstrapIdentity ? "unscored" : "passed")
+  ) return false;
+  if (!input.quality || Object.values(input.quality).some((passed) => !passed)) {
+    return false;
+  }
+  return input.bootstrapIdentity ||
+    (
+      typeof input.score === "number" &&
+      input.score >= CHARACTER_IDENTITY_APPROVAL_MIN_SCORE
+    );
+}
+
 function ImageProductionReadinessCard({
   blockers,
   canRepair,
@@ -787,7 +815,9 @@ function IdentityRail({
           </div>
           <p className="mt-1 line-clamp-1 text-xs text-[var(--ad-text-muted)]">
             {identityEstablished
-              ? t("Identity, references, and route are protected for this batch.")
+              ? qualifiedRoute
+                ? t("Identity, references, and route are protected for this batch.")
+                : t("Identity and references are locked; the generation route is not qualified yet.")
               : bootstrapMode && bootstrapProfile
                 ? t("This batch will establish the first reviewed identity anchor.")
                 : t("Visual authority must be repaired before production can continue.")}
@@ -1561,14 +1591,13 @@ export function CharacterAssetStudio({
       isDraftAuthority: isDraftAuthorityAsset,
     }),
   );
-  const isApprovedItem = selectedItem?.review?.decision === "approved" && (
-    bootstrapMode
-      ? selectedItem.review.identityConsistency === "unscored"
-      : selectedItem.review.identityConsistency === "passed"
-  ) && Boolean(
-    selectedItem.review.quality &&
-    Object.values(selectedItem.review.quality).every(Boolean),
-  );
+  const isApprovedItem = isCharacterAssetApprovalActionable({
+    bootstrapIdentity: bootstrapMode,
+    decision: selectedItem?.review?.decision ?? null,
+    identityConsistency: selectedItem?.review?.identityConsistency ?? null,
+    score: selectedItem?.review?.score ?? null,
+    quality: selectedItem?.review?.quality ?? null,
+  });
   const decisionActionLabel = isSelectedAsset
     ? firstIncompleteCharacterAssetPurpose(currentDraftAssetPack, true) === activePurpose
       ? "Selected · preview"
@@ -1591,7 +1620,9 @@ export function CharacterAssetStudio({
     reviewDraft.score.trim().length > 0 &&
     reviewDraft.reason.trim().length >= 3 &&
     Number.isInteger(Number(reviewDraft.score)) &&
-    Number(reviewDraft.score) >= 0 &&
+    Number(reviewDraft.score) >= (
+      bootstrapMode ? 0 : CHARACTER_IDENTITY_APPROVAL_MIN_SCORE
+    ) &&
     Number(reviewDraft.score) <= 100 &&
     Object.values(reviewDraft.quality).every(Boolean);
   const rejectionEvidenceReady = reviewDraft.reason.trim().length >= 3;
@@ -2488,10 +2519,18 @@ export function CharacterAssetStudio({
     if (refreshWarning) return null;
     if (!activeRunDetail || !selectedItem) return null;
     const numericScore = reviewDraft.score.trim() ? Number(reviewDraft.score) : undefined;
-    const validScore = numericScore !== undefined && Number.isInteger(numericScore) && numericScore >= 0 && numericScore <= 100;
+    const validScore =
+      numericScore !== undefined &&
+      Number.isInteger(numericScore) &&
+      numericScore >= (
+        bootstrapMode ? 0 : CHARACTER_IDENTITY_APPROVAL_MIN_SCORE
+      ) &&
+      numericScore <= 100;
     if (reviewDraft.reason.trim().length < 3 || (decision === "approved" && !validScore)) {
       setError(decision === "approved"
-        ? "Approval requires an integer score from 0 to 100 and concrete visible evidence."
+        ? bootstrapMode
+          ? "Approval requires an integer score from 0 to 100 and concrete visible evidence."
+          : `Approval requires an identity match score from ${CHARACTER_IDENTITY_APPROVAL_MIN_SCORE} to 100 and concrete visible evidence.`
         : "Rejection requires a concrete visible reason.");
       return null;
     }
@@ -3260,11 +3299,17 @@ export function CharacterAssetStudio({
                   </fieldset>
                   <div className="mt-3 grid grid-cols-2 gap-2">
                     <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
-                      {t("Score")}
+                      {bootstrapMode
+                        ? t("Quality score")
+                        : t("Identity match score ({minimum}–100 required)", {
+                            minimum: CHARACTER_IDENTITY_APPROVAL_MIN_SCORE,
+                          })}
                       <input
                         className={`${fieldClass} mt-1`}
                         max={100}
-                        min={0}
+                        min={bootstrapMode
+                          ? 0
+                          : CHARACTER_IDENTITY_APPROVAL_MIN_SCORE}
                         onChange={(event) => updateReviewDraft((current) => ({
                           ...current,
                           score: event.target.value,

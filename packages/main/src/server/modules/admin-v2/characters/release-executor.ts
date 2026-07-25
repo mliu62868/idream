@@ -21,7 +21,7 @@ import {
   isCharacterReleaseTransitionAllowed,
   isCharacterServingTransitionAllowed,
 } from "../shared/state-transition-authority";
-import { creativeReviewQualityPassed } from "../shared/creative-review-quality";
+import { characterIdentityReviewEvidencePassed } from "../shared/creative-review-quality";
 import {
   characterQaAuthorityMatches,
   characterQaProvenanceMatchesRun,
@@ -499,9 +499,13 @@ export async function validateCharacterReleaseSnapshot(
       !decision ||
       decision.id !== placement.reviewDecisionId ||
       decision.artifactId !== placement.assetId ||
-      decision.decision !== "approved" ||
-      decision.identityConsistency !== (placement.bootstrapIdentity ? "unscored" : "passed") ||
-      !creativeReviewQualityPassed(decision.evidence)
+      !characterIdentityReviewEvidencePassed({
+        bootstrapIdentity: placement.bootstrapIdentity,
+        decision: decision.decision,
+        identityConsistency: decision.identityConsistency,
+        score: decision.score,
+        evidence: decision.evidence,
+      })
       ? [placement.slotKey]
       : [];
   });

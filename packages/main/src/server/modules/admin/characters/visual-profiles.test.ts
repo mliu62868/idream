@@ -724,6 +724,183 @@ describe("Visual Passport (character visual profiles)", () => {
     expect(item.identityStale).toBe(false);
   });
 
+  it("promotes only a reviewed identity-calibration candidate into a new immutable identity", async () => {
+    const admin = await seedActor("admin", "candidate-promotion");
+    const characterId = `${P}char-candidate-promotion`;
+    const originalAssetId = `${P}image-candidate-original`;
+    const candidateAssetId = `${P}image-candidate-promoted`;
+    const runId = `${P}run-candidate-promotion`;
+    const itemId = `${P}item-candidate-promotion`;
+    const jobId = `${P}job-candidate-promotion`;
+    const decisionId = `${P}decision-candidate-promotion`;
+    await createMedia({ id: originalAssetId, ownerId: admin });
+    await createMedia({ id: candidateAssetId, ownerId: admin });
+    await createCharacter({
+      id: characterId,
+      name: "Candidate Promotion",
+      imageAssetId: originalAssetId,
+    });
+    await prisma.mediaAsset.updateMany({
+      where: { id: { in: [originalAssetId, candidateAssetId] } },
+      data: { characterId },
+    });
+    const original = await seedVisualProfile({
+      characterId,
+      version: 1,
+      status: "active",
+      identityPrompt: "Original identity",
+      anchorAssetIds: [originalAssetId],
+      referenceAssetIds: [originalAssetId],
+    });
+    await prisma.contentProductionBatch.create({
+      data: {
+        id: runId,
+        title: "Identity calibration candidate",
+        purpose: "identity_calibration",
+        targetType: "character",
+        targetId: characterId,
+        presetIds: [],
+        count: 1,
+        totalItems: 1,
+        completedItems: 1,
+        approvedItems: 1,
+        status: "completed",
+        lifecycleState: "closed",
+        workflowStage: "completed",
+        verificationState: "passed",
+        createdById: admin,
+      },
+    });
+    await prisma.contentProductionItem.create({
+      data: {
+        id: itemId,
+        batchId: runId,
+        mediaAssetId: candidateAssetId,
+        itemIndex: 0,
+        status: "approved",
+        tags: [],
+      },
+    });
+    await prisma.generationJob.create({
+      data: {
+        id: jobId,
+        userId: admin,
+        characterId,
+        mode: "image",
+        controls: {},
+        presetIds: [],
+        outputCount: 1,
+        deliveredOutputCount: 1,
+        seed: "42",
+        status: "completed",
+        sourceType: "content_production_item",
+        sourceId: itemId,
+        sourceMeta: {
+          batchId: runId,
+          purpose: "identity_calibration",
+          targetType: "character",
+          targetId: characterId,
+          identityExperiment: {
+            mode: "text_to_image",
+            positivePrompt: "A controlled candidate portrait",
+          },
+        },
+        model: "identity-candidate-test",
+        provider: "comfyui",
+        completedAt: new Date(),
+      },
+    });
+    await prisma.contentProductionItem.update({
+      where: { id: itemId },
+      data: { jobId },
+    });
+    await prisma.mediaAsset.update({
+      where: { id: candidateAssetId },
+      data: { sourceJobId: jobId },
+    });
+    await prisma.creativeReviewDecision.create({
+      data: {
+        id: decisionId,
+        runItemId: itemId,
+        artifactId: candidateAssetId,
+        decision: "approved",
+        identityConsistency: "unscored",
+        score: 97,
+        evidence: {
+          quality: {
+            artifactFree: true,
+            singleSubject: true,
+            intentMatch: true,
+            noVisibleText: true,
+          },
+        },
+        reason: "This candidate is the chosen identity definition",
+        reviewerId: admin,
+      },
+    });
+
+    const result = await call(createCharacterVisualProfile(
+      makeRequest("POST", `/${characterId}/visual-profiles`, {
+        userId: admin,
+        role: "admin",
+        body: {
+          identityPrompt:
+            "Preserve the exact person shown in the canonical portrait.",
+          faceTraits: {
+            canonicalPortraitAuthority: true,
+            stableTraits: ["oval face", "blue eyes"],
+          },
+          hairTraits: { stableTraits: ["dark wavy hair"] },
+          bodyTraits: { stableTraits: ["balanced adult proportions"] },
+          reason: "Activate the reviewed calibration candidate",
+          confirmation: confirmationFor(characterId),
+          candidateAuthority: {
+            runId,
+            itemId,
+            assetId: candidateAssetId,
+            reviewDecisionId: decisionId,
+          },
+        },
+      }),
+      characterId,
+    ));
+
+    expect(result.ok).toBe(true);
+    expect(result.data?.item).toMatchObject({
+      version: 2,
+      status: "active",
+      anchorAssetIds: [candidateAssetId],
+      referenceAssetIds: [candidateAssetId],
+      defaultSeed: "42",
+    });
+    await expect(prisma.characterVisualProfile.findUniqueOrThrow({
+      where: { id: original.id },
+    })).resolves.toMatchObject({ status: "archived" });
+    const promoted = await prisma.characterVisualProfile.findFirstOrThrow({
+      where: { characterId, status: "active" },
+      include: {
+        referenceSetRevisions: {
+          include: { references: true },
+        },
+        referenceCandidates: true,
+      },
+    });
+    expect(promoted).toMatchObject({
+      evidenceState: "reviewed_bootstrap",
+      createdFrom: `identity_calibration:${jobId}`,
+    });
+    expect(promoted.referenceSetRevisions[0]?.references[0]).toMatchObject({
+      mediaAssetId: candidateAssetId,
+      role: "primary_face",
+      qualityScore: 97,
+    });
+    expect(promoted.referenceCandidates[0]).toMatchObject({
+      mediaAssetId: candidateAssetId,
+      sourceJobId: jobId,
+      status: "promoted",
+    });
+  });
+
   it("flags a derived version as stale when its stored traits no longer match its stored hash", async () => {
     const admin = await seedActor("admin", "stale");
     const characterId = `${P}char-stale`;

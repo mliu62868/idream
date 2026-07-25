@@ -558,6 +558,12 @@ describe("Character first identity bootstrap authority", () => {
       evidenceState: "reviewed_bootstrap",
       createdFrom: `identity_bootstrap:${jobId}`,
     });
+    expect(profile.identityPrompt).toContain(
+      "Preserve the exact same adult person shown in the canonical identity portrait",
+    );
+    expect(profile.identityPrompt).not.toContain(
+      "A precise, warm late-night confidante.",
+    );
     expect(profile.immutableHash).toBe(characterVisualProfileSnapshotHash(profile));
     await expect(prisma.characterVisualProfile.findUniqueOrThrow({
       where: { id: legacyEmptyProfileId },

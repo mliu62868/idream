@@ -13,6 +13,7 @@ import {
 } from "../shared/state-transition-authority";
 import { resolveCommunityCampaignPlacements } from "@/server/modules/ourdream/community-campaigns";
 import {
+  CHARACTER_IDENTITY_APPROVAL_MIN_SCORE,
   creativeRunCreateOptionsSchema,
   creativeRunListResponseSchema,
   creativeRunQuerySchema,
@@ -701,6 +702,18 @@ export async function recordCreativeReviewDecision(input: {
         identityReviewMode === "defines_identity"
           ? "The first reviewed portrait defines identity and must keep identity consistency unscored"
           : "An identity-preserving Character asset can only be approved when identity consistency passes",
+      );
+    }
+    if (
+      input.decision === "approved" &&
+      identityReviewMode === "preserves_identity" &&
+      (
+        input.score === undefined ||
+        input.score < CHARACTER_IDENTITY_APPROVAL_MIN_SCORE
+      )
+    ) {
+      throw Errors.badRequest(
+        `Character asset approval requires an identity match score of at least ${CHARACTER_IDENTITY_APPROVAL_MIN_SCORE}`,
       );
     }
     if (!isCreativeRunItemTransitionAllowed(item.status, input.decision)) {

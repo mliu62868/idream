@@ -232,6 +232,70 @@ describe("Character Asset Studio bootstrap route projection", () => {
     expect(generate?.disabled).toBe(false);
   });
 
+  it("does not claim the generation route is locked when only identity evidence is ready", async () => {
+    const routeBlockedData = {
+      ...data,
+      character: {
+        ...data.character,
+        id: "character-route-blocked",
+        imageUrl: "/mira.webp",
+      },
+      visual: {
+        ...data.visual,
+        activeIdentity: {
+          id: "identity-mira-v1",
+          version: 1,
+          immutableHash: "identity-mira-v1-hash",
+        },
+        activeReferenceSet: {
+          id: "reference-set-mira-v1",
+          revision: 1,
+          status: "active",
+          references: [{
+            mediaAssetId: "mira-anchor",
+            role: "identity_anchor",
+            available: true,
+            url: "/mira.webp",
+            thumbnailUrl: null,
+          }],
+        },
+        routeQualifications: [],
+        identityBootstrap: {
+          state: "blocked_existing_authority",
+          allowed: false,
+          nextIdentityVersion: 2,
+          blockers: ["grounded_or_unknown_identity_history_exists"],
+          profile: null,
+        },
+        readiness: {
+          ...data.visual.readiness,
+          ready: false,
+          blockers: [{
+            code: "generation_route_unqualified",
+            message: "No qualified generation route exists.",
+          }],
+        },
+      },
+    } as unknown as CharacterWorkspaceDetail;
+
+    await act(async () => root.render(<CharacterAssetStudio
+      commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
+      data={routeBlockedData}
+      onContinue={() => undefined}
+      onProjectReload={async () => undefined}
+      permissions={{ read: true, create: true, review: true, selectDraft: true }}
+    />));
+    await waitUntil(() => container.textContent?.includes("Image production setup") === true);
+
+    expect(container.textContent).toContain(
+      "Identity and references are locked; the generation route is not qualified yet.",
+    );
+    expect(container.textContent).not.toContain(
+      "Identity, references, and route are protected for this batch.",
+    );
+    expect(container.textContent).toContain("Unavailable");
+  });
+
   it("explains live-portrait enablement and keeps a failed repair beside the action", async () => {
     const repairableData = {
       ...data,

@@ -13,6 +13,7 @@ import {
   characterSourceVariationBlockerMessage,
   characterAssetReadinessSummary,
   firstIncompleteCharacterAssetPurpose,
+  isCharacterAssetApprovalActionable,
   isCharacterIdentityAuthorityReady,
   nextCharacterAssetPurpose,
   resolveCharacterCandidateVisualState,
@@ -56,6 +57,33 @@ describe("Character Asset Studio flow", () => {
     expect(isCharacterIdentityAuthorityReady({
       hasIdentity: true,
       blockerCodes: ["generation_route_unqualified"],
+    })).toBe(true);
+  });
+
+  it("keeps a low-score identity-preserving approval out of draft authority", () => {
+    expect(isCharacterAssetApprovalActionable({
+      bootstrapIdentity: false,
+      decision: "approved",
+      identityConsistency: "passed",
+      score: 89,
+      quality: {
+        artifactFree: true,
+        singleSubject: true,
+        intentMatch: true,
+        noVisibleText: true,
+      },
+    })).toBe(false);
+    expect(isCharacterAssetApprovalActionable({
+      bootstrapIdentity: false,
+      decision: "approved",
+      identityConsistency: "passed",
+      score: 90,
+      quality: {
+        artifactFree: true,
+        singleSubject: true,
+        intentMatch: true,
+        noVisibleText: true,
+      },
     })).toBe(true);
   });
 

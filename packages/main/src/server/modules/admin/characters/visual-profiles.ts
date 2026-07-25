@@ -18,7 +18,11 @@
 //   - archive 旧 active 与创建新 active 必须在同一事务内完成。
 // EXAMPLE: GET .../visual-profiles → { items: [...] } version desc；
 //          POST { identityPrompt, reason, confirmation } → 铸 v(prev+1) active，旧 active → archived。
-import { z } from "zod";
+import {
+  characterVisualProfileCreateRequestSchema,
+  type CharacterVisualProfileCreateRequest,
+} from "@idream/shared/admin";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
@@ -36,32 +40,17 @@ import {
   traitsHashOf,
   type IdentityTraits,
 } from "@/server/modules/ourdream/identity-assembler";
-import { characterVisualProfileSnapshotHash } from "@/server/modules/admin-v2/characters/release-snapshot";
+import {
+  characterVisualProfileSnapshotHash,
+  referenceSetSnapshotHash,
+} from "@/server/modules/admin-v2/characters/release-snapshot";
 import {
   lockCharacterGenerationAuthority,
   lockCharacterMediaAssetAuthorities,
 } from "@/server/modules/admin-v2/characters/generation-authority-lock";
 import { invalidateCharacterDraftAssetPack } from "@/server/modules/admin-v2/characters/draft-asset-authority";
 import { isMediaAssetOperationalForAuthority } from "@/server/lib/media-asset-authority";
-
-const styleEnum = z.enum(["realistic", "anime", "hybrid", "other"]);
-const traitsRecordSchema = z.record(z.string(), z.unknown());
-
-const createVisualProfileSchema = z.object({
-  // 缺省时由 traits 派生（source: "derived"）；显式给出则原样存 + 标记 manual —— 运营意志优先，
-  // 修正漂移的机制是标记而非禁止（见 identity-assembler.ts SPEC）。
-  identityPrompt: z.string().trim().min(1).max(2_000).optional(),
-  negativeIdentityPrompt: z.string().trim().max(2_000).optional(),
-  style: styleEnum.optional(),
-  defaultSeed: z.string().trim().max(200).optional(),
-  faceTraits: traitsRecordSchema.optional(),
-  hairTraits: traitsRecordSchema.optional(),
-  bodyTraits: traitsRecordSchema.optional(),
-  signatureTraits: traitsRecordSchema.optional(),
-  styleTraits: traitsRecordSchema.optional(),
-  reason: z.string().trim().min(3).max(2_000),
-  confirmation: z.string().trim().min(1).max(200),
-});
+import { creativeReviewQualityPassed } from "@/server/modules/admin-v2/shared/creative-review-quality";
 
 // 注：faceTraits/hairTraits/bodyTraits/signatureTraits/styleTraits 额外纳入 select ——
 // 面板要求"当前 active 的 traits 只读 JSON 视图"，而这些字段正是 traits 本体。
@@ -102,6 +91,105 @@ function jsonStringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string")
     : [];
+}
+
+function jsonRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+async function reviewedIdentityCandidate(
+  tx: Prisma.TransactionClient,
+  input: {
+    readonly characterId: string;
+    readonly authority: NonNullable<
+      CharacterVisualProfileCreateRequest["candidateAuthority"]
+    >;
+  },
+) {
+  const item = await tx.contentProductionItem.findFirst({
+    where: {
+      id: input.authority.itemId,
+      batchId: input.authority.runId,
+      mediaAssetId: input.authority.assetId,
+    },
+    include: {
+      batch: true,
+      mediaAsset: true,
+      job: true,
+    },
+  });
+  const experiment = jsonRecord(item?.job?.sourceMeta).identityExperiment;
+  if (
+    !item ||
+    item.batch.purpose !== "identity_calibration" ||
+    item.batch.targetType !== "character" ||
+    item.batch.targetId !== input.characterId ||
+    item.status !== "approved" ||
+    !item.mediaAsset ||
+    item.mediaAsset.characterId !== input.characterId ||
+    item.mediaAsset.type !== "image" ||
+    item.mediaAsset.deletedAt !== null ||
+    item.mediaAsset.safetyStatus !== "passed" ||
+    !isMediaAssetOperationalForAuthority(item.mediaAsset.metadata) ||
+    !item.job ||
+    item.job.status !== "completed" ||
+    item.job.characterId !== input.characterId ||
+    item.job.sourceType !== "content_production_item" ||
+    item.job.sourceId !== item.id ||
+    item.mediaAsset.sourceJobId !== item.job.id ||
+    experiment === null ||
+    typeof experiment !== "object" ||
+    Array.isArray(experiment)
+  ) {
+    throw Errors.conflict(
+      "The selected image is not a completed identity-calibration candidate for this Character",
+      { deepLink: `/admin/characters/${input.characterId}?tab=visual` },
+    );
+  }
+  const decision = await tx.creativeReviewDecision.findFirst({
+    where: {
+      id: input.authority.reviewDecisionId,
+      runItemId: item.id,
+      artifactId: item.mediaAsset.id,
+    },
+  });
+  const latestDecision = await tx.creativeReviewDecision.findFirst({
+    where: { runItemId: item.id },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    select: { id: true },
+  });
+  if (
+    !decision ||
+    latestDecision?.id !== decision.id ||
+    decision.decision !== "approved" ||
+    decision.identityConsistency !== "unscored" ||
+    !creativeReviewQualityPassed(decision.evidence)
+  ) {
+    throw Errors.conflict(
+      "The identity candidate requires the latest approved identity-defining review with complete visible evidence",
+      { deepLink: `/admin/characters/${input.characterId}?tab=visual` },
+    );
+  }
+  const existingPromotion = await tx.referenceCandidate.findFirst({
+    where: {
+      mediaAssetId: item.mediaAsset.id,
+      sourceJobId: item.job.id,
+      status: "promoted",
+    },
+    select: { visualProfileId: true },
+  });
+  if (existingPromotion) {
+    throw Errors.conflict(
+      "This identity-calibration candidate has already been promoted",
+      {
+        visualProfileId: existingPromotion.visualProfileId,
+        deepLink: `/admin/characters/${input.characterId}?tab=visual`,
+      },
+    );
+  }
+  return { item, decision };
 }
 
 function visualProfileConfirmation(characterId: string): string {
@@ -176,7 +264,9 @@ export async function createCharacterVisualProfile(
   characterId: string,
 ): Promise<Response> {
   const actor = await actorWithPermission(request, "content.official.write");
-  const body = createVisualProfileSchema.parse(await jsonBody(request));
+  const body = characterVisualProfileCreateRequestSchema.parse(
+    await jsonBody(request),
+  );
   if (body.confirmation !== visualProfileConfirmation(characterId)) {
     throw Errors.badRequest("Confirmation did not match visual profile target");
   }
@@ -246,17 +336,20 @@ export async function createCharacterVisualProfile(
         ? jsonStringArray(discoveredActive.referenceAssetIds)
         : [];
     const discoveredFallbackImageAssetId =
+      !body.candidateAuthority &&
       discoveredAnchorAssetIds.length === 0 &&
       discoveredReferenceAssetIds.length === 0
         ? discoveredCharacter.imageAssetId
         : null;
-    const discoveredMediaAssetIds = [
-      ...new Set([
-        ...discoveredAnchorAssetIds,
-        ...discoveredReferenceAssetIds,
-        ...(discoveredFallbackImageAssetId ? [discoveredFallbackImageAssetId] : []),
-      ]),
-    ];
+    const discoveredMediaAssetIds = body.candidateAuthority
+      ? [body.candidateAuthority.assetId]
+      : [
+          ...new Set([
+            ...discoveredAnchorAssetIds,
+            ...discoveredReferenceAssetIds,
+            ...(discoveredFallbackImageAssetId ? [discoveredFallbackImageAssetId] : []),
+          ]),
+        ];
     await lockCharacterMediaAssetAuthorities(tx, discoveredMediaAssetIds);
 
     const character = await tx.character.findUnique({
@@ -300,16 +393,19 @@ export async function createCharacterVisualProfile(
         ? jsonStringArray(active.referenceAssetIds)
         : [];
     const fallbackImageAssetId =
+      !body.candidateAuthority &&
       activeAnchorAssetIds.length === 0 && inheritedReferenceAssetIds.length === 0
         ? character.imageAssetId
         : null;
-    const inheritedMediaAssetIds = [
-      ...new Set([
-        ...activeAnchorAssetIds,
-        ...inheritedReferenceAssetIds,
-        ...(fallbackImageAssetId ? [fallbackImageAssetId] : []),
-      ]),
-    ];
+    const inheritedMediaAssetIds = body.candidateAuthority
+      ? [body.candidateAuthority.assetId]
+      : [
+          ...new Set([
+            ...activeAnchorAssetIds,
+            ...inheritedReferenceAssetIds,
+            ...(fallbackImageAssetId ? [fallbackImageAssetId] : []),
+          ]),
+        ];
     const discoveredMediaAssetIdSet = new Set(discoveredMediaAssetIds);
     if (
       inheritedMediaAssetIds.some((assetId) => !discoveredMediaAssetIdSet.has(assetId))
@@ -395,11 +491,19 @@ export async function createCharacterVisualProfile(
         },
       );
     }
-    const inheritedAnchorAssetIds = activeAnchorAssetIds.length > 0
-      ? activeAnchorAssetIds
-      : fallbackImageAssetId
-        ? [fallbackImageAssetId]
-        : [];
+    const candidate = body.candidateAuthority
+      ? await reviewedIdentityCandidate(tx, {
+          characterId,
+          authority: body.candidateAuthority,
+        })
+      : null;
+    const inheritedAnchorAssetIds = candidate
+      ? [candidate.item.mediaAsset!.id]
+      : activeAnchorAssetIds.length > 0
+        ? activeAnchorAssetIds
+        : fallbackImageAssetId
+          ? [fallbackImageAssetId]
+          : [];
     if (inheritedAnchorAssetIds.length === 0 && inheritedReferenceAssetIds.length === 0) {
       throw Errors.conflict(
         "Establish a reviewed portrait anchor in Character Assets before creating identity versions",
@@ -414,7 +518,9 @@ export async function createCharacterVisualProfile(
     }
     // 锚点继承 active identity；参考图继承 active Reference Set 的当前运行权威。
     const anchorAssetIds = inheritedAnchorAssetIds;
-    const referenceAssetIds = inheritedReferenceAssetIds;
+    const referenceAssetIds = candidate
+      ? [candidate.item.mediaAsset!.id]
+      : inheritedReferenceAssetIds;
     const version = (active?.version ?? 0) + 1;
 
     const faceTraits = body.faceTraits ?? active?.faceTraits ?? {};
@@ -459,13 +565,25 @@ export async function createCharacterVisualProfile(
         styleTraits: toInputJson(styleTraits),
         anchorAssetIds: toInputJson(anchorAssetIds),
         referenceAssetIds: toInputJson(referenceAssetIds),
-        defaultSeed: body.defaultSeed ?? active?.defaultSeed ?? null,
+        defaultSeed:
+          body.defaultSeed ??
+          candidate?.item.job!.seed ??
+          active?.defaultSeed ??
+          null,
         adapterRefs: toInputJson({
           identity: {
             traitsHash,
             assemblerVersion: IDENTITY_ASSEMBLER_VERSION,
             source,
           },
+          ...(candidate ? {
+            identityCalibration: {
+              runId: candidate.item.batch.id,
+              itemId: candidate.item.id,
+              reviewDecisionId: candidate.decision.id,
+              generationJobId: candidate.item.job!.id,
+            },
+          } : {}),
         }),
         immutableHash: characterVisualProfileSnapshotHash({
           version,
@@ -480,11 +598,59 @@ export async function createCharacterVisualProfile(
           anchorAssetIds,
           referenceAssetIds,
         }),
-        evidenceState: "candidate",
-        createdFrom: "admin_passport_edit",
+        evidenceState: candidate ? "reviewed_bootstrap" : "candidate",
+        createdFrom: candidate
+          ? `identity_calibration:${candidate.item.job!.id}`
+          : "admin_passport_edit",
       },
       select: visualProfileSelect,
     });
+    if (candidate) {
+      const mediaAssetId = candidate.item.mediaAsset!.id;
+      const references = [{
+        mediaAssetId,
+        position: 0,
+        role: "primary_face",
+        weight: 1,
+      }];
+      const selectorVersion = "identity-calibration-v1";
+      const referenceSet = await tx.referenceSetRevision.create({
+        data: {
+          visualProfileId: created.id,
+          revision: 1,
+          status: "active",
+          selectorVersion,
+          createdFrom: `identity_calibration:${candidate.item.job!.id}`,
+          snapshotHash: referenceSetSnapshotHash({
+            visualProfileId: created.id,
+            revision: 1,
+            selectorVersion,
+            references,
+          }),
+          references: {
+            create: references.map((reference) => ({
+              ...reference,
+              selectorVersion,
+              selectionReason: body.reason,
+              qualityScore: candidate.decision.score,
+            })),
+          },
+        },
+      });
+      await tx.referenceCandidate.create({
+        data: {
+          visualProfileId: created.id,
+          mediaAssetId,
+          sourceJobId: candidate.item.job!.id,
+          proposedRole: "primary_face",
+          qualityScore: candidate.decision.score,
+          identityScore: null,
+          source: "identity_calibration",
+          status: "promoted",
+          promotedRevisionId: referenceSet.id,
+        },
+      });
+    }
     const invalidatedDraftAssets = await invalidateCharacterDraftAssetPack(tx, characterId);
     await tx.adminAuditLog.create({
       data: adminAuditData(request, actor, {
@@ -502,6 +668,7 @@ export async function createCharacterVisualProfile(
           visualProfileId: created.id,
           version: created.version,
           status: created.status,
+          candidateAuthority: body.candidateAuthority ?? null,
           draftAssetPackVersion: invalidatedDraftAssets?.nextVersion ?? null,
         },
       }),

@@ -299,6 +299,7 @@ describe.sequential("Character Asset Studio draft image authority", () => {
         supersedesDecisionId: legacyDecisionId,
         decision: "approved",
         identityConsistency: "passed",
+        score: 97,
         evidence: {
           quality: {
             artifactFree: true,
@@ -391,6 +392,7 @@ describe.sequential("Character Asset Studio draft image authority", () => {
           artifactId: fixture.assetId,
           decision: "approved",
           identityConsistency: "passed",
+          score: 97,
           evidence: { artifactFree: true, singleSubject: true, intentMatch: true, noVisibleText: true },
           reason: "Identity and placement intent match the character asset pack.",
           reviewerId: actorId,
@@ -427,6 +429,86 @@ describe.sequential("Character Asset Studio draft image authority", () => {
     await prisma.$disconnect();
   });
 
+  it("rejects a production asset approval below the identity evidence threshold", async () => {
+    const lowScoreRunId = `asset-studio-low-score-run-${suffix}`;
+    await prisma.contentProductionBatch.create({
+      data: {
+        id: lowScoreRunId,
+        title: "Low identity evidence",
+        purpose: "character_cover",
+        targetType: "character",
+        targetId: characterId,
+        presetIds: [],
+        count: 1,
+        totalItems: 1,
+        completedItems: 1,
+        status: "reviewing",
+        lifecycleState: "active",
+        workflowStage: "review",
+        verificationState: "pending",
+        createdById: actorId,
+      },
+    });
+    const lowScoreItemId = `asset-studio-low-score-item-${suffix}`;
+    await prisma.contentProductionItem.create({
+      data: {
+        id: lowScoreItemId,
+        batchId: lowScoreRunId,
+        itemIndex: 0,
+        status: "pending",
+        tags: [],
+      },
+    });
+    try {
+      await expect(recordCreativeReviewDecision({
+        runId: lowScoreRunId,
+        itemId: lowScoreItemId,
+        actor: { id: actorId, role: "admin" },
+        expectedVersion: 1,
+        decision: "approved",
+        identityConsistency: "passed",
+        score: 89,
+        quality: {
+          artifactFree: true,
+          singleSubject: true,
+          intentMatch: true,
+          noVisibleText: true,
+        },
+        reason: "The image looks clean but identity confidence is too low",
+        requestId: `asset-studio-low-score-${suffix}`,
+      })).rejects.toMatchObject({
+        status: 400,
+        message: expect.stringContaining("at least 90"),
+      });
+      const missingScoreError = await recordCreativeReviewDecision({
+        runId: lowScoreRunId,
+        itemId: lowScoreItemId,
+        actor: { id: actorId, role: "admin" },
+        expectedVersion: 1,
+        decision: "approved",
+        identityConsistency: "passed",
+        quality: {
+          artifactFree: true,
+          singleSubject: true,
+          intentMatch: true,
+          noVisibleText: true,
+        },
+        reason: "An approval without an identity score must fail closed",
+        requestId: `asset-studio-missing-score-${suffix}`,
+      }).catch((cause: unknown) => cause);
+      expect(missingScoreError).toMatchObject({ status: 400 });
+      expect(missingScoreError).toBeInstanceOf(Error);
+      expect((missingScoreError as Error).message).toContain("explicit score");
+    } finally {
+      await prisma.contentProductionItem.delete({
+        where: { id: lowScoreItemId },
+      });
+      await prisma.contentProductionBatch.delete({
+        where: { id: lowScoreRunId },
+      });
+    }
+  });
+
   it("rejects a superseded approval without changing the Character Project", async () => {
     await expect(selectCharacterDraftImage({
       characterId,
@@ -446,6 +528,41 @@ describe.sequential("Character Asset Studio draft image authority", () => {
       draftImageAssetId: null,
       draftAssetPack: {},
     });
+  });
+
+  it("rejects historical low-score approval before it can enter draft authority", async () => {
+    await prisma.creativeReviewDecision.update({
+      where: { id: decisionId },
+      data: { score: 89 },
+    });
+    try {
+      await expect(selectCharacterDraftImage({
+        characterId,
+        expectedProjectVersion: 1,
+        purpose: "character_cover",
+        runId,
+        itemId,
+        assetId: candidateAssetId,
+        reviewDecisionId: decisionId,
+        actor: { id: actorId, role: "admin" },
+        reason: "Low identity confidence must stay outside draft authority",
+        requestId: `asset-studio-low-score-select-${suffix}`,
+      })).rejects.toMatchObject({
+        status: 409,
+        message: expect.stringContaining("at least 90"),
+      });
+      await expect(prisma.characterProject.findUniqueOrThrow({
+        where: { id: projectId },
+      })).resolves.toMatchObject({
+        version: 1,
+        draftImageAssetId: null,
+      });
+    } finally {
+      await prisma.creativeReviewDecision.update({
+        where: { id: decisionId },
+        data: { score: 97 },
+      });
+    }
   });
 
   it("rejects an approved historical Run after Visual Identity authority changes", async () => {

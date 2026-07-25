@@ -1,11 +1,14 @@
-import { characterDraftImageSelectionResultSchema } from "@idream/shared/admin";
+import {
+  CHARACTER_IDENTITY_APPROVAL_MIN_SCORE,
+  characterDraftImageSelectionResultSchema,
+} from "@idream/shared/admin";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
-import { creativeReviewQualityPassed } from "@/server/modules/admin-v2/shared/creative-review-quality";
+import { characterIdentityReviewEvidencePassed } from "@/server/modules/admin-v2/shared/creative-review-quality";
 import {
   characterVisualProfileSnapshotHash,
   referenceSetSnapshotHash,
@@ -281,11 +284,17 @@ export async function selectCharacterDraftImage(input: {
     if (
       !decision ||
       latestDecision?.id !== decision.id ||
-      decision.decision !== "approved" ||
-      decision.identityConsistency !== "passed" ||
-      !creativeReviewQualityPassed(decision.evidence)
+      !characterIdentityReviewEvidencePassed({
+        bootstrapIdentity: false,
+        decision: decision.decision,
+        identityConsistency: decision.identityConsistency,
+        score: decision.score,
+        evidence: decision.evidence,
+      })
     ) {
-      throw Errors.conflict("Draft asset requires approved identity and visible quality evidence");
+      throw Errors.conflict(
+        `Draft asset requires approved identity evidence scored at least ${CHARACTER_IDENTITY_APPROVAL_MIN_SCORE} and complete visible quality evidence`,
+      );
     }
     const nextAssetPack = {
       ...draftAssetEntries(project.draftAssetPack),

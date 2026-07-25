@@ -9,7 +9,7 @@ import {
 } from "@idream/shared/gen-workflow";
 import { isMediaAssetOperationalForAuthority } from "@/server/lib/media-asset-authority";
 import { canonicalSha256 } from "../shared/canonical-json";
-import { creativeReviewQualityPassed } from "../shared/creative-review-quality";
+import { characterIdentityReviewEvidencePassed } from "../shared/creative-review-quality";
 import { generationWorkflowDescriptor } from "@/server/modules/admin/generation-catalog";
 import {
   characterDraftAssetPurposes,
@@ -367,9 +367,13 @@ export async function evaluateDraftAssetPackAuthority(
           sourceJob.sourceType === "content_production_item" &&
           sourceDecision &&
           sourceDecision.artifactId === sourceAsset.id &&
-          sourceDecision.decision === "approved" &&
-          sourceDecision.identityConsistency === "passed" &&
-          creativeReviewQualityPassed(sourceDecision.evidence)
+          characterIdentityReviewEvidencePassed({
+            bootstrapIdentity: false,
+            decision: sourceDecision.decision,
+            identityConsistency: sourceDecision.identityConsistency,
+            score: sourceDecision.score,
+            evidence: sourceDecision.evidence,
+          })
         );
       },
     );
@@ -466,10 +470,13 @@ export async function evaluateDraftAssetPackAuthority(
       !latestDecision ||
       latestDecision.id !== entry.reviewDecisionId ||
       latestDecision.artifactId !== entry.assetId ||
-      latestDecision.decision !== "approved" ||
-      latestDecision.identityConsistency !==
-        (entry.bootstrapIdentity ? "unscored" : "passed") ||
-      !creativeReviewQualityPassed(latestDecision.evidence) ||
+      !characterIdentityReviewEvidencePassed({
+        bootstrapIdentity: entry.bootstrapIdentity,
+        decision: latestDecision.decision,
+        identityConsistency: latestDecision.identityConsistency,
+        score: latestDecision.score,
+        evidence: latestDecision.evidence,
+      }) ||
       (!bootstrapAuthorityMatches && !qualifiedIdentityRouteMatches)
       ? [purpose]
       : [];

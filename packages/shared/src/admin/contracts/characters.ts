@@ -77,6 +77,71 @@ export const characterVisualIdentityStatusSchema = z.enum(["draft", "active", "a
 export const characterVisualReferenceSetStatusSchema = z.enum(["draft", "active", "superseded"]);
 export const characterVisualReferenceRoleSchema = z.enum(["primary_face", "identity_anchor", "identity_reference"]);
 export const generationRouteQualificationResultSchema = z.enum(["candidate", "qualified", "paused", "expired"]);
+export const CHARACTER_CANONICAL_PORTRAIT_IDENTITY_PROMPT =
+  "Preserve the exact same adult person shown in the canonical identity portrait, including facial geometry, eyes, nose, lips, skin tone, hairline, age presentation, body proportions, and signature marks";
+
+export const characterVisualProfileCreateRequestSchema = z
+  .object({
+    identityPrompt: z.string().trim().min(1).max(2_000).optional(),
+    negativeIdentityPrompt: z.string().trim().max(2_000).optional(),
+    style: characterVisualStyleSchema.optional(),
+    defaultSeed: z.string().trim().max(200).optional(),
+    faceTraits: z.record(z.string(), z.unknown()).optional(),
+    hairTraits: z.record(z.string(), z.unknown()).optional(),
+    bodyTraits: z.record(z.string(), z.unknown()).optional(),
+    signatureTraits: z.record(z.string(), z.unknown()).optional(),
+    styleTraits: z.record(z.string(), z.unknown()).optional(),
+    candidateAuthority: z
+      .object({
+        runId: adminIdSchema,
+        itemId: adminIdSchema,
+        assetId: adminIdSchema,
+        reviewDecisionId: adminIdSchema,
+      })
+      .strict()
+      .optional(),
+    reason: z.string().trim().min(3).max(2_000),
+    confirmation: z.string().trim().min(1).max(200),
+  })
+  .superRefine((value, context) => {
+    if (value.candidateAuthority && !value.identityPrompt) {
+      context.addIssue({
+        code: "custom",
+        path: ["identityPrompt"],
+        message:
+          "Activating an identity candidate requires an explicit visual identity prompt",
+      });
+    }
+    if (!value.candidateAuthority) return;
+    const requiredStructuredTraits = [
+      ["faceTraits", value.faceTraits],
+      ["hairTraits", value.hairTraits],
+      ["bodyTraits", value.bodyTraits],
+    ] as const;
+    for (const [path, traits] of requiredStructuredTraits) {
+      if (
+        !Array.isArray(traits?.stableTraits) ||
+        !traits.stableTraits.some(
+          (trait) => typeof trait === "string" && trait.trim().length > 0,
+        )
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: [path, "stableTraits"],
+          message:
+            "Activating an identity candidate requires structured face, hair, and body traits",
+        });
+      }
+    }
+    if (value.faceTraits?.canonicalPortraitAuthority !== true) {
+      context.addIssue({
+        code: "custom",
+        path: ["faceTraits", "canonicalPortraitAuthority"],
+        message:
+          "Activating an identity candidate must designate the reviewed portrait as canonical",
+      });
+    }
+  });
 
 export const generationRouteQualificationEvaluateRequestSchema = z
   .object({
@@ -1572,6 +1637,9 @@ export type CharacterVoiceActivationResponse = z.infer<
 >;
 export type CharacterReferenceSetPublishRequest = z.infer<typeof characterReferenceSetPublishRequestSchema>;
 export type CharacterLookArchiveRequest = z.infer<typeof characterLookArchiveRequestSchema>;
+export type CharacterVisualProfileCreateRequest = z.infer<
+  typeof characterVisualProfileCreateRequestSchema
+>;
 export type CharacterDraftImageSelectionRequest = z.infer<typeof characterDraftImageSelectionRequestSchema>;
 export type CharacterIdentityBootstrapRequest = z.infer<typeof characterIdentityBootstrapRequestSchema>;
 export type CharacterIdentityBootstrapResponse = z.infer<typeof characterIdentityBootstrapResponseSchema>;

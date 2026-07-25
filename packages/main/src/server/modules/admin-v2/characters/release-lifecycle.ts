@@ -19,7 +19,7 @@ import {
   isCharacterProjectPhaseTransitionAllowed,
   isCharacterReleaseTransitionAllowed,
 } from "../shared/state-transition-authority";
-import { creativeReviewQualityPassed } from "../shared/creative-review-quality";
+import { characterIdentityReviewEvidencePassed } from "../shared/creative-review-quality";
 import {
   lockCharacterGenerationAuthority,
   lockCharacterMediaAssetAuthorities,
@@ -378,9 +378,13 @@ export async function proposeCharacterRelease(input: {
         !latestDecision ||
         latestDecision.id !== entry.reviewDecisionId ||
         latestDecision.artifactId !== entry.assetId ||
-        latestDecision.decision !== "approved" ||
-        latestDecision.identityConsistency !== (entry.bootstrapIdentity ? "unscored" : "passed") ||
-        !creativeReviewQualityPassed(latestDecision.evidence) ||
+        !characterIdentityReviewEvidencePassed({
+          bootstrapIdentity: entry.bootstrapIdentity,
+          decision: latestDecision.decision,
+          identityConsistency: latestDecision.identityConsistency,
+          score: latestDecision.score,
+          evidence: latestDecision.evidence,
+        }) ||
         (!bootstrapAuthorityMatches && !qualifiedIdentityRouteMatches);
     });
     const unavailableReferenceMediaIds = referenceSet

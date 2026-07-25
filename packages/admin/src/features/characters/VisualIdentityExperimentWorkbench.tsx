@@ -2,11 +2,13 @@
 
 import Image from "next/image";
 import {
+  CHARACTER_CANONICAL_PORTRAIT_IDENTITY_PROMPT,
   creativeReviewDecisionResultSchema,
   creativeRunCreateRequestSchema,
   creativeRunCreateResultSchema,
   creativeRunDetailSchema,
   creativeRunListResponseSchema,
+  type CharacterVisualProfileCreateRequest,
   type CharacterWorkspaceDetail,
   type CreativeRun,
   type CreativeRunDetail,
@@ -28,8 +30,11 @@ import {
 import { cn } from "@/lib/utils";
 
 type VisualIdentityExperimentData = Pick<CharacterWorkspaceDetail, "visual"> & {
-  character: Pick<CharacterWorkspaceDetail["character"], "id" | "style" | "imageUrl">;
+  character: Pick<CharacterWorkspaceDetail["character"], "id" | "name" | "style" | "imageUrl">;
 };
+
+export type ActivateIdentityCandidateInput =
+  CharacterVisualProfileCreateRequest;
 
 type ExperimentMode = "text_to_image" | "image_to_image";
 type SeedStrategy = "random" | "locked" | "reuse_source";
@@ -65,14 +70,27 @@ function seedStrategyLabel(strategy: SeedStrategy) {
   return "每轮随机";
 }
 
+function identityTraitLines(value: string) {
+  return value
+    .split(/\r?\n|,/)
+    .map((trait) => trait.trim())
+    .filter(Boolean);
+}
+
 export function VisualIdentityExperimentWorkbench({
   data,
   canCreate,
   canReview,
+  canActivate,
+  onActivateCandidate,
 }: {
   data: VisualIdentityExperimentData;
   canCreate: boolean;
   canReview: boolean;
+  canActivate: boolean;
+  onActivateCandidate?: (
+    input: ActivateIdentityCandidateInput,
+  ) => Promise<void>;
 }) {
   const identity = data.visual.activeIdentity;
   const calibration = data.visual.identityCalibration ?? {
@@ -117,12 +135,29 @@ export function VisualIdentityExperimentWorkbench({
   const [runs, setRuns] = useState<CreativeRun[]>([]);
   const [selectedRun, setSelectedRun] = useState<CreativeRunDetail | null>(null);
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
-  const [busy, setBusy] = useState<"generate" | "review" | null>(null);
+  const [busy, setBusy] = useState<"generate" | "review" | "activate" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [proposalOpen, setProposalOpen] = useState(false);
   const [proposalReason, setProposalReason] = useState("");
+  const [proposalQuality, setProposalQuality] = useState({
+    artifactFree: false,
+    singleSubject: false,
+    intentMatch: false,
+    noVisibleText: false,
+  });
   const [proposalConfirmed, setProposalConfirmed] = useState(false);
+  const [activationOpen, setActivationOpen] = useState(false);
+  const [activationPrompt, setActivationPrompt] = useState(
+    `${data.character.name}. ${CHARACTER_CANONICAL_PORTRAIT_IDENTITY_PROMPT}.`,
+  );
+  const [activationFaceTraits, setActivationFaceTraits] = useState("");
+  const [activationHairTraits, setActivationHairTraits] = useState("");
+  const [activationBodyTraits, setActivationBodyTraits] = useState("");
+  const [activationSignatureTraits, setActivationSignatureTraits] =
+    useState("");
+  const [activationReason, setActivationReason] = useState("");
+  const [activationConfirmed, setActivationConfirmed] = useState(false);
   const idempotencyKeys = useRef(new Map<string, string>());
   const resolvedOrientation =
     selectedProfile?.allowedOrientations.includes(orientation)
@@ -361,7 +396,12 @@ export function VisualIdentityExperimentWorkbench({
   };
 
   const submitCandidate = async () => {
-    if (!selectedRun || !selectedItem?.asset || !proposalConfirmed) return;
+    if (
+      !selectedRun ||
+      !selectedItem?.asset ||
+      !proposalConfirmed ||
+      Object.values(proposalQuality).some((passed) => !passed)
+    ) return;
     const body = {
       entityVersion: selectedRun.version,
       ...(selectedItem.review
@@ -369,12 +409,7 @@ export function VisualIdentityExperimentWorkbench({
         : {}),
       decision: "approved" as const,
       identityConsistency: "unscored" as const,
-      quality: {
-        artifactFree: true,
-        singleSubject: true,
-        intentMatch: true,
-        noVisibleText: true,
-      },
+      quality: proposalQuality,
       reason: proposalReason.trim(),
     };
     const signature = `${selectedRun.id}:${selectedItem.id}:${JSON.stringify(body)}`;
@@ -399,9 +434,63 @@ export function VisualIdentityExperimentWorkbench({
       setProposalOpen(false);
       setProposalConfirmed(false);
       setProposalReason("");
+      setProposalQuality({
+        artifactFree: false,
+        singleSubject: false,
+        intentMatch: false,
+        noVisibleText: false,
+      });
       setNotice("候选身份已提交为不可变评审决定；激活身份版本仍需单独执行。");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "候选身份提交失败");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const activateCandidate = async () => {
+    if (
+      !selectedRun ||
+      !selectedItem?.asset ||
+      !selectedItem.review ||
+      !onActivateCandidate ||
+      !activationConfirmed
+    ) return;
+    setBusy("activate");
+    setError(null);
+    try {
+      await onActivateCandidate({
+        identityPrompt: activationPrompt.trim(),
+        faceTraits: {
+          canonicalPortraitAuthority: true,
+          stableTraits: identityTraitLines(activationFaceTraits),
+        },
+        hairTraits: {
+          stableTraits: identityTraitLines(activationHairTraits),
+        },
+        bodyTraits: {
+          stableTraits: identityTraitLines(activationBodyTraits),
+        },
+        signatureTraits: {
+          stableTraits: identityTraitLines(activationSignatureTraits),
+        },
+        reason: activationReason.trim(),
+        confirmation: `${data.character.id}:visual-profile`,
+        candidateAuthority: {
+          runId: selectedRun.id,
+          itemId: selectedItem.id,
+          assetId: selectedItem.asset.id,
+          reviewDecisionId: selectedItem.review.id,
+        },
+      });
+      setActivationOpen(false);
+      setActivationConfirmed(false);
+      setActivationReason("");
+      setNotice(
+        "已激活新的不可变视觉身份和 Reference Set；旧身份保留为历史版本，线上图片未自动替换。",
+      );
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "候选身份激活失败");
     } finally {
       setBusy(null);
     }
@@ -422,7 +511,19 @@ export function VisualIdentityExperimentWorkbench({
       )
     );
   const selectedApproved =
-    selectedItem?.review?.decision === "approved";
+    selectedItem?.review?.decision === "approved" &&
+    selectedItem.review.identityConsistency === "unscored" &&
+    Boolean(
+      selectedItem.review.quality &&
+      Object.values(selectedItem.review.quality).every(Boolean),
+    );
+  const selectedIsActiveIdentity = Boolean(
+    selectedItem?.asset &&
+    identity &&
+    data.visual.anchors.some(
+      (anchor) => anchor.mediaAssetId === selectedItem.asset?.id,
+    ),
+  );
 
   return (
     <section
@@ -798,6 +899,7 @@ export function VisualIdentityExperimentWorkbench({
                     onClick={() => {
                       setSelectedItemId(item.id);
                       setProposalOpen(false);
+                      setActivationOpen(false);
                     }}
                     type="button"
                   >
@@ -849,6 +951,20 @@ export function VisualIdentityExperimentWorkbench({
             >
               {selectedApproved ? "候选身份已提交" : "提交候选身份"}
             </WorkspaceButton>
+            {selectedApproved ? (
+              <WorkspaceButton
+                disabled={
+                  !canActivate ||
+                  !onActivateCandidate ||
+                  selectedIsActiveIdentity ||
+                  busy !== null
+                }
+                onClick={() => setActivationOpen((current) => !current)}
+                tone="primary"
+              >
+                {selectedIsActiveIdentity ? "当前活动身份" : "激活为新视觉身份"}
+              </WorkspaceButton>
+            ) : null}
           </div>
 
           {proposalOpen && selectedItem?.asset ? (
@@ -865,6 +981,33 @@ export function VisualIdentityExperimentWorkbench({
                   value={proposalReason}
                 />
               </label>
+              <fieldset className="mt-3 rounded-lg border border-[var(--ad-border)] p-3">
+                <legend className="px-1 text-xs font-semibold text-[var(--ad-text-muted)]">
+                  可见质量证据（逐项检查）
+                </legend>
+                {([
+                  ["artifactFree", "无明显瑕疵"],
+                  ["singleSubject", "只有一个主体"],
+                  ["intentMatch", "符合本轮身份设计意图"],
+                  ["noVisibleText", "画面没有可见文字"],
+                ] as const).map(([key, label]) => (
+                  <label
+                    className="mt-2 flex items-start gap-2 text-xs leading-5 first:mt-0"
+                    key={key}
+                  >
+                    <input
+                      checked={proposalQuality[key]}
+                      className="mt-1"
+                      onChange={(event) => setProposalQuality((current) => ({
+                        ...current,
+                        [key]: event.target.checked,
+                      }))}
+                      type="checkbox"
+                    />
+                    <span>{label}</span>
+                  </label>
+                ))}
+              </fieldset>
               <label className="mt-3 flex items-start gap-2 text-xs leading-5">
                 <input
                   checked={proposalConfirmed}
@@ -873,7 +1016,7 @@ export function VisualIdentityExperimentWorkbench({
                   type="checkbox"
                 />
                 <span>
-                  我已检查：无明显瑕疵、单一主体、符合提示、画面无可见文字。
+                  我确认以上逐项判断将作为不可变评审证据写入。
                 </span>
               </label>
               <div className="mt-4 flex flex-wrap gap-2">
@@ -881,6 +1024,7 @@ export function VisualIdentityExperimentWorkbench({
                   disabled={
                     busy !== null ||
                     proposalReason.trim().length < 3 ||
+                    Object.values(proposalQuality).some((passed) => !passed) ||
                     !proposalConfirmed
                   }
                   onClick={() => void submitCandidate()}
@@ -891,6 +1035,101 @@ export function VisualIdentityExperimentWorkbench({
                 <WorkspaceButton
                   disabled={busy !== null}
                   onClick={() => setProposalOpen(false)}
+                >
+                  取消
+                </WorkspaceButton>
+              </div>
+            </div>
+          ) : null}
+
+          {activationOpen && selectedApproved && selectedItem?.asset ? (
+            <div className="mt-4 rounded-xl border border-[var(--ad-ink)] bg-[var(--ad-surface)] p-4">
+              <h4 className="text-sm font-semibold">激活新的视觉身份版本</h4>
+              <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">
+                候选图将成为新身份的规范肖像和首个 Reference Set。这里填写的是跨场景保持不变的视觉身份，不是剧情、姿势、服装或场景提示词。
+              </p>
+              <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">
+                身份锁定描述
+                <textarea
+                  className={`${textAreaClass} mt-1 min-h-24`}
+                  onChange={(event) => setActivationPrompt(event.target.value)}
+                  value={activationPrompt}
+                />
+              </label>
+              <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">
+                脸部稳定特征（每行一个，必填）
+                <textarea
+                  className={`${textAreaClass} mt-1 min-h-20`}
+                  onChange={(event) => setActivationFaceTraits(event.target.value)}
+                  placeholder={"例如：椭圆脸\n蓝灰色杏眼\n窄鼻梁"}
+                  value={activationFaceTraits}
+                />
+              </label>
+              <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">
+                头发稳定特征（每行一个，必填）
+                <textarea
+                  className={`${textAreaClass} mt-1 min-h-20`}
+                  onChange={(event) => setActivationHairTraits(event.target.value)}
+                  placeholder={"例如：深棕色波浪长发\n中央分缝"}
+                  value={activationHairTraits}
+                />
+              </label>
+              <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">
+                身形稳定特征（每行一个，必填）
+                <textarea
+                  className={`${textAreaClass} mt-1 min-h-20`}
+                  onChange={(event) => setActivationBodyTraits(event.target.value)}
+                  placeholder={"例如：高挑身形\n肩腰比例"}
+                  value={activationBodyTraits}
+                />
+              </label>
+              <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">
+                标志特征（每行一个，可留空）
+                <textarea
+                  className={`${textAreaClass} mt-1 min-h-20`}
+                  onChange={(event) => setActivationSignatureTraits(event.target.value)}
+                  placeholder={"例如：左眼下方小痣"}
+                  value={activationSignatureTraits}
+                />
+              </label>
+              <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">
+                激活理由
+                <input
+                  className={`${fieldClass} mt-1`}
+                  onChange={(event) => setActivationReason(event.target.value)}
+                  value={activationReason}
+                />
+              </label>
+              <label className="mt-3 flex items-start gap-2 text-xs leading-5">
+                <input
+                  checked={activationConfirmed}
+                  className="mt-1"
+                  onChange={(event) => setActivationConfirmed(event.target.checked)}
+                  type="checkbox"
+                />
+                <span>
+                  我确认这段文字只描述人物身份；激活会归档旧身份、创建新 Reference Set，并使旧草稿图片失效。
+                </span>
+              </label>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <WorkspaceButton
+                  disabled={
+                    busy !== null ||
+                    activationPrompt.trim().length < 10 ||
+                    identityTraitLines(activationFaceTraits).length === 0 ||
+                    identityTraitLines(activationHairTraits).length === 0 ||
+                    identityTraitLines(activationBodyTraits).length === 0 ||
+                    activationReason.trim().length < 3 ||
+                    !activationConfirmed
+                  }
+                  onClick={() => void activateCandidate()}
+                  tone="primary"
+                >
+                  {busy === "activate" ? "正在激活…" : "确认激活新身份"}
+                </WorkspaceButton>
+                <WorkspaceButton
+                  disabled={busy !== null}
+                  onClick={() => setActivationOpen(false)}
                 >
                   取消
                 </WorkspaceButton>

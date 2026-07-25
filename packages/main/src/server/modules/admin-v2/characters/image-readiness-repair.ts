@@ -1,6 +1,7 @@
 import type { Prisma } from "@prisma/client";
-import type {
-  CharacterImageReadinessRepairRequest,
+import {
+  CHARACTER_CANONICAL_PORTRAIT_IDENTITY_PROMPT,
+  type CharacterImageReadinessRepairRequest,
 } from "@idream/shared/admin";
 import { env } from "@/server/lib/env";
 import { prisma } from "@/server/lib/db";
@@ -16,6 +17,7 @@ import {
   evaluateEditorialReleaseAuthorityInTransaction,
 } from "@/server/modules/ourdream/public-release-authority";
 import { draftAssetRouteEntries } from "./draft-asset-route-authority";
+import { invalidateCharacterDraftAssetPack } from "./draft-asset-authority";
 import {
   lockCharacterGenerationAndMediaAssetAuthorities,
 } from "./generation-authority-lock";
@@ -54,6 +56,103 @@ function visualStyle(value: unknown) {
   return ["realistic", "anime", "hybrid", "other"].includes(String(value))
     ? String(value)
     : "realistic";
+}
+
+export const EDITORIAL_VISUAL_IDENTITY_REPAIR_VERSION = 2;
+
+export function buildEditorialPortraitIdentity(input: {
+  readonly characterName: string;
+  readonly characterStyle: unknown;
+  readonly appearanceSnapshot: unknown;
+  /**
+   * Narrative copy is accepted only to make the trust boundary explicit:
+   * biography, premise, and scene text must never become visual identity.
+   */
+  readonly narrativeDescription?: string | null;
+}) {
+  const appearance = record(input.appearanceSnapshot);
+  const structuredAppearance = record(appearance.structured);
+  const identityAnchor = text(appearance.identityAnchor);
+  const stableTraits = stringArray(appearance.stableTraits);
+  const referenceDirection = text(appearance.referenceDirection);
+  const style = visualStyle(appearance.style || input.characterStyle);
+  const structuredFaceTraits = record(
+    appearance.faceTraits ?? structuredAppearance.faceTraits,
+  );
+  const structuredHairTraits = record(
+    appearance.hairTraits ?? structuredAppearance.hairTraits,
+  );
+  const structuredBodyTraits = record(
+    appearance.bodyTraits ?? structuredAppearance.bodyTraits,
+  );
+  const structuredSignatureTraits = record(
+    appearance.signatureTraits ?? structuredAppearance.signatureTraits,
+  );
+  const identityPrompt = [
+    input.characterName.trim(),
+    CHARACTER_CANONICAL_PORTRAIT_IDENTITY_PROMPT,
+    identityAnchor ? `Visual identity anchor: ${identityAnchor}` : "",
+    stableTraits.length > 0
+      ? `Stable visual traits: ${stableTraits.join(", ")}`
+      : "",
+  ].filter(Boolean).join(". ");
+
+  return {
+    style,
+    identityPrompt,
+    negativeIdentityPrompt: [
+      "different person",
+      "identity drift",
+      "changed facial geometry",
+      "changed age",
+      "changed skin tone",
+      "multiple people",
+      "duplicate face",
+      "text",
+      "watermark",
+      "contact sheet",
+    ].join(", "),
+    faceTraits: {
+      ...structuredFaceTraits,
+      ...(identityAnchor ? { identityAnchor } : {}),
+      canonicalPortraitAuthority: true,
+      stableTraits,
+      preservedDimensions: [
+        "facial geometry",
+        "eyes",
+        "nose",
+        "lips",
+        "skin tone",
+        "age presentation",
+      ],
+      source: "canonical_portrait",
+    },
+    hairTraits: {
+      ...structuredHairTraits,
+      preservedDimensions: [
+        "hairline",
+        "hair color",
+        "hair length",
+        "hair texture",
+      ],
+      source: "canonical_portrait",
+    },
+    bodyTraits: {
+      ...structuredBodyTraits,
+      preservedDimensions: ["body proportions", "silhouette"],
+      source: "canonical_portrait",
+    },
+    signatureTraits: {
+      ...structuredSignatureTraits,
+      ...(referenceDirection ? { referenceDirection } : {}),
+      preservedDimensions: ["visible signature marks"],
+      source: "canonical_portrait",
+    },
+    styleTraits: {
+      style,
+      characterName: input.characterName.trim(),
+    },
+  };
 }
 
 export type PreparedCharacterImageReadinessSource = {
@@ -114,6 +213,379 @@ export async function prepareCharacterImageReadinessSource(
     sourceAuthorityFingerprint: canonicalSha256(source.authority),
     storageKey,
     contentType,
+  };
+}
+
+export async function repairLegacyEditorialVisualIdentity(input: {
+  readonly characterId: string;
+  readonly actorId: string;
+  readonly requestId: string;
+  readonly tx: Prisma.TransactionClient;
+}) {
+  await lockCharacterGenerationAndMediaAssetAuthorities(
+    input.tx,
+    input.characterId,
+    [],
+  );
+  const discovered = await input.tx.characterVisualProfile.findFirst({
+    where: { characterId: input.characterId, status: "active" },
+    orderBy: { version: "desc" },
+    include: {
+      referenceSetRevisions: {
+        where: { status: "active" },
+        orderBy: { revision: "desc" },
+        take: 1,
+        include: {
+          references: { orderBy: { position: "asc" } },
+        },
+      },
+    },
+  });
+  if (!discovered) throw Errors.notFound("Active Visual Identity not found");
+  const discoveredAdapterRefs = record(discovered.adapterRefs);
+  if (discoveredAdapterRefs.authority !== "editorial_live_portrait") {
+    throw Errors.conflict(
+      "Only a legacy editorial portrait identity can use this repair",
+    );
+  }
+  const discoveredFaceTraits = record(discovered.faceTraits);
+  if (
+    discoveredFaceTraits.canonicalPortraitAuthority === true &&
+    record(discoveredAdapterRefs.identityPromptRepair).version ===
+      EDITORIAL_VISUAL_IDENTITY_REPAIR_VERSION
+  ) {
+    return {
+      state: "already_repaired" as const,
+      characterId: input.characterId,
+      visualProfileId: discovered.id,
+      visualProfileVersion: discovered.version,
+    };
+  }
+  const discoveredReferenceSet =
+    discovered.referenceSetRevisions[0] ?? null;
+  const discoveredAssetIds = [
+    ...new Set([
+      ...stringArray(discovered.anchorAssetIds),
+      ...(discoveredReferenceSet
+        ? discoveredReferenceSet.references.map(
+            (reference) => reference.mediaAssetId,
+          )
+        : stringArray(discovered.referenceAssetIds)),
+    ]),
+  ];
+  if (discoveredAssetIds.length === 0) {
+    throw Errors.conflict(
+      "The legacy editorial identity has no portrait authority to preserve",
+    );
+  }
+  await lockCharacterGenerationAndMediaAssetAuthorities(
+    input.tx,
+    input.characterId,
+    discoveredAssetIds,
+  );
+  const [character, current, mediaAssets, project] = await Promise.all([
+    input.tx.character.findUnique({
+      where: { id: input.characterId },
+      select: {
+        id: true,
+        name: true,
+        description: true,
+        style: true,
+        appearance: true,
+      },
+    }),
+    input.tx.characterVisualProfile.findFirst({
+      where: { characterId: input.characterId, status: "active" },
+      orderBy: { version: "desc" },
+      include: {
+        referenceSetRevisions: {
+          where: { status: "active" },
+          orderBy: { revision: "desc" },
+          take: 1,
+          include: {
+            references: { orderBy: { position: "asc" } },
+          },
+        },
+      },
+    }),
+    input.tx.mediaAsset.findMany({
+      where: { id: { in: discoveredAssetIds } },
+      select: {
+        id: true,
+        characterId: true,
+        type: true,
+        deletedAt: true,
+        safetyStatus: true,
+        metadata: true,
+      },
+    }),
+    input.tx.characterProject.findFirst({
+      where: { characterId: input.characterId },
+      orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+      select: { id: true },
+    }),
+  ]);
+  if (!character || !current) {
+    throw Errors.conflict(
+      "The Character identity authority changed during editorial repair",
+    );
+  }
+  if (current.id !== discovered.id) {
+    throw Errors.conflict(
+      "The active Visual Identity changed during editorial repair",
+    );
+  }
+  const currentReferenceSet = current.referenceSetRevisions[0] ?? null;
+  if ((currentReferenceSet?.id ?? null) !== (discoveredReferenceSet?.id ?? null)) {
+    throw Errors.conflict(
+      "The active Reference Set changed during editorial repair",
+    );
+  }
+  const mediaById = new Map(mediaAssets.map((asset) => [asset.id, asset]));
+  const invalidAssetIds = discoveredAssetIds.filter((assetId) => {
+    const asset = mediaById.get(assetId);
+    return (
+      !asset ||
+      asset.characterId !== input.characterId ||
+      asset.type !== "image" ||
+      asset.deletedAt !== null ||
+      asset.safetyStatus !== "passed" ||
+      !isMediaAssetOperationalForAuthority(asset.metadata)
+    );
+  });
+  if (invalidAssetIds.length > 0) {
+    throw Errors.conflict(
+      "The legacy editorial portrait authority is unavailable or unsafe",
+      { assetIds: invalidAssetIds },
+    );
+  }
+  if (project) {
+    const activeRelease = await input.tx.characterRelease.findFirst({
+      where: {
+        projectId: project.id,
+        status: { in: ["draft", "validating", "in_review", "approved"] },
+      },
+      select: { id: true, status: true },
+    });
+    if (activeRelease) {
+      throw Errors.conflict(
+        "Withdraw or finish the active Character Release before repairing Visual Identity",
+        {
+          releaseId: activeRelease.id,
+          releaseStatus: activeRelease.status,
+        },
+      );
+    }
+  }
+  const currentAdapterRefs = record(current.adapterRefs);
+  const sourceContentVersionId = text(
+    currentAdapterRefs.sourceContentVersionId,
+  );
+  const content = sourceContentVersionId
+    ? await input.tx.characterContentVersion.findUnique({
+        where: { id: sourceContentVersionId },
+      })
+    : await input.tx.characterContentVersion.findFirst({
+        where: { characterId: input.characterId },
+        orderBy: { version: "desc" },
+      });
+  const identity = buildEditorialPortraitIdentity({
+    characterName: character.name,
+    characterStyle: current.style || character.style,
+    appearanceSnapshot: content?.appearanceSnapshot ?? character.appearance,
+    narrativeDescription:
+      text(record(content?.personaSnapshot).description) ||
+      character.description,
+  });
+  const version = current.version + 1;
+  const anchorAssetIds = stringArray(current.anchorAssetIds);
+  const references = currentReferenceSet
+    ? currentReferenceSet.references.map((reference) => ({
+        mediaAssetId: reference.mediaAssetId,
+        position: reference.position,
+        role: reference.role,
+        weight: reference.weight,
+        crop: reference.crop,
+        qualityScore: reference.qualityScore,
+        identityScore: reference.identityScore,
+        selectionReason: reference.selectionReason,
+      }))
+    : stringArray(current.referenceAssetIds).map((mediaAssetId, position) => ({
+        mediaAssetId,
+        position,
+        role: position === 0 ? "primary_face" : "identity_reference",
+        weight: 1,
+        crop: null,
+        qualityScore: null,
+        identityScore: null,
+        selectionReason:
+          "Preserve the qualified editorial portrait identity authority",
+      }));
+  if (anchorAssetIds.length === 0 || references.length === 0) {
+    throw Errors.conflict(
+      "The legacy editorial identity is missing its sealed portrait references",
+    );
+  }
+  const referenceAssetIds = references.map(
+    (reference) => reference.mediaAssetId,
+  );
+  const profileSnapshot = {
+    version,
+    style: identity.style,
+    identityPrompt: identity.identityPrompt,
+    negativeIdentityPrompt: identity.negativeIdentityPrompt,
+    faceTraits: identity.faceTraits,
+    hairTraits: identity.hairTraits,
+    bodyTraits: identity.bodyTraits,
+    signatureTraits: identity.signatureTraits,
+    styleTraits: identity.styleTraits,
+    anchorAssetIds,
+    referenceAssetIds,
+  };
+  const archived = await input.tx.characterVisualProfile.updateMany({
+    where: {
+      id: current.id,
+      characterId: input.characterId,
+      status: "active",
+    },
+    data: { status: "archived" },
+  });
+  if (archived.count !== 1) {
+    throw Errors.conflict(
+      "The legacy editorial identity changed before it could be archived",
+    );
+  }
+  const created = await input.tx.characterVisualProfile.create({
+    data: {
+      characterId: input.characterId,
+      version,
+      status: "active",
+      style: identity.style,
+      identityPrompt: identity.identityPrompt,
+      negativeIdentityPrompt: identity.negativeIdentityPrompt,
+      faceTraits: toInputJson(identity.faceTraits),
+      hairTraits: toInputJson(identity.hairTraits),
+      bodyTraits: toInputJson(identity.bodyTraits),
+      signatureTraits: toInputJson(identity.signatureTraits),
+      styleTraits: toInputJson(identity.styleTraits),
+      anchorAssetIds: toInputJson(anchorAssetIds),
+      referenceAssetIds: toInputJson(referenceAssetIds),
+      defaultSeed: current.defaultSeed,
+      adapterRefs: toInputJson({
+        ...currentAdapterRefs,
+        identityPromptRepair: {
+          version: EDITORIAL_VISUAL_IDENTITY_REPAIR_VERSION,
+          repairedFromVisualProfileId: current.id,
+          source: "canonical_editorial_portrait",
+        },
+      }),
+      qualityScore: current.qualityScore,
+      consistencyScore: current.consistencyScore,
+      immutableHash: characterVisualProfileSnapshotHash(profileSnapshot),
+      evidenceState: "qualified",
+      createdFrom: `editorial_visual_identity_repair:${current.id}`,
+    },
+  });
+  const selectorVersion = "editorial-visual-identity-repair-v1";
+  const referenceSet = await input.tx.referenceSetRevision.create({
+    data: {
+      visualProfileId: created.id,
+      revision: 1,
+      status: "active",
+      selectorVersion,
+      createdFrom: `editorial_visual_identity_repair:${current.id}`,
+      snapshotHash: referenceSetSnapshotHash({
+        visualProfileId: created.id,
+        revision: 1,
+        selectorVersion,
+        references,
+      }),
+      references: {
+        create: references.map((reference) => ({
+          mediaAssetId: reference.mediaAssetId,
+          position: reference.position,
+          role: reference.role,
+          weight: reference.weight,
+          ...(reference.crop === null
+            ? {}
+            : { crop: toInputJson(reference.crop) }),
+          qualityScore: reference.qualityScore,
+          identityScore: reference.identityScore,
+          selectionReason: reference.selectionReason,
+          selectorVersion,
+        })),
+      },
+    },
+  });
+  await input.tx.referenceCandidate.createMany({
+    data: references.map((reference) => ({
+      visualProfileId: created.id,
+      mediaAssetId: reference.mediaAssetId,
+      sourceJobId: null,
+      proposedRole: reference.role,
+      qualityScore: reference.qualityScore,
+      identityScore: reference.identityScore,
+      source: "editorial_visual_identity_repair",
+      status: "promoted",
+      promotedRevisionId: referenceSet.id,
+    })),
+  });
+  await input.tx.characterLook.updateMany({
+    where: {
+      characterId: input.characterId,
+      visualProfileId: current.id,
+      status: "active",
+    },
+    data: { status: "needs_rebase" },
+  });
+  const invalidatedDraftAssets =
+    await invalidateCharacterDraftAssetPack(input.tx, input.characterId);
+  await input.tx.adminAuditLog.create({
+    data: {
+      actorId: input.actorId,
+      actorRole: "system",
+      action: "character.visual_identity.editorial_prompt_repaired",
+      targetType: "character",
+      targetId: input.characterId,
+      reason:
+        "Replace legacy narrative identity text with canonical portrait authority",
+      before: toInputJson({
+        visualProfileId: current.id,
+        version: current.version,
+        identityPrompt: current.identityPrompt,
+      }),
+      after: toInputJson({
+        visualProfileId: created.id,
+        version: created.version,
+        identityPrompt: created.identityPrompt,
+        referenceSetRevisionId: referenceSet.id,
+        invalidatedDraftAssetPackProjectId:
+          invalidatedDraftAssets?.projectId ?? null,
+      }),
+      requestId: input.requestId,
+    },
+  });
+  await input.tx.mainOutboxEvent.create({
+    data: {
+      eventType: "character.visual_identity.editorial_prompt_repaired.v1",
+      aggregateType: "character",
+      aggregateId: input.characterId,
+      payload: toInputJson({
+        characterId: input.characterId,
+        previousVisualProfileId: current.id,
+        visualProfileId: created.id,
+        visualProfileVersion: created.version,
+        referenceSetRevisionId: referenceSet.id,
+      }),
+    },
+  });
+  return {
+    state: "repaired" as const,
+    characterId: input.characterId,
+    previousVisualProfileId: current.id,
+    visualProfileId: created.id,
+    visualProfileVersion: created.version,
+    referenceSetRevisionId: referenceSet.id,
   };
 }
 
@@ -417,40 +889,22 @@ export async function repairCharacterImageReadiness(input: {
   }
 
   const persona = record(content.personaSnapshot);
-  const appearance = record(content.appearanceSnapshot);
-  const identityAnchor =
-    text(appearance.identityAnchor) ||
-    text(persona.description) ||
-    character.description;
-  const stableTraits = stringArray(appearance.stableTraits);
-  const referenceDirection = text(appearance.referenceDirection);
-  const style = visualStyle(appearance.style || character.style);
-  const identityPrompt = [
-    identityAnchor,
-    stableTraits.length > 0
-      ? `Stable traits: ${stableTraits.join(", ")}`
-      : "",
-    referenceDirection
-      ? `Visual direction: ${referenceDirection}`
-      : "",
-  ].filter(Boolean).join(". ");
-  const negativeIdentityPrompt = [
-    "different person",
-    "identity drift",
-    "multiple people",
-    "duplicate face",
-    "text",
-    "watermark",
-    "contact sheet",
-  ].join(", ");
-  const faceTraits = { identityAnchor, stableTraits };
-  const hairTraits = {};
-  const bodyTraits = {};
-  const signatureTraits = { referenceDirection };
-  const styleTraits = {
+  const {
     style,
+    identityPrompt,
+    negativeIdentityPrompt,
+    faceTraits,
+    hairTraits,
+    bodyTraits,
+    signatureTraits,
+    styleTraits,
+  } = buildEditorialPortraitIdentity({
     characterName: text(persona.name) || character.name,
-  };
+    characterStyle: character.style,
+    appearanceSnapshot: content.appearanceSnapshot,
+    narrativeDescription:
+      text(persona.description) || character.description,
+  });
   const latestProfile = await input.tx.characterVisualProfile.aggregate({
     where: { characterId: input.characterId },
     _max: { version: true },

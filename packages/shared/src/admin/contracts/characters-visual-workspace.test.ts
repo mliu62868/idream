@@ -5,11 +5,38 @@ import {
   characterPreviewSnapshotSchema,
   characterReferenceSetPublishRequestSchema,
   characterRouteQualificationEvidenceSchema,
+  characterVisualProfileCreateRequestSchema,
   characterVisualWorkspaceSchema,
   characterWorkspaceProjectSchema,
 } from "./characters";
 
 describe("Character Visual workspace contract", () => {
+  it("requires an explicit identity prompt when activating a reviewed candidate", () => {
+    const candidateAuthority = {
+      runId: "run-1",
+      itemId: "item-1",
+      assetId: "asset-1",
+      reviewDecisionId: "decision-1",
+    };
+    expect(characterVisualProfileCreateRequestSchema.safeParse({
+      candidateAuthority,
+      reason: "Activate reviewed candidate",
+      confirmation: "character-1:visual-profile",
+    }).success).toBe(false);
+    expect(characterVisualProfileCreateRequestSchema.safeParse({
+      identityPrompt: "Preserve the exact person shown in the canonical portrait.",
+      faceTraits: {
+        canonicalPortraitAuthority: true,
+        stableTraits: ["oval face", "blue eyes"],
+      },
+      hairTraits: { stableTraits: ["dark wavy hair"] },
+      bodyTraits: { stableTraits: ["balanced adult proportions"] },
+      candidateAuthority,
+      reason: "Activate reviewed candidate",
+      confirmation: "character-1:visual-profile",
+    }).success).toBe(true);
+  });
+
   it("keeps selection, published references, qualification evidence and readiness distinct", () => {
     const result = characterVisualWorkspaceSchema.parse({
       activeIdentity: {

@@ -411,6 +411,8 @@ export const creativeReviewQualityEvidenceSchema = z.object({
   noVisibleText: z.boolean(),
 }).strict();
 
+export const CHARACTER_IDENTITY_APPROVAL_MIN_SCORE = 90;
+
 export const creativeReviewEvidenceSchema = z.object({
   quality: creativeReviewQualityEvidenceSchema,
 }).strict();
