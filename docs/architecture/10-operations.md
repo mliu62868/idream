@@ -540,13 +540,13 @@ Next.js 服务：
 | `admin-web` | `packages/admin` | `3001` | 内部管理后台和 `/api/v1/admin/*` 控制面 API |
 | `chat` | `packages/chat` | `CHAT_PORT` | chat API/SSE + worker，单实例本地文件写入 |
 | `gen-image` | `packages/gen` | n/a | 异步图片生成 worker（当前 2 实例） |
-| `gen-video` | `packages/gen` | n/a | V1.1 延后；`video_gen=false` 时不在 PM2 拓扑中启动 |
+| `gen-video` | `packages/gen` | n/a | 异步视频生成 worker；当前 `backend -> ComfyUI :8188 -> LTX 2.3 GTAnimation I2V` |
 | `gen-finalizer` / `main-event-consumer` | `packages/main` | n/a | 主站侧权威写回和事件消费 |
 | `admin-command-worker` | `packages/main` | n/a | Admin durable command 执行 |
 
-当前 `ecosystem.config.js` 是 8 个 logical apps / 9 个 processes：
+当前 `ecosystem.config.js` 是 9 个 logical apps / 10 个 processes：
 `pocket-tts`、`main-web`、`admin-web`、`chat`、`gen-image`（2 processes）、
-`gen-finalizer`、`main-event-consumer`、`admin-command-worker`。ComfyUI 是独立
+`gen-video`、`gen-finalizer`、`main-event-consumer`、`admin-command-worker`。ComfyUI 是独立
 运行时，不计入这组 ecosystem 进程。
 
 运行命令：
@@ -559,8 +559,16 @@ bun run pm2:status
 默认开发模式下，`main-web` / `admin-web` 直接运行 `next dev`，页面源码由
 Fast Refresh 更新；`chat`、`gen-image`、`gen-finalizer`、
 `main-event-consumer`、`admin-command-worker` 由 PM2 监听对应源码目录并
-自动重启。日常改代码无需 build；`.env`、Prisma Client、Next 配置等启动级
+自动重启。`gen-video` 即使在开发模式也固定关闭 watch：当前 768×1152 LTX
+任务约需 10–15 分钟，源码监听重启会截断已扣费的长任务。日常改代码无需
+build；`.env`、Prisma Client、Next 配置等启动级
 变化执行 `bun run pm2:restart`。
+
+主站 stale reconciler 对普通 generation job 使用默认 10 分钟窗口，对视频
+单独使用 `VIDEO_JOB_STALE_TIMEOUT_MS`（生产模板为 35 分钟）。这个窗口必须
+大于 gen 侧 `GEN_VIDEO_TIMEOUT_MS`（30 分钟），保证 provider 先有机会返回
+completion manifest，再由主站判定遗留任务；不能把图片任务的短窗口直接复用
+到视频。
 
 生产模式需要先构建不可变发布，再显式启动：
 

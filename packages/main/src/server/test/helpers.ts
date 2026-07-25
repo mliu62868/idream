@@ -330,6 +330,8 @@ export async function publishCharacterForPublicAudience(input: {
         type: "image",
         url: `/user-content/${assetId}/content.webp`,
         thumbnailUrl: `/user-content/${assetId}/thumbnail.webp`,
+        storageKey: `test-fixtures/${assetId}.webp`,
+        contentType: "image/webp",
         visibility: "public_pack",
         safetyStatus: "passed",
         metadata: {

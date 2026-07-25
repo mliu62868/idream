@@ -1866,6 +1866,37 @@ describe("image generation service contract", () => {
     expect(await dreamcoinBalance(userId)).toBe(100);
   });
 
+  it("does not stale-fail a video job inside its longer provider window", async () => {
+    const userId = `${P}video-stale-user`;
+    await createUser({ id: userId });
+    await grantCoins(userId, 100, "seed");
+
+    const gen = await api("POST", "generation/jobs", {
+      userId,
+      ageGate: true,
+      body: { mode: "image", characterId: CHAR, outputCount: 1 },
+    });
+    expectOk(gen, 202);
+    const jobId = gen.data.job.id as string;
+    await prisma.generationJob.update({
+      where: { id: jobId },
+      data: {
+        mode: "video",
+        updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+      },
+    });
+
+    const reconciled = await reconcileStaleGenerationJobs({
+      now: new Date("2026-01-01T00:20:00.000Z"),
+      timeoutMs: 10 * 60_000,
+      videoTimeoutMs: 35 * 60_000,
+    });
+    expect(reconciled.enqueued).toBe(0);
+    await expect(
+      prisma.generationJob.findUniqueOrThrow({ where: { id: jobId } }),
+    ).resolves.toMatchObject({ status: "queued", mode: "video" });
+  });
+
   it("removes pending generate work when a job is finalized as failed", async () => {
     const userId = `${P}failed-cleanup-user`;
     await createUser({ id: userId });

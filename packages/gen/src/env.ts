@@ -69,7 +69,7 @@ export const env = {
   get IMAGE_PROVIDER(): string {
     return process.env.GEN_IMAGE_PROVIDER ?? process.env.IMAGE_PROVIDER ?? "mock";
   },
-  /** Video provider switch. Production uses the pipeline gateway when video is enabled. */
+  /** Video provider switch. Production can use the workflow-native backend. */
   get VIDEO_PROVIDER(): string {
     return process.env.GEN_VIDEO_PROVIDER ?? process.env.VIDEO_PROVIDER ?? "mock";
   },
@@ -108,6 +108,11 @@ export const env = {
   get PIPELINE_TIMEOUT_MS(): number {
     const parsed = Number.parseInt(process.env.PIPELINE_TIMEOUT_MS ?? "60000", 10);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : 60_000;
+  },
+  /** Long-running video generation timeout; LTX 2.3 MPS runs need a larger budget. */
+  get VIDEO_TIMEOUT_MS(): number {
+    const parsed = Number.parseInt(process.env.GEN_VIDEO_TIMEOUT_MS ?? "1800000", 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 1_800_000;
   },
   /** ComfyUI native HTTP API base URL, used by IMAGE_PROVIDER=backend's registry. */
   get COMFYUI_API_URL(): string {

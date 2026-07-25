@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { chatImageRequestedPayloadSchema } from "./payloads";
+import {
+  chatImageRequestedPayloadSchema,
+  videoGeneratePayloadSchema,
+} from "./payloads";
 
 const request = {
   version: 1 as const,
@@ -42,5 +45,40 @@ describe("chat image request Release pin", () => {
         characterReleaseId: "",
       }),
     ).toThrow();
+  });
+});
+
+describe("video generation reference authority", () => {
+  it("preserves the pinned source image consumed by image-to-video workers", () => {
+    const parsed = videoGeneratePayloadSchema.parse({
+      version: 1,
+      kind: "video",
+      requestId: "request-video-1",
+      generationJobId: "job-video-1",
+      userId: "user-1",
+      characterId: "character-1",
+      prompt: "She looks into the camera and waves.",
+      negativePrompt: null,
+      controls: {},
+      seconds: 4,
+      seed: "seed-video-1",
+      model: "ltx23-gtanimation-i2v",
+      outputPrefix: "gen/job-video-1/",
+      referenceImages: [
+        {
+          assetId: "character-primary-image-1",
+          role: "source_image",
+          storageKey: "characters/character-1/primary.webp",
+          contentType: "image/webp",
+        },
+      ],
+    });
+
+    expect(parsed.referenceImages).toEqual([
+      expect.objectContaining({
+        assetId: "character-primary-image-1",
+        role: "source_image",
+      }),
+    ]);
   });
 });

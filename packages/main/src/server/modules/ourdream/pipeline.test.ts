@@ -574,12 +574,21 @@ describe("local AI service pipeline", () => {
           seconds: 4,
           seed: expect.any(String),
           negativePrompt: null,
-          model: "mock-video",
+          model: "ltx23-gtanimation-i2v",
           controls: expect.objectContaining({
             profileId: "profile_video_beta_v1",
             width: 768,
-            height: 1024,
+            height: 1152,
+            sourceImageAssetId: expect.any(String),
+            workflowKey: "ltx23-gtanimation-i2v",
+            workflowVersion: 1,
           }),
+          referenceImages: [
+            expect.objectContaining({
+              assetId: expect.any(String),
+              role: "source_image",
+            }),
+          ],
           requestId: expect.any(String),
         }),
       );

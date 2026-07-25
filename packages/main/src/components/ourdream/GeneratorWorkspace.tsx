@@ -2325,6 +2325,7 @@ export function GeneratorWorkspace() {
                   onClick={() => {
                     const firstVideoModel = config?.video.models[0];
                     setMode("video");
+                    setFreeplay(false);
                     setModelSelection({
                       id: "",
                       explicit: false,

@@ -289,16 +289,17 @@ export async function enqueueGenerationAttempt(
     controls,
     "lookReferenceAssetId",
   );
-  const resolvedReferenceImages = job.mode === "image"
-    ? await imageReferenceInputsForGenerationJob({
-        userId: job.userId,
-        characterId: job.characterId,
-        controls,
-        referenceAssetIds: job.referenceAssetIds,
-        referenceManifest: job.referenceManifest,
-        maxReferences: Number.MAX_SAFE_INTEGER,
-      })
-    : [];
+  const resolvedReferenceImages =
+    job.mode === "image" || job.mode === "video"
+      ? await imageReferenceInputsForGenerationJob({
+          userId: job.userId,
+          characterId: job.characterId,
+          controls,
+          referenceAssetIds: job.referenceAssetIds,
+          referenceManifest: job.referenceManifest,
+          maxReferences: Number.MAX_SAFE_INTEGER,
+        })
+      : [];
   const manifestEntries = referenceManifestEntries(job.referenceManifest);
   const manifestSourceImageAssetIds = [
     ...new Set(manifestEntries.flatMap((entry) =>
@@ -315,7 +316,7 @@ export async function enqueueGenerationAttempt(
       )
     );
   if (
-    job.mode === "image" &&
+    (job.mode === "image" || job.mode === "video") &&
     unresolvedManifestSourceImageAssetIds.length > 0
   ) {
     throw Errors.conflict(
@@ -340,7 +341,7 @@ export async function enqueueGenerationAttempt(
     (assetId) => !dispatchedReferenceAssetIds.has(assetId),
   );
   if (
-    job.mode === "image" &&
+    (job.mode === "image" || job.mode === "video") &&
     job.referenceSetRevisionId &&
     (
       pinnedReferenceAssetIds.length === 0 ||
@@ -362,7 +363,7 @@ export async function enqueueGenerationAttempt(
       referenceImages: resolvedReferenceImages,
     });
   if (
-    job.mode === "image" &&
+    (job.mode === "image" || job.mode === "video") &&
     unavailableManifestReferenceRoles.length > 0
   ) {
     throw Errors.conflict(
@@ -375,7 +376,7 @@ export async function enqueueGenerationAttempt(
     );
   }
   if (
-    job.mode === "image" &&
+    (job.mode === "image" || job.mode === "video") &&
     requestedSourceImageAssetId &&
     !resolvedReferenceImages.some(
       (image) =>
@@ -392,7 +393,7 @@ export async function enqueueGenerationAttempt(
     );
   }
   if (
-    job.mode === "image" &&
+    (job.mode === "image" || job.mode === "video") &&
     requestedLookReferenceAssetId &&
     !resolvedReferenceImages.some(
       (image) =>
@@ -408,17 +409,18 @@ export async function enqueueGenerationAttempt(
       },
     );
   }
-  const referenceImages = job.mode === "image"
-    ? runtimeReferenceImagesForDispatch({
-        generationJobId: job.id,
-        images: resolvedReferenceImages,
-        capabilities: modelCapabilities,
-        workflow: runtime.workflow,
-        workflowKey: runtime.workflowKey,
-        storedWorkflowKey: runtime.storedWorkflowKey,
-        storedWorkflowVersion: runtime.storedWorkflowVersion,
-      })
-    : [];
+  const referenceImages =
+    job.mode === "image" || job.mode === "video"
+      ? runtimeReferenceImagesForDispatch({
+          generationJobId: job.id,
+          images: resolvedReferenceImages,
+          capabilities: modelCapabilities,
+          workflow: runtime.workflow,
+          workflowKey: runtime.workflowKey,
+          storedWorkflowKey: runtime.storedWorkflowKey,
+          storedWorkflowVersion: runtime.storedWorkflowVersion,
+        })
+      : [];
   const common = {
     version: 1 as const,
     requestId: `admin_requeue_${randomUUID()}`,
@@ -439,7 +441,12 @@ export async function enqueueGenerationAttempt(
   };
   const payload: ImageGeneratePayload | VideoGeneratePayload =
     job.mode === "video"
-      ? { ...common, kind: "video", seconds: numericControl(controls, "seconds", 4) }
+      ? {
+          ...common,
+          kind: "video",
+          seconds: numericControl(controls, "seconds", 4),
+          ...(referenceImages.length > 0 ? { referenceImages } : {}),
+        }
       : {
           ...common,
           kind: "image",

@@ -9,6 +9,7 @@ export default defineConfig({
     include: ["src/**/*.test.ts"],
     env: {
       NODE_ENV: "test",
+      GEN_VIDEO_PROVIDER: "mock",
     },
   },
   resolve: {

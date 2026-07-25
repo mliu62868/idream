@@ -41,6 +41,7 @@ type ComfyImageOutput = {
 interface PendingJob {
   timeoutMs: number;
   slots: ResolvedGenJob["slots"];
+  outputKind: "image" | "video";
 }
 
 export class ComfyUIBackend implements GenBackend {
@@ -117,7 +118,13 @@ export class ComfyUIBackend implements GenBackend {
       logger.warn({ workflowKey: job.descriptor.workflowKey, response: json }, "ComfyUI rejected prompt");
       throw new Error(`ComfyUI did not return prompt_id: ${JSON.stringify(json)}`);
     }
-    this.pending.set(promptId, { timeoutMs: job.timeoutMs, slots: job.slots });
+    this.pending.set(promptId, {
+      timeoutMs: job.timeoutMs,
+      slots: job.slots,
+      outputKind: descriptor.capabilities.includes("video")
+        ? "video"
+        : "image",
+    });
     return { id: promptId };
   }
 
@@ -136,20 +143,26 @@ export class ComfyUIBackend implements GenBackend {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const image = await this.waitForImage(handle.id, timeoutMs, controller.signal);
-      const bytes = await this.fetchComfyImage(image, controller.signal);
-      assertGeneratedImageSanity(Buffer.from(bytes), handle.id);
+      const output = await this.waitForOutput(handle.id, timeoutMs, controller.signal);
+      const bytes = await this.fetchComfyOutput(output, controller.signal);
       const dimensions = pngDimensions(bytes) ?? {
         width: numberSlot(pending?.slots, "width") ?? 0,
         height: numberSlot(pending?.slots, "height") ?? 0,
       };
+      const outputKind = pending?.outputKind ?? outputKindFromFilename(output.filename);
+      if (outputKind === "video") {
+        assertGeneratedMp4Sanity(bytes, handle.id);
+      } else {
+        assertGeneratedImageSanity(Buffer.from(bytes), handle.id);
+      }
       return {
         assets: [
           {
             body: bytes,
             width: dimensions.width,
             height: dimensions.height,
-            contentType: "image/png",
+            contentType:
+              outputKind === "video" ? "video/mp4" : "image/png",
           },
         ],
       };
@@ -305,7 +318,7 @@ export class ComfyUIBackend implements GenBackend {
     return { name, subfolder: stringField(json, "subfolder") ?? "", type: stringField(json, "type") ?? "input" };
   }
 
-  private async waitForImage(
+  private async waitForOutput(
     promptId: string,
     timeoutMs: number,
     signal: AbortSignal,
@@ -322,16 +335,16 @@ export class ComfyUIBackend implements GenBackend {
         throw new Error(`ComfyUI prompt failed: ${JSON.stringify(status.messages ?? status)}`);
       }
       if (status.completed === true) {
-        const image = firstImageOutput(item);
-        if (!image) throw new Error(`ComfyUI prompt ${promptId} completed without image output`);
-        return image;
+        const output = firstImageOutput(item);
+        if (!output) throw new Error(`ComfyUI prompt ${promptId} completed without media output`);
+        return output;
       }
       await sleep(this.pollIntervalMs);
     }
     throw new Error(`ComfyUI prompt timed out after ${timeoutMs}ms: ${promptId}`);
   }
 
-  private async fetchComfyImage(image: ComfyImageOutput, signal: AbortSignal): Promise<Uint8Array> {
+  private async fetchComfyOutput(image: ComfyImageOutput, signal: AbortSignal): Promise<Uint8Array> {
     const url = new URL(`${this.apiUrl}/view`);
     url.searchParams.set("filename", image.filename);
     url.searchParams.set("subfolder", image.subfolder);
@@ -339,6 +352,19 @@ export class ComfyUIBackend implements GenBackend {
     const response = await fetch(url, { signal });
     if (!response.ok) throw new Error(`ComfyUI /view HTTP ${response.status}`);
     return new Uint8Array(await response.arrayBuffer());
+  }
+}
+
+function outputKindFromFilename(filename: string): "image" | "video" {
+  return filename.toLowerCase().endsWith(".mp4") ? "video" : "image";
+}
+
+function assertGeneratedMp4Sanity(bytes: Uint8Array, requestId: string) {
+  if (
+    bytes.byteLength < 12 ||
+    String.fromCharCode(...bytes.subarray(4, 8)) !== "ftyp"
+  ) {
+    throw new Error(`Generated video sanity check failed for ${requestId}: invalid MP4`);
   }
 }
 

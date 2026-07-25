@@ -115,7 +115,13 @@ function makeProviders(over: Partial<GenProviders> = {}): GenProviders {
       retryCapabilities: { deterministicIdempotencyKey: true, retryableFailureCodes: ["rate_limited", "overloaded", "timeout", "internal"] },
       generate: vi.fn(async () => ({
         ok: true as const,
-        data: { asset: { key: "mock/videos/seed_v1.mp4", seconds: 6 } },
+        data: {
+          asset: {
+            key: "mock/videos/seed_v1.mp4",
+            seconds: 6,
+            body: mockVideoMp4Bytes(),
+          },
+        },
       })),
     },
     moderation: {
@@ -944,6 +950,61 @@ function crc32(data: Buffer) {
 }
 
 describe("processVideoGenerate", () => {
+  it("passes the pinned source image to the video provider", async () => {
+    const enqueue = vi.fn(async (_: EnqueueInput) => {});
+    const providers = makeProviders();
+    const referenceImages = [{
+      assetId: "source-1",
+      role: "source_image" as const,
+      b64Json: "aW1hZ2U=",
+      contentType: "image/webp",
+    }];
+
+    await processVideoGenerate(videoPayload({ referenceImages }), {
+      enqueue,
+      providers,
+    });
+
+    expect(providers.video.generate).toHaveBeenCalledWith(
+      expect.objectContaining({ referenceImages }),
+    );
+  });
+
+  it("fails closed when a successful provider response has no video bytes or URL", async () => {
+    const enqueue = vi.fn(async (_: EnqueueInput) => {});
+    const providers = makeProviders({
+      video: {
+        generate: vi.fn(async () => ({
+          ok: true as const,
+          data: {
+            asset: {
+              key: "backend/videos/missing.mp4",
+              seconds: 4,
+              contentType: "video/mp4",
+            },
+          },
+        })),
+      },
+    });
+
+    await processVideoGenerate(videoPayload({ seconds: 4 }), {
+      enqueue,
+      providers,
+      attemptsMade: 2,
+      maxAttempts: 3,
+    });
+
+    expect(providers.blob.putPrivate).not.toHaveBeenCalled();
+    expect(enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          kind: "generation.failed",
+          error: expect.objectContaining({ code: "asset_persist_failed" }),
+        }),
+      }),
+    );
+  });
+
   it("writes a single blob and enqueues generation.completed with seconds asset", async () => {
     const enqueue = vi.fn(async (_: EnqueueInput) => {});
     const recordTransportExecution = vi.fn(async () => {});

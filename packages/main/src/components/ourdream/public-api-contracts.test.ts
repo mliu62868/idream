@@ -782,6 +782,57 @@ describe("public API runtime contracts", () => {
     ).toThrow(PublicApiContractError);
   });
 
+  it("accepts image-to-video config with a character recipe only", () => {
+    expect(
+      parseGenerationConfigResponse({
+        ok: true,
+        data: {
+          viewer: { authenticated: true, scope: "user:video-user" },
+          entitlements: { video_generation: true },
+          dreamcoins: { balance: 1_000 },
+          pricing: {
+            image: { baseCost: 5, maxCount: null },
+            video: { baseCost: 100 },
+          },
+          image: {
+            availability: {
+              state: "unavailable",
+              reason: "no_active_model",
+            },
+            orientations: [],
+            models: [],
+            recipes: [],
+          },
+          video: {
+            enabled: true,
+            availability: { state: "available" },
+            requiredEntitlement: "video_generation",
+            models: [
+              {
+                id: "profile_video_beta_v1",
+                label: "LTX 2.3 GTAnimation I2V",
+                costMultiplier: 1,
+                entitlement: "video_generation",
+                maxCount: 1,
+                orientations: ["2:3"],
+              },
+            ],
+            recipes: [
+              {
+                id: "video-character",
+                rowId: "video-character-row",
+                label: "Video character",
+                mode: "video",
+                useCase: "character",
+                version: 1,
+              },
+            ],
+          },
+        },
+      }).video.availability,
+    ).toEqual({ state: "available" });
+  });
+
   it("pins the exact failed job, route, and price in a retry quote", () => {
     expect(
       parseGenerationRetryQuoteResponse({

@@ -2508,6 +2508,37 @@ describe("launch readiness", () => {
     });
   });
 
+  it("passes the production video provider check for a ComfyUI backend", () => {
+    const report = assessLaunchReadiness({
+      env: {
+        ...productionEnv,
+        GEN_VIDEO_PROVIDER: "backend",
+        COMFYUI_API_URL: "https://comfyui-video.ourdream.internal",
+      },
+      imagePipelineProbe: passingImageProbe(),
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingProductConfigProbe({
+        videoFeatureEnabled: true,
+        activeVideoProfiles: 1,
+        activeVideoCharacterTemplates: 1,
+        activeVideoFreeplayTemplates: 1,
+        activeVideoPricingRules: 1,
+      }),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
+      now,
+    });
+
+    expect(checkById(report, "gen-video-provider")?.status).toBe("pass");
+    expect(checkById(report, "video-comfyui-api-url")?.status).toBe("pass");
+  });
+
   it("fails when the video worker is configured for an unsupported provider", () => {
     const report = assessLaunchReadiness({
       env: {
@@ -2591,12 +2622,13 @@ describe("launch readiness", () => {
     ]].filter((key) => !genKeys.has(key))).toEqual([]);
   });
 
-  it("keeps deferred video disabled in production templates", () => {
+  it("keeps the production video worker on the workflow-native backend", () => {
     const mainValues = envTemplateValues("../../.env.production.example");
     const genValues = envTemplateValues("../../../gen/.env.production.example");
 
-    expect(mainValues.GEN_VIDEO_PROVIDER).toBe("mock");
-    expect(genValues.GEN_VIDEO_PROVIDER).toBe("mock");
+    expect(mainValues.GEN_VIDEO_PROVIDER).toBe("backend");
+    expect(genValues.GEN_VIDEO_PROVIDER).toBe("backend");
+    expect(genValues.GEN_VIDEO_TIMEOUT_MS).toBe("1800000");
   });
 
   it("keeps Pocket TTS as the production voice authority", () => {

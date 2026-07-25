@@ -141,17 +141,28 @@ export async function drainLocalAiPipeline(input: {
 export async function reconcileStaleGenerationJobs(input: {
   now?: Date;
   timeoutMs?: number;
+  videoTimeoutMs?: number;
   limit?: number;
 } = {}) {
   const now = input.now ?? new Date();
   const timeoutMs =
     input.timeoutMs ??
     Number.parseInt(process.env.JOB_STALE_TIMEOUT_MS ?? `${10 * 60 * 1000}`, 10);
+  const videoTimeoutMs =
+    input.videoTimeoutMs ??
+    Number.parseInt(
+      process.env.VIDEO_JOB_STALE_TIMEOUT_MS ?? `${35 * 60 * 1000}`,
+      10,
+    );
   const cutoff = new Date(now.getTime() - timeoutMs);
+  const videoCutoff = new Date(now.getTime() - videoTimeoutMs);
   const jobs = await prisma.generationJob.findMany({
     where: {
       status: { in: ["queued", "moderating_input", "running", "moderating_output"] },
-      updatedAt: { lt: cutoff },
+      OR: [
+        { mode: "video", updatedAt: { lt: videoCutoff } },
+        { mode: { not: "video" }, updatedAt: { lt: cutoff } },
+      ],
     },
     orderBy: { updatedAt: "asc" },
     take: Math.max(1, Math.min(input.limit ?? 25, 100)),
@@ -176,7 +187,7 @@ export async function reconcileStaleGenerationJobs(input: {
     });
   }
 
-  return { scanned: jobs.length, enqueued: jobs.length, cutoff };
+  return { scanned: jobs.length, enqueued: jobs.length, cutoff, videoCutoff };
 }
 
 async function processLocalAiJob(job: QueueJob) {
@@ -378,6 +389,7 @@ async function runVideoGenerate(payload: VideoGeneratePayload, jobMeta: QueueJob
     model: payload.model,
     controls: payload.controls,
     requestId: payload.requestId,
+    referenceImages: payload.referenceImages,
   });
 
   if (!result.ok) {

@@ -1,4 +1,7 @@
-import type { ImageGeneratePayload } from "@idream/shared/contracts";
+import type {
+  ImageGeneratePayload,
+  VideoGeneratePayload,
+} from "@idream/shared/contracts";
 
 export interface ProviderFailure {
   code: string;
@@ -55,6 +58,7 @@ export interface VideoModel {
     model?: string;
     controls?: Record<string, unknown>;
     requestId?: string;
+    referenceImages?: NonNullable<VideoGeneratePayload["referenceImages"]>;
   }): Promise<ProviderResult<{ asset: { key: string; seconds: number } }>>;
 }
 

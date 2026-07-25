@@ -49,7 +49,7 @@ const EnvSchema = z.object({
   LOG_LEVEL: z.enum(["trace", "debug", "info", "warn", "error", "fatal", "silent"]).default("info"),
   CHAT_PROVIDER: z.enum(["mock", "pipeline"]).default("mock"),
   IMAGE_PROVIDER: z.enum(["mock", "pipeline", "backend"]).default("mock"),
-  VIDEO_PROVIDER: z.enum(["mock", "pipeline"]).default("mock"),
+  VIDEO_PROVIDER: z.enum(["mock", "pipeline", "backend"]).default("mock"),
   // Tests with no environment remain isolated on mock. Versioned local and
   // production env templates select Pocket TTS as the product authority.
   VOICE_PROVIDER: z.enum(["mock", "pipeline", "pocket-tts"]).default("mock"),

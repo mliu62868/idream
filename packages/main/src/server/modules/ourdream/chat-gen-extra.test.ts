@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { resolveLocalBlobPath } from "@idream/shared/storage/local-blob";
+import { jobQueue } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
 import { dispatchV1 } from "@/server/modules/ourdream/service";
 import { providers } from "@/server/providers";
@@ -80,6 +81,25 @@ describe("video generation (Deluxe)", () => {
       });
       expectOk(gen, 202);
       expect(gen.data.job.status).toBe("queued");
+      const queued = await jobQueue.getByDedupeKey(
+        "ai.video.generate",
+        `generation:${gen.data.job.id}`,
+      );
+      expect(queued?.payload).toMatchObject({
+        kind: "video",
+        model: "ltx23-gtanimation-i2v",
+        controls: {
+          sourceImageAssetId: expect.any(String),
+          workflowKey: "ltx23-gtanimation-i2v",
+          workflowVersion: 1,
+        },
+        referenceImages: [
+          expect.objectContaining({
+            assetId: expect.any(String),
+            role: "source_image",
+          }),
+        ],
+      });
       await runQueuedGenerationJobs(8, [
         "ai.video.generate",
         "app.ai.finalize",

@@ -24,7 +24,6 @@ import {
   videoGeneratePayloadSchema,
   type VideoGeneratePayload,
 } from "@idream/shared/contracts";
-import { mockVideoMp4Bytes } from "@idream/shared";
 import { env } from "./env";
 import {
   assertGeneratedImageSanity,
@@ -604,6 +603,10 @@ export async function processVideoGenerate(
     return;
   }
 
+  const referenceImages = await hydratedImageReferenceInputs(
+    payload.referenceImages,
+    providers.blob,
+  );
   const videoModel = providers.video;
   const videoProvider = env.VIDEO_PROVIDER;
   const videoTransport = transportIdentity(payload, deps);
@@ -617,6 +620,7 @@ export async function processVideoGenerate(
     model: payload.model,
     controls: payload.controls,
     requestId: videoTransport.idempotencyKey,
+    ...(referenceImages.length > 0 ? { referenceImages } : {}),
   });
   const invocationLatencyMs = performance.now() - invocationStartedAt;
 
@@ -738,8 +742,9 @@ async function videoAssetBody(
 ) {
   if (asset.body) return asset.body;
   if (!asset.sourceUrl) {
-    void generationJobId;
-    return mockVideoMp4Bytes();
+    throw new Error(
+      `Generated video ${generationJobId} did not include video bytes or a source URL`,
+    );
   }
 
   const controller = new AbortController();

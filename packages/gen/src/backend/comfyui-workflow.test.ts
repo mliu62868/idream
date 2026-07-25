@@ -58,6 +58,40 @@ describe("ComfyUI visible workflow sync", () => {
     expect(workflow.extra.idream).toMatchObject({ name: "iDream: Test/T2I", workflowKey: "test-t2i" });
   });
 
+  it("maps nested subgraph API ids to stable numeric UI node ids", () => {
+    const nestedDescriptor = workflowDescriptorSchema.parse({
+      ...descriptor,
+      comfyWorkflow: {
+        id: "77777777-7777-4777-8777-777777777777",
+        name: "Nested LTX Test",
+      },
+      apiPrompt: {
+        "269": {
+          class_type: "ModelLoader",
+          inputs: { model_name: "model.safetensors" },
+        },
+        "320:276": {
+          class_type: "Sampler",
+          inputs: { model: ["269", 0], seed: 42, steps: 8 },
+        },
+      },
+    });
+    if (nestedDescriptor.backendKind !== "comfyui") {
+      throw new Error("expected ComfyUI descriptor");
+    }
+
+    const workflow = buildComfyUiWorkflow(
+      nestedDescriptor,
+      objectInfo,
+    ) as {
+      nodes: Array<{ id: number }>;
+      links: Array<[number, number, number, number]>;
+    };
+
+    expect(workflow.nodes.map((node) => node.id)).toEqual([269, 270]);
+    expect(workflow.links[0]?.slice(1, 4)).toEqual([269, 0, 270]);
+  });
+
   it("stores the graph in ComfyUI's workflows userdata directory", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify(objectInfo), { status: 200 }))

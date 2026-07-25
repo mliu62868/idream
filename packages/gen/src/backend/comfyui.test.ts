@@ -137,6 +137,37 @@ const lookDescriptor = workflowDescriptorSchema.parse({
   ],
 });
 
+const videoDescriptor = workflowDescriptorSchema.parse({
+  workflowKey: "ltx-video-test",
+  modelId: "ltx-video-test",
+  backendKind: "comfyui",
+  version: 1,
+  comfyWorkflow: {
+    id: "55555555-5555-4555-8555-555555555555",
+    name: "iDream Test Video",
+  },
+  capabilities: ["video", "img2video", "referenceImages"],
+  identity: {
+    mode: "single_reference",
+    maxReferences: 1,
+    acceptedRoles: ["source_image"],
+    supportsLookReference: false,
+    supportsSourceImageWithIdentity: false,
+  },
+  apiPrompt: {
+    "8": { class_type: "LoadImage", inputs: { image: "" } },
+    "75": { class_type: "SaveVideo", inputs: {} },
+  },
+  inputs: [
+    {
+      key: "source_image",
+      type: "image",
+      referenceRoles: ["source_image"],
+      target: { nodeId: "8", field: "image" },
+    },
+  ],
+});
+
 // 2x2 PNG (checkerboard black/white) — the brief's original 1x1 fixture had a
 // truncated/corrupt IDAT chunk (bad CRC) and, even fixed, a true 1x1 pixel is
 // uniform by construction so it would always trip assertGeneratedImageSanity's
@@ -146,6 +177,14 @@ const lookDescriptor = workflowDescriptorSchema.parse({
 const PNG_B64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAE0lEQVR4nGNgYGD4//8/GDMwAAAp5AX71ZPZmwAAAABJRU5ErkJggg==";
 const PNG = Uint8Array.from(atob(PNG_B64), (c) => c.charCodeAt(0));
+const MP4 = new Uint8Array([
+  0x00, 0x00, 0x00, 0x18,
+  0x66, 0x74, 0x79, 0x70,
+  0x69, 0x73, 0x6f, 0x6d,
+  0x00, 0x00, 0x02, 0x00,
+  0x69, 0x73, 0x6f, 0x6d,
+  0x6d, 0x70, 0x34, 0x32,
+]);
 
 function mockFetch(seq: Array<() => Response>) {
   let i = 0;
@@ -197,6 +236,56 @@ describe("ComfyUIBackend", () => {
         version: 1,
       },
     });
+  });
+
+  it("polls an animated ComfyUI output as MP4 for video workflows", async () => {
+    const g = mockFetch([
+      () => new Response(JSON.stringify({ name: "source.webp", subfolder: "", type: "input" })),
+      () => new Response(JSON.stringify({ prompt_id: "video-p1" }), { status: 200 }),
+      () => new Response(JSON.stringify({
+        "video-p1": {
+          status: { completed: true },
+          outputs: {
+            "75": {
+              images: [{
+                filename: "result.mp4",
+                subfolder: "",
+                type: "output",
+                animated: [true],
+              }],
+            },
+          },
+        },
+      }), { status: 200 }),
+      () => new Response(MP4, {
+        status: 200,
+        headers: { "content-type": "video/mp4" },
+      }),
+    ]);
+    vi.stubGlobal("fetch", g);
+    const backend = makeBackend();
+    const handle = await backend.submit({
+      descriptor: videoDescriptor,
+      slots: { width: 768, height: 1152 },
+      referenceImages: [{
+        assetId: "source-1",
+        role: "source_image",
+        b64Json: PNG_B64,
+        contentType: "image/png",
+      }],
+      timeoutMs: 5_000,
+    });
+
+    const result = await backend.poll(handle);
+
+    expect(result.assets).toEqual([
+      {
+        body: MP4,
+        width: 768,
+        height: 1152,
+        contentType: "video/mp4",
+      },
+    ]);
   });
   it("throws when prompt is rejected (no prompt_id)", async () => {
     vi.stubGlobal("fetch", mockFetch([() => new Response(JSON.stringify({ node_errors: { "6": "bad" } }), { status: 200 })]));

@@ -111,7 +111,8 @@ async function runProbe(): Promise<ProductConfigProbeReport> {
       }),
     ]);
 
-    const videoFeatureEnabled = videoFlag?.enabled === true;
+    const videoFeatureEnabled =
+      videoFlag?.enabled === true && videoFlag.rolloutPercent === 100;
     const failureReasons = [
       activeImageProfiles < 1 ? "missing active image model profile" : null,
       activeImageCharacterTemplates < 1
@@ -128,9 +129,6 @@ async function runProbe(): Promise<ProductConfigProbeReport> {
         : null,
       videoFeatureEnabled && activeVideoCharacterTemplates < 1
         ? "video_gen enabled without active video character prompt template"
-        : null,
-      videoFeatureEnabled && activeVideoFreeplayTemplates < 1
-        ? "video_gen enabled without active video freeplay prompt template"
         : null,
       videoFeatureEnabled && activeVideoPricingRules !== 1
         ? `video_gen requires exactly one active video pricing rule (found ${activeVideoPricingRules})`

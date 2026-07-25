@@ -155,6 +155,11 @@ import {
   resolvePublicCharacterReleaseAssetPack,
 } from "./public-content-audience";
 
+const generationOrientations = [...imageOrientations, "2:3"] as [
+  (typeof imageOrientations)[number] | "2:3",
+  ...Array<(typeof imageOrientations)[number] | "2:3">,
+];
+
 type ApiMethod = "GET" | "POST" | "PATCH" | "DELETE" | "PUT";
 type JsonRecord = Record<string, Prisma.JsonValue>;
 type SearchRouteSuggestion = {
@@ -233,7 +238,7 @@ const generationControlsSchema = z
     camera: z.string().trim().min(1).max(240).optional(),
     lighting: z.string().trim().min(1).max(240).optional(),
     styleDelta: z.string().trim().min(1).max(240).optional(),
-    orientation: z.enum(imageOrientations).optional(),
+    orientation: z.enum(generationOrientations).optional(),
     model: z.string().trim().min(1).max(120).optional(),
     seconds: z.number().int().min(1).max(30).optional(),
   })
@@ -262,7 +267,7 @@ const generationJobSchema = z
     negativePrompt: z.string().trim().max(1_000).optional(),
     controls: generationControlsSchema.default({}),
     presetIds: z.array(z.string()).max(12).default([]),
-    orientation: z.enum(imageOrientations).optional(),
+    orientation: z.enum(generationOrientations).optional(),
     outputCount: z.number().int().min(1).max(8).default(1),
     model: z.string().max(80).optional(),
     remixFeedItemId: z.string().max(180).optional(),
@@ -1972,7 +1977,7 @@ async function generationConfig(request: Request) {
               ? ("entitlement_required" as const)
               : ("no_active_model" as const),
         }
-      : !hasCompleteGenerationRecipeSet(videoRecipes)
+      : !hasCharacterGenerationRecipe(videoRecipes)
         ? {
             state: "unavailable" as const,
             reason: "no_active_recipe" as const,
@@ -2282,6 +2287,7 @@ async function resolveFeedRemixGenerationSource(
 
 interface GenerationPromptCharacter {
   id: string;
+  imageAssetId: string | null;
   name: string;
   age: number;
   description: string;
@@ -2864,16 +2870,6 @@ async function resolveGenerationPlanForUser(
   if (body.mode === "video" && !(await featureFlagEnabled("video_gen"))) {
     throw Errors.forbidden("Video generation is disabled");
   }
-  const preflightProfile =
-    body.mode === "video"
-      ? await selectGenerationProfile(
-          body.mode,
-          selectedModel,
-          undefined,
-          false,
-          entitlements,
-        )
-      : null;
   const systemPromptSource = isTrustedGenerationPromptSource(
     options.source?.sourceType,
   );
@@ -2910,20 +2906,37 @@ async function resolveGenerationPlanForUser(
   );
   const requestedLookReferenceAssetId =
     selectedLook?.referenceAssetId ?? null;
-  const requestedSourceImageAssetId = (
+  const explicitSourceImageAssetId = (
     body.controls as Record<string, unknown>
   ).sourceImageAssetId;
+  const requestedSourceImageAssetId =
+    typeof explicitSourceImageAssetId === "string"
+      ? explicitSourceImageAssetId
+      : body.mode === "video"
+        ? character?.imageAssetId ?? null
+        : null;
   const referenceRequirements =
     body.mode === "image" && character && visualProfile
       ? await generationReferenceRouteRequirements(visualProfile.id)
       : [];
   const hasRequestedSourceImage =
     typeof requestedSourceImageAssetId === "string";
+  if (body.mode === "video" && !hasRequestedSourceImage) {
+    throw Errors.conflict(
+      "Image-to-video generation requires a Character with an available primary image",
+      { characterId: character?.id ?? null },
+    );
+  }
   const requiresReferenceRouting =
-    body.mode === "image" &&
-    (referenceRequirements.length > 0 ||
-      hasRequestedSourceImage ||
-      requestedLookReferenceAssetId !== null);
+    (
+      body.mode === "image" &&
+      (
+        referenceRequirements.length > 0 ||
+        hasRequestedSourceImage ||
+        requestedLookReferenceAssetId !== null
+      )
+    ) ||
+    (body.mode === "video" && hasRequestedSourceImage);
   const requirePublicTextToImageProfile =
     body.mode === "image" &&
     (
@@ -2965,7 +2978,13 @@ async function resolveGenerationPlanForUser(
           entitlements,
           requirePublicImageEditProfile,
         )
-      : preflightProfile!;
+      : await selectGenerationProfile(
+          body.mode,
+          selectedModel,
+          undefined,
+          false,
+          entitlements,
+        );
   if (
     profile.requiredEntitlement &&
     !entitlements[profile.requiredEntitlement]
@@ -2975,14 +2994,10 @@ async function resolveGenerationPlanForUser(
     });
   }
 
-  const workflowDescriptor =
-    body.mode === "image"
-      ? await generationWorkflowDescriptor(
-          profile.workflowKey ?? profile.pipelineModel,
-        )
-      : null;
+  const workflowDescriptor = await generationWorkflowDescriptor(
+    profile.workflowKey ?? profile.pipelineModel,
+  );
   if (
-    body.mode === "image" &&
     hasRequestedSourceImage &&
     referenceRequirements.length === 0
   ) {
@@ -11639,9 +11654,6 @@ async function featureFlagEnabled(key: string) {
     select: { enabled: true, rolloutPercent: true },
   });
   if (!flag?.enabled || flag.rolloutPercent !== 100) return false;
-  // Main has no production video adapter by design yet. Even an accidental
-  // operator flag change must not expose or execute the local mock provider.
-  if (key === "video_gen" && env.APP_ENV === "production") return false;
   return true;
 }
 
@@ -11736,6 +11748,7 @@ function profileConfigDTO(profile: {
 function supportedProfileOrientations(value: Prisma.JsonValue) {
   return jsonStringArray(value).filter(
     (orientation) =>
+      orientation === "2:3" ||
       imageOrientations.includes(
         orientation as (typeof imageOrientations)[number],
       ),
@@ -11893,6 +11906,12 @@ function hasCompleteGenerationRecipeSet(
 ) {
   const useCases = new Set(recipes.map((recipe) => recipe.useCase));
   return useCases.has("character") && useCases.has("freeplay");
+}
+
+function hasCharacterGenerationRecipe(
+  recipes: ReadonlyArray<{ readonly useCase: string }>,
+) {
+  return recipes.some((recipe) => recipe.useCase === "character");
 }
 
 async function entitlementMap(userId: string) {

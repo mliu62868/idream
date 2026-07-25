@@ -193,4 +193,92 @@ describe("generation completion manifest durable ingest", () => {
       await prisma.user.deleteMany({ where: { id: userId } });
     }
   });
+
+  it("archives late artifacts without delivery after a stale-failed Attempt", async () => {
+    const suffix = crypto.randomUUID();
+    const userId = `late-failed-user-${suffix}`;
+    const jobId = `late-failed-job-${suffix}`;
+    const failedAttemptId = `late-failed-attempt-${suffix}`;
+    const lateManifest = {
+      ...manifest,
+      attemptId: failedAttemptId,
+      generationJobId: jobId,
+      requestId: `late-failed-provider-${suffix}`,
+      providerIdempotencyKey: `generation:${failedAttemptId}:provider`,
+    };
+    try {
+      await prisma.user.create({
+        data: {
+          id: userId,
+          email: `${userId}@idream.internal`,
+          status: "active",
+        },
+      });
+      await prisma.generationJob.create({
+        data: {
+          id: jobId,
+          userId,
+          mode: "video",
+          controls: {},
+          presetIds: [],
+          status: "failed",
+          errorCode: "stale_timeout",
+        },
+      });
+      await prisma.generationAttempt.create({
+        data: {
+          id: failedAttemptId,
+          requestId: jobId,
+          attemptNo: 1,
+          status: "failed",
+          errorCode: "stale_timeout",
+          finishedAt: new Date(),
+        },
+      });
+      const input = {
+        manifestRef: `gen/completion-manifests/${failedAttemptId}/completion.json`,
+        manifestChecksum: generationManifestChecksum(lateManifest),
+        manifest: lateManifest,
+      };
+
+      await expect(ingestGenerationManifest(input)).resolves.toMatchObject({
+        acknowledged: true,
+        status: "persisted",
+      });
+      await expect(
+        prisma.generationArtifact.findMany({
+          where: { attemptId: failedAttemptId },
+        }),
+      ).resolves.toEqual([
+        expect.objectContaining({
+          validationState: "late_after_failed",
+          archiveState: "archived",
+          assetId: null,
+        }),
+      ]);
+      await expect(
+        prisma.generationDelivery.findFirst({ where: { requestId: jobId } }),
+      ).resolves.toMatchObject({ status: "suppressed", deliveredAt: null });
+    } finally {
+      await prisma.inboundEventReceipt.deleteMany({
+        where: { sourceService: "gen", sourceEventId: failedAttemptId },
+      });
+      await prisma.generationJobEvent.deleteMany({ where: { jobId } });
+      await prisma.generationDelivery.deleteMany({ where: { requestId: jobId } });
+      await prisma.generationArtifact.deleteMany({
+        where: { attemptId: failedAttemptId },
+      });
+      await prisma.generationTransportExecution.deleteMany({
+        where: { attemptId: failedAttemptId },
+      });
+      await prisma.generationAttemptEvent.deleteMany({
+        where: { attemptId: failedAttemptId },
+      });
+      await prisma.generationAttempt.deleteMany({
+        where: { id: failedAttemptId },
+      });
+      await prisma.generationJob.deleteMany({ where: { id: jobId } });
+      await prisma.user.deleteMany({ where: { id: userId } });
+    }
+  });
 });

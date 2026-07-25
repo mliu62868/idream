@@ -72,12 +72,19 @@ export function buildComfyUiWorkflow(
 ): JsonRecord {
   const drafts = new Map<string, UiNodeDraft>();
   const promptEntries = Object.entries(descriptor.apiPrompt);
+  const uiNodeIds = numericUiNodeIds(
+    promptEntries.map(([nodeId]) => nodeId),
+  );
 
   for (const [nodeId, promptNode] of promptEntries) {
     const info = objectInfo[promptNode.class_type];
     if (!info) throw new Error(`ComfyUI object_info is missing node type ${promptNode.class_type}`);
     const definitions = { ...info.input?.required, ...info.input?.optional };
-    const orderedNames = orderedInputNames(info, definitions);
+    const orderedNames = orderedInputNames(
+      info,
+      definitions,
+      Object.keys(promptNode.inputs),
+    );
     const inputDrafts = orderedNames.map((name) => {
       const definition = definitions[name];
       const value = promptNode.inputs[name];
@@ -108,7 +115,7 @@ export function buildComfyUiWorkflow(
     const outputTypes = info.output ?? [];
     const outputNames = info.output_name ?? outputTypes;
     drafts.set(nodeId, {
-      id: numericNodeId(nodeId),
+      id: uiNodeIds.get(nodeId)!,
       type: promptNode.class_type,
       inputs,
       outputs: outputTypes.map((type, index) => ({
@@ -184,12 +191,22 @@ export function buildComfyUiWorkflow(
   };
 }
 
-function orderedInputNames(info: ObjectInfo, definitions: Record<string, unknown>): string[] {
+function orderedInputNames(
+  info: ObjectInfo,
+  definitions: Record<string, unknown>,
+  promptInputNames: readonly string[],
+): string[] {
   const declared = [
     ...(info.input_order?.required ?? Object.keys(info.input?.required ?? {})),
     ...(info.input_order?.optional ?? Object.keys(info.input?.optional ?? {})),
   ];
-  return [...new Set([...declared, ...Object.keys(definitions)])];
+  return [
+    ...new Set([
+      ...declared,
+      ...Object.keys(definitions),
+      ...promptInputNames,
+    ]),
+  ];
 }
 
 function inputType(definition: unknown): string {
@@ -222,10 +239,24 @@ function isConnection(value: unknown): value is [string | number, number] {
     && typeof value[1] === "number";
 }
 
-function numericNodeId(nodeId: string): number {
-  const value = Number(nodeId);
-  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`ComfyUI UI workflow requires numeric node id: ${nodeId}`);
-  return value;
+function numericUiNodeIds(nodeIds: readonly string[]) {
+  const mapped = new Map<string, number>();
+  const used = new Set<number>();
+  for (const nodeId of nodeIds) {
+    const value = Number(nodeId);
+    if (!Number.isSafeInteger(value) || value < 0) continue;
+    mapped.set(nodeId, value);
+    used.add(value);
+  }
+  let next = Math.max(0, ...used) + 1;
+  for (const nodeId of nodeIds) {
+    if (mapped.has(nodeId)) continue;
+    while (used.has(next)) next += 1;
+    mapped.set(nodeId, next);
+    used.add(next);
+    next += 1;
+  }
+  return mapped;
 }
 
 function layoutPositions(descriptor: ComfyDescriptor): Map<string, [number, number]> {

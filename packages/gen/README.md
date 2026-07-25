@@ -201,6 +201,44 @@ The first generation on a cold ComfyUI process loads a ~24GB bf16 checkpoint
 into memory and can take a few minutes; subsequent runs are much faster once
 the model is resident.
 
+## Production video backend (`GEN_VIDEO_PROVIDER=backend`)
+
+The production video worker uses the same backend registry, but resolves the
+video-only `ltx23-gtanimation-i2v` descriptor through `BackendVideoModel`.
+This route requires exactly one `source_image` reference and writes an MP4
+artifact; missing source authority or a non-MP4 backend response fails closed.
+
+The checked-in descriptor pins the exact Civitai LTX 2.3 GTAnimation INT4
+ConvRot workflow tested on ComfyUI/MPS:
+
+```dotenv
+GEN_VIDEO_PROVIDER=backend
+GEN_VIDEO_TIMEOUT_MS=1800000
+COMFYUI_API_URL=http://127.0.0.1:8188
+```
+
+```text
+model: ltx23-gtanimation-int4-convrot
+workflow: ltx23-gtanimation-i2v
+input: one published source image
+output: 768x1152, 25 fps, MP4 with audio
+```
+
+Regenerate the descriptor from the validated ComfyUI API prompt with:
+
+```bash
+node packages/gen/scripts/build-ltx23-gtanimation-workflow.mjs
+bun run sync:comfyui-workflows
+```
+
+The 30-minute provider timeout is intentional: the full 768x1152 route takes
+roughly 10–15 minutes on the current M4 Max/MPS host.
+
+The PM2 `gen-video` process intentionally runs with `watch: false` in both
+development and production. A source-file restart can otherwise interrupt an
+in-flight clip after coins were reserved. Main's video stale timeout is 35
+minutes, deliberately longer than this provider timeout.
+
 **fp8 → bf16 note:** on Apple Silicon (MPS), fp8-quantized checkpoints are not
 supported — they must be dequantized to bf16 before ComfyUI can load them on
 MPS. See `docs/superpowers/specs/2026-07-07-image-generation-redesign-design.md`

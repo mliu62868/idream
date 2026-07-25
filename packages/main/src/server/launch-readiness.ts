@@ -410,7 +410,7 @@ export const currentLaunchCapabilities: LaunchReadinessCapabilities = {
     AGE_VERIFICATION_PROVIDER: ["mock", "gocam"],
   },
   genImageProviders: ["mock", "pipeline", "backend"],
-  genVideoProviders: ["mock", "pipeline"],
+  genVideoProviders: ["mock", "pipeline", "backend"],
 };
 
 const developmentSecret = "development-only-secret-change-before-production";
@@ -1393,24 +1393,26 @@ function addVideoPipelineChecks(
       remediation:
         videoFeatureDisabled
           ? undefined
-          : "Keep the video_gen feature flag off, or set GEN_VIDEO_PROVIDER=pipeline with a tested video gateway before enabling video generation.",
+          : "Keep the video_gen feature flag off, or set GEN_VIDEO_PROVIDER=backend/pipeline with a tested video workflow before enabling video generation.",
     });
     return;
   }
 
   const supported = capabilities.genVideoProviders.includes(configured);
+  const isProductionProvider =
+    configured === "pipeline" || configured === "backend";
   addCheck(checks, {
     id: "gen-video-provider",
     area: "Generation",
-    status: configured === "pipeline" && supported ? "pass" : "fail",
+    status: isProductionProvider && supported ? "pass" : "fail",
     message:
-      configured === "pipeline" && supported
-        ? "Video generation worker is configured for the pipeline provider."
+      isProductionProvider && supported
+        ? `Video generation worker is configured for the ${configured} provider.`
         : `Video generation worker is configured as ${configured}.`,
     remediation:
-      configured === "pipeline" && supported
+      isProductionProvider && supported
         ? undefined
-        : "Use GEN_VIDEO_PROVIDER=pipeline or keep video generation disabled for launch.",
+        : "Use GEN_VIDEO_PROVIDER=backend/pipeline or keep video generation disabled for launch.",
   });
 
   if (configured === "pipeline") {
@@ -1425,6 +1427,17 @@ function addVideoPipelineChecks(
       remediation: hasMinLength(model, 1)
         ? undefined
         : "Set PIPELINE_VIDEO_MODEL_DEFAULT or document the default model in the pipeline service.",
+    });
+  }
+  if (configured === "backend") {
+    addRequiredCheck(checks, env, {
+      id: "video-comfyui-api-url",
+      area: "Generation",
+      key: "COMFYUI_API_URL",
+      label: "Video ComfyUI API URL",
+      url: true,
+      remediation:
+        "Set COMFYUI_API_URL to the ComfyUI runtime hosting the pinned LTX video workflow.",
     });
   }
 }
@@ -1474,9 +1487,6 @@ function addProductConfigProbeCheck(
       }
       if ((probe.activeVideoCharacterTemplates ?? 0) < 1) {
         problems.push("video_gen is enabled but no active video character prompt template is configured");
-      }
-      if ((probe.activeVideoFreeplayTemplates ?? 0) < 1) {
-        problems.push("video_gen is enabled but no active video freeplay prompt template is configured");
       }
       if ((probe.activeVideoPricingRules ?? 0) !== 1) {
         problems.push("video_gen is enabled but video pricing does not have exactly one active rule");

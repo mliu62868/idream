@@ -189,17 +189,21 @@ module.exports = {
         ...sharedInternalEnv,
       },
     },
-    // gen-video is DEFERRED to V1.1 (video_gen flag is off; see docs/architecture/12-roadmap.md).
-    // Keep it out of the running topology until a real video provider is enabled, so we
-    // don't run an idle/exiting worker. Re-enable this block together with VIDEO_PROVIDER.
-    // {
-    //   name: "gen-video",
-    //   cwd: dir("packages/gen"),
-    //   script: "node_modules/tsx/dist/cli.mjs",
-    //   args: "src/video.ts",
-    //   exec_mode: "fork",
-    //   instances: 1,
-    // },
+    {
+      name: "gen-video",
+      cwd: dir("packages/gen"),
+      script: "node_modules/tsx/dist/cli.mjs",
+      args: "src/video.ts",
+      exec_mode: "fork",
+      instances: 1,
+      // Video jobs can run for 10–30 minutes. A dev watch restart after the
+      // ComfyUI submit but before manifest ingest creates an orphan prompt and
+      // BullMQ retry duplicate, so this worker is always restarted explicitly.
+      watch: false,
+      env: {
+        ...sharedInternalEnv,
+      },
+    },
     // medium · async — main-side authority write-back
     {
       name: "gen-finalizer",

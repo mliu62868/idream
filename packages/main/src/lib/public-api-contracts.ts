@@ -817,7 +817,7 @@ const generationConfigSchema = z
       (videoAvailable &&
         (!config.video.enabled ||
           config.video.models.length === 0 ||
-          !hasCompleteRecipeSet(config.video.recipes))) ||
+          !hasCharacterRecipe(config.video.recipes))) ||
       (!videoAvailable && config.video.models.length > 0)
     ) {
       ctx.addIssue({
@@ -838,6 +838,16 @@ function hasCompleteRecipeSet(
 ) {
   const useCases = new Set((recipes ?? []).map((recipe) => recipe.useCase));
   return useCases.has("character") && useCases.has("freeplay");
+}
+
+function hasCharacterRecipe(
+  recipes:
+    | ReadonlyArray<{
+        useCase: string;
+      }>
+    | undefined,
+) {
+  return (recipes ?? []).some((recipe) => recipe.useCase === "character");
 }
 
 const generationConfigResponseSchema = successEnvelope(generationConfigSchema);

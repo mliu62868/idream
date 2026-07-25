@@ -8,8 +8,14 @@ import { Buffer } from "node:buffer";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { ImageGeneratePayload } from "@idream/shared/contracts";
-import { S3CompatibleBlobStore, SafetyGatewayModerationProvider } from "@idream/shared";
+import type { VideoGeneratePayload } from "@idream/shared/contracts";
+import {
+  mockVideoMp4Bytes,
+  S3CompatibleBlobStore,
+  SafetyGatewayModerationProvider,
+} from "@idream/shared";
 import { BackendImageModel } from "./backend/backend-image-model";
+import { BackendVideoModel } from "./backend/backend-video-model";
 import { buildBackendRegistry, type BackendRegistry } from "./backend/registry";
 import { env } from "./env";
 
@@ -73,6 +79,7 @@ export interface VideoModel {
     model?: string;
     controls?: Record<string, unknown>;
     requestId?: string;
+    referenceImages?: NonNullable<VideoGeneratePayload["referenceImages"]>;
   }): Promise<
     ProviderResult<{
       asset: {
@@ -136,6 +143,8 @@ class MockVideoModel implements VideoModel {
         asset: {
           key: `mock/videos/${input.seed ?? "mock"}.mp4`,
           seconds: input.seconds,
+          contentType: "video/mp4",
+          body: mockVideoMp4Bytes(),
         },
       },
     };
@@ -497,6 +506,9 @@ function buildImageModel(): ImageModel {
 function buildVideoModel(): VideoModel {
   assertProductionProviderReady("video");
   if (env.VIDEO_PROVIDER === "mock") return new MockVideoModel();
+  if (env.VIDEO_PROVIDER === "backend") {
+    return new BackendVideoModel(getBackendRegistry());
+  }
   if (env.VIDEO_PROVIDER === "pipeline") return new PipelineVideoModel();
   throw new Error(`Unsupported video provider: ${env.VIDEO_PROVIDER}`);
 }
@@ -544,9 +556,7 @@ function buildModerationProvider(): ModerationProvider {
 
 export function assertProductionProviderReady(kind: "image" | "video") {
   const provider = kind === "image" ? env.IMAGE_PROVIDER : env.VIDEO_PROVIDER;
-  // "backend" (local ComfyUI/sd-cli via the workflow-native GenBackend registry) is
-  // only a valid choice for images — video generation still goes through "pipeline".
-  const supported = kind === "image" ? ["mock", "pipeline", "backend"] : ["mock", "pipeline"];
+  const supported = ["mock", "pipeline", "backend"];
   if (!supported.includes(provider)) {
     throw new Error(`Unsupported ${kind} provider: ${provider}`);
   }
@@ -568,9 +578,6 @@ export function assertProductionProviderReady(kind: "image" | "video") {
 export function assertProductionModerationReady() {
   if (process.env.APP_ENV !== "production") return;
 
-  if (env.MODERATION_PROVIDER === "mock") {
-    throw new Error("Production generation requires a non-mock moderation provider");
-  }
   if (env.MODERATION_PROVIDER === "safety-gateway") {
     requireProviderEnv(
       "MODERATION_SERVICE_URL",

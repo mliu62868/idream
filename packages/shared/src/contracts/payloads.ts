@@ -50,6 +50,25 @@ export const chatMemoryExtractPayloadSchema = z.object({
   attempt: z.number().int().min(1),
 });
 
+const generationReferenceImageSchema = z
+  .object({
+    assetId: z.string(),
+    role: z.enum([
+      "identity_anchor",
+      "identity_reference",
+      "look_reference",
+      "source_image",
+    ]),
+    storageKey: z.string().optional(),
+    url: z.string().optional(),
+    contentType: z.string().optional(),
+    width: z.number().int().positive().optional(),
+    height: z.number().int().positive().optional(),
+    weight: z.number().min(0).max(2).optional(),
+    b64Json: z.string().optional(),
+  })
+  .passthrough();
+
 export const imageGeneratePayloadSchema = z
   .object({
     version: z.literal(1),
@@ -69,28 +88,7 @@ export const imageGeneratePayloadSchema = z
     seed: z.string(),
     model: z.string(),
     outputPrefix: z.string(),
-    referenceImages: z
-      .array(
-        z
-          .object({
-            assetId: z.string(),
-            role: z.enum([
-              "identity_anchor",
-              "identity_reference",
-              "look_reference",
-              "source_image",
-            ]),
-            storageKey: z.string().optional(),
-            url: z.string().optional(),
-            contentType: z.string().optional(),
-            width: z.number().int().positive().optional(),
-            height: z.number().int().positive().optional(),
-            weight: z.number().min(0).max(2).optional(),
-            b64Json: z.string().optional(),
-          })
-          .passthrough(),
-      )
-      .optional(),
+    referenceImages: z.array(generationReferenceImageSchema).optional(),
   })
   .passthrough();
 
@@ -242,6 +240,7 @@ export const videoGeneratePayloadSchema = z
     seed: z.string(),
     model: z.string(),
     outputPrefix: z.string(),
+    referenceImages: z.array(generationReferenceImageSchema).optional(),
   })
   .passthrough();
 

@@ -65,7 +65,10 @@ export async function ingestGenerationManifest(
       });
       return { acknowledged: false, status: "quarantined" as const, receiptId: quarantined.id };
     }
-    if (existingAttempt?.status === "cancelled") {
+    const lateValidationState = existingAttempt
+      ? lateArtifactValidationState(existingAttempt.status)
+      : null;
+    if (existingAttempt && lateValidationState) {
       const request = await tx.generationJob.findUniqueOrThrow({
         where: { id: existingAttempt.requestId },
         select: { userId: true },
@@ -110,7 +113,7 @@ export async function ingestGenerationManifest(
         const artifactKey = { attemptId_ordinal: { attemptId: existingAttempt.id, ordinal: asset.ordinal } };
         const existingArtifact = await tx.generationArtifact.findUnique({ where: artifactKey });
         if (existingArtifact && (
-          !isGenerationArtifactValidationTransitionAllowed(existingArtifact.validationState, "late_after_cancel") ||
+          !isGenerationArtifactValidationTransitionAllowed(existingArtifact.validationState, lateValidationState) ||
           !isGenerationArtifactArchiveTransitionAllowed(existingArtifact.archiveState, "archived")
         )) {
           throw Errors.conflict("Late completion cannot rewrite terminal Artifact evidence", {
@@ -125,10 +128,10 @@ export async function ingestGenerationManifest(
             ordinal: asset.ordinal,
             providerRef: asset.providerKey,
             manifestChecksum: input.manifestChecksum,
-            validationState: "late_after_cancel",
+            validationState: lateValidationState,
             archiveState: "archived",
           },
-          update: { validationState: "late_after_cancel", archiveState: "archived" },
+          update: { validationState: lateValidationState, archiveState: "archived" },
         });
         const deliveryKey = {
           artifactId_targetType_targetId: {
@@ -162,8 +165,13 @@ export async function ingestGenerationManifest(
       await tx.generationJobEvent.create({ data: {
         jobId: input.manifest.generationJobId,
         type: "late_artifact_archived",
-        message: "Provider artifacts arrived after cancellation and were archived without delivery",
-        metadata: toInputJson({ attemptId: existingAttempt.id, manifestRef: input.manifestRef, assetCount: input.manifest.assets.length }),
+        message: "Provider artifacts arrived after a terminal outcome and were archived without delivery",
+        metadata: toInputJson({
+          attemptId: existingAttempt.id,
+          terminalStatus: existingAttempt.status,
+          manifestRef: input.manifestRef,
+          assetCount: input.manifest.assets.length,
+        }),
       } });
       return { acknowledged: true, status: "persisted" as const, receiptId: createdReceipt.id };
     }
@@ -280,6 +288,14 @@ export async function ingestGenerationManifest(
     );
   }
   return result;
+}
+
+function lateArtifactValidationState(status: string) {
+  if (status === "cancelled") return "late_after_cancel" as const;
+  if (status === "failed") return "late_after_failed" as const;
+  if (status === "blocked") return "late_after_blocked" as const;
+  if (status === "refunded") return "late_after_refunded" as const;
+  return null;
 }
 
 function manifestCostMicros(input: GenerationManifestIngest): bigint | null {

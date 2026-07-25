@@ -342,7 +342,7 @@ Required work:
 - Show premium prompt and negative prompt gates with upgrade path. **Covered.**
 - Add clear insufficient-balance, blocked, failed, refunded, and retry states. **Covered.**
 - Add gallery management: like, delete, download, report, filter, and empty states. **Covered; sorting/full-text search remains intentionally deferred for controlled beta.**
-- Keep video hidden unless real video provider and launch gates are ready. **Covered for current `video_gen=false` scope.**
+- Keep video hidden unless real video provider and launch gates are ready. **Covered: `video_gen=true` now exposes only the real LTX 2.3 backend route, and launch readiness rejects mock/missing ComfyUI configuration.**
 
 Acceptance:
 
@@ -350,7 +350,7 @@ Acceptance:
 - Premium controls unlock after Upgrade. **Covered.**
 - Insufficient balance blocks submission with an actionable message. **Covered.**
 - Failed provider job can retry; blocked job cannot retry and points to policy/help. **Covered.**
-- Video is either hidden cleanly when disabled or passes the video provider launch gate. **Covered for disabled-video scope.**
+- Video is either hidden cleanly when disabled or passes the video provider launch gate. **Covered for the enabled LTX 2.3 I2V scope; exact browser → queue → ComfyUI → MP4 persistence evidence is recorded in `CURRENT_FUNCTIONAL_COVERAGE.md`.**
 
 ### D2. Character-Consistent Image Generation — Phase 1 app flow landed（2026-06-30）
 

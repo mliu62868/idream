@@ -448,13 +448,11 @@ describe("PipelineImageModel", () => {
     );
   });
 
-  it("rejects production generation when moderation is still mock", () => {
+  it("accepts the product mock moderation authority in production", () => {
     process.env.APP_ENV = "production";
     process.env.GEN_MODERATION_PROVIDER = "mock";
 
-    expect(() => assertProductionModerationReady()).toThrow(
-      "Production generation requires a non-mock moderation provider",
-    );
+    expect(() => assertProductionModerationReady()).not.toThrow();
   });
 
   it("wires the safety gateway moderation provider when configured", async () => {
