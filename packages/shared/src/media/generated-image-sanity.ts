@@ -25,9 +25,71 @@ export class GeneratedImageSanityError extends Error {
   }
 }
 
-export function assertGeneratedImageSanity(image: Buffer, source: string) {
+export const GENERATED_IMAGE_SANITY_EVALUATOR_VERSION =
+  "generated-image-sanity-v2";
+
+export type GeneratedImageSanityRequirements = {
+  readonly singleContinuousFrame?: boolean;
+};
+
+export type GeneratedImageSanityEvidence = {
+  readonly schemaVersion: "1";
+  readonly evaluatorVersion: typeof GENERATED_IMAGE_SANITY_EVALUATOR_VERSION;
+  readonly sanity: {
+    readonly status: "passed";
+  };
+  readonly composition: {
+    readonly status: "passed" | "unscored";
+    readonly reason: string;
+  };
+};
+
+export function parseSingleContinuousFrameEvidence(
+  value: unknown,
+): Pick<
+  GeneratedImageSanityEvidence,
+  "schemaVersion" | "evaluatorVersion" | "composition"
+> | null {
+  const evidence =
+    value !== null && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  const composition =
+    evidence.composition !== null &&
+    typeof evidence.composition === "object" &&
+    !Array.isArray(evidence.composition)
+      ? (evidence.composition as Record<string, unknown>)
+      : {};
+  if (
+    evidence.schemaVersion !== "1" ||
+    evidence.evaluatorVersion !== GENERATED_IMAGE_SANITY_EVALUATOR_VERSION ||
+    composition.status !== "passed" ||
+    composition.reason !== "single_continuous_frame_detected"
+  ) {
+    return null;
+  }
+  return {
+    schemaVersion: "1",
+    evaluatorVersion: GENERATED_IMAGE_SANITY_EVALUATOR_VERSION,
+    composition: {
+      status: "passed",
+      reason: "single_continuous_frame_detected",
+    },
+  };
+}
+
+export function assertGeneratedImageSanity(
+  image: Buffer,
+  source: string,
+  requirements: GeneratedImageSanityRequirements = {},
+): GeneratedImageSanityEvidence {
   const pixels = decodePngPixels(image);
-  if (!pixels) return;
+  if (!pixels) {
+    return generatedImageSanityEvidence(
+      "unscored",
+      "single_frame_evaluator_supports_png_only",
+    );
+  }
 
   const stats = rgbLuminanceStats(pixels);
   if (stats.pixelCount === 0) {
@@ -45,6 +107,98 @@ export function assertGeneratedImageSanity(image: Buffer, source: string) {
         `(luminance range ${stats.range})`,
     );
   }
+  if (
+    requirements.singleContinuousFrame &&
+    hasPersistentInternalDivider(pixels)
+  ) {
+    throw new GeneratedImageSanityError(
+      `Generated image contains multiple panels or a contact sheet: ${source}`,
+    );
+  }
+  return generatedImageSanityEvidence(
+    requirements.singleContinuousFrame ? "passed" : "unscored",
+    requirements.singleContinuousFrame
+      ? "single_continuous_frame_detected"
+      : "single_continuous_frame_not_required",
+  );
+}
+
+function generatedImageSanityEvidence(
+  compositionStatus: "passed" | "unscored",
+  reason: string,
+): GeneratedImageSanityEvidence {
+  return {
+    schemaVersion: "1",
+    evaluatorVersion: GENERATED_IMAGE_SANITY_EVALUATOR_VERSION,
+    sanity: { status: "passed" },
+    composition: { status: compositionStatus, reason },
+  };
+}
+
+function hasPersistentInternalDivider(pixels: PngPixels) {
+  const { width, height } = pixels.header;
+  if (width < 64 || height < 64) return false;
+  return (
+    axisHasPersistentInternalDivider(pixels, "vertical") ||
+    axisHasPersistentInternalDivider(pixels, "horizontal")
+  );
+}
+
+function axisHasPersistentInternalDivider(
+  pixels: PngPixels,
+  axis: "vertical" | "horizontal",
+) {
+  const { width, height } = pixels.header;
+  const axisLength = axis === "vertical" ? width : height;
+  const crossLength = axis === "vertical" ? height : width;
+  const first = Math.ceil(axisLength * 0.15);
+  const last = Math.floor(axisLength * 0.85);
+
+  for (let coordinate = first; coordinate <= last; coordinate += 1) {
+    let strongEdges = 0;
+    let totalDifference = 0;
+    for (let cross = 0; cross < crossLength; cross += 1) {
+      const beforeX = axis === "vertical" ? coordinate - 1 : cross;
+      const beforeY = axis === "vertical" ? cross : coordinate - 1;
+      const afterX = axis === "vertical" ? coordinate : cross;
+      const afterY = axis === "vertical" ? cross : coordinate;
+      const difference = pixelRgbDifference(
+        pixels,
+        beforeX,
+        beforeY,
+        afterX,
+        afterY,
+      );
+      totalDifference += difference;
+      if (difference >= 35) strongEdges += 1;
+    }
+    if (
+      strongEdges / crossLength >= 0.35 &&
+      totalDifference / crossLength >= 20
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function pixelRgbDifference(
+  pixels: PngPixels,
+  firstX: number,
+  firstY: number,
+  secondX: number,
+  secondY: number,
+) {
+  const first = (firstY * pixels.header.width + firstX) * pixels.channels;
+  const second = (secondY * pixels.header.width + secondX) * pixels.channels;
+  if (pixels.channels === 1 || pixels.channels === 2) {
+    return Math.abs((pixels.data[first] ?? 0) - (pixels.data[second] ?? 0));
+  }
+  return (
+    Math.abs((pixels.data[first] ?? 0) - (pixels.data[second] ?? 0)) +
+    Math.abs((pixels.data[first + 1] ?? 0) - (pixels.data[second + 1] ?? 0)) +
+    Math.abs((pixels.data[first + 2] ?? 0) - (pixels.data[second + 2] ?? 0))
+  ) / 3;
 }
 
 function decodePngPixels(image: Buffer): PngPixels | null {

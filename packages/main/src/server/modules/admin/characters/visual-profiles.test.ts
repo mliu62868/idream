@@ -839,6 +839,65 @@ describe("Visual Passport (character visual profiles)", () => {
       },
     });
 
+    const candidateAuthority = {
+      runId,
+      itemId,
+      assetId: candidateAssetId,
+      reviewDecisionId: decisionId,
+    };
+    const legacyAttempt = await call(createCharacterVisualProfile(
+      makeRequest("POST", `/${characterId}/visual-profiles`, {
+        userId: admin,
+        role: "admin",
+        body: {
+          identityPrompt:
+            "Preserve the exact person shown in the canonical portrait.",
+          faceTraits: {
+            canonicalPortraitAuthority: true,
+            stableTraits: ["oval face", "blue eyes"],
+          },
+          hairTraits: { stableTraits: ["dark wavy hair"] },
+          bodyTraits: { stableTraits: ["balanced adult proportions"] },
+          reason: "Activate the reviewed calibration candidate",
+          confirmation: confirmationFor(characterId),
+          candidateAuthority,
+        },
+      }),
+      characterId,
+    ));
+    expect(legacyAttempt).toMatchObject({
+      status: 409,
+      ok: false,
+      errorDetails: { code: "identity_candidate_evidence_incomplete" },
+    });
+
+    const automaticComposition = {
+      schemaVersion: "1",
+      evaluatorVersion: "generated-image-sanity-v2",
+      composition: {
+        status: "passed",
+        reason: "single_continuous_frame_detected",
+      },
+    };
+    await prisma.mediaAsset.update({
+      where: { id: candidateAssetId },
+      data: { metadata: { quality: automaticComposition } },
+    });
+    await prisma.creativeReviewDecision.update({
+      where: { id: decisionId },
+      data: {
+        evidence: {
+          quality: {
+            artifactFree: true,
+            singleSubject: true,
+            intentMatch: true,
+            noVisibleText: true,
+          },
+          automaticComposition,
+        },
+      },
+    });
+
     const result = await call(createCharacterVisualProfile(
       makeRequest("POST", `/${characterId}/visual-profiles`, {
         userId: admin,
@@ -854,12 +913,7 @@ describe("Visual Passport (character visual profiles)", () => {
           bodyTraits: { stableTraits: ["balanced adult proportions"] },
           reason: "Activate the reviewed calibration candidate",
           confirmation: confirmationFor(characterId),
-          candidateAuthority: {
-            runId,
-            itemId,
-            assetId: candidateAssetId,
-            reviewDecisionId: decisionId,
-          },
+          candidateAuthority,
         },
       }),
       characterId,

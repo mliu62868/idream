@@ -18,7 +18,10 @@ import {
 } from "@/server/modules/admin-v2/characters/generation-authority-lock";
 import { patchContentAsset } from "@/server/modules/admin/content-ops";
 import { purgeQueuedGenerationJobs } from "@/server/test/helpers";
-import { recordCreativeReviewDecision } from "./workflow";
+import {
+  getCreativeRunDetail,
+  recordCreativeReviewDecision,
+} from "./workflow";
 
 const { multiReferenceWorkflowKey } = vi.hoisted(() => ({
   multiReferenceWorkflowKey: "test-qwen-image-edit-multi-reference",
@@ -425,6 +428,9 @@ describe("Character image Creative Run authority", () => {
     expect(jobs[0]?.prompt).not.toMatch(
       /Production purpose|Recipe:|template|collage|contact sheet|split panel|comparison grid|late-night confidante/i,
     );
+    expect(jobs[0]?.controls).toMatchObject({
+      compositionRequirement: "single_subject_single_frame",
+    });
     expect(jobs[0]?.sourceMeta).toMatchObject({
       identityExperiment: {
         mode: "text_to_image",
@@ -507,6 +513,118 @@ describe("Character image Creative Run authority", () => {
       status: 400,
       message:
         "A Character identity candidate cannot be approved while a required quality check is failing",
+    });
+
+    const job = await prisma.generationJob.findFirstOrThrow({
+      where: { sourceType: "content_production_item", sourceId: item.id },
+    });
+    const assetId = `character-identity-unverified-asset-${suffix}`;
+    await prisma.mediaAsset.create({
+      data: {
+        id: assetId,
+        ownerId: actorId,
+        characterId,
+        sourceJobId: job.id,
+        type: "image",
+        url: `/assets/${assetId}.png`,
+        storageKey: `test-fixtures/${assetId}.png`,
+        safetyStatus: "passed",
+        metadata: {
+          quality: {
+            schemaVersion: "1",
+            evaluatorVersion: "sanity-v1",
+            sanity: { status: "passed" },
+          },
+        },
+      },
+    });
+    await prisma.generationJob.update({
+      where: { id: job.id },
+      data: { status: "completed", deliveredOutputCount: 1 },
+    });
+    await prisma.contentProductionItem.update({
+      where: { id: item.id },
+      data: { status: "generated", mediaAssetId: assetId },
+    });
+
+    await expect(recordCreativeReviewDecision({
+      runId: batchId,
+      itemId: item.id,
+      actor: { id: actorId, role: "admin" },
+      expectedVersion: batch.version,
+      decision: "approved",
+      identityConsistency: "unscored",
+      quality: {
+        artifactFree: true,
+        singleSubject: true,
+        intentMatch: true,
+        noVisibleText: true,
+      },
+      reason: "All client-supplied checkboxes claim the image is valid",
+      requestId: `character-identity-system-quality-${suffix}`,
+    })).rejects.toMatchObject({
+      status: 400,
+      message:
+        "Character identity approval requires system-verified single-frame evidence",
+    });
+
+    await prisma.mediaAsset.update({
+      where: { id: assetId },
+      data: {
+        metadata: {
+          quality: {
+            schemaVersion: "1",
+            evaluatorVersion: "generated-image-sanity-v2",
+            sanity: { status: "passed" },
+            composition: {
+              status: "passed",
+              reason: "single_continuous_frame_detected",
+            },
+          },
+        },
+      },
+    });
+    const approved = await recordCreativeReviewDecision({
+      runId: batchId,
+      itemId: item.id,
+      actor: { id: actorId, role: "admin" },
+      expectedVersion: batch.version,
+      decision: "approved",
+      identityConsistency: "unscored",
+      quality: {
+        artifactFree: true,
+        singleSubject: true,
+        intentMatch: true,
+        noVisibleText: true,
+      },
+      reason: "The system and reviewer both confirm a valid identity portrait",
+      requestId: `character-identity-system-quality-pass-${suffix}`,
+    });
+    expect(approved).toMatchObject({ decision: "approved" });
+    const decision = await prisma.creativeReviewDecision.findUniqueOrThrow({
+      where: { id: approved.decisionId },
+    });
+    expect(decision.evidence).toMatchObject({
+      quality: {
+        artifactFree: true,
+        singleSubject: true,
+      },
+      automaticComposition: {
+        evaluatorVersion: "generated-image-sanity-v2",
+        composition: {
+          status: "passed",
+          reason: "single_continuous_frame_detected",
+        },
+      },
+    });
+    const detail = await getCreativeRunDetail({
+      runId: batchId,
+      actor: { id: actorId, role: "admin" },
+    });
+    expect(detail.items[0]?.asset?.automaticComposition).toEqual({
+      evaluatorVersion: "generated-image-sanity-v2",
+      status: "passed",
+      reason: "single_continuous_frame_detected",
     });
   });
 

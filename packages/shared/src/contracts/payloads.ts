@@ -362,6 +362,7 @@ const generationQualitySchema = z
     faceCount: generationQualityDimensionSchema,
     identity: generationQualityDimensionSchema,
     intent: generationQualityDimensionSchema,
+    composition: generationQualityDimensionSchema.optional(),
   })
   .passthrough();
 

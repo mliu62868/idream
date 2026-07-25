@@ -36,6 +36,10 @@ import {
   lockCharacterGenerationAuthority,
   lockCharacterMediaAssetAuthorities,
 } from "@/server/modules/admin-v2/characters/generation-authority-lock";
+import {
+  GENERATED_IMAGE_SANITY_EVALUATOR_VERSION,
+  parseSingleContinuousFrameEvidence,
+} from "@idream/shared/media/generated-image-sanity";
 
 const RELEASE_OWNED_SLOTS = new Set(["character_avatar", "character_hero", "character_chat"]);
 
@@ -50,6 +54,55 @@ function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
+}
+
+function systemSingleFrameEvidence(metadata: unknown) {
+  const quality = record(record(metadata).quality);
+  return parseSingleContinuousFrameEvidence(quality);
+}
+
+function automaticCompositionSummary(metadata: unknown) {
+  const quality = record(record(metadata).quality);
+  const composition = record(quality.composition);
+  const evaluatorVersion = quality.evaluatorVersion;
+  const status = composition.status;
+  if (
+    typeof evaluatorVersion !== "string" ||
+    !["passed", "failed", "unscored"].includes(
+      typeof status === "string" ? status : "",
+    )
+  ) {
+    return null;
+  }
+  return {
+    evaluatorVersion,
+    status: status as "passed" | "failed" | "unscored",
+    reason:
+      typeof composition.reason === "string" ? composition.reason : null,
+  };
+}
+
+function creativeItemFailure(
+  itemStatus: string,
+  jobErrorCode: string | null,
+  attempt: {
+    readonly errorCode: string | null;
+    readonly operatorGuidance: string | null;
+  } | null,
+) {
+  if (itemStatus !== "failed") return null;
+  const errorCode =
+    attempt?.errorCode?.trim() ||
+    jobErrorCode?.trim() ||
+    "generation_failed";
+  return {
+    errorCode,
+    operatorGuidance:
+      attempt?.operatorGuidance?.trim() ||
+      (errorCode === "asset_quality_failed"
+        ? "系统质量检查未通过；合图、空白图或损坏图片不会进入候选。请载入本轮参数，修改提示词后重新生成。"
+        : "本轮没有产生可审核图片。请载入本轮参数，调整后重新生成。"),
+  };
 }
 
 function strings(value: unknown): string[] {
@@ -759,6 +812,23 @@ export async function recordCreativeReviewDecision(input: {
     if (!asset || asset.deletedAt || asset.safetyStatus !== "passed") {
       throw Errors.badRequest("Only a valid generated asset can be reviewed");
     }
+    const automaticSingleFrameEvidence =
+      systemSingleFrameEvidence(asset.metadata);
+    if (
+      characterIdentityReview &&
+      input.decision === "approved" &&
+      !automaticSingleFrameEvidence
+    ) {
+      throw Errors.badRequest(
+        "Character identity approval requires system-verified single-frame evidence",
+        {
+          code: "identity_single_frame_evidence_missing",
+          mediaAssetId: asset.id,
+          requiredEvaluatorVersion:
+            GENERATED_IMAGE_SANITY_EVALUATOR_VERSION,
+        },
+      );
+    }
     if (input.decision === "approved") {
       await assertCustomerPublishableCreativeAsset(tx, asset);
     }
@@ -827,7 +897,12 @@ export async function recordCreativeReviewDecision(input: {
         identityConsistency: input.identityConsistency,
         score: input.score,
         reason: input.reason.trim(),
-        evidence: toInputJson(input.quality ? { quality: input.quality } : {}),
+        evidence: toInputJson({
+          ...(input.quality ? { quality: input.quality } : {}),
+          ...(automaticSingleFrameEvidence
+            ? { automaticComposition: automaticSingleFrameEvidence }
+            : {}),
+        }),
         reviewerId: input.actor.id,
       },
     });
@@ -1921,6 +1996,11 @@ export async function getCreativeRunDetail(input: {
       const latestDecision = latestByCreatedAt(decisions.filter((decision) => decision.runItemId === item.id));
       const latestAttempt = attempts.find((attempt) => attempt.requestId === item.jobId) ?? null;
       const latestTransport = transportExecutions.find((execution) => execution.attemptId === latestAttempt?.id) ?? null;
+      const failure = creativeItemFailure(
+        item.status,
+        item.job?.errorCode ?? null,
+        latestAttempt,
+      );
       const placement = asset
         ? latestByCreatedAt(asset.placements.filter((candidate) =>
             ["published", "scheduled"].includes(candidate.status)
@@ -1944,6 +2024,7 @@ export async function getCreativeRunDetail(input: {
         direction: creativeDirectionSnapshot(item.directionSnapshot),
         version: item.version,
         retryability: latestAttempt?.retryability ?? (item.status === "failed" ? "unknown" : "not_applicable"),
+        failure,
         lineage: {
           briefId: run.id,
           directionId: item.directionId,
@@ -1968,6 +2049,7 @@ export async function getCreativeRunDetail(input: {
           thumbnailUrl: asset.thumbnailUrl,
           width: asset.width,
           height: asset.height,
+          automaticComposition: automaticCompositionSummary(asset.metadata),
         } : null,
         review: latestDecision
           ? {

@@ -4,6 +4,7 @@ import { MAIN_TO_CHAT_EVENTS, MAIN_TO_CHAT_QUEUE, idempotencyKeys } from "@idrea
 import {
   GeneratedImageSanityError,
   assertGeneratedImageSanity,
+  type GeneratedImageSanityEvidence,
 } from "@idream/shared/media/generated-image-sanity";
 import { jobQueue } from "@/server/jobs/queue";
 import type { QueueJob } from "@/server/jobs/queue";
@@ -64,13 +65,16 @@ class GeneratedAssetBodyMissingError extends Error {
   }
 }
 
-function baselineGeneratedImageQuality() {
+function baselineGeneratedImageQuality(
+  evidence: GeneratedImageSanityEvidence,
+) {
   return {
     ...generatedImageQualityEvidence(
-      "sanity-v1",
+      evidence.evaluatorVersion,
       { status: "unscored" as const, reason: "artifact_evaluator_unavailable" },
     ),
-    sanity: { status: "passed" as const },
+    sanity: evidence.sanity,
+    composition: evidence.composition,
   };
 }
 
@@ -279,9 +283,14 @@ async function runImageGenerate(payload: ImageGeneratePayload, jobMeta: QueueJob
           ".png",
         );
         const body = asset.body;
-        assertGeneratedImageSanity(
+        const sanityEvidence = assertGeneratedImageSanity(
           Buffer.from(body),
           `${payload.generationJobId} asset ${index + 1}`,
+          {
+            singleContinuousFrame:
+              payload.controls.compositionRequirement ===
+              "single_subject_single_frame",
+          },
         );
         const persisted = await providers.blob.putPrivate({
           key,
@@ -297,7 +306,7 @@ async function runImageGenerate(payload: ImageGeneratePayload, jobMeta: QueueJob
           height: asset.height,
           contentType,
           providerKey: asset.key ?? null,
-          quality: baselineGeneratedImageQuality(),
+          quality: baselineGeneratedImageQuality(sanityEvidence),
         };
       }),
     );

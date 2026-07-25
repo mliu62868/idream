@@ -26,7 +26,11 @@ import {
 } from "@idream/shared/contracts";
 import { mockVideoMp4Bytes } from "@idream/shared";
 import { env } from "./env";
-import { assertGeneratedImageSanity, GeneratedImageSanityError } from "./generated-image-sanity";
+import {
+  assertGeneratedImageSanity,
+  GeneratedImageSanityError,
+  type GeneratedImageSanityEvidence,
+} from "./generated-image-sanity";
 import {
   type GenProviders,
   type ImageModel,
@@ -55,6 +59,33 @@ class GeneratedAssetBodyMissingError extends Error {
     super(message);
     this.name = "GeneratedAssetBodyMissingError";
   }
+}
+
+function generatedImageQuality(
+  evidence: GeneratedImageSanityEvidence,
+) {
+  return {
+    schemaVersion: "1" as const,
+    evaluatorVersion: evidence.evaluatorVersion,
+    artifact: {
+      status: "unscored" as const,
+      reason: "artifact_evaluator_unavailable",
+    },
+    faceCount: {
+      status: "unscored" as const,
+      reason: "evaluator_unavailable",
+    },
+    identity: {
+      status: "unscored" as const,
+      reason: "evaluator_unavailable",
+    },
+    intent: {
+      status: "unscored" as const,
+      reason: "evaluator_unavailable",
+    },
+    sanity: evidence.sanity,
+    composition: evidence.composition,
+  };
 }
 
 function asPayload(value: AiFinalizePayload): JsonPayload {
@@ -277,6 +308,7 @@ export async function processImageGenerate(
     height: number;
     contentType: string;
     providerKey: string | null;
+    quality: ReturnType<typeof generatedImageQuality>;
   }>;
   try {
     assets = await Promise.all(
@@ -290,12 +322,15 @@ export async function processImageGenerate(
           ".png",
         );
         const body = await imageAssetBody(asset);
-        if (hasProviderMedia) {
-          assertGeneratedImageSanity(
-            Buffer.from(body),
-            `${payload.generationJobId} asset ${index + 1}`,
-          );
-        }
+        const sanityEvidence = assertGeneratedImageSanity(
+          Buffer.from(body),
+          `${payload.generationJobId} asset ${index + 1}`,
+          {
+            singleContinuousFrame:
+              payload.controls.compositionRequirement ===
+              "single_subject_single_frame",
+          },
+        );
         const persisted = await providers.blob.putPrivate({
           key,
           body,
@@ -308,6 +343,7 @@ export async function processImageGenerate(
           height: asset.height,
           contentType,
           providerKey: asset.key ?? null,
+          quality: generatedImageQuality(sanityEvidence),
         };
       }),
     );

@@ -50,6 +50,7 @@ import {
 } from "@/server/modules/admin-v2/characters/generation-authority-lock";
 import { invalidateCharacterDraftAssetPack } from "@/server/modules/admin-v2/characters/draft-asset-authority";
 import { isMediaAssetOperationalForAuthority } from "@/server/lib/media-asset-authority";
+import { parseSingleContinuousFrameEvidence } from "@idream/shared/media/generated-image-sanity";
 import { creativeReviewQualityPassed } from "@/server/modules/admin-v2/shared/creative-review-quality";
 
 // 注：faceTraits/hairTraits/bodyTraits/signatureTraits/styleTraits 额外纳入 select ——
@@ -170,6 +171,22 @@ async function reviewedIdentityCandidate(
     throw Errors.conflict(
       "The identity candidate requires the latest approved identity-defining review with complete visible evidence",
       { deepLink: `/admin/characters/${input.characterId}?tab=visual` },
+    );
+  }
+  const assetQuality = jsonRecord(item.mediaAsset.metadata).quality;
+  const decisionEvidence = jsonRecord(decision.evidence);
+  if (
+    !parseSingleContinuousFrameEvidence(assetQuality) ||
+    !parseSingleContinuousFrameEvidence(
+      decisionEvidence.automaticComposition,
+    )
+  ) {
+    throw Errors.conflict(
+      "The identity candidate requires current system and human review evidence before activation",
+      {
+        code: "identity_candidate_evidence_incomplete",
+        deepLink: `/admin/characters/${input.characterId}?tab=visual`,
+      },
     );
   }
   const existingPromotion = await tx.referenceCandidate.findFirst({

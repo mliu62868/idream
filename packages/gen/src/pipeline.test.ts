@@ -160,20 +160,28 @@ describe("processImageGenerate", () => {
     expect(payload.model).toBe("mock-image");
     expect(payload.generationJobId).toBe("job_img_1");
     expect(payload.assets).toEqual([
-      {
+      expect.objectContaining({
         key: "gen/job_img_1/image-1.png",
         width: 1024,
         height: 1024,
         contentType: "image/png",
         providerKey: "mock/images/seed_1-1.png",
-      },
-      {
+        quality: expect.objectContaining({
+          evaluatorVersion: "generated-image-sanity-v2",
+          composition: expect.objectContaining({ status: "unscored" }),
+        }),
+      }),
+      expect.objectContaining({
         key: "gen/job_img_1/image-2.png",
         width: 1024,
         height: 1024,
         contentType: "image/png",
         providerKey: "mock/images/seed_1-2.png",
-      },
+        quality: expect.objectContaining({
+          evaluatorVersion: "generated-image-sanity-v2",
+          composition: expect.objectContaining({ status: "unscored" }),
+        }),
+      }),
     ]);
   });
 
@@ -539,6 +547,49 @@ describe("processImageGenerate", () => {
     );
   });
 
+  it("rejects a multi-panel identity candidate before persisting any artifact", async () => {
+    const enqueue = vi.fn(async (_: EnqueueInput) => {});
+    const providers = makeProviders({
+      image: {
+        generate: vi.fn(async () => ({
+          ok: true as const,
+          data: {
+            assets: [
+              {
+                key: "pipeline/contact-sheet.png",
+                width: 80,
+                height: 100,
+                contentType: "image/png",
+                body: contactSheetPng(),
+              },
+            ],
+          },
+        })),
+      },
+    });
+
+    await processImageGenerate(
+      imagePayload({
+        count: 1,
+        controls: {
+          compositionRequirement: "single_subject_single_frame",
+        },
+      }),
+      { enqueue, providers },
+    );
+
+    expect(providers.blob.putPrivate).not.toHaveBeenCalled();
+    expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({
+      payload: expect.objectContaining({
+        kind: "generation.failed",
+        error: expect.objectContaining({
+          code: "asset_quality_failed",
+          message: expect.stringMatching(/multiple panels|contact sheet/i),
+        }),
+      }),
+    }));
+  });
+
   it("enqueues generation.failed on final blob persistence failure", async () => {
     const enqueue = vi.fn(async (_: EnqueueInput) => {});
     const providers = makeProviders({
@@ -791,6 +842,44 @@ function patternedPng(width: number, height: number) {
       row[offset] = (x * 67 + y * 19) % 256;
       row[offset + 1] = (x * 29 + y * 83) % 256;
       row[offset + 2] = (x * 11 + y * 47) % 256;
+    }
+    return row;
+  });
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 2;
+  return new Uint8Array(Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", deflateSync(Buffer.concat(rows))),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]));
+}
+
+function contactSheetPng() {
+  const width = 80;
+  const height = 100;
+  const rows = Array.from({ length: height }, (_, y) => {
+    const row = Buffer.alloc(1 + width * 3);
+    row[0] = 0;
+    for (let x = 0; x < width; x += 1) {
+      const offset = 1 + x * 3;
+      const color = x < 60
+        ? [
+            (x * 3 + y) % 180,
+            (x + y * 2) % 180,
+            (x * 2 + y * 3) % 180,
+          ]
+        : [
+            220 - Math.floor(y / 25) * 20,
+            190 - Math.floor(y / 25) * 10,
+            160 + ((x + y) % 40),
+          ];
+      row[offset] = color[0];
+      row[offset + 1] = color[1];
+      row[offset + 2] = color[2];
     }
     return row;
   });

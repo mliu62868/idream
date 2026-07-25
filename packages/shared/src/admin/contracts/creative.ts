@@ -415,6 +415,14 @@ export const CHARACTER_IDENTITY_APPROVAL_MIN_SCORE = 90;
 
 export const creativeReviewEvidenceSchema = z.object({
   quality: creativeReviewQualityEvidenceSchema,
+  automaticComposition: z.object({
+    schemaVersion: z.literal("1"),
+    evaluatorVersion: z.literal("generated-image-sanity-v2"),
+    composition: z.object({
+      status: z.literal("passed"),
+      reason: z.literal("single_continuous_frame_detected"),
+    }).strict(),
+  }).strict().optional(),
 }).strict();
 
 export const creativeReviewDecisionRequestSchema = z.object({
@@ -721,6 +729,14 @@ export const creativeRunItemDetailSchema = z
     identityReviewMode: creativeIdentityReviewModeSchema,
     version: z.number().int().nonnegative(),
     retryability: z.string(),
+    failure: z
+      .object({
+        errorCode: z.string().trim().min(1),
+        operatorGuidance: z.string().trim().min(1),
+      })
+      .strict()
+      .nullable()
+      .optional(),
     direction: z.object({
       title: z.string().trim().min(1),
       scenePrompt: z.string().trim().min(1),
@@ -755,6 +771,15 @@ export const creativeRunItemDetailSchema = z
         thumbnailUrl: z.string().trim().min(1).nullable(),
         width: z.number().int().positive().nullable(),
         height: z.number().int().positive().nullable(),
+        automaticComposition: z
+          .object({
+            evaluatorVersion: z.string().trim().min(1),
+            status: z.enum(["passed", "failed", "unscored"]),
+            reason: z.string().trim().min(1).nullable(),
+          })
+          .strict()
+          .nullable()
+          .optional(),
       })
       .strict()
       .nullable(),

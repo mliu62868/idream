@@ -1031,6 +1031,9 @@ export async function createProductionBatchCore(
       referenceAssetIds,
       workflowIdentity: workflow?.identity,
       generationRouteFingerprint: generationRouteAuthority?.routeFingerprint,
+      compositionRequirement: identityExperimentRun
+        ? "single_subject_single_frame"
+        : undefined,
     }),
     ...(identityExperimentRun && body.identityExperiment?.sourceAssetId
       ? {
@@ -2878,6 +2881,7 @@ function productionControls(input: {
     supportsSourceImageWithIdentity: boolean;
   } | undefined;
   generationRouteFingerprint?: string;
+  compositionRequirement?: "single_subject_single_frame";
 }) {
   const anchorAssetIds = input.visualProfile
     ? jsonStringArray(input.visualProfile.anchorAssetIds)
@@ -2896,6 +2900,7 @@ function productionControls(input: {
     consistencyMode: input.visualProfile ? input.consistencyMode : undefined,
     workflowIdentity: input.workflowIdentity,
     generationRouteFingerprint: input.generationRouteFingerprint,
+    compositionRequirement: input.compositionRequirement,
     visualIdentity: input.visualProfile
       ? {
           visualProfileId: input.visualProfile.id,

@@ -1,6 +1,9 @@
 import { deflateSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
-import { assertGeneratedImageSanity } from "./generated-image-sanity";
+import {
+  assertGeneratedImageSanity,
+  parseSingleContinuousFrameEvidence,
+} from "./generated-image-sanity";
 
 describe("generated image sanity", () => {
   it("rejects pure white PNG outputs", () => {
@@ -23,6 +26,52 @@ describe("generated image sanity", () => {
     ]);
 
     expect(() => assertGeneratedImageSanity(image, "varied-test")).not.toThrow();
+  });
+
+  it("rejects a generated contact sheet instead of treating it as one continuous image", () => {
+    const image = pngFromRgb(80, 100, (x, y) => {
+      if (x < 60) {
+        return [
+          (x * 3 + y) % 180,
+          (x + y * 2) % 180,
+          (x * 2 + y * 3) % 180,
+        ];
+      }
+      const thumbnail = Math.floor(y / 25);
+      return [
+        220 - thumbnail * 20,
+        190 - thumbnail * 10,
+        160 + ((x + y) % 40),
+      ];
+    });
+
+    expect(() =>
+      assertGeneratedImageSanity(image, "contact-sheet-test", {
+        singleContinuousFrame: true,
+      })
+    ).toThrow(/multiple panels|contact sheet|montage/i);
+  });
+
+  it("accepts only current, passed single-frame evidence for later authority changes", () => {
+    expect(parseSingleContinuousFrameEvidence({
+      schemaVersion: "1",
+      evaluatorVersion: "generated-image-sanity-v2",
+      composition: {
+        status: "passed",
+        reason: "single_continuous_frame_detected",
+      },
+    })).toMatchObject({
+      evaluatorVersion: "generated-image-sanity-v2",
+      composition: { status: "passed" },
+    });
+    expect(parseSingleContinuousFrameEvidence({
+      schemaVersion: "1",
+      evaluatorVersion: "generated-image-sanity-v1",
+      composition: {
+        status: "passed",
+        reason: "single_continuous_frame_detected",
+      },
+    })).toBeNull();
   });
 
   it("rejects PNG outputs with invalid chunk checksums", () => {

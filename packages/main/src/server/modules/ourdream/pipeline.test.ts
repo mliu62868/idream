@@ -77,7 +77,11 @@ afterAll(async () => {
   await prisma.$disconnect();
 });
 
-async function requeueAsFinalAttempt(queue: "ai.image.generate" | "ai.video.generate", jobId: string) {
+async function requeueAsFinalAttempt(
+  queue: "ai.image.generate" | "ai.video.generate",
+  jobId: string,
+  payloadPatch: Record<string, unknown> = {},
+) {
   const dedupeKey = `generation:${jobId}`;
   const queued = await jobQueue.getByDedupeKey(queue, dedupeKey);
   expect(queued).not.toBeNull();
@@ -86,7 +90,10 @@ async function requeueAsFinalAttempt(queue: "ai.image.generate" | "ai.video.gene
   await jobQueue.removeByDedupePrefix(dedupeKey, [queue]);
   await jobQueue.enqueue({
     queue,
-    payload: queued.payload as Prisma.InputJsonValue,
+    payload: {
+      ...(queued.payload as Record<string, unknown>),
+      ...payloadPatch,
+    } as Prisma.InputJsonValue,
     dedupeKey,
     maxAttempts: 1,
   });
@@ -210,6 +217,68 @@ describe("local AI service pipeline", () => {
       completedAt: null,
     });
     await expect(prisma.generationSettlementLink.count({ where: { requestId: jobId } })).resolves.toBe(2);
+  });
+
+  it("does not persist a multi-panel image when a single continuous frame is required", async () => {
+    const userId = `${P}composite-image-user`;
+    await createUser({ id: userId });
+    await grantCoins(userId, 100, "seed");
+    vi.spyOn(providers.image, "generate").mockResolvedValueOnce({
+      ok: true,
+      data: {
+        assets: [
+          {
+            key: "pipeline/contact-sheet.png",
+            width: 80,
+            height: 100,
+            contentType: "image/png",
+            body: contactSheetPng(),
+          },
+        ],
+      },
+    });
+    const blobPut = vi.spyOn(providers.blob, "putPrivate");
+
+    const gen = await api("POST", "generation/jobs", {
+      userId,
+      ageGate: true,
+      body: {
+        mode: "image",
+        characterId: CHAR,
+        outputCount: 1,
+      },
+    });
+    expectOk(gen, 202);
+    const jobId = gen.data.job.id as string;
+    cleanupJobDedupeKeys.push(
+      `generation:${jobId}`,
+      `generation-finalize:${jobId}:failed`,
+    );
+    cleanupModerationTargetIds.push(jobId);
+    await requeueAsFinalAttempt("ai.image.generate", jobId, {
+      controls: {
+        compositionRequirement: "single_subject_single_frame",
+      },
+    });
+
+    await runQueuedGenerationJobs(8);
+
+    const poll = await api("GET", `generation/jobs/${jobId}`, {
+      userId,
+      ageGate: true,
+    });
+    expectOk(poll);
+    expect(poll.data.job).toMatchObject({
+      status: "failed",
+      errorCode: "asset_quality_failed",
+    });
+    expect(blobPut).not.toHaveBeenCalled();
+    expect(
+      await prisma.mediaAsset.count({ where: { sourceJobId: jobId } }),
+    ).toBe(0);
+    await expect(
+      prisma.generationJob.findUniqueOrThrow({ where: { id: jobId } }),
+    ).resolves.toMatchObject({ deliveredOutputCount: 0 });
   });
 
   it("keeps character preview provider work out of the main mock drain", async () => {
@@ -609,6 +678,45 @@ function whitePng(width: number, height: number) {
   ihdr[10] = 0;
   ihdr[11] = 0;
   ihdr[12] = 0;
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", deflateSync(Buffer.concat(rows))),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+function contactSheetPng() {
+  const width = 80;
+  const height = 100;
+  const rows = Array.from({ length: height }, (_, y) => {
+    const row = Buffer.alloc(1 + width * 3);
+    row[0] = 0;
+    for (let x = 0; x < width; x += 1) {
+      const offset = 1 + x * 3;
+      const thumbnail = Math.floor(y / 25);
+      const color: [number, number, number] = x < 60
+        ? [
+            (x * 3 + y) % 180,
+            (x + y * 2) % 180,
+            (x * 2 + y * 3) % 180,
+          ]
+        : [
+            220 - thumbnail * 20,
+            190 - thumbnail * 10,
+            160 + ((x + y) % 40),
+          ];
+      row[offset] = color[0];
+      row[offset + 1] = color[1];
+      row[offset + 2] = color[2];
+    }
+    return row;
+  });
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 2;
   return Buffer.concat([
     Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
     pngChunk("IHDR", ihdr),

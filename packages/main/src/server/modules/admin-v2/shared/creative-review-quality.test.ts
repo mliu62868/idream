@@ -24,6 +24,17 @@ describe("Creative review visible quality evidence", () => {
     expect(creativeReviewQualityPassed(quality)).toBe(true);
     expect(creativeReviewQuality(legacySuperseding)).toEqual(quality);
     expect(creativeReviewQualityPassed(legacySuperseding)).toBe(true);
+    expect(creativeReviewQuality({
+      quality,
+      automaticComposition: {
+        schemaVersion: "1",
+        evaluatorVersion: "generated-image-sanity-v2",
+        composition: {
+          status: "passed",
+          reason: "single_continuous_frame_detected",
+        },
+      },
+    })).toEqual(quality);
   });
 
   it("fails closed for missing, malformed, extra, or failing evidence", () => {
