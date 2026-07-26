@@ -431,6 +431,15 @@ describe("PipelineImageModel", () => {
     );
   });
 
+  it("rejects video worker startup with an invalid provider timeout", () => {
+    process.env.GEN_VIDEO_PROVIDER = "backend";
+    process.env.GEN_VIDEO_TIMEOUT_MS = "not-a-timeout";
+
+    expect(() => assertProductionProviderReady("video")).toThrow(
+      "GEN_VIDEO_TIMEOUT_MS must be a positive integer",
+    );
+  });
+
   it("rejects unsupported generation providers at startup", () => {
     process.env.GEN_VIDEO_PROVIDER = "sdcpp";
 

@@ -11,6 +11,15 @@ type GenerateInput = Parameters<VideoModel["generate"]>[0];
 type GenerateResult = Awaited<ReturnType<VideoModel["generate"]>>;
 type ReferenceImages = NonNullable<VideoGeneratePayload["referenceImages"]>;
 
+const PRODUCTION_VIDEO_AUTHORITY = {
+  workflowKey: "ltx23-gtanimation-i2v",
+  modelId: "ltx23-gtanimation-int4-convrot",
+  width: 768,
+  height: 1152,
+  fps: 25,
+  seconds: 4,
+} as const;
+
 export class BackendVideoModel implements VideoModel {
   readonly retryCapabilities = {
     deterministicIdempotencyKey: true,
@@ -38,6 +47,10 @@ export class BackendVideoModel implements VideoModel {
     }
 
     const { backend, descriptor } = resolved;
+    const descriptorError = validateProductionVideoDescriptor(descriptor);
+    if (descriptorError) {
+      return failure("unsupported_video_workflow", descriptorError, false);
+    }
     const workflowPinError = validateWorkflowPin(descriptor, input.controls);
     if (workflowPinError) {
       return failure("workflow_version_mismatch", workflowPinError, false);
@@ -57,10 +70,25 @@ export class BackendVideoModel implements VideoModel {
       );
     }
 
-    const width = numericControl(input.controls, "width") ?? 768;
-    const height = numericControl(input.controls, "height") ?? 1152;
-    const seconds = 4;
-    const fps = numericControl(input.controls, "fps") ?? 25;
+    const width = numericControl(input.controls, "width");
+    const height = numericControl(input.controls, "height");
+    const requestedFps = numericControl(input.controls, "fps");
+    if (
+      width !== PRODUCTION_VIDEO_AUTHORITY.width ||
+      height !== PRODUCTION_VIDEO_AUTHORITY.height ||
+      (
+        requestedFps !== undefined &&
+        requestedFps !== PRODUCTION_VIDEO_AUTHORITY.fps
+      )
+    ) {
+      return failure(
+        "unsupported_video_envelope",
+        "LTX 2.3 production video generation requires 768x1152 at 25fps",
+        false,
+      );
+    }
+    const seconds = PRODUCTION_VIDEO_AUTHORITY.seconds;
+    const fps = PRODUCTION_VIDEO_AUTHORITY.fps;
     const seed =
       stableNumericSeed(input.seed ?? input.requestId ?? "video") ?? 0;
     const slots: SlotValues = {
@@ -120,13 +148,25 @@ export class BackendVideoModel implements VideoModel {
   }
 }
 
+function validateProductionVideoDescriptor(
+  descriptor: ReturnType<BackendRegistry["resolveForModel"]>["descriptor"],
+) {
+  if (
+    descriptor.backendKind !== "comfyui" ||
+    descriptor.workflowKey !== PRODUCTION_VIDEO_AUTHORITY.workflowKey ||
+    descriptor.modelId !== PRODUCTION_VIDEO_AUTHORITY.modelId
+  ) {
+    return `Only ${PRODUCTION_VIDEO_AUTHORITY.workflowKey} with ${PRODUCTION_VIDEO_AUTHORITY.modelId} is authorized for production video`;
+  }
+  return null;
+}
+
 function validateWorkflowPin(
   descriptor: ReturnType<BackendRegistry["resolveForModel"]>["descriptor"],
   controls: GenerateInput["controls"],
 ) {
   const workflowKey = controls?.workflowKey;
   const workflowVersion = controls?.workflowVersion;
-  if (workflowKey === undefined && workflowVersion === undefined) return null;
   if (
     workflowKey !== descriptor.workflowKey ||
     workflowVersion !== descriptor.version

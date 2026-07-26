@@ -100,6 +100,7 @@ const EnvSchema = z.object({
   PIPELINE_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
   PIPELINE_VOICE_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
   JOB_STALE_TIMEOUT_MS: z.coerce.number().int().positive().default(10 * 60 * 1_000),
+  GEN_VIDEO_TIMEOUT_MS: z.coerce.number().int().positive().default(30 * 60 * 1_000),
   VIDEO_JOB_STALE_TIMEOUT_MS: z.coerce
     .number()
     .int()
@@ -131,6 +132,14 @@ const EnvSchema = z.object({
   CHAT_BFF_SIGNING_SECRET: z.string().optional(),
   ADMIN_BFF_SIGNING_SECRET: z.string().min(32).optional(),
 }).superRefine((value, ctx) => {
+  if (value.VIDEO_JOB_STALE_TIMEOUT_MS <= value.GEN_VIDEO_TIMEOUT_MS) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["VIDEO_JOB_STALE_TIMEOUT_MS"],
+      message:
+        "VIDEO_JOB_STALE_TIMEOUT_MS must be greater than GEN_VIDEO_TIMEOUT_MS",
+    });
+  }
   if (
     value.APP_ENV === "production" &&
     !isProductionBuild &&

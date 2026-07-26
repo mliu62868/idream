@@ -33,6 +33,46 @@ async function seedFunctionSource(name: string) {
   return source.slice(start, next === -1 ? undefined : next);
 }
 
+async function writeLegacyVideoBetaProfile(costMultiplier = 1) {
+  return prisma.generationModelProfile.update({
+    where: { id: "seed-profile-video-beta-v1" },
+    data: {
+      profileKey: "profile_video_beta_v1",
+      label: "Video beta",
+      mode: "video",
+      runner: "external",
+      pipelineModel: "mock-video",
+      workflowKey: null,
+      sourceModelPath: null,
+      convertedModelPath: null,
+      modelFormat: "external",
+      runnerConfig: { disabledUntilFlag: "video_gen" },
+      defaultWidth: 768,
+      defaultHeight: 1024,
+      allowedOrientations: ["9:16", "16:9"],
+      steps: 24,
+      sampler: "video_default",
+      scheduler: "model_default",
+      cfgScale: 5,
+      costMultiplier,
+      requiredEntitlement: "video_generation",
+      maxCount: 1,
+      concurrencyLimit: 1,
+      enabled: true,
+      rolloutPercent: 0,
+      version: 1,
+      status: "active",
+      dryRunSummary: {
+        status: "not_run",
+        source: "seed_configuration_state",
+        disabledByFlag: "video_gen",
+      },
+      publishedAt: new Date("2026-06-24T00:00:00.000Z"),
+      archivedAt: null,
+    },
+  });
+}
+
 describe("seed data provenance", () => {
   it("separates the dedicated audit probe from internal operator users", async () => {
     const users = await prisma.user.findMany({
@@ -517,34 +557,7 @@ describe("seed data provenance", () => {
 
   it("migrates the untouched legacy video beta route to the exact LTX workflow", async () => {
     const profileId = "seed-profile-video-beta-v1";
-    await prisma.generationModelProfile.update({
-      where: { id: profileId },
-      data: {
-        profileKey: "profile_video_beta_v1",
-        label: "Video beta",
-        runner: "external",
-        pipelineModel: "mock-video",
-        workflowKey: null,
-        sourceModelPath: null,
-        convertedModelPath: null,
-        modelFormat: "external",
-        runnerConfig: { disabledUntilFlag: "video_gen" },
-        defaultWidth: 768,
-        defaultHeight: 1024,
-        allowedOrientations: ["9:16", "16:9"],
-        steps: 24,
-        sampler: "video_default",
-        scheduler: "model_default",
-        cfgScale: 5,
-        rolloutPercent: 0,
-        dryRunSummary: {
-          status: "not_run",
-          source: "seed_configuration_state",
-          disabledByFlag: "video_gen",
-        },
-        publishedAt: new Date("2026-06-24T00:00:00.000Z"),
-      },
-    });
+    await writeLegacyVideoBetaProfile();
 
     await execFileAsync("bun", ["run", "db:seed"], {
       cwd: fileURLToPath(new URL("..", import.meta.url)),
@@ -588,6 +601,43 @@ describe("seed data provenance", () => {
       rolloutPercent: 100,
     });
   }, 15_000);
+
+  it("preserves an operator-edited legacy video beta route", async () => {
+    const profileId = "seed-profile-video-beta-v1";
+    await writeLegacyVideoBetaProfile(1.25);
+
+    try {
+      await execFileAsync("bun", ["run", "db:seed"], {
+        cwd: fileURLToPath(new URL("..", import.meta.url)),
+        env: process.env,
+      });
+
+      await expect(
+        prisma.generationModelProfile.findUniqueOrThrow({
+          where: { id: profileId },
+          select: {
+            runner: true,
+            pipelineModel: true,
+            workflowKey: true,
+            costMultiplier: true,
+            rolloutPercent: true,
+          },
+        }),
+      ).resolves.toEqual({
+        runner: "external",
+        pipelineModel: "mock-video",
+        workflowKey: null,
+        costMultiplier: 1.25,
+        rolloutPercent: 0,
+      });
+    } finally {
+      await writeLegacyVideoBetaProfile();
+      await execFileAsync("bun", ["run", "db:seed"], {
+        cwd: fileURLToPath(new URL("..", import.meta.url)),
+        env: process.env,
+      });
+    }
+  }, 30_000);
 
   it("only creates missing cold-start rows and preserves operator edits on repeat seed runs", async () => {
     const users = await seedFunctionSource("seedUsers");

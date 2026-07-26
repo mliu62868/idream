@@ -692,7 +692,19 @@ async function assertGenerationCharacterDispatchable(
   if (!job.characterId) return;
   await lockCharacterGenerationAuthority(tx, job.characterId);
   const character = await tx.character.findFirst({
-    where: job.sourceType === "content_production_item"
+    where: job.mode === "video"
+      ? {
+          AND: [
+            {
+              id: job.characterId,
+              deletedAt: null,
+              age: { gte: 18 },
+              status: "approved",
+            },
+            publicCharacterAudienceWhere,
+          ],
+        }
+      : job.sourceType === "content_production_item"
       ? {
           id: job.characterId,
           deletedAt: null,
@@ -714,7 +726,7 @@ async function assertGenerationCharacterDispatchable(
           },
         ],
       },
-    select: { id: true },
+    select: { id: true, imageAssetId: true },
   });
   if (!character) {
     throw Errors.conflict(
@@ -722,6 +734,27 @@ async function assertGenerationCharacterDispatchable(
       {
         generationJobId: job.id,
         characterId: job.characterId,
+      },
+    );
+  }
+  const pinnedSourceImageAssetId = stringFromRecord(
+    jsonRecord(job.controls),
+    "sourceImageAssetId",
+  );
+  if (
+    job.mode === "video" &&
+    (
+      !pinnedSourceImageAssetId ||
+      character.imageAssetId !== pinnedSourceImageAssetId
+    )
+  ) {
+    throw Errors.conflict(
+      "Generation dispatch rejected a video whose published primary image changed",
+      {
+        generationJobId: job.id,
+        characterId: job.characterId,
+        pinnedSourceImageAssetId: pinnedSourceImageAssetId ?? null,
+        currentSourceImageAssetId: character.imageAssetId,
       },
     );
   }

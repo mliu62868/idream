@@ -1,4 +1,8 @@
-import { Prisma, type GenerationJob as GenerationJobRow } from "@prisma/client";
+import {
+  Prisma,
+  type GenerationJob as GenerationJobRow,
+  type GenerationModelProfile,
+} from "@prisma/client";
 import { buildCharacterSystemPrompt } from "@idream/shared";
 import { parseCharacterReleaseAssetManifest } from "@idream/shared/admin";
 import { assignWorkflowReferenceSlots } from "@idream/shared/gen-workflow";
@@ -243,6 +247,29 @@ const generationControlsSchema = z
     seconds: z.number().int().min(1).max(30).optional(),
   })
   .strict();
+
+const PRODUCTION_VIDEO_PROFILE_AUTHORITY = {
+  profileKey: "profile_video_beta_v1",
+  runner: "comfyui",
+  pipelineModel: "ltx23-gtanimation-int4-convrot",
+  workflowKey: "ltx23-gtanimation-i2v",
+} as const;
+
+function isProductionVideoProfile(
+  profile: Pick<
+    GenerationModelProfile,
+    "mode" | "profileKey" | "runner" | "pipelineModel" | "workflowKey"
+  >,
+) {
+  return (
+    profile.mode === "video" &&
+    profile.profileKey === PRODUCTION_VIDEO_PROFILE_AUTHORITY.profileKey &&
+    profile.runner === PRODUCTION_VIDEO_PROFILE_AUTHORITY.runner &&
+    profile.pipelineModel ===
+      PRODUCTION_VIDEO_PROFILE_AUTHORITY.pipelineModel &&
+    profile.workflowKey === PRODUCTION_VIDEO_PROFILE_AUTHORITY.workflowKey
+  );
+}
 
 const generationQuoteAuthoritySchema = z
   .object({
@@ -1940,7 +1967,8 @@ async function generationConfig(request: Request) {
     );
   const executableVideoProfiles = profiles.filter(
     (profile) =>
-      profile.mode === "video" && isExecutableGenerationProfile(profile),
+      isProductionVideoProfile(profile) &&
+      isExecutableGenerationProfile(profile),
   );
   const visibleImageProfiles = publicImageProfiles.filter((profile) =>
     profile.requiredEntitlement
@@ -3316,12 +3344,25 @@ async function createGenerationJobForUser(
                 },
           ],
         },
-        select: { id: true },
+        select: { id: true, imageAssetId: true },
       });
       if (!lockedCharacter) {
         throw Errors.conflict(
           "Character changed before generation authority could be reserved",
           { characterId: character.id },
+        );
+      }
+      if (
+        body.mode === "video" &&
+        lockedCharacter.imageAssetId !== requestedSourceImageAssetId
+      ) {
+        throw Errors.conflict(
+          "Character primary image changed before video authority could be reserved",
+          {
+            characterId: character.id,
+            pinnedSourceImageAssetId: requestedSourceImageAssetId,
+            currentSourceImageAssetId: lockedCharacter.imageAssetId,
+          },
         );
       }
       if (body.mode === "image") {
@@ -4439,7 +4480,10 @@ async function resolveGenerationRetryAuthority(
     exactProfiles.find(
       (candidate) => candidate.profileKey === job.profileId,
     ) ?? exactProfiles[0];
-  const profile = exactProfile && isExecutableGenerationProfile(exactProfile)
+  const profile =
+    exactProfile &&
+    isExecutableGenerationProfile(exactProfile) &&
+    (job.mode !== "video" || isProductionVideoProfile(exactProfile))
     ? exactProfile
     : generationJobRequiresPinnedLegacyAuthority(job) &&
         !job.profileId &&
@@ -4791,12 +4835,25 @@ async function retryGenerationJob(request: Request, id: string) {
                 },
           ],
         },
-        select: { id: true },
+        select: { id: true, imageAssetId: true },
       });
       if (!character) {
         throw Errors.conflict(
           "Character changed before retry authority could be reserved",
           { characterId: job.characterId },
+        );
+      }
+      if (
+        job.mode === "video" &&
+        character.imageAssetId !== retrySourceImageAssetId
+      ) {
+        throw Errors.conflict(
+          "Character primary image changed before video retry authority could be reserved",
+          {
+            characterId: job.characterId,
+            pinnedSourceImageAssetId: retrySourceImageAssetId ?? null,
+            currentSourceImageAssetId: character.imageAssetId,
+          },
         );
       }
       if (generationJobRequiresPinnedLegacyAuthority(lockedJob)) {
@@ -11582,6 +11639,14 @@ async function selectGenerationProfile(
     mode,
     status: "active",
     enabled: true,
+    ...(mode === "video"
+      ? {
+          profileKey: PRODUCTION_VIDEO_PROFILE_AUTHORITY.profileKey,
+          runner: PRODUCTION_VIDEO_PROFILE_AUTHORITY.runner,
+          pipelineModel: PRODUCTION_VIDEO_PROFILE_AUTHORITY.pipelineModel,
+          workflowKey: PRODUCTION_VIDEO_PROFILE_AUTHORITY.workflowKey,
+        }
+      : {}),
     OR: requested
       ? [{ profileKey: requested }, { id: requested }, { pipelineModel: requested }]
       : undefined,

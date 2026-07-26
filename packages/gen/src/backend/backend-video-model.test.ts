@@ -188,4 +188,79 @@ describe("BackendVideoModel", () => {
     });
     expect(stub.submit).not.toHaveBeenCalled();
   });
+
+  it("requires exact workflow pins and the production spatial envelope", async () => {
+    const stub = backend();
+    const model = new BackendVideoModel({
+      resolveForModel: vi.fn(() => ({ backend: stub, descriptor })),
+    });
+    const referenceImages = [{
+      assetId: "source-1",
+      role: "source_image" as const,
+      b64Json: "aW1hZ2U=",
+    }];
+
+    const missingPins = await model.generate({
+      prompt: "wave",
+      seconds: 4,
+      model: "ltx23-gtanimation-i2v",
+      controls: { width: 768, height: 1152 },
+      referenceImages,
+    });
+    expect(missingPins).toMatchObject({
+      ok: false,
+      error: { code: "workflow_version_mismatch", retryable: false },
+    });
+
+    const wrongEnvelope = await model.generate({
+      prompt: "wave",
+      seconds: 4,
+      model: "ltx23-gtanimation-i2v",
+      controls: {
+        workflowKey: "ltx23-gtanimation-i2v",
+        workflowVersion: 1,
+        width: 1024,
+        height: 1152,
+      },
+      referenceImages,
+    });
+    expect(wrongEnvelope).toMatchObject({
+      ok: false,
+      error: { code: "unsupported_video_envelope", retryable: false },
+    });
+    expect(stub.submit).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-production video descriptor", async () => {
+    const stub = backend();
+    const model = new BackendVideoModel({
+      resolveForModel: vi.fn(() => ({
+        backend: stub,
+        descriptor: { ...descriptor, modelId: "other-video-model" },
+      })),
+    });
+
+    const result = await model.generate({
+      prompt: "wave",
+      seconds: 4,
+      model: "other-video-model",
+      controls: {
+        workflowKey: "ltx23-gtanimation-i2v",
+        workflowVersion: 1,
+        width: 768,
+        height: 1152,
+      },
+      referenceImages: [{
+        assetId: "source-1",
+        role: "source_image",
+        b64Json: "aW1hZ2U=",
+      }],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "unsupported_video_workflow", retryable: false },
+    });
+    expect(stub.submit).not.toHaveBeenCalled();
+  });
 });

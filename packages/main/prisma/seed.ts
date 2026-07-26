@@ -1,6 +1,7 @@
 import { Prisma, PrismaClient } from "@prisma/client";
 import { buildCharacterSystemPrompt } from "@idream/shared";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
 import { categoryFilters } from "../src/lib/ourdream-data";
 import { createPrismaClientOptions } from "../src/server/lib/prisma-adapter";
@@ -1028,9 +1029,6 @@ async function seedAdminControlPlane() {
     update: {
       label: "Video generation",
       description: "Single gate for all video generation traffic.",
-      enabled: true,
-      rolloutPercent: 100,
-      targetPlans: ["deluxe"],
     },
     create: {
       key: "video_gen",
@@ -1833,23 +1831,77 @@ async function seedAdminControlPlane() {
       select: {
         profileKey: true,
         label: true,
+        mode: true,
         runner: true,
         pipelineModel: true,
         workflowKey: true,
+        sourceModelPath: true,
+        convertedModelPath: true,
         modelFormat: true,
+        runnerConfig: true,
+        defaultWidth: true,
+        defaultHeight: true,
+        allowedOrientations: true,
+        steps: true,
+        sampler: true,
+        scheduler: true,
+        cfgScale: true,
+        costMultiplier: true,
+        requiredEntitlement: true,
+        maxCount: true,
+        concurrencyLimit: true,
+        enabled: true,
         rolloutPercent: true,
         version: true,
+        status: true,
+        dryRunSummary: true,
+        publishedAt: true,
+        archivedAt: true,
       },
     });
   const isUntouchedLegacyVideoBeta =
     legacyVideoBetaProfile?.profileKey === "profile_video_beta_v1" &&
     legacyVideoBetaProfile.label === "Video beta" &&
+    legacyVideoBetaProfile.mode === "video" &&
     legacyVideoBetaProfile.runner === "external" &&
     legacyVideoBetaProfile.pipelineModel === "mock-video" &&
     legacyVideoBetaProfile.workflowKey === null &&
+    legacyVideoBetaProfile.sourceModelPath === null &&
+    legacyVideoBetaProfile.convertedModelPath === null &&
     legacyVideoBetaProfile.modelFormat === "external" &&
+    isDeepStrictEqual(
+      legacyVideoBetaProfile.runnerConfig,
+      { disabledUntilFlag: "video_gen" },
+    ) &&
+    legacyVideoBetaProfile.defaultWidth === 768 &&
+    legacyVideoBetaProfile.defaultHeight === 1024 &&
+    isDeepStrictEqual(
+      legacyVideoBetaProfile.allowedOrientations,
+      ["9:16", "16:9"],
+    ) &&
+    legacyVideoBetaProfile.steps === 24 &&
+    legacyVideoBetaProfile.sampler === "video_default" &&
+    legacyVideoBetaProfile.scheduler === "model_default" &&
+    legacyVideoBetaProfile.cfgScale === 5 &&
+    legacyVideoBetaProfile.costMultiplier === 1 &&
+    legacyVideoBetaProfile.requiredEntitlement === "video_generation" &&
+    legacyVideoBetaProfile.maxCount === 1 &&
+    legacyVideoBetaProfile.concurrencyLimit === 1 &&
+    legacyVideoBetaProfile.enabled === true &&
     legacyVideoBetaProfile.rolloutPercent === 0 &&
-    legacyVideoBetaProfile.version === 1;
+    legacyVideoBetaProfile.version === 1 &&
+    legacyVideoBetaProfile.status === "active" &&
+    isDeepStrictEqual(
+      legacyVideoBetaProfile.dryRunSummary,
+      {
+        status: "not_run",
+        source: "seed_configuration_state",
+        disabledByFlag: "video_gen",
+      },
+    ) &&
+    legacyVideoBetaProfile.publishedAt?.getTime() ===
+      new Date("2026-06-24T00:00:00.000Z").getTime() &&
+    legacyVideoBetaProfile.archivedAt === null;
   if (
     !existingProfileKeys.has("profile_video_beta_v1") ||
     isUntouchedLegacyVideoBeta

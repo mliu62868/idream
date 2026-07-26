@@ -4102,6 +4102,61 @@ describe("image generation service contract", () => {
 
   });
 
+  it("fails video dispatch closed when the published primary image changes", async () => {
+    const userId = `${P}video-primary-drift-user`;
+    const jobId = `${P}video-primary-drift-job`;
+    await createUser({ id: userId });
+    const character = await prisma.character.findUniqueOrThrow({
+      where: { id: CHAR },
+      select: { imageAssetId: true },
+    });
+    expect(character.imageAssetId).toBeTruthy();
+    const job = await prisma.generationJob.create({
+      data: {
+        id: jobId,
+        userId,
+        characterId: CHAR,
+        mode: "video",
+        controls: {
+          sourceImageAssetId: character.imageAssetId,
+          workflowKey: "ltx23-gtanimation-i2v",
+          workflowVersion: 1,
+          width: 768,
+          height: 1152,
+        },
+        presetIds: [],
+        model: "ltx23-gtanimation-i2v",
+        profileId: "profile_video_beta_v1",
+        profileVersion: 1,
+        orientation: "2:3",
+        outputCount: 1,
+        status: "queued",
+      },
+    });
+
+    await prisma.character.update({
+      where: { id: CHAR },
+      data: { imageAssetId: null },
+    });
+    try {
+      await expect(enqueueGenerationAttempt(job)).rejects.toMatchObject({
+        status: 409,
+        details: {
+          generationJobId: jobId,
+          characterId: CHAR,
+        },
+      });
+      await expect(
+        jobQueue.getByDedupeKey("ai.video.generate", `generation:${jobId}`),
+      ).resolves.toBeNull();
+    } finally {
+      await prisma.character.update({
+        where: { id: CHAR },
+        data: { imageAssetId: character.imageAssetId },
+      });
+    }
+  });
+
   it("fails dispatch closed when a pinned More-like source loses profile init-image capability", async () => {
     const userId = `${P}source-runtime-dispatch-user`;
     const anchorId = `${P}source-runtime-dispatch-anchor`;

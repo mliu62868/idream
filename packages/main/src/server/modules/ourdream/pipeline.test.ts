@@ -617,6 +617,7 @@ describe("local AI service pipeline", () => {
     const userId = `${P}video-authority-user`;
     const privateCharacterId = `${P}private-video-char`;
     const privateAssetId = `${P}private-video-source`;
+    const alternateProfileKey = `${P}alternate-video-profile`;
     await createUser({ id: userId });
     await grantCoins(userId, 300, "seed");
     await prisma.entitlement.createMany({
@@ -669,8 +670,54 @@ describe("local AI service pipeline", () => {
       where: { id: "seed-profile-video-beta-v1" },
       data: { rolloutPercent: 100 },
     });
+    await prisma.generationModelProfile.create({
+      data: {
+        id: alternateProfileKey,
+        profileKey: alternateProfileKey,
+        label: "Unauthorized alternate video route",
+        mode: "video",
+        runner: "comfyui",
+        pipelineModel: "ltx23-gtanimation-int4-convrot",
+        workflowKey: "ltx23-gtanimation-i2v",
+        runnerConfig: {
+          capabilities: { initImage: true, imageToVideo: true },
+        },
+        defaultWidth: 768,
+        defaultHeight: 1152,
+        allowedOrientations: ["2:3"],
+        costMultiplier: 0.1,
+        requiredEntitlement: "video_generation",
+        maxCount: 1,
+        enabled: true,
+        rolloutPercent: 100,
+        version: 1,
+        status: "active",
+      },
+    });
 
     try {
+      const config = await api("GET", "generation/config", {
+        userId,
+        ageGate: true,
+      });
+      expectOk(config);
+      expect(config.data.video.models).toHaveLength(1);
+      expect(config.data.video.models[0].id).toBe(
+        "profile_video_beta_v1",
+      );
+      const alternateRoute = await api("POST", "generation/jobs", {
+        userId,
+        ageGate: true,
+        body: {
+          mode: "video",
+          characterId: CHAR,
+          model: alternateProfileKey,
+          controls: { seconds: 4 },
+          outputCount: 1,
+        },
+      });
+      expectError(alternateRoute, 409, "conflict");
+
       const invalidDuration = await api("POST", "generation/jobs", {
         userId,
         ageGate: true,

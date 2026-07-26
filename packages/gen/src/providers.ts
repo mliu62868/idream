@@ -556,6 +556,11 @@ function buildModerationProvider(): ModerationProvider {
 
 export function assertProductionProviderReady(kind: "image" | "video") {
   const provider = kind === "image" ? env.IMAGE_PROVIDER : env.VIDEO_PROVIDER;
+  if (kind === "video") {
+    // Startup authority: a malformed long-job budget must crash the worker
+    // before it accepts its first paid request.
+    void env.VIDEO_TIMEOUT_MS;
+  }
   const supported = ["mock", "pipeline", "backend"];
   if (!supported.includes(provider)) {
     throw new Error(`Unsupported ${kind} provider: ${provider}`);
