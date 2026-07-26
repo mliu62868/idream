@@ -121,7 +121,7 @@ export const adminZhCoverageC: Record<string, string> = {
   "Validate pinned snapshot": "验证固定快照",
   "Verify from authority": "从权威数据验证",
   "version": "版本",
-  "Video (legacy records)": "视频（旧版记录）",
+  Video: "视频",
   "View label": "视图名称",
   "Visible quality checks": "可见质量检查",
   "Visual direction": "视觉方向",

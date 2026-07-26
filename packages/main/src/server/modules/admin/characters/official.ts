@@ -166,8 +166,6 @@ export async function listOfficialCharacters(
             qualityScore: true,
             consistencyScore: true,
             faceTraits: true,
-            anchorAssetIds: true,
-            referenceAssetIds: true,
           },
         },
       },

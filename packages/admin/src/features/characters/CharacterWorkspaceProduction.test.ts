@@ -1,6 +1,8 @@
 import type { CharacterWorkspaceDetail } from "@idream/shared/admin";
 import { describe, expect, it } from "vitest";
 import {
+  characterVideoSourceBroken,
+  characterVisualReadinessTarget,
   characterWorkspaceTabLabel,
   resolveCharacterProductionEntry,
 } from "./CharacterWorkspace";
@@ -71,10 +73,41 @@ describe("Character production entry", () => {
     });
   });
 
+  it("flags a live character whose primary image cannot serve image-to-video", () => {
+    expect(characterVideoSourceBroken(workspace({ servingState: "live" }))).toBe(true);
+  });
+
+  it("stays quiet when the live character has a usable primary image", () => {
+    expect(characterVideoSourceBroken(workspace({ servingState: "live", repairable: true })))
+      .toBe(false);
+  });
+
+  it("stays quiet before launch — a missing portrait is already the current production step", () => {
+    expect(characterVideoSourceBroken(workspace({ servingState: null }))).toBe(false);
+  });
+
   it("uses operator-facing tab labels instead of raw route keys", () => {
     expect(characterWorkspaceTabLabel("project")).toBe("Overview");
     expect(characterWorkspaceTabLabel("assets")).toBe("Image assets");
     expect(characterWorkspaceTabLabel("voice")).toBe("Voice");
     expect(characterWorkspaceTabLabel("preview")).toBe("Launch preview");
+  });
+
+  it("routes a blocked visual step to the earliest executable control", () => {
+    expect(characterVisualReadinessTarget([
+      "generation_route_unqualified",
+      "reference_set_not_active",
+      "visual_identity_unsealed",
+    ])).toBe("visual-identity-version");
+    expect(characterVisualReadinessTarget([
+      "generation_route_unqualified",
+      "reference_set_not_active",
+    ])).toBe("visual-reference-set");
+    expect(characterVisualReadinessTarget([
+      "generation_route_unqualified",
+    ])).toBe("route-qualification-workbench");
+    expect(characterVisualReadinessTarget([
+      "visual_anchor_missing",
+    ])).toBeNull();
   });
 });

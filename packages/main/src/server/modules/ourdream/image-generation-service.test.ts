@@ -251,7 +251,6 @@ beforeAll(async () => {
       signatureTraits: {},
       styleTraits: {},
       anchorAssetIds: [assetId],
-      referenceAssetIds: [],
       adapterRefs: {},
       createdFrom: "test",
     },
@@ -1127,7 +1126,6 @@ describe("image generation service contract", () => {
         signatureTraits: {},
         styleTraits: {},
         anchorAssetIds: [],
-        referenceAssetIds: [],
         adapterRefs: {},
         createdFrom: "test",
       },
@@ -1234,7 +1232,6 @@ describe("image generation service contract", () => {
           signatureTraits: {},
           styleTraits: {},
           anchorAssetIds: [],
-          referenceAssetIds: [],
           adapterRefs: {},
           createdFrom: "test",
         },
@@ -2280,7 +2277,6 @@ describe("image generation service contract", () => {
         signatureTraits: {},
         styleTraits: { style: "realistic" },
         anchorAssetIds: [`${P}anchor-1`],
-        referenceAssetIds: [`${P}ref-1`],
         defaultSeed: `${P}identity-seed`,
         adapterRefs: {},
         createdFrom: "test",
@@ -2444,7 +2440,6 @@ describe("image generation service contract", () => {
         signatureTraits: {},
         styleTraits: { style: "realistic" },
         anchorAssetIds: [`${P}text-anchor`],
-        referenceAssetIds: [`${P}text-ref`],
         defaultSeed: `${P}text-seed`,
         adapterRefs: {},
         createdFrom: "test",
@@ -2529,7 +2524,6 @@ describe("image generation service contract", () => {
         signatureTraits: { freckles: true },
         styleTraits: { style: "realistic" },
         anchorAssetIds: [anchorId],
-        referenceAssetIds: [],
         defaultSeed: `${P}chat-seed`,
         adapterRefs: {},
         createdFrom: "test",
@@ -2696,7 +2690,6 @@ describe("image generation service contract", () => {
           signatureTraits: {},
           styleTraits: {},
           anchorAssetIds: [sourceAssetId],
-          referenceAssetIds: [],
           adapterRefs: {},
           createdFrom: "test",
         },
@@ -2713,7 +2706,6 @@ describe("image generation service contract", () => {
           signatureTraits: {},
           styleTraits: {},
           anchorAssetIds: [targetAnchorId],
-          referenceAssetIds: [],
           adapterRefs: {},
           createdFrom: "test",
         },
@@ -3057,7 +3049,6 @@ describe("image generation service contract", () => {
         signatureTraits: {},
         styleTraits: {},
         anchorAssetIds: [anchorId],
-        referenceAssetIds: [],
         adapterRefs: {},
         createdFrom: "test",
       },
@@ -3161,9 +3152,9 @@ describe("image generation service contract", () => {
       [1, "archived"],
       [2, "active"],
     ]);
+    // 参考集断言见紧随其后的 nextReferenceSet；profile 上只剩候选图池。
     expect(profiles[1]).toMatchObject({
       anchorAssetIds: [anchorId],
-      referenceAssetIds: [referenceId],
     });
     const nextReferenceSet = await prisma.referenceSetRevision.findFirstOrThrow({
       where: { visualProfileId: profiles[1]?.id, status: "active" },
@@ -3346,7 +3337,6 @@ describe("image generation service contract", () => {
         signatureTraits: {},
         styleTraits: {},
         anchorAssetIds: [],
-        referenceAssetIds: [],
         adapterRefs: {},
         createdFrom: "test",
       },
@@ -3517,7 +3507,6 @@ describe("image generation service contract", () => {
         signatureTraits: {},
         styleTraits: {},
         anchorAssetIds: [],
-        referenceAssetIds: [],
         adapterRefs: {},
         createdFrom: "test",
       },
@@ -3655,7 +3644,6 @@ describe("image generation service contract", () => {
         signatureTraits: {},
         styleTraits: { style: "realistic" },
         anchorAssetIds: [oldAnchorId],
-        referenceAssetIds: [mediaId],
         defaultSeed: `${P}promote-existing-seed`,
         adapterRefs: {},
         immutableHash: `${P}promote-existing-immutable`,
@@ -3693,7 +3681,8 @@ describe("image generation service contract", () => {
     expect(oldProfile.status).toBe("active");
     expect(activeProfile.version).toBe(1);
     expect(activeProfile.anchorAssetIds).toEqual([oldAnchorId]);
-    expect(activeProfile.referenceAssetIds).toEqual([mediaId]);
+    // 本用例的重点是「已有不可变身份时，设显示头像不得改动身份」——参考集不属于断言范围
+    // （该 fixture 本就没有发布过 Reference Set），只需确认身份版本/锚点/密封 hash 未变。
     expect(activeProfile.immutableHash).toBe(`${P}promote-existing-immutable`);
     await expect(
       prisma.character.findUniqueOrThrow({ where: { id: characterId } }),
@@ -3730,7 +3719,6 @@ describe("image generation service contract", () => {
         signatureTraits: {},
         styleTraits: { style: "realistic" },
         anchorAssetIds: [`${P}reference-anchor`],
-        referenceAssetIds: [],
         defaultSeed: `${P}reference-seed`,
         adapterRefs: {},
         immutableHash: `${P}reference-immutable`,
@@ -3802,7 +3790,6 @@ describe("image generation service contract", () => {
     const media = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: mediaId } });
     expect(oldProfile.status).toBe("active");
     expect(activeProfile.version).toBe(1);
-    expect(activeProfile.referenceAssetIds).toEqual([]);
     expect(activeProfile.anchorAssetIds).toEqual([`${P}reference-anchor`]);
     expect(activeProfile.immutableHash).toBe(`${P}reference-immutable`);
     expect(added.data.referenceSetRevision.references).toEqual(
@@ -3851,7 +3838,6 @@ describe("image generation service contract", () => {
         signatureTraits: {},
         styleTraits: { style: "realistic" },
         anchorAssetIds: [anchorId],
-        referenceAssetIds: [],
         defaultSeed: `${P}manifest-seed`,
         adapterRefs: {},
         createdFrom: "test",
@@ -4469,7 +4455,6 @@ describe("image generation service contract", () => {
         signatureTraits: {},
         styleTraits: { style: "realistic" },
         anchorAssetIds: [anchorId],
-        referenceAssetIds: [],
         adapterRefs: {},
         createdFrom: "test",
       },
@@ -4567,7 +4552,6 @@ describe("image generation service contract", () => {
         signatureTraits: {},
         styleTraits: {},
         anchorAssetIds: [anchorId],
-        referenceAssetIds: [],
         adapterRefs: {},
         createdFrom: "test",
       },
@@ -4645,7 +4629,6 @@ describe("image generation service contract", () => {
         signatureTraits: {},
         styleTraits: { style: "realistic" },
         anchorAssetIds: [identityAnchorId],
-        referenceAssetIds: [],
         adapterRefs: {},
         createdFrom: "test",
       },
@@ -5076,7 +5059,6 @@ describe("image generation service contract", () => {
         signatureTraits: {},
         styleTraits: { style: "realistic" },
         anchorAssetIds: [identityAnchorId],
-        referenceAssetIds: [identityAnchorId],
         defaultSeed: `${P}variation-seed`,
         adapterRefs: {},
         createdFrom: "test",

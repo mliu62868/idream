@@ -61,7 +61,7 @@ const productionEnv = {
   PUBLIC_CATALOG_PROBE_REPORT: ".tmp/public-catalog-probe.json",
   WEB_SURFACE_PROBE_REPORT: ".tmp/launch-web-surface-probe.json",
   GEN_IMAGE_PROVIDER: "pipeline",
-  GEN_VIDEO_PROVIDER: "pipeline",
+  GEN_VIDEO_PROVIDER: "backend",
   GEN_FINALIZER_QUEUES: "app.ai.finalize,character.preview",
   PIPELINE_API_URL: "https://pipeline.ourdream.internal",
   PIPELINE_VOICE_API_URL: "https://voice.ourdream.internal/v1",
@@ -70,6 +70,7 @@ const productionEnv = {
   PIPELINE_IMAGE_MODEL_DEFAULT: "pornmaster-zimage-turbo",
   PIPELINE_VOICE_MODEL_DEFAULT: "voice-default",
   PIPELINE_VIDEO_MODEL_DEFAULT: "video-default",
+  COMFYUI_API_URL: "https://comfyui-video.ourdream.internal",
   PIPELINE_IMAGE_PROBE_REPORT: ".tmp/launch-image-probe.json",
   VOICE_MODEL_PROBE_REPORT: ".tmp/launch-voice-probe.json",
   BLOB_STORAGE_PROBE_REPORT: ".tmp/launch-blob-probe.json",
@@ -622,6 +623,7 @@ describe("launch readiness", () => {
         ...productionEnv,
         IMAGE_PROVIDER: "backend",
         GEN_IMAGE_PROVIDER: "backend",
+        COMFYUI_API_URL: undefined,
       },
       imagePipelineProbe: null,
       ageVerificationProbe: passingAgeProbe(),
@@ -648,6 +650,7 @@ describe("launch readiness", () => {
         ...productionEnv,
         IMAGE_PROVIDER: "backend",
         GEN_IMAGE_PROVIDER: "backend",
+        GEN_VIDEO_PROVIDER: "mock",
         DRAWTHINGS_CLI: "/opt/drawthings/draw-things-cli",
       },
       imagePipelineProbe: null,
@@ -1771,6 +1774,38 @@ describe("launch readiness", () => {
     expect(checkById(cloneReady, "voice-model-live-probe")?.status).toBe("pass");
   });
 
+  it("requires Fish Audio probe evidence to include resident MLX cloning", () => {
+    const fishEnv = {
+      ...productionEnv,
+      VOICE_PROVIDER: "fish-audio",
+      FISH_AUDIO_API_URL: "https://fish.ourdream.internal/v1",
+      FISH_AUDIO_MODEL: "fish-audio-s2-pro-8bit",
+    };
+    const report = assessLaunchReadiness({
+      env: fishEnv,
+      imagePipelineProbe: passingImageProbe(),
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      voiceModelProbe: passingVoiceProbe({
+        provider: "fish-audio",
+        baseUrl: fishEnv.FISH_AUDIO_API_URL,
+        model: fishEnv.FISH_AUDIO_MODEL,
+        voiceCloningAvailable: true,
+        voiceCloneVerified: true,
+      }),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingProductConfigProbe(),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
+      now,
+    });
+
+    expect(checkById(report, "voice-model-live-probe")?.status).toBe("pass");
+  });
+
   it("preserves Pocket TTS clone evidence when loading the voice probe report", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "idream-voice-probe-"));
     try {
@@ -2539,6 +2574,36 @@ describe("launch readiness", () => {
     expect(checkById(report, "video-comfyui-api-url")?.status).toBe("pass");
   });
 
+  it("rejects the generic pipeline provider for production video", () => {
+    const report = assessLaunchReadiness({
+      env: {
+        ...productionEnv,
+        GEN_VIDEO_PROVIDER: "pipeline",
+      },
+      imagePipelineProbe: passingImageProbe(),
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingProductConfigProbe({
+        videoFeatureEnabled: true,
+        activeVideoProfiles: 1,
+        activeVideoCharacterTemplates: 1,
+        activeVideoFreeplayTemplates: 1,
+        activeVideoPricingRules: 1,
+      }),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
+      now,
+    });
+
+    expect(report.ok).toBe(false);
+    expect(failedIds(report)).toContain("gen-video-provider");
+  });
+
   it("fails when the video worker is configured for an unsupported provider", () => {
     const report = assessLaunchReadiness({
       env: {
@@ -2631,13 +2696,13 @@ describe("launch readiness", () => {
     expect(genValues.GEN_VIDEO_TIMEOUT_MS).toBe("1800000");
   });
 
-  it("keeps Pocket TTS as the production voice authority", () => {
+  it("keeps Fish Audio S2 Pro as the production voice authority", () => {
     const mainValues = envTemplateValues("../../.env.production.example");
 
-    expect(mainValues.VOICE_PROVIDER).toBe("pocket-tts");
-    expect(mainValues.POCKET_TTS_API_URL).toBe("http://127.0.0.1:8062/v1");
-    expect(mainValues.POCKET_TTS_MODEL).toBe("pocket-tts-4bit");
-    expect(mainValues.POCKET_TTS_OMLX_API_URL).toBe("http://127.0.0.1:8061/v1");
-    expect(mainValues.POCKET_TTS_OMLX_API_TOKEN).toBeTruthy();
+    expect(mainValues.VOICE_PROVIDER).toBe("fish-audio");
+    expect(mainValues.FISH_AUDIO_API_URL).toBe("http://127.0.0.1:8062/v1");
+    expect(mainValues.FISH_AUDIO_MODEL).toBe("fish-audio-s2-pro-8bit");
+    expect(mainValues.FISH_AUDIO_MODEL_PATH).toBeTruthy();
+    expect(mainValues.FISH_AUDIO_API_TOKEN).toBeTruthy();
   });
 });

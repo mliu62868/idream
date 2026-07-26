@@ -10,6 +10,7 @@ import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { referenceSetSnapshotHash } from "./release-snapshot";
 import { lockCharacterGenerationAndMediaAssetAuthorities } from "./generation-authority-lock";
 import { invalidateCharacterDraftAssetPack } from "./draft-asset-authority";
+import { characterReferenceAuthorityFrom } from "./reference-authority";
 import {
   hasHydratableMediaBlobAuthority,
   isMediaAssetOperationalForAuthority,
@@ -89,11 +90,13 @@ export async function publishCharacterReferenceSet(input: {
       },
     );
   }
+  // 可选参考图 = 候选图池 ∪ 当前参考集。图池（anchorAssetIds）必须并进来，它可以包含参考集
+  // 之外的图，否则运营永远无法往参考集里加新图。
+  // TODO(reference-authority): 图池的正确权威是 ReferenceCandidate（候选池），迁移后此处改读候选池。
+  // 详见 docs/superpowers/specs/2026-07-25-visual-reference-single-authority-design.md §2.1。
   const eligibleIds = new Set([
     ...jsonStringArray(profile.anchorAssetIds),
-    ...(currentReferenceSet
-      ? currentReferenceSet.references.map((reference) => reference.mediaAssetId)
-      : jsonStringArray(profile.referenceAssetIds)),
+    ...(characterReferenceAuthorityFrom(currentReferenceSet)?.refs ?? []),
   ]);
   if (uniqueAssetIds.some((id) => !eligibleIds.has(id))) {
     throw Errors.conflict("A selected reference is not pinned by the active Visual Identity");

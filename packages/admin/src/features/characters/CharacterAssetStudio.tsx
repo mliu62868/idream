@@ -558,13 +558,12 @@ function AssetImage({ alt, className, src }: { alt: string; className: string; s
   );
 }
 
+// 与后端 workspace.ts 的生图闸同口径：密封 hash（*_unsealed）是发布级检查，不拦打磨。
 const identityAuthorityBlockerCodes = new Set([
   "visual_identity_missing",
   "visual_anchor_missing",
   "visual_traits_incomplete",
-  "visual_identity_unsealed",
   "reference_set_not_active",
-  "reference_set_unsealed",
   "reference_assets_unavailable",
 ]);
 
@@ -1616,16 +1615,18 @@ export function CharacterAssetStudio({
   const canUseDecisionAction = Boolean(selectedItem?.asset) && (
     isSelectedAsset || (isApprovedItem && permissions.selectDraft)
   );
+  // 审图门槛只留真实判断：分数 + 质量勾选。理由不再拦人——这是单人自用后台，
+  // 「看一眼觉得行就能过」，写给没人读的审计日志的理由只是打断心流。
   const approvalEvidenceReady =
     reviewDraft.score.trim().length > 0 &&
-    reviewDraft.reason.trim().length >= 3 &&
     Number.isInteger(Number(reviewDraft.score)) &&
     Number(reviewDraft.score) >= (
       bootstrapMode ? 0 : CHARACTER_IDENTITY_APPROVAL_MIN_SCORE
     ) &&
     Number(reviewDraft.score) <= 100 &&
     Object.values(reviewDraft.quality).every(Boolean);
-  const rejectionEvidenceReady = reviewDraft.reason.trim().length >= 3;
+  // 拒绝一张图通常就是「不好看，重生成」，不必先写一段理由。
+  const rejectionEvidenceReady = true;
 
   const prepareImageProduction = async () => {
     const readiness = data.visual.imageReadiness;
@@ -2522,7 +2523,7 @@ export function CharacterAssetStudio({
         bootstrapMode ? 0 : CHARACTER_IDENTITY_APPROVAL_MIN_SCORE
       ) &&
       numericScore <= 100;
-    if (reviewDraft.reason.trim().length < 3 || (decision === "approved" && !validScore)) {
+    if (decision === "approved" && !validScore) {
       setError(decision === "approved"
         ? bootstrapMode
           ? "Approval requires an integer score from 0 to 100 and concrete visible evidence."
@@ -3113,7 +3114,7 @@ export function CharacterAssetStudio({
             ) : null}
           </div>
 
-          {!bootstrapMode && qualifiedRoute && !variationRouteReady ? (
+          {!bootstrapMode && qualifiedRoute && selectedItem && !variationRouteReady ? (
             <div className="mt-3 flex flex-col gap-2 rounded-lg bg-[var(--ad-blue-bg)] p-3 text-xs leading-5 text-[var(--ad-blue-text)] sm:flex-row sm:items-center sm:justify-between">
               <p>{t(characterSourceVariationBlockerMessage(variationRouteBlocker))}</p>
               <WorkspaceButton onClick={() => onContinue("visual")}>{t("Review generation route")}</WorkspaceButton>

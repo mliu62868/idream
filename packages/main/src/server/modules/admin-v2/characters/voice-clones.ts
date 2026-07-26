@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
+  DEFAULT_FISH_AUDIO_DELIVERY,
   characterVoiceActivationRequestSchema,
   characterVoiceActivationResponseSchema,
   characterVoiceCloneCreateRequestSchema,
@@ -7,7 +8,9 @@ import {
   characterVoiceProfileSchema,
   characterVoiceSystemDefaultResetRequestSchema,
   characterVoiceSystemDefaultResetResponseSchema,
+  fishAudioDeliverySettingsSchema,
   type CharacterVoiceProfile,
+  type FishAudioDeliverySettings,
 } from "@idream/shared/admin";
 import type { CharacterVoiceProfile as CharacterVoiceProfileRecord, MediaAsset, Prisma } from "@prisma/client";
 import { env } from "@/server/lib/env";
@@ -39,6 +42,7 @@ export type ParsedVoiceCloneForm = {
   language: string;
   referenceText: string;
   sampleText: string;
+  delivery: FishAudioDeliverySettings;
   reason: string;
   reference: {
     filename: string;
@@ -54,6 +58,7 @@ export async function parseVoiceCloneForm(request: Request): Promise<ParsedVoice
     language: stringField(form, "language") || "english",
     referenceText: stringField(form, "referenceText"),
     sampleText: stringField(form, "sampleText"),
+    delivery: jsonFormField(form, "delivery"),
     reason: stringField(form, "reason"),
   });
   const audio = form.get("audio");
@@ -90,9 +95,13 @@ export async function createCharacterVoiceClone(input: {
   form: ParsedVoiceCloneForm;
 }) {
   const voice = providers.voice;
-  if (!voice.supportsVoiceCloning || !voice.cloneVoice) {
+  if (
+    voice.providerKey !== "fish_audio" ||
+    !voice.supportsVoiceCloning ||
+    !voice.cloneVoice
+  ) {
     throw Errors.unavailable(
-      "Voice cloning requires VOICE_PROVIDER=pocket-tts",
+      "Voice cloning requires VOICE_PROVIDER=fish-audio",
       { configuredProvider: voice.providerKey },
     );
   }
@@ -136,6 +145,7 @@ export async function createCharacterVoiceClone(input: {
       payload: {
         language: input.form.language,
         sampleText: input.form.sampleText,
+        delivery: input.form.delivery,
         reason: input.form.reason,
         referenceFilename: input.form.reference.filename,
         referenceText: input.form.referenceText,
@@ -153,16 +163,17 @@ export async function createCharacterVoiceClone(input: {
           referenceText: input.form.referenceText,
         });
         if (!cloned.ok) {
-          throw Errors.unavailable("Pocket TTS could not clone the reference voice", cloned.error);
+          throw Errors.unavailable("Fish Audio could not clone the reference voice", cloned.error);
         }
         preparedArtifacts.voiceId = cloned.data.voiceId;
         const preview = await voice.synthesize({
           text: input.form.sampleText,
           voiceId: cloned.data.voiceId,
+          delivery: input.form.delivery,
         });
         if (!preview.ok) {
           await voice.deleteVoice?.({ voiceId: cloned.data.voiceId });
-          throw Errors.unavailable("Pocket TTS cloned the voice but could not render its preview", preview.error);
+          throw Errors.unavailable("Fish Audio cloned the voice but could not render its preview", preview.error);
         }
         preparedArtifacts.previewKey = preview.data.key;
         const storedReference = await providers.blob.putPrivate({
@@ -223,8 +234,9 @@ export async function createCharacterVoiceClone(input: {
               referenceText: input.form.referenceText,
               sizeBytes: input.form.reference.body.byteLength,
               sha256: input.form.reference.sha256,
-              provider: "pocket_tts",
+              provider: "fish_audio",
               providerVoiceId: prepared.cloned.voiceId,
+              delivery: input.form.delivery,
             }),
           },
         });
@@ -242,8 +254,9 @@ export async function createCharacterVoiceClone(input: {
             metadata: toInputJson({
               purpose: "voice_clone_preview",
               durationMs: prepared.preview.durationMs,
-              provider: "pocket_tts",
+              provider: "fish_audio",
               providerVoiceId: prepared.cloned.voiceId,
+              delivery: input.form.delivery,
             }),
           },
         });
@@ -252,10 +265,11 @@ export async function createCharacterVoiceClone(input: {
             id: profileId,
             characterId: input.characterId,
             version: (latest?.version ?? 0) + 1,
-            provider: "pocket_tts",
+            provider: "fish_audio",
             providerVoiceId: prepared.cloned.voiceId,
             model: prepared.cloned.model,
             language: prepared.cloned.language,
+            deliverySettings: toInputJson(input.form.delivery),
             status: "candidate",
             referenceAssetId,
             previewAssetId,
@@ -340,9 +354,9 @@ export async function activateCharacterVoiceProfile(input: {
   request: unknown;
 }) {
   const voice = providers.voice;
-  if (voice.providerKey !== "pocket_tts") {
+  if (voice.providerKey !== "fish_audio") {
     throw Errors.unavailable(
-      "Voice activation requires VOICE_PROVIDER=pocket-tts",
+      "Voice activation requires VOICE_PROVIDER=fish-audio",
       { configuredProvider: voice.providerKey },
     );
   }
@@ -371,6 +385,7 @@ export async function activateCharacterVoiceProfile(input: {
           where: {
             id: input.profileId,
             characterId: input.characterId,
+            provider: "fish_audio",
             status: "candidate",
           },
           include: {
@@ -389,10 +404,12 @@ export async function activateCharacterVoiceProfile(input: {
           profileId: input.profileId,
         });
       }
-      if ((current?.id ?? null) !== request.expectedActiveProfileId) {
+      const currentFishProfileId =
+        current?.provider === "fish_audio" ? current.id : null;
+      if (currentFishProfileId !== request.expectedActiveProfileId) {
         throw Errors.conflict("Active voice changed while this candidate was under review", {
           expectedActiveProfileId: request.expectedActiveProfileId,
-          currentActiveProfileId: current?.id ?? null,
+          currentActiveProfileId: currentFishProfileId,
         });
       }
       if (lockedCharacter.voiceId !== request.expectedCurrentVoiceId) {
@@ -506,12 +523,14 @@ export async function resetCharacterVoiceToSystemDefault(input: {
         where: { characterId: input.characterId, status: "active" },
         orderBy: [{ version: "desc" }, { id: "desc" }],
       });
-      if ((current?.id ?? null) !== request.expectedActiveProfileId) {
+      const currentFishProfileId =
+        current?.provider === "fish_audio" ? current.id : null;
+      if (currentFishProfileId !== request.expectedActiveProfileId) {
         throw Errors.conflict(
           "Active voice changed before the system-default reset",
           {
             expectedActiveProfileId: request.expectedActiveProfileId,
-            currentActiveProfileId: current?.id ?? null,
+            currentActiveProfileId: currentFishProfileId,
           },
         );
       }
@@ -601,6 +620,7 @@ export function characterVoiceProfileDto(profile: VoiceProfileWithAssets): Chara
     providerVoiceId: profile.providerVoiceId,
     model: profile.model,
     language: profile.language,
+    delivery: deliverySettings(profile.deliverySettings),
     status: profile.status,
     reference: {
       assetId: profile.referenceAsset.id,
@@ -668,6 +688,21 @@ function mediaViewUrl(assetId: string, extension: string) {
 function stringField(form: FormData, key: string) {
   const value = form.get(key);
   return typeof value === "string" ? value : "";
+}
+
+function jsonFormField(form: FormData, key: string) {
+  const value = stringField(form, key);
+  if (!value) return undefined;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    throw Errors.badRequest(`${key} must be valid JSON`);
+  }
+}
+
+function deliverySettings(value: Prisma.JsonValue) {
+  const parsed = fishAudioDeliverySettingsSchema.safeParse(value);
+  return parsed.success ? parsed.data : DEFAULT_FISH_AUDIO_DELIVERY;
 }
 
 function normalizedAudioContentType(contentType: string, filename: string) {

@@ -1,11 +1,13 @@
 import {
-  pocketTtsCatalogVoiceIdSchema,
+  DEFAULT_FISH_AUDIO_DELIVERY,
+  fishAudioCatalogVoiceIdSchema,
+  fishAudioDeliverySettingsSchema,
   voiceDefaultPreviewRequestSchema,
   voiceDefaultPreviewResponseSchema,
   voiceDefaultSettingsSchema,
   voiceDefaultSettingsUpdateRequestSchema,
   voiceDefaultSettingsUpdateResponseSchema,
-  type PocketTtsCatalogVoiceId,
+  type FishAudioCatalogVoiceId,
   type VoiceDefaultSettings,
 } from "@idream/shared/admin";
 import type { AppSetting } from "@prisma/client";
@@ -20,28 +22,27 @@ import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 
 export const VOICE_DEFAULTS_SETTING_KEY = "voice.defaults";
 
-export const POCKET_TTS_CATALOG = [
-  { id: "alba", label: "Alba", presentation: "female" },
-  { id: "fantine", label: "Fantine", presentation: "female" },
-  { id: "cosette", label: "Cosette", presentation: "female" },
-  { id: "eponine", label: "Éponine", presentation: "female" },
-  { id: "azelma", label: "Azelma", presentation: "female" },
-  { id: "marius", label: "Marius", presentation: "male" },
-  { id: "javert", label: "Javert", presentation: "male" },
-  { id: "jean", label: "Jean", presentation: "male" },
+export const FISH_AUDIO_CATALOG = [
+  {
+    id: "fish-female-default",
+    label: "System Female",
+    presentation: "female",
+    description: "Curated adult female identity; delivery is configured separately",
+  },
 ] as const;
 
 const storedVoiceDefaultsSchema = z
   .object({
-    schemaVersion: z.literal(1),
-    defaultVoiceId: pocketTtsCatalogVoiceIdSchema,
+    schemaVersion: z.literal(2),
+    defaultVoiceId: fishAudioCatalogVoiceIdSchema,
     genderVoiceIds: z
       .object({
-        female: pocketTtsCatalogVoiceIdSchema,
-        male: pocketTtsCatalogVoiceIdSchema,
-        trans: pocketTtsCatalogVoiceIdSchema,
+        female: fishAudioCatalogVoiceIdSchema,
+        male: fishAudioCatalogVoiceIdSchema,
+        trans: fishAudioCatalogVoiceIdSchema,
       })
       .strict(),
+    delivery: fishAudioDeliverySettingsSchema,
   })
   .strict();
 
@@ -53,21 +54,35 @@ export async function getVoiceDefaultSettings(): Promise<VoiceDefaultSettings> {
 }
 
 export async function resolveCharacterVoiceAuthority(input: {
+  characterId: string;
   voiceId: string | null;
   gender: string;
 }) {
   if (input.voiceId?.trim()) {
-    return {
-      voiceId: input.voiceId.trim(),
-      source: "character_clone" as const,
-      settingVersion: null,
-    };
+    const profile = await prisma.characterVoiceProfile.findFirst({
+      where: {
+        characterId: input.characterId,
+        providerVoiceId: input.voiceId.trim(),
+        status: "active",
+      },
+      orderBy: [{ version: "desc" }, { id: "desc" }],
+      select: { deliverySettings: true, provider: true },
+    });
+    if (profile?.provider === "fish_audio") {
+      return {
+        voiceId: input.voiceId.trim(),
+        source: "character_clone" as const,
+        settingVersion: null,
+        delivery: deliverySettings(profile.deliverySettings),
+      };
+    }
   }
   const defaults = await getVoiceDefaultSettings();
   return {
     voiceId: voiceIdForGender(defaults, input.gender),
     source: "system_default" as const,
     settingVersion: defaults.settingVersion,
+    delivery: defaults.delivery,
   };
 }
 
@@ -97,9 +112,10 @@ export async function updateVoiceDefaultSettings(input: {
         throw voiceDefaultVersionConflict(request.expectedVersion, before);
       }
       const value = toInputJson({
-        schemaVersion: 1,
+        schemaVersion: 2,
         defaultVoiceId: request.defaultVoiceId,
         genderVoiceIds: request.genderVoiceIds,
+        delivery: request.delivery,
       });
       if (before) {
         const updated = await tx.appSetting.updateMany({
@@ -157,6 +173,7 @@ export async function updateVoiceDefaultSettings(input: {
             settingVersion: settings.settingVersion,
             defaultVoiceId: settings.defaultVoiceId,
             genderVoiceIds: settings.genderVoiceIds,
+            delivery: settings.delivery,
             actorId: input.actor.id,
           }),
         },
@@ -174,17 +191,18 @@ export async function updateVoiceDefaultSettings(input: {
 export async function previewVoiceDefault(input: unknown) {
   const request = voiceDefaultPreviewRequestSchema.parse(input);
   const voice = providers.voice;
-  if (voice.providerKey !== "pocket_tts" || !voice.previewVoice) {
-    throw Errors.unavailable("Pocket TTS catalog preview is unavailable", {
+  if (voice.providerKey !== "fish_audio" || !voice.previewVoice) {
+    throw Errors.unavailable("Fish Audio voice preview is unavailable", {
       configuredProvider: voice.providerKey,
     });
   }
   const result = await voice.previewVoice({
     text: request.text,
     voiceId: request.voiceId,
+    delivery: request.delivery,
   });
   if (!result.ok) {
-    throw Errors.unavailable("Pocket TTS could not render the catalog preview", result.error);
+    throw Errors.unavailable("Fish Audio could not render the voice preview", result.error);
   }
   return voiceDefaultPreviewResponseSchema.parse({
     voiceId: request.voiceId,
@@ -200,39 +218,45 @@ export function voiceDefaultSettingsDto(
   const stored = storedVoiceDefaultsSchema.safeParse(setting?.value);
   const fallbackVoiceId = environmentDefaultVoiceId();
   return voiceDefaultSettingsSchema.parse({
-    provider: "pocket_tts",
+    provider: "fish_audio",
     source: stored.success ? "app_setting" : "environment",
     settingVersion: setting?.version ?? 0,
     updatedAt: setting?.updatedAt.toISOString() ?? null,
-    defaultVoiceId: stored.success
-      ? stored.data.defaultVoiceId
-      : fallbackVoiceId,
+    defaultVoiceId: stored.success ? stored.data.defaultVoiceId : fallbackVoiceId,
     genderVoiceIds: stored.success
       ? stored.data.genderVoiceIds
       : {
           female: fallbackVoiceId,
-          male: "marius",
+          male: fallbackVoiceId,
           trans: fallbackVoiceId,
         },
-    catalog: POCKET_TTS_CATALOG,
+    delivery: stored.success
+      ? stored.data.delivery
+      : DEFAULT_FISH_AUDIO_DELIVERY,
+    catalog: FISH_AUDIO_CATALOG,
   });
 }
 
 export function voiceIdForGender(
   settings: VoiceDefaultSettings,
   gender: string,
-): PocketTtsCatalogVoiceId {
+): FishAudioCatalogVoiceId {
   if (gender === "female" || gender === "male" || gender === "trans") {
     return settings.genderVoiceIds[gender];
   }
   return settings.defaultVoiceId;
 }
 
-function environmentDefaultVoiceId(): PocketTtsCatalogVoiceId {
-  const parsed = pocketTtsCatalogVoiceIdSchema.safeParse(
-    env.POCKET_TTS_DEFAULT_VOICE_ID,
+function environmentDefaultVoiceId(): FishAudioCatalogVoiceId {
+  const parsed = fishAudioCatalogVoiceIdSchema.safeParse(
+    env.FISH_AUDIO_DEFAULT_VOICE_ID,
   );
-  return parsed.success ? parsed.data : "alba";
+  return parsed.success ? parsed.data : "fish-female-default";
+}
+
+function deliverySettings(value: unknown) {
+  const parsed = fishAudioDeliverySettingsSchema.safeParse(value);
+  return parsed.success ? parsed.data : DEFAULT_FISH_AUDIO_DELIVERY;
 }
 
 function voiceDefaultVersionConflict(

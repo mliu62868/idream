@@ -246,7 +246,6 @@ async function seedCharacterAssetAuthority(input: {
       signatureTraits: {},
       styleTraits: { style },
       anchorAssetIds: [anchorAssetId],
-      referenceAssetIds: [anchorAssetId],
       adapterRefs: {},
       evidenceState: "qualified",
       createdFrom: "admin_console_test",

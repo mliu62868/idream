@@ -316,7 +316,6 @@ describe("Character Release command executor", () => {
       signatureTraits: {},
       styleTraits: { style: "realistic" },
       anchorAssetIds: [referenceMediaId],
-      referenceAssetIds: [referenceMediaId],
       adapterRefs: {},
       evidenceState: "qualified",
       createdFrom: "test",

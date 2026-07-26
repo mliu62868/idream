@@ -73,46 +73,59 @@ const sharedInternalEnv = internalToken ? { INTERNAL_TOKEN: internalToken } : {}
 const mainEnvPath = dir("packages/main/.env");
 const mainEnvValue = (key, fallback) =>
   process.env[key] ?? localEnvValue(mainEnvPath, key) ?? fallback;
-const pocketTtsApiUrl = new URL(
-  mainEnvValue("POCKET_TTS_API_URL", "http://127.0.0.1:8062/v1"),
+const fishAudioApiUrl = new URL(
+  mainEnvValue("FISH_AUDIO_API_URL", "http://127.0.0.1:8062/v1"),
 );
-const pocketTtsApiToken = mainEnvValue("POCKET_TTS_API_TOKEN");
-const pocketTtsOmlxApiToken =
-  mainEnvValue("POCKET_TTS_OMLX_API_TOKEN") ??
-  mainEnvValue("PIPELINE_VOICE_API_TOKEN") ??
-  mainEnvValue("PIPELINE_API_TOKEN");
+const fishAudioApiToken = mainEnvValue("FISH_AUDIO_API_TOKEN");
 
 module.exports = {
   apps: [
-    // Durable Pocket voice registry + thin adapter to the oMLX audio runtime.
+    // Resident Fish Audio S2 Pro MLX runtime + durable reference-voice registry.
     {
-      name: "pocket-tts",
+      name: "fish-audio",
       cwd: dir("."),
-      script: "scripts/start-pocket-tts.cjs",
+      script: "scripts/start-fish-audio.cjs",
       exec_mode: "fork",
       instances: 1,
-      ...sourceWatch("scripts/start-pocket-tts.cjs"),
+      ...sourceWatch(
+        "scripts/start-fish-audio.cjs",
+        "scripts/fish_audio_gateway.py",
+      ),
       env: {
-        POCKET_TTS_HOST: mainEnvValue("POCKET_TTS_HOST", pocketTtsApiUrl.hostname),
-        POCKET_TTS_PORT: mainEnvValue(
-          "POCKET_TTS_PORT",
-          pocketTtsApiUrl.port || (pocketTtsApiUrl.protocol === "https:" ? "443" : "80"),
+        FISH_AUDIO_HOST: mainEnvValue("FISH_AUDIO_HOST", fishAudioApiUrl.hostname),
+        FISH_AUDIO_PORT: mainEnvValue(
+          "FISH_AUDIO_PORT",
+          fishAudioApiUrl.port ||
+            (fishAudioApiUrl.protocol === "https:" ? "443" : "80"),
         ),
-        POCKET_TTS_MODEL: mainEnvValue("POCKET_TTS_MODEL", "pocket-tts-4bit"),
-        POCKET_TTS_LANGUAGE: mainEnvValue("POCKET_TTS_LANGUAGE", "english"),
-        POCKET_TTS_DEFAULT_VOICE_ID:
-          mainEnvValue("POCKET_TTS_DEFAULT_VOICE_ID", "alba"),
-        POCKET_TTS_VOICE_DIR:
-          mainEnvValue("POCKET_TTS_VOICE_DIR", dir(".data/pocket-tts/voices")),
-        POCKET_TTS_OMLX_API_URL:
-          mainEnvValue("POCKET_TTS_OMLX_API_URL", "http://127.0.0.1:8061/v1"),
-        POCKET_TTS_OMLX_RUNTIME_VERSION:
-          mainEnvValue("POCKET_TTS_OMLX_RUNTIME_VERSION", "0.5.3"),
-        POCKET_TTS_OMLX_TIMEOUT_MS:
-          mainEnvValue("POCKET_TTS_OMLX_TIMEOUT_MS", "120000"),
-        ...(pocketTtsApiToken ? { POCKET_TTS_API_TOKEN: pocketTtsApiToken } : {}),
-        ...(pocketTtsOmlxApiToken
-          ? { POCKET_TTS_OMLX_API_TOKEN: pocketTtsOmlxApiToken }
+        FISH_AUDIO_MODEL:
+          mainEnvValue("FISH_AUDIO_MODEL", "fish-audio-s2-pro-8bit"),
+        FISH_AUDIO_MODEL_PATH: mainEnvValue(
+          "FISH_AUDIO_MODEL_PATH",
+          path.join(
+            process.env.HOME || __dirname,
+            ".omlx/models/mlx-community/fish-audio-s2-pro-8bit",
+          ),
+        ),
+        FISH_AUDIO_LANGUAGE: mainEnvValue("FISH_AUDIO_LANGUAGE", "auto"),
+        FISH_AUDIO_DEFAULT_VOICE_ID: mainEnvValue(
+          "FISH_AUDIO_DEFAULT_VOICE_ID",
+          "fish-female-default",
+        ),
+        FISH_AUDIO_SYSTEM_REFERENCE_AUDIO: mainEnvValue(
+          "FISH_AUDIO_SYSTEM_REFERENCE_AUDIO",
+          dir(".data/fish-audio/system/female-reference.wav"),
+        ),
+        FISH_AUDIO_SYSTEM_REFERENCE_MANIFEST: mainEnvValue(
+          "FISH_AUDIO_SYSTEM_REFERENCE_MANIFEST",
+          dir(".data/fish-audio/system/female-reference.json"),
+        ),
+        FISH_AUDIO_VOICE_DIR: mainEnvValue(
+          "FISH_AUDIO_VOICE_DIR",
+          dir(".data/fish-audio/voices"),
+        ),
+        ...(fishAudioApiToken
+          ? { FISH_AUDIO_API_TOKEN: fishAudioApiToken }
           : {}),
       },
     },

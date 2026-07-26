@@ -1033,7 +1033,6 @@ describe("Image Library and legacy Placement authority", () => {
         signatureTraits: {},
         styleTraits: {},
         anchorAssetIds: [staleAssetId],
-        referenceAssetIds: [staleAssetId],
         adapterRefs: [],
         createdFrom: "content_ops_deleted_character_test",
         referenceSetRevisions: {
@@ -1906,13 +1905,12 @@ describe("Image Library and legacy Placement authority", () => {
   it("ignores stale active Reference Sets from archived Visual Profiles", async () => {
     const oldOnlyAssetId = `content-authority-old-reference-${suffix}`;
     const currentAssetId = `content-authority-current-reference-${suffix}`;
-    const referenceOnlyAssetId = `content-authority-reference-only-${suffix}`;
     const archivedProfileId = `content-authority-archived-profile-${suffix}`;
     const activeProfileId = `content-authority-active-profile-${suffix}`;
     const archivedProfileRevisionId = `content-authority-archived-profile-r1-${suffix}`;
     const activeProfileRevisionId = `content-authority-active-profile-r1-${suffix}`;
     await prisma.mediaAsset.createMany({
-      data: [oldOnlyAssetId, currentAssetId, referenceOnlyAssetId].map((id) => ({
+      data: [oldOnlyAssetId, currentAssetId].map((id) => ({
         id,
         ownerId: actorId,
         characterId,
@@ -1935,7 +1933,6 @@ describe("Image Library and legacy Placement authority", () => {
         signatureTraits: {},
         styleTraits: {},
         anchorAssetIds: [],
-        referenceAssetIds: [currentAssetId, oldOnlyAssetId],
         adapterRefs: [],
         createdFrom: "content_ops_authority_test",
         referenceSetRevisions: {
@@ -1977,7 +1974,6 @@ describe("Image Library and legacy Placement authority", () => {
         signatureTraits: {},
         styleTraits: {},
         anchorAssetIds: [],
-        referenceAssetIds: [currentAssetId, referenceOnlyAssetId],
         adapterRefs: [],
         createdFrom: "content_ops_authority_test",
         referenceSetRevisions: {
@@ -2065,42 +2061,9 @@ describe("Image Library and legacy Placement authority", () => {
         },
       });
 
-      const referenceOnlyDetail = await getContentAsset(
-        request("GET", `admin/content/assets/${referenceOnlyAssetId}`),
-        referenceOnlyAssetId,
-      );
-      const referenceOnlyDependencies = (
-        await referenceOnlyDetail.json()
-      ).data.asset.authorityDependencies;
-      expect(referenceOnlyDependencies).toContainEqual(expect.objectContaining({
-        kind: "character_visual_identity",
-        visualProfileId: activeProfileId,
-      }));
-      expect(referenceOnlyDependencies).not.toEqual(expect.arrayContaining([
-        expect.objectContaining({ kind: "character_reference_set" }),
-      ]));
-      await expect(
-        patchContentAsset(
-          request("PATCH", `admin/content/assets/${referenceOnlyAssetId}`, {
-            status: "archived",
-            reason: "A reference-only active Visual Profile asset remains authoritative",
-            confirmation: referenceOnlyAssetId,
-          }),
-          referenceOnlyAssetId,
-        ),
-      ).rejects.toMatchObject({
-        status: 409,
-        details: {
-          code: "asset_authority_dependency_active",
-          assetId: referenceOnlyAssetId,
-          dependencies: expect.arrayContaining([
-            expect.objectContaining({
-              kind: "character_visual_identity",
-              visualProfileId: activeProfileId,
-            }),
-          ]),
-        },
-      });
+      // 原本这里还有一段：一张图「只在 profile 影子列、不在参考集里」也必须算权威依赖。
+      // 参考图归一后每个 identity 版本都带 active Reference Set、参考图只来自该集合，
+      // 那个状态不可能再产生，被测对象已消失，故随影子列读点一并移除。
     } finally {
       await prisma.characterVisualReferenceSnapshot.deleteMany({
         where: {
@@ -2120,7 +2083,7 @@ describe("Image Library and legacy Placement authority", () => {
       await prisma.mediaAsset.deleteMany({
         where: {
           id: {
-            in: [oldOnlyAssetId, currentAssetId, referenceOnlyAssetId],
+            in: [oldOnlyAssetId, currentAssetId],
           },
         },
       });

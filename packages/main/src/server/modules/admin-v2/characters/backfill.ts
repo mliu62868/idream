@@ -240,12 +240,9 @@ async function backfillVisualIdentity(
       data: { immutableHash, evidenceState: "legacy_candidate" },
     });
   }
-  const proposedIds = Array.from(
-    new Set([
-      ...stringArray(profile.anchorAssetIds),
-      ...stringArray(profile.referenceAssetIds),
-    ]),
-  );
+  // 这里读 anchorAssetIds 是本函数的**输入**：backfill 的职责就是给缺 active Reference Set 的
+  // 老 profile 重建参考集，而候选图池是此时唯一可信的线索。参考集的影子副本已随归一删除。
+  const proposedIds = Array.from(new Set(stringArray(profile.anchorAssetIds)));
   const assets = proposedIds.length
     ? await tx.mediaAsset.findMany({
         where: {
@@ -477,7 +474,6 @@ function predictedCharacter(character: {
   visualProfiles: readonly {
     id: string;
     anchorAssetIds: Prisma.JsonValue;
-    referenceAssetIds: Prisma.JsonValue;
   }[];
 }) {
   const isLive =

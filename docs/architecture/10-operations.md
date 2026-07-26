@@ -92,40 +92,44 @@ ComfyUI/backend failure；同样不能把组合 pipeline suite 宣称为 pass。
 
 ### Local voice runner
 
-Voice 当前使用 oMLX 内的 Pocket TTS MLX。oMLX 在 `8061` 负责模型发现与推理；
-仓库内 `8062` 进程是不加载权重的产品适配器，暴露 OpenAI-compatible
-`/v1/audio/speech` 和持久声音注册接口。它不复用 legacy 8091 image gateway：
+Voice 当前使用 Fish Audio S2 Pro 8-bit。仓库内 `8062` 进程使用 oMLX 随附的
+`mlx-audio` 直接常驻装载模型，暴露 OpenAI-compatible `/v1/audio/speech` 和
+持久声音注册接口。它不复用 legacy 8091 image gateway：
 
 ```bash
-pm2 start ecosystem.config.js --only pocket-tts --update-env
+bun run voice:fish:prepare-system -- \
+  --audio /path/to/curated-adult-female-reference.wav \
+  --manifest /path/to/curated-adult-female-reference.json
+pm2 delete pocket-tts 2>/dev/null || true
+pm2 start ecosystem.config.js --only fish-audio --update-env
 pm2 save
 curl -fsS http://127.0.0.1:8062/health
 bun run launch:probe:voice:local
 ```
 
-先在 oMLX Admin → Downloads 下载公开的 `mlx-community/pocket-tts-4bit`；
-oMLX 对外 model id 是 `pocket-tts-4bit`。适配器只安装 FastAPI/httpx，不加载第二份
-模型。`/health` 必须同时证明 oMLX 可达、模型已被发现，并报告 `runtime: omlx`、
-`acceleration: mlx`、`voice_cloning: true`。Main 拒绝旧的独立
-`pocket_tts_mlx` gateway，但不把 oMLX 补丁版本硬编码死。默认配置：
+先在 oMLX Admin → Downloads 下载公开的 `mlx-community/fish-audio-s2-pro-8bit`。
+`/health` 必须报告 `runtime: mlx_audio`、`acceleration: mlx`、
+`model_loaded: true`、`voice_cloning: true`、`system_voice_ready: true`；
+系统女性参考 WAV 或 manifest 缺失时会直接返回 HTTP 503。默认配置：
 
 ```dotenv
-VOICE_PROVIDER=pocket-tts
-POCKET_TTS_API_URL=http://127.0.0.1:8062/v1
-POCKET_TTS_MODEL=pocket-tts-4bit
-POCKET_TTS_LANGUAGE=english
-POCKET_TTS_DEFAULT_VOICE_ID=alba
-POCKET_TTS_OMLX_API_URL=http://127.0.0.1:8061/v1
-POCKET_TTS_OMLX_API_TOKEN=<omlx-api-token>
-POCKET_TTS_OMLX_RUNTIME_VERSION=0.5.3
+VOICE_PROVIDER=fish-audio
+FISH_AUDIO_API_URL=http://127.0.0.1:8062/v1
+FISH_AUDIO_MODEL=fish-audio-s2-pro-8bit
+FISH_AUDIO_MODEL_PATH=/path/to/.omlx/models/mlx-community/fish-audio-s2-pro-8bit
+FISH_AUDIO_LANGUAGE=auto
+FISH_AUDIO_DEFAULT_VOICE_ID=fish-female-default
+FISH_AUDIO_SYSTEM_REFERENCE_AUDIO=/path/to/curated-adult-female-reference.wav
+FISH_AUDIO_SYSTEM_REFERENCE_MANIFEST=/path/to/curated-adult-female-reference.json
 ```
 
 声音克隆入口在 Admin 的 Character Workspace → Voice，分成候选制作和明确启用
 两段 authority。候选制作会：
 
 - 读取最多前 30 秒的单人参考录音和准确转录文本；
-- 将规范化参考 WAV 与 manifest 持久化到 `.data/pocket-tts/voices/`；每次生成时
-  作为 `ref_audio + ref_text` 发送给 oMLX，进程重启后仍可复用；
+- 将规范化参考 WAV 与 manifest 持久化到 `.data/fish-audio/voices/`；每次生成时
+  将参考 WAV 解码为 MLX array，并与 `ref_text` 一起传给 Fish，进程重启后仍可复用；
+- 保存性感、亲密、俏皮、自信或自然 preset，以及强度、语速和采样参数；
 - 保存原始参考音频和试听 WAV 为 `MediaAsset`；
 - 创建状态为 `candidate` 的版本化 `CharacterVoiceProfile`，但不修改
   `Character.voiceId`。
@@ -137,10 +141,9 @@ POCKET_TTS_OMLX_RUNTIME_VERSION=0.5.3
 自动预生成只消耗套餐内 `voice_minutes`，不会自动扣梦币。用户显式点击播放时复用
 已有或进行中的生成；套餐分钟不足时才进入原有的显式溢出计费路径。
 
-`POCKET_TTS_API_TOKEN` 保护 Main → adapter；`POCKET_TTS_OMLX_API_TOKEN`
-保护 adapter → oMLX。旧 PyTorch/独立 MLX gateway 生成的 voice-state 文件不是
-参考音频资产；切换后需从 Admin 原始参考音频重新创建候选。
-旧 `pipeline` voice adapter 仍保留为回滚路径，但不再是当前默认。
+`FISH_AUDIO_API_TOKEN` 保护 Main → Fish runtime。旧 Pocket voice registry 与
+pipeline voice adapter 仍保留为回滚路径，但不再是当前默认；已有 Pocket profile
+不会被静默改写为 Fish profile，需从 Admin 原始参考音频创建并审核新的 Fish 候选。
 
 之后再按需要跑真实图片探针和上线门禁：
 
@@ -260,7 +263,9 @@ service probe 报告，证明 `/healthz` 可达、BFF 签名的只读 chat 请�
 未签名请求返回 401；否则 chat split 不能误报为可上线。`VOICE_MODEL_PROBE_REPORT`
 也必须指向最近一次 voice probe 报告，证明当前 `VOICE_PROVIDER` 能生成可用
 voice asset；使用 Pocket TTS 时还必须确认 clone 权重可用，否则语音克隆不能误报为
-可上线。门禁也要求 `BLOB_STORAGE_PROBE_REPORT` 指向最近一次对象存储
+可上线；使用 Fish Audio 时还必须确认真实 MLX runtime、克隆能力与
+`system_voice_ready=true`，否则不能把仅靠文本标签的声音误报为系统女性身份。
+门禁也要求 `BLOB_STORAGE_PROBE_REPORT` 指向最近一次对象存储
 probe 报告，证明当前 `BLOB_PROVIDER` 能对真实 bucket 完成 PUT、signed GET
 读回校验和 DELETE；否则对象存储 env 填了但 credentials、bucket policy 或 endpoint
 不可用时会失败。门禁还要求 `SAFETY_GATEWAY_PROBE_REPORT` 指向最近一次 safety gateway
@@ -287,9 +292,9 @@ gen worker 用同一配置写入生成产物。
 `MODERATION_API_KEY` Bearer token 鉴权，并统一解析 `passed/flagged/blocked`、
 `policyCode` 和 `confidence`。
 chat provider 支持 `pipeline`，调用 OpenAI-compatible `/chat/completions`
-（SSE 或 JSON 均可）。voice 当前使用 `pocket-tts`，调用本地
-`/v1/audio/speech` 并由 main 写入私有 blob；旧 `pipeline` voice adapter 保留为
-显式回滚路径。
+（SSE 或 JSON 均可）。voice 当前使用 `fish-audio`，调用本地常驻 MLX Audio
+`/v1/audio/speech` 并由 main 写入私有 blob；旧 `pocket-tts` 与 `pipeline`
+voice adapter 仅保留为显式回滚路径。
 年龄验证已支持 `gocam` adapter：main-web 调内部 age gateway 创建验证
 session，gateway 负责 Go.cam SDK/partnerId/cipherKey/HMAC key；回调到
 `/api/v1/age-verification/webhooks/gocam` 时必须带
@@ -545,7 +550,7 @@ Next.js 服务：
 | `admin-command-worker` | `packages/main` | n/a | Admin durable command 执行 |
 
 当前 `ecosystem.config.js` 是 9 个 logical apps / 10 个 processes：
-`pocket-tts`、`main-web`、`admin-web`、`chat`、`gen-image`（2 processes）、
+`fish-audio`、`main-web`、`admin-web`、`chat`、`gen-image`（2 processes）、
 `gen-video`、`gen-finalizer`、`main-event-consumer`、`admin-command-worker`。ComfyUI 是独立
 运行时，不计入这组 ecosystem 进程。
 

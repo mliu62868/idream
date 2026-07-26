@@ -218,6 +218,10 @@ export const adminZhCoverageG: Record<string, string> = {
   "Publish a release": "发布角色版本",
   "Monitor the live character": "监控线上角色",
   "Character production workflow": "角色生产流程",
+  "I confirm this release action": "我确认执行该发布操作",
+  "Release actions are irreversible and visible to customers.": "发布类操作不可撤销，且对用户可见。",
+  "Live without a usable primary image — video generation for this character is rejected. Repair it in Image assets.":
+    "已上线但没有可用主图 —— 该角色的视频生成会被拒绝。请在「图片资产」中修复。",
   "Completed": "已完成",
   "Current step": "当前步骤",
   "Available when needed": "需要时可进行",
@@ -226,6 +230,29 @@ export const adminZhCoverageG: Record<string, string> = {
   "Project collaboration": "项目协作",
   "Character image production workspace": "角色图片生产工作台",
   "Technical status": "技术状态",
+  "The active Visual Identity does not match its immutable snapshot hash.":
+    "当前生效的视觉身份与其不可变快照不一致。",
+  "imageUrl changed": "角色主图已变更",
+  "assetPack changed": "图片资产包已变更",
+  "Draft Preview": "草稿预览",
+  "read only": "只读",
+  "serving now": "当前在线",
+  "superseded": "已被替代",
+  "Record renderer and conversation QA evidence": "记录用户界面与会话 QA 证据",
+  "Operator verified release evidence": "运营已核对发布证据",
+  "Launch preview is waiting for the image pack": "上线预览正在等待图片资产包",
+  "Complete the cover, hero, and chat images under the current route, then return here to compare live and draft.":
+    "先在当前图片线路下补齐主肖像、角色主视觉和聊天场景图，再回来对比线上版本与草稿。",
+  "Regenerate the stale image selections under the current route, then return here to compare live and draft.":
+    "先在当前图片线路下重新生成已过期的图片选择，再回来对比线上版本与草稿。",
+  "Complete image assets": "完成图片资产",
+  "Regenerate current image pack": "重新生成当前图片资产包",
+  "Release preparation is incomplete": "发布准备尚未完成",
+  "Complete the current image pack before recording launch QA and proposing a release.":
+    "先补齐当前图片资产包，再记录上线 QA 并发起发布。",
+  "Record launch QA for the current draft before proposing a release.":
+    "先为当前草稿记录上线 QA，再发起发布。",
+  "Open launch QA": "打开上线 QA",
   "Image production setup": "图片生产设置",
   "Enable image production with the current portrait": "使用当前肖像启用图片生产",
   "The current live portrait will become the sealed identity reference for future batches. Existing live images and releases will not change.": "当前线上肖像将被封存为后续批次的身份参考；现有线上图片和发布版本不会改变。",

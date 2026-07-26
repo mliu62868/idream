@@ -238,7 +238,6 @@ export async function bootstrapCharacterIdentity(input: {
       signatureTraits: toInputJson(signatureTraits),
       styleTraits: toInputJson(styleTraits),
       anchorAssetIds: toInputJson([item.mediaAsset.id]),
-      referenceAssetIds: toInputJson([item.mediaAsset.id]),
       defaultSeed: item.job.seed ?? item.job.id,
       adapterRefs: toInputJson({
         bootstrapIdentity: true,

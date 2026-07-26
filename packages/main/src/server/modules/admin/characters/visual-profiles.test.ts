@@ -9,6 +9,7 @@ import { ZodError } from "zod";
 import { prisma } from "@/server/lib/db";
 import { AppError } from "@/server/lib/errors";
 import { traitsHashOf } from "@/server/modules/ourdream/identity-assembler";
+import { referenceSetSnapshotHash } from "@/server/modules/admin-v2/characters/release-snapshot";
 import { createCharacter, createMedia, createUser, purgeTestData } from "@/server/test/helpers";
 import { createCharacterVisualProfile, listCharacterVisualProfiles } from "./visual-profiles";
 
@@ -86,7 +87,9 @@ async function seedVisualProfile(input: {
   anchorAssetIds?: string[];
   referenceAssetIds?: string[];
 }) {
-  return prisma.characterVisualProfile.create({
+  const anchorAssetIds = input.anchorAssetIds ?? [];
+  const referenceAssetIds = input.referenceAssetIds ?? [];
+  const profile = await prisma.characterVisualProfile.create({
     data: {
       characterId: input.characterId,
       version: input.version,
@@ -99,13 +102,45 @@ async function seedVisualProfile(input: {
       bodyTraits: {},
       signatureTraits: {},
       styleTraits: {},
-      anchorAssetIds: input.anchorAssetIds ?? [],
-      referenceAssetIds: input.referenceAssetIds ?? [],
+      anchorAssetIds,
       defaultSeed: `seed-v${input.version}`,
       adapterRefs: {},
       createdFrom: "seed",
     },
   });
+  // INVARIANT: 每个 Visual Identity 版本都带一个 active Reference Set（见 visual-profiles.ts）。
+  // fixture 必须建出这个不变式，否则测的是一个真实流程已经不会产生的状态。
+  const references = [
+    ...anchorAssetIds.map((mediaAssetId, index) => ({
+      mediaAssetId, position: index, role: index === 0 ? "primary_face" : "identity_anchor", weight: 1,
+    })),
+    ...referenceAssetIds
+      .filter((mediaAssetId) => !anchorAssetIds.includes(mediaAssetId))
+      .map((mediaAssetId, index) => ({
+        mediaAssetId, position: anchorAssetIds.length + index, role: "identity_reference", weight: 1,
+      })),
+  ];
+  if (references.length > 0) {
+    const selectorVersion = "seed-v1";
+    await prisma.referenceSetRevision.create({
+      data: {
+        visualProfileId: profile.id,
+        revision: 1,
+        status: "active",
+        selectorVersion,
+        createdFrom: "seed",
+        snapshotHash: referenceSetSnapshotHash({
+          visualProfileId: profile.id, revision: 1, selectorVersion, references,
+        }),
+        references: {
+          create: references.map((reference) => ({
+            ...reference, selectorVersion, selectionReason: "seed fixture",
+          })),
+        },
+      },
+    });
+  }
+  return profile;
 }
 
 describe("Visual Passport (character visual profiles)", () => {
@@ -201,7 +236,6 @@ describe("Visual Passport (character visual profiles)", () => {
         "styleTraits",
         "defaultSeed",
         "anchorAssetIds",
-        "referenceAssetIds",
         "qualityScore",
         "consistencyScore",
         "createdFrom",
@@ -239,7 +273,6 @@ describe("Visual Passport (character visual profiles)", () => {
       expect.objectContaining({
         status: "active",
         anchorAssetIds: [],
-        referenceAssetIds: [],
         qualityScore: null,
         consistencyScore: null,
       }),
@@ -282,6 +315,7 @@ describe("Visual Passport (character visual profiles)", () => {
     );
     expect(result.ok).toBe(true);
     const item = result.data?.item as {
+      id: string;
       version: number;
       status: string;
       identityPrompt: string;
@@ -572,18 +606,24 @@ describe("Visual Passport (character visual profiles)", () => {
     );
     expect(result.ok).toBe(true);
     const item = result.data?.item as {
+      id: string;
       version: number;
       status: string;
       identityPrompt: string;
       anchorAssetIds: string[];
-      referenceAssetIds: string[];
     };
     expect(item.version).toBe(2);
     expect(item.status).toBe("active");
     expect(item.identityPrompt).toBe("revised identity prompt");
-    // Pool carried forward unchanged — not editable from this endpoint.
+    // 候选图池原样继承——本端点不编辑它。
     expect(item.anchorAssetIds).toEqual([anchorAssetId]);
-    expect(item.referenceAssetIds).toEqual([referenceAssetId]);
+    // 参考集只在 ReferenceSetRevision 上：新版本原样继承上一版的 references。
+    const mintedReferenceSet = await prisma.referenceSetRevision.findFirstOrThrow({
+      where: { visualProfileId: item.id, status: "active" },
+      include: { references: { orderBy: { position: "asc" } } },
+    });
+    expect(mintedReferenceSet.references.map((reference) => reference.mediaAssetId))
+      .toEqual([anchorAssetId, referenceAssetId]);
 
     const profiles = await prisma.characterVisualProfile.findMany({
       where: { characterId },
@@ -924,9 +964,18 @@ describe("Visual Passport (character visual profiles)", () => {
       version: 2,
       status: "active",
       anchorAssetIds: [candidateAssetId],
-      referenceAssetIds: [candidateAssetId],
       defaultSeed: "42",
     });
+    // 提升候选图会把它建成新版本的 active Reference Set（参考集不再有 profile 上的副本）。
+    const promotedReferenceSet = await prisma.referenceSetRevision.findFirstOrThrow({
+      where: {
+        visualProfileId: (result.data?.item as { id: string }).id,
+        status: "active",
+      },
+      include: { references: true },
+    });
+    expect(promotedReferenceSet.references.map((reference) => reference.mediaAssetId))
+      .toEqual([candidateAssetId]);
     await expect(prisma.characterVisualProfile.findUniqueOrThrow({
       where: { id: original.id },
     })).resolves.toMatchObject({ status: "archived" });
@@ -981,7 +1030,6 @@ describe("Visual Passport (character visual profiles)", () => {
         signatureTraits: staleTraits.signature,
         styleTraits: staleTraits.style,
         anchorAssetIds: [],
-        referenceAssetIds: [],
         defaultSeed: "seed-stale",
         // Hash was computed for a DIFFERENT traits snapshot than what's currently stored above —
         // simulates drift (e.g. an assembler version bump) without needing a real edit path.

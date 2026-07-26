@@ -26,20 +26,6 @@ This version has breaking changes — APIs, conventions, and file structure may 
 - **UI:** shadcn/ui + Tailwind v4；Lucide 图标
 - **AI/支付:** provider 抽象（自托管开源模型经 OpenAI 兼容流水线接入；加密货币支付）
 
-## Commands（在仓库根，bun + turbo）
-- `bun run dev` — 启动 main 开发服务（`bun run dev:admin` 启 admin）
-- `bun run build` / `bun run lint` / `bun run typecheck` — turbo 跑全工作区
-- `bun run check` — lint + typecheck + build
-- `bun run check:launch` — 上线就绪体检；各 `bun run launch:probe:*` 为单项探针
-- `bun run pm2:start` — 按 `ecosystem.config.js` 起多进程
-
-## Code Style
-- TypeScript strict mode, no `any`
-- Named exports, PascalCase components, camelCase utils
-- Tailwind utility classes, no inline styles
-- 2-space indentation
-- Responsive: mobile-first
-
 ## 文档与事实来源（SSoT）
 - 产品：`docs/product/`（PRD / FeatureMap / BackendFeatureSpec / ECONOMY_AND_PRICING / CONTENT_POLICY / ADMIN_CONSOLE_PLAN）
 - 架构：`docs/architecture/`（01–14，怎么做）
@@ -63,9 +49,6 @@ ecosystem.config.js  # pm2 多进程
 - When launching Claude Code agent teams, ALWAYS have each teammate work in their own worktree branch and merge everyone's work at the end, resolving any merge conflicts smartly since you are basically serving the orchestrator role and have full context to our goals, work given, work achieved, and desired outcomes.
 - After editing `AGENTS.md`, run `bash scripts/sync-agent-rules.sh` to regenerate platform-specific instruction files.
 - After editing `.claude/skills/clone-website/SKILL.md`, run `node scripts/sync-skills.mjs` to regenerate the skill for all platforms.
-
-@docs/research/INSPECTION_GUIDE.md
-
 
 ## 参考站点
 https://ourdream.ai/ —— 可参考学习、对比、验证。产品定位/功能取舍以 `docs/product/` 为准，不必逐像素复刻。

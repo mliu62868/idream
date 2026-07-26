@@ -5,6 +5,7 @@ import path from "node:path";
 import { MockVoiceModel } from "./providers/voice/mock";
 import { PipelineVoiceModel } from "./providers/voice/pipeline";
 import { PocketTtsVoiceModel } from "./providers/voice/pocket-tts";
+import { FishAudioVoiceModel } from "./providers/voice/fish-audio";
 import type { BlobStore, ProviderResult, VoiceModel } from "./providers/types";
 
 type ProbeOptions = {
@@ -94,11 +95,15 @@ function readOptions(defaultVoiceId: string): ProbeOptions {
 async function main() {
   const startedAt = Date.now();
   const provider = process.env.VOICE_PROVIDER ?? "mock";
-  const baseUrl = provider === "pocket-tts"
-    ? process.env.POCKET_TTS_API_URL ?? "http://127.0.0.1:8062/v1"
+  const baseUrl = provider === "fish-audio"
+    ? process.env.FISH_AUDIO_API_URL ?? "http://127.0.0.1:8062/v1"
+    : provider === "pocket-tts"
+      ? process.env.POCKET_TTS_API_URL ?? "http://127.0.0.1:8062/v1"
     : process.env.PIPELINE_VOICE_API_URL ?? process.env.PIPELINE_API_URL ?? null;
-  const model = provider === "pocket-tts"
-    ? process.env.POCKET_TTS_MODEL ?? "pocket-tts-4bit"
+  const model = provider === "fish-audio"
+    ? process.env.FISH_AUDIO_MODEL ?? "fish-audio-s2-pro-8bit"
+    : provider === "pocket-tts"
+      ? process.env.POCKET_TTS_MODEL ?? "pocket-tts-4bit"
     : process.env.PIPELINE_VOICE_MODEL_DEFAULT ??
       (provider === "mock" ? "mock-voice-probe" : "voice-default");
   const options = readOptions(defaultVoiceForModel(model));
@@ -175,7 +180,7 @@ async function runProbe(input: {
       };
     }
     let synthesized = result.data;
-    if (input.provider === "pocket-tts") {
+    if (input.provider === "pocket-tts" || input.provider === "fish-audio") {
       if (
         voiceCloningAvailable !== true ||
         !voice.cloneVoice ||
@@ -194,7 +199,7 @@ async function runProbe(input: {
           contentType: blob.stored?.contentType,
           error: {
             code: "voice_clone_unavailable",
-            message: "Pocket TTS did not expose a usable voice-cloning capability",
+            message: `${input.provider} did not expose a usable voice-cloning capability`,
             retryable: false,
           },
         };
@@ -205,8 +210,11 @@ async function runProbe(input: {
         voiceId: probeVoiceId,
         audio: reference.body,
         contentType: reference.contentType,
-        filename: "pocket-tts-probe-reference.wav",
-        language: process.env.POCKET_TTS_LANGUAGE ?? "english",
+        filename: `${input.provider}-probe-reference.wav`,
+        language:
+          input.provider === "fish-audio"
+            ? process.env.FISH_AUDIO_LANGUAGE ?? "auto"
+            : process.env.POCKET_TTS_LANGUAGE ?? "english",
         referenceText: input.text,
       });
       if (!clone.ok) {
@@ -326,6 +334,19 @@ function createVoiceModel(input: {
       blob: input.blob,
     });
   }
+  if (input.provider === "fish-audio") {
+    return new FishAudioVoiceModel({
+      baseUrl: requireValue("FISH_AUDIO_API_URL", input.baseUrl),
+      apiKey: process.env.FISH_AUDIO_API_TOKEN,
+      model: requireValue("FISH_AUDIO_MODEL", input.model),
+      language: process.env.FISH_AUDIO_LANGUAGE ?? "auto",
+      defaultVoiceId:
+        process.env.FISH_AUDIO_DEFAULT_VOICE_ID ?? "fish-female-default",
+      maxInputChars: readIntEnv("PIPELINE_VOICE_MAX_INPUT_CHARS", 900, 1),
+      timeoutMs: readIntEnv("FISH_AUDIO_TIMEOUT_MS", 240_000, 250),
+      blob: input.blob,
+    });
+  }
   if (input.provider !== "pipeline") {
     throw new Error(`Unsupported voice model provider: ${input.provider}`);
   }
@@ -367,6 +388,7 @@ function defaultVoiceForModel(model: string | null) {
   if (normalized.includes("qwen3-tts")) return "serena";
   if (normalized.includes("kokoro")) return "af_heart";
   if (normalized.includes("pocket-tts")) return "alba";
+  if (normalized.includes("fish-audio")) return "fish-female-default";
   return "default";
 }
 

@@ -117,10 +117,11 @@ describe("Visual Identity operator workbench", () => {
     expect(html).toContain("边生成，边定义视觉身份");
     expect(html).toContain("负向提示词");
     expect(html).toContain("锁定种子");
-    expect(html).toContain("从这张继续（图生图）");
-    expect(html).toContain("评审这张候选图");
+    expect(html).toContain("从这张继续调整");
+    expect(html).toContain("采用这张图并继续");
     expect(html).toContain("正式身份与生产设置");
     expect(html).toContain("Publish the approved identity references");
+    expect(html).toContain('href="#visual-reference-set"');
     expect(html).toContain("reference_set_not_active");
     expect(html.match(/>Resolve</g)).toHaveLength(1);
     expect(html).not.toContain("Resolve blocker");
@@ -139,9 +140,26 @@ describe("Visual Identity operator workbench", () => {
     expect(html).toContain("Operators create and review one image at a time");
     expect(html).not.toContain("Generate 40 route test images");
     expect(html).not.toContain("Batch IDs");
+    expect(html.indexOf("正式身份与生产设置"))
+      .toBeLessThan(html.indexOf("边生成，边定义视觉身份"));
   });
 
-  it("opens formal production settings when the image route is the current setup task", () => {
+  it("opens formal production settings for every blocked image-production state", () => {
+    const blockedHtml = renderToStaticMarkup(
+      <VisualIdentityPanel
+        data={data}
+        permissions={{ writeVisual: true, evaluateRoute: true }}
+        runCommittedMutation={runCommittedMutation}
+      />,
+    );
+    const blockedSummary = blockedHtml.indexOf("正式身份与生产设置");
+    expect(
+      blockedHtml.slice(
+        Math.max(0, blockedSummary - 260),
+        blockedSummary,
+      ),
+    ).toContain('open=""');
+
     const html = renderToStaticMarkup(
       <VisualIdentityPanel
         data={{

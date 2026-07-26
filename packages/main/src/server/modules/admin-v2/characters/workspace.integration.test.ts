@@ -163,7 +163,7 @@ describe("Character operator workspace", () => {
       style: "realistic",
       identityPrompt: "same adult character",
       faceTraits: { eyes: "brown" }, hairTraits: {}, bodyTraits: {}, signatureTraits: {}, styleTraits: {},
-      anchorAssetIds: [previewAssetId], referenceAssetIds: [previewAssetId], adapterRefs: {},
+      anchorAssetIds: [previewAssetId], adapterRefs: {},
       evidenceState: "candidate",
       createdFrom: "workspace_test",
     } });
@@ -658,9 +658,12 @@ describe("Character operator workspace", () => {
     expect(detail.visual.readiness.blockers.map((blocker) => blocker.code)).toContain("visual_traits_incomplete");
     await prisma.characterVisualProfile.update({ where: { id: visualProfileId }, data: { faceTraits: { eyes: "brown" } } });
 
+    // 密封漂移是发布级问题，不再拦打磨：生图闸（visual.readiness）放行，
+    // readiness.ts 仍会在发布链上产出 reference_set_unsealed。
     await prisma.referenceSetRevision.update({ where: { id: referenceSetId }, data: { snapshotHash: "drifted-reference-hash" } });
     detail = characterWorkspaceDetailSchema.parse(await getCharacterWorkspace(characterId));
-    expect(detail.visual.readiness.blockers.map((blocker) => blocker.code)).toContain("reference_set_unsealed");
+    expect(detail.visual.readiness.blockers.map((blocker) => blocker.code))
+      .not.toContain("reference_set_unsealed");
     await prisma.referenceSetRevision.update({ where: { id: referenceSetId }, data: { snapshotHash: referenceSnapshotHash } });
 
     const secondaryReferenceAssetId = `workspace-secondary-reference-${suffix}`;
@@ -694,17 +697,8 @@ describe("Character operator workspace", () => {
       ],
     });
     try {
-      const nextReferenceAssetIds = [previewAssetId, secondaryReferenceAssetId];
-      await prisma.characterVisualProfile.update({
-        where: { id: visualProfileId },
-        data: {
-          referenceAssetIds: nextReferenceAssetIds,
-          immutableHash: characterVisualProfileSnapshotHash({
-            ...originalProfile,
-            referenceAssetIds: nextReferenceAssetIds,
-          }),
-        },
-      });
+      // 参考集的唯一权威是 ReferenceSetRevision：加一张参考图只需建 snapshot + 更新 revision 的
+      // snapshotHash，profile 本身既无副本列可写、密封 hash 也不含参考图，因此完全不用动。
       await prisma.characterVisualReferenceSnapshot.create({
         data: {
           referenceSetRevisionId: referenceSetId,
@@ -778,7 +772,6 @@ describe("Character operator workspace", () => {
       await prisma.characterVisualProfile.update({
         where: { id: visualProfileId },
         data: {
-          referenceAssetIds: toInputJson(originalProfile.referenceAssetIds),
           immutableHash: originalProfile.immutableHash,
         },
       });

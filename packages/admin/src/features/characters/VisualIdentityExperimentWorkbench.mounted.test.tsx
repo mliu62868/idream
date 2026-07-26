@@ -87,6 +87,11 @@ const runDetail = {
       id: "identity-asset-1",
       url: "/identity-candidate.webp",
       thumbnailUrl: null,
+      automaticComposition: {
+        evaluatorVersion: "generated-image-sanity-v2",
+        status: "passed",
+        reason: "single_continuous_frame_detected",
+      },
     },
     review: {
       id: "identity-review-1",
@@ -580,7 +585,7 @@ describe("Visual Identity experiment activation", () => {
     }));
   });
 
-  it("records each visible quality judgment before accepting an identity candidate", async () => {
+  it("requires a compact single-frame confirmation before adopting an identity image", async () => {
     let reviewPosted = false;
     adminV2Request.mockImplementation(async (
       path: string,
@@ -621,55 +626,27 @@ describe("Visual Identity experiment activation", () => {
     await waitUntil(() =>
       [...container.querySelectorAll<HTMLButtonElement>("button")]
         .some((button) =>
-          button.textContent?.includes("评审这张候选图") &&
-          !button.disabled
+          button.textContent?.includes("采用这张图并继续")
         )
     );
-    const open = [...container.querySelectorAll<HTMLButtonElement>("button")]
-      .find((button) => button.textContent?.includes("评审这张候选图"));
-    expect(open?.disabled).toBe(false);
-    await act(async () => open?.click());
-    await waitUntil(() =>
-      container.textContent?.includes("确认候选身份评审") === true
+    expect(container.textContent).toContain(
+      "系统构图检查已通过：这是一个连续画面",
+    );
+    expect(container.textContent).toContain(
+      "只有一个人物、一个连续画面（无拼图、分栏或缩略图）",
     );
 
-    const panel = [...container.querySelectorAll("div")]
-      .find((element) =>
-        element.querySelector("h4")?.textContent === "确认候选身份评审"
-      );
-    expect(panel).toBeDefined();
-    const reason = [...panel!.querySelectorAll("label")]
-      .find((label) => label.textContent?.includes("评审说明"))
+    const adopt = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent?.includes("采用这张图并继续"));
+    const qualityConfirmation = [...container.querySelectorAll("label")]
+      .find((label) => label.textContent?.includes("只有一个人物、一个连续画面"))
       ?.querySelector<HTMLInputElement>("input");
-    const evidenceChecks = [
-      "无明显瑕疵",
-      "只有一个主体",
-      "符合本轮身份设计意图",
-      "画面没有可见文字",
-    ].map((label) =>
-      [...panel!.querySelectorAll("label")]
-        .find((element) => element.textContent?.includes(label))
-        ?.querySelector<HTMLInputElement>("input")
-    );
-    const confirmed = [...panel!.querySelectorAll("label")]
-      .find((label) =>
-        label.textContent?.includes("以上逐项判断将作为不可变评审证据")
-      )
-      ?.querySelector<HTMLInputElement>("input");
-    const submit = [...panel!.querySelectorAll<HTMLButtonElement>("button")]
-      .find((button) => button.textContent?.includes("完成检查后继续"));
-    expect(reason).toBeDefined();
-    expect(evidenceChecks.every(Boolean)).toBe(true);
-    expect(confirmed).toBeDefined();
-    expect(submit?.disabled).toBe(true);
+    expect(qualityConfirmation).toBeDefined();
+    expect(adopt?.disabled).toBe(true);
 
-    await act(async () => {
-      if (reason) setInputValue(reason, "Visible evidence reviewed");
-      evidenceChecks.forEach((checkbox) => checkbox?.click());
-      confirmed?.click();
-    });
-    expect(submit?.disabled).toBe(false);
-    await act(async () => submit?.click());
+    await act(async () => qualityConfirmation?.click());
+    expect(adopt?.disabled).toBe(false);
+    await act(async () => adopt?.click());
     await waitUntil(() =>
       adminV2Request.mock.calls.some(([, options]) =>
         options?.method === "POST"
@@ -682,7 +659,9 @@ describe("Visual Identity experiment activation", () => {
       `/api/v2/admin/creative/runs/${run.id}/items/identity-item-1/decisions`,
       expect.objectContaining({
         method: "POST",
-        body: expect.objectContaining({
+        body: {
+          entityVersion: runDetail.version,
+          decision: "approved",
           identityConsistency: "unscored",
           quality: {
             artifactFree: true,
@@ -690,21 +669,24 @@ describe("Visual Identity experiment activation", () => {
             intentMatch: true,
             noVisibleText: true,
           },
-        }),
+          reason: "已确认候选图为单人单画面并符合视觉身份要求",
+        },
       }),
     );
   });
 
-  it("offers an executable rejection path when a candidate fails visible quality", async () => {
-    let reviewPosted = false;
-    adminV2Request.mockImplementation(async (
-      path: string,
-      options?: { method?: string },
-    ) => {
-      if (options?.method === "POST") {
-        reviewPosted = true;
-        return {};
-      }
+  it("does not let an old candidate without system composition evidence be adopted", async () => {
+    const unverifiedDetail = {
+      ...runDetail,
+      items: runDetail.items.map((item) => ({
+        ...item,
+        asset: item.asset
+          ? { ...item.asset, automaticComposition: undefined }
+          : null,
+        review: null,
+      })),
+    };
+    adminV2Request.mockImplementation(async (path: string) => {
       if (path.endsWith("/image-sources")) return { items: [] };
       if (path.includes("/api/v2/admin/creative/runs?")) {
         return {
@@ -713,28 +695,11 @@ describe("Visual Identity experiment activation", () => {
         };
       }
       if (path === `/api/v2/admin/creative/runs/${run.id}`) {
-        return {
-          ...runDetail,
-          items: runDetail.items.map((item) => ({
-            ...item,
-            review: reviewPosted
-              ? {
-                  ...item.review,
-                  decision: "rejected",
-                  quality: {
-                    artifactFree: true,
-                    singleSubject: false,
-                    intentMatch: false,
-                    noVisibleText: true,
-                  },
-                  reason: "Multiple people and the identity intent does not match",
-                }
-              : null,
-          })),
-        };
+        return unverifiedDetail;
       }
       throw new Error(`Unexpected request: ${path}`);
     });
+
     await act(async () => root.render(
       <VisualIdentityExperimentWorkbench
         canActivate
@@ -746,76 +711,107 @@ describe("Visual Identity experiment activation", () => {
       />,
     ));
     await waitUntil(() =>
-      [...container.querySelectorAll<HTMLButtonElement>("button")]
-        .some((button) =>
-          button.textContent?.includes("评审这张候选图") &&
-          !button.disabled
-        )
+      container.textContent?.includes("缺少新版单画面系统证据") === true
     );
-    const open = [...container.querySelectorAll<HTMLButtonElement>("button")]
-      .find((button) => button.textContent?.includes("评审这张候选图"));
-    await act(async () => open?.click());
 
-    const panel = [...container.querySelectorAll("div")]
-      .find((element) =>
-        element.querySelector("h4")?.textContent === "确认候选身份评审"
-      );
-    expect(panel).toBeDefined();
-    const reason = [...panel!.querySelectorAll("label")]
-      .find((label) => label.textContent?.includes("评审说明"))
-      ?.querySelector<HTMLInputElement>("input");
-    const artifactFree = [...panel!.querySelectorAll("label")]
-      .find((label) => label.textContent?.includes("无明显瑕疵"))
-      ?.querySelector<HTMLInputElement>("input");
-    const noVisibleText = [...panel!.querySelectorAll("label")]
-      .find((label) => label.textContent?.includes("画面没有可见文字"))
-      ?.querySelector<HTMLInputElement>("input");
-    const confirmed = [...panel!.querySelectorAll("label")]
-      .find((label) =>
-        label.textContent?.includes("以上逐项判断将作为不可变评审证据")
-      )
-      ?.querySelector<HTMLInputElement>("input");
-    await act(async () => {
-      if (reason) {
-        setInputValue(
-          reason,
-          "Multiple people and the identity intent does not match",
-        );
+    const adopt = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent?.includes("采用这张图并继续"));
+    expect(adopt?.disabled).toBe(true);
+    expect(
+      [...container.querySelectorAll("label")].some((label) =>
+        label.textContent?.includes("采用前确认")
+      ),
+    ).toBe(false);
+  });
+
+  it("does not let a historically approved candidate bypass system evidence during activation", async () => {
+    const historicallyApprovedDetail = {
+      ...runDetail,
+      items: runDetail.items.map((item) => ({
+        ...item,
+        asset: item.asset
+          ? { ...item.asset, automaticComposition: undefined }
+          : null,
+      })),
+    };
+    adminV2Request.mockImplementation(async (path: string) => {
+      if (path.endsWith("/image-sources")) return { items: [] };
+      if (path.includes("/api/v2/admin/creative/runs?")) {
+        return {
+          items: [run],
+          pageInfo: { endCursor: null, hasNextPage: false },
+        };
       }
-      artifactFree?.click();
-      noVisibleText?.click();
-      confirmed?.click();
+      if (path === `/api/v2/admin/creative/runs/${run.id}`) {
+        return historicallyApprovedDetail;
+      }
+      throw new Error(`Unexpected request: ${path}`);
     });
 
-    expect(panel?.textContent).toContain(
-      "2 项未通过，这张图不能进入身份激活",
-    );
-    const reject = [...panel!.querySelectorAll<HTMLButtonElement>("button")]
-      .find((button) =>
-        button.textContent?.includes("记录不采用并继续调整")
-      );
-    expect(reject?.disabled).toBe(false);
-    await act(async () => reject?.click());
+    await act(async () => root.render(
+      <VisualIdentityExperimentWorkbench
+        canActivate
+        canCreate
+        canReview
+        canUploadSource
+        data={data}
+        onActivateCandidate={vi.fn(async () => undefined)}
+      />,
+    ));
     await waitUntil(() =>
-      adminV2Request.mock.calls.some(([, options]) =>
-        options?.method === "POST"
-      )
+      container.textContent?.includes("缺少新版单画面系统证据") === true
     );
-    expect(adminV2Request).toHaveBeenCalledWith(
-      `/api/v2/admin/creative/runs/${run.id}/items/identity-item-1/decisions`,
-      expect.objectContaining({
-        method: "POST",
-        body: expect.objectContaining({
-          decision: "rejected",
-          identityConsistency: "unscored",
-          quality: {
-            artifactFree: true,
-            singleSubject: false,
-            intentMatch: false,
-            noVisibleText: true,
-          },
-        }),
-      }),
+
+    const activate = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent?.includes("激活为新视觉身份"));
+    expect(activate?.disabled).toBe(true);
+  });
+
+  it("explains when the system blocks a failed composite candidate", async () => {
+    const failedDetail = {
+      ...runDetail,
+      executionOutcome: "failed",
+      items: runDetail.items.map((item) => ({
+        ...item,
+        executionState: "failed",
+        status: "failed",
+        asset: null,
+        review: null,
+        failure: {
+          errorCode: "asset_quality_failed",
+          operatorGuidance:
+            "系统质量检查未通过；合图、空白图或损坏图片不会进入候选。请载入本轮参数，修改提示词后重新生成。",
+        },
+      })),
+    };
+    adminV2Request.mockImplementation(async (path: string) => {
+      if (path.endsWith("/image-sources")) return { items: [] };
+      if (path.includes("/api/v2/admin/creative/runs?")) {
+        return {
+          items: [{ ...run, executionOutcome: "failed" }],
+          pageInfo: { endCursor: null, hasNextPage: false },
+        };
+      }
+      if (path === `/api/v2/admin/creative/runs/${run.id}`) {
+        return failedDetail;
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+
+    await act(async () => root.render(
+      <VisualIdentityExperimentWorkbench
+        canActivate
+        canCreate
+        canReview
+        canUploadSource
+        data={data}
+        onActivateCandidate={vi.fn(async () => undefined)}
+      />,
+    ));
+    await waitUntil(() =>
+      container.textContent?.includes("合图、空白图或损坏图片不会进入候选") ===
+      true
     );
+    expect(container.textContent).toContain("asset_quality_failed");
   });
 });

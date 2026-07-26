@@ -187,7 +187,6 @@ describe("Character QA evidence authority", () => {
         signatureTraits: {},
         styleTraits: {},
         anchorAssetIds: [referenceAssetId],
-        referenceAssetIds: [referenceAssetId, secondaryReferenceAssetId],
         adapterRefs: {},
         evidenceState: "reviewed_bootstrap",
         createdFrom: "qa_fixture",

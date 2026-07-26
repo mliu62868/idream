@@ -88,7 +88,7 @@ describe("Character Release proposal and review lifecycle", () => {
       } });
     }
     await prisma.characterServing.create({ data: { characterId, state: "inactive" } });
-    const profile = await prisma.characterVisualProfile.create({ data: { id: profileId, characterId, version: 1, status: "active", style: "realistic", identityPrompt: "same adult character", faceTraits: {}, hairTraits: {}, bodyTraits: {}, signatureTraits: {}, styleTraits: {}, anchorAssetIds: [assetId], referenceAssetIds: [assetId], adapterRefs: {}, createdFrom: "test" } });
+    const profile = await prisma.characterVisualProfile.create({ data: { id: profileId, characterId, version: 1, status: "active", style: "realistic", identityPrompt: "same adult character", faceTraits: {}, hairTraits: {}, bodyTraits: {}, signatureTraits: {}, styleTraits: {}, anchorAssetIds: [assetId], adapterRefs: {}, createdFrom: "test" } });
     visualProfileHash = characterVisualProfileSnapshotHash(profile);
     await prisma.characterVisualProfile.update({ where: { id: profile.id }, data: { immutableHash: visualProfileHash } });
     await prisma.referenceSetRevision.create({ data: { id: referenceSetId, visualProfileId: profileId, revision: 1, status: "active", selectorVersion: "v1", createdFrom: "test" } });

@@ -421,13 +421,13 @@ describe("PipelineImageModel", () => {
     });
   });
 
-  it("rejects production video pipeline startup without a pipeline URL", () => {
+  it("rejects the generic pipeline provider for production video", () => {
     process.env.APP_ENV = "production";
     process.env.GEN_VIDEO_PROVIDER = "pipeline";
-    delete process.env.PIPELINE_API_URL;
+    process.env.PIPELINE_API_URL = "https://pipeline.test";
 
     expect(() => assertProductionProviderReady("video")).toThrow(
-      "Production video generation requires PIPELINE_API_URL",
+      "Production video generation requires GEN_VIDEO_PROVIDER=backend",
     );
   });
 

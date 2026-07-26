@@ -60,6 +60,7 @@ import {
   referenceSetSnapshotHash,
 } from "@/server/modules/admin-v2/characters/release-snapshot";
 import { loadCharacterIdentityBootstrapAuthority } from "@/server/modules/admin-v2/characters/identity-bootstrap-authority";
+import { characterReferenceAuthorityFrom } from "@/server/modules/admin-v2/characters/reference-authority";
 import {
   lockCharacterGenerationAndMediaAssetAuthorities,
 } from "@/server/modules/admin-v2/characters/generation-authority-lock";
@@ -2724,9 +2725,22 @@ async function resolveProductionVisualProfile(
       styleTraits: true,
       defaultSeed: true,
       anchorAssetIds: true,
-      referenceAssetIds: true,
       immutableHash: true,
       evidenceState: true,
+      // 运营生图的 payload 锚点要和付费主链路同口径：由 active Reference Set 的 role 现算。
+      referenceSetRevisions: {
+        where: { status: "active" },
+        orderBy: { revision: "desc" },
+        take: 1,
+        select: {
+          id: true,
+          revision: true,
+          references: {
+            orderBy: { position: "asc" },
+            select: { mediaAssetId: true, role: true },
+          },
+        },
+      },
     },
   });
 }
@@ -2883,9 +2897,13 @@ function productionControls(input: {
   generationRouteFingerprint?: string;
   compositionRequirement?: "single_subject_single_frame";
 }) {
-  const anchorAssetIds = input.visualProfile
-    ? jsonStringArray(input.visualProfile.anchorAssetIds)
-    : [];
+  // 锚点由 active Reference Set 的 role 现算，与 service.ts 的付费生成路径同口径；
+  // 此前这里读 profile 影子列，两条生图路径对「哪几张是身份锚点」的判断可能不一致。
+  const anchorAssetIds = [
+    ...(characterReferenceAuthorityFrom(
+      input.visualProfile?.referenceSetRevisions[0],
+    )?.anchors ?? []),
+  ];
   const referenceAssetIds = [...new Set(input.referenceAssetIds)];
   return pruneUndefined({
     orientation: input.orientation,

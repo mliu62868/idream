@@ -69,7 +69,6 @@ async function seedChar(opts: {
         signatureTraits: {},
         styleTraits: {},
         anchorAssetIds: [],
-        referenceAssetIds: [],
         adapterRefs: {},
         createdFrom: "generation_bootstrap:test",
       },

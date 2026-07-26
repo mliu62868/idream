@@ -135,10 +135,6 @@ async function characterAssetReviewDependencies(
     orderBy: { updatedAt: "desc" },
     select: { id: true, draftImageAssetId: true, draftAssetPack: true },
   });
-  const activeProfiles = await tx.characterVisualProfile.findMany({
-    where: { characterId, status: "active" },
-    select: { id: true, anchorAssetIds: true, referenceAssetIds: true },
-  });
   const activeReference = await tx.characterVisualReferenceSnapshot.findFirst({
     where: {
       mediaAssetId: assetId,
@@ -207,15 +203,13 @@ async function characterAssetReviewDependencies(
   ) {
     dependencies.push("character_project_draft");
   }
-  if (activeProfiles.some((profile) =>
-    [
-      ...strings(profile.anchorAssetIds),
-      ...strings(profile.referenceAssetIds),
-    ].includes(assetId)
-  )) {
+  // 归一后「活跃视觉身份用了这张图」与「活跃参考集用了这张图」是同一个判断——参考图只存在于
+  // active Reference Set。原先前者按 profile 影子列另查一次，是对同一事实的第二次覆盖。
+  // 两个依赖串都保留，调用方契约不变。
+  if (activeReference) {
     dependencies.push("active_visual_identity");
+    dependencies.push("active_reference_set");
   }
-  if (activeReference) dependencies.push("active_reference_set");
   if (activeLook) dependencies.push("active_character_look");
   if (
     activeRelease &&

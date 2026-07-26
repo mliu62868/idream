@@ -529,8 +529,14 @@ describe("Character image-readiness repair", () => {
     expect(profile).toMatchObject({
       evidenceState: "qualified",
       anchorAssetIds: [assetId],
-      referenceAssetIds: [assetId],
     });
+    // 参考集只在 ReferenceSetRevision 上。
+    const repairedReferenceSet = await prisma.referenceSetRevision.findFirstOrThrow({
+      where: { visualProfileId: profile.id, status: "active" },
+      include: { references: { orderBy: { position: "asc" } } },
+    });
+    expect(repairedReferenceSet.references.map((reference) => reference.mediaAssetId))
+      .toEqual([assetId]);
     expect(profile.immutableHash).toMatch(/^[a-f0-9]{64}$/);
     expect(Object.keys(profile.faceTraits as object)).not.toHaveLength(0);
     const referenceSet = await prisma.referenceSetRevision.findFirstOrThrow({
@@ -674,7 +680,6 @@ describe("Character image-readiness repair", () => {
       evidenceState: "qualified",
       createdFrom: `editorial_visual_identity_repair:${legacy.id}`,
       anchorAssetIds: [assetId],
-      referenceAssetIds: [assetId],
       hairTraits: {
         source: "canonical_portrait",
       },

@@ -144,9 +144,9 @@ Historical local result from 2026-06-30:
 - image generation via `pipeline`: pass, using `http://127.0.0.1:8091` and
   `pornmaster-zimage-turbo`; combined pipeline probe produced 1 image asset in
   about 97.3s.
-- voice: the former pipeline/Qwen smoke remains historical evidence. Current
-  authority is `VOICE_PROVIDER=pocket-tts` through the local Apple Silicon
-  oMLX `pocket-tts-4bit` runtime on `8061` plus durable registry adapter on `8062`,
+- voice: the former Pocket/pipeline smokes remain historical evidence. Current
+  authority is `VOICE_PROVIDER=fish-audio` through the local Apple Silicon
+  resident MLX Audio `fish-audio-s2-pro-8bit` runtime and durable registry on `8062`,
   with a real clone→synthesize→delete probe plus Admin candidate→preview→activate
   persistence proof required before voice cloning is included in a demo.
 
@@ -209,8 +209,9 @@ Required work:
   Gallery asset. If prior runs were interrupted, clear stale `ai.image.generate`
   active jobs, restart `gen-image` and `sdcpp-image`, and confirm Prisma schema
   is synced before the probe.
-- Keep oMLX `8061` and the Pocket registry adapter `8062` healthy with
-  `runtime=omlx` and `acceleration=mlx`, run the real voice probe, and
+- Keep the resident Fish Audio MLX gateway on `8062` healthy with
+  `runtime=mlx_audio`, `acceleration=mlx`, and `system_voice_ready=true`; run
+  the real voice probe, and
   verify one Admin clone creates a playable candidate preview without changing
   `Character.voiceId`, then separately activate that reviewed profile and verify
   the active voice pointer before promising voice in a demo.
@@ -237,7 +238,7 @@ bun run launch:probe:chat -- --report .tmp/launch-chat-probe.json
 If voice is included in the active demo promise, also run:
 
 ```bash
-pm2 start ecosystem.config.js --only pocket-tts --update-env
+pm2 start ecosystem.config.js --only fish-audio --update-env
 curl -fsS http://127.0.0.1:8062/health
 bun run launch:probe:voice:local
 ```
@@ -512,7 +513,7 @@ Exit criteria:
 
 1. Keep active Pipeline-backed image and chat paths passing through `bun run launch:probe:pipeline`.
 2. Keep BTCPay, R2/S3, Go.cam, and Sentry documented as deferred, not missing current tasks.
-3. If voice is in the internal demo promise, require a healthy Pocket TTS gateway,
+3. If voice is in the internal demo promise, require a healthy Fish Audio gateway,
    a passing real clone→synthesize→delete probe, and one Admin
    candidate→preview→activate persistence proof.
 4. Run catalog probe and clean demo data until it passes.
@@ -579,7 +580,7 @@ The current internal-demo milestone is complete when:
 - Public catalog probe passes.
 - PM screenshot audit shows no test data and no dead promises.
 - Active Pipeline-backed runtime paths have probe evidence from `bun run launch:probe:pipeline`.
-- If voice is visible/promised, Pocket TTS has a passing clone→synthesize→delete
+- If voice is visible/promised, Fish Audio has a passing clone→synthesize→delete
   probe and Admin candidate→preview→activate persistence evidence.
 - Deferred provider gaps are documented and not represented as publicly launch-ready.
 - Product docs describe the current state without stale contradictions.

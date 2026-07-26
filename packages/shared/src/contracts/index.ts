@@ -5,3 +5,4 @@ export * from "./idempotency";
 export * from "./events";
 export * from "./durable";
 export * from "./metric-events";
+export * from "./voice";

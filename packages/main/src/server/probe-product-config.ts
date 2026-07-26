@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { prisma } from "@/server/lib/db";
+import { isProductionLtxVideoProfile } from "@/server/modules/generation/production-video-profile";
 import { publicCharacterAudienceWhere } from "@/server/modules/ourdream/public-content-audience";
 
 type ProbeOptions = {
@@ -67,7 +68,7 @@ async function runProbe(): Promise<ProductConfigProbeReport> {
       activeImageCharacterTemplates,
       activeImageFreeplayTemplates,
       activeImagePricingRules,
-      activeVideoProfiles,
+      activeVideoProfileCandidates,
       activeVideoCharacterTemplates,
       activeVideoFreeplayTemplates,
       activeVideoPricingRules,
@@ -86,7 +87,7 @@ async function runProbe(): Promise<ProductConfigProbeReport> {
         where: { mode: "image", useCase: "freeplay", status: "active" },
       }),
       prisma.pricingRule.count({ where: { mode: "image", status: "active" } }),
-      prisma.generationModelProfile.count({
+      prisma.generationModelProfile.findMany({
         where: { mode: "video", status: "active", enabled: true },
       }),
       prisma.generationRecipe.count({
@@ -113,6 +114,9 @@ async function runProbe(): Promise<ProductConfigProbeReport> {
 
     const videoFeatureEnabled =
       videoFlag?.enabled === true && videoFlag.rolloutPercent === 100;
+    const activeVideoProfiles = activeVideoProfileCandidates.filter(
+      isProductionLtxVideoProfile,
+    ).length;
     const failureReasons = [
       activeImageProfiles < 1 ? "missing active image model profile" : null,
       activeImageCharacterTemplates < 1
@@ -125,7 +129,7 @@ async function runProbe(): Promise<ProductConfigProbeReport> {
         ? `image pricing requires exactly one active rule (found ${activeImagePricingRules})`
         : null,
       videoFeatureEnabled && activeVideoProfiles < 1
-        ? "video_gen enabled without active video model profile"
+        ? "video_gen enabled without the exact production LTX video profile"
         : null,
       videoFeatureEnabled && activeVideoCharacterTemplates < 1
         ? "video_gen enabled without active video character prompt template"

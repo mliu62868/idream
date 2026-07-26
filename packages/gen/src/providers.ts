@@ -567,6 +567,12 @@ export function assertProductionProviderReady(kind: "image" | "video") {
   }
   if (process.env.APP_ENV !== "production") return;
 
+  if (kind === "video" && provider !== "backend") {
+    throw new Error(
+      "Production video generation requires GEN_VIDEO_PROVIDER=backend",
+    );
+  }
+
   if (provider === "mock") {
     throw new Error(`Production ${kind} generation requires a non-mock provider`);
   }

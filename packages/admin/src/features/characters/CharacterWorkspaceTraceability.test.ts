@@ -259,7 +259,8 @@ describe("Character workspace traceability", () => {
     const source = readFileSync(new URL("./CharacterWorkspace.tsx", import.meta.url), "utf8");
 
     expect(source).toContain('window === "route_qualification" ? "not_required" : "pending"');
-    expect(source).toContain("No route qualification action is currently required.");
-    expect(source).toContain("Open route qualification");
+    // 运营面说人话：空态/入口文案用「image route」，不暴露 route qualification 这个工程词。
+    expect(source).toContain("No image route action is currently required.");
+    expect(source).toContain("Open image route");
   });
 });

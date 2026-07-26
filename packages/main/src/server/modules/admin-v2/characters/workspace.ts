@@ -31,6 +31,7 @@ import {
 import { ACTIVE_CONTROL_PLANE_COMMAND_STATUSES } from "../shared/control-plane-command";
 import { characterCommandCoordinationKey } from "./command-coordination";
 import { loadCharacterIdentityBootstrapAuthority } from "./identity-bootstrap-authority";
+import { characterReferenceAuthorityFrom } from "./reference-authority";
 import { lockCharacterGenerationAuthority } from "./generation-authority-lock";
 import { isMediaAssetOperationalForAuthority } from "@/server/lib/media-asset-authority";
 import { evaluateDraftAssetRouteAuthority } from "./draft-asset-route-authority";
@@ -680,14 +681,22 @@ export async function getCharacterWorkspace(characterId: string) {
   const activeVoiceProfile =
     voiceProfiles.find((profile) => profile.status === "active") ?? null;
   const candidateVoiceProfile =
-    voiceProfiles.find((profile) => profile.status === "candidate") ?? null;
+    voiceProfiles.find(
+      (profile) =>
+        profile.status === "candidate" && profile.provider === "fish_audio",
+    ) ?? null;
+  const usableActiveVoiceProfile =
+    activeVoiceProfile?.provider === "fish_audio" &&
+    activeVoiceProfile.providerVoiceId === character.voiceId
+      ? activeVoiceProfile
+      : null;
   const [voiceCapabilities, voiceDefaults] = await Promise.all([
-    env.VOICE_PROVIDER === "pocket-tts"
+    env.VOICE_PROVIDER === "fish-audio"
       ? providers.voice.inspectCapabilities?.()
       : undefined,
     getVoiceDefaultSettings(),
   ]);
-  const voiceRuntimeStatus = env.VOICE_PROVIDER !== "pocket-tts"
+  const voiceRuntimeStatus = env.VOICE_PROVIDER !== "fish-audio"
     ? "inactive"
     : !voiceCapabilities?.ok || !voiceCapabilities.data.voiceCloning
       ? "unavailable"
@@ -706,14 +715,15 @@ export async function getCharacterWorkspace(characterId: string) {
     orderBy: { revision: "desc" },
   }) : null;
   const bootstrapAuthority = await loadCharacterIdentityBootstrapAuthority(prisma, characterId);
-  const activeReferenceAssetIds = activeReferenceSet
-    ? activeReferenceSet.references.map((reference) => reference.mediaAssetId)
-    : activeIdentity
-      ? strings(activeIdentity.referenceAssetIds)
-      : [];
-  const visualPoolIds = activeIdentity
-    ? [...new Set([...strings(activeIdentity.anchorAssetIds), ...activeReferenceAssetIds])]
-    : [];
+  // 参考集取自 active revision（唯一权威），不再在缺 revision 时回退读影子列——
+  // 没有 active revision 就是「参考集未发布」，展示影子列的旧内容只会误导运营。
+  const referenceAuthority = characterReferenceAuthorityFrom(activeReferenceSet);
+  const activeReferenceAssetIds = referenceAuthority?.refs ?? [];
+  // TODO(reference-authority): anchorAssetIds 不是参考集副本，而是「可选图池」——它可以含
+  // 参考集之外的图，否则运营无法往参考集里加新图（publishCharacterReferenceSet 的
+  // eligibleIds 同样接受它）。图池的正确权威是 ReferenceCandidate，迁移前这里保持读影子列。
+  const poolAnchorIds = activeIdentity ? strings(activeIdentity.anchorAssetIds) : [];
+  const visualPoolIds = [...new Set([...poolAnchorIds, ...activeReferenceAssetIds])];
   const visualAsOf = new Date();
   const [
     visualPoolAssets,
@@ -873,20 +883,15 @@ export async function getCharacterWorkspace(characterId: string) {
   const performance = portfolio.items.find((item) => item.characterId === characterId)?.performance ?? [];
   const portfolioItem = portfolio.items.find((item) => item.characterId === characterId) ?? null;
   const poolAssetById = new Map(visualPoolAssets.map((asset) => [asset.id, asset]));
+  // anchors 走图池（见上面的 TODO），不能收窄成参考集的子集：前端的 referenceCandidates
+  // 由 anchors ∪ references 组成，收窄会让运营选不到参考集之外的候选图。
   const anchors = activeIdentity
-    ? visualPoolDtos(strings(activeIdentity.anchorAssetIds), "identity_anchor", poolAssetById, characterId)
+    ? visualPoolDtos(poolAnchorIds, "identity_anchor", poolAssetById, characterId)
     : [];
-  const references = activeIdentity
-    ? activeReferenceSet
-      ? activeReferenceSet.references.map((reference) =>
-          visualAssetDto(reference.mediaAsset, reference.role, characterId, reference)
-        )
-      : visualPoolDtos(
-          activeReferenceAssetIds,
-          "identity_reference",
-          poolAssetById,
-          characterId,
-        )
+  const references = activeReferenceSet
+    ? activeReferenceSet.references.map((reference) =>
+        visualAssetDto(reference.mediaAsset, reference.role, characterId, reference)
+      )
     : [];
   const visualReadiness = evaluateReleaseReadiness({
     releaseId: candidateRelease?.id ?? "visual-workbench",
@@ -921,9 +926,13 @@ export async function getCharacterWorkspace(characterId: string) {
     routeQualification: qualifiedRoute ? { status: qualifiedRoute.result, stale: false } : null,
     characterQa: { status: "passed" },
   });
+  // SPEC: 生图（打磨）闸 ≠ 发布闸。这里只保留「没有它就画不出图」的条件。
+  // INTENT: 密封 hash（*_unsealed）是内容的派生缓存，它的价值是发布时锁住身份，对生成一张
+  // 草稿图没有意义；却曾要求运营「铸一个新版本」才能继续——用改数据的手段去修一个只需重算的
+  // 值。发布链仍在 readiness.ts 里检查这两项，打磨阶段不再被它拦住。
   const visualBlockerCodes = new Set([
-    "visual_identity_missing", "visual_anchor_missing", "visual_traits_incomplete", "visual_identity_unsealed",
-    "reference_set_not_active", "reference_set_unsealed", "reference_assets_unavailable",
+    "visual_identity_missing", "visual_anchor_missing", "visual_traits_incomplete",
+    "reference_set_not_active", "reference_assets_unavailable",
     "generation_route_unqualified", "generation_route_stale",
   ]);
   const visualBlockers = visualReadiness.blockers.filter((blocker) => visualBlockerCodes.has(blocker.code));
@@ -969,11 +978,9 @@ export async function getCharacterWorkspace(characterId: string) {
     "visual_identity_missing",
     "visual_anchor_missing",
     "visual_traits_incomplete",
-    "visual_identity_unsealed",
   ]);
   const referenceBlockerCodes = new Set([
     "reference_set_not_active",
-    "reference_set_unsealed",
     "reference_assets_unavailable",
   ]);
   const routeBlockerCodes = new Set([
@@ -1202,26 +1209,27 @@ export async function getCharacterWorkspace(characterId: string) {
       cloningAvailable: voiceRuntimeStatus === "ready",
       runtimeStatus: voiceRuntimeStatus,
       runtimeEngine:
-        env.VOICE_PROVIDER !== "pocket-tts"
+        env.VOICE_PROVIDER !== "fish-audio"
           ? "inactive"
           : voiceCapabilities?.ok &&
-              voiceCapabilities.data.runtime === "omlx"
-            ? "omlx"
+              voiceCapabilities.data.runtime === "mlx_audio"
+            ? "mlx_audio"
             : "unknown",
       runtimeVersion:
         voiceCapabilities?.ok
           ? voiceCapabilities.data.runtimeVersion ?? null
           : null,
-      runtimeLanguage: env.POCKET_TTS_LANGUAGE,
+      runtimeLanguage: env.FISH_AUDIO_LANGUAGE,
       currentVoiceId: character.voiceId,
       effectiveVoiceId:
-        character.voiceId ?? voiceIdForGender(voiceDefaults, character.gender),
-      authoritySource: character.voiceId
+        usableActiveVoiceProfile?.providerVoiceId ??
+        voiceIdForGender(voiceDefaults, character.gender),
+      authoritySource: usableActiveVoiceProfile
         ? "character_clone"
         : "system_default",
       systemDefaults: voiceDefaults,
-      activeProfile: activeVoiceProfile
-        ? characterVoiceProfileDto(activeVoiceProfile)
+      activeProfile: usableActiveVoiceProfile
+        ? characterVoiceProfileDto(usableActiveVoiceProfile)
         : null,
       candidateProfile: candidateVoiceProfile
         ? characterVoiceProfileDto(candidateVoiceProfile)
@@ -1276,8 +1284,10 @@ export async function getCharacterWorkspace(characterId: string) {
   };
 }
 
-function providersVoiceKey(): "mock" | "pipeline" | "pocket_tts" {
-  return env.VOICE_PROVIDER === "pocket-tts" ? "pocket_tts" : env.VOICE_PROVIDER;
+function providersVoiceKey(): "mock" | "pipeline" | "pocket_tts" | "fish_audio" {
+  if (env.VOICE_PROVIDER === "pocket-tts") return "pocket_tts";
+  if (env.VOICE_PROVIDER === "fish-audio") return "fish_audio";
+  return env.VOICE_PROVIDER;
 }
 
 export async function getCharacterProjectDraftForResume(characterId: string) {

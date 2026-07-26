@@ -846,7 +846,6 @@ describe("applyChatEvent", () => {
         signatureTraits: {},
         styleTraits: {},
         anchorAssetIds: [],
-        referenceAssetIds: [],
         adapterRefs: {},
         createdFrom: "generation_bootstrap:test",
       },

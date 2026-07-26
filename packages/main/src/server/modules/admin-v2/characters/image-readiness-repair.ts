@@ -33,6 +33,7 @@ import {
   referenceSetSnapshotHash,
 } from "./release-snapshot";
 import { findOperationalGenerationRoute } from "./visual-authority";
+import { characterReferenceAuthorityFrom } from "./reference-authority";
 
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -263,15 +264,9 @@ export async function repairLegacyEditorialVisualIdentity(input: {
   }
   const discoveredReferenceSet =
     discovered.referenceSetRevisions[0] ?? null;
+  // 参考图与锚点都取自 active Reference Set（唯一权威）；anchors 是 refs 的子集，取 refs 即全集。
   const discoveredAssetIds = [
-    ...new Set([
-      ...stringArray(discovered.anchorAssetIds),
-      ...(discoveredReferenceSet
-        ? discoveredReferenceSet.references.map(
-            (reference) => reference.mediaAssetId,
-          )
-        : stringArray(discovered.referenceAssetIds)),
-    ]),
+    ...new Set(characterReferenceAuthorityFrom(discoveredReferenceSet)?.refs ?? []),
   ];
   if (discoveredAssetIds.length === 0) {
     throw Errors.conflict(
@@ -398,7 +393,11 @@ export async function repairLegacyEditorialVisualIdentity(input: {
       character.description,
   });
   const version = current.version + 1;
-  const anchorAssetIds = stringArray(current.anchorAssetIds);
+  // 锚点与参考图都来自 active Reference Set。没有它就是没有可保留的身份权威——
+  // 此前从影子列重建 references 会凭空造出一个 role 布局，掩盖「参考集缺失」这个真问题。
+  const anchorAssetIds = [
+    ...(characterReferenceAuthorityFrom(currentReferenceSet)?.anchors ?? []),
+  ];
   const references = currentReferenceSet
     ? currentReferenceSet.references.map((reference) => ({
         mediaAssetId: reference.mediaAssetId,
@@ -410,17 +409,7 @@ export async function repairLegacyEditorialVisualIdentity(input: {
         identityScore: reference.identityScore,
         selectionReason: reference.selectionReason,
       }))
-    : stringArray(current.referenceAssetIds).map((mediaAssetId, position) => ({
-        mediaAssetId,
-        position,
-        role: position === 0 ? "primary_face" : "identity_reference",
-        weight: 1,
-        crop: null,
-        qualityScore: null,
-        identityScore: null,
-        selectionReason:
-          "Preserve the qualified editorial portrait identity authority",
-      }));
+    : [];
   if (anchorAssetIds.length === 0 || references.length === 0) {
     throw Errors.conflict(
       "The legacy editorial identity is missing its sealed portrait references",
@@ -469,7 +458,6 @@ export async function repairLegacyEditorialVisualIdentity(input: {
       signatureTraits: toInputJson(identity.signatureTraits),
       styleTraits: toInputJson(identity.styleTraits),
       anchorAssetIds: toInputJson(anchorAssetIds),
-      referenceAssetIds: toInputJson(referenceAssetIds),
       defaultSeed: current.defaultSeed,
       adapterRefs: toInputJson({
         ...currentAdapterRefs,
@@ -937,7 +925,6 @@ export async function repairCharacterImageReadiness(input: {
       signatureTraits: toInputJson(signatureTraits),
       styleTraits: toInputJson(styleTraits),
       anchorAssetIds: toInputJson([asset.id]),
-      referenceAssetIds: toInputJson([asset.id]),
       defaultSeed: null,
       adapterRefs: toInputJson({
         authority: "editorial_live_portrait",

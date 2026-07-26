@@ -86,7 +86,7 @@ describe("Character Portfolio role-image summary", () => {
     });
   });
 
-  it("returns an unfinished image run to the last batch", () => {
+  it("returns an unfinished image run to the image still in progress", () => {
     expect(resolveCharacterPortfolioPrimaryAction({
       ...item,
       nextAction: {
@@ -95,8 +95,9 @@ describe("Character Portfolio role-image summary", () => {
         label: "Continue active image run",
       },
     }, "studio")).toMatchObject({
-      eyebrow: "Batch in progress",
-      label: "Continue last batch",
+      // 运营面说人话：不用 batch/run 这类工程词（与周围 image route / image pack 文案一致）。
+      eyebrow: "Image in progress",
+      label: "Continue current image",
       href: "/admin/characters/character-1?tab=assets",
       requiresAssets: true,
     });

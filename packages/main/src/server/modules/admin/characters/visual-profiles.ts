@@ -49,6 +49,7 @@ import {
   lockCharacterMediaAssetAuthorities,
 } from "@/server/modules/admin-v2/characters/generation-authority-lock";
 import { invalidateCharacterDraftAssetPack } from "@/server/modules/admin-v2/characters/draft-asset-authority";
+import { characterReferenceAuthorityFrom } from "@/server/modules/admin-v2/characters/reference-authority";
 import { isMediaAssetOperationalForAuthority } from "@/server/lib/media-asset-authority";
 import { parseSingleContinuousFrameEvidence } from "@idream/shared/media/generated-image-sanity";
 import { creativeReviewQualityPassed } from "@/server/modules/admin-v2/shared/creative-review-quality";
@@ -71,7 +72,6 @@ const visualProfileSelect = {
   styleTraits: true,
   defaultSeed: true,
   anchorAssetIds: true,
-  referenceAssetIds: true,
   qualityScore: true,
   consistencyScore: true,
   createdFrom: true,
@@ -347,11 +347,11 @@ export async function createCharacterVisualProfile(
           orderBy: { revision: "desc" },
         })
       : null;
+    // 参考集只认 active Reference Set；没有它就是没有参考集，不再回退读 profile 影子列
+    // （下面的 fallbackImageAssetId 会用角色主图兜底，与 inherited 阶段口径一致）。
     const discoveredReferenceAssetIds = discoveredReferenceSet
       ? discoveredReferenceSet.references.map((reference) => reference.mediaAssetId)
-      : discoveredActive
-        ? jsonStringArray(discoveredActive.referenceAssetIds)
-        : [];
+      : [];
     const discoveredFallbackImageAssetId =
       !body.candidateAuthority &&
       discoveredAnchorAssetIds.length === 0 &&
@@ -384,14 +384,18 @@ export async function createCharacterVisualProfile(
         { deepLink: `/admin/characters/${characterId}?tab=visual` },
       );
     }
-    const activeAnchorAssetIds = active ? jsonStringArray(active.anchorAssetIds) : [];
     const activeReferenceSet = active
       ? await tx.referenceSetRevision.findFirst({
           where: { visualProfileId: active.id, status: "active" },
           select: {
             id: true,
+            revision: true,
+            selectorVersion: true,
             references: {
-              select: { mediaAssetId: true },
+              select: {
+                mediaAssetId: true, role: true, position: true,
+                weight: true, qualityScore: true,
+              },
               orderBy: { position: "asc" },
             },
           },
@@ -404,11 +408,12 @@ export async function createCharacterVisualProfile(
         { deepLink: `/admin/characters/${characterId}?tab=visual` },
       );
     }
-    const inheritedReferenceAssetIds = activeReferenceSet
-      ? activeReferenceSet.references.map((reference) => reference.mediaAssetId)
-      : active
-        ? jsonStringArray(active.referenceAssetIds)
-        : [];
+    // 锚点与参考图都取自 active Reference Set（唯一权威）。此前锚点只读 profile 的影子列、
+    // 参考图「权威优先影子回退」——两条口径不一致，且没有 active revision 时会把影子列的旧内容
+    // 当成可继承的权威。现在没有 revision 就是没有可继承的参考集，交给下面的主图兜底。
+    const inheritedAuthority = characterReferenceAuthorityFrom(activeReferenceSet);
+    const activeAnchorAssetIds = [...(inheritedAuthority?.anchors ?? [])];
+    const inheritedReferenceAssetIds = [...(inheritedAuthority?.refs ?? [])];
     const fallbackImageAssetId =
       !body.candidateAuthority &&
       activeAnchorAssetIds.length === 0 && inheritedReferenceAssetIds.length === 0
@@ -533,11 +538,9 @@ export async function createCharacterVisualProfile(
         data: { status: "archived" },
       });
     }
-    // 锚点继承 active identity；参考图继承 active Reference Set 的当前运行权威。
+    // 锚点（候选图池）继承 active identity；参考集本身由下面的 nextReferences 建成新的
+    // Reference Set revision，profile 上不再留副本。
     const anchorAssetIds = inheritedAnchorAssetIds;
-    const referenceAssetIds = candidate
-      ? [candidate.item.mediaAsset!.id]
-      : inheritedReferenceAssetIds;
     const version = (active?.version ?? 0) + 1;
 
     const faceTraits = body.faceTraits ?? active?.faceTraits ?? {};
@@ -581,7 +584,6 @@ export async function createCharacterVisualProfile(
         signatureTraits: toInputJson(signatureTraits),
         styleTraits: toInputJson(styleTraits),
         anchorAssetIds: toInputJson(anchorAssetIds),
-        referenceAssetIds: toInputJson(referenceAssetIds),
         defaultSeed:
           body.defaultSeed ??
           candidate?.item.job!.seed ??
@@ -612,8 +614,6 @@ export async function createCharacterVisualProfile(
           bodyTraits: toInputJson(bodyTraits),
           signatureTraits: toInputJson(signatureTraits),
           styleTraits: toInputJson(styleTraits),
-          anchorAssetIds,
-          referenceAssetIds,
         }),
         evidenceState: candidate ? "reviewed_bootstrap" : "candidate",
         createdFrom: candidate
@@ -622,38 +622,63 @@ export async function createCharacterVisualProfile(
       },
       select: visualProfileSelect,
     });
-    if (candidate) {
-      const mediaAssetId = candidate.item.mediaAsset!.id;
-      const references = [{
-        mediaAssetId,
-        position: 0,
-        role: "primary_face",
-        weight: 1,
-      }];
-      const selectorVersion = "identity-calibration-v1";
-      const referenceSet = await tx.referenceSetRevision.create({
-        data: {
+    // INVARIANT: 每个 Visual Identity 版本都必须带一个 active Reference Set。
+    // 此前只有「激活候选图」这条路建 revision，纯改提示词的版本会落在「有 profile 无 revision」
+    // 的状态里——那正是各处「没有 revision 就回退读影子列」的由来。只改提示词不该改图，
+    // 所以原样继承上一版的 references（role/position/weight 全部照搬）；连上一版都没有时，
+    // 用已校验过的锚点（含角色主图兜底）建首版。
+    const inheritedRows = activeReferenceSet?.references ?? [];
+    const nextReferences = candidate
+      ? [{
+          mediaAssetId: candidate.item.mediaAsset!.id,
+          position: 0,
+          role: "primary_face",
+          weight: 1,
+          qualityScore: candidate.decision.score,
+        }]
+      : inheritedRows.length > 0
+        ? inheritedRows.map((reference) => ({ ...reference }))
+        : anchorAssetIds.map((mediaAssetId, index) => ({
+            mediaAssetId,
+            position: index,
+            role: index === 0 ? "primary_face" : "identity_anchor",
+            weight: 1,
+            qualityScore: null,
+          }));
+    const selectorVersion = candidate
+      ? "identity-calibration-v1"
+      : inheritedRows.length > 0
+        ? activeReferenceSet!.selectorVersion
+        : "identity-anchor-v1";
+    const createdFrom = candidate
+      ? `identity_calibration:${candidate.item.job!.id}`
+      : inheritedRows.length > 0
+        ? `identity_version_inherit:${activeReferenceSet!.id}`
+        : "identity_anchor_bootstrap";
+    const referenceSet = await tx.referenceSetRevision.create({
+      data: {
+        visualProfileId: created.id,
+        revision: 1,
+        status: "active",
+        selectorVersion,
+        createdFrom,
+        snapshotHash: referenceSetSnapshotHash({
           visualProfileId: created.id,
           revision: 1,
-          status: "active",
           selectorVersion,
-          createdFrom: `identity_calibration:${candidate.item.job!.id}`,
-          snapshotHash: referenceSetSnapshotHash({
-            visualProfileId: created.id,
-            revision: 1,
+          references: nextReferences,
+        }),
+        references: {
+          create: nextReferences.map((reference) => ({
+            ...reference,
             selectorVersion,
-            references,
-          }),
-          references: {
-            create: references.map((reference) => ({
-              ...reference,
-              selectorVersion,
-              selectionReason: body.reason,
-              qualityScore: candidate.decision.score,
-            })),
-          },
+            selectionReason: body.reason,
+          })),
         },
-      });
+      },
+    });
+    if (candidate) {
+      const mediaAssetId = candidate.item.mediaAsset!.id;
       await tx.referenceCandidate.create({
         data: {
           visualProfileId: created.id,

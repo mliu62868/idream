@@ -122,7 +122,6 @@ describe.sequential("Character Asset Studio draft image authority", () => {
         signatureTraits: {},
         styleTraits: { style: "realistic" },
         anchorAssetIds: [currentAssetId],
-        referenceAssetIds: [currentAssetId],
         adapterRefs: {},
         evidenceState: "reviewed_bootstrap",
         createdFrom: "asset_studio_test",
@@ -587,7 +586,6 @@ describe.sequential("Character Asset Studio draft image authority", () => {
         signatureTraits: {},
         styleTraits: { style: "realistic" },
         anchorAssetIds: [currentAssetId],
-        referenceAssetIds: [currentAssetId],
         adapterRefs: {},
         evidenceState: "reviewed_bootstrap",
         createdFrom: "asset_studio_test",
@@ -1182,8 +1180,14 @@ describe.sequential("Character Asset Studio draft image authority", () => {
       },
       visual: {
         activeIdentity: { version: 2 },
-        activeReferenceSet: null,
-        readiness: { ready: false },
+        // 新身份版本原样继承上一版的 Reference Set——只改身份提示词不该丢参考图，
+        // 也不再落入「有 identity 无 reference set」的状态（那是各处影子列回退的由来）。
+        activeReferenceSet: {
+          createdFrom: expect.stringContaining("identity_version_inherit:"),
+        },
+        // 参考集随之继承，所以改身份提示词不再把角色打回「视觉未就绪」、逼运营重新发布参考集。
+        // 草稿资产仍然作废（上面的 draftAssetPack: {}）——那才是这次铸版真正要失效的东西。
+        readiness: { ready: true },
       },
       preview: { draft: { imageUrl: null } },
     });

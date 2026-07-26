@@ -158,7 +158,6 @@ describe("Admin cutover invariant adversarial release authority", () => {
       signatureTraits: {},
       styleTraits: { style: "realistic" },
       anchorAssetIds: [mediaId],
-      referenceAssetIds: [mediaId],
       adapterRefs: {},
       evidenceState: "qualified",
       createdFrom: "test",

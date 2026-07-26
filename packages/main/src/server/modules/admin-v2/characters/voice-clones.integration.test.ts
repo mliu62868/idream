@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
+import { DEFAULT_FISH_AUDIO_DELIVERY } from "@idream/shared/admin";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/server/lib/db";
 
 const providerState = vi.hoisted(() => ({
-  providerKey: "pocket_tts",
+  providerKey: "fish_audio",
   cloneCalls: 0,
   synthesizeCalls: 0,
   failSynthesizeCall: null as number | null,
@@ -30,7 +31,7 @@ vi.mock("@/server/providers", () => ({
           ok: true as const,
           data: {
             voiceId: input.voiceId,
-            model: "pocket-tts-4bit",
+            model: "fish-audio-s2-pro-8bit",
             language: input.language,
           },
         };
@@ -85,7 +86,7 @@ import {
   resetCharacterVoiceToSystemDefault,
 } from "./voice-clones";
 
-describe("Character Pocket TTS voice clone authority", () => {
+describe("Character Fish Audio voice clone authority", () => {
   const suffix = randomUUID();
   const actorId = `voice-admin-${suffix}`;
   const characterId = `voice-character-${suffix}`;
@@ -203,7 +204,8 @@ describe("Character Pocket TTS voice clone authority", () => {
     ]);
     expect(first.profile).toMatchObject({
       version: 1,
-      provider: "pocket_tts",
+      provider: "fish_audio",
+      delivery: DEFAULT_FISH_AUDIO_DELIVERY,
       status: "candidate",
       reference: {
         filename: "first-reference.wav",
@@ -219,6 +221,13 @@ describe("Character Pocket TTS voice clone authority", () => {
       where: { id: characterId },
       select: { voiceId: true },
     })).toEqual({ voiceId: null });
+    expect(await prisma.characterVoiceProfile.findUniqueOrThrow({
+      where: { id: first.profile.id },
+      select: { provider: true, deliverySettings: true },
+    })).toEqual({
+      provider: "fish_audio",
+      deliverySettings: DEFAULT_FISH_AUDIO_DELIVERY,
+    });
     const firstActivationKey = `voice-activate-first-${suffix}`;
     const firstActivation = await activateCharacterVoiceProfile({
       characterId,
@@ -362,8 +371,8 @@ describe("Character Pocket TTS voice clone authority", () => {
     })).status).toBe("candidate");
   });
 
-  it("refuses to activate a Pocket candidate while another voice provider is active", async () => {
-    providerState.providerKey = "pocket_tts";
+  it("refuses to activate a Fish candidate while another voice provider is active", async () => {
+    providerState.providerKey = "fish_audio";
     providerState.synthesizeCalls = 0;
     providerState.failSynthesizeCall = null;
     const candidate = await createCharacterVoiceClone({
@@ -397,7 +406,7 @@ describe("Character Pocket TTS voice clone authority", () => {
         },
       })).rejects.toMatchObject({ status: 503 });
     } finally {
-      providerState.providerKey = "pocket_tts";
+      providerState.providerKey = "fish_audio";
     }
     expect((await prisma.character.findUniqueOrThrow({
       where: { id: characterId },
@@ -483,6 +492,7 @@ function cloneForm(
     language: "english",
     referenceText: "The reference speaker reads this exact transcript.",
     sampleText,
+    delivery: DEFAULT_FISH_AUDIO_DELIVERY,
     reason: "Create the character voice authority",
     reference: {
       filename,

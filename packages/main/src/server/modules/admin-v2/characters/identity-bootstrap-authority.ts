@@ -11,12 +11,6 @@ export type CharacterIdentityBootstrapAuthority = {
   readonly blockers: readonly string[];
 };
 
-function stringArray(value: unknown) {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
-    : [];
-}
-
 export async function loadCharacterIdentityBootstrapAuthority(
   db: Prisma.TransactionClient,
   characterId: string,
@@ -59,8 +53,6 @@ export async function loadCharacterIdentityBootstrapAuthority(
         status: true,
         evidenceState: true,
         createdFrom: true,
-        anchorAssetIds: true,
-        referenceAssetIds: true,
       },
     }),
     db.characterServing.findUnique({
@@ -98,11 +90,7 @@ export async function loadCharacterIdentityBootstrapAuthority(
       (character.imageAsset.characterId === null && currentImageReferenceCount === 1)
     )
   );
-  const profileSnapshots = profiles.map((profile) => ({
-    ...profile,
-    anchorAssetIds: stringArray(profile.anchorAssetIds),
-    referenceAssetIds: stringArray(profile.referenceAssetIds),
-  }));
+  const profileSnapshots = profiles.map((profile) => ({ ...profile }));
   const blockers = [
     ...(!character ? ["character_missing"] : []),
     ...(!latestProject ? ["project_missing"] : []),
@@ -116,11 +104,11 @@ export async function loadCharacterIdentityBootstrapAuthority(
     ...(referenceSetCount > 0 ? ["reference_set_history_exists"] : []),
     ...(referenceCandidateCount > 0 ? ["reference_candidate_history_exists"] : []),
     ...(lookCount > 0 ? ["character_look_history_exists"] : []),
+    // 「已有扎实的参考图历史」由上面的 reference_set_history_exists 承担：参考图只存在于
+    // active Reference Set 里，有参考图 ⟺ 有 reference set。此处只判断身份记录本身的来源与证据态。
     ...(profileSnapshots.some((profile) =>
       profile.evidenceState !== "candidate" ||
-      profile.createdFrom !== "admin_passport_edit" ||
-      profile.anchorAssetIds.length > 0 ||
-      profile.referenceAssetIds.length > 0
+      profile.createdFrom !== "admin_passport_edit"
     ) ? ["grounded_or_unknown_identity_history_exists"] : []),
   ];
   const historyFingerprint = canonicalSha256({

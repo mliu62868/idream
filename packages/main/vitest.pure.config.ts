@@ -20,6 +20,7 @@ export default defineConfig({
       "src/e2e/playwright-workspace-lease.test.ts",
       "src/lib/**/*.test.ts",
       "src/server/launch-readiness.test.ts",
+      "src/server/modules/voice-defaults.test.ts",
       "src/server/next-standalone-runtime.test.ts",
       "src/server/probe-web-surface-assets.test.ts",
       "src/server/cms/**/*.test.ts",

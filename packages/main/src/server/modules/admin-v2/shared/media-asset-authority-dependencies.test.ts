@@ -112,8 +112,9 @@ describe("mediaAssetAuthorityDependenciesBatch", () => {
       findMany: vi.fn(async () => [{
         id: "profile-reference-only",
         characterId: "character-reference-only",
-        anchorAssetIds: [],
-        referenceAssetIds: ["asset-reference-only"],
+        referenceSetRevisions: [{
+          references: [{ mediaAssetId: "asset-reference-only" }],
+        }],
       }]),
     };
     const db = {
@@ -144,9 +145,13 @@ describe("mediaAssetAuthorityDependenciesBatch", () => {
         where: expect.objectContaining({
           status: "active",
           character: { deletedAt: null },
-          OR: expect.arrayContaining([
-            { referenceAssetIds: { array_contains: ["asset-reference-only"] } },
-          ]),
+          // 依赖判定按 active Reference Set 的 references 查，不再按 profile 影子列 array_contains。
+          referenceSetRevisions: {
+            some: {
+              status: "active",
+              references: { some: { mediaAssetId: { in: ["asset-reference-only"] } } },
+            },
+          },
         }),
       }),
     );

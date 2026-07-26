@@ -196,15 +196,8 @@ export function VisualIdentityExperimentWorkbench({
   const [busy, setBusy] = useState<"generate" | "review" | "activate" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [proposalOpen, setProposalOpen] = useState(false);
-  const [proposalReason, setProposalReason] = useState("");
-  const [proposalQuality, setProposalQuality] = useState({
-    artifactFree: false,
-    singleSubject: false,
-    intentMatch: false,
-    noVisibleText: false,
-  });
-  const [proposalConfirmed, setProposalConfirmed] = useState(false);
+  const [candidateQualityConfirmed, setCandidateQualityConfirmed] =
+    useState(false);
   const [activationOpen, setActivationOpen] = useState(false);
   const [activationPrompt, setActivationPrompt] = useState(
     `${data.character.name}. ${CHARACTER_CANONICAL_PORTRAIT_IDENTITY_PROMPT}.`,
@@ -224,6 +217,7 @@ export function VisualIdentityExperimentWorkbench({
       : selectedProfile?.orientation ?? orientation;
 
   const loadRun = useCallback(async (runId: string) => {
+    setCandidateQualityConfirmed(false);
     const detail = await adminV2Request(
       `/api/v2/admin/creative/runs/${encodeURIComponent(runId)}`,
       { schema: creativeRunDetailSchema },
@@ -237,7 +231,7 @@ export function VisualIdentityExperimentWorkbench({
           null
     );
     return detail;
-  }, [setSelectedItemId]);
+  }, [setCandidateQualityConfirmed, setSelectedItemId]);
 
   const loadRuns = useCallback(async () => {
     const response = await adminV2Request(
@@ -321,6 +315,12 @@ export function VisualIdentityExperimentWorkbench({
   const selectedItem =
     selectedRun?.items.find((item) => item.id === selectedItemId) ??
     selectedRun?.items[0];
+  const automaticComposition =
+    selectedItem?.asset?.automaticComposition ?? null;
+  const systemSingleFramePassed =
+    automaticComposition?.evaluatorVersion ===
+      "generated-image-sanity-v2" &&
+    automaticComposition.status === "passed";
   const settledReadyCount =
     selectedRun && runSettled(selectedRun)
       ? selectedRun.items.filter((item) => item.asset).length
@@ -553,26 +553,27 @@ export function VisualIdentityExperimentWorkbench({
     setNotice("已载入这一轮的参数快照；修改后可创建新一轮。");
   };
 
-  const submitCandidate = async (decision: "approved" | "rejected") => {
+  const submitCandidate = async () => {
     if (
       !selectedRun ||
       !selectedItem?.asset ||
-      !proposalConfirmed ||
-      proposalReason.trim().length < 3 ||
-      (
-        decision === "approved" &&
-        Object.values(proposalQuality).some((passed) => !passed)
-      )
+      !systemSingleFramePassed ||
+      !candidateQualityConfirmed
     ) return;
     const body = {
       entityVersion: selectedRun.version,
       ...(selectedItem.review
         ? { supersedesDecisionId: selectedItem.review.id }
         : {}),
-      decision,
+      decision: "approved" as const,
       identityConsistency: "unscored" as const,
-      quality: proposalQuality,
-      reason: proposalReason.trim(),
+      quality: {
+        artifactFree: true,
+        singleSubject: true,
+        intentMatch: true,
+        noVisibleText: true,
+      },
+      reason: "已确认候选图为单人单画面并符合视觉身份要求",
     };
     const signature = `${selectedRun.id}:${selectedItem.id}:${JSON.stringify(body)}`;
     const idempotencyKey =
@@ -593,39 +594,17 @@ export function VisualIdentityExperimentWorkbench({
       idempotencyKeys.current.delete(signature);
       await loadRun(selectedRun.id);
       await loadRuns();
-      setProposalOpen(false);
-      setActivationOpen(decision === "approved");
-      setProposalConfirmed(false);
-      setProposalReason("");
-      setProposalQuality({
-        artifactFree: false,
-        singleSubject: false,
-        intentMatch: false,
-        noVisibleText: false,
-      });
-      setNotice(
-        decision === "approved"
-          ? "候选身份已通过；请完成身份锁定信息并激活新的视觉身份版本。"
-          : "已记录这张候选图不采用；请调整参数后继续生成下一张。",
-      );
+      setCandidateQualityConfirmed(false);
+      setActivationOpen(true);
+      setNotice("已采用这张候选图；请完成身份信息并激活新的视觉身份版本。");
       window.requestAnimationFrame(() => {
-        document.getElementById(
-          decision === "approved"
-            ? "identity-candidate-activation"
-            : "identity-experiment-composer",
-        )?.scrollIntoView({
+        document.getElementById("identity-candidate-activation")?.scrollIntoView({
           behavior: "smooth",
           block: "start",
         });
       });
     } catch (cause) {
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : decision === "approved"
-            ? "候选身份提交失败"
-            : "无法记录不采用决定",
-      );
+      setError(cause instanceof Error ? cause.message : "候选身份采用失败");
     } finally {
       setBusy(null);
     }
@@ -636,6 +615,8 @@ export function VisualIdentityExperimentWorkbench({
       !selectedRun ||
       !selectedItem?.asset ||
       !selectedItem.review ||
+      !systemSingleFramePassed ||
+      !selectedApproved ||
       !onActivateCandidate ||
       !activationConfirmed
     ) return;
@@ -701,18 +682,6 @@ export function VisualIdentityExperimentWorkbench({
       selectedItem.review.quality &&
       Object.values(selectedItem.review.quality).every(Boolean),
     );
-  const selectedRejected = selectedItem?.review?.decision === "rejected";
-  const proposalPassedCount =
-    Object.values(proposalQuality).filter(Boolean).length;
-  const proposalFailedCount =
-    Object.values(proposalQuality).length - proposalPassedCount;
-  const proposalAllPassed = proposalFailedCount === 0;
-  const proposalDecision = proposalConfirmed
-    ? proposalAllPassed
-      ? "approved"
-      : "rejected"
-    : null;
-  const proposalReasonValid = proposalReason.trim().length >= 3;
   const selectedIsActiveIdentity = Boolean(
     selectedItem?.asset &&
     identity &&
@@ -1236,9 +1205,15 @@ export function VisualIdentityExperimentWorkbench({
                       <StatusBadge value={selectedItem.executionState} />
                       <p className="mt-3 text-sm text-[var(--ad-text-muted)]">
                         {selectedItem.executionState === "failed"
-                          ? "这一张生成失败，可创建新一轮继续尝试。"
+                          ? selectedItem.failure?.operatorGuidance ??
+                            "这一张生成失败，可创建新一轮继续尝试。"
                           : "生成完成后会自动出现在这里。"}
                       </p>
+                      {selectedItem.failure ? (
+                        <p className="mt-2 font-mono text-[10px] text-[var(--ad-text-muted)]">
+                          {selectedItem.failure.errorCode}
+                        </p>
+                      ) : null}
                     </div>
                   </div>
                 ) : (
@@ -1264,8 +1239,8 @@ export function VisualIdentityExperimentWorkbench({
                     )}
                     key={item.id}
                     onClick={() => {
+                      setCandidateQualityConfirmed(false);
                       setSelectedItemId(item.id);
-                      setProposalOpen(false);
                       setActivationOpen(false);
                     }}
                     type="button"
@@ -1299,34 +1274,50 @@ export function VisualIdentityExperimentWorkbench({
             </>
           ) : null}
 
+          {selectedItem?.asset ? (
+            <div
+              className={cn(
+                "mt-4 rounded-lg border px-3 py-2 text-xs leading-5",
+                systemSingleFramePassed
+                  ? "border-[var(--ad-green-text)]/30 bg-[var(--ad-green-bg)] text-[var(--ad-green-text)]"
+                  : "border-[var(--ad-yellow-text)]/30 bg-[var(--ad-yellow-bg)] text-[var(--ad-yellow-text)]",
+              )}
+            >
+              {systemSingleFramePassed
+                ? "系统构图检查已通过：这是一个连续画面，不是拼图、分栏或缩略图合成。"
+                : "这张候选缺少新版单画面系统证据，不能采用。请载入本轮参数后重新生成。"}
+            </div>
+          ) : null}
+
+          {!selectedApproved && selectedItem?.asset && systemSingleFramePassed ? (
+            <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface-subtle)] p-3 text-sm leading-6 text-[var(--ad-text)]">
+              <input
+                checked={candidateQualityConfirmed}
+                className="mt-1 h-4 w-4 shrink-0 accent-[var(--ad-ink)]"
+                onChange={(event) =>
+                  setCandidateQualityConfirmed(event.target.checked)
+                }
+                type="checkbox"
+              />
+              <span>
+                采用前确认：只有一个人物、一个连续画面（无拼图、分栏或缩略图），无明显瑕疵、无可见文字，并符合本轮身份设计意图。
+              </span>
+            </label>
+          ) : null}
+
           <div className="mt-5 flex flex-wrap gap-2">
             <WorkspaceButton
               disabled={!selectedItem?.asset || busy !== null}
               onClick={continueFromSelected}
             >
-              从这张继续（图生图）
-            </WorkspaceButton>
-            <WorkspaceButton
-              disabled={
-                !canReview ||
-                !selectedItem?.asset ||
-                selectedApproved ||
-                busy !== null
-              }
-              onClick={() => setProposalOpen((current) => !current)}
-              tone="primary"
-            >
-              {selectedApproved
-                ? "候选身份已提交"
-                : selectedRejected
-                  ? "重新评审候选"
-                  : "评审这张候选图"}
+              从这张继续调整
             </WorkspaceButton>
             {selectedApproved ? (
               <WorkspaceButton
                 disabled={
                   !canActivate ||
                   !onActivateCandidate ||
+                  !systemSingleFramePassed ||
                   selectedIsActiveIdentity ||
                   busy !== null
                 }
@@ -1335,132 +1326,27 @@ export function VisualIdentityExperimentWorkbench({
               >
                 {selectedIsActiveIdentity ? "当前活动身份" : "激活为新视觉身份"}
               </WorkspaceButton>
-            ) : null}
+            ) : (
+              <WorkspaceButton
+                disabled={
+                  !canReview ||
+                  !selectedItem?.asset ||
+                  !systemSingleFramePassed ||
+                  !candidateQualityConfirmed ||
+                  busy !== null
+                }
+                onClick={() => void submitCandidate()}
+                tone="primary"
+              >
+                {busy === "review" ? "正在采用…" : "采用这张图并继续"}
+              </WorkspaceButton>
+            )}
           </div>
 
-          {proposalOpen && selectedItem?.asset ? (
-            <div className="mt-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-              <h4 className="text-base font-semibold">确认候选身份评审</h4>
-              <p className="mt-1 max-w-2xl text-sm leading-6 text-[var(--ad-text-muted)]">
-                逐项判断这张图能否成为人物身份基准。四项全部通过时可以进入身份激活；任一项不通过时也可以记录不采用，然后继续调整。
-              </p>
-              <label className="mt-4 block text-sm font-semibold text-[var(--ad-text)]">
-                评审说明
-                <input
-                  aria-describedby="identity-candidate-review-reason-help"
-                  className={`${fieldClass} mt-1`}
-                  onChange={(event) => setProposalReason(event.target.value)}
-                  placeholder="至少 3 个字，例如：多人入镜，不适合作为身份基准"
-                  value={proposalReason}
-                />
-              </label>
-              <p
-                className="mt-1 text-xs text-[var(--ad-text-muted)]"
-                id="identity-candidate-review-reason-help"
-              >
-                说明通过或不采用的依据；至少填写 3 个字。
-              </p>
-              <fieldset className="mt-4">
-                <legend className="text-sm font-semibold text-[var(--ad-text)]">
-                  可见质量检查
-                </legend>
-                <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">
-                  只勾选图片真实满足的条件。未勾选的项目会作为不采用依据保存。
-                </p>
-                <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                  {([
-                    ["artifactFree", "无明显瑕疵"],
-                    ["singleSubject", "只有一个主体"],
-                    ["intentMatch", "符合本轮身份设计意图"],
-                    ["noVisibleText", "画面没有可见文字"],
-                  ] as const).map(([key, label]) => (
-                    <label
-                      className={cn(
-                        "flex min-h-11 cursor-pointer items-center gap-3 rounded-md border px-3 py-2 text-sm leading-5 transition-colors",
-                        proposalQuality[key]
-                          ? "border-[var(--ad-green-text)]/30 bg-[var(--ad-green-bg)] text-[var(--ad-green-text)]"
-                          : "border-[var(--ad-border)] bg-[var(--ad-surface-subtle)] text-[var(--ad-text)] hover:border-[var(--ad-text-muted)]",
-                      )}
-                      key={key}
-                    >
-                      <input
-                        checked={proposalQuality[key]}
-                        className="h-4 w-4 shrink-0 accent-[var(--ad-ink)]"
-                        onChange={(event) => setProposalQuality((current) => ({
-                          ...current,
-                          [key]: event.target.checked,
-                        }))}
-                        type="checkbox"
-                      />
-                      <span>{label}</span>
-                    </label>
-                  ))}
-                </div>
-              </fieldset>
-              <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-md border border-[var(--ad-border)] p-3 text-sm leading-6">
-                <input
-                  checked={proposalConfirmed}
-                  className="mt-1 h-4 w-4 shrink-0 accent-[var(--ad-ink)]"
-                  onChange={(event) => setProposalConfirmed(event.target.checked)}
-                  type="checkbox"
-                />
-                <span>
-                  我确认以上逐项判断将作为不可变评审证据写入。
-                </span>
-              </label>
-              <div
-                aria-live="polite"
-                className={cn(
-                  "mt-3 rounded-md px-3 py-2 text-sm leading-6",
-                  proposalDecision === "approved"
-                    ? "bg-[var(--ad-green-bg)] text-[var(--ad-green-text)]"
-                    : proposalDecision === "rejected"
-                      ? "bg-[var(--ad-yellow-bg)] text-[var(--ad-yellow-text)]"
-                      : "bg-[var(--ad-blue-bg)] text-[var(--ad-blue-text)]",
-                )}
-                id="identity-candidate-review-status"
-              >
-                {proposalDecision === "approved"
-                  ? "4/4 项通过。提交后将直接打开身份激活步骤。"
-                  : proposalDecision === "rejected"
-                    ? `${proposalFailedCount} 项未通过，这张图不能进入身份激活；可以记录不采用并继续调整。`
-                    : `已通过 ${proposalPassedCount}/4 项。完成逐项检查并勾选确认后，系统会给出可执行的下一步。`}
-                {!proposalReasonValid ? " 还需要填写评审说明。" : ""}
-              </div>
-              <div className="mt-4 flex flex-wrap gap-2">
-                <WorkspaceButton
-                  aria-describedby="identity-candidate-review-status"
-                  disabled={
-                    busy !== null ||
-                    !proposalReasonValid ||
-                    proposalDecision === null
-                  }
-                  onClick={() => {
-                    if (proposalDecision) {
-                      void submitCandidate(proposalDecision);
-                    }
-                  }}
-                  tone="primary"
-                >
-                  {busy === "review"
-                    ? "正在提交…"
-                    : proposalDecision === "approved"
-                      ? "通过候选并进入下一步"
-                      : proposalDecision === "rejected"
-                        ? "记录不采用并继续调整"
-                        : "完成检查后继续"}
-                </WorkspaceButton>
-                <WorkspaceButton
-                  disabled={busy !== null}
-                  onClick={() => setProposalOpen(false)}
-                >
-                  暂不评审
-                </WorkspaceButton>
-              </div>
-            </div>
-          ) : null}
-
-          {activationOpen && selectedApproved && selectedItem?.asset ? (
+          {activationOpen &&
+          selectedApproved &&
+          systemSingleFramePassed &&
+          selectedItem?.asset ? (
             <div
               className="mt-4 scroll-mt-6 rounded-xl border border-[var(--ad-ink)] bg-[var(--ad-surface)] p-4"
               id="identity-candidate-activation"

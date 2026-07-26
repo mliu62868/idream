@@ -209,7 +209,10 @@ describe("Character Asset Studio bootstrap route projection", () => {
           generationProfileKey: "profile-alexa",
           result: "qualified",
           stale: false,
-          sourceVariationAuthority: { ready: true },
+          sourceVariationAuthority: {
+            ready: false,
+            blocker: "workflow_source_identity_combination_unsupported",
+          },
         }],
       },
     } as unknown as CharacterWorkspaceDetail;
@@ -228,6 +231,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
     expect(container.textContent).toContain("One image per generation");
     expect(container.textContent).toContain("The locked visual identity stays unchanged.");
     expect(container.textContent).not.toContain("Adjust the creative brief");
+    expect(container.textContent).not.toContain("Review generation route");
     const generate = [...container.querySelectorAll("button")]
       .find((button) => button.textContent?.includes("Generate 1 portrait"));
     expect(generate?.disabled).toBe(false);

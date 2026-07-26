@@ -48,8 +48,7 @@ describe("Character Reference Set publication", () => {
       bodyTraits: {},
       signatureTraits: {},
       styleTraits: {},
-      anchorAssetIds: [assetIds[0]],
-      referenceAssetIds: [assetIds[1], assetIds[2], assetIds[3], assetIds[4]],
+      anchorAssetIds: assetIds,
       adapterRefs: {},
       createdFrom: "test",
     } });
@@ -136,7 +135,6 @@ describe("Character Reference Set publication", () => {
         signatureTraits: {},
         styleTraits: {},
         anchorAssetIds: concurrentAssetIds,
-        referenceAssetIds: concurrentAssetIds,
         adapterRefs: {},
         createdFrom: "test",
       },
@@ -346,8 +344,13 @@ describe("Character Reference Set publication", () => {
       orderBy: { version: "desc" },
     });
     expect(activeProfile.version).toBe(2);
-    expect(activeProfile.referenceAssetIds).toEqual([assetIds[0]]);
-    expect(activeProfile.referenceAssetIds).not.toContain(assetIds[1]);
+    // 参考集只在 ReferenceSetRevision 上：新身份版本继承的是被裁剪后的当前参考集。
+    const inheritedReferenceSet = await prisma.referenceSetRevision.findFirstOrThrow({
+      where: { visualProfileId: activeProfile.id, status: "active" },
+      include: { references: { orderBy: { position: "asc" } } },
+    });
+    expect(inheritedReferenceSet.references.map((reference) => reference.mediaAssetId))
+      .toEqual([assetIds[0]]);
 
     const archived = await patchContentAsset(
       new Request(
@@ -498,7 +501,6 @@ describe("Character Reference Set publication", () => {
         signatureTraits: {},
         styleTraits: {},
         anchorAssetIds: [inheritedAssetId],
-        referenceAssetIds: [],
         adapterRefs: {},
         createdFrom: "test",
       },

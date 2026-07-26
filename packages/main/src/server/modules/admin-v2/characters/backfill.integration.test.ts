@@ -81,7 +81,6 @@ describe("Character / Release / Visual Identity historical backfill", () => {
         signatureTraits: {},
         styleTraits: { style: "realistic" },
         anchorAssetIds: [mediaId],
-        referenceAssetIds: [mediaId],
         adapterRefs: {},
         createdFrom: "legacy",
       },

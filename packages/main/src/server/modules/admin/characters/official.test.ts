@@ -474,16 +474,12 @@ describe("official character CMS", () => {
         signatureTraits: {},
         styleTraits: {},
         anchorAssetIds: [referenceMedia.id],
-        referenceAssetIds: [referenceMedia.id],
         adapterRefs: {},
         createdFrom: "test_qualified_identity",
         evidenceState: "qualified",
       },
     });
-    const visualProfileHash = characterVisualProfileSnapshotHash({
-      ...activeProfile,
-      anchorAssetIds: [referenceMedia.id],
-    });
+    const visualProfileHash = characterVisualProfileSnapshotHash(activeProfile);
     await prisma.characterVisualProfile.update({
       where: { id: activeProfile.id },
       data: {

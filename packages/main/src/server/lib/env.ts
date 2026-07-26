@@ -51,8 +51,10 @@ const EnvSchema = z.object({
   IMAGE_PROVIDER: z.enum(["mock", "pipeline", "backend"]).default("mock"),
   VIDEO_PROVIDER: z.enum(["mock", "pipeline", "backend"]).default("mock"),
   // Tests with no environment remain isolated on mock. Versioned local and
-  // production env templates select Pocket TTS as the product authority.
-  VOICE_PROVIDER: z.enum(["mock", "pipeline", "pocket-tts"]).default("mock"),
+  // production env templates select Fish Audio as the product authority.
+  VOICE_PROVIDER: z
+    .enum(["mock", "pipeline", "pocket-tts", "fish-audio"])
+    .default("mock"),
   MODERATION_PROVIDER: z.enum(["mock", "pipeline", "safety-gateway"]).default("mock"),
   PAYMENT_PROVIDER: z.enum(["mock", "btcpay"]).default("mock"),
   BLOB_PROVIDER: z.enum(["mock", "r2", "s3"]).default("mock"),
@@ -116,6 +118,15 @@ const EnvSchema = z.object({
   POCKET_TTS_OMLX_API_TOKEN: z.string().optional(),
   POCKET_TTS_OMLX_RUNTIME_VERSION: z.string().min(1).default("0.5.3"),
   POCKET_TTS_OMLX_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
+  FISH_AUDIO_API_URL: z.string().url().default("http://127.0.0.1:8062/v1"),
+  FISH_AUDIO_API_TOKEN: z.string().optional(),
+  FISH_AUDIO_MODEL: z.string().min(1).default("fish-audio-s2-pro-8bit"),
+  FISH_AUDIO_LANGUAGE: z.string().min(1).default("auto"),
+  FISH_AUDIO_DEFAULT_VOICE_ID: z
+    .string()
+    .min(1)
+    .default("fish-female-default"),
+  FISH_AUDIO_TIMEOUT_MS: z.coerce.number().int().positive().default(240_000),
   AGE_VERIFY_SERVICE_URL: z.string().url().optional(),
   AGE_VERIFY_API_KEY: z.string().optional(),
   AGE_VERIFY_WEBHOOK_SECRET: z.string().optional(),

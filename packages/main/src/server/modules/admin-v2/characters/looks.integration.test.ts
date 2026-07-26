@@ -88,7 +88,6 @@ beforeAll(async () => {
       signatureTraits: {},
       styleTraits: {},
       anchorAssetIds: [assetId],
-      referenceAssetIds: [assetId],
       adapterRefs: {},
       createdFrom: "test",
     },

@@ -192,6 +192,39 @@ export function resolveCharacterProductionEntry(
   };
 }
 
+const visualIdentityRepairBlockers = new Set([
+  "visual_identity_unsealed",
+  "visual_traits_incomplete",
+]);
+
+const visualReferenceRepairBlockers = new Set([
+  "reference_set_not_active",
+  "reference_set_unsealed",
+  "reference_assets_unavailable",
+]);
+
+const visualRouteRepairBlockers = new Set([
+  "generation_route_unqualified",
+  "generation_route_stale",
+]);
+
+// SPEC: 阻塞入口必须落到能完成动作的控件，而不是只回到 Visual 页首。
+// INTENT: identity -> references -> route 是生产权威的固定顺序；多项阻塞时只给最早可执行动作。
+export function characterVisualReadinessTarget(
+  blockerCodes: readonly string[],
+): string | null {
+  if (blockerCodes.some((code) => visualIdentityRepairBlockers.has(code))) {
+    return "visual-identity-version";
+  }
+  if (blockerCodes.some((code) => visualReferenceRepairBlockers.has(code))) {
+    return "visual-reference-set";
+  }
+  if (blockerCodes.some((code) => visualRouteRepairBlockers.has(code))) {
+    return "route-qualification-workbench";
+  }
+  return null;
+}
+
 const characterProductionSteps = [
   { label: "Lock visual identity", tab: "visual" },
   { label: "Create image assets", tab: "assets" },
@@ -202,6 +235,14 @@ const characterProductionSteps = [
   label: string;
   tab: CharacterProductionEntry["tab"];
 }[];
+
+// SPEC: 视频是 character I2V，源图恒为角色主图（service.ts 的 mode==="video" 守卫）。
+// INTENT: 主图不可用时用户端视频请求会 409，但角色本身在线、运营面看不出异常。只在「已上线 +
+// 主图不可用」这个真正可行动的组合下告警——未上线时缺主图已由前面的生产步骤覆盖，再报一次是噪音。
+// 不新增契约字段：detail.character.imageUrl 为 null 已等价于后端的 characterImageAvailable=false。
+export function characterVideoSourceBroken(data: CharacterWorkspaceDetail) {
+  return data.serving?.state === "live" && data.character.imageUrl === null;
+}
 
 function CharacterProductionOverview({
   data,
@@ -267,6 +308,12 @@ function CharacterProductionOverview({
             );
           })}
         </ol>
+        {characterVideoSourceBroken(data) ? (
+          <p className="flex items-start gap-2 border-t border-[var(--ad-border)] bg-[var(--ad-yellow-bg)] p-4 text-xs leading-5 text-[var(--ad-yellow-text)]">
+            <ShieldAlert aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0" />
+            {t("Live without a usable primary image — video generation for this character is rejected. Repair it in Image assets.")}
+          </p>
+        ) : null}
       </div>
     </section>
   );
@@ -1588,7 +1635,13 @@ export function VisualIdentityPanel({ data, navigateToTab, permissions, runCommi
     routeEvaluation.profiles[0] ??
     null;
   const [productionSettingsOpen, setProductionSettingsOpen] = useState(
-    data.visual.imageReadiness?.state === "route_pending",
+    !data.visual.readiness.ready,
+  );
+  const identityVersionNeedsAttention = data.visual.readiness.blockers.some(
+    (blocker) => visualIdentityRepairBlockers.has(blocker.code),
+  );
+  const [advancedIdentityOpen, setAdvancedIdentityOpen] = useState(
+    identityVersionNeedsAttention,
   );
   const referenceCandidates = useMemo(() => uniqueAvailableVisualAssets([
     ...data.visual.anchors,
@@ -1647,7 +1700,14 @@ export function VisualIdentityPanel({ data, navigateToTab, permissions, runCommi
         codes: [...(existing?.codes ?? []), blocker.code],
       });
     }
-    return [...grouped].map(([action, value]) => ({ action, ...value }));
+    return [...grouped].map(([action, value]) => {
+      const target = characterVisualReadinessTarget(value.codes);
+      return {
+        action,
+        ...value,
+        deepLink: target ? `#${target}` : value.deepLink,
+      };
+    });
   }, [data.visual.readiness.blockers]);
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -1814,21 +1874,11 @@ export function VisualIdentityPanel({ data, navigateToTab, permissions, runCommi
 
   const publishedAssets = [...data.visual.anchors, ...(data.visual.activeReferenceSet?.references ?? [])];
   return <div className="space-y-5">
-    <VisualIdentityExperimentWorkbench
-      canActivate={permissions.writeVisual}
-      canCreate={permissions.createAssets ?? false}
-      canUploadSource={
-        (permissions.writeProject ?? false) &&
-        (permissions.createAssets ?? false)
-      }
-      canReview={permissions.reviewAssets ?? false}
-      data={data}
-      onActivateCandidate={activateIdentityCandidate}
-    />
     <details
-      className="rounded-xl border border-[var(--ad-border)] bg-black/[0.015]"
+      className="scroll-mt-4 rounded-xl border border-[var(--ad-border)] bg-black/[0.015]"
+      id="visual-production-readiness"
       onToggle={(event) => setProductionSettingsOpen(event.currentTarget.open)}
-      open={productionSettingsOpen}
+      open={productionSettingsOpen || !data.visual.readiness.ready}
     >
       <summary className="cursor-pointer px-4 py-4 text-sm font-semibold sm:px-5">
         正式身份与生产设置
@@ -1899,7 +1949,7 @@ export function VisualIdentityPanel({ data, navigateToTab, permissions, runCommi
         )}
       </section>
 
-      <section className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" aria-labelledby="reference-set-title">
+      <section className="scroll-mt-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" id="visual-reference-set" aria-labelledby="reference-set-title">
         <div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="font-semibold" id="reference-set-title">{t("Anchors & published references")}</h3><p className="mt-1 text-xs text-[var(--ad-text-muted)]">{t("Select available Identity assets, then seal an immutable Reference Set revision.")}</p></div>{navigateToTab ? <button className="inline-flex min-h-11 items-center rounded-lg border border-[var(--ad-border)] px-3 text-sm font-semibold" onClick={() => navigateToTab("assets")} type="button">{t("Open role image production")}</button> : <Link className="inline-flex min-h-11 items-center rounded-lg border border-[var(--ad-border)] px-3 text-sm font-semibold" href={data.visual.readiness.productionDeepLink}>{t("Open role image production")}</Link>}</div>
         <div className="mt-4 grid gap-3 sm:grid-cols-2">{publishedAssets.length === 0 ? <p className="text-sm text-[var(--ad-text-muted)]">{t("No anchor or published reference assets.")}</p> : publishedAssets.map((asset, index) => <article className="rounded-lg border border-[var(--ad-border)] p-3" key={`${asset.role}-${asset.mediaAssetId}-${index}`}><div className="flex items-center justify-between gap-2"><span className="text-xs font-semibold">{t(asset.role.replaceAll("_", " "))}</span><StatusBadge value={asset.available ? "available" : "unavailable"} /></div><p className="mt-2 truncate text-xs text-[var(--ad-text-muted)]">{asset.mediaAssetId}</p>{asset.thumbnailUrl ?? asset.url ? <Image alt={t("Visual reference evidence")} className="mt-3 aspect-video w-full rounded-md object-cover" height={180} src={asset.thumbnailUrl ?? asset.url ?? ""} unoptimized width={320} /> : null}</article>)}</div>
         {identity ? <div className="mt-5 border-t border-[var(--ad-border)] pt-4">
@@ -2023,7 +2073,12 @@ export function VisualIdentityPanel({ data, navigateToTab, permissions, runCommi
     </div>
 
     <aside className="space-y-5">
-      <details className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"><summary className="cursor-pointer font-semibold">{t("Advanced identity controls")}</summary><section className="mt-4" aria-labelledby="new-identity-title"><h3 className="font-semibold" id="new-identity-title">{t("Create identity version")}</h3><p className="mt-1 text-xs text-[var(--ad-text-muted)]">{t("Creates a new active immutable version; existing assets are carried forward.")}</p>{requiresReviewedBootstrap ? <div className="mt-4 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]"><p>{t("Establish a reviewed portrait anchor in Character Assets before creating later identity versions.")}</p>{navigateToTab ? <div className="mt-3"><WorkspaceButton onClick={() => navigateToTab("assets")}>{t("Open Character Assets")}</WorkspaceButton></div> : null}</div> : blockedIdentityRepair ? <div className="mt-4 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]"><p>{t("This character has earlier visual history but no usable portrait authority. Repair its reviewed image evidence before creating another identity version.")}</p><details className="mt-2 text-xs"><summary className="cursor-pointer font-semibold">{t("Technical identity diagnostics")}</summary><ul className="mt-2 space-y-1">{data.visual.identityBootstrap.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul></details></div> : usesCurrentCharacterImageAsAnchor ? <p className="mt-4 rounded-lg bg-[var(--ad-blue-bg)] p-3 text-sm text-[var(--ad-blue-text)]">{t("The current Character image is available and will be carried forward as the anchor for this identity version.")}</p> : null}<label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">{t("Identity lock")}<textarea className={`${textAreaClass} mt-1`} onChange={(event) => setIdentityPrompt(event.target.value)} value={identityPrompt} /></label><label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">{t("Must not change")}<textarea className={`${textAreaClass} mt-1`} onChange={(event) => setNegativeIdentityPrompt(event.target.value)} value={negativeIdentityPrompt} /></label><div className="mt-3 grid grid-cols-2 gap-2"><label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Style")}<select className={`${fieldClass} mt-1`} onChange={(event) => setStyle(event.target.value)} value={style}>{["realistic", "anime", "hybrid", "other"].map((value) => <option key={value}>{value}</option>)}</select></label><label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Seed")}<input className={`${fieldClass} mt-1`} onChange={(event) => setDefaultSeed(event.target.value)} value={defaultSeed} /></label></div><label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">{t("Change reason")}<input className={`${fieldClass} mt-1`} onChange={(event) => setIdentityReason(event.target.value)} value={identityReason} /></label><label className="mt-3 flex items-start gap-2 text-xs"><input checked={identityConfirmed} className="mt-0.5" onChange={(event) => setIdentityConfirmed(event.target.checked)} type="checkbox" /><span>{t("Activate this as a new identity version.")}</span></label><div className="mt-4"><WorkspaceButton disabled={requiresReviewedBootstrap || blockedIdentityRepair || !permissions.writeVisual || busy !== null || identityReason.trim().length < 3 || !identityConfirmed} onClick={() => void createIdentityVersion()} tone="primary">{t("Create & activate version")}</WorkspaceButton></div>{!permissions.writeVisual ? <p className="mt-2 text-xs text-[var(--ad-text-muted)]">{t("Read-only: content.official.write is not granted.")}</p> : null}</section></details>
+      <details
+        className="scroll-mt-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"
+        id="visual-identity-version"
+        onToggle={(event) => setAdvancedIdentityOpen(event.currentTarget.open)}
+        open={advancedIdentityOpen || identityVersionNeedsAttention}
+      ><summary className="cursor-pointer font-semibold">{t("Advanced identity controls")}</summary><section className="mt-4" aria-labelledby="new-identity-title"><h3 className="font-semibold" id="new-identity-title">{t("Create identity version")}</h3><p className="mt-1 text-xs text-[var(--ad-text-muted)]">{t("Creates a new active immutable version; existing assets are carried forward.")}</p>{requiresReviewedBootstrap ? <div className="mt-4 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]"><p>{t("Establish a reviewed portrait anchor in Character Assets before creating later identity versions.")}</p>{navigateToTab ? <div className="mt-3"><WorkspaceButton onClick={() => navigateToTab("assets")}>{t("Open Character Assets")}</WorkspaceButton></div> : null}</div> : blockedIdentityRepair ? <div className="mt-4 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]"><p>{t("This character has earlier visual history but no usable portrait authority. Repair its reviewed image evidence before creating another identity version.")}</p><details className="mt-2 text-xs"><summary className="cursor-pointer font-semibold">{t("Technical identity diagnostics")}</summary><ul className="mt-2 space-y-1">{data.visual.identityBootstrap.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul></details></div> : usesCurrentCharacterImageAsAnchor ? <p className="mt-4 rounded-lg bg-[var(--ad-blue-bg)] p-3 text-sm text-[var(--ad-blue-text)]">{t("The current Character image is available and will be carried forward as the anchor for this identity version.")}</p> : null}<label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">{t("Identity lock")}<textarea className={`${textAreaClass} mt-1`} onChange={(event) => setIdentityPrompt(event.target.value)} value={identityPrompt} /></label><label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">{t("Must not change")}<textarea className={`${textAreaClass} mt-1`} onChange={(event) => setNegativeIdentityPrompt(event.target.value)} value={negativeIdentityPrompt} /></label><div className="mt-3 grid grid-cols-2 gap-2"><label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Style")}<select className={`${fieldClass} mt-1`} onChange={(event) => setStyle(event.target.value)} value={style}>{["realistic", "anime", "hybrid", "other"].map((value) => <option key={value}>{value}</option>)}</select></label><label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Seed")}<input className={`${fieldClass} mt-1`} onChange={(event) => setDefaultSeed(event.target.value)} value={defaultSeed} /></label></div><label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">{t("Change reason")}<input className={`${fieldClass} mt-1`} onChange={(event) => setIdentityReason(event.target.value)} value={identityReason} /></label><label className="mt-3 flex items-start gap-2 text-xs"><input checked={identityConfirmed} className="mt-0.5" onChange={(event) => setIdentityConfirmed(event.target.checked)} type="checkbox" /><span>{t("Activate this as a new identity version.")}</span></label><div className="mt-4"><WorkspaceButton disabled={requiresReviewedBootstrap || blockedIdentityRepair || !permissions.writeVisual || busy !== null || identityReason.trim().length < 3 || !identityConfirmed} onClick={() => void createIdentityVersion()} tone="primary">{t("Create & activate version")}</WorkspaceButton></div>{!permissions.writeVisual ? <p className="mt-2 text-xs text-[var(--ad-text-muted)]">{t("Read-only: content.official.write is not granted.")}</p> : null}</section></details>
       <details
         className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"
         id="route-qualification-workbench"
@@ -2070,6 +2125,17 @@ export function VisualIdentityPanel({ data, navigateToTab, permissions, runCommi
     </aside>
       </div>
     </details>
+    <VisualIdentityExperimentWorkbench
+      canActivate={permissions.writeVisual}
+      canCreate={permissions.createAssets ?? false}
+      canUploadSource={
+        (permissions.writeProject ?? false) &&
+        (permissions.createAssets ?? false)
+      }
+      canReview={permissions.reviewAssets ?? false}
+      data={data}
+      onActivateCandidate={activateIdentityCandidate}
+    />
   </div>;
 }
 
@@ -2207,7 +2273,9 @@ function PreviewDiff({ data, permissions, runCommittedMutation }: { data: Charac
     comment: "",
     fixDeepLink: `/admin/characters/${data.character.id}?tab=preview`,
   })));
-  const [reason, setReason] = useState("Record renderer and conversation QA evidence");
+  const [reason, setReason] = useState(() =>
+    t("Record renderer and conversation QA evidence")
+  );
   const [busy, setBusy] = useState(false);
   const [qaError, setQaError] = useState<string | null>(null);
   const qaIdempotencyKeys = useRef<Record<string, string>>({});
@@ -2265,6 +2333,29 @@ function PreviewDiff({ data, permissions, runCommittedMutation }: { data: Charac
     : null;
   return (
     <div>
+      {!exactDraftAssetPackAllowsQa ? (
+        <section
+          aria-labelledby="launch-preview-next-action"
+          className="mb-5 flex flex-col gap-4 rounded-xl border border-[var(--ad-yellow-text)]/25 bg-[var(--ad-yellow-bg)] p-4 text-[var(--ad-yellow-text)] sm:flex-row sm:items-center sm:justify-between"
+        >
+          <div>
+            <h2 className="font-semibold" id="launch-preview-next-action">
+              {t("Launch preview is waiting for the image pack")}
+            </h2>
+            <p className="mt-1 max-w-2xl text-sm leading-6">
+              {t(draftAssetPackIsStale
+                ? "Regenerate the stale image selections under the current route, then return here to compare live and draft."
+                : "Complete the cover, hero, and chat images under the current route, then return here to compare live and draft.")}
+            </p>
+          </div>
+          <Link
+            className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-md border border-current px-3 text-sm font-semibold"
+            href={`/admin/characters/${data.character.id}?tab=assets`}
+          >
+            {t(draftAssetPackIsStale ? "Regenerate current image pack" : "Complete image assets")}
+          </Link>
+        </section>
+      ) : null}
       <div className="mb-4 flex flex-wrap gap-2" aria-label={t("Changed fields")}>{data.preview.changedFields.map((field) => <StatusBadge key={field} tone="warn" value={`${field} changed`} />)}</div>
       <section aria-labelledby="real-renderer-preview-title">
         <div className="flex flex-wrap items-end justify-between gap-2">
@@ -2344,7 +2435,7 @@ function PreviewDiff({ data, permissions, runCommittedMutation }: { data: Charac
         </div>
         <label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">{t("QA reason")}<input className={`${fieldClass} mt-1`} onChange={(event) => setReason(event.target.value)} value={reason} /></label>
         {qaError ? <p className="mt-3 text-sm text-[var(--ad-red-text)]" role="alert">{qaError}</p> : null}
-        <div className="mt-4"><WorkspaceButton disabled={!permissions.reviewRelease || busy || Boolean(activeReleaseCandidate) || !exactDraftAssetPackAllowsQa || checks.some((check) => !check.result || !check.evidenceRef.trim() || check.comment.trim().length < 3)} onClick={() => void recordQa()} tone="primary">{t("Record immutable QA Run")}</WorkspaceButton></div>
+        <div className="mt-4"><WorkspaceButton disabled={!permissions.reviewRelease || busy || Boolean(activeReleaseCandidate) || !exactDraftAssetPackAllowsQa || checks.some((check) => !check.result || !check.evidenceRef.trim())} onClick={() => void recordQa()} tone="primary">{t("Record immutable QA Run")}</WorkspaceButton></div>
         <div className="mt-5 grid gap-2">
           {data.qaRuns.map((run) => {
             const authorityMatches = exactDraftAssetPackAllowsQa && characterQaAuthorityMatches(
@@ -2393,11 +2484,17 @@ function ReleasePanel({
   const rollbackSources = data.releases.filter(({ release }) =>
     release.id !== current?.release.id && release.status === "superseded",
   );
-  const [reason, setReason] = useState("Operator verified release evidence");
+  const [reason, setReason] = useState(() =>
+    t("Operator verified release evidence")
+  );
   const [selectedQaRunId, setSelectedQaRunId] = useState("");
   const [scheduledAt, setScheduledAt] = useState("");
   const [selectedRollbackSourceId, setSelectedRollbackSourceId] = useState("");
-  const [confirmation, setConfirmation] = useState("");
+  // SPEC: 发布类操作仍需明确确认（不可逆、对外可见），但确认方式是勾选，不是默写内部 ID。
+  // INTENT: 原先 8 个按钮共用一个输入框、各自要求不同的精确 token（{id}:{releaseId}:approved …），
+  // 敲对了按钮才启用——这是全工作台最重的一道人工负担，且同文件的视觉区早已是「勾选 → 程序化填」。
+  // 统一到那个惯例：运营勾一次，token 由代码按动作生成。
+  const [releaseConfirmed, setReleaseConfirmed] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const proposalIdempotencyKeys = useRef<Record<string, string>>({});
@@ -2407,8 +2504,8 @@ function ReleasePanel({
   const command = async (kind: "publish" | "schedule" | "rollback", releaseId: string, version: number) => {
     if (pendingCommand || mutationNotice) return;
     const expectedConfirmation = `${data.character.id}:${releaseId}:${kind}`;
-    if (confirmation.trim() !== expectedConfirmation) {
-      setError(`Type ${expectedConfirmation} to confirm this high-risk action.`);
+    if (!releaseConfirmed) {
+      setError("Tick the release confirmation before running this action.");
       return;
     }
     const scheduledDate = kind === "schedule" ? new Date(scheduledAt) : null;
@@ -2429,7 +2526,7 @@ function ReleasePanel({
       const body = {
         entityVersion: version,
         reason: { code: `operator_${kind}`, summary: reason },
-        confirmation: confirmation.trim(),
+        confirmation: expectedConfirmation,
         ...(scheduledDate ? { scheduledAt: scheduledDate.toISOString() } : {}),
       };
       const signature = `${kind}:${releaseId}:${JSON.stringify(body)}`;
@@ -2457,7 +2554,7 @@ function ReleasePanel({
         commandId: accepted.commandId,
       } satisfies PendingCharacterCommand;
       rememberPendingCommand(pending);
-      setConfirmation("");
+      setReleaseConfirmed(false);
     } catch (cause) {
       const conflict = activeCommandConflict(cause);
       if (!submission) {
@@ -2500,6 +2597,9 @@ function ReleasePanel({
   const qaRunId = eligibleQaRuns.some((run) => run.id === selectedQaRunId)
     ? selectedQaRunId
     : eligibleQaRuns[0]?.id ?? "";
+  const releasePreparationNeedsAssets =
+    !data.project.draftAssetRouteAuthority.qaReady ||
+    !data.preview.draft.assetPackReady;
   const propose = async () => {
     setBusy("propose");
     setError(null);
@@ -2508,7 +2608,7 @@ function ReleasePanel({
       entityVersion: data.project.version,
       qaRunId,
       reason,
-      confirmation: confirmation.trim(),
+      confirmation: `${data.character.id}:propose-release`,
     });
     const idempotencyKey = proposalIdempotencyKeys.current[requestSignature] ?? crypto.randomUUID();
     proposalIdempotencyKeys.current[requestSignature] = idempotencyKey;
@@ -2518,7 +2618,7 @@ function ReleasePanel({
         data.project.version,
         qaRunId,
         reason,
-        confirmation.trim(),
+        `${data.character.id}:propose-release`,
         idempotencyKey,
       );
       await runCommittedMutation({
@@ -2526,7 +2626,7 @@ function ReleasePanel({
         commit: () => adminV2Request(mutation.path, mutation.options),
         afterRefresh: () => {
           delete proposalIdempotencyKeys.current[requestSignature];
-          setConfirmation("");
+          setReleaseConfirmed(false);
         },
       });
     } catch (cause) {
@@ -2545,7 +2645,7 @@ function ReleasePanel({
       entityVersion: candidate.release.version,
       decision,
       reason,
-      confirmation: confirmation.trim(),
+      confirmation: `${data.character.id}:${candidate.release.id}:${decision}`,
     });
     const idempotencyKey = releaseReviewIdempotencyKeys.current[requestSignature] ?? crypto.randomUUID();
     releaseReviewIdempotencyKeys.current[requestSignature] = idempotencyKey;
@@ -2556,7 +2656,7 @@ function ReleasePanel({
         candidate.release.version,
         decision,
         reason,
-        confirmation.trim(),
+        `${data.character.id}:${candidate.release.id}:${decision}`,
         idempotencyKey,
       );
       await runCommittedMutation({
@@ -2564,7 +2664,7 @@ function ReleasePanel({
         commit: () => adminV2Request(mutation.path, mutation.options),
         afterRefresh: () => {
           delete releaseReviewIdempotencyKeys.current[requestSignature];
-          setConfirmation("");
+          setReleaseConfirmed(false);
         },
       });
     } catch (cause) {
@@ -2581,7 +2681,7 @@ function ReleasePanel({
       characterId: data.character.id,
       releaseId: candidate.release.id,
       entityVersion: candidate.release.version,
-      confirmation: confirmation.trim(),
+      confirmation: `${data.character.id}:${candidate.release.id}:validate`,
     });
     const idempotencyKey = validationIdempotencyKeys.current[requestSignature] ?? crypto.randomUUID();
     validationIdempotencyKeys.current[requestSignature] = idempotencyKey;
@@ -2593,12 +2693,12 @@ function ReleasePanel({
           idempotencyKey,
           body: {
             entityVersion: candidate.release.version,
-            confirmation: confirmation.trim(),
+            confirmation: `${data.character.id}:${candidate.release.id}:validate`,
           },
         }),
         afterRefresh: () => {
           delete validationIdempotencyKeys.current[requestSignature];
-          setConfirmation("");
+          setReleaseConfirmed(false);
         },
       });
     } catch (cause) {
@@ -2621,7 +2721,7 @@ function ReleasePanel({
       const body = {
         entityVersion: data.serving.version,
         reason: { code: `operator_${action}`, summary: reason },
-        confirmation: confirmation.trim(),
+        confirmation: `${data.character.id}:${action}`,
       };
       const signature = `${action}:${data.character.id}:${JSON.stringify(body)}`;
       const idempotencyKey = getDurableCommandIdempotencyKey(signature);
@@ -2648,7 +2748,7 @@ function ReleasePanel({
         commandId: accepted.commandId,
       } satisfies PendingCharacterCommand;
       rememberPendingCommand(pending);
-      setConfirmation("");
+      setReleaseConfirmed(false);
     } catch (cause) {
       const conflict = activeCommandConflict(cause);
       if (!submission) {
@@ -2711,6 +2811,22 @@ function ReleasePanel({
       </div>
       <aside className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
         <h3 className="font-semibold">{t("Release action")}</h3>
+        {!candidate && !releasableQaRun ? (
+          <div className="mt-4 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]">
+            <strong>{t("Release preparation is incomplete")}</strong>
+            <p className="mt-1 leading-5">
+              {t(releasePreparationNeedsAssets
+                ? "Complete the current image pack before recording launch QA and proposing a release."
+                : "Record launch QA for the current draft before proposing a release.")}
+            </p>
+            <Link
+              className="mt-3 inline-flex min-h-11 items-center font-semibold underline"
+              href={`/admin/characters/${data.character.id}?tab=${releasePreparationNeedsAssets ? "assets" : "preview"}`}
+            >
+              {t(releasePreparationNeedsAssets ? "Complete image assets" : "Open launch QA")}
+            </Link>
+          </div>
+        ) : null}
         <label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">
 
           {t("Reason")}
@@ -2744,15 +2860,20 @@ function ReleasePanel({
             {rollbackSources.map(({ release }) => <option key={release.id} value={release.id}>{release.id}</option>)}
           </select>
         </label>
-        <label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">
-
-          {t("Exact confirmation")}
-          <input className={`${fieldClass} mt-1`} onChange={(event) => setConfirmation(event.target.value)} value={confirmation} />
+        <label className="mt-4 flex items-start gap-2 text-xs font-semibold">
+          <input
+            checked={releaseConfirmed}
+            className="mt-0.5 h-4 w-4"
+            onChange={(event) => setReleaseConfirmed(event.target.checked)}
+            type="checkbox"
+          />
+          <span>
+            {t("I confirm this release action")}
+            <span className="mt-1 block font-normal text-[var(--ad-text-muted)]">
+              {t("Release actions are irreversible and visible to customers.")}
+            </span>
+          </span>
         </label>
-        <p className="mt-2 text-xs text-[var(--ad-text-muted)]">
-
-          {t("Use the exact target, for example")} {t("Confirmation target: {target}", { target: candidate ? `${data.character.id}:${candidate.release.id}:${candidate.release.status === "in_review" ? "approved" : "publish"}` : `${data.character.id}:propose-release` })}.
-        </p>
         {error ? <p className="mt-3 text-xs text-[var(--ad-red-text)]" role="alert">{error}</p> : null}
         {data.serving?.state === "live" && data.serving.scheduledReleaseId ? (
           <p className="mt-3 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-xs text-[var(--ad-yellow-text)]">
@@ -2761,9 +2882,9 @@ function ReleasePanel({
           </p>
         ) : null}
         <div className="mt-4 grid gap-2">
-          {!candidate ? <WorkspaceButton disabled={!permissions.proposeRelease || !qaRunId || confirmation !== `${data.character.id}:propose-release` || Boolean(busy)} onClick={() => void propose()}><Rocket className="h-4 w-4" />  {t("Propose immutable Release")}</WorkspaceButton> : null}
-          {candidate?.release.status === "in_review" ? <><WorkspaceButton disabled={!permissions.reviewRelease || confirmation !== `${data.character.id}:${candidate.release.id}:approved` || Boolean(busy)} onClick={() => void review("approved")} tone="primary">{t("Approve candidate")}</WorkspaceButton><WorkspaceButton disabled={!permissions.reviewRelease || confirmation !== `${data.character.id}:${candidate.release.id}:changes_requested` || Boolean(busy)} onClick={() => void review("changes_requested")}>{t("Request changes")}</WorkspaceButton></> : null}
-          <WorkspaceButton disabled={!permissions.publishRelease || !candidate || candidate.release.status !== "approved" || confirmation !== `${data.character.id}:${candidate.release.id}:validate` || Boolean(busy)} onClick={() => void validate()}>
+          {!candidate ? <WorkspaceButton disabled={!permissions.proposeRelease || !qaRunId || releaseConfirmed === false || Boolean(busy)} onClick={() => void propose()}><Rocket className="h-4 w-4" />  {t("Propose immutable Release")}</WorkspaceButton> : null}
+          {candidate?.release.status === "in_review" ? <><WorkspaceButton disabled={!permissions.reviewRelease || releaseConfirmed === false || Boolean(busy)} onClick={() => void review("approved")} tone="primary">{t("Approve candidate")}</WorkspaceButton><WorkspaceButton disabled={!permissions.reviewRelease || releaseConfirmed === false || Boolean(busy)} onClick={() => void review("changes_requested")}>{t("Request changes")}</WorkspaceButton></> : null}
+          <WorkspaceButton disabled={!permissions.publishRelease || !candidate || candidate.release.status !== "approved" || releaseConfirmed === false || Boolean(busy)} onClick={() => void validate()}>
 
             {t("Validate pinned snapshot")}
           </WorkspaceButton>
@@ -2776,8 +2897,8 @@ function ReleasePanel({
           <WorkspaceButton disabled={!permissions.publishRelease || !rollbackSource || Boolean(busy)} onClick={() => rollbackSource && void command("rollback", rollbackSource.release.id, data.serving?.version ?? 0)} tone="danger">
             <RotateCcw className="h-4 w-4" />  {t("Roll back to selected snapshot")}
           </WorkspaceButton>
-          {data.serving?.state === "live" ? <><WorkspaceButton disabled={!permissions.publishRelease || confirmation !== `${data.character.id}:pause` || Boolean(busy)} onClick={() => void servingCommand("pause")}>{t("Pause serving")}</WorkspaceButton><WorkspaceButton disabled={!permissions.publishRelease || confirmation !== `${data.character.id}:retire` || Boolean(busy)} onClick={() => void servingCommand("retire")} tone="danger">{t("Retire Character")}</WorkspaceButton></> : null}
-          {data.serving?.state === "paused" ? <WorkspaceButton disabled={!permissions.publishRelease || confirmation !== `${data.character.id}:resume` || Boolean(busy)} onClick={() => void servingCommand("resume")}>{t("Resume serving")}</WorkspaceButton> : null}
+          {data.serving?.state === "live" ? <><WorkspaceButton disabled={!permissions.publishRelease || releaseConfirmed === false || Boolean(busy)} onClick={() => void servingCommand("pause")}>{t("Pause serving")}</WorkspaceButton><WorkspaceButton disabled={!permissions.publishRelease || releaseConfirmed === false || Boolean(busy)} onClick={() => void servingCommand("retire")} tone="danger">{t("Retire Character")}</WorkspaceButton></> : null}
+          {data.serving?.state === "paused" ? <WorkspaceButton disabled={!permissions.publishRelease || releaseConfirmed === false || Boolean(busy)} onClick={() => void servingCommand("resume")}>{t("Resume serving")}</WorkspaceButton> : null}
         </div>
         {!permissions.publishRelease ? <p className="mt-3 text-xs text-[var(--ad-text-muted)]">{t("Read-only: character.release.publish is not granted.")}</p> : null}
       </aside>
@@ -3514,17 +3635,21 @@ function CharacterDetail({
     tabRef.current = tab;
   }, [tab]);
   useEffect(() => {
-    if (
-      tab !== "visual" ||
-      window.location.hash !== "#route-qualification-workbench"
-    ) return;
+    if (tab !== "visual") return;
+    const targetId = window.location.hash.replace(/^#/, "");
+    if (![
+      "visual-production-readiness",
+      "visual-identity-version",
+      "visual-reference-set",
+      "route-qualification-workbench",
+    ].includes(targetId)) return;
     const frame = window.requestAnimationFrame(() => {
-      const target = document.getElementById("route-qualification-workbench");
+      const target = document.getElementById(targetId);
       target?.scrollIntoView({ block: "start" });
       target?.querySelector("summary")?.focus({ preventScroll: true });
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [tab, data?.visual.imageReadiness?.state]);
+  }, [tab, data?.visual.imageReadiness?.state, data?.visual.readiness.ready]);
   useEffect(() => {
     const restoreTab = () => {
       if (mutationNoticeRef.current || pendingCommandRef.current || data?.activeCommand) {
@@ -3588,14 +3713,11 @@ function CharacterDetail({
       (mutationNoticeRef.current || pendingCommandRef.current || data.activeCommand) &&
       next !== tab
     ) return;
-    const visualSetupHash =
-      next === "visual" &&
-      data.visual.imageReadiness?.state === "route_pending"
-        ? new URL(
-            data.visual.imageReadiness.nextDeepLink,
-            window.location.origin,
-          ).hash.replace(/^#/, "") || undefined
-        : undefined;
+    const visualSetupHash = next === "visual" && !data.visual.readiness.ready
+      ? characterVisualReadinessTarget(
+          data.visual.readiness.blockers.map((blocker) => blocker.code),
+        ) ?? "visual-production-readiness"
+      : undefined;
     setTab(next);
     setWorkspaceUrl(new URLSearchParams({ tab: next }), {
       hash: visualSetupHash,

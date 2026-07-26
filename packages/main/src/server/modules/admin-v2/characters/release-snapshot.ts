@@ -1,15 +1,11 @@
 import { canonicalSha256 } from "../shared/canonical-json";
 
-function stringArray(value: unknown): string[] {
-  return Array.isArray(value)
-    ? Array.from(
-        new Set(
-          value.filter((item): item is string => typeof item === "string"),
-        ),
-      ).sort()
-    : [];
-}
-
+// SPEC: 视觉身份的密封 hash —— 覆盖「这个角色长什么样」的描述性事实（提示词 + 五组 traits）。
+// INTENT: 参考图**不进这个 hash**。参考图的完整性由 referenceSetSnapshotHash 独立覆盖
+// （mediaAssetId/position/role/weight），而 CharacterRelease 同时 pin 了 visualProfileId+version
+// 与 referenceSetRevisionId 两个引用——两个 hash 各管一半，合起来无缺口。此前把 profile 上的
+// anchorAssetIds/referenceAssetIds 影子副本也算进来，是对同一批图做第二次覆盖，且把密封与那两个
+// 冗余列焊死，挡住了它们的删除。移除是语义修正，不是能力损失。
 export function characterVisualProfileSnapshotHash(profile: {
   readonly version: number;
   readonly style: string;
@@ -20,8 +16,6 @@ export function characterVisualProfileSnapshotHash(profile: {
   readonly bodyTraits: unknown;
   readonly signatureTraits: unknown;
   readonly styleTraits: unknown;
-  readonly anchorAssetIds: unknown;
-  readonly referenceAssetIds: unknown;
 }) {
   return canonicalSha256({
     version: profile.version,
@@ -35,8 +29,6 @@ export function characterVisualProfileSnapshotHash(profile: {
       signature: profile.signatureTraits,
       style: profile.styleTraits,
     },
-    anchorAssetIds: stringArray(profile.anchorAssetIds),
-    referenceAssetIds: stringArray(profile.referenceAssetIds),
   });
 }
 

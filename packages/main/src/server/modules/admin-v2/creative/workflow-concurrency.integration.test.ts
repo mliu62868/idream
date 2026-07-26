@@ -873,9 +873,25 @@ describe("Creative workflow transition concurrency", () => {
         signatureTraits: {},
         styleTraits: {},
         anchorAssetIds: [],
-        referenceAssetIds: assetIds,
         adapterRefs: [],
         createdFrom: "creative_transition_reference_only_test",
+        // 参考图归一后只存在于 active Reference Set，每个 identity 版本都带一个——
+        // fixture 必须建出这个不变式，否则测的是真实流程已不会产生的状态。
+        referenceSetRevisions: {
+          create: {
+            revision: 1,
+            status: "active",
+            createdFrom: "creative_transition_reference_only_test",
+            references: {
+              create: assetIds.map((mediaAssetId, position) => ({
+                mediaAssetId,
+                position,
+                role: "identity_reference",
+                selectionReason: "Reference-only authority fixture",
+              })),
+            },
+          },
+        },
       },
     });
     await prisma.contentProductionBatch.createMany({

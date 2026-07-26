@@ -1,7 +1,6 @@
 import {
   Prisma,
   type GenerationJob as GenerationJobRow,
-  type GenerationModelProfile,
 } from "@prisma/client";
 import { buildCharacterSystemPrompt } from "@idream/shared";
 import { parseCharacterReleaseAssetManifest } from "@idream/shared/admin";
@@ -25,6 +24,10 @@ import {
   loadLockedLiveEditorialLegacyGenerationAuthority,
   type LegacyCharacterGenerationAuthority,
 } from "@/server/modules/generation/attempt-dispatch";
+import {
+  isProductionLtxVideoProfile,
+  PRODUCTION_LTX_VIDEO_PROFILE,
+} from "@/server/modules/generation/production-video-profile";
 import { transitionGenerationRequest } from "@/server/ai/generation-request-transition";
 import { dispatchAdmin } from "@/server/modules/admin/service";
 import { generationWorkflowDescriptor } from "@/server/modules/admin/generation-catalog";
@@ -247,29 +250,6 @@ const generationControlsSchema = z
     seconds: z.number().int().min(1).max(30).optional(),
   })
   .strict();
-
-const PRODUCTION_VIDEO_PROFILE_AUTHORITY = {
-  profileKey: "profile_video_beta_v1",
-  runner: "comfyui",
-  pipelineModel: "ltx23-gtanimation-int4-convrot",
-  workflowKey: "ltx23-gtanimation-i2v",
-} as const;
-
-function isProductionVideoProfile(
-  profile: Pick<
-    GenerationModelProfile,
-    "mode" | "profileKey" | "runner" | "pipelineModel" | "workflowKey"
-  >,
-) {
-  return (
-    profile.mode === "video" &&
-    profile.profileKey === PRODUCTION_VIDEO_PROFILE_AUTHORITY.profileKey &&
-    profile.runner === PRODUCTION_VIDEO_PROFILE_AUTHORITY.runner &&
-    profile.pipelineModel ===
-      PRODUCTION_VIDEO_PROFILE_AUTHORITY.pipelineModel &&
-    profile.workflowKey === PRODUCTION_VIDEO_PROFILE_AUTHORITY.workflowKey
-  );
-}
 
 const generationQuoteAuthoritySchema = z
   .object({
@@ -1967,7 +1947,7 @@ async function generationConfig(request: Request) {
     );
   const executableVideoProfiles = profiles.filter(
     (profile) =>
-      isProductionVideoProfile(profile) &&
+      isProductionLtxVideoProfile(profile) &&
       isExecutableGenerationProfile(profile),
   );
   const visibleImageProfiles = publicImageProfiles.filter((profile) =>
@@ -2345,8 +2325,8 @@ interface GenerationVisualProfile {
   style: string;
   identityPrompt: string;
   negativeIdentityPrompt: string | null;
+  // 参考集不进这个类型：它的权威是 ReferenceSetRevision。anchorAssetIds 是候选图池，保留。
   anchorAssetIds: Prisma.JsonValue;
-  referenceAssetIds: Prisma.JsonValue;
   defaultSeed: string | null;
   adapterRefs: Prisma.JsonValue;
 }
@@ -2379,7 +2359,6 @@ export function characterVisualProfileCreateData(input: {
   appearance: Prisma.JsonValue;
   advancedDetails: Prisma.JsonValue;
   anchorAssetIds: string[];
-  referenceAssetIds?: string[];
   createdFrom: string;
 }) {
   // traits 是唯一真源：先抽取，再把 identityPrompt/traitsHash 作为版本化派生缓存拼装出来
@@ -2419,7 +2398,6 @@ export function characterVisualProfileCreateData(input: {
     signatureTraits: toInputJson(signatureTraits),
     styleTraits: toInputJson(styleTraits),
     anchorAssetIds: toInputJson(input.anchorAssetIds),
-    referenceAssetIds: toInputJson(input.referenceAssetIds ?? []),
     defaultSeed: `character:${input.characterId}:visual:${input.version}`,
     adapterRefs: toInputJson({
       identity: { traitsHash, assemblerVersion: IDENTITY_ASSEMBLER_VERSION, source: "derived" },
@@ -2434,8 +2412,6 @@ export function characterVisualProfileCreateData(input: {
       bodyTraits,
       signatureTraits,
       styleTraits,
-      anchorAssetIds: input.anchorAssetIds,
-      referenceAssetIds: input.referenceAssetIds ?? [],
     }),
     evidenceState: "candidate",
     createdFrom: input.createdFrom,
@@ -2504,7 +2480,6 @@ export async function createActiveCharacterVisualProfileVersion(
       appearance: character.appearance,
       advancedDetails: character.advancedDetails,
       anchorAssetIds,
-      referenceAssetIds,
       createdFrom,
     }),
   });
@@ -3750,26 +3725,17 @@ function imageNegativePrompt(base: string | null, visualProfile: GenerationVisua
   return [cleanBase, identityNegative].filter(Boolean).join(", ") || null;
 }
 
+// SPEC: 为还没有 active Reference Set 的身份建出首个参考集。
+// INTENT: 只用 anchorAssetIds（候选图池）——参考集本身的权威是 ReferenceSetRevision，
+// 「没有 revision」就等于「还没有参考集」，此时唯一可信的线索就是图池里的锚点。
 function referenceSnapshotInputs(profile: GenerationVisualProfile) {
-  const anchorIds = jsonStringArray(profile.anchorAssetIds);
-  const anchorSet = new Set(anchorIds);
-  const referenceIds = jsonStringArray(profile.referenceAssetIds).filter((id) => !anchorSet.has(id));
-  return [
-    ...anchorIds.map((mediaAssetId, index) => ({
-      mediaAssetId,
-      position: index,
-      role: index === 0 ? "primary_face" : "identity_anchor",
-      weight: index === 0 ? 1 : 0.9,
-      selectionReason: index === 0 ? "primary_identity_anchor" : "supporting_identity_angle",
-    })),
-    ...referenceIds.map((mediaAssetId, index) => ({
-      mediaAssetId,
-      position: anchorIds.length + index,
-      role: "identity_reference",
-      weight: 0.75,
-      selectionReason: "user_promoted_identity_reference",
-    })),
-  ];
+  return jsonStringArray(profile.anchorAssetIds).map((mediaAssetId, index) => ({
+    mediaAssetId,
+    position: index,
+    role: index === 0 ? "primary_face" : "identity_anchor",
+    weight: index === 0 ? 1 : 0.9,
+    selectionReason: index === 0 ? "primary_identity_anchor" : "supporting_identity_angle",
+  }));
 }
 
 async function loadLockedGenerationReferenceAuthority(
@@ -3808,10 +3774,14 @@ async function loadLockedGenerationReferenceAuthority(
     );
   }
 
+  // 「没有任何参考图」以 active Reference Set 为准（anchorAssetIds 是候选图池，非空只说明
+  // 有候选、不代表已发布参考集）。归一后无 active revision ⟺ 无参考图。
   const bootstrapWithoutReferences =
     activeProfile.createdFrom.startsWith("generation_bootstrap") &&
     jsonStringArray(activeProfile.anchorAssetIds).length === 0 &&
-    jsonStringArray(activeProfile.referenceAssetIds).length === 0;
+    (await tx.referenceSetRevision.count({
+      where: { visualProfileId: activeProfile.id, status: "active" },
+    })) === 0;
   if (bootstrapWithoutReferences) {
     await lockCharacterMediaAssetAuthorities(tx, additionalMediaAssetIds);
     return {
@@ -4114,7 +4084,7 @@ const voiceClipSchema = z.object({
   intent: z.enum(["play", "prewarm"]).default("play"),
 });
 
-const voiceClipCacheVersion = 5;
+const voiceClipCacheVersion = 6;
 
 async function createVoiceClip(request: Request) {
   const ctx = await getAuthCtx(request);
@@ -4188,6 +4158,7 @@ async function createVoiceClip(request: Request) {
   }
 
   const voiceAuthority = await resolveCharacterVoiceAuthority({
+    characterId: character.id,
     voiceId: character.voiceId,
     gender: character.gender,
   });
@@ -4195,6 +4166,7 @@ async function createVoiceClip(request: Request) {
     text: body.text,
     voiceId: voiceAuthority.voiceId,
     tone,
+    delivery: voiceAuthority.delivery,
   });
   if (!result.ok) throw Errors.internal("Voice synthesis failed", result.error);
 
@@ -4258,6 +4230,7 @@ async function createVoiceClip(request: Request) {
             voiceAuthority: voiceAuthority.source,
             systemVoiceSettingVersion: voiceAuthority.settingVersion,
             tone,
+            delivery: voiceAuthority.delivery,
             durationMs,
             providerKey: result.data.key,
             costDreamcoins: cost,
@@ -4483,7 +4456,7 @@ async function resolveGenerationRetryAuthority(
   const profile =
     exactProfile &&
     isExecutableGenerationProfile(exactProfile) &&
-    (job.mode !== "video" || isProductionVideoProfile(exactProfile))
+    (job.mode !== "video" || isProductionLtxVideoProfile(exactProfile))
     ? exactProfile
     : generationJobRequiresPinnedLegacyAuthority(job) &&
         !job.profileId &&
@@ -5799,8 +5772,9 @@ async function addMediaToIdentity(request: Request, id: string) {
     });
     await lockCharacterMediaAssetAuthorities(tx, [
       asset.id,
+      // anchorAssetIds 是候选图池，可含参考集之外的图，仍要锁；referenceAssetIds 是参考集的
+      // 影子副本，其内容已由下面的 currentReferenceSet 覆盖。
       ...jsonStringArray(activeProfile.anchorAssetIds),
-      ...jsonStringArray(activeProfile.referenceAssetIds),
       ...(currentReferenceSet?.references.map((reference) => reference.mediaAssetId) ?? []),
     ]);
     const lockedAsset = await assertIdentityImageMediaForCharacterInTx(
@@ -5873,7 +5847,10 @@ async function addMediaToIdentity(request: Request, id: string) {
   });
 
   return ok({
-    visualProfile: visualProfileDTO(result.visualProfile),
+    visualProfile: visualProfileDTO(
+      result.visualProfile,
+      result.referenceSetRevision?.references.map((reference) => reference.mediaAssetId) ?? [],
+    ),
     referenceSetRevision: referenceSetRevisionDTO(result.referenceSetRevision),
   });
 }
@@ -9979,14 +9956,24 @@ async function updateCharacter(request: Request, id: string) {
       ? await tx.characterVisualProfile.findFirst({
           where: { characterId: id, status: "active" },
           orderBy: { version: "desc" },
+          include: {
+            referenceSetRevisions: {
+              where: { status: "active" },
+              orderBy: { revision: "desc" },
+              take: 1,
+              select: { references: { select: { mediaAssetId: true } } },
+            },
+          },
         })
       : null;
     await lockCharacterMediaAssetAuthorities(tx, [
       ...(body.visibility === "public" && existing.imageAssetId
         ? [existing.imageAssetId]
         : []),
+      // anchorAssetIds 是候选图池仍要锁；参考集本身取 active Reference Set，不读影子副本。
       ...jsonStringArray(activeProfile?.anchorAssetIds),
-      ...jsonStringArray(activeProfile?.referenceAssetIds),
+      ...(activeProfile?.referenceSetRevisions[0]?.references
+        .map((reference) => reference.mediaAssetId) ?? []),
     ]);
     if (shouldRebuildPrompt) {
       await assertCharacterIdentityAuthorityMutable(tx, id);
@@ -10191,6 +10178,15 @@ function characterInclude(userId?: string) {
       where: { status: "active" },
       orderBy: { version: "desc" },
       take: 1,
+      // 参考图数量对外走 active Reference Set（唯一权威），不读 profile 上的影子列。
+      include: {
+        referenceSetRevisions: {
+          where: { status: "active" },
+          orderBy: { revision: "desc" },
+          take: 1,
+          select: { references: { select: { mediaAssetId: true } } },
+        },
+      },
     },
     creator: { select: { id: true, displayName: true, name: true } },
     serving: { include: { currentRelease: true } },
@@ -10248,7 +10244,13 @@ function characterDTO(character: CharacterWithPublicRelations, viewerId?: string
     views: character.stats?.viewsCount ?? 0,
     vivid: character.vivid,
     liked: Array.isArray(character.likes) ? character.likes.length > 0 : false,
-    visualProfile: visualProfile ? visualProfileDTO(visualProfile) : null,
+    visualProfile: visualProfile
+      ? visualProfileDTO(
+          visualProfile,
+          visualProfile.referenceSetRevisions[0]?.references
+            .map((reference) => reference.mediaAssetId) ?? [],
+        )
+      : null,
     tags: character.tags.map(({ tag }) => tag),
     createdAt: character.createdAt,
   };
@@ -11097,14 +11099,19 @@ function mediaMetadataWithQuality(
   });
 }
 
-function visualProfileDTO(profile: GenerationVisualProfile) {
+// referenceAssetIds 由调用方从 active Reference Set 取（唯一权威）；字段名对外不变，
+// 前台 GeneratorWorkspace 用它显示参考图数量。
+function visualProfileDTO(
+  profile: GenerationVisualProfile,
+  referenceAssetIds: readonly string[],
+) {
   return {
     id: profile.id,
     version: profile.version,
     status: profile.status,
     style: profile.style,
     anchorAssetIds: profile.anchorAssetIds,
-    referenceAssetIds: profile.referenceAssetIds,
+    referenceAssetIds: [...referenceAssetIds],
     defaultSeed: profile.defaultSeed,
   };
 }
@@ -11641,10 +11648,10 @@ async function selectGenerationProfile(
     enabled: true,
     ...(mode === "video"
       ? {
-          profileKey: PRODUCTION_VIDEO_PROFILE_AUTHORITY.profileKey,
-          runner: PRODUCTION_VIDEO_PROFILE_AUTHORITY.runner,
-          pipelineModel: PRODUCTION_VIDEO_PROFILE_AUTHORITY.pipelineModel,
-          workflowKey: PRODUCTION_VIDEO_PROFILE_AUTHORITY.workflowKey,
+          profileKey: PRODUCTION_LTX_VIDEO_PROFILE.profileKey,
+          runner: PRODUCTION_LTX_VIDEO_PROFILE.runner,
+          pipelineModel: PRODUCTION_LTX_VIDEO_PROFILE.pipelineModel,
+          workflowKey: PRODUCTION_LTX_VIDEO_PROFILE.workflowKey,
         }
       : {}),
     OR: requested
@@ -11662,13 +11669,22 @@ async function selectGenerationProfile(
     : queriedCandidates.filter(
         (candidate) => !generationProfileIsExplicitSelectionOnly(candidate),
       );
-  const eligibleCandidates = requirePublicTextToImageProfile
-    ? await filterPublicTextToImageGenerationProfiles(automaticCandidates)
-    : requirePublicImageEditProfile
-      ? (
-          await projectPublicImageEditGenerationProfiles(automaticCandidates)
-        ).map(({ profile }) => profile)
-      : automaticCandidates.filter(isExecutableGenerationProfile);
+  const eligibleCandidates =
+    mode === "video"
+      ? automaticCandidates.filter(
+          (candidate) =>
+            isProductionLtxVideoProfile(candidate) &&
+            isExecutableGenerationProfile(candidate),
+        )
+      : requirePublicTextToImageProfile
+        ? await filterPublicTextToImageGenerationProfiles(automaticCandidates)
+        : requirePublicImageEditProfile
+          ? (
+              await projectPublicImageEditGenerationProfiles(
+                automaticCandidates,
+              )
+            ).map(({ profile }) => profile)
+          : automaticCandidates.filter(isExecutableGenerationProfile);
   const accessibleCandidates =
     !requested && accessibleEntitlements
       ? eligibleCandidates.filter(

@@ -117,7 +117,6 @@ beforeAll(async () => {
       signatureTraits: {},
       styleTraits: {},
       anchorAssetIds: [profileAnchorId],
-      referenceAssetIds: [],
       adapterRefs: {},
       createdFrom: "test",
     },

@@ -127,7 +127,6 @@ describe("Character first identity bootstrap authority", () => {
         signatureTraits: {},
         styleTraits: {},
         anchorAssetIds: [],
-        referenceAssetIds: [],
         adapterRefs: {},
         evidenceState: "candidate",
         createdFrom: "admin_passport_edit",
@@ -554,7 +553,6 @@ describe("Character first identity bootstrap authority", () => {
       version: 2,
       style: "realistic",
       anchorAssetIds: [assetId],
-      referenceAssetIds: [assetId],
       evidenceState: "reviewed_bootstrap",
       createdFrom: `identity_bootstrap:${jobId}`,
     });

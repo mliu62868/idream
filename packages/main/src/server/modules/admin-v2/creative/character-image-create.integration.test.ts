@@ -728,7 +728,6 @@ describe("Character image Creative Run authority", () => {
         signatureTraits: {},
         styleTraits: {},
         anchorAssetIds: [],
-        referenceAssetIds: [],
         adapterRefs: {},
         evidenceState: "candidate",
         createdFrom: "admin_passport_edit",
@@ -856,14 +855,20 @@ describe("Character image Creative Run authority", () => {
       characterId,
     });
 
+    // 铸造身份版本时已经用锚点建出首个 active Reference Set（每个 identity 版本都带一个），
+    // 所以这里的乐观锁期望值要取当前实际的 revision，不再是「还没有参考集」的 null/0。
+    const bootstrappedReferenceSet = await prisma.referenceSetRevision.findFirstOrThrow({
+      where: { visualProfileId: legacyVisualProfileId, status: "active" },
+      orderBy: { revision: "desc" },
+    });
     const legacyReferenceSet = await prisma.$transaction((tx) => publishCharacterReferenceSet({
       characterId,
       actor: { id: actorId, role: "admin" },
       requestId: `character-image-legacy-reference-${suffix}`,
       request: {
         visualProfileId: legacyVisualProfileId,
-        expectedActiveReferenceSetRevisionId: null,
-        expectedActiveReferenceSetRevision: 0,
+        expectedActiveReferenceSetRevisionId: bootstrappedReferenceSet.id,
+        expectedActiveReferenceSetRevision: bootstrappedReferenceSet.revision,
         selectorVersion: "legacy-seed-repair-v1",
         references: [{ mediaAssetId: legacyAssetId, role: "identity_anchor", weight: 1 }],
         reason: { code: "legacy_seed_repair", summary: "Seal the uniquely owned legacy Character image" },
@@ -1012,7 +1017,6 @@ describe("Character image Creative Run authority", () => {
         signatureTraits: {},
         styleTraits: { style: archiveRaceStyle },
         anchorAssetIds: [archiveRaceAssetId],
-        referenceAssetIds: [archiveRaceAssetId],
         defaultSeed: `archive-race-${suffix}`,
         adapterRefs: {},
         evidenceState: "reviewed_bootstrap",
@@ -1289,7 +1293,6 @@ describe("Character image Creative Run authority", () => {
         signatureTraits: {},
         styleTraits: { style: "realistic" },
         anchorAssetIds: [anchorAssetId],
-        referenceAssetIds: [anchorAssetId],
         defaultSeed: `mara-${suffix}`,
         adapterRefs: {},
         evidenceState: "reviewed_bootstrap",
@@ -1797,10 +1800,6 @@ describe("Character image Creative Run authority", () => {
       }),
     ]);
 
-    const currentVisualProfile =
-      await prisma.characterVisualProfile.findUniqueOrThrow({
-        where: { id: visualProfileId },
-      });
     const canonicalReference =
       await prisma.characterVisualReferenceSnapshot.findFirstOrThrow({
         where: { referenceSetRevisionId: referenceSetId },
@@ -1842,12 +1841,6 @@ describe("Character image Creative Run authority", () => {
         where: { id: visualProfileId },
         data: {
           anchorAssetIds: [anchorAssetId],
-          referenceAssetIds: [anchorAssetId, variationSourceAssetId],
-          immutableHash: characterVisualProfileSnapshotHash({
-            ...currentVisualProfile,
-            anchorAssetIds: [anchorAssetId],
-            referenceAssetIds: [anchorAssetId, variationSourceAssetId],
-          }),
         },
       });
     });
@@ -1919,12 +1912,6 @@ describe("Character image Creative Run authority", () => {
         where: { id: visualProfileId },
         data: {
           anchorAssetIds: [variationSourceAssetId],
-          referenceAssetIds: [variationSourceAssetId],
-          immutableHash: characterVisualProfileSnapshotHash({
-            ...currentVisualProfile,
-            anchorAssetIds: [variationSourceAssetId],
-            referenceAssetIds: [variationSourceAssetId],
-          }),
         },
       });
     });

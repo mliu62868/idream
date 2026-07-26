@@ -200,10 +200,11 @@ model CharacterVoiceProfile {
   id                 String     @id @default(cuid())
   characterId        String
   version            Int
-  provider           String     @default("pocket_tts")
+  provider           String     @default("fish_audio")
   providerVoiceId    String     @unique
   model              String
   language           String
+  deliverySettings   Json       @default("{}")
   status             String     @default("candidate") // enum: candidate | active | archived | failed
   referenceAssetId   String
   previewAssetId     String?
@@ -271,7 +272,6 @@ model CharacterVisualProfile {
   signatureTraits        Json
   styleTraits            Json
   anchorAssetIds         Json
-  referenceAssetIds      Json
   defaultSeed            String?
   adapterRefs            Json
   qualityScore           Float?

@@ -230,20 +230,27 @@ export async function mediaAssetAuthorityDependenciesBatch(
             IN (${Prisma.join(assetIds)})
         )
     `),
+    // 依赖判定走 active Reference Set（唯一权威），不再按 profile 上的影子列做 array_contains。
     db.characterVisualProfile.findMany({
       where: {
         status: "active",
         character: { deletedAt: null },
-        OR: assetIds.flatMap((assetId) => [
-          { anchorAssetIds: { array_contains: [assetId] } },
-          { referenceAssetIds: { array_contains: [assetId] } },
-        ]),
+        referenceSetRevisions: {
+          some: {
+            status: "active",
+            references: { some: { mediaAssetId: { in: assetIds } } },
+          },
+        },
       },
       select: {
         id: true,
         characterId: true,
-        anchorAssetIds: true,
-        referenceAssetIds: true,
+        referenceSetRevisions: {
+          where: { status: "active" },
+          orderBy: { revision: "desc" },
+          take: 1,
+          select: { references: { select: { mediaAssetId: true } } },
+        },
       },
     }),
     db.characterVisualReferenceSnapshot.findMany({
@@ -401,10 +408,9 @@ export async function mediaAssetAuthorityDependenciesBatch(
     }
   }
   for (const profile of visualProfiles) {
-    for (const assetId of new Set([
-      ...jsonStringArray(profile.anchorAssetIds),
-      ...jsonStringArray(profile.referenceAssetIds),
-    ])) {
+    const profileReferenceIds = profile.referenceSetRevisions[0]?.references
+      .map((reference) => reference.mediaAssetId) ?? [];
+    for (const assetId of new Set(profileReferenceIds)) {
       if (!requestedAssetIdSet.has(assetId)) continue;
       pushDependency(dependenciesByAssetId, assetId, {
         kind: "character_visual_identity",

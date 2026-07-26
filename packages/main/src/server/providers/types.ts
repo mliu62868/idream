@@ -1,4 +1,5 @@
 import type {
+  FishAudioDeliverySettings,
   ImageGeneratePayload,
   VideoGeneratePayload,
 } from "@idream/shared/contracts";
@@ -63,7 +64,7 @@ export interface VideoModel {
 }
 
 export interface VoiceModel {
-  readonly providerKey: "mock" | "pipeline" | "pocket_tts";
+  readonly providerKey: "mock" | "pipeline" | "pocket_tts" | "fish_audio";
   readonly supportsVoiceCloning: boolean;
   synthesize(input: {
     text: string;
@@ -71,10 +72,12 @@ export interface VoiceModel {
     // Free-form delivery instruction (emotion/persona/intonation). Sourced from the
     // character today; later a per-message emotion tag from chat can flow in here.
     tone?: string;
+    delivery?: FishAudioDeliverySettings;
   }): Promise<ProviderResult<{ key: string; durationMs: number }>>;
   previewVoice?(input: {
     text: string;
     voiceId: string;
+    delivery?: FishAudioDeliverySettings;
   }): Promise<
     ProviderResult<{
       body: Uint8Array;

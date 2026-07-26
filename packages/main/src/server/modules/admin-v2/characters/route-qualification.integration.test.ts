@@ -69,7 +69,6 @@ describe("production Generation Route Qualification writer", () => {
         signatureTraits: {},
         styleTraits: {},
         anchorAssetIds: [anchorAssetId],
-        referenceAssetIds: [anchorAssetId],
         adapterRefs: {},
         createdFrom: "test",
       },

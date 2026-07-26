@@ -403,7 +403,7 @@ export const currentLaunchCapabilities: LaunchReadinessCapabilities = {
   mainProviderImplementations: {
     CHAT_PROVIDER: ["mock", "pipeline"],
     IMAGE_PROVIDER: ["mock", "pipeline", "backend"],
-    VOICE_PROVIDER: ["mock", "pipeline", "pocket-tts"],
+    VOICE_PROVIDER: ["mock", "pipeline", "pocket-tts", "fish-audio"],
     MODERATION_PROVIDER: ["mock", "safety-gateway"],
     PAYMENT_PROVIDER: ["mock", "btcpay"],
     BLOB_PROVIDER: ["mock", "r2", "s3"],
@@ -942,11 +942,15 @@ function addVoiceModelProbeCheck(
   const problems: string[] = [];
   const reportPath = env.VOICE_MODEL_PROBE_REPORT;
   const configuredProvider = env.VOICE_PROVIDER ?? "mock";
-  const configuredBaseUrl = configuredProvider === "pocket-tts"
-    ? env.POCKET_TTS_API_URL
+  const configuredBaseUrl = configuredProvider === "fish-audio"
+    ? env.FISH_AUDIO_API_URL
+    : configuredProvider === "pocket-tts"
+      ? env.POCKET_TTS_API_URL
     : env.PIPELINE_VOICE_API_URL ?? env.PIPELINE_API_URL;
-  const configuredModel = configuredProvider === "pocket-tts"
-    ? env.POCKET_TTS_MODEL
+  const configuredModel = configuredProvider === "fish-audio"
+    ? env.FISH_AUDIO_MODEL
+    : configuredProvider === "pocket-tts"
+      ? env.POCKET_TTS_MODEL
     : env.PIPELINE_VOICE_MODEL_DEFAULT;
 
   if (!reportPath) {
@@ -983,6 +987,20 @@ function addVoiceModelProbeCheck(
       }
       if (probe.voiceCloneVerified !== true) {
         problems.push("Pocket TTS probe did not complete clone, synthesize, and delete");
+      }
+    }
+    if (configuredProvider === "fish-audio") {
+      if (!sameUrl(probe.baseUrl, configuredBaseUrl)) {
+        problems.push("probe base URL does not match FISH_AUDIO_API_URL");
+      }
+      if (hasMinLength(configuredModel, 1) && probe.model !== configuredModel) {
+        problems.push("probe model does not match FISH_AUDIO_MODEL");
+      }
+      if (probe.voiceCloningAvailable !== true) {
+        problems.push("Fish Audio probe did not confirm MLX voice cloning");
+      }
+      if (probe.voiceCloneVerified !== true) {
+        problems.push("Fish Audio probe did not complete clone, synthesize, and delete");
       }
     }
     if (!hasMinLength(probe.key ?? undefined, 1)) {
@@ -1393,14 +1411,13 @@ function addVideoPipelineChecks(
       remediation:
         videoFeatureDisabled
           ? undefined
-          : "Keep the video_gen feature flag off, or set GEN_VIDEO_PROVIDER=backend/pipeline with a tested video workflow before enabling video generation.",
+          : "Keep the video_gen feature flag off, or set GEN_VIDEO_PROVIDER=backend with the pinned LTX workflow before enabling video generation.",
     });
     return;
   }
 
   const supported = capabilities.genVideoProviders.includes(configured);
-  const isProductionProvider =
-    configured === "pipeline" || configured === "backend";
+  const isProductionProvider = configured === "backend";
   addCheck(checks, {
     id: "gen-video-provider",
     area: "Generation",
@@ -1412,23 +1429,9 @@ function addVideoPipelineChecks(
     remediation:
       isProductionProvider && supported
         ? undefined
-        : "Use GEN_VIDEO_PROVIDER=backend/pipeline or keep video generation disabled for launch.",
+        : "Use GEN_VIDEO_PROVIDER=backend with the pinned LTX workflow, or keep video generation disabled for launch.",
   });
 
-  if (configured === "pipeline") {
-    const model = env.PIPELINE_VIDEO_MODEL_DEFAULT;
-    addCheck(checks, {
-      id: "pipeline-video-model",
-      area: "Generation",
-      status: hasMinLength(model, 1) ? "pass" : "warn",
-      message: hasMinLength(model, 1)
-        ? "Default video model is documented for the pipeline."
-        : "Default video model is not set in product env.",
-      remediation: hasMinLength(model, 1)
-        ? undefined
-        : "Set PIPELINE_VIDEO_MODEL_DEFAULT or document the default model in the pipeline service.",
-    });
-  }
   if (configured === "backend") {
     addRequiredCheck(checks, env, {
       id: "video-comfyui-api-url",

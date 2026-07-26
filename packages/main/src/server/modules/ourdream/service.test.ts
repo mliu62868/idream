@@ -57,7 +57,6 @@ describe("ourdream API dispatcher", () => {
         signatureTraits: {},
         styleTraits: {},
         anchorAssetIds: [],
-        referenceAssetIds: [],
         adapterRefs: {},
         createdFrom: "generation_bootstrap:test",
       },
