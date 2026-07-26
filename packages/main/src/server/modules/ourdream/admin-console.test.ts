@@ -2258,8 +2258,8 @@ describe("generation config control plane", () => {
         profileId: `${P}production-profile`,
         recipeId: `${P}production-recipe`,
         orientation: "4:5",
-        count: 2,
-        brief: "Two cover candidates",
+        count: 1,
+        brief: "One cover candidate",
         consistencyMode: "strict",
         reason: "seed production batch",
       },
@@ -2283,8 +2283,8 @@ describe("generation config control plane", () => {
         presetIds: [],
         referenceAssetIds: [],
         orientation: "4:5",
-        count: 2,
-        brief: "Two cover candidates",
+        count: 1,
+        brief: "First cover candidate",
         consistencyMode: "strict",
         priority: "normal",
         reason: "seed production batch through the canonical Creative Run API",
@@ -2293,10 +2293,36 @@ describe("generation config control plane", () => {
     expectOk(created, 202);
     expect(created.data.batch).toMatchObject({
       title: `${P}production-batch`,
-      totalItems: 2,
+      totalItems: 1,
       status: "queued",
     });
-    const itemIds = created.data.batch.items.map((item: { id: string }) => item.id);
+    // 角色目标的 Run 恒为一张图（content-ops 的 single-frame 规则）。本用例要覆盖的是
+    // 多条目下的计费与 attempt 一致性，故连开第二个 Run 而不是把一个 Run 撑成两张。
+    const createdSecond = await createCreativeRunThroughV2({
+      userId: admin,
+      role: "admin",
+      body: {
+        title: `${P}production-batch-2`,
+        purpose: "character_chat",
+        targetType: "character",
+        targetId: character.id,
+        profileId: `${P}production-profile`,
+        recipeId: `${P}production-recipe`,
+        presetIds: [],
+        referenceAssetIds: [],
+        orientation: "4:5",
+        count: 1,
+        brief: "Second cover candidate",
+        consistencyMode: "strict",
+        priority: "normal",
+        reason: "seed production batch through the canonical Creative Run API",
+      },
+    });
+    expectOk(createdSecond, 202);
+    const itemIds = [
+      ...created.data.batch.items.map((item: { id: string }) => item.id),
+      ...createdSecond.data.batch.items.map((item: { id: string }) => item.id),
+    ];
     expect(itemIds).toHaveLength(2);
 
     const jobs = await prisma.generationJob.findMany({
@@ -2308,9 +2334,11 @@ describe("generation config control plane", () => {
     // （不断言精确值：并行测试可能创建更新的 active image PricingRule）
     expect(jobs[0].costDreamcoins).toBeGreaterThan(0);
     expect(jobs[1].costDreamcoins).toBe(jobs[0].costDreamcoins);
-    expect(created.data.batch.estimatedCostDreamcoins).toBe(
-      jobs[0].costDreamcoins + jobs[1].costDreamcoins,
-    );
+    // 两个 Run 的报价合计必须等于两个 job 的实际扣费合计（jobs 的返回顺序不保证，故比总额）。
+    expect(
+      created.data.batch.estimatedCostDreamcoins
+      + createdSecond.data.batch.estimatedCostDreamcoins,
+    ).toBe(jobs[0].costDreamcoins + jobs[1].costDreamcoins);
     expect(jobs[0]).toMatchObject({
       userId: admin,
       profileId: `${P}production-profile`,
@@ -2355,7 +2383,7 @@ describe("generation config control plane", () => {
     expect(initialAttemptEvents.every((event) => event.eventType === "generation.attempt.queued.v1")).toBe(true);
     const dispatchRows = await prisma.mainOutboxEvent.findMany({
       where: {
-        aggregateId: created.data.batch.id,
+        aggregateId: { in: [created.data.batch.id, createdSecond.data.batch.id] },
         eventType: "creative.generation.dispatch.v2",
       },
     });
@@ -2378,8 +2406,18 @@ describe("generation config control plane", () => {
       role: "admin",
     });
     expectOk(detail);
-    expect(detail.data.batch).toMatchObject({ completedItems: 2, status: "reviewing" });
-    const generatedItems = detail.data.batch.items as Array<{
+    expect(detail.data.batch).toMatchObject({ completedItems: 1, status: "reviewing" });
+    const detailSecond = await api("GET", `admin/content/production/batches/${createdSecond.data.batch.id}`, {
+      userId: admin,
+      role: "admin",
+    });
+    expectOk(detailSecond);
+    expect(detailSecond.data.batch).toMatchObject({ completedItems: 1, status: "reviewing" });
+    // 两个单图 Run 合起来提供「一个批准、一个拒绝」这两条评审路径。
+    const generatedItems = [
+      ...detail.data.batch.items,
+      ...detailSecond.data.batch.items,
+    ] as Array<{
       id: string;
       asset: { id: string } | null;
       status: string;
@@ -2429,7 +2467,8 @@ describe("generation config control plane", () => {
     expectError(reject, 409, "conflict");
     expect(reject.error?.details).toMatchObject({
       code: "creative_run_review_required",
-      repairPath: `/admin/creative/runs/${created.data.batch.id}`,
+      // 被拒项来自第二个 Run，修复入口自然指向它所属的 Run。
+      repairPath: `/admin/creative/runs/${createdSecond.data.batch.id}`,
     });
     const legacyRetry = await api(
       "POST",
@@ -2446,7 +2485,8 @@ describe("generation config control plane", () => {
     expectError(legacyRetry, 409, "conflict");
     expect(legacyRetry.error?.details).toMatchObject({
       code: "creative_run_command_required",
-      repairPath: `/admin/creative/runs/${created.data.batch.id}`,
+      // 同上：该项属于第二个 Run。
+      repairPath: `/admin/creative/runs/${createdSecond.data.batch.id}`,
     });
 
     const assetId = generatedItems[0]?.asset?.id as string;
