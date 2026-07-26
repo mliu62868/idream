@@ -11801,11 +11801,6 @@ async function publicOfferAvailability(): Promise<PublicOfferAvailability> {
     featureFlagEnabled("video_gen"),
     prisma.generationModelProfile.findMany({
       where: { mode: "video", status: "active", enabled: true },
-      select: {
-        allowedOrientations: true,
-        maxCount: true,
-        rolloutPercent: true,
-      },
     }),
     prisma.generationRecipe.findMany({
       where: { mode: "video", status: "active" },
@@ -11825,7 +11820,11 @@ async function publicOfferAvailability(): Promise<PublicOfferAvailability> {
   return {
     videoGeneration:
       videoEnabled &&
-      videoProfiles.some(isExecutableGenerationProfile) &&
+      videoProfiles.some(
+        (profile) =>
+          isProductionLtxVideoProfile(profile) &&
+          isExecutableGenerationProfile(profile),
+      ) &&
       hasCompleteGenerationRecipeSet(videoRecipes) &&
       videoPricing.length === 1,
   };

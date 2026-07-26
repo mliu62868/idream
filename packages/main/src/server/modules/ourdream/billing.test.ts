@@ -227,6 +227,66 @@ describe("plans billing mode", () => {
       });
     }
   });
+
+  it("does not market video from a non-authoritative active profile", async () => {
+    const planId = await setupPlan("alternate-video-profile");
+    const alternateProfileId = `${P}alternate-video-profile`;
+    const [videoFlag, productionProfile] = await Promise.all([
+      prisma.featureFlag.findUniqueOrThrow({
+        where: { key: "video_gen" },
+        select: { enabled: true, rolloutPercent: true },
+      }),
+      prisma.generationModelProfile.findUniqueOrThrow({
+        where: { id: "seed-profile-video-beta-v1" },
+        select: { enabled: true, rolloutPercent: true },
+      }),
+    ]);
+
+    await prisma.featureFlag.update({
+      where: { key: "video_gen" },
+      data: { enabled: true, rolloutPercent: 100 },
+    });
+    await prisma.generationModelProfile.update({
+      where: { id: "seed-profile-video-beta-v1" },
+      data: { rolloutPercent: 0 },
+    });
+    await prisma.generationModelProfile.create({
+      data: {
+        id: alternateProfileId,
+        profileKey: alternateProfileId,
+        label: "Alternate video route",
+        mode: "video",
+        runner: "comfyui",
+        pipelineModel: "alternate-video",
+        allowedOrientations: ["2:3"],
+        maxCount: 1,
+        enabled: true,
+        rolloutPercent: 100,
+        status: "active",
+      },
+    });
+
+    try {
+      const plans = await api("GET", "plans");
+      expectOk(plans);
+      expect(
+        plans.data.items.find((item: { id: string }) => item.id === planId)
+          ?.features,
+      ).toMatchObject({ videoGeneration: false });
+    } finally {
+      await prisma.generationModelProfile.delete({
+        where: { id: alternateProfileId },
+      });
+      await prisma.generationModelProfile.update({
+        where: { id: "seed-profile-video-beta-v1" },
+        data: productionProfile,
+      });
+      await prisma.featureFlag.update({
+        where: { key: "video_gen" },
+        data: videoFlag,
+      });
+    }
+  });
 });
 
 describe("checkout (auto-confirm) activates entitlements + grants coins", () => {
