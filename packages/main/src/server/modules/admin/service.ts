@@ -28,9 +28,6 @@ import {
   listCharacterVisualProfiles,
   createCharacterVisualProfile,
 } from "./characters/visual-profiles";
-import {
-  listCharacterPregenBatches,
-} from "./characters/pregen";
 import { setCharacterChatTools } from "./characters/chat-tools";
 import { generateProductionDirections } from "./production-directions";
 import {
@@ -354,14 +351,6 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
     }
     if (action && child === "visual-profiles" && method === "POST") {
       return createCharacterVisualProfile(request, action);
-    }
-    if (action && child === "pregen" && method === "GET") {
-      return listCharacterPregenBatches(request, action);
-    }
-    if (action && child === "pregen" && method === "POST") {
-      return retiredCreativeWrite(request, {
-        deepLink: `/admin/characters/${action}?tab=assets`,
-      });
     }
     if (action && child === "chat-tools" && method === "POST") {
       return setCharacterChatTools(request, action);

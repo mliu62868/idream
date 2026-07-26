@@ -94,7 +94,6 @@ export const adminZhCoverageB: Record<string, string> = {
   "No permission for this workspace": "无此工作区权限",
   "No permitted records match this search.": "没有获准访问且符合搜索条件的记录。",
   "No portfolio decision has been recorded.": "尚未记录角色组合决策。",
-  "No pregen batches yet — trigger a pack above to start.": "尚无预生成批次——请在上方触发一个图片资产包。",
   "No primary role portrait": "无主要角色肖像",
   "No slots.": "暂无输入槽位。",
   "No subscription": "无订阅",
