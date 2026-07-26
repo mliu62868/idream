@@ -70,7 +70,7 @@ describe("voice generation service contract", () => {
     const asset = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: first.data.assetId } });
     expect(asset.storageKey).toBeTruthy();
     expect(asset.metadata).toMatchObject({
-      voiceId: "alba",
+      voiceId: "fish-female-default",
       voiceAuthority: "system_default",
       systemVoiceSettingVersion: 0,
     });
@@ -138,7 +138,7 @@ describe("voice generation service contract", () => {
     const stale = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: staleId } });
     expect(stale.deletedAt).toBeInstanceOf(Date);
     const replacement = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: res.data.assetId } });
-    expect((replacement.metadata as { cacheVersion?: number }).cacheVersion).toBe(5);
+    expect((replacement.metadata as { cacheVersion?: number }).cacheVersion).toBe(6);
     expect((replacement.metadata as { costDreamcoins?: number }).costDreamcoins).toBe(0);
     expect((replacement.metadata as { replacedAssetIds?: string[] }).replacedAssetIds).toEqual([
       staleId,
