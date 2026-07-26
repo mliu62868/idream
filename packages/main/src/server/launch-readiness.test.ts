@@ -651,6 +651,7 @@ describe("launch readiness", () => {
         IMAGE_PROVIDER: "backend",
         GEN_IMAGE_PROVIDER: "backend",
         GEN_VIDEO_PROVIDER: "mock",
+        COMFYUI_API_URL: undefined,
         DRAWTHINGS_CLI: "/opt/drawthings/draw-things-cli",
       },
       imagePipelineProbe: null,
