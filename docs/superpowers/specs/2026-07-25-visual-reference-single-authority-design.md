@@ -58,6 +58,18 @@
 不是 profile 上的 Json 列。在图池来源迁移到候选池之前，涉及图池的读点保持读 `anchorAssetIds`，
 代码里以 `TODO(reference-authority)` 标注（`workspace.ts`、`reference-set.ts` 各一处）。
 
+> ⚠️ **2026-07-26 实测修正：这个迁移当前是零收益的，不要照着做。**
+> dev 库里 `reference_candidates` 共 6 条、**全部是 `promoted`**，`candidate`/`rejected` 各 0 条；
+> 没有任何代码往它写 `status: "candidate"`。真实 profile 的 anchors 被 candidates 100% 覆盖
+> （未覆盖的 3 条全是 `zt-` 测试 fixture）。
+>
+> 也就是说这张表**只记录「已被提升的结果」，从不记录「待选的候选」**——它和 `anchorAssetIds`
+> 装的是同一批图。现在迁过去只是换个存储位置，图池依然不是图池。
+>
+> 前置条件是先让**候选图在审核通过时进池**（`status: "candidate"`），运营从池中挑选并提升。
+> 那是新增一条产品流程（候选何时进池 / 拒绝如何退出 / 运营在哪看 / 与「一次生成一张、审一张」
+> 的节奏如何衔接），需要产品决策，不是纯技术重构。
+
 因此终局是**分两步删列**：`referenceAssetIds` 随本轮改造删除；`anchorAssetIds` 要等图池迁到
 `ReferenceCandidate` 之后才能删 —— 那是一个独立的、有产品语义的改造，不属于"消除冗余副本"。
 
