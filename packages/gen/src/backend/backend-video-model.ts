@@ -49,10 +49,17 @@ export class BackendVideoModel implements VideoModel {
     if (referenceError) {
       return failure("unsupported_video_workflow", referenceError, false);
     }
+    if (input.seconds !== 4) {
+      return failure(
+        "unsupported_video_duration",
+        "LTX 2.3 production video generation requires exactly four seconds",
+        false,
+      );
+    }
 
     const width = numericControl(input.controls, "width") ?? 768;
     const height = numericControl(input.controls, "height") ?? 1152;
-    const seconds = Math.max(1, Math.min(input.seconds, 6));
+    const seconds = 4;
     const fps = numericControl(input.controls, "fps") ?? 25;
     const seed =
       stableNumericSeed(input.seed ?? input.requestId ?? "video") ?? 0;

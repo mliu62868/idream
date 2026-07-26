@@ -147,13 +147,10 @@ export async function reconcileStaleGenerationJobs(input: {
   const now = input.now ?? new Date();
   const timeoutMs =
     input.timeoutMs ??
-    Number.parseInt(process.env.JOB_STALE_TIMEOUT_MS ?? `${10 * 60 * 1000}`, 10);
+    env.JOB_STALE_TIMEOUT_MS;
   const videoTimeoutMs =
     input.videoTimeoutMs ??
-    Number.parseInt(
-      process.env.VIDEO_JOB_STALE_TIMEOUT_MS ?? `${35 * 60 * 1000}`,
-      10,
-    );
+    env.VIDEO_JOB_STALE_TIMEOUT_MS;
   const cutoff = new Date(now.getTime() - timeoutMs);
   const videoCutoff = new Date(now.getTime() - videoTimeoutMs);
   const jobs = await prisma.generationJob.findMany({

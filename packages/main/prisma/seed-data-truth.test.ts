@@ -515,6 +515,80 @@ describe("seed data provenance", () => {
     ).resolves.toBe(0);
   }, 15_000);
 
+  it("migrates the untouched legacy video beta route to the exact LTX workflow", async () => {
+    const profileId = "seed-profile-video-beta-v1";
+    await prisma.generationModelProfile.update({
+      where: { id: profileId },
+      data: {
+        profileKey: "profile_video_beta_v1",
+        label: "Video beta",
+        runner: "external",
+        pipelineModel: "mock-video",
+        workflowKey: null,
+        sourceModelPath: null,
+        convertedModelPath: null,
+        modelFormat: "external",
+        runnerConfig: { disabledUntilFlag: "video_gen" },
+        defaultWidth: 768,
+        defaultHeight: 1024,
+        allowedOrientations: ["9:16", "16:9"],
+        steps: 24,
+        sampler: "video_default",
+        scheduler: "model_default",
+        cfgScale: 5,
+        rolloutPercent: 0,
+        dryRunSummary: {
+          status: "not_run",
+          source: "seed_configuration_state",
+          disabledByFlag: "video_gen",
+        },
+        publishedAt: new Date("2026-06-24T00:00:00.000Z"),
+      },
+    });
+
+    await execFileAsync("bun", ["run", "db:seed"], {
+      cwd: fileURLToPath(new URL("..", import.meta.url)),
+      env: process.env,
+    });
+
+    const migrated = await prisma.generationModelProfile.findUniqueOrThrow({
+      where: { id: profileId },
+      select: {
+        runner: true,
+        pipelineModel: true,
+        workflowKey: true,
+        sourceModelPath: true,
+        modelFormat: true,
+        runnerConfig: true,
+        defaultWidth: true,
+        defaultHeight: true,
+        allowedOrientations: true,
+        rolloutPercent: true,
+      },
+    });
+    expect(migrated).toMatchObject({
+      runner: "comfyui",
+      pipelineModel: "ltx23-gtanimation-int4-convrot",
+      workflowKey: "ltx23-gtanimation-i2v",
+      sourceModelPath:
+        "diffusion_models/ltx23Gtanimation25Frames_ltxv23INT4Convrot.safetensors",
+      modelFormat: "safetensors",
+      runnerConfig: {
+        workflowVersion: 1,
+        capabilities: {
+          imageToVideo: true,
+          audio: true,
+          fps: 25,
+          maxDurationSeconds: 4,
+        },
+      },
+      defaultWidth: 768,
+      defaultHeight: 1152,
+      allowedOrientations: ["2:3"],
+      rolloutPercent: 100,
+    });
+  }, 15_000);
+
   it("only creates missing cold-start rows and preserves operator edits on repeat seed runs", async () => {
     const users = await seedFunctionSource("seedUsers");
     const characters = await seedFunctionSource("seedCharacters");

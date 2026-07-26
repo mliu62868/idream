@@ -8,12 +8,25 @@ import { resolveLocalBlobRoot } from "@idream/shared/storage/local-blob";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import "dotenv/config";
+import { z } from "zod";
 
 const bundledWorkflowDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
   "workflows",
 );
+
+const positiveIntegerSchema = z.coerce.number().int().positive();
+
+function positiveIntegerEnv(name: string, fallback: number) {
+  const result = positiveIntegerSchema.safeParse(
+    process.env[name] ?? fallback,
+  );
+  if (!result.success) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+  return result.data;
+}
 
 export const env = {
   /** Redis for BullMQ. GEN_REDIS_URL wins, else shared REDIS_URL, else local. */
@@ -111,8 +124,7 @@ export const env = {
   },
   /** Long-running video generation timeout; LTX 2.3 MPS runs need a larger budget. */
   get VIDEO_TIMEOUT_MS(): number {
-    const parsed = Number.parseInt(process.env.GEN_VIDEO_TIMEOUT_MS ?? "1800000", 10);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : 1_800_000;
+    return positiveIntegerEnv("GEN_VIDEO_TIMEOUT_MS", 1_800_000);
   },
   /** ComfyUI native HTTP API base URL, used by IMAGE_PROVIDER=backend's registry. */
   get COMFYUI_API_URL(): string {

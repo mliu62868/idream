@@ -157,4 +157,35 @@ describe("BackendVideoModel", () => {
     });
     expect(stub.submit).not.toHaveBeenCalled();
   });
+
+  it("rejects video durations outside the production four-second envelope", async () => {
+    const stub = backend();
+    const model = new BackendVideoModel({
+      resolveForModel: vi.fn(() => ({ backend: stub, descriptor })),
+    });
+
+    const result = await model.generate({
+      prompt: "wave",
+      seconds: 6,
+      model: "ltx23-gtanimation-i2v",
+      controls: {
+        workflowKey: "ltx23-gtanimation-i2v",
+        workflowVersion: 1,
+      },
+      referenceImages: [{
+        assetId: "source-1",
+        role: "source_image",
+        b64Json: "aW1hZ2U=",
+      }],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: "unsupported_video_duration",
+        retryable: false,
+      },
+    });
+    expect(stub.submit).not.toHaveBeenCalled();
+  });
 });

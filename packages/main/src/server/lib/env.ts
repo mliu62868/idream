@@ -99,6 +99,12 @@ const EnvSchema = z.object({
   PIPELINE_VOICE_MAX_INPUT_CHARS: z.coerce.number().int().min(0).default(900),
   PIPELINE_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
   PIPELINE_VOICE_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
+  JOB_STALE_TIMEOUT_MS: z.coerce.number().int().positive().default(10 * 60 * 1_000),
+  VIDEO_JOB_STALE_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(35 * 60 * 1_000),
   POCKET_TTS_API_URL: z.string().url().default("http://127.0.0.1:8062/v1"),
   POCKET_TTS_API_TOKEN: z.string().optional(),
   POCKET_TTS_MODEL: z.string().min(1).default("pocket-tts-4bit"),

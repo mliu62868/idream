@@ -288,6 +288,17 @@ const generationJobSchema = z
         message: "Visual profile can only be used with a character",
       });
     }
+    if (
+      value.mode === "video" &&
+      value.controls.seconds !== undefined &&
+      value.controls.seconds !== 4
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["controls", "seconds"],
+        message: "LTX 2.3 video generation requires exactly four seconds",
+      });
+    }
   });
 
 const presetCreateSchema = z.object({
@@ -2887,7 +2898,9 @@ async function resolveGenerationPlanForUser(
     body.characterId ? "character" : "freeplay",
   );
   const character = body.characterId
-    ? await generationCharacter(body.characterId, userId)
+    ? body.mode === "video"
+      ? await publishedGenerationVideoCharacter(body.characterId)
+      : await generationCharacter(body.characterId, userId)
     : null;
   const consistencyMode = body.consistencyMode ?? "balanced";
   const visualProfile =
@@ -3293,12 +3306,14 @@ async function createGenerationJobForUser(
               age: { gte: 18 },
               status: "approved",
             },
-            {
-              OR: [
-                { creatorId: userId },
-                publicCharacterAudienceWhere,
-              ],
-            },
+            body.mode === "video"
+              ? publicCharacterAudienceWhere
+              : {
+                  OR: [
+                    { creatorId: userId },
+                    publicCharacterAudienceWhere,
+                  ],
+                },
           ],
         },
         select: { id: true },
@@ -4458,12 +4473,35 @@ async function resolveGenerationRetryAuthority(
       })
     );
   }
-  const workflowDescriptor =
-    job.mode === "image"
-      ? await generationWorkflowDescriptor(
-          profile.workflowKey ?? profile.pipelineModel,
-        )
-      : null;
+  const workflowDescriptor = await generationWorkflowDescriptor(
+    profile.workflowKey ?? profile.pipelineModel,
+  );
+  const pinnedWorkflowKey = stringFromRecord(controls, "workflowKey");
+  const pinnedWorkflowVersion = numberFromRecord(
+    controls,
+    "workflowVersion",
+  );
+  if (
+    (
+      pinnedWorkflowKey !== undefined ||
+      pinnedWorkflowVersion !== undefined
+    ) &&
+    (
+      pinnedWorkflowKey !== workflowDescriptor?.workflowKey ||
+      pinnedWorkflowVersion !== workflowDescriptor?.version
+    )
+  ) {
+    throw Errors.conflict(
+      "The failed generation job's pinned workflow version is unavailable",
+      {
+        generationJobId: job.id,
+        pinnedWorkflowKey: pinnedWorkflowKey ?? null,
+        pinnedWorkflowVersion: pinnedWorkflowVersion ?? null,
+        resolvedWorkflowKey: workflowDescriptor?.workflowKey ?? null,
+        resolvedWorkflowVersion: workflowDescriptor?.version ?? null,
+      },
+    );
+  }
   if (
     job.mode === "image" &&
     (
@@ -4743,12 +4781,14 @@ async function retryGenerationJob(request: Request, id: string) {
               age: { gte: 18 },
               status: "approved",
             },
-            {
-              OR: [
-                { creatorId: user.id },
-                publicCharacterAudienceWhere,
-              ],
-            },
+            job.mode === "video"
+              ? publicCharacterAudienceWhere
+              : {
+                  OR: [
+                    { creatorId: user.id },
+                    publicCharacterAudienceWhere,
+                  ],
+                },
           ],
         },
         select: { id: true },
@@ -10723,6 +10763,19 @@ async function generationCharacter(id: string, userId: string) {
       status: character.status,
     });
   }
+  return character;
+}
+
+async function publishedGenerationVideoCharacter(id: string) {
+  const character = await prisma.character.findFirst({
+    where: {
+      AND: [
+        { id, age: { gte: 18 } },
+        publicCharacterAudienceWhere,
+      ],
+    },
+  });
+  if (!character) throw Errors.notFound("Character not found");
   return character;
 }
 

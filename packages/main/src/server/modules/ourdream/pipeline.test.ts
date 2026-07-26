@@ -9,6 +9,7 @@ import {
   createCharacter,
   createUser,
   dreamcoinBalance,
+  expectError,
   expectOk,
   grantCoins,
   publishCharacterForPublicAudience,
@@ -604,6 +605,227 @@ describe("local AI service pipeline", () => {
       await prisma.featureFlag.update({
         where: { key: "video_gen" },
         data: { enabled: false, rolloutPercent: 0 },
+      });
+      await prisma.generationModelProfile.update({
+        where: { id: "seed-profile-video-beta-v1" },
+        data: previousVideoProfile,
+      });
+    }
+  });
+
+  it("rejects non-four-second requests and unpublished Character sources", async () => {
+    const userId = `${P}video-authority-user`;
+    const privateCharacterId = `${P}private-video-char`;
+    const privateAssetId = `${P}private-video-source`;
+    await createUser({ id: userId });
+    await grantCoins(userId, 300, "seed");
+    await prisma.entitlement.createMany({
+      data: [
+        { userId, key: "video_generation", value: true, source: "test" },
+        { userId, key: "premium_controls", value: true, source: "test" },
+      ],
+    });
+    await createCharacter({
+      id: privateCharacterId,
+      creatorId: userId,
+      source: "user",
+      visibility: "private",
+      status: "approved",
+    });
+    await prisma.mediaAsset.create({
+      data: {
+        id: privateAssetId,
+        ownerId: userId,
+        characterId: privateCharacterId,
+        type: "image",
+        storageKey: `${P}private-video-source.webp`,
+        url: "/images/ourdream/card-sarah-mercer.webp",
+        visibility: "private",
+        safetyStatus: "passed",
+        metadata: {
+          synthetic: false,
+          platformAsset: { status: "active" },
+        },
+      },
+    });
+    await prisma.character.update({
+      where: { id: privateCharacterId },
+      data: { imageAssetId: privateAssetId },
+    });
+    const previousFlag = await prisma.featureFlag.findUniqueOrThrow({
+      where: { key: "video_gen" },
+      select: { enabled: true, rolloutPercent: true },
+    });
+    const previousVideoProfile =
+      await prisma.generationModelProfile.findUniqueOrThrow({
+        where: { id: "seed-profile-video-beta-v1" },
+        select: { rolloutPercent: true },
+      });
+    await prisma.featureFlag.update({
+      where: { key: "video_gen" },
+      data: { enabled: true, rolloutPercent: 100 },
+    });
+    await prisma.generationModelProfile.update({
+      where: { id: "seed-profile-video-beta-v1" },
+      data: { rolloutPercent: 100 },
+    });
+
+    try {
+      const invalidDuration = await api("POST", "generation/jobs", {
+        userId,
+        ageGate: true,
+        body: {
+          mode: "video",
+          characterId: CHAR,
+          controls: { seconds: 6 },
+          outputCount: 1,
+        },
+      });
+      expectError(invalidDuration, 400, "bad_request");
+
+      const unpublished = await api("POST", "generation/jobs", {
+        userId,
+        ageGate: true,
+        body: {
+          mode: "video",
+          characterId: privateCharacterId,
+          controls: { seconds: 4 },
+          outputCount: 1,
+        },
+      });
+      expectError(unpublished, 404, "not_found");
+      await expect(
+        prisma.generationJob.count({
+          where: { userId, mode: "video" },
+        }),
+      ).resolves.toBe(0);
+      await expect(dreamcoinBalance(userId)).resolves.toBe(300);
+    } finally {
+      await prisma.featureFlag.update({
+        where: { key: "video_gen" },
+        data: previousFlag,
+      });
+      await prisma.generationModelProfile.update({
+        where: { id: "seed-profile-video-beta-v1" },
+        data: previousVideoProfile,
+      });
+    }
+  });
+
+  it("fails closed when a video retry no longer matches its pinned workflow", async () => {
+    const userId = `${P}video-retry-authority-user`;
+    const retryKey = `${P}video-retry-authority-key`;
+    await createUser({ id: userId });
+    await grantCoins(userId, 300, "seed");
+    await prisma.entitlement.create({
+      data: { userId, key: "video_generation", value: true, source: "test" },
+    });
+    const previousFlag = await prisma.featureFlag.findUniqueOrThrow({
+      where: { key: "video_gen" },
+      select: { enabled: true, rolloutPercent: true },
+    });
+    const previousVideoProfile =
+      await prisma.generationModelProfile.findUniqueOrThrow({
+        where: { id: "seed-profile-video-beta-v1" },
+        select: { rolloutPercent: true },
+      });
+    await prisma.featureFlag.update({
+      where: { key: "video_gen" },
+      data: { enabled: true, rolloutPercent: 100 },
+    });
+    await prisma.generationModelProfile.update({
+      where: { id: "seed-profile-video-beta-v1" },
+      data: { rolloutPercent: 100 },
+    });
+
+    try {
+      const created = await api("POST", "generation/jobs", {
+        userId,
+        ageGate: true,
+        body: {
+          mode: "video",
+          characterId: CHAR,
+          controls: { seconds: 4 },
+          outputCount: 1,
+        },
+      });
+      expectOk(created, 202);
+      const failedJobId = created.data.job.id as string;
+      cleanupJobDedupeKeys.push(`generation:${failedJobId}`);
+      await jobQueue.removeByDedupePrefix(
+        `generation:${failedJobId}`,
+        ["ai.video.generate"],
+      );
+      const originalControls = created.data.job.controls as Record<
+        string,
+        unknown
+      >;
+      await prisma.generationJob.update({
+        where: { id: failedJobId },
+        data: {
+          status: "failed",
+          errorCode: "video_retry_fixture",
+          controls: {
+            ...originalControls,
+            workflowVersion: 2,
+          } as Prisma.InputJsonValue,
+        },
+      });
+
+      const staleQuote = await api(
+        "POST",
+        `generation/jobs/${failedJobId}/retry/quote`,
+        {
+          userId,
+          ageGate: true,
+          body: {},
+        },
+      );
+      expectError(staleQuote, 409, "conflict");
+
+      await prisma.generationJob.update({
+        where: { id: failedJobId },
+        data: { controls: originalControls as Prisma.InputJsonValue },
+      });
+      const quoted = await api(
+        "POST",
+        `generation/jobs/${failedJobId}/retry/quote`,
+        {
+          userId,
+          ageGate: true,
+          body: {},
+        },
+      );
+      expectOk(quoted);
+      const retried = await api(
+        "POST",
+        `generation/jobs/${failedJobId}/retry`,
+        {
+          userId,
+          ageGate: true,
+          headers: { "idempotency-key": retryKey },
+          body: {
+            quoteAuthority: {
+              profileId: quoted.data.quote.profileId,
+              profileVersion: quoted.data.quote.profileVersion,
+              routeFingerprint: quoted.data.quote.routeFingerprint,
+              pricingFingerprint: quoted.data.quote.pricing.fingerprint,
+              outputCount: quoted.data.quote.outputCount,
+              costDreamcoins: quoted.data.quote.costDreamcoins,
+            },
+          },
+        },
+      );
+      expectOk(retried, 202);
+      expect(retried.data.job.controls).toMatchObject({
+        workflowKey: "ltx23-gtanimation-i2v",
+        workflowVersion: 1,
+      });
+      cleanupJobDedupeKeys.push(`generation:${retried.data.job.id as string}`);
+    } finally {
+      await prisma.featureFlag.update({
+        where: { key: "video_gen" },
+        data: previousFlag,
       });
       await prisma.generationModelProfile.update({
         where: { id: "seed-profile-video-beta-v1" },

@@ -1827,7 +1827,33 @@ async function seedAdminControlPlane() {
     });
   }
 
-  if (!existingProfileKeys.has("profile_video_beta_v1")) {
+  const legacyVideoBetaProfile =
+    await prisma.generationModelProfile.findUnique({
+      where: { id: "seed-profile-video-beta-v1" },
+      select: {
+        profileKey: true,
+        label: true,
+        runner: true,
+        pipelineModel: true,
+        workflowKey: true,
+        modelFormat: true,
+        rolloutPercent: true,
+        version: true,
+      },
+    });
+  const isUntouchedLegacyVideoBeta =
+    legacyVideoBetaProfile?.profileKey === "profile_video_beta_v1" &&
+    legacyVideoBetaProfile.label === "Video beta" &&
+    legacyVideoBetaProfile.runner === "external" &&
+    legacyVideoBetaProfile.pipelineModel === "mock-video" &&
+    legacyVideoBetaProfile.workflowKey === null &&
+    legacyVideoBetaProfile.modelFormat === "external" &&
+    legacyVideoBetaProfile.rolloutPercent === 0 &&
+    legacyVideoBetaProfile.version === 1;
+  if (
+    !existingProfileKeys.has("profile_video_beta_v1") ||
+    isUntouchedLegacyVideoBeta
+  ) {
     await prisma.generationModelProfile.upsert({
     where: { id: "seed-profile-video-beta-v1" },
     update: {
@@ -1850,7 +1876,7 @@ async function seedAdminControlPlane() {
           imageToVideo: true,
           audio: true,
           fps: 25,
-          maxDurationSeconds: 6,
+          maxDurationSeconds: 4,
         },
       },
       defaultWidth: 768,
@@ -1903,7 +1929,7 @@ async function seedAdminControlPlane() {
           imageToVideo: true,
           audio: true,
           fps: 25,
-          maxDurationSeconds: 6,
+          maxDurationSeconds: 4,
         },
       },
       defaultWidth: 768,
