@@ -1675,7 +1675,6 @@ export function VisualIdentityPanel({ data, navigateToTab, permissions, runCommi
   const [referenceConfirmed, setReferenceConfirmed] = useState(false);
   const [selectedLookId, setSelectedLookId] = useState<string | null>(null);
   const [lookArchiveReason, setLookArchiveReason] = useState("");
-  const [lookArchiveConfirmation, setLookArchiveConfirmation] = useState("");
   const [busy, setBusy] = useState<
     "identity" | "references" | "look" | null
   >(null);
@@ -1841,9 +1840,9 @@ export function VisualIdentityPanel({ data, navigateToTab, permissions, runCommi
       expectedUpdatedAt: look.updatedAt,
       reason: {
         code: "look_retired",
-        summary: lookArchiveReason.trim(),
+        summary: lookArchiveReason.trim() || "Archived by operator",
       },
-      confirmation: lookArchiveConfirmation.trim(),
+      confirmation: `ARCHIVE LOOK ${look.id}`,
     };
     const requestIdentity = stableIdempotencyKey(`archive-look:${look.id}`, body);
     try {
@@ -1862,7 +1861,6 @@ export function VisualIdentityPanel({ data, navigateToTab, permissions, runCommi
           delete idempotencyKeys.current[requestIdentity.signature];
           setSelectedLookId(null);
           setLookArchiveReason("");
-          setLookArchiveConfirmation("");
         },
       });
     } catch (cause) {
@@ -1998,7 +1996,6 @@ export function VisualIdentityPanel({ data, navigateToTab, permissions, runCommi
                   onClick={() => {
                     setSelectedLookId(look.id);
                     setLookArchiveReason("");
-                    setLookArchiveConfirmation("");
                   }}
                 >
 
@@ -2021,22 +2018,11 @@ export function VisualIdentityPanel({ data, navigateToTab, permissions, runCommi
                 value={lookArchiveReason}
               />
             </label>
-            <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">
-
-              {t("Type ARCHIVE LOOK")} {selectedLookId}
-              <input
-                className={`${fieldClass} mt-1`}
-                onChange={(event) => setLookArchiveConfirmation(event.target.value)}
-                value={lookArchiveConfirmation}
-              />
-            </label>
             <div className="mt-4 flex flex-wrap gap-2">
               <WorkspaceButton
-                disabled={
-                  busy !== null ||
-                  lookArchiveReason.trim().length < 3 ||
-                  lookArchiveConfirmation.trim() !== `ARCHIVE LOOK ${selectedLookId}`
-                }
+                // 归档 Look 是可逆的（status 可改回 active），按钮本身即确认动作——
+                // 不再要求先填理由、再默写内部 ID。
+                disabled={busy !== null}
                 onClick={() => void archiveLook()}
                 tone="primary"
               >
@@ -2048,7 +2034,6 @@ export function VisualIdentityPanel({ data, navigateToTab, permissions, runCommi
                 onClick={() => {
                   setSelectedLookId(null);
                   setLookArchiveReason("");
-                  setLookArchiveConfirmation("");
                 }}
               >
 

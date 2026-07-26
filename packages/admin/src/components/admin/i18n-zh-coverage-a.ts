@@ -262,7 +262,6 @@ export const adminZhCoverageA: Record<string, string> = {
   "Evidence URL or durable reference": "证据 URL 或持久引用",
   "Evidence, decision, downstream verification, and closure stay attached to the customer problem.": "证据、决策、下游验证与闭环始终关联到该客户问题。",
   "Evidence:": "证据：",
-  "Exact confirmation": "精确确认文本",
   "Example: A composed night-shift doctor with a dry sense of humor and a hidden soft side.": "例如：一位沉稳的夜班医生，有冷幽默，也藏着温柔的一面。",
   "Exceptional override": "例外覆盖",
   "excluded:": "已排除：",
