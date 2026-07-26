@@ -710,6 +710,39 @@ describe("admin appeal queue", () => {
   });
 });
 
+// SPEC: video_gen 是全局开关，seed 默认开启（LTX 已上线）。断言「视频关闭时的行为」的用例
+// 必须自己把它关掉再恢复——否则结果取决于同一次运行里别的测试文件有没有先动过它
+// （此前正是如此：单跑这个文件 2 红、全量跑 0 红）。
+async function withVideoGenerationDisabled<T>(run: () => Promise<T>): Promise<T> {
+  const previous = await prisma.featureFlag.findUnique({ where: { key: "video_gen" } });
+  await prisma.featureFlag.upsert({
+    where: { key: "video_gen" },
+    update: { enabled: false, rolloutPercent: 0 },
+    create: {
+      key: "video_gen",
+      label: "Video generation",
+      description: "Single gate for all video generation traffic.",
+      enabled: false,
+      rolloutPercent: 0,
+      targetRoles: [],
+      targetPlans: ["deluxe"],
+      hardPolicy: false,
+    },
+  });
+  try {
+    return await run();
+  } finally {
+    if (previous) {
+      await prisma.featureFlag.update({
+        where: { key: "video_gen" },
+        data: { enabled: previous.enabled, rolloutPercent: previous.rolloutPercent },
+      });
+    } else {
+      await prisma.featureFlag.deleteMany({ where: { key: "video_gen" } });
+    }
+  }
+}
+
 describe("generation config control plane", () => {
   const previousModelDiagnostics = process.env.ADMIN_MODEL_DIAGNOSTICS_ENABLED;
 
@@ -723,94 +756,96 @@ describe("generation config control plane", () => {
   });
 
   it("returns active generation config and stamps profile/template versions onto jobs", async () => {
-    const userId = `${P}gen-user`;
-    const characterId = `${P}gen-char`;
-    await createUser({ id: userId });
-    await createCharacter({ id: characterId, creatorId: userId, visibility: "public", status: "approved" });
-    await grantCoins(userId, 100, "seed");
+    await withVideoGenerationDisabled(async () => {
+      const userId = `${P}gen-user`;
+      const characterId = `${P}gen-char`;
+      await createUser({ id: userId });
+      await createCharacter({ id: characterId, creatorId: userId, visibility: "public", status: "approved" });
+      await grantCoins(userId, 100, "seed");
 
-    const config = await api("GET", "generation/config", { userId, ageGate: true });
-    expectOk(config);
-    expect(() => parseGenerationConfigResponse(config)).not.toThrow();
-    expect(config.data.video.enabled).toBe(false);
-    expect(config.data.video.availability).toEqual({
-      state: "unavailable",
-      reason: "feature_disabled",
-    });
-    expect(config.data.image.availability).toEqual({ state: "available" });
-    expect(config.data.image.models).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          profileId: "profile_image_default_v1",
-          entitlement: null,
-        }),
-      ]),
-    );
-    expect(config.data.image.models.map((model: { profileId: string }) => model.profileId)).not.toEqual(
-      expect.arrayContaining([
-        "character-image-multi-identity",
-        "character-image-variation",
-        "chat-image-edit",
-      ]),
-    );
-    expect(config.data.image.editModels).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          profileId: "character-image-variation-darkbeast",
-          referenceMode: "identity_source",
-        }),
-      ]),
-    );
-    expect(
-      config.data.image.editModels.map(
-        (model: { profileId: string }) => model.profileId,
-      ),
-    ).toEqual(["character-image-variation-darkbeast"]);
-    expect(JSON.stringify(config.data.image.models)).not.toContain("profile_image_premium_v1");
+      const config = await api("GET", "generation/config", { userId, ageGate: true });
+      expectOk(config);
+      expect(() => parseGenerationConfigResponse(config)).not.toThrow();
+      expect(config.data.video.enabled).toBe(false);
+      expect(config.data.video.availability).toEqual({
+        state: "unavailable",
+        reason: "feature_disabled",
+      });
+      expect(config.data.image.availability).toEqual({ state: "available" });
+      expect(config.data.image.models).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            profileId: "profile_image_default_v1",
+            entitlement: null,
+          }),
+        ]),
+      );
+      expect(config.data.image.models.map((model: { profileId: string }) => model.profileId)).not.toEqual(
+        expect.arrayContaining([
+          "character-image-multi-identity",
+          "character-image-variation",
+          "chat-image-edit",
+        ]),
+      );
+      expect(config.data.image.editModels).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            profileId: "character-image-variation-darkbeast",
+            referenceMode: "identity_source",
+          }),
+        ]),
+      );
+      expect(
+        config.data.image.editModels.map(
+          (model: { profileId: string }) => model.profileId,
+        ),
+      ).toEqual(["character-image-variation-darkbeast"]);
+      expect(JSON.stringify(config.data.image.models)).not.toContain("profile_image_premium_v1");
 
-    const beforeRejectedJobs = await prisma.generationJob.count({ where: { userId } });
-    const beforeRejectedBalance = await dreamcoinBalance(userId);
-    const beforeRejectedVisualProfiles = await prisma.characterVisualProfile.count({
-      where: { characterId },
-    });
-    const referenceOnlyProfile = await api("POST", "generation/jobs", {
-      userId,
-      ageGate: true,
-      body: {
+      const beforeRejectedJobs = await prisma.generationJob.count({ where: { userId } });
+      const beforeRejectedBalance = await dreamcoinBalance(userId);
+      const beforeRejectedVisualProfiles = await prisma.characterVisualProfile.count({
+        where: { characterId },
+      });
+      const referenceOnlyProfile = await api("POST", "generation/jobs", {
+        userId,
+        ageGate: true,
+        body: {
+          mode: "image",
+          characterId,
+          outputCount: 1,
+          model: "character-image-variation",
+        },
+      });
+      expectError(referenceOnlyProfile, 409, "conflict");
+      expect(referenceOnlyProfile.error?.message).toBe(
+        "Requested generation profile is unavailable",
+      );
+      expect(referenceOnlyProfile.error?.details).toMatchObject({
         mode: "image",
-        characterId,
-        outputCount: 1,
-        model: "character-image-variation",
-      },
-    });
-    expectError(referenceOnlyProfile, 409, "conflict");
-    expect(referenceOnlyProfile.error?.message).toBe(
-      "Requested generation profile is unavailable",
-    );
-    expect(referenceOnlyProfile.error?.details).toMatchObject({
-      mode: "image",
-      requestedProfile: "character-image-variation",
-    });
-    expect(await prisma.generationJob.count({ where: { userId } })).toBe(beforeRejectedJobs);
-    expect(await dreamcoinBalance(userId)).toBe(beforeRejectedBalance);
-    expect(
-      await prisma.characterVisualProfile.count({ where: { characterId } }),
-    ).toBe(beforeRejectedVisualProfiles);
+        requestedProfile: "character-image-variation",
+      });
+      expect(await prisma.generationJob.count({ where: { userId } })).toBe(beforeRejectedJobs);
+      expect(await dreamcoinBalance(userId)).toBe(beforeRejectedBalance);
+      expect(
+        await prisma.characterVisualProfile.count({ where: { characterId } }),
+      ).toBe(beforeRejectedVisualProfiles);
 
-    const gen = await api("POST", "generation/jobs", {
-      userId,
-      ageGate: true,
-      body: { mode: "image", characterId, outputCount: 1 },
+      const gen = await api("POST", "generation/jobs", {
+        userId,
+        ageGate: true,
+        body: { mode: "image", characterId, outputCount: 1 },
+      });
+      expectOk(gen, 202);
+      expect(gen.data.job).toMatchObject({
+        status: "queued",
+        profileId: "profile_image_default_v1",
+        profileVersion: 1,
+        recipeId: "template_image_character_default",
+        recipeVersion: 1,
+      });
+      await runQueuedGenerationJobs(8);
     });
-    expectOk(gen, 202);
-    expect(gen.data.job).toMatchObject({
-      status: "queued",
-      profileId: "profile_image_default_v1",
-      profileVersion: 1,
-      recipeId: "template_image_character_default",
-      recipeVersion: 1,
-    });
-    await runQueuedGenerationJobs(8);
   });
 
   it("reports missing image capacity explicitly and fails direct writes closed", async () => {
@@ -1028,25 +1063,27 @@ describe("generation config control plane", () => {
   });
 
   it("keeps video visible but disabled by a single feature flag and creates no job", async () => {
-    const userId = `${P}video-user`;
-    const characterId = `${P}video-char`;
-    await createUser({ id: userId });
-    await createCharacter({ id: characterId, creatorId: userId, visibility: "public", status: "approved" });
-    await grantCoins(userId, 500, "seed");
-    await prisma.entitlement.create({
-      data: { userId, key: "video_generation", value: true, source: "test" },
-    });
+    await withVideoGenerationDisabled(async () => {
+      const userId = `${P}video-user`;
+      const characterId = `${P}video-char`;
+      await createUser({ id: userId });
+      await createCharacter({ id: characterId, creatorId: userId, visibility: "public", status: "approved" });
+      await grantCoins(userId, 500, "seed");
+      await prisma.entitlement.create({
+        data: { userId, key: "video_generation", value: true, source: "test" },
+      });
 
-    const beforeJobs = await prisma.generationJob.count({ where: { userId } });
-    const beforeBalance = await dreamcoinBalance(userId);
-    const video = await api("POST", "generation/jobs", {
-      userId,
-      ageGate: true,
-      body: { mode: "video", characterId, outputCount: 1 },
+      const beforeJobs = await prisma.generationJob.count({ where: { userId } });
+      const beforeBalance = await dreamcoinBalance(userId);
+      const video = await api("POST", "generation/jobs", {
+        userId,
+        ageGate: true,
+        body: { mode: "video", characterId, outputCount: 1 },
+      });
+      expectError(video, 403, "forbidden");
+      expect(await prisma.generationJob.count({ where: { userId } })).toBe(beforeJobs);
+      expect(await dreamcoinBalance(userId)).toBe(beforeBalance);
     });
-    expectError(video, 403, "forbidden");
-    expect(await prisma.generationJob.count({ where: { userId } })).toBe(beforeJobs);
-    expect(await dreamcoinBalance(userId)).toBe(beforeBalance);
   });
 
   it("publishes and rolls back model profiles with audit records", async () => {
