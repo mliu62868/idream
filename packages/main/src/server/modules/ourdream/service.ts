@@ -11825,7 +11825,7 @@ async function publicOfferAvailability(): Promise<PublicOfferAvailability> {
           isProductionLtxVideoProfile(profile) &&
           isExecutableGenerationProfile(profile),
       ) &&
-      hasCompleteGenerationRecipeSet(videoRecipes) &&
+      hasCharacterGenerationRecipe(videoRecipes) &&
       videoPricing.length === 1,
   };
 }

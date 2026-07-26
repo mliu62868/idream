@@ -142,7 +142,7 @@ describe("plans billing mode", () => {
     const userId = await setupUser("dormant-video-copy");
     const videoFlag = await prisma.featureFlag.findUniqueOrThrow({
       where: { key: "video_gen" },
-      select: { enabled: true },
+      select: { enabled: true, rolloutPercent: true },
     });
     await prisma.featureFlag.update({
       where: { key: "video_gen" },
@@ -173,13 +173,13 @@ describe("plans billing mode", () => {
         where: { key: "video_gen" },
         data: { enabled: true, rolloutPercent: 100 },
       });
-      const zeroProfileRolloutPlans = await api("GET", "plans");
-      expectOk(zeroProfileRolloutPlans);
+      const productionRoutePlans = await api("GET", "plans");
+      expectOk(productionRoutePlans);
       expect(
-        zeroProfileRolloutPlans.data.items.find(
+        productionRoutePlans.data.items.find(
           (item: { id: string }) => item.id === planId,
         )?.features,
-      ).toMatchObject({ videoGeneration: false });
+      ).toMatchObject({ videoGeneration: true });
 
       await prisma.featureFlag.update({
         where: { key: "video_gen" },
@@ -228,7 +228,7 @@ describe("plans billing mode", () => {
     }
   });
 
-  it("does not market video from a non-authoritative active profile", async () => {
+  it("markets video only from the authoritative Character I2V route", async () => {
     const planId = await setupPlan("alternate-video-profile");
     const alternateProfileId = `${P}alternate-video-profile`;
     const [videoFlag, productionProfile] = await Promise.all([
@@ -246,6 +246,19 @@ describe("plans billing mode", () => {
       where: { key: "video_gen" },
       data: { enabled: true, rolloutPercent: 100 },
     });
+    await prisma.generationModelProfile.update({
+      where: { id: "seed-profile-video-beta-v1" },
+      data: { rolloutPercent: 100 },
+    });
+
+    const productionPlans = await api("GET", "plans");
+    expectOk(productionPlans);
+    expect(
+      productionPlans.data.items.find(
+        (item: { id: string }) => item.id === planId,
+      )?.features,
+    ).toMatchObject({ videoGeneration: true });
+
     await prisma.generationModelProfile.update({
       where: { id: "seed-profile-video-beta-v1" },
       data: { rolloutPercent: 0 },
