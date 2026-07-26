@@ -223,7 +223,7 @@ describe("plans billing mode", () => {
     } finally {
       await prisma.featureFlag.update({
         where: { key: "video_gen" },
-        data: { enabled: videoFlag.enabled },
+        data: videoFlag,
       });
     }
   });
@@ -337,7 +337,7 @@ describe("checkout (auto-confirm) activates entitlements + grants coins", () => 
     expect(me.data.dreamcoins.balance).toBe(1000);
     expect(me.data.entitlements).toMatchObject({
       premium_controls: true,
-      video_generation: false,
+      video_generation: true,
       // camelCase plan feature → snake_case entitlement; gates on-demand voice.
       voice_enabled: true,
       custom_prompt: true,
@@ -1797,7 +1797,7 @@ describe("checkout (auto-confirm) activates entitlements + grants coins", () => 
     const me = await api("GET", "me", { userId });
     expect(me.data.entitlements).toMatchObject({
       custom_prompt: true,
-      video_generation: false,
+      video_generation: true,
       voice_enabled: true,
     });
     await expect(
@@ -2231,7 +2231,7 @@ describe("webhook idempotency", () => {
     const me = await api("GET", "me", { userId });
     expect(me.data.entitlements).toMatchObject({
       custom_prompt: true,
-      video_generation: false,
+      video_generation: true,
       voice_enabled: true,
     });
     await expect(
@@ -2252,7 +2252,7 @@ describe("webhook idempotency", () => {
         includedDreamcoins: 777,
         features: {
           customPrompt: true,
-          videoGeneration: false,
+          videoGeneration: true,
           voiceEnabled: true,
         },
       },
