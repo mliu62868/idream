@@ -12,6 +12,7 @@ describe("Character video Creative Run authority", () => {
   const characterId = `character-video-character-${suffix}`;
   const projectId = `character-video-project-${suffix}`;
   const otherCharacterId = `character-video-other-${suffix}`;
+  const publishedPrimaryAssetId = `character-video-primary-${suffix}`;
   const sourceAssetId = `character-video-source-${suffix}`;
   const otherSourceAssetId = `character-video-other-source-${suffix}`;
   const batchIds: string[] = [];
@@ -79,6 +80,7 @@ describe("Character video Creative Run authority", () => {
           name: "Mara",
           age: 27,
           description: "A warm, self-assured companion.",
+          visibility: "public",
           status: "approved",
           source: "official",
           appearance: {},
@@ -110,6 +112,19 @@ describe("Character video Creative Run authority", () => {
     await prisma.mediaAsset.createMany({
       data: [
         {
+          id: publishedPrimaryAssetId,
+          ownerId: actorId,
+          characterId,
+          type: "image",
+          url: `https://assets.example/${publishedPrimaryAssetId}.webp`,
+          storageKey: `tests/${publishedPrimaryAssetId}.webp`,
+          contentType: "image/webp",
+          width: 768,
+          height: 1152,
+          safetyStatus: "passed",
+          metadata: {},
+        },
+        {
           id: sourceAssetId,
           ownerId: actorId,
           characterId,
@@ -136,6 +151,10 @@ describe("Character video Creative Run authority", () => {
           metadata: {},
         },
       ],
+    });
+    await prisma.character.update({
+      where: { id: characterId },
+      data: { imageAssetId: publishedPrimaryAssetId },
     });
   });
 
@@ -166,7 +185,15 @@ describe("Character video Creative Run authority", () => {
     });
     await prisma.adminAuditLog.deleteMany({ where: { actorId } });
     await prisma.mediaAsset.deleteMany({
-      where: { id: { in: [sourceAssetId, otherSourceAssetId] } },
+      where: {
+        id: {
+          in: [
+            publishedPrimaryAssetId,
+            sourceAssetId,
+            otherSourceAssetId,
+          ],
+        },
+      },
     });
     await prisma.characterProject.deleteMany({ where: { id: projectId } });
     await prisma.character.deleteMany({
@@ -186,7 +213,7 @@ describe("Character video Creative Run authority", () => {
     );
   });
 
-  it("queues one exact LTX 2.3 image-to-video job with its source role pinned", async () => {
+  it("dispatches an exact LTX job from an operational image that is not the published primary", async () => {
     const response = await createCreativeRun(request());
     expect(response.status).toBe(202);
     const payload = await response.json();
@@ -230,6 +257,14 @@ describe("Character video Creative Run authority", () => {
       profileVersion: 1,
       workflowKey: "ltx23-gtanimation-i2v",
       workflowVersion: 1,
+    });
+    expect(await prisma.mainOutboxEvent.findUniqueOrThrow({
+      where: {
+        id: `creative_initial_${batchId}_${item.id}`,
+      },
+    })).toMatchObject({
+      status: "delivered",
+      lastError: null,
     });
   });
 

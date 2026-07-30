@@ -691,8 +691,15 @@ async function assertGenerationCharacterDispatchable(
 ) {
   if (!job.characterId) return;
   await lockCharacterGenerationAuthority(tx, job.characterId);
+  const contentProduction = job.sourceType === "content_production_item";
   const character = await tx.character.findFirst({
-    where: job.mode === "video"
+    where: contentProduction
+      ? {
+          id: job.characterId,
+          deletedAt: null,
+          status: { notIn: ["archived", "removed"] },
+        }
+      : job.mode === "video"
       ? {
           AND: [
             {
@@ -703,12 +710,6 @@ async function assertGenerationCharacterDispatchable(
             },
             publicCharacterAudienceWhere,
           ],
-        }
-      : job.sourceType === "content_production_item"
-      ? {
-          id: job.characterId,
-          deletedAt: null,
-          status: { notIn: ["archived", "removed"] },
         }
       : {
         AND: [
@@ -743,6 +744,7 @@ async function assertGenerationCharacterDispatchable(
   );
   if (
     job.mode === "video" &&
+    !contentProduction &&
     (
       !pinnedSourceImageAssetId ||
       character.imageAssetId !== pinnedSourceImageAssetId
@@ -758,6 +760,8 @@ async function assertGenerationCharacterDispatchable(
       },
     );
   }
+  // SPEC: Admin 角色视频可固定任意一张仍可用的角色图片；引用解析随后会重新校验
+  // 归属、可读取性和 source_image 角色。只有用户侧视频必须继续绑定当前公开主图。
   if (
     job.mode === "image" &&
     job.visualProfileId == null &&
