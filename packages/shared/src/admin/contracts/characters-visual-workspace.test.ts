@@ -66,6 +66,7 @@ describe("Character Visual workspace contract", () => {
       },
       anchors: [{ mediaAssetId: "asset-anchor", role: "identity_anchor", available: true, url: "/anchor.webp", thumbnailUrl: null, qualityScore: null, identityScore: null }],
       references: [],
+      videoSources: [],
       activeReferenceSet: null,
       routeQualifications: [],
       routeEvaluation: {
@@ -173,6 +174,7 @@ describe("Character Visual workspace contract", () => {
       activeIdentity: null,
       anchors: [],
       references: [],
+      videoSources: [],
       activeReferenceSet: null,
       routeQualifications: [],
       routeEvaluation: {
@@ -215,6 +217,7 @@ describe("Character Visual workspace contract", () => {
       activeIdentity: null,
       anchors: [],
       references: [],
+      videoSources: [],
       activeReferenceSet: null,
       routeQualifications: [],
       routeEvaluation: {

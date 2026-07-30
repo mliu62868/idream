@@ -19,6 +19,17 @@ export const creativeRunAttachIncidentRequestSchema = z.object({
 
 export const characterRouteEvaluationMatrixSchemaVersion =
   "character-identity-v1";
+export const characterVideoProductionSpec = {
+  profileKey: "profile_video_beta_v1",
+  modelLabel: "LTX 2.3 GTAnimation",
+  durationSeconds: 4,
+  fps: 25,
+  width: 768,
+  height: 1152,
+  orientation: "2:3",
+  outputCount: 1,
+  sourceImageCount: 1,
+} as const;
 export const characterRouteEvaluationOutputsPerDirection = 4;
 export const characterRouteEvaluationMatrixDirections = [
   {
@@ -141,6 +152,59 @@ function isCanonicalCharacterRouteEvaluationMatrix(input: {
       JSON.stringify(characterRouteEvaluationMatrixDirections);
 }
 
+function characterVideoRunValidationIssues(input: {
+  readonly purpose: string;
+  readonly profileId: string;
+  readonly referenceAssetIds: readonly string[];
+  readonly count: number;
+  readonly orientation?: string;
+  readonly directions?: readonly unknown[];
+  readonly outputsPerDirection?: number;
+}) {
+  if (input.purpose !== "character_video") return [];
+  const issues: Array<{
+    readonly path: readonly string[];
+    readonly message: string;
+  }> = [];
+  if (input.profileId !== characterVideoProductionSpec.profileKey) {
+    issues.push({
+      path: ["profileId"],
+      message: "Character video production must use the pinned production video profile",
+    });
+  }
+  if (
+    input.referenceAssetIds.length !==
+      characterVideoProductionSpec.sourceImageCount
+  ) {
+    issues.push({
+      path: ["referenceAssetIds"],
+      message: "Character video production requires exactly one source image",
+    });
+  }
+  if (input.count !== characterVideoProductionSpec.outputCount) {
+    issues.push({
+      path: ["count"],
+      message: "Character video production creates exactly one clip per Run",
+    });
+  }
+  if (
+    input.orientation !== undefined &&
+    input.orientation !== characterVideoProductionSpec.orientation
+  ) {
+    issues.push({
+      path: ["orientation"],
+      message: "Character video production requires the 2:3 production envelope",
+    });
+  }
+  if (input.directions || input.outputsPerDirection !== undefined) {
+    issues.push({
+      path: ["directions"],
+      message: "Character video production does not support image direction fan-out",
+    });
+  }
+  return issues;
+}
+
 export const creativeRunCreateRequestSchema = z
   .object({
     title: z.string().trim().min(1).max(160).optional(),
@@ -148,6 +212,7 @@ export const creativeRunCreateRequestSchema = z
       "character_cover",
       "character_hero",
       "character_chat",
+      "character_video",
       "feed",
       "homepage",
       "seo",
@@ -197,6 +262,7 @@ export const creativeRunCreateRequestSchema = z
       "character_cover",
       "character_hero",
       "character_chat",
+      "character_video",
       "identity_calibration",
     ]
       .includes(request.purpose);
@@ -212,7 +278,7 @@ export const creativeRunCreateRequestSchema = z
       ctx.addIssue({
         code: "custom",
         path: ["targetType"],
-        message: "Character image purposes must use the dedicated Character target workflow",
+        message: "Character asset purposes must use the dedicated Character target workflow",
       });
     }
     if (genericPurpose && request.targetType !== "none") {
@@ -251,6 +317,13 @@ export const creativeRunCreateRequestSchema = z
         code: "custom",
         path: ["referenceAssetIds"],
         message: "Identity bootstrap cannot depend on an existing Character reference",
+      });
+    }
+    for (const issue of characterVideoRunValidationIssues(request)) {
+      ctx.addIssue({
+        code: "custom",
+        path: [...issue.path],
+        message: issue.message,
       });
     }
     if (request.targetType !== "character" && request.referenceAssetIds.length > 0) {

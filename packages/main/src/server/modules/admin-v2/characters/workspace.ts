@@ -432,6 +432,19 @@ function visualAssetDto(asset: VisualAssetProjectionSource, role: string, expect
   };
 }
 
+function videoSourceAssetDto(
+  asset: VisualAssetProjectionSource,
+  expectedCharacterId: string,
+) {
+  const available = visualAssetAvailable(asset, expectedCharacterId);
+  return {
+    mediaAssetId: asset.id,
+    available,
+    url: available ? asset.url : null,
+    thumbnailUrl: available ? asset.thumbnailUrl : null,
+  };
+}
+
 function visualPoolDtos(
   assetIds: readonly string[],
   role: "identity_anchor" | "identity_reference",
@@ -727,6 +740,7 @@ export async function getCharacterWorkspace(characterId: string) {
   const visualAsOf = new Date();
   const [
     visualPoolAssets,
+    videoSourceAssets,
     routeQualifications,
     qualifiedRoute,
     bootstrapProfile,
@@ -742,6 +756,16 @@ export async function getCharacterWorkspace(characterId: string) {
         safetyStatus: "passed",
         characterId,
       }),
+    }),
+    prisma.mediaAsset.findMany({
+      where: operationalMediaAssetWhere({
+        deletedAt: null,
+        type: "image",
+        safetyStatus: "passed",
+        characterId,
+      }),
+      orderBy: { createdAt: "desc" },
+      take: 60,
     }),
     activeIdentity ? prisma.generationRouteQualification.findMany({
       where: { style: activeIdentity.style },
@@ -1073,6 +1097,9 @@ export async function getCharacterWorkspace(characterId: string) {
       } : null,
       anchors,
       references,
+      videoSources: videoSourceAssets.map((asset) =>
+        videoSourceAssetDto(asset, characterId)
+      ),
       activeReferenceSet: activeReferenceSet ? {
         id: activeReferenceSet.id,
         revision: activeReferenceSet.revision,

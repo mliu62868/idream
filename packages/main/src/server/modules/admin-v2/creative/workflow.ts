@@ -440,7 +440,12 @@ export function creativeIdentityReviewMode(input: {
   if (input.purpose === "identity_calibration") {
     return "defines_identity" as const;
   }
-  if (!["character_cover", "character_hero", "character_chat"].includes(input.purpose)) {
+  if (![
+    "character_cover",
+    "character_hero",
+    "character_chat",
+    "character_video",
+  ].includes(input.purpose)) {
     return "not_applicable" as const;
   }
   return record(input.sourceMeta).bootstrapIdentity === true
@@ -625,7 +630,12 @@ export async function recordCreativeReviewDecision(input: {
     ) {
       throw Errors.conflict("Creative Run is not active for review", { lifecycleState: run.lifecycleState });
     }
-    const characterAssetReview = ["character_cover", "character_hero", "character_chat"].includes(run.purpose);
+    const characterAssetReview = [
+      "character_cover",
+      "character_hero",
+      "character_chat",
+      "character_video",
+    ].includes(run.purpose);
     const characterIdentityReview = run.purpose === "identity_calibration";
     const routeEvaluationReview = run.purpose === "model_eval";
     if (characterAssetReview || characterIdentityReview) {

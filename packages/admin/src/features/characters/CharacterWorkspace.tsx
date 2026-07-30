@@ -24,6 +24,7 @@ import {
   CharacterAssetStudio,
   characterAssetReadinessAction,
 } from "@/features/characters/CharacterAssetStudio";
+import { CharacterVideoStudio } from "@/features/characters/CharacterVideoStudio";
 import { CharacterCreateWizard } from "@/features/characters/CharacterCreateWizard";
 import { CharacterVoicePanel } from "@/features/characters/CharacterVoicePanel";
 import {
@@ -83,7 +84,7 @@ type Tab = CharacterWorkspaceTab;
 const characterWorkspaceTabLabels: Record<Tab, string> = {
   project: "Overview",
   visual: "Visual identity",
-  assets: "Image assets",
+  assets: "Images & video",
   voice: "Voice",
   preview: "Launch preview",
   release: "Release",
@@ -3865,20 +3866,36 @@ function CharacterDetail({
             runCommittedMutation={runCommittedMutation}
           />
         ) : tab === "assets" ? (
-          <CharacterAssetStudio
-            actorId={actorId}
-            commitProjectMutation={runCommittedMutation}
-            data={data}
-            key={`${actorId}:${data.character.id}`}
-            onContinue={selectTab}
-            onProjectReload={load}
-            permissions={{
-              read: permissions.readAssets,
-              create: guardedPermissions.createAssets,
-              review: guardedPermissions.reviewAssets,
-              selectDraft: guardedPermissions.writeProject,
-            }}
-          />
+          <div className="space-y-5">
+            <div id="character-image-studio">
+              <CharacterAssetStudio
+                actorId={actorId}
+                commitProjectMutation={runCommittedMutation}
+                data={data}
+                key={`${actorId}:${data.character.id}`}
+                onContinue={selectTab}
+                onProjectReload={load}
+                permissions={{
+                  read: permissions.readAssets,
+                  create: guardedPermissions.createAssets,
+                  review: guardedPermissions.reviewAssets,
+                  selectDraft: guardedPermissions.writeProject,
+                }}
+              />
+            </div>
+            <CharacterVideoStudio
+              data={data}
+              onCreateImage={() =>
+                document
+                  .getElementById("character-image-studio")
+                  ?.scrollIntoView({ behavior: "smooth", block: "start" })}
+              permissions={{
+                read: permissions.readAssets,
+                create: guardedPermissions.createAssets,
+                review: guardedPermissions.reviewAssets,
+              }}
+            />
+          </div>
         ) : tab === "voice" ? (
           <CharacterVoicePanel
             canActivate={guardedPermissions.publishRelease}

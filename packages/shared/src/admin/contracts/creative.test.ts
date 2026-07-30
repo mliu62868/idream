@@ -145,6 +145,38 @@ describe("Creative Run create contract", () => {
     }).success).toBe(false);
   });
 
+  it("requires one pinned source image for a Character video Run", () => {
+    const videoRequest = {
+      ...request,
+      purpose: "character_video" as const,
+      targetType: "character" as const,
+      targetId: "character-1",
+      profileId: "profile_video_beta_v1",
+      referenceAssetIds: ["character-source-1"],
+      orientation: "2:3",
+      count: 1,
+      brief: "A subtle natural smile and direct eye contact with a steady camera.",
+    };
+    expect(creativeRunCreateRequestSchema.safeParse(videoRequest).success).toBe(true);
+    expect(creativeRunCreateRequestSchema.safeParse({
+      ...videoRequest,
+      referenceAssetIds: [],
+    }).success).toBe(false);
+    expect(creativeRunCreateRequestSchema.safeParse({
+      ...videoRequest,
+      referenceAssetIds: ["source-1", "source-2"],
+    }).success).toBe(false);
+    expect(creativeRunCreateRequestSchema.safeParse({
+      ...videoRequest,
+      count: 2,
+    }).success).toBe(false);
+    expect(creativeRunCreateRequestSchema.safeParse({
+      ...videoRequest,
+      targetType: "none",
+      targetId: undefined,
+    }).success).toBe(false);
+  });
+
   it("rejects reference assets for generic text-to-image Runs", () => {
     expect(creativeRunCreateRequestSchema.safeParse({
       ...request,

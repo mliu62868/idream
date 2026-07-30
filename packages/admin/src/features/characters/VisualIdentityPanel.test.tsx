@@ -20,6 +20,7 @@ const data = {
     },
     anchors: [{ mediaAssetId: "anchor-1", role: "identity_anchor", available: true, url: "/anchor.webp", thumbnailUrl: null, qualityScore: null, identityScore: null }],
     references: [],
+    videoSources: [],
     activeReferenceSet: null,
     looks: [{
       id: "look-1",

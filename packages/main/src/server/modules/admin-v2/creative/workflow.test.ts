@@ -108,6 +108,15 @@ describe("Creative Run identity review semantics", () => {
     expect(approvedIdentityConsistencyForMode(mode)).toBe("passed");
   });
 
+  it("reviews Character video as an identity-preserving asset", () => {
+    const mode = creativeIdentityReviewMode({
+      purpose: "character_video",
+      sourceMeta: { bootstrapIdentity: false },
+    });
+    expect(mode).toBe("preserves_identity");
+    expect(approvedIdentityConsistencyForMode(mode)).toBe("passed");
+  });
+
   it("treats every route-evaluation sample as an identity-preservation judgment", () => {
     const mode = creativeIdentityReviewMode({
       purpose: "model_eval",

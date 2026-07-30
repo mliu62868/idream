@@ -1,11 +1,10 @@
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import {
-  characterRouteEvaluationMatrixDirections,
   characterRouteEvaluationMatrixKey,
   characterRouteEvaluationMatrixSchemaVersion,
-  characterRouteEvaluationOutputsPerDirection,
-  characterRouteEvaluationSampleCount,
+  characterVideoProductionSpec,
+  creativeRunCreateRequestSchema,
   incrementCounter,
 } from "@idream/shared";
 import { recordGenerationAttemptQueuedEvent } from "@/server/ai/generation-attempt-events";
@@ -72,27 +71,12 @@ import {
   operationalMediaAssetPlacementWhere,
   operationalMediaAssetWhere,
 } from "@/server/modules/admin/shared/metric-data-scope";
+import { isProductionLtxVideoProfile } from "@/server/modules/generation/production-video-profile";
 
-const productionPurposeSchema = z.enum([
-  "character_cover",
-  "character_hero",
-  "character_chat",
-  "feed",
-  "homepage",
-  "seo",
-  "template_cover",
-  "campaign",
-  "model_eval",
-  "identity_calibration",
-]);
-
-const productionTargetTypeSchema = z.enum([
-  "character",
-  "route_page",
-  "campaign",
-  "template",
-  "none",
-]);
+const productionPurposeSchema =
+  creativeRunCreateRequestSchema.shape.purpose;
+const productionTargetTypeSchema =
+  creativeRunCreateRequestSchema.shape.targetType;
 
 const placementSlotSchema = z.enum([
   "character_avatar",
@@ -107,17 +91,6 @@ const placementSlotSchema = z.enum([
 
 const releaseOwnedPlacementSlots = new Set(["character_avatar", "character_hero", "character_chat"]);
 const assetReviewStatusSchema = z.enum(["draft", "generated", "approved", "rejected", "published", "archived"]);
-const consistencyModeSchema = z.enum(["strict", "balanced", "creative"]);
-const productionDirectionSchema = z.object({
-  id: z.string().trim().min(1).max(180),
-  title: z.string().trim().min(2).max(80),
-  scenePrompt: z.string().trim().min(12).max(1_200),
-  mood: z.string().trim().min(1).max(120),
-  setting: z.string().trim().min(1).max(120),
-  outfit: z.string().trim().min(1).max(120),
-  camera: z.string().trim().min(1).max(120),
-  lighting: z.string().trim().min(1).max(120),
-}).strict();
 
 const optionalText = (max: number) =>
   z.preprocess(
@@ -125,218 +98,12 @@ const optionalText = (max: number) =>
     z.string().trim().max(max).optional(),
   );
 
-const productionBatchCreateBaseSchema = z.object({
-  title: optionalText(160),
-  purpose: productionPurposeSchema,
-  targetType: productionTargetTypeSchema.default("none"),
-  targetId: optionalText(180),
+const productionBatchCreateSchema = creativeRunCreateRequestSchema;
+
+const productionEstimateSchema = z.object({
   profileId: z.string().trim().min(1).max(180),
-  recipeId: optionalText(180),
-  presetIds: z.array(z.string().trim().min(1).max(180)).max(12).default([]),
-  referenceAssetIds: z.array(z.string().trim().min(1).max(180)).max(4).default([]),
-  bootstrapIdentity: z.boolean().default(false),
-  orientation: optionalText(20),
   count: z.number().int().min(1).max(40).default(4),
-  brief: optionalText(2_000),
-  directions: z.array(productionDirectionSchema).min(1).max(12).optional(),
-  outputsPerDirection: z.number().int().min(1).max(24).optional(),
-  routeEvaluationMatrixKey: optionalText(160),
-  identityExperiment: z.object({
-    mode: z.enum(["text_to_image", "image_to_image"]),
-    negativePrompt: z.string().trim().max(2_000).default(""),
-    seedStrategy: z.enum(["random", "locked", "reuse_source"]),
-    baseSeed: z.string().trim().min(1).max(200).optional(),
-    sourceAssetId: z.string().trim().min(1).max(180).optional(),
-    strength: z.number().min(0.1).max(1).default(0.65),
-  }).strict().optional(),
-  consistencyMode: consistencyModeSchema.default("balanced"),
-  dueAt: optionalText(80),
-  priority: z.enum(["low", "normal", "high", "urgent"]).default("normal"),
-  reason: optionalText(2_000),
-});
-
-const productionBatchCreateSchema = productionBatchCreateBaseSchema.superRefine((value, ctx) => {
-  const characterPurpose = [
-    "character_cover",
-    "character_hero",
-    "character_chat",
-    "identity_calibration",
-  ]
-    .includes(value.purpose);
-  const genericPurpose = ["feed", "homepage", "seo", "template_cover", "campaign"]
-    .includes(value.purpose);
-  if (value.targetType !== "none" && !value.targetId) {
-    ctx.addIssue({ code: "custom", path: ["targetId"], message: "Target ID is required for this target type" });
-  }
-  if (value.targetType === "none" && value.targetId) {
-    ctx.addIssue({ code: "custom", path: ["targetId"], message: "Target ID must be omitted for a targetless Run" });
-  }
-  if (characterPurpose && value.targetType !== "character") {
-    ctx.addIssue({
-      code: "custom",
-      path: ["targetType"],
-      message: "Character image purposes must use the dedicated Character target workflow",
-    });
-  }
-  if (genericPurpose && value.targetType !== "none") {
-    ctx.addIssue({
-      code: "custom",
-      path: ["targetType"],
-      message: "Generic image Runs must remain targetless until an artifact is reviewed",
-    });
-  }
-  if (!value.directions && value.outputsPerDirection !== undefined) {
-    ctx.addIssue({ code: "custom", path: ["outputsPerDirection"], message: "Outputs per direction requires persisted directions" });
-  }
-  const outputLimit = value.purpose === "model_eval" ? 40 : 24;
-  if (value.count > outputLimit) {
-    ctx.addIssue({
-      code: "custom",
-      path: ["count"],
-      message: `A ${value.purpose === "model_eval" ? "model evaluation" : "Creative"} Run cannot exceed ${outputLimit} outputs`,
-    });
-  }
-  if (value.directions && value.directions.length * (value.outputsPerDirection ?? 1) > outputLimit) {
-    ctx.addIssue({ code: "custom", path: ["outputsPerDirection"], message: `This Run cannot exceed ${outputLimit} outputs` });
-  }
-  if (
-    value.bootstrapIdentity &&
-    (value.targetType !== "character" || value.purpose !== "character_cover")
-  ) {
-    ctx.addIssue({
-      code: "custom",
-      path: ["bootstrapIdentity"],
-      message: "Identity bootstrap is only valid for a Character primary portrait Run",
-    });
-  }
-  if (value.bootstrapIdentity && value.referenceAssetIds.length > 0) {
-    ctx.addIssue({
-      code: "custom",
-      path: ["referenceAssetIds"],
-      message: "Identity bootstrap cannot depend on an existing Character reference",
-    });
-  }
-  if (value.targetType !== "character" && value.referenceAssetIds.length > 0) {
-    ctx.addIssue({
-      code: "custom",
-      path: ["referenceAssetIds"],
-      message: "Generic image production is text-to-image only and cannot accept reference assets",
-    });
-  }
-  if (value.purpose === "model_eval" && value.targetType !== "character") {
-    ctx.addIssue({
-      code: "custom",
-      path: ["targetType"],
-      message: "Identity route evaluation must pin a Character and its current reference authority",
-    });
-  }
-  if (value.purpose === "model_eval" && value.referenceAssetIds.length > 0) {
-    ctx.addIssue({
-      code: "custom",
-      path: ["referenceAssetIds"],
-      message: "Route evaluation uses only the Character's sealed canonical Reference Set",
-    });
-  }
-  if (
-    value.purpose === "model_eval" &&
-    (
-      value.count !== characterRouteEvaluationSampleCount ||
-      value.outputsPerDirection !==
-        characterRouteEvaluationOutputsPerDirection ||
-      JSON.stringify(value.directions) !==
-        JSON.stringify(characterRouteEvaluationMatrixDirections)
-    )
-  ) {
-    ctx.addIssue({
-      code: "custom",
-      path: ["directions"],
-      message: "Route evaluation must use the canonical 10-direction, 40-sample matrix",
-    });
-  }
-  if (value.purpose === "model_eval" && !value.routeEvaluationMatrixKey) {
-    ctx.addIssue({
-      code: "custom",
-      path: ["routeEvaluationMatrixKey"],
-      message: "Route evaluation must pin the canonical matrix key",
-    });
-  }
-  if (
-    value.purpose !== "model_eval" &&
-    value.routeEvaluationMatrixKey !== undefined
-  ) {
-    ctx.addIssue({
-      code: "custom",
-      path: ["routeEvaluationMatrixKey"],
-      message: "Only route evaluation Runs may pin a route evaluation matrix key",
-    });
-  }
-  if (value.purpose === "identity_calibration" && !value.identityExperiment) {
-    ctx.addIssue({
-      code: "custom",
-      path: ["identityExperiment"],
-      message: "Identity calibration must preserve an immutable experiment snapshot",
-    });
-  }
-  if (value.purpose !== "identity_calibration" && value.identityExperiment) {
-    ctx.addIssue({
-      code: "custom",
-      path: ["identityExperiment"],
-      message: "Only identity calibration Runs may include an identity experiment snapshot",
-    });
-  }
-  if (value.purpose === "identity_calibration" && value.referenceAssetIds.length > 0) {
-    ctx.addIssue({
-      code: "custom",
-      path: ["referenceAssetIds"],
-      message: "Identity calibration sources must be pinned through the experiment snapshot",
-    });
-  }
-  if (
-    value.identityExperiment?.mode === "text_to_image" &&
-    value.identityExperiment.sourceAssetId
-  ) {
-    ctx.addIssue({
-      code: "custom",
-      path: ["identityExperiment", "sourceAssetId"],
-      message: "Text-to-image calibration cannot include a source image",
-    });
-  }
-  if (
-    value.identityExperiment?.mode === "image_to_image" &&
-    !value.identityExperiment.sourceAssetId
-  ) {
-    ctx.addIssue({
-      code: "custom",
-      path: ["identityExperiment", "sourceAssetId"],
-      message: "Image-to-image calibration requires a source image",
-    });
-  }
-  if (
-    value.identityExperiment?.seedStrategy === "locked" &&
-    !value.identityExperiment.baseSeed
-  ) {
-    ctx.addIssue({
-      code: "custom",
-      path: ["identityExperiment", "baseSeed"],
-      message: "Locked seed calibration requires a base seed",
-    });
-  }
-  if (
-    value.identityExperiment?.seedStrategy === "reuse_source" &&
-    value.identityExperiment.mode !== "image_to_image"
-  ) {
-    ctx.addIssue({
-      code: "custom",
-      path: ["identityExperiment", "seedStrategy"],
-      message: "Source seed reuse is only valid for image-to-image calibration",
-    });
-  }
-});
-
-const productionEstimateSchema = productionBatchCreateBaseSchema.pick({
-  profileId: true,
-  count: true,
-});
+}).strict();
 
 const itemReviewSchema = z.object({
   reviewNote: optionalText(2_000),
@@ -590,6 +357,8 @@ export async function createProductionBatchCore(
   actor: AdminActor,
   body: ProductionBatchCreateInput,
 ): Promise<Response> {
+  const characterVideoRun = body.purpose === "character_video";
+  const productionMode = characterVideoRun ? "video" as const : "image" as const;
   const idempotencyKey = request.headers.get("idempotency-key")?.trim() || null;
   const commandScope = `${env.APP_ENV}:${actor.id}:creative.run.create`;
   const requestHash = canonicalSha256({ commandType: "creative.run.create", payload: body });
@@ -626,7 +395,11 @@ export async function createProductionBatchCore(
       );
     }
   }
-  const profile = await resolveProductionProfile(body.profileId);
+  const profile = await resolveProductionProfile(
+    body.profileId,
+    undefined,
+    productionMode,
+  );
   const workflowKey = profile.workflowKey ?? profile.pipelineModel;
   const workflow = await generationWorkflowDescriptor(workflowKey);
   const configuredWorkflowVersion = jsonRecord(profile.runnerConfig).workflowVersion;
@@ -638,9 +411,20 @@ export async function createProductionBatchCore(
   if (workflowVersion === null) {
     throw Errors.conflict("The exact production workflow version is unavailable", { workflowKey });
   }
-  const recipe = await resolveProductionRecipe(body.recipeId, body.targetType);
+  const recipe = await resolveProductionRecipe(
+    body.recipeId,
+    body.targetType,
+    undefined,
+    productionMode,
+  );
   const target = await resolveProductionTarget(body.targetType, body.targetId);
-  const visualProfile = await resolveProductionVisualProfile(prisma, body.targetType, body.targetId);
+  const visualProfile = characterVideoRun
+    ? null
+    : await resolveProductionVisualProfile(
+        prisma,
+        body.targetType,
+        body.targetId,
+      );
   const bootstrapAuthority = body.bootstrapIdentity && body.targetId
     ? await resolveProductionBootstrapAuthority(prisma, body.targetId, body.brief ?? null)
     : null;
@@ -654,7 +438,7 @@ export async function createProductionBatchCore(
     characterTargetRun && body.purpose === "identity_calibration";
   if (characterTargetRun && !routeEvaluationRun && body.count !== 1) {
     throw Errors.badRequest(
-      "Character image production creates exactly one image per Run",
+      "Character asset production creates exactly one output per Run",
       {
         requestedCount: body.count,
         requiredCount: 1,
@@ -705,6 +489,24 @@ export async function createProductionBatchCore(
           profileKey: profile.profileKey,
           workflowKey,
           mode: experiment.mode,
+        },
+      );
+    }
+  } else if (characterVideoRun) {
+    if (
+      !isProductionLtxVideoProfile(profile) ||
+      !workflow ||
+      !workflow.capabilities.includes("video") ||
+      !workflow.capabilities.includes("img2video") ||
+      workflow.identity.maxReferences !== 1 ||
+      !workflow.identity.acceptedRoles.includes("source_image") ||
+      profileCapabilities.initImage !== true
+    ) {
+      throw Errors.conflict(
+        "The exact Character image-to-video production route is unavailable",
+        {
+          profileKey: profile.profileKey,
+          workflowKey,
         },
       );
     }
@@ -815,11 +617,17 @@ export async function createProductionBatchCore(
   }
   const activeReferenceSet = visualProfile &&
       characterTargetRun &&
+      !characterVideoRun &&
       !body.bootstrapIdentity &&
       !identityExperimentRun
     ? await resolveProductionReferenceSet(prisma, visualProfile.id)
     : null;
-  if (characterTargetRun && !body.bootstrapIdentity && !identityExperimentRun) {
+  if (
+    characterTargetRun &&
+    !characterVideoRun &&
+    !body.bootstrapIdentity &&
+    !identityExperimentRun
+  ) {
     if (
       !visualProfile ||
       !activeReferenceSet ||
@@ -924,11 +732,13 @@ export async function createProductionBatchCore(
       allowedOrientations,
     });
   }
-  const dimensions = dimensionsForImageOrientation({
-    orientation,
-    defaultWidth: profile.defaultWidth,
-    defaultHeight: profile.defaultHeight,
-  });
+  const dimensions = characterVideoRun
+    ? { width: profile.defaultWidth, height: profile.defaultHeight }
+    : dimensionsForImageOrientation({
+        orientation,
+        defaultWidth: profile.defaultWidth,
+        defaultHeight: profile.defaultHeight,
+      });
   const title =
     body.title ??
     `${purposeLabel(body.purpose)} ${new Date().toISOString().slice(0, 10)}`;
@@ -969,6 +779,7 @@ export async function createProductionBatchCore(
   });
   if (
     variationSourceCount > 0 &&
+    !characterVideoRun &&
     !identityExperimentRun &&
     !sourceVariationAuthority.ready
   ) {
@@ -990,7 +801,9 @@ export async function createProductionBatchCore(
       mediaAssetId: asset.id,
       position: nextReferencePosition + index,
       role: "source_image",
-      weight: identityExperimentRun
+      weight: characterVideoRun
+        ? 1
+        : identityExperimentRun
         ? body.identityExperiment?.strength ?? 0.65
         : body.consistencyMode === "strict"
           ? 0.9
@@ -998,7 +811,9 @@ export async function createProductionBatchCore(
             ? 0.7
             : 0.8,
       selectorVersion: activeReferenceSet?.selectorVersion ?? "operator-source-v1",
-      selectionReason: identityExperimentRun
+      selectionReason: characterVideoRun
+        ? "Operator-selected Character video source image"
+        : identityExperimentRun
         ? "Operator-selected visual identity calibration source"
         : "Operator-selected identity-consistent variation source",
       sourceJobId: asset.sourceJob?.id ?? null,
@@ -1042,9 +857,15 @@ export async function createProductionBatchCore(
           strength: body.identityExperiment.strength,
         }
       : {}),
+    ...(characterVideoRun
+      ? {
+          sourceImageAssetId: additionalReferenceAssets[0]?.id,
+          seconds: characterVideoProductionSpec.durationSeconds,
+        }
+      : {}),
   };
   const perItemCostDreamcoins = await generationCostDreamcoins(
-    "image",
+    productionMode,
     1,
     profile.costMultiplier ?? 1,
   );
@@ -1211,6 +1032,54 @@ export async function createProductionBatchCore(
       ) {
         throw Errors.conflict(
           "The identity calibration source changed before the Run was committed",
+        );
+      }
+    } else if (characterVideoRun && body.targetId) {
+      const [currentProfile, currentRecipe, currentSource] = await Promise.all([
+        tx.generationModelProfile.findUnique({
+          where: { id: profile.id },
+        }),
+        tx.generationRecipe.findUnique({
+          where: { id: recipe.id },
+          select: {
+            id: true,
+            recipeKey: true,
+            version: true,
+            mode: true,
+            useCase: true,
+            status: true,
+          },
+        }),
+        tx.mediaAsset.findFirst({
+          where: operationalMediaAssetWhere({
+            id: additionalReferenceAssets[0]?.id,
+            type: "image",
+            safetyStatus: "passed",
+            deletedAt: null,
+            characterId: body.targetId,
+          }),
+          select: { id: true, metadata: true },
+        }),
+      ]);
+      if (
+        !currentProfile ||
+        !isProductionLtxVideoProfile(currentProfile) ||
+        currentProfile.id !== profile.id ||
+        !currentRecipe ||
+        currentRecipe.recipeKey !== recipe.recipeKey ||
+        currentRecipe.version !== recipe.version ||
+        currentRecipe.mode !== "video" ||
+        currentRecipe.useCase !== "character" ||
+        currentRecipe.status !== "active" ||
+        !currentSource ||
+        !isMediaAssetOperationalForAuthority(currentSource.metadata)
+      ) {
+        throw Errors.conflict(
+          "Character video authority changed before the Run was committed",
+          {
+            characterId: body.targetId,
+            sourceAssetId: additionalReferenceAssets[0]?.id ?? null,
+          },
         );
       }
     } else if (body.targetType === "character" && body.targetId) {
@@ -1498,7 +1367,7 @@ export async function createProductionBatchCore(
           referenceAssetIds: referenceAssetIds.length > 0 ? toInputJson(referenceAssetIds) : undefined,
           referenceSetRevisionId: activeReferenceSet?.id,
           referenceManifest: referenceManifest.length > 0 ? toInputJson(referenceManifest) : undefined,
-          mode: "image",
+          mode: productionMode,
           prompt,
           negativePrompt: productionNegativePrompt(
             recipe.negativeBase,
@@ -1544,6 +1413,14 @@ export async function createProductionBatchCore(
             referenceSetRevisionId: activeReferenceSet?.id ?? null,
             generationRouteQualificationId: generationRouteAuthority?.qualificationId ?? null,
             generationRouteFingerprint: generationRouteAuthority?.routeFingerprint ?? null,
+            videoSourceAssetId:
+              characterVideoRun
+                ? additionalReferenceAssets[0]?.id ?? null
+                : null,
+            videoDurationSeconds:
+              characterVideoRun
+                ? characterVideoProductionSpec.durationSeconds
+                : null,
             routeQualificationEvaluationCandidate: routeEvaluationRun,
             routeQualificationMatrixKey:
               routeEvaluationRun ? body.routeEvaluationMatrixKey ?? null : null,
@@ -2581,10 +2458,14 @@ function assertLegacyPlacementTransition(
   });
 }
 
-async function resolveProductionProfile(profileId: string, version?: number) {
+async function resolveProductionProfile(
+  profileId: string,
+  version?: number,
+  mode: "image" | "video" = "image",
+) {
   const profile = await prisma.generationModelProfile.findFirst({
     where: {
-      mode: "image",
+      mode,
       status: "active",
       enabled: true,
       rolloutPercent: { gt: 0 },
@@ -2593,7 +2474,17 @@ async function resolveProductionProfile(profileId: string, version?: number) {
     },
     orderBy: { version: "desc" },
   });
-  if (!profile) throw Errors.badRequest("Production Studio requires an active image profile");
+  if (!profile) {
+    throw Errors.badRequest(
+      `Production Studio requires an active ${mode} profile`,
+    );
+  }
+  if (mode === "video" && !isProductionLtxVideoProfile(profile)) {
+    throw Errors.conflict(
+      "Production Studio only accepts the exact pinned Character video profile",
+      { profileId, version: version ?? null },
+    );
+  }
   return profile;
 }
 
@@ -2601,24 +2492,29 @@ async function resolveProductionRecipe(
   recipeId: string | undefined,
   targetType: string,
   version?: number,
+  mode: "image" | "video" = "image",
 ) {
   const useCase = targetType === "character" ? "character" : "freeplay";
   const recipe = await prisma.generationRecipe.findFirst({
     where: recipeId
       ? {
-          mode: "image",
+          mode,
           status: "active",
           version,
           OR: [{ id: recipeId }, { recipeKey: recipeId }],
         }
       : {
-          mode: "image",
+          mode,
           status: "active",
           useCase,
         },
     orderBy: { version: "desc" },
   });
-  if (!recipe) throw Errors.badRequest("Production Studio requires an active prompt recipe");
+  if (!recipe) {
+    throw Errors.badRequest(
+      `Production Studio requires an active ${mode} prompt recipe`,
+    );
+  }
   return recipe;
 }
 
@@ -2800,7 +2696,9 @@ function generationProfileCapabilities(value: Prisma.JsonValue | null) {
   };
 }
 
-function productionConsistencyPrompt(mode: z.infer<typeof consistencyModeSchema>) {
+function productionConsistencyPrompt(
+  mode: ProductionBatchCreateInput["consistencyMode"],
+) {
   if (mode === "strict") {
     return "Identity consistency: strict; preserve the locked face, hairstyle, body type, and signature traits.";
   }
@@ -2817,8 +2715,24 @@ function productionPrompt(input: {
   presetFragment: string;
   brief?: string;
   visualProfile: Awaited<ReturnType<typeof resolveProductionVisualProfile>>;
-  consistencyMode: z.infer<typeof consistencyModeSchema>;
+  consistencyMode: ProductionBatchCreateInput["consistencyMode"];
 }) {
+  if (
+    input.purpose === "character_video" &&
+    input.target?.type === "character"
+  ) {
+    return [
+      `Create one continuous ${characterVideoProductionSpec.durationSeconds}-second image-to-video portrait clip.`,
+      `Target character: ${input.target.label}.`,
+      "The pinned source image is the exact identity, appearance, composition, and first-frame authority.",
+      `Recipe: ${input.recipeBody}`,
+      input.brief ? `Operator motion brief: ${input.brief}` : "",
+      "Use subtle natural motion, stable facial identity, coherent anatomy, and a steady single camera take.",
+      "Do not cut, reframe, duplicate the person, introduce another person, add captions, or replace the background.",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
   if (
     input.purpose === "identity_calibration" &&
     input.target?.type === "character" &&
@@ -2885,7 +2799,7 @@ function productionControls(input: {
   };
   presets: Array<{ id: string; type: string }>;
   visualProfile: Awaited<ReturnType<typeof resolveProductionVisualProfile>>;
-  consistencyMode: z.infer<typeof consistencyModeSchema>;
+  consistencyMode: ProductionBatchCreateInput["consistencyMode"];
   referenceAssetIds: readonly string[];
   workflowIdentity: {
     mode: string;
@@ -2939,6 +2853,12 @@ function productionNegativePrompt(
   identity: string | null | undefined,
   purpose: z.infer<typeof productionPurposeSchema>,
 ) {
+  if (purpose === "character_video") {
+    return [
+      base?.trim(),
+      "identity drift, face morphing, flicker, jitter, camera cut, reframing, duplicate person, extra people, text, watermark",
+    ].filter(Boolean).join(", ");
+  }
   const characterCompositionGuard =
     purpose.startsWith("character_") || purpose === "identity_calibration"
     ? "collage, contact sheet, split screen, multiple panels, comparison grid, duplicate person, extra people"

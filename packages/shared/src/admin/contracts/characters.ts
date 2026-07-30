@@ -222,6 +222,15 @@ export const characterVisualAssetSchema = z
   })
   .strict();
 
+export const characterVideoSourceAssetSchema = z
+  .object({
+    mediaAssetId: adminIdSchema,
+    available: z.boolean(),
+    url: z.string().nullable(),
+    thumbnailUrl: z.string().nullable(),
+  })
+  .strict();
+
 export const characterLookWorkspaceSchema = z
   .object({
     id: adminIdSchema,
@@ -480,6 +489,7 @@ export const characterVisualWorkspaceSchema = z
     activeIdentity: characterVisualIdentityVersionSchema.nullable(),
     anchors: z.array(characterVisualAssetSchema).readonly(),
     references: z.array(characterVisualAssetSchema).readonly(),
+    videoSources: z.array(characterVideoSourceAssetSchema).readonly(),
     activeReferenceSet: characterVisualReferenceSetSchema.nullable(),
     looks: z.array(characterLookWorkspaceSchema).readonly().optional(),
     routeQualifications: z.array(characterRouteQualificationEvidenceSchema).readonly(),
