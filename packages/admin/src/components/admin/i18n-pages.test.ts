@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hasAdminZh } from "./i18n";
+import { hasAdminZh, translateAdmin } from "./i18n";
 
 // SPEC: 三件套页面自有文案必须有 zh（运营面不漏英文）。每落一个三件套，扩这张表。
 // 注意：枚举/状态词（approved/draft/archived/female/…/realistic/…）不进 zh 表——
@@ -132,6 +132,25 @@ export const UI_KEYS = [
   "Type the name to confirm",
 ];
 
+// SPEC: 角色工作台顶部的运营事实条 + 已上线降级文案（characterOperationsFacts /
+// Character Production Journey 展示文案）。这条是运营开页第一眼看的东西，漏英文最刺眼。
+export const CHARACTER_OPERATIONS_KEYS = [
+  "{name} visual production progress", "Character operations filters",
+  "Complete the image pack the live character is missing", "Could not record portfolio decision",
+  "Do not regress qualified conversation or Same-character D7", "Image pack", "Live performance",
+  "Live release", "Live with an incomplete image pack", "Missing: {purposes}",
+  "Every live character has a complete image pack and is recording observations.",
+  "Monitor refresh failed", "Needs attention", "No character needs attention right now",
+  "No observations across a full {window} window. Check placement targeting and event delivery.",
+  "No observations yet. The {window} window has not closed since publish.",
+  "None", "None published", "Ongoing", "Operations status", "Owner",
+  "Review the selected action at the next portfolio window", "Serving", "Unassigned",
+  "Unpublished changes", "Visibility",
+  "What should we do with this Character based on current release evidence?",
+  "not required", "not_live", "refresh the active image route before the next Release",
+  "route qualification",
+];
+
 describe("admin i18n — trio pages have zh", () => {
   it("creative and Character image workflow", () => {
     for (const key of CREATIVE_WORKFLOW_KEYS) expect(hasAdminZh(key)).toBe(true);
@@ -163,5 +182,16 @@ describe("admin i18n — trio pages have zh", () => {
 
   it("shared ui primitives", () => {
     for (const key of UI_KEYS) expect(hasAdminZh(key)).toBe(true);
+  });
+
+  it("character workspace operations facts", () => {
+    for (const key of CHARACTER_OPERATIONS_KEYS) expect(hasAdminZh(key)).toBe(true);
+  });
+
+  // SPEC: 扁平词典没有命名空间，同名 key 就是冲突。声音面板的"演绎风格"曾经占用
+  // "Performance"，把角色工作台的「表现」tab 译成了演绎风格——锁住两边各用各的键。
+  it("keeps the Performance tab distinct from voice delivery style", () => {
+    expect(translateAdmin("zh", "Performance")).toBe("表现");
+    expect(translateAdmin("zh", "Voice delivery")).toBe("演绎风格");
   });
 });

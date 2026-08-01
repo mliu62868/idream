@@ -316,6 +316,85 @@ describe("Admin API v2 authoritative command routes", () => {
     }
   });
 
+  it("replays inline durable commands after their side effects change target versions", async () => {
+    const incidentKey = randomUUID();
+    const first = await resolveIncident(
+      request(
+        "/api/v2/admin/incidents/x/commands/resolve",
+        { entityVersion: 4 },
+        { key: incidentKey, confirmation: `${incidentId}:resolve` },
+      ),
+      { params: Promise.resolve({ id: incidentId }) },
+    );
+    const firstBody = await first.json();
+
+    const caseKey = randomUUID();
+    const firstClose = await closeCase(
+      request(
+        "/api/v2/admin/cases/x/commands/close",
+        { entityVersion: 5 },
+        { key: caseKey, confirmation: `${caseId}:close` },
+      ),
+      { params: Promise.resolve({ id: caseId }) },
+    );
+    const firstCloseBody = await firstClose.json();
+
+    try {
+      const replay = await resolveIncident(
+        request(
+          "/api/v2/admin/incidents/x/commands/resolve",
+          { entityVersion: 4 },
+          { key: incidentKey, confirmation: `${incidentId}:resolve` },
+        ),
+        { params: Promise.resolve({ id: incidentId }) },
+      );
+      const replayBody = await replay.json();
+      const replayClose = await closeCase(
+        request(
+          "/api/v2/admin/cases/x/commands/close",
+          { entityVersion: 5 },
+          { key: caseKey, confirmation: `${caseId}:close` },
+        ),
+        { params: Promise.resolve({ id: caseId }) },
+      );
+      const replayCloseBody = await replayClose.json();
+
+      expect(first.status).toBe(202);
+      expect(replay.status).toBe(202);
+      expect(replayBody.data.commandId).toBe(firstBody.data.commandId);
+      expect(replayBody.data.requestId).toBe(firstBody.data.requestId);
+      expect(firstClose.status).toBe(202);
+      expect(replayClose.status).toBe(202);
+      expect(replayCloseBody.data.commandId).toBe(firstCloseBody.data.commandId);
+      expect(replayCloseBody.data.requestId).toBe(firstCloseBody.data.requestId);
+      await expect(prisma.opsIncident.findUniqueOrThrow({ where: { id: incidentId } })).resolves.toMatchObject({
+        status: "resolved",
+        version: 5,
+      });
+      expect(await prisma.adminAuditLog.count({
+        where: { requestId: firstBody.data.requestId, targetId: incidentId, action: "incident.resolved" },
+      })).toBe(1);
+      await expect(prisma.adminCase.findUniqueOrThrow({ where: { id: caseId } })).resolves.toMatchObject({
+        status: "closed",
+        version: 6,
+      });
+      expect(await prisma.adminAuditLog.count({
+        where: { requestId: firstCloseBody.data.requestId, targetId: caseId, action: "case.closed" },
+      })).toBe(1);
+    } finally {
+      await Promise.all([
+        prisma.opsIncident.update({
+          where: { id: incidentId },
+          data: { status: "monitoring", verificationState: "passed", version: 4 },
+        }),
+        prisma.adminCase.update({
+          where: { id: caseId },
+          data: { status: "resolved", verificationState: "passed", version: 5 },
+        }),
+      ]);
+    }
+  });
+
   it("rejects missing permission, stale versions, and unmet domain invariants", async () => {
     const denied = await publishRelease(
       request("/api/v2/admin/characters/x/releases/x/commands/publish", { entityVersion: 3 }, { actorId: analystId, role: "analyst", confirmation: `${characterId}:${releaseId}:publish` }),

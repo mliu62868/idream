@@ -19,9 +19,13 @@ import {
 } from "./pipeline";
 import type { GenProviders } from "./providers";
 import type { EnqueueInput } from "./queue";
+import { env } from "./env";
+
+const originalFetch = globalThis.fetch;
 
 afterEach(() => {
-  vi.unstubAllGlobals();
+  globalThis.fetch = originalFetch;
+  vi.restoreAllMocks();
 });
 
 function imagePayload(overrides: Partial<ImageGeneratePayload> = {}): ImageGeneratePayload {
@@ -79,7 +83,7 @@ function previewPayload(
     controls: { width: 832, height: 1024 },
     orientation: "4:5",
     seed: "draft-1:preview-job-1",
-    model: "redcraft-krea2-comfyui",
+    model: "redcraft-krea2-redmix3-fp8",
     outputPrefix: "preview/preview-job-1/",
     ...overrides,
   };
@@ -424,10 +428,9 @@ describe("processImageGenerate", () => {
 
   it("downloads provider asset URLs before writing blobs", async () => {
     const enqueue = vi.fn(async (_: EnqueueInput) => {});
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response("downloaded-image", { status: 200 })),
-    );
+    globalThis.fetch = vi.fn(
+      async () => new Response("downloaded-image", { status: 200 }),
+    ) as typeof fetch;
     const providers = makeProviders({
       image: {
         generate: vi.fn(async () => ({
@@ -1020,7 +1023,7 @@ describe("processVideoGenerate", () => {
     });
     expect(enqueue).toHaveBeenCalledTimes(1);
     expect(recordTransportExecution).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      provider: "mock",
+      provider: env.VIDEO_PROVIDER,
       model: "mock-video",
       status: "running",
     }));
@@ -1032,7 +1035,7 @@ describe("processVideoGenerate", () => {
     const payload = input.payload as Record<string, unknown>;
     expect(payload.kind).toBe("generation.completed");
     expect(payload.mode).toBe("video");
-    expect(payload.provider).toBe("mock");
+    expect(payload.provider).toBe(env.VIDEO_PROVIDER);
     expect(payload.model).toBe("mock-video");
     expect(payload.assets).toEqual([
       {
@@ -1046,10 +1049,9 @@ describe("processVideoGenerate", () => {
 
   it("downloads provider video asset URLs before writing blobs", async () => {
     const enqueue = vi.fn(async (_: EnqueueInput) => {});
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response("downloaded-video", { status: 200 })),
-    );
+    globalThis.fetch = vi.fn(
+      async () => new Response("downloaded-video", { status: 200 }),
+    ) as typeof fetch;
     const providers = makeProviders({
       video: {
         generate: vi.fn(async () => ({

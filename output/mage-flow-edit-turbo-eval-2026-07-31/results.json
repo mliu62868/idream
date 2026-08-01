@@ -1,0 +1,140 @@
+{
+  "runtime": {
+    "host": "Mac16,6 / Apple M4 Max / 128 GiB unified memory",
+    "comfyuiUrl": "http://127.0.0.1:8188",
+    "comfyuiVersion": "0.29.0",
+    "comfyuiCommit": "e651b7bef55a5376343dcb1c0edb79f0142c985e",
+    "pytorchVersion": "2.10.0",
+    "device": "mps"
+  },
+  "mageFlow": {
+    "source": "Comfy-Org/Mage-Flow",
+    "revision": "d8c99241f6fa80fbd453014234af2bf337ea21e6",
+    "diffusionModel": {
+      "file": "mage_flow_edit_turbo_bf16.safetensors",
+      "bytes": 8231536760,
+      "sha256": "29c3726ecd64afe149eef28af3e27b6b40de52646bfd16757a37da4b6fbcf288"
+    },
+    "vae": {
+      "file": "mage_flow_vae_bf16.safetensors",
+      "bytes": 345053056,
+      "sha256": "34e076dc1e8a15321e1e07be5111d59cf16dd10b804b7c7e20b4de29013427e0"
+    },
+    "textEncoder": {
+      "file": "qwen3vl_4b_bf16.safetensors",
+      "bytes": 8875713480,
+      "sha256": "e358a5ed88311216fbff16d8210765ad9ae361fd93241b022ae389cd1085f8ae",
+      "note": "Existing local ComfyUI conversion. Its tensor-data prefix matches the current Comfy-Org file; the 5904-byte difference is entirely in the safetensors header length."
+    },
+    "loadedComponentMbFromComfyLog": 16577.93
+  },
+  "qwenBaseline": {
+    "checkpoint": "Qwen-Rapid-AIO-NSFW-v19.safetensors",
+    "weightDtype": "fp8_e4m3fn",
+    "manualCast": "bfloat16",
+    "loadedComponentMbFromComfyLog": 27114.26
+  },
+  "recipe": {
+    "sourceImage": "source.webp",
+    "width": 800,
+    "height": 992,
+    "steps": 4,
+    "cfg": 1,
+    "mageSampler": "euler/simple",
+    "qwenSampler": "sa_solver/beta"
+  },
+  "runs": [
+    {
+      "model": "mage-flow-edit-turbo-bf16",
+      "case": "ordinary",
+      "seed": 4242,
+      "promptId": "8436ba74-2c0b-4ff9-958c-af74e527859c",
+      "cachedNodes": [],
+      "durationMs": 15223,
+      "output": "mage-ordinary-seed-4242.png",
+      "status": "success"
+    },
+    {
+      "model": "mage-flow-edit-turbo-bf16",
+      "case": "adult",
+      "seed": 4242,
+      "promptId": "4175d21b-d23d-494e-95f5-a403caa3362e",
+      "cachedNodes": [
+        "1",
+        "2",
+        "3",
+        "4"
+      ],
+      "durationMs": 11210,
+      "output": "mage-adult-seed-4242.png",
+      "status": "success"
+    },
+    {
+      "model": "mage-flow-edit-turbo-bf16",
+      "case": "adult",
+      "seed": 4243,
+      "promptId": "11973569-ba1a-470c-9003-26bb29bcfabf",
+      "cachedNodes": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5"
+      ],
+      "durationMs": 8746,
+      "output": "mage-adult-seed-4243.png",
+      "status": "success"
+    },
+    {
+      "model": "mage-flow-edit-turbo-bf16",
+      "case": "adult",
+      "seed": 4244,
+      "promptId": "8d389652-2e41-46e8-a49a-d7b9cdc2638e",
+      "cachedNodes": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5"
+      ],
+      "durationMs": 9792,
+      "output": "mage-adult-seed-4244.png",
+      "status": "success"
+    },
+    {
+      "model": "qwen-rapid-aio-nsfw-v19",
+      "case": "ordinary",
+      "seed": 4242,
+      "promptId": "697b8d3a-3261-4341-8c72-43088a76f490",
+      "cachedNodes": [
+        "8"
+      ],
+      "durationMs": 109887,
+      "output": "qwen-ordinary-seed-4242.png",
+      "status": "success"
+    },
+    {
+      "model": "qwen-rapid-aio-nsfw-v19",
+      "case": "adult",
+      "seed": 4242,
+      "promptId": "429bc277-7d07-4d98-bd68-1a776aaedaf9",
+      "cachedNodes": [
+        "1",
+        "4",
+        "8",
+        "9"
+      ],
+      "durationMs": 98366,
+      "output": "qwen-adult-seed-4242.png",
+      "status": "success"
+    }
+  ],
+  "observations": {
+    "nsfwPasses": 3,
+    "nsfwAttempts": 3,
+    "mageAdultWarmMedianMs": 9792,
+    "ordinaryColdSpeedupVsQwen": 7.22,
+    "adultWarmSpeedupVsQwen": 8.78,
+    "routeChanged": false
+  }
+}

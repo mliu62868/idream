@@ -10,7 +10,7 @@ import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
-import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
+import { actorWithPermission, jsonBody } from "@/server/modules/admin-v2/shared/authority";
 import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
 import { assignReviewCaseInTransaction } from "../cases/service";
 import { triageIncidentInTransaction } from "../incidents/workflow";
@@ -185,7 +185,7 @@ async function applyClaim(
 }
 
 export async function claimTodayWorkItem(request: Request) {
-  const body = todayClaimRequestSchema.parse(await request.json());
+  const body = todayClaimRequestSchema.parse(await jsonBody(request));
   const idempotencyKey = requireIdempotencyKey(request);
   const requestId = request.headers.get("x-request-id")?.trim() || crypto.randomUUID();
   const actor = await claimActor(request, body);

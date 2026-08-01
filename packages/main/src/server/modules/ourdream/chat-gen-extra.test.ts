@@ -28,7 +28,7 @@ const P = "zt-cgx-";
 const SYS = `${P}sys`;
 const CHAR = `${P}char`;
 const PINNED_RETRY_JOB_AUTHORITY = {
-  model: "redcraft-krea2-txt2img",
+  model: "redcraft-krea2-redmix3-txt2img",
   profileId: "profile_image_default_v1",
   profileVersion: 1,
   orientation: "1:1",

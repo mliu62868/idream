@@ -1,5 +1,5 @@
 import { characterProjectDraftPatchRequestSchema, characterProjectDraftResumeSchema } from "@idream/shared/admin";
-import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
+import { actorWithPermission, jsonBody } from "@/server/modules/admin-v2/shared/authority";
 import { getCharacterProjectDraftForResume, updateCharacterProjectDraft } from "@/server/modules/admin-v2/characters/workspace";
 import { requireMatchingProjectVersion } from "@/server/modules/admin-v2/characters/project-version";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
@@ -19,7 +19,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   const { id } = await context.params;
   return adminV2Route(async () => {
     const actor = await actorWithPermission(request, "character.project.write", { characterId: id });
-    const body = characterProjectDraftPatchRequestSchema.parse(await request.json());
+    const body = characterProjectDraftPatchRequestSchema.parse(await jsonBody(request));
     requireMatchingProjectVersion(request, body.entityVersion);
     return updateCharacterProjectDraft({
       characterId: id,

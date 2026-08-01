@@ -50,7 +50,7 @@ const SMOKE_PROMPT =
 
 async function main() {
   const outPath = resolveOutPath();
-  const modelId = resolveArg("--model") ?? "redcraft-krea2-comfyui";
+  const modelId = resolveArg("--model") ?? "redcraft-krea2-redmix3-fp8";
   const promptOverride = resolveArg("--prompt");
   const cliArgs = process.argv.slice(2);
   const generationOverrides = resolveSmokeGenerationOverrides(cliArgs);

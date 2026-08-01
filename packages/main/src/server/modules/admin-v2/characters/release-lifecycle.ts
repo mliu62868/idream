@@ -19,6 +19,10 @@ import {
   isCharacterProjectPhaseTransitionAllowed,
   isCharacterReleaseTransitionAllowed,
 } from "../shared/state-transition-authority";
+import {
+  transitionCharacterProject,
+  transitionCharacterRelease,
+} from "./transition";
 import { characterIdentityReviewEvidencePassed } from "../shared/creative-review-quality";
 import {
   lockCharacterGenerationAuthority,
@@ -546,17 +550,14 @@ export async function proposeCharacterRelease(input: {
       generationProvenance,
       releasePlacementManifest,
     };
-    const projectUpdated = await tx.characterProject.updateMany({
-      where: {
-        id: project.id,
+    await transitionCharacterProject(tx, {
+      projectId: project.id,
+      to: "qa",
+      expected: {
+        from: project.phase as "idea" | "planned" | "producing",
         version: project.version,
-        phase: project.phase,
       },
-      data: { phase: "qa", version: { increment: 1 } },
     });
-    if (projectUpdated.count !== 1) {
-      throw Errors.conflict("Character Project changed before Release proposal");
-    }
     const release = await tx.characterRelease.create({ data: {
       ...snapshot,
       generationProvenance: toInputJson(generationProvenance),
@@ -659,27 +660,21 @@ export async function reviewCharacterRelease(input: {
         projectPhase: { from: project.phase, to: projectPhase },
       });
     }
-    const releaseUpdated = await tx.characterRelease.updateMany({
-      where: {
-        id: release.id,
+    const updated = await transitionCharacterRelease(tx, {
+      releaseId: release.id,
+      to: status,
+      expected: {
+        from: release.status as "in_review",
         version: release.version,
-        status: release.status,
       },
-      data: { status, version: { increment: 1 } },
     });
-    const projectUpdated = await tx.characterProject.updateMany({
-      where: {
-        id: project.id,
+    await transitionCharacterProject(tx, {
+      projectId: project.id,
+      to: projectPhase,
+      expected: {
+        from: project.phase as "qa",
         version: project.version,
-        phase: project.phase,
       },
-      data: { phase: projectPhase, version: { increment: 1 } },
-    });
-    if (releaseUpdated.count !== 1 || projectUpdated.count !== 1) {
-      throw Errors.conflict("Release or Character Project changed during review");
-    }
-    const updated = await tx.characterRelease.findUniqueOrThrow({
-      where: { id: release.id },
     });
     await tx.adminAuditLog.create({ data: {
       actorId: actor.id,

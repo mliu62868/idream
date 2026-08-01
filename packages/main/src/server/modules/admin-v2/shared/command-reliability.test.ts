@@ -507,6 +507,9 @@ describe("canonical product event durable ingest", () => {
     });
 
     expect(conflict.status).toBe("quarantined");
+    await expect(ingestProductEvent(prisma, event)).resolves.toMatchObject({
+      status: "quarantined",
+    });
     expect(
       await prisma.inboundEventReceipt.findUniqueOrThrow({
         where: { sourceService_sourceEventId: { sourceService: "admin-test", sourceEventId } },

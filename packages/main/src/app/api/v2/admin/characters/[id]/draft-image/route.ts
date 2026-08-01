@@ -1,37 +1,28 @@
 import {
   characterDraftImageSelectionRequestSchema,
-  characterDraftImageSelectionResultSchema,
 } from "@idream/shared/admin";
-import { env } from "@/server/lib/env";
+import type { z } from "zod";
 import { selectCharacterDraftImage } from "@/server/modules/admin-v2/characters/asset-studio";
-import { requireMatchingProjectVersion } from "@/server/modules/admin-v2/characters/project-version";
-import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
-import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
-import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
+import { executeAdminMutation } from "@/server/modules/admin-v2/shared/admin-mutation";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
+type DraftImageSelection = z.infer<typeof characterDraftImageSelectionRequestSchema>;
+
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
-  return adminV2Route(async () => {
-    const actor = await actorWithPermission(request, "character.project.write", { characterId: id });
-    const body = characterDraftImageSelectionRequestSchema.parse(await request.json());
-    requireMatchingProjectVersion(request, body.entityVersion);
-    const idempotencyKey = requireIdempotencyKey(request);
-    const requestId = request.headers.get("x-request-id")?.trim() || crypto.randomUUID();
-    return characterDraftImageSelectionResultSchema.parse(
-      await executeAtomicIdempotentMutation({
-        environment: env.APP_ENV,
-        actor,
-        idempotencyKey,
-        requestId,
-        commandType: "character.project.draft_image.select",
-        target: { type: "character", id },
-        expectedVersion: body.entityVersion,
-        payload: body,
-        mutate: (tx) => selectCharacterDraftImage({
+  return adminV2Route(() =>
+    executeAdminMutation<DraftImageSelection>(
+      "PATCH /api/v2/admin/characters/:id/draft-image",
+      request,
+      {
+        params: { id },
+        resource: { characterId: id },
+        target: () => ({ type: "character", id }),
+        expectedVersion: (body) => body.entityVersion,
+        mutate: (tx, { actor, body, requestId }) => selectCharacterDraftImage({
           characterId: id,
           expectedProjectVersion: body.entityVersion,
           purpose: body.purpose,
@@ -43,7 +34,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
           reason: body.reason,
           requestId,
         }, tx),
-      }),
-    );
-  });
+      },
+    )
+  );
 }

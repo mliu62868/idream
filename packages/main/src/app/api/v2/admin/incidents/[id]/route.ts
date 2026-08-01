@@ -3,7 +3,7 @@ import { Errors } from "@/server/lib/errors";
 import { getIncidentDetail } from "@/server/modules/admin-v2/incidents/query";
 import { triageIncident } from "@/server/modules/admin-v2/incidents/workflow";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
-import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
+import { actorWithPermission, jsonBody } from "@/server/modules/admin-v2/shared/authority";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -26,7 +26,7 @@ export async function PATCH(request: Request, context: Context) {
   const { id } = await context.params;
   return adminV2Route(async () => {
     const actor = await actorWithPermission(request, "ops.incident.manage");
-    const body = incidentTriageRequestSchema.parse(await request.json());
+    const body = incidentTriageRequestSchema.parse(await jsonBody(request));
     requireMatchingIfMatch(request, body.entityVersion);
     const updated = await triageIncident({
       incidentId: id,

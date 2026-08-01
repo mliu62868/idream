@@ -259,6 +259,20 @@ export function unavailablePinnedManifestReferenceRoles(input: {
     }));
 }
 
+export function generationDispatchModelKey(input: {
+  readonly mode: string;
+  readonly workflowKey: string | null;
+  readonly model: string | null;
+  readonly profileId?: string | null;
+}) {
+  return input.workflowKey
+    ?? input.model
+    ?? input.profileId
+    ?? (input.mode === "video"
+      ? "unresolved-video-model"
+      : "unresolved-image-model");
+}
+
 export async function enqueueGenerationAttempt(
   job: ExistingGenerationJob,
   suppliedAttempt?: { readonly attemptId: string; readonly attemptNo: number },
@@ -433,10 +447,12 @@ export async function enqueueGenerationAttempt(
     negativePrompt: job.negativePrompt,
     controls,
     seed: job.seed ?? job.id,
-    model:
-      job.model
-      ?? job.profileId
-      ?? (job.mode === "video" ? "unresolved-video-model" : "unresolved-image-model"),
+    model: generationDispatchModelKey({
+      mode: job.mode,
+      workflowKey: runtime.workflowKey,
+      model: job.model,
+      profileId: job.profileId,
+    }),
     outputPrefix: `gen/${job.id}/`,
   };
   const payload: ImageGeneratePayload | VideoGeneratePayload =

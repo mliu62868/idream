@@ -10,7 +10,6 @@ import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { referenceSetSnapshotHash } from "./release-snapshot";
 import { lockCharacterGenerationAndMediaAssetAuthorities } from "./generation-authority-lock";
 import { invalidateCharacterDraftAssetPack } from "./draft-asset-authority";
-import { characterReferenceAuthorityFrom } from "./reference-authority";
 import {
   hasHydratableMediaBlobAuthority,
   isMediaAssetOperationalForAuthority,
@@ -90,17 +89,11 @@ export async function publishCharacterReferenceSet(input: {
       },
     );
   }
-  // 可选参考图 = 候选图池 ∪ 当前参考集。图池（anchorAssetIds）必须并进来，它可以包含参考集
-  // 之外的图，否则运营永远无法往参考集里加新图。
-  // TODO(reference-authority): 图池的正确权威是 ReferenceCandidate（候选池），迁移后此处改读候选池。
-  // 详见 docs/superpowers/specs/2026-07-25-visual-reference-single-authority-design.md §2.1。
-  const eligibleIds = new Set([
-    ...jsonStringArray(profile.anchorAssetIds),
-    ...(characterReferenceAuthorityFrom(currentReferenceSet)?.refs ?? []),
-  ]);
-  if (uniqueAssetIds.some((id) => !eligibleIds.has(id))) {
-    throw Errors.conflict("A selected reference is not pinned by the active Visual Identity");
-  }
+  // SPEC: 「哪些图可以当参考图」是事实、不是状态——判据就是下面那段查询：归属本角色、未删除、
+  // 是图片、安全通过、operational、blob 可取。不需要另一份「图池」预先圈定范围。
+  // INTENT: 原先这里还有一道 eligibleIds 白名单（profile.anchorAssetIds ∪ 当前参考集）。它不
+  // 增加任何安全性——下面的硬校验已经覆盖且更严——却造成一个真实限制：新生成的好图不在池里，
+  // 运营就加不进参考集，只能绕道 bootstrap 或铸新身份版本。删掉它，选哪张交回运营判断。
   const assets = await input.tx.mediaAsset.findMany({
     where: {
       id: { in: uniqueAssetIds },
@@ -218,8 +211,4 @@ export async function publishCharacterReferenceSet(input: {
     }),
     replayed: false,
   });
-}
-
-function jsonStringArray(value: Prisma.JsonValue): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }

@@ -1,6 +1,6 @@
 // SPEC: Transactional outbox (chat → main, design §4/§6). Effects are written to
 // chat.chat_outbox_events INSIDE the finalize TX, then delivered async by
-// chat.outbox.deliver → main.inbound. Guards "committed but never published".
+// chat.outbox.deliver → Main HTTP durable ingest. Guards "committed but never published".
 // INVARIANTS: delivery is at-least-once; main consumer dedupes on eventId.
 import type { Prisma } from "../generated/client/client.js";
 import type { ChatPrismaClient } from "./db.js";
@@ -46,15 +46,17 @@ export async function recordOutbox(
 }
 
 /** Kick the deliver queue (best-effort; reconcile also sweeps pending). */
-export async function scheduleOutboxDelivery(): Promise<void> {
+export async function scheduleOutboxDelivery(
+  schedule: typeof enqueue = enqueue,
+): Promise<void> {
   // Do not use a fixed deterministic job id here. Completed BullMQ jobs are
   // retained for observability, so reusing one suppresses every later wake-up
   // until retention expires. Delivery itself is idempotent at the event id.
-  await enqueue({ queue: CHAT_QUEUES.outboxDeliver, payload: {} });
+  await schedule({ queue: CHAT_QUEUES.outboxDeliver, payload: {} });
 }
 
 /**
- * chat.outbox.deliver handler: claim pending rows, fan them out to main.inbound,
+ * chat.outbox.deliver handler: claim pending rows, send them to Main durable ingest,
  * mark delivered. Bounded batch; failures bump attempts + backoff via next_run_at.
  */
 export async function deliverPendingOutbox(

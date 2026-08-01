@@ -22,7 +22,7 @@
 
 **尽量零 schema 迁移**：
 - CMS 复用既有 `RoutePage` 表（path/template/title/description/canonical/contentStatus/body）——**无新表**。
-- 合规复用 `User`（status/deletedAt）+ `AgeVerification`（status override）+ 既有擦除流（`MAIN_TO_CHAT_QUEUE` userDeleted）——**无新表**，按需操作 + 审计。
+- 合规复用 `User`（status/deletedAt）+ `AgeVerification`（status override）+ 既有擦除流（Main Outbox → Chat HTTP durable ingest → Inbox ACK 的 `userDeleted` 事件）——**无新表**，按需操作 + 审计。
 - 生成健康度从 `GenerationJob` 只读聚合；dry-run 写既有 `GenerationModelProfile.dryRunSummary(Json)`——**无新表**。
 - 双人审批硬门控复用 `AdminActionRequest`（加一个 `consumed` 语义：用 `status=consumed` 表示已执行，**无新列**）。
 - analytics 导出/留存从核心表 + `AnalyticsEvent` 只读计算——**无新表**。

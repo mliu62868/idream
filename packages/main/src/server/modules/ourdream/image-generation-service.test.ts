@@ -161,7 +161,7 @@ async function completeCharacterPreview(input: {
       draftId: input.draftId,
       userId: input.userId,
       provider: "backend",
-      model: "redcraft-krea2-comfyui",
+      model: "redcraft-krea2-redmix3-fp8",
       asset: {
         key: `preview/${input.previewJobId}/image-1.webp`,
         width: 832,
@@ -395,7 +395,7 @@ describe("image generation service contract", () => {
           mode: "image",
           runner: "comfyui",
           pipelineModel: "redcraft-krea2",
-          workflowKey: "redcraft-krea2-txt2img",
+          workflowKey: "redcraft-krea2-redmix3-txt2img",
           runnerConfig: {
             workflowVersion: 1,
             capabilities: {
@@ -1066,7 +1066,7 @@ describe("image generation service contract", () => {
       referenceSetRevisionId: null,
       referenceManifest: null,
       profileId: "profile_image_default_v1",
-      model: "redcraft-krea2-txt2img",
+      model: "redcraft-krea2-redmix3-txt2img",
       recipeId: "template_image_character_default",
       status: "queued",
     });

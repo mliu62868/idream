@@ -5,6 +5,7 @@ import { Errors } from "@/server/lib/errors";
 import { canonicalSha256 } from "../shared/canonical-json";
 import { toInputJson } from "../shared/prisma-json";
 import { isIncidentTransitionAllowed } from "../shared/state-transition-authority";
+import { transitionIncident } from "./transition";
 
 const INCIDENT_SIGNATURE_VERSION = "generation-error-v1";
 const INCIDENT_CORRELATION_POLICY_VERSION = "generation-correlation-v1";
@@ -556,9 +557,14 @@ export async function executeIncidentActionPlan(input: {
           commandId: command.id,
         },
       };
-      await tx.opsIncident.update({
-        where: { id: incident.id, version: incident.version },
-        data: { status: "mitigating", mitigation, version: { increment: 1 } },
+      await transitionIncident(tx, {
+        incidentId: incident.id,
+        to: "mitigating",
+        expected: {
+          from: incident.status as "detected" | "triaged",
+          version: incident.version,
+        },
+        data: { mitigation },
       });
       await tx.adminAuditLog.create({
         data: {
@@ -666,7 +672,19 @@ export async function mergeIncidents(input: {
       const sourceOccurrences = occurrences.filter((row) => row.incidentId === source!.id);
       await tx.opsIncidentOccurrence.updateMany({ where: { incidentId: source!.id }, data: { incidentId: target.id } });
       if (sourceOccurrences.length > 0) await tx.opsIncidentOccurrenceAssignment.createMany({ data: sourceOccurrences.map((row) => ({ occurrenceId: row.id, fromIncidentId: source!.id, toIncidentId: target.id, action: "merge", actorId: input.actor.id, reason: input.reason })) });
-      await tx.opsIncident.update({ where: { id: source!.id }, data: { status: "merged", activeCorrelationKey: null, mitigation: toInputJson({ ...asRecord(source!.mitigation), mergedIntoIncidentId: target.id, mergeReason: input.reason }), version: { increment: 1 } } });
+      await transitionIncident(tx, {
+        incidentId: source!.id,
+        to: "merged",
+        expected: { from: source!.status as "triaged", version: source!.version },
+        data: {
+          activeCorrelationKey: null,
+          mitigation: toInputJson({
+            ...asRecord(source!.mitigation),
+            mergedIntoIncidentId: target.id,
+            mergeReason: input.reason,
+          }),
+        },
+      });
     }
     const firstSeen = sources.reduce((value, row) => row!.firstSeen < value ? row!.firstSeen : value, target.firstSeen);
     const lastSeen = sources.reduce((value, row) => row!.lastSeen > value ? row!.lastSeen : value, target.lastSeen);
@@ -698,7 +716,15 @@ export async function closeIncidentWithPostmortem(input: {
     if (!isIncidentTransitionAllowed(incident.status, "closed")) throw Errors.conflict("Incident must be resolved before postmortem close");
     if (!["passed", "overridden"].includes(incident.verificationState)) throw Errors.conflict("Recovery verification is required before close");
     const postmortem = await tx.incidentPostmortem.create({ data: { incidentId: incident.id, summary: input.summary, rootCause: input.rootCause, contributingFactors: [...input.contributingFactors], correctiveActions: [...input.correctiveActions], evidenceRefs: [...input.evidenceRefs], createdById: input.actor.id } });
-    const closed = await tx.opsIncident.update({ where: { id: incident.id }, data: { status: "closed", activeCorrelationKey: null, version: { increment: 1 }, mitigation: toInputJson({ ...asRecord(incident.mitigation), postmortemId: postmortem.id }) } });
+    const closed = await transitionIncident(tx, {
+      incidentId: incident.id,
+      to: "closed",
+      expected: { from: "resolved", version: incident.version },
+      data: {
+        activeCorrelationKey: null,
+        mitigation: toInputJson({ ...asRecord(incident.mitigation), postmortemId: postmortem.id }),
+      },
+    });
     await tx.adminAuditLog.create({ data: { actorId: input.actor.id, actorRole: input.actor.role, action: "incident.closed_with_postmortem", targetType: "ops_incident", targetId: incident.id, reason: input.reason, before: toInputJson({ status: incident.status, version: incident.version }), after: toInputJson({ status: closed.status, version: closed.version, postmortemId: postmortem.id, evidenceRefs: input.evidenceRefs }), requestId: input.requestId } });
     await tx.mainOutboxEvent.create({ data: { eventType: "ops.incident.closed.v2", aggregateType: "ops_incident", aggregateId: incident.id, payload: toInputJson({ incidentId: incident.id, postmortemId: postmortem.id, version: closed.version }) } });
     return {

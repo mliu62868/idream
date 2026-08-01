@@ -53,11 +53,34 @@ describe("Character Portfolio v2 contracts", () => {
       primaryImageSource: "live",
       livePurposes: ["character_hero"],
     }).success).toBe(false);
-    expect(characterPortfolioItemSchema.shape.nextAction.parse({
-      code: "prepare_image_production",
-      label: "Prepare image production",
-      deepLink: "/admin/characters/character-1?tab=assets",
-    })).toMatchObject({ code: "prepare_image_production" });
+    expect(characterPortfolioItemSchema.shape.journey.parse({
+      projectionVersion: 1,
+      asOf: "2026-07-31T12:00:00.000Z",
+      stage: "visual_setup",
+      status: "in_progress",
+      steps: [
+        { code: "visual_identity", state: "current", deepLink: "/admin/characters/character-1?tab=visual" },
+        { code: "image_assets", state: "upcoming", deepLink: "/admin/characters/character-1?tab=assets" },
+        { code: "preview_qa", state: "upcoming", deepLink: "/admin/characters/character-1?tab=preview" },
+        { code: "release", state: "upcoming", deepLink: "/admin/characters/character-1?tab=release" },
+        { code: "live_monitor", state: "upcoming", deepLink: "/admin/characters/character-1?tab=monitor" },
+      ],
+      blockers: [{
+        code: "visual_identity_missing",
+        message: "A reusable visual identity has not been established.",
+        deepLink: "/admin/characters/character-1?tab=assets",
+      }],
+      primaryAction: {
+        code: "prepare_image_production",
+        deepLink: "/admin/characters/character-1?tab=assets",
+        command: null,
+      },
+      assetPack: {
+        draft: { availablePurposes: [], missingPurposes: ["character_cover", "character_hero", "character_chat"], completed: 0, total: 3 },
+        live: { availablePurposes: ["character_cover"], missingPurposes: ["character_hero", "character_chat"], completed: 1, total: 3 },
+      },
+      release: { servingState: "live", currentReleaseId: "release-1", candidateReleaseId: null },
+    }).primaryAction).toMatchObject({ code: "prepare_image_production" });
   });
 
   it("fails closed when contribution margin has no audited revenue authority", () => {

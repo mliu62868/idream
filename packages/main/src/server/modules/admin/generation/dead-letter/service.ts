@@ -7,7 +7,7 @@ import { transitionGenerationRequest } from "@/server/ai/generation-request-tran
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
-import { appendLedger } from "@/server/modules/admin/billing/ledger";
+import { postDreamcoinEntry } from "@/server/modules/admin/billing/ledger";
 import { deriveGenerationJobState, deriveGenerationTimeline } from "@/server/modules/admin/generation-job-state";
 import {
   OPERATIONAL_USER_DATA_SCOPE,
@@ -302,7 +302,15 @@ async function refundDiscardableJob(job: { id: string; userId: string; costDream
     const settlement = await ensureGenerationSettlementLinks(tx, job.id);
     const amount = Math.min(job.costDreamcoins, settlement.refundable);
     const willRefund = amount > 0;
-    if (willRefund) await appendLedger(tx, job.userId, amount, "refund", job.id, `generation:${job.id}:refund`);
+    if (willRefund) {
+      await postDreamcoinEntry(tx, {
+        kind: "refund",
+        userId: job.userId,
+        amount,
+        sourceId: job.id,
+        idempotencyKey: `generation:${job.id}:refund`,
+      });
+    }
     await tx.generationJob.update({
       where: { id: job.id },
       data: { errorCode: job.errorCode ?? "discarded", version: { increment: 1 } },

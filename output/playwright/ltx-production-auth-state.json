@@ -1,0 +1,55 @@
+{
+  "cookies": [
+    {
+      "name": "AdultContentAcceptedOD",
+      "value": "true",
+      "domain": "127.0.0.1",
+      "path": "/",
+      "expires": 1816521984.585224,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "idream_anonymous_id",
+      "value": "anon_c1deb8c051815d8002da87a2fd2db868",
+      "domain": "127.0.0.1",
+      "path": "/",
+      "expires": 1816521984.584787,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "idream_session",
+      "value": "sess_58943c5dceaa67b887933f71019e0b3c0fb7e5c6751886f22313bc6ca550499c",
+      "domain": "127.0.0.1",
+      "path": "/",
+      "expires": 1787578018.471642,
+      "httpOnly": true,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "__next_hmr_refresh_hash__",
+      "value": "469",
+      "domain": "127.0.0.1",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    }
+  ],
+  "origins": [
+    {
+      "origin": "http://127.0.0.1:3000",
+      "localStorage": [
+        {
+          "name": "AdultContentAcceptedOD",
+          "value": "true"
+        }
+      ]
+    }
+  ]
+}

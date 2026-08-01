@@ -455,7 +455,7 @@ describe("Character Asset Studio flow", () => {
 
   it("keeps the batch dominant and adds a sticky decision inspector only on wide screens", () => {
     expect(characterAssetStudioLayoutClass).toContain(
-      "xl:grid-cols-[minmax(0,1fr)_320px]",
+      "xl:grid-cols-[minmax(0,1fr)_380px]",
     );
     expect(characterAssetStudioLayoutClass).not.toContain("250px");
   });
@@ -463,7 +463,6 @@ describe("Character Asset Studio flow", () => {
   it("does not invent an opening message when the draft has none", () => {
     const source = readFileSync(new URL("./CharacterAssetStudio.tsx", import.meta.url), "utf8");
 
-    expect(source).toContain("Opening message unavailable");
     expect(source).not.toContain("I was hoping you would stop by.");
   });
 

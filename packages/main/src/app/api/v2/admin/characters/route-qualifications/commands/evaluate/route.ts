@@ -1,6 +1,6 @@
 import { generationRouteQualificationEvaluateRequestSchema } from "@idream/shared/admin";
 import { env } from "@/server/lib/env";
-import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
+import { actorWithPermission, jsonBody } from "@/server/modules/admin-v2/shared/authority";
 import { evaluateGenerationRouteQualification } from "@/server/modules/admin-v2/characters/route-qualification";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
@@ -12,7 +12,7 @@ export const runtime = "nodejs";
 export function POST(request: Request) {
   return adminV2Route(async () => {
     const actor = await actorWithPermission(request, "content.production.write");
-    const body = generationRouteQualificationEvaluateRequestSchema.parse(await request.json());
+    const body = generationRouteQualificationEvaluateRequestSchema.parse(await jsonBody(request));
     const idempotencyKey = requireIdempotencyKey(request);
     const requestId = request.headers.get("x-request-id")?.trim() || crypto.randomUUID();
     const result = await executeAtomicIdempotentMutation({

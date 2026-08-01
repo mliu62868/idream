@@ -3,6 +3,10 @@ import { evaluateMediaAssetCustomerPublishability } from "@/server/lib/media-ass
 import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { characterReleaseSnapshotHash } from "@/server/modules/admin-v2/characters/release-snapshot";
+import {
+  transitionCharacterRelease,
+  transitionCharacterServing,
+} from "@/server/modules/admin-v2/characters/transition";
 
 export const PUBLIC_CATALOG_QUALIFICATION_SCHEMA_VERSION =
   "public-catalog-qualification-v1";
@@ -360,26 +364,35 @@ export async function ensureOfficialEditorialCatalogQualification(
       currentRelease.id !== release.id &&
       currentRelease.status === "published"
     ) {
-      await tx.characterRelease.update({
-        where: { id: currentRelease.id },
-        data: { status: "superseded", version: { increment: 1 } },
+      await transitionCharacterRelease(tx, {
+        releaseId: currentRelease.id,
+        to: "superseded",
+        expected: { from: "published", version: currentRelease.version },
       });
     }
-    await tx.characterServing.upsert({
-      where: { characterId: character.id },
-      update: {
-        currentReleaseId: release.id,
-        scheduledReleaseId: null,
-        scheduledAt: null,
-        state: "live",
-        version: { increment: 1 },
-      },
-      create: {
-        characterId: character.id,
-        currentReleaseId: release.id,
-        state: "live",
-      },
-    });
+    if (character.serving) {
+      await transitionCharacterServing(tx, {
+        servingId: character.serving.id,
+        to: "live",
+        expected: {
+          from: character.serving.state as "inactive" | "live" | "paused",
+          version: character.serving.version,
+        },
+        data: {
+          currentReleaseId: release.id,
+          scheduledReleaseId: null,
+          scheduledAt: null,
+        },
+      });
+    } else {
+      await tx.characterServing.create({
+        data: {
+          characterId: character.id,
+          currentReleaseId: release.id,
+          state: "live",
+        },
+      });
+    }
     return {
       releaseId: release.id,
       qualificationId: qualification.id,

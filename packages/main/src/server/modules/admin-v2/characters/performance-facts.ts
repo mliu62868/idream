@@ -6,7 +6,7 @@ import {
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { ok } from "@/server/lib/http";
-import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
+import { actorWithPermission, jsonBody } from "@/server/modules/admin-v2/shared/authority";
 import { toInputJson } from "../shared/prisma-json";
 
 export interface CharacterPerformanceBackfillOptions {
@@ -338,7 +338,7 @@ export async function reconcileCharacterPerformanceFacts(db: PrismaClient) {
 
 export async function runCharacterPerformanceBackfill(request: Request) {
   await actorWithPermission(request, "analytics.metric.export");
-  const body = characterPerformanceBackfillRequestSchema.parse(await request.json());
+  const body = characterPerformanceBackfillRequestSchema.parse(await jsonBody(request));
   const report = body.kind === "funnel"
     ? await backfillCharacterFunnelFacts(prisma, body)
     : await backfillCharacterVariableCostFacts(prisma, body);

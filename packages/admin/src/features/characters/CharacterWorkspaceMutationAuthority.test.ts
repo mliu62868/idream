@@ -148,8 +148,12 @@ describe("Character workspace mutation authority", () => {
     expect(source).toContain("schemaVersion: CHARACTER_COMMAND_JOURNAL_SCHEMA_VERSION");
     expect(source).toContain("actorId,\n        environment: browserCommandEnvironment()");
     expect(source).toContain("environment: browserCommandEnvironment()");
-    expect(source).toContain("autoReplayUntil: command.autoReplayUntil");
-    expect(source).toContain("?? command.createdAt + UNKNOWN_COMMAND_AUTO_REPLAY_TTL_MS");
+    expect(source).toMatch(
+      /autoReplayUntil:\s*command\.autoReplayUntil/,
+    );
+    expect(source).toMatch(
+      /\?\?\s*command\.createdAt \+ UNKNOWN_COMMAND_AUTO_REPLAY_TTL_MS/,
+    );
   });
 
   it("rejects journals with missing or invalid creation authority instead of extending replay from now", () => {
@@ -315,7 +319,7 @@ describe("Character workspace mutation authority", () => {
   it("persists command intent before POST and only unlocks on a definitive rejection", () => {
     const source = readFileSync(new URL("./CharacterWorkspace.tsx", import.meta.url), "utf8");
     const releaseCommand = source.slice(
-      source.indexOf('const command = async (kind: "publish"'),
+      source.indexOf("const command = async"),
       source.indexOf("const rollbackSourceId"),
     );
     const servingCommand = source.slice(

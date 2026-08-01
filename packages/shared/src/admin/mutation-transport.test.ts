@@ -8,7 +8,7 @@ import {
 } from "./mutation-transport";
 
 const mutationOperations = ADMIN_V2_API_OPERATIONS.filter(
-  (operation) => operation.method !== "GET",
+  (operation) => operation.mutation !== undefined,
 );
 const transportRegistry: Readonly<Partial<Record<AdminV2OperationId, AdminV2MutationTransport>>> =
   ADMIN_V2_MUTATION_TRANSPORT;
@@ -21,9 +21,15 @@ describe("Admin v2 mutation transport invariant", () => {
 
     for (const operation of ADMIN_V2_API_OPERATIONS) {
       expect(operation.id in ADMIN_V2_MUTATION_TRANSPORT).toBe(
-        operation.method !== "GET",
+        operation.mutation !== undefined,
       );
     }
+
+    expect(
+      ADMIN_V2_API_OPERATIONS.find(
+        ({ id }) => id === "POST /api/v2/admin/voice-defaults/preview",
+      )?.mutation,
+    ).toBeUndefined();
   });
 
   it("binds completed transports to the public request contract", () => {

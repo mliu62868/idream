@@ -48,12 +48,25 @@ export type AdminV2ApiContract = {
   readonly response: AdminV2SchemaContractRef;
 };
 
+export type AdminV2MutationTransportKind =
+  | "idempotency_key"
+  | "if_match"
+  | "idempotency_key_and_if_match";
+
+export type AdminV2MutationMetadata = {
+  readonly transport: AdminV2MutationTransportKind;
+  readonly commandType: string;
+  readonly executionMode: "atomic" | "durable";
+};
+
 export type AdminV2ApiOperation = {
   readonly id: AdminV2OperationId;
   readonly method: AdminV2HttpMethod;
   readonly route: AdminV2RoutePattern;
   readonly authorization: AdminV2Authorization;
   readonly contract: AdminV2ApiContract;
+  /** Executable write admission; absent for read-only and preview operations. */
+  readonly mutation?: AdminV2MutationMetadata;
   /** Additional permission-keyed DTO projections after admission. */
   readonly responseProjectionBy?: readonly AdminPermissionKey[];
 };
@@ -77,14 +90,49 @@ function operation<const Method extends AdminV2HttpMethod, const Route extends A
   request: AdminV2RequestContractRef,
   response: AdminV2SchemaContractRef,
   responseProjectionBy?: readonly AdminPermissionKey[],
+  mutationOverride?: Partial<Pick<AdminV2MutationMetadata, "commandType" | "executionMode">>,
 ): AdminV2ApiOperation {
+  const operationId = `${method} ${route}` as AdminV2OperationId;
+  const mutation = mutationMetadata(
+    operationId,
+    request,
+    response,
+    mutationOverride,
+  );
   return {
-    id: `${method} ${route}`,
+    id: operationId,
     method,
     route,
     authorization,
     contract: { request, response },
+    ...(mutation ? { mutation } : {}),
     ...(responseProjectionBy ? { responseProjectionBy } : {}),
+  };
+}
+
+function mutationMetadata(
+  operationId: AdminV2OperationId,
+  request: AdminV2RequestContractRef,
+  response: AdminV2SchemaContractRef,
+  override?: Partial<Pick<AdminV2MutationMetadata, "commandType" | "executionMode">>,
+): AdminV2MutationMetadata | undefined {
+  const requirements = request.split("+");
+  const idempotency = requirements.includes("idempotency-key");
+  const ifMatch = requirements.includes("if-match") || request === "if-match";
+  if (!idempotency && !ifMatch) return undefined;
+  const transport = idempotency && ifMatch
+    ? "idempotency_key_and_if_match"
+    : idempotency
+      ? "idempotency_key"
+      : "if_match";
+  return {
+    transport,
+    commandType: override?.commandType ?? operationId
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, ".")
+      .replace(/^\.|\.$/g, ""),
+    executionMode: override?.executionMode ??
+      (response === "adminCommandAcceptedSchema" ? "durable" : "atomic"),
   };
 }
 
@@ -161,7 +209,7 @@ export const ADMIN_V2_API_OPERATIONS = [
   operation("POST", "/api/v2/admin/characters/:id/portfolio-decisions", allOf("character.project.write"), "characterPortfolioDecisionRequestSchema+idempotency-key", "characterPortfolioDecisionRecordSchema"),
   operation("GET", "/api/v2/admin/characters/:id/project", allOf("character.project.write"), "path:id", "characterProjectDraftResumeSchema"),
   operation("PATCH", "/api/v2/admin/characters/:id/project", allOf("character.project.write"), "characterProjectDraftPatchRequestSchema+if-match", "characterWorkspaceProjectSchema"),
-  operation("PATCH", "/api/v2/admin/characters/:id/draft-image", allOf("character.project.write"), "characterDraftImageSelectionRequestSchema+idempotency-key+if-match", "characterDraftImageSelectionResultSchema"),
+  operation("PATCH", "/api/v2/admin/characters/:id/draft-image", allOf("character.project.write"), "characterDraftImageSelectionRequestSchema+idempotency-key+if-match", "characterDraftImageSelectionResultSchema", undefined, { commandType: "character.project.draft_image.select" }),
   operation("POST", "/api/v2/admin/characters/:id/identity-bootstrap", allOf("character.project.write"), "characterIdentityBootstrapRequestSchema+idempotency-key+if-match", "characterIdentityBootstrapResponseSchema"),
   operation("POST", "/api/v2/admin/characters/:id/image-readiness/repair", allOf("character.project.write"), "characterImageReadinessRepairRequestSchema+idempotency-key+if-match", "characterImageReadinessRepairResponseSchema"),
   operation("POST", "/api/v2/admin/characters/:id/qa-runs", allOf("character.release.review"), "characterQaRunCreateRequestSchema+idempotency-key+if-match", "characterQaRunSchema"),

@@ -8,12 +8,12 @@
 //   - 擦除幂等：已 deleted 用户重复擦除直接幂等返回。
 //   - 审计只记 targetId/元数据，绝不写入导出内容明文。
 import { z } from "zod";
-import { jobQueue } from "@/server/jobs/queue";
-import { MAIN_TO_CHAT_QUEUE, MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
+import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
 import { actorWithPermission, clampInt, jsonBody, writeAudit } from "@/server/modules/admin/shared/legacy-primitives";
+import { recordMainToChatEvent } from "@/processes/chat-outbox";
 
 const COMPLIANCE_READ = "compliance.read" as const;
 const COMPLIANCE_WRITE = "compliance.write" as const;
@@ -100,25 +100,20 @@ export async function eraseUser(request: Request, userId: string): Promise<Respo
   if (user.status === "deleted" && user.deletedAt) {
     return ok({ erased: true, idempotent: true });
   }
-  await prisma.user.update({
-    where: { id: userId },
-    data: { status: "deleted", deletedAt: new Date() },
-  });
-  await prisma.session.deleteMany({ where: { userId } });
-  // 跨服务擦除（chat 域），best-effort at-least-once；消费端按 eventId 幂等。
-  try {
-    await jobQueue.enqueue({
-      queue: MAIN_TO_CHAT_QUEUE,
-      payload: {
-        eventId: `user_deleted_${userId}`,
-        eventType: MAIN_TO_CHAT_EVENTS.userDeleted,
-        payload: { userId },
-      },
-      dedupeKey: `user_deleted_${userId}`,
+  await prisma.$transaction(async (tx) => {
+    await tx.user.update({
+      where: { id: userId },
+      data: { status: "deleted", deletedAt: new Date() },
     });
-  } catch {
-    // 投递失败不阻塞擦除主流程（与 deleteRequest 一致）；审计仍记录擦除已发起。
-  }
+    await tx.session.deleteMany({ where: { userId } });
+    await recordMainToChatEvent({
+      eventId: `user_deleted_${userId}`,
+      eventType: MAIN_TO_CHAT_EVENTS.userDeleted,
+      aggregateType: "user",
+      aggregateId: userId,
+      payload: { userId },
+    }, tx);
+  });
   await writeAudit(request, actor, {
     action: "compliance.erase",
     targetType: "user",

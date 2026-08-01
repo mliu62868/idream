@@ -5,7 +5,7 @@ import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
 import { executeIdempotentDomainCommand } from "@/server/modules/admin/shared/domain-command";
 import { persistTransactionalAdminMutation } from "@/server/modules/admin/shared/transactional-mutation";
-import { appendLedger } from "./ledger";
+import { postDreamcoinEntry } from "./ledger";
 import { enforceApproval, LEDGER_APPROVAL_THRESHOLD } from "@/server/modules/admin/shared/legacy-approval";
 import {
   actorWithPermission,
@@ -42,24 +42,31 @@ export async function billingAdjustment(request: Request) {
   const result = await prisma.$transaction(async (tx) => {
     const replay = await tx.dreamcoinLedger.findUnique({ where: { idempotencyKey } });
     if (replay) {
-      if (replay.userId !== body.userId || replay.delta !== body.delta || replay.reason !== "admin_adjust") {
-        throw Errors.conflict("Idempotency-Key was already used for a different ledger adjustment");
-      }
-      return { entry: replay, replayed: true };
+      const entry = await postDreamcoinEntry(tx, {
+        kind: "admin_adjust",
+        userId: body.userId,
+        delta: body.delta,
+        actorId: actor.id,
+        adjustmentReason: body.reason,
+        sourceId: body.sourceId ?? idempotencyKey,
+        idempotencyKey,
+      });
+      return { entry, replayed: true };
     }
     const user = await tx.user.findUnique({ where: { id: body.userId } });
     if (!user) throw Errors.notFound("User not found");
     if (Math.abs(body.delta) >= LEDGER_APPROVAL_THRESHOLD) {
       await enforceApproval("billing.ledger.adjust", body.userId, tx);
     }
-    const entry = await appendLedger(
-      tx,
-      body.userId,
-      body.delta,
-      "admin_adjust",
-      body.sourceId ?? `admin-adjust:${actor.id}:${idempotencyKey}`,
+    const entry = await postDreamcoinEntry(tx, {
+      kind: "admin_adjust",
+      userId: body.userId,
+      delta: body.delta,
+      actorId: actor.id,
+      adjustmentReason: body.reason,
+      sourceId: body.sourceId ?? idempotencyKey,
       idempotencyKey,
-    );
+    });
     await tx.adminAuditLog.create({
       data: {
         actorId: actor.id,

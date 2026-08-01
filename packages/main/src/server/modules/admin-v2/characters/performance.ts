@@ -184,11 +184,18 @@ export function evaluateCharacterPerformance(input: {
   const exactExposure = input.exposureRows.length > 0 &&
     exactExposures.length === input.exposureRows.length &&
     !detailParentOutsideCohort;
-  const qualityState = impossible || !directionalFunnel || !exactExposure
-    ? "invalid" as const
-    : exactFunnel
-      ? "certified" as const
-      : "directional" as const;
+  // SPEC: 一条观测都没有 ≠ 观测不可信。前者是 no_data（等），后者是 invalid（查）。
+  // INTENT: exactExposure/directionalFunnel 都以 length > 0 起判，空数据集会双双落 false —— 那是
+  // "算不出"，不是"算出来是坏的"，不能借 invalid 的口径去报一个并不存在的链路故障。
+  const noObservations = input.exposureRows.length === 0 && input.funnelRows.length === 0;
+  const qualityState = noObservations
+    ? "no_data" as const
+    : impossible || !directionalFunnel || !exactExposure
+      ? "invalid" as const
+      : exactFunnel
+        ? "certified" as const
+        : "directional" as const;
+  const ratesUnusable = qualityState === "invalid" || qualityState === "no_data";
   const observationMature = input.releasePublishedAt.getTime() + days * DAY_MS <= input.asOf.getTime();
   const maturity = !observationMature
     ? "immature" as const
@@ -199,15 +206,19 @@ export function evaluateCharacterPerformance(input: {
     ...input.exposureRows.map((row) => row.occurredAt.getTime()),
     ...input.funnelRows.flatMap((row) => row.latestDataAt ? [row.latestDataAt.getTime()] : []),
   ];
+  // INTENT: 无观测时只报 no_observations_recorded。以前会同时输出"曝光链不精确"和"漏斗投影不精确"
+  // 两条并不存在的故障原因——运营据此排查数据管道，查到的是一个根本没发生的问题。
   const evidence = [
     `grain:${input.characterContentVersionId}/${input.characterReleaseId}/${input.placementId ?? "all"}`,
     "window_grain:utc_product_day",
     ...input.funnelRows.flatMap((row) => evidenceStrings(row.sourceEvidence)),
-    ...(!exactExposure ? ["eligible_impression_or_detail_chain_not_exact"] : []),
-    ...(detailParentOutsideCohort ? ["detail_view_parent_outside_reporting_cohort"] : []),
-    ...(!directionalFunnel ? ["funnel_projection_not_exact"] : []),
-    ...(directionalFunnel && !exactFunnel ? ["paid_attribution_unavailable"] : []),
-    ...(impossible ? ["numerator_outside_denominator_cohort"] : []),
+    ...(noObservations ? ["no_observations_recorded"] : [
+      ...(!exactExposure ? ["eligible_impression_or_detail_chain_not_exact"] : []),
+      ...(detailParentOutsideCohort ? ["detail_view_parent_outside_reporting_cohort"] : []),
+      ...(!directionalFunnel ? ["funnel_projection_not_exact"] : []),
+      ...(directionalFunnel && !exactFunnel ? ["paid_attribution_unavailable"] : []),
+      ...(impossible ? ["numerator_outside_denominator_cohort"] : []),
+    ]),
     ...(maturity === "insufficient_data" ? [`minimum_sample:${MIN_IMPRESSIONS}_impressions/${MIN_CHAT_STARTS}_chat_starts`] : []),
   ];
   return {
@@ -225,14 +236,16 @@ export function evaluateCharacterPerformance(input: {
     sameCharacterD7EligiblePairs,
     sameCharacterD7Returns,
     paidAttributions,
-    detailCtr: qualityState === "invalid" ? null : ratio(detailViews, eligibleImpressions),
-    chatStartRate: qualityState === "invalid" ? null : ratio(firstSuccessfulExchanges, detailViews),
-    qceRate: qualityState === "invalid" ? null : ratio(qceCount, firstSuccessfulExchanges),
-    sameCharacterD7: qualityState === "invalid" ? null : ratio(sameCharacterD7Returns, sameCharacterD7EligiblePairs),
+    detailCtr: ratesUnusable ? null : ratio(detailViews, eligibleImpressions),
+    chatStartRate: ratesUnusable ? null : ratio(firstSuccessfulExchanges, detailViews),
+    qceRate: ratesUnusable ? null : ratio(qceCount, firstSuccessfulExchanges),
+    sameCharacterD7: ratesUnusable ? null : ratio(sameCharacterD7Returns, sameCharacterD7EligiblePairs),
     sampleSize: eligibleImpressions,
     maturity,
     qualityState,
-    coverageState: qualityState === "invalid" ? "invalid" : qualityState === "certified" ? "exact" : "partial",
+    coverageState: qualityState === "no_data"
+      ? "unavailable"
+      : qualityState === "invalid" ? "invalid" : qualityState === "certified" ? "exact" : "partial",
     latestDataAt: latestTimes.length > 0 ? new Date(Math.max(...latestTimes)).toISOString() : null,
     evidence: evidence.length > 0 ? [...new Set(evidence)] : ["canonical_character_performance_v1"],
     contributionMargin: evaluateContributionMargin({ facts: input.economicsRows, authority: input.economicsAuthority }),

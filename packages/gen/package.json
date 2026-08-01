@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Generation Service — gen/image + gen/video. Slow async workers: payload self-contained, write blob only, NO DB authority. Finalize via app.ai.finalize → gen-finalizer (main-side).",
+  "description": "Generation Service \u2014 gen/image + gen/video. Slow async workers: payload self-contained, write blob only, NO DB authority. Finalize via app.ai.finalize \u2192 gen-finalizer (main-side).",
   "engines": {
     "node": ">=22"
   },
@@ -17,7 +17,8 @@
     "probe:character-consistency": "tsx src/probe-character-consistency.ts",
     "probe:redcraft-comfyui": "tsx src/probe-redcraft-comfyui.ts",
     "sync:comfyui-workflows": "tsx src/sync-comfyui-workflows.ts",
-    "smoke:backend": "tsx src/backend/smoke.ts"
+    "smoke:backend": "tsx src/backend/smoke.ts",
+    "preflight": "tsx src/preflight.ts"
   },
   "dependencies": {
     "@idream/shared": "workspace:*",

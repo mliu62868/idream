@@ -1,5 +1,28 @@
 import { describe, expect, it } from "vitest";
-import { unavailablePinnedManifestReferenceRoles } from "./attempt-dispatch";
+import {
+  generationDispatchModelKey,
+  unavailablePinnedManifestReferenceRoles,
+} from "./attempt-dispatch";
+
+describe("Generation dispatch model authority", () => {
+  it("routes a pinned profile through its workflow key instead of its legacy pipeline model", () => {
+    expect(generationDispatchModelKey({
+      mode: "image",
+      workflowKey: "redcraft-krea2-redmix3-txt2img",
+      model: "redcraft-krea2-redmix3-bf16",
+      profileId: "redcraft-krea2-redmix3-comparison",
+    })).toBe("redcraft-krea2-redmix3-txt2img");
+  });
+
+  it("keeps the existing fallback order when no workflow is pinned", () => {
+    expect(generationDispatchModelKey({
+      mode: "video",
+      workflowKey: null,
+      model: null,
+      profileId: null,
+    })).toBe("unresolved-video-model");
+  });
+});
 
 describe("Generation dispatch manifest role authority", () => {
   const overlappingManifest = [

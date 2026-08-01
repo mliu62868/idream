@@ -1,13 +1,16 @@
 {
   "workflowKey": "redcraft-krea2-redmix3-txt2img",
-  "modelId": "redcraft-krea2-redmix3-bf16",
+  "modelId": "redcraft-krea2-redmix3-fp8",
   "backendKind": "comfyui",
   "comfyWorkflow": {
     "id": "abea5b3f-6ba1-4bbd-86b0-95e0261a7ee1",
     "name": "iDream · RedCraft Krea2 RedMix3 · Text to Image"
   },
   "version": 1,
-  "capabilities": ["textToImage", "stableSeed"],
+  "capabilities": [
+    "textToImage",
+    "stableSeed"
+  ],
   "identity": {
     "mode": "none",
     "maxReferences": 0,
@@ -17,13 +20,16 @@
   },
   "quality": {
     "maxCandidates": 1,
-    "evaluatorDimensions": ["artifact", "face_count"]
+    "evaluatorDimensions": [
+      "artifact",
+      "face_count"
+    ]
   },
   "apiPrompt": {
     "1": {
       "class_type": "UNETLoader",
       "inputs": {
-        "unet_name": "redcraftKREA2RedMix3.0-bf16.safetensors",
+        "unet_name": "Krea2RedMix3.0-fp8-scaled-ComfyUI.safetensors",
         "weight_dtype": "default"
       }
     },
@@ -43,14 +49,20 @@
     "4": {
       "class_type": "CLIPTextEncode",
       "inputs": {
-        "clip": ["2", 0],
+        "clip": [
+          "2",
+          0
+        ],
         "text": ""
       }
     },
     "5": {
       "class_type": "CLIPTextEncode",
       "inputs": {
-        "clip": ["2", 0],
+        "clip": [
+          "2",
+          0
+        ],
         "text": ""
       }
     },
@@ -65,10 +77,22 @@
     "7": {
       "class_type": "KSampler",
       "inputs": {
-        "model": ["1", 0],
-        "positive": ["4", 0],
-        "negative": ["5", 0],
-        "latent_image": ["6", 0],
+        "model": [
+          "1",
+          0
+        ],
+        "positive": [
+          "4",
+          0
+        ],
+        "negative": [
+          "5",
+          0
+        ],
+        "latent_image": [
+          "6",
+          0
+        ],
         "seed": 0,
         "steps": 12,
         "cfg": 1,
@@ -80,14 +104,23 @@
     "8": {
       "class_type": "VAEDecode",
       "inputs": {
-        "samples": ["7", 0],
-        "vae": ["3", 0]
+        "samples": [
+          "7",
+          0
+        ],
+        "vae": [
+          "3",
+          0
+        ]
       }
     },
     "9": {
       "class_type": "SaveImage",
       "inputs": {
-        "images": ["8", 0],
+        "images": [
+          "8",
+          0
+        ],
         "filename_prefix": "idream_redmix3"
       }
     }
@@ -96,35 +129,53 @@
     {
       "key": "prompt",
       "type": "text",
-      "target": { "nodeId": "4", "field": "text" }
+      "target": {
+        "nodeId": "4",
+        "field": "text"
+      }
     },
     {
       "key": "negative",
       "type": "text",
-      "target": { "nodeId": "5", "field": "text" },
+      "target": {
+        "nodeId": "5",
+        "field": "text"
+      },
       "default": ""
     },
     {
       "key": "width",
       "type": "int",
-      "target": { "nodeId": "6", "field": "width" },
+      "target": {
+        "nodeId": "6",
+        "field": "width"
+      },
       "default": 832
     },
     {
       "key": "height",
       "type": "int",
-      "target": { "nodeId": "6", "field": "height" },
+      "target": {
+        "nodeId": "6",
+        "field": "height"
+      },
       "default": 1216
     },
     {
       "key": "seed",
       "type": "int",
-      "target": { "nodeId": "7", "field": "seed" }
+      "target": {
+        "nodeId": "7",
+        "field": "seed"
+      }
     },
     {
       "key": "steps",
       "type": "int",
-      "target": { "nodeId": "7", "field": "steps" },
+      "target": {
+        "nodeId": "7",
+        "field": "steps"
+      },
       "default": 12
     }
   ]

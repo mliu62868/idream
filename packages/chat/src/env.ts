@@ -31,11 +31,8 @@ export const env = {
   get REDIS_URL() {
     return process.env.CHAT_REDIS_URL ?? process.env.REDIS_URL ?? "redis://127.0.0.1:6379/0";
   },
-  // CROSS-SERVICE INVARIANT: the BullMQ prefix MUST be identical across main, chat,
-  // and gen, because the cross-service queues (chat.inbound, main.inbound) are
-  // produced by one service and consumed by another — a mismatch silently drops
-  // every event (recent-chat projection, account erasure, …). Default mirrors
-  // main's `idream:${APP_ENV}` so an un-overridden dev stack already agrees.
+  // BullMQ is receiver-local wake-up/work scheduling; cross-service events use
+  // durable HTTP ingest and do not depend on a shared Redis prefix.
   get BULLMQ_PREFIX() {
     return process.env.BULLMQ_PREFIX ?? `idream:${process.env.APP_ENV ?? "development"}`;
   },

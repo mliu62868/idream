@@ -408,7 +408,7 @@ model ChatSession {
   @@schema("chat")
 }
 
-model ChatOutboxEvent {                            // chat→main 投递（BullMQ+Redis 消费）
+model ChatOutboxEvent {                            // chat→main：Outbox→HTTP durable ingest→Inbox ACK
   id            String    @id
   eventType     String    @map("event_type")
   aggregateType String    @map("aggregate_type")

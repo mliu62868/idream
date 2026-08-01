@@ -16,14 +16,13 @@ const WORKFLOWS_DIR = path.resolve(
 // that reads gen's real on-disk workflows/ directory through the thin shell,
 // since that fixture is gen-specific.
 describe("loadWorkflowDescriptors (real files on disk)", () => {
-  it("loads the redcraft-krea2 txt2img descriptor and validates it against the schema", async () => {
+  it("loads every on-disk descriptor and validates them against the schema", async () => {
     const descriptors = await loadWorkflowDescriptors(WORKFLOWS_DIR);
-    // The dir also contains a legacy non-conforming file
-    // (redcraft-krea2-comfyui-text.json) which the loader warn-skips —
-    // so we assert presence of the target modelId, not array length.
-    const redcraft = descriptors.find((d) => d.modelId === "redcraft-krea2-comfyui");
-    expect(redcraft).toBeDefined();
-    expect(() => workflowDescriptorSchema.parse(redcraft)).not.toThrow();
+    expect(descriptors.length).toBeGreaterThan(0);
+    for (const descriptor of descriptors) {
+      expect(() => workflowDescriptorSchema.parse(descriptor)).not.toThrow();
+    }
+    expect(descriptors.map((d) => d.modelId)).toContain("redcraft-krea2-redmix3-fp8");
   });
 
   it("loads RedMix3 as an isolated 12-step Krea2 comparison workflow", async () => {
@@ -35,7 +34,7 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
 
     expect(() => workflowDescriptorSchema.parse(redMix3)).not.toThrow();
     expect(redMix3).toMatchObject({
-      modelId: "redcraft-krea2-redmix3-bf16",
+      modelId: "redcraft-krea2-redmix3-fp8",
       backendKind: "comfyui",
       version: 1,
       capabilities: ["textToImage", "stableSeed"],
@@ -49,7 +48,7 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
       throw new Error("expected RedMix3 ComfyUI descriptor");
     }
     expect(redMix3.apiPrompt["1"]?.inputs).toEqual({
-      unet_name: "redcraftKREA2RedMix3.0-bf16.safetensors",
+      unet_name: "Krea2RedMix3.0-fp8-scaled-ComfyUI.safetensors",
       weight_dtype: "default",
     });
     expect(redMix3.apiPrompt["7"]?.inputs).toMatchObject({
@@ -237,72 +236,6 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
     expect(drawThings?.backendKind).toBe("drawthings");
   });
 
-  it("loads RedCraft Krea2 as an isolated Draw Things candidate", async () => {
-    const descriptors = await loadWorkflowDescriptors(WORKFLOWS_DIR);
-    const redcraft = descriptors.find(
-      (descriptor) => descriptor.modelId === "redcraft-krea2-drawthings",
-    );
 
-    expect(() => workflowDescriptorSchema.parse(redcraft)).not.toThrow();
-    expect(redcraft).toMatchObject({
-      workflowKey: "redcraft-krea2-drawthings-txt2img",
-      backendKind: "drawthings",
-      capabilities: ["textToImage", "stableSeed"],
-      drawThings: {
-        model: "redcraftkrea2redmix_krea2edition_bf16_f16.ckpt",
-      },
-    });
-    expect(redcraft?.inputs).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ key: "steps", default: 10 }),
-        expect.objectContaining({ key: "cfg", default: 1 }),
-      ]),
-    );
-  });
 
-  it("loads the independent RedCraft Krea2 Q8P Draw Things candidate", async () => {
-    const descriptors = await loadWorkflowDescriptors(WORKFLOWS_DIR);
-    const redcraftQ8p = descriptors.find(
-      (descriptor) => descriptor.modelId === "redcraft-krea2-drawthings-q8p",
-    );
-
-    expect(() => workflowDescriptorSchema.parse(redcraftQ8p)).not.toThrow();
-    expect(redcraftQ8p).toMatchObject({
-      workflowKey: "redcraft-krea2-drawthings-q8p-txt2img",
-      backendKind: "drawthings",
-      capabilities: ["textToImage", "stableSeed"],
-      drawThings: {
-        model: "redcraftkrea2redmix_krea2edition_bf16_q8p.ckpt",
-      },
-    });
-    expect(redcraftQ8p?.inputs).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ key: "steps", default: 10 }),
-        expect.objectContaining({ key: "cfg", default: 1 }),
-      ]),
-    );
-  });
-
-  it("loads the independent RedCraft Krea2 I8X Draw Things candidate", async () => {
-    const descriptors = await loadWorkflowDescriptors(WORKFLOWS_DIR);
-    const redcraftI8x = descriptors.find(
-      (descriptor) => descriptor.modelId === "redcraft-krea2-drawthings-i8x",
-    );
-
-    expect(() => workflowDescriptorSchema.parse(redcraftI8x)).not.toThrow();
-    expect(redcraftI8x).toMatchObject({
-      workflowKey: "redcraft-krea2-drawthings-i8x-txt2img",
-      backendKind: "drawthings",
-      capabilities: ["textToImage", "stableSeed"],
-      drawThings: {
-        model: "redcraftkrea2redmix_krea2edition_bf16_i8x.ckpt",
-      },
-    });
-    expect(redcraftI8x?.inputs).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ key: "steps", default: 10 }),
-        expect.objectContaining({ key: "cfg", default: 1 }),
-      ]),
-    );
-  });
 });

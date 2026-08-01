@@ -1,6 +1,6 @@
 # iDream 后台技术架构（Architecture）
 
-更新日期：2026-06-28
+更新日期：2026-07-30
 目标产品：Ourdream.ai 克隆（18+ AI 角色扮演 / AI 伴侣平台）
 目标站点：https://ourdream.ai/
 
@@ -49,6 +49,7 @@ packages/main/prisma/schema.prisma + packages/*/src ← 代码（最终事实来
 | 14 | [14-chat-service-tech-design.md](./14-chat-service-tech-design.md) | Chat Service 技术架构（服务拆分、权限边界、热路径、存储/记忆、服务目录/协议/pm2） | Lead、后端 |
 | 15 | [15-admin-operating-system-authority-adr.md](./15-admin-operating-system-authority-adr.md) | Admin v2 authority、命令/事件可靠性、渐进切换与回滚 ADR | Product、架构、后端、运营 |
 | 16 | [16-character-asset-studio-authority.md](./16-character-asset-studio-authority.md) | Character Asset Studio 的生成、审核、草稿采用与 Release 发布权威 | Product、架构、后端、运营 |
+| 17 | [17-deep-module-authority-boundaries.md](./17-deep-module-authority-boundaries.md) | Gen、Ledger、Admin mutation、状态变更、跨服务交换与 Character Journey 的深模块权威 ADR | Product、架构、后端、运营 |
 
 > 实现状态（已落地/暂缓）以 [`CURRENT_FUNCTIONAL_COVERAGE.md`](../product/CURRENT_FUNCTIONAL_COVERAGE.md) 为唯一事实来源；剩余工作执行计划见 [`REMAINING_WORK_EXECUTION_PLAN.md`](../product/REMAINING_WORK_EXECUTION_PLAN.md)。
 > 管理后台方案见 [ADMIN_CONSOLE_PLAN.md](../product/ADMIN_CONSOLE_PLAN.md)；生成（图片/视频/语音）契约见 [BackendFeatureSpec.md](../product/BackendFeatureSpec.md) §5.5。
@@ -66,7 +67,7 @@ packages/main/prisma/schema.prisma + packages/*/src ← 代码（最终事实来
 | 校验 | Zod | 系统边界强制校验（API 入参、env、provider 回调） |
 | UI | shadcn/ui + @base-ui/react + Tailwind v4 | 既有，前端不在本目录范围 |
 | 支付 | 抽象 `PaymentProvider`；**生产用加密货币**（推荐自托管 BTCPay Server，非托管/无 AUP 风险） | 见 02-ADR-4 |
-| 异步 | Redis/BullMQ + 常驻 pm2 worker；main↔chat 跨服务事件（outbox/inbox + 队列）；gen 图片/视频/finalizer 队列 | 见 06 |
+| 异步 | Redis/BullMQ + 常驻 pm2 worker；Main↔Chat 业务事件走 Outbox→HTTP durable ingest→Inbox ACK；Gen 图片/视频/finalizer 走队列 | 见 06、14、17 |
 | AI | 抽象 `ChatModel`/`ImageModel`/`VideoModel`/`Voice`/`Moderation` | **自托管开源模型，经内部流水线 API（OpenAI 兼容）接入**，见 02-ADR-6 |
 | 管理后台 | 独立 `@idream/admin` web/BFF + main `/api/v2/admin/*` authority；v1 仅兼容观测 | Today、Character、Creative、Incident、Case、Metrics、系统控制面，见 ADR-11 |
 | 对象存储 | 抽象 `BlobStore`；S3 兼容（R2）/ 本地 fs（dev） | 签名 URL，见 02-ADR-8 |
@@ -90,6 +91,8 @@ packages/main/prisma/schema.prisma + packages/*/src ← 代码（最终事实来
 | ADR-9 | **限流：dev DB 令牌桶 / prod Upstash Redis** | 鉴权/生成/聊天端点必须限流，防滥用与成本失控 |
 | ADR-10 | **缓存：公开 SEO/目录用 Cache Components(`use cache`+`cacheTag`)，产品/鉴权 API 全动态** | Next 16 缓存模型；角色更新按 tag 失效 |
 | ADR-11 | **Admin 是领域 authority 上的决策执行系统**：shared contract + fail-closed BFF + command/outbox + shadow/canary cutover | 状态、指标、权限、审计和回滚都可独立证明 |
+| ADR-12 | **Character Asset Studio 复用现有生成、审核、草稿、Release 与 Serving authority** | 采用只改草稿，只有显式发布改变线上角色 |
+| ADR-13 | **六个深 Module 吸收重复的可靠性协议**：Gen、Ledger、Admin mutation、聚合 transition、Durable Exchange、Character Journey | 每个高风险事实只有一个窄写入口；状态与部署配置不再漂移 |
 
 ## 4. 不可妥协的合规底线（贯穿全文，P0）
 

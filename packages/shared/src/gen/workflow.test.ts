@@ -12,7 +12,7 @@ import {
 
 const comfyDescriptor = workflowDescriptorSchema.parse({
   workflowKey: "t2i",
-  modelId: "redcraft-krea2-comfyui",
+  modelId: "redcraft-krea2-redmix3-fp8",
   backendKind: "comfyui",
   comfyWorkflow: { id: "11111111-1111-4111-8111-111111111111", name: "Test T2I" },
   version: 1,

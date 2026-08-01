@@ -56,7 +56,7 @@ it explicitly so it works regardless of cwd.
 
 `redcraft-krea2-redmix3-txt2img` is an opt-in RedMix3 text-to-image workflow
 for Civitai model `958009`, version `3139241`, file `3019490`. It remains
-separate from the serving `redcraft-krea2-txt2img` workflow so the current
+separate from the serving `redcraft-krea2-redmix3-txt2img` workflow so the current
 RedCraft BF16 model stays available as the default and rollback path.
 
 The exact source file is the 12.24 GiB scaled-FP8 variant:
@@ -70,15 +70,12 @@ The exact source file is the 12.24 GiB scaled-FP8 variant:
   `https://civitai.red/api/download/models/3139241?fileId=3019490`
 
 Header inspection must show 256 FP8 weights, 256 matching `weight_scale`
-sidecars, and 256 `comfy_quant` tags before using the existing converter. On
-Apple MPS, convert that source to the exact filename expected by the
-descriptor:
-
-```bash
-python3 packages/gen/scripts/dequant_fp8_to_bf16.py \
-  /Users/kk/ComfyUI-Shared/models/diffusion_models/Krea2RedMix3.0-fp8-scaled-ComfyUI.safetensors \
-  /Users/kk/ComfyUI-Shared/models/diffusion_models/redcraftKREA2RedMix3.0-bf16.safetensors
-```
+sidecars, and 256 `comfy_quant` tags. **No conversion step is needed.** With
+`fp4-fp8-for-torch-mps` in the runner venv, ComfyUI dequantizes scaled-fp8 per
+layer on MPS, so the descriptor loads the Civitai release file as-is. The
+former bf16 conversion product is not equivalent to it anyway — same-seed
+output differs (RMSE 25.5); see
+`docs/research/QWEN_FP8_ON_APPLE_MPS_LANDED_2026-07-29.md`.
 
 The candidate also requires:
 
@@ -96,7 +93,7 @@ cd packages/gen
 GEN_IMAGE_PROVIDER=backend \
   COMFYUI_API_URL=http://127.0.0.1:8188 \
   bun run smoke:backend -- \
-  --model redcraft-krea2-redmix3-bf16 \
+  --model redcraft-krea2-redmix3-fp8 \
   --prompt "editorial portrait, dramatic foreground perspective, natural skin texture" \
   --seed 486071801727172 \
   --steps 12 \

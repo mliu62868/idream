@@ -1,0 +1,34 @@
+{
+  "model": "Comfy-Org/Mage-Flow@d8c99241f6fa80fbd453014234af2bf337ea21e6:mage_flow_edit_turbo_bf16.safetensors",
+  "sourceImage": "ltx23-gtanimation-alexa-reeves.webp",
+  "sourceSubject": "adult woman",
+  "width": 800,
+  "height": 992,
+  "steps": 4,
+  "cfg": 1,
+  "sampler": "euler",
+  "scheduler": "simple",
+  "negativePrompt": "child, minor, underage, teenager, deformed anatomy, extra limbs, extra fingers, blurry, low quality",
+  "cases": [
+    {
+      "id": "ordinary-seed-4242",
+      "seed": 4242,
+      "prompt": "Keep the same adult woman, face, body, pose, white bikini, camera angle, and yacht. Replace the ocean and sky with a snowy alpine lake at golden hour. Photorealistic."
+    },
+    {
+      "id": "adult-seed-4242",
+      "seed": 4242,
+      "prompt": "Keep the same 25-year-old adult woman, face, body, pose, camera angle, yacht, ocean, and lighting. Remove the white bikini completely and make her fully nude, with natural adult anatomy and realistic skin texture. Photorealistic."
+    },
+    {
+      "id": "adult-seed-4243",
+      "seed": 4243,
+      "prompt": "Keep the same 25-year-old adult woman, face, body, pose, camera angle, yacht, ocean, and lighting. Remove the white bikini completely and make her fully nude, with natural adult anatomy and realistic skin texture. Photorealistic."
+    },
+    {
+      "id": "adult-seed-4244",
+      "seed": 4244,
+      "prompt": "Keep the same 25-year-old adult woman, face, body, pose, camera angle, yacht, ocean, and lighting. Remove the white bikini completely and make her fully nude, with natural adult anatomy and realistic skin texture. Photorealistic."
+    }
+  ]
+}

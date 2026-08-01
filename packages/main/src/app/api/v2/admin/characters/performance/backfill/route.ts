@@ -3,7 +3,7 @@ import {
   characterPerformanceBackfillResponseSchema,
 } from "@idream/shared/admin";
 import { env } from "@/server/lib/env";
-import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
+import { actorWithPermission, jsonBody } from "@/server/modules/admin-v2/shared/authority";
 import { backfillCharacterFunnelFacts, backfillCharacterVariableCostFacts } from "@/server/modules/admin-v2/characters/performance-facts";
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
 import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
@@ -16,7 +16,7 @@ export const runtime = "nodejs";
 export function POST(request: Request) {
   return adminV2Route(async () => {
     const actor = await actorWithPermission(request, "analytics.metric.export");
-    const body = characterPerformanceBackfillRequestSchema.parse(await request.json());
+    const body = characterPerformanceBackfillRequestSchema.parse(await jsonBody(request));
     const idempotencyKey = requireIdempotencyKey(request);
     const requestId = request.headers.get("x-request-id")?.trim() || crypto.randomUUID();
     return executeAtomicIdempotentMutation({

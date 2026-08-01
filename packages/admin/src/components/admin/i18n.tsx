@@ -239,6 +239,36 @@ const zh: Record<string, string> = {
   "Flag Monitoring": "功能开关监测",
   Today: "今日工作",
   "Character Studio": "角色工作室",
+  "Operations status": "运营状态",
+  Serving: "服务状态",
+  not_live: "未上线",
+  "Live release": "线上发布版本",
+  "None published": "尚未发布",
+  "Unpublished changes": "未发布改动",
+  "Image pack": "图片资产包",
+  "Live performance": "线上表现",
+  "Needs attention": "需要处理",
+  "No character needs attention right now": "当前没有角色需要处理",
+  "Every live character has a complete image pack and is recording observations.":
+    "所有线上角色的图片资产包都已补齐，且都有观测数据在进。",
+  "No observations yet. The {window} window has not closed since publish.":
+    "暂无观测，距发布还不满 {window} 观察窗口。",
+  "No observations across a full {window} window. Check placement targeting and event delivery.":
+    "整个 {window} 窗口零观测，请检查铺位定向与事件上报。",
+  "Monitor refresh failed": "监控刷新失败",
+  "route qualification": "图片线路资格",
+  "refresh the active image route before the next Release": "在下个发布版本前刷新在用的图片线路",
+  Ongoing: "持续进行",
+  "Missing: {purposes}": "缺：{purposes}",
+  "Live with an incomplete image pack": "线上运行中 · 图片资产包不完整",
+  "What should we do with this Character based on current release evidence?":
+    "基于当前发布版本的证据，这个角色应该怎么处理？",
+  "Review the selected action at the next portfolio window": "在下个角色组合复盘窗口复查所选处理",
+  "Do not regress qualified conversation or Same-character D7": "不得让合格对话或同角色 D7 退化",
+  "Could not record portfolio decision": "无法记录角色组合决策",
+  "Complete the image pack the live character is missing": "补齐线上角色缺失的图片资产",
+  "Placements without an adopted asset fall back to the legacy portrait until the pack is complete.":
+    "未采用资产的展示位会回退到旧版主图，直到资产包补齐。",
   Voice: "声音",
   english: "英语",
   "Voice control room": "角色声音控制台",
@@ -246,11 +276,16 @@ const zh: Record<string, string> = {
     "在一个页面中配置角色线上声音、审核候选声音，并管理系统继承设置。",
   "Current source": "当前来源",
   "Live voice": "线上声音",
-  Performance: "演绎风格",
+  // SPEC: 声音面板的"演绎风格"必须用独立键。共用 "Performance" 会盖掉角色工作台
+  // "Performance"（表现）tab 的译文——扁平词典没有命名空间，同名即冲突。
+  "Voice delivery": "演绎风格",
   "Character override": "角色专属覆盖",
   "System inheritance": "系统继承",
   "Next action": "下一步操作",
   "Candidate awaiting review": "候选声音等待审核",
+  "Current voice and one new candidate": "当前声音与一个新候选",
+  "Current voice and runtime": "当前声音与运行线路",
+  "Voice style and advanced settings": "演绎风格与高级设置",
   "Build a voice candidate": "创建声音候选",
   "Listen and activate voice version {version} when it matches the character.":
     "试听声音版本 {version}，确认符合角色后再启用。",
@@ -278,6 +313,12 @@ const zh: Record<string, string> = {
   "Restoring system default…": "正在恢复系统默认…",
   "Use system default voice": "使用系统默认声音",
   "System voice defaults": "系统默认声音",
+  "Current and draft assets": "线上与草稿资产",
+  "Technical evidence": "技术证据",
+  "Schedule and live operations": "定时与线上操作",
+  "New portfolio decision": "新建运营决策",
+  "Chat image": "聊天场景图",
+  "Avatar / discovery": "头像 / 发现页",
   "This curated adult female identity applies to every character without a character-specific override.":
     "这一精选成年女性声音身份适用于所有没有角色专属覆盖的角色。",
   "System performance direction": "系统演绎方向",
@@ -1759,6 +1800,29 @@ const zhColumns: Record<string, string> = {
 };
 
 const zhValues: Record<string, string> = {
+  // SPEC: 角色组合决策与线上表现的枚举值（Promote…/mature…/certified…/exact…）。
+  // 走 zhValues 通道而不是 zh —— 它们是枚举，StatusBadge 与 <option> 共用同一份译文。
+  Promote: "推广",
+  Maintain: "维持",
+  Improve: "改进",
+  Retire: "下线",
+  // maturity 是两个维度：immature 说的是观察窗口还没走完（时间），insufficient_data 才是
+  // 窗口走完了但样本没达标（样本量）。译文混用"样本不足"会让运营把"再等等"当成"投放不够"。
+  mature: "证据充分",
+  immature: "观察期未到",
+  "insufficient data": "样本不足",
+  certified: "已核准",
+  directional: "仅供参考",
+  invalid: "口径异常",
+  no_data: "暂无观测",
+  "no data": "暂无观测",
+  exact: "精确",
+  partial: "部分",
+  // 发布护栏状态与建议动作
+  "not required": "无需处理",
+  "action required": "需要处理",
+  action_required: "需要处理",
+  continue_monitoring: "继续观察",
   active: "启用",
   accepted: "已接受",
   actioned: "已处理",

@@ -244,7 +244,9 @@ describe("Character workspace traceability", () => {
     expect(source).toContain("check.comment");
     expect(source).toContain("check.evidenceRef");
     expect(source).toContain("check.fixDeepLink");
-    expect(source).toContain("Pinned assets, generation, and review lineage");
+    expect(source).toContain('t("Technical evidence")');
+    expect(source).toContain('t("Current live release")');
+    expect(source).toContain('t("Release history")');
     expect(source).toContain("releasePlacementManifest: release.releasePlacementManifest");
     expect(source).toContain("generationProvenance: release.generationProvenance");
     expect(source).toContain("activeReleaseCandidate");

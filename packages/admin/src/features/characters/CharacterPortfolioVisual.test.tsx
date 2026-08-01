@@ -3,13 +3,41 @@ import { describe, expect, it } from "vitest";
 import type { CharacterPortfolioItem } from "@idream/shared/admin";
 import {
   CharacterListEmptyState,
-  CharacterOperationsSummary,
   CharacterPortfolioCard,
   CharacterPortfolioVisual,
   characterPortfolioPerformanceLabel,
+  characterPortfolioState,
   resolveCharacterPortfolioPrimaryAction,
-  summarizeCharacterOperations,
 } from "./CharacterWorkspace";
+
+function journey(
+  code: CharacterPortfolioItem["journey"]["primaryAction"]["code"],
+  stage: CharacterPortfolioItem["journey"]["stage"],
+  deepLink: string,
+): CharacterPortfolioItem["journey"] {
+  const stateFor = (stepStage: CharacterPortfolioItem["journey"]["stage"]) =>
+    stepStage === stage ? "current" as const : "upcoming" as const;
+  return {
+    projectionVersion: 1,
+    asOf: "2026-07-31T12:00:00.000Z",
+    stage,
+    status: stage === "live_operations" ? "live" : "in_progress",
+    steps: [
+      { code: "visual_identity", state: "complete", deepLink: "/admin/characters/character-1?tab=visual" },
+      { code: "image_assets", state: stateFor("image_production"), deepLink: "/admin/characters/character-1?tab=assets" },
+      { code: "preview_qa", state: stateFor("preview_qa"), deepLink: "/admin/characters/character-1?tab=preview" },
+      { code: "release", state: "complete", deepLink: "/admin/characters/character-1?tab=release" },
+      { code: "live_monitor", state: stateFor("live_operations"), deepLink: "/admin/characters/character-1?tab=monitor" },
+    ],
+    blockers: [],
+    primaryAction: { code, deepLink, command: null },
+    assetPack: {
+      draft: { availablePurposes: ["character_cover"], missingPurposes: ["character_hero", "character_chat"], completed: 1, total: 3 },
+      live: { availablePurposes: ["character_cover", "character_hero"], missingPurposes: ["character_chat"], completed: 2, total: 3 },
+    },
+    release: { servingState: "live", currentReleaseId: "release-1", candidateReleaseId: null },
+  };
+}
 
 describe("Character Portfolio role-image summary", () => {
   const item = {
@@ -33,11 +61,7 @@ describe("Character Portfolio role-image summary", () => {
       qceRate: 0.75,
       sameCharacterD7: null,
     }],
-    nextAction: {
-      code: "continue_asset_pack",
-      deepLink: "/admin/characters/character-1?tab=assets",
-      label: "Complete Character Assets",
-    },
+    journey: journey("continue_asset_pack", "image_production", "/admin/characters/character-1?tab=assets"),
     latestDecision: { decision: "promote" },
   } as unknown as CharacterPortfolioItem;
 
@@ -62,7 +86,8 @@ describe("Character Portfolio role-image summary", () => {
     expect(studio).toContain("Mara");
     expect(studio).not.toContain("28d QCE");
     expect(studio).not.toContain("Latest decision:");
-    expect(studio).toContain("Continue filling image pack");
+    expect(studio).toContain("Live");
+    expect(studio).not.toContain("Continue filling image pack");
     expect(studio).not.toContain("Complete Character Assets");
     expect(performance).toContain("28d QCE 75.0%");
     expect(performance).toContain("Latest decision:");
@@ -71,12 +96,8 @@ describe("Character Portfolio role-image summary", () => {
   it("treats an existing live portrait as enablement instead of first-time setup", () => {
     const action = resolveCharacterPortfolioPrimaryAction({
       ...item,
-      nextAction: {
-        code: "prepare_image_production",
-        deepLink: "/admin/characters/character-1?tab=assets",
-        label: "Prepare image production",
-      },
-    }, "studio");
+      journey: journey("prepare_image_production", "visual_setup", "/admin/characters/character-1?tab=assets"),
+    });
 
     expect(action).toMatchObject({
       eyebrow: "Enable image production",
@@ -89,12 +110,8 @@ describe("Character Portfolio role-image summary", () => {
   it("returns an unfinished image run to the image still in progress", () => {
     expect(resolveCharacterPortfolioPrimaryAction({
       ...item,
-      nextAction: {
-        code: "continue_image_run",
-        deepLink: "/admin/characters/character-1?tab=assets",
-        label: "Continue active image run",
-      },
-    }, "studio")).toMatchObject({
+      journey: journey("continue_image_run", "image_production", "/admin/characters/character-1?tab=assets"),
+    })).toMatchObject({
       // 运营面说人话：不用 batch/run 这类工程词（与周围 image route / image pack 文案一致）。
       eyebrow: "Image in progress",
       label: "Continue current image",
@@ -103,7 +120,7 @@ describe("Character Portfolio role-image summary", () => {
     });
   });
 
-  it("routes a completed live character to more images in Studio and monitoring in Performance", () => {
+  it("uses the same authoritative live action in Studio and Performance", () => {
     const liveItem = {
       ...item,
       visualProduction: {
@@ -111,20 +128,16 @@ describe("Character Portfolio role-image summary", () => {
         draftPurposes: [],
         livePurposes: ["character_cover", "character_hero", "chat_moment"],
       },
-      nextAction: {
-        code: "monitor_live_character",
-        deepLink: "/admin/characters/character-1?tab=monitor",
-        label: "Review live character",
-      },
+      journey: journey("monitor_live_character", "live_operations", "/admin/characters/character-1?tab=monitor"),
     } as CharacterPortfolioItem;
 
-    expect(resolveCharacterPortfolioPrimaryAction(liveItem, "studio")).toMatchObject({
-      eyebrow: "Ongoing production",
-      label: "Create more images",
-      href: "/admin/characters/character-1?tab=assets",
-      requiresAssets: true,
+    expect(resolveCharacterPortfolioPrimaryAction(liveItem)).toMatchObject({
+      eyebrow: "Live character",
+      label: "Review live character",
+      href: "/admin/characters/character-1?tab=monitor",
+      requiresAssets: false,
     });
-    expect(resolveCharacterPortfolioPrimaryAction(liveItem, "performance")).toMatchObject({
+    expect(resolveCharacterPortfolioPrimaryAction(liveItem)).toMatchObject({
       eyebrow: "Live character",
       label: "Review live character",
       href: "/admin/characters/character-1?tab=monitor",
@@ -132,64 +145,24 @@ describe("Character Portfolio role-image summary", () => {
     });
   });
 
-  it("turns the current page into an operator-oriented next-step overview", () => {
-    const items = [
-      {
-        ...item,
-        characterId: "route-character",
-        name: "Route Character",
-        nextAction: {
-          code: "complete_image_route",
-          deepLink: "/admin/characters/route-character?tab=visual",
-          label: "Complete image route",
-        },
-      },
-      {
-        ...item,
-        characterId: "portrait-character",
-        name: "Portrait Character",
-        nextAction: {
-          code: "prepare_image_production",
-          deepLink: "/admin/characters/portrait-character?tab=assets",
-          label: "Prepare image production",
-        },
-      },
-      {
-        ...item,
-        characterId: "live-character",
-        name: "Live Character",
-        nextAction: {
-          code: "monitor_live_character",
-          deepLink: "/admin/characters/live-character?tab=monitor",
-          label: "Monitor live character",
-        },
-      },
-    ] as CharacterPortfolioItem[];
-    const summary = summarizeCharacterOperations(items);
+  it("renders a free roster item with one factual state and one direct destination", () => {
     const html = renderToStaticMarkup(
-      <CharacterOperationsSummary
+      <CharacterPortfolioCard
         canOpenAssets
         canOpenProject
-        items={items}
+        item={item}
+        mode="studio"
       />,
     );
 
-    expect(summary).toMatchObject({
-      awaitingAction: 2,
-      counts: { setup: 2, production: 0, launch: 0, live: 1 },
-      focusItem: { characterId: "portrait-character" },
-      total: 3,
-    });
-    expect(html).toContain("Character operations overview");
-    expect(html).toContain("2 characters need an operator next step");
-    expect(html).toContain("Suggested first");
-    expect(html).toContain("Portrait Character");
-    expect(html).toContain("Use existing portrait");
-    expect(html).toContain("One-time setup");
-    expect(html).toContain("Live monitoring");
-    expect(html).toContain(
-      'href="/admin/characters/portrait-character?tab=assets"',
-    );
+    expect(characterPortfolioState(item)).toMatchObject({ label: "Live" });
+    expect(html).toContain('data-layout="roster"');
+    expect(html).toContain('href="/admin/characters/character-1"');
+    expect(html).not.toContain("Next");
+    expect(html).not.toContain("Image pack");
+    expect(html).not.toContain("Visual identity");
+    expect(html).not.toContain("Continue filling image pack");
+    expect(html).not.toContain("28d QCE");
   });
 
   it("uses Character-specific empty states instead of operations queue language", () => {
@@ -200,8 +173,15 @@ describe("Character Portfolio role-image summary", () => {
       <CharacterListEmptyState filtered onClear={() => undefined} />,
     );
 
+    // SPEC: 筛「需要处理」而零结果是好消息，语气必须和"没找到"分开——运营每天点它就为看这句。
+    const attentionClear = renderToStaticMarkup(
+      <CharacterListEmptyState attentionOnly filtered onClear={() => undefined} />,
+    );
+    expect(attentionClear).toContain("No character needs attention right now");
+    expect(attentionClear).not.toContain("No characters match these filters");
+
     expect(empty).toContain("No characters yet");
-    expect(empty).toContain("Create the first official character to get started.");
+    expect(empty).toContain("No characters are available yet.");
     expect(filtered).toContain("No characters match these filters");
     expect(filtered).toContain("Clear filters to return to all characters.");
     expect(`${empty}${filtered}`).not.toMatch(/queue|incident|case|authority/i);

@@ -5,7 +5,7 @@ import {
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { validateCharacterRelease } from "@/server/modules/admin-v2/characters/release-lifecycle";
-import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
+import { actorWithPermission, jsonBody } from "@/server/modules/admin-v2/shared/authority";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
 import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
@@ -17,7 +17,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const { id, releaseId } = await context.params;
   return adminV2Route(async () => {
     const actor = await actorWithPermission(request, "character.release.publish", { characterId: id });
-    const body = characterReleaseValidationRequestSchema.parse(await request.json());
+    const body = characterReleaseValidationRequestSchema.parse(await jsonBody(request));
     if (body.confirmation !== `${id}:${releaseId}:validate`) {
       throw Errors.badRequest("Confirmation did not match Release validation target");
     }

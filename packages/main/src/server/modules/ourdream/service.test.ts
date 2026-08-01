@@ -1,9 +1,9 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
-import { drainLocalAiPipeline } from "@/server/ai/local-pipeline";
 import {
   publishCharacterForPublicAudience,
   purgeTestData,
+  runQueuedGenerationJobs,
 } from "@/server/test/helpers";
 import { dispatchV1 } from "./service";
 
@@ -251,10 +251,7 @@ describe("ourdream API dispatcher", () => {
 
 async function drainGenerationToCompletion(jobId: string) {
   for (let pass = 0; pass < 12; pass += 1) {
-    await drainLocalAiPipeline({
-      limit: 8,
-      workerId: `service-smoke-worker-${pass}`,
-    });
+    await runQueuedGenerationJobs(8);
     const job = await prisma.generationJob.findUnique({
       where: { id: jobId },
       select: { status: true },

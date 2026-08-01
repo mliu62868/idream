@@ -75,7 +75,10 @@ import {
   assignExperiment,
   recordExperimentExposure,
 } from "@/server/modules/admin-v2/experiments/runtime";
-import { linkGenerationLedgerEntry } from "@/server/ai/generation-settlement";
+import {
+  dreamcoinBalance,
+  postDreamcoinEntry,
+} from "@/server/modules/admin/billing/ledger";
 import {
   clearSessionCookie,
   createAnonymousId,
@@ -111,7 +114,10 @@ import {
 } from "@/server/lib/media-asset-authority";
 import { mediaAssetAuthorityDependencies } from "@/server/modules/admin-v2/shared/media-asset-authority-dependencies";
 import { canonicalJsonHash } from "@/server/modules/admin-v2/shared/idempotency";
-import { isCharacterProjectPhaseTransitionAllowed } from "@/server/modules/admin-v2/shared/state-transition-authority";
+import {
+  transitionCharacterProject,
+  transitionCharacterServing,
+} from "@/server/modules/admin-v2/characters/transition";
 import {
   isReservedInternalEmail,
   registeredUserDataClass,
@@ -791,7 +797,13 @@ async function signup(request: Request) {
         },
       },
     });
-    await appendLedger(tx, created.id, 250, "signup_bonus", "signup");
+    await postDreamcoinEntry(tx, {
+      kind: "signup_bonus",
+      userId: created.id,
+      amount: 250,
+      sourceId: `signup:${created.id}`,
+      idempotencyKey: `signup_bonus:${created.id}`,
+    });
     // Referral give/get: one share code can convert many invitees. Keep the
     // parent invite row (inviteeId=null) and append one conversion row per signup
     // so admin/progress views do not lose prior invitee attribution.
@@ -809,22 +821,22 @@ async function signup(request: Request) {
             rewardStatus: "granted",
           },
         });
-        await appendLedger(
-          tx,
-          created.id,
-          REFERRAL_INVITEE_BONUS,
-          "referral_bonus",
-          conversion.id,
-          `referral_invitee:${created.id}`,
-        );
-        await appendLedger(
-          tx,
-          referral.inviterId,
-          REFERRAL_INVITER_REWARD,
-          "referral_reward",
-          created.id,
-          `referral_inviter:${created.id}`,
-        );
+        await postDreamcoinEntry(tx, {
+          kind: "referral",
+          beneficiary: "invitee",
+          userId: created.id,
+          amount: REFERRAL_INVITEE_BONUS,
+          sourceId: conversion.id,
+          idempotencyKey: `referral_invitee:${created.id}`,
+        });
+        await postDreamcoinEntry(tx, {
+          kind: "referral",
+          beneficiary: "inviter",
+          userId: referral.inviterId,
+          amount: REFERRAL_INVITER_REWARD,
+          sourceId: created.id,
+          idempotencyKey: `referral_inviter:${created.id}`,
+        });
       }
     }
     await appendCanonicalMetricEvent(tx, {
@@ -2450,11 +2462,6 @@ export async function createActiveCharacterVisualProfileVersion(
       reference.role === "primary_face" || reference.role === "identity_anchor"
     )
     .map((reference) => reference.mediaAssetId);
-  const referenceAssetIds = inheritedReferences
-    .filter((reference) =>
-      reference.role !== "primary_face" && reference.role !== "identity_anchor"
-    )
-    .map((reference) => reference.mediaAssetId);
   if (active) {
     await tx.characterVisualProfile.updateMany({
       where: { characterId: character.id, status: "active" },
@@ -3512,14 +3519,13 @@ async function createGenerationJobForUser(
       sourceType: created.sourceType,
       sourceId: created.sourceId,
     });
-    await appendLedger(
-      tx,
+    await postDreamcoinEntry(tx, {
+      kind: "generation_spend",
       userId,
-      -cost,
-      "generation_spend",
-      created.id,
-      `generation:${created.id}:reserve`,
-    );
+      amount: cost,
+      sourceId: created.id,
+      idempotencyKey: `generation:${created.id}:reserve`,
+    });
     await appendGenerationEvent(tx, created.id, "reserved", "Dreamcoins reserved", {
       amount: cost,
     });
@@ -4200,14 +4206,13 @@ async function createVoiceClip(request: Request) {
         if (balance < cost) {
           throw Errors.paymentRequired("Insufficient dreamcoins", { balance, cost, required: cost });
         }
-        await appendLedger(
-          tx,
-          user.id,
-          -cost,
-          "generation_spend",
-          mediaId,
-          `voice:${body.messageId}:spend`,
-        );
+        await postDreamcoinEntry(tx, {
+          kind: "generation_spend",
+          userId: user.id,
+          amount: cost,
+          sourceId: mediaId,
+          idempotencyKey: `voice:${body.messageId}:spend`,
+        });
       }
       return tx.mediaAsset.create({
         data: {
@@ -4922,14 +4927,13 @@ async function retryGenerationJob(request: Request, id: string) {
     await appendGenerationEvent(tx, created.id, "created", "Retry generation job accepted", {
       derivedFromJobId: job.id,
     });
-    await appendLedger(
-      tx,
-      user.id,
-      -cost,
-      "generation_spend",
-      created.id,
-      `generation:${created.id}:reserve`,
-    );
+    await postDreamcoinEntry(tx, {
+      kind: "generation_spend",
+      userId: user.id,
+      amount: cost,
+      sourceId: created.id,
+      idempotencyKey: `generation:${created.id}:reserve`,
+    });
     await appendGenerationEvent(tx, created.id, "reserved", "Dreamcoins reserved", {
       amount: cost,
     });
@@ -8330,7 +8334,13 @@ async function redeemCode(request: Request) {
     const created = await tx.redeemCodeRedemption.create({
       data: { redeemCodeId: lockedCode.id, userId: user.id },
     });
-    await appendLedger(tx, user.id, coins, "redeem", created.id);
+    await postDreamcoinEntry(tx, {
+      kind: "redeem",
+      userId: user.id,
+      amount: coins,
+      sourceId: created.id,
+      idempotencyKey: `redeem:${created.id}`,
+    });
     return { coins, redemption: created };
   });
 
@@ -8396,7 +8406,7 @@ async function deleteRequest(request: Request) {
 
   // The response is authorized by the committed Main transaction above.
   // Immediate dispatch is only a latency optimization: the durable pending row
-  // remains retryable when Chat ingress or the BullMQ fallback is unavailable.
+  // remains retryable when Chat HTTP ingress is unavailable.
   try {
     await dispatchPendingChatEvents();
   } catch (error) {
@@ -10098,16 +10108,24 @@ async function archiveCharacter(request: Request, id: string) {
     if (character.imageAssetId) {
       await lockMediaAssetAuthority(tx, character.imageAssetId);
     }
-    await tx.characterServing.updateMany({
+    const serving = await tx.characterServing.findUnique({
       where: { characterId: character.id },
-      data: {
-        state: "retired",
+    });
+    if (serving) {
+      await transitionCharacterServing(tx, {
+        servingId: serving.id,
+        to: "retired",
+        expected: {
+          from: serving.state as "inactive" | "live" | "paused",
+          version: serving.version,
+        },
+        data: {
         currentReleaseId: null,
         scheduledReleaseId: null,
         scheduledAt: null,
-        version: { increment: 1 },
-      },
-    });
+        },
+      });
+    }
     await tx.characterSubmission.updateMany({
       where: { characterId: character.id, status: "pending" },
       data: {
@@ -10130,23 +10148,19 @@ async function archiveCharacter(request: Request, id: string) {
         activeKey: { not: null },
         phase: { notIn: ["inactive", "retired"] },
       },
-      select: { id: true, phase: true },
+      select: { id: true, phase: true, version: true },
     });
-    if (activeProjects.some((project) =>
-      !isCharacterProjectPhaseTransitionAllowed(project.phase, "retired")
-    )) {
-      throw Errors.conflict("Character Project cannot be retired from its current phase");
+    for (const project of activeProjects) {
+      await transitionCharacterProject(tx, {
+        projectId: project.id,
+        to: "retired",
+        expected: {
+          from: project.phase as "idea" | "planned" | "producing" | "qa" | "launch_ready" | "live_management",
+          version: project.version,
+        },
+        data: { activeKey: null },
+      });
     }
-    await tx.characterProject.updateMany({
-      where: {
-        id: { in: activeProjects.map((project) => project.id) },
-      },
-      data: {
-        phase: "retired",
-        activeKey: null,
-        version: { increment: 1 },
-      },
-    });
     await recordMainToChatEvent({
       eventId: `character_removed_${character.id}_${randomUUID()}`,
       eventType: MAIN_TO_CHAT_EVENTS.characterRemoved,
@@ -11260,45 +11274,6 @@ async function currentAgeVerificationStatus(userId: string) {
   return latest?.status ?? "not_required";
 }
 
-async function dreamcoinBalance(userId: string, tx: Prisma.TransactionClient | typeof prisma = prisma) {
-  const aggregate = await tx.dreamcoinLedger.aggregate({
-    where: { userId },
-    _sum: { delta: true },
-  });
-  return aggregate._sum.delta ?? 0;
-}
-
-async function appendLedger(
-  tx: Prisma.TransactionClient,
-  userId: string,
-  delta: number,
-  reason: string,
-  sourceId?: string,
-  idempotencyKey?: string,
-) {
-  if (idempotencyKey) {
-    const existing = await tx.dreamcoinLedger.findUnique({ where: { idempotencyKey } });
-    if (existing) {
-      await linkGenerationLedgerEntry(tx, existing);
-      return existing;
-    }
-  }
-  await lockUserLedger(tx, userId);
-  const balance = await dreamcoinBalance(userId, tx);
-  const created = await tx.dreamcoinLedger.create({
-    data: {
-      userId,
-      delta,
-      balanceAfter: balance + delta,
-      reason,
-      sourceId,
-      idempotencyKey,
-    },
-  });
-  await linkGenerationLedgerEntry(tx, created);
-  return created;
-}
-
 async function lockUserLedger(tx: Prisma.TransactionClient, userId: string) {
   await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${userId} FOR UPDATE`;
 }
@@ -11330,14 +11305,13 @@ async function failQueuedGeneration(
       },
     });
     if (job.costDreamcoins > 0) {
-      await appendLedger(
-        tx,
-        job.userId,
-        job.costDreamcoins,
-        "refund",
-        job.id,
-        `generation:${job.id}:refund`,
-      );
+      await postDreamcoinEntry(tx, {
+        kind: "refund",
+        userId: job.userId,
+        amount: job.costDreamcoins,
+        sourceId: job.id,
+        idempotencyKey: `generation:${job.id}:refund`,
+      });
     }
     const attempt = await tx.generationAttempt.findFirst({
       where: { requestId: job.id },
@@ -12463,14 +12437,13 @@ async function activateSubscriptionInTx(
         currentPeriodEnd: extendedEnd,
       },
     });
-    await appendLedger(
-      tx,
+    await postDreamcoinEntry(tx, {
+      kind: "subscription_grant",
       userId,
-      includedDreamcoins,
-      "subscription_grant",
-      appliedPurchase.id,
-      `subscription:grant:${provider}:${providerSubscriptionId}`,
-    );
+      amount: includedDreamcoins,
+      sourceId: appliedPurchase.id,
+      idempotencyKey: `subscription:grant:${provider}:${providerSubscriptionId}`,
+    });
     await appendCanonicalMetricEvent(tx, {
       sourceEventId: `subscription:${appliedPurchase.id}:activated`,
       eventType: METRIC_PRODUCT_EVENTS.subscriptionActivated,
@@ -12543,14 +12516,13 @@ async function activateSubscriptionInTx(
     },
   });
   await syncSubscriptionEntitlements(tx, userId, entitlementPlan, currentPeriodEnd);
-  await appendLedger(
-    tx,
+  await postDreamcoinEntry(tx, {
+    kind: "subscription_grant",
     userId,
-    includedDreamcoins,
-    "subscription_grant",
-    subscription.id,
-    `subscription:grant:${provider}:${providerSubscriptionId}`,
-  );
+    amount: includedDreamcoins,
+    sourceId: subscription.id,
+    idempotencyKey: `subscription:grant:${provider}:${providerSubscriptionId}`,
+  });
   await appendCanonicalMetricEvent(tx, {
     sourceEventId: `subscription:${subscription.id}:activated`,
     eventType: METRIC_PRODUCT_EVENTS.subscriptionActivated,

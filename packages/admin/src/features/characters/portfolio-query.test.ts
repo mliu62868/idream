@@ -27,4 +27,12 @@ describe("Character Portfolio URL authority", () => {
       "limit=25&sort=project_id_asc&search=needle",
     );
   });
+
+  // SPEC: 「需要处理」要能分享和刷新——它是运营每天的入口，必须活在 URL 里而不是组件 state 里。
+  it("round-trips the needs-attention entry point through the URL", () => {
+    expect(parseCharacterPortfolioUrl("?attention=true")).toMatchObject({ attention: true });
+    expect(characterPortfolioQuery({ search: "", attention: true })).toBe("attention=true");
+    expect(parseCharacterPortfolioUrl("?attention=1").attention).toBeUndefined();
+    expect(characterPortfolioQuery({ search: "" })).toBe("");
+  });
 });

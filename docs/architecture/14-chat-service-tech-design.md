@@ -1,6 +1,6 @@
 # 14. Chat Service 技术架构设计
 
-更新日期：2026-07-18
+更新日期：2026-07-31
 
 > 本文是 `docs/product/CHAT_SERVICE_PRD.md`（产品/数据边界）和 `docs/research/SERVICE_INTEGRATION.md`（跨服务传输）的**落地技术设计**。
 > PRD 定义 *what*，本文定义 *how*：服务拆分 → 物理拓扑、权限、热路径、可靠性、存储/记忆、事件 → 服务目录、服务间协议、进程管理。**拆分已落地**，本文是已实现的目标设计。
@@ -15,7 +15,7 @@
 | 记忆检索 | **按"谁读"分存**：账本(messages/usage/审核)入 Postgres，agent session.jsonl/记忆/关系/边界入**本地文件夹**（直接 fs 读写）+ igrep 索引 | 记忆权威=文件本身（agent 友好）；账本权威=PG（ACID/计费/查询）；同一事实只有一个 canonical；不做存储接口抽象（YAGNI），fs 读写集中在一个模块 |
 | P0 第一刀 | **边界重构**：schema 隔离 + 双 role + 只读 view | 写权威成为 DB 层强约束，而非 code review 纪律；也是物理拆分前置 |
 
-> 现状（as-built）：**拆分已落地**。Chat Service 是独立部署单元（`packages/chat`，pm2 `chat` 进程内同时起 HTTP/SSE + BullMQ worker），拥有自己的 `chat.*` schema 和两个数据库能力：`chat_service` 是请求/领域事务角色，只读 Main 的 core/billing/compliance 视图并创建 durable file intent；`chat_projector` 是独立文件投影角色，只有实际完成文件副作用后才能推进 mutation receipt。账本入 PG，记忆/会话日志入文件层（`packages/chat/src/chat-fs.ts`）。Main 不再同步 drain chat 生成；Chat ↔ Main 经 outbox/inbox 事件（BullMQ + Redis）交互。
+> 现状（as-built）：**拆分已落地**。Chat Service 是独立部署单元（`packages/chat`，pm2 `chat` 进程内同时起 HTTP/SSE + BullMQ worker），拥有自己的 `chat.*` schema 和两个数据库能力：`chat_service` 是请求/领域事务角色，只读 Main 的 core/billing/compliance 视图并创建 durable file intent；`chat_projector` 是独立文件投影角色，只有实际完成文件副作用后才能推进 mutation receipt。账本入 PG，记忆/会话日志入文件层（`packages/chat/src/chat-fs.ts`）。Main 不再同步 drain chat 生成；Chat ↔ Main 业务事件统一经 sender Outbox → HTTP durable ingest → receiver Inbox ACK，Redis 只承载 Chat 内部队列和 token Stream。
 
 ---
 
@@ -362,7 +362,7 @@ packages/
 
 ## 11. 服务间协议
 
-三类通道：**HTTP(同步、薄)** / **BullMQ on 共享 Redis(异步任务)** / **事务 outbox→inbox(跨服务事件)**。媒体字节只走 Blob。原则：**web 请求里绝不同步等生成**；所有跨服务**至少一次 + 消费者幂等**；服务间**不共享可变表写权**。
+三类通道：**HTTP(同步、薄)** / **BullMQ（服务内部或 Main↔Gen 异步任务）** / **事务 Outbox → HTTP durable ingest → Inbox ACK（Main↔Chat 业务事件）**。媒体字节只走 Blob。原则：**web 请求里绝不同步等生成**；所有跨服务**至少一次 + 消费者幂等**；服务间**不共享可变表写权**。
 
 | 交互 | 通道 | 方向 | 内容 | 幂等键 |
 |------|------|------|------|--------|
@@ -370,8 +370,8 @@ packages/
 | 提交 chat 消息 | HTTP + BFF 签名头 | main-web → `chat/web` | sendMessage | PG message id |
 | chat token 流 | SSE | `chat/web` → Browser | start/delta/done | `Last-Event-ID` |
 | chat 生成 | BullMQ `chat.generate`（同进程入队/消费） | `chat/web` → `chat/worker` | {sessionId, assistantMessageId, attempt} | `chat-generate:<amid>:<attempt>` |
-| **chat → main 事件** | Chat outbox → `chat.outbox.deliver` → Redis 队列 `main.inbound` → `main-event-consumer` | `chat/worker` → main | `chat.message.completed`/`usage.incremented`/`safety.flagged`… | `chat-outbox:<eventId>` |
-| **main → chat 事件** | Main outbox → `main.outbox.deliver` → Redis 队列 `chat.inbound` → `chat.inbox.consume` | main → `chat/worker` | `user.suspended`/`character.removed`/`entitlement.updated`… | `chat-inbox:<eventId>` |
+| **chat → main 事件** | Chat Outbox → HTTP `/api/internal/events/ingest` → Main Product Event receipt/Inbox ACK → 本地 projector | `chat/worker` → main | `chat.message.completed`/`usage.incremented`/`safety.flagged`… | `chat:<eventId>` |
+| **main → chat 事件** | Main Outbox → HTTP `/internal/events/ingest` → `chat_inbox_events` ACK → receiver-local `chat.inbox.consume` | main → `chat/worker` | `user.suspended`/`character.removed`/Chat 图片回调… | `main:<eventId>` |
 | 提交图片/视频生成 | BullMQ `ai.image.generate` / `ai.video.generate`（payload 自包含） | main-web → `gen/image`·`gen/video` | prompt/controls/seed/outputPrefix | `generation:<jobId>` |
 | 生成完成回收 | BullMQ `app.ai.finalize` → `gen-finalizer` | `gen/image`·`gen/video` → main | generation.completed / failed | `generation-finalize:<jobId>:<state>` |
 | 媒体交接 | Blob `putPrivate` / `signGetUrl` | worker → Blob → main 签发 | object key | — |
@@ -380,6 +380,7 @@ packages/
 
 **协议不变量**
 - chat：HTTP 立即返回 `{assistantMessageId, streamUrl}`，生成走 `chat.generate`；断线带 `Last-Event-ID` 续读，过期退化拉 PG。
+- Main↔Chat：只有接收方持久化 receipt 后返回的 ACK 才算交付成功；本地 queue 只唤醒已持久化 Inbox，不是第二条跨服务通路。
 - image/video：提交返回 `{jobId}`，前端**轮询** `GET /generation/jobs/:id`（无 SSE）。
 - 失败：retryable 让 BullMQ 重试；耗尽 → 终态 finalize（退款/标记）。reconciler 兜底。
 - 安全：worker 写 Blob 默认 private，仅 main 能签读 URL；chat 只读 core view，不写 core/billing/compliance。

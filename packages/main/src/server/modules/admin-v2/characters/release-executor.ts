@@ -42,6 +42,11 @@ import {
   evaluateEffectiveGenerationRouteAuthority,
   isOperatorSingleImageRoute,
 } from "./generation-route-authority";
+import {
+  transitionCharacterProject,
+  transitionCharacterRelease,
+  transitionCharacterServing,
+} from "./transition";
 
 export const CHARACTER_RELEASE_POLICY_VERSION = "character-release-policy-v2";
 
@@ -1232,9 +1237,11 @@ async function publishRelease(
       { servingState: serving.state },
     );
   }
-  const servingUpdate = await tx.characterServing.updateMany({
-    where: {
-      id: serving.id,
+  await transitionCharacterServing(tx, {
+    servingId: serving.id,
+    to: "live",
+    expected: {
+      from: serving.state as "inactive" | "live",
       version: serving.version,
       currentReleaseId: serving.currentReleaseId,
     },
@@ -1242,19 +1249,12 @@ async function publishRelease(
       currentReleaseId: release.id,
       scheduledReleaseId: null,
       scheduledAt: null,
-      state: "live",
-      version: { increment: 1 },
     },
   });
-  if (servingUpdate.count !== 1)
-    throw new ReleaseCommandError(
-      "serving_version_conflict",
-      "CharacterServing changed while publishing",
-    );
   if (serving.currentReleaseId) {
     const currentRelease = await tx.characterRelease.findUnique({
       where: { id: serving.currentReleaseId },
-      select: { status: true },
+      select: { status: true, version: true },
     });
     if (
       currentRelease &&
@@ -1267,46 +1267,31 @@ async function publishRelease(
         true,
       );
     }
-    await tx.characterRelease.updateMany({
-      where: { id: serving.currentReleaseId, status: "published" },
-      data: { status: "superseded", version: { increment: 1 } },
+    await transitionCharacterRelease(tx, {
+      releaseId: serving.currentReleaseId,
+      to: "superseded",
+      expected: { from: "published", version: currentRelease!.version },
     });
   }
-  const published = await tx.characterRelease.updateMany({
-    where: { id: release.id, version: release.version, status: "approved" },
+  await transitionCharacterRelease(tx, {
+    releaseId: release.id,
+    to: "published",
+    expected: { from: "approved", version: release.version },
     data: {
-      status: "published",
       readiness: "ready",
       publishedAt: now,
       supersedesId: serving.currentReleaseId,
-      version: { increment: 1 },
     },
   });
-  if (published.count !== 1) {
-    throw new ReleaseCommandError(
-      "release_version_conflict",
-      "Release changed while publishing",
-      {},
-      true,
-    );
-  }
   if (project.phase !== "live_management") {
-    const projectUpdated = await tx.characterProject.updateMany({
-      where: {
-        id: project.id,
+    await transitionCharacterProject(tx, {
+      projectId: project.id,
+      to: "live_management",
+      expected: {
+        from: project.phase as "idea" | "launch_ready",
         version: project.version,
-        phase: project.phase,
       },
-      data: { phase: "live_management", version: { increment: 1 } },
     });
-    if (projectUpdated.count !== 1) {
-      throw new ReleaseCommandError(
-        "project_version_conflict",
-        "Character Project changed while publishing",
-        {},
-        true,
-      );
-    }
   }
   const publishedAssetIds = [
     ...new Set(
@@ -1710,24 +1695,22 @@ async function executeServingState(
       "Published Release has no character avatar manifest",
     );
   }
-  const updated = await tx.characterServing.updateMany({
-    where: { id: serving.id, version: serving.version, state: expectedState },
+  await transitionCharacterServing(tx, {
+    servingId: serving.id,
+    to: nextState,
+    expected: {
+      from: expectedState,
+      version: serving.version,
+    },
     data: {
-      state: nextState,
       ...(retiring
         ? {
             scheduledReleaseId: null,
             scheduledAt: null,
           }
         : {}),
-      version: { increment: 1 },
     },
   });
-  if (updated.count !== 1)
-    throw new ReleaseCommandError(
-      "serving_version_conflict",
-      "CharacterServing changed during state transition",
-    );
   await tx.character.update({
     where: { id: command.targetId },
     data: pausing || retiring
@@ -1739,22 +1722,15 @@ async function executeServingState(
         },
   });
   if (retiring) {
-    const projectUpdated = await tx.characterProject.updateMany({
-      where: {
-        id: project.id,
+    await transitionCharacterProject(tx, {
+      projectId: project.id,
+      to: "retired",
+      expected: {
+        from: project.phase as "idea" | "planned" | "producing" | "qa" | "launch_ready" | "live_management",
         version: project.version,
-        phase: project.phase,
       },
-      data: { phase: "retired", activeKey: null, version: { increment: 1 } },
+      data: { activeKey: null },
     });
-    if (projectUpdated.count !== 1) {
-      throw new ReleaseCommandError(
-        "project_version_conflict",
-        "Character Project changed during retirement",
-        {},
-        true,
-      );
-    }
   }
   await appendExecutionEvidence(tx, {
     command,

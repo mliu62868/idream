@@ -1,6 +1,6 @@
 # iDream Remaining Work Execution Plan
 
-Updated: 2026-07-18
+Updated: 2026-07-31
 
 ## Current State
 
@@ -13,6 +13,7 @@ Use these documents as the current source of truth:
 - `docs/product/PRODUCTION_SECRET_CHECKLIST.md`: production env and secret checklist.
 - `docs/product-audits/current-implementation/pm-audit.md`: PM/UX gaps.
 - `docs/product/ADMIN_CONSOLE_FIRST_PRINCIPLES_REMEDIATION_PLAN.md`: management-console correctness, operating model, migration gates, and 90-day remediation sequence.
+- `docs/product/DEEP_MODULE_AUTHORITY_EXECUTION_PLAN.md`: implemented Gen/Ledger/Admin mutation/state transition/Main↔Chat/Character Journey authority-deepening work; local generation, bidirectional durable exchange, Chat probe, Admin replay, PM2, HTTP and persistence Gates now pass. The remaining local Gates are the real Character browser operator journey and an operator-approved cutover away from the deleted customer default image workflow; implementation status remains tracked only in `CURRENT_FUNCTIONAL_COVERAGE.md`.
 
 ### 2026-07-18 current local truth
 

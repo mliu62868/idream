@@ -41,9 +41,13 @@ describe("Admin backfill mutation reliability", () => {
   });
 
   it("requires Idempotency-Key for every Admin backfill endpoint", async () => {
-    const routes = [reviewCaseBackfill, customerCaseBackfill, incidentBackfill];
-    for (const route of routes) {
-      const response = await route(new Request("http://localhost/api/v2/admin/backfill", {
+    const routes = [
+      [reviewCaseBackfill, "/api/v2/admin/cases/backfill"],
+      [customerCaseBackfill, "/api/v2/admin/cases/backfill/customer"],
+      [incidentBackfill, "/api/v2/admin/incidents/backfill"],
+    ] as const;
+    for (const [route, pathname] of routes) {
+      const response = await route(new Request(`http://localhost${pathname}`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -52,7 +56,7 @@ describe("Admin backfill mutation reliability", () => {
         },
         body: JSON.stringify({ dryRun: true, batchSize: 1 }),
       }));
-      expect(response.status).toBe(400);
+      expect(response.status, await response.clone().text()).toBe(400);
     }
     await expect(prisma.adminBackfillRun.count()).resolves.toBe(0);
   });

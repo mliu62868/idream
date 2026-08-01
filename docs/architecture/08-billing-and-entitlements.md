@@ -1,6 +1,6 @@
 # 08 · 计费、权益与 dreamcoin
 
-更新日期：2026-07-04
+更新日期：2026-07-31
 
 落地 `BackendFeatureSpec §3.5/§4.5/§5.8` 与 ADR-4（支付抽象 + **加密货币**）。核心三件事：**订阅生命周期**、**权益（entitlement）派生**、**dreamcoin append-only ledger**。
 
@@ -72,18 +72,16 @@ worker billing.webhook（必须等"已确认/已结算"才发权益）:
 
 **铁律**：`balance(user) = SUM(dreamcoin_ledger.delta WHERE userId)`。**没有"余额字段"被就地写**。`balanceAfter` 仅为审计快照。
 
+生产写入口只有 `postDreamcoinEntry(tx, intent)`。调用方提交类型化业务 intent（`signup_bonus | subscription_grant | generation_spend | refund | redeem | referral | admin_adjust`），不得自由组合 `delta/reason`，也不得直接写 `DreamcoinLedger`。该 Module 在同一事务内负责用户行锁、余额派生、符号与规范 reason、幂等 replay/conflict、`balanceAfter` 和 GenerationSettlement 关联。
+
 ```ts
-// modules/billing/ledger.service.ts （事务内）
-async function applyDelta(userId, delta, reason, sourceId) {
-  return prisma.$transaction(async (tx) => {
-    const cur = await balanceOf(tx, userId);         // SUM(delta) 或读最近 balanceAfter
-    const next = cur + delta;
-    if (next < 0) throw Errors.insufficientCoins(-delta, cur);   // 不允许透支
-    return tx.dreamcoinLedger.create({
-      data: { userId, delta, balanceAfter: next, reason, sourceId },
-    });
-  });
-}
+await postDreamcoinEntry(tx, {
+  kind: "generation_spend",
+  userId,
+  amount: cost,
+  sourceId: requestId,
+  idempotencyKey: `generation-spend:${requestId}`,
+});
 ```
 
 **生成预留/结算**（与 06 §8 一致）：
@@ -94,7 +92,7 @@ async function applyDelta(userId, delta, reason, sourceId) {
 | 成功 | 0（已扣，确认） | — | — |
 | 失败/拦截 | `+cost`（或按份额） | `refund` | jobId |
 
-按 `sourceId=jobId` 去重，保证一个任务最多净扣一次、可全额退。
+按稳定 `idempotencyKey` 去重；同 key 同 intent 安全 replay，同 key 不同 intent 返回 conflict，保证一个任务最多净扣一次、可全额退。
 
 **奖励来源**：`signup_bonus`、`subscription_grant`（续费发放）、`redeem`、`referral`、`admin_adjust`，全部经 `reward.ledger` 队列恰好一次。
 

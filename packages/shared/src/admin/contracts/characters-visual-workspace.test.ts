@@ -17,8 +17,8 @@ describe("Character Visual workspace contract", () => {
       profileKey: "profile_image_default_v1",
       profileVersion: 1,
       label: "Default image",
-      modelId: "redcraft-krea2-comfyui",
-      workflowKey: "redcraft-krea2-txt2img",
+      modelId: "redcraft-krea2-redmix3-fp8",
+      workflowKey: "redcraft-krea2-redmix3-txt2img",
       workflowVersion: 1,
       orientation: "4:5",
       allowedOrientations: ["1:1", "4:5"],
@@ -26,7 +26,7 @@ describe("Character Visual workspace contract", () => {
       recommended: true,
     });
 
-    expect(profile.modelId).toBe("redcraft-krea2-comfyui");
+    expect(profile.modelId).toBe("redcraft-krea2-redmix3-fp8");
   });
 
   it("requires an explicit identity prompt when activating a reviewed candidate", () => {
@@ -193,7 +193,7 @@ describe("Character Visual workspace contract", () => {
           profileKey: "redcraft-krea2",
           profileVersion: 1,
           label: "RedCraft Krea 2",
-          workflowKey: "redcraft-krea2-txt2img",
+          workflowKey: "redcraft-krea2-redmix3-txt2img",
           workflowVersion: 1,
           orientation: "4:5",
         },
@@ -209,7 +209,7 @@ describe("Character Visual workspace contract", () => {
         productionDeepLink: "/admin/characters/character-1?tab=assets",
       },
     });
-    expect(result.identityBootstrap.profile?.workflowKey).toBe("redcraft-krea2-txt2img");
+    expect(result.identityBootstrap.profile?.workflowKey).toBe("redcraft-krea2-redmix3-txt2img");
   });
 
   it("keeps bootstrap authority visible when no compatible profile is configured", () => {

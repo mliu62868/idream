@@ -14,7 +14,7 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
-import { actorWithPermission, type AdminActor } from "@/server/modules/admin-v2/shared/authority";
+import { actorWithPermission, jsonBody, type AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { canonicalJsonHash, requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
 import { effectivePermissions } from "@/server/admin/effective-permissions";
 
@@ -188,7 +188,7 @@ export async function listActivity(request: Request, rawTargetType: string, targ
 export async function createActivity(request: Request, rawTargetType: string, targetId: string) {
   const targetType = collaborationTargetTypeSchema.parse(rawTargetType);
   const actor = await actorWithPermission(request, targetDescriptors[targetType].write);
-  const input = collaborationActivityCreateSchema.parse(await request.json());
+  const input = collaborationActivityCreateSchema.parse(await jsonBody(request));
   const key = requireIdempotencyKey(request);
   const hash = canonicalJsonHash({ targetType, targetId, input });
   const existing = await prisma.adminCollaborationActivity.findUnique({
@@ -314,7 +314,7 @@ export async function setWatching(request: Request, rawTargetType: string, targe
   const targetType = collaborationTargetTypeSchema.parse(rawTargetType);
   const actor = await actorWithPermission(request, targetDescriptors[targetType].read);
   await assertTarget(actor, targetType, targetId);
-  const input = collaborationWatchSchema.parse(await request.json());
+  const input = collaborationWatchSchema.parse(await jsonBody(request));
   const key = requireIdempotencyKey(request);
   const hash = canonicalJsonHash({ targetType, targetId, input });
   const result = await prisma.$transaction(async (tx) => {
@@ -382,7 +382,7 @@ export async function listSavedViewsV2(request: Request) {
 }
 
 export async function createSavedViewV2(request: Request) {
-  const input = savedViewCreateSchema.parse(await request.json());
+  const input = savedViewCreateSchema.parse(await jsonBody(request));
   const actor = await actorWithPermission(request, targetDescriptors[input.scope].read);
   const key = requireIdempotencyKey(request);
   const existing = await prisma.adminSavedView.findUnique({ where: { ownerId_idempotencyKey: { ownerId: actor.id, idempotencyKey: key } } });
@@ -395,7 +395,7 @@ export async function createSavedViewV2(request: Request) {
 }
 
 export async function updateSavedViewV2(request: Request, id: string) {
-  const input = savedViewUpdateSchema.parse(await request.json());
+  const input = savedViewUpdateSchema.parse(await jsonBody(request));
   const current = await prisma.adminSavedView.findUnique({ where: { id } });
   if (!current) throw Errors.notFound("Saved view not found");
   const scope = collaborationTargetTypeSchema.parse(current.scope);

@@ -197,6 +197,15 @@ function validFixture(schema: z.ZodType, depth = 0): unknown {
       if (value !== undefined) candidate[key] = value;
     }
     if (schema.safeParse(candidate).success) return candidate;
+    // Cross-field refinements commonly partition an enum across two arrays.
+    // Try every distinct enum prefix for one array at a time before declaring
+    // that the structural fixture cannot satisfy the object invariant.
+    for (const [key, child] of Object.entries(def.shape ?? {})) {
+      for (const value of enumArrayFixtures(child)) {
+        const refined = { ...candidate, [key]: value };
+        if (schema.safeParse(refined).success) return refined;
+      }
+    }
     throw new Error(`No structural positive fixture for object schema: ${JSON.stringify(candidate)}`);
   }
   if (def.type === "array" && def.element) {
@@ -230,6 +239,23 @@ function validFixture(schema: z.ZodType, depth = 0): unknown {
   if (def.type === "undefined" || def.type === "void") return undefined;
   if (def.type === "null") return null;
   throw new Error(`Unsupported Admin v2 fixture schema type: ${def.type}`);
+}
+
+function enumArrayFixtures(schema: z.ZodType): readonly unknown[][] {
+  let def = definition(schema);
+  while (["optional", "nullable", "default", "prefault", "catch", "readonly", "nonoptional"].includes(def.type)) {
+    if (!def.innerType) return [];
+    def = definition(def.innerType);
+  }
+  if (def.type !== "array" || !def.element) return [];
+  let element = definition(def.element);
+  while (["optional", "nullable", "default", "prefault", "catch", "readonly", "nonoptional"].includes(element.type)) {
+    if (!element.innerType) return [];
+    element = definition(element.innerType);
+  }
+  if (element.type !== "enum") return [];
+  const values = Object.values(element.entries ?? {});
+  return Array.from({ length: values.length + 1 }, (_, length) => values.slice(0, length));
 }
 
 function stringFixture(schema: z.ZodType): string {

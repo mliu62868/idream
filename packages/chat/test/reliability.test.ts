@@ -73,6 +73,8 @@ describe("inbox (P0-4 main→chat, idempotent)", () => {
     expect(await persistInboundEvent(event, prisma)).toMatchObject({ acknowledged: true, status: "duplicate" });
     expect(await persistInboundEvent({ ...event, payload: { ...event.payload, tier: "free" } }, prisma))
       .toMatchObject({ acknowledged: false, status: "quarantined" });
+    expect(await persistInboundEvent(event, prisma))
+      .toMatchObject({ acknowledged: false, status: "quarantined" });
     const quarantined = await prisma.chatInboxEvent.findUnique({ where: { id: receipt.id } });
     expect(quarantined?.processedAt).toBeInstanceOf(Date);
   });

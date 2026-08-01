@@ -1,7 +1,7 @@
 import { incidentCloseRequestSchema } from "@idream/shared/admin";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
-import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
+import { actorWithPermission, jsonBody } from "@/server/modules/admin-v2/shared/authority";
 import { closeIncidentWithPostmortem } from "@/server/modules/admin-v2/incidents/service";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
@@ -13,7 +13,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const { id } = await context.params;
   return adminV2Route(async () => {
     const actor = await actorWithPermission(request, "ops.incident.manage");
-    const body = incidentCloseRequestSchema.parse(await request.json());
+    const body = incidentCloseRequestSchema.parse(await jsonBody(request));
     if (body.confirmation !== `${id}:close`) throw Errors.badRequest("Confirmation did not match Incident close target");
     const idempotencyKey = requireIdempotencyKey(request);
     const requestId = request.headers.get("x-request-id")?.trim() || crypto.randomUUID();

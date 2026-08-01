@@ -1,0 +1,6 @@
+{"lane": "F", "run": 0, "thermal": "warm", "ckpt": "klein-9b", "seed": 42, "wall_s": 69.12, "status": "success", "files": ["F_0_seed42.png"]}
+{"lane": "F", "run": 1, "thermal": "warm", "ckpt": "klein-9b", "seed": 43, "wall_s": 69.11, "status": "success", "files": ["F_1_seed43.png"]}
+{"lane": "F", "run": 2, "thermal": "warm", "ckpt": "klein-9b", "seed": 44, "wall_s": 69.13, "status": "success", "files": ["F_2_seed44.png"]}
+{"lane": "E", "run": 0, "thermal": "cold", "ckpt": "qwen-v19", "seed": 42, "wall_s": 219.56, "status": "success", "files": ["E_0_seed42.png"]}
+{"lane": "E", "run": 1, "thermal": "warm", "ckpt": "qwen-v19", "seed": 43, "wall_s": 72.2, "status": "success", "files": ["E_1_seed43.png"]}
+{"lane": "E", "run": 2, "thermal": "warm", "ckpt": "qwen-v19", "seed": 44, "wall_s": 78.25, "status": "success", "files": ["E_2_seed44.png"]}

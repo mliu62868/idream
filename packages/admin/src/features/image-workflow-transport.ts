@@ -6,15 +6,17 @@ import type {
   CreativeRunRetryFailedCommandRequest,
 } from "@idream/shared/admin";
 
+// SPEC: 上线之后的证据只有一个 tab —— 线上表现、组合决策和发布护栏是同一件事的三面。
+// 旧的 ?tab=portfolio 深链会回落到概览（characterWorkspaceTabFromSearch 的缺省）。
 export const characterWorkspaceTabs = [
   "project",
   "visual",
   "assets",
+  "video",
   "voice",
   "preview",
   "release",
   "monitor",
-  "portfolio",
 ] as const;
 
 export type CharacterWorkspaceTab = typeof characterWorkspaceTabs[number];

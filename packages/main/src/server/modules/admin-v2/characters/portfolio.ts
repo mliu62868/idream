@@ -22,7 +22,7 @@ import { ok } from "@/server/lib/http";
 import {
   isMediaAssetOperationalForAuthority,
 } from "@/server/lib/media-asset-authority";
-import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
+import { actorWithPermission, jsonBody } from "@/server/modules/admin-v2/shared/authority";
 import {
   effectiveCharacterIdsForPermission,
 } from "@/server/admin/effective-permissions";
@@ -37,7 +37,6 @@ import {
 } from "./character-release-contract";
 import {
   draftAssetRouteEntries,
-  evaluateDraftAssetRouteAuthority,
 } from "./draft-asset-route-authority";
 import {
   completedUtcCharacterPerformanceWindow,
@@ -46,6 +45,13 @@ import {
 } from "./performance";
 import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-executor";
 import { findOperationalGenerationRoute } from "./visual-authority";
+import {
+  characterProductionPurposes,
+  projectCharacterProductionJourneys,
+  projectCurrentDraftAssetPack,
+  releaseAssetPack,
+  type CharacterProductionAssetPack,
+} from "./production-journey";
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 
@@ -63,77 +69,28 @@ function stringValue(value: unknown, fallback: string) {
   return typeof value === "string" && value.trim().length > 0 ? value : fallback;
 }
 
-const characterAssetPurposes = [
-  "character_cover",
-  "character_hero",
-  "character_chat",
-] as const;
+const characterAssetPurposes = characterProductionPurposes;
+type CharacterAssetPack = CharacterProductionAssetPack;
 
-type CharacterAssetPurpose = (typeof characterAssetPurposes)[number];
-type CharacterAssetPack = Partial<Record<CharacterAssetPurpose, string>>;
+// SPEC: 「需要处理」= 已上线、观察窗口整段走完、却一条观测都没有 —— 铺位定向或事件上报没通，
+// 投放在空转。这是列表上没有任何其他地方会说的事。
+// INTENT: 只收这一条。资产包不完整已经由每张卡片的 Journey 说了；"无负责人"这类治理欠账
+// 对几乎每个角色都为真。多塞一条都会把这个筛子稀释成又一个恒真告警，然后没人再点它。
+// 判定必须只依赖 SQL 可精确回答的事实 —— 它跑在主查询之前（要进 where 才能让分页正确），
+// 拿不到主查询里那套资产可用性/路线新鲜度的计算。
+export const ATTENTION_NO_DATA_WINDOW_DAYS = 7;
 
-function distinctPurposeAssetPack(
-  input: Partial<Record<CharacterAssetPurpose, string>>,
-): CharacterAssetPack {
-  const seenAssetIds = new Set<string>();
-  return Object.fromEntries(characterAssetPurposes.flatMap((purpose) => {
-    const assetId = input[purpose];
-    if (!assetId || seenAssetIds.has(assetId)) return [];
-    seenAssetIds.add(assetId);
-    return [[purpose, assetId]];
-  }));
-}
-
-function projectCurrentDraftAssetPack(
-  project: CharacterProject,
-  currentRouteFingerprint: string | null,
-): CharacterAssetPack {
-  const entries = draftAssetRouteEntries(project.draftAssetPack);
-  const routeAuthority = evaluateDraftAssetRouteAuthority(
-    project.draftAssetPack,
-    currentRouteFingerprint,
-  );
-  return distinctPurposeAssetPack(Object.fromEntries(
-    characterAssetPurposes.flatMap((purpose) => {
-      const entry = entries[purpose];
-      return entry && routeAuthority.routeCurrentByPurpose[purpose] === true
-        ? [[purpose, entry.assetId]]
-        : [];
-    }),
-  ));
-}
-
-function releaseAssetPack(release: CharacterRelease | null): CharacterAssetPack {
-  if (!release) return {};
-  const purposeBySlot = new Map<string, typeof characterAssetPurposes[number]>([
-    ["character_avatar", "character_cover"],
-    ["character_hero", "character_hero"],
-    ["character_chat", "character_chat"],
-  ]);
-  const assetIdsByPurpose = new Map<CharacterAssetPurpose, Set<string>>();
-  for (const placement of characterReleasePlacements(release)) {
-    const purpose = purposeBySlot.get(placement.slotKey);
-    if (!purpose) continue;
-    const assetIds = assetIdsByPurpose.get(purpose) ?? new Set<string>();
-    assetIds.add(placement.assetId);
-    assetIdsByPurpose.set(purpose, assetIds);
-  }
-  return distinctPurposeAssetPack(Object.fromEntries(
-    characterAssetPurposes.flatMap((purpose) => {
-      const assetIds = [...(assetIdsByPurpose.get(purpose) ?? [])];
-      return assetIds.length === 1 ? [[purpose, assetIds[0]]] : [];
-    }),
-  ));
-}
-
-function availablePurposes(
-  pack: CharacterAssetPack,
-  availableAssetIds: ReadonlySet<string>,
-) {
-  return characterAssetPurposes.filter((purpose) => {
-    const assetId = pack[purpose];
-    return Boolean(assetId && availableAssetIds.has(assetId));
-  });
+export function charactersNeedingAttention(input: {
+  readonly live: readonly { readonly characterId: string; readonly currentReleaseId: string | null }[];
+  readonly windowClosedReleaseIds: ReadonlySet<string>;
+  readonly observedReleaseIds: ReadonlySet<string>;
+}) {
+  return input.live
+    .filter(({ currentReleaseId }) =>
+      currentReleaseId !== null &&
+      input.windowClosedReleaseIds.has(currentReleaseId) &&
+      !input.observedReleaseIds.has(currentReleaseId))
+    .map(({ characterId }) => characterId);
 }
 
 function assetIds(pack: CharacterAssetPack) {
@@ -141,83 +98,6 @@ function assetIds(pack: CharacterAssetPack) {
     const assetId = pack[purpose];
     return assetId ? [assetId] : [];
   });
-}
-
-function portfolioNextAction(input: {
-  readonly characterId: string;
-  readonly hasCandidateRelease: boolean;
-  readonly hasActiveImageRun: boolean;
-  readonly hasVisualAuthority: boolean;
-  readonly imageProductionReady: boolean;
-  readonly draftPurposeCount: number;
-  readonly livePurposeCount: number;
-  readonly hasLivePortrait: boolean;
-}) {
-  const base = `/admin/characters/${encodeURIComponent(input.characterId)}`;
-  if (input.hasCandidateRelease) {
-    return {
-      code: "review_candidate_release" as const,
-      label: "Review candidate release",
-      deepLink: `${base}?tab=release`,
-    };
-  }
-  if (input.draftPurposeCount === characterAssetPurposes.length) {
-    return {
-      code: "run_preview_qa" as const,
-      label: "Review previews & run QA",
-      deepLink: `${base}?tab=preview`,
-    };
-  }
-  if (input.draftPurposeCount > 0) {
-    return {
-      code: "continue_asset_pack" as const,
-      label: "Continue role-image pack",
-      deepLink: `${base}?tab=assets`,
-    };
-  }
-  if (input.hasVisualAuthority && !input.imageProductionReady) {
-    return {
-      code: "complete_image_route" as const,
-      label: "Complete image route setup",
-      deepLink: `${base}?tab=visual#route-qualification-workbench`,
-    };
-  }
-  if (!input.hasVisualAuthority && input.hasLivePortrait) {
-    return {
-      code: "prepare_image_production" as const,
-      label: "Prepare image production",
-      deepLink: `${base}?tab=assets`,
-    };
-  }
-  if (input.hasActiveImageRun) {
-    return {
-      code: "continue_image_run" as const,
-      label: "Continue active image run",
-      deepLink: `${base}?tab=assets`,
-    };
-  }
-  if (
-    input.imageProductionReady &&
-    input.livePurposeCount < characterAssetPurposes.length
-  ) {
-    return {
-      code: "continue_asset_pack" as const,
-      label: "Continue role-image pack",
-      deepLink: `${base}?tab=assets`,
-    };
-  }
-  if (input.livePurposeCount === characterAssetPurposes.length) {
-    return {
-      code: "monitor_live_character" as const,
-      label: "Review live character",
-      deepLink: `${base}?tab=monitor`,
-    };
-  }
-  return {
-    code: "create_primary_portrait" as const,
-    label: "Create first portrait",
-    deepLink: `${base}?tab=assets`,
-  };
 }
 
 function projectDto(project: CharacterProject) {
@@ -427,12 +307,52 @@ async function changeMarkers(
   }));
 }
 
+async function attentionCharacterIds(db: PrismaClient, asOf: Date) {
+  const live = await db.characterServing.findMany({
+    where: { state: "live" },
+    select: { characterId: true, currentReleaseId: true },
+  });
+  const releaseIds = live
+    .map((row) => row.currentReleaseId)
+    .filter((id): id is string => id !== null);
+  if (releaseIds.length === 0) return [];
+  const [windowClosed, exposures, funnels] = await Promise.all([
+    db.characterRelease.findMany({
+      where: {
+        id: { in: releaseIds },
+        publishedAt: {
+          lte: new Date(asOf.getTime() - ATTENTION_NO_DATA_WINDOW_DAYS * 24 * 60 * 60 * 1_000),
+        },
+      },
+      select: { id: true },
+    }),
+    db.characterExposureFact.findMany({
+      where: { characterReleaseId: { in: releaseIds } },
+      select: { characterReleaseId: true },
+      distinct: ["characterReleaseId"],
+    }),
+    db.characterFunnelDaily.findMany({
+      where: { characterReleaseId: { in: releaseIds } },
+      select: { characterReleaseId: true },
+      distinct: ["characterReleaseId"],
+    }),
+  ]);
+  return charactersNeedingAttention({
+    live,
+    windowClosedReleaseIds: new Set(windowClosed.map((row) => row.id)),
+    observedReleaseIds: new Set([...exposures, ...funnels]
+      .flatMap((row) => row.characterReleaseId ? [row.characterReleaseId] : [])),
+  });
+}
+
 async function filteredCharacterIds(
   db: PrismaClient,
   query: CharacterPortfolioQuery,
   authorizedCharacterIds: readonly string[] | null = null,
+  asOf: Date = new Date(),
 ) {
   const filters: string[][] = [];
+  if (query.attention) filters.push(await attentionCharacterIds(db, asOf));
   if (authorizedCharacterIds !== null) filters.push([...authorizedCharacterIds]);
   if (query.search) {
     filters.push((await db.character.findMany({
@@ -493,7 +413,7 @@ export async function listCharacterPortfolioData(
   } = {},
 ) {
   const asOf = input.asOf ?? new Date();
-  const characterIds = await filteredCharacterIds(db, query, input.authorizedCharacterIds ?? null);
+  const characterIds = await filteredCharacterIds(db, query, input.authorizedCharacterIds ?? null, asOf);
   const projects = await db.characterProject.findMany({
     where: {
       phase: query.phase,
@@ -540,11 +460,42 @@ export async function listCharacterPortfolioData(
       activeVisualAuthorityByCharacter.set(authority.characterId, authority);
     }
   }
+  const qualifiedRouteByAuthority = new Map<
+    string,
+    ReturnType<typeof findOperationalGenerationRoute>
+  >();
+  const qualifiedRouteByCharacter = new Map<
+    string,
+    Awaited<ReturnType<typeof findOperationalGenerationRoute>>
+  >();
+  await Promise.all(pageCharacterIds.map(async (characterId) => {
+    const authority = activeVisualAuthorityByCharacter.get(characterId);
+    if (!authority) {
+      qualifiedRouteByCharacter.set(characterId, null);
+      return;
+    }
+    const roles = authority.referenceSetRevisions[0]?.references.map(
+      (reference) => reference.role,
+    ) ?? [];
+    const key = JSON.stringify([authority.style, roles]);
+    let route = qualifiedRouteByAuthority.get(key);
+    if (!route) {
+      route = findOperationalGenerationRoute(db, {
+        style: authority.style,
+        policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
+        evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,
+        at: asOf,
+        requiredReferenceCount: roles.length,
+        requiredReferenceRoles: roles,
+      });
+      qualifiedRouteByAuthority.set(key, route);
+    }
+    qualifiedRouteByCharacter.set(characterId, await route);
+  }));
   const [
     pageCharacters,
     rawPageCharacters,
     pageServings,
-    pageActiveImageRuns,
   ] =
     pageCharacterIds.length > 0
       ? await Promise.all([
@@ -561,19 +512,8 @@ export async function listCharacterPortfolioData(
           db.characterServing.findMany({
             where: { characterId: { in: pageCharacterIds } },
           }),
-          db.contentProductionBatch.findMany({
-            where: {
-              targetType: "character",
-              targetId: { in: pageCharacterIds },
-              purpose: { in: [...characterAssetPurposes] },
-              lifecycleState: "active",
-              status: { in: ["draft", "queued", "reviewing"] },
-            },
-            orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
-            select: { id: true, targetId: true },
-          }),
         ])
-      : [[], [], [], []];
+      : [[], [], []];
   const pageCharacterById = new Map(
     pageCharacters.map((character) => [character.id, character]),
   );
@@ -582,9 +522,6 @@ export async function listCharacterPortfolioData(
   );
   const pageServingByCharacter = new Map(
     pageServings.map((serving) => [serving.characterId, serving]),
-  );
-  const activeImageRunCharacterIds = new Set(
-    pageActiveImageRuns.flatMap((run) => run.targetId ? [run.targetId] : []),
   );
   const currentReleaseIds = [...new Set(pageServings.flatMap((serving) =>
     serving.currentReleaseId ? [serving.currentReleaseId] : []
@@ -643,12 +580,27 @@ export async function listCharacterPortfolioData(
     characterIds.push(reference.id);
     characterReferencesByAssetId.set(reference.imageAssetId, characterIds);
   }
-  const qualifiedRouteByAuthority = new Map<
-    string,
-    ReturnType<typeof findOperationalGenerationRoute>
-  >();
+  const availableAssetIdsByCharacter = new Map<string, ReadonlySet<string>>(
+    pageCharacterIds.map((characterId) => [
+      characterId,
+      new Set(pageCandidateAssets.flatMap((asset) => {
+        if (!isMediaAssetOperationalForAuthority(asset.metadata)) return [];
+        const belongsToCharacter = asset.characterId === characterId || (
+          asset.characterId === null &&
+          (characterReferencesByAssetId.get(asset.id) ?? []).length === 1 &&
+          characterReferencesByAssetId.get(asset.id)?.[0] === characterId
+        );
+        return belongsToCharacter ? [asset.id] : [];
+      })),
+    ]),
+  );
+  const journeyByCharacter = await projectCharacterProductionJourneys(
+    db,
+    pageCharacterIds,
+    asOf,
+    { routeByCharacter: qualifiedRouteByCharacter, availableAssetIdsByCharacter },
+  );
   const orphanProjectIds: string[] = [];
-  const authorityAsOf = new Date();
   const projectedItems = await Promise.all(page.map(async (project) => {
     const character = pageCharacterById.get(project.characterId) ?? null;
     const serving = pageServingByCharacter.get(project.characterId) ?? null;
@@ -711,31 +663,7 @@ export async function listCharacterPortfolioData(
     const readiness = currentRelease && ["ready", "blocked", "stale", "unknown"].includes(currentRelease.readiness)
       ? currentRelease.readiness as "ready" | "blocked" | "stale" | "unknown"
       : "unknown" as const;
-    const activeVisualAuthority =
-      activeVisualAuthorityByCharacter.get(project.characterId) ?? null;
-    const activeReferences =
-      activeVisualAuthority?.referenceSetRevisions[0]?.references ?? [];
-    const referenceRoles = activeReferences.map((reference) => reference.role);
-    const routeAuthorityKey = activeVisualAuthority
-      ? JSON.stringify([activeVisualAuthority.style, referenceRoles])
-      : null;
-    let qualifiedRoutePromise = routeAuthorityKey
-      ? qualifiedRouteByAuthority.get(routeAuthorityKey)
-      : undefined;
-    if (activeVisualAuthority && routeAuthorityKey && !qualifiedRoutePromise) {
-      qualifiedRoutePromise = findOperationalGenerationRoute(db, {
-        style: activeVisualAuthority.style,
-        policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
-        evaluatorVersion: env.GENERATION_ROUTE_EVALUATOR_VERSION,
-        at: authorityAsOf,
-        requiredReferenceCount: referenceRoles.length,
-        requiredReferenceRoles: referenceRoles,
-      });
-      qualifiedRouteByAuthority.set(routeAuthorityKey, qualifiedRoutePromise);
-    }
-    const qualifiedRoute = qualifiedRoutePromise
-      ? await qualifiedRoutePromise
-      : null;
+    const qualifiedRoute = qualifiedRouteByCharacter.get(project.characterId) ?? null;
     const mayReadDraftAssets =
       input.authorizedDraftAssetCharacterIds === null ||
       input.authorizedDraftAssetCharacterIds?.includes(
@@ -796,14 +724,14 @@ export async function listCharacterPortfolioData(
     const primaryImageAsset = primaryImageAssetId
       ? availableAssets.get(primaryImageAssetId) ?? null
       : null;
-    const draftPurposes = availablePurposes(
-      draftAssetPack,
-      availableAssetIds,
-    );
-    const livePurposes = availablePurposes(
-      liveAssetPack,
-      availableAssetIds,
-    );
+    const journey = journeyByCharacter.get(character.id);
+    if (!journey) {
+      throw new Error(`Character production journey missing for ${character.id}`);
+    }
+    const draftPurposes = mayReadDraftAssets
+      ? journey.assetPack.draft.availablePurposes
+      : [];
+    const livePurposes = journey.assetPack.live.availablePurposes;
     return {
       characterId: character.id,
       name: character.name,
@@ -834,24 +762,16 @@ export async function listCharacterPortfolioData(
         totalPurposes: 3,
         deepLink: `/admin/characters/${encodeURIComponent(character.id)}?tab=assets`,
       },
-      nextAction: portfolioNextAction({
-        characterId: character.id,
-        hasCandidateRelease: candidateRelease !== null,
-        hasActiveImageRun: activeImageRunCharacterIds.has(character.id),
-        hasVisualAuthority: activeVisualAuthority !== null,
-        imageProductionReady:
-          activeVisualAuthority !== null &&
-          activeReferences.length > 0 &&
-          qualifiedRoute !== null,
-        draftPurposeCount: draftPurposes.length,
-        livePurposeCount: livePurposes.length,
-        hasLivePortrait:
-          primaryImageAsset !== null && primaryImageSource === "live",
-      }),
+      journey,
       operationalState: {
         workflowState: project.phase,
         servingState: serving?.state ?? "inactive",
-        qualityState: performance.some((item) => item.qualityState === "invalid") ? "invalid" : "certified",
+        // SPEC: 汇总取最坏，但"全是无观测"要报 no_data，不能借 invalid 冒充数据故障。
+        qualityState: performance.some((item) => item.qualityState === "invalid")
+          ? "invalid"
+          : performance.length > 0 && performance.every((item) => item.qualityState === "no_data")
+            ? "no_data"
+            : "certified",
         readiness,
         checks: [],
         blockers: readiness === "ready" ? [] : [{
@@ -982,7 +902,7 @@ export async function listCharacterPortfolio(request: Request) {
 
 export async function recordCharacterPortfolioDecision(request: Request, characterId: string) {
   const actor = await actorWithPermission(request, "character.project.write", { characterId });
-  const body = characterPortfolioDecisionRequestSchema.parse(await request.json());
+  const body = characterPortfolioDecisionRequestSchema.parse(await jsonBody(request));
   const decision = await createCharacterPortfolioDecision(prisma, {
     characterId,
     actor,

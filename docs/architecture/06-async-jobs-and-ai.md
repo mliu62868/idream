@@ -1,10 +1,10 @@
 # 06 · 异步任务与 AI 集成
 
-更新日期：2026-06-28
+更新日期：2026-07-31
 
-> 2026-07-11 authority 修正：Generation 的业务真相已按 ADR-11 拆为 Request → Attempt → TransportExecution → Artifact → Delivery；BullMQ job 只承载 transport，不是业务 outcome authority。以下旧 `generationJobId` 表述在兼容路径中仍可见，但新任务必须携带稳定 `requestId/attemptId/attemptNo`。
+> 2026-07-31 authority：Generation 的业务真相是 Request → Attempt → TransportExecution → Artifact → Delivery；BullMQ job 只承载 transport，不是业务 outcome authority。图片/视频 provider invocation 只存在于 `packages/gen`，Main 只派发 Attempt、接收 immutable completion manifest 并结算。Main↔Chat 业务事件只走 Outbox → HTTP durable ingest → Inbox ACK。
 
-本文件落地 Redis + BullMQ 跨服务任务总线与 ADR-6（AI provider 抽象），以及生成/聊天的异步流水线与 dreamcoin 预留结算。Chat Service 拥有 chat domain DB 和内部队列；Image/Video 仍使用主站到 AI worker 的跨服务队列。队列清单对齐 `BackendFeatureSpec §7` 与 `docs/research/SERVICE_INTEGRATION.md`。
+本文件落地 Redis + BullMQ 的生成 transport、服务内任务队列、HTTP durable event exchange 与 ADR-6（AI provider 抽象），以及生成/聊天的异步流水线与 dreamcoin 预留结算。Chat Service 拥有 chat domain DB 和内部队列；Image/Video 使用 Main 到 Gen 的任务队列，业务事件不以共享 Redis 作为跨服务接收凭证。队列清单对齐 `BackendFeatureSpec §7` 与 `docs/research/SERVICE_INTEGRATION.md`。
 
 ## 1. 为什么异步
 
@@ -22,7 +22,7 @@ waiting ──worker──▶ active ──ok──▶ completed
                        └─超过 attempts──▶ failed（死信，留证 + 告警）
 ```
 
-接口（`packages/main/src/server/jobs/queue.ts`；chat 侧对称在 `packages/chat/src/queue.ts`）：
+接口（`packages/main/src/server/jobs/queue.ts`；chat 的队列只服务 Chat 内部工作）：
 
 ```ts
 export interface JobQueue {
@@ -44,11 +44,11 @@ export interface JobQueue {
 
 每个 BullMQ `Worker` 从其队列拉 job → 按 queue 分发到 handler → 由 BullMQ 标记 completed/failed（失败按 `attempts` + backoff 重排，超限进 failed 死信）。并发安全由 BullMQ + Redis 原子操作保证，**无需 `SELECT ... FOR UPDATE SKIP LOCKED`**。
 
-**幂等**：每个 handler 必须可重入（如"生成已完成则跳过"、webhook 按 `provider_events` 去重、ledger 按 `sourceId` 去重）。
+**幂等**：每个 handler 必须可重入（如"生成已完成则跳过"、webhook 按 `provider_events` 去重、Ledger 按稳定 `idempotencyKey` replay/conflict）。
 
 Generation 额外遵循：
 
-- 每次真实 provider invocation 前由 main durable 写 `GenerationTransportExecution`；同一业务 Attempt 内 transport retry 只递增 `transportAttemptNo`。
+- 每次真实 provider invocation 前由 Gen 向 Main 的内部 HTTP seam 报告 `GenerationTransportExecution`；Main 持久化该证据。同一业务 Attempt 内 transport retry 只递增 `transportAttemptNo`。
 - 自动 transport retry 只允许 provider 声明 deterministic idempotency；ambiguous 且不可幂等的结果终止为 `unknown/non-replayable`。
 - gen 先持久化带 checksum、artifact、provider 与 cost 的 immutable completion manifest；main durable ACK 失败时只重投 manifest，不再次调用 provider。
 - Request cancelled 后的晚到 artifact 只能 archive/suppress，不 delivery、不改变 cancelled、不重复 capture/refund。
@@ -62,10 +62,10 @@ Generation 额外遵循：
 | `chat.generate` | Chat Service API | 拼 prompt → ChatModel 流 → Redis Stream token → Chat DB 落 assistant/usage/memory/relationship/outbox | assistantMessageId |
 | `chat.memory.extract` | Chat worker | 从已通过审核的消息抽取长期记忆候选并写 Chat DB | assistantMessageId |
 | `chat.memory.rebuild` | Chat reconciler / 删除补偿 | 从 Chat 权威 memory/message 状态重建运行时 memory index | userId+characterId+version |
-| `chat.outbox.deliver` | Chat DB outbox | 向主站投递 chat.message.completed、chat.usage.incremented、chat.safety.flagged 等事件 | eventId |
-| `ai.image.generate` | generation API | ImageModel → BlobStore → 投递 finalize | generationJobId |
-| `ai.video.generate` | generation API（P1） | 同上，VideoModel | generationJobId |
-| `app.ai.finalize` | image/video AI workers | 输出审核 → 落库 media/generation/ledger | generationJobId |
+| `chat.outbox.deliver` | Chat DB outbox | HTTP 投递 Main durable ingest；Main receipt commit ACK 后才标 delivered | eventId |
+| `ai.image.generate` | Main generation dispatcher | Gen Image backend → BlobStore → immutable manifest → finalize | attemptId |
+| `ai.video.generate` | Main generation dispatcher | Gen Video backend → BlobStore → immutable manifest → finalize | attemptId |
+| `app.ai.finalize` | Gen image/video worker | Main 持久 ingest manifest → Artifact/Delivery/settlement；ACK 中断只重投 manifest | attemptId |
 | `moderation.output` | model workers | 释放或拦截生成产物/消息 | target |
 | `character.preview` | creator API | 生成草稿预览图 | draftId+rev |
 | `age.verification.webhook` | 验证 provider | 幂等更新 `age_verifications` 状态 | providerEventId |
@@ -78,9 +78,9 @@ Generation 额外遵循：
 
 > moderation.input 可"同步快路径 + 异步深检"：发消息时同步跑一个低延迟分类（拦明显高危），深度检测（哈希匹配等）在 worker 补。CSAM 检测**必须**在产物释放前完成（07 §3）。
 
-## 5. AI Provider 抽象层（`src/server/providers/`）
+## 5. AI Provider 抽象与 owner
 
-全部接口化，dev 有 mock（确定性假数据），prod 注入真实实现 —— 生成类（chat/image/video/voice）统一指向**内部自托管开源模型流水线 API**（OpenAI 兼容，ADR-6）。
+全部接口化，dev 有 mock（确定性假数据），prod 注入真实实现。每类 provider 由使用它的服务持有：ChatModel 属于 Chat，Image/Video backend 属于 Gen，Voice/Moderation 等由各自现有服务持有；Main 不创建图片/视频 provider。
 
 ```ts
 // providers/chat/types.ts
@@ -92,13 +92,11 @@ export interface ChatModel {
   }): AsyncIterable<{ delta: string; done?: boolean; tokens?: number }>;
 }
 
-// providers/image/types.ts
-export interface ImageModel {
-  generate(input: { prompt: string; negativePrompt?: string; controls: Record<string,unknown>;
-    orientation?: string; count: number; }): Promise<{ assets: { bytes: Blob; meta: object }[]; cost: number }>;
+// packages/gen/src/backend/types.ts
+export interface GenBackend {
+  generate(input: GenerationInput): Promise<GenerationOutput>;
 }
 
-// providers/video/types.ts —— 同构（P1）
 // providers/voice/types.ts
 export interface Voice { synthesize(input: { text: string; voiceId: string }): Promise<{ bytes: Blob; seconds: number }>; }
 
@@ -115,40 +113,32 @@ export type ModerationResult = {
 };
 ```
 
-**provider 注册**（`providers/index.ts`）：按 env 选择实现，统一加超时/重试/熔断/日志。chat/video/voice 仍可走内部 OpenAI-compatible Pipeline API；图片生产由独立 `packages/gen` worker 的 workflow-native `GenBackend` seam 承担。`GenerationModelProfile.workflowKey ?? pipelineModel` 选择 descriptor，descriptor 再选择 `comfyui`、`sdcpp` 或可选的 `drawthings` adapter。Node worker 本身不加载模型权重：ComfyUI 走原生 HTTP，sd.cpp 与 Draw Things 分别启动受超时约束的 `sd-cli` / `draw-things-cli`。旧 `IMAGE_PROVIDER=pipeline` 保留作兼容路径。**审核（moderation）保持独立**：通用安全分类可同流水线，但 CSAM 哈希匹配 + NCMEC 上报是独立服务、独立密钥（07 §3）。
+**provider 注册**：Chat/Voice/Moderation 等按所属服务的 env 选择实现，统一加超时、重试、熔断和日志。图片/视频生产只由独立 `packages/gen` worker 的 workflow-native `GenBackend` seam 承担；Main 不注册、不调用图片/视频 provider。`GenerationModelProfile.workflowKey ?? pipelineModel` 选择 descriptor，descriptor 再选择 `comfyui`、`sdcpp` 或可选的 `drawthings` adapter。Node worker 本身不加载模型权重：ComfyUI 走原生 HTTP，sd.cpp 与 Draw Things 分别启动受超时约束的 `sd-cli` / `draw-things-cli`。**审核（moderation）保持独立**。
 
-```ts
-export const providers = {
-  chat:       process.env.NODE_ENV === "test" ? mockChat   : makeChat(env),
-  image:      isMock ? mockImage  : makeImage(env),
-  video:      isMock ? mockVideo  : makeVideo(env),
-  voice:      isMock ? mockVoice  : makeVoice(env),
-  moderation: isMock ? mockMod    : makeModeration(env),   // 即便 mock 也保留未成年硬规则
-  payment:    makePayment(env),
-  blob:       makeBlob(env),
-  ageVerify:  makeAgeVerify(env),
-};
-```
+不建立跨服务 `providers` 总注册表；服务只装配自己真正调用的 adapter。
 
 ## 6. 生成流水线（图片，端到端）
 
 ```
 POST /generation/jobs
-  │ service:
+  │ Main transaction:
   │  1) 校验 mode/character|Freeplay/controls (Zod)
   │  2) Premium 门: requireEntitlement(custom_prompt / video_gen ...)
   │  3) 估价 cost = price(mode, count, model)
   │  4) dreamcoin RESERVE（事务: 校验余额 >= cost，写 ledger delta=-cost reason=generation_spend(reserved)）
-  │  5) 落 GenerationJob(queued, costDreamcoins=cost) + enqueue('generation.image', {jobId})
-  ▼ 返回 202 {jobId}
-worker generation.image:
-  1) job→running
-  2) moderation.input(prompt+controls) ── blocked → REFUND + job=blocked + moderation_event
-  3) ImageModel.generate(...) ── provider 失败 → 可重试; 超限 → REFUND + job=failed(errorCode)
-  4) moderation.output(每张图: CSAM/未成年/深伪/禁内容) ── 命中 → 丢弃该图 + REFUND 对应份额 + 留证
-  5) BlobStore.putPrivate(bytes) → 落 MediaAsset(private, safetyStatus=passed)
-  6) SETTLE（确认扣费；若部分失败按份额 refund）→ job=completed(completedAt)
-  7) after: events.track('generation_completed')；revalidate library
+  │  5) 落 Request + Attempt + dispatch intent，按 attemptId 入 Gen queue
+  ▼ 返回 202 {jobId/requestId/attemptId}
+Gen worker:
+  1) claim transport work，并向 Main 记录 running TransportExecution
+  2) moderation.input(prompt+controls)；阻断时产出失败 manifest
+  3) GenBackend.generate(...)；只在明确可重试且 provider 支持确定幂等时重试
+  4) moderation.output + BlobStore.putPrivate(bytes)
+  5) 先持久化 immutable completion manifest，再投递 `app.ai.finalize`
+Main finalizer:
+  1) 按 attemptId + manifest hash durable ingest；相同 replay，冲突 fail closed
+  2) 同事务写 TransportExecution/Artifact/Delivery/finalize outbox
+  3) 通过 `postDreamcoinEntry` SETTLE/REFUND；同一业务 intent 不重复扣退
+  4) ACK 中断时 Gen 回读并重投同一 manifest，不再调用 provider
 ```
 
 价格表（`generation_jobs.costDreamcoins`）由 `lib/pricing.ts` 单点定义（SSoT）：按 mode × model × count × orientation。失败原因码与可重试性写入 `errorCode`（GN-11）。
@@ -194,7 +184,7 @@ worker chat.generate:
 
 1. **余额 = SUM(ledger.delta)**，绝不就地覆盖（01 §8、03、08 §4）。
 2. 生成前 **reserve**（负 delta，reason 标 reserved/source=jobId）；成功 **settle**（确认），失败/拦截 **refund**（反向正 delta，source=jobId）。
-3. 每个 jobId 的净额必须收敛（要么扣成功、要么全额退）。worker 重入时按 `sourceId` 去重，避免重复扣/退。
+3. 每个 jobId 的净额必须收敛（要么扣成功、要么全额退）。worker 重入时通过 `postDreamcoinEntry` 的稳定 `idempotencyKey` 去重，避免重复扣/退。
 4. 奖励（signup/referral/redeem）经 `reward.ledger` 队列恰好一次。
 
 ## 9. 可靠性与可观测
@@ -203,4 +193,4 @@ worker chat.generate:
 - 重试退避：BullMQ `attempts` + 指数 backoff（封顶）。
 - 死信留证：failed job 的 `failedReason` + payload 由 BullMQ 保留，便于人工重放（admin 提供 requeue）。
 - 超时：worker handler 各自设软超时；provider 调用必须有超时，防止 worker 卡死。
-- 跨服务投递：main ↔ chat 经 outbox/inbox 事件表 + 共享 Redis，要求两边 `BULLMQ_PREFIX` + `REDIS_URL` 一致。
+- 跨服务投递：main ↔ chat 经 sender Outbox → HTTP durable ingest → receiver Inbox ACK；BullMQ 只唤醒 receiver 已持久化的 receipt，不构成跨服务交付成功。

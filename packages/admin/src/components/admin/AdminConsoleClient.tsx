@@ -213,6 +213,7 @@ function AdminConsoleContent({
   const mobileNavTriggerRef = useRef<HTMLButtonElement | null>(null);
   const { sectionId, view: subview } = parseAdminPath(initialSection);
   const activeItem = adminSectionItem(sectionId);
+  const isCharacterWorkspace = sectionId === "content/official";
   const permissions = useMemo(() => new Set(initialPermissions), [initialPermissions]);
   const canAccessActiveSection = sectionIsPermitted(sectionId, permissions);
   const [workMode, setWorkMode] = useState<WorkMode>(() => defaultWorkModeForRole(actor?.role));
@@ -220,6 +221,17 @@ function AdminConsoleContent({
     () => navGroupsForPermissions(permissions, workMode),
     [permissions, workMode],
   );
+  const visibleNavGroups = useMemo(() => {
+    if (!isCharacterWorkspace) return navGroups;
+    return navGroups
+      .filter(({ group }) => group === "Today" || group === "Character Studio")
+      .map(({ group, items }) => ({
+        group,
+        items: group === "Character Studio"
+          ? items.filter(({ id }) => id === "content/official" || id === "content/review-queue")
+          : items,
+      }));
+  }, [isCharacterWorkspace, navGroups]);
   const [data, setData] = useState<SectionData | null>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -516,7 +528,7 @@ function AdminConsoleContent({
             </div>
           </div>
           <nav ref={sidebarNavRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3">
-            {navGroups.map(({ group, items }, groupIndex) => {
+            {visibleNavGroups.map(({ group, items }, groupIndex) => {
               if (group === "Today") {
                 return (
                   <div className="pb-2" key={group}>
@@ -590,7 +602,7 @@ function AdminConsoleContent({
                 </button>
               </div>
               <nav className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3">
-                {navGroups.map(({ group, items }) => (
+                {visibleNavGroups.map(({ group, items }) => (
                   <section className="border-b border-[var(--ad-border)] py-2 last:border-b-0" key={group}>
                     {group === "Today" ? null : (
                       <h2 className="px-3 pb-1 text-[10px] font-semibold uppercase text-[var(--ad-text-muted)]">
@@ -629,13 +641,15 @@ function AdminConsoleContent({
                 </button>
                 <div className="min-w-0">
                   <h1 className="truncate text-base font-semibold md:text-lg">{t(activeItem.label)}</h1>
-                  <p className="truncate text-[11px] text-[var(--ad-text-muted)]">{actor.id} · {t(workModeLabel(workMode))}</p>
+                  {isCharacterWorkspace ? null : (
+                    <p className="truncate text-[11px] text-[var(--ad-text-muted)]">{actor.id} · {t(workModeLabel(workMode))}</p>
+                  )}
                 </div>
               </div>
               <div className="grid gap-2 sm:grid-cols-[1fr_auto] lg:ml-auto lg:flex lg:items-center">
-                <GlobalAdminSearch />
+                {isCharacterWorkspace ? null : <GlobalAdminSearch />}
                 <div className="flex flex-wrap items-center gap-2">
-                  {actor.role === "admin" ? (
+                  {actor.role === "admin" && !isCharacterWorkspace ? (
                     <label className="inline-flex h-9 items-center gap-2 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)]">
                       <span className="sr-only">{t("Work mode")}</span>
                       <select
@@ -699,7 +713,7 @@ function AdminConsoleContent({
                 </div>
               </div>
             </div>
-            <ShellSignalBar signals={shellSignals} />
+            {isCharacterWorkspace ? null : <ShellSignalBar signals={shellSignals} />}
           </header>
 
           <div className="p-4 md:p-6">

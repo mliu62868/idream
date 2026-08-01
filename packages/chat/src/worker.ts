@@ -4,7 +4,6 @@
 import type { Worker } from "bullmq";
 import {
   CHAT_QUEUES,
-  MAIN_TO_CHAT_QUEUE,
   chatGeneratePayloadSchema,
   chatMemoryExtractPayloadSchema,
 } from "@idream/shared/contracts";
@@ -13,7 +12,7 @@ import { logger } from "./logger.js";
 import { processGenerate } from "./generate.js";
 import { processMemoryExtract } from "./memory.js";
 import { deliverPendingOutbox } from "./outbox.js";
-import { consumeInbound, type InboundEvent, reprocessPendingInbox } from "./inbox.js";
+import { consumeDurableInbox, reprocessPendingInbox } from "./inbox.js";
 import { reconcile } from "./reconcile.js";
 import { pruneExpiredSegments } from "./maintain.js";
 
@@ -34,12 +33,12 @@ export function startWorker(): { close: () => Promise<void> } {
       await deliverPendingOutbox();
     }, { concurrency: 1 }),
 
-    runWorker(MAIN_TO_CHAT_QUEUE, async (job) => {
-      await consumeInbound(job.payload as InboundEvent);
-    }),
-
-    runWorker(CHAT_QUEUES.inboxConsume, async () => {
-      await reprocessPendingInbox();
+    runWorker(CHAT_QUEUES.inboxConsume, async (job) => {
+      const receiptId = (job.payload as { receiptId?: unknown }).receiptId;
+      if (typeof receiptId !== "string" || receiptId.length === 0) {
+        throw new Error("chat inbox wake-up requires receiptId");
+      }
+      await consumeDurableInbox(receiptId);
     }, { concurrency: 1 }),
   ];
 

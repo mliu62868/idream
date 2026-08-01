@@ -15,6 +15,8 @@ export interface ProductEventInput {
   readonly actor: Readonly<Record<string, unknown>>;
   readonly context: Readonly<Record<string, unknown>>;
   readonly payload: Readonly<Record<string, unknown>>;
+  /** Cross-service ingress supplies the shared envelope hash; local writers omit it. */
+  readonly canonicalHash?: string;
 }
 
 export type ProductEventIngestResult =
@@ -23,7 +25,7 @@ export type ProductEventIngestResult =
   | { readonly status: "quarantined"; readonly eventId: string | null };
 
 function payloadHash(input: ProductEventInput): string {
-  return canonicalSha256({
+  return input.canonicalHash ?? canonicalSha256({
     eventType: input.eventType,
     schemaVersion: input.schemaVersion,
     occurredAt: input.occurredAt,
@@ -51,6 +53,11 @@ async function ingestTransaction(
     const existing = await tx.inboundEventReceipt.findUnique({ where });
     if (existing) {
       const canonical = await tx.analyticsEvent.findUnique({ where });
+      // INVARIANT: quarantine is sticky until an explicit reconciliation owns
+      // the decision. An original-payload replay cannot silently restore ACK.
+      if (existing.processingState === "quarantined") {
+        return { status: "quarantined", eventId: canonical?.id ?? null };
+      }
       if (existing.payloadHash === hash) {
         return { status: "duplicate", eventId: canonical?.id ?? existing.id };
       }

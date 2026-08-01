@@ -66,8 +66,8 @@ beforeAll(async () => {
   );
   await superPool.query(
     `INSERT INTO public.character_visual_profiles
-       (id,"characterId",version,status,style,"identityPrompt","faceTraits","hairTraits","bodyTraits","signatureTraits","styleTraits","anchorAssetIds","referenceAssetIds","adapterRefs","createdFrom","createdAt","updatedAt")
-     VALUES ($1,$2,1,'active','realistic',$3,'{}','{}','{}','{}','{}','[]','[]','{}','test',now(),now())
+       (id,"characterId",version,status,style,"identityPrompt","faceTraits","hairTraits","bodyTraits","signatureTraits","styleTraits","anchorAssetIds","adapterRefs","createdFrom","createdAt","updatedAt")
+     VALUES ($1,$2,1,'active','realistic',$3,'{}','{}','{}','{}','{}','[]','{}','test',now(),now())
      ON CONFLICT (id) DO NOTHING`,
     [CHAR_VP_PROFILE, CHAR_VP, `WebVP, adult woman, ${IDENTITY_TOKEN}`],
   );

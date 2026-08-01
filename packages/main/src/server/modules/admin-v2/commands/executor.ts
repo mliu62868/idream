@@ -5,8 +5,11 @@ import { transitionControlPlaneCommandAttempt } from "../shared/control-plane-co
 import { transitionControlPlaneCommand } from "../shared/control-plane-command-transition";
 import { toInputJson } from "../shared/prisma-json";
 import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
+import { recordMainToChatEvent } from "@/processes/chat-outbox";
 import { executeCreativeRetryCommand } from "../creative/retry-executor";
 import { executeIncidentActionPlanCommand } from "../incidents/action-executor";
+import { transitionIncident } from "../incidents/transition";
+import { transitionCase } from "../cases/transition";
 import {
   isAdminCaseTransitionAllowed,
   isIncidentTransitionAllowed,
@@ -56,12 +59,12 @@ async function executeResolveIncident(commandId: string) {
       if (!isIncidentTransitionAllowed(incident.status, "resolved") || !["passed", "overridden"].includes(incident.verificationState)) {
         throw Errors.conflict("Incident recovery verification is not complete");
       }
-      const updated = await tx.opsIncident.update({
-        where: { id: incident.id, version: incident.version },
+      const updated = await transitionIncident(tx, {
+        incidentId: incident.id,
+        to: "resolved",
+        expected: { from: "monitoring", version: incident.version },
         data: {
-          status: "resolved",
           activeCorrelationKey: null,
-          version: { increment: 1 },
         },
       });
       await tx.adminAuditLog.create({
@@ -131,9 +134,11 @@ async function executeCloseCase(commandId: string) {
       ) {
         throw Errors.conflict("Case decision and downstream verification are incomplete");
       }
-      const updated = await tx.adminCase.update({
-        where: { id: adminCase.id, version: adminCase.version },
-        data: { status: "closed", activeKey: null, version: { increment: 1 } },
+      const updated = await transitionCase(tx, {
+        caseId: adminCase.id,
+        to: "closed",
+        expected: { from: "resolved", version: adminCase.version },
+        data: { activeKey: null },
       });
       await tx.adminAuditLog.create({
         data: {
@@ -254,26 +259,14 @@ async function executeMigrateSessionRelease(commandId: string) {
         compatibilityQa,
         requestedById: claimed.actorId,
       };
-      await tx.mainOutboxEvent.upsert({
-        where: { id: eventId },
-        create: {
-          id: eventId,
-          eventType: MAIN_TO_CHAT_EVENTS.sessionReleaseMigrationRequested,
-          aggregateType: "chat_session",
-          aggregateId: claimed.targetId,
-          payload: toInputJson({
-            sourceService: "main",
-            sourceEventId: eventId,
-            eventType: MAIN_TO_CHAT_EVENTS.sessionReleaseMigrationRequested,
-            schemaVersion: 2,
-            occurredAt: new Date().toISOString(),
-            aggregateType: "chat_session",
-            aggregateId: claimed.targetId,
-            payload: eventPayload,
-          }),
-        },
-        update: {},
-      });
+      await recordMainToChatEvent({
+        eventId,
+        eventType: MAIN_TO_CHAT_EVENTS.sessionReleaseMigrationRequested,
+        schemaVersion: 2,
+        aggregateType: "chat_session",
+        aggregateId: claimed.targetId,
+        payload: eventPayload,
+      }, tx);
       return transitionControlPlaneCommand(tx, {
         commandId: claimed.id,
         to: "verifying",

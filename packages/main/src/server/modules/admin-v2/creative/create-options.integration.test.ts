@@ -45,8 +45,8 @@ describe("Creative Run create options projection", () => {
           label: "Compatible text to image",
           mode: "image",
           runner: "pipeline",
-          pipelineModel: "redcraft-krea2-txt2img",
-          workflowKey: "redcraft-krea2-txt2img",
+          pipelineModel: "redcraft-krea2-redmix3-txt2img",
+          workflowKey: "redcraft-krea2-redmix3-txt2img",
           runnerConfig: {
             workflowVersion: 1,
             capabilities: { textToImage: true },
@@ -64,8 +64,8 @@ describe("Creative Run create options projection", () => {
           label: "Rollout zero",
           mode: "image",
           runner: "pipeline",
-          pipelineModel: "redcraft-krea2-txt2img",
-          workflowKey: "redcraft-krea2-txt2img",
+          pipelineModel: "redcraft-krea2-redmix3-txt2img",
+          workflowKey: "redcraft-krea2-redmix3-txt2img",
           runnerConfig: {
             workflowVersion: 1,
             capabilities: { textToImage: true },

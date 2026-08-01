@@ -41,7 +41,7 @@ const CHARACTER_PROJECT_PHASE_AUTHORITY = defineTransitionAuthority(CHARACTER_PR
   idea: ["planned", "producing", "qa", "live_management", "retired"],
   planned: ["producing", "qa", "retired"],
   producing: ["qa", "retired"],
-  qa: ["producing", "launch_ready", "retired"],
+  qa: ["qa", "producing", "launch_ready", "retired"],
   launch_ready: ["producing", "live_management", "retired"],
   live_management: ["producing", "retired"],
   retired: [],
@@ -68,9 +68,9 @@ export function isCharacterReleaseTransitionAllowed(from: string, to: string) {
 export const CHARACTER_SERVING_STATES = characterServingStateSchema.options;
 
 const CHARACTER_SERVING_AUTHORITY = defineTransitionAuthority(CHARACTER_SERVING_STATES, {
-  inactive: ["live"],
+  inactive: ["live", "retired"],
   live: ["live", "paused", "retired"],
-  paused: ["live"],
+  paused: ["live", "retired"],
   retired: [],
 });
 

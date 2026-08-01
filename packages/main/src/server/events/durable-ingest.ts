@@ -1,4 +1,8 @@
-import { durableEventEnvelopeSchema } from "@idream/shared/contracts";
+import {
+  durableAckSchema,
+  durableEnvelopeHash,
+  durableEventEnvelopeSchema,
+} from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { ingestProductEvent } from "@/server/modules/admin-v2/shared/product-event-store";
@@ -20,10 +24,11 @@ export async function ingestDurableServiceEvent(raw: unknown) {
     actor: { ...classification.actor, service: event.sourceService },
     context: { aggregateType: event.aggregateType, aggregateId: event.aggregateId },
     payload: event.payload,
+    canonicalHash: durableEnvelopeHash(event),
   });
-  return {
+  return durableAckSchema.parse({
     acknowledged: result.status !== "quarantined",
     status: result.status,
     receiptId: result.eventId,
-  };
+  });
 }

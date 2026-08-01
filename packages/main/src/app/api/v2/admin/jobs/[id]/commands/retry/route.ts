@@ -5,7 +5,7 @@ import {
 import { retryGenerationRequest } from "@/server/ai/generation-request-lifecycle";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
-import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
+import { actorWithPermission, jsonBody } from "@/server/modules/admin-v2/shared/authority";
 import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 
@@ -16,7 +16,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const { id } = await context.params;
   return adminV2Route(async () => {
     const actor = await actorWithPermission(request, "generation.job.requeue");
-    const body = retryGenerationRequestCommandSchema.parse(await request.json());
+    const body = retryGenerationRequestCommandSchema.parse(await jsonBody(request));
     if (body.confirmation !== `${id}:retry`) {
       throw Errors.badRequest("Confirmation did not match Generation Request retry target");
     }

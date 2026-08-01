@@ -2,7 +2,8 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { Errors } from "@/server/lib/errors";
 import { recordGenerationAttemptQueuedEvent } from "@/server/ai/generation-attempt-events";
 import { transitionGenerationRequest } from "@/server/ai/generation-request-transition";
-import { ensureGenerationSettlementLinks, linkGenerationLedgerEntry } from "@/server/ai/generation-settlement";
+import { ensureGenerationSettlementLinks } from "@/server/ai/generation-settlement";
+import { postDreamcoinEntry } from "@/server/modules/admin/billing/ledger";
 import { claimControlPlaneCommand } from "../shared/control-plane-command";
 import { transitionControlPlaneCommandAttempt } from "../shared/control-plane-command-attempt";
 import { transitionControlPlaneCommand } from "../shared/control-plane-command-transition";
@@ -92,21 +93,14 @@ async function appendRefund(
   if (amount === 0) return { jobId: job.id, amount: 0, alreadySettled: true };
   const idempotencyKey = `incident:${input.commandId}:refund:${job.id}`;
   const existing = await tx.dreamcoinLedger.findUnique({ where: { idempotencyKey } });
-  if (existing) return { jobId: job.id, amount: existing.delta, alreadySettled: true };
-  await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${job.userId} FOR UPDATE`;
-  const balance = await tx.dreamcoinLedger.aggregate({ where: { userId: job.userId }, _sum: { delta: true } });
-  const refund = await tx.dreamcoinLedger.create({
-    data: {
-      userId: job.userId,
-      delta: amount,
-      balanceAfter: (balance._sum.delta ?? 0) + amount,
-      reason: "refund",
-      sourceId: job.id,
-      idempotencyKey,
-    },
+  await postDreamcoinEntry(tx, {
+    kind: "refund",
+    userId: job.userId,
+    amount,
+    sourceId: job.id,
+    idempotencyKey,
   });
-  await linkGenerationLedgerEntry(tx, refund);
-  return { jobId: job.id, amount, alreadySettled: false };
+  return { jobId: job.id, amount, alreadySettled: Boolean(existing) };
 }
 
 export async function executeIncidentActionPlanCommand(

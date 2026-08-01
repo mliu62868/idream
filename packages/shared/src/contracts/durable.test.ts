@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  durableAckSchema,
+  durableEnvelopeHash,
+  durableEventEnvelopeSchema,
   generationCompletionManifestSchema,
   generationManifestChecksum,
   generationTransportExecutionEventSchema,
@@ -7,6 +10,35 @@ import {
 import { aiUsageRecordedV2Schema } from "./metric-events";
 
 describe("durable cross-service contracts", () => {
+  it("uses one canonical envelope hash and makes quarantine impossible to acknowledge", () => {
+    const envelope = durableEventEnvelopeSchema.parse({
+      sourceService: "main",
+      sourceEventId: "event-1",
+      eventType: "user.deleted",
+      schemaVersion: 1,
+      occurredAt: "2026-07-31T12:00:00.000Z",
+      aggregateType: "user",
+      aggregateId: "user-1",
+      payload: { reason: "requested", userId: "user-1" },
+    });
+    expect(durableEnvelopeHash(envelope)).toBe(durableEnvelopeHash({
+      ...envelope,
+      payload: { userId: "user-1", reason: "requested" },
+    }));
+    expect(durableEnvelopeHash({ ...envelope, payload: { userId: "user-2" } }))
+      .not.toBe(durableEnvelopeHash(envelope));
+    expect(durableAckSchema.parse({
+      acknowledged: true,
+      status: "duplicate",
+      receiptId: "main:event-1",
+    })).toMatchObject({ acknowledged: true, status: "duplicate" });
+    expect(durableAckSchema.safeParse({
+      acknowledged: true,
+      status: "quarantined",
+      receiptId: "main:event-1",
+    }).success).toBe(false);
+  });
+
   it("produces a stable checksum independent of object key order", () => {
     const manifest = generationCompletionManifestSchema.parse({
       version: 1,

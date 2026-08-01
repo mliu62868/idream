@@ -226,6 +226,11 @@ describe("Character Video Studio", () => {
 
     expect(container.textContent).toContain("LTX 2.3 GTAnimation");
     expect(container.textContent).toContain("4 seconds");
+    expect(container.textContent).toContain("New video");
+    expect(container.querySelector('[role="tablist"]')).toBeNull();
+    const secondaryDetails = [...container.querySelectorAll("details")];
+    expect(secondaryDetails.length).toBeGreaterThan(0);
+    expect(secondaryDetails.every((details) => details.open === false)).toBe(true);
     const create = [...container.querySelectorAll("button")]
       .find((button) => button.textContent?.includes("Create video"));
     await waitUntil(() => create?.disabled === false);

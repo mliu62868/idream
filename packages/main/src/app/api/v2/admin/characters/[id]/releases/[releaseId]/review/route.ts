@@ -2,7 +2,7 @@ import { characterReleaseReviewRequestSchema } from "@idream/shared/admin";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { reviewCharacterRelease } from "@/server/modules/admin-v2/characters/release-lifecycle";
-import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
+import { actorWithPermission, jsonBody } from "@/server/modules/admin-v2/shared/authority";
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
 import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
@@ -14,7 +14,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const { id, releaseId } = await context.params;
   return adminV2Route(async () => {
     const actor = await actorWithPermission(request, "character.release.review", { characterId: id });
-    const body = characterReleaseReviewRequestSchema.parse(await request.json());
+    const body = characterReleaseReviewRequestSchema.parse(await jsonBody(request));
     const ifMatch = request.headers.get("if-match")?.trim().replace(/^W\//, "").replace(/^"|"$/g, "");
     if (!ifMatch || !/^\d+$/.test(ifMatch) || Number(ifMatch) !== body.entityVersion) {
       throw Errors.badRequest("If-Match must equal body entityVersion");

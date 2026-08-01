@@ -2,6 +2,7 @@ import {
   findAdminV2ApiOperation,
   resolveAdminV2ManifestAuthorization,
 } from "@idream/shared/admin/api-manifest";
+import { requireExecutableAdminV2Contract } from "@idream/shared/admin";
 import type { PermissionKey } from "@/server/admin/permissions";
 import {
   effectiveCharacterIdsForPermission,
@@ -12,6 +13,8 @@ import { Errors } from "@/server/lib/errors";
 import { verifyAdminBffRequest } from "./admin-bff";
 
 export type AdminActor = { id: string; role: ActorRole };
+
+const parsedAdminBodies = new WeakMap<Request, Promise<unknown>>();
 
 export async function authenticatedAdminActor(
   request: Request,
@@ -79,8 +82,68 @@ export async function actorWithPermission(
 }
 
 export async function jsonBody(request: Request): Promise<unknown> {
-  if (request.method === "GET" || request.method === "DELETE") return {};
+  const cached = parsedAdminBodies.get(request);
+  if (cached) return cached;
+  const parsed = parseManifestBody(request);
+  parsedAdminBodies.set(request, parsed);
+  return parsed;
+}
+
+async function parseManifestBody(request: Request): Promise<unknown> {
+  if (request.method === "GET" || request.method === "HEAD") return {};
   const text = await request.text();
-  if (!text) return {};
-  return JSON.parse(text) as unknown;
+  const raw = text ? JSON.parse(text) as unknown : {};
+  const pathname = new URL(request.url).pathname;
+  const operation = findAdminV2ApiOperation(request.method, pathname);
+  if (!operation) {
+    if (pathname.startsWith("/api/v2/admin/")) {
+      throw Errors.internal("Admin v2 operation is missing from the authority manifest", {
+        method: request.method,
+        pathname,
+      });
+    }
+    return raw;
+  }
+  if (operation.mutation) {
+    assertMutationTransportHeaders(request, operation.mutation.transport);
+  }
+  const contract = requireExecutableAdminV2Contract(operation.contract.request);
+  if (contract.kind === "transport") return raw;
+  const parsed = contract.schema.parse(raw);
+  if (
+    operation.mutation?.transport.includes("if_match") &&
+    parsed !== null &&
+    typeof parsed === "object" &&
+    "entityVersion" in parsed &&
+    typeof (parsed as { entityVersion?: unknown }).entityVersion === "number"
+  ) {
+    const ifMatch = parseIfMatch(request);
+    if (ifMatch !== (parsed as { entityVersion: number }).entityVersion) {
+      throw Errors.badRequest("If-Match and request body identify different authority versions");
+    }
+  }
+  return parsed;
+}
+
+function assertMutationTransportHeaders(
+  request: Request,
+  transport: "idempotency_key" | "if_match" | "idempotency_key_and_if_match",
+) {
+  if (transport.includes("idempotency_key")) {
+    const key = request.headers.get("idempotency-key")?.trim();
+    if (!key) throw Errors.badRequest("Idempotency-Key header is required");
+  }
+  if (transport.includes("if_match")) parseIfMatch(request);
+}
+
+function parseIfMatch(request: Request) {
+  const value = request.headers
+    .get("if-match")
+    ?.trim()
+    .replace(/^W\//, "")
+    .replace(/^"|"$/g, "");
+  if (!value || !/^\d+$/.test(value)) {
+    throw Errors.badRequest("If-Match must contain an authority version");
+  }
+  return Number(value);
 }

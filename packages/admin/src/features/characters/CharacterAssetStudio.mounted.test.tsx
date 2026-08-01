@@ -226,10 +226,12 @@ describe("Character Asset Studio bootstrap route projection", () => {
     />));
     await waitUntil(() => container.textContent?.includes("New image") === true);
 
-    expect(container.textContent).toContain("Image purpose filters");
-    expect(container.textContent).toContain("Image library");
-    expect(container.textContent).toContain("One image per generation");
-    expect(container.textContent).toContain("The locked visual identity stays unchanged.");
+    expect(container.textContent).toContain("Inspect");
+    expect(container.textContent).toContain("Settings");
+    expect(container.textContent).toContain("Visual identity");
+    expect(container.textContent).not.toContain("Image purpose filters");
+    expect(container.textContent).not.toContain("One image per generation");
+    expect(container.querySelector('img[alt="Alexa Reeves image 1"]')).not.toBeNull();
     expect(container.textContent).not.toContain("Adjust the creative brief");
     expect(container.textContent).not.toContain("Review generation route");
     const generate = [...container.querySelectorAll("button")]
@@ -292,11 +294,10 @@ describe("Character Asset Studio bootstrap route projection", () => {
     />));
     await waitUntil(() => container.textContent?.includes("Image production setup") === true);
 
-    expect(container.textContent).toContain(
-      "Identity and references are locked; the generation route is not qualified yet.",
-    );
+    expect(container.textContent).toContain("Visual identity v1");
+    expect(container.textContent).toContain("References 1");
     expect(container.textContent).not.toContain(
-      "Identity, references, and route are protected for this batch.",
+      "Identity, references, and route are protected",
     );
     expect(container.textContent).toContain("Unavailable");
   });
@@ -794,7 +795,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
       onProjectReload={async () => undefined}
       permissions={{ read: true, create: true, review: true, selectDraft: true }}
     />));
-    await waitUntil(() => container.textContent?.includes("Current candidate") === true);
+    await waitUntil(() => container.querySelector('[aria-label="View candidate 1"]') !== null);
     const openCandidate = [...container.querySelectorAll<HTMLButtonElement>("button")]
       .find((button) => button.getAttribute("aria-label") === "View candidate 1");
     await act(async () => openCandidate?.click());
@@ -1678,12 +1679,6 @@ describe("Character Asset Studio bootstrap route projection", () => {
         button.textContent?.includes("Reconcile selection")
       )
     );
-    const portraitBefore = [...container.querySelectorAll("button")]
-      .find((button) =>
-        button.textContent?.includes("Primary portrait")
-      );
-    expect(portraitBefore?.disabled).toBe(true);
-
     const reconcile = [...container.querySelectorAll("button")].find(
       (button) =>
         button.textContent?.includes("Reconcile selection"),
@@ -1719,11 +1714,6 @@ describe("Character Asset Studio bootstrap route projection", () => {
         button.textContent?.includes("Reconcile selection")
       ),
     ).toBe(false);
-    const portraitAfter = [...container.querySelectorAll("button")]
-      .find((button) =>
-        button.textContent?.includes("Primary portrait")
-      );
-    expect(portraitAfter?.disabled).toBe(false);
     expect(adminV2Request.mock.calls.some(([path, options]) =>
       path.includes("/draft-image") &&
       options?.method === "PATCH"

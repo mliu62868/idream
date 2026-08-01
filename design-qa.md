@@ -1,3 +1,284 @@
+# Design QA — Character List and Detail Simplification
+
+## Comparison target
+
+- Selected list visual truth: `/Users/kk/.codex/generated_images/019fbb03-5a89-7353-be3b-2d6b99a9d4d7/exec-7fb2681a-b451-4550-9b3d-c63e61f5f329.png`
+- Generated detail visual truth: `/Users/kk/.codex/generated_images/019fbb03-5a89-7353-be3b-2d6b99a9d4d7/exec-d7721e79-da65-4aa9-8cf5-eb7587fdb219.png`
+- Final list implementation: `/Users/kk/code/idream/output/product-design/character-list-simplification-2026-07-31/05-implemented-list.png`
+- Final detail implementation: `/Users/kk/code/idream/output/product-design/character-detail-simplification-2026-07-31/02-implemented-detail.png`
+- Same-input list comparison: `/Users/kk/code/idream/output/product-design/character-list-simplification-2026-07-31/06-reference-vs-implementation.png`
+- Same-input detail comparison: `/Users/kk/code/idream/output/product-design/character-detail-simplification-2026-07-31/03-reference-vs-implementation.png`
+- Routes: `http://127.0.0.1:3001/admin/characters` and `http://127.0.0.1:3001/admin/characters/alexa-reeves`
+- Viewport: 1488 × 1058 CSS px, effective device scale factor 1. Implementation captures are 1488 × 1058 px; both source visuals are 1487 × 1058 px. The 1px source-width difference was retained and both comparisons were aligned at equal height without density rescaling.
+- State: Chinese locale; 24-character list with search empty and filters closed; Alexa Reeves detail with Details selected, editor closed, and project collaboration collapsed.
+
+## Full-view comparison evidence
+
+The combined list comparison confirms the selected direction's core structure: quiet Character-only navigation, visible search, one compact filter control, one Create action, a four-column portrait roster, and only name plus factual state below each image. Workflow summary tabs, featured-card hierarchy, progress steppers, repeated next-action cards, and instructional copy are absent.
+
+The combined detail comparison confirms the generated detail direction's core structure: back navigation, large identity portrait and factual state, direct section tabs, open character facts, current status, and a three-image recent-assets strip. Editing and collaboration are secondary disclosures. No server-projected “next step” is rendered and direct tab selection does not append a guided anchor.
+
+## Focused-region comparison evidence
+
+No separate crop was needed because the 2975 × 1058 original-resolution comparison images keep the header, toolbar, card labels, tabs, factual values, and recent-asset controls legible in one input. Browser semantic snapshots were used in addition to the visual comparisons to verify the controls and labels rather than inferring interaction from pixels.
+
+## Required fidelity surfaces
+
+- Fonts and typography: the implementation uses the existing Admin type system and matches the source's restrained hierarchy: compact shell title, 30px character title, 16px roster names, 14px factual states, and small metadata. Long real names truncate instead of changing card height.
+- Spacing and layout rhythm: the list uses four equal tracks at the verified desktop width, 4:5 images, restrained horizontal gaps, and no card chrome. The detail uses a 192px square identity portrait, a plain tab divider, two factual columns, and border-only section separation.
+- Colors and visual tokens: the existing warm canvas, surface, ink, muted, border, green, blue, and yellow `--ad-*` tokens map directly to the visual direction. No gradients, decorative shadows, or new badge system were introduced.
+- Image quality and asset fidelity: all visible portraits and recent assets are genuine current Character/MediaAsset URLs. Characters without permitted or available portraits show the existing factual empty image state; no generated placeholder artwork, CSS art, or repeated unrelated image was substituted.
+- Copy and content: cards state only Draft, In production, Ready for preview, Pending release, or Live. Detail copy names the actual character facts and authority state. “Next”, production workflow steps, setup instructions, and forced-action descriptions are absent.
+- Accessibility and interaction: each roster item is one named link, search and filters have accessible labels, tabs retain tab semantics and keyboard behavior, edit disclosure has a named toggle, and real mutation locks remain enforced.
+
+## Findings
+
+No actionable P0, P1, or P2 visual or interaction differences remain.
+
+## Comparison history
+
+### Pass 1
+
+- [P2] The initial implementation still exposed Character Starters, Taxonomy, and unrelated shell groups beside the simplified roster.
+  - Fix: on the Character workspace, navigation now contains Today plus Characters and Character Review only.
+  - Post-fix evidence: `06-reference-vs-implementation.png`.
+- [P2] The first detail capture compressed the identity header around a small portrait.
+  - Fix: increased the desktop identity portrait to a 192px square so header height and identity emphasis match the selected direction.
+  - Post-fix evidence: `03-reference-vs-implementation.png`.
+- [P2] Hot reload briefly mixed the old server shell with the new client shell and produced a recoverable hydration issue.
+  - Fix: restarted only the `admin-web` development process and repeated both captures from a cold page load.
+  - Post-fix evidence: the final Browser snapshots report no Issue, Recoverable Error, or hydration error on either route.
+
+### Final pass
+
+- Primary interactions tested: search for Alexa and return to all Characters; open and close Filters; open a Character through the whole roster item; expand and close the 10-field details editor; switch directly to Visual identity and back; return to the list.
+- Direct-tab evidence: Visual identity resolves to `/admin/characters/alexa-reeves?tab=visual` with no guided hash.
+- Runtime evidence: 24 Characters loaded; the final list and detail Browser snapshots had no Next.js issue or hydration error; the Admin development process remained online and the final open route is the Character list.
+- Verification: 22 focused tests passed, Admin TypeScript check passed, focused ESLint passed, and `git diff --check` passed.
+
+## Follow-up polish
+
+- [P3] The real development roster contains long fixture names and missing portraits, so its content is less curated than the concept image. The implementation intentionally keeps those factual states instead of hiding data or fabricating imagery.
+- [P3] Language, Refresh, and Logout remain as compact shell utilities; they are product controls rather than workflow guidance.
+
+final result: passed
+
+---
+
+# Final closeout — Full Character Workspace Audit
+
+## Comparison target
+
+- Source visual truth: `/Users/kk/.codex/generated_images/019fbb03-5a89-7353-be3b-2d6b99a9d4d7/exec-3c6fd842-7578-4f30-b6fc-730d1df6d804.png`
+- Rendered implementation: `output/product-design/character-workspace-full-audit-2026-08-01/32-visual-final-desktop.png`
+- Responsive evidence: `output/product-design/character-workspace-full-audit-2026-08-01/21-detail-final-mobile.png` through `28-performance-final-mobile.png`
+- Desktop state: Alexa Reeves, Chinese locale, 1440 × 1024 CSS viewport, screenshot 1440 × 1024 px, device density 1.
+- Mobile state: Alexa Reeves, Chinese locale, 410 × 734 CSS viewport, screenshot 410 × 734 px, device density 1.
+- Source pixels: 1487 × 1058. The source and implementation were opened together at original resolution. No density resampling was needed; the comparison judged the shared composition and interaction hierarchy while preserving the authoritative live Alexa content.
+
+## Full-view comparison evidence
+
+The implementation retains the selected source hierarchy: compact character authority header, direct desktop tabs, dominant current visual, free-form prompt, visible negative prompt and seed, one primary Generate action, and secondary production controls below the fold. The final Details, Voice, Release, and Live Performance screenshots confirm that the same warm monochrome tokens, crisp borders, low visual density, and disclosure pattern now carry across the workspace.
+
+## Focused-region evidence
+
+A separate crop was not needed because the original-resolution screenshots keep the typography, field labels, status tokens, and primary controls readable. The exact interactive regions were additionally inspected through the live DOM: mobile workspace selector, Details editor, Visual Identity prompt/negative prompt/seed, Images filmstrip/settings, Video model disclosure, Voice advanced settings, Release history, and portfolio-decision disclosure.
+
+## Findings and iteration history
+
+- P2 mobile navigation: the eight-tab horizontal strip clipped earlier destinations when an end tab was active. Fixed with one complete mobile workspace selector while preserving the desktop tablist and keyboard behavior. Post-fix evidence: `21-detail-final-mobile.png` through `28-performance-final-mobile.png`.
+- P2 localization: the Voice upload control exposed browser-native English copy. Fixed with an accessible localized picker and selected-file label. Post-fix evidence: `25-voice-final-mobile.png` and `35-voice-final-desktop.png`.
+- P2 empty-state density: Live Performance repeated four rows of N/A metrics with zero samples. Fixed with one diagnosis and one factual monitored-window empty state. Post-fix evidence: `28-performance-final-mobile.png` and `38-performance-final-desktop.png`.
+- P2 release hierarchy: current and superseded Releases appeared as equivalent cards and showed contradictory readiness emphasis. Fixed by separating current live Release, candidate, and collapsed history; historical versions no longer show readiness as a current action. Post-fix evidence: `27-release-final-mobile.png` and `37-release-final-desktop.png`.
+- P2 detail duplication: updated timestamp, Character ID, serving state, and visibility repeated the shared header. Fixed by keeping identity fields in Technical Status and showing only distinct operational facts in Details. Post-fix evidence: `21-detail-final-mobile.png` and `31-detail-final-desktop.png`.
+
+## Required fidelity surfaces
+
+- Typography: existing Admin system typography, compact weight hierarchy, wrapping, and small-label contrast are consistent across all eight tabs.
+- Spacing and layout: desktop keeps the source two-column task composition; mobile reflows to one column without horizontal page overflow or clipped navigation.
+- Colors and tokens: warm canvas, white surfaces, hairline borders, muted semantic blue/green/yellow states, and black primary actions remain consistent.
+- Image quality: real Character images and videos are preserved with correct aspect ratios and object-fit behavior; no placeholder or CSS-drawn media was introduced.
+- Copy and content: visible controls are Chinese, internal IDs stay in Technical Status or Technical Evidence, and blocked states provide one direct action.
+
+## Verification
+
+- Character module: 14 files, 144 tests passed.
+- Admin typecheck, focused ESLint, production build, and targeted `git diff --check` passed.
+- Live Browser covered all eight desktop tabs and all eight mobile selector destinations plus the primary safe interactions. There were no console errors. The development session still contains one earlier Next.js LCP warning for the Alexa image; the image is already eager in the shared header and no new warning appeared after the final HMR pass. This is retained as P3 runtime follow-up rather than a UX blocker.
+
+final result: passed
+
+---
+
+# Final closeout - Video, Voice, Launch Preview, and Live Performance
+
+## Comparison target
+
+- source visual truth path: `/Users/kk/.codex/generated_images/019fbb03-5a89-7353-be3b-2d6b99a9d4d7/exec-3c6fd842-7578-4f30-b6fc-730d1df6d804.png`
+- same-state source captures:
+  - `output/product-design/character-secondary-tabs-simplification-2026-08-01/01-current-video.png`
+  - `output/product-design/character-secondary-tabs-simplification-2026-08-01/02-current-voice.png`
+  - `output/product-design/character-secondary-tabs-simplification-2026-08-01/03-current-preview.png`
+  - `output/product-design/character-secondary-tabs-simplification-2026-08-01/04-current-performance.png`
+- implementation screenshots:
+  - `output/product-design/character-secondary-tabs-simplification-2026-08-01/16-final-video-desktop.png`
+  - `output/product-design/character-secondary-tabs-simplification-2026-08-01/17-final-voice-desktop.png`
+  - `output/product-design/character-secondary-tabs-simplification-2026-08-01/18-final-preview-desktop.png`
+  - `output/product-design/character-secondary-tabs-simplification-2026-08-01/15-final-performance-desktop.png`
+- viewport: desktop 1440 x 1024 CSS px; mobile 410 x 734 CSS px
+- pixels and density: desktop captures are 1440 x 1024 pixels, mobile captures are 410 x 734 pixels, device density is normalized 1:1 by the in-app Browser viewport override. The selected style target is 1487 x 1058 pixels and was compared for hierarchy and design language, not pixel matching, because it depicts a different tab.
+- state: authenticated Chinese Admin, Alexa Reeves, real video result, inherited system voice, image-pack-blocked launch preview, and zero-observation live performance.
+
+## Full-view comparison evidence
+
+The selected Visual Identity target and all four final desktop captures were opened together in one comparison input. All four tabs now carry the selected hierarchy: compact Character header, one dominant fact or task, one primary action, warm neutral tokens, 8px surfaces, no decorative effects, and technical or historical content behind disclosures.
+
+## Required fidelity surfaces
+
+- Fonts and typography: existing Admin type family and weights are preserved. Headings stay at compact tool-scale sizes; helper copy and metadata use the existing muted token without cramped wrapping.
+- Spacing and layout rhythm: Video uses a media/composer split, Voice uses one full-width form after the current voice, Launch Preview stops after the blocker and compact comparison, and Performance uses one compact fact surface. Desktop and mobile captures show no overlapping controls or horizontal page overflow.
+- Colors and tokens: all changes use existing `--ad-*` surface, border, text, blue, yellow, green, and red tokens. No gradients, heavy shadows, or new accent system were introduced.
+- Image quality: the real authorized Character portrait, video, live image, and draft image are preserved with stable crops and no substitute art.
+- Copy and content: repeated guidance, route IDs, model IDs, duplicate zero-data diagnoses, and disabled QA choices were removed from the default view. Operator labels remain direct and localized.
+- Icons and affordances: existing Lucide icons and WorkspaceButton states are retained. Disclosures are visible, keyboard-native `details` elements.
+- Accessibility and responsiveness: semantic regions, headings, labels, audio/video controls, links, and status roles remain intact. The 410 x 734 captures show single-column stacking and usable controls.
+
+Focused region comparison was not needed after the full 1440 x 1024 captures because all affected controls and copy were legible at original resolution. The browser interaction pass separately opened Video model details, portfolio decisions, and release monitoring, and verified the Voice preview button and Launch Preview repair link.
+
+## Comparison history
+
+- P2, first mobile pass: the latest video occupied too much of the 410 x 734 first screen. Fix: cap the mobile video height while retaining the larger desktop media stage. Post-fix evidence: `output/product-design/character-secondary-tabs-simplification-2026-08-01/13-final-video-mobile.png`.
+- P2, first mobile pass: Performance metric fields stacked into a long single column. Fix: use a two-column fact grid on mobile and the compact six-column row at desktop. Post-fix evidence: `output/product-design/character-secondary-tabs-simplification-2026-08-01/14-final-performance-mobile.png`.
+- Post-fix comparison found no remaining actionable P0, P1, or P2 issue.
+
+## Browser and build evidence
+
+- Primary interactions tested: all four tabs, Video model disclosure, portfolio-decision disclosure, release-monitor disclosure, Voice preview availability, and Launch Preview repair deep link.
+- Mobile evidence: Preview, Voice, Video, and Performance were captured at 410 x 734.
+- Runtime evidence: current Admin requests returned 200 and the dev server compiled after the final edits. PM2's error tail contains an older resolved parse error plus an existing Next.js LCP warning for the shared Alexa header image; no new runtime error appeared during this pass.
+- Verification: 34 focused tests passed, Admin typecheck passed, focused ESLint passed, Admin production build passed, and targeted `git diff --check` passed.
+
+## Findings
+
+- No actionable P0, P1, or P2 findings remain.
+- P3 follow-up: the existing Next.js development LCP warning for the shared Character header image remains even though the image currently declares eager loading. It is outside the four-tab layout change and does not block the workflow redesign.
+
+final result: passed
+
+---
+
+# Design QA — Visual Identity Simple Generation Flow
+
+## Comparison target
+
+- Selected and revised source visual: `/Users/kk/.codex/generated_images/019fbb03-5a89-7353-be3b-2d6b99a9d4d7/exec-3c6fd842-7578-4f30-b6fc-730d1df6d804.png`
+- Final desktop implementation: `/Users/kk/code/idream/output/product-design/visual-identity-usability-redesign-2026-07-31/04-implementation-desktop.png`
+- Final narrow-screen top: `/Users/kk/code/idream/output/product-design/visual-identity-usability-redesign-2026-07-31/04-implementation-mobile-top.png`
+- Final narrow-screen controls: `/Users/kk/code/idream/output/product-design/visual-identity-usability-redesign-2026-07-31/05-implementation-mobile-controls.png`
+- Route: `http://127.0.0.1:3001/admin/characters/alexa-reeves?tab=visual`
+- Desktop viewport: 1440 × 1024 CSS px. Narrow-screen viewport: 410 × 734 CSS px at device scale factor 2.
+- State: Chinese locale; prompt empty; real negative prompt and seed visible; Generate disabled until the prompt is entered; History and Advanced settings collapsed.
+
+## Full-view comparison evidence
+
+The source and implementation were opened together at original resolution in one comparison input. The implementation matches the selected information hierarchy: the current real character image occupies the left track; the right track contains one creative prompt, a compact visible negative prompt, a visible seed with a quiet Random action, optional reference upload, one primary Generate action, and only two secondary disclosures. The model, workflow, route, identity version, experiment terminology, candidate comparison, evidence, and adoption flow are absent from the default visible state.
+
+The implementation intentionally uses Alexa's current authoritative image and current negative prompt instead of the source mock's generated face and abbreviated sample copy. This is a factual data difference, not a component deviation.
+
+## Focused-region comparison evidence
+
+- Prompt and generation controls: the large prompt area, single-line negative prompt, seed field, Random action, Add reference image, Generate, History, and Advanced settings align with the selected source in the same desktop viewport.
+- Narrow-screen flow: the composer moves before the large current image, so the operator reaches the task without scrolling past a portrait. The visible control order remains prompt → negative prompt → seed → optional reference → Generate.
+- Result and authority flow: existing result review and activation controls remain in the DOM and retain their backend contracts, but they appear only after a new generation or an explicit History selection.
+
+## Comparison history
+
+### Pass 1
+
+- [P2] The first narrow-screen pass put the full current image before the composer.
+  - Fix: composer is first on narrow screens and returns to the right column at the desktop breakpoint.
+- [P2] The negative prompt used a multiline textarea and competed with the primary prompt.
+  - Fix: changed it to a compact single-line field while preserving the full stored value.
+- [P2] The Generate action began too close to Add reference image and consumed the whole row.
+  - Fix: reserved a quiet left action column and kept the black primary action dominant on desktop.
+
+### Final pass
+
+- No open P0, P1, or P2 visual or interaction differences remain.
+- Browser interaction evidence: blank prompt truthfully disables Generate; filling the prompt enables it; Random changes the visible seed; History opens eight real prior runs; Advanced settings opens generation method, aspect ratio, identity constraint, and image-to-image controls; no generation mutation was submitted during QA.
+- Responsive evidence: the default 410px viewport and explicit 1440 × 1024 viewport both have no visible horizontal overflow or clipped primary controls.
+- Verification: 17 focused tests passed; focused ESLint, Admin TypeScript check, production build, and `git diff --check` passed.
+
+## Follow-up polish
+
+- [P3] The live Alexa negative prompt is longer than the source sample. The compact field intentionally keeps the real stored value and allows horizontal text navigation instead of expanding the page.
+- [P3] Formal identity and production controls remain as one collapsed disclosure after the primary workspace so existing authority operations stay reachable without returning to the first screen.
+
+final result: passed
+
+---
+
+# Design QA — Character Detail Media Workspace (Option 2)
+
+## Comparison target
+
+- Source visual truth: `/Users/kk/.codex/generated_images/019fbb03-5a89-7353-be3b-2d6b99a9d4d7/exec-3ef45301-5abe-40cb-83a0-f9f5fe38c799.png`
+- Images implementation: `/Users/kk/code/idream/output/product-design/character-detail-redesign-2026-08-01/03-implemented-images.png`
+- Video implementation: `/Users/kk/code/idream/output/product-design/character-detail-redesign-2026-08-01/04-implemented-video.png`
+- Route: `http://127.0.0.1:3001/admin/characters/alexa-reeves?tab=assets`
+- Viewport: 1488 × 1058 CSS px at device scale factor 1.
+- Pixel normalization: source 1487 × 1058 px; both implementation captures 1488 × 1058 px. The 1px source-width difference was retained; no density rescaling was needed.
+- State: Chinese locale; Alexa Reeves; Images selected with the existing image library and New image inspector visible. Video was captured separately with a real completed clip and New video inspector visible.
+
+## Full-view comparison evidence
+
+The source and latest Images implementation were opened together in the same original-resolution comparison input. Both use the same compact Character header, direct section tabs, a quiet identity/route line, a dominant media preview, a horizontal thumbnail filmstrip, and a fixed-width right inspector with `Inspect / New image` modes. The implementation keeps the existing Admin shell title instead of moving back navigation into the shell; redundant in-content back navigation was removed so the Character header and media workspace align with the source's vertical rhythm.
+
+The source's curated landscape portrait and the implementation's current Character assets differ by data, not component treatment. The implementation uses genuine current MediaAsset URLs, preserves the selected image's full crop with neutral gutters when needed, and does not fabricate a source-matching asset.
+
+## Focused-region comparison evidence
+
+No extra crop was required: at original resolution, the combined comparison keeps the header status, tab labels, route line, inspector labels, prompt, primary action, selected thumbnail border, and filmstrip crops legible. The separate Video capture verifies the user-requested state that does not exist in the source mock: a dominant playable clip, horizontal run history, and the same two-mode inspector structure.
+
+## Required fidelity surfaces
+
+- Fonts and typography: existing Admin typography matches the source's compact 14px controls, restrained 16px section headings, semibold Character name, muted metadata, and unembellished labels. No oversized display treatment or instructional headline was introduced.
+- Spacing and layout rhythm: the workspace uses one dominant media track plus a 380px inspector, 5-unit track gap, thin dividers, restrained 8px radii, and no decorative shadows. Header and tabs were tightened so media starts at the same visual level as the selected direction.
+- Colors and tokens: warm canvas, white surfaces, ink, muted text, hairline borders, black primary action, and factual green serving dot all reuse existing `--ad-*` tokens. No gradients, decorative fills, or new color system was added.
+- Image quality and asset fidelity: the main image, thumbnails, source image, and video are real authorized Character assets. `object-contain` preserves the full media; thumbnails use consistent square crops. No placeholder art, CSS art, inline SVG art, or repeated fake imagery was used.
+- Copy and content: Images and Video are separate top-level tabs. The right panels ask only for the current creative brief or motion brief; purpose/source controls are secondary. Long setup steps, forced next-action cards, and customer-preview explanations are absent.
+- Icons: existing Lucide outline icons remain aligned with the Admin shell and are limited to actionable controls or factual empty states.
+- Accessibility and interaction: workspace and inspector tabs keep tab semantics and selected state; thumbnails expose named pressed-state buttons; inputs and media sources are labeled; video has native controls; disabled Inspect states are truthful when no reviewable Creative Run exists.
+- Responsiveness: the desktop target matches at 1488px. The same browser session also exercised the default 1280px viewport without overlap or loss of the Images, Video, Inspect, or New controls; below the `xl` breakpoint the inspector follows the media in document flow.
+
+## Comparison history
+
+### Pass 1
+
+- [P2] The first implementation showed an empty first-run canvas even though the Character already had usable images.
+  - Fix: added a de-duplicated existing-image library, selected-purpose-first ordering, a large real preview, and a horizontal thumbnail filmstrip. Review authority remains limited to actual Creative Run candidates.
+  - Post-fix evidence: `03-implemented-images.png` shows 13 real images, a selected preview, and the filmstrip in the first viewport.
+- [P2] Redundant in-content back navigation pushed the Character header and media workspace below the source rhythm.
+  - Fix: removed the duplicate back row; the persistent Character navigation in the Admin sidebar remains available.
+  - Post-fix evidence: the final source/implementation comparison aligns the Character header, tabs, identity line, media canvas, and inspector above the fold.
+
+### Final pass
+
+- No actionable P0, P1, or P2 visual, behavior, localization, accessibility, or responsive findings remain.
+- Primary interactions tested in the in-app Browser: direct Images/Video tab switching with URL persistence; thumbnail selection; Video Inspect/New video switching; real video playback surface; source selection and motion composer presence.
+- Fresh browser run: zero console warnings and zero errors after the final LCP loading fix.
+- Verification: 6 focused files / 57 tests passed; Admin TypeScript check passed; focused ESLint passed; Next 16 production build passed; `git diff --check` passed.
+- The full Admin test run still contains one unrelated pre-existing Character-list search-placeholder expectation in `operator-domain-workspaces.test.tsx`; this media-workspace change does not touch that flow.
+
+## Follow-up polish
+
+- [P3] The source mock uses one curated landscape identity set, while Alexa's live library mixes portrait, face-reference, and group-image crops. The implementation intentionally shows factual current media instead of hiding or fabricating assets.
+- [P3] The source shows optional reference and advanced-setting rows in the New image inspector. The implementation keeps only the currently supported purpose setting visible to honor the user's request for less guidance and fewer restrictions.
+
+final result: passed
+
+---
+
 # Design QA — Admin Image Production
 
 ## Comparison target
@@ -638,5 +919,71 @@ locked seeds, a durable text-to-image result, exact seed lineage, a one-click
 image-to-image continuation with source and strength, and an explicit
 candidate-review gate. The active identity remained `v1`, the page had no
 horizontal overflow, and the Browser console had no warnings or errors.
+
+final result: passed
+
+---
+
+# Final closeout — Character Detail Media Workspace (Option 2)
+
+The Option 2 source and the final 1488 × 1058 Images implementation were
+compared together at original resolution. The compact Character header, direct
+Images/Video tabs, dominant real-media preview, horizontal filmstrip, and
+right-side Inspect/New composer now match the selected interaction model. The
+separate Video state, real media assets, primary interactions, fresh console,
+57 focused tests, typecheck, lint, production build, and diff check passed.
+
+final result: passed
+
+---
+
+# Final closeout — Character Detail Tabs Simplification
+
+The selected Option 2 media-workspace reference and the final Visual Identity
+screen were inspected together. The detail workspace now uses one consistent
+hierarchy across all eight tabs: compact Character facts, one dominant task,
+and secondary or technical controls in disclosures.
+
+- Visual Identity puts the baseline/candidate comparison canvas first and
+  keeps only the prompt and Generate action visible. Route, reference image,
+  negative prompt, model, seed, and identity constraints remain available in
+  collapsed settings.
+- Voice removes the large prescribed next-step hero. The live authority is a
+  compact fact strip, candidate creation is the primary task, and runtime,
+  system defaults, performance direction, and advanced Fish controls are
+  secondary disclosures.
+- Launch Preview stops rendering unavailable iframes and a disabled seven-part
+  QA form while the image pack is incomplete. It shows the exact blocker and a
+  direct live-versus-draft asset comparison; QA opens when the draft is ready.
+- Release cards use human version labels first. Snapshot IDs and lineage move
+  into Technical Evidence; the action panel exposes the current next action,
+  while schedule, rollback, pause, resume, and retire live under one operations
+  disclosure.
+- Live Performance replaces large metric cards with compact evidence rows and
+  keeps a new portfolio decision collapsed until requested.
+- Details, Images, and Video were rechecked and already fit the selected
+  compact header, direct tabs, dominant media, and single-composer direction.
+
+The final browser pass covered Visual Identity, Voice, Launch Preview, Release,
+and Live Performance using the authoritative Alexa workspace and captured
+fresh evidence in
+`output/product-design/character-tabs-redesign-2026-08-01/15-final-visual.jpg`
+through `19-final-monitor.jpg`. The fresh browser session reported zero console
+errors. Focused lint, Admin typecheck, 72 related tests, and the Admin production
+build passed.
+
+final result: passed
+
+---
+
+# Superseding result — Full Character Workspace Audit
+
+The complete comparison record is in the earlier `Full Character Workspace
+Audit` section. It covers the selected 1487 × 1058 source, the final 1440 ×
+1024 desktop implementation, all eight 410 × 734 mobile destinations, primary
+interactions, localization, authority boundaries, 144 Character tests,
+typecheck, focused lint, production build, and targeted diff checks. The final
+Browser pass had no console errors; one earlier development-session LCP warning
+remains a non-blocking P3 follow-up.
 
 final result: passed

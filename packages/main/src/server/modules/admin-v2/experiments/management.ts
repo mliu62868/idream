@@ -9,9 +9,9 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
-import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
+import { actorWithPermission, jsonBody } from "@/server/modules/admin-v2/shared/authority";
 import { canonicalJsonEqual, requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
-import { isExperimentTransitionAllowed } from "@/server/modules/admin-v2/shared/state-transition-authority";
+import { transitionExperiment } from "./transition";
 
 function definitionDto(row: Awaited<ReturnType<typeof prisma.experimentDefinition.findFirstOrThrow>>) {
   const rawMetrics = row.metrics !== null && typeof row.metrics === "object" && !Array.isArray(row.metrics) ? row.metrics : {};
@@ -100,7 +100,7 @@ export async function getExperimentDefinition(request: Request, id: string) {
 
 export async function createExperimentDefinition(request: Request) {
   const actor = await actorWithPermission(request, "experiment.manage");
-  const input = experimentDefinitionCreateSchema.parse(await request.json());
+  const input = experimentDefinitionCreateSchema.parse(await jsonBody(request));
   const idempotencyKey = requireIdempotencyKey(request);
   const existing = await prisma.experimentDefinition.findUnique({ where: { createdById_createIdempotencyKey: { createdById: actor.id, createIdempotencyKey: idempotencyKey } } });
   if (existing) {
@@ -138,9 +138,9 @@ export async function createExperimentDefinition(request: Request) {
   return ok({ experiment: definitionDto(created.row), duplicate: created.duplicate }, { status: created.duplicate ? 200 : 201 });
 }
 
-async function transitionExperiment(request: Request, id: string, transition: "start" | "stop") {
+async function applyExperimentLifecycle(request: Request, id: string, transition: "start" | "stop") {
   const actor = await actorWithPermission(request, "experiment.manage");
-  const input = experimentLifecycleRequestSchema.parse(await request.json());
+  const input = experimentLifecycleRequestSchema.parse(await jsonBody(request));
   const idempotencyKey = requireIdempotencyKey(request);
   const result = await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${actor.id}:${idempotencyKey}`}))`;
@@ -160,7 +160,6 @@ async function transitionExperiment(request: Request, id: string, transition: "s
     const nextStatus = transition === "start" ? "running" : "stopped";
     if (
       current.status !== expectedStatus ||
-      !isExperimentTransitionAllowed(current.status, nextStatus) ||
       current.stateVersion !== input.expectedStateVersion
     ) throw Errors.conflict("Experiment lifecycle changed; reload before retrying");
     if (transition === "start") {
@@ -172,14 +171,14 @@ async function transitionExperiment(request: Request, id: string, transition: "s
       if (running) throw Errors.conflict("Another version of this experiment is already running");
     }
     const now = new Date();
-    const changed = await tx.experimentDefinition.updateMany({
-      where: { id, status: expectedStatus, stateVersion: input.expectedStateVersion },
+    const updated = await transitionExperiment(tx, {
+      experimentId: id,
+      to: nextStatus,
+      expected: { from: expectedStatus, stateVersion: input.expectedStateVersion },
       data: transition === "start"
-        ? { status: "running", stateVersion: { increment: 1 }, startedAt: now, startedById: actor.id }
-        : { status: "stopped", stateVersion: { increment: 1 }, stoppedAt: now, stoppedById: actor.id },
+        ? { startedAt: now, startedById: actor.id }
+        : { stoppedAt: now, stoppedById: actor.id },
     });
-    if (changed.count !== 1) throw Errors.conflict("Experiment lifecycle changed; reload before retrying");
-    const updated = await tx.experimentDefinition.findUniqueOrThrow({ where: { id } });
     await tx.adminAuditLog.create({ data: { actorId: actor.id, actorRole: actor.role, action: `experiment.${transition}`, targetType: "experiment_definition", targetId: id, reason: input.reason, before: { status: current.status, stateVersion: current.stateVersion }, after: { status: updated.status, stateVersion: updated.stateVersion }, requestId: idempotencyKey } });
     await tx.mainOutboxEvent.create({ data: { eventType: `experiment.definition.${transition === "start" ? "started" : "stopped"}.v2`, aggregateType: "experiment_definition", aggregateId: id, payload: { experimentId: id, key: updated.key, version: updated.version, stateVersion: updated.stateVersion, actorId: actor.id, reason: input.reason } } });
     return { row: updated, duplicate: false };
@@ -187,5 +186,5 @@ async function transitionExperiment(request: Request, id: string, transition: "s
   return ok({ experiment: definitionDto(result.row), duplicate: result.duplicate });
 }
 
-export function startExperiment(request: Request, id: string) { return transitionExperiment(request, id, "start"); }
-export function stopExperiment(request: Request, id: string) { return transitionExperiment(request, id, "stop"); }
+export function startExperiment(request: Request, id: string) { return applyExperimentLifecycle(request, id, "start"); }
+export function stopExperiment(request: Request, id: string) { return applyExperimentLifecycle(request, id, "stop"); }

@@ -1341,50 +1341,6 @@ function addImagePipelineChecks(
   }
 }
 
-// SPEC: pm2's gen-finalizer (main-side) and the dedicated gen-image worker
-// (packages/gen) both drain BullMQ. In a gen-split deploy — a real generation
-// backend configured via GEN_IMAGE_PROVIDER/GEN_VIDEO_PROVIDER — the gen
-// worker owns ai.image.generate/ai.video.generate. If the finalizer's own
-// GEN_FINALIZER_QUEUES is unset or still includes those queues, both
-// processes race the same jobs (dual-drain), producing nondeterministic
-// mock-vs-real output. This check only applies once that split is real; a
-// non-split (single mock inline) deploy has no dual-drain risk to flag.
-// INTENT: reuse the same "configured" signal addImagePipelineChecks already
-// uses (GEN_IMAGE_PROVIDER falling back to IMAGE_PROVIDER) rather than invent
-// a second, possibly inconsistent heuristic or an extra env flag.
-function addGenFinalizerQueueScopeCheck(
-  checks: LaunchReadinessCheck[],
-  env: EnvLike,
-) {
-  const genImageConfigured = env.GEN_IMAGE_PROVIDER ?? env.IMAGE_PROVIDER ?? "mock";
-  const genVideoConfigured = env.GEN_VIDEO_PROVIDER ?? env.VIDEO_PROVIDER ?? "mock";
-  const genSplit = genImageConfigured !== "mock" || genVideoConfigured !== "mock";
-  if (!genSplit) return;
-
-  const configuredQueues = (env.GEN_FINALIZER_QUEUES ?? "")
-    .split(",")
-    .map((queue) => queue.trim())
-    .filter(Boolean);
-  const dualDrainQueues = configuredQueues.filter(
-    (queue) => queue === "ai.image.generate" || queue === "ai.video.generate",
-  );
-  const scoped = configuredQueues.length > 0 && dualDrainQueues.length === 0;
-
-  addCheck(checks, {
-    id: "gen-finalizer-queue-scope",
-    area: "Generation",
-    status: scoped ? "pass" : "fail",
-    message: scoped
-      ? "gen-finalizer's GEN_FINALIZER_QUEUES excludes ai.image.generate/ai.video.generate — no dual-drain against the gen worker."
-      : configuredQueues.length === 0
-        ? "A generation backend is configured (gen-split deploy) but gen-finalizer's GEN_FINALIZER_QUEUES is unset, so it defaults to draining ai.image.generate/ai.video.generate alongside the dedicated gen worker."
-        : `gen-finalizer's GEN_FINALIZER_QUEUES still includes ${dualDrainQueues.join(", ")}, which the dedicated gen worker also drains.`,
-    remediation: scoped
-      ? undefined
-      : 'Set GEN_FINALIZER_QUEUES="app.ai.finalize,character.preview" (see ecosystem.config.js) so the main-side finalizer only handles finalize + character.preview, and the gen worker exclusively drains ai.image.generate/ai.video.generate.',
-  });
-}
-
 function addVideoPipelineChecks(
   checks: LaunchReadinessCheck[],
   env: EnvLike,
@@ -3010,7 +2966,6 @@ export function assessLaunchReadiness(
   addChatModerationChecks(checks, env);
 
   addImagePipelineChecks(checks, env, capabilities, imagePipelineProbe, now);
-  addGenFinalizerQueueScopeCheck(checks, env);
   addProductConfigProbeCheck(checks, env, productConfigProbe, now);
   addPublicCatalogProbeCheck(checks, env, publicCatalogProbe, now);
   addVideoPipelineChecks(checks, env, capabilities, productConfigProbe);

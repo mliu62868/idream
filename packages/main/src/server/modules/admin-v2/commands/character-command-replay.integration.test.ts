@@ -32,7 +32,12 @@ describe("Character authoritative command replay before mutable preflight", () =
     readonly scheduledAt?: string;
     readonly reasonSummary?: string;
   }) {
-    return new Request("http://localhost/api/v2/admin/commands", {
+    const [characterId, releaseIdOrAction, releaseAction] = input.confirmation.split(":");
+    const action = releaseAction ?? releaseIdOrAction;
+    const pathname = releaseAction
+      ? `/api/v2/admin/characters/${characterId}/releases/${releaseIdOrAction}/commands/${action}`
+      : `/api/v2/admin/characters/${characterId}/commands/${action}`;
+    return new Request(`http://localhost${pathname}`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -57,10 +62,10 @@ describe("Character authoritative command replay before mutable preflight", () =
   }
 
   async function commandId(response: Response) {
-    expect(response.status).toBe(202);
     const body = await response.json() as {
       data: { commandId: string };
     };
+    expect(response.status, JSON.stringify(body)).toBe(202);
     return body.data.commandId;
   }
 

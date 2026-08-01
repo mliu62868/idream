@@ -1,12 +1,8 @@
-// SPEC: gen-finalizer (design §10). Long-running drain of the main-side AI
-// queues. Current main-web enqueue writes the DB-backed local queue, so this
-// process drains generation plus finalization by default. When a deployment
-// moves image/video generation to a separate queue worker, set
-// GEN_FINALIZER_QUEUES=app.ai.finalize.
+// SPEC: gen-finalizer owns Main-side finalization only. packages/gen is the
+// sole image/video provider executor in every deployment topology.
 import { randomUUID } from "node:crypto";
 import {
   drainLocalAiPipeline,
-  localAiQueueNames,
   reconcileStaleGenerationJobs,
 } from "@/server/ai/local-pipeline";
 import { logger } from "@/server/lib/logger";
@@ -15,7 +11,7 @@ import { dispatchPendingGenerationManifests } from "@/server/ai/generation-manif
 const BUSY_DELAY_MS = 50;
 const IDLE_DELAY_MS = 1_000;
 const RECONCILE_INTERVAL_MS = 60_000;
-const DEFAULT_FINALIZER_QUEUES = [...localAiQueueNames];
+const FINALIZER_QUEUES = ["app.ai.finalize"] as const;
 
 let running = true;
 let reconciling = false;
@@ -23,12 +19,15 @@ let lastReconcileAt = 0;
 
 export async function runFinalizerLoop(): Promise<void> {
   logger.info("gen-finalizer started");
-  const queues = finalizerQueues();
   while (running) {
     const workerId = `finalizer-${randomUUID()}`;
     let processed = 0;
     try {
-      const result = await drainLocalAiPipeline({ limit: 25, workerId, queues });
+      const result = await drainLocalAiPipeline({
+        limit: 25,
+        workerId,
+        queues: [...FINALIZER_QUEUES],
+      });
       processed = result.processed;
     } catch (err) {
       logger.error({ err }, "finalizer drain failed");
@@ -64,16 +63,6 @@ function sleep(ms: number): Promise<void> {
 
 export function stopFinalizerLoop(): void {
   running = false;
-}
-
-function finalizerQueues(): string[] {
-  const configured =
-    process.env.GEN_FINALIZER_QUEUES ?? process.env.LOCAL_AI_DRAIN_QUEUES;
-  if (!configured) return [...DEFAULT_FINALIZER_QUEUES];
-  return configured
-    .split(",")
-    .map((queue) => queue.trim())
-    .filter(Boolean);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

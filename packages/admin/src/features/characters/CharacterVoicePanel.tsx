@@ -14,12 +14,8 @@ import {
 import {
   Activity,
   AudioLines,
-  ArrowRight,
   CheckCircle2,
-  FileAudio,
-  Gauge,
   History,
-  Mic2,
   Play,
   Radio,
   RotateCcw,
@@ -36,6 +32,7 @@ import {
   textAreaClass,
 } from "@/features/operations/WorkspaceUi";
 import { adminV2FormRequest, adminV2Request } from "@/lib/admin-v2-api";
+import { cn } from "@/lib/utils";
 
 type RunCommittedMutation = <T>(input: {
   readonly action: string;
@@ -336,109 +333,48 @@ export function CharacterVoicePanel({
     <div className="space-y-5">
       <section
         aria-labelledby="character-voice-authority"
-        className="overflow-hidden rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)]"
+        className="border-b border-[var(--ad-border)] pb-5"
         data-testid="voice-control-room"
       >
-        <div className="grid gap-px bg-[var(--ad-border)] lg:grid-cols-[minmax(0,1fr)_22rem]">
-          <div className="bg-[var(--ad-surface)] p-5 sm:p-6">
-            <div className="flex items-start gap-3">
-              <div className="grid h-11 w-11 shrink-0 place-items-center rounded-lg bg-[var(--ad-blue-bg)] text-[var(--ad-blue-text)]">
-                <Radio aria-hidden="true" className="h-5 w-5" />
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <h3 className="font-semibold" id="character-voice-authority">
+              {t("Live voice")}
+            </h3>
+            <p className="mt-1 text-sm text-[var(--ad-text-muted)]">
+              {active
+                ? t("Voice version {version}", { version: active.version })
+                : t(voiceLabel(data, data.voice.effectiveVoiceId))}
+            </p>
+            <dl className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-xs">
+              <div>
+                <dt className="inline text-[var(--ad-text-muted)]">{t("Current source")} </dt>
+                <dd className="inline font-semibold">
+                  {data.voice.authoritySource === "character_clone" ? t("Character override") : t("System inheritance")}
+                </dd>
               </div>
               <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--ad-blue-text)]">
-                  {t("Voice control room")}
-                </p>
-                <h3
-                  className="mt-1 text-xl font-semibold tracking-tight"
-                  id="character-voice-authority"
-                >
-                  {data.character.name}
-                </h3>
-                <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--ad-text-muted)]">
-                  {t(
-                    "Shape the live character voice, review candidates, and control inherited defaults from one place.",
-                  )}
-                </p>
-              </div>
-            </div>
-            <dl className="mt-6 grid gap-px overflow-hidden rounded-lg border border-[var(--ad-border)] bg-[var(--ad-border)] sm:grid-cols-3">
-              <div className="bg-[var(--ad-surface-subtle)] p-3">
-                <dt className="text-[11px] font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">
-                  {t("Current source")}
-                </dt>
-                <dd className="mt-1 text-sm font-semibold">
-                  {data.voice.authoritySource === "character_clone"
-                    ? t("Character override")
-                    : t("System inheritance")}
-                </dd>
-              </div>
-              <div className="bg-[var(--ad-surface-subtle)] p-3">
-                <dt className="text-[11px] font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">
-                  {t("Live voice")}
-                </dt>
-                <dd className="mt-1 truncate text-sm font-semibold">
-                  {active
-                    ? t("Voice version {version}", { version: active.version })
-                    : t(voiceLabel(data, data.voice.effectiveVoiceId))}
-                </dd>
-              </div>
-              <div className="bg-[var(--ad-surface-subtle)] p-3">
-                <dt className="text-[11px] font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">
-                  {t("Performance")}
-                </dt>
-                <dd className="mt-1 text-sm font-semibold">
-                  {t(
-                    deliveryPresetLabel(
-                      active?.delivery.preset ??
-                        data.voice.systemDefaults.delivery.preset,
-                    ),
-                  )}
+                <dt className="inline text-[var(--ad-text-muted)]">{t("Voice delivery")} </dt>
+                <dd className="inline font-semibold">
+                  {t(deliveryPresetLabel(active?.delivery.preset ?? data.voice.systemDefaults.delivery.preset))}
                 </dd>
               </div>
             </dl>
           </div>
-          <aside className="flex flex-col justify-between bg-[var(--ad-ink)] p-5 text-white sm:p-6">
-            <div>
-              <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-white/60">
-                <span
-                  aria-hidden="true"
-                  className={`h-2 w-2 rounded-full ${
-                    candidate ? "bg-[#f4c46b]" : "bg-[#8fd09a]"
-                  }`}
-                />
-                {t("Next action")}
-              </div>
-              <h4 className="mt-4 text-lg font-semibold">
-                {candidate
-                  ? t("Candidate awaiting review")
-                  : t("Build a voice candidate")}
-              </h4>
-              <p className="mt-2 text-sm leading-6 text-white/70">
-                {candidate
-                  ? t(
-                      "Listen and activate voice version {version} when it matches the character.",
-                      {
-                        version: candidate.version,
-                      },
-                    )
-                  : t(
-                      "Create a reviewed candidate without changing the live voice.",
-                    )}
-              </p>
-            </div>
-            <a
-              className="mt-6 inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-white px-4 text-sm font-semibold text-[var(--ad-ink)] transition hover:bg-white/90"
-              href={
-                candidate
-                  ? "#voice-candidate-review"
-                  : "#voice-candidate-builder"
-              }
+          {active?.preview ? (
+            <audio aria-label={t("Active cloned voice preview")} className="w-full lg:w-80" controls preload="metadata" src={active.preview.url} />
+          ) : catalogPreview?.voiceId === data.voice.effectiveVoiceId ? (
+            <audio aria-label={t("System voice preview")} autoPlay className="w-full lg:w-80" controls src={catalogPreview.src} />
+          ) : (
+            <WorkspaceButton
+              disabled={previewBusy !== null || busy}
+              onClick={() => void previewCatalogVoice(data.voice.effectiveVoiceId as FishAudioCatalogVoiceId)}
+              type="button"
             >
-              {candidate ? t("Review candidate") : t("Build candidate")}
-              <ArrowRight aria-hidden="true" className="h-4 w-4" />
-            </a>
-          </aside>
+              <Play aria-hidden="true" className="h-4 w-4" />
+              {previewBusy ? t("Rendering…") : t("Preview")}
+            </WorkspaceButton>
+          )}
         </div>
       </section>
 
@@ -574,30 +510,16 @@ export function CharacterVoicePanel({
         </section>
       ) : null}
 
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_20rem] xl:items-start">
+      <div className="space-y-4">
         <form
-          className="overflow-hidden rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)]"
+          className="overflow-hidden rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]"
           id="voice-candidate-builder"
           onSubmit={(event) => void submit(event)}
         >
-          <div className="border-b border-[var(--ad-border)] bg-[var(--ad-surface-subtle)] px-5 py-4 sm:px-6">
-            <div className="flex items-start gap-3">
-              <div className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-[var(--ad-blue-bg)] text-[var(--ad-blue-text)]">
-                <Mic2 aria-hidden="true" className="h-5 w-5" />
-              </div>
-              <div>
-                <h3 className="font-semibold">
-                  {candidate
-                    ? t("Replace voice candidate")
-                    : t("Create voice candidate")}
-                </h3>
-                <p className="mt-1 text-sm leading-6 text-[var(--ad-text-muted)]">
-                  {t(
-                    "Use a clean adult female single-speaker recording. Fish Audio uses up to the first 30 seconds.",
-                  )}
-                </p>
-              </div>
-            </div>
+          <div className="border-b border-[var(--ad-border)] px-5 py-4 sm:px-6">
+            <h3 className="font-semibold">
+              {candidate ? t("Replace voice candidate") : t("Create voice candidate")}
+            </h3>
           </div>
           {!data.voice.cloningAvailable ? (
             <p
@@ -607,34 +529,21 @@ export function CharacterVoicePanel({
               {t(voiceRuntimeMessage(data.voice.runtimeStatus))}
             </p>
           ) : null}
-          <div className="grid gap-px bg-[var(--ad-border)] lg:grid-cols-2">
+          <div className="grid gap-5 p-5 sm:p-6 lg:grid-cols-2">
             <section
               aria-labelledby="voice-reference-identity"
-              className="bg-[var(--ad-surface)] p-5 sm:p-6"
+              className="min-w-0"
             >
-              <div className="flex items-center gap-2">
-                <FileAudio
-                  aria-hidden="true"
-                  className="h-4 w-4 text-[var(--ad-blue-text)]"
-                />
-                <h4
-                  className="text-sm font-semibold"
-                  id="voice-reference-identity"
-                >
-                  {t("Reference identity")}
-                </h4>
-              </div>
-              <p className="mt-2 text-xs leading-5 text-[var(--ad-text-muted)]">
-                {t(
-                  "Upload the recording that defines the voice identity, then enter its exact transcript.",
-                )}
-              </p>
-              <div className="mt-4 grid gap-4">
-                <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
-                  {t("Voice reference audio")}
+              <h4 className="text-sm font-semibold" id="voice-reference-identity">
+                {t("Reference identity")}
+              </h4>
+              <div className="mt-3 grid gap-4">
+                <div className="text-xs font-semibold text-[var(--ad-text-muted)]">
+                  <span>{t("Voice reference audio")}</span>
                   <input
                     accept=".wav,.mp3,.flac,.ogg,audio/wav,audio/mpeg,audio/flac,audio/ogg"
-                    className={`${fieldClass} mt-1 file:mr-3 file:rounded file:border-0 file:bg-[var(--ad-surface-subtle)] file:px-3 file:py-2 file:text-xs file:font-semibold`}
+                    aria-describedby="character-voice-reference-help"
+                    className="sr-only"
                     disabled={!canWrite || !data.voice.cloningAvailable || busy}
                     id="character-voice-reference"
                     name="audio"
@@ -645,10 +554,28 @@ export function CharacterVoicePanel({
                     required
                     type="file"
                   />
-                  <span className="mt-1 block font-normal">
+                  <div className="mt-1 flex min-h-11 items-center rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] p-1">
+                    <label
+                      className={cn(
+                        "inline-flex min-h-9 shrink-0 cursor-pointer items-center rounded px-3 text-xs font-semibold text-[var(--ad-ink)] hover:bg-black/[0.04]",
+                        (!canWrite || !data.voice.cloningAvailable || busy) &&
+                          "cursor-not-allowed opacity-50",
+                      )}
+                      htmlFor="character-voice-reference"
+                    >
+                      {t("Choose audio")}
+                    </label>
+                    <span className="min-w-0 truncate px-3 font-normal text-[var(--ad-ink)]">
+                      {file?.name ?? t("No audio selected")}
+                    </span>
+                  </div>
+                  <span
+                    className="mt-1 block font-normal"
+                    id="character-voice-reference-help"
+                  >
                     {t("WAV, MP3, FLAC, or OGG · maximum 15 MB")}
                   </span>
-                </label>
+                </div>
                 <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
                   {t("Reference transcript")}
                   <textarea
@@ -676,23 +603,12 @@ export function CharacterVoicePanel({
 
             <section
               aria-labelledby="voice-preview-audit"
-              className="bg-[var(--ad-surface)] p-5 sm:p-6"
+              className="min-w-0"
             >
-              <div className="flex items-center gap-2">
-                <CheckCircle2
-                  aria-hidden="true"
-                  className="h-4 w-4 text-[var(--ad-blue-text)]"
-                />
-                <h4 className="text-sm font-semibold" id="voice-preview-audit">
-                  {t("Preview and audit")}
-                </h4>
-              </div>
-              <p className="mt-2 text-xs leading-5 text-[var(--ad-text-muted)]">
-                {t(
-                  "Write the line operators will hear, and record why this candidate was created.",
-                )}
-              </p>
-              <div className="mt-4 grid gap-4">
+              <h4 className="text-sm font-semibold" id="voice-preview-audit">
+                {t("Preview and audit")}
+              </h4>
+              <div className="mt-3 grid gap-4">
                 <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
                   {t("Preview script")}
                   <textarea
@@ -727,75 +643,32 @@ export function CharacterVoicePanel({
             </section>
           </div>
 
-          <section
-            aria-labelledby="character-performance-direction"
-            className="border-t border-[var(--ad-border)] bg-[var(--ad-surface-subtle)] p-5 sm:p-6"
-          >
-            <div className="mb-5 flex items-start gap-3">
-              <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-[var(--ad-surface)] text-[var(--ad-blue-text)]">
-                <Gauge aria-hidden="true" className="h-4 w-4" />
-              </div>
-              <div>
-                <h4
-                  className="text-sm font-semibold"
-                  id="character-performance-direction"
-                >
-                  {t("Character performance direction")}
-                </h4>
-                <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">
-                  {t(
-                    "Choose how this voice attracts and engages the listener. The reference recording still owns identity.",
-                  )}
-                </p>
-              </div>
+          <details className="border-t border-[var(--ad-border)] bg-[var(--ad-surface-subtle)]">
+            <summary
+              className="cursor-pointer px-5 py-4 text-sm font-semibold sm:px-6"
+              id="character-performance-direction"
+            >
+              {t("Voice style and advanced settings")}
+            </summary>
+            <div className="border-t border-[var(--ad-border)] p-5 sm:p-6">
+              <VoiceDeliveryEditor
+                delivery={cloneDelivery}
+                disabled={!canWrite || busy}
+                onChange={setCloneDelivery}
+                t={t}
+              />
             </div>
-            <VoiceDeliveryEditor
-              delivery={cloneDelivery}
-              disabled={!canWrite || busy}
-              onChange={setCloneDelivery}
-              t={t}
-            />
-          </section>
+          </details>
 
           <div className="border-t border-[var(--ad-border)] p-5 sm:p-6">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">
-                  {t("Candidate readiness")}
-                </p>
-                <p className="mt-1 text-sm font-semibold">
+              <div className="text-sm text-[var(--ad-text-muted)]">
+                <p>
                   {t("{done} of {total} required inputs ready", {
                     done: candidateReadyCount,
                     total: candidateReadiness.length,
                   })}
                 </p>
-                <ul className="mt-3 flex flex-wrap gap-x-4 gap-y-2">
-                  {candidateReadiness.map((item) => (
-                    <li
-                      className="inline-flex items-center gap-1.5 text-xs text-[var(--ad-text-muted)]"
-                      key={item.label}
-                    >
-                      <CheckCircle2
-                        aria-hidden="true"
-                        className={`h-3.5 w-3.5 ${
-                          item.complete
-                            ? "text-[var(--ad-green-text)]"
-                            : "text-black/20"
-                        }`}
-                      />
-                      {t(item.label)}
-                      <span
-                        className={
-                          item.complete
-                            ? "text-[var(--ad-green-text)]"
-                            : "text-[var(--ad-text-muted)]"
-                        }
-                      >
-                        {t(item.complete ? "Ready" : "Required")}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
               </div>
               <WorkspaceButton
                 className="w-full lg:w-auto"
@@ -824,7 +697,11 @@ export function CharacterVoicePanel({
           </div>
         </form>
 
-        <aside className="space-y-5 xl:sticky xl:top-5">
+        <details className="overflow-hidden rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
+          <summary className="cursor-pointer px-4 py-4 text-sm font-semibold">
+            {t("Current voice and runtime")}
+          </summary>
+          <div className="space-y-5 border-t border-[var(--ad-border)] p-3">
           <section
             aria-labelledby="live-voice-configuration"
             className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-5"
@@ -979,7 +856,8 @@ export function CharacterVoicePanel({
               </div>
             </dl>
           </section>
-        </aside>
+          </div>
+        </details>
       </div>
 
       <details
@@ -1425,7 +1303,7 @@ function VoiceDefaultSelect({
       </select>
       <div className="mt-3 flex items-center justify-between gap-2">
         <span className="text-xs text-[var(--ad-text-muted)]">
-          {selected ? t(selected.description) : "—"}
+          {selected ? t(selected.description) : "N/A"}
         </span>
         <WorkspaceButton
           aria-label={t("Preview {voice}", {

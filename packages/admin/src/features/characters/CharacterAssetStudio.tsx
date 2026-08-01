@@ -20,13 +20,9 @@ import {
 } from "@idream/shared/admin";
 import {
   Check,
-  ChevronRight,
-  Columns2,
   ImageIcon,
   Loader2,
-  LockKeyhole,
   Pin,
-  Plus,
   RefreshCcw,
   ShieldAlert,
   Sparkles,
@@ -61,7 +57,7 @@ import { useAdminI18n } from "@/components/admin/i18n";
 export const characterAssetPurposes = ["character_cover", "character_hero", "character_chat"] as const;
 export type CharacterAssetPurpose = typeof characterAssetPurposes[number];
 export const characterAssetStudioLayoutClass =
-  "grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_320px]";
+  "grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_380px]";
 
 export type CharacterSourceVariationBlocker =
   | "no_qualified_route"
@@ -143,6 +139,11 @@ const purposeConfig: Record<CharacterAssetPurpose, {
     orientation: "4:5",
   },
 };
+
+// SPEC: 用途名对外只有这一份权威，工作台概览列缺失项时必须复用，别再写第二套映射。
+export function characterAssetPurposeLabel(purpose: string) {
+  return purposeConfig[purpose as CharacterAssetPurpose]?.label ?? purpose;
+}
 
 const reviewQualityChecks = [
   ["artifactFree", "No visible artifacts"],
@@ -498,15 +499,6 @@ function isProjectionRequestCancellation(cause: unknown) {
     (cause instanceof Error && cause.name === "AbortError");
 }
 
-function runState(run: CreativeRun | undefined, adopted: boolean) {
-  if (adopted) return "selected";
-  if (!run) return "not started";
-  if (run.counts.approved > 0) return "approved";
-  if (["pending", "running"].includes(run.executionOutcome)) return "generating";
-  if (run.counts.generated > 0) return "review";
-  return run.executionOutcome;
-}
-
 function candidateState(item: CreativeRunDetail["items"][number]) {
   if (item.review?.decision === "approved" && item.review.identityConsistency === "passed") return "Approved identity";
   if (item.review?.decision === "approved" && item.review.identityConsistency === "unscored") return "Approved first identity";
@@ -661,20 +653,20 @@ function ImageProductionReadinessCard({
   );
   return (
     <section
-      className="mt-4 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-yellow-bg)] p-4 text-[var(--ad-yellow-text)]"
+      className="mt-4 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"
       aria-labelledby={`${descriptionId}-title`}
     >
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h4 className="text-sm font-semibold" id={`${descriptionId}-title`}>
             {t(canRepair
               ? "Enable image production with the current portrait"
               : summary.title)}
           </h4>
-          <p className="mt-1 text-xs leading-5" id={descriptionId}>
+          <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]" id={descriptionId}>
             {t(canRepair
               ? "The current live portrait will become the sealed identity reference for future images. Existing live images and releases will not change."
-              : "Complete these steps before starting a generation run. Existing live images and releases will not change.")}
+              : summary.steps[0] ?? "Complete the current visual setup before generating an image.")}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -700,43 +692,8 @@ function ImageProductionReadinessCard({
           )}
         </div>
       </div>
-      <ol
-        aria-label={t("Image production readiness")}
-        className="mt-4 text-xs"
-      >
-        {summary.steps.slice(0, 1).map((step) => (
-          <li
-            aria-current="step"
-            className="flex gap-3 rounded-lg border border-current/20 bg-white/35 p-3"
-            key={step}
-          >
-            <span
-              aria-hidden="true"
-              className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-current text-[10px] font-semibold"
-            >
-              <span className="text-[var(--ad-surface)]">1</span>
-            </span>
-            <span>
-              <strong className="block">{t("Do this next")}</strong>
-              <span className="mt-1 block leading-5">{t(step)}</span>
-            </span>
-          </li>
-        ))}
-      </ol>
-      {summary.steps.length > 1 ? (
-        <details className="mt-3 text-xs">
-          <summary className="cursor-pointer font-semibold">
-            {t("Then {count} more setup steps", { count: summary.steps.length - 1 })}
-          </summary>
-          <ol className="mt-2 space-y-2 pl-4">
-            {summary.steps.slice(1).map((step, index) => (
-              <li key={step}>{index + 2}. {t(step)}</li>
-            ))}
-          </ol>
-        </details>
-      ) : null}
       <details className="mt-3 text-xs">
-        <summary className="cursor-pointer font-semibold">
+        <summary className="cursor-pointer font-semibold text-[var(--ad-text-muted)]">
 
           {t("Technical diagnostics")}
         </summary>
@@ -768,19 +725,9 @@ function IdentityRail({
     hasIdentity: identity !== null,
     blockerCodes: data.visual.readiness.blockers.map((blocker) => blocker.code),
   });
-  const subject = resolveCharacterAssetSubject({
-    draftName: data.preview.draft?.name,
-    draftDescription: data.preview.draft?.description,
-    liveName: data.character.name,
-    liveDescription: data.character.description,
-  });
   const referenceAssets = data.visual.activeReferenceSet?.references.length
     ? data.visual.activeReferenceSet.references
     : [...data.visual.anchors, ...data.visual.references];
-  const canonicalImageUrl = referenceAssets.find((asset) => asset.available)?.thumbnailUrl ??
-    referenceAssets.find((asset) => asset.available)?.url ??
-    data.preview.draft?.imageUrl ??
-    data.character.imageUrl;
   const availableReferenceCount = referenceAssets.filter((asset) => asset.available).length;
   const qualifiedRoute = data.visual.routeQualifications.find(
     (route) => route.result === "qualified" && !route.stale,
@@ -789,135 +736,18 @@ function IdentityRail({
   return (
     <aside
       aria-labelledby="identity-lock-title"
-      className="flex flex-col gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 py-3 lg:flex-row lg:items-center lg:justify-between"
+      className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-[var(--ad-border)] pb-3 text-xs text-[var(--ad-text-muted)]"
     >
-      <div className="flex min-w-0 items-center gap-3">
-        <AssetImage
-          alt={t("{name} canonical portrait", { name: subject.name })}
-          className="h-12 w-12 shrink-0 rounded-md object-cover"
-          src={canonicalImageUrl}
-        />
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <LockKeyhole aria-hidden="true" className="h-4 w-4 text-[var(--ad-text-muted)]" />
-            <h3 className="truncate text-sm font-semibold" id="identity-lock-title">
-              {subject.name}
-            </h3>
-            <StatusBadge
-              tone={identityEstablished ? "good" : "warn"}
-              value={identityEstablished && identity
-                ? t("Locked v{version}", { version: identity.version })
-                : identity
-                  ? "needs repair"
-                  : "not locked"}
-            />
-          </div>
-          <p className="mt-1 line-clamp-1 text-xs text-[var(--ad-text-muted)]">
-            {identityEstablished
-              ? qualifiedRoute
-                ? t("Identity, references, and route are protected for this image.")
-                : t("Identity and references are locked; the generation route is not qualified yet.")
-              : bootstrapMode && bootstrapProfile
-                ? t("This image will establish the first reviewed identity anchor.")
-                : t("Visual authority must be repaired before production can continue.")}
-          </p>
-        </div>
-      </div>
-      <dl className="flex shrink-0 flex-wrap items-center gap-x-5 gap-y-2 text-xs">
-        <div>
-          <dt className="text-[var(--ad-text-muted)]">{t("References")}</dt>
-          <dd className="mt-0.5 font-semibold">
-            {identityEstablished
-              ? t("{count} locked", { count: availableReferenceCount })
-              : t("Pending")}
-          </dd>
-        </div>
-        <div>
-          <dt className="text-[var(--ad-text-muted)]">{t("Image route")}</dt>
-          <dd className="mt-0.5 max-w-44 truncate font-semibold">
-            {bootstrapMode
-              ? bootstrapProfile?.label ?? t("Unavailable")
-              : qualifiedRoute?.generationProfileKey ?? t("Unavailable")}
-          </dd>
-        </div>
-        {!identityEstablished && identity ? (
-          <WorkspaceButton className="min-h-9" onClick={onRepair}>
-            {t("Repair visual authority")}
-          </WorkspaceButton>
-        ) : null}
-      </dl>
+      <h3 className="sr-only" id="identity-lock-title">{t("Visual identity authority")}</h3>
+      <span>{t("Visual identity")} <strong className="font-semibold text-[var(--ad-ink)]">{identity ? `v${identity.version}` : t("Pending")}</strong></span>
+      <span aria-hidden="true">·</span>
+      <span>{t("References")} <strong className="font-semibold text-[var(--ad-ink)]">{identityEstablished ? availableReferenceCount : t("Pending")}</strong></span>
+      <span aria-hidden="true">·</span>
+      <span className="max-w-56 truncate"><strong className="font-semibold text-[var(--ad-ink)]">{bootstrapMode ? bootstrapProfile?.label ?? t("Unavailable") : qualifiedRoute?.generationProfileKey ?? t("Unavailable")}</strong></span>
+      {!identityEstablished && identity ? (
+        <button className="font-semibold text-[var(--ad-ink)] underline" onClick={onRepair} type="button">{t("Repair visual authority")}</button>
+      ) : null}
     </aside>
-  );
-}
-
-function CustomerPreviews({
-  activePurpose,
-  candidateImageUrl,
-  data,
-}: {
-  activePurpose: CharacterAssetPurpose;
-  candidateImageUrl: string | null;
-  data: CharacterWorkspaceDetail;
-}) {
-  const { t } = useAdminI18n();
-  const name = data.preview.draft?.name ?? data.character.name;
-  const description = data.preview.draft?.description ?? data.character.description;
-  const previewAssets = resolveCharacterCustomerPreviewAssets({
-    activePurpose,
-    candidateImageUrl,
-    draftAssets: {
-      character_cover: data.preview.draft?.assetPack?.character_cover?.imageUrl,
-      character_hero: data.preview.draft?.assetPack?.character_hero?.imageUrl,
-      character_chat: data.preview.draft?.assetPack?.character_chat?.imageUrl,
-    },
-  });
-  const coverImageUrl = previewAssets.character_cover;
-  const heroImageUrl = previewAssets.character_hero;
-  const chatImageUrl = previewAssets.character_chat;
-  return (
-    <section aria-labelledby="customer-preview-title">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-        <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--ad-text-muted)]">{t("Customer surfaces")}</p>
-          <h3 className="mt-1 font-semibold" id="customer-preview-title">{t("Customer context")}</h3>
-        </div>
-        <StatusBadge tone="neutral" value={purposeConfig[activePurpose].shortLabel} />
-      </div>
-      {activePurpose === "character_cover" ? (
-        <div className="mt-3 overflow-hidden rounded-lg border border-[var(--ad-border)] bg-[#181816] text-white">
-          <AssetImage alt={t("{name} discovery card preview", { name })} className="aspect-[4/3] w-full object-cover" src={coverImageUrl} />
-          <div className="p-3">
-            <p className="text-[10px] uppercase tracking-[0.14em] text-white/55">{t("Discovery card · portrait slot")}</p>
-            <h4 className="mt-1 font-semibold">{name}</h4>
-            <p className="mt-1 line-clamp-2 text-xs leading-5 text-white/65">{description}</p>
-          </div>
-        </div>
-      ) : activePurpose === "character_hero" ? (
-        <div className="relative mt-3 min-h-52 overflow-hidden rounded-lg border border-[var(--ad-border)] bg-[#24231f] text-white">
-          <AssetImage alt={t("{name} character hero preview", { name })} className="absolute inset-0 h-full w-full object-cover opacity-75" src={heroImageUrl} />
-          <div className="absolute inset-x-0 bottom-0 bg-black/70 p-3">
-            <p className="text-[10px] uppercase tracking-[0.14em] text-white/60">{t("Character hero · hero slot")}</p>
-            <h4 className="mt-1 text-lg font-semibold">{t("Meet")} {name}</h4>
-            <span className="mt-3 inline-flex min-h-9 items-center rounded-full bg-white px-4 text-xs font-semibold text-black">{t("Start chatting")}</span>
-          </div>
-        </div>
-      ) : (
-        <div className="mt-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3">
-          <div className="flex items-center gap-3 border-b border-[var(--ad-border)] pb-3">
-            <AssetImage alt={t("{name} chat avatar preview", { name })} className="h-10 w-10 rounded-full object-cover" src={coverImageUrl} />
-            <div>
-              <p className="text-[10px] uppercase tracking-[0.12em] text-[var(--ad-text-muted)]">{t("Chat header · portrait slot")}</p>
-              <p className="text-sm font-semibold">{name}</p>
-            </div>
-          </div>
-          <AssetImage alt={t("{name} chat moment preview", { name })} className="mt-3 aspect-[4/5] max-h-56 w-full rounded-md object-cover" src={chatImageUrl} />
-          <div className="mt-3 max-w-[92%] rounded-2xl rounded-tl-sm bg-black/[0.05] px-3 py-2 text-xs leading-5">{String(data.preview.draft?.opening.firstMessage ?? t("Opening message unavailable"))}</div>
-        </div>
-      )}
-      <p className="mt-3 text-xs leading-5 text-[var(--ad-text-muted)]">
-        {t("This preview uses the active candidate only in the current draft slot. Nothing live changes until a reviewed Release is published.")}
-      </p>
-    </section>
   );
 }
 
@@ -943,132 +773,104 @@ function CandidateBatchGrid({
   subjectName: string;
 }) {
   const { t } = useAdminI18n();
+  const activeItem = items.find((item) => item.id === activeItemId) ?? items[0] ?? null;
+  const activeIndex = activeItem
+    ? items.findIndex((item) => item.id === activeItem.id)
+    : -1;
+  const activeIsDraft = Boolean(
+    activeItem?.asset?.id && activeItem.asset.id === selectedPackAssetId,
+  );
   return (
-    <div
-      aria-label={t("Generated candidates")}
-      className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3"
-      role="list"
-    >
-      {items.map((item, index) => {
-        const active = item.id === activeItemId;
-        const comparison = item.id === comparisonItemId;
-        const draft = Boolean(
-          item.asset?.id && item.asset.id === selectedPackAssetId,
-        );
-        const visualState = resolveCharacterCandidateVisualState({
-          active,
-          comparison,
-          draft,
-          decision: item.review?.decision ?? null,
-        });
-        return (
-          <article
-            className={cn(
-              "group relative min-w-0 overflow-hidden rounded-lg border bg-[var(--ad-surface)] transition",
-              visualState === "active" &&
-                "border-[var(--ad-ink)] ring-1 ring-[var(--ad-ink)]",
-              visualState === "comparison" &&
-                "border-[var(--ad-blue-text)] ring-1 ring-[var(--ad-blue-text)]",
-              visualState === "draft" &&
-                "border-[var(--ad-green-text)]",
-              visualState === "approved" &&
-                "border-[var(--ad-green-text)]/45",
-              visualState === "rejected" &&
-                "border-[var(--ad-red-text)]/35 opacity-75",
-              visualState === "ready" &&
-                "border-[var(--ad-border)] hover:border-[var(--ad-text-muted)]",
-            )}
-            data-candidate-state={visualState}
-            key={item.id}
-            role="listitem"
-          >
-            <button
-              aria-label={t("View candidate {number}", {
-                number: item.ordinal + 1,
-              })}
-              aria-pressed={active}
-              className="block w-full text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--ad-ink)]"
-              disabled={disabled}
-              onClick={() => onActivate(index)}
-              type="button"
+    <div aria-label={t("Generated candidates")}>
+      <div className="overflow-hidden rounded-lg bg-black/[0.04]" style={{ height: "min(500px, 60vh)" }}>
+        <AssetImage
+          alt={activeItem
+            ? t("{name} {purpose} candidate {number}", {
+                name: subjectName,
+                purpose: t(purposeConfig[activePurpose].label),
+                number: activeItem.ordinal + 1,
+              })
+            : t("No image asset is available")}
+          className="h-full w-full object-contain"
+          src={activeItem?.asset?.url ?? activeItem?.asset?.thumbnailUrl}
+        />
+      </div>
+      <div className="mt-3 flex gap-2 overflow-x-auto pb-1" role="list">
+        {items.map((item, index) => {
+          const active = item.id === activeItem?.id;
+          const comparison = item.id === comparisonItemId;
+          const draft = Boolean(item.asset?.id && item.asset.id === selectedPackAssetId);
+          const visualState = resolveCharacterCandidateVisualState({
+            active,
+            comparison,
+            draft,
+            decision: item.review?.decision ?? null,
+          });
+          return (
+            <article
+              className="group relative w-24 shrink-0"
+              data-candidate-state={visualState}
+              key={item.id}
+              role="listitem"
             >
-              <div className="relative overflow-hidden bg-black/[0.04]">
+              <button
+                aria-label={t("View candidate {number}", { number: item.ordinal + 1 })}
+                aria-pressed={active}
+                className={cn(
+                  "block w-full overflow-hidden rounded-md border bg-black/[0.04] p-0.5 transition focus-visible:outline focus-visible:outline-2",
+                  active
+                    ? "border-[var(--ad-ink)] ring-1 ring-[var(--ad-ink)]"
+                    : comparison
+                      ? "border-[var(--ad-blue-text)]"
+                      : draft
+                        ? "border-[var(--ad-green-text)]"
+                        : "border-[var(--ad-border)] hover:border-[var(--ad-text-muted)]",
+                  item.review?.decision === "rejected" && "opacity-60",
+                )}
+                disabled={disabled}
+                onClick={() => onActivate(index)}
+                type="button"
+              >
                 <AssetImage
                   alt={t("{name} {purpose} candidate {number}", {
                     name: subjectName,
                     purpose: t(purposeConfig[activePurpose].label),
                     number: item.ordinal + 1,
                   })}
-                  className={cn(
-                    "w-full object-cover",
-                    activePurpose === "character_hero"
-                      ? "aspect-video"
-                      : "aspect-[4/5]",
-                  )}
+                  className="aspect-square w-full rounded-[4px] object-cover"
                   src={item.asset?.thumbnailUrl ?? item.asset?.url}
                 />
-                <span className="absolute left-2 top-2 inline-flex min-h-7 items-center rounded-md bg-white/92 px-2 text-xs font-semibold text-[var(--ad-ink)] shadow-sm">
-                  {String(item.ordinal + 1).padStart(2, "0")}
-                </span>
-                {draft ? (
-                  <span className="absolute bottom-2 left-2 rounded-sm bg-[var(--ad-green-text)] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-white">
-                    {t("Draft slot")}
-                  </span>
-                ) : item.review?.decision === "approved" ? (
-                  <span className="absolute bottom-2 left-2 rounded-sm bg-[var(--ad-green-text)] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-white">
-                    {t("Approved")}
-                  </span>
-                ) : item.review?.decision === "rejected" ? (
-                  <span className="absolute bottom-2 left-2 rounded-sm bg-[var(--ad-red-text)] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-white">
-                    {t("Rejected")}
-                  </span>
-                ) : null}
-              </div>
-              <span className="flex items-center justify-between gap-2 px-3 py-2">
-                <span className="min-w-0">
-                  <strong className="block truncate text-sm">
-                    {active
-                      ? t("Current candidate")
-                      : comparison
-                        ? t("Comparison candidate")
-                        : `${t("Candidate")} ${item.ordinal + 1}`}
-                  </strong>
-                  <span className="mt-0.5 block truncate text-xs text-[var(--ad-text-muted)]">
-                    {t(candidateState(item))}
-                  </span>
-                </span>
-                {active ? (
-                  <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-[var(--ad-ink)]" />
-                ) : comparison ? (
-                  <Columns2 aria-hidden="true" className="h-4 w-4 shrink-0 text-[var(--ad-blue-text)]" />
-                ) : null}
-              </span>
-            </button>
-            <button
-              aria-label={comparison
-                ? t("Remove candidate {number} from comparison", {
-                    number: item.ordinal + 1,
-                  })
-                : t("Compare candidate {number} with current candidate", {
-                    number: item.ordinal + 1,
-                  })}
-              aria-pressed={comparison}
-              className={cn(
-                "absolute right-2 top-2 grid h-11 w-11 place-items-center rounded-md border bg-white/92 text-[var(--ad-text)] transition hover:bg-white focus-visible:outline focus-visible:outline-2",
-                comparison
-                  ? "border-[var(--ad-blue-text)] text-[var(--ad-blue-text)]"
-                  : "border-white/60",
-                active && "hidden",
-              )}
-              disabled={disabled || active || !item.asset}
-              onClick={() => onCompare(item.id)}
-              type="button"
-            >
-              {comparison ? <X aria-hidden="true" className="h-4 w-4" /> : <Pin aria-hidden="true" className="h-4 w-4" />}
-            </button>
-          </article>
-        );
-      })}
+              </button>
+              {!active && item.asset ? (
+                <button
+                  aria-label={comparison
+                    ? t("Remove candidate {number} from comparison", { number: item.ordinal + 1 })
+                    : t("Compare candidate {number} with current candidate", { number: item.ordinal + 1 })}
+                  aria-pressed={comparison}
+                  className="absolute right-1 top-1 grid h-8 w-8 place-items-center rounded-md border border-white/70 bg-white/95 opacity-0 transition group-hover:opacity-100 focus:opacity-100 focus-visible:outline focus-visible:outline-2"
+                  disabled={disabled}
+                  onClick={() => onCompare(item.id)}
+                  type="button"
+                >
+                  {comparison ? <X aria-hidden="true" className="h-3.5 w-3.5" /> : <Pin aria-hidden="true" className="h-3.5 w-3.5" />}
+                </button>
+              ) : null}
+            </article>
+          );
+        })}
+      </div>
+      {activeItem ? (
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--ad-border)] pt-3 text-xs">
+          <p>
+            <strong>{t("Candidate {number}", { number: activeItem.ordinal + 1 })}</strong>
+            <span className="ml-2 text-[var(--ad-text-muted)]">{t(candidateState(activeItem))}</span>
+          </p>
+          <p className="text-[var(--ad-text-muted)]">
+            {activeIsDraft ? t("Selected in draft") : t(purposeConfig[activePurpose].label)}
+            {activeIndex >= 0 ? ` · ${activeIndex + 1}/${items.length}` : ""}
+          </p>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1184,6 +986,7 @@ export function CharacterAssetStudio({
   const selectedRunIdRef = useRef<string | null>(null);
   const [selectedRun, setSelectedRun] = useState<CreativeRunDetail | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [selectedExistingImageId, setSelectedExistingImageId] = useState<string | null>(null);
   const [comparisonItemId, setComparisonItemId] = useState<string | null>(null);
   const [workspaceMode, setWorkspaceMode] = useState<"library" | "review">(
     () => data.visual.identityBootstrap.allowed ? "review" : "library",
@@ -1264,6 +1067,44 @@ export function CharacterAssetStudio({
     Object.values(data.project.draftAssetSelections ?? {})
       .flatMap((selection) => selection?.runId ? [selection.runId] : []),
   ), [data.project.draftAssetSelections]);
+  const existingImages = useMemo(() => {
+    const images: Array<{
+      readonly id: string;
+      readonly url: string;
+      readonly thumbnailUrl: string;
+    }> = [];
+    const seen = new Set<string>();
+    const add = (
+      id: string,
+      url: string | null | undefined,
+      thumbnailUrl: string | null | undefined = url,
+    ) => {
+      const displayUrl = url ?? thumbnailUrl;
+      if (!displayUrl || seen.has(displayUrl)) return;
+      seen.add(displayUrl);
+      images.push({ id, url: displayUrl, thumbnailUrl: thumbnailUrl ?? displayUrl });
+    };
+    const references = [
+      ...(data.visual.activeReferenceSet?.references ?? []),
+      ...data.visual.anchors,
+      ...data.visual.references,
+      ...(data.visual.videoSources ?? []),
+    ];
+    const preferredAssetId = data.project.draftAssetPack[activePurpose] ?? (
+      activePurpose === "character_cover" ? data.project.draftImageAssetId : null
+    );
+    const preferred = references.find(
+      (reference) => reference.mediaAssetId === preferredAssetId && reference.available,
+    );
+    if (preferred) add(preferred.mediaAssetId, preferred.url, preferred.thumbnailUrl);
+    add(`${data.character.id}:primary`, data.character.imageUrl);
+    add(`${data.character.id}:draft`, data.preview.draft?.imageUrl);
+    for (const reference of references) {
+      if (!reference.available) continue;
+      add(reference.mediaAssetId, reference.url, reference.thumbnailUrl);
+    }
+    return images;
+  }, [activePurpose, data]);
 
   const loadRuns = useCallback(async (options: {
     readonly signal?: AbortSignal;
@@ -1509,8 +1350,10 @@ export function CharacterAssetStudio({
     };
   }, [loadRun, loadRuns, pollingRunId, shouldPollSelectedRun]);
 
-  const recentByPurpose = useMemo(() => Object.fromEntries(characterAssetPurposes.map((purpose) => [purpose, runs.find((run) => run.purpose === purpose)])) as Record<CharacterAssetPurpose, CreativeRun | undefined>, [runs]);
   const activeRunDetail = selectedRun?.id === selectedRunId ? selectedRun : null;
+  const selectedExistingImage = existingImages.find(
+    (image) => image.id === selectedExistingImageId,
+  ) ?? existingImages[0] ?? null;
   const selectedItem = activeRunDetail?.items[selectedIndex] ?? null;
   const comparisonItem = comparisonItemId
     ? activeRunDetail?.items.find((item) => item.id === comparisonItemId) ?? null
@@ -1539,7 +1382,6 @@ export function CharacterAssetStudio({
       [selectedItem.id]: update(current[selectedItem.id] ?? emptyReviewDraft(bootstrapMode)),
     }));
   };
-  const selectedImageUrl = selectedItem?.asset?.url ?? selectedItem?.asset?.thumbnailUrl ?? null;
   const activeConfig = purposeConfig[activePurpose];
   const mutationContextLocked = Boolean(
     runCreationIntent ||
@@ -2902,23 +2744,11 @@ export function CharacterAssetStudio({
           {t(message)}
         </p>
       ) : null}
-      <section
+      {!recurringProductionReady ? <section
         aria-labelledby="asset-pack-title"
         className="overflow-hidden rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)]"
       >
-        {recurringProductionReady ? (
-          workspaceMode === "review" ? (
-            <div className="flex items-center justify-between gap-3 border-b border-[var(--ad-border)] p-3">
-              <h3 className="text-sm font-semibold" id="asset-pack-title">{t("Candidate review")}</h3>
-              <WorkspaceButton onClick={() => {
-                setComparisonItemId(null);
-                setWorkspaceMode("library");
-              }}>
-                {t("Back to image library")}
-              </WorkspaceButton>
-            </div>
-          ) : <h3 className="sr-only" id="asset-pack-title">{t("Image purpose filters")}</h3>
-        ) : <div className="flex flex-col gap-4 p-4 sm:p-5 lg:flex-row lg:items-end lg:justify-between">
+        <div className="flex flex-col gap-4 p-4 sm:p-5 lg:flex-row lg:items-end lg:justify-between">
           <div className="min-w-0">
             <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">
               {t(bootstrapMode
@@ -2963,7 +2793,7 @@ export function CharacterAssetStudio({
               </WorkspaceButton>
             ) : null}
           </div>
-        </div>}
+        </div>
         <p className="sr-only" id={generationActionDescriptionId}>
           {t(generationActionDescription)}
         </p>
@@ -3003,69 +2833,18 @@ export function CharacterAssetStudio({
             />
           </div>
         ) : null}
-        <nav
-          aria-label={t(recurringProductionReady ? "Image purpose filters" : "Character asset pack progress")}
-          className="grid border-t border-[var(--ad-border)] md:grid-cols-3"
-        >
-          {characterAssetPurposes.map((purpose, index) => {
-            const routeCurrent =
-              data.project.draftAssetSelections?.[purpose]?.routeCurrent !== false;
-            const adopted = routeCurrent && Boolean(
-              data.project.draftAssetPack[purpose] ??
-              (purpose === "character_cover"
-                ? data.project.draftImageAssetId
-                : null),
-            );
-            const state = bootstrapMode && purpose !== "character_cover"
-              ? "locked until identity"
-              : !routeCurrent && data.project.draftAssetPack[purpose]
-                ? "regenerate"
-                : runState(recentByPurpose[purpose], adopted);
-            const purposeLocked =
-              mutationContextLocked ||
-              productionBlocked ||
-              (bootstrapMode && purpose !== "character_cover");
-            return (
-              <button
-                aria-current={activePurpose === purpose ? "step" : undefined}
-                className={cn(
-                  "flex min-h-20 items-center gap-3 border-b-2 px-4 py-3 text-left transition focus-visible:outline focus-visible:outline-2 md:border-r md:last:border-r-0",
-                  activePurpose === purpose
-                    ? "border-b-[var(--ad-green-text)] bg-[var(--ad-green-bg)]/45"
-                    : "border-b-transparent hover:bg-black/[0.025]",
-                  purposeLocked && "cursor-not-allowed opacity-50",
-                )}
-                disabled={purposeLocked}
-                key={purpose}
-                onClick={() => choosePurpose(purpose)}
-                type="button"
-              >
-                <span className={cn(
-                  "grid h-8 w-8 shrink-0 place-items-center rounded-full border text-xs font-semibold",
-                  !recurringProductionReady && ["selected", "approved"].includes(state)
-                    ? "border-[var(--ad-green-text)] bg-[var(--ad-green-text)] text-white"
-                    : activePurpose === purpose
-                      ? "border-[var(--ad-green-text)] text-[var(--ad-green-text)]"
-                      : "border-[var(--ad-border)]",
-                )}>
-                  {!recurringProductionReady && ["selected", "approved"].includes(state)
-                    ? <Check className="h-4 w-4" />
-                    : index + 1}
-                </span>
-                <span className="min-w-0 flex-1">
-                  <strong className="block text-sm">{t(purposeConfig[purpose].label)}</strong>
-                  <span className="mt-1 block text-xs text-[var(--ad-text-muted)]">
-                    {recurringProductionReady
-                      ? t("One image per generation")
-                      : t(state)}
-                  </span>
-                </span>
-                <ChevronRight className="h-4 w-4 text-[var(--ad-text-muted)]" />
-              </button>
-            );
-          })}
-        </nav>
-      </section>
+      </section> : null}
+
+      {recurringProductionReady && data.project.draftAssetRouteAuthority?.status === "stale" ? (
+        <div className="flex flex-col gap-3 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)] sm:flex-row sm:items-center sm:justify-between">
+          <span>
+            {t(`The active image route changed. ${data.project.draftAssetRouteAuthority.stalePurposes.length} selected asset${data.project.draftAssetRouteAuthority.stalePurposes.length === 1 ? "" : "s"} remain in history but cannot authorize QA.`)}
+          </span>
+          <WorkspaceButton disabled={!canGenerate || busy !== null} onClick={regenerateUnderCurrentRoute}>
+            {t("Regenerate under current route")}
+          </WorkspaceButton>
+        </div>
+      ) : null}
 
       <IdentityRail data={data} onRepair={() => onContinue("visual")} />
 
@@ -3076,35 +2855,20 @@ export function CharacterAssetStudio({
       <div className={characterAssetStudioLayoutClass}>
         <section
           aria-labelledby="candidate-title"
-          className="min-w-0 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"
+          className="min-w-0"
         >
-          <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[var(--ad-border)] pb-3">
+          <div className="flex flex-wrap items-end justify-between gap-3 pb-3">
             <div>
-              <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--ad-text-muted)]">
-                {t(recurringProductionReady && workspaceMode === "library" ? "Image library" : "Generated image")} · {t(activeConfig.label)}
-              </p>
-              <h3 className="mt-1 font-semibold" id="candidate-title">
+              <h3 className="font-semibold" id="candidate-title">
                 {productionBlocked
                   ? t("Candidate history is paused")
                   : activeRunDetail?.items.length
-                  ? recurringProductionReady && workspaceMode === "library"
-                    ? t("{count} recent images", { count: activeRunDetail.items.length })
-                    : t("{count} candidates ready to compare", {
-                        count: activeRunDetail.items.length,
-                      })
+                  ? t("{count} recent images", { count: activeRunDetail.items.length })
+                  : existingImages.length
+                    ? t("{count} images", { count: existingImages.length })
                   : t("Ready for a first run")}
               </h3>
-              <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">
-                {productionBlocked
-                  ? t("Finish the setup action above before reviewing or creating candidates.")
-                  : recurringProductionReady && workspaceMode === "library"
-                  ? t("Open an image to review it. Creating a new image never changes the live character automatically.")
-                  : selectedItem
-                  ? t("Candidate {number} is the only active decision target.", {
-                      number: selectedItem.ordinal + 1,
-                    })
-                  : t(activeConfig.description)}
-              </p>
+              <p className="mt-1 text-xs text-[var(--ad-text-muted)]">{t(activeConfig.label)}</p>
             </div>
             {activeRunDetail ? (
               <div className="flex flex-wrap gap-2">
@@ -3121,7 +2885,7 @@ export function CharacterAssetStudio({
             </div>
           ) : null}
 
-          <div className="mt-4">
+          <div className="mt-1">
             {productionBlocked ? (
               <div className="grid min-h-64 place-items-center rounded-lg border border-dashed border-[var(--ad-border)] bg-black/[0.02] px-6 py-8 text-center text-[var(--ad-text-muted)]">
                 <div>
@@ -3156,6 +2920,43 @@ export function CharacterAssetStudio({
                 selectedPackAssetId={selectedPackAssetId}
                 subjectName={subject.name}
               />
+            ) : selectedExistingImage ? (
+              <div aria-label={t("Character image library")}>
+                <div className="overflow-hidden rounded-lg bg-black/[0.04]" style={{ height: "min(500px, 60vh)" }}>
+                  <AssetImage
+                    alt={t("{name} image {number}", {
+                      name: subject.name,
+                      number: existingImages.indexOf(selectedExistingImage) + 1,
+                    })}
+                    className="h-full w-full object-contain"
+                    src={selectedExistingImage.url}
+                  />
+                </div>
+                <div className="mt-3 flex gap-2 overflow-x-auto pb-1" role="list">
+                  {existingImages.map((image, index) => (
+                    <div className="w-24 shrink-0" key={image.id} role="listitem">
+                      <button
+                        aria-label={t("Open image {number}", { number: index + 1 })}
+                        aria-pressed={image.id === selectedExistingImage.id}
+                        className={cn(
+                          "w-full overflow-hidden rounded-md border bg-black/[0.04] p-0.5 transition focus-visible:outline focus-visible:outline-2",
+                          image.id === selectedExistingImage.id
+                            ? "border-[var(--ad-ink)] ring-1 ring-[var(--ad-ink)]"
+                            : "border-[var(--ad-border)] hover:border-[var(--ad-text-muted)]",
+                        )}
+                        onClick={() => setSelectedExistingImageId(image.id)}
+                        type="button"
+                      >
+                        <AssetImage
+                          alt={t("{name} thumbnail {number}", { name: subject.name, number: index + 1 })}
+                          className="aspect-square w-full rounded-[4px] object-cover"
+                          src={image.thumbnailUrl}
+                        />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
             ) : (
               <div className="grid min-h-64 place-items-center rounded-lg border border-dashed border-[var(--ad-border)] bg-black/[0.02] px-6 text-center text-[var(--ad-text-muted)]">
                 <div>
@@ -3168,42 +2969,24 @@ export function CharacterAssetStudio({
         </section>
 
         {recurringProductionReady && workspaceMode === "library" ? (
-          <aside className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 xl:sticky xl:top-4" aria-labelledby="new-image-title">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--ad-text-muted)]">
-                  {t("Ongoing production")}
-                </p>
-                <h3 className="mt-1 font-semibold" id="new-image-title">{t("New image")}</h3>
-              </div>
-              <span className="grid h-9 w-9 place-items-center rounded-full bg-[var(--ad-green-bg)] text-[var(--ad-green-text)]">
-                <Plus aria-hidden="true" className="h-4 w-4" />
-              </span>
+          <aside className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 xl:sticky xl:top-4" aria-labelledby="new-image-title">
+            <div className="flex border-b border-[var(--ad-border)]" role="tablist" aria-label={t("Image inspector mode")}>
+              <button
+                aria-selected={false}
+                className="min-h-11 border-b-2 border-transparent px-3 text-sm text-[var(--ad-text-muted)] disabled:opacity-40"
+                disabled={!selectedItem?.asset}
+                onClick={() => setWorkspaceMode("review")}
+                role="tab"
+                type="button"
+              >{t("Inspect")}</button>
+              <button aria-selected="true" className="min-h-11 border-b-2 border-[var(--ad-ink)] px-3 text-sm font-semibold" role="tab" type="button">{t("New image")}</button>
             </div>
-            <p className="mt-2 text-xs leading-5 text-[var(--ad-text-muted)]">
-              {t("Choose one customer purpose and describe the image you want now.")}
-            </p>
-            <label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">
-              {t("Image purpose")}
-              <select
-                className={`${fieldClass} mt-1`}
-                disabled={mutationContextLocked}
-                onChange={(event) => choosePurpose(event.target.value as CharacterAssetPurpose)}
-                value={activePurpose}
-              >
-                {characterAssetPurposes.map((purpose) => (
-                  <option key={purpose} value={purpose}>{t(purposeConfig[purpose].label)}</option>
-                ))}
-              </select>
-            </label>
-            <p className="mt-3 rounded-lg bg-black/[0.03] px-3 py-2 text-xs text-[var(--ad-text-muted)]">
-              {t("One image per generation")}
-            </p>
-            <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">
+            <h3 className="sr-only" id="new-image-title">{t("New image")}</h3>
+            <label className="mt-5 block text-xs font-semibold text-[var(--ad-text-muted)]">
               {t("What should be different this time?")}
               <textarea
                 aria-label={`${t(activeConfig.label)} ${t("creative brief")}`}
-                className={`${textAreaClass} mt-1 min-h-32`}
+                className={`${textAreaClass} mt-1 min-h-36`}
                 disabled={mutationContextLocked}
                 onChange={(event) => setBriefs((current) => ({
                   ...current,
@@ -3212,33 +2995,52 @@ export function CharacterAssetStudio({
                 value={briefs[activePurpose]}
               />
             </label>
-            <div className="mt-3 flex items-center gap-2 rounded-lg bg-black/[0.03] px-3 py-2 text-xs text-[var(--ad-text-muted)]">
-              <LockKeyhole aria-hidden="true" className="h-4 w-4 shrink-0" />
-              <span>{t("The locked visual identity stays unchanged.")}</span>
-            </div>
+            <details className="mt-4 border-t border-[var(--ad-border)] pt-3 text-xs">
+              <summary className="cursor-pointer font-semibold">{t("Settings")}</summary>
+              <label className="mt-3 block font-semibold text-[var(--ad-text-muted)]">
+                {t("Image purpose")}
+                <select
+                  className={`${fieldClass} mt-1`}
+                  disabled={mutationContextLocked}
+                  onChange={(event) => choosePurpose(event.target.value as CharacterAssetPurpose)}
+                  value={activePurpose}
+                >
+                  {characterAssetPurposes.map((purpose) => (
+                    <option key={purpose} value={purpose}>{t(purposeConfig[purpose].label)}</option>
+                  ))}
+                </select>
+              </label>
+            </details>
             <WorkspaceButton
               aria-describedby={generationActionDisabled ? generationActionDescriptionId : undefined}
-              className="mt-4 w-full justify-center"
+              className="mt-5 w-full justify-center"
               disabled={generationActionDisabled}
               onClick={() => void createRun(activePurpose)}
               tone="primary"
             >
               <WandSparkles className="h-4 w-4" /> {generationActionText}
             </WorkspaceButton>
-            <p className="mt-3 text-center text-[11px] leading-4 text-[var(--ad-text-muted)]">
-              {t("Review is a separate next step. Nothing is published automatically.")}
-            </p>
+            {selectedItem?.asset ? (
+              <button className="mt-3 min-h-10 w-full text-center text-xs font-semibold text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]" onClick={() => setWorkspaceMode("review")} type="button">{t("Cancel")}</button>
+            ) : null}
           </aside>
         ) : !productionBlocked && selectedItem?.asset ? (
-          <aside className="space-y-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 xl:sticky xl:top-4" aria-label={t("Current candidate decision inspector")}>
-            <CustomerPreviews
-              activePurpose={activePurpose}
-              candidateImageUrl={selectedImageUrl}
-              data={data}
-            />
+          <aside className="space-y-4 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 xl:sticky xl:top-4" aria-label={t("Current candidate decision inspector")}>
+            {recurringProductionReady ? (
+              <div className="flex border-b border-[var(--ad-border)]" role="tablist" aria-label={t("Image inspector mode")}>
+                <button aria-selected="true" className="min-h-11 border-b-2 border-[var(--ad-ink)] px-3 text-sm font-semibold" role="tab" type="button">{t("Inspect")}</button>
+                <button
+                  aria-selected={false}
+                  className="min-h-11 border-b-2 border-transparent px-3 text-sm text-[var(--ad-text-muted)]"
+                  onClick={() => setWorkspaceMode("library")}
+                  role="tab"
+                  type="button"
+                >{t("New image")}</button>
+              </div>
+            ) : null}
             <section
               aria-label={t("Record the visible review evidence")}
-              className="border-t border-[var(--ad-border)] pt-4"
+              className={recurringProductionReady ? "pt-1" : "border-t border-[var(--ad-border)] pt-4"}
             >
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <div>
@@ -3414,10 +3216,7 @@ export function CharacterAssetStudio({
       {selectedItem && !productionBlocked && (!recurringProductionReady || workspaceMode === "review") ? (
         <section
           aria-label={t("Current candidate actions")}
-          className={cn(
-            "flex flex-col gap-3 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)]/95 p-3 shadow-[0_10px_32px_rgb(50_47_38/0.12)] backdrop-blur sm:flex-row sm:items-center sm:justify-between",
-            productionBlocked ? "relative" : "sticky bottom-3 z-40",
-          )}
+          className="flex flex-col gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3 sm:flex-row sm:items-center sm:justify-between"
         >
         <div className="min-w-0">
           <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--ad-text-muted)]">

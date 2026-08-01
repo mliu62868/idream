@@ -55,10 +55,9 @@ const localEnvValue = (envPath, key) => {
   }
   return undefined;
 };
-// REDIS_URL must resolve IDENTICALLY across main-web (which enqueues) and the main-side
-// workers gen-finalizer / main-event-consumer (which consume) — otherwise jobs and chat→main
-// events are produced on one Redis and consumed on another (split-brain: jobs stick forever,
-// events silently drop). main's env.ts loads .env NON-overridingly, so a hardcoded fallback
+// REDIS_URL must resolve IDENTICALLY across main-web (which enqueues) and gen-finalizer
+// (which consumes) — otherwise generation jobs stick forever. Durable Main↔Chat delivery
+// does not use Redis. main's env.ts loads .env NON-overridingly, so a hardcoded fallback
 // here would override .env for the pm2-injected workers while main-web kept the .env value.
 // So: inject the override ONLY when it is set in the shell, and apply the SAME value to all
 // three. When unset, none are injected and all three fall back to packages/main/.env.
@@ -237,7 +236,6 @@ module.exports = {
         // main-side process (IMAGE_PROVIDER defaults to mock) races the dedicated
         // gen-image worker (GEN_IMAGE_PROVIDER=backend) → nondeterministic mock output.
         // Character previews are owned by gen-image and return through app.ai.finalize.
-        GEN_FINALIZER_QUEUES: "app.ai.finalize",
       },
     },
     {
@@ -253,7 +251,6 @@ module.exports = {
         "packages/shared/src",
       ),
       env: {
-        ...mainRedisEnv,
         ...sharedInternalEnv,
       },
     },

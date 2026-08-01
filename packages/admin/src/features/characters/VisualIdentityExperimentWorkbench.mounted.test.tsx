@@ -79,35 +79,37 @@ const runDetail = {
       strength: 0.65,
     },
   },
-  items: [{
-    id: "identity-item-1",
-    ordinal: 0,
-    executionState: "ready",
-    asset: {
-      id: "identity-asset-1",
-      url: "/identity-candidate.webp",
-      thumbnailUrl: null,
-      automaticComposition: {
-        evaluatorVersion: "generated-image-sanity-v2",
-        status: "passed",
-        reason: "single_continuous_frame_detected",
+  items: [
+    {
+      id: "identity-item-1",
+      ordinal: 0,
+      executionState: "ready",
+      asset: {
+        id: "identity-asset-1",
+        url: "/identity-candidate.webp",
+        thumbnailUrl: null,
+        automaticComposition: {
+          evaluatorVersion: "generated-image-sanity-v2",
+          status: "passed",
+          reason: "single_continuous_frame_detected",
+        },
       },
-    },
-    review: {
-      id: "identity-review-1",
-      decision: "approved",
-      identityConsistency: "unscored",
-      score: null,
-      quality: {
-        artifactFree: true,
-        singleSubject: true,
-        intentMatch: true,
-        noVisibleText: true,
+      review: {
+        id: "identity-review-1",
+        decision: "approved",
+        identityConsistency: "unscored",
+        score: null,
+        quality: {
+          artifactFree: true,
+          singleSubject: true,
+          intentMatch: true,
+          noVisibleText: true,
+        },
+        reason: "Chosen identity definition",
       },
-      reason: "Chosen identity definition",
+      lineage: { seed: "42" },
     },
-    lineage: { seed: "42" },
-  }],
+  ],
 };
 
 const data = {
@@ -125,29 +127,33 @@ const data = {
       negativeIdentityPrompt: "different person",
       defaultSeed: "7",
     },
-    anchors: [{
-      mediaAssetId: "identity-current-asset",
-      role: "identity_anchor",
-      available: true,
-      url: "/mira-current.webp",
-      thumbnailUrl: null,
-    }],
+    anchors: [
+      {
+        mediaAssetId: "identity-current-asset",
+        role: "identity_anchor",
+        available: true,
+        url: "/mira-current.webp",
+        thumbnailUrl: null,
+      },
+    ],
     references: [],
     activeReferenceSet: null,
     identityCalibration: {
       blocker: null,
-      profiles: [{
-        profileKey: "identity-profile",
-        profileVersion: 1,
-        label: "Identity profile",
-        modelId: "redcraft-krea2-comfyui",
-        workflowKey: "identity-workflow",
-        workflowVersion: 1,
-        orientation: "4:5",
-        allowedOrientations: ["4:5"],
-        modes: ["text_to_image", "image_to_image"],
-        recommended: true,
-      }],
+      profiles: [
+        {
+          profileKey: "identity-profile",
+          profileVersion: 1,
+          label: "Identity profile",
+          modelId: "redcraft-krea2-redmix3-fp8",
+          workflowKey: "identity-workflow",
+          workflowVersion: 1,
+          orientation: "4:5",
+          allowedOrientations: ["4:5"],
+          modes: ["text_to_image", "image_to_image"],
+          recommended: true,
+        },
+      ],
     },
   },
 } as unknown as CharacterWorkspaceDetail;
@@ -156,15 +162,17 @@ const multiSourceData = {
   ...data,
   visual: {
     ...data.visual,
-    references: [{
-      mediaAssetId: "identity-reference-extra",
-      role: "identity_reference",
-      available: true,
-      url: "/mira-reference-extra.webp",
-      thumbnailUrl: null,
-      qualityScore: 0.92,
-      identityScore: 0.96,
-    }],
+    references: [
+      {
+        mediaAssetId: "identity-reference-extra",
+        role: "identity_reference",
+        available: true,
+        url: "/mira-reference-extra.webp",
+        thumbnailUrl: null,
+        qualityScore: 0.92,
+        identityScore: 0.96,
+      },
+    ],
     activeReferenceSet: {
       id: "reference-set-v2",
       revision: 2,
@@ -173,15 +181,17 @@ const multiSourceData = {
       snapshotHash: "reference-set-hash",
       createdFrom: "reviewed_identity",
       createdAt: "2026-07-24T12:00:00.000Z",
-      references: [{
-        mediaAssetId: "identity-reference-active",
-        role: "primary_face",
-        available: true,
-        url: "/mira-reference-active.webp",
-        thumbnailUrl: null,
-        qualityScore: 0.97,
-        identityScore: 0.99,
-      }],
+      references: [
+        {
+          mediaAssetId: "identity-reference-active",
+          role: "primary_face",
+          available: true,
+          url: "/mira-reference-active.webp",
+          thumbnailUrl: null,
+          qualityScore: 0.97,
+          identityScore: 0.99,
+        },
+      ],
     },
   },
 } as unknown as CharacterWorkspaceDetail;
@@ -191,8 +201,9 @@ describe("Visual Identity experiment activation", () => {
   let root: Root;
 
   beforeEach(() => {
-    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
-      .IS_REACT_ACT_ENVIRONMENT = true;
+    (
+      globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -217,33 +228,97 @@ describe("Visual Identity experiment activation", () => {
   });
 
   it("gives every generation selector an explicit accessible name", async () => {
-    await act(async () => root.render(
-      <VisualIdentityExperimentWorkbench
-        canActivate
-        canCreate
-        canReview
-        canUploadSource
-        data={data}
-        onActivateCandidate={vi.fn(async () => undefined)}
-      />,
-    ));
-    await waitUntil(() =>
-      container.querySelectorAll<HTMLSelectElement>("select").length === 5
+    await act(async () =>
+      root.render(
+        <VisualIdentityExperimentWorkbench
+          canActivate
+          canCreate
+          canReview
+          canUploadSource
+          data={data}
+          onActivateCandidate={vi.fn(async () => undefined)}
+        />,
+      ),
+    );
+    await waitUntil(
+      () =>
+        container.querySelector<HTMLSelectElement>(
+          'select[aria-label="生成方式"]',
+        ) !== null,
     );
 
-    expect(
-      [...container.querySelectorAll<HTMLSelectElement>("select")]
-        .map((select) => select.getAttribute("aria-label")),
-    ).toEqual([
-      "文生图模型",
-      "配置档位",
-      "种子策略",
-      "构图比例",
-      "身份约束",
-    ]);
+    const labels = [
+      ...container.querySelectorAll<HTMLSelectElement>("select"),
+    ].map((select) => select.getAttribute("aria-label"));
+    expect(labels.every(Boolean)).toBe(true);
+    expect(labels).toEqual(
+      expect.arrayContaining([
+        "文生图模型",
+        "配置档位",
+        "种子策略",
+        "构图比例",
+        "身份约束",
+        "生成方式",
+        "高级构图比例",
+        "高级身份约束",
+      ]),
+    );
   });
 
-  it("shows the default model without opening advanced settings and switches real models separately from profiles", async () => {
+  it("keeps the first generation screen limited to prompt, negative prompt, seed, and generate", async () => {
+    await act(async () =>
+      root.render(
+        <VisualIdentityExperimentWorkbench
+          canActivate
+          canCreate
+          canReview
+          canUploadSource
+          data={data}
+          onActivateCandidate={vi.fn(async () => undefined)}
+        />,
+      ),
+    );
+    await waitUntil(
+      () =>
+        container.querySelector<HTMLInputElement>('input[aria-label="种子"]') !==
+        null,
+    );
+
+    const prompt = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="描述这次想要的画面"]',
+    );
+    const negativePrompt = container.querySelector<HTMLInputElement>(
+      'input[aria-label="负向提示词"]',
+    );
+    const seed = container.querySelector<HTMLInputElement>(
+      'input[aria-label="种子"]',
+    );
+    const generate = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="生成 1 张候选图"]',
+    );
+    const history = [...container.querySelectorAll("summary")].find(
+      (summary) => summary.textContent === "历史",
+    )?.parentElement as HTMLDetailsElement | undefined;
+    const advanced = [...container.querySelectorAll("summary")].find(
+      (summary) => summary.textContent === "高级设置",
+    )?.parentElement as HTMLDetailsElement | undefined;
+
+    expect(container.textContent).toContain("当前形象");
+    expect(prompt?.value).toBe("");
+    expect(negativePrompt?.value).toContain("different person");
+    expect(seed?.value).not.toBe("");
+    expect(generate?.textContent).toBe("生成");
+    expect(generate?.disabled).toBe(true);
+    expect(history?.open).toBe(false);
+    expect(advanced?.open).toBe(false);
+
+    await act(async () => {
+      if (prompt) setTextAreaValue(prompt, "A calm editorial portrait");
+    });
+    expect(generate?.disabled).toBe(false);
+  });
+
+  it("summarizes the default model in a collapsed route disclosure and keeps model selection working", async () => {
     const multiModelData = {
       ...data,
       visual: {
@@ -268,20 +343,23 @@ describe("Visual Identity experiment activation", () => {
         },
       },
     } as unknown as CharacterWorkspaceDetail;
-    await act(async () => root.render(
-      <VisualIdentityExperimentWorkbench
-        canActivate
-        canCreate
-        canReview
-        canUploadSource
-        data={multiModelData}
-        onActivateCandidate={vi.fn(async () => undefined)}
-      />,
-    ));
-    await waitUntil(() =>
-      container.querySelector<HTMLSelectElement>(
-        'select[aria-label="文生图模型"]',
-      ) !== null
+    await act(async () =>
+      root.render(
+        <VisualIdentityExperimentWorkbench
+          canActivate
+          canCreate
+          canReview
+          canUploadSource
+          data={multiModelData}
+          onActivateCandidate={vi.fn(async () => undefined)}
+        />,
+      ),
+    );
+    await waitUntil(
+      () =>
+        container.querySelector<HTMLSelectElement>(
+          'select[aria-label="文生图模型"]',
+        ) !== null,
     );
 
     const model = container.querySelector<HTMLSelectElement>(
@@ -290,11 +368,13 @@ describe("Visual Identity experiment activation", () => {
     const profile = container.querySelector<HTMLSelectElement>(
       'select[aria-label="配置档位"]',
     );
-    expect(model?.closest("details")).toBeNull();
-    expect(model?.value).toBe("redcraft-krea2-comfyui");
+    const routeSettings = model?.closest("details");
+    expect(routeSettings).not.toBeNull();
+    expect(routeSettings?.hasAttribute("open")).toBe(false);
+    expect(model?.value).toBe("redcraft-krea2-redmix3-fp8");
     expect(container.textContent).toContain("当前默认");
     expect(container.textContent).toContain("RedCraft Krea2");
-    expect(container.textContent).toContain("redcraft-krea2-comfyui");
+    expect(container.textContent).toContain("redcraft-krea2-redmix3-fp8");
 
     await act(async () => {
       if (model) setSelectValue(model, "qwen-image-edit");
@@ -306,51 +386,59 @@ describe("Visual Identity experiment activation", () => {
   });
 
   it("lets operators choose an image-to-image source by visible reference card", async () => {
-    adminV2Request.mockImplementation(async (
-      path: string,
-      options?: { method?: string },
-    ) => {
-      if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") {
-        return { batch: { id: "identity-run-2" }, replayed: false };
-      }
-      if (path.endsWith("/image-sources")) return { items: [] };
-      if (path.includes("/api/v2/admin/creative/runs?")) {
-        return {
-          items: [run],
-          pageInfo: { endCursor: null, hasNextPage: false },
-        };
-      }
-      if (path === `/api/v2/admin/creative/runs/${run.id}`) return runDetail;
-      if (path === "/api/v2/admin/creative/runs/identity-run-2") {
-        return { ...runDetail, id: "identity-run-2" };
-      }
-      throw new Error(`Unexpected request: ${path}`);
-    });
-    await act(async () => root.render(
-      <VisualIdentityExperimentWorkbench
-        canActivate
-        canCreate
-        canReview
-        canUploadSource
-        data={multiSourceData}
-        onActivateCandidate={vi.fn(async () => undefined)}
-      />,
-    ));
-    await waitUntil(() =>
-      [...container.querySelectorAll<HTMLButtonElement>("button")]
-        .some((button) => button.textContent === "图生图")
+    adminV2Request.mockImplementation(
+      async (path: string, options?: { method?: string }) => {
+        if (
+          path === "/api/v2/admin/creative/runs" &&
+          options?.method === "POST"
+        ) {
+          return { batch: { id: "identity-run-2" }, replayed: false };
+        }
+        if (path.endsWith("/image-sources")) return { items: [] };
+        if (path.includes("/api/v2/admin/creative/runs?")) {
+          return {
+            items: [run],
+            pageInfo: { endCursor: null, hasNextPage: false },
+          };
+        }
+        if (path === `/api/v2/admin/creative/runs/${run.id}`) return runDetail;
+        if (path === "/api/v2/admin/creative/runs/identity-run-2") {
+          return { ...runDetail, id: "identity-run-2" };
+        }
+        throw new Error(`Unexpected request: ${path}`);
+      },
     );
-    const imageToImage = [...container.querySelectorAll<HTMLButtonElement>("button")]
-      .find((button) => button.textContent === "图生图");
-    await act(async () => imageToImage?.click());
+    await act(async () =>
+      root.render(
+        <VisualIdentityExperimentWorkbench
+          canActivate
+          canCreate
+          canReview
+          canUploadSource
+          data={multiSourceData}
+          onActivateCandidate={vi.fn(async () => undefined)}
+        />,
+      ),
+    );
     await waitUntil(() =>
-      container.querySelectorAll<HTMLInputElement>(
-        'input[name="identity-experiment-source"]',
-      ).length === 4
+      [...container.querySelectorAll<HTMLButtonElement>("button")].some(
+        (button) => button.textContent === "图生图",
+      ),
+    );
+    const imageToImage = [
+      ...container.querySelectorAll<HTMLButtonElement>("button"),
+    ].find((button) => button.textContent === "图生图");
+    await act(async () => imageToImage?.click());
+    await waitUntil(
+      () =>
+        container.querySelectorAll<HTMLInputElement>(
+          'input[name="identity-experiment-source"]',
+        ).length === 4,
     );
 
-    const sourceFieldset = [...container.querySelectorAll("fieldset")]
-      .find((fieldset) => fieldset.textContent?.includes("选择参考图"));
+    const sourceFieldset = [...container.querySelectorAll("fieldset")].find(
+      (fieldset) => fieldset.textContent?.includes("选择参考图"),
+    );
     expect(sourceFieldset).toBeDefined();
     expect(sourceFieldset?.querySelector("select")).toBeNull();
     expect(sourceFieldset?.textContent).toContain("正式参考集 R2");
@@ -369,15 +457,23 @@ describe("Visual Identity experiment activation", () => {
       )?.checked,
     ).toBe(false);
 
-    const generate = [...container.querySelectorAll<HTMLButtonElement>("button")]
-      .find((button) => button.textContent === "生成 1 张候选图");
+    const prompt = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="描述这次想要的画面"]',
+    );
+    await act(async () => {
+      if (prompt) setTextAreaValue(prompt, "A calm editorial portrait");
+    });
+
+    const generate = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="生成 1 张候选图"]',
+    );
     expect(generate).toBeDefined();
     await act(async () => generate?.click());
     await waitUntil(() =>
-      adminV2Request.mock.calls.some(([path, options]) =>
-        path === "/api/v2/admin/creative/runs" &&
-        options?.method === "POST"
-      )
+      adminV2Request.mock.calls.some(
+        ([path, options]) =>
+          path === "/api/v2/admin/creative/runs" && options?.method === "POST",
+      ),
     );
     expect(adminV2Request).toHaveBeenCalledWith(
       "/api/v2/admin/creative/runs",
@@ -410,47 +506,52 @@ describe("Visual Identity experiment activation", () => {
       asset: uploadedAsset,
       replayed: false,
     });
-    adminV2Request.mockImplementation(async (
-      path: string,
-      options?: { method?: string },
-    ) => {
-      if (path.endsWith("/image-sources")) return { items: [] };
-      if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") {
-        return { batch: { id: "identity-run-2" }, replayed: false };
-      }
-      if (path.includes("/api/v2/admin/creative/runs?")) {
-        return {
-          items: [run],
-          pageInfo: { endCursor: null, hasNextPage: false },
-        };
-      }
-      if (path === `/api/v2/admin/creative/runs/${run.id}`) return runDetail;
-      if (path === "/api/v2/admin/creative/runs/identity-run-2") {
-        return { ...runDetail, id: "identity-run-2" };
-      }
-      throw new Error(`Unexpected request: ${path}`);
-    });
-    await act(async () => root.render(
-      <VisualIdentityExperimentWorkbench
-        canActivate
-        canCreate
-        canReview
-        canUploadSource
-        data={multiSourceData}
-        onActivateCandidate={vi.fn(async () => undefined)}
-      />,
-    ));
-    await waitUntil(() =>
-      [...container.querySelectorAll<HTMLButtonElement>("button")]
-        .some((button) => button.textContent === "图生图")
+    adminV2Request.mockImplementation(
+      async (path: string, options?: { method?: string }) => {
+        if (path.endsWith("/image-sources")) return { items: [] };
+        if (
+          path === "/api/v2/admin/creative/runs" &&
+          options?.method === "POST"
+        ) {
+          return { batch: { id: "identity-run-2" }, replayed: false };
+        }
+        if (path.includes("/api/v2/admin/creative/runs?")) {
+          return {
+            items: [run],
+            pageInfo: { endCursor: null, hasNextPage: false },
+          };
+        }
+        if (path === `/api/v2/admin/creative/runs/${run.id}`) return runDetail;
+        if (path === "/api/v2/admin/creative/runs/identity-run-2") {
+          return { ...runDetail, id: "identity-run-2" };
+        }
+        throw new Error(`Unexpected request: ${path}`);
+      },
     );
-    const imageToImage = [...container.querySelectorAll<HTMLButtonElement>("button")]
-      .find((button) => button.textContent === "图生图");
+    await act(async () =>
+      root.render(
+        <VisualIdentityExperimentWorkbench
+          canActivate
+          canCreate
+          canReview
+          canUploadSource
+          data={multiSourceData}
+          onActivateCandidate={vi.fn(async () => undefined)}
+        />,
+      ),
+    );
+    await waitUntil(() =>
+      [...container.querySelectorAll<HTMLButtonElement>("button")].some(
+        (button) => button.textContent === "图生图",
+      ),
+    );
+    const imageToImage = [
+      ...container.querySelectorAll<HTMLButtonElement>("button"),
+    ].find((button) => button.textContent === "图生图");
     await act(async () => imageToImage?.click());
 
-    const fileInput = container.querySelector<HTMLInputElement>(
-      'input[type="file"]',
-    );
+    const fileInput =
+      container.querySelector<HTMLInputElement>('input[type="file"]');
     expect(fileInput).toBeDefined();
     const file = new File([new Uint8Array(2_048)], "mira-local.png", {
       type: "image/png",
@@ -472,21 +573,30 @@ describe("Visual Identity experiment activation", () => {
       "identity_experiment_source",
     );
     expect(uploadOptions.form.get("image")).toBe(file);
-    await waitUntil(() =>
-      container.querySelector<HTMLInputElement>(
-        'input[value="local-uploaded-source-1"]',
-      )?.checked === true
+    await waitUntil(
+      () =>
+        container.querySelector<HTMLInputElement>(
+          'input[value="local-uploaded-source-1"]',
+        )?.checked === true,
     );
     expect(container.textContent).toContain("本地上传");
 
-    const generate = [...container.querySelectorAll<HTMLButtonElement>("button")]
-      .find((button) => button.textContent === "生成 1 张候选图");
+    const prompt = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="描述这次想要的画面"]',
+    );
+    await act(async () => {
+      if (prompt) setTextAreaValue(prompt, "A calm editorial portrait");
+    });
+
+    const generate = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="生成 1 张候选图"]',
+    );
     await act(async () => generate?.click());
     await waitUntil(() =>
-      adminV2Request.mock.calls.some(([path, options]) =>
-        path === "/api/v2/admin/creative/runs" &&
-        options?.method === "POST"
-      )
+      adminV2Request.mock.calls.some(
+        ([path, options]) =>
+          path === "/api/v2/admin/creative/runs" && options?.method === "POST",
+      ),
     );
     expect(adminV2Request).toHaveBeenCalledWith(
       "/api/v2/admin/creative/runs",
@@ -504,27 +614,30 @@ describe("Visual Identity experiment activation", () => {
 
   it("turns a reviewed candidate into an explicit activation command", async () => {
     const onActivateCandidate = vi.fn(async () => undefined);
-    await act(async () => root.render(
-      <VisualIdentityExperimentWorkbench
-        canActivate
-        canCreate
-        canReview
-        canUploadSource
-        data={data}
-        onActivateCandidate={onActivateCandidate}
-      />,
-    ));
-    await waitUntil(() =>
-      container.textContent?.includes("激活为新视觉身份") === true
+    await act(async () =>
+      root.render(
+        <VisualIdentityExperimentWorkbench
+          canActivate
+          canCreate
+          canReview
+          canUploadSource
+          data={data}
+          onActivateCandidate={onActivateCandidate}
+        />,
+      ),
     );
-    const open = [...container.querySelectorAll<HTMLButtonElement>("button")]
-      .find((button) => button.textContent?.includes("激活为新视觉身份"));
+    await waitUntil(
+      () => container.textContent?.includes("激活为新视觉身份") === true,
+    );
+    const open = [
+      ...container.querySelectorAll<HTMLButtonElement>("button"),
+    ].find((button) => button.textContent?.includes("激活为新视觉身份"));
     await act(async () => open?.click());
 
-    const activationPanel = [...container.querySelectorAll("div")]
-      .find((element) =>
-        element.querySelector("h4")?.textContent === "激活新的视觉身份版本"
-      );
+    const activationPanel = [...container.querySelectorAll("div")].find(
+      (element) =>
+        element.querySelector("h4")?.textContent === "激活新的视觉身份版本",
+    );
     expect(activationPanel).toBeDefined();
     const labels = [...activationPanel!.querySelectorAll("label")];
     const reason = labels
@@ -540,7 +653,9 @@ describe("Visual Identity experiment activation", () => {
       .find((label) => label.textContent?.includes("身形稳定特征"))
       ?.querySelector<HTMLTextAreaElement>("textarea");
     const confirmed = labels
-      .find((label) => label.textContent?.includes("我确认这段文字只描述人物身份"))
+      .find((label) =>
+        label.textContent?.includes("我确认这段文字只描述人物身份"),
+      )
       ?.querySelector<HTMLInputElement>("input");
     expect(reason).toBeDefined();
     expect(faceTraits).toBeDefined();
@@ -558,76 +673,79 @@ describe("Visual Identity experiment activation", () => {
       }
       confirmed?.click();
     });
-    const confirm = [...activationPanel!.querySelectorAll<HTMLButtonElement>("button")]
-      .find((button) => button.textContent?.includes("确认激活新身份"));
+    const confirm = [
+      ...activationPanel!.querySelectorAll<HTMLButtonElement>("button"),
+    ].find((button) => button.textContent?.includes("确认激活新身份"));
     expect(confirm).toBeDefined();
     expect(confirm?.disabled).toBe(false);
     await act(async () => confirm?.click());
     await waitUntil(() => onActivateCandidate.mock.calls.length === 1);
 
-    expect(onActivateCandidate).toHaveBeenCalledWith(expect.objectContaining({
-      identityPrompt: expect.stringContaining(
-        "Preserve the exact same adult person shown in the canonical identity portrait",
-      ),
-      faceTraits: {
-        canonicalPortraitAuthority: true,
-        stableTraits: ["oval face", "blue eyes"],
-      },
-      hairTraits: { stableTraits: ["dark wavy hair"] },
-      bodyTraits: { stableTraits: ["balanced adult proportions"] },
-      confirmation: "character-1:visual-profile",
-      candidateAuthority: {
-        runId: "identity-run-1",
-        itemId: "identity-item-1",
-        assetId: "identity-asset-1",
-        reviewDecisionId: "identity-review-1",
-      },
-    }));
+    expect(onActivateCandidate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        identityPrompt: expect.stringContaining(
+          "Preserve the exact same adult person shown in the canonical identity portrait",
+        ),
+        faceTraits: {
+          canonicalPortraitAuthority: true,
+          stableTraits: ["oval face", "blue eyes"],
+        },
+        hairTraits: { stableTraits: ["dark wavy hair"] },
+        bodyTraits: { stableTraits: ["balanced adult proportions"] },
+        confirmation: "character-1:visual-profile",
+        candidateAuthority: {
+          runId: "identity-run-1",
+          itemId: "identity-item-1",
+          assetId: "identity-asset-1",
+          reviewDecisionId: "identity-review-1",
+        },
+      }),
+    );
   });
 
   it("requires a compact single-frame confirmation before adopting an identity image", async () => {
     let reviewPosted = false;
-    adminV2Request.mockImplementation(async (
-      path: string,
-      options?: { method?: string },
-    ) => {
-      if (options?.method === "POST") {
-        reviewPosted = true;
-        return {};
-      }
-      if (path.endsWith("/image-sources")) return { items: [] };
-      if (path.includes("/api/v2/admin/creative/runs?")) {
-        return {
-          items: [run],
-          pageInfo: { endCursor: null, hasNextPage: false },
-        };
-      }
-      if (path === `/api/v2/admin/creative/runs/${run.id}`) {
-        return {
-          ...runDetail,
-          items: runDetail.items.map((item) => ({
-            ...item,
-            review: reviewPosted ? item.review : null,
-          })),
-        };
-      }
-      throw new Error(`Unexpected request: ${path}`);
-    });
-    await act(async () => root.render(
-      <VisualIdentityExperimentWorkbench
-        canActivate
-        canCreate
-        canReview
-        canUploadSource
-        data={data}
-        onActivateCandidate={vi.fn(async () => undefined)}
-      />,
-    ));
+    adminV2Request.mockImplementation(
+      async (path: string, options?: { method?: string }) => {
+        if (options?.method === "POST") {
+          reviewPosted = true;
+          return {};
+        }
+        if (path.endsWith("/image-sources")) return { items: [] };
+        if (path.includes("/api/v2/admin/creative/runs?")) {
+          return {
+            items: [run],
+            pageInfo: { endCursor: null, hasNextPage: false },
+          };
+        }
+        if (path === `/api/v2/admin/creative/runs/${run.id}`) {
+          return {
+            ...runDetail,
+            items: runDetail.items.map((item) => ({
+              ...item,
+              review: reviewPosted ? item.review : null,
+            })),
+          };
+        }
+        throw new Error(`Unexpected request: ${path}`);
+      },
+    );
+    await act(async () =>
+      root.render(
+        <VisualIdentityExperimentWorkbench
+          canActivate
+          canCreate
+          canReview
+          canUploadSource
+          data={data}
+          onActivateCandidate={vi.fn(async () => undefined)}
+        />,
+      ),
+    );
     await waitUntil(() =>
-      [...container.querySelectorAll<HTMLButtonElement>("button")]
-        .some((button) =>
-          button.textContent?.includes("采用这张图并继续")
-        )
+      [...container.querySelectorAll<HTMLButtonElement>("button")].some(
+        (button) => button.textContent?.includes("采用这张图并继续"),
+      ),
     );
     expect(container.textContent).toContain(
       "系统构图检查已通过：这是一个连续画面",
@@ -636,10 +754,13 @@ describe("Visual Identity experiment activation", () => {
       "只有一个人物、一个连续画面（无拼图、分栏或缩略图）",
     );
 
-    const adopt = [...container.querySelectorAll<HTMLButtonElement>("button")]
-      .find((button) => button.textContent?.includes("采用这张图并继续"));
+    const adopt = [
+      ...container.querySelectorAll<HTMLButtonElement>("button"),
+    ].find((button) => button.textContent?.includes("采用这张图并继续"));
     const qualityConfirmation = [...container.querySelectorAll("label")]
-      .find((label) => label.textContent?.includes("只有一个人物、一个连续画面"))
+      .find((label) =>
+        label.textContent?.includes("只有一个人物、一个连续画面"),
+      )
       ?.querySelector<HTMLInputElement>("input");
     expect(qualityConfirmation).toBeDefined();
     expect(adopt?.disabled).toBe(true);
@@ -648,12 +769,12 @@ describe("Visual Identity experiment activation", () => {
     expect(adopt?.disabled).toBe(false);
     await act(async () => adopt?.click());
     await waitUntil(() =>
-      adminV2Request.mock.calls.some(([, options]) =>
-        options?.method === "POST"
-      )
+      adminV2Request.mock.calls.some(
+        ([, options]) => options?.method === "POST",
+      ),
     );
-    await waitUntil(() =>
-      container.textContent?.includes("激活新的视觉身份版本") === true
+    await waitUntil(
+      () => container.textContent?.includes("激活新的视觉身份版本") === true,
     );
     expect(adminV2Request).toHaveBeenCalledWith(
       `/api/v2/admin/creative/runs/${run.id}/items/identity-item-1/decisions`,
@@ -700,26 +821,29 @@ describe("Visual Identity experiment activation", () => {
       throw new Error(`Unexpected request: ${path}`);
     });
 
-    await act(async () => root.render(
-      <VisualIdentityExperimentWorkbench
-        canActivate
-        canCreate
-        canReview
-        canUploadSource
-        data={data}
-        onActivateCandidate={vi.fn(async () => undefined)}
-      />,
-    ));
-    await waitUntil(() =>
-      container.textContent?.includes("缺少新版单画面系统证据") === true
+    await act(async () =>
+      root.render(
+        <VisualIdentityExperimentWorkbench
+          canActivate
+          canCreate
+          canReview
+          canUploadSource
+          data={data}
+          onActivateCandidate={vi.fn(async () => undefined)}
+        />,
+      ),
+    );
+    await waitUntil(
+      () => container.textContent?.includes("缺少新版单画面系统证据") === true,
     );
 
-    const adopt = [...container.querySelectorAll<HTMLButtonElement>("button")]
-      .find((button) => button.textContent?.includes("采用这张图并继续"));
+    const adopt = [
+      ...container.querySelectorAll<HTMLButtonElement>("button"),
+    ].find((button) => button.textContent?.includes("采用这张图并继续"));
     expect(adopt?.disabled).toBe(true);
     expect(
       [...container.querySelectorAll("label")].some((label) =>
-        label.textContent?.includes("采用前确认")
+        label.textContent?.includes("采用前确认"),
       ),
     ).toBe(false);
   });
@@ -748,22 +872,25 @@ describe("Visual Identity experiment activation", () => {
       throw new Error(`Unexpected request: ${path}`);
     });
 
-    await act(async () => root.render(
-      <VisualIdentityExperimentWorkbench
-        canActivate
-        canCreate
-        canReview
-        canUploadSource
-        data={data}
-        onActivateCandidate={vi.fn(async () => undefined)}
-      />,
-    ));
-    await waitUntil(() =>
-      container.textContent?.includes("缺少新版单画面系统证据") === true
+    await act(async () =>
+      root.render(
+        <VisualIdentityExperimentWorkbench
+          canActivate
+          canCreate
+          canReview
+          canUploadSource
+          data={data}
+          onActivateCandidate={vi.fn(async () => undefined)}
+        />,
+      ),
+    );
+    await waitUntil(
+      () => container.textContent?.includes("缺少新版单画面系统证据") === true,
     );
 
-    const activate = [...container.querySelectorAll<HTMLButtonElement>("button")]
-      .find((button) => button.textContent?.includes("激活为新视觉身份"));
+    const activate = [
+      ...container.querySelectorAll<HTMLButtonElement>("button"),
+    ].find((button) => button.textContent?.includes("激活为新视觉身份"));
     expect(activate?.disabled).toBe(true);
   });
 
@@ -798,19 +925,23 @@ describe("Visual Identity experiment activation", () => {
       throw new Error(`Unexpected request: ${path}`);
     });
 
-    await act(async () => root.render(
-      <VisualIdentityExperimentWorkbench
-        canActivate
-        canCreate
-        canReview
-        canUploadSource
-        data={data}
-        onActivateCandidate={vi.fn(async () => undefined)}
-      />,
-    ));
-    await waitUntil(() =>
-      container.textContent?.includes("合图、空白图或损坏图片不会进入候选") ===
-      true
+    await act(async () =>
+      root.render(
+        <VisualIdentityExperimentWorkbench
+          canActivate
+          canCreate
+          canReview
+          canUploadSource
+          data={data}
+          onActivateCandidate={vi.fn(async () => undefined)}
+        />,
+      ),
+    );
+    await waitUntil(
+      () =>
+        container.textContent?.includes(
+          "合图、空白图或损坏图片不会进入候选",
+        ) === true,
     );
     expect(container.textContent).toContain("asset_quality_failed");
   });

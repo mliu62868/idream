@@ -144,7 +144,9 @@ describe("local AI service pipeline", () => {
     await expect(prisma.generationJob.findUnique({ where: { id: jobId } })).resolves.toMatchObject({
       status: "completed",
       deliveredOutputCount: 2,
-      version: 5,
+      // Gen owns provider execution, so Main observes only moderating_output
+      // and completed instead of the former inline running sub-transitions.
+      version: 3,
       finishedAt: expect.any(Date),
       completedAt: expect.any(Date),
     });

@@ -9,6 +9,7 @@ import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { toInputJson } from "../shared/prisma-json";
 import { isAdminCaseTransitionAllowed } from "../shared/state-transition-authority";
+import { transitionCase } from "./transition";
 
 type Db = PrismaClient | Prisma.TransactionClient;
 type Actor = { readonly id: string; readonly role: string };
@@ -275,13 +276,17 @@ export async function synchronizeSupportCaseFromRequest(db: Db, request: Support
   const baseResolution = current.resolution && typeof current.resolution === "object" && !Array.isArray(current.resolution)
     ? current.resolution as Record<string, unknown>
     : {};
-  return db.adminCase.update({
-    where: { id: current.id, version: current.version },
+  return transitionCase(db as Prisma.TransactionClient, {
+    caseId: current.id,
+    to: supportStatus(request.status),
+    expected: {
+      from: current.status as "new" | "triaged" | "in_progress" | "waiting" | "resolved" | "closed" | "reopened",
+      version: current.version,
+    },
     data: {
       activeKey: terminal
         ? null
         : activeKey(current.type, current.targetType, current.targetId, current.caseKey),
-      status: supportStatus(request.status),
       priority,
       ownerId: request.assignedToId,
       slaDueAt: terminal ? request.resolvedAt ?? request.updatedAt : slaFor(priority, request.createdAt),
@@ -300,7 +305,6 @@ export async function synchronizeSupportCaseFromRequest(db: Db, request: Support
             },
           })
         : toInputJson({ ...baseResolution, severity: severityForPriority(priority), category: request.category }),
-      version: { increment: 1 },
     },
   });
 }
@@ -701,14 +705,17 @@ export async function assignReviewCaseInTransaction(
   if (!isAdminCaseTransitionAllowed(current.status, nextStatus)) {
     throw Errors.conflict("Case cannot be assigned from its present state", { status: current.status });
   }
-  const updated = await tx.adminCase.update({
-    where: { id: current.id, version: current.version },
+  const updated = await transitionCase(tx, {
+    caseId: current.id,
+    to: nextStatus as "triaged" | "in_progress" | "waiting" | "resolved" | "closed" | "reopened",
+    expected: {
+      from: current.status as "new" | "triaged" | "in_progress" | "waiting" | "resolved" | "closed" | "reopened",
+      version: current.version,
+    },
     data: {
       ownerId: input.ownerId,
       priority: input.priority,
       slaDueAt: input.slaDueAt,
-      status: nextStatus,
-      version: { increment: 1 },
     },
   });
   await tx.adminAuditLog.create({
@@ -800,14 +807,17 @@ export async function recordReviewCaseDecision(
       ? { state: "passed", evidenceRefs: [...input.evidenceRefs], verifiedAt: new Date().toISOString() }
       : { state: "pending", evidenceRefs: [...input.evidenceRefs], verifiedAt: null },
   };
-  const updated = await db.adminCase.update({
-    where: { id: current.id, version: current.version },
+  const updated = await transitionCase(db as Prisma.TransactionClient, {
+    caseId: current.id,
+    to: nextStatus,
+    expected: {
+      from: current.status as "new" | "triaged" | "in_progress" | "waiting" | "resolved" | "closed" | "reopened",
+      version: current.version,
+    },
     data: {
-      status: nextStatus,
       activeKey: input.downstreamVerified ? null : current.activeKey,
       resolution: toInputJson(resolution),
       verificationState: input.downstreamVerified ? "passed" : "pending",
-      version: { increment: 1 },
     },
   });
   await db.decisionRecord.create({
@@ -952,16 +962,19 @@ export async function verifyReviewCase(input: {
         authorityEvidence: authority.evidence,
       },
     };
-    const updated = await tx.adminCase.update({
-      where: { id: current.id, version: current.version },
+    const updated = await transitionCase(tx, {
+      caseId: current.id,
+      to: nextStatus,
+      expected: {
+        from: current.status as "new" | "triaged" | "in_progress" | "waiting" | "resolved" | "closed" | "reopened",
+        version: current.version,
+      },
       data: {
-        status: nextStatus,
         activeKey: input.state === "failed"
           ? current.activeKey ?? `${current.type}:${current.targetType}:${current.targetId}:${current.caseKey}`
           : null,
         verificationState: input.state,
         resolution: toInputJson(resolution),
-        version: { increment: 1 },
       },
     });
     await tx.adminAuditLog.create({
@@ -1070,10 +1083,14 @@ export async function recordCustomerCaseAction(input: {
       actorId: input.actor.id,
       performedAt: decidedAt.toISOString(),
     };
-    const updated = await tx.adminCase.update({
-      where: { id: current.id, version: current.version },
+    const updated = await transitionCase(tx, {
+      caseId: current.id,
+      to: "in_progress",
+      expected: {
+        from: current.status as "new" | "triaged" | "in_progress" | "waiting" | "resolved" | "reopened",
+        version: current.version,
+      },
       data: {
-        status: "in_progress",
         verificationState: "pending",
         resolution: toInputJson({
           ...currentResolution,
@@ -1089,7 +1106,6 @@ export async function recordCustomerCaseAction(input: {
           },
           actions: [...priorActions, action],
         }),
-        version: { increment: 1 },
       },
     });
     await tx.decisionRecord.create({
@@ -1150,15 +1166,18 @@ export async function waitCase(input: {
     const prior = current.resolution && typeof current.resolution === "object" && !Array.isArray(current.resolution)
       ? current.resolution as Record<string, unknown>
       : {};
-    const updated = await tx.adminCase.update({
-      where: { id: current.id, version: current.version },
+    const updated = await transitionCase(tx, {
+      caseId: current.id,
+      to: "waiting",
+      expected: {
+        from: current.status as "new" | "triaged" | "in_progress" | "waiting" | "reopened",
+        version: current.version,
+      },
       data: {
-        status: "waiting",
         resolution: toInputJson({
           ...prior,
           waiting: { reason: input.reason, resumeAt: input.resumeAt?.toISOString() ?? null, recordedAt: new Date().toISOString() },
         }),
-        version: { increment: 1 },
       },
     });
     await tx.adminAuditLog.create({ data: {
@@ -1203,9 +1222,14 @@ export async function reopenOrRecurCase(input: {
     const cutoff = Date.now() - (input.reopenWindowMs ?? 7 * 24 * 60 * 60 * 1_000);
     const reopenSameCase = current.updatedAt.getTime() >= cutoff;
     if (reopenSameCase) {
-      const updated = await tx.adminCase.update({
-        where: { id: current.id, version: current.version },
-        data: { status: "reopened", activeKey, verificationState: "pending", version: { increment: 1 } },
+      const updated = await transitionCase(tx, {
+        caseId: current.id,
+        to: "reopened",
+        expected: {
+          from: current.status as "resolved" | "closed",
+          version: current.version,
+        },
+        data: { activeKey, verificationState: "pending" },
       });
       await tx.adminAuditLog.create({ data: {
         actorId: input.actor.id,

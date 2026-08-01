@@ -10,7 +10,8 @@ import {
   recordGenerationAttemptEvent,
   recordGenerationAttemptQueuedEvent,
 } from "./generation-attempt-events";
-import { ensureGenerationSettlementLinks, linkGenerationLedgerEntry } from "./generation-settlement";
+import { ensureGenerationSettlementLinks } from "./generation-settlement";
+import { postDreamcoinEntry } from "@/server/modules/admin/billing/ledger";
 import { transitionGenerationRequest } from "./generation-request-transition";
 
 export async function cancelGenerationRequest(input: {
@@ -52,13 +53,16 @@ export async function cancelGenerationRequest(input: {
     if (attempt && !["succeeded", "failed", "cancelled", "unknown"].includes(attempt.status)) {
       await recordGenerationAttemptEvent(tx, { eventId: `${attempt.id}:terminal`, attemptId: attempt.id, eventType: "generation.attempt.cancelled.v1", outcome: "cancelled", occurredAt: cancelledAt, payload: { requestId: job.id, reason: input.reason }, retryability: "not_retryable" });
     }
-    await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${job.userId} FOR UPDATE`;
     const settlement = await ensureGenerationSettlementLinks(tx, job.id);
     let refundAmount = 0;
     if (settlement.refundable > 0) {
-      const balance = await tx.dreamcoinLedger.aggregate({ where: { userId: job.userId }, _sum: { delta: true } });
-      const refund = await tx.dreamcoinLedger.create({ data: { userId: job.userId, delta: settlement.refundable, balanceAfter: (balance._sum.delta ?? 0) + settlement.refundable, reason: "refund", sourceId: job.id, idempotencyKey: `generation:${job.id}:cancel-refund` } });
-      await linkGenerationLedgerEntry(tx, refund);
+      const refund = await postDreamcoinEntry(tx, {
+        kind: "refund",
+        userId: job.userId,
+        amount: settlement.refundable,
+        sourceId: job.id,
+        idempotencyKey: `generation:${job.id}:cancel-refund`,
+      });
       refundAmount = refund.delta;
     }
     const response = { requestId: job.id, status: cancelled.status, version: cancelled.version, finishedAt: cancelledAt.toISOString(), refundAmount };

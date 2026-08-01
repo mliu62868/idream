@@ -18,7 +18,7 @@ import { prisma } from "@/server/lib/db";
 import { AppError, Errors } from "@/server/lib/errors";
 import { fail, ok } from "@/server/lib/http";
 import { env } from "@/server/lib/env";
-import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
+import { actorWithPermission, jsonBody } from "@/server/modules/admin-v2/shared/authority";
 import type { PermissionKey } from "@/server/admin/permissions";
 import {
   acceptControlPlaneCommand,
@@ -87,7 +87,7 @@ async function parseCommand<T extends AdminCommandRequest>(
     ifMatch: request.headers.get("if-match") ?? undefined,
     requestId,
   });
-  const body = schema.parse(await request.json());
+  const body = schema.parse(await jsonBody(request));
   if (headers.ifMatch) {
     const matchedVersion = parseIfMatch(headers.ifMatch);
     if (matchedVersion === null || matchedVersion !== body.entityVersion) {
@@ -737,6 +737,14 @@ export function resolveIncident(request: Request, incidentId: string) {
     const actor = await actorWithPermission(request, resolveIncidentDefinition.permission);
     const parsed = await parseCommand(request, incidentResolveCommandRequestSchema);
     requireConfirmation(parsed.body.confirmation, `${incidentId}:resolve`);
+    const replay = await replayExactCommandBeforeMutablePreflight({
+      actor,
+      parsed,
+      definition: resolveIncidentDefinition,
+      targetId: incidentId,
+      executeInline: true,
+    });
+    if (replay) return replay;
     const incident = await prisma.opsIncident.findUnique({ where: { id: incidentId } });
     if (!incident) throw Errors.notFound("Incident not found", { incidentId });
     if (incident.version !== parsed.body.entityVersion) {
@@ -764,6 +772,14 @@ export function closeCase(request: Request, caseId: string) {
     const actor = await actorWithPermission(request, closeCaseDefinition.permission);
     const parsed = await parseCommand(request, caseCloseCommandRequestSchema);
     requireConfirmation(parsed.body.confirmation, `${caseId}:close`);
+    const replay = await replayExactCommandBeforeMutablePreflight({
+      actor,
+      parsed,
+      definition: closeCaseDefinition,
+      targetId: caseId,
+      executeInline: true,
+    });
+    if (replay) return replay;
     const adminCase = await prisma.adminCase.findUnique({ where: { id: caseId } });
     if (!adminCase) throw Errors.notFound("Case not found", { caseId });
     if (

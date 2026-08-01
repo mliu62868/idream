@@ -3,11 +3,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   CHAT_TO_MAIN_EVENTS,
   MAIN_TO_CHAT_EVENTS,
-  idempotencyKeys,
   type DurableEventEnvelope,
 } from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
-import { jobQueue } from "@/server/jobs/queue";
 import {
   createCharacter,
   createUser,
@@ -805,7 +803,7 @@ describe("applyChatEvent", () => {
     expect(await dreamcoinBalance(userId)).toBe(95);
 
     const acceptedEventId = `chat_image_accepted_${attachmentId}_${jobs[0].id}`;
-    expect(await jobQueue.getByDedupeKey("chat.inbound", idempotencyKeys.chatInbox(acceptedEventId))).toBeTruthy();
+    expect(await prisma.mainOutboxEvent.findUnique({ where: { id: acceptedEventId } })).toBeTruthy();
 
     await runQueuedGenerationJobs(8, [
       "ai.image.generate",
@@ -814,10 +812,7 @@ describe("applyChatEvent", () => {
     const asset = await prisma.mediaAsset.findFirst({ where: { sourceJobId: jobs[0].id } });
     expect(asset?.id).toBeTruthy();
     const completedEventId = `chat_image_completed_${attachmentId}_${jobs[0].id}_${asset?.id}`;
-    const completedJob = await jobQueue.getByDedupeKey(
-      "chat.inbound",
-      idempotencyKeys.chatInbox(completedEventId),
-    );
+    const completedJob = await prisma.mainOutboxEvent.findUnique({ where: { id: completedEventId } });
     expect(completedJob).toBeTruthy();
     // P4 Task 5: the completed payload carries a summary for chat-side photo awareness.
     expect(completedJob?.payload).toMatchObject({
@@ -1013,10 +1008,7 @@ describe("applyChatEvent", () => {
       expect(jobs).toHaveLength(0);
       await expect(dreamcoinBalance(userId)).resolves.toBe(100);
       const failedEventId = `chat_image_failed_${attachmentId}`;
-      const failure = await jobQueue.getByDedupeKey(
-        "chat.inbound",
-        idempotencyKeys.chatInbox(failedEventId),
-      );
+      const failure = await prisma.mainOutboxEvent.findUnique({ where: { id: failedEventId } });
       expect(failure?.payload).toMatchObject({
         eventType: "chat.image.failed",
         payload: {
@@ -1408,10 +1400,7 @@ describe("applyChatEvent", () => {
 
     // ...and the failure callback is retryable 'failed' with the underlying transient code.
     const failedEventId = `chat_image_failed_${attachmentId}`;
-    const snapshot = await jobQueue.getByDedupeKey(
-      "chat.inbound",
-      idempotencyKeys.chatInbox(failedEventId),
-    );
+    const snapshot = await prisma.mainOutboxEvent.findUnique({ where: { id: failedEventId } });
     expect(snapshot).toBeTruthy();
     const callback = snapshot?.payload as { payload?: { status?: string; errorCode?: string } } | null;
     expect(callback?.payload?.status).toBe("failed");

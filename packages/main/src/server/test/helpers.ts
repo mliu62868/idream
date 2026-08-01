@@ -5,8 +5,9 @@ import { prisma } from "@/server/lib/db";
 import { AGE_GATE_COOKIE, type ActorRole } from "@/server/lib/auth";
 import { dispatchV1 } from "@/server/modules/ourdream/service";
 import { jobQueue } from "@/server/jobs/queue";
-import { drainLocalAiPipeline, localAiQueueNames } from "@/server/ai/local-pipeline";
+import { drainLocalAiPipeline } from "@/server/ai/local-pipeline";
 import { redeemCodeHash } from "@/server/lib/redeem-codes";
+import { providers } from "@/server/providers";
 
 // SPEC: Shared integration-test client + fixtures for the /api/v1 surface.
 // INTENT: One ergonomic `api()` that drives dispatchV1 exactly like the route
@@ -522,15 +523,95 @@ export async function dreamcoinBalance(userId: string) {
 
 export async function runQueuedGenerationJobs(
   limit = 25,
-  queues: readonly string[] = localAiQueueNames,
+  queues: readonly string[] = [
+    "ai.image.generate",
+    "ai.video.generate",
+    "app.ai.finalize",
+  ],
 ) {
-  return drainLocalAiPipeline({
-    // Mirror the main-side drain set. Character previews are consumed by
-    // packages/gen and return here through app.ai.finalize.
-    queues: [...queues],
-    limit,
-    workerId: "test-generation-worker",
-  });
+  const claimed: Array<{ id: string; queue: string; status: string; error?: string }> = [];
+  let processed = 0;
+  for (let index = 0; index < limit; index += 1) {
+    let found = false;
+    for (const queue of queues) {
+      if (queue === "app.ai.finalize") {
+        const result = await drainLocalAiPipeline({
+          queues: [queue],
+          limit: 1,
+          workerId: `test-main-finalizer-${index}`,
+        });
+        if (result.claimed.length === 0) continue;
+        found = true;
+        claimed.push(...result.claimed);
+        processed += result.processed;
+        break;
+      }
+      if (queue !== "ai.image.generate" && queue !== "ai.video.generate") {
+        continue;
+      }
+      const result = await jobQueue.processNext({
+        queue,
+        workerId: `test-external-gen-${index}`,
+        processor: async (job) => {
+          const genPipeline = await loadTestGenPipeline();
+          const deps: TestGenPipelineDeps = {
+            enqueue: async (input) => {
+              await jobQueue.enqueue({
+                ...input,
+                payload: input.payload as Prisma.InputJsonValue,
+              });
+            },
+            providers,
+            attemptsMade: job.attemptsMade,
+            maxAttempts: job.maxAttempts,
+          };
+          if (queue === "ai.image.generate") {
+            await genPipeline.processImageGenerate(job.payload, deps);
+          } else {
+            await genPipeline.processVideoGenerate(job.payload, deps);
+          }
+        },
+      });
+      if (!result.job) continue;
+      if (result.status === "failed") {
+        throw new Error(`Test Gen owner failed ${queue}: ${result.error ?? "unknown error"}`);
+      }
+      found = true;
+      claimed.push({
+        id: result.job.id,
+        queue: result.job.queue,
+        status: result.status,
+        ...(result.error ? { error: result.error } : {}),
+      });
+      if (result.status === "completed") processed += 1;
+      break;
+    }
+    if (!found) break;
+  }
+  return { workerId: "test-external-gen", claimed, processed };
+}
+
+type TestGenPipelineDeps = {
+  enqueue(input: {
+    queue: string;
+    payload: Record<string, unknown>;
+    dedupeKey?: string;
+  }): Promise<void>;
+  providers: typeof providers;
+  attemptsMade: number;
+  maxAttempts: number;
+};
+
+type TestGenPipeline = {
+  processImageGenerate(payload: unknown, deps: TestGenPipelineDeps): Promise<void>;
+  processVideoGenerate(payload: unknown, deps: TestGenPipelineDeps): Promise<void>;
+};
+
+async function loadTestGenPipeline(): Promise<TestGenPipeline> {
+  // INTENT: exercise the real Gen owner in integration tests without making
+  // Main production code import Gen internals or reintroducing provider work.
+  const modulePath = new URL("../../../../gen/src/pipeline.ts", import.meta.url).href;
+  return await import(modulePath) as TestGenPipeline;
 }
 
 export async function completeQueuedCharacterPreview(input: {
@@ -562,7 +643,7 @@ export async function completeQueuedCharacterPreview(input: {
       draftId: input.draftId,
       userId: input.userId,
       provider: input.provider ?? "backend",
-      model: input.model ?? "redcraft-krea2-comfyui",
+      model: input.model ?? "redcraft-krea2-redmix3-fp8",
       asset: {
         key: `preview/${input.previewJobId}/image-1.webp`,
         width: 832,

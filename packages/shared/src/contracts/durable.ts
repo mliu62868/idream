@@ -10,13 +10,25 @@ export const durableEventEnvelopeSchema = z.object({
   aggregateType: z.string().min(1),
   aggregateId: z.string().min(1),
   payload: z.record(z.string(), z.unknown()),
-});
+}).strict();
 
-export const durableAckSchema = z.object({
-  acknowledged: z.boolean(),
-  status: z.enum(["persisted", "duplicate", "quarantined"]),
-  receiptId: z.string().nullable(),
-});
+export const durableAckSchema = z.discriminatedUnion("status", [
+  z.object({
+    acknowledged: z.literal(true),
+    status: z.literal("persisted"),
+    receiptId: z.string().min(1),
+  }).strict(),
+  z.object({
+    acknowledged: z.literal(true),
+    status: z.literal("duplicate"),
+    receiptId: z.string().min(1),
+  }).strict(),
+  z.object({
+    acknowledged: z.literal(false),
+    status: z.literal("quarantined"),
+    receiptId: z.string().min(1).nullable(),
+  }).strict(),
+]);
 
 const generationManifestAssetSchema = z.object({
   ordinal: z.number().int().nonnegative(),
@@ -94,6 +106,20 @@ export function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   const record = value as Record<string, unknown>;
   return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
+}
+
+/** The receiver hashes the complete immutable envelope, excluding only its identity key. */
+export function durableEnvelopeHash(envelope: DurableEventEnvelope): string {
+  return createHash("sha256")
+    .update(canonicalJson({
+      eventType: envelope.eventType,
+      schemaVersion: envelope.schemaVersion,
+      occurredAt: envelope.occurredAt,
+      aggregateType: envelope.aggregateType,
+      aggregateId: envelope.aggregateId,
+      payload: envelope.payload,
+    }))
+    .digest("hex");
 }
 
 export function generationManifestChecksum(manifest: GenerationCompletionManifest): string {

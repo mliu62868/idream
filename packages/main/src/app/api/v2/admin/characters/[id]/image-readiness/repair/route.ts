@@ -13,6 +13,7 @@ import {
 } from "@/server/modules/admin-v2/characters/project-version";
 import {
   actorWithPermission,
+  jsonBody,
 } from "@/server/modules/admin-v2/shared/authority";
 import {
   executeAtomicIdempotentMutation,
@@ -45,7 +46,7 @@ export async function POST(
       { characterId: id },
     );
     const body = characterImageReadinessRepairRequestSchema.parse(
-      await request.json(),
+      await jsonBody(request),
     );
     if (body.confirmation !== `PREPARE IMAGE PRODUCTION ${id}`) {
       throw Errors.badRequest(

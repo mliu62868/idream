@@ -7,32 +7,64 @@
     "name": "iDream · Qwen Image Edit · Image to Image"
   },
   "version": 1,
-  "capabilities": ["img2img", "edit", "referenceImages", "stableSeed", "textToImage"],
+  "capabilities": [
+    "img2img",
+    "edit",
+    "referenceImages",
+    "stableSeed",
+    "textToImage"
+  ],
   "identity": {
     "mode": "single_reference",
     "maxReferences": 1,
-    "acceptedRoles": ["identity_anchor", "identity_reference", "source_image"],
+    "acceptedRoles": [
+      "identity_anchor",
+      "identity_reference",
+      "source_image"
+    ],
     "supportsLookReference": false,
     "supportsSourceImageWithIdentity": false
   },
   "quality": {
     "maxCandidates": 2,
-    "evaluatorDimensions": ["artifact", "face_count", "identity", "intent"]
+    "evaluatorDimensions": [
+      "artifact",
+      "face_count",
+      "identity",
+      "intent"
+    ]
   },
   "apiPrompt": {
     "1": {
-      "class_type": "CheckpointLoaderSimple",
+      "class_type": "CheckpointLoaderKJ",
       "inputs": {
-        "ckpt_name": "Qwen-Rapid-AIO-NSFW-v19-bf16.safetensors"
+        "ckpt_name": "Qwen-Rapid-AIO-NSFW-v19.safetensors",
+        "weight_dtype": "fp8_e4m3fn",
+        "compute_dtype": "default",
+        "patch_cublaslinear": false,
+        "sage_attention": "disabled",
+        "enable_fp16_accumulation": false
       }
     },
     "2": {
       "class_type": "KSampler",
       "inputs": {
-        "model": ["1", 0],
-        "positive": ["3", 0],
-        "negative": ["4", 0],
-        "latent_image": ["9", 0],
+        "model": [
+          "1",
+          0
+        ],
+        "positive": [
+          "3",
+          0
+        ],
+        "negative": [
+          "4",
+          0
+        ],
+        "latent_image": [
+          "9",
+          0
+        ],
         "seed": 0,
         "steps": 4,
         "cfg": 1,
@@ -44,16 +76,28 @@
     "3": {
       "class_type": "TextEncodeQwenImageEditPlus",
       "inputs": {
-        "clip": ["1", 1],
-        "vae": ["1", 2],
-        "image1": ["8", 0],
+        "clip": [
+          "1",
+          1
+        ],
+        "vae": [
+          "1",
+          2
+        ],
+        "image1": [
+          "8",
+          0
+        ],
         "prompt": ""
       }
     },
     "4": {
       "class_type": "TextEncodeQwenImageEditPlus",
       "inputs": {
-        "clip": ["1", 1],
+        "clip": [
+          "1",
+          1
+        ],
         "prompt": ""
       }
     },
@@ -74,30 +118,92 @@
     "10": {
       "class_type": "VAEDecode",
       "inputs": {
-        "samples": ["2", 0],
-        "vae": ["1", 2]
+        "samples": [
+          "2",
+          0
+        ],
+        "vae": [
+          "1",
+          2
+        ]
       }
     },
     "11": {
       "class_type": "SaveImage",
       "inputs": {
-        "images": ["10", 0],
+        "images": [
+          "10",
+          0
+        ],
         "filename_prefix": "idream_qwen_edit"
       }
     }
   },
   "inputs": [
-    { "key": "prompt", "type": "text", "target": { "nodeId": "3", "field": "prompt" } },
-    { "key": "negative", "type": "text", "target": { "nodeId": "4", "field": "prompt" }, "default": "" },
+    {
+      "key": "prompt",
+      "type": "text",
+      "target": {
+        "nodeId": "3",
+        "field": "prompt"
+      }
+    },
+    {
+      "key": "negative",
+      "type": "text",
+      "target": {
+        "nodeId": "4",
+        "field": "prompt"
+      },
+      "default": ""
+    },
     {
       "key": "source_image",
       "type": "image",
-      "referenceRoles": ["identity_anchor", "identity_reference", "source_image"],
-      "target": { "nodeId": "8", "field": "image" }
+      "referenceRoles": [
+        "identity_anchor",
+        "identity_reference",
+        "source_image"
+      ],
+      "target": {
+        "nodeId": "8",
+        "field": "image"
+      }
     },
-    { "key": "width", "type": "int", "target": { "nodeId": "9", "field": "width" }, "default": 832 },
-    { "key": "height", "type": "int", "target": { "nodeId": "9", "field": "height" }, "default": 1216 },
-    { "key": "seed", "type": "int", "target": { "nodeId": "2", "field": "seed" } },
-    { "key": "steps", "type": "int", "target": { "nodeId": "2", "field": "steps" }, "default": 4 }
+    {
+      "key": "width",
+      "type": "int",
+      "target": {
+        "nodeId": "9",
+        "field": "width"
+      },
+      "default": 832
+    },
+    {
+      "key": "height",
+      "type": "int",
+      "target": {
+        "nodeId": "9",
+        "field": "height"
+      },
+      "default": 1216
+    },
+    {
+      "key": "seed",
+      "type": "int",
+      "target": {
+        "nodeId": "2",
+        "field": "seed"
+      }
+    },
+    {
+      "key": "steps",
+      "type": "int",
+      "target": {
+        "nodeId": "2",
+        "field": "steps"
+      },
+      "default": 4
+    }
   ]
 }

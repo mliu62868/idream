@@ -60,7 +60,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       if (ack.acknowledged && ack.receiptId) {
         await enqueue({
           queue: CHAT_QUEUES.inboxConsume,
-          payload: { eventId: ack.receiptId },
+          payload: { receiptId: ack.receiptId },
           dedupeKey: idempotencyKeys.chatInbox(ack.receiptId),
         }).catch(() => undefined);
       }

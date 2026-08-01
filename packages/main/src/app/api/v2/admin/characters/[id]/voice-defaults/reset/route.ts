@@ -1,6 +1,6 @@
 import { characterVoiceSystemDefaultResetResponseSchema } from "@idream/shared/admin";
 import { resetCharacterVoiceToSystemDefault } from "@/server/modules/admin-v2/characters/voice-clones";
-import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
+import { actorWithPermission, jsonBody } from "@/server/modules/admin-v2/shared/authority";
 import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 
@@ -25,7 +25,7 @@ export async function POST(
         idempotencyKey: requireIdempotencyKey(request),
         requestId:
           request.headers.get("x-request-id")?.trim() || crypto.randomUUID(),
-        request: await request.json(),
+        request: await jsonBody(request),
       }),
     );
   });

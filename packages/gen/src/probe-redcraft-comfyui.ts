@@ -152,7 +152,7 @@ function readOptions(): ProbeOptions {
   return {
     url: trimTrailingSlash(readArg("url") ?? process.env.COMFYUI_API_URL ?? "http://127.0.0.1:8191"),
     workflowPath: resolveWorkspacePath(
-      readArg("workflow") ?? "packages/gen/workflows/redcraft-krea2-comfyui-text.json",
+      readArg("workflow") ?? "packages/gen/workflows/redcraft-krea2-redmix3-txt2img.json",
     ),
     prompt: readArg("prompt") ?? defaultPrompt,
     reportPath: optionalResolvedPath(readArg("report")),

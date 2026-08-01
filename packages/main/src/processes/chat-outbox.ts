@@ -1,36 +1,37 @@
-import type { Prisma, PrismaClient } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 import {
   durableAckSchema,
-  idempotencyKeys,
+  durableEventEnvelopeSchema,
   MAIN_TO_CHAT_EVENTS,
-  MAIN_TO_CHAT_QUEUE,
   type DurableEventEnvelope,
 } from "@idream/shared/contracts";
 import { setGauge } from "@idream/shared";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
-import { jobQueue } from "@/server/jobs/queue";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 
 type Db = PrismaClient | Prisma.TransactionClient;
+export type MainToChatEventType =
+  (typeof MAIN_TO_CHAT_EVENTS)[keyof typeof MAIN_TO_CHAT_EVENTS];
 
 export async function recordMainToChatEvent(input: {
   eventId: string;
-  eventType: string;
+  eventType: MainToChatEventType;
+  schemaVersion?: number;
   aggregateType?: string;
   aggregateId?: string;
   payload: Record<string, unknown>;
 }, db: Db = prisma): Promise<void> {
-  const envelope: DurableEventEnvelope = {
+  const envelope = durableEventEnvelopeSchema.parse({
     sourceService: "main",
     sourceEventId: input.eventId,
     eventType: input.eventType,
-    schemaVersion: 1,
+    schemaVersion: input.schemaVersion ?? 1,
     occurredAt: new Date().toISOString(),
     aggregateType: input.aggregateType ?? "chat_effect",
     aggregateId: input.aggregateId ?? input.eventId,
     payload: input.payload,
-  };
+  });
   await db.mainOutboxEvent.upsert({
     where: { id: input.eventId },
     create: {
@@ -76,10 +77,10 @@ export async function dispatchPendingChatEvents(
   let failed = 0;
   for (const row of rows) {
     try {
-      await deliver(row.payload as unknown as DurableEventEnvelope);
+      await deliver(durableEventEnvelopeSchema.parse(row.payload));
       await prisma.mainOutboxEvent.update({
         where: { id: row.id },
-        data: { status: "delivered", deliveredAt: new Date(), lastError: undefined },
+        data: { status: "delivered", deliveredAt: new Date(), lastError: Prisma.DbNull },
       });
       delivered += 1;
     } catch (error) {
@@ -99,27 +100,15 @@ export async function dispatchPendingChatEvents(
   return { delivered, failed };
 }
 
-export function durableChatIngressEnabled(
-  durableIngestUrl: string | undefined = env.CHAT_DURABLE_INGEST_URL,
-): boolean {
-  return Boolean(durableIngestUrl?.trim());
+export function resolveChatDurableIngestUrl(chatServiceUrl: string | undefined): string {
+  if (!chatServiceUrl?.trim()) {
+    throw new Error("CHAT_SERVICE_URL is required for Main to Chat durable delivery");
+  }
+  return `${chatServiceUrl.replace(/\/$/, "")}/internal/events/ingest`;
 }
 
 async function deliverToChat(event: DurableEventEnvelope): Promise<void> {
-  if (!env.CHAT_DURABLE_INGEST_URL) {
-    await jobQueue.enqueue({
-      queue: MAIN_TO_CHAT_QUEUE,
-      payload: {
-        eventId: event.sourceEventId,
-        eventType: event.eventType,
-        payload: event.payload,
-        sourceService: event.sourceService,
-      } as Prisma.InputJsonValue,
-      dedupeKey: idempotencyKeys.chatInbox(event.sourceEventId),
-    });
-    return;
-  }
-  const response = await fetch(env.CHAT_DURABLE_INGEST_URL, {
+  const response = await fetch(resolveChatDurableIngestUrl(env.CHAT_SERVICE_URL), {
     method: "POST",
     headers: { "content-type": "application/json", "x-internal-token": env.INTERNAL_TOKEN },
     body: JSON.stringify(event),

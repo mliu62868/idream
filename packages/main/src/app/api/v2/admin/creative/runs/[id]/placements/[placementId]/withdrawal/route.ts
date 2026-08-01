@@ -4,7 +4,7 @@ import {
 } from "@idream/shared/admin";
 import { env } from "@/server/lib/env";
 import { withdrawCreativePlacement } from "@/server/modules/admin-v2/creative/workflow";
-import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
+import { actorWithPermission, jsonBody } from "@/server/modules/admin-v2/shared/authority";
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
 import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
@@ -18,7 +18,7 @@ export async function POST(request: Request, context: Context) {
   const { id, placementId } = await context.params;
   return adminV2Route(async () => {
     const actor = await actorWithPermission(request, "creative.placement.publish");
-    const body = creativePlacementWithdrawalRequestSchema.parse(await request.json());
+    const body = creativePlacementWithdrawalRequestSchema.parse(await jsonBody(request));
     const idempotencyKey = requireIdempotencyKey(request);
     const requestId = request.headers.get("x-request-id")?.trim() || crypto.randomUUID();
     return executeAtomicIdempotentMutation({

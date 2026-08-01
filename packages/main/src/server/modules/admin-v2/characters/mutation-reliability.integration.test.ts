@@ -34,7 +34,7 @@ describe("Character mutation reliability", () => {
       },
       body: JSON.stringify({ source, kind: "funnel", dryRun: true, batchSize: 10, cursor: null }),
     }));
-    expect(response.status).toBe(400);
+    expect(response.status, await response.clone().text()).toBe(400);
     await expect(prisma.metricBackfillRun.count({ where: { source } })).resolves.toBe(0);
   });
 

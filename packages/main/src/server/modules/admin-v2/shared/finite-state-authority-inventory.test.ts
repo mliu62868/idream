@@ -877,9 +877,7 @@ describe("Admin v2 finite-state authority inventory", () => {
       mutationWritesField(path, "characterProject", "phase"),
     );
     expect(writers.sort()).toEqual([
-      "src/server/modules/admin-v2/characters/release-executor.ts",
-      "src/server/modules/admin-v2/characters/release-lifecycle.ts",
-      "src/server/modules/ourdream/service.ts",
+      "src/server/modules/admin-v2/characters/transition.ts",
     ]);
     for (const path of writers) {
       expect(source(path), path).toContain("isCharacterProjectPhaseTransitionAllowed");
@@ -943,6 +941,23 @@ describe("Admin v2 finite-state authority inventory", () => {
     const authority = source(directWriters[0]);
     expect(authority).toContain("isControlPlaneCommandTransitionAllowed");
     expect(authority).toContain("status: current.status");
+  });
+
+  it("funnels Incident, Case, Experiment, Release, and Serving transitions through aggregate owners", () => {
+    const ownedAxes = [
+      ["opsIncident", "status", "src/server/modules/admin-v2/incidents/transition.ts"],
+      ["adminCase", "status", "src/server/modules/admin-v2/cases/transition.ts"],
+      ["experimentDefinition", "status", "src/server/modules/admin-v2/experiments/transition.ts"],
+      ["characterRelease", "status", "src/server/modules/admin-v2/characters/transition.ts"],
+      ["characterServing", "state", "src/server/modules/admin-v2/characters/transition.ts"],
+    ] as const;
+
+    for (const [model, field, owner] of ownedAxes) {
+      const writers = productionTypeScript
+        .filter((path) => path !== "src/server/modules/admin-v2/characters/backfill.ts")
+        .filter((path) => mutationWritesField(path, model, field));
+      expect(writers, `${model}.${field}`).toEqual([owner]);
+    }
   });
 
   it("excludes Creative execution, review, and deployment views because they are derived and not persisted axes", () => {

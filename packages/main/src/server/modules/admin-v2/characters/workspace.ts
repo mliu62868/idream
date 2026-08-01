@@ -31,7 +31,6 @@ import {
 import { ACTIVE_CONTROL_PLANE_COMMAND_STATUSES } from "../shared/control-plane-command";
 import { characterCommandCoordinationKey } from "./command-coordination";
 import { loadCharacterIdentityBootstrapAuthority } from "./identity-bootstrap-authority";
-import { characterReferenceAuthorityFrom } from "./reference-authority";
 import { lockCharacterGenerationAuthority } from "./generation-authority-lock";
 import { isMediaAssetOperationalForAuthority } from "@/server/lib/media-asset-authority";
 import { evaluateDraftAssetRouteAuthority } from "./draft-asset-route-authority";
@@ -728,15 +727,11 @@ export async function getCharacterWorkspace(characterId: string) {
     orderBy: { revision: "desc" },
   }) : null;
   const bootstrapAuthority = await loadCharacterIdentityBootstrapAuthority(prisma, characterId);
-  // 参考集取自 active revision（唯一权威），不再在缺 revision 时回退读影子列——
-  // 没有 active revision 就是「参考集未发布」，展示影子列的旧内容只会误导运营。
-  const referenceAuthority = characterReferenceAuthorityFrom(activeReferenceSet);
-  const activeReferenceAssetIds = referenceAuthority?.refs ?? [];
-  // TODO(reference-authority): anchorAssetIds 不是参考集副本，而是「可选图池」——它可以含
-  // 参考集之外的图，否则运营无法往参考集里加新图（publishCharacterReferenceSet 的
-  // eligibleIds 同样接受它）。图池的正确权威是 ReferenceCandidate，迁移前这里保持读影子列。
-  const poolAnchorIds = activeIdentity ? strings(activeIdentity.anchorAssetIds) : [];
-  const visualPoolIds = [...new Set([...poolAnchorIds, ...activeReferenceAssetIds])];
+  // SPEC: 可选图池 = 这个角色当前所有可用的图，判据与 publishCharacterReferenceSet 的写入
+  // 校验完全一致（归属本角色 / 未删除 / 是图片 / 安全通过）。
+  // INTENT: 「哪些图能当参考图」是事实不是状态，不需要 anchorAssetIds 或 ReferenceCandidate
+  // 再存一份——存了反而把新生成的好图挡在外面。取最近 60 张，够运营挑；已在参考集里的图
+  // 由 activeReferenceSet.references 自带，不依赖这个池。
   const visualAsOf = new Date();
   const [
     visualPoolAssets,
@@ -750,12 +745,13 @@ export async function getCharacterWorkspace(characterId: string) {
   ] = await Promise.all([
     prisma.mediaAsset.findMany({
       where: operationalMediaAssetWhere({
-        id: { in: visualPoolIds },
         deletedAt: null,
         type: "image",
         safetyStatus: "passed",
         characterId,
       }),
+      orderBy: { createdAt: "desc" },
+      take: 60,
     }),
     prisma.mediaAsset.findMany({
       where: operationalMediaAssetWhere({
@@ -906,11 +902,20 @@ export async function getCharacterWorkspace(characterId: string) {
   }, { authorizedDraftAssetCharacterIds: [characterId] });
   const performance = portfolio.items.find((item) => item.characterId === characterId)?.performance ?? [];
   const portfolioItem = portfolio.items.find((item) => item.characterId === characterId) ?? null;
+  if (!portfolioItem) {
+    throw new Error(`Character production journey missing for ${characterId}`);
+  }
   const poolAssetById = new Map(visualPoolAssets.map((asset) => [asset.id, asset]));
-  // anchors 走图池（见上面的 TODO），不能收窄成参考集的子集：前端的 referenceCandidates
-  // 由 anchors ∪ references 组成，收窄会让运营选不到参考集之外的候选图。
+  // visual.anchors 承载的是**可选图池**（前端 referenceCandidates = anchors ∪ references）。
+  // 现在池 = 角色当前所有可用图，运营因此能把任何一张审核通过的新图选进参考集——
+  // 这正是原先被 anchorAssetIds 挡住的事。已在参考集里的图由 references 提供，两者去重后展示。
   const anchors = activeIdentity
-    ? visualPoolDtos(poolAnchorIds, "identity_anchor", poolAssetById, characterId)
+    ? visualPoolDtos(
+        visualPoolAssets.map((asset) => asset.id),
+        "identity_anchor",
+        poolAssetById,
+        characterId,
+      )
     : [];
   const references = activeReferenceSet
     ? activeReferenceSet.references.map((reference) =>
@@ -1074,6 +1079,7 @@ export async function getCharacterWorkspace(characterId: string) {
       updatedAt: character.updatedAt.toISOString(),
     },
     project: projectDto(project, qualifiedRoute?.routeFingerprint ?? null),
+    journey: portfolioItem.journey,
     visual: {
       activeIdentity: activeIdentity ? {
         id: activeIdentity.id,

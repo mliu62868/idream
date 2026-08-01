@@ -1,14 +1,10 @@
-// SPEC: main-event-consumer (design §10). Consumes the chat→main events that the
-// chat service delivers to the `main.inbound` queue (its transactional outbox),
-// and applies them to main's authority tables: stats, safety, analytics.
+// SPEC: Main's receiver-local projector. Chat delivers by HTTP into a durable
+// Product Event receipt; this process only applies already-persisted rows.
 // INVARIANT: each origin service + source event has one durable projection
 // receipt; its domain effect and processed receipt commit in the same DB TX.
-import { Worker } from "bullmq";
-import type { RedisOptions } from "ioredis";
 import { Prisma } from "@prisma/client";
 import { setGauge } from "@idream/shared";
 import {
-  MAIN_QUEUES,
   MAIN_TO_CHAT_EVENTS,
   CHAT_TO_MAIN_EVENTS,
   chatExchangeCorrectionV2Schema,
@@ -16,13 +12,13 @@ import {
   chatSessionReleaseMigrationAppliedPayloadSchema,
 } from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
-import { env } from "@/server/lib/env";
 import { logger } from "@/server/lib/logger";
 import { createChatImageGenerationJob } from "@/server/modules/ourdream/service";
 import { findReusableChatImage } from "@/server/modules/ourdream/chat-image-reuse";
 import {
   dispatchPendingChatEvents,
   recordMainToChatEvent,
+  type MainToChatEventType,
 } from "./chat-outbox";
 import { projectCanonicalMetricEvent } from "@/server/modules/admin-v2/metrics/projector";
 import { transitionControlPlaneCommandAttempt } from "@/server/modules/admin-v2/shared/control-plane-command-attempt";
@@ -30,18 +26,6 @@ import { transitionControlPlaneCommand } from "@/server/modules/admin-v2/shared/
 import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
 import { activeCustomerUserWhere } from "@/server/modules/ourdream/public-content-audience";
 import { updateGenerationRequestSourceMeta } from "@/server/ai/generation-request-transition";
-
-function redisOptions(): RedisOptions {
-  const url = new URL(env.REDIS_URL);
-  return {
-    host: url.hostname,
-    port: url.port ? Number.parseInt(url.port, 10) : 6379,
-    username: url.username ? decodeURIComponent(url.username) : undefined,
-    password: url.password ? decodeURIComponent(url.password) : undefined,
-    db: url.pathname && url.pathname !== "/" ? Number.parseInt(url.pathname.slice(1), 10) : 0,
-    maxRetriesPerRequest: null,
-  };
-}
 
 interface InboundEvent {
   eventId: string;
@@ -443,7 +427,7 @@ async function applyChatEventEffect(
         }
         const reusable = await findReusableChatImage(payload);
         if (reusable) {
-          await enqueueChatCallback({
+          await recordChatCallback(tx, {
             eventId: `chat_image_completed_${payload.attachmentId}_reused_${reusable.asset.id}`,
             eventType: MAIN_TO_CHAT_EVENTS.chatImageCompleted,
             payload: {
@@ -463,7 +447,7 @@ async function applyChatEventEffect(
           return CHAT_EVENT_APPLIED;
         }
         const job = await createChatImageGenerationJob(payload);
-        await enqueueChatCallback({
+        await recordChatCallback(tx, {
           eventId: `chat_image_accepted_${payload.attachmentId}_${job.id}`,
           eventType: MAIN_TO_CHAT_EVENTS.chatImageAccepted,
           payload: {
@@ -479,7 +463,7 @@ async function applyChatEventEffect(
         // endpoint refuses to re-confirm). Transient ones — insufficient coins, rate limit,
         // a Redis/DB blip — are 'failed' so the user can retry once the condition clears;
         // marking them 'rejected' would wedge the attachment permanently.
-        await enqueueChatCallback({
+        await recordChatCallback(tx, {
           eventId: `chat_image_failed_${attachmentId}`,
           eventType: MAIN_TO_CHAT_EVENTS.chatImageFailed,
           payload: {
@@ -750,9 +734,9 @@ function jsonRecord(value: Prisma.JsonValue | null): Record<string, unknown> {
     : {};
 }
 
-async function enqueueChatCallback(input: {
+async function recordChatCallback(tx: Prisma.TransactionClient, input: {
   eventId: string;
-  eventType: string;
+  eventType: MainToChatEventType;
   payload: Record<string, unknown>;
 }) {
   await recordMainToChatEvent({
@@ -760,8 +744,7 @@ async function enqueueChatCallback(input: {
     eventType: input.eventType,
     aggregateId: input.eventId,
     payload: input.payload,
-  });
-  await dispatchPendingChatEvents().catch(() => undefined);
+  }, tx);
 }
 
 function errorCode(error: unknown) {
@@ -788,30 +771,21 @@ function chatImageFailureStatus(error: unknown): "failed" | "rejected" {
   return PERMANENT_IMAGE_ERROR_CODES.has(code) ? "rejected" : "failed";
 }
 
-export function startEventConsumer(): Worker {
-  const worker = new Worker(
-    MAIN_QUEUES.mainInbound,
-    async (job) => {
-      // The chat producer (packages/chat enqueue) wraps the event envelope as
-      // { payload: <envelope>, dedupeKey }. Unwrap to the envelope; tolerate an
-      // already-unwrapped shape so either producer convention is consumed.
-      const data = job.data as { payload?: InboundEvent } & Partial<InboundEvent>;
-      const event = (data.payload ?? data) as InboundEvent;
-      const result = await applyChatEvent(event);
-      if (result.status === "quarantined") {
-        throw new Error(`chat event projection quarantined: ${result.reason}`);
-      }
-    },
-    { connection: redisOptions(), prefix: env.BULLMQ_PREFIX, concurrency: 4 },
-  );
-  worker.on("ready", () => logger.info("main-event-consumer ready"));
-  worker.on("failed", (job, err) => logger.error({ jobId: job?.id, err }, "event consume failed"));
+export function startEventConsumer(): { close(): Promise<void> } {
+  const reconcile = async () => {
+    await dispatchPendingProductEvents();
+    await dispatchPendingChatEvents();
+  };
   const projectionTimer = setInterval(() => {
-    dispatchPendingProductEvents().catch((err) => logger.error({ err }, "product event projection dispatch failed"));
-    dispatchPendingChatEvents().catch((err) => logger.error({ err }, "chat outbox dispatch failed"));
+    reconcile().catch((err) => logger.error({ err }, "durable event reconciliation failed"));
   }, 5_000);
-  worker.on("closed", () => clearInterval(projectionTimer));
-  return worker;
+  reconcile().catch((err) => logger.error({ err }, "initial durable event reconciliation failed"));
+  logger.info("main durable event projector ready");
+  return {
+    async close() {
+      clearInterval(projectionTimer);
+    },
+  };
 }
 
 // Entry when run directly (pm2): start + graceful shutdown.

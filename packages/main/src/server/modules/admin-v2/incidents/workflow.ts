@@ -5,6 +5,7 @@ import { Errors } from "@/server/lib/errors";
 import { canonicalSha256 } from "../shared/canonical-json";
 import { toInputJson } from "../shared/prisma-json";
 import { isIncidentTransitionAllowed } from "../shared/state-transition-authority";
+import { transitionIncident } from "./transition";
 
 type Actor = { readonly id: string; readonly role: string };
 type Db = Prisma.TransactionClient;
@@ -294,17 +295,20 @@ export async function triageIncidentInTransaction(
     ...(input.runbookUrl ? { runbookUrl: input.runbookUrl } : {}),
     ...(input.rollbackTarget ? { rollbackTarget: input.rollbackTarget } : {}),
   };
-  const updated = await tx.opsIncident.update({
-    where: { id: current.id, version: current.version },
+  const updated = await transitionIncident(tx, {
+    incidentId: current.id,
+    to: nextStatus as "triaged",
+    expected: {
+      from: current.status as "detected" | "triaged",
+      version: current.version,
+    },
     data: {
-      status: nextStatus,
       ownerId: input.ownerId,
       severity: input.severity,
       slaDueAt: input.slaDueAt,
       suspectedCause: input.suspectedCause,
       confidence: input.confidence,
       mitigation,
-      version: { increment: 1 },
     },
   });
   await tx.adminAuditLog.create({
@@ -381,13 +385,16 @@ export async function verifyIncidentRecovery(input: {
         overrideReason: input.overrideReason ?? null,
       },
     };
-    const updated = await tx.opsIncident.update({
-      where: { id: current.id, version: current.version },
+    const updated = await transitionIncident(tx, {
+      incidentId: current.id,
+      to: "monitoring",
+      expected: {
+        from: current.status as "mitigating" | "monitoring",
+        version: current.version,
+      },
       data: {
-        status: "monitoring",
         verificationState: state,
         mitigation: toInputJson(mitigation),
-        version: { increment: 1 },
       },
     });
     await tx.adminAuditLog.create({

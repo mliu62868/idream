@@ -429,7 +429,7 @@ describe("seed data provenance", () => {
     });
   });
 
-  it("keeps RedMix3 as a disabled exact-version BF16 comparison candidate", async () => {
+  it("keeps RedMix3 as a disabled exact-version scaled-fp8 comparison candidate", async () => {
     const profile = await prisma.generationModelProfile.findFirst({
       where: { profileKey: "redcraft-krea2-redmix3-comparison" },
       select: {
@@ -452,15 +452,14 @@ describe("seed data provenance", () => {
 
     expect(profile).toMatchObject({
       profileKey: "redcraft-krea2-redmix3-comparison",
-      pipelineModel: "redcraft-krea2-redmix3-bf16",
+      pipelineModel: "redcraft-krea2-redmix3-fp8",
       workflowKey: "redcraft-krea2-redmix3-txt2img",
       runner: "comfyui",
       sourceModelPath: expect.stringMatching(
         /models\/diffusion_models\/Krea2RedMix3\.0-fp8-scaled-ComfyUI\.safetensors$/,
       ),
-      convertedModelPath: expect.stringMatching(
-        /models\/diffusion_models\/redcraftKREA2RedMix3\.0-bf16\.safetensors$/,
-      ),
+      // The Civitai release file runs as-is on MPS now; there is no conversion product.
+      convertedModelPath: null,
       steps: 12,
       sampler: "euler",
       scheduler: "simple",
@@ -478,8 +477,8 @@ describe("seed data provenance", () => {
         civitaiSha256:
           "F6088960C0FEBD27CBD372FC758BB07D012F2D8AE3CD10C45C903D48B94409EA",
         comparisonBaseline: {
-          modelId: "redcraft-krea2-comfyui",
-          workflowKey: "redcraft-krea2-txt2img",
+          modelId: "redcraft-krea2-redmix3-fp8",
+          workflowKey: "redcraft-krea2-redmix3-txt2img",
         },
         capabilities: {
           textToImage: true,

@@ -425,7 +425,7 @@ describe("referrals + account", () => {
     // Inviter: +150 give reward per invitee, granted exactly once for each.
     expect(await dreamcoinBalance(inviterId)).toBe(inviterBefore + 300);
     expect(
-      await prisma.dreamcoinLedger.count({ where: { userId: inviterId, reason: "referral_reward" } }),
+      await prisma.dreamcoinLedger.count({ where: { userId: inviterId, reason: "referral" } }),
     ).toBe(2);
 
     // Parent invite row remains reusable; conversions are one row per invitee.

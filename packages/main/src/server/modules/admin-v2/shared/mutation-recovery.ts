@@ -12,6 +12,7 @@ import { Errors } from "@/server/lib/errors";
 import type { PermissionKey } from "@/server/admin/permissions";
 import {
   authenticatedAdminActor,
+  jsonBody,
   requireActorPermission,
 } from "./authority";
 import { canonicalSha256 } from "./canonical-json";
@@ -388,7 +389,7 @@ function isMutationRecoveryRace(cause: unknown) {
 export async function reconcileAdminMutationReceipt(request: Request) {
   const actor = await authenticatedAdminActor(request);
   const body = adminMutationRecoveryRequestSchema.parse(
-    await request.json(),
+    await jsonBody(request),
   );
   const configuration = recoveryConfiguration[body.commandType];
   const expectedCharacter = expectedCharacterId(body);

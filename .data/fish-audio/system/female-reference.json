@@ -1,0 +1,8 @@
+{
+  "format": "idream_fish_audio_system_reference_v1",
+  "model": "fish-audio-s2-pro-8bit",
+  "language": "english",
+  "ref_text": "For the oMLX Pocket TTS integration proof, this is a clean reference recording for Alexa Reeves.",
+  "source_filename": "idream-bd936661-c3ac-44e5-ba78-62e87b23ab77.wav",
+  "source_sha256": "e70021f24441f7a49c58517964691b8997cbbadf7871006b17a556c038a23a38"
+}

@@ -231,8 +231,9 @@ describe("Character Release command executor", () => {
   }
 
   function routeRequest(body: Record<string, unknown>, confirmation: string) {
+    const action = confirmation.split(":").at(-1);
     return new Request(
-      "http://localhost/api/v2/admin/characters/x/releases/x/commands/test",
+      `http://localhost/api/v2/admin/characters/x/releases/x/commands/${action}`,
       {
         method: "POST",
         headers: {
@@ -789,7 +790,13 @@ describe("Character Release command executor", () => {
         }),
       },
     );
-    expect([schedule.status, rollback.status]).toEqual([202, 422]);
+    expect(
+      [schedule.status, rollback.status],
+      JSON.stringify({
+        schedule: await schedule.clone().json(),
+        rollback: await rollback.clone().json(),
+      }),
+    ).toEqual([202, 422]);
     await expect(rollback.json()).resolves.toMatchObject({
       error: { code: "invariant_failed", blockers: [{ code: "rollback_source_not_superseded" }] },
     });

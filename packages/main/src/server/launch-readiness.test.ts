@@ -62,7 +62,6 @@ const productionEnv = {
   WEB_SURFACE_PROBE_REPORT: ".tmp/launch-web-surface-probe.json",
   GEN_IMAGE_PROVIDER: "pipeline",
   GEN_VIDEO_PROVIDER: "backend",
-  GEN_FINALIZER_QUEUES: "app.ai.finalize,character.preview",
   PIPELINE_API_URL: "https://pipeline.ourdream.internal",
   PIPELINE_VOICE_API_URL: "https://voice.ourdream.internal/v1",
   PIPELINE_API_TOKEN: "production-pipeline-token-0123456789",
@@ -671,91 +670,6 @@ describe("launch readiness", () => {
     expect(checkById(report, "gen-image-provider")?.status).toBe("pass");
     expect(checkById(report, "drawthings-cli")?.status).toBe("pass");
     expect(report.checks.map((check) => check.id)).not.toContain("comfyui-api-url");
-  });
-
-  it("fails when a gen-split deploy leaves GEN_FINALIZER_QUEUES unset (dual-drain risk)", () => {
-    const report = assessLaunchReadiness({
-      env: { ...productionEnv, GEN_FINALIZER_QUEUES: undefined },
-      imagePipelineProbe: passingImageProbe(),
-      ageVerificationProbe: passingAgeProbe(),
-      blobStorageProbe: passingBlobProbe(),
-      chatModelProbe: passingChatProbe(),
-      voiceModelProbe: passingVoiceProbe(),
-      chatServiceProbe: passingChatServiceProbe(),
-      paymentProviderProbe: passingPaymentProbe(),
-      safetyGatewayProbe: passingSafetyProbe(),
-      productConfigProbe: passingProductConfigProbe(),
-      webSurfaceProbe: passingWebSurfaceProbe(),
-      publicCatalogProbe: passingPublicCatalogProbe(),
-      now,
-    });
-
-    expect(report.ok).toBe(false);
-    expect(checkById(report, "gen-finalizer-queue-scope")?.status).toBe("fail");
-    expect(failedIds(report)).toContain("gen-finalizer-queue-scope");
-  });
-
-  it("fails when GEN_FINALIZER_QUEUES still includes ai.image.generate (dual-drain)", () => {
-    const report = assessLaunchReadiness({
-      env: { ...productionEnv, GEN_FINALIZER_QUEUES: "app.ai.finalize,ai.image.generate" },
-      imagePipelineProbe: passingImageProbe(),
-      ageVerificationProbe: passingAgeProbe(),
-      blobStorageProbe: passingBlobProbe(),
-      chatModelProbe: passingChatProbe(),
-      voiceModelProbe: passingVoiceProbe(),
-      chatServiceProbe: passingChatServiceProbe(),
-      paymentProviderProbe: passingPaymentProbe(),
-      safetyGatewayProbe: passingSafetyProbe(),
-      productConfigProbe: passingProductConfigProbe(),
-      webSurfaceProbe: passingWebSurfaceProbe(),
-      publicCatalogProbe: passingPublicCatalogProbe(),
-      now,
-    });
-
-    expect(report.ok).toBe(false);
-    expect(checkById(report, "gen-finalizer-queue-scope")?.status).toBe("fail");
-    expect(failedIds(report)).toContain("gen-finalizer-queue-scope");
-  });
-
-  it("passes gen-finalizer queue scope for a scoped gen-split deploy", () => {
-    const report = assessLaunchReadiness({
-      env: productionEnv,
-      imagePipelineProbe: passingImageProbe(),
-      ageVerificationProbe: passingAgeProbe(),
-      blobStorageProbe: passingBlobProbe(),
-      chatModelProbe: passingChatProbe(),
-      voiceModelProbe: passingVoiceProbe(),
-      chatServiceProbe: passingChatServiceProbe(),
-      paymentProviderProbe: passingPaymentProbe(),
-      safetyGatewayProbe: passingSafetyProbe(),
-      productConfigProbe: passingProductConfigProbe(),
-      webSurfaceProbe: passingWebSurfaceProbe(),
-      publicCatalogProbe: passingPublicCatalogProbe(),
-      now,
-    });
-
-    expect(checkById(report, "gen-finalizer-queue-scope")?.status).toBe("pass");
-    expect(failedIds(report)).not.toContain("gen-finalizer-queue-scope");
-  });
-
-  it("does not flag gen-finalizer queue scope when no generation backend is configured (non-split)", () => {
-    const report = assessLaunchReadiness({
-      env: { ...productionEnv, GEN_IMAGE_PROVIDER: "mock", GEN_VIDEO_PROVIDER: "mock", GEN_FINALIZER_QUEUES: undefined },
-      imagePipelineProbe: passingImageProbe(),
-      ageVerificationProbe: passingAgeProbe(),
-      blobStorageProbe: passingBlobProbe(),
-      chatModelProbe: passingChatProbe(),
-      voiceModelProbe: passingVoiceProbe(),
-      chatServiceProbe: passingChatServiceProbe(),
-      paymentProviderProbe: passingPaymentProbe(),
-      safetyGatewayProbe: passingSafetyProbe(),
-      productConfigProbe: passingProductConfigProbe(),
-      webSurfaceProbe: passingWebSurfaceProbe(),
-      publicCatalogProbe: passingPublicCatalogProbe(),
-      now,
-    });
-
-    expect(report.checks.map((check) => check.id)).not.toContain("gen-finalizer-queue-scope");
   });
 
   it("requires the split chat service to use its own least-privilege database role", () => {

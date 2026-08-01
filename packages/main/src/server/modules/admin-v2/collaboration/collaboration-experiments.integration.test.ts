@@ -78,9 +78,9 @@ describe("admin collaboration, saved views, and managed experiments", () => {
     const replayPayload = await replay.json();
     expect(replayPayload).toMatchObject({ ok: true, data: { duplicate: true } });
     const view = (await first.json()).data.view as { id: string; version: number };
-    const stale = await patchViewRoute(new Request(`http://localhost/api/v2/admin/saved-views/${view.id}`, { method: "PATCH", headers: headers(), body: JSON.stringify({ expectedVersion: 99, label: "stale" }) }), { params: Promise.resolve({ id: view.id }) });
-    expect(stale.status).toBe(409);
-    const updated = await patchViewRoute(new Request(`http://localhost/api/v2/admin/saved-views/${view.id}`, { method: "PATCH", headers: headers(), body: JSON.stringify({ expectedVersion: view.version, label: "High severity owned" }) }), { params: Promise.resolve({ id: view.id }) });
+    const stale = await patchViewRoute(new Request(`http://localhost/api/v2/admin/saved-views/${view.id}`, { method: "PATCH", headers: { ...headers(), "if-match": '"99"' }, body: JSON.stringify({ expectedVersion: 99, label: "stale" }) }), { params: Promise.resolve({ id: view.id }) });
+    expect(stale.status, await stale.clone().text()).toBe(409);
+    const updated = await patchViewRoute(new Request(`http://localhost/api/v2/admin/saved-views/${view.id}`, { method: "PATCH", headers: { ...headers(), "if-match": `"${view.version}"` }, body: JSON.stringify({ expectedVersion: view.version, label: "High severity owned" }) }), { params: Promise.resolve({ id: view.id }) });
     expect(await updated.json()).toMatchObject({ ok: true, data: { view: { version: 2, label: "High severity owned" } } });
   });
 

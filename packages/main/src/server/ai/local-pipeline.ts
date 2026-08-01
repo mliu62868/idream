@@ -1,11 +1,5 @@
 import type { Prisma } from "@prisma/client";
-import { mockVideoMp4Bytes } from "@idream/shared";
-import { MAIN_TO_CHAT_EVENTS, MAIN_TO_CHAT_QUEUE, idempotencyKeys } from "@idream/shared/contracts";
-import {
-  GeneratedImageSanityError,
-  assertGeneratedImageSanity,
-  type GeneratedImageSanityEvidence,
-} from "@idream/shared/media/generated-image-sanity";
+import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { jobQueue } from "@/server/jobs/queue";
 import type { QueueJob } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
@@ -20,19 +14,16 @@ import {
 } from "@/server/modules/admin/content-production-state";
 import {
   aiFinalizePayloadSchema,
-  imageGeneratePayloadSchema,
   type AiFinalizePayload,
-  type ImageGeneratePayload,
-  type VideoGeneratePayload,
-  videoGeneratePayloadSchema,
 } from "./schemas";
-import { hydratedImageReferenceInputs } from "./reference-images";
 import { recordGenerationAttemptEvent } from "./generation-attempt-events";
 import {
   transitionGenerationRequest,
   transitionGenerationRequestWithDisposition,
 } from "./generation-request-transition";
-import { ensureGenerationSettlementLinks, linkGenerationLedgerEntry } from "./generation-settlement";
+import { ensureGenerationSettlementLinks } from "./generation-settlement";
+import { postDreamcoinEntry } from "@/server/modules/admin/billing/ledger";
+import { recordMainToChatEvent } from "@/processes/chat-outbox";
 import {
   isGenerationArtifactArchiveTransitionAllowed,
   isGenerationArtifactValidationTransitionAllowed,
@@ -40,8 +31,6 @@ import {
 } from "./generation-evidence-transition-authority";
 
 export const localAiQueueNames = [
-  "ai.image.generate",
-  "ai.video.generate",
   "app.ai.finalize",
 ] as const;
 
@@ -54,28 +43,6 @@ export interface LocalAiDrainResult {
     error?: string;
   }>;
   processed: number;
-}
-
-class GeneratedAssetBodyMissingError extends Error {
-  readonly code = "asset_body_missing";
-
-  constructor(message: string) {
-    super(message);
-    this.name = "GeneratedAssetBodyMissingError";
-  }
-}
-
-function baselineGeneratedImageQuality(
-  evidence: GeneratedImageSanityEvidence,
-) {
-  return {
-    ...generatedImageQualityEvidence(
-      evidence.evaluatorVersion,
-      { status: "unscored" as const, reason: "artifact_evaluator_unavailable" },
-    ),
-    sanity: evidence.sanity,
-    composition: evidence.composition,
-  };
 }
 
 function unscoredGeneratedImageQuality() {
@@ -188,262 +155,11 @@ export async function reconcileStaleGenerationJobs(input: {
 }
 
 async function processLocalAiJob(job: QueueJob) {
-  if (job.queue === "ai.image.generate") {
-    return processImageGenerate(job.payload, job);
-  }
-  if (job.queue === "ai.video.generate") {
-    return processVideoGenerate(job.payload, job);
-  }
   if (job.queue === "app.ai.finalize") {
     return processFinalize(job.payload);
   }
 
-  throw new Error(`Unsupported local AI queue: ${job.queue}`);
-}
-
-async function processImageGenerate(payloadValue: Prisma.JsonValue, jobMeta: QueueJob) {
-  // SPEC: any unhandled error (moderation calls, status writes, provider throws,
-  // finalize enqueue) must not strand the job in a non-terminal state with coins
-  // debited. On the final attempt funnel to a refund-emitting generation.failed;
-  // otherwise rethrow so the queue keeps retrying.
-  const payload = imageGeneratePayloadSchema.parse(payloadValue);
-  try {
-    return await runImageGenerate(payload, jobMeta);
-  } catch (error) {
-    if (!isFinalAttempt(jobMeta)) throw error;
-    await enqueueGenerationFailed(
-      payload,
-      "worker_error",
-      errorMessage(error, "Image generation worker failed"),
-    );
-  }
-}
-
-async function runImageGenerate(payload: ImageGeneratePayload, jobMeta: QueueJob) {
-  const inputModeration = await markGenerationModeratingInput(payload);
-  if (!inputModeration) return;
-  if (inputModeration.status === "blocked") {
-    await enqueueGenerationBlocked(
-      payload,
-      inputModeration.policyCode ?? "PROHIBITED_OTHER",
-      "Input moderation blocked the generation request",
-      "input",
-    );
-    return;
-  }
-  if (!await markGenerationRunning(payload.generationJobId, payload.attemptId)) return;
-  const referenceImages = await hydratedImageReferenceInputs(
-    payload.referenceImages,
-    providers.blob,
-  );
-
-  const result = await providers.image.generate({
-    prompt: payload.prompt,
-    count: payload.count,
-    seed: payload.seed,
-    negativePrompt: payload.negativePrompt,
-    model: payload.model,
-    controls: payload.controls,
-    requestId: payload.requestId,
-    orientation: payload.orientation,
-    ...(referenceImages.length > 0 ? { referenceImages } : {}),
-  });
-
-  if (!result.ok) {
-    if (result.error.retryable && !isFinalAttempt(jobMeta)) throw new Error(result.error.message);
-    if (result.error.code === "content_blocked") {
-      await enqueueGenerationBlocked(payload, result.error.code, result.error.message, "provider");
-      return;
-    }
-    await enqueueGenerationFailed(payload, result.error.code, result.error.message);
-    return;
-  }
-
-  if (result.data.assets.length === 0) {
-    await enqueueGenerationFailed(
-      payload,
-      "empty_provider_result",
-      "Image provider returned no assets",
-    );
-    return;
-  }
-
-  let assets: Array<{
-    key: string;
-    width: number;
-    height: number;
-    contentType: string;
-    providerKey: string | null;
-  }>;
-  try {
-    assets = await Promise.all(
-      result.data.assets.map(async (asset, index) => {
-        if (!asset.body) {
-          throw new GeneratedAssetBodyMissingError(
-            `Image provider returned no bytes for asset ${index + 1}`,
-          );
-        }
-        const contentType = asset.contentType ?? "image/png";
-        const key = generatedAssetStorageKey(
-          payload.outputPrefix,
-          `image-${index + 1}`,
-          contentType,
-          ".png",
-        );
-        const body = asset.body;
-        const sanityEvidence = assertGeneratedImageSanity(
-          Buffer.from(body),
-          `${payload.generationJobId} asset ${index + 1}`,
-          {
-            singleContinuousFrame:
-              payload.controls.compositionRequirement ===
-              "single_subject_single_frame",
-          },
-        );
-        const persisted = await providers.blob.putPrivate({
-          key,
-          body,
-          contentType,
-        });
-        if (!persisted.ok) {
-          throw new Error(`Blob write failed for ${key}: ${persisted.error.message}`);
-        }
-        return {
-          key,
-          width: asset.width,
-          height: asset.height,
-          contentType,
-          providerKey: asset.key ?? null,
-          quality: baselineGeneratedImageQuality(sanityEvidence),
-        };
-      }),
-    );
-  } catch (error) {
-    if (!isFinalAttempt(jobMeta)) throw error;
-    await enqueueGenerationFailed(
-      payload,
-      error instanceof GeneratedImageSanityError || error instanceof GeneratedAssetBodyMissingError
-        ? error.code
-        : "asset_persist_failed",
-      errorMessage(error, "Failed to persist generated image assets"),
-    );
-    return;
-  }
-
-  await jobQueue.enqueue({
-    queue: "app.ai.finalize",
-    payload: toInputJson({
-      version: 1,
-      kind: "generation.completed",
-      requestId: payload.requestId,
-      generationJobId: payload.generationJobId,
-      attemptId: payload.attemptId,
-      attemptNo: payload.attemptNo,
-      mode: "image",
-      provider: env.IMAGE_PROVIDER,
-      model: payload.model,
-      assets,
-      usage: { gpuSeconds: assets.length * 1.2, model: payload.model },
-    } satisfies AiFinalizePayload),
-    dedupeKey: generationFinalizeDedupeKey(payload, "completed"),
-  });
-}
-
-async function processVideoGenerate(payloadValue: Prisma.JsonValue, jobMeta: QueueJob) {
-  // Same final-attempt funnel as the image worker — see processImageGenerate.
-  const payload = videoGeneratePayloadSchema.parse(payloadValue);
-  try {
-    return await runVideoGenerate(payload, jobMeta);
-  } catch (error) {
-    if (!isFinalAttempt(jobMeta)) throw error;
-    await enqueueGenerationFailed(
-      payload,
-      "worker_error",
-      errorMessage(error, "Video generation worker failed"),
-    );
-  }
-}
-
-async function runVideoGenerate(payload: VideoGeneratePayload, jobMeta: QueueJob) {
-  const inputModeration = await markGenerationModeratingInput(payload);
-  if (!inputModeration) return;
-  if (inputModeration.status === "blocked") {
-    await enqueueGenerationBlocked(
-      payload,
-      inputModeration.policyCode ?? "PROHIBITED_OTHER",
-      "Input moderation blocked the generation request",
-      "input",
-    );
-    return;
-  }
-  if (!await markGenerationRunning(payload.generationJobId, payload.attemptId)) return;
-
-  const result = await providers.video.generate({
-    prompt: payload.prompt,
-    seconds: payload.seconds,
-    seed: payload.seed,
-    negativePrompt: payload.negativePrompt,
-    model: payload.model,
-    controls: payload.controls,
-    requestId: payload.requestId,
-    referenceImages: payload.referenceImages,
-  });
-
-  if (!result.ok) {
-    if (result.error.retryable && !isFinalAttempt(jobMeta)) throw new Error(result.error.message);
-    if (result.error.code === "content_blocked") {
-      await enqueueGenerationBlocked(payload, result.error.code, result.error.message, "provider");
-      return;
-    }
-    await enqueueGenerationFailed(payload, result.error.code, result.error.message);
-    return;
-  }
-
-  const contentType = "video/mp4";
-  const assetKey = generatedAssetStorageKey(payload.outputPrefix, "video", contentType, ".mp4");
-  try {
-    const persisted = await providers.blob.putPrivate({
-      key: assetKey,
-      body: mockVideoMp4Bytes(),
-      contentType,
-    });
-    if (!persisted.ok) {
-      throw new Error(`Blob write failed for ${assetKey}: ${persisted.error.message}`);
-    }
-  } catch (error) {
-    if (!isFinalAttempt(jobMeta)) throw error;
-    await enqueueGenerationFailed(
-      payload,
-      "asset_persist_failed",
-      errorMessage(error, "Failed to persist generated video asset"),
-    );
-    return;
-  }
-
-  await jobQueue.enqueue({
-    queue: "app.ai.finalize",
-    payload: toInputJson({
-      version: 1,
-      kind: "generation.completed",
-      requestId: payload.requestId,
-      generationJobId: payload.generationJobId,
-      attemptId: payload.attemptId,
-      attemptNo: payload.attemptNo,
-      mode: "video",
-      provider: "mock",
-      model: payload.model,
-      assets: [
-        {
-          key: assetKey,
-          seconds: result.data.asset.seconds,
-          contentType,
-          providerKey: result.data.asset.key ?? null,
-        },
-      ],
-      usage: { gpuSeconds: payload.seconds * 2, model: payload.model },
-    } satisfies AiFinalizePayload),
-    dedupeKey: generationFinalizeDedupeKey(payload, "completed"),
-  });
+  throw new Error(`Main cannot execute generation queue: ${job.queue}`);
 }
 
 async function processFinalize(payloadValue: Prisma.JsonValue) {
@@ -674,10 +390,7 @@ async function finalizeGenerationCompleted(
   const attempt = await resolveGenerationAttemptForFinalize(job.id, payload.attemptId);
   const attemptId = attempt?.id;
   await removeGenerationWorkQueueJob(job.id, job.mode);
-  if (job.status === "completed") {
-    await enqueueChatImageCompleted(job.id);
-    return;
-  }
+  if (job.status === "completed") return;
   if (["failed", "blocked", "cancelled", "refunded"].includes(job.status)) {
     await prisma.$transaction(async (tx) => {
       if (attemptId) {
@@ -715,8 +428,8 @@ async function finalizeGenerationCompleted(
       "blocked",
       "output_blocked",
       job.sourceType,
+      job.sourceId,
     );
-    await enqueueChatImageFailed(job.id, "blocked", "output_blocked");
     return;
   }
 
@@ -786,14 +499,13 @@ async function finalizeGenerationCompleted(
     const missingOutputs = Math.max(0, job.outputCount - payload.assets.length);
     if (missingOutputs > 0 && job.costDreamcoins > 0 && job.sourceType !== "content_production_item") {
       const refundAmount = Math.ceil((job.costDreamcoins * missingOutputs) / job.outputCount);
-      await appendLedger(
-        tx,
-        job.userId,
-        refundAmount,
-        "refund",
-        job.id,
-        `generation:${job.id}:partial-refund`,
-      );
+      await postDreamcoinEntry(tx, {
+        kind: "refund",
+        userId: job.userId,
+        amount: refundAmount,
+        sourceId: job.id,
+        idempotencyKey: `generation:${job.id}:partial-refund`,
+      });
       await appendGenerationEvent(tx, job.id, "refunded", "Partial generation refund issued", {
         amount: refundAmount,
         missingOutputs,
@@ -852,7 +564,7 @@ async function finalizeGenerationCompleted(
     const deliveredAssets = await tx.mediaAsset.findMany({
       where: { sourceJobId: job.id },
       orderBy: { createdAt: "asc" },
-      select: { id: true },
+      select: { id: true, width: true, height: true },
     });
     const attemptArtifacts = attemptId
       ? await tx.generationArtifact.findMany({
@@ -920,6 +632,25 @@ async function finalizeGenerationCompleted(
         },
       });
     }
+    const chatAsset = deliveredAssets[0];
+    if (chatAsset && job.sourceType === "chat_image" && job.sourceId) {
+      await recordMainToChatEvent({
+        eventId: `chat_image_completed_${job.sourceId}_${job.id}_${chatAsset.id}`,
+        eventType: MAIN_TO_CHAT_EVENTS.chatImageCompleted,
+        aggregateType: "chat_attachment",
+        aggregateId: job.sourceId,
+        payload: {
+          version: 1,
+          kind: "chat.image.completed",
+          attachmentId: job.sourceId,
+          generationJobId: job.id,
+          mediaAssetId: chatAsset.id,
+          width: chatAsset.width,
+          height: chatAsset.height,
+          summary: chatImageCompletedSummary(job),
+        },
+      }, tx);
+    }
     if (!payload.completionManifestRef) {
       await appendLocalCanonicalProductEvent(tx, {
         sourceEventId: `ai-usage:${attemptId ?? job.id}:v2`,
@@ -943,7 +674,6 @@ async function finalizeGenerationCompleted(
   });
 
   await trackEvent("generation_completed", { jobId: job.id, mode: payload.mode }, { userId: job.userId });
-  await enqueueChatImageCompleted(job.id);
 }
 
 async function appendLocalCanonicalProductEvent(
@@ -970,17 +700,17 @@ async function finalizeGenerationFailed(
   const attempt = await resolveGenerationAttemptForFinalize(job.id, payload.attemptId);
   await removeGenerationWorkQueueJob(job.id, job.mode);
   if (["completed", "failed", "blocked", "refunded", "cancelled"].includes(job.status)) return;
-  const transitioned = await refundGeneration(
+  await refundGeneration(
     job.userId,
     job.id,
     job.costDreamcoins,
     "failed",
     payload.error.code,
     job.sourceType,
+    job.sourceId,
     attempt?.id,
     { attemptOutcome: payload.error.attemptOutcome, retryability: payload.error.retryability },
   );
-  if (transitioned) await enqueueChatImageFailed(job.id, "failed", payload.error.code);
 }
 
 async function finalizeGenerationBlocked(
@@ -993,13 +723,14 @@ async function finalizeGenerationBlocked(
   const attempt = await resolveGenerationAttemptForFinalize(job.id, payload.attemptId);
   await removeGenerationWorkQueueJob(job.id, job.mode);
   if (["completed", "failed", "blocked", "refunded", "cancelled"].includes(job.status)) return;
-  const transitioned = await refundGeneration(
+  await refundGeneration(
     job.userId,
     job.id,
     job.costDreamcoins,
     "blocked",
     payload.policyCode,
     job.sourceType,
+    job.sourceId,
     attempt?.id,
     {
       moderation: {
@@ -1009,7 +740,6 @@ async function finalizeGenerationBlocked(
       },
     },
   );
-  if (transitioned) await enqueueChatImageFailed(job.id, "blocked", payload.policyCode);
 }
 
 async function resolveGenerationAttemptForFinalize(jobId: string, suppliedAttemptId?: string) {
@@ -1032,35 +762,6 @@ async function removeGenerationWorkQueueJob(jobId: string, mode: string) {
   await jobQueue.removeByDedupePrefix(`generation:${jobId}`, [queue]);
 }
 
-async function enqueueChatImageCompleted(jobId: string) {
-  const job = await prisma.generationJob.findUnique({
-    where: { id: jobId },
-    include: { assets: { orderBy: { createdAt: "asc" }, take: 1 } },
-  });
-  if (!job || job.sourceType !== "chat_image" || !job.sourceId) return;
-  const asset = job.assets[0];
-  if (!asset) return;
-  const eventId = `chat_image_completed_${job.sourceId}_${job.id}_${asset.id}`;
-  await jobQueue.enqueue({
-    queue: MAIN_TO_CHAT_QUEUE,
-    payload: {
-      eventId,
-      eventType: MAIN_TO_CHAT_EVENTS.chatImageCompleted,
-      payload: {
-        version: 1,
-        kind: "chat.image.completed",
-        attachmentId: job.sourceId,
-        generationJobId: job.id,
-        mediaAssetId: asset.id,
-        width: asset.width,
-        height: asset.height,
-        summary: chatImageCompletedSummary(job),
-      },
-    } as Prisma.InputJsonValue,
-    dedupeKey: idempotencyKeys.chatInbox(eventId),
-  });
-}
-
 // P4 Task 5: what the chat agent should recall having sent. sourceMeta.promptHint
 // (the raw human-facing request, set on chat.image.requested — see service.ts
 // buildChatImagePrompt) is preferred: job.prompt is the fully-composed generation
@@ -1079,148 +780,6 @@ function chatImageCompletedSummary(job: {
   const raw = promptHint?.trim() || job.prompt?.trim();
   if (!raw) return undefined;
   return raw.length <= 200 ? raw : `${raw.slice(0, 199)}…`;
-}
-
-async function enqueueChatImageFailed(
-  jobId: string,
-  status: "failed" | "blocked" | "refunded",
-  errorCode: string,
-) {
-  const job = await prisma.generationJob.findUnique({ where: { id: jobId } });
-  if (!job || job.sourceType !== "chat_image" || !job.sourceId) return;
-  const eventId = `chat_image_failed_${job.sourceId}_${job.id}_${status}_${errorCode}`;
-  await jobQueue.enqueue({
-    queue: MAIN_TO_CHAT_QUEUE,
-    payload: {
-      eventId,
-      eventType: MAIN_TO_CHAT_EVENTS.chatImageFailed,
-      payload: {
-        version: 1,
-        kind: "chat.image.failed",
-        attachmentId: job.sourceId,
-        generationJobId: job.id,
-        status,
-        errorCode,
-      },
-    } as Prisma.InputJsonValue,
-    dedupeKey: idempotencyKeys.chatInbox(eventId),
-  });
-}
-
-async function enqueueGenerationFailed(
-  payload: ImageGeneratePayload | VideoGeneratePayload,
-  code: string,
-  message: string,
-) {
-  await jobQueue.enqueue({
-    queue: "app.ai.finalize",
-    payload: toInputJson({
-      version: 1,
-      kind: "generation.failed",
-      requestId: payload.requestId,
-      generationJobId: payload.generationJobId,
-      attemptId: payload.attemptId,
-      attemptNo: payload.attemptNo,
-      mode: payload.kind,
-      error: { code, message, retryable: false },
-    } satisfies AiFinalizePayload),
-    dedupeKey: generationFinalizeDedupeKey(payload, "failed"),
-  });
-}
-
-async function enqueueGenerationBlocked(
-  payload: ImageGeneratePayload | VideoGeneratePayload,
-  policyCode: string,
-  message: string,
-  layer: "input" | "output" | "provider",
-) {
-  await jobQueue.enqueue({
-    queue: "app.ai.finalize",
-    payload: toInputJson({
-      version: 1,
-      kind: "generation.blocked",
-      requestId: payload.requestId,
-      generationJobId: payload.generationJobId,
-      attemptId: payload.attemptId,
-      attemptNo: payload.attemptNo,
-      mode: payload.kind,
-      policyCode,
-      message,
-      layer,
-    } satisfies AiFinalizePayload),
-    dedupeKey: generationFinalizeDedupeKey(payload, "blocked"),
-  });
-}
-
-function generationFinalizeDedupeKey(
-  payload: { generationJobId: string; attemptId?: string; attemptNo?: number },
-  outcome: "completed" | "failed" | "blocked",
-) {
-  return payload.attemptId && (payload.attemptNo ?? 1) > 1
-    ? `generation-finalize:${payload.generationJobId}:${payload.attemptId}:${outcome}`
-    : `generation-finalize:${payload.generationJobId}:${outcome}`;
-}
-
-async function markGenerationModeratingInput(payload: ImageGeneratePayload | VideoGeneratePayload) {
-  const transitioned = await prisma.$transaction(async (tx) => {
-    const result = await transitionGenerationRequestWithDisposition(tx, {
-      requestId: payload.generationJobId,
-      to: "moderating_input",
-      expected: { from: ["queued", "moderating_input"] },
-      data: { errorCode: null },
-      onConflict: "return-null",
-    });
-    if (!result) return false;
-    if (result.disposition === "applied") {
-      await appendGenerationEvent(
-        tx,
-        payload.generationJobId,
-        "moderating_input",
-        "Input moderation started",
-        { requestId: payload.requestId },
-      );
-    }
-    return true;
-  });
-  if (!transitioned) return null;
-  return moderateText(
-    "generation_job",
-    payload.generationJobId,
-    `${payload.prompt} ${payload.negativePrompt ?? ""}`,
-    "input",
-  );
-}
-
-async function markGenerationRunning(generationJobId: string, attemptId?: string) {
-  return prisma.$transaction(async (tx) => {
-    const result = await transitionGenerationRequestWithDisposition(tx, {
-      requestId: generationJobId,
-      to: "running",
-      expected: { from: ["queued", "moderating_input", "running"] },
-      data: { errorCode: null },
-      onConflict: "return-null",
-    });
-    if (!result) return false;
-    if (attemptId && result.disposition === "applied") {
-      const attempt = await tx.generationAttempt.findFirstOrThrow({
-        where: { id: attemptId, requestId: generationJobId },
-      });
-      const startedAt = attempt.startedAt ?? new Date();
-      await recordGenerationAttemptEvent(tx, {
-        eventId: `${attemptId}:running`,
-        attemptId,
-        eventType: "generation.attempt.running.v1",
-        occurredAt: startedAt,
-        payload: { requestId: generationJobId },
-        status: "running",
-        startedAt,
-      });
-    }
-    if (result.disposition === "applied") {
-      await appendGenerationEvent(tx, generationJobId, "running", "Provider generation started", {});
-    }
-    return true;
-  });
 }
 
 async function markGenerationModeratingOutput(generationJobId: string, assetCount: number) {
@@ -1286,6 +845,7 @@ async function refundGeneration(
   status: "failed" | "blocked",
   errorCode: string,
   sourceType: string,
+  sourceId: string | null,
   attemptId?: string,
   terminal: {
     attemptOutcome?: "failed" | "unknown";
@@ -1312,6 +872,22 @@ async function refundGeneration(
       onConflict: "return-null",
     });
     if (!transitioned) return false;
+    if (sourceType === "chat_image" && sourceId) {
+      await recordMainToChatEvent({
+        eventId: `chat_image_failed_${sourceId}_${jobId}_${status}_${errorCode}`,
+        eventType: MAIN_TO_CHAT_EVENTS.chatImageFailed,
+        aggregateType: "chat_attachment",
+        aggregateId: sourceId,
+        payload: {
+          version: 1,
+          kind: "chat.image.failed",
+          attachmentId: sourceId,
+          generationJobId: jobId,
+          status,
+          errorCode,
+        },
+      }, tx);
+    }
     if (terminal.moderation) {
       await tx.moderationEvent.create({
         data: {
@@ -1328,14 +904,13 @@ async function refundGeneration(
     const settlement = isDebitedJob ? await ensureGenerationSettlementLinks(tx, jobId) : { refundable: 0 };
     const refundAmount = Math.min(cost, settlement.refundable);
     if (refundAmount > 0 && isDebitedJob) {
-      await appendLedger(
-        tx,
+      await postDreamcoinEntry(tx, {
+        kind: "refund",
         userId,
-        refundAmount,
-        "refund",
-        jobId,
-        `generation:${jobId}:refund`,
-      );
+        amount: refundAmount,
+        sourceId: jobId,
+        idempotencyKey: `generation:${jobId}:refund`,
+      });
     }
     if (attemptId) {
       await recordTerminalArtifactDeliveryEvidence(tx, {
@@ -1397,52 +972,6 @@ async function appendGenerationEvent(
   });
 }
 
-async function appendLedger(
-  tx: Prisma.TransactionClient,
-  userId: string,
-  delta: number,
-  reason: string,
-  sourceId?: string,
-  idempotencyKey?: string,
-) {
-  if (idempotencyKey) {
-    const existing = await tx.dreamcoinLedger.findUnique({ where: { idempotencyKey } });
-    if (existing) {
-      await linkGenerationLedgerEntry(tx, existing);
-      return existing;
-    }
-  }
-  await lockUserLedger(tx, userId);
-  const aggregate = await tx.dreamcoinLedger.aggregate({
-    where: { userId },
-    _sum: { delta: true },
-  });
-  const balance = aggregate._sum.delta ?? 0;
-  const created = await tx.dreamcoinLedger.create({
-    data: {
-      userId,
-      delta,
-      balanceAfter: balance + delta,
-      reason,
-      sourceId,
-      idempotencyKey,
-    },
-  });
-  await linkGenerationLedgerEntry(tx, created);
-  return created;
-}
-
-async function lockUserLedger(tx: Prisma.TransactionClient, userId: string) {
-  await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${userId} FOR UPDATE`;
-}
-
-function isFinalAttempt(job: QueueJob) {
-  return job.attemptsMade + 1 >= job.maxAttempts;
-}
-
-function errorMessage(error: unknown, fallback: string) {
-  return error instanceof Error ? error.message : fallback;
-}
 
 function promptHash(value: string) {
   let hash = 5381;
@@ -1482,15 +1011,6 @@ function mediaFileExtension(contentType: string | undefined) {
     "video/webm": ".webm",
   };
   return contentType ? (extensions[contentType] ?? "") : "";
-}
-
-function generatedAssetStorageKey(
-  outputPrefix: string,
-  name: string,
-  contentType: string | undefined,
-  fallbackExtension: string,
-) {
-  return `${outputPrefix}${name}${mediaFileExtension(contentType) || fallbackExtension}`;
 }
 
 function mediaRouteToken(id: string) {

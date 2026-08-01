@@ -1,0 +1,101 @@
+{
+  "1": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "ltx23-gtanimation-alexa-reeves.webp"
+    }
+  },
+  "2": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "mage_flow_edit_turbo_bf16.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "3": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen3vl_4b_bf16.safetensors",
+      "type": "mage",
+      "device": "default"
+    }
+  },
+  "4": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "mage_flow_vae_bf16.safetensors"
+    }
+  },
+  "5": {
+    "class_type": "TextEncodeMageFlowEdit",
+    "inputs": {
+      "clip": [
+        "3",
+        0
+      ],
+      "prompt": "__PROMPT__",
+      "negative_prompt": "child, minor, underage, teenager, deformed anatomy, extra limbs, extra fingers, blurry, low quality",
+      "images.image_1": [
+        "1",
+        0
+      ],
+      "width": 800,
+      "height": 992,
+      "batch_size": 1,
+      "vae": [
+        "4",
+        0
+      ]
+    }
+  },
+  "6": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": [
+        "2",
+        0
+      ],
+      "seed": 4242,
+      "steps": 4,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "positive": [
+        "5",
+        0
+      ],
+      "negative": [
+        "5",
+        1
+      ],
+      "latent_image": [
+        "5",
+        2
+      ],
+      "denoise": 1
+    }
+  },
+  "7": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "6",
+        0
+      ],
+      "vae": [
+        "4",
+        0
+      ]
+    }
+  },
+  "8": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "7",
+        0
+      ],
+      "filename_prefix": "idream_mageflow_eval/__CASE_ID__"
+    }
+  }
+}

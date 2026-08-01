@@ -1237,14 +1237,14 @@ describe("generation config control plane", () => {
         runner: "sd_cpp",
         pipelineModel: "mock-image-workflow",
         allowedOrientations: ["1:1"],
-        workflowKey: "redcraft-krea2-txt2img",
+        workflowKey: "redcraft-krea2-redmix3-txt2img",
       },
     });
     expectOk(draft);
-    expect(draft.data.profile.workflowKey).toBe("redcraft-krea2-txt2img");
+    expect(draft.data.profile.workflowKey).toBe("redcraft-krea2-redmix3-txt2img");
     expect(
       await prisma.generationModelProfile.findUnique({ where: { id: draft.data.profile.id } }),
-    ).toMatchObject({ workflowKey: "redcraft-krea2-txt2img" });
+    ).toMatchObject({ workflowKey: "redcraft-krea2-redmix3-txt2img" });
 
     const unknownPatch = await api(
       "PATCH",
@@ -1274,11 +1274,11 @@ describe("generation config control plane", () => {
       {
         userId: admin,
         role: "admin",
-        body: { workflowKey: "redcraft-krea2-txt2img" },
+        body: { workflowKey: "redcraft-krea2-redmix3-txt2img" },
       },
     );
     expectOk(restorePatch);
-    expect(restorePatch.data.profile.workflowKey).toBe("redcraft-krea2-txt2img");
+    expect(restorePatch.data.profile.workflowKey).toBe("redcraft-krea2-redmix3-txt2img");
   });
 
   it("routes a generation job through workflowKey when the selected profile has one", async () => {
@@ -1302,7 +1302,7 @@ describe("generation config control plane", () => {
         mode: "image",
         runner: "sd_cpp",
         pipelineModel: "mock-image-workflow-route",
-        workflowKey: "redcraft-krea2-txt2img",
+        workflowKey: "redcraft-krea2-redmix3-txt2img",
         allowedOrientations: ["1:1"],
         version: 1,
         status: "active",
@@ -1321,7 +1321,7 @@ describe("generation config control plane", () => {
     expect(gen.data.job.profileId).toBe(profileKey);
 
     const stored = await prisma.generationJob.findUnique({ where: { id: gen.data.job.id } });
-    expect(stored?.model).toBe("redcraft-krea2-txt2img");
+    expect(stored?.model).toBe("redcraft-krea2-redmix3-txt2img");
 
     await runQueuedGenerationJobs(4);
   });
@@ -1472,13 +1472,13 @@ describe("generation config control plane", () => {
         label: "Missing runtime components",
         mode: "image",
         runner: "comfyui",
-        pipelineModel: "redcraft-krea2-comfyui",
+        pipelineModel: "redcraft-krea2-redmix3-fp8",
         sourceModelPath: "/models/checkpoints/redcraftKREA2RedMix_krea2Edition.safetensors",
         allowedOrientations: ["1:1"],
         version: 1,
         status: "draft",
         runnerConfig: {
-          apiModelId: "redcraft-krea2-comfyui",
+          apiModelId: "redcraft-krea2-redmix3-fp8",
           modelPath: "/models/checkpoints/redcraftKREA2RedMix_krea2Edition.safetensors",
           verificationStatus: "manual_passed",
           componentStatus: {
@@ -2661,8 +2661,8 @@ describe("generation config control plane", () => {
         label: "Production refund profile",
         mode: "image",
         runner: "pipeline",
-        pipelineModel: "redcraft-krea2-txt2img",
-        workflowKey: "redcraft-krea2-txt2img",
+        pipelineModel: "redcraft-krea2-redmix3-txt2img",
+        workflowKey: "redcraft-krea2-redmix3-txt2img",
         runnerConfig: {
           workflowVersion: 1,
           capabilities: { textToImage: true },

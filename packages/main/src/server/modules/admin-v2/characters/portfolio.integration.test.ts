@@ -540,10 +540,10 @@ describe("Character Portfolio authority/read model", () => {
       totalPurposes: 3,
       deepLink: `/admin/characters/${characterA}?tab=assets`,
     });
-    expect(item.nextAction).toEqual({
+    expect(item.journey.primaryAction).toEqual({
       code: "continue_asset_pack",
-      label: "Continue role-image pack",
       deepLink: `/admin/characters/${characterA}?tab=assets`,
+      command: null,
     });
     expect(item.performance.find((row) => row.window === "7d" && row.placementId === "feed.hero")).toMatchObject({
       characterContentVersionId: contentA,
@@ -559,6 +559,26 @@ describe("Character Portfolio authority/read model", () => {
     });
     expect(item.performance.find((row) => row.window === "7d" && row.placementId === "feed.hero")?.eligibleImpressions)
       .toBe(120);
+  });
+
+  // SPEC: 「需要处理」是运营每天的发现入口。它必须是真·筛选（进 where、影响分页），
+  // 页内排序解决不了问题——第三页上那个零观测的角色永远翻不到。
+  it("narrows the portfolio to live characters starved of observations", async () => {
+    const all = await listCharacterPortfolioData(prisma, characterPortfolioQuerySchema.parse({
+      limit: 50,
+    }), { asOf, authorizedDraftAssetCharacterIds: null });
+    const flagged = await listCharacterPortfolioData(prisma, characterPortfolioQuerySchema.parse({
+      limit: 50,
+      attention: true,
+    }), { asOf, authorizedDraftAssetCharacterIds: null });
+
+    const allIds = all.items.map((item) => item.characterId);
+    const flaggedIds = flagged.items.map((item) => item.characterId);
+    expect(allIds).toEqual(expect.arrayContaining([characterA, characterB]));
+    // A 与 B 都在 2026-06-01 上线（asOf 是 07-11，7d 窗口早已走完）；A 有 120 次曝光事实，
+    // B 一条观测都没有 —— 只有 B 该被筛出来。
+    expect(flaggedIds).toContain(characterB);
+    expect(flaggedIds).not.toContain(characterA);
   });
 
   it("returns an unfinished image run to the latest batch before ongoing production", async () => {
@@ -589,10 +609,10 @@ describe("Character Portfolio authority/read model", () => {
         characterPortfolioQuerySchema.parse({ search: "Astra", limit: 20 }),
         { asOf, authorizedDraftAssetCharacterIds: null },
       );
-      expect(data.items[0].nextAction).toEqual({
+      expect(data.items[0].journey.primaryAction).toEqual({
         code: "continue_image_run",
-        label: "Continue active image run",
         deepLink: `/admin/characters/${characterA}?tab=assets`,
+        command: null,
       });
     } finally {
       await prisma.contentProductionBatch.deleteMany({ where: { id: runId } });
@@ -621,10 +641,10 @@ describe("Character Portfolio authority/read model", () => {
         characterPortfolioQuerySchema.parse({ search: "Astra", limit: 20 }),
         { asOf, authorizedDraftAssetCharacterIds: null },
       );
-      expect(data.items[0].nextAction).toEqual({
+      expect(data.items[0].journey.primaryAction).toEqual({
         code: "continue_asset_pack",
-        label: "Continue role-image pack",
         deepLink: `/admin/characters/${characterA}?tab=assets`,
+        command: null,
       });
     } finally {
       await prisma.characterProject.update({

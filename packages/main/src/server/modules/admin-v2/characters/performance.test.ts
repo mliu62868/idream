@@ -130,6 +130,75 @@ describe("canonical Character Performance", () => {
     });
   });
 
+  // SPEC: 无观测 ≠ 观测不可信。以前两者都落 invalid，还附带两条并不存在的链路故障原因，
+  // 结果是每个刚上线的角色天天报"数据不可用"，运营很快学会无视这个字段。
+  it("reports no_data instead of inventing a broken pipeline when nothing was observed", () => {
+    const summary = evaluateCharacterPerformance({
+      characterContentVersionId: "content-v2",
+      characterReleaseId: "release-v2",
+      placementId: null,
+      releasePublishedAt: new Date("2026-07-09T00:00:00.000Z"),
+      window: "7d",
+      asOf,
+      exposureRows: [],
+      funnelRows: [],
+      economicsRows: [],
+      economicsAuthority: {
+        cashCaptureComplete: false,
+        refundsComplete: false,
+        creditsComplete: false,
+        variableCostsComplete: false,
+      },
+    });
+    expect(summary).toMatchObject({
+      qualityState: "no_data",
+      coverageState: "unavailable",
+      sampleSize: 0,
+      detailCtr: null,
+      chatStartRate: null,
+      qceRate: null,
+      sameCharacterD7: null,
+    });
+    expect(summary.evidence).toContain("no_observations_recorded");
+    expect(summary.evidence).not.toContain("eligible_impression_or_detail_chain_not_exact");
+    expect(summary.evidence).not.toContain("funnel_projection_not_exact");
+  });
+
+  it("still reports invalid when only half of the observation chain arrived", () => {
+    const summary = evaluateCharacterPerformance({
+      characterContentVersionId: "content-v2",
+      characterReleaseId: "release-v2",
+      placementId: null,
+      releasePublishedAt: new Date("2026-06-01T00:00:00.000Z"),
+      window: "7d",
+      asOf,
+      exposureRows: [],
+      funnelRows: [{
+        eligibleImpressions: 40,
+        detailViews: 20,
+        firstSuccessfulExchanges: 10,
+        qceCount: 5,
+        relationshipActivations: 2,
+        sameCharacterD7EligiblePairs: 4,
+        sameCharacterD7Returns: 1,
+        paidAttributions: 1,
+        coverageState: "exact",
+        latestDataAt: new Date("2026-07-10T02:00:00.000Z"),
+        sourceEvidence: ["projector:character-funnel-v1"],
+      }],
+      economicsRows: [],
+      economicsAuthority: {
+        cashCaptureComplete: false,
+        refundsComplete: false,
+        creditsComplete: false,
+        variableCostsComplete: false,
+      },
+    });
+    expect(summary.qualityState).toBe("invalid");
+    expect(summary.evidence).toContain("eligible_impression_or_detail_chain_not_exact");
+    expect(summary.evidence).not.toContain("no_observations_recorded");
+  });
+
   it("keeps verified funnel rates directional when only paid attribution is unavailable", () => {
     const summary = evaluateCharacterPerformance({
       characterContentVersionId: "content-v2",

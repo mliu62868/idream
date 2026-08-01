@@ -27,16 +27,6 @@ const ANALYST_USER_ID = "seed-analyst-user";
 const KREA2_TEXT_ENCODER_PATH =
   "/Users/kk/.localai/models/krea2/text_encoders/Qwen3VL-4B-Instruct-Q4_K_M.gguf";
 const KREA2_VAE_PATH = "/Users/kk/.localai/models/krea2/vae/wan_2.1_vae.safetensors";
-const REDCRAFT_KREA2_MODEL_PATH =
-  "/Users/kk/Downloads/models/redcraftKREA2RedMix_krea2Edition.safetensors";
-const REDCRAFT_COMFYUI_RUNTIME_PATH = "/Users/kk/ComfyUI-Installs/idream (1)/ComfyUI";
-const REDCRAFT_CANONICAL_WORKFLOW_PATH =
-  "/Users/kk/code/idream/packages/gen/workflows/redcraft-krea2-txt2img.json";
-const REDCRAFT_COMFYUI_WORKFLOW_PATH =
-  "/Users/kk/code/idream/packages/gen/workflows/redcraft-krea2-comfyui-text.json";
-const REDCRAFT_COMFYUI_TEXT_ENCODER_PATH =
-  "/Users/kk/ComfyUI-Shared/models/text_encoders/qwen3vl_4b_fp8_scaled.safetensors";
-const REDCRAFT_COMFYUI_VAE_PATH = "/Users/kk/ComfyUI-Shared/models/vae/qwen_image_vae.safetensors";
 const COMFYUI_MODEL_ROOT =
   process.env.COMFYUI_MODEL_ROOT ?? "/Users/kk/ComfyUI-Shared/models";
 const DARKBEAST_BFS_FLUX2_MODEL_PATH = path.join(
@@ -64,11 +54,6 @@ const REDMIX3_FP8_MODEL_PATH = path.join(
   COMFYUI_MODEL_ROOT,
   "diffusion_models",
   "Krea2RedMix3.0-fp8-scaled-ComfyUI.safetensors",
-);
-const REDMIX3_BF16_MODEL_PATH = path.join(
-  COMFYUI_MODEL_ROOT,
-  "diffusion_models",
-  "redcraftKREA2RedMix3.0-bf16.safetensors",
 );
 const REDMIX3_TEXT_ENCODER_PATH = path.join(
   COMFYUI_MODEL_ROOT,
@@ -225,21 +210,25 @@ function darkBeastUserImageEditProfileData() {
 function redMix3ComparisonProfileData() {
   return {
     profileKey: "redcraft-krea2-redmix3-comparison",
-    label: "RedCraft Krea2 RedMix3 BF16 comparison",
+    label: "RedCraft Krea2 RedMix3 comparison",
     mode: "image",
     runner: "comfyui",
-    pipelineModel: "redcraft-krea2-redmix3-bf16",
+    pipelineModel: "redcraft-krea2-redmix3-fp8",
     workflowKey: "redcraft-krea2-redmix3-txt2img",
     sourceModelPath: REDMIX3_FP8_MODEL_PATH,
-    convertedModelPath: REDMIX3_BF16_MODEL_PATH,
+    // SPEC: run the Civitai release file as-is. Once fp4-fp8-for-torch-mps is in
+    // the runner venv, ComfyUI dequantizes scaled-fp8 per layer on MPS, so the
+    // former bf16 conversion product is neither needed nor equivalent to it
+    // (measured RMSE 25.5 against the same seed on the krea2Edition pair).
+    convertedModelPath: null,
     modelFormat: "safetensors",
     runnerConfig: {
       sourceFp8Path: REDMIX3_FP8_MODEL_PATH,
-      diffusionModelPath: REDMIX3_BF16_MODEL_PATH,
+      diffusionModelPath: REDMIX3_FP8_MODEL_PATH,
       textEncoderPath: REDMIX3_TEXT_ENCODER_PATH,
       vaePath: REDMIX3_VAE_PATH,
       workflowPath: REDMIX3_WORKFLOW_PATH,
-      apiModelId: "redcraft-krea2-redmix3-bf16",
+      apiModelId: "redcraft-krea2-redmix3-fp8",
       templateIntent: "redmix3_text_to_image_comparison",
       baseModel: "Krea 2",
       civitaiModelId: 958009,
@@ -251,18 +240,18 @@ function redMix3ComparisonProfileData() {
       civitaiAutoV2: "F6088960C0",
       civitaiSha256:
         "F6088960C0FEBD27CBD372FC758BB07D012F2D8AE3CD10C45C903D48B94409EA",
-      conversion: {
-        sourceFormat: "scaled_fp8_e4m3",
-        targetFormat: "bf16",
-        script: "packages/gen/scripts/dequant_fp8_to_bf16.py",
+      // Header expectations are still worth asserting on download; they just no
+      // longer feed a conversion step.
+      weightLayout: {
+        format: "scaled_fp8_e4m3",
         expectedFp8Weights: 256,
         expectedWeightScales: 256,
         expectedComfyQuantSidecars: 256,
       },
-      verificationStatus: "artifact_smoke_pending",
+      verificationStatus: "runtime_verified_mps",
       comparisonBaseline: {
-        modelId: "redcraft-krea2-comfyui",
-        workflowKey: "redcraft-krea2-txt2img",
+        modelId: "redcraft-krea2-redmix3-fp8",
+        workflowKey: "redcraft-krea2-redmix3-txt2img",
       },
       workflow: {
         sampler: "euler",
@@ -274,12 +263,9 @@ function redMix3ComparisonProfileData() {
       },
       componentStatus: {
         sourceFp8: {
-          status: "download_pending",
+          // SHA-256 verified against the Civitai release on 2026-07-29.
+          status: "present",
           path: REDMIX3_FP8_MODEL_PATH,
-        },
-        convertedDiffusionModel: {
-          status: "conversion_pending",
-          path: REDMIX3_BF16_MODEL_PATH,
         },
         qwenTextEncoder: {
           status: "present",
@@ -296,7 +282,6 @@ function redMix3ComparisonProfileData() {
       },
       requiredComponents: [
         "Krea2RedMix3.0-fp8-scaled-ComfyUI.safetensors",
-        "redcraftKREA2RedMix3.0-bf16.safetensors",
         "qwen3vl_4b_bf16.safetensors",
         "qwen_image_vae.safetensors",
         "ComfyUI 0.28+ MPS workflow",
@@ -1155,15 +1140,15 @@ async function seedAdminControlPlane() {
       label: "Default image",
       mode: "image",
       runner: "comfyui",
-      pipelineModel: "redcraft-krea2-comfyui",
-      workflowKey: "redcraft-krea2-txt2img",
-      sourceModelPath: REDCRAFT_KREA2_MODEL_PATH,
+      pipelineModel: "redcraft-krea2-redmix3-fp8",
+      workflowKey: "redcraft-krea2-redmix3-txt2img",
+      sourceModelPath: REDMIX3_FP8_MODEL_PATH,
       convertedModelPath: null,
       modelFormat: "safetensors",
       runnerConfig: {
-        modelPath: REDCRAFT_KREA2_MODEL_PATH,
-        apiModelId: "redcraft-krea2-comfyui",
-        workflowPath: REDCRAFT_CANONICAL_WORKFLOW_PATH,
+        modelPath: REDMIX3_FP8_MODEL_PATH,
+        apiModelId: "redcraft-krea2-redmix3-fp8",
+        workflowPath: REDMIX3_WORKFLOW_PATH,
         capabilities: {
           textToImage: true,
           stableSeed: true,
@@ -1195,15 +1180,15 @@ async function seedAdminControlPlane() {
       label: "Default image",
       mode: "image",
       runner: "comfyui",
-      pipelineModel: "redcraft-krea2-comfyui",
-      workflowKey: "redcraft-krea2-txt2img",
-      sourceModelPath: REDCRAFT_KREA2_MODEL_PATH,
+      pipelineModel: "redcraft-krea2-redmix3-fp8",
+      workflowKey: "redcraft-krea2-redmix3-txt2img",
+      sourceModelPath: REDMIX3_FP8_MODEL_PATH,
       convertedModelPath: null,
       modelFormat: "safetensors",
       runnerConfig: {
-        modelPath: REDCRAFT_KREA2_MODEL_PATH,
-        apiModelId: "redcraft-krea2-comfyui",
-        workflowPath: REDCRAFT_CANONICAL_WORKFLOW_PATH,
+        modelPath: REDMIX3_FP8_MODEL_PATH,
+        apiModelId: "redcraft-krea2-redmix3-fp8",
+        workflowPath: REDMIX3_WORKFLOW_PATH,
         capabilities: {
           textToImage: true,
           stableSeed: true,
@@ -1240,15 +1225,15 @@ async function seedAdminControlPlane() {
       label: "Premium image",
       mode: "image",
       runner: "comfyui",
-      pipelineModel: "redcraft-krea2-comfyui",
-      workflowKey: "redcraft-krea2-txt2img",
-      sourceModelPath: REDCRAFT_KREA2_MODEL_PATH,
+      pipelineModel: "redcraft-krea2-redmix3-fp8",
+      workflowKey: "redcraft-krea2-redmix3-txt2img",
+      sourceModelPath: REDMIX3_FP8_MODEL_PATH,
       convertedModelPath: null,
       modelFormat: "safetensors",
       runnerConfig: {
-        modelPath: REDCRAFT_KREA2_MODEL_PATH,
-        apiModelId: "redcraft-krea2-comfyui",
-        workflowPath: REDCRAFT_CANONICAL_WORKFLOW_PATH,
+        modelPath: REDMIX3_FP8_MODEL_PATH,
+        apiModelId: "redcraft-krea2-redmix3-fp8",
+        workflowPath: REDMIX3_WORKFLOW_PATH,
         capabilities: {
           textToImage: true,
           stableSeed: true,
@@ -1280,15 +1265,15 @@ async function seedAdminControlPlane() {
       label: "Premium image",
       mode: "image",
       runner: "comfyui",
-      pipelineModel: "redcraft-krea2-comfyui",
-      workflowKey: "redcraft-krea2-txt2img",
-      sourceModelPath: REDCRAFT_KREA2_MODEL_PATH,
+      pipelineModel: "redcraft-krea2-redmix3-fp8",
+      workflowKey: "redcraft-krea2-redmix3-txt2img",
+      sourceModelPath: REDMIX3_FP8_MODEL_PATH,
       convertedModelPath: null,
       modelFormat: "safetensors",
       runnerConfig: {
-        modelPath: REDCRAFT_KREA2_MODEL_PATH,
-        apiModelId: "redcraft-krea2-comfyui",
-        workflowPath: REDCRAFT_CANONICAL_WORKFLOW_PATH,
+        modelPath: REDMIX3_FP8_MODEL_PATH,
+        apiModelId: "redcraft-krea2-redmix3-fp8",
+        workflowPath: REDMIX3_WORKFLOW_PATH,
         capabilities: {
           textToImage: true,
           stableSeed: true,
@@ -1313,217 +1298,6 @@ async function seedAdminControlPlane() {
       status: "active",
       dryRunSummary: { configurationSampleCount: 6, configurationPassRate: 1, source: "seed_configuration_check" },
       publishedAt: new Date("2026-06-24T00:00:00.000Z"),
-    },
-    });
-  }
-
-  if (!existingProfileKeys.has("profile_comfyui_redcraft_krea2_checkpoint_v1")) {
-    await prisma.generationModelProfile.upsert({
-    where: { id: "seed-profile-sdcpp-redcraft-krea2-text-v1" },
-    update: {
-      profileKey: "profile_comfyui_redcraft_krea2_checkpoint_v1",
-      label: "Redcraft Krea2 ComfyUI checkpoint candidate",
-      mode: "image",
-      runner: "comfyui",
-      pipelineModel: "redcraft-krea2-comfyui",
-      sourceModelPath: REDCRAFT_KREA2_MODEL_PATH,
-      convertedModelPath: null,
-      modelFormat: "safetensors",
-      runnerConfig: {
-        modelPath: REDCRAFT_KREA2_MODEL_PATH,
-        apiModelId: "redcraft-krea2-comfyui",
-        profileTemplate: "reference_identity_comfyui",
-        templateIntent: "comfyui_krea2_text_checkpoint",
-        assetFormat: "fp8_scaled_comfyui_checkpoint",
-        workflowPath: REDCRAFT_COMFYUI_WORKFLOW_PATH,
-        verificationStatus: "manual_passed",
-        productionRunnerPolicy: {
-          gateway: "openai_compatible_comfyui_image_gateway",
-          readinessEndpoint: "/readyz",
-          generationEndpoint: "/images/generations",
-          trafficExposure: "draft_disabled_zero_rollout_until_managed_gateway",
-          localProbe:
-            "bun run launch:probe:redcraft-consistency:local -- --output .tmp/redcraft-consistency-review --seed redcraft-serena-cvp-v1",
-          note:
-            "Redcraft is a built-in ComfyUI profile, not an admin-managed model. Publishing traffic requires a managed gateway process with health checks; local CPU smoke is sufficient for candidate readiness, not automatic rollout.",
-        },
-        componentStatus: {
-          comfyuiRuntime: {
-            status: "verified_cpu",
-            path: REDCRAFT_COMFYUI_RUNTIME_PATH,
-          },
-          krea2ComfyuiTextEncoder: { status: "present", path: REDCRAFT_COMFYUI_TEXT_ENCODER_PATH },
-          krea2ComfyuiVae: { status: "present", path: REDCRAFT_COMFYUI_VAE_PATH },
-          krea2Workflow: { status: "present", path: REDCRAFT_COMFYUI_WORKFLOW_PATH },
-          krea2SdcppTextEncoder: { status: "present", path: KREA2_TEXT_ENCODER_PATH },
-          krea2SdcppVae: { status: "present", path: KREA2_VAE_PATH },
-        },
-        probeFindings: {
-          sdcppMetal: "pure_white_output",
-          sdcppCpu: "timed_out_without_256x384_output",
-          sdcppOfficialWanVaeMetal: "aborted_on_metal_vae_decode_im2col_3d",
-          sdcppOfficialWanVaeCpu: "exit_zero_but_sanity_rejected_pure_white",
-          sdcppQwenVaeCpu: "exit_zero_but_sanity_rejected_pure_white",
-          sdcppGuidanceZero: "exit_zero_but_sanity_rejected_pure_white",
-          sdcppGuidanceMatrix: "guidance_0_1_3_5_all_exit_zero_but_pure_white",
-          sdcppSchedulerMatrix: "model_default_simple_logit_normal_mu_1_15_all_pure_white",
-          sdcppVaeFormatMatrix: "auto_flux_sd3_flux2_all_pure_white",
-          sdcppGgufDiffusion: "exit_zero_but_sanity_rejected_pure_white",
-          sdcppFp8TextEncoder: "metadata_shape_validation_failed",
-          civitaiAssetFormat: "fp8_scaled_comfyui_checkpoint",
-          sdcppModelFlag: "exit_zero_but_sanity_rejected_pure_white",
-          sdcppCpuBackend: "exit_zero_but_sanity_rejected_pure_white",
-          comfyuiMps: "unsupported_float8_e4m3fn_dtype",
-          comfyuiGgufClip: "clip_loader_torch_load_unpickling_error_for_gguf",
-          comfyuiFp8CpuClip: "ksampler_mps_float8_e4m3fn_unsupported",
-          comfyuiCpu: "smoke_passed_256x384_2_steps_nonblank",
-          comfyuiOpenAiGateway: "pipeline_probe_completed_blob_written",
-          comfyuiConsistencySamples: "20_locked_seed_samples_manual_passed_17_of_20",
-        },
-        capabilities: {
-          textToImage: true,
-          stableSeed: true,
-          referenceImages: false,
-          initImage: false,
-          lora: false,
-        },
-      },
-      defaultWidth: 960,
-      defaultHeight: 1440,
-      allowedOrientations: ["3:4", "4:5", "1:1"],
-      steps: 10,
-      sampler: "er_sde",
-      scheduler: "simple",
-      cfgScale: 1,      costMultiplier: 1.1,
-      requiredEntitlement: null,
-      maxCount: 1,
-      concurrencyLimit: 1,
-      enabled: false,
-      rolloutPercent: 0,
-      version: 1,
-      status: "draft",
-      dryRunSummary: {
-        sampleCount: 20,
-        successRate: 1,
-        p95LatencyMs: 20_000,
-        testedAt: "2026-06-30",
-        smokeOutputPath: "/tmp/idream-redcraft-comfyui-cpu-smoke.png",
-        pipelineSmokeReportPath: "/tmp/idream-redcraft-pipeline-image-local.json",
-        consistencyManifestPath: "/Users/kk/code/idream/.tmp/redcraft-consistency-review/manifest.json",
-        consistencyReviewPath: "/Users/kk/code/idream/.tmp/redcraft-consistency-review/review.html",
-        consistencyManualReviewPath: "/Users/kk/code/idream/.tmp/redcraft-consistency-review/manual-review.json",
-        consistencyContactSheetPath: "/Users/kk/code/idream/.tmp/redcraft-consistency-review/contact-sheet.jpg",
-        consistencySampleCount: 20,
-        consistencyPassCount: 17,
-        consistencyRate: 0.85,
-        seedMode: "locked",
-        notes:
-          "Local sd.cpp tests with Redcraft safetensors and gguf produced all-white PNGs. Header inspection shows a diffusion-only fp8-scaled ComfyUI checkpoint with CheckpointLoaderSimple workflow metadata, so this asset is no longer modeled as a sd.cpp template. A 2026-06-30 sd.cpp matrix covered scheduler model_default/simple/logit_normal mu=1.15, guidance 0/1/3.5, VAE format auto/flux/sd3/flux2, qwen_image VAE, no diffusion-fa, no offload, --model loading, GGUF diffusion, and CPU backend; all successful exits were rejected by image sanity as pure white. Apple Silicon MPS ComfyUI still fails on Float8_e4m3fn. The split-node ComfyUI CPU workflow in packages/gen/workflows/redcraft-krea2-comfyui-text.json produced a 256x384 PNG that passed image sanity. The local OpenAI-compatible gateway also completed launch:probe:redcraft-image:local and wrote a PNG through gen probe:image/blob storage. launch:probe:redcraft-consistency:local now runs with seedMode=locked, matching CharacterVisualProfile.defaultSeed behavior; 20 pipeline samples were manually reviewed at 17/20 same-character, consistencyRate=0.85. Redcraft remains disabled at zero rollout until a managed ComfyUI gateway is deployed.",
-      },
-      publishedAt: null,
-    },
-    create: {
-      id: "seed-profile-sdcpp-redcraft-krea2-text-v1",
-      profileKey: "profile_comfyui_redcraft_krea2_checkpoint_v1",
-      label: "Redcraft Krea2 ComfyUI checkpoint candidate",
-      mode: "image",
-      runner: "comfyui",
-      pipelineModel: "redcraft-krea2-comfyui",
-      sourceModelPath: REDCRAFT_KREA2_MODEL_PATH,
-      convertedModelPath: null,
-      modelFormat: "safetensors",
-      runnerConfig: {
-        modelPath: REDCRAFT_KREA2_MODEL_PATH,
-        apiModelId: "redcraft-krea2-comfyui",
-        profileTemplate: "reference_identity_comfyui",
-        templateIntent: "comfyui_krea2_text_checkpoint",
-        assetFormat: "fp8_scaled_comfyui_checkpoint",
-        workflowPath: REDCRAFT_COMFYUI_WORKFLOW_PATH,
-        verificationStatus: "manual_passed",
-        productionRunnerPolicy: {
-          gateway: "openai_compatible_comfyui_image_gateway",
-          readinessEndpoint: "/readyz",
-          generationEndpoint: "/images/generations",
-          trafficExposure: "draft_disabled_zero_rollout_until_managed_gateway",
-          localProbe:
-            "bun run launch:probe:redcraft-consistency:local -- --output .tmp/redcraft-consistency-review --seed redcraft-serena-cvp-v1",
-          note:
-            "Redcraft is a built-in ComfyUI profile, not an admin-managed model. Publishing traffic requires a managed gateway process with health checks; local CPU smoke is sufficient for candidate readiness, not automatic rollout.",
-        },
-        componentStatus: {
-          comfyuiRuntime: {
-            status: "verified_cpu",
-            path: REDCRAFT_COMFYUI_RUNTIME_PATH,
-          },
-          krea2ComfyuiTextEncoder: { status: "present", path: REDCRAFT_COMFYUI_TEXT_ENCODER_PATH },
-          krea2ComfyuiVae: { status: "present", path: REDCRAFT_COMFYUI_VAE_PATH },
-          krea2Workflow: { status: "present", path: REDCRAFT_COMFYUI_WORKFLOW_PATH },
-          krea2SdcppTextEncoder: { status: "present", path: KREA2_TEXT_ENCODER_PATH },
-          krea2SdcppVae: { status: "present", path: KREA2_VAE_PATH },
-        },
-        probeFindings: {
-          sdcppMetal: "pure_white_output",
-          sdcppCpu: "timed_out_without_256x384_output",
-          sdcppOfficialWanVaeMetal: "aborted_on_metal_vae_decode_im2col_3d",
-          sdcppOfficialWanVaeCpu: "exit_zero_but_sanity_rejected_pure_white",
-          sdcppQwenVaeCpu: "exit_zero_but_sanity_rejected_pure_white",
-          sdcppGuidanceZero: "exit_zero_but_sanity_rejected_pure_white",
-          sdcppGuidanceMatrix: "guidance_0_1_3_5_all_exit_zero_but_pure_white",
-          sdcppSchedulerMatrix: "model_default_simple_logit_normal_mu_1_15_all_pure_white",
-          sdcppVaeFormatMatrix: "auto_flux_sd3_flux2_all_pure_white",
-          sdcppGgufDiffusion: "exit_zero_but_sanity_rejected_pure_white",
-          sdcppFp8TextEncoder: "metadata_shape_validation_failed",
-          civitaiAssetFormat: "fp8_scaled_comfyui_checkpoint",
-          sdcppModelFlag: "exit_zero_but_sanity_rejected_pure_white",
-          sdcppCpuBackend: "exit_zero_but_sanity_rejected_pure_white",
-          comfyuiMps: "unsupported_float8_e4m3fn_dtype",
-          comfyuiGgufClip: "clip_loader_torch_load_unpickling_error_for_gguf",
-          comfyuiFp8CpuClip: "ksampler_mps_float8_e4m3fn_unsupported",
-          comfyuiCpu: "smoke_passed_256x384_2_steps_nonblank",
-          comfyuiOpenAiGateway: "pipeline_probe_completed_blob_written",
-          comfyuiConsistencySamples: "20_locked_seed_samples_manual_passed_17_of_20",
-        },
-        capabilities: {
-          textToImage: true,
-          stableSeed: true,
-          referenceImages: false,
-          initImage: false,
-          lora: false,
-        },
-      },
-      defaultWidth: 960,
-      defaultHeight: 1440,
-      allowedOrientations: ["3:4", "4:5", "1:1"],
-      steps: 10,
-      sampler: "er_sde",
-      scheduler: "simple",
-      cfgScale: 1,      costMultiplier: 1.1,
-      requiredEntitlement: null,
-      maxCount: 1,
-      concurrencyLimit: 1,
-      enabled: false,
-      rolloutPercent: 0,
-      version: 1,
-      status: "draft",
-      dryRunSummary: {
-        sampleCount: 20,
-        successRate: 1,
-        p95LatencyMs: 20_000,
-        testedAt: "2026-06-30",
-        smokeOutputPath: "/tmp/idream-redcraft-comfyui-cpu-smoke.png",
-        pipelineSmokeReportPath: "/tmp/idream-redcraft-pipeline-image-local.json",
-        consistencyManifestPath: "/Users/kk/code/idream/.tmp/redcraft-consistency-review/manifest.json",
-        consistencyReviewPath: "/Users/kk/code/idream/.tmp/redcraft-consistency-review/review.html",
-        consistencyManualReviewPath: "/Users/kk/code/idream/.tmp/redcraft-consistency-review/manual-review.json",
-        consistencyContactSheetPath: "/Users/kk/code/idream/.tmp/redcraft-consistency-review/contact-sheet.jpg",
-        consistencySampleCount: 20,
-        consistencyPassCount: 17,
-        consistencyRate: 0.85,
-        seedMode: "locked",
-        notes:
-          "Local sd.cpp tests with Redcraft safetensors and gguf produced all-white PNGs. Header inspection shows a diffusion-only fp8-scaled ComfyUI checkpoint with CheckpointLoaderSimple workflow metadata, so this asset is no longer modeled as a sd.cpp template. A 2026-06-30 sd.cpp matrix covered scheduler model_default/simple/logit_normal mu=1.15, guidance 0/1/3.5, VAE format auto/flux/sd3/flux2, qwen_image VAE, no diffusion-fa, no offload, --model loading, GGUF diffusion, and CPU backend; all successful exits were rejected by image sanity as pure white. Apple Silicon MPS ComfyUI still fails on Float8_e4m3fn. The split-node ComfyUI CPU workflow in packages/gen/workflows/redcraft-krea2-comfyui-text.json produced a 256x384 PNG that passed image sanity. The local OpenAI-compatible gateway also completed launch:probe:redcraft-image:local and wrote a PNG through gen probe:image/blob storage. launch:probe:redcraft-consistency:local now runs with seedMode=locked, matching CharacterVisualProfile.defaultSeed behavior; 20 pipeline samples were manually reviewed at 17/20 same-character, consistencyRate=0.85. Redcraft remains disabled at zero rollout until a managed ComfyUI gateway is deployed.",
-      },
-      publishedAt: null,
     },
     });
   }

@@ -9,6 +9,7 @@ export interface CharacterPortfolioUrlState {
   readonly phase?: string;
   readonly servingState?: string;
   readonly readiness?: string;
+  readonly attention?: boolean;
   readonly cursor?: string;
 }
 
@@ -31,6 +32,7 @@ export function parseCharacterPortfolioUrl(search: string): CharacterPortfolioUr
     phase: phase.success ? phase.data : undefined,
     servingState: servingState.success ? servingState.data : undefined,
     readiness: readiness.success ? readiness.data : undefined,
+    attention: params.get("attention") === "true" ? true : undefined,
     cursor: optionalValue(params.get("cursor")),
   };
 }
@@ -48,6 +50,7 @@ export function characterPortfolioQuery(
   if (state.phase) params.set("phase", state.phase);
   if (state.servingState) params.set("servingState", state.servingState);
   if (state.readiness) params.set("readiness", state.readiness);
+  if (state.attention) params.set("attention", "true");
   if (state.cursor) params.set("cursor", state.cursor);
   return params.toString();
 }
