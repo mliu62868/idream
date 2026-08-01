@@ -210,6 +210,7 @@ export const characterVisualIdentityVersionSchema = z
     immutableHash: z.string().nullable(),
     evidenceState: z.string().trim().min(1),
     defaultSeed: z.string().nullable(),
+    anchorAssetIds: z.array(adminIdSchema).readonly(),
     createdFrom: z.string().trim().min(1),
     createdAt: adminIsoDateTimeSchema,
   })

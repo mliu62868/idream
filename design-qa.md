@@ -65,6 +65,37 @@ final result: passed
 
 ---
 
+# Visual Identity History Gallery - 2026-08-01
+
+## Visual source and implementation
+
+- Selected visual target: `/Users/kk/.codex/generated_images/019fbb03-5a89-7353-be3b-2d6b99a9d4d7/exec-3c6fd842-7578-4f30-b6fc-730d1df6d804.png` at 1487 x 1058.
+- Full comparison input: `output/product-design/character-visual-history-redesign-2026-08-01/qa-source-and-implementation.png` at 2560 x 911. The source and implementation were normalized to the same 1280 px comparison width.
+- Final implementation: `output/product-design/character-visual-history-redesign-2026-08-01/final-visual-desktop.png` at 1280 x 1413 full-page capture.
+- Focused selected-history state: `output/product-design/character-visual-history-redesign-2026-08-01/final-history-selected-desktop.png` at 1280 x 1918 full-page capture.
+- Browser state: real Alexa Reeves workspace at `?tab=visual`, Chinese locale, five successful historical images and three failed runs.
+- Design controls: `DESIGN_VARIANCE=5`, `MOTION_INTENSITY=2`, `VISUAL_DENSITY=3`.
+
+## Visible comparison and iteration
+
+- Preserved the selected target's calm two-column editor: current identity on the left, one free-form generation composer on the right, and prompt, negative prompt, seed, reference action, and Generate as the visible controls.
+- Replaced the hidden date/status history disclosure with a persistent image gallery below the composer. This is the only intentional structural difference from the target because history discovery and re-selection were the reported usability failure.
+- Clicking a historical image opens a large preview with the actual seed, generation mode, prompt disclosure, and direct reuse actions. Failed runs remain visible without occupying image-card space.
+- Removed the false `current` label from historical candidates by projecting the active identity's authoritative `anchorAssetIds`. Legacy images without the required composition evidence can be reused for a new run but are not offered an impossible activation action.
+- Rechecked Details, Images, Video, Voice, Launch Preview, Release, and Live Performance at desktop width. No new stage navigation, explanatory hero, or card stack was added.
+
+## Interaction and implementation QA
+
+- Browser verified five discoverable history buttons, opened an older image, confirmed prompt and actual seed visibility, and used `沿用生成参数` to restore seed `143891318` into the composer.
+- Browser console contained zero errors. One pre-existing Next.js LCP warning remains for `/images/ourdream/card-alexa-reeves.webp` and is unrelated to this visual-history change.
+- Character frontend suite: 14 files, 145 tests passed.
+- Workspace integration: 10 tests passed against PostgreSQL, including `anchorAssetIds` projection.
+- Admin, Main, and Shared typecheck passed. Admin lint, production build, and `git diff --check` passed.
+
+final result: passed
+
+---
+
 # Final closeout — Full Character Workspace Audit
 
 ## Comparison target

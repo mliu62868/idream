@@ -1098,6 +1098,7 @@ export async function getCharacterWorkspace(characterId: string) {
         immutableHash: activeIdentity.immutableHash,
         evidenceState: activeIdentity.evidenceState,
         defaultSeed: activeIdentity.defaultSeed,
+        anchorAssetIds: strings(activeIdentity.anchorAssetIds),
         createdFrom: activeIdentity.createdFrom,
         createdAt: activeIdentity.createdAt.toISOString(),
       } : null,

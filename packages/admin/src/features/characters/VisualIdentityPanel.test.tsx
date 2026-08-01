@@ -27,6 +27,7 @@ const data = {
       immutableHash: "identity-hash",
       evidenceState: "candidate",
       defaultSeed: "42",
+      anchorAssetIds: ["anchor-1"],
       createdFrom: "admin_passport_edit",
       createdAt: "2026-07-12T12:00:00.000Z",
     },
@@ -179,8 +180,8 @@ describe("Visual Identity operator workbench", () => {
     expect(html).toContain("高级设置");
     expect(html).toContain("负向提示词");
     expect(html).toContain("锁定种子");
-    expect(html).toContain("从这张继续调整");
-    expect(html).toContain("采用这张图并继续");
+    expect(html).toContain("历史创作");
+    expect(html).toContain("打开任意图片");
     expect(html).toContain("正式身份与生产设置");
     expect(html).toContain("Publish the approved identity references");
     expect(html).toContain('href="#visual-reference-set"');

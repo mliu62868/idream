@@ -305,7 +305,12 @@ describe("Character operator workspace", () => {
     });
     expect(detail.releases[0]).toMatchObject({ release: { readiness: "blocked" }, checks: [], monitors: [] });
     expect(detail.visual).toMatchObject({
-      activeIdentity: { id: visualProfileId, version: 1, evidenceState: "candidate" },
+      activeIdentity: {
+        id: visualProfileId,
+        version: 1,
+        evidenceState: "candidate",
+        anchorAssetIds: [previewAssetId],
+      },
       anchors: [{ mediaAssetId: previewAssetId, available: true }],
       activeReferenceSet: { id: referenceSetId, revision: 1, references: [{ mediaAssetId: previewAssetId, available: true }] },
       routeQualifications: [{

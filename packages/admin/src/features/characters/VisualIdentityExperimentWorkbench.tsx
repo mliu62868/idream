@@ -27,7 +27,6 @@ import {
 } from "react";
 import { adminV2FormRequest, adminV2Request } from "@/lib/admin-v2-api";
 import {
-  StatusBadge,
   WorkspaceButton,
   fieldClass,
   textAreaClass,
@@ -90,12 +89,6 @@ function itemImage(item: CreativeRunDetail["items"][number] | undefined) {
 
 function modeLabel(mode: ExperimentMode) {
   return mode === "text_to_image" ? "文生图" : "图生图";
-}
-
-function seedStrategyLabel(strategy: SeedStrategy) {
-  if (strategy === "locked") return "锁定种子";
-  if (strategy === "reuse_source") return "沿用所选图";
-  return "每轮随机";
 }
 
 function generationModelLabel(modelId: string) {
@@ -166,8 +159,6 @@ export function VisualIdentityExperimentWorkbench({
   const selectedModelProfiles = compatibleProfiles.filter(
     (profile) => profile.modelId === selectedModelId,
   );
-  const selectedProfileIsDefault =
-    selectedProfile?.profileKey === preferredProfile?.profileKey;
   const [orientation, setOrientation] = useState(
     selectedProfile?.orientation ?? "4:5",
   );
@@ -193,6 +184,10 @@ export function VisualIdentityExperimentWorkbench({
     url: string | null;
   } | null>(null);
   const [runs, setRuns] = useState<CreativeRun[]>([]);
+  const [runDetails, setRunDetails] = useState<
+    Record<string, CreativeRunDetail>
+  >({});
+  const [historyLoading, setHistoryLoading] = useState(true);
   const [selectedRun, setSelectedRun] = useState<CreativeRunDetail | null>(
     null,
   );
@@ -231,6 +226,7 @@ export function VisualIdentityExperimentWorkbench({
         `/api/v2/admin/creative/runs/${encodeURIComponent(runId)}`,
         { schema: creativeRunDetailSchema },
       );
+      setRunDetails((current) => ({ ...current, [detail.id]: detail }));
       setSelectedRun(detail);
       setSelectedItemId((current) =>
         detail.items.some((item) => item.id === current)
@@ -259,18 +255,33 @@ export function VisualIdentityExperimentWorkbench({
   useEffect(() => {
     let active = true;
     const timer = window.setTimeout(() => {
+      setHistoryLoading(true);
       void loadRuns()
         .then(async (experiments) => {
-          if (!active || experiments.length === 0) return;
-          const detail = await adminV2Request(
-            `/api/v2/admin/creative/runs/${encodeURIComponent(experiments[0]!.id)}`,
-            { schema: creativeRunDetailSchema },
+          if (!active || experiments.length === 0) {
+            if (active) setRunDetails({});
+            return;
+          }
+          const results = await Promise.allSettled(
+            experiments.map((run) =>
+              adminV2Request(
+                `/api/v2/admin/creative/runs/${encodeURIComponent(run.id)}`,
+                { schema: creativeRunDetailSchema },
+              ),
+            ),
           );
           if (!active) return;
-          setSelectedRun(detail);
+          const details = results.flatMap((result) =>
+            result.status === "fulfilled" ? [result.value] : [],
+          );
+          setRunDetails(
+            Object.fromEntries(details.map((detail) => [detail.id, detail])),
+          );
+          const latest = details[0] ?? null;
+          setSelectedRun(latest);
           setSelectedItemId(
-            detail.items.find((item) => item.asset)?.id ??
-              detail.items[0]?.id ??
+            latest?.items.find((item) => item.asset)?.id ??
+              latest?.items[0]?.id ??
               null,
           );
         })
@@ -280,6 +291,9 @@ export function VisualIdentityExperimentWorkbench({
               cause instanceof Error ? cause.message : "无法读取视觉实验历史",
             );
           }
+        })
+        .finally(() => {
+          if (active) setHistoryLoading(false);
         });
     }, 0);
     return () => {
@@ -695,348 +709,79 @@ export function VisualIdentityExperimentWorkbench({
   const selectedIsActiveIdentity = Boolean(
     selectedItem?.asset &&
     identity &&
-    data.visual.anchors.some(
-      (anchor) => anchor.mediaAssetId === selectedItem.asset?.id,
-    ),
+    identity.anchorAssetIds.includes(selectedItem.asset.id),
   );
+  const historyCandidates = runs.flatMap((run, runIndex) => {
+    const detail = runDetails[run.id];
+    if (!detail) return [];
+    return detail.items
+      .filter((item) => item.asset)
+      .map((item) => ({
+        run,
+        runDetail: detail,
+        runNumber: runs.length - runIndex,
+        item,
+      }));
+  });
+  const historyRunsWithoutImages = runs.flatMap((run, runIndex) => {
+    const detail = runDetails[run.id];
+    if (!detail || detail.items.some((item) => item.asset)) return [];
+    return [{ run, runDetail: detail, runNumber: runs.length - runIndex }];
+  });
 
   return (
-    <section
-      aria-labelledby="identity-experiment-title"
-      className="bg-[var(--ad-surface)]"
-    >
-      <header className="sr-only">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h2
-              className="text-base font-semibold tracking-[-0.01em]"
-              id="identity-experiment-title"
-            >
-              视觉身份
-            </h2>
-            <p className="mt-0.5 text-xs text-[var(--ad-text-muted)]">
-              生成和比较候选；只有激活才会改变正式身份。
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <StatusBadge
-              value={
-                identity ? `active v${identity.version}` : "no active identity"
-              }
-            />
-            <span className="text-xs text-[var(--ad-text-muted)]">
-              {runs.length} 轮实验
-            </span>
-          </div>
-        </div>
-      </header>
+    <section aria-labelledby="identity-experiment-title">
+      <h2 className="sr-only" id="identity-experiment-title">
+        视觉身份
+      </h2>
 
       <div className="grid items-start gap-8 lg:grid-cols-[minmax(0,0.86fr)_minmax(420px,1.14fr)] xl:gap-12">
-        <aside
-          className="order-1 min-w-0 lg:order-2 lg:pt-1"
-          id="identity-experiment-composer"
-        >
-          <div className="mb-4">
+        <div className="min-w-0">
+          <div className="flex items-center justify-between gap-3">
             <h3 className="text-xl font-semibold tracking-[-0.02em]">
-              想让 {data.character.name} 变成什么样？
+              当前形象
             </h3>
+            <span className="text-xs text-[var(--ad-text-muted)]">
+              {identity ? `v${identity.version}` : "尚未激活"}
+            </span>
           </div>
-          <div hidden role="tablist" aria-label="生成方式">
-            {(["text_to_image", "image_to_image"] as const).map((value) => (
-              <button
-                aria-selected={mode === value}
-                className={cn(
-                  "min-h-10 rounded-md px-3 text-sm font-semibold transition",
-                  mode === value
-                    ? "bg-[var(--ad-surface)] text-[var(--ad-ink)] shadow-sm"
-                    : "text-[var(--ad-text-muted)]",
-                )}
-                key={value}
-                onClick={() => setMode(value)}
-                role="tab"
-                type="button"
-              >
-                {modeLabel(value)}
-              </button>
-            ))}
-          </div>
-
-          <details hidden>
-            <summary className="cursor-pointer px-3 py-3 text-sm font-semibold">
-              线路与参考图
-              <span className="ml-2 font-normal text-[var(--ad-text-muted)]">
-                {selectedProfile
-                  ? generationModelLabel(selectedProfile.modelId)
-                  : "未配置"}
-              </span>
-            </summary>
-            <div className="border-t border-[var(--ad-border)] p-3">
-              <section
-                aria-label={`${modeLabel(mode)}模型选择`}
-                className="rounded-lg bg-[var(--ad-blue-bg)] p-3"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="text-xs font-semibold text-[var(--ad-blue-text)]">
-                      当前{modeLabel(mode)}模型
-                    </p>
-                    <p className="mt-1 truncate text-sm font-semibold text-[var(--ad-ink)]">
-                      {selectedProfile
-                        ? generationModelLabel(selectedProfile.modelId)
-                        : "暂无可用模型"}
-                    </p>
-                  </div>
-                  {selectedProfile ? (
-                    <span className="shrink-0 rounded-full bg-[var(--ad-surface)] px-2.5 py-1 text-[11px] font-semibold text-[var(--ad-blue-text)]">
-                      {selectedProfileIsDefault ? "当前默认" : "当前选择"}
-                    </span>
-                  ) : null}
+          <figure className="mt-4 overflow-hidden rounded-lg border border-[var(--ad-border)] bg-black/[0.035]">
+            <div className="relative aspect-[3/4]">
+              {baselineUrl ? (
+                <Image
+                  alt="当前活动视觉身份基准"
+                  className="object-cover"
+                  fill
+                  loading="eager"
+                  sizes="(min-width: 1024px) 36vw, 100vw"
+                  src={baselineUrl}
+                  unoptimized
+                />
+              ) : (
+                <div className="grid h-full place-items-center p-6 text-center text-sm text-[var(--ad-text-muted)]">
+                  还没有当前形象
                 </div>
-                {selectedProfile ? (
-                  <p className="mt-1 break-all font-mono text-[11px] leading-5 text-[var(--ad-blue-text)]">
-                    {selectedProfile.modelId}
-                  </p>
-                ) : null}
-                <label className="mt-3 block text-xs font-semibold text-[var(--ad-blue-text)]">
-                  模型
-                  <select
-                    aria-label={`${modeLabel(mode)}模型`}
-                    className={`${fieldClass} mt-1`}
-                    disabled={modelOptions.length < 2}
-                    onChange={(event) => {
-                      const nextProfile = compatibleProfiles.find(
-                        (profile) => profile.modelId === event.target.value,
-                      );
-                      if (nextProfile) {
-                        setProfileKey(nextProfile.profileKey);
-                        setOrientation(nextProfile.orientation);
-                      }
-                    }}
-                    value={selectedModelId}
-                  >
-                    {modelOptions.map((modelId) => (
-                      <option key={modelId} value={modelId}>
-                        {generationModelLabel(modelId)}
-                        {modelId === preferredProfile?.modelId
-                          ? "（默认）"
-                          : ""}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="mt-3 block text-xs font-semibold text-[var(--ad-blue-text)]">
-                  配置档位
-                  <select
-                    aria-label="配置档位"
-                    className={`${fieldClass} mt-1`}
-                    disabled={selectedModelProfiles.length < 2}
-                    onChange={(event) => {
-                      const nextProfile = selectedModelProfiles.find(
-                        (profile) => profile.profileKey === event.target.value,
-                      );
-                      setProfileKey(event.target.value);
-                      if (nextProfile) setOrientation(nextProfile.orientation);
-                    }}
-                    value={selectedProfile?.profileKey ?? ""}
-                  >
-                    {selectedModelProfiles.map((profile) => (
-                      <option
-                        key={`${profile.profileKey}:${profile.profileVersion}`}
-                        value={profile.profileKey}
-                      >
-                        {generationProfileLabel(profile.label)} · v
-                        {profile.profileVersion}
-                        {profile.profileKey === preferredProfile?.profileKey
-                          ? "（默认）"
-                          : ""}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <p className="mt-2 text-[11px] leading-5 text-[var(--ad-blue-text)]">
-                  {modelOptions.length > 1
-                    ? `当前生成方式有 ${modelOptions.length} 个已上线模型可选。`
-                    : "当前生成方式只有 1 个已上线模型；新模型通过能力检查后会自动出现在这里。"}
-                  配置档位用于选择同一模型的参数和资源规格。
-                </p>
-                {selectedProfile ? (
-                  <p className="mt-2 border-t border-black/10 pt-2 text-[11px] leading-5 text-[var(--ad-blue-text)]">
-                    工作流 {selectedProfile.workflowKey} v
-                    {selectedProfile.workflowVersion}
-                    ；模型、配置档位和工作流会随本轮冻结。
-                  </p>
-                ) : null}
-              </section>
-
-              {mode === "image_to_image" ? (
-                <fieldset
-                  aria-describedby="identity-experiment-source-help"
-                  className="mt-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3"
-                >
-                  <legend className="px-1 text-sm font-semibold">
-                    选择参考图
-                  </legend>
-                  <div className="flex items-start justify-between gap-3">
-                    <p
-                      className="text-xs leading-5 text-[var(--ad-text-muted)]"
-                      id="identity-experiment-source-help"
-                    >
-                      直接按画面选择本轮来源，不会修改正式参考集。
-                    </p>
-                    <span className="shrink-0 text-xs text-[var(--ad-text-muted)]">
-                      {visualSources.length} 张可用
-                    </span>
-                  </div>
-
-                  <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2">
-                    <button
-                      className="inline-flex min-h-10 items-center gap-2 rounded-md bg-[var(--ad-ink)] px-3 text-xs font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-                      disabled={!canUploadSource || sourceUploadBusy}
-                      onClick={() => sourceFileInput.current?.click()}
-                      type="button"
-                    >
-                      <Upload aria-hidden="true" size={14} />
-                      {sourceUploadBusy ? "正在上传…" : "上传本地图片"}
-                    </button>
-                    <input
-                      accept="image/jpeg,image/png,image/webp"
-                      className="hidden"
-                      disabled={!canUploadSource || sourceUploadBusy}
-                      onChange={(event) => void uploadSource(event)}
-                      ref={sourceFileInput}
-                      tabIndex={-1}
-                      type="file"
-                    />
-                    <span className="text-[11px] leading-5 text-[var(--ad-text-muted)]">
-                      JPG、PNG 或 WebP，最大 15 MB
-                      {!canUploadSource ? "；当前账号没有上传权限" : ""}
-                    </span>
-                  </div>
-
-                  {pendingSource || visualSources.length > 0 ? (
-                    <div className="mt-3 grid max-h-[326px] grid-cols-2 gap-2 overflow-y-auto pr-1">
-                      {pendingSource ? (
-                        <div
-                          aria-live="polite"
-                          className="overflow-hidden rounded-lg border border-[var(--ad-ink)] bg-black/[0.02] p-1.5"
-                        >
-                          <span className="relative block aspect-[4/5] overflow-hidden rounded-md bg-black/[0.06]">
-                            {pendingSource.url ? (
-                              <Image
-                                alt=""
-                                className="object-cover opacity-70"
-                                fill
-                                sizes="150px"
-                                src={pendingSource.url}
-                                unoptimized
-                              />
-                            ) : null}
-                            <span className="absolute inset-x-2 bottom-2 rounded-md bg-black/75 px-2 py-1 text-center text-[10px] font-semibold text-white">
-                              正在上传并校验
-                            </span>
-                          </span>
-                          <span className="mt-2 block truncate text-xs font-semibold">
-                            {pendingSource.filename}
-                          </span>
-                          <span className="mt-0.5 block text-[11px] text-[var(--ad-text-muted)]">
-                            上传完成后自动选中
-                          </span>
-                        </div>
-                      ) : null}
-                      {visualSources.map((source) => {
-                        const selected = source.id === resolvedSourceAssetId;
-                        return (
-                          <label
-                            className={cn(
-                              "relative cursor-pointer overflow-hidden rounded-lg border bg-black/[0.02] p-1.5 transition focus-within:ring-2 focus-within:ring-[var(--ad-ink)] focus-within:ring-offset-2 hover:border-[var(--ad-text-muted)]",
-                              selected
-                                ? "border-[var(--ad-ink)] shadow-[0_0_0_1px_var(--ad-ink)]"
-                                : "border-[var(--ad-border)]",
-                            )}
-                            key={source.id}
-                          >
-                            <input
-                              checked={selected}
-                              className="sr-only"
-                              name="identity-experiment-source"
-                              onChange={() => {
-                                setSourceAssetId(source.id);
-                                if (
-                                  seedStrategy === "reuse_source" &&
-                                  !source.seed
-                                ) {
-                                  setSeedStrategy("random");
-                                }
-                              }}
-                              type="radio"
-                              value={source.id}
-                            />
-                            <span className="relative block aspect-[4/5] overflow-hidden rounded-md bg-black/[0.06]">
-                              {source.url ? (
-                                <Image
-                                  alt=""
-                                  className="object-cover"
-                                  fill
-                                  sizes="150px"
-                                  src={source.url}
-                                  unoptimized
-                                />
-                              ) : (
-                                <span className="grid h-full place-items-center px-2 text-center text-xs text-[var(--ad-text-muted)]">
-                                  暂无预览
-                                </span>
-                              )}
-                              {selected ? (
-                                <span
-                                  aria-hidden="true"
-                                  className="absolute right-1.5 top-1.5 rounded-full bg-[var(--ad-ink)] px-2 py-1 text-[10px] font-semibold text-white"
-                                >
-                                  已选
-                                </span>
-                              ) : null}
-                            </span>
-                            <span className="mt-2 block truncate text-xs font-semibold">
-                              {source.label}
-                            </span>
-                            <span className="mt-0.5 block truncate text-[11px] text-[var(--ad-text-muted)]">
-                              {source.provenance}
-                            </span>
-                          </label>
-                        );
-                      })}
-                    </div>
-                  ) : (
-                    <div className="mt-3 rounded-lg bg-[var(--ad-yellow-bg)] p-3">
-                      <p className="text-xs leading-5 text-[var(--ad-yellow-text)]">
-                        还没有可用参考图。可以直接上传本地图片，或先创建一轮文生图候选。
-                      </p>
-                      <button
-                        className="mt-2 min-h-9 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-xs font-semibold"
-                        onClick={() => setMode("text_to_image")}
-                        type="button"
-                      >
-                        先创建文生图候选
-                      </button>
-                    </div>
-                  )}
-                </fieldset>
-              ) : null}
+              )}
             </div>
-          </details>
+          </figure>
+        </div>
 
-          <label className="block text-sm font-medium text-[var(--ad-text)]">
+        <aside className="min-w-0 lg:pt-1" id="identity-experiment-composer">
+          <h3 className="text-xl font-semibold tracking-[-0.02em]">
+            想让 {data.character.name} 变成什么样？
+          </h3>
+          <label className="mt-4 block">
             <span className="sr-only">描述这次想要的画面</span>
             <textarea
               aria-label="描述这次想要的画面"
-              className={`${textAreaClass} min-h-64 resize-y px-4 py-4 text-base leading-7`}
+              className={`${textAreaClass} min-h-48 resize-y px-4 py-4 text-base leading-7`}
               onChange={(event) => setPositivePrompt(event.target.value)}
-              placeholder="例如：让她看起来更成熟一些，发型换成长发，妆容更精致，整体气质更优雅。"
+              placeholder="例如：让她看起来更成熟一些，换成长发，妆容更精致。"
               value={positivePrompt}
             />
           </label>
 
-          <div className="mt-4">
-          <label className="block text-sm font-medium text-[var(--ad-text)]">
+          <label className="mt-4 block text-sm font-medium">
             负向提示词
             <input
               aria-label="负向提示词"
@@ -1044,128 +789,35 @@ export function VisualIdentityExperimentWorkbench({
               onChange={(event) => setNegativePrompt(event.target.value)}
               value={negativePrompt}
             />
-            </label>
+          </label>
 
-            <div hidden>
-              <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
-                种子策略
-                <select
-                  aria-label="种子策略"
-                  className={`${fieldClass} mt-1`}
-                  onChange={(event) =>
-                    setSeedStrategy(event.target.value as SeedStrategy)
-                  }
-                  value={resolvedSeedStrategy}
-                >
-                  <option value="random">每轮随机</option>
-                  <option value="locked">锁定种子</option>
-                  <option disabled={!selectedSource?.seed} value="reuse_source">
-                    沿用所选图
-                  </option>
-                </select>
-              </label>
-              <div className="text-xs font-semibold text-[var(--ad-text-muted)]">
-                每次生成
-                <p className={`${fieldClass} mt-1 flex items-center`}>1 张</p>
-              </div>
-            </div>
-            <label className="mt-4 block text-sm font-medium text-[var(--ad-text)]">
-              种子
-              <span className="mt-2 flex gap-3">
-                <input
-                  aria-label="种子"
-                  className={`${fieldClass} min-w-0 flex-1`}
-                  disabled={resolvedSeedStrategy === "reuse_source"}
-                  onChange={(event) => setBaseSeed(event.target.value)}
-                  value={
-                    resolvedSeedStrategy === "reuse_source"
-                      ? (selectedSource?.seed ?? "")
-                      : baseSeed
-                  }
-                />
-                <button
-                  className="shrink-0 px-2 text-sm font-medium underline decoration-[var(--ad-border)] underline-offset-4 disabled:opacity-40"
-                  disabled={resolvedSeedStrategy === "reuse_source"}
-                  onClick={() => {
-                    setSeedStrategy("locked");
-                    setBaseSeed(randomSeed());
-                  }}
-                  type="button"
-                >
-                  随机
-                </button>
-              </span>
-            </label>
-            <p className="sr-only">
-              {resolvedSeedStrategy === "locked"
-                ? "跨轮保持相同变体种子，适合只改一个参数做 A/B。"
-                : resolvedSeedStrategy === "reuse_source"
-                  ? "从所选图的生成种子继续，来源关系会写入快照。"
-                  : "每次创建新轮次；同一轮内仍会派生互不重复的变体种子。"}
-            </p>
-
-            <details hidden>
-              <summary className="cursor-pointer px-3 py-3 text-sm font-semibold">
-                其它生成参数
-              </summary>
-              <div className="grid gap-3 border-t border-[var(--ad-border)] p-3">
-                <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
-                  构图比例
-                  <select
-                    aria-label="构图比例"
-                    className={`${fieldClass} mt-1`}
-                    onChange={(event) => setOrientation(event.target.value)}
-                    value={resolvedOrientation}
-                  >
-                    {(
-                      selectedProfile?.allowedOrientations ?? [orientation]
-                    ).map((value) => (
-                      <option key={value}>{value}</option>
-                    ))}
-                  </select>
-                </label>
-                <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
-                  身份约束
-                  <select
-                    aria-label="身份约束"
-                    className={`${fieldClass} mt-1`}
-                    onChange={(event) =>
-                      setConsistencyMode(
-                        event.target.value as typeof consistencyMode,
-                      )
-                    }
-                    value={consistencyMode}
-                  >
-                    <option value="strict">严格</option>
-                    <option value="balanced">平衡</option>
-                    <option value="creative">创意</option>
-                  </select>
-                </label>
-                {mode === "image_to_image" ? (
-                  <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
-                    变化强度 · {strength.toFixed(2)}
-                    <input
-                      className="mt-2 w-full accent-[var(--ad-ink)]"
-                      max="0.95"
-                      min="0.1"
-                      onChange={(event) =>
-                        setStrength(Number(event.target.value))
-                      }
-                      step="0.05"
-                      type="range"
-                      value={strength}
-                    />
-                  </label>
-                ) : null}
-              </div>
-            </details>
-          </div>
-
-          {calibration.blocker && !selectedProfile ? (
-            <p className="mt-4 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-xs text-[var(--ad-yellow-text)]">
-              {calibration.blocker}
-            </p>
-          ) : null}
+          <label className="mt-4 block text-sm font-medium">
+            种子
+            <span className="mt-2 flex gap-3">
+              <input
+                aria-label="种子"
+                className={`${fieldClass} min-w-0 flex-1`}
+                disabled={resolvedSeedStrategy === "reuse_source"}
+                onChange={(event) => setBaseSeed(event.target.value)}
+                value={
+                  resolvedSeedStrategy === "reuse_source"
+                    ? (selectedSource?.seed ?? "")
+                    : baseSeed
+                }
+              />
+              <button
+                className="shrink-0 px-2 text-sm font-medium underline decoration-[var(--ad-border)] underline-offset-4 disabled:opacity-40"
+                disabled={resolvedSeedStrategy === "reuse_source"}
+                onClick={() => {
+                  setSeedStrategy("locked");
+                  setBaseSeed(randomSeed());
+                }}
+                type="button"
+              >
+                随机
+              </button>
+            </span>
+          </label>
 
           <input
             accept="image/jpeg,image/png,image/webp"
@@ -1178,9 +830,10 @@ export function VisualIdentityExperimentWorkbench({
           />
           {mode === "image_to_image" && (pendingSource || selectedSource) ? (
             <p className="mt-4 truncate text-xs text-[var(--ad-text-muted)]">
-              参考图 · {pendingSource?.filename ?? selectedSource?.label}
+              参考图：{pendingSource?.filename ?? selectedSource?.label}
             </p>
           ) : null}
+
           <div className="mt-5 grid items-center gap-4 sm:grid-cols-[190px_minmax(220px,1fr)]">
             <button
               className="justify-self-start text-sm font-medium underline decoration-[var(--ad-border)] underline-offset-4 disabled:opacity-40"
@@ -1197,7 +850,7 @@ export function VisualIdentityExperimentWorkbench({
             </button>
             <button
               aria-label="生成 1 张候选图"
-              className="min-h-14 w-full rounded-lg bg-[var(--ad-ink)] px-5 text-base font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+              className="min-h-14 w-full rounded-md bg-[var(--ad-ink)] px-5 text-base font-semibold text-white transition hover:bg-[#333] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
               disabled={!canGenerate || busy !== null}
               onClick={() => void generate()}
               type="button"
@@ -1222,527 +875,607 @@ export function VisualIdentityExperimentWorkbench({
               {error}
             </p>
           ) : null}
+          {calibration.blocker && !selectedProfile ? (
+            <p className="mt-4 text-sm text-[var(--ad-yellow-text)]">
+              {calibration.blocker}
+            </p>
+          ) : null}
 
-          <div className="mt-7 flex flex-wrap items-start gap-x-7 gap-y-3">
-            <details>
-              <summary className="cursor-pointer list-none text-sm font-medium underline decoration-[var(--ad-border)] underline-offset-4">
-                历史
-              </summary>
-              <div className="mt-3 grid min-w-72 gap-2 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3">
-                {runs.length === 0 ? (
-                  <p className="text-sm text-[var(--ad-text-muted)]">
-                    暂无生成历史
-                  </p>
-                ) : (
-                  runs.map((run, index) => (
-                    <button
-                      className="flex min-h-11 items-center justify-between gap-3 rounded-md px-2 text-left text-xs hover:bg-black/[0.035]"
-                      key={run.id}
-                      onClick={() => {
-                        void loadRun(run.id).then(() => setResultOpen(true));
-                      }}
-                      type="button"
-                    >
-                      <span>
-                        <strong>第 {runs.length - index} 次</strong>
-                        <span className="mt-0.5 block text-[var(--ad-text-muted)]">
-                          {new Date(run.createdAt).toLocaleString("zh-CN")}
-                        </span>
-                      </span>
-                      <StatusBadge value={run.executionOutcome} />
-                    </button>
-                  ))
-                )}
-              </div>
-            </details>
-
-            <details>
-              <summary className="cursor-pointer list-none text-sm font-medium underline decoration-[var(--ad-border)] underline-offset-4">
-                高级设置
-              </summary>
-              <div className="mt-3 grid min-w-72 gap-4 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 sm:grid-cols-2">
-                <label className="text-xs font-medium text-[var(--ad-text-muted)]">
-                  生成方式
-                  <select
-                    aria-label="生成方式"
-                    className={`${fieldClass} mt-1`}
-                    onChange={(event) =>
-                      setMode(event.target.value as ExperimentMode)
+          <details className="mt-6 border-t border-[var(--ad-border)] pt-4">
+            <summary className="cursor-pointer text-sm font-medium">
+              高级设置
+            </summary>
+            <div className="mt-4 grid gap-4 sm:grid-cols-2">
+              <label className="text-xs font-medium text-[var(--ad-text-muted)]">
+                生成方式
+                <select
+                  aria-label="生成方式"
+                  className={`${fieldClass} mt-1`}
+                  onChange={(event) =>
+                    setMode(event.target.value as ExperimentMode)
+                  }
+                  value={mode}
+                >
+                  <option value="text_to_image">文生图</option>
+                  <option value="image_to_image">图生图</option>
+                </select>
+              </label>
+              <label className="text-xs font-medium text-[var(--ad-text-muted)]">
+                模型
+                <select
+                  aria-label={`${modeLabel(mode)}模型`}
+                  className={`${fieldClass} mt-1`}
+                  disabled={modelOptions.length < 2}
+                  onChange={(event) => {
+                    const nextProfile = compatibleProfiles.find(
+                      (profile) => profile.modelId === event.target.value,
+                    );
+                    if (nextProfile) {
+                      setProfileKey(nextProfile.profileKey);
+                      setOrientation(nextProfile.orientation);
                     }
-                    value={mode}
-                  >
-                    <option value="text_to_image">文生图</option>
-                    <option value="image_to_image">图生图</option>
-                  </select>
-                </label>
-                <label className="text-xs font-medium text-[var(--ad-text-muted)]">
-                  构图比例
-                  <select
-                    aria-label="高级构图比例"
-                    className={`${fieldClass} mt-1`}
-                    onChange={(event) => setOrientation(event.target.value)}
-                    value={resolvedOrientation}
-                  >
-                    {(
-                      selectedProfile?.allowedOrientations ?? [orientation]
-                    ).map((value) => (
+                  }}
+                  value={selectedModelId}
+                >
+                  {modelOptions.map((modelId) => (
+                    <option key={modelId} value={modelId}>
+                      {generationModelLabel(modelId)}
+                      {modelId === preferredProfile?.modelId ? "（默认）" : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-xs font-medium text-[var(--ad-text-muted)]">
+                配置档位
+                <select
+                  aria-label="配置档位"
+                  className={`${fieldClass} mt-1`}
+                  disabled={selectedModelProfiles.length < 2}
+                  onChange={(event) => {
+                    const nextProfile = selectedModelProfiles.find(
+                      (profile) => profile.profileKey === event.target.value,
+                    );
+                    setProfileKey(event.target.value);
+                    if (nextProfile) setOrientation(nextProfile.orientation);
+                  }}
+                  value={selectedProfile?.profileKey ?? ""}
+                >
+                  {selectedModelProfiles.map((profile) => (
+                    <option
+                      key={`${profile.profileKey}:${profile.profileVersion}`}
+                      value={profile.profileKey}
+                    >
+                      {generationProfileLabel(profile.label)} v
+                      {profile.profileVersion}
+                      {profile.profileKey === preferredProfile?.profileKey
+                        ? "（默认）"
+                        : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-xs font-medium text-[var(--ad-text-muted)]">
+                构图比例
+                <select
+                  aria-label="高级构图比例"
+                  className={`${fieldClass} mt-1`}
+                  onChange={(event) => setOrientation(event.target.value)}
+                  value={resolvedOrientation}
+                >
+                  {(selectedProfile?.allowedOrientations ?? [orientation]).map(
+                    (value) => (
                       <option key={value}>{value}</option>
-                    ))}
-                  </select>
-                </label>
-                <label className="text-xs font-medium text-[var(--ad-text-muted)]">
-                  身份约束
-                  <select
-                    aria-label="高级身份约束"
-                    className={`${fieldClass} mt-1`}
+                    ),
+                  )}
+                </select>
+              </label>
+              <label className="text-xs font-medium text-[var(--ad-text-muted)]">
+                身份约束
+                <select
+                  aria-label="高级身份约束"
+                  className={`${fieldClass} mt-1`}
+                  onChange={(event) =>
+                    setConsistencyMode(
+                      event.target.value as typeof consistencyMode,
+                    )
+                  }
+                  value={consistencyMode}
+                >
+                  <option value="strict">严格</option>
+                  <option value="balanced">平衡</option>
+                  <option value="creative">创意</option>
+                </select>
+              </label>
+              <label className="text-xs font-medium text-[var(--ad-text-muted)]">
+                种子策略
+                <select
+                  aria-label="种子策略"
+                  className={`${fieldClass} mt-1`}
+                  onChange={(event) =>
+                    setSeedStrategy(event.target.value as SeedStrategy)
+                  }
+                  value={resolvedSeedStrategy}
+                >
+                  <option value="random">每轮随机</option>
+                  <option value="locked">锁定种子</option>
+                  <option disabled={!selectedSource?.seed} value="reuse_source">
+                    沿用所选图
+                  </option>
+                </select>
+              </label>
+              {mode === "image_to_image" ? (
+                <label className="text-xs font-medium text-[var(--ad-text-muted)] sm:col-span-2">
+                  变化强度：{strength.toFixed(2)}
+                  <input
+                    className="mt-3 w-full accent-[var(--ad-ink)]"
+                    max="0.95"
+                    min="0.1"
                     onChange={(event) =>
-                      setConsistencyMode(
-                        event.target.value as typeof consistencyMode,
-                      )
+                      setStrength(Number(event.target.value))
                     }
-                    value={consistencyMode}
-                  >
-                    <option value="strict">严格</option>
-                    <option value="balanced">平衡</option>
-                    <option value="creative">创意</option>
-                  </select>
+                    step="0.05"
+                    type="range"
+                    value={strength}
+                  />
                 </label>
-                {mode === "image_to_image" ? (
-                  <label className="text-xs font-medium text-[var(--ad-text-muted)]">
-                    变化强度 · {strength.toFixed(2)}
-                    <input
-                      className="mt-3 w-full accent-[var(--ad-ink)]"
-                      max="0.95"
-                      min="0.1"
-                      onChange={(event) =>
-                        setStrength(Number(event.target.value))
-                      }
-                      step="0.05"
-                      type="range"
-                      value={strength}
-                    />
-                  </label>
-                ) : null}
-                {mode === "image_to_image" && visualSources.length > 0 ? (
-                  <label className="text-xs font-medium text-[var(--ad-text-muted)] sm:col-span-2">
-                    参考图
-                    <select
-                      aria-label="参考图"
-                      className={`${fieldClass} mt-1`}
-                      onChange={(event) => setSourceAssetId(event.target.value)}
-                      value={resolvedSourceAssetId ?? ""}
-                    >
-                      {visualSources.map((source) => (
-                        <option key={source.id} value={source.id}>
-                          {source.label} · {source.provenance}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                ) : null}
-              </div>
-            </details>
-          </div>
-        </aside>
-
-        <div className="order-2 min-w-0 lg:order-1">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h3 className="text-xl font-semibold tracking-[-0.02em]">
-                当前形象
-              </h3>
+              ) : null}
             </div>
-            {resultOpen && selectedRun ? (
-              <div className="flex items-center gap-2">
-                <StatusBadge value={selectedRun.executionOutcome} />
+
+            {mode === "image_to_image" ? (
+              <fieldset className="mt-5 border-t border-[var(--ad-border)] pt-4">
+                <legend className="text-sm font-medium">参考图</legend>
                 <button
-                  className="text-xs font-semibold underline"
-                  onClick={reuseRunParameters}
+                  className="mt-3 inline-flex min-h-9 items-center gap-2 rounded-md border border-[var(--ad-border)] px-3 text-xs font-semibold"
+                  disabled={!canUploadSource || sourceUploadBusy}
+                  onClick={() => sourceFileInput.current?.click()}
                   type="button"
                 >
-                  载入本轮参数
+                  <Upload aria-hidden="true" size={14} />
+                  上传图片
                 </button>
-              </div>
-            ) : null}
-          </div>
-
-          <div
-            className={cn("mt-4 grid gap-4", resultOpen && "md:grid-cols-2")}
-          >
-            <figure className="overflow-hidden rounded-lg border border-[var(--ad-border)] bg-black/[0.04]">
-              <div className="sr-only">
-                <strong>活动基准</strong>
-                <span className="text-[var(--ad-text-muted)]">
-                  {identity ? `v${identity.version}` : "尚未激活"}
-                </span>
-              </div>
-              <div className="relative aspect-[3/4]">
-                {baselineUrl ? (
-                  <Image
-                    alt="当前活动视觉身份基准"
-                    className="object-cover"
-                    fill
-                    loading="eager"
-                    sizes="(min-width: 1024px) 32vw, 50vw"
-                    src={baselineUrl}
-                    unoptimized
-                  />
-                ) : (
-                  <div className="grid h-full place-items-center p-6 text-center text-sm text-[var(--ad-text-muted)]">
-                    暂无活动基准；先用文生图探索第一张身份图。
+                {visualSources.length > 0 ? (
+                  <div className="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-4">
+                    {visualSources.map((source) => {
+                      const selected = source.id === resolvedSourceAssetId;
+                      return (
+                        <label className="cursor-pointer" key={source.id}>
+                          <input
+                            checked={selected}
+                            className="sr-only"
+                            name="identity-experiment-source"
+                            onChange={() => setSourceAssetId(source.id)}
+                            type="radio"
+                            value={source.id}
+                          />
+                          <span
+                            className={cn(
+                              "relative block aspect-[4/5] overflow-hidden rounded-md border bg-black/[0.035]",
+                              selected
+                                ? "border-[var(--ad-ink)]"
+                                : "border-[var(--ad-border)]",
+                            )}
+                          >
+                            {source.url ? (
+                              <Image
+                                alt={source.label}
+                                className="object-cover"
+                                fill
+                                sizes="120px"
+                                src={source.url}
+                                unoptimized
+                              />
+                            ) : null}
+                          </span>
+                          <span className="mt-1 block truncate text-[11px] text-[var(--ad-text-muted)]">
+                            {source.label}
+                          </span>
+                        </label>
+                      );
+                    })}
                   </div>
+                ) : (
+                  <p className="mt-3 text-xs text-[var(--ad-text-muted)]">
+                    还没有可用参考图
+                  </p>
                 )}
-              </div>
-            </figure>
+              </fieldset>
+            ) : null}
+          </details>
+        </aside>
+      </div>
 
-            <figure
-              className="overflow-hidden rounded-lg border border-[var(--ad-ink)] bg-black/[0.04]"
-              hidden={!resultOpen}
+      <section
+        aria-labelledby="identity-history-title"
+        className="mt-12 border-t border-[var(--ad-border)] pt-8"
+      >
+        <div className="flex items-end justify-between gap-4">
+          <div>
+            <h3
+              className="text-xl font-semibold tracking-[-0.02em]"
+              id="identity-history-title"
             >
-              <div className="flex items-center justify-between border-b border-[var(--ad-border)] px-3 py-2 text-xs">
-                <strong>所选候选</strong>
-                <span className="text-[var(--ad-text-muted)]">
-                  {selectedItem ? `#${selectedItem.ordinal + 1}` : "等待生成"}
-                </span>
-              </div>
+              历史创作
+            </h3>
+            <p className="mt-1 text-sm text-[var(--ad-text-muted)]">
+              打开任意图片，可继续调整或重新设为当前形象。
+            </p>
+          </div>
+          <span className="shrink-0 text-xs text-[var(--ad-text-muted)]">
+            {historyCandidates.length} 张
+          </span>
+        </div>
+
+        {resultOpen && selectedRun && selectedItem ? (
+          <article
+            className="mt-6 grid gap-6 border-y border-[var(--ad-border)] py-6 lg:grid-cols-[minmax(240px,0.72fr)_minmax(0,1.28fr)]"
+            aria-labelledby="selected-history-candidate-title"
+          >
+            <figure className="overflow-hidden rounded-lg border border-[var(--ad-border)] bg-black/[0.035]">
               <div className="relative aspect-[4/5]">
                 {itemImage(selectedItem) ? (
                   <Image
-                    alt="所选视觉身份候选"
+                    alt="所选历史视觉身份候选"
                     className="object-cover"
                     fill
-                    sizes="(min-width: 1024px) 32vw, 50vw"
+                    sizes="(min-width: 1024px) 32vw, 100vw"
                     src={itemImage(selectedItem)!}
                     unoptimized
                   />
-                ) : selectedItem ? (
-                  <div className="grid h-full place-items-center p-6 text-center">
+                ) : (
+                  <div className="grid h-full place-items-center p-5 text-center text-sm text-[var(--ad-text-muted)]">
                     <div>
-                      <StatusBadge value={selectedItem.executionState} />
-                      <p className="mt-3 text-sm text-[var(--ad-text-muted)]">
+                      <p>
                         {selectedItem.executionState === "failed"
                           ? (selectedItem.failure?.operatorGuidance ??
-                            "这一张生成失败，可创建新一轮继续尝试。")
-                          : "生成完成后会自动出现在这里。"}
+                            "生成失败")
+                          : "正在生成"}
                       </p>
                       {selectedItem.failure ? (
-                        <p className="mt-2 font-mono text-[10px] text-[var(--ad-text-muted)]">
+                        <p className="mt-2 font-mono text-[10px]">
                           {selectedItem.failure.errorCode}
                         </p>
                       ) : null}
                     </div>
                   </div>
-                ) : (
-                  <div className="grid h-full place-items-center p-6 text-center text-sm text-[var(--ad-text-muted)]">
-                    在右侧描述画面，然后开始第一轮实验。
-                  </div>
                 )}
               </div>
             </figure>
-          </div>
 
-          <div hidden={!resultOpen && !activationOpen}>
-            {selectedRun ? (
-              <>
-                <div
-                  className="mt-4 flex gap-3 overflow-x-auto pb-2"
-                  aria-label="本轮候选图"
+            <div className="min-w-0">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h4
+                    className="text-lg font-semibold"
+                    id="selected-history-candidate-title"
+                  >
+                    所选图片
+                  </h4>
+                  <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
+                    {new Date(selectedRun.createdAt).toLocaleString("zh-CN")}
+                  </p>
+                </div>
+                <button
+                  className="text-sm underline decoration-[var(--ad-border)] underline-offset-4"
+                  onClick={() => setResultOpen(false)}
+                  type="button"
                 >
-                  {selectedRun.items.map((item) => (
-                    <button
-                      aria-pressed={selectedItem?.id === item.id}
-                      className={cn(
-                        "relative h-24 w-20 shrink-0 overflow-hidden rounded-lg border-2 bg-black/[0.04]",
-                        selectedItem?.id === item.id
-                          ? "border-[var(--ad-ink)]"
-                          : "border-transparent",
-                      )}
-                      key={item.id}
-                      onClick={() => {
-                        setCandidateQualityConfirmed(false);
-                        setSelectedItemId(item.id);
-                        setActivationOpen(false);
-                      }}
-                      type="button"
-                    >
-                      {itemImage(item) ? (
-                        <Image
-                          alt={`候选图 ${item.ordinal + 1}`}
-                          className="object-cover"
-                          fill
-                          sizes="80px"
-                          src={itemImage(item)!}
-                          unoptimized
-                        />
-                      ) : (
-                        <span className="grid h-full place-items-center px-2 text-[10px] text-[var(--ad-text-muted)]">
-                          {item.executionState}
-                        </span>
-                      )}
-                    </button>
-                  ))}
-                </div>
-                <div className="mt-2 rounded-lg bg-black/[0.035] px-3 py-2 text-xs leading-5 text-[var(--ad-text-muted)]">
-                  {modeLabel(experiment?.mode ?? "text_to_image")} · 基数{" "}
-                  {experiment?.baseSeed ?? "由系统派生"} · 变体{" "}
-                  {(selectedItem?.ordinal ?? 0) + 1}/{selectedRun.items.length}{" "}
-                  · {seedStrategyLabel(experiment?.seedStrategy ?? "random")}
-                  {selectedItem?.lineage.seed
-                    ? ` · 实际种子 ${selectedItem.lineage.seed}`
-                    : ""}
-                </div>
-              </>
-            ) : null}
-
-            {selectedItem?.asset ? (
-              <div
-                className={cn(
-                  "mt-4 rounded-lg border px-3 py-2 text-xs leading-5",
-                  systemSingleFramePassed
-                    ? "border-[var(--ad-green-text)]/30 bg-[var(--ad-green-bg)] text-[var(--ad-green-text)]"
-                    : "border-[var(--ad-yellow-text)]/30 bg-[var(--ad-yellow-bg)] text-[var(--ad-yellow-text)]",
-                )}
-              >
-                {systemSingleFramePassed
-                  ? "系统构图检查已通过：这是一个连续画面，不是拼图、分栏或缩略图合成。"
-                  : "这张候选缺少新版单画面系统证据，不能采用。请载入本轮参数后重新生成。"}
+                  收起
+                </button>
               </div>
-            ) : null}
 
-            {!selectedApproved &&
-            selectedItem?.asset &&
-            systemSingleFramePassed ? (
-              <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface-subtle)] p-3 text-sm leading-6 text-[var(--ad-text)]">
-                <input
-                  checked={candidateQualityConfirmed}
-                  className="mt-1 h-4 w-4 shrink-0 accent-[var(--ad-ink)]"
-                  onChange={(event) =>
-                    setCandidateQualityConfirmed(event.target.checked)
-                  }
-                  type="checkbox"
-                />
-                <span>
-                  采用前确认：只有一个人物、一个连续画面（无拼图、分栏或缩略图），无明显瑕疵、无可见文字，并符合本轮身份设计意图。
-                </span>
-              </label>
-            ) : null}
+              <dl className="mt-5 grid gap-4 text-sm sm:grid-cols-2">
+                <div>
+                  <dt className="text-xs text-[var(--ad-text-muted)]">
+                    实际种子
+                  </dt>
+                  <dd className="mt-1 break-all font-mono text-xs">
+                    {selectedItem.lineage.seed ??
+                      experiment?.baseSeed ??
+                      "系统生成"}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-[var(--ad-text-muted)]">
+                    生成方式
+                  </dt>
+                  <dd className="mt-1">
+                    {modeLabel(experiment?.mode ?? "text_to_image")}
+                  </dd>
+                </div>
+              </dl>
+              <details className="mt-5 border-t border-[var(--ad-border)] pt-4">
+                <summary className="cursor-pointer text-sm font-medium">
+                  查看提示词
+                </summary>
+                <div className="mt-3 space-y-3 text-sm leading-6">
+                  <p>{experiment?.positivePrompt ?? "本轮没有提示词快照"}</p>
+                  <p className="text-[var(--ad-text-muted)]">
+                    负向提示词：{experiment?.negativePrompt || "无"}
+                  </p>
+                </div>
+              </details>
 
-            <div className="mt-5 flex flex-wrap gap-2">
-              <WorkspaceButton
-                disabled={!selectedItem?.asset || busy !== null}
-                onClick={continueFromSelected}
-              >
-                从这张继续调整
-              </WorkspaceButton>
-              {selectedApproved ? (
-                <WorkspaceButton
-                  disabled={
-                    !canActivate ||
-                    !onActivateCandidate ||
-                    !systemSingleFramePassed ||
-                    selectedIsActiveIdentity ||
-                    busy !== null
-                  }
-                  onClick={() => setActivationOpen((current) => !current)}
-                  tone="primary"
-                >
-                  {selectedIsActiveIdentity
-                    ? "当前活动身份"
-                    : "激活为新视觉身份"}
-                </WorkspaceButton>
-              ) : (
-                <WorkspaceButton
-                  disabled={
-                    !canReview ||
-                    !selectedItem?.asset ||
-                    !systemSingleFramePassed ||
-                    !candidateQualityConfirmed ||
-                    busy !== null
-                  }
-                  onClick={() => void submitCandidate()}
-                  tone="primary"
-                >
-                  {busy === "review" ? "正在采用…" : "采用这张图并继续"}
-                </WorkspaceButton>
-              )}
-            </div>
-
-            {activationOpen &&
-            selectedApproved &&
-            systemSingleFramePassed &&
-            selectedItem?.asset ? (
-              <div
-                className="mt-4 scroll-mt-6 rounded-xl border border-[var(--ad-ink)] bg-[var(--ad-surface)] p-4"
-                id="identity-candidate-activation"
-              >
-                <h4 className="text-sm font-semibold">激活新的视觉身份版本</h4>
-                <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">
-                  候选图将成为新身份的规范肖像和首个 Reference
-                  Set。这里填写的是跨场景保持不变的视觉身份，不是剧情、姿势、服装或场景提示词。
+              {selectedItem.asset && !systemSingleFramePassed ? (
+                <p className="mt-5 text-sm text-[var(--ad-yellow-text)]">
+                  旧图片缺少可采用的构图检查记录。可以从这张继续调整，生成的新图仍可重新选择。
                 </p>
-                <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">
-                  身份锁定描述
-                  <textarea
-                    className={`${textAreaClass} mt-1 min-h-24`}
-                    onChange={(event) =>
-                      setActivationPrompt(event.target.value)
-                    }
-                    value={activationPrompt}
-                  />
-                </label>
-                <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">
-                  脸部稳定特征（每行一个，必填）
-                  <textarea
-                    className={`${textAreaClass} mt-1 min-h-20`}
-                    onChange={(event) =>
-                      setActivationFaceTraits(event.target.value)
-                    }
-                    placeholder={"例如：椭圆脸\n蓝灰色杏眼\n窄鼻梁"}
-                    value={activationFaceTraits}
-                  />
-                </label>
-                <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">
-                  头发稳定特征（每行一个，必填）
-                  <textarea
-                    className={`${textAreaClass} mt-1 min-h-20`}
-                    onChange={(event) =>
-                      setActivationHairTraits(event.target.value)
-                    }
-                    placeholder={"例如：深棕色波浪长发\n中央分缝"}
-                    value={activationHairTraits}
-                  />
-                </label>
-                <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">
-                  身形稳定特征（每行一个，必填）
-                  <textarea
-                    className={`${textAreaClass} mt-1 min-h-20`}
-                    onChange={(event) =>
-                      setActivationBodyTraits(event.target.value)
-                    }
-                    placeholder={"例如：高挑身形\n肩腰比例"}
-                    value={activationBodyTraits}
-                  />
-                </label>
-                <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">
-                  标志特征（每行一个，可留空）
-                  <textarea
-                    className={`${textAreaClass} mt-1 min-h-20`}
-                    onChange={(event) =>
-                      setActivationSignatureTraits(event.target.value)
-                    }
-                    placeholder={"例如：左眼下方小痣"}
-                    value={activationSignatureTraits}
-                  />
-                </label>
-                <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">
-                  激活理由
+              ) : null}
+
+              {!selectedApproved &&
+              selectedItem.asset &&
+              systemSingleFramePassed ? (
+                <label className="mt-5 flex cursor-pointer items-start gap-3 text-sm leading-6">
                   <input
-                    className={`${fieldClass} mt-1`}
+                    checked={candidateQualityConfirmed}
+                    className="mt-1 h-4 w-4 shrink-0 accent-[var(--ad-ink)]"
                     onChange={(event) =>
-                      setActivationReason(event.target.value)
-                    }
-                    value={activationReason}
-                  />
-                </label>
-                <label className="mt-3 flex items-start gap-2 text-xs leading-5">
-                  <input
-                    checked={activationConfirmed}
-                    className="mt-1"
-                    onChange={(event) =>
-                      setActivationConfirmed(event.target.checked)
+                      setCandidateQualityConfirmed(event.target.checked)
                     }
                     type="checkbox"
                   />
                   <span>
-                    我确认这段文字只描述人物身份；激活会归档旧身份、创建新
-                    Reference Set，并使旧草稿图片失效。
+                    我已确认人物、画面和图片质量，可将它作为视觉身份。
                   </span>
                 </label>
-                <div className="mt-4 flex flex-wrap gap-2">
+              ) : null}
+
+              <div className="mt-6 flex flex-wrap gap-2">
+                <WorkspaceButton
+                  disabled={!selectedItem.asset || busy !== null}
+                  onClick={continueFromSelected}
+                >
+                  从这张继续调整
+                </WorkspaceButton>
+                <WorkspaceButton
+                  disabled={!experiment || busy !== null}
+                  onClick={reuseRunParameters}
+                >
+                  沿用生成参数
+                </WorkspaceButton>
+                {systemSingleFramePassed && selectedApproved ? (
                   <WorkspaceButton
                     disabled={
-                      busy !== null ||
-                      activationPrompt.trim().length < 10 ||
-                      identityTraitLines(activationFaceTraits).length === 0 ||
-                      identityTraitLines(activationHairTraits).length === 0 ||
-                      identityTraitLines(activationBodyTraits).length === 0 ||
-                      activationReason.trim().length < 3 ||
-                      !activationConfirmed
+                      !canActivate ||
+                      !onActivateCandidate ||
+                      !systemSingleFramePassed ||
+                      selectedIsActiveIdentity ||
+                      busy !== null
                     }
-                    onClick={() => void activateCandidate()}
+                    onClick={() => setActivationOpen((current) => !current)}
                     tone="primary"
                   >
-                    {busy === "activate" ? "正在激活…" : "确认激活新身份"}
+                    {selectedIsActiveIdentity ? "当前形象" : "设为当前形象"}
                   </WorkspaceButton>
+                ) : systemSingleFramePassed ? (
                   <WorkspaceButton
-                    disabled={busy !== null}
-                    onClick={() => setActivationOpen(false)}
+                    disabled={
+                      !canReview ||
+                      !selectedItem.asset ||
+                      !systemSingleFramePassed ||
+                      !candidateQualityConfirmed ||
+                      busy !== null
+                    }
+                    onClick={() => void submitCandidate()}
+                    tone="primary"
                   >
-                    取消
+                    {busy === "review" ? "正在采用…" : "采用这张图"}
                   </WorkspaceButton>
-                </div>
+                ) : null}
               </div>
-            ) : null}
-          </div>
 
-          <div hidden>
-            {displayedNotice ? (
-              <p
-                className="mt-4 rounded-lg bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]"
-                role="status"
-              >
-                {displayedNotice}
-              </p>
-            ) : null}
-            {error ? (
-              <p
-                className="mt-4 rounded-lg bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]"
-                role="alert"
-              >
-                {error}
-              </p>
-            ) : null}
-
-            <details className="mt-6 border-t border-[var(--ad-border)] pt-4">
-              <summary className="cursor-pointer text-sm font-semibold">
-                最近实验轮次 · {runs.length}
-              </summary>
-              <div className="mt-3 grid gap-2">
-                {runs.length === 0 ? (
-                  <p className="text-sm text-[var(--ad-text-muted)]">
-                    尚无视觉身份实验。
-                  </p>
-                ) : (
-                  runs.map((run, index) => (
-                    <button
-                      className={cn(
-                        "flex min-h-12 items-center justify-between gap-3 rounded-lg border px-3 text-left text-xs",
-                        selectedRun?.id === run.id
-                          ? "border-[var(--ad-ink)] bg-black/[0.035]"
-                          : "border-[var(--ad-border)]",
-                      )}
-                      key={run.id}
-                      onClick={() =>
-                        void loadRun(run.id).then(() => setResultOpen(true))
+              {activationOpen &&
+              selectedApproved &&
+              systemSingleFramePassed &&
+              selectedItem.asset ? (
+                <div
+                  className="mt-6 scroll-mt-6 border-t border-[var(--ad-border)] pt-5"
+                  id="identity-candidate-activation"
+                >
+                  <h4 className="text-sm font-semibold">设为当前形象</h4>
+                  <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                    <label className="text-xs font-medium text-[var(--ad-text-muted)] sm:col-span-2">
+                      身份描述
+                      <textarea
+                        className={`${textAreaClass} mt-1 min-h-24`}
+                        onChange={(event) =>
+                          setActivationPrompt(event.target.value)
+                        }
+                        value={activationPrompt}
+                      />
+                    </label>
+                    <label className="text-xs font-medium text-[var(--ad-text-muted)]">
+                      脸部特征（每行一个）
+                      <textarea
+                        className={`${textAreaClass} mt-1 min-h-20`}
+                        onChange={(event) =>
+                          setActivationFaceTraits(event.target.value)
+                        }
+                        value={activationFaceTraits}
+                      />
+                    </label>
+                    <label className="text-xs font-medium text-[var(--ad-text-muted)]">
+                      头发特征（每行一个）
+                      <textarea
+                        className={`${textAreaClass} mt-1 min-h-20`}
+                        onChange={(event) =>
+                          setActivationHairTraits(event.target.value)
+                        }
+                        value={activationHairTraits}
+                      />
+                    </label>
+                    <label className="text-xs font-medium text-[var(--ad-text-muted)]">
+                      身形特征（每行一个）
+                      <textarea
+                        className={`${textAreaClass} mt-1 min-h-20`}
+                        onChange={(event) =>
+                          setActivationBodyTraits(event.target.value)
+                        }
+                        value={activationBodyTraits}
+                      />
+                    </label>
+                    <label className="text-xs font-medium text-[var(--ad-text-muted)]">
+                      标志特征（可留空）
+                      <textarea
+                        className={`${textAreaClass} mt-1 min-h-20`}
+                        onChange={(event) =>
+                          setActivationSignatureTraits(event.target.value)
+                        }
+                        value={activationSignatureTraits}
+                      />
+                    </label>
+                    <label className="text-xs font-medium text-[var(--ad-text-muted)] sm:col-span-2">
+                      变更理由
+                      <input
+                        className={`${fieldClass} mt-1`}
+                        onChange={(event) =>
+                          setActivationReason(event.target.value)
+                        }
+                        value={activationReason}
+                      />
+                    </label>
+                  </div>
+                  <label className="mt-4 flex items-start gap-2 text-xs leading-5">
+                    <input
+                      checked={activationConfirmed}
+                      className="mt-1"
+                      onChange={(event) =>
+                        setActivationConfirmed(event.target.checked)
                       }
-                      type="button"
+                      type="checkbox"
+                    />
+                    <span>
+                      我确认要创建新的视觉身份版本。线上图片不会自动替换。
+                    </span>
+                  </label>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <WorkspaceButton
+                      disabled={
+                        busy !== null ||
+                        activationPrompt.trim().length < 10 ||
+                        identityTraitLines(activationFaceTraits).length === 0 ||
+                        identityTraitLines(activationHairTraits).length === 0 ||
+                        identityTraitLines(activationBodyTraits).length === 0 ||
+                        activationReason.trim().length < 3 ||
+                        !activationConfirmed
+                      }
+                      onClick={() => void activateCandidate()}
+                      tone="primary"
                     >
-                      <span>
-                        <strong>第 {runs.length - index} 轮</strong>
-                        <span className="mt-0.5 block text-[var(--ad-text-muted)]">
-                          {new Date(run.createdAt).toLocaleString("zh-CN")} ·{" "}
-                          {run.counts.total} 张
+                      {busy === "activate" ? "正在设置…" : "确认设为当前形象"}
+                    </WorkspaceButton>
+                    <WorkspaceButton
+                      disabled={busy !== null}
+                      onClick={() => setActivationOpen(false)}
+                    >
+                      取消
+                    </WorkspaceButton>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </article>
+        ) : null}
+
+        {historyLoading ? (
+          <p className="mt-6 text-sm text-[var(--ad-text-muted)]">
+            正在读取历史创作…
+          </p>
+        ) : historyCandidates.length === 0 &&
+          historyRunsWithoutImages.length === 0 ? (
+          <div className="mt-6 border border-dashed border-[var(--ad-border)] px-5 py-10 text-center text-sm text-[var(--ad-text-muted)]">
+            生成后的图片会保存在这里
+          </div>
+        ) : (
+          <>
+            {historyCandidates.length > 0 ? (
+              <div
+                className="mt-6 grid grid-cols-2 gap-x-3 gap-y-6 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"
+                aria-label="历史创作图片"
+              >
+                {historyCandidates.map(
+                  ({ run, runDetail, runNumber, item }) => {
+                    const selected =
+                      selectedRun?.id === run.id &&
+                      selectedItem?.id === item.id &&
+                      resultOpen;
+                    const isCurrent = Boolean(
+                      item.asset &&
+                      identity?.anchorAssetIds.includes(item.asset.id),
+                    );
+                    return (
+                      <button
+                        aria-label={`查看第 ${runNumber} 次创作的候选图 ${item.ordinal + 1}`}
+                        aria-pressed={selected}
+                        className="group min-w-0 text-left"
+                        key={item.id}
+                        onClick={() => {
+                          setCandidateQualityConfirmed(false);
+                          setActivationOpen(false);
+                          setSelectedRun(runDetail);
+                          setSelectedItemId(item.id);
+                          setResultOpen(true);
+                        }}
+                        type="button"
+                      >
+                        <span
+                          className={cn(
+                            "relative block aspect-[4/5] overflow-hidden rounded-lg border bg-black/[0.035] transition group-hover:border-[var(--ad-text-muted)]",
+                            selected
+                              ? "border-[var(--ad-ink)]"
+                              : "border-[var(--ad-border)]",
+                          )}
+                        >
+                          <Image
+                            alt={`第 ${runNumber} 次创作的候选图 ${item.ordinal + 1}`}
+                            className="object-cover transition duration-200 group-hover:scale-[1.01]"
+                            fill
+                            sizes="(min-width: 1280px) 16vw, (min-width: 1024px) 20vw, (min-width: 640px) 30vw, 46vw"
+                            src={itemImage(item)!}
+                            unoptimized
+                          />
                         </span>
-                      </span>
-                      <StatusBadge value={run.executionOutcome} />
-                    </button>
-                  ))
+                        <span className="mt-2 flex items-center justify-between gap-2 text-xs">
+                          <span className="truncate">第 {runNumber} 次</span>
+                          <span className="shrink-0 text-[var(--ad-text-muted)]">
+                            {isCurrent
+                              ? "当前使用"
+                              : item.review?.decision === "approved"
+                                ? "已采用"
+                                : "候选"}
+                          </span>
+                        </span>
+                      </button>
+                    );
+                  },
                 )}
               </div>
-            </details>
-          </div>
-        </div>
-      </div>
+            ) : null}
+            {historyRunsWithoutImages.length > 0 ? (
+              <div
+                className="mt-6 flex flex-wrap gap-2"
+                aria-label="未产出图片的历史创作"
+              >
+                {historyRunsWithoutImages.map(
+                  ({ run, runDetail, runNumber }) => (
+                    <button
+                      className="rounded-md border border-[var(--ad-border)] px-3 py-2 text-left text-xs text-[var(--ad-text-muted)] hover:border-[var(--ad-text-muted)]"
+                      key={run.id}
+                      onClick={() => {
+                        setSelectedRun(runDetail);
+                        setSelectedItemId(runDetail.items[0]?.id ?? null);
+                        setResultOpen(true);
+                      }}
+                      type="button"
+                    >
+                      第 {runNumber} 次：未产出图片
+                    </button>
+                  ),
+                )}
+              </div>
+            ) : null}
+          </>
+        )}
+      </section>
     </section>
   );
 }
