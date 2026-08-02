@@ -11,11 +11,12 @@ import {
 } from "@/server/modules/admin/shared/admin-text-generation";
 import { actorWithPermission, jsonBody } from "@/server/modules/admin/shared/legacy-primitives";
 import { moderateText } from "@/server/modules/ourdream/service";
+import { CHARACTER_STYLES, GENDERS } from "@idream/shared/catalog";
 
 const assistSchema = z.object({
   seed: z.string().trim().min(3).max(400),
-  gender: z.enum(["female", "male", "trans"]).optional(),
-  style: z.enum(["realistic", "anime", "hybrid", "other"]).optional(),
+  gender: z.enum(GENDERS).optional(),
+  style: z.enum(CHARACTER_STYLES).optional(),
 });
 
 function nameIdeasFromText(value: string): string[] {

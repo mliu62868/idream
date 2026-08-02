@@ -34,6 +34,7 @@ import {
 } from "./release-snapshot";
 import { findOperationalGenerationRoute } from "./visual-authority";
 import { characterReferenceAuthorityFrom } from "./reference-authority";
+import { CHARACTER_STYLES, isCatalogMember } from "@idream/shared/catalog";
 
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -54,9 +55,7 @@ function text(value: unknown) {
 }
 
 function visualStyle(value: unknown) {
-  return ["realistic", "anime", "hybrid", "other"].includes(String(value))
-    ? String(value)
-    : "realistic";
+  return isCatalogMember(CHARACTER_STYLES, value) ? value : "realistic";
 }
 
 export const EDITORIAL_VISUAL_IDENTITY_REPAIR_VERSION = 2;

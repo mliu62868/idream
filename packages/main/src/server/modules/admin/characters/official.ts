@@ -31,11 +31,12 @@ import {
   getCharacterProjectDraftForResume,
   updateCharacterProjectDraft,
 } from "@/server/modules/admin-v2/characters/workspace";
+import { CHARACTER_STYLES, GENDERS } from "@idream/shared/catalog";
 
 const OFFICIAL_PERMISSION = "content.official.write" as const;
 
-const genderEnum = z.enum(["female", "male", "trans"]);
-const styleEnum = z.enum(["realistic", "anime", "hybrid", "other"]);
+const genderEnum = z.enum(GENDERS);
+const styleEnum = z.enum(CHARACTER_STYLES);
 // 顶层只接 string→unknown 的记录，避免把任意结构（数组/标量）当成 appearance/advancedDetails。
 const recordSchema = z.record(z.string(), z.unknown());
 

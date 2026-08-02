@@ -30,6 +30,7 @@ import {
   parseFeaturedSetting,
 } from "@/server/modules/ourdream/featured-setting";
 import { publicCharacterAudienceWhere } from "@/server/modules/ourdream/public-content-audience";
+import { CHARACTER_VISIBILITY } from "@idream/shared/catalog";
 
 const featuredCharacterSelect = {
   id: true,
@@ -91,7 +92,7 @@ type FeaturedRuntimeBlocker = {
 };
 
 const contentVisibilitySchema = z.object({
-  visibility: z.enum(["private", "unlisted", "public"]),
+  visibility: z.enum(CHARACTER_VISIBILITY),
   reason: z.string().trim().min(3).max(2_000),
   confirmation: z.string().trim().min(1).max(160),
 });

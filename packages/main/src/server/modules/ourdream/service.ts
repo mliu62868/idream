@@ -3,6 +3,17 @@ import {
   type GenerationJob as GenerationJobRow,
 } from "@prisma/client";
 import { buildCharacterSystemPrompt } from "@idream/shared";
+import {
+  APPEAL_TARGET_TYPES,
+  CHARACTER_STYLES,
+  CHARACTER_VISIBILITY,
+  GENDERS,
+  GENERATION_JOB_STATUSES,
+  MEDIA_ASSET_VISIBILITY,
+  PRODUCT_FEEDBACK_CATEGORIES,
+  SUPPORT_REQUEST_CATEGORIES,
+  TERMINAL_GENERATION_JOB_STATUSES,
+} from "@idream/shared/catalog";
 import { parseCharacterReleaseAssetManifest } from "@idream/shared/admin";
 import { assignWorkflowReferenceSlots } from "@idream/shared/gen-workflow";
 import { resolveLocalBlobPath, resolveLocalBlobRoot } from "@idream/shared/storage/local-blob";
@@ -205,15 +216,15 @@ const ageGateSchema = z.object({
 });
 
 const draftCreateSchema = z.object({
-  gender: z.enum(["female", "male", "trans"]).optional(),
-  style: z.enum(["realistic", "anime", "hybrid", "other"]).optional(),
+  gender: z.enum(GENDERS).optional(),
+  style: z.enum(CHARACTER_STYLES).optional(),
   name: z.string().trim().min(1).max(80).optional(),
 });
 
 const draftPatchSchema = z.object({
   step: z.number().int().min(0).max(12).optional(),
-  gender: z.enum(["female", "male", "trans"]).nullable().optional(),
-  style: z.enum(["realistic", "anime", "hybrid", "other"]).nullable().optional(),
+  gender: z.enum(GENDERS).nullable().optional(),
+  style: z.enum(CHARACTER_STYLES).nullable().optional(),
   name: z.string().trim().min(1).max(80).nullable().optional(),
   appearance: z.record(z.string(), z.unknown()).optional(),
   hair: z.record(z.string(), z.unknown()).optional(),
@@ -223,7 +234,7 @@ const draftPatchSchema = z.object({
 });
 
 const draftSubmitSchema = z.object({
-  visibility: z.enum(["private", "unlisted", "public"]).default("private"),
+  visibility: z.enum(CHARACTER_VISIBILITY).default("private"),
   description: z.string().trim().min(1).max(1_500).optional(),
   age: z.number().int().min(18).max(99).default(21),
 });
@@ -395,16 +406,7 @@ const reportSchema = z.object({
   description: z.string().trim().max(2_000).optional(),
 });
 
-const appealTargetTypeSchema = z.enum([
-  "character",
-  "media",
-  "feed_item",
-  "chat_message",
-  "user_profile",
-  "moderation_decision",
-  "safety_issue",
-  "copyright_likeness",
-]);
+const appealTargetTypeSchema = z.enum(APPEAL_TARGET_TYPES);
 
 const profilePatchSchema = z.object({
   displayName: z.string().trim().min(1).max(80).optional(),
@@ -453,7 +455,7 @@ const experimentExposureClientSchema = z.object({
 }).strict();
 
 const supportRequestSchema = z.object({
-  category: z.enum(["account", "billing", "generation", "chat", "bug", "feature", "other"]),
+  category: z.enum(SUPPORT_REQUEST_CATEGORIES),
   subject: z.string().trim().min(3).max(120),
   description: z.string().trim().min(10).max(2_000),
   diagnosticConsent: z.boolean().default(false),
@@ -461,7 +463,7 @@ const supportRequestSchema = z.object({
 });
 
 const feedbackItemCreateSchema = z.object({
-  category: z.enum(["bug", "feature", "improvement"]).default("feature"),
+  category: z.enum(PRODUCT_FEEDBACK_CATEGORIES).default("feature"),
   title: z.string().trim().min(3).max(120),
   description: z.string().trim().min(10).max(600),
 });
@@ -5935,7 +5937,7 @@ async function bulkMedia(request: Request) {
     .object({
       ids: z.array(z.string()).min(1).max(100),
       action: z.enum(["delete", "visibility"]),
-      visibility: z.enum(["private", "public_pack", "unlisted"]).optional(),
+      visibility: z.enum(MEDIA_ASSET_VISIBILITY).optional(),
     })
     .parse(await jsonBody(request));
 
@@ -9772,7 +9774,7 @@ async function updateCharacter(request: Request, id: string) {
     .object({
       name: z.string().min(1).max(80).optional(),
       description: z.string().min(1).max(1_500).optional(),
-      visibility: z.enum(["private", "unlisted", "public"]).optional(),
+      visibility: z.enum(CHARACTER_VISIBILITY).optional(),
     })
     .parse(await jsonBody(request));
   const shouldRebuildPrompt = body.name !== undefined || body.description !== undefined;
@@ -11157,8 +11159,11 @@ function pruneUndefined(value: Record<string, unknown>) {
   return Object.fromEntries(Object.entries(value).filter(([, child]) => child !== undefined));
 }
 
+// INTENT: 「活跃」= 非终态。以终态集合取反，新增一个状态时不会漏进这里。
 function activeGenerationStatuses() {
-  return ["queued", "moderating_input", "running", "moderating_output"];
+  return GENERATION_JOB_STATUSES.filter(
+    (status) => !(TERMINAL_GENERATION_JOB_STATUSES as readonly string[]).includes(status),
+  );
 }
 
 function maxInflightJobs(entitlements: Record<string, Prisma.JsonValue>) {
