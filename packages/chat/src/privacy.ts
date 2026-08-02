@@ -8,16 +8,14 @@ import type { Prisma } from "../generated/client/client.js";
 import type { ChatPrismaClient } from "./db.js";
 import { chatPrisma, chatProjectorPrisma } from "./db.js";
 import {
-  assertNoPendingChatFileMutationsTx,
   projectChatFileMutations,
   recordChatFileMutation,
-  runWithProjectedChatFiles,
   withTurnAuthority,
 } from "./file-mutations.js";
 import { loadSessionLinkage } from "./relationship-authority.js";
 import { CHAT_TO_MAIN_EVENTS } from "@idream/shared/contracts";
 import { recordExchangeCorrection } from "./exchange-corrections.js";
-import { lockTurn, lockUser } from "./turn-lock.js";
+import { lockUser } from "./turn-lock.js";
 
 type PrivacyRedactionReason =
   | "logical_exchange_deleted"
