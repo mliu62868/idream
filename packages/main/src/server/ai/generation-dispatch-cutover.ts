@@ -865,7 +865,7 @@ function validInFlightBullRow(input: {
     const parsed = aiFinalizePayloadSchema.safeParse(input.row.payload);
     if (
       !parsed.success ||
-      !["generation.completed", "generation.failed", "generation.blocked"]
+      !["generation.completed", "generation.failed", "generation.unknown", "generation.blocked"]
         .includes(parsed.data.kind) ||
       payload.requestId !== `generation_dispatch_${attempt.id}` ||
       payload.mode !== job.mode
@@ -949,8 +949,7 @@ function validUnknownFinalizationEvidence(input: {
   const parsed = aiFinalizePayloadSchema.safeParse(input.terminalOutbox.payload);
   if (
     !parsed.success ||
-    parsed.data.kind !== "generation.failed" ||
-    parsed.data.error.attemptOutcome !== "unknown" ||
+    parsed.data.kind !== "generation.unknown" ||
     input.terminalOutbox.status !== "delivered" ||
     input.terminalOutbox.deliveredAt === null
   ) {
@@ -987,6 +986,7 @@ function validTerminalOutbox(input: {
     ![
       "generation.completed",
       "generation.failed",
+      "generation.unknown",
       "generation.blocked",
     ].includes(parsed.data.kind)
   ) {

@@ -948,7 +948,6 @@ describe("generation terminal record durable ingest", () => {
         kind: "generation.failed",
         error: expect.objectContaining({
           code: "provider_timeout",
-          attemptOutcome: "failed",
           retryability: "retryable",
         }),
       },
@@ -964,10 +963,9 @@ describe("generation terminal record durable ingest", () => {
       },
       transportStatus: "unknown",
       finalizer: {
-        kind: "generation.failed",
+        kind: "generation.unknown",
         error: expect.objectContaining({
           code: "provider_outcome_unknown",
-          attemptOutcome: "unknown",
           retryability: "operator_retry",
         }),
       },

@@ -421,8 +421,7 @@ async function ingestUnknownTerminalResolution(
       originalOutbox.aggregateType !== "generation_attempt" ||
       originalOutbox.aggregateId !== attempt.id ||
       !originalPayload.success ||
-      originalPayload.data.kind !== "generation.failed" ||
-      originalPayload.data.error.attemptOutcome !== "unknown" ||
+      originalPayload.data.kind !== "generation.unknown" ||
       originalPayload.data.generationJobId !== attempt.requestId ||
       originalPayload.data.attemptId !== attempt.id ||
       originalPayload.data.attemptNo !== attempt.attemptNo ||
@@ -988,17 +987,19 @@ function finalizePayload(input: GenerationTerminalRecordIngest) {
       layer: record.block.layer,
     };
   }
-  return {
-    ...common,
-    kind: "generation.failed" as const,
-    error: {
-      code: record.error.code,
-      message: record.error.message,
-      retryable: record.error.retryability === "retryable",
-      attemptOutcome: record.outcome,
-      retryability: record.error.retryability,
-    },
+  const error = {
+    code: record.error.code,
+    message: record.error.message,
+    retryable: record.error.retryability === "retryable",
+    retryability: record.error.retryability,
   };
+  // INTENT: Gen's ambiguous terminal outcome keeps its own finalize kind all the
+  // way to settlement. Collapsing it into generation.failed would hand a possibly
+  // charged, possibly produced Attempt to the refund-and-retry path.
+  if (record.outcome === "unknown") {
+    return { ...common, kind: "generation.unknown" as const, error };
+  }
+  return { ...common, kind: "generation.failed" as const, error };
 }
 
 export async function dispatchPendingGenerationTerminalRecords(

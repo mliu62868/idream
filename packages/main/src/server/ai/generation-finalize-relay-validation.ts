@@ -25,6 +25,7 @@ export async function validateGenerationFinalizeRelaySnapshot(
   if (![
     "generation.completed",
     "generation.failed",
+    "generation.unknown",
     "generation.blocked",
   ].includes(parsed.data.kind)) {
     return { valid: false, reason: "unsupported_kind" };

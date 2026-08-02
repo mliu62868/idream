@@ -643,19 +643,25 @@ async function processLocalAiJob(job: QueueJob) {
 async function processFinalize(payloadValue: Prisma.JsonValue) {
   const payload = aiFinalizePayloadSchema.parse(payloadValue);
 
-  if (payload.kind === "generation.completed") return finalizeGenerationCompleted(payload);
-  if (payload.kind === "generation.failed") return finalizeGenerationFailed(payload);
-  if (payload.kind === "generation.blocked") return finalizeGenerationBlocked(payload);
+  // INTENT: the raw queue value travels alongside the parsed one because the
+  // durable terminal-record match is a statement about the delivered wire bytes.
+  // Hashing the parsed projection instead would make the check depend on which
+  // fields the current schema happens to retain.
+  if (payload.kind === "generation.completed") return finalizeGenerationCompleted(payload, payloadValue);
+  if (payload.kind === "generation.failed") return finalizeGenerationFailed(payload, payloadValue);
+  if (payload.kind === "generation.unknown") return finalizeGenerationUnknown(payload, payloadValue);
+  if (payload.kind === "generation.blocked") return finalizeGenerationBlocked(payload, payloadValue);
 }
 
 async function finalizeGenerationCompleted(
   payload: Extract<AiFinalizePayload, { kind: "generation.completed" }>,
+  rawPayload: Prisma.JsonValue,
 ) {
   const job = await prisma.generationJob.findUnique({
     where: { id: payload.generationJobId },
   });
   if (!job) return;
-  const resolved = await resolveGenerationAttemptForFinalize(job.id, payload);
+  const resolved = await resolveGenerationAttemptForFinalize(job.id, payload, rawPayload);
   await removeGenerationAttemptQueueJob({
     requestId: job.id,
     attemptId: resolved.attempt.id,
@@ -956,21 +962,18 @@ async function appendLocalCanonicalProductEvent(
 
 async function finalizeGenerationFailed(
   payload: Extract<AiFinalizePayload, { kind: "generation.failed" }>,
+  rawPayload: Prisma.JsonValue,
 ) {
   const job = await prisma.generationJob.findUnique({
     where: { id: payload.generationJobId },
   });
   if (!job) return;
-  const resolved = await resolveGenerationAttemptForFinalize(job.id, payload);
+  const resolved = await resolveGenerationAttemptForFinalize(job.id, payload, rawPayload);
   await removeGenerationAttemptQueueJob({
     requestId: job.id,
     attemptId: resolved.attempt.id,
   });
   if (!resolved.isLatest) return;
-  if (payload.error.attemptOutcome === "unknown") {
-    await finalizeGenerationUnknown(job, resolved.attempt.id, payload);
-    return;
-  }
   if (["completed", "failed", "blocked", "refunded", "cancelled"].includes(job.status)) return;
   await refundGeneration(
     job.userId,
@@ -982,7 +985,7 @@ async function finalizeGenerationFailed(
     job.sourceId,
     resolved.attempt.id,
     {
-      attemptOutcome: payload.error.attemptOutcome ?? "failed",
+      attemptOutcome: "failed",
       retryability: payload.error.retryability,
       terminalRecordRef: payload.terminalRecordRef,
       terminalRecordChecksum: payload.terminalRecordChecksum,
@@ -990,11 +993,25 @@ async function finalizeGenerationFailed(
   );
 }
 
+// SPEC: an ambiguous provider outcome settles nothing. No refund is issued and
+// no business retry is allowed until an operator reconciles the provider request.
+// INVARIANT: reachable only from the generation.unknown finalize variant, so a
+// plain failure can never be routed here (and vice versa).
 async function finalizeGenerationUnknown(
-  job: Prisma.GenerationJobGetPayload<Record<string, never>>,
-  attemptId: string,
-  payload: Extract<AiFinalizePayload, { kind: "generation.failed" }>,
+  payload: Extract<AiFinalizePayload, { kind: "generation.unknown" }>,
+  rawPayload: Prisma.JsonValue,
 ) {
+  const job = await prisma.generationJob.findUnique({
+    where: { id: payload.generationJobId },
+  });
+  if (!job) return;
+  const resolved = await resolveGenerationAttemptForFinalize(job.id, payload, rawPayload);
+  await removeGenerationAttemptQueueJob({
+    requestId: job.id,
+    attemptId: resolved.attempt.id,
+  });
+  if (!resolved.isLatest) return;
+  const attemptId = resolved.attempt.id;
   await prisma.$transaction(async (tx) => {
     await tx.$queryRaw(Prisma.sql`
       SELECT id FROM generation_jobs WHERE id = ${job.id} FOR UPDATE
@@ -1060,12 +1077,13 @@ async function finalizeGenerationUnknown(
 
 async function finalizeGenerationBlocked(
   payload: Extract<AiFinalizePayload, { kind: "generation.blocked" }>,
+  rawPayload: Prisma.JsonValue,
 ) {
   const job = await prisma.generationJob.findUnique({
     where: { id: payload.generationJobId },
   });
   if (!job) return;
-  const resolved = await resolveGenerationAttemptForFinalize(job.id, payload);
+  const resolved = await resolveGenerationAttemptForFinalize(job.id, payload, rawPayload);
   await removeGenerationAttemptQueueJob({
     requestId: job.id,
     attemptId: resolved.attempt.id,
@@ -1103,9 +1121,11 @@ async function resolveGenerationAttemptForFinalize(
       kind:
         | "generation.completed"
         | "generation.failed"
+        | "generation.unknown"
         | "generation.blocked";
     }
   >,
+  rawPayload: Prisma.JsonValue,
 ) {
   const [attempt, latestAttempt, terminalOutbox] = await Promise.all([
     prisma.generationAttempt.findFirst({
@@ -1139,7 +1159,7 @@ async function resolveGenerationAttemptForFinalize(
     terminalOutbox.eventType !== "generation.terminal_record.accepted.v1" ||
     terminalOutbox.aggregateType !== "generation_attempt" ||
     terminalOutbox.aggregateId !== attempt.id ||
-    canonicalSha256(terminalOutbox.payload) !== canonicalSha256(payload)
+    canonicalSha256(terminalOutbox.payload) !== canonicalSha256(rawPayload)
   ) {
     throw Errors.conflict(
       "Generation finalize payload does not match its durable terminal record",
@@ -1234,8 +1254,11 @@ async function refundGeneration(
   sourceType: string,
   sourceId: string | null,
   attemptId?: string,
+  // INVARIANT: refunding settles a Request as failed/blocked, so the Attempt
+  // outcome recorded here is never the ambiguous one — an unknown provider
+  // outcome holds the funds and goes to operator reconciliation instead.
   terminal: {
-    attemptOutcome?: "failed" | "blocked" | "unknown";
+    attemptOutcome?: "failed" | "blocked";
     retryability?: "retryable" | "not_retryable" | "operator_retry";
     terminalRecordRef?: string;
     terminalRecordChecksum?: string;
@@ -1336,10 +1359,7 @@ async function refundGeneration(
           },
           terminalRecordRef: terminal.terminalRecordRef ?? null,
           errorCode,
-          errorClass: attemptOutcome === "unknown" ? "ambiguous_provider_outcome" : undefined,
-          errorSignature: attemptOutcome === "unknown" ? `ambiguous_provider_outcome:${errorCode}` : undefined,
           retryability: terminal.retryability ?? (status === "failed" ? "retryable" : "not_retryable"),
-          operatorGuidance: attemptOutcome === "unknown" ? "Reconcile the provider request before any business retry." : undefined,
         });
       }
       await markGenerationTerminalRecordDelivered(tx, attemptId);
