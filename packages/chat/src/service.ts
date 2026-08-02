@@ -989,11 +989,14 @@ export async function regenerate(
   }
   await hooks.beforeAuthorityLock?.();
 
-  const attempt = await runWithProjectedChatFiles(
-    input.userId,
-    () => prisma.$transaction(async (tx) => {
-    await lockTurn(tx, input.userId, session.id);
-    await assertNoPendingChatFileMutationsTx(tx, input.userId);
+  const attempt = await withTurnAuthority(
+    {
+      userId: input.userId,
+      sessionId: session.id,
+      prisma,
+      projectorPrisma,
+    },
+    async (tx) => {
     await assertActiveUserAuthority(tx, input.userId);
     await assertTurnCapacity(tx, input.userId, session.id, policy, message.id);
     const [
@@ -1071,8 +1074,7 @@ export async function regenerate(
       },
     });
     return nextAttempt;
-    }),
-    projectorPrisma,
+    },
   );
 
   // dedupeKey carries :attempt so regenerate is NOT swallowed (PLAN §3, the bug fix).
