@@ -2,13 +2,14 @@
 // generation process and exposes it through the existing GenBackend seam.
 // INTENT: Keep Draw Things process/model/temp-file knowledge out of queue and
 // ImageModel callers. submit() completes generation and caches one result; poll()
-// consumes it, matching the synchronous SdcppBackend adapter shape.
+// consumes it — the synchronous one-shot shape every CLI backend uses, in
+// contrast to ComfyUIBackend's real submit/poll queue.
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { resolveExecutable } from "@idream/shared";
-import { assertGeneratedImageSanity } from "../generated-image-sanity";
+import { assertGeneratedImageSanity } from "@idream/shared/media/generated-image-sanity";
 import { logger } from "../logger";
 import {
   cleanupGenerationReferenceImages,

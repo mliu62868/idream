@@ -4,8 +4,8 @@ import { BackendImageModel } from "./backend-image-model";
 import { BackendInvocationError, type GenBackend } from "./types";
 import { workflowDescriptorSchema } from "./workflow";
 
-// 2x2 PNG (checkerboard black/white) — same fixture used by comfyui.test.ts /
-// sdcpp.test.ts. These tests inject a stub GenBackend directly (no real sanity
+// 2x2 PNG (checkerboard black/white) — same fixture used by comfyui.test.ts.
+// These tests inject a stub GenBackend directly (no real sanity
 // check runs), so the bytes just need to be non-empty/valid-looking.
 const PNG = Uint8Array.from(
   atob("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAE0lEQVR4nGNgYGD4//8/GDMwAAAp5AX71ZPZmwAAAABJRU5ErkJggg=="),
@@ -53,6 +53,15 @@ const noLookDescriptor = workflowDescriptorSchema.parse({
     },
   ],
 });
+
+// Main pins workflowKey@workflowVersion into controls on every dispatched
+// attempt, and the worker now fails closed without it (registry.validateWorkflowPin).
+// Tests that are about anything downstream of that check carry the matching pin.
+const PIN = { workflowKey: descriptor.workflowKey, workflowVersion: descriptor.version };
+const NO_LOOK_PIN = {
+  workflowKey: noLookDescriptor.workflowKey,
+  workflowVersion: noLookDescriptor.version,
+};
 
 function makeStubBackend(overrides?: Partial<GenBackend>): GenBackend {
   return {
@@ -111,6 +120,39 @@ describe("BackendImageModel", () => {
     expect(backend.submit).not.toHaveBeenCalled();
   });
 
+  // SPEC: an unpinned image attempt fails closed, exactly like video. There used
+  // to be an escape hatch here that let "no workflowKey AND no workflowVersion"
+  // through, so an image attempt could execute whatever descriptor its model id
+  // resolved to with no version agreement between Main and the worker.
+  it("rejects an attempt that carries no workflow pin at all", async () => {
+    const backend = makeStubBackend();
+    const model = modelWith(backend);
+    const result = await model.generate({ prompt: "a cat", count: 1, model: "m" });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "workflow_version_mismatch", retryable: false },
+    });
+    expect(backend.submit).not.toHaveBeenCalled();
+  });
+
+  it("rejects an attempt pinned to a workflow key with no version", async () => {
+    const backend = makeStubBackend();
+    const model = modelWith(backend);
+    const result = await model.generate({
+      prompt: "a cat",
+      count: 1,
+      model: "m",
+      controls: { workflowKey: "t2i" },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "workflow_version_mismatch", retryable: false },
+    });
+    expect(backend.submit).not.toHaveBeenCalled();
+  });
+
   it("rejects identity references when the workflow contract declares no identity support", async () => {
     const backend = makeStubBackend();
     const model = modelWith(backend);
@@ -118,6 +160,7 @@ describe("BackendImageModel", () => {
       prompt: "same character in a cafe",
       count: 1,
       model: "m",
+      controls: PIN,
       referenceImages: [
         { assetId: "anchor-1", role: "identity_anchor", b64Json: "aW1hZ2U=" },
       ],
@@ -143,6 +186,7 @@ describe("BackendImageModel", () => {
       prompt: "same character, use this outfit and lighting",
       count: 1,
       model: "identity-without-look",
+      controls: NO_LOOK_PIN,
       referenceImages: [
         {
           assetId: "look-1",
@@ -180,6 +224,7 @@ describe("BackendImageModel", () => {
       model: "m",
       orientation: "portrait",
       seed: "5",
+      controls: PIN,
     });
 
     expect(result.ok).toBe(true);
@@ -215,7 +260,7 @@ describe("BackendImageModel", () => {
     const registry = { resolveForModel: vi.fn(() => ({ backend, descriptor })) };
     const model = new BackendImageModel(registry);
 
-    const result = await model.generate({ prompt: "a cat", count: 1, model: "m" });
+    const result = await model.generate({ prompt: "a cat", count: 1, model: "m", controls: PIN });
 
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected failure result");
@@ -239,7 +284,7 @@ describe("BackendImageModel", () => {
     });
     const model = modelWith(backend);
 
-    const result = await model.generate({ prompt: "a cat", count: 1, model: "m" });
+    const result = await model.generate({ prompt: "a cat", count: 1, model: "m", controls: PIN });
 
     expect(result).toMatchObject({
       ok: false,
@@ -265,7 +310,7 @@ describe("BackendImageModel", () => {
     });
     const model = modelWith(backend);
 
-    const result = await model.generate({ prompt: "a cat", count: 1, model: "m" });
+    const result = await model.generate({ prompt: "a cat", count: 1, model: "m", controls: PIN });
 
     expect(result).toMatchObject({
       ok: false,
@@ -285,7 +330,7 @@ describe("BackendImageModel", () => {
     };
     const model = new BackendImageModel(registry);
 
-    const result = await model.generate({ prompt: "a cat", count: 1, model: "nope" });
+    const result = await model.generate({ prompt: "a cat", count: 1, model: "nope", controls: PIN });
 
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected failure result");
@@ -302,7 +347,7 @@ describe("BackendImageModel", () => {
 describe("BackendImageModel orientation sizing (wire contract)", () => {
   it('"4:5" is taller than wide and is NOT the old 1024x1024 default', async () => {
     const backend = makeStubBackend();
-    await modelWith(backend).generate({ prompt: "a cat", count: 1, model: "m", orientation: "4:5" });
+    await modelWith(backend).generate({ prompt: "a cat", count: 1, model: "m", orientation: "4:5", controls: PIN });
 
     const slots = submittedSlots(backend);
     expect(slots).toMatchObject({ width: 832, height: 1024 });
@@ -312,7 +357,7 @@ describe("BackendImageModel orientation sizing (wire contract)", () => {
 
   it('"16:9" is wider than tall', async () => {
     const backend = makeStubBackend();
-    await modelWith(backend).generate({ prompt: "a cat", count: 1, model: "m", orientation: "16:9" });
+    await modelWith(backend).generate({ prompt: "a cat", count: 1, model: "m", orientation: "16:9", controls: PIN });
 
     const slots = submittedSlots(backend);
     expect(slots).toMatchObject({ width: 1472, height: 832 });
@@ -321,7 +366,7 @@ describe("BackendImageModel orientation sizing (wire contract)", () => {
 
   it('"1:1" is square', async () => {
     const backend = makeStubBackend();
-    await modelWith(backend).generate({ prompt: "a cat", count: 1, model: "m", orientation: "1:1" });
+    await modelWith(backend).generate({ prompt: "a cat", count: 1, model: "m", orientation: "1:1", controls: PIN });
 
     const slots = submittedSlots(backend);
     expect(slots.width).toBe(slots.height);
@@ -330,21 +375,21 @@ describe("BackendImageModel orientation sizing (wire contract)", () => {
 
   it('legacy "portrait" still maps to its original dimensions', async () => {
     const backend = makeStubBackend();
-    await modelWith(backend).generate({ prompt: "a cat", count: 1, model: "m", orientation: "portrait" });
+    await modelWith(backend).generate({ prompt: "a cat", count: 1, model: "m", orientation: "portrait", controls: PIN });
 
     expect(submittedSlots(backend)).toMatchObject({ width: 832, height: 1216 });
   });
 
   it('unknown orientation "weird" falls back to the same dims as "4:5"', async () => {
     const backend = makeStubBackend();
-    await modelWith(backend).generate({ prompt: "a cat", count: 1, model: "m", orientation: "weird" });
+    await modelWith(backend).generate({ prompt: "a cat", count: 1, model: "m", orientation: "weird", controls: PIN });
 
     expect(submittedSlots(backend)).toMatchObject({ width: 832, height: 1024 });
   });
 
   it("omits width/height from the submitted slots when orientation is undefined", async () => {
     const backend = makeStubBackend();
-    await modelWith(backend).generate({ prompt: "a cat", count: 1, model: "m" });
+    await modelWith(backend).generate({ prompt: "a cat", count: 1, model: "m", controls: PIN });
 
     const slots = submittedSlots(backend);
     expect(slots).not.toHaveProperty("width");
@@ -357,7 +402,7 @@ describe("BackendImageModel orientation sizing (wire contract)", () => {
       prompt: "a cat",
       count: 1,
       model: "m",
-      controls: { width: 500, height: 700 },
+      controls: { ...PIN, width: 500, height: 700 },
     });
 
     expect(submittedSlots(backend)).toMatchObject({ width: 500, height: 700 });
@@ -372,7 +417,7 @@ describe("BackendImageModel orientation sizing (wire contract)", () => {
 describe("BackendImageModel seed hashing (wire contract)", () => {
   it("hashes a non-numeric seed via stableNumericSeed instead of colliding at 0", async () => {
     const backend = makeStubBackend();
-    await modelWith(backend).generate({ prompt: "a cat", count: 1, model: "m", seed: "cjob123abc" });
+    await modelWith(backend).generate({ prompt: "a cat", count: 1, model: "m", seed: "cjob123abc", controls: PIN });
 
     const seed = submittedSlots(backend).seed;
     expect(seed).toBe(stableNumericSeed("cjob123abc"));
@@ -381,24 +426,24 @@ describe("BackendImageModel seed hashing (wire contract)", () => {
 
   it("hashes two different non-numeric seeds to two different slot seeds", async () => {
     const backendA = makeStubBackend();
-    await modelWith(backendA).generate({ prompt: "a cat", count: 1, model: "m", seed: "cjob-aaa111" });
+    await modelWith(backendA).generate({ prompt: "a cat", count: 1, model: "m", seed: "cjob-aaa111", controls: PIN });
 
     const backendB = makeStubBackend();
-    await modelWith(backendB).generate({ prompt: "a cat", count: 1, model: "m", seed: "cjob-bbb222" });
+    await modelWith(backendB).generate({ prompt: "a cat", count: 1, model: "m", seed: "cjob-bbb222", controls: PIN });
 
     expect(submittedSlots(backendA).seed).not.toBe(submittedSlots(backendB).seed);
   });
 
   it('uses a numeric seed string ("42") verbatim', async () => {
     const backend = makeStubBackend();
-    await modelWith(backend).generate({ prompt: "a cat", count: 1, model: "m", seed: "42" });
+    await modelWith(backend).generate({ prompt: "a cat", count: 1, model: "m", seed: "42", controls: PIN });
 
     expect(submittedSlots(backend).seed).toBe(42);
   });
 
   it("increments the hashed base seed per batch index (count:2 -> [s, s+1])", async () => {
     const backend = makeStubBackend();
-    await modelWith(backend).generate({ prompt: "a cat", count: 2, model: "m", seed: "cjob123abc" });
+    await modelWith(backend).generate({ prompt: "a cat", count: 2, model: "m", seed: "cjob123abc", controls: PIN });
 
     const base = stableNumericSeed("cjob123abc") ?? 0;
     expect(submittedSlots(backend, 0).seed).toBe(base);
@@ -413,7 +458,7 @@ describe("BackendImageModel numericControl", () => {
       prompt: "a cat",
       count: 1,
       model: "m",
-      controls: { steps: 7.5 },
+      controls: { ...PIN, steps: 7.5 },
     });
 
     expect(submittedSlots(backend)).not.toHaveProperty("steps");

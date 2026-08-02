@@ -10,7 +10,7 @@ const WORKFLOWS_DIR = path.resolve(
   "../../workflows",
 );
 
-// Pure-function tests (bindComfySlots/bindSdcppArgs) and the onSkip-callback
+// Pure-function tests (bindComfySlots/bindWorkflowArgs) and the onSkip-callback
 // contract now live at packages/shared/src/gen/workflow.test.ts, alongside the
 // hoisted SSoT (@idream/shared/gen-workflow). This file keeps only the test
 // that reads gen's real on-disk workflows/ directory through the thin shell,

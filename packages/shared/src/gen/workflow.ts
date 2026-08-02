@@ -8,7 +8,7 @@ import { z } from "zod";
 
 export type SlotValues = Record<string, string | number>;
 
-export const workflowBackendKinds = ["comfyui", "sdcpp", "drawthings"] as const;
+export const workflowBackendKinds = ["comfyui", "drawthings"] as const;
 export const workflowBackendKindSchema = z.enum(workflowBackendKinds);
 export type WorkflowBackendKind = z.infer<typeof workflowBackendKindSchema>;
 
@@ -58,6 +58,37 @@ export const workflowIdentityCapabilitySchema = z.object({
   supportsLookReference: z.boolean(),
   supportsSourceImageWithIdentity: z.boolean(),
 }).superRefine((contract, context) => {
+  // SPEC: the identity contract must be internally consistent for EVERY backend.
+  // These live here, not in the descriptor-level superRefine, because that one
+  // early-returns for non-comfyui descriptors — which is how a Draw Things
+  // descriptor shipped `mode:"single_reference"` + `acceptedRoles:["source_image"]`
+  // + `maxReferences:0`: a self-contradiction that parsed fine and then made the
+  // declared img2img path permanently unreachable at runtime
+  // (assignWorkflowReferenceSlots rejects 1 > 0 as a cardinality mismatch).
+  if (new Set(contract.acceptedRoles).size !== contract.acceptedRoles.length) {
+    context.addIssue({
+      code: "custom",
+      path: ["acceptedRoles"],
+      message: "identity acceptedRoles must be unique",
+    });
+  }
+  if (contract.mode === "none") {
+    if (contract.acceptedRoles.length > 0 || contract.maxReferences !== 0) {
+      context.addIssue({
+        code: "custom",
+        path: ["mode"],
+        message:
+          "identity mode none cannot accept reference roles or declare a reference budget",
+      });
+    }
+  } else if (contract.acceptedRoles.length === 0 || contract.maxReferences < 1) {
+    context.addIssue({
+      code: "custom",
+      path: ["maxReferences"],
+      message:
+        `identity mode ${contract.mode} must accept at least one role and allow at least one reference`,
+    });
+  }
   if (
     contract.supportsLookReference !==
       contract.acceptedRoles.includes("look_reference")
@@ -119,14 +150,6 @@ const comfyWorkflowDescriptorSchema = workflowDescriptorBaseSchema.extend({
   inputs: z.array(comfySlotSchema),
 });
 
-const sdcppWorkflowDescriptorSchema = workflowDescriptorBaseSchema.extend({
-  backendKind: z.literal("sdcpp"),
-  // Accepted for backward compatibility with descriptors created before the
-  // backend-specific schema split. sd.cpp never reads this field.
-  apiPrompt: z.record(z.string(), comfyNodeSchema).optional(),
-  inputs: z.array(commandSlotSchema),
-});
-
 const drawThingsWorkflowDescriptorSchema = workflowDescriptorBaseSchema.extend({
   backendKind: z.literal("drawthings"),
   drawThings: z.object({
@@ -137,7 +160,6 @@ const drawThingsWorkflowDescriptorSchema = workflowDescriptorBaseSchema.extend({
 
 export const workflowDescriptorSchema = z.discriminatedUnion("backendKind", [
   comfyWorkflowDescriptorSchema,
-  sdcppWorkflowDescriptorSchema,
   drawThingsWorkflowDescriptorSchema,
 ]).superRefine((descriptor, context) => {
   const inputIndexByKey = new Map<string, number>();
@@ -499,10 +521,6 @@ export function bindWorkflowArgs(d: WorkflowDescriptor, values: SlotValues): str
     args.push(slot.target.argFlag, String(resolveValue(slot, values)));
   }
   return args;
-}
-
-export function bindSdcppArgs(d: WorkflowDescriptor, values: SlotValues): string[] {
-  return bindWorkflowArgs(d, values);
 }
 
 export async function loadWorkflowDescriptors(

@@ -6,7 +6,7 @@ import {
   workflowDescriptorSchema,
   assignWorkflowReferenceSlots,
   bindComfySlots,
-  bindSdcppArgs,
+  bindWorkflowArgs,
   loadWorkflowDescriptors,
 } from "./workflow";
 
@@ -78,6 +78,78 @@ describe("bindComfySlots", () => {
     const prompt = bindComfySlots(descriptor, { width: 1024 });
     expect(prompt["14"].inputs.width).toBe(1024);
     expect(prompt["15"].inputs.width).toBe(1024);
+  });
+});
+
+// SPEC: identity-contract self-consistency is backend-agnostic. The
+// descriptor-level superRefine early-returns for command backends, so these
+// checks live on the identity schema itself — otherwise a Draw Things descriptor
+// can declare a reference mode it can never actually satisfy.
+describe("identity contract consistency (all backends)", () => {
+  function drawThingsDescriptor(identity: Record<string, unknown>) {
+    return {
+      workflowKey: "dt-t2i",
+      modelId: "dt-model",
+      backendKind: "drawthings",
+      version: 1,
+      capabilities: ["textToImage", "img2img"],
+      identity,
+      drawThings: { model: "dt.ckpt" },
+      inputs: [{ key: "prompt", type: "text", target: { argFlag: "--prompt" } }],
+    };
+  }
+
+  it("rejects a command-backend contract that accepts roles with a zero reference budget", () => {
+    expect(() =>
+      workflowDescriptorSchema.parse(drawThingsDescriptor({
+        mode: "single_reference",
+        maxReferences: 0,
+        acceptedRoles: ["source_image"],
+        supportsLookReference: false,
+        supportsSourceImageWithIdentity: false,
+      })),
+    ).toThrow(/at least one reference/);
+  });
+
+  it("rejects a command-backend contract whose mode is none but still accepts roles", () => {
+    expect(() =>
+      workflowDescriptorSchema.parse(drawThingsDescriptor({
+        mode: "none",
+        maxReferences: 1,
+        acceptedRoles: ["source_image"],
+        supportsLookReference: false,
+        supportsSourceImageWithIdentity: false,
+      })),
+    ).toThrow(/mode none/);
+  });
+
+  it("accepts a self-consistent command-backend img2img contract", () => {
+    const descriptor = workflowDescriptorSchema.parse(drawThingsDescriptor({
+      mode: "single_reference",
+      maxReferences: 1,
+      acceptedRoles: ["source_image"],
+      supportsLookReference: false,
+      supportsSourceImageWithIdentity: false,
+    }));
+
+    // Command backends have no graph slots, so maxReferences stays an
+    // upper-bound capability contract — one source_image must now fit.
+    expect(assignWorkflowReferenceSlots(descriptor, ["source_image"])).toMatchObject({
+      ok: true,
+      maxReferences: 1,
+    });
+  });
+
+  it("rejects duplicate accepted roles", () => {
+    expect(() =>
+      workflowDescriptorSchema.parse(drawThingsDescriptor({
+        mode: "single_reference",
+        maxReferences: 2,
+        acceptedRoles: ["source_image", "source_image"],
+        supportsLookReference: false,
+        supportsSourceImageWithIdentity: false,
+      })),
+    ).toThrow(/unique/);
   });
 });
 
@@ -532,17 +604,17 @@ describe("workflow backend contracts", () => {
   });
 });
 
-describe("bindSdcppArgs", () => {
-  it("maps slots to sd-cli arg flags", () => {
+describe("bindWorkflowArgs", () => {
+  it("maps slots to command-backend arg flags", () => {
     const d = workflowDescriptorSchema.parse({
-      workflowKey: "sd", modelId: "z-turbo", backendKind: "sdcpp", version: 1,
-      capabilities: ["textToImage"], apiPrompt: {},
+      workflowKey: "z-turbo-t2i", modelId: "z-turbo", backendKind: "drawthings", version: 1,
+      capabilities: ["textToImage"], drawThings: { model: "z-turbo.ckpt" },
       inputs: [
         { key: "prompt", type: "text", target: { argFlag: "--prompt" } },
         { key: "steps", type: "int", target: { argFlag: "--steps" }, default: 8 },
       ],
     });
-    expect(bindSdcppArgs(d, { prompt: "hi" })).toEqual(["--prompt", "hi", "--steps", "8"]);
+    expect(bindWorkflowArgs(d, { prompt: "hi" })).toEqual(["--prompt", "hi", "--steps", "8"]);
   });
 });
 
@@ -567,8 +639,8 @@ describe("loadWorkflowDescriptors (opts.onSkip)", () => {
     await writeFile(
       path.join(dir, "good.json"),
       JSON.stringify({
-        workflowKey: "sd", modelId: "z-turbo", backendKind: "sdcpp", version: 1,
-        capabilities: ["textToImage"], apiPrompt: {}, inputs: [],
+        workflowKey: "z-turbo-t2i", modelId: "z-turbo", backendKind: "drawthings", version: 1,
+        capabilities: ["textToImage"], drawThings: { model: "z-turbo.ckpt" }, inputs: [],
       }),
     );
     const skipped: Array<{ file: string; err: string }> = [];

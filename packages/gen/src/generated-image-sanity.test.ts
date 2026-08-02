@@ -1,6 +1,6 @@
 import { deflateSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
-import { assertGeneratedImageSanity } from "./generated-image-sanity";
+import { assertGeneratedImageSanity } from "@idream/shared/media/generated-image-sanity";
 
 describe("generated image sanity", () => {
   it("rejects pure white PNG outputs", () => {

@@ -3,11 +3,11 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { buildBackendRegistry } from "./registry";
-import { bindComfySlots } from "./workflow";
+import { assignWorkflowReferenceSlots, bindComfySlots } from "./workflow";
 
 function descriptorJson(
   modelId: string,
-  backendKind: "comfyui" | "sdcpp" | "drawthings",
+  backendKind: "comfyui" | "drawthings",
   workflowKey = `${backendKind}-t2i`,
 ) {
   return JSON.stringify({
@@ -36,11 +36,10 @@ describe("buildBackendRegistry", () => {
   it("indexes descriptors by modelId and resolves the matching backend kind", async () => {
     dir = await mkdtemp(path.join(tmpdir(), "gen-registry-"));
     await writeFile(path.join(dir, "comfy.json"), descriptorJson("redcraft-krea2-redmix3-fp8", "comfyui"));
-    await writeFile(path.join(dir, "sdcpp.json"), descriptorJson("z-turbo", "sdcpp"));
+    await writeFile(path.join(dir, "drawthings.json"), descriptorJson("z-turbo", "drawthings"));
 
     const registry = await buildBackendRegistry({
       comfyApiUrl: "http://127.0.0.1:8188",
-      sdcppCli: "/bin/true",
       workflowDir: dir,
     });
 
@@ -48,9 +47,9 @@ describe("buildBackendRegistry", () => {
     expect(comfy.backend.kind).toBe("comfyui");
     expect(comfy.descriptor.modelId).toBe("redcraft-krea2-redmix3-fp8");
 
-    const sdcpp = registry.resolveForModel("z-turbo");
-    expect(sdcpp.backend.kind).toBe("sdcpp");
-    expect(sdcpp.descriptor.modelId).toBe("z-turbo");
+    const drawthings = registry.resolveForModel("z-turbo");
+    expect(drawthings.backend.kind).toBe("drawthings");
+    expect(drawthings.descriptor.modelId).toBe("z-turbo");
 
     // Same backend instance is reused across models of the same kind.
     const comfyAgain = registry.resolveForModel("redcraft-krea2-redmix3-fp8");
@@ -66,7 +65,6 @@ describe("buildBackendRegistry", () => {
 
     const registry = await buildBackendRegistry({
       comfyApiUrl: "http://127.0.0.1:8188",
-      sdcppCli: "/bin/true",
       drawThingsCli: "/bin/true",
       workflowDir: dir,
     });
@@ -83,7 +81,6 @@ describe("buildBackendRegistry", () => {
 
     const registry = await buildBackendRegistry({
       comfyApiUrl: "http://127.0.0.1:8188",
-      sdcppCli: "/bin/true",
       workflowDir: dir,
     });
 
@@ -93,11 +90,10 @@ describe("buildBackendRegistry", () => {
   it("resolves by workflowKey as well as modelId (dual index)", async () => {
     dir = await mkdtemp(path.join(tmpdir(), "gen-registry-"));
     await writeFile(path.join(dir, "comfy.json"), descriptorJson("redcraft-krea2-redmix3-fp8", "comfyui"));
-    await writeFile(path.join(dir, "sdcpp.json"), descriptorJson("z-turbo", "sdcpp"));
+    await writeFile(path.join(dir, "drawthings.json"), descriptorJson("z-turbo", "drawthings"));
 
     const registry = await buildBackendRegistry({
       comfyApiUrl: "http://127.0.0.1:8188",
-      sdcppCli: "/bin/true",
       workflowDir: dir,
     });
 
@@ -106,10 +102,10 @@ describe("buildBackendRegistry", () => {
     expect(comfyByWorkflowKey.descriptor).toBe(comfyByModelId.descriptor);
     expect(comfyByWorkflowKey.backend).toBe(comfyByModelId.backend);
 
-    const sdcppByModelId = registry.resolveForModel("z-turbo");
-    const sdcppByWorkflowKey = registry.resolveForModel("sdcpp-t2i");
-    expect(sdcppByWorkflowKey.descriptor).toBe(sdcppByModelId.descriptor);
-    expect(sdcppByWorkflowKey.backend).toBe(sdcppByModelId.backend);
+    const drawthingsByModelId = registry.resolveForModel("z-turbo");
+    const drawthingsByWorkflowKey = registry.resolveForModel("drawthings-t2i");
+    expect(drawthingsByWorkflowKey.descriptor).toBe(drawthingsByModelId.descriptor);
+    expect(drawthingsByWorkflowKey.backend).toBe(drawthingsByModelId.backend);
   });
 
   it("throws a clear error for an unknown workflowKey", async () => {
@@ -118,7 +114,6 @@ describe("buildBackendRegistry", () => {
 
     const registry = await buildBackendRegistry({
       comfyApiUrl: "http://127.0.0.1:8188",
-      sdcppCli: "/bin/true",
       workflowDir: dir,
     });
 
@@ -129,12 +124,11 @@ describe("buildBackendRegistry", () => {
     dir = await mkdtemp(path.join(tmpdir(), "gen-registry-"));
     await writeFile(path.join(dir, "a.json"), descriptorJson("model-a", "comfyui", "workflow-a"));
     // file b's workflowKey ("model-a") collides with file a's modelId ("model-a").
-    await writeFile(path.join(dir, "b.json"), descriptorJson("model-b", "sdcpp", "model-a"));
+    await writeFile(path.join(dir, "b.json"), descriptorJson("model-b", "drawthings", "model-a"));
 
     await expect(
       buildBackendRegistry({
         comfyApiUrl: "http://127.0.0.1:8188",
-        sdcppCli: "/bin/true",
         workflowDir: dir,
       }),
     ).rejects.toThrow(/duplicate registry key/);
@@ -143,12 +137,11 @@ describe("buildBackendRegistry", () => {
   it("rejects at build time when two descriptors share the same modelId", async () => {
     dir = await mkdtemp(path.join(tmpdir(), "gen-registry-"));
     await writeFile(path.join(dir, "a.json"), descriptorJson("dup-model", "comfyui", "workflow-a"));
-    await writeFile(path.join(dir, "b.json"), descriptorJson("dup-model", "sdcpp", "workflow-b"));
+    await writeFile(path.join(dir, "b.json"), descriptorJson("dup-model", "drawthings", "workflow-b"));
 
     await expect(
       buildBackendRegistry({
         comfyApiUrl: "http://127.0.0.1:8188",
-        sdcppCli: "/bin/true",
         workflowDir: dir,
       }),
     ).rejects.toThrow(/duplicate registry key/);
@@ -163,7 +156,6 @@ describe("buildBackendRegistry", () => {
 
     const registry = await buildBackendRegistry({
       comfyApiUrl: "http://127.0.0.1:8188",
-      sdcppCli: "/bin/true",
       workflowDir: dir,
     });
 
@@ -172,10 +164,24 @@ describe("buildBackendRegistry", () => {
     expect(byModel.descriptor.workflowKey).toBe("solo-model");
   });
 
+  // SPEC: the shipped Draw Things descriptor declares img2img, and
+  // DrawThingsBackend implements it (--image/--strength off one source_image).
+  // It used to declare maxReferences:0 at the same time, which made every
+  // img2img attempt fail the reference-cardinality check before the CLI ran.
+  it("admits one source image on the shipped Draw Things img2img descriptor", async () => {
+    const registry = await buildBackendRegistry({
+      comfyApiUrl: "http://127.0.0.1:8188",
+      workflowDir: path.resolve(import.meta.dirname, "../../workflows"),
+    });
+    const descriptor = registry.resolveForModel("pornmaster-zimage-drawthings").descriptor;
+
+    expect(descriptor.capabilities).toContain("img2img");
+    expect(assignWorkflowReferenceSlots(descriptor, ["source_image"])).toMatchObject({ ok: true });
+  });
+
   it("binds production ComfyUI workflow slots, including both identity references", async () => {
     const registry = await buildBackendRegistry({
       comfyApiUrl: "http://127.0.0.1:8188",
-      sdcppCli: "/bin/true",
       workflowDir: path.resolve(import.meta.dirname, "../../workflows"),
     });
     const qwen = registry.resolveForModel("qwen-image-edit-img2img").descriptor;

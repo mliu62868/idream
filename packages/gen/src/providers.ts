@@ -599,15 +599,14 @@ class MockBlobStore implements BlobStore {
 }
 
 // SPEC: the registry loads workflow descriptors from disk and constructs the
-// backend instances (ComfyUIBackend/SdcppBackend) — do this once and cache the
-// in-flight/resolved Promise at module scope, since buildImageModel() (and thus
-// buildBackendImageModel()) runs on every `providers.image` access.
+// backend instances (ComfyUIBackend/DrawThingsBackend) — do this once and cache
+// the in-flight/resolved Promise at module scope, since buildImageModel() (and
+// thus buildBackendImageModel()) runs on every `providers.image` access.
 let registryPromise: Promise<BackendRegistry> | undefined;
 
 function getBackendRegistry(): Promise<BackendRegistry> {
   registryPromise ??= buildBackendRegistry({
     comfyApiUrl: env.COMFYUI_API_URL,
-    sdcppCli: env.SDCPP_CLI,
     drawThingsCli: env.DRAWTHINGS_CLI,
     drawThingsModelsDir: env.DRAWTHINGS_MODELS_DIR,
     drawThingsOffline: env.DRAWTHINGS_OFFLINE,
@@ -624,9 +623,10 @@ function buildImageModel(): ImageModel {
   assertProductionProviderReady("image");
   if (env.IMAGE_PROVIDER === "mock") return new MockImageModel();
   if (env.IMAGE_PROVIDER === "backend") return buildBackendImageModel();
-  // deprecated: external OpenAI-compatible gateway (self-hosted models behind a
-  // separate pipeline service). GEN_IMAGE_PROVIDER=backend talks to ComfyUI/sd-cli
-  // directly via the workflow-native GenBackend abstraction instead.
+  // Legacy external OpenAI-compatible gateway (self-hosted models behind a
+  // separate pipeline service). Retained as the documented production rollback —
+  // see PRODUCTION_ADAPTERS below. GEN_IMAGE_PROVIDER=backend instead talks to
+  // ComfyUI/Draw Things directly via the workflow-native GenBackend abstraction.
   if (env.IMAGE_PROVIDER === "pipeline") return new PipelineImageModel();
   throw new Error(`Unsupported image provider: ${env.IMAGE_PROVIDER}`);
 }
@@ -682,6 +682,22 @@ function buildModerationProvider(): ModerationProvider {
   throw new Error(`Unsupported moderation provider: ${env.MODERATION_PROVIDER}`);
 }
 
+// SPEC: adapters each mode is allowed to run under APP_ENV=production. The
+// asymmetry is deliberate, not an oversight, and is declared here rather than
+// buried in a mode-specific `if`.
+// INTENT: image keeps `pipeline` because the legacy OpenAI-compatible 8091
+// gateway is still the documented rollback route (see the runbook in
+// docs/architecture/10-operations.md and PIPELINE_API_URL in
+// .env.production.example) — deleting it would remove a rollback that operations
+// still relies on. Video is backend-only because its sole production route is
+// LTX 2.3 I2V and only BackendVideoModel enforces that runtime envelope
+// (768x1152, 25fps, ~4s, ffprobe/ffmpeg-verified decode); a generic gateway
+// cannot, so admitting one would let unverified media settle as succeeded.
+const PRODUCTION_ADAPTERS: Record<"image" | "video", readonly string[]> = {
+  image: ["backend", "pipeline"],
+  video: ["backend"],
+};
+
 export function assertProductionProviderReady(kind: "image" | "video") {
   const provider = kind === "image" ? env.IMAGE_PROVIDER : env.VIDEO_PROVIDER;
   if (kind === "video") {
@@ -695,14 +711,14 @@ export function assertProductionProviderReady(kind: "image" | "video") {
   }
   if (process.env.APP_ENV !== "production") return;
 
-  if (kind === "video" && provider !== "backend") {
-    throw new Error(
-      "Production video generation requires GEN_VIDEO_PROVIDER=backend",
-    );
-  }
-
   if (provider === "mock") {
     throw new Error(`Production ${kind} generation requires a non-mock provider`);
+  }
+
+  if (!PRODUCTION_ADAPTERS[kind].includes(provider)) {
+    throw new Error(
+      `Production ${kind} generation requires GEN_${kind.toUpperCase()}_PROVIDER=${PRODUCTION_ADAPTERS[kind].join(" or ")}`,
+    );
   }
 
   if (provider === "pipeline" && !env.PIPELINE_API_URL) {

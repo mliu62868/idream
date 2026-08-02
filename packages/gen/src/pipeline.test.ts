@@ -1144,13 +1144,38 @@ describe("processVideoGenerate", () => {
       );
     }
 
-    const videoKeys = vi.mocked(blob.putPrivate).mock.calls.map(
-      ([input]) => input.key,
-    );
+    const videoKeys = vi.mocked(blob.putPrivateIfAbsent).mock.calls
+      .map(([input]) => input.key)
+      .filter((key) => key.endsWith(".mp4"));
     expect(videoKeys).toEqual([
       "gen/job_vid_1/attempts/attempt_vid_isolated_1/video.mp4",
       "gen/job_vid_1/attempts/attempt_vid_isolated_2/video.mp4",
     ]);
+  });
+
+  // SPEC: video artifacts share the image path's create-if-absent transaction.
+  // A duplicate delivery of the same attempt must leave already-published bytes
+  // untouched instead of overwriting them (the old putPrivate was last-write-wins).
+  it("does not overwrite a video object that already exists under the same key", async () => {
+    const blob = makeMemoryBlob();
+    const published = new TextEncoder().encode("already-published-video");
+    await blob.putPrivate({
+      key: "gen/job_vid_1/video.mp4",
+      body: published,
+      contentType: "video/mp4",
+    });
+    const providers = makeProviders({ blob });
+    const deps = makePipelineDeps(providers);
+
+    await processVideoGenerate(videoPayload(), deps);
+
+    const stored = await blob.getPrivate!({ key: "gen/job_vid_1/video.mp4" });
+    expect(stored.ok).toBe(true);
+    if (!stored.ok) throw new Error("expected the published object to still exist");
+    expect(stored.data.body).toEqual(published);
+    expect(deps.acknowledgeTerminalRecord).toHaveBeenCalledWith(expect.objectContaining({
+      terminalRecord: expect.objectContaining({ outcome: "succeeded" }),
+    }));
   });
 
   it("passes the pinned source image to the video provider", async () => {
@@ -1211,9 +1236,10 @@ describe("processVideoGenerate", () => {
       acknowledgeTerminalRecord,
     });
 
-    expect(providers.blob.putPrivate).toHaveBeenCalledTimes(1);
-    expect(providers.blob.putPrivateIfAbsent).toHaveBeenCalledTimes(1);
-    expect(providers.blob.putPrivate).toHaveBeenCalledWith({
+    // Video artifacts use the same create-if-absent transaction as images, so
+    // the raw overwrite path is never touched.
+    expect(providers.blob.putPrivate).not.toHaveBeenCalled();
+    expect(providers.blob.putPrivateIfAbsent).toHaveBeenCalledWith({
       key: "gen/job_vid_1/video.mp4",
       body: mockVideoMp4Bytes(),
       contentType: "video/mp4",
@@ -1259,8 +1285,8 @@ describe("processVideoGenerate", () => {
 
     expect(providers.video.generate).toHaveBeenCalledTimes(1);
     expect(providers.moderation.check).toHaveBeenCalledTimes(1);
-    expect(providers.blob.putPrivate).toHaveBeenCalledTimes(1);
-    expect(providers.blob.putPrivateIfAbsent).toHaveBeenCalledTimes(1);
+    expect(providers.blob.putPrivate).not.toHaveBeenCalled();
+    expect(providers.blob.putPrivateIfAbsent).toHaveBeenCalledTimes(2);
     expect(acknowledgeTerminalRecord).toHaveBeenCalledTimes(2);
     expect(acknowledgeTerminalRecord).toHaveBeenLastCalledWith(expect.objectContaining({
       terminalRecordRef: "gen/terminal-records/attempt_vid_resume/terminal.json",
@@ -1333,7 +1359,7 @@ describe("processVideoGenerate", () => {
       "https://pipeline-assets.test/job_vid_1.mp4",
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
-    expect(providers.blob.putPrivate).toHaveBeenCalledWith({
+    expect(providers.blob.putPrivateIfAbsent).toHaveBeenCalledWith({
       key: "gen/job_vid_1/video.mp4",
       body: new TextEncoder().encode("downloaded-video"),
       contentType: "video/mp4",
@@ -1346,7 +1372,11 @@ describe("processVideoGenerate", () => {
   it("persists a failed terminal record on final video blob persistence failure", async () => {
     const providers = makeProviders({
       blob: {
-        putPrivate: vi.fn(async (input) =>
+        putPrivate: vi.fn(async (input) => ({
+          ok: true as const,
+          data: { key: input.key, size: input.body.byteLength },
+        })),
+        putPrivateIfAbsent: vi.fn(async (input) =>
           input.key.endsWith("/video.mp4")
             ? {
                 ok: false as const,
@@ -1358,10 +1388,13 @@ describe("processVideoGenerate", () => {
               }
             : {
                 ok: true as const,
-                data: { key: input.key, size: input.body.byteLength },
+                data: {
+                  key: input.key,
+                  size: input.body.byteLength,
+                  created: true,
+                },
               }
         ),
-        putPrivateIfAbsent: successfulPutPrivateIfAbsent(),
         delete: vi.fn(async () => ({
           ok: true as const,
           data: { deleted: true as const },
@@ -1602,8 +1635,8 @@ it("retries only video terminal relay admission on transport attempt two", async
 
 it("does not invoke a non-idempotent video provider again after artifact persistence fails", async () => {
   const blob = makeMemoryBlob();
-  const persistInMemory = blob.putPrivate;
-  blob.putPrivate = vi.fn(async (input) =>
+  const persistInMemory = blob.putPrivateIfAbsent;
+  blob.putPrivateIfAbsent = vi.fn(async (input) =>
     input.key.endsWith("/video.mp4")
       ? {
           ok: false as const,
