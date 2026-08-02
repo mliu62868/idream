@@ -12,6 +12,7 @@ import {
   projectChatFileMutations,
   recordChatFileMutation,
   runWithProjectedChatFiles,
+  withTurnAuthority,
 } from "./file-mutations.js";
 import { loadSessionLinkage } from "./relationship-authority.js";
 import { CHAT_TO_MAIN_EVENTS } from "@idream/shared/contracts";
@@ -123,11 +124,14 @@ export async function deleteMessage(
   if (!session || session.userId !== input.userId) {
     throw new Error("not your message");
   }
-  await runWithProjectedChatFiles(
-    input.userId,
-    () => prisma.$transaction(async (tx) => {
-      await lockTurn(tx, input.userId, session.id);
-      await assertNoPendingChatFileMutationsTx(tx, input.userId);
+  await withTurnAuthority(
+    {
+      userId: input.userId,
+      sessionId: session.id,
+      prisma,
+      projectorPrisma,
+    },
+    async (tx, recordIntent) => {
       const currentMessage = await tx.message.findUnique({
         where: { id: message.id },
       });
@@ -212,20 +216,16 @@ export async function deleteMessage(
         where: { messageId: { in: messageIds } },
         select: { id: true },
       });
-      await recordChatFileMutation(tx, input.userId, {
+      await recordIntent({
         kind: "turn_forget",
         sessionId: currentSession.id,
         characterId: currentSession.characterId,
         messageIds,
       });
-      await recordChatFileMutation(
-        tx,
-        input.userId,
-        {
-          kind: "relationship_rebuild",
-          characterId: currentSession.characterId,
-        },
-      );
+      await recordIntent({
+        kind: "relationship_rebuild",
+        characterId: currentSession.characterId,
+      });
 
       await redactOrDeleteImageRequestOutbox(tx, {
         reason: "logical_exchange_deleted",
@@ -268,10 +268,8 @@ export async function deleteMessage(
           messageIds,
         });
       }
-    }),
-    projectorPrisma,
+    },
   );
-  await projectChatFileMutations(input.userId, projectorPrisma);
 }
 
 export async function deleteSession(
