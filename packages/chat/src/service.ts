@@ -494,11 +494,14 @@ export async function sendMessage(
   const userMessageId = createId("msg");
   const assistantMessageId = createId("msg");
 
-  const committed = await runWithProjectedChatFiles(
-    input.userId,
-    () => prisma.$transaction(async (tx) => {
-    await lockTurn(tx, input.userId, session.id);
-    await assertNoPendingChatFileMutationsTx(tx, input.userId);
+  const committed = await withTurnAuthority(
+    {
+      userId: input.userId,
+      sessionId: session.id,
+      prisma,
+      projectorPrisma,
+    },
+    async (tx) => {
     await advisoryLock(tx, `send:${input.userId}:${idempotencyKey}`);
     await assertEligible(tx, input.userId, session.characterId);
     const currentSession = await tx.chatSession.findUnique({ where: { id: session.id } });
@@ -618,8 +621,7 @@ export async function sendMessage(
         moderation.status === "blocked" ? "blocked" : "pending",
       replayed: false,
     };
-    }),
-    projectorPrisma,
+    },
   );
 
   // A pending assistant row is the durable queue intent. Replaying after an
