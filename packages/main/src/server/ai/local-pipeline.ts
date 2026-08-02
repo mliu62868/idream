@@ -643,17 +643,44 @@ async function processLocalAiJob(job: QueueJob) {
   throw new Error(`Main cannot execute generation queue: ${job.queue}`);
 }
 
+type GenerationFinalizePayload = Extract<
+  AiFinalizePayload,
+  { kind: `generation.${string}` }
+>;
+
+function isGenerationFinalize(
+  payload: AiFinalizePayload,
+): payload is GenerationFinalizePayload {
+  return payload.kind.startsWith("generation.");
+}
+
 async function processFinalize(payloadValue: Prisma.JsonValue) {
   const payload = aiFinalizePayloadSchema.parse(payloadValue);
+  if (!isGenerationFinalize(payload)) return;
 
   // INTENT: the raw queue value travels alongside the parsed one because the
   // durable terminal-record match is a statement about the delivered wire bytes.
   // Hashing the parsed projection instead would make the check depend on which
   // fields the current schema happens to retain.
-  if (payload.kind === "generation.completed") return finalizeGenerationCompleted(payload, payloadValue);
-  if (payload.kind === "generation.failed") return finalizeGenerationFailed(payload, payloadValue);
-  if (payload.kind === "generation.unknown") return finalizeGenerationUnknown(payload, payloadValue);
-  if (payload.kind === "generation.blocked") return finalizeGenerationBlocked(payload, payloadValue);
+  switch (payload.kind) {
+    case "generation.completed":
+      return finalizeGenerationCompleted(payload, payloadValue);
+    case "generation.failed":
+      return finalizeGenerationFailed(payload, payloadValue);
+    case "generation.unknown":
+      return finalizeGenerationUnknown(payload, payloadValue);
+    case "generation.blocked":
+      return finalizeGenerationBlocked(payload, payloadValue);
+    default: {
+      // INVARIANT: every generation.* finalize kind is routed above. This
+      // assignment stops compiling the moment one is added and left unhandled —
+      // falling through silently would strand the Request and its held funds.
+      const unhandled: never = payload;
+      throw new Error(
+        `Unhandled generation finalize kind: ${(unhandled as { kind: string }).kind}`,
+      );
+    }
+  }
 }
 
 async function finalizeGenerationCompleted(
