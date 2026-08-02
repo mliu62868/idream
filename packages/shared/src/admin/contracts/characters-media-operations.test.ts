@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   characterMediaOperationsProjectionSchema,
   characterVoiceClipReclaimRequestSchema,
-} from "./characters";
+} from "./characters-media-operations";
 
 describe("Character media operations projection contract", () => {
   it("represents a Character with no media runs as three explicit unavailable rows", () => {

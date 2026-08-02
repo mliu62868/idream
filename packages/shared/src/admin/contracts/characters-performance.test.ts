@@ -5,7 +5,7 @@ import {
   characterPortfolioItemSchema,
   characterPortfolioDecisionRequestSchema,
   characterReleaseChangeMarkerSchema,
-} from "./characters";
+} from "./characters-performance";
 import {
   characterExposureRecordedV2Schema,
   chatExchangeCompletedV2Schema,

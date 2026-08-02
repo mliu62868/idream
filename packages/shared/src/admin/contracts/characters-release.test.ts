@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { characterReleaseSchema } from "./characters";
+import { characterReleaseSchema } from "./characters-release";
 
 const baseRelease = {
   id: "release-1",

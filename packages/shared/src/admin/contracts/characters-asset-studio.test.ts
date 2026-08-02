@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   characterDraftImageSelectionRequestSchema,
   characterDraftImageSelectionResultSchema,
-} from "./characters";
+} from "./characters-asset-studio";
 
 describe("Character Asset Studio contracts", () => {
   it("requires the exact reviewed Run item and optimistic Project version", () => {
