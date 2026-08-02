@@ -12,12 +12,9 @@ import {
 import { extractCandidates } from "./extract.js";
 import { resolvePolicy, snapshotFromView } from "./policy.js";
 import {
-  assertNoPendingChatFileMutationsTx,
   projectChatFileMutations,
-  recordChatFileMutation,
-  runWithProjectedChatFiles,
+  withTurnAuthority,
 } from "./file-mutations.js";
-import { lockTurn } from "./turn-lock.js";
 import type { ChatMemoryExtractPayload } from "@idream/shared/contracts";
 import { loadSessionLinkage } from "./relationship-authority.js";
 
@@ -90,11 +87,14 @@ export async function processMemoryExtract(
   // The same user+turn advisory lock serializes extraction with send, edit,
   // regenerate, memory preference changes, and privacy deletion. Re-read the
   // exact source rows under that lock before any file-layer side effect.
-  const committed = await runWithProjectedChatFiles(
-    session.userId,
-    () => prisma.$transaction(async (tx) => {
-    await lockTurn(tx, session.userId, session.id);
-    await assertNoPendingChatFileMutationsTx(tx, session.userId);
+  return withTurnAuthority(
+    {
+      userId: session.userId,
+      sessionId: session.id,
+      prisma,
+      projectorPrisma,
+    },
+    async (tx, recordIntent) => {
     const [
       currentSession,
       currentAssistant,
@@ -114,44 +114,26 @@ export async function processMemoryExtract(
       currentSession.status === "deleted" ||
       currentSession.deletedAt
     ) {
-      return {
-        result: { written: 0, skipped: "no_session" },
-        mutationId: null,
-      };
+      return { written: 0, skipped: "no_session" };
     }
     if (
       !currentAssistant ||
       currentAssistant.sessionId !== session.id ||
       currentAssistant.role !== "assistant"
     ) {
-      return {
-        result: { written: 0, skipped: "wrong_assistant" },
-        mutationId: null,
-      };
+      return { written: 0, skipped: "wrong_assistant" };
     }
     if (currentAssistant.attempt !== payload.attempt) {
-      return {
-        result: { written: 0, skipped: "stale_attempt" },
-        mutationId: null,
-      };
+      return { written: 0, skipped: "stale_attempt" };
     }
     if (currentAssistant.memoryExtractedAttempt >= payload.attempt) {
-      return {
-        result: { written: 0, skipped: "already_extracted" },
-        mutationId: null,
-      };
+      return { written: 0, skipped: "already_extracted" };
     }
     if (currentAssistant.memoryAuthority === "disabled") {
-      return {
-        result: { written: 0, skipped: "turn_memory_disabled" },
-        mutationId: null,
-      };
+      return { written: 0, skipped: "turn_memory_disabled" };
     }
     if (currentAssistant.memoryAuthority !== "enabled") {
-      return {
-        result: { written: 0, skipped: "turn_memory_legacy_unknown" },
-        mutationId: null,
-      };
+      return { written: 0, skipped: "turn_memory_legacy_unknown" };
     }
     if (
       !currentUserMessage ||
@@ -165,19 +147,13 @@ export async function processMemoryExtract(
       ) ||
       currentUserMessage.content !== userMessage.content
     ) {
-      return {
-        result: { written: 0, skipped: "stale_source" },
-        mutationId: null,
-      };
+      return { written: 0, skipped: "stale_source" };
     }
     if (
       !canMemorize(currentUserMessage) ||
       !canMemorize(currentAssistant)
     ) {
-      return {
-        result: { written: 0, skipped: "blocked_or_deleted" },
-        mutationId: null,
-      };
+      return { written: 0, skipped: "blocked_or_deleted" };
     }
 
     await hooks.afterAuthorityLocked?.();
@@ -195,38 +171,23 @@ export async function processMemoryExtract(
     // watermark in the same completion transaction that marks this intent
     // applied, so `memoryExtractedAttempt` never claims a file write that has
     // not actually succeeded.
-    const mutationId = await recordChatFileMutation(
-      tx,
-      currentSession.userId,
-      {
-        kind: "memory_extract",
-        sessionId: currentSession.id,
-        userMessageId: currentUserMessage.id,
-        characterId: currentSession.characterId,
-        turnKey: currentAssistant.id,
-        attempt: payload.attempt,
-        summaryDelta: relationshipTurnSummary(currentUserMessage.content),
-        warmth: relationshipSignal.warmth,
-        familiarity: relationshipSignal.familiarity,
-        candidates,
-        maxStored: policy.maxStoredMemories,
-      },
-    );
+    await recordIntent({
+      kind: "memory_extract",
+      sessionId: currentSession.id,
+      userMessageId: currentUserMessage.id,
+      characterId: currentSession.characterId,
+      turnKey: currentAssistant.id,
+      attempt: payload.attempt,
+      summaryDelta: relationshipTurnSummary(currentUserMessage.content),
+      warmth: relationshipSignal.warmth,
+      familiarity: relationshipSignal.familiarity,
+      candidates,
+      maxStored: policy.maxStoredMemories,
+    });
 
-    return {
-      result: { written: candidates.length, skipped: null },
-      mutationId,
-    };
-    }),
-    projectorPrisma,
+    return { written: candidates.length, skipped: null };
+    },
   );
-  if (committed.mutationId) {
-    await projectChatFileMutations(
-      session.userId,
-      projectorPrisma,
-    );
-  }
-  return committed.result;
 }
 
 interface MemorableMessage {

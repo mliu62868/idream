@@ -19,13 +19,10 @@ import { recordOutbox, scheduleOutboxDelivery } from "./outbox.js";
 import { createId } from "./id.js";
 import { enqueue } from "./queue.js";
 import { logger } from "./logger.js";
-import { lockTurn } from "./turn-lock.js";
 import {
-  assertNoPendingChatFileMutationsTx,
   CHAT_CONTEXT_INVALIDATING_FILE_MUTATIONS,
   projectChatFileMutations,
-  recordChatFileMutation,
-  runWithProjectedChatFiles,
+  withTurnAuthority,
 } from "./file-mutations.js";
 import {
   EDIT_LAST_IMAGE_TOOL,
@@ -399,7 +396,6 @@ export async function processGenerate(
     return { status: "failed" };
   }
   if (finalized === "skipped") return { status: "skipped" };
-  await projectChatFileMutations(session.userId, projectorPrisma);
 
   await appendStreamEvent(key, { type: "done", attempt: payload.attempt, usage });
 
@@ -456,14 +452,17 @@ async function finalize(
 ): Promise<"finalized" | "stale" | "skipped"> {
   const { prisma, payload, session, content, model, usage, moderation, blocked, context, imageToolCall, toolCallTrigger, traceEntry, projectorPrisma } = input;
 
-  return runWithProjectedChatFiles(
-    session.userId,
-    () => prisma.$transaction(async (tx) => {
-    // Account/session/message privacy operations use the same lock. Re-read all
-    // authority after acquiring it so a deleted user turn or session cannot be
-    // finalized by a worker that started from an older snapshot.
-    await lockTurn(tx, session.userId, session.id);
-    await assertNoPendingChatFileMutationsTx(tx, session.userId);
+  // Account/session/message privacy operations use the same lock. Re-read all
+  // authority after acquiring it so a deleted user turn or session cannot be
+  // finalized by a worker that started from an older snapshot.
+  return withTurnAuthority(
+    {
+      userId: session.userId,
+      sessionId: session.id,
+      prisma,
+      projectorPrisma,
+    },
+    async (tx, recordIntent) => {
     const [
       currentUser,
       currentSession,
@@ -738,15 +737,14 @@ async function finalize(
       }
     }
     if (traceEntry) {
-      await recordChatFileMutation(tx, session.userId, {
+      await recordIntent({
         kind: "trace_append",
         sessionId: session.id,
         entry: traceEntry,
       });
     }
     return "finalized";
-    }),
-    projectorPrisma,
+    },
   );
 }
 

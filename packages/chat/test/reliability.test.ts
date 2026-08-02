@@ -5,21 +5,24 @@ import { mkdtemp, rm, readFile, writeFile, mkdir, readdir, utimes } from "node:f
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Pool } from "pg";
-import { createChatPrisma } from "../src/db.js";
+import { createChatPrisma, createChatProjectorPrisma } from "../src/db.js";
 import { persistInboundEvent, reprocessPendingInbox } from "../src/inbox.js";
 import { reconcile } from "../src/reconcile.js";
 import { rollSessionLog, pruneExpiredSegments } from "../src/maintain.js";
 import { deleteMessage, deleteSession, deleteAccount } from "../src/privacy.js";
-import { appendLine, chatFsPaths, listPrefix } from "../src/chat-fs.js";
+import { withTurnAuthority } from "../src/file-mutations.js";
+import { appendLine, chatFsPaths, listPrefix, readWhole } from "../src/chat-fs.js";
 import { drainQueue, obliterate } from "../src/queue.js";
 import { CHAT_QUEUES, MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { acceptAgeGate, ingestMainEvent } from "./fixtures.js";
 
 const prisma = createChatPrisma();
+const projectorPrisma = createChatProjectorPrisma();
 const superPool = new Pool({ connectionString: process.env.CHAT_TEST_SUPER_URL });
 let fsRoot: string;
 const USER = "u_rel";
 const STARVATION_USER = "u_rel_memory_starvation";
+const TURN_AUTHORITY_USER = "u_rel_turn_authority";
 const CHAR = "c_rel";
 
 beforeAll(async () => {
@@ -33,7 +36,11 @@ beforeAll(async () => {
     `INSERT INTO public.users (id,email,status,"createdAt","updatedAt") VALUES ($1,$2,'active',now(),now()) ON CONFLICT (id) DO NOTHING`,
     [STARVATION_USER, "rel-memory-starvation@test.dev"],
   );
-  await acceptAgeGate(superPool, [USER, STARVATION_USER]);
+  await superPool.query(
+    `INSERT INTO public.users (id,email,status,"createdAt","updatedAt") VALUES ($1,$2,'active',now(),now()) ON CONFLICT (id) DO NOTHING`,
+    [TURN_AUTHORITY_USER, "rel-turn-authority@test.dev"],
+  );
+  await acceptAgeGate(superPool, [USER, STARVATION_USER, TURN_AUTHORITY_USER]);
   await superPool.query(
     `INSERT INTO public.characters (id,name,age,description,visibility,status,style,gender,appearance,"advancedDetails","createdAt","updatedAt")
      VALUES ($1,'Rel',24,'d','public','approved','realistic','female','{}','{}',now(),now()) ON CONFLICT (id) DO NOTHING`,
@@ -43,8 +50,67 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await prisma.$disconnect();
+  await projectorPrisma.$disconnect();
   await superPool.end();
   await rm(fsRoot, { recursive: true, force: true });
+});
+
+describe("turn authority protocol (withTurnAuthority)", () => {
+  // The wrapper exists so that recording an intent IS what schedules the
+  // projection. Before it, every write path had to remember a second,
+  // separate call; forgetting it left the ledger pending and the file effect
+  // invisible until some later request happened to drain it. These two cases
+  // pin the rule from both sides so it cannot drift back into convention.
+  it("projects a recorded intent once the transaction commits, with no caller-side projection call", async () => {
+    const sessionId = "rel_turn_authority_recorded";
+    await withTurnAuthority(
+      {
+        userId: TURN_AUTHORITY_USER,
+        sessionId,
+        prisma,
+        projectorPrisma,
+      },
+      async (_tx, recordIntent) => {
+        await recordIntent({
+          kind: "trace_append",
+          sessionId,
+          entry: { kind: "chat.turn", marker: "turn-authority-projected" },
+        });
+      },
+    );
+
+    expect(
+      await prisma.chatFileMutation.findMany({
+        where: { userId: TURN_AUTHORITY_USER },
+        select: { kind: true, status: true },
+      }),
+    ).toEqual([{ kind: "trace_append", status: "applied" }]);
+    expect(
+      await readWhole(chatFsPaths.sessionLog(TURN_AUTHORITY_USER, sessionId)),
+    ).toContain("turn-authority-projected");
+  });
+
+  it("writes no ledger row when the transaction records no intent", async () => {
+    const before = await prisma.chatFileMutation.count({
+      where: { userId: TURN_AUTHORITY_USER },
+    });
+    await expect(
+      withTurnAuthority(
+        {
+          userId: TURN_AUTHORITY_USER,
+          sessionId: "rel_turn_authority_silent",
+          prisma,
+          projectorPrisma,
+        },
+        async () => "read-only" as const,
+      ),
+    ).resolves.toBe("read-only");
+    expect(
+      await prisma.chatFileMutation.count({
+        where: { userId: TURN_AUTHORITY_USER },
+      }),
+    ).toBe(before);
+  });
 });
 
 describe("inbox (P0-4 main→chat, idempotent)", () => {

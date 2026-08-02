@@ -15,12 +15,11 @@ import { enqueue } from "./queue.js";
 import { streamKey } from "./stream.js";
 import { recordOutbox, scheduleOutboxDelivery } from "./outbox.js";
 import { recordExchangeCorrection } from "./exchange-corrections.js";
-import { advisoryLock, lockTurn, lockUser } from "./turn-lock.js";
+import { advisoryLock, lockUser } from "./turn-lock.js";
 import {
   assertNoPendingChatFileMutationsTx,
-  projectChatFileMutations,
-  recordChatFileMutation,
   runWithProjectedChatFiles,
+  withTurnAuthority,
 } from "./file-mutations.js";
 import { loadSessionLinkage } from "./relationship-authority.js";
 import { resolvePolicy, snapshotFromView } from "./policy.js";
@@ -493,11 +492,14 @@ export async function sendMessage(
   const userMessageId = createId("msg");
   const assistantMessageId = createId("msg");
 
-  const committed = await runWithProjectedChatFiles(
-    input.userId,
-    () => prisma.$transaction(async (tx) => {
-    await lockTurn(tx, input.userId, session.id);
-    await assertNoPendingChatFileMutationsTx(tx, input.userId);
+  const committed = await withTurnAuthority(
+    {
+      userId: input.userId,
+      sessionId: session.id,
+      prisma,
+      projectorPrisma,
+    },
+    async (tx) => {
     await advisoryLock(tx, `send:${input.userId}:${idempotencyKey}`);
     await assertEligible(tx, input.userId, session.characterId);
     const currentSession = await tx.chatSession.findUnique({ where: { id: session.id } });
@@ -617,8 +619,7 @@ export async function sendMessage(
         moderation.status === "blocked" ? "blocked" : "pending",
       replayed: false,
     };
-    }),
-    projectorPrisma,
+    },
   );
 
   // A pending assistant row is the durable queue intent. Replaying after an
@@ -713,11 +714,14 @@ export async function editUserMessage(
   const attempt = (assistant?.attempt ?? 0) + 1;
   const assistantHadEligibleExchange = assistant?.status === "sent";
 
-  await runWithProjectedChatFiles(
-    input.userId,
-    () => prisma.$transaction(async (tx) => {
-    await lockTurn(tx, input.userId, session.id);
-    await assertNoPendingChatFileMutationsTx(tx, input.userId);
+  await withTurnAuthority(
+    {
+      userId: input.userId,
+      sessionId: session.id,
+      prisma,
+      projectorPrisma,
+    },
+    async (tx, recordIntent) => {
     await assertActiveUserAuthority(tx, input.userId);
     const [
       currentSession,
@@ -813,27 +817,19 @@ export async function editUserMessage(
     if (moderation.status !== "blocked") {
       await assertTurnCapacity(tx, input.userId, session.id, policy, assistantMessageId);
     }
-    await recordChatFileMutation(
-      tx,
-      input.userId,
-      {
-        kind: "turn_forget",
-        sessionId: currentSession.id,
-        characterId: currentSession.characterId,
-        messageIds: [
-          currentMessage.id,
-          ...(currentAssistant ? [currentAssistant.id] : []),
-        ],
-      },
-    );
-    await recordChatFileMutation(
-      tx,
-      input.userId,
-      {
-        kind: "relationship_rebuild",
-        characterId: currentSession.characterId,
-      },
-    );
+    await recordIntent({
+      kind: "turn_forget",
+      sessionId: currentSession.id,
+      characterId: currentSession.characterId,
+      messageIds: [
+        currentMessage.id,
+        ...(currentAssistant ? [currentAssistant.id] : []),
+      ],
+    });
+    await recordIntent({
+      kind: "relationship_rebuild",
+      characterId: currentSession.characterId,
+    });
     await tx.message.update({
       where: { id: currentMessage.id },
       data: {
@@ -923,10 +919,8 @@ export async function editUserMessage(
         payload: { sessionId: session.id, userId: input.userId, layer: "input", policyCode: moderation.policyCode },
       });
     }
-    }),
-    projectorPrisma,
+    },
   );
-  await projectChatFileMutations(input.userId, projectorPrisma);
 
   if (moderation.status === "blocked") {
     return {
@@ -986,11 +980,14 @@ export async function regenerate(
   }
   await hooks.beforeAuthorityLock?.();
 
-  const attempt = await runWithProjectedChatFiles(
-    input.userId,
-    () => prisma.$transaction(async (tx) => {
-    await lockTurn(tx, input.userId, session.id);
-    await assertNoPendingChatFileMutationsTx(tx, input.userId);
+  const attempt = await withTurnAuthority(
+    {
+      userId: input.userId,
+      sessionId: session.id,
+      prisma,
+      projectorPrisma,
+    },
+    async (tx) => {
     await assertActiveUserAuthority(tx, input.userId);
     await assertTurnCapacity(tx, input.userId, session.id, policy, message.id);
     const [
@@ -1068,8 +1065,7 @@ export async function regenerate(
       },
     });
     return nextAttempt;
-    }),
-    projectorPrisma,
+    },
   );
 
   // dedupeKey carries :attempt so regenerate is NOT swallowed (PLAN §3, the bug fix).
@@ -1137,28 +1133,30 @@ export async function setNoMemory(
   override?: Partial<ChatContext>,
 ) {
   const { prisma, projectorPrisma } = ctx(override);
-  return runWithProjectedChatFiles(
-    input.userId,
-    () => prisma.$transaction(async (tx) => {
-    // The same lock as sendMessage gives preference toggles and turn creation a
-    // total order. The assistant row then permanently records which side won.
-    await lockTurn(tx, input.userId, input.sessionId);
-    await assertNoPendingChatFileMutationsTx(tx, input.userId);
-    await assertActiveUserAuthority(tx, input.userId);
-    const session = await tx.chatSession.findUnique({ where: { id: input.sessionId } });
-    if (!session || session.userId !== input.userId) {
-      throw new ChatError("session_not_found", "session not found", 404);
-    }
-    return tx.chatSession.update({
-      where: { id: session.id },
-      data: {
-        memoryEnabled: input.memoryEnabled,
-        ...(!input.memoryEnabled ? { memorySummary: null } : {}),
-        contextRevision: { increment: 1 },
-      },
-    });
-    }),
-    projectorPrisma,
+  // The same lock as sendMessage gives preference toggles and turn creation a
+  // total order. The assistant row then permanently records which side won.
+  return withTurnAuthority(
+    {
+      userId: input.userId,
+      sessionId: input.sessionId,
+      prisma,
+      projectorPrisma,
+    },
+    async (tx) => {
+      await assertActiveUserAuthority(tx, input.userId);
+      const session = await tx.chatSession.findUnique({ where: { id: input.sessionId } });
+      if (!session || session.userId !== input.userId) {
+        throw new ChatError("session_not_found", "session not found", 404);
+      }
+      return tx.chatSession.update({
+        where: { id: session.id },
+        data: {
+          memoryEnabled: input.memoryEnabled,
+          ...(!input.memoryEnabled ? { memorySummary: null } : {}),
+          contextRevision: { increment: 1 },
+        },
+      });
+    },
   );
 }
 

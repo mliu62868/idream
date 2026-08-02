@@ -21,7 +21,12 @@
 //   - No self-projection: a writer takes the same user lock and then calls
 //     assertNoPendingChatFileMutationsTx. A newly committed intent aborts and
 //     retries the entire request (runWithProjectedChatFiles) rather than letting
-//     request code drain the ledger on the projector's behalf.
+//     request code drain the ledger on the projector's behalf. Turn-scoped
+//     writers get that ordering from withTurnAuthority, which also ties the
+//     post-commit projection to whether an intent was actually recorded. The
+//     account-erasure and batch-repair paths deliberately stay outside it:
+//     erasure supersedes every pending intent instead of asserting there are
+//     none, so it must NOT fail closed on a poisoned row.
 //   - Cross-service honesty: watermarks (memoryExtractedAttempt, logExtractedSeq)
 //     and outbox events are written in the SAME transaction that marks the row
 //     applied, so main is never told about a file effect that did not land.
@@ -64,7 +69,7 @@ import {
   loadSessionLinkage,
   type RelationshipProjectionOperation,
 } from "./relationship-authority.js";
-import { lockUser, lockUserShared } from "./turn-lock.js";
+import { lockTurn, lockUser, lockUserShared } from "./turn-lock.js";
 import { CHAT_TO_MAIN_EVENTS } from "@idream/shared/contracts";
 
 const memoryCandidateSchema = z.object({
@@ -388,6 +393,77 @@ export async function projectChatFileMutations(
     }
     throw error;
   }
+}
+
+/**
+ * Commit one durable file intent from inside a turn-authority transaction.
+ * Obtaining this function is the ONLY way a caller reaches the ledger under
+ * the turn protocol, and calling it is what schedules the post-commit
+ * projection — so "an intent was recorded" and "the projector ran" cannot be
+ * wired up independently, or forgotten, at a call site.
+ */
+export type RecordChatFileIntent = (
+  mutation: ChatFileMutation,
+) => Promise<string>;
+
+/**
+ * SPEC: the write protocol that every turn-scoped mutation must follow. One
+ * call owns the whole ordering — drain the ledger, open the transaction, take
+ * the user and turn advisory locks in that order, and only then prove that no
+ * intent slipped in ahead of this writer.
+ * INTENT: those four steps used to be retyped at every write path, where their
+ * ORDER was load-bearing but unstated. assertNoPendingChatFileMutationsTx
+ * before the lock proves nothing, yet no signature said so and a reader had to
+ * compare call sites to recover the rule. Callers can no longer spell it wrong.
+ * INVARIANTS:
+ *   - `run` executes with both advisory locks held and zero pending intents for
+ *     this user, so rows it reads are current and stay current until commit.
+ *     It still has to re-read them: the pre-lock snapshot it was planned from
+ *     is exactly what this lock was taken to invalidate.
+ *   - `recordIntent` is the sole ledger entry point here, and using it is what
+ *     makes the projector run — exactly once, after the transaction commits,
+ *     and never when nothing was recorded. A path that records nothing has no
+ *     file effect to project, so it must not pay for a projection round trip.
+ *   - A rolled-back transaction never projects: the failure propagates out of
+ *     runWithProjectedChatFiles before the projection call is reached.
+ *   - ChatFileProjectionRaceError raised inside `run` is caught and retried by
+ *     runWithProjectedChatFiles, while ChatError propagates to the caller. `run`
+ *     must therefore stay safe to execute more than once.
+ */
+export async function withTurnAuthority<T>(
+  input: {
+    userId: string;
+    sessionId: string;
+    prisma: ChatPrismaClient;
+    projectorPrisma: ChatPrismaClient;
+  },
+  run: (
+    tx: Prisma.TransactionClient,
+    recordIntent: RecordChatFileIntent,
+  ) => Promise<T>,
+): Promise<T> {
+  let recorded = false;
+  const value = await runWithProjectedChatFiles(
+    input.userId,
+    () =>
+      input.prisma.$transaction(async (tx) => {
+        // Reset per attempt: a projection race replays `run` from the top, and
+        // the intents recorded by the abandoned attempt rolled back with it.
+        recorded = false;
+        await lockTurn(tx, input.userId, input.sessionId);
+        await assertNoPendingChatFileMutationsTx(tx, input.userId);
+        return run(tx, async (mutation) => {
+          const id = await recordChatFileMutation(tx, input.userId, mutation);
+          recorded = true;
+          return id;
+        });
+      }),
+    input.projectorPrisma,
+  );
+  if (recorded) {
+    await projectChatFileMutations(input.userId, input.projectorPrisma);
+  }
+  return value;
 }
 
 /**
