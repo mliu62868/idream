@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -48,22 +48,27 @@ const SINGLE_CONSUMER_LEDGER: Record<string, { consumer: string; reason: string 
   },
 };
 
+// INVARIANT: 只扫源码。构建产物里留着搬家前的旧 import（.next-runtime 的 release 快照就是
+// 这样让这条断言假阳性的），生成物里也有 Prisma 的自指符号链接。点开头的目录一律跳过，
+// 这样新增一种缓存目录（.next / .turbo / .vercel …）不必回来改这张表。
 const IGNORED_DIRS = new Set([
   "node_modules",
-  ".next",
-  ".turbo",
   "dist",
   "build",
   "coverage",
-  ".git",
+  "generated",
 ]);
 const SOURCE_FILE = /\.(?:ts|tsx|mts|cts|mjs|cjs|js|jsx)$/;
 
+// INVARIANT: 不跟随符号链接。Prisma 会在 packages/chat/generated/client 下生成一个指向自身
+// 的 client 链接，跟随它会无限递归（ELOOP）。仓库源码遍历只看树里的真实文件。
 function collectSourceFiles(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
-    if (IGNORED_DIRS.has(entry)) continue;
+    if (entry.startsWith(".") || IGNORED_DIRS.has(entry)) continue;
     const full = join(dir, entry);
-    if (statSync(full).isDirectory()) collectSourceFiles(full, out);
+    const stats = lstatSync(full);
+    if (stats.isSymbolicLink()) continue;
+    if (stats.isDirectory()) collectSourceFiles(full, out);
     else if (SOURCE_FILE.test(entry)) out.push(full);
   }
   return out;
@@ -82,7 +87,7 @@ function declaredSubpathSpecifiers(): string[] {
 function buildConsumerIndex(): Map<string, Set<string>> {
   const index = new Map<string, Set<string>>();
   const packages = readdirSync(PACKAGES_DIR).filter((entry) =>
-    statSync(join(PACKAGES_DIR, entry)).isDirectory(),
+    lstatSync(join(PACKAGES_DIR, entry)).isDirectory(),
   );
   for (const pkg of packages) {
     if (pkg === SHARED_PKG) continue;

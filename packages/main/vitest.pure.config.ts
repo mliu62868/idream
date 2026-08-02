@@ -43,6 +43,11 @@ export default defineConfig({
         find: /^@idream\/shared\/contracts$/,
         replacement: `${sharedSourceRoot}contracts/index.ts`,
       },
+      // 子路径名与目录名不一致的必须显式列出，通配规则会把 env 解析成 shared/src/env。
+      {
+        find: /^@idream\/shared\/env$/,
+        replacement: `${sharedSourceRoot}contracts/env.ts`,
+      },
       {
         find: /^@idream\/shared\/(.+)$/,
         replacement: `${sharedSourceRoot}$1`,
