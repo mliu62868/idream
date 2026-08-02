@@ -153,6 +153,16 @@ async function generationTerminalFixture(
   };
 }
 
+// SPEC: 断言「没有任何产物字节落盘」。
+// INTENT: terminal record 自己也走 putPrivateIfAbsent（gen/terminal-records/…），失败路径本来
+// 就会写它——早先这里 spy 的是 putPrivate，生成路径改用 putPrivateIfAbsent 后断言变成永真，
+// 抓不到任何东西。按 key 前缀把两者分开，断言才重新有牙齿。
+function artifactWriteKeys(spy: { mock: { calls: readonly (readonly [{ key: string }])[] } }) {
+  return spy.mock.calls
+    .map(([input]) => input.key)
+    .filter((key) => !key.startsWith("gen/terminal-records/"));
+}
+
 describe("local AI service pipeline", () => {
   it("queues image generation and creates media through the finalize queue", async () => {
     const userId = `${P}gen-user`;
@@ -251,7 +261,7 @@ describe("local AI service pipeline", () => {
         ],
       },
     });
-    const blobPut = vi.spyOn(genProviders.blob, "putPrivate");
+    const blobPut = vi.spyOn(genProviders.blob, "putPrivateIfAbsent");
 
     const gen = await api("POST", "generation/jobs", {
       userId,
@@ -267,7 +277,7 @@ describe("local AI service pipeline", () => {
     await runQueuedGenerationJobs(8);
 
     expect(imageGenerate).toHaveBeenCalledTimes(1);
-    expect(blobPut).not.toHaveBeenCalled();
+    expect(artifactWriteKeys(blobPut)).toEqual([]);
     const poll = await api("GET", `generation/jobs/${jobId}`, { userId, ageGate: true });
     expectOk(poll);
     expect(poll.data.job.status).toBe("failed");
@@ -301,7 +311,7 @@ describe("local AI service pipeline", () => {
         ],
       },
     });
-    const blobPut = vi.spyOn(genProviders.blob, "putPrivate");
+    const blobPut = vi.spyOn(genProviders.blob, "putPrivateIfAbsent");
 
     const gen = await api("POST", "generation/jobs", {
       userId,
@@ -336,7 +346,7 @@ describe("local AI service pipeline", () => {
       status: "failed",
       errorCode: "asset_quality_failed",
     });
-    expect(blobPut).not.toHaveBeenCalled();
+    expect(artifactWriteKeys(blobPut)).toEqual([]);
     expect(
       await prisma.mediaAsset.count({ where: { sourceJobId: jobId } }),
     ).toBe(0);
@@ -789,7 +799,7 @@ describe("local AI service pipeline", () => {
         }],
       },
     });
-    const blobPut = vi.spyOn(genProviders.blob, "putPrivate");
+    const blobPut = vi.spyOn(genProviders.blob, "putPrivateIfAbsent");
 
     await runQueuedGenerationJobs(8);
 
@@ -800,7 +810,7 @@ describe("local AI service pipeline", () => {
       errorCode: "asset_body_missing",
     });
     expect(failed.data.assets).toHaveLength(0);
-    expect(blobPut).not.toHaveBeenCalled();
+    expect(artifactWriteKeys(blobPut)).toEqual([]);
     expect(await dreamcoinBalance(userId)).toBe(100);
     expect(await prisma.mediaAsset.count({ where: { sourceJobId: jobId } })).toBe(0);
   });
