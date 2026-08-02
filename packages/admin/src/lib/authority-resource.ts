@@ -102,8 +102,11 @@ export type AuthorityResource<T> = AuthorityState<T> & {
   readonly refreshError: string | null;
   /** 前台刷新，会进入 loading。 */
   readonly refresh: () => Promise<void>;
-  /** 本地改写已取到的数据；同时重置轮询节奏，让新一轮从最快档重新开始。 */
-  readonly setData: (next: T) => void;
+  /**
+   * 本地改写已取到的数据；同时重置轮询节奏，让新一轮从最快档重新开始。
+   * 支持函数式更新，因为改写常发生在异步 handler 里，直接读闭包里的 data 会拿到旧值。
+   */
+  readonly setData: (next: T | ((current: T | null) => T)) => void;
 };
 
 /**
@@ -204,10 +207,13 @@ export function useAuthorityResource<T>(
   const armed = enabled && Boolean(options.pollWhile);
   usePollingTask(armed ? pollTask : null, decide);
 
-  const setData = useCallback((next: T) => {
-    dataRef.current = next;
+  const setData = useCallback((next: T | ((current: T | null) => T)) => {
+    const resolved = typeof next === "function"
+      ? (next as (current: T | null) => T)(dataRef.current)
+      : next;
+    dataRef.current = resolved;
     cadenceRef.current = { attempt: 0, consecutiveFailures: 0, error: null };
-    setState(authorityRequestSucceeded(key, next));
+    setState(authorityRequestSucceeded(key, resolved));
   }, [key]);
 
   return { ...state, refreshError, refresh: foreground, setData };

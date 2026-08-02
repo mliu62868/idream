@@ -26,7 +26,11 @@ import {
   type ChangeEvent,
 } from "react";
 import { adminV2FormRequest, adminV2Request } from "@/lib/admin-v2-api";
-import { usePollingTask, type PollingTask } from "@/lib/authority-resource";
+import {
+  useAuthorityResource,
+  usePollingTask,
+  type PollingTask,
+} from "@/lib/authority-resource";
 import {
   WorkspaceButton,
   fieldClass,
@@ -46,6 +50,9 @@ export type ActivateIdentityCandidateInput =
 
 type ExperimentMode = "text_to_image" | "image_to_image";
 type SeedStrategy = "random" | "locked" | "reuse_source";
+
+// INVARIANT: 常量空数组，避免"资源尚未到达"每次渲染都产生新引用而触发下游重算。
+const EMPTY_SOURCE_OPTIONS: SourceOption[] = [];
 
 type SourceOption = {
   readonly id: string;
@@ -178,7 +185,6 @@ export function VisualIdentityExperimentWorkbench({
   >("balanced");
   const [strength, setStrength] = useState(0.65);
   const [sourceAssetId, setSourceAssetId] = useState<string | null>(null);
-  const [uploadedSources, setUploadedSources] = useState<SourceOption[]>([]);
   const [sourceUploadBusy, setSourceUploadBusy] = useState(false);
   const [pendingSource, setPendingSource] = useState<{
     filename: string;
@@ -303,30 +309,18 @@ export function VisualIdentityExperimentWorkbench({
     };
   }, [loadRuns]);
 
-  useEffect(() => {
-    let active = true;
-    void adminV2Request(
-      `/api/v2/admin/characters/${encodeURIComponent(data.character.id)}/image-sources`,
-      { schema: characterImageSourceListResponseSchema },
-    )
-      .then((response) => {
-        if (active) {
-          setUploadedSources(response.items.map(uploadedSourceOption));
-        }
-      })
-      .catch((cause) => {
-        if (active) {
-          setError(
-            cause instanceof Error
-              ? cause.message
-              : "无法读取最近上传的本地参考图",
-          );
-        }
-      });
-    return () => {
-      active = false;
-    };
-  }, [data.character.id]);
+  // SPEC: 最近上传的本地参考图是一份独立资源，取数生命周期整个交给 useAuthorityResource。
+  const uploadedSourcesResource = useAuthorityResource<SourceOption[]>({
+    key: data.character.id,
+    load: useCallback(async () => {
+      const response = await adminV2Request(
+        `/api/v2/admin/characters/${encodeURIComponent(data.character.id)}/image-sources`,
+        { schema: characterImageSourceListResponseSchema },
+      );
+      return response.items.map(uploadedSourceOption);
+    }, [data.character.id]),
+  });
+  const uploadedSources = uploadedSourcesResource.data ?? EMPTY_SOURCE_OPTIONS;
 
   // SPEC: 未落终态的实验 Run 每 3s 刷新一次，失败退避到 6s。
   // INTENT: 这里原本是一个靠 effect 依赖变化重新武装的伪轮询——刷新失败时 selectedRun
@@ -465,9 +459,9 @@ export function VisualIdentityExperimentWorkbench({
         },
       );
       const uploaded = uploadedSourceOption(result.asset);
-      setUploadedSources((current) => [
+      uploadedSourcesResource.setData((current) => [
         uploaded,
-        ...current.filter((source) => source.id !== uploaded.id),
+        ...(current ?? []).filter((source) => source.id !== uploaded.id),
       ]);
       setSourceAssetId(uploaded.id);
       if (seedStrategy === "reuse_source") setSeedStrategy("random");

@@ -25,7 +25,11 @@ import {
   AdminV2RequestError,
   adminV2Request,
 } from "@/lib/admin-v2-api";
-import { usePollingTask, type PollingTask } from "@/lib/authority-resource";
+import {
+  useAuthorityResource,
+  usePollingTask,
+  type PollingTask,
+} from "@/lib/authority-resource";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import {
   claimDurableMutationIntent,
@@ -732,6 +736,25 @@ function CreateRunForm({
   );
 }
 
+type CreativeRunListQuery = {
+  search: string;
+  outcome: string;
+  cursor?: string;
+};
+
+// INVARIANT: 常量空值，避免"资源尚未到达"每次渲染都产生新引用。
+const EMPTY_CREATIVE_RUNS: readonly CreativeRun[] = [];
+const EMPTY_PAGE_INFO = { endCursor: null, hasNextPage: false } as const;
+
+// SPEC: 请求参数与写进地址栏的参数必须是同一份，刷新页面才能复现同一页。
+function creativeRunListParams(query: CreativeRunListQuery) {
+  const params = new URLSearchParams({ limit: "25" });
+  if (query.search.trim()) params.set("search", query.search.trim());
+  if (query.outcome !== "all") params.set("executionOutcome", query.outcome);
+  if (query.cursor) params.set("cursor", query.cursor);
+  return params;
+}
+
 function RunList({
   actorId,
   permissions,
@@ -740,78 +763,71 @@ function RunList({
   permissions: Permissions;
 }) {
   const { locale, t } = useAdminI18n();
-  const [items, setItems] = useState<CreativeRun[]>([]);
   const [search, setSearch] = useState("");
   const [outcome, setOutcome] = useState("all");
-  const [cursor, setCursor] = useState<string | undefined>();
-  const [pageInfo, setPageInfo] = useState<{ endCursor: string | null; hasNextPage: boolean }>({ endCursor: null, hasNextPage: false });
-  const [asOf, setAsOf] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const requestGate = useRef(createLatestRequestGate());
-  const successfulQueryKey = useRef<string | null>(null);
+  // SPEC: 已生效的查询与表单草稿分开保存。
+  // INTENT: search/outcome 直接绑在输入框上，在搜索框里打字不该触发取数——只有 Apply
+  //         / 翻页 / 地址栏恢复才更新 applied，也就是 useAuthorityResource 的 query key。
+  const [applied, setApplied] = useState<CreativeRunListQuery>(
+    () => ({ search: "", outcome: "all" }),
+  );
 
-  const load = useCallback(async (next: { search: string; outcome: string; cursor?: string }, historyMode: "none" | "push" | "replace") => {
-    if (!permissions.read) return;
-    const request = requestGate.current.begin();
-    const queryKey = JSON.stringify(next);
-    if (successfulQueryKey.current !== queryKey) {
-      setItems([]);
-      setPageInfo({ endCursor: null, hasNextPage: false });
-      setAsOf(null);
+  const runs = useAuthorityResource({
+    key: JSON.stringify(applied),
+    enabled: permissions.read,
+    load: useCallback(
+      () =>
+        adminV2Request(
+          `/api/v2/admin/creative/runs?${creativeRunListParams(applied)}`,
+          { schema: creativeRunListResponseSchema },
+        ),
+      [applied],
+    ),
+  });
+  const items = runs.data?.items ?? EMPTY_CREATIVE_RUNS;
+  const pageInfo = runs.data?.pageInfo ?? EMPTY_PAGE_INFO;
+  const asOf = runs.data?.asOf ?? null;
+  const loading = runs.loading;
+  const error = runs.error;
+
+  const applyQuery = (
+    next: CreativeRunListQuery,
+    historyMode: "none" | "push" | "replace",
+  ) => {
+    setSearch(next.search);
+    setOutcome(next.outcome);
+    setApplied(next);
+    if (historyMode !== "none") {
+      window.history[historyMode === "push" ? "pushState" : "replaceState"](
+        null,
+        "",
+        `${window.location.pathname}?${creativeRunListParams(next)}`,
+      );
     }
-    setLoading(true);
-    setError(null);
-    try {
-      const query = new URLSearchParams({ limit: "25" });
-      if (next.search.trim()) query.set("search", next.search.trim());
-      if (next.outcome !== "all") query.set("executionOutcome", next.outcome);
-      if (next.cursor) query.set("cursor", next.cursor);
-      if (historyMode !== "none") {
-        window.history[historyMode === "push" ? "pushState" : "replaceState"](null, "", `${window.location.pathname}?${query}`);
-      }
-      const data = await adminV2Request(`/api/v2/admin/creative/runs?${query}`, { schema: creativeRunListResponseSchema });
-      if (!request.isCurrent()) return;
-      setItems([...data.items]);
-      setPageInfo(data.pageInfo);
-      setAsOf(data.asOf);
-      successfulQueryKey.current = queryKey;
-    } catch (cause) {
-      if (request.isCurrent()) {
-        setError(cause instanceof Error ? cause.message : "Creative Runs could not be loaded");
-      }
-    } finally {
-      if (request.isCurrent()) setLoading(false);
-    }
-  }, [permissions.read]);
+  };
 
   useEffect(() => {
-    const gate = requestGate.current;
     const restore = (historyMode: "none" | "replace") => {
       const params = new URLSearchParams(window.location.search);
-      const next = {
-        search: params.get("search") ?? "",
-        outcome: params.get("executionOutcome") ?? "all",
-        cursor: params.get("cursor") ?? undefined,
-      };
-      setSearch(next.search);
-      setOutcome(next.outcome);
-      setCursor(next.cursor);
-      void load(next, historyMode);
+      applyQuery(
+        {
+          search: params.get("search") ?? "",
+          outcome: params.get("executionOutcome") ?? "all",
+          cursor: params.get("cursor") ?? undefined,
+        },
+        historyMode,
+      );
     };
-    const timer = window.setTimeout(() => restore("replace"), 0);
+    restore("replace");
     const onPopState = () => restore("none");
     window.addEventListener("popstate", onPopState);
-    return () => {
-      gate.invalidate();
-      window.clearTimeout(timer);
-      window.removeEventListener("popstate", onPopState);
-    };
-  }, [load]);
+    return () => window.removeEventListener("popstate", onPopState);
+    // INTENT: 只在挂载时读一次地址栏并注册 popstate；applyQuery 每次渲染都是新函数，
+    //         进依赖会让监听器反复重装。
+  }, []);
 
   function apply(nextCursor?: string) {
-    setCursor(nextCursor);
-    void load({ search, outcome, cursor: nextCursor }, "push");
+    applyQuery({ search, outcome, cursor: nextCursor }, "push");
   }
 
   if (!permissions.read) return denied();
@@ -827,8 +843,8 @@ function RunList({
         </form>
       </div>
       <CreateRunForm actorId={actorId} enabled={permissions.write} />
-      {error ? <div className="mt-5 rounded-lg bg-[var(--ad-red-bg)] p-4 text-sm text-[var(--ad-red-text)]" role="alert">{error} <button className="ml-2 underline" onClick={() => void load({ search, outcome, cursor }, "none")} type="button">{t("Retry")}</button></div> : null}
-      <div className="mt-6">{loading && items.length === 0 ? <LoadingWorkspace label="Loading Creative Run facts" /> : items.length === 0 ? error ? null : <EmptyWorkspace filtered={filtered} onClear={() => { setSearch(""); setOutcome("all"); setCursor(undefined); void load({ search: "", outcome: "all" }, "push"); }} /> : <div className="grid gap-3">{items.map((run) => <Link className="grid gap-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 transition-colors hover:border-[var(--ad-ink)] focus-visible:outline focus-visible:outline-2 sm:grid-cols-[1fr_auto]" href={`/admin/creative/runs/${run.id}`} key={run.id}><div><div className="flex flex-wrap items-center gap-2"><strong>{t(run.purpose)}</strong><StatusBadge value={run.executionOutcome} /><StatusBadge value={run.reviewState} /><StatusBadge value={run.deploymentState} /><StatusBadge value={run.verificationState} /></div><p className="mt-2 text-xs text-[var(--ad-text-muted)]">{run.target.type === "none" ? t("Destination chosen after review") : `${run.target.type}:${run.target.id}`} · {t(run.workflowStage)}  {t("· owner")} {run.ownerId ?? t("unassigned")}</p><div className="mt-3 flex flex-wrap gap-3 text-xs tabular-nums"><span>{run.counts.generated}/{run.counts.total}  {t("generated")}</span><span>{run.counts.failed}  {t("failed")}</span><span>{run.counts.approved}  {t("approved")}</span><span>{run.counts.placed}  {t("placed")}</span></div></div><span className="self-center text-xs text-[var(--ad-text-muted)]">{t("Open operator flow →")}</span></Link>)}</div>}</div>
+      {error ? <div className="mt-5 rounded-lg bg-[var(--ad-red-bg)] p-4 text-sm text-[var(--ad-red-text)]" role="alert">{error} <button className="ml-2 underline" onClick={() => void runs.refresh()} type="button">{t("Retry")}</button></div> : null}
+      <div className="mt-6">{loading && items.length === 0 ? <LoadingWorkspace label="Loading Creative Run facts" /> : items.length === 0 ? error ? null : <EmptyWorkspace filtered={filtered} onClear={() => applyQuery({ search: "", outcome: "all" }, "push")} /> : <div className="grid gap-3">{items.map((run) => <Link className="grid gap-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 transition-colors hover:border-[var(--ad-ink)] focus-visible:outline focus-visible:outline-2 sm:grid-cols-[1fr_auto]" href={`/admin/creative/runs/${run.id}`} key={run.id}><div><div className="flex flex-wrap items-center gap-2"><strong>{t(run.purpose)}</strong><StatusBadge value={run.executionOutcome} /><StatusBadge value={run.reviewState} /><StatusBadge value={run.deploymentState} /><StatusBadge value={run.verificationState} /></div><p className="mt-2 text-xs text-[var(--ad-text-muted)]">{run.target.type === "none" ? t("Destination chosen after review") : `${run.target.type}:${run.target.id}`} · {t(run.workflowStage)}  {t("· owner")} {run.ownerId ?? t("unassigned")}</p><div className="mt-3 flex flex-wrap gap-3 text-xs tabular-nums"><span>{run.counts.generated}/{run.counts.total}  {t("generated")}</span><span>{run.counts.failed}  {t("failed")}</span><span>{run.counts.approved}  {t("approved")}</span><span>{run.counts.placed}  {t("placed")}</span></div></div><span className="self-center text-xs text-[var(--ad-text-muted)]">{t("Open operator flow →")}</span></Link>)}</div>}</div>
       <div className="mt-4 flex items-center justify-between gap-3"><p className="text-xs text-[var(--ad-text-muted)]">{asOf ? t("Fresh as of {time}", { time: new Date(asOf).toLocaleString(locale === "zh" ? "zh-CN" : "en-US") }) : t("No successful query yet")}</p><WorkspaceButton disabled={loading || !pageInfo.hasNextPage || !pageInfo.endCursor} onClick={() => apply(pageInfo.endCursor ?? undefined)}>{t("Next page")}</WorkspaceButton></div>
     </section>
   );
