@@ -53,6 +53,7 @@ import {
   loadingAuthorityStatus,
   readyAuthorityStatus,
 } from "./authority-state";
+import { useViewerResource } from "@/hooks/useViewerResource";
 import { useAgeGateAccess } from "./AgeGateBoundary";
 import { authHrefForTarget } from "./authRedirect";
 import { LegacyTestAssetBadge } from "./LegacyTestAssetBadge";
@@ -111,6 +112,17 @@ type ImageWorkflow = "presets" | "image-edit";
 type ConsistencyMode = "balanced" | "strict" | "creative";
 type WorkspaceView = "create" | "jobs" | "gallery";
 type GalleryTab = "image" | "video" | "liked";
+
+/**
+ * Identity a private read was issued under. `epoch` and `scope` are compared
+ * again when the response lands, so an answer for the previous signed-in viewer
+ * is recognisable as no longer ours.
+ */
+type PrivateViewerTicket = {
+  controller: AbortController;
+  epoch: number;
+  scope: string;
+};
 
 type PresetConfig = {
   id: string;
@@ -405,10 +417,72 @@ export function GeneratorWorkspace() {
   const [backgroundPresetId, setBackgroundPresetId] = useState("");
   const [posePresetId, setPosePresetId] = useState("");
   const [outfitPresetId, setOutfitPresetId] = useState("");
-  const [jobs, setJobs] = useState<GenerationJob[]>([]);
-  const [jobsAuthority, setJobsAuthority] = useState(initialAuthorityStatus);
-  const [media, setMedia] = useState<MediaItem[]>([]);
-  const [mediaAuthority, setMediaAuthority] = useState(initialAuthorityStatus);
+  const viewerAuthenticatedRef = useRef<boolean | null>(null);
+  const viewerScopeRef = useRef<string | null>(null);
+  const viewerEpochRef = useRef(0);
+  const privateRequestControllersRef = useRef<Set<AbortController>>(new Set());
+
+  // SPEC: a private read is admissible only while the viewer who asked for it is
+  // still the signed-in viewer. The ticket carries the identity the request went
+  // out under, so a response arriving after a sign-out or an account switch is
+  // recognisable as no longer ours.
+  const beginPrivateViewerRequest = useCallback(() => {
+    const scope = viewerScopeRef.current;
+    if (viewerAuthenticatedRef.current !== true || !scope) return null;
+    const controller = new AbortController();
+    privateRequestControllersRef.current.add(controller);
+    return {
+      controller,
+      epoch: viewerEpochRef.current,
+      scope,
+    };
+  }, []);
+
+  const privateViewerRequestIsCurrent = useCallback(
+    (request: { epoch: number; scope: string }) =>
+      request.epoch === viewerEpochRef.current &&
+      request.scope === viewerScopeRef.current &&
+      viewerAuthenticatedRef.current === true,
+    [],
+  );
+
+  const finishPrivateViewerRequest = useCallback(
+    (request: { controller: AbortController }) => {
+      privateRequestControllersRef.current.delete(request.controller);
+    },
+    [],
+  );
+
+  const privateViewerGate = useMemo(
+    () => ({
+      begin: beginPrivateViewerRequest,
+      isCurrent: privateViewerRequestIsCurrent,
+      finish: finishPrivateViewerRequest,
+      signal: (ticket: PrivateViewerTicket) => ticket.controller.signal,
+    }),
+    [
+      beginPrivateViewerRequest,
+      finishPrivateViewerRequest,
+      privateViewerRequestIsCurrent,
+    ],
+  );
+
+  const {
+    data: jobs,
+    status: jobsAuthority,
+    setData: setJobs,
+    reset: resetJobs,
+    refresh: refreshJobs,
+  } = useViewerResource<GenerationJob[], void, PrivateViewerTicket>({
+    request: () => ({
+      path: "/api/v1/generation/jobs?limit=20",
+      init: { cache: "no-store" },
+    }),
+    parse: (raw) => parseGenerationJobsResponse(raw).items,
+    fallbackError: "Jobs could not load.",
+    initialData: [],
+    gate: privateViewerGate,
+  });
   const [latestResults, setLatestResults] = useState<MediaItem[]>([]);
   const [identityMedia, setIdentityMedia] = useState<MediaItem[]>([]);
   const [identityMediaAuthority, setIdentityMediaAuthority] = useState(initialAuthorityStatus);
@@ -427,14 +501,62 @@ export function GeneratorWorkspace() {
   const [invalidPreviewMediaIds, setInvalidPreviewMediaIds] = useState<Set<string>>(() => new Set());
   const [failedLatestResultIds, setFailedLatestResultIds] = useState<Set<string>>(() => new Set());
   const [invalidLatestResultIds, setInvalidLatestResultIds] = useState<Set<string>>(() => new Set());
-  const [userPresets, setUserPresets] = useState<UserPreset[]>([]);
-  const [presetsAuthority, setPresetsAuthority] = useState(initialAuthorityStatus);
   const [presetName, setPresetName] = useState("");
   const [manageMode, setManageMode] = useState(false);
   const [selectedMediaIds, setSelectedMediaIds] = useState<Set<string>>(() => new Set());
   const [deleteConfirmMediaId, setDeleteConfirmMediaId] = useState<string | null>(null);
   const [bulkDeleteConfirmKey, setBulkDeleteConfirmKey] = useState<string | null>(null);
   const [deleteConfirmPresetId, setDeleteConfirmPresetId] = useState<string | null>(null);
+
+  const {
+    data: media,
+    status: mediaAuthority,
+    setData: setMedia,
+    reset: resetMedia,
+    refresh: refreshMedia,
+  } = useViewerResource<MediaItem[], GalleryTab, PrivateViewerTicket>({
+    request: (tab) => ({
+      path: `/api/v1/media?${tab === "liked" ? "liked=1" : `type=${tab}`}`,
+      init: { cache: "no-store" },
+    }),
+    parse: (raw) => parseWorkspaceMediaResponse(raw).items,
+    fallbackError: "Gallery could not load.",
+    initialData: [],
+    gate: privateViewerGate,
+    // Each gallery tab is its own projection: switching tabs must drop the old
+    // one rather than leave it on screen looking like the new tab's contents.
+    snapshotKey: (tab) => tab,
+    initialSnapshotKey: "image",
+    onSnapshotChange: () => {
+      setSelectedMediaIds(new Set());
+      setDeleteConfirmMediaId(null);
+      setBulkDeleteConfirmKey(null);
+    },
+    onLoaded: () => {
+      setDeleteConfirmMediaId(null);
+      setBulkDeleteConfirmKey(null);
+    },
+  });
+
+  const {
+    data: userPresets,
+    status: presetsAuthority,
+    reset: resetUserPresets,
+    refresh: refreshPresets,
+  } = useViewerResource<UserPreset[], void, PrivateViewerTicket>({
+    // scope=user yields only the signed-in user's saved presets (built-in
+    // background/pose/outfit presets arrive separately via the config endpoint).
+    request: () => ({
+      path: "/api/v1/generation/presets?scope=user",
+      init: { cache: "no-store" },
+    }),
+    parse: (raw) => parseUserPresetsResponse(raw).items,
+    fallbackError: "Saved presets could not load.",
+    initialData: [],
+    gate: privateViewerGate,
+    onLoaded: () => setDeleteConfirmPresetId(null),
+  });
+
   const [editSourceMediaId, setEditSourceMediaId] = useState("");
   const [lookEditorMediaId, setLookEditorMediaId] = useState<string | null>(null);
   const [lookLabel, setLookLabel] = useState("");
@@ -447,12 +569,6 @@ export function GeneratorWorkspace() {
   const workspaceTopRef = useRef<HTMLDivElement>(null);
   const looksCharacterIdRef = useRef("");
   const looksRequestSerialRef = useRef(0);
-  const mediaTabRef = useRef<GalleryTab>("image");
-  const mediaRequestSerialRef = useRef(0);
-  const viewerAuthenticatedRef = useRef<boolean | null>(null);
-  const viewerScopeRef = useRef<string | null>(null);
-  const viewerEpochRef = useRef(0);
-  const privateRequestControllersRef = useRef<Set<AbortController>>(new Set());
   const charactersRequestControllerRef = useRef<AbortController | null>(null);
   const charactersRequestSerialRef = useRef(0);
   const configRequestControllerRef = useRef<AbortController | null>(null);
@@ -694,17 +810,13 @@ export function GeneratorWorkspace() {
 
   const clearPrivateViewerProjections = useCallback(() => {
     abortPrivateViewerRequests();
-    mediaRequestSerialRef.current += 1;
     looksRequestSerialRef.current += 1;
-    setJobs([]);
-    setJobsAuthority(readyAuthorityStatus());
-    setMedia([]);
-    setMediaAuthority(readyAuthorityStatus());
+    resetJobs();
+    resetMedia();
+    resetUserPresets();
     setLatestResults([]);
     setIdentityMedia([]);
     setIdentityMediaAuthority(readyAuthorityStatus());
-    setUserPresets([]);
-    setPresetsAuthority(readyAuthorityStatus());
     setEditSourceMediaId("");
     setSelectedMediaIds(new Set());
     setDeleteConfirmMediaId(null);
@@ -719,7 +831,13 @@ export function GeneratorWorkspace() {
     setRetryQuoteFailures({});
     invalidateLookScope();
     setLooksAuthority(readyAuthorityStatus());
-  }, [abortPrivateViewerRequests, invalidateLookScope]);
+  }, [
+    abortPrivateViewerRequests,
+    invalidateLookScope,
+    resetJobs,
+    resetMedia,
+    resetUserPresets,
+  ]);
 
   const resetPrivateViewerData = useCallback(() => {
     clearPrivateViewerProjections();
@@ -731,33 +849,6 @@ export function GeneratorWorkspace() {
     setPrompt("");
     setNegativePrompt("");
   }, [clearPrivateViewerProjections]);
-
-  const beginPrivateViewerRequest = useCallback(() => {
-    const scope = viewerScopeRef.current;
-    if (viewerAuthenticatedRef.current !== true || !scope) return null;
-    const controller = new AbortController();
-    privateRequestControllersRef.current.add(controller);
-    return {
-      controller,
-      epoch: viewerEpochRef.current,
-      scope,
-    };
-  }, []);
-
-  const privateViewerRequestIsCurrent = useCallback(
-    (request: { epoch: number; scope: string }) =>
-      request.epoch === viewerEpochRef.current &&
-      request.scope === viewerScopeRef.current &&
-      viewerAuthenticatedRef.current === true,
-    [],
-  );
-
-  const finishPrivateViewerRequest = useCallback(
-    (request: { controller: AbortController }) => {
-      privateRequestControllersRef.current.delete(request.controller);
-    },
-    [],
-  );
 
   const showJobsView = useCallback(() => {
     setView("jobs");
@@ -1148,134 +1239,6 @@ export function GeneratorWorkspace() {
     return () => controller.abort();
   }, [retryQuoteRequestNonce, retryQuoteScopeKey]);
 
-  const refreshJobs = useCallback(async () => {
-    const viewerRequest = beginPrivateViewerRequest();
-    if (!viewerRequest) return;
-    setJobsAuthority(loadingAuthorityStatus);
-    try {
-      const response = await fetch("/api/v1/generation/jobs?limit=20", {
-        cache: "no-store",
-        signal: viewerRequest.controller.signal,
-      });
-      const raw = await response.json().catch(() => null);
-      if (!privateViewerRequestIsCurrent(viewerRequest)) return;
-      if (!response.ok) {
-        throw new Error(
-          apiPayloadErrorMessage(raw) ?? "Jobs could not load.",
-        );
-      }
-      setJobs(parseGenerationJobsResponse(raw).items);
-      setJobsAuthority(readyAuthorityStatus());
-    } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") return;
-      if (!privateViewerRequestIsCurrent(viewerRequest)) return;
-      setJobsAuthority((current) =>
-        failedAuthorityStatus(current, requestErrorMessage(error, "Jobs could not load.")),
-      );
-    } finally {
-      finishPrivateViewerRequest(viewerRequest);
-    }
-  }, [
-    beginPrivateViewerRequest,
-    finishPrivateViewerRequest,
-    privateViewerRequestIsCurrent,
-  ]);
-
-  const refreshMedia = useCallback(async (tab: GalleryTab) => {
-    const viewerRequest = beginPrivateViewerRequest();
-    if (!viewerRequest) return;
-    const query = tab === "liked" ? "liked=1" : `type=${tab}`;
-    const requestSerial = mediaRequestSerialRef.current + 1;
-    mediaRequestSerialRef.current = requestSerial;
-    const hasMatchingSnapshot = mediaTabRef.current === tab;
-    if (!hasMatchingSnapshot) {
-      mediaTabRef.current = tab;
-      setMedia([]);
-      setSelectedMediaIds(new Set());
-      setDeleteConfirmMediaId(null);
-      setBulkDeleteConfirmKey(null);
-    }
-    setMediaAuthority((current) =>
-      loadingAuthorityStatus(
-        hasMatchingSnapshot ? current : initialAuthorityStatus(),
-      ),
-    );
-    try {
-      const response = await fetch(`/api/v1/media?${query}`, {
-        cache: "no-store",
-        signal: viewerRequest.controller.signal,
-      });
-      const raw = await response.json().catch(() => null);
-      if (
-        requestSerial !== mediaRequestSerialRef.current ||
-        !privateViewerRequestIsCurrent(viewerRequest)
-      ) return;
-      if (!response.ok) {
-        throw new Error(
-          apiPayloadErrorMessage(raw) ?? "Gallery could not load.",
-        );
-      }
-      setMedia(parseWorkspaceMediaResponse(raw).items);
-      setMediaAuthority(readyAuthorityStatus());
-      setDeleteConfirmMediaId(null);
-      setBulkDeleteConfirmKey(null);
-    } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") return;
-      if (
-        requestSerial !== mediaRequestSerialRef.current ||
-        !privateViewerRequestIsCurrent(viewerRequest)
-      ) return;
-      setMediaAuthority((current) =>
-        failedAuthorityStatus(current, requestErrorMessage(error, "Gallery could not load.")),
-      );
-    } finally {
-      finishPrivateViewerRequest(viewerRequest);
-    }
-  }, [
-    beginPrivateViewerRequest,
-    finishPrivateViewerRequest,
-    privateViewerRequestIsCurrent,
-  ]);
-
-  const refreshPresets = useCallback(async () => {
-    const viewerRequest = beginPrivateViewerRequest();
-    if (!viewerRequest) return;
-    // scope=user yields only the signed-in user's saved presets (built-in
-    // background/pose/outfit presets arrive separately via the config endpoint).
-    setPresetsAuthority(loadingAuthorityStatus);
-    try {
-      const response = await fetch("/api/v1/generation/presets?scope=user", {
-        cache: "no-store",
-        signal: viewerRequest.controller.signal,
-      });
-      const raw = await response.json().catch(() => null);
-      if (!privateViewerRequestIsCurrent(viewerRequest)) return;
-      if (!response.ok) {
-        throw new Error(
-          apiPayloadErrorMessage(raw) ?? "Saved presets could not load.",
-        );
-      }
-      setUserPresets(parseUserPresetsResponse(raw).items);
-      setPresetsAuthority(readyAuthorityStatus());
-      setDeleteConfirmPresetId(null);
-    } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") return;
-      if (!privateViewerRequestIsCurrent(viewerRequest)) return;
-      setPresetsAuthority((current) =>
-        failedAuthorityStatus(
-          current,
-          requestErrorMessage(error, "Saved presets could not load."),
-        ),
-      );
-    } finally {
-      finishPrivateViewerRequest(viewerRequest);
-    }
-  }, [
-    beginPrivateViewerRequest,
-    finishPrivateViewerRequest,
-    privateViewerRequestIsCurrent,
-  ]);
-
   const refreshIdentityMedia = useCallback(async () => {
     const viewerRequest = beginPrivateViewerRequest();
     if (!viewerRequest) return;
@@ -1560,6 +1523,7 @@ export function GeneratorWorkspace() {
     privateViewerRequestIsCurrent,
     refreshBalanceAndQuoteAuthority,
     refreshMedia,
+    setJobs,
   ]);
 
   useEffect(() => {
