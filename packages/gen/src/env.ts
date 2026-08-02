@@ -5,6 +5,17 @@
 // without any env set. Config comes from packages/gen/.env (see .env.example),
 // loaded here non-overriding so injected vars still win.
 import { resolveLocalBlobRoot } from "@idream/shared/storage/local-blob";
+import {
+  BLOB_ACCESS_KEY_ID_ALIASES,
+  BLOB_SECRET_ACCESS_KEY_ALIASES,
+  DEFAULT_BLOB_REGION,
+  DEFAULT_MODERATION_PROVIDER,
+  DEFAULT_MODERATION_TIMEOUT_MS,
+  DEFAULT_REDIS_URL,
+  defaultBullmqPrefix,
+  mainWebUrlOrigin,
+  resolveAlias,
+} from "@idream/shared/env";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import "dotenv/config";
@@ -31,18 +42,18 @@ function positiveIntegerEnv(name: string, fallback: number) {
 export const env = {
   /** Redis for BullMQ. GEN_REDIS_URL wins, else shared REDIS_URL, else local. */
   get REDIS_URL(): string {
-    return process.env.GEN_REDIS_URL ?? process.env.REDIS_URL ?? "redis://127.0.0.1:6379/0";
+    return process.env.GEN_REDIS_URL ?? process.env.REDIS_URL ?? DEFAULT_REDIS_URL;
   },
   // CROSS-SERVICE INVARIANT: the BullMQ prefix MUST match main (and chat) — main
   // enqueues generation jobs that gen workers consume, so a different prefix means
-  // gen never sees them. Default mirrors main's `idream:${APP_ENV}`. (Queue NAMES,
-  // not the prefix, are what isolate gen/chat/main traffic within the shared Redis.)
+  // gen never sees them. The formula now lives in @idream/shared/env so there is
+  // one definition instead of three copies. (Queue NAMES, not the prefix, are what
+  // isolate gen/chat/main traffic within the shared Redis.)
   get BULLMQ_PREFIX(): string {
-    return process.env.BULLMQ_PREFIX ?? `idream:${process.env.APP_ENV ?? "development"}`;
+    return process.env.BULLMQ_PREFIX ?? defaultBullmqPrefix(process.env.APP_ENV);
   },
   get MAIN_GENERATION_TRANSPORT_URL(): string {
-    const base = process.env.MAIN_WEB_URL ?? "http://127.0.0.1:3000";
-    return `${base.replace(/\/$/, "")}/api/internal/generation/transports`;
+    return `${mainWebUrlOrigin()}/api/internal/generation/transports`;
   },
   get INTERNAL_TOKEN(): string {
     return process.env.INTERNAL_TOKEN ?? "";
@@ -62,17 +73,13 @@ export const env = {
     return process.env.BLOB_BUCKET;
   },
   get BLOB_REGION(): string {
-    return process.env.BLOB_REGION ?? "auto";
+    return process.env.BLOB_REGION ?? DEFAULT_BLOB_REGION;
   },
   get BLOB_ACCESS_KEY_ID(): string | undefined {
-    return process.env.BLOB_ACCESS_KEY_ID ?? process.env.BLOB_ACCESS_KEY ?? process.env.AWS_ACCESS_KEY_ID;
+    return resolveAlias(BLOB_ACCESS_KEY_ID_ALIASES);
   },
   get BLOB_SECRET_ACCESS_KEY(): string | undefined {
-    return (
-      process.env.BLOB_SECRET_ACCESS_KEY ??
-      process.env.BLOB_SECRET_KEY ??
-      process.env.AWS_SECRET_ACCESS_KEY
-    );
+    return resolveAlias(BLOB_SECRET_ACCESS_KEY_ALIASES);
   },
   /** Image provider switch. Production uses the backend (ComfyUI/Draw Things) provider. */
   get IMAGE_PROVIDER(): string {
@@ -84,7 +91,11 @@ export const env = {
   },
   /** Moderation provider for generation input/output gates. */
   get MODERATION_PROVIDER(): string {
-    return process.env.GEN_MODERATION_PROVIDER ?? process.env.MODERATION_PROVIDER ?? "mock";
+    return (
+      process.env.GEN_MODERATION_PROVIDER ??
+      process.env.MODERATION_PROVIDER ??
+      DEFAULT_MODERATION_PROVIDER
+    );
   },
   get MODERATION_SERVICE_URL(): string | undefined {
     return process.env.MODERATION_SERVICE_URL;
@@ -93,8 +104,11 @@ export const env = {
     return process.env.MODERATION_API_KEY;
   },
   get MODERATION_TIMEOUT_MS(): number {
-    const parsed = Number.parseInt(process.env.MODERATION_TIMEOUT_MS ?? "5000", 10);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : 5_000;
+    const parsed = Number.parseInt(
+      process.env.MODERATION_TIMEOUT_MS ?? String(DEFAULT_MODERATION_TIMEOUT_MS),
+      10,
+    );
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_MODERATION_TIMEOUT_MS;
   },
   get PIPELINE_API_URL(): string | undefined {
     return process.env.PIPELINE_API_URL;

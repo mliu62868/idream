@@ -70,6 +70,10 @@ export default defineConfig({
         "../shared/src/contracts/index.ts",
         import.meta.url,
       ).pathname,
+      "@idream/shared/env": new URL(
+        "../shared/src/contracts/env.ts",
+        import.meta.url,
+      ).pathname,
       "@idream/shared/admin/api-manifest": new URL(
         "../shared/src/admin/api-manifest.ts",
         import.meta.url,

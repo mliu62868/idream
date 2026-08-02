@@ -10,6 +10,7 @@
     ".": "./src/index.ts",
     "./catalog": "./src/catalog/index.ts",
     "./contracts": "./src/contracts/index.ts",
+    "./env": "./src/contracts/env.ts",
     "./admin": "./src/admin/index.ts",
     "./admin/contracts": "./src/admin/contracts/index.ts",
     "./admin/permissions": "./src/admin/permissions.ts",
