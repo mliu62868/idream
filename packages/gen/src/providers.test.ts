@@ -359,6 +359,19 @@ describe("PipelineImageModel", () => {
     );
   });
 
+  // SPEC: the image/video production-adapter asymmetry is deliberate. Image may
+  // still run the legacy OpenAI-compatible gateway as the documented rollback;
+  // video may not, because only BackendVideoModel enforces the LTX production
+  // envelope. Pinned so "make the two modes consistent" cannot quietly delete
+  // either the rollback or the guard.
+  it("admits the legacy pipeline rollback for production image generation", () => {
+    process.env.APP_ENV = "production";
+    process.env.GEN_IMAGE_PROVIDER = "pipeline";
+    process.env.PIPELINE_API_URL = "https://pipeline.test";
+
+    expect(() => assertProductionProviderReady("image")).not.toThrow();
+  });
+
   it("rejects production image pipeline startup without a pipeline URL", () => {
     process.env.APP_ENV = "production";
     process.env.GEN_IMAGE_PROVIDER = "pipeline";

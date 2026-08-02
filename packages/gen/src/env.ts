@@ -74,7 +74,7 @@ export const env = {
       process.env.AWS_SECRET_ACCESS_KEY
     );
   },
-  /** Image provider switch. Production uses the backend (ComfyUI/sd-cli) provider. */
+  /** Image provider switch. Production uses the backend (ComfyUI/Draw Things) provider. */
   get IMAGE_PROVIDER(): string {
     return process.env.GEN_IMAGE_PROVIDER ?? "mock";
   },
@@ -125,10 +125,6 @@ export const env = {
   /** ComfyUI native HTTP API base URL, used by GEN_IMAGE_PROVIDER=backend. */
   get COMFYUI_API_URL(): string {
     return process.env.COMFYUI_API_URL ?? "http://127.0.0.1:8188";
-  },
-  /** sd-cli binary path, used by GEN_IMAGE_PROVIDER=backend. */
-  get SDCPP_CLI(): string {
-    return process.env.SDCPP_CLI ?? `${process.env.HOME}/bin/sd-cli`;
   },
   /** Official Draw Things automation CLI, used by drawthings workflows. */
   get DRAWTHINGS_CLI(): string {

@@ -8,7 +8,7 @@
 // wait loop with its own AbortController + job.timeoutMs. health() is a readiness
 // probe, bounded by a fixed HEALTH_TIMEOUT_MS regardless of job timeout config.
 import { randomUUID } from "node:crypto";
-import { assertGeneratedImageSanity } from "../generated-image-sanity";
+import { assertGeneratedImageSanity } from "@idream/shared/media/generated-image-sanity";
 import { logger } from "../logger";
 import { syncComfyUiWorkflow } from "./comfyui-workflow";
 import { assignWorkflowReferenceSlots, bindComfySlots } from "./workflow";

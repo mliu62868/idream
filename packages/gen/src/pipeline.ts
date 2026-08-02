@@ -19,7 +19,7 @@ import {
   assertGeneratedImageSanity,
   GeneratedImageSanityError,
   type GeneratedImageSanityEvidence,
-} from "./generated-image-sanity";
+} from "@idream/shared/media/generated-image-sanity";
 import {
   type GenProviders,
   providers as defaultProviders,
@@ -92,7 +92,7 @@ export async function processImageGenerate(
     recordTransportExecution: deps.recordTransportExecution,
   });
   if (await execution.resumeTerminalRecord()) return;
-  assertPinnedProviderAdapter(payload.provider, env.IMAGE_PROVIDER, "image");
+  assertWorkerAdapterMatchesRecordedProvider(payload.provider, env.IMAGE_PROVIDER, "image");
 
   const inputModeration = await providers.moderation.check({
     targetType: "text",
@@ -255,7 +255,7 @@ export async function processVideoGenerate(
     recordTransportExecution: deps.recordTransportExecution,
   });
   if (await execution.resumeTerminalRecord()) return;
-  assertPinnedProviderAdapter(payload.provider, env.VIDEO_PROVIDER, "video");
+  assertWorkerAdapterMatchesRecordedProvider(payload.provider, env.VIDEO_PROVIDER, "video");
 
   const inputModeration = await providers.moderation.check({
     targetType: "text",
@@ -300,8 +300,13 @@ export async function processVideoGenerate(
         contentType,
         ".mp4",
       );
+      // Same persistence transaction as the image path: create-if-absent, so a
+      // duplicate delivery of this attempt cannot overwrite bytes an earlier
+      // invocation already published under the same key. No rollback branch
+      // here — unlike images this writes exactly one object, so there is never
+      // a partially-created set to undo.
       try {
-        const persisted = await providers.blob.putPrivate({
+        const persisted = await providers.blob.putPrivateIfAbsent({
           key: assetKey,
           body: await videoAssetBody(output.asset, payload.generationJobId),
           contentType,
@@ -330,19 +335,37 @@ export async function processVideoGenerate(
   });
 }
 
-function assertPinnedProviderAdapter(
-  pinnedProvider: string,
+// SPEC: deployment self-check, NOT backend selection. `payload.provider` is
+// Main's `GenerationModelProfile.runner` copied onto the Attempt — an accounting
+// field that ends up verbatim in the terminal record. It never chooses an
+// execution body: the backend is decided by
+// `registry.resolveForModel(payload.model).descriptor.backendKind`, admitted by
+// the workflowKey@workflowVersion pin (backend/registry.ts validateWorkflowPin).
+// INTENT: this only asserts the worker's own GEN_*_PROVIDER adapter is the one
+// Main assumed when it recorded that runner — i.e. a `mock`-provisioned attempt
+// cannot land on a real-backend worker and vice versa. The two vocabularies are
+// deliberately many-to-one (Main's runner names ⇒ gen's adapter names), so
+// matching here proves nothing about which backend actually runs.
+function assertWorkerAdapterMatchesRecordedProvider(
+  recordedProvider: string,
   configuredAdapter: string,
   mode: "image" | "video",
 ) {
-  const requiredAdapter = providerAdapterForPinnedAuthority(pinnedProvider);
+  const requiredAdapter = providerAdapterForPinnedAuthority(recordedProvider);
   if (requiredAdapter !== configuredAdapter) {
     throw new Error(
-      `Pinned ${mode} provider ${pinnedProvider} requires GEN_${mode.toUpperCase()}_PROVIDER=${requiredAdapter}; configured=${configuredAdapter}`,
+      `Pinned ${mode} provider ${recordedProvider} requires GEN_${mode.toUpperCase()}_PROVIDER=${requiredAdapter}; configured=${configuredAdapter}`,
     );
   }
 }
 
+// SPEC: Main runner name -> gen adapter name. Many-to-one by construction.
+// INTENT: `sd_cpp` still maps to `backend` even though gen no longer has an
+// sd.cpp backend, because it is the `GenerationModelProfile.runner` DB default
+// and public text-to-image selection still admits such profiles. Fail-closing it
+// here would take out any live profile still carrying the default; the correct
+// fix is main-side (retire the runner value / change the column default), not a
+// worker-side reject. Whatever the runner says, the descriptor decides.
 export function providerAdapterForPinnedAuthority(provider: string) {
   switch (provider) {
     case "mock":

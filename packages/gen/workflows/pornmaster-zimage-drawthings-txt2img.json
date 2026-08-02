@@ -6,7 +6,7 @@
   "capabilities": ["textToImage", "img2img", "stableSeed"],
   "identity": {
     "mode": "single_reference",
-    "maxReferences": 0,
+    "maxReferences": 1,
     "acceptedRoles": ["source_image"],
     "supportsLookReference": false,
     "supportsSourceImageWithIdentity": false

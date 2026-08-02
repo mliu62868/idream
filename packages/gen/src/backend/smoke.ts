@@ -40,7 +40,7 @@ process.env.GEN_IMAGE_PROVIDER = "backend";
 process.env.GEN_WORKFLOW_DIR ??= path.resolve(here, "..", "..", "workflows");
 
 const { providers } = await import("../providers");
-const { assertGeneratedImageSanity } = await import("../generated-image-sanity");
+const { assertGeneratedImageSanity } = await import("@idream/shared/media/generated-image-sanity");
 const { logger } = await import("../logger");
 
 const SMOKE_PROMPT =

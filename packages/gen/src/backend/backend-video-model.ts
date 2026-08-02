@@ -6,7 +6,7 @@ import {
   type VideoModel,
 } from "../providers";
 import { assignWorkflowReferenceSlots, type SlotValues } from "./workflow";
-import type { BackendRegistry } from "./registry";
+import { validateWorkflowPin, type BackendRegistry } from "./registry";
 import { BackendInvocationError, type BackendAsset } from "./types";
 import { assertCharacterVideoProductionDescriptor } from "./production-video-descriptor";
 
@@ -204,21 +204,6 @@ function validateProductionVideoDescriptor(
   } catch (error) {
     return error instanceof Error ? error.message : String(error);
   }
-}
-
-function validateWorkflowPin(
-  descriptor: ReturnType<BackendRegistry["resolveForModel"]>["descriptor"],
-  controls: GenerateInput["controls"],
-) {
-  const workflowKey = controls?.workflowKey;
-  const workflowVersion = controls?.workflowVersion;
-  if (
-    workflowKey !== descriptor.workflowKey ||
-    workflowVersion !== descriptor.version
-  ) {
-    return `Pinned workflow ${String(workflowKey)}@${String(workflowVersion)} does not match worker descriptor ${descriptor.workflowKey}@${descriptor.version}`;
-  }
-  return null;
 }
 
 function validateVideoReferences(

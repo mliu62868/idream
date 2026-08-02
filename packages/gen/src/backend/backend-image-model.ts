@@ -24,7 +24,7 @@ import {
   assignWorkflowReferenceSlots,
   type SlotValues,
 } from "./workflow";
-import type { BackendRegistry } from "./registry";
+import { validateWorkflowPin, type BackendRegistry } from "./registry";
 import { BackendInvocationError } from "./types";
 
 type GenerateInput = Parameters<ImageModel["generate"]>[0];
@@ -235,22 +235,6 @@ function backendFailure(
     fallbackPhase,
     fallbackPhase === "post_submit" ? "ambiguous" : "definitive",
   );
-}
-
-function validateWorkflowPin(
-  descriptor: ReturnType<BackendRegistry["resolveForModel"]>["descriptor"],
-  controls: GenerateInput["controls"],
-) {
-  const workflowKey = controls?.workflowKey;
-  const workflowVersion = controls?.workflowVersion;
-  if (workflowKey === undefined && workflowVersion === undefined) return null;
-  if (
-    workflowKey !== descriptor.workflowKey ||
-    workflowVersion !== descriptor.version
-  ) {
-    return `Pinned workflow ${String(workflowKey)}@${String(workflowVersion)} does not match worker descriptor ${descriptor.workflowKey}@${descriptor.version}`;
-  }
-  return null;
 }
 
 function validateReferenceContract(

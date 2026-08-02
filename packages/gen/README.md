@@ -27,8 +27,7 @@ OpenAI-compatible pipeline gateway:
 
 - **`GenBackend`** (`src/backend/types.ts`) — a small `submit`/`poll`/`health`
   contract implemented per backend kind: `ComfyUIBackend` (`src/backend/comfyui.ts`,
-  drives ComfyUI's native `/prompt` → `/history` → `/view` HTTP API),
-  `SdcppBackend` (`src/backend/sdcpp.ts`, shells out to the `sd-cli` binary), and
+  drives ComfyUI's native `/prompt` → `/history` → `/view` HTTP API) and
   `DrawThingsBackend` (`src/backend/drawthings.ts`, shells out to the official
   `draw-things-cli`).
 - **Workflow descriptors** (`src/backend/workflow.ts`, JSON files under
