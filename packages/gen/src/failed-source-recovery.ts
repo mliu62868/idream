@@ -1,5 +1,6 @@
 import {
   GEN_QUEUES,
+  generationProviderIdempotencyKey,
   idempotencyKeys,
   imageGeneratePayloadSchema,
   videoGeneratePayloadSchema,
@@ -148,7 +149,7 @@ async function validateRecoverableSourceRow(
     record.mode !== payload.kind ||
     record.provider !== payload.provider ||
     record.model !== payload.model ||
-    record.providerIdempotencyKey !== `generation:${payload.attemptId}:provider`
+    record.providerIdempotencyKey !== generationProviderIdempotencyKey(payload.attemptId)
   ) {
     return { valid: false, reason: "terminal_identity_mismatch" };
   }

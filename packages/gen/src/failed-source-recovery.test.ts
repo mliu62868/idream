@@ -1,5 +1,6 @@
 import {
   GEN_QUEUES,
+  generationProviderIdempotencyKey,
   idempotencyKeys,
   type GenerationTerminalRecord,
 } from "@idream/shared/contracts";
@@ -61,7 +62,7 @@ describe("failed generation source recovery", () => {
       attemptId: exact.attemptId,
       attemptNo: exact.attemptNo,
       transportAttemptNo: 1,
-      providerIdempotencyKey: `generation:${exact.attemptId}:provider`,
+      providerIdempotencyKey: generationProviderIdempotencyKey(exact.attemptId),
       requestId: exact.requestId,
       generationJobId: exact.generationJobId,
       mode: exact.kind,
