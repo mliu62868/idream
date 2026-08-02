@@ -1,13 +1,9 @@
 import { Prisma } from "@prisma/client";
 import {
-  generationProviderIdempotencyKey,
-  generationTerminalRecordRef,
-  generationTerminalRecordSchema,
   idempotencyKeys,
-  imageGeneratePayloadSchema,
   MAIN_QUEUES,
   MAIN_TO_CHAT_EVENTS,
-  videoGeneratePayloadSchema,
+  type GenerationTerminalRecord,
 } from "@idream/shared/contracts";
 import { bullMqJobIdForDedupeKey, jobQueue } from "@/server/jobs/queue";
 import type { QueueJob } from "@/server/jobs/queue";
@@ -48,6 +44,16 @@ import { removeGenerationAttemptQueueJob } from "./generation-attempt-queue";
 import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
 import { consumeGenerationTerminalRelay } from "./generation-terminal-relay";
 import { validateGenerationTerminalRelaySnapshot } from "./generation-terminal-relay-validation";
+import {
+  checkExactGenerationDispatchAuthority,
+  generationDispatchForAttempt,
+  generationTerminalRecordEvidence,
+  readAttemptTerminalRecord,
+  type ExactGenerationDispatchAuthority,
+  type GenerationDispatchJobAuthority,
+  type GenerationDispatchOutboxRow,
+  type PinnedGenerationAttempt,
+} from "./generation-dispatch-evidence-authority";
 
 export const localAiQueueNames = [
   MAIN_QUEUES.generationTerminalIngest,
@@ -429,7 +435,16 @@ async function probeRecoverableTerminalEvidence(
     prisma.generationAttempt.findFirst({
       where: { requestId: generationJobId },
       orderBy: { attemptNo: "desc" },
-      select: { id: true, attemptNo: true, provider: true },
+      select: {
+        id: true,
+        requestId: true,
+        attemptNo: true,
+        provider: true,
+        profileKey: true,
+        profileVersion: true,
+        workflowKey: true,
+        workflowVersion: true,
+      },
     }),
     prisma.mainOutboxEvent.findMany({
       where: {
@@ -437,7 +452,7 @@ async function probeRecoverableTerminalEvidence(
         eventType: { in: [...MAIN_OUTBOX_GENERATION_DISPATCH_EVENT_TYPES] },
       },
       orderBy: { createdAt: "desc" },
-      select: { payload: true },
+      select: { aggregateType: true, aggregateId: true, payload: true },
     }),
   ]);
   if (!job || !attempt) {
@@ -447,16 +462,12 @@ async function probeRecoverableTerminalEvidence(
       sourceDispatchRecoverable: false,
     };
   }
-  const dispatch = dispatchRows.find(
-    (row) => jsonRecord(row.payload).attemptId === attempt.id,
-  );
-  const queue = dispatch ? generationQueueFact(dispatch.payload) : null;
+  const dispatch = generationDispatchForAttempt(dispatchRows, attempt.id);
   try {
     const recovery = await hasRecoverableTerminalEvidence({
       job,
       attempt,
       dispatch,
-      queue,
     });
     return { attemptId: attempt.id, ...recovery };
   } catch {
@@ -468,98 +479,100 @@ async function probeRecoverableTerminalEvidence(
   }
 }
 
+// SPEC: recovery may only defer quarantine to evidence the exact immutable
+// dispatch envelope could have produced — the same judgement terminal ingest
+// applies. A row whose envelope is no longer exact can never be admitted, so
+// deferring on it would strand the Request instead of reconciling it.
 async function hasRecoverableTerminalEvidence(input: {
-  readonly job: { id: string; mode: string };
-  readonly attempt: {
-    id: string;
-    attemptNo: number;
-    provider: string | null;
-  };
-  readonly dispatch: { payload: Prisma.JsonValue } | undefined;
-  readonly queue: GenerationQueueFact | null;
+  readonly job: GenerationDispatchJobAuthority;
+  readonly attempt: PinnedGenerationAttempt;
+  readonly dispatch: GenerationDispatchOutboxRow | undefined;
 }) {
+  const resolved = input.dispatch
+    ? checkExactGenerationDispatchAuthority({
+        job: input.job,
+        attempt: input.attempt,
+        dispatch: input.dispatch,
+      })
+    : null;
+  if (!input.dispatch || !resolved?.ok) {
+    return { defer: false, sourceDispatchRecoverable: false };
+  }
+  const { authority } = resolved;
+  const envelope = {
+    job: input.job,
+    attempt: input.attempt,
+    dispatch: input.dispatch,
+    authority,
+  };
+
   let sourceDispatchRecoverable = false;
   // Source first, relay last: if recovery changes failed -> waiting ->
   // completed while this probe runs, the final relay read observes the durable
   // admission that allowed source completion.
-  if (input.queue && input.dispatch) {
-    const source = await jobQueue.getByDedupeKey(
-      input.queue.queue,
-      input.queue.dedupeKey,
-    );
-    if (source && RECOVERABLE_QUEUE_STATES.has(source.state)) {
-      const queueInput = jsonRecord(jsonRecord(input.dispatch.payload).queueInput);
-      const parsed = input.job.mode === "video"
-        ? videoGeneratePayloadSchema.safeParse(source.payload)
-        : imageGeneratePayloadSchema.safeParse(source.payload);
-      if (
-        parsed.success &&
-        parsed.data.generationJobId === input.job.id &&
-        parsed.data.attemptId === input.attempt.id &&
-        parsed.data.attemptNo === input.attempt.attemptNo &&
-        parsed.data.provider === input.attempt.provider &&
-        source.id === bullMqJobIdForDedupeKey(input.queue.dedupeKey) &&
-        source.dedupeKey === input.queue.dedupeKey &&
-        canonicalSha256(queueInput.payload) === canonicalSha256(source.payload)
-      ) {
-        if (source.state !== "failed") {
-          sourceDispatchRecoverable = true;
-        } else if (await hasExactBlobTerminal(input, parsed.data)) {
-          return { defer: true, sourceDispatchRecoverable: false };
-        }
-      }
+  const source = await jobQueue.getByDedupeKey(
+    authority.queue,
+    authority.dedupeKey,
+  );
+  if (
+    source &&
+    RECOVERABLE_QUEUE_STATES.has(source.state) &&
+    source.id === bullMqJobIdForDedupeKey(authority.dedupeKey) &&
+    source.dedupeKey === authority.dedupeKey &&
+    canonicalSha256(authority.queueInput.payload) ===
+      canonicalSha256(source.payload)
+  ) {
+    if (source.state !== "failed") {
+      sourceDispatchRecoverable = true;
+    } else if (await hasExactBlobTerminal(envelope)) {
+      return { defer: true, sourceDispatchRecoverable: false };
     }
   }
 
-  const relayKey = idempotencyKeys.generationTerminalRelay(input.attempt.id);
   const relay = await jobQueue.getByDedupeKey(
     MAIN_QUEUES.generationTerminalIngest,
-    relayKey,
+    idempotencyKeys.generationTerminalRelay(input.attempt.id),
   );
   if (!relay || !RECOVERABLE_QUEUE_STATES.has(relay.state)) {
     return { defer: false, sourceDispatchRecoverable };
   }
   const validation = validateGenerationTerminalRelaySnapshot(relay);
-  const exactRelay = validation.valid &&
-    validation.payload.terminalRecord.generationJobId === input.job.id &&
-    validation.payload.terminalRecord.attemptNo === input.attempt.attemptNo &&
-    validation.payload.terminalRecord.provider === input.attempt.provider;
   return {
-    defer: exactRelay,
+    defer: validation.valid &&
+      exactAttemptTerminalEvidence(envelope, validation.payload.terminalRecord),
     sourceDispatchRecoverable,
   };
 }
 
-async function hasExactBlobTerminal(
-  input: Parameters<typeof hasRecoverableTerminalEvidence>[0],
-  payload: { requestId: string; model: string },
-) {
-  const blob = providers.blob;
-  if (!blob.getPrivate) throw new Error("blob terminal read unavailable");
-  const loaded = await blob.getPrivate({
-    key: generationTerminalRecordRef(input.attempt.id),
-  });
-  if (!loaded.ok) {
-    if (loaded.error.code === "not_found") return false;
-    throw new Error(loaded.error.message);
-  }
-  let decoded: unknown;
-  try {
-    decoded = JSON.parse(new TextDecoder().decode(loaded.data.body));
-  } catch {
+type ExactGenerationDispatchEnvelope = {
+  readonly job: GenerationDispatchJobAuthority;
+  readonly attempt: PinnedGenerationAttempt;
+  readonly dispatch: GenerationDispatchOutboxRow;
+  readonly authority: ExactGenerationDispatchAuthority;
+};
+
+// INTENT: an unreachable Blob store is not "no evidence" — it throws so the
+// caller defers this stale row to the next bounded scan.
+async function hasExactBlobTerminal(envelope: ExactGenerationDispatchEnvelope) {
+  const read = await readAttemptTerminalRecord(envelope.attempt.id);
+  if (!read.ok) {
+    if (read.code === "unavailable") throw new Error(read.message);
     return false;
   }
-  const terminal = generationTerminalRecordSchema.safeParse(decoded);
-  return terminal.success &&
-    terminal.data.attemptId === input.attempt.id &&
-    terminal.data.attemptNo === input.attempt.attemptNo &&
-    terminal.data.generationJobId === input.job.id &&
-    terminal.data.requestId === payload.requestId &&
-    terminal.data.provider === input.attempt.provider &&
-    terminal.data.mode === input.job.mode &&
-    terminal.data.model === payload.model &&
-    terminal.data.providerIdempotencyKey ===
-      generationProviderIdempotencyKey(input.attempt.id);
+  return exactAttemptTerminalEvidence(envelope, read.record);
+}
+
+function exactAttemptTerminalEvidence(
+  envelope: ExactGenerationDispatchEnvelope,
+  record: GenerationTerminalRecord,
+) {
+  return record.mode === envelope.authority.mode &&
+    checkExactGenerationDispatchAuthority({
+      job: envelope.job,
+      attempt: envelope.attempt,
+      dispatch: envelope.dispatch,
+      evidence: generationTerminalRecordEvidence(record),
+    }).ok;
 }
 
 async function recoverStaleGenerationDispatch(

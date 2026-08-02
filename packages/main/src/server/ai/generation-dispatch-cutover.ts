@@ -8,17 +8,12 @@ import type {
 import {
   aiFinalizePayloadSchema,
   generationDispatchRequestId,
-  generationProviderIdempotencyKey,
   generationTerminalFinalizeDedupeKey,
   generationTerminalRecordChecksum,
   generationTerminalRecordIngestSchema,
-  generationTerminalRecordRef,
-  generationTerminalRecordSchema,
   GEN_QUEUES,
   idempotencyKeys,
-  imageGeneratePayloadSchema,
   MAIN_QUEUES,
-  videoGeneratePayloadSchema,
 } from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
 import { MAIN_OUTBOX_GENERATION_DISPATCH_EVENT_TYPES } from "@/server/events/main-outbox-transport";
@@ -29,10 +24,16 @@ import {
   type QueueJobSnapshot,
 } from "@/server/jobs/queue";
 import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
+import {
+  checkExactGenerationDispatchAuthority,
+  generationDispatchForAttempt,
+  generationTerminalRecordEvidence,
+  readAttemptTerminalRecord,
+  type ExactGenerationDispatchAuthority,
+} from "./generation-dispatch-evidence-authority";
 import { validateGenerationTerminalRelaySnapshot } from "./generation-terminal-relay-validation";
 import { validateGenerationFinalizeRelaySnapshot } from "./generation-finalize-relay-validation";
 import { dispatchPendingGenerationTerminalRecords } from "./generation-terminal-record-ingest";
-import { providers } from "@/server/providers";
 
 const ACTIVE_GENERATION_STATUSES = [
   "queued",
@@ -50,6 +51,12 @@ const NON_TERMINAL_BULL_STATES = new Set([
   "waiting-children",
 ]);
 const NON_TERMINAL_ATTEMPT_STATUSES = new Set(["queued", "running"]);
+const TERMINAL_FINALIZE_KINDS: readonly string[] = [
+  "generation.completed",
+  "generation.failed",
+  "generation.unknown",
+  "generation.blocked",
+];
 
 export const GENERATION_CUTOVER_QUEUES = [
   GEN_QUEUES.imageGenerate,
@@ -104,6 +111,13 @@ type GenerationQueueDrainOptions = {
 };
 
 type GenerationJobAuthority = Pick<GenerationJob, "id" | "mode" | "status">;
+
+type ExactGenerationBullRow = {
+  readonly job: GenerationJobAuthority;
+  readonly attempt: GenerationAttempt;
+  readonly dispatch: MainOutboxEvent;
+  readonly authority: ExactGenerationDispatchAuthority;
+};
 
 // SPEC: deployments that make Attempt identity mandatory must prove every
 // in-flight Request and every real Bull row already use the exact immutable
@@ -282,7 +296,7 @@ export async function assessGenerationDispatchCutoverReadiness(
       });
       continue;
     }
-    const dispatch = dispatchForAttempt(dispatchOutboxes, attempt.id);
+    const dispatch = generationDispatchForAttempt(dispatchOutboxes, attempt.id);
     if (!dispatch) {
       issues.push({
         generationJobId: job.id,
@@ -291,7 +305,7 @@ export async function assessGenerationDispatchCutoverReadiness(
       });
       continue;
     }
-    if (!validDispatchEnvelope(job, attempt, dispatch)) {
+    if (!checkExactGenerationDispatchAuthority({ job, attempt, dispatch }).ok) {
       issues.push({
         generationJobId: job.id,
         attemptId: attempt.id,
@@ -349,7 +363,7 @@ export async function assessGenerationDispatchCutoverReadiness(
         finalizeRow &&
         ((!NON_TERMINAL_BULL_STATES.has(finalizeRow.state) &&
             finalizeRow.state !== "completed") ||
-          !validInFlightBullRow({
+          !exactInFlightBullRow({
             row: finalizeRow,
             jobsById,
             attemptsById,
@@ -383,7 +397,7 @@ export async function assessGenerationDispatchCutoverReadiness(
     if (
       !finalizeRow ||
       !NON_TERMINAL_BULL_STATES.has(finalizeRow.state) ||
-      !validInFlightBullRow({
+      !exactInFlightBullRow({
         row: finalizeRow,
         jobsById,
         attemptsById,
@@ -425,7 +439,7 @@ export async function assessGenerationDispatchCutoverReadiness(
 
   for (const row of inFlightBullRows) {
     if (
-      !validInFlightBullRow({
+      !exactInFlightBullRow({
         row,
         jobsById,
         attemptsById,
@@ -448,7 +462,7 @@ export async function assessGenerationDispatchCutoverReadiness(
 
   for (const row of failedRecoveryRows) {
     const identity = generationBullRowIdentity(row);
-    const exact = validInFlightBullRow({
+    const exact = exactInFlightBullRow({
       row,
       jobsById,
       attemptsById,
@@ -494,27 +508,11 @@ export async function assessGenerationDispatchCutoverReadiness(
       });
       continue;
     }
-    const failedAttempt = identity.attemptId
-      ? attemptsById.get(identity.attemptId)
-      : null;
-    const sourceAuthorityExact = validInFlightBullRow({
-      row,
-      jobsById,
-      attemptsById,
-      latestAttemptByJob,
-      dispatchOutboxes,
-      terminalOutboxes,
-      requireLatest: false,
-    });
-    if (
-      sourceAuthorityExact &&
-      failedAttempt &&
-      !NON_TERMINAL_ATTEMPT_STATUSES.has(failedAttempt.status)
-    ) {
+    if (exact && !NON_TERMINAL_ATTEMPT_STATUSES.has(exact.attempt.status)) {
       ignoredFailedSourceHistory.add(`${row.queue}:${row.id}`);
       continue;
     }
-    if (exact && await hasExactSourceBlobTerminal(row)) {
+    if (exact && await hasExactAttemptTerminalRecord(exact)) {
       recoverableFailedRows.add(`${row.queue}:${row.id}`);
       continue;
     }
@@ -714,7 +712,7 @@ async function classifyDrainFailedRows(
   const blocking: QueueJobSnapshot[] = [];
   for (const row of rows) {
     if (row.queue === MAIN_QUEUES.generationTerminalIngest) {
-      const exact = validInFlightBullRow({
+      const exact = exactInFlightBullRow({
         row,
         jobsById,
         attemptsById,
@@ -738,11 +736,7 @@ async function classifyDrainFailedRows(
       blocking.push(row);
       continue;
     }
-    const identity = generationBullRowIdentity(row);
-    const attempt = identity.attemptId
-      ? attemptsById.get(identity.attemptId)
-      : null;
-    const exact = validInFlightBullRow({
+    const exact = exactInFlightBullRow({
       row,
       jobsById,
       attemptsById,
@@ -751,47 +745,13 @@ async function classifyDrainFailedRows(
       terminalOutboxes: [],
       requireLatest: false,
     });
-    if (
-      exact &&
-      attempt &&
-      !NON_TERMINAL_ATTEMPT_STATUSES.has(attempt.status)
-    ) ignoredHistory.push(row);
-    else if (exact && await hasExactSourceBlobTerminal(row)) {
+    if (exact && !NON_TERMINAL_ATTEMPT_STATUSES.has(exact.attempt.status)) {
+      ignoredHistory.push(row);
+    } else if (exact && await hasExactAttemptTerminalRecord(exact)) {
       recoverableCarriers.push(row);
     } else blocking.push(row);
   }
   return { blocking, ignoredHistory, recoverableCarriers };
-}
-
-async function hasExactSourceBlobTerminal(row: QueueJobSnapshot) {
-  const parsed = row.queue === GEN_QUEUES.videoGenerate
-    ? videoGeneratePayloadSchema.safeParse(row.payload)
-    : row.queue === GEN_QUEUES.imageGenerate
-      ? imageGeneratePayloadSchema.safeParse(row.payload)
-      : null;
-  if (!parsed?.success || !providers.blob.getPrivate) return false;
-  const payload = parsed.data;
-  try {
-    const loaded = await providers.blob.getPrivate({
-      key: generationTerminalRecordRef(payload.attemptId),
-    });
-    if (!loaded.ok) return false;
-    const terminal = generationTerminalRecordSchema.safeParse(
-      JSON.parse(new TextDecoder().decode(loaded.data.body)),
-    );
-    return terminal.success &&
-      terminal.data.attemptId === payload.attemptId &&
-      terminal.data.attemptNo === payload.attemptNo &&
-      terminal.data.generationJobId === payload.generationJobId &&
-      terminal.data.requestId === payload.requestId &&
-      terminal.data.mode === payload.kind &&
-      terminal.data.provider === payload.provider &&
-      terminal.data.model === payload.model &&
-      terminal.data.providerIdempotencyKey ===
-        generationProviderIdempotencyKey(payload.attemptId);
-  } catch {
-    return false;
-  }
 }
 
 async function inspectAllFailedRecoveryRows(
@@ -814,7 +774,11 @@ async function inspectAllFailedRecoveryRows(
   return rows;
 }
 
-function validInFlightBullRow(input: {
+// SPEC: a Bull row is exact only when Redis and PostgreSQL agree on the same
+// immutable Attempt envelope. The envelope judgement itself is delegated; what
+// stays here is the cross-storage reconciliation that neither type nor schema
+// can express — which Bull row carries which Outbox row.
+function exactInFlightBullRow(input: {
   readonly row: QueueJobSnapshot;
   readonly jobsById: ReadonlyMap<string, GenerationJobAuthority>;
   readonly attemptsById: ReadonlyMap<string, GenerationAttempt>;
@@ -822,13 +786,13 @@ function validInFlightBullRow(input: {
   readonly dispatchOutboxes: readonly MainOutboxEvent[];
   readonly terminalOutboxes: readonly MainOutboxEvent[];
   readonly requireLatest?: boolean;
-}) {
+}): ExactGenerationBullRow | null {
   const identity = generationBullRowIdentity(input.row);
   if (
-    !identity?.generationJobId ||
+    !identity.generationJobId ||
     !identity.attemptId ||
     identity.attemptNo === null
-  ) return false;
+  ) return null;
   const { generationJobId, attemptId, attemptNo } = identity;
   const job = input.jobsById.get(generationJobId);
   const attempt = input.attemptsById.get(attemptId);
@@ -840,74 +804,105 @@ function validInFlightBullRow(input: {
     ((input.requireLatest ?? true) &&
       input.latestAttemptByJob.get(generationJobId)?.id !== attempt.id)
   ) {
-    return false;
+    return null;
   }
-  const dispatch = dispatchForAttempt(input.dispatchOutboxes, attempt.id);
-  if (!dispatch || !validDispatchEnvelope(job, attempt, dispatch)) return false;
+  const dispatch = generationDispatchForAttempt(
+    input.dispatchOutboxes,
+    attempt.id,
+  );
+  if (!dispatch) return null;
+  const resolved = checkExactGenerationDispatchAuthority({
+    job,
+    attempt,
+    dispatch,
+  });
+  if (!resolved.ok) return null;
+  const exact: ExactGenerationBullRow = {
+    job,
+    attempt,
+    dispatch,
+    authority: resolved.authority,
+  };
 
   if (input.row.queue === MAIN_QUEUES.generationTerminalIngest) {
     const parsed = generationTerminalRecordIngestSchema.safeParse(
       input.row.payload,
     );
-    if (!parsed.success) return false;
+    if (!parsed.success) return null;
     const relay = parsed.data;
-    return (
+    const carriesExactEvidence =
       generationTerminalRecordChecksum(relay.terminalRecord) ===
         relay.terminalRecordChecksum &&
-      relay.terminalRecord.mode === job.mode &&
-      relay.terminalRecord.provider === attempt.provider &&
-      relay.terminalRecord.requestId === generationDispatchRequestId(attempt.id) &&
+      relay.terminalRecord.mode === resolved.authority.mode &&
+      checkExactGenerationDispatchAuthority({
+        job,
+        attempt,
+        dispatch,
+        evidence: generationTerminalRecordEvidence(relay.terminalRecord),
+      }).ok &&
       validBullDedupe(
         input.row,
         idempotencyKeys.generationTerminalRelay(attempt.id),
-      )
-    );
+      );
+    return carriesExactEvidence ? exact : null;
   }
 
-  const payload = jsonRecord(input.row.payload);
   if (input.row.queue === MAIN_QUEUES.aiFinalize) {
+    const payload = jsonRecord(input.row.payload);
     const parsed = aiFinalizePayloadSchema.safeParse(input.row.payload);
     if (
       !parsed.success ||
-      !["generation.completed", "generation.failed", "generation.unknown", "generation.blocked"]
-        .includes(parsed.data.kind) ||
+      !TERMINAL_FINALIZE_KINDS.includes(parsed.data.kind) ||
       payload.requestId !== generationDispatchRequestId(attempt.id) ||
-      payload.mode !== job.mode
+      payload.mode !== resolved.authority.mode
     ) {
-      return false;
+      return null;
     }
-    const dedupeKey = generationTerminalFinalizeDedupeKey(attempt.id);
     const terminalOutbox = input.terminalOutboxes.find(
       (row) =>
         row.aggregateId === attempt.id &&
         canonicalSha256(row.payload) === canonicalSha256(input.row.payload),
     );
-    return Boolean(
+    const carriedByOutbox = Boolean(
       terminalOutbox &&
-      validTerminalOutbox({
-        outbox: terminalOutbox,
-        jobsById: input.jobsById,
-        attemptsById: input.attemptsById,
-        latestAttemptByJob: input.latestAttemptByJob,
-        dispatchOutboxes: input.dispatchOutboxes,
-        requireLatest: input.requireLatest,
-      }) &&
-      validBullDedupe(input.row, dedupeKey),
+        validTerminalOutbox({
+          outbox: terminalOutbox,
+          jobsById: input.jobsById,
+          attemptsById: input.attemptsById,
+          latestAttemptByJob: input.latestAttemptByJob,
+          dispatchOutboxes: input.dispatchOutboxes,
+          requireLatest: input.requireLatest,
+        }) &&
+        validBullDedupe(
+          input.row,
+          generationTerminalFinalizeDedupeKey(attempt.id),
+        ),
     );
+    return carriedByOutbox ? exact : null;
   }
 
-  const expectedQueue = job.mode === "video"
-    ? "ai.video.generate"
-    : "ai.image.generate";
-  if (input.row.queue !== expectedQueue) return false;
-  const dispatchPayload = jsonRecord(dispatch.payload);
-  const queueInput = jsonRecord(dispatchPayload.queueInput);
-  const dedupeKey = idempotencyKeys.generationAttempt(job.id, attempt.attemptNo);
+  const carriesExactEnvelope =
+    input.row.queue === resolved.authority.queue &&
+    canonicalSha256(resolved.authority.queueInput.payload) ===
+      canonicalSha256(input.row.payload) &&
+    validBullDedupe(input.row, resolved.authority.dedupeKey);
+  return carriesExactEnvelope ? exact : null;
+}
+
+// SPEC: recovery may only defer to a Blob terminal record that the exact
+// immutable envelope could have produced. An unreachable Blob store is treated
+// as "no evidence" here — the gate reports rather than acts on it.
+async function hasExactAttemptTerminalRecord(exact: ExactGenerationBullRow) {
+  const read = await readAttemptTerminalRecord(exact.attempt.id);
+  if (!read.ok) return false;
   return (
-    queueInput.queue === input.row.queue &&
-    queueInput.dedupeKey === dedupeKey &&
-    canonicalSha256(queueInput.payload) === canonicalSha256(input.row.payload) &&
-    validBullDedupe(input.row, dedupeKey)
+    read.record.mode === exact.authority.mode &&
+    checkExactGenerationDispatchAuthority({
+      job: exact.job,
+      attempt: exact.attempt,
+      dispatch: exact.dispatch,
+      evidence: generationTerminalRecordEvidence(read.record),
+    }).ok
   );
 }
 
@@ -976,6 +971,8 @@ function validUnknownFinalizationEvidence(input: {
   return terminalAttemptEvent && requestEvent;
 }
 
+// SPEC: a terminal Outbox row is exact only when the Attempt it names still
+// points at the same terminal record and its dispatch envelope is exact.
 function validTerminalOutbox(input: {
   readonly outbox: MainOutboxEvent;
   readonly jobsById: ReadonlyMap<string, GenerationJobAuthority>;
@@ -985,15 +982,7 @@ function validTerminalOutbox(input: {
   readonly requireLatest?: boolean;
 }) {
   const parsed = aiFinalizePayloadSchema.safeParse(input.outbox.payload);
-  if (
-    !parsed.success ||
-    ![
-      "generation.completed",
-      "generation.failed",
-      "generation.unknown",
-      "generation.blocked",
-    ].includes(parsed.data.kind)
-  ) {
+  if (!parsed.success || !TERMINAL_FINALIZE_KINDS.includes(parsed.data.kind)) {
     return false;
   }
   const payload = jsonRecord(parsed.data);
@@ -1018,84 +1007,19 @@ function validTerminalOutbox(input: {
   ) {
     return false;
   }
-  const dispatch = dispatchForAttempt(input.dispatchOutboxes, attempt.id);
-  return Boolean(dispatch && validDispatchEnvelope(job, attempt, dispatch));
-}
-
-function validDispatchEnvelope(
-  job: GenerationJobAuthority,
-  attempt: GenerationAttempt,
-  dispatch: MainOutboxEvent,
-) {
-  const dispatchPayload = jsonRecord(dispatch.payload);
-  const queueInput = jsonRecord(dispatchPayload.queueInput);
-  const queuePayload = queueInput.payload;
-  const parsed = job.mode === "video"
-    ? videoGeneratePayloadSchema.safeParse(queuePayload)
-    : imageGeneratePayloadSchema.safeParse(queuePayload);
-  if (!parsed.success) return false;
-  const controls = jsonRecord(parsed.data.controls);
-  const expectedQueue = job.mode === "video"
-    ? "ai.video.generate"
-    : "ai.image.generate";
-  const expectedDedupeKey =
-    idempotencyKeys.generationAttempt(job.id, attempt.attemptNo);
-  return (
-    dispatch.aggregateType === "generation_request" &&
-    dispatch.aggregateId === job.id &&
-    dispatchPayload.generationJobId === job.id &&
-    dispatchPayload.attemptId === attempt.id &&
-    dispatchPayload.attemptNo === attempt.attemptNo &&
-    queueInput.queue === expectedQueue &&
-    queueInput.dedupeKey === expectedDedupeKey &&
-    parsed.data.kind === (job.mode === "video" ? "video" : "image") &&
-    parsed.data.generationJobId === job.id &&
-    parsed.data.attemptId === attempt.id &&
-    parsed.data.attemptNo === attempt.attemptNo &&
-    parsed.data.requestId === generationDispatchRequestId(attempt.id) &&
-    parsed.data.provider === attempt.provider &&
-    pinMatches(
-      attempt.profileKey,
-      controls.generationProfileKey,
-    ) &&
-    pinMatches(
-      attempt.profileVersion,
-      controls.generationProfileVersion,
-    ) &&
-    workflowKeyMatches(attempt.workflowKey, parsed.data.model, controls) &&
-    pinMatches(attempt.workflowVersion, controls.workflowVersion)
+  const dispatch = generationDispatchForAttempt(
+    input.dispatchOutboxes,
+    attempt.id,
   );
-}
-
-function dispatchForAttempt(
-  outboxes: readonly MainOutboxEvent[],
-  attemptId: string,
-) {
-  return outboxes.find(
-    (row) => jsonRecord(row.payload).attemptId === attemptId,
+  return Boolean(
+    dispatch &&
+      checkExactGenerationDispatchAuthority({ job, attempt, dispatch }).ok,
   );
 }
 
 function validBullDedupe(row: QueueJobSnapshot, expected: string) {
   return row.dedupeKey === expected &&
     row.id === bullMqJobIdForDedupeKey(expected);
-}
-
-function pinMatches(
-  pin: string | number | null,
-  actual: unknown,
-) {
-  return pin === null || actual === pin;
-}
-
-function workflowKeyMatches(
-  workflowKey: string | null,
-  model: string,
-  controls: Readonly<Record<string, unknown>>,
-) {
-  return workflowKey === null ||
-    controls.workflowKey === workflowKey ||
-    model === workflowKey;
 }
 
 function positiveInteger(value: unknown) {
