@@ -21,6 +21,7 @@ import {
   projectChatFileMutations,
   recordChatFileMutation,
   runWithProjectedChatFiles,
+  withTurnAuthority,
 } from "./file-mutations.js";
 import { loadSessionLinkage } from "./relationship-authority.js";
 import { resolvePolicy, snapshotFromView } from "./policy.js";
@@ -1137,28 +1138,30 @@ export async function setNoMemory(
   override?: Partial<ChatContext>,
 ) {
   const { prisma, projectorPrisma } = ctx(override);
-  return runWithProjectedChatFiles(
-    input.userId,
-    () => prisma.$transaction(async (tx) => {
-    // The same lock as sendMessage gives preference toggles and turn creation a
-    // total order. The assistant row then permanently records which side won.
-    await lockTurn(tx, input.userId, input.sessionId);
-    await assertNoPendingChatFileMutationsTx(tx, input.userId);
-    await assertActiveUserAuthority(tx, input.userId);
-    const session = await tx.chatSession.findUnique({ where: { id: input.sessionId } });
-    if (!session || session.userId !== input.userId) {
-      throw new ChatError("session_not_found", "session not found", 404);
-    }
-    return tx.chatSession.update({
-      where: { id: session.id },
-      data: {
-        memoryEnabled: input.memoryEnabled,
-        ...(!input.memoryEnabled ? { memorySummary: null } : {}),
-        contextRevision: { increment: 1 },
-      },
-    });
-    }),
-    projectorPrisma,
+  // The same lock as sendMessage gives preference toggles and turn creation a
+  // total order. The assistant row then permanently records which side won.
+  return withTurnAuthority(
+    {
+      userId: input.userId,
+      sessionId: input.sessionId,
+      prisma,
+      projectorPrisma,
+    },
+    async (tx) => {
+      await assertActiveUserAuthority(tx, input.userId);
+      const session = await tx.chatSession.findUnique({ where: { id: input.sessionId } });
+      if (!session || session.userId !== input.userId) {
+        throw new ChatError("session_not_found", "session not found", 404);
+      }
+      return tx.chatSession.update({
+        where: { id: session.id },
+        data: {
+          memoryEnabled: input.memoryEnabled,
+          ...(!input.memoryEnabled ? { memorySummary: null } : {}),
+          contextRevision: { increment: 1 },
+        },
+      });
+    },
   );
 }
 
