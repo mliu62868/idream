@@ -1,6 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  CHARACTER_STYLE_FILTER_VALUES,
+  GENDER_FILTER_VALUES,
+} from "@/lib/character-taxonomy";
 import { categoryFilters } from "@/lib/ourdream-data";
 import {
   parseCharacterListResponse,
@@ -254,11 +258,11 @@ function parseExploreSearchParams(search: string) {
   return {
     activeCategory: categoryFromParam(params.get("tags")),
     age: ageFromParams(params),
-    gender: enumParam(params.get("gender"), ["female", "male", "trans", "any"], "female"),
+    gender: enumParam(params.get("gender"), GENDER_FILTER_VALUES, "female"),
     limit: clampLimit(params.get("limit")),
     query: params.get("q") ?? "",
     sort: enumParam(params.get("sort"), ["for-you", "popular", "newest", "following"], "for-you"),
-    style: enumParam(params.get("style"), ["any", "realistic", "anime", "hybrid"], "any"),
+    style: enumParam(params.get("style"), CHARACTER_STYLE_FILTER_VALUES, "any"),
   };
 }
 

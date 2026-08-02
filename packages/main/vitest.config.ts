@@ -62,6 +62,10 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": new URL("./src", import.meta.url).pathname,
+      "@idream/shared/catalog": new URL(
+        "../shared/src/catalog/index.ts",
+        import.meta.url,
+      ).pathname,
       "@idream/shared/contracts": new URL(
         "../shared/src/contracts/index.ts",
         import.meta.url,

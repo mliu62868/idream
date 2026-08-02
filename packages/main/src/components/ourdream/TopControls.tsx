@@ -4,6 +4,10 @@ import Image from "next/image";
 import Link from "next/link";
 import { Check, ChevronDown, Search } from "lucide-react";
 import { useState } from "react";
+import {
+  characterStyleFilterOptions,
+  genderFilterOptions,
+} from "@/lib/character-taxonomy";
 import { categoryFilters } from "@/lib/ourdream-data";
 import { cn } from "@/lib/utils";
 import { AuthNav } from "./AuthNav";
@@ -14,20 +18,6 @@ const sortOptions = [
   { value: "popular", label: "Popular · Month" },
   { value: "newest", label: "Newest" },
   { value: "following", label: "Following" },
-] as const;
-
-const genderOptions = [
-  { value: "female", label: "Female" },
-  { value: "male", label: "Male" },
-  { value: "trans", label: "Trans" },
-  { value: "any", label: "Any Gender" },
-] as const;
-
-const styleOptions = [
-  { value: "any", label: "Any Style" },
-  { value: "realistic", label: "Realistic" },
-  { value: "anime", label: "Anime" },
-  { value: "hybrid", label: "Hybrid" },
 ] as const;
 
 const ageOptions = [
@@ -215,14 +205,14 @@ export function TopControls({
               ariaLabel="Gender filter"
               name="gender"
               onChange={onGenderChange}
-              options={genderOptions}
+              options={genderFilterOptions}
               value={gender}
             />
             <SelectPill
               ariaLabel="Style filter"
               name="style"
               onChange={onStyleChange}
-              options={styleOptions}
+              options={characterStyleFilterOptions}
               value={style}
             />
             <SelectPill

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { PRODUCT_FEEDBACK_CATEGORIES } from "@idream/shared/catalog";
 
 const nonEmptyString = z.string().trim().min(1);
 const nonNegativeInteger = z.number().int().nonnegative();
@@ -531,7 +532,7 @@ export const feedbackItemSchema = z
     id: nonEmptyString,
     title: nonEmptyString,
     description: nonEmptyString,
-    category: z.enum(["bug", "feature", "improvement"]),
+    category: z.enum(PRODUCT_FEEDBACK_CATEGORIES),
     status: nonEmptyString,
     voteCount: nonNegativeInteger,
     userVoted: z.boolean(),

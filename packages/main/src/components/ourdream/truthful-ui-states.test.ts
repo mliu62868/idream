@@ -32,8 +32,9 @@ describe("truthful public UI states", () => {
     const createWorkspace = source("CreateWorkspace.tsx");
 
     expect(createWorkspace).not.toContain('name: "Nova Vale"');
-    expect(createWorkspace).toContain(`${"${STORAGE_KEY_PREFIX}"}:user:${"${userId}"}`);
-    expect(createWorkspace).toContain(`${"${STORAGE_KEY_PREFIX}"}:anonymous:${"${anonymousId}"}`);
+    expect(createWorkspace).toContain(`${"${STORAGE_KEY_PREFIX}"}:${"${viewerScope}"}`);
+    expect(createWorkspace).toContain(`user:${"${userId}"}`);
+    expect(createWorkspace).toContain(`anonymous:${"${anonymousId}"}`);
     expect(createWorkspace).toContain('setViewerAuthorityState("error")');
     expect(createWorkspace).toContain('data-testid="create-viewer-authority-error"');
   });
@@ -114,7 +115,7 @@ describe("truthful public UI states", () => {
   it("moves anonymous help-desk drafts into the signed-in owner scope once", () => {
     const helpDesk = source("HelpDeskWorkspace.tsx");
 
-    expect(helpDesk).toContain("sourceScope: record.sourceScope");
+    expect(helpDesk).toContain("sourceScope: claimed.sourceScope");
     expect(helpDesk).toContain("if (saveSupportDraft(viewerScope, restoredSupport))");
     expect(helpDesk).toContain("clearSupportDraft(resumed.sourceScope)");
     expect(helpDesk).toContain("clearFeedbackDraft(resumed.sourceScope)");

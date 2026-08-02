@@ -1,5 +1,14 @@
 import { GEN_QUEUES, MAIN_QUEUES } from "@idream/shared/contracts";
 
+// Enum members shared with the web client live in @idream/shared/catalog so the
+// browser cannot hand-copy a stale subset. Re-exported here so server call sites
+// keep importing a single module.
+export {
+  CHARACTER_STYLES,
+  GENDERS,
+  CHARACTER_VISIBILITY as VISIBILITY,
+} from "@idream/shared/catalog";
+
 export const DB_PROVIDER = "postgresql" as const;
 export const DEFAULT_POSTGRES_DATABASE_URL =
   "postgresql://postgres:postgres@localhost:5433/idream";
@@ -7,7 +16,6 @@ export const DEFAULT_POSTGRES_DATABASE_URL =
 export const ROLES = ["user", "moderator", "support", "ops", "analyst", "admin"] as const;
 export const USER_STATUSES = ["active", "suspended", "deleted"] as const;
 
-export const VISIBILITY = ["private", "unlisted", "public"] as const;
 export const CHARACTER_STATUSES = [
   "draft",
   "pending_review",
@@ -16,8 +24,6 @@ export const CHARACTER_STATUSES = [
   "removed",
   "archived",
 ] as const;
-export const CHARACTER_STYLES = ["realistic", "anime", "hybrid", "other"] as const;
-export const GENDERS = ["female", "male", "trans"] as const;
 
 export const JOB_STATUSES = ["queued", "running", "completed", "failed", "dead"] as const;
 // Wired BullMQ queues with a live producer AND consumer. Names that had only a

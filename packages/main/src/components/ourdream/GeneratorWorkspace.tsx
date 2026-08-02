@@ -20,6 +20,18 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "re
 import type { ReactNode } from "react";
 import type { CharacterCardData } from "@/types/ourdream";
 import {
+  GENERATION_JOB_STATUSES,
+  isCatalogMember,
+  isTerminalGenerationJobStatus,
+  type GenerationJobStatus,
+  type MediaAssetVisibility,
+} from "@idream/shared/catalog";
+import {
+  isBlankImagePreview,
+  isBuiltInMediaPlaceholderUrl,
+  isPrivateMediaUrl,
+} from "@/lib/image-delivery";
+import {
   parseCharacterDetailResponse,
   parseCharacterLooksResponse,
   parseGenerationConfigResponse,
@@ -44,6 +56,12 @@ import {
 import { useAgeGateAccess } from "./AgeGateBoundary";
 import { authHrefForTarget } from "./authRedirect";
 import { LegacyTestAssetBadge } from "./LegacyTestAssetBadge";
+import {
+  claimDraftTransfer,
+  draftTransferPath,
+  stashDraftTransfer,
+} from "./draft-transfer";
+import { isRecord } from "./workspace-helpers";
 import {
   GenerationRequestError,
   exactGenerationQuoteForCount,
@@ -124,7 +142,8 @@ type CharacterLookItem = {
 };
 
 type BulkAction = "delete" | "visibility";
-type BulkVisibility = "private" | "public_pack" | "unlisted";
+// Media assets, not characters: a shared asset is `public_pack`, never `public`.
+type BulkVisibility = MediaAssetVisibility;
 
 type GenerationJob = {
   id: string;
@@ -1599,7 +1618,7 @@ export function GeneratorWorkspace() {
   useEffect(() => {
     if (!ageGateAccepted) return;
     const pendingJobIds = jobs
-      .filter((job) => !isTerminal(job.status))
+      .filter((job) => !isTerminalGenerationJobStatus(job.status))
       .map((job) => job.id);
     if (pendingJobIds.length === 0) return;
     let cancelled = false;
@@ -2097,10 +2116,11 @@ export function GeneratorWorkspace() {
             savedAt: Date.now(),
           };
           savePresetDraft(viewerScope, draft);
-          const resumeNonce = createPresetDraftTransfer(viewerScope, draft);
-          const returnTarget = resumeNonce
-            ? `/generate?presetResume=${encodeURIComponent(resumeNonce)}`
-            : "/generate";
+          const returnTarget =
+            stashDraftTransfer("generatorPreset", {
+              payload: draft,
+              sourceScope: viewerScope,
+            }) ?? draftTransferPath("generatorPreset");
           window.location.assign(authHrefForTarget("/signup", returnTarget));
           return;
         }
@@ -3907,14 +3927,6 @@ export async function fetchCharacterById(id: string) {
   return parseCharacterDetailResponse(raw).character;
 }
 
-function isTerminal(status: string) {
-  return ["completed", "failed", "blocked", "refunded"].includes(status);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function presetControlString(controls: Record<string, unknown>, key: string): string {
   const value = controls[key];
   return typeof value === "string" ? value : "";
@@ -3944,10 +3956,7 @@ function currentPresetControls({
   return controls;
 }
 
-const generatorPresetTransferStorageKey =
-  "idream.generatePresetDraftTransfer.v1";
 const presetDraftTtlMs = 7 * 24 * 60 * 60 * 1_000;
-const presetTransferTtlMs = 20 * 60 * 1_000;
 
 function scopedPresetDraftStorageKey(viewerScope: string) {
   return `${generatorPresetDraftStorageKey}:${viewerScope}`;
@@ -4019,82 +4028,23 @@ function readPresetDraft(viewerScope: string): PresetDraft | null {
   }
 }
 
-function createPresetDraftTransfer(
-  sourceScope: string,
-  draft: PresetDraft,
-) {
-  if (
-    typeof window === "undefined" ||
-    !sourceScope.startsWith("anonymous:")
-  ) {
-    return null;
-  }
-  try {
-    const nonce = crypto.randomUUID();
-    window.sessionStorage.setItem(
-      generatorPresetTransferStorageKey,
-      JSON.stringify({
-        nonce,
-        sourceScope,
-        expiresAt: Date.now() + presetTransferTtlMs,
-        draft,
-      }),
-    );
-    return nonce;
-  } catch {
-    return null;
-  }
-}
-
 function consumePresetDraftTransfer(targetScope: string): PresetDraft | null {
-  try {
-    if (
-      typeof window === "undefined" ||
-      !targetScope.startsWith("user:")
-    ) {
-      return null;
-    }
-    const nonce = new URLSearchParams(window.location.search).get(
-      "presetResume",
-    );
-    if (!nonce) return null;
-    const raw = window.sessionStorage.getItem(
-      generatorPresetTransferStorageKey,
-    );
-    if (!raw) return null;
-    const transfer = JSON.parse(raw) as unknown;
-    if (
-      !isRecord(transfer) ||
-      transfer.nonce !== nonce ||
-      typeof transfer.sourceScope !== "string" ||
-      !transfer.sourceScope.startsWith("anonymous:") ||
-      typeof transfer.expiresAt !== "number" ||
-      transfer.expiresAt <= Date.now() ||
-      !isRecord(transfer.draft)
-    ) {
-      return null;
-    }
-    const draft = transfer.draft;
-    const restored: PresetDraft = {
-      backgroundPresetId: presetControlString(draft, "backgroundPresetId"),
-      label: presetControlString(draft, "label"),
-      modePresetId: presetControlString(draft, "modePresetId"),
-      outfitPresetId: presetControlString(draft, "outfitPresetId"),
-      posePresetId: presetControlString(draft, "posePresetId"),
-      prompt: presetControlString(draft, "prompt"),
-      savedAt: typeof draft.savedAt === "number" ? draft.savedAt : 0,
-    };
-    if (!restored.label) return null;
-    if (!savePresetDraft(targetScope, restored)) return null;
-    clearPresetDraft(transfer.sourceScope);
-    window.sessionStorage.removeItem(generatorPresetTransferStorageKey);
-    const url = new URL(window.location.href);
-    url.searchParams.delete("presetResume");
-    window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
-    return restored;
-  } catch {
-    return null;
-  }
+  const claimed = claimDraftTransfer("generatorPreset", { targetScope });
+  if (!claimed || !isRecord(claimed.payload)) return null;
+  const draft = claimed.payload;
+  const restored: PresetDraft = {
+    backgroundPresetId: presetControlString(draft, "backgroundPresetId"),
+    label: presetControlString(draft, "label"),
+    modePresetId: presetControlString(draft, "modePresetId"),
+    outfitPresetId: presetControlString(draft, "outfitPresetId"),
+    posePresetId: presetControlString(draft, "posePresetId"),
+    prompt: presetControlString(draft, "prompt"),
+    savedAt: typeof draft.savedAt === "number" ? draft.savedAt : 0,
+  };
+  if (!restored.label) return null;
+  if (!savePresetDraft(targetScope, restored)) return null;
+  clearPresetDraft(claimed.sourceScope);
+  return restored;
 }
 
 function openDownloadWindow() {
@@ -4115,54 +4065,10 @@ function upgradeHrefForTarget(target: string) {
   return `/upgrade?returnTo=${encodeURIComponent(target || "/generate")}`;
 }
 
-function isPrivateMediaUrl(url: string) {
-  return url.startsWith("/api/v1/media/") || url.startsWith("/user-content/");
-}
-
-function isBuiltInMediaPlaceholderUrl(url: string) {
-  const lower = url.toLowerCase();
-  return (
-    lower.includes("/images/ourdream/card-sarah-mercer.webp") ||
-    lower.includes("%2fimages%2fourdream%2fcard-sarah-mercer.webp")
-  );
-}
-
 function isUnusableImagePreview(item: MediaItem) {
   if (item.type !== "image") return false;
   if (item.width == null || item.height == null) return false;
   return item.width <= 1 || item.height <= 1;
-}
-
-function isBlankImagePreview(image: HTMLImageElement) {
-  const width = Math.min(16, image.naturalWidth);
-  const height = Math.min(16, image.naturalHeight);
-  if (width <= 0 || height <= 0) return false;
-
-  try {
-    const canvas = document.createElement("canvas");
-    canvas.width = width;
-    canvas.height = height;
-    const context = canvas.getContext("2d", { willReadFrequently: true });
-    if (!context) return false;
-
-    context.drawImage(image, 0, 0, width, height);
-    const data = context.getImageData(0, 0, width, height).data;
-    let min = 255;
-    let max = 0;
-    for (let index = 0; index < data.length; index += 4) {
-      const red = data[index] ?? 0;
-      const green = data[index + 1] ?? 0;
-      const blue = data[index + 2] ?? 0;
-      const luminance = Math.round(red * 0.2126 + green * 0.7152 + blue * 0.0722);
-      min = Math.min(min, luminance);
-      max = Math.max(max, luminance);
-    }
-
-    const range = max - min;
-    return range <= 1 || (range <= 4 && (min >= 250 || max <= 5));
-  } catch {
-    return false;
-  }
 }
 
 function consistencyModeLabel(mode: ConsistencyMode) {
@@ -4218,16 +4124,25 @@ function apiPayloadErrorMessage(payload: unknown) {
   return typeof error.message === "string" ? error.message : undefined;
 }
 
+// Exhaustive over the catalog: a new generation status becomes a compile error
+// here instead of leaking a raw snake_case value into the jobs list.
+const jobStatusLabels: Record<GenerationJobStatus, string> = {
+  queued: "Queued",
+  moderating_input: "Checking prompt",
+  running: "Generating",
+  moderating_output: "Checking output",
+  completed: "Completed",
+  failed: "Failed",
+  blocked: "Blocked",
+  refunded: "Refunded",
+};
+
 function jobStatusLabel(status: string, errorCode: string | null) {
-  if (status === "queued") return "Queued";
-  if (status === "moderating_input") return "Checking prompt";
-  if (status === "running") return "Generating";
-  if (status === "moderating_output") return "Checking output";
-  if (status === "completed") return "Completed";
-  if (status === "blocked") return `Blocked${errorCode ? `: ${errorCode}` : ""}`;
-  if (status === "failed") return `Failed${errorCode ? `: ${errorCode}` : ""}`;
-  if (status === "refunded") return "Refunded";
-  return status;
+  if (!isCatalogMember(GENERATION_JOB_STATUSES, status)) return status;
+  const label = jobStatusLabels[status];
+  return errorCode && (status === "blocked" || status === "failed")
+    ? `${label}: ${errorCode}`
+    : label;
 }
 
 function statusMessage(job: GenerationJob) {

@@ -17,8 +17,13 @@ import {
   type CommunityDreamer as Dreamer,
   type RankingExperiment,
 } from "@/lib/public-api-contracts";
+import {
+  characterStyleFilterOptions,
+  genderFilterOptions,
+} from "@/lib/character-taxonomy";
 import { shouldBypassNextImageOptimizer } from "@/lib/image-delivery";
 import { useAgeGateAccess } from "./AgeGateBoundary";
+import { countLabel } from "./workspace-helpers";
 import {
   authorityShowsEmpty,
   failedAuthorityStatus,
@@ -94,20 +99,6 @@ const releaseOptions = [
   { value: "30d", label: "Last 30 days" },
 ] as const;
 
-const genderOptions = [
-  { value: "any", label: "Any Gender" },
-  { value: "female", label: "Female" },
-  { value: "male", label: "Male" },
-  { value: "trans", label: "Trans" },
-] as const;
-
-const styleOptions = [
-  { value: "any", label: "Any Style" },
-  { value: "realistic", label: "Realistic" },
-  { value: "anime", label: "Anime" },
-  { value: "hybrid", label: "Hybrid" },
-] as const;
-
 type CommunityHero = {
   ctaLabel: string | null;
   eyebrow: string;
@@ -131,10 +122,6 @@ const editorialOverview: CommunityHero = {
 const COMMUNITY_INITIAL_DREAMERS = 3;
 const COMMUNITY_INITIAL_CHARACTERS = 8;
 const COMMUNITY_INITIAL_COLLECTIONS = 3;
-
-function countLabel(count: number, singular: string, plural = `${singular}s`) {
-  return `${count} ${count === 1 ? singular : plural}`;
-}
 
 export function CommunityWorkspace() {
   const { accepted: ageGateAccepted } = useAgeGateAccess();
@@ -647,7 +634,7 @@ export function CommunityWorkspace() {
               invalidateLeaderboardScope();
               setGender(value);
             }}
-            options={genderOptions}
+            options={genderFilterOptions}
             value={gender}
           />
           <SelectPill
@@ -657,7 +644,7 @@ export function CommunityWorkspace() {
               invalidateLeaderboardScope();
               setStyle(value);
             }}
-            options={styleOptions}
+            options={characterStyleFilterOptions}
             value={style}
           />
         </div>

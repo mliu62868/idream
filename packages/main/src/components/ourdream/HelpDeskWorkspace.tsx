@@ -32,9 +32,26 @@ import {
   parseViewerAuthorityResponse,
   type PublicFeedbackItem as FeedbackItem,
 } from "@/lib/public-api-contracts";
+import {
+  APPEAL_TARGET_TYPES,
+  PRODUCT_FEEDBACK_CATEGORIES,
+  PRODUCT_FEEDBACK_STATUSES,
+  SUPPORT_REQUEST_CATEGORIES,
+  isCatalogMember,
+  type AppealTargetType,
+  type ProductFeedbackCategory,
+  type ProductFeedbackStatus,
+  type SupportRequestCategory,
+} from "@idream/shared/catalog";
 import { useAgeGateAccess } from "./AgeGateBoundary";
 import { authHrefForTarget } from "./authRedirect";
+import {
+  claimDraftTransfer,
+  draftTransferPath,
+  stashDraftTransfer,
+} from "./draft-transfer";
 import { fetchViewerScope } from "./viewer-auth";
+import { isRecord } from "./workspace-helpers";
 
 type SupportPayload = {
   ok?: boolean;
@@ -62,17 +79,24 @@ type AppealPayload = {
   error?: { message?: string };
 };
 
-const categories = [
-  { value: "account", label: "Account" },
-  { value: "billing", label: "Billing" },
-  { value: "generation", label: "Generation" },
-  { value: "chat", label: "Chat" },
-  { value: "bug", label: "Bug" },
-  { value: "feature", label: "Feature" },
-  { value: "other", label: "Other" },
-] as const;
+// Values come from the catalog; only the English copy lives here. The Record type
+// makes a catalog addition a compile error instead of a silently missing option.
+type SupportCategory = SupportRequestCategory;
 
-type SupportCategory = (typeof categories)[number]["value"];
+const supportCategoryLabels: Record<SupportCategory, string> = {
+  account: "Account",
+  billing: "Billing",
+  generation: "Generation",
+  chat: "Chat",
+  bug: "Bug",
+  feature: "Feature",
+  other: "Other",
+};
+
+const categories = SUPPORT_REQUEST_CATEGORIES.map((value) => ({
+  label: supportCategoryLabels[value],
+  value,
+}));
 
 type SupportDraft = {
   category: SupportCategory;
@@ -89,26 +113,34 @@ const INITIAL_SUPPORT_DRAFT: SupportDraft = {
   diagnosticConsent: true,
 };
 
-const appealTargetTypes = [
-  { value: "character", label: "Character" },
-  { value: "media", label: "Media" },
-  { value: "feed_item", label: "Feed item" },
-  { value: "chat_message", label: "Chat message" },
-  { value: "user_profile", label: "User profile" },
-  { value: "moderation_decision", label: "Moderation decision" },
-  { value: "safety_issue", label: "Safety issue" },
-  { value: "copyright_likeness", label: "Copyright / likeness" },
-] as const;
+const appealTargetTypeLabels: Record<AppealTargetType, string> = {
+  character: "Character",
+  media: "Media",
+  feed_item: "Feed item",
+  chat_message: "Chat message",
+  user_profile: "User profile",
+  moderation_decision: "Moderation decision",
+  safety_issue: "Safety issue",
+  copyright_likeness: "Copyright / likeness",
+};
 
-type AppealTargetType = (typeof appealTargetTypes)[number]["value"];
+const appealTargetTypes = APPEAL_TARGET_TYPES.map((value) => ({
+  label: appealTargetTypeLabels[value],
+  value,
+}));
 
-const feedbackCategories = [
-  { value: "feature", label: "Feature" },
-  { value: "improvement", label: "Improvement" },
-  { value: "bug", label: "Bug" },
-] as const;
+type FeedbackCategory = ProductFeedbackCategory;
 
-type FeedbackCategory = (typeof feedbackCategories)[number]["value"];
+const feedbackCategoryLabels: Record<FeedbackCategory, string> = {
+  feature: "Feature",
+  improvement: "Improvement",
+  bug: "Bug",
+};
+
+const feedbackCategories = PRODUCT_FEEDBACK_CATEGORIES.map((value) => ({
+  label: feedbackCategoryLabels[value],
+  value,
+}));
 
 type FeedbackDraft = {
   category: FeedbackCategory;
@@ -1146,9 +1178,7 @@ function SupportLink({
   );
 }
 
-const HELP_DESK_RESUME_STORAGE_KEY = "ourdream.helpdesk.resume.v1";
 const HELP_DESK_DRAFT_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
-const HELP_DESK_RESUME_TTL_MS = 20 * 60 * 1_000;
 type HelpDeskResumeKind = "support" | "feedback" | "appeal" | "vote";
 
 function scopedHelpDeskStorageKey(base: string, viewerScope: string) {
@@ -1274,34 +1304,12 @@ function helpDeskAuthReturnTarget(
   kind: HelpDeskResumeKind,
   value: unknown,
 ) {
-  const nonce = createHelpDeskResume(sourceScope, kind, value);
-  return nonce
-    ? `/helpdesk?resume=${encodeURIComponent(nonce)}`
-    : "/helpdesk";
-}
-
-function createHelpDeskResume(
-  sourceScope: string,
-  kind: HelpDeskResumeKind,
-  value: unknown,
-) {
-  if (!sourceScope.startsWith("anonymous:")) return null;
-  try {
-    const nonce = crypto.randomUUID();
-    window.sessionStorage.setItem(
-      HELP_DESK_RESUME_STORAGE_KEY,
-      JSON.stringify({
-        nonce,
-        sourceScope,
-        kind,
-        value,
-        expiresAt: Date.now() + HELP_DESK_RESUME_TTL_MS,
-      }),
-    );
-    return nonce;
-  } catch {
-    return null;
-  }
+  return (
+    stashDraftTransfer("helpdesk", {
+      payload: { kind, value },
+      sourceScope,
+    }) ?? draftTransferPath("helpdesk")
+  );
 }
 
 function consumeHelpDeskResume(targetScope: string): {
@@ -1309,41 +1317,11 @@ function consumeHelpDeskResume(targetScope: string): {
   sourceScope: string;
   value: unknown;
 } | null {
-  if (!targetScope.startsWith("user:")) return null;
-  try {
-    const nonce = new URLSearchParams(window.location.search).get("resume");
-    if (!nonce) return null;
-    const raw = window.sessionStorage.getItem(HELP_DESK_RESUME_STORAGE_KEY);
-    if (!raw) return null;
-    const value = JSON.parse(raw) as unknown;
-    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-    const record = value as Record<string, unknown>;
-    if (
-      record.nonce !== nonce ||
-      typeof record.sourceScope !== "string" ||
-      !record.sourceScope.startsWith("anonymous:") ||
-      typeof record.expiresAt !== "number" ||
-      record.expiresAt <= Date.now() ||
-      !isHelpDeskResumeKind(record.kind)
-    ) {
-      return null;
-    }
-    window.sessionStorage.removeItem(HELP_DESK_RESUME_STORAGE_KEY);
-    const url = new URL(window.location.href);
-    url.searchParams.delete("resume");
-    window.history.replaceState(
-      null,
-      "",
-      `${url.pathname}${url.search}${url.hash}`,
-    );
-    return {
-      kind: record.kind,
-      sourceScope: record.sourceScope,
-      value: record.value,
-    };
-  } catch {
-    return null;
-  }
+  const claimed = claimDraftTransfer("helpdesk", { targetScope });
+  if (!claimed || !isRecord(claimed.payload)) return null;
+  const { kind, value } = claimed.payload;
+  if (!isHelpDeskResumeKind(kind)) return null;
+  return { kind, sourceScope: claimed.sourceScope, value };
 }
 
 function isHelpDeskResumeKind(value: unknown): value is HelpDeskResumeKind {
@@ -1474,15 +1452,15 @@ function searchParamValue(params: URLSearchParams, key: string, maxLength: numbe
 }
 
 function isSupportCategory(value: unknown): value is SupportCategory {
-  return typeof value === "string" && categories.some((item) => item.value === value);
+  return isCatalogMember(SUPPORT_REQUEST_CATEGORIES, value);
 }
 
 function isFeedbackCategory(value: unknown): value is FeedbackCategory {
-  return typeof value === "string" && feedbackCategories.some((item) => item.value === value);
+  return isCatalogMember(PRODUCT_FEEDBACK_CATEGORIES, value);
 }
 
 function isAppealTargetType(value: unknown): value is AppealTargetType {
-  return typeof value === "string" && appealTargetTypes.some((item) => item.value === value);
+  return isCatalogMember(APPEAL_TARGET_TYPES, value);
 }
 
 function helpdeskErrorMessage(status: number, fallback?: string) {
@@ -1525,8 +1503,16 @@ function sortFeedbackItems(items: FeedbackItem[]) {
   return [...items].sort((a, b) => b.voteCount - a.voteCount || a.title.localeCompare(b.title));
 }
 
+const feedbackStatusLabels: Record<ProductFeedbackStatus, string> = {
+  under_review: "under review",
+  planned: "planned",
+  shipped: "shipped",
+};
+
+// `under_review` is the server default and is now matched explicitly; unknown
+// values still fall back to it rather than showing a raw enum member.
 function feedbackStatusLabel(status: string) {
-  if (status === "planned") return "planned";
-  if (status === "shipped") return "shipped";
-  return "under review";
+  return isCatalogMember(PRODUCT_FEEDBACK_STATUSES, status)
+    ? feedbackStatusLabels[status]
+    : feedbackStatusLabels.under_review;
 }
