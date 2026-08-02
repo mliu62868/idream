@@ -1544,7 +1544,7 @@ describe("generation terminal record durable ingest", () => {
       await ensureDispatchAuthority(lateTerminalRecord);
       const input = { terminalRecordRef: `gen/terminal-records/${cancelledAttemptId}/terminal.json`, terminalRecordChecksum: generationTerminalRecordChecksum(lateTerminalRecord), terminalRecord: lateTerminalRecord };
       await expect(ingestGenerationTerminalRecord(input)).resolves.toMatchObject({ acknowledged: true, status: "persisted" });
-      await expect(prisma.generationArtifact.findMany({ where: { attemptId: cancelledAttemptId } })).resolves.toEqual([expect.objectContaining({ validationState: "late_after_cancel", archiveState: "archived", assetId: null })]);
+      await expect(prisma.generationArtifact.findMany({ where: { attemptId: cancelledAttemptId } })).resolves.toEqual([expect.objectContaining({ validationState: "late_after_cancelled", archiveState: "archived", assetId: null })]);
       await expect(prisma.generationDelivery.findFirst({ where: { requestId: jobId } })).resolves.toMatchObject({
         status: "suppressed",
         deliveredAt: null,

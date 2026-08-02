@@ -35,6 +35,7 @@ import { postDreamcoinEntry } from "@/server/modules/admin/billing/ledger";
 import { recordMainToChatEvent } from "@/processes/chat-outbox";
 import {
   deliverGenerationArtifacts,
+  lateArtifactDisposition,
   projectAttemptArtifactDisposition,
 } from "./generation-evidence-transition-authority";
 import {
@@ -674,13 +675,9 @@ async function finalizeGenerationCompleted(
   if (["failed", "blocked", "cancelled", "refunded"].includes(job.status)) {
     await prisma.$transaction(async (tx) => {
       if (attemptId) {
-        const validationState = job.status === "cancelled"
-          ? "late_after_cancelled"
-          : job.status === "blocked"
-            ? "late_after_blocked"
-            : job.status === "refunded"
-              ? "late_after_refunded"
-              : "late_after_failed";
+        const validationState =
+          lateArtifactDisposition({ requestStatus: job.status }) ??
+            "late_after_failed";
         await projectAttemptArtifactDisposition(tx, {
           requestId: job.id,
           attemptId,

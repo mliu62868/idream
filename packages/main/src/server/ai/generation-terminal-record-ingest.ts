@@ -15,6 +15,7 @@ import { recordGenerationAttemptEvent } from "./generation-attempt-events";
 import {
   ensureProducedGenerationArtifact,
   isGenerationTransportExecutionTransitionAllowed,
+  lateArtifactDisposition,
   projectAttemptArtifactDisposition,
 } from "./generation-evidence-transition-authority";
 import { isGenerationAttemptTransitionAllowed } from "@/server/modules/admin-v2/shared/state-transition-authority";
@@ -171,7 +172,9 @@ export async function ingestGenerationTerminalRecord(
     if (receipt) {
       await tx.inboundEventReceipt.delete({ where: receiptWhere });
     }
-    const lateValidationState = lateArtifactValidationState(existingAttempt.status);
+    const lateValidationState = lateArtifactDisposition({
+      attemptStatus: existingAttempt.status,
+    });
     const assets = terminalAssets(input);
     if (lateValidationState) {
       const request = await tx.generationJob.findUniqueOrThrow({
@@ -335,15 +338,6 @@ export async function ingestGenerationTerminalRecord(
     );
   }
   return result;
-}
-
-function lateArtifactValidationState(status: string) {
-  if (status === "cancelled") return "late_after_cancel" as const;
-  if (status === "failed") return "late_after_failed" as const;
-  if (status === "blocked") return "late_after_blocked" as const;
-  if (status === "refunded") return "late_after_refunded" as const;
-  if (status === "unknown") return "late_after_unknown" as const;
-  return null;
 }
 
 function terminalTransportStatus(

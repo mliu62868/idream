@@ -46,13 +46,12 @@ export const isGenerationTransportExecutionTransitionAllowed = defineAuthority(
 export const isGenerationArtifactValidationTransitionAllowed = defineAuthority(
   GENERATION_ARTIFACT_VALIDATION_STATES,
   {
-    produced: ["produced", "valid", "invalid", "rejected", "late_after_failed", "late_after_blocked", "late_after_cancel", "late_after_cancelled", "late_after_refunded", "late_after_unknown"],
-    valid: ["valid", "late_after_failed", "late_after_blocked", "late_after_cancel", "late_after_cancelled", "late_after_refunded", "late_after_unknown"],
+    produced: ["produced", "valid", "invalid", "rejected", "late_after_failed", "late_after_blocked", "late_after_cancelled", "late_after_refunded", "late_after_unknown"],
+    valid: ["valid", "late_after_failed", "late_after_blocked", "late_after_cancelled", "late_after_refunded", "late_after_unknown"],
     invalid: ["invalid"],
     rejected: ["rejected"],
     late_after_failed: ["late_after_failed"],
     late_after_blocked: ["late_after_blocked"],
-    late_after_cancel: ["late_after_cancel"],
     late_after_cancelled: ["late_after_cancelled"],
     late_after_refunded: ["late_after_refunded"],
     late_after_unknown: ["late_after_unknown"],
@@ -76,6 +75,37 @@ export const isGenerationDeliveryTransitionAllowed = defineAuthority(
 
 type GenerationArtifactValidationState =
   (typeof GENERATION_ARTIFACT_VALIDATION_STATES)[number];
+
+const LATE_ARTIFACT_STATE_BY_TERMINAL_STATUS = {
+  cancelled: "late_after_cancelled",
+  failed: "late_after_failed",
+  blocked: "late_after_blocked",
+  refunded: "late_after_refunded",
+  unknown: "late_after_unknown",
+} as const satisfies Record<string, GenerationArtifactValidationState>;
+
+// SPEC: provider artifacts that land after their owning work already reached a
+// terminal outcome are archived and suppressed, never delivered.
+// INTENT: one function for one real-world fact. Terminal-record ingest sees the
+// Attempt's terminal status while finalize sees the Request's, and they used to
+// derive their own state strings from their own if-chains — which is how
+// "arrived after cancel" ended up recorded under two different names, splitting
+// every operator count that filters on validationState.
+// INVARIANT: the Attempt fact wins when both are terminal. It is the more
+// specific one — an Attempt can be terminal (e.g. unknown) while its Request is
+// still active.
+export function lateArtifactDisposition(input: {
+  readonly requestStatus?: string | null;
+  readonly attemptStatus?: string | null;
+}): GenerationArtifactValidationState | null {
+  const terminal = (status: string | null | undefined) =>
+    status && status in LATE_ARTIFACT_STATE_BY_TERMINAL_STATUS
+      ? LATE_ARTIFACT_STATE_BY_TERMINAL_STATUS[
+          status as keyof typeof LATE_ARTIFACT_STATE_BY_TERMINAL_STATUS
+        ]
+      : null;
+  return terminal(input.attemptStatus) ?? terminal(input.requestStatus);
+}
 type GenerationArtifactArchiveState =
   (typeof GENERATION_ARTIFACT_ARCHIVE_STATES)[number];
 type GenerationDeliveryStatus = (typeof GENERATION_DELIVERY_STATES)[number];
