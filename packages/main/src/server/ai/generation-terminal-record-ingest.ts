@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 import {
   aiFinalizePayloadSchema,
+  generationTerminalFinalizeDedupeKey,
   generationTerminalRecordChecksum,
   generationTerminalRecordIngestSchema,
   type GenerationTerminalRecordIngest,
@@ -14,6 +15,7 @@ import { recordGenerationAttemptEvent } from "./generation-attempt-events";
 import {
   ensureProducedGenerationArtifact,
   isGenerationTransportExecutionTransitionAllowed,
+  lateArtifactDisposition,
   projectAttemptArtifactDisposition,
 } from "./generation-evidence-transition-authority";
 import { isGenerationAttemptTransitionAllowed } from "@/server/modules/admin-v2/shared/state-transition-authority";
@@ -170,7 +172,9 @@ export async function ingestGenerationTerminalRecord(
     if (receipt) {
       await tx.inboundEventReceipt.delete({ where: receiptWhere });
     }
-    const lateValidationState = lateArtifactValidationState(existingAttempt.status);
+    const lateValidationState = lateArtifactDisposition({
+      attemptStatus: existingAttempt.status,
+    });
     const assets = terminalAssets(input);
     if (lateValidationState) {
       const request = await tx.generationJob.findUniqueOrThrow({
@@ -336,15 +340,6 @@ export async function ingestGenerationTerminalRecord(
   return result;
 }
 
-function lateArtifactValidationState(status: string) {
-  if (status === "cancelled") return "late_after_cancel" as const;
-  if (status === "failed") return "late_after_failed" as const;
-  if (status === "blocked") return "late_after_blocked" as const;
-  if (status === "refunded") return "late_after_refunded" as const;
-  if (status === "unknown") return "late_after_unknown" as const;
-  return null;
-}
-
 function terminalTransportStatus(
   outcome: GenerationTerminalRecordIngest["terminalRecord"]["outcome"],
 ) {
@@ -421,8 +416,7 @@ async function ingestUnknownTerminalResolution(
       originalOutbox.aggregateType !== "generation_attempt" ||
       originalOutbox.aggregateId !== attempt.id ||
       !originalPayload.success ||
-      originalPayload.data.kind !== "generation.failed" ||
-      originalPayload.data.error.attemptOutcome !== "unknown" ||
+      originalPayload.data.kind !== "generation.unknown" ||
       originalPayload.data.generationJobId !== attempt.requestId ||
       originalPayload.data.attemptId !== attempt.id ||
       originalPayload.data.attemptNo !== attempt.attemptNo ||
@@ -988,17 +982,19 @@ function finalizePayload(input: GenerationTerminalRecordIngest) {
       layer: record.block.layer,
     };
   }
-  return {
-    ...common,
-    kind: "generation.failed" as const,
-    error: {
-      code: record.error.code,
-      message: record.error.message,
-      retryable: record.error.retryability === "retryable",
-      attemptOutcome: record.outcome,
-      retryability: record.error.retryability,
-    },
+  const error = {
+    code: record.error.code,
+    message: record.error.message,
+    retryable: record.error.retryability === "retryable",
+    retryability: record.error.retryability,
   };
+  // INTENT: Gen's ambiguous terminal outcome keeps its own finalize kind all the
+  // way to settlement. Collapsing it into generation.failed would hand a possibly
+  // charged, possibly produced Attempt to the refund-and-retry path.
+  if (record.outcome === "unknown") {
+    return { ...common, kind: "generation.unknown" as const, error };
+  }
+  return { ...common, kind: "generation.failed" as const, error };
 }
 
 export async function dispatchPendingGenerationTerminalRecords(
@@ -1057,7 +1053,7 @@ export async function dispatchPendingGenerationTerminalRecords(
       await queue.enqueue({
         queue: "app.ai.finalize",
         payload: row.payload as Prisma.InputJsonValue,
-        dedupeKey: `generation-terminal-record-finalize:${row.aggregateId}`,
+        dedupeKey: generationTerminalFinalizeDedupeKey(row.aggregateId),
       });
       const acknowledged = await prisma.mainOutboxEvent.updateMany({
         where: {

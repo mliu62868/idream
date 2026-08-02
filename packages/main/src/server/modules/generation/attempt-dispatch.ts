@@ -1,5 +1,9 @@
 import type { Prisma } from "@prisma/client";
 import {
+  generationDispatchRequestId,
+  idempotencyKeys,
+} from "@idream/shared/contracts";
+import {
   assignWorkflowReferenceSlots,
   type WorkflowDescriptor,
 } from "@idream/shared/gen-workflow";
@@ -462,7 +466,7 @@ export async function buildGenerationAttemptQueueInput(
       : [];
   const common = {
     version: 1 as const,
-    requestId: `generation_dispatch_${attempt.id}`,
+    requestId: generationDispatchRequestId(attempt.id),
     generationJobId: job.id,
     attemptId: attempt.id,
     attemptNo: attempt.attemptNo,
@@ -501,7 +505,8 @@ export async function buildGenerationAttemptQueueInput(
     queue: job.mode === "video" ? "ai.video.generate" : "ai.image.generate",
     payload: payload as unknown as Prisma.InputJsonValue,
     dedupeKey:
-      input.dedupeKey ?? `generation:${job.id}:attempt:${attempt.attemptNo}`,
+      input.dedupeKey ??
+        idempotencyKeys.generationAttempt(job.id, attempt.attemptNo),
     // INTENT: later video transport attempts recover only persisted terminal
     // relay admission. A non-replayable provider outcome without terminal
     // persistence is projected unknown instead of entering this retry path.

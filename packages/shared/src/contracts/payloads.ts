@@ -372,7 +372,7 @@ const generationAssetSchema = z
   })
   .passthrough();
 
-export const aiFinalizePayloadSchema = z.discriminatedUnion("kind", [
+const aiFinalizeVariantsSchema = z.discriminatedUnion("kind", [
   z
     .object({
       version: z.literal(1),
@@ -461,7 +461,31 @@ export const aiFinalizePayloadSchema = z.discriminatedUnion("kind", [
         code: z.string(),
         message: z.string(),
         retryable: z.boolean(),
-        attemptOutcome: z.enum(["failed", "unknown"]).optional(),
+        retryability: z.enum(["retryable", "not_retryable", "operator_retry"]).optional(),
+      }),
+    })
+    .passthrough(),
+  // SPEC: the provider outcome is ambiguous — it may have already charged us and
+  // produced content we cannot see.
+  // INTENT: a separate variant, not a flag on generation.failed. The two demand
+  // opposite settlements (failed refunds and retries; unknown holds funds and
+  // waits for operator reconciliation), so the finalize switch must fail to
+  // compile rather than default an ambiguous outcome into the refunding branch.
+  z
+    .object({
+      version: z.literal(1),
+      kind: z.literal("generation.unknown"),
+      requestId: z.string(),
+      generationJobId: z.string(),
+      attemptId: z.string().min(1),
+      attemptNo: z.number().int().positive(),
+      terminalRecordRef: z.string().min(1),
+      terminalRecordChecksum: z.string().regex(/^[a-f0-9]{64}$/),
+      mode: z.enum(["image", "video"]),
+      error: z.object({
+        code: z.string(),
+        message: z.string(),
+        retryable: z.boolean(),
         retryability: z.enum(["retryable", "not_retryable", "operator_retry"]).optional(),
       }),
     })
@@ -495,6 +519,29 @@ export const aiFinalizePayloadSchema = z.discriminatedUnion("kind", [
     }
   });
 });
+
+// INTENT: migration-window compatibility read. Before generation.unknown existed,
+// Gen flattened an ambiguous provider outcome into generation.failed carrying an
+// optional error.attemptOutcome: "unknown". Payloads in that shape can still be
+// sitting in Redis or the Outbox, so we normalize them here — at the single parse
+// boundary — instead of re-checking the legacy flag in each finalize branch.
+// Writers only ever emit the new shape. Delete this once no pre-cutover payload
+// can still be in flight.
+function normalizeLegacyGenerationUnknown(value: unknown): unknown {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return value;
+  const payload = value as Record<string, unknown>;
+  if (payload.kind !== "generation.failed") return value;
+  const error = payload.error;
+  if (typeof error !== "object" || error === null || Array.isArray(error)) return value;
+  const { attemptOutcome, ...restError } = error as Record<string, unknown>;
+  if (attemptOutcome !== "unknown") return value;
+  return { ...payload, kind: "generation.unknown", error: restError };
+}
+
+export const aiFinalizePayloadSchema = z.preprocess(
+  normalizeLegacyGenerationUnknown,
+  aiFinalizeVariantsSchema,
+);
 
 export type ChatStreamEvent = z.infer<typeof chatStreamEventSchema>;
 export type ChatGeneratePayload = z.infer<typeof chatGeneratePayloadSchema>;

@@ -97,7 +97,7 @@ describe("Generation Request cancellation", () => {
     const queuePayload = queueInput.payload as Record<string, unknown>;
     const terminalRecord = { version: 1 as const, outcome: "succeeded" as const, attemptId, attemptNo: 1, transportAttemptNo: 1, providerIdempotencyKey: `generation:${attemptId}:provider`, requestId: queuePayload.requestId as string, generationJobId: jobId, mode: "image" as const, provider: queuePayload.provider as string, providerInvoked: true, model: queuePayload.model as string, providerRequestId: null, completedAt: new Date().toISOString(), assets: [{ ordinal: 0, key: `${queuePayload.outputPrefix as string}image.webp`, contentType: "image/webp", width: 1024, height: 1024, providerKey: "late-provider-asset" }], usage: { gpuSeconds: 1 } };
     await expect(ingestGenerationTerminalRecord({ terminalRecordRef: `gen/terminal-records/${attemptId}/terminal.json`, terminalRecordChecksum: generationTerminalRecordChecksum(terminalRecord), terminalRecord })).resolves.toMatchObject({ acknowledged: true, status: "persisted" });
-    await expect(prisma.generationArtifact.findFirst({ where: { attemptId } })).resolves.toMatchObject({ archiveState: "archived", validationState: "late_after_cancel", assetId: null });
+    await expect(prisma.generationArtifact.findFirst({ where: { attemptId } })).resolves.toMatchObject({ archiveState: "archived", validationState: "late_after_cancelled", assetId: null });
     await expect(prisma.generationDelivery.findFirst({ where: { requestId: jobId } })).resolves.toMatchObject({
       status: "suppressed",
       deliveredAt: null,

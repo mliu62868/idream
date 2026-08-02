@@ -948,7 +948,6 @@ describe("generation terminal record durable ingest", () => {
         kind: "generation.failed",
         error: expect.objectContaining({
           code: "provider_timeout",
-          attemptOutcome: "failed",
           retryability: "retryable",
         }),
       },
@@ -964,10 +963,9 @@ describe("generation terminal record durable ingest", () => {
       },
       transportStatus: "unknown",
       finalizer: {
-        kind: "generation.failed",
+        kind: "generation.unknown",
         error: expect.objectContaining({
           code: "provider_outcome_unknown",
-          attemptOutcome: "unknown",
           retryability: "operator_retry",
         }),
       },
@@ -1546,7 +1544,7 @@ describe("generation terminal record durable ingest", () => {
       await ensureDispatchAuthority(lateTerminalRecord);
       const input = { terminalRecordRef: `gen/terminal-records/${cancelledAttemptId}/terminal.json`, terminalRecordChecksum: generationTerminalRecordChecksum(lateTerminalRecord), terminalRecord: lateTerminalRecord };
       await expect(ingestGenerationTerminalRecord(input)).resolves.toMatchObject({ acknowledged: true, status: "persisted" });
-      await expect(prisma.generationArtifact.findMany({ where: { attemptId: cancelledAttemptId } })).resolves.toEqual([expect.objectContaining({ validationState: "late_after_cancel", archiveState: "archived", assetId: null })]);
+      await expect(prisma.generationArtifact.findMany({ where: { attemptId: cancelledAttemptId } })).resolves.toEqual([expect.objectContaining({ validationState: "late_after_cancelled", archiveState: "archived", assetId: null })]);
       await expect(prisma.generationDelivery.findFirst({ where: { requestId: jobId } })).resolves.toMatchObject({
         status: "suppressed",
         deliveredAt: null,

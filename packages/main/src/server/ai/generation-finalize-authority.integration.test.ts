@@ -215,6 +215,114 @@ describe("Generation finalize Attempt authority", () => {
       await prisma.user.deleteMany({ where: { id: userId } });
     }
   });
+
+  // INTENT: pre-cutover Gen flattened an ambiguous provider outcome into
+  // generation.failed + error.attemptOutcome: "unknown". Such payloads can still
+  // be sitting in Redis/Outbox during the migration window, and reading one as a
+  // plain failure would refund and re-run an Attempt the provider may already
+  // have charged us for and produced.
+  it("settles a legacy flattened unknown payload as unknown, not as a refundable failure", async () => {
+    const suffix = crypto.randomUUID();
+    const userId = `legacy-unknown-user-${suffix}`;
+    const requestId = `legacy-unknown-request-${suffix}`;
+    const dispatchId = `legacy-unknown-dispatch-${suffix}`;
+    const finalizeDedupeKey = `legacy-unknown-finalize-${suffix}`;
+    let attemptId: string | null = null;
+    try {
+      await prisma.user.create({
+        data: { id: userId, email: `${userId}@idream.internal`, status: "active" },
+      });
+      await prisma.generationJob.create({
+        data: {
+          id: requestId,
+          userId,
+          mode: "image",
+          controls: {},
+          presetIds: [],
+          outputCount: 1,
+          status: "queued",
+          provider: "mock",
+          model: "mock-image-v2",
+          costDreamcoins: 10,
+        },
+      });
+      const reserved = await prisma.$transaction((tx) =>
+        reserveInitialGenerationAttempt(tx, {
+          requestId,
+          dispatch: { outboxId: dispatchId, eventType: "generation.retry.dispatch.v2" },
+        })
+      );
+      attemptId = reserved.attempt.id;
+      const terminalRecordRef = `gen/terminal-records/${attemptId}/terminal.json`;
+      const legacyPayload = {
+        version: 1,
+        kind: "generation.failed",
+        requestId: `generation_dispatch_${attemptId}`,
+        generationJobId: requestId,
+        attemptId,
+        attemptNo: 1,
+        terminalRecordRef,
+        terminalRecordChecksum: "b".repeat(64),
+        mode: "image",
+        error: {
+          code: "provider_outcome_unknown",
+          message: "Provider accepted the request but its result is ambiguous",
+          retryable: false,
+          attemptOutcome: "unknown",
+          retryability: "operator_retry",
+        },
+      };
+      await prisma.generationAttempt.update({
+        where: { id: attemptId },
+        data: { terminalRecordRef },
+      });
+      await prisma.mainOutboxEvent.create({
+        data: {
+          id: `generation_terminal_record_${attemptId}`,
+          eventType: "generation.terminal_record.accepted.v1",
+          aggregateType: "generation_attempt",
+          aggregateId: attemptId,
+          payload: legacyPayload,
+        },
+      });
+      await jobQueue.enqueue({
+        queue: "app.ai.finalize",
+        dedupeKey: finalizeDedupeKey,
+        payload: legacyPayload as Prisma.InputJsonValue,
+      });
+
+      await expect(drainLocalAiPipeline({
+        limit: 1,
+        queues: ["app.ai.finalize"],
+      })).resolves.toMatchObject({ processed: 1 });
+
+      // The ambiguous outcome holds the funds: no refund, no terminal failure.
+      await expect(prisma.generationJob.findUniqueOrThrow({
+        where: { id: requestId },
+      })).resolves.toMatchObject({ status: "queued", errorCode: null });
+      await expect(prisma.generationJobEvent.count({
+        where: { jobId: requestId, type: "refunded" },
+      })).resolves.toBe(0);
+      await expect(prisma.generationJobEvent.findUniqueOrThrow({
+        where: { id: `generation_request_unknown_${attemptId}` },
+      })).resolves.toMatchObject({ type: "provider_outcome_unknown" });
+      await expect(prisma.generationAttemptEvent.findFirst({
+        where: { attemptId, outcome: "unknown" },
+      })).resolves.toMatchObject({ eventType: "generation.attempt.unknown.v1" });
+    } finally {
+      await jobQueue.removeByDedupeKey("app.ai.finalize", finalizeDedupeKey);
+      await prisma.mainOutboxEvent.deleteMany({
+        where: { OR: [{ aggregateId: requestId }, { aggregateId: attemptId ?? "" }] },
+      });
+      await prisma.generationAttemptEvent.deleteMany({
+        where: { attemptId: attemptId ?? "" },
+      });
+      await prisma.generationJobEvent.deleteMany({ where: { jobId: requestId } });
+      await prisma.generationAttempt.deleteMany({ where: { id: attemptId ?? "" } });
+      await prisma.generationJob.deleteMany({ where: { id: requestId } });
+      await prisma.user.deleteMany({ where: { id: userId } });
+    }
+  });
 });
 
 afterAll(async () => {

@@ -1,4 +1,9 @@
 import type { Prisma } from "@prisma/client";
+import {
+  generationDispatchRequestId,
+  generationProviderIdempotencyKey,
+  idempotencyKeys,
+} from "@idream/shared/contracts";
 import { MAIN_OUTBOX_GENERATION_DISPATCH_EVENT_TYPES } from "@/server/events/main-outbox-transport";
 
 export type GenerationDispatchEvidenceIdentity = {
@@ -88,7 +93,7 @@ export async function resolveExactGenerationDispatchAuthority(
     dispatchPayload.generationJobId !== attempt.requestId ||
     dispatchPayload.attemptId !== attempt.id ||
     dispatchPayload.attemptNo !== attempt.attemptNo ||
-    queuePayload.requestId !== `generation_dispatch_${attempt.id}` ||
+    queuePayload.requestId !== generationDispatchRequestId(attempt.id) ||
     (evidence.requestId !== undefined && evidence.requestId !== queuePayload.requestId) ||
     queuePayload.generationJobId !== attempt.requestId ||
     queuePayload.attemptId !== attempt.id ||
@@ -102,7 +107,7 @@ export async function resolveExactGenerationDispatchAuthority(
     queueInput.queue !== `ai.${mode}.generate` ||
     queuePayload.kind !== mode ||
     queueInput.dedupeKey !==
-      `generation:${attempt.requestId}:attempt:${attempt.attemptNo}` ||
+      idempotencyKeys.generationAttempt(attempt.requestId, attempt.attemptNo) ||
     typeof maxAttempts !== "number" ||
     !Number.isSafeInteger(maxAttempts) ||
     maxAttempts < 1 ||
@@ -128,7 +133,7 @@ export async function resolveExactGenerationDispatchAuthority(
   }
   if (
     evidence.providerIdempotencyKey !==
-      `generation:${attempt.id}:provider`
+      generationProviderIdempotencyKey(attempt.id)
   ) {
     return mismatch("generation_dispatch_provider_invocation_identity_mismatch");
   }

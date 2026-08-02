@@ -8,6 +8,7 @@ import {
   isGenerationArtifactValidationTransitionAllowed,
   isGenerationDeliveryTransitionAllowed,
   isGenerationTransportExecutionTransitionAllowed,
+  lateArtifactDisposition,
 } from "./generation-evidence-transition-authority";
 
 const matrices = [
@@ -26,13 +27,12 @@ const matrices = [
     name: "Artifact validation",
     states: GENERATION_ARTIFACT_VALIDATION_STATES,
     allowed: {
-      produced: ["produced", "valid", "invalid", "rejected", "late_after_failed", "late_after_blocked", "late_after_cancel", "late_after_cancelled", "late_after_refunded", "late_after_unknown"],
-      valid: ["valid", "late_after_failed", "late_after_blocked", "late_after_cancel", "late_after_cancelled", "late_after_refunded", "late_after_unknown"],
+      produced: ["produced", "valid", "invalid", "rejected", "late_after_failed", "late_after_blocked", "late_after_cancelled", "late_after_refunded", "late_after_unknown"],
+      valid: ["valid", "late_after_failed", "late_after_blocked", "late_after_cancelled", "late_after_refunded", "late_after_unknown"],
       invalid: ["invalid"],
       rejected: ["rejected"],
       late_after_failed: ["late_after_failed"],
       late_after_blocked: ["late_after_blocked"],
-      late_after_cancel: ["late_after_cancel"],
       late_after_cancelled: ["late_after_cancelled"],
       late_after_refunded: ["late_after_refunded"],
       late_after_unknown: ["late_after_unknown"],
@@ -72,5 +72,50 @@ describe.each(matrices)("$name finite authority", ({ states, allowed, permits })
   it("fails closed outside the shared state set", () => {
     expect(permits("__unknown__", states[0])).toBe(false);
     expect(permits(states[0], "__unknown__")).toBe(false);
+  });
+});
+
+describe("late artifact disposition", () => {
+  // INTENT: terminal-record ingest reads the Attempt status and finalize reads
+  // the Request status. Both describe the same fact — the artifact showed up too
+  // late — so both must land on the same state or operator counts split in half.
+  it("names a cancelled arrival identically from either side", () => {
+    expect(lateArtifactDisposition({ attemptStatus: "cancelled" }))
+      .toBe("late_after_cancelled");
+    expect(lateArtifactDisposition({ requestStatus: "cancelled" }))
+      .toBe("late_after_cancelled");
+  });
+
+  it.each([
+    ["failed", "late_after_failed"],
+    ["blocked", "late_after_blocked"],
+    ["refunded", "late_after_refunded"],
+    ["unknown", "late_after_unknown"],
+  ])("maps the %s terminal status to %s", (status, expected) => {
+    expect(lateArtifactDisposition({ attemptStatus: status })).toBe(expected);
+    expect(lateArtifactDisposition({ requestStatus: status })).toBe(expected);
+  });
+
+  it("returns null while nothing is terminal yet", () => {
+    expect(lateArtifactDisposition({ attemptStatus: "running" })).toBeNull();
+    expect(lateArtifactDisposition({ requestStatus: "queued" })).toBeNull();
+    expect(lateArtifactDisposition({ attemptStatus: "succeeded" })).toBeNull();
+    expect(lateArtifactDisposition({})).toBeNull();
+  });
+
+  // The Attempt fact is the more specific one: an Attempt can be terminal while
+  // its Request is still active.
+  it("prefers the Attempt outcome when both ended", () => {
+    expect(lateArtifactDisposition({
+      requestStatus: "failed",
+      attemptStatus: "unknown",
+    })).toBe("late_after_unknown");
+  });
+
+  it("only emits states the validation authority accepts", () => {
+    for (const status of ["cancelled", "failed", "blocked", "refunded", "unknown"]) {
+      const state = lateArtifactDisposition({ attemptStatus: status });
+      expect(GENERATION_ARTIFACT_VALIDATION_STATES).toContain(state);
+    }
   });
 });

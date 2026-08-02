@@ -79,3 +79,72 @@ describe("generation terminal finalize payload", () => {
     }).success).toBe(false);
   });
 });
+
+describe("ambiguous provider outcome stays out of the failure branch", () => {
+  const base = {
+    version: 1 as const,
+    requestId: "request-1",
+    generationJobId: "job-1",
+    attemptId: "attempt-1",
+    attemptNo: 1,
+    mode: "image" as const,
+    ...terminalEvidence,
+  };
+
+  it("keeps generation.unknown distinct from generation.failed", () => {
+    expect(
+      aiFinalizePayloadSchema.parse({
+        ...base,
+        kind: "generation.unknown",
+        error: { code: "provider_timeout", message: "ambiguous", retryable: false },
+      }).kind,
+    ).toBe("generation.unknown");
+  });
+
+  it("never reads a plain failure as ambiguous", () => {
+    expect(
+      aiFinalizePayloadSchema.parse({
+        ...base,
+        kind: "generation.failed",
+        error: { code: "backend_error", message: "failed", retryable: false },
+      }).kind,
+    ).toBe("generation.failed");
+  });
+
+  // INTENT: pre-cutover payloads can still be sitting in Redis/Outbox. Reading one
+  // as a plain failure would refund and retry an Attempt the provider may have
+  // already charged and produced.
+  it("normalizes the legacy flattened shape into generation.unknown", () => {
+    const parsed = aiFinalizePayloadSchema.parse({
+      ...base,
+      kind: "generation.failed",
+      error: {
+        code: "provider_timeout",
+        message: "ambiguous",
+        retryable: false,
+        attemptOutcome: "unknown",
+        retryability: "operator_retry",
+      },
+    });
+    expect(parsed.kind).toBe("generation.unknown");
+    expect(parsed).toMatchObject({
+      error: { code: "provider_timeout", retryability: "operator_retry" },
+    });
+    expect(parsed.error).not.toHaveProperty("attemptOutcome");
+  });
+
+  it("leaves a legacy explicit failure on the failure branch", () => {
+    expect(
+      aiFinalizePayloadSchema.parse({
+        ...base,
+        kind: "generation.failed",
+        error: {
+          code: "backend_error",
+          message: "failed",
+          retryable: true,
+          attemptOutcome: "failed",
+        },
+      }).kind,
+    ).toBe("generation.failed");
+  });
+});

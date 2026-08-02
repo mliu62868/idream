@@ -16,13 +16,10 @@ export const idempotencyKeys = {
   chatSessionAppend: (assistantMessageId: string, attempt: number) =>
     `chat-session-append:${assistantMessageId}:${attempt}`,
   chatImage: (attachmentId: string) => `chat-image:${attachmentId}`,
-  generation: (jobId: string) => `generation:${jobId}`,
   generationAttempt: (jobId: string, attemptNo: number) =>
     `generation:${jobId}:attempt:${attemptNo}`,
   generationTerminalRelay: (attemptId: string) =>
     `generation-terminal-relay:${attemptId}`,
-  generationFinalize: (jobId: string, state: "completed" | "failed" | "blocked") =>
-    `generation-finalize:${jobId}:${state}`,
 } as const;
 
 export type IdempotencyKeyBuilder = typeof idempotencyKeys;
