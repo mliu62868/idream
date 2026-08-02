@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
+import type { CharacterWorkspaceDetail } from "@idream/shared/admin";
 import { describe, expect, it } from "vitest";
 import {
   canChooseCharacterAssetPurpose,
   canOfferCharacterAssetTerminalRejection,
-  characterAssetPackUnderCurrentRoute,
   characterAssetBootstrapRequestKey,
   characterAssetDraftSelectionRequestKey,
   characterAssetReviewRequestKey,
@@ -12,15 +12,32 @@ import {
   characterAssetStudioLayoutClass,
   characterSourceVariationBlockerMessage,
   characterAssetReadinessSummary,
-  firstIncompleteCharacterAssetPurpose,
   isCharacterAssetApprovalActionable,
   isCharacterIdentityAuthorityReady,
-  nextCharacterAssetPurpose,
+  nextIncompleteCharacterAssetPurpose,
   resolveCharacterCandidateVisualState,
   resolveCharacterCustomerPreviewAssets,
   resolveCharacterAssetReviewEvidence,
   resolveCharacterAssetSubject,
 } from "./CharacterAssetStudio";
+
+// 只给 journey 投影里前端真正读的那部分；其余字段与本用例无关。
+function journey(
+  missingPurposes: readonly string[],
+): CharacterWorkspaceDetail["journey"] {
+  return {
+    assetPack: {
+      draft: {
+        availablePurposes: characterAssetPurposes.filter(
+          (purpose) => !missingPurposes.includes(purpose),
+        ),
+        missingPurposes,
+        completed: 3 - missingPurposes.length,
+        total: 3,
+      },
+    },
+  } as unknown as CharacterWorkspaceDetail["journey"];
+}
 
 describe("Character Asset Studio flow", () => {
   it("summarizes authority blockers as operator actions without leaking raw codes", () => {
@@ -44,9 +61,6 @@ describe("Character Asset Studio flow", () => {
       "character_hero",
       "character_chat",
     ]);
-    expect(nextCharacterAssetPurpose("character_cover")).toBe("character_hero");
-    expect(nextCharacterAssetPurpose("character_hero")).toBe("character_chat");
-    expect(nextCharacterAssetPurpose("character_chat")).toBe("character_chat");
   });
 
   it("never presents a partially unavailable Reference Set as locked identity authority", () => {
@@ -185,14 +199,34 @@ describe("Character Asset Studio flow", () => {
     })).toBe("rejected");
   });
 
-  it("starts with the first unfinished customer-facing asset and keeps bootstrap on portrait", () => {
-    expect(firstIncompleteCharacterAssetPurpose({}, false)).toBe("character_cover");
-    expect(firstIncompleteCharacterAssetPurpose({}, true)).toBe("character_cover");
-    expect(firstIncompleteCharacterAssetPurpose({ character_cover: "cover" }, true)).toBe("character_hero");
-    expect(firstIncompleteCharacterAssetPurpose({
-      character_cover: "cover",
-      character_hero: "hero",
-    }, true)).toBe("character_chat");
+  // SPEC: 「下一张该做的图」只读服务端 journey 投影，前端不再自己数 draftAssetPack。
+  // INTENT: 前端那版只过滤 routeCurrent、不过滤资产可用性（软删/归属），资产被软删时
+  // 服务端说缺 cover、前端却把运营带去 hero。这里盯住「读服务端答案」本身。
+  it("takes the next asset from the server journey projection", () => {
+    expect(nextIncompleteCharacterAssetPurpose(
+      journey(["character_cover", "character_hero", "character_chat"]),
+    )).toBe("character_cover");
+    expect(nextIncompleteCharacterAssetPurpose(
+      journey(["character_hero", "character_chat"]),
+    )).toBe("character_hero");
+    expect(nextIncompleteCharacterAssetPurpose(journey(["character_chat"])))
+      .toBe("character_chat");
+  });
+
+  // SPEC: 图池齐了就没有「下一张图」，下一步是 Launch preview。
+  // INTENT: 旧实现在图池已满时兜底返回 character_chat，于是按钮文案在封面页写「下一个资产」
+  // 却什么都不缺；null 让文案与点击行为都能落到 preview。
+  it("reports no next asset once the server says the pack is complete", () => {
+    expect(nextIncompleteCharacterAssetPurpose(journey([]))).toBeNull();
+  });
+
+  // SPEC: 路线过期的历史选择由服务端判定为「缺」，前端不重算。
+  // INTENT: 服务端 projectCurrentDraftAssetPack 已经把 routeCurrent=false 的选择排除掉，
+  // 前端只要照读 —— 历史指针仍在 project.draftAssetPack 里，不因此被抹掉。
+  it("treats stale route selections as recovery work because the server says so", () => {
+    expect(nextIncompleteCharacterAssetPurpose(
+      journey(["character_cover", "character_hero", "character_chat"]),
+    )).toBe("character_cover");
   });
 
   it("never fills a missing hero or chat slot with the primary portrait", () => {
@@ -223,27 +257,6 @@ describe("Character Asset Studio flow", () => {
       character_hero: "/hero-candidate.webp",
       character_chat: "/chat.webp",
     });
-  });
-
-  it("treats stale route selections as recovery work while preserving their historical pointers", () => {
-    const historicalPack = {
-      character_cover: "cover-q1",
-      character_hero: "hero-q1",
-      character_chat: "chat-q1",
-    };
-    const currentPack = characterAssetPackUnderCurrentRoute(historicalPack, {
-      character_cover: { routeCurrent: false },
-      character_hero: { routeCurrent: false },
-      character_chat: { routeCurrent: false },
-    });
-    expect(currentPack).toEqual({});
-    expect(historicalPack).toEqual({
-      character_cover: "cover-q1",
-      character_hero: "hero-q1",
-      character_chat: "chat-q1",
-    });
-    expect(firstIncompleteCharacterAssetPurpose(currentPack, true))
-      .toBe("character_cover");
   });
 
   it("keeps one generation idempotency identity until the normalized request changes", () => {

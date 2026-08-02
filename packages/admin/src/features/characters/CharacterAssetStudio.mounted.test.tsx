@@ -79,6 +79,30 @@ function createMemoryStorage(): Storage {
   };
 }
 
+const productionPurposes = [
+  "character_cover",
+  "character_hero",
+  "character_chat",
+] as const;
+
+// 服务端 journey 投影：图池完成度、下一张该做什么都读它。
+// 这里按「已经在当前路线下可用的用途」构造，和服务端 projectCurrentDraftAssetPack 的口径一致
+// —— 被软删/路线过期的选择不算 available。
+function journeyFor(available: readonly string[] = []) {
+  const progress = (availablePurposes: readonly string[]) => ({
+    availablePurposes: [...availablePurposes],
+    missingPurposes: productionPurposes.filter(
+      (purpose) => !availablePurposes.includes(purpose),
+    ),
+    completed: availablePurposes.length,
+    total: 3 as const,
+  });
+  return {
+    assetPack: { draft: progress(available), live: progress([]) },
+    release: { servingState: "inactive", currentReleaseId: null, candidateReleaseId: null },
+  };
+}
+
 const data = {
   character: {
     id: "character-no-bootstrap-route",
@@ -86,6 +110,7 @@ const data = {
     description: "A precise evening companion.",
     imageUrl: null,
   },
+  journey: journeyFor(),
   project: {
     version: 1,
     draftImageAssetId: null,
