@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { evaluateAdminReleaseGate } from "@idream/shared/admin/release-gate";
+import { evaluateAdminReleaseGate } from "@/server/admin/release-gate";
 
 async function main() {
   const evidencePath = process.argv[2] ?? process.env.ADMIN_RELEASE_EVIDENCE_PATH;

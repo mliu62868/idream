@@ -7,6 +7,13 @@
 // cwd, so start chat via the full ecosystem (or `bun run pm2:start`), not `--only`.
 import "dotenv/config";
 import path from "node:path";
+import {
+  DEFAULT_MODERATION_PROVIDER,
+  DEFAULT_MODERATION_TIMEOUT_MS,
+  DEFAULT_REDIS_URL,
+  defaultBullmqPrefix,
+  mainWebUrlOrigin,
+} from "@idream/shared/env";
 
 function required(name: string, fallback?: string): string {
   const value = process.env[name] ?? fallback;
@@ -29,12 +36,14 @@ export const env = {
     return url.toString();
   },
   get REDIS_URL() {
-    return process.env.CHAT_REDIS_URL ?? process.env.REDIS_URL ?? "redis://127.0.0.1:6379/0";
+    return process.env.CHAT_REDIS_URL ?? process.env.REDIS_URL ?? DEFAULT_REDIS_URL;
   },
   // BullMQ is receiver-local wake-up/work scheduling; cross-service events use
-  // durable HTTP ingest and do not depend on a shared Redis prefix.
+  // durable HTTP ingest and do not depend on a shared Redis prefix. The default
+  // still comes from the shared contract so chat cannot drift off main/gen if
+  // that ever stops being true.
   get BULLMQ_PREFIX() {
-    return process.env.BULLMQ_PREFIX ?? `idream:${process.env.APP_ENV ?? "development"}`;
+    return process.env.BULLMQ_PREFIX ?? defaultBullmqPrefix(process.env.APP_ENV);
   },
   get CHAT_FS_ROOT() {
     return path.resolve(process.env.CHAT_FS_ROOT ?? "./data/chat");
@@ -78,7 +87,11 @@ export const env = {
     return process.env.CHAT_MODEL_API_KEY ?? process.env.PIPELINE_API_TOKEN ?? "";
   },
   get MODERATION_PROVIDER() {
-    return process.env.CHAT_MODERATION_PROVIDER ?? process.env.MODERATION_PROVIDER ?? "mock";
+    return (
+      process.env.CHAT_MODERATION_PROVIDER ??
+      process.env.MODERATION_PROVIDER ??
+      DEFAULT_MODERATION_PROVIDER
+    );
   },
   get MODERATION_SERVICE_URL() {
     return process.env.CHAT_MODERATION_SERVICE_URL ?? process.env.MODERATION_SERVICE_URL ?? "";
@@ -87,9 +100,12 @@ export const env = {
     return process.env.CHAT_MODERATION_API_KEY ?? process.env.MODERATION_API_KEY ?? "";
   },
   get MODERATION_TIMEOUT_MS() {
-    const raw = process.env.CHAT_MODERATION_TIMEOUT_MS ?? process.env.MODERATION_TIMEOUT_MS ?? "5000";
+    const raw =
+      process.env.CHAT_MODERATION_TIMEOUT_MS ??
+      process.env.MODERATION_TIMEOUT_MS ??
+      String(DEFAULT_MODERATION_TIMEOUT_MS);
     const parsed = Number.parseInt(raw, 10);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : 5_000;
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_MODERATION_TIMEOUT_MS;
   },
   get BFF_SIGNING_SECRET() {
     return process.env.CHAT_BFF_SIGNING_SECRET ?? "";
@@ -100,8 +116,7 @@ export const env = {
     return process.env.INTERNAL_TOKEN ?? "";
   },
   get MAIN_INTERNAL_INGEST_URL() {
-    const base = process.env.MAIN_WEB_URL ?? "http://127.0.0.1:3000";
-    return `${base.replace(/\/$/, "")}/api/internal/events/ingest`;
+    return `${mainWebUrlOrigin()}/api/internal/events/ingest`;
   },
   get PORT() {
     return Number.parseInt(process.env.CHAT_PORT ?? "3100", 10);

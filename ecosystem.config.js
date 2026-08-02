@@ -58,10 +58,13 @@ const localEnvValue = (envPath, key) => {
 };
 // REDIS_URL must resolve IDENTICALLY across main-web (which enqueues) and gen-finalizer
 // (which consumes) — otherwise generation jobs stick forever. Durable Main↔Chat delivery
-// does not use Redis. main's env.ts loads .env NON-overridingly, so a hardcoded fallback
-// here would override .env for the pm2-injected workers while main-web kept the .env value.
-// So: inject the override ONLY when it is set in the shell, and apply the SAME value to all
-// three. When unset, none are injected and all three fall back to packages/main/.env.
+// does not use Redis. Which vars are cross-service, and their one set of defaults, is
+// defined in packages/shared/src/contracts/env.ts — that file is the SSoT; what follows
+// is only the pm2-specific mechanics of getting the same value into three processes.
+// main's env.ts loads .env NON-overridingly, so a hardcoded fallback here would override
+// .env for the pm2-injected workers while main-web kept the .env value. So: inject the
+// override ONLY when it is set in the shell, and apply the SAME value to all three.
+// When unset, none are injected and all three fall back to packages/main/.env.
 const mainRedisUrl = process.env.MAIN_REDIS_URL ?? process.env.REDIS_URL;
 const mainRedisEnv = mainRedisUrl ? { REDIS_URL: mainRedisUrl } : {};
 // INTERNAL_TOKEN is a cross-service credential, not a main-only setting. In

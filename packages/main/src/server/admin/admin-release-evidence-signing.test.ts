@@ -7,7 +7,7 @@ import {
   signAdminEvidenceArtifact,
   signAdminReleaseEvidence,
   type AdminReleaseDriRole,
-} from "@idream/shared/admin/release-gate";
+} from "./release-gate";
 
 function keyPair() {
   const pair = generateKeyPairSync("ed25519");

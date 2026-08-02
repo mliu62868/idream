@@ -3,7 +3,7 @@ import {
   ADMIN_CANARY_SCENARIO_IDS,
   requiredAdminCanaryScenarioIds,
   type AdminCanaryScenarioId,
-} from "@idream/shared/admin/canary";
+} from "./canary";
 import { canonicalJson } from "@idream/shared/contracts";
 import { z } from "zod";
 

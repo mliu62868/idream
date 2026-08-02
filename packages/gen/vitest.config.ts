@@ -36,6 +36,11 @@ export default defineConfig({
         "../shared/src/gen/workflow.ts",
         import.meta.url,
       ).pathname,
+      "@idream/shared/env": new URL(
+        "../shared/src/contracts/env.ts",
+        import.meta.url,
+      ).pathname,
+      // Bare specifier stays LAST — Vite alias matching is prefix-based, first match wins.
       "@idream/shared": new URL("../shared/src/index.ts", import.meta.url).pathname,
     },
   },

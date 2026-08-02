@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { signAdminReleaseEvidence } from "@idream/shared/admin/release-gate";
+import { signAdminReleaseEvidence } from "@/server/admin/release-gate";
 
 async function main() {
   const evidencePath = process.argv[2];

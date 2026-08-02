@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { generationRouteQualificationEvaluateRequestSchema } from "./characters";
+import { generationRouteQualificationEvaluateRequestSchema } from "./characters-qualification";
 
 const validRequest = {
   batchIds: ["eval-batch-1", "eval-batch-2"],

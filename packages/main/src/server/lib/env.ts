@@ -2,9 +2,14 @@
 // gives tsx processes and sibling services the same cwd-based env loading.
 import "dotenv/config";
 import { z } from "zod";
+import {
+  DEFAULT_APP_ENV,
+  DEFAULT_BLOB_REGION,
+  crossServiceEnvShape,
+} from "@idream/shared/env";
 import { DB_PROVIDER, DEFAULT_POSTGRES_DATABASE_URL } from "./constants";
 
-const appEnv = process.env.APP_ENV ?? "development";
+const appEnv = process.env.APP_ENV ?? DEFAULT_APP_ENV;
 const isProductionBuild =
   process.env.NEXT_PHASE === "phase-production-build" ||
   process.env.npm_lifecycle_event === "build";
@@ -32,7 +37,10 @@ function isPublicHttpsOrigin(value: string) {
 }
 
 const EnvSchema = z.object({
-  APP_ENV: z.enum(["development", "test", "preview", "production"]).default("development"),
+  // Cross-service variables (APP_ENV / REDIS_URL / BULLMQ_PREFIX / INTERNAL_TOKEN /
+  // MAIN_WEB_URL / MODERATION_* / PIPELINE_API_*) come from the shared contract so
+  // main, chat and gen cannot drift apart. See @idream/shared/env.
+  ...crossServiceEnvShape(appEnv),
   NODE_ENV: z.string().optional(),
   DB_PROVIDER: z.literal(DB_PROVIDER).default(DB_PROVIDER),
   DATABASE_URL: z.string().min(1).refine(isPostgresUrl, {
@@ -40,11 +48,7 @@ const EnvSchema = z.object({
   }),
   BETTER_AUTH_SECRET: z.string().min(32),
   BETTER_AUTH_URL: z.string().url(),
-  MAIN_WEB_URL: z.string().url().optional(),
-  INTERNAL_TOKEN: z.string().min(16),
   CRON_SECRET: z.string().min(16),
-  REDIS_URL: z.string().url().default("redis://127.0.0.1:6379/0"),
-  BULLMQ_PREFIX: z.string().min(1).default(`idream:${appEnv}`),
   GENERATION_ROUTE_EVALUATOR_VERSION: z.string().min(1).default("identity-match-v1"),
   LOG_LEVEL: z.enum(["trace", "debug", "info", "warn", "error", "fatal", "silent"]).default("info"),
   CHAT_PROVIDER: z.enum(["mock", "pipeline"]).default("mock"),
@@ -53,13 +57,12 @@ const EnvSchema = z.object({
   VOICE_PROVIDER: z
     .enum(["mock", "pipeline", "pocket-tts", "fish-audio"])
     .default("mock"),
-  MODERATION_PROVIDER: z.enum(["mock", "pipeline", "safety-gateway"]).default("mock"),
   PAYMENT_PROVIDER: z.enum(["mock", "btcpay"]).default("mock"),
   BLOB_PROVIDER: z.enum(["mock", "r2", "s3"]).default("mock"),
   AGE_VERIFICATION_PROVIDER: z.enum(["mock", "gocam"]).default("mock"),
   BLOB_ENDPOINT: z.string().url().optional(),
   BLOB_BUCKET: z.string().min(1).optional(),
-  BLOB_REGION: z.string().min(1).default("auto"),
+  BLOB_REGION: z.string().min(1).default(DEFAULT_BLOB_REGION),
   BLOB_ACCESS_KEY_ID: z.string().optional(),
   BLOB_ACCESS_KEY: z.string().optional(),
   AWS_ACCESS_KEY_ID: z.string().optional(),
@@ -70,15 +73,10 @@ const EnvSchema = z.object({
   BTCPAY_STORE_ID: z.string().optional(),
   BTCPAY_API_KEY: z.string().optional(),
   BTCPAY_WEBHOOK_SECRET: z.string().optional(),
-  MODERATION_SERVICE_URL: z.string().url().optional(),
-  MODERATION_API_KEY: z.string().optional(),
-  MODERATION_TIMEOUT_MS: z.coerce.number().int().positive().default(5_000),
-  PIPELINE_API_URL: z.string().url().optional(),
   // Read by Admin diagnostics and launch-readiness. Gen workers own provider
   // selection through GEN_IMAGE_PROVIDER / GEN_VIDEO_PROVIDER.
   COMFYUI_API_URL: z.string().url().optional(),
   PIPELINE_VOICE_API_URL: z.string().url().optional(),
-  PIPELINE_API_TOKEN: z.string().optional(),
   PIPELINE_VOICE_API_TOKEN: z.string().optional(),
   PIPELINE_CHAT_MODEL_DEFAULT: z
     .string()

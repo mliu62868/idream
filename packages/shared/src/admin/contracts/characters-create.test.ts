@@ -5,7 +5,7 @@ import {
   characterProjectDraftSchema,
   characterProjectDraftPatchRequestSchema,
   characterProjectProductionReadyDraftSchema,
-} from "./characters";
+} from "./characters-create";
 
 const validCreate = {
   positioning: {

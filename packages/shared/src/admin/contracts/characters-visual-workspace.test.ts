@@ -9,7 +9,7 @@ import {
   characterVisualProfileCreateRequestSchema,
   characterVisualWorkspaceSchema,
   characterWorkspaceProjectSchema,
-} from "./characters";
+} from "./characters-visual-workspace";
 
 describe("Character Visual workspace contract", () => {
   it("exposes the concrete model behind an identity calibration profile", () => {

@@ -1,6 +1,16 @@
 export * from "./common";
 export * from "./access";
-export * from "./characters";
+// Character contracts are split by subdomain — the seam the test files already used.
+// contract-registry resolves by SYMBOL NAME on this barrel, so the split is invisible
+// to every caller.
+export * from "./characters-common";
+export * from "./characters-create";
+export * from "./characters-visual-workspace";
+export * from "./characters-qualification";
+export * from "./characters-asset-studio";
+export * from "./characters-release";
+export * from "./characters-performance";
+export * from "./characters-media-operations";
 export * from "./creative";
 export * from "./incidents";
 export * from "./cases";
