@@ -7,13 +7,13 @@ import {
   verify,
   type KeyObject,
 } from "node:crypto";
-import { canonicalJson } from "../contracts/durable";
+import { canonicalJson } from "@idream/shared/contracts";
 import {
   adminCanaryScenarioPathIsRepresentative,
   adminCanaryScenarioIdSchema,
   requiredAdminCanaryScenarioIds,
 } from "./canary";
-import { availabilityErrorBudget, evaluateAdminOperationalSlos } from "./operational-slo";
+import { availabilityErrorBudget, evaluateAdminOperationalSlos } from "@idream/shared/admin";
 
 const sha256DigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const ed25519SignatureSchema = z.string().regex(/^[A-Za-z0-9_-]{86}$/, "signature must be a 64-byte base64url Ed25519 signature");
