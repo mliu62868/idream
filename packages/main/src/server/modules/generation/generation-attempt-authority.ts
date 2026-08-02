@@ -4,6 +4,7 @@ import {
   type MainOutboxEvent,
   type PrismaClient,
 } from "@prisma/client";
+import { idempotencyKeys } from "@idream/shared/contracts";
 import { recordGenerationAttemptQueuedEvent } from "@/server/ai/generation-attempt-events";
 import { transitionGenerationRequest } from "@/server/ai/generation-request-transition";
 import {
@@ -531,7 +532,7 @@ async function replayInitialGenerationReservation(
 function generationAttemptDedupeKey(
   attempt: Pick<GenerationAttempt, "requestId" | "attemptNo">,
 ) {
-  return `generation:${attempt.requestId}:attempt:${attempt.attemptNo}`;
+  return idempotencyKeys.generationAttempt(attempt.requestId, attempt.attemptNo);
 }
 
 // SPEC: An unknown Attempt is an immutable transport fact. A later

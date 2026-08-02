@@ -1,5 +1,7 @@
 import { Prisma } from "@prisma/client";
 import {
+  generationProviderIdempotencyKey,
+  generationTerminalRecordRef,
   generationTerminalRecordSchema,
   idempotencyKeys,
   imageGeneratePayloadSchema,
@@ -534,7 +536,7 @@ async function hasExactBlobTerminal(
   const blob = providers.blob;
   if (!blob.getPrivate) throw new Error("blob terminal read unavailable");
   const loaded = await blob.getPrivate({
-    key: `gen/terminal-records/${input.attempt.id}/terminal.json`,
+    key: generationTerminalRecordRef(input.attempt.id),
   });
   if (!loaded.ok) {
     if (loaded.error.code === "not_found") return false;
@@ -556,7 +558,7 @@ async function hasExactBlobTerminal(
     terminal.data.mode === input.job.mode &&
     terminal.data.model === payload.model &&
     terminal.data.providerIdempotencyKey ===
-      `generation:${input.attempt.id}:provider`;
+      generationProviderIdempotencyKey(input.attempt.id);
 }
 
 async function recoverStaleGenerationDispatch(

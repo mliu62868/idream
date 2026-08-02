@@ -7,8 +7,12 @@ import type {
 } from "@prisma/client";
 import {
   aiFinalizePayloadSchema,
+  generationDispatchRequestId,
+  generationProviderIdempotencyKey,
+  generationTerminalFinalizeDedupeKey,
   generationTerminalRecordChecksum,
   generationTerminalRecordIngestSchema,
+  generationTerminalRecordRef,
   generationTerminalRecordSchema,
   GEN_QUEUES,
   idempotencyKeys,
@@ -231,7 +235,7 @@ export async function assessGenerationDispatchCutoverReadiness(
     await Promise.all([
       Promise.all(
       activeTerminalAttempts.map(async ({ attempt }) => {
-        const dedupeKey = `generation-terminal-record-finalize:${attempt.id}`;
+        const dedupeKey = generationTerminalFinalizeDedupeKey(attempt.id);
         return [
           attempt.id,
           await queueInspector.getByDedupeKey("app.ai.finalize", dedupeKey),
@@ -769,7 +773,7 @@ async function hasExactSourceBlobTerminal(row: QueueJobSnapshot) {
   const payload = parsed.data;
   try {
     const loaded = await providers.blob.getPrivate({
-      key: `gen/terminal-records/${payload.attemptId}/terminal.json`,
+      key: generationTerminalRecordRef(payload.attemptId),
     });
     if (!loaded.ok) return false;
     const terminal = generationTerminalRecordSchema.safeParse(
@@ -784,7 +788,7 @@ async function hasExactSourceBlobTerminal(row: QueueJobSnapshot) {
       terminal.data.provider === payload.provider &&
       terminal.data.model === payload.model &&
       terminal.data.providerIdempotencyKey ===
-        `generation:${payload.attemptId}:provider`;
+        generationProviderIdempotencyKey(payload.attemptId);
   } catch {
     return false;
   }
@@ -852,7 +856,7 @@ function validInFlightBullRow(input: {
         relay.terminalRecordChecksum &&
       relay.terminalRecord.mode === job.mode &&
       relay.terminalRecord.provider === attempt.provider &&
-      relay.terminalRecord.requestId === `generation_dispatch_${attempt.id}` &&
+      relay.terminalRecord.requestId === generationDispatchRequestId(attempt.id) &&
       validBullDedupe(
         input.row,
         idempotencyKeys.generationTerminalRelay(attempt.id),
@@ -867,12 +871,12 @@ function validInFlightBullRow(input: {
       !parsed.success ||
       !["generation.completed", "generation.failed", "generation.unknown", "generation.blocked"]
         .includes(parsed.data.kind) ||
-      payload.requestId !== `generation_dispatch_${attempt.id}` ||
+      payload.requestId !== generationDispatchRequestId(attempt.id) ||
       payload.mode !== job.mode
     ) {
       return false;
     }
-    const dedupeKey = `generation-terminal-record-finalize:${attempt.id}`;
+    const dedupeKey = generationTerminalFinalizeDedupeKey(attempt.id);
     const terminalOutbox = input.terminalOutboxes.find(
       (row) =>
         row.aggregateId === attempt.id &&
@@ -898,7 +902,7 @@ function validInFlightBullRow(input: {
   if (input.row.queue !== expectedQueue) return false;
   const dispatchPayload = jsonRecord(dispatch.payload);
   const queueInput = jsonRecord(dispatchPayload.queueInput);
-  const dedupeKey = `generation:${job.id}:attempt:${attempt.attemptNo}`;
+  const dedupeKey = idempotencyKeys.generationAttempt(job.id, attempt.attemptNo);
   return (
     queueInput.queue === input.row.queue &&
     queueInput.dedupeKey === dedupeKey &&
@@ -1008,7 +1012,7 @@ function validTerminalOutbox(input: {
     attempt.attemptNo !== attemptNo ||
     ((input.requireLatest ?? true) &&
       input.latestAttemptByJob.get(generationJobId)?.id !== attempt.id) ||
-    payload.requestId !== `generation_dispatch_${attempt.id}` ||
+    payload.requestId !== generationDispatchRequestId(attempt.id) ||
     payload.mode !== job.mode ||
     payload.terminalRecordRef !== attempt.terminalRecordRef
   ) {
@@ -1035,7 +1039,7 @@ function validDispatchEnvelope(
     ? "ai.video.generate"
     : "ai.image.generate";
   const expectedDedupeKey =
-    `generation:${job.id}:attempt:${attempt.attemptNo}`;
+    idempotencyKeys.generationAttempt(job.id, attempt.attemptNo);
   return (
     dispatch.aggregateType === "generation_request" &&
     dispatch.aggregateId === job.id &&
@@ -1048,7 +1052,7 @@ function validDispatchEnvelope(
     parsed.data.generationJobId === job.id &&
     parsed.data.attemptId === attempt.id &&
     parsed.data.attemptNo === attempt.attemptNo &&
-    parsed.data.requestId === `generation_dispatch_${attempt.id}` &&
+    parsed.data.requestId === generationDispatchRequestId(attempt.id) &&
     parsed.data.provider === attempt.provider &&
     pinMatches(
       attempt.profileKey,

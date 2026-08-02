@@ -1,6 +1,8 @@
 import {
+  generationProviderInvocationRef,
   generationTerminalRecordChecksum,
   generationTerminalRecordIngestSchema,
+  generationTerminalRecordRef,
   generationTerminalRecordSchema,
   idempotencyKeys,
   MAIN_QUEUES,
@@ -52,7 +54,7 @@ export async function reserveGenerationInvocation(
 ): Promise<{ created: boolean; guard: GenerationInvocationGuard }> {
   const validatedGuard = parseInvocationGuard(guard);
   const persisted = await blob.putPrivateIfAbsent({
-    key: invocationGuardStorageRef(validatedGuard.attemptId),
+    key: generationProviderInvocationRef(validatedGuard.attemptId),
     body: new TextEncoder().encode(JSON.stringify(validatedGuard)),
     contentType: "application/json",
   });
@@ -77,7 +79,7 @@ export async function loadGenerationInvocationGuard(
   if (!blob.getPrivate) {
     throw new Error("blob provider cannot read provider invocation guards");
   }
-  const loaded = await blob.getPrivate({ key: invocationGuardStorageRef(attemptId) });
+  const loaded = await blob.getPrivate({ key: generationProviderInvocationRef(attemptId) });
   if (!loaded.ok) {
     if (loaded.error.code === "not_found") return null;
     throw new Error(loaded.error.message);
@@ -93,7 +95,7 @@ export async function persistTerminalRecord(
 ): Promise<GenerationTerminalRecordIngest> {
   const validatedRecord = generationTerminalRecordSchema.parse(terminalRecord);
   const terminalRecordChecksum = generationTerminalRecordChecksum(validatedRecord);
-  const terminalRecordRef = terminalRecordStorageRef(validatedRecord.attemptId);
+  const terminalRecordRef = generationTerminalRecordRef(validatedRecord.attemptId);
   const persisted = await blob.putPrivateIfAbsent({
     key: terminalRecordRef,
     body: new TextEncoder().encode(JSON.stringify(validatedRecord)),
@@ -122,7 +124,7 @@ export async function loadPersistedTerminalRecord(
   attemptId: string,
 ): Promise<GenerationTerminalRecordIngest | null> {
   if (!blob.getPrivate) return null;
-  const loaded = await blob.getPrivate({ key: terminalRecordStorageRef(attemptId) });
+  const loaded = await blob.getPrivate({ key: generationTerminalRecordRef(attemptId) });
   if (!loaded.ok) {
     if (loaded.error.code === "not_found") return null;
     throw new Error(loaded.error.message);
@@ -131,19 +133,12 @@ export async function loadPersistedTerminalRecord(
     JSON.parse(new TextDecoder().decode(loaded.data.body)),
   );
   return {
-    terminalRecordRef: terminalRecordStorageRef(attemptId),
+    terminalRecordRef: generationTerminalRecordRef(attemptId),
     terminalRecordChecksum: generationTerminalRecordChecksum(terminalRecord),
     terminalRecord,
   };
 }
 
-function terminalRecordStorageRef(attemptId: string): string {
-  return `gen/terminal-records/${attemptId}/terminal.json`;
-}
-
-function invocationGuardStorageRef(attemptId: string): string {
-  return `gen/terminal-records/${attemptId}/provider-invocation.json`;
-}
 
 function parseInvocationGuard(value: unknown): GenerationInvocationGuard {
   if (!value || typeof value !== "object" || Array.isArray(value)) {

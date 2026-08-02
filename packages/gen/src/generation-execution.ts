@@ -3,6 +3,7 @@
 // allowed only when the model explicitly guarantees deterministic idempotency.
 // INTENT: Keep lifecycle authority here; modality adapters invoke providers and
 // normalize persisted artifacts without knowing ACK/retry/transport mechanics.
+import { generationProviderIdempotencyKey } from "@idream/shared/contracts";
 import type {
   GenerationTerminalRecord,
   GenerationTerminalRecordIngest,
@@ -96,7 +97,7 @@ export class GenerationExecution {
       attemptId,
       attemptNo: options.payload.attemptNo,
       transportAttemptNo: (options.attemptsMade ?? 0) + 1,
-      idempotencyKey: `generation:${attemptId}:provider`,
+      idempotencyKey: generationProviderIdempotencyKey(attemptId),
     };
   }
 

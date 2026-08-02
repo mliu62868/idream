@@ -3,7 +3,6 @@
 //   - enqueueDurable(queue, payload) -> hand immutable evidence to its owner
 // INTENT: Ported from packages/main jobs/queue.ts but stripped of Prisma — gen
 // has no DB and only produces the Main-owned terminal relay lifecycle.
-import { Buffer } from "node:buffer";
 import {
   type Job as BullJob,
   Queue,
@@ -11,7 +10,10 @@ import {
   type JobsOptions,
 } from "bullmq";
 import type { RedisOptions } from "ioredis";
+import { bullMqJobIdForDedupeKey } from "@idream/shared/contracts";
 import { env } from "./env";
+
+export { bullMqJobIdForDedupeKey };
 
 export type JsonPayload = Record<string, unknown>;
 
@@ -42,10 +44,6 @@ function redisOptions(): RedisOptions {
     tls: url.protocol === "rediss:" ? {} : undefined,
     maxRetriesPerRequest: null,
   };
-}
-
-export function bullMqJobIdForDedupeKey(key: string): string {
-  return `dedupe_${Buffer.from(key, "utf8").toString("base64url")}`;
 }
 
 function enqueueOptions(input: DurableEnqueueInput): JobsOptions {

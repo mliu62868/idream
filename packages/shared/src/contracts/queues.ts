@@ -52,3 +52,13 @@ export const ALL_QUEUE_NAMES = [
 ] as const;
 
 export type QueueName = (typeof ALL_QUEUE_NAMES)[number];
+
+// SPEC: derive the BullMQ job id that makes a dedupe key collide with itself.
+// INTENT: BullMQ dedupes on job id, so this mapping is what turns at-least-once
+// enqueues into one provider invocation. Main and Gen both enqueue onto the same
+// queues, so they must derive the id identically — two copies that drift stop
+// colliding and let the same Attempt be dispatched, and billed, twice.
+// INVARIANT: base64url of the UTF-8 key — stable across processes and restarts.
+export function bullMqJobIdForDedupeKey(dedupeKey: string): string {
+  return `dedupe_${Buffer.from(dedupeKey, "utf8").toString("base64url")}`;
+}

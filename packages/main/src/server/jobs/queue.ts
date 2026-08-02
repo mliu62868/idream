@@ -1,8 +1,13 @@
-import { Buffer } from "node:buffer";
 import { Job as BullJob, Queue, Worker, type JobsOptions } from "bullmq";
 import type { RedisOptions } from "ioredis";
 import type { Prisma } from "@prisma/client";
+import { bullMqJobIdForDedupeKey } from "@idream/shared/contracts";
 import { env } from "@/server/lib/env";
+
+// INTENT: re-exported so existing importers keep their "@/server/jobs/queue"
+// entry point. Gen enqueues onto these same queues, so the derivation itself
+// lives in shared — two copies that drift stop deduping and double-invoke.
+export { bullMqJobIdForDedupeKey };
 
 export interface EnqueueJobInput {
   queue: string;
@@ -119,10 +124,6 @@ function createQueue(queueName: string) {
     connection: redisOptions(),
     prefix: env.BULLMQ_PREFIX,
   });
-}
-
-export function bullMqJobIdForDedupeKey(dedupeKey: string) {
-  return `dedupe_${Buffer.from(dedupeKey, "utf8").toString("base64url")}`;
 }
 
 function enqueueOptions(input: EnqueueJobInput): JobsOptions {

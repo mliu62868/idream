@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 import {
   aiFinalizePayloadSchema,
+  generationTerminalFinalizeDedupeKey,
   generationTerminalRecordChecksum,
   generationTerminalRecordIngestSchema,
   type GenerationTerminalRecordIngest,
@@ -1058,7 +1059,7 @@ export async function dispatchPendingGenerationTerminalRecords(
       await queue.enqueue({
         queue: "app.ai.finalize",
         payload: row.payload as Prisma.InputJsonValue,
-        dedupeKey: `generation-terminal-record-finalize:${row.aggregateId}`,
+        dedupeKey: generationTerminalFinalizeDedupeKey(row.aggregateId),
       });
       const acknowledged = await prisma.mainOutboxEvent.updateMany({
         where: {

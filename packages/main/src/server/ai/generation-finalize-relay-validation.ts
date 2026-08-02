@@ -1,4 +1,5 @@
 import type { PrismaClient } from "@prisma/client";
+import { generationTerminalFinalizeDedupeKey } from "@idream/shared/contracts";
 import { aiFinalizePayloadSchema } from "./schemas";
 import { prisma } from "@/server/lib/db";
 import {
@@ -45,7 +46,7 @@ export async function validateGenerationFinalizeRelaySnapshot(
     terminalRecordRef: raw.terminalRecordRef,
     mode: raw.mode,
   };
-  const dedupeKey = `generation-terminal-record-finalize:${payload.attemptId}`;
+  const dedupeKey = generationTerminalFinalizeDedupeKey(payload.attemptId);
   if (row.dedupeKey !== dedupeKey) {
     return { valid: false, reason: "dedupe_mismatch" };
   }
