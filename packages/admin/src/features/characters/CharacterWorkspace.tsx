@@ -350,27 +350,6 @@ export function CharacterMediaOperationsCard({
   );
 }
 
-// SPEC: 阻塞入口要落到能完成动作的控件，而不是只回到 Visual 页首。
-// INTENT: 优先级权威是服务端 readiness.blockers 的下发顺序（identity → references → route），
-// 前端不再自建一遍阶梯去覆盖 deepLink。这里只剩 code → 页内锚点的展示映射 —— DOM id 是 admin
-// 自己的东西。服务端已经带 fragment 的 deepLink（路线类）原样透传，不再重推一次。
-const characterVisualBlockerAnchor: Readonly<Record<string, string>> = {
-  visual_identity_unsealed: "visual-identity-version",
-  visual_traits_incomplete: "visual-identity-version",
-  reference_set_not_active: "visual-reference-set",
-  reference_set_unsealed: "visual-reference-set",
-  reference_assets_unavailable: "visual-reference-set",
-};
-
-export function characterVisualBlockerHref(blocker: {
-  readonly code: string;
-  readonly deepLink: string;
-}): string {
-  if (blocker.deepLink.includes("#")) return blocker.deepLink;
-  const anchor = characterVisualBlockerAnchor[blocker.code];
-  return anchor ? `${blocker.deepLink}#${anchor}` : blocker.deepLink;
-}
-
 // SPEC: 视频是 character I2V，源图恒为角色主图（service.ts 的 mode==="video" 守卫）。
 // INTENT: 主图不可用时用户端视频请求会 409，但角色本身在线、运营面看不出异常。只在「已上线 +
 // 主图不可用」这个真正可行动的组合下告警——未上线时缺主图已由前面的生产步骤覆盖，再报一次是噪音。
@@ -2343,10 +2322,10 @@ export function VisualIdentityPanel({
   const [productionSettingsOpen, setProductionSettingsOpen] = useState(
     !data.visual.readiness.ready,
   );
-  const identityVersionNeedsAttention = data.visual.readiness.blockers.some(
-    (blocker) =>
-      characterVisualBlockerAnchor[blocker.code] === "visual-identity-version",
-  );
+  // INTENT: 「身份是否受阻」由服务端 imageReadiness.steps 判定；前端曾用一张 code→锚点表反推，
+  // 那张表漏了 visual_identity_missing 与 visual_anchor_missing，这两类阻塞时面板不会自动展开。
+  const identityVersionNeedsAttention =
+    (data.visual.imageReadiness?.steps.identity ?? "complete") !== "complete";
   const [advancedIdentityOpen, setAdvancedIdentityOpen] = useState(
     identityVersionNeedsAttention,
   );
@@ -2443,7 +2422,7 @@ export function VisualIdentityPanel({
       const action = characterAssetReadinessAction(blocker.code);
       const existing = grouped.get(action);
       grouped.set(action, {
-        deepLink: existing?.deepLink ?? characterVisualBlockerHref(blocker),
+        deepLink: existing?.deepLink ?? blocker.deepLink,
         messages: [...(existing?.messages ?? []), blocker.message],
         codes: [...(existing?.codes ?? []), blocker.code],
       });

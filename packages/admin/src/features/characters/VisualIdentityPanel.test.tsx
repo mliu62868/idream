@@ -126,7 +126,8 @@ const data = {
         {
           code: "reference_set_not_active",
           message: "No active Reference Set revision is pinned.",
-          deepLink: "/admin/characters/character-1?tab=visual",
+          // 服务端 workspace 投影下发的是带页内锚点的完整 deepLink（visualBlockerDeepLink）。
+          deepLink: "/admin/characters/character-1?tab=visual#visual-reference-set",
         },
       ],
       productionDeepLink: "/admin/characters/character-1?tab=assets",
@@ -184,7 +185,7 @@ describe("Visual Identity operator workbench", () => {
     expect(html).toContain("打开任意图片");
     expect(html).toContain("正式身份与生产设置");
     expect(html).toContain("Publish the approved identity references");
-    // 服务端下发的 deepLink 原样保留，前端只补它不知道的页内锚点。
+    // 服务端下发的 deepLink 原样透传，前端不再自建 code→锚点映射。
     expect(html).toContain(
       'href="/admin/characters/character-1?tab=visual#visual-reference-set"',
     );

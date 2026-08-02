@@ -718,6 +718,50 @@ function changedFields(
     .filter((key) => JSON.stringify(live[key]) !== JSON.stringify(draft[key]));
 }
 
+// SPEC: 生图（打磨）闸 ≠ 发布闸。这里只保留「没有它就画不出图」的条件。
+// INTENT: 密封 hash（*_unsealed）是内容的派生缓存，它的价值是发布时锁住身份，对生成一张
+// 草稿图没有意义；却曾要求运营「铸一个新版本」才能继续——用改数据的手段去修一个只需重算的
+// 值。发布链仍在 readiness.ts 里检查这两项，打磨阶段不再被它拦住。
+const VISUAL_BLOCKER_CODES = [
+  "visual_identity_missing", "visual_anchor_missing", "visual_traits_incomplete",
+  "reference_set_not_active", "reference_assets_unavailable",
+  "generation_route_unqualified", "generation_route_stale",
+] as const;
+type VisualBlockerCode = (typeof VISUAL_BLOCKER_CODES)[number];
+
+function isVisualBlockerCode(code: string): code is VisualBlockerCode {
+  return (VISUAL_BLOCKER_CODES as readonly string[]).includes(code);
+}
+
+// SPEC: blocker 的 deepLink 直达能完成该动作的控件，不是 Visual 页首。
+// INTENT: 锚点字面上是 admin 的 DOM id，但「哪类阻塞该去哪解决」是运营流程知识，属于本投影。
+// 这份知识此前被劈成两半——服务端只给路线类 fragment，admin 自己补其余——于是两边都漏了
+// visual_identity_missing 与 visual_anchor_missing，运营点进去只能落到页首。合到一处后
+// admin 侧退化成原样透传。
+// INVARIANT: 每个 VisualBlockerCode 都有锚点——漏一个是编译错误，不靠测试兜。
+const VISUAL_BLOCKER_ANCHORS: Readonly<Record<VisualBlockerCode, string>> = {
+  visual_identity_missing: "visual-identity-version",
+  visual_anchor_missing: "visual-identity-version",
+  visual_traits_incomplete: "visual-identity-version",
+  reference_set_not_active: "visual-reference-set",
+  reference_assets_unavailable: "visual-reference-set",
+  generation_route_unqualified: "route-qualification-workbench",
+  generation_route_stale: "route-qualification-workbench",
+};
+
+export function visualBlockerDeepLink(blocker: {
+  readonly code: string;
+  readonly deepLink: string;
+}): string {
+  const base = blocker.deepLink
+    .replace("?tab=visual-identity", "?tab=visual")
+    .split("#")[0];
+  const anchor = isVisualBlockerCode(blocker.code)
+    ? VISUAL_BLOCKER_ANCHORS[blocker.code]
+    : null;
+  return anchor ? `${base}#${anchor}` : base;
+}
+
 export async function getCharacterWorkspace(characterId: string) {
   const [character, project, serving, activeCommand, activeLooks, voiceProfiles] = await Promise.all([
     prisma.character.findFirst({
@@ -1027,12 +1071,9 @@ export async function getCharacterWorkspace(characterId: string) {
   // INTENT: 密封 hash（*_unsealed）是内容的派生缓存，它的价值是发布时锁住身份，对生成一张
   // 草稿图没有意义；却曾要求运营「铸一个新版本」才能继续——用改数据的手段去修一个只需重算的
   // 值。发布链仍在 readiness.ts 里检查这两项，打磨阶段不再被它拦住。
-  const visualBlockerCodes = new Set([
-    "visual_identity_missing", "visual_anchor_missing", "visual_traits_incomplete",
-    "reference_set_not_active", "reference_assets_unavailable",
-    "generation_route_unqualified", "generation_route_stale",
-  ]);
-  const visualBlockers = visualReadiness.blockers.filter((blocker) => visualBlockerCodes.has(blocker.code));
+  const visualBlockers = visualReadiness.blockers.filter((blocker) =>
+    isVisualBlockerCode(blocker.code)
+  );
   const currentReleaseForImageReadiness = serving?.currentReleaseId
     ? releases.find((release) => release.id === serving.currentReleaseId) ?? null
     : null;
@@ -1300,10 +1341,7 @@ export async function getCharacterWorkspace(characterId: string) {
         qualificationPolicyVersion: CHARACTER_RELEASE_POLICY_VERSION,
         blockers: visualBlockers.map((blocker) => ({
           ...blocker,
-          deepLink: ["generation_route_unqualified", "generation_route_stale"]
-            .includes(blocker.code)
-            ? `/admin/characters/${encodeURIComponent(characterId)}?tab=visual#route-qualification-workbench`
-            : blocker.deepLink.replace("?tab=visual-identity", "?tab=visual"),
+          deepLink: visualBlockerDeepLink(blocker),
         })),
         productionDeepLink: `/admin/characters/${encodeURIComponent(characterId)}?tab=assets`,
       },

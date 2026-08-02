@@ -105,4 +105,33 @@ describe("deep module authority boundaries", () => {
     expect(portfolio).toContain("journey,");
     expect(workspace).toContain("journey: portfolioItem.journey");
   });
+
+  // SPEC: blocker deepLink 里的页内锚点必须指向 admin 里真实存在的控件。
+  // INTENT: 服务端拼出的锚点字符串本身测不出问题——真正的失败模式是它与 admin 的 DOM id 漂移，
+  // 而漂移之后链接依然「合法」，只是点了不跳转。这条守卫跨包对账，两边任一侧改名都会炸。
+  it("keeps every server blocker anchor pointing at a control that exists in admin", () => {
+    const workspace = source("src/server/modules/admin-v2/characters/workspace.ts");
+    const anchorBlock = workspace.match(
+      /VISUAL_BLOCKER_ANCHORS[^=]*=\s*\{([\s\S]*?)\};/,
+    )?.[1];
+    expect(anchorBlock, "VISUAL_BLOCKER_ANCHORS block not found").toBeTruthy();
+
+    // 捕获整段引号内容而不是「合法字符」子集——否则一个含意外字符的漂移值会被截成合法前缀，
+    // 守卫反而放行（写这条时就踩了一次）。
+    const anchors = [
+      ...new Set([...anchorBlock!.matchAll(/:\s*"([^"]+)"/g)].map((m) => m[1])),
+    ];
+    expect(anchors.length).toBeGreaterThanOrEqual(3);
+
+    const adminUi = readdirSync("../admin/src/features/characters")
+      .filter((name) => name.endsWith(".tsx") && !name.includes(".test."))
+      .map((name) => source(path.join("../admin/src/features/characters", name)))
+      .join("\n");
+
+    for (const anchor of anchors) {
+      expect(adminUi, `no id="${anchor}" in admin characters UI`).toContain(
+        `id="${anchor}"`,
+      );
+    }
+  });
 });

@@ -7,7 +7,6 @@ import {
   characterReleaseOrdinals,
   characterRecentAssets,
   characterVideoSourceBroken,
-  characterVisualBlockerHref,
   characterWorkspaceTabLabel,
 } from "./CharacterWorkspace";
 
@@ -133,30 +132,6 @@ describe("Character production entry", () => {
     expect(workspaceSource).toContain('const historical = ["superseded", "withdrawn"]');
   });
 
-  // SPEC: 阻塞入口要落到能完成动作的控件，且服务端下发的 deepLink 是权威。
-  // INTENT: 前端曾自建 identity→references→route 优先级阶梯，用它覆盖掉 blocker.deepLink。
-  // 优先级本来就是服务端 blockers 的下发顺序；前端只补服务端不知道的页内锚点（DOM id）。
-  it("keeps the server deep link and only adds the in-page anchor it owns", () => {
-    expect(characterVisualBlockerHref({
-      code: "visual_identity_unsealed",
-      deepLink: "/admin/characters/c1?tab=visual",
-    })).toBe("/admin/characters/c1?tab=visual#visual-identity-version");
-    expect(characterVisualBlockerHref({
-      code: "reference_set_not_active",
-      deepLink: "/admin/characters/c1?tab=visual",
-    })).toBe("/admin/characters/c1?tab=visual#visual-reference-set");
-  });
-
-  it("passes a server deep link that already targets a control through untouched", () => {
-    expect(characterVisualBlockerHref({
-      code: "generation_route_unqualified",
-      deepLink: "/admin/characters/c1?tab=visual#route-qualification-workbench",
-    })).toBe("/admin/characters/c1?tab=visual#route-qualification-workbench");
-    expect(characterVisualBlockerHref({
-      code: "visual_anchor_missing",
-      deepLink: "/admin/characters/c1?tab=visual",
-    })).toBe("/admin/characters/c1?tab=visual");
-  });
 });
 
 describe("Character detail assets", () => {
