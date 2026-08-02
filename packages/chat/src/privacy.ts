@@ -281,11 +281,14 @@ export async function deleteSession(
   if (!session || session.userId !== input.userId) {
     throw new Error("not your session");
   }
-  await runWithProjectedChatFiles(
-    input.userId,
-    () => prisma.$transaction(async (tx) => {
-      await lockTurn(tx, input.userId, session.id);
-      await assertNoPendingChatFileMutationsTx(tx, input.userId);
+  await withTurnAuthority(
+    {
+      userId: input.userId,
+      sessionId: session.id,
+      prisma,
+      projectorPrisma,
+    },
+    async (tx, recordIntent) => {
       const currentSession = await tx.chatSession.findUnique({
         where: { id: session.id },
       });
@@ -300,20 +303,16 @@ export async function deleteSession(
       }
       const { messages, linkage } = await loadSessionLinkage(tx, session.id);
       const ids = messages.map((m) => m.id);
-      await recordChatFileMutation(tx, input.userId, {
+      await recordIntent({
         kind: "session_delete",
         sessionId: currentSession.id,
         characterId: currentSession.characterId,
         messageIds: ids,
       });
-      await recordChatFileMutation(
-        tx,
-        input.userId,
-        {
-          kind: "relationship_rebuild",
-          characterId: currentSession.characterId,
-        },
-      );
+      await recordIntent({
+        kind: "relationship_rebuild",
+        characterId: currentSession.characterId,
+      });
 
       await redactOrDeleteImageRequestOutbox(tx, {
         reason: "session_deleted",
@@ -369,10 +368,8 @@ export async function deleteSession(
           messageIds: ids,
         });
       }
-    }),
-    projectorPrisma,
+    },
   );
-  await projectChatFileMutations(input.userId, projectorPrisma);
 }
 
 export async function deleteAccount(
