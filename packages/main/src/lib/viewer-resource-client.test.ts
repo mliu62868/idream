@@ -101,6 +101,42 @@ describe("loadViewerResource", () => {
     expect(outcome).toEqual({ kind: "failed", error: "Gallery could not load." });
   });
 
+  it("keeps the caller's sentence when the error policy is fallback", async () => {
+    // ProfileWorkspace's library/preferences/tags reads deliberately never show
+    // the server's wording; migrating them must not change that.
+    const outcome = await loadViewerResource(
+      {
+        path: "/api/v1/library/recent",
+        parse: identity,
+        fallbackError: "Library data could not load.",
+        errorFrom: "fallback",
+      },
+      fetcherReturning(
+        jsonResponse({ ok: false, error: { message: "Shard 3 offline." } }, 503),
+      ),
+    );
+
+    expect(outcome).toEqual({
+      kind: "failed",
+      error: "Library data could not load.",
+    });
+  });
+
+  it("prefers the envelope message by default", async () => {
+    const outcome = await loadViewerResource(
+      {
+        path: "/api/v1/media/collections",
+        parse: identity,
+        fallbackError: "Media collections could not load.",
+      },
+      fetcherReturning(
+        jsonResponse({ ok: false, error: { message: "Shard 3 offline." } }, 503),
+      ),
+    );
+
+    expect(outcome).toEqual({ kind: "failed", error: "Shard 3 offline." });
+  });
+
   it("treats an unparseable failure body as a plain failure", async () => {
     const outcome = await loadViewerResource(
       { path: "/x", parse: identity, fallbackError: "Saved presets could not load." },

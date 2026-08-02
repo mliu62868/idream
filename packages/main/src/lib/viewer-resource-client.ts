@@ -51,6 +51,18 @@ export type ViewerResourceRequest<T> = {
    * Defaults to "always current" for callers with no staleness notion.
    */
   isCurrent?: () => boolean;
+  /**
+   * Where a failing response's message comes from. `"envelope"` (default)
+   * prefers the server's `error.message`; `"fallback"` always shows the
+   * caller's own sentence.
+   *
+   * INTENT: an explicit knob because the workspaces genuinely disagree —
+   * ProfileWorkspace surfaces the server's message for media collections but a
+   * fixed sentence for library, preferences, and tags. Defaulting one way and
+   * migrating everyone onto it would have quietly rewritten user-visible error
+   * text on three screens.
+   */
+  errorFrom?: "envelope" | "fallback";
 };
 
 /**
@@ -80,7 +92,13 @@ export async function loadViewerResource<T>(
     if (!isCurrent()) return DISCARDED;
 
     if (!response.ok) {
-      return { kind: "failed", error: envelopeError(raw, request.fallbackError) };
+      return {
+        kind: "failed",
+        error:
+          request.errorFrom === "fallback"
+            ? request.fallbackError
+            : envelopeError(raw, request.fallbackError),
+      };
     }
     return { kind: "loaded", data: request.parse(raw) };
   } catch (error) {
