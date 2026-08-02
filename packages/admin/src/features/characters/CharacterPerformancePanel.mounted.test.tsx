@@ -71,6 +71,23 @@ const blockedPreviewWorkspace = {
       qaBlockers: [],
     },
   },
+  // 图池完成度读服务端 journey 投影，不数 preview 快照的槽位。
+  journey: {
+    assetPack: {
+      draft: {
+        availablePurposes: ["character_cover"],
+        missingPurposes: ["character_hero", "character_chat"],
+        completed: 1,
+        total: 3,
+      },
+      live: {
+        availablePurposes: ["character_cover"],
+        missingPurposes: ["character_hero", "character_chat"],
+        completed: 1,
+        total: 3,
+      },
+    },
+  },
   preview: {
     changedFields: ["imageUrl", "assetPack"],
     live: {

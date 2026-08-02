@@ -6,7 +6,6 @@ import { type KeyboardEvent, type WheelEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Ban,
-  Check,
   ChevronRight,
   Languages,
   Loader2,
@@ -15,7 +14,7 @@ import {
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { apiGet, formatApiError, type ApiEnvelope } from "@/components/admin/api";
+import { apiGet } from "@/components/admin/api";
 import { BackendsView } from "@/components/admin/BackendsView";
 import { GenerationMetricsView } from "@/components/admin/GenerationMetricsView";
 import { WorkflowsView } from "@/components/admin/WorkflowsView";
@@ -33,9 +32,6 @@ import { ExperimentsView } from "@/components/admin/ExperimentsView";
 import { TodayView, type TodayData, type TodayLegacyData } from "@/components/admin/today/TodayView";
 import { type TodayProjection } from "@idream/shared/admin";
 import { PlacementsSection } from "@/components/admin/placements/PlacementsSection";
-import {
-  GENERATION_JOBS_REFRESH_EVENT,
-} from "@/features/jobs/query";
 import {
   AdminI18nProvider,
   getStoredAdminLocale,
@@ -79,7 +75,6 @@ import {
   RiskWorkspace,
 } from "@/features/overviews/OverviewWorkspaces";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
-import { buildCompatibilityListUrl } from "@/features/compatibility-lists/query";
 
 type Actor = {
   id: string;
@@ -145,16 +140,6 @@ type SectionData =
         | "risk-overview"
         | "provider-overview";
     };
-
-type PendingAction = {
-  title: string;
-  endpoint: string;
-  method: "POST" | "PATCH";
-  confirmText: string;
-  reasonRequired: boolean;
-  idempotencyKey?: string;
-  body: (reason: string, confirmation: string) => Record<string, unknown>;
-};
 
 // SPEC: localStorage key for which folded sidebar nav groups the operator last expanded.
 const NAV_GROUPS_STORAGE_KEY = "idream.admin.openNavGroups";
@@ -233,12 +218,6 @@ function AdminConsoleContent({
   // 一整片空白内容区（体感是"后台坏了"），直到 useEffect 里的 load() 才补上 spinner。
   const [loading, setLoading] = useState(() => initialAccess && canAccessActiveSection);
   const [error, setError] = useState<string | null>(null);
-  const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
-  const pendingActionDialogRef = useRef<HTMLDivElement | null>(null);
-  const [reason, setReason] = useState("");
-  const [confirmation, setConfirmation] = useState("");
-  const [actionStatus, setActionStatus] = useState<string | null>(null);
-  const [actionBusy, setActionBusy] = useState(false);
 
   useEffect(() => {
     if (!mobileNavOpen) return;
@@ -337,96 +316,6 @@ function AdminConsoleContent({
     // load intentionally reads the restored URL at event time.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sectionId]);
-
-  function updateRouteQuery(updates: Record<string, string | null>, clearCursors: readonly string[] = []) {
-    const nextUrl = buildCompatibilityListUrl(window.location.pathname, window.location.search, updates, clearCursors);
-    window.history.pushState(null, "", nextUrl);
-    void load();
-  }
-
-  function openAction(action: PendingAction) {
-    setReason("");
-    setConfirmation("");
-    setActionStatus(null);
-    setPendingAction(action);
-  }
-
-  useEffect(() => {
-    if (!pendingAction) return;
-    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const background = document.getElementById("admin-shell-background");
-    const skipLink = document.getElementById("admin-skip-link");
-    background?.setAttribute("aria-hidden", "true");
-    skipLink?.setAttribute("aria-hidden", "true");
-    if (background instanceof HTMLElement) background.inert = true;
-    if (skipLink instanceof HTMLElement) skipLink.inert = true;
-    const timer = window.setTimeout(() => {
-      pendingActionDialogRef.current?.querySelector<HTMLElement>("textarea, input, button:not([disabled])")?.focus();
-    }, 0);
-    return () => {
-      window.clearTimeout(timer);
-      background?.removeAttribute("aria-hidden");
-      skipLink?.removeAttribute("aria-hidden");
-      if (background instanceof HTMLElement) background.inert = false;
-      if (skipLink instanceof HTMLElement) skipLink.inert = false;
-      previousFocus?.focus();
-    };
-  }, [pendingAction]);
-
-  function handlePendingActionDialogKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if (event.key === "Escape" && !actionBusy) {
-      event.preventDefault();
-      setPendingAction(null);
-      return;
-    }
-    if (event.key !== "Tab") return;
-    const focusable = [...(pendingActionDialogRef.current?.querySelectorAll<HTMLElement>(
-      "button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [href], [tabindex]:not([tabindex='-1'])",
-    ) ?? [])];
-    if (focusable.length === 0) return;
-    const first = focusable[0];
-    const last = focusable.at(-1)!;
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  }
-
-  async function submitAction() {
-    if (!pendingAction) return;
-    setActionBusy(true);
-    setError(null);
-    try {
-      const response = await fetch(pendingAction.endpoint, {
-        method: pendingAction.method,
-        headers: {
-          "content-type": "application/json",
-          ...(pendingAction.idempotencyKey ? { "idempotency-key": pendingAction.idempotencyKey } : {}),
-        },
-        body: JSON.stringify(pendingAction.body(reason, confirmation)),
-      });
-      const payload = (await response.json()) as ApiEnvelope<unknown>;
-      if (!payload.ok) {
-        throw new Error(formatApiError(payload.error, "Admin action failed"));
-      }
-      const completedEndpoint = pendingAction.endpoint;
-      const completedTitle = pendingAction.title;
-      setPendingAction(null);
-      setActionStatus(`${completedTitle} completed.`);
-      await load();
-      if (completedEndpoint.startsWith("/api/v1/admin/generation/jobs/")) {
-        window.dispatchEvent(new Event(GENERATION_JOBS_REFRESH_EVENT));
-      }
-    } catch (actionError) {
-      setActionStatus(null);
-      setError(actionError instanceof Error ? actionError.message : "Admin action failed");
-    } finally {
-      setActionBusy(false);
-    }
-  }
 
   // SPEC: which folded nav groups are expanded; default all-collapsed (progressive
   // disclosure), persisted so an operator's expanded groups survive a reload.
@@ -723,16 +612,6 @@ function AdminConsoleContent({
                 {error}
               </div>
             ) : null}
-            {actionStatus ? (
-              <div
-                aria-live="polite"
-                className="mb-4 rounded-lg border border-[var(--ad-green-text)]/20 bg-[var(--ad-green-bg)] px-4 py-3 text-sm text-[var(--ad-green-text)]"
-                data-testid="admin-action-status"
-                role="status"
-              >
-                {actionStatus}
-              </div>
-            ) : null}
             {!canAccessActiveSection ? (
               <section
                 aria-labelledby="admin-section-denied-title"
@@ -754,8 +633,6 @@ function AdminConsoleContent({
               </div>
             ) : (
               renderSection(data, subview, {
-                openAction,
-                updateQuery: updateRouteQuery,
                 reload: () => void load(),
                 permissions,
                 canRead: canAccessActiveSection,
@@ -767,75 +644,6 @@ function AdminConsoleContent({
         </section>
       </div>
 
-      {pendingAction ? (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 p-4">
-          <div
-            aria-labelledby="pending-action-dialog-title"
-            aria-modal="true"
-            className="w-full max-w-md rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-5 shadow-2xl"
-            onKeyDown={handlePendingActionDialogKeyDown}
-            ref={pendingActionDialogRef}
-            role="dialog"
-          >
-            <div className="flex items-center justify-between gap-3">
-              <h2 className="text-base font-semibold" id="pending-action-dialog-title">{pendingAction.title}</h2>
-              <button
-                aria-label={t("Close")}
-                className="grid h-8 w-8 place-items-center rounded-md hover:bg-black/[0.04]"
-                onClick={() => setPendingAction(null)}
-                type="button"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-            <div className="mt-4 space-y-3">
-              <label className="block">
-                <span className="mb-1 block text-xs font-medium text-[var(--ad-text-muted)]">{t("Reason")}</span>
-                <textarea
-                  className="min-h-20 w-full resize-y rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 py-2 text-sm text-[var(--ad-text)] outline-none focus:border-[var(--ad-ink)]"
-                  onChange={(event) => setReason(event.target.value)}
-                  value={reason}
-                />
-              </label>
-              <label className="block">
-                <span className="mb-1 block text-xs font-medium text-[var(--ad-text-muted)]">
-                  {t("Confirmation")}
-                </span>
-                <input
-                  className="h-10 w-full rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 font-mono text-sm text-[var(--ad-text)] outline-none focus:border-[var(--ad-ink)]"
-                  onChange={(event) => setConfirmation(event.target.value)}
-                  value={confirmation}
-                />
-              </label>
-              <div className="rounded-lg border border-[var(--ad-border)] bg-black/[0.03] px-3 py-2 font-mono text-xs text-[var(--ad-text)]">
-                {pendingAction.confirmText}
-              </div>
-            </div>
-            <div className="mt-5 flex justify-end gap-2">
-              <button
-                className="h-9 rounded-md border border-[var(--ad-border)] px-3 text-sm text-[var(--ad-text)] hover:bg-black/[0.04]"
-                onClick={() => setPendingAction(null)}
-                type="button"
-              >
-                {t("Cancel")}
-              </button>
-              <button
-                className="inline-flex h-9 items-center gap-2 rounded-md bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
-                disabled={
-                  actionBusy ||
-                  confirmation !== pendingAction.confirmText ||
-                  (pendingAction.reasonRequired && reason.trim().length < 3)
-                }
-                onClick={() => void submitAction()}
-                type="button"
-              >
-                {actionBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
-                {t("Confirm")}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
     </main>
     </>
   );
@@ -972,8 +780,6 @@ function renderSection(
   section: SectionData | null,
   subview: AdminSubview,
   ctx: {
-    openAction: (action: PendingAction) => void;
-    updateQuery: (updates: Record<string, string | null>, clearCursors?: readonly string[]) => void;
     reload: () => void | Promise<void>;
     permissions: ReadonlySet<AdminPermissionKey>;
     canRead: boolean;

@@ -350,37 +350,25 @@ export function CharacterMediaOperationsCard({
   );
 }
 
-const visualIdentityRepairBlockers = new Set([
-  "visual_identity_unsealed",
-  "visual_traits_incomplete",
-]);
+// SPEC: 阻塞入口要落到能完成动作的控件，而不是只回到 Visual 页首。
+// INTENT: 优先级权威是服务端 readiness.blockers 的下发顺序（identity → references → route），
+// 前端不再自建一遍阶梯去覆盖 deepLink。这里只剩 code → 页内锚点的展示映射 —— DOM id 是 admin
+// 自己的东西。服务端已经带 fragment 的 deepLink（路线类）原样透传，不再重推一次。
+const characterVisualBlockerAnchor: Readonly<Record<string, string>> = {
+  visual_identity_unsealed: "visual-identity-version",
+  visual_traits_incomplete: "visual-identity-version",
+  reference_set_not_active: "visual-reference-set",
+  reference_set_unsealed: "visual-reference-set",
+  reference_assets_unavailable: "visual-reference-set",
+};
 
-const visualReferenceRepairBlockers = new Set([
-  "reference_set_not_active",
-  "reference_set_unsealed",
-  "reference_assets_unavailable",
-]);
-
-const visualRouteRepairBlockers = new Set([
-  "generation_route_unqualified",
-  "generation_route_stale",
-]);
-
-// SPEC: 阻塞入口必须落到能完成动作的控件，而不是只回到 Visual 页首。
-// INTENT: identity -> references -> route 是生产权威的固定顺序；多项阻塞时只给最早可执行动作。
-export function characterVisualReadinessTarget(
-  blockerCodes: readonly string[],
-): string | null {
-  if (blockerCodes.some((code) => visualIdentityRepairBlockers.has(code))) {
-    return "visual-identity-version";
-  }
-  if (blockerCodes.some((code) => visualReferenceRepairBlockers.has(code))) {
-    return "visual-reference-set";
-  }
-  if (blockerCodes.some((code) => visualRouteRepairBlockers.has(code))) {
-    return "route-qualification-workbench";
-  }
-  return null;
+export function characterVisualBlockerHref(blocker: {
+  readonly code: string;
+  readonly deepLink: string;
+}): string {
+  if (blocker.deepLink.includes("#")) return blocker.deepLink;
+  const anchor = characterVisualBlockerAnchor[blocker.code];
+  return anchor ? `${blocker.deepLink}#${anchor}` : blocker.deepLink;
 }
 
 // SPEC: 视频是 character I2V，源图恒为角色主图（service.ts 的 mode==="video" 守卫）。
@@ -2356,7 +2344,8 @@ export function VisualIdentityPanel({
     !data.visual.readiness.ready,
   );
   const identityVersionNeedsAttention = data.visual.readiness.blockers.some(
-    (blocker) => visualIdentityRepairBlockers.has(blocker.code),
+    (blocker) =>
+      characterVisualBlockerAnchor[blocker.code] === "visual-identity-version",
   );
   const [advancedIdentityOpen, setAdvancedIdentityOpen] = useState(
     identityVersionNeedsAttention,
@@ -2454,19 +2443,12 @@ export function VisualIdentityPanel({
       const action = characterAssetReadinessAction(blocker.code);
       const existing = grouped.get(action);
       grouped.set(action, {
-        deepLink: existing?.deepLink ?? blocker.deepLink,
+        deepLink: existing?.deepLink ?? characterVisualBlockerHref(blocker),
         messages: [...(existing?.messages ?? []), blocker.message],
         codes: [...(existing?.codes ?? []), blocker.code],
       });
     }
-    return [...grouped].map(([action, value]) => {
-      const target = characterVisualReadinessTarget(value.codes);
-      return {
-        action,
-        ...value,
-        deepLink: target ? `#${target}` : value.deepLink,
-      };
-    });
+    return [...grouped].map(([action, value]) => ({ action, ...value }));
   }, [data.visual.readiness.blockers]);
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -3593,9 +3575,14 @@ export function PreviewDiff({
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
             {snapshots.map((snapshot) => {
               const cover = snapshot.assetPack.character_cover;
-              const missing = Object.values(snapshot.assetPack).filter(
-                (slot) => !slot.imageUrl,
-              ).length;
+              // SPEC: 完成度只读服务端 journey 投影，不数 preview 快照的槽位。
+              // INTENT: preview.draft.assetPack 没做路线过滤，数出来的「齐了」和上面那条
+              // 「图池 0/3」告警来自两套口径，同一屏能并存两个互相打脸的结论。
+              const missing = (
+                snapshot.label === "Live"
+                  ? data.journey.assetPack.live
+                  : data.journey.assetPack.draft
+              ).missingPurposes.length;
               return (
                 <article
                   className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3"

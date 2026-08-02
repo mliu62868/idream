@@ -1444,10 +1444,11 @@ const zh: Record<string, string> = {
   "Go to review queue": "去审核",
   Handle: "去处理",
   // generation-group redesign (task 13 zh backfill) — FailureReason/EngineeringDetails/
-  // OperatorFlow/ReadonlyOpsView primitives + failureReasons.ts titles/hints.
+  // ReadonlyOpsView primitives + failureReasons.ts titles/hints。
+  // 下面 failureReasons 的 title/hint 只经 t(reason.title) 动态取值，i18n-completeness
+  // 的 AST 扫描只看字面量实参，扫不到它们 —— 删掉不会红，只会静默退回英文。
   "Technical detail": "技术详情",
   "Engineering details": "工程详情",
-  "Nothing here yet.": "暂无内容",
   "Model files not ready": "模型文件未就绪",
   "Missing runtime components — needs engineering": "缺运行组件，需工程处理",
   "Generation timed out": "生成超时",
@@ -1691,114 +1692,6 @@ const zh: Record<string, string> = {
   "Created from": "创建来源",
 };
 
-const zhColumns: Record<string, string> = {
-  accountCount: "账号数",
-  action: "操作",
-  active: "启用",
-  activeSessions: "活跃会话",
-  actorId: "操作者 ID",
-  actorRole: "操作者角色",
-  anonymousId: "匿名 ID",
-  approved: "已通过",
-  balanceAfter: "调整后余额",
-  baseCost: "基础费用",
-  billingPeriod: "计费周期",
-  blocked: "已拦截",
-  cancelAtPeriodEnd: "期末取消",
-  category: "分类",
-  characterId: "角色 ID",
-  characters: "角色数",
-  completed: "已完成",
-  confidence: "置信度",
-  costDreamcoins: "消耗金币",
-  coinsCost: "金币成本",
-  count: "数量",
-  createdAt: "创建时间",
-  currentPeriodEnd: "当前周期结束",
-  delta: "变更量",
-  displayName: "显示名",
-  effectiveFrom: "生效时间",
-  enabled: "启用",
-  errorCode: "错误码",
-  failed: "失败",
-  flag: "开关",
-  freeDailyLimit: "免费日限额",
-  freeRemaining: "免费剩余额度",
-  gender: "性别",
-  hardPolicy: "硬策略",
-  id: "ID",
-  inviteeId: "被邀请人 ID",
-  inviterId: "邀请人 ID",
-  isActive: "启用",
-  key: "键",
-  label: "标签",
-  latencyP50Ms: "P50 延迟",
-  latencyP95Ms: "P95 延迟",
-  layer: "层级",
-  lastMessageAt: "最后消息时间",
-  lastMessageRole: "最后消息角色",
-  lastMessageStatus: "最后消息状态",
-  lastSafetyStatus: "最后安全状态",
-  ledgerState: "账本状态",
-  level: "级别",
-  maxRedemptions: "最大兑换次数",
-  memoryEnabled: "记忆启用",
-  messageCount: "消息数",
-  messages24h: "24 小时消息",
-  messagesUsed: "已用消息数",
-  mode: "模式",
-  modelTier: "模型档位",
-  name: "名称",
-  paying: "付费",
-  permissionKey: "权限键",
-  periodStart: "周期开始",
-  pipelineModel: "流水线模型",
-  plan: "套餐",
-  policyCode: "策略代码",
-  profileId: "配置 ID",
-  profileKey: "配置键",
-  profileVersion: "配置版本",
-  provider: "供应商",
-  quotaStatus: "额度状态",
-  publishedAt: "发布时间",
-  reason: "原因",
-  redemptions: "已兑换",
-  referralCount: "邀请数",
-  reward: "奖励",
-  rewardStatus: "奖励状态",
-  role: "角色",
-  rolloutPercent: "放量比例",
-  ruleKey: "规则键",
-  signups: "注册",
-  slug: "Slug",
-  sortOrder: "排序",
-  sourceId: "来源 ID",
-  slaDueAt: "SLA 截止",
-  slaEscalatedAt: "SLA 升级时间",
-  slaEscalationReason: "SLA 升级原因",
-  slaState: "SLA",
-  status: "状态",
-  style: "风格",
-  submittedAt: "提交时间",
-  successRate: "成功率",
-  targetId: "目标 ID",
-  targetType: "目标类型",
-  recipeKey: "配方键",
-  title: "标题",
-  total: "总数",
-  totalDelta: "总变更",
-  type: "类型",
-  updatedAt: "更新时间",
-  unlimitedMessages: "无限消息",
-  useCase: "用途",
-  user: "用户",
-  userEmail: "用户邮箱",
-  userId: "用户 ID",
-  userIds: "用户 ID",
-  version: "版本",
-  visibility: "可见性",
-};
-
 const zhValues: Record<string, string> = {
   // SPEC: 角色组合决策与线上表现的枚举值（Promote…/mature…/certified…/exact…）。
   // 走 zhValues 通道而不是 zh —— 它们是枚举，StatusBadge 与 <option> 共用同一份译文。
@@ -1969,7 +1862,6 @@ type TranslationValues = Record<string, string | number>;
 type AdminI18nContextValue = {
   locale: AdminLocale;
   t: (key: string, values?: TranslationValues) => string;
-  column: (key: string) => string;
   value: (key: string) => string;
 };
 
@@ -2033,10 +1925,6 @@ export function hasAdminZh(key: string): boolean {
   );
 }
 
-export function adminColumnLabel(locale: AdminLocale, key: string) {
-  return locale === "zh" ? (zhColumns[key] ?? key) : key;
-}
-
 export function adminValueLabel(locale: AdminLocale, key: string) {
   return locale === "zh" ? (zhValues[key] ?? key) : key;
 }
@@ -2048,7 +1936,6 @@ export function adminDateLocale(locale: AdminLocale) {
 const defaultContext: AdminI18nContextValue = {
   locale: "en",
   t: (key, values) => translateAdmin("en", key, values),
-  column: (key) => adminColumnLabel("en", key),
   value: (key) => adminValueLabel("en", key),
 };
 
@@ -2064,7 +1951,6 @@ export function AdminI18nProvider({
   const value: AdminI18nContextValue = {
     locale,
     t: (key, values) => translateAdmin(locale, key, values),
-    column: (key) => adminColumnLabel(locale, key),
     value: (key) => adminValueLabel(locale, key),
   };
 

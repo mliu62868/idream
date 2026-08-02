@@ -184,7 +184,10 @@ describe("Visual Identity operator workbench", () => {
     expect(html).toContain("打开任意图片");
     expect(html).toContain("正式身份与生产设置");
     expect(html).toContain("Publish the approved identity references");
-    expect(html).toContain('href="#visual-reference-set"');
+    // 服务端下发的 deepLink 原样保留，前端只补它不知道的页内锚点。
+    expect(html).toContain(
+      'href="/admin/characters/character-1?tab=visual#visual-reference-set"',
+    );
     expect(html).toContain("reference_set_not_active");
     expect(html.match(/>Resolve</g)).toHaveLength(1);
     expect(html).not.toContain("Resolve blocker");

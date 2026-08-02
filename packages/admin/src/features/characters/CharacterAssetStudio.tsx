@@ -217,30 +217,15 @@ export function resolveCharacterAssetSubject(input: {
   };
 }
 
-export function nextCharacterAssetPurpose(purpose: CharacterAssetPurpose) {
-  const index = characterAssetPurposes.indexOf(purpose);
-  return characterAssetPurposes[Math.min(index + 1, characterAssetPurposes.length - 1)];
-}
-
-export function firstIncompleteCharacterAssetPurpose(
-  draftAssetPack: Partial<Record<CharacterAssetPurpose, unknown>>,
-  identityExists: boolean,
-): CharacterAssetPurpose {
-  if (!identityExists) return "character_cover";
-  return characterAssetPurposes.find((purpose) => !draftAssetPack[purpose]) ?? "character_chat";
-}
-
-export function characterAssetPackUnderCurrentRoute(
-  draftAssetPack: Partial<Record<CharacterAssetPurpose, unknown>>,
-  selections: Partial<Record<CharacterAssetPurpose, {
-    readonly routeCurrent?: boolean;
-  }>> | undefined,
-) {
-  return Object.fromEntries(characterAssetPurposes.flatMap((purpose) =>
-    draftAssetPack[purpose] && selections?.[purpose]?.routeCurrent !== false
-      ? [[purpose, draftAssetPack[purpose]]]
-      : []
-  )) as Partial<Record<CharacterAssetPurpose, unknown>>;
+// SPEC: 「下一张该做的图」只有一个口径 —— 服务端 journey 投影的 assetPack.draft.missingPurposes。
+// INTENT: 前端曾用 project.draftAssetPack 自己推一遍顺序，只过滤 routeCurrent，不过滤资产可用性
+// （软删 / 归属不对）。资产被软删时服务端说缺 cover、前端把运营带去 hero；同一屏的按钮文案用
+// 过滤后的 pack、点击行为用未过滤的 pack，说「下一个资产」却跳到别处。推导留在服务端一份。
+// 返回 null = 图池在当前路线下已齐，下一步是 Launch preview。
+export function nextIncompleteCharacterAssetPurpose(
+  journey: CharacterWorkspaceDetail["journey"],
+): CharacterAssetPurpose | null {
+  return journey.assetPack.draft.missingPurposes[0] ?? null;
 }
 
 export function resolveCharacterCustomerPreviewAssets(input: {
@@ -993,13 +978,8 @@ export function CharacterAssetStudio({
   );
   const [activePurpose, setActivePurpose] = useState<CharacterAssetPurpose>(() =>
     data.project.draftAssetRouteAuthority?.recoveryPurpose ??
-    firstIncompleteCharacterAssetPurpose(
-      characterAssetPackUnderCurrentRoute(
-        data.project.draftAssetPack,
-        data.project.draftAssetSelections,
-      ),
-      Boolean(data.visual.activeIdentity),
-    ),
+    nextIncompleteCharacterAssetPurpose(data.journey) ??
+    "character_chat",
   );
   const [briefs, setBriefs] = useState<Record<CharacterAssetPurpose, string>>(() => ({
     character_cover: t("Create a definitive primary portrait of {name}, preserving the locked identity and personality.", { name: subject.name }),
@@ -1059,10 +1039,12 @@ export function CharacterAssetStudio({
     qualifiedRoute?.sourceVariationAuthority?.ready === true;
   const variationRouteBlocker =
     qualifiedRoute?.sourceVariationAuthority?.blocker ?? "no_qualified_route";
-  const currentDraftAssetPack = useMemo(() => characterAssetPackUnderCurrentRoute(
-    data.project.draftAssetPack,
-    data.project.draftAssetSelections,
-  ), [data.project.draftAssetPack, data.project.draftAssetSelections]);
+  const nextIncompletePurpose = nextIncompleteCharacterAssetPurpose(data.journey);
+  // SPEC: 「已选中」按钮的文案和点击行为必须读同一个值。
+  // INTENT: 文案曾读路由过滤后的 pack、点击读未过滤的原始 pack —— 写着「下一个资产」、点下去跳到别处。
+  // null = 当前用途就是最后一件待办（或图池已齐），下一步是 Launch preview。
+  const advanceTargetPurpose =
+    nextIncompletePurpose === activePurpose ? null : nextIncompletePurpose;
   const pinnedRunIds = useMemo(() => new Set(
     Object.values(data.project.draftAssetSelections ?? {})
       .flatMap((selection) => selection?.runId ? [selection.runId] : []),
@@ -1139,10 +1121,7 @@ export function CharacterAssetStudio({
       ),
     );
     if (!preserveCurrent) {
-      const desiredPurpose = firstIncompleteCharacterAssetPurpose(
-        currentDraftAssetPack,
-        Boolean(data.visual.activeIdentity),
-      );
+      const desiredPurpose = nextIncompletePurpose ?? "character_chat";
       const selectedRunForPurpose =
         data.project.draftAssetSelections?.[desiredPurpose]?.runId;
       selectRunId(
@@ -1153,7 +1132,7 @@ export function CharacterAssetStudio({
       );
     }
     return scoped;
-  }, [currentDraftAssetPack, data.character.id, data.project.draftAssetSelections, data.visual.activeIdentity, selectRunId]);
+  }, [nextIncompletePurpose, data.character.id, data.project.draftAssetSelections, selectRunId]);
 
   const loadRun = useCallback(async (
     runId: string,
@@ -1440,7 +1419,7 @@ export function CharacterAssetStudio({
     quality: selectedItem?.review?.quality ?? null,
   });
   const decisionActionLabel = isSelectedAsset
-    ? firstIncompleteCharacterAssetPurpose(currentDraftAssetPack, true) === activePurpose
+    ? advanceTargetPurpose === null
       ? "Selected · preview"
       : "Selected · next asset"
     : selectedItem?.review?.decision === "rejected"
@@ -2495,8 +2474,7 @@ export function CharacterAssetStudio({
     if (!activeRunDetail || !selectedItem?.asset) return;
     const selectedAsset = selectedItem.asset;
     if (isSelectedAsset) {
-      const nextPurpose = firstIncompleteCharacterAssetPurpose(data.project.draftAssetPack, true);
-      if (nextPurpose !== activePurpose) choosePurpose(nextPurpose);
+      if (advanceTargetPurpose) choosePurpose(advanceTargetPurpose);
       else onContinue("preview");
       return;
     }
