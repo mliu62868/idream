@@ -1336,6 +1336,9 @@ model GenerationModelProfile {
   profileKey          String
   label               String
   mode                String    @default("image") // enum: image | video
+  // 记账字段，不决定实际后端：gen 按 workflow 描述符的 backendKind 选后端（comfyui / drawthings）。
+  // 默认值 sd_cpp 指向一个 gen 里已不存在的 runner —— 保留是因为线上可能有沿用默认值的 profile，
+  // gen 侧把它映射到 backend 适配器后照常执行。要改默认值需单独迁移，见 db/sql/。
   runner              String    @default("sd_cpp") // enum: pipeline | sd_cpp | mlx | comfyui | external
   pipelineModel       String
   workflowKey         String?

@@ -351,7 +351,7 @@ function assertWorkerAdapterMatchesRecordedProvider(
   configuredAdapter: string,
   mode: "image" | "video",
 ) {
-  const requiredAdapter = providerAdapterForPinnedAuthority(recordedProvider);
+  const requiredAdapter = workerAdapterForRecordedProvider(recordedProvider);
   if (requiredAdapter !== configuredAdapter) {
     throw new Error(
       `Pinned ${mode} provider ${recordedProvider} requires GEN_${mode.toUpperCase()}_PROVIDER=${requiredAdapter}; configured=${configuredAdapter}`,
@@ -360,13 +360,17 @@ function assertWorkerAdapterMatchesRecordedProvider(
 }
 
 // SPEC: Main runner name -> gen adapter name. Many-to-one by construction.
+// NOTE: named for what it does. It does NOT pin a backend — `payload.provider`
+// is an accounting field; `descriptor.backendKind` is what selects the backend.
+// The old name (`providerAdapterForPinnedAuthority`) claimed an authority it
+// never had.
 // INTENT: `sd_cpp` still maps to `backend` even though gen no longer has an
 // sd.cpp backend, because it is the `GenerationModelProfile.runner` DB default
 // and public text-to-image selection still admits such profiles. Fail-closing it
 // here would take out any live profile still carrying the default; the correct
 // fix is main-side (retire the runner value / change the column default), not a
 // worker-side reject. Whatever the runner says, the descriptor decides.
-export function providerAdapterForPinnedAuthority(provider: string) {
+export function workerAdapterForRecordedProvider(provider: string) {
   switch (provider) {
     case "mock":
     case "backend":

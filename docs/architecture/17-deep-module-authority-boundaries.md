@@ -65,6 +65,36 @@ Gen
 
 未来若部署到 serverless，不恢复 Main 内执行路径；单独部署 Gen adapter。
 
+#### 2.1.1 unknown 是独立终态，不是 failed 的一个可选字段
+
+`unknown`（provider 结果不明确，可能已扣费已产出）与 `failed`（确定失败）的处置相反：前者不退款、不重试、进运营裁决，后者退款且可重试。
+
+该区别一度被编码成 finalize payload 里 `generation.failed` variant 上的一个**可选**字段 `error.attemptOutcome`，解码端缺省落到 `"failed"` —— 漏传即对一次可能已扣费已产出的生成执行退款并重试。
+
+现在 `generation.unknown` 是 finalize 判别联合的独立 variant：
+
+- 编码端按 terminal record 的 outcome 直接发对应 variant；
+- 解码端按 variant 分派，`finalizeGenerationUnknown` 的签名只接受 unknown；
+- 分支缺失是**编译错误**（switch + `never` 兜底），不是静默 no-op；
+- 退款入口的参数类型收窄为 `"failed" | "blocked"`，"退款路径带模糊终态"不可表达；
+- 旧形状在解析边界单点归一化（迁移窗口，旧 payload 排空后删除），业务分支里没有兼容代码。
+
+Outbox payload 与 Bull payload 的 `canonicalSha256` 比对必须用**原始 wire 字节**，不能用 zod 解析后的对象 —— 否则 schema 每少留一个字段都会让在途任务判定终态不匹配。
+
+#### 2.1.2 跨进程 wire 标识符只有一个构造入口
+
+provider 幂等键、dispatch requestId、terminal record 存储路径、finalize dedupe key、BullMQ jobId 推导，全部由 `packages/shared/src/contracts/generation-identity.ts` 构造，main 与 gen 两侧只 import。
+
+理由：这些字面量此前在两个包里各存 3–6 份拷贝，其中 `bullMqJobIdForDedupeKey` 是两份逐字节相同的独立实现。任一侧改动编译期与 CI 都不报错，只有生产表现为 100% terminal record 被 quarantine，或（更糟）同一 Attempt 被 provider 调用两次。
+
+改这些格式属于**跨服务迁移**，不是重构。
+
+#### 2.1.3 `payload.provider` 是记账字段
+
+实际后端由 workflow 描述符的 `backendKind` 决定，与 `payload.provider` 无关。后端身份的真 pin 是 `workflowKey@workflowVersion`，图片与视频**同强度强制**（图片侧曾有「两者都缺则跳过校验」的逃生口，已删）。
+
+`GenerationModelProfile.runner` 的默认值 `sd_cpp` 指向一个 gen 里已不存在的 runner，保留是因为线上可能有沿用默认值的 profile；gen 把它映射到 backend 适配器后照常执行。要收敛需单独的 DB 迁移。
+
 ### 2.2 Dreamcoin Ledger 只有一个类型化写入口
 
 业务调用方不得自由组合 `(delta, reason: string)`，也不得直接写 `DreamcoinLedger`。
@@ -231,6 +261,8 @@ type CharacterProductionJourney = {
 - primary action 必须可执行，不能只链接到说明页；
 - Portfolio 与 Workspace 使用同一服务端投影；
 - UI 不再重算生产阶段、资产包完成度或下一步；
+- **deepLink 是完整答案，包含页内锚点**：服务端一度只为路线类 blocker 下发 fragment，其余交给 admin 自建 `code → 锚点` 表补齐；两边各漏一半，`visual_identity_missing` 与 `visual_anchor_missing` 两类阻塞点进去只能落到页首。锚点表现在与 blocker code 联合类型绑定（漏一个 code 是编译错误），admin 侧原样透传；
+- **守卫必须是形状断言，不是符号黑名单**：ADR 首版的 Journey 守卫断言两个旧符号名不出现、且只扫一个文件，于是换个名字住到另一个文件的重算逻辑完全不可见。现在守卫扫 characters 目录全部前端文件、断言三类**形状**（自己数图池槽位、自己推用途顺序、自造 fragment 顶掉服务端 deepLink），并正向断言关键字段确实被消费；另有跨包守卫校验服务端每个锚点都对应 admin 里真实存在的 DOM id。新增守卫时应先注入一次真实漂移确认它会失败。
 - 成功动作后重新读取投影，并自动进入新的下一步；
 - 自动前进只改变导航和可见任务，不自动采用候选、不自动激活 Voice、不自动发布 Release；
 - Journey 不拥有 Visual、Creative、Release、Serving 或 Performance 状态。
@@ -245,6 +277,10 @@ type CharacterProductionJourney = {
 | 聚合状态变更 | 对应 aggregate transition | 目标状态与领域原因 |
 | Main ↔ Chat event delivery | Durable Exchange Module | 类型化 event envelope |
 | Character 运营下一步 | Character Journey projector | Character identity / snapshot |
+| 生成终态处置（failed / unknown / blocked） | finalize 判别联合 | terminal record 的 outcome |
+| 产物迟到归档处置 | `lateArtifactDisposition` | Request 态与 Attempt 态（Attempt 优先） |
+| 跨进程 wire 标识符 | `shared/contracts/generation-identity` | attemptId |
+| 跨端枚举取值集合 | `@idream/shared/catalog` | 引用常量，不重打字面量 |
 
 ## 4. Rejected alternatives
 

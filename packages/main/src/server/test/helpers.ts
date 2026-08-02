@@ -606,7 +606,7 @@ export async function runQueuedGenerationJobs(
               : "GEN_VIDEO_PROVIDER";
           const previousAdapter = process.env[envKey];
           process.env[envKey] =
-            genPipeline.providerAdapterForPinnedAuthority(pinnedProvider);
+            genPipeline.workerAdapterForRecordedProvider(pinnedProvider);
           try {
             if (queue === "ai.image.generate") {
               await genPipeline.processImageGenerate(job.payload, deps);
@@ -662,7 +662,7 @@ type TestGenProviders = {
 };
 
 type TestGenPipeline = {
-  providerAdapterForPinnedAuthority(provider: string): string;
+  workerAdapterForRecordedProvider(provider: string): string;
   processImageGenerate(payload: unknown, deps: TestGenPipelineDeps): Promise<void>;
   processVideoGenerate(payload: unknown, deps: TestGenPipelineDeps): Promise<void>;
 };

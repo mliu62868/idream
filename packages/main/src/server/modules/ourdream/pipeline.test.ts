@@ -866,7 +866,8 @@ describe("local AI service pipeline", () => {
       const videoSpy = vi
         .spyOn(genProviders.video, "generate")
         .mockImplementation((input) => originalVideoGenerate(input));
-      vi.spyOn(genProviders.blob, "putPrivate").mockResolvedValueOnce({
+      // 视频产物走 putPrivateIfAbsent（同 key 重复投递不覆盖已发布字节），不是 putPrivate。
+      vi.spyOn(genProviders.blob, "putPrivateIfAbsent").mockResolvedValueOnce({
         ok: false,
         error: {
           code: "blob_write_failed",
