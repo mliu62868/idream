@@ -25,7 +25,9 @@ vi.mock("@/lib/admin-v2-api", async (importOriginal) => {
   return { ...actual, adminV2Request };
 });
 vi.mock("@/components/admin/i18n", () => ({
+  adminDateLocale: () => undefined,
   useAdminI18n: () => ({
+    locale: "en" as const,
     t: (
       value: string,
       values?: Readonly<Record<string, string | number>>,
@@ -40,6 +42,7 @@ vi.mock("@/components/admin/i18n", () => ({
 import {
   CharacterVideoStudio,
   characterVideoSourceOptions,
+  videoPlaybackIssueMessage,
 } from "./CharacterVideoStudio";
 import { readActiveDurableMutationIntent } from "@/lib/durable-mutation-intent";
 
@@ -91,6 +94,13 @@ const data = {
     },
   },
   visual: {
+    videoGenerationEstimate: {
+      profileKey: "profile_video_beta_v1",
+      estimatedCostDreamcoins: 100,
+      averageDurationMs: 785_800,
+      completedSampleCount: 1,
+      windowDays: 7,
+    },
     videoSources: [
       {
         mediaAssetId: "source-recent",
@@ -304,6 +314,9 @@ describe("Character Video Studio", () => {
 
     expect(container.textContent).toContain("LTX 2.3 GTAnimation");
     expect(container.textContent).toContain("4 seconds");
+    expect(container.textContent).toContain("100 Dreamcoins");
+    expect(container.textContent).toContain("13m 6s");
+    expect(container.textContent).toContain("7-day average");
     await waitUntil(() => adminV2Request.mock.calls.some(
       ([path, options]) => path.includes("/api/v2/admin/creative/runs?") && !options?.method,
     ));
@@ -568,5 +581,20 @@ describe("Character Video Studio", () => {
       scope: "character-video:review:actor-1:character-video-1",
     })).toBeNull();
     expect(container.textContent).not.toContain("Publish video");
+  });
+
+  // SPEC: 播放失败一定要有一句能读懂的原因，任何 MediaError 码都不能落空。
+  // INTENT: 生成"已成功"只代表出了文件；播不出来时若什么都不显示，运营分不清是还在加载
+  // 还是坏了。静默停滞（连元数据都没拿到、也没有 error 事件）同样要有话说。
+  it("gives every playback failure a readable reason", () => {
+    const messages = [1, 2, 3, 4].map((code) => videoPlaybackIssueMessage(code));
+    expect(messages.every((text) => text.trim().length > 0)).toBe(true);
+    expect(new Set(messages).size).toBe(4);
+    expect(videoPlaybackIssueMessage(3)).toContain("could not be decoded");
+    expect(videoPlaybackIssueMessage(4)).toContain("cannot play");
+    // 未知码与静默停滞都必须回落到一句话，不能是空串。
+    expect(videoPlaybackIssueMessage(0).trim().length).toBeGreaterThan(0);
+    expect(videoPlaybackIssueMessage(99).trim().length).toBeGreaterThan(0);
+    expect(videoPlaybackIssueMessage("stalled")).toContain("did not start playing");
   });
 });

@@ -242,6 +242,12 @@ describe("Character operator workspace", () => {
   it("returns a truthful draft preview and incomplete release evidence", async () => {
     const detail = characterWorkspaceDetailSchema.parse(await getCharacterWorkspace(characterId));
     expect(detail.activeCommand).toBeNull();
+    expect(detail.visual.videoGenerationEstimate).toMatchObject({
+      profileKey: "profile_video_beta_v1",
+      estimatedCostDreamcoins: 100,
+      completedSampleCount: expect.any(Number),
+      windowDays: 7,
+    });
     expect(detail.voice).toMatchObject({
       provider: "mock",
       cloningAvailable: false,

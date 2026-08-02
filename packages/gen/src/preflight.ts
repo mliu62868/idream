@@ -7,15 +7,17 @@
  *   1. A model file resolves in ComfyUI's dropdown but cannot be opened —
  *      dangling symlinks stay listed after their target disappears.
  *   2. Descriptors asking for `fp8_e4m3fn` weights need the
- *      `fp4-fp8-for-torch-mps` shim in the runner's venv. PyTorch MPS has no
- *      native Float8 dtype, so without it the sampler raises at step 0. The
- *      shim autoloads via a `[torch.backends]` entry point, which means an
- *      already-running process never picks up a fresh install — and a ComfyUI
- *      upgrade that rebuilds the venv drops it entirely.
+ *      ComfyUI-AppleSilicon-FP8 custom node in the runner's custom_nodes/.
+ *      PyTorch MPS has no native Float8 dtype, so without it the sampler
+ *      raises at step 0. custom_nodes/ survives ComfyUI upgrades, but a fresh
+ *      install loses it — and an already-running process never picks up a
+ *      fresh install.
  *
  * INVARIANT: read-only. This probe never submits a generation.
  */
+import "dotenv/config";
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -131,20 +133,26 @@ async function main() {
         detail: "descriptors request fp8 weights but CheckpointLoaderKJ is missing — install comfyui-kjnodes",
       });
     }
-    // Point COMFYUI_VENV_PYTHON at the runner interpreter for a hard check;
-    // without it we can only warn, since ComfyUI exposes no package listing.
+    // The node registers no ComfyUI nodes (pure runtime patches), so there is
+    // no /object_info surface to probe. Point COMFYUI_VENV_PYTHON at the
+    // runner interpreter (<comfyui>/.venv/bin/python3); custom_nodes/ is
+    // derived from it for a hard presence check. Without it we can only warn.
     const venvPython = process.env.COMFYUI_VENV_PYTHON;
     if (venvPython) {
-      const probe = spawnSync(venvPython, ["-c", "import fp4_fp8_for_torch_mps"], { stdio: "ignore" });
-      if (probe.status !== 0) {
+      const nodeInit = path.resolve(
+        venvPython,
+        "../../..",
+        "custom_nodes/ComfyUI-AppleSilicon-FP8/__init__.py",
+      );
+      if (!existsSync(nodeInit)) {
         problems.push({
           workflow: "(runner)",
-          detail: `fp8 descriptors present but ${venvPython} cannot import fp4_fp8_for_torch_mps`,
+          detail: `fp8 descriptors present but ${nodeInit} is missing — install ComfyUI-AppleSilicon-FP8`,
         });
       }
     } else {
       process.stdout.write(
-        "preflight: set COMFYUI_VENV_PYTHON to hard-check the fp4-fp8-for-torch-mps shim\n",
+        "preflight: set COMFYUI_VENV_PYTHON to hard-check the ComfyUI-AppleSilicon-FP8 node\n",
       );
     }
   }
@@ -155,7 +163,7 @@ async function main() {
   );
   if (needsFp8Shim) {
     process.stdout.write(
-      "preflight: fp8 descriptors present — runner venv needs fp4-fp8-for-torch-mps, and must be restarted after installing it\n",
+      "preflight: fp8 descriptors present — runner needs the ComfyUI-AppleSilicon-FP8 custom node, and must be restarted after installing it\n",
     );
   }
   process.exit(problems.length === 0 ? 0 : 1);

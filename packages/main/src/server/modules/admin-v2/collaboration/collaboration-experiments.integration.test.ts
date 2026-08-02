@@ -28,7 +28,7 @@ describe("admin collaboration, saved views, and managed experiments", () => {
 
   beforeAll(async () => {
     await prisma.user.createMany({ data: [
-      { id: adminId, email: `${adminId}@example.test`, role: "admin", status: "active" },
+      { id: adminId, email: `${adminId}@example.test`, displayName: "Ops Anna", role: "admin", status: "active" },
       { id: analystId, email: `${analystId}@example.test`, role: "analyst", status: "active" },
       { id: supportId, email: `${supportId}@example.test`, role: "support", status: "active" },
     ] });
@@ -100,6 +100,14 @@ describe("admin collaboration, saved views, and managed experiments", () => {
     const activityList = await listActivityRoute(new Request(`http://localhost/api/v2/admin/collaboration/incident/${incidentId}/activity`, { headers: headers() }), context);
     const activityPayload = await activityList.json();
     expect(activityPayload).toMatchObject({ ok: true, data: { watcherIds: [adminId] } });
+    // 时间线原先只回 actorId，运营看到的是原始 ID。名录随列表返回：
+    // 有 displayName 用 displayName，没有就回落到 email；两者都没有的 actorId 不进名录，
+    // 由前端显示原始 ID —— 不能编一个"名字就是 ID"的条目冒充真名。
+    const actors: { id: string; displayName: string }[] = activityPayload.data.actors;
+    expect(actors.every((entry) => entry.displayName.trim().length > 0)).toBe(true);
+    expect(actors.find((entry) => entry.id === adminId)?.displayName).toBe("Ops Anna");
+    expect(actors.find((entry) => entry.id === analystId)?.displayName).toBe(`${analystId}@example.test`);
+    expect(actors.some((entry) => entry.id === `${suffix}-ghost`)).toBe(false);
     expect(activityPayload.data.items.find((item: { kind: string }) => item.kind === "handoff")).toMatchObject({ metadata: { handoffToActorId: analystId, attachments: [{ label: "Provider recovery log" }] } });
     const hiddenMentions = await mentionsRoute(new Request("http://localhost/api/v2/admin/collaboration/mentions", { headers: headers(analystId, "analyst") }));
     expect(await hiddenMentions.json()).toMatchObject({ ok: true, data: { items: [] } });

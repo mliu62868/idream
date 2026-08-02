@@ -1,6 +1,6 @@
 "use client";
 
-import { AdminText, useAdminI18n } from "@/components/admin/i18n";
+import { AdminText, adminDateLocale, useAdminI18n } from "@/components/admin/i18n";
 import { ConfirmDialog } from "@/components/admin/ui/ConfirmDialog";
 import Link from "next/link";
 import Image from "next/image";
@@ -412,6 +412,15 @@ export function characterOperationsFacts(
       ? data.journey.assetPack.live
       : data.journey.assetPack.draft;
   const changedCount = data.preview.changedFields.length;
+  const releaseOrdinals = characterReleaseOrdinals(data.releases);
+  // SPEC: 身份图片按 mediaAssetId 去重后计数。
+  // INTENT: anchors 与 references 会重叠（已发布参考集里的图同时也是锚点），相加会把同一张
+  // 图数两次 —— 这个角色实际 15 张，页面写 16。
+  const identityImageCount = new Set(
+    [...data.visual.anchors, ...data.visual.references]
+      .filter((asset) => asset.available)
+      .map((asset) => asset.mediaAssetId),
+  ).size;
   return [
     {
       label: "Serving",
@@ -422,7 +431,7 @@ export function characterOperationsFacts(
     {
       label: "Live release",
       value: currentRelease
-        ? `v${currentRelease.version} · ${(currentRelease.publishedAt ?? currentRelease.createdAt).slice(0, 10)}`
+        ? `#${releaseOrdinals.get(currentRelease.id) ?? "?"} · ${(currentRelease.publishedAt ?? currentRelease.createdAt).slice(0, 10)}`
         : "None published",
       alert: currentRelease === null,
     },
@@ -440,6 +449,22 @@ export function characterOperationsFacts(
       label: "Owner",
       value: data.project.ownerId ?? "Unassigned",
       alert: data.project.ownerId === null,
+    },
+    {
+      label: "Identity images",
+      value: String(identityImageCount),
+      alert: identityImageCount === 0,
+    },
+    // SPEC: 这一格数的是"能拿去生成视频的源图片"，不是视频数量。
+    // INTENT: visual.videoSources 服务端就是一条 type:"image" 的查询，原先标签写的是
+    // "Videos"，于是"视频 15"其实是 15 张图片（这个角色只有 1 个视频），而且数值恰好和图片数
+    // 相同，误导更甚。0 张是真实信号：没有源图就生成不了视频。
+    {
+      label: "Video source images",
+      value: String(
+        data.visual.videoSources.filter((asset) => asset.available).length,
+      ),
+      alert: data.visual.videoSources.every((asset) => !asset.available),
     },
   ];
 }
@@ -1002,6 +1027,22 @@ export function characterPortfolioPerformanceLabel(
     return "28d performance will appear after sufficient live traffic.";
   }
   return `${metrics.join(" · ")} · ${performance.maturity.replaceAll("_", " ")}`;
+}
+
+// SPEC: 发布卡片与回滚下拉必须让运营一眼分辨"哪个更新"。
+// INTENT: CharacterRelease.version 是行级乐观锁计数（每次改动 +1），不是发布序号——
+// 直接渲染成 "Release v{version}" 会出现"v2 比 v1 更早发布"这种读反的顺序。
+// 这里按发布时间给出单调递增的序号；version 仍用于命令的并发校验，只在技术证据里出现。
+export function characterReleaseOrdinals(
+  items: readonly { readonly release: { id: string; publishedAt: string | null; createdAt: string } }[],
+) {
+  const stamp = (release: { publishedAt: string | null; createdAt: string }) =>
+    Date.parse(release.publishedAt ?? release.createdAt);
+  return new Map(
+    [...items]
+      .sort((left, right) => stamp(left.release) - stamp(right.release))
+      .map((item, index) => [item.release.id, index + 1] as const),
+  );
 }
 
 export function characterMonitorWindows(
@@ -1839,9 +1880,7 @@ function CharacterPortfolio({
         <p className="text-xs text-[var(--ad-text-muted)]">
           {asOf
             ? t("Fresh as of {time}", {
-                time: new Date(asOf).toLocaleString(
-                  locale === "zh" ? "zh-CN" : "en-US",
-                ),
+                time: new Date(asOf).toLocaleString(adminDateLocale(locale)),
               })
             : t("No successful query yet")}
         </p>
@@ -2026,28 +2065,6 @@ function ProjectEditor({
                   </dd>
                 </div>
               ))}
-              <div>
-                <dt className="text-xs text-[var(--ad-text-muted)]">
-                  {t("Images")}
-                </dt>
-                <dd className="mt-1 text-sm font-semibold">
-                  {data.visual.anchors.filter((asset) => asset.available)
-                    .length +
-                    data.visual.references.filter((asset) => asset.available)
-                      .length}
-                </dd>
-              </div>
-              <div>
-                <dt className="text-xs text-[var(--ad-text-muted)]">
-                  {t("Videos")}
-                </dt>
-                <dd className="mt-1 text-sm font-semibold">
-                  {
-                    data.visual.videoSources.filter((asset) => asset.available)
-                      .length
-                  }
-                </dd>
-              </div>
             </dl>
             {characterVideoSourceBroken(data) ? (
               <p className="mt-4 flex items-start gap-2 text-xs leading-5 text-[var(--ad-yellow-text)]">
@@ -2062,9 +2079,12 @@ function ProjectEditor({
             ) : null}
             <div className="mt-7 flex items-center justify-between gap-3">
               <h3 className="text-sm font-semibold">{t("Recent assets")}</h3>
+              {/* SPEC: "查看全部"必须落到这个角色的全部图片。
+                  INTENT: 曾指向 ?tab=assets，但那个 tab 只呈现最近一次生成批次的候选图，
+                  详情页写着"图片 16"却只能看到 1 张。图库支持 targetId 收窄，直接跳过去。 */}
               <Link
                 className="text-xs font-semibold hover:underline"
-                href={`?tab=assets`}
+                href={`/admin/creative/library?targetId=${encodeURIComponent(data.character.id)}`}
               >
                 {t("View all")}
               </Link>
@@ -2349,6 +2369,37 @@ export function VisualIdentityPanel({
       ]),
     [data.visual.anchors, data.visual.references],
   );
+  // SPEC: 参考集只有一个网格 —— 看图即可勾选。
+  // INTENT: 拆成"缩略图展示区 + 纯 media ID 勾选区"时，运营要靠 ID 在两区之间对照才能
+  // 剔除掉混进锚点池的多人合照/他人脸，实际不可用。不可用资产保留展示但禁止勾选，
+  // 以免"少了一张"却查不到原因。
+  const referenceRows = useMemo(() => {
+    const activeIds = new Set(
+      (data.visual.activeReferenceSet?.references ?? []).map(
+        (reference) => reference.mediaAssetId,
+      ),
+    );
+    const seen = new Set<string>();
+    return [
+      ...data.visual.anchors,
+      ...data.visual.references,
+      ...(data.visual.activeReferenceSet?.references ?? []),
+    ]
+      .filter((asset) => {
+        if (seen.has(asset.mediaAssetId)) return false;
+        seen.add(asset.mediaAssetId);
+        return true;
+      })
+      .map((asset) => ({
+        asset,
+        active: activeIds.has(asset.mediaAssetId),
+        selectable: asset.available,
+      }));
+  }, [
+    data.visual.activeReferenceSet,
+    data.visual.anchors,
+    data.visual.references,
+  ]);
   const requiresReviewedBootstrap =
     requiresReviewedIdentityBootstrap({
       hasActiveIdentity: identity !== null,
@@ -2616,10 +2667,6 @@ export function VisualIdentityPanel({
     }
   };
 
-  const publishedAssets = [
-    ...data.visual.anchors,
-    ...(data.visual.activeReferenceSet?.references ?? []),
-  ];
   return (
     <div className="space-y-5">
       <VisualIdentityExperimentWorkbench
@@ -2806,40 +2853,85 @@ export function VisualIdentityPanel({
                   </Link>
                 )}
               </div>
-              <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                {publishedAssets.length === 0 ? (
+              {identity ? (
+                <p className="mt-3 text-xs leading-5 text-[var(--ad-text-muted)]">
+                  {t(
+                    "Only checked images become active generation references. Unchecked images leave runtime authority after this revision is published; historical snapshots remain unchanged.",
+                  )}
+                </p>
+              ) : null}
+              <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                {referenceRows.length === 0 ? (
                   <p className="text-sm text-[var(--ad-text-muted)]">
                     {t("No anchor or published reference assets.")}
                   </p>
                 ) : (
-                  publishedAssets.map((asset, index) => (
-                    <article
-                      className="rounded-lg border border-[var(--ad-border)] p-3"
-                      key={`${asset.role}-${asset.mediaAssetId}-${index}`}
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-xs font-semibold">
-                          {t(asset.role.replaceAll("_", " "))}
-                        </span>
-                        <StatusBadge
-                          value={asset.available ? "available" : "unavailable"}
-                        />
-                      </div>
-                      <p className="mt-2 truncate text-xs text-[var(--ad-text-muted)]">
-                        {asset.mediaAssetId}
-                      </p>
-                      {(asset.thumbnailUrl ?? asset.url) ? (
-                        <Image
-                          alt={t("Visual reference evidence")}
-                          className="mt-3 aspect-video w-full rounded-md object-cover"
-                          height={180}
-                          src={asset.thumbnailUrl ?? asset.url ?? ""}
-                          unoptimized
-                          width={320}
-                        />
-                      ) : null}
-                    </article>
-                  ))
+                  referenceRows.map((row) => {
+                    const checked = selectedReferenceIds.includes(
+                      row.asset.mediaAssetId,
+                    );
+                    const preview = row.asset.thumbnailUrl ?? row.asset.url;
+                    return (
+                      <label
+                        className={`block cursor-pointer rounded-lg border p-3 transition-colors ${
+                          checked
+                            ? "border-[var(--ad-ink)] bg-black/[0.03]"
+                            : "border-[var(--ad-border)]"
+                        } ${row.selectable ? "" : "cursor-not-allowed opacity-60"}`}
+                        key={row.asset.mediaAssetId}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="flex min-w-0 items-center gap-2 text-xs font-semibold">
+                            <input
+                              checked={checked}
+                              disabled={!row.selectable}
+                              onChange={(event) =>
+                                setSelectedReferenceIds((current) =>
+                                  event.target.checked
+                                    ? [
+                                        ...new Set([
+                                          ...current,
+                                          row.asset.mediaAssetId,
+                                        ]),
+                                      ]
+                                    : current.filter(
+                                        (id) => id !== row.asset.mediaAssetId,
+                                      ),
+                                )
+                              }
+                              type="checkbox"
+                            />
+                            <span className="truncate">
+                              {t(row.asset.role.replaceAll("_", " "))}
+                            </span>
+                          </span>
+                          <StatusBadge
+                            tone={row.active ? "good" : undefined}
+                            value={
+                              !row.asset.available
+                                ? "unavailable"
+                                : row.active
+                                  ? "live reference"
+                                  : "available"
+                            }
+                          />
+                        </div>
+                        {preview ? (
+                          <Image
+                            alt={t("Visual reference evidence")}
+                            className="mt-3 aspect-square w-full rounded-md object-cover"
+                            height={320}
+                            src={preview}
+                            unoptimized
+                            width={320}
+                          />
+                        ) : null}
+                        <p className="mt-2 truncate text-[11px] text-[var(--ad-text-muted)]">
+                          {row.asset.mediaAssetId}
+                        </p>
+                      </label>
+                    );
+                  })
                 )}
               </div>
               {identity ? (
@@ -2847,39 +2939,12 @@ export function VisualIdentityPanel({
                   <h4 className="text-sm font-semibold">
                     {t("Publish Reference Set revision")}
                   </h4>
-                  <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">
-                    {t(
-                      "Only checked images become active generation references. Unchecked images leave runtime authority after this revision is published; historical snapshots remain unchanged.",
-                    )}
+                  <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
+                    {t("{count} of {total} images selected", {
+                      count: selectedReferenceIds.length,
+                      total: referenceCandidates.length,
+                    })}
                   </p>
-                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                    {referenceCandidates.map((asset) => (
-                      <label
-                        className="flex min-h-11 items-center gap-2 rounded-md border border-[var(--ad-border)] px-3 text-xs"
-                        key={asset.mediaAssetId}
-                      >
-                        <input
-                          checked={selectedReferenceIds.includes(
-                            asset.mediaAssetId,
-                          )}
-                          onChange={(event) =>
-                            setSelectedReferenceIds((current) =>
-                              event.target.checked
-                                ? [...new Set([...current, asset.mediaAssetId])]
-                                : current.filter(
-                                    (id) => id !== asset.mediaAssetId,
-                                  ),
-                            )
-                          }
-                          type="checkbox"
-                        />
-                        <span className="min-w-0 truncate">
-                          {t(asset.role.replaceAll("_", " "))} ·{" "}
-                          {asset.mediaAssetId}
-                        </span>
-                      </label>
-                    ))}
-                  </div>
                   {removedReferenceIds.length > 0 ? (
                     <p className="mt-3 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-xs text-[var(--ad-yellow-text)]">
                       {t(
@@ -3514,14 +3579,17 @@ export function PreviewDiff({
             <h2 className="font-semibold" id="blocked-preview-comparison">
               {t("Current and draft assets")}
             </h2>
-            {data.preview.changedFields.length ? (
-              <span className="text-xs text-[var(--ad-text-muted)]">
-                {t("{count} changed fields", {
-                  count: data.preview.changedFields.length,
-                })}
-              </span>
-            ) : null}
           </div>
+          {/* SPEC: 待发布的改动要列出改了什么，不能只给个计数。
+              INTENT: 详情页写"未发布改动 2"、这里也只显示"2 项变更"，运营无从判断该不该发布。
+              未被阻塞的分支一直是列字段名的，阻塞分支同样列出来，两条路径口径一致。 */}
+          {data.preview.changedFields.length ? (
+            <div className="mt-2 flex flex-wrap gap-2" aria-label={t("Changed fields")}>
+              {data.preview.changedFields.map((field) => (
+                <StatusBadge key={field} tone="warn" value={`${field} changed`} />
+              ))}
+            </div>
+          ) : null}
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
             {snapshots.map((snapshot) => {
               const cover = snapshot.assetPack.character_cover;
@@ -3951,9 +4019,11 @@ type CharacterReleaseItem = CharacterWorkspaceDetail["releases"][number];
 
 function ReleaseSummary({
   item,
+  ordinal,
   serving,
 }: {
   item: CharacterReleaseItem;
+  ordinal: number | undefined;
   serving: boolean;
 }) {
   const { t } = useAdminI18n();
@@ -3963,8 +4033,13 @@ function ReleaseSummary({
     <article className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
       <div className="flex flex-wrap items-center gap-2">
         <strong>
-          {t("Release")} v{release.version}
+          {t("Release")} #{ordinal ?? "?"}
         </strong>
+        {release.publishedAt ? (
+          <span className="text-xs text-[var(--ad-text-muted)]">
+            {release.publishedAt.slice(0, 10)}
+          </span>
+        ) : null}
         <StatusBadge value={release.status} />
         {!historical ? <StatusBadge value={release.readiness} /> : null}
         {serving ? <StatusBadge tone="good" value="serving now" /> : null}
@@ -3988,7 +4063,8 @@ function ReleaseSummary({
         </summary>
         <p className="mt-2 break-all text-xs text-[var(--ad-text-muted)]">
           {release.id} · {t("Snapshot")} {release.snapshotHash.slice(0, 16)} ·{" "}
-          {t("content")} {release.characterContentVersionId}
+          {t("content")} {release.characterContentVersionId} · {t("row version")}{" "}
+          {release.version}
         </p>
         <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap rounded-md bg-black/[0.035] p-3 text-[11px] leading-5">
           {JSON.stringify(
@@ -4029,6 +4105,12 @@ function ReleasePanel({
   getDurableCommandIdempotencyKey: (signature: string) => string;
 }) {
   const { t } = useAdminI18n();
+  const releaseOrdinals = useMemo(
+    () => characterReleaseOrdinals(data.releases),
+    [data.releases],
+  );
+  const liveAssetPackGap =
+    data.journey.assetPack.live.total - data.journey.assetPack.live.completed;
   const candidate = data.releases.find(
     ({ release }) =>
       !["published", "superseded", "withdrawn"].includes(release.status),
@@ -4383,7 +4465,23 @@ function ReleasePanel({
                 >
                   {t("Current live release")}
                 </h3>
-                <ReleaseSummary item={current} serving />
+                {/* SPEC: "已就绪"只代表发布校验通过，不代表线上图片资产齐了。
+                    INTENT: 发布校验校的是 placement manifest，不校 cover/hero/chat 三件套；
+                    卡片标"已就绪"而上线预览标"缺少 2 个图片位"，并列出现会被读成自相矛盾。
+                    把线上资产包缺口直接标在这里，两个口径各自说清自己在讲什么。 */}
+                {liveAssetPackGap > 0 ? (
+                  <p className="mb-3 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-xs text-[var(--ad-yellow-text)]">
+                    {t(
+                      "Release validation passed, but the live image pack is still {completed}/{total}. Missing: {missing}",
+                      {
+                        completed: data.journey.assetPack.live.completed,
+                        total: data.journey.assetPack.live.total,
+                        missing: data.journey.assetPack.live.missingPurposes.join(", "),
+                      },
+                    )}
+                  </p>
+                ) : null}
+                <ReleaseSummary item={current} ordinal={releaseOrdinals.get(current.release.id)} serving />
               </section>
             ) : null}
             {candidate ? (
@@ -4394,7 +4492,11 @@ function ReleasePanel({
                 >
                   {t("Release candidate")}
                 </h3>
-                <ReleaseSummary item={candidate} serving={false} />
+                <ReleaseSummary
+                  item={candidate}
+                  ordinal={releaseOrdinals.get(candidate.release.id)}
+                  serving={false}
+                />
               </section>
             ) : null}
             {history.length > 0 ? (
@@ -4407,6 +4509,7 @@ function ReleasePanel({
                     <ReleaseSummary
                       item={item}
                       key={item.release.id}
+                      ordinal={releaseOrdinals.get(item.release.id)}
                       serving={false}
                     />
                   ))}
@@ -4636,7 +4739,8 @@ function ReleasePanel({
               <option value="">{t("No superseded release available")}</option>
               {rollbackSources.map(({ release }) => (
                 <option key={release.id} value={release.id}>
-                  {t("Release")} v{release.version}
+                  {t("Release")} #{releaseOrdinals.get(release.id) ?? "?"}
+                  {release.publishedAt ? ` · ${release.publishedAt.slice(0, 10)}` : ""}
                 </option>
               ))}
             </select>
@@ -5208,7 +5312,7 @@ function CharacterDetail({
   id: string;
   permissions: Permissions;
 }) {
-  const { t } = useAdminI18n();
+  const { locale, t } = useAdminI18n();
   const [data, setData] = useState<CharacterWorkspaceDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -6079,7 +6183,9 @@ function CharacterDetail({
             </div>
             <p className="mt-1 text-sm text-[var(--ad-text-muted)]">
               {t("Updated")}{" "}
-              {new Date(data.character.updatedAt).toLocaleDateString()}
+              {new Date(data.character.updatedAt).toLocaleDateString(
+                adminDateLocale(locale),
+              )}
             </p>
           </div>
         </div>

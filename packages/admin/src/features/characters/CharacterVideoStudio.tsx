@@ -23,8 +23,8 @@ import {
   ThumbsDown,
   Video,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { useAdminI18n } from "@/components/admin/i18n";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { adminDateLocale, useAdminI18n } from "@/components/admin/i18n";
 import {
   StatusBadge,
   WorkspaceButton,
@@ -216,6 +216,78 @@ function createdRunProjectionMatches(
     detail.items.length === body.count;
 }
 
+export function formatGenerationEstimateDuration(durationMs: number) {
+  const totalSeconds = Math.max(0, Math.round(durationMs / 1_000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+}
+
+// SPEC: 播放器出问题必须说出问题，不能一直转圈。
+// INTENT: 生成成功（状态标"已成功"）只代表产出了文件，不代表这台机器放得出来。原先
+// <video> 没有任何失败处理：解码失败、下载中断、浏览器不支持该编码，表现全都是永远转圈，
+// 运营既判断不出是"还在加载"还是"坏了"，也拿不到可以拿去复核的地址。
+// 两种失败都要盖到：error 事件（有明确 MediaError）与静默停滞（连元数据都没拿到）。
+const VIDEO_STALL_TIMEOUT_MS = 15_000;
+
+const videoErrorReasons: Record<number, string> = {
+  1: "Playback was aborted before the video loaded.",
+  2: "The video download failed. Check network access to the asset URL.",
+  3: "The video downloaded but could not be decoded. The file may be corrupt.",
+  4: "This browser cannot play the video's format, or the asset URL is unreachable.",
+};
+
+export function videoPlaybackIssueMessage(issue: "stalled" | number) {
+  if (issue === "stalled") return "The video did not start playing in this browser.";
+  return videoErrorReasons[issue] ?? "The video could not be played.";
+}
+
+function VideoPlayback({ src }: { src: string }) {
+  const { t } = useAdminI18n();
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [issue, setIssue] = useState<"stalled" | number | null>(null);
+
+  // 换视频靠调用方的 key 重挂载来重置状态，effect 只挂看门狗。
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      // readyState 0 = HAVE_NOTHING：连元数据都没解出来，且没有触发 error。
+      if (videoRef.current?.readyState === 0) setIssue("stalled");
+    }, VIDEO_STALL_TIMEOUT_MS);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  return (
+    <>
+      <video
+        className="h-[360px] w-full rounded-lg bg-black object-contain sm:aspect-[4/3] sm:h-auto sm:max-h-[620px]"
+        controls
+        onError={(event) => setIssue(event.currentTarget.error?.code ?? 0)}
+        onLoadedMetadata={() => setIssue(null)}
+        playsInline
+        preload="metadata"
+        ref={videoRef}
+        src={src}
+      />
+      {issue !== null ? (
+        <div
+          className="mt-2 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-xs text-[var(--ad-yellow-text)]"
+          role="alert"
+        >
+          <p className="font-semibold">
+            {t(videoPlaybackIssueMessage(issue))}
+          </p>
+          <p className="mt-1">
+            {t("The generation run still succeeded — this is a playback problem.")}{" "}
+            <a className="underline" href={src} rel="noreferrer" target="_blank">
+              {t("Open the file directly")}
+            </a>
+          </p>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 export function CharacterVideoStudio({
   actorId,
   data,
@@ -229,7 +301,7 @@ export function CharacterVideoStudio({
   readonly permissions: CharacterVideoPermissions;
   readonly runCommittedMutation: RunCommittedMutation;
 }) {
-  const { t } = useAdminI18n();
+  const { locale, t } = useAdminI18n();
   const createIntentScope =
     `character-video:create:${actorId}:${data.character.id}`;
   const reviewIntentScope =
@@ -561,6 +633,11 @@ export function CharacterVideoStudio({
   const selectedItem = selectedRun?.items[0] ?? null;
   const selectedSource =
     sources.find((source) => source.assetId === sourceAssetId) ?? null;
+  const estimate =
+    data.visual.videoGenerationEstimate?.profileKey ===
+      characterVideoProductionRecipe.profileKey
+      ? data.visual.videoGenerationEstimate
+      : null;
   const lockedCreateRequest = createIntent
     ? savedCreateRequest(createIntent, data.character.id)
     : null;
@@ -827,7 +904,7 @@ export function CharacterVideoStudio({
           ) : selectedRun && selectedItem ? (
             <>
               {selectedItem.asset ? (
-                <video className="h-[360px] w-full rounded-lg bg-black object-contain sm:aspect-[4/3] sm:h-auto sm:max-h-[620px]" controls playsInline preload="metadata" src={selectedItem.asset.url} />
+                <VideoPlayback key={selectedItem.asset.url} src={selectedItem.asset.url} />
               ) : (
                 <div className="grid min-h-96 place-items-center rounded-lg border border-[var(--ad-border)] bg-black/[0.02] text-center text-[var(--ad-text-muted)]">
                   <div>
@@ -915,6 +992,31 @@ export function CharacterVideoStudio({
                 )}
               </p>
             ) : null}
+            <div
+              aria-label={t("Generation estimate")}
+              className="mt-4 rounded-md bg-[var(--ad-surface-subtle)] px-3 py-2 text-xs leading-5 text-[var(--ad-text-muted)]"
+            >
+              <p>
+                {estimate?.estimatedCostDreamcoins !== null &&
+                estimate?.estimatedCostDreamcoins !== undefined
+                  ? t("Estimated cost: {cost} Dreamcoins", {
+                      cost: estimate.estimatedCostDreamcoins,
+                    })
+                  : t("Estimated cost unavailable")}
+              </p>
+              <p>
+                {estimate?.averageDurationMs !== null &&
+                estimate?.averageDurationMs !== undefined
+                  ? t("Estimated duration: {duration} · {days}-day average · {count} completed run", {
+                      duration: formatGenerationEstimateDuration(
+                        estimate.averageDurationMs,
+                      ),
+                      days: estimate.windowDays,
+                      count: estimate.completedSampleCount,
+                    })
+                  : t("Estimated duration unavailable until this profile has completed health samples")}
+              </p>
+            </div>
             <WorkspaceButton className="mt-4 w-full justify-center" disabled={loading || busy !== null || !permissions.create || (!createIntent && (!sourceAssetId || brief.trim().length === 0))} onClick={() => void createVideo()} tone="primary">
               {busy === "create" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}{t(createActionLabel)}
             </WorkspaceButton>
@@ -940,7 +1042,7 @@ export function CharacterVideoStudio({
                     type="button"
                   >
                     <span>{t("Video")} {index + 1}</span>
-                    <span className="mt-1 block truncate text-[var(--ad-text-muted)]">{new Date(run.updatedAt).toLocaleString()}</span>
+                    <span className="mt-1 block truncate text-[var(--ad-text-muted)]">{new Date(run.updatedAt).toLocaleString(adminDateLocale(locale))}</span>
                   </button>
                 ))}
               </div>

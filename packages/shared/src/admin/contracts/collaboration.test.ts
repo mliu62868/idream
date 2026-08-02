@@ -32,7 +32,11 @@ describe("admin collaboration and experiment contracts", () => {
   it("owns collaboration and Saved View authority response contracts", () => {
     const now = new Date().toISOString();
     const activity = { id: "activity-1", targetType: "incident", targetId: "incident-1", kind: "comment", actorId: "admin-1", body: "Investigating", mentionedIds: [], metadata: {}, parentId: null, createdAt: now };
-    expect(collaborationActivityListResponseSchema.parse({ items: [activity], watching: true, watcherIds: ["actor-1"], pageInfo: { hasNextPage: false, endCursor: null }, asOf: now }).items).toHaveLength(1);
+    const list = collaborationActivityListResponseSchema.parse({ items: [activity], actors: [{ id: "admin-1", displayName: "Ops Anna" }], watching: true, watcherIds: ["actor-1"], pageInfo: { hasNextPage: false, endCursor: null }, asOf: now });
+    expect(list.items).toHaveLength(1);
+    // 名录只覆盖能解析出显示名的人；解析不到的 actorId 不占位，前端回落到 ID。
+    expect(list.actors).toEqual([{ id: "admin-1", displayName: "Ops Anna" }]);
+    expect(collaborationActivityListResponseSchema.safeParse({ items: [activity], watching: true, watcherIds: [], pageInfo: { hasNextPage: false, endCursor: null }, asOf: now }).success).toBe(false);
     expect(collaborationActivityMutationSchema.parse({ activity, authority: { ownerId: "actor-2", version: 2 }, duplicate: false }).authority).toEqual({ ownerId: "actor-2", version: 2 });
     expect(collaborationActivityCreateSchema.safeParse({ kind: "handoff", body: "Transfer", mentionedIds: [], metadata: { handoffToActorId: "actor-2" } }).success).toBe(false);
     expect(collaborationActivityCreateSchema.safeParse({ kind: "handoff", expectedVersion: 1, body: "Transfer", mentionedIds: [], metadata: { handoffToActorId: "actor-2" } }).success).toBe(true);
@@ -58,6 +62,7 @@ describe("admin collaboration and experiment contracts", () => {
       };
       expect(collaborationActivityListResponseSchema.safeParse({
         items: [activity],
+        actors: [],
         watching: false,
         watcherIds: [],
         pageInfo: { hasNextPage: false, endCursor: null },

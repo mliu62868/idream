@@ -152,6 +152,24 @@ function activityDto(row: Awaited<ReturnType<typeof prisma.adminCollaborationAct
   };
 }
 
+// SPEC: 只为本页真正出现过的 actorId 解析显示名，查不到的一律不返回。
+// INTENT: 前端在缺名字时回落到 ID —— 返回一条"名字就是 ID"的假记录会让运营以为那是真名。
+async function resolveCollaborationActors(actorIds: readonly string[]) {
+  const ids = [...new Set(actorIds)];
+  if (ids.length === 0) return [];
+  const users = await prisma.user.findMany({
+    where: { id: { in: ids } },
+    select: { id: true, displayName: true, name: true, email: true },
+  });
+  return users
+    .map((user) => ({
+      id: user.id,
+      displayName: (user.displayName ?? user.name ?? user.email ?? "").trim(),
+    }))
+    .filter((actor) => actor.displayName.length > 0)
+    .sort((left, right) => left.id.localeCompare(right.id));
+}
+
 export async function listActivity(request: Request, rawTargetType: string, targetId: string) {
   const targetType = collaborationTargetTypeSchema.parse(rawTargetType);
   const actor = await actorWithPermission(request, targetDescriptors[targetType].read);
@@ -178,6 +196,14 @@ export async function listActivity(request: Request, rawTargetType: string, targ
   });
   return ok({
     items,
+    actors: await resolveCollaborationActors([
+      ...items.flatMap((item) => [
+        item.actorId,
+        ...item.mentionedIds,
+        ...(item.metadata.handoffToActorId ? [item.metadata.handoffToActorId] : []),
+      ]),
+      ...preferences.map((preference) => preference.actorId),
+    ]),
     watching: preferences.some((preference) => preference.actorId === actor.id),
     watcherIds: preferences.map((preference) => preference.actorId),
     pageInfo: { hasNextPage: rows.length > query.limit, endCursor: rows.length > query.limit ? items.at(-1)?.id ?? null : null },

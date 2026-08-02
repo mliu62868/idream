@@ -213,11 +213,14 @@ export const ASSET_PURPOSES = [
 // 资产量可观，服务端筛更省）；详情页复用同一构造但不传筛选，等价于裸端点（spec §7 详情页
 // "无单条 GET，复用列表接口" 惯例的图片库版本——后端其实有单条 GET，但为与其余三件套架构一致
 // 仍走 list+find）。
-export function assetsListPath(filters?: { status?: string; purpose?: string; search?: string; cursor?: string; limit?: number }): string {
+export function assetsListPath(filters?: { status?: string; purpose?: string; search?: string; targetId?: string; cursor?: string; limit?: number }): string {
   const params = new URLSearchParams();
   if (filters?.status && filters.status !== "all") params.set("status", filters.status);
   if (filters?.purpose && filters.purpose !== "all") params.set("purpose", filters.purpose);
   if (filters?.search?.trim()) params.set("search", filters.search.trim());
+  // SPEC: targetId 把图库收敛到某个角色（生产批次的 targetId 即 characterId）。
+  // INTENT: 角色工作台的"查看全部"要能落到这个角色的全部图片；后端一直支持该参数。
+  if (filters?.targetId?.trim()) params.set("targetId", filters.targetId.trim());
   if (filters?.cursor) params.set("cursor", filters.cursor);
   if (filters?.limit) params.set("limit", String(filters.limit));
   return params.size > 0 ? `${ASSETS_LIST}?${params.toString()}` : ASSETS_LIST;

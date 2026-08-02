@@ -3,6 +3,7 @@ import type {
   CharacterDraftVisualDirection,
 } from "@idream/shared/admin";
 import {
+  characterVideoProductionRecipe,
   adminCommandStatusSchema,
   characterProjectDraftResumeSchema,
   characterQaRunSchema,
@@ -24,6 +25,7 @@ import { characterVisualProfileSnapshotHash, referenceSetSnapshotHash } from "./
 import { generationWorkflowDescriptor } from "@/server/modules/admin/generation-catalog";
 import { canonicalSha256 } from "../shared/canonical-json";
 import {
+  OPERATIONAL_USER_DATA_CLASS_SQL,
   operationalCharacterWhere,
   operationalMediaAssetWhere,
 } from "@/server/modules/admin/shared/metric-data-scope";
@@ -54,6 +56,72 @@ import {
   getVoiceDefaultSettings,
   voiceIdForGender,
 } from "@/server/modules/voice-defaults";
+import { generationCostDreamcoins } from "@/server/lib/generation-pricing";
+import { isProductionLtxVideoProfile } from "@/server/modules/generation/production-video-profile";
+
+const CHARACTER_VIDEO_HEALTH_WINDOW_DAYS = 7;
+
+async function loadCharacterVideoGenerationEstimate() {
+  const profile = await prisma.generationModelProfile.findFirst({
+    where: {
+      profileKey: characterVideoProductionRecipe.profileKey,
+      mode: "video",
+      status: "active",
+      enabled: true,
+      rolloutPercent: { gt: 0 },
+    },
+    orderBy: { version: "desc" },
+  });
+  if (!profile || !isProductionLtxVideoProfile(profile)) {
+    return {
+      profileKey: characterVideoProductionRecipe.profileKey,
+      estimatedCostDreamcoins: null,
+      averageDurationMs: null,
+      completedSampleCount: 0,
+      windowDays: CHARACTER_VIDEO_HEALTH_WINDOW_DAYS,
+    };
+  }
+  const since = new Date(
+    Date.now() -
+      CHARACTER_VIDEO_HEALTH_WINDOW_DAYS * 24 * 60 * 60 * 1_000,
+  );
+  const [healthRows, estimatedCostDreamcoins] = await Promise.all([
+    prisma.$queryRaw<
+      Array<{
+        averageDurationMs: number | null;
+        completedSampleCount: number;
+      }>
+    >`
+      SELECT
+        GREATEST(
+          0,
+          AVG(EXTRACT(EPOCH FROM (jobs."completedAt" - jobs."createdAt")) * 1000)
+        )::float8 AS "averageDurationMs",
+        count(*)::int AS "completedSampleCount"
+      FROM "generation_jobs" jobs
+      JOIN "users" owners ON owners.id = jobs."userId"
+      WHERE jobs."createdAt" >= ${since}
+        AND jobs."completedAt" IS NOT NULL
+        AND jobs."mode" = 'video'
+        AND jobs."profileId" = ${profile.profileKey}
+        AND jobs."profileVersion" = ${profile.version}
+        AND owners."dataClass" IN (${OPERATIONAL_USER_DATA_CLASS_SQL})
+    `,
+    generationCostDreamcoins(
+      "video",
+      characterVideoProductionRecipe.outputCount,
+      profile.costMultiplier,
+    ).catch(() => null),
+  ]);
+  const health = healthRows[0];
+  return {
+    profileKey: profile.profileKey,
+    estimatedCostDreamcoins,
+    averageDurationMs: health?.averageDurationMs ?? null,
+    completedSampleCount: health?.completedSampleCount ?? 0,
+    windowDays: CHARACTER_VIDEO_HEALTH_WINDOW_DAYS,
+  };
+}
 
 function record(value: Prisma.JsonValue | null | undefined): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -738,6 +806,7 @@ export async function getCharacterWorkspace(characterId: string) {
     routeEvaluationProfiles,
     identityCalibrationProfiles,
     characterImageReferenceCount,
+    videoGenerationEstimate,
     mediaOperations,
   ] = await Promise.all([
     prisma.mediaAsset.findMany({
@@ -784,6 +853,7 @@ export async function getCharacterWorkspace(characterId: string) {
     character.imageAsset?.characterId === null
       ? prisma.character.count({ where: { imageAssetId: character.imageAsset.id } })
       : Promise.resolve(0),
+    loadCharacterVideoGenerationEstimate(),
     loadCharacterMediaOperationsProjection(characterId),
   ]);
   const projectedRouteQualifications = qualifiedRoute &&
@@ -1106,6 +1176,7 @@ export async function getCharacterWorkspace(characterId: string) {
       videoSources: videoSourceAssets.map((asset) =>
         videoSourceAssetDto(asset, characterId)
       ),
+      videoGenerationEstimate,
       activeReferenceSet: activeReferenceSet ? {
         id: activeReferenceSet.id,
         revision: activeReferenceSet.revision,

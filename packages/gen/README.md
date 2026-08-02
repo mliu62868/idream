@@ -53,6 +53,34 @@ instance's native API, and `GEN_IMAGE_PROVIDER=backend` to route
 `packages/gen/workflows` (repo-root relative); the smoke script below resolves
 it explicitly so it works regardless of cwd.
 
+#### FP8 on Apple Silicon (MPS)
+
+PyTorch MPS has no native Float8 dtype. The runner needs the
+[ComfyUI-AppleSilicon-FP8](https://github.com/pawel-mazurkiewicz/ComfyUI-AppleSilicon-FP8)
+custom node in `custom_nodes/` — it re-applies its runtime patches on every
+ComfyUI startup, so a ComfyUI upgrade needs **no re-patching**. Do NOT install
+the older `fp4-fp8-for-torch-mps` pip package alongside it; both patch the
+same MPS ops and stack unpredictably.
+
+After every ComfyUI upgrade (then `pm2 restart comfyui-idream`):
+
+```bash
+cd packages/gen && bun run preflight && bun run smoke:backend
+```
+
+`preflight` hard-checks the node directory (via `COMFYUI_VENV_PYTHON`) and
+model visibility; `smoke:backend` proves fp8 end-to-end with a real image. If
+smoke fails after an upgrade, update the node itself and restart:
+
+```bash
+git -C "<comfyui>/custom_nodes/ComfyUI-AppleSilicon-FP8" pull
+```
+
+Per-patch status is logged at startup — inspect with
+`pm2 logs comfyui-idream --nostream | grep AppleSilicon-FP8`. A venv rebuild
+(major ComfyUI Desktop upgrade) keeps the node but may drop its pip deps;
+reinstall with the venv python: `pip install -r <node dir>/requirements.txt`.
+
 ### RedCraft Krea2 RedMix3 comparison candidate
 
 `redcraft-krea2-redmix3-txt2img` is an opt-in RedMix3 text-to-image workflow
@@ -72,8 +100,9 @@ The exact source file is the 12.24 GiB scaled-FP8 variant:
 
 Header inspection must show 256 FP8 weights, 256 matching `weight_scale`
 sidecars, and 256 `comfy_quant` tags. **No conversion step is needed.** With
-`fp4-fp8-for-torch-mps` in the runner venv, ComfyUI dequantizes scaled-fp8 per
-layer on MPS, so the descriptor loads the Civitai release file as-is. The
+the `ComfyUI-AppleSilicon-FP8` custom node in the runner's `custom_nodes/`,
+ComfyUI dequantizes scaled-fp8 per layer on MPS, so the descriptor loads the
+Civitai release file as-is. The
 former bf16 conversion product is not equivalent to it anyway — same-seed
 output differs (RMSE 25.5); see
 `docs/research/QWEN_FP8_ON_APPLE_MPS_LANDED_2026-07-29.md`.

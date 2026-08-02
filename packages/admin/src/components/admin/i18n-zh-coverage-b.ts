@@ -139,6 +139,7 @@ export const adminZhCoverageB: Record<string, string> = {
   "Override with audit": "审计后覆盖",
   "owner": "负责人",
   "Owner ID": "负责人 ID",
+  "Ownership transferred and recorded in the activity timeline.": "负责人已转交，并记入协作动态时间线。",
   "Page": "页",
   "Page size": "每页数量",
   "Pass/fail is derived by main from route outcomes, signature growth, affected-request backlog, completed mitigation scope, and Dreamcoin ledger authority. Operator input cannot make these checks pass.": "通过/失败由主服务根据路线结果、故障特征增长、受影响请求积压、已完成缓解范围和 Dreamcoin 账本权威派生；运营人员输入不能让这些检查直接通过。",

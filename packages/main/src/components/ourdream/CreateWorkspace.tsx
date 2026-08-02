@@ -415,7 +415,7 @@ export function CreateWorkspace() {
   } | null> {
     for (let attempt = 0; attempt < 50; attempt += 1) {
       const status = await requestApi(
-        `/api/v1/character-drafts/${draftId}/preview`,
+        `/api/v1/character-drafts/${draftId}/preview?previewJobId=${encodeURIComponent(previewJobId)}`,
         undefined,
         "GET",
       );

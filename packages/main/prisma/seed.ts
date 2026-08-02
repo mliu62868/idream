@@ -24,9 +24,6 @@ const CHAT_PROBE_USER_ID = "seed-chat-probe-user";
 const SUPPORT_USER_ID = "seed-support-user";
 const OPS_USER_ID = "seed-ops-user";
 const ANALYST_USER_ID = "seed-analyst-user";
-const KREA2_TEXT_ENCODER_PATH =
-  "/Users/kk/.localai/models/krea2/text_encoders/Qwen3VL-4B-Instruct-Q4_K_M.gguf";
-const KREA2_VAE_PATH = "/Users/kk/.localai/models/krea2/vae/wan_2.1_vae.safetensors";
 const COMFYUI_MODEL_ROOT =
   process.env.COMFYUI_MODEL_ROOT ?? "/Users/kk/ComfyUI-Shared/models";
 const DARKBEAST_BFS_FLUX2_MODEL_PATH = path.join(
@@ -216,8 +213,8 @@ function redMix3ComparisonProfileData() {
     pipelineModel: "redcraft-krea2-redmix3-fp8",
     workflowKey: "redcraft-krea2-redmix3-txt2img",
     sourceModelPath: REDMIX3_FP8_MODEL_PATH,
-    // SPEC: run the Civitai release file as-is. Once fp4-fp8-for-torch-mps is in
-    // the runner venv, ComfyUI dequantizes scaled-fp8 per layer on MPS, so the
+    // SPEC: run the Civitai release file as-is. With the ComfyUI-AppleSilicon-FP8
+    // custom node in the runner, ComfyUI dequantizes scaled-fp8 per layer on MPS, so the
     // former bf16 conversion product is neither needed nor equivalent to it
     // (measured RMSE 25.5 against the same seed on the krea2Edition pair).
     convertedModelPath: null,

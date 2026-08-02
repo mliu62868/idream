@@ -42,6 +42,7 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
   const [status, setStatus] = useState("all");
   const [purpose, setPurpose] = useState("all");
   const [search, setSearch] = useState("");
+  const [targetId, setTargetId] = useState("");
   const [cursor, setCursor] = useState<string | undefined>();
   const [pageInfo, setPageInfo] = useState({ endCursor: null as string | null, hasNextPage: false });
   const [ready, setReady] = useState(false);
@@ -79,7 +80,7 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
     setLoading(true);
     setError(null);
     try {
-      const data = await apiGet<{ items: ContentAsset[]; pageInfo: { endCursor: string | null; hasNextPage: boolean } }>(assetsListPath({ status, purpose, search, cursor: nextCursor, limit: 25 }));
+      const data = await apiGet<{ items: ContentAsset[]; pageInfo: { endCursor: string | null; hasNextPage: boolean } }>(assetsListPath({ status, purpose, search, targetId, cursor: nextCursor, limit: 25 }));
       if (!request.isCurrent()) return;
       setRows(data.items);
       setCursor(nextCursor);
@@ -88,6 +89,7 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
       if (status !== "all") params.set("status", status);
       if (purpose !== "all") params.set("purpose", purpose);
       if (search.trim()) params.set("search", search.trim());
+      if (targetId.trim()) params.set("targetId", targetId.trim());
       if (nextCursor) params.set("cursor", nextCursor);
       window.history.replaceState(null, "", `${window.location.pathname}${params.size ? `?${params}` : ""}`);
     } catch (loadError) {
@@ -96,7 +98,7 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
     } finally {
       if (request.isCurrent()) setLoading(false);
     }
-  }, [purpose, search, status, t]);
+  }, [purpose, search, status, targetId, t]);
 
   useEffect(() => {
     const gate = requestGate.current;
@@ -106,6 +108,7 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
       setStatus(params.get("status") ?? "all");
       setPurpose(params.get("purpose") ?? "all");
       setSearch(params.get("search") ?? "");
+      setTargetId(params.get("targetId") ?? "");
       setCursor(params.get("cursor") ?? undefined);
       setReady(true);
     }, 0);
@@ -209,6 +212,24 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
   return (
     <div aria-busy={loading}>
       <PageHeader purpose={t("Browse and curate generated image assets.")} title={t("Image Library")} />
+      {targetId ? (
+        // SPEC: 收窄范围必须可见且可撤销。
+        // INTENT: 从角色工作台"查看全部"跳进来时列表只剩该角色的图，不说明就像图库丢了数据。
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface-subtle)] px-3 py-2 text-sm">
+          <span>{t("Scoped to character {id}", { id: targetId })}</span>
+          <button
+            className="min-h-11 shrink-0 text-sm font-semibold underline"
+            onClick={() => {
+              clearForNextQuery();
+              setTargetId("");
+              setCursor(undefined);
+            }}
+            type="button"
+          >
+            {t("Show all characters")}
+          </button>
+        </div>
+      ) : null}
       <FilterBar
         onSearch={(value) => {
           clearForNextQuery();

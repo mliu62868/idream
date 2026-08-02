@@ -496,6 +496,18 @@ export const characterVisualWorkspaceSchema = z
     anchors: z.array(characterVisualAssetSchema).readonly(),
     references: z.array(characterVisualAssetSchema).readonly(),
     videoSources: z.array(characterVideoSourceAssetSchema).readonly(),
+    // SPEC: 运营在提交前看到当前固定视频 profile 的价格与近期真实耗时。
+    // INTENT: 估算是只读投影；缺少定价或样本时保留 null，不能猜一个看似精确的数字。
+    videoGenerationEstimate: z
+      .object({
+        profileKey: adminIdSchema,
+        estimatedCostDreamcoins: z.number().int().nonnegative().nullable(),
+        averageDurationMs: z.number().nonnegative().nullable(),
+        completedSampleCount: z.number().int().nonnegative(),
+        windowDays: z.number().int().positive(),
+      })
+      .strict()
+      .optional(),
     activeReferenceSet: characterVisualReferenceSetSchema.nullable(),
     looks: z.array(characterLookWorkspaceSchema).readonly().optional(),
     routeQualifications: z.array(characterRouteQualificationEvidenceSchema).readonly(),

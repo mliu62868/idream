@@ -68,6 +68,13 @@ describe("Character Visual workspace contract", () => {
       anchors: [{ mediaAssetId: "asset-anchor", role: "identity_anchor", available: true, url: "/anchor.webp", thumbnailUrl: null, qualityScore: null, identityScore: null }],
       references: [],
       videoSources: [],
+      videoGenerationEstimate: {
+        profileKey: "profile_video_beta_v1",
+        estimatedCostDreamcoins: 100,
+        averageDurationMs: 785_800,
+        completedSampleCount: 1,
+        windowDays: 7,
+      },
       activeReferenceSet: null,
       routeQualifications: [],
       routeEvaluation: {
@@ -92,7 +99,15 @@ describe("Character Visual workspace contract", () => {
       },
     });
     expect(result.activeIdentity?.version).toBe(2);
+    // 身份自带的锚点清单、可用锚点资产、已发布参考集三者互不等同：
+    // 这里锚点池有一张、参考集尚未发布，readiness 仍然为 false。
+    expect(result.activeIdentity?.anchorAssetIds).toEqual(["asset-anchor"]);
+    expect(result.activeReferenceSet).toBeNull();
     expect(result.readiness.ready).toBe(false);
+    expect(result.videoGenerationEstimate).toMatchObject({
+      estimatedCostDreamcoins: 100,
+      averageDurationMs: 785_800,
+    });
   });
 
   it("rejects a readiness claim without explicit evidence collections", () => {

@@ -52,7 +52,7 @@ import { reconcileDurableMutationIntent } from "@/lib/durable-mutation-recovery"
 import { createLatestRequestGate } from "@/lib/latest-request";
 import { cn } from "@/lib/utils";
 import { characterIdentityBootstrapMutation } from "@/features/image-workflow-transport";
-import { useAdminI18n } from "@/components/admin/i18n";
+import { adminDateLocale, useAdminI18n } from "@/components/admin/i18n";
 
 export const characterAssetPurposes = ["character_cover", "character_hero", "character_chat"] as const;
 export type CharacterAssetPurpose = typeof characterAssetPurposes[number];
@@ -974,7 +974,7 @@ export function CharacterAssetStudio({
   onProjectReload: () => Promise<void>;
   commitProjectMutation: CharacterAssetProjectMutation;
 }) {
-  const { t } = useAdminI18n();
+  const { locale, t } = useAdminI18n();
   const subject = resolveCharacterAssetSubject({
     draftName: data.preview.draft?.name,
     draftDescription: data.preview.draft?.description,
@@ -3339,7 +3339,7 @@ export function CharacterAssetStudio({
             >
               <span className="flex items-center justify-between gap-3">
                 <strong>{isCharacterAssetPurpose(run.purpose) ? t(purposeConfig[run.purpose].label) : t(run.purpose)}{pinnedRunIds.has(run.id) ? ` · ${t("Selected in draft")}` : ""}</strong>
-                <span>{new Date(run.updatedAt).toLocaleString()}</span>
+                <span>{new Date(run.updatedAt).toLocaleString(adminDateLocale(locale))}</span>
               </span>
               <span className="mt-1 block break-all text-[var(--ad-text-muted)]">
                 {run.id} · {run.counts.generated}/{run.counts.total} {t("generated")} · {run.counts.approved} {t("approved")}

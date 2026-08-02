@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   characterNoDataDiagnosis,
   characterOperationsFacts,
+  characterReleaseOrdinals,
   characterRecentAssets,
   characterVideoSourceBroken,
   characterVisualReadinessTarget,
@@ -24,6 +25,9 @@ function workspace(overrides: {
   changedFields?: string[];
   ownerId?: string | null;
   publishedRelease?: boolean;
+  anchors?: { mediaAssetId: string; available: boolean }[];
+  references?: { mediaAssetId: string; available: boolean }[];
+  videoSources?: { mediaAssetId: string; available: boolean }[];
 }): CharacterWorkspaceDetail {
   const releaseId = "editorial-release:alexa-reeves:a5c8ca4f";
   const purposes = ["character_cover", "character_hero", "character_chat"];
@@ -55,6 +59,18 @@ function workspace(overrides: {
     visual: {
       identityBootstrap: { allowed: overrides.bootstrap ?? false },
       readiness: { ready: overrides.ready ?? true },
+      // anchors 与 references 故意留一张重叠（shared-1），用来盯住去重。
+      anchors: overrides.anchors ?? [
+        { mediaAssetId: "shared-1", available: true },
+        { mediaAssetId: "anchor-2", available: true },
+      ],
+      references: overrides.references ?? [
+        { mediaAssetId: "shared-1", available: true },
+        { mediaAssetId: "reference-hidden", available: false },
+      ],
+      videoSources: overrides.videoSources ?? [
+        { mediaAssetId: "shared-1", available: true },
+      ],
       imageReadiness: overrides.repairable
         ? { state: "repairable", repair: { kind: "adopt_live_portrait" } }
         : null,
@@ -171,7 +187,8 @@ describe("Character operations facts", () => {
       changedFields: ["imageUrl", "assetPack"],
     });
     expect(factValue(live, "Serving")).toMatchObject({ value: "live", alert: false });
-    expect(factValue(live, "Live release")).toMatchObject({ value: "v1 · 2026-07-24" });
+    // 按发布时间的序号，不是行级锁版本号（发布页显示的也是这个）。
+    expect(factValue(live, "Live release")).toMatchObject({ value: "#1 · 2026-07-24" });
     expect(factValue(live, "Unpublished changes")).toMatchObject({ value: "2", alert: true });
     expect(factValue(live, "Image pack")).toMatchObject({ value: "1/3", alert: true });
     expect(factValue(live, "Owner")).toMatchObject({ value: "Unassigned", alert: true });
@@ -203,5 +220,56 @@ describe("Character operations facts", () => {
     expect(factValue(draft, "Unpublished changes")).toMatchObject({ value: "None", alert: false });
     expect(factValue(draft, "Image pack")).toMatchObject({ value: "3/3", alert: false });
     expect(factValue(draft, "Owner")).toMatchObject({ value: "ops-anna", alert: false });
+  });
+
+  // SPEC: 发布序号按发布时间单调递增。
+  // INTENT: CharacterRelease.version 是行级乐观锁计数，曾被当成发布号渲染，导致
+  // "v2 比 v1 更早发布" —— 回滚下拉里读起来像回滚到更新的版本。
+  it("numbers releases by publish time, not by the row lock version", () => {
+    const ordinals = characterReleaseOrdinals([
+      { release: { id: "live", publishedAt: "2026-07-24T00:40:28.924Z", createdAt: "2026-07-24T00:40:28.924Z" } },
+      { release: { id: "older", publishedAt: "2026-07-20T04:13:28.650Z", createdAt: "2026-07-20T04:13:28.650Z" } },
+    ]);
+    expect(ordinals.get("older")).toBe(1);
+    expect(ordinals.get("live")).toBe(2);
+  });
+
+  // SPEC: 还没发布的候选版本用 createdAt 排，不能因为 publishedAt 为 null 就掉到最前面。
+  it("falls back to createdAt for releases that were never published", () => {
+    const ordinals = characterReleaseOrdinals([
+      { release: { id: "candidate", publishedAt: null, createdAt: "2026-07-28T00:00:00.000Z" } },
+      { release: { id: "published", publishedAt: "2026-07-24T00:00:00.000Z", createdAt: "2026-07-01T00:00:00.000Z" } },
+    ]);
+    expect(ordinals.get("published")).toBe(1);
+    expect(ordinals.get("candidate")).toBe(2);
+  });
+
+  // SPEC: 身份图片按资产 ID 去重；"视频源图片"数的是图片，不是视频。
+  // INTENT: 原先 anchors + references 直接相加，重叠的图被数两次（真实角色 15 张显示成 16）；
+  // 而 visual.videoSources 服务端就是一条 type:"image" 查询，却被标成 "Videos" —— 于是
+  // "视频 15" 实际是 15 张图片，该角色只有 1 个视频。
+  it("counts identity images once and never calls source images videos", () => {
+    const detail = workspace({});
+    // shared-1 同时在 anchors 和 references 里，available 的去重后是 shared-1 + anchor-2。
+    expect(factValue(detail, "Identity images")).toMatchObject({ value: "2", alert: false });
+    expect(factValue(detail, "Video source images")).toMatchObject({ value: "1", alert: false });
+    expect(characterOperationsFacts(detail).some((fact) => fact.label === "Videos")).toBe(false);
+  });
+
+  it("flags a character that has no usable identity image or video source", () => {
+    const empty = workspace({ anchors: [], references: [], videoSources: [] });
+    expect(factValue(empty, "Identity images")).toMatchObject({ value: "0", alert: true });
+    expect(factValue(empty, "Video source images")).toMatchObject({ value: "0", alert: true });
+  });
+
+  // SPEC: 详情页的线上版本标签必须和发布页一致。
+  // INTENT: 两处都曾渲染行级锁版本 release.version，修发布页时漏了这里，
+  // 结果详情页写 v1、发布页写 #2，同一个版本两种叫法。
+  it("labels the live release with the same ordinal the Release tab shows", () => {
+    const detail = workspace({ publishedRelease: true, servingState: "live" });
+    const ordinal = characterReleaseOrdinals(detail.releases).get(
+      detail.serving?.currentReleaseId ?? "",
+    );
+    expect(factValue(detail, "Live release")?.value).toContain(`#${ordinal}`);
   });
 });

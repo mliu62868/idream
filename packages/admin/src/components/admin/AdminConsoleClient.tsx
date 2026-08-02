@@ -221,20 +221,17 @@ function AdminConsoleContent({
     () => navGroupsForPermissions(permissions, workMode),
     [permissions, workMode],
   );
-  const visibleNavGroups = useMemo(() => {
-    if (!isCharacterWorkspace) return navGroups;
-    return navGroups
-      .filter(({ group }) => group === "Today" || group === "Character Studio")
-      .map(({ group, items }) => ({
-        group,
-        items: group === "Character Studio"
-          ? items.filter(({ id }) => id === "content/official" || id === "content/review-queue")
-          : items,
-      }));
-  }, [isCharacterWorkspace, navGroups]);
+  // SPEC: 角色工作台不裁剪导航。
+  // INTENT: 曾把侧边栏裁到 Today + 角色/角色审核队列，但工作台里就有"检查生成路由"这类
+  // 需要跳生成任务/供应商诊断的动作，裁完就没有出口，只能绕回 Today。非当前组本来就是
+  // 折叠态（渐进披露），保留它们不增加视觉噪音，却能一步跳出去。
+  const visibleNavGroups = navGroups;
   const [data, setData] = useState<SectionData | null>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
-  const [loading, setLoading] = useState(false);
+  // SPEC: 会拉取 section 数据时，首帧就必须是加载态。
+  // INTENT: renderSection(null) 返回 null，若初值为 false，SSR 与水合前的首帧会渲染
+  // 一整片空白内容区（体感是"后台坏了"），直到 useEffect 里的 load() 才补上 spinner。
+  const [loading, setLoading] = useState(() => initialAccess && canAccessActiveSection);
   const [error, setError] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const pendingActionDialogRef = useRef<HTMLDivElement | null>(null);

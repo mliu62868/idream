@@ -116,8 +116,17 @@ export const savedViewListResponseSchema = z.object({ items: z.array(savedViewSc
 export const savedViewMutationResponseSchema = z.object({ view: savedViewSchema, duplicate: z.boolean() }).strict();
 export const savedViewUpdateResponseSchema = z.object({ view: savedViewSchema }).strict();
 
+// SPEC: 活动列表随附本页出现过的操作者名录（id → 显示名）。
+// INTENT: 时间线和关注者列表原先只有 actorId，运营看到的是 `seed-admin-user` 这种原始 ID，
+// 认不出是谁。名录随列表一次返回，避免前端按人 N+1 查询；查不到名字的仍回落到 ID。
+export const collaborationActorSchema = z.object({
+  id: adminIdSchema,
+  displayName: z.string().trim().min(1),
+}).strict();
+
 export const collaborationActivityListResponseSchema = z.object({
   items: z.array(collaborationActivitySchema).readonly(),
+  actors: z.array(collaborationActorSchema).readonly(),
   watching: z.boolean(),
   watcherIds: z.array(adminIdSchema).readonly(),
   pageInfo: adminPageInfoSchema,

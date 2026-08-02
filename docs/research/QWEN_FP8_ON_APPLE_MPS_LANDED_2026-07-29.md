@@ -2,6 +2,11 @@
 
 日期：2026-07-29
 范围：本机 ComfyUI `0.29.0` / PyTorch `2.10.0` / Apple M4 Max / 128 GiB unified memory。
+
+> **更新 2026-08-02**：MPS FP8 方案已从 `fp4-fp8-for-torch-mps` venv 包切换为
+> `custom_nodes/ComfyUI-AppleSilicon-FP8` 自定义节点（venv 包已卸载；两者 patch
+> 同一批算子，不可共存）。preflight 硬检查也已改为探测节点目录。本文其余内容为
+> 当时的落地记录，其中的包安装与 entry-point 细节不再适用。
 本文推翻了 [`QWEN_IMAGE_FP8_INT8_APPLE_MPS_SUPPORT_2026-07-24.md`](./QWEN_IMAGE_FP8_INT8_APPLE_MPS_SUPPORT_2026-07-24.md) 结论 4（「当前可靠路径仍是离线恢复到 BF16/FP16」）的适用范围：社区已有可用方案，Qwen 现在直接以 8-bit 常驻。
 
 ## 结论
