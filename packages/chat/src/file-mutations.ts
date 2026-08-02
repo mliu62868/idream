@@ -1,3 +1,36 @@
+// SPEC: durable file-intent ledger (chat.chat_file_mutations). The file layer
+// (mem/*.md, sessions/*.jsonl) is authority but is NOT transactional, so no
+// domain transaction may touch it directly. A writer commits an INTENT; a
+// separate projector transaction performs the file effect. Recording an intent
+// is therefore a promise with a precise meaning: it will be applied under the
+// exclusive user advisory lock, over the projector connection, in `sequence`
+// order, and before any read that goes through withReadableChatFileSnapshot can
+// observe that user's files.
+// INTENT: the capability split is enforced by PG role, not by convention —
+// chat_service may only INSERT (id, user_id, kind, payload) and holds neither
+// UPDATE nor DELETE, while chat_projector holds SELECT+UPDATE and none of the
+// INSERT (db/sql/03_chat_tables.sql). Request code therefore cannot forge an
+// "applied" receipt for a side effect that never landed, which is the whole
+// reason this ledger exists instead of writing files inline.
+// INVARIANTS:
+//   - Exclusivity: the ledger flip to `applied` is a guarded updateMany whose
+//     count must be 1. The file effect itself, however, runs BEFORE that
+//     transaction commits, so a rollback replays it — every applyFileMutation
+//     branch must stay idempotent (updateRelationshipOnce/setRelationshipOnce
+//     keyed by turn/mutation id, appendTraceOnce by fileMutationId).
+//   - No self-projection: a writer takes the same user lock and then calls
+//     assertNoPendingChatFileMutationsTx. A newly committed intent aborts and
+//     retries the entire request (runWithProjectedChatFiles) rather than letting
+//     request code drain the ledger on the projector's behalf.
+//   - Cross-service honesty: watermarks (memoryExtractedAttempt, logExtractedSeq)
+//     and outbox events are written in the SAME transaction that marks the row
+//     applied, so main is never told about a file effect that did not land.
+//   - Privacy: applying an intent overwrites its payload with an identity-only
+//     receipt (appliedFileMutationReceipt) so the ledger cannot survive as a
+//     second copy of text the user deleted. relationship_set is the deliberate
+//     exception — buildRelationshipProjection replays its summary/stage verbatim
+//     — and relationship_delete calls chat.purge_applied_relationship_sets to
+//     drop those retained rows before the reset takes effect.
 import path from "node:path";
 import { z } from "zod";
 import type { Prisma } from "../generated/client/client.js";
@@ -28,8 +61,7 @@ import {
 } from "./relationship.js";
 import {
   buildRelationshipProjection,
-  relationshipMessageSelect,
-  resolveRelationshipLinkage,
+  loadSessionLinkage,
   type RelationshipProjectionOperation,
 } from "./relationship-authority.js";
 import { lockUser, lockUserShared } from "./turn-lock.js";
@@ -392,23 +424,12 @@ async function assertMemoryExtractAuthority(
   userId: string,
   mutation: Extract<ChatFileMutation, { kind: "memory_extract" }>,
 ): Promise<void> {
-  const [session, assistant, source, messages, receipts] = await Promise.all([
+  const [session, assistant, source, { linkage }] = await Promise.all([
     tx.chatSession.findUnique({ where: { id: mutation.sessionId } }),
     tx.message.findUnique({ where: { id: mutation.turnKey } }),
     tx.message.findUnique({ where: { id: mutation.userMessageId } }),
-    tx.message.findMany({
-      where: { sessionId: mutation.sessionId },
-      select: relationshipMessageSelect,
-    }),
-    tx.chatSendReceipt.findMany({
-      where: { sessionId: mutation.sessionId },
-      select: {
-        userMessageId: true,
-        assistantMessageId: true,
-      },
-    }),
+    loadSessionLinkage(tx, mutation.sessionId),
   ]);
-  const linkage = resolveRelationshipLinkage(messages, receipts);
   if (
     !session ||
     session.userId !== userId ||

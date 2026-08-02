@@ -79,14 +79,6 @@ export interface RelationshipRepairSnapshot {
   cutoverBaseline: RelationshipCutoverBaseline | null;
 }
 
-export async function updateRelationship(
-  userId: string,
-  characterId: string,
-  patch: RelationshipPatch,
-): Promise<RelationshipState> {
-  return (await updateRelationshipDocument(userId, characterId, patch)).state;
-}
-
 /** Apply one generated turn exactly once. BullMQ is at-least-once, so relationship
  * progression must use the same idempotency key as the memory extraction job. */
 export async function updateRelationshipOnce(
@@ -95,20 +87,11 @@ export async function updateRelationshipOnce(
   turnKey: string,
   patch: RelationshipPatch,
 ): Promise<{ state: RelationshipState; applied: boolean }> {
-  return updateRelationshipDocument(userId, characterId, patch, turnKey);
-}
-
-async function updateRelationshipDocument(
-  userId: string,
-  characterId: string,
-  patch: RelationshipPatch,
-  turnKey?: string,
-): Promise<{ state: RelationshipState; applied: boolean }> {
   const rel = chatFsPaths.relationship(userId, characterId);
   return withFileMutationLock(rel, async () => {
     const document = parseRelationshipDocument(await readWhole(rel));
+    // Prefix match also catches the legacy `${assistantId}:${attempt}` keys.
     if (
-      turnKey &&
       document.appliedTurnKeys.some(
         (key) => key === turnKey || key.startsWith(`${turnKey}:`),
       )
@@ -131,85 +114,15 @@ async function updateRelationshipDocument(
       : current.summary;
 
     const next: RelationshipState = { stage, signals, summary, version: current.version + 1 };
-    const appliedTurnKeys = turnKey
-      ? [...document.appliedTurnKeys, turnKey]
-      : document.appliedTurnKeys;
     await writeAtomic(
       rel,
       renderRelationship(
         next,
-        appliedTurnKeys,
+        [...document.appliedTurnKeys, turnKey],
         document.cutoverBaseline,
       ),
     );
     return { state: next, applied: true };
-  });
-}
-
-/**
- * Remove source-linked relationship derivation before an edit/deletion lands.
- * Memory extraction uses the stable assistant id as its turn key. Older rows
- * used `${assistantId}:${attempt}`, so prefix matching also erases legacy turns.
- */
-export async function forgetRelationshipTurns(
-  userId: string,
-  characterId: string,
-  input: {
-    turnIds: string[];
-    summaryDeltas?: string[];
-  },
-): Promise<number> {
-  const turnIds = Array.from(
-    new Set(input.turnIds.map((value) => value.trim()).filter(Boolean)),
-  );
-  const summaryDeltas = input.summaryDeltas
-    ?.map((value) => value.trim())
-    .filter(Boolean) ?? [];
-  if (turnIds.length === 0 && summaryDeltas.length === 0) return 0;
-
-  const rel = chatFsPaths.relationship(userId, characterId);
-  return withFileMutationLock(rel, async () => {
-    const document = parseRelationshipDocument(await readWhole(rel));
-    const removedKeys = document.appliedTurnKeys.filter((key) =>
-      turnIds.some((turnId) => key === turnId || key.startsWith(`${turnId}:`)),
-    );
-    const appliedTurnKeys = document.appliedTurnKeys.filter(
-      (key) => !removedKeys.includes(key),
-    );
-    const summaryLines = document.state.summary
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean);
-    let removedSummaries = 0;
-    for (const delta of summaryDeltas) {
-      const index = summaryLines.lastIndexOf(delta);
-      if (index < 0) continue;
-      summaryLines.splice(index, 1);
-      removedSummaries += 1;
-    }
-    if (removedKeys.length === 0 && removedSummaries === 0) return 0;
-
-    const decrement = removedKeys.length;
-    const signals = {
-      warmth: Math.max(0, document.state.signals.warmth - decrement),
-      familiarity: Math.max(0, document.state.signals.familiarity - decrement),
-      turns: Math.max(0, document.state.signals.turns - decrement),
-    };
-    const next: RelationshipState = {
-      stage: stageForScore(signals.warmth + signals.familiarity),
-      signals,
-      summary: summaryLines.join("\n"),
-      version: document.state.version + 1,
-    };
-    await writeAtomic(
-      rel,
-      renderRelationship(
-        next,
-        appliedTurnKeys,
-        document.cutoverBaseline,
-      ),
-    );
-    return removedKeys.length;
   });
 }
 
@@ -329,20 +242,6 @@ export async function restoreRelationshipCutoverBaseline(
   });
 }
 
-/** Edit the narrative summary and/or stage (bumps version). Returns the new state. */
-export async function setRelationship(
-  userId: string,
-  characterId: string,
-  patch: { summary?: string; stage?: RelationshipStage },
-): Promise<RelationshipView> {
-  return setRelationshipWithMutationKey(
-    userId,
-    characterId,
-    patch,
-    null,
-  );
-}
-
 /** Idempotent manual relationship edit used by the durable file projector. */
 export async function setRelationshipOnce(
   userId: string,
@@ -350,38 +249,24 @@ export async function setRelationshipOnce(
   mutationKey: string,
   patch: { summary?: string; stage?: RelationshipStage },
 ): Promise<RelationshipView> {
-  return setRelationshipWithMutationKey(
-    userId,
-    characterId,
-    patch,
-    `manual:${mutationKey}`,
-  );
-}
-
-async function setRelationshipWithMutationKey(
-  userId: string,
-  characterId: string,
-  patch: { summary?: string; stage?: RelationshipStage },
-  mutationKey: string | null,
-): Promise<RelationshipView> {
+  // `manual:` prefix keeps operator edits out of buildRelationshipProjection's
+  // legacy turn recovery, which only replays keys that name an assistant row.
+  const appliedKey = `manual:${mutationKey}`;
   const rel = chatFsPaths.relationship(userId, characterId);
   return withFileMutationLock(rel, async () => {
     const document = parseRelationshipDocument(await readWhole(rel));
-    if (mutationKey && document.appliedTurnKeys.includes(mutationKey)) {
+    if (document.appliedTurnKeys.includes(appliedKey)) {
       return { characterId, ...document.state };
     }
     const current = document.state;
     const stage = patch.stage && STAGE_ORDER.includes(patch.stage) ? patch.stage : current.stage;
     const summary = patch.summary != null ? clampSummary(patch.summary) : current.summary;
     const next: RelationshipState = { ...current, stage, summary, version: current.version + 1 };
-    const appliedTurnKeys = mutationKey
-      ? [...document.appliedTurnKeys, mutationKey]
-      : document.appliedTurnKeys;
     await writeAtomic(
       rel,
       renderRelationship(
         next,
-        appliedTurnKeys,
+        [...document.appliedTurnKeys, appliedKey],
         document.cutoverBaseline,
       ),
     );

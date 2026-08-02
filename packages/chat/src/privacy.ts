@@ -13,10 +13,7 @@ import {
   recordChatFileMutation,
   runWithProjectedChatFiles,
 } from "./file-mutations.js";
-import {
-  relationshipMessageSelect,
-  resolveRelationshipLinkage,
-} from "./relationship-authority.js";
+import { loadSessionLinkage } from "./relationship-authority.js";
 import { CHAT_TO_MAIN_EVENTS } from "@idream/shared/contracts";
 import { recordExchangeCorrection } from "./exchange-corrections.js";
 import { lockTurn, lockUser } from "./turn-lock.js";
@@ -144,20 +141,10 @@ export async function deleteMessage(
       if (currentMessage.status === "deleted" || currentMessage.deletedAt) {
         return;
       }
-      const [messages, receipts] = await Promise.all([
-        tx.message.findMany({
-          where: { sessionId: currentSession.id },
-          select: relationshipMessageSelect,
-        }),
-        tx.chatSendReceipt.findMany({
-          where: { sessionId: currentSession.id },
-          select: {
-            userMessageId: true,
-            assistantMessageId: true,
-          },
-        }),
-      ]);
-      const linkage = resolveRelationshipLinkage(messages, receipts);
+      const { messages, linkage } = await loadSessionLinkage(
+        tx,
+        currentSession.id,
+      );
       const messagesById = new Map(
         messages.map((candidate) => [candidate.id, candidate]),
       );
@@ -313,20 +300,7 @@ export async function deleteSession(
       ) {
         return;
       }
-      const [messages, receipts] = await Promise.all([
-        tx.message.findMany({
-          where: { sessionId: session.id },
-          select: relationshipMessageSelect,
-        }),
-        tx.chatSendReceipt.findMany({
-          where: { sessionId: session.id },
-          select: {
-            userMessageId: true,
-            assistantMessageId: true,
-          },
-        }),
-      ]);
-      const linkage = resolveRelationshipLinkage(messages, receipts);
+      const { messages, linkage } = await loadSessionLinkage(tx, session.id);
       const ids = messages.map((m) => m.id);
       await recordChatFileMutation(tx, input.userId, {
         kind: "session_delete",

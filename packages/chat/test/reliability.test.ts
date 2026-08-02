@@ -6,14 +6,14 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { Pool } from "pg";
 import { createChatPrisma } from "../src/db.js";
-import { consumeInbound, persistInboundEvent, reprocessPendingInbox } from "../src/inbox.js";
+import { persistInboundEvent, reprocessPendingInbox } from "../src/inbox.js";
 import { reconcile } from "../src/reconcile.js";
 import { rollSessionLog, pruneExpiredSegments } from "../src/maintain.js";
 import { deleteMessage, deleteSession, deleteAccount } from "../src/privacy.js";
 import { appendLine, chatFsPaths, listPrefix } from "../src/chat-fs.js";
 import { drainQueue, obliterate } from "../src/queue.js";
 import { CHAT_QUEUES, MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
-import { acceptAgeGate } from "./fixtures.js";
+import { acceptAgeGate, ingestMainEvent } from "./fixtures.js";
 
 const prisma = createChatPrisma();
 const superPool = new Pool({ connectionString: process.env.CHAT_TEST_SUPER_URL });
@@ -83,34 +83,41 @@ describe("inbox (P0-4 main→chat, idempotent)", () => {
     const s = await prisma.chatSession.create({
       data: { id: "rel_s1", userId: USER, characterId: CHAR, status: "active" },
     });
+    // main redelivers the envelope it stored, so a replay is the SAME object.
     const event = {
-      eventId: "rel_evt_1",
+      sourceEventId: "rel_evt_1",
       eventType: MAIN_TO_CHAT_EVENTS.characterRemoved,
+      occurredAt: new Date().toISOString(),
+      aggregateType: "character",
+      aggregateId: CHAR,
       payload: { characterId: CHAR },
     };
-    const first = await consumeInbound(event, prisma);
+    const first = await ingestMainEvent(event, prisma);
     expect(first.applied).toBe(true);
     expect((await prisma.chatSession.findUnique({ where: { id: s.id } }))?.status).toBe("archived");
 
-    const second = await consumeInbound(event, prisma);
-    expect(second.applied).toBe(false); // idempotent on eventId
+    const second = await ingestMainEvent(event, prisma);
+    expect(second.applied).toBe(false); // idempotent on sourceEventId
   });
 
   it("atomically claims concurrent deliveries so only one worker applies the event", async () => {
     const event = {
-      eventId: `rel_concurrent_${Date.now()}`,
+      sourceEventId: `rel_concurrent_${Date.now()}`,
       eventType: MAIN_TO_CHAT_EVENTS.entitlementUpdated,
+      occurredAt: new Date().toISOString(),
+      aggregateType: "user",
+      aggregateId: USER,
       payload: { userId: USER, tier: "premium" },
     };
 
     const results = await Promise.all([
-      consumeInbound(event, prisma),
-      consumeInbound(event, prisma),
+      ingestMainEvent(event, prisma),
+      ingestMainEvent(event, prisma),
     ]);
 
     expect(results.filter((result) => result.applied)).toHaveLength(1);
     expect(results.filter((result) => !result.applied)).toHaveLength(1);
-    expect(await prisma.chatInboxEvent.findUnique({ where: { id: `main:${event.eventId}` } }))
+    expect(await prisma.chatInboxEvent.findUnique({ where: { id: `main:${event.sourceEventId}` } }))
       .toMatchObject({ status: "consumed", attempts: 0 });
   });
 });

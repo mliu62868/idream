@@ -10,12 +10,11 @@ import { createChatPrisma } from "../src/db.js";
 import { dispatchChat } from "../src/router.js";
 import { processGenerate, type GeneratePayload } from "../src/generate.js";
 import { processMemoryExtract } from "../src/memory.js";
-import { consumeInbound } from "../src/inbox.js";
 import { drainQueue } from "../src/queue.js";
 import { setNoMemory } from "../src/service.js";
 import { getLastMockStreamMessages } from "../src/providers.js";
 import { CHAT_QUEUES, MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
-import { acceptAgeGate } from "./fixtures.js";
+import { acceptAgeGate, ingestChatImageCallback } from "./fixtures.js";
 
 const superPool = new Pool({ connectionString: process.env.CHAT_TEST_SUPER_URL });
 const prisma = createChatPrisma();
@@ -271,22 +270,22 @@ describe("dispatchChat router", () => {
         controls: { orientation: "4:5", outputCount: 1 },
       });
 
-      await consumeInbound({
-        eventId: `img_accept_${attachment.id}`,
-        eventType: MAIN_TO_CHAT_EVENTS.chatImageAccepted,
-        payload: {
+      await ingestChatImageCallback(
+        `img_accept_${attachment.id}`,
+        MAIN_TO_CHAT_EVENTS.chatImageAccepted,
+        {
           version: 1,
           kind: "chat.image.accepted",
           attachmentId: attachment.id,
           generationJobId: "job_img_1",
           costDreamcoins: 5,
         },
-      });
+      );
       const photoSummary = "Web smiling by a sunlit window";
-      await consumeInbound({
-        eventId: `img_done_${attachment.id}`,
-        eventType: MAIN_TO_CHAT_EVENTS.chatImageCompleted,
-        payload: {
+      await ingestChatImageCallback(
+        `img_done_${attachment.id}`,
+        MAIN_TO_CHAT_EVENTS.chatImageCompleted,
+        {
           version: 1,
           kind: "chat.image.completed",
           attachmentId: attachment.id,
@@ -296,7 +295,7 @@ describe("dispatchChat router", () => {
           height: 640,
           summary: photoSummary,
         },
-      });
+      );
 
       const completed = await dispatchChat({
         method: "GET",
@@ -480,21 +479,21 @@ describe("dispatchChat router", () => {
       expect(trace.system).toContain(IDENTITY_TOKEN);
 
       const photoSummary = "WebVP smiling for a selfie by a sunlit window";
-      await consumeInbound({
-        eventId: `p4_accept_${firstAttachment!.id}`,
-        eventType: MAIN_TO_CHAT_EVENTS.chatImageAccepted,
-        payload: {
+      await ingestChatImageCallback(
+        `p4_accept_${firstAttachment!.id}`,
+        MAIN_TO_CHAT_EVENTS.chatImageAccepted,
+        {
           version: 1,
           kind: "chat.image.accepted",
           attachmentId: firstAttachment!.id,
           generationJobId: "job_p4_1",
           costDreamcoins: 5,
         },
-      });
-      await consumeInbound({
-        eventId: `p4_done_${firstAttachment!.id}`,
-        eventType: MAIN_TO_CHAT_EVENTS.chatImageCompleted,
-        payload: {
+      );
+      await ingestChatImageCallback(
+        `p4_done_${firstAttachment!.id}`,
+        MAIN_TO_CHAT_EVENTS.chatImageCompleted,
+        {
           version: 1,
           kind: "chat.image.completed",
           attachmentId: firstAttachment!.id,
@@ -504,7 +503,7 @@ describe("dispatchChat router", () => {
           height: 640,
           summary: photoSummary,
         },
-      });
+      );
 
       const afterCompletion = await dispatchChat({
         method: "GET",
@@ -673,21 +672,21 @@ describe("dispatchChat router", () => {
       const firstAttachment = firstMessages.flatMap((m) => m.attachments ?? [])[0];
       expect(firstAttachment).toBeTruthy();
 
-      await consumeInbound({
-        eventId: `edit_accept_${firstAttachment!.id}`,
-        eventType: MAIN_TO_CHAT_EVENTS.chatImageAccepted,
-        payload: {
+      await ingestChatImageCallback(
+        `edit_accept_${firstAttachment!.id}`,
+        MAIN_TO_CHAT_EVENTS.chatImageAccepted,
+        {
           version: 1,
           kind: "chat.image.accepted",
           attachmentId: firstAttachment!.id,
           generationJobId: "job_edit_1",
           costDreamcoins: 5,
         },
-      });
-      await consumeInbound({
-        eventId: `edit_done_${firstAttachment!.id}`,
-        eventType: MAIN_TO_CHAT_EVENTS.chatImageCompleted,
-        payload: {
+      );
+      await ingestChatImageCallback(
+        `edit_done_${firstAttachment!.id}`,
+        MAIN_TO_CHAT_EVENTS.chatImageCompleted,
+        {
           version: 1,
           kind: "chat.image.completed",
           attachmentId: firstAttachment!.id,
@@ -697,7 +696,7 @@ describe("dispatchChat router", () => {
           height: 640,
           summary: "WebEdit smiling for a selfie",
         },
-      });
+      );
 
       // Second turn: the model calls edit_last_image instead of generating a new scene.
       const editInstruction = "change the background to a snowy mountain scene";
@@ -843,21 +842,21 @@ describe("dispatchChat router", () => {
           : undefined;
       expect(firstAttachment).toBeTruthy();
 
-      await consumeInbound({
-        eventId: `p5_accept_accept_${firstAttachment!.id}`,
-        eventType: MAIN_TO_CHAT_EVENTS.chatImageAccepted,
-        payload: {
+      await ingestChatImageCallback(
+        `p5_accept_accept_${firstAttachment!.id}`,
+        MAIN_TO_CHAT_EVENTS.chatImageAccepted,
+        {
           version: 1,
           kind: "chat.image.accepted",
           attachmentId: firstAttachment!.id,
           generationJobId: "job_p5_accept_1",
           costDreamcoins: 5,
         },
-      });
-      await consumeInbound({
-        eventId: `p5_accept_done_${firstAttachment!.id}`,
-        eventType: MAIN_TO_CHAT_EVENTS.chatImageCompleted,
-        payload: {
+      );
+      await ingestChatImageCallback(
+        `p5_accept_done_${firstAttachment!.id}`,
+        MAIN_TO_CHAT_EVENTS.chatImageCompleted,
+        {
           version: 1,
           kind: "chat.image.completed",
           attachmentId: firstAttachment!.id,
@@ -867,7 +866,7 @@ describe("dispatchChat router", () => {
           height: 640,
           summary: "WebEdit in a photo",
         },
-      });
+      );
 
       // "把刚才那张改成雪山背景" — the model selects edit_last_image against the
       // just-completed photo.
@@ -1005,21 +1004,21 @@ describe("dispatchChat router", () => {
           : undefined;
       expect(firstAttachment).toBeTruthy();
 
-      await consumeInbound({
-        eventId: `retry_accept_${firstAttachment!.id}`,
-        eventType: MAIN_TO_CHAT_EVENTS.chatImageAccepted,
-        payload: {
+      await ingestChatImageCallback(
+        `retry_accept_${firstAttachment!.id}`,
+        MAIN_TO_CHAT_EVENTS.chatImageAccepted,
+        {
           version: 1,
           kind: "chat.image.accepted",
           attachmentId: firstAttachment!.id,
           generationJobId: "job_retry_1",
           costDreamcoins: 5,
         },
-      });
-      await consumeInbound({
-        eventId: `retry_done_${firstAttachment!.id}`,
-        eventType: MAIN_TO_CHAT_EVENTS.chatImageCompleted,
-        payload: {
+      );
+      await ingestChatImageCallback(
+        `retry_done_${firstAttachment!.id}`,
+        MAIN_TO_CHAT_EVENTS.chatImageCompleted,
+        {
           version: 1,
           kind: "chat.image.completed",
           attachmentId: firstAttachment!.id,
@@ -1028,7 +1027,7 @@ describe("dispatchChat router", () => {
           width: 512,
           height: 640,
         },
-      });
+      );
 
       // Turn 2: edit_last_image against that source photo.
       process.env.CHAT_MOCK_TOOL_CALLS_JSON = JSON.stringify([
@@ -1061,16 +1060,16 @@ describe("dispatchChat router", () => {
       expect(editAttachment).toBeTruthy();
 
       // Main reports the generation as failed — the attachment moves out of "requesting".
-      await consumeInbound({
-        eventId: `retry_failed_${editAttachment!.id}`,
-        eventType: MAIN_TO_CHAT_EVENTS.chatImageFailed,
-        payload: {
+      await ingestChatImageCallback(
+        `retry_failed_${editAttachment!.id}`,
+        MAIN_TO_CHAT_EVENTS.chatImageFailed,
+        {
           version: 1,
           kind: "chat.image.failed",
           attachmentId: editAttachment!.id,
           status: "failed",
         },
-      });
+      );
 
       const storedAttachment = await prisma.messageAttachment.findUniqueOrThrow({
         where: { id: editAttachment!.id },

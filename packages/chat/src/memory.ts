@@ -19,14 +19,7 @@ import {
 } from "./file-mutations.js";
 import { lockTurn } from "./turn-lock.js";
 import type { ChatMemoryExtractPayload } from "@idream/shared/contracts";
-import {
-  relationshipMessageSelect,
-  resolveRelationshipLinkage,
-} from "./relationship-authority.js";
-
-// Re-export the extractor surface so existing importers keep their path.
-export { deriveCandidates } from "./extract.js";
-export type { MemoryCandidate } from "./extract.js";
+import { loadSessionLinkage } from "./relationship-authority.js";
 
 export type MemoryExtractPayload = ChatMemoryExtractPayload;
 
@@ -63,20 +56,7 @@ export async function processMemoryExtract(
   if (assistant.memoryAuthority !== "enabled") {
     return { written: 0, skipped: "turn_memory_legacy_unknown" };
   }
-  const [messages, receipts] = await Promise.all([
-    prisma.message.findMany({
-      where: { sessionId: session.id },
-      select: relationshipMessageSelect,
-    }),
-    prisma.chatSendReceipt.findMany({
-      where: { sessionId: session.id },
-      select: {
-        userMessageId: true,
-        assistantMessageId: true,
-      },
-    }),
-  ]);
-  const linkage = resolveRelationshipLinkage(messages, receipts);
+  const { linkage } = await loadSessionLinkage(prisma, session.id);
   const userMessage = linkage.sources.get(assistant.id);
   if (!userMessage) return { written: 0, skipped: "no_user_turn" };
   if (
@@ -119,29 +99,14 @@ export async function processMemoryExtract(
       currentSession,
       currentAssistant,
       currentUserMessage,
-      currentMessages,
-      currentReceipts,
+      { linkage: currentLinkage },
     ] =
       await Promise.all([
         tx.chatSession.findUnique({ where: { id: session.id } }),
         tx.message.findUnique({ where: { id: assistant.id } }),
         tx.message.findUnique({ where: { id: userMessage.id } }),
-        tx.message.findMany({
-          where: { sessionId: session.id },
-          select: relationshipMessageSelect,
-        }),
-        tx.chatSendReceipt.findMany({
-          where: { sessionId: session.id },
-          select: {
-            userMessageId: true,
-            assistantMessageId: true,
-          },
-        }),
+        loadSessionLinkage(tx, session.id),
       ]);
-    const currentLinkage = resolveRelationshipLinkage(
-      currentMessages,
-      currentReceipts,
-    );
     if (
       !currentSession ||
       currentSession.userId !== session.userId ||

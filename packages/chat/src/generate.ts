@@ -226,7 +226,10 @@ export async function processGenerate(
       });
       reply = completion.content.trim();
     } catch (error) {
-      console.warn("chat agent tool follow-up complete() failed; falling back to caption", error);
+      logger.warn(
+        { err: error, assistantMessageId: payload.assistantMessageId },
+        "chat agent tool follow-up complete() failed; falling back to caption",
+      );
     }
     if (!reply) reply = toolCall.arguments.caption?.trim() || imageToolCaption(toolCall, context.persona.name);
     for (const piece of chunk(reply, 96)) await streamDelta(piece);
@@ -253,18 +256,27 @@ export async function processGenerate(
   const validateToolCall = (rawCall: ChatToolCall): AgentToolCallPlan | null => {
     const tool = findAgentTool(rawCall.name);
     if (!tool) {
-      console.warn(`chat agent tool call references unknown tool "${rawCall.name}"; ignoring`);
+      logger.warn(
+        { toolName: rawCall.name, assistantMessageId: payload.assistantMessageId },
+        "chat agent tool call references unknown tool; ignoring",
+      );
       return null;
     }
     try {
       const plan = tool.parseCall(JSON.parse(rawCall.arguments) as unknown);
       if (!plan) {
-        console.warn(`chat agent tool call "${rawCall.name}" failed args validation; ignoring`);
+        logger.warn(
+          { toolName: rawCall.name, assistantMessageId: payload.assistantMessageId },
+          "chat agent tool call failed args validation; ignoring",
+        );
         return null;
       }
       return plan;
     } catch (error) {
-      console.warn(`chat agent tool call "${rawCall.name}" has invalid JSON arguments; ignoring`, error);
+      logger.warn(
+        { err: error, toolName: rawCall.name, assistantMessageId: payload.assistantMessageId },
+        "chat agent tool call has invalid JSON arguments; ignoring",
+      );
       return null;
     }
   };
@@ -867,8 +879,9 @@ async function buildImageRequestFromPlan(
         orderBy: { createdAt: "desc" },
       });
       if (!source?.mediaAssetId) {
-        console.warn(
-          `edit_last_image: no completed source photo in session ${sessionId}; falling back to generate_image_async semantics`,
+        logger.warn(
+          { sessionId },
+          "edit_last_image: no completed source photo in session; falling back to generate_image_async semantics",
         );
         return {
           promptHint: plan.args.instruction,

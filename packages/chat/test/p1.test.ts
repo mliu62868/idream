@@ -12,7 +12,7 @@ import { drainQueue } from "../src/queue.js";
 import {
   parseRelationship,
   relationshipSignalForTurn,
-  updateRelationship,
+  updateRelationshipOnce,
 } from "../src/relationship.js";
 import { exportAccount } from "../src/export.js";
 import { readWhole, chatFsPaths } from "../src/chat-fs.js";
@@ -48,17 +48,19 @@ afterAll(async () => {
 
 describe("relationship.md (P1-2)", () => {
   it("does not turn neutral message volume into intimacy", async () => {
-    let state = await updateRelationship(
+    let { state } = await updateRelationshipOnce(
       USER,
       "c_p1_neutral",
+      "neutral_turn_0",
       { summaryDelta: "User: hello from the launch probe" },
     );
     for (let turn = 1; turn < 30; turn += 1) {
-      state = await updateRelationship(
+      ({ state } = await updateRelationshipOnce(
         USER,
         "c_p1_neutral",
+        `neutral_turn_${turn}`,
         { summaryDelta: `User: routine probe ${turn}` },
-      );
+      ));
     }
 
     expect(state.signals).toEqual({
@@ -101,10 +103,10 @@ describe("relationship.md (P1-2)", () => {
   });
 
   it("merges signals + advances stage across turns", async () => {
-    let state = await updateRelationship(USER, CHAR, { warmth: 1, familiarity: 1, summaryDelta: "first" });
+    let { state } = await updateRelationshipOnce(USER, CHAR, "merge_turn_1", { warmth: 1, familiarity: 1, summaryDelta: "first" });
     expect(state.stage).toBe("new"); // score 2 < familiar(6)
     expect(state.version).toBe(1);
-    state = await updateRelationship(USER, CHAR, { warmth: 10, familiarity: 10, summaryDelta: "more" });
+    ({ state } = await updateRelationshipOnce(USER, CHAR, "merge_turn_2", { warmth: 10, familiarity: 10, summaryDelta: "more" }));
     expect(state.signals.familiarity).toBe(11);
     expect(state.stage).toBe("close"); // score 22 ≥ close(20)
 

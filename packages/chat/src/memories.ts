@@ -8,7 +8,6 @@
 // lines) so PATCH/DELETE by id is deterministic across reads.
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { env } from "./env.js";
 import { chatFsPaths, listPrefix, readWhole, withFileMutationLock, writeAtomic } from "./chat-fs.js";
 import { createId } from "./id.js";
 
@@ -327,6 +326,3 @@ function joinLines(lines: string[]): string {
   while (trimmed.length && trimmed[trimmed.length - 1].trim() === "") trimmed.pop();
   return trimmed.length ? `${trimmed.join("\n")}\n` : "";
 }
-
-// Re-export for callers that build paths relative to the FS root in tests.
-export const memoriesRoot = (): string => env.CHAT_FS_ROOT;
