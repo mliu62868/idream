@@ -1,8 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { loadChatSessionsForViewer } from "./ChatHubWorkspace";
 import { loadProfileForViewer } from "./ProfileWorkspace";
 import { loadUpgradeProfileForViewer } from "./UpgradeWorkspace";
+import { invalidateViewerAuthority } from "./viewer-auth";
 
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -10,6 +11,14 @@ function jsonResponse(body: unknown, status = 200) {
     headers: { "content-type": "application/json" },
   });
 }
+
+// Viewer authority is resolved once per page lifetime and shared by every
+// protected loader, so each case has to start before anyone has resolved it.
+// What these cases pin down is unchanged: no loader may touch its protected
+// path until the viewer is known to be signed in.
+beforeEach(() => {
+  invalidateViewerAuthority();
+});
 
 const protectedRouteLoaders = [
   ["profile", "/api/v1/profile", loadProfileForViewer],

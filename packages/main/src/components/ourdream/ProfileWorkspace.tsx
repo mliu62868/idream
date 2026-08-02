@@ -47,6 +47,10 @@ import {
   profileAuthorityStateForResponse,
   readyAuthorityStatus,
 } from "./authority-state";
+import {
+  loadViewerResource,
+  requestErrorMessage,
+} from "@/lib/viewer-resource-client";
 import { useAgeGateAccess } from "./AgeGateBoundary";
 import { authHrefForTarget, authNextTargetFromPath } from "./authRedirect";
 import {
@@ -312,7 +316,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
       setProfileAuthority((current) =>
         failedAuthorityStatus(
           current,
-          profileRequestError(error, "Account data could not load."),
+          requestErrorMessage(error, "Account data could not load."),
         ),
       );
       setAuthState((current) =>
@@ -335,105 +339,98 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
         hasMatchingSnapshot ? current : initialAuthorityStatus(),
       ),
     );
-    try {
-      const response = await fetch(`/api/v1/library/${nextTab}`);
-      const raw = await response.json().catch(() => null);
-      if (requestSerial !== libraryRequestSerialRef.current) return;
-      if (!response.ok) {
-        throw new Error("Library data could not load.");
-      }
-      const payload = parseLibraryResponse(raw);
-      setItems(payload.items);
-      setEmptyCta(payload.emptyCta);
-      setLibraryAuthority(readyAuthorityStatus());
-    } catch (error) {
-      if (requestSerial !== libraryRequestSerialRef.current) return;
+    const outcome = await loadViewerResource({
+      path: `/api/v1/library/${nextTab}`,
+      parse: parseLibraryResponse,
+      fallbackError: "Library data could not load.",
+      errorFrom: "fallback",
+      isCurrent: () => requestSerial === libraryRequestSerialRef.current,
+    });
+    if (outcome.kind === "discarded") return;
+    if (outcome.kind === "failed") {
       setLibraryAuthority((current) =>
-        failedAuthorityStatus(
-          current,
-          profileRequestError(error, "Library data could not load."),
-        ),
+        failedAuthorityStatus(current, outcome.error),
       );
+      return;
     }
+    setItems(outcome.data.items);
+    setEmptyCta(outcome.data.emptyCta);
+    setLibraryAuthority(readyAuthorityStatus());
   }, []);
 
   const refreshMediaCollections = useCallback(async () => {
     const requestSerial = mediaCollectionsRequestSerialRef.current + 1;
     mediaCollectionsRequestSerialRef.current = requestSerial;
     setMediaCollectionsAuthority(loadingAuthorityStatus);
-    try {
-      const response = await fetch("/api/v1/media/collections");
-      const raw = await response.json().catch(() => null);
-      if (requestSerial !== mediaCollectionsRequestSerialRef.current) return;
-      if (!response.ok) {
-        throw new Error(
-          profileApiErrorMessage(raw) ??
-            "Media collections could not load.",
-        );
-      }
-      setMediaCollections(parseMediaCollectionsResponse(raw).collections);
-      setMediaCollectionsAuthority(readyAuthorityStatus());
-    } catch (error) {
-      if (requestSerial !== mediaCollectionsRequestSerialRef.current) return;
+    const outcome = await loadViewerResource({
+      path: "/api/v1/media/collections",
+      parse: (raw) => parseMediaCollectionsResponse(raw).collections,
+      fallbackError: "Media collections could not load.",
+      isCurrent: () =>
+        requestSerial === mediaCollectionsRequestSerialRef.current,
+    });
+    if (outcome.kind === "discarded") return;
+    if (outcome.kind === "failed") {
       setMediaCollectionsAuthority((current) =>
-        failedAuthorityStatus(
-          current,
-          profileRequestError(error, "Media collections could not load."),
-        ),
+        failedAuthorityStatus(current, outcome.error),
       );
+      return;
     }
+    setMediaCollections(outcome.data);
+    setMediaCollectionsAuthority(readyAuthorityStatus());
   }, []);
 
   const refreshPreferences = useCallback(async () => {
     const requestSerial = preferencesRequestSerialRef.current + 1;
     preferencesRequestSerialRef.current = requestSerial;
     setPreferencesAuthority(loadingAuthorityStatus);
-    try {
-      const response = await fetch("/api/v1/profile/preferences");
-      const raw = await response.json().catch(() => null);
-      if (requestSerial !== preferencesRequestSerialRef.current) return;
-      if (!response.ok) {
-        throw new Error("Preferences could not load.");
-      }
-      const preferences = parseProfilePreferencesResponse(raw).preferences;
-      const notificationSettings = preferences.notificationSettings ?? {};
-      setEmailUpdates(notificationSettings.productUpdates === true);
-      setMutedTags(preferences.mutedTags ?? []);
-      setPreferencesAuthority(readyAuthorityStatus());
-    } catch (error) {
-      if (requestSerial !== preferencesRequestSerialRef.current) return;
+    const isCurrent = () =>
+      requestSerial === preferencesRequestSerialRef.current;
+
+    const preferencesOutcome = await loadViewerResource({
+      path: "/api/v1/profile/preferences",
+      parse: (raw) => parseProfilePreferencesResponse(raw).preferences,
+      fallbackError: "Preferences could not load.",
+      errorFrom: "fallback",
+      isCurrent,
+    });
+    // INVARIANT: a superseded preferences response abandons the whole refresh,
+    // tags included — a newer refresh is already loading both.
+    if (preferencesOutcome.kind === "discarded") return;
+    if (preferencesOutcome.kind === "failed") {
       setPreferencesAuthority((current) =>
-        failedAuthorityStatus(
-          current,
-          profileRequestError(error, "Preferences could not load."),
-        ),
+        failedAuthorityStatus(current, preferencesOutcome.error),
       );
+    } else {
+      const notificationSettings =
+        preferencesOutcome.data.notificationSettings ?? {};
+      setEmailUpdates(notificationSettings.productUpdates === true);
+      setMutedTags(preferencesOutcome.data.mutedTags ?? []);
+      setPreferencesAuthority(readyAuthorityStatus());
     }
 
+    // INVARIANT: the tags read runs even when preferences failed — the two
+    // panels report their authority separately, as they did before.
     setPreferenceTagsAuthority(loadingAuthorityStatus);
-    try {
-      const response = await fetch("/api/v1/tags");
-      const raw = await response.json().catch(() => null);
-      if (requestSerial !== preferencesRequestSerialRef.current) return;
-      if (!response.ok) {
-        throw new Error("Preference tags could not load.");
-      }
-      const payload = parseTagListResponse(raw);
-      setPreferenceTags(
-        payload.items.filter(
+    const tagsOutcome = await loadViewerResource({
+      path: "/api/v1/tags",
+      parse: (raw) =>
+        parseTagListResponse(raw).items.filter(
           (tag) => !tag.isMutedByDefault && (tag.publicCharacterCount ?? 0) > 0,
         ),
-      );
-      setPreferenceTagsAuthority(readyAuthorityStatus());
-    } catch (error) {
-      if (requestSerial !== preferencesRequestSerialRef.current) return;
+      fallbackError: "Preference tags could not load.",
+      errorFrom: "fallback",
+      isCurrent,
+    });
+    if (tagsOutcome.kind === "discarded") return;
+    if (tagsOutcome.kind === "failed") {
       setPreferenceTagsAuthority((current) =>
-        failedAuthorityStatus(
-          current,
-          profileRequestError(error, "Preference tags could not load."),
-        ),
+        failedAuthorityStatus(current, tagsOutcome.error),
       );
+      return;
     }
+    setPreferenceTags(tagsOutcome.data);
+    setPreferenceTagsAuthority(readyAuthorityStatus());
   }, []);
 
   // Defer initial loads to a macrotask so the first render commits before any setState
@@ -1918,18 +1915,3 @@ function triggerDownload(url: string) {
   link.remove();
 }
 
-function profileRequestError(error: unknown, fallback: string) {
-  return error instanceof Error && error.message ? error.message : fallback;
-}
-
-function profileApiErrorMessage(payload: unknown) {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    return undefined;
-  }
-  const error = (payload as Record<string, unknown>).error;
-  if (!error || typeof error !== "object" || Array.isArray(error)) {
-    return undefined;
-  }
-  const message = (error as Record<string, unknown>).message;
-  return typeof message === "string" ? message : undefined;
-}

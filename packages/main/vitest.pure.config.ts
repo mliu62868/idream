@@ -14,6 +14,7 @@ export default defineConfig({
     environment: "node",
     include: [
       "src/components/ourdream/**/*.test.ts",
+      "src/hooks/**/*.test.ts",
       "src/app/sitemap.test.ts",
       "src/e2e/playwright-environment.test.ts",
       "src/e2e/playwright-chat-service-outcome.test.ts",
