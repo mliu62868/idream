@@ -17,15 +17,11 @@ import {
   chatSessionReleaseMigrationRequestedPayloadSchema,
 } from "@idream/shared/contracts";
 
-export interface InboundEvent {
+/** The persisted receipt as the effect appliers see it — never a wire shape. */
+interface InboundEvent {
   eventId: string;
   eventType: string;
   payload: Record<string, unknown>;
-  sourceService?: string;
-  schemaVersion?: number;
-  occurredAt?: string;
-  aggregateType?: string;
-  aggregateId?: string;
 }
 
 export async function persistInboundEvent(
@@ -88,30 +84,9 @@ function receiptId(sourceService: string, sourceEventId: string): string {
 }
 
 /**
- * Consume one inbound event. Idempotent: the inbox row keyed by eventId is the
- * dedupe gate — if already consumed, no-op.
+ * Apply one persisted receipt. Idempotent: the status claim is the dedupe gate,
+ * so a redelivered event that was already consumed is a no-op.
  */
-export async function consumeInbound(
-  event: InboundEvent,
-  prisma: ChatPrismaClient = chatPrisma,
-): Promise<{ applied: boolean }> {
-  const sourceService = event.sourceService ?? "main";
-  const ack = await persistInboundEvent({
-    sourceService,
-    sourceEventId: event.eventId,
-    eventType: event.eventType,
-    schemaVersion: event.schemaVersion ?? 1,
-    occurredAt: event.occurredAt ?? "1970-01-01T00:00:00.000Z",
-    aggregateType: event.aggregateType ?? "chat_effect",
-    aggregateId: event.aggregateId ?? event.eventId,
-    payload: event.payload,
-  }, prisma);
-  if (!ack.acknowledged || !ack.receiptId) {
-    throw new Error(`inbound event ${sourceService}:${event.eventId} is quarantined`);
-  }
-  return consumeDurableInbox(ack.receiptId, prisma);
-}
-
 export async function consumeDurableInbox(
   id: string,
   prisma: ChatPrismaClient = chatPrisma,
@@ -134,7 +109,6 @@ export async function consumeDurableInbox(
   const claimed = await prisma.chatInboxEvent.findUniqueOrThrow({ where: { id } });
   const eventToApply: InboundEvent = {
     eventId: claimed.sourceEventId,
-    sourceService: claimed.sourceService,
     eventType: claimed.eventType,
     payload: (claimed.payload ?? {}) as Record<string, unknown>,
   };
@@ -327,7 +301,7 @@ export async function reprocessPendingInbox(
       const result = await consumeDurableInbox(row.id, prisma);
       if (result.applied) applied += 1;
     } catch {
-      // consumeInbound records the failed attempt while retaining the event.
+      // consumeDurableInbox records the failed attempt while retaining the event.
     }
   }
   return applied;

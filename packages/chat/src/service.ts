@@ -22,10 +22,7 @@ import {
   recordChatFileMutation,
   runWithProjectedChatFiles,
 } from "./file-mutations.js";
-import {
-  relationshipMessageSelect,
-  resolveRelationshipLinkage,
-} from "./relationship-authority.js";
+import { loadSessionLinkage } from "./relationship-authority.js";
 import { resolvePolicy, snapshotFromView } from "./policy.js";
 import type { ChatPolicy } from "./policy.js";
 import { logger } from "./logger.js";
@@ -670,23 +667,8 @@ export async function editUserMessage(
     throw new ChatError("message_not_editable", "only the latest user message can be edited", 409);
   }
 
-  const [editMessages, editReceipts] = await Promise.all([
-    prisma.message.findMany({
-      where: { sessionId: session.id },
-      select: relationshipMessageSelect,
-    }),
-    prisma.chatSendReceipt.findMany({
-      where: { sessionId: session.id },
-      select: {
-        userMessageId: true,
-        assistantMessageId: true,
-      },
-    }),
-  ]);
-  const editLinkage = resolveRelationshipLinkage(
-    editMessages,
-    editReceipts,
-  );
+  const { messages: editMessages, linkage: editLinkage } =
+    await loadSessionLinkage(prisma, session.id);
   const ambiguousLinkedAssistants = editLinkage.ambiguousAssistantIds.filter(
     (assistantId) =>
       editLinkage.candidateSourceIds
@@ -740,24 +722,13 @@ export async function editUserMessage(
     const [
       currentSession,
       currentMessage,
-      currentMessages,
-      currentReceipts,
+      { messages: currentMessages, linkage: currentLinkage },
       currentLatestUser,
     ] =
       await Promise.all([
         tx.chatSession.findUnique({ where: { id: session.id } }),
         tx.message.findUnique({ where: { id: message.id } }),
-        tx.message.findMany({
-          where: { sessionId: session.id },
-          select: relationshipMessageSelect,
-        }),
-        tx.chatSendReceipt.findMany({
-          where: { sessionId: session.id },
-          select: {
-            userMessageId: true,
-            assistantMessageId: true,
-          },
-        }),
+        loadSessionLinkage(tx, session.id),
         tx.message.findFirst({
           where: {
             sessionId: session.id,
@@ -769,10 +740,6 @@ export async function editUserMessage(
           select: { id: true },
         }),
       ]);
-    const currentLinkage = resolveRelationshipLinkage(
-      currentMessages,
-      currentReceipts,
-    );
     if (
       currentLinkage.ambiguousAssistantIds.some((assistantId) =>
         currentLinkage.candidateSourceIds
@@ -1012,23 +979,8 @@ export async function regenerate(
   const entitlement = await prisma.chatEntitlementView.findUnique({ where: { userId: input.userId } });
   const policy = resolvePolicy(snapshotFromView(entitlement), { memoryEnabled: session.memoryEnabled });
 
-  const [messages, receipts] = await Promise.all([
-    prisma.message.findMany({
-      where: { sessionId: session.id },
-      select: relationshipMessageSelect,
-    }),
-    prisma.chatSendReceipt.findMany({
-      where: { sessionId: session.id },
-      select: {
-        userMessageId: true,
-        assistantMessageId: true,
-      },
-    }),
-  ]);
-  const lastUser = resolveRelationshipLinkage(
-    messages,
-    receipts,
-  ).sources.get(message.id);
+  const { linkage } = await loadSessionLinkage(prisma, session.id);
+  const lastUser = linkage.sources.get(message.id);
   if (!lastUser) {
     throw new ChatError("missing_user_turn", "assistant message has no user turn", 409);
   }
@@ -1045,28 +997,13 @@ export async function regenerate(
       currentSession,
       current,
       currentSource,
-      currentMessages,
-      currentReceipts,
+      { linkage: currentLinkage },
     ] = await Promise.all([
       tx.chatSession.findUnique({ where: { id: session.id } }),
       tx.message.findUnique({ where: { id: message.id } }),
       tx.message.findUnique({ where: { id: lastUser.id } }),
-      tx.message.findMany({
-        where: { sessionId: session.id },
-        select: relationshipMessageSelect,
-      }),
-      tx.chatSendReceipt.findMany({
-        where: { sessionId: session.id },
-        select: {
-          userMessageId: true,
-          assistantMessageId: true,
-        },
-      }),
+      loadSessionLinkage(tx, session.id),
     ]);
-    const currentLinkage = resolveRelationshipLinkage(
-      currentMessages,
-      currentReceipts,
-    );
     if (
       !currentSession ||
       currentSession.userId !== input.userId ||

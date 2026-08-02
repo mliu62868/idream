@@ -1,4 +1,48 @@
+// SPEC: relationship authority — which user turn authored which assistant reply,
+// and how mem/{u}/{c}/relationship.md is rebuilt from scratch once it has been
+// deleted. Both exports answer the same question, because PG carries two
+// independent pieces of source evidence: messages.reply_to_message_id (modern,
+// authoritative) and chat_send_receipts (the send idempotency receipt).
+// INTENT: fail closed, never guess. A wrong link attributes one user's turn to
+// another reply, which would leak text across an edit/delete boundary. So
+// resolveRelationshipLinkage reports a source ONLY when the evidence is
+// unanimous and exclusive; everything else comes back as ambiguousAssistantIds +
+// candidateSourceIds, and callers refuse the write (edit/regenerate → 409) or
+// over-scrub (privacy erases the whole connected component).
+// INVARIANTS — resolveRelationshipLinkage:
+//   - Disagreement is ambiguity: two receipts for one assistant, a receipt that
+//     contradicts reply_to_message_id, or a target that is missing / not a user
+//     row / in another session all yield ambiguity, never a best guess.
+//   - One user turn is the source authority for at most one assistant row.
+//     Duplicate explicit claims are corruption, so ALL claimants go ambiguous.
+//   - Rows predating reply_to_message_id fall back to a time window bounded by
+//     the previous assistant in the same session, and are accepted only when
+//     that window holds exactly one user row no other assistant also claims.
+// INVARIANTS — buildRelationshipProjection: it returns the ordered operation
+// list that recreates the entire file after deleteRelationship, so it has to
+// reconstruct history the ledger never recorded. Four sources, sorted by an
+// ordering that puts reconstructed history strictly before replayed history:
+//   - canonical turns  — applied memory_extract rows whose session/user/attempt
+//     still match a currently eligible PG turn exactly (real ledger sequence);
+//   - manual patches   — applied relationship_set rows (real ledger sequence);
+//   - legacy turns     — recovered from the file's own applied_turn_keys, and
+//     failing that from its retained summary lines (synthetic sequence −N..−1);
+//   - cutover baseline — a content-free aggregate (synthetic sequence, strictly
+//     lowest). Everything at or before the newest relationship_delete sequence
+//     is then dropped: a reset is an epoch boundary, not a filter.
+// The baseline exists because relationship.md predates this ledger: pre-cutover
+// turns were applied straight to the file with no row to replay. Dropping them
+// would visibly regress a long-running bond, and fabricating their prose is not
+// an option, so the rebuild retains ONLY the counters plus candidateAssistantIds
+// — the still-eligible assistant turns that nothing else explains. Those ids are
+// what let a later delete/edit shrink the aggregate (reconcileCutoverBaseline)
+// without the baseline ever having stored a word of the text it stands for.
+// Summary-line recovery works the same way round: recompute the line each
+// eligible turn WOULD produce, bucket by that exact string, and accept a
+// retained line only when its bucket holds exactly one turn. Two turns with
+// identical text recover neither — unattributed prose is never copied forward.
 import type { Prisma } from "../generated/client/client.js";
+import type { ChatPrismaClient } from "./db.js";
 import {
   getRelationshipRepairSnapshot,
   relationshipSignalForTurn,
@@ -7,7 +51,7 @@ import {
   type RelationshipRepairSnapshot,
 } from "./relationship.js";
 
-export const relationshipMessageSelect = {
+const relationshipMessageSelect = {
   id: true,
   sessionId: true,
   role: true,
@@ -37,17 +81,49 @@ export interface RelationshipMessage {
   deletedAt: Date | null;
 }
 
+export interface RelationshipLinkage {
+  /** assistant id → the one user row that is its source of record. */
+  sources: Map<string, RelationshipMessage>;
+  ambiguousAssistantIds: string[];
+  candidateSourceIds: Map<string, string[]>;
+}
+
+/**
+ * Read both evidence tables for one session and resolve them together. Linkage
+ * is only meaningful over a whole session, so these two queries are never
+ * separable: issuing them apart invites a caller to resolve messages against
+ * another session's receipts.
+ */
+export async function loadSessionLinkage(
+  db: ChatPrismaClient | Prisma.TransactionClient,
+  sessionId: string,
+): Promise<{
+  messages: RelationshipMessage[];
+  linkage: RelationshipLinkage;
+}> {
+  const [messages, receipts] = await Promise.all([
+    db.message.findMany({
+      where: { sessionId },
+      select: relationshipMessageSelect,
+    }),
+    db.chatSendReceipt.findMany({
+      where: { sessionId },
+      select: {
+        userMessageId: true,
+        assistantMessageId: true,
+      },
+    }),
+  ]);
+  return { messages, linkage: resolveRelationshipLinkage(messages, receipts) };
+}
+
 export function resolveRelationshipLinkage(
   messages: RelationshipMessage[],
   receipts: Array<{
     userMessageId: string;
     assistantMessageId: string;
   }>,
-): {
-  sources: Map<string, RelationshipMessage>;
-  ambiguousAssistantIds: string[];
-  candidateSourceIds: Map<string, string[]>;
-} {
+): RelationshipLinkage {
   const byId = new Map(messages.map((message) => [message.id, message]));
   const receiptSource = new Map<string, string>();
   const receiptCandidates = new Map<string, Set<string>>();

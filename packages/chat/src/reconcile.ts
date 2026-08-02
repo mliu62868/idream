@@ -11,10 +11,7 @@ import { deliverPendingOutbox } from "./outbox.js";
 import { reprocessPendingInbox } from "./inbox.js";
 import { enqueue } from "./queue.js";
 import { projectChatFileMutations } from "./file-mutations.js";
-import {
-  relationshipMessageSelect,
-  resolveRelationshipLinkage,
-} from "./relationship-authority.js";
+import { loadSessionLinkage } from "./relationship-authority.js";
 import {
   CHAT_QUEUES,
   idempotencyKeys,
@@ -154,20 +151,7 @@ export async function reconcile(
     sentBySession.set(message.sessionId, rows);
   }
   for (const [sessionId, lagging] of sentBySession) {
-    const [messages, receipts] = await Promise.all([
-      prisma.message.findMany({
-        where: { sessionId },
-        select: relationshipMessageSelect,
-      }),
-      prisma.chatSendReceipt.findMany({
-        where: { sessionId },
-        select: {
-          userMessageId: true,
-          assistantMessageId: true,
-        },
-      }),
-    ]);
-    const linkage = resolveRelationshipLinkage(messages, receipts);
+    const { linkage } = await loadSessionLinkage(prisma, sessionId);
     for (const message of lagging) {
       const source = linkage.sources.get(message.id);
       if (

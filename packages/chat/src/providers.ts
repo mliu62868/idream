@@ -3,6 +3,7 @@
 // INTENT: keep the chat deploy artifact thin (design §10 dependency isolation).
 import { SafetyGatewayModerationProvider } from "@idream/shared";
 import { env } from "./env.js";
+import { logger } from "./logger.js";
 
 export interface ChatChunk {
   delta: string;
@@ -105,7 +106,7 @@ function readMockToolCalls(): ChatToolCall[] {
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? (parsed as ChatToolCall[]) : [];
   } catch (error) {
-    console.warn("CHAT_MOCK_TOOL_CALLS_JSON is not valid JSON; ignoring", error);
+    logger.warn({ err: error }, "CHAT_MOCK_TOOL_CALLS_JSON is not valid JSON; ignoring");
     return [];
   }
 }

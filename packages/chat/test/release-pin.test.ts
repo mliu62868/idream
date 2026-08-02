@@ -3,13 +3,12 @@ import { Pool } from "pg";
 import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { buildContext } from "../src/context.js";
 import { createChatPrisma } from "../src/db.js";
-import { consumeInbound } from "../src/inbox.js";
 import {
   attachmentReleaseIdForRetry,
   createSession,
   sendMessage,
 } from "../src/service.js";
-import { acceptAgeGate } from "./fixtures.js";
+import { acceptAgeGate, ingestMainEvent } from "./fixtures.js";
 
 const prisma = createChatPrisma();
 const superPool = new Pool({ connectionString: process.env.CHAT_TEST_SUPER_URL });
@@ -293,10 +292,15 @@ describe("Character Release → Chat serving pin", () => {
       status: "superseded",
     });
 
-    await consumeInbound(
+    await ingestMainEvent(
       {
-        eventId: "migrate-session-command-1",
+        sourceEventId: "migrate-session-command-1",
         eventType: MAIN_TO_CHAT_EVENTS.sessionReleaseMigrationRequested,
+        // admin-v2's command executor emits this one at schemaVersion 2.
+        schemaVersion: 2,
+        occurredAt: new Date().toISOString(),
+        aggregateType: "chat_session",
+        aggregateId: session.id,
         payload: {
           commandId: "migrate-session-command-1",
           sessionId: session.id,

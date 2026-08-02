@@ -14,11 +14,10 @@ import { processGenerate, type GeneratePayload } from "../src/generate.js";
 import { processMemoryExtract } from "../src/memory.js";
 import { reconcile } from "../src/reconcile.js";
 import { modelForTier } from "../src/policy.js";
-import { setRelationship } from "../src/relationship.js";
-import { consumeInbound } from "../src/inbox.js";
+import { setRelationshipOnce } from "../src/relationship.js";
 import { drainQueue, obliterate } from "../src/queue.js";
 import { CHAT_QUEUES, MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
-import { acceptAgeGate } from "./fixtures.js";
+import { acceptAgeGate, ingestMainEvent } from "./fixtures.js";
 
 const prisma = createChatPrisma();
 const superPool = new Pool({ connectionString: process.env.CHAT_TEST_SUPER_URL });
@@ -319,7 +318,7 @@ describe("P1-B: relationship state is injected into the model context", () => {
   it("includes the qualitative bond tone + summary in the system prompt", async () => {
     const user = "u_p1_rel";
     // Establish a 'close' bond before the turn (file-layer authority).
-    await setRelationship(user, CHAR, { stage: "close", summary: "We share inside jokes about sailing." });
+    await setRelationshipOnce(user, CHAR, "p1_b_seed", { stage: "close", summary: "We share inside jokes about sailing." });
 
     const session = await createSession({ userId: user, characterId: CHAR }, { prisma });
     const sent = await sendMessage({ userId: user, sessionId: session.id, content: "hey you" }, { prisma });
@@ -352,8 +351,15 @@ describe("P0-F: user.deleted erases the chat domain", () => {
     expect(await prisma.chatSession.count({ where: { userId: user } })).toBeGreaterThan(0);
     expect(await exists(path.join(fsRoot, "sessions", user))).toBe(true);
 
-    await consumeInbound(
-      { eventId: `evt_del_${user}`, eventType: MAIN_TO_CHAT_EVENTS.userDeleted, payload: { userId: user } },
+    await ingestMainEvent(
+      {
+        sourceEventId: `evt_del_${user}`,
+        eventType: MAIN_TO_CHAT_EVENTS.userDeleted,
+        occurredAt: new Date().toISOString(),
+        aggregateType: "user",
+        aggregateId: user,
+        payload: { userId: user },
+      },
       prisma,
     );
 
