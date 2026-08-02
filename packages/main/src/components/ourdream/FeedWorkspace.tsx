@@ -12,16 +12,13 @@ import {
 import { shouldBypassNextImageOptimizer } from "@/lib/image-delivery";
 import { useAgeGateAccess } from "./AgeGateBoundary";
 import { authHrefForTarget } from "./authRedirect";
+import { countLabel } from "./workspace-helpers";
 
 type FeedCharacterItem = Extract<PublicFeedItem, { type: "character" }>;
 type FeedCollectionItem = Extract<PublicFeedItem, { type: "collection" }>;
 type FeedItem = PublicFeedItem;
 
 const FEED_PAGE_SIZE = 8;
-
-function countLabel(count: number, singular: string, plural = `${singular}s`) {
-  return `${count} ${count === 1 ? singular : plural}`;
-}
 
 type FeedActionPayload = {
   ok?: boolean;

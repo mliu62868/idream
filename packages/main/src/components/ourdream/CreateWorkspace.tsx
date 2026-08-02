@@ -4,6 +4,12 @@ import Image from "next/image";
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { ArrowLeft, ArrowRight, Check, ImageIcon, Loader2, Sparkles, Wand2 } from "lucide-react";
+import { CHARACTER_VISIBILITY, isCatalogMember } from "@idream/shared/catalog";
+import {
+  characterStyleFormOptions,
+  genderFormOptions,
+} from "@/lib/character-taxonomy";
+import { isPrivateMediaUrl } from "@/lib/image-delivery";
 import {
   isRenderableMediaSource,
   parseTemplatesResponse,
@@ -11,6 +17,12 @@ import {
   type PublicCharacterTemplate as CreateTemplate,
 } from "@/lib/public-api-contracts";
 import { useAgeGateAccess } from "./AgeGateBoundary";
+import {
+  claimDraftTransfer,
+  isAnonymousScope,
+  stashDraftTransfer,
+} from "./draft-transfer";
+import { isRecord } from "./workspace-helpers";
 
 type DraftPayload = {
   ok?: boolean;
@@ -59,8 +71,10 @@ function pickLines(value: unknown): string {
 
 const DEFAULT_PREVIEW = "/images/ourdream/character-placeholder.svg";
 const STORAGE_KEY_PREFIX = "ourdream.create.draft.v2";
-const CREATE_DRAFT_TRANSFER_KEY = "ourdream.create.draft.transfer.v1";
-const CREATE_DRAFT_TRANSFER_TTL_MS = 20 * 60 * 1_000;
+
+function draftStorageKeyForScope(viewerScope: string) {
+  return `${STORAGE_KEY_PREFIX}:${viewerScope}`;
+}
 
 const STEPS = ["Identity", "Appearance", "Personality", "Preview", "Publish"] as const;
 
@@ -122,7 +136,8 @@ export function CreateWorkspace() {
   const [createdStatus, setCreatedStatus] = useState("");
   const [pending, setPending] = useState(false);
   const [hydrated, setHydrated] = useState(false);
-  const [storageKey, setStorageKey] = useState<string | null>(null);
+  const [viewerScope, setViewerScope] = useState<string | null>(null);
+  const storageKey = viewerScope ? draftStorageKeyForScope(viewerScope) : null;
   const [viewerAuthorityState, setViewerAuthorityState] = useState<
     "loading" | "ready" | "error"
   >("loading");
@@ -141,7 +156,7 @@ export function CreateWorkspace() {
     [],
   );
   const requestApi = (path: string, body?: unknown, method = "POST") =>
-    api(path, body, method, () => createDraftTransfer(storageKey, state));
+    api(path, body, method, () => createDraftTransfer(viewerScope, state));
 
   // Resolve a stable viewer identity before touching local storage so drafts never
   // leak from one signed-in account to another on a shared browser.
@@ -157,14 +172,14 @@ export function CreateWorkspace() {
         if (controller.signal.aborted) return;
         const userId = payload.user?.id;
         const anonymousId = payload.anonymousId;
-        const nextStorageKey = userId
-          ? `${STORAGE_KEY_PREFIX}:user:${userId}`
+        const nextScope = userId
+          ? `user:${userId}`
           : anonymousId
-            ? `${STORAGE_KEY_PREFIX}:anonymous:${anonymousId}`
+            ? `anonymous:${anonymousId}`
             : null;
-        if (nextStorageKey) {
-          if (userId) consumeDraftTransfer(nextStorageKey);
-          setStorageKey(nextStorageKey);
+        if (nextScope) {
+          if (userId) consumeDraftTransfer(nextScope);
+          setViewerScope(nextScope);
           setViewerAuthorityState("ready");
         } else {
           setViewerAuthorityState("error");
@@ -550,7 +565,7 @@ export function CreateWorkspace() {
             className="mt-4 h-10 rounded-full bg-white px-5 text-[13px] font-black text-[rgb(13,13,13)]"
             onClick={() => {
               setViewerAuthorityState("loading");
-              setStorageKey(null);
+              setViewerScope(null);
               setViewerAuthorityAttempt((attempt) => attempt + 1);
             }}
             type="button"
@@ -606,7 +621,7 @@ export function CreateWorkspace() {
               loading="eager"
               sizes="360px"
               src={preview}
-              unoptimized={isProtectedMediaUrl(preview)}
+              unoptimized={isPrivateMediaUrl(preview)}
             />
             <div className="absolute inset-0 bg-[linear-gradient(0deg,rgba(0,0,0,.82),rgba(0,0,0,.1)_62%,transparent)]" />
             {previewStatus === "generating" && (
@@ -726,9 +741,11 @@ export function CreateWorkspace() {
                     onChange={(event) => setIdentityField("gender", event.target.value)}
                     value={state.gender}
                   >
-                    <option value="female">Female</option>
-                    <option value="male">Male</option>
-                    <option value="trans">Trans</option>
+                    {genderFormOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
                   </select>
                 </Field>
                 <Field label="Style">
@@ -737,9 +754,11 @@ export function CreateWorkspace() {
                     onChange={(event) => setIdentityField("style", event.target.value)}
                     value={state.style}
                   >
-                    <option value="realistic">Realistic</option>
-                    <option value="anime">Anime</option>
-                    <option value="hybrid">Hybrid</option>
+                    {characterStyleFormOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
                   </select>
                 </Field>
                 <p className="md:col-span-2 text-[12px] font-medium text-[rgb(170,170,170)]">
@@ -903,7 +922,7 @@ export function CreateWorkspace() {
                             fill
                             sizes="180px"
                             src={candidate.url}
-                            unoptimized={isProtectedMediaUrl(candidate.url)}
+                            unoptimized={isPrivateMediaUrl(candidate.url)}
                           />
                           <span className="absolute left-2 top-2 rounded-full bg-black/70 px-2 py-1 text-[11px] font-black text-white">
                             {candidate.isSynthetic
@@ -996,7 +1015,7 @@ export function CreateWorkspace() {
                 <div>
                   <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">Visibility</p>
                   <div className="mt-2 flex flex-wrap gap-2">
-                    {["private", "unlisted", "public"].map((item) => (
+                    {CHARACTER_VISIBILITY.map((item) => (
                       <button
                         className={`h-10 rounded-full px-4 text-[12px] font-bold ${
                           state.visibility === item
@@ -1149,73 +1168,34 @@ async function api(
   return payload;
 }
 
-function createDraftTransfer(
-  sourceStorageKey: string | null,
-  draft: WizardState,
-) {
-  if (
-    !sourceStorageKey?.startsWith(`${STORAGE_KEY_PREFIX}:anonymous:`)
-  ) {
-    return null;
-  }
+function createDraftTransfer(viewerScope: string | null, draft: WizardState) {
+  if (!viewerScope || !isAnonymousScope(viewerScope)) return null;
   try {
-    window.localStorage.setItem(sourceStorageKey, JSON.stringify(draft));
-    const nonce = crypto.randomUUID();
-    window.sessionStorage.setItem(
-      CREATE_DRAFT_TRANSFER_KEY,
-      JSON.stringify({
-        nonce,
-        sourceStorageKey,
-        expiresAt: Date.now() + CREATE_DRAFT_TRANSFER_TTL_MS,
-        draft,
-      }),
+    // Park the latest edits under the anonymous key too, so a visitor who never
+    // finishes signing in still finds the draft when they come back.
+    window.localStorage.setItem(
+      draftStorageKeyForScope(viewerScope),
+      JSON.stringify(draft),
     );
-    return `/create?draftResume=${encodeURIComponent(nonce)}`;
   } catch {
-    return null;
+    // Local storage is an optional aid; the transfer envelope is what matters.
   }
+  return stashDraftTransfer("create", { payload: draft, sourceScope: viewerScope });
 }
 
-function consumeDraftTransfer(targetStorageKey: string) {
-  if (!targetStorageKey.startsWith(`${STORAGE_KEY_PREFIX}:user:`)) {
-    return false;
-  }
+function consumeDraftTransfer(targetScope: string) {
+  const claimed = claimDraftTransfer("create", { targetScope });
+  if (!claimed) return false;
+  const restored = parseWizardDraft(claimed.payload);
+  if (!restored) return false;
   try {
-    const nonce = new URLSearchParams(window.location.search).get(
-      "draftResume",
-    );
-    if (!nonce) return false;
-    const raw = window.sessionStorage.getItem(CREATE_DRAFT_TRANSFER_KEY);
-    if (!raw) return false;
-    const transfer = JSON.parse(raw) as unknown;
-    if (
-      !isRecord(transfer) ||
-      transfer.nonce !== nonce ||
-      typeof transfer.sourceStorageKey !== "string" ||
-      !transfer.sourceStorageKey.startsWith(
-        `${STORAGE_KEY_PREFIX}:anonymous:`,
-      ) ||
-      typeof transfer.expiresAt !== "number" ||
-      transfer.expiresAt <= Date.now()
-    ) {
-      return false;
-    }
-    const restored = parseWizardDraft(transfer.draft);
-    if (!restored) return false;
-
+    // The wizard hydrates from local storage once the viewer scope flips, so the
+    // handoff only completes if this write lands.
     window.localStorage.setItem(
-      targetStorageKey,
+      draftStorageKeyForScope(targetScope),
       JSON.stringify(restored),
     );
-    window.localStorage.removeItem(transfer.sourceStorageKey);
-    window.sessionStorage.removeItem(CREATE_DRAFT_TRANSFER_KEY);
-    const url = new URL(window.location.href);
-    url.searchParams.delete("draftResume");
-    window.history.replaceState(
-      null,
-      "",
-      `${url.pathname}${url.search}${url.hash}`,
-    );
+    window.localStorage.removeItem(draftStorageKeyForScope(claimed.sourceScope));
     return true;
   } catch {
     return false;
@@ -1263,12 +1243,9 @@ function parseWizardDraft(value: unknown): WizardState | null {
     firstMessage: draftString(value.firstMessage, 4000),
     exampleDialogue: draftString(value.exampleDialogue, 12_000),
     tags: draftString(value.tags, 2000),
-    visibility:
-      value.visibility === "public" ||
-      value.visibility === "private" ||
-      value.visibility === "unlisted"
-        ? value.visibility
-        : INITIAL.visibility,
+    visibility: isCatalogMember(CHARACTER_VISIBILITY, value.visibility)
+      ? value.visibility
+      : INITIAL.visibility,
   };
   if (restored.step > 3 && !restored.confirmedPreviewJobId) {
     restored.step = 3;
@@ -1280,14 +1257,6 @@ function draftString(value: unknown, maximumLength: number) {
   return typeof value === "string"
     ? value.slice(0, maximumLength)
     : "";
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    !Array.isArray(value)
-  );
 }
 
 function messageFrom(error: unknown) {
@@ -1325,8 +1294,4 @@ function requiredPersonaMessage(state: WizardState) {
     if (typeof value !== "string" || !value.trim()) return message;
   }
   return "";
-}
-
-function isProtectedMediaUrl(url: string) {
-  return url.startsWith("/api/v1/media/") || url.startsWith("/user-content/");
 }

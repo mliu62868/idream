@@ -24,6 +24,11 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  isBlankImagePreview,
+  isBuiltInMediaPlaceholderUrl,
+  isPrivateMediaUrl,
+} from "@/lib/image-delivery";
+import {
   parseLibraryResponse,
   parseMediaCollectionsResponse,
   parseProfileResponse,
@@ -157,38 +162,6 @@ function emptyStateForTab(tab: LibraryTab, emptyCta: string | null) {
     },
   };
   return { ...defaults[tab], ctaHref: emptyCta ?? defaults[tab].ctaHref };
-}
-
-function isBlankImagePreview(image: HTMLImageElement) {
-  const width = Math.min(16, image.naturalWidth);
-  const height = Math.min(16, image.naturalHeight);
-  if (width <= 0 || height <= 0) return false;
-
-  try {
-    const canvas = document.createElement("canvas");
-    canvas.width = width;
-    canvas.height = height;
-    const context = canvas.getContext("2d", { willReadFrequently: true });
-    if (!context) return false;
-
-    context.drawImage(image, 0, 0, width, height);
-    const data = context.getImageData(0, 0, width, height).data;
-    let min = 255;
-    let max = 0;
-    for (let index = 0; index < data.length; index += 4) {
-      const red = data[index] ?? 0;
-      const green = data[index + 1] ?? 0;
-      const blue = data[index + 2] ?? 0;
-      const luminance = Math.round(red * 0.2126 + green * 0.7152 + blue * 0.0722);
-      min = Math.min(min, luminance);
-      max = Math.max(max, luminance);
-    }
-
-    const range = max - min;
-    return range <= 1 || (range <= 4 && (min >= 250 || max <= 5));
-  } catch {
-    return false;
-  }
 }
 
 const profileDeepLinkTargets: Record<string, { selector: string; focusSelector: string }> = {
@@ -1959,16 +1932,4 @@ function profileApiErrorMessage(payload: unknown) {
   }
   const message = (error as Record<string, unknown>).message;
   return typeof message === "string" ? message : undefined;
-}
-
-function isPrivateMediaUrl(url: string) {
-  return url.startsWith("/api/v1/media/") || url.startsWith("/user-content/");
-}
-
-function isBuiltInMediaPlaceholderUrl(url: string) {
-  const lower = url.toLowerCase();
-  return (
-    lower.includes("/images/ourdream/card-sarah-mercer.webp") ||
-    lower.includes("%2fimages%2fourdream%2fcard-sarah-mercer.webp")
-  );
 }

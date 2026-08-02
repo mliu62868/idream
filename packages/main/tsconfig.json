@@ -20,6 +20,7 @@
     ],
     "paths": {
       "@/*": ["./src/*"],
+      "@idream/shared/catalog": ["../shared/src/catalog/index.ts"],
       "@idream/shared/admin": ["../shared/src/admin/index.ts"],
       "@idream/shared/admin/release-gate": ["../shared/src/admin/release-gate.ts"],
       "@idream/shared/admin/api-manifest": ["../shared/src/admin/api-manifest.ts"],
