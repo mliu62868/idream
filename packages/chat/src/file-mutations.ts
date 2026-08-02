@@ -21,7 +21,12 @@
 //   - No self-projection: a writer takes the same user lock and then calls
 //     assertNoPendingChatFileMutationsTx. A newly committed intent aborts and
 //     retries the entire request (runWithProjectedChatFiles) rather than letting
-//     request code drain the ledger on the projector's behalf.
+//     request code drain the ledger on the projector's behalf. Turn-scoped
+//     writers get that ordering from withTurnAuthority, which also ties the
+//     post-commit projection to whether an intent was actually recorded. The
+//     account-erasure and batch-repair paths deliberately stay outside it:
+//     erasure supersedes every pending intent instead of asserting there are
+//     none, so it must NOT fail closed on a poisoned row.
 //   - Cross-service honesty: watermarks (memoryExtractedAttempt, logExtractedSeq)
 //     and outbox events are written in the SAME transaction that marks the row
 //     applied, so main is never told about a file effect that did not land.
