@@ -26,6 +26,7 @@ import {
   type ChangeEvent,
 } from "react";
 import { adminV2FormRequest, adminV2Request } from "@/lib/admin-v2-api";
+import { usePollingTask, type PollingTask } from "@/lib/authority-resource";
 import {
   WorkspaceButton,
   fieldClass,
@@ -327,15 +328,23 @@ export function VisualIdentityExperimentWorkbench({
     };
   }, [data.character.id]);
 
-  useEffect(() => {
-    if (!selectedRun || runSettled(selectedRun)) return;
-    const timer = window.setTimeout(() => {
-      void loadRun(selectedRun.id).catch((cause) => {
-        setError(cause instanceof Error ? cause.message : "无法刷新生成结果");
-      });
-    }, 3_000);
-    return () => window.clearTimeout(timer);
-  }, [loadRun, selectedRun]);
+  // SPEC: 未落终态的实验 Run 每 3s 刷新一次，失败退避到 6s。
+  // INTENT: 这里原本是一个靠 effect 依赖变化重新武装的伪轮询——刷新失败时 selectedRun
+  //         不变，依赖也就不变，轮询会永久停摆。改成显式循环后失败能自己退避重试。
+  const pollingRunId = selectedRun && !runSettled(selectedRun)
+    ? selectedRun.id
+    : null;
+  const pollExperimentRun = useCallback<PollingTask>(async () => {
+    if (!pollingRunId) return null;
+    try {
+      await loadRun(pollingRunId);
+      return 3_000;
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "无法刷新生成结果");
+      return 6_000;
+    }
+  }, [loadRun, pollingRunId]);
+  usePollingTask(pollingRunId ? pollExperimentRun : null, 3_000);
 
   const selectedItem =
     selectedRun?.items.find((item) => item.id === selectedItemId) ??

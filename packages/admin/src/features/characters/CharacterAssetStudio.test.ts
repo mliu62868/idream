@@ -589,25 +589,8 @@ describe("Character Asset Studio flow", () => {
     expect(source).toContain("controller.abort()");
   });
 
-  it("does not turn superseded polling into a sticky operator warning", () => {
-    const source = readFileSync(new URL("./CharacterAssetStudio.tsx", import.meta.url), "utf8");
-    const pollingStart = source.indexOf(
-      "if (!pollingRunId || !shouldPollSelectedRun) return;",
-    );
-    const pollingFlow = source.slice(
-      pollingStart,
-      source.indexOf("const recentByPurpose", pollingStart),
-    );
-    const cancellationIndex = pollingFlow.indexOf(
-      "if (isProjectionRequestCancellation(cause)) return;",
-    );
-    const warningIndex = pollingFlow.indexOf(
-      "Automatic refresh was delayed:",
-    );
-
-    expect(pollingStart).toBeGreaterThan(-1);
-    expect(cancellationIndex).toBeGreaterThan(-1);
-    expect(warningIndex).toBeGreaterThan(-1);
-    expect(cancellationIndex).toBeLessThan(warningIndex);
-  });
+  // INTENT: "被取代的轮询不得留下粘滞告警"原本靠断言源码里两行文本的先后顺序来守，
+  //         那锁的是实现文本不是行为。同一条不变量已由 CharacterAssetStudio.mounted
+  //         .test.tsx 的 "keeps a committed refresh usable when polling supersedes its
+  //         projection requests" 真正驱动 4s 轮询定时器验证，故此处不再重复。
 });

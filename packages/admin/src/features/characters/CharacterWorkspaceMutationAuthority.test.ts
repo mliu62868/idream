@@ -433,16 +433,19 @@ describe("Character workspace mutation authority", () => {
 
   it("never unlocks an unknown command directly when replay authority is unavailable or ambiguous", () => {
     const source = readFileSync(new URL("./CharacterWorkspace.tsx", import.meta.url), "utf8");
+    const recoveryStart = source.indexOf("const recoverPendingCommand = useCallback");
     const recovery = source.slice(
-      source.indexOf("const recover = async"),
-      source.indexOf("try {\n        const status", source.indexOf("const recover = async")),
+      recoveryStart,
+      source.indexOf("try {\n        const status", recoveryStart),
     );
 
+    expect(recoveryStart).toBeGreaterThan(-1);
     expect(recovery).toContain("characterCommandReplayFailureDisposition(");
     expect(recovery).toContain('replayDisposition === "keep_locked"');
     expect(recovery).toContain("acceptance cannot be proven with the current session or permissions");
     expect(recovery).toContain("Character writes remain locked");
-    expect(recovery).toContain("schedule(() => void recover(), 5_000)");
+    // SPEC: 受理状态未知时只能继续等待重试，不能放弃——所以这里必须返回一个重试间隔。
+    expect(recovery).toContain("return 5_000;");
     expect(recovery).toContain('replayDisposition === "reconcile"');
     expect(recovery).toContain("await reconcilePendingCommandAuthority(");
     expect(recovery).not.toContain("discardPendingCommand(pendingCommand)");

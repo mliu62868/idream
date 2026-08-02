@@ -49,6 +49,7 @@ import {
   type DurableMutationIntent,
 } from "@/lib/durable-mutation-intent";
 import { reconcileDurableMutationIntent } from "@/lib/durable-mutation-recovery";
+import { usePollingTask, type PollingTask } from "@/lib/authority-resource";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import { cn } from "@/lib/utils";
 import { characterIdentityBootstrapMutation } from "@/features/image-workflow-transport";
@@ -1298,36 +1299,30 @@ export function CharacterAssetStudio({
   const shouldPollSelectedRun =
     selectedRun !== null &&
     ["pending", "running"].includes(selectedRun.executionOutcome);
-  useEffect(() => {
-    if (!pollingRunId || !shouldPollSelectedRun) return;
-    let cancelled = false;
-    let timer: number | null = null;
-    const schedule = (delay: number) => {
-      timer = window.setTimeout(async () => {
-        let nextDelay = 4_000;
-        try {
-          await Promise.all([loadRun(pollingRunId), loadRuns()]);
-          if (!cancelled) setRefreshWarning(null);
-        } catch (cause) {
-          if (isProjectionRequestCancellation(cause)) return;
-          nextDelay = 8_000;
-          if (!cancelled) {
-            setRefreshWarning(
-              cause instanceof Error
-                ? `Automatic refresh was delayed: ${cause.message}. Retrying in the background; Refresh is also available.`
-                : "Automatic refresh was delayed. Retrying in the background; Refresh is also available.",
-            );
-          }
-        }
-        if (!cancelled) schedule(nextDelay);
-      }, delay);
-    };
-    schedule(4_000);
-    return () => {
-      cancelled = true;
-      if (timer !== null) window.clearTimeout(timer);
-    };
-  }, [loadRun, loadRuns, pollingRunId, shouldPollSelectedRun]);
+  // SPEC: 生成中的 Run 每 4s 刷新一次，失败退避到 8s。
+  const pollAssetRun = useCallback<PollingTask>(async (context) => {
+    if (!pollingRunId) return null;
+    try {
+      await Promise.all([loadRun(pollingRunId), loadRuns()]);
+      if (!context.cancelled) setRefreshWarning(null);
+      return 4_000;
+    } catch (cause) {
+      // INTENT: 请求被新一轮取代不是故障，静默停手等新一轮接管即可。
+      if (isProjectionRequestCancellation(cause)) return null;
+      if (!context.cancelled) {
+        setRefreshWarning(
+          cause instanceof Error
+            ? `Automatic refresh was delayed: ${cause.message}. Retrying in the background; Refresh is also available.`
+            : "Automatic refresh was delayed. Retrying in the background; Refresh is also available.",
+        );
+      }
+      return 8_000;
+    }
+  }, [loadRun, loadRuns, pollingRunId]);
+  usePollingTask(
+    pollingRunId && shouldPollSelectedRun ? pollAssetRun : null,
+    4_000,
+  );
 
   const activeRunDetail = selectedRun?.id === selectedRunId ? selectedRun : null;
   const selectedExistingImage = existingImages.find(

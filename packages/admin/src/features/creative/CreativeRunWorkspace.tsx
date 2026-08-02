@@ -25,6 +25,7 @@ import {
   AdminV2RequestError,
   adminV2Request,
 } from "@/lib/admin-v2-api";
+import { usePollingTask, type PollingTask } from "@/lib/authority-resource";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import {
   claimDurableMutationIntent,
@@ -1466,37 +1467,26 @@ function RunDetail({
       window.clearTimeout(timer);
     };
   }, [load, permissions.read]);
+  // SPEC: 生成中的 Run 每 4s 刷新一次，失败退避到 8s。
   const shouldPollRun =
     run !== null &&
     ["pending", "running"].includes(run.executionOutcome);
-  useEffect(() => {
-    if (!shouldPollRun) return;
-    let cancelled = false;
-    let timer: number | null = null;
-    const schedule = (delay: number) => {
-      timer = window.setTimeout(async () => {
-        let nextDelay = 4_000;
-        try {
-          await load(true, true);
-        } catch (cause) {
-          nextDelay = 8_000;
-          if (!cancelled) {
-            setBackgroundRefreshWarning(
-              cause instanceof Error
-                ? `Automatic refresh was delayed: ${cause.message}. Retrying in the background.`
-                : "Automatic refresh was delayed. Retrying in the background.",
-            );
-          }
-        }
-        if (!cancelled) schedule(nextDelay);
-      }, delay);
-    };
-    schedule(4_000);
-    return () => {
-      cancelled = true;
-      if (timer !== null) window.clearTimeout(timer);
-    };
-  }, [load, shouldPollRun]);
+  const pollRun = useCallback<PollingTask>(async (context) => {
+    try {
+      await load(true, true);
+      return 4_000;
+    } catch (cause) {
+      if (!context.cancelled) {
+        setBackgroundRefreshWarning(
+          cause instanceof Error
+            ? `Automatic refresh was delayed: ${cause.message}. Retrying in the background.`
+            : "Automatic refresh was delayed. Retrying in the background.",
+        );
+      }
+      return 8_000;
+    }
+  }, [load]);
+  usePollingTask(shouldPollRun ? pollRun : null, 4_000);
   const activeRetryCommandId =
     retryCommand?.commandId &&
     (retryCommand.status === "accepted" ||
@@ -1504,23 +1494,23 @@ function RunDetail({
       retryCommand.status === "verifying")
       ? retryCommand.commandId
       : null;
-  useEffect(() => {
-    if (!activeRetryCommandId) return;
-    let cancelled = false;
-    let timer: number | undefined;
-    const poll = async () => {
+  // SPEC: 重试命令状态每 1.5s 拉一次；读不到状态退避到 3s；命令落终态即停。
+  // INTENT: 这是状态机不是取数——每种状态各有副作用（落盘、刷新投影、解锁写入），
+  //         所以走 usePollingTask 让 task 直接返回下一次间隔，而不是自己 setTimeout。
+  const pollRetryCommand = useCallback<PollingTask>(async (context) => {
+      if (!activeRetryCommandId) return null;
       try {
         const command = await adminV2Request(
           `/api/v2/admin/commands/${encodeURIComponent(activeRetryCommandId)}`,
           { schema: adminCommandStatusSchema },
         );
-        if (cancelled) return;
+        if (context.cancelled) return null;
         const current = retryCommandRef.current;
         if (
           !current ||
           current.commandId !== activeRetryCommandId
         ) {
-          return;
+          return null;
         }
         const next: CreativeRetryCommandState = {
           ...current,
@@ -1535,7 +1525,7 @@ function RunDetail({
           try {
             await reloadAfterCommit();
           } catch (cause) {
-            if (!cancelled) {
+            if (!context.cancelled) {
               retryCommandRef.current = next;
               setRetryCommand(next);
               setWarning(
@@ -1544,15 +1534,15 @@ function RunDetail({
                 }. Refresh the projection before starting another retry.`,
               );
             }
-            return;
+            return null;
           }
-          if (cancelled) return;
+          if (context.cancelled) return null;
           persistCreativeRetryCommand(id, actorId, null);
           retryCommandRef.current = null;
           setRetryCommand(null);
           setRetryIdempotencyKey(crypto.randomUUID());
           setWarning(null);
-          return;
+          return null;
         }
         retryCommandRef.current = next;
         setRetryCommand(next);
@@ -1562,25 +1552,20 @@ function RunDetail({
           command.status === "cancelled"
         ) {
           setError(creativeRetryFailureMessage(command.error));
-          return;
+          return null;
         }
-        timer = window.setTimeout(() => void poll(), 1_500);
+        return 1_500;
       } catch (cause) {
-        if (cancelled) return;
+        if (context.cancelled) return null;
         setWarning(
           `Retry command ${activeRetryCommandId} is still pending, but its latest status could not be loaded${
             cause instanceof Error ? `: ${cause.message}` : ""
           }.`,
         );
-        timer = window.setTimeout(() => void poll(), 3_000);
+        return 3_000;
       }
-    };
-    timer = window.setTimeout(() => void poll(), 0);
-    return () => {
-      cancelled = true;
-      if (timer !== undefined) window.clearTimeout(timer);
-    };
   }, [activeRetryCommandId, actorId, id, reloadAfterCommit]);
+  usePollingTask(activeRetryCommandId ? pollRetryCommand : null, 0);
   useEffect(() => {
     if (
       !run ||

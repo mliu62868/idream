@@ -76,6 +76,11 @@ import {
   adminV2Request,
   setWorkspaceUrl,
 } from "@/lib/admin-v2-api";
+import {
+  usePollingTask,
+  type PollDecision,
+  type PollingTask,
+} from "@/lib/authority-resource";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import { cn } from "@/lib/utils";
 import {
@@ -5759,14 +5764,13 @@ function CharacterDetail({
       mode: "replace",
     });
   }, [data?.activeCommand, rememberPendingCommand]);
-  useEffect(() => {
-    if (!pendingCommand || pendingCommand.terminal) return;
-    let cancelled = false;
-    let timer = 0;
-    const schedule = (callback: () => void, delay: number) => {
-      if (!cancelled) timer = window.setTimeout(callback, delay);
-    };
-    const recover = async () => {
+  // SPEC: 待决命令的恢复轮询，五档自适应间隔（250ms / 500ms / 1s / 2s / 5s）。
+  // INTENT: 档位是有意的运营体验设计——刚提交动作时快速轮询让操作员立刻看到结果，
+  //         局面稳定（或权限受阻）后放慢，不要压成固定间隔。这里只把"自己 setTimeout
+  //         递归"换成"返回下一次间隔"，五个档位一个不少。
+  const recoverPendingCommand = useCallback<PollingTask>(
+    async (context): Promise<PollDecision> => {
+      if (!pendingCommand) return null;
       if (!pendingCommand.commandId) {
         if (!characterCommandJournalCanAutoReplay(pendingCommand)) {
           updateMutationNotice({
@@ -5776,7 +5780,7 @@ function CharacterDetail({
           setCommandRecoveryError(
             `${pendingCommand.action} requires fresh operator confirmation before the saved request can be replayed.`,
           );
-          return;
+          return null;
         }
         if (
           !pendingCommand.endpoint ||
@@ -5793,7 +5797,7 @@ function CharacterDetail({
             pendingCommand,
             `${pendingCommand.action} recovery evidence is incomplete. Server authority must be reconciled before writes resume.`,
           );
-          return;
+          return null;
         }
         try {
           const accepted = await adminV2Request(pendingCommand.endpoint, {
@@ -5802,14 +5806,14 @@ function CharacterDetail({
             schema: adminCommandAcceptedSchema,
             body: pendingCommand.body,
           });
-          if (cancelled) return;
+          if (context.cancelled) return null;
           rememberPendingCommand({
             ...pendingCommand,
             commandId: accepted.commandId,
           });
-          return;
+          return null;
         } catch (cause) {
-          if (cancelled) return;
+          if (context.cancelled) return null;
           const conflict = activeCommandConflict(cause);
           if (conflict) {
             rememberPendingCommand({
@@ -5822,7 +5826,7 @@ function CharacterDetail({
             setCommandRecoveryError(
               `${characterCommandActionLabel(conflict.commandType)} is already active according to server authority. The workspace attached to that command instead of submitting a second one.`,
             );
-            return;
+            return null;
           }
           const replayDisposition = characterCommandReplayFailureDisposition(
             cause instanceof AdminV2RequestError ? cause.status : null,
@@ -5831,8 +5835,7 @@ function CharacterDetail({
             setCommandRecoveryError(
               `${pendingCommand.action} acceptance cannot be proven with the current session or permissions. The original command may already exist, so Character writes remain locked while the exact idempotent request waits to retry.`,
             );
-            schedule(() => void recover(), 5_000);
-            return;
+            return 5_000;
           }
           if (replayDisposition === "reconcile") {
             setCommandRecoveryError(
@@ -5849,15 +5852,14 @@ function CharacterDetail({
                   : `${pendingCommand.action} replay was rejected, and server-side Character authority confirmed that no active command remains.`,
               );
             }
-            return;
+            return null;
           }
           setCommandRecoveryError(
             cause instanceof Error
               ? `${pendingCommand.action} acceptance is still unknown: ${cause.message}. Retrying the exact command safely.`
               : `${pendingCommand.action} acceptance is still unknown. Retrying the exact command safely.`,
           );
-          schedule(() => void recover(), 2_000);
-          return;
+          return 2_000;
         }
       }
 
@@ -5866,7 +5868,7 @@ function CharacterDetail({
           `/api/v2/admin/commands/${encodeURIComponent(pendingCommand.commandId)}`,
           { schema: adminCommandStatusSchema },
         );
-        if (cancelled) return;
+        if (context.cancelled) return null;
         if (["failed", "cancelled", "succeeded"].includes(status.status)) {
           setPendingCommand((current) =>
             current ? { ...current, terminal: true } : current,
@@ -5884,11 +5886,11 @@ function CharacterDetail({
               ? `${pendingCommand.action} command ${status.status}. Open command evidence for the authoritative result.`
               : null,
           );
-          return;
+          return null;
         }
         setCommandRecoveryError(null);
       } catch (cause) {
-        if (cancelled) return;
+        if (context.cancelled) return null;
         if (cause instanceof AdminV2RequestError && cause.status === 404) {
           setPendingCommand((current) =>
             current ? { ...current, terminal: true } : current,
@@ -5902,7 +5904,7 @@ function CharacterDetail({
               ? `${pendingCommand.action} command evidence was unavailable, and server-side Character authority confirmed that no command remains active.`
               : `${pendingCommand.action} command evidence is unavailable. Character writes remain locked until server authority can be reconciled.`,
           );
-          return;
+          return null;
         }
         if (
           cause instanceof AdminV2RequestError &&
@@ -5911,8 +5913,7 @@ function CharacterDetail({
           setCommandRecoveryError(
             `${pendingCommand.action} command evidence cannot be read with the current session or permissions. The command may still be running, so Character writes remain locked.`,
           );
-          schedule(() => void recover(), 5_000);
-          return;
+          return 5_000;
         }
         setCommandRecoveryError(
           cause instanceof Error
@@ -5920,24 +5921,26 @@ function CharacterDetail({
             : `${pendingCommand.action} status could not be refreshed.`,
         );
       }
-      schedule(() => void recover(), 1_000);
-    };
-    const initialDelay = pendingCommand.commandId
-      ? 500
-      : Math.max(250, pendingCommand.createdAt + 1_500 - Date.now());
-    schedule(() => void recover(), initialDelay);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [
-    discardPendingCommand,
-    pendingCommand,
-    reconcilePendingCommandAuthority,
-    rememberPendingCommand,
-    settlePendingCommand,
-    updateMutationNotice,
-  ]);
+      return 1_000;
+    },
+    [
+      discardPendingCommand,
+      pendingCommand,
+      reconcilePendingCommandAuthority,
+      rememberPendingCommand,
+      settlePendingCommand,
+      updateMutationNotice,
+    ],
+  );
+  usePollingTask(
+    pendingCommand && !pendingCommand.terminal ? recoverPendingCommand : null,
+    // INTENT: 首轮延迟必须在 effect 执行时才求值——它要拿 createdAt 和此刻的 Date.now()
+    //         算差值，好让"刚提交就刷新页面"的场景等满命令的最短受理窗口再去查。
+    () =>
+      pendingCommand?.commandId
+        ? 500
+        : Math.max(250, (pendingCommand?.createdAt ?? 0) + 1_500 - Date.now()),
+  );
   useEffect(() => {
     tabRef.current = tab;
   }, [tab]);
