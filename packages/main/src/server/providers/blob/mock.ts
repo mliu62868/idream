@@ -1,6 +1,6 @@
 import type { BlobStore } from "../types";
 import { resolveLocalBlobRoot } from "@idream/shared/storage/local-blob";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export class MockBlobStore implements BlobStore {
@@ -32,6 +32,27 @@ export class MockBlobStore implements BlobStore {
         url: `https://mock-blob.idream.local/${encodeURIComponent(input.key)}?${query.toString()}`,
       },
     };
+  }
+
+  async getPrivate(input: { key: string }) {
+    try {
+      return {
+        ok: true as const,
+        data: {
+          body: new Uint8Array(await readFile(path.join(blobRoot(), input.key))),
+          contentType: null,
+        },
+      };
+    } catch (error) {
+      return {
+        ok: false as const,
+        error: {
+          code: "not_found",
+          message: error instanceof Error ? error.message : String(error),
+          retryable: false,
+        },
+      };
+    }
   }
 
   async delete() {

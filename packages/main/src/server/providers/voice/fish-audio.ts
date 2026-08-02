@@ -1,5 +1,11 @@
-import { randomUUID } from "node:crypto";
-import type { BlobStore, ProviderResult, VoiceModel } from "../types";
+import {
+  VOICE_PROVIDER_REPLAY,
+  type BlobStore,
+  type ProviderResult,
+  type VoiceClipPort,
+  type VoiceIdentityPort,
+} from "../types";
+import { voiceArtifactKey } from "./idempotency";
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -30,9 +36,9 @@ type FishHealthResponse = {
   model_loaded?: unknown;
 };
 
-export class FishAudioVoiceModel implements VoiceModel {
+export class FishAudioVoiceModel implements VoiceClipPort, VoiceIdentityPort {
   readonly providerKey = "fish_audio" as const;
-  readonly supportsVoiceCloning = true;
+  readonly providerReplay = VOICE_PROVIDER_REPLAY.fish_audio;
 
   private readonly speechEndpoint: URL;
   private readonly voicesEndpoint: URL;
@@ -61,10 +67,10 @@ export class FishAudioVoiceModel implements VoiceModel {
     this.fetchImpl = config.fetchImpl ?? fetch;
   }
 
-  async synthesize(input: Parameters<VoiceModel["synthesize"]>[0]) {
+  async synthesize(input: Parameters<VoiceClipPort["synthesize"]>[0]) {
     const rendered = await this.renderVoice(input);
     if (!rendered.ok) return rendered;
-    const key = `voice/${randomUUID()}.wav`;
+    const key = voiceArtifactKey(input.idempotencyKey, ".wav");
     const stored = await this.blob.putPrivate({
       key,
       body: rendered.data.body,
@@ -78,13 +84,13 @@ export class FishAudioVoiceModel implements VoiceModel {
   }
 
   async previewVoice(
-    input: Parameters<NonNullable<VoiceModel["previewVoice"]>>[0],
+    input: Parameters<VoiceIdentityPort["previewVoice"]>[0],
   ) {
     return this.renderVoice(input);
   }
 
   async cloneVoice(
-    input: Parameters<NonNullable<VoiceModel["cloneVoice"]>>[0],
+    input: Parameters<VoiceIdentityPort["cloneVoice"]>[0],
   ) {
     const form = new FormData();
     form.set("voice_id", input.voiceId);
@@ -127,7 +133,7 @@ export class FishAudioVoiceModel implements VoiceModel {
   }
 
   async deleteVoice(
-    input: Parameters<NonNullable<VoiceModel["deleteVoice"]>>[0],
+    input: Parameters<VoiceIdentityPort["deleteVoice"]>[0],
   ) {
     const endpoint = new URL(
       `${this.voicesEndpoint.toString().replace(/\/$/, "")}/${encodeURIComponent(input.voiceId)}`,
@@ -177,10 +183,29 @@ export class FishAudioVoiceModel implements VoiceModel {
     };
   }
 
-  private async renderVoice(input: Parameters<VoiceModel["synthesize"]>[0]) {
+  private async renderVoice(input: {
+    text: string;
+    voiceId?: string;
+    tone?: string;
+    delivery?: Parameters<VoiceClipPort["synthesize"]>[0]["delivery"];
+    requestId?: string;
+    attemptNo?: number;
+    idempotencyKey?: string;
+  }) {
     const response = await this.request(this.speechEndpoint, {
       method: "POST",
-      headers: this.jsonHeaders(),
+      headers: {
+        ...this.jsonHeaders(),
+        ...(input.idempotencyKey
+          ? { "idempotency-key": input.idempotencyKey }
+          : {}),
+        ...(input.requestId
+          ? { "x-idream-request-id": input.requestId }
+          : {}),
+        ...(input.attemptNo
+          ? { "x-idream-attempt-no": String(input.attemptNo) }
+          : {}),
+      },
       body: JSON.stringify({
         model: this.model,
         input: limitText(input.text, this.maxInputChars),

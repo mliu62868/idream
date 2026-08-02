@@ -26,8 +26,8 @@ const matrices = [
     name: "Artifact validation",
     states: GENERATION_ARTIFACT_VALIDATION_STATES,
     allowed: {
-      produced: ["produced", "valid", "invalid", "rejected", "late_after_failed", "late_after_blocked", "late_after_cancel", "late_after_cancelled", "late_after_refunded"],
-      valid: ["valid", "late_after_failed", "late_after_blocked", "late_after_cancel", "late_after_cancelled", "late_after_refunded"],
+      produced: ["produced", "valid", "invalid", "rejected", "late_after_failed", "late_after_blocked", "late_after_cancel", "late_after_cancelled", "late_after_refunded", "late_after_unknown"],
+      valid: ["valid", "late_after_failed", "late_after_blocked", "late_after_cancel", "late_after_cancelled", "late_after_refunded", "late_after_unknown"],
       invalid: ["invalid"],
       rejected: ["rejected"],
       late_after_failed: ["late_after_failed"],
@@ -35,6 +35,7 @@ const matrices = [
       late_after_cancel: ["late_after_cancel"],
       late_after_cancelled: ["late_after_cancelled"],
       late_after_refunded: ["late_after_refunded"],
+      late_after_unknown: ["late_after_unknown"],
     },
     permits: isGenerationArtifactValidationTransitionAllowed,
   },

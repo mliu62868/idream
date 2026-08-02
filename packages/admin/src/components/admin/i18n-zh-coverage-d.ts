@@ -12,6 +12,7 @@ export const adminZhCoverageD: Record<string, string> = {
   "Claim failed": "领取失败",
   "Claimed by you": "已由你领取",
   "Complete authorized work, filtered and ranked by the same authority as Summary.": "按照与摘要相同的权威规则筛选并排序全部已授权工作。",
+  "content": "内容版本",
   "control plane command": "控制面命令",
   "creative run": "创意生产批次",
   "Creative execution and placement blockers are ranked first when present.": "存在创意执行和铺位阻塞项时，将优先排序。",

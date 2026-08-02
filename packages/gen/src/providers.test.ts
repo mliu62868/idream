@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Buffer } from "node:buffer";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import {
   assertProductionBlobReady,
   assertProductionModerationReady,
@@ -19,6 +22,13 @@ afterEach(() => {
 });
 
 describe("PipelineImageModel", () => {
+  it("does not advertise replay safety without a durable gateway contract", () => {
+    process.env.GEN_IMAGE_PROVIDER = "pipeline";
+    process.env.PIPELINE_API_URL = "https://pipeline.test";
+
+    expect(providers.image.retryCapabilities).toBeUndefined();
+  });
+
   it("parses OpenAI-compatible base64 image responses for blob persistence", async () => {
     process.env.GEN_IMAGE_PROVIDER = "pipeline";
     process.env.PIPELINE_API_URL = "https://pipeline.test";
@@ -320,7 +330,7 @@ describe("PipelineImageModel", () => {
     });
   });
 
-  it("wires IMAGE_PROVIDER=backend to a BackendImageModel that rejects unknown models", async () => {
+  it("wires GEN_IMAGE_PROVIDER=backend to a BackendImageModel that rejects unknown models", async () => {
     process.env.GEN_IMAGE_PROVIDER = "backend";
     process.env.GEN_WORKFLOW_DIR = "workflows"; // no descriptor declares this modelId
 
@@ -528,6 +538,30 @@ describe("PipelineImageModel", () => {
       "https://account.r2.cloudflarestorage.com/private-media/images/job-1/result.webp",
     );
     expect(init?.method).toBe("PUT");
+  });
+
+  it("creates mock blob objects once without replacing existing bytes", async () => {
+    const blobRoot = await mkdtemp(path.join(tmpdir(), "idream-gen-blob-"));
+    process.env.GEN_BLOB_PROVIDER = "mock";
+    process.env.BLOB_ROOT = blobRoot;
+
+    try {
+      const key = "terminal/attempt-1.json";
+      await expect(providers.blob.putPrivateIfAbsent({
+        key,
+        body: new TextEncoder().encode("first"),
+        contentType: "application/json",
+      })).resolves.toMatchObject({ ok: true, data: { created: true } });
+      await expect(providers.blob.putPrivateIfAbsent({
+        key,
+        body: new TextEncoder().encode("second"),
+        contentType: "application/json",
+      })).resolves.toMatchObject({ ok: true, data: { created: false } });
+
+      expect(await readFile(path.join(blobRoot, key), "utf8")).toBe("first");
+    } finally {
+      await rm(blobRoot, { recursive: true, force: true });
+    }
   });
 
   it("emits distinct underage policy codes (csam vs other underage terms)", async () => {

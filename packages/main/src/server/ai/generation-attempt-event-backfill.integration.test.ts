@@ -22,7 +22,7 @@ describe("GenerationAttemptEvent backfill", () => {
       data: [
         {
           id: attemptIds[0], requestId: jobIds[0], attemptNo: 1, status: "succeeded",
-          completionManifestRef: `gen/${attemptIds[0]}/completion.json`, finishedAt: new Date("2026-07-11T10:00:00Z"),
+          terminalRecordRef: `gen/terminal-records/${attemptIds[0]}/terminal.json`, finishedAt: new Date("2026-07-11T10:00:00Z"),
         },
         {
           id: attemptIds[1], requestId: jobIds[1], attemptNo: 1, status: "failed",
@@ -43,7 +43,7 @@ describe("GenerationAttemptEvent backfill", () => {
         id: `${prefix}-artifact`,
         attemptId: attemptIds[3],
         ordinal: 0,
-        manifestChecksum: "0".repeat(64),
+        terminalRecordChecksum: "0".repeat(64),
         validationState: "valid",
       },
     });
@@ -78,7 +78,7 @@ describe("GenerationAttemptEvent backfill", () => {
     });
     expect(report).toMatchObject({ examined: 4, ready: 2, applied: 0, partial: 1, mismatch: 1 });
     expect(report.items).toEqual(expect.arrayContaining([
-      expect.objectContaining({ attemptId: attemptIds[2], classification: "partial", reason: "success_without_manifest_or_artifact" }),
+      expect.objectContaining({ attemptId: attemptIds[2], classification: "partial", reason: "success_without_terminal_record_or_artifact" }),
       expect.objectContaining({ attemptId: attemptIds[3], classification: "mismatch", reason: "failed_attempt_has_delivered_artifact" }),
     ]));
     expect(await prisma.generationAttemptEvent.count({ where: { attemptId: { in: attemptIds } } })).toBe(0);

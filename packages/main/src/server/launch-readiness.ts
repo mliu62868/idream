@@ -353,7 +353,6 @@ type EnvLike = Record<string, string | undefined>;
 
 const criticalProviderKeys = [
   "CHAT_PROVIDER",
-  "IMAGE_PROVIDER",
   "VOICE_PROVIDER",
   "MODERATION_PROVIDER",
   "PAYMENT_PROVIDER",
@@ -402,7 +401,6 @@ export interface LaunchReadinessCliOptions {
 export const currentLaunchCapabilities: LaunchReadinessCapabilities = {
   mainProviderImplementations: {
     CHAT_PROVIDER: ["mock", "pipeline"],
-    IMAGE_PROVIDER: ["mock", "pipeline", "backend"],
     VOICE_PROVIDER: ["mock", "pipeline", "pocket-tts", "fish-audio"],
     MODERATION_PROVIDER: ["mock", "safety-gateway"],
     PAYMENT_PROVIDER: ["mock", "btcpay"],
@@ -1245,7 +1243,7 @@ function addImagePipelineChecks(
   probe: ImagePipelineProbeEvidence | null,
   now: Date,
 ) {
-  const configured = env.GEN_IMAGE_PROVIDER ?? env.IMAGE_PROVIDER ?? "mock";
+  const configured = env.GEN_IMAGE_PROVIDER ?? "mock";
   const supported = capabilities.genImageProviders.includes(configured);
   // "pipeline" (legacy OpenAI-compat gateway) and "backend" (P1: gen worker calls
   // ComfyUI/sd-cli directly via GenBackend) are both valid non-mock production
@@ -1347,7 +1345,7 @@ function addVideoPipelineChecks(
   capabilities: LaunchReadinessCapabilities,
   productConfigProbe: ProductConfigProbeEvidence | null,
 ) {
-  const configured = env.GEN_VIDEO_PROVIDER ?? env.VIDEO_PROVIDER;
+  const configured = env.GEN_VIDEO_PROVIDER ?? "mock";
   if (!configured || configured === "mock") {
     const productConfigOk =
       productConfigProbe?.ok === true && !productConfigProbe.loadError;

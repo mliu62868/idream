@@ -34,7 +34,7 @@ idream/
 │  │        │  ├─ ourdream/service.ts  # 产品域 mega-module（dispatchV1）+ 就近 *.test.ts
 │  │        │  └─ admin/               # service.ts + characters/（official/templates/tags/review/assist）
 │  │        ├─ jobs/queue.ts   # JobQueue + claim
-│  │        ├─ providers/      # index.ts(按 env 注册含 mock) + chat/image/video/voice/moderation/payment/blob/verify
+│  │        ├─ providers/      # Main 只注册 chat/voice/moderation/payment/blob/verify；不含 image/video
 │  │        ├─ bff/chat-proxy.ts   # 签名 + 反向代理到 Chat Service
 │  │        ├─ ai/             # local-pipeline、schemas
 │  │        ├─ admin/          # permissions、effective-permissions、dev-login
@@ -49,7 +49,7 @@ idream/
 │  │           ├─ auth/        # getAuthCtx, guards
 │  │           └─ http/        # envelope（ok/fail/empty）+ handle 包装器
 │  ├─ chat/                    # Chat Service（独立服务，独立 prisma/ + Postgres schema/views）
-│  ├─ gen/                     # 生成 worker（image/video/voice pipeline）
+│  ├─ gen/                     # 图片/视频唯一生成 worker；统一 GenerationExecution 生命周期
 │  ├─ admin/                   # Admin 控制台（独立 Next App，src/app）
 │  └─ shared/                  # 跨包契约/类型（bff/chat/contracts/media/moderation/storage）
 └─ docs/architecture/          # 本目录

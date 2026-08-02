@@ -3,8 +3,8 @@ import {
   durableAckSchema,
   durableEnvelopeHash,
   durableEventEnvelopeSchema,
-  generationCompletionManifestSchema,
-  generationManifestChecksum,
+  generationTerminalRecordChecksum,
+  generationTerminalRecordSchema,
   generationTransportExecutionEventSchema,
 } from "./durable";
 import { aiUsageRecordedV2Schema } from "./metric-events";
@@ -40,21 +40,24 @@ describe("durable cross-service contracts", () => {
   });
 
   it("produces a stable checksum independent of object key order", () => {
-    const manifest = generationCompletionManifestSchema.parse({
+    const terminalRecord = generationTerminalRecordSchema.parse({
       version: 1,
+      outcome: "succeeded",
       attemptId: "attempt-1",
       attemptNo: 1,
+      providerIdempotencyKey: "generation:attempt-1:provider",
       requestId: "request-1",
       generationJobId: "job-1",
       mode: "image",
       provider: "provider-1",
+      providerInvoked: true,
       providerRequestId: null,
       completedAt: "2026-07-11T12:00:00.000Z",
       assets: [{ ordinal: 0, key: "a.webp", contentType: "image/webp", providerKey: null }],
       usage: { model: "m", gpuSeconds: 1 },
     });
-    expect(generationManifestChecksum(manifest)).toBe(
-      generationManifestChecksum({ ...manifest, usage: { gpuSeconds: 1, model: "m" } }),
+    expect(generationTerminalRecordChecksum(terminalRecord)).toBe(
+      generationTerminalRecordChecksum({ ...terminalRecord, usage: { gpuSeconds: 1, model: "m" } }),
     );
   });
 
@@ -65,14 +68,16 @@ describe("durable cross-service contracts", () => {
       costMicros: 125_000,
       pricingVersion: "fal-flux-v3",
     };
-    const manifest = {
+    const terminalRecord = {
       version: 1 as const,
       attemptId: "attempt-1",
       attemptNo: 1,
+      providerIdempotencyKey: "generation:attempt-1:provider",
       requestId: "request-1",
       generationJobId: "job-1",
       mode: "image" as const,
       provider: "fal",
+      providerInvoked: true,
       model: "flux-pro",
       providerRequestId: "provider-request-1",
       completedAt: "2026-07-11T12:00:00.000Z",
@@ -80,7 +85,10 @@ describe("durable cross-service contracts", () => {
       usage: { images: 2 },
       accounting,
     };
-    expect(generationCompletionManifestSchema.parse(manifest)).toMatchObject({ accounting });
+    expect(generationTerminalRecordSchema.parse({
+      ...terminalRecord,
+      outcome: "succeeded",
+    })).toMatchObject({ accounting });
 
     const terminal = {
       version: 1 as const,
@@ -113,6 +121,142 @@ describe("durable cross-service contracts", () => {
       usage: { images: 2 },
       costMicros: 125_000,
       pricingVersion: null,
+    }).success).toBe(false);
+  });
+
+  it("represents every generation terminal outcome as one durable record", () => {
+    const common = {
+      version: 1 as const,
+      attemptId: "attempt-1",
+      attemptNo: 1,
+      transportAttemptNo: 1,
+      providerIdempotencyKey: "generation:attempt-1:provider",
+      requestId: "request-1",
+      generationJobId: "job-1",
+      mode: "image" as const,
+      provider: "backend",
+      providerInvoked: true,
+      model: "image-model",
+      providerRequestId: null,
+      completedAt: "2026-07-11T12:00:00.000Z",
+      usage: {},
+    };
+
+    expect(generationTerminalRecordSchema.parse({
+      ...common,
+      outcome: "succeeded",
+      assets: [{ ordinal: 0, key: "a.webp", contentType: "image/webp", providerKey: null }],
+    })).toMatchObject({ outcome: "succeeded", assets: [{ key: "a.webp" }] });
+    expect(generationTerminalRecordSchema.parse({
+      ...common,
+      outcome: "failed",
+      error: { code: "backend_error", message: "backend unavailable", retryability: "operator_retry" },
+    })).toMatchObject({ outcome: "failed", error: { code: "backend_error" } });
+    expect(generationTerminalRecordSchema.parse({
+      ...common,
+      outcome: "blocked",
+      block: { policyCode: "PROHIBITED_OTHER", message: "blocked", layer: "provider" },
+    })).toMatchObject({ outcome: "blocked", block: { layer: "provider" } });
+    expect(generationTerminalRecordSchema.parse({
+      ...common,
+      outcome: "unknown",
+      error: { code: "ambiguous_non_replayable", message: "timed out", retryability: "not_retryable" },
+    })).toMatchObject({ outcome: "unknown", error: { retryability: "not_retryable" } });
+    expect(generationTerminalRecordSchema.safeParse({
+      ...common,
+      providerInvoked: undefined,
+      outcome: "failed",
+      error: { code: "moderation_unavailable", message: "unavailable", retryability: "retryable" },
+    }).success).toBe(false);
+  });
+
+  it("requires terminal asset MIME to match the generation mode", () => {
+    const common = {
+      version: 1 as const,
+      outcome: "succeeded" as const,
+      attemptId: "attempt-mime",
+      attemptNo: 1,
+      transportAttemptNo: 1,
+      providerIdempotencyKey: "generation:attempt-mime:provider",
+      requestId: "generation_dispatch_attempt-mime",
+      generationJobId: "job-mime",
+      provider: "backend",
+      providerInvoked: true,
+      model: "model",
+      providerRequestId: null,
+      completedAt: "2026-07-11T12:00:00.000Z",
+      usage: {},
+    };
+    expect(generationTerminalRecordSchema.safeParse({
+      ...common,
+      mode: "image",
+      assets: [{ ordinal: 0, key: "wrong.mp4", contentType: "video/mp4", providerKey: null }],
+    }).success).toBe(false);
+    expect(generationTerminalRecordSchema.safeParse({
+      ...common,
+      mode: "video",
+      assets: [{ ordinal: 0, key: "wrong.webp", contentType: "image/webp", providerKey: null }],
+    }).success).toBe(false);
+  });
+
+  it("permits providerInvoked=false only for an evidence-free input block", () => {
+    const common = {
+      version: 1 as const,
+      attemptId: "attempt-input-block",
+      attemptNo: 1,
+      transportAttemptNo: 1,
+      providerIdempotencyKey: "generation:attempt-input-block:provider",
+      requestId: "request-input-block",
+      generationJobId: "job-input-block",
+      mode: "image" as const,
+      provider: "backend",
+      model: "image-model",
+      providerRequestId: null,
+      completedAt: "2026-07-11T12:00:00.000Z",
+      usage: {},
+    };
+    const inputBlock = {
+      ...common,
+      providerInvoked: false,
+      outcome: "blocked" as const,
+      block: {
+        policyCode: "UNDERAGE",
+        message: "Input moderation blocked the request",
+        layer: "input" as const,
+      },
+    };
+
+    expect(generationTerminalRecordSchema.safeParse(inputBlock).success).toBe(true);
+    expect(generationTerminalRecordSchema.safeParse({
+      ...inputBlock,
+      providerInvoked: true,
+    }).success).toBe(false);
+    expect(generationTerminalRecordSchema.safeParse({
+      ...inputBlock,
+      providerRequestId: "provider-request-that-cannot-exist",
+    }).success).toBe(false);
+    expect(generationTerminalRecordSchema.safeParse({
+      ...inputBlock,
+      accounting: {
+        usage: {},
+        latencyMs: 0,
+        costMicros: null,
+        pricingVersion: null,
+      },
+    }).success).toBe(false);
+    expect(generationTerminalRecordSchema.safeParse({
+      ...common,
+      providerInvoked: false,
+      outcome: "failed",
+      error: {
+        code: "moderation_unavailable",
+        message: "Moderation unavailable",
+        retryability: "retryable",
+      },
+    }).success).toBe(false);
+    expect(generationTerminalRecordSchema.safeParse({
+      ...inputBlock,
+      block: { ...inputBlock.block, layer: "provider" },
     }).success).toBe(false);
   });
 });

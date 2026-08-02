@@ -1,20 +1,20 @@
-import { randomUUID } from "node:crypto";
-import type { BlobStore, VoiceModel } from "../types";
+import { VOICE_PROVIDER_REPLAY, type BlobStore, type VoiceClipPort } from "../types";
+import { voiceArtifactKey } from "./idempotency";
 
 // SPEC: Deterministic stand-in for a real TTS gateway. Unlike a key-only stub, the
 //       mock persists a genuinely playable artifact so on-demand playback works
 //       end-to-end in dev/mock — matching the PipelineVoiceModel contract (the
 //       returned key always points at stored bytes).
 // INTENT: a short silent WAV is trivial to synthesize and every browser decodes it.
-export class MockVoiceModel implements VoiceModel {
+export class MockVoiceModel implements VoiceClipPort {
   readonly providerKey = "mock" as const;
-  readonly supportsVoiceCloning = false;
+  readonly providerReplay = VOICE_PROVIDER_REPLAY.mock;
 
   constructor(private readonly blob?: BlobStore) {}
 
-  async synthesize(input: Parameters<VoiceModel["synthesize"]>[0]) {
+  async synthesize(input: Parameters<VoiceClipPort["synthesize"]>[0]) {
     const durationMs = Math.max(500, input.text.length * 35);
-    const key = `voice/mock-${randomUUID()}.wav`;
+    const key = voiceArtifactKey(input.idempotencyKey, ".wav");
     if (this.blob) {
       const stored = await this.blob.putPrivate({
         key,

@@ -48,6 +48,45 @@ describe("S3CompatibleBlobStore", () => {
     );
   });
 
+  it("atomically creates an object only when its key is absent", async () => {
+    const fetchImpl = vi.fn(
+      async (_input: Parameters<typeof fetch>[0], _init?: Parameters<typeof fetch>[1]) =>
+        new Response(null, { status: 200 }),
+    );
+    const store = createStore(fetchImpl);
+
+    const result = await store.putPrivateIfAbsent({
+      key: "terminal/attempt-1.json",
+      body: new TextEncoder().encode("terminal-record"),
+      contentType: "application/json",
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      data: { key: "terminal/attempt-1.json", size: 15, created: true },
+    });
+    const firstCall = fetchImpl.mock.calls[0];
+    if (!firstCall) throw new Error("fetch was not called");
+    const [, init] = firstCall;
+    expect(init?.headers).toMatchObject({ "if-none-match": "*" });
+    expect((init?.headers as Record<string, string>).authorization).toContain(
+      "SignedHeaders=cache-control;content-type;host;if-none-match;x-amz-content-sha256;x-amz-date",
+    );
+  });
+
+  it("treats a precondition failure as an existing immutable object", async () => {
+    const store = createStore(async () => new Response(null, { status: 412 }));
+
+    await expect(store.putPrivateIfAbsent({
+      key: "terminal/attempt-1.json",
+      body: new TextEncoder().encode("terminal-record"),
+      contentType: "application/json",
+    })).resolves.toEqual({
+      ok: true,
+      data: { key: "terminal/attempt-1.json", size: 15, created: false },
+    });
+  });
+
   it("creates presigned get URLs without making a network request", async () => {
     const fetchImpl = vi.fn(
       async (_input: Parameters<typeof fetch>[0], _init?: Parameters<typeof fetch>[1]) =>

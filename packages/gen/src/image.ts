@@ -1,34 +1,34 @@
 // SPEC: gen/image process entry. Consumes ai.image.generate; for each job runs
-// the pipeline (provider → blob → enqueue app.ai.finalize). Long-running with
+// the pipeline (provider → blob terminal record → durable Main relay). Long-running with
 // graceful shutdown: SIGTERM/SIGINT close the worker so in-flight jobs drain.
 import { GEN_QUEUES } from "@idream/shared/contracts";
 import { logger } from "./logger";
-import {
-  processCharacterPreviewGenerate,
-  processImageGenerate,
-} from "./pipeline";
-import { assertProductionProviderReady } from "./providers";
-import { enqueue, runWorker } from "./queue";
-import { acknowledgeCompletionManifest } from "./completion-manifest";
+import { processImageGenerate } from "./pipeline";
+import { assertProductionProviderReady, providers } from "./providers";
+import { runWorker } from "./queue";
+import { startGenerationSourceRecovery } from "./failed-source-recovery";
+import { enqueueTerminalRecordRelay } from "./terminal-record";
 import { recordTransportExecution } from "./transport-execution";
 
 assertProductionProviderReady("image");
 
-const imageWorker = runWorker(GEN_QUEUES.imageGenerate, async (job) => {
-  await processImageGenerate(job.payload, {
-    enqueue,
-    attemptsMade: job.attemptsMade,
-    maxAttempts: job.maxAttempts,
-    acknowledgeCompletion: acknowledgeCompletionManifest,
-    recordTransportExecution,
-  });
+const sourceRecovery = startGenerationSourceRecovery({
+  mode: "image",
+  blob: providers.blob,
+  onResult: (result) => {
+    if (result.recovered > 0 || result.invalid.length > 0 || result.retryErrors.length > 0) {
+      logger.warn(result, "image failed-source recovery scan completed");
+    }
+  },
+  onError: (err) => logger.error({ err }, "image failed-source recovery scan failed"),
 });
 
-const previewWorker = runWorker(GEN_QUEUES.characterPreview, async (job) => {
-  await processCharacterPreviewGenerate(job.payload, {
-    enqueue,
+const imageWorker = runWorker(GEN_QUEUES.imageGenerate, async (job) => {
+  await processImageGenerate(job.payload, {
     attemptsMade: job.attemptsMade,
     maxAttempts: job.maxAttempts,
+    acknowledgeTerminalRecord: enqueueTerminalRecordRelay,
+    recordTransportExecution,
   });
 });
 
@@ -38,21 +38,15 @@ imageWorker.on("failed", (job, err) => {
 imageWorker.on("completed", (job) => {
   logger.info({ jobId: job.id }, "image generate job completed");
 });
-previewWorker.on("failed", (job, err) => {
-  logger.error({ jobId: job?.id, err: err.message }, "character preview job failed");
-});
-previewWorker.on("completed", (job) => {
-  logger.info({ jobId: job.id }, "character preview job completed");
-});
-
 logger.info(
-  { queues: [GEN_QUEUES.imageGenerate, GEN_QUEUES.characterPreview] },
+  { queues: [GEN_QUEUES.imageGenerate] },
   "gen/image workers started",
 );
 
 async function shutdown(signal: string): Promise<void> {
   logger.info({ signal }, "gen/image shutting down");
-  await Promise.all([imageWorker.close(), previewWorker.close()]);
+  await sourceRecovery.close();
+  await imageWorker.close();
   process.exit(0);
 }
 

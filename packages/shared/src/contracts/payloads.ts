@@ -75,8 +75,9 @@ export const imageGeneratePayloadSchema = z
     kind: z.literal("image"),
     requestId: z.string(),
     generationJobId: z.string(),
-    attemptId: z.string().optional(),
-    attemptNo: z.number().int().positive().optional(),
+    attemptId: z.string().min(1),
+    attemptNo: z.number().int().positive(),
+    provider: z.string().trim().min(1),
     userId: z.string(),
     characterId: z.string().nullable(),
     prompt: z.string(),
@@ -89,24 +90,6 @@ export const imageGeneratePayloadSchema = z
     model: z.string(),
     outputPrefix: z.string(),
     referenceImages: z.array(generationReferenceImageSchema).optional(),
-  })
-  .passthrough();
-
-export const characterPreviewGeneratePayloadSchema = z
-  .object({
-    version: z.literal(1),
-    kind: z.literal("character.preview"),
-    requestId: z.string().min(1),
-    previewJobId: z.string().min(1),
-    draftId: z.string().min(1),
-    userId: z.string().min(1),
-    prompt: z.string().min(1),
-    negativePrompt: z.string().nullable(),
-    controls: z.record(z.string(), z.unknown()),
-    orientation: z.string().min(1),
-    seed: z.string().min(1),
-    model: z.string().min(1),
-    outputPrefix: z.string().min(1),
   })
   .passthrough();
 
@@ -229,8 +212,9 @@ export const videoGeneratePayloadSchema = z
     kind: z.literal("video"),
     requestId: z.string(),
     generationJobId: z.string(),
-    attemptId: z.string().optional(),
-    attemptNo: z.number().int().positive().optional(),
+    attemptId: z.string().min(1),
+    attemptNo: z.number().int().positive(),
+    provider: z.string().trim().min(1),
     userId: z.string(),
     characterId: z.string().nullable(),
     prompt: z.string(),
@@ -353,7 +337,7 @@ const generationQualityDimensionSchema = z
   })
   .passthrough();
 
-const generationQualitySchema = z
+export const generationQualitySchema = z
   .object({
     schemaVersion: z.literal("1"),
     evaluatorVersion: z.string(),
@@ -448,41 +432,13 @@ export const aiFinalizePayloadSchema = z.discriminatedUnion("kind", [
   z
     .object({
       version: z.literal(1),
-      kind: z.literal("character.preview.completed"),
-      requestId: z.string().min(1),
-      previewJobId: z.string().min(1),
-      draftId: z.string().min(1),
-      userId: z.string().min(1),
-      provider: z.string().min(1),
-      model: z.string().min(1),
-      asset: generationAssetSchema,
-    })
-    .passthrough(),
-  z
-    .object({
-      version: z.literal(1),
-      kind: z.literal("character.preview.failed"),
-      requestId: z.string().min(1),
-      previewJobId: z.string().min(1),
-      draftId: z.string().min(1),
-      userId: z.string().min(1),
-      error: z.object({
-        code: z.string().min(1),
-        message: z.string().min(1),
-        retryable: z.boolean(),
-      }),
-    })
-    .passthrough(),
-  z
-    .object({
-      version: z.literal(1),
       kind: z.literal("generation.completed"),
       requestId: z.string(),
       generationJobId: z.string(),
-      attemptId: z.string().optional(),
-      attemptNo: z.number().int().positive().optional(),
-      completionManifestRef: z.string().optional(),
-      completionManifestChecksum: z.string().optional(),
+      attemptId: z.string().min(1),
+      attemptNo: z.number().int().positive(),
+      terminalRecordRef: z.string().min(1),
+      terminalRecordChecksum: z.string().regex(/^[a-f0-9]{64}$/),
       mode: z.enum(["image", "video"]),
       provider: z.string().min(1).optional(),
       model: z.string().min(1).optional(),
@@ -496,8 +452,10 @@ export const aiFinalizePayloadSchema = z.discriminatedUnion("kind", [
       kind: z.literal("generation.failed"),
       requestId: z.string(),
       generationJobId: z.string(),
-      attemptId: z.string().optional(),
-      attemptNo: z.number().int().positive().optional(),
+      attemptId: z.string().min(1),
+      attemptNo: z.number().int().positive(),
+      terminalRecordRef: z.string().min(1),
+      terminalRecordChecksum: z.string().regex(/^[a-f0-9]{64}$/),
       mode: z.enum(["image", "video"]),
       error: z.object({
         code: z.string(),
@@ -514,23 +472,34 @@ export const aiFinalizePayloadSchema = z.discriminatedUnion("kind", [
       kind: z.literal("generation.blocked"),
       requestId: z.string(),
       generationJobId: z.string(),
-      attemptId: z.string().optional(),
-      attemptNo: z.number().int().positive().optional(),
+      attemptId: z.string().min(1),
+      attemptNo: z.number().int().positive(),
+      terminalRecordRef: z.string().min(1),
+      terminalRecordChecksum: z.string().regex(/^[a-f0-9]{64}$/),
       mode: z.enum(["image", "video"]),
       policyCode: z.string(),
       message: z.string(),
       layer: z.enum(["input", "output", "provider"]).default("input"),
     })
     .passthrough(),
-]);
+]).superRefine((payload, context) => {
+  if (payload.kind !== "generation.completed") return;
+  const requiredPrefix = `${payload.mode}/`;
+  payload.assets.forEach((asset, index) => {
+    if (!asset.contentType.startsWith(requiredPrefix)) {
+      context.addIssue({
+        code: "custom",
+        path: ["assets", index, "contentType"],
+        message: `${payload.mode} finalize assets require ${requiredPrefix}* content type`,
+      });
+    }
+  });
+});
 
 export type ChatStreamEvent = z.infer<typeof chatStreamEventSchema>;
 export type ChatGeneratePayload = z.infer<typeof chatGeneratePayloadSchema>;
 export type ChatMemoryExtractPayload = z.infer<typeof chatMemoryExtractPayloadSchema>;
 export type ImageGeneratePayload = z.infer<typeof imageGeneratePayloadSchema>;
-export type CharacterPreviewGeneratePayload = z.infer<
-  typeof characterPreviewGeneratePayloadSchema
->;
 export type VideoGeneratePayload = z.infer<typeof videoGeneratePayloadSchema>;
 export type ChatImageRequestedPayload = z.infer<typeof chatImageRequestedPayloadSchema>;
 export type ChatImageAcceptedPayload = z.infer<typeof chatImageAcceptedPayloadSchema>;

@@ -1,13 +1,18 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { expect } from "vitest";
 import type { Prisma } from "@prisma/client";
+import { idempotencyKeys, MAIN_QUEUES } from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
 import { AGE_GATE_COOKIE, type ActorRole } from "@/server/lib/auth";
 import { dispatchV1 } from "@/server/modules/ourdream/service";
 import { jobQueue } from "@/server/jobs/queue";
 import { drainLocalAiPipeline } from "@/server/ai/local-pipeline";
+import {
+  dispatchPendingGenerationTerminalRecords,
+  ingestGenerationTerminalRecord,
+} from "@/server/ai/generation-terminal-record-ingest";
+import { recordGenerationTransportExecution } from "@/server/ai/generation-transport-execution";
 import { redeemCodeHash } from "@/server/lib/redeem-codes";
-import { providers } from "@/server/providers";
 
 // SPEC: Shared integration-test client + fixtures for the /api/v1 surface.
 // INTENT: One ergonomic `api()` that drives dispatchV1 exactly like the route
@@ -526,7 +531,8 @@ export async function runQueuedGenerationJobs(
   queues: readonly string[] = [
     "ai.image.generate",
     "ai.video.generate",
-    "app.ai.finalize",
+    MAIN_QUEUES.generationTerminalIngest,
+    MAIN_QUEUES.aiFinalize,
   ],
 ) {
   const claimed: Array<{ id: string; queue: string; status: string; error?: string }> = [];
@@ -534,13 +540,22 @@ export async function runQueuedGenerationJobs(
   for (let index = 0; index < limit; index += 1) {
     let found = false;
     for (const queue of queues) {
-      if (queue === "app.ai.finalize") {
+      if (
+        queue === MAIN_QUEUES.generationTerminalIngest ||
+        queue === MAIN_QUEUES.aiFinalize
+      ) {
         const result = await drainLocalAiPipeline({
           queues: [queue],
           limit: 1,
           workerId: `test-main-finalizer-${index}`,
         });
         if (result.claimed.length === 0) continue;
+        const failed = result.claimed.find((item) => item.status === "failed");
+        if (failed) {
+          throw new Error(
+            `Test Main finalizer failed ${failed.id}: ${failed.error ?? "unknown error"}`,
+          );
+        }
         found = true;
         claimed.push(...result.claimed);
         processed += result.processed;
@@ -555,26 +570,60 @@ export async function runQueuedGenerationJobs(
         processor: async (job) => {
           const genPipeline = await loadTestGenPipeline();
           const deps: TestGenPipelineDeps = {
-            enqueue: async (input) => {
-              await jobQueue.enqueue({
-                ...input,
-                payload: input.payload as Prisma.InputJsonValue,
-              });
+            acknowledgeTerminalRecord: async (input) => {
+              const result = await ingestGenerationTerminalRecord(input);
+              if (!result.acknowledged) {
+                const receipt = result.receiptId
+                  ? await prisma.inboundEventReceipt.findUnique({
+                      where: { id: result.receiptId },
+                      select: { error: true },
+                    })
+                  : null;
+                throw new Error(
+                  `Main quarantined Gen terminal record ${input.terminalRecord.attemptId}: ${JSON.stringify(receipt?.error ?? "unknown reason")}`,
+                );
+              }
+              await dispatchPendingGenerationTerminalRecords();
             },
-            providers,
+            recordTransportExecution: async (input) => {
+              await recordGenerationTransportExecution(input);
+            },
+            providers: await generationTestProviders(),
             attemptsMade: job.attemptsMade,
             maxAttempts: job.maxAttempts,
           };
-          if (queue === "ai.image.generate") {
-            await genPipeline.processImageGenerate(job.payload, deps);
-          } else {
-            await genPipeline.processVideoGenerate(job.payload, deps);
+          const payload =
+            typeof job.payload === "object" &&
+            job.payload !== null &&
+            !Array.isArray(job.payload)
+              ? (job.payload as Record<string, unknown>)
+              : {};
+          const pinnedProvider =
+            typeof payload.provider === "string" ? payload.provider : "mock";
+          const envKey =
+            queue === "ai.image.generate"
+              ? "GEN_IMAGE_PROVIDER"
+              : "GEN_VIDEO_PROVIDER";
+          const previousAdapter = process.env[envKey];
+          process.env[envKey] =
+            genPipeline.providerAdapterForPinnedAuthority(pinnedProvider);
+          try {
+            if (queue === "ai.image.generate") {
+              await genPipeline.processImageGenerate(job.payload, deps);
+            } else {
+              await genPipeline.processVideoGenerate(job.payload, deps);
+            }
+          } finally {
+            if (previousAdapter === undefined) delete process.env[envKey];
+            else process.env[envKey] = previousAdapter;
           }
         },
       });
       if (!result.job) continue;
       if (result.status === "failed") {
-        throw new Error(`Test Gen owner failed ${queue}: ${result.error ?? "unknown error"}`);
+        throw new Error(
+          `Test Gen owner failed ${queue} job=${result.job.id}: ${result.error ?? "unknown error"}`,
+        );
       }
       found = true;
       claimed.push({
@@ -592,17 +641,28 @@ export async function runQueuedGenerationJobs(
 }
 
 type TestGenPipelineDeps = {
-  enqueue(input: {
-    queue: string;
-    payload: Record<string, unknown>;
-    dedupeKey?: string;
-  }): Promise<void>;
-  providers: typeof providers;
+  acknowledgeTerminalRecord(input: any): Promise<void>;
+  recordTransportExecution(input: any): Promise<void>;
+  providers: TestGenProviders;
   attemptsMade: number;
   maxAttempts: number;
 };
 
+type TestGenProviders = {
+  image: { generate(input: any): Promise<any> };
+  video: { generate(input: any): Promise<any> };
+  moderation: { check(input: any): Promise<any> };
+  blob: {
+    putPrivate(input: any): Promise<any>;
+    putPrivateIfAbsent(input: any): Promise<any>;
+    delete(input: any): Promise<any>;
+    signGetUrl(input: any): Promise<any>;
+    getPrivate?(input: any): Promise<any>;
+  };
+};
+
 type TestGenPipeline = {
+  providerAdapterForPinnedAuthority(provider: string): string;
   processImageGenerate(payload: unknown, deps: TestGenPipelineDeps): Promise<void>;
   processVideoGenerate(payload: unknown, deps: TestGenPipelineDeps): Promise<void>;
 };
@@ -614,55 +674,50 @@ async function loadTestGenPipeline(): Promise<TestGenPipeline> {
   return await import(modulePath) as TestGenPipeline;
 }
 
+let stableTestGenProviders: TestGenProviders | undefined;
+
+export async function generationTestProviders(): Promise<TestGenProviders> {
+  if (stableTestGenProviders) return stableTestGenProviders;
+  const modulePath = new URL("../../../../gen/src/providers.ts", import.meta.url).href;
+  const providerModule = await import(modulePath) as {
+    createMockGenProviders(): TestGenProviders;
+  };
+  stableTestGenProviders = providerModule.createMockGenProviders();
+  return stableTestGenProviders;
+}
+
 export async function completeQueuedCharacterPreview(input: {
   previewJobId: string;
   draftId: string;
   userId: string;
-  provider?: string;
-  model?: string;
 }) {
-  const generateDedupeKey = `character-preview:${input.previewJobId}`;
+  const generationJob = await prisma.generationJob.findFirstOrThrow({
+    where: {
+      sourceType: "character_preview",
+      sourceId: input.previewJobId,
+      userId: input.userId,
+    },
+  });
+  const attempt = await prisma.generationAttempt.findFirstOrThrow({
+    where: { requestId: generationJob.id },
+    orderBy: { attemptNo: "desc" },
+  });
+  const generateDedupeKey =
+    `generation:${generationJob.id}:attempt:${attempt.attemptNo}`;
   const queued = await jobQueue.getByDedupeKey(
-    "character.preview",
+    "ai.image.generate",
     generateDedupeKey,
   );
   expect(queued?.payload).toMatchObject({
-    kind: "character.preview",
-    previewJobId: input.previewJobId,
-    draftId: input.draftId,
+    kind: "image",
+    generationJobId: generationJob.id,
+    attemptId: attempt.id,
     userId: input.userId,
   });
-  await jobQueue.removeByDedupePrefix(generateDedupeKey, ["character.preview"]);
-  await jobQueue.enqueue({
-    queue: "app.ai.finalize",
-    payload: {
-      version: 1,
-      kind: "character.preview.completed",
-      requestId: `character-preview:${input.previewJobId}`,
-      previewJobId: input.previewJobId,
-      draftId: input.draftId,
-      userId: input.userId,
-      provider: input.provider ?? "backend",
-      model: input.model ?? "redcraft-krea2-redmix3-fp8",
-      asset: {
-        key: `preview/${input.previewJobId}/image-1.webp`,
-        width: 832,
-        height: 1024,
-        contentType: "image/webp",
-      },
-    },
-    dedupeKey: `character-preview-finalize:${input.previewJobId}:completed`,
-  });
-  const result = await drainLocalAiPipeline({
-    queues: ["app.ai.finalize"],
-    limit: 2,
-    workerId: `test-preview-finalizer-${input.previewJobId}`,
-  });
-  await jobQueue.removeByDedupePrefix(
-    `character-preview-finalize:${input.previewJobId}:`,
-    ["app.ai.finalize"],
-  );
-  return result;
+  // INTENT: Character Preview tests traverse the same Gen terminal-record ACK
+  // seam as every other image Request. Hand-building a Main finalize payload
+  // would bypass immutable Attempt storage and hide dispatch-envelope drift.
+  return runQueuedGenerationJobs(4);
 }
 
 // ---------------------------------------------------------------------------
@@ -672,8 +727,15 @@ export async function completeQueuedCharacterPreview(input: {
 export async function purgeQueuedGenerationJobs(
   generationJobIds: readonly string[],
 ) {
+  const uniqueJobIds = [...new Set(generationJobIds)];
+  const attempts = uniqueJobIds.length === 0
+    ? []
+    : await prisma.generationAttempt.findMany({
+        where: { requestId: { in: uniqueJobIds } },
+        select: { id: true },
+      });
   let removed = 0;
-  for (const jobId of new Set(generationJobIds)) {
+  for (const jobId of uniqueJobIds) {
     removed += await jobQueue.removeByDedupePrefix(`generation:${jobId}`, [
       "ai.image.generate",
       "ai.video.generate",
@@ -682,6 +744,20 @@ export async function purgeQueuedGenerationJobs(
       `generation-finalize:${jobId}:`,
       ["app.ai.finalize"],
     );
+  }
+  for (const attempt of attempts) {
+    removed += (await jobQueue.removeByDedupeKey(
+        MAIN_QUEUES.generationTerminalIngest,
+        idempotencyKeys.generationTerminalRelay(attempt.id),
+      ))
+      ? 1
+      : 0;
+    removed += (await jobQueue.removeByDedupeKey(
+        MAIN_QUEUES.aiFinalize,
+        `generation-terminal-record-finalize:${attempt.id}`,
+      ))
+      ? 1
+      : 0;
   }
   return removed;
 }
@@ -735,8 +811,8 @@ export async function purgeTestData(prefix: string) {
   await jobQueue.removeByDedupePrefix(prefix, [
     "ai.image.generate",
     "ai.video.generate",
-    "app.ai.finalize",
-    "character.preview",
+    MAIN_QUEUES.generationTerminalIngest,
+    MAIN_QUEUES.aiFinalize,
   ]);
 
   const derivedCaseEvidence = await prisma.caseEvidence.findMany({

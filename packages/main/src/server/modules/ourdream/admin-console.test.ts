@@ -2161,7 +2161,10 @@ describe("generation config control plane", () => {
           diffusionModelPath: "/models/checkpoints/legacy-redcraft.safetensors",
         }),
       });
-      const queueJob = await jobQueue.getByDedupeKey("ai.image.generate", `generation:${jobId}`);
+      const queueJob = await jobQueue.getByDedupeKey(
+        "ai.image.generate",
+        `generation:${jobId}:attempt:1`,
+      );
       expect(queueJob?.payload).toMatchObject({
         model: "legacy-redcraft-model",
         controls: {
@@ -2420,7 +2423,8 @@ describe("generation config control plane", () => {
     expect(initialAttemptEvents.every((event) => event.eventType === "generation.attempt.queued.v1")).toBe(true);
     const dispatchRows = await prisma.mainOutboxEvent.findMany({
       where: {
-        aggregateId: { in: [created.data.batch.id, createdSecond.data.batch.id] },
+        aggregateType: "generation_request",
+        aggregateId: { in: jobs.map((job) => job.id) },
         eventType: "creative.generation.dispatch.v2",
       },
     });
@@ -2743,6 +2747,58 @@ describe("generation config control plane", () => {
     // batch creation never debits a wallet for them.
     expect(jobs[0].costDreamcoins).toBeGreaterThan(0);
     const [failJob, blockJob] = jobs;
+    const [failAttempt, blockAttempt] = await Promise.all([
+      prisma.generationAttempt.findFirstOrThrow({
+        where: { requestId: failJob.id },
+        orderBy: { attemptNo: "desc" },
+      }),
+      prisma.generationAttempt.findFirstOrThrow({
+        where: { requestId: blockJob.id },
+        orderBy: { attemptNo: "desc" },
+      }),
+    ]);
+    const failPayload = asInputJson({
+      version: 1,
+      kind: "generation.failed",
+      requestId: `${P}production-refund-fail`,
+      generationJobId: failJob.id,
+      attemptId: failAttempt.id,
+      attemptNo: failAttempt.attemptNo,
+      terminalRecordRef: `test://terminal-record/${failAttempt.id}`,
+      terminalRecordChecksum: "a".repeat(64),
+      mode: "image",
+      error: { code: "backend_oom", message: "backend out of memory", retryable: false },
+    });
+    const blockPayload = asInputJson({
+      version: 1,
+      kind: "generation.blocked",
+      requestId: `${P}production-refund-block`,
+      generationJobId: blockJob.id,
+      attemptId: blockAttempt.id,
+      attemptNo: blockAttempt.attemptNo,
+      terminalRecordRef: `test://terminal-record/${blockAttempt.id}`,
+      terminalRecordChecksum: "b".repeat(64),
+      mode: "image",
+      layer: "input",
+      policyCode: "moderation_blocked",
+      message: "prompt failed moderation",
+    });
+    await prisma.mainOutboxEvent.createMany({ data: [
+      {
+        id: `generation_terminal_record_${failAttempt.id}`,
+        eventType: "generation.terminal_record.accepted.v1",
+        aggregateType: "generation_attempt",
+        aggregateId: failAttempt.id,
+        payload: failPayload,
+      },
+      {
+        id: `generation_terminal_record_${blockAttempt.id}`,
+        eventType: "generation.terminal_record.accepted.v1",
+        aggregateType: "generation_attempt",
+        aggregateId: blockAttempt.id,
+        payload: blockPayload,
+      },
+    ] });
 
     // Never debited on creation: the operator's balance before any failure/finalize.
     const balanceBefore = await dreamcoinBalance(admin);
@@ -2750,30 +2806,14 @@ describe("generation config control plane", () => {
     await jobQueue.removeByDedupePrefix(`generation:${failJob.id}`, ["ai.image.generate"]);
     await jobQueue.enqueue({
       queue: "app.ai.finalize",
-      payload: asInputJson({
-        version: 1,
-        kind: "generation.failed",
-        requestId: `${P}production-refund-fail`,
-        generationJobId: failJob.id,
-        mode: "image",
-        error: { code: "backend_oom", message: "backend out of memory", retryable: false },
-      }),
+      payload: failPayload,
       dedupeKey: `generation-finalize:${failJob.id}:failed`,
     });
 
     await jobQueue.removeByDedupePrefix(`generation:${blockJob.id}`, ["ai.image.generate"]);
     await jobQueue.enqueue({
       queue: "app.ai.finalize",
-      payload: asInputJson({
-        version: 1,
-        kind: "generation.blocked",
-        requestId: `${P}production-refund-block`,
-        generationJobId: blockJob.id,
-        mode: "image",
-        layer: "input",
-        policyCode: "moderation_blocked",
-        message: "prompt failed moderation",
-      }),
+      payload: blockPayload,
       dedupeKey: `generation-finalize:${blockJob.id}:blocked`,
     });
 
@@ -3414,11 +3454,16 @@ describe("dead-letter operations console", () => {
     const owner = `${P}dl-rq-owner`;
     await createUser({ id: owner, dataClass: "customer" });
     await makeJob(`${P}dl-rq-failed`, owner, "failed", 5);
+    await prisma.generationJob.update({
+      where: { id: `${P}dl-rq-failed` },
+      data: { provider: "mock" },
+    });
     await prisma.generationAttempt.create({
       data: {
         id: `${P}dl-rq-attempt-1`,
         requestId: `${P}dl-rq-failed`,
         attemptNo: 1,
+        provider: "mock",
         status: "failed",
         retryability: "operator_retry",
         finishedAt: new Date(),

@@ -1614,6 +1614,7 @@ export async function listCreativeRuns(input: {
   void input.actor;
   const query = creativeRunQuerySchema.parse(Object.fromEntries(new URL(input.requestUrl).searchParams));
   const queryIdentity = {
+    purpose: query.purpose,
     lifecycleState: query.lifecycleState,
     workflowStage: query.workflowStage,
     executionOutcome: query.executionOutcome,
@@ -1654,6 +1655,7 @@ export async function listCreativeRuns(input: {
     const roots = await prisma.contentProductionBatch.findMany({
       where: operationalContentProductionBatchWhere({
         ...(cursorWhere ? { AND: [cursorWhere] } : {}),
+        purpose: query.purpose,
         lifecycleState: query.lifecycleState,
         workflowStage: query.workflowStage,
         ownerId: query.ownerId,

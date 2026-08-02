@@ -201,6 +201,7 @@ export const ADMIN_V2_API_OPERATIONS = [
   operation("POST", "/api/v2/admin/characters/:id/voice-clones", allOf("character.project.write"), "characterVoiceCloneCreateRequestSchema+idempotency-key", "characterVoiceCloneCreateResponseSchema"),
   operation("POST", "/api/v2/admin/characters/:id/voice-clones/:profileId/activate", allOf("character.release.publish"), "characterVoiceActivationRequestSchema+idempotency-key", "characterVoiceActivationResponseSchema"),
   operation("POST", "/api/v2/admin/characters/:id/voice-defaults/reset", allOf("character.release.publish"), "characterVoiceSystemDefaultResetRequestSchema+idempotency-key", "characterVoiceSystemDefaultResetResponseSchema"),
+  operation("POST", "/api/v2/admin/characters/:id/voice-clips/:requestId/commands/reclaim", allOf("character.project.write"), "characterVoiceClipReclaimRequestSchema+idempotency-key", "characterVoiceClipReclaimResponseSchema"),
   operation("POST", "/api/v2/admin/characters/:id/reference-sets", allOf("content.official.write"), "characterReferenceSetPublishRequestSchema+idempotency-key", "characterReferenceSetPublishResponseSchema"),
   operation("PATCH", "/api/v2/admin/characters/:id/looks/:lookId", allOf("content.official.write"), "characterLookArchiveRequestSchema+idempotency-key", "characterLookArchiveResponseSchema"),
   operation("POST", "/api/v2/admin/characters/:id/commands/pause", allOf("character.release.publish"), "adminCommandRequestSchema+idempotency-key", "adminCommandAcceptedSchema"),
@@ -267,6 +268,7 @@ export const ADMIN_V2_API_OPERATIONS = [
 
   operation("GET", "/api/v2/admin/jobs", allOf("generation.job.read"), "generationJobQuerySchema", "generationJobListResponseSchema"),
   operation("GET", "/api/v2/admin/jobs/:id", allOf("generation.job.read"), "path:id", "generationJobDetailResponseSchema"),
+  operation("POST", "/api/v2/admin/jobs/:id/commands/reconcile-unknown", allOf("generation.job.requeue"), "unknownGenerationReconciliationCommandSchema+idempotency-key", "unknownGenerationReconciliationResultSchema"),
   operation("POST", "/api/v2/admin/jobs/:id/commands/retry", allOf("generation.job.requeue"), "retryGenerationRequestCommandSchema+idempotency-key", "retryGenerationRequestResultSchema"),
 
   operation("GET", "/api/v2/admin/metrics", allOf("analytics.metric.read"), "metricDashboardQuerySchema", "metricDashboardResponseSchema"),

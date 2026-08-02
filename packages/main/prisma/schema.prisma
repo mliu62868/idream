@@ -34,6 +34,8 @@ model User {
   recentChats        RecentChat[]
   generationJobs     GenerationJob[]
   mediaAssets        MediaAsset[]
+  voiceClipRequests  VoiceClipRequest[]
+  voiceUsageFacts    VoiceUsageFact[]
   productionBatches  ContentProductionBatch[]
   mediaPlacements    MediaAssetPlacement[]
   mediaLikes         MediaLike[]
@@ -174,19 +176,21 @@ model Character {
   updatedAt       DateTime  @updatedAt
   deletedAt       DateTime?
 
-  creator        User?                    @relation("CharacterCreator", fields: [creatorId], references: [id], onDelete: SetNull)
-  imageAsset     MediaAsset?              @relation("CharacterImage", fields: [imageAssetId], references: [id], onDelete: SetNull)
-  tags           CharacterTag[]
-  stats          CharacterStats?
-  submissions    CharacterSubmission[]
-  recentChats    RecentChat[]
-  generationJobs GenerationJob[]
-  mediaAssets    MediaAsset[]             @relation("CharacterAssets")
-  visualProfiles CharacterVisualProfile[]
-  looks          CharacterLook[]
-  voiceProfiles  CharacterVoiceProfile[]
-  likes          CharacterLike[]
-  serving        CharacterServing?
+  creator           User?                    @relation("CharacterCreator", fields: [creatorId], references: [id], onDelete: SetNull)
+  imageAsset        MediaAsset?              @relation("CharacterImage", fields: [imageAssetId], references: [id], onDelete: SetNull)
+  tags              CharacterTag[]
+  stats             CharacterStats?
+  submissions       CharacterSubmission[]
+  recentChats       RecentChat[]
+  generationJobs    GenerationJob[]
+  mediaAssets       MediaAsset[]             @relation("CharacterAssets")
+  voiceClipRequests VoiceClipRequest[]
+  voiceUsageFacts   VoiceUsageFact[]
+  visualProfiles    CharacterVisualProfile[]
+  looks             CharacterLook[]
+  voiceProfiles     CharacterVoiceProfile[]
+  likes             CharacterLike[]
+  serving           CharacterServing?
 
   @@index([visibility, status])
   @@index([source, visibility, status])
@@ -197,28 +201,82 @@ model Character {
 }
 
 model CharacterVoiceProfile {
-  id                 String     @id @default(cuid())
-  characterId        String
-  version            Int
-  provider           String     @default("fish_audio")
-  providerVoiceId    String     @unique
-  model              String
-  language           String
-  deliverySettings   Json       @default("{}")
-  status             String     @default("candidate") // enum: candidate | active | archived | failed
-  referenceAssetId   String
-  previewAssetId     String?
-  sampleText         String
-  createdById        String
-  createdAt          DateTime   @default(now())
-  archivedAt         DateTime?
-  character          Character  @relation(fields: [characterId], references: [id], onDelete: Cascade)
-  referenceAsset     MediaAsset @relation("VoiceReferenceAsset", fields: [referenceAssetId], references: [id], onDelete: Restrict)
-  previewAsset       MediaAsset? @relation("VoicePreviewAsset", fields: [previewAssetId], references: [id], onDelete: SetNull)
+  id               String      @id @default(cuid())
+  characterId      String
+  version          Int
+  provider         String      @default("fish_audio")
+  providerVoiceId  String      @unique
+  model            String
+  language         String
+  deliverySettings Json        @default("{}")
+  status           String      @default("candidate") // enum: candidate | active | archived | failed
+  referenceAssetId String
+  previewAssetId   String?
+  sampleText       String
+  createdById      String
+  createdAt        DateTime    @default(now())
+  archivedAt       DateTime?
+  character        Character   @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  referenceAsset   MediaAsset  @relation("VoiceReferenceAsset", fields: [referenceAssetId], references: [id], onDelete: Restrict)
+  previewAsset     MediaAsset? @relation("VoicePreviewAsset", fields: [previewAssetId], references: [id], onDelete: SetNull)
 
   @@unique([characterId, version])
   @@index([characterId, status, version])
   @@map("character_voice_profiles")
+}
+
+model VoiceClipRequest {
+  id                 String           @id
+  userId             String
+  characterId        String
+  messageId          String
+  requestFingerprint String
+  synthesisPayload   Json?
+  providerPayload    Json
+  status             String           @default("running") // enum: running | succeeded | failed | skipped
+  attemptNo          Int              @default(1)
+  leaseOwner         String?
+  leaseExpiresAt     DateTime?
+  mediaAssetId       String?
+  provider           String?
+  providerRequestId  String?
+  errorCode          String?
+  error              Json?
+  startedAt          DateTime         @default(now())
+  completedAt        DateTime?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+  user               User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  character          Character        @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  mediaAsset         MediaAsset?      @relation("VoiceClipRequestMedia", fields: [mediaAssetId], references: [id], onDelete: SetNull)
+  usageFacts         VoiceUsageFact[]
+
+  @@unique([userId, messageId])
+  @@index([status, leaseExpiresAt])
+  @@index([characterId, createdAt])
+  @@map("voice_clip_requests")
+}
+
+model VoiceUsageFact {
+  id             String           @id
+  requestId      String
+  attemptNo      Int
+  userId         String
+  characterId    String
+  mediaAssetId   String?
+  durationMs     Int
+  costDreamcoins Int
+  intent         String
+  occurredAt     DateTime         @default(now())
+  request        VoiceClipRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  character      Character        @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  mediaAsset     MediaAsset?      @relation("VoiceUsageMedia", fields: [mediaAssetId], references: [id], onDelete: SetNull)
+
+  @@unique([requestId, attemptNo])
+  @@index([userId, occurredAt])
+  @@index([characterId, occurredAt])
+  @@map("voice_usage_facts")
 }
 
 model CharacterDraft {
@@ -659,6 +717,8 @@ model MediaAsset {
   draftCharacterProjects CharacterProject[]                 @relation("CharacterProjectDraftImage")
   voiceReferenceProfiles CharacterVoiceProfile[]            @relation("VoiceReferenceAsset")
   voicePreviewProfiles   CharacterVoiceProfile[]            @relation("VoicePreviewAsset")
+  voiceClipRequests      VoiceClipRequest[]                 @relation("VoiceClipRequestMedia")
+  voiceUsageFacts        VoiceUsageFact[]                   @relation("VoiceUsageMedia")
 
   @@index([ownerId, type, createdAt])
   @@index([sourceJobId])
@@ -1749,7 +1809,7 @@ model GenerationAttempt {
   operatorGuidance      String?
   sourceCommandId       String?
   creativeRunItemId     String?
-  completionManifestRef String?
+  terminalRecordRef     String?
   startedAt             DateTime?
   finishedAt            DateTime?
   createdAt             DateTime                 @default(now())
@@ -1792,7 +1852,7 @@ model GenerationTransportExecution {
   latencyMs          Int?
   costMicros         BigInt?
   pricingVersion     String?
-  manifestRef        String?
+  terminalRecordRef String?
   startedAt          DateTime  @default(now())
   finishedAt         DateTime?
 
@@ -1806,7 +1866,7 @@ model GenerationArtifact {
   attemptId        String
   ordinal          Int
   providerRef      String?
-  manifestChecksum String
+  terminalRecordChecksum String
   validationState  String   @default("produced")
   assetId          String?
   archiveState     String   @default("active")

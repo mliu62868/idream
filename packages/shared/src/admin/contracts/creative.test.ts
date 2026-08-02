@@ -4,6 +4,7 @@ import {
   characterRouteEvaluationMatrixKey,
   characterRouteEvaluationOutputsPerDirection,
   characterRouteEvaluationSampleCount,
+  characterVideoProductionRecipe,
   creativePlacementWithdrawalRequestSchema,
   creativePlacementWithdrawalResultSchema,
   creativeRunCreateOptionsSchema,
@@ -23,6 +24,29 @@ describe("Creative Run create contract", () => {
     priority: "high" as const,
     reason: "Launch the approved operator brief",
   };
+
+  it("owns the complete pinned Character video execution recipe", () => {
+    expect(characterVideoProductionRecipe).toMatchObject({
+      recipeVersion: 1,
+      runner: "comfyui",
+      pipelineModel: "ltx23-gtanimation-int4-convrot",
+      workflowKey: "ltx23-gtanimation-i2v",
+      workflowVersion: 1,
+      sourceModelPath:
+        "diffusion_models/ltx23Gtanimation25Frames_ltxv23INT4Convrot.safetensors",
+      checkpointFilename:
+        "ltx23Gtanimation25Frames_ltxv23INT4Convrot.safetensors",
+      modelFormat: "safetensors",
+      width: 768,
+      height: 1152,
+      fps: 25,
+      durationSeconds: 4,
+      steps: 13,
+      sampler: "euler",
+      scheduler: "manual_sigmas",
+      cfgScale: 1,
+    });
+  });
 
   it("accepts an explicit, bounded brief", () => {
     expect(creativeRunCreateRequestSchema.parse(request)).toMatchObject(request);
@@ -315,11 +339,13 @@ describe("Creative Run create contract", () => {
 
   it("accepts a recent-first character-scoped studio query", () => {
     expect(creativeRunQuerySchema.parse({
+      purpose: "character_video",
       targetType: "character",
       targetId: "character-1",
       sort: "updated_desc",
       limit: "20",
     })).toMatchObject({
+      purpose: "character_video",
       targetType: "character",
       targetId: "character-1",
       sort: "updated_desc",

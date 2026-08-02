@@ -106,7 +106,9 @@ describe("Creative Run v2 brief and launch", () => {
       for (const jobId of jobIds) {
         await jobQueue.removeByDedupePrefix(`generation:${jobId}`, ["ai.image.generate"]);
       }
-      await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: batchId } });
+      await prisma.mainOutboxEvent.deleteMany({
+        where: { aggregateId: { in: [batchId, ...jobIds] } },
+      });
       await prisma.generationAttemptEvent.deleteMany({
         where: { attempt: { requestId: { in: jobIds } } },
       });
@@ -146,7 +148,8 @@ describe("Creative Run v2 brief and launch", () => {
     ]));
     expect(await prisma.mainOutboxEvent.count({
       where: {
-        aggregateId: batchId,
+        aggregateType: "generation_request",
+        aggregateId: { in: jobIds },
         eventType: "creative.generation.dispatch.v2",
         status: "delivered",
       },
@@ -399,7 +402,14 @@ describe("Creative Run v2 brief and launch", () => {
     });
 
     const jobIds = items.flatMap((item) => item.jobId ? [item.jobId] : []);
-    await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: directedBatchId } });
+    // INVARIANT: remove external Gen work before deleting its Main Attempt
+    // authority, otherwise a later test can claim an orphan transport row.
+    for (const jobId of jobIds) {
+      await jobQueue.removeByDedupePrefix(`generation:${jobId}`, ["ai.image.generate"]);
+    }
+    await prisma.mainOutboxEvent.deleteMany({
+      where: { aggregateId: { in: [directedBatchId, ...jobIds] } },
+    });
     await prisma.generationAttemptEvent.deleteMany({ where: { attempt: { requestId: { in: jobIds } } } });
     await prisma.generationAttempt.deleteMany({ where: { requestId: { in: jobIds } } });
     await prisma.contentProductionBatch.delete({ where: { id: directedBatchId } });

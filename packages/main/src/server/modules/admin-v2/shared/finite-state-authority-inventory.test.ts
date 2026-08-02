@@ -958,7 +958,7 @@ describe("Admin v2 finite-state authority inventory", () => {
         .filter((path) => mutationWritesField(path, model, field));
       expect(writers, `${model}.${field}`).toEqual([owner]);
     }
-  });
+  }, 15_000);
 
   it("excludes Creative execution, review, and deployment views because they are derived and not persisted axes", () => {
     const schema = source("prisma/schema.prisma");

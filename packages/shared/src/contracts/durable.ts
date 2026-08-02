@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { createHash } from "node:crypto";
+import { generationQualitySchema } from "./payloads";
 
 export const durableEventEnvelopeSchema = z.object({
   sourceService: z.string().min(1),
@@ -30,7 +31,7 @@ export const durableAckSchema = z.discriminatedUnion("status", [
   }).strict(),
 ]);
 
-const generationManifestAssetSchema = z.object({
+const generationTerminalAssetSchema = z.object({
   ordinal: z.number().int().nonnegative(),
   key: z.string().min(1),
   contentType: z.string().min(1),
@@ -38,6 +39,7 @@ const generationManifestAssetSchema = z.object({
   height: z.number().int().positive().optional(),
   seconds: z.number().positive().optional(),
   providerKey: z.string().nullable(),
+  quality: generationQualitySchema.optional(),
 });
 
 export const generationProviderAccountingSchema = z.object({
@@ -55,7 +57,7 @@ export const generationProviderAccountingSchema = z.object({
   }
 });
 
-export const generationCompletionManifestSchema = z.object({
+const generationTerminalRecordBaseSchema = z.object({
   version: z.literal(1),
   attemptId: z.string().min(1),
   attemptNo: z.number().int().positive(),
@@ -65,12 +67,93 @@ export const generationCompletionManifestSchema = z.object({
   generationJobId: z.string().min(1),
   mode: z.enum(["image", "video"]),
   provider: z.string().min(1),
+  // INVARIANT: Main may project provider transport/usage only when Gen actually
+  // crossed the provider invocation boundary.
+  providerInvoked: z.boolean(),
   model: z.string().min(1).optional(),
   providerRequestId: z.string().nullable(),
   completedAt: z.string().datetime(),
-  assets: z.array(generationManifestAssetSchema).min(1),
   usage: z.record(z.string(), z.unknown()),
   accounting: generationProviderAccountingSchema.optional(),
+});
+
+const generationTerminalErrorSchema = z.object({
+  code: z.string().min(1),
+  message: z.string().min(1),
+  retryability: z.enum(["retryable", "not_retryable", "operator_retry"]),
+});
+
+export const generationTerminalRecordSchema = z.discriminatedUnion("outcome", [
+  generationTerminalRecordBaseSchema.extend({
+    outcome: z.literal("succeeded"),
+    assets: z.array(generationTerminalAssetSchema).min(1),
+  }),
+  generationTerminalRecordBaseSchema.extend({
+    outcome: z.literal("failed"),
+    error: generationTerminalErrorSchema,
+  }),
+  generationTerminalRecordBaseSchema.extend({
+    outcome: z.literal("blocked"),
+    block: z.object({
+      policyCode: z.string().min(1),
+      message: z.string().min(1),
+      layer: z.enum(["input", "output", "provider"]),
+    }),
+  }),
+  generationTerminalRecordBaseSchema.extend({
+    outcome: z.literal("unknown"),
+    error: generationTerminalErrorSchema,
+  }),
+]).superRefine((record, context) => {
+  const blockedAtInput =
+    record.outcome === "blocked" && record.block.layer === "input";
+  if (blockedAtInput && record.providerInvoked) {
+    context.addIssue({
+      code: "custom",
+      path: ["providerInvoked"],
+      message: "input moderation must block before provider invocation",
+    });
+  }
+  if (!record.providerInvoked && !blockedAtInput) {
+    context.addIssue({
+      code: "custom",
+      path: ["providerInvoked"],
+      message: "only an input-moderation block may precede provider invocation",
+    });
+  }
+  if (!record.providerInvoked && record.providerRequestId !== null) {
+    context.addIssue({
+      code: "custom",
+      path: ["providerRequestId"],
+      message: "a non-invoked provider cannot have a provider request id",
+    });
+  }
+  if (!record.providerInvoked && record.accounting !== undefined) {
+    context.addIssue({
+      code: "custom",
+      path: ["accounting"],
+      message: "a non-invoked provider cannot have provider accounting",
+    });
+  }
+  if (record.providerInvoked && !record.providerIdempotencyKey) {
+    context.addIssue({
+      code: "custom",
+      path: ["providerIdempotencyKey"],
+      message: "a provider invocation requires its immutable idempotency key",
+    });
+  }
+  if (record.outcome === "succeeded") {
+    const requiredPrefix = `${record.mode}/`;
+    record.assets.forEach((asset, index) => {
+      if (!asset.contentType.startsWith(requiredPrefix)) {
+        context.addIssue({
+          code: "custom",
+          path: ["assets", index, "contentType"],
+          message: `${record.mode} terminal assets require ${requiredPrefix}* content type`,
+        });
+      }
+    });
+  }
 });
 
 export const generationTransportExecutionEventSchema = z.object({
@@ -80,7 +163,7 @@ export const generationTransportExecutionEventSchema = z.object({
   generationJobId: z.string().min(1),
   transportAttemptNo: z.number().int().positive(),
   provider: z.string().min(1),
-  model: z.string().min(1).optional(),
+  model: z.string().min(1),
   providerRequestId: z.string().nullable(),
   idempotencyKey: z.string().min(1),
   status: z.enum(["running", "failed", "unknown"]),
@@ -89,16 +172,16 @@ export const generationTransportExecutionEventSchema = z.object({
   accounting: generationProviderAccountingSchema.optional(),
 });
 
-export const generationManifestIngestSchema = z.object({
-  manifestRef: z.string().min(1),
-  manifestChecksum: z.string().regex(/^[a-f0-9]{64}$/),
-  manifest: generationCompletionManifestSchema,
+export const generationTerminalRecordIngestSchema = z.object({
+  terminalRecordRef: z.string().min(1),
+  terminalRecordChecksum: z.string().regex(/^[a-f0-9]{64}$/),
+  terminalRecord: generationTerminalRecordSchema,
 });
 
 export type DurableEventEnvelope = z.infer<typeof durableEventEnvelopeSchema>;
 export type DurableAck = z.infer<typeof durableAckSchema>;
-export type GenerationCompletionManifest = z.infer<typeof generationCompletionManifestSchema>;
-export type GenerationManifestIngest = z.infer<typeof generationManifestIngestSchema>;
+export type GenerationTerminalRecord = z.infer<typeof generationTerminalRecordSchema>;
+export type GenerationTerminalRecordIngest = z.infer<typeof generationTerminalRecordIngestSchema>;
 export type GenerationTransportExecutionEvent = z.infer<typeof generationTransportExecutionEventSchema>;
 
 export function canonicalJson(value: unknown): string {
@@ -122,6 +205,6 @@ export function durableEnvelopeHash(envelope: DurableEventEnvelope): string {
     .digest("hex");
 }
 
-export function generationManifestChecksum(manifest: GenerationCompletionManifest): string {
-  return createHash("sha256").update(canonicalJson(manifest)).digest("hex");
+export function generationTerminalRecordChecksum(record: GenerationTerminalRecord): string {
+  return createHash("sha256").update(canonicalJson(record)).digest("hex");
 }

@@ -13,6 +13,7 @@ describe("Creative retry media and dispatch authority", () => {
   const workflowKey = "qwen-image-edit-img2img";
   const scenarios = {
     archived: scenario("archived"),
+    confirmedUnknown: scenario("confirmed-unknown"),
     valid: scenario("valid"),
     workflowKeyDrift: scenario("workflow-key-drift", {
       pinnedWorkflowKey: "qwen-image-edit-multi-identity",
@@ -200,7 +201,7 @@ describe("Creative retry media and dispatch authority", () => {
         orderBy: [{ attemptId: "asc" }, { sequence: "asc" }],
       }),
       prisma.mainOutboxEvent.findMany({
-        where: { aggregateId: fixture.runId },
+        where: { aggregateId: { in: [fixture.runId, fixture.jobId] } },
         orderBy: [{ createdAt: "asc" }, { id: "asc" }],
       }),
     ]);
@@ -237,7 +238,7 @@ describe("Creative retry media and dispatch authority", () => {
     await expect(
       prisma.mainOutboxEvent.count({
         where: {
-          aggregateId: input.fixture.runId,
+          aggregateId: input.fixture.jobId,
           eventType: "creative.retry.dispatch.v2",
         },
       }),
@@ -310,6 +311,31 @@ describe("Creative retry media and dispatch authority", () => {
     for (const fixture of Object.values(scenarios)) {
       await seedScenario(fixture);
     }
+    await prisma.$transaction([
+      prisma.generationAttempt.update({
+        where: { id: scenarios.confirmedUnknown.attemptId },
+        data: {
+          status: "unknown",
+          retryability: "not_retryable",
+          errorClass: "ambiguous_provider_outcome",
+          errorCode: "provider_outcome_unknown",
+        },
+      }),
+      prisma.generationJob.update({
+        where: { id: scenarios.confirmedUnknown.jobId },
+        data: { errorCode: "operator_confirmed_provider_failure" },
+      }),
+      prisma.generationJobEvent.create({
+        data: {
+          jobId: scenarios.confirmedUnknown.jobId,
+          type: "unknown_reconciliation_confirm_failed",
+          metadata: {
+            attemptId: scenarios.confirmedUnknown.attemptId,
+            resolution: "confirm_failed",
+          },
+        },
+      }),
+    ]);
   });
 
   afterAll(async () => {
@@ -318,7 +344,7 @@ describe("Creative retry media and dispatch authority", () => {
     const jobIds = fixtures.map((fixture) => fixture.jobId);
     const sourceAssetIds = fixtures.map((fixture) => fixture.sourceAssetId);
     await prisma.mainOutboxEvent.deleteMany({
-      where: { aggregateId: { in: runIds } },
+      where: { aggregateId: { in: [...runIds, ...jobIds] } },
     });
     await prisma.adminAuditLog.deleteMany({ where: { actorId } });
     await prisma.controlPlaneCommandAttempt.deleteMany({
@@ -427,6 +453,52 @@ describe("Creative retry media and dispatch authority", () => {
     }
   });
 
+  it("creates a new Creative Attempt after the unknown Attempt was confirmed failed", async () => {
+    const fixture = scenarios.confirmedUnknown;
+    const commandId = await acceptRetry(fixture);
+    await expect(executeCreativeRetryCommand(prisma, {
+      commandId,
+      workerId: `creative-retry-authority-worker-confirmed-unknown-${suffix}`,
+    })).resolves.toMatchObject({ status: "verifying", attemptCount: 1 });
+
+    await expect(
+      prisma.generationAttempt.findMany({
+        where: { requestId: fixture.jobId },
+        orderBy: { attemptNo: "asc" },
+      }),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        id: fixture.attemptId,
+        attemptNo: 1,
+        status: "unknown",
+        retryability: "not_retryable",
+      }),
+      expect.objectContaining({
+        requestId: fixture.jobId,
+        attemptNo: 2,
+        status: "queued",
+        sourceCommandId: commandId,
+        creativeRunItemId: fixture.itemId,
+      }),
+    ]);
+    await expect(
+      prisma.mainOutboxEvent.findUniqueOrThrow({
+        where: { id: `creative_retry_${commandId}_${fixture.itemId}` },
+      }),
+    ).resolves.toMatchObject({
+      eventType: "creative.retry.dispatch.v2",
+      aggregateType: "generation_request",
+      aggregateId: fixture.jobId,
+      payload: expect.objectContaining({
+        generationJobId: fixture.jobId,
+        attemptNo: 2,
+        queueInput: expect.objectContaining({
+          dedupeKey: `generation:${fixture.jobId}:attempt:2`,
+        }),
+      }),
+    });
+  });
+
   it("queues a retry only when the hydratable source and qwen img2img route remain valid", async () => {
     const fixture = scenarios.valid;
     const commandId = await acceptRetry(fixture);
@@ -509,7 +581,8 @@ describe("Creative retry media and dispatch authority", () => {
       }),
     ).resolves.toMatchObject({
       eventType: "creative.retry.dispatch.v2",
-      aggregateId: fixture.runId,
+      aggregateType: "generation_request",
+      aggregateId: fixture.jobId,
       status: "pending",
       attempts: 0,
       payload: {

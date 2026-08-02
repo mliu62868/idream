@@ -7,8 +7,6 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
-import { recordGenerationAttemptEvent } from "@/server/ai/generation-attempt-events";
-import { transitionGenerationRequest } from "@/server/ai/generation-request-transition";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
@@ -20,7 +18,10 @@ import { workflowKeyExists } from "@/server/modules/admin/generation-catalog";
 import { actorWithPermission, jsonBody, toInputJson, writeAudit } from "@/server/modules/admin/shared/legacy-primitives";
 import { redactGenerationJob as redactJob } from "@/server/modules/admin/shared/presenters";
 import { decodeAdminListCursor, encodeAdminListCursor } from "@/server/modules/admin-v2/shared/list-cursor";
-import { enqueueGenerationAttempt } from "@/server/modules/generation/attempt-dispatch";
+import {
+  dispatchGenerationAttemptOutbox,
+  reserveInitialGenerationAttempt,
+} from "@/server/modules/generation/generation-attempt-authority";
 
 export function modelDiagnosticsEnabled() {
   return process.env.ADMIN_MODEL_DIAGNOSTICS_ENABLED === "true";
@@ -1249,7 +1250,7 @@ export async function createProfileTestJob(request: Request, id: string) {
   const controls = profileTestControls(profile, orientation);
   const prompt = body.prompt?.trim() || `Admin test image for ${profile.label}`;
   const negativePrompt = body.negativePrompt?.trim() || null;
-  const job = await prisma.$transaction(async (tx) => {
+  const reservation = await prisma.$transaction(async (tx) => {
     const created = await tx.generationJob.create({
       data: {
         userId: actor.id,
@@ -1277,47 +1278,21 @@ export async function createProfileTestJob(request: Request, id: string) {
       source: "admin_generation_config",
     });
     await appendAdminGenerationEvent(tx, created.id, "queued", "Admin profile test job queued", {});
-    return created;
-  });
-
-  try {
-    await enqueueGenerationAttempt(job);
-  } catch (error) {
-    await prisma.$transaction(async (tx) => {
-      const failedAt = new Date();
-      await transitionGenerationRequest(tx, {
-        requestId: job.id,
-        to: "failed",
-        expected: { from: "queued", version: job.version },
-        data: {
-          errorCode: "queue_enqueue_failed",
-          completedAt: null,
-          finishedAt: failedAt,
-          deliveredOutputCount: 0,
-        },
-      });
-      const attempt = await tx.generationAttempt.findFirst({
-        where: { requestId: job.id },
-        orderBy: { attemptNo: "desc" },
-      });
-      if (attempt) {
-        await recordGenerationAttemptEvent(tx, {
-          eventId: `${attempt.id}:terminal`,
-          attemptId: attempt.id,
-          eventType: "generation.attempt.failed.v1",
-          outcome: "failed",
-          occurredAt: failedAt,
-          payload: { requestId: job.id, errorCode: "queue_enqueue_failed" },
-          errorCode: "queue_enqueue_failed",
-          retryability: "retryable",
-        });
-      }
-      await appendAdminGenerationEvent(tx, job.id, "failed", "Admin test job enqueue failed", {
-        error: error instanceof Error ? error.message : String(error),
-      });
+    const dispatch = await reserveInitialGenerationAttempt(tx, {
+      requestId: created.id,
+      dispatch: {
+        outboxId: `generation_initial_${created.id}`,
+        eventType: "generation.retry.dispatch.v2",
+        payload: { source: "admin_profile_test" },
+      },
     });
-    throw Errors.internal("Generation queue unavailable", { jobId: job.id });
-  }
+    return { job: created, outboxId: dispatch.outbox.id };
+  });
+  const job = reservation.job;
+
+  await dispatchGenerationAttemptOutbox(prisma, {
+    outboxIds: [reservation.outboxId],
+  });
 
   await writeAudit(request, actor, {
     action: "generation.profile.test_job",

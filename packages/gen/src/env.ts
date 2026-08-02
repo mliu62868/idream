@@ -40,10 +40,6 @@ export const env = {
   get BULLMQ_PREFIX(): string {
     return process.env.BULLMQ_PREFIX ?? `idream:${process.env.APP_ENV ?? "development"}`;
   },
-  get MAIN_GENERATION_INGEST_URL(): string {
-    const base = process.env.MAIN_WEB_URL ?? "http://127.0.0.1:3000";
-    return `${base.replace(/\/$/, "")}/api/internal/generation/manifests/ingest`;
-  },
   get MAIN_GENERATION_TRANSPORT_URL(): string {
     const base = process.env.MAIN_WEB_URL ?? "http://127.0.0.1:3000";
     return `${base.replace(/\/$/, "")}/api/internal/generation/transports`;
@@ -80,11 +76,11 @@ export const env = {
   },
   /** Image provider switch. Production uses the backend (ComfyUI/sd-cli) provider. */
   get IMAGE_PROVIDER(): string {
-    return process.env.GEN_IMAGE_PROVIDER ?? process.env.IMAGE_PROVIDER ?? "mock";
+    return process.env.GEN_IMAGE_PROVIDER ?? "mock";
   },
   /** Video provider switch. Production can use the workflow-native backend. */
   get VIDEO_PROVIDER(): string {
-    return process.env.GEN_VIDEO_PROVIDER ?? process.env.VIDEO_PROVIDER ?? "mock";
+    return process.env.GEN_VIDEO_PROVIDER ?? "mock";
   },
   /** Moderation provider for generation input/output gates. */
   get MODERATION_PROVIDER(): string {
@@ -126,11 +122,11 @@ export const env = {
   get VIDEO_TIMEOUT_MS(): number {
     return positiveIntegerEnv("GEN_VIDEO_TIMEOUT_MS", 1_800_000);
   },
-  /** ComfyUI native HTTP API base URL, used by IMAGE_PROVIDER=backend's registry. */
+  /** ComfyUI native HTTP API base URL, used by GEN_IMAGE_PROVIDER=backend. */
   get COMFYUI_API_URL(): string {
     return process.env.COMFYUI_API_URL ?? "http://127.0.0.1:8188";
   },
-  /** sd-cli binary path, used by IMAGE_PROVIDER=backend's registry. */
+  /** sd-cli binary path, used by GEN_IMAGE_PROVIDER=backend. */
   get SDCPP_CLI(): string {
     return process.env.SDCPP_CLI ?? `${process.env.HOME}/bin/sd-cli`;
   },

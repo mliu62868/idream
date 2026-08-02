@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   generationDispatchModelKey,
   unavailablePinnedManifestReferenceRoles,
+  VIDEO_GENERATION_TRANSPORT_MAX_ATTEMPTS,
 } from "./attempt-dispatch";
 
 describe("Generation dispatch model authority", () => {
@@ -21,6 +22,10 @@ describe("Generation dispatch model authority", () => {
       model: null,
       profileId: null,
     })).toBe("unresolved-video-model");
+  });
+
+  it("reserves video retries for persisted-terminal relay recovery", () => {
+    expect(VIDEO_GENERATION_TRANSPORT_MAX_ATTEMPTS).toBe(3);
   });
 });
 

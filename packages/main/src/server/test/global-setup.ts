@@ -188,7 +188,10 @@ async function resetSchema(url: string) {
 }
 
 async function alignDeferrableAuthorityConstraints(url: string) {
-  const client = new pg.Client({ connectionString: postgresUrl(url) });
+  const client = new pg.Client({
+    connectionString: postgresUrl(url),
+    options: `-c search_path=${quoteIdentifier(postgresSchema(url))}`,
+  });
   await client.connect();
   try {
     for (const constraint of [

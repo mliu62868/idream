@@ -644,7 +644,7 @@ describe("metric product-event recovery", () => {
         id: artifactId,
         attemptId,
         ordinal: 0,
-        manifestChecksum: "b".repeat(64),
+        terminalRecordChecksum: "b".repeat(64),
         validationState: "valid",
         assetId,
       },

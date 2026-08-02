@@ -1,5 +1,11 @@
-import { randomUUID } from "node:crypto";
-import type { BlobStore, ProviderResult, VoiceModel } from "../types";
+import {
+  VOICE_PROVIDER_REPLAY,
+  type BlobStore,
+  type ProviderResult,
+  type VoiceClipPort,
+  type VoiceIdentityPort,
+} from "../types";
+import { voiceArtifactKey } from "./idempotency";
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -28,9 +34,9 @@ type PocketHealthResponse = {
   acceleration?: unknown;
 };
 
-export class PocketTtsVoiceModel implements VoiceModel {
+export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
   readonly providerKey = "pocket_tts" as const;
-  readonly supportsVoiceCloning = true;
+  readonly providerReplay = VOICE_PROVIDER_REPLAY.pocket_tts;
 
   private readonly speechEndpoint: URL;
   private readonly voicesEndpoint: URL;
@@ -58,10 +64,10 @@ export class PocketTtsVoiceModel implements VoiceModel {
     this.fetchImpl = config.fetchImpl ?? fetch;
   }
 
-  async synthesize(input: Parameters<VoiceModel["synthesize"]>[0]) {
+  async synthesize(input: Parameters<VoiceClipPort["synthesize"]>[0]) {
     const rendered = await this.renderVoice(input);
     if (!rendered.ok) return rendered;
-    const key = `voice/${randomUUID()}.wav`;
+    const key = voiceArtifactKey(input.idempotencyKey, ".wav");
     const stored = await this.blob.putPrivate({
       key,
       body: rendered.data.body,
@@ -77,17 +83,31 @@ export class PocketTtsVoiceModel implements VoiceModel {
     };
   }
 
-  async previewVoice(input: Parameters<NonNullable<VoiceModel["previewVoice"]>>[0]) {
+  async previewVoice(input: Parameters<VoiceIdentityPort["previewVoice"]>[0]) {
     return this.renderVoice(input);
   }
 
   private async renderVoice(input: {
     text: string;
     voiceId?: string;
+    requestId?: string;
+    attemptNo?: number;
+    idempotencyKey?: string;
   }) {
     const response = await this.request(this.speechEndpoint, {
       method: "POST",
-      headers: this.jsonHeaders(),
+      headers: {
+        ...this.jsonHeaders(),
+        ...(input.idempotencyKey
+          ? { "idempotency-key": input.idempotencyKey }
+          : {}),
+        ...(input.requestId
+          ? { "x-idream-request-id": input.requestId }
+          : {}),
+        ...(input.attemptNo
+          ? { "x-idream-attempt-no": String(input.attemptNo) }
+          : {}),
+      },
       body: JSON.stringify({
         model: this.model,
         input: limitText(input.text, this.maxInputChars),
@@ -119,7 +139,7 @@ export class PocketTtsVoiceModel implements VoiceModel {
     };
   }
 
-  async cloneVoice(input: Parameters<NonNullable<VoiceModel["cloneVoice"]>>[0]) {
+  async cloneVoice(input: Parameters<VoiceIdentityPort["cloneVoice"]>[0]) {
     const form = new FormData();
     form.set("voice_id", input.voiceId);
     form.set("language", input.language || this.language);
@@ -158,7 +178,7 @@ export class PocketTtsVoiceModel implements VoiceModel {
     };
   }
 
-  async deleteVoice(input: Parameters<NonNullable<VoiceModel["deleteVoice"]>>[0]) {
+  async deleteVoice(input: Parameters<VoiceIdentityPort["deleteVoice"]>[0]) {
     const endpoint = new URL(
       `${this.voicesEndpoint.toString().replace(/\/$/, "")}/${encodeURIComponent(input.voiceId)}`,
     );

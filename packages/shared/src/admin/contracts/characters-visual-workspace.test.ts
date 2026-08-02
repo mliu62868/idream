@@ -62,6 +62,7 @@ describe("Character Visual workspace contract", () => {
         identityPrompt: "same adult character", negativeIdentityPrompt: null,
         traits: { face: {}, hair: {}, body: {}, signature: {}, style: {} },
         immutableHash: "identity-hash", evidenceState: "candidate", defaultSeed: null,
+        anchorAssetIds: ["asset-anchor"],
         createdFrom: "admin_passport_edit", createdAt: "2026-07-12T12:00:00.000Z",
       },
       anchors: [{ mediaAssetId: "asset-anchor", role: "identity_anchor", available: true, url: "/anchor.webp", thumbnailUrl: null, qualityScore: null, identityScore: null }],

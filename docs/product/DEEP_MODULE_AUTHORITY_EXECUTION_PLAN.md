@@ -1,8 +1,8 @@
 # Deep Module Authority Execution Plan
 
-Updated: 2026-07-31
+Updated: 2026-08-01
 
-Status: Implemented in source; live authority chains verified; browser operator journey and customer default-profile cutover pending
+Status: Implemented and isolated full-suite verified; development DB migration, production cutover/live media canary, browser operator journey, and customer default-profile cutover pending
 
 Decision record: [`ADR-13`](../architecture/17-deep-module-authority-boundaries.md)
 
@@ -120,21 +120,21 @@ test(architecture): inventory deep-module authority leaks
 ```ts
 // Main
 dispatchGenerationAttempt(attempt)
-ingestGenerationCompletionManifest(envelope)
-finalizeGenerationAttempt(manifest)
+ingestGenerationTerminalRecord(envelope)
+finalizeGenerationAttempt(terminalRecord)
 
 // Gen
-executeGenerationTransport(job)
-persistCompletionManifest(result)
-deliverCompletionManifestUntilAck(manifest)
+GenerationExecution.run(job)
+persistTerminalRecord(result)
+deliverTerminalRecordUntilAck(terminalRecord)
 ```
 
 ### Work items
 
 #### P1.1 Lock the package boundary
 
-- 明确 `packages/gen/src/{image,video,pipeline,transport-execution,completion-manifest}.ts` 为 provider execution owner；
-- 共享契约只暴露 pinned Attempt/Transport input 与 completion manifest；
+- 明确 `packages/gen/src/{image,video,pipeline,generation-execution,terminal-record}.ts` 为 provider execution owner；
+- 共享契约只暴露 pinned Attempt/Transport input 与 immutable terminal record；
 - 加边界测试：`packages/main` 不得导入 Gen backend/provider，也不得请求 ComfyUI/sd.cpp/Draw Things/video runtime。
 
 Suggested commit:
@@ -148,7 +148,7 @@ test(gen): lock provider execution to gen package
 - 删除 `packages/main/src/server/ai/local-pipeline.ts` 中图片/视频 provider invocation；
 - 删除 `/api/internal/worker` 中承担图片/视频执行的分支，但保留仍有独立职责的 worker endpoint；
 - Main generation service 只创建 Request/Attempt、写 dispatch intent；
-- Main finalizer 只接收 immutable manifest，不根据部署配置自行生成；
+- Main finalizer 只接收 immutable terminal record，不根据部署配置自行生成；
 - 删除仅为 Main execution 服务的 provider/env/import。
 
 Suggested commit:
@@ -157,11 +157,12 @@ Suggested commit:
 refactor(gen): make gen worker the only media executor
 ```
 
-#### P1.3 Prove manifest recovery
+#### P1.3 Prove terminal-record recovery
 
-- 覆盖 Gen 调用成功、Main ACK 中断、manifest 重投；
+- 覆盖 Gen 调用成功、relay enqueue 中断、terminal record 重投；
+- 覆盖 Main 短时不可用时 terminal relay 独立重试与进程重启恢复；
 - 证明重投不会再次调用 provider；
-- 覆盖 cancelled Request 的晚到 manifest；
+- 覆盖 cancelled Request 的晚到 terminal record；
 - 覆盖 ambiguous non-idempotent provider outcome。
 
 Suggested commit:
@@ -177,7 +178,7 @@ bun test packages/gen/src/pipeline.test.ts
 bun test packages/gen/src/backend/backend-image-model.test.ts
 bun test packages/gen/src/backend/backend-video-model.test.ts
 bun test packages/main/src/server/modules/ourdream/image-generation-service.test.ts
-bun test packages/main/src/server/ai/generation-manifest-ingest.test.ts
+bun test packages/main/src/server/ai/generation-terminal-record-ingest.test.ts
 ```
 
 若实际文件名与当前测试入口不同，以同目录现有 Vitest 文件为准，不新建重复测试套件。
@@ -186,7 +187,7 @@ bun test packages/main/src/server/ai/generation-manifest-ingest.test.ts
 
 - `pm2 jlist`：只有 `gen-image` / `gen-video` 拥有 provider execution；
 - Main HTTP 创建 Request 后，Gen 消费一次；
-- completion manifest 持久化；
+- terminal record 持久化；
 - Main finalization 后 Request/Attempt/Artifact/Delivery/Settlement 链闭合；
 - 暂停 Main finalizer再恢复时不重复调用 provider。
 
@@ -437,7 +438,7 @@ refactor(admin): seal command state transitions
 #### P4.2 Generation transitions
 
 - Request 与 Attempt 分别拥有 transition；
-- finalization、cancel、retry、late manifest 都调用同一入口；
+- finalization、cancel、retry、late terminal record 都调用同一入口；
 - `refunded` 不作为 execution outcome；
 - transition 与 Ledger settlement 保持同事务或可证明的 durable sequence。
 
@@ -779,7 +780,7 @@ create / open Character
 - P0–P6 已完成；旧 provider execution、自由 Ledger 写入、Route 自组 mutation 协议、调用方状态写入、跨服务 Redis 直投和客户端 Journey 推导均已删除。
 - `git diff --check`、根 `lint`、`typecheck`、全量 `test` 与 production `build` 退出码均为 0。全量测试为 `404 passed files + 2 skipped files / 2,679 passed tests + 3 skipped tests`；build 为 `5/5`。最终 build 产物为 Main `idream-9626f3cc-c7a3-45bd-a4a5-9948f223a43d`、Admin `idream-9afddb6a-cad4-4c6a-892c-e58fd256090a`，共同 build ID 为 `build-TfctsWXpff2fKS`。
 - 当前 PM2 中 Main、Admin、Chat、Gen image/video、finalizer、event consumer 与 command worker 均为 `online`；Main `/`、Admin `/admin/characters`、Chat `/healthz` 本轮 HTTP 均返回 200。
-- Main → Gen → Main 真实链已完成：Admin test Job `cms91ymbw00012ul7zdz3g6vf` / Attempt `cms91ymc800042ul7l0m8y2h6` 经 `redcraft-krea2-redmix3-txt2img` 执行，Main 摄入不可变 completion manifest 后终结为 `completed` / `succeeded`。产物为 832×832 PNG、871,984 bytes、SHA-256 `d269bf4fb059747d75581c87d19965ed60d1a4e278a05db587f77aef06d168c1`；通过 Admin media BFF 读取返回 HTTP 200，字节哈希与 Blob 一致。
+- Main → Gen → Main 真实链已完成：Admin test Job `cms91ymbw00012ul7zdz3g6vf` / Attempt `cms91ymc800042ul7l0m8y2h6` 经 `redcraft-krea2-redmix3-txt2img` 执行，Main 摄入当时的不可变 completion evidence（现由 terminal record authority 承接）后终结为 `completed` / `succeeded`。产物为 832×832 PNG、871,984 bytes、SHA-256 `d269bf4fb059747d75581c87d19965ed60d1a4e278a05db587f77aef06d168c1`；通过 Admin media BFF 读取返回 HTTP 200，字节哈希与 Blob 一致。
 - customer 默认生成的失败路径也已真实验证：旧开发库 active default/premium profile 仍指向已删除的 `redcraft-krea2-txt2img`，Job `cms91jow800xi66l736d5xseq` 因 `unknown_model` 失败；Ledger 精确产生一笔 `-5 generation_spend` 与一笔 `+5 refund`，净变化 0。源码没有增加 alias/fallback，也没有静默改写 operator-owned profile；必须由 operator 通过新的有效 profile 完成默认 profile cutover。
 - Main ↔ Chat 双向真实链已完成：显式 `alexa-reeves` 的 signed BFF conversation probe 全绿并以退出码 0 完成 create/send/SSE/reload/no-memory/blocked-input/cleanup。临时用户删除产生 Main `user_deleted_cms91ipu500xc66l7ijjohtvz` Outbox `delivered` → Chat Inbox `consumed`；Chat 随后产生 `evt_91af71673c7b465bbb805dd8d2738762` (`chat.account_erasure.completed`) Outbox `delivered` → Main receipt `processed`。
 - Admin atomic/durable 真实链已完成并清理 fixture：atomic recovery override 用同一 idempotency key 重放后仍只有一个 `succeeded` command；durable incident resolve 只有一个 `succeeded` command 和一个 `succeeded` attempt。该验收发现 inline durable command 在副作用改变 entity version 后先返回 409、无法重放；现已把 Incident resolve 与 Case close 的 exact replay 提前到 mutable preflight 之前，运行态重放返回原始 `requestId` / `commandId`，新增 integration test 防止回归。隔离 incident、commands、attempt、audits 与 outbox 已精确删除，残留均为 0。
@@ -833,7 +834,7 @@ curl -fsS http://127.0.0.1:3100/healthz
 
 - 每个阶段保持可单独 revert 的提交；
 - 回滚代码版本，不恢复已删除的第二 authority；
-- Gen 回滚必须成对回滚 dispatcher/manifest contract，pending work 保留；
+- Gen 回滚必须成对回滚 dispatcher/terminal-record contract，pending work 保留；
 - Ledger 回滚不得删除 ledger entry 或 settlement evidence；
 - Admin 回滚保留已创建 Command/Audit/Outbox；
 - transition 回滚不得逆向改写 terminal row；

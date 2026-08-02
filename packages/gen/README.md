@@ -1,23 +1,25 @@
 # @idream/gen
 
 Generation Service — image + video. Slow async workers: payload self-contained,
-write blob only, no DB authority. Finalize happens main-side via
-`app.ai.finalize` → gen-finalizer.
+write blob only, no DB authority. Image/video attempts persist one durable
+terminal record and enqueue it to Main's BullMQ relay. Character Preview is an
+ordinary `ai.image.generate` Attempt with a Main-owned source projection.
 
 ## Playwright-managed image worker
 
 Main's Playwright configuration owns one `start:image` process and one
 Main-side `gen-finalizer` process in addition to its four URL services. The Gen
-process consumes both `ai.image.generate` and character-preview jobs from the
+process consumes `ai.image.generate` jobs, including Character Preview, from the
 run-scoped Redis/BullMQ namespace. Because the workers have no HTTP ports,
 Playwright 1.61 waits for their stable stdout readiness records and stops them
 with graceful `SIGTERM`. The harness explicitly pins the higher-priority
 `GEN_*` variables so Gen cannot inherit `packages/gen/.env` Redis or provider
-authority. The finalizer mirrors production ownership (`app.ai.finalize`
-only), dispatching durable completion manifests without racing the Gen image
-queue.
+authority. Image/video jobs resume a persisted terminal record before invoking
+their provider, so interrupted relay admission cannot repeat expensive
+generation. Main outages retry only the independent relay row; the finalizer
+projects all image/video outcomes from the same terminal record authority.
 
-## Backend abstraction (`IMAGE_PROVIDER=backend`)
+## Backend abstraction (`GEN_IMAGE_PROVIDER=backend`)
 
 `providers.image` (see `src/providers.ts`) supports a `backend` provider that
 talks directly to a local generation backend instead of an external
@@ -46,8 +48,7 @@ OpenAI-compatible pipeline gateway:
 ### Pointing at a local ComfyUI
 
 Set `COMFYUI_API_URL` (default `http://127.0.0.1:8188`) to your running ComfyUI
-instance's native API, and `IMAGE_PROVIDER=backend` (or `GEN_IMAGE_PROVIDER=backend`,
-which takes priority — see `.env`'s `GEN_IMAGE_PROVIDER`) to route
+instance's native API, and `GEN_IMAGE_PROVIDER=backend` to route
 `providers.image` through it. `GEN_WORKFLOW_DIR` defaults to
 `packages/gen/workflows` (repo-root relative); the smoke script below resolves
 it explicitly so it works regardless of cwd.
@@ -191,7 +192,7 @@ requires the corresponding real backend:
 
 ```bash
 cd packages/gen
-IMAGE_PROVIDER=backend COMFYUI_API_URL=http://127.0.0.1:8188 bun run smoke:backend -- --out /tmp/backend-smoke.png
+GEN_IMAGE_PROVIDER=backend COMFYUI_API_URL=http://127.0.0.1:8188 bun run smoke:backend -- --out /tmp/backend-smoke.png
 ```
 
 The first generation on a cold ComfyUI process loads a ~24GB bf16 checkpoint
@@ -202,8 +203,10 @@ the model is resident.
 
 The production video worker uses the same backend registry, but resolves the
 video-only `ltx23-gtanimation-i2v` descriptor through `BackendVideoModel`.
-This route requires exactly one `source_image` reference and writes an MP4
-artifact; missing source authority or a non-MP4 backend response fails closed.
+This route requires exactly one `source_image` reference. Before blob persistence,
+`ffprobe` reads the actual stream envelope and `ffmpeg` fully decodes the file;
+the worker rejects corrupt media or anything other than 768x1152, about four
+seconds, 25 fps, and an audio stream. Missing verification binaries fail closed.
 
 The checked-in descriptor pins the exact Civitai LTX 2.3 GTAnimation INT4
 ConvRot workflow tested on ComfyUI/MPS:
@@ -212,6 +215,9 @@ ConvRot workflow tested on ComfyUI/MPS:
 GEN_VIDEO_PROVIDER=backend
 GEN_VIDEO_TIMEOUT_MS=1800000
 COMFYUI_API_URL=http://127.0.0.1:8188
+# Optional when the binaries are not on PATH:
+# GEN_FFPROBE_BIN=/opt/homebrew/bin/ffprobe
+# GEN_FFMPEG_BIN=/opt/homebrew/bin/ffmpeg
 ```
 
 ```text
@@ -224,7 +230,7 @@ output: 768x1152, 25 fps, MP4 with audio
 Regenerate the descriptor from the validated ComfyUI API prompt with:
 
 ```bash
-node packages/gen/scripts/build-ltx23-gtanimation-workflow.mjs
+bun packages/gen/scripts/build-ltx23-gtanimation-workflow.mjs
 bun run sync:comfyui-workflows
 ```
 

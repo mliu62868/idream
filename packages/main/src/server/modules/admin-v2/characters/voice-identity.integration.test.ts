@@ -11,54 +11,88 @@ const providerState = vi.hoisted(() => ({
   deletedVoiceIds: [] as string[],
   referenceTexts: [] as string[],
   storedKeys: [] as string[],
+  inspectOk: true,
+  voiceCloning: true,
+  runtime: "mlx_audio",
+  runtimeVersion: "mlx-audio-test",
 }));
 
 vi.mock("@/server/providers", () => ({
   providers: {
     voice: {
-      get providerKey() {
-        return providerState.providerKey;
+      clip: {
+        get providerKey() {
+          return providerState.providerKey;
+        },
+        async synthesize() {
+          throw new Error("Voice Clip is outside this Voice Identity test");
+        },
       },
-      supportsVoiceCloning: true,
-      async cloneVoice(input: {
-        voiceId: string;
-        language: string;
-        referenceText: string;
-      }) {
-        providerState.cloneCalls += 1;
-        providerState.referenceTexts.push(input.referenceText);
-        return {
-          ok: true as const,
-          data: {
-            voiceId: input.voiceId,
-            model: "fish-audio-s2-pro-8bit",
-            language: input.language,
-          },
-        };
-      },
-      async synthesize(input: { voiceId?: string }) {
-        providerState.synthesizeCalls += 1;
-        if (providerState.synthesizeCalls === providerState.failSynthesizeCall) {
+      identity: {
+        get providerKey() {
+          return providerState.providerKey;
+        },
+        async cloneVoice(input: {
+          voiceId: string;
+          language: string;
+          referenceText: string;
+        }) {
+          providerState.cloneCalls += 1;
+          providerState.referenceTexts.push(input.referenceText);
           return {
-            ok: false as const,
-            error: {
-              code: "preview_failed",
-              message: "Synthetic concurrent preview failure",
-              retryable: true,
+            ok: true as const,
+            data: {
+              voiceId: input.voiceId,
+              model: "fish-audio-s2-pro-8bit",
+              language: input.language,
             },
           };
-        }
-        return {
-          ok: true as const,
-          data: {
-            key: `voice/${input.voiceId}.wav`,
-            durationMs: 1_500,
-          },
-        };
-      },
-      async deleteVoice(input: { voiceId: string }) {
-        providerState.deletedVoiceIds.push(input.voiceId);
-        return { ok: true as const, data: { deleted: true as const } };
+        },
+        async previewVoice() {
+          providerState.synthesizeCalls += 1;
+          if (providerState.synthesizeCalls === providerState.failSynthesizeCall) {
+            return {
+              ok: false as const,
+              error: {
+                code: "preview_failed",
+                message: "Synthetic concurrent preview failure",
+                retryable: true,
+              },
+            };
+          }
+          return {
+              ok: true as const,
+              data: {
+                body: new Uint8Array([82, 73, 70, 70]),
+                contentType: "audio/wav" as const,
+                durationMs: 1_500,
+              },
+            };
+        },
+        async deleteVoice(input: { voiceId: string }) {
+          providerState.deletedVoiceIds.push(input.voiceId);
+          return { ok: true as const, data: { deleted: true as const } };
+        },
+        async inspectCapabilities() {
+          return providerState.inspectOk
+            ? {
+                ok: true as const,
+                data: {
+                  voiceCloning: providerState.voiceCloning,
+                  runtime: providerState.runtime,
+                  runtimeVersion: providerState.runtimeVersion,
+                  acceleration: "mlx",
+                },
+              }
+            : {
+              ok: false as const,
+              error: {
+                code: "voice_runtime_unavailable",
+                message: "Synthetic runtime outage",
+                retryable: true,
+              },
+            };
+        },
       },
     },
     blob: {
@@ -82,9 +116,10 @@ vi.mock("@/server/providers", () => ({
 import {
   activateCharacterVoiceProfile,
   createCharacterVoiceClone,
+  inspectConfiguredVoiceIdentityRuntime,
   parseVoiceCloneForm,
   resetCharacterVoiceToSystemDefault,
-} from "./voice-clones";
+} from "./voice-identity";
 
 describe("Character Fish Audio voice clone authority", () => {
   const suffix = randomUUID();
@@ -125,6 +160,44 @@ describe("Character Fish Audio voice clone authority", () => {
     await prisma.character.deleteMany({ where: { id: characterId } });
     await prisma.user.deleteMany({ where: { id: actorId } });
     await prisma.$disconnect();
+  });
+
+  it("owns the configured Voice Identity runtime projection", async () => {
+    providerState.providerKey = "fish_audio";
+    providerState.inspectOk = true;
+    providerState.voiceCloning = true;
+    providerState.runtime = "mlx_audio";
+    providerState.runtimeVersion = "mlx-audio-test";
+
+    await expect(inspectConfiguredVoiceIdentityRuntime()).resolves.toMatchObject({
+      provider: "fish_audio",
+      cloningAvailable: true,
+      runtimeStatus: "ready",
+      runtimeEngine: "mlx_audio",
+      runtimeVersion: "mlx-audio-test",
+      runtimeLanguage: expect.any(String),
+    });
+
+    providerState.inspectOk = false;
+    await expect(inspectConfiguredVoiceIdentityRuntime()).resolves.toMatchObject({
+      provider: "fish_audio",
+      cloningAvailable: false,
+      runtimeStatus: "unavailable",
+      runtimeEngine: "unknown",
+      runtimeVersion: null,
+    });
+
+    providerState.providerKey = "pipeline";
+    await expect(inspectConfiguredVoiceIdentityRuntime()).resolves.toMatchObject({
+      provider: "pipeline",
+      cloningAvailable: false,
+      runtimeStatus: "inactive",
+      runtimeEngine: "inactive",
+      runtimeVersion: null,
+    });
+
+    providerState.providerKey = "fish_audio";
+    providerState.inspectOk = true;
   });
 
   it("rejects audio containers that the installed soundfile runtime cannot decode", async () => {

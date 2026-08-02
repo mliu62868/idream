@@ -2,8 +2,6 @@ import { randomUUID } from "node:crypto";
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { ensureGenerationSettlementLinks } from "@/server/ai/generation-settlement";
-import { recordGenerationAttemptQueuedEvent } from "@/server/ai/generation-attempt-events";
-import { transitionGenerationRequest } from "@/server/ai/generation-request-transition";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
@@ -17,6 +15,7 @@ import { actorWithPermission, clampInt, jsonBody, toInputJson, writeAudit, type 
 import { publicUser, redactGenerationJob as redactJob } from "@/server/modules/admin/shared/presenters";
 import { decodeAdminListCursor, encodeAdminListCursor } from "@/server/modules/admin-v2/shared/list-cursor";
 import type { ExistingGenerationJob } from "@/server/modules/generation/attempt-dispatch";
+import { reserveRetryGenerationAttempt } from "@/server/modules/generation/generation-attempt-authority";
 
 const requeueSchema = z.object({
   reason: z.string().trim().max(2_000).optional(),
@@ -356,55 +355,24 @@ async function stageGenerationRetry(
   input: {
     readonly request: Request;
     readonly actor: AdminActor;
-    readonly job: ExistingGenerationJob & { readonly status: string; readonly errorCode?: string | null; readonly version?: number };
+    readonly job: ExistingGenerationJob & { readonly status: string; readonly errorCode?: string | null; readonly version: number };
     readonly reason: string;
   },
 ) {
-  await tx.$queryRaw`SELECT id FROM "generation_jobs" WHERE id = ${input.job.id} FOR UPDATE`;
-  const current = await tx.generationJob.findUniqueOrThrow({ where: { id: input.job.id } });
-  if (current.status !== input.job.status) {
-    throw Errors.conflict("Generation Request changed before retry staging", { expectedStatus: input.job.status, actualStatus: current.status });
-  }
-  const latest = await tx.generationAttempt.findFirst({ where: { requestId: current.id }, orderBy: { attemptNo: "desc" } });
-  if (latest && latest.status !== "failed") {
-    throw Errors.conflict("Latest Generation Attempt is not safe for operator retry", { attemptId: latest.id, attemptNo: latest.attemptNo, status: latest.status });
-  }
-  if (latest?.retryability === "not_retryable") {
-    throw Errors.conflict("Latest Generation Attempt is explicitly non-replayable", { attemptId: latest.id, retryability: latest.retryability });
-  }
-  const updated = await transitionGenerationRequest(tx, {
-    requestId: current.id,
-    to: "queued",
-    expected: { from: "failed", version: current.version },
-    data: {
-      errorCode: null,
-      completedAt: null,
-      finishedAt: null,
-      deliveredOutputCount: 0,
-    },
-  });
-  const attempt = await tx.generationAttempt.create({
-    data: {
-      requestId: current.id,
-      attemptNo: (latest?.attemptNo ?? 0) + 1,
-      provider: latest?.provider ?? current.provider,
-      profileKey: latest?.profileKey ?? current.profileId,
-      profileVersion: latest?.profileVersion ?? current.profileVersion,
-      workflowKey: latest?.workflowKey ?? current.model,
-      workflowVersion: latest?.workflowVersion,
-      status: "queued",
-    },
-  });
-  await recordGenerationAttemptQueuedEvent(tx, attempt);
-  await tx.mainOutboxEvent.create({
-    data: {
-      id: `generation_retry_${current.id}_${attempt.attemptNo}`,
+  const reservation = await reserveRetryGenerationAttempt(tx, {
+    requestId: input.job.id,
+    expectedRequestVersion: input.job.version,
+    eligibleLatestStatuses: ["failed"],
+    dispatch: {
       eventType: "generation.retry.dispatch.v2",
-      aggregateType: "generation_request",
-      aggregateId: current.id,
-      payload: toInputJson({ generationJobId: current.id, attemptId: attempt.id, attemptNo: attempt.attemptNo }),
     },
   });
+  const {
+    attempt,
+    request: updated,
+    previousRequest: current,
+    previousAttempt: latest,
+  } = reservation;
   await tx.adminAuditLog.create({
     data: {
       actorId: input.actor.id,

@@ -1,16 +1,15 @@
 import { isDeepStrictEqual } from "node:util";
-import { characterVideoProductionSpec } from "@idream/shared";
+import { characterVideoProductionRecipe } from "@idream/shared";
 
 export const PRODUCTION_LTX_VIDEO_PROFILE = {
-  profileKey: characterVideoProductionSpec.profileKey,
-  runner: "comfyui",
-  pipelineModel: "ltx23-gtanimation-int4-convrot",
-  workflowKey: "ltx23-gtanimation-i2v",
-  sourceModelPath:
-    "diffusion_models/ltx23Gtanimation25Frames_ltxv23INT4Convrot.safetensors",
-  modelFormat: "safetensors",
+  profileKey: characterVideoProductionRecipe.profileKey,
+  runner: characterVideoProductionRecipe.runner,
+  pipelineModel: characterVideoProductionRecipe.pipelineModel,
+  workflowKey: characterVideoProductionRecipe.workflowKey,
+  sourceModelPath: characterVideoProductionRecipe.sourceModelPath,
+  modelFormat: characterVideoProductionRecipe.modelFormat,
   runnerConfig: {
-    workflowVersion: 1,
+    workflowVersion: characterVideoProductionRecipe.workflowVersion,
     capabilities: {
       textToImage: false,
       stableSeed: true,
@@ -18,22 +17,22 @@ export const PRODUCTION_LTX_VIDEO_PROFILE = {
       initImage: true,
       imageToVideo: true,
       audio: true,
-      fps: characterVideoProductionSpec.fps,
-      maxDurationSeconds: characterVideoProductionSpec.durationSeconds,
+      fps: characterVideoProductionRecipe.fps,
+      maxDurationSeconds: characterVideoProductionRecipe.durationSeconds,
     },
   },
-  defaultWidth: characterVideoProductionSpec.width,
-  defaultHeight: characterVideoProductionSpec.height,
-  allowedOrientations: [characterVideoProductionSpec.orientation],
-  steps: 13,
-  sampler: "euler",
-  scheduler: "manual_sigmas",
-  cfgScale: 1,
-  requiredEntitlement: "video_generation",
-  maxCount: characterVideoProductionSpec.outputCount,
-  concurrencyLimit: 1,
-  rolloutPercent: 100,
-  version: 1,
+  defaultWidth: characterVideoProductionRecipe.width,
+  defaultHeight: characterVideoProductionRecipe.height,
+  allowedOrientations: [characterVideoProductionRecipe.orientation],
+  steps: characterVideoProductionRecipe.steps,
+  sampler: characterVideoProductionRecipe.sampler,
+  scheduler: characterVideoProductionRecipe.scheduler,
+  cfgScale: characterVideoProductionRecipe.cfgScale,
+  requiredEntitlement: characterVideoProductionRecipe.requiredEntitlement,
+  maxCount: characterVideoProductionRecipe.outputCount,
+  concurrencyLimit: characterVideoProductionRecipe.concurrencyLimit,
+  rolloutPercent: characterVideoProductionRecipe.rolloutPercent,
+  version: characterVideoProductionRecipe.recipeVersion,
 } as const;
 
 type ProductionVideoProfileCandidate = {

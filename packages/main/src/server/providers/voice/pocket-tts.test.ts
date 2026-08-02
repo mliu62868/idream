@@ -2,6 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import type { BlobStore } from "../types";
 import { PocketTtsVoiceModel } from "./pocket-tts";
 
+const voiceSynthesisIdentity = {
+  requestId: "pocket-test-request",
+  attemptNo: 1,
+  idempotencyKey: "pocket-test-request:1",
+} as const;
+
 describe("PocketTtsVoiceModel", () => {
   it("reports the oMLX Pocket runtime and reusable voice-cloning capability", async () => {
     const fetchMock = vi.fn(async () =>
@@ -145,6 +151,7 @@ describe("PocketTtsVoiceModel", () => {
     });
 
     const result = await voice.synthesize({
+      ...voiceSynthesisIdentity,
       text: "Hello from the active character voice.",
       voiceId: "idream-voice-1",
     });
@@ -158,6 +165,11 @@ describe("PocketTtsVoiceModel", () => {
     expect(stored[0]?.key).toMatch(/^voice\/.+\.wav$/);
     const [endpoint, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
     expect(endpoint.toString()).toBe("http://127.0.0.1:8062/v1/audio/speech");
+    expect(init.headers).toMatchObject({
+      "idempotency-key": voiceSynthesisIdentity.idempotencyKey,
+      "x-idream-request-id": voiceSynthesisIdentity.requestId,
+      "x-idream-attempt-no": String(voiceSynthesisIdentity.attemptNo),
+    });
     expect(JSON.parse(String(init.body))).toEqual({
       model: "pocket-tts-4bit",
       input: "Hello from the active character voice.",

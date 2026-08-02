@@ -15,7 +15,7 @@ import { z } from "zod";
 import { env } from "@/server/lib/env";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
-import { providers } from "@/server/providers";
+import { previewConfiguredVoiceIdentity } from "@/server/modules/admin-v2/characters/voice-identity";
 import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
@@ -190,25 +190,16 @@ export async function updateVoiceDefaultSettings(input: {
 
 export async function previewVoiceDefault(input: unknown) {
   const request = voiceDefaultPreviewRequestSchema.parse(input);
-  const voice = providers.voice;
-  if (voice.providerKey !== "fish_audio" || !voice.previewVoice) {
-    throw Errors.unavailable("Fish Audio voice preview is unavailable", {
-      configuredProvider: voice.providerKey,
-    });
-  }
-  const result = await voice.previewVoice({
+  const preview = await previewConfiguredVoiceIdentity({
     text: request.text,
     voiceId: request.voiceId,
     delivery: request.delivery,
   });
-  if (!result.ok) {
-    throw Errors.unavailable("Fish Audio could not render the voice preview", result.error);
-  }
   return voiceDefaultPreviewResponseSchema.parse({
     voiceId: request.voiceId,
     contentType: "audio/wav",
-    audioBase64: Buffer.from(result.data.body).toString("base64"),
-    durationMs: result.data.durationMs,
+    audioBase64: Buffer.from(preview.body).toString("base64"),
+    durationMs: preview.durationMs,
   });
 }
 

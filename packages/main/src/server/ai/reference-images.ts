@@ -111,6 +111,7 @@ export async function imageReferenceInputsForGenerationJob(input: {
   referenceAssetIds?: Prisma.JsonValue | null;
   referenceManifest?: Prisma.JsonValue | null;
   maxReferences?: number;
+  db?: Pick<Prisma.TransactionClient, "mediaAsset"> | typeof prisma;
 }): Promise<ImageReferenceInput[]> {
   const controls = jsonRecord(input.controls);
   const visualIdentity = jsonRecord(controls.visualIdentity);
@@ -137,7 +138,7 @@ export async function imageReferenceInputsForGenerationJob(input: {
     orderedReferences.map((reference) => reference.mediaAssetId),
   );
 
-  const assets = await prisma.mediaAsset.findMany({
+  const assets = await (input.db ?? prisma).mediaAsset.findMany({
     where: {
       id: { in: orderedAssetIds },
       type: "image",

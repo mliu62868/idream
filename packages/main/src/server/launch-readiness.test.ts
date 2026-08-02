@@ -39,7 +39,6 @@ const productionEnv = {
   REDIS_URL: "redis://redis.ourdream.internal:6379/0",
   BULLMQ_PREFIX: "idream:prod",
   CHAT_PROVIDER: "pipeline",
-  IMAGE_PROVIDER: "pipeline",
   CHAT_DATABASE_URL: "postgresql://chat_service:secret@db.ourdream.internal:5432/idream",
   CHAT_FS_ROOT: "/var/lib/idream/chat",
   CHAT_MODEL_PROVIDER: "pipeline",
@@ -536,32 +535,6 @@ describe("launch readiness", () => {
     expect(failedIds(report)).not.toContain("gen-image-provider");
   });
 
-  it("requires main-web image provider separately from the generation worker provider", () => {
-    const report = assessLaunchReadiness({
-      env: {
-        ...productionEnv,
-        IMAGE_PROVIDER: "mock",
-        GEN_IMAGE_PROVIDER: "pipeline",
-      },
-      imagePipelineProbe: passingImageProbe(),
-      ageVerificationProbe: passingAgeProbe(),
-      blobStorageProbe: passingBlobProbe(),
-      chatModelProbe: passingChatProbe(),
-      voiceModelProbe: passingVoiceProbe(),
-      chatServiceProbe: passingChatServiceProbe(),
-      paymentProviderProbe: passingPaymentProbe(),
-      safetyGatewayProbe: passingSafetyProbe(),
-      productConfigProbe: passingProductConfigProbe(),
-      webSurfaceProbe: passingWebSurfaceProbe(),
-      publicCatalogProbe: passingPublicCatalogProbe(),
-      now,
-    });
-
-    expect(report.ok).toBe(false);
-    expect(failedIds(report)).toContain("image-provider-non-mock");
-    expect(failedIds(report)).not.toContain("gen-image-provider");
-  });
-
   it("fails when production env is configured but the live image probe is missing", () => {
     const report = assessLaunchReadiness({
       env: productionEnv,
@@ -587,7 +560,6 @@ describe("launch readiness", () => {
     const report = assessLaunchReadiness({
       env: {
         ...productionEnv,
-        IMAGE_PROVIDER: "backend",
         GEN_IMAGE_PROVIDER: "backend",
         COMFYUI_API_URL: "https://comfyui.ourdream.internal",
       },
@@ -620,7 +592,6 @@ describe("launch readiness", () => {
     const report = assessLaunchReadiness({
       env: {
         ...productionEnv,
-        IMAGE_PROVIDER: "backend",
         GEN_IMAGE_PROVIDER: "backend",
         COMFYUI_API_URL: undefined,
       },
@@ -647,7 +618,6 @@ describe("launch readiness", () => {
     const report = assessLaunchReadiness({
       env: {
         ...productionEnv,
-        IMAGE_PROVIDER: "backend",
         GEN_IMAGE_PROVIDER: "backend",
         GEN_VIDEO_PROVIDER: "mock",
         COMFYUI_API_URL: undefined,
@@ -939,7 +909,7 @@ describe("launch readiness", () => {
     expect(failedIds(report)).toEqual(
       expect.arrayContaining([
         "database-url",
-        "pipeline-api-token",
+        "chat-model-api-key",
         "payment-btcpay-base-url",
         "blob-endpoint",
         "sentry-dsn",

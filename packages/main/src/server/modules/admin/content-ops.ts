@@ -3,11 +3,10 @@ import { z } from "zod";
 import {
   characterRouteEvaluationMatrixKey,
   characterRouteEvaluationMatrixSchemaVersion,
-  characterVideoProductionSpec,
+  characterVideoProductionRecipe,
   creativeRunCreateRequestSchema,
   incrementCounter,
 } from "@idream/shared";
-import { recordGenerationAttemptQueuedEvent } from "@/server/ai/generation-attempt-events";
 import { dimensionsForImageOrientation } from "@/server/modules/ourdream/generation-dimensions";
 import { generationCostDreamcoins } from "@/server/lib/generation-pricing";
 import { prisma } from "@/server/lib/db";
@@ -40,7 +39,10 @@ import {
   refreshContentProductionBatchStats,
   type CreativeRunLedgerFact,
 } from "./content-production-state";
-import { dispatchCreativeRetryOutbox } from "@/server/modules/admin-v2/creative/retry-executor";
+import {
+  dispatchGenerationAttemptOutbox,
+  reserveInitialGenerationAttempt,
+} from "@/server/modules/generation/generation-attempt-authority";
 import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
 import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
 import {
@@ -860,7 +862,7 @@ export async function createProductionBatchCore(
     ...(characterVideoRun
       ? {
           sourceImageAssetId: additionalReferenceAssets[0]?.id,
-          seconds: characterVideoProductionSpec.durationSeconds,
+          seconds: characterVideoProductionRecipe.durationSeconds,
         }
       : {}),
   };
@@ -1419,7 +1421,7 @@ export async function createProductionBatchCore(
                 : null,
             videoDurationSeconds:
               characterVideoRun
-                ? characterVideoProductionSpec.durationSeconds
+                ? characterVideoProductionRecipe.durationSeconds
                 : null,
             routeQualificationEvaluationCandidate: routeEvaluationRun,
             routeQualificationMatrixKey:
@@ -1456,33 +1458,16 @@ export async function createProductionBatchCore(
         purpose: body.purpose,
       });
       await appendProductionJobEvent(tx, job.id, "queued", "Content production job queued", {});
-      const attempt = await tx.generationAttempt.create({
-        data: {
-          requestId: job.id,
-          attemptNo: 1,
-          provider: job.provider,
-          profileKey: job.profileId,
-          profileVersion: job.profileVersion,
-          workflowKey,
-          workflowVersion,
-          status: "queued",
-          creativeRunItemId: item.id,
-        },
-      });
-      await recordGenerationAttemptQueuedEvent(tx, attempt);
-      await tx.mainOutboxEvent.create({
-        data: {
-          id: `creative_initial_${createdBatch.id}_${item.id}`,
+      await reserveInitialGenerationAttempt(tx, {
+        requestId: job.id,
+        creativeRunItemId: item.id,
+        dispatch: {
+          outboxId: `creative_initial_${createdBatch.id}_${item.id}`,
           eventType: "creative.generation.dispatch.v2",
-          aggregateType: "creative_run",
-          aggregateId: createdBatch.id,
-          payload: toInputJson({
+          payload: {
             runId: createdBatch.id,
             itemId: item.id,
-            generationJobId: job.id,
-            attemptId: attempt.id,
-            attemptNo: attempt.attemptNo,
-          }),
+          },
         },
       });
     }
@@ -1529,12 +1514,10 @@ export async function createProductionBatchCore(
       include: productionBatchInclude,
     });
   });
-  if (!replayed) {
-    await dispatchCreativeRetryOutbox(prisma, {
-      limit: totalOutputCount,
-      outboxIds: batch.items.map((item) => `creative_initial_${batch.id}_${item.id}`),
-    });
-  }
+  await dispatchGenerationAttemptOutbox(prisma, {
+    limit: totalOutputCount,
+    outboxIds: batch.items.map((item) => `creative_initial_${batch.id}_${item.id}`),
+  });
   const mediaAuthorityById = await productionBatchMediaAuthority([batch]);
   return ok(
     { batch: productionBatchDTO(batch, [], mediaAuthorityById), replayed },
@@ -2722,7 +2705,7 @@ function productionPrompt(input: {
     input.target?.type === "character"
   ) {
     return [
-      `Create one continuous ${characterVideoProductionSpec.durationSeconds}-second image-to-video portrait clip.`,
+      `Create one continuous ${characterVideoProductionRecipe.durationSeconds}-second image-to-video portrait clip.`,
       `Target character: ${input.target.label}.`,
       "The pinned source image is the exact identity, appearance, composition, and first-frame authority.",
       `Recipe: ${input.recipeBody}`,

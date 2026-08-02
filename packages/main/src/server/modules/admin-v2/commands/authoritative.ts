@@ -30,6 +30,7 @@ import { CHARACTER_RELEASE_POLICY_VERSION } from "../characters/release-executor
 import { characterCommandCoordinationKey } from "../characters/command-coordination";
 import { executeAcceptedAdminCommand } from "./executor";
 import { generationProfileHealth } from "../creative/retry-executor";
+import { resolveGenerationAttemptRetryAuthority } from "@/server/modules/generation/generation-attempt-authority";
 
 type JsonObject = Record<string, unknown>;
 
@@ -662,7 +663,16 @@ export function retryFailedCreativeRun(request: Request, runId: string) {
           where: { status: "failed" },
           select: {
             id: true,
-            job: { select: { id: true, status: true, profileId: true, profileVersion: true } },
+            job: {
+              select: {
+                id: true,
+                status: true,
+                errorCode: true,
+                deliveredOutputCount: true,
+                profileId: true,
+                profileVersion: true,
+              },
+            },
           },
         },
       },
@@ -715,8 +725,16 @@ export function retryFailedCreativeRun(request: Request, runId: string) {
       if (!health.healthy) {
         dependencies.push({ code: health.reason, message: "The generation profile has not passed its health gate.", itemId: item.id });
       }
-      if (latestAttempt?.status === "unknown" || latestAttempt?.retryability === "not_retryable") {
-        dependencies.push({ code: "attempt_non_replayable", message: "The latest attempt requires reconciliation and cannot be retried.", itemId: item.id });
+      const retryAuthority = await resolveGenerationAttemptRetryAuthority(prisma, {
+        request: item.job,
+        latestAttempt,
+      });
+      if (!retryAuthority.allowed) {
+        dependencies.push({
+          code: retryAuthority.code,
+          message: retryAuthority.message,
+          itemId: item.id,
+        });
       }
     }
     if (dependencies.length > 0) throw new DependencyUnhealthyError(dependencies);

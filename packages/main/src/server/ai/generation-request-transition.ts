@@ -103,6 +103,7 @@ export async function transitionGenerationRequestWithDisposition(
     );
   }
   if (current.status === input.to) {
+    await projectCharacterPreviewRequestState(tx, current);
     return { request: current, disposition: "duplicate" };
   }
 
@@ -126,8 +127,99 @@ export async function transitionGenerationRequestWithDisposition(
       version: current.version,
     });
   }
-  return {
-    request: await tx.generationJob.findUniqueOrThrow({ where: { id: current.id } }),
-    disposition: "applied",
-  };
+  const request = await tx.generationJob.findUniqueOrThrow({
+    where: { id: current.id },
+  });
+  await projectCharacterPreviewRequestState(tx, request);
+  return { request, disposition: "applied" };
+}
+
+async function projectCharacterPreviewRequestState(
+  tx: Prisma.TransactionClient,
+  request: GenerationJob,
+) {
+  if (request.sourceType !== "character_preview" || !request.sourceId) return;
+  const preview = await tx.characterPreviewJob.findUnique({
+    where: { id: request.sourceId },
+    include: { draft: { select: { ownerId: true } } },
+  });
+  // The draft may have been deliberately deleted while provider work was in
+  // flight. That removes the Preview target but must not strand terminal ACK.
+  if (!preview) return;
+  if (preview.draft.ownerId !== request.userId) {
+    throw Errors.conflict(
+      "Character Preview source does not belong to the Generation Request owner",
+      { requestId: request.id, previewJobId: preview.id },
+    );
+  }
+
+  if (request.status === "queued") {
+    await tx.characterPreviewJob.update({
+      where: { id: preview.id },
+      data: {
+        status: "queued",
+        provider: request.provider,
+        resultAssetId: null,
+        errorCode: null,
+        completedAt: null,
+      },
+    });
+    return;
+  }
+  if (["moderating_input", "running", "moderating_output"].includes(request.status)) {
+    if (!["completed", "failed"].includes(preview.status)) {
+      await tx.characterPreviewJob.update({
+        where: { id: preview.id },
+        data: { status: "running", provider: request.provider },
+      });
+    }
+    return;
+  }
+  if (request.status === "completed") {
+    const asset = await tx.mediaAsset.findFirst({
+      where: { sourceJobId: request.id },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      select: { id: true },
+    });
+    if (!asset) {
+      throw Errors.conflict(
+        "Completed Character Preview Generation Request has no delivered asset",
+        { requestId: request.id, previewJobId: preview.id },
+      );
+    }
+    if (preview.status === "failed") {
+      throw Errors.conflict(
+        "Failed Character Preview cannot be overwritten by a late Generation result",
+        { requestId: request.id, previewJobId: preview.id },
+      );
+    }
+    await tx.characterPreviewJob.update({
+      where: { id: preview.id },
+      data: {
+        status: "completed",
+        provider: request.provider,
+        resultAssetId: asset.id,
+        errorCode: null,
+        completedAt: request.completedAt ?? request.finishedAt ?? new Date(),
+      },
+    });
+    await tx.characterDraft.updateMany({
+      where: { id: preview.draftId, ownerId: request.userId },
+      data: { previewJobId: preview.id },
+    });
+    return;
+  }
+  if (["failed", "blocked", "refunded", "cancelled"].includes(request.status)) {
+    if (preview.status === "completed") return;
+    await tx.characterPreviewJob.update({
+      where: { id: preview.id },
+      data: {
+        status: "failed",
+        provider: request.provider,
+        resultAssetId: null,
+        errorCode: request.errorCode ?? `generation_${request.status}`,
+        completedAt: request.finishedAt ?? new Date(),
+      },
+    });
+  }
 }

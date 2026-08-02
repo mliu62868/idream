@@ -1,3 +1,5 @@
+import { GEN_QUEUES, MAIN_QUEUES } from "@idream/shared/contracts";
+
 export const DB_PROVIDER = "postgresql" as const;
 export const DEFAULT_POSTGRES_DATABASE_URL =
   "postgresql://postgres:postgres@localhost:5433/idream";
@@ -22,10 +24,10 @@ export const JOB_STATUSES = ["queued", "running", "completed", "failed", "dead"]
 // dead producer (moderation.input / report.triage / age.verification.webhook —
 // their work is done synchronously inline) were removed to avoid orphan queues.
 export const JOB_QUEUES = [
-  "ai.image.generate",
-  "ai.video.generate",
-  "app.ai.finalize",
-  "character.preview",
+  GEN_QUEUES.imageGenerate,
+  GEN_QUEUES.videoGenerate,
+  MAIN_QUEUES.generationTerminalIngest,
+  MAIN_QUEUES.aiFinalize,
 ] as const;
 
 export const PROVIDER_KIND = ["mock", "pipeline", "btcpay", "r2", "vercel_blob"] as const;

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { stableNumericSeed } from "../providers";
 import { BackendImageModel } from "./backend-image-model";
-import type { GenBackend } from "./types";
+import { BackendInvocationError, type GenBackend } from "./types";
 import { workflowDescriptorSchema } from "./workflow";
 
 // 2x2 PNG (checkerboard black/white) — same fixture used by comfyui.test.ts /
@@ -206,7 +206,7 @@ describe("BackendImageModel", () => {
     expect(sizes[0]).toMatchObject({ width: 832, height: 1216 });
   });
 
-  it("maps a thrown poll error to ok:false with retryable:true", async () => {
+  it("maps a post-submit poll error to an ambiguous provider outcome", async () => {
     const backend = makeStubBackend({
       poll: vi.fn(async () => {
         throw new Error("network blip");
@@ -221,12 +221,59 @@ describe("BackendImageModel", () => {
     if (result.ok) throw new Error("expected failure result");
     expect(result.error.code).toBe("backend_error");
     expect(result.error.retryable).toBe(true);
+    expect(result.error.outcome).toBe("ambiguous");
     expect(result.error.message).toContain("network blip");
     expect(result.invocation).toEqual({
       providerRequestId: "handle-1",
       usage: { providerRequestIds: ["handle-1"] },
       costMicros: null,
       pricingVersion: null,
+    });
+  });
+
+  it("maps a pre-submit rejection to a definitive failure", async () => {
+    const backend = makeStubBackend({
+      submit: vi.fn(async () => {
+        throw new Error("workflow cannot be submitted");
+      }),
+    });
+    const model = modelWith(backend);
+
+    const result = await model.generate({ prompt: "a cat", count: 1, model: "m" });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: "backend_error",
+        outcome: "definitive",
+        retryable: true,
+      },
+    });
+    expect(backend.poll).not.toHaveBeenCalled();
+  });
+
+  it("preserves an explicit post-submit prompt failure as definitive", async () => {
+    const backend = makeStubBackend({
+      poll: vi.fn(async () => {
+        throw new BackendInvocationError(
+          "backend_error",
+          "ComfyUI prompt failed",
+          "post_submit",
+          "definitive",
+        );
+      }),
+    });
+    const model = modelWith(backend);
+
+    const result = await model.generate({ prompt: "a cat", count: 1, model: "m" });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: "backend_error",
+        outcome: "definitive",
+        retryable: false,
+      },
     });
   });
 

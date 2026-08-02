@@ -4,12 +4,12 @@
 // services use PM2 watch. Production keeps the immutable standalone web runtime.
 //   bun run pm2:start              # development; no build required
 //   bun run pm2:status
-//   pm2 restart main-web admin-web # reload startup config/source state
+//   bun run pm2:restart            # detect current mode; production stays gated
 //   bun run pm2:start:production   # production; build first
 //   pm2 restart chat                   # single-instance: brief gap, reconciler heals
 // IDREAM_PM2_MODE accepts only "development" or "production". Switching modes
 // changes the process definitions, so delete/recreate the ecosystem once; normal
-// source and .env changes only need Fast Refresh, PM2 watch, or pm2 restart.
+// source and .env changes only need Fast Refresh, PM2 watch, or `bun run pm2:restart`.
 // Production web apps run from immutable .next-runtime releases. Prefer restart
 // after both builds are published; rolling reload still needs deployment-aware
 // routing to keep old clients and workers on the same release during the overlap.
@@ -32,6 +32,7 @@ if (runtimeMode !== "development" && runtimeMode !== "production") {
   );
 }
 const isDevelopment = runtimeMode === "development";
+const runtimeIdentityEnv = { IDREAM_PM2_MODE: runtimeMode };
 const sourceWatch = (...paths) =>
   isDevelopment
     ? {
@@ -91,6 +92,7 @@ module.exports = {
         "scripts/fish_audio_gateway.py",
       ),
       env: {
+        ...runtimeIdentityEnv,
         FISH_AUDIO_HOST: mainEnvValue("FISH_AUDIO_HOST", fishAudioApiUrl.hostname),
         FISH_AUDIO_PORT: mainEnvValue(
           "FISH_AUDIO_PORT",
@@ -144,6 +146,7 @@ module.exports = {
       // Next dev owns source watching/Fast Refresh. PM2 watch would fight it.
       watch: false,
       env: {
+        ...runtimeIdentityEnv,
         PORT: process.env.MAIN_WEB_PORT ?? "3000",
         ...mainRedisEnv,
         ...sharedInternalEnv,
@@ -163,6 +166,7 @@ module.exports = {
       // Next dev owns source watching/Fast Refresh. PM2 watch would fight it.
       watch: false,
       env: {
+        ...runtimeIdentityEnv,
         PORT: process.env.ADMIN_WEB_PORT ?? "3001",
         ...sharedInternalEnv,
       },
@@ -178,6 +182,7 @@ module.exports = {
       instances: 1, // ⚠️ local FS single-writer
       ...sourceWatch("packages/chat/src", "packages/shared/src"),
       env: {
+        ...runtimeIdentityEnv,
         ...sharedInternalEnv,
       },
       // config from packages/chat/.env (CHAT_PORT, CHAT_DATABASE_URL, …)
@@ -192,12 +197,16 @@ module.exports = {
       // Draw Things serializes within one worker. Set GEN_IMAGE_INSTANCES=1 for
       // strict host-wide single-process model loading; other backends may scale out.
       instances: process.env.GEN_IMAGE_INSTANCES ?? 2,
+      // Provider calls may outlive PM2's default kill window. Queue pause/drain
+      // should make this idle; this is the last fail-safe against mid-job kill.
+      kill_timeout: 5 * 60 * 1_000,
       ...sourceWatch(
         "packages/gen/src",
         "packages/gen/workflows",
         "packages/shared/src",
       ),
       env: {
+        ...runtimeIdentityEnv,
         ...sharedInternalEnv,
       },
     },
@@ -208,11 +217,13 @@ module.exports = {
       args: "src/video.ts",
       exec_mode: "fork",
       instances: 1,
+      kill_timeout: 35 * 60 * 1_000,
       // Video jobs can run for 10–30 minutes. A dev watch restart after the
       // ComfyUI submit but before manifest ingest creates an orphan prompt and
       // BullMQ retry duplicate, so this worker is always restarted explicitly.
       watch: false,
       env: {
+        ...runtimeIdentityEnv,
         ...sharedInternalEnv,
       },
     },
@@ -224,17 +235,18 @@ module.exports = {
       args: "src/processes/finalizer.ts",
       exec_mode: "fork",
       instances: 1,
+      kill_timeout: 5 * 60 * 1_000,
       ...sourceWatch(
         "packages/main/src/processes",
         "packages/main/src/server",
         "packages/shared/src",
       ),
       env: {
+        ...runtimeIdentityEnv,
         ...mainRedisEnv,
         ...sharedInternalEnv,
-        // Finalize only — do NOT add ai.image/video.generate, or this
-        // main-side process (IMAGE_PROVIDER defaults to mock) races the dedicated
-        // gen-image worker (GEN_IMAGE_PROVIDER=backend) → nondeterministic mock output.
+        // Finalize only — image/video provider execution is owned exclusively by
+        // the dedicated Gen workers through GEN_IMAGE_PROVIDER/GEN_VIDEO_PROVIDER.
         // Character previews are owned by gen-image and return through app.ai.finalize.
       },
     },
@@ -251,6 +263,7 @@ module.exports = {
         "packages/shared/src",
       ),
       env: {
+        ...runtimeIdentityEnv,
         ...sharedInternalEnv,
       },
     },
@@ -268,6 +281,7 @@ module.exports = {
         "packages/shared/src",
       ),
       env: {
+        ...runtimeIdentityEnv,
         ...mainRedisEnv,
         ...sharedInternalEnv,
       },

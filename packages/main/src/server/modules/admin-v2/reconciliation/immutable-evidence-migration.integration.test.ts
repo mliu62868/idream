@@ -4,16 +4,29 @@ import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
+import { prismaPgSchema, prismaPgSearchPath } from "@/server/lib/prisma-adapter";
 
 describe("immutable admin evidence database guards", () => {
   const suffix = crypto.randomUUID();
 
   beforeAll(async () => {
-    const sql = await readFile(path.resolve(process.cwd(), "prisma/migrations/20260711120000_immutable_admin_evidence/migration.sql"), "utf8");
-    const client = new pg.Client({ connectionString: env.DATABASE_URL });
+    const schema = prismaPgSchema(env.DATABASE_URL);
+    const client = new pg.Client({
+      connectionString: env.DATABASE_URL,
+      ...(schema ? { options: prismaPgSearchPath(schema) } : {}),
+    });
     await client.connect();
     try {
-      await client.query(sql);
+      for (const migration of [
+        "20260711120000_immutable_admin_evidence",
+        "20260801203000_generation_terminal_record_authority",
+      ]) {
+        const sql = await readFile(
+          path.resolve(process.cwd(), `prisma/migrations/${migration}/migration.sql`),
+          "utf8",
+        );
+        await client.query(sql);
+      }
     } finally {
       await client.end();
     }
@@ -56,11 +69,28 @@ describe("immutable admin evidence database guards", () => {
     await expect(prisma.characterRelease.update({ where: { id: release.id }, data: { snapshotHash: `${suffix}:rewritten` } })).rejects.toThrow(/snapshot is immutable/);
   });
 
-  it("allows one TransportExecution terminal transition and rejects history rewrites", async () => {
+  it("allows one TransportExecution terminal resolution and rejects history rewrites", async () => {
     const attemptId = `${suffix}:attempt`;
     await prisma.generationAttempt.create({ data: { id: attemptId, requestId: `${suffix}:request`, attemptNo: 1 } });
     await prisma.generationTransportExecution.create({ data: { attemptId, transportAttemptNo: 1, idempotencyKey: `${suffix}:key`, status: "running" } });
     await expect(prisma.generationTransportExecution.update({ where: { attemptId_transportAttemptNo: { attemptId, transportAttemptNo: 1 } }, data: { status: "failed", finishedAt: new Date() } })).resolves.toMatchObject({ status: "failed" });
+
+    const succeededAttemptId = `${suffix}:succeeded-attempt`;
+    await prisma.generationAttempt.create({ data: { id: succeededAttemptId, requestId: `${suffix}:succeeded-request`, attemptNo: 1 } });
+    await prisma.generationTransportExecution.create({ data: { attemptId: succeededAttemptId, transportAttemptNo: 1, idempotencyKey: `${suffix}:succeeded-key`, status: "running" } });
+    await expect(prisma.generationTransportExecution.update({
+      where: { attemptId_transportAttemptNo: { attemptId: succeededAttemptId, transportAttemptNo: 1 } },
+      data: {
+        status: "succeeded",
+        finishedAt: new Date(),
+        terminalRecordRef: `generation-terminal-records/${succeededAttemptId}.json`,
+      },
+    })).resolves.toMatchObject({ status: "succeeded" });
+    await expect(prisma.generationTransportExecution.update({
+      where: { attemptId_transportAttemptNo: { attemptId: succeededAttemptId, transportAttemptNo: 1 } },
+      data: { status: "unknown" },
+    })).rejects.toThrow(/append-only/);
+
     await expect(prisma.generationTransportExecution.update({ where: { attemptId_transportAttemptNo: { attemptId, transportAttemptNo: 1 } }, data: { status: "unknown" } })).rejects.toThrow(/append-only/);
   });
 });

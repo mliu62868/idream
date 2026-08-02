@@ -139,6 +139,35 @@ describe("GenerationAttemptEvent authority", () => {
     });
   });
 
+  it("preserves a blocked terminal record as a blocked Attempt outcome", async () => {
+    const occurredAt = new Date("2026-07-11T12:00:00.000Z");
+    const terminal = await prisma.$transaction((tx) =>
+      recordGenerationAttemptEvent(tx, {
+        eventId: `${attemptId}:terminal`,
+        attemptId,
+        eventType: "generation.attempt.blocked.v1",
+        outcome: "blocked",
+        occurredAt,
+        payload: {
+          policyCode: "provider_blocked",
+          layer: "provider",
+        },
+        errorCode: "provider_blocked",
+        retryability: "not_retryable",
+      }),
+    );
+
+    expect(terminal).toMatchObject({ outcome: "blocked", disposition: "created" });
+    await expect(
+      prisma.generationAttempt.findUnique({ where: { id: attemptId } }),
+    ).resolves.toMatchObject({
+      status: "blocked",
+      errorCode: "provider_blocked",
+      retryability: "not_retryable",
+      finishedAt: occurredAt,
+    });
+  });
+
   it("serializes concurrent success and failure terminals into exactly one authority outcome", async () => {
     const base = {
       attemptId,

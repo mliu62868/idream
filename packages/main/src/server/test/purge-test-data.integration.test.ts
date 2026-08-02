@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { idempotencyKeys, MAIN_QUEUES } from "@idream/shared/contracts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { jobQueue } from "@/server/jobs/queue";
@@ -99,8 +100,17 @@ describe("purgeTestData generation queue ownership", () => {
         presetIds: [],
       },
     });
+    const attempt = await prisma.generationAttempt.create({
+      data: {
+        requestId: generationJob.id,
+        attemptNo: 1,
+        provider: "mock",
+        status: "running",
+      },
+    });
     const workKey = `generation:${generationJob.id}`;
     const finalizeKey = `generation-finalize:${generationJob.id}:completed`;
+    const relayKey = idempotencyKeys.generationTerminalRelay(attempt.id);
 
     await jobQueue.enqueue({
       queue: "ai.image.generate",
@@ -112,9 +122,18 @@ describe("purgeTestData generation queue ownership", () => {
       payload: { generationJobId: generationJob.id },
       dedupeKey: finalizeKey,
     });
+    await jobQueue.enqueue({
+      queue: MAIN_QUEUES.generationTerminalIngest,
+      payload: { terminalRecord: { attemptId: attempt.id } },
+      dedupeKey: relayKey,
+    });
 
     expect(await jobQueue.getByDedupeKey("ai.image.generate", workKey)).not.toBeNull();
     expect(await jobQueue.getByDedupeKey("app.ai.finalize", finalizeKey)).not.toBeNull();
+    expect(await jobQueue.getByDedupeKey(
+      MAIN_QUEUES.generationTerminalIngest,
+      relayKey,
+    )).not.toBeNull();
 
     await purgeTestData(prefix);
 
@@ -123,6 +142,10 @@ describe("purgeTestData generation queue ownership", () => {
     ).toBeNull();
     expect(await jobQueue.getByDedupeKey("ai.image.generate", workKey)).toBeNull();
     expect(await jobQueue.getByDedupeKey("app.ai.finalize", finalizeKey)).toBeNull();
+    expect(await jobQueue.getByDedupeKey(
+      MAIN_QUEUES.generationTerminalIngest,
+      relayKey,
+    )).toBeNull();
   });
 
   it("removes attempt-scoped work by generation id without touching another job", async () => {

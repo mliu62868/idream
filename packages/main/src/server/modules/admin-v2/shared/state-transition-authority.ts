@@ -99,10 +99,11 @@ export function isGenerationRequestTransitionAllowed(from: string, to: string) {
 export const GENERATION_ATTEMPT_STATES = generationAttemptStatusSchema.options;
 
 const GENERATION_ATTEMPT_AUTHORITY = defineTransitionAuthority(GENERATION_ATTEMPT_STATES, {
-  queued: ["queued", "running", "succeeded", "failed", "cancelled", "unknown"],
-  running: ["running", "succeeded", "failed", "cancelled", "unknown"],
+  queued: ["queued", "running", "succeeded", "failed", "blocked", "cancelled", "unknown"],
+  running: ["running", "succeeded", "failed", "blocked", "cancelled", "unknown"],
   succeeded: ["succeeded"],
   failed: ["failed"],
+  blocked: ["blocked"],
   cancelled: ["cancelled"],
   unknown: ["unknown"],
 });

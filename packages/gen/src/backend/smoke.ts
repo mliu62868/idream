@@ -1,5 +1,5 @@
 // SPEC: Real end-to-end smoke — drives `providers.image.generate()` with
-// IMAGE_PROVIDER=backend against a LIVE registered backend, reproducing a real
+// GEN_IMAGE_PROVIDER=backend against a LIVE registered backend, reproducing a real
 // image through BackendImageModel -> BackendRegistry -> GenBackend. The default
 // targets ComfyUI; pass a Draw Things model id to drive draw-things-cli through
 // the same provider seam the gen worker uses in production.
@@ -11,10 +11,8 @@
 // exercised explicitly instead of inferred from array order.
 // INTENT: Manual-only dev script, not part of `vitest run` (no live server in
 // CI; see package.json's `smoke:backend` script). Forces GEN_IMAGE_PROVIDER to
-// "backend" unconditionally — env.ts's getter checks GEN_IMAGE_PROVIDER before
-// IMAGE_PROVIDER, and .env pins GEN_IMAGE_PROVIDER=pipeline, so a plain
-// `IMAGE_PROVIDER=backend` env var alone would silently lose to .env's
-// dotenv/config load. Also forces GEN_WORKFLOW_DIR to an absolute path
+// "backend" unconditionally so package-local .env cannot select another Gen
+// provider. Also forces GEN_WORKFLOW_DIR to an absolute path
 // resolved from this file's location, since the env.ts default
 // ("packages/gen/workflows") is repo-root relative and breaks when this
 // script is invoked from inside packages/gen (its `bun run` cwd).

@@ -1,5 +1,4 @@
 import { createServer } from "node:http";
-import { MockImageModel } from "@/server/providers/image/mock";
 
 function portFromArgs() {
   const index = process.argv.indexOf("--port");
@@ -20,7 +19,27 @@ async function requestJson(request: import("node:http").IncomingMessage) {
   return body ? JSON.parse(body) as Record<string, unknown> : {};
 }
 
-const imageModel = new MockImageModel();
+// INTENT: this fixture exercises the Gen-owned execution adapter. Main must not
+// grow a second image provider registry just to support Playwright.
+const genProviderModulePath = new URL("../../../gen/src/providers.ts", import.meta.url).href;
+const { createMockGenProviders } = await import(genProviderModulePath) as {
+  createMockGenProviders(): {
+    image: {
+      generate(input: {
+        prompt: string;
+        count: number;
+        seed?: string;
+        requestId?: string;
+      }): Promise<{
+        ok: true;
+        data: {
+          assets: Array<{ key?: string; body?: Uint8Array }>;
+        };
+      }>;
+    };
+  };
+};
+const imageModel = createMockGenProviders().image;
 const server = createServer(async (request, response) => {
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
   if (request.method === "GET" && url.pathname === "/health") {

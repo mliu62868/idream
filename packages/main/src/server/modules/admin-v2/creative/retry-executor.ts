@@ -1,13 +1,14 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { Errors } from "@/server/lib/errors";
 import {
-  enqueueGenerationAttempt,
   normalizedModelCapabilities,
   runtimeReferenceImagesForDispatch,
 } from "@/server/modules/generation/attempt-dispatch";
 import { generationReferenceRequests } from "@/server/ai/reference-images";
-import { recordGenerationAttemptQueuedEvent } from "@/server/ai/generation-attempt-events";
-import { transitionGenerationRequest } from "@/server/ai/generation-request-transition";
+import {
+  reserveRetryGenerationAttempt,
+  resolveGenerationAttemptRetryAuthority,
+} from "@/server/modules/generation/generation-attempt-authority";
 import { generationWorkflowDescriptor } from "@/server/modules/admin/generation-catalog";
 import {
   hasHydratableMediaBlobAuthority,
@@ -32,7 +33,7 @@ import {
   isCreativeRunWorkflowTransitionAllowed,
 } from "../shared/state-transition-authority";
 
-const TERMINAL_ATTEMPT_STATES = new Set(["succeeded", "failed", "cancelled", "unknown"]);
+const TERMINAL_ATTEMPT_STATES = new Set(["succeeded", "failed", "blocked", "cancelled", "unknown"]);
 const HEALTHY_VERIFICATION_STATES = new Set(["passed", "verified", "manual_passed"]);
 const FROZEN_IMAGE_REFERENCE_ROLES = new Set([
   "primary_face",
@@ -456,10 +457,15 @@ export async function executeCreativeRetryCommand(
           where: { requestId: item.job.id },
           orderBy: { attemptNo: "desc" },
         });
-        if (latest?.retryability === "not_retryable" || latest?.status === "unknown") {
-          throw Errors.conflict("Generation attempt requires reconciliation and cannot be replayed", {
+        const retryAuthority = await resolveGenerationAttemptRetryAuthority(tx, {
+          request: item.job,
+          latestAttempt: latest,
+        });
+        if (!retryAuthority.allowed) {
+          throw Errors.conflict(retryAuthority.message, {
+            code: retryAuthority.code,
+            ...retryAuthority.details,
             itemId: item.id,
-            attemptId: latest.id,
           });
         }
         const profile = await tx.generationModelProfile.findFirst({
@@ -490,40 +496,21 @@ export async function executeCreativeRetryCommand(
           profile,
           latestAttempt: latest,
         });
-        await transitionGenerationRequest(tx, {
+        const { attempt } = await reserveRetryGenerationAttempt(tx, {
           requestId: item.job.id,
-          to: "queued",
-          expected: { from: "failed", version: item.job.version },
-          data: {
-            errorCode: null,
-            completedAt: null,
-            finishedAt: null,
-            deliveredOutputCount: 0,
-          },
-        });
-        const attemptNo = (latest?.attemptNo ?? 0) + 1;
-        const attempt = await tx.generationAttempt.upsert({
-          where: {
-            sourceCommandId_creativeRunItemId: {
-              sourceCommandId: claimed.id,
-              creativeRunItemId: item.id,
+          expectedRequestVersion: item.job.version,
+          sourceCommandId: claimed.id,
+          creativeRunItemId: item.id,
+          dispatch: {
+            outboxId: `creative_retry_${claimed.id}_${item.id}`,
+            eventType: "creative.retry.dispatch.v2",
+            payload: {
+              commandId: claimed.id,
+              runId: run.id,
+              itemId: item.id,
             },
           },
-          create: {
-            requestId: item.job.id,
-            attemptNo,
-            provider: item.job.provider,
-            profileKey: item.job.profileId,
-            profileVersion: item.job.profileVersion,
-            workflowKey: latest?.workflowKey,
-            workflowVersion: latest?.workflowVersion,
-            status: "queued",
-            sourceCommandId: claimed.id,
-            creativeRunItemId: item.id,
-          },
-          update: {},
         });
-        await recordGenerationAttemptQueuedEvent(tx, attempt);
         attemptIds.push(attempt.id);
         const itemUpdated = await tx.contentProductionItem.updateMany({
           where: {
@@ -540,24 +527,6 @@ export async function executeCreativeRetryCommand(
             itemId: item.id,
           });
         }
-        await tx.mainOutboxEvent.upsert({
-          where: { id: `creative_retry_${claimed.id}_${item.id}` },
-          create: {
-            id: `creative_retry_${claimed.id}_${item.id}`,
-            eventType: "creative.retry.dispatch.v2",
-            aggregateType: "creative_run",
-            aggregateId: run.id,
-            payload: toInputJson({
-              commandId: claimed.id,
-              runId: run.id,
-              itemId: item.id,
-              generationJobId: item.job.id,
-              attemptId: attempt.id,
-              attemptNo: attempt.attemptNo,
-            }),
-          },
-          update: {},
-        });
       }
 
       const runUpdated = await tx.contentProductionBatch.updateMany({
@@ -622,77 +591,6 @@ export async function executeCreativeRetryCommand(
     });
     throw error;
   }
-}
-
-export async function dispatchCreativeRetryOutbox(
-  db: PrismaClient,
-  input: { readonly limit?: number; readonly outboxIds?: readonly string[] } = {},
-) {
-  const rows = await db.mainOutboxEvent.findMany({
-    where: {
-      eventType: { in: [
-        "creative.retry.dispatch.v2",
-        "creative.generation.dispatch.v2",
-        "incident.retry.dispatch.v2",
-        "generation.retry.dispatch.v2",
-      ] },
-      status: { in: ["pending", "dispatched"] },
-      nextRunAt: { lte: new Date() },
-      ...(input.outboxIds ? { id: { in: [...input.outboxIds] } } : {}),
-    },
-    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-    take: Math.min(100, Math.max(1, input.limit ?? 25)),
-  });
-  let delivered = 0;
-  let failed = 0;
-  for (const row of rows) {
-    const leaseExpiresAt = new Date(Date.now() + 60_000);
-    const claimed = await db.mainOutboxEvent.updateMany({
-      where: {
-        id: row.id,
-        status: row.status,
-        nextRunAt: row.nextRunAt,
-      },
-      data: {
-        status: "dispatched",
-        attempts: { increment: 1 },
-        nextRunAt: leaseExpiresAt,
-        lastError: Prisma.DbNull,
-      },
-    });
-    if (claimed.count !== 1) continue;
-    const payload = record(row.payload);
-    const generationJobId = typeof payload.generationJobId === "string" ? payload.generationJobId : null;
-    const attemptId = typeof payload.attemptId === "string" ? payload.attemptId : null;
-    const attemptNo = typeof payload.attemptNo === "number" ? payload.attemptNo : null;
-    try {
-      if (!generationJobId || !attemptId || !attemptNo) throw new Error("Creative generation outbox payload is invalid");
-      const [job, attempt] = await Promise.all([
-        db.generationJob.findUnique({ where: { id: generationJobId } }),
-        db.generationAttempt.findUnique({ where: { id: attemptId } }),
-      ]);
-      if (!job || !attempt || attempt.attemptNo !== attemptNo) {
-        throw new Error("Creative generation authority is missing");
-      }
-      await enqueueGenerationAttempt(job, { attemptId, attemptNo });
-      await db.mainOutboxEvent.updateMany({
-        where: { id: row.id, status: "dispatched", nextRunAt: leaseExpiresAt },
-        data: { status: "delivered", deliveredAt: new Date(), lastError: Prisma.DbNull },
-      });
-      delivered += 1;
-    } catch (error) {
-      await db.mainOutboxEvent.updateMany({
-        where: { id: row.id, status: "dispatched", nextRunAt: leaseExpiresAt },
-        data: {
-          status: "pending",
-          nextRunAt: new Date(Date.now() + 30_000),
-          lastError: toInputJson({ message: error instanceof Error ? error.message : "Creative generation dispatch failed" }),
-        },
-      });
-      failed += 1;
-    }
-  }
-  return { examined: rows.length, delivered, failed };
 }
 
 export async function verifyCreativeRetryCommands(

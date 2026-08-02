@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Generation Service \u2014 gen/image + gen/video. Slow async workers: payload self-contained, write blob only, NO DB authority. Finalize via app.ai.finalize \u2192 gen-finalizer (main-side).",
+  "description": "Generation Service \u2014 gen/image + gen/video. Slow async workers: payload self-contained, write blob only, NO DB authority. Durable terminal records enter a Main-owned relay for projection.",
   "engines": {
     "node": ">=22"
   },

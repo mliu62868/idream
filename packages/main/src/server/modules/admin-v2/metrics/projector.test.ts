@@ -586,7 +586,7 @@ describe("canonical metric fact projector", () => {
         id: artifactAuthorityId,
         attemptId,
         ordinal: 0,
-        manifestChecksum: "a".repeat(64),
+        terminalRecordChecksum: "a".repeat(64),
         validationState: "valid",
         assetId,
       },

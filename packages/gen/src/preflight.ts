@@ -56,7 +56,9 @@ async function availableFiles(base: string, node: string, slot: string): Promise
 }
 
 async function main() {
-  const base = process.env.COMFYUI_URL ?? "http://127.0.0.1:8188";
+  const base = process.env.COMFYUI_API_URL ??
+    process.env.COMFYUI_URL ??
+    "http://127.0.0.1:8188";
   // Resolve relative to this file so the probe works from the repo root or from
   // packages/gen, matching how the other gen scripts get invoked.
   const dir = process.env.GEN_WORKFLOW_DIR
@@ -70,6 +72,18 @@ async function main() {
 
   const files = (await readdir(dir)).filter((f) => f.endsWith(".json"));
   const problems: Problem[] = [];
+  for (const [name, executable] of [
+    ["ffprobe", process.env.GEN_FFPROBE_BIN ?? "ffprobe"],
+    ["ffmpeg", process.env.GEN_FFMPEG_BIN ?? "ffmpeg"],
+  ] as const) {
+    const probe = spawnSync(executable, ["-version"], { stdio: "ignore" });
+    if (probe.error || probe.status !== 0) {
+      problems.push({
+        workflow: "(video verification)",
+        detail: `${name} executable is unavailable: ${executable}`,
+      });
+    }
+  }
   const cache = new Map<string, Set<string> | null>();
   let needsFp8Shim = false;
   let checked = 0;

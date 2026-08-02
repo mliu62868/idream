@@ -1784,6 +1784,163 @@ export const characterVoiceSystemDefaultResetResponseSchema = z
   })
   .strict();
 
+export const characterVoiceClipReclaimRequestSchema = z
+  .object({
+    requestId: adminIdSchema,
+    confirmation: z.string().trim().min(1),
+    reason: z.string().trim().min(3).max(2_000),
+  })
+  .strict()
+  .superRefine((request, context) => {
+    if (request.confirmation !== `RECLAIM VOICE ${request.requestId}`) {
+      context.addIssue({
+        code: "custom",
+        path: ["confirmation"],
+        message: "Confirmation must identify the durable Voice request",
+      });
+    }
+  });
+
+export const characterVoiceClipReclaimResponseSchema = z
+  .object({
+    requestId: adminIdSchema,
+    status: z.enum(["succeeded", "failed", "skipped"]),
+    attemptNo: z.number().int().positive(),
+    mediaAssetId: adminIdSchema.nullable(),
+    provider: z.string().trim().min(1).nullable(),
+    replayed: z.boolean(),
+  })
+  .strict();
+
+const characterMediaOperationSchema = (
+  modality: "image" | "video" | "voice",
+) => z
+  .object({
+    modality: z.literal(modality),
+    requestId: adminIdSchema.nullable(),
+    status: z.string().trim().min(1).nullable(),
+    attempt: z
+      .object({
+        id: adminIdSchema.nullable(),
+        number: z.number().int().positive(),
+        status: z.string().trim().min(1),
+        errorCode: z.string().trim().min(1).nullable(),
+        retryability: z
+          .enum(["retryable", "not_retryable", "operator_retry"])
+          .nullable(),
+        operatorGuidance: z.string().trim().min(1).nullable(),
+      })
+      .strict()
+      .nullable(),
+    provider: z
+      .object({
+        key: z.string().trim().min(1).nullable(),
+        requestId: z.string().trim().min(1).nullable(),
+      })
+      .strict()
+      .nullable(),
+    timing: z
+      .object({
+        requestedAt: adminIsoDateTimeSchema,
+        startedAt: adminIsoDateTimeSchema.nullable(),
+        finishedAt: adminIsoDateTimeSchema.nullable(),
+        latencyMs: z.number().int().nonnegative().nullable(),
+      })
+      .strict()
+      .nullable(),
+    costDreamcoins: z.number().int().nonnegative().nullable(),
+    output: z
+      .object({
+        mediaAssetId: adminIdSchema.nullable(),
+        availability: z.enum(["available", "deleted", "unavailable"]),
+        url: z.string().trim().min(1).nullable(),
+        createdAt: adminIsoDateTimeSchema.nullable(),
+        durationMs: z.number().int().nonnegative().nullable(),
+      })
+      .strict()
+      .nullable(),
+    recoverability: z
+      .object({
+        state: z.enum([
+          "unavailable",
+          "not_needed",
+          "retryable",
+          "operator_action",
+          "not_recoverable",
+        ]),
+        reason: z.string().trim().min(1).nullable(),
+        actionHref: z
+          .string()
+          .startsWith("/api/v2/admin/characters/")
+          .nullable()
+          .default(null),
+        actionConfirmation: z.string().trim().min(1).nullable().default(null),
+      })
+      .strict(),
+    studioHref: z.string().startsWith("/admin/characters/"),
+    operationsHref: z.string().startsWith("/admin/").nullable(),
+  })
+  .strict()
+  .superRefine((operation, context) => {
+    if (
+      (operation.recoverability.actionHref === null) !==
+        (operation.recoverability.actionConfirmation === null)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["recoverability", "actionHref"],
+        message: "Recovery action href and confirmation must be projected together",
+      });
+    }
+    if (
+      operation.recoverability.actionHref !== null &&
+      (operation.modality !== "voice" ||
+        operation.requestId === null ||
+        operation.recoverability.state !== "operator_action")
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["recoverability", "actionHref"],
+        message: "Only an actionable Voice recovery may expose a command href",
+      });
+    }
+    if (
+      operation.requestId === null &&
+      (
+        operation.status !== null ||
+        operation.attempt !== null ||
+        operation.provider !== null ||
+        operation.timing !== null ||
+        operation.costDreamcoins !== null ||
+        operation.output !== null ||
+        operation.operationsHref !== null ||
+        operation.recoverability.state !== "unavailable"
+      )
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["requestId"],
+        message: "Missing request evidence must fail closed as null/unavailable",
+      });
+    }
+  });
+
+// SPEC: 这是 image/video/voice 三套既有 authority 的只读运营投影，不拥有写入语义。
+// INTENT: 固定三行让运营可以比较最近一次请求；缺少证据时使用 null/unavailable，禁止猜测。
+export const characterMediaOperationsProjectionSchema = z
+  .object({
+    projectionVersion: z.literal(1),
+    asOf: adminIsoDateTimeSchema,
+    operations: z
+      .tuple([
+        characterMediaOperationSchema("image"),
+        characterMediaOperationSchema("video"),
+        characterMediaOperationSchema("voice"),
+      ])
+      .readonly(),
+  })
+  .strict();
+
 export const characterWorkspaceDetailSchema = z
   .object({
     character: z
@@ -1802,6 +1959,7 @@ export const characterWorkspaceDetailSchema = z
       .strict(),
     project: characterWorkspaceProjectSchema,
     journey: characterProductionJourneySchema,
+    mediaOperations: characterMediaOperationsProjectionSchema,
     visual: characterVisualWorkspaceSchema,
     voice: characterVoiceWorkspaceSchema,
     serving: characterServingSchema.nullable(),
@@ -1861,6 +2019,9 @@ export type CharacterPerformanceBackfillRequest = z.infer<typeof characterPerfor
 export type CharacterPerformanceReconciliation = z.infer<typeof characterPerformanceReconciliationSchema>;
 export type CharacterProjectDraftPatchRequest = z.infer<typeof characterProjectDraftPatchRequestSchema>;
 export type CharacterWorkspaceDetail = z.infer<typeof characterWorkspaceDetailSchema>;
+export type CharacterMediaOperationsProjection = z.infer<
+  typeof characterMediaOperationsProjectionSchema
+>;
 export type CharacterVoiceProfile = z.infer<typeof characterVoiceProfileSchema>;
 export type CharacterVoiceWorkspace = z.infer<typeof characterVoiceWorkspaceSchema>;
 export type FishAudioCatalogVoiceId = z.infer<typeof fishAudioCatalogVoiceIdSchema>;
@@ -1885,6 +2046,12 @@ export type CharacterVoiceCloneCreateResponse = z.infer<
 >;
 export type CharacterVoiceActivationRequest = z.infer<
   typeof characterVoiceActivationRequestSchema
+>;
+export type CharacterVoiceClipReclaimRequest = z.infer<
+  typeof characterVoiceClipReclaimRequestSchema
+>;
+export type CharacterVoiceClipReclaimResponse = z.infer<
+  typeof characterVoiceClipReclaimResponseSchema
 >;
 export type CharacterVoiceActivationResponse = z.infer<
   typeof characterVoiceActivationResponseSchema

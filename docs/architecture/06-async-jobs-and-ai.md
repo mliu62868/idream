@@ -1,8 +1,8 @@
 # 06 · 异步任务与 AI 集成
 
-更新日期：2026-07-31
+更新日期：2026-08-01
 
-> 2026-07-31 authority：Generation 的业务真相是 Request → Attempt → TransportExecution → Artifact → Delivery；BullMQ job 只承载 transport，不是业务 outcome authority。图片/视频 provider invocation 只存在于 `packages/gen`，Main 只派发 Attempt、接收 immutable completion manifest 并结算。Main↔Chat 业务事件只走 Outbox → HTTP durable ingest → Inbox ACK。
+> 2026-08-01 authority：Generation 的业务真相是 Request → Attempt → TransportExecution → Artifact → Delivery；BullMQ job 只承载 transport，不是业务 outcome authority。图片/视频 provider invocation 只存在于 `packages/gen`，Main 以同一事务创建 Attempt + dispatch Outbox，接收 immutable terminal record 并结算。Main↔Chat 业务事件只走 Outbox → HTTP durable ingest → Inbox ACK。
 
 本文件落地 Redis + BullMQ 的生成 transport、服务内任务队列、HTTP durable event exchange 与 ADR-6（AI provider 抽象），以及生成/聊天的异步流水线与 dreamcoin 预留结算。Chat Service 拥有 chat domain DB 和内部队列；Image/Video 使用 Main 到 Gen 的任务队列，业务事件不以共享 Redis 作为跨服务接收凭证。队列清单对齐 `BackendFeatureSpec §7` 与 `docs/research/SERVICE_INTEGRATION.md`。
 
@@ -50,9 +50,44 @@ Generation 额外遵循：
 
 - 每次真实 provider invocation 前由 Gen 向 Main 的内部 HTTP seam 报告 `GenerationTransportExecution`；Main 持久化该证据。同一业务 Attempt 内 transport retry 只递增 `transportAttemptNo`。
 - 自动 transport retry 只允许 provider 声明 deterministic idempotency；ambiguous 且不可幂等的结果终止为 `unknown/non-replayable`。
-- gen 先持久化带 checksum、artifact、provider 与 cost 的 immutable completion manifest；main durable ACK 失败时只重投 manifest，不再次调用 provider。
+- Main 在一个事务中创建业务 Attempt 与 dispatch Outbox；Outbox 重放使用 attempt 级确定性 BullMQ job id。
+- 每个 immutable Attempt 独占 `gen/{requestId}/attempts/{attemptId}/` 输出前缀；图片不能把旧 Attempt 的已存在对象当作本次产物，视频不能覆盖仍被旧 terminal evidence 引用的对象。
+- gen 先持久化带 checksum、outcome、artifact、provider 与 cost 的 immutable terminal record，再按 Attempt key 投递 Main-owned durable relay；Main 短时不可用只重试 relay row，relay admission 失败时只重投 record，不再次调用 provider。
+- terminal record 覆盖 `succeeded / failed / blocked / unknown`；`blocked` 不压成 `failed`，不可重放的 ambiguous 视频结果保持 `unknown`。
 - Request cancelled 后的晚到 artifact 只能 archive/suppress，不 delivery、不改变 cancelled、不重复 capture/refund。
 - DreamcoinLedger 是 settlement authority；execution status 不承载 refunded 语义。
+
+部署把 `attemptId / attemptNo` 设为必填前，必须先执行
+`bun run --cwd packages/main check:generation-cutover`。该门禁只读检查活动 Request、immutable
+dispatch Outbox，以及 Redis 中 `ai.image.generate`、`ai.video.generate`、
+`app.generation.terminal.ingest`、`app.ai.finalize` 的
+实际 in-flight Bull row 与所有 `pending / dispatched` terminal Outbox；每一行都必须绑定最新
+Attempt、精确 pins、attempt 级 dedupe、确定性 Bull job id 与对应 immutable Outbox。任何 legacy
+payload、缺失 Attempt/dispatch/terminal Outbox 都会以非零退出，门禁不会删除或重派队列。
+活动 Request 的最新 queued/running Attempt 一旦已有 `terminalRecordRef`，还必须同时存在内容精确的
+terminal Outbox 与非终态 exact finalize Bull row；Outbox 已 delivered 但 Bull row 缺失、failed 或
+completed 属于 stranded finalization，必须先显式对账，不能因 pending Outbox 已归零而放行。合法
+`unknown` Attempt 是例外：Request 会保持 active 等待运营对账；门禁改为验证 delivered exact Outbox、
+`generation.attempt.unknown.v1` terminal event 与 `provider_outcome_unknown` Request event，并允许 finalize
+Bull row 已 completed 或按保留策略移除。
+
+`pm2:start:production`、`pm2:restart:production` 与 `pm2:reload:production` 的固定切换顺序是：
+
+1. 在 Main、Gen 与 finalizer 仍在线时，全局 pause image/video/terminal-ingest/finalize 四条 BullMQ queue；
+2. 等待所有 active handler 完成。Gen 可继续写 terminal record 并投递 durable relay；Main 将
+   `pending / dispatched` terminal Outbox 投递到已经暂停的 finalize queue；
+3. 只有四条 queue 都已确认 paused、active row 为 0、terminal Outbox 为 0 后，才先停止
+   `main-web / admin-web / chat / main-event-consumer / admin-command-worker`，再停止
+   `gen-image / gen-video / gen-finalizer`，其中 finalizer 最后；
+4. 以 `pm2 jlist` 确认非 voice 进程为 `stopped / errored / absent`，执行只读 authority gate；
+5. PM2 action 返回 0 后仍保持 queue paused；有限时轮询 `pm2 jlist`，要求 ecosystem
+   的期望实例数全部 `online`，再验证 Main/Admin HTTP、Chat `/healthz`、Fish `/health`
+   与 Gen `preflight`（ComfyUI model refs + `ffprobe`/`ffmpeg`）；全部通过后才显式
+   resume 四条 queue。
+
+pause/drain、stop、静止确认、门禁、PM2 action、运行态 readiness 或 resume 任一步失败，都不会开放生成队列；resume
+部分失败还会 best-effort 把四条 queue 全部重新 pause。发布方应先 drain 或显式对账异常 Request，
+worker 不会从可变 Job 字段猜测或补造执行身份。
 
 ## 4. 队列清单与 handler
 
@@ -63,11 +98,11 @@ Generation 额外遵循：
 | `chat.memory.extract` | Chat worker | 从已通过审核的消息抽取长期记忆候选并写 Chat DB | assistantMessageId |
 | `chat.memory.rebuild` | Chat reconciler / 删除补偿 | 从 Chat 权威 memory/message 状态重建运行时 memory index | userId+characterId+version |
 | `chat.outbox.deliver` | Chat DB outbox | HTTP 投递 Main durable ingest；Main receipt commit ACK 后才标 delivered | eventId |
-| `ai.image.generate` | Main generation dispatcher | Gen Image backend → BlobStore → immutable manifest → finalize | attemptId |
-| `ai.video.generate` | Main generation dispatcher | Gen Video backend → BlobStore → immutable manifest → finalize | attemptId |
-| `app.ai.finalize` | Gen image/video worker | Main 持久 ingest manifest → Artifact/Delivery/settlement；ACK 中断只重投 manifest | attemptId |
+| `ai.image.generate` | Main generation/Character Preview dispatch Outbox | Gen Image backend → BlobStore → immutable terminal record → durable relay admission | attemptId |
+| `ai.video.generate` | Main generation dispatch Outbox | Gen Video backend → BlobStore → immutable terminal record → durable relay admission | attemptId |
+| `app.generation.terminal.ingest` | Gen Image/Video | 独立重试 terminal ingest；gen-finalizer 调用 Main idempotent ingest authority | attemptId |
+| `app.ai.finalize` | Main terminal-record Outbox | Main 投影 terminal record → Artifact/Delivery/settlement | attemptId |
 | `moderation.output` | model workers | 释放或拦截生成产物/消息 | target |
-| `character.preview` | creator API | 生成草稿预览图 | draftId+rev |
 | `age.verification.webhook` | 验证 provider | 幂等更新 `age_verifications` 状态 | providerEventId |
 | `billing.webhook` | 支付 provider | 同步订阅/权益/ledger | providerEventId |
 | `reward.ledger` | referral/redeem/signup | 恰好一次发奖（dreamcoin/entitlement） | sourceId |
@@ -126,22 +161,36 @@ POST /generation/jobs
   │  2) Premium 门: requireEntitlement(custom_prompt / video_gen ...)
   │  3) 估价 cost = price(mode, count, model)
   │  4) dreamcoin RESERVE（事务: 校验余额 >= cost，写 ledger delta=-cost reason=generation_spend(reserved)）
-  │  5) 落 Request + Attempt + dispatch intent，按 attemptId 入 Gen queue
+  │  5) 同事务落 Request + Attempt + dispatch Outbox；worker 按 attemptId 幂等入 Gen queue
   ▼ 返回 202 {jobId/requestId/attemptId}
 Gen worker:
   1) claim transport work，并向 Main 记录 running TransportExecution
-  2) moderation.input(prompt+controls)；阻断时产出失败 manifest
+  2) moderation.input(prompt+controls)；阻断时产出 blocked terminal record
   3) GenBackend.generate(...)；只在明确可重试且 provider 支持确定幂等时重试
-  4) moderation.output + BlobStore.putPrivate(bytes)
-  5) 先持久化 immutable completion manifest，再投递 `app.ai.finalize`
+  4) moderation.output + artifact verification + BlobStore.putPrivate(bytes)；生产 LTX
+     视频必须先由 ffprobe 读取实测 envelope、ffmpeg 完整解码，并匹配
+     768×1152 / 4s / 25fps / audio
+  5) 先持久化 immutable terminal record，再以 Attempt key 投递到 Main-owned durable relay
 Main finalizer:
-  1) 按 attemptId + manifest hash durable ingest；相同 replay，冲突 fail closed
+  1) 消费独立 terminal relay，按 attemptId + terminal-record hash durable ingest；相同 replay，冲突 fail closed
   2) 同事务写 TransportExecution/Artifact/Delivery/finalize outbox
   3) 通过 `postDreamcoinEntry` SETTLE/REFUND；同一业务 intent 不重复扣退
-  4) ACK 中断时 Gen 回读并重投同一 manifest，不再调用 provider
+  4) Main 短时不可用只重试 relay row；relay admission 中断时 Gen 回读并重投同一 terminal record，不再调用 provider
+  5) exhausted relay/finalize 按 cursor 分页逐行校验；毒行隔离，合法 failed row 可在 paused/cold-start 后重驱动
+  6) exhausted source 只有精确 Blob terminal record 才能重驱动；无 Blob 或身份不匹配时 fail closed
 ```
 
 价格表（`generation_jobs.costDreamcoins`）由 `lib/pricing.ts` 单点定义（SSoT）：按 mode × model × count × orientation。失败原因码与可重试性写入 `errorCode`（GN-11）。
+
+### 6.1 Voice clip 请求与用量权威
+
+Voice 播放是同步用户路径，但不能把 `MediaAsset` 当请求或计量 authority：
+
+- `VoiceClipRequest(userId, messageId)` 是单飞与重放边界；持久 lease 防止刷新、并发点击或网络丢响应导致重复调用 TTS provider。
+- provider 调用携带稳定 `requestId / attemptNo / idempotencyKey`；失败或 lease 过期后才 append 下一 attempt。
+- `VoiceUsageFact(requestId, attemptNo)` 是 append-only 用量与成本事实；分钟余额只从该表聚合，删除或替换音频素材不会返还已消费分钟。
+- `prewarm` 与 `play` 共享同一合成请求指纹：预热成功后点击播放直接重放同一素材；预热不得自动花 Dreamcoin。
+- `MediaAsset` 只承载可播放产物；审核、删除与缓存升级不能改写历史 usage fact。
 
 ## 7. 聊天流水线（流式）
 
@@ -194,3 +243,4 @@ worker chat.generate:
 - 死信留证：failed job 的 `failedReason` + payload 由 BullMQ 保留，便于人工重放（admin 提供 requeue）。
 - 超时：worker handler 各自设软超时；provider 调用必须有超时，防止 worker 卡死。
 - 跨服务投递：main ↔ chat 经 sender Outbox → HTTP durable ingest → receiver Inbox ACK；BullMQ 只唤醒 receiver 已持久化的 receipt，不构成跨服务交付成功。
+- 陈旧 generation 只负责恢复精确 dispatch 或隔离为 `unknown`：reconciler 在同一事务锁定并重读 Job、Attempt、Transport 与 terminal evidence；没有 provider invocation 证据时重投原 immutable Outbox，有模糊执行证据时保持资金预留并等待 operator 对账，不凭 Job 超时自动退款。

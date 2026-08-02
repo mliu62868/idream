@@ -21,6 +21,7 @@ const contractClasses = {
     "adminGrantBundleWriteSchema",
     "adminGrantBundleRevokeSchema",
     "generationRequestCancelSchema",
+    "unknownGenerationReconciliationCommandSchema",
   ],
   listResponse: [
     "adminGrantBundleListSchema",
@@ -44,6 +45,7 @@ const contractClasses = {
     "incidentSplitResultSchema",
     "incidentTriageResultSchema",
     "savedViewDeleteSchema",
+    "unknownGenerationReconciliationResultSchema",
   ],
 } as const;
 

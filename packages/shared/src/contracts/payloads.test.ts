@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   chatImageRequestedPayloadSchema,
+  imageGeneratePayloadSchema,
   videoGeneratePayloadSchema,
 } from "./payloads";
 
@@ -55,6 +56,9 @@ describe("video generation reference authority", () => {
       kind: "video",
       requestId: "request-video-1",
       generationJobId: "job-video-1",
+      attemptId: "attempt-video-1",
+      attemptNo: 1,
+      provider: "comfyui",
       userId: "user-1",
       characterId: "character-1",
       prompt: "She looks into the camera and waves.",
@@ -80,5 +84,52 @@ describe("video generation reference authority", () => {
         role: "source_image",
       }),
     ]);
+  });
+});
+
+describe("generation Attempt authority", () => {
+  it.each([
+    {
+      schema: imageGeneratePayloadSchema,
+      payload: {
+        version: 1,
+        kind: "image",
+        requestId: "request-image-1",
+        generationJobId: "job-image-1",
+        provider: "mock",
+        userId: "user-1",
+        characterId: null,
+        prompt: "portrait",
+        negativePrompt: null,
+        controls: {},
+        presetIds: [],
+        orientation: "portrait",
+        count: 1,
+        seed: "seed-image-1",
+        model: "mock-image",
+        outputPrefix: "gen/job-image-1/",
+      },
+    },
+    {
+      schema: videoGeneratePayloadSchema,
+      payload: {
+        version: 1,
+        kind: "video",
+        requestId: "request-video-2",
+        generationJobId: "job-video-2",
+        provider: "mock",
+        userId: "user-1",
+        characterId: null,
+        prompt: "wave",
+        negativePrompt: null,
+        controls: {},
+        seconds: 4,
+        seed: "seed-video-2",
+        model: "mock-video",
+        outputPrefix: "gen/job-video-2/",
+      },
+    },
+  ])("rejects generation payloads without reserved Attempt identity", ({ schema, payload }) => {
+    expect(schema.safeParse(payload).success).toBe(false);
   });
 });

@@ -10,25 +10,21 @@ import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
-import type {
-  CharacterPreviewGeneratePayload,
-  ChatImageRequestedPayload,
-} from "@/server/ai/schemas";
-import {
-  recordGenerationAttemptEvent,
-} from "@/server/ai/generation-attempt-events";
+import type { ChatImageRequestedPayload } from "@/server/ai/schemas";
 import {
   assertPinnedLegacyCharacterGenerationAuthority,
-  enqueueGenerationAttempt,
   legacyCharacterGenerationAuthorityFromControls,
   loadLockedLiveEditorialLegacyGenerationAuthority,
   type LegacyCharacterGenerationAuthority,
 } from "@/server/modules/generation/attempt-dispatch";
 import {
+  dispatchGenerationAttemptOutbox,
+  reserveInitialGenerationAttempt as reserveInitialGenerationAttemptAuthority,
+} from "@/server/modules/generation/generation-attempt-authority";
+import {
   isProductionLtxVideoProfile,
   PRODUCTION_LTX_VIDEO_PROFILE,
 } from "@/server/modules/generation/production-video-profile";
-import { transitionGenerationRequest } from "@/server/ai/generation-request-transition";
 import { dispatchAdmin } from "@/server/modules/admin/service";
 import { generationWorkflowDescriptor } from "@/server/modules/admin/generation-catalog";
 import {
@@ -56,9 +52,7 @@ import {
 } from "@/server/modules/admin-v2/characters/generation-authority-lock";
 import { invalidateCharacterDraftAssetPack } from "@/server/modules/admin-v2/characters/draft-asset-authority";
 import { proxyChatRequest } from "@/server/bff/chat-proxy";
-import { jobQueue } from "@/server/jobs/queue";
 import {
-  GEN_QUEUES,
   MAIN_TO_CHAT_EVENTS,
   METRIC_PRODUCT_EVENTS,
   characterExposureRecordedV2Schema,
@@ -128,7 +122,6 @@ import { billingPeriodEnd } from "@/lib/billing-period";
 import { isPublicRouteDiscoverable } from "@/lib/public-route-authority";
 import { activeAnnouncements, readAnnouncements } from "@/server/announcements/store";
 import { logger } from "@/server/lib/logger";
-import { resolveCharacterVoiceAuthority } from "@/server/modules/voice-defaults";
 import {
   redeemCodeDreamcoins,
   redeemCodeHashCandidates,
@@ -154,6 +147,7 @@ import {
   parseCommunityCampaignAuthoredCopy,
   resolveCommunityCampaignPlacements,
 } from "./community-campaigns";
+import { createVoiceClip as createDurableVoiceClip } from "./voice-clip";
 import {
   FEATURED_SETTING_KEY,
   parseFeaturedSetting,
@@ -631,7 +625,12 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
     if (id === "config" && !action && method === "GET") return generationConfig(request);
     if (id === "quote" && !action && method === "POST") return generationQuote(request);
     if (id === "jobs" && !action && method === "POST") return createGenerationJob(request);
-    if (id === "voice" && !action && method === "POST") return createVoiceClip(request);
+    if (id === "voice" && !action && method === "POST") {
+      return createDurableVoiceClip(request, {
+        entitlementMap,
+        readableCharacter,
+      });
+    }
     if (id === "jobs" && !action && method === "GET") return listGenerationJobs(request);
     if (id === "jobs" && action && !child && method === "GET") return getGenerationJob(request, action);
     if (
@@ -1647,50 +1646,88 @@ async function previewDraft(request: Request, id: string) {
     .filter((part): part is string => Boolean(part))
     .join(". ");
 
-  // Async: the generation service owns provider execution and blob persistence;
-  // main only creates and settles the authoritative preview job.
-  const job = await prisma.characterPreviewJob.create({
-    data: {
-      draftId: id,
-      status: "queued",
-      provider: "generation_service",
-    },
-  });
-  await jobQueue.enqueue({
-    queue: GEN_QUEUES.characterPreview,
-    payload: toInputJson({
-      version: 1,
-      kind: "character.preview",
-      requestId: `character-preview:${job.id}`,
-      previewJobId: job.id,
-      draftId: id,
-      userId: user.id,
-      prompt,
-      negativePrompt: recipe.negativeBase,
-      controls: {
-        width: dimensions.width,
-        height: dimensions.height,
-        workflowKey: profile.workflowKey,
+  // INVARIANT: Preview business state, Generation Request, first Attempt and
+  // dispatch Outbox either all exist or none do. Gen consumes the same formal
+  // image envelope as every other image use case.
+  const reservation = await prisma.$transaction(async (tx) => {
+    const previewJob = await tx.characterPreviewJob.create({
+      data: {
+        draftId: id,
+        status: "queued",
+        provider: profile.runner,
       },
-      orientation,
-      seed: `${id}:${job.id}`,
-      model: profile.pipelineModel,
-      outputPrefix: `preview/${job.id}/`,
-    } satisfies CharacterPreviewGeneratePayload),
-    dedupeKey: idempotencyKeys.characterPreview(job.id),
+    });
+    const generationJob = await tx.generationJob.create({
+      data: {
+        userId: user.id,
+        mode: "image",
+        prompt,
+        negativePrompt: recipe.negativeBase,
+        controls: toInputJson(pruneUndefined({
+          width: dimensions.width,
+          height: dimensions.height,
+          orientation,
+          workflowKey: profile.workflowKey ?? undefined,
+        })),
+        presetIds: toInputJson([]),
+        model: profile.workflowKey ?? profile.pipelineModel,
+        profileId: profile.profileKey,
+        profileVersion: profile.version,
+        recipeId: recipe.recipeKey,
+        recipeVersion: recipe.version,
+        orientation,
+        outputCount: 1,
+        costDreamcoins: 0,
+        provider: profile.runner,
+        sourceType: "character_preview",
+        sourceId: previewJob.id,
+        sourceMeta: toInputJson({
+          draftId: id,
+          previewJobId: previewJob.id,
+        }),
+      },
+    });
+    await appendGenerationEvent(
+      tx,
+      generationJob.id,
+      "created",
+      "Character Preview Generation Request accepted",
+      { previewJobId: previewJob.id, draftId: id },
+    );
+    await appendGenerationEvent(
+      tx,
+      generationJob.id,
+      "queued",
+      "Character Preview Generation Request queued",
+      {},
+    );
+    const attempt = await reserveInitialGenerationAttempt(tx, generationJob);
+    return {
+      previewJob,
+      outboxId: attempt.outbox.id,
+    };
   });
-  return ok({ previewJob: job });
+  await dispatchGenerationAttemptOutbox(prisma, {
+    outboxIds: [reservation.outboxId],
+  });
+  return ok({ previewJob: reservation.previewJob });
 }
 
-// GET character-drafts/:id/preview — poll target for the async preview job.
-// Returns the latest preview job for the draft, plus the asset once completed.
+// GET character-drafts/:id/preview — poll one async preview by durable identity.
+// Omitting previewJobId preserves the operator-facing "latest preview" read.
 async function previewStatus(request: Request, id: string) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
   requireAgeGate(ctx);
   const draft = await assertDraftOwner(id, user.id);
+  const requestedPreviewJobId = new URL(request.url).searchParams
+    .get("previewJobId")
+    ?.trim();
   const job = await prisma.characterPreviewJob.findFirst({
-    where: { draftId: draft.id },
+    where: {
+      draftId: draft.id,
+      ...(requestedPreviewJobId ? { id: requestedPreviewJobId } : {}),
+    },
     orderBy: { createdAt: "desc" },
   });
   if (!job) return ok({ previewJob: null, asset: null });
@@ -2209,6 +2246,7 @@ async function createGenerationJob(request: Request) {
     idempotencyKey,
     requestFingerprint,
   });
+  if (existing) await wakeQueuedGenerationDispatch(existing);
   const job = existing ?? await (async () => {
     const source = await resolveFeedRemixGenerationSource(
       user.id,
@@ -3104,6 +3142,44 @@ function generationPricingFingerprint(
     .digest("hex");
 }
 
+async function reserveInitialGenerationAttempt(
+  tx: Prisma.TransactionClient,
+  job: {
+    readonly id: string;
+    readonly provider: string | null;
+    readonly profileId: string | null;
+    readonly profileVersion: number | null;
+    readonly model: string | null;
+    readonly controls: Prisma.JsonValue;
+  },
+) {
+  return reserveInitialGenerationAttemptAuthority(tx, {
+    requestId: job.id,
+    dispatch: {
+      outboxId: `generation_initial_${job.id}`,
+      eventType: "generation.retry.dispatch.v2",
+    },
+  });
+}
+
+async function wakeQueuedGenerationDispatch(job: {
+  readonly id: string;
+  readonly status: string;
+  readonly provider: string | null;
+  readonly profileId: string | null;
+  readonly profileVersion: number | null;
+  readonly model: string | null;
+  readonly controls: Prisma.JsonValue;
+}) {
+  if (job.status !== "queued") return;
+  const reservation = await prisma.$transaction((tx) =>
+    reserveInitialGenerationAttempt(tx, job),
+  );
+  await dispatchGenerationAttemptOutbox(prisma, {
+    outboxIds: [reservation.outbox.id],
+  });
+}
+
 async function createGenerationJobForUser(
   userId: string,
   body: GenerationCreateBody,
@@ -3117,7 +3193,10 @@ async function createGenerationJobForUser(
   } = {},
 ) {
   const preexisting = await findExistingGenerationJob(userId, options);
-  if (preexisting) return preexisting;
+  if (preexisting) {
+    await wakeQueuedGenerationDispatch(preexisting);
+    return preexisting;
+  }
   if (
     (
       options.profileSelectionAuthority === "public_generator" ||
@@ -3302,7 +3381,13 @@ async function createGenerationJobForUser(
           existing,
           options.requestFingerprint,
         );
-        return existing;
+        const reservation = existing.status === "queued"
+          ? await reserveInitialGenerationAttempt(tx, existing)
+          : null;
+        return {
+          job: existing,
+          outboxId: reservation?.outbox.id ?? null,
+        };
       }
     }
     if (character) {
@@ -3530,32 +3615,30 @@ async function createGenerationJobForUser(
       amount: cost,
     });
     await appendGenerationEvent(tx, created.id, "queued", "Generation job queued", {});
-    return created;
+    const reservation = await reserveInitialGenerationAttempt(tx, created);
+    return { job: created, outboxId: reservation.outbox.id };
   });
 
-  let job: Awaited<ReturnType<typeof runCreateTx>>;
+  let reservation: Awaited<ReturnType<typeof runCreateTx>>;
   try {
-    job = await runCreateTx();
+    reservation = await runCreateTx();
   } catch (error) {
     if (isUniqueConstraintError(error)) {
       const existing = await findExistingGenerationJob(userId, options);
-      if (existing) return existing;
+      if (existing) {
+        await wakeQueuedGenerationDispatch(existing);
+        return existing;
+      }
     }
     throw error;
   }
+  const job = reservation.job;
 
   if (job.status !== "queued") return job;
-
-  try {
-    await enqueueGenerationJob(job);
-  } catch (error) {
-    await failQueuedGeneration(job, "queue_enqueue_failed", error);
-    logger.error(
-      { error, generationJobId: job.id },
-      "generation job enqueue failed",
-    );
-    if (error instanceof AppError) throw error;
-    throw Errors.internal("Generation queue unavailable", { jobId: job.id });
+  if (reservation.outboxId) {
+    await dispatchGenerationAttemptOutbox(prisma, {
+      outboxIds: [reservation.outboxId],
+    });
   }
   return job;
 }
@@ -4074,271 +4157,6 @@ function clampPrompt(value: string, max: number) {
   return value.length <= max ? value : `${value.slice(0, max - 3).trimEnd()}...`;
 }
 
-// SPEC: Cached TTS for one assistant chat turn. The client prewarms each completed
-//       reply and the play button reuses the same endpoint and MediaAsset.
-// INTENT: synchronous at this seam, but prewarming runs off the reply-rendering
-//         path so text is never delayed by speech generation.
-// INVARIANTS: prewarm uses included minutes only and never spends Dreamcoins
-//         without a play action; character must be age>=18.
-// EXAMPLE: POST /api/v1/generation/voice {characterId, messageId, text, intent}
-//          → {assetId, contentUrl, durationMs}
-const voiceClipSchema = z.object({
-  characterId: z.string().min(1),
-  messageId: z.string().min(1),
-  sessionId: z.string().min(1).optional(),
-  text: z.string().trim().min(1).max(2_000),
-  intent: z.enum(["play", "prewarm"]).default("play"),
-});
-
-const voiceClipCacheVersion = 6;
-
-async function createVoiceClip(request: Request) {
-  const ctx = await getAuthCtx(request);
-  const user = requireUser(ctx);
-  requireAgeGate(ctx);
-  requireAgeVerified(ctx);
-  const body = voiceClipSchema.parse(await jsonBody(request));
-  const prewarming = body.intent === "prewarm";
-
-  // Release gate: a single flag fronts all voice traffic for controlled rollout /
-  // kill-switch, mirroring video_gen.
-  if (!(await featureFlagEnabled("voice_gen"))) {
-    if (prewarming) return ok(voicePrewarmSkipped(body.messageId, "disabled"));
-    throw Errors.forbidden("Voice generation is disabled");
-  }
-
-  const entitlements = await entitlementMap(user.id);
-  if (entitlements.voice_enabled !== true) {
-    if (prewarming) return ok(voicePrewarmSkipped(body.messageId, "not_entitled"));
-    throw Errors.paymentRequired("Voice playback requires a plan with voice enabled", {
-      entitlement: "voice_enabled",
-    });
-  }
-
-  // Cache: a clip already synthesized for this message replays for free.
-  const cacheWhere: Prisma.MediaAssetWhereInput = {
-    ownerId: user.id,
-    type: "voice",
-    deletedAt: null,
-    metadata: { path: ["messageId"], equals: body.messageId },
-  };
-  const cachedAssets = await prisma.mediaAsset.findMany({
-    where: cacheWhere,
-    orderBy: { createdAt: "desc" },
-  });
-  const cached = cachedAssets.find(isCurrentVoiceClip);
-  if (cached) return ok(voiceClipResponse(cached));
-  const hasStaleCachedClip = cachedAssets.length > 0;
-
-  const character = await readableCharacter(body.characterId, user.id);
-  if (character.age < 18) {
-    throw Errors.badRequest("Character is not eligible for voice", { policyCode: "UNDERAGE" });
-  }
-  const tone = characterVoiceTone(character);
-
-  const overflowCost = await voiceClipCost();
-  const remainingBeforeSynthesis = await voiceMinutesRemainingMs(
-    user.id,
-    entitlements,
-  );
-  if (
-    prewarming &&
-    !hasStaleCachedClip &&
-    remainingBeforeSynthesis <= 0
-  ) {
-    return ok(voicePrewarmSkipped(body.messageId, "allowance_exhausted"));
-  }
-  // Fast-fail only when the allowance is already exhausted. The authoritative
-  // metering decision happens after synthesis because duration determines coverage.
-  if (
-    !prewarming &&
-    !hasStaleCachedClip &&
-    overflowCost > 0 &&
-    remainingBeforeSynthesis <= 0 &&
-    (await dreamcoinBalance(user.id)) < overflowCost
-  ) {
-    throw Errors.paymentRequired("Insufficient dreamcoins", {
-      cost: overflowCost,
-      required: overflowCost,
-    });
-  }
-
-  const voiceAuthority = await resolveCharacterVoiceAuthority({
-    characterId: character.id,
-    voiceId: character.voiceId,
-    gender: character.gender,
-  });
-  const result = await providers.voice.synthesize({
-    text: body.text,
-    voiceId: voiceAuthority.voiceId,
-    tone,
-    delivery: voiceAuthority.delivery,
-  });
-  if (!result.ok) throw Errors.internal("Voice synthesis failed", result.error);
-
-  const mediaId = `media_${cryptoRandomId("voice")}`;
-  // Debit + persist atomically under the per-user ledger lock. The lock also makes
-  // the cache re-check race-free, so a concurrent double-click can neither create a
-  // duplicate clip nor double-charge; a create failure rolls the charge back.
-  let asset: Awaited<ReturnType<typeof prisma.mediaAsset.create>> | null = null;
-  try {
-    asset = await prisma.$transaction(async (tx) => {
-      await lockUserLedger(tx, user.id);
-      const racedAssets = await tx.mediaAsset.findMany({
-        where: cacheWhere,
-        orderBy: { createdAt: "desc" },
-      });
-      const raced = racedAssets.find(isCurrentVoiceClip);
-      if (raced) return raced;
-      const staleAssetIds = racedAssets.map((existingAsset) => existingAsset.id);
-      const durationMs = Math.max(0, result.data.durationMs);
-      const remainingMs = await voiceMinutesRemainingMs(user.id, entitlements, tx);
-      const cost = staleAssetIds.length > 0 || remainingMs >= durationMs ? 0 : overflowCost;
-      if (prewarming && cost > 0) return null;
-      if (staleAssetIds.length > 0) {
-        await tx.mediaAsset.updateMany({
-          where: { id: { in: staleAssetIds } },
-          data: { deletedAt: new Date() },
-        });
-      }
-      if (cost > 0) {
-        const balance = await dreamcoinBalance(user.id, tx);
-        if (balance < cost) {
-          throw Errors.paymentRequired("Insufficient dreamcoins", { balance, cost, required: cost });
-        }
-        await postDreamcoinEntry(tx, {
-          kind: "generation_spend",
-          userId: user.id,
-          amount: cost,
-          sourceId: mediaId,
-          idempotencyKey: `voice:${body.messageId}:spend`,
-        });
-      }
-      return tx.mediaAsset.create({
-        data: {
-          id: mediaId,
-          ownerId: user.id,
-          characterId: character.id,
-          type: "voice",
-          url: `/api/v1/media/${mediaId}/content`,
-          storageKey: result.data.key,
-          contentType: voiceContentType(result.data.key),
-          providerAssetId: result.data.key,
-          prompt: body.text.slice(0, 500),
-          visibility: "private",
-          safetyStatus: "passed",
-          metadata: toInputJson({
-            cacheVersion: voiceClipCacheVersion,
-            messageId: body.messageId,
-            sessionId: body.sessionId ?? null,
-            voiceId: voiceAuthority.voiceId,
-            voiceAuthority: voiceAuthority.source,
-            systemVoiceSettingVersion: voiceAuthority.settingVersion,
-            tone,
-            delivery: voiceAuthority.delivery,
-            durationMs,
-            providerKey: result.data.key,
-            costDreamcoins: cost,
-            generationIntent: prewarming ? "automatic" : "requested",
-            replacedAssetIds: staleAssetIds,
-          }),
-        },
-      });
-    });
-  } catch (cause) {
-    await providers.blob.delete({ key: result.data.key });
-    throw cause;
-  }
-
-  if (!asset) {
-    await providers.blob.delete({ key: result.data.key });
-    return ok(voicePrewarmSkipped(body.messageId, "allowance_exhausted"));
-  }
-  if (asset.id !== mediaId) {
-    await providers.blob.delete({ key: result.data.key });
-  }
-
-  // 201 when we created the clip; 200 when a concurrent request beat us to it.
-  return ok(voiceClipResponse(asset), { status: asset.id === mediaId ? 201 : 200 });
-}
-
-// Remaining voice milliseconds in the user's rolling 30-day window. The plan grants
-// a `voice_minutes` allowance; consumed time is the sum of prior clip durations.
-async function voiceMinutesRemainingMs(
-  userId: string,
-  entitlements: Record<string, Prisma.JsonValue>,
-  db: Prisma.TransactionClient | typeof prisma = prisma,
-) {
-  const allowanceMinutes =
-    typeof entitlements.voice_minutes === "number" ? entitlements.voice_minutes : 0;
-  if (allowanceMinutes <= 0) return 0;
-  const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-  const clips = await db.mediaAsset.findMany({
-    where: { ownerId: userId, type: "voice", deletedAt: null, createdAt: { gte: since } },
-    select: { metadata: true },
-  });
-  const consumedMs = clips.reduce((sum, clip) => sum + voiceDurationMs(clip.metadata), 0);
-  return Math.max(0, allowanceMinutes * 60_000 - consumedMs);
-}
-
-function voiceDurationMs(metadata: Prisma.JsonValue) {
-  const record = jsonRecord(metadata);
-  return typeof record.durationMs === "number" ? record.durationMs : 0;
-}
-
-function isCurrentVoiceClip(asset: { metadata: Prisma.JsonValue }) {
-  const record = jsonRecord(asset.metadata);
-  return record.cacheVersion === voiceClipCacheVersion;
-}
-
-function voiceContentType(key: string) {
-  const ext = key.split(".").pop()?.toLowerCase();
-  const byExt: Record<string, string> = {
-    mp3: "audio/mpeg",
-    wav: "audio/wav",
-    ogg: "audio/ogg",
-    flac: "audio/flac",
-    webm: "audio/webm",
-  };
-  return (ext && byExt[ext]) ?? "audio/mpeg";
-}
-
-// Character-level default delivery. Per-message emotion can later override this.
-function characterVoiceTone(character: {
-  name: string;
-  style: string;
-  relationship: string | null;
-}) {
-  const relationship = character.relationship?.trim();
-  const persona = relationship ? `the user's ${relationship}` : "a close companion";
-  return `Speak as ${character.name}, ${persona}. Warm, intimate, expressive ${character.style} delivery.`;
-}
-
-async function voiceClipCost() {
-  return generationCostDreamcoins("voice", 1, 1);
-}
-
-function voiceClipResponse(asset: { id: string; url: string; metadata: Prisma.JsonValue }) {
-  const metadata = jsonRecord(asset.metadata);
-  return {
-    assetId: asset.id,
-    contentUrl: asset.url,
-    durationMs: typeof metadata.durationMs === "number" ? metadata.durationMs : 0,
-    messageId: typeof metadata.messageId === "string" ? metadata.messageId : null,
-  };
-}
-
-function voicePrewarmSkipped(
-  messageId: string,
-  reason: "allowance_exhausted" | "disabled" | "not_entitled",
-) {
-  return {
-    messageId,
-    prewarmed: false as const,
-    reason,
-  };
-}
-
 async function listGenerationJobs(request: Request) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
@@ -4678,6 +4496,7 @@ async function retryGenerationJob(request: Request, id: string) {
       where: { id: replay.id },
       include: generationJobInclude(),
     });
+    await wakeQueuedGenerationDispatch(existing);
     return ok(generationJobResponse(existing), { status: 202 });
   }
   assertGenerationJobIsRetryable(job);
@@ -4781,7 +4600,14 @@ async function retryGenerationJob(request: Request, id: string) {
           "Idempotency-Key was already used for a different generation request",
         );
       }
-      return { job: existingRetry, created: false } as const;
+      const dispatch = existingRetry.status === "queued"
+        ? await reserveInitialGenerationAttempt(tx, existingRetry)
+        : null;
+      return {
+        job: existingRetry,
+        created: false,
+        outboxId: dispatch?.outbox.id ?? null,
+      } as const;
     }
     const retryCount = await tx.generationJob.count({
       where: { derivedFromJobId: job.id },
@@ -4938,23 +4764,18 @@ async function retryGenerationJob(request: Request, id: string) {
       amount: cost,
     });
     await appendGenerationEvent(tx, created.id, "queued", "Retry generation job queued", {});
-    return { job: created, created: true } as const;
+    const dispatch = await reserveInitialGenerationAttempt(tx, created);
+    return {
+      job: created,
+      created: true,
+      outboxId: dispatch.outbox.id,
+    } as const;
   });
   const retry = reservation.job;
-  if (reservation.created) {
-    try {
-      await enqueueGenerationJob(retry);
-    } catch (error) {
-      await failQueuedGeneration(retry, "queue_enqueue_failed", error);
-      logger.error(
-        { error, generationJobId: retry.id },
-        "generation retry enqueue failed",
-      );
-      if (error instanceof AppError) throw error;
-      throw Errors.internal("Generation queue unavailable", {
-        jobId: retry.id,
-      });
-    }
+  if (reservation.outboxId) {
+    await dispatchGenerationAttemptOutbox(prisma, {
+      outboxIds: [reservation.outboxId],
+    });
   }
   const queued = await prisma.generationJob.findUniqueOrThrow({
     where: { id: retry.id },
@@ -6063,6 +5884,7 @@ async function createMediaVariation(request: Request, id: string) {
     idempotencyKey,
     requestFingerprint,
   });
+  if (existing) await wakeQueuedGenerationDispatch(existing);
   const job = existing ?? await (async () => {
     const variation = await resolveMediaVariationGenerationInput(
       user.id,
@@ -10809,7 +10631,7 @@ async function assertDraftOwner(id: string, userId: string) {
   return draft;
 }
 
-async function readableCharacter(id: string, userId: string) {
+export async function readableCharacter(id: string, userId: string) {
   const character = await prisma.character.findFirst({
     where: {
       id,
@@ -11286,59 +11108,6 @@ async function lockCheckoutSession(tx: Prisma.TransactionClient, checkoutId: str
   await tx.$queryRaw`SELECT id FROM "checkout_sessions" WHERE id = ${checkoutId} FOR UPDATE`;
 }
 
-async function failQueuedGeneration(
-  job: { id: string; userId: string; costDreamcoins: number },
-  errorCode: string,
-  error: unknown,
-) {
-  await prisma.$transaction(async (tx) => {
-    const failedAt = new Date();
-    await transitionGenerationRequest(tx, {
-      requestId: job.id,
-      to: "failed",
-      expected: { from: "queued" },
-      data: {
-        errorCode,
-        completedAt: null,
-        finishedAt: failedAt,
-        deliveredOutputCount: 0,
-      },
-    });
-    if (job.costDreamcoins > 0) {
-      await postDreamcoinEntry(tx, {
-        kind: "refund",
-        userId: job.userId,
-        amount: job.costDreamcoins,
-        sourceId: job.id,
-        idempotencyKey: `generation:${job.id}:refund`,
-      });
-    }
-    const attempt = await tx.generationAttempt.findFirst({
-      where: { requestId: job.id },
-      orderBy: { attemptNo: "desc" },
-    });
-    if (attempt) {
-      await recordGenerationAttemptEvent(tx, {
-        eventId: `${attempt.id}:terminal`,
-        attemptId: attempt.id,
-        eventType: "generation.attempt.failed.v1",
-        outcome: "failed",
-        occurredAt: failedAt,
-        payload: { requestId: job.id, errorCode, stage: "queue_enqueue" },
-        errorCode,
-        retryability: "retryable",
-      });
-    }
-    await appendGenerationEvent(tx, job.id, "failed", "Generation queue enqueue failed", {
-      errorCode,
-      message: error instanceof Error ? error.message : String(error),
-    });
-    await appendGenerationEvent(tx, job.id, "refunded", "Dreamcoins refunded", {
-      amount: job.costDreamcoins,
-    });
-  });
-}
-
 async function appendGenerationEvent(
   tx: Prisma.TransactionClient,
   jobId: string,
@@ -11354,31 +11123,6 @@ async function appendGenerationEvent(
       metadata: toInputJson(metadata),
     },
   });
-}
-
-async function enqueueGenerationJob(job: {
-  id: string;
-  userId: string;
-  characterId: string | null;
-  visualProfileId: string | null;
-  visualProfileVersion: number | null;
-  mode: string;
-  prompt: string | null;
-  negativePrompt: string | null;
-  controls: Prisma.JsonValue;
-  presetIds: Prisma.JsonValue;
-  model: string | null;
-  profileId: string | null;
-  profileVersion: number | null;
-  orientation: string | null;
-  outputCount: number;
-  seed?: string | null;
-  sourceType?: string | null;
-  referenceAssetIds?: Prisma.JsonValue | null;
-  referenceSetRevisionId?: string | null;
-  referenceManifest?: Prisma.JsonValue | null;
-}) {
-  return enqueueGenerationAttempt(job);
 }
 
 function generationModelCapabilities(runner: string, runnerConfig: Prisma.JsonValue) {
@@ -12021,7 +11765,7 @@ function hasCharacterGenerationRecipe(
   return recipes.some((recipe) => recipe.useCase === "character");
 }
 
-async function entitlementMap(userId: string) {
+export async function entitlementMap(userId: string) {
   const now = new Date();
   const [entitlements, activeSubscriptions] = await Promise.all([
     prisma.entitlement.findMany({

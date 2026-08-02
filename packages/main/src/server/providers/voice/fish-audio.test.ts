@@ -91,6 +91,40 @@ describe("FishAudioVoiceModel", () => {
       delivery: DEFAULT_FISH_AUDIO_DELIVERY,
     });
   });
+
+  it("reuses one blob key when the same synthesis attempt is replayed", async () => {
+    const storedKeys: string[] = [];
+    const blob: BlobStore = {
+      ...stubBlobStore(),
+      async putPrivate(input) {
+        storedKeys.push(input.key);
+        return { ok: true, data: { key: input.key, size: input.body.byteLength } };
+      },
+    };
+    const voice = new FishAudioVoiceModel({
+      baseUrl: "http://127.0.0.1:8062/v1",
+      model: "fish-audio-s2-pro-8bit",
+      language: "auto",
+      blob,
+      fetchImpl: async () =>
+        new Response(wavBytes(800), {
+          headers: { "content-type": "audio/wav" },
+        }),
+    });
+    const input = {
+      requestId: "voice-request-1",
+      attemptNo: 1,
+      idempotencyKey: "voice-request-1:attempt:1",
+      text: "Replay this exact clip.",
+    };
+
+    const first = await voice.synthesize(input);
+    const replay = await voice.synthesize(input);
+
+    expect(first).toEqual(replay);
+    expect(storedKeys).toHaveLength(2);
+    expect(new Set(storedKeys).size).toBe(1);
+  });
 });
 
 function stubBlobStore(): BlobStore {

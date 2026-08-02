@@ -12,7 +12,8 @@ type CharacterScopedRecoveryCommandType =
 type CharacterAssetPurpose =
   | "character_cover"
   | "character_hero"
-  | "character_chat";
+  | "character_chat"
+  | "character_video";
 
 type DurableMutationRecoveryInput =
   | {

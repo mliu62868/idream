@@ -25,6 +25,7 @@ import {
   type SlotValues,
 } from "./workflow";
 import type { BackendRegistry } from "./registry";
+import { BackendInvocationError } from "./types";
 
 type GenerateInput = Parameters<ImageModel["generate"]>[0];
 type GenerateResult = Awaited<ReturnType<ImageModel["generate"]>>;
@@ -156,9 +157,11 @@ export class BackendImageModel implements ImageModel {
     const stepsOverride = numericControl(input.controls, "steps");
 
     const providerRequestIds: string[] = [];
+    let failurePhase: "pre_submit" | "post_submit" = "pre_submit";
     try {
       const assets: ImageAsset[] = [];
       for (let index = 0; index < count; index += 1) {
+        failurePhase = "pre_submit";
         const slots: SlotValues = {
           prompt: input.prompt,
           negative: input.negativePrompt ?? "",
@@ -175,6 +178,7 @@ export class BackendImageModel implements ImageModel {
           timeoutMs: env.PIPELINE_TIMEOUT_MS,
         });
         providerRequestIds.push(handle.id);
+        failurePhase = "post_submit";
         const result = await backend.poll(handle);
         for (const asset of result.assets) {
           assets.push({
@@ -196,12 +200,16 @@ export class BackendImageModel implements ImageModel {
         },
       };
     } catch (error) {
+      const failure = backendFailure(error, failurePhase);
       return {
         ok: false,
         error: {
-          code: "backend_error",
-          message: error instanceof Error ? error.message : String(error),
-          retryable: true,
+          code: failure.code,
+          message: failure.message,
+          retryable:
+            failure.outcome === "ambiguous" ||
+            failure.phase === "pre_submit",
+          outcome: failure.outcome,
         },
         invocation: {
           providerRequestId: providerRequestIds[0] ?? null,
@@ -212,6 +220,21 @@ export class BackendImageModel implements ImageModel {
       };
     }
   }
+}
+
+function backendFailure(
+  error: unknown,
+  fallbackPhase: "pre_submit" | "post_submit",
+) {
+  if (error instanceof BackendInvocationError) return error;
+  return new BackendInvocationError(
+    error instanceof Error && /timed out/i.test(error.message)
+      ? "timeout"
+      : "backend_error",
+    error instanceof Error ? error.message : String(error),
+    fallbackPhase,
+    fallbackPhase === "post_submit" ? "ambiguous" : "definitive",
+  );
 }
 
 function validateWorkflowPin(

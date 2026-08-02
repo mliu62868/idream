@@ -6,6 +6,7 @@ import {
   type GenerationJobListResponse,
   type GenerationJobSort,
 } from "@idream/shared/admin";
+import { aiFinalizePayloadSchema } from "@idream/shared/contracts";
 import { createHash } from "node:crypto";
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
@@ -17,6 +18,7 @@ import {
   operationalGenerationJobWhere,
 } from "@/server/modules/admin/shared/metric-data-scope";
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
+import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
 
 const jobCursorSchema = z.object({
   version: z.literal(1),
@@ -134,7 +136,7 @@ function facetRows(rows: Array<{ value: string | null; count: number }>) {
 }
 
 function attemptStatus(value: string) {
-  return ["queued", "running", "succeeded", "failed", "cancelled"].includes(value) ? value : "unknown";
+  return ["queued", "running", "succeeded", "failed", "blocked", "cancelled"].includes(value) ? value : "unknown";
 }
 
 function requestOutcome(
@@ -142,17 +144,91 @@ function requestOutcome(
   expectedOutputCount: number,
   deliveredCount: number,
   latestAttemptStatus: string | null,
+  latestUnknownResolution: "adopt_succeeded" | "confirm_failed" | "remain_unknown" | null,
 ) {
+  if (latestUnknownResolution === "confirm_failed") return "failed";
+  if (latestUnknownResolution === "adopt_succeeded") {
+    if (deliveredCount >= expectedOutputCount && expectedOutputCount > 0) {
+      return "succeeded";
+    }
+    return deliveredCount > 0 ? "partially_succeeded" : "failed";
+  }
   if (legacyStatus === "cancelled") return "cancelled";
   if (legacyStatus === "blocked") return "blocked";
-  if (legacyStatus === "queued") return "accepted";
-  if (["moderating_input", "running", "moderating_output"].includes(legacyStatus)) {
-    return latestAttemptStatus === "failed" ? "needs_reconciliation" : "processing";
+  if (legacyStatus === "queued") {
+    return ["failed", "unknown"].includes(latestAttemptStatus ?? "")
+      ? "needs_reconciliation"
+      : "accepted";
   }
-  if (legacyStatus === "failed") return deliveredCount > 0 ? "partially_succeeded" : "failed";
+  if (["moderating_input", "running", "moderating_output"].includes(legacyStatus)) {
+    return ["failed", "unknown"].includes(latestAttemptStatus ?? "")
+      ? "needs_reconciliation"
+      : "processing";
+  }
+  if (legacyStatus === "failed") {
+    if (latestAttemptStatus === "unknown") return "needs_reconciliation";
+    return deliveredCount > 0 ? "partially_succeeded" : "failed";
+  }
   if (deliveredCount >= expectedOutputCount && expectedOutputCount > 0) return "succeeded";
   if (deliveredCount > 0) return "partially_succeeded";
   return "needs_reconciliation";
+}
+
+function unknownReconciliationResolution(
+  event: { readonly type: string; readonly metadata: Prisma.JsonValue } | null,
+  attemptId: string | null,
+) {
+  if (!attemptId || jsonRecord(event?.metadata ?? null).attemptId !== attemptId) {
+    return null;
+  }
+  if (event?.type === "unknown_reconciliation_adopt_succeeded") {
+    return "adopt_succeeded" as const;
+  }
+  if (event?.type === "unknown_reconciliation_confirm_failed") {
+    return "confirm_failed" as const;
+  }
+  if (event?.type === "unknown_reconciliation_remain_unknown") {
+    return "remain_unknown" as const;
+  }
+  return null;
+}
+
+function jsonRecord(value: Prisma.JsonValue | null) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Prisma.JsonObject
+    : {};
+}
+
+function stringArray(value: Prisma.JsonValue | undefined) {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === "string")
+    : [];
+}
+
+function unknownReviewProjection(
+  event: { readonly type: string; readonly metadata: Prisma.JsonValue } | null,
+  attemptId: string | null,
+  now: Date,
+) {
+  if (
+    event?.type !== "unknown_reconciliation_remain_unknown" ||
+    !attemptId ||
+    jsonRecord(event.metadata).attemptId !== attemptId
+  ) {
+    return { status: "not_applicable" as const, nextReviewAt: null };
+  }
+  const value = jsonRecord(event.metadata).nextReviewAt;
+  if (typeof value !== "string") {
+    return { status: "not_applicable" as const, nextReviewAt: null };
+  }
+  const nextReviewAt = new Date(value);
+  if (Number.isNaN(nextReviewAt.getTime())) {
+    return { status: "not_applicable" as const, nextReviewAt: null };
+  }
+  return {
+    status: nextReviewAt <= now ? "due" as const : "scheduled" as const,
+    nextReviewAt: nextReviewAt.toISOString(),
+  };
 }
 
 type JobProjectionRow = Prisma.GenerationJobGetPayload<{
@@ -172,6 +248,11 @@ function generationJobProjection(
   latestAttempt: AttemptRow | null,
   deliveries: Readonly<Record<string, number>>,
   settlement: { captured: number; refunded: number },
+  unknownReview: {
+    readonly status: "not_applicable" | "scheduled" | "due";
+    readonly nextReviewAt: string | null;
+  },
+  latestUnknownResolution: "adopt_succeeded" | "confirm_failed" | "remain_unknown" | null,
 ) {
   const deliveredCount = deliveries.delivered ?? 0;
   return {
@@ -180,7 +261,13 @@ function generationJobProjection(
     characterId: row.characterId,
     derivedFromJobId: row.derivedFromJobId,
     mode: row.mode,
-    requestOutcome: requestOutcome(row.status, row.outputCount, deliveredCount, latestAttempt?.status ?? null),
+    requestOutcome: requestOutcome(
+      row.status,
+      row.outputCount,
+      deliveredCount,
+      latestAttempt?.status ?? null,
+      latestUnknownResolution,
+    ),
     legacyStatus: row.status,
     latestAttempt: latestAttempt ? {
       id: latestAttempt.id,
@@ -193,6 +280,7 @@ function generationJobProjection(
       startedAt: latestAttempt.startedAt?.toISOString() ?? null,
       finishedAt: latestAttempt.finishedAt?.toISOString() ?? null,
     } : null,
+    unknownReview,
     delivery: {
       expectedOutputCount: row.outputCount,
       deliveredCount,
@@ -234,6 +322,7 @@ export type GenerationJobsQueryAuthorityDb = Pick<
   | "generationDelivery"
   | "generationSettlementLink"
   | "dreamcoinLedger"
+  | "generationJobEvent"
 >;
 
 export async function queryGenerationJobsV2Authority(input: {
@@ -242,6 +331,7 @@ export async function queryGenerationJobsV2Authority(input: {
   readonly now?: Date;
 }): Promise<GenerationJobListResponse> {
   const { db, query } = input;
+  const now = input.now ?? new Date();
   const filters = baseWhere(query);
   const queryHash = cursorQueryHash(query);
   const cursor = query.cursor ? decodeCursor(query.cursor, query.sort, queryHash) : null;
@@ -268,7 +358,7 @@ export async function queryGenerationJobsV2Authority(input: {
   const page = rows.slice(0, query.limit);
   const last = page.at(-1);
   const pageIds = page.map((row) => row.id);
-  const [attempts, deliveryGroups, settlementLinks] = pageIds.length > 0 ? await Promise.all([
+  const [attempts, deliveryGroups, settlementLinks, reconciliationEvents] = pageIds.length > 0 ? await Promise.all([
     db.generationAttempt.findMany({
       where: { requestId: { in: pageIds } },
       orderBy: [{ requestId: "asc" }, { attemptNo: "desc" }],
@@ -282,7 +372,20 @@ export async function queryGenerationJobsV2Authority(input: {
       where: { requestId: { in: pageIds } },
       select: { requestId: true, ledgerEntryId: true },
     }),
-  ]) : [[], [], []];
+    db.generationJobEvent.findMany({
+      where: {
+        jobId: { in: pageIds },
+        type: {
+          in: [
+            "unknown_reconciliation_adopt_succeeded",
+            "unknown_reconciliation_confirm_failed",
+            "unknown_reconciliation_remain_unknown",
+          ],
+        },
+      },
+      orderBy: [{ jobId: "asc" }, { createdAt: "desc" }, { id: "desc" }],
+    }),
+  ]) : [[], [], [], []];
   const ledgerEntries = settlementLinks.length > 0 ? await db.dreamcoinLedger.findMany({
     where: { id: { in: settlementLinks.map((link) => link.ledgerEntryId) } },
     select: { id: true, delta: true, reason: true },
@@ -307,12 +410,30 @@ export async function queryGenerationJobsV2Authority(input: {
     if (entry.reason === "refund" && entry.delta > 0) amounts.refunded += entry.delta;
     settlementByRequest.set(link.requestId, amounts);
   }
+  const latestReconciliationByRequest = new Map<
+    string,
+    (typeof reconciliationEvents)[number]
+  >();
+  for (const event of reconciliationEvents) {
+    if (!latestReconciliationByRequest.has(event.jobId)) {
+      latestReconciliationByRequest.set(event.jobId, event);
+    }
+  }
   const response = generationJobListResponseSchema.parse({
     items: page.map((row) => generationJobProjection(
       row,
       latestAttemptByRequest.get(row.id) ?? null,
       deliveriesByRequest.get(row.id) ?? {},
       settlementByRequest.get(row.id) ?? { captured: 0, refunded: 0 },
+      unknownReviewProjection(
+        latestReconciliationByRequest.get(row.id) ?? null,
+        latestAttemptByRequest.get(row.id)?.id ?? null,
+        now,
+      ),
+      unknownReconciliationResolution(
+        latestReconciliationByRequest.get(row.id) ?? null,
+        latestAttemptByRequest.get(row.id)?.id ?? null,
+      ),
     )),
     pageInfo: {
       endCursor: hasNextPage && last ? cursorForRow(last, query.sort, queryHash) : null,
@@ -331,7 +452,7 @@ export async function queryGenerationJobsV2Authority(input: {
       totalDeliveredOutputCount: totals._sum.deliveredOutputCount ?? 0,
     },
     dataScope: OPERATIONAL_USER_DATA_SCOPE,
-    asOf: (input.now ?? new Date()).toISOString(),
+    asOf: now.toISOString(),
     freshness: "fresh",
   });
   return response;
@@ -357,7 +478,15 @@ export async function getGenerationJobV2(request: Request, requestId: string) {
     orderBy: { attemptNo: "asc" },
   });
   const attemptIds = attempts.map((attempt) => attempt.id);
-  const [events, transportExecutions, artifacts, deliveries, settlementLinks] = await Promise.all([
+  const [
+    events,
+    transportExecutions,
+    artifacts,
+    deliveries,
+    settlementLinks,
+    unknownAuthorityEvents,
+    terminalReceipts,
+  ] = await Promise.all([
     attemptIds.length > 0 ? prisma.generationAttemptEvent.findMany({
       where: { attemptId: { in: attemptIds } },
       orderBy: [{ occurredAt: "asc" }, { sequence: "asc" }],
@@ -378,6 +507,28 @@ export async function getGenerationJobV2(request: Request, requestId: string) {
       where: { requestId },
       orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     }),
+    prisma.generationJobEvent.findMany({
+      where: {
+        jobId: requestId,
+        type: {
+          in: [
+            "unknown_terminal_evidence_recovered",
+            "unknown_terminal_resolution_evidence_recovered",
+            "unknown_reconciliation_adopt_succeeded",
+            "unknown_reconciliation_confirm_failed",
+            "unknown_reconciliation_remain_unknown",
+            "unknown_reconciliation_review_due",
+          ],
+        },
+      },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    }),
+    attemptIds.length > 0 ? prisma.inboundEventReceipt.findMany({
+      where: {
+        sourceService: { in: ["gen", "gen_resolution"] },
+        sourceEventId: { in: attemptIds },
+      },
+    }) : [],
   ]);
   const ledgerEntries = settlementLinks.length > 0 ? await prisma.dreamcoinLedger.findMany({
     where: { id: { in: settlementLinks.map((link) => link.ledgerEntryId) } },
@@ -395,8 +546,146 @@ export async function getGenerationJobV2(request: Request, requestId: string) {
   }
   const latestAttempt = attempts.at(-1) ?? null;
   const providerByAttemptId = new Map(attempts.map((attempt) => [attempt.id, attempt.provider]));
+  const unknownReconciliationEvents = unknownAuthorityEvents.filter((event) =>
+    [
+      "unknown_reconciliation_adopt_succeeded",
+      "unknown_reconciliation_confirm_failed",
+      "unknown_reconciliation_remain_unknown",
+    ].includes(event.type)
+  );
+  const dueReconciliationEventIds = new Set(
+    unknownAuthorityEvents
+      .filter((event) => event.type === "unknown_reconciliation_review_due")
+      .flatMap((event) => {
+        const value = jsonRecord(event.metadata).reconciliationEventId;
+        return typeof value === "string" ? [value] : [];
+      }),
+  );
+  const latestRecoveredEvent = unknownAuthorityEvents
+    .filter((event) =>
+      (event.type === "unknown_terminal_evidence_recovered" ||
+        event.type === "unknown_terminal_resolution_evidence_recovered") &&
+      jsonRecord(event.metadata).attemptId === latestAttempt?.id
+    )
+    .at(-1) ?? null;
+  const recoveredReceiptSource = latestRecoveredEvent?.type ===
+      "unknown_terminal_resolution_evidence_recovered"
+    ? "gen_resolution"
+    : latestRecoveredEvent?.type === "unknown_terminal_evidence_recovered"
+      ? "gen"
+      : null;
+  const recoveredMetadata = jsonRecord(latestRecoveredEvent?.metadata ?? null);
+  const recoveredPayload = aiFinalizePayloadSchema.safeParse(
+    recoveredMetadata.recoveredSuccess,
+  );
+  const recoveredAttemptId = typeof recoveredMetadata.attemptId === "string"
+    ? recoveredMetadata.attemptId
+    : null;
+  const recoveredOutcome = ["succeeded", "failed", "blocked", "unknown"].includes(
+    String(recoveredMetadata.terminalRecordOutcome),
+  )
+    ? recoveredMetadata.terminalRecordOutcome as "succeeded" | "failed" | "blocked" | "unknown"
+    : null;
+  const recoveredRef = typeof recoveredMetadata.terminalRecordRef === "string"
+    ? recoveredMetadata.terminalRecordRef
+    : null;
+  const recoveredChecksum =
+    typeof recoveredMetadata.terminalRecordChecksum === "string" &&
+    /^[a-f0-9]{64}$/.test(recoveredMetadata.terminalRecordChecksum)
+      ? recoveredMetadata.terminalRecordChecksum
+      : null;
+  const recoveredTransport = transportExecutions.find((execution) =>
+    execution.attemptId === recoveredAttemptId
+  ) ?? null;
+  const recoveredArtifacts = artifacts.filter(
+    (artifact) => artifact.attemptId === recoveredAttemptId,
+  );
+  const deliveriesByArtifactId = new Map(
+    deliveries.map((delivery) => [delivery.artifactId, delivery]),
+  );
+  const recoveredReceipt = terminalReceipts.find(
+    (receipt) =>
+      receipt.sourceService === recoveredReceiptSource &&
+      receipt.sourceEventId === recoveredAttemptId,
+  ) ?? null;
+  const recoveredAssetCount = typeof recoveredMetadata.assetCount === "number"
+    ? recoveredMetadata.assetCount
+    : recoveredArtifacts.length;
+  const unknownTerminalEvidence =
+    recoveredAttemptId && recoveredOutcome && recoveredRef && recoveredTransport
+      ? {
+          attemptId: recoveredAttemptId,
+          outcome: recoveredOutcome,
+          transportStatus: recoveredTransport.status,
+          terminalRecordRef: recoveredRef,
+          terminalRecordChecksum: recoveredChecksum,
+          artifactCount: recoveredAssetCount,
+          adoptable:
+            recoveredOutcome === "succeeded" &&
+            recoveredTransport.status === "unknown" &&
+            latestAttempt?.id === recoveredAttemptId &&
+            latestAttempt.status === "unknown" &&
+            ["queued", "moderating_input", "running", "moderating_output", "failed"].includes(row.status) &&
+            settlement.refunded === 0 &&
+            recoveredChecksum !== null &&
+            recoveredPayload.success &&
+            recoveredPayload.data.kind === "generation.completed" &&
+            recoveredPayload.data.attemptId === recoveredAttemptId &&
+            recoveredPayload.data.generationJobId === row.id &&
+            recoveredPayload.data.terminalRecordRef === recoveredRef &&
+            recoveredPayload.data.terminalRecordChecksum === recoveredChecksum &&
+            latestAttempt.terminalRecordRef ===
+              (recoveredReceiptSource === "gen"
+                ? recoveredRef
+                : recoveredMetadata.originalTerminalRecordRef ?? null) &&
+            recoveredTransport.terminalRecordRef ===
+              (recoveredReceiptSource === "gen"
+                ? recoveredRef
+                : recoveredMetadata.originalTerminalRecordRef ?? null) &&
+            recoveredArtifacts.length === recoveredAssetCount &&
+            recoveredArtifacts.every((artifact, ordinal) =>
+              artifact.ordinal === ordinal &&
+              artifact.validationState === "late_after_unknown" &&
+              artifact.archiveState === "archived" &&
+              artifact.assetId === null &&
+              artifact.terminalRecordChecksum === recoveredChecksum &&
+              deliveriesByArtifactId.get(artifact.id)?.status === "suppressed"
+            ) &&
+            recoveredReceipt?.processingState === "processed" &&
+            (recoveredReceipt.payloadHash === canonicalSha256({
+              terminalRecordRef: recoveredRef,
+              terminalRecordChecksum: recoveredChecksum,
+            }) ||
+              (recoveredReceiptSource === "gen" &&
+                recoveredReceipt.payloadHash === recoveredChecksum)) &&
+            (recoveredReceiptSource === "gen" ||
+              (recoveredMetadata.resolutionReceiptId === recoveredReceipt.id &&
+                recoveredMetadata.resolutionPayloadHash ===
+                  recoveredReceipt.payloadHash)),
+          adoptionBlockReason: settlement.refunded > 0
+            ? "request_already_refunded"
+            : !["queued", "moderating_input", "running", "moderating_output", "failed"].includes(row.status)
+              ? "request_not_reconcilable"
+              : null,
+        }
+      : null;
+  const detailNow = new Date();
   const response = generationJobDetailResponseSchema.parse({
-    request: generationJobProjection(row, latestAttempt, deliveryCounts, settlement),
+    request: generationJobProjection(
+      row,
+      latestAttempt,
+      deliveryCounts,
+      settlement,
+      unknownReviewProjection(
+        unknownReconciliationEvents.at(-1) ?? null,
+        latestAttempt?.id ?? null,
+        detailNow,
+      ),
+      unknownReconciliationResolution(
+        unknownReconciliationEvents.at(-1) ?? null,
+        latestAttempt?.id ?? null,
+      ),
+    ),
     attempts: attempts.map((attempt) => ({
       id: attempt.id,
       attemptNo: attempt.attemptNo,
@@ -426,7 +715,7 @@ export async function getGenerationJobV2(request: Request, requestId: string) {
       latencyMs: execution.latencyMs,
       costMicros: execution.costMicros === null ? null : Number(execution.costMicros),
       pricingVersion: execution.pricingVersion?.trim() || null,
-      manifestRef: execution.manifestRef?.trim() || null,
+      terminalRecordRef: execution.terminalRecordRef?.trim() || null,
       startedAt: execution.startedAt.toISOString(),
       finishedAt: execution.finishedAt?.toISOString() ?? null,
     })),
@@ -466,7 +755,56 @@ export async function getGenerationJobV2(request: Request, requestId: string) {
         createdAt: entry.createdAt.toISOString(),
       }] : [];
     }),
-    asOf: new Date().toISOString(),
+    unknownReconciliations: unknownReconciliationEvents.flatMap((event) => {
+      const metadata = jsonRecord(event.metadata);
+      const resolution = metadata.resolution;
+      const attemptId = metadata.attemptId;
+      const actorId = metadata.actorId;
+      if (
+        (
+          resolution !== "adopt_succeeded" &&
+          resolution !== "confirm_failed" &&
+          resolution !== "remain_unknown"
+        ) ||
+        typeof attemptId !== "string" ||
+        typeof actorId !== "string" ||
+        !event.message
+      ) {
+        return [];
+      }
+      return [{
+        id: event.id,
+        attemptId,
+        resolution,
+        actorId,
+        reason: event.message,
+        providerEvidenceRefs: stringArray(metadata.providerEvidenceRefs),
+        nextReviewAt:
+          typeof metadata.nextReviewAt === "string"
+            ? metadata.nextReviewAt
+            : null,
+        reviewStatus: resolution === "remain_unknown"
+          ? dueReconciliationEventIds.has(event.id) ||
+              (
+                typeof metadata.nextReviewAt === "string" &&
+                new Date(metadata.nextReviewAt) <= detailNow
+              )
+            ? "due"
+            : "scheduled"
+          : "not_applicable",
+        refundAmount:
+          typeof metadata.refundAmount === "number"
+            ? metadata.refundAmount
+            : 0,
+        deliveredCount:
+          typeof metadata.deliveredCount === "number"
+            ? metadata.deliveredCount
+            : 0,
+        occurredAt: event.createdAt.toISOString(),
+      }];
+    }),
+    unknownTerminalEvidence,
+    asOf: detailNow.toISOString(),
     freshness: "fresh",
   });
   return ok(response, { headers: { "Cache-Control": "no-store" } });

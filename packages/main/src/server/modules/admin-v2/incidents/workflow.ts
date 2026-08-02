@@ -14,7 +14,7 @@ const RECOVERY_WINDOW_MS = 15 * 60 * 1_000;
 const REQUIRED_SUCCESS_RATE = 0.95;
 const ACTIVE_REQUEST_STATES = new Set(["queued", "moderating_input", "running", "moderating_output", "processing"]);
 const ACTIVE_ATTEMPT_STATES = new Set(["queued", "running", "processing"]);
-const TERMINAL_ATTEMPT_STATES = new Set(["succeeded", "failed", "cancelled", "unknown"]);
+const TERMINAL_ATTEMPT_STATES = new Set(["succeeded", "failed", "blocked", "cancelled", "unknown"]);
 
 function record(value: Prisma.JsonValue | null) {
   return typeof value === "object" && value !== null && !Array.isArray(value)

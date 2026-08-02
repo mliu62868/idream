@@ -2,7 +2,7 @@ import { characterVoiceCloneCreateResponseSchema } from "@idream/shared/admin";
 import {
   createCharacterVoiceClone,
   parseVoiceCloneForm,
-} from "@/server/modules/admin-v2/characters/voice-clones";
+} from "@/server/modules/admin-v2/characters/voice-identity";
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";

@@ -22,12 +22,20 @@ describe("deep module authority boundaries", () => {
   it("keeps image and video provider execution out of Main", () => {
     const pipeline = source("src/server/ai/local-pipeline.ts");
     const finalizer = source("src/processes/finalizer.ts");
+    const providerProduction = productionTypeScriptFiles("src/server/providers")
+      .map(source)
+      .join("\n");
 
     expect(pipeline).not.toContain("providers.image.generate");
     expect(pipeline).not.toContain("providers.video.generate");
     expect(pipeline).not.toContain('job.queue === "ai.image.generate"');
     expect(pipeline).not.toContain('job.queue === "ai.video.generate"');
     expect(finalizer).not.toContain("localAiQueueNames");
+    expect(providerProduction).not.toContain("IMAGE_PROVIDER");
+    expect(providerProduction).not.toContain("MockImageModel");
+    expect(providerProduction).not.toContain("PipelineImageModel");
+    expect(providerProduction).not.toContain("MockVideoModel");
+    expect(providerProduction).not.toMatch(/\b(image|video):\s*(create|new )/);
   });
 
   it("keeps DreamcoinLedger production writes inside the billing ledger owner", () => {

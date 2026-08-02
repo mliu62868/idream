@@ -1,30 +1,38 @@
-// SPEC: Unit tests for the gen pipeline. enqueue is mocked and providers are
-// stubbed, so no Redis and no disk are touched. Asserts the generation.completed
-// finalize payload is enqueued to app.ai.finalize with the right dedupeKey,
-// mode, and assets — and that the failure path enqueues generation.failed.
+// SPEC: Unit tests for the gen pipeline. Providers and durable hand-off ports are
+// stubbed, so no Redis, HTTP, or disk are touched. Image/video outcomes persist
+// one terminal record before ACK across every image/video use case.
 import { deflateSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  type CharacterPreviewGeneratePayload,
-  idempotencyKeys,
+  type GenerationTerminalRecordIngest,
   type ImageGeneratePayload,
-  MAIN_QUEUES,
   type VideoGeneratePayload,
 } from "@idream/shared/contracts";
 import { mockVideoMp4Bytes } from "@idream/shared";
 import {
-  processCharacterPreviewGenerate,
+  type PipelineDeps,
   processImageGenerate,
   processVideoGenerate,
 } from "./pipeline";
 import type { GenProviders } from "./providers";
-import type { EnqueueInput } from "./queue";
 import { env } from "./env";
 
 const originalFetch = globalThis.fetch;
+const originalImageProvider = process.env.GEN_IMAGE_PROVIDER;
+const originalVideoProvider = process.env.GEN_VIDEO_PROVIDER;
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  if (originalImageProvider === undefined) {
+    delete process.env.GEN_IMAGE_PROVIDER;
+  } else {
+    process.env.GEN_IMAGE_PROVIDER = originalImageProvider;
+  }
+  if (originalVideoProvider === undefined) {
+    delete process.env.GEN_VIDEO_PROVIDER;
+  } else {
+    process.env.GEN_VIDEO_PROVIDER = originalVideoProvider;
+  }
   vi.restoreAllMocks();
 });
 
@@ -34,6 +42,8 @@ function imagePayload(overrides: Partial<ImageGeneratePayload> = {}): ImageGener
     kind: "image",
     requestId: "req_img_1",
     generationJobId: "job_img_1",
+    attemptId: "job_img_1:1",
+    attemptNo: 1,
     userId: "user_1",
     characterId: null,
     prompt: "a serene mountain lake",
@@ -44,6 +54,7 @@ function imagePayload(overrides: Partial<ImageGeneratePayload> = {}): ImageGener
     count: 2,
     seed: "seed_1",
     model: "mock-image",
+    provider: env.IMAGE_PROVIDER,
     outputPrefix: "gen/job_img_1/",
     ...overrides,
   };
@@ -55,6 +66,8 @@ function videoPayload(overrides: Partial<VideoGeneratePayload> = {}): VideoGener
     kind: "video",
     requestId: "req_vid_1",
     generationJobId: "job_vid_1",
+    attemptId: "job_vid_1:1",
+    attemptNo: 1,
     userId: "user_1",
     characterId: null,
     prompt: "a slow pan over a city skyline",
@@ -63,28 +76,8 @@ function videoPayload(overrides: Partial<VideoGeneratePayload> = {}): VideoGener
     seconds: 6,
     seed: "seed_v1",
     model: "mock-video",
+    provider: env.VIDEO_PROVIDER,
     outputPrefix: "gen/job_vid_1/",
-    ...overrides,
-  };
-}
-
-function previewPayload(
-  overrides: Partial<CharacterPreviewGeneratePayload> = {},
-): CharacterPreviewGeneratePayload {
-  return {
-    version: 1,
-    kind: "character.preview",
-    requestId: "preview-request-1",
-    previewJobId: "preview-job-1",
-    draftId: "draft-1",
-    userId: "user-1",
-    prompt: "adult character identity portrait",
-    negativePrompt: null,
-    controls: { width: 832, height: 1024 },
-    orientation: "4:5",
-    seed: "draft-1:preview-job-1",
-    model: "redcraft-krea2-redmix3-fp8",
-    outputPrefix: "preview/preview-job-1/",
     ...overrides,
   };
 }
@@ -139,6 +132,18 @@ function makeProviders(over: Partial<GenProviders> = {}): GenProviders {
         ok: true as const,
         data: { key: input.key, size: input.body.byteLength },
       })),
+      putPrivateIfAbsent: vi.fn(async (input) => ({
+        ok: true as const,
+        data: {
+          key: input.key,
+          size: input.body.byteLength,
+          created: true,
+        },
+      })),
+      delete: vi.fn(async () => ({
+        ok: true as const,
+        data: { deleted: true as const },
+      })),
       signGetUrl: vi.fn(async (input) => ({
         ok: true as const,
         data: { url: `mock://${input.key}` },
@@ -148,56 +153,149 @@ function makeProviders(over: Partial<GenProviders> = {}): GenProviders {
   };
 }
 
+function makePipelineDeps(
+  providers: GenProviders,
+  overrides: Partial<Omit<PipelineDeps, "providers">> = {},
+): PipelineDeps {
+  return {
+    providers,
+    acknowledgeTerminalRecord: vi.fn(async () => {}),
+    recordTransportExecution: vi.fn(async () => {}),
+    ...overrides,
+  };
+}
+
+function successfulPutPrivateIfAbsent() {
+  return vi.fn(async (input: {
+    key: string;
+    body: Uint8Array;
+    contentType: string;
+  }) => ({
+    ok: true as const,
+    data: {
+      key: input.key,
+      size: input.body.byteLength,
+      created: true,
+    },
+  }));
+}
+
+function makeMemoryBlob(): GenProviders["blob"] {
+  const objects = new Map<string, { body: Uint8Array; contentType: string }>();
+  return {
+    putPrivate: vi.fn(async (input) => {
+      objects.set(input.key, { body: input.body, contentType: input.contentType });
+      return {
+        ok: true as const,
+        data: { key: input.key, size: input.body.byteLength },
+      };
+    }),
+    putPrivateIfAbsent: vi.fn(async (input) => {
+      if (objects.has(input.key)) {
+        return {
+          ok: true as const,
+          data: {
+            key: input.key,
+            size: input.body.byteLength,
+            created: false,
+          },
+        };
+      }
+      objects.set(input.key, { body: input.body, contentType: input.contentType });
+      return {
+        ok: true as const,
+        data: {
+          key: input.key,
+          size: input.body.byteLength,
+          created: true,
+        },
+      };
+    }),
+    delete: vi.fn(async (input) => {
+      objects.delete(input.key);
+      return { ok: true as const, data: { deleted: true as const } };
+    }),
+    getPrivate: vi.fn(async (input) => {
+      const object = objects.get(input.key);
+      return object
+        ? {
+            ok: true as const,
+            data: { body: object.body, contentType: object.contentType },
+          }
+        : {
+            ok: false as const,
+            error: {
+              code: "not_found",
+              message: `Object ${input.key} was not found`,
+              retryable: false,
+            },
+          };
+    }),
+    signGetUrl: vi.fn(async (input) => ({
+      ok: true as const,
+      data: { url: `memory://${input.key}` },
+    })),
+  };
+}
+
 describe("processImageGenerate", () => {
-  it("writes a blob per asset and enqueues generation.completed with the right dedupeKey", async () => {
-    const enqueue = vi.fn(async (_: EnqueueInput) => {});
+  it("persists and acknowledges a succeeded terminal record", async () => {
     const providers = makeProviders();
+    const acknowledgeTerminalRecord = vi.fn(async (_: GenerationTerminalRecordIngest) => {});
 
-    await processImageGenerate(imagePayload(), { enqueue, providers });
+    await processImageGenerate(imagePayload(), {
+      providers,
+      acknowledgeTerminalRecord,
+      recordTransportExecution: vi.fn(async () => {}),
+    });
 
-    // One blob write per asset, no DB.
-    expect(providers.blob.putPrivate).toHaveBeenCalledTimes(2);
-
-    expect(enqueue).toHaveBeenCalledTimes(1);
-    const [input] = enqueue.mock.calls[0];
-    expect(input.queue).toBe(MAIN_QUEUES.aiFinalize);
-    expect(input.dedupeKey).toBe(idempotencyKeys.generationFinalize("job_img_1", "completed"));
-
-    const payload = input.payload as Record<string, unknown>;
-    expect(payload.kind).toBe("generation.completed");
-    expect(payload.mode).toBe("image");
-    expect(payload.provider).toBe("backend");
-    expect(payload.model).toBe("mock-image");
-    expect(payload.generationJobId).toBe("job_img_1");
-    expect(payload.assets).toEqual([
-      expect.objectContaining({
-        key: "gen/job_img_1/image-1.png",
-        width: 1024,
-        height: 1024,
-        contentType: "image/png",
-        providerKey: "mock/images/seed_1-1.png",
-        quality: expect.objectContaining({
-          evaluatorVersion: "generated-image-sanity-v2",
-          composition: expect.objectContaining({ status: "unscored" }),
-        }),
+    expect(providers.blob.putPrivate).not.toHaveBeenCalled();
+    expect(providers.blob.putPrivateIfAbsent).toHaveBeenCalledTimes(3);
+    expect(acknowledgeTerminalRecord).toHaveBeenCalledWith(expect.objectContaining({
+      terminalRecordChecksum: expect.stringMatching(/^[a-f0-9]{64}$/),
+      terminalRecord: expect.objectContaining({
+        outcome: "succeeded",
+        mode: "image",
+        providerInvoked: true,
+        generationJobId: "job_img_1",
+        assets: expect.arrayContaining([
+          expect.objectContaining({
+            key: "gen/job_img_1/image-1.png",
+            providerKey: "mock/images/seed_1-1.png",
+          }),
+        ]),
       }),
-      expect.objectContaining({
-        key: "gen/job_img_1/image-2.png",
-        width: 1024,
-        height: 1024,
-        contentType: "image/png",
-        providerKey: "mock/images/seed_1-2.png",
-        quality: expect.objectContaining({
-          evaluatorVersion: "generated-image-sanity-v2",
-          composition: expect.objectContaining({ status: "unscored" }),
+    }));
+  });
+
+  it("keeps image objects isolated between Attempts of the same request", async () => {
+    const blob = makeMemoryBlob();
+    const providers = makeProviders({ blob });
+    const attemptIds = ["attempt_img_isolated_1", "attempt_img_isolated_2"];
+
+    for (const [index, attemptId] of attemptIds.entries()) {
+      await processImageGenerate(
+        imagePayload({
+          attemptId,
+          attemptNo: index + 1,
+          count: 1,
+          outputPrefix: `gen/job_img_1/attempts/${attemptId}/`,
         }),
-      }),
+        makePipelineDeps(providers),
+      );
+    }
+
+    const imageKeys = vi.mocked(blob.putPrivateIfAbsent).mock.calls
+      .map(([input]) => input.key)
+      .filter((key) => key.endsWith("/image-1.png"));
+    expect(imageKeys).toEqual([
+      "gen/job_img_1/attempts/attempt_img_isolated_1/image-1.png",
+      "gen/job_img_1/attempts/attempt_img_isolated_2/image-1.png",
     ]);
   });
 
-  it("persists an immutable manifest and waits for main durable ACK before completing", async () => {
-    const enqueue = vi.fn(async (_: EnqueueInput) => {});
-    const acknowledgeCompletion = vi.fn(async () => {});
+  it("persists an immutable terminal record and waits for main durable ACK before completing", async () => {
+    const acknowledgeTerminalRecord = vi.fn(async (_: GenerationTerminalRecordIngest) => {});
     const providers = makeProviders({
       image: {
         generate: vi.fn(async () => ({
@@ -232,22 +330,23 @@ describe("processImageGenerate", () => {
 
     await processImageGenerate(
       imagePayload({ attemptId: "attempt_img_1", attemptNo: 1 }),
-      { enqueue, providers, acknowledgeCompletion },
+      makePipelineDeps(providers, { acknowledgeTerminalRecord }),
     );
 
-    expect(enqueue).not.toHaveBeenCalled();
-    expect(providers.blob.putPrivate).toHaveBeenCalledTimes(3);
-    expect(providers.blob.putPrivate).toHaveBeenLastCalledWith(expect.objectContaining({
-      key: "gen/completion-manifests/attempt_img_1/completion.json",
+    expect(providers.blob.putPrivate).not.toHaveBeenCalled();
+    expect(providers.blob.putPrivateIfAbsent).toHaveBeenCalledWith(expect.objectContaining({
+      key: "gen/terminal-records/attempt_img_1/terminal.json",
       contentType: "application/json",
     }));
-    expect(acknowledgeCompletion).toHaveBeenCalledWith(expect.objectContaining({
-      manifestChecksum: expect.stringMatching(/^[a-f0-9]{64}$/),
-      manifest: expect.objectContaining({
+    expect(acknowledgeTerminalRecord).toHaveBeenCalledWith(expect.objectContaining({
+      terminalRecordChecksum: expect.stringMatching(/^[a-f0-9]{64}$/),
+      terminalRecord: expect.objectContaining({
+        outcome: "succeeded",
         attemptId: "attempt_img_1",
         generationJobId: "job_img_1",
         model: "mock-image",
-        provider: "backend",
+        provider: env.IMAGE_PROVIDER,
+        providerInvoked: true,
         providerRequestId: "provider-request-image-1",
         accounting: {
           usage: { images: 2 },
@@ -260,46 +359,81 @@ describe("processImageGenerate", () => {
     }));
   });
 
-  it("replays a persisted manifest after an ACK interruption without invoking the provider again", async () => {
-    const enqueue = vi.fn(async (_: EnqueueInput) => {});
-    const acknowledgeCompletion = vi.fn(async () => {});
-    const manifest = {
-      version: 1 as const,
-      attemptId: "attempt_img_resume",
-      attemptNo: 1,
-      transportAttemptNo: 1,
-      providerIdempotencyKey: "generation:attempt_img_resume:provider",
-      requestId: "req_img_1",
-      generationJobId: "job_img_1",
-      mode: "image" as const,
-      provider: "mock-image",
-      providerRequestId: null,
-      completedAt: "2026-07-11T12:00:00.000Z",
-      assets: [{ ordinal: 0, key: "gen/job_img_1/image-1.png", contentType: "image/png", width: 1024, height: 1024, providerKey: null }],
-      usage: { gpuSeconds: 1.2, model: "mock-image" },
-    };
-    const providers = makeProviders();
-    providers.blob.getPrivate = vi.fn(async () => ({
-      ok: true as const,
-      data: { body: new TextEncoder().encode(JSON.stringify(manifest)), contentType: "application/json" },
-    }));
+  it("replays an image terminal record after relay interruption without invoking the provider twice", async () => {
+    const providers = makeProviders({ blob: makeMemoryBlob() });
+    const acknowledgeTerminalRecord = vi.fn()
+      .mockRejectedValueOnce(new Error("terminal relay unavailable"))
+      .mockResolvedValue(undefined);
+    const payload = imagePayload({ attemptId: "attempt_img_resume", attemptNo: 1 });
 
+    await expect(processImageGenerate(
+      payload,
+      makePipelineDeps(providers, { acknowledgeTerminalRecord }),
+    )).rejects.toThrow("terminal relay unavailable");
     await processImageGenerate(
-      imagePayload({ attemptId: manifest.attemptId, attemptNo: 1 }),
-      { enqueue, providers, acknowledgeCompletion },
+      payload,
+      makePipelineDeps(providers, { acknowledgeTerminalRecord, attemptsMade: 1 }),
     );
 
-    expect(providers.image.generate).not.toHaveBeenCalled();
+    expect(providers.image.generate).toHaveBeenCalledTimes(1);
+    expect(providers.moderation.check).toHaveBeenCalledTimes(1);
     expect(providers.blob.putPrivate).not.toHaveBeenCalled();
-    expect(enqueue).not.toHaveBeenCalled();
-    expect(acknowledgeCompletion).toHaveBeenCalledWith(expect.objectContaining({
-      manifestRef: `gen/completion-manifests/${manifest.attemptId}/completion.json`,
-      manifest,
+    expect(providers.blob.putPrivateIfAbsent).toHaveBeenCalledTimes(3);
+    expect(acknowledgeTerminalRecord).toHaveBeenCalledTimes(2);
+    expect(acknowledgeTerminalRecord).toHaveBeenLastCalledWith(expect.objectContaining({
+      terminalRecordRef: "gen/terminal-records/attempt_img_resume/terminal.json",
+      terminalRecord: expect.objectContaining({ outcome: "succeeded" }),
     }));
   });
 
+  it("fails closed before moderation when the pinned provider requires another adapter", async () => {
+    process.env.GEN_IMAGE_PROVIDER = "backend";
+    const providers = makeProviders();
+    const deps = makePipelineDeps(providers);
+
+    await expect(processImageGenerate(
+      imagePayload({ provider: "pipeline" }),
+      deps,
+    )).rejects.toThrow(
+      "Pinned image provider pipeline requires GEN_IMAGE_PROVIDER=pipeline; configured=backend",
+    );
+
+    expect(providers.moderation.check).not.toHaveBeenCalled();
+    expect(providers.image.generate).not.toHaveBeenCalled();
+    expect(providers.blob.putPrivateIfAbsent).not.toHaveBeenCalled();
+  });
+
+  it("replays a persisted terminal record before checking a drifted adapter", async () => {
+    process.env.GEN_IMAGE_PROVIDER = "pipeline";
+    const providers = makeProviders({ blob: makeMemoryBlob() });
+    const acknowledgeTerminalRecord = vi.fn()
+      .mockRejectedValueOnce(new Error("terminal relay unavailable"))
+      .mockResolvedValue(undefined);
+    const payload = imagePayload({
+      provider: "pipeline",
+      attemptId: "attempt_img_adapter_drift",
+      attemptNo: 1,
+    });
+
+    await expect(processImageGenerate(
+      payload,
+      makePipelineDeps(providers, { acknowledgeTerminalRecord }),
+    )).rejects.toThrow("terminal relay unavailable");
+    process.env.GEN_IMAGE_PROVIDER = "backend";
+    await processImageGenerate(
+      payload,
+      makePipelineDeps(providers, {
+        acknowledgeTerminalRecord,
+        attemptsMade: 1,
+      }),
+    );
+
+    expect(providers.image.generate).toHaveBeenCalledTimes(1);
+    expect(providers.moderation.check).toHaveBeenCalledTimes(1);
+    expect(acknowledgeTerminalRecord).toHaveBeenCalledTimes(2);
+  });
+
   it("hydrates reference image storage keys before calling the image provider", async () => {
-    const enqueue = vi.fn(async (_: EnqueueInput) => {});
     const imageGenerate = vi.fn(async () => ({
       ok: true as const,
       data: {
@@ -318,6 +452,11 @@ describe("processImageGenerate", () => {
         putPrivate: vi.fn(async (input) => ({
           ok: true as const,
           data: { key: input.key, size: input.body.byteLength },
+        })),
+        putPrivateIfAbsent: successfulPutPrivateIfAbsent(),
+        delete: vi.fn(async () => ({
+          ok: true as const,
+          data: { deleted: true as const },
         })),
         signGetUrl: vi.fn(async (input) => ({
           ok: true as const,
@@ -341,7 +480,7 @@ describe("processImageGenerate", () => {
           },
         ],
       }),
-      { enqueue, providers },
+      makePipelineDeps(providers),
     );
 
     expect(imageGenerate).toHaveBeenCalledWith(
@@ -360,7 +499,6 @@ describe("processImageGenerate", () => {
   });
 
   it("fails closed before the provider when any pinned reference cannot be hydrated", async () => {
-    const enqueue = vi.fn(async (_: EnqueueInput) => {});
     const imageGenerate = vi.fn(async () => ({
       ok: true as const,
       data: {
@@ -379,6 +517,11 @@ describe("processImageGenerate", () => {
         putPrivate: vi.fn(async (input) => ({
           ok: true as const,
           data: { key: input.key, size: input.body.byteLength },
+        })),
+        putPrivateIfAbsent: successfulPutPrivateIfAbsent(),
+        delete: vi.fn(async () => ({
+          ok: true as const,
+          data: { deleted: true as const },
         })),
         signGetUrl: vi.fn(async (input) =>
           input.key === "identity/unavailable.webp"
@@ -399,6 +542,7 @@ describe("processImageGenerate", () => {
         ),
       },
     });
+    const deps = makePipelineDeps(providers);
 
     await expect(
       processImageGenerate(
@@ -417,17 +561,16 @@ describe("processImageGenerate", () => {
             },
           ],
         }),
-        { enqueue, providers },
+        deps,
       ),
     ).rejects.toThrow(
       "Pinned image references could not be hydrated: anchor-unavailable",
     );
     expect(imageGenerate).not.toHaveBeenCalled();
-    expect(enqueue).not.toHaveBeenCalled();
+    expect(deps.acknowledgeTerminalRecord).not.toHaveBeenCalled();
   });
 
   it("downloads provider asset URLs before writing blobs", async () => {
-    const enqueue = vi.fn(async (_: EnqueueInput) => {});
     globalThis.fetch = vi.fn(
       async () => new Response("downloaded-image", { status: 200 }),
     ) as typeof fetch;
@@ -450,23 +593,24 @@ describe("processImageGenerate", () => {
       },
     });
 
-    await processImageGenerate(imagePayload({ count: 1 }), { enqueue, providers });
+    const deps = makePipelineDeps(providers);
+    await processImageGenerate(imagePayload({ count: 1 }), deps);
 
     expect(fetch).toHaveBeenCalledWith(
       "https://pipeline-assets.test/job_img_1.webp",
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
-    expect(providers.blob.putPrivate).toHaveBeenCalledWith({
+    expect(providers.blob.putPrivateIfAbsent).toHaveBeenCalledWith({
       key: "gen/job_img_1/image-1.webp",
       body: new TextEncoder().encode("downloaded-image"),
       contentType: "image/webp",
     });
-    const [input] = enqueue.mock.calls[0];
-    expect((input.payload as Record<string, unknown>).kind).toBe("generation.completed");
+    expect(deps.acknowledgeTerminalRecord).toHaveBeenCalledWith(expect.objectContaining({
+      terminalRecord: expect.objectContaining({ outcome: "succeeded" }),
+    }));
   });
 
-  it("enqueues generation.failed when an image provider returns no assets", async () => {
-    const enqueue = vi.fn(async (_: EnqueueInput) => {});
+  it("persists and acknowledges a failed terminal record when an image provider returns no assets", async () => {
     const providers = makeProviders({
       image: {
         generate: vi.fn(async () => ({
@@ -475,21 +619,26 @@ describe("processImageGenerate", () => {
         })),
       },
     });
+    const acknowledgeTerminalRecord = vi.fn(async (_: GenerationTerminalRecordIngest) => {});
+    const recordTransportExecution = vi.fn(async () => {});
 
-    await processImageGenerate(imagePayload(), { enqueue, providers });
+    await processImageGenerate(imagePayload(), {
+      providers,
+      acknowledgeTerminalRecord,
+      recordTransportExecution,
+    });
 
     expect(providers.blob.putPrivate).not.toHaveBeenCalled();
-    expect(enqueue).toHaveBeenCalledTimes(1);
-    const [input] = enqueue.mock.calls[0];
-    expect(input.dedupeKey).toBe(idempotencyKeys.generationFinalize("job_img_1", "failed"));
-    expect((input.payload as Record<string, unknown>).kind).toBe("generation.failed");
-    expect(((input.payload as Record<string, unknown>).error as Record<string, unknown>).code).toBe(
-      "empty_provider_result",
-    );
+    expect(providers.blob.putPrivateIfAbsent).toHaveBeenCalledTimes(2);
+    expect(acknowledgeTerminalRecord).toHaveBeenCalledWith(expect.objectContaining({
+      terminalRecord: expect.objectContaining({
+        outcome: "failed",
+        error: expect.objectContaining({ code: "empty_provider_result" }),
+      }),
+    }));
   });
 
   it("fails instead of fabricating pixels when the provider returns no bytes or URL", async () => {
-    const enqueue = vi.fn(async (_: EnqueueInput) => {});
     const providers = makeProviders({
       image: {
         generate: vi.fn(async () => ({
@@ -505,26 +654,21 @@ describe("processImageGenerate", () => {
         })),
       },
     });
+    const deps = makePipelineDeps(providers, { attemptsMade: 0, maxAttempts: 1 });
 
-    await processImageGenerate(imagePayload({ count: 1 }), {
-      enqueue,
-      providers,
-      attemptsMade: 0,
-      maxAttempts: 1,
-    });
+    await processImageGenerate(imagePayload({ count: 1 }), deps);
 
     expect(providers.blob.putPrivate).not.toHaveBeenCalled();
-    expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({
-      dedupeKey: idempotencyKeys.generationFinalize("job_img_1", "failed"),
-      payload: expect.objectContaining({
-        kind: "generation.failed",
+    expect(providers.blob.putPrivateIfAbsent).toHaveBeenCalledTimes(2);
+    expect(deps.acknowledgeTerminalRecord).toHaveBeenCalledWith(expect.objectContaining({
+      terminalRecord: expect.objectContaining({
+        outcome: "failed",
         error: expect.objectContaining({ code: "asset_body_missing" }),
       }),
     }));
   });
 
-  it("enqueues generation.failed when an image provider returns a degenerate PNG", async () => {
-    const enqueue = vi.fn(async (_: EnqueueInput) => {});
+  it("persists a failed terminal record when an image provider returns a degenerate PNG", async () => {
     const providers = makeProviders({
       image: {
         generate: vi.fn(async () => ({
@@ -543,21 +687,21 @@ describe("processImageGenerate", () => {
         })),
       },
     });
+    const deps = makePipelineDeps(providers);
 
-    await processImageGenerate(imagePayload({ count: 1 }), { enqueue, providers });
+    await processImageGenerate(imagePayload({ count: 1 }), deps);
 
     expect(providers.blob.putPrivate).not.toHaveBeenCalled();
-    expect(enqueue).toHaveBeenCalledTimes(1);
-    const [input] = enqueue.mock.calls[0];
-    expect(input.dedupeKey).toBe(idempotencyKeys.generationFinalize("job_img_1", "failed"));
-    expect((input.payload as Record<string, unknown>).kind).toBe("generation.failed");
-    expect(((input.payload as Record<string, unknown>).error as Record<string, unknown>).code).toBe(
-      "asset_quality_failed",
-    );
+    expect(providers.blob.putPrivateIfAbsent).toHaveBeenCalledTimes(2);
+    expect(deps.acknowledgeTerminalRecord).toHaveBeenCalledWith(expect.objectContaining({
+      terminalRecord: expect.objectContaining({
+        outcome: "failed",
+        error: expect.objectContaining({ code: "asset_quality_failed" }),
+      }),
+    }));
   });
 
   it("rejects a multi-panel identity candidate before persisting any artifact", async () => {
-    const enqueue = vi.fn(async (_: EnqueueInput) => {});
     const providers = makeProviders({
       image: {
         generate: vi.fn(async () => ({
@@ -576,6 +720,7 @@ describe("processImageGenerate", () => {
         })),
       },
     });
+    const deps = makePipelineDeps(providers);
 
     await processImageGenerate(
       imagePayload({
@@ -584,13 +729,14 @@ describe("processImageGenerate", () => {
           compositionRequirement: "single_subject_single_frame",
         },
       }),
-      { enqueue, providers },
+      deps,
     );
 
     expect(providers.blob.putPrivate).not.toHaveBeenCalled();
-    expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({
-      payload: expect.objectContaining({
-        kind: "generation.failed",
+    expect(providers.blob.putPrivateIfAbsent).toHaveBeenCalledTimes(2);
+    expect(deps.acknowledgeTerminalRecord).toHaveBeenCalledWith(expect.objectContaining({
+      terminalRecord: expect.objectContaining({
+        outcome: "failed",
         error: expect.objectContaining({
           code: "asset_quality_failed",
           message: expect.stringMatching(/multiple panels|contact sheet/i),
@@ -599,17 +745,35 @@ describe("processImageGenerate", () => {
     }));
   });
 
-  it("enqueues generation.failed on final blob persistence failure", async () => {
-    const enqueue = vi.fn(async (_: EnqueueInput) => {});
+  it("persists a failed terminal record on final blob persistence failure", async () => {
     const providers = makeProviders({
       blob: {
-        putPrivate: vi.fn(async () => ({
-          ok: false as const,
-          error: {
-            code: "blob_write_failed",
-            message: "object store unavailable",
-            retryable: true,
-          },
+        putPrivate: vi.fn(async (input) => ({
+          ok: true as const,
+          data: { key: input.key, size: input.body.byteLength },
+        })),
+        putPrivateIfAbsent: vi.fn(async (input) =>
+          input.key.includes("/image-")
+            ? {
+                ok: false as const,
+                error: {
+                  code: "blob_write_failed",
+                  message: "object store unavailable",
+                  retryable: true,
+                },
+              }
+            : {
+                ok: true as const,
+                data: {
+                  key: input.key,
+                  size: input.body.byteLength,
+                  created: true,
+                },
+              }
+        ),
+        delete: vi.fn(async () => ({
+          ok: true as const,
+          data: { deleted: true as const },
         })),
         signGetUrl: vi.fn(async (input) => ({
           ok: true as const,
@@ -617,24 +781,68 @@ describe("processImageGenerate", () => {
         })),
       },
     });
+    const deps = makePipelineDeps(providers, { attemptsMade: 2, maxAttempts: 3 });
 
-    await processImageGenerate(imagePayload(), {
-      enqueue,
-      providers,
-      attemptsMade: 2,
-      maxAttempts: 3,
-    });
+    await processImageGenerate(imagePayload(), deps);
 
-    const [input] = enqueue.mock.calls[0];
-    expect(input.dedupeKey).toBe(idempotencyKeys.generationFinalize("job_img_1", "failed"));
-    expect((input.payload as Record<string, unknown>).kind).toBe("generation.failed");
-    expect(((input.payload as Record<string, unknown>).error as Record<string, unknown>).code).toBe(
-      "asset_persist_failed",
-    );
+    expect(deps.acknowledgeTerminalRecord).toHaveBeenCalledWith(expect.objectContaining({
+      terminalRecord: expect.objectContaining({
+        outcome: "failed",
+        error: expect.objectContaining({ code: "asset_persist_failed" }),
+      }),
+    }));
   });
 
-  it("enqueues generation.blocked on a provider content block", async () => {
-    const enqueue = vi.fn(async (_: EnqueueInput) => {});
+  it("rolls back blobs created before a later image asset persistence failure", async () => {
+    const deleteBlob = vi.fn(async () => ({
+      ok: true as const,
+      data: { deleted: true as const },
+    }));
+    const providers = makeProviders({
+      blob: {
+        putPrivate: vi.fn(async (input) => ({
+          ok: true as const,
+          data: { key: input.key, size: input.body.byteLength },
+        })),
+        putPrivateIfAbsent: vi.fn(async (input) =>
+          input.key.endsWith("/image-2.png")
+            ? {
+                ok: false as const,
+                error: {
+                  code: "blob_write_failed",
+                  message: "second image unavailable",
+                  retryable: true,
+                },
+              }
+            : {
+                ok: true as const,
+                data: {
+                  key: input.key,
+                  size: input.body.byteLength,
+                  created: true,
+                },
+              },
+        ),
+        delete: deleteBlob,
+        signGetUrl: vi.fn(async (input) => ({
+          ok: true as const,
+          data: { url: `mock://${input.key}` },
+        })),
+      },
+    });
+
+    await processImageGenerate(
+      imagePayload({ count: 2 }),
+      makePipelineDeps(providers, { attemptsMade: 2, maxAttempts: 3 }),
+    );
+
+    expect(deleteBlob).toHaveBeenCalledTimes(1);
+    expect(deleteBlob).toHaveBeenCalledWith({
+      key: "gen/job_img_1/image-1.png",
+    });
+  });
+
+  it("persists and acknowledges a blocked terminal record on a provider content block", async () => {
     const providers = makeProviders({
       image: {
         generate: vi.fn(async () => ({
@@ -643,18 +851,36 @@ describe("processImageGenerate", () => {
         })),
       },
     });
+    const acknowledgeTerminalRecord = vi.fn(async (_: GenerationTerminalRecordIngest) => {});
+    const recordTransportExecution = vi.fn(async () => {});
 
-    await processImageGenerate(imagePayload(), { enqueue, providers });
+    await processImageGenerate(imagePayload(), {
+      providers,
+      acknowledgeTerminalRecord,
+      recordTransportExecution,
+    });
 
     expect(providers.blob.putPrivate).not.toHaveBeenCalled();
-    expect(enqueue).toHaveBeenCalledTimes(1);
-    const [input] = enqueue.mock.calls[0];
-    expect(input.dedupeKey).toBe(idempotencyKeys.generationFinalize("job_img_1", "blocked"));
-    expect((input.payload as Record<string, unknown>).kind).toBe("generation.blocked");
+    expect(providers.blob.putPrivateIfAbsent).toHaveBeenCalledTimes(2);
+    expect(acknowledgeTerminalRecord).toHaveBeenCalledWith(expect.objectContaining({
+      terminalRecord: expect.objectContaining({
+        outcome: "blocked",
+        providerInvoked: true,
+        block: {
+          policyCode: "content_blocked",
+          message: "blocked",
+          layer: "provider",
+        },
+      }),
+    }));
+    expect(recordTransportExecution).toHaveBeenCalledTimes(1);
+    expect(recordTransportExecution).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ status: "running" }),
+    );
   });
 
   it("throws (lets the queue retry) on a retryable provider error", async () => {
-    const enqueue = vi.fn(async (_: EnqueueInput) => {});
     const recordTransportExecution = vi.fn(async () => {});
     const providers = makeProviders({
       image: {
@@ -665,74 +891,75 @@ describe("processImageGenerate", () => {
         })),
       },
     });
+    const deps = makePipelineDeps(providers, {
+      attemptsMade: 0,
+      maxAttempts: 3,
+      recordTransportExecution,
+    });
 
     await expect(
-      processImageGenerate(imagePayload(), {
-        enqueue,
-        providers,
-        attemptsMade: 0,
-        maxAttempts: 3,
-        recordTransportExecution,
-      }),
+      processImageGenerate(imagePayload(), deps),
     ).rejects.toThrow("try again");
-    expect(enqueue).not.toHaveBeenCalled();
+    expect(deps.acknowledgeTerminalRecord).not.toHaveBeenCalled();
     expect(recordTransportExecution).toHaveBeenNthCalledWith(1, expect.objectContaining({ transportAttemptNo: 1, status: "running", idempotencyKey: "generation:job_img_1:1:provider" }));
     expect(recordTransportExecution).toHaveBeenNthCalledWith(2, expect.objectContaining({ transportAttemptNo: 1, status: "failed" }));
   });
 
   it("does not replay an ambiguous invocation when the provider lacks deterministic idempotency", async () => {
-    const enqueue = vi.fn(async (_: EnqueueInput) => {});
     const recordTransportExecution = vi.fn(async () => {});
     const providers = makeProviders({
       image: {
         generate: vi.fn(async () => ({ ok: false as const, error: { code: "timeout", message: "provider outcome unknown", retryable: true } })),
       },
     });
-
-    await processImageGenerate(imagePayload({ attemptId: "attempt-non-replayable", attemptNo: 1 }), {
-      enqueue,
-      providers,
+    const deps = makePipelineDeps(providers, {
       attemptsMade: 0,
       maxAttempts: 3,
       recordTransportExecution,
     });
 
+    await processImageGenerate(
+      imagePayload({ attemptId: "attempt-non-replayable", attemptNo: 1 }),
+      deps,
+    );
+
     expect(providers.image.generate).toHaveBeenCalledTimes(1);
-    expect(recordTransportExecution).toHaveBeenLastCalledWith(expect.objectContaining({ status: "unknown", transportAttemptNo: 1 }));
-    expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({
-      payload: expect.objectContaining({
-        kind: "generation.failed",
-        error: expect.objectContaining({ code: "ambiguous_non_replayable", attemptOutcome: "unknown", retryability: "not_retryable" }),
+    expect(recordTransportExecution).toHaveBeenCalledTimes(1);
+    expect(recordTransportExecution).toHaveBeenLastCalledWith(expect.objectContaining({ status: "running", transportAttemptNo: 1 }));
+    expect(deps.acknowledgeTerminalRecord).toHaveBeenCalledWith(expect.objectContaining({
+      terminalRecord: expect.objectContaining({
+        outcome: "unknown",
+        error: expect.objectContaining({ code: "ambiguous_non_replayable", retryability: "not_retryable" }),
       }),
     }));
   });
 
-  it("enqueues generation.failed when retryable errors hit the final attempt", async () => {
-    const enqueue = vi.fn(async (_: EnqueueInput) => {});
+  it("persists a failed terminal record when retryable errors hit the final attempt", async () => {
     const providers = makeProviders({
       image: {
+        retryCapabilities: {
+          deterministicIdempotencyKey: true,
+          retryableFailureCodes: ["timeout"],
+        },
         generate: vi.fn(async () => ({
           ok: false as const,
           error: { code: "timeout", message: "timed out", retryable: true },
         })),
       },
     });
+    const deps = makePipelineDeps(providers, { attemptsMade: 2, maxAttempts: 3 });
 
-    await processImageGenerate(imagePayload(), {
-      enqueue,
-      providers,
-      attemptsMade: 2,
-      maxAttempts: 3,
-    });
+    await processImageGenerate(imagePayload(), deps);
 
-    expect(enqueue).toHaveBeenCalledTimes(1);
-    const [input] = enqueue.mock.calls[0];
-    expect(input.dedupeKey).toBe(idempotencyKeys.generationFinalize("job_img_1", "failed"));
-    expect((input.payload as Record<string, unknown>).kind).toBe("generation.failed");
+    expect(deps.acknowledgeTerminalRecord).toHaveBeenCalledWith(expect.objectContaining({
+      terminalRecord: expect.objectContaining({
+        outcome: "failed",
+        error: expect.objectContaining({ code: "timeout" }),
+      }),
+    }));
   });
 
-  it("enqueues generation.blocked when input moderation blocks before provider work", async () => {
-    const enqueue = vi.fn(async (_: EnqueueInput) => {});
+  it("persists a blocked terminal record when input moderation blocks before provider work", async () => {
     const providers = makeProviders({
       moderation: {
         check: vi.fn(async () => ({
@@ -741,104 +968,52 @@ describe("processImageGenerate", () => {
         })),
       },
     });
+    const deps = makePipelineDeps(providers);
 
-    await processImageGenerate(imagePayload(), { enqueue, providers });
+    await processImageGenerate(imagePayload(), deps);
 
     expect(providers.image.generate).not.toHaveBeenCalled();
-    const [input] = enqueue.mock.calls[0];
-    expect(input.dedupeKey).toBe(idempotencyKeys.generationFinalize("job_img_1", "blocked"));
-    expect((input.payload as Record<string, unknown>).kind).toBe("generation.blocked");
+    expect(deps.acknowledgeTerminalRecord).toHaveBeenCalledWith(expect.objectContaining({
+      terminalRecord: expect.objectContaining({
+        outcome: "blocked",
+        providerInvoked: false,
+        block: expect.objectContaining({ policyCode: "UNDERAGE", layer: "input" }),
+      }),
+    }));
+  });
+
+  it("retries moderation infrastructure failure without fabricating a provider terminal", async () => {
+    const providers = makeProviders({
+      moderation: {
+        check: vi.fn(async () => ({
+          ok: false as const,
+          error: {
+            code: "moderation_unavailable",
+            message: "moderation service unavailable",
+            retryable: true,
+          },
+        })),
+      },
+    });
+    const deps = makePipelineDeps(providers);
+
+    await expect(processImageGenerate(imagePayload(), deps)).rejects.toThrow(
+      "Input moderation failed",
+    );
+    expect(providers.image.generate).not.toHaveBeenCalled();
+    expect(deps.recordTransportExecution).not.toHaveBeenCalled();
+    expect(deps.acknowledgeTerminalRecord).not.toHaveBeenCalled();
   });
 
   it("rejects an invalid payload before touching any provider", async () => {
-    const enqueue = vi.fn(async (_: EnqueueInput) => {});
     const providers = makeProviders();
+    const deps = makePipelineDeps(providers);
 
     await expect(
-      processImageGenerate(imagePayload({ count: 99 as unknown as 4 }), { enqueue, providers }),
+      processImageGenerate(imagePayload({ count: 99 as unknown as 4 }), deps),
     ).rejects.toThrow();
     expect(providers.image.generate).not.toHaveBeenCalled();
-    expect(enqueue).not.toHaveBeenCalled();
-  });
-});
-
-describe("processCharacterPreviewGenerate", () => {
-  it("persists a real provider asset and returns a preview completion to main", async () => {
-    const enqueue = vi.fn(async (_: EnqueueInput) => {});
-    const providers = makeProviders({
-      image: {
-        generate: vi.fn(async () => ({
-          ok: true as const,
-          data: {
-            assets: [{
-              key: "provider/preview.png",
-              width: 832,
-              height: 1024,
-              contentType: "image/png",
-              body: patternedPng(4, 4),
-            }],
-          },
-        })),
-      },
-    });
-
-    await processCharacterPreviewGenerate(previewPayload(), { enqueue, providers });
-
-    expect(providers.blob.putPrivate).toHaveBeenCalledWith({
-      key: "preview/preview-job-1/image-1.png",
-      body: expect.anything(),
-      contentType: "image/png",
-    });
-    expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({
-      queue: MAIN_QUEUES.aiFinalize,
-      dedupeKey: idempotencyKeys.characterPreviewFinalize(
-        "preview-job-1",
-        "completed",
-      ),
-      payload: expect.objectContaining({
-        kind: "character.preview.completed",
-        provider: "backend",
-        previewJobId: "preview-job-1",
-      }),
-    }));
-  });
-
-  it("fails closed when a provider returns only a key without bytes or URL", async () => {
-    const enqueue = vi.fn(async (_: EnqueueInput) => {});
-    const providers = makeProviders({
-      image: {
-        generate: vi.fn(async () => ({
-          ok: true as const,
-          data: {
-            assets: [{
-              key: "provider/missing-preview.png",
-              width: 832,
-              height: 1024,
-              contentType: "image/png",
-            }],
-          },
-        })),
-      },
-    });
-
-    await processCharacterPreviewGenerate(previewPayload(), {
-      enqueue,
-      providers,
-      attemptsMade: 0,
-      maxAttempts: 1,
-    });
-
-    expect(providers.blob.putPrivate).not.toHaveBeenCalled();
-    expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({
-      dedupeKey: idempotencyKeys.characterPreviewFinalize(
-        "preview-job-1",
-        "failed",
-      ),
-      payload: expect.objectContaining({
-        kind: "character.preview.failed",
-        error: expect.objectContaining({ code: "asset_body_missing" }),
-      }),
-    }));
+    expect(deps.acknowledgeTerminalRecord).not.toHaveBeenCalled();
   });
 });
 
@@ -953,8 +1128,32 @@ function crc32(data: Buffer) {
 }
 
 describe("processVideoGenerate", () => {
+  it("keeps video objects isolated between Attempts of the same request", async () => {
+    const blob = makeMemoryBlob();
+    const providers = makeProviders({ blob });
+    const attemptIds = ["attempt_vid_isolated_1", "attempt_vid_isolated_2"];
+
+    for (const [index, attemptId] of attemptIds.entries()) {
+      await processVideoGenerate(
+        videoPayload({
+          attemptId,
+          attemptNo: index + 1,
+          outputPrefix: `gen/job_vid_1/attempts/${attemptId}/`,
+        }),
+        makePipelineDeps(providers),
+      );
+    }
+
+    const videoKeys = vi.mocked(blob.putPrivate).mock.calls.map(
+      ([input]) => input.key,
+    );
+    expect(videoKeys).toEqual([
+      "gen/job_vid_1/attempts/attempt_vid_isolated_1/video.mp4",
+      "gen/job_vid_1/attempts/attempt_vid_isolated_2/video.mp4",
+    ]);
+  });
+
   it("passes the pinned source image to the video provider", async () => {
-    const enqueue = vi.fn(async (_: EnqueueInput) => {});
     const providers = makeProviders();
     const referenceImages = [{
       assetId: "source-1",
@@ -963,10 +1162,7 @@ describe("processVideoGenerate", () => {
       contentType: "image/webp",
     }];
 
-    await processVideoGenerate(videoPayload({ referenceImages }), {
-      enqueue,
-      providers,
-    });
+    await processVideoGenerate(videoPayload({ referenceImages }), makePipelineDeps(providers));
 
     expect(providers.video.generate).toHaveBeenCalledWith(
       expect.objectContaining({ referenceImages }),
@@ -974,7 +1170,6 @@ describe("processVideoGenerate", () => {
   });
 
   it("fails closed when a successful provider response has no video bytes or URL", async () => {
-    const enqueue = vi.fn(async (_: EnqueueInput) => {});
     const providers = makeProviders({
       video: {
         generate: vi.fn(async () => ({
@@ -989,66 +1184,129 @@ describe("processVideoGenerate", () => {
         })),
       },
     });
+    const deps = makePipelineDeps(providers, { attemptsMade: 2, maxAttempts: 3 });
 
-    await processVideoGenerate(videoPayload({ seconds: 4 }), {
-      enqueue,
-      providers,
-      attemptsMade: 2,
-      maxAttempts: 3,
-    });
+    await processVideoGenerate(videoPayload({ seconds: 4 }), deps);
 
     expect(providers.blob.putPrivate).not.toHaveBeenCalled();
-    expect(enqueue).toHaveBeenCalledWith(
+    expect(providers.blob.putPrivateIfAbsent).toHaveBeenCalledTimes(2);
+    expect(deps.acknowledgeTerminalRecord).toHaveBeenCalledWith(
       expect.objectContaining({
-        payload: expect.objectContaining({
-          kind: "generation.failed",
+        terminalRecord: expect.objectContaining({
+          outcome: "failed",
           error: expect.objectContaining({ code: "asset_persist_failed" }),
         }),
       }),
     );
   });
 
-  it("writes a single blob and enqueues generation.completed with seconds asset", async () => {
-    const enqueue = vi.fn(async (_: EnqueueInput) => {});
+  it("persists and acknowledges a succeeded video terminal record", async () => {
     const recordTransportExecution = vi.fn(async () => {});
     const providers = makeProviders();
+    const acknowledgeTerminalRecord = vi.fn(async (_: GenerationTerminalRecordIngest) => {});
 
-    await processVideoGenerate(videoPayload(), { enqueue, providers, recordTransportExecution });
+    await processVideoGenerate(videoPayload(), {
+      providers,
+      recordTransportExecution,
+      acknowledgeTerminalRecord,
+    });
 
     expect(providers.blob.putPrivate).toHaveBeenCalledTimes(1);
+    expect(providers.blob.putPrivateIfAbsent).toHaveBeenCalledTimes(1);
     expect(providers.blob.putPrivate).toHaveBeenCalledWith({
       key: "gen/job_vid_1/video.mp4",
       body: mockVideoMp4Bytes(),
       contentType: "video/mp4",
     });
-    expect(enqueue).toHaveBeenCalledTimes(1);
     expect(recordTransportExecution).toHaveBeenNthCalledWith(1, expect.objectContaining({
       provider: env.VIDEO_PROVIDER,
       model: "mock-video",
       status: "running",
     }));
+    expect(acknowledgeTerminalRecord).toHaveBeenCalledWith(expect.objectContaining({
+      terminalRecord: expect.objectContaining({
+        outcome: "succeeded",
+        mode: "video",
+        provider: env.VIDEO_PROVIDER,
+        providerInvoked: true,
+        model: "mock-video",
+        assets: [{
+          ordinal: 0,
+          key: "gen/job_vid_1/video.mp4",
+          seconds: 6,
+          contentType: "video/mp4",
+          providerKey: "mock/videos/seed_v1.mp4",
+        }],
+      }),
+    }));
+  });
 
-    const [input] = enqueue.mock.calls[0];
-    expect(input.queue).toBe(MAIN_QUEUES.aiFinalize);
-    expect(input.dedupeKey).toBe(idempotencyKeys.generationFinalize("job_vid_1", "completed"));
+  it("replays a video terminal record after relay interruption without invoking the provider twice", async () => {
+    const providers = makeProviders({ blob: makeMemoryBlob() });
+    const acknowledgeTerminalRecord = vi.fn()
+      .mockRejectedValueOnce(new Error("terminal relay unavailable"))
+      .mockResolvedValue(undefined);
+    const payload = videoPayload({ attemptId: "attempt_vid_resume", attemptNo: 1 });
 
-    const payload = input.payload as Record<string, unknown>;
-    expect(payload.kind).toBe("generation.completed");
-    expect(payload.mode).toBe("video");
-    expect(payload.provider).toBe(env.VIDEO_PROVIDER);
-    expect(payload.model).toBe("mock-video");
-    expect(payload.assets).toEqual([
-      {
-        key: "gen/job_vid_1/video.mp4",
-        seconds: 6,
-        contentType: "video/mp4",
-        providerKey: "mock/videos/seed_v1.mp4",
+    await expect(processVideoGenerate(
+      payload,
+      makePipelineDeps(providers, { acknowledgeTerminalRecord }),
+    )).rejects.toThrow("terminal relay unavailable");
+    await processVideoGenerate(
+      payload,
+      makePipelineDeps(providers, { acknowledgeTerminalRecord, attemptsMade: 1 }),
+    );
+
+    expect(providers.video.generate).toHaveBeenCalledTimes(1);
+    expect(providers.moderation.check).toHaveBeenCalledTimes(1);
+    expect(providers.blob.putPrivate).toHaveBeenCalledTimes(1);
+    expect(providers.blob.putPrivateIfAbsent).toHaveBeenCalledTimes(1);
+    expect(acknowledgeTerminalRecord).toHaveBeenCalledTimes(2);
+    expect(acknowledgeTerminalRecord).toHaveBeenLastCalledWith(expect.objectContaining({
+      terminalRecordRef: "gen/terminal-records/attempt_vid_resume/terminal.json",
+      terminalRecord: expect.objectContaining({ outcome: "succeeded" }),
+    }));
+  });
+
+  it("does not replay an ambiguous video invocation without deterministic idempotency", async () => {
+    const providers = makeProviders({
+      video: {
+        generate: vi.fn(async () => ({
+          ok: false as const,
+          error: {
+            code: "timeout",
+            message: "provider outcome unknown",
+            retryable: true,
+          },
+        })),
       },
-    ]);
+    });
+    const deps = makePipelineDeps(providers, { attemptsMade: 0, maxAttempts: 3 });
+
+    await processVideoGenerate(
+      videoPayload({ attemptId: "attempt_vid_unknown", attemptNo: 1 }),
+      deps,
+    );
+
+    expect(providers.video.generate).toHaveBeenCalledTimes(1);
+    expect(deps.recordTransportExecution).toHaveBeenCalledTimes(1);
+    expect(deps.recordTransportExecution).toHaveBeenLastCalledWith(
+      expect.objectContaining({ status: "running" }),
+    );
+    expect(deps.acknowledgeTerminalRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        terminalRecord: expect.objectContaining({
+          outcome: "unknown",
+          error: expect.objectContaining({
+            code: "ambiguous_non_replayable",
+            retryability: "not_retryable",
+          }),
+        }),
+      }),
+    );
   });
 
   it("downloads provider video asset URLs before writing blobs", async () => {
-    const enqueue = vi.fn(async (_: EnqueueInput) => {});
     globalThis.fetch = vi.fn(
       async () => new Response("downloaded-video", { status: 200 }),
     ) as typeof fetch;
@@ -1067,8 +1325,9 @@ describe("processVideoGenerate", () => {
         })),
       },
     });
+    const deps = makePipelineDeps(providers);
 
-    await processVideoGenerate(videoPayload({ seconds: 8 }), { enqueue, providers });
+    await processVideoGenerate(videoPayload({ seconds: 8 }), deps);
 
     expect(fetch).toHaveBeenCalledWith(
       "https://pipeline-assets.test/job_vid_1.mp4",
@@ -1079,21 +1338,33 @@ describe("processVideoGenerate", () => {
       body: new TextEncoder().encode("downloaded-video"),
       contentType: "video/mp4",
     });
-    const [input] = enqueue.mock.calls[0];
-    expect((input.payload as Record<string, unknown>).kind).toBe("generation.completed");
+    expect(deps.acknowledgeTerminalRecord).toHaveBeenCalledWith(expect.objectContaining({
+      terminalRecord: expect.objectContaining({ outcome: "succeeded" }),
+    }));
   });
 
-  it("enqueues generation.failed on final video blob persistence failure", async () => {
-    const enqueue = vi.fn(async (_: EnqueueInput) => {});
+  it("persists a failed terminal record on final video blob persistence failure", async () => {
     const providers = makeProviders({
       blob: {
-        putPrivate: vi.fn(async () => ({
-          ok: false as const,
-          error: {
-            code: "blob_write_failed",
-            message: "object store unavailable",
-            retryable: true,
-          },
+        putPrivate: vi.fn(async (input) =>
+          input.key.endsWith("/video.mp4")
+            ? {
+                ok: false as const,
+                error: {
+                  code: "blob_write_failed",
+                  message: "object store unavailable",
+                  retryable: true,
+                },
+              }
+            : {
+                ok: true as const,
+                data: { key: input.key, size: input.body.byteLength },
+              }
+        ),
+        putPrivateIfAbsent: successfulPutPrivateIfAbsent(),
+        delete: vi.fn(async () => ({
+          ok: true as const,
+          data: { deleted: true as const },
         })),
         signGetUrl: vi.fn(async (input) => ({
           ok: true as const,
@@ -1101,24 +1372,19 @@ describe("processVideoGenerate", () => {
         })),
       },
     });
+    const deps = makePipelineDeps(providers, { attemptsMade: 2, maxAttempts: 3 });
 
-    await processVideoGenerate(videoPayload(), {
-      enqueue,
-      providers,
-      attemptsMade: 2,
-      maxAttempts: 3,
-    });
+    await processVideoGenerate(videoPayload(), deps);
 
-    const [input] = enqueue.mock.calls[0];
-    expect(input.dedupeKey).toBe(idempotencyKeys.generationFinalize("job_vid_1", "failed"));
-    expect((input.payload as Record<string, unknown>).kind).toBe("generation.failed");
-    expect(((input.payload as Record<string, unknown>).error as Record<string, unknown>).code).toBe(
-      "asset_persist_failed",
-    );
+    expect(deps.acknowledgeTerminalRecord).toHaveBeenCalledWith(expect.objectContaining({
+      terminalRecord: expect.objectContaining({
+        outcome: "failed",
+        error: expect.objectContaining({ code: "asset_persist_failed" }),
+      }),
+    }));
   });
 
-  it("enqueues generation.blocked on a provider content block", async () => {
-    const enqueue = vi.fn(async (_: EnqueueInput) => {});
+  it("persists a blocked video terminal record on a provider content block", async () => {
     const providers = makeProviders({
       video: {
         generate: vi.fn(async () => ({
@@ -1127,12 +1393,508 @@ describe("processVideoGenerate", () => {
         })),
       },
     });
+    const deps = makePipelineDeps(providers);
 
-    await processVideoGenerate(videoPayload(), { enqueue, providers });
+    await processVideoGenerate(videoPayload(), deps);
 
     expect(providers.blob.putPrivate).not.toHaveBeenCalled();
-    const [input] = enqueue.mock.calls[0];
-    expect(input.dedupeKey).toBe(idempotencyKeys.generationFinalize("job_vid_1", "blocked"));
-    expect((input.payload as Record<string, unknown>).kind).toBe("generation.blocked");
+    expect(providers.blob.putPrivateIfAbsent).toHaveBeenCalledTimes(2);
+    expect(deps.acknowledgeTerminalRecord).toHaveBeenCalledWith(expect.objectContaining({
+      terminalRecord: expect.objectContaining({
+        outcome: "blocked",
+        providerInvoked: true,
+        block: expect.objectContaining({ layer: "provider" }),
+      }),
+    }));
+    expect(deps.recordTransportExecution).toHaveBeenCalledTimes(1);
+    expect(deps.recordTransportExecution).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ status: "running" }),
+    );
   });
+});
+
+type GenerationLifecycleOutcome = "succeeded" | "failed" | "unknown" | "blocked";
+
+function imageLifecycleResult(outcome: GenerationLifecycleOutcome) {
+  switch (outcome) {
+    case "succeeded":
+      return {
+        ok: true as const,
+        data: {
+          assets: [{
+            key: "provider/image.png",
+            width: 2,
+            height: 2,
+            contentType: "image/png",
+            body: Buffer.from(
+              "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAE0lEQVR4nGNgYGD4//8/GDMwAAAp5AX71ZPZmwAAAABJRU5ErkJggg==",
+              "base64",
+            ),
+          }],
+        },
+      };
+    case "failed":
+      return {
+        ok: false as const,
+        error: { code: "backend_error", message: "backend failed", retryable: false },
+      };
+    case "unknown":
+      return {
+        ok: false as const,
+        error: {
+          code: "backend_error",
+          message: "provider outcome unknown",
+          retryable: true,
+          outcome: "ambiguous" as const,
+        },
+      };
+    case "blocked":
+      return {
+        ok: false as const,
+        error: { code: "content_blocked", message: "provider blocked", retryable: false },
+      };
+  }
+}
+
+function videoLifecycleResult(outcome: GenerationLifecycleOutcome) {
+  switch (outcome) {
+    case "succeeded":
+      return {
+        ok: true as const,
+        data: {
+          asset: {
+            key: "provider/video.mp4",
+            seconds: 6,
+            contentType: "video/mp4",
+            body: mockVideoMp4Bytes(),
+          },
+        },
+      };
+    case "failed":
+      return {
+        ok: false as const,
+        error: { code: "backend_error", message: "backend failed", retryable: false },
+      };
+    case "unknown":
+      return {
+        ok: false as const,
+        error: {
+          code: "backend_error",
+          message: "provider outcome unknown",
+          retryable: true,
+          outcome: "ambiguous" as const,
+        },
+      };
+    case "blocked":
+      return {
+        ok: false as const,
+        error: { code: "content_blocked", message: "provider blocked", retryable: false },
+      };
+  }
+}
+
+function lifecycleHarness(
+  mode: "image" | "video",
+  outcome: GenerationLifecycleOutcome,
+  blob: GenProviders["blob"] = makeMemoryBlob(),
+) {
+  if (mode === "image") {
+    const generate = vi.fn(async () => imageLifecycleResult(outcome));
+    const providers = makeProviders({ image: { generate }, blob });
+    const payload = imagePayload({
+      attemptId: `attempt_contract_${mode}_${outcome}`,
+      attemptNo: 1,
+      count: 1,
+    });
+    return {
+      generate,
+      payload,
+      providers,
+      run: (deps: PipelineDeps) => processImageGenerate(payload, deps),
+    };
+  }
+
+  const generate = vi.fn(async () => videoLifecycleResult(outcome));
+  const providers = makeProviders({ video: { generate }, blob });
+  const payload = videoPayload({
+    attemptId: `attempt_contract_${mode}_${outcome}`,
+    attemptNo: 1,
+  });
+  return {
+    generate,
+    payload,
+    providers,
+    run: (deps: PipelineDeps) => processVideoGenerate(payload, deps),
+  };
+}
+
+describe.each(["image", "video"] as const)(
+  "%s generation lifecycle contract",
+  (mode) => {
+    it.each(["succeeded", "failed", "unknown", "blocked"] as const)(
+      "persists and relays the %s terminal outcome",
+      async (outcome) => {
+        const harness = lifecycleHarness(mode, outcome);
+        const acknowledgeTerminalRecord = vi.fn(async () => undefined);
+
+        await harness.run(makePipelineDeps(harness.providers, {
+          acknowledgeTerminalRecord,
+          attemptsMade: 0,
+          maxAttempts: 3,
+        }));
+
+        expect(harness.generate).toHaveBeenCalledTimes(1);
+        expect(acknowledgeTerminalRecord).toHaveBeenCalledWith(
+          expect.objectContaining({
+            terminalRecord: expect.objectContaining({ outcome, mode }),
+          }),
+        );
+      },
+    );
+
+    it("resumes relay admission from the terminal record without invoking the provider twice", async () => {
+      const harness = lifecycleHarness(mode, "succeeded");
+      const acknowledgeTerminalRecord = vi.fn()
+        .mockRejectedValueOnce(new Error("terminal relay unavailable"))
+        .mockResolvedValue(undefined);
+
+      await expect(harness.run(makePipelineDeps(harness.providers, {
+        acknowledgeTerminalRecord,
+      }))).rejects.toThrow("terminal relay unavailable");
+      await harness.run(makePipelineDeps(harness.providers, {
+        acknowledgeTerminalRecord,
+        attemptsMade: 1,
+      }));
+
+      expect(harness.generate).toHaveBeenCalledTimes(1);
+      expect(acknowledgeTerminalRecord).toHaveBeenCalledTimes(2);
+      expect(acknowledgeTerminalRecord.mock.calls[1]?.[0]).toEqual(
+        acknowledgeTerminalRecord.mock.calls[0]?.[0],
+      );
+    });
+  },
+);
+
+it("retries only video terminal relay admission on transport attempt two", async () => {
+  const harness = lifecycleHarness("video", "succeeded");
+  const acknowledgeTerminalRecord = vi.fn()
+    .mockRejectedValueOnce(new Error("terminal relay Redis unavailable"))
+    .mockResolvedValue(undefined);
+
+  await expect(harness.run(makePipelineDeps(harness.providers, {
+    acknowledgeTerminalRecord,
+    attemptsMade: 0,
+    maxAttempts: 3,
+  }))).rejects.toThrow("terminal relay Redis unavailable");
+  await expect(harness.run(makePipelineDeps(harness.providers, {
+    acknowledgeTerminalRecord,
+    attemptsMade: 1,
+    maxAttempts: 3,
+  }))).resolves.toBeUndefined();
+
+  expect(harness.generate).toHaveBeenCalledTimes(1);
+  expect(acknowledgeTerminalRecord).toHaveBeenCalledTimes(2);
+  expect(acknowledgeTerminalRecord.mock.calls[1]?.[0]).toEqual(
+    acknowledgeTerminalRecord.mock.calls[0]?.[0],
+  );
+});
+
+it("does not invoke a non-idempotent video provider again after artifact persistence fails", async () => {
+  const blob = makeMemoryBlob();
+  const persistInMemory = blob.putPrivate;
+  blob.putPrivate = vi.fn(async (input) =>
+    input.key.endsWith("/video.mp4")
+      ? {
+          ok: false as const,
+          error: {
+            code: "blob_write_failed",
+            message: "video blob unavailable",
+            retryable: true,
+          },
+        }
+      : persistInMemory(input),
+  );
+  const harness = lifecycleHarness("video", "succeeded", blob);
+  const acknowledgeTerminalRecord = vi.fn()
+    .mockRejectedValueOnce(new Error("terminal relay unavailable"))
+    .mockResolvedValue(undefined);
+
+  await expect(harness.run(makePipelineDeps(harness.providers, {
+    acknowledgeTerminalRecord,
+    attemptsMade: 0,
+    maxAttempts: 3,
+  }))).rejects.toThrow("terminal relay unavailable");
+  await harness.run(makePipelineDeps(harness.providers, {
+    acknowledgeTerminalRecord,
+    attemptsMade: 1,
+    maxAttempts: 3,
+  }));
+
+  expect(harness.generate).toHaveBeenCalledTimes(1);
+  expect(acknowledgeTerminalRecord).toHaveBeenCalledTimes(2);
+  expect(acknowledgeTerminalRecord).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      terminalRecord: expect.objectContaining({
+        outcome: "failed",
+        error: expect.objectContaining({
+          code: "asset_persist_failed",
+          retryability: "not_retryable",
+        }),
+      }),
+    }),
+  );
+});
+
+it("retries image artifact persistence only when provider replay is deterministic", async () => {
+  const blob = makeMemoryBlob();
+  const persistInMemory = blob.putPrivateIfAbsent;
+  let rejectFirstImageWrite = true;
+  blob.putPrivateIfAbsent = vi.fn(async (input) => {
+    if (input.key.endsWith("/image-1.png") && rejectFirstImageWrite) {
+      rejectFirstImageWrite = false;
+      return {
+        ok: false as const,
+        error: {
+          code: "blob_write_failed",
+          message: "image blob unavailable",
+          retryable: true,
+        },
+      };
+    }
+    return persistInMemory(input);
+  });
+  const generate = vi.fn(async (
+    _input: Parameters<GenProviders["image"]["generate"]>[0],
+  ) => imageLifecycleResult("succeeded"));
+  const providers = makeProviders({
+    image: {
+      retryCapabilities: {
+        deterministicIdempotencyKey: true,
+        retryableFailureCodes: [],
+      },
+      generate,
+    },
+    blob,
+  });
+  const payload = imagePayload({
+    attemptId: "attempt_deterministic_image_artifact_retry",
+    attemptNo: 1,
+    count: 1,
+  });
+
+  await expect(processImageGenerate(
+    payload,
+    makePipelineDeps(providers, { attemptsMade: 0, maxAttempts: 3 }),
+  )).rejects.toThrow("image blob unavailable");
+  await processImageGenerate(
+    payload,
+    makePipelineDeps(providers, { attemptsMade: 1, maxAttempts: 3 }),
+  );
+
+  expect(generate).toHaveBeenCalledTimes(2);
+  expect(generate.mock.calls[0]?.[0]?.requestId).toBe(
+    generate.mock.calls[1]?.[0]?.requestId,
+  );
+});
+
+describe.each(["image", "video"] as const)(
+  "%s terminal persistence safety",
+  (mode) => {
+    it("records unknown instead of replaying a non-idempotent provider", async () => {
+      const blob = makeMemoryBlob();
+      const persistIfAbsent = blob.putPrivateIfAbsent;
+      blob.putPrivateIfAbsent = vi.fn(async (input) =>
+        input.key.endsWith("/terminal.json")
+          ? {
+              ok: false as const,
+              error: {
+                code: "terminal_blob_unavailable",
+                message: `cannot persist ${input.key}`,
+                retryable: true,
+              },
+            }
+          : persistIfAbsent(input),
+      );
+      const harness = lifecycleHarness(mode, "succeeded", blob);
+      const recordTransportExecution = vi.fn(async () => undefined);
+      const acknowledgeTerminalRecord = vi.fn(async () => undefined);
+
+      await expect(harness.run(makePipelineDeps(harness.providers, {
+        recordTransportExecution,
+        acknowledgeTerminalRecord,
+        attemptsMade: 0,
+        maxAttempts: 3,
+      }))).resolves.toBeUndefined();
+
+      expect(harness.generate).toHaveBeenCalledTimes(1);
+      expect(acknowledgeTerminalRecord).not.toHaveBeenCalled();
+      expect(recordTransportExecution).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          status: "unknown",
+          error: expect.objectContaining({
+            code: "terminal_record_persist_failed",
+          }),
+        }),
+      );
+    });
+
+    it.each(["succeeded", "failed"] as const)(
+      "recovers a %s result from simultaneous blob and Main failure without a second provider call",
+      async (providerOutcome) => {
+      const blob = makeMemoryBlob();
+      const persistIfAbsent = blob.putPrivateIfAbsent;
+      let terminalBlobAvailable = false;
+      blob.putPrivateIfAbsent = vi.fn(async (input) =>
+        input.key.endsWith("/terminal.json") && !terminalBlobAvailable
+          ? {
+              ok: false as const,
+              error: {
+                code: "terminal_blob_unavailable",
+                message: "terminal object store unavailable",
+                retryable: true,
+              },
+            }
+          : persistIfAbsent(input),
+      );
+      const harness = lifecycleHarness(mode, providerOutcome, blob);
+      let mainAvailable = false;
+      const recordTransportExecution = vi.fn(async (input) => {
+        if (input.status === "unknown" && !mainAvailable) {
+          throw new Error("Main transport unavailable");
+        }
+      });
+      const acknowledgeTerminalRecord = vi.fn(async () => undefined);
+
+      await expect(harness.run(makePipelineDeps(harness.providers, {
+        recordTransportExecution,
+        acknowledgeTerminalRecord,
+        attemptsMade: 0,
+        maxAttempts: 3,
+      }))).rejects.toThrow(/could not persist or record terminal evidence/);
+
+      terminalBlobAvailable = true;
+      mainAvailable = true;
+      await harness.run(makePipelineDeps(harness.providers, {
+        recordTransportExecution,
+        acknowledgeTerminalRecord,
+        attemptsMade: 1,
+        maxAttempts: 3,
+      }));
+
+      expect(harness.generate).toHaveBeenCalledTimes(1);
+      expect(acknowledgeTerminalRecord).toHaveBeenCalledWith(
+        expect.objectContaining({
+          terminalRecord: expect.objectContaining({
+            outcome: "unknown",
+            error: expect.objectContaining({
+              code: "ambiguous_incomplete_provider_invocation",
+              retryability: "not_retryable",
+            }),
+          }),
+        }),
+      );
+      },
+    );
+  },
+);
+
+it("retries deterministic terminal persistence with the same provider key", async () => {
+  const blob = makeMemoryBlob();
+  const persistIfAbsent = blob.putPrivateIfAbsent;
+  let rejectFirstTerminalWrite = true;
+  blob.putPrivateIfAbsent = vi.fn(async (input) => {
+    if (input.key.endsWith("/terminal.json") && rejectFirstTerminalWrite) {
+      rejectFirstTerminalWrite = false;
+      return {
+        ok: false as const,
+        error: {
+          code: "terminal_blob_unavailable",
+          message: "terminal object store unavailable",
+          retryable: true,
+        },
+      };
+    }
+    return persistIfAbsent(input);
+  });
+  const generate = vi.fn(async (
+    _input: Parameters<GenProviders["image"]["generate"]>[0],
+  ) => imageLifecycleResult("succeeded"));
+  const providers = makeProviders({
+    image: {
+      retryCapabilities: {
+        deterministicIdempotencyKey: true,
+        retryableFailureCodes: [],
+      },
+      generate,
+    },
+    blob,
+  });
+  const payload = imagePayload({
+    attemptId: "attempt_deterministic_terminal_retry",
+    attemptNo: 1,
+    count: 1,
+  });
+
+  await expect(processImageGenerate(
+    payload,
+    makePipelineDeps(providers, { attemptsMade: 0, maxAttempts: 3 }),
+  )).rejects.toThrow("terminal object store unavailable");
+  await processImageGenerate(
+    payload,
+    makePipelineDeps(providers, { attemptsMade: 1, maxAttempts: 3 }),
+  );
+
+  expect(generate).toHaveBeenCalledTimes(2);
+  expect(generate.mock.calls[0]?.[0]?.requestId).toBe(
+    generate.mock.calls[1]?.[0]?.requestId,
+  );
+});
+
+it("records unknown when deterministic terminal persistence fails on the final attempt", async () => {
+  const blob = makeMemoryBlob();
+  const persistIfAbsent = blob.putPrivateIfAbsent;
+  blob.putPrivateIfAbsent = vi.fn(async (input) =>
+    input.key.endsWith("/terminal.json")
+      ? {
+          ok: false as const,
+          error: {
+            code: "terminal_blob_unavailable",
+            message: "terminal object store unavailable",
+            retryable: true,
+          },
+        }
+      : persistIfAbsent(input),
+  );
+  const generate = vi.fn(async () => imageLifecycleResult("succeeded"));
+  const providers = makeProviders({
+    image: {
+      retryCapabilities: {
+        deterministicIdempotencyKey: true,
+        retryableFailureCodes: [],
+      },
+      generate,
+    },
+    blob,
+  });
+  const recordTransportExecution = vi.fn(async () => undefined);
+
+  await processImageGenerate(
+    imagePayload({ attemptId: "attempt_deterministic_terminal_final" }),
+    makePipelineDeps(providers, {
+      attemptsMade: 2,
+      maxAttempts: 3,
+      recordTransportExecution,
+    }),
+  );
+
+  expect(generate).toHaveBeenCalledTimes(1);
+  expect(recordTransportExecution).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      status: "unknown",
+      error: expect.objectContaining({
+        code: "terminal_record_persist_failed",
+      }),
+    }),
+  );
 });

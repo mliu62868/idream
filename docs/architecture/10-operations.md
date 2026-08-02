@@ -90,6 +90,42 @@ config、chat service、chat model、voice、catalog 通过；legacy 8091 image 
 因 gateway 未运行失败。当前 `backend` smoke 独立通过，所以不能把该失败解释为
 ComfyUI/backend failure；同样不能把组合 pipeline suite 宣称为 pass。
 
+### Local ComfyUI runner（FP8 / 升级 runbook）
+
+PyTorch MPS 没有原生 Float8 dtype。runner（`/Users/kk/ComfyUI-Installs/idream (1)/ComfyUI`，
+pm2 进程 `comfyui-idream`，端口 8188）依赖 `custom_nodes/` 里的
+[ComfyUI-AppleSilicon-FP8](https://github.com/pawel-mazurkiewicz/ComfyUI-AppleSilicon-FP8)
+在每次启动时给 MPS 打运行时 patch。禁止把旧的 `fp4-fp8-for-torch-mps` pip 包装回
+venv——两者 patch 同一批 MPS 算子，叠加后行为不可预测（2026-08-02 已切换并卸载旧包）。
+
+ComfyUI 升级**不需要重新打补丁**：custom_nodes 不会被升级触碰，patch 在启动时自动
+重放。升级后只需重启并验证：
+
+```bash
+pm2 restart comfyui-idream
+cd packages/gen && bun run preflight && bun run smoke:backend
+```
+
+- `preflight` 硬检查节点目录（经 `.env` 的 `COMFYUI_VENV_PYTHON` 推导）与模型可见性，
+  异常 exit 1；
+- `smoke:backend` 用生产 fp8 模型（默认 `redcraft-krea2-redmix3-fp8`）真实出图。
+
+异常处置：
+
+- **smoke 失败 / 黑图**（ComfyUI 内部 API 变动导致 patch 失效）：更新节点后重启——
+  `git -C "<comfyui>/custom_nodes/ComfyUI-AppleSilicon-FP8" pull && pm2 restart comfyui-idream`。
+  逐项 patch 生效状态看启动日志：
+  `pm2 logs comfyui-idream --nostream | grep AppleSilicon-FP8`；其中 `na_gemm`
+  内核编译失败属预期（M5/Metal 4.1 专属，本机自动降级 LUT 路径）。上游未跟进新版
+  ComfyUI 时的临时退路：受影响 descriptor 先切 GGUF/bf16 权重。
+- **Desktop 大版本升级重建 venv**：节点目录仍在，但其 pip 依赖（`mtlflashattn`/
+  `ninja`）可能被清，用 venv python 重装 `pip install -r <节点目录>/requirements.txt`。
+  依赖缺失只降级 flash-attention 加速，fp8 核心 patch 不受影响。
+
+细节与出处：`packages/gen/README.md` §"FP8 on Apple Silicon (MPS)"、
+`docs/research/QWEN_FP8_ON_APPLE_MPS_LANDED_2026-07-29.md`（头部含 2026-08-02
+方案切换说明）。
+
 ### Local voice runner
 
 Voice 当前使用 Fish Audio S2 Pro 8-bit。仓库内 `8062` 进程使用 oMLX 随附的
@@ -572,7 +608,7 @@ build；`.env`、Prisma Client、Next 配置等启动级
 主站 stale reconciler 对普通 generation job 使用默认 10 分钟窗口，对视频
 单独使用 `VIDEO_JOB_STALE_TIMEOUT_MS`（生产模板为 35 分钟）。这个窗口必须
 大于 gen 侧 `GEN_VIDEO_TIMEOUT_MS`（30 分钟），保证 provider 先有机会返回
-completion manifest，再由主站判定遗留任务；不能把图片任务的短窗口直接复用
+terminal record，再由主站判定遗留任务；不能把图片任务的短窗口直接复用
 到视频。
 
 生产模式需要先构建不可变发布，再显式启动：
@@ -581,6 +617,35 @@ completion manifest，再由主站判定遗留任务；不能把图片任务的�
 bun run build
 bun run pm2:start:production
 ```
+
+三个 production wrapper（start/restart/reload）使用同一 fail-closed 协议：先在 Main、Gen、
+finalizer 仍在线时全局 pause image/video/terminal-ingest/finalize 四条 BullMQ queue；等待 active row
+归零。Gen 可把新 terminal record 投进暂停的 durable relay，Main 可把已摄入 record 的
+`pending / dispatched` terminal Outbox 投进暂停的 finalize queue。之后先停止请求入口与
+direct producer（`main-web`、`admin-web`、`chat`、`main-event-consumer`、
+`admin-command-worker`），再停止 `gen-image`、`gen-video`，最后停止 `gen-finalizer`。
+`pm2 jlist` 确认全部非 voice app 静止后，才只读检查 Postgres generation authority、terminal
+Outbox 与 Redis in-flight row。PM2 action 返回 0 仍不等于发布成功：wrapper 会继续有限时轮询
+9 个 logical app 的精确期望实例数，全部 `online` 后验证 Main/Admin HTTP、Chat `/healthz`、
+Fish `/health`，并运行 Gen `preflight` 检查 ComfyUI model refs 和视频验真所需的
+`ffprobe` / `ffmpeg`；全部通过才 resume 四条 queue。
+若活动 Request 的最新 queued/running Attempt 已绑定 `terminalRecordRef`，门禁还要求 terminal Outbox
+内容精确且对应 finalize Bull row 仍为非终态；row 缺失、failed 或 completed 都按 stranded
+finalization 阻断。对于合法 `unknown` Attempt，门禁验证 delivered exact Outbox、Attempt unknown
+terminal event 与 `provider_outcome_unknown` Request event，并允许 finalize Bull 已 completed 或移除；
+这类 Request 保持 active 是运营对账状态，不是 stranded finalization。
+
+drain 的跨 Redis/PostgreSQL 读使用严格 fence：先检查一次 in-flight（A），仅当 A 无 active row
+时派发 pending terminal Outbox，再检查一次 in-flight（B），最后统计 pending Outbox；A/B 任一出现
+active 都阻断，避免 torn snapshot。精确 failed terminal relay、finalize，以及具备精确 Blob terminal
+record 的 Gen source row，在 queue paused 时可作为 cold-start durable carrier 放行；新进程启动后的 initial
+scanner 负责重驱动。invalid row、身份漂移或无 Blob 的 failed source 继续阻断。
+
+pause/drain、分层 stop、静止确认、authority gate、PM2 action、运行态 readiness 或 resume 任一步失败都保持四条
+queue paused；resume 部分失败会 best-effort 重新 pause 全部 queue。需要运营完成 drain/对账后
+重新执行 wrapper，禁止直接 resume 绕过门禁。初次部署没有现有 PM2 app 时，三个阶段的
+`jlist` 都确认空集合后正常通过。`gen-image`、`gen-video`、`gen-finalizer` 另设 5 分钟、35 分钟、
+5 分钟 PM2 `kill_timeout`，作为 pause/drain 之外的最后防线。
 
 开发/生产模式之间切换会改变 web 的 script、cwd 和 exec mode，也会改变
 worker watch 设置。PM2 的普通 restart 不会重写这些进程定义，因此切换模式
@@ -592,7 +657,10 @@ bun run pm2:start:production # 切回开发态则使用 bun run pm2:start
 pm2 save
 ```
 
-同一模式内普通 restart 会直接载入最新源码和环境，无需重新 build。
+同一模式内使用 `bun run pm2:restart`：wrapper 会从 PM2 持久 mode marker（旧拓扑则从明确的 web
+entrypoint）识别 development/production；混合或无法识别的拓扑直接失败。生产也可显式使用
+`bun run pm2:restart:production`。不要直接调用 `pm2 restart ecosystem.config.js` 绕过 generation
+queue pause/drain 门禁；无参数 `bun run pm2:start` 也会拒绝覆盖正在运行的 production 拓扑。
 
 当 `ecosystem.config.js` 增删进程后，确认 `pm2 list` 与目标拓扑一致，然后执行 `pm2 save`。否则 `pm2 resurrect` 或机器重启可能恢复旧 dump（例如已延后的 `gen-video` 或重复的 `main-web`）。
 
@@ -602,7 +670,11 @@ pm2 save
 standalone `server.js`，不使用 `next start`。默认开发模式不读取
 `.next-runtime`，直接从源码启动 Next dev。
 
-如果是在同一个工作目录内执行 `bun run build`，构建完成后必须对 web 进程执行 `pm2 restart main-web admin-web`。不要在 in-place Next.js build 后对 web 进程执行 `pm2 reload`：旧 cluster worker 可能继续引用已被新构建删除的 server chunk，表现为随机 `ChunkLoadError`、路由超时或 client reference manifest 缺失。只有每个进程都指向不可变 release 目录时，`pm2 reload main-web admin-web` 才适合作为零停机切换。
+如果是在同一个工作目录内执行 `bun run build`，构建完成后必须执行
+`bun run pm2:restart:production`，让完整 generation gate 切换到新的 immutable release。不要对
+`main-web` / `admin-web` 直接执行 in-place `pm2 restart` 或 `pm2 reload`：它既绕过生成门禁，也可能让
+旧 cluster worker 继续引用已被新构建删除的 server chunk，表现为随机 `ChunkLoadError`、路由超时或
+client reference manifest 缺失。
 
 `admin-web` 使用 `packages/admin/.env`，但必须与 `packages/main/.env` 共享 `DATABASE_URL`、`BETTER_AUTH_SECRET`、`INTERNAL_TOKEN`、`CRON_SECRET` 等服务端密钥。PM2 默认给 `main-web` 设置 `PORT=3000`、给 `admin-web` 设置 `PORT=3001`；需要改端口时在启动 PM2 前设置 `MAIN_WEB_PORT` / `ADMIN_WEB_PORT`。
 

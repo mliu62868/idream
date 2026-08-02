@@ -38,6 +38,7 @@ import {
   parseGenerationJobQuery,
   type GenerationJobQueryDraft,
 } from "./query";
+import { UnknownGenerationReconciliationControls } from "./UnknownGenerationReconciliationControls";
 
 type Row = Record<string, unknown>;
 
@@ -182,6 +183,23 @@ export function JobsView() {
       render: (row) => compactDate(stringValue(row.createdAt), locale),
     },
     { key: "requestOutcome", label: "Request outcome", render: (row) => value(stringValue(row.requestOutcome)) },
+    {
+      key: "unknownReview",
+      label: "Unknown review",
+      render: (row) => {
+        const review = row.unknownReview as Row | undefined;
+        const status = stringValue(review?.status);
+        const nextReviewAt = stringValue(review?.nextReviewAt);
+        if (!status || status === "not_applicable") {
+          return <span className="text-[var(--ad-text-muted)]">—</span>;
+        }
+        return (
+          <span className={status === "due" ? "font-semibold text-red-700" : "text-amber-700"}>
+            {t(status)}{nextReviewAt ? ` · ${compactDate(nextReviewAt, locale)}` : ""}
+          </span>
+        );
+      },
+    },
     { key: "settlement", label: "Settlement", render: (row) => value(stringValue((row.settlement as Row | undefined)?.view)) },
     {
       key: "failure",
@@ -303,19 +321,35 @@ export function JobsView() {
           </button>
         </div>
       ) : null}
-      {selectedJobId ? <GenerationJobInspector detail={detail} error={detailError} jobId={selectedJobId} loading={detailBusy} locale={locale} onClose={closeJobDetail} /> : null}
+      {selectedJobId ? (
+        <GenerationJobInspector
+          detail={detail}
+          error={detailError}
+          jobId={selectedJobId}
+          loading={detailBusy}
+          locale={locale}
+          onClose={closeJobDetail}
+          onReconciled={async () => {
+            await Promise.all([
+              loadJobDetail(selectedJobId),
+              loadJobs(jobQuery),
+            ]);
+          }}
+        />
+      ) : null}
       {retrySpec ? <ConfirmDialog onClose={() => setRetrySpec(null)} spec={retrySpec} /> : null}
     </div>
   );
 }
 
-function GenerationJobInspector({ detail, error, jobId, loading, locale, onClose }: {
+function GenerationJobInspector({ detail, error, jobId, loading, locale, onClose, onReconciled }: {
   detail: GenerationJobDetailResponse | null;
   error: string | null;
   jobId: string;
   loading: boolean;
   locale: AdminLocale;
   onClose: () => void;
+  onReconciled: () => Promise<void>;
 }) {
   const { t, value } = useAdminI18n();
   const request = detail?.request ?? null;
@@ -335,6 +369,10 @@ function GenerationJobInspector({ detail, error, jobId, loading, locale, onClose
             <Metric label="Settlement" value={value(request.settlement.view)} meta={`${request.settlement.capturedDreamcoins} captured · ${request.settlement.refundedDreamcoins} refunded`} />
             <Metric label="Freshness" value={detail.freshness} meta={compactDate(detail.asOf, locale)} />
           </div>
+          <UnknownGenerationReconciliationControls
+            detail={detail}
+            onReconciled={onReconciled}
+          />
           <AuthorityTable
             caption="Generation Attempts"
             headers={["Attempt", "Outcome", "Provider / route", "Failure authority", "Finished"]}
@@ -348,13 +386,13 @@ function GenerationJobInspector({ detail, error, jobId, loading, locale, onClose
           />
           <AuthorityTable
             caption="Provider Transport Executions"
-            headers={["Transport", "Attempt / provider", "Technical outcome", "Provider cost", "Manifest", "Finished"]}
+            headers={["Transport", "Attempt / provider", "Technical outcome", "Provider cost", "Terminal record", "Finished"]}
             rows={detail.transportExecutions.map((execution) => [
               `#${execution.transportAttemptNo} · ${shortId(execution.id)}`,
               `${shortId(execution.attemptId)} · ${execution.provider ?? "—"}`,
               execution.status,
               execution.costMicros === null ? "Unavailable" : `${execution.costMicros.toLocaleString(locale)} μ`,
-              execution.manifestRef ?? "—",
+              execution.terminalRecordRef ?? "—",
               execution.finishedAt ? compactDate(execution.finishedAt, locale) : "—",
             ])}
           />
@@ -379,6 +417,22 @@ function GenerationJobInspector({ detail, error, jobId, loading, locale, onClose
             caption="Append-only Settlement entries"
             headers={["Ledger entry", "Kind", "Reason", "Dreamcoins", "Occurred"]}
             rows={detail.settlementEntries.map((entry) => [shortId(entry.ledgerEntryId), entry.kind, entry.reason, String(entry.deltaDreamcoins), compactDate(entry.createdAt, locale)])}
+          />
+          <AuthorityTable
+            caption="Unknown outcome reconciliation decisions"
+            headers={["Decision", "Attempt / actor", "Reason", "Evidence", "Review / settlement", "Occurred"]}
+            rows={detail.unknownReconciliations.map((decision) => [
+              decision.resolution,
+              `${shortId(decision.attemptId)} · ${shortId(decision.actorId)}`,
+              decision.reason,
+              decision.providerEvidenceRefs.join(" · ") || "—",
+              decision.nextReviewAt
+                ? `${decision.reviewStatus} · ${compactDate(decision.nextReviewAt, locale)}`
+                : decision.deliveredCount > 0
+                  ? `${decision.deliveredCount} delivered · ${decision.refundAmount} Dreamcoins refund`
+                  : `${decision.refundAmount} Dreamcoins refund`,
+              compactDate(decision.occurredAt, locale),
+            ])}
           />
         </div>
       ) : null}

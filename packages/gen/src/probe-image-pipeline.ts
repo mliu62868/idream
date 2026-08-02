@@ -2,9 +2,9 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { GenerationTerminalRecordIngest } from "@idream/shared/contracts";
 import { env } from "./env";
 import { processImageGenerate } from "./pipeline";
-import type { EnqueueInput } from "./queue";
 
 type ProbeOptions = {
   prompt: string;
@@ -39,7 +39,7 @@ async function main() {
   const options = readOptions();
   const startedAt = Date.now();
   const generationJobId = `probe_${randomUUID()}`;
-  const enqueued: EnqueueInput[] = [];
+  const terminalIngests: GenerationTerminalRecordIngest[] = [];
 
   await processImageGenerate(
     {
@@ -60,19 +60,26 @@ async function main() {
       outputPrefix: `probe/${generationJobId}/`,
     },
     {
-      enqueue: async (input) => {
-        enqueued.push(input);
+      acknowledgeTerminalRecord: async (input) => {
+        terminalIngests.push(input);
       },
+      recordTransportExecution: async () => undefined,
       attemptsMade: 0,
       maxAttempts: 1,
     },
   );
 
-  const finalize = enqueued.find((input) => input.queue === "app.ai.finalize");
-  const payload = finalize?.payload as
-    | { kind?: string; assets?: unknown[]; error?: { code?: string; message?: string } }
-    | undefined;
-  const ok = payload?.kind === "generation.completed";
+  const terminalIngest = terminalIngests[0];
+  const terminalRecord = terminalIngest?.terminalRecord;
+  const ok = terminalRecord?.outcome === "succeeded";
+  const assets = terminalRecord?.outcome === "succeeded"
+    ? terminalRecord.assets.length
+    : 0;
+  const error = terminalRecord?.outcome === "failed" || terminalRecord?.outcome === "unknown"
+    ? terminalRecord.error
+    : terminalRecord?.outcome === "blocked"
+      ? terminalRecord.block
+      : null;
   const report = {
     ok,
     checkedAt: new Date().toISOString(),
@@ -84,13 +91,13 @@ async function main() {
     count: options.count,
     blobRoot: env.BLOB_ROOT,
     generationJobId,
-    finalize: finalize
+    terminal: terminalIngest
       ? {
-          queue: finalize.queue,
-          dedupeKey: finalize.dedupeKey,
-          kind: payload?.kind,
-          assets: payload?.assets?.length ?? 0,
-          error: payload?.error ?? null,
+          ref: terminalIngest.terminalRecordRef,
+          checksum: terminalIngest.terminalRecordChecksum,
+          outcome: terminalRecord?.outcome,
+          assets,
+          error,
         }
       : null,
   };

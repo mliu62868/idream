@@ -85,7 +85,6 @@ import {
   rollbackPricingRule,
 } from "./pricing/service";
 export { DUAL_APPROVAL_FLAG, LEDGER_APPROVAL_THRESHOLD } from "./shared/legacy-approval";
-export { enqueueGenerationAttempt } from "@/server/modules/generation/attempt-dispatch";
 import {
   getUserDetail,
   listUserPermissions,

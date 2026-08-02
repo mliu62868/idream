@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { idempotencyKeys } from "./idempotency";
-import { ALL_QUEUE_NAMES, CHAT_QUEUES } from "./queues";
+import { ALL_QUEUE_NAMES, CHAT_QUEUES, MAIN_QUEUES } from "./queues";
 import { signBffContext, verifyBffContext } from "../bff/signing";
 
 describe("idempotency keys", () => {
@@ -14,15 +14,26 @@ describe("idempotency keys", () => {
     expect(idempotencyKeys.generationFinalize("j1", "failed")).toBe("generation-finalize:j1:failed");
     expect(idempotencyKeys.generationFinalize("j1", "blocked")).toBe("generation-finalize:j1:blocked");
   });
+  it("generation terminal relay keys on immutable Attempt identity", () => {
+    expect(idempotencyKeys.generationTerminalRelay("attempt-1")).toBe(
+      "generation-terminal-relay:attempt-1",
+    );
+  });
+  it("generation source keys on immutable Attempt identity", () => {
+    expect(idempotencyKeys.generationAttempt("job-1", 2)).toBe(
+      "generation:job-1:attempt:2",
+    );
+  });
   it("chat image requests key on attachment id", () => {
     expect(idempotencyKeys.chatImage("att1")).toBe("chat-image:att1");
   });
 });
 
 describe("queue names", () => {
-  it("are unique and include the chat generate queue", () => {
+  it("are unique and include the cross-service terminal relay queue", () => {
     expect(new Set(ALL_QUEUE_NAMES).size).toBe(ALL_QUEUE_NAMES.length);
     expect(ALL_QUEUE_NAMES).toContain(CHAT_QUEUES.generate);
+    expect(ALL_QUEUE_NAMES).toContain(MAIN_QUEUES.generationTerminalIngest);
   });
 });
 

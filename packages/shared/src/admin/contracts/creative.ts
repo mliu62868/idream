@@ -19,9 +19,22 @@ export const creativeRunAttachIncidentRequestSchema = z.object({
 
 export const characterRouteEvaluationMatrixSchemaVersion =
   "character-identity-v1";
-export const characterVideoProductionSpec = {
+export const characterVideoProductionRecipe = {
+  recipeVersion: 1,
   profileKey: "profile_video_beta_v1",
   modelLabel: "LTX 2.3 GTAnimation",
+  runner: "comfyui",
+  pipelineModel: "ltx23-gtanimation-int4-convrot",
+  workflowKey: "ltx23-gtanimation-i2v",
+  workflowVersion: 1,
+  sourceModelPath:
+    "diffusion_models/ltx23Gtanimation25Frames_ltxv23INT4Convrot.safetensors",
+  checkpointFilename:
+    "ltx23Gtanimation25Frames_ltxv23INT4Convrot.safetensors",
+  modelFormat: "safetensors",
+  comfyWorkflowId: "9b3f4d6a-0c8e-4b72-9f51-2a6d7e8c9012",
+  comfyWorkflowName: "iDream LTX 2.3 GTAnimation I2V",
+  outputFilenamePrefix: "idream-ltx23-gtanimation",
   durationSeconds: 4,
   fps: 25,
   width: 768,
@@ -29,6 +42,26 @@ export const characterVideoProductionSpec = {
   orientation: "2:3",
   outputCount: 1,
   sourceImageCount: 1,
+  steps: 13,
+  sampler: "euler",
+  scheduler: "manual_sigmas",
+  cfgScale: 1,
+  // Hash of the executable ComfyUI graph after replacing only the declared
+  // runtime input fields. Metadata labels and ComfyUI cache markers are
+  // excluded; checkpoint, wiring, sampler, sigma schedule and bindings are not.
+  workflowGraphSha256:
+    "ef8ff05606ca85d714b4ecf7dc5ed6c4758f543b545e313f875469564d08184a",
+  requiredEntitlement: "video_generation",
+  concurrencyLimit: 1,
+  rolloutPercent: 100,
+  capabilities: [
+    "video",
+    "img2video",
+    "referenceImages",
+    "stableSeed",
+    "audio",
+  ],
+  evaluatorDimensions: ["artifact", "identity", "intent"],
 } as const;
 export const characterRouteEvaluationOutputsPerDirection = 4;
 export const characterRouteEvaluationMatrixDirections = [
@@ -166,7 +199,7 @@ function characterVideoRunValidationIssues(input: {
     readonly path: readonly string[];
     readonly message: string;
   }> = [];
-  if (input.profileId !== characterVideoProductionSpec.profileKey) {
+  if (input.profileId !== characterVideoProductionRecipe.profileKey) {
     issues.push({
       path: ["profileId"],
       message: "Character video production must use the pinned production video profile",
@@ -174,14 +207,14 @@ function characterVideoRunValidationIssues(input: {
   }
   if (
     input.referenceAssetIds.length !==
-      characterVideoProductionSpec.sourceImageCount
+      characterVideoProductionRecipe.sourceImageCount
   ) {
     issues.push({
       path: ["referenceAssetIds"],
       message: "Character video production requires exactly one source image",
     });
   }
-  if (input.count !== characterVideoProductionSpec.outputCount) {
+  if (input.count !== characterVideoProductionRecipe.outputCount) {
     issues.push({
       path: ["count"],
       message: "Character video production creates exactly one clip per Run",
@@ -189,7 +222,7 @@ function characterVideoRunValidationIssues(input: {
   }
   if (
     input.orientation !== undefined &&
-    input.orientation !== characterVideoProductionSpec.orientation
+    input.orientation !== characterVideoProductionRecipe.orientation
   ) {
     issues.push({
       path: ["orientation"],
@@ -205,22 +238,24 @@ function characterVideoRunValidationIssues(input: {
   return issues;
 }
 
+export const creativeRunPurposeSchema = z.enum([
+  "character_cover",
+  "character_hero",
+  "character_chat",
+  "character_video",
+  "feed",
+  "homepage",
+  "seo",
+  "template_cover",
+  "campaign",
+  "model_eval",
+  "identity_calibration",
+]);
+
 export const creativeRunCreateRequestSchema = z
   .object({
     title: z.string().trim().min(1).max(160).optional(),
-    purpose: z.enum([
-      "character_cover",
-      "character_hero",
-      "character_chat",
-      "character_video",
-      "feed",
-      "homepage",
-      "seo",
-      "template_cover",
-      "campaign",
-      "model_eval",
-      "identity_calibration",
-    ]),
+    purpose: creativeRunPurposeSchema,
     targetType: z.enum(["character", "route_page", "campaign", "template", "none"]),
     targetId: adminIdSchema.optional(),
     profileId: adminIdSchema,
@@ -781,6 +816,7 @@ export const creativeAssetLineageSchema = z
   .strict();
 
 export const creativeRunQuerySchema = adminCursorQuerySchema.extend({
+  purpose: creativeRunPurposeSchema.optional(),
   lifecycleState: creativeLifecycleStateSchema.optional(),
   workflowStage: creativeWorkflowStageSchema.optional(),
   executionOutcome: creativeExecutionOutcomeSchema.optional(),

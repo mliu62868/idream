@@ -3,31 +3,19 @@ import { env } from "@/server/lib/env";
 import { MockBlobStore } from "./blob/mock";
 import { MockChatModel } from "./chat/mock";
 import { PipelineChatModel } from "./chat/pipeline";
-import { MockImageModel } from "./image/mock";
-import { PipelineImageModel } from "./image/pipeline";
 import { MockModerationProvider } from "./moderation/mock";
 import { BtcPayPaymentProvider } from "./payment/btcpay";
 import { MockPaymentProvider } from "./payment/mock";
-import type { BlobStore, ProviderRegistry } from "./types";
+import type { ProviderRegistry } from "./types";
 import { GoCamAgeVerificationProvider } from "./verify/gocam";
 import { MockAgeVerificationProvider } from "./verify/mock";
-import { MockVideoModel } from "./video/mock";
-import { MockVoiceModel } from "./voice/mock";
-import { PipelineVoiceModel } from "./voice/pipeline";
-import { PocketTtsVoiceModel } from "./voice/pocket-tts";
-import { FishAudioVoiceModel } from "./voice/fish-audio";
+import { createConfiguredVoicePorts } from "./voice/factory";
 
-// SPEC: main only ever constructs mock|pipeline image adapters — never "backend".
-// INTENT: "backend" (GenBackend/ComfyUI) is deliberately gen-worker-only (see
-// packages/gen/src/providers.ts, GEN_IMAGE_PROVIDER=backend). Main's inline
-// IMAGE_PROVIDER path exists to serve the local DB-backed test drain
-// (`runQueuedGenerationJobs`) and character.preview (main-only, no gen worker
-// owns it) — not production image generation, which is the gen worker's job.
-// This is the verdict, not a gap: do not widen this list to "backend".
+// INVARIANT: Main owns request, billing, and projection authority. Image/video
+// provider execution belongs exclusively to packages/gen, including tests.
 function assertMockProvidersConfigured() {
   const unsupported = [
     unsupportedProvider("CHAT_PROVIDER", env.CHAT_PROVIDER, ["mock", "pipeline"]),
-    unsupportedProvider("IMAGE_PROVIDER", env.IMAGE_PROVIDER, ["mock", "pipeline"]),
     unsupportedProvider("VOICE_PROVIDER", env.VOICE_PROVIDER, [
       "mock",
       "pipeline",
@@ -53,12 +41,8 @@ function unsupportedProvider(name: string, value: string, supported: readonly st
 function assertProductionProvidersConfigured() {
   if (env.APP_ENV !== "production") return;
 
-  // VIDEO_PROVIDER is intentionally absent: video generation is deferred to V1.1
-  // (2026-06-27 scope decision — too slow for phase 1), so main never wires a real
-  // video adapter and `video` stays mock by design. See docs/architecture/12-roadmap.md.
   const mockProviders = [
     ["CHAT_PROVIDER", env.CHAT_PROVIDER],
-    ["IMAGE_PROVIDER", env.IMAGE_PROVIDER],
     ["VOICE_PROVIDER", env.VOICE_PROVIDER],
     ["MODERATION_PROVIDER", env.MODERATION_PROVIDER],
     ["PAYMENT_PROVIDER", env.PAYMENT_PROVIDER],
@@ -112,67 +96,6 @@ function createChatProvider() {
     apiKey: env.PIPELINE_API_TOKEN,
     model: env.PIPELINE_CHAT_MODEL_DEFAULT,
     timeoutMs: env.PIPELINE_TIMEOUT_MS,
-  });
-}
-
-function createImageProvider() {
-  if (env.IMAGE_PROVIDER === "mock") return new MockImageModel();
-
-  return new PipelineImageModel({
-    baseUrl: requireProviderEnv(
-      "PIPELINE_API_URL",
-      env.PIPELINE_API_URL,
-      "IMAGE_PROVIDER",
-      env.IMAGE_PROVIDER,
-    ),
-    apiKey: env.PIPELINE_API_TOKEN,
-    model: env.PIPELINE_IMAGE_MODEL_DEFAULT,
-    timeoutMs: env.PIPELINE_TIMEOUT_MS,
-  });
-}
-
-function createVoiceProvider(blob: BlobStore) {
-  if (env.VOICE_PROVIDER === "mock") return new MockVoiceModel(blob);
-  if (env.VOICE_PROVIDER === "pocket-tts") {
-    return new PocketTtsVoiceModel({
-      baseUrl: env.POCKET_TTS_API_URL,
-      apiKey: env.POCKET_TTS_API_TOKEN,
-      model: env.POCKET_TTS_MODEL,
-      language: env.POCKET_TTS_LANGUAGE,
-      defaultVoiceId: env.POCKET_TTS_DEFAULT_VOICE_ID,
-      maxInputChars: env.PIPELINE_VOICE_MAX_INPUT_CHARS,
-      timeoutMs: env.POCKET_TTS_TIMEOUT_MS,
-      blob,
-    });
-  }
-  if (env.VOICE_PROVIDER === "fish-audio") {
-    return new FishAudioVoiceModel({
-      baseUrl: env.FISH_AUDIO_API_URL,
-      apiKey: env.FISH_AUDIO_API_TOKEN,
-      model: env.FISH_AUDIO_MODEL,
-      language: env.FISH_AUDIO_LANGUAGE,
-      defaultVoiceId: env.FISH_AUDIO_DEFAULT_VOICE_ID,
-      maxInputChars: env.PIPELINE_VOICE_MAX_INPUT_CHARS,
-      timeoutMs: env.FISH_AUDIO_TIMEOUT_MS,
-      blob,
-    });
-  }
-
-  return new PipelineVoiceModel({
-    baseUrl: requireProviderEnv(
-      "PIPELINE_VOICE_API_URL or PIPELINE_API_URL",
-      env.PIPELINE_VOICE_API_URL ?? env.PIPELINE_API_URL,
-      "VOICE_PROVIDER",
-      env.VOICE_PROVIDER,
-    ),
-    apiKey: env.PIPELINE_VOICE_API_TOKEN ?? env.PIPELINE_API_TOKEN,
-    model: env.PIPELINE_VOICE_MODEL_DEFAULT,
-    defaultVoiceId: env.PIPELINE_VOICE_DEFAULT_VOICE_ID,
-    sendInstructions: env.PIPELINE_VOICE_SEND_INSTRUCTIONS,
-    maxInputCharsPerRequest: env.PIPELINE_VOICE_CHUNK_CHARS,
-    maxInputChars: env.PIPELINE_VOICE_MAX_INPUT_CHARS,
-    timeoutMs: env.PIPELINE_VOICE_TIMEOUT_MS,
-    blob,
   });
 }
 
@@ -293,17 +216,7 @@ export function createProviderRegistry(): ProviderRegistry {
 
   return {
     chat: createChatProvider(),
-    // Split deployments consume image/video traffic in packages/gen. Main keeps
-    // an image pipeline adapter so the local DB-backed queue cannot silently
-    // complete real jobs with mock assets — IMAGE_PROVIDER must be non-mock in
-    // production (enforced by assertProductionProvidersConfigured).
-    image: createImageProvider(),
-    // Video is deferred to V1.1 (2026-06-27 scope decision: video gen too slow for
-    // phase 1). Main intentionally never wires a real video adapter — packages/gen
-    // owns video when it ships — so this stays mock by design and is excluded from
-    // the production non-mock guard. See docs/architecture/12-roadmap.md.
-    video: new MockVideoModel(),
-    voice: createVoiceProvider(blob),
+    voice: createConfiguredVoicePorts(blob),
     moderation: createModerationProvider(),
     payment: createPaymentProvider(),
     blob,

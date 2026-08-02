@@ -44,15 +44,17 @@ describe("Generation Jobs v2 server query", () => {
     ] });
     await prisma.character.create({ data: {
       id: characterId,
+      creatorId: customerId,
       name: "Jobs Fixture",
       age: 28,
       description: "Generation query fixture",
+      status: "approved",
       appearance: {},
       advancedDetails: {},
     } });
     await prisma.generationJob.createMany({ data: [
       {
-        id: jobIds[0], userId: customerId, characterId, mode: "image", status: "failed",
+        id: jobIds[0], userId: customerId, mode: "image", status: "failed",
         provider: "provider-alpha", model: "needle-model", sourceType: "generator", sourceId: `source-a-${suffix}`,
         errorCode: "needle-timeout", controls: {}, presetIds: [], outputCount: 2, deliveredOutputCount: 0,
         costDreamcoins: 9, createdAt: sameCreatedAt, updatedAt: sameCreatedAt,
@@ -126,7 +128,7 @@ describe("Generation Jobs v2 server query", () => {
         idempotencyKey: `provider-invocation-2-${suffix}`,
         status: "succeeded",
         costMicros: BigInt(375_000),
-        manifestRef: `completion-manifests/${attemptId}/2.json`,
+        terminalRecordRef: `terminal-records/${attemptId}/2.json`,
         startedAt: new Date("2026-07-11T12:00:03.000Z"),
         finishedAt: new Date("2026-07-11T12:00:07.000Z"),
       },
@@ -135,7 +137,7 @@ describe("Generation Jobs v2 server query", () => {
       id: artifactId,
       attemptId,
       ordinal: 0,
-      manifestChecksum: `jobs-v2-manifest-${suffix}`,
+      terminalRecordChecksum: `jobs-v2-terminal-record-${suffix}`,
       validationState: "rejected",
     } });
     await prisma.generationDelivery.create({ data: {
@@ -227,7 +229,7 @@ describe("Generation Jobs v2 server query", () => {
 
   it("applies search and filters to both rows and complete-query aggregates", async () => {
     const response = await listJobsRoute(request(
-      `search=needle&mode=all&userId=${customerId}&characterId=${characterId}&provider=provider-alpha&sourceType=generator&sort=cost_desc&limit=25`,
+      `search=needle&mode=all&userId=${customerId}&provider=provider-alpha&sourceType=generator&sort=cost_desc&limit=25`,
     ));
     const data = generationJobListResponseSchema.parse((await response.json()).data);
     expect(data.items.map((item) => item.id)).toEqual([jobIds[0]]);
@@ -237,6 +239,17 @@ describe("Generation Jobs v2 server query", () => {
       totalOutputCount: 2,
       totalDeliveredOutputCount: 0,
     });
+
+    const characterResponse = await listJobsRoute(request(
+      `mode=image&userId=${customerId}&characterId=${characterId}&sort=created_desc&limit=25`,
+    ));
+    const characterFiltered = generationJobListResponseSchema.parse(
+      (await characterResponse.json()).data,
+    );
+    expect(characterFiltered.items.map((item) => item.id)).toEqual([
+      jobIds[2],
+      jobIds[1],
+    ]);
 
     const cancelled = generationJobListResponseSchema.parse((await (await listJobsRoute(
       request(`mode=all&legacyStatus=cancelled&userId=${customerId}&sort=created_desc&limit=25`),
@@ -344,7 +357,7 @@ describe("Generation Jobs v2 server query", () => {
         providerRequestId: `provider-request-failed-${suffix}`,
         status: "failed",
         costMicros: 125_000,
-        manifestRef: null,
+        terminalRecordRef: null,
       }),
       expect.objectContaining({
         id: transportIds[1],
@@ -354,7 +367,7 @@ describe("Generation Jobs v2 server query", () => {
         providerRequestId: `provider-request-success-${suffix}`,
         status: "succeeded",
         costMicros: 375_000,
-        manifestRef: `completion-manifests/${attemptId}/2.json`,
+        terminalRecordRef: `terminal-records/${attemptId}/2.json`,
       }),
     ]);
     expect(detail.events).toEqual([expect.objectContaining({ id: attemptEventId, outcome: "failed" })]);

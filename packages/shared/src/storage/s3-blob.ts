@@ -67,6 +67,51 @@ export class S3CompatibleBlobStore {
     }
   }
 
+  /**
+   * Creates an object exactly once. S3 evaluates If-None-Match atomically, so
+   * concurrent writers cannot replace an already-persisted authority record.
+   */
+  async putPrivateIfAbsent(input: {
+    key: string;
+    body: Uint8Array;
+    contentType: string;
+  }): Promise<BlobProviderResult<{ key: string; size: number; created: boolean }>> {
+    const target = this.objectUrl(input.key);
+    const payloadHash = sha256Hex(input.body);
+    const headers = this.signedHeaders({
+      method: "PUT",
+      target,
+      payloadHash,
+      extraHeaders: {
+        "cache-control": "private, no-store, max-age=0",
+        "content-type": input.contentType,
+        "if-none-match": "*",
+        "x-amz-content-sha256": payloadHash,
+      },
+    });
+
+    try {
+      const response = await this.fetchImpl(target, {
+        method: "PUT",
+        headers,
+        body: new Blob([arrayBuffer(input.body)], { type: input.contentType }),
+      });
+      if (response.status === 412) {
+        return {
+          ok: true,
+          data: { key: input.key, size: input.body.byteLength, created: false },
+        };
+      }
+      if (!response.ok) return blobFailure("put_if_absent_failed", response);
+      return {
+        ok: true,
+        data: { key: input.key, size: input.body.byteLength, created: true },
+      };
+    } catch (error) {
+      return networkFailure("put_if_absent_failed", error);
+    }
+  }
+
   async signGetUrl(input: {
     key: string;
     expiresInSeconds: number;

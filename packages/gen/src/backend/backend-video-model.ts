@@ -1,3 +1,4 @@
+import { characterVideoProductionRecipe } from "@idream/shared";
 import type { VideoGeneratePayload } from "@idream/shared/contracts";
 import { env } from "../env";
 import {
@@ -6,32 +7,16 @@ import {
 } from "../providers";
 import { assignWorkflowReferenceSlots, type SlotValues } from "./workflow";
 import type { BackendRegistry } from "./registry";
+import { BackendInvocationError, type BackendAsset } from "./types";
+import { assertCharacterVideoProductionDescriptor } from "./production-video-descriptor";
 
 type GenerateInput = Parameters<VideoModel["generate"]>[0];
 type GenerateResult = Awaited<ReturnType<VideoModel["generate"]>>;
 type ReferenceImages = NonNullable<VideoGeneratePayload["referenceImages"]>;
-
-const PRODUCTION_VIDEO_AUTHORITY = {
-  workflowKey: "ltx23-gtanimation-i2v",
-  modelId: "ltx23-gtanimation-int4-convrot",
-  width: 768,
-  height: 1152,
-  fps: 25,
-  seconds: 4,
-} as const;
+const PRODUCTION_DURATION_TOLERANCE_SECONDS = 0.25;
+const PRODUCTION_FPS_TOLERANCE = 0.05;
 
 export class BackendVideoModel implements VideoModel {
-  readonly retryCapabilities = {
-    deterministicIdempotencyKey: true,
-    retryableFailureCodes: [
-      "rate_limited",
-      "overloaded",
-      "timeout",
-      "internal",
-      "backend_error",
-    ],
-  } as const;
-
   constructor(
     private readonly registry: BackendRegistry | Promise<BackendRegistry>,
   ) {}
@@ -62,7 +47,7 @@ export class BackendVideoModel implements VideoModel {
     if (referenceError) {
       return failure("unsupported_video_workflow", referenceError, false);
     }
-    if (input.seconds !== 4) {
+    if (input.seconds !== characterVideoProductionRecipe.durationSeconds) {
       return failure(
         "unsupported_video_duration",
         "LTX 2.3 production video generation requires exactly four seconds",
@@ -74,11 +59,11 @@ export class BackendVideoModel implements VideoModel {
     const height = numericControl(input.controls, "height");
     const requestedFps = numericControl(input.controls, "fps");
     if (
-      width !== PRODUCTION_VIDEO_AUTHORITY.width ||
-      height !== PRODUCTION_VIDEO_AUTHORITY.height ||
+      width !== characterVideoProductionRecipe.width ||
+      height !== characterVideoProductionRecipe.height ||
       (
         requestedFps !== undefined &&
-        requestedFps !== PRODUCTION_VIDEO_AUTHORITY.fps
+        requestedFps !== characterVideoProductionRecipe.fps
       )
     ) {
       return failure(
@@ -87,8 +72,8 @@ export class BackendVideoModel implements VideoModel {
         false,
       );
     }
-    const seconds = PRODUCTION_VIDEO_AUTHORITY.seconds;
-    const fps = PRODUCTION_VIDEO_AUTHORITY.fps;
+    const seconds = characterVideoProductionRecipe.durationSeconds;
+    const fps = characterVideoProductionRecipe.fps;
     const seed =
       stableNumericSeed(input.seed ?? input.requestId ?? "video") ?? 0;
     const slots: SlotValues = {
@@ -123,12 +108,22 @@ export class BackendVideoModel implements VideoModel {
           providerRequestId,
         );
       }
+      const mediaError = validateProductionVideoOutput(asset, descriptor);
+      if (mediaError) {
+        return failure(
+          "invalid_video_output",
+          mediaError,
+          false,
+          providerRequestId,
+          "definitive",
+        );
+      }
       return {
         ok: true,
         data: {
           asset: {
             key: `backend/videos/${providerRequestId}.mp4`,
-            seconds,
+            seconds: asset.verifiedVideo!.durationSeconds,
             contentType: "video/mp4",
             body: asset.body,
           },
@@ -136,29 +131,79 @@ export class BackendVideoModel implements VideoModel {
         invocation: invocation(providerRequestId),
       };
     } catch (error) {
-      return failure(
-        error instanceof Error && /timed out/i.test(error.message)
-          ? "timeout"
-          : "backend_error",
+      const classified = backendFailure(
         error,
-        true,
+        providerRequestId === null ? "pre_submit" : "post_submit",
+      );
+      return failure(
+        classified.code,
+        classified.message,
+        classified.outcome === "ambiguous" ||
+          classified.phase === "pre_submit",
         providerRequestId,
+        classified.outcome,
       );
     }
   }
 }
 
+function validateProductionVideoOutput(
+  asset: BackendAsset,
+  descriptor: ReturnType<BackendRegistry["resolveForModel"]>["descriptor"],
+) {
+  const media = asset.verifiedVideo;
+  if (!media) {
+    return "ComfyUI video output has no verified decode metadata";
+  }
+  if (
+    media.width !== characterVideoProductionRecipe.width ||
+    media.height !== characterVideoProductionRecipe.height
+  ) {
+    return `Decoded video is ${media.width}x${media.height}; expected ${characterVideoProductionRecipe.width}x${characterVideoProductionRecipe.height}`;
+  }
+  if (
+    Math.abs(
+      media.durationSeconds - characterVideoProductionRecipe.durationSeconds,
+    ) > PRODUCTION_DURATION_TOLERANCE_SECONDS
+  ) {
+    return `Decoded video duration is ${media.durationSeconds}s; expected approximately ${characterVideoProductionRecipe.durationSeconds}s`;
+  }
+  if (
+    Math.abs(media.framesPerSecond - characterVideoProductionRecipe.fps) >
+      PRODUCTION_FPS_TOLERANCE
+  ) {
+    return `Decoded video frame rate is ${media.framesPerSecond}fps; expected ${characterVideoProductionRecipe.fps}fps`;
+  }
+  if (descriptor.capabilities.includes("audio") && !media.hasAudio) {
+    return "Decoded video has no audio stream required by the production recipe";
+  }
+  return null;
+}
+
+function backendFailure(
+  error: unknown,
+  fallbackPhase: "pre_submit" | "post_submit",
+) {
+  if (error instanceof BackendInvocationError) return error;
+  return new BackendInvocationError(
+    error instanceof Error && /timed out/i.test(error.message)
+      ? "timeout"
+      : "backend_error",
+    error instanceof Error ? error.message : String(error),
+    fallbackPhase,
+    fallbackPhase === "post_submit" ? "ambiguous" : "definitive",
+  );
+}
+
 function validateProductionVideoDescriptor(
   descriptor: ReturnType<BackendRegistry["resolveForModel"]>["descriptor"],
 ) {
-  if (
-    descriptor.backendKind !== "comfyui" ||
-    descriptor.workflowKey !== PRODUCTION_VIDEO_AUTHORITY.workflowKey ||
-    descriptor.modelId !== PRODUCTION_VIDEO_AUTHORITY.modelId
-  ) {
-    return `Only ${PRODUCTION_VIDEO_AUTHORITY.workflowKey} with ${PRODUCTION_VIDEO_AUTHORITY.modelId} is authorized for production video`;
+  try {
+    assertCharacterVideoProductionDescriptor(descriptor);
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
   }
-  return null;
 }
 
 function validateWorkflowPin(
@@ -225,6 +270,7 @@ function failure(
   error: unknown,
   retryable: boolean,
   providerRequestId: string | null = null,
+  outcome?: "definitive" | "ambiguous",
 ): GenerateResult {
   return {
     ok: false,
@@ -232,6 +278,7 @@ function failure(
       code,
       message: error instanceof Error ? error.message : String(error),
       retryable,
+      ...(outcome ? { outcome } : {}),
     },
     ...(providerRequestId
       ? { invocation: invocation(providerRequestId) }

@@ -1,6 +1,13 @@
-import type { Prisma } from "@prisma/client";
-import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
-import { jobQueue } from "@/server/jobs/queue";
+import { Prisma } from "@prisma/client";
+import {
+  generationTerminalRecordSchema,
+  idempotencyKeys,
+  imageGeneratePayloadSchema,
+  MAIN_QUEUES,
+  MAIN_TO_CHAT_EVENTS,
+  videoGeneratePayloadSchema,
+} from "@idream/shared/contracts";
+import { bullMqJobIdForDedupeKey, jobQueue } from "@/server/jobs/queue";
 import type { QueueJob } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
@@ -25,13 +32,23 @@ import { ensureGenerationSettlementLinks } from "./generation-settlement";
 import { postDreamcoinEntry } from "@/server/modules/admin/billing/ledger";
 import { recordMainToChatEvent } from "@/processes/chat-outbox";
 import {
-  isGenerationArtifactArchiveTransitionAllowed,
-  isGenerationArtifactValidationTransitionAllowed,
-  isGenerationDeliveryTransitionAllowed,
+  deliverGenerationArtifacts,
+  projectAttemptArtifactDisposition,
 } from "./generation-evidence-transition-authority";
+import {
+  dispatchGenerationAttemptOutbox,
+} from "@/server/modules/generation/generation-attempt-authority";
+import {
+  MAIN_OUTBOX_GENERATION_DISPATCH_EVENT_TYPES,
+} from "@/server/events/main-outbox-transport";
+import { removeGenerationAttemptQueueJob } from "./generation-attempt-queue";
+import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
+import { consumeGenerationTerminalRelay } from "./generation-terminal-relay";
+import { validateGenerationTerminalRelaySnapshot } from "./generation-terminal-relay-validation";
 
 export const localAiQueueNames = [
-  "app.ai.finalize",
+  MAIN_QUEUES.generationTerminalIngest,
+  MAIN_QUEUES.aiFinalize,
 ] as const;
 
 export interface LocalAiDrainResult {
@@ -110,6 +127,7 @@ export async function reconcileStaleGenerationJobs(input: {
   timeoutMs?: number;
   videoTimeoutMs?: number;
   limit?: number;
+  generationJobIds?: readonly string[];
 } = {}) {
   const now = input.now ?? new Date();
   const timeoutMs =
@@ -120,42 +138,502 @@ export async function reconcileStaleGenerationJobs(input: {
     env.VIDEO_JOB_STALE_TIMEOUT_MS;
   const cutoff = new Date(now.getTime() - timeoutMs);
   const videoCutoff = new Date(now.getTime() - videoTimeoutMs);
-  const jobs = await prisma.generationJob.findMany({
-    where: {
-      status: { in: ["queued", "moderating_input", "running", "moderating_output"] },
-      OR: [
-        { mode: "video", updatedAt: { lt: videoCutoff } },
-        { mode: { not: "video" }, updatedAt: { lt: cutoff } },
-      ],
-    },
-    orderBy: { updatedAt: "asc" },
-    take: Math.max(1, Math.min(input.limit ?? 25, 100)),
+  const limit = Math.max(1, Math.min(input.limit ?? 25, 100));
+  if (input.generationJobIds?.length === 0) {
+    return { scanned: 0, enqueued: 0, quarantined: 0, cutoff, videoCutoff };
+  }
+  const idFilter = input.generationJobIds
+    ? Prisma.sql`AND request.id IN (${Prisma.join([...input.generationJobIds])})`
+    : Prisma.empty;
+  const candidates = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT request.id
+    FROM generation_jobs request
+    WHERE request.status IN ('queued', 'moderating_input', 'running', 'moderating_output')
+      AND (
+        (request.mode = 'video' AND request."updatedAt" < ${videoCutoff}) OR
+        (request.mode <> 'video' AND request."updatedAt" < ${cutoff})
+      )
+      ${idFilter}
+      AND EXISTS (
+        SELECT 1
+        FROM generation_attempts active_attempt
+        WHERE active_attempt.id = (
+          SELECT latest_attempt.id
+          FROM generation_attempts latest_attempt
+          WHERE latest_attempt."requestId" = request.id
+          ORDER BY latest_attempt."attemptNo" DESC, latest_attempt."createdAt" DESC
+          LIMIT 1
+        )
+          AND active_attempt.status IN ('queued', 'running')
+          AND active_attempt."terminalRecordRef" IS NULL
+      )
+    ORDER BY request."updatedAt" ASC, request.id ASC
+    LIMIT ${limit}
+  `);
+  const rows = candidates.length > 0
+    ? await prisma.generationJob.findMany({
+        where: { id: { in: candidates.map((candidate) => candidate.id) } },
+      })
+    : [];
+  const jobsById = new Map(rows.map((job) => [job.id, job]));
+  const jobs = candidates.flatMap((candidate) => {
+    const job = jobsById.get(candidate.id);
+    return job ? [job] : [];
   });
 
+  let enqueued = 0;
+  let quarantined = 0;
   for (const job of jobs) {
-    await jobQueue.enqueue({
-      queue: "app.ai.finalize",
-      payload: toInputJson({
-        version: 1,
-        kind: "generation.failed",
-        requestId: `stale_${job.id}`,
-        generationJobId: job.id,
-        mode: job.mode === "video" ? "video" : "image",
-        error: {
-          code: "stale_timeout",
-          message: "Generation job exceeded the stale timeout",
-          retryable: false,
-        },
-      } satisfies AiFinalizePayload),
-      dedupeKey: `generation-finalize:${job.id}:failed`,
+    const recoveryProbe = await probeRecoverableTerminalEvidence(job.id);
+    const decision = await inspectAndQuarantineStaleGeneration({
+      generationJobId: job.id,
+      cutoff,
+      videoCutoff,
+      timeoutMs,
+      videoTimeoutMs,
+      recoveryProbe,
     });
+    if (decision.kind === "redispatch") {
+      enqueued += await recoverStaleGenerationDispatch(decision, now);
+    } else if (decision.kind === "quarantined") {
+      if (decision.created) quarantined += 1;
+      if (decision.queue) {
+        await jobQueue.removeByDedupeKey(
+          decision.queue.queue,
+          decision.queue.dedupeKey,
+        );
+      }
+    }
   }
 
-  return { scanned: jobs.length, enqueued: jobs.length, cutoff, videoCutoff };
+  return { scanned: jobs.length, enqueued, quarantined, cutoff, videoCutoff };
+}
+
+type GenerationQueueFact = {
+  readonly queue: "ai.image.generate" | "ai.video.generate";
+  readonly dedupeKey: string;
+};
+
+type StaleGenerationDecision =
+  | { readonly kind: "none" }
+  | {
+      readonly kind: "redispatch";
+      readonly outboxId: string;
+      readonly outboxStatus: string;
+      readonly outboxUpdatedAt: Date;
+      readonly staleCutoff: Date;
+      readonly queue: GenerationQueueFact;
+    }
+  | {
+      readonly kind: "quarantined";
+      readonly created: boolean;
+      readonly queue: GenerationQueueFact | null;
+    };
+
+// INVARIANT: the Job, latest Attempt, and latest Transport are re-read while
+// holding the same lock order used by terminal ingest. A stale snapshot outside
+// this transaction can only nominate work; it cannot decide an outcome.
+async function inspectAndQuarantineStaleGeneration(input: {
+  readonly generationJobId: string;
+  readonly cutoff: Date;
+  readonly videoCutoff: Date;
+  readonly timeoutMs: number;
+  readonly videoTimeoutMs: number;
+  readonly recoveryProbe: RecoverableTerminalProbe;
+}): Promise<StaleGenerationDecision> {
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw(Prisma.sql`
+      SELECT id FROM generation_jobs
+      WHERE id = ${input.generationJobId}
+      FOR UPDATE
+    `);
+    const job = await tx.generationJob.findUnique({
+      where: { id: input.generationJobId },
+    });
+    if (
+      !job ||
+      !["queued", "moderating_input", "running", "moderating_output"].includes(job.status)
+    ) {
+      return { kind: "none" };
+    }
+    const staleCutoff = job.mode === "video" ? input.videoCutoff : input.cutoff;
+    if (job.updatedAt >= staleCutoff) return { kind: "none" };
+
+    const attemptCandidate = await tx.generationAttempt.findFirst({
+      where: { requestId: job.id },
+      orderBy: { attemptNo: "desc" },
+    });
+    if (!attemptCandidate) return { kind: "none" };
+    await tx.$queryRaw(Prisma.sql`
+      SELECT id FROM generation_attempts
+      WHERE id = ${attemptCandidate.id}
+      FOR UPDATE
+    `);
+    const attempt = await tx.generationAttempt.findUniqueOrThrow({
+      where: { id: attemptCandidate.id },
+    });
+    if (attempt.terminalRecordRef || isTerminalAttempt(attempt.status)) {
+      return { kind: "none" };
+    }
+
+    const transportCandidate = await tx.generationTransportExecution.findFirst({
+      where: { attemptId: attempt.id },
+      orderBy: { transportAttemptNo: "desc" },
+    });
+    if (transportCandidate) {
+      await tx.$queryRaw(Prisma.sql`
+        SELECT id FROM generation_transport_executions
+        WHERE id = ${transportCandidate.id}
+        FOR UPDATE
+      `);
+    }
+    const [transport, latestAttemptEvent, dispatchRows] = await Promise.all([
+      transportCandidate
+        ? tx.generationTransportExecution.findUnique({
+            where: { id: transportCandidate.id },
+          })
+        : null,
+      tx.generationAttemptEvent.findFirst({
+        where: { attemptId: attempt.id },
+        orderBy: { sequence: "desc" },
+        select: { occurredAt: true },
+      }),
+      tx.mainOutboxEvent.findMany({
+        where: {
+          aggregateId: job.id,
+          eventType: { in: [...MAIN_OUTBOX_GENERATION_DISPATCH_EVENT_TYPES] },
+        },
+        orderBy: { createdAt: "desc" },
+      }),
+    ]);
+    const dispatch = dispatchRows.find(
+      (row) => jsonRecord(row.payload).attemptId === attempt.id,
+    );
+    const queue = dispatch ? generationQueueFact(dispatch.payload) : null;
+    const evidenceAt = latestDate(
+      attempt.createdAt,
+      attempt.startedAt,
+      latestAttemptEvent?.occurredAt,
+      transport?.startedAt,
+      transport?.finishedAt,
+      dispatch?.updatedAt,
+    );
+    if (evidenceAt >= staleCutoff || transport?.terminalRecordRef) {
+      return { kind: "none" };
+    }
+    // A queued source row is only recovery authority before provider entry, or
+    // after an explicitly failed retryable transport. Once a running transport
+    // lease expires, replaying that source could invoke an ambiguous provider
+    // outcome twice; only an exact Blob terminal or relay may defer quarantine.
+    const sourceDispatchCanStillRun =
+      !transport || transport.status === "failed";
+    if (
+      input.recoveryProbe.attemptId === attempt.id &&
+      (
+        input.recoveryProbe.defer ||
+        (
+          input.recoveryProbe.sourceDispatchRecoverable &&
+          sourceDispatchCanStillRun
+        )
+      )
+    ) {
+      return { kind: "none" };
+    }
+    if (!transport) {
+      return dispatch && queue
+        ? {
+            kind: "redispatch",
+            outboxId: dispatch.id,
+            outboxStatus: dispatch.status,
+            outboxUpdatedAt: dispatch.updatedAt,
+            staleCutoff,
+            queue,
+          }
+        : { kind: "none" };
+    }
+
+    const thresholdMs = job.mode === "video"
+      ? input.videoTimeoutMs
+      : input.timeoutMs;
+    const occurredAt = new Date(evidenceAt.getTime() + thresholdMs);
+    const originalTransportStatus = transport.status;
+    if (transport.status === "running") {
+      const quarantinedTransport = await tx.generationTransportExecution.updateMany({
+        where: {
+          id: transport.id,
+          status: "running",
+          terminalRecordRef: transport.terminalRecordRef,
+        },
+        data: { status: "unknown", finishedAt: occurredAt },
+      });
+      if (quarantinedTransport.count !== 1) return { kind: "none" };
+    }
+    const result = await recordGenerationAttemptEvent(tx, {
+      eventId: `${attempt.id}:stale-provider-outcome-unknown`,
+      attemptId: attempt.id,
+      eventType: "generation.attempt.unknown.v1",
+      outcome: "unknown",
+      occurredAt,
+      payload: {
+        requestId: job.id,
+        transportExecutionId: transport.id,
+        transportStatus: originalTransportStatus,
+        lastEvidenceAt: evidenceAt.toISOString(),
+        reason: "provider_execution_lease_expired_without_terminal_record",
+      },
+      errorClass: "stale_provider_outcome",
+      errorCode: "stale_provider_outcome",
+      errorSignature: `stale_provider_outcome:${attempt.provider ?? "unresolved"}`,
+      retryability: "operator_retry",
+      operatorGuidance:
+        "Reconcile the provider request before settling, refunding, or retrying this generation.",
+    });
+    return {
+      kind: "quarantined",
+      created: result.disposition === "created",
+      queue,
+    };
+  });
+}
+
+const RECOVERABLE_QUEUE_STATES = new Set([
+  "waiting",
+  "prioritized",
+  "delayed",
+  "active",
+  "paused",
+  "waiting-children",
+  "failed",
+]);
+
+type RecoverableTerminalProbe = {
+  readonly attemptId: string | null;
+  readonly defer: boolean;
+  readonly sourceDispatchRecoverable: boolean;
+};
+
+// INTENT: Redis and Blob probes must never run while PostgreSQL authority rows
+// are locked. An unavailable dependency conservatively defers this stale row;
+// the next bounded scan can decide after authority is reachable again.
+async function probeRecoverableTerminalEvidence(
+  generationJobId: string,
+): Promise<RecoverableTerminalProbe> {
+  const [job, attempt, dispatchRows] = await Promise.all([
+    prisma.generationJob.findUnique({
+      where: { id: generationJobId },
+      select: { id: true, mode: true },
+    }),
+    prisma.generationAttempt.findFirst({
+      where: { requestId: generationJobId },
+      orderBy: { attemptNo: "desc" },
+      select: { id: true, attemptNo: true, provider: true },
+    }),
+    prisma.mainOutboxEvent.findMany({
+      where: {
+        aggregateId: generationJobId,
+        eventType: { in: [...MAIN_OUTBOX_GENERATION_DISPATCH_EVENT_TYPES] },
+      },
+      orderBy: { createdAt: "desc" },
+      select: { payload: true },
+    }),
+  ]);
+  if (!job || !attempt) {
+    return {
+      attemptId: null,
+      defer: false,
+      sourceDispatchRecoverable: false,
+    };
+  }
+  const dispatch = dispatchRows.find(
+    (row) => jsonRecord(row.payload).attemptId === attempt.id,
+  );
+  const queue = dispatch ? generationQueueFact(dispatch.payload) : null;
+  try {
+    const recovery = await hasRecoverableTerminalEvidence({
+      job,
+      attempt,
+      dispatch,
+      queue,
+    });
+    return { attemptId: attempt.id, ...recovery };
+  } catch {
+    return {
+      attemptId: attempt.id,
+      defer: true,
+      sourceDispatchRecoverable: false,
+    };
+  }
+}
+
+async function hasRecoverableTerminalEvidence(input: {
+  readonly job: { id: string; mode: string };
+  readonly attempt: {
+    id: string;
+    attemptNo: number;
+    provider: string | null;
+  };
+  readonly dispatch: { payload: Prisma.JsonValue } | undefined;
+  readonly queue: GenerationQueueFact | null;
+}) {
+  let sourceDispatchRecoverable = false;
+  // Source first, relay last: if recovery changes failed -> waiting ->
+  // completed while this probe runs, the final relay read observes the durable
+  // admission that allowed source completion.
+  if (input.queue && input.dispatch) {
+    const source = await jobQueue.getByDedupeKey(
+      input.queue.queue,
+      input.queue.dedupeKey,
+    );
+    if (source && RECOVERABLE_QUEUE_STATES.has(source.state)) {
+      const queueInput = jsonRecord(jsonRecord(input.dispatch.payload).queueInput);
+      const parsed = input.job.mode === "video"
+        ? videoGeneratePayloadSchema.safeParse(source.payload)
+        : imageGeneratePayloadSchema.safeParse(source.payload);
+      if (
+        parsed.success &&
+        parsed.data.generationJobId === input.job.id &&
+        parsed.data.attemptId === input.attempt.id &&
+        parsed.data.attemptNo === input.attempt.attemptNo &&
+        parsed.data.provider === input.attempt.provider &&
+        source.id === bullMqJobIdForDedupeKey(input.queue.dedupeKey) &&
+        source.dedupeKey === input.queue.dedupeKey &&
+        canonicalSha256(queueInput.payload) === canonicalSha256(source.payload)
+      ) {
+        if (source.state !== "failed") {
+          sourceDispatchRecoverable = true;
+        } else if (await hasExactBlobTerminal(input, parsed.data)) {
+          return { defer: true, sourceDispatchRecoverable: false };
+        }
+      }
+    }
+  }
+
+  const relayKey = idempotencyKeys.generationTerminalRelay(input.attempt.id);
+  const relay = await jobQueue.getByDedupeKey(
+    MAIN_QUEUES.generationTerminalIngest,
+    relayKey,
+  );
+  if (!relay || !RECOVERABLE_QUEUE_STATES.has(relay.state)) {
+    return { defer: false, sourceDispatchRecoverable };
+  }
+  const validation = validateGenerationTerminalRelaySnapshot(relay);
+  const exactRelay = validation.valid &&
+    validation.payload.terminalRecord.generationJobId === input.job.id &&
+    validation.payload.terminalRecord.attemptNo === input.attempt.attemptNo &&
+    validation.payload.terminalRecord.provider === input.attempt.provider;
+  return {
+    defer: exactRelay,
+    sourceDispatchRecoverable,
+  };
+}
+
+async function hasExactBlobTerminal(
+  input: Parameters<typeof hasRecoverableTerminalEvidence>[0],
+  payload: { requestId: string; model: string },
+) {
+  const blob = providers.blob;
+  if (!blob.getPrivate) throw new Error("blob terminal read unavailable");
+  const loaded = await blob.getPrivate({
+    key: `gen/terminal-records/${input.attempt.id}/terminal.json`,
+  });
+  if (!loaded.ok) {
+    if (loaded.error.code === "not_found") return false;
+    throw new Error(loaded.error.message);
+  }
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(new TextDecoder().decode(loaded.data.body));
+  } catch {
+    return false;
+  }
+  const terminal = generationTerminalRecordSchema.safeParse(decoded);
+  return terminal.success &&
+    terminal.data.attemptId === input.attempt.id &&
+    terminal.data.attemptNo === input.attempt.attemptNo &&
+    terminal.data.generationJobId === input.job.id &&
+    terminal.data.requestId === payload.requestId &&
+    terminal.data.provider === input.attempt.provider &&
+    terminal.data.mode === input.job.mode &&
+    terminal.data.model === payload.model &&
+    terminal.data.providerIdempotencyKey ===
+      `generation:${input.attempt.id}:provider`;
+}
+
+async function recoverStaleGenerationDispatch(
+  decision: Extract<StaleGenerationDecision, { kind: "redispatch" }>,
+  now: Date,
+) {
+  const queued = await jobQueue.getByDedupeKey(
+    decision.queue.queue,
+    decision.queue.dedupeKey,
+  );
+  if (queued) {
+    if (!["completed", "failed"].includes(queued.state)) return 0;
+    const finishedAt = queued.finishedOn ? new Date(queued.finishedOn) : null;
+    if (finishedAt && finishedAt >= decision.staleCutoff) return 0;
+    const removed = await jobQueue.removeByDedupeKey(
+      decision.queue.queue,
+      decision.queue.dedupeKey,
+    );
+    if (!removed) return 0;
+  }
+  const released = await prisma.mainOutboxEvent.updateMany({
+    where: {
+      id: decision.outboxId,
+      status: decision.outboxStatus,
+      updatedAt: decision.outboxUpdatedAt,
+    },
+    data: {
+      status: "pending",
+      nextRunAt: now,
+      deliveredAt: null,
+      lastError: Prisma.DbNull,
+    },
+  });
+  if (released.count !== 1) return 0;
+  const recovered = await dispatchGenerationAttemptOutbox(prisma, {
+    outboxIds: [decision.outboxId],
+    limit: 1,
+    now,
+  });
+  return recovered.delivered;
+}
+
+function isTerminalAttempt(status: string) {
+  return ["succeeded", "failed", "blocked", "cancelled", "unknown"].includes(status);
+}
+
+function latestDate(...values: Array<Date | null | undefined>) {
+  const milliseconds = values.flatMap((value) => value ? [value.getTime()] : []);
+  return new Date(Math.max(...milliseconds));
+}
+
+function generationQueueFact(value: Prisma.JsonValue): GenerationQueueFact | null {
+  const queueInput = jsonRecord(jsonRecord(value).queueInput);
+  const queue = queueInput.queue;
+  const dedupeKey = queueInput.dedupeKey;
+  if (
+    (queue !== "ai.image.generate" && queue !== "ai.video.generate") ||
+    typeof dedupeKey !== "string" ||
+    dedupeKey.length === 0
+  ) {
+    return null;
+  }
+  return { queue, dedupeKey };
+}
+
+function jsonRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
 async function processLocalAiJob(job: QueueJob) {
-  if (job.queue === "app.ai.finalize") {
+  if (job.queue === MAIN_QUEUES.generationTerminalIngest) {
+    await consumeGenerationTerminalRelay(job.payload);
+    return;
+  }
+  if (job.queue === MAIN_QUEUES.aiFinalize) {
     return processFinalize(job.payload);
   }
 
@@ -165,219 +643,9 @@ async function processLocalAiJob(job: QueueJob) {
 async function processFinalize(payloadValue: Prisma.JsonValue) {
   const payload = aiFinalizePayloadSchema.parse(payloadValue);
 
-  if (payload.kind === "character.preview.completed") {
-    return finalizeCharacterPreviewCompleted(payload);
-  }
-  if (payload.kind === "character.preview.failed") {
-    return finalizeCharacterPreviewFailed(payload);
-  }
   if (payload.kind === "generation.completed") return finalizeGenerationCompleted(payload);
   if (payload.kind === "generation.failed") return finalizeGenerationFailed(payload);
   if (payload.kind === "generation.blocked") return finalizeGenerationBlocked(payload);
-}
-
-async function finalizeCharacterPreviewCompleted(
-  payload: Extract<AiFinalizePayload, { kind: "character.preview.completed" }>,
-) {
-  const previewJob = await prisma.characterPreviewJob.findFirst({
-    where: {
-      id: payload.previewJobId,
-      draftId: payload.draftId,
-    },
-    include: {
-      draft: {
-        select: {
-          ownerId: true,
-          name: true,
-        },
-      },
-    },
-  });
-  if (!previewJob || previewJob.status === "completed" || previewJob.status === "failed") {
-    return;
-  }
-  if (previewJob.draft.ownerId !== payload.userId) {
-    await finalizeCharacterPreviewFailed({
-      version: 1,
-      kind: "character.preview.failed",
-      requestId: payload.requestId,
-      previewJobId: payload.previewJobId,
-      draftId: payload.draftId,
-      userId: payload.userId,
-      error: {
-        code: "preview_owner_mismatch",
-        message: "Character preview owner did not match the authoritative draft",
-        retryable: false,
-      },
-    });
-    return;
-  }
-
-  const mediaId = `media_preview_${payload.previewJobId}`;
-  const displayUrl =
-    `/user-content/${mediaRouteToken(mediaId)}/content` +
-    mediaFileExtension(payload.asset.contentType);
-  const providerKey =
-    typeof payload.asset.providerKey === "string"
-      ? payload.asset.providerKey
-      : payload.asset.key;
-
-  await prisma.$transaction(async (tx) => {
-    await tx.mediaAsset.upsert({
-      where: { id: mediaId },
-      update: {},
-      create: {
-        id: mediaId,
-        ownerId: payload.userId,
-        type: "image",
-        url: displayUrl,
-        thumbnailUrl: displayUrl,
-        storageKey: payload.asset.key,
-        contentType: payload.asset.contentType,
-        width: payload.asset.width,
-        height: payload.asset.height,
-        providerAssetId: providerKey,
-        prompt: previewJob.draft.name,
-        visibility: "private",
-        safetyStatus: "passed",
-        metadata: {
-          provider: payload.provider,
-          model: payload.model,
-          providerKey,
-          source: "character_preview",
-          synthetic: payload.provider === "mock",
-        },
-      },
-    });
-    const settled = await tx.characterPreviewJob.updateMany({
-      where: {
-        id: payload.previewJobId,
-        draftId: payload.draftId,
-        status: { notIn: ["completed", "failed"] },
-      },
-      data: {
-        status: "completed",
-        provider: payload.provider,
-        resultAssetId: mediaId,
-        errorCode: null,
-        completedAt: new Date(),
-      },
-    });
-    if (settled.count === 1) {
-      await tx.characterDraft.updateMany({
-        where: { id: payload.draftId, ownerId: payload.userId },
-        data: { previewJobId: payload.previewJobId },
-      });
-    }
-  });
-}
-
-async function finalizeCharacterPreviewFailed(
-  payload: Extract<AiFinalizePayload, { kind: "character.preview.failed" }>,
-) {
-  await prisma.characterPreviewJob.updateMany({
-    where: {
-      id: payload.previewJobId,
-      draftId: payload.draftId,
-      draft: { ownerId: payload.userId },
-      status: { notIn: ["completed", "failed"] },
-    },
-    data: {
-      status: "failed",
-      errorCode: payload.error.code,
-      completedAt: new Date(),
-    },
-  });
-}
-
-async function recordTerminalArtifactDeliveryEvidence(
-  tx: Prisma.TransactionClient,
-  input: {
-    readonly requestId: string;
-    readonly attemptId: string;
-    readonly targetId: string;
-    readonly validationState: string;
-    readonly deliveryStatus: "failed" | "suppressed";
-  },
-) {
-  const artifacts = await tx.generationArtifact.findMany({
-    where: { attemptId: input.attemptId },
-    orderBy: { ordinal: "asc" },
-  });
-  for (const artifact of artifacts) {
-    if (
-      !isGenerationArtifactValidationTransitionAllowed(
-        artifact.validationState,
-        input.validationState,
-      ) ||
-      !isGenerationArtifactArchiveTransitionAllowed(
-        artifact.archiveState,
-        "archived",
-      )
-    ) {
-      throw Errors.conflict("Terminal Request outcome cannot rewrite Artifact evidence", {
-        artifactId: artifact.id,
-        validationState: artifact.validationState,
-        archiveState: artifact.archiveState,
-      });
-    }
-    const artifactUpdated = await tx.generationArtifact.updateMany({
-      where: {
-        id: artifact.id,
-        validationState: artifact.validationState,
-        archiveState: artifact.archiveState,
-      },
-      data: {
-        validationState: input.validationState,
-        archiveState: "archived",
-      },
-    });
-    if (artifactUpdated.count !== 1) {
-      throw Errors.conflict("Artifact evidence changed during terminal projection", {
-        artifactId: artifact.id,
-      });
-    }
-
-    const deliveryKey = {
-      artifactId_targetType_targetId: {
-        artifactId: artifact.id,
-        targetType: "user_library",
-        targetId: input.targetId,
-      },
-    } as const;
-    const existingDelivery = await tx.generationDelivery.findUnique({
-      where: deliveryKey,
-    });
-    const fromStatus = existingDelivery?.status ?? "pending";
-    if (!isGenerationDeliveryTransitionAllowed(fromStatus, input.deliveryStatus)) {
-      throw Errors.conflict("Generation Delivery is already terminal", {
-        deliveryId: existingDelivery?.id ?? null,
-        status: fromStatus,
-      });
-    }
-    if (existingDelivery) {
-      const deliveryUpdated = await tx.generationDelivery.updateMany({
-        where: { id: existingDelivery.id, status: existingDelivery.status },
-        data: { status: input.deliveryStatus, deliveredAt: null },
-      });
-      if (deliveryUpdated.count !== 1) {
-        throw Errors.conflict("Generation Delivery changed during terminal projection", {
-          deliveryId: existingDelivery.id,
-        });
-      }
-    } else {
-      await tx.generationDelivery.create({
-        data: {
-          id: `generation_delivery_${input.requestId}_${artifact.ordinal}`,
-          requestId: input.requestId,
-          artifactId: artifact.id,
-          targetType: "user_library",
-          targetId: input.targetId,
-          status: input.deliveryStatus,
-        },
-      });
-    }
-  }
 }
 
 async function finalizeGenerationCompleted(
@@ -387,25 +655,33 @@ async function finalizeGenerationCompleted(
     where: { id: payload.generationJobId },
   });
   if (!job) return;
-  const attempt = await resolveGenerationAttemptForFinalize(job.id, payload.attemptId);
-  const attemptId = attempt?.id;
-  await removeGenerationWorkQueueJob(job.id, job.mode);
+  const resolved = await resolveGenerationAttemptForFinalize(job.id, payload);
+  await removeGenerationAttemptQueueJob({
+    requestId: job.id,
+    attemptId: resolved.attempt.id,
+  });
+  if (!resolved.isLatest) return;
+  const attemptId = resolved.attempt.id;
   if (job.status === "completed") return;
   if (["failed", "blocked", "cancelled", "refunded"].includes(job.status)) {
     await prisma.$transaction(async (tx) => {
       if (attemptId) {
-        const validationState = `late_after_${job.status}`;
-        await recordTerminalArtifactDeliveryEvidence(tx, {
+        const validationState = job.status === "cancelled"
+          ? "late_after_cancelled"
+          : job.status === "blocked"
+            ? "late_after_blocked"
+            : job.status === "refunded"
+              ? "late_after_refunded"
+              : "late_after_failed";
+        await projectAttemptArtifactDisposition(tx, {
           requestId: job.id,
           attemptId,
           targetId: job.userId,
           validationState,
           deliveryStatus: "suppressed",
+          occurredAt: new Date(),
         });
-        await tx.mainOutboxEvent.updateMany({
-          where: { id: `generation_manifest_${attemptId}` },
-          data: { status: "delivered", deliveredAt: new Date() },
-        });
+        await markGenerationTerminalRecordDelivered(tx, attemptId);
       }
       await appendGenerationEvent(tx, job.id, "late_artifact_archived", "Provider artifacts arrived after a terminal Request outcome and were suppressed", { attemptId: attemptId ?? null, requestStatus: job.status, assetCount: payload.assets.length });
     });
@@ -429,6 +705,13 @@ async function finalizeGenerationCompleted(
       "output_blocked",
       job.sourceType,
       job.sourceId,
+      attemptId,
+      {
+        attemptOutcome: "blocked",
+        retryability: "not_retryable",
+        terminalRecordRef: payload.terminalRecordRef,
+        terminalRecordChecksum: payload.terminalRecordChecksum,
+      },
     );
     return;
   }
@@ -473,6 +756,9 @@ async function finalizeGenerationCompleted(
               seconds: asset.seconds,
               usage: payload.usage,
               storageKey: asset.key,
+              ...(job.sourceType === "character_preview"
+                ? { source: "character_preview" }
+                : {}),
               visualProfileId: job.visualProfileId,
               visualProfileVersion: job.visualProfileVersion,
               consistencyMode: job.consistencyMode,
@@ -535,83 +821,61 @@ async function finalizeGenerationCompleted(
           requestId: job.id,
           assetCount: payload.assets.length,
           expectedOutputCount: job.outputCount,
-          completionManifestChecksum: payload.completionManifestChecksum ?? null,
+          terminalRecordChecksum: payload.terminalRecordChecksum ?? null,
         },
-        completionManifestRef: payload.completionManifestRef ?? null,
+        terminalRecordRef: payload.terminalRecordRef ?? null,
       });
     }
     if (attemptId) {
-      await tx.mainOutboxEvent.updateMany({
-        where: { id: `generation_manifest_${attemptId}` },
-        data: { status: "delivered", deliveredAt: new Date() },
-      });
+      await markGenerationTerminalRecordDelivered(tx, attemptId);
     }
     await appendGenerationEvent(tx, job.id, "completed", "Generation job completed", {
       assets: payload.assets.length,
       requested: job.outputCount,
     });
-    const productionAsset = await tx.mediaAsset.findFirst({
+    const persistedAssets = await tx.mediaAsset.findMany({
       where: { sourceJobId: job.id },
-      orderBy: { createdAt: "asc" },
-      select: { id: true },
+      select: { id: true, width: true, height: true, metadata: true },
     });
+    const persistedAssetsByOrdinal = new Map<number, (typeof persistedAssets)[number]>();
+    for (const asset of persistedAssets) {
+      const ordinal = mediaAssetGenerationOrdinal(asset.metadata);
+      if (ordinal === null) continue;
+      if (persistedAssetsByOrdinal.has(ordinal)) {
+        throw Errors.conflict("Generation produced duplicate MediaAsset ordinals", {
+          requestId: job.id,
+          ordinal,
+        });
+      }
+      persistedAssetsByOrdinal.set(ordinal, asset);
+    }
+    const deliveredAssets = payload.assets.map((_, ordinal) => {
+      const asset = persistedAssetsByOrdinal.get(ordinal);
+      if (!asset) {
+        throw Errors.conflict("Generation Artifact ordinal has no persisted MediaAsset", {
+          requestId: job.id,
+          ordinal,
+        });
+      }
+      return asset;
+    });
+    const productionAsset = deliveredAssets[0];
     if (productionAsset) {
       await markProductionItemGenerated(tx, {
         jobId: job.id,
         mediaAssetId: productionAsset.id,
       });
     }
-    const deliveredAssets = await tx.mediaAsset.findMany({
-      where: { sourceJobId: job.id },
-      orderBy: { createdAt: "asc" },
-      select: { id: true, width: true, height: true },
-    });
-    const attemptArtifacts = attemptId
-      ? await tx.generationArtifact.findMany({
-        where: { attemptId },
-        orderBy: { ordinal: "asc" },
-      })
-      : [];
-    for (const [index, asset] of deliveredAssets.entries()) {
-      const artifact = attemptArtifacts[index];
-      if (artifact) {
-        if (!isGenerationArtifactValidationTransitionAllowed(artifact.validationState, "valid")) {
-          throw Errors.conflict("Artifact validation is already terminal", {
-            artifactId: artifact.id,
-            validationState: artifact.validationState,
-          });
-        }
-        await tx.generationArtifact.update({
-          where: { id: artifact.id },
-          data: { assetId: asset.id, validationState: "valid" },
-        });
-      }
-      const deliveryKey = {
-        artifactId_targetType_targetId: {
-          artifactId: artifact?.id ?? `legacy:${asset.id}`,
-          targetType: "user_library",
-          targetId: job.userId,
-        },
-      };
-      const existingDelivery = await tx.generationDelivery.findUnique({ where: deliveryKey });
-      if (existingDelivery && !isGenerationDeliveryTransitionAllowed(existingDelivery.status, "delivered")) {
-        throw Errors.conflict("Generation Delivery is already terminal", {
-          deliveryId: existingDelivery.id,
-          status: existingDelivery.status,
-        });
-      }
-      await tx.generationDelivery.upsert({
-        where: deliveryKey,
-        create: {
-          id: `generation_delivery_${job.id}_${index}`,
-          requestId: job.id,
-          artifactId: artifact?.id ?? `legacy:${asset.id}`,
-          targetType: "user_library",
-          targetId: job.userId,
-          status: "delivered",
-          deliveredAt: completedAt,
-        },
-        update: { status: "delivered", deliveredAt: completedAt },
+    if (attemptId) {
+      await deliverGenerationArtifacts(tx, {
+        requestId: job.id,
+        attemptId,
+        targetId: job.userId,
+        assets: deliveredAssets.map((asset, ordinal) => ({
+          ordinal,
+          assetId: asset.id,
+        })),
+        occurredAt: completedAt,
       });
     }
     if (deliveredAssets.length > 0) {
@@ -651,7 +915,7 @@ async function finalizeGenerationCompleted(
         },
       }, tx);
     }
-    if (!payload.completionManifestRef) {
+    if (!payload.terminalRecordRef) {
       await appendLocalCanonicalProductEvent(tx, {
         sourceEventId: `ai-usage:${attemptId ?? job.id}:v2`,
         eventType: "ai.usage.recorded.v2",
@@ -697,8 +961,16 @@ async function finalizeGenerationFailed(
     where: { id: payload.generationJobId },
   });
   if (!job) return;
-  const attempt = await resolveGenerationAttemptForFinalize(job.id, payload.attemptId);
-  await removeGenerationWorkQueueJob(job.id, job.mode);
+  const resolved = await resolveGenerationAttemptForFinalize(job.id, payload);
+  await removeGenerationAttemptQueueJob({
+    requestId: job.id,
+    attemptId: resolved.attempt.id,
+  });
+  if (!resolved.isLatest) return;
+  if (payload.error.attemptOutcome === "unknown") {
+    await finalizeGenerationUnknown(job, resolved.attempt.id, payload);
+    return;
+  }
   if (["completed", "failed", "blocked", "refunded", "cancelled"].includes(job.status)) return;
   await refundGeneration(
     job.userId,
@@ -708,9 +980,82 @@ async function finalizeGenerationFailed(
     payload.error.code,
     job.sourceType,
     job.sourceId,
-    attempt?.id,
-    { attemptOutcome: payload.error.attemptOutcome, retryability: payload.error.retryability },
+    resolved.attempt.id,
+    {
+      attemptOutcome: payload.error.attemptOutcome ?? "failed",
+      retryability: payload.error.retryability,
+      terminalRecordRef: payload.terminalRecordRef,
+      terminalRecordChecksum: payload.terminalRecordChecksum,
+    },
   );
+}
+
+async function finalizeGenerationUnknown(
+  job: Prisma.GenerationJobGetPayload<Record<string, never>>,
+  attemptId: string,
+  payload: Extract<AiFinalizePayload, { kind: "generation.failed" }>,
+) {
+  await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw(Prisma.sql`
+      SELECT id FROM generation_jobs WHERE id = ${job.id} FOR UPDATE
+    `);
+    const current = await tx.generationJob.findUniqueOrThrow({
+      where: { id: job.id },
+    });
+    if (
+      !["queued", "moderating_input", "running", "moderating_output"].includes(
+        current.status,
+      )
+    ) return;
+    const latest = await tx.generationAttempt.findFirst({
+      where: { requestId: current.id },
+      orderBy: [{ attemptNo: "desc" }, { createdAt: "desc" }],
+      select: { id: true },
+    });
+    if (latest?.id !== attemptId) return;
+    const attempt = await tx.generationAttempt.findUniqueOrThrow({
+      where: { id: attemptId },
+    });
+    if (attempt.status !== "unknown") {
+      await recordGenerationAttemptEvent(tx, {
+        eventId: `${attemptId}:terminal`,
+        attemptId,
+        eventType: "generation.attempt.unknown.v1",
+        outcome: "unknown",
+        occurredAt: attempt.finishedAt ?? new Date(),
+        payload: {
+          requestId: current.id,
+          requestOutcome: "needs_reconciliation",
+          errorCode: payload.error.code,
+          terminalRecordChecksum: payload.terminalRecordChecksum,
+        },
+        terminalRecordRef: payload.terminalRecordRef,
+        errorCode: payload.error.code,
+        errorClass: "ambiguous_provider_outcome",
+        errorSignature: `ambiguous_provider_outcome:${payload.error.code}`,
+        retryability: payload.error.retryability ?? "operator_retry",
+        operatorGuidance:
+          "Reconcile the provider request before settlement or business retry.",
+      });
+    }
+    await markGenerationTerminalRecordDelivered(tx, attemptId);
+    await tx.generationJobEvent.upsert({
+      where: { id: `generation_request_unknown_${attemptId}` },
+      create: {
+        id: `generation_request_unknown_${attemptId}`,
+        jobId: current.id,
+        type: "provider_outcome_unknown",
+        message: "Provider outcome is unknown and requires operator reconciliation",
+        metadata: toInputJson({
+          attemptId,
+          errorCode: payload.error.code,
+          terminalRecordRef: payload.terminalRecordRef,
+          terminalRecordChecksum: payload.terminalRecordChecksum,
+        }),
+      },
+      update: {},
+    });
+  });
 }
 
 async function finalizeGenerationBlocked(
@@ -720,8 +1065,12 @@ async function finalizeGenerationBlocked(
     where: { id: payload.generationJobId },
   });
   if (!job) return;
-  const attempt = await resolveGenerationAttemptForFinalize(job.id, payload.attemptId);
-  await removeGenerationWorkQueueJob(job.id, job.mode);
+  const resolved = await resolveGenerationAttemptForFinalize(job.id, payload);
+  await removeGenerationAttemptQueueJob({
+    requestId: job.id,
+    attemptId: resolved.attempt.id,
+  });
+  if (!resolved.isLatest) return;
   if (["completed", "failed", "blocked", "refunded", "cancelled"].includes(job.status)) return;
   await refundGeneration(
     job.userId,
@@ -731,8 +1080,12 @@ async function finalizeGenerationBlocked(
     payload.policyCode,
     job.sourceType,
     job.sourceId,
-    attempt?.id,
+    resolved.attempt.id,
     {
+      attemptOutcome: "blocked",
+      retryability: "not_retryable",
+      terminalRecordRef: payload.terminalRecordRef,
+      terminalRecordChecksum: payload.terminalRecordChecksum,
       moderation: {
         layer: payload.layer,
         policyCode: payload.policyCode,
@@ -742,24 +1095,58 @@ async function finalizeGenerationBlocked(
   );
 }
 
-async function resolveGenerationAttemptForFinalize(jobId: string, suppliedAttemptId?: string) {
-  const attempt = suppliedAttemptId
-    ? await prisma.generationAttempt.findFirst({
-        where: { id: suppliedAttemptId, requestId: jobId },
-      })
-    : await prisma.generationAttempt.findFirst({
-        where: { requestId: jobId },
-        orderBy: { attemptNo: "desc" },
-      });
-  if (suppliedAttemptId && !attempt) {
-    throw new Error(`Generation Attempt ${suppliedAttemptId} does not belong to Request ${jobId}`);
+async function resolveGenerationAttemptForFinalize(
+  jobId: string,
+  payload: Extract<
+    AiFinalizePayload,
+    {
+      kind:
+        | "generation.completed"
+        | "generation.failed"
+        | "generation.blocked";
+    }
+  >,
+) {
+  const [attempt, latestAttempt, terminalOutbox] = await Promise.all([
+    prisma.generationAttempt.findFirst({
+      where: {
+        id: payload.attemptId,
+        requestId: jobId,
+        attemptNo: payload.attemptNo,
+      },
+    }),
+    prisma.generationAttempt.findFirst({
+      where: { requestId: jobId },
+      orderBy: [{ attemptNo: "desc" }, { createdAt: "desc" }],
+      select: { id: true },
+    }),
+    prisma.mainOutboxEvent.findUnique({
+      where: { id: `generation_terminal_record_${payload.attemptId}` },
+    }),
+  ]);
+  if (!attempt) {
+    throw Errors.conflict(
+      "Generation finalize Attempt identity does not belong to the Request",
+      {
+        requestId: jobId,
+        attemptId: payload.attemptId,
+        attemptNo: payload.attemptNo,
+      },
+    );
   }
-  return attempt;
-}
-
-async function removeGenerationWorkQueueJob(jobId: string, mode: string) {
-  const queue = mode === "video" ? "ai.video.generate" : "ai.image.generate";
-  await jobQueue.removeByDedupePrefix(`generation:${jobId}`, [queue]);
+  if (
+    !terminalOutbox ||
+    terminalOutbox.eventType !== "generation.terminal_record.accepted.v1" ||
+    terminalOutbox.aggregateType !== "generation_attempt" ||
+    terminalOutbox.aggregateId !== attempt.id ||
+    canonicalSha256(terminalOutbox.payload) !== canonicalSha256(payload)
+  ) {
+    throw Errors.conflict(
+      "Generation finalize payload does not match its durable terminal record",
+      { requestId: jobId, attemptId: attempt.id },
+    );
+  }
+  return { attempt, isLatest: latestAttempt?.id === attempt.id };
 }
 
 // P4 Task 5: what the chat agent should recall having sent. sourceMeta.promptHint
@@ -848,8 +1235,10 @@ async function refundGeneration(
   sourceId: string | null,
   attemptId?: string,
   terminal: {
-    attemptOutcome?: "failed" | "unknown";
+    attemptOutcome?: "failed" | "blocked" | "unknown";
     retryability?: "retryable" | "not_retryable" | "operator_retry";
+    terminalRecordRef?: string;
+    terminalRecordChecksum?: string;
     moderation?: { layer: string; policyCode: string; message: string };
   } = {},
 ) {
@@ -913,36 +1302,47 @@ async function refundGeneration(
       });
     }
     if (attemptId) {
-      await recordTerminalArtifactDeliveryEvidence(tx, {
+      await projectAttemptArtifactDisposition(tx, {
         requestId: jobId,
         attemptId,
         targetId: userId,
         validationState: status === "blocked" ? "rejected" : "invalid",
         deliveryStatus: "failed",
+        occurredAt: new Date(),
       });
       const attempt = await tx.generationAttempt.findFirstOrThrow({
         where: { id: attemptId, requestId: jobId },
       });
       const finishedAt = attempt.finishedAt ?? new Date();
       const attemptOutcome = terminal.attemptOutcome ?? "failed";
-      await recordGenerationAttemptEvent(tx, {
-        eventId: `${attemptId}:terminal`,
-        attemptId,
-        eventType: `generation.attempt.${attemptOutcome}.v1`,
-        outcome: attemptOutcome,
-        occurredAt: finishedAt,
-        payload: {
-          requestId: jobId,
-          requestOutcome: status,
+      if (attempt.status !== attemptOutcome) {
+        if (["succeeded", "failed", "blocked", "cancelled", "unknown"].includes(attempt.status)) {
+          throw new Error(
+            `Generation Attempt ${attemptId} already ended as ${attempt.status}, cannot settle Request as ${attemptOutcome}`,
+          );
+        }
+        await recordGenerationAttemptEvent(tx, {
+          eventId: `${attemptId}:terminal`,
+          attemptId,
+          eventType: `generation.attempt.${attemptOutcome}.v1`,
+          outcome: attemptOutcome,
+          occurredAt: finishedAt,
+          payload: {
+            requestId: jobId,
+            requestOutcome: status,
+            errorCode,
+            refundAmount,
+            terminalRecordChecksum: terminal.terminalRecordChecksum ?? null,
+          },
+          terminalRecordRef: terminal.terminalRecordRef ?? null,
           errorCode,
-          refundAmount,
-        },
-        errorCode,
-        errorClass: attemptOutcome === "unknown" ? "ambiguous_provider_outcome" : undefined,
-        errorSignature: attemptOutcome === "unknown" ? `ambiguous_provider_outcome:${errorCode}` : undefined,
-        retryability: terminal.retryability ?? (status === "failed" ? "retryable" : "not_retryable"),
-        operatorGuidance: attemptOutcome === "unknown" ? "Reconcile the provider request before any business retry." : undefined,
-      });
+          errorClass: attemptOutcome === "unknown" ? "ambiguous_provider_outcome" : undefined,
+          errorSignature: attemptOutcome === "unknown" ? `ambiguous_provider_outcome:${errorCode}` : undefined,
+          retryability: terminal.retryability ?? (status === "failed" ? "retryable" : "not_retryable"),
+          operatorGuidance: attemptOutcome === "unknown" ? "Reconcile the provider request before any business retry." : undefined,
+        });
+      }
+      await markGenerationTerminalRecordDelivered(tx, attemptId);
     }
     await markProductionItemFailed(tx, jobId);
     await appendGenerationEvent(tx, jobId, status, `Generation job ${status}`, {
@@ -952,6 +1352,16 @@ async function refundGeneration(
       amount: refundAmount,
     });
     return true;
+  });
+}
+
+async function markGenerationTerminalRecordDelivered(
+  tx: Prisma.TransactionClient,
+  attemptId: string,
+) {
+  await tx.mainOutboxEvent.updateMany({
+    where: { id: `generation_terminal_record_${attemptId}` },
+    data: { status: "delivered", deliveredAt: new Date() },
   });
 }
 
@@ -995,6 +1405,16 @@ async function trackEvent(
 
 function toInputJson(value: unknown): Prisma.InputJsonValue {
   return value as Prisma.InputJsonValue;
+}
+
+function mediaAssetGenerationOrdinal(metadata: Prisma.JsonValue | null) {
+  if (metadata === null || Array.isArray(metadata) || typeof metadata !== "object") {
+    return null;
+  }
+  const ordinal = metadata.index;
+  return typeof ordinal === "number" && Number.isInteger(ordinal) && ordinal >= 0
+    ? ordinal
+    : null;
 }
 
 function cryptoRandomId() {

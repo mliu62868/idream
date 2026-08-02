@@ -83,7 +83,7 @@ describe("video generation (Deluxe)", () => {
       expect(gen.data.job.status).toBe("queued");
       const queued = await jobQueue.getByDedupeKey(
         "ai.video.generate",
-        `generation:${gen.data.job.id}`,
+        `generation:${gen.data.job.id}:attempt:1`,
       );
       expect(queued?.payload).toMatchObject({
         kind: "video",

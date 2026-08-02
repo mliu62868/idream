@@ -44,6 +44,7 @@ export const adminZhCoverageA: Record<string, string> = {
   "[x] Provider disabled [ ] Verify recovery": "[x] 供应商已禁用 [ ] 验证恢复",
   "{completed}/{total} completed": "已完成 {completed}/{total}",
   "{cost} DC": "{cost} DC",
+  "{name} {snapshot}": "{name} {snapshot}",
   "/ max": "/ 最大值",
   "/guides/example": "/guides/example",
   "A dependable evening ritual that helps them decompress": "帮助他们放松下来的可靠晚间仪式",

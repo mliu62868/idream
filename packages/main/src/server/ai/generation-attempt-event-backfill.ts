@@ -71,7 +71,7 @@ function classifyAttempt(
     errorCode: string | null;
     errorSignature: string | null;
     retryability: string | null;
-    completionManifestRef: string | null;
+    terminalRecordRef: string | null;
     finishedAt: Date | null;
     events: Array<{
       attemptId: string;
@@ -110,9 +110,9 @@ function classifyAttempt(
     return { attemptId: attempt.id, status: attempt.status, classification: "partial", reason: "missing_finished_at" };
   }
   if (outcome === "succeeded") {
-    const hasSuccessEvidence = Boolean(attempt.completionManifestRef) || evidence.artifactCount > 0;
+    const hasSuccessEvidence = Boolean(attempt.terminalRecordRef) || evidence.artifactCount > 0;
     if (!hasSuccessEvidence) {
-      return { attemptId: attempt.id, status: attempt.status, classification: "partial", reason: "success_without_manifest_or_artifact" };
+      return { attemptId: attempt.id, status: attempt.status, classification: "partial", reason: "success_without_terminal_record_or_artifact" };
     }
     return { attemptId: attempt.id, status: attempt.status, classification: "ready", reason: "success_evidence_present" };
   }
@@ -199,7 +199,7 @@ export async function backfillGenerationAttemptEvents(
           requestId: attempt.requestId,
           reason: item.reason,
           evidence,
-          completionManifestRef: attempt.completionManifestRef,
+          terminalRecordRef: attempt.terminalRecordRef,
           errorCode: attempt.errorCode,
           errorSignature: attempt.errorSignature,
           retryability: attempt.retryability,
@@ -207,7 +207,7 @@ export async function backfillGenerationAttemptEvents(
         errorCode: attempt.errorCode,
         errorSignature: attempt.errorSignature,
         retryability: attempt.retryability,
-        completionManifestRef: attempt.completionManifestRef,
+        terminalRecordRef: attempt.terminalRecordRef,
       }));
       applied += 1;
     }

@@ -526,7 +526,7 @@ Rules:
 | --- | --- | --- | --- |
 | `moderation.input` | Chat Service, creator, generation | moderation service | Blocks high-severity content before model/provider call |
 | `age.verification.webhook` | verification provider | compliance worker | Updates verification status idempotently |
-| `character.preview` | creator API | image worker | Generates creator preview before final submit |
+| `ai.image.generate` (`sourceType=character_preview`) | creator API via Generation dispatch Outbox | Gen image worker | Generates creator preview through the same Attempt/terminal authority as all images |
 | `chat.generate` | Chat Service API | Chat Service worker | Internal Chat queue; writes assistant message versions, usage, memory, relationship, and outbox |
 | `chat.outbox.deliver` | Chat Service DB | Chat Service worker | Delivers chat events to main-site consumers idempotently |
 | `generation.image` | generation API | image worker | P0 worker |

@@ -35,6 +35,11 @@ export const ADMIN_V2_PENDING_CONTRACTS = {
 
 const bindingCache = new Map<string, ExecutableAdminV2Contract>();
 const fixtureOverrides: Readonly<Record<string, unknown>> = {
+  characterVoiceClipReclaimRequestSchema: {
+    requestId: "voice-request-fixture",
+    confirmation: "RECLAIM VOICE voice-request-fixture",
+    reason: "Recover an expired Voice worker lease",
+  },
   characterQaRunCreateRequestSchema: {
     entityVersion: 1,
     checks: [

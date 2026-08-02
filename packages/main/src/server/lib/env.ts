@@ -48,8 +48,6 @@ const EnvSchema = z.object({
   GENERATION_ROUTE_EVALUATOR_VERSION: z.string().min(1).default("identity-match-v1"),
   LOG_LEVEL: z.enum(["trace", "debug", "info", "warn", "error", "fatal", "silent"]).default("info"),
   CHAT_PROVIDER: z.enum(["mock", "pipeline"]).default("mock"),
-  IMAGE_PROVIDER: z.enum(["mock", "pipeline", "backend"]).default("mock"),
-  VIDEO_PROVIDER: z.enum(["mock", "pipeline", "backend"]).default("mock"),
   // Tests with no environment remain isolated on mock. Versioned local and
   // production env templates select Fish Audio as the product authority.
   VOICE_PROVIDER: z
@@ -76,9 +74,8 @@ const EnvSchema = z.object({
   MODERATION_API_KEY: z.string().optional(),
   MODERATION_TIMEOUT_MS: z.coerce.number().int().positive().default(5_000),
   PIPELINE_API_URL: z.string().url().optional(),
-  // Backend image provider (P1): gen worker's ComfyUI-backed generation path.
-  // Optional here — required only for a production IMAGE_PROVIDER=backend
-  // deploy, enforced by launch-readiness rather than at boot.
+  // Read by Admin diagnostics and launch-readiness. Gen workers own provider
+  // selection through GEN_IMAGE_PROVIDER / GEN_VIDEO_PROVIDER.
   COMFYUI_API_URL: z.string().url().optional(),
   PIPELINE_VOICE_API_URL: z.string().url().optional(),
   PIPELINE_API_TOKEN: z.string().optional(),

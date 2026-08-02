@@ -5,8 +5,9 @@
 // pipeline logic ports 1:1.
 // INVARIANTS: blob.putPrivate is the ONLY persistence gen performs. No DB.
 import { Buffer } from "node:buffer";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { deflateSync } from "node:zlib";
 import type { ImageGeneratePayload } from "@idream/shared/contracts";
 import type { VideoGeneratePayload } from "@idream/shared/contracts";
 import {
@@ -23,6 +24,12 @@ export interface ProviderFailure {
   code: string;
   message: string;
   retryable: boolean;
+  /**
+   * SPEC: ambiguous means the remote request may have been accepted and must
+   * not be replayed without provider idempotency. Omitted preserves the legacy
+   * code/retryable classification for non-backend adapters.
+   */
+  outcome?: "definitive" | "ambiguous";
 }
 
 export interface ProviderInvocationMetadata {
@@ -112,6 +119,12 @@ export interface BlobStore {
     body: Uint8Array;
     contentType: string;
   }): Promise<ProviderResult<{ key: string; size: number }>>;
+  putPrivateIfAbsent(input: {
+    key: string;
+    body: Uint8Array;
+    contentType: string;
+  }): Promise<ProviderResult<{ key: string; size: number; created: boolean }>>;
+  delete(input: { key: string }): Promise<ProviderResult<{ deleted: true }>>;
   signGetUrl(input: { key: string; expiresInSeconds: number }): Promise<ProviderResult<{ url: string }>>;
   getPrivate?(input: { key: string }): Promise<ProviderResult<{ body: Uint8Array; contentType: string | null }>>;
 }
@@ -128,10 +141,61 @@ class MockImageModel implements ImageModel {
           key: `mock/images/${seed}-${index + 1}.png`,
           width: 1024,
           height: 1024,
+          contentType: "image/png",
+          body: mockImagePngBytes(16, 16),
         })),
       },
     };
   }
+}
+
+function mockImagePngBytes(width: number, height: number) {
+  const rows = Array.from({ length: height }, (_, y) => {
+    const row = Buffer.alloc(1 + width * 3);
+    for (let x = 0; x < width; x += 1) {
+      const offset = 1 + x * 3;
+      row[offset] = (x * 67 + y * 19) % 256;
+      row[offset + 1] = (x * 29 + y * 83) % 256;
+      row[offset + 2] = (x * 11 + y * 47) % 256;
+    }
+    return row;
+  });
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 2;
+  return new Uint8Array(Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    mockPngChunk("IHDR", ihdr),
+    mockPngChunk("IDAT", deflateSync(Buffer.concat(rows))),
+    mockPngChunk("IEND", Buffer.alloc(0)),
+  ]));
+}
+
+function mockPngChunk(type: string, data: Buffer) {
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length, 0);
+  const chunk = Buffer.concat([Buffer.from(type, "ascii"), data]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(mockPngCrc32(chunk), 0);
+  return Buffer.concat([length, chunk, crc]);
+}
+
+const mockPngCrcTable = new Uint32Array(256).map((_, value) => {
+  let crc = value;
+  for (let bit = 0; bit < 8; bit += 1) {
+    crc = crc & 1 ? 0xedb88320 ^ (crc >>> 1) : crc >>> 1;
+  }
+  return crc >>> 0;
+});
+
+function mockPngCrc32(data: Buffer) {
+  let crc = 0xffffffff;
+  for (const byte of data) {
+    crc = mockPngCrcTable[(crc ^ byte) & 0xff]! ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
 }
 
 class MockVideoModel implements VideoModel {
@@ -221,7 +285,8 @@ const pipelineResponseSchema = {
 };
 
 class PipelineImageModel implements ImageModel {
-  readonly retryCapabilities = { deterministicIdempotencyKey: true, retryableFailureCodes: [...retryablePipelineCategories] } as const;
+  // INTENT: requestId is correlation only. The legacy gateway has no durable
+  // same-key result contract, so a timeout must become unknown, never Bull retry.
   async generate(input: Parameters<ImageModel["generate"]>[0]) {
     const endpoint = pipelineEndpoint("/images/generations");
     if (!endpoint) {
@@ -364,7 +429,8 @@ const pipelineVideoResponseSchema = {
 };
 
 class PipelineVideoModel implements VideoModel {
-  readonly retryCapabilities = { deterministicIdempotencyKey: true, retryableFailureCodes: [...retryablePipelineCategories] } as const;
+  // INTENT: keep this rollback adapter non-replayable until its gateway proves
+  // concurrent and post-restart same-key result reuse with payload conflicts.
   async generate(input: Parameters<VideoModel["generate"]>[0]) {
     const endpoint = pipelineEndpoint("/videos/generations");
     if (!endpoint) {
@@ -441,6 +507,46 @@ class MockBlobStore implements BlobStore {
     };
   }
 
+  async putPrivateIfAbsent(
+    input: Parameters<BlobStore["putPrivateIfAbsent"]>[0],
+  ) {
+    const target = path.join(env.BLOB_ROOT, input.key);
+    await mkdir(path.dirname(target), { recursive: true });
+    try {
+      await writeFile(target, input.body, { flag: "wx" });
+      return {
+        ok: true as const,
+        data: {
+          key: input.key,
+          size: input.body.byteLength,
+          created: true,
+        },
+      };
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error
+        ? String(error.code)
+        : "";
+      if (code === "EEXIST") {
+        return {
+          ok: true as const,
+          data: {
+            key: input.key,
+            size: input.body.byteLength,
+            created: false,
+          },
+        };
+      }
+      return {
+        ok: false as const,
+        error: {
+          code: "put_if_absent_failed",
+          message: error instanceof Error ? error.message : "blob write failed",
+          retryable: true,
+        },
+      };
+    }
+  }
+
   async signGetUrl(input: Parameters<BlobStore["signGetUrl"]>[0]) {
     return {
       ok: true as const,
@@ -448,6 +554,28 @@ class MockBlobStore implements BlobStore {
         url: `https://mock-blob.idream.local/${encodeURIComponent(input.key)}?ttl=${input.expiresInSeconds}`,
       },
     };
+  }
+
+  async delete(input: Parameters<BlobStore["delete"]>[0]) {
+    try {
+      await unlink(path.join(env.BLOB_ROOT, input.key));
+      return { ok: true as const, data: { deleted: true as const } };
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error
+        ? String(error.code)
+        : "";
+      if (code === "ENOENT") {
+        return { ok: true as const, data: { deleted: true as const } };
+      }
+      return {
+        ok: false as const,
+        error: {
+          code: "delete_failed",
+          message: error instanceof Error ? error.message : "blob delete failed",
+          retryable: true,
+        },
+      };
+    }
   }
 
   async getPrivate(input: { key: string }) {
@@ -497,7 +625,7 @@ function buildImageModel(): ImageModel {
   if (env.IMAGE_PROVIDER === "mock") return new MockImageModel();
   if (env.IMAGE_PROVIDER === "backend") return buildBackendImageModel();
   // deprecated: external OpenAI-compatible gateway (self-hosted models behind a
-  // separate pipeline service). IMAGE_PROVIDER=backend talks to ComfyUI/sd-cli
+  // separate pipeline service). GEN_IMAGE_PROVIDER=backend talks to ComfyUI/sd-cli
   // directly via the workflow-native GenBackend abstraction instead.
   if (env.IMAGE_PROVIDER === "pipeline") return new PipelineImageModel();
   throw new Error(`Unsupported image provider: ${env.IMAGE_PROVIDER}`);
@@ -640,6 +768,18 @@ export interface GenProviders {
   video: VideoModel;
   moderation: ModerationProvider;
   blob: BlobStore;
+}
+
+// INTENT: Main integration tests exercise the real Gen pipeline without
+// reintroducing image/video execution adapters into Main. Stable instances let
+// tests inject provider failures and inspect calls through the Gen-owned seam.
+export function createMockGenProviders(): GenProviders {
+  return {
+    image: new MockImageModel(),
+    video: new MockVideoModel(),
+    moderation: new MockModerationProvider(),
+    blob: new MockBlobStore(),
+  };
 }
 
 export const providers: GenProviders = {

@@ -22,6 +22,7 @@ class FishAudioGatewayTests(unittest.TestCase):
                 "FISH_AUDIO_MODEL_PATH",
                 "FISH_AUDIO_SYSTEM_REFERENCE_AUDIO",
                 "FISH_AUDIO_SYSTEM_REFERENCE_MANIFEST",
+                "FISH_AUDIO_IDEMPOTENCY_DIR",
             )
         }
         system_audio = Path(self.directory.name) / "system-female.wav"
@@ -39,6 +40,9 @@ class FishAudioGatewayTests(unittest.TestCase):
         os.environ["FISH_AUDIO_MODEL_PATH"] = self.directory.name
         os.environ["FISH_AUDIO_SYSTEM_REFERENCE_AUDIO"] = str(system_audio)
         os.environ["FISH_AUDIO_SYSTEM_REFERENCE_MANIFEST"] = str(system_manifest)
+        os.environ["FISH_AUDIO_IDEMPOTENCY_DIR"] = str(
+            Path(self.directory.name) / "idempotency"
+        )
         sys.modules.pop("scripts.fish_audio_gateway", None)
         self.gateway = importlib.import_module("scripts.fish_audio_gateway")
 
@@ -142,6 +146,78 @@ class FishAudioGatewayTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(calls["load_thread"], calls["render_thread"])
+
+    def test_speech_idempotency_replays_persisted_audio_without_rendering_twice(self):
+        calls = 0
+        original_load_runtime_model = self.gateway.load_runtime_model
+        original_render_wav = self.gateway.render_wav
+
+        def fake_load_runtime_model():
+            return object()
+
+        def fake_render_wav(_request):
+            nonlocal calls
+            calls += 1
+            return f"RIFF-{calls}-WAVE".encode()
+
+        self.gateway.load_runtime_model = fake_load_runtime_model
+        self.gateway.render_wav = fake_render_wav
+        headers = {
+            "Idempotency-Key": "voice-request-1:attempt:1",
+            "X-Idream-Request-Id": "voice-request-1",
+            "X-Idream-Attempt-No": "1",
+        }
+        payload = {
+            "model": "fish-audio-s2-pro-8bit",
+            "input": "Persistent replay",
+            "voice": "fish-female-default",
+            "response_format": "wav",
+        }
+        try:
+            with TestClient(self.gateway.app) as client:
+                first = client.post("/v1/audio/speech", json=payload, headers=headers)
+                second = client.post("/v1/audio/speech", json=payload, headers=headers)
+        finally:
+            self.gateway.load_runtime_model = original_load_runtime_model
+            self.gateway.render_wav = original_render_wav
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.content, second.content)
+        self.assertEqual(second.headers["x-idream-idempotency-replayed"], "true")
+        self.assertEqual(calls, 1)
+
+    def test_speech_idempotency_rejects_key_reuse_for_a_different_request(self):
+        original_load_runtime_model = self.gateway.load_runtime_model
+        original_render_wav = self.gateway.render_wav
+        self.gateway.load_runtime_model = lambda: object()
+        self.gateway.render_wav = lambda _request: b"RIFF-cached-WAVE"
+        headers = {
+            "Idempotency-Key": "voice-request-2:attempt:1",
+            "X-Idream-Request-Id": "voice-request-2",
+            "X-Idream-Attempt-No": "1",
+        }
+        payload = {
+            "model": "fish-audio-s2-pro-8bit",
+            "input": "Original request",
+            "voice": "fish-female-default",
+            "response_format": "wav",
+        }
+        try:
+            with TestClient(self.gateway.app) as client:
+                first = client.post("/v1/audio/speech", json=payload, headers=headers)
+                conflict = client.post(
+                    "/v1/audio/speech",
+                    json={**payload, "input": "Different request"},
+                    headers=headers,
+                )
+        finally:
+            self.gateway.load_runtime_model = original_load_runtime_model
+            self.gateway.render_wav = original_render_wav
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(conflict.status_code, 409)
+        self.assertIn("different request", conflict.json()["detail"])
 
     def test_system_voice_identity_cannot_be_overwritten_by_a_clone(self):
         with self.assertRaises(self.gateway.HTTPException) as raised:

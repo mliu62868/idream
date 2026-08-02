@@ -1,6 +1,6 @@
 # ADR-13：全项目深模块权威边界
 
-更新日期：2026-07-31
+更新日期：2026-08-01
 
 状态：Accepted / Implemented in source；live authority chains verified；browser operator journey and customer default-profile cutover pending
 
@@ -37,16 +37,16 @@
 Main
   accept Request
   reserve/settle Dreamcoin
-  create Attempt + dispatch intent
-  ingest immutable completion manifest
+  atomically create Attempt + dispatch Outbox
+  consume terminal relay and ingest immutable terminal record
   finalize Artifact/Delivery
         │
         ▼
 Gen
   claim transport work
-  invoke image/video provider
-  persist completion manifest
-  redeliver manifest until Main durable ACK
+  GenerationExecution invokes image/video adapter
+  persist terminal record
+  enqueue record into Main-owned durable relay
 ```
 
 不变量：
@@ -55,9 +55,13 @@ Gen
 - `main` 不保留 internal worker/serverless provider execution 回退；
 - BullMQ completed 不是生成成功 authority；
 - Gen 在真实调用前必须持有可审计的 Attempt/Transport identity；
-- Gen 先持久化 immutable completion manifest，再请求 Main durable ACK；
-- Main 只做 dispatch、manifest ingest、settlement 和 finalization；
+- Main 的 Attempt 与 dispatch Outbox 必须在同一事务提交，不能先建 Attempt 再直接 enqueue；
+- Gen 先持久化 immutable terminal record，再按 immutable Attempt key 投递 Main-owned durable relay；record 覆盖 succeeded / failed / blocked / unknown；
+- Main 短时不可用只重试 relay row；relay admission 中断时 Gen 只重投已持久化 record，不重放 provider invocation；
+- output storage authority 属于 immutable Attempt，而不是 Request：前缀固定为 `gen/{requestId}/attempts/{attemptId}/`，terminal ingest 同时校验 dispatch 前缀和所有 artifact key；
+- Main 只做 dispatch、terminal-record ingest、settlement 和 finalization；
 - provider outcome 不明确且 provider 不支持确定性幂等时，不自动重放 provider invocation。
+- 图片与视频共用 `GenerationExecution` 的 resume → transport → invoke → retry decision → terminal persist + relay admission 生命周期；modality adapter 只负责调用与产物归一化。
 
 未来若部署到 serverless，不恢复 Main 内执行路径；单独部署 Gen adapter。
 
@@ -300,6 +304,26 @@ type CharacterProductionJourney = {
 4. 加边界测试禁止旧写法；
 5. 删除重复 helper、旧 env、回退执行路径和前端推导；
 6. 运行 focused test、仓库 check、HTTP/PM2/DB/browser 闭环。
+
+Generation worker 切换另有 fail-closed 门禁：在部署要求 `attemptId / attemptNo` 的 Gen
+版本前运行 `bun run --cwd packages/main check:generation-cutover`。所有活动 Request 必须已有
+最新 Attempt 与精确 immutable dispatch Outbox；Redis 中 image/video/terminal-ingest/finalize 四类 in-flight
+Bull row 还必须绑定同一最新 Attempt、pins、attempt 级 dedupe 与对应 Outbox；所有
+`pending / dispatched` terminal Outbox 也独立验证，不依赖它是否已有 Bull row。检查只读，不做
+删除或重派。
+活动 Request 的最新 queued/running Attempt 若已绑定 `terminalRecordRef`，还必须存在精确 terminal
+Outbox 与非终态 exact finalize Bull row；delivered Outbox 对应的 Bull row 缺失、failed 或 completed
+都是 stranded finalization。合法 `unknown` Attempt 则以 delivered exact Outbox、Attempt unknown
+terminal event 与 `provider_outcome_unknown` Request event 证明 finalization 已完成，并允许 Bull row
+completed 或已移除；Request 保持 active 以等待运营对账。
+
+生产 PM2 start/restart/reload wrapper 先在 Main/Gen/finalizer 在线时全局 pause image、video、
+terminal-ingest、finalize queue，等待 active handler 完成；Gen 可把新 terminal record 投进暂停的
+durable relay，Main 可把已摄入 record 的 terminal Outbox 投进暂停的 finalize queue；再先停
+admission/direct producer，后停 Gen worker，finalizer 最后。`pm2 jlist` 证明非 voice app 为
+`stopped / errored / absent` 后才执行门禁和目标 PM2 action；全部成功后才 resume。任一阶段非零
+都保持四条 queue paused，禁止通过 legacy payload fallback、读取可变 Job 字段、静默补造 Attempt 或
+手工 resume 绕过门禁。
 
 跨服务切换按 receiver-first：
 

@@ -37,7 +37,7 @@ M0 地基 → M1 鉴权+合规 → M2 目录+Explore → M3 角色详情+举报�
 **退出**：详情页可用；举报落库进队列；举报人匿名。E2E 流 1（含详情）。
 
 ## M4 · 角色创建器（spec P0 #5）
-**交付**：多步 `character-drafts` 保存、tag 管理、`character.preview` 队列 + image worker(mock)、`submit`（创建前校验 07 §3 + 输入审核 + 状态机 §4.1）、保存到 My AI、私有/公开。
+**交付**：多步 `character-drafts` 保存、tag 管理、Character Preview 复用正式 `GenerationJob → Attempt → ai.image.generate → terminal` 链、`submit`（创建前校验 07 §3 + 输入审核 + 状态机 §4.1）、保存到 My AI、私有/公开。
 **退出**：草稿→预览→提交→My AI 可见；age<18/禁内容被拒。E2E 流 4。
 
 ## M5 · 聊天（spec P0 #6）

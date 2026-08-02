@@ -17,7 +17,7 @@ to take it from `mock` to a **publishable production** state.
 - **Billing** — plan `voice_minutes` allowance is spent first (rolling 30-day window);
   overflow falls back to a per-clip Dreamcoin charge (`PricingRule` mode `voice`,
   default 2). Debit + asset write are atomic; concurrent double-clicks are de-duped.
-- **Delivery / tone** — `VoiceModel.synthesize` carries the character tone plus a
+- **Delivery / tone** — the `VoiceClipPort.synthesize` authority carries the character tone plus a
   persisted Fish delivery contract: preset, intensity, speed, temperature, top-p,
   top-k, and repetition penalty.
 - **UI** — play / loading / stop control on each assistant message in chat; 402 routes
@@ -33,6 +33,10 @@ to take it from `mock` to a **publishable production** state.
   changing `Character.voiceId`. A separate publish-authority action activates the
   reviewed candidate, archives the previous active profile, updates the character
   pointer, and records Audit/Outbox evidence.
+- **Durable recovery** — `VoiceClipRequest` persists immutable synthesis and provider
+  authority. Character operations can reclaim only an expired running lease; takeover
+  keeps the same provider idempotency key and records the operator command and audit
+  evidence. `VoiceIdentityPort` separately owns preview/clone/delete/runtime inspection.
 - **Launch gates** — `VOICE_PROVIDER` is a launch-critical provider: production refuses
   to start on `mock`, and `check:launch` requires a fresh live voice-model probe.
 

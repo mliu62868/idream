@@ -2,11 +2,13 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { MockVoiceModel } from "./providers/voice/mock";
-import { PipelineVoiceModel } from "./providers/voice/pipeline";
-import { PocketTtsVoiceModel } from "./providers/voice/pocket-tts";
-import { FishAudioVoiceModel } from "./providers/voice/fish-audio";
-import type { BlobStore, ProviderResult, VoiceModel } from "./providers/types";
+import { createConfiguredVoicePorts } from "./providers/voice/factory";
+import type {
+  BlobStore,
+  ProviderResult,
+  VoiceClipPort,
+  VoiceIdentityPort,
+} from "./providers/types";
 
 type ProbeOptions = {
   report: string | null;
@@ -147,19 +149,17 @@ async function runProbe(input: {
   let voiceCloneVerified: boolean | null = null;
 
   try {
-    const voice = createVoiceModel({
-      provider: input.provider,
-      baseUrl: input.baseUrl,
-      model: input.model,
-      blob,
-    });
-    if (voice.inspectCapabilities) {
-      const capabilities = await voice.inspectCapabilities();
+    const voice = createConfiguredVoicePorts(blob);
+    if (voice.identity) {
+      const capabilities = await voice.identity.inspectCapabilities();
       voiceCloningAvailable = capabilities.ok
         ? capabilities.data.voiceCloning
         : null;
     }
-    const result = await voice.synthesize({
+    const result = await voice.clip.synthesize({
+      requestId: `voice-probe-${input.startedAt}`,
+      attemptNo: 1,
+      idempotencyKey: `voice-probe-${input.startedAt}:1`,
       text: input.text,
       voiceId: input.voiceId,
     });
@@ -183,8 +183,7 @@ async function runProbe(input: {
     if (input.provider === "pocket-tts" || input.provider === "fish-audio") {
       if (
         voiceCloningAvailable !== true ||
-        !voice.cloneVoice ||
-        !voice.deleteVoice ||
+        !voice.identity ||
         !blob.stored?.body
       ) {
         return {
@@ -206,7 +205,7 @@ async function runProbe(input: {
       }
       const reference = blob.stored;
       const probeVoiceId = `idream-probe-${randomUUID()}`;
-      const clone = await voice.cloneVoice({
+      const clone = await voice.identity.cloneVoice({
         voiceId: probeVoiceId,
         audio: reference.body,
         contentType: reference.contentType,
@@ -235,15 +234,18 @@ async function runProbe(input: {
           },
         };
       }
-      let clonedSpeech: Awaited<ReturnType<VoiceModel["synthesize"]>>;
-      let deleted: Awaited<ReturnType<NonNullable<VoiceModel["deleteVoice"]>>>;
+      let clonedSpeech: Awaited<ReturnType<VoiceClipPort["synthesize"]>>;
+      let deleted: Awaited<ReturnType<VoiceIdentityPort["deleteVoice"]>>;
       try {
-        clonedSpeech = await voice.synthesize({
+        clonedSpeech = await voice.clip.synthesize({
+          requestId: `voice-clone-probe-${input.startedAt}`,
+          attemptNo: 1,
+          idempotencyKey: `voice-clone-probe-${input.startedAt}:1`,
           text: input.text,
           voiceId: clone.data.voiceId,
         });
       } finally {
-        deleted = await voice.deleteVoice({ voiceId: clone.data.voiceId });
+        deleted = await voice.identity.deleteVoice({ voiceId: clone.data.voiceId });
       }
       if (!clonedSpeech.ok) {
         return {
@@ -313,70 +315,6 @@ async function runProbe(input: {
       },
     };
   }
-}
-
-function createVoiceModel(input: {
-  provider: string;
-  baseUrl: string | null;
-  model: string | null;
-  blob: BlobStore;
-}): VoiceModel {
-  if (input.provider === "mock") return new MockVoiceModel();
-  if (input.provider === "pocket-tts") {
-    return new PocketTtsVoiceModel({
-      baseUrl: requireValue("POCKET_TTS_API_URL", input.baseUrl),
-      apiKey: process.env.POCKET_TTS_API_TOKEN,
-      model: requireValue("POCKET_TTS_MODEL", input.model),
-      language: process.env.POCKET_TTS_LANGUAGE ?? "english",
-      defaultVoiceId: process.env.POCKET_TTS_DEFAULT_VOICE_ID ?? "alba",
-      maxInputChars: readIntEnv("PIPELINE_VOICE_MAX_INPUT_CHARS", 900, 1),
-      timeoutMs: readIntEnv("POCKET_TTS_TIMEOUT_MS", 120_000, 250),
-      blob: input.blob,
-    });
-  }
-  if (input.provider === "fish-audio") {
-    return new FishAudioVoiceModel({
-      baseUrl: requireValue("FISH_AUDIO_API_URL", input.baseUrl),
-      apiKey: process.env.FISH_AUDIO_API_TOKEN,
-      model: requireValue("FISH_AUDIO_MODEL", input.model),
-      language: process.env.FISH_AUDIO_LANGUAGE ?? "auto",
-      defaultVoiceId:
-        process.env.FISH_AUDIO_DEFAULT_VOICE_ID ?? "fish-female-default",
-      maxInputChars: readIntEnv("PIPELINE_VOICE_MAX_INPUT_CHARS", 900, 1),
-      timeoutMs: readIntEnv("FISH_AUDIO_TIMEOUT_MS", 240_000, 250),
-      blob: input.blob,
-    });
-  }
-  if (input.provider !== "pipeline") {
-    throw new Error(`Unsupported voice model provider: ${input.provider}`);
-  }
-
-  return new PipelineVoiceModel({
-    baseUrl: requireValue("PIPELINE_VOICE_API_URL or PIPELINE_API_URL", input.baseUrl),
-    apiKey: process.env.PIPELINE_VOICE_API_TOKEN ?? process.env.PIPELINE_API_TOKEN,
-    model: requireValue("PIPELINE_VOICE_MODEL_DEFAULT", input.model),
-    sendInstructions: process.env.PIPELINE_VOICE_SEND_INSTRUCTIONS === "true",
-    maxInputCharsPerRequest: readIntEnv("PIPELINE_VOICE_CHUNK_CHARS", 0),
-    maxInputChars: readIntEnv("PIPELINE_VOICE_MAX_INPUT_CHARS", 900),
-    timeoutMs: readIntEnv(
-      "PIPELINE_VOICE_TIMEOUT_MS",
-      readIntEnv("PIPELINE_TIMEOUT_MS", 120_000, 250),
-      250,
-    ),
-    blob: input.blob,
-  });
-}
-
-function readIntEnv(name: string, fallback: number, min = 0) {
-  const raw = process.env[name];
-  if (!raw) return fallback;
-  const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) && parsed >= min ? parsed : fallback;
-}
-
-function requireValue(name: string, value: string | null | undefined) {
-  if (!value?.trim()) throw new Error(`${name} is required for voice model probe`);
-  return value;
 }
 
 function hasText(value: string | null | undefined) {

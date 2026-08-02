@@ -1,5 +1,13 @@
-import { randomUUID } from "node:crypto";
-import type { BlobStore, ProviderResult, VoiceModel } from "../types";
+import {
+  VOICE_PROVIDER_REPLAY,
+  type BlobStore,
+  type ProviderResult,
+  type VoiceClipPort,
+} from "../types";
+import {
+  voiceArtifactKey,
+  voiceChunkIdempotencyKey,
+} from "./idempotency";
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -37,9 +45,9 @@ type JsonSpeechChunk = {
 
 type SpeechChunk = BinarySpeechChunk | JsonSpeechChunk;
 
-export class PipelineVoiceModel implements VoiceModel {
+export class PipelineVoiceModel implements VoiceClipPort {
   readonly providerKey = "pipeline" as const;
-  readonly supportsVoiceCloning = false;
+  readonly providerReplay = VOICE_PROVIDER_REPLAY.pipeline;
 
   private readonly endpoint: URL;
   private readonly apiKey: string | undefined;
@@ -65,18 +73,29 @@ export class PipelineVoiceModel implements VoiceModel {
     this.fetchImpl = config.fetchImpl ?? fetch;
   }
 
-  async synthesize(input: Parameters<VoiceModel["synthesize"]>[0]) {
+  async synthesize(input: Parameters<VoiceClipPort["synthesize"]>[0]) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
       const rendered: SpeechChunk[] = [];
       const voiceText = limitVoiceText(input.text, this.maxInputChars);
-      for (const chunk of splitVoiceText(voiceText, this.maxInputCharsPerRequest)) {
+      const voiceChunks = splitVoiceText(
+        voiceText,
+        this.maxInputCharsPerRequest,
+      );
+      for (const [chunkIndex, chunk] of voiceChunks.entries()) {
         const response = await this.fetchImpl(this.endpoint, {
           method: "POST",
           headers: {
             "content-type": "application/json",
             ...(this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}),
+            "idempotency-key": voiceChunkIdempotencyKey(
+              input.idempotencyKey,
+              chunkIndex,
+              voiceChunks.length,
+            ),
+            "x-idream-request-id": input.requestId,
+            "x-idream-attempt-no": String(input.attemptNo),
           },
           body: JSON.stringify({
             model: this.model,
@@ -108,7 +127,10 @@ export class PipelineVoiceModel implements VoiceModel {
       const combined = combineSpeechChunks(rendered as BinarySpeechChunk[]);
       if (!combined.ok) return combined;
       const { body, contentType, durationMs } = combined.data;
-      const key = `voice/${randomUUID()}${audioFileExtension(contentType)}`;
+      const key = voiceArtifactKey(
+        input.idempotencyKey,
+        audioFileExtension(contentType),
+      );
       const stored = await this.blob.putPrivate({ key, body, contentType });
       if (!stored.ok) return stored;
       return {

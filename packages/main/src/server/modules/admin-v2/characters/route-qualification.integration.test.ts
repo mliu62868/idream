@@ -50,6 +50,7 @@ describe("production Generation Route Qualification writer", () => {
         characterId,
         type: "image",
         url: `/test/${anchorAssetId}.webp`,
+        storageKey: `tests/${anchorAssetId}.webp`,
         visibility: "private",
         safetyStatus: "passed",
         metadata: { operational: true },

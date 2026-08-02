@@ -1,13 +1,14 @@
 // SPEC: gen/video process entry. Consumes ai.video.generate; for each job runs
-// the pipeline (provider → blob → enqueue app.ai.finalize). Long-running with
+// the pipeline (provider → blob terminal record → durable Main relay). Long-running with
 // graceful shutdown: SIGTERM/SIGINT close the worker so in-flight jobs drain.
 import { GEN_QUEUES } from "@idream/shared/contracts";
 import { env } from "./env";
 import { logger } from "./logger";
 import { processVideoGenerate } from "./pipeline";
-import { assertProductionProviderReady } from "./providers";
-import { enqueue, runWorker } from "./queue";
-import { acknowledgeCompletionManifest } from "./completion-manifest";
+import { assertProductionProviderReady, providers } from "./providers";
+import { runWorker } from "./queue";
+import { startGenerationSourceRecovery } from "./failed-source-recovery";
+import { enqueueTerminalRecordRelay } from "./terminal-record";
 import { recordTransportExecution } from "./transport-execution";
 
 // Video generation is deferred (V1.1). In the intended deferred state the provider
@@ -22,12 +23,22 @@ if (env.VIDEO_PROVIDER === "mock") {
 
 assertProductionProviderReady("video");
 
+const sourceRecovery = startGenerationSourceRecovery({
+  mode: "video",
+  blob: providers.blob,
+  onResult: (result) => {
+    if (result.recovered > 0 || result.invalid.length > 0 || result.retryErrors.length > 0) {
+      logger.warn(result, "video failed-source recovery scan completed");
+    }
+  },
+  onError: (err) => logger.error({ err }, "video failed-source recovery scan failed"),
+});
+
 const worker = runWorker(GEN_QUEUES.videoGenerate, async (job) => {
   await processVideoGenerate(job.payload, {
-    enqueue,
     attemptsMade: job.attemptsMade,
     maxAttempts: job.maxAttempts,
-    acknowledgeCompletion: acknowledgeCompletionManifest,
+    acknowledgeTerminalRecord: enqueueTerminalRecordRelay,
     recordTransportExecution,
   });
 });
@@ -43,6 +54,7 @@ logger.info({ queue: GEN_QUEUES.videoGenerate }, "gen/video worker started");
 
 async function shutdown(signal: string): Promise<void> {
   logger.info({ signal }, "gen/video shutting down");
+  await sourceRecovery.close();
   await worker.close();
   process.exit(0);
 }

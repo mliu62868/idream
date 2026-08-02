@@ -18,8 +18,8 @@ export const MAIN_OUTBOX_TRANSPORT_QUEUES = [
     eventTypes: ["product.event.persisted.v2"],
   },
   {
-    queue: "generation_manifest",
-    eventTypes: ["generation.manifest.accepted.v1"],
+    queue: "generation_terminal_record",
+    eventTypes: ["generation.terminal_record.accepted.v1"],
   },
   {
     queue: "generation_dispatch",

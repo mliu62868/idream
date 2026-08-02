@@ -1,10 +1,12 @@
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { characterVideoProductionRecipe } from "@idream/shared";
+import { assertCharacterVideoProductionDescriptor } from "../src/backend/production-video-descriptor.ts";
 
 const [, , sourceArg, outputArg] = process.argv;
 if (!sourceArg) {
   throw new Error(
-    "Usage: node scripts/build-ltx23-gtanimation-workflow.mjs <api-prompt.json> [output.json]",
+    "Usage: bun scripts/build-ltx23-gtanimation-workflow.mjs <api-prompt.json> [output.json]",
   );
 }
 
@@ -13,37 +15,22 @@ const output = path.resolve(
   outputArg ?? "workflows/ltx23-gtanimation-i2v.json",
 );
 const apiPrompt = JSON.parse(await readFile(source, "utf8"));
-if (
-  apiPrompt?.["320:333"]?.inputs?.unet_name !==
-  "ltx23Gtanimation25Frames_ltxv23INT4Convrot.safetensors"
-) {
-  throw new Error("Source prompt does not use the exact GTAnimation INT4 ConvRot checkpoint");
-}
-if (apiPrompt?.["75"]?.class_type !== "SaveVideo") {
-  throw new Error("Source prompt does not contain the expected SaveVideo output");
-}
-
-apiPrompt["75"].inputs.filename_prefix = "idream-ltx23-gtanimation";
+apiPrompt["75"].inputs.filename_prefix =
+  characterVideoProductionRecipe.outputFilenamePrefix;
 for (const node of Object.values(apiPrompt)) {
   if (node && typeof node === "object") delete node.is_changed;
 }
 
 const descriptor = {
-  workflowKey: "ltx23-gtanimation-i2v",
-  modelId: "ltx23-gtanimation-int4-convrot",
-  backendKind: "comfyui",
+  workflowKey: characterVideoProductionRecipe.workflowKey,
+  modelId: characterVideoProductionRecipe.pipelineModel,
+  backendKind: characterVideoProductionRecipe.runner,
   comfyWorkflow: {
-    id: "9b3f4d6a-0c8e-4b72-9f51-2a6d7e8c9012",
-    name: "iDream LTX 2.3 GTAnimation I2V",
+    id: characterVideoProductionRecipe.comfyWorkflowId,
+    name: characterVideoProductionRecipe.comfyWorkflowName,
   },
-  version: 1,
-  capabilities: [
-    "video",
-    "img2video",
-    "referenceImages",
-    "stableSeed",
-    "audio",
-  ],
+  version: characterVideoProductionRecipe.workflowVersion,
+  capabilities: characterVideoProductionRecipe.capabilities,
   identity: {
     mode: "single_reference",
     maxReferences: 1,
@@ -52,8 +39,8 @@ const descriptor = {
     supportsSourceImageWithIdentity: false,
   },
   quality: {
-    maxCandidates: 1,
-    evaluatorDimensions: ["artifact", "identity", "intent"],
+    maxCandidates: characterVideoProductionRecipe.outputCount,
+    evaluatorDimensions: characterVideoProductionRecipe.evaluatorDimensions,
   },
   apiPrompt,
   inputs: [
@@ -77,25 +64,25 @@ const descriptor = {
     {
       key: "width",
       type: "int",
-      default: 768,
+      default: characterVideoProductionRecipe.width,
       target: { nodeId: "320:312", field: "value" },
     },
     {
       key: "height",
       type: "int",
-      default: 1152,
+      default: characterVideoProductionRecipe.height,
       target: { nodeId: "320:299", field: "value" },
     },
     {
       key: "fps",
       type: "int",
-      default: 25,
+      default: characterVideoProductionRecipe.fps,
       target: { nodeId: "320:300", field: "value" },
     },
     {
       key: "seconds",
       type: "int",
-      default: 4,
+      default: characterVideoProductionRecipe.durationSeconds,
       target: { nodeId: "320:301", field: "value" },
     },
     {
@@ -110,6 +97,8 @@ const descriptor = {
     },
   ],
 };
+
+assertCharacterVideoProductionDescriptor(descriptor);
 
 await writeFile(output, `${JSON.stringify(descriptor, null, 2)}\n`);
 console.log(output);

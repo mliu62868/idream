@@ -1,14 +1,28 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Prisma } from "@prisma/client";
+import {
+  generationTerminalRecordChecksum,
+  generationTerminalRecordSchema,
+} from "@idream/shared/contracts";
 import type { AiFinalizePayload } from "@/server/ai/schemas";
 import { drainLocalAiPipeline, reconcileStaleGenerationJobs } from "@/server/ai/local-pipeline";
-import { enqueueGenerationAttempt } from "@/server/modules/generation/attempt-dispatch";
+import { recordGenerationTransportExecution } from "@/server/ai/generation-transport-execution";
+import {
+  dispatchPendingGenerationTerminalRecords,
+  ingestGenerationTerminalRecord,
+} from "@/server/ai/generation-terminal-record-ingest";
+import {
+  buildGenerationAttemptQueueInput,
+  type ExistingGenerationJob,
+} from "@/server/modules/generation/attempt-dispatch";
+import { reserveInitialGenerationAttempt } from "@/server/modules/generation/generation-attempt-authority";
 import { jobQueue } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
 import { referenceSetSnapshotHash } from "@/server/modules/admin-v2/characters/release-snapshot";
 import * as generationCatalog from "@/server/modules/admin/generation-catalog";
 import {
   api,
+  completeQueuedCharacterPreview,
   createCharacter,
   createUser,
   dreamcoinBalance,
@@ -35,6 +49,149 @@ const COMPLETE_PERSONA_DETAILS = {
 
 function asInputJson(value: AiFinalizePayload): Prisma.InputJsonValue {
   return value as unknown as Prisma.InputJsonValue;
+}
+
+async function enqueueGenerationAttempt(job: ExistingGenerationJob) {
+  const existingAttempt = await prisma.generationAttempt.findFirst({
+    where: { requestId: job.id },
+    orderBy: { attemptNo: "desc" },
+  });
+  const profile = job.profileId && job.profileVersion
+    ? await prisma.generationModelProfile.findFirst({
+        where: {
+          version: job.profileVersion,
+          OR: [{ id: job.profileId }, { profileKey: job.profileId }],
+        },
+      })
+    : null;
+  const attemptId = existingAttempt?.id ?? `test-attempt-${job.id}`;
+  const provider =
+    existingAttempt?.provider ?? job.provider ?? profile?.runner ?? "mock";
+  const input = await buildGenerationAttemptQueueInput(
+    job,
+    {
+      id: attemptId,
+      requestId: job.id,
+      attemptNo: existingAttempt?.attemptNo ?? 1,
+      provider,
+      profileKey: existingAttempt?.profileKey ?? null,
+      profileVersion: existingAttempt?.profileVersion ?? null,
+      workflowKey: existingAttempt?.workflowKey ?? null,
+      workflowVersion: existingAttempt?.workflowVersion ?? null,
+    },
+    {
+      dedupeKey:
+        `generation:${job.id}:attempt:${existingAttempt?.attemptNo ?? 1}`,
+    },
+  );
+  if (!existingAttempt) {
+    const queuePayload = input.payload as Record<string, unknown>;
+    const controls = queuePayload.controls as Record<string, unknown>;
+    await prisma.$transaction(async (tx) => {
+      await tx.generationAttempt.create({
+        data: {
+          id: attemptId,
+          requestId: job.id,
+          attemptNo: 1,
+          provider,
+          profileKey:
+            typeof controls.generationProfileKey === "string"
+              ? controls.generationProfileKey
+              : null,
+          profileVersion:
+            typeof controls.generationProfileVersion === "number"
+              ? controls.generationProfileVersion
+              : null,
+          workflowKey:
+            typeof controls.workflowKey === "string"
+              ? controls.workflowKey
+              : null,
+          workflowVersion:
+            typeof controls.workflowVersion === "number"
+              ? controls.workflowVersion
+              : null,
+          status: "queued",
+        },
+      });
+      await tx.mainOutboxEvent.create({
+        data: {
+          id: `generation_initial_${job.id}`,
+          eventType: "generation.retry.dispatch.v2",
+          aggregateType: "generation_request",
+          aggregateId: job.id,
+          payload: {
+            generationJobId: job.id,
+            attemptId,
+            attemptNo: 1,
+            queueInput: input,
+          } as unknown as Prisma.InputJsonValue,
+          status: "delivered",
+          deliveredAt: new Date(),
+        },
+      });
+    });
+  }
+  await jobQueue.enqueue(input);
+}
+
+async function generationFinalizeEvidence(
+  generationJobId: string,
+  assets: readonly {
+    providerRef: string | null;
+    quality?: unknown;
+  }[],
+) {
+  const attempt = await prisma.generationAttempt.findFirstOrThrow({
+    where: { requestId: generationJobId },
+    orderBy: { attemptNo: "desc" },
+  });
+  const dispatch = await prisma.mainOutboxEvent.findFirstOrThrow({
+    where: {
+      aggregateType: "generation_request",
+      aggregateId: generationJobId,
+      payload: { path: ["attemptId"], equals: attempt.id },
+    },
+  });
+  const queueInput = (dispatch.payload as Record<string, unknown>)
+    .queueInput as Record<string, unknown>;
+  const queuePayload = queueInput.payload as Record<string, unknown>;
+  const outputPrefix = queuePayload.outputPrefix as string;
+  const terminalRecord = generationTerminalRecordSchema.parse({
+    version: 1,
+    attemptId: attempt.id,
+    attemptNo: attempt.attemptNo,
+    transportAttemptNo: 1,
+    providerIdempotencyKey: `generation:${attempt.id}:provider`,
+    requestId: queuePayload.requestId,
+    generationJobId,
+    mode: "image",
+    provider: queuePayload.provider,
+    providerInvoked: true,
+    model: queuePayload.model,
+    providerRequestId: `test-provider-${attempt.id}`,
+    completedAt: new Date().toISOString(),
+    usage: { gpuSeconds: 1.2, model: queuePayload.model },
+    outcome: "succeeded",
+    assets: assets.map((asset, ordinal) => ({
+      ordinal,
+      key: `${outputPrefix}image-${ordinal + 1}.webp`,
+      contentType: "image/webp",
+      width: 1024,
+      height: 1280,
+      providerKey: asset.providerRef,
+      ...(asset.quality ? { quality: asset.quality } : {}),
+    })),
+  });
+  const terminalRecordRef =
+    `gen/terminal-records/${attempt.id}/terminal.json`;
+  const terminalRecordChecksumValue =
+    generationTerminalRecordChecksum(terminalRecord);
+  await expect(ingestGenerationTerminalRecord({
+    terminalRecordRef,
+    terminalRecordChecksum: terminalRecordChecksumValue,
+    terminalRecord,
+  })).resolves.toMatchObject({ acknowledged: true, status: "persisted" });
+  await dispatchPendingGenerationTerminalRecords();
 }
 
 type ExactGenerationQuote = {
@@ -134,52 +291,6 @@ async function createSealedReferenceSet(input: {
     },
     include: { references: true },
   });
-}
-
-async function completeCharacterPreview(input: {
-  previewJobId: string;
-  draftId: string;
-  userId: string;
-}) {
-  const dedupeKey = `character-preview:${input.previewJobId}`;
-  const queued = await jobQueue.getByDedupeKey("character.preview", dedupeKey);
-  expect(queued?.payload).toMatchObject({
-    kind: "character.preview",
-    previewJobId: input.previewJobId,
-    draftId: input.draftId,
-    userId: input.userId,
-    model: expect.not.stringContaining("mock"),
-  });
-  await jobQueue.removeByDedupePrefix(dedupeKey, ["character.preview"]);
-  await jobQueue.enqueue({
-    queue: "app.ai.finalize",
-    payload: asInputJson({
-      version: 1,
-      kind: "character.preview.completed",
-      requestId: `character-preview:${input.previewJobId}`,
-      previewJobId: input.previewJobId,
-      draftId: input.draftId,
-      userId: input.userId,
-      provider: "backend",
-      model: "redcraft-krea2-redmix3-fp8",
-      asset: {
-        key: `preview/${input.previewJobId}/image-1.webp`,
-        width: 832,
-        height: 1024,
-        contentType: "image/webp",
-      },
-    }),
-    dedupeKey: `character-preview-finalize:${input.previewJobId}:completed`,
-  });
-  await drainLocalAiPipeline({
-    limit: 2,
-    queues: ["app.ai.finalize"],
-    workerId: `${P}preview-finalizer`,
-  });
-  await jobQueue.removeByDedupePrefix(
-    `character-preview-finalize:${input.previewJobId}:`,
-    ["app.ai.finalize"],
-  );
 }
 
 beforeAll(async () => {
@@ -1351,7 +1462,7 @@ describe("image generation service contract", () => {
     await expect(
       jobQueue.getByDedupeKey(
         "ai.image.generate",
-        `generation:${generationJobId}`,
+        `generation:${generationJobId}:attempt:1`,
       ),
     ).resolves.toBeNull();
   });
@@ -1391,7 +1502,7 @@ describe("image generation service contract", () => {
       ageGate: true,
     });
     expectOk(previewResponse);
-    await completeCharacterPreview({
+    await completeQueuedCharacterPreview({
       previewJobId: previewResponse.data.previewJob.id as string,
       draftId,
       userId,
@@ -1769,6 +1880,37 @@ describe("image generation service contract", () => {
       headers: { "Idempotency-Key": `${P}idem-key` },
       body: generationBody,
     });
+    expectOk(first, 202);
+    const generationJobId = first.data.job.id as string;
+    const firstAttempt = await prisma.generationAttempt.findFirstOrThrow({
+      where: { requestId: generationJobId },
+    });
+    const dispatchOutboxId = `generation_initial_${generationJobId}`;
+    await expect(
+      prisma.mainOutboxEvent.findUnique({ where: { id: dispatchOutboxId } }),
+    ).resolves.toMatchObject({
+      status: "delivered",
+      payload: expect.objectContaining({
+        generationJobId,
+        attemptId: firstAttempt.id,
+        attemptNo: 1,
+      }),
+    });
+
+    // Simulate a committed dispatch intent whose wakeup was lost. The replay
+    // must recover the same Attempt/Outbox instead of reserving or charging again.
+    await jobQueue.removeByDedupePrefix(
+      `generation:${generationJobId}`,
+      ["ai.image.generate"],
+    );
+    await prisma.mainOutboxEvent.update({
+      where: { id: dispatchOutboxId },
+      data: {
+        status: "pending",
+        nextRunAt: new Date(0),
+        deliveredAt: null,
+      },
+    });
     const second = await api("POST", "generation/jobs", {
       userId,
       ageGate: true,
@@ -1782,7 +1924,6 @@ describe("image generation service contract", () => {
       },
     });
 
-    expectOk(first, 202);
     expectOk(second, 202);
     expect(second.data.job.id).toBe(first.data.job.id);
 
@@ -1797,8 +1938,29 @@ describe("image generation service contract", () => {
       "different generation request",
     );
     expect(await prisma.generationJob.count({ where: { userId } })).toBe(1);
+    expect(await prisma.generationAttempt.count({
+      where: { requestId: generationJobId },
+    })).toBe(1);
+    expect(await prisma.generationAttemptEvent.count({
+      where: { attemptId: firstAttempt.id },
+    })).toBe(1);
+    expect(await prisma.mainOutboxEvent.count({
+      where: { id: dispatchOutboxId },
+    })).toBe(1);
+    await expect(
+      prisma.mainOutboxEvent.findUnique({ where: { id: dispatchOutboxId } }),
+    ).resolves.toMatchObject({ status: "delivered", lastError: null });
+    await expect(
+      jobQueue.getByDedupeKey(
+        "ai.image.generate",
+        `generation:${generationJobId}:attempt:1`,
+      ),
+    ).resolves.not.toBeNull();
     expect(await dreamcoinBalance(userId)).toBe(95);
-    await runQueuedGenerationJobs(8);
+    await jobQueue.removeByDedupePrefix(
+      `generation:${generationJobId}`,
+      ["ai.image.generate"],
+    );
   });
 
   it("enforces the per-user active job limit before reserve", async () => {
@@ -1830,7 +1992,7 @@ describe("image generation service contract", () => {
     }
   });
 
-  it("reconciles stale non-terminal jobs to failed and refunds idempotently", async () => {
+  it("re-dispatches a stale queued Attempt without fabricating failure or refund", async () => {
     const userId = `${P}stale-user`;
     await createUser({ id: userId });
     await grantCoins(userId, 100, "seed");
@@ -1842,32 +2004,79 @@ describe("image generation service contract", () => {
     });
     expectOk(gen, 202);
     const jobId = gen.data.job.id as string;
+    const attempt = await prisma.generationAttempt.findFirstOrThrow({
+      where: { requestId: jobId },
+    });
+    const dispatch = await prisma.mainOutboxEvent.findFirstOrThrow({
+      where: { aggregateId: jobId },
+      orderBy: { createdAt: "desc" },
+    });
+    const staleAt = new Date("2026-01-01T00:00:00.000Z");
+    await jobQueue.removeByDedupePrefix(`generation:${jobId}`, ["ai.image.generate"]);
+    const dispatchPayload = dispatch.payload as Record<string, unknown>;
+    const queueInput = dispatchPayload.queueInput as Record<string, unknown>;
+    const queuePayload = queueInput.payload as Prisma.InputJsonValue;
+    const dedupeKey = queueInput.dedupeKey as string;
+    await jobQueue.enqueue({
+      queue: "ai.image.generate",
+      payload: queuePayload,
+      dedupeKey,
+      maxAttempts: 1,
+    });
+    await expect(jobQueue.processNext({
+      queue: "ai.image.generate",
+      workerId: `${P}stale-failed-worker`,
+      processor: async () => {
+        throw new Error("worker exited before provider invocation");
+      },
+    })).resolves.toMatchObject({ status: "failed" });
     await prisma.generationJob.update({
       where: { id: jobId },
-      data: { updatedAt: new Date("2026-01-01T00:00:00.000Z") },
+      data: { updatedAt: staleAt },
+    });
+    await prisma.generationAttempt.update({
+      where: { id: attempt.id },
+      data: { createdAt: staleAt },
+    });
+    await prisma.generationAttemptEvent.updateMany({
+      where: { attemptId: attempt.id },
+      data: { occurredAt: staleAt, createdAt: staleAt },
+    });
+    await prisma.mainOutboxEvent.update({
+      where: { id: dispatch.id },
+      data: { createdAt: staleAt, updatedAt: staleAt, nextRunAt: staleAt },
     });
 
     const reconciled = await reconcileStaleGenerationJobs({
-      now: new Date("2026-01-01T00:20:00.000Z"),
+      now: new Date("2030-01-01T00:20:00.000Z"),
       timeoutMs: 60_000,
+      generationJobIds: [jobId],
     });
-    expect(reconciled.enqueued).toBeGreaterThanOrEqual(1);
-    await runQueuedGenerationJobs(4);
-    await runQueuedGenerationJobs(4);
+    expect(reconciled).toMatchObject({ enqueued: 1, quarantined: 0 });
 
     const poll = await api("GET", `generation/jobs/${jobId}`, { userId, ageGate: true });
     expectOk(poll);
-    expect(poll.data.job.status).toBe("failed");
+    expect(poll.data.job.status).toBe("queued");
     expect(poll.data.job.completedAt).toBeNull();
-    expect(poll.data.job.errorCode).toBe("stale_timeout");
-    expect(await dreamcoinBalance(userId)).toBe(100);
+    expect(poll.data.job.errorCode).toBeNull();
+    expect(await dreamcoinBalance(userId)).toBe(95);
+    await expect(prisma.generationAttempt.findUniqueOrThrow({
+      where: { id: attempt.id },
+    })).resolves.toMatchObject({ status: "queued", terminalSequence: null });
+    await expect(prisma.mainOutboxEvent.findUniqueOrThrow({
+      where: { id: dispatch.id },
+    })).resolves.toMatchObject({ status: "delivered" });
+    await expect(jobQueue.getByDedupeKey("ai.image.generate", dedupeKey)).resolves.toMatchObject({
+      state: expect.stringMatching(/waiting|prioritized|delayed/),
+      attemptsMade: 0,
+    });
+    await jobQueue.removeByDedupePrefix(`generation:${jobId}`, ["ai.image.generate"]);
   });
 
-  it("does not stale-fail a video job inside its longer provider window", async () => {
-    const userId = `${P}video-stale-user`;
+  it("uses a fresh Transport lease instead of stale GenerationJob.updatedAt", async () => {
+    const userId = `${P}fresh-transport-user`;
     await createUser({ id: userId });
     await grantCoins(userId, 100, "seed");
-
     const gen = await api("POST", "generation/jobs", {
       userId,
       ageGate: true,
@@ -1875,12 +2084,134 @@ describe("image generation service contract", () => {
     });
     expectOk(gen, 202);
     const jobId = gen.data.job.id as string;
-    await prisma.generationJob.update({
-      where: { id: jobId },
+    const attempt = await prisma.generationAttempt.findFirstOrThrow({ where: { requestId: jobId } });
+    const dispatch = await prisma.mainOutboxEvent.findFirstOrThrow({ where: { aggregateId: jobId } });
+    const dispatchQueuePayload = (
+      (dispatch.payload as Record<string, unknown>).queueInput as Record<string, unknown>
+    ).payload as Record<string, unknown>;
+    const staleAt = new Date("2026-01-01T00:00:00.000Z");
+    const freshAt = new Date("2026-01-01T00:19:30.000Z");
+    await prisma.generationJob.update({ where: { id: jobId }, data: { status: "running", updatedAt: staleAt } });
+    await prisma.generationAttempt.update({ where: { id: attempt.id }, data: { createdAt: staleAt } });
+    await prisma.generationAttemptEvent.updateMany({ where: { attemptId: attempt.id }, data: { occurredAt: staleAt, createdAt: staleAt } });
+    await prisma.mainOutboxEvent.update({ where: { id: dispatch.id }, data: { createdAt: staleAt, updatedAt: staleAt, nextRunAt: staleAt } });
+    await recordGenerationTransportExecution({
+      version: 1,
+      attemptId: attempt.id,
+      attemptNo: attempt.attemptNo,
+      generationJobId: jobId,
+      transportAttemptNo: 1,
+      provider: attempt.provider ?? "mock",
+      model: dispatchQueuePayload.model as string,
+      providerRequestId: null,
+      idempotencyKey: `generation:${attempt.id}:provider`,
+      status: "running",
+      occurredAt: freshAt.toISOString(),
+      error: null,
+    });
+
+    const reconciled = await reconcileStaleGenerationJobs({
+      now: new Date("2026-01-01T00:20:00.000Z"),
+      timeoutMs: 60_000,
+    });
+    expect(reconciled).toMatchObject({ enqueued: 0, quarantined: 0 });
+    await expect(prisma.generationAttempt.findUniqueOrThrow({ where: { id: attempt.id } })).resolves.toMatchObject({ status: "running", terminalSequence: null });
+    await expect(prisma.generationJob.findUniqueOrThrow({ where: { id: jobId } })).resolves.toMatchObject({ status: "running", errorCode: null });
+    expect(await dreamcoinBalance(userId)).toBe(95);
+    await jobQueue.removeByDedupePrefix(`generation:${jobId}`, ["ai.image.generate"]);
+  });
+
+  it("quarantines an expired provider lease as unknown exactly once without refund", async () => {
+    const userId = `${P}unknown-stale-user`;
+    await createUser({ id: userId });
+    await grantCoins(userId, 100, "seed");
+    const gen = await api("POST", "generation/jobs", {
+      userId,
+      ageGate: true,
+      body: { mode: "image", characterId: CHAR, outputCount: 1 },
+    });
+    expectOk(gen, 202);
+    const jobId = gen.data.job.id as string;
+    const attempt = await prisma.generationAttempt.findFirstOrThrow({ where: { requestId: jobId } });
+    const dispatch = await prisma.mainOutboxEvent.findFirstOrThrow({ where: { aggregateId: jobId } });
+    const dispatchQueuePayload = (
+      (dispatch.payload as Record<string, unknown>).queueInput as Record<string, unknown>
+    ).payload as Record<string, unknown>;
+    const staleAt = new Date("2026-01-01T00:00:00.000Z");
+    await prisma.generationJob.update({ where: { id: jobId }, data: { status: "running", updatedAt: staleAt } });
+    await prisma.generationAttempt.update({ where: { id: attempt.id }, data: { createdAt: staleAt } });
+    await prisma.generationAttemptEvent.updateMany({ where: { attemptId: attempt.id }, data: { occurredAt: staleAt, createdAt: staleAt } });
+    await prisma.mainOutboxEvent.update({ where: { id: dispatch.id }, data: { createdAt: staleAt, updatedAt: staleAt, nextRunAt: staleAt } });
+    await recordGenerationTransportExecution({
+      version: 1,
+      attemptId: attempt.id,
+      attemptNo: attempt.attemptNo,
+      generationJobId: jobId,
+      transportAttemptNo: 1,
+      provider: attempt.provider ?? "mock",
+      model: dispatchQueuePayload.model as string,
+      providerRequestId: null,
+      idempotencyKey: `generation:${attempt.id}:provider`,
+      status: "running",
+      occurredAt: staleAt.toISOString(),
+      error: null,
+    });
+
+    const results = await Promise.all([
+      reconcileStaleGenerationJobs({ now: new Date("2026-01-01T00:20:00.000Z"), timeoutMs: 60_000 }),
+      reconcileStaleGenerationJobs({ now: new Date("2026-01-01T00:20:00.000Z"), timeoutMs: 60_000 }),
+    ]);
+    expect(results.reduce((sum, result) => sum + result.quarantined, 0)).toBe(1);
+    await expect(prisma.generationAttempt.findUniqueOrThrow({ where: { id: attempt.id } })).resolves.toMatchObject({
+      status: "unknown",
+      errorCode: "stale_provider_outcome",
+      retryability: "operator_retry",
+      terminalSequence: expect.any(Number),
+    });
+    await expect(prisma.generationAttemptEvent.count({ where: { attemptId: attempt.id, terminalScope: "terminal" } })).resolves.toBe(1);
+    await expect(prisma.generationTransportExecution.findFirstOrThrow({ where: { attemptId: attempt.id } })).resolves.toMatchObject({
+      status: "unknown",
+      terminalRecordRef: null,
+    });
+    await expect(prisma.generationJob.findUniqueOrThrow({ where: { id: jobId } })).resolves.toMatchObject({ status: "running", errorCode: null });
+    expect(await dreamcoinBalance(userId)).toBe(95);
+    await jobQueue.removeByDedupePrefix(`generation:${jobId}`, ["ai.image.generate"]);
+  });
+
+  it("does not stale-fail a video job inside its longer provider window", async () => {
+    const userId = `${P}video-stale-user`;
+    await createUser({ id: userId });
+    await grantCoins(userId, 100, "seed");
+
+    const job = await prisma.generationJob.create({
       data: {
+        id: `${P}video-stale-job`,
+        userId,
         mode: "video",
-        updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+        controls: {
+          workflowKey: "ltx23-gtanimation-i2v",
+          workflowVersion: 1,
+        },
+        presetIds: [],
+        model: "ltx23-gtanimation-i2v",
+        provider: "mock",
+        outputCount: 1,
+        status: "queued",
       },
+    });
+    await prisma.$transaction((tx) =>
+      reserveInitialGenerationAttempt(tx, {
+        requestId: job.id,
+        dispatch: {
+          outboxId: `generation_initial_${job.id}`,
+          eventType: "generation.retry.dispatch.v2",
+          payload: { source: "video_stale_window_test" },
+        },
+      })
+    );
+    await prisma.generationJob.update({
+      where: { id: job.id },
+      data: { updatedAt: new Date("2026-01-01T00:00:00.000Z") },
     });
 
     const reconciled = await reconcileStaleGenerationJobs({
@@ -1890,7 +2221,7 @@ describe("image generation service contract", () => {
     });
     expect(reconciled.enqueued).toBe(0);
     await expect(
-      prisma.generationJob.findUniqueOrThrow({ where: { id: jobId } }),
+      prisma.generationJob.findUniqueOrThrow({ where: { id: job.id } }),
     ).resolves.toMatchObject({ status: "queued", mode: "video" });
   });
 
@@ -1906,22 +2237,38 @@ describe("image generation service contract", () => {
     });
     expectOk(gen, 202);
     const jobId = gen.data.job.id as string;
-    expect(await jobQueue.getByDedupeKey("ai.image.generate", `generation:${jobId}`)).not.toBeNull();
+    expect(await jobQueue.getByDedupeKey("ai.image.generate", `generation:${jobId}:attempt:1`)).not.toBeNull();
+    const attempt = await prisma.generationAttempt.findFirstOrThrow({
+      where: { requestId: jobId },
+      orderBy: { attemptNo: "desc" },
+    });
+    const finalizePayload = asInputJson({
+      version: 1,
+      kind: "generation.failed",
+      requestId: `${P}failed-cleanup`,
+      generationJobId: jobId,
+      attemptId: attempt.id,
+      attemptNo: attempt.attemptNo,
+      terminalRecordRef: `test://terminal-record/${attempt.id}`,
+      terminalRecordChecksum: "c".repeat(64),
+      mode: "image",
+      error: {
+        code: "worker_interrupted",
+        message: "Worker interrupted",
+        retryable: false,
+      },
+    });
+    await prisma.mainOutboxEvent.create({ data: {
+      id: `generation_terminal_record_${attempt.id}`,
+      eventType: "generation.terminal_record.accepted.v1",
+      aggregateType: "generation_attempt",
+      aggregateId: attempt.id,
+      payload: finalizePayload,
+    } });
 
     await jobQueue.enqueue({
       queue: "app.ai.finalize",
-      payload: asInputJson({
-        version: 1,
-        kind: "generation.failed",
-        requestId: `${P}failed-cleanup`,
-        generationJobId: jobId,
-        mode: "image",
-        error: {
-          code: "worker_interrupted",
-          message: "Worker interrupted",
-          retryable: false,
-        },
-      }),
+      payload: finalizePayload,
       dedupeKey: `generation-finalize:${jobId}:failed`,
     });
 
@@ -1936,9 +2283,11 @@ describe("image generation service contract", () => {
     expect(poll.data.job.status).toBe("failed");
     expect(poll.data.job.completedAt).toBeNull();
     expect(await dreamcoinBalance(userId)).toBe(100);
-    expect(await jobQueue.getByDedupeKey("ai.image.generate", `generation:${jobId}`)).toBeNull();
-    const attempt = await prisma.generationAttempt.findFirstOrThrow({ where: { requestId: jobId } });
-    expect(attempt).toMatchObject({ status: "failed", terminalSequence: expect.any(Number) });
+    expect(await jobQueue.getByDedupeKey("ai.image.generate", `generation:${jobId}:attempt:1`)).toBeNull();
+    const finalizedAttempt = await prisma.generationAttempt.findUniqueOrThrow({
+      where: { id: attempt.id },
+    });
+    expect(finalizedAttempt).toMatchObject({ status: "failed", terminalSequence: expect.any(Number) });
     expect(await prisma.generationAttemptEvent.findMany({
       where: { attemptId: attempt.id, terminalScope: "terminal" },
     })).toEqual([
@@ -1999,26 +2348,9 @@ describe("image generation service contract", () => {
     expectOk(gen, 202);
     const jobId = gen.data.job.id as string;
     await jobQueue.removeByDedupePrefix(`generation:${jobId}`, ["ai.image.generate"]);
-    await jobQueue.enqueue({
-      queue: "app.ai.finalize",
-      payload: asInputJson({
-        version: 1,
-        kind: "generation.completed",
-        requestId: `${P}partial-request`,
-        generationJobId: jobId,
-        mode: "image",
-        assets: [
-          {
-            key: `${P}partial/${jobId}/0.webp`,
-            contentType: "image/webp",
-            width: 1024,
-            height: 1280,
-          },
-        ],
-        usage: { gpuSeconds: 1.2, model: "mock-image" },
-      }),
-      dedupeKey: `generation-finalize:${jobId}:completed`,
-    });
+    await generationFinalizeEvidence(jobId, [{
+      providerRef: `${P}partial/provider-0.webp`,
+    }]);
 
     await runQueuedGenerationJobs(4);
     const poll = await api("GET", `generation/jobs/${jobId}`, { userId, ageGate: true });
@@ -2047,35 +2379,17 @@ describe("image generation service contract", () => {
     expectOk(gen, 202);
     const jobId = gen.data.job.id as string;
     await jobQueue.removeByDedupePrefix(`generation:${jobId}`, ["ai.image.generate"]);
-
-    await jobQueue.enqueue({
-      queue: "app.ai.finalize",
-      payload: asInputJson({
-        version: 1,
-        kind: "generation.completed",
-        requestId: `${P}quality-request`,
-        generationJobId: jobId,
-        mode: "image",
-        assets: [
-          {
-            key: `${P}quality/${jobId}/0.webp`,
-            contentType: "image/webp",
-            width: 1024,
-            height: 1280,
-            quality: {
-              schemaVersion: "1",
-              evaluatorVersion: "sanity-v1",
-              artifact: { status: "passed" },
-              faceCount: { status: "unscored", reason: "evaluator_unavailable" },
-              identity: { status: "unscored", reason: "evaluator_unavailable" },
-              intent: { status: "unscored", reason: "evaluator_unavailable" },
-            },
-          },
-        ],
-        usage: { gpuSeconds: 1.2, model: "mock-image" },
-      }),
-      dedupeKey: `generation-finalize:${jobId}:completed`,
-    });
+    await generationFinalizeEvidence(jobId, [{
+      providerRef: `${P}quality/provider-0.webp`,
+      quality: {
+        schemaVersion: "1",
+        evaluatorVersion: "sanity-v1",
+        artifact: { status: "passed" },
+        faceCount: { status: "unscored", reason: "evaluator_unavailable" },
+        identity: { status: "unscored", reason: "evaluator_unavailable" },
+        intent: { status: "unscored", reason: "evaluator_unavailable" },
+      },
+    }]);
     await drainLocalAiPipeline({ queues: ["app.ai.finalize"], limit: 2 });
 
     const poll = await api("GET", `generation/jobs/${jobId}`, { userId, ageGate: true });
@@ -2335,7 +2649,7 @@ describe("image generation service contract", () => {
         seed: `${P}identity-seed`,
       },
     });
-    const queued = await jobQueue.getByDedupeKey("ai.image.generate", `generation:${job.id}`);
+    const queued = await jobQueue.getByDedupeKey("ai.image.generate", `generation:${job.id}:attempt:1`);
     const queuedPayload = queued?.payload as { referenceImages?: unknown[] } | undefined;
     expect(queuedPayload?.referenceImages).toEqual([
       expect.objectContaining({
@@ -3916,7 +4230,7 @@ describe("image generation service contract", () => {
     });
     const queued = await jobQueue.getByDedupeKey(
       "ai.image.generate",
-      `generation:${created.data.job.id}`,
+      `generation:${created.data.job.id}:attempt:1`,
     );
     expect(queued?.payload).toMatchObject({
       referenceImages: [
@@ -4011,7 +4325,7 @@ describe("image generation service contract", () => {
       },
     });
     await expect(
-      jobQueue.getByDedupeKey("ai.image.generate", `generation:${jobId}`),
+      jobQueue.getByDedupeKey("ai.image.generate", `generation:${jobId}:attempt:1`),
     ).resolves.toBeNull();
   });
 
@@ -4083,7 +4397,7 @@ describe("image generation service contract", () => {
       },
     });
     await expect(
-      jobQueue.getByDedupeKey("ai.image.generate", `generation:${jobId}`),
+      jobQueue.getByDedupeKey("ai.image.generate", `generation:${jobId}:attempt:1`),
     ).resolves.toBeNull();
 
   });
@@ -4133,7 +4447,7 @@ describe("image generation service contract", () => {
         },
       });
       await expect(
-        jobQueue.getByDedupeKey("ai.video.generate", `generation:${jobId}`),
+        jobQueue.getByDedupeKey("ai.video.generate", `generation:${jobId}:attempt:1`),
       ).resolves.toBeNull();
     } finally {
       await prisma.character.update({
@@ -4260,7 +4574,7 @@ describe("image generation service contract", () => {
       },
     });
     await expect(
-      jobQueue.getByDedupeKey("ai.image.generate", `generation:${jobId}`),
+      jobQueue.getByDedupeKey("ai.image.generate", `generation:${jobId}:attempt:1`),
     ).resolves.toBeNull();
 
     await prisma.generationModelProfile.update({
@@ -4286,7 +4600,7 @@ describe("image generation service contract", () => {
       },
     });
     await expect(
-      jobQueue.getByDedupeKey("ai.image.generate", `generation:${jobId}`),
+      jobQueue.getByDedupeKey("ai.image.generate", `generation:${jobId}:attempt:1`),
     ).resolves.toBeNull();
   });
 
@@ -4393,7 +4707,7 @@ describe("image generation service contract", () => {
       ).resolves.toBeUndefined();
       const queued = await jobQueue.getByDedupeKey(
         "ai.image.generate",
-        `generation:${jobId}`,
+        `generation:${jobId}:attempt:1`,
       );
       expect(queued?.payload, scenario.label).toMatchObject({
         referenceImages: [
@@ -4407,6 +4721,9 @@ describe("image generation service contract", () => {
           }),
         ],
       });
+      await jobQueue.removeByDedupePrefix(`generation:${jobId}`, [
+        "ai.image.generate",
+      ]);
     }
   });
 
@@ -4773,7 +5090,7 @@ describe("image generation service contract", () => {
     const generatedJobId = generated.data.job.id as string;
     const queuedLookGeneration = await jobQueue.getByDedupeKey(
       "ai.image.generate",
-      `generation:${generatedJobId}`,
+      `generation:${generatedJobId}:attempt:1`,
     );
     expect(queuedLookGeneration?.payload).toMatchObject({
       controls: {
@@ -4839,7 +5156,7 @@ describe("image generation service contract", () => {
     const retriedJobId = retriedLookGeneration.data.job.id as string;
     const queuedLookRetry = await jobQueue.getByDedupeKey(
       "ai.image.generate",
-      `generation:${retriedJobId}`,
+      `generation:${retriedJobId}:attempt:1`,
     );
     expect(queuedLookRetry?.payload).toMatchObject({
       controls: {
@@ -5373,7 +5690,7 @@ describe("image generation service contract", () => {
     expect(job.prompt).toContain("Locked identity");
     expect(job.prompt).toContain("pearl-white hair");
     expect(job.prompt).toContain("lantern-lit library");
-    const queued = await jobQueue.getByDedupeKey("ai.image.generate", `generation:${job.id}`);
+    const queued = await jobQueue.getByDedupeKey("ai.image.generate", `generation:${job.id}:attempt:1`);
     const queuedPayload = queued?.payload as { controls?: Record<string, unknown>; referenceImages?: unknown[] } | undefined;
     expect(queuedPayload?.controls).toMatchObject({
       sourceImageAssetId: mediaId,

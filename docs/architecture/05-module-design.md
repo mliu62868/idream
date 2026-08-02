@@ -79,7 +79,7 @@
 
 **关键流程**：
 - `POST /character-drafts` + `PATCH :id`：按 `step` 渐进保存（gender→style→appearance→hair→body→name→advanced→tags），immutable 更新。
-- `POST :id/preview`：入队 `character.preview` → image worker 生成预览图 → 回填 `previewJobId`/asset。
+- `POST :id/preview`：同事务创建 `CharacterPreviewJob` + cost=0 的 `GenerationJob(sourceType=character_preview)` + 首个 Attempt/dispatch Outbox；统一 `ai.image.generate` worker 生成，正式 terminal finalizer 按 source 投影 `previewJobId`/asset。
 - `POST :id/submit`：**创建前校验**（年龄≥18、禁止内容、真实人物/IP/非自愿/规避，见 07 §3）→ 建 `Character(status=draft→pending_review)` + `CharacterSubmission` → 入队输入审核 → 私有可直接 `approved` 自用，公开需过审。
 - `PATCH/DELETE /characters/:id`：`requireOwner`；删除=archive（软删）。
 

@@ -7,12 +7,14 @@ reference-cloning path that currently forwards a temporary filename string.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
 import re
 import shutil
 import subprocess
+import struct
 import tempfile
 import threading
 import wave
@@ -52,13 +54,19 @@ SYSTEM_REFERENCE_MANIFEST = os.getenv(
     "FISH_AUDIO_SYSTEM_REFERENCE_MANIFEST",
     "",
 ).strip()
+IDEMPOTENCY_DIR = Path(
+    os.getenv("FISH_AUDIO_IDEMPOTENCY_DIR", ".data/fish-audio/idempotency")
+).resolve()
 
 VOICE_MANIFEST_FORMAT = "idream_fish_audio_voice_reference_v1"
+IDEMPOTENCY_MANIFEST_FORMAT = "idream_fish_audio_idempotency_v1"
+IDEMPOTENCY_CACHE_MAGIC = b"IDREAM-FISH-IDEMPOTENCY-V1\n"
 MAX_REFERENCE_BYTES = 15 * 1024 * 1024
 MAX_REFERENCE_SECONDS = 30
 MIN_REFERENCE_BYTES = 1_024
 BUILTIN_VOICES = {"fish-female-default"}
 registry_lock = threading.RLock()
+idempotency_lock = threading.RLock()
 generation_lock = threading.Lock()
 runtime_model: Any | None = None
 
@@ -68,6 +76,7 @@ if not LANGUAGE:
     raise RuntimeError("FISH_AUDIO_LANGUAGE is required")
 
 VOICE_DIR.mkdir(parents=True, exist_ok=True)
+IDEMPOTENCY_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class DeliverySettings(BaseModel):
@@ -314,6 +323,114 @@ def atomic_write(path: Path, content: bytes) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def speech_request_fingerprint(request: SpeechRequest) -> str:
+    canonical = json.dumps(
+        request.model_dump(mode="json"),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def idempotency_cache_path(idempotency_key: str) -> Path:
+    normalized = idempotency_key.strip()
+    if not normalized or len(normalized) > 256:
+        raise HTTPException(status_code=400, detail="Invalid Idempotency-Key")
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    return IDEMPOTENCY_DIR / f"{digest}.cache"
+
+
+def load_idempotent_audio(
+    cache_path: Path,
+    request_fingerprint: str,
+) -> bytes | None:
+    if not cache_path.is_file():
+        return None
+    try:
+        content = cache_path.read_bytes()
+        prefix_size = len(IDEMPOTENCY_CACHE_MAGIC) + 4
+        if not content.startswith(IDEMPOTENCY_CACHE_MAGIC) or len(content) <= prefix_size:
+            raise ValueError("invalid cache prefix")
+        manifest_size = struct.unpack(
+            ">I",
+            content[len(IDEMPOTENCY_CACHE_MAGIC) : prefix_size],
+        )[0]
+        manifest_end = prefix_size + manifest_size
+        if manifest_size < 2 or manifest_end >= len(content):
+            raise ValueError("invalid manifest size")
+        manifest = json.loads(content[prefix_size:manifest_end].decode("utf-8"))
+        audio = content[manifest_end:]
+    except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError) as error:
+        raise HTTPException(
+            status_code=503,
+            detail="Stored speech idempotency result is invalid",
+        ) from error
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("format") != IDEMPOTENCY_MANIFEST_FORMAT
+        or not isinstance(manifest.get("request_fingerprint"), str)
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail="Stored speech idempotency manifest is incompatible",
+        )
+    if manifest["request_fingerprint"] != request_fingerprint:
+        raise HTTPException(
+            status_code=409,
+            detail="Idempotency-Key was already used for a different request",
+        )
+    return audio
+
+
+def render_idempotent_wav(
+    request: SpeechRequest,
+    idempotency_key: str,
+    request_id: str,
+    attempt_no: int,
+) -> tuple[bytes, bool]:
+    if not request_id.strip() or attempt_no < 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Idempotent speech requires request id and positive attempt number",
+        )
+    cache_path = idempotency_cache_path(idempotency_key)
+    request_fingerprint = speech_request_fingerprint(request)
+    with idempotency_lock:
+        replay = load_idempotent_audio(
+            cache_path,
+            request_fingerprint,
+        )
+        if replay is not None:
+            return replay, True
+        rendered = render_wav(request)
+        manifest = {
+            "format": IDEMPOTENCY_MANIFEST_FORMAT,
+            "request_fingerprint": request_fingerprint,
+            "request_id": request_id.strip(),
+            "attempt_no": attempt_no,
+        }
+        manifest_bytes = json.dumps(
+            manifest,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        # INVARIANT: metadata and bytes become visible in one atomic rename, so
+        # a process crash can never leave a key that is allowed to re-render.
+        atomic_write(
+            cache_path,
+            b"".join(
+                (
+                    IDEMPOTENCY_CACHE_MAGIC,
+                    struct.pack(">I", len(manifest_bytes)),
+                    manifest_bytes,
+                    rendered,
+                )
+            ),
+        )
+        return rendered, False
+
+
 def style_prefix(delivery: DeliverySettings) -> str:
     base = {
         "sensual": ["female voice", "low voice", "breathy"],
@@ -413,7 +530,12 @@ async def health() -> JSONResponse:
 
 
 @app.post("/v1/audio/speech", dependencies=[Depends(authorize)])
-async def synthesize(request: SpeechRequest) -> Response:
+async def synthesize(
+    request: SpeechRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    request_id: str | None = Header(default=None, alias="X-Idream-Request-Id"),
+    attempt_no: int | None = Header(default=None, alias="X-Idream-Attempt-No"),
+) -> Response:
     if request.response_format != "wav":
         raise HTTPException(status_code=400, detail="Only WAV output is supported")
     if request.model != MODEL_ID:
@@ -421,10 +543,31 @@ async def synthesize(request: SpeechRequest) -> Response:
             status_code=409,
             detail=f"Configured model is '{MODEL_ID}', received '{request.model}'",
         )
+    replayed = False
+    if idempotency_key is None:
+        rendered = render_wav(request)
+    else:
+        if request_id is None or attempt_no is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Idempotency-Key requires X-Idream-Request-Id and "
+                    "X-Idream-Attempt-No"
+                ),
+            )
+        rendered, replayed = render_idempotent_wav(
+            request,
+            idempotency_key,
+            request_id,
+            attempt_no,
+        )
     return Response(
-        content=render_wav(request),
+        content=rendered,
         media_type="audio/wav",
-        headers={"Content-Disposition": "inline; filename=generated_speech.wav"},
+        headers={
+            "Content-Disposition": "inline; filename=generated_speech.wav",
+            "X-Idream-Idempotency-Replayed": "true" if replayed else "false",
+        },
     )
 
 

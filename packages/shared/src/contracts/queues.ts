@@ -1,17 +1,18 @@
 // SPEC: Canonical BullMQ queue names, shared by every service (SSoT).
 // INTENT: One place to name queues so producer/consumer never drift across the
-// physical split. Every queue below is owned and consumed inside one service.
+// physical split. Cross-service queues name their consumer-side authority.
 // INVARIANTS: A queue name is a stable wire identifier — renaming is a migration.
 
 /** Generation workers (gen/image, gen/video) — payload self-contained, no DB authority. */
 export const GEN_QUEUES = {
   imageGenerate: "ai.image.generate",
-  characterPreview: "character.preview",
   videoGenerate: "ai.video.generate",
 } as const;
 
 /** Main-side authority write-back (gen-finalizer, main-event-consumer). */
 export const MAIN_QUEUES = {
+  /** gen/* -> gen-finalizer: relay one immutable terminal record into Main. */
+  generationTerminalIngest: "app.generation.terminal.ingest",
   /** gen/* → gen-finalizer: settle assets + dreamcoins + output moderation. */
   aiFinalize: "app.ai.finalize",
 } as const;

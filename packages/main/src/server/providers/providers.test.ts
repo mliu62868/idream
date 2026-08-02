@@ -5,6 +5,11 @@ import type { BlobStore } from "./types";
 import { PipelineVoiceModel } from "./voice/pipeline";
 
 const oldEnv = { ...process.env };
+const voiceSynthesisIdentity = {
+  requestId: "provider-test-request",
+  attemptNo: 1,
+  idempotencyKey: "provider-test-request:1",
+} as const;
 
 afterEach(() => {
   vi.resetModules();
@@ -23,16 +28,6 @@ describe("mock providers", () => {
   it("returns deterministic mock provider results", async () => {
     const registry = createProviderRegistry();
 
-    const image = await registry.image.generate({
-      prompt: "portrait",
-      count: 2,
-      seed: "fixed",
-    });
-    const repeatedImage = await registry.image.generate({
-      prompt: "portrait",
-      count: 2,
-      seed: "fixed",
-    });
     const moderation = await registry.moderation.check({
       targetType: "text",
       content: "safe prompt",
@@ -44,28 +39,6 @@ describe("mock providers", () => {
       currency: "usd",
     });
 
-    expect(image).toMatchObject({
-      ok: true,
-      data: {
-        assets: [
-          {
-            key: "mock/images/fixed-1.png",
-            width: 256,
-            height: 320,
-            contentType: "image/png",
-            body: expect.any(Uint8Array),
-          },
-          {
-            key: "mock/images/fixed-2.png",
-            width: 256,
-            height: 320,
-            contentType: "image/png",
-            body: expect.any(Uint8Array),
-          },
-        ],
-      },
-    });
-    expect(repeatedImage).toEqual(image);
     expect(moderation).toMatchObject({
       ok: true,
       data: { status: "passed" },
@@ -108,70 +81,6 @@ describe("mock providers", () => {
     await expect(import("./index")).rejects.toThrow(
       /Production requires non-mock providers:.*BLOB_PROVIDER/,
     );
-  });
-
-  it("rejects production startup when IMAGE_PROVIDER is still mock", async () => {
-    vi.resetModules();
-    process.env = {
-      ...oldEnv,
-      APP_ENV: "production",
-      DATABASE_URL: "postgresql://postgres:postgres@localhost:5433/idream",
-      BETTER_AUTH_URL: "https://ourdream.ai",
-      MAIN_WEB_URL: "https://ourdream.ai",
-      BETTER_AUTH_SECRET: "production-secret-please-change-0123456789abcdef",
-      INTERNAL_TOKEN: "production-internal-token-0123456789",
-      CRON_SECRET: "production-cron-token-0123456789",
-      CHAT_SERVICE_URL: "https://chat.internal.example",
-      CHAT_BFF_SIGNING_SECRET: "production-bff-secret-0123456789abcdef",
-      ADMIN_BFF_SIGNING_SECRET: "production-admin-bff-secret-0123456789abcdef",
-      // All launch-critical providers are real except image — image must still be
-      // rejected so main's finalizer cannot write placeholder PNGs in production.
-      CHAT_PROVIDER: "pipeline",
-      PIPELINE_API_URL: "https://pipeline.internal.example.com/v1",
-      PIPELINE_API_TOKEN: "production-pipeline-token-0123456789",
-      IMAGE_PROVIDER: "mock",
-      VOICE_PROVIDER: "pipeline",
-      MODERATION_PROVIDER: "safety-gateway",
-      MODERATION_SERVICE_URL: "https://safety.internal.example.com",
-      MODERATION_API_KEY: "production-moderation-key-0123456789",
-      PAYMENT_PROVIDER: "btcpay",
-      BTCPAY_BASE_URL: "https://btcpay.example.com",
-      BTCPAY_STORE_ID: "store-1",
-      BTCPAY_API_KEY: "btcpay-api-key-0123456789",
-      BTCPAY_WEBHOOK_SECRET: "btcpay-webhook-secret-0123456789",
-      BLOB_PROVIDER: "r2",
-      BLOB_ENDPOINT: "https://account.r2.cloudflarestorage.com",
-      BLOB_BUCKET: "private-media",
-      BLOB_ACCESS_KEY_ID: "access-key",
-      BLOB_SECRET_ACCESS_KEY: "secret-key",
-      AGE_VERIFICATION_PROVIDER: "gocam",
-      AGE_VERIFY_SERVICE_URL: "https://age.internal.example.com",
-      AGE_VERIFY_API_KEY: "age-api-key-0123456789",
-      AGE_VERIFY_WEBHOOK_SECRET: "age-webhook-secret-0123456789",
-      AGE_VERIFY_LINK_BACK_URL: "https://ourdream.ai/age-verification/return",
-      AGE_VERIFY_CALLBACK_URL: "https://ourdream.ai/api/v1/age-verification/webhooks/gocam",
-    };
-
-    await expect(import("./index")).rejects.toThrow(
-      /Production requires non-mock providers:.*IMAGE_PROVIDER/,
-    );
-  });
-
-  it("parses IMAGE_PROVIDER=backend without throwing (P1 gen backend parity)", async () => {
-    vi.resetModules();
-    process.env = {
-      ...oldEnv,
-      IMAGE_PROVIDER: "backend",
-      COMFYUI_API_URL: "http://127.0.0.1:8188",
-    };
-
-    // Import the env module directly (not the provider registry barrel): this
-    // asserts the Zod schema itself accepts IMAGE_PROVIDER=backend, independent of
-    // ./index's own separate provider-implementation wiring/validation.
-    const { env } = await import("../lib/env");
-
-    expect(env.IMAGE_PROVIDER).toBe("backend");
-    expect(env.COMFYUI_API_URL).toBe("http://127.0.0.1:8188");
   });
 
   it("rejects production startup when Better Auth uses a localhost origin", async () => {
@@ -383,105 +292,6 @@ describe("mock providers", () => {
     );
   });
 
-  it("can wire the pipeline image provider", async () => {
-    vi.resetModules();
-    const png = Uint8Array.from([137, 80, 78, 71]);
-    const fetchMock = vi.fn(async () =>
-      Response.json({
-        data: [{ b64_json: Buffer.from(png).toString("base64") }],
-      }),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-    process.env = {
-      ...oldEnv,
-      IMAGE_PROVIDER: "pipeline",
-      PIPELINE_API_URL: "https://pipeline.internal.example.com",
-      PIPELINE_API_TOKEN: "pipeline-token",
-      PIPELINE_IMAGE_MODEL_DEFAULT: "image-model",
-    };
-
-    const { createProviderRegistry: createFreshRegistry } = await import("./index");
-    const registry = createFreshRegistry();
-    const image = await registry.image.generate({
-      prompt: "portrait",
-      count: 1,
-      seed: "fixed",
-      orientation: "1:1",
-    });
-
-    expect(image.ok).toBe(true);
-    if (image.ok) {
-      expect(image.data.assets[0]).toMatchObject({
-        key: "pipeline/image-1.png",
-        width: 1024,
-        height: 1024,
-        contentType: "image/png",
-      });
-      expect(Array.from(image.data.assets[0]?.body ?? [])).toEqual(Array.from(png));
-    }
-    expect(fetchMock).toHaveBeenCalledWith(
-      new URL("https://pipeline.internal.example.com/images/generations"),
-      expect.objectContaining({
-        method: "POST",
-        headers: expect.objectContaining({
-          authorization: "Bearer pipeline-token",
-        }),
-        body: expect.stringContaining('"model":"image-model"'),
-      }),
-    );
-  });
-
-  it("passes reference images to the pipeline image provider", async () => {
-    vi.resetModules();
-    const fetchMock = vi.fn(async () =>
-      Response.json({
-        data: [{ b64_json: Buffer.from("image-bytes", "utf8").toString("base64") }],
-      }),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-    process.env = {
-      ...oldEnv,
-      IMAGE_PROVIDER: "pipeline",
-      PIPELINE_API_URL: "https://pipeline.internal.example.com",
-      PIPELINE_IMAGE_MODEL_DEFAULT: "image-model",
-    };
-
-    const { createProviderRegistry: createFreshRegistry } = await import("./index");
-    const registry = createFreshRegistry();
-    const image = await registry.image.generate({
-      prompt: "portrait",
-      count: 1,
-      referenceImages: [
-        {
-          assetId: "anchor-1",
-          role: "identity_anchor",
-          contentType: "image/webp",
-          width: 1024,
-          height: 1280,
-          weight: 1.25,
-          b64Json: Buffer.from("reference-image", "utf8").toString("base64"),
-        },
-      ],
-    });
-
-    const firstCall = fetchMock.mock.calls[0] as unknown as
-      | [Parameters<typeof fetch>[0], Parameters<typeof fetch>[1]]
-      | undefined;
-    if (!firstCall) throw new Error("fetch was not called");
-    const [, init] = firstCall;
-    const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
-    expect(requestBody.reference_images).toEqual([
-      expect.objectContaining({
-        assetId: "anchor-1",
-        asset_id: "anchor-1",
-        role: "identity_anchor",
-        weight: 1.25,
-        b64_json: Buffer.from("reference-image", "utf8").toString("base64"),
-      }),
-    ]);
-    expect(image.ok).toBe(true);
-  });
-
   it("can wire the pipeline voice provider", async () => {
     vi.resetModules();
     const fetchMock = vi.fn(async () =>
@@ -503,7 +313,8 @@ describe("mock providers", () => {
 
     const { createProviderRegistry: createFreshRegistry } = await import("./index");
     const registry = createFreshRegistry();
-    const result = await registry.voice.synthesize({
+    const result = await registry.voice.clip.synthesize({
+      ...voiceSynthesisIdentity,
       text: "hello",
       voiceId: "mel",
       tone: "Warm and intimate",
@@ -522,6 +333,9 @@ describe("mock providers", () => {
         method: "POST",
         headers: expect.objectContaining({
           authorization: "Bearer voice-token",
+          "idempotency-key": voiceSynthesisIdentity.idempotencyKey,
+          "x-idream-request-id": voiceSynthesisIdentity.requestId,
+          "x-idream-attempt-no": String(voiceSynthesisIdentity.attemptNo),
         }),
         body: expect.stringContaining('"voice":"mel"'),
       }),
@@ -554,7 +368,8 @@ describe("mock providers", () => {
 
     const { createProviderRegistry: createFreshRegistry } = await import("./index");
     const registry = createFreshRegistry();
-    await registry.voice.synthesize({
+    await registry.voice.clip.synthesize({
+      ...voiceSynthesisIdentity,
       text: "hello",
       voiceId: "mel",
       tone: "Warm and intimate",
@@ -592,7 +407,11 @@ describe("mock providers", () => {
     const { createProviderRegistry: createFreshRegistry } = await import("./index");
     const registry = createFreshRegistry();
     const started = Date.now();
-    const result = await registry.voice.synthesize({ text: "slow voice", voiceId: "mel" });
+    const result = await registry.voice.clip.synthesize({
+      ...voiceSynthesisIdentity,
+      text: "slow voice",
+      voiceId: "mel",
+    });
 
     expect(Date.now() - started).toBeLessThan(2_000);
     expect(result).toMatchObject({
@@ -624,7 +443,11 @@ describe("mock providers", () => {
       fetchImpl: fetchMock,
     });
 
-    await voice.synthesize({ text: "hello", voiceId: "mel" });
+    await voice.synthesize({
+      ...voiceSynthesisIdentity,
+      text: "hello",
+      voiceId: "mel",
+    });
 
     const voiceBody = (fetchMock.mock.calls as unknown as Array<[unknown, RequestInit]>)[0]?.[1]?.body as string;
     expect(voiceBody).not.toContain("instructions");
@@ -665,6 +488,7 @@ describe("mock providers", () => {
     });
 
     const result = await voice.synthesize({
+      ...voiceSynthesisIdentity,
       text: "hello",
       voiceId: "serena",
     });
@@ -718,6 +542,7 @@ describe("mock providers", () => {
     });
 
     const result = await voice.synthesize({
+      ...voiceSynthesisIdentity,
       text: "Oh, sweetie... That is clear. Second sentence is also clear and short.",
       voiceId: "serena",
     });
@@ -775,6 +600,7 @@ describe("mock providers", () => {
     });
 
     const result = await voice.synthesize({
+      ...voiceSynthesisIdentity,
       text: "First sentence fits. Second sentence should be dropped. Third sentence should also be dropped.",
       voiceId: "serena",
     });
@@ -818,6 +644,7 @@ describe("mock providers", () => {
     });
 
     const result = await voice.synthesize({
+      ...voiceSynthesisIdentity,
       text: `${firstSentence} ${secondSentence}`,
       voiceId: "serena",
     });
@@ -861,6 +688,7 @@ describe("mock providers", () => {
     });
 
     const result = await voice.synthesize({
+      ...voiceSynthesisIdentity,
       text: "First clause fits, second clause would exceed the configured voice limit.",
       voiceId: "serena",
     });

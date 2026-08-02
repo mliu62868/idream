@@ -15,10 +15,10 @@ import { dispatchDueCharacterReleasePublishes } from "@/server/modules/admin-v2/
 import { executeAcceptedAdminCommand } from "@/server/modules/admin-v2/commands/executor";
 import { reconcileExpiredCommandLeases } from "@/server/modules/admin-v2/shared/control-plane-command";
 import {
-  dispatchCreativeRetryOutbox,
   executeCreativeRetryCommand,
   verifyCreativeRetryCommands,
 } from "@/server/modules/admin-v2/creative/retry-executor";
+import { dispatchGenerationAttemptOutbox } from "@/server/modules/generation/generation-attempt-authority";
 import {
   executeIncidentActionPlanCommand,
   verifyIncidentActionPlanCommands,
@@ -181,7 +181,7 @@ export async function drainAdminCommands(
     else if (["accepted", "running", "verifying"].includes(result.status)) verifying += 1;
     else failed += 1;
   }
-  const dispatched = await dispatchCreativeRetryOutbox(db, { limit: input.limit });
+  const dispatched = await dispatchGenerationAttemptOutbox(db, { limit: input.limit });
   const incidentCorrelation = await dispatchGenerationIncidentCorrelation(db, { limit: input.limit });
   const verified = await verifyCreativeRetryCommands(db, { limit: input.limit });
   const incidentActions = await verifyIncidentActionPlanCommands(db, { limit: input.limit });

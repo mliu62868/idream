@@ -14,13 +14,35 @@ export function createPrismaClientOptions(): PrismaClientOptions {
   // in test so the suite coexists deterministically. Prod/dev keep the driver
   // default; override with DATABASE_POOL_MAX when a different ceiling is needed.
   const poolMax = resolvePoolMax();
+  const schema = prismaPgSchema(env.DATABASE_URL);
 
   return {
-    adapter: new PrismaPg({
-      connectionString: env.DATABASE_URL,
-      ...(poolMax ? { max: poolMax } : {}),
-    }),
+    adapter: new PrismaPg(
+      {
+        connectionString: env.DATABASE_URL,
+        ...(poolMax ? { max: poolMax } : {}),
+        ...(schema ? { options: prismaPgSearchPath(schema) } : {}),
+      },
+      schema ? { schema } : undefined,
+    ),
   };
+}
+
+// INVARIANT: Prisma CLI and the runtime adapter must resolve the same Postgres
+// schema. adapter-pg does not translate Prisma's `?schema=` URL parameter into
+// its query namespace unless it is also passed as an explicit adapter option.
+export function prismaPgSchema(databaseUrl: string): string | undefined {
+  const value = new URL(databaseUrl).searchParams.get("schema")?.trim();
+  return value || undefined;
+}
+
+export function prismaPgSearchPath(schema: string): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_$]*$/.test(schema)) {
+    throw new Error(`DATABASE_URL schema is not a safe Postgres identifier: ${schema}`);
+  }
+  // Generated Prisma queries use the adapter schema option; raw SQL follows
+  // the connection search_path. Both must point at the same authority.
+  return `-c search_path=${schema}`;
 }
 
 function resolvePoolMax(): number | undefined {

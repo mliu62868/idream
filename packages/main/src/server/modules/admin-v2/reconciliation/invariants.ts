@@ -392,7 +392,7 @@ const sqlChecks: readonly SqlInvariant[] = [
     query: Prisma.sql`
       SELECT a.id, count(*) OVER()::int AS total
       FROM generation_attempts a
-      WHERE a.status IN ('succeeded', 'failed', 'cancelled', 'unknown')
+      WHERE a.status IN ('succeeded', 'failed', 'blocked', 'cancelled', 'unknown')
         AND NOT EXISTS (
           SELECT 1 FROM generation_attempt_events e
           WHERE e."attemptId" = a.id

@@ -1,9 +1,19 @@
 import { deflateSync } from "node:zlib";
 import type { Prisma } from "@prisma/client";
+import {
+  generationTerminalRecordChecksum,
+  generationTerminalRecordSchema,
+} from "@idream/shared/contracts";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { jobQueue } from "@/server/jobs/queue";
-import { providers } from "@/server/providers";
+import { retryGenerationRequest } from "@/server/ai/generation-request-lifecycle";
+import {
+  dispatchPendingGenerationTerminalRecords,
+  ingestGenerationTerminalRecord,
+} from "@/server/ai/generation-terminal-record-ingest";
+import { dispatchGenerationAttemptOutbox } from "@/server/modules/generation/generation-attempt-authority";
+import { reconcileUnknownGenerationRequest } from "@/server/modules/admin-v2/jobs/unknown-reconciliation";
 import {
   api,
   createCharacter,
@@ -11,6 +21,7 @@ import {
   dreamcoinBalance,
   expectError,
   expectOk,
+  generationTestProviders,
   grantCoins,
   publishCharacterForPublicAudience,
   purgeTestData,
@@ -22,8 +33,10 @@ const SYS = `${P}sys`;
 const CHAR = `${P}char`;
 const cleanupJobDedupeKeys: string[] = [];
 const cleanupModerationTargetIds: string[] = [];
+let genProviders: Awaited<ReturnType<typeof generationTestProviders>>;
 
 beforeAll(async () => {
+  genProviders = await generationTestProviders();
   await purgeTestData(P);
   await createUser({ id: SYS, dataClass: "customer" });
   await createCharacter({
@@ -67,7 +80,6 @@ afterAll(async () => {
       "ai.image.generate",
       "ai.video.generate",
       "app.ai.finalize",
-      "character.preview",
     ]);
   }
   await prisma.moderationEvent.deleteMany({
@@ -82,7 +94,7 @@ async function requeueAsFinalAttempt(
   jobId: string,
   payloadPatch: Record<string, unknown> = {},
 ) {
-  const dedupeKey = `generation:${jobId}`;
+  const dedupeKey = `generation:${jobId}:attempt:1`;
   const queued = await jobQueue.getByDedupeKey(queue, dedupeKey);
   expect(queued).not.toBeNull();
   if (!queued) throw new Error(`Missing queued ${queue} job for ${jobId}`);
@@ -97,6 +109,48 @@ async function requeueAsFinalAttempt(
     dedupeKey,
     maxAttempts: 1,
   });
+}
+
+async function generationTerminalFixture(
+  generationJobId: string,
+  attemptId: string,
+  outcome: Record<string, unknown>,
+) {
+  const attempt = await prisma.generationAttempt.findUniqueOrThrow({
+    where: { id: attemptId },
+  });
+  const dispatch = await prisma.mainOutboxEvent.findFirstOrThrow({
+    where: {
+      aggregateType: "generation_request",
+      aggregateId: generationJobId,
+      payload: { path: ["attemptId"], equals: attempt.id },
+    },
+  });
+  const queueInput = (dispatch.payload as Record<string, unknown>)
+    .queueInput as Record<string, unknown>;
+  const queuePayload = queueInput.payload as Record<string, unknown>;
+  const terminalRecord = generationTerminalRecordSchema.parse({
+    version: 1,
+    attemptId: attempt.id,
+    attemptNo: attempt.attemptNo,
+    transportAttemptNo: 1,
+    providerIdempotencyKey: `generation:${attempt.id}:provider`,
+    requestId: queuePayload.requestId,
+    generationJobId,
+    mode: queuePayload.kind,
+    provider: queuePayload.provider,
+    providerInvoked: true,
+    model: queuePayload.model,
+    providerRequestId: `test-provider-${attempt.id}`,
+    completedAt: new Date().toISOString(),
+    usage: {},
+    ...outcome,
+  });
+  return {
+    terminalRecordRef: `gen/terminal-records/${attempt.id}/terminal.json`,
+    terminalRecordChecksum: generationTerminalRecordChecksum(terminalRecord),
+    terminalRecord,
+  };
 }
 
 describe("local AI service pipeline", () => {
@@ -122,7 +176,7 @@ describe("local AI service pipeline", () => {
     expect(gen.data.job.status).toBe("queued");
     expect(gen.data.assets).toHaveLength(0);
 
-    const queuedGenerateJob = await jobQueue.getByDedupeKey("ai.image.generate", `generation:${jobId}`);
+    const queuedGenerateJob = await jobQueue.getByDedupeKey("ai.image.generate", `generation:${jobId}:attempt:1`);
     expect(queuedGenerateJob?.payload).toMatchObject({
       controls: {
         profileId: "profile_image_default_v1",
@@ -152,22 +206,30 @@ describe("local AI service pipeline", () => {
     });
     await expect(prisma.generationSettlementLink.count({ where: { requestId: jobId } })).resolves.toBe(1);
 
-    const generateJob = await jobQueue.getByDedupeKey("ai.image.generate", `generation:${jobId}`);
+    const generateJob = await jobQueue.getByDedupeKey("ai.image.generate", `generation:${jobId}:attempt:1`);
     const finalizeJob = await jobQueue.getByDedupeKey(
       "app.ai.finalize",
       `generation-finalize:${jobId}:completed`,
     );
     expect(generateJob).toBeNull();
-    expect(finalizeJob).toMatchObject({ queue: "app.ai.finalize", state: "completed" });
+    expect(finalizeJob).toBeNull();
+    await expect(
+      prisma.mainOutboxEvent.findFirst({
+        where: {
+          aggregateType: "generation_attempt",
+          payload: { path: ["generationJobId"], equals: jobId },
+        },
+      }),
+    ).resolves.toMatchObject({ status: "delivered" });
     expect(completed.data.job.controls).not.toHaveProperty("sdcpp");
 
     const asset = await prisma.mediaAsset.findFirstOrThrow({
       where: { sourceJobId: jobId },
     });
     expect(asset.metadata).toMatchObject({
-      provider: "mock",
+      provider: "comfyui",
       contentType: "image/png",
-      synthetic: true,
+      synthetic: false,
     });
   });
 
@@ -175,7 +237,7 @@ describe("local AI service pipeline", () => {
     const userId = `${P}blank-image-user`;
     await createUser({ id: userId });
     await grantCoins(userId, 100, "seed");
-    const imageGenerate = vi.spyOn(providers.image, "generate").mockResolvedValueOnce({
+    const imageGenerate = vi.spyOn(genProviders.image, "generate").mockResolvedValueOnce({
       ok: true,
       data: {
         assets: [
@@ -189,7 +251,7 @@ describe("local AI service pipeline", () => {
         ],
       },
     });
-    const blobPut = vi.spyOn(providers.blob, "putPrivate");
+    const blobPut = vi.spyOn(genProviders.blob, "putPrivate");
 
     const gen = await api("POST", "generation/jobs", {
       userId,
@@ -225,7 +287,7 @@ describe("local AI service pipeline", () => {
     const userId = `${P}composite-image-user`;
     await createUser({ id: userId });
     await grantCoins(userId, 100, "seed");
-    vi.spyOn(providers.image, "generate").mockResolvedValueOnce({
+    vi.spyOn(genProviders.image, "generate").mockResolvedValueOnce({
       ok: true,
       data: {
         assets: [
@@ -239,7 +301,7 @@ describe("local AI service pipeline", () => {
         ],
       },
     });
-    const blobPut = vi.spyOn(providers.blob, "putPrivate");
+    const blobPut = vi.spyOn(genProviders.blob, "putPrivate");
 
     const gen = await api("POST", "generation/jobs", {
       userId,
@@ -283,7 +345,7 @@ describe("local AI service pipeline", () => {
     ).resolves.toMatchObject({ deliveredOutputCount: 0 });
   });
 
-  it("keeps character preview provider work out of the main mock drain", async () => {
+  it("runs Character Preview through the formal Generation Attempt and recovers its Outbox", async () => {
     const userId = `${P}preview-throw-user`;
     await createUser({ id: userId });
 
@@ -300,7 +362,54 @@ describe("local AI service pipeline", () => {
     });
     expectOk(preview);
     const previewJobId = preview.data.previewJob.id as string;
-    cleanupJobDedupeKeys.push(`character-preview:${previewJobId}`);
+    const generationJob = await prisma.generationJob.findFirstOrThrow({
+      where: { sourceType: "character_preview", sourceId: previewJobId },
+    });
+    const attempt = await prisma.generationAttempt.findFirstOrThrow({
+      where: { requestId: generationJob.id },
+    });
+    const outboxId = `generation_initial_${generationJob.id}`;
+    cleanupJobDedupeKeys.push(`generation:${generationJob.id}`);
+    expect(generationJob).toMatchObject({
+      userId,
+      mode: "image",
+      costDreamcoins: 0,
+      sourceType: "character_preview",
+      sourceId: previewJobId,
+    });
+    expect(attempt).toMatchObject({ attemptNo: 1, status: "queued" });
+    await expect(
+      prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id: outboxId } }),
+    ).resolves.toMatchObject({ status: "delivered" });
+
+    await jobQueue.removeByDedupePrefix(
+      `generation:${generationJob.id}`,
+      ["ai.image.generate"],
+    );
+    await prisma.mainOutboxEvent.update({
+      where: { id: outboxId },
+      data: { status: "pending", deliveredAt: null, nextRunAt: new Date() },
+    });
+    await expect(
+      dispatchGenerationAttemptOutbox(prisma, { outboxIds: [outboxId] }),
+    ).resolves.toMatchObject({ delivered: 1, failed: 0 });
+
+    const previewQueueJob = await jobQueue.getByDedupeKey(
+      "ai.image.generate",
+      `generation:${generationJob.id}:attempt:1`,
+    );
+    expect(previewQueueJob).toMatchObject({
+      queue: "ai.image.generate",
+      state: "waiting",
+      payload: expect.objectContaining({
+        kind: "image",
+        generationJobId: generationJob.id,
+        attemptId: attempt.id,
+        attemptNo: 1,
+        userId,
+        model: expect.not.stringContaining("mock"),
+      }),
+    });
 
     await runQueuedGenerationJobs(4);
 
@@ -310,28 +419,85 @@ describe("local AI service pipeline", () => {
     });
     expectOk(status);
     expect(status.data.previewJob).toMatchObject({
-      status: "queued",
-      provider: "generation_service",
+      status: "completed",
+      resultAssetId: expect.any(String),
     });
-
-    const previewQueueJob = await jobQueue.getByDedupeKey(
-      "character.preview",
-      `character-preview:${previewJobId}`,
-    );
-    expect(previewQueueJob).toMatchObject({
-      queue: "character.preview",
-      state: "waiting",
-      payload: expect.objectContaining({
-        kind: "character.preview",
-        previewJobId,
-        draftId,
-        userId,
-        model: expect.not.stringContaining("mock"),
+    expect(status.data.asset).toMatchObject({
+      id: status.data.previewJob.resultAssetId,
+    });
+    await expect(
+      prisma.mediaAsset.findUniqueOrThrow({
+        where: { id: status.data.previewJob.resultAssetId as string },
       }),
-    });
+    ).resolves.toMatchObject({ sourceJobId: generationJob.id });
   });
 
-  it("settles a generation-service character preview failure through main authority", async () => {
+  it("polls the exact Preview Job while overlapping previews are active", async () => {
+    const userId = `${P}preview-exact-poll-user`;
+    await createUser({ id: userId });
+    const draft = await api("POST", "character-drafts", {
+      userId,
+      ageGate: true,
+      body: { name: "Preview Poll", gender: "female", style: "realistic" },
+    });
+    expectOk(draft);
+    const draftId = draft.data.draft.id as string;
+    const first = await api("POST", `character-drafts/${draftId}/preview`, {
+      userId,
+      ageGate: true,
+    });
+    const second = await api("POST", `character-drafts/${draftId}/preview`, {
+      userId,
+      ageGate: true,
+    });
+    expectOk(first);
+    expectOk(second);
+    const firstId = first.data.previewJob.id as string;
+    const secondId = second.data.previewJob.id as string;
+    expect(firstId).not.toBe(secondId);
+
+    const generationJobs = await prisma.generationJob.findMany({
+      where: {
+        sourceType: "character_preview",
+        sourceId: { in: [firstId, secondId] },
+      },
+    });
+    cleanupJobDedupeKeys.push(
+      ...generationJobs.map((job) => `generation:${job.id}`),
+    );
+    const firstStatus = await api(
+      "GET",
+      `character-drafts/${draftId}/preview`,
+      { userId, ageGate: true, query: { previewJobId: firstId } },
+    );
+    const secondStatus = await api(
+      "GET",
+      `character-drafts/${draftId}/preview`,
+      { userId, ageGate: true, query: { previewJobId: secondId } },
+    );
+    const latestStatus = await api(
+      "GET",
+      `character-drafts/${draftId}/preview`,
+      { userId, ageGate: true },
+    );
+
+    expectOk(firstStatus);
+    expectOk(secondStatus);
+    expectOk(latestStatus);
+    expect(firstStatus.data.previewJob.id).toBe(firstId);
+    expect(secondStatus.data.previewJob.id).toBe(secondId);
+    expect(latestStatus.data.previewJob.id).toBe(secondId);
+    // INTENT: this test asserts polling identity while both jobs are queued; it
+    // must not leave either Generate row for the next test's one-shot provider
+    // failure mock to consume.
+    for (const job of generationJobs) {
+      await jobQueue.removeByDedupePrefix(`generation:${job.id}`, [
+        "ai.image.generate",
+      ]);
+    }
+  });
+
+  it("projects unknown, business retry, blocked replay, and late results through Generation authority", async () => {
     const userId = `${P}preview-no-body-user`;
     await createUser({ id: userId });
 
@@ -348,44 +514,200 @@ describe("local AI service pipeline", () => {
     });
     expectOk(preview);
     const previewJobId = preview.data.previewJob.id as string;
-    cleanupJobDedupeKeys.push(
-      `character-preview:${previewJobId}`,
-      `character-preview-finalize:${previewJobId}:failed`,
-    );
+    const generationJob = await prisma.generationJob.findFirstOrThrow({
+      where: { sourceType: "character_preview", sourceId: previewJobId },
+    });
+    const firstAttempt = await prisma.generationAttempt.findFirstOrThrow({
+      where: { requestId: generationJob.id, attemptNo: 1 },
+    });
+    cleanupJobDedupeKeys.push(`generation:${generationJob.id}`);
     await jobQueue.removeByDedupePrefix(
-      `character-preview:${previewJobId}`,
-      ["character.preview"],
+      `generation:${generationJob.id}`,
+      ["ai.image.generate"],
     );
-    await jobQueue.enqueue({
-      queue: "app.ai.finalize",
-      payload: {
-        version: 1,
-        kind: "character.preview.failed",
-        requestId: `character-preview:${previewJobId}`,
-        previewJobId,
-        draftId,
-        userId,
+    const unknownTerminal = await generationTerminalFixture(
+      generationJob.id,
+      firstAttempt.id,
+      {
+        outcome: "unknown",
         error: {
-          code: "preview_provider_down",
-          message: "Image backend unavailable",
-          retryable: false,
+          code: "preview_provider_unknown",
+          message: "Provider outcome is ambiguous",
+          retryability: "operator_retry",
         },
       },
-      dedupeKey: `character-preview-finalize:${previewJobId}:failed`,
-    });
+    );
+    await expect(ingestGenerationTerminalRecord(unknownTerminal)).resolves
+      .toMatchObject({ acknowledged: true, status: "persisted" });
+    await expect(dispatchPendingGenerationTerminalRecords({
+      outboxIds: [`generation_terminal_record_${firstAttempt.id}`],
+    })).resolves.toBe(1);
 
-    await runQueuedGenerationJobs(4);
+    await expect(runQueuedGenerationJobs(2, ["app.ai.finalize"])).resolves
+      .toMatchObject({ processed: 1 });
 
-    const status = await api("GET", `character-drafts/${draftId}/preview`, {
+    const unknownStatus = await api("GET", `character-drafts/${draftId}/preview`, {
       userId,
       ageGate: true,
     });
-    expectOk(status);
-    expect(status.data.previewJob).toMatchObject({
-      status: "failed",
-      errorCode: "preview_provider_down",
+    expectOk(unknownStatus);
+    expect(unknownStatus.data.previewJob).toMatchObject({
+      status: "queued",
+      errorCode: null,
     });
-    expect(status.data.asset).toBeNull();
+    expect(unknownStatus.data.asset).toBeNull();
+    await expect(
+      prisma.generationAttempt.findUniqueOrThrow({ where: { id: firstAttempt.id } }),
+    ).resolves.toMatchObject({ status: "unknown", retryability: "operator_retry" });
+
+    const failedRequest = await prisma.generationJob.findUniqueOrThrow({
+      where: { id: generationJob.id },
+    });
+    await expect(retryGenerationRequest({
+      requestId: generationJob.id,
+      expectedVersion: failedRequest.version,
+      actor: { id: userId, role: "user" },
+      reason: "A business retry cannot bypass unknown reconciliation",
+      idempotencyKey: `preview-unsafe-retry-${previewJobId}`,
+      traceId: `preview-unsafe-retry-trace-${previewJobId}`,
+    })).rejects.toMatchObject({ status: 409 });
+    const reconciled = await reconcileUnknownGenerationRequest({
+      requestId: generationJob.id,
+      command: {
+        entityVersion: failedRequest.version,
+        resolution: "confirm_failed",
+        reason: "Provider evidence confirms the Preview request failed",
+        providerEvidenceRefs: [`test://provider/${firstAttempt.id}`],
+        confirmation: `${generationJob.id}:confirm_failed`,
+      },
+      actor: { id: SYS, role: "ops" },
+      idempotencyKey: `preview-confirm-failed-${previewJobId}`,
+      traceId: `preview-confirm-failed-trace-${previewJobId}`,
+    });
+    expect(reconciled).toMatchObject({
+      resolution: "confirm_failed",
+      requestStatus: "failed",
+      attemptId: firstAttempt.id,
+    });
+    const retried = await retryGenerationRequest({
+      requestId: generationJob.id,
+      expectedVersion: reconciled.version,
+      actor: { id: userId, role: "user" },
+      reason: "Retry the ambiguous Character Preview through a new Attempt",
+      idempotencyKey: `preview-retry-${previewJobId}`,
+      traceId: `preview-retry-trace-${previewJobId}`,
+    });
+    if (
+      typeof retried !== "object" ||
+      retried === null ||
+      Array.isArray(retried) ||
+      typeof retried.attemptId !== "string"
+    ) {
+      throw new Error("Character Preview retry did not return an Attempt identity");
+    }
+    expect(retried).toMatchObject({ attemptNo: 2, status: "queued" });
+    await expect(
+      prisma.characterPreviewJob.findUniqueOrThrow({ where: { id: previewJobId } }),
+    ).resolves.toMatchObject({
+      status: "queued",
+      resultAssetId: null,
+      errorCode: null,
+      completedAt: null,
+    });
+
+    const secondAttempt = await prisma.generationAttempt.findUniqueOrThrow({
+      where: { id: retried.attemptId },
+    });
+    const retryOutboxId = `generation_retry_${retried.commandId as string}`;
+    const secondAttemptDedupeKey =
+      `generation:${generationJob.id}:attempt:${secondAttempt.attemptNo}`;
+    await expect(dispatchGenerationAttemptOutbox(prisma, {
+      outboxIds: [retryOutboxId],
+    })).resolves.toMatchObject({ delivered: 1, failed: 0 });
+    await expect(jobQueue.getByDedupeKey(
+      "ai.image.generate",
+      secondAttemptDedupeKey,
+    )).resolves.toMatchObject({
+      payload: expect.objectContaining({
+        generationJobId: generationJob.id,
+        attemptId: secondAttempt.id,
+        attemptNo: secondAttempt.attemptNo,
+      }),
+    });
+    // INTENT: the injected Terminal below represents an external Gen owner
+    // that already claimed the exact retry work. Removing that row models the
+    // claim boundary and prevents Main recovery from dispatching it later.
+    await expect(jobQueue.removeByDedupeKey(
+      "ai.image.generate",
+      secondAttemptDedupeKey,
+    )).resolves.toBe(true);
+    const blockedTerminal = await generationTerminalFixture(
+      generationJob.id,
+      secondAttempt.id,
+      {
+        outcome: "blocked",
+        block: {
+          policyCode: "preview_blocked",
+          message: "Preview was blocked",
+          layer: "provider",
+        },
+      },
+    );
+    await expect(ingestGenerationTerminalRecord(blockedTerminal)).resolves
+      .toMatchObject({ acknowledged: true, status: "persisted" });
+    await expect(dispatchPendingGenerationTerminalRecords({
+      outboxIds: [`generation_terminal_record_${secondAttempt.id}`],
+    })).resolves.toBe(1);
+    await expect(runQueuedGenerationJobs(2, ["app.ai.finalize"])).resolves
+      .toMatchObject({ processed: 1 });
+    const blockedPreview = await prisma.characterPreviewJob.findUniqueOrThrow({
+      where: { id: previewJobId },
+    });
+    expect(blockedPreview).toMatchObject({
+      status: "failed",
+      errorCode: "preview_blocked",
+      resultAssetId: null,
+    });
+
+    // A repeated terminal delivery and a late success cannot overwrite the
+    // already-projected blocked Preview outcome.
+    const blockedOutbox = await prisma.mainOutboxEvent.findUniqueOrThrow({
+      where: { id: `generation_terminal_record_${secondAttempt.id}` },
+    });
+    await jobQueue.enqueue({
+      queue: "app.ai.finalize",
+      payload: blockedOutbox.payload as Prisma.InputJsonValue,
+      dedupeKey: `generation-finalize-replay:${generationJob.id}:blocked`,
+    });
+    const lateSuccessTerminal = await generationTerminalFixture(
+      generationJob.id,
+      secondAttempt.id,
+      {
+        outcome: "succeeded",
+        assets: [{
+          ordinal: 0,
+          key:
+            `gen/${generationJob.id}/attempts/${secondAttempt.id}/image-1.webp`,
+          width: 832,
+          height: 1024,
+          contentType: "image/webp",
+          providerKey: "late-provider-image",
+        }],
+      },
+    );
+    await expect(ingestGenerationTerminalRecord(lateSuccessTerminal)).resolves
+      .toMatchObject({ acknowledged: false, status: "quarantined" });
+    await runQueuedGenerationJobs(4, ["app.ai.finalize"]);
+    await expect(
+      prisma.characterPreviewJob.findUniqueOrThrow({ where: { id: previewJobId } }),
+    ).resolves.toEqual(blockedPreview);
+    await expect(jobQueue.getByDedupeKey(
+      "ai.image.generate",
+      secondAttemptDedupeKey,
+    )).resolves.toBeNull();
+    await expect(prisma.mainOutboxEvent.findUniqueOrThrow({
+      where: { id: retryOutboxId },
+    })).resolves.toMatchObject({ status: "delivered" });
   });
 
   it("fails and refunds image jobs when generated assets cannot be persisted", async () => {
@@ -408,7 +730,7 @@ describe("local AI service pipeline", () => {
     cleanupModerationTargetIds.push(jobId);
 
     await requeueAsFinalAttempt("ai.image.generate", jobId);
-    vi.spyOn(providers.blob, "putPrivate").mockResolvedValueOnce({
+    vi.spyOn(genProviders.blob, "putPrivateIfAbsent").mockResolvedValueOnce({
       ok: false,
       error: {
         code: "blob_write_failed",
@@ -427,13 +749,13 @@ describe("local AI service pipeline", () => {
     expect(await dreamcoinBalance(userId)).toBe(100);
     expect(await prisma.mediaAsset.count({ where: { sourceJobId: jobId } })).toBe(0);
 
-    const generateJob = await jobQueue.getByDedupeKey("ai.image.generate", `generation:${jobId}`);
+    const generateJob = await jobQueue.getByDedupeKey("ai.image.generate", `generation:${jobId}:attempt:1`);
     const finalizeJob = await jobQueue.getByDedupeKey(
       "app.ai.finalize",
       `generation-finalize:${jobId}:failed`,
     );
     expect(generateJob).toBeNull();
-    expect(finalizeJob).toMatchObject({ queue: "app.ai.finalize", state: "completed" });
+    expect(finalizeJob).toBeNull();
   });
 
   it("fails and refunds image jobs when the provider returns keys without asset bytes", async () => {
@@ -456,7 +778,7 @@ describe("local AI service pipeline", () => {
     cleanupModerationTargetIds.push(jobId);
 
     await requeueAsFinalAttempt("ai.image.generate", jobId);
-    vi.spyOn(providers.image, "generate").mockResolvedValueOnce({
+    vi.spyOn(genProviders.image, "generate").mockResolvedValueOnce({
       ok: true,
       data: {
         assets: [{
@@ -467,7 +789,7 @@ describe("local AI service pipeline", () => {
         }],
       },
     });
-    const blobPut = vi.spyOn(providers.blob, "putPrivate");
+    const blobPut = vi.spyOn(genProviders.blob, "putPrivate");
 
     await runQueuedGenerationJobs(8);
 
@@ -502,7 +824,7 @@ describe("local AI service pipeline", () => {
     );
     cleanupModerationTargetIds.push(jobId);
 
-    vi.spyOn(providers.image, "generate").mockResolvedValueOnce({
+    vi.spyOn(genProviders.image, "generate").mockResolvedValueOnce({
       ok: true,
       data: { assets: [] },
     });
@@ -540,11 +862,11 @@ describe("local AI service pipeline", () => {
     });
 
     try {
-      const originalVideoGenerate = providers.video.generate.bind(providers.video);
+      const originalVideoGenerate = genProviders.video.generate.bind(genProviders.video);
       const videoSpy = vi
-        .spyOn(providers.video, "generate")
+        .spyOn(genProviders.video, "generate")
         .mockImplementation((input) => originalVideoGenerate(input));
-      vi.spyOn(providers.blob, "putPrivate").mockResolvedValueOnce({
+      vi.spyOn(genProviders.blob, "putPrivate").mockResolvedValueOnce({
         ok: false,
         error: {
           code: "blob_write_failed",
@@ -927,8 +1249,8 @@ describe("local AI service pipeline", () => {
       expect(asset.thumbnailUrl).toBeNull();
       expect(asset.url).not.toContain("promo-card");
       expect(asset.metadata).toMatchObject({
-        provider: "mock",
-        synthetic: true,
+        provider: "comfyui",
+        synthetic: false,
       });
     } finally {
       await prisma.featureFlag.update({

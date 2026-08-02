@@ -191,7 +191,11 @@ describe("Incident and P0 Review Case authority loops", () => {
     await prisma.controlPlaneCommand.deleteMany({ where: { actorId: adminId } });
     await prisma.adminAuditLog.deleteMany({ where: { actorId: adminId } });
     await prisma.mainOutboxEvent.deleteMany({
-      where: { aggregateId: { in: [...createdIncidentIds, ...createdCaseIds] } },
+      where: {
+        aggregateId: {
+          in: [...createdIncidentIds, ...createdCaseIds, requestA, requestB],
+        },
+      },
     });
     await prisma.decisionRecord.deleteMany({ where: { ownerId: adminId } });
     const cases = await prisma.adminCase.findMany({ where: { targetId }, select: { id: true } });
@@ -255,7 +259,11 @@ describe("Incident and P0 Review Case authority loops", () => {
     expect(running.status).toBe("verifying");
     expect(
       await prisma.mainOutboxEvent.count({
-        where: { aggregateId: first.id, eventType: "incident.retry.dispatch.v2" },
+        where: {
+          aggregateType: "generation_request",
+          aggregateId: { in: [requestA, requestB] },
+          eventType: "incident.retry.dispatch.v2",
+        },
       }),
     ).toBe(2);
     expect(

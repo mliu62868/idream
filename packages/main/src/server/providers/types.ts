@@ -1,7 +1,5 @@
 import type {
   FishAudioDeliverySettings,
-  ImageGeneratePayload,
-  VideoGeneratePayload,
 } from "@idream/shared/contracts";
 
 export interface ProviderFailure {
@@ -26,47 +24,29 @@ export interface ChatModel {
   }): AsyncIterable<ChatChunk>;
 }
 
-export interface ImageModel {
-  generate(input: {
-    prompt: string;
-    count: number;
-    seed?: string;
-    negativePrompt?: string | null;
-    model?: string;
-    controls?: Record<string, unknown>;
-    requestId?: string;
-    orientation?: string;
-    referenceImages?: NonNullable<ImageGeneratePayload["referenceImages"]>;
-  }): Promise<
-    ProviderResult<{
-      assets: Array<{
-        key: string;
-        width: number;
-        height: number;
-        body?: Uint8Array;
-        contentType?: string;
-      }>;
-    }>
-  >;
-}
+export type VoiceProviderKey =
+  | "mock"
+  | "pipeline"
+  | "pocket_tts"
+  | "fish_audio";
 
-export interface VideoModel {
-  generate(input: {
-    prompt: string;
-    seconds: number;
-    seed?: string;
-    negativePrompt?: string | null;
-    model?: string;
-    controls?: Record<string, unknown>;
-    requestId?: string;
-    referenceImages?: NonNullable<VideoGeneratePayload["referenceImages"]>;
-  }): Promise<ProviderResult<{ asset: { key: string; seconds: number } }>>;
-}
+export const VOICE_PROVIDER_REPLAY = {
+  mock: "durable_same_key",
+  fish_audio: "durable_same_key",
+  pipeline: "non_replayable",
+  pocket_tts: "non_replayable",
+} as const satisfies Record<
+  VoiceProviderKey,
+  "durable_same_key" | "non_replayable"
+>;
 
-export interface VoiceModel {
-  readonly providerKey: "mock" | "pipeline" | "pocket_tts" | "fish_audio";
-  readonly supportsVoiceCloning: boolean;
+export interface VoiceClipPort {
+  readonly providerKey: VoiceProviderKey;
+  readonly providerReplay: "durable_same_key" | "non_replayable";
   synthesize(input: {
+    requestId: string;
+    attemptNo: number;
+    idempotencyKey: string;
     text: string;
     voiceId?: string;
     // Free-form delivery instruction (emotion/persona/intonation). Sourced from the
@@ -74,7 +54,11 @@ export interface VoiceModel {
     tone?: string;
     delivery?: FishAudioDeliverySettings;
   }): Promise<ProviderResult<{ key: string; durationMs: number }>>;
-  previewVoice?(input: {
+}
+
+export interface VoiceIdentityPort {
+  readonly providerKey: VoiceProviderKey;
+  previewVoice(input: {
     text: string;
     voiceId: string;
     delivery?: FishAudioDeliverySettings;
@@ -85,7 +69,7 @@ export interface VoiceModel {
       durationMs: number;
     }>
   >;
-  cloneVoice?(input: {
+  cloneVoice(input: {
     voiceId: string;
     audio: Uint8Array;
     contentType: string;
@@ -99,10 +83,10 @@ export interface VoiceModel {
       language: string;
     }>
   >;
-  deleteVoice?(input: {
+  deleteVoice(input: {
     voiceId: string;
   }): Promise<ProviderResult<{ deleted: true }>>;
-  inspectCapabilities?(): Promise<
+  inspectCapabilities(): Promise<
     ProviderResult<{
       voiceCloning: boolean;
       runtime?: string;
@@ -111,6 +95,11 @@ export interface VoiceModel {
     }>
   >;
 }
+
+export type VoicePorts = {
+  readonly clip: VoiceClipPort;
+  readonly identity: VoiceIdentityPort | null;
+};
 
 export interface ModerationProvider {
   check(input: {
@@ -204,6 +193,9 @@ export interface BlobStore {
     downloadFilename?: string;
   }): Promise<ProviderResult<{ url: string }>>;
   delete(input: { key: string }): Promise<ProviderResult<{ deleted: true }>>;
+  getPrivate?(input: {
+    key: string;
+  }): Promise<ProviderResult<{ body: Uint8Array; contentType: string | null }>>;
 }
 
 export interface AgeVerificationProvider {
@@ -235,9 +227,7 @@ export interface AgeVerificationProvider {
 
 export interface ProviderRegistry {
   chat: ChatModel;
-  image: ImageModel;
-  video: VideoModel;
-  voice: VoiceModel;
+  voice: VoicePorts;
   moderation: ModerationProvider;
   payment: PaymentProvider;
   blob: BlobStore;

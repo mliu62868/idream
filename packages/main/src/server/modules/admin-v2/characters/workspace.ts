@@ -11,7 +11,6 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
-import { providers } from "@/server/providers";
 import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { listCharacterPortfolioData } from "./portfolio";
 import { collectReleaseMonitorFacts } from "./release-monitor";
@@ -46,7 +45,11 @@ import {
 import {
   evaluateEditorialReleaseAuthority,
 } from "@/server/modules/ourdream/public-release-authority";
-import { characterVoiceProfileDto } from "./voice-clones";
+import {
+  characterVoiceProfileDto,
+  inspectConfiguredVoiceIdentityRuntime,
+} from "./voice-identity";
+import { loadCharacterMediaOperationsProjection } from "./character-media-operations";
 import {
   getVoiceDefaultSettings,
   voiceIdForGender,
@@ -702,17 +705,10 @@ export async function getCharacterWorkspace(characterId: string) {
     activeVoiceProfile.providerVoiceId === character.voiceId
       ? activeVoiceProfile
       : null;
-  const [voiceCapabilities, voiceDefaults] = await Promise.all([
-    env.VOICE_PROVIDER === "fish-audio"
-      ? providers.voice.inspectCapabilities?.()
-      : undefined,
+  const [voiceRuntime, voiceDefaults] = await Promise.all([
+    inspectConfiguredVoiceIdentityRuntime(),
     getVoiceDefaultSettings(),
   ]);
-  const voiceRuntimeStatus = env.VOICE_PROVIDER !== "fish-audio"
-    ? "inactive"
-    : !voiceCapabilities?.ok || !voiceCapabilities.data.voiceCloning
-      ? "unavailable"
-      : "ready";
   const releases = await prisma.characterRelease.findMany({
     where: { projectId: project.id },
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
@@ -742,6 +738,7 @@ export async function getCharacterWorkspace(characterId: string) {
     routeEvaluationProfiles,
     identityCalibrationProfiles,
     characterImageReferenceCount,
+    mediaOperations,
   ] = await Promise.all([
     prisma.mediaAsset.findMany({
       where: operationalMediaAssetWhere({
@@ -787,6 +784,7 @@ export async function getCharacterWorkspace(characterId: string) {
     character.imageAsset?.characterId === null
       ? prisma.character.count({ where: { imageAssetId: character.imageAsset.id } })
       : Promise.resolve(0),
+    loadCharacterMediaOperationsProjection(characterId),
   ]);
   const projectedRouteQualifications = qualifiedRoute &&
       !routeQualifications.some((qualification) => qualification.id === qualifiedRoute.id)
@@ -1080,6 +1078,7 @@ export async function getCharacterWorkspace(characterId: string) {
     },
     project: projectDto(project, qualifiedRoute?.routeFingerprint ?? null),
     journey: portfolioItem.journey,
+    mediaOperations,
     visual: {
       activeIdentity: activeIdentity ? {
         id: activeIdentity.id,
@@ -1239,21 +1238,7 @@ export async function getCharacterWorkspace(characterId: string) {
       },
     },
     voice: {
-      provider: providersVoiceKey(),
-      cloningAvailable: voiceRuntimeStatus === "ready",
-      runtimeStatus: voiceRuntimeStatus,
-      runtimeEngine:
-        env.VOICE_PROVIDER !== "fish-audio"
-          ? "inactive"
-          : voiceCapabilities?.ok &&
-              voiceCapabilities.data.runtime === "mlx_audio"
-            ? "mlx_audio"
-            : "unknown",
-      runtimeVersion:
-        voiceCapabilities?.ok
-          ? voiceCapabilities.data.runtimeVersion ?? null
-          : null,
-      runtimeLanguage: env.FISH_AUDIO_LANGUAGE,
+      ...voiceRuntime,
       currentVoiceId: character.voiceId,
       effectiveVoiceId:
         usableActiveVoiceProfile?.providerVoiceId ??
@@ -1316,12 +1301,6 @@ export async function getCharacterWorkspace(characterId: string) {
       changeMarkers: portfolioItem?.changeMarkers ?? [],
     },
   };
-}
-
-function providersVoiceKey(): "mock" | "pipeline" | "pocket_tts" | "fish_audio" {
-  if (env.VOICE_PROVIDER === "pocket-tts") return "pocket_tts";
-  if (env.VOICE_PROVIDER === "fish-audio") return "fish_audio";
-  return env.VOICE_PROVIDER;
 }
 
 export async function getCharacterProjectDraftForResume(characterId: string) {

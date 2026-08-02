@@ -13,7 +13,19 @@ import { logger } from "../logger";
 import { syncComfyUiWorkflow } from "./comfyui-workflow";
 import { assignWorkflowReferenceSlots, bindComfySlots } from "./workflow";
 import type { WorkflowDescriptor } from "./workflow";
-import type { BackendHandle, BackendHealth, BackendResult, Capabilities, GenBackend, ResolvedGenJob } from "./types";
+import {
+  probeVideoMedia,
+  type VideoMediaProbe,
+} from "./video-media-probe";
+import {
+  BackendInvocationError,
+  type BackendHandle,
+  type BackendHealth,
+  type BackendResult,
+  type Capabilities,
+  type GenBackend,
+  type ResolvedGenJob,
+} from "./types";
 
 type JsonRecord = Record<string, unknown>;
 type ComfyDescriptor = Extract<WorkflowDescriptor, { backendKind: "comfyui" }>;
@@ -51,13 +63,20 @@ export class ComfyUIBackend implements GenBackend {
   private readonly apiUrl: string;
   private readonly pollIntervalMs: number;
   private readonly workflowSync: WorkflowSync;
+  private readonly videoMediaProbe: VideoMediaProbe;
   private readonly workflowGraphs = new Map<string, Promise<JsonRecord>>();
   private readonly pending = new Map<string, PendingJob>();
 
-  constructor(opts: { apiUrl: string; pollIntervalMs?: number; workflowSync?: WorkflowSync }) {
+  constructor(opts: {
+    apiUrl: string;
+    pollIntervalMs?: number;
+    workflowSync?: WorkflowSync;
+    videoMediaProbe?: VideoMediaProbe;
+  }) {
     this.apiUrl = trimTrailingSlash(opts.apiUrl);
     this.pollIntervalMs = opts.pollIntervalMs ?? 1_000;
     this.workflowSync = opts.workflowSync ?? syncComfyUiWorkflow;
+    this.videoMediaProbe = opts.videoMediaProbe ?? probeVideoMedia;
   }
 
   capabilities(): Capabilities {
@@ -105,18 +124,43 @@ export class ComfyUIBackend implements GenBackend {
       });
     } catch (error) {
       if (error instanceof Error && error.name === "AbortError") {
-        throw new Error(`ComfyUI /prompt timed out after ${job.timeoutMs}ms`);
+        throw new BackendInvocationError(
+          "timeout",
+          `ComfyUI /prompt timed out after ${job.timeoutMs}ms`,
+          "post_submit",
+          "ambiguous",
+        );
       }
-      throw error;
+      throw new BackendInvocationError(
+        "backend_error",
+        error instanceof Error ? error.message : String(error),
+        "post_submit",
+        "ambiguous",
+      );
     } finally {
       clearTimeout(timeout);
     }
     const json = (await response.json().catch(() => ({}))) as JsonRecord;
-    if (!response.ok) throw new Error(`ComfyUI /prompt HTTP ${response.status}`);
+    if (!response.ok) {
+      throw new BackendInvocationError(
+        "backend_error",
+        `ComfyUI /prompt HTTP ${response.status}`,
+        "pre_submit",
+        "definitive",
+      );
+    }
     const promptId = stringField(json, "prompt_id");
     if (!promptId) {
       logger.warn({ workflowKey: job.descriptor.workflowKey, response: json }, "ComfyUI rejected prompt");
-      throw new Error(`ComfyUI did not return prompt_id: ${JSON.stringify(json)}`);
+      const explicitlyRejected =
+        json.error !== undefined ||
+        Object.keys(jsonRecord(json.node_errors)).length > 0;
+      throw new BackendInvocationError(
+        "backend_error",
+        `ComfyUI did not return prompt_id: ${JSON.stringify(json)}`,
+        explicitlyRejected ? "pre_submit" : "post_submit",
+        explicitlyRejected ? "definitive" : "ambiguous",
+      );
     }
     this.pending.set(promptId, {
       timeoutMs: job.timeoutMs,
@@ -145,16 +189,26 @@ export class ComfyUIBackend implements GenBackend {
     try {
       const output = await this.waitForOutput(handle.id, timeoutMs, controller.signal);
       const bytes = await this.fetchComfyOutput(output, controller.signal);
-      const dimensions = pngDimensions(bytes) ?? {
-        width: numberSlot(pending?.slots, "width") ?? 0,
-        height: numberSlot(pending?.slots, "height") ?? 0,
-      };
       const outputKind = pending?.outputKind ?? outputKindFromFilename(output.filename);
+      let verifiedVideo;
       if (outputKind === "video") {
-        assertGeneratedMp4Sanity(bytes, handle.id);
+        try {
+          verifiedVideo = await this.videoMediaProbe(bytes);
+        } catch (error) {
+          throw new BackendInvocationError(
+            "backend_error",
+            `Generated video verification failed for ${handle.id}: ${error instanceof Error ? error.message : String(error)}`,
+            "post_submit",
+            "definitive",
+          );
+        }
       } else {
         assertGeneratedImageSanity(Buffer.from(bytes), handle.id);
       }
+      const dimensions = verifiedVideo ?? pngDimensions(bytes) ?? {
+        width: numberSlot(pending?.slots, "width") ?? 0,
+        height: numberSlot(pending?.slots, "height") ?? 0,
+      };
       return {
         assets: [
           {
@@ -163,9 +217,21 @@ export class ComfyUIBackend implements GenBackend {
             height: dimensions.height,
             contentType:
               outputKind === "video" ? "video/mp4" : "image/png",
+            ...(verifiedVideo ? { verifiedVideo } : {}),
           },
         ],
       };
+    } catch (error) {
+      if (error instanceof BackendInvocationError) throw error;
+      throw new BackendInvocationError(
+        error instanceof Error &&
+            (error.name === "AbortError" || /timed out/i.test(error.message))
+          ? "timeout"
+          : "backend_error",
+        error instanceof Error ? error.message : String(error),
+        "post_submit",
+        "ambiguous",
+      );
     } finally {
       clearTimeout(timeout);
       this.pending.delete(handle.id);
@@ -328,20 +394,44 @@ export class ComfyUIBackend implements GenBackend {
       if (signal.aborted) break;
       const response = await fetch(`${this.apiUrl}/history/${encodeURIComponent(promptId)}`, { signal });
       const history = (await response.json().catch(() => ({}))) as JsonRecord;
-      if (!response.ok) throw new Error(`ComfyUI /history HTTP ${response.status}`);
+      if (!response.ok) {
+        throw new BackendInvocationError(
+          "backend_error",
+          `ComfyUI /history HTTP ${response.status}`,
+          "post_submit",
+          "ambiguous",
+        );
+      }
       const item = jsonRecord(history[promptId]);
       const status = jsonRecord(item.status);
       if (status.status_str === "error") {
-        throw new Error(`ComfyUI prompt failed: ${JSON.stringify(status.messages ?? status)}`);
+        throw new BackendInvocationError(
+          "backend_error",
+          `ComfyUI prompt failed: ${JSON.stringify(status.messages ?? status)}`,
+          "post_submit",
+          "definitive",
+        );
       }
       if (status.completed === true) {
         const output = firstImageOutput(item);
-        if (!output) throw new Error(`ComfyUI prompt ${promptId} completed without media output`);
+        if (!output) {
+          throw new BackendInvocationError(
+            "backend_error",
+            `ComfyUI prompt ${promptId} completed without media output`,
+            "post_submit",
+            "definitive",
+          );
+        }
         return output;
       }
       await sleep(this.pollIntervalMs);
     }
-    throw new Error(`ComfyUI prompt timed out after ${timeoutMs}ms: ${promptId}`);
+    throw new BackendInvocationError(
+      "timeout",
+      `ComfyUI prompt timed out after ${timeoutMs}ms: ${promptId}`,
+      "post_submit",
+      "ambiguous",
+    );
   }
 
   private async fetchComfyOutput(image: ComfyImageOutput, signal: AbortSignal): Promise<Uint8Array> {
@@ -350,22 +440,20 @@ export class ComfyUIBackend implements GenBackend {
     url.searchParams.set("subfolder", image.subfolder);
     url.searchParams.set("type", image.type);
     const response = await fetch(url, { signal });
-    if (!response.ok) throw new Error(`ComfyUI /view HTTP ${response.status}`);
+    if (!response.ok) {
+      throw new BackendInvocationError(
+        "backend_error",
+        `ComfyUI /view HTTP ${response.status}`,
+        "post_submit",
+        "ambiguous",
+      );
+    }
     return new Uint8Array(await response.arrayBuffer());
   }
 }
 
 function outputKindFromFilename(filename: string): "image" | "video" {
   return filename.toLowerCase().endsWith(".mp4") ? "video" : "image";
-}
-
-function assertGeneratedMp4Sanity(bytes: Uint8Array, requestId: string) {
-  if (
-    bytes.byteLength < 12 ||
-    String.fromCharCode(...bytes.subarray(4, 8)) !== "ftyp"
-  ) {
-    throw new Error(`Generated video sanity check failed for ${requestId}: invalid MP4`);
-  }
 }
 
 function firstImageOutput(historyItem: JsonRecord): ComfyImageOutput | null {

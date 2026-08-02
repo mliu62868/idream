@@ -1,7 +1,6 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { Errors } from "@/server/lib/errors";
-import { recordGenerationAttemptQueuedEvent } from "@/server/ai/generation-attempt-events";
-import { transitionGenerationRequest } from "@/server/ai/generation-request-transition";
+import { reserveRetryGenerationAttempt } from "@/server/modules/generation/generation-attempt-authority";
 import { ensureGenerationSettlementLinks } from "@/server/ai/generation-settlement";
 import { postDreamcoinEntry } from "@/server/modules/admin/billing/ledger";
 import { claimControlPlaneCommand } from "../shared/control-plane-command";
@@ -145,56 +144,20 @@ export async function executeIncidentActionPlanCommand(
         const attemptIds: string[] = [];
         for (const occurrence of occurrences) {
           if (!occurrence.requestId) throw Errors.conflict("Retry occurrence has no Generation Request");
-          const [job, latest] = await Promise.all([
-            tx.generationJob.findUnique({ where: { id: occurrence.requestId } }),
-            tx.generationAttempt.findFirst({ where: { requestId: occurrence.requestId }, orderBy: { attemptNo: "desc" } }),
-          ]);
-          if (!job || !latest || !["failed", "unknown"].includes(latest.status)) {
-            throw Errors.conflict("Frozen retry target is no longer retryable", { occurrenceId: occurrence.id });
-          }
-          await transitionGenerationRequest(tx, {
-            requestId: job.id,
-            to: "queued",
-            expected: { from: "failed", version: job.version },
-            data: {
-              errorCode: null,
-              completedAt: null,
-              finishedAt: null,
-              deliveredOutputCount: 0,
-            },
-          });
-          const attempt = await tx.generationAttempt.create({
-            data: {
-              requestId: job.id,
-              attemptNo: latest.attemptNo + 1,
-              provider: latest.provider ?? job.provider,
-              profileKey: latest.profileKey ?? job.profileId,
-              profileVersion: latest.profileVersion ?? job.profileVersion,
-              workflowKey: latest.workflowKey ?? job.model,
-              workflowVersion: latest.workflowVersion,
-              status: "queued",
-              sourceCommandId: claimed.id,
-            },
-          });
-          await recordGenerationAttemptQueuedEvent(tx, attempt);
-          await tx.mainOutboxEvent.upsert({
-            where: { id: `incident_retry_${claimed.id}_${occurrence.id}` },
-            create: {
-              id: `incident_retry_${claimed.id}_${occurrence.id}`,
+          const { attempt } = await reserveRetryGenerationAttempt(tx, {
+            requestId: occurrence.requestId,
+            requireLatestAttempt: true,
+            sourceCommandId: claimed.id,
+            dispatch: {
+              outboxId: `incident_retry_${claimed.id}_${occurrence.id}`,
               eventType: "incident.retry.dispatch.v2",
-              aggregateType: "ops_incident",
-              aggregateId: incident.id,
-              payload: toInputJson({
+              payload: {
                 incidentId: incident.id,
                 actionPlanId: plan.id,
                 occurrenceId: occurrence.id,
-                generationJobId: job.id,
-                attemptId: attempt.id,
-                attemptNo: attempt.attemptNo,
                 commandId: claimed.id,
-              }),
+              },
             },
-            update: {},
           });
           attemptIds.push(attempt.id);
         }
@@ -302,7 +265,7 @@ export async function verifyIncidentActionPlanCommands(
   let failed = 0;
   for (const command of commands) {
     const attempts = await db.generationAttempt.findMany({ where: { sourceCommandId: command.id } });
-    const terminal = attempts.length > 0 && attempts.every((attempt) => ["succeeded", "failed", "cancelled", "unknown"].includes(attempt.status));
+    const terminal = attempts.length > 0 && attempts.every((attempt) => ["succeeded", "failed", "blocked", "cancelled", "unknown"].includes(attempt.status));
     if (!terminal) {
       pending += 1;
       continue;

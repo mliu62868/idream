@@ -15,7 +15,7 @@ describe("Main metrics exporter", () => {
     const metrics = await response.text();
     expect(metrics).toContain('main_inbound_events_total{outcome="persisted"} 1');
     expect(metrics).toMatch(/admin_state_invariant_violation_total\{invariant="all"\} \d+/);
-    expect(metrics).toContain('main_outbox_pending_age_seconds{queue="generation_manifest"}');
+    expect(metrics).toContain('main_outbox_pending_age_seconds{queue="generation_terminal_record"}');
     expect(metrics).toContain('incident_detection_lag_seconds{severity="all"}');
     expect(metrics).toContain('admin_inbox_open_total{source="case"}');
     expect(metrics).toContain("generation_unknown_failure_rate ");

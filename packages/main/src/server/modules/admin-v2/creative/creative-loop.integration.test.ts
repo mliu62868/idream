@@ -10,10 +10,10 @@ import { POST as withdrawPlacement } from "@/app/api/v2/admin/creative/runs/[id]
 import { prisma } from "@/server/lib/db";
 import { verifyCreativePlacement } from "./workflow";
 import {
-  dispatchCreativeRetryOutbox,
   executeCreativeRetryCommand,
   verifyCreativeRetryCommands,
 } from "./retry-executor";
+import { dispatchGenerationAttemptOutbox } from "@/server/modules/generation/generation-attempt-authority";
 import { jobQueue } from "@/server/jobs/queue";
 import { recordGenerationAttemptEvent } from "@/server/ai/generation-attempt-events";
 
@@ -142,7 +142,7 @@ describe("Creative retry through verified placement", () => {
     await prisma.generationTransportExecution.deleteMany({
       where: { attemptId: { in: (await prisma.generationAttempt.findMany({ where: { requestId: jobId }, select: { id: true } })).map((row) => row.id) } },
     });
-    await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: { in: [runId, itemId, placementId || "missing"] } } });
+    await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: { in: [runId, itemId, jobId, placementId || "missing"] } } });
     await prisma.adminAuditLog.deleteMany({ where: { actorId: adminId } });
     await prisma.controlPlaneCommandAttempt.deleteMany({ where: { commandId } });
     await prisma.controlPlaneCommand.deleteMany({ where: { actorId: adminId } });
@@ -195,7 +195,11 @@ describe("Creative retry through verified placement", () => {
       status: "queued",
     });
     expect(await prisma.mainOutboxEvent.count({
-      where: { eventType: "creative.retry.dispatch.v2", aggregateId: runId },
+      where: {
+        eventType: "creative.retry.dispatch.v2",
+        aggregateType: "generation_request",
+        aggregateId: jobId,
+      },
     })).toBe(1);
     expect(await prisma.contentProductionBatch.findUnique({ where: { id: runId } })).toMatchObject({
       workflowStage: "generation",
@@ -203,11 +207,11 @@ describe("Creative retry through verified placement", () => {
       version: 3,
     });
     const dispatchResults = await Promise.all([
-      dispatchCreativeRetryOutbox(prisma, {
+      dispatchGenerationAttemptOutbox(prisma, {
         limit: 10,
         outboxIds: [`creative_retry_${commandId}_${itemId}`],
       }),
-      dispatchCreativeRetryOutbox(prisma, {
+      dispatchGenerationAttemptOutbox(prisma, {
         limit: 10,
         outboxIds: [`creative_retry_${commandId}_${itemId}`],
       }),
@@ -592,5 +596,79 @@ describe("Creative retry through verified placement", () => {
       await prisma.contentProductionBatch.deleteMany({ where: { id: { in: [...failedRunIds, succeededRunId] } } });
       await prisma.mediaAsset.deleteMany({ where: { id: scanAssetId } });
     }
+  });
+});
+
+describe("Creative Run purpose query", () => {
+  const suffix = randomUUID();
+  const adminId = `creative-purpose-admin-${suffix}`;
+  const characterId = `creative-purpose-character-${suffix}`;
+  const videoRunId = `creative-purpose-video-${suffix}`;
+  const imageRunId = `creative-purpose-image-${suffix}`;
+
+  beforeAll(async () => {
+    await prisma.user.create({
+      data: {
+        id: adminId,
+        email: `${adminId}@example.test`,
+        role: "admin",
+        status: "active",
+      },
+    });
+    for (const [runId, purpose] of [
+      [videoRunId, "character_video"],
+      [imageRunId, "character_cover"],
+    ] as const) {
+      await prisma.contentProductionBatch.create({
+        data: {
+          id: runId,
+          title: runId,
+          purpose,
+          targetType: "character",
+          targetId: characterId,
+          presetIds: [],
+          count: 1,
+          totalItems: 1,
+          status: "queued",
+          createdById: adminId,
+          items: {
+            create: {
+              id: `${runId}-item`,
+              itemIndex: 0,
+              status: "queued",
+              tags: [],
+            },
+          },
+        },
+      });
+    }
+  });
+
+  afterAll(async () => {
+    await prisma.contentProductionItem.deleteMany({
+      where: { batchId: { in: [videoRunId, imageRunId] } },
+    });
+    await prisma.contentProductionBatch.deleteMany({
+      where: { id: { in: [videoRunId, imageRunId] } },
+    });
+    await prisma.user.deleteMany({ where: { id: adminId } });
+  });
+
+  it("filters by purpose before applying the page limit", async () => {
+    const response = await listRuns(new Request(
+      `http://localhost/api/v2/admin/creative/runs?purpose=character_video&targetType=character&targetId=${characterId}&limit=1&sort=updated_desc`,
+      {
+        headers: {
+          "x-idream-user-id": adminId,
+          "x-idream-role": "admin",
+          "x-request-id": randomUUID(),
+        },
+      },
+    ));
+    const body = await response.json();
+    expect(response.status, JSON.stringify(body)).toBe(200);
+    expect(body.data.items.map((item: { id: string }) => item.id)).toEqual([
+      videoRunId,
+    ]);
   });
 });

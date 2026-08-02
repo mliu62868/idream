@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ComfyUIBackend } from "./comfyui";
+import { BackendInvocationError } from "./types";
 import { workflowDescriptorSchema } from "./workflow";
+import type { VideoMediaProbe } from "./video-media-probe";
 
 const descriptor = workflowDescriptorSchema.parse({
   workflowKey: "t2i", modelId: "redcraft-krea2-redmix3-fp8", backendKind: "comfyui",
@@ -185,6 +187,13 @@ const MP4 = new Uint8Array([
   0x69, 0x73, 0x6f, 0x6d,
   0x6d, 0x70, 0x34, 0x32,
 ]);
+const VERIFIED_VIDEO = {
+  width: 768,
+  height: 1152,
+  durationSeconds: 4,
+  framesPerSecond: 25,
+  hasAudio: true,
+};
 
 function mockFetch(seq: Array<() => Response>) {
   let i = 0;
@@ -200,8 +209,38 @@ async function testWorkflowSync(input: {
   };
 }
 
-function makeBackend() {
-  return new ComfyUIBackend({ apiUrl: "http://x", workflowSync: testWorkflowSync });
+function makeBackend(videoMediaProbe?: VideoMediaProbe) {
+  return new ComfyUIBackend({
+    apiUrl: "http://x",
+    workflowSync: testWorkflowSync,
+    ...(videoMediaProbe ? { videoMediaProbe } : {}),
+  });
+}
+
+function videoOutputFetch() {
+  return mockFetch([
+    () => new Response(JSON.stringify({ name: "source.webp", subfolder: "", type: "input" })),
+    () => new Response(JSON.stringify({ prompt_id: "video-p1" }), { status: 200 }),
+    () => new Response(JSON.stringify({
+      "video-p1": {
+        status: { completed: true },
+        outputs: {
+          "75": {
+            images: [{
+              filename: "result.mp4",
+              subfolder: "",
+              type: "output",
+              animated: [true],
+            }],
+          },
+        },
+      },
+    }), { status: 200 }),
+    () => new Response(MP4, {
+      status: 200,
+      headers: { "content-type": "video/mp4" },
+    }),
+  ]);
 }
 
 describe("ComfyUIBackend", () => {
@@ -239,31 +278,9 @@ describe("ComfyUIBackend", () => {
   });
 
   it("polls an animated ComfyUI output as MP4 for video workflows", async () => {
-    const g = mockFetch([
-      () => new Response(JSON.stringify({ name: "source.webp", subfolder: "", type: "input" })),
-      () => new Response(JSON.stringify({ prompt_id: "video-p1" }), { status: 200 }),
-      () => new Response(JSON.stringify({
-        "video-p1": {
-          status: { completed: true },
-          outputs: {
-            "75": {
-              images: [{
-                filename: "result.mp4",
-                subfolder: "",
-                type: "output",
-                animated: [true],
-              }],
-            },
-          },
-        },
-      }), { status: 200 }),
-      () => new Response(MP4, {
-        status: 200,
-        headers: { "content-type": "video/mp4" },
-      }),
-    ]);
+    const g = videoOutputFetch();
     vi.stubGlobal("fetch", g);
-    const backend = makeBackend();
+    const backend = makeBackend(async () => VERIFIED_VIDEO);
     const handle = await backend.submit({
       descriptor: videoDescriptor,
       slots: { width: 768, height: 1152 },
@@ -284,13 +301,107 @@ describe("ComfyUIBackend", () => {
         width: 768,
         height: 1152,
         contentType: "video/mp4",
+        verifiedVideo: VERIFIED_VIDEO,
       },
     ]);
+  });
+
+  it("rejects a truncated or undecodable MP4 before returning a backend asset", async () => {
+    vi.stubGlobal("fetch", videoOutputFetch());
+    const probe = vi.fn(async () => {
+      throw new Error("ffmpeg could not fully decode generated video");
+    });
+    const backend = makeBackend(probe);
+    const handle = await backend.submit({
+      descriptor: videoDescriptor,
+      slots: { width: 768, height: 1152 },
+      referenceImages: [{
+        assetId: "source-1",
+        role: "source_image",
+        b64Json: PNG_B64,
+        contentType: "image/png",
+      }],
+      timeoutMs: 5_000,
+    });
+
+    await expect(backend.poll(handle)).rejects.toMatchObject({
+      name: "BackendInvocationError",
+      phase: "post_submit",
+      outcome: "definitive",
+      message: expect.stringContaining("could not fully decode"),
+    });
+    expect(probe).toHaveBeenCalledWith(MP4);
   });
   it("throws when prompt is rejected (no prompt_id)", async () => {
     vi.stubGlobal("fetch", mockFetch([() => new Response(JSON.stringify({ node_errors: { "6": "bad" } }), { status: 200 })]));
     const backend = makeBackend();
-    await expect(backend.submit({ descriptor, slots: { prompt: "cat" }, timeoutMs: 5000 })).rejects.toThrow();
+    await expect(backend.submit({ descriptor, slots: { prompt: "cat" }, timeoutMs: 5000 })).rejects.toMatchObject({
+      name: "BackendInvocationError",
+      phase: "pre_submit",
+      outcome: "definitive",
+    });
+  });
+  it("treats a malformed successful submit response as ambiguous", async () => {
+    vi.stubGlobal("fetch", mockFetch([
+      () => new Response(JSON.stringify({}), { status: 200 }),
+    ]));
+    const backend = makeBackend();
+
+    await expect(backend.submit({
+      descriptor,
+      slots: { prompt: "cat" },
+      timeoutMs: 5_000,
+    })).rejects.toMatchObject({
+      name: "BackendInvocationError",
+      phase: "post_submit",
+      outcome: "ambiguous",
+    });
+  });
+  it("marks a post-submit history connection reset as ambiguous", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ prompt_id: "p-reset" }), { status: 200 }))
+      .mockRejectedValueOnce(new TypeError("connection reset by peer"));
+    vi.stubGlobal("fetch", fetchMock);
+    const backend = makeBackend();
+    const handle = await backend.submit({
+      descriptor,
+      slots: { prompt: "cat" },
+      timeoutMs: 5_000,
+    });
+
+    await expect(backend.poll(handle)).rejects.toMatchObject({
+      name: "BackendInvocationError",
+      phase: "post_submit",
+      outcome: "ambiguous",
+      code: "backend_error",
+    });
+  });
+  it("keeps an explicit ComfyUI prompt error definitive", async () => {
+    vi.stubGlobal("fetch", mockFetch([
+      () => new Response(JSON.stringify({ prompt_id: "p-error" }), { status: 200 }),
+      () => new Response(JSON.stringify({
+        "p-error": {
+          status: {
+            status_str: "error",
+            messages: [["execution_error", { exception_message: "bad tensor shape" }]],
+          },
+        },
+      }), { status: 200 }),
+    ]));
+    const backend = makeBackend();
+    const handle = await backend.submit({
+      descriptor,
+      slots: { prompt: "cat" },
+      timeoutMs: 5_000,
+    });
+
+    await expect(backend.poll(handle)).rejects.toEqual(
+      expect.objectContaining<Partial<BackendInvocationError>>({
+        phase: "post_submit",
+        outcome: "definitive",
+        code: "backend_error",
+      }),
+    );
   });
   it("rejects references when the workflow has no semantic image slots", async () => {
     const fetchMock = vi.fn();

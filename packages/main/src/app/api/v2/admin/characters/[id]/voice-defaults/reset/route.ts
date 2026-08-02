@@ -1,5 +1,5 @@
 import { characterVoiceSystemDefaultResetResponseSchema } from "@idream/shared/admin";
-import { resetCharacterVoiceToSystemDefault } from "@/server/modules/admin-v2/characters/voice-clones";
+import { resetCharacterVoiceToSystemDefault } from "@/server/modules/admin-v2/characters/voice-identity";
 import { actorWithPermission, jsonBody } from "@/server/modules/admin-v2/shared/authority";
 import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";

@@ -6,6 +6,7 @@ import { isGenerationAttemptTransitionAllowed } from "@/server/modules/admin-v2/
 export const GENERATION_ATTEMPT_TERMINAL_OUTCOMES = [
   "succeeded",
   "failed",
+  "blocked",
   "cancelled",
   "unknown",
 ] as const;
@@ -37,7 +38,7 @@ export interface GenerationAttemptEventInput {
   readonly errorSignature?: string | null;
   readonly retryability?: string | null;
   readonly operatorGuidance?: string | null;
-  readonly completionManifestRef?: string | null;
+  readonly terminalRecordRef?: string | null;
 }
 
 export async function recordGenerationAttemptQueuedEvent(
@@ -166,7 +167,7 @@ export async function recordGenerationAttemptEvent(
         errorSignature: input.errorSignature,
         retryability: input.retryability,
         operatorGuidance: input.operatorGuidance,
-        completionManifestRef: input.completionManifestRef,
+        terminalRecordRef: input.terminalRecordRef,
       },
     });
     if (input.outcome === "failed" || input.outcome === "unknown") {
@@ -192,8 +193,8 @@ export async function recordGenerationAttemptEvent(
       data: {
         status: input.status,
         ...(input.startedAt ? { startedAt: input.startedAt } : {}),
-        ...(input.completionManifestRef !== undefined
-          ? { completionManifestRef: input.completionManifestRef }
+        ...(input.terminalRecordRef !== undefined
+          ? { terminalRecordRef: input.terminalRecordRef }
           : {}),
       },
     });

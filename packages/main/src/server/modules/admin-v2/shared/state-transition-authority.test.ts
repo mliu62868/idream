@@ -99,10 +99,11 @@ const matrices: readonly MatrixCase[] = [
     name: "Generation Attempt",
     states: GENERATION_ATTEMPT_STATES,
     allowed: {
-      queued: ["queued", "running", "succeeded", "failed", "cancelled", "unknown"],
-      running: ["running", "succeeded", "failed", "cancelled", "unknown"],
+      queued: ["queued", "running", "succeeded", "failed", "blocked", "cancelled", "unknown"],
+      running: ["running", "succeeded", "failed", "blocked", "cancelled", "unknown"],
       succeeded: ["succeeded"],
       failed: ["failed"],
+      blocked: ["blocked"],
       cancelled: ["cancelled"],
       unknown: ["unknown"],
     },
