@@ -15,11 +15,9 @@ import { enqueue } from "./queue.js";
 import { streamKey } from "./stream.js";
 import { recordOutbox, scheduleOutboxDelivery } from "./outbox.js";
 import { recordExchangeCorrection } from "./exchange-corrections.js";
-import { advisoryLock, lockTurn, lockUser } from "./turn-lock.js";
+import { advisoryLock, lockUser } from "./turn-lock.js";
 import {
   assertNoPendingChatFileMutationsTx,
-  projectChatFileMutations,
-  recordChatFileMutation,
   runWithProjectedChatFiles,
   withTurnAuthority,
 } from "./file-mutations.js";
@@ -716,11 +714,14 @@ export async function editUserMessage(
   const attempt = (assistant?.attempt ?? 0) + 1;
   const assistantHadEligibleExchange = assistant?.status === "sent";
 
-  await runWithProjectedChatFiles(
-    input.userId,
-    () => prisma.$transaction(async (tx) => {
-    await lockTurn(tx, input.userId, session.id);
-    await assertNoPendingChatFileMutationsTx(tx, input.userId);
+  await withTurnAuthority(
+    {
+      userId: input.userId,
+      sessionId: session.id,
+      prisma,
+      projectorPrisma,
+    },
+    async (tx, recordIntent) => {
     await assertActiveUserAuthority(tx, input.userId);
     const [
       currentSession,
@@ -816,27 +817,19 @@ export async function editUserMessage(
     if (moderation.status !== "blocked") {
       await assertTurnCapacity(tx, input.userId, session.id, policy, assistantMessageId);
     }
-    await recordChatFileMutation(
-      tx,
-      input.userId,
-      {
-        kind: "turn_forget",
-        sessionId: currentSession.id,
-        characterId: currentSession.characterId,
-        messageIds: [
-          currentMessage.id,
-          ...(currentAssistant ? [currentAssistant.id] : []),
-        ],
-      },
-    );
-    await recordChatFileMutation(
-      tx,
-      input.userId,
-      {
-        kind: "relationship_rebuild",
-        characterId: currentSession.characterId,
-      },
-    );
+    await recordIntent({
+      kind: "turn_forget",
+      sessionId: currentSession.id,
+      characterId: currentSession.characterId,
+      messageIds: [
+        currentMessage.id,
+        ...(currentAssistant ? [currentAssistant.id] : []),
+      ],
+    });
+    await recordIntent({
+      kind: "relationship_rebuild",
+      characterId: currentSession.characterId,
+    });
     await tx.message.update({
       where: { id: currentMessage.id },
       data: {
@@ -926,10 +919,8 @@ export async function editUserMessage(
         payload: { sessionId: session.id, userId: input.userId, layer: "input", policyCode: moderation.policyCode },
       });
     }
-    }),
-    projectorPrisma,
+    },
   );
-  await projectChatFileMutations(input.userId, projectorPrisma);
 
   if (moderation.status === "blocked") {
     return {
