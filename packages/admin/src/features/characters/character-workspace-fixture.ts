@@ -268,5 +268,17 @@ function merge(current: unknown, override: unknown): unknown {
 export function characterWorkspaceDetail(
   overrides: FixtureOverrides<CharacterWorkspaceDetail> = {},
 ): CharacterWorkspaceDetail {
-  return merge(base, overrides) as CharacterWorkspaceDetail;
+  return withCharacterWorkspaceDetail(base, overrides);
+}
+
+/**
+ * SPEC: 在某个已经调好的投影上再改一层，仍然产出完整投影。
+ * INTENT: 测试文件常有自己的一份 data（本文件的公共前置），各用例再在它上面微调。
+ *         用扩展运算符手写这一层就等于每次都要把嵌套对象补全，写不动就会退回强转。
+ */
+export function withCharacterWorkspaceDetail(
+  current: CharacterWorkspaceDetail,
+  overrides: FixtureOverrides<CharacterWorkspaceDetail> = {},
+): CharacterWorkspaceDetail {
+  return merge(current, overrides) as CharacterWorkspaceDetail;
 }
