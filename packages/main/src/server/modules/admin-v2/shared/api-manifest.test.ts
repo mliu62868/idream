@@ -48,13 +48,8 @@ const QUERY_DOOR = "shared/authority.ts";
  * cannot hide behind an old entry, and an entry that no longer offends must be deleted.
  */
 const ROUTE_SEAM_DEBT: ReadonlyMap<string, string> = new Map([
-  // Owned by the concurrent Creative refactor; migrating it here would collide. Its response is
-  // still narrowed inside `commands/authoritative.ts`, so the contract holds — it just is not
-  // the seam that holds it.
-  [
-    "creative/runs/[id]/commands/retry-failed/route.ts",
-    "POST /api/v2/admin/creative/runs/:id/commands/retry-failed",
-  ],
+  // 空了。retry-failed 曾是唯一一条，理由是「并行的 Creative 重构持有它」——
+  // 那次重构合并后理由就不成立了，所以它按本条 INTENT 被删除而不是留着烂掉。
 ]);
 
 /**
