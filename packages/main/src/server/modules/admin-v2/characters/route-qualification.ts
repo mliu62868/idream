@@ -1,23 +1,27 @@
 import type { Prisma } from "@prisma/client";
-import type { z } from "zod";
 import {
   characterRouteEvaluationMatrixDirections,
   characterRouteEvaluationMatrixKey,
   characterRouteEvaluationMatrixSchemaVersion,
   characterRouteEvaluationOutputsPerDirection,
   characterRouteEvaluationSampleCount,
-  generationRouteQualificationEvaluateRequestSchema,
   generationRouteQualificationEvaluateResponseSchema,
 } from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
-import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
+import type {
+  AdminActor,
+  AdminV2RequestBody,
+} from "@/server/modules/admin-v2/shared/authority";
 import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
 import { canonicalSha256 } from "../shared/canonical-json";
 import { toInputJson } from "../shared/prisma-json";
 
-type QualificationRequest = z.infer<typeof generationRouteQualificationEvaluateRequestSchema>;
+// SPEC: the body the manifest declares for this operation, already parsed by the route.
+type QualificationRequest = AdminV2RequestBody<
+  "generationRouteQualificationEvaluateRequestSchema+idempotency-key"
+>;
 
 type QualityEvidence = {
   readonly assetId: string;
@@ -109,7 +113,7 @@ export async function evaluateGenerationRouteQualification(input: {
   tx?: Prisma.TransactionClient;
 }) {
   const db = input.tx ?? prisma;
-  const request = generationRouteQualificationEvaluateRequestSchema.parse(input.request);
+  const request = input.request;
   if (request.confirmation !== `QUALIFY ${request.matrixKey}`) {
     throw Errors.badRequest("Confirmation did not match the route qualification matrix");
   }

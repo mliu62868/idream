@@ -1,11 +1,10 @@
-import {
-  characterIdentityBootstrapRequestSchema,
-  characterIdentityBootstrapResponseSchema,
-  type CharacterIdentityBootstrapRequest,
-} from "@idream/shared/admin";
+import { characterIdentityBootstrapResponseSchema } from "@idream/shared/admin";
 import type { Prisma } from "@prisma/client";
 import { Errors } from "@/server/lib/errors";
-import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
+import type {
+  AdminActor,
+  AdminV2RequestBody,
+} from "@/server/modules/admin-v2/shared/authority";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import {
   characterVisualProfileSnapshotHash,
@@ -31,14 +30,22 @@ function text(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+// SPEC: the body is whatever the manifest declares for this operation, already parsed.
+// INTENT: naming the ref instead of importing the schema keeps one authority — the Route
+// Handler parsed with this exact contract, so re-parsing here would only add a second
+// place a contract could drift.
+type BootstrapRequest = AdminV2RequestBody<
+  "characterIdentityBootstrapRequestSchema+idempotency-key+if-match"
+>;
+
 export async function bootstrapCharacterIdentity(input: {
   readonly characterId: string;
   readonly actor: AdminActor;
   readonly requestId: string;
-  readonly request: CharacterIdentityBootstrapRequest;
+  readonly request: BootstrapRequest;
   readonly tx: Prisma.TransactionClient;
 }) {
-  const request = characterIdentityBootstrapRequestSchema.parse(input.request);
+  const request = input.request;
   if (request.confirmation !== `BOOTSTRAP IDENTITY ${input.characterId}`) {
     throw Errors.badRequest("Confirmation did not match the Character identity bootstrap");
   }

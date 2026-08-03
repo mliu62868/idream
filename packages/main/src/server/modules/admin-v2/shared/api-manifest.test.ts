@@ -43,6 +43,18 @@ const MODULE_BODY_PARSE_DEBT: ReadonlyMap<string, string> = new Map([
   ["collaboration/service.ts", "PATCH /api/v2/admin/saved-views/:id"],
 ]);
 
+/**
+ * SPEC: modules allowed to hold a request contract schema as a symbol, and the operation
+ * whose body arrives in a shape `jsonBody` cannot parse.
+ * INTENT: `multipart/form-data` has no JSON body, so these two are the *first* parse of
+ * their operation's contract, not a second one. Every other module must take an
+ * already-parsed body, or the manifest stops being the only place a request shape lives.
+ */
+const MODULE_FORM_CONTRACT_PARSERS: ReadonlyMap<string, string> = new Map([
+  ["characters/image-sources.ts", "POST /api/v2/admin/characters/:id/image-sources"],
+  ["characters/voice-identity.ts", "POST /api/v2/admin/characters/:id/voice-clones"],
+]);
+
 async function routeFiles(directory: string): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true });
   const nested = await Promise.all(entries.map(async (entry) => {
@@ -330,24 +342,27 @@ describe("Admin v2 API permission and contract manifest", () => {
 
     const offenders: string[] = [];
     const settledDebt: string[] = [];
+    const exercisedFormExemptions = new Set<string>();
     let filesNamingAnOperation = 0;
 
     for (const file of files) {
       const source = await readFile(file, "utf8");
       const label = relative(moduleRoot, file).split(sep).join("/");
-      const readsBody = /\bjsonBody\(/.test(source);
       const owed = MODULE_BODY_PARSE_DEBT.get(label);
       const hands: string[] = [];
 
-      // INVARIANT: a module that reads an HTTP body names the operation, never a schema —
-      // an imported request schema is a second authority nothing reconciles with the manifest.
-      if (readsBody) {
-        const imports = (source.match(/^import[\s\S]*?;$/gm) ?? []).join("\n");
-        for (const symbol of bodyContractSymbols) {
-          if (new RegExp(`\\b${symbol}\\b`).test(imports)) {
-            hands.push(`${label}: imports request contract ${symbol}`);
-          }
+      // INVARIANT: a module names the operation whose body it handles, never a schema — an
+      // imported request schema is a second authority nothing reconciles with the manifest.
+      // A module downstream of a Route Handler receives a body `jsonBody` already parsed, so
+      // holding the schema at all can only mean parsing it twice with two separate authorities.
+      const imports = (source.match(/^import[\s\S]*?;$/gm) ?? []).join("\n");
+      for (const symbol of bodyContractSymbols) {
+        if (!new RegExp(`\\b${symbol}\\b`).test(imports)) continue;
+        if (MODULE_FORM_CONTRACT_PARSERS.has(label)) {
+          exercisedFormExemptions.add(label);
+          continue;
         }
+        hands.push(`${label}: imports request contract ${symbol}`);
       }
       if (LOCAL_BODY_PARSE.test(source)) {
         hands.push(`${label}: re-parses the body jsonBody already parsed`);
@@ -381,6 +396,13 @@ describe("Admin v2 API permission and contract manifest", () => {
       expect(files.map((file) => relative(moduleRoot, file).split(sep).join("/")), label)
         .toContain(label);
       expect(declaredIds.has(operationId), operationId).toBe(true);
+    }
+    // Self-check: a form-parser exemption that no longer holds a contract must be deleted,
+    // and it must name the multipart operation it exists for.
+    for (const [label, operationId] of MODULE_FORM_CONTRACT_PARSERS) {
+      expect(declaredIds.has(operationId), operationId).toBe(true);
+      expect(exercisedFormExemptions, `${label} no longer needs its exemption`)
+        .toContain(label);
     }
     // Self-check: an assertion that inspected no operation key is not a guard.
     expect(filesNamingAnOperation).toBeGreaterThan(0);

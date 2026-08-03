@@ -1,26 +1,30 @@
 import type { Prisma } from "@prisma/client";
-import {
-  characterLookArchiveRequestSchema,
-  characterLookArchiveResponseSchema,
-  type CharacterLookArchiveRequest,
-} from "@idream/shared/admin";
+import { characterLookArchiveResponseSchema } from "@idream/shared/admin";
 import { Errors } from "@/server/lib/errors";
-import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
+import type {
+  AdminActor,
+  AdminV2RequestBody,
+} from "@/server/modules/admin-v2/shared/authority";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import {
   lockCharacterGenerationAuthority,
   lockCharacterMediaAssetAuthorities,
 } from "./generation-authority-lock";
 
+// SPEC: the body the manifest declares for this operation, already parsed by the route.
+type LookArchiveRequest = AdminV2RequestBody<
+  "characterLookArchiveRequestSchema+idempotency-key"
+>;
+
 export async function archiveCharacterLookAsAdmin(input: {
   characterId: string;
   lookId: string;
   actor: AdminActor;
   requestId: string;
-  request: CharacterLookArchiveRequest;
+  request: LookArchiveRequest;
   tx: Prisma.TransactionClient;
 }) {
-  const request = characterLookArchiveRequestSchema.parse(input.request);
+  const request = input.request;
   if (request.confirmation !== `ARCHIVE LOOK ${input.lookId}`) {
     throw Errors.badRequest("Confirmation did not match the Character Look");
   }

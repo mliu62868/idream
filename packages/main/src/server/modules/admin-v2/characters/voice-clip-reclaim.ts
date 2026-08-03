@@ -1,5 +1,4 @@
 import {
-  characterVoiceClipReclaimRequestSchema,
   characterVoiceClipReclaimResponseSchema,
   type CharacterVoiceClipReclaimResponse,
 } from "@idream/shared/admin";
@@ -19,7 +18,10 @@ import {
   reclaimExpiredVoiceClip,
   type VoiceClipSuccessCommit,
 } from "@/server/modules/ourdream/voice-clip";
-import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
+import type {
+  AdminActor,
+  AdminV2RequestBody,
+} from "@/server/modules/admin-v2/shared/authority";
 import { canonicalRequestHash } from "@/server/modules/admin-v2/shared/control-plane-command";
 import {
   transitionControlPlaneCommand,
@@ -43,15 +45,22 @@ type CommandFailure = {
   readonly details?: unknown;
 };
 
+// SPEC: the body the manifest declares for this operation, already parsed by the route.
+// INVARIANT: the schema already binds `confirmation` to the body's own `requestId`; the
+// check below is the separate one it cannot make — body vs route path.
+type VoiceClipReclaimRequest = AdminV2RequestBody<
+  "characterVoiceClipReclaimRequestSchema+idempotency-key"
+>;
+
 export async function reclaimCharacterVoiceClip(input: {
   readonly characterId: string;
   readonly requestId: string;
   readonly actor: AdminActor;
   readonly idempotencyKey: string;
   readonly transportRequestId: string;
-  readonly request: unknown;
+  readonly request: VoiceClipReclaimRequest;
 }): Promise<CharacterVoiceClipReclaimResponse> {
-  const request = characterVoiceClipReclaimRequestSchema.parse(input.request);
+  const request = input.request;
   if (request.requestId !== input.requestId) {
     throw Errors.badRequest("Request body and route identify different Voice requests");
   }
