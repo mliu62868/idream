@@ -34,6 +34,7 @@ import {
 } from "./release-snapshot";
 import { findOperationalGenerationRoute } from "./visual-authority";
 import { characterReferenceAuthorityFrom } from "./reference-authority";
+import { characterWorkspaceTabLink } from "./character-deep-link";
 import { CHARACTER_STYLES, isCatalogMember } from "@idream/shared/catalog";
 
 function record(value: unknown): Record<string, unknown> {
@@ -1078,6 +1079,6 @@ export async function repairCharacterImageReadiness(input: {
     routeQualificationId: route?.id ?? null,
     routeFingerprint: route?.routeFingerprint ?? null,
     remainingBlockers: route ? [] : ["generation_route_unqualified"],
-    deepLink: `/admin/characters/${input.characterId}?tab=assets`,
+    deepLink: characterWorkspaceTabLink(input.characterId, "assets"),
   };
 }

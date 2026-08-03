@@ -9,6 +9,7 @@ import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { referenceSetSnapshotHash } from "./release-snapshot";
 import { lockCharacterGenerationAndMediaAssetAuthorities } from "./generation-authority-lock";
 import { invalidateCharacterDraftAssetPack } from "./draft-asset-authority";
+import { characterWorkspaceTabLink } from "./character-deep-link";
 import {
   hasHydratableMediaBlobAuthority,
   isMediaAssetOperationalForAuthority,
@@ -61,7 +62,7 @@ export async function publishCharacterReferenceSet(input: {
       {
         releaseId: activeRelease.id,
         releaseStatus: activeRelease.status,
-        deepLink: `/admin/characters/${input.characterId}?tab=release`,
+        deepLink: characterWorkspaceTabLink(input.characterId, "release"),
       },
     );
   }
@@ -89,7 +90,7 @@ export async function publishCharacterReferenceSet(input: {
           request.expectedActiveReferenceSetRevision,
         currentReferenceSetRevisionId: currentReferenceSet?.id ?? null,
         currentReferenceSetRevision: currentReferenceSet?.revision ?? 0,
-        deepLink: `/admin/characters/${input.characterId}?tab=visual`,
+        deepLink: characterWorkspaceTabLink(input.characterId, "visual"),
       },
     );
   }

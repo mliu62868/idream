@@ -2,8 +2,6 @@ import { describe, expect, it } from "vitest";
 import { evaluateReleaseReadiness, validateServingPointer } from "./readiness";
 
 const readyCandidate = {
-  releaseId: "release-a",
-  releaseCharacterId: "character-a",
   snapshotHash: "snapshot-a",
   currentSnapshotHash: "snapshot-a",
   validatedPolicyVersion: "release-policy-v1",

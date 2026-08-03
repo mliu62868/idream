@@ -31,6 +31,7 @@ import {
 } from "./draft-asset-route-authority";
 import { findOperationalGenerationRoute } from "./visual-authority";
 import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-executor";
+import { characterWorkspaceTabLink } from "./character-deep-link";
 import {
   discoverDraftAssetPackSourceAssetIds,
   evaluateDraftAssetPackAuthority,
@@ -185,7 +186,7 @@ export async function createCharacterQaRun(
           missingPurposes: draftAssetRouteAuthority.missingPurposes,
           invalidBootstrapPurposes:
             draftAssetRouteAuthority.invalidBootstrapPurposes,
-          deepLink: `/admin/characters/${characterId}?tab=assets`,
+          deepLink: characterWorkspaceTabLink(characterId, "assets"),
         },
       );
     }
@@ -197,7 +198,7 @@ export async function createCharacterQaRun(
           currentRouteFingerprint: currentRoute?.routeFingerprint ?? null,
           stalePurposes: draftAssetRouteAuthority.stalePurposes,
           recoveryPurpose: draftAssetRouteAuthority.recoveryPurpose,
-          deepLink: `/admin/characters/${characterId}?tab=assets`,
+          deepLink: characterWorkspaceTabLink(characterId, "assets"),
         },
       );
     }
@@ -208,7 +209,7 @@ export async function createCharacterQaRun(
           code: "draft_asset_pack_not_qa_ready",
           blockers: draftAssetRouteAuthority.qaBlockers,
           currentRouteFingerprint: currentRoute?.routeFingerprint ?? null,
-          deepLink: `/admin/characters/${characterId}?tab=assets`,
+          deepLink: characterWorkspaceTabLink(characterId, "assets"),
         },
       );
     }
@@ -217,7 +218,7 @@ export async function createCharacterQaRun(
         "Character QA requires a current effective Generation Route",
         {
           code: "draft_asset_pack_not_qa_ready",
-          deepLink: `/admin/characters/${characterId}?tab=assets`,
+          deepLink: characterWorkspaceTabLink(characterId, "assets"),
         },
       );
     }
@@ -238,7 +239,7 @@ export async function createCharacterQaRun(
             draftAssetPackAuthority.invalidAssetPurposes,
           invalidLineagePurposes:
             draftAssetPackAuthority.invalidLineagePurposes,
-          deepLink: `/admin/characters/${characterId}?tab=assets`,
+          deepLink: characterWorkspaceTabLink(characterId, "assets"),
         },
       );
     }

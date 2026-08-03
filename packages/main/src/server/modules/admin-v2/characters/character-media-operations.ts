@@ -14,6 +14,7 @@ import {
   operationalGenerationJobWhere,
 } from "@/server/modules/metric-data-scope";
 import { resolveGenerationAttemptRetryAuthority } from "@/server/modules/generation/generation-attempt-authority";
+import { characterWorkspaceTabLink } from "./character-deep-link";
 
 // SPEC: This projector only reads evidence owned by Generation and Voice authorities.
 // INTENT: CharacterWorkspace consumes one stable operations view without learning how
@@ -22,7 +23,6 @@ export async function loadCharacterMediaOperationsProjection(
   characterId: string,
 ): Promise<CharacterMediaOperationsProjection> {
   const projectionAsOf = new Date();
-  const characterHref = `/admin/characters/${encodeURIComponent(characterId)}`;
   const unavailable = (
     modality: "image" | "video" | "voice",
     tab: "assets" | "video" | "voice",
@@ -39,7 +39,7 @@ export async function loadCharacterMediaOperationsProjection(
       state: "unavailable" as const,
       reason: "No operation evidence exists for this Character.",
     },
-    studioHref: `${characterHref}?tab=${tab}`,
+    studioHref: characterWorkspaceTabLink(characterId, tab),
     operationsHref: null,
   });
   const latestGenerationJob = (mode: "image" | "video") =>
@@ -303,7 +303,7 @@ export async function loadCharacterMediaOperationsProjection(
             : null,
       } : null,
       recoverability: recovery,
-      studioHref: `${characterHref}?tab=${tab}`,
+      studioHref: characterWorkspaceTabLink(characterId, tab),
       operationsHref: ["failed", "blocked"].includes(job.status)
         ? `/admin/ops/jobs?view=dead-letter&search=${encodeURIComponent(job.id)}`
         : `/admin/ops/jobs?job=${encodeURIComponent(job.id)}`,
@@ -394,7 +394,7 @@ export async function loadCharacterMediaOperationsProjection(
               : "No retryability evidence is recorded for this Voice request.",
             }
           : { state: "not_needed" as const, reason: null },
-      studioHref: `${characterHref}?tab=voice`,
+      studioHref: characterWorkspaceTabLink(characterId, "voice"),
       operationsHref: null,
     };
   })();

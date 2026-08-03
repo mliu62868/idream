@@ -4,6 +4,7 @@ import { env } from "@/server/lib/env";
 import { verifyCharacterPreviewToken } from "./preview-token";
 import { isMediaAssetOperationalForAuthority } from "@/server/lib/media-asset-authority";
 import { draftAssetRouteEntries } from "./draft-asset-route-authority";
+import { characterReleaseExactAssetPackByPurpose } from "./character-release-contract";
 
 const previewPurposes = [
   "character_cover",
@@ -26,29 +27,6 @@ function text(value: unknown) {
 
 function stringList(value: unknown) {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
-}
-
-function releaseAssetPack(value: Prisma.JsonValue): Partial<PreviewAssetPack> {
-  const manifest = record(value);
-  const placements = Array.isArray(manifest.placements) ? manifest.placements : [];
-  const purposeBySlot = {
-    character_avatar: "character_cover",
-    character_hero: "character_hero",
-    character_chat: "character_chat",
-  } as const;
-  const entries = placements.flatMap((value) => {
-    const placement = record(value as Prisma.JsonValue);
-    const purpose = typeof placement.slotKey === "string"
-      ? purposeBySlot[placement.slotKey as keyof typeof purposeBySlot]
-      : undefined;
-    return purpose && typeof placement.assetId === "string"
-      ? [[purpose, placement.assetId]]
-      : [];
-  }) as Array<[PreviewPurpose, string]>;
-  return Object.fromEntries(previewPurposes.flatMap((purpose) => {
-    const matches = entries.filter(([candidate]) => candidate === purpose);
-    return matches.length === 1 ? [matches[0]] : [];
-  }));
 }
 
 function draftAssetPack(value: Prisma.JsonValue): Partial<PreviewAssetPack> {
@@ -104,7 +82,7 @@ export async function loadCharacterRendererPreview(token: string) {
       serving.currentReleaseId !== release.id ||
       serving.version !== authority.servingVersion ||
       release.projectId !== project.id ||
-      !exactPackMatches(authority.assetPack, releaseAssetPack(release.releasePlacementManifest))
+      !exactPackMatches(authority.assetPack, characterReleaseExactAssetPackByPurpose(release))
     ) return null;
   } else {
     if (

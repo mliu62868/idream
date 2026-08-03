@@ -43,6 +43,7 @@ import {
 } from "./performance";
 import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-executor";
 import { findOperationalGenerationRoute } from "./visual-authority";
+import { characterWorkspaceTabLink } from "./character-deep-link";
 import {
   characterProductionPurposes,
   projectCharacterProductionJourneys,
@@ -758,7 +759,7 @@ export async function listCharacterPortfolioData(
         draftPurposes,
         livePurposes,
         totalPurposes: 3,
-        deepLink: `/admin/characters/${encodeURIComponent(character.id)}?tab=assets`,
+        deepLink: characterWorkspaceTabLink(character.id, "assets"),
       },
       journey,
       operationalState: {
@@ -775,7 +776,7 @@ export async function listCharacterPortfolioData(
         blockers: readiness === "ready" ? [] : [{
           code: `release_${readiness}`,
           message: `Current release readiness is ${readiness}`,
-          deepLink: `/admin/characters/${character.id}?tab=monitor`,
+          deepLink: characterWorkspaceTabLink(character.id, "monitor"),
         }],
         verificationState: validation?.result === "passed" ? "passed" : validation ? "failed" : "pending",
         policyVersion: validation?.policyVersion ?? "character-release-policy-v1",

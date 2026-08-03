@@ -284,6 +284,7 @@ type CharacterProductionJourney = {
 - Portfolio 与 Workspace 使用同一服务端投影；
 - UI 不再重算生产阶段、资产包完成度或下一步；
 - **deepLink 是完整答案，包含页内锚点**：服务端一度只为路线类 blocker 下发 fragment，其余交给 admin 自建 `code → 锚点` 表补齐；两边各漏一半，`visual_identity_missing` 与 `visual_anchor_missing` 两类阻塞点进去只能落到页首。锚点表现在与 blocker code 联合类型绑定（漏一个 code 是编译错误），admin 侧原样透传；
+- **链接的 base 也是答案的一部分，不能靠字符串手术拼**：只补 fragment 仍然不够。`readiness.ts` 这个纯闸门模块自己手拼 admin URL，用的却是一套 admin 不存在的 tab 词表（`?tab=visual-identity` / `?tab=persona` / `?tab=overview` 全部静默回落到缺省 tab），路线类更是指向 `/admin/ops/profiles` 这个完全不同的页面；workspace 投影再用 `String.replace` 修其中一个 tab、给另一个页面的 URL 拼上只有角色运营台才有的锚点——于是「路线未合格」的 deepLink 是 `/admin/ops/profiles?characterId=…#route-qualification-workbench`，URL 合法、页面能开、点了什么也不会发生。现在 base + tab + 锚点整体由 `characters/character-deep-link` 一份表拥有，`readiness.ts` 不再产出链接（它只回答哪些闸没过）；
 - **守卫必须是形状断言，不是符号黑名单**：ADR 首版的 Journey 守卫断言两个旧符号名不出现、且只扫一个文件，于是换个名字住到另一个文件的重算逻辑完全不可见。现在守卫扫 characters 目录全部前端文件、断言三类**形状**（自己数图池槽位、自己推用途顺序、自造 fragment 顶掉服务端 deepLink），并正向断言关键字段确实被消费；另有跨包守卫校验服务端每个锚点都对应 admin 里真实存在的 DOM id。新增守卫时应先注入一次真实漂移确认它会失败。
 - 成功动作后重新读取投影，并自动进入新的下一步；
 - 自动前进只改变导航和可见任务，不自动采用候选、不自动激活 Voice、不自动发布 Release；
@@ -299,6 +300,9 @@ type CharacterProductionJourney = {
 | 聚合状态变更 | 对应 aggregate transition | 目标状态与领域原因 |
 | Main ↔ Chat event delivery | Durable Exchange Module | 类型化 event envelope |
 | Character 运营下一步 | Character Journey projector | Character identity / snapshot |
+| Character 运营台 deepLink（base/tab/锚点） | `characters/character-deep-link` | characterId + tab 或锚点名 |
+| release placement slot → 生产用途 | `characters/character-release-contract` | slotKey |
+| Character Release 命令分派 | `RELEASE_COMMAND_HANDLERS` | commandType |
 | 生成终态处置（failed / unknown / blocked） | finalize 判别联合 | terminal record 的 outcome |
 | 产物迟到归档处置 | `lateArtifactDisposition` | Request 态与 Attempt 态（Attempt 优先） |
 | 跨进程 wire 标识符 | `shared/contracts/generation-identity` | attemptId |
@@ -324,6 +328,13 @@ type CharacterProductionJourney = {
 3. **新守卫必须先注入一次真实漂移，确认它会失败**。本轮三次都靠这一步发现问题：跨包锚点守卫的正则把漂移值截成合法前缀反而放行；shared 准入守卫跟随符号链接 ELOOP、又把构建产物里搬家前的旧 import 当成违规；i18n 互斥断言若走 import 而非 AST，要抓的重复会先被合并掉。
 4. **遍历仓库的守卫只扫源码**：不跟随符号链接（Prisma 生成物里有自指链接），跳过所有点开头目录与生成物目录（构建快照里留着搬家前的旧 import）。
 5. **债务清单必须会缩短**：单消费者豁免要写明「阻止它搬家的约束」，并有断言检查台账本身是否陈旧（条目升到 2 个消费者 / 掉到 0 / 消费方对不上都失败）。
+6. **对账一个字段抓不住整条答案**：跨包锚点守卫只证明「这个 fragment 在 admin 里存在」，证明不了它挂在哪个页面、哪个 tab 上——`/admin/ops/profiles?…#route-qualification-workbench` 完美通过。凡是「服务端拼一条给人点的字符串」，守卫要覆盖它的**全部组成部分**：tab 词表与 admin 断言集合相等、锚点断言存在于 admin DOM、并断言整个目录里只有一个构造入口（`` `/admin/characters/ `` 这种写法在 characters 目录里只允许出现在 builder 里）。
+
+### 3.2 重复的形状不等于重复的判断
+
+`release manifest → 用途→assetId` 这个投影在 characters 目录里有三份实现，看上去是典型的复制品。实际只有两份该合：workspace 预览投影与 renderer preview token 校验逐字相同，且都必须在歧义时 fail-closed（renderer 要按 token 里的 assetPack 验签发内容）。第三份在 `production-journey` 里**故意更宽**：它只统计运营完成度，对 legacy manifest 里重复登记同一张图的历史数据从宽，`portfolio.integration` 的 legacy fixture 直接钉着这个差别。
+
+合并前先问「两边在歧义时该不该给同一个答案」。这里该共用的只有 slot→purpose 那张表，不是整个投影。
 
 ## 4. Rejected alternatives
 

@@ -3388,8 +3388,12 @@ export function PreviewDiff({
   const snapshots = [data.preview.live, data.preview.draft].filter(
     (item): item is NonNullable<typeof item> => Boolean(item),
   );
-  const activeReleaseCandidate = data.releases.find(({ release }) =>
-    ["draft", "validating", "in_review", "approved"].includes(release.status),
+  // INTENT: 「哪个 Release 是候选」由服务端 journey 投影判定。前端曾用一张**包含**列表
+  // （draft/validating/in_review/approved）重推，服务端用的是**排除**列表
+  // （非 published/superseded/withdrawn）——同一个集合的两种编码，往状态机里加一个状态时
+  // 两边不会同时更新，而且谁都不会报错。
+  const activeReleaseCandidate = data.releases.find(
+    ({ release }) => release.id === data.journey.release.candidateReleaseId,
   );
   const [checks, setChecks] = useState<CharacterQaCheckDraft[]>(() =>
     qaCheckKeys.map((key) => ({

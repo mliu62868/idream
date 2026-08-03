@@ -2,8 +2,51 @@ import {
   characterReleaseSchema,
   parseCharacterReleaseAssetManifest,
   type CharacterRelease as CharacterReleaseResponse,
+  type CharacterReleaseAssetSlot,
 } from "@idream/shared/admin";
 import { Errors } from "@/server/lib/errors";
+
+// SPEC: release placement slot → 生产用途，全仓唯一一份。
+// INTENT: 这张三行表此前在四个文件里各存一份对象字面量：release-executor 用它当发布闸的判据
+// （「这张图的生产批次用途对不对」），workspace / renderer-preview / production-journey 用它把
+// manifest 投影成图池。四份一致纯属巧合——改一处不改另一处，运营看到的图池就会与发布闸给出
+// 不同答案，而类型系统看不见四个独立的字面量。
+// INVARIANT: `satisfies Record<CharacterReleaseAssetSlot, …>` 让「shared 新增一个槽位而这里没跟」
+// 变成编译错误。
+const RELEASE_PURPOSE_BY_SLOT = {
+  character_avatar: "character_cover",
+  character_hero: "character_hero",
+  character_chat: "character_chat",
+} as const satisfies Readonly<Record<CharacterReleaseAssetSlot, string>>;
+
+export type CharacterReleaseAssetPurpose =
+  (typeof RELEASE_PURPOSE_BY_SLOT)[CharacterReleaseAssetSlot];
+
+export function characterReleaseAssetPurpose(
+  slotKey: string,
+): CharacterReleaseAssetPurpose | null {
+  return slotKey in RELEASE_PURPOSE_BY_SLOT
+    ? RELEASE_PURPOSE_BY_SLOT[slotKey as CharacterReleaseAssetSlot]
+    : null;
+}
+
+// SPEC: 一个用途恰好对应一个 placement 才算数；重复或缺失都当作「这个用途没有图」。
+// INTENT: 预览链专用（workspace 预览投影 + renderer preview token 校验），两处此前是逐字相同的
+// 两份实现。这里从严是因为 renderer 要按 token 里的 assetPack 验签发内容，歧义必须 fail-closed。
+// production-journey 的完成度统计**故意**用另一条更宽的规则（见那边注释），不要合并。
+export function characterReleaseExactAssetPackByPurpose(
+  release: unknown,
+): Partial<Record<CharacterReleaseAssetPurpose, string>> {
+  const purposes = characterReleasePlacements(release).flatMap((placement) => {
+    const purpose = characterReleaseAssetPurpose(placement.slotKey);
+    return purpose ? [[purpose, placement.assetId] as const] : [];
+  });
+  return Object.fromEntries(
+    purposes.filter(([purpose]) =>
+      purposes.filter(([candidate]) => candidate === purpose).length === 1
+    ),
+  );
+}
 
 const STRICT_RELEASE_PROVENANCE_SCHEMA =
   "character-release-generation-provenance-v2";
