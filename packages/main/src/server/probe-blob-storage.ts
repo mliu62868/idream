@@ -95,7 +95,9 @@ async function main() {
 }
 
 async function runProbe(input: {
-  provider: BlobProvider | string;
+  // 此前写的是 `BlobProvider | string` —— 那等于 `string`，一个长得像约束、
+  // 实际什么也不约束的声明。
+  provider: BlobProvider;
   key: string;
   body: Uint8Array;
   contentType: string;
@@ -183,15 +185,35 @@ async function runProbe(input: {
   return report;
 }
 
-function blobProvider() {
-  return process.env.BLOB_PROVIDER ?? process.env.GEN_BLOB_PROVIDER ?? "mock";
-}
-
-function buildBlobStore(provider: string): BlobStore {
-  if (provider === "mock") return new MockBlobStore();
-  if (provider !== "r2" && provider !== "s3") {
+// SPEC: 探针要验证的是**生成产物真正落进去的那个存储**。
+// INTENT: BLOB_PROVIDER 与 GEN_BLOB_PROVIDER 这一对变量，此前被两处以**相反的
+//   优先级**解析：gen（packages/gen/src/env.ts）取 `GEN_ ?? BLOB_ ?? "mock"`，
+//   本探针取 `BLOB_ ?? GEN_ ?? "mock"`。两个都设且不同时，探针会去验证一个 gen
+//   根本不写入的存储 —— 一份"存储健康"的报告，说的却是另一个桶。
+//   探针的职责是让配置错误可见，所以这里不再挑一边：两者不一致就直接失败。
+export function resolveProbeBlobProvider(
+  env: Record<string, string | undefined>,
+): BlobProvider {
+  const { BLOB_PROVIDER: main, GEN_BLOB_PROVIDER: gen } = env;
+  if (main && gen && main !== gen) {
+    throw new Error(
+      `BLOB_PROVIDER=${main} and GEN_BLOB_PROVIDER=${gen} disagree; ` +
+        `the probe cannot tell which store generated media lands in. Unset one or make them match.`,
+    );
+  }
+  const provider = gen ?? main ?? "mock";
+  if (provider !== "mock" && provider !== "r2" && provider !== "s3") {
     throw new Error(`Unsupported blob provider: ${provider}`);
   }
+  return provider;
+}
+
+function blobProvider(): BlobProvider {
+  return resolveProbeBlobProvider(process.env);
+}
+
+function buildBlobStore(provider: BlobProvider): BlobStore {
+  if (provider === "mock") return new MockBlobStore();
 
   return new S3CompatibleBlobStore({
     endpoint: requireEnv("BLOB_ENDPOINT", process.env.BLOB_ENDPOINT),
