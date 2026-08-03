@@ -1,5 +1,4 @@
 import {
-  experimentDefinitionListQuerySchema,
   experimentDefinitionListSchema,
   experimentDefinitionSchema,
 } from "@idream/shared/admin";
@@ -7,7 +6,7 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
-import { actorWithPermission, jsonBody } from "@/server/modules/admin-v2/shared/authority";
+import { actorWithPermission, jsonBody, queryParams } from "@/server/modules/admin-v2/shared/authority";
 import { canonicalJsonEqual, requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
 import { transitionExperiment } from "./transition";
 
@@ -67,8 +66,7 @@ export function knownExperimentSurfaceBlockers(input: {
 
 export async function listExperimentDefinitions(request: Request) {
   await actorWithPermission(request, "experiment.manage");
-  const url = new URL(request.url);
-  const query = experimentDefinitionListQuerySchema.parse(Object.fromEntries(url.searchParams));
+  const query = queryParams(request, "GET /api/v2/admin/experiments");
   const rows = await prisma.experimentDefinition.findMany({
     where: {
       ...(query.status ? { status: query.status } : {}),

@@ -1,8 +1,6 @@
 import {
-  collaborationQuerySchema,
   collaborationTargetTypeSchema,
   savedViewDeleteSchema,
-  savedViewListQuerySchema,
   savedViewUpdateSchema,
   type AdminPermissionKey,
   type CollaborationTargetType,
@@ -11,7 +9,7 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
-import { actorWithPermission, jsonBody, type AdminActor } from "@/server/modules/admin-v2/shared/authority";
+import { actorWithPermission, jsonBody, queryParams, type AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { canonicalJsonHash, requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
 import { effectivePermissions } from "@/server/admin/effective-permissions";
 
@@ -171,7 +169,10 @@ export async function listActivity(request: Request, rawTargetType: string, targ
   const targetType = collaborationTargetTypeSchema.parse(rawTargetType);
   const actor = await actorWithPermission(request, targetDescriptors[targetType].read);
   await assertTarget(actor, targetType, targetId);
-  const query = collaborationQuerySchema.parse(Object.fromEntries(new URL(request.url).searchParams));
+  const query = queryParams(
+    request,
+    "GET /api/v2/admin/collaboration/:targetType/:targetId/activity",
+  );
   const cursor = query.cursor
     ? await prisma.adminCollaborationActivity.findFirst({ where: { id: query.cursor, targetType, targetId } })
     : null;
@@ -382,7 +383,7 @@ export async function setWatching(request: Request, rawTargetType: string, targe
 export async function listMentions(request: Request) {
   const actor = await actorWithPermission(request, "dashboard.read");
   const actorPermissions = await effectivePermissions(actor.id, actor.role);
-  const query = collaborationQuerySchema.parse(Object.fromEntries(new URL(request.url).searchParams));
+  const query = queryParams(request, "GET /api/v2/admin/collaboration/mentions");
   const rows = await prisma.adminCollaborationActivity.findMany({
     where: { mentionedIds: { has: actor.id }, ...(query.cursor ? { id: { lt: query.cursor } } : {}) },
     orderBy: { id: "desc" },
@@ -404,7 +405,7 @@ function viewDto(view: Awaited<ReturnType<typeof prisma.adminSavedView.findFirst
 }
 
 export async function listSavedViewsV2(request: Request) {
-  const { scope } = savedViewListQuerySchema.parse(Object.fromEntries(new URL(request.url).searchParams));
+  const { scope } = queryParams(request, "GET /api/v2/admin/saved-views");
   const actor = await actorWithPermission(request, targetDescriptors[scope].read);
   const views = await prisma.adminSavedView.findMany({ where: { ownerId: actor.id, scope }, orderBy: [{ updatedAt: "desc" }, { id: "desc" }] });
   return ok({ items: views.map(viewDto) });

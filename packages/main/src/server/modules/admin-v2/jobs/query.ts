@@ -1,7 +1,6 @@
 import {
   generationJobDetailResponseSchema,
   generationJobListResponseSchema,
-  generationJobQuerySchema,
   type GenerationJobQuery,
   type GenerationJobListResponse,
   type GenerationJobSort,
@@ -17,7 +16,7 @@ import {
   OPERATIONAL_USER_DATA_SCOPE,
   operationalGenerationJobWhere,
 } from "@/server/modules/metric-data-scope";
-import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
+import { actorWithPermission, queryParams } from "@/server/modules/admin-v2/shared/authority";
 import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
 
 const jobCursorSchema = z.object({
@@ -44,7 +43,7 @@ function decodeCursor(value: string, sort: GenerationJobSort, queryHash: string)
   }
 }
 
-function cursorQueryHash(query: ReturnType<typeof generationJobQuerySchema.parse>) {
+function cursorQueryHash(query: GenerationJobQuery) {
   return createHash("sha256").update(JSON.stringify({
     search: query.search ?? null,
     mode: query.mode,
@@ -57,7 +56,7 @@ function cursorQueryHash(query: ReturnType<typeof generationJobQuerySchema.parse
   })).digest("hex");
 }
 
-function baseWhere(query: ReturnType<typeof generationJobQuerySchema.parse>): Prisma.GenerationJobWhereInput {
+function baseWhere(query: GenerationJobQuery): Prisma.GenerationJobWhereInput {
   return operationalGenerationJobWhere({
     mode: query.mode === "all" ? undefined : query.mode,
     status: query.legacyStatus,
@@ -460,8 +459,7 @@ export async function queryGenerationJobsV2Authority(input: {
 
 export async function listGenerationJobsV2(request: Request) {
   await actorWithPermission(request, "generation.job.read");
-  const url = new URL(request.url);
-  const query = generationJobQuerySchema.parse(Object.fromEntries(url.searchParams));
+  const query = queryParams(request, "GET /api/v2/admin/jobs");
   const response = await queryGenerationJobsV2Authority({ db: prisma, query });
   return ok(response, { headers: { "Cache-Control": "no-store" } });
 }

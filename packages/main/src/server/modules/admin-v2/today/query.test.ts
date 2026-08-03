@@ -1,10 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { todayAllWorkQuerySchema, type TodayAllWorkQuery } from "@idream/shared/admin";
 import { resolvePermissions } from "@/server/admin/permissions";
 import { prisma } from "@/server/lib/db";
 import { updateOperationalWorkPreference } from "./preferences";
 import { claimTodayWorkItem } from "./claim";
 import { buildTodayAllWork, buildTodayProjection, getTodayAllWork, getTodayProjection } from "./query";
+
+/** `buildTodayAllWork` now takes the query the HTTP boundary already parsed, defaults included. */
+function allWorkQuery(partial: Partial<TodayAllWorkQuery>): TodayAllWorkQuery {
+  return todayAllWorkQuerySchema.parse(partial);
+}
 
 describe("Today authoritative projection", () => {
   const suffix = randomUUID();
@@ -172,14 +178,14 @@ describe("Today authoritative projection", () => {
       now,
     } as const;
     const summary = await buildTodayProjection(authority);
-    const first = await buildTodayAllWork({ ...authority, query: { limit: 5 }, diagnostics: { onSourceQuery: (event) => sourceQueries.push(event) } });
+    const first = await buildTodayAllWork({ ...authority, query: allWorkQuery({ limit: 5 }), diagnostics: { onSourceQuery: (event) => sourceQueries.push(event) } });
     const second = await buildTodayAllWork({
       ...authority,
-      query: { limit: 5, cursor: first.pageInfo.endCursor ?? undefined },
+      query: allWorkQuery({ limit: 5, cursor: first.pageInfo.endCursor ?? undefined }),
     });
     const third = await buildTodayAllWork({
       ...authority,
-      query: { limit: 5, cursor: second.pageInfo.endCursor ?? undefined },
+      query: allWorkQuery({ limit: 5, cursor: second.pageInfo.endCursor ?? undefined }),
     });
 
     expect(first.items.map((item) => `${item.sourceType}:${item.sourceId}`)).toEqual(
@@ -195,13 +201,13 @@ describe("Today authoritative projection", () => {
 
     const filtered = await buildTodayAllWork({
       ...authority,
-      query: { domain: "admin_case", severity: "high", owner: "mine", status: "in_progress", environment: "test" },
+      query: allWorkQuery({ domain: "admin_case", severity: "high", owner: "mine", status: "in_progress", environment: "test" }),
     });
     expect(filtered.items.length).toBeGreaterThan(0);
     expect(filtered.items.every((item) => item.sourceType === "admin_case" && item.severity === "high" && item.ownerId === actorId && item.sourceStatus === "in_progress" && item.environment === "test")).toBe(true);
     await expect(buildTodayAllWork({
       ...authority,
-      query: { limit: 5, domain: "ops_incident", cursor: first.pageInfo.endCursor ?? undefined },
+      query: allWorkQuery({ limit: 5, domain: "ops_incident", cursor: first.pageInfo.endCursor ?? undefined }),
     })).rejects.toThrow("cursor is invalid");
     const cursor = first.pageInfo.endCursor;
     if (!cursor) throw new Error("expected a signed Today cursor");
@@ -210,11 +216,11 @@ describe("Today authoritative projection", () => {
     const forged = `${Buffer.from(JSON.stringify({ ...decoded, scanLimit: 1_000_000 })).toString("base64url")}.${signature}`;
     await expect(buildTodayAllWork({
       ...authority,
-      query: { limit: 5, cursor: forged },
+      query: allWorkQuery({ limit: 5, cursor: forged }),
     })).rejects.toThrow("cursor is invalid");
     await expect(buildTodayAllWork({
       ...authority,
-      query: { limit: 5, cursor: `${payload}.${signature?.slice(0, -1)}x` },
+      query: allWorkQuery({ limit: 5, cursor: `${payload}.${signature?.slice(0, -1)}x` }),
     })).rejects.toThrow("cursor is invalid");
   });
 

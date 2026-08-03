@@ -1,6 +1,5 @@
 import {
   characterPortfolioDecisionRecordSchema,
-  characterPortfolioQuerySchema,
   characterPortfolioResponseSchema,
   type CharacterPerformanceSummary,
   type CharacterPerformanceWindow,
@@ -21,7 +20,7 @@ import { ok } from "@/server/lib/http";
 import {
   isMediaAssetOperationalForAuthority,
 } from "@/server/lib/media-asset-authority";
-import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
+import { actorWithPermission, queryParams } from "@/server/modules/admin-v2/shared/authority";
 import {
   effectiveCharacterIdsForPermission,
 } from "@/server/admin/effective-permissions";
@@ -879,7 +878,7 @@ export async function createCharacterPortfolioDecision(
 
 export async function listCharacterPortfolio(request: Request) {
   const actor = await actorWithPermission(request, "character.performance.read");
-  const query = characterPortfolioQuerySchema.parse(Object.fromEntries(new URL(request.url).searchParams));
+  const query = queryParams(request, "GET /api/v2/admin/characters/portfolio");
   const [scope, draftAssetScope] = await Promise.all([
     effectiveCharacterIdsForPermission(
       actor.id,

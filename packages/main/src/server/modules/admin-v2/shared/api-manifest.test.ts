@@ -20,15 +20,21 @@ const HTTP_METHOD_PATTERN = /export\s+(?:async\s+)?function\s+(GET|POST|PUT|PATC
 const LOCAL_BODY_PARSE = /[A-Za-z0-9_]+\s*\.\s*parse\(\s*await\s+jsonBody\(/;
 /** `jsonBody(request)` with no contract — the untyped door kept for legacy `/api/admin`. */
 const UNDECLARED_BODY_READ = /jsonBody\(\s*request\s*\)/;
+/** `someSchema.parse(Object.fromEntries(<url>.searchParams))` — a hand-rolled query door. */
+const LOCAL_QUERY_PARSE = /\.\s*parse\(\s*Object\.fromEntries\([^;]*searchParams/;
 /** Any manifest-shaped contract ref literal, wherever it appears in the file. */
 const CONTRACT_REF_LITERAL = /"([A-Za-z0-9_]+Schema(?:\+[a-z-]+)*)"/g;
 /** Any manifest-shaped operation id literal, quoted or templated. */
 const OPERATION_ID_LITERAL = /["`]((?:GET|POST|PUT|PATCH|DELETE) \/api\/v2\/admin\/[^"`]*)["`]/g;
-const routeRoot = join(
-  dirname(fileURLToPath(import.meta.url)),
-  "../../../../app/api/v2/admin",
-);
+const srcRoot = join(dirname(fileURLToPath(import.meta.url)), "../../../..");
+const routeRoot = join(srcRoot, "app/api/v2/admin");
 const moduleRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+/**
+ * SPEC: the single file allowed to turn a URL into a parsed Admin query.
+ * INTENT: `queryParams` has to read `searchParams` somewhere. Naming the one file here means a
+ * second query door cannot appear anywhere else without this guard saying so.
+ */
+const QUERY_DOOR = "shared/authority.ts";
 
 /**
  * SPEC: modules that still parse their own HTTP body instead of naming their operation id,
@@ -78,13 +84,26 @@ async function moduleFiles(directory: string): Promise<string[]> {
   return nested.flat().sort();
 }
 
-/** SPEC: the schemas a write body may be parsed with. GET refs are query parsers, not bodies. */
-function manifestBodyContractSymbols(): ReadonlySet<string> {
+/**
+ * SPEC: every schema an inbound Admin request may be narrowed with — write bodies and read
+ * queries alike.
+ * INTENT: the two halves used to be one ban list and one blind spot: GET refs were filtered out,
+ * so seventeen read operations kept their contract as a hand-imported symbol that nothing
+ * reconciled with the manifest. `jsonBody` and `queryParams` now cover both halves, so the ban
+ * list covers both halves too.
+ */
+function manifestRequestContractSymbols(): ReadonlySet<string> {
   return new Set(
     ADMIN_V2_API_OPERATIONS
-      .filter((operation) => operation.method !== "GET")
       .map((operation) => operation.contract.request.split("+")[0]!)
       .filter((ref) => ref.endsWith("Schema")),
+  );
+}
+
+/** SPEC: read operations whose contract lives in the URL — the half `queryParams` answers. */
+function manifestQueryOperations() {
+  return ADMIN_V2_API_OPERATIONS.filter(
+    (operation) => operation.method === "GET" && operation.contract.request.endsWith("Schema"),
   );
 }
 
@@ -273,7 +292,7 @@ describe("Admin v2 API permission and contract manifest", () => {
     )).toBeNull();
   });
 
-  it("keeps the request body schema inside the manifest, never in a Route Handler", async () => {
+  it("keeps the request contract inside the manifest, never in a Route Handler", async () => {
     const files = await routeFiles(routeRoot);
     // Self-check: a scan that loses the route tree must fail loudly, not pass empty.
     expect(files).toHaveLength(
@@ -281,8 +300,8 @@ describe("Admin v2 API permission and contract manifest", () => {
     );
 
     // Derived from the manifest, so a new operation joins the ban list on its own.
-    const bodyContractSymbols = manifestBodyContractSymbols();
-    expect(bodyContractSymbols.size).toBeGreaterThan(0);
+    const requestContractSymbols = manifestRequestContractSymbols();
+    expect(requestContractSymbols.size).toBeGreaterThan(0);
 
     const offenders: string[] = [];
     let filesNamingAContract = 0;
@@ -299,7 +318,7 @@ describe("Admin v2 API permission and contract manifest", () => {
       // INVARIANT: a request contract is named by ref, never imported as a symbol —
       // an imported schema is a second authority that nothing reconciles with the manifest.
       const imports = (source.match(/^import[\s\S]*?;$/gm) ?? []).join("\n");
-      for (const symbol of bodyContractSymbols) {
+      for (const symbol of requestContractSymbols) {
         if (new RegExp(`\\b${symbol}\\b`).test(imports)) {
           offenders.push(`${label}: imports request contract ${symbol}`);
         }
@@ -309,6 +328,9 @@ describe("Admin v2 API permission and contract manifest", () => {
       }
       if (UNDECLARED_BODY_READ.test(source)) {
         offenders.push(`${label}: reads jsonBody without naming a contract ref`);
+      }
+      if (LOCAL_QUERY_PARSE.test(source)) {
+        offenders.push(`${label}: parses the query itself instead of naming its operation`);
       }
 
       const refs = [...source.matchAll(CONTRACT_REF_LITERAL)].map((match) => match[1]!);
@@ -327,12 +349,12 @@ describe("Admin v2 API permission and contract manifest", () => {
     expect(filesNamingAContract).toBeGreaterThan(0);
   });
 
-  it("keeps the request body schema inside the manifest, never in an Admin v2 module", async () => {
+  it("keeps the request contract inside the manifest, never in an Admin v2 module", async () => {
     const files = await moduleFiles(moduleRoot);
     // Self-check: a scan that loses the module tree must fail loudly, not pass empty.
     expect(files.length).toBeGreaterThan(50);
 
-    const bodyContractSymbols = manifestBodyContractSymbols();
+    const requestContractSymbols = manifestRequestContractSymbols();
     const declaredRefs = new Set<string>(
       ADMIN_V2_API_OPERATIONS.map((operation) => operation.contract.request),
     );
@@ -343,6 +365,7 @@ describe("Admin v2 API permission and contract manifest", () => {
     const offenders: string[] = [];
     const settledDebt: string[] = [];
     const exercisedFormExemptions = new Set<string>();
+    const queryDoors: string[] = [];
     let filesNamingAnOperation = 0;
 
     for (const file of files) {
@@ -351,12 +374,12 @@ describe("Admin v2 API permission and contract manifest", () => {
       const owed = MODULE_BODY_PARSE_DEBT.get(label);
       const hands: string[] = [];
 
-      // INVARIANT: a module names the operation whose body it handles, never a schema — an
+      // INVARIANT: a module names the operation whose request it handles, never a schema — an
       // imported request schema is a second authority nothing reconciles with the manifest.
       // A module downstream of a Route Handler receives a body `jsonBody` already parsed, so
       // holding the schema at all can only mean parsing it twice with two separate authorities.
       const imports = (source.match(/^import[\s\S]*?;$/gm) ?? []).join("\n");
-      for (const symbol of bodyContractSymbols) {
+      for (const symbol of requestContractSymbols) {
         if (!new RegExp(`\\b${symbol}\\b`).test(imports)) continue;
         if (MODULE_FORM_CONTRACT_PARSERS.has(label)) {
           exercisedFormExemptions.add(label);
@@ -370,6 +393,7 @@ describe("Admin v2 API permission and contract manifest", () => {
       if (UNDECLARED_BODY_READ.test(source)) {
         hands.push(`${label}: reads jsonBody without naming its operation`);
       }
+      if (LOCAL_QUERY_PARSE.test(source)) queryDoors.push(label);
       if (owed !== undefined && hands.length === 0) {
         settledDebt.push(`${label}: no longer parses its own body; drop the debt entry`);
       }
@@ -404,8 +428,38 @@ describe("Admin v2 API permission and contract manifest", () => {
       expect(exercisedFormExemptions, `${label} no longer needs its exemption`)
         .toContain(label);
     }
+    // INVARIANT: exactly one query door. `queryParams` reads `searchParams` once, in the file
+    // that owns the manifest lookup; anywhere else is a module narrowing a query on its own.
+    expect(queryDoors).toEqual([QUERY_DOOR]);
     // Self-check: an assertion that inspected no operation key is not a guard.
     expect(filesNamingAnOperation).toBeGreaterThan(0);
+  });
+
+  it("reads every declared query through the manifest, by operation id", async () => {
+    const queryOperations = manifestQueryOperations();
+    const requestContractSymbols = manifestRequestContractSymbols();
+    // Self-check: a derivation that finds no read contract bans nothing, and a ban list that
+    // drops the read half again is the exact blind spot this guard exists to close.
+    expect(queryOperations.length).toBeGreaterThan(0);
+    expect(
+      queryOperations
+        .map((operation) => operation.contract.request)
+        .filter((ref) => !requestContractSymbols.has(ref)),
+    ).toEqual([]);
+
+    const sources = await Promise.all(
+      [...await routeFiles(routeRoot), ...await moduleFiles(moduleRoot)]
+        .map((file) => readFile(file, "utf8")),
+    );
+    const named = new Set(
+      sources.flatMap((source) => [...source.matchAll(OPERATION_ID_LITERAL)].map((m) => m[1]!)),
+    );
+
+    // INVARIANT: a declared query contract that no handler names is a contract nothing parses
+    // against — the manifest would claim a shape the runtime never applies.
+    expect(
+      queryOperations.map((operation) => operation.id).filter((id) => !named.has(id)),
+    ).toEqual([]);
   });
 
   it("keeps every combined transport exact across manifest, registry, and handlers", async () => {

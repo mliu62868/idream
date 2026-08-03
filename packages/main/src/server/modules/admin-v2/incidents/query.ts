@@ -1,9 +1,9 @@
-import { incidentDetailSchema, incidentQuerySchema, incidentRecoveryChecksSchema } from "@idream/shared/admin";
+import { incidentDetailSchema, incidentRecoveryChecksSchema } from "@idream/shared/admin";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
-import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
+import { actorWithPermission, queryParams } from "@/server/modules/admin-v2/shared/authority";
 import { adminAuditDto } from "@/server/modules/admin-v2/shared/dto";
 import { assertIncidentReadable, incidentReadScopeWhere } from "./scope";
 
@@ -63,8 +63,7 @@ function incidentDto(row: Awaited<ReturnType<typeof prisma.opsIncident.findUniqu
 
 export async function listIncidents(request: Request) {
   const actor = await actorWithPermission(request, "ops.incident.read");
-    const url = new URL(request.url);
-    const query = incidentQuerySchema.parse(Object.fromEntries(url.searchParams));
+    const query = queryParams(request, "GET /api/v2/admin/incidents");
     const scope = await incidentReadScopeWhere(prisma, actor);
     const where: Prisma.OpsIncidentWhereInput = { AND: [scope, {
       status: query.status,
