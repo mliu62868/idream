@@ -4,6 +4,7 @@ import {
   characterReleaseAssetPlacement,
   parseCharacterReleaseAssetManifest,
 } from "@idream/shared/admin";
+import { prisma } from "@/server/lib/db";
 import {
   evaluateMediaAssetCustomerPublishability,
   hasHydratableMediaBlobAuthority,
@@ -25,6 +26,21 @@ export const activeCustomerUserWhere = {
   status: "active",
   deletedAt: null,
 } as const satisfies Prisma.UserWhereInput;
+
+// SPEC: 这个 userId 的点赞/浏览算不算真实客户互动。
+// INTENT: 与 activeCustomerUserWhere 同住 —— 「谁算客户」在整个公开面上只能有一个答案。
+// 它此前住在 service.ts 里，于是那条 where 有两个副本式的用法：一处过滤 row、
+// 一处判定 actor，改一边漏一边就会让内部账号的点赞被计入公开榜单。
+export async function isCustomerEngagementActor(userId: string) {
+  const actor = await prisma.user.findFirst({
+    where: {
+      id: userId,
+      ...activeCustomerUserWhere,
+    },
+    select: { id: true },
+  });
+  return Boolean(actor);
+}
 
 export const rawPublicCharacterWhere = {
   visibility: "public",

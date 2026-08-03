@@ -16,10 +16,11 @@
 // 预算、不会重复或漏掉条目。签名用 INTERNAL_TOKEN，校验走 timingSafeEqual；解不开、
 // 版本不对、超 TTL 一律 fail closed（400 / 410），不降级成"当作第一页"。
 //
-// NOTE: 反向 import ./service 的一批是共用的公开读模型（characterInclude / characterDTO /
-// mediaCollectionDTO / mediaViewUrl / formatCount…）与两个跨面 helper（submitReport /
-// isCustomerEngagementActor）。它们是下一刀该抽的东西（一个 public read model 模块），
-// 这轮没做 —— 见提交说明。
+// NOTE: 公开读模型已经抽到 ./public-read-model，这里与 service 同向依赖它，不再互相 import。
+// 仍反向 import ./service 的只剩 submitReport 与三个跨面原语（clampInt / cryptoRandomId /
+// trackEvent）。submitReport 挪不动的原因是它依赖 service 的 applyModerationAction，
+// 而后者又依赖本文件的 feedCharacterId / feedCollectionId —— 要先把 feed item id 编解码
+// 抽出去，才能把举报受理搬成自己的模块。见提交说明。
 import { Prisma } from "@prisma/client";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import {
@@ -49,25 +50,31 @@ import {
 } from "./featured-setting";
 import {
   activeCustomerUserWhere,
+  isCustomerEngagementActor,
   publicCharacterAudienceWhere,
   publicCollectionAudienceWhere,
 } from "./public-content-audience";
 import {
   characterDTO,
   characterInclude,
-  clampInt,
-  cryptoRandomId,
   formatCount,
-  isCustomerEngagementActor,
   mediaCollectionDTO,
   mediaCollectionInclude,
   mediaViewUrl,
-  numberFromDb,
-  submitReport,
-  trackEvent,
   type CharacterWithPublicRelations,
   type MediaCollectionWithRelations,
+} from "./public-read-model";
+import {
+  clampInt,
+  cryptoRandomId,
+  submitReport,
+  trackEvent,
 } from "./service";
+
+// Prisma 的聚合计数在 PostgreSQL 上回 bigint，直接进 JSON 会抛 TypeError。
+function numberFromDb(value: number | bigint) {
+  return typeof value === "bigint" ? Number(value) : value;
+}
 
 export async function feed(request: Request, segments: string[]) {
   const ctx = await getAuthCtx(request);
