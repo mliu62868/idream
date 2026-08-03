@@ -1,10 +1,14 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
-import { mkdir, open, stat, writeFile } from "node:fs/promises";
+import { open, stat } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { prisma } from "@/server/lib/db";
+import {
+  probeCliArg,
+  writeProbeReport,
+} from "./readiness/probe-report";
 
 type ProbeOptions = {
   candidateKeys: string[];
@@ -216,25 +220,17 @@ export function shouldVerifyGenerationModelCandidateSourceHash(input: {
   );
 }
 
-function readArg(name: string) {
-  const prefix = `--${name}=`;
-  const inline = process.argv.find((arg) => arg.startsWith(prefix));
-  if (inline) return inline.slice(prefix.length);
-  const index = process.argv.indexOf(`--${name}`);
-  return index >= 0 ? process.argv[index + 1] : undefined;
-}
-
 function readFlag(name: string) {
   return process.argv.includes(`--${name}`);
 }
 
 function readOptions(): ProbeOptions {
   const candidateKeys = parseCandidateKeys(
-    readArg("candidate") ?? process.env.GENERATION_MODEL_CANDIDATE_KEYS ?? "",
+    probeCliArg("candidate") ?? process.env.GENERATION_MODEL_CANDIDATE_KEYS ?? "",
   );
   return {
     candidateKeys,
-    report: readArg("report") ?? process.env.GENERATION_MODEL_CANDIDATE_PROBE_REPORT ?? null,
+    report: probeCliArg("report") ?? process.env.GENERATION_MODEL_CANDIDATE_PROBE_REPORT ?? null,
     requireReady:
       readFlag("require-ready") ||
       process.env.GENERATION_MODEL_CANDIDATE_PROBE_REQUIRE_READY === "1",
@@ -246,9 +242,7 @@ async function main() {
   const report = await runProbe(options);
 
   if (options.report) {
-    const reportPath = resolveWorkspacePath(options.report);
-    await mkdir(path.dirname(reportPath), { recursive: true });
-    await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+    await writeProbeReport(options.report, report);
   }
 
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
@@ -830,27 +824,6 @@ function stringField(record: Record<string, unknown>, key: string) {
 
 function jsonRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
-}
-
-function resolveWorkspacePath(filePath: string) {
-  if (path.isAbsolute(filePath)) return filePath;
-  return path.resolve(workspaceRoot(), filePath);
-}
-
-function workspaceRoot() {
-  let current = process.cwd();
-  while (true) {
-    if (
-      existsSync(path.join(current, "package.json")) &&
-      (existsSync(path.join(current, "turbo.json")) ||
-        existsSync(path.join(current, "bun.lock")))
-    ) {
-      return current;
-    }
-    const parent = path.dirname(current);
-    if (parent === current) return process.cwd();
-    current = parent;
-  }
 }
 
 const entryPath = process.argv[1];

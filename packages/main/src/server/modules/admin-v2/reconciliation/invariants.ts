@@ -674,28 +674,45 @@ const sqlChecks: readonly SqlInvariant[] = [
       ORDER BY i.id LIMIT 20
     `,
   },
+  // SPEC: 投影去重不是靠事后数重复行守住的，是靠唯一索引 —— 所以这里查的是"那些索引还在吗"。
+  // INTENT: 原先两条检查（duplicate_canonical_source_effect / chat_replay_duplicate_fact）分别
+  //         GROUP BY 已有唯一索引覆盖的列 HAVING count(*) > 1。有索引在，它们**永远返回零行**：
+  //         查的是一个已经不可表示的状态，报告里那两个 passed 是恒真的，不构成任何证据。
+  //         真正会漂移的是索引本身被删/被改名。改成集合相等：期望的唯一约束集合必须恰好存在。
   {
-    key: "duplicate_canonical_source_effect",
-    description: "A canonical source event may produce at most one projector effect",
-    evidence: "metric_projection_receipts grouped by sourceService/sourceEventId",
+    key: "projection_dedupe_constraint_missing",
+    description:
+      "Projector dedupe identities must stay database-enforced by unique constraints",
+    evidence:
+      "pg_indexes over metric_projection_receipts and chat_exchange_facts unique dedupe indexes",
     query: Prisma.sql`
-      WITH violations AS (
-        SELECT min(id) AS id FROM metric_projection_receipts
-        GROUP BY "sourceService", "sourceEventId" HAVING count(*) > 1
-      )
-      SELECT id, count(*) OVER()::int AS total FROM violations ORDER BY id LIMIT 20
-    `,
-  },
-  {
-    key: "chat_replay_duplicate_fact",
-    description: "Chat event replay must not create duplicate exchange facts",
-    evidence: "chat_exchange_facts grouped independently by exchangeId and canonical source identity",
-    query: Prisma.sql`
-      WITH violations AS (
-        SELECT min(id) AS id FROM chat_exchange_facts GROUP BY "exchangeId" HAVING count(*) > 1
-        UNION ALL
-        SELECT min(id) AS id FROM chat_exchange_facts
-        GROUP BY "sourceService", "sourceEventId" HAVING count(*) > 1
+      WITH expected(id, tablename, columns) AS (
+        VALUES
+          ('metric_projection_receipts:sourceService,sourceEventId',
+            'metric_projection_receipts', ARRAY['sourceService', 'sourceEventId']),
+          ('chat_exchange_facts:exchangeId', 'chat_exchange_facts', ARRAY['exchangeId']),
+          ('chat_exchange_facts:sourceService,sourceEventId',
+            'chat_exchange_facts', ARRAY['sourceService', 'sourceEventId'])
+      ),
+      present AS (
+        SELECT c.relname::text AS tablename,
+          array_agg(a.attname::text ORDER BY k.ord) AS columns
+        FROM pg_index i
+        JOIN pg_class c ON c.oid = i.indrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord)
+        JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum
+        WHERE i.indisunique AND i.indpred IS NULL
+          AND n.nspname = current_schema()
+          AND c.relname IN ('metric_projection_receipts', 'chat_exchange_facts')
+        GROUP BY i.indexrelid, c.relname
+      ),
+      violations AS (
+        SELECT e.id FROM expected e
+        WHERE NOT EXISTS (
+          SELECT 1 FROM present p
+          WHERE p.tablename = e.tablename AND p.columns = e.columns
+        )
       )
       SELECT id, count(*) OVER()::int AS total FROM violations ORDER BY id LIMIT 20
     `,

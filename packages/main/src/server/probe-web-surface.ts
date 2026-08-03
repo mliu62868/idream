@@ -1,8 +1,11 @@
-import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ProbeReportOf, WebSurfaceProbeEvidence } from "./readiness/evidence";
+import {
+  probeCliArg,
+  probeReportPath,
+  writeProbeReport,
+} from "./readiness/probe-report";
 
 type ProbeOptions = {
   report: string | null;
@@ -103,23 +106,15 @@ export function isAdminAccessDeniedHtml(html: string) {
   );
 }
 
-function readArg(name: string) {
-  const prefix = `--${name}=`;
-  const inline = process.argv.find((arg) => arg.startsWith(prefix));
-  if (inline) return inline.slice(prefix.length);
-  const index = process.argv.indexOf(`--${name}`);
-  return index >= 0 ? process.argv[index + 1] : undefined;
-}
-
 function readOptions(): ProbeOptions {
   return {
-    report: readArg("report") ?? process.env.WEB_SURFACE_PROBE_REPORT ?? null,
+    report: probeReportPath("webSurfaceProbe"),
     mainUrl:
-      readArg("main-url") ??
+      probeCliArg("main-url") ??
       process.env.MAIN_WEB_URL ??
       process.env.BETTER_AUTH_URL ??
       null,
-    adminUrl: readArg("admin-url") ?? process.env.ADMIN_WEB_URL ?? null,
+    adminUrl: probeCliArg("admin-url") ?? process.env.ADMIN_WEB_URL ?? null,
   };
 }
 
@@ -128,9 +123,7 @@ export async function main() {
   const report = await runProbe(options);
 
   if (options.report) {
-    const reportPath = resolveWorkspacePath(options.report);
-    await mkdir(path.dirname(reportPath), { recursive: true });
-    await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+    await writeProbeReport(options.report, report);
   }
 
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
@@ -622,27 +615,6 @@ function buildUrl(baseUrl: string | null, pathname: string) {
 function normalizeBaseUrl(baseUrl: string | null | undefined) {
   if (!baseUrl?.trim()) return null;
   return baseUrl.trim().replace(/\/+$/, "/");
-}
-
-function resolveWorkspacePath(filePath: string) {
-  if (path.isAbsolute(filePath)) return filePath;
-  return path.resolve(workspaceRoot(), filePath);
-}
-
-function workspaceRoot() {
-  let current = process.cwd();
-  while (true) {
-    if (
-      existsSync(path.join(current, "package.json")) &&
-      (existsSync(path.join(current, "turbo.json")) ||
-        existsSync(path.join(current, "bun.lock")))
-    ) {
-      return current;
-    }
-    const parent = path.dirname(current);
-    if (parent === current) return process.cwd();
-    current = parent;
-  }
 }
 
 const invokedPath = process.argv[1]

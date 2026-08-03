@@ -1,7 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
-import path from "node:path";
 import { createConfiguredVoicePorts } from "./providers/voice/factory";
 import type {
   BlobStore,
@@ -10,6 +7,11 @@ import type {
   VoiceIdentityPort,
 } from "./providers/types";
 import type { ProbeReportOf, VoiceModelProbeEvidence } from "./readiness/evidence";
+import {
+  probeCliArg,
+  probeReportPath,
+  writeProbeReport,
+} from "./readiness/probe-report";
 
 type ProbeOptions = {
   report: string | null;
@@ -68,21 +70,13 @@ class ProbeBlobStore implements BlobStore {
   }
 }
 
-function readArg(name: string) {
-  const prefix = `--${name}=`;
-  const inline = process.argv.find((arg) => arg.startsWith(prefix));
-  if (inline) return inline.slice(prefix.length);
-  const index = process.argv.indexOf(`--${name}`);
-  return index >= 0 ? process.argv[index + 1] : undefined;
-}
-
 function readOptions(defaultVoiceId: string): ProbeOptions {
   return {
-    report: readArg("report") ?? process.env.VOICE_MODEL_PROBE_REPORT ?? null,
+    report: probeReportPath("voiceModelProbe"),
     text:
-      readArg("text") ??
+      probeCliArg("text") ??
       "Launch readiness voice probe. This short line should synthesize clearly.",
-    voiceId: readArg("voice") ?? process.env.VOICE_MODEL_PROBE_VOICE_ID ?? defaultVoiceId,
+    voiceId: probeCliArg("voice") ?? process.env.VOICE_MODEL_PROBE_VOICE_ID ?? defaultVoiceId,
   };
 }
 
@@ -111,9 +105,7 @@ async function main() {
   });
 
   if (options.report) {
-    const reportPath = resolveWorkspacePath(options.report);
-    await mkdir(path.dirname(reportPath), { recursive: true });
-    await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+    await writeProbeReport(options.report, report);
   }
 
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
@@ -320,27 +312,6 @@ function defaultVoiceForModel(model: string | null) {
   if (normalized.includes("pocket-tts")) return "alba";
   if (normalized.includes("fish-audio")) return "fish-female-default";
   return "default";
-}
-
-function resolveWorkspacePath(filePath: string) {
-  if (path.isAbsolute(filePath)) return filePath;
-  return path.resolve(workspaceRoot(), filePath);
-}
-
-function workspaceRoot() {
-  let current = process.cwd();
-  while (true) {
-    if (
-      existsSync(path.join(current, "package.json")) &&
-      (existsSync(path.join(current, "turbo.json")) ||
-        existsSync(path.join(current, "bun.lock")))
-    ) {
-      return current;
-    }
-    const parent = path.dirname(current);
-    if (parent === current) return process.cwd();
-    current = parent;
-  }
 }
 
 main().catch((error: unknown) => {

@@ -5,30 +5,29 @@ import { looksLikeMockChatResponse } from "@idream/shared";
 import { defaultBullmqPrefix } from "@idream/shared/env";
 import { parse as parseDotenv } from "dotenv";
 // SPEC: evidence 契约的家在 readiness/evidence.ts —— 生产端（probe-*.ts）与这里共用同一份声明。
-import {
-  decodeAgeVerificationProbeEvidence,
-  decodeBlobStorageProbeEvidence,
-  decodeChatModelProbeEvidence,
-  decodeChatServiceProbeEvidence,
-  decodeImagePipelineProbeEvidence,
-  decodePaymentProviderProbeEvidence,
-  decodeProductConfigProbeEvidence,
-  decodePublicCatalogProbeEvidence,
-  decodeSafetyGatewayProbeEvidence,
-  decodeVoiceModelProbeEvidence,
-  decodeWebSurfaceProbeEvidence,
-  type AgeVerificationProbeEvidence,
-  type BlobStorageProbeEvidence,
-  type ChatModelProbeEvidence,
-  type ChatServiceProbeEvidence,
-  type ImagePipelineProbeEvidence,
-  type PaymentProviderProbeEvidence,
-  type ProductConfigProbeEvidence,
-  type PublicCatalogProbeEvidence,
-  type SafetyGatewayProbeEvidence,
-  type VoiceModelProbeEvidence,
-  type WebSurfaceProbeEvidence,
+import type {
+  AgeVerificationProbeEvidence,
+  BlobStorageProbeEvidence,
+  ChatModelProbeEvidence,
+  ChatServiceProbeEvidence,
+  ImagePipelineProbeEvidence,
+  PaymentProviderProbeEvidence,
+  ProductConfigProbeEvidence,
+  PublicCatalogProbeEvidence,
+  SafetyGatewayProbeEvidence,
+  VoiceModelProbeEvidence,
+  WebSurfaceProbeEvidence,
 } from "./readiness/evidence";
+// SPEC: “哪个 probe 用哪个 env 变量”只在 readiness/probe-report.ts 定义一次，两端都从那里取。
+import {
+  loadProbeReport,
+  PROBE_NAMES,
+  PROBE_REPORTS,
+  resolveWorkspacePath,
+  type LaunchReadinessProbeOptions,
+  type ProbeEvidenceOf,
+  type ProbeName,
+} from "./readiness/probe-report";
 
 const DEDICATED_CHAT_PROBE_USER_ID = "seed-chat-probe-user";
 
@@ -73,20 +72,10 @@ export type LaunchReadinessCapabilityOverride = {
   genVideoProviders?: readonly string[];
 };
 
-export interface LaunchReadinessOptions {
+// INVARIANT: probe 注入面由 PROBE_REPORTS 映射而来 —— 新增一个 probe 而没接进门禁是编译错误。
+export interface LaunchReadinessOptions extends LaunchReadinessProbeOptions {
   env?: EnvLike;
   capabilities?: LaunchReadinessCapabilityOverride;
-  imagePipelineProbe?: ImagePipelineProbeEvidence | null;
-  blobStorageProbe?: BlobStorageProbeEvidence | null;
-  safetyGatewayProbe?: SafetyGatewayProbeEvidence | null;
-  chatServiceProbe?: ChatServiceProbeEvidence | null;
-  chatModelProbe?: ChatModelProbeEvidence | null;
-  voiceModelProbe?: VoiceModelProbeEvidence | null;
-  paymentProviderProbe?: PaymentProviderProbeEvidence | null;
-  ageVerificationProbe?: AgeVerificationProbeEvidence | null;
-  productConfigProbe?: ProductConfigProbeEvidence | null;
-  publicCatalogProbe?: PublicCatalogProbeEvidence | null;
-  webSurfaceProbe?: WebSurfaceProbeEvidence | null;
   now?: Date;
   preflightChecks?: LaunchReadinessCheck[];
 }
@@ -236,6 +225,44 @@ function addCheck(
   check: LaunchReadinessCheck,
 ) {
   checks.push(check);
+}
+
+// SPEC: 每个 probe 的判定都以“证据够新吗”收尾，此前是 11 份逐字相同的复制。
+// INVARIANT: push 顺序与文案必须保持原样 —— 它们会被 join 进 check.message。
+function addProbeFreshnessProblems(
+  problems: string[],
+  env: EnvLike,
+  name: ProbeName,
+  checkedAtValue: string | null | undefined,
+  now: Date,
+) {
+  const checkedAt = parseProbeDate(checkedAtValue);
+  if (!checkedAt) {
+    problems.push("probe checkedAt is missing or invalid");
+    return;
+  }
+  const maxAgeMs = probeMaxAgeMs(env, PROBE_REPORTS[name].maxAgeEnvKey);
+  if (now.getTime() - checkedAt.getTime() > maxAgeMs) {
+    problems.push(`probe is older than ${Math.round(maxAgeMs / 60_000)} minutes`);
+  }
+  if (checkedAt.getTime() - now.getTime() > 60_000) {
+    problems.push("probe checkedAt is in the future");
+  }
+}
+
+/** `<KEY> is not set` —— KEY 从注册表取，不再由每个检查各写一遍字面量。 */
+function probeReportPathValue(env: EnvLike, name: ProbeName) {
+  return env[PROBE_REPORTS[name].reportEnvKey];
+}
+
+function addMissingProbeReportProblem(
+  problems: string[],
+  env: EnvLike,
+  name: ProbeName,
+) {
+  if (!probeReportPathValue(env, name)) {
+    problems.push(`${PROBE_REPORTS[name].reportEnvKey} is not set`);
+  }
 }
 
 function addRequiredCheck(
@@ -438,11 +465,9 @@ function addChatServiceProbeCheck(
   now: Date,
 ) {
   const problems: string[] = [];
-  const reportPath = env.CHAT_SERVICE_PROBE_REPORT;
+  const probeName: ProbeName = "chatServiceProbe";
 
-  if (!reportPath) {
-    problems.push("CHAT_SERVICE_PROBE_REPORT is not set");
-  }
+  addMissingProbeReportProblem(problems, env, probeName);
   if (!probe) {
     problems.push("no probe report was loaded");
   } else if (probe.loadError) {
@@ -526,18 +551,7 @@ function addChatServiceProbeCheck(
         problems.push("conversation smoke did not clean its audit state");
       }
     }
-    const checkedAt = parseProbeDate(probe.checkedAt);
-    if (!checkedAt) {
-      problems.push("probe checkedAt is missing or invalid");
-    } else {
-      const maxAgeMs = probeMaxAgeMs(env, "CHAT_SERVICE_PROBE_MAX_AGE_MINUTES");
-      if (now.getTime() - checkedAt.getTime() > maxAgeMs) {
-        problems.push(`probe is older than ${Math.round(maxAgeMs / 60_000)} minutes`);
-      }
-      if (checkedAt.getTime() - now.getTime() > 60_000) {
-        problems.push("probe checkedAt is in the future");
-      }
-    }
+    addProbeFreshnessProblems(problems, env, probeName, probe.checkedAt, now);
   }
 
   addCheck(checks, {
@@ -551,7 +565,7 @@ function addChatServiceProbeCheck(
     remediation:
       problems.length === 0
         ? undefined
-        : "Run `bun run --filter @idream/main probe:chat-service -- --report .tmp/launch-chat-service-probe.json` against the real chat service, then set CHAT_SERVICE_PROBE_REPORT before check:launch.",
+        : `Run \`bun run --filter @idream/main probe:chat-service -- --report .tmp/launch-chat-service-probe.json\` against the real chat service, then set ${PROBE_REPORTS[probeName].reportEnvKey} before check:launch.`,
   });
 }
 
@@ -562,14 +576,12 @@ function addChatModelProbeCheck(
   now: Date,
 ) {
   const problems: string[] = [];
-  const reportPath = env.CHAT_MODEL_PROBE_REPORT;
+  const probeName: ProbeName = "chatModelProbe";
   const configuredProvider = env.CHAT_MODEL_PROVIDER ?? env.CHAT_PROVIDER ?? "mock";
   const configuredBaseUrl = env.CHAT_MODEL_BASE_URL ?? env.PIPELINE_API_URL;
   const configuredModel = env.CHAT_MODEL_NAME ?? env.PIPELINE_CHAT_MODEL_DEFAULT;
 
-  if (!reportPath) {
-    problems.push("CHAT_MODEL_PROBE_REPORT is not set");
-  }
+  addMissingProbeReportProblem(problems, env, probeName);
   if (!probe) {
     problems.push("no probe report was loaded");
   } else if (probe.loadError) {
@@ -601,18 +613,7 @@ function addChatModelProbeCheck(
     if (probe.done !== true) {
       problems.push("probe stream did not finish");
     }
-    const checkedAt = parseProbeDate(probe.checkedAt);
-    if (!checkedAt) {
-      problems.push("probe checkedAt is missing or invalid");
-    } else {
-      const maxAgeMs = probeMaxAgeMs(env, "CHAT_MODEL_PROBE_MAX_AGE_MINUTES");
-      if (now.getTime() - checkedAt.getTime() > maxAgeMs) {
-        problems.push(`probe is older than ${Math.round(maxAgeMs / 60_000)} minutes`);
-      }
-      if (checkedAt.getTime() - now.getTime() > 60_000) {
-        problems.push("probe checkedAt is in the future");
-      }
-    }
+    addProbeFreshnessProblems(problems, env, probeName, probe.checkedAt, now);
   }
 
   addCheck(checks, {
@@ -626,7 +627,7 @@ function addChatModelProbeCheck(
     remediation:
       problems.length === 0
         ? undefined
-        : "Run `bun run --filter @idream/main probe:chat -- --report .tmp/launch-chat-probe.json` against the real chat model gateway, then set CHAT_MODEL_PROBE_REPORT before check:launch.",
+        : `Run \`bun run --filter @idream/main probe:chat -- --report .tmp/launch-chat-probe.json\` against the real chat model gateway, then set ${PROBE_REPORTS[probeName].reportEnvKey} before check:launch.`,
   });
 }
 
@@ -637,7 +638,7 @@ function addVoiceModelProbeCheck(
   now: Date,
 ) {
   const problems: string[] = [];
-  const reportPath = env.VOICE_MODEL_PROBE_REPORT;
+  const probeName: ProbeName = "voiceModelProbe";
   const configuredProvider = env.VOICE_PROVIDER ?? "mock";
   const configuredBaseUrl = configuredProvider === "fish-audio"
     ? env.FISH_AUDIO_API_URL
@@ -650,9 +651,7 @@ function addVoiceModelProbeCheck(
       ? env.POCKET_TTS_MODEL
     : env.PIPELINE_VOICE_MODEL_DEFAULT;
 
-  if (!reportPath) {
-    problems.push("VOICE_MODEL_PROBE_REPORT is not set");
-  }
+  addMissingProbeReportProblem(problems, env, probeName);
   if (!probe) {
     problems.push("no probe report was loaded");
   } else if (probe.loadError) {
@@ -709,18 +708,7 @@ function addVoiceModelProbeCheck(
     if (probe.bytes !== undefined && probe.bytes <= 0) {
       problems.push("probe stored an empty audio payload");
     }
-    const checkedAt = parseProbeDate(probe.checkedAt);
-    if (!checkedAt) {
-      problems.push("probe checkedAt is missing or invalid");
-    } else {
-      const maxAgeMs = probeMaxAgeMs(env, "VOICE_MODEL_PROBE_MAX_AGE_MINUTES");
-      if (now.getTime() - checkedAt.getTime() > maxAgeMs) {
-        problems.push(`probe is older than ${Math.round(maxAgeMs / 60_000)} minutes`);
-      }
-      if (checkedAt.getTime() - now.getTime() > 60_000) {
-        problems.push("probe checkedAt is in the future");
-      }
-    }
+    addProbeFreshnessProblems(problems, env, probeName, probe.checkedAt, now);
   }
 
   addCheck(checks, {
@@ -734,7 +722,7 @@ function addVoiceModelProbeCheck(
     remediation:
       problems.length === 0
         ? undefined
-        : "Run `bun run --filter @idream/main probe:voice -- --report .tmp/launch-voice-probe.json` against the real voice model gateway, then set VOICE_MODEL_PROBE_REPORT before check:launch.",
+        : `Run \`bun run --filter @idream/main probe:voice -- --report .tmp/launch-voice-probe.json\` against the real voice model gateway, then set ${PROBE_REPORTS[probeName].reportEnvKey} before check:launch.`,
   });
 }
 
@@ -795,12 +783,10 @@ function addPaymentProviderProbeCheck(
   now: Date,
 ) {
   const problems: string[] = [];
-  const reportPath = env.PAYMENT_PROVIDER_PROBE_REPORT;
+  const probeName: ProbeName = "paymentProviderProbe";
   const configuredProvider = env.PAYMENT_PROVIDER ?? "mock";
 
-  if (!reportPath) {
-    problems.push("PAYMENT_PROVIDER_PROBE_REPORT is not set");
-  }
+  addMissingProbeReportProblem(problems, env, probeName);
   if (!probe) {
     problems.push("no probe report was loaded");
   } else if (probe.loadError) {
@@ -839,18 +825,7 @@ function addPaymentProviderProbeCheck(
         problems.push("BTCPay returned a different store id");
       }
     }
-    const checkedAt = parseProbeDate(probe.checkedAt);
-    if (!checkedAt) {
-      problems.push("probe checkedAt is missing or invalid");
-    } else {
-      const maxAgeMs = probeMaxAgeMs(env, "PAYMENT_PROVIDER_PROBE_MAX_AGE_MINUTES");
-      if (now.getTime() - checkedAt.getTime() > maxAgeMs) {
-        problems.push(`probe is older than ${Math.round(maxAgeMs / 60_000)} minutes`);
-      }
-      if (checkedAt.getTime() - now.getTime() > 60_000) {
-        problems.push("probe checkedAt is in the future");
-      }
-    }
+    addProbeFreshnessProblems(problems, env, probeName, probe.checkedAt, now);
   }
 
   addCheck(checks, {
@@ -864,7 +839,7 @@ function addPaymentProviderProbeCheck(
     remediation:
       problems.length === 0
         ? undefined
-        : "Run `bun run --filter @idream/main probe:payment -- --report .tmp/launch-payment-probe.json` against the real payment provider. The BTCPay probe creates a small launch-test invoice, so the API key must include Create invoice permission. Then set PAYMENT_PROVIDER_PROBE_REPORT before check:launch.",
+        : `Run \`bun run --filter @idream/main probe:payment -- --report .tmp/launch-payment-probe.json\` against the real payment provider. The BTCPay probe creates a small launch-test invoice, so the API key must include Create invoice permission. Then set ${PROBE_REPORTS[probeName].reportEnvKey} before check:launch.`,
   });
 }
 
@@ -875,12 +850,10 @@ function addAgeVerificationProbeCheck(
   now: Date,
 ) {
   const problems: string[] = [];
-  const reportPath = env.AGE_VERIFICATION_PROBE_REPORT;
+  const probeName: ProbeName = "ageVerificationProbe";
   const configuredProvider = env.AGE_VERIFICATION_PROVIDER ?? "mock";
 
-  if (!reportPath) {
-    problems.push("AGE_VERIFICATION_PROBE_REPORT is not set");
-  }
+  addMissingProbeReportProblem(problems, env, probeName);
   if (!probe) {
     problems.push("no probe report was loaded");
   } else if (probe.loadError) {
@@ -906,18 +879,7 @@ function addAgeVerificationProbeCheck(
         problems.push("probe verification URL is missing or not public HTTPS");
       }
     }
-    const checkedAt = parseProbeDate(probe.checkedAt);
-    if (!checkedAt) {
-      problems.push("probe checkedAt is missing or invalid");
-    } else {
-      const maxAgeMs = probeMaxAgeMs(env, "AGE_VERIFICATION_PROBE_MAX_AGE_MINUTES");
-      if (now.getTime() - checkedAt.getTime() > maxAgeMs) {
-        problems.push(`probe is older than ${Math.round(maxAgeMs / 60_000)} minutes`);
-      }
-      if (checkedAt.getTime() - now.getTime() > 60_000) {
-        problems.push("probe checkedAt is in the future");
-      }
-    }
+    addProbeFreshnessProblems(problems, env, probeName, probe.checkedAt, now);
   }
 
   addCheck(checks, {
@@ -931,7 +893,7 @@ function addAgeVerificationProbeCheck(
     remediation:
       problems.length === 0
         ? undefined
-        : "Run `bun run --filter @idream/main probe:age -- --report .tmp/launch-age-probe.json` against the real age gateway, then set AGE_VERIFICATION_PROBE_REPORT before check:launch.",
+        : `Run \`bun run --filter @idream/main probe:age -- --report .tmp/launch-age-probe.json\` against the real age gateway, then set ${PROBE_REPORTS[probeName].reportEnvKey} before check:launch.`,
   });
 }
 
@@ -1094,10 +1056,9 @@ function addProductConfigProbeCheck(
   now: Date,
 ) {
   const problems: string[] = [];
+  const probeName: ProbeName = "productConfigProbe";
 
-  if (!env.PRODUCT_CONFIG_PROBE_REPORT) {
-    problems.push("PRODUCT_CONFIG_PROBE_REPORT is not set");
-  }
+  addMissingProbeReportProblem(problems, env, probeName);
   if (!probe) {
     problems.push("no probe report was loaded");
   } else if (probe.loadError) {
@@ -1138,18 +1099,7 @@ function addProductConfigProbeCheck(
       }
     }
 
-    const checkedAt = parseProbeDate(probe.checkedAt);
-    if (!checkedAt) {
-      problems.push("probe checkedAt is missing or invalid");
-    } else {
-      const maxAgeMs = probeMaxAgeMs(env, "PRODUCT_CONFIG_PROBE_MAX_AGE_MINUTES");
-      if (now.getTime() - checkedAt.getTime() > maxAgeMs) {
-        problems.push(`probe is older than ${Math.round(maxAgeMs / 60_000)} minutes`);
-      }
-      if (checkedAt.getTime() - now.getTime() > 60_000) {
-        problems.push("probe checkedAt is in the future");
-      }
-    }
+    addProbeFreshnessProblems(problems, env, probeName, probe.checkedAt, now);
   }
 
   addCheck(checks, {
@@ -1163,7 +1113,7 @@ function addProductConfigProbeCheck(
     remediation:
       problems.length === 0
         ? undefined
-        : "Run `bun run --filter @idream/main probe:product-config -- --report .tmp/launch-product-config-probe.json`, then set PRODUCT_CONFIG_PROBE_REPORT before check:launch.",
+        : `Run \`bun run --filter @idream/main probe:product-config -- --report .tmp/launch-product-config-probe.json\`, then set ${PROBE_REPORTS[probeName].reportEnvKey} before check:launch.`,
   });
 }
 
@@ -1174,10 +1124,9 @@ function addPublicCatalogProbeCheck(
   now: Date,
 ) {
   const problems: string[] = [];
+  const probeName: ProbeName = "publicCatalogProbe";
 
-  if (!env.PUBLIC_CATALOG_PROBE_REPORT) {
-    problems.push("PUBLIC_CATALOG_PROBE_REPORT is not set");
-  }
+  addMissingProbeReportProblem(problems, env, probeName);
   if (!probe) {
     problems.push("no probe report was loaded");
   } else if (probe.loadError) {
@@ -1206,18 +1155,7 @@ function addPublicCatalogProbeCheck(
       problems.push(`${probe.issueTotals?.warn ?? 0} catalog warning issue(s) found`);
     }
 
-    const checkedAt = parseProbeDate(probe.checkedAt);
-    if (!checkedAt) {
-      problems.push("probe checkedAt is missing or invalid");
-    } else {
-      const maxAgeMs = probeMaxAgeMs(env, "PUBLIC_CATALOG_PROBE_MAX_AGE_MINUTES");
-      if (now.getTime() - checkedAt.getTime() > maxAgeMs) {
-        problems.push(`probe is older than ${Math.round(maxAgeMs / 60_000)} minutes`);
-      }
-      if (checkedAt.getTime() - now.getTime() > 60_000) {
-        problems.push("probe checkedAt is in the future");
-      }
-    }
+    addProbeFreshnessProblems(problems, env, probeName, probe.checkedAt, now);
   }
 
   addCheck(checks, {
@@ -1231,7 +1169,7 @@ function addPublicCatalogProbeCheck(
     remediation:
       problems.length === 0
         ? undefined
-        : "Run `bun run --filter @idream/main probe:catalog -- --report .tmp/public-catalog-probe.json`, then set PUBLIC_CATALOG_PROBE_REPORT before check:launch.",
+        : `Run \`bun run --filter @idream/main probe:catalog -- --report .tmp/public-catalog-probe.json\`, then set ${PROBE_REPORTS[probeName].reportEnvKey} before check:launch.`,
   });
 }
 
@@ -1242,11 +1180,10 @@ function addWebSurfaceProbeCheck(
   now: Date,
 ) {
   const problems: string[] = [];
+  const probeName: ProbeName = "webSurfaceProbe";
   const expectedMainUrl = env.MAIN_WEB_URL;
 
-  if (!env.WEB_SURFACE_PROBE_REPORT) {
-    problems.push("WEB_SURFACE_PROBE_REPORT is not set");
-  }
+  addMissingProbeReportProblem(problems, env, probeName);
   if (!isPublicHttpsUrl(expectedMainUrl)) {
     problems.push("MAIN_WEB_URL must be a public HTTPS URL");
   }
@@ -1318,18 +1255,7 @@ function addWebSurfaceProbeCheck(
       problems.push("unauthenticated admin API did not fail closed");
     }
 
-    const checkedAt = parseProbeDate(probe.checkedAt);
-    if (!checkedAt) {
-      problems.push("probe checkedAt is missing or invalid");
-    } else {
-      const maxAgeMs = probeMaxAgeMs(env, "WEB_SURFACE_PROBE_MAX_AGE_MINUTES");
-      if (now.getTime() - checkedAt.getTime() > maxAgeMs) {
-        problems.push(`probe is older than ${Math.round(maxAgeMs / 60_000)} minutes`);
-      }
-      if (checkedAt.getTime() - now.getTime() > 60_000) {
-        problems.push("probe checkedAt is in the future");
-      }
-    }
+    addProbeFreshnessProblems(problems, env, probeName, probe.checkedAt, now);
   }
 
   addCheck(checks, {
@@ -1343,7 +1269,7 @@ function addWebSurfaceProbeCheck(
     remediation:
       problems.length === 0
         ? undefined
-        : "Run `bun run --filter @idream/main probe:web-surface -- --report .tmp/launch-web-surface-probe.json` against the deployed main/admin web surfaces, then set WEB_SURFACE_PROBE_REPORT before check:launch.",
+        : `Run \`bun run --filter @idream/main probe:web-surface -- --report .tmp/launch-web-surface-probe.json\` against the deployed main/admin web surfaces, then set ${PROBE_REPORTS[probeName].reportEnvKey} before check:launch.`,
   });
 }
 
@@ -1354,11 +1280,9 @@ function addImagePipelineProbeCheck(
   now: Date,
 ) {
   const problems: string[] = [];
-  const reportPath = env.PIPELINE_IMAGE_PROBE_REPORT;
+  const probeName: ProbeName = "imagePipelineProbe";
 
-  if (!reportPath) {
-    problems.push("PIPELINE_IMAGE_PROBE_REPORT is not set");
-  }
+  addMissingProbeReportProblem(problems, env, probeName);
   if (!probe) {
     problems.push("no probe report was loaded");
   } else if (probe.loadError) {
@@ -1383,18 +1307,7 @@ function addImagePipelineProbeCheck(
     if ((probe.finalize?.assets ?? 0) < 1) {
       problems.push("probe produced no assets");
     }
-    const checkedAt = parseProbeDate(probe.checkedAt);
-    if (!checkedAt) {
-      problems.push("probe checkedAt is missing or invalid");
-    } else {
-      const maxAgeMs = probeMaxAgeMs(env, "PIPELINE_IMAGE_PROBE_MAX_AGE_MINUTES");
-      if (now.getTime() - checkedAt.getTime() > maxAgeMs) {
-        problems.push(`probe is older than ${Math.round(maxAgeMs / 60_000)} minutes`);
-      }
-      if (checkedAt.getTime() - now.getTime() > 60_000) {
-        problems.push("probe checkedAt is in the future");
-      }
-    }
+    addProbeFreshnessProblems(problems, env, probeName, probe.checkedAt, now);
   }
 
   addCheck(checks, {
@@ -1408,7 +1321,7 @@ function addImagePipelineProbeCheck(
     remediation:
       problems.length === 0
         ? undefined
-        : "Run `bun run --filter @idream/gen probe:image -- --report .tmp/launch-image-probe.json` against the real pipeline, then set PIPELINE_IMAGE_PROBE_REPORT to that report before check:launch.",
+        : `Run \`bun run --filter @idream/gen probe:image -- --report .tmp/launch-image-probe.json\` against the real pipeline, then set ${PROBE_REPORTS[probeName].reportEnvKey} to that report before check:launch.`,
   });
 }
 
@@ -1419,12 +1332,10 @@ function addBlobStorageProbeCheck(
   now: Date,
 ) {
   const problems: string[] = [];
-  const reportPath = env.BLOB_STORAGE_PROBE_REPORT;
+  const probeName: ProbeName = "blobStorageProbe";
   const configuredProvider = env.BLOB_PROVIDER ?? "mock";
 
-  if (!reportPath) {
-    problems.push("BLOB_STORAGE_PROBE_REPORT is not set");
-  }
+  addMissingProbeReportProblem(problems, env, probeName);
   if (!probe) {
     problems.push("no probe report was loaded");
   } else if (probe.loadError) {
@@ -1456,18 +1367,7 @@ function addBlobStorageProbeCheck(
     if (probe.delete?.ok !== true) {
       problems.push("probe DELETE did not succeed");
     }
-    const checkedAt = parseProbeDate(probe.checkedAt);
-    if (!checkedAt) {
-      problems.push("probe checkedAt is missing or invalid");
-    } else {
-      const maxAgeMs = probeMaxAgeMs(env, "BLOB_STORAGE_PROBE_MAX_AGE_MINUTES");
-      if (now.getTime() - checkedAt.getTime() > maxAgeMs) {
-        problems.push(`probe is older than ${Math.round(maxAgeMs / 60_000)} minutes`);
-      }
-      if (checkedAt.getTime() - now.getTime() > 60_000) {
-        problems.push("probe checkedAt is in the future");
-      }
-    }
+    addProbeFreshnessProblems(problems, env, probeName, probe.checkedAt, now);
   }
 
   addCheck(checks, {
@@ -1481,7 +1381,7 @@ function addBlobStorageProbeCheck(
     remediation:
       problems.length === 0
         ? undefined
-        : "Run `bun run --filter @idream/main probe:blob -- --report .tmp/launch-blob-probe.json` against the real object store, then set BLOB_STORAGE_PROBE_REPORT before check:launch.",
+        : `Run \`bun run --filter @idream/main probe:blob -- --report .tmp/launch-blob-probe.json\` against the real object store, then set ${PROBE_REPORTS[probeName].reportEnvKey} before check:launch.`,
   });
 }
 
@@ -1492,7 +1392,7 @@ function addSafetyGatewayProbeCheck(
   now: Date,
 ) {
   const problems: string[] = [];
-  const reportPath = env.SAFETY_GATEWAY_PROBE_REPORT;
+  const probeName: ProbeName = "safetyGatewayProbe";
   const configuredProvider = env.MODERATION_PROVIDER ?? "mock";
 
   if (configuredProvider !== "safety-gateway") {
@@ -1505,9 +1405,7 @@ function addSafetyGatewayProbeCheck(
     return;
   }
 
-  if (!reportPath) {
-    problems.push("SAFETY_GATEWAY_PROBE_REPORT is not set");
-  }
+  addMissingProbeReportProblem(problems, env, probeName);
   if (!probe) {
     problems.push("no probe report was loaded");
   } else if (probe.loadError) {
@@ -1533,18 +1431,7 @@ function addSafetyGatewayProbeCheck(
     if (typeof probe.confidence !== "number" || probe.confidence < 0 || probe.confidence > 1) {
       problems.push("probe confidence is missing or outside 0..1");
     }
-    const checkedAt = parseProbeDate(probe.checkedAt);
-    if (!checkedAt) {
-      problems.push("probe checkedAt is missing or invalid");
-    } else {
-      const maxAgeMs = probeMaxAgeMs(env, "SAFETY_GATEWAY_PROBE_MAX_AGE_MINUTES");
-      if (now.getTime() - checkedAt.getTime() > maxAgeMs) {
-        problems.push(`probe is older than ${Math.round(maxAgeMs / 60_000)} minutes`);
-      }
-      if (checkedAt.getTime() - now.getTime() > 60_000) {
-        problems.push("probe checkedAt is in the future");
-      }
-    }
+    addProbeFreshnessProblems(problems, env, probeName, probe.checkedAt, now);
   }
 
   addCheck(checks, {
@@ -1558,7 +1445,7 @@ function addSafetyGatewayProbeCheck(
     remediation:
       problems.length === 0
         ? undefined
-        : "Run `bun run --filter @idream/main probe:safety -- --report .tmp/launch-safety-probe.json` against the real safety gateway, then set SAFETY_GATEWAY_PROBE_REPORT before check:launch.",
+        : `Run \`bun run --filter @idream/main probe:safety -- --report .tmp/launch-safety-probe.json\` against the real safety gateway, then set ${PROBE_REPORTS[probeName].reportEnvKey} before check:launch.`,
   });
 }
 
@@ -1584,174 +1471,17 @@ function sameUrl(left: string | null | undefined, right: string | null | undefin
   }
 }
 
-function loadImagePipelineProbeEvidence(env: EnvLike): ImagePipelineProbeEvidence | null {
-  const reportPath = env.PIPELINE_IMAGE_PROBE_REPORT;
-  if (!reportPath) return null;
-  try {
-    return decodeImagePipelineProbeEvidence(
-      JSON.parse(readFileSync(resolveWorkspacePath(reportPath), "utf8")),
-    );
-  } catch (error) {
-    return {
-      ok: false,
-      loadError: `failed to read PIPELINE_IMAGE_PROBE_REPORT: ${error instanceof Error ? error.message : String(error)}`,
-    };
+// SPEC: 门禁读回全部 probe 证据。测试注入优先，其余按注册表里的 env 变量读文件。
+// INVARIANT: 遍历 PROBE_NAMES 而不是逐个手写 —— 少接一个 probe 在类型上就不可能了。
+function resolveProbeEvidence(
+  env: EnvLike,
+  options: LaunchReadinessOptions,
+): { [K in ProbeName]: ProbeEvidenceOf<K> | null } {
+  const resolved: Record<string, unknown> = {};
+  for (const name of PROBE_NAMES) {
+    resolved[name] = options[name] !== undefined ? options[name] : loadProbeReport(env, name);
   }
-}
-
-function loadBlobStorageProbeEvidence(env: EnvLike): BlobStorageProbeEvidence | null {
-  const reportPath = env.BLOB_STORAGE_PROBE_REPORT;
-  if (!reportPath) return null;
-  try {
-    return decodeBlobStorageProbeEvidence(
-      JSON.parse(readFileSync(resolveWorkspacePath(reportPath), "utf8")),
-    );
-  } catch (error) {
-    return {
-      ok: false,
-      loadError: `failed to read BLOB_STORAGE_PROBE_REPORT: ${error instanceof Error ? error.message : String(error)}`,
-    };
-  }
-}
-
-function loadSafetyGatewayProbeEvidence(env: EnvLike): SafetyGatewayProbeEvidence | null {
-  const reportPath = env.SAFETY_GATEWAY_PROBE_REPORT;
-  if (!reportPath) return null;
-  try {
-    return decodeSafetyGatewayProbeEvidence(
-      JSON.parse(readFileSync(resolveWorkspacePath(reportPath), "utf8")),
-    );
-  } catch (error) {
-    return {
-      ok: false,
-      loadError: `failed to read SAFETY_GATEWAY_PROBE_REPORT: ${error instanceof Error ? error.message : String(error)}`,
-    };
-  }
-}
-
-function loadChatServiceProbeEvidence(env: EnvLike): ChatServiceProbeEvidence | null {
-  const reportPath = env.CHAT_SERVICE_PROBE_REPORT;
-  if (!reportPath) return null;
-  try {
-    return decodeChatServiceProbeEvidence(
-      JSON.parse(readFileSync(resolveWorkspacePath(reportPath), "utf8")),
-    );
-  } catch (error) {
-    return {
-      ok: false,
-      loadError: `failed to read CHAT_SERVICE_PROBE_REPORT: ${error instanceof Error ? error.message : String(error)}`,
-    };
-  }
-}
-
-function loadChatModelProbeEvidence(env: EnvLike): ChatModelProbeEvidence | null {
-  const reportPath = env.CHAT_MODEL_PROBE_REPORT;
-  if (!reportPath) return null;
-  try {
-    return decodeChatModelProbeEvidence(
-      JSON.parse(readFileSync(resolveWorkspacePath(reportPath), "utf8")),
-    );
-  } catch (error) {
-    return {
-      ok: false,
-      loadError: `failed to read CHAT_MODEL_PROBE_REPORT: ${error instanceof Error ? error.message : String(error)}`,
-    };
-  }
-}
-
-function loadVoiceModelProbeEvidence(env: EnvLike): VoiceModelProbeEvidence | null {
-  const reportPath = env.VOICE_MODEL_PROBE_REPORT;
-  if (!reportPath) return null;
-  try {
-    return decodeVoiceModelProbeEvidence(
-      JSON.parse(readFileSync(resolveWorkspacePath(reportPath), "utf8")),
-    );
-  } catch (error) {
-    return {
-      ok: false,
-      loadError: `failed to read VOICE_MODEL_PROBE_REPORT: ${error instanceof Error ? error.message : String(error)}`,
-    };
-  }
-}
-
-function loadPaymentProviderProbeEvidence(env: EnvLike): PaymentProviderProbeEvidence | null {
-  const reportPath = env.PAYMENT_PROVIDER_PROBE_REPORT;
-  if (!reportPath) return null;
-  try {
-    return decodePaymentProviderProbeEvidence(
-      JSON.parse(readFileSync(resolveWorkspacePath(reportPath), "utf8")),
-    );
-  } catch (error) {
-    return {
-      ok: false,
-      loadError: `failed to read PAYMENT_PROVIDER_PROBE_REPORT: ${error instanceof Error ? error.message : String(error)}`,
-    };
-  }
-}
-
-function loadAgeVerificationProbeEvidence(env: EnvLike): AgeVerificationProbeEvidence | null {
-  const reportPath = env.AGE_VERIFICATION_PROBE_REPORT;
-  if (!reportPath) return null;
-  try {
-    return decodeAgeVerificationProbeEvidence(
-      JSON.parse(readFileSync(resolveWorkspacePath(reportPath), "utf8")),
-    );
-  } catch (error) {
-    return {
-      ok: false,
-      loadError: `failed to read AGE_VERIFICATION_PROBE_REPORT: ${error instanceof Error ? error.message : String(error)}`,
-    };
-  }
-}
-
-function loadProductConfigProbeEvidence(env: EnvLike): ProductConfigProbeEvidence | null {
-  const reportPath = env.PRODUCT_CONFIG_PROBE_REPORT;
-  if (!reportPath) return null;
-  try {
-    return decodeProductConfigProbeEvidence(
-      JSON.parse(readFileSync(resolveWorkspacePath(reportPath), "utf8")),
-    );
-  } catch (error) {
-    return {
-      ok: false,
-      loadError: `failed to read PRODUCT_CONFIG_PROBE_REPORT: ${error instanceof Error ? error.message : String(error)}`,
-    };
-  }
-}
-
-function loadPublicCatalogProbeEvidence(env: EnvLike): PublicCatalogProbeEvidence | null {
-  const reportPath = env.PUBLIC_CATALOG_PROBE_REPORT;
-  if (!reportPath) return null;
-  try {
-    return decodePublicCatalogProbeEvidence(
-      JSON.parse(readFileSync(resolveWorkspacePath(reportPath), "utf8")),
-    );
-  } catch (error) {
-    return {
-      ok: false,
-      loadError: `failed to read PUBLIC_CATALOG_PROBE_REPORT: ${error instanceof Error ? error.message : String(error)}`,
-    };
-  }
-}
-
-function loadWebSurfaceProbeEvidence(env: EnvLike): WebSurfaceProbeEvidence | null {
-  const reportPath = env.WEB_SURFACE_PROBE_REPORT;
-  if (!reportPath) return null;
-  try {
-    return decodeWebSurfaceProbeEvidence(
-      JSON.parse(readFileSync(resolveWorkspacePath(reportPath), "utf8")),
-    );
-  } catch (error) {
-    return {
-      ok: false,
-      loadError: `failed to read WEB_SURFACE_PROBE_REPORT: ${error instanceof Error ? error.message : String(error)}`,
-    };
-  }
-}
-
-function resolveWorkspacePath(filePath: string) {
-  if (path.isAbsolute(filePath)) return filePath;
-  return path.resolve(workspaceRoot(), filePath);
+  return resolved as { [K in ProbeName]: ProbeEvidenceOf<K> | null };
 }
 
 export function loadLaunchReadinessEnv(
@@ -1766,71 +1496,13 @@ export function loadLaunchReadinessEnv(
   };
 }
 
-function workspaceRoot() {
-  let current = process.cwd();
-  while (true) {
-    if (
-      existsSync(path.join(current, "package.json")) &&
-      (existsSync(path.join(current, "turbo.json")) ||
-        existsSync(path.join(current, "bun.lock")))
-    ) {
-      return current;
-    }
-    const parent = path.dirname(current);
-    if (parent === current) return process.cwd();
-    current = parent;
-  }
-}
-
 export function assessLaunchReadiness(
   options: LaunchReadinessOptions = {},
 ): LaunchReadinessReport {
   const env = options.env ?? process.env;
   const capabilities = mergeCapabilities(options.capabilities);
-  const imagePipelineProbe =
-    options.imagePipelineProbe !== undefined
-      ? options.imagePipelineProbe
-      : loadImagePipelineProbeEvidence(env);
-  const blobStorageProbe =
-    options.blobStorageProbe !== undefined
-      ? options.blobStorageProbe
-      : loadBlobStorageProbeEvidence(env);
-  const safetyGatewayProbe =
-    options.safetyGatewayProbe !== undefined
-      ? options.safetyGatewayProbe
-      : loadSafetyGatewayProbeEvidence(env);
-  const chatServiceProbe =
-    options.chatServiceProbe !== undefined
-      ? options.chatServiceProbe
-      : loadChatServiceProbeEvidence(env);
-  const chatModelProbe =
-    options.chatModelProbe !== undefined
-      ? options.chatModelProbe
-      : loadChatModelProbeEvidence(env);
-  const voiceModelProbe =
-    options.voiceModelProbe !== undefined
-      ? options.voiceModelProbe
-      : loadVoiceModelProbeEvidence(env);
-  const paymentProviderProbe =
-    options.paymentProviderProbe !== undefined
-      ? options.paymentProviderProbe
-      : loadPaymentProviderProbeEvidence(env);
-  const ageVerificationProbe =
-    options.ageVerificationProbe !== undefined
-      ? options.ageVerificationProbe
-      : loadAgeVerificationProbeEvidence(env);
-  const productConfigProbe =
-    options.productConfigProbe !== undefined
-      ? options.productConfigProbe
-      : loadProductConfigProbeEvidence(env);
-  const publicCatalogProbe =
-    options.publicCatalogProbe !== undefined
-      ? options.publicCatalogProbe
-      : loadPublicCatalogProbeEvidence(env);
-  const webSurfaceProbe =
-    options.webSurfaceProbe !== undefined
-      ? options.webSurfaceProbe
-      : loadWebSurfaceProbeEvidence(env);
+  // INVARIANT: 显式传入（含 null）优先于按 env 读文件；未传才落回 *_PROBE_REPORT。
+  const probes = resolveProbeEvidence(env, options);
   const now = options.now ?? new Date();
   const checks: LaunchReadinessCheck[] = [...(options.preflightChecks ?? [])];
 
@@ -1929,7 +1601,7 @@ export function assessLaunchReadiness(
         : "Internal and cron tokens are missing or identical.",
     remediation: "Use separate random secrets for INTERNAL_TOKEN and CRON_SECRET.",
   });
-  addWebSurfaceProbeCheck(checks, env, webSurfaceProbe, now);
+  addWebSurfaceProbeCheck(checks, env, probes.webSurfaceProbe, now);
 
   addRequiredCheck(checks, env, {
     id: "redis-url",
@@ -1977,15 +1649,15 @@ export function assessLaunchReadiness(
     remediation: "Set ADMIN_BFF_SIGNING_SECRET to the same shared secret used by packages/admin.",
   });
   addChatServiceChecks(checks, env);
-  addChatServiceProbeCheck(checks, env, chatServiceProbe, now);
-  addChatModelProbeCheck(checks, env, chatModelProbe, now);
+  addChatServiceProbeCheck(checks, env, probes.chatServiceProbe, now);
+  addChatModelProbeCheck(checks, env, probes.chatModelProbe, now);
   addChatModerationChecks(checks, env);
 
-  addImagePipelineChecks(checks, env, capabilities, imagePipelineProbe, now);
-  addProductConfigProbeCheck(checks, env, productConfigProbe, now);
-  addPublicCatalogProbeCheck(checks, env, publicCatalogProbe, now);
-  addVideoPipelineChecks(checks, env, capabilities, productConfigProbe);
-  addVoiceModelProbeCheck(checks, env, voiceModelProbe, now);
+  addImagePipelineChecks(checks, env, capabilities, probes.imagePipelineProbe, now);
+  addProductConfigProbeCheck(checks, env, probes.productConfigProbe, now);
+  addPublicCatalogProbeCheck(checks, env, probes.publicCatalogProbe, now);
+  addVideoPipelineChecks(checks, env, capabilities, probes.productConfigProbe);
+  addVoiceModelProbeCheck(checks, env, probes.voiceModelProbe, now);
 
   if ((env.MODERATION_PROVIDER ?? "mock") === "safety-gateway") {
     addRequiredCheck(checks, env, {
@@ -2018,7 +1690,7 @@ export function assessLaunchReadiness(
       message: `MODERATION_PROVIDER=${env.MODERATION_PROVIDER ?? "mock"} does not require MODERATION_API_KEY.`,
     });
   }
-  addSafetyGatewayProbeCheck(checks, env, safetyGatewayProbe, now);
+  addSafetyGatewayProbeCheck(checks, env, probes.safetyGatewayProbe, now);
   addAtLeastOneCheck(checks, env, {
     id: "payment-api-key",
     area: "Billing",
@@ -2053,7 +1725,7 @@ export function assessLaunchReadiness(
     label: "Payment webhook secret",
     remediation: "Configure and verify the production payment webhook secret.",
   });
-  addPaymentProviderProbeCheck(checks, env, paymentProviderProbe, now);
+  addPaymentProviderProbeCheck(checks, env, probes.paymentProviderProbe, now);
   addRequiredCheck(checks, env, {
     id: "age-verification-service-url",
     area: "Compliance",
@@ -2098,7 +1770,7 @@ export function assessLaunchReadiness(
     remediation:
       "Set AGE_VERIFY_CALLBACK_URL to the public signed-webhook endpoint for Go.cam callbacks.",
   });
-  addAgeVerificationProbeCheck(checks, env, ageVerificationProbe, now);
+  addAgeVerificationProbeCheck(checks, env, probes.ageVerificationProbe, now);
 
   addRequiredCheck(checks, env, {
     id: "blob-bucket",
@@ -2134,7 +1806,7 @@ export function assessLaunchReadiness(
     label: "Object storage secret key",
     remediation: "Configure object storage secret credentials.",
   });
-  addBlobStorageProbeCheck(checks, env, blobStorageProbe, now);
+  addBlobStorageProbeCheck(checks, env, probes.blobStorageProbe, now);
 
   addRequiredCheck(checks, env, {
     id: "sentry-dsn",

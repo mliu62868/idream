@@ -310,6 +310,7 @@ type CharacterProductionJourney = {
 | 生成报价与提交校验 | `ourdream/generation-quote` | 六字段令牌（含双指纹） |
 | Admin 写请求 body 解析 | `jsonBody(request, ref)` | manifest contract ref |
 | 上线门禁证据形状 | `server/readiness/evidence` | probe 名（生产端必填 / 消费端全可选） |
+| probe 报告的 env 变量与解码器 | `server/readiness/probe-report` | probe 名（生产端写、门禁读同一个 key） |
 | 前端一次生成请求 | `lib/generation-request` | submit / retry / applyServerJob / refreshQuote |
 | 两侧前端取数编排 | `useViewerResource` / `useAuthorityResource` | path + parser（+ 轮询策略） |
 
@@ -324,6 +325,34 @@ type CharacterProductionJourney = {
 3. **新守卫必须先注入一次真实漂移，确认它会失败**。本轮三次都靠这一步发现问题：跨包锚点守卫的正则把漂移值截成合法前缀反而放行；shared 准入守卫跟随符号链接 ELOOP、又把构建产物里搬家前的旧 import 当成违规；i18n 互斥断言若走 import 而非 AST，要抓的重复会先被合并掉。
 4. **遍历仓库的守卫只扫源码**：不跟随符号链接（Prisma 生成物里有自指链接），跳过所有点开头目录与生成物目录（构建快照里留着搬家前的旧 import）。
 5. **债务清单必须会缩短**：单消费者豁免要写明「阻止它搬家的约束」，并有断言检查台账本身是否陈旧（条目升到 2 个消费者 / 掉到 0 / 消费方对不上都失败）。
+
+### 3.2 先问检查器守的不变量能不能变成不可表示
+
+离线检查器只在「不变量无法被类型或 schema 表达」时才有价值。新增或审查一个检查器时先按这个顺序问：
+
+1. **它守什么？** 用一句话写出来。写不出来的，先补清楚再谈保留。
+2. **写入侧能不能让它不可表示？** 已实证有效的三种手法：
+   - 「两处字面量必须一致」→ 收成一张按名索引的表，两侧都只能引用同一个条目
+     （probe 报告的 env 变量此前生产端 1 处、消费端 5 处各存一份；`readiness/probe-report`
+     收口后「probe 写 A、门禁读 B」不可表达）；
+   - 「这个 map 必须覆盖所有 code」→ `Record<Name, T>` + 由它映射出调用方的入参类型
+     （`LaunchReadinessProbeOptions` 从 `PROBE_REPORTS` 映射，漏接一个 probe 是编译错误）；
+   - 「状态 A 之后不能出现字段 B」→ CHECK 约束 / 唯一索引，而不是事后 GROUP BY 数重复行。
+3. **已经不可表示的检查要删，但删之前先确认那条结构保证真的在**。
+   `duplicate_canonical_source_effect` 与 `chat_replay_duplicate_fact` 曾按已有唯一索引覆盖的
+   列 `GROUP BY … HAVING count(*) > 1` —— 索引在，它们**永远返回零行**，报告里那两个 passed
+   是恒真的。真正会漂移的是索引本身被删被改名，所以换成一条集合相等检查
+   （`projection_dedupe_constraint_missing`：期望的唯一约束集合必须恰好存在于 `pg_index`）。
+   **行数几乎没变，但它从「查一个不可能的状态」变成了「查那个不可能性还成立吗」。**
+4. **删不掉但需要 DB 约束的，只出 SQL，不自己执行**，并且约束落地前不要先删检查
+   （见 `db/sql/2026-08-03-invariant-collapse-check-constraints.sql`：admin_cases 的
+   activeKey 身份约束一旦生效，三条 Case 检查同时不可表示）。
+5. **不是所有检查器都能收**。跨存储集合关系（Redis Bull row ↔ PostgreSQL Outbox row）、
+   真实进程崩溃恢复（`readiness/dependency-chaos-process`）没有类型或 schema 表达形式，
+   属于离线闸门该留的部分。`generation-dispatch-cutover` 就是这一类：payload 层面的 cutover
+   早已完成（`shared/contracts/payloads` 里 `attemptId/attemptNo` 全部必填，旧形状不可构造），
+   但那 1000 行不是过渡脚手架 —— 它是 `scripts/start-pm2-ecosystem.cjs` 每次生产 start /
+   restart / reload 都会跑的静默期验证，删了等于放弃零丢失重启。
 
 ## 4. Rejected alternatives
 
