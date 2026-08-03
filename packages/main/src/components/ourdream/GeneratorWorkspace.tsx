@@ -3721,6 +3721,7 @@ const jobStatusLabels: Record<GenerationJobStatus, string> = {
   failed: "Failed",
   blocked: "Blocked",
   refunded: "Refunded",
+  cancelled: "Cancelled",
 };
 
 function jobStatusLabel(status: string, errorCode: string | null) {

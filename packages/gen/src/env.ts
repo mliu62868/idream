@@ -8,6 +8,7 @@ import { resolveLocalBlobRoot } from "@idream/shared/storage/local-blob";
 import {
   BLOB_ACCESS_KEY_ID_ALIASES,
   BLOB_SECRET_ACCESS_KEY_ALIASES,
+  DEFAULT_APP_ENV,
   DEFAULT_BLOB_REGION,
   DEFAULT_MODERATION_PROVIDER,
   DEFAULT_MODERATION_TIMEOUT_MS,
@@ -46,6 +47,14 @@ function positiveIntegerEnv(name: string, fallback: number) {
 }
 
 export const env = {
+  /**
+   * Deployment environment. Feeds the queue prefix AND the production provider
+   * policy in providers.ts — those read it separately before, each supplying its
+   * own notion of "unset".
+   */
+  get APP_ENV(): string {
+    return process.env.APP_ENV ?? DEFAULT_APP_ENV;
+  },
   /** Redis for BullMQ. GEN_REDIS_URL wins, else shared REDIS_URL, else local. */
   get REDIS_URL(): string {
     return process.env.GEN_REDIS_URL ?? process.env.REDIS_URL ?? DEFAULT_REDIS_URL;
@@ -56,7 +65,7 @@ export const env = {
   // one definition instead of three copies. (Queue NAMES, not the prefix, are what
   // isolate gen/chat/main traffic within the shared Redis.)
   get BULLMQ_PREFIX(): string {
-    return process.env.BULLMQ_PREFIX ?? defaultBullmqPrefix(process.env.APP_ENV);
+    return process.env.BULLMQ_PREFIX ?? defaultBullmqPrefix(this.APP_ENV);
   },
   get MAIN_GENERATION_TRANSPORT_URL(): string {
     return `${mainWebUrlOrigin()}/api/internal/generation/transports`;
@@ -165,5 +174,15 @@ export const env = {
   /** Directory of workflow descriptor JSON files (see ./backend/workflow.ts). */
   get GEN_WORKFLOW_DIR(): string {
     return process.env.GEN_WORKFLOW_DIR ?? bundledWorkflowDir;
+  },
+  // Video verification binaries. Declared here — not read raw at each use site —
+  // because preflight.ts checks that they exist and video-media-probe.ts runs
+  // them: a probe that resolves a different binary than the worker executes is
+  // a green light for something that was never checked.
+  get FFPROBE_BIN(): string {
+    return process.env.GEN_FFPROBE_BIN ?? "ffprobe";
+  },
+  get FFMPEG_BIN(): string {
+    return process.env.GEN_FFMPEG_BIN ?? "ffmpeg";
   },
 } as const;

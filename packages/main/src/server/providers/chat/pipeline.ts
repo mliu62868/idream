@@ -1,3 +1,4 @@
+import { pipelineEndpoint } from "@idream/shared/env";
 import type { ChatChunk, ChatModel } from "../types";
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -115,14 +116,6 @@ function contentFromJson(value: unknown) {
     if (typeof text === "string") return text;
   }
   return typeof record.content === "string" ? record.content : "";
-}
-
-function pipelineEndpoint(baseUrl: string, suffix: string) {
-  const url = new URL(baseUrl);
-  if (url.pathname.endsWith(suffix)) return url;
-  const basePath = url.pathname === "/" ? "" : url.pathname.replace(/\/$/, "");
-  url.pathname = `${basePath}${suffix}`;
-  return url;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

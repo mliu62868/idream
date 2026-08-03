@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { generationJobStatusSchema } from "../admin/contracts/jobs";
 import {
   APPEAL_TARGET_TYPES,
   CHARACTER_STYLES,
@@ -28,14 +29,31 @@ describe("catalog", () => {
     expect(MEDIA_ASSET_VISIBILITY).not.toContain("public");
   });
 
+  // Regression + drift guard. `cancelled` was writable by the admin cancel
+  // command but absent from this catalog, so the generator polled a cancelled
+  // job forever. Set EQUALITY (not "contains each terminal one") is the point:
+  // the previous assertion iterated the catalog's own members, so it could only
+  // ever confirm the catalog agreed with itself — a status the server gained
+  // and the catalog never learned about was invisible to it.
+  it("carries exactly the generation statuses the server can write", () => {
+    expect(new Set(GENERATION_JOB_STATUSES)).toEqual(
+      new Set(generationJobStatusSchema.options),
+    );
+  });
+
   it("treats only finished generation states as terminal", () => {
     for (const status of TERMINAL_GENERATION_JOB_STATUSES) {
       expect(GENERATION_JOB_STATUSES).toContain(status);
       expect(isTerminalGenerationJobStatus(status)).toBe(true);
     }
-    for (const status of ["queued", "moderating_input", "running", "moderating_output"]) {
-      expect(isTerminalGenerationJobStatus(status)).toBe(false);
-    }
+    // The complement, asserted as a set: any status added to the catalog is
+    // forced into exactly one of these two lists rather than falling through as
+    // "not terminal" by default.
+    expect(
+      new Set(
+        GENERATION_JOB_STATUSES.filter((status) => !isTerminalGenerationJobStatus(status)),
+      ),
+    ).toEqual(new Set(["queued", "moderating_input", "running", "moderating_output"]));
     expect(isTerminalGenerationJobStatus("nonsense")).toBe(false);
   });
 

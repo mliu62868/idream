@@ -1,3 +1,4 @@
+import { pipelineEndpoint } from "@idream/shared/env";
 import {
   VOICE_PROVIDER_REPLAY,
   type BlobStore,
@@ -532,14 +533,6 @@ function audioFileExtension(contentType: string) {
     "audio/webm": ".webm",
   };
   return mediaType ? (extensions[mediaType] ?? ".bin") : ".bin";
-}
-
-function pipelineEndpoint(baseUrl: string, suffix: string) {
-  const url = new URL(baseUrl);
-  if (url.pathname.endsWith(suffix)) return url;
-  const basePath = url.pathname === "/" ? "" : url.pathname.replace(/\/$/, "");
-  url.pathname = `${basePath}${suffix}`;
-  return url;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

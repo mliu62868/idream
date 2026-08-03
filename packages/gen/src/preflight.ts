@@ -20,7 +20,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { env } from "./env";
 
 type Descriptor = {
   workflowKey?: string;
@@ -58,13 +58,15 @@ async function availableFiles(base: string, node: string, slot: string): Promise
 }
 
 async function main() {
-  const base = process.env.COMFYUI_API_URL ??
-    process.env.COMFYUI_URL ??
-    "http://127.0.0.1:8188";
-  // Resolve relative to this file so the probe works from the repo root or from
-  // packages/gen, matching how the other gen scripts get invoked.
-  const dir = process.env.GEN_WORKFLOW_DIR
-    ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../workflows");
+  // INTENT: read the worker's own config, never a second copy of it. This used to
+  // resolve `COMFYUI_API_URL ?? COMFYUI_URL ?? "http://127.0.0.1:8188"` while the
+  // worker (env.ts) resolves `COMFYUI_API_URL ?? "http://127.0.0.1:8188"`.
+  // COMFYUI_URL appears nowhere else in the repo, so setting only that pointed
+  // preflight at one runner and left the worker on localhost — every descriptor
+  // verified green against a ComfyUI that serves no generation. Same reason the
+  // workflow dir and the ffprobe/ffmpeg paths come from env.
+  const base = env.COMFYUI_API_URL;
+  const dir = env.GEN_WORKFLOW_DIR;
 
   const stats = await fetch(`${base}/system_stats`).catch(() => null);
   if (!stats?.ok) {
@@ -75,8 +77,8 @@ async function main() {
   const files = (await readdir(dir)).filter((f) => f.endsWith(".json"));
   const problems: Problem[] = [];
   for (const [name, executable] of [
-    ["ffprobe", process.env.GEN_FFPROBE_BIN ?? "ffprobe"],
-    ["ffmpeg", process.env.GEN_FFMPEG_BIN ?? "ffmpeg"],
+    ["ffprobe", env.FFPROBE_BIN],
+    ["ffmpeg", env.FFMPEG_BIN],
   ] as const) {
     const probe = spawnSync(executable, ["-version"], { stdio: "ignore" });
     if (probe.error || probe.status !== 0) {

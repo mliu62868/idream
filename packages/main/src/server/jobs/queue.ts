@@ -2,6 +2,7 @@ import { Job as BullJob, Queue, Worker, type JobsOptions } from "bullmq";
 import type { RedisOptions } from "ioredis";
 import type { Prisma } from "@prisma/client";
 import { bullMqJobIdForDedupeKey } from "@idream/shared/contracts";
+import { redisConnectionOptions } from "@idream/shared/env";
 import { env } from "@/server/lib/env";
 
 // INTENT: re-exported so existing importers keep their "@/server/jobs/queue"
@@ -107,16 +108,7 @@ const defaultBackoffDelayMs = 30_000;
 const removeOnComplete = { age: 60 * 60 * 24, count: 10_000 };
 
 function redisOptions(): RedisOptions {
-  const url = new URL(env.REDIS_URL);
-  return {
-    host: url.hostname,
-    port: url.port ? Number.parseInt(url.port, 10) : 6379,
-    username: url.username ? decodeURIComponent(url.username) : undefined,
-    password: url.password ? decodeURIComponent(url.password) : undefined,
-    db: url.pathname && url.pathname !== "/" ? Number.parseInt(url.pathname.slice(1), 10) : 0,
-    tls: url.protocol === "rediss:" ? {} : undefined,
-    maxRetriesPerRequest: null,
-  };
+  return redisConnectionOptions(env.REDIS_URL);
 }
 
 function createQueue(queueName: string) {

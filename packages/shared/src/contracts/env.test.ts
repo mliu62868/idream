@@ -12,6 +12,7 @@ import {
   crossServiceEnvShape,
   defaultBullmqPrefix,
   mainWebUrlOrigin,
+  pipelineEndpoint,
   resolveAlias,
 } from "./env";
 
@@ -79,6 +80,71 @@ describe("探针必须复用生产的预算", () => {
   });
 });
 
+// SPEC: 共享的**解析**也只能有一份，不只是共享的默认值。
+// INTENT: 上面两条守卫盯的是字面量常量，可是 redisConnectionOptions 与
+//   pipelineEndpoint 这类"把一个字符串拆成结构"的函数，是被整段手抄的 ——
+//   REDIS_URL 的解析在 main/chat/gen 三个 queue.ts 里逐字节抄了三遍（db 索引
+//   来自 URL 路径，抄歪一份就是生产者与消费者连到不同的库，两边都不报错、什么
+//   也不投递）；pipelineEndpoint 抄成了两种语义，gen 那份直接忽略 route，于是
+//   图和视频解析到同一个 URL。
+//   所以扫描域是**整棵 src 树**（不是三个 env.ts，也不是 probe-*.ts），指纹用
+//   这些解析里最独特的那一行 —— 换个函数名重抄一遍照样会被抓到。
+const SERVICE_SOURCE_ROOTS = [
+  `${ROOT}/packages/main/src`,
+  `${ROOT}/packages/chat/src`,
+  `${ROOT}/packages/gen/src`,
+];
+
+const HAND_ROLLED_PARSES: { fingerprint: string; owner: string }[] = [
+  {
+    fingerprint: "decodeURIComponent(url.username)",
+    owner: "redisConnectionOptions() from @idream/shared/env",
+  },
+  {
+    fingerprint: "pathname.endsWith(",
+    owner: "pipelineEndpoint() from @idream/shared/env",
+  },
+];
+
+function serviceSourceFiles(): string[] {
+  const found: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = `${dir}/${entry.name}`;
+      if (entry.isDirectory()) {
+        if (entry.name === "node_modules" || entry.name === "generated") continue;
+        walk(full);
+      } else if (/\.tsx?$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name)) {
+        found.push(full);
+      }
+    }
+  };
+  for (const root of SERVICE_SOURCE_ROOTS) walk(root);
+  return found;
+}
+
+describe("共享解析只能有一份", () => {
+  it("扫描域覆盖到整棵 src 树，而不是空转", () => {
+    expect(serviceSourceFiles().length).toBeGreaterThan(300);
+  });
+
+  it("没有服务自己再手写一遍共享的解析", () => {
+    const violations: string[] = [];
+    for (const file of serviceSourceFiles()) {
+      const source = readFileSync(file, "utf8");
+      for (const { fingerprint, owner } of HAND_ROLLED_PARSES) {
+        if (source.includes(fingerprint)) {
+          violations.push(`${file.replace(`${ROOT}/`, "")} 手写了 ${fingerprint} —— 改用 ${owner}`);
+        }
+      }
+    }
+    expect(
+      violations,
+      `共享解析被重新手抄，两份拷贝迟早给出不同答案：\n  ${violations.join("\n  ")}`,
+    ).toEqual([]);
+  });
+});
+
 describe("cross-service env contract", () => {
   it("is the only place the shared defaults are written down", () => {
     const violations: string[] = [];
@@ -125,6 +191,38 @@ describe("cross-service env contract", () => {
     expect(mainWebUrlOrigin("https://example.com/")).toBe("https://example.com");
     expect(mainWebUrlOrigin("https://example.com")).toBe("https://example.com");
     expect(mainWebUrlOrigin(undefined)).toBe(DEFAULT_MAIN_WEB_URL);
+  });
+
+  // Regression: gen returned the configured base UNCHANGED whenever it carried a
+  // path, so `/images/generations` and `/videos/generations` resolved to the same
+  // URL and video requests went to the image endpoint; under main's documented
+  // `.../v1` base it posted to `/v1` and never reached a route at all.
+  it("resolves every pipeline route off one base, for every adapter", () => {
+    const base = "http://127.0.0.1:8061/v1";
+    expect(pipelineEndpoint(base, "/chat/completions").toString()).toBe(
+      "http://127.0.0.1:8061/v1/chat/completions",
+    );
+    expect(pipelineEndpoint(base, "/audio/speech").toString()).toBe(
+      "http://127.0.0.1:8061/v1/audio/speech",
+    );
+    // The two generation routes must never collapse onto each other.
+    expect(pipelineEndpoint(base, "/images/generations").toString()).not.toBe(
+      pipelineEndpoint(base, "/videos/generations").toString(),
+    );
+  });
+
+  it("accepts a base that is already the complete endpoint, without doubling it", () => {
+    expect(
+      pipelineEndpoint("http://127.0.0.1:8091/images/generations", "/images/generations")
+        .toString(),
+    ).toBe("http://127.0.0.1:8091/images/generations");
+    // Root and trailing-slash bases both land on the bare route.
+    expect(pipelineEndpoint("http://host", "/chat/completions").toString()).toBe(
+      "http://host/chat/completions",
+    );
+    expect(pipelineEndpoint("http://host/v1/", "/chat/completions").toString()).toBe(
+      "http://host/v1/chat/completions",
+    );
   });
 
   it("resolves credential aliases with ?? semantics — empty string wins over the next alias", () => {
