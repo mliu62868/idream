@@ -10,10 +10,8 @@ import {
   Errors,
   type AppErrorCode,
 } from "@/server/lib/errors";
-import {
-  entitlementMap,
-  readableCharacter,
-} from "@/server/modules/ourdream/service";
+import { readableCharacter } from "@/server/modules/ourdream/service";
+import { entitlementMap } from "@/server/modules/ourdream/subscription-lifecycle";
 import {
   reclaimExpiredVoiceClip,
   type VoiceClipSuccessCommit,

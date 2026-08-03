@@ -308,6 +308,8 @@ type CharacterProductionJourney = {
 | 跨服务 env 默认值 | `shared/contracts/env` | 变量名（判据：两进程取值不同就会坏） |
 | chat 轮次写入协议 | `withTurnAuthority` | userId / sessionId + 回调 |
 | 生成报价与提交校验 | `ourdream/generation-quote` | 六字段令牌（含双指纹） |
+| 订阅激活与权益派生 | `ourdream/subscription-lifecycle` | 计划 + provider 发票 + checkout purchase-order |
+| Feed 分页连续性 | `ourdream/discovery` 的签名游标 | limit（快照与排除集由游标自带） |
 | Admin 写请求 body 解析 | `jsonBody(request, ref)` | manifest contract ref |
 | 上线门禁证据形状 | `server/readiness/evidence` | probe 名（生产端必填 / 消费端全可选） |
 | 前端一次生成请求 | `lib/generation-request` | submit / retry / applyServerJob / refreshQuote |
@@ -324,6 +326,8 @@ type CharacterProductionJourney = {
 3. **新守卫必须先注入一次真实漂移，确认它会失败**。本轮三次都靠这一步发现问题：跨包锚点守卫的正则把漂移值截成合法前缀反而放行；shared 准入守卫跟随符号链接 ELOOP、又把构建产物里搬家前的旧 import 当成违规；i18n 互斥断言若走 import 而非 AST，要抓的重复会先被合并掉。
 4. **遍历仓库的守卫只扫源码**：不跟随符号链接（Prisma 生成物里有自指链接），跳过所有点开头目录与生成物目录（构建快照里留着搬家前的旧 import）。
 5. **债务清单必须会缩短**：单消费者豁免要写明「阻止它搬家的约束」，并有断言检查台账本身是否陈旧（条目升到 2 个消费者 / 掉到 0 / 消费方对不上都失败）。
+
+再补一条实证（`ourdream → admin` 依赖方向守卫）：**注释不是边界**。前台公开只读投影 `listActiveTemplates` 曾住在 `modules/admin/characters/templates.ts`，靠文件头一行「公开只读，不要求 admin 权限」声明它其实不属于那里。名字、位置、import 全都编译得过，符号黑名单抓不到。现在守的是「`modules/ourdream/**` 里出现的 `modules/admin/**` import 集合**恰好等于**白名单」，白名单只有 v1→admin 的 dispatch 接缝一条；多一条是新的错误方向，少一条说明白名单陈旧。按第 1 条：能抓住这类漂移的只有集合相等，不是任何形式的命名约定。
 
 ## 4. Rejected alternatives
 

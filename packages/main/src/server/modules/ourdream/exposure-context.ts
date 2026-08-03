@@ -24,6 +24,18 @@ export type ExposureSubject = {
   subjectId: string;
 };
 
+// SPEC: 认证态优先，匿名态兜底，两者都没有则没有可归因的主体。
+// INTENT: 曝光主体身份只在这里定一次 —— 发放侧（榜单）与核销侧（/track）必须得到
+// 同一个答案，否则 assignment 归属校验会把合法请求判成"主体不匹配"。
+export function metricExposureSubject(
+  userId: string | null | undefined,
+  anonymousId: string | null | undefined,
+): ExposureSubject | null {
+  if (userId) return { subjectType: "user", subjectId: userId };
+  if (anonymousId) return { subjectType: "anonymous", subjectId: anonymousId };
+  return null;
+}
+
 type IssueExposureContextInput = ExposureSubject & {
   characterId: string;
   characterContentVersionId: string;

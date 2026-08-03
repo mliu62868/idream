@@ -4,7 +4,6 @@ import { handle } from "@/server/lib/http";
 import { createUser } from "@/server/test/helpers";
 import {
   createTemplate,
-  listActiveTemplates,
   listTemplates,
   setTemplateActive,
   updateTemplate,
@@ -169,36 +168,6 @@ describe("character template library service (feature B)", () => {
     expect(
       await prisma.characterTemplate.findUniqueOrThrow({ where: { id }, select: { isActive: true } }),
     ).toEqual({ isActive: false });
-  });
-
-  it("listActiveTemplates returns only active, ordered by sortOrder, and needs no admin perm", async () => {
-    const admin = await setupAdmin("list");
-    const active = await call(createTemplate, {
-      userId: admin,
-      role: "admin",
-      body: { name: "Visible One", sortOrder: 5, reason: "seed active" },
-    });
-    await call(createTemplate, {
-      userId: admin,
-      role: "admin",
-      body: { name: "Hidden One", sortOrder: 1, reason: "seed hidden" },
-    });
-    await call((req) => setTemplateActive(req, active.data.template.id), {
-      userId: admin,
-      role: "admin",
-      body: { active: true, reason: "publish it", confirmation: active.data.template.id },
-    });
-
-    // 公开路由：不传任何 admin 身份也能读。
-    const result = await call(listActiveTemplates, {});
-    expect(result.status).toBe(200);
-    const names = result.data.items.map((t: { name: string }) => t.name);
-    expect(names).toContain("Visible One");
-    expect(names).not.toContain("Hidden One");
-    // select 投影不应泄露 createdById / isActive 等内部字段。
-    const visible = result.data.items.find((t: { name: string }) => t.name === "Visible One");
-    expect(visible).not.toHaveProperty("createdById");
-    expect(visible).not.toHaveProperty("isActive");
   });
 
   it("admin listTemplates returns inactive too and is gated by content.read (403 for analyst)", async () => {

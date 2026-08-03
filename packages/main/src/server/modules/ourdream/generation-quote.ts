@@ -34,7 +34,6 @@ import {
 import { dreamcoinBalance } from "@/server/modules/billing/ledger";
 import {
   assertGenerationProfileCanDispatchReferences,
-  entitlementMap,
   featureFlagEnabled,
   generationCharacter,
   generationReferenceRouteRequirements,
@@ -47,6 +46,7 @@ import {
   type GenerationCreateBody,
   type GenerationSource,
 } from "./service";
+import { entitlementMap } from "./subscription-lifecycle";
 import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
 
 // SPEC: 报价令牌 —— 客户端从报价里投影出来、提交时原样回传的六个字段。
