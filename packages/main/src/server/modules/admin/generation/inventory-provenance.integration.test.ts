@@ -94,7 +94,13 @@ describe("Admin generation inventory data provenance", () => {
       new Set([jobIds.customer, jobIds.internal]),
     );
     expect(legacy.dataScope).toEqual(v2Data.dataScope);
-  });
+    // INTENT: v1 的 listGenerationJobs 不支持 search（只有 status/mode/userId/limit），
+    // 所以这条只能拉未过滤的前 100 行再在内存里按 token 挑 —— 而 limit=100 带着
+    // include:{user,assets} 两个关联，成本随 GenerationJob 表在整个测试套件里累积而增长。
+    // vitest 默认 5s 是给单测的，main 又没配 testTimeout，于是这条会在满载跑时偶发
+    // 5009ms 超时（单独跑必过）。不缩小 limit：那会让 fixture/audit 有可能因为落在
+    // 窗口外而"看起来被正确排除"，assertion 就名存实亡了。
+  }, 20_000);
 
   it("limits Dead-letter and Global Search generation jobs to the same operational scope", async () => {
     const deadLetter = await call(
