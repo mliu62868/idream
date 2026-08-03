@@ -5,6 +5,7 @@ import { idempotencyKeys, MAIN_QUEUES } from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
 import { AGE_GATE_COOKIE, type ActorRole } from "@/server/lib/auth";
 import { dispatchV1 } from "@/server/modules/ourdream/service";
+import { quoteAuthorityFor } from "@/server/modules/ourdream/generation-quote";
 import { jobQueue } from "@/server/jobs/queue";
 import { drainLocalAiPipeline } from "@/server/ai/local-pipeline";
 import {
@@ -31,8 +32,11 @@ export interface ApiOptions {
    */
   autoGenerationIdempotencyKey?: boolean;
   /**
-   * Integration clients follow the same quote -> submit contract as the UI.
-   * Set false only when a test intentionally exercises a missing quote.
+   * Integration clients follow the same quote -> submit contract as the UI:
+   * POST the matching `.../quote`, then project the reply into the six-field
+   * token with `quoteAuthorityFor` (see modules/ourdream/generation-quote.ts
+   * for the protocol itself). Set false only when a test intentionally
+   * exercises a missing or hand-tampered quote.
    */
   autoGenerationQuote?: boolean;
   headers?: Record<string, string>;
@@ -77,69 +81,28 @@ export async function api(
 ): Promise<ApiResult> {
   let requestBody = options.body;
   const requestBodyObject = isJsonObject(requestBody) ? requestBody : {};
-  const retryPath = /^generation\/jobs\/[^/]+\/retry$/.test(path);
   if (
     method === "POST" &&
     options.autoGenerationQuote !== false &&
-    (isJsonObject(requestBody) || retryPath) &&
+    // Retry takes no body of its own, so an absent body still gets quoted.
+    (isJsonObject(requestBody) || /^generation\/jobs\/[^/]+\/retry$/.test(path)) &&
     !isJsonObject(requestBodyObject.quoteAuthority)
   ) {
-    const quotePath =
-      path === "generation/jobs"
-        ? "generation/quote"
-        : /^media\/[^/]+\/variation$/.test(path)
-          ? `${path}/quote`
-          : retryPath
-            ? `${path}/quote`
-          : null;
-    if (quotePath) {
-      const quoteBody =
-        path === "generation/jobs"
-          ? requestBodyObject
-          : /^media\/[^/]+\/variation$/.test(path)
-            ? {
-              consistencyMode:
-                typeof requestBodyObject.consistencyMode === "string"
-                  ? requestBodyObject.consistencyMode
-                  : "balanced",
-              }
-            : {};
-      const quote = await api("POST", quotePath, {
+    const step = generationQuoteStep(path, requestBodyObject);
+    if (step) {
+      const quote = await api("POST", step.path, {
         ...options,
         autoGenerationQuote: false,
-        body: quoteBody,
+        body: step.body,
       });
       if (!quote.ok) return quote;
-      const outputCount =
-        typeof quote.data?.quote?.outputCount === "number"
+      const authority = quoteAuthorityFor(
+        quote.data.quote,
+        typeof quote.data.quote.outputCount === "number"
           ? quote.data.quote.outputCount
-          : typeof requestBodyObject.outputCount === "number"
-            ? requestBodyObject.outputCount
-            : 1;
-      const exactCost = Array.isArray(quote.data?.quote?.costs)
-        ? quote.data.quote.costs.find(
-            (cost: unknown) =>
-              isJsonObject(cost) &&
-              cost.outputCount === outputCount,
-          )
-        : undefined;
-      requestBody = {
-        ...requestBodyObject,
-        quoteAuthority: {
-          profileId: quote.data.quote.profileId,
-          profileVersion: quote.data.quote.profileVersion,
-          routeFingerprint: quote.data.quote.routeFingerprint,
-          pricingFingerprint: quote.data.quote.pricing.fingerprint,
-          outputCount,
-          costDreamcoins:
-            typeof quote.data.quote.costDreamcoins === "number"
-              ? quote.data.quote.costDreamcoins
-              : isJsonObject(exactCost) &&
-            typeof exactCost.costDreamcoins === "number"
-              ? exactCost.costDreamcoins
-              : 0,
-        },
-      };
+          : step.outputCount,
+      );
+      if (authority) requestBody = { ...requestBodyObject, quoteAuthority: authority };
     }
   }
 
@@ -200,6 +163,35 @@ export async function api(
 
 function isJsonObject(value: unknown): value is Record<string, any> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// SPEC: 三个生成写入端点各自对应的报价端点与报价请求体。
+// INTENT: 只保留"哪个端点配哪个报价"这一条测试脚手架自己的知识；六字段令牌
+// 怎么从报价里投影出来是协议本身的事，交给 generation-quote 的
+// `quoteAuthorityFor`。
+function generationQuoteStep(
+  path: string,
+  body: Record<string, any>,
+): { path: string; body: unknown; outputCount: number } | null {
+  const outputCount =
+    typeof body.outputCount === "number" ? body.outputCount : 1;
+  if (path === "generation/jobs") {
+    return { path: "generation/quote", body, outputCount };
+  }
+  if (/^media\/[^/]+\/variation$/.test(path)) {
+    return {
+      path: `${path}/quote`,
+      body: {
+        consistencyMode:
+          typeof body.consistencyMode === "string" ? body.consistencyMode : "balanced",
+      },
+      outputCount,
+    };
+  }
+  if (/^generation\/jobs\/[^/]+\/retry$/.test(path)) {
+    return { path: `${path}/quote`, body: {}, outputCount };
+  }
+  return null;
 }
 
 /** Reduce Set-Cookie headers to a single Cookie request header value. */

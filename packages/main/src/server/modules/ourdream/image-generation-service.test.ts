@@ -5306,6 +5306,146 @@ describe("image generation service contract", () => {
     });
   });
 
+  // 这是 quote -> submit 握手存在的理由本身：look.updatedAt 进了 routeFingerprint，
+  // 所以报价之后、下单之前改一次 Look，在途报价必须立刻失效（fail closed，
+  // 不按旧 Look 执行、也不悄悄换成新 Look），而且不得留下任何 job 或扣款。
+  it("invalidates an in-flight quote when the selected Look changes before submit", async () => {
+    const userId = `${P}look-drift-user`;
+    const characterId = `${P}look-drift-char`;
+    const anchorId = `${P}look-drift-anchor`;
+    await createUser({ id: userId });
+    await grantCoins(userId, 100, "seed");
+    await createCharacter({
+      id: characterId,
+      creatorId: userId,
+      name: "Nadia Frost",
+      description: "An adult companion with silver hair.",
+      visibility: "private",
+      status: "approved",
+    });
+    await prisma.mediaAsset.create({
+      data: {
+        id: anchorId,
+        ownerId: userId,
+        characterId,
+        type: "image",
+        url: "/images/ourdream/card-amelie-dubois.webp",
+        storageKey: `${P}look-drift-anchor.webp`,
+        visibility: "private",
+        safetyStatus: "passed",
+        metadata: {},
+      },
+    });
+    await prisma.characterVisualProfile.create({
+      data: {
+        id: `${P}look-drift-cvp`,
+        characterId,
+        version: 1,
+        status: "active",
+        style: "realistic",
+        identityPrompt: "Nadia Frost, adult woman, silver hair",
+        faceTraits: {},
+        hairTraits: { color: "silver" },
+        bodyTraits: {},
+        signatureTraits: {},
+        styleTraits: { style: "realistic" },
+        anchorAssetIds: [anchorId],
+        adapterRefs: {},
+        createdFrom: "test",
+      },
+    });
+    await createSealedReferenceSet({
+      id: `${P}look-drift-reference-set`,
+      visualProfileId: `${P}look-drift-cvp`,
+      references: [
+        {
+          mediaAssetId: anchorId,
+          role: "primary_face",
+          weight: 1,
+          selectionReason: "primary_identity_anchor",
+        },
+      ],
+    });
+    const saved = await api("POST", `characters/${characterId}/looks`, {
+      userId,
+      ageGate: true,
+      body: {
+        label: "Winter coat",
+        appearanceDelta: { outfit: "grey wool coat" },
+      },
+    });
+    expectOk(saved, 201);
+    const lookId = saved.data.look.id as string;
+
+    const body = {
+      mode: "image" as const,
+      characterId,
+      controls: { lookId },
+      outputCount: 1,
+    };
+    const quoted = await api("POST", "generation/quote", {
+      userId,
+      ageGate: true,
+      body,
+    });
+    expectOk(quoted);
+    const quote = quoted.data.quote as ExactGenerationQuote;
+    const balanceBefore = await dreamcoinBalance(userId);
+
+    // 只动 Look 的一个非身份字段：档案版本、模型档案、计价规则全都没变，
+    // 唯一变的是 look.updatedAt —— 单靠 profileVersion / pricingFingerprint 抓不到。
+    const edited = await api("PATCH", `characters/${characterId}/looks/${lookId}`, {
+      userId,
+      ageGate: true,
+      body: { appearanceDelta: { outfit: "charcoal wool coat" } },
+    });
+    expectOk(edited);
+
+    const stale = await api("POST", "generation/jobs", {
+      userId,
+      ageGate: true,
+      autoGenerationQuote: false,
+      body: { ...body, quoteAuthority: quoteAuthority(quote) },
+    });
+    expectError(stale, 409, "conflict");
+    expect(stale.error?.message).toContain("Refresh the exact quote");
+    expect(stale.error?.details?.current?.routeFingerprint).not.toBe(
+      quote.routeFingerprint,
+    );
+    // 定价没动，所以漂的只能是路线指纹。
+    expect(stale.error?.details?.current?.pricingFingerprint).toBe(
+      quote.pricing.fingerprint,
+    );
+    await expect(
+      prisma.generationJob.count({ where: { userId } }),
+    ).resolves.toBe(0);
+    await expect(dreamcoinBalance(userId)).resolves.toBe(balanceBefore);
+
+    // 重新报价即可继续下单 —— fail closed 不是死路。
+    const requoted = await api("POST", "generation/quote", {
+      userId,
+      ageGate: true,
+      body,
+    });
+    expectOk(requoted);
+    const accepted = await api("POST", "generation/jobs", {
+      userId,
+      ageGate: true,
+      autoGenerationQuote: false,
+      body: {
+        ...body,
+        quoteAuthority: quoteAuthority(
+          requoted.data.quote as ExactGenerationQuote,
+        ),
+      },
+    });
+    expectOk(accepted, 202);
+    expect(accepted.data.job).toMatchObject({
+      lookId,
+      lookSnapshot: { appearanceDelta: { outfit: "charcoal wool coat" } },
+    });
+  });
+
   it("rejects another user retrying a failed job for a public Character", async () => {
     const jobOwnerId = `${P}public-retry-job-owner`;
     const otherUserId = `${P}public-retry-other-user`;
