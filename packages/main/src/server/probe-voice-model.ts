@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { env } from "./lib/env";
 import { createConfiguredVoicePorts } from "./providers/voice/factory";
 import type {
   BlobStore,
@@ -88,18 +89,25 @@ function readOptions(defaultVoiceId: string): ProbeOptions {
 
 async function main() {
   const startedAt = Date.now();
-  const provider = process.env.VOICE_PROVIDER ?? "mock";
+  // INTENT: 读 lib/env.ts 校验过的 env，而不是自己 `process.env.X ?? 字面量`。
+  // 这个探针本来就通过 providers/voice/factory 传递地 import 了 env（那边 import 时
+  // 就 parse），所以"探针不能碰 env"在这里并不成立 —— 它只是没用而已，于是把 zod 里
+  // 的六个默认值又抄了一遍。probe-chat-model 的超时 bug 就是这么抄出来的：
+  // 抄着抄着抄成了不一样的数。这些值目前与 zod 一致，改成引用后不可能再不一致。
+  const provider = env.VOICE_PROVIDER;
   const baseUrl = provider === "fish-audio"
-    ? process.env.FISH_AUDIO_API_URL ?? "http://127.0.0.1:8062/v1"
+    ? env.FISH_AUDIO_API_URL
     : provider === "pocket-tts"
-      ? process.env.POCKET_TTS_API_URL ?? "http://127.0.0.1:8062/v1"
-    : process.env.PIPELINE_VOICE_API_URL ?? process.env.PIPELINE_API_URL ?? null;
+      ? env.POCKET_TTS_API_URL
+    : env.PIPELINE_VOICE_API_URL ?? env.PIPELINE_API_URL ?? null;
   const model = provider === "fish-audio"
-    ? process.env.FISH_AUDIO_MODEL ?? "fish-audio-s2-pro-8bit"
+    ? env.FISH_AUDIO_MODEL
     : provider === "pocket-tts"
-      ? process.env.POCKET_TTS_MODEL ?? "pocket-tts-4bit"
+      ? env.POCKET_TTS_MODEL
+    // 这一条**故意**读原始 env：zod 给 PIPELINE_VOICE_MODEL_DEFAULT 兜了
+    // "voice-default"，用 env.* 会让 mock 的 "mock-voice-probe" 永远走不到。
     : process.env.PIPELINE_VOICE_MODEL_DEFAULT ??
-      (provider === "mock" ? "mock-voice-probe" : "voice-default");
+      (provider === "mock" ? "mock-voice-probe" : env.PIPELINE_VOICE_MODEL_DEFAULT);
   const options = readOptions(defaultVoiceForModel(model));
   const report = await runProbe({
     provider,
@@ -204,8 +212,8 @@ async function runProbe(input: {
         filename: `${input.provider}-probe-reference.wav`,
         language:
           input.provider === "fish-audio"
-            ? process.env.FISH_AUDIO_LANGUAGE ?? "auto"
-            : process.env.POCKET_TTS_LANGUAGE ?? "english",
+            ? env.FISH_AUDIO_LANGUAGE
+            : env.POCKET_TTS_LANGUAGE,
         referenceText: input.text,
       });
       if (!clone.ok) {
