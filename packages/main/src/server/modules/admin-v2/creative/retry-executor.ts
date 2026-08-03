@@ -183,10 +183,7 @@ async function assertCreativeRetryDispatchContract(input: {
   runtimeReferenceImagesForDispatch({
     generationJobId: input.job.id,
     images: referenceImages,
-    capabilities: normalizedModelCapabilities(
-      input.profile.runnerConfig,
-      input.profile.runner === "sd_cpp",
-    ),
+    capabilities: normalizedModelCapabilities(input.profile.runnerConfig),
     workflow,
     workflowKey,
     storedWorkflowKey:

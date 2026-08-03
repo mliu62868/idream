@@ -2827,7 +2827,6 @@ function productionControls(input: {
         }
       : undefined,
     contentProduction: true,
-    sdcpp: input.profile.runner === "sd_cpp" ? sdcppProfileRuntimeConfig(input.profile) : undefined,
   });
 }
 
@@ -2868,79 +2867,6 @@ function presetPromptFragment(
     fragments.push(values.length ? values.join(", ") : preset.label);
   }
   return fragments.join(", ");
-}
-
-function sdcppProfileRuntimeConfig(profile: {
-  profileKey: string;
-  version: number;
-  pipelineModel: string;
-  sourceModelPath: string | null;
-  convertedModelPath: string | null;
-  modelFormat: string;
-  runnerConfig: Prisma.JsonValue | null;
-  steps: number;
-  sampler: string;
-  scheduler: string;
-  cfgScale: number;
-  defaultWidth: number;
-  defaultHeight: number;
-}) {
-  const config = jsonRecord(profile.runnerConfig);
-  const conversion = jsonRecord(config.conversion);
-  return pruneUndefined({
-    profileKey: profile.profileKey,
-    profileVersion: profile.version,
-    apiModelId: profile.pipelineModel,
-    modelFormat: profile.modelFormat,
-    sourceModelPath: profile.sourceModelPath,
-    convertedModelPath: profile.convertedModelPath,
-    modelPath: stringFromRecord(config, "modelPath"),
-    diffusionModelPath: stringFromRecord(config, "diffusionModelPath"),
-    llmPath: stringFromRecord(config, "llmPath"),
-    vaePath: stringFromRecord(config, "vaePath"),
-    llmVisionPath: stringFromRecord(config, "llmVisionPath"),
-    clipLPath: stringFromRecord(config, "clipLPath"),
-    clipGPath: stringFromRecord(config, "clipGPath"),
-    t5xxlPath: stringFromRecord(config, "t5xxlPath"),
-    backend: stringFromRecord(config, "backend"),
-    loraModelDir: stringFromRecord(config, "loraModelDir"),
-    loraApplyMode: stringFromRecord(config, "loraApplyMode"),
-    loras: normalizeSdcppLoras(config.loras),
-    conversion:
-      conversion.enabled === true
-        ? pruneUndefined({
-            enabled: true,
-            targetFormat: "gguf",
-            outputPath: stringFromRecord(conversion, "outputPath") ?? profile.convertedModelPath,
-            type: stringFromRecord(conversion, "type") ?? "q8_0",
-            sourceArg: stringFromRecord(conversion, "sourceArg") ?? "model",
-            convertName: conversion.convertName === true,
-            tensorTypeRules: stringFromRecord(conversion, "tensorTypeRules"),
-          })
-        : undefined,
-    steps: profile.steps,
-    sampler: profile.sampler,
-    scheduler: profile.scheduler,
-    cfgScale: profile.cfgScale,
-    defaultWidth: profile.defaultWidth,
-    defaultHeight: profile.defaultHeight,
-  });
-}
-
-function normalizeSdcppLoras(value: unknown) {
-  if (!Array.isArray(value)) return undefined;
-  const loras = value
-    .filter(isRecord)
-    .map((item) =>
-      pruneUndefined({
-        key: stringFromRecord(item, "key"),
-        path: stringFromRecord(item, "path"),
-        weight: typeof item.weight === "number" && Number.isFinite(item.weight) ? item.weight : 1,
-        enabled: item.enabled !== false,
-      }),
-    )
-    .filter((item) => typeof item.key === "string" || typeof item.path === "string");
-  return loras.length ? loras : undefined;
 }
 
 async function patchAssetMetadata(

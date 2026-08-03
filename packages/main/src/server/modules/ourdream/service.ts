@@ -11127,15 +11127,19 @@ async function appendGenerationEvent(
   });
 }
 
-function generationModelCapabilities(runner: string, runnerConfig: Prisma.JsonValue) {
+// SPEC: capability defaults for a profile that declares nothing.
+// INTENT: `initImage` defaults to false. The old default was `runner === "sd_cpp"`,
+// the only runner treated as intrinsically img2img-capable; that runner is retired
+// and no surviving profile relied on the implicit default (every row declares
+// `initImage` explicitly), so this is a zero-row behavior change.
+function generationModelCapabilities(runnerConfig: Prisma.JsonValue) {
   const config = jsonRecord(runnerConfig);
   const capabilities = jsonRecord(config.capabilities);
-  const initImageDefault = runner === "sd_cpp";
   return {
     textToImage: booleanFromRecord(capabilities, "textToImage", true),
     stableSeed: booleanFromRecord(capabilities, "stableSeed", true),
     referenceImages: booleanFromRecord(capabilities, "referenceImages", false),
-    initImage: booleanFromRecord(capabilities, "initImage", initImageDefault),
+    initImage: booleanFromRecord(capabilities, "initImage", false),
     lora: booleanFromRecord(capabilities, "lora", false),
   };
 }
@@ -11257,10 +11261,7 @@ function generationProfileReferenceIncompatibilities(input: {
   readonly sourceImageAssetId: string | null;
   readonly lookReferenceAssetId: string | null;
 }) {
-  const capabilities = generationModelCapabilities(
-    input.profile.runner,
-    input.profile.runnerConfig ?? {},
-  );
+  const capabilities = generationModelCapabilities(input.profile.runnerConfig ?? {});
   const reasons: string[] = [];
   if (
     (
@@ -11661,10 +11662,11 @@ async function isPublicTextToImageGenerationProfile(
     );
   }
 
-  // A profile without a declarative workflow still needs affirmative runtime
-  // authority. sd.cpp is intrinsically text-to-image unless explicitly
-  // disabled; every other runner must declare the capability itself.
-  return configuredTextToImage === true || profile.runner === "sd_cpp";
+  // INVARIANT: a profile without a declarative workflow needs affirmative runtime
+  // authority — it must declare textToImage itself. The one runner that used to be
+  // admitted implicitly (sd_cpp, intrinsically text-to-image) is retired; every
+  // profile that actually reaches public selection declares the capability.
+  return configuredTextToImage === true;
 }
 
 async function filterPublicTextToImageGenerationProfiles<
@@ -11705,10 +11707,7 @@ async function projectPublicImageEditGenerationProfiles<
         publicSelection.surface !== "generator_image_edit" ||
         profile.mode !== "image" ||
         !isExecutableGenerationProfile(profile) ||
-        !generationModelCapabilities(
-          profile.runner,
-          profile.runnerConfig ?? {},
-        ).initImage
+        !generationModelCapabilities(profile.runnerConfig ?? {}).initImage
       ) {
         return null;
       }
