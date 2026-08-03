@@ -15,6 +15,7 @@ import {
   type VideoGeneratePayload,
 } from "@idream/shared/contracts";
 import { env } from "./env";
+import type { GenAdapter } from "./provider-vocabulary";
 import {
   assertGeneratedImageSanity,
   GeneratedImageSanityError,
@@ -369,7 +370,7 @@ function assertWorkerAdapterMatchesRecordedProvider(
 // was retired once db/sql/2026-08-03-generation-model-profile-runner-retire-sd-cpp.sql
 // rewrote the surviving rows to `comfyui` — the same adapter, so nothing changed
 // but the vocabulary. Whatever the runner says, the descriptor decides.
-export function workerAdapterForRecordedProvider(provider: string) {
+export function workerAdapterForRecordedProvider(provider: string): GenAdapter {
   switch (provider) {
     case "mock":
     case "backend":

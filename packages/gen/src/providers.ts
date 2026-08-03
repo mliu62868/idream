@@ -19,6 +19,7 @@ import { BackendImageModel } from "./backend/backend-image-model";
 import { BackendVideoModel } from "./backend/backend-video-model";
 import { buildBackendRegistry, type BackendRegistry } from "./backend/registry";
 import { env } from "./env";
+import type { GenAdapter } from "./provider-vocabulary";
 
 export interface ProviderFailure {
   code: string;
@@ -621,42 +622,50 @@ function buildBackendImageModel(): ImageModel {
 
 function buildImageModel(): ImageModel {
   assertProductionProviderReady("image");
-  if (env.IMAGE_PROVIDER === "mock") return new MockImageModel();
-  if (env.IMAGE_PROVIDER === "backend") return buildBackendImageModel();
-  // Legacy external OpenAI-compatible gateway (self-hosted models behind a
-  // separate pipeline service). Retained as the documented production rollback —
-  // see PRODUCTION_ADAPTERS below. GEN_IMAGE_PROVIDER=backend instead talks to
-  // ComfyUI/Draw Things directly via the workflow-native GenBackend abstraction.
-  if (env.IMAGE_PROVIDER === "pipeline") return new PipelineImageModel();
-  throw new Error(`Unsupported image provider: ${env.IMAGE_PROVIDER}`);
+  switch (env.IMAGE_PROVIDER) {
+    case "mock":
+      return new MockImageModel();
+    case "backend":
+      return buildBackendImageModel();
+    // Legacy external OpenAI-compatible gateway (self-hosted models behind a
+    // separate pipeline service). Retained as the documented production rollback —
+    // see PRODUCTION_ADAPTERS below. GEN_IMAGE_PROVIDER=backend instead talks to
+    // ComfyUI/Draw Things directly via the workflow-native GenBackend abstraction.
+    case "pipeline":
+      return new PipelineImageModel();
+  }
 }
 
 function buildVideoModel(): VideoModel {
   assertProductionProviderReady("video");
-  if (env.VIDEO_PROVIDER === "mock") return new MockVideoModel();
-  if (env.VIDEO_PROVIDER === "backend") {
-    return new BackendVideoModel(getBackendRegistry());
+  switch (env.VIDEO_PROVIDER) {
+    case "mock":
+      return new MockVideoModel();
+    case "backend":
+      return new BackendVideoModel(getBackendRegistry());
+    case "pipeline":
+      return new PipelineVideoModel();
   }
-  if (env.VIDEO_PROVIDER === "pipeline") return new PipelineVideoModel();
-  throw new Error(`Unsupported video provider: ${env.VIDEO_PROVIDER}`);
 }
 
 function buildBlobStore(): BlobStore {
   assertProductionBlobReady();
-  if (env.BLOB_PROVIDER === "mock") return new MockBlobStore();
-  if (env.BLOB_PROVIDER === "r2" || env.BLOB_PROVIDER === "s3") {
-    return new S3CompatibleBlobStore({
-      endpoint: requireBlobEnv("BLOB_ENDPOINT", env.BLOB_ENDPOINT),
-      bucket: requireBlobEnv("BLOB_BUCKET", env.BLOB_BUCKET),
-      region: env.BLOB_REGION,
-      accessKeyId: requireBlobEnv("BLOB_ACCESS_KEY_ID", env.BLOB_ACCESS_KEY_ID),
-      secretAccessKey: requireBlobEnv(
-        "BLOB_SECRET_ACCESS_KEY",
-        env.BLOB_SECRET_ACCESS_KEY,
-      ),
-    });
+  switch (env.BLOB_PROVIDER) {
+    case "mock":
+      return new MockBlobStore();
+    case "r2":
+    case "s3":
+      return new S3CompatibleBlobStore({
+        endpoint: requireBlobEnv("BLOB_ENDPOINT", env.BLOB_ENDPOINT),
+        bucket: requireBlobEnv("BLOB_BUCKET", env.BLOB_BUCKET),
+        region: env.BLOB_REGION,
+        accessKeyId: requireBlobEnv("BLOB_ACCESS_KEY_ID", env.BLOB_ACCESS_KEY_ID),
+        secretAccessKey: requireBlobEnv(
+          "BLOB_SECRET_ACCESS_KEY",
+          env.BLOB_SECRET_ACCESS_KEY,
+        ),
+      });
   }
-  throw new Error(`Unsupported blob provider: ${env.BLOB_PROVIDER}`);
 }
 
 function buildModerationProvider(): ModerationProvider {
@@ -693,7 +702,7 @@ function buildModerationProvider(): ModerationProvider {
 // LTX 2.3 I2V and only BackendVideoModel enforces that runtime envelope
 // (768x1152, 25fps, ~4s, ffprobe/ffmpeg-verified decode); a generic gateway
 // cannot, so admitting one would let unverified media settle as succeeded.
-const PRODUCTION_ADAPTERS: Record<"image" | "video", readonly string[]> = {
+const PRODUCTION_ADAPTERS: Record<"image" | "video", readonly GenAdapter[]> = {
   image: ["backend", "pipeline"],
   video: ["backend"],
 };
@@ -705,10 +714,8 @@ export function assertProductionProviderReady(kind: "image" | "video") {
     // before it accepts its first paid request.
     void env.VIDEO_TIMEOUT_MS;
   }
-  const supported = ["mock", "pipeline", "backend"];
-  if (!supported.includes(provider)) {
-    throw new Error(`Unsupported ${kind} provider: ${provider}`);
-  }
+  // 词表检查已经由 env getter 的解析完成 —— 读到 `provider` 这一行就意味着它
+  // 是 GenAdapter 的成员，此处只剩"生产环境允许哪几个"这条**策略**。
   if (process.env.APP_ENV !== "production") return;
 
   if (provider === "mock") {
@@ -755,9 +762,7 @@ export function assertProductionBlobReady() {
   if (env.BLOB_PROVIDER === "mock") {
     throw new Error("Production generation requires a non-mock blob provider");
   }
-  if (env.BLOB_PROVIDER !== "r2" && env.BLOB_PROVIDER !== "s3") {
-    throw new Error(`Unsupported blob provider: ${env.BLOB_PROVIDER}`);
-  }
+  // 词表之外的值在 env getter 上就抛了，这里剩下的只可能是 r2/s3。
   requireBlobEnv("BLOB_ENDPOINT", env.BLOB_ENDPOINT);
   requireBlobEnv("BLOB_BUCKET", env.BLOB_BUCKET);
   requireBlobEnv("BLOB_ACCESS_KEY_ID", env.BLOB_ACCESS_KEY_ID);

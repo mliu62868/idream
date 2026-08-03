@@ -16,6 +16,12 @@ import {
   mainWebUrlOrigin,
   resolveAlias,
 } from "@idream/shared/env";
+import {
+  parseGenAdapter,
+  parseGenBlobAdapter,
+  type GenAdapter,
+  type GenBlobAdapter,
+} from "./provider-vocabulary";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import "dotenv/config";
@@ -63,8 +69,10 @@ export const env = {
     return resolveLocalBlobRoot();
   },
   /** Private generated media store. Use mock locally; r2/s3 in production. */
-  get BLOB_PROVIDER(): string {
-    return process.env.GEN_BLOB_PROVIDER ?? process.env.BLOB_PROVIDER ?? "mock";
+  get BLOB_PROVIDER(): GenBlobAdapter {
+    return parseGenBlobAdapter(
+      process.env.GEN_BLOB_PROVIDER ?? process.env.BLOB_PROVIDER ?? "mock",
+    );
   },
   get BLOB_ENDPOINT(): string | undefined {
     return process.env.BLOB_ENDPOINT;
@@ -82,12 +90,12 @@ export const env = {
     return resolveAlias(BLOB_SECRET_ACCESS_KEY_ALIASES);
   },
   /** Image provider switch. Production uses the backend (ComfyUI/Draw Things) provider. */
-  get IMAGE_PROVIDER(): string {
-    return process.env.GEN_IMAGE_PROVIDER ?? "mock";
+  get IMAGE_PROVIDER(): GenAdapter {
+    return parseGenAdapter("image", process.env.GEN_IMAGE_PROVIDER ?? "mock");
   },
   /** Video provider switch. Production can use the workflow-native backend. */
-  get VIDEO_PROVIDER(): string {
-    return process.env.GEN_VIDEO_PROVIDER ?? "mock";
+  get VIDEO_PROVIDER(): GenAdapter {
+    return parseGenAdapter("video", process.env.GEN_VIDEO_PROVIDER ?? "mock");
   },
   /** Moderation provider for generation input/output gates. */
   get MODERATION_PROVIDER(): string {
