@@ -1,5 +1,5 @@
 import { Prisma } from "@prisma/client";
-import type { TodaySourceType, TodayWorkItem } from "@idream/shared/admin";
+import type { TodayWorkItem } from "@idream/shared/admin";
 import { caseSeverityForPriority } from "@/server/modules/admin-v2/cases/case-severity";
 
 export type WorkSeverity = TodayWorkItem["severity"];
@@ -137,16 +137,3 @@ export const CHARACTER_PROJECT_MENTION_SEVERITY = {
       THEN ${rank("high")} ELSE ${rank("medium")} END`;
   },
 } as const;
-
-/**
- * 只为编译期完整性：新增一个 TodaySourceType 而不声明它的紧急度规则是编译错误。
- * collaboration_mention 没有自己的紧急度 —— 它照抄被提及对象的，故显式记为 inherited。
- */
-export const WORK_SOURCE_SEVERITY: Record<TodaySourceType, { readonly kind: "own" | "inherited" }> = {
-  admin_case: { kind: "own" },
-  ops_incident: { kind: "own" },
-  control_plane_command: { kind: "own" },
-  character_release: { kind: "own" },
-  creative_run: { kind: "own" },
-  collaboration_mention: { kind: "inherited" },
-};

@@ -719,6 +719,7 @@ function projectRow(
       claim: item.ownerId === null && permissions.has("creative.run.write") ? { entityVersion: item.version } : null,
     };
   }
+  if (row.sourceType !== "control_plane_command") return absurd(row);
   const item = row.row;
   const verificationState = commandVerification(item.status);
   return {
@@ -749,6 +750,11 @@ function projectRow(
     preferenceVersion: preferenceVersions.get(`${row.sourceType}:${item.id}`) ?? 0,
     claim: null,
   };
+}
+
+/** 新增一种工作来源却没在 projectRow 里投影，是编译错误，不是静默落到最后一个分支。 */
+function absurd(row: never): never {
+  throw new Error(`Unprojected Today work source: ${JSON.stringify(row)}`);
 }
 
 function rankingReason(severity: TodayWorkItem["severity"], dueAt: Date | null, createdAt: Date) {
