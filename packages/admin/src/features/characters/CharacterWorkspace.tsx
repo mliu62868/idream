@@ -77,6 +77,7 @@ import {
   setWorkspaceUrl,
 } from "@/lib/admin-v2-api";
 import {
+  useAuthorityResource,
   usePollingTask,
   type PollDecision,
   type PollingTask,
@@ -1453,6 +1454,13 @@ export function CharacterListEmptyState({
   );
 }
 
+// INTENT: 稳定引用，避免"投影还没到"时每次渲染都换一个新的空值。
+const EMPTY_PORTFOLIO_ITEMS: readonly CharacterPortfolioItem[] = [];
+const EMPTY_PORTFOLIO_PAGE_INFO = {
+  endCursor: null,
+  hasNextPage: false,
+} as const;
+
 function CharacterPortfolio({
   canOpenAssets,
   canCreate,
@@ -1468,99 +1476,80 @@ function CharacterPortfolio({
 }) {
   const { locale, t } = useAdminI18n();
   const performanceMode = mode === "performance";
-  const [items, setItems] = useState<CharacterPortfolioItem[]>([]);
   const [search, setSearch] = useState("");
   const [phase, setPhase] = useState("");
   const [servingState, setServingState] = useState("");
   const [readiness, setReadiness] = useState("");
   const [attention, setAttention] = useState(false);
-  const [cursor, setCursor] = useState<string | undefined>();
-  const [pageInfo, setPageInfo] = useState<{
-    endCursor: string | null;
-    hasNextPage: boolean;
-  }>({ endCursor: null, hasNextPage: false });
-  const [asOf, setAsOf] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const requestGate = useRef(createLatestRequestGate());
-  const successfulQueryKey = useRef<string | null>(null);
+  // SPEC: 已生效的查询与筛选表单草稿分开保存。
+  // INTENT: 上面六个 state 直接绑在输入框上，改一个下拉不该触发取数——只有 Apply /
+  //         翻页 / 地址栏恢复才更新 applied，也就是 useAuthorityResource 的 query key。
+  const [applied, setApplied] = useState<CharacterPortfolioUrlState>(
+    () => ({ search: "" }),
+  );
 
-  const load = useCallback(
-    async (
+  const portfolio = useAuthorityResource({
+    key: characterPortfolioQuery(applied, true),
+    enabled: canRead,
+    load: useCallback(async () => {
+      try {
+        return await adminV2Request(
+          `/api/v2/admin/characters/portfolio?${characterPortfolioQuery(applied, true)}`,
+          { schema: characterPortfolioResponseSchema },
+        );
+      } catch (reason) {
+        // INTENT: 两种模式各有一句能读懂的兜底；抛出去让 resource 统一收成 error。
+        throw reason instanceof Error ? reason : new Error(
+          performanceMode
+            ? "Character portfolio could not be loaded"
+            : "Characters could not be loaded",
+        );
+      }
+    }, [applied, performanceMode]),
+  });
+  const items = portfolio.data?.items ?? EMPTY_PORTFOLIO_ITEMS;
+  const pageInfo = portfolio.data?.pageInfo ?? EMPTY_PORTFOLIO_PAGE_INFO;
+  const asOf = portfolio.data?.asOf ?? null;
+  const loading = portfolio.loading;
+  const error = portfolio.error;
+
+  const applyQuery = useCallback(
+    (
       next: CharacterPortfolioUrlState,
       historyMode: "none" | "push" | "replace",
     ) => {
-      if (!canRead) return;
-      const request = requestGate.current.begin();
-      const queryKey = JSON.stringify(next);
-      if (successfulQueryKey.current !== queryKey) {
-        setItems([]);
-        setPageInfo({ endCursor: null, hasNextPage: false });
-        setAsOf(null);
-      }
-      setLoading(true);
-      setError(null);
-      try {
-        const query = characterPortfolioQuery(next, true);
-        if (historyMode !== "none") {
-          const locationQuery = characterPortfolioQuery(next);
-          window.history[historyMode === "push" ? "pushState" : "replaceState"](
-            null,
-            "",
-            `${window.location.pathname}${locationQuery ? `?${locationQuery}` : ""}`,
-          );
-        }
-        const data = await adminV2Request(
-          `/api/v2/admin/characters/portfolio?${query}`,
-          { schema: characterPortfolioResponseSchema },
-        );
-        if (!request.isCurrent()) return;
-        setItems([...data.items]);
-        setPageInfo(data.pageInfo);
-        setAsOf(data.asOf);
-        successfulQueryKey.current = queryKey;
-      } catch (reason) {
-        if (request.isCurrent()) {
-          setError(
-            reason instanceof Error
-              ? reason.message
-              : performanceMode
-                ? "Character portfolio could not be loaded"
-                : "Characters could not be loaded",
-          );
-        }
-      } finally {
-        if (request.isCurrent()) setLoading(false);
-      }
-    },
-    [canRead, performanceMode],
-  );
-
-  useEffect(() => {
-    const gate = requestGate.current;
-    const restore = (historyMode: "none" | "replace") => {
-      const next = parseCharacterPortfolioUrl(window.location.search);
       setSearch(next.search);
       setPhase(next.phase ?? "");
       setServingState(next.servingState ?? "");
       setReadiness(next.readiness ?? "");
       setAttention(next.attention ?? false);
-      setCursor(next.cursor);
-      void load(next, historyMode);
+      setApplied(next);
+      if (historyMode !== "none") {
+        const locationQuery = characterPortfolioQuery(next);
+        window.history[historyMode === "push" ? "pushState" : "replaceState"](
+          null,
+          "",
+          `${window.location.pathname}${locationQuery ? `?${locationQuery}` : ""}`,
+        );
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const restore = (historyMode: "none" | "replace") => {
+      applyQuery(parseCharacterPortfolioUrl(window.location.search), historyMode);
     };
-    const timer = window.setTimeout(() => restore("replace"), 0);
+    // INTENT: 挂载时同步恢复即可——resource 的首轮取数排在 setTimeout(…, 0) 里，
+    //         这一句先落地，那一轮就直接带着地址栏里的查询发出去，不会先打一发空查询。
+    restore("replace");
     const onPopState = () => restore("none");
     window.addEventListener("popstate", onPopState);
-    return () => {
-      gate.invalidate();
-      window.clearTimeout(timer);
-      window.removeEventListener("popstate", onPopState);
-    };
-  }, [load]);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [applyQuery]);
 
   function apply(nextCursor?: string) {
-    setCursor(nextCursor);
-    void load(
+    applyQuery(
       {
         search,
         phase: phase || undefined,
@@ -1580,9 +1569,7 @@ function CharacterPortfolio({
   // INTENT: 「需要处理」是发现入口，不是第四个下拉——藏进 More filters 折叠等于没人会用。
   function toggleAttention() {
     const next = !attention;
-    setAttention(next);
-    setCursor(undefined);
-    void load(
+    applyQuery(
       {
         search,
         phase: phase || undefined,
@@ -1595,11 +1582,7 @@ function CharacterPortfolio({
   }
 
   function clearStatusFilters() {
-    setPhase("");
-    setServingState("");
-    setReadiness("");
-    setCursor(undefined);
-    void load({ search, attention: attention || undefined }, "push");
+    applyQuery({ search, attention: attention || undefined }, "push");
   }
 
   const statusFilterControls = (
@@ -1774,19 +1757,7 @@ function CharacterPortfolio({
           {error}{" "}
           <button
             className="ml-2 underline"
-            onClick={() =>
-              void load(
-                {
-                  search,
-                  phase: phase || undefined,
-                  servingState: servingState || undefined,
-                  readiness: readiness || undefined,
-                  attention: attention || undefined,
-                  cursor,
-                },
-                "none",
-              )
-            }
+            onClick={() => void portfolio.refresh()}
             type="button"
           >
             {t("Retry")}
@@ -1809,15 +1780,7 @@ function CharacterPortfolio({
               filtered={Boolean(
                 search || phase || servingState || readiness || attention,
               )}
-              onClear={() => {
-                setSearch("");
-                setPhase("");
-                setServingState("");
-                setReadiness("");
-                setAttention(false);
-                setCursor(undefined);
-                void load({ search: "" }, "push");
-              }}
+              onClear={() => applyQuery({ search: "" }, "push")}
             />
           )
         ) : (
