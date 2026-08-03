@@ -41,11 +41,6 @@ const SINGLE_CONSUMER_LEDGER: Record<string, { consumer: string; reason: string 
     reason:
       "Same shape as ./admin/contracts — admin reaches these symbols via the `@idream/shared/admin` barrel; main imports the narrow subpath because its route-manifest guard test loads it standalone.",
   },
-  "@idream/shared/admin/workspace-access": {
-    consumer: "admin",
-    reason:
-      "admin-only, but it CANNOT move to main: ADR-11 forbids admin from importing main. Moving it into packages/admin is the real fix and requires editing admin's import sites. Until then it stays here as genuinely-admin-owned content parked in shared.",
-  },
 };
 
 // INVARIANT: 只扫源码。构建产物里留着搬家前的旧 import（.next-runtime 的 release 快照就是

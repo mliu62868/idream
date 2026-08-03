@@ -29,7 +29,7 @@ import {
 import {
   ADMIN_V2_WORKSPACE_ACCESS,
   type AdminV2WorkspaceAccessKey,
-} from "@idream/shared/admin/workspace-access";
+} from "./workspace-access";
 import type { AdminPermissionKey } from "@idream/shared/admin/permissions";
 
 export const ADMIN_WORKSPACES = [

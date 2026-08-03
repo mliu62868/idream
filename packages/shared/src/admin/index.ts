@@ -3,7 +3,6 @@ export * from "./permissions";
 export * from "./api-manifest";
 export * from "./contract-registry";
 export * from "./mutation-transport";
-export * from "./workspace-access";
 export * from "./errors";
 export * from "./operational-slo";
 export * from "./character-qa-authority";
