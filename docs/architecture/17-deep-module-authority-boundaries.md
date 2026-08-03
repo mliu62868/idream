@@ -174,6 +174,14 @@ authenticate
 
 领域 mutation 继续拥有自己的业务不变量；通用执行入口不解释 Character、Incident、Billing 等领域规则。
 
+#### 2.3.1 body 解析只有一次，且由 manifest 键控
+
+此前 `jsonBody(request)` 内部已按 manifest 查找并解析，但约 40 个 route handler 又手工 import 一个 request schema 再 parse 一遍。那行手工 import 是**第三处**契约引用：manifest 的字符串 ref 是第一处、registry 的可执行 schema 是第二处，而没有任何测试对账第三处。import 错同域相似的 schema，运行时会先按 manifest 收窄、再按 handler 收窄，**大概率静默通过**。
+
+现在 `jsonBody(request, ref)` 返回 `z.infer`，route 文件里 request schema 的 import 数为 0。运行时补一条：声明的 ref 与 method+path 解析出的 manifest 条目不符即失败关闭，且该断言必须排在 per-Request 解析缓存**之前**——否则两次声明不同契约的调用会共用同一次 parse 结果。
+
+守卫的禁用名单**从 manifest 推导**而非硬编码符号名（非 GET 操作的 request ref 去掉 transport 后缀即为 body 契约集合），并断言扫到的 route 文件数等于 manifest 去重路由数。
+
 ### 2.4 每个聚合拥有唯一 transition Interface
 
 共享层保留状态集合、允许边和小型纯函数，不建立万能工作流引擎。
@@ -299,6 +307,11 @@ type CharacterProductionJourney = {
 | 退款金额与幂等身份 | `refundGenerationRequest` | 类型化 refund cause |
 | 跨服务 env 默认值 | `shared/contracts/env` | 变量名（判据：两进程取值不同就会坏） |
 | chat 轮次写入协议 | `withTurnAuthority` | userId / sessionId + 回调 |
+| 生成报价与提交校验 | `ourdream/generation-quote` | 六字段令牌（含双指纹） |
+| Admin 写请求 body 解析 | `jsonBody(request, ref)` | manifest contract ref |
+| 上线门禁证据形状 | `server/readiness/evidence` | probe 名（生产端必填 / 消费端全可选） |
+| 前端一次生成请求 | `lib/generation-request` | submit / retry / applyServerJob / refreshQuote |
+| 两侧前端取数编排 | `useViewerResource` / `useAuthorityResource` | path + parser（+ 轮询策略） |
 
 ## 3.1 守卫的形状决定它能抓住什么
 
