@@ -42,7 +42,7 @@ import {
   updateDurableMutationIntent,
   type DurableMutationIntent,
 } from "@/lib/durable-mutation-intent";
-import { usePollingTask, type PollingTask } from "@/lib/authority-resource";
+import { useAuthorityResource } from "@/lib/authority-resource";
 import { reconcileDurableMutationIntent } from "@/lib/durable-mutation-recovery";
 import { cn } from "@/lib/utils";
 
@@ -231,6 +231,9 @@ export function formatGenerationEstimateDuration(durationMs: number) {
 // 两种失败都要盖到：error 事件（有明确 MediaError）与静默停滞（连元数据都没拿到）。
 const VIDEO_STALL_TIMEOUT_MS = 15_000;
 
+// INTENT: 稳定引用，避免"列表还没到"时每次渲染都换一个空数组。
+const EMPTY_VIDEO_RUNS: readonly CreativeRun[] = [];
+
 const videoErrorReasons: Record<number, string> = {
   1: "Playback was aborted before the video loaded.",
   2: "The video download failed. Check network access to the asset URL.",
@@ -321,9 +324,12 @@ export function CharacterVideoStudio({
       "Subtle natural breathing, a gentle smile, and direct eye contact. Keep the camera steady and preserve the exact face and background.",
     )
   );
-  const [runs, setRuns] = useState<CreativeRun[]>([]);
-  const [selectedRun, setSelectedRun] = useState<CreativeRunDetail | null>(null);
-  const [loading, setLoading] = useState(permissions.read);
+  // SPEC: 选中哪个 Run 是这一屏唯一的"取数身份"；null 表示跟随列表最新一条。
+  // INTENT: 原来 loadRuns 与 loadRun 互写 runs/selectedRun 两份 state——列表取完顺手把
+  //         第一条的详情也取了，详情取完又把自己塞回列表。两条路径都能改对方的状态，
+  //         "现在到底在看哪个 Run"没有单一出处。改成 id 驱动后，列表与详情各是一份
+  //         只读投影，谁也写不了对方。
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [busy, setBusy] = useState<"create" | "review" | "refresh" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -339,9 +345,34 @@ export function CharacterVideoStudio({
   const [reviewIntent, setReviewIntent] = useState<DurableMutationIntent | null>(
     () => readActiveDurableMutationIntent({ scope: reviewIntentScope }),
   );
-  const videoPollFailures = useRef(0);
+  const runList = useAuthorityResource({
+    key: data.character.id,
+    enabled: permissions.read,
+    load: useCallback(async () => {
+      const query = new URLSearchParams({
+        limit: "20",
+        purpose: "character_video",
+        targetType: "character",
+        targetId: data.character.id,
+        sort: "updated_desc",
+      });
+      const response = await adminV2Request(
+        `/api/v2/admin/creative/runs?${query}`,
+        { schema: creativeRunListResponseSchema },
+      );
+      // INVARIANT: 这一屏只认 character_video，串了别的 purpose 宁可整块报错也不渲染。
+      if (response.items.some((run) => run.purpose !== "character_video")) {
+        throw new Error("The Character video query returned a non-video Run.");
+      }
+      return [...response.items];
+    }, [data.character.id]),
+  });
+  const listedRuns = runList.data ?? EMPTY_VIDEO_RUNS;
+  // SPEC: 没有显式选择时看最新一条。
+  const activeRunId = selectedRunId ?? listedRuns[0]?.id ?? null;
 
-  const loadRun = useCallback(async (runId: string) => {
+  // INVARIANT: 详情必须是这个 Character 的视频 Run；不是就报错，不渲染别人的画面。
+  const fetchRunDetail = useCallback(async (runId: string) => {
     const detail = await adminV2Request(
       `/api/v2/admin/creative/runs/${runId}`,
       { schema: creativeRunDetailSchema },
@@ -353,94 +384,56 @@ export function CharacterVideoStudio({
     ) {
       throw new Error("The selected video Run does not belong to this Character.");
     }
-    setSelectedRun(detail);
-    setRuns((current) =>
-      current.some((run) => run.id === detail.id)
-        ? current
-        : [detail, ...current]
-    );
     return detail;
   }, [data.character.id]);
 
-  const loadRuns = useCallback(async () => {
-    if (!permissions.read) return [];
-    const query = new URLSearchParams({
-      limit: "20",
-      purpose: "character_video",
-      targetType: "character",
-      targetId: data.character.id,
-      sort: "updated_desc",
-    });
-    const response = await adminV2Request(
-      `/api/v2/admin/creative/runs?${query}`,
-      { schema: creativeRunListResponseSchema },
-    );
-    if (response.items.some((run) => run.purpose !== "character_video")) {
-      throw new Error("The Character video query returned a non-video Run.");
-    }
-    const videoRuns = [...response.items];
-    setRuns(videoRuns);
-    if (videoRuns[0]) await loadRun(videoRuns[0].id);
-    else setSelectedRun(null);
-    return videoRuns;
-  }, [data.character.id, loadRun, permissions.read]);
+  const runDetail = useAuthorityResource(
+    {
+      key: activeRunId ?? "",
+      enabled: permissions.read && activeRunId !== null,
+      load: useCallback(
+        () => fetchRunDetail(activeRunId ?? ""),
+        [activeRunId, fetchRunDetail],
+      ),
+    },
+    {
+      // SPEC: 生成中的视频 Run 每 5s 刷新一次；连续失败按 2 倍退避，封顶 40s。
+      // INTENT: 这里最早是无退避的 setInterval——后端一旦不稳，它会以固定 5s 持续加压，
+      //         而且 setInterval 不等上一轮返回，慢响应时请求会叠在一起。
+      pollWhile: ({ data: detail, consecutiveFailures }) =>
+        detail && ["pending", "running"].includes(detail.executionOutcome)
+          ? 5_000 * 2 ** Math.min(consecutiveFailures, 3)
+          : null,
+    },
+  );
+  const selectedRun = runDetail.data;
+  // SPEC: 刚创建、还没进过列表的 Run 也要出现在历史里。
+  // INTENT: 这是从两份只读投影推出来的，不再是 loadRun 往 runs 里回写的副作用。
+  const runs: readonly CreativeRun[] =
+    selectedRun && !listedRuns.some((run) => run.id === selectedRun.id)
+      ? [selectedRun, ...listedRuns]
+      : listedRuns;
+  // SPEC: loading 只表示"这一屏还没有可看的内容"，前台刷新不清空已有画面。
+  const loading =
+    (runList.loading && runList.data === null) ||
+    (activeRunId !== null && runDetail.loading && selectedRun === null);
 
-  useEffect(() => {
-    if (!permissions.read) return;
-    let cancelled = false;
-    const timer = window.setTimeout(async () => {
-      setLoading(true);
-      try {
-        await loadRuns();
-      } catch (cause) {
-        if (!cancelled) {
-          setError(
-            cause instanceof Error
-              ? cause.message
-              : "Character videos could not be loaded",
-          );
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }, 0);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [loadRuns, permissions.read]);
-
-  // SPEC: 生成中的视频 Run 每 5s 刷新一次；连续失败按 2 倍退避，封顶 40s。
-  // INTENT: 这里原本是无退避的 setInterval——后端一旦不稳，它会以固定 5s 持续加压，
-  //         而且 setInterval 不等上一轮返回，慢响应时请求会叠在一起。
-  const pollingRunId =
-    selectedRun && ["pending", "running"].includes(selectedRun.executionOutcome)
-      ? selectedRun.id
-      : null;
-  const pollVideoRun = useCallback<PollingTask>(async () => {
-    if (!pollingRunId) return null;
-    try {
-      await loadRun(pollingRunId);
-      videoPollFailures.current = 0;
-      return 5_000;
-    } catch (cause: unknown) {
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : "Video progress could not be refreshed",
-      );
-      videoPollFailures.current += 1;
-      return 5_000 * 2 ** Math.min(videoPollFailures.current, 3);
-    }
-  }, [loadRun, pollingRunId]);
-  usePollingTask(pollingRunId ? pollVideoRun : null, 5_000);
+  const { setData: setRunDetailData } = runDetail;
+  // SPEC: 恢复/校验路径已经拿到 detail 了，直接让它成为当前 Run。
+  // INTENT: 换 Run 时 setData 写在旧 key 上会立刻被新一轮取数覆盖成同一份数据，
+  //         所以两句都发无需分支；同 Run 时 setData 才是真正生效的那一句。
+  const showRun = useCallback((detail: CreativeRunDetail) => {
+    setSelectedRunId(detail.id);
+    setRunDetailData(detail);
+  }, [setRunDetailData]);
 
   const verifyCreatedRun = async (
     intent: DurableMutationIntent,
     body: CharacterVideoCreateRequest,
     runId: string,
   ) => {
-    const detail = await loadRun(runId);
+    const detail = await fetchRunDetail(runId);
+    showRun(detail);
     if (!createdRunProjectionMatches(detail, body)) {
       throw new Error(
         "The exact created video Run is not present in the latest projection yet.",
@@ -628,12 +621,9 @@ export function CharacterVideoStudio({
     setBusy("refresh");
     setError(null);
     try {
-      if (selectedRun) await loadRun(selectedRun.id);
-      else await loadRuns();
-    } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : "Character videos could not be refreshed",
-      );
+      // SPEC: 有选中 Run 就只刷它，否则刷列表——列表刷完自然带出最新一条的详情。
+      if (activeRunId) await runDetail.refresh();
+      else await runList.refresh();
     } finally {
       setBusy(null);
     }
@@ -677,7 +667,8 @@ export function CharacterVideoStudio({
     intent: DurableMutationIntent,
     snapshot: CharacterVideoReviewSnapshot,
   ) => {
-    const detail = await loadRun(snapshot.runId);
+    const detail = await fetchRunDetail(snapshot.runId);
+    showRun(detail);
     const projected = detail.items.some(
       (item) =>
         item.id === snapshot.itemId &&
@@ -856,6 +847,14 @@ export function CharacterVideoStudio({
     }
   };
 
+  // SPEC: 写入失败优先，然后是详情取数失败（含轮询失败），最后才是列表失败。
+  // INTENT: 三种失败原来共用一个 error，谁最后写谁显示。拆开之后要显式定一个次序：
+  //         越靠近运营刚才那个动作的越先说。轮询失败当年就是红色报错，保持不变。
+  const shownError = error ??
+    runDetail.error ??
+    runDetail.refreshError ??
+    runList.error;
+
   if (!permissions.read) {
     return (
       <section className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-5">
@@ -869,7 +868,7 @@ export function CharacterVideoStudio({
 
   return (
     <section aria-labelledby="character-video-title" className="space-y-5">
-      {error ? <p className="rounded-lg bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">{t(error)}</p> : null}
+      {shownError ? <p className="rounded-lg bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">{t(shownError)}</p> : null}
       {message ? <p className="rounded-lg bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]" role="status">{t(message)}</p> : null}
       {reviewIntent ? (
         <div
@@ -1047,7 +1046,7 @@ export function CharacterVideoStudio({
                   <button
                     className={cn("rounded-md px-3 py-2 text-left text-xs", selectedRun?.id === run.id ? "bg-[var(--ad-surface-subtle)] font-semibold" : "hover:bg-[var(--ad-surface-subtle)]")}
                     key={run.id}
-                    onClick={() => void loadRun(run.id)}
+                    onClick={() => setSelectedRunId(run.id)}
                     type="button"
                   >
                     <span>{t("Video")} {index + 1}</span>
