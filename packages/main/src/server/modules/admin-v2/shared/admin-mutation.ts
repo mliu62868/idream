@@ -4,7 +4,8 @@ import {
   findAdminV2ApiOperation,
   requireExecutableAdminV2Contract,
   type AdminV2ApiOperation,
-  type AdminV2RequestContractRef,
+  type AdminV2DeclaredOperation,
+  type AdminV2DeclaredRequestRef,
   type ExecutableAdminV2Contract,
 } from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
@@ -20,7 +21,9 @@ import {
 import { acceptControlPlaneCommand } from "./control-plane-command";
 
 export type AdminMutationOperationDefinition = {
-  readonly operation: AdminV2ApiOperation & {
+  // INTENT: the declared union, not the widened operation — it keeps `contract.request` a ref
+  // the manifest actually owns, which is what `jsonBody` now demands.
+  readonly operation: AdminV2DeclaredOperation & {
     readonly mutation: NonNullable<AdminV2ApiOperation["mutation"]>;
   };
   readonly request: ExecutableAdminV2Contract;
@@ -201,7 +204,7 @@ function staticPermission(operation: AdminV2ApiOperation) {
   });
 }
 
-async function mutationBody(request: Request, contract: AdminV2RequestContractRef) {
+async function mutationBody(request: Request, contract: AdminV2DeclaredRequestRef) {
   return request.method === "DELETE" ? {} : jsonBody(request, contract);
 }
 

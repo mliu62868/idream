@@ -1,9 +1,13 @@
 import type { z } from "zod";
 import type * as adminContracts from "@idream/shared/admin/contracts";
 import {
+  ADMIN_V2_HTTP_METHODS,
   findAdminV2ApiOperation,
   resolveAdminV2ManifestAuthorization,
   type AdminV2ApiOperation,
+  type AdminV2DeclaredOperationId,
+  type AdminV2DeclaredRequestRef,
+  type AdminV2DeclaredRequestRefFor,
   type AdminV2RequestContractRef,
 } from "@idream/shared/admin/api-manifest";
 import { requireExecutableAdminV2Contract } from "@idream/shared/admin";
@@ -93,41 +97,71 @@ type ContractBaseRef<Ref extends string> = Ref extends `${infer Base}+${string}`
   : Ref;
 
 /**
+ * SPEC: every body the manifest can hand a handler, keyed by the ref that names it.
+ * INTENT: bounded to the refs the manifest declares. Indexing the whole contract barrel by a
+ * ref that is still generic — as a caller that keys by operation id does — expands to every
+ * export the barrel has, which tsc rejects as "union type too complex".
+ */
+type AdminV2DeclaredBody = {
+  [Name in ContractBaseRef<AdminV2DeclaredRequestRef>]: Name extends keyof AdminContracts
+    ? AdminContracts[Name] extends z.ZodType<infer Output> ? Output : unknown
+    : unknown;
+};
+
+/**
  * SPEC: the body a handler receives is whatever the manifest's request ref names,
  * resolved through the same contract barrel `contract-registry` executes against.
  * INTENT: transport-only refs (`none` / `if-match` / `limit-query` / `path:*`) carry no
  * parsed body, so they stay `unknown` instead of pretending to be a domain shape.
  */
 export type AdminV2RequestBody<Ref extends AdminV2RequestContractRef> =
-  ContractBaseRef<Ref> extends keyof AdminContracts
-    ? AdminContracts[ContractBaseRef<Ref> & keyof AdminContracts] extends z.ZodType<infer Output>
-      ? Output
-      : unknown
+  ContractBaseRef<Ref> extends keyof AdminV2DeclaredBody
+    ? AdminV2DeclaredBody[ContractBaseRef<Ref> & keyof AdminV2DeclaredBody]
     : unknown;
+
+/** `POST /api/v2/admin/today/claim` reads as an operation id; a contract ref never does. */
+function isDeclaredOperationId(declared: string): boolean {
+  return ADMIN_V2_HTTP_METHODS.some((method) => declared.startsWith(`${method} /api/v2/admin/`));
+}
 
 /**
  * SPEC: parses an Admin write body exactly once, with the schema the manifest declares.
- * INTENT: `contract` is the manifest's own ref string, not a second source of truth —
- * a value the manifest does not declare for this method+path fails closed as `internal`,
- * so a handler can no longer quietly narrow the body with a different schema.
+ * INTENT: `declared` names the manifest entry, never a second source of truth — a value the
+ * manifest does not own for this method+path fails closed as `internal`, so a handler can no
+ * longer quietly narrow the body with a different schema.
+ * INTENT: two doors on purpose. Module handlers key by `operationId`, the same key
+ * `executeAdminMutation` already takes, so the schema is never an input at all. Route Handlers
+ * that are not routed through `executeAdminMutation` key by contract ref, because a Route
+ * Handler file has no operation id of its own — its method plus its directory *is* the id.
+ * Both keys are unions of what the manifest declares, so a name that does not exist is a
+ * compile error either way.
  * INVARIANT: the manifest check runs before the per-Request cache, so two calls that
  * name different contracts cannot share one parse.
  */
 export function jsonBody(request: Request): Promise<unknown>;
-export function jsonBody<const Ref extends AdminV2RequestContractRef>(
+export function jsonBody<const Id extends AdminV2DeclaredOperationId>(
+  request: Request,
+  operationId: Id,
+): Promise<AdminV2RequestBody<AdminV2DeclaredRequestRefFor<Id>>>;
+export function jsonBody<const Ref extends AdminV2DeclaredRequestRef>(
   request: Request,
   contract: Ref,
 ): Promise<AdminV2RequestBody<Ref>>;
-export async function jsonBody(request: Request, contract?: string): Promise<unknown> {
+export async function jsonBody(request: Request, declared?: string): Promise<unknown> {
   const pathname = new URL(request.url).pathname;
   const operation = findAdminV2ApiOperation(request.method, pathname);
-  if (contract !== undefined && operation?.contract.request !== contract) {
-    throw Errors.internal("Admin v2 handler declared a request contract the manifest does not own", {
-      method: request.method,
-      pathname,
-      declared: contract,
-      manifest: operation?.contract.request ?? null,
-    });
+  if (declared !== undefined) {
+    const owned = isDeclaredOperationId(declared)
+      ? operation?.id
+      : operation?.contract.request;
+    if (owned !== declared) {
+      throw Errors.internal("Admin v2 handler declared a request contract the manifest does not own", {
+        method: request.method,
+        pathname,
+        declared,
+        manifest: owned ?? null,
+      });
+    }
   }
   const cached = parsedAdminBodies.get(request);
   if (cached) return cached;
