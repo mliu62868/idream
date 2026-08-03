@@ -8,7 +8,7 @@ export const runtime = "nodejs";
 type Context = { params: Promise<{ id: string; planId: string }> };
 export async function POST(request: Request, context: Context) {
   const { id, planId } = await context.params;
-  return adminV2Route(async () => {
+  return adminV2Route(request, async () => {
     const actor = await actorWithPermission(request, "ops.incident.manage");
     const body = await jsonBody(request, "incidentActionPlanExecuteRequestSchema+idempotency-key");
     const idempotencyKey = request.headers.get("idempotency-key")?.trim();

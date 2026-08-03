@@ -1,3 +1,4 @@
+import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 import { resolveIncident } from "@/server/modules/admin-v2/commands/authoritative";
 
 export const dynamic = "force-dynamic";
@@ -9,5 +10,5 @@ type ResolveRouteContext = {
 
 export async function POST(request: Request, context: ResolveRouteContext) {
   const { id } = await context.params;
-  return resolveIncident(request, id);
+  return adminV2Route(request, () => resolveIncident(request, id));
 }

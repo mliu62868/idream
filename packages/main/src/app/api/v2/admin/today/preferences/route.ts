@@ -14,7 +14,7 @@ function requiredIfMatch(request: Request) {
 }
 
 export function PUT(request: Request) {
-  return adminV2Route(async () => {
+  return adminV2Route(request, async () => {
     const actor = await actorWithPermission(request, "dashboard.read");
     const permissions = await effectivePermissions(actor.id, actor.role);
     const body = await jsonBody(request, "operationalWorkPreferenceUpdateSchema+if-match");

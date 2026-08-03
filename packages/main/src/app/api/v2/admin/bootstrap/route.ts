@@ -13,7 +13,7 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function GET(request: Request) {
-  return adminV2Route(async () => {
+  return adminV2Route(request, async () => {
     const bff = await verifyAdminBffRequest(request);
     if (!bff.ok) {
       throw Errors.unauthorized("Admin BFF authentication failed", { reason: bff.reason });

@@ -12,7 +12,7 @@ export function PATCH(
   request: Request,
   context: { params: Promise<{ id: string; lookId: string }> },
 ) {
-  return adminV2Route(async () => {
+  return adminV2Route(request, async () => {
     const actor = await actorWithPermission(request, "content.official.write");
     const { id, lookId } = await context.params;
     const body = await jsonBody(request, "characterLookArchiveRequestSchema+idempotency-key");

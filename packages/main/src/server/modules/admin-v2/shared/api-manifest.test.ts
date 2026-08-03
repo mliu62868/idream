@@ -42,6 +42,22 @@ const moduleRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const QUERY_DOOR = "shared/authority.ts";
 
 /**
+ * SPEC: Route Handlers that do not leave through `adminV2Route`, and the operation each one
+ * still serves unnarrowed. Empty is the goal.
+ * INTENT: an entry is a recorded debt, not a licence. The guard fails both ways — a new handler
+ * cannot hide behind an old entry, and an entry that no longer offends must be deleted.
+ */
+const ROUTE_SEAM_DEBT: ReadonlyMap<string, string> = new Map([
+  // Owned by the concurrent Creative refactor; migrating it here would collide. Its response is
+  // still narrowed inside `commands/authoritative.ts`, so the contract holds — it just is not
+  // the seam that holds it.
+  [
+    "creative/runs/[id]/commands/retry-failed/route.ts",
+    "POST /api/v2/admin/creative/runs/:id/commands/retry-failed",
+  ],
+]);
+
+/**
  * SPEC: modules that still parse their own HTTP body instead of naming their operation id,
  * with the operation each one is stuck on. Empty is the goal.
  * INTENT: an entry is a recorded debt, not a licence. The guard fails both ways — a new
@@ -673,6 +689,57 @@ describe("Admin v2 API permission and contract manifest", () => {
     }
     // Self-check: an assertion that inspected no parse site is not a guard.
     expect(inspected).toBeGreaterThan(70);
+  });
+
+  it("leaves every declared operation through the manifest-keyed response seam", async () => {
+    const routes = await routeFiles(routeRoot);
+    // Self-check: a scan that loses the route tree must fail loudly, not pass empty.
+    expect(routes).toHaveLength(
+      new Set(ADMIN_V2_API_OPERATIONS.map((operation) => operation.route)).size,
+    );
+    const declaredIds = new Set<string>(ADMIN_V2_API_OPERATIONS.map((operation) => operation.id));
+
+    const offenders: string[] = [];
+    const settledDebt: string[] = [];
+    const exercisedDebt = new Set<string>();
+    let inspected = 0;
+
+    for (const file of routes) {
+      const source = await readFile(file, "utf8");
+      const label = relative(routeRoot, file).split(sep).join("/");
+      const owed = ROUTE_SEAM_DEBT.get(label);
+      const handlers = [...source.matchAll(HTTP_METHOD_PATTERN)];
+      for (const [index, handler] of handlers.entries()) {
+        const operationId = `${handler[1]} ${routePattern(file)}`;
+        const body = source.slice(handler.index, handlers[index + 1]?.index ?? source.length);
+        inspected += 1;
+        // INVARIANT: the handler returns through the seam *and* hands it the request the runtime
+        // received. Without the request the seam cannot resolve which operation — and therefore
+        // which response contract — governs the payload, so both halves are the assertion.
+        if (/return\s+adminV2Route\(\s*request\s*,/.test(body)) {
+          if (owed === operationId) {
+            settledDebt.push(`${label}: now routes through the seam; drop the debt entry`);
+          }
+          continue;
+        }
+        if (owed === operationId) {
+          exercisedDebt.add(label);
+          continue;
+        }
+        offenders.push(`${label}: ${operationId} does not return through adminV2Route(request, …)`);
+      }
+    }
+
+    expect(offenders).toEqual([]);
+    expect(settledDebt).toEqual([]);
+    // Self-check: an assertion that inspected no handler is not a guard, and the count must equal
+    // the manifest exactly — a route file that quietly stopped exporting a method is drift too.
+    expect(inspected).toBe(ADMIN_V2_API_OPERATIONS.length);
+    // Self-check: a recorded debt must still offend, and must name an operation that exists.
+    for (const [label, operationId] of ROUTE_SEAM_DEBT) {
+      expect(declaredIds.has(operationId), operationId).toBe(true);
+      expect(exercisedDebt, `${label} no longer needs its debt entry`).toContain(label);
+    }
   });
 
   it("keeps every combined transport exact across manifest, registry, and handlers", async () => {

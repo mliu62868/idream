@@ -133,6 +133,16 @@ export const collaborationActivityListResponseSchema = z.object({
   asOf: adminIsoDateTimeSchema,
 }).strict();
 
+// SPEC: 提及信箱的响应 —— 跨所有目标、点名到本人的活动。
+// INTENT: manifest 原先把它指向 collaborationActivityListResponseSchema，而那个契约带
+// watching / watcherIds / actors —— 三个都是「某一个目标」的事实。跨目标的信箱没有那个目标可以
+// 回答，所以 handler 从来没发这几个字段，也从来没有人发现：声明的契约从未在出参上执行过。
+// 与其编一个恒为 false 的 watching 去凑形状，不如把它真正提供的形状声明出来。
+export const collaborationMentionListResponseSchema = z.object({
+  items: z.array(collaborationActivitySchema).readonly(),
+  pageInfo: adminPageInfoSchema,
+}).strict();
+
 export const collaborationWatchResponseSchema = z.object({ watching: z.boolean(), duplicate: z.boolean() }).strict();
 export const collaborationAuthoritySchema = z.object({
   ownerId: adminIdSchema.nullable(),

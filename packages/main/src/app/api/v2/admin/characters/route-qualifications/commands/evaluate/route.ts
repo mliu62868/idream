@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export function POST(request: Request) {
-  return adminV2Route(async () => {
+  return adminV2Route(request, async () => {
     const actor = await actorWithPermission(request, "content.production.write");
     const body = await jsonBody(request, "generationRouteQualificationEvaluateRequestSchema+idempotency-key");
     const idempotencyKey = requireIdempotencyKey(request);

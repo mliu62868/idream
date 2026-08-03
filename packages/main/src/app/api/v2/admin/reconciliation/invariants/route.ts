@@ -5,5 +5,5 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export function GET(request: Request) {
-  return adminV2Route(() => getAdminCutoverInvariantReport(request));
+  return adminV2Route(request, () => getAdminCutoverInvariantReport(request));
 }

@@ -1,3 +1,4 @@
+import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 import { closeCase } from "@/server/modules/admin-v2/commands/authoritative";
 
 export const dynamic = "force-dynamic";
@@ -9,5 +10,5 @@ type CloseRouteContext = {
 
 export async function POST(request: Request, context: CloseRouteContext) {
   const { id } = await context.params;
-  return closeCase(request, id);
+  return adminV2Route(request, () => closeCase(request, id));
 }

@@ -1,8 +1,7 @@
 import {
-  findAdminV2ApiOperation,
   incrementCounter,
+  narrowAdminV2ResponseEnvelope,
   observeHistogram,
-  requireExecutableAdminV2Contract,
 } from "@idream/shared";
 import { BFF_HEADER, BFF_USER_HEADER, signBffContext } from "@idream/shared/bff";
 import { randomUUID } from "node:crypto";
@@ -217,26 +216,14 @@ export async function proxyToMain(request: Request, pathname: string): Promise<R
   }
 }
 
+/**
+ * INTENT: the judgement is `shared`'s, not the proxy's — the producing route now applies the
+ * same one before the bytes leave Main. Keeping a second copy here would let the two ends
+ * disagree about which responses are admissible while both looked correct in isolation.
+ */
 function validateAdminV2SuccessResponse(method: string, pathname: string, rawBody: string) {
-  const operation = findAdminV2ApiOperation(method, pathname);
-  if (!operation) return { operationId: `${method} ${pathname}`, contractRef: "undeclared" };
-  let envelope: unknown;
-  try {
-    envelope = JSON.parse(rawBody) as unknown;
-  } catch {
-    return { operationId: operation.id, contractRef: operation.contract.response };
-  }
-  if (!isRecord(envelope) || envelope.ok !== true || !("data" in envelope)) {
-    return { operationId: operation.id, contractRef: operation.contract.response };
-  }
-  const contract = requireExecutableAdminV2Contract(operation.contract.response);
-  return contract.schema.safeParse(envelope.data).success
-    ? null
-    : { operationId: operation.id, contractRef: operation.contract.response };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
+  const narrowed = narrowAdminV2ResponseEnvelope(method, pathname, rawBody);
+  return narrowed.ok ? null : narrowed.violation;
 }
 
 function activeAdminV2KillSwitch(pathname: string, method: string): "read" | "write" | null {

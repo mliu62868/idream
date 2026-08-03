@@ -1,3 +1,4 @@
+import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 import { migrateChatSessionRelease } from "@/server/modules/admin-v2/commands/authoritative";
 
 export const dynamic = "force-dynamic";
@@ -9,5 +10,5 @@ type MigrateReleaseRouteContext = {
 
 export async function POST(request: Request, context: MigrateReleaseRouteContext) {
   const { sessionId } = await context.params;
-  return migrateChatSessionRelease(request, sessionId);
+  return adminV2Route(request, () => migrateChatSessionRelease(request, sessionId));
 }

@@ -15,7 +15,7 @@ type Context = { params: Promise<{ id: string; itemId: string }> };
 
 export async function POST(request: Request, context: Context) {
   const { id, itemId } = await context.params;
-  return adminV2Route(async () => {
+  return adminV2Route(request, async () => {
     const actor = await actorWithPermission(request, "creative.run.review");
     const body = await jsonBody(request, "creativeReviewDecisionRequestSchema+idempotency-key");
     const idempotencyKey = requireIdempotencyKey(request);

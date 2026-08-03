@@ -11,7 +11,7 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 export async function POST(request: Request, context: { params: Promise<{ id: string; releaseId: string }> }) {
   const { id, releaseId } = await context.params;
-  return adminV2Route(async () => {
+  return adminV2Route(request, async () => {
     const actor = await actorWithPermission(request, "character.release.review", { characterId: id });
     const body = await jsonBody(request, "characterReleaseReviewRequestSchema+idempotency-key+if-match");
     const ifMatch = request.headers.get("if-match")?.trim().replace(/^W\//, "").replace(/^"|"$/g, "");

@@ -36,6 +36,15 @@ describe("Generation Jobs v2 server query", () => {
     });
   }
 
+  // The route handler resolves its response contract from the path the runtime received, so a
+  // detail call has to arrive on the detail URL. Reusing the list URL asked the detail handler
+  // for the list contract — a pairing production can never produce, since Next dispatches by path.
+  function detailRequest(id: string, actor = actorId, role = "admin") {
+    return new Request(`http://localhost/api/v2/admin/jobs/${id}`, {
+      headers: { "x-idream-user-id": actor, "x-idream-role": role },
+    });
+  }
+
   beforeAll(async () => {
     await prisma.user.createMany({ data: [
       { id: actorId, email: `${actorId}@example.test`, role: "admin", status: "active" },
@@ -336,7 +345,7 @@ describe("Generation Jobs v2 server query", () => {
 
   it("exposes all authority axes in detail and retries through an idempotent v2 command", async () => {
     const detailResponse = await getJobRoute(
-      request(""),
+      detailRequest(jobIds[0]!),
       { params: Promise.resolve({ id: jobIds[0] }) },
     );
     expect(detailResponse.status).toBe(200);

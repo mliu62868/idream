@@ -20,7 +20,7 @@ function record(value: unknown): Record<string, unknown> {
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
-  return adminV2Route(async () => {
+  return adminV2Route(request, async () => {
     const actor = await actorWithPermission(request, "character.project.write", { characterId: id });
     const body = await jsonBody(request, "characterIdentityBootstrapRequestSchema+idempotency-key+if-match");
     requireMatchingProjectVersion(request, body.entityVersion);

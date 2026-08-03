@@ -12,7 +12,7 @@ export async function POST(
   context: { params: Promise<{ id: string; profileId: string }> },
 ) {
   const { id, profileId } = await context.params;
-  return adminV2Route(async () => {
+  return adminV2Route(request, async () => {
     const actor = await actorWithPermission(
       request,
       "character.release.publish",

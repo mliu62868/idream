@@ -15,12 +15,12 @@ type Context = { params: Promise<{ id: string }> };
 
 export async function GET(request: Request, context: Context) {
   const { id } = await context.params;
-  return adminV2Route(async () => adminGrantBundleListSchema.parse(await listUserGrantBundles(request, id)));
+  return adminV2Route(request, async () => adminGrantBundleListSchema.parse(await listUserGrantBundles(request, id)));
 }
 
 export async function POST(request: Request, context: Context) {
   const { id } = await context.params;
-  return adminV2Route(async () => {
+  return adminV2Route(request, async () => {
     const actor = await actorWithPermission(request, "user.role.write");
     const body = await jsonBody(request, "adminGrantBundleWriteSchema+idempotency-key");
     const idempotencyKey = requireIdempotencyKey(request);

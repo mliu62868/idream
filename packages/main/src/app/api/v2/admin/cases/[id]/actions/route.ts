@@ -11,7 +11,7 @@ type Context = { params: Promise<{ id: string }> };
 
 export async function POST(request: Request, context: Context) {
   const { id } = await context.params;
-  return adminV2Route(async () => {
+  return adminV2Route(request, async () => {
     const actor = await actorWithPermission(request, "case.decide");
     const body = await jsonBody(request, "customerCaseActionRequestSchema+idempotency-key");
     const idempotencyKey = requireIdempotencyKey(request);

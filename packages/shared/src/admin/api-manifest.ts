@@ -251,7 +251,7 @@ export const ADMIN_V2_API_OPERATIONS = [
   operation("GET", "/api/v2/admin/collaboration/:targetType/:targetId/activity", oneOfBy("collaboration_target_read", ...collaborationRead), "collaborationQuerySchema", "collaborationActivityListResponseSchema"),
   operation("POST", "/api/v2/admin/collaboration/:targetType/:targetId/activity", oneOfBy("collaboration_target_write", ...collaborationWrite), "collaborationActivityCreateSchema+idempotency-key", "collaborationActivityMutationSchema"),
   operation("PUT", "/api/v2/admin/collaboration/:targetType/:targetId/watch", oneOfBy("collaboration_target_read", ...collaborationRead), "collaborationWatchSchema+idempotency-key", "collaborationWatchResponseSchema"),
-  operation("GET", "/api/v2/admin/collaboration/mentions", allOf("dashboard.read"), "collaborationQuerySchema", "collaborationActivityListResponseSchema", collaborationRead),
+  operation("GET", "/api/v2/admin/collaboration/mentions", allOf("dashboard.read"), "collaborationQuerySchema", "collaborationMentionListResponseSchema", collaborationRead),
   operation("GET", "/api/v2/admin/commands/:commandId", allOfAndOneOfBy("command_target_read", ["dashboard.read"], commandTargetRead), "path:commandId", "adminCommandStatusSchema"),
   operation("POST", "/api/v2/admin/mutation-receipts/reconcile", oneOfBy("mutation_recovery_command_type", ...mutationRecoveryWrite), "adminMutationRecoveryRequestSchema+idempotency-key", "adminMutationRecoveryResultSchema"),
 
@@ -270,11 +270,11 @@ export const ADMIN_V2_API_OPERATIONS = [
   operation("GET", "/api/v2/admin/customers/:id", allOf("customer.read"), "path:id", "customer360Schema"),
 
   operation("GET", "/api/v2/admin/experiments", allOf("experiment.manage"), "experimentDefinitionListQuerySchema", "experimentDefinitionListSchema"),
-  operation("POST", "/api/v2/admin/experiments", allOf("experiment.manage"), "experimentDefinitionCreateSchema+idempotency-key", "experimentDefinitionSchema"),
-  operation("GET", "/api/v2/admin/experiments/:id", allOf("experiment.manage"), "path:id", "experimentDefinitionSchema"),
+  operation("POST", "/api/v2/admin/experiments", allOf("experiment.manage"), "experimentDefinitionCreateSchema+idempotency-key", "experimentDefinitionMutationSchema"),
+  operation("GET", "/api/v2/admin/experiments/:id", allOf("experiment.manage"), "path:id", "experimentDefinitionResponseSchema"),
   operation("GET", "/api/v2/admin/experiments/:id/analysis", allOf("experiment.manage"), "experimentAnalysisQuerySchema", "experimentAnalysisResponseSchema"),
-  operation("POST", "/api/v2/admin/experiments/:id/commands/start", allOf("experiment.manage"), "experimentLifecycleRequestSchema+idempotency-key", "experimentDefinitionSchema"),
-  operation("POST", "/api/v2/admin/experiments/:id/commands/stop", allOf("experiment.manage"), "experimentLifecycleRequestSchema+idempotency-key", "experimentDefinitionSchema"),
+  operation("POST", "/api/v2/admin/experiments/:id/commands/start", allOf("experiment.manage"), "experimentLifecycleRequestSchema+idempotency-key", "experimentDefinitionMutationSchema"),
+  operation("POST", "/api/v2/admin/experiments/:id/commands/stop", allOf("experiment.manage"), "experimentLifecycleRequestSchema+idempotency-key", "experimentDefinitionMutationSchema"),
 
   operation("POST", "/api/v2/admin/generation/requests/:id/commands/cancel", allOf("generation.job.requeue"), "generationRequestCancelSchema+idempotency-key", "generationRequestCancelResultSchema"),
 

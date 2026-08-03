@@ -2,6 +2,7 @@ export * from "./contracts/index";
 export * from "./permissions";
 export * from "./api-manifest";
 export * from "./contract-registry";
+export * from "./response-contract";
 export * from "./mutation-transport";
 export * from "./errors";
 export * from "./operational-slo";

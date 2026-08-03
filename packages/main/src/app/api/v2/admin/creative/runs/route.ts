@@ -10,14 +10,14 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export function GET(request: Request) {
-  return adminV2Route(async () => {
+  return adminV2Route(request, async () => {
     const actor = await actorWithPermission(request, "creative.run.read");
     return listCreativeRuns({ requestUrl: request.url, actor });
   });
 }
 
 export function POST(request: Request) {
-  return adminV2Route(async () => {
+  return adminV2Route(request, async () => {
     const actor = await actorWithPermission(request, "creative.run.write");
     if (!request.headers.get("idempotency-key")?.trim()) {
       throw Errors.badRequest("Idempotency-Key is required for Creative Run creation");

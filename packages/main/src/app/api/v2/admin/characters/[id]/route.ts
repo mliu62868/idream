@@ -8,7 +8,7 @@ export const runtime = "nodejs";
 
 export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
-  return adminV2Route(async () => {
+  return adminV2Route(request, async () => {
     await actorWithPermission(request, "character.project.read", { characterId: id });
     await actorWithPermission(request, "character.release.read", { characterId: id });
     await actorWithPermission(request, "character.performance.read", { characterId: id });

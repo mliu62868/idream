@@ -15,7 +15,7 @@ type Context = { params: Promise<{ id: string; bundleKey: string }> };
 
 export async function DELETE(request: Request, context: Context) {
   const params = await context.params;
-  return adminV2Route(async () => {
+  return adminV2Route(request, async () => {
     const actor = await actorWithPermission(request, "user.role.write");
     const bundleKey = adminGrantBundleKeySchema.parse(params.bundleKey);
     const body = await jsonBody(request, "adminGrantBundleRevokeSchema+idempotency-key");
