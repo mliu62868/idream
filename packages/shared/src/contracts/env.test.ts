@@ -104,6 +104,17 @@ const HAND_ROLLED_PARSES: { fingerprint: string; owner: string }[] = [
     fingerprint: "pathname.endsWith(",
     owner: "pipelineEndpoint() from @idream/shared/env",
   },
+  // 别名链的**末位**单独出现，只可能是有人又把整条链手抄了一遍 —— 没有别的理由
+  // 去读 AWS_* 而不读前面两种拼写。probe-blob-storage 就抄过一次：探针用一条链
+  // 认证成功、gen 用另一条链认证失败，正是 BLOB_*_ALIASES 的 SPEC 警告过的事。
+  {
+    fingerprint: "process.env.AWS_ACCESS_KEY_ID",
+    owner: "resolveAlias(BLOB_ACCESS_KEY_ID_ALIASES) from @idream/shared/env",
+  },
+  {
+    fingerprint: "process.env.AWS_SECRET_ACCESS_KEY",
+    owner: "resolveAlias(BLOB_SECRET_ACCESS_KEY_ALIASES) from @idream/shared/env",
+  },
 ];
 
 function serviceSourceFiles(): string[] {

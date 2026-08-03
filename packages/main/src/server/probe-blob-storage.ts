@@ -1,6 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFile, rm } from "node:fs/promises";
 import { S3CompatibleBlobStore } from "@idream/shared";
+import {
+  BLOB_ACCESS_KEY_ID_ALIASES,
+  BLOB_SECRET_ACCESS_KEY_ALIASES,
+  resolveAlias,
+} from "@idream/shared/env";
 import { resolveLocalBlobPath } from "@idream/shared/storage/local-blob";
 import { MockBlobStore } from "./providers/blob/mock";
 import type { BlobStore, ProviderFailure, ProviderResult } from "./providers/types";
@@ -212,17 +217,16 @@ function buildBlobStore(provider: BlobProvider): BlobStore {
     endpoint: requireEnv("BLOB_ENDPOINT", process.env.BLOB_ENDPOINT),
     bucket: requireEnv("BLOB_BUCKET", process.env.BLOB_BUCKET),
     region: process.env.BLOB_REGION,
+    // 别名链走 @idream/shared/env 的那一份 —— 那个 SPEC 写得很清楚："记在这里
+    // 是为了没人在某一个包里'清理'掉一种拼写、悄悄让另一个包认证不上"。探针照抄
+    // 一遍就正好是它警告的事：探针用一条链认证成功，gen 用另一条链认证失败。
     accessKeyId: requireEnv(
       "BLOB_ACCESS_KEY_ID",
-      process.env.BLOB_ACCESS_KEY_ID ??
-        process.env.BLOB_ACCESS_KEY ??
-        process.env.AWS_ACCESS_KEY_ID,
+      resolveAlias(BLOB_ACCESS_KEY_ID_ALIASES),
     ),
     secretAccessKey: requireEnv(
       "BLOB_SECRET_ACCESS_KEY",
-      process.env.BLOB_SECRET_ACCESS_KEY ??
-        process.env.BLOB_SECRET_KEY ??
-        process.env.AWS_SECRET_ACCESS_KEY,
+      resolveAlias(BLOB_SECRET_ACCESS_KEY_ALIASES),
     ),
   });
 }
