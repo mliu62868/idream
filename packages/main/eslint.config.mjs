@@ -53,6 +53,16 @@ const eslintConfig = defineConfig([
       "no-console": "error",
     },
   },
+  {
+    // `const { secret: _, ...rest } = obj` 是省略字段的标准写法，被省略的绑定按定义就不会被读。
+    // 这是 @typescript-eslint 推荐配置的默认值，只影响 rest 兄弟绑定，不会放过真正的未用变量。
+    rules: {
+      "@typescript-eslint/no-unused-vars": [
+        "warn",
+        { ignoreRestSiblings: true, argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
+      ],
+    },
+  },
   // Override default ignores of eslint-config-next.
   globalIgnores([
     // Default ignores of eslint-config-next:
