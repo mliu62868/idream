@@ -107,6 +107,10 @@ provider 幂等键、dispatch requestId、terminal record 存储路径、finaliz
 
 **settlement clamp 是不同 cause 能安全共存的原因**：同一事务内 `refundable = max(0, captured − refunded)` 是退款金额的唯一上界。因此拆分幂等键不需要额外护栏——自动退过之后运营再点，走新键但 `refundable` 已为 0。
 
+但这句话此前只在**串行**下成立。clamp 是一次「先读后发」，而 ledger 自己的锁是**按用户**的：它串行化两笔写，不串行化决定这两笔写的两次读。两个 cause 各自读到 `refunded = 0`，就各自全额发一次——幂等键不同，`postDreamcoinEntry` 也不会拦。六个退款调用点里五个碰巧先拿了 `generation_jobs` 行锁，唯独完成路径的缺量部分退款没拿；而事件退款（`incident_action`）压根不改 Request，因此也不会让部分退款那笔的版本 CAS 失败。40 币的扣费实测退回 80。
+
+现在这把行锁收进 `ensureGenerationSettlementLinks` 本身——产出 `refundable` 的那次读**不可能**不持锁，clamp 因此是判断而不是猜测。锁序固定为 `generation_jobs → users`（该读永远先于 `postDreamcoinEntry`）。这是 §3.3 第 2 条的写法：与其加一条「调用方必须先上锁」的检查，不如让「不上锁地读 clamp」不可表达。
+
 顺带修掉一个白发币口子：缺量部分退款此前完全不查 settlement，只凭 `costDreamcoins > 0` 就发币，而它是**记账值**——未真正扣费的 Request 会凭空得币。
 
 ### 2.2 Dreamcoin Ledger 只有一个类型化写入口
@@ -333,6 +337,8 @@ type CharacterProductionJourney = {
 4. **遍历仓库的守卫只扫源码**：不跟随符号链接（Prisma 生成物里有自指链接），跳过所有点开头目录与生成物目录（构建快照里留着搬家前的旧 import）。
 5. **债务清单必须会缩短**：单消费者豁免要写明「阻止它搬家的约束」，并有断言检查台账本身是否陈旧（条目升到 2 个消费者 / 掉到 0 / 消费方对不上都失败）。
 6. **对账一个字段抓不住整条答案**：跨包锚点守卫只证明「这个 fragment 在 admin 里存在」，证明不了它挂在哪个页面、哪个 tab 上——`/admin/ops/profiles?…#route-qualification-workbench` 完美通过。凡是「服务端拼一条给人点的字符串」，守卫要覆盖它的**全部组成部分**：tab 词表与 admin 断言集合相等、锚点断言存在于 admin DOM、并断言整个目录里只有一个构造入口（`` `/admin/characters/ `` 这种写法在 characters 目录里只允许出现在 builder 里）。
+
+再补一条同形实证：`GenerationAttempt` 写入守卫此前只拉黑 `create` / `upsert`，因此漏掉了真正决定钱的那次写——`generationAttempt.update({ data: { status } })`。Attempt 的 status 列没有任何数据库约束兜底（「每个 Attempt 只有一条终态事件」的唯一索引约束的是事件表，不是 Attempt 行）。现在守的是「整个 `src` 里写 Attempt 行的文件集合**恰好等于**三条白名单」，并自检扫到的文件数下限与三个关键文件确实在列。已知残留：白名单内某个模块自己新写 status 抓不到，这一条仍靠评审。
 
 ### 3.2 重复的形状不等于重复的判断
 

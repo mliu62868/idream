@@ -142,6 +142,64 @@ describe("generation refund causes", () => {
     ).resolves.toMatchObject({ _sum: { delta: 40 } });
   });
 
+  // SPEC: the clamp is the *only* upper bound on a refund, and distinct causes
+  // deliberately carry distinct ledger identities — so nothing except the clamp
+  // stops two causes from each paying out in full. The ledger's per-user lock
+  // serialises the two writes but not the two reads that decided them, so the
+  // clamp has to be read under the Request row itself.
+  it("clamps a second cause that started before the first one committed", async () => {
+    const requestId = await debitedRequest("concurrent", 40);
+    let firstRefundIssued = () => {};
+    const issued = new Promise<void>((resolve) => {
+      firstRefundIssued = resolve;
+    });
+    let commitFirst = () => {};
+    const held = new Promise<void>((resolve) => {
+      commitFirst = resolve;
+    });
+
+    const first = prisma.$transaction(
+      async (tx) => {
+        const amount = await refundGenerationRequest(tx, {
+          requestId,
+          userId,
+          cause: { kind: "failed" },
+          requested: 40,
+        });
+        firstRefundIssued();
+        await held;
+        return amount;
+      },
+      { timeout: 30_000 },
+    );
+
+    await issued;
+    const second = prisma.$transaction(
+      async (tx) =>
+        refundGenerationRequest(tx, {
+          requestId,
+          userId,
+          cause: { kind: "operator_manual" },
+          requested: 40,
+        }),
+      { timeout: 30_000 },
+    );
+    // Let the second transaction reach its first statement while the first one
+    // is still open. Without the Request lock it reads `refunded = 0` here and
+    // goes on to commit a second full payout.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    commitFirst();
+
+    await expect(first).resolves.toBe(40);
+    await expect(second).resolves.toBe(0);
+    await expect(
+      prisma.dreamcoinLedger.aggregate({
+        where: { sourceId: requestId, reason: "refund" },
+        _sum: { delta: true },
+      }),
+    ).resolves.toMatchObject({ _sum: { delta: 40 } });
+  });
+
   it("clamps a requested amount to what the Request still has captured", async () => {
     const requestId = await debitedRequest("clamped", 30);
 

@@ -1,9 +1,22 @@
 import type { Prisma } from "@prisma/client";
 
+// SPEC: the settled position of one Generation Request — what it captured, what
+// it has already given back, and therefore what is still refundable.
+// INVARIANT: `refundable` is the only upper bound on a refund, and distinct
+// refund causes deliberately carry distinct ledger identities, so nothing else
+// stops two causes from each paying out in full. The ledger's own lock is
+// per-user: it serialises the two writes but not the two reads that decided
+// them. Taking the Request row here makes the clamp a decision instead of a
+// guess. Every refund caller happened to hold this lock except the partial
+// refund on the completion path — which is exactly the shape that has to stop
+// depending on caller discipline.
+// INTENT: lock order is always generation_jobs -> users, because this read
+// always precedes `postDreamcoinEntry`.
 export async function ensureGenerationSettlementLinks(
   tx: Prisma.TransactionClient,
   requestId: string,
 ) {
+  await tx.$queryRaw`SELECT id FROM "generation_jobs" WHERE id = ${requestId} FOR UPDATE`;
   const entries = await tx.dreamcoinLedger.findMany({
     where: { sourceId: requestId, reason: { in: ["generation_spend", "refund"] } },
     select: { id: true, delta: true, reason: true },
