@@ -2,6 +2,7 @@
 // moderation (input/output). Slim, self-contained; no image/video/payment/blob.
 // INTENT: keep the chat deploy artifact thin (design §10 dependency isolation).
 import { SafetyGatewayModerationProvider } from "@idream/shared";
+import { pipelineEndpoint } from "@idream/shared/env";
 import { env } from "./env.js";
 import { logger } from "./logger.js";
 
@@ -421,9 +422,5 @@ export function createProviders(): ChatProviders {
 export const providers = createProviders();
 
 function chatCompletionEndpoint(baseUrl: string) {
-  const url = new URL(baseUrl);
-  if (url.pathname.endsWith("/chat/completions")) return url;
-  const basePath = url.pathname === "/" ? "" : url.pathname.replace(/\/$/, "");
-  url.pathname = `${basePath}/chat/completions`;
-  return url;
+  return pipelineEndpoint(baseUrl, "/chat/completions");
 }

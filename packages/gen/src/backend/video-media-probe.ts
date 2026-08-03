@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { env } from "../env";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_PROBE_TIMEOUT_MS = 60_000;
@@ -44,12 +45,10 @@ export function createVideoMediaProbe(input: {
   readonly timeoutMs?: number;
 } = {}): VideoMediaProbe {
   const runner = input.runner ?? runMediaCommand;
-  const ffprobePath = input.ffprobePath ??
-    process.env.GEN_FFPROBE_BIN ??
-    "ffprobe";
-  const ffmpegPath = input.ffmpegPath ??
-    process.env.GEN_FFMPEG_BIN ??
-    "ffmpeg";
+  // env, not a second `process.env.GEN_FF*_BIN ?? "ff*"` — preflight.ts checks
+  // these same two binaries exist, and it has to check the ones this runs.
+  const ffprobePath = input.ffprobePath ?? env.FFPROBE_BIN;
+  const ffmpegPath = input.ffmpegPath ?? env.FFMPEG_BIN;
   const timeoutMs = input.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
 
   return async (bytes) => {

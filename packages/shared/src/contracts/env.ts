@@ -39,6 +39,43 @@ export function defaultBullmqPrefix(appEnv: string | undefined = DEFAULT_APP_ENV
 /** Shared Redis instance. main enqueues generation jobs that gen workers consume. */
 export const DEFAULT_REDIS_URL = "redis://127.0.0.1:6379/0";
 
+/**
+ * SPEC: REDIS_URL → the connection fields ioredis needs. Structurally an ioredis
+ * `RedisOptions`; typed locally so this module stays dependency-free.
+ *
+ * INTENT: main, chat and gen each carried a byte-identical copy of this parse.
+ * It is the same failure mode BULLMQ_PREFIX proved: the `db` index comes out of
+ * the URL path, so one copy drifting puts a producer and its consumer on
+ * different Redis databases — nothing errors, nothing is delivered. Whatever the
+ * prefix agrees on is worthless if the connections disagree.
+ *
+ * INVARIANT: `maxRetriesPerRequest: null` is required by BullMQ workers (a
+ * blocking BRPOPLPUSH must not be aborted by ioredis' retry cap), not a
+ * preference — do not "tidy" it into a number.
+ */
+export type RedisConnectionOptions = {
+  host: string;
+  port: number;
+  username: string | undefined;
+  password: string | undefined;
+  db: number;
+  tls: Record<string, never> | undefined;
+  maxRetriesPerRequest: null;
+};
+
+export function redisConnectionOptions(rawUrl: string): RedisConnectionOptions {
+  const url = new URL(rawUrl);
+  return {
+    host: url.hostname,
+    port: url.port ? Number.parseInt(url.port, 10) : 6379,
+    username: url.username ? decodeURIComponent(url.username) : undefined,
+    password: url.password ? decodeURIComponent(url.password) : undefined,
+    db: url.pathname && url.pathname !== "/" ? Number.parseInt(url.pathname.slice(1), 10) : 0,
+    tls: url.protocol === "rediss:" ? {} : undefined,
+    maxRetriesPerRequest: null,
+  };
+}
+
 /** Origin chat and gen call back into for internal ingest / transport callbacks. */
 export const DEFAULT_MAIN_WEB_URL = "http://127.0.0.1:3000";
 
@@ -48,6 +85,34 @@ export const DEFAULT_MAIN_WEB_URL = "http://127.0.0.1:3000";
  */
 export function mainWebUrlOrigin(raw: string | undefined = process.env.MAIN_WEB_URL): string {
   return (raw ?? DEFAULT_MAIN_WEB_URL).replace(/\/$/, "");
+}
+
+/**
+ * SPEC: the OpenAI-compatible endpoint an adapter calls, from a configured base
+ * URL plus the route that adapter owns (`/chat/completions`, `/audio/speech`,
+ * `/images/generations`, `/videos/generations`).
+ *
+ * INTENT: PIPELINE_API_URL is a CROSS-SERVICE variable (see crossServiceEnvShape)
+ * but the two sides read it as different things. main's chat and voice adapters
+ * append their route to whatever path the base carries; gen returned the base
+ * UNCHANGED whenever it had any path at all, ignoring the route entirely. Both
+ * .env.example files document that difference without acknowledging it:
+ * main writes `.../v1`, gen writes `.../images/generations`. So gen posted image
+ * requests to `/v1` under main's documented value, and — worse — posted VIDEO
+ * requests to `/images/generations` under its own, because a base with a path
+ * made the image and video routes resolve to the identical URL.
+ *
+ * INVARIANT: appending is idempotent. A base that already ends in the route is
+ * returned untouched, so "point me at the complete endpoint" keeps working; a
+ * base that does not gets the route appended, so "point me at the API root"
+ * works too. That is the union of what the two copies each supported alone.
+ */
+export function pipelineEndpoint(baseUrl: string, route: string): URL {
+  const url = new URL(baseUrl);
+  if (url.pathname.endsWith(route)) return url;
+  const basePath = url.pathname === "/" ? "" : url.pathname.replace(/\/$/, "");
+  url.pathname = `${basePath}${route}`;
+  return url;
 }
 
 export const DEFAULT_CHAT_MODEL_TIMEOUT_MS = 45_000;

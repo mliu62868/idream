@@ -3,9 +3,10 @@
 // runner for chat/worker; one-shot drain for tests.
 // INVARIANTS: dedupe is by jobId; regenerate keys carry :attempt so they are NOT
 // collapsed (PLAN §3).
-import { Buffer } from "node:buffer";
 import { Queue, Worker, type JobsOptions, type Processor } from "bullmq";
 import type { RedisOptions } from "ioredis";
+import { bullMqJobIdForDedupeKey } from "@idream/shared/contracts";
+import { redisConnectionOptions } from "@idream/shared/env";
 import { env } from "./env.js";
 
 export interface EnqueueInput {
@@ -21,25 +22,12 @@ const DEFAULT_BACKOFF_MS = 30_000;
 const removeOnComplete = { age: 60 * 60 * 24, count: 10_000 };
 
 export function redisOptions(): RedisOptions {
-  const url = new URL(env.REDIS_URL);
-  return {
-    host: url.hostname,
-    port: url.port ? Number.parseInt(url.port, 10) : 6379,
-    username: url.username ? decodeURIComponent(url.username) : undefined,
-    password: url.password ? decodeURIComponent(url.password) : undefined,
-    db: url.pathname && url.pathname !== "/" ? Number.parseInt(url.pathname.slice(1), 10) : 0,
-    tls: url.protocol === "rediss:" ? {} : undefined,
-    maxRetriesPerRequest: null,
-  };
-}
-
-function dedupeJobId(key: string): string {
-  return `dedupe_${Buffer.from(key, "utf8").toString("base64url")}`;
+  return redisConnectionOptions(env.REDIS_URL);
 }
 
 function enqueueOptions(input: EnqueueInput): JobsOptions {
   return {
-    jobId: input.dedupeKey ? dedupeJobId(input.dedupeKey) : undefined,
+    jobId: input.dedupeKey ? bullMqJobIdForDedupeKey(input.dedupeKey) : undefined,
     priority: input.priority,
     attempts: input.maxAttempts ?? 5,
     backoff: { type: "exponential", delay: DEFAULT_BACKOFF_MS },

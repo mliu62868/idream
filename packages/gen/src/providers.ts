@@ -15,6 +15,7 @@ import {
   S3CompatibleBlobStore,
   SafetyGatewayModerationProvider,
 } from "@idream/shared";
+import { pipelineEndpoint } from "@idream/shared/env";
 import { BackendImageModel } from "./backend/backend-image-model";
 import { BackendVideoModel } from "./backend/backend-video-model";
 import { buildBackendRegistry, type BackendRegistry } from "./backend/registry";
@@ -289,7 +290,7 @@ class PipelineImageModel implements ImageModel {
   // INTENT: requestId is correlation only. The legacy gateway has no durable
   // same-key result contract, so a timeout must become unknown, never Bull retry.
   async generate(input: Parameters<ImageModel["generate"]>[0]) {
-    const endpoint = pipelineEndpoint("/images/generations");
+    const endpoint = pipelineEndpointOrUndefined("/images/generations");
     if (!endpoint) {
       return {
         ok: false as const,
@@ -433,7 +434,7 @@ class PipelineVideoModel implements VideoModel {
   // INTENT: keep this rollback adapter non-replayable until its gateway proves
   // concurrent and post-restart same-key result reuse with payload conflicts.
   async generate(input: Parameters<VideoModel["generate"]>[0]) {
-    const endpoint = pipelineEndpoint("/videos/generations");
+    const endpoint = pipelineEndpointOrUndefined("/videos/generations");
     if (!endpoint) {
       return {
         ok: false as const,
@@ -716,7 +717,7 @@ export function assertProductionProviderReady(kind: "image" | "video") {
   }
   // 词表检查已经由 env getter 的解析完成 —— 读到 `provider` 这一行就意味着它
   // 是 GenAdapter 的成员，此处只剩"生产环境允许哪几个"这条**策略**。
-  if (process.env.APP_ENV !== "production") return;
+  if (env.APP_ENV !== "production") return;
 
   if (provider === "mock") {
     throw new Error(`Production ${kind} generation requires a non-mock provider`);
@@ -738,7 +739,7 @@ export function assertProductionProviderReady(kind: "image" | "video") {
 }
 
 export function assertProductionModerationReady() {
-  if (process.env.APP_ENV !== "production") return;
+  if (env.APP_ENV !== "production") return;
 
   if (env.MODERATION_PROVIDER === "safety-gateway") {
     requireProviderEnv(
@@ -757,7 +758,7 @@ export function assertProductionModerationReady() {
 }
 
 export function assertProductionBlobReady() {
-  if (process.env.APP_ENV !== "production") return;
+  if (env.APP_ENV !== "production") return;
 
   if (env.BLOB_PROVIDER === "mock") {
     throw new Error("Production generation requires a non-mock blob provider");
@@ -818,11 +819,12 @@ export const providers: GenProviders = {
   },
 };
 
-function pipelineEndpoint(defaultPath: string) {
+// The route is what distinguishes the image endpoint from the video one, so it
+// is never optional. See pipelineEndpoint in @idream/shared/env for what the
+// local copy of this used to drop.
+function pipelineEndpointOrUndefined(route: string) {
   if (!env.PIPELINE_API_URL) return undefined;
-  const url = new URL(env.PIPELINE_API_URL);
-  if (url.pathname !== "/" && url.pathname !== "") return url;
-  return new URL(defaultPath, url);
+  return pipelineEndpoint(env.PIPELINE_API_URL, route);
 }
 
 function imageContentType(record: Record<string, unknown>, body: Uint8Array | undefined) {

@@ -527,6 +527,31 @@ describe("generation job settlement", () => {
     ]);
   });
 
+  // Regression: the admin cancel command writes generation_jobs.status =
+  // "cancelled" and refunds in the same transaction, but the shared catalog did
+  // not carry that status — so it read as non-terminal and the workspace polled
+  // the job forever while showing nothing and never repricing the refund.
+  it("settles a cancelled job and reprices the refund it already moved", () => {
+    expect(
+      pendingGenerationJobIds([
+        { id: "job-1", mode: "image", status: "cancelled", errorCode: null },
+      ]),
+    ).toEqual([]);
+    expect(
+      projectServerJobArrival({
+        id: "job-1",
+        mode: "image",
+        status: "cancelled",
+        errorCode: null,
+      }),
+    ).toEqual({
+      settled: true,
+      statusMessage: "Generation stopped.",
+      showResults: false,
+      refreshBalanceAndQuote: true,
+    });
+  });
+
   it("says nothing about a job that is still in motion", () => {
     expect(
       projectServerJobArrival({

@@ -10,6 +10,7 @@ import { Prisma } from "../generated/client/client.js";
 import { chatPrisma } from "./db.js";
 import { env } from "./env.js";
 import { FREE_DAILY_MESSAGES } from "@idream/shared/chat/limits";
+import { pipelineEndpoint } from "@idream/shared/env";
 
 export interface ChatAdminRequest {
   method: string;
@@ -795,11 +796,7 @@ function chatAdminPageInfo<T>(
 }
 
 function chatModelsEndpoint(baseUrl: string): URL {
-  const url = new URL(baseUrl);
-  if (url.pathname.endsWith("/models")) return url;
-  const basePath = url.pathname === "/" ? "" : url.pathname.replace(/\/$/, "");
-  url.pathname = `${basePath}/models`;
-  return url;
+  return pipelineEndpoint(baseUrl, "/models");
 }
 
 function modelListIncludes(value: unknown, model: string): boolean | null {
