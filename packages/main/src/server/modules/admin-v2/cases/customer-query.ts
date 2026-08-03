@@ -1,9 +1,9 @@
-import { customer360Schema, customerListQuerySchema, customerListResponseSchema } from "@idream/shared/admin";
+import { customer360Schema, customerListResponseSchema } from "@idream/shared/admin";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
-import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
+import { actorWithPermission, queryParams } from "@/server/modules/admin-v2/shared/authority";
 import { caseDto } from "./query";
 
 const ACTIVE_CASE_STATUSES = ["new", "triaged", "in_progress", "waiting", "reopened"];
@@ -27,8 +27,7 @@ function decodeCursor(value?: string) {
 
 export async function listCustomers(request: Request) {
   await actorWithPermission(request, "customer.read");
-  const url = new URL(request.url);
-  const query = customerListQuerySchema.parse(Object.fromEntries(url.searchParams));
+  const query = queryParams(request, "GET /api/v2/admin/customers");
   const cursor = decodeCursor(query.cursor);
   const since30d = new Date(Date.now() - 30 * 24 * 60 * 60 * 1_000);
   const rows = await prisma.user.findMany({

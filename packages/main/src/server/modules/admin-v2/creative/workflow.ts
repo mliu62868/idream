@@ -1,7 +1,7 @@
 import { prisma } from "@/server/lib/db";
 import type { Prisma } from "@prisma/client";
 import { Errors } from "@/server/lib/errors";
-import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
+import { queryParams, type AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { deriveCreativeRunState, type CreativeRunLedgerFact } from "@/server/modules/content-production-state";
 import { toInputJson } from "../shared/prisma-json";
 import {
@@ -16,7 +16,6 @@ import {
   CHARACTER_IDENTITY_APPROVAL_MIN_SCORE,
   creativeRunCreateOptionsSchema,
   creativeRunListResponseSchema,
-  creativeRunQuerySchema,
 } from "@idream/shared/admin";
 import {
   decodeAdminListCursor,
@@ -1612,7 +1611,7 @@ export async function listCreativeRuns(input: {
   readonly actor: AdminActor;
 }) {
   void input.actor;
-  const query = creativeRunQuerySchema.parse(Object.fromEntries(new URL(input.requestUrl).searchParams));
+  const query = queryParams({ url: input.requestUrl }, "GET /api/v2/admin/creative/runs");
   const queryIdentity = {
     purpose: query.purpose,
     lifecycleState: query.lifecycleState,

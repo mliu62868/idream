@@ -1,9 +1,9 @@
-import { operationsCaseDetailSchema, operationsCaseQuerySchema } from "@idream/shared/admin";
+import { operationsCaseDetailSchema, type OperationsCaseQuery } from "@idream/shared/admin";
 import { Prisma, type AdminCase } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
-import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
+import { actorWithPermission, queryParams } from "@/server/modules/admin-v2/shared/authority";
 import { adminAuditDto } from "@/server/modules/admin-v2/shared/dto";
 
 function record(value: Prisma.JsonValue | null) {
@@ -151,7 +151,7 @@ function supportSearchSql(search: string) {
 async function searchedCasePage(input: {
   role: string;
   actorId: string;
-  query: ReturnType<typeof operationsCaseQuerySchema.parse>;
+  query: OperationsCaseQuery;
   cursor: CaseCursor | null;
 }) {
   const conditions: Prisma.Sql[] = [];
@@ -201,8 +201,7 @@ async function searchedCasePage(input: {
 
 export async function listCases(request: Request) {
   const actor = await actorWithPermission(request, "case.read");
-  const url = new URL(request.url);
-  const query = operationsCaseQuerySchema.parse(Object.fromEntries(url.searchParams));
+  const query = queryParams(request, "GET /api/v2/admin/cases");
   const scope = scopedCaseWhere(actor.role, query.view, actor.id);
   const cursor = decodeCaseCursor(query.cursor);
   const cursorDirection = query.sort === "updated_asc" ? "gt" : "lt";

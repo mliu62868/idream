@@ -1,7 +1,7 @@
-import { globalAdminSearchQuerySchema, globalAdminSearchResponseSchema } from "@idream/shared/admin";
+import { globalAdminSearchResponseSchema } from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
 import { ok } from "@/server/lib/http";
-import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
+import { actorWithPermission, queryParams } from "@/server/modules/admin-v2/shared/authority";
 import { effectiveCharacterIdsForPermission, effectivePermissions } from "@/server/admin/effective-permissions";
 import { incidentReadScopeWhere } from "@/server/modules/admin-v2/incidents/scope";
 import {
@@ -13,7 +13,7 @@ import {
 
 export async function globalAdminSearch(request: Request) {
   const actor = await actorWithPermission(request, "dashboard.read");
-  const query = globalAdminSearchQuerySchema.parse(Object.fromEntries(new URL(request.url).searchParams));
+  const query = queryParams(request, "GET /api/v2/admin/search");
   const permissions = await effectivePermissions(actor.id, actor.role);
   const characterScope = permissions.has("character.project.read")
     ? await effectiveCharacterIdsForPermission(actor.id, actor.role, "character.project.read")

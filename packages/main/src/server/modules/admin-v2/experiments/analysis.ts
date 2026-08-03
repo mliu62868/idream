@@ -1,6 +1,5 @@
 import {
   ADMIN_METRIC_REGISTRY,
-  experimentAnalysisQuerySchema,
   experimentAnalysisResponseSchema,
   experimentVariantSchema,
   type ExperimentAnalysisResponse,
@@ -9,7 +8,7 @@ import type { Prisma, PrismaClient } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
-import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
+import { actorWithPermission, queryParams } from "@/server/modules/admin-v2/shared/authority";
 import { canonicalSha256 } from "../shared/canonical-json";
 import { selectQualityChecksForMetric } from "../metrics/query";
 
@@ -373,7 +372,7 @@ export async function analyzeExperiment(
 
 export async function getExperimentAnalysis(request: Request, experimentId: string) {
   await actorWithPermission(request, "experiment.manage");
-  const query = experimentAnalysisQuerySchema.parse(Object.fromEntries(new URL(request.url).searchParams));
+  const query = queryParams(request, "GET /api/v2/admin/experiments/:id/analysis");
   const asOf = query.asOf ? new Date(query.asOf) : new Date();
   try {
     return ok(await analyzeExperiment(prisma, experimentId, asOf), {

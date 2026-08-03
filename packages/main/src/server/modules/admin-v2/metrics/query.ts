@@ -2,9 +2,6 @@ import {
   ADMIN_METRIC_REGISTRY,
   metricCardSchema,
   metricDashboardResponseSchema,
-  metricDashboardQuerySchema,
-  metricQualityQuerySchema,
-  metricReconciliationQuerySchema,
   metricQualityReportSchema,
   metricReconciliationReportSchema,
   type MetricCard,
@@ -14,7 +11,7 @@ import type { PrismaClient } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { AppError } from "@/server/lib/errors";
 import { fail, ok } from "@/server/lib/http";
-import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
+import { actorWithPermission, queryParams } from "@/server/modules/admin-v2/shared/authority";
 import { effectivePermissionScope } from "@/server/admin/effective-permissions";
 import { canonicalSha256 } from "../shared/canonical-json";
 import { toInputJson } from "../shared/prisma-json";
@@ -29,8 +26,17 @@ const CANONICAL_DEFINITIONS = ADMIN_METRIC_REGISTRY.filter((definition) =>
 );
 const DEFINITION_BY_KEY = new Map(CANONICAL_DEFINITIONS.map((definition) => [definition.key, definition]));
 
-function parseAsOf(request: Request, schema: typeof metricDashboardQuerySchema): Date {
-  const query = schema.parse(Object.fromEntries(new URL(request.url).searchParams));
+/** The three metric reads, each of which declares its own `asOf` contract in the manifest. */
+type MetricReadOperationId =
+  | "GET /api/v2/admin/metrics"
+  | "GET /api/v2/admin/metrics/quality"
+  | "GET /api/v2/admin/metrics/reconciliation";
+
+// SPEC: the reporting instant a metric read is answered at.
+// INTENT: keyed by operation id, not by schema — passing a schema let one read be answered
+// with another read's contract, and nothing reconciled either against the manifest.
+function parseAsOf(request: Request, operationId: MetricReadOperationId): Date {
+  const query = queryParams(request, operationId);
   return query.asOf ? new Date(query.asOf) : new Date();
 }
 
@@ -525,7 +531,7 @@ export async function materializeMetricSnapshots(db: PrismaClient, asOf = new Da
 export async function getMetricDashboard(request: Request) {
   try {
     const actor = await actorWithPermission(request, "analytics.metric.read");
-    const data = await buildMetricDashboardData(prisma, parseAsOf(request, metricDashboardQuerySchema));
+    const data = await buildMetricDashboardData(prisma, parseAsOf(request, "GET /api/v2/admin/metrics"));
     const scope = await effectivePermissionScope(actor.id, actor.role, "analytics.metric.read");
     return ok(scope === "technical_metrics"
       ? { ...data, definitions: [], cards: [] }
@@ -539,7 +545,7 @@ export async function getMetricDashboard(request: Request) {
 export async function getMetricQualityReport(request: Request) {
   try {
     await actorWithPermission(request, "analytics.metric.read");
-    const data = await qualityReport(prisma, parseAsOf(request, metricQualityQuerySchema));
+    const data = await qualityReport(prisma, parseAsOf(request, "GET /api/v2/admin/metrics/quality"));
     return ok(data, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     if (error instanceof AppError) return fail(error);
@@ -550,7 +556,7 @@ export async function getMetricQualityReport(request: Request) {
 export async function getMetricReconciliationReport(request: Request) {
   try {
     await actorWithPermission(request, "analytics.metric.read");
-    const asOf = parseAsOf(request, metricReconciliationQuerySchema);
+    const asOf = parseAsOf(request, "GET /api/v2/admin/metrics/reconciliation");
     const [quality, recentBackfills] = await Promise.all([
       qualityReport(prisma, asOf),
       prisma.metricBackfillRun.findMany({ orderBy: { startedAt: "desc" }, take: 20 }),

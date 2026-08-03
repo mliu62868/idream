@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { jsonBody } from "./authority";
+import { jsonBody, queryParams } from "./authority";
 
 function writeRequest(pathname: string, body: unknown, headers: HeadersInit = {}) {
   return new Request(`https://admin.test${pathname}`, {
@@ -61,5 +61,37 @@ describe("Admin v2 request body authority", () => {
 
     await expect(jsonBody(request, "caseDecisionRequestSchema+idempotency-key"))
       .rejects.toThrow("Idempotency-Key header is required");
+  });
+});
+
+function readRequest(pathnameWithQuery: string) {
+  return new Request(`https://admin.test${pathnameWithQuery}`);
+}
+
+describe("Admin v2 request query authority", () => {
+  it("parses a read query with the schema the manifest declares for that operation", () => {
+    const query = queryParams(
+      readRequest("/api/v2/admin/cases?view=mine&limit=5"),
+      "GET /api/v2/admin/cases",
+    );
+
+    // Coerced and defaulted by the manifest's contract, not by the handler.
+    expect(query).toMatchObject({ view: "mine", limit: 5 });
+  });
+
+  it("fails closed when a handler reads a different operation's query", () => {
+    // Adjacent, real, same-domain read — the drift a hand-imported schema could not detect,
+    // because both sides were the handler's own choice.
+    expect(() => queryParams(
+      readRequest("/api/v2/admin/today?workMode=support"),
+      "GET /api/v2/admin/today/all-work",
+    )).toThrow("Admin v2 handler read the query of a different operation");
+  });
+
+  it("rejects a query the declared contract does not admit", () => {
+    expect(() => queryParams(
+      readRequest("/api/v2/admin/cases?view=nonsense"),
+      "GET /api/v2/admin/cases",
+    )).toThrow();
   });
 });

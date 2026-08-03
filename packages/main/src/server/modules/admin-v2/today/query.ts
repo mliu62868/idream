@@ -1,8 +1,6 @@
 import {
-  todayAllWorkQuerySchema,
   todayAllWorkResponseSchema,
   todayProjectionSchema,
-  todayProjectionQuerySchema,
   todayWorkItemSchema,
   type AdminPermissionKey,
   type TodayProjection,
@@ -27,7 +25,7 @@ import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { AppError } from "@/server/lib/errors";
 import { fail, ok } from "@/server/lib/http";
-import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
+import { actorWithPermission, queryParams } from "@/server/modules/admin-v2/shared/authority";
 
 const QUEUE_LIMIT = 10;
 const MAX_ALL_WORK_SCAN_LIMIT = 5_000;
@@ -1456,17 +1454,20 @@ function matchesAllWorkFilters(
   return true;
 }
 
+// INVARIANT: the query arrives parsed. `getTodayAllWork` reads it through the manifest, so
+// re-narrowing it here would be a second authority over the same contract — and the cursor is
+// signed over this object, so the two authorities would also have to agree on its shape.
 export async function buildTodayAllWork(input: {
   actor: { id: string; role: string };
   permissions: ReadonlySet<AdminPermissionKey>;
-  query?: Partial<TodayAllWorkQuery>;
+  query: TodayAllWorkQuery;
   now?: Date;
   db?: TodayReadDb;
   diagnostics?: TodayQueryDiagnostics;
 }): Promise<TodayAllWorkResponse> {
   const db = input.db ?? prisma;
   const now = input.now ?? new Date();
-  const query = todayAllWorkQuerySchema.parse(input.query ?? {});
+  const query = input.query;
   const workMode = query.workMode ?? defaultWorkMode(input.actor.role);
   const cursor = query.cursor ? decodeTodayCursor(query.cursor, { workMode, actorId: input.actor.id, query }) : null;
   const scanLimit = Math.min(MAX_ALL_WORK_SCAN_LIMIT, (cursor?.scanLimit ?? 0) + query.limit + 1);
@@ -1618,7 +1619,7 @@ export async function getTodayAllWork(request: Request) {
   try {
     const actor = await actorWithPermission(request, "dashboard.read");
     const permissions = await effectivePermissions(actor.id, actor.role);
-    const query = todayAllWorkQuerySchema.parse(Object.fromEntries(new URL(request.url).searchParams));
+    const query = queryParams(request, "GET /api/v2/admin/today/all-work");
     return ok(await buildTodayAllWork({ actor, permissions, query }), { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     if (error instanceof AppError) return fail(error);
@@ -1630,7 +1631,7 @@ export async function getTodayProjection(request: Request) {
   try {
     const actor = await actorWithPermission(request, "dashboard.read");
     const permissions = await effectivePermissions(actor.id, actor.role);
-    const query = todayProjectionQuerySchema.parse(Object.fromEntries(new URL(request.url).searchParams));
+    const query = queryParams(request, "GET /api/v2/admin/today");
     const projection = await buildTodayProjection({
       actor,
       permissions,

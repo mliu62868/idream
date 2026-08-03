@@ -1,6 +1,7 @@
 import type { z } from "zod";
 import type * as adminContracts from "@idream/shared/admin/contracts";
 import {
+  ADMIN_V2_API_OPERATIONS,
   ADMIN_V2_HTTP_METHODS,
   findAdminV2ApiOperation,
   resolveAdminV2ManifestAuthorization,
@@ -168,6 +169,53 @@ export async function jsonBody(request: Request, declared?: string): Promise<unk
   const parsed = parseManifestBody(request, pathname, operation);
   parsedAdminBodies.set(request, parsed);
   return parsed;
+}
+
+/** The read half of the manifest — the only operations that carry a contract in the URL. */
+type AdminV2DeclaredReadOperationId = Extract<AdminV2DeclaredOperationId, `GET ${string}`>;
+
+/**
+ * SPEC: parses an Admin read query with the schema the manifest declares for `operationId`.
+ * INTENT: `jsonBody`'s twin for the other half of the request line. A GET carries its contract
+ * in the URL, so the body door cannot serve it, and without this every GET module held its own
+ * imported schema — a second authority nothing reconciled with the manifest.
+ * INTENT: one door, keyed by operation id. A GET Route Handler delegates the read to a module
+ * and it is the module that needs the query, so there is no Route-Handler-shaped caller to serve.
+ * INTENT: takes the URL carrier rather than a `Request`, because one module receives only
+ * `request.url` across an in-process seam and a query needs nothing else. The method is not an
+ * input either: the id type admits GET operations only.
+ * INVARIANT: the manifest owns the schema; the URL only cross-checks the id. A pathname that
+ * resolves to a different operation is a module reading someone else's query and fails closed.
+ * A pathname the manifest does not own carries no claim that could contradict the id.
+ */
+export function queryParams<const Id extends AdminV2DeclaredReadOperationId>(
+  source: { readonly url: string },
+  operationId: Id,
+): AdminV2RequestBody<AdminV2DeclaredRequestRefFor<Id>> {
+  const declared = ADMIN_V2_API_OPERATIONS.find((operation) => operation.id === operationId);
+  if (!declared) {
+    throw Errors.internal("Admin v2 handler read a query the manifest does not declare", {
+      operationId,
+    });
+  }
+  const url = new URL(source.url);
+  const concrete = findAdminV2ApiOperation("GET", url.pathname);
+  if (concrete && concrete.id !== operationId) {
+    throw Errors.internal("Admin v2 handler read the query of a different operation", {
+      declared: operationId,
+      resolved: concrete.id,
+    });
+  }
+  const contract = requireExecutableAdminV2Contract(declared.contract.request);
+  if (contract.kind !== "zod") {
+    throw Errors.internal("Admin v2 operation declares no query contract", {
+      operationId,
+      contract: declared.contract.request,
+    });
+  }
+  return contract.schema.parse(
+    Object.fromEntries(url.searchParams),
+  ) as AdminV2RequestBody<AdminV2DeclaredRequestRefFor<Id>>;
 }
 
 async function parseManifestBody(
