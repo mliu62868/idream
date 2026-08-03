@@ -5,8 +5,6 @@ import { ConfirmDialog } from "@/components/admin/ui/ConfirmDialog";
 import Link from "next/link";
 import Image from "next/image";
 import {
-  adminCommandAcceptedSchema,
-  adminCommandStatusSchema,
   characterQaAuthorityMatches,
   latestCharacterQaAuthorityRun,
   characterLookArchiveResponseSchema,
@@ -14,7 +12,6 @@ import {
   characterVoiceClipReclaimResponseSchema,
   characterPortfolioResponseSchema,
   characterWorkspaceDetailSchema,
-  type AdminCommandStatus,
   type CharacterPortfolioItem,
   type CharacterMediaOperationsProjection,
   type CharacterQaCheckInput,
@@ -39,6 +36,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type KeyboardEvent,
 } from "react";
 import type { AdminSubview } from "@/components/admin/nav-config";
@@ -92,6 +90,13 @@ import {
   parseCharacterPortfolioUrl,
   type CharacterPortfolioUrlState,
 } from "./portfolio-query";
+import {
+  committedCharacterProjectionWarning,
+  createCharacterCommandJournal,
+  type CharacterCommandJournal,
+  type CharacterCommandSubmission,
+  type PendingCharacterCommand,
+} from "./character-command-journal";
 
 type Permissions = {
   read: boolean;
@@ -442,502 +447,31 @@ export function characterOperationsFacts(
   ];
 }
 
-type CharacterMutationNotice =
-  | {
-      readonly kind: "mutation_in_flight";
-      readonly message: string;
-    }
-  | {
-      readonly kind: "command_pending";
-      readonly message: string;
-      readonly commandId: string;
-    }
-  | {
-      readonly kind: "command_submission_unknown";
-      readonly message: string;
-    }
-  | {
-      readonly kind: "command_reconfirmation_required";
-      readonly message: string;
-    }
-  | {
-      readonly kind: "refresh_required";
-      readonly message: string;
-      readonly commandId?: string;
-    };
-
 type RunCommittedCharacterMutation = <T>(input: {
   readonly action: string;
   readonly commit: () => Promise<T>;
   readonly afterRefresh?: () => void;
 }) => Promise<{ readonly result: T; readonly refreshed: boolean }>;
 
-type PendingCharacterCommand = {
-  readonly commandId: string | null;
-  readonly action: string;
-  readonly signature: string;
-  readonly endpoint?: string;
-  readonly body?: unknown;
-  readonly idempotencyKey?: string;
-  readonly createdAt: number;
-  readonly autoReplayUntil?: number;
-  readonly terminal: boolean;
-};
+// SPEC: 把 journal 给出的非受理处置翻译成操作员能读的一句话。
+// INTENT: 处置本身（解锁 / 保持锁定 / 改挂到别的命令）已经由 journal 做完并生效了，
+// 这里只负责措辞——所以三种出口的文案改错也改不动写入锁的行为。
+function localCleanupWarning(cause: unknown) {
+  return cause instanceof Error
+    ? `The authoritative workspace refreshed, but local cleanup needs attention: ${cause.message}`
+    : "The authoritative workspace refreshed, but local cleanup needs attention.";
+}
 
-type CharacterCommandStorage = Pick<
-  Storage,
-  "getItem" | "setItem" | "removeItem"
->;
-
-const CHARACTER_COMMAND_JOURNAL_SCHEMA_VERSION = 1;
-const UNKNOWN_COMMAND_AUTO_REPLAY_TTL_MS = 5 * 60_000;
-
-function isSamePendingCharacterCommand(
-  left: PendingCharacterCommand,
-  right: PendingCharacterCommand,
+function commandSubmissionMessage(
+  outcome: Exclude<CharacterCommandSubmission, { readonly kind: "accepted" }>,
+  action: string,
 ) {
-  if (left.commandId !== null || right.commandId !== null) {
-    return left.commandId !== null && left.commandId === right.commandId;
+  if (outcome.kind === "attached") {
+    return `${outcome.command.action} is already active. This workspace attached to that command instead of accepting another one.`;
   }
-  return (
-    left.signature === right.signature &&
-    left.idempotencyKey === right.idempotencyKey
-  );
-}
-
-type CharacterMutationRefreshResult<T> =
-  | {
-      readonly status: "superseded";
-      readonly projection?: T;
-      readonly error?: unknown;
-    }
-  | { readonly status: "failed"; readonly error: unknown }
-  | { readonly status: "kept_locked"; readonly projection: T }
-  | {
-      readonly status: "cleanup_failed";
-      readonly projection: T;
-      readonly error: unknown;
-    }
-  | { readonly status: "unlocked"; readonly projection: T };
-
-export function createCharacterMutationAuthorityCoordinator() {
-  let generation = 0;
-  let journal: PendingCharacterCommand | null = null;
-  let notice: CharacterMutationNotice | null = null;
-  let pendingCleanup: {
-    readonly generation: number;
-    readonly cleanup: (() => void) | null;
-  } | null = null;
-
-  const advanceGeneration = () => {
-    generation += 1;
-    pendingCleanup = null;
-    return generation;
-  };
-
-  return {
-    advanceGeneration,
-    clearCommand(command: PendingCharacterCommand) {
-      if (!journal || !isSamePendingCharacterCommand(journal, command))
-        return false;
-      advanceGeneration();
-      journal = null;
-      notice = null;
-      return true;
-    },
-    currentCommandIs(command: PendingCharacterCommand) {
-      return (
-        journal !== null && isSamePendingCharacterCommand(journal, command)
-      );
-    },
-    getGeneration() {
-      return generation;
-    },
-    getSnapshot() {
-      return {
-        journal,
-        notice,
-        writesLocked: journal !== null || notice !== null,
-      } as const;
-    },
-    isCurrentGeneration(candidate: number) {
-      return generation === candidate;
-    },
-    rememberCommand(
-      command: PendingCharacterCommand,
-      nextNotice: CharacterMutationNotice,
-    ) {
-      if (!journal || !isSamePendingCharacterCommand(journal, command)) {
-        advanceGeneration();
-      }
-      journal = command;
-      notice = nextNotice;
-    },
-    setNotice(nextNotice: CharacterMutationNotice | null) {
-      notice = nextNotice;
-    },
-    async refresh<T>(input: {
-      readonly load: () => Promise<T>;
-      readonly canUnlock: (projection: T) => boolean;
-      readonly onUnlock?: () => void;
-      readonly reusePendingCleanup?: boolean;
-    }): Promise<CharacterMutationRefreshResult<T>> {
-      const refreshGeneration = generation;
-      if (!input.reusePendingCleanup) {
-        pendingCleanup = {
-          generation: refreshGeneration,
-          cleanup: input.onUnlock ?? null,
-        };
-      }
-      let projection: T;
-      try {
-        projection = await input.load();
-      } catch (error) {
-        if (generation !== refreshGeneration) {
-          return { status: "superseded", error };
-        }
-        return { status: "failed", error };
-      }
-      if (generation !== refreshGeneration) {
-        return { status: "superseded", projection };
-      }
-      if (!input.canUnlock(projection)) {
-        pendingCleanup = null;
-        return { status: "kept_locked", projection };
-      }
-      const cleanup =
-        pendingCleanup?.generation === refreshGeneration
-          ? pendingCleanup.cleanup
-          : null;
-      pendingCleanup = null;
-      notice = null;
-      try {
-        cleanup?.();
-      } catch (error) {
-        return { status: "cleanup_failed", projection, error };
-      }
-      return { status: "unlocked", projection };
-    },
-  };
-}
-
-export function commandIdempotencyStorageKey(
-  actorId: string,
-  characterId: string,
-) {
-  return `idream:admin:character:${encodeURIComponent(actorId)}:${encodeURIComponent(characterId)}:command-idempotency`;
-}
-
-export function pendingCommandStorageKey(actorId: string, characterId: string) {
-  return `idream:admin:character:${encodeURIComponent(actorId)}:${encodeURIComponent(characterId)}:pending-command`;
-}
-
-function browserCommandEnvironment() {
-  return typeof window === "undefined" ? "" : window.location.origin;
-}
-
-function browserCharacterCommandStorage(): CharacterCommandStorage | null {
-  if (typeof window === "undefined") return null;
-  const candidates: Storage[] = [];
-  for (const candidate of ["localStorage", "sessionStorage"] as const) {
-    try {
-      candidates.push(window[candidate]);
-    } catch {
-      // Keep probing the next browser-backed store.
-    }
-  }
-  if (candidates.length === 0) return null;
-  return {
-    getItem(key) {
-      let lastError: unknown;
-      for (const storage of candidates) {
-        try {
-          const value = storage.getItem(key);
-          if (value !== null) return value;
-        } catch (cause) {
-          lastError = cause;
-        }
-      }
-      if (lastError) throw lastError;
-      return null;
-    },
-    setItem(key, value) {
-      let stored = false;
-      let lastError: unknown;
-      for (const storage of candidates) {
-        try {
-          storage.setItem(key, value);
-          stored = true;
-        } catch (cause) {
-          lastError = cause;
-        }
-      }
-      if (!stored && lastError) throw lastError;
-    },
-    removeItem(key) {
-      let removed = false;
-      let lastError: unknown;
-      for (const storage of candidates) {
-        try {
-          storage.removeItem(key);
-          removed = true;
-        } catch (cause) {
-          lastError = cause;
-        }
-      }
-      if (!removed && lastError) throw lastError;
-    },
-  };
-}
-
-function readStoredStringRecord(storage: CharacterCommandStorage, key: string) {
-  try {
-    const raw = storage.getItem(key);
-    if (!raw) return {} as Record<string, string>;
-    const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-      return {};
-    return Object.fromEntries(
-      Object.entries(parsed).filter(
-        (entry): entry is [string, string] => typeof entry[1] === "string",
-      ),
-    );
-  } catch {
-    return {};
-  }
-}
-
-export function getOrCreateCharacterCommandIdempotencyKey(
-  storage: CharacterCommandStorage,
-  actorId: string,
-  characterId: string,
-  signature: string,
-  createKey: () => string = () => crypto.randomUUID(),
-) {
-  const storageKey = commandIdempotencyStorageKey(actorId, characterId);
-  const identities = readStoredStringRecord(storage, storageKey);
-  const existing = identities[signature];
-  if (existing) return existing;
-  const created = createKey();
-  try {
-    storage.setItem(
-      storageKey,
-      JSON.stringify({
-        ...identities,
-        [signature]: created,
-      }),
-    );
-  } catch {
-    // The in-memory ReleasePanel fallback still protects the current page.
-  }
-  return created;
-}
-
-export function releaseCharacterCommandIdempotencyKey(
-  storage: CharacterCommandStorage,
-  actorId: string,
-  characterId: string,
-  signature: string,
-) {
-  const storageKey = commandIdempotencyStorageKey(actorId, characterId);
-  const identities = readStoredStringRecord(storage, storageKey);
-  if (!Object.hasOwn(identities, signature)) return;
-  delete identities[signature];
-  try {
-    if (Object.keys(identities).length === 0) storage.removeItem(storageKey);
-    else storage.setItem(storageKey, JSON.stringify(identities));
-  } catch {
-    // A storage failure must not turn a terminal command into a UI failure.
-  }
-}
-
-export function parsePendingCharacterCommandJournal(
-  raw: string,
-  actorId: string,
-  environment: string,
-): PendingCharacterCommand | null {
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-      return null;
-    const record = parsed as Record<string, unknown>;
-    if (
-      record.schemaVersion !== CHARACTER_COMMAND_JOURNAL_SCHEMA_VERSION ||
-      record.actorId !== actorId ||
-      record.environment !== environment
-    )
-      return null;
-    if (
-      !(record.commandId === null || typeof record.commandId === "string") ||
-      typeof record.action !== "string" ||
-      typeof record.signature !== "string" ||
-      typeof record.createdAt !== "number" ||
-      !Number.isFinite(record.createdAt) ||
-      record.createdAt <= 0
-    )
-      return null;
-    if (
-      Object.hasOwn(record, "autoReplayUntil") &&
-      (typeof record.autoReplayUntil !== "number" ||
-        !Number.isFinite(record.autoReplayUntil))
-    )
-      return null;
-    if (
-      record.commandId === null &&
-      (typeof record.endpoint !== "string" ||
-        typeof record.idempotencyKey !== "string" ||
-        !Object.hasOwn(record, "body"))
-    )
-      return null;
-    return {
-      commandId: record.commandId,
-      action: record.action,
-      signature: record.signature,
-      ...(typeof record.endpoint === "string"
-        ? { endpoint: record.endpoint }
-        : {}),
-      ...(Object.hasOwn(record, "body") ? { body: record.body } : {}),
-      ...(typeof record.idempotencyKey === "string"
-        ? { idempotencyKey: record.idempotencyKey }
-        : {}),
-      createdAt: record.createdAt,
-      ...(typeof record.autoReplayUntil === "number"
-        ? { autoReplayUntil: record.autoReplayUntil }
-        : {}),
-      terminal: false,
-    };
-  } catch {
-    return null;
-  }
-}
-
-function readPendingCharacterCommand(
-  characterId: string,
-  actorId: string,
-): PendingCharacterCommand | null {
-  const storage = browserCharacterCommandStorage();
-  if (!storage) return null;
-  try {
-    const raw = storage.getItem(pendingCommandStorageKey(actorId, characterId));
-    if (!raw) return null;
-    return parsePendingCharacterCommandJournal(
-      raw,
-      actorId,
-      browserCommandEnvironment(),
-    );
-  } catch {
-    return null;
-  }
-}
-
-function persistPendingCharacterCommand(
-  characterId: string,
-  actorId: string,
-  command: PendingCharacterCommand,
-) {
-  const storage = browserCharacterCommandStorage();
-  if (!storage) return;
-  try {
-    storage.setItem(
-      pendingCommandStorageKey(actorId, characterId),
-      JSON.stringify({
-        schemaVersion: CHARACTER_COMMAND_JOURNAL_SCHEMA_VERSION,
-        actorId,
-        environment: browserCommandEnvironment(),
-        commandId: command.commandId,
-        action: command.action,
-        signature: command.signature,
-        endpoint: command.endpoint,
-        body: command.body,
-        idempotencyKey: command.idempotencyKey,
-        createdAt: command.createdAt,
-        autoReplayUntil:
-          command.autoReplayUntil ??
-          command.createdAt + UNKNOWN_COMMAND_AUTO_REPLAY_TTL_MS,
-      }),
-    );
-  } catch {
-    // The current page still keeps the command locked and polling.
-  }
-}
-
-function clearPendingCharacterCommand(
-  characterId: string,
-  actorId: string,
-  command: PendingCharacterCommand,
-) {
-  const storage = browserCharacterCommandStorage();
-  if (!storage) return true;
-  try {
-    const raw = storage.getItem(pendingCommandStorageKey(actorId, characterId));
-    if (raw) {
-      const stored = parsePendingCharacterCommandJournal(
-        raw,
-        actorId,
-        browserCommandEnvironment(),
-      );
-      if (stored && !isSamePendingCharacterCommand(stored, command))
-        return false;
-    }
-    storage.removeItem(pendingCommandStorageKey(actorId, characterId));
-    return true;
-  } catch {
-    // Terminal state is authoritative even when browser storage is unavailable.
-    return true;
-  }
-}
-
-function isDefinitiveCommandRejection(cause: unknown) {
-  return (
-    cause instanceof AdminV2RequestError &&
-    [400, 401, 403, 404, 409, 422].includes(cause.status)
-  );
-}
-
-export function characterCommandReplayFailureDisposition(
-  status: number | null,
-): "keep_locked" | "reconcile" | "retry" {
-  if (status === 401 || status === 403) return "keep_locked";
-  if (status !== null && [400, 404, 409, 422].includes(status)) {
-    return "reconcile";
-  }
-  return "retry";
-}
-
-function activeCommandConflict(cause: unknown) {
-  if (!(cause instanceof AdminV2RequestError) || cause.status !== 409)
-    return null;
-  if (
-    !cause.details ||
-    typeof cause.details !== "object" ||
-    Array.isArray(cause.details)
-  ) {
-    return null;
-  }
-  const details = cause.details as Record<string, unknown>;
-  if (typeof details.activeCommandId !== "string") return null;
-  return {
-    commandId: details.activeCommandId,
-    commandType:
-      typeof details.activeCommandType === "string"
-        ? details.activeCommandType
-        : "character.command",
-  };
-}
-
-export function characterCommandJournalCanAutoReplay(
-  command: Pick<
-    PendingCharacterCommand,
-    "commandId" | "createdAt" | "autoReplayUntil"
-  >,
-  now = Date.now(),
-) {
-  if (command.commandId) return true;
-  return (
-    now <=
-    (command.autoReplayUntil ??
-      command.createdAt + UNKNOWN_COMMAND_AUTO_REPLAY_TTL_MS)
-  );
+  return outcome.cause instanceof Error
+    ? outcome.cause.message
+    : `${action} acceptance is unknown. The same command will be replayed safely.`;
 }
 
 function percent(value: number | null) {
@@ -1029,33 +563,6 @@ export function characterMonitorWindows(
       ...monitors.map((monitor) => monitor.window),
     ]),
   ];
-}
-
-function characterCommandActionLabel(commandType: string) {
-  return commandType
-    .replace(/^character\./, "")
-    .replaceAll(".", " ")
-    .replaceAll("_", " ");
-}
-
-function pendingCommandFromAuthority(
-  command: AdminCommandStatus,
-): PendingCharacterCommand {
-  return {
-    commandId: command.commandId,
-    action: characterCommandActionLabel(command.commandType),
-    signature: `authority:${command.commandId}`,
-    createdAt: Date.parse(command.createdAt),
-    terminal: false,
-  };
-}
-
-export function committedCharacterProjectionWarning(
-  action: string,
-  cause: unknown,
-) {
-  const detail = cause instanceof Error ? `: ${cause.message}` : "";
-  return `${action} was committed, but the authoritative Character workspace could not be refreshed${detail}. Refresh the authoritative workspace before another write.`;
 }
 
 function permissionDenied(label: string) {
@@ -4022,25 +3529,15 @@ function ReleaseSummary({
 function ReleasePanel({
   data,
   permissions,
-  mutationNotice,
+  journal,
+  writesLocked,
   runCommittedMutation,
-  beginCommandSubmission,
-  abortCommandSubmission,
-  pendingCommand,
-  rememberPendingCommand,
-  discardPendingCommand,
-  getDurableCommandIdempotencyKey,
 }: {
   data: CharacterWorkspaceDetail;
   permissions: Permissions;
-  mutationNotice: CharacterMutationNotice | null;
+  journal: CharacterCommandJournal;
+  writesLocked: boolean;
   runCommittedMutation: RunCommittedCharacterMutation;
-  beginCommandSubmission: (message: string) => boolean;
-  abortCommandSubmission: () => void;
-  pendingCommand: PendingCharacterCommand | null;
-  rememberPendingCommand: (command: PendingCharacterCommand) => void;
-  discardPendingCommand: (command: PendingCharacterCommand) => void;
-  getDurableCommandIdempotencyKey: (signature: string) => string;
 }) {
   const { t } = useAdminI18n();
   const releaseOrdinals = useMemo(
@@ -4087,7 +3584,7 @@ function ReleasePanel({
     releaseId: string,
     version: number,
   ) => {
-    if (pendingCommand || mutationNotice) return;
+    if (writesLocked) return;
     const expectedConfirmation = `${data.character.id}:${releaseId}:${kind}`;
     if (!releaseConfirmed) {
       setError("Tick the release confirmation before running this action.");
@@ -4101,14 +3598,13 @@ function ReleasePanel({
     setBusy(kind);
     setError(null);
     if (
-      !beginCommandSubmission(
+      !journal.beginSubmission(
         `Submitting Release ${kind}. Character writes stay locked until command acceptance is known.`,
       )
     ) {
       setBusy(null);
       return;
     }
-    let submission: PendingCharacterCommand | null = null;
     try {
       const body = {
         entityVersion: version,
@@ -4116,55 +3612,21 @@ function ReleasePanel({
         confirmation: expectedConfirmation,
         ...(scheduledDate ? { scheduledAt: scheduledDate.toISOString() } : {}),
       };
-      const signature = `${kind}:${releaseId}:${JSON.stringify(body)}`;
-      const idempotencyKey = getDurableCommandIdempotencyKey(signature);
-      const endpoint = `/api/v2/admin/characters/${data.character.id}/releases/${releaseId}/commands/${kind}`;
-      submission = {
-        commandId: null,
+      const outcome = await journal.submit({
         action: `Release ${kind}`,
-        signature,
-        endpoint,
-        body,
-        idempotencyKey,
-        createdAt: Date.now(),
-        terminal: false,
-      };
-      rememberPendingCommand(submission);
-      const accepted = await adminV2Request(endpoint, {
-        method: "POST",
-        idempotencyKey,
-        schema: adminCommandAcceptedSchema,
+        signature: `${kind}:${releaseId}:${JSON.stringify(body)}`,
+        endpoint: `/api/v2/admin/characters/${data.character.id}/releases/${releaseId}/commands/${kind}`,
         body,
       });
-      const pending = {
-        ...submission,
-        commandId: accepted.commandId,
-      } satisfies PendingCharacterCommand;
-      rememberPendingCommand(pending);
-      setReleaseConfirmed(false);
-    } catch (cause) {
-      const conflict = activeCommandConflict(cause);
-      if (!submission) {
-        abortCommandSubmission();
-      } else if (conflict) {
-        rememberPendingCommand({
-          commandId: conflict.commandId,
-          action: characterCommandActionLabel(conflict.commandType),
-          signature: `authority:${conflict.commandId}`,
-          createdAt: Date.now(),
-          terminal: false,
-        });
-      } else if (isDefinitiveCommandRejection(cause)) {
-        discardPendingCommand(submission);
+      if (outcome.kind === "accepted") {
+        setReleaseConfirmed(false);
+        return;
       }
+      setError(commandSubmissionMessage(outcome, `Release ${kind}`));
+    } catch (cause) {
+      journal.abortSubmission();
       setError(
-        conflict
-          ? `${characterCommandActionLabel(conflict.commandType)} is already active. This workspace attached to that command instead of accepting another one.`
-          : cause instanceof Error
-            ? cause.message
-            : submission
-              ? `Release ${kind} acceptance is unknown. The same command will be replayed safely.`
-              : `Could not ${kind} release`,
+        cause instanceof Error ? cause.message : `Could not ${kind} release`,
       );
     } finally {
       setBusy(null);
@@ -4316,73 +3778,38 @@ function ReleasePanel({
     }
   };
   const servingCommand = async (action: "pause" | "resume" | "retire") => {
-    if (!data.serving || pendingCommand || mutationNotice) return;
+    if (!data.serving || writesLocked) return;
     setBusy(action);
     setError(null);
     if (
-      !beginCommandSubmission(
+      !journal.beginSubmission(
         `Submitting Serving ${action}. Character writes stay locked until command acceptance is known.`,
       )
     ) {
       setBusy(null);
       return;
     }
-    let submission: PendingCharacterCommand | null = null;
     try {
       const body = {
         entityVersion: data.serving.version,
         reason: { code: `operator_${action}`, summary: reason },
         confirmation: `${data.character.id}:${action}`,
       };
-      const signature = `${action}:${data.character.id}:${JSON.stringify(body)}`;
-      const idempotencyKey = getDurableCommandIdempotencyKey(signature);
-      const endpoint = `/api/v2/admin/characters/${data.character.id}/commands/${action}`;
-      submission = {
-        commandId: null,
+      const outcome = await journal.submit({
         action: `Serving ${action}`,
-        signature,
-        endpoint,
-        body,
-        idempotencyKey,
-        createdAt: Date.now(),
-        terminal: false,
-      };
-      rememberPendingCommand(submission);
-      const accepted = await adminV2Request(endpoint, {
-        method: "POST",
-        idempotencyKey,
-        schema: adminCommandAcceptedSchema,
+        signature: `${action}:${data.character.id}:${JSON.stringify(body)}`,
+        endpoint: `/api/v2/admin/characters/${data.character.id}/commands/${action}`,
         body,
       });
-      const pending = {
-        ...submission,
-        commandId: accepted.commandId,
-      } satisfies PendingCharacterCommand;
-      rememberPendingCommand(pending);
-      setReleaseConfirmed(false);
-    } catch (cause) {
-      const conflict = activeCommandConflict(cause);
-      if (!submission) {
-        abortCommandSubmission();
-      } else if (conflict) {
-        rememberPendingCommand({
-          commandId: conflict.commandId,
-          action: characterCommandActionLabel(conflict.commandType),
-          signature: `authority:${conflict.commandId}`,
-          createdAt: Date.now(),
-          terminal: false,
-        });
-      } else if (isDefinitiveCommandRejection(cause)) {
-        discardPendingCommand(submission);
+      if (outcome.kind === "accepted") {
+        setReleaseConfirmed(false);
+        return;
       }
+      setError(commandSubmissionMessage(outcome, `Serving ${action}`));
+    } catch (cause) {
+      journal.abortSubmission();
       setError(
-        conflict
-          ? `${characterCommandActionLabel(conflict.commandType)} is already active. This workspace attached to that command instead of accepting another one.`
-          : cause instanceof Error
-            ? cause.message
-            : submission
-              ? `Serving ${action} acceptance is unknown. The same command will be replayed safely.`
-              : `Could not ${action} Character`,
+        cause instanceof Error ? cause.message : `Could not ${action} Character`,
       );
     } finally {
       setBusy(null);
@@ -5254,30 +4681,30 @@ function CharacterDetail({
   const [data, setData] = useState<CharacterWorkspaceDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [commandRecoveryError, setCommandRecoveryError] = useState<
-    string | null
-  >(null);
-  const [pendingCommand, setPendingCommand] =
-    useState<PendingCharacterCommand | null>(null);
-  const [mutationNotice, setMutationNotice] =
-    useState<CharacterMutationNotice | null>(null);
   const [reclaimingVoiceRequestId, setReclaimingVoiceRequestId] = useState<
     string | null
   >(null);
-  const mutationNoticeRef = useRef<CharacterMutationNotice | null>(
-    mutationNotice,
+  // SPEC: 待决命令与写入锁只有 journal 一份权威，组件通过订阅镜像它。
+  // INTENT: 这两个事实此前同时存在于 2 个 useState、2 个 useRef 和 coordinator 内部共 5 份
+  //         副本里，refs 的存在只是为了让异步回调读到当前值。订阅之后 5 份塌成 1 份，
+  //         "忘了同步 ref" 这一整类 bug 不再可表达。
+  const [journal] = useState(() =>
+    createCharacterCommandJournal({ actorId, characterId: id }),
   );
-  const pendingCommandRef = useRef<PendingCharacterCommand | null>(
-    pendingCommand,
-  );
-  const mutationAuthority = useRef(
-    createCharacterMutationAuthorityCoordinator(),
+  const {
+    command: pendingCommand,
+    notice: mutationNotice,
+    recoveryError: commandRecoveryError,
+    writesLocked: commandWritesLocked,
+  } = useSyncExternalStore(
+    journal.subscribe,
+    journal.getSnapshot,
+    journal.getSnapshot,
   );
   const requestGate = useRef(createLatestRequestGate());
-  const durableCommandIdempotencyKeys = useRef<Record<string, string>>({});
   const [tab, setTab] = useState<Tab>(() => {
     if (typeof window === "undefined") return "project";
-    if (readPendingCharacterCommand(id, actorId)) return "release";
+    if (journal.hasPersistedCommand()) return "release";
     return characterWorkspaceTabFromSearch(window.location.search);
   });
   const tabRef = useRef(tab);
@@ -5324,73 +4751,12 @@ function CharacterDetail({
       setLoading(false);
     }
   }, [id]);
-  const updateMutationNotice = useCallback(
-    (notice: CharacterMutationNotice | null) => {
-      mutationAuthority.current.setNotice(notice);
-      mutationNoticeRef.current = notice;
-      setMutationNotice(notice);
-    },
-    [],
-  );
-  const getDurableCommandIdempotencyKey = useCallback(
-    (signature: string) => {
-      const inMemory = durableCommandIdempotencyKeys.current[signature];
-      const storage = browserCharacterCommandStorage();
-      if (!storage) {
-        const key = inMemory ?? crypto.randomUUID();
-        durableCommandIdempotencyKeys.current[signature] = key;
-        return key;
-      }
-      const key = getOrCreateCharacterCommandIdempotencyKey(
-        storage,
-        actorId,
-        id,
-        signature,
-        () => inMemory ?? crypto.randomUUID(),
-      );
-      durableCommandIdempotencyKeys.current[signature] = key;
-      return key;
-    },
-    [actorId, id],
-  );
-  const releaseDurableCommandIdempotencyKey = useCallback(
-    (signature: string) => {
-      delete durableCommandIdempotencyKeys.current[signature];
-      const storage = browserCharacterCommandStorage();
-      if (storage) {
-        releaseCharacterCommandIdempotencyKey(storage, actorId, id, signature);
-      }
-    },
-    [actorId, id],
-  );
-  const rememberPendingCommand = useCallback(
-    (command: PendingCharacterCommand) => {
-      const nextNotice: CharacterMutationNotice = command.commandId
-        ? {
-            kind: "command_pending",
-            message: `${command.action} command is pending. Character writes stay locked until the worker records a terminal result and the workspace refreshes.`,
-            commandId: command.commandId,
-          }
-        : {
-            kind: "command_submission_unknown",
-            message: `${command.action} may already be accepted. The exact command is being replayed with the same idempotency key before any other Character write is allowed.`,
-          };
-      mutationAuthority.current.rememberCommand(command, nextNotice);
-      persistPendingCharacterCommand(id, actorId, command);
-      pendingCommandRef.current = command;
-      setPendingCommand(command);
-      setCommandRecoveryError(null);
-      updateMutationNotice(nextNotice);
-    },
-    [actorId, id, updateMutationNotice],
-  );
   const refreshCommittedProjection = useCallback(
     async (action: string, commandId?: string, afterRefresh?: () => void) => {
-      const result = await mutationAuthority.current.refresh({
+      const result = await journal.refresh({
         load: loadAuthoritative,
-        canUnlock: (authoritative) => authoritative.activeCommand === null,
         onUnlock: () => {
-          updateMutationNotice(null);
+          journal.setNotice(null);
           afterRefresh?.();
         },
       });
@@ -5399,34 +4765,22 @@ function CharacterDetail({
       }
       if (result.status === "failed") {
         setError(null);
-        updateMutationNotice({
+        journal.setNotice({
           kind: "refresh_required",
           message: committedCharacterProjectionWarning(action, result.error),
           ...(commandId ? { commandId } : {}),
         });
         return false;
       }
-      if (result.status === "kept_locked") {
-        if (result.projection.activeCommand) {
-          rememberPendingCommand(
-            pendingCommandFromAuthority(result.projection.activeCommand),
-          );
-        }
-        return true;
-      }
-      updateMutationNotice(null);
+      // SPEC: kept_locked 说明服务端仍有命令在跑；journal 已把日志改挂到那一条上。
+      if (result.status === "kept_locked") return true;
       setError(null);
       if (result.status === "cleanup_failed") {
-        const cleanupCause = result.error;
-        setCommandRecoveryError(
-          cleanupCause instanceof Error
-            ? `The authoritative workspace refreshed, but local cleanup needs attention: ${cleanupCause.message}`
-            : "The authoritative workspace refreshed, but local cleanup needs attention.",
-        );
+        journal.setRecoveryError(localCleanupWarning(result.error));
       }
       return true;
     },
-    [loadAuthoritative, rememberPendingCommand, updateMutationNotice],
+    [journal, loadAuthoritative],
   );
   const runCommittedMutation = useCallback(
     async <T,>(input: {
@@ -5434,23 +4788,21 @@ function CharacterDetail({
       readonly commit: () => Promise<T>;
       readonly afterRefresh?: () => void;
     }) => {
-      if (mutationNoticeRef.current || pendingCommandRef.current) {
+      if (
+        !journal.beginSubmission(
+          `${input.action} is being committed. Character writes stay locked until the authoritative workspace refreshes.`,
+        )
+      ) {
         throw new Error(
           "Refresh the authoritative Character workspace before another write.",
         );
       }
-      const generation = mutationAuthority.current.advanceGeneration();
-      updateMutationNotice({
-        kind: "mutation_in_flight",
-        message: `${input.action} is being committed. Character writes stay locked until the authoritative workspace refreshes.`,
-      });
+      const generation = journal.getGeneration();
       let result: T;
       try {
         result = await input.commit();
       } catch (cause) {
-        if (mutationAuthority.current.isCurrentGeneration(generation)) {
-          updateMutationNotice(null);
-        }
+        if (journal.isCurrentGeneration(generation)) journal.setNotice(null);
         throw cause;
       }
       const refreshed = await refreshCommittedProjection(
@@ -5460,7 +4812,7 @@ function CharacterDetail({
       );
       return { result, refreshed };
     },
-    [refreshCommittedProjection, updateMutationNotice],
+    [journal, refreshCommittedProjection],
   );
   const reclaimVoiceRequest = useCallback(
     async (input: {
@@ -5470,7 +4822,7 @@ function CharacterDetail({
       readonly reason: string;
     }) => {
       const signature = `voice-clip-reclaim:${input.requestId}`;
-      const idempotencyKey = getDurableCommandIdempotencyKey(signature);
+      const idempotencyKey = journal.takeIdempotencyKey(signature);
       setReclaimingVoiceRequestId(input.requestId);
       setError(null);
       try {
@@ -5488,10 +4840,10 @@ function CharacterDetail({
               schema: characterVoiceClipReclaimResponseSchema,
             }),
         });
-        releaseDurableCommandIdempotencyKey(signature);
+        journal.releaseIdempotencyKey(signature);
       } catch (cause) {
         if (shouldReleaseVoiceReclaimIdempotencyKey(cause)) {
-          releaseDurableCommandIdempotencyKey(signature);
+          journal.releaseIdempotencyKey(signature);
         }
         setError(
           cause instanceof Error
@@ -5503,43 +4855,8 @@ function CharacterDetail({
         setReclaimingVoiceRequestId(null);
       }
     },
-    [
-      getDurableCommandIdempotencyKey,
-      releaseDurableCommandIdempotencyKey,
-      runCommittedMutation,
-    ],
+    [journal, runCommittedMutation],
   );
-  const discardPendingCommand = useCallback(
-    (command: PendingCharacterCommand) => {
-      const current = pendingCommandRef.current;
-      if (!current || !isSamePendingCharacterCommand(current, command))
-        return false;
-      if (!mutationAuthority.current.currentCommandIs(command)) return false;
-      if (!clearPendingCharacterCommand(id, actorId, command)) return false;
-      if (!mutationAuthority.current.clearCommand(command)) return false;
-      releaseDurableCommandIdempotencyKey(command.signature);
-      pendingCommandRef.current = null;
-      setPendingCommand(null);
-      updateMutationNotice(null);
-      return true;
-    },
-    [actorId, id, releaseDurableCommandIdempotencyKey, updateMutationNotice],
-  );
-  const beginCommandSubmission = useCallback(
-    (message: string) => {
-      if (mutationNoticeRef.current || pendingCommandRef.current) return false;
-      mutationAuthority.current.advanceGeneration();
-      updateMutationNotice({ kind: "mutation_in_flight", message });
-      return true;
-    },
-    [updateMutationNotice],
-  );
-  const abortCommandSubmission = useCallback(() => {
-    if (mutationNoticeRef.current?.kind === "mutation_in_flight") {
-      mutationAuthority.current.advanceGeneration();
-      updateMutationNotice(null);
-    }
-  }, [updateMutationNotice]);
   const settlePendingCommand = useCallback(
     (
       action: string,
@@ -5549,16 +4866,15 @@ function CharacterDetail({
     [refreshCommittedProjection],
   );
   const refreshAuthoritativeWorkspace = useCallback(async () => {
+    const current = journal.getSnapshot().notice;
     if (
-      mutationNoticeRef.current?.kind === "command_pending" ||
-      mutationNoticeRef.current?.kind === "command_submission_unknown" ||
-      mutationNoticeRef.current?.kind === "command_reconfirmation_required"
+      current?.kind === "command_pending" ||
+      current?.kind === "command_submission_unknown" ||
+      current?.kind === "command_reconfirmation_required"
     )
       return false;
-    const current = mutationNoticeRef.current;
-    const result = await mutationAuthority.current.refresh({
+    const result = await journal.refresh({
       load: loadAuthoritative,
-      canUnlock: (authoritative) => authoritative.activeCommand === null,
       reusePendingCleanup: true,
     });
     if (result.status === "superseded") {
@@ -5566,7 +4882,7 @@ function CharacterDetail({
     }
     if (result.status === "failed") {
       setError(null);
-      updateMutationNotice({
+      journal.setNotice({
         kind: "refresh_required",
         message:
           current?.kind === "refresh_required"
@@ -5581,34 +4897,18 @@ function CharacterDetail({
       });
       return false;
     }
-    if (result.status === "kept_locked") {
-      if (result.projection.activeCommand) {
-        rememberPendingCommand(
-          pendingCommandFromAuthority(result.projection.activeCommand),
-        );
-      }
-      return true;
-    }
-    updateMutationNotice(null);
+    if (result.status === "kept_locked") return true;
     setError(null);
     if (result.status === "cleanup_failed") {
-      const cleanupCause = result.error;
-      setCommandRecoveryError(
-        cleanupCause instanceof Error
-          ? `The authoritative workspace refreshed, but local cleanup needs attention: ${cleanupCause.message}`
-          : "The authoritative workspace refreshed, but local cleanup needs attention.",
-      );
+      journal.setRecoveryError(localCleanupWarning(result.error));
     }
     return true;
-  }, [loadAuthoritative, rememberPendingCommand, updateMutationNotice]);
+  }, [journal, loadAuthoritative]);
   const reconcilePendingCommandAuthority = useCallback(
     async (command: PendingCharacterCommand, message: string) => {
-      const current = pendingCommandRef.current;
-      if (!current || !isSamePendingCharacterCommand(current, command))
-        return false;
-      if (!mutationAuthority.current.currentCommandIs(command)) return false;
-      const generation = mutationAuthority.current.getGeneration();
-      updateMutationNotice({
+      if (!journal.currentCommandIs(command)) return false;
+      const generation = journal.getGeneration();
+      journal.setNotice({
         kind: "refresh_required",
         message,
         ...(command.commandId ? { commandId: command.commandId } : {}),
@@ -5616,35 +4916,30 @@ function CharacterDetail({
       try {
         const authoritative = await loadAuthoritative();
         if (
-          !mutationAuthority.current.isCurrentGeneration(generation) ||
-          !mutationAuthority.current.currentCommandIs(command) ||
-          !pendingCommandRef.current ||
-          !isSamePendingCharacterCommand(pendingCommandRef.current, command)
+          !journal.isCurrentGeneration(generation) ||
+          !journal.currentCommandIs(command)
         )
           return false;
         if (authoritative.activeCommand) {
-          const active = pendingCommandFromAuthority(
+          const active = journal.attachAuthorityCommand(
             authoritative.activeCommand,
           );
-          rememberPendingCommand(active);
-          setCommandRecoveryError(
+          journal.setRecoveryError(
             `${active.action} is still active according to server authority. Character writes remain locked.`,
           );
           return false;
         }
-        if (!discardPendingCommand(command)) return false;
-        setCommandRecoveryError(null);
+        if (!journal.discard(command)) return false;
+        journal.setRecoveryError(null);
         return true;
       } catch (cause) {
         if (
-          !mutationAuthority.current.isCurrentGeneration(generation) ||
-          !mutationAuthority.current.currentCommandIs(command) ||
-          !pendingCommandRef.current ||
-          !isSamePendingCharacterCommand(pendingCommandRef.current, command)
+          !journal.isCurrentGeneration(generation) ||
+          !journal.currentCommandIs(command)
         )
           return false;
         setError(null);
-        updateMutationNotice({
+        journal.setNotice({
           kind: "refresh_required",
           message: committedCharacterProjectionWarning(
             `${command.action} command reconciliation`,
@@ -5655,28 +4950,8 @@ function CharacterDetail({
         return false;
       }
     },
-    [
-      discardPendingCommand,
-      loadAuthoritative,
-      rememberPendingCommand,
-      updateMutationNotice,
-    ],
+    [journal, loadAuthoritative],
   );
-  const authorizePendingCommandReplay = useCallback(() => {
-    const current = pendingCommandRef.current;
-    if (!current || current.commandId) return;
-    const now = Date.now();
-    mutationAuthority.current.advanceGeneration();
-    rememberPendingCommand({
-      ...current,
-      createdAt: now,
-      autoReplayUntil: now + UNKNOWN_COMMAND_AUTO_REPLAY_TTL_MS,
-    });
-    setCommandRecoveryError(null);
-  }, [rememberPendingCommand]);
-  useEffect(() => {
-    pendingCommandRef.current = pendingCommand;
-  }, [pendingCommand]);
   useEffect(() => {
     if (!permissions.read) return;
     const gate = requestGate.current;
@@ -5691,11 +4966,7 @@ function CharacterDetail({
   }, [load, permissions.read]);
   useEffect(() => {
     const restore = () => {
-      const pending = readPendingCharacterCommand(id, actorId);
-      if (!pending) {
-        return;
-      }
-      rememberPendingCommand(pending);
+      if (!journal.restore()) return;
       setTab("release");
       setWorkspaceUrl(new URLSearchParams({ tab: "release" }), {
         mode: "replace",
@@ -5703,12 +4974,12 @@ function CharacterDetail({
     };
     const timer = window.setTimeout(restore, 0);
     const onStorage = (event: StorageEvent) => {
-      if (event.key !== pendingCommandStorageKey(actorId, id)) return;
+      if (!journal.ownsStorageEvent(event)) return;
       if (event.newValue !== null) {
         restore();
         return;
       }
-      const current = pendingCommandRef.current;
+      const current = journal.getSnapshot().command;
       if (!current) return;
       void reconcilePendingCommandAuthority(
         current,
@@ -5720,92 +4991,69 @@ function CharacterDetail({
       window.clearTimeout(timer);
       window.removeEventListener("storage", onStorage);
     };
-  }, [actorId, id, reconcilePendingCommandAuthority, rememberPendingCommand]);
+  }, [journal, reconcilePendingCommandAuthority]);
+  // INTENT: 与上面的日志恢复一样延后一个 tick 再切页签——effect 里同步 setState 会触发级联
+  //          渲染（构建期 react-hooks/set-state-in-effect 会拦），而这里本来就是"服务端说还有
+  //          命令在跑"的异步事实，不需要在同一次提交里生效。
   useEffect(() => {
     const active = data?.activeCommand;
-    if (!active || pendingCommandRef.current?.commandId === active.commandId)
+    if (
+      !active ||
+      journal.getSnapshot().command?.commandId === active.commandId
+    )
       return;
-    rememberPendingCommand(pendingCommandFromAuthority(active));
-    setTab("release");
-    setWorkspaceUrl(new URLSearchParams({ tab: "release" }), {
-      mode: "replace",
-    });
-  }, [data?.activeCommand, rememberPendingCommand]);
-  // SPEC: 待决命令的恢复轮询，五档自适应间隔（250ms / 500ms / 1s / 2s / 5s）。
-  // INTENT: 档位是有意的运营体验设计——刚提交动作时快速轮询让操作员立刻看到结果，
-  //         局面稳定（或权限受阻）后放慢，不要压成固定间隔。这里只把"自己 setTimeout
-  //         递归"换成"返回下一次间隔"，五个档位一个不少。
+    const timer = window.setTimeout(() => {
+      journal.attachAuthorityCommand(active);
+      setTab("release");
+      setWorkspaceUrl(new URLSearchParams({ tab: "release" }), {
+        mode: "replace",
+      });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [data?.activeCommand, journal]);
+  // SPEC: 待决命令的恢复循环。每个分支只做两件事——把 journal 的处置翻成一句运营能读的话，
+  //       并把它给的重试间隔交回调度器。
+  // INTENT: 处置本身（能不能重放、该不该解锁、等多久）全在 journal 里，所以这里改错文案
+  //         也改不动安全语义；反过来，任何一条出口漏接都会立刻表现为"运营看不到发生了什么"。
+  // INVARIANT: cancelled 只在本轮开始前判一次，拿到 journal 的处置之后不再中途退出。
+  //            journal 的每次状态推进（受理 / 挂到别的命令 / 标记终态）都会 publish 并触发
+  //            重渲染，于是本轮任务当场被换掉、cancelled 立刻为 true——中途判一次就等于把
+  //            刚拿到的终态丢掉，命令永远settle不了、写入锁永远解不开。防重放靠的是 journal
+  //            自己的命令身份与代际校验，不是这个标志位。
   const recoverPendingCommand = useCallback<PollingTask>(
     async (context): Promise<PollDecision> => {
-      if (!pendingCommand) return null;
+      if (!pendingCommand || context.cancelled) return null;
       if (!pendingCommand.commandId) {
-        if (!characterCommandJournalCanAutoReplay(pendingCommand)) {
-          updateMutationNotice({
-            kind: "command_reconfirmation_required",
-            message: `${pendingCommand.action} was saved before acceptance could be proven, but the automatic replay window expired. Review the action and explicitly resume it; no old command will run automatically.`,
-          });
-          setCommandRecoveryError(
-            `${pendingCommand.action} requires fresh operator confirmation before the saved request can be replayed.`,
-          );
-          return null;
-        }
-        if (
-          !pendingCommand.endpoint ||
-          pendingCommand.body === undefined ||
-          !pendingCommand.idempotencyKey
-        ) {
-          setPendingCommand((current) =>
-            current ? { ...current, terminal: true } : current,
-          );
-          setCommandRecoveryError(
-            `${pendingCommand.action} recovery journal is incomplete. The authoritative workspace must be reconciled before writes resume.`,
-          );
-          await reconcilePendingCommandAuthority(
-            pendingCommand,
-            `${pendingCommand.action} recovery evidence is incomplete. Server authority must be reconciled before writes resume.`,
-          );
-          return null;
-        }
-        try {
-          const accepted = await adminV2Request(pendingCommand.endpoint, {
-            method: "POST",
-            idempotencyKey: pendingCommand.idempotencyKey,
-            schema: adminCommandAcceptedSchema,
-            body: pendingCommand.body,
-          });
-          if (context.cancelled) return null;
-          rememberPendingCommand({
-            ...pendingCommand,
-            commandId: accepted.commandId,
-          });
-          return null;
-        } catch (cause) {
-          if (context.cancelled) return null;
-          const conflict = activeCommandConflict(cause);
-          if (conflict) {
-            rememberPendingCommand({
-              commandId: conflict.commandId,
-              action: characterCommandActionLabel(conflict.commandType),
-              signature: `authority:${conflict.commandId}`,
-              createdAt: Date.now(),
-              terminal: false,
-            });
-            setCommandRecoveryError(
-              `${characterCommandActionLabel(conflict.commandType)} is already active according to server authority. The workspace attached to that command instead of submitting a second one.`,
+        const replay = await journal.replay(pendingCommand);
+        switch (replay.kind) {
+          case "accepted":
+            return null;
+          case "attached":
+            journal.setRecoveryError(
+              `${replay.command.action} is already active according to server authority. The workspace attached to that command instead of submitting a second one.`,
             );
             return null;
-          }
-          const replayDisposition = characterCommandReplayFailureDisposition(
-            cause instanceof AdminV2RequestError ? cause.status : null,
-          );
-          if (replayDisposition === "keep_locked") {
-            setCommandRecoveryError(
+          case "window_expired":
+            journal.setRecoveryError(
+              `${pendingCommand.action} requires fresh operator confirmation before the saved request can be replayed.`,
+            );
+            return null;
+          case "evidence_incomplete":
+            journal.setRecoveryError(
+              `${pendingCommand.action} recovery journal is incomplete. The authoritative workspace must be reconciled before writes resume.`,
+            );
+            await reconcilePendingCommandAuthority(
+              pendingCommand,
+              `${pendingCommand.action} recovery evidence is incomplete. Server authority must be reconciled before writes resume.`,
+            );
+            return null;
+          case "blocked":
+            journal.setRecoveryError(
               `${pendingCommand.action} acceptance cannot be proven with the current session or permissions. The original command may already exist, so Character writes remain locked while the exact idempotent request waits to retry.`,
             );
-            return 5_000;
-          }
-          if (replayDisposition === "reconcile") {
-            setCommandRecoveryError(
+            return replay.retryInMs;
+          case "reconcile": {
+            journal.setRecoveryError(
               `${pendingCommand.action} replay was rejected, but the original acceptance is still unknown. Server-side Character authority must reconcile the active command before writes resume.`,
             );
             const reconciled = await reconcilePendingCommandAuthority(
@@ -5813,100 +5061,81 @@ function CharacterDetail({
               `${pendingCommand.action} replay was rejected after its original response was lost. Server-side Character authority must prove that no command remains active before writes resume.`,
             );
             if (reconciled) {
-              setCommandRecoveryError(
-                cause instanceof Error
-                  ? `${pendingCommand.action} replay was rejected, and server-side Character authority confirmed that no active command remains: ${cause.message}`
+              journal.setRecoveryError(
+                replay.cause instanceof Error
+                  ? `${pendingCommand.action} replay was rejected, and server-side Character authority confirmed that no active command remains: ${replay.cause.message}`
                   : `${pendingCommand.action} replay was rejected, and server-side Character authority confirmed that no active command remains.`,
               );
             }
             return null;
           }
-          setCommandRecoveryError(
-            cause instanceof Error
-              ? `${pendingCommand.action} acceptance is still unknown: ${cause.message}. Retrying the exact command safely.`
-              : `${pendingCommand.action} acceptance is still unknown. Retrying the exact command safely.`,
-          );
-          return 2_000;
+          case "retry":
+            journal.setRecoveryError(
+              replay.cause instanceof Error
+                ? `${pendingCommand.action} acceptance is still unknown: ${replay.cause.message}. Retrying the exact command safely.`
+                : `${pendingCommand.action} acceptance is still unknown. Retrying the exact command safely.`,
+            );
+            return replay.retryInMs;
         }
       }
 
-      try {
-        const status = await adminV2Request<AdminCommandStatus>(
-          `/api/v2/admin/commands/${encodeURIComponent(pendingCommand.commandId)}`,
-          { schema: adminCommandStatusSchema },
-        );
-        if (context.cancelled) return null;
-        if (["failed", "cancelled", "succeeded"].includes(status.status)) {
-          setPendingCommand((current) =>
-            current ? { ...current, terminal: true } : current,
-          );
-          const failed = status.status !== "succeeded";
+      const status = await journal.pollStatus(pendingCommand);
+      switch (status.kind) {
+        case "settled":
           await settlePendingCommand(
-            failed
-              ? `${pendingCommand.action} ${status.status}`
-              : pendingCommand.action,
+            status.succeeded
+              ? pendingCommand.action
+              : `${pendingCommand.action} ${status.status}`,
             pendingCommand.commandId,
-            () => discardPendingCommand(pendingCommand),
+            () => journal.discard(pendingCommand),
           );
-          setCommandRecoveryError(
-            failed
-              ? `${pendingCommand.action} command ${status.status}. Open command evidence for the authoritative result.`
-              : null,
+          journal.setRecoveryError(
+            status.succeeded
+              ? null
+              : `${pendingCommand.action} command ${status.status}. Open command evidence for the authoritative result.`,
           );
           return null;
-        }
-        setCommandRecoveryError(null);
-      } catch (cause) {
-        if (context.cancelled) return null;
-        if (cause instanceof AdminV2RequestError && cause.status === 404) {
-          setPendingCommand((current) =>
-            current ? { ...current, terminal: true } : current,
-          );
+        case "evidence_missing": {
           const reconciled = await reconcilePendingCommandAuthority(
             pendingCommand,
             `${pendingCommand.action} command evidence returned 404. Server-side Character authority must prove that no command remains active before writes resume.`,
           );
-          setCommandRecoveryError(
+          journal.setRecoveryError(
             reconciled
               ? `${pendingCommand.action} command evidence was unavailable, and server-side Character authority confirmed that no command remains active.`
               : `${pendingCommand.action} command evidence is unavailable. Character writes remain locked until server authority can be reconciled.`,
           );
           return null;
         }
-        if (
-          cause instanceof AdminV2RequestError &&
-          [401, 403].includes(cause.status)
-        ) {
-          setCommandRecoveryError(
+        case "blocked":
+          journal.setRecoveryError(
             `${pendingCommand.action} command evidence cannot be read with the current session or permissions. The command may still be running, so Character writes remain locked.`,
           );
-          return 5_000;
-        }
-        setCommandRecoveryError(
-          cause instanceof Error
-            ? `${pendingCommand.action} status could not be refreshed: ${cause.message}`
-            : `${pendingCommand.action} status could not be refreshed.`,
-        );
+          return status.retryInMs;
+        case "unavailable":
+          journal.setRecoveryError(
+            status.cause instanceof Error
+              ? `${pendingCommand.action} status could not be refreshed: ${status.cause.message}`
+              : `${pendingCommand.action} status could not be refreshed.`,
+          );
+          return status.retryInMs;
+        case "running":
+          journal.setRecoveryError(null);
+          return status.retryInMs;
       }
-      return 1_000;
     },
     [
-      discardPendingCommand,
+      journal,
       pendingCommand,
       reconcilePendingCommandAuthority,
-      rememberPendingCommand,
       settlePendingCommand,
-      updateMutationNotice,
     ],
   );
   usePollingTask(
     pendingCommand && !pendingCommand.terminal ? recoverPendingCommand : null,
     // INTENT: 首轮延迟必须在 effect 执行时才求值——它要拿 createdAt 和此刻的 Date.now()
     //         算差值，好让"刚提交就刷新页面"的场景等满命令的最短受理窗口再去查。
-    () =>
-      pendingCommand?.commandId
-        ? 500
-        : Math.max(250, (pendingCommand?.createdAt ?? 0) + 1_500 - Date.now()),
+    () => (pendingCommand ? journal.initialRecoveryDelayMs(pendingCommand) : 0),
   );
   useEffect(() => {
     tabRef.current = tab;
@@ -5932,11 +5161,7 @@ function CharacterDetail({
   }, [tab, data?.visual.imageReadiness?.state, data?.visual.readiness.ready]);
   useEffect(() => {
     const restoreTab = () => {
-      if (
-        mutationNoticeRef.current ||
-        pendingCommandRef.current ||
-        data?.activeCommand
-      ) {
+      if (journal.getSnapshot().writesLocked || data?.activeCommand) {
         setWorkspaceUrl(new URLSearchParams({ tab: tabRef.current }), {
           mode: "replace",
         });
@@ -5946,7 +5171,7 @@ function CharacterDetail({
     };
     window.addEventListener("popstate", restoreTab);
     return () => window.removeEventListener("popstate", restoreTab);
-  }, [data?.activeCommand, id]);
+  }, [data?.activeCommand, id, journal]);
   if (!permissions.read) return permissionDenied("character.project.read");
   if (loading && !data && !pendingCommand) {
     return (
@@ -5976,7 +5201,7 @@ function CharacterDetail({
               pendingCommand ? (
                 <button
                   className="font-semibold underline"
-                  onClick={authorizePendingCommandReplay}
+                  onClick={() => journal.authorizeReplay()}
                   type="button"
                 >
                   {t("Review and resume saved command")}
@@ -6022,9 +5247,7 @@ function CharacterDetail({
   }
   const selectTab = (next: Tab) => {
     if (
-      (mutationNoticeRef.current ||
-        pendingCommandRef.current ||
-        data.activeCommand) &&
+      (journal.getSnapshot().writesLocked || data.activeCommand) &&
       next !== tab
     )
       return;
@@ -6061,10 +5284,7 @@ function CharacterDetail({
     data.preview.live?.imageUrl ??
     data.character.imageUrl;
   const visibleTabs = characterWorkspaceTabs;
-  const writesLocked =
-    mutationNotice !== null ||
-    pendingCommand !== null ||
-    data.activeCommand !== null;
+  const writesLocked = commandWritesLocked || data.activeCommand !== null;
   const guardedPermissions = {
     ...permissions,
     writeProject: permissions.writeProject && !writesLocked,
@@ -6194,7 +5414,7 @@ function CharacterDetail({
             pendingCommand ? (
               <button
                 className="font-semibold underline"
-                onClick={authorizePendingCommandReplay}
+                onClick={() => journal.authorizeReplay()}
                 type="button"
               >
                 {t("Review and resume saved command")}
@@ -6332,16 +5552,11 @@ function CharacterDetail({
           />
         ) : tab === "release" ? (
           <ReleasePanel
-            abortCommandSubmission={abortCommandSubmission}
-            beginCommandSubmission={beginCommandSubmission}
             data={data}
-            discardPendingCommand={discardPendingCommand}
-            getDurableCommandIdempotencyKey={getDurableCommandIdempotencyKey}
-            mutationNotice={mutationNotice}
-            pendingCommand={pendingCommand}
+            journal={journal}
             permissions={guardedPermissions}
-            rememberPendingCommand={rememberPendingCommand}
             runCommittedMutation={runCommittedMutation}
+            writesLocked={writesLocked}
           />
         ) : (
           // SPEC: 「线上」= 表现证据 → 组合决策 → 发布护栏，自上而下就是运营复盘的顺序。
