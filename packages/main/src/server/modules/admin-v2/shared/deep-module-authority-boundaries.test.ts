@@ -110,16 +110,21 @@ describe("deep module authority boundaries", () => {
   // INTENT: 服务端拼出的锚点字符串本身测不出问题——真正的失败模式是它与 admin 的 DOM id 漂移，
   // 而漂移之后链接依然「合法」，只是点了不跳转。这条守卫跨包对账，两边任一侧改名都会炸。
   it("keeps every server blocker anchor pointing at a control that exists in admin", () => {
-    const workspace = source("src/server/modules/admin-v2/characters/workspace.ts");
-    const anchorBlock = workspace.match(
-      /VISUAL_BLOCKER_ANCHORS[^=]*=\s*\{([\s\S]*?)\};/,
+    const links = source(
+      "src/server/modules/admin-v2/characters/character-deep-link.ts",
+    );
+    const anchorBlock = links.match(
+      /CHARACTER_WORKSPACE_ANCHORS[^=]*=\s*\{([\s\S]*?)\n\} as const/,
     )?.[1];
-    expect(anchorBlock, "VISUAL_BLOCKER_ANCHORS block not found").toBeTruthy();
+    expect(anchorBlock, "CHARACTER_WORKSPACE_ANCHORS block not found")
+      .toBeTruthy();
 
     // 捕获整段引号内容而不是「合法字符」子集——否则一个含意外字符的漂移值会被截成合法前缀，
     // 守卫反而放行（写这条时就踩了一次）。
     const anchors = [
-      ...new Set([...anchorBlock!.matchAll(/:\s*"([^"]+)"/g)].map((m) => m[1])),
+      ...new Set(
+        [...anchorBlock!.matchAll(/id:\s*"([^"]+)"/g)].map((m) => m[1]),
+      ),
     ];
     expect(anchors.length).toBeGreaterThanOrEqual(3);
 
@@ -133,5 +138,59 @@ describe("deep module authority boundaries", () => {
         `id="${anchor}"`,
       );
     }
+  });
+
+  // SPEC: 服务端下发的 ?tab= 必须是 admin 真的会渲染的那一个。
+  // INTENT: 锚点对账只能证明「片段存在」，证明不了「落在哪个页面/哪个 tab」。此前
+  // readiness.ts 发过 ?tab=visual-identity / ?tab=persona / ?tab=overview 三个 admin 根本没有的
+  // tab，全部静默回落到缺省 tab；路线类 blocker 更是指向 /admin/ops/profiles 再挂一个角色工作台
+  // 才有的锚点。tab 词表是跨包契约，这里断言两侧**集合相等**——admin 新增/改名/删除都会炸。
+  it("keeps the server workspace tab vocabulary equal to the admin one", () => {
+    const tabList = (text: string, symbol: string) => {
+      const block = text.match(
+        new RegExp(`${symbol}\\s*=\\s*\\[([\\s\\S]*?)\\]\\s*as const`),
+      )?.[1];
+      expect(block, `${symbol} block not found`).toBeTruthy();
+      return [...block!.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    };
+
+    const server = tabList(
+      source("src/server/modules/admin-v2/characters/character-deep-link.ts"),
+      "CHARACTER_WORKSPACE_TABS",
+    );
+    const admin = tabList(
+      source("../admin/src/features/image-workflow-transport.ts"),
+      "characterWorkspaceTabs",
+    );
+
+    expect(server.length).toBeGreaterThanOrEqual(6);
+    expect(server).toEqual(admin);
+  });
+
+  // SPEC: 角色运营台链接只有 character-deep-link 一个构造入口。
+  // INTENT: 上一条断言的是那张表里的值对不对，管不住「有人绕过表再手拼一条」。运营台链接坏掉是
+  // 静默的——URL 合法、页面能打开、只是打开了错的地方，没有任何测试会红。所以这里断言**写法**
+  // 在整个 characters 目录里不得出现，而不是拉黑某几个已经修过的字符串。
+  it("keeps character workspace deep links to a single builder", () => {
+    const directory = "src/server/modules/admin-v2/characters";
+    const files = productionTypeScriptFiles(directory);
+
+    // 守卫自检：目录改名/搬走时必须炸，而不是静默扫描空集合。
+    expect(files.map((file) => path.basename(file))).toEqual(
+      expect.arrayContaining([
+        "character-deep-link.ts",
+        "production-journey.ts",
+        "workspace.ts",
+        "readiness.ts",
+      ]),
+    );
+    expect(files.length).toBeGreaterThanOrEqual(30);
+
+    const builders = files.filter((file) =>
+      // 模板字符串直接以 /admin/characters/ 开头即为手拼（`/api/v2/admin/characters/…` 不匹配）。
+      /`\/admin\/characters\//.test(source(file))
+    ).map((file) => path.basename(file));
+
+    expect(builders).toEqual(["character-deep-link.ts"]);
   });
 });

@@ -12,7 +12,14 @@ import { isMediaAssetOperationalForAuthority } from "@/server/lib/media-asset-au
 import { operationalMediaAssetWhere } from "@/server/modules/metric-data-scope";
 import { ACTIVE_CONTROL_PLANE_COMMAND_STATUSES } from "../shared/control-plane-command";
 import { characterCommandCoordinationKey } from "./command-coordination";
-import { characterReleasePlacements } from "./character-release-contract";
+import {
+  characterReleaseAssetPurpose,
+  characterReleasePlacements,
+} from "./character-release-contract";
+import {
+  characterWorkspaceAnchorLink,
+  characterWorkspaceTabLink,
+} from "./character-deep-link";
 import {
   draftAssetRouteEntries,
   evaluateDraftAssetRouteAuthority,
@@ -65,18 +72,17 @@ export function projectCurrentDraftAssetPack(
   ));
 }
 
+// SPEC: 历史 manifest 里同一个槽位重复登记同一张图，仍然算这个用途有图。
+// INTENT: 这条**不是**预览链那条 exact 规则的复制品，两者故意不同：预览链要签发 preview token，
+// 歧义必须 fail-closed；这条只统计运营完成度，对着 legacy release 从宽。共用的只有 slot→purpose
+// 那张表。（portfolio.integration 的 legacy fixture 直接钉着这个差别。）
 export function releaseAssetPack(
   release: CharacterRelease | null,
 ): CharacterProductionAssetPack {
   if (!release) return {};
-  const purposeBySlot = new Map<string, CharacterProductionPurpose>([
-    ["character_avatar", "character_cover"],
-    ["character_hero", "character_hero"],
-    ["character_chat", "character_chat"],
-  ]);
   const assetIdsByPurpose = new Map<CharacterProductionPurpose, Set<string>>();
   for (const placement of characterReleasePlacements(release)) {
-    const purpose = purposeBySlot.get(placement.slotKey);
+    const purpose = characterReleaseAssetPurpose(placement.slotKey);
     if (!purpose) continue;
     const assetIds = assetIdsByPurpose.get(purpose) ?? new Set<string>();
     assetIds.add(placement.assetId);
@@ -120,11 +126,12 @@ function progress(available: readonly CharacterProductionPurpose[]) {
 }
 
 function commandDeepLink(characterId: string, commandType: string) {
-  const base = `/admin/characters/${encodeURIComponent(characterId)}`;
-  if (commandType.includes("identity") || commandType.includes("image")) {
-    return `${base}?tab=assets`;
-  }
-  return `${base}?tab=release`;
+  return characterWorkspaceTabLink(
+    characterId,
+    commandType.includes("identity") || commandType.includes("image")
+      ? "assets"
+      : "release",
+  );
 }
 
 function journeySteps(input: {
@@ -133,18 +140,19 @@ function journeySteps(input: {
   blocked: boolean;
   live: boolean;
 }) {
-  const base = `/admin/characters/${encodeURIComponent(input.characterId)}`;
+  const tabLink = (tab: Parameters<typeof characterWorkspaceTabLink>[1]) =>
+    characterWorkspaceTabLink(input.characterId, tab);
   const state = (index: number, release = false) => index === input.activeIndex
       ? input.blocked ? "blocked" as const : "current" as const
       : index < input.activeIndex || (input.live && release)
         ? "complete" as const
         : "upcoming" as const;
   return [
-    { code: "visual_identity", state: state(0), deepLink: `${base}?tab=visual` },
-    { code: "image_assets", state: state(1), deepLink: `${base}?tab=assets` },
-    { code: "preview_qa", state: state(2), deepLink: `${base}?tab=preview` },
-    { code: "release", state: state(3, true), deepLink: `${base}?tab=release` },
-    { code: "live_monitor", state: state(4), deepLink: `${base}?tab=monitor` },
+    { code: "visual_identity", state: state(0), deepLink: tabLink("visual") },
+    { code: "image_assets", state: state(1), deepLink: tabLink("assets") },
+    { code: "preview_qa", state: state(2), deepLink: tabLink("preview") },
+    { code: "release", state: state(3, true), deepLink: tabLink("release") },
+    { code: "live_monitor", state: state(4), deepLink: tabLink("monitor") },
   ] as const;
 }
 
@@ -176,7 +184,8 @@ export function projectCharacterProductionJourneySnapshot(input: {
   candidateReleaseId: string | null;
   activeCommand: NonNullable<CharacterProductionJourney["primaryAction"]["command"]> | null;
 }): CharacterProductionJourney {
-  const base = `/admin/characters/${encodeURIComponent(input.characterId)}`;
+  const tabLink = (tab: Parameters<typeof characterWorkspaceTabLink>[1]) =>
+    characterWorkspaceTabLink(input.characterId, tab);
   const draft = progress(input.draftPurposes);
   const live = progress(input.livePurposes);
   const blockers: Array<CharacterProductionJourney["blockers"][number]> = [];
@@ -203,7 +212,7 @@ export function projectCharacterProductionJourneySnapshot(input: {
     activeStep = commandStage.step;
     status = input.activeCommand.needsReconciliation ? "blocked" : "in_progress";
   } else if (!input.hasVisualProfile) {
-    const deepLink = `${base}?tab=assets`;
+    const deepLink = tabLink("assets");
     blockers.push({
       code: "visual_identity_missing",
       message: "A reusable visual identity has not been established.",
@@ -219,9 +228,12 @@ export function projectCharacterProductionJourneySnapshot(input: {
     stage = "visual_setup";
     status = "in_progress";
   } else if (input.referenceCount === 0 || !input.routeQualified) {
-    const deepLink = input.referenceCount === 0
-      ? `${base}?tab=visual#visual-reference-set`
-      : `${base}?tab=visual#route-qualification-workbench`;
+    const deepLink = characterWorkspaceAnchorLink(
+      input.characterId,
+      input.referenceCount === 0
+        ? "visual_reference_set"
+        : "route_qualification_workbench",
+    );
     blockers.push({
       code: input.referenceCount === 0
         ? "reference_set_not_active"
@@ -235,26 +247,26 @@ export function projectCharacterProductionJourneySnapshot(input: {
     stage = "visual_setup";
     status = "blocked";
   } else if (input.hasActiveImageRun) {
-    primaryAction = { code: "continue_image_run", deepLink: `${base}?tab=assets`, command: null };
+    primaryAction = { code: "continue_image_run", deepLink: tabLink("assets"), command: null };
     stage = "image_production";
     status = "in_progress";
   } else {
     const liveNow = input.servingState === "live";
     const workingPack = liveNow && draft.completed === 0 ? live : draft;
     if (workingPack.completed < workingPack.total) {
-      primaryAction = { code: "continue_asset_pack", deepLink: `${base}?tab=assets`, command: null };
+      primaryAction = { code: "continue_asset_pack", deepLink: tabLink("assets"), command: null };
       stage = "image_production";
       status = "in_progress";
     } else if (input.candidateReleaseId) {
-      primaryAction = { code: "review_candidate_release", deepLink: `${base}?tab=release`, command: null };
+      primaryAction = { code: "review_candidate_release", deepLink: tabLink("release"), command: null };
       stage = "release_review";
       status = "ready";
     } else if (liveNow && draft.completed === 0) {
-      primaryAction = { code: "monitor_live_character", deepLink: `${base}?tab=monitor`, command: null };
+      primaryAction = { code: "monitor_live_character", deepLink: tabLink("monitor"), command: null };
       stage = "live_operations";
       status = "live";
     } else {
-      primaryAction = { code: "run_preview_qa", deepLink: `${base}?tab=preview`, command: null };
+      primaryAction = { code: "run_preview_qa", deepLink: tabLink("preview"), command: null };
       stage = "preview_qa";
       status = "ready";
     }

@@ -12,6 +12,7 @@ import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { characterDraftSnapshots } from "./draft-content";
+import { characterWorkspaceLink } from "./character-deep-link";
 
 const CREATE_COMMAND = "character.project.create";
 
@@ -94,7 +95,7 @@ export async function createCharacterProject(input: {
     revisionId,
     projectVersion: 1,
     contentVersion: 1,
-    deepLink: `/admin/characters/${characterId}`,
+    deepLink: characterWorkspaceLink(characterId),
     replayed: false,
   });
 

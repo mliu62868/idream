@@ -52,6 +52,13 @@ import {
   inspectConfiguredVoiceIdentityRuntime,
 } from "./voice-identity";
 import { loadCharacterMediaOperationsProjection } from "./character-media-operations";
+import { characterReleaseExactAssetPackByPurpose } from "./character-release-contract";
+import {
+  type CharacterWorkspaceAnchor,
+  characterWorkspaceAnchorLink,
+  characterWorkspaceLink,
+  characterWorkspaceTabLink,
+} from "./character-deep-link";
 import {
   getVoiceDefaultSettings,
   voiceIdForGender,
@@ -159,28 +166,7 @@ function characterAssetPack(value: Prisma.JsonValue): CharacterPreviewAssetPackI
 function releasePreviewAssetPackIds(
   release: { releasePlacementManifest: Prisma.JsonValue } | null,
 ): CharacterPreviewAssetPackIds {
-  const manifest = release ? record(release.releasePlacementManifest) : {};
-  const placements = Array.isArray(manifest.placements) ? manifest.placements : [];
-  const purposeBySlot = {
-    character_avatar: "character_cover",
-    character_hero: "character_hero",
-    character_chat: "character_chat",
-  } as const;
-  const entries = placements.flatMap((value) => {
-    const placement = value !== null && typeof value === "object" && !Array.isArray(value)
-      ? value as Record<string, unknown>
-      : {};
-    const purpose = typeof placement.slotKey === "string"
-      ? purposeBySlot[placement.slotKey as keyof typeof purposeBySlot]
-      : undefined;
-    return purpose && typeof placement.assetId === "string"
-      ? [[purpose, placement.assetId]]
-      : [];
-  }) as Array<[CharacterPreviewAssetPurpose, string]>;
-  return Object.fromEntries(characterPreviewAssetPurposes.flatMap((purpose) => {
-    const matches = entries.filter(([candidate]) => candidate === purpose);
-    return matches.length === 1 ? [matches[0]] : [];
-  }));
+  return release ? characterReleaseExactAssetPackByPurpose(release) : {};
 }
 
 type CharacterPreviewMediaAsset = {
@@ -734,32 +720,31 @@ function isVisualBlockerCode(code: string): code is VisualBlockerCode {
 }
 
 // SPEC: blocker 的 deepLink 直达能完成该动作的控件，不是 Visual 页首。
-// INTENT: 锚点字面上是 admin 的 DOM id，但「哪类阻塞该去哪解决」是运营流程知识，属于本投影。
-// 这份知识此前被劈成两半——服务端只给路线类 fragment，admin 自己补其余——于是两边都漏了
-// visual_identity_missing 与 visual_anchor_missing，运营点进去只能落到页首。合到一处后
-// admin 侧退化成原样透传。
-// INVARIANT: 每个 VisualBlockerCode 都有锚点——漏一个是编译错误，不靠测试兜。
-const VISUAL_BLOCKER_ANCHORS: Readonly<Record<VisualBlockerCode, string>> = {
-  visual_identity_missing: "visual-identity-version",
-  visual_anchor_missing: "visual-identity-version",
-  visual_traits_incomplete: "visual-identity-version",
-  reference_set_not_active: "visual-reference-set",
-  reference_assets_unavailable: "visual-reference-set",
-  generation_route_unqualified: "route-qualification-workbench",
-  generation_route_stale: "route-qualification-workbench",
+// INTENT: 「哪类阻塞该去哪解决」是运营流程知识，属于本投影；具体落在哪个 tab、哪个 DOM id 由
+// character-deep-link 一张表拥有。此前这条链接是三方拼出来的：readiness.ts 给一个 base（其中
+// 路线类指向 /admin/ops/profiles 这个完全不同的页面），这里再 String.replace 修 tab、拼锚点——
+// 于是「路线未合格」的链接是 /admin/ops/profiles?characterId=…#route-qualification-workbench，
+// 落在 Profiles & Rollout 页上挂一个永远匹配不上的片段。现在 base 也由锚点表给。
+// INVARIANT: 每个 VisualBlockerCode 都有目标锚点——漏一个是编译错误，不靠测试兜。
+const VISUAL_BLOCKER_ANCHORS: Readonly<
+  Record<VisualBlockerCode, CharacterWorkspaceAnchor>
+> = {
+  visual_identity_missing: "visual_identity_version",
+  visual_anchor_missing: "visual_identity_version",
+  visual_traits_incomplete: "visual_identity_version",
+  reference_set_not_active: "visual_reference_set",
+  reference_assets_unavailable: "visual_reference_set",
+  generation_route_unqualified: "route_qualification_workbench",
+  generation_route_stale: "route_qualification_workbench",
 };
 
-export function visualBlockerDeepLink(blocker: {
-  readonly code: string;
-  readonly deepLink: string;
-}): string {
-  const base = blocker.deepLink
-    .replace("?tab=visual-identity", "?tab=visual")
-    .split("#")[0];
-  const anchor = isVisualBlockerCode(blocker.code)
-    ? VISUAL_BLOCKER_ANCHORS[blocker.code]
-    : null;
-  return anchor ? `${base}#${anchor}` : base;
+export function visualBlockerDeepLink(
+  characterId: string,
+  code: string,
+): string {
+  return isVisualBlockerCode(code)
+    ? characterWorkspaceAnchorLink(characterId, VISUAL_BLOCKER_ANCHORS[code])
+    : characterWorkspaceTabLink(characterId, "visual");
 }
 
 export async function getCharacterWorkspace(characterId: string) {
@@ -1035,8 +1020,6 @@ export async function getCharacterWorkspace(characterId: string) {
       )
     : [];
   const visualReadiness = evaluateReleaseReadiness({
-    releaseId: candidateRelease?.id ?? "visual-workbench",
-    releaseCharacterId: characterId,
     snapshotHash: "visual-workbench",
     currentSnapshotHash: "visual-workbench",
     validatedPolicyVersion: CHARACTER_RELEASE_POLICY_VERSION,
@@ -1333,17 +1316,20 @@ export async function getCharacterWorkspace(characterId: string) {
             }
           : null,
         nextDeepLink: imageReadinessState === "route_pending"
-          ? `/admin/characters/${encodeURIComponent(characterId)}?tab=visual#route-qualification-workbench`
-          : `/admin/characters/${encodeURIComponent(characterId)}?tab=assets`,
+          ? characterWorkspaceAnchorLink(
+              characterId,
+              "route_qualification_workbench",
+            )
+          : characterWorkspaceTabLink(characterId, "assets"),
       },
       readiness: {
         ready: visualBlockers.length === 0,
         qualificationPolicyVersion: CHARACTER_RELEASE_POLICY_VERSION,
         blockers: visualBlockers.map((blocker) => ({
           ...blocker,
-          deepLink: visualBlockerDeepLink(blocker),
+          deepLink: visualBlockerDeepLink(characterId, blocker.code),
         })),
-        productionDeepLink: `/admin/characters/${encodeURIComponent(characterId)}?tab=assets`,
+        productionDeepLink: characterWorkspaceTabLink(characterId, "assets"),
       },
     },
     voice: {
@@ -1461,7 +1447,7 @@ export async function getCharacterProjectDraftForResume(characterId: string) {
       characterId,
       projectId: project.id,
       projectVersion: project.version,
-      deepLink: `/admin/characters/${characterId}`,
+      deepLink: characterWorkspaceLink(characterId),
     },
     draft: {
       positioning: {

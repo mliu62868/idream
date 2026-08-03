@@ -22,6 +22,7 @@ import {
   isMediaAssetOperationalForAuthority,
 } from "@/server/lib/media-asset-authority";
 import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-executor";
+import { characterWorkspaceTabLink } from "./character-deep-link";
 import { findOperationalGenerationRoute } from "./visual-authority";
 
 type CharacterAssetPurpose = "character_cover" | "character_hero" | "character_chat";
@@ -108,7 +109,7 @@ export async function selectCharacterDraftImage(input: {
       throw Errors.conflict("The active Character Release already pins an immutable asset pack", {
         releaseId: activeRelease.id,
         status: activeRelease.status,
-        deepLink: `/admin/characters/${input.characterId}?tab=release`,
+        deepLink: characterWorkspaceTabLink(input.characterId, "release"),
       });
     }
     const authorityProfile = await tx.characterVisualProfile.findFirst({
@@ -243,7 +244,7 @@ export async function selectCharacterDraftImage(input: {
     ) {
       throw Errors.conflict(
         "Draft asset generation is stale against the current Visual Identity or Reference Set",
-        { deepLink: `/admin/characters/${input.characterId}?tab=assets` },
+        { deepLink: characterWorkspaceTabLink(input.characterId, "assets") },
       );
     }
     if (
@@ -265,7 +266,7 @@ export async function selectCharacterDraftImage(input: {
           code: "draft_asset_generation_route_stale",
           currentRouteFingerprint: currentQualifiedRoute?.routeFingerprint ?? null,
           assetRouteFingerprint: generationRouteFingerprint,
-          deepLink: `/admin/characters/${input.characterId}?tab=assets`,
+          deepLink: characterWorkspaceTabLink(input.characterId, "assets"),
         },
       );
     }
@@ -385,7 +386,7 @@ export async function selectCharacterDraftImage(input: {
       selectedAssetId: item.mediaAsset.id,
       draftImageAssetId: updated.draftImageAssetId,
       draftAssetPack: draftAssetIds(updated.draftAssetPack),
-      deepLink: `/admin/characters/${input.characterId}?tab=preview`,
+      deepLink: characterWorkspaceTabLink(input.characterId, "preview"),
     });
   };
   return db ? execute(db) : prisma.$transaction(execute);

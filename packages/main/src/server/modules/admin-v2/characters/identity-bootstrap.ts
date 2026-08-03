@@ -19,6 +19,7 @@ import {
   isMediaAssetOperationalForAuthority,
 } from "@/server/lib/media-asset-authority";
 import { buildEditorialPortraitIdentity } from "./image-readiness-repair";
+import { characterWorkspaceTabLink } from "./character-deep-link";
 
 function record(value: Prisma.JsonValue | null | undefined): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -395,7 +396,7 @@ export async function bootstrapCharacterIdentity(input: {
     referenceSetRevision: referenceSet.revision,
     anchorAssetId: item.mediaAsset.id,
     draftImageAssetId: item.mediaAsset.id,
-    deepLink: `/admin/characters/${input.characterId}?tab=assets`,
+    deepLink: characterWorkspaceTabLink(input.characterId, "assets"),
     replayed: false,
   });
 }

@@ -27,6 +27,7 @@ import {
   characterQaProvenanceMatchesRun,
   parseCharacterReleaseAssetManifest,
 } from "@idream/shared/admin";
+import { characterReleaseAssetPurpose } from "./character-release-contract";
 import {
   lockCharacterGenerationAuthority,
   lockCharacterMediaAssetAuthorities,
@@ -53,6 +54,10 @@ export const CHARACTER_RELEASE_POLICY_VERSION = "character-release-policy-v2";
 // paused is an operator hold: an existing schedule remains durable and becomes
 // eligible after resume. retired is terminal and cannot accept new schedules.
 const SCHEDULABLE_SERVING_STATES = new Set(["inactive", "live"]);
+
+type ReleaseCommandRow = Awaited<
+  ReturnType<Prisma.TransactionClient["controlPlaneCommand"]["findUniqueOrThrow"]>
+>;
 
 type ReleaseCommandType =
   | "character.release.schedule"
@@ -419,11 +424,6 @@ export async function validateCharacterReleaseSnapshot(
       latestDecisionByItemId.set(decision.runItemId, decision);
     }
   }
-  const expectedPurposeBySlot: Record<string, string> = {
-    character_avatar: "character_cover",
-    character_hero: "character_hero",
-    character_chat: "character_chat",
-  };
   const rawPlacementProvenance = Array.isArray(provenance.placements)
     ? provenance.placements.map(record)
     : [];
@@ -501,7 +501,7 @@ export async function validateCharacterReleaseSnapshot(
       item.mediaAssetId !== placement.assetId ||
       item.batch.targetType !== "character" ||
       item.batch.targetId !== project?.characterId ||
-      item.batch.purpose !== expectedPurposeBySlot[placement.slotKey] ||
+      item.batch.purpose !== characterReleaseAssetPurpose(placement.slotKey) ||
       !["approved", "published"].includes(item.status) ||
       asset?.characterId !== project?.characterId ||
       !decision ||
@@ -560,7 +560,7 @@ export async function validateCharacterReleaseSnapshot(
       job.sourceType === "content_production_item" &&
       job.sourceId === item.id &&
       sourceMeta.batchId === item.batchId &&
-      sourceMeta.purpose === expectedPurposeBySlot[placement.slotKey] &&
+      sourceMeta.purpose === characterReleaseAssetPurpose(placement.slotKey) &&
       sourceMeta.targetType === "character" &&
       sourceMeta.targetId === project?.characterId &&
       sourceMeta.bootstrapIdentity === placement.bootstrapIdentity &&
@@ -1002,11 +1002,7 @@ async function appendExecutionEvidence(
 
 async function executeSchedule(
   tx: Prisma.TransactionClient,
-  command: Awaited<
-    ReturnType<
-      Prisma.TransactionClient["controlPlaneCommand"]["findUniqueOrThrow"]
-    >
-  >,
+  command: ReleaseCommandRow,
   policyVersion: string,
   now: Date,
 ) {
@@ -1111,11 +1107,7 @@ async function executeSchedule(
 
 async function publishRelease(
   tx: Prisma.TransactionClient,
-  command: Awaited<
-    ReturnType<
-      Prisma.TransactionClient["controlPlaneCommand"]["findUniqueOrThrow"]
-    >
-  >,
+  command: ReleaseCommandRow,
   release: Awaited<
     ReturnType<
       Prisma.TransactionClient["characterRelease"]["findUniqueOrThrow"]
@@ -1416,11 +1408,7 @@ async function publishRelease(
 
 async function executeRollback(
   tx: Prisma.TransactionClient,
-  command: Awaited<
-    ReturnType<
-      Prisma.TransactionClient["controlPlaneCommand"]["findUniqueOrThrow"]
-    >
-  >,
+  command: ReleaseCommandRow,
   policyVersion: string,
   now: Date,
 ) {
@@ -1494,11 +1482,7 @@ async function executeRollback(
 
 async function executeServingState(
   tx: Prisma.TransactionClient,
-  command: Awaited<
-    ReturnType<
-      Prisma.TransactionClient["controlPlaneCommand"]["findUniqueOrThrow"]
-    >
-  >,
+  command: ReleaseCommandRow,
   policyVersion: string,
   now: Date,
 ) {
@@ -1788,6 +1772,42 @@ async function executeServingState(
   return release.id;
 }
 
+// SPEC: commandType → 执行者，只有这一张表。
+// INVARIANT: 每个 ReleaseCommandType 都必须在表里有 handler —— 漏一个是编译错误。
+// INTENT: 同一个集合此前写了三遍：联合类型、一个手写的 supported 数组、一串三元链。三元链的
+// 兜底分支是 publishRelease，于是「往联合和 supported 里加了新命令、但忘了加三元分支」会静默
+// 地把它当成一次发布来执行——没有任何一处会报错。
+type ReleaseCommandHandler = (
+  tx: Prisma.TransactionClient,
+  command: ReleaseCommandRow,
+  policyVersion: string,
+  now: Date,
+) => Promise<string>;
+
+const RELEASE_COMMAND_HANDLERS: Readonly<
+  Record<ReleaseCommandType, ReleaseCommandHandler>
+> = {
+  "character.release.schedule": executeSchedule,
+  "character.release.publish": async (tx, command, policyVersion, now) =>
+    publishRelease(
+      tx,
+      command,
+      await tx.characterRelease.findUniqueOrThrow({
+        where: { id: command.targetId },
+      }),
+      policyVersion,
+      now,
+    ),
+  "character.release.rollback": executeRollback,
+  "character.serving.pause": executeServingState,
+  "character.serving.resume": executeServingState,
+  "character.serving.retire": executeServingState,
+};
+
+function isReleaseCommandType(value: string): value is ReleaseCommandType {
+  return value in RELEASE_COMMAND_HANDLERS;
+}
+
 export async function executeCharacterReleaseCommand(
   db: PrismaClient,
   input: ExecuteReleaseCommandInput,
@@ -1812,15 +1832,7 @@ export async function executeCharacterReleaseCommand(
         stringValue(record(existing.result).releaseId) ?? existing.targetId,
     };
   }
-  const supported: readonly ReleaseCommandType[] = [
-    "character.release.schedule",
-    "character.release.publish",
-    "character.release.rollback",
-    "character.serving.pause",
-    "character.serving.resume",
-    "character.serving.retire",
-  ];
-  if (!supported.includes(existing.commandType as ReleaseCommandType)) {
+  if (!isReleaseCommandType(existing.commandType)) {
     return {
       status: "failed",
       commandId: existing.id,
@@ -1851,39 +1863,18 @@ export async function executeCharacterReleaseCommand(
         where: { id: claimed.id },
       });
       try {
-        const releaseId =
-          command.commandType === "character.release.schedule"
-            ? await executeSchedule(
-                tx,
-                command,
-                input.policyVersion ?? CHARACTER_RELEASE_POLICY_VERSION,
-                now,
-              )
-            : command.commandType === "character.serving.pause" ||
-                command.commandType === "character.serving.resume" ||
-                command.commandType === "character.serving.retire"
-              ? await executeServingState(
-                  tx,
-                  command,
-                  input.policyVersion ?? CHARACTER_RELEASE_POLICY_VERSION,
-                  now,
-                )
-              : command.commandType === "character.release.rollback"
-                ? await executeRollback(
-                    tx,
-                    command,
-                    input.policyVersion ?? CHARACTER_RELEASE_POLICY_VERSION,
-                    now,
-                  )
-                : await publishRelease(
-                    tx,
-                    command,
-                    await tx.characterRelease.findUniqueOrThrow({
-                      where: { id: command.targetId },
-                    }),
-                    input.policyVersion ?? CHARACTER_RELEASE_POLICY_VERSION,
-                    now,
-                  );
+        if (!isReleaseCommandType(command.commandType)) {
+          throw new ReleaseCommandError(
+            "unsupported_command",
+            "Command type is not a Character Release command",
+          );
+        }
+        const releaseId = await RELEASE_COMMAND_HANDLERS[command.commandType](
+          tx,
+          command,
+          input.policyVersion ?? CHARACTER_RELEASE_POLICY_VERSION,
+          now,
+        );
         return {
           status: "succeeded" as const,
           commandId: command.id,
