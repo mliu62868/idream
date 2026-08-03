@@ -95,6 +95,20 @@ provider 幂等键、dispatch requestId、terminal record 存储路径、finaliz
 
 `GenerationModelProfile.runner` 的默认值 `sd_cpp` 指向一个 gen 里已不存在的 runner，保留是因为线上可能有沿用默认值的 profile；gen 把它映射到 backend 适配器后照常执行。要收敛需单独的 DB 迁移。
 
+#### 2.1.4 dispatch envelope authority 与 refund cause
+
+「这份证据是否属于那个不可变 Attempt」曾有三份实现，检查项互不相同（运行时 ingest 查 transportAttemptNo、离线闸门不查、Blob 恢复路径不查 workflow），且没有任何测试断言三者等价。现在只有 `checkExactGenerationDispatchAuthority` 一个纯函数，输入 `{job, attempt, dispatch, evidence?}`，输出 `ok | 结构化 code`；transport 事件、Blob 终态记录、relay row 先归一成同一种 **evidence identity** 再判定。
+
+合并时取的是检查项**并集**——它当场暴露了一个手搓 fixture 缺 9 个必填字段。这是并集该有的效果，不是回归。
+
+`generation-dispatch-cutover` 只减少约 76 行而非预估的 250–350：`assess` 与 `classifyDrainFailedRows` 的 failed-row 分类**语义确实不同且不能统一**（drain 路径不加载 terminal outbox，其 aiFinalize 分支无法检查 exact）。这反证了原判断——跨存储集合关系（Bull row vs Outbox row）是类型和运行时结构保证不了的部分，值得留在离线闸门里。
+
+退款只有 `refundGenerationRequest(tx, {requestId, userId, cause, requested?})` 一个入口。`cause` 是业务意图的判别联合，决定 ledger 幂等身份；运营手动退款与自动失败退款不再共用 `generation:{id}:refund`（共用时，运营点了退款、系统显示成功、钱其实是之前那笔，无法从结果区分）。
+
+**settlement clamp 是不同 cause 能安全共存的原因**：同一事务内 `refundable = max(0, captured − refunded)` 是退款金额的唯一上界。因此拆分幂等键不需要额外护栏——自动退过之后运营再点，走新键但 `refundable` 已为 0。
+
+顺带修掉一个白发币口子：缺量部分退款此前完全不查 settlement，只凭 `costDreamcoins > 0` 就发币，而它是**记账值**——未真正扣费的 Request 会凭空得币。
+
 ### 2.2 Dreamcoin Ledger 只有一个类型化写入口
 
 业务调用方不得自由组合 `(delta, reason: string)`，也不得直接写 `DreamcoinLedger`。
@@ -281,6 +295,22 @@ type CharacterProductionJourney = {
 | 产物迟到归档处置 | `lateArtifactDisposition` | Request 态与 Attempt 态（Attempt 优先） |
 | 跨进程 wire 标识符 | `shared/contracts/generation-identity` | attemptId |
 | 跨端枚举取值集合 | `@idream/shared/catalog` | 引用常量，不重打字面量 |
+| dispatch 证据归属判定 | `checkExactGenerationDispatchAuthority` | job / attempt / dispatch / evidence |
+| 退款金额与幂等身份 | `refundGenerationRequest` | 类型化 refund cause |
+| 跨服务 env 默认值 | `shared/contracts/env` | 变量名（判据：两进程取值不同就会坏） |
+| chat 轮次写入协议 | `withTurnAuthority` | userId / sessionId + 回调 |
+
+## 3.1 守卫的形状决定它能抓住什么
+
+本轮多次实证：**文本/符号黑名单式守卫只能抓住你已经修过一次的漂移**。ADR 首版的 Journey 守卫拉黑两个旧符号名、只扫一个文件，于是换了名字住到另一个文件的重算逻辑完全不可见。
+
+新增或修改守卫时遵循：
+
+1. **断言形状或集合相等，不断言具体符号名**。可用的形状：某类写法在整个目录里不得出现；某组值必须**恰好等于**白名单（dreamcoin 写入者集合、路由↔manifest 集合）；某个实现必须只有一份（源码扫描）。
+2. **守卫必须自检**。扫描一个目录的守卫要断言「文件清单确实包含关键文件且数量下限成立」，否则目录改名后它会静默扫描空集合然后全绿。
+3. **新守卫必须先注入一次真实漂移，确认它会失败**。本轮三次都靠这一步发现问题：跨包锚点守卫的正则把漂移值截成合法前缀反而放行；shared 准入守卫跟随符号链接 ELOOP、又把构建产物里搬家前的旧 import 当成违规；i18n 互斥断言若走 import 而非 AST，要抓的重复会先被合并掉。
+4. **遍历仓库的守卫只扫源码**：不跟随符号链接（Prisma 生成物里有自指链接），跳过所有点开头目录与生成物目录（构建快照里留着搬家前的旧 import）。
+5. **债务清单必须会缩短**：单消费者豁免要写明「阻止它搬家的约束」，并有断言检查台账本身是否陈旧（条目升到 2 个消费者 / 掉到 0 / 消费方对不上都失败）。
 
 ## 4. Rejected alternatives
 
