@@ -1,3 +1,4 @@
+import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 import { scheduleCharacterRelease } from "@/server/modules/admin-v2/commands/authoritative";
 
 export const dynamic = "force-dynamic";
@@ -9,5 +10,5 @@ type ScheduleRouteContext = {
 
 export async function POST(request: Request, context: ScheduleRouteContext) {
   const { id, releaseId } = await context.params;
-  return scheduleCharacterRelease(request, id, releaseId);
+  return adminV2Route(request, () => scheduleCharacterRelease(request, id, releaseId));
 }

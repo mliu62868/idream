@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
-  return adminV2Route(async () => {
+  return adminV2Route(request, async () => {
     const actor = await actorWithPermission(request, "generation.job.requeue");
     const body = await jsonBody(request, "generationRequestCancelSchema+idempotency-key");
     if (body.confirmation !== `${id}:cancel`) throw Errors.badRequest("Confirmation did not match Generation Request cancellation target");

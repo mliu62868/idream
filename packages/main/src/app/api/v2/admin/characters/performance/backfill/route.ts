@@ -13,7 +13,7 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export function POST(request: Request) {
-  return adminV2Route(async () => {
+  return adminV2Route(request, async () => {
     const actor = await actorWithPermission(request, "analytics.metric.export");
     const body = await jsonBody(request, "characterPerformanceBackfillRequestSchema+idempotency-key");
     const idempotencyKey = requireIdempotencyKey(request);

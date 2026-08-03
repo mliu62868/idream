@@ -14,7 +14,7 @@ export const runtime = "nodejs";
 
 export async function POST(request: Request, context: { params: Promise<{ id: string; releaseId: string }> }) {
   const { id, releaseId } = await context.params;
-  return adminV2Route(async () => {
+  return adminV2Route(request, async () => {
     const actor = await actorWithPermission(request, "character.release.publish", { characterId: id });
     const body = await jsonBody(request, "characterReleaseValidationRequestSchema+idempotency-key");
     if (body.confirmation !== `${id}:${releaseId}:validate`) {

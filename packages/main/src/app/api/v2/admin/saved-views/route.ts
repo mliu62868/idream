@@ -6,14 +6,14 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export function GET(request: Request) {
-  return adminV2Route(async () => {
+  return adminV2Route(request, async () => {
     await actorWithPermission(request, "dashboard.read");
     return listSavedViewsV2(request);
   });
 }
 
 export function POST(request: Request) {
-  return adminV2Route(async () => {
+  return adminV2Route(request, async () => {
     await actorWithPermission(request, "dashboard.read");
     return createSavedViewV2(request);
   });

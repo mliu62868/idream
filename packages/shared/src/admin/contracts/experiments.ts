@@ -75,6 +75,20 @@ export const experimentDefinitionListSchema = z.object({
   asOf: adminIsoDateTimeSchema,
 }).strict();
 
+// SPEC: 单个受管实验的线上形状 —— 定义放在具名信封里，写操作另带幂等重放答案。
+// INTENT: manifest 给这四个 operation 声明的是 experimentDefinitionSchema（裸定义），
+// 而四个 handler 一直发的是 { experiment } / { experiment, duplicate }。两种形状能长期共存，
+// 正是因为声明出来的契约从来没有在出参上执行过。duplicate 是幂等重放的唯一可见答案，
+// 不能为了迁就旧 ref 丢掉 —— 所以改的是声明，不是 handler。
+export const experimentDefinitionResponseSchema = z.object({
+  experiment: experimentDefinitionSchema,
+}).strict();
+
+export const experimentDefinitionMutationSchema = z.object({
+  experiment: experimentDefinitionSchema,
+  duplicate: z.boolean(),
+}).strict();
+
 export const experimentAssignmentRequestSchema = z.object({
   subjectType: z.enum(["user", "anonymous"]),
   subjectId: adminIdSchema,

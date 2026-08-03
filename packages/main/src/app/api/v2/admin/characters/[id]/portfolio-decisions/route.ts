@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export function POST(request: Request, context: { params: Promise<{ id: string }> }) {
-  return adminV2Route(async () => {
+  return adminV2Route(request, async () => {
     const { id } = await context.params;
     const actor = await actorWithPermission(request, "character.project.write", { characterId: id });
     const body = await jsonBody(request, "characterPortfolioDecisionRequestSchema+idempotency-key");

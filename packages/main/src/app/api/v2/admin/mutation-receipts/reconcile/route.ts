@@ -5,5 +5,5 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export function POST(request: Request) {
-  return adminV2Route(() => reconcileAdminMutationReceipt(request));
+  return adminV2Route(request, () => reconcileAdminMutationReceipt(request));
 }

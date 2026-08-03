@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
-  return adminV2Route(async () => {
+  return adminV2Route(request, async () => {
     await actorWithPermission(request, "dashboard.read");
     return claimTodayWorkItem(request);
   });

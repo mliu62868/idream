@@ -12,7 +12,7 @@ type DraftImageSelection = AdminV2RequestBody<
 
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
-  return adminV2Route(() =>
+  return adminV2Route(request, () =>
     executeAdminMutation<DraftImageSelection>(
       "PATCH /api/v2/admin/characters/:id/draft-image",
       request,

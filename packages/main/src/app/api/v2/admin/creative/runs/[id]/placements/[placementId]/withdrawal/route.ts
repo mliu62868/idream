@@ -15,7 +15,7 @@ type Context = { params: Promise<{ id: string; placementId: string }> };
 
 export async function POST(request: Request, context: Context) {
   const { id, placementId } = await context.params;
-  return adminV2Route(async () => {
+  return adminV2Route(request, async () => {
     const actor = await actorWithPermission(request, "creative.placement.publish");
     const body = await jsonBody(request, "creativePlacementWithdrawalRequestSchema+idempotency-key");
     const idempotencyKey = requireIdempotencyKey(request);

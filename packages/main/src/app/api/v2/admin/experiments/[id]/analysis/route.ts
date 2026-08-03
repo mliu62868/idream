@@ -5,7 +5,7 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export function GET(request: Request, context: { params: Promise<{ id: string }> }) {
-  return adminV2Route(async () => {
+  return adminV2Route(request, async () => {
     const { id } = await context.params;
     return getExperimentAnalysis(request, id);
   });

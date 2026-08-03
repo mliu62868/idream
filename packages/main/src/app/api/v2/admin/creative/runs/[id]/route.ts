@@ -10,7 +10,7 @@ type Context = { params: Promise<{ id: string }> };
 
 export async function GET(request: Request, context: Context) {
   const { id } = await context.params;
-  return adminV2Route(async () => {
+  return adminV2Route(request, async () => {
     const actor = await actorWithPermission(request, "creative.run.read");
     return creativeRunDetailSchema.parse(await getCreativeRunDetail({ runId: id, actor }));
   });

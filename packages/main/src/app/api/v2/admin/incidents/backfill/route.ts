@@ -6,7 +6,7 @@ import { executeAdminBackfillHttpMutation } from "@/server/modules/admin-v2/back
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 export function POST(request: Request) {
-  return adminV2Route(async () => {
+  return adminV2Route(request, async () => {
     const actor = await actorWithPermission(request, "ops.incident.manage");
     const body = await jsonBody(request, "adminBackfillRequestSchema+idempotency-key");
     return executeAdminBackfillHttpMutation({

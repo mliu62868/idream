@@ -5,6 +5,6 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export function GET(request: Request) {
-  return adminV2Route(() => listCases(request));
+  return adminV2Route(request, () => listCases(request));
 }
 

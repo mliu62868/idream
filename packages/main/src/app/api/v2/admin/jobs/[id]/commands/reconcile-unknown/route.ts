@@ -19,7 +19,7 @@ export async function POST(
   context: { params: Promise<{ id: string }> },
 ) {
   const { id } = await context.params;
-  return adminV2Route(async () => {
+  return adminV2Route(request, async () => {
     const actor = await actorWithPermission(request, "generation.job.requeue");
     const body = await jsonBody(request, "unknownGenerationReconciliationCommandSchema+idempotency-key");
     if (body.confirmation !== `${id}:${body.resolution}`) {

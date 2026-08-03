@@ -9,7 +9,7 @@ export const runtime = "nodejs";
 
 export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
-  return adminV2Route(async () => {
+  return adminV2Route(request, async () => {
     await actorWithPermission(request, "character.project.write", { characterId: id });
     return characterProjectDraftResumeSchema.parse(await getCharacterProjectDraftForResume(id));
   });
@@ -17,7 +17,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
 
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
-  return adminV2Route(async () => {
+  return adminV2Route(request, async () => {
     const actor = await actorWithPermission(request, "character.project.write", { characterId: id });
     const body = await jsonBody(request, "characterProjectDraftPatchRequestSchema+if-match");
     requireMatchingProjectVersion(request, body.entityVersion);

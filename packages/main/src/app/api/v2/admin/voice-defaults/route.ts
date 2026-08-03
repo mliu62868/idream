@@ -14,14 +14,14 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function GET(request: Request) {
-  return adminV2Route(async () => {
+  return adminV2Route(request, async () => {
     await actorWithPermission(request, "generation.config.read");
     return voiceDefaultSettingsSchema.parse(await getVoiceDefaultSettings());
   });
 }
 
 export async function PUT(request: Request) {
-  return adminV2Route(async () => {
+  return adminV2Route(request, async () => {
     const actor = await actorWithPermission(request, "generation.config.write");
     return updateVoiceDefaultSettings({
       actor,

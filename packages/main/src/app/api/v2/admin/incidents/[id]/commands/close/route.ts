@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
-  return adminV2Route(async () => {
+  return adminV2Route(request, async () => {
     const actor = await actorWithPermission(request, "ops.incident.manage");
     const body = await jsonBody(request, "incidentCloseRequestSchema+idempotency-key");
     if (body.confirmation !== `${id}:close`) throw Errors.badRequest("Confirmation did not match Incident close target");

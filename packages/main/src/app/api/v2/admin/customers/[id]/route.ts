@@ -7,5 +7,5 @@ type Context = { params: Promise<{ id: string }> };
 
 export async function GET(request: Request, context: Context) {
   const { id } = await context.params;
-  return adminV2Route(() => getCustomer360(request, id));
+  return adminV2Route(request, () => getCustomer360(request, id));
 }

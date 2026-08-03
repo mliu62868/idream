@@ -11,7 +11,7 @@ export const runtime = "nodejs";
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
-  return adminV2Route(async () => {
+  return adminV2Route(request, async () => {
     const actor = await actorWithPermission(request, "case.decide");
     const body = await jsonBody(request, "caseReopenRequestSchema+idempotency-key");
     if (body.confirmation !== `${id}:reopen`) throw Errors.badRequest("Confirmation did not match Case reopen target");

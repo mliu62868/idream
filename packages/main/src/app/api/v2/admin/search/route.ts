@@ -5,5 +5,5 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function GET(request: Request) {
-  return adminV2Route(() => globalAdminSearch(request));
+  return adminV2Route(request, () => globalAdminSearch(request));
 }

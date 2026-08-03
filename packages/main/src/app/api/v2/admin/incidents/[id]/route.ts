@@ -18,12 +18,12 @@ function requireMatchingIfMatch(request: Request, entityVersion: number) {
 
 export async function GET(request: Request, context: Context) {
   const { id } = await context.params;
-  return adminV2Route(() => getIncidentDetail(request, id));
+  return adminV2Route(request, () => getIncidentDetail(request, id));
 }
 
 export async function PATCH(request: Request, context: Context) {
   const { id } = await context.params;
-  return adminV2Route(async () => {
+  return adminV2Route(request, async () => {
     const actor = await actorWithPermission(request, "ops.incident.manage");
     const body = await jsonBody(request, "incidentTriageRequestSchema+if-match");
     requireMatchingIfMatch(request, body.entityVersion);

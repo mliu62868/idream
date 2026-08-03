@@ -7,5 +7,5 @@ export const runtime = "nodejs";
 type Context = { params: Promise<{ targetType: string; targetId: string }> };
 export async function PUT(request: Request, { params }: Context) {
   const { targetType, targetId } = await params;
-  return adminV2Route(() => setWatching(request, targetType, targetId));
+  return adminV2Route(request, () => setWatching(request, targetType, targetId));
 }
