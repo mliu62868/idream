@@ -16,6 +16,12 @@ import {
 import { isPermissionKey } from "@/server/admin/permissions";
 
 const HTTP_METHOD_PATTERN = /export\s+(?:async\s+)?function\s+(GET|POST|PUT|PATCH|DELETE)\b/g;
+/** `someSchema.parse(await jsonBody(...))` — a handler re-narrowing the parsed body. */
+const LOCAL_BODY_PARSE = /[A-Za-z0-9_]+\s*\.\s*parse\(\s*await\s+jsonBody\(/;
+/** `jsonBody(request)` with no contract — the untyped door kept for legacy `/api/admin`. */
+const UNDECLARED_BODY_READ = /jsonBody\(\s*request\s*\)/;
+/** Any manifest-shaped contract ref literal, wherever it appears in the file. */
+const CONTRACT_REF_LITERAL = /"([A-Za-z0-9_]+Schema(?:\+[a-z-]+)*)"/g;
 const routeRoot = join(
   dirname(fileURLToPath(import.meta.url)),
   "../../../../app/api/v2/admin",
@@ -203,6 +209,66 @@ describe("Admin v2 API permission and contract manifest", () => {
       receiptRecovery!,
       "dashboard.read",
     )).toBeNull();
+  });
+
+  it("keeps the request body schema inside the manifest, never in a Route Handler", async () => {
+    const files = await routeFiles(routeRoot);
+    // Self-check: a scan that loses the route tree must fail loudly, not pass empty.
+    expect(files).toHaveLength(
+      new Set(ADMIN_V2_API_OPERATIONS.map((operation) => operation.route)).size,
+    );
+
+    // SPEC: the schemas a write body may be parsed with. Derived from the manifest, so a
+    // new operation joins the ban list on its own. GET refs are query parsers, not bodies.
+    const bodyContractSymbols = new Set(
+      ADMIN_V2_API_OPERATIONS
+        .filter((operation) => operation.method !== "GET")
+        .map((operation) => operation.contract.request.split("+")[0]!)
+        .filter((ref) => ref.endsWith("Schema")),
+    );
+    expect(bodyContractSymbols.size).toBeGreaterThan(0);
+
+    const offenders: string[] = [];
+    let filesNamingAContract = 0;
+
+    for (const file of files) {
+      const source = await readFile(file, "utf8");
+      const label = relative(routeRoot, file);
+      const declaredRefs = new Set<string>(
+        ADMIN_V2_API_OPERATIONS
+          .filter((operation) => operation.route === routePattern(file))
+          .map((operation) => operation.contract.request),
+      );
+
+      // INVARIANT: a request contract is named by ref, never imported as a symbol —
+      // an imported schema is a second authority that nothing reconciles with the manifest.
+      const imports = (source.match(/^import[\s\S]*?;$/gm) ?? []).join("\n");
+      for (const symbol of bodyContractSymbols) {
+        if (new RegExp(`\\b${symbol}\\b`).test(imports)) {
+          offenders.push(`${label}: imports request contract ${symbol}`);
+        }
+      }
+      if (LOCAL_BODY_PARSE.test(source)) {
+        offenders.push(`${label}: re-parses the body jsonBody already parsed`);
+      }
+      if (UNDECLARED_BODY_READ.test(source)) {
+        offenders.push(`${label}: reads jsonBody without naming a contract ref`);
+      }
+
+      const refs = [...source.matchAll(CONTRACT_REF_LITERAL)].map((match) => match[1]!);
+      if (refs.length > 0) filesNamingAContract += 1;
+      for (const ref of refs) {
+        if (!declaredRefs.has(ref)) {
+          offenders.push(
+            `${label}: names ${ref}; manifest declares ${[...declaredRefs].join(" | ") || "none"}`,
+          );
+        }
+      }
+    }
+
+    expect(offenders).toEqual([]);
+    // Self-check: an assertion that inspected no contract ref is not a guard.
+    expect(filesNamingAContract).toBeGreaterThan(0);
   });
 
   it("keeps every combined transport exact across manifest, registry, and handlers", async () => {
