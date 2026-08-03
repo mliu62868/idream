@@ -342,7 +342,7 @@ type CharacterProductionJourney = {
 
 再补一条实证（`ourdream → admin` 依赖方向守卫）：**注释不是边界**。前台公开只读投影 `listActiveTemplates` 曾住在 `modules/admin/characters/templates.ts`，靠文件头一行「公开只读，不要求 admin 权限」声明它其实不属于那里。名字、位置、import 全都编译得过，符号黑名单抓不到。现在守的是「`modules/ourdream/**` 里出现的 `modules/admin/**` import 集合**恰好等于**白名单」，白名单只有 v1→admin 的 dispatch 接缝一条；多一条是新的错误方向，少一条说明白名单陈旧。按第 1 条：能抓住这类漂移的只有集合相等，不是任何形式的命名约定。
 
-### 3.2 先问检查器守的不变量能不能变成不可表示
+### 3.3 先问检查器守的不变量能不能变成不可表示
 
 离线检查器只在「不变量无法被类型或 schema 表达」时才有价值。新增或审查一个检查器时先按这个顺序问：
 
