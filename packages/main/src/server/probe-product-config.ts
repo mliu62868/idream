@@ -4,30 +4,14 @@ import path from "node:path";
 import { prisma } from "@/server/lib/db";
 import { isProductionLtxVideoProfile } from "@/server/modules/generation/production-video-profile";
 import { publicCharacterAudienceWhere } from "@/server/modules/ourdream/public-content-audience";
+import type { ProbeReportOf, ProductConfigProbeEvidence } from "./readiness/evidence";
 
 type ProbeOptions = {
   report: string | null;
 };
 
-type ProductConfigProbeReport = {
-  ok: boolean;
-  checkedAt: string;
-  durationMs: number;
-  videoFeatureEnabled: boolean;
-  activeImageProfiles: number;
-  activeImageCharacterTemplates: number;
-  activeImageFreeplayTemplates: number;
-  activeImagePricingRules: number;
-  activeVideoProfiles: number;
-  activeVideoCharacterTemplates: number;
-  activeVideoFreeplayTemplates: number;
-  activeVideoPricingRules: number;
-  activeVoicePricingRules: number;
-  publicCharacters: number;
-  publicCharactersWithSystemPrompt: number;
-  failureReasons: string[];
-  error: { code: string; message: string; retryable?: boolean } | null;
-};
+// SPEC: 写出的 JSON 由 launch gate 的 evidence 契约约束，两端共用 readiness/evidence.ts。
+type ProductConfigProbeReport = ProbeReportOf<ProductConfigProbeEvidence>;
 
 function readArg(name: string) {
   const prefix = `--${name}=`;

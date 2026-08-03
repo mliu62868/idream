@@ -7,6 +7,7 @@ import {
   runPublicCatalogProbe,
   type PublicCatalogProbeOptions,
 } from "@/server/public-catalog-probe";
+import type { PublicCatalogProbeEvidence } from "@/server/readiness/evidence";
 
 function readArg(name: string) {
   const prefix = `--${name}=`;
@@ -38,7 +39,9 @@ function toEnvName(name: string) {
 
 async function main() {
   const options = readOptions();
-  const report = await runPublicCatalogProbe(prisma, options);
+  // SPEC: 报告体归 public-catalog-probe.ts 所有（它导出自己的 PublicCatalogProbeReport），这里
+  //       用契约类型接住 —— 它一旦漏写/改名 launch gate 要读的 counts.* / issueTotals.*，就是编译错误。
+  const report: PublicCatalogProbeEvidence = await runPublicCatalogProbe(prisma, options);
 
   if (options.report) {
     const reportPath = resolveWorkspacePath(options.report);

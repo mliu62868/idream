@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import type { ProbeReportOf, WebSurfaceProbeEvidence } from "./readiness/evidence";
 
 type ProbeOptions = {
   report: string | null;
@@ -73,19 +74,10 @@ type AdminEvidence = {
   error?: string | null;
 };
 
-type WebSurfaceProbeReport = {
-  ok: boolean;
-  checkedAt: string;
-  durationMs: number;
-  mainUrl: string | null;
-  adminUrl: string | null;
-  home: PageEvidence;
-  generate: PageEvidence;
-  apiAgeGate: ApiAgeGateEvidence;
-  admin: AdminEvidence;
-  adminApi: AdminApiEvidence;
-  error: { code: string; message: string; retryable?: boolean } | null;
-};
+// SPEC: 写出的 JSON 由 launch gate 的 evidence 契约约束，两端共用 readiness/evidence.ts。
+// INTENT: 只把顶层收到契约上 —— 上面那几个嵌套类型比契约更精确（protectedReason 是字面量联合、
+//         LinkedAssetFailure 的 url/error 必填），赋值时由 tsc 校验它们能落进契约，精度不丢。
+type WebSurfaceProbeReport = ProbeReportOf<WebSurfaceProbeEvidence>;
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_TOTAL_TIMEOUT_MS = 45_000;

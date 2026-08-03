@@ -4,25 +4,15 @@ import path from "node:path";
 import { looksLikeMockChatResponse } from "@idream/shared";
 import { PipelineChatModel } from "./providers/chat/pipeline";
 import type { ChatChunk, ChatModel } from "./providers/types";
+import type { ChatModelProbeEvidence, ProbeReportOf } from "./readiness/evidence";
 
 type ProbeOptions = {
   report: string | null;
   prompt: string;
 };
 
-type ChatProbeReport = {
-  ok: boolean;
-  checkedAt: string;
-  durationMs: number;
-  provider: string;
-  baseUrl: string | null;
-  model: string | null;
-  chunks: number;
-  characters: number;
-  assistantPreview: string | null;
-  done: boolean;
-  error: { code: string; message: string } | null;
-};
+// SPEC: 写出的 JSON 由 launch gate 的 evidence 契约约束，两端共用 readiness/evidence.ts。
+type ChatProbeReport = ProbeReportOf<ChatModelProbeEvidence>;
 
 class MockProbeChatModel implements ChatModel {
   async *stream(input: Parameters<ChatModel["stream"]>[0]): AsyncIterable<ChatChunk> {

@@ -5,24 +5,15 @@ import path from "node:path";
 import { GoCamAgeVerificationProvider } from "./providers/verify/gocam";
 import { MockAgeVerificationProvider } from "./providers/verify/mock";
 import type { AgeVerificationProvider } from "./providers/types";
+import type { AgeVerificationProbeEvidence, ProbeReportOf } from "./readiness/evidence";
 
 type ProbeOptions = {
   report: string | null;
   jurisdiction: string;
 };
 
-type AgeProbeReport = {
-  ok: boolean;
-  checkedAt: string;
-  durationMs: number;
-  provider: string;
-  serviceUrl: string | null;
-  jurisdiction: string;
-  providerVerificationId: string | null;
-  status: string | null;
-  url: string | null;
-  error: { code: string; message: string; retryable?: boolean } | null;
-};
+// SPEC: 写出的 JSON 由 launch gate 的 evidence 契约约束，两端共用 readiness/evidence.ts。
+type AgeProbeReport = ProbeReportOf<AgeVerificationProbeEvidence>;
 
 function readArg(name: string) {
   const prefix = `--${name}=`;
