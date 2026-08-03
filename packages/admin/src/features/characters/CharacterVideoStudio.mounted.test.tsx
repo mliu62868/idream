@@ -1,6 +1,5 @@
 // @vitest-environment happy-dom
 
-import type { CharacterWorkspaceDetail } from "@idream/shared/admin";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -39,6 +38,7 @@ vi.mock("@/components/admin/i18n", () => ({
   }),
 }));
 
+import { characterWorkspaceDetail } from "./character-workspace-fixture";
 import {
   CharacterVideoStudio,
   characterVideoSourceOptions,
@@ -82,7 +82,7 @@ function createMemoryStorage(): Storage {
   };
 }
 
-const data = {
+const data = characterWorkspaceDetail({
   character: {
     id: "character-video-1",
     name: "Mira",
@@ -115,6 +115,8 @@ const data = {
         role: "identity_anchor",
         available: true,
         url: "/hero.webp",
+        qualityScore: null,
+        identityScore: null,
         thumbnailUrl: "/hero-thumb.webp",
       },
       {
@@ -122,6 +124,8 @@ const data = {
         role: "identity_anchor",
         available: true,
         url: "/cover.webp",
+        qualityScore: null,
+        identityScore: null,
         thumbnailUrl: null,
       },
     ],
@@ -131,11 +135,13 @@ const data = {
         role: "identity_reference",
         available: true,
         url: "/cover.webp",
+        qualityScore: null,
+        identityScore: null,
         thumbnailUrl: null,
       },
     ],
   },
-} as unknown as CharacterWorkspaceDetail;
+});
 
 const pendingRun = {
   id: "video-run-1",
@@ -365,11 +371,10 @@ describe("Character Video Studio", () => {
   });
 
   it("shows the executable prerequisite when no Character image is available", async () => {
-    const noSourceData = {
-      ...data,
+    const noSourceData = characterWorkspaceDetail({
       project: { draftAssetPack: {} },
       visual: { anchors: [], references: [], videoSources: [] },
-    } as unknown as CharacterWorkspaceDetail;
+    });
     const onCreateImage = vi.fn();
     await act(async () => root.render(
       <CharacterVideoStudio

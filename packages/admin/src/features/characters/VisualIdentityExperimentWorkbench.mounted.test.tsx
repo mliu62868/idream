@@ -1,6 +1,5 @@
 // @vitest-environment happy-dom
 
-import type { CharacterWorkspaceDetail } from "@idream/shared/admin";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,6 +15,10 @@ vi.mock("@/lib/admin-v2-api", () => ({
 }));
 
 import { VisualIdentityExperimentWorkbench } from "./VisualIdentityExperimentWorkbench";
+import {
+  characterWorkspaceDetail,
+  withCharacterWorkspaceDetail,
+} from "./character-workspace-fixture";
 
 async function waitUntil(predicate: () => boolean) {
   const deadline = Date.now() + 2_000;
@@ -132,7 +135,7 @@ const runDetail = {
   ],
 };
 
-const data = {
+const data = characterWorkspaceDetail({
   character: {
     id: "character-1",
     name: "Mira",
@@ -154,6 +157,8 @@ const data = {
         role: "identity_anchor",
         available: true,
         url: "/mira-current.webp",
+        qualityScore: null,
+        identityScore: null,
         thumbnailUrl: null,
       },
     ],
@@ -177,10 +182,9 @@ const data = {
       ],
     },
   },
-} as unknown as CharacterWorkspaceDetail;
+});
 
-const multiSourceData = {
-  ...data,
+const multiSourceData = withCharacterWorkspaceDetail(data, {
   visual: {
     ...data.visual,
     references: [
@@ -215,7 +219,7 @@ const multiSourceData = {
       ],
     },
   },
-} as unknown as CharacterWorkspaceDetail;
+});
 
 describe("Visual Identity experiment activation", () => {
   let container: HTMLDivElement;
@@ -417,8 +421,7 @@ describe("Visual Identity experiment activation", () => {
   });
 
   it("summarizes the default model in a collapsed route disclosure and keeps model selection working", async () => {
-    const multiModelData = {
-      ...data,
+    const multiModelData = withCharacterWorkspaceDetail(data, {
       visual: {
         ...data.visual,
         identityCalibration: {
@@ -440,7 +443,7 @@ describe("Visual Identity experiment activation", () => {
           ],
         },
       },
-    } as unknown as CharacterWorkspaceDetail;
+    });
     await act(async () =>
       root.render(
         <VisualIdentityExperimentWorkbench

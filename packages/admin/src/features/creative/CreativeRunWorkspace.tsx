@@ -30,7 +30,6 @@ import {
   usePollingTask,
   type PollingTask,
 } from "@/lib/authority-resource";
-import { createLatestRequestGate } from "@/lib/latest-request";
 import {
   claimDurableMutationIntent,
   clearDurableMutationIntent,
@@ -1338,13 +1337,38 @@ function RunDetail({
   permissions: Permissions;
 }) {
   const { t } = useAdminI18n();
-  const [run, setRun] = useState<CreativeRunDetail | null>(null);
+  const fetchRun = useCallback(
+    () =>
+      adminV2Request(`/api/v2/admin/creative/runs/${id}`, {
+        schema: creativeRunDetailSchema,
+      }),
+    [id],
+  );
+  // SPEC: Run 投影是这一屏唯一的取数：前台取数、生成中轮询、提交后回读共用一份状态。
+  // INTENT: 原来是 run/loading/error/backgroundRefreshWarning 四个 useState 加一个手写
+  //         latest-request 门控，由 load(background, propagateError) 两个布尔开关分派四
+  //         种行为。"后台失败只挂旁注、前台失败才换成报错"本就是 useAuthorityResource
+  //         的 error/refreshError 之分，没有理由在这里再实现一遍。
+  // INVARIANT: RunDetail 由父组件按 `${actorId}:${id}` 加 key，换 Run 一定是重新挂载，
+  //            所以这里不需要再防跨 id 的迟到响应。
+  const runResource = useAuthorityResource(
+    { key: id, enabled: permissions.read, load: fetchRun },
+    {
+      // SPEC: 生成中的 Run 每 4s 刷新一次，失败退避到 8s。
+      pollWhile: ({ data, error: refreshFailure }) =>
+        data && ["pending", "running"].includes(data.executionOutcome)
+          ? refreshFailure === null ? 4_000 : 8_000
+          : null,
+    },
+  );
+  const run = runResource.data;
+  const loading = runResource.loading;
   const [selected, setSelected] = useState(0);
-  const [loading, setLoading] = useState(true);
+  // SPEC: error 只承载写入侧（重试命令）的失败；取数失败归 runResource.error。
+  // INTENT: 两者曾共用一个 useState，于是一次成功的后台刷新会把"重试命令失败"的结论
+  //         也一并抹掉。分开后各自的清除时机才说得清。
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
-  const [backgroundRefreshWarning, setBackgroundRefreshWarning] =
-    useState<string | null>(null);
   const [retrySubmitting, setRetrySubmitting] = useState(false);
   const [retryProjectionRefreshing, setRetryProjectionRefreshing] =
     useState(false);
@@ -1373,30 +1397,13 @@ function RunDetail({
   const retrying =
     retrySubmitting ||
     retryCommandLocksNewIntent;
-  const requestGate = useRef(createLatestRequestGate());
-  const load = useCallback(async (background = false, propagateError = false) => {
-    const request = requestGate.current.begin();
-    if (!background) setLoading(true);
-    if (!background) setError(null);
-    try {
-      const next = await adminV2Request(`/api/v2/admin/creative/runs/${id}`, { schema: creativeRunDetailSchema });
-      if (request.isCurrent()) {
-        setRun(next);
-        setBackgroundRefreshWarning(null);
-      }
-    } catch (cause) {
-      if (request.isCurrent() && !background) {
-        setError(cause instanceof Error ? cause.message : "Creative Run could not be loaded");
-      }
-      if (propagateError) throw cause;
-    } finally {
-      if (!background && request.isCurrent()) setLoading(false);
-    }
-  }, [id]);
-  const reloadAfterCommit = useCallback(
-    () => load(true, true),
-    [load],
-  );
+  // SPEC: 提交成功后回读投影；读失败必须抛给调用方，由调用方决定挂什么警告。
+  // INTENT: 不能走 refresh()——那是前台取数，会把整屏换成 loading，而且它把失败吞成
+  //         error 状态而不是抛出，调用方就写不出"命令已提交但投影没跟上"的那句话了。
+  const { setData: setRunProjection } = runResource;
+  const reloadAfterCommit = useCallback(async () => {
+    setRunProjection(await fetchRun());
+  }, [fetchRun, setRunProjection]);
   const submitRetryIntent = useCallback(async (intent: {
     readonly idempotencyKey: string;
     readonly entityVersion: number;
@@ -1474,35 +1481,6 @@ function RunDetail({
       setRetrySubmitting(false);
     }
   }, [actorId, id]);
-  useEffect(() => {
-    if (!permissions.read) return;
-    const gate = requestGate.current;
-    const timer = window.setTimeout(() => void load(), 0);
-    return () => {
-      gate.invalidate();
-      window.clearTimeout(timer);
-    };
-  }, [load, permissions.read]);
-  // SPEC: 生成中的 Run 每 4s 刷新一次，失败退避到 8s。
-  const shouldPollRun =
-    run !== null &&
-    ["pending", "running"].includes(run.executionOutcome);
-  const pollRun = useCallback<PollingTask>(async (context) => {
-    try {
-      await load(true, true);
-      return 4_000;
-    } catch (cause) {
-      if (!context.cancelled) {
-        setBackgroundRefreshWarning(
-          cause instanceof Error
-            ? `Automatic refresh was delayed: ${cause.message}. Retrying in the background.`
-            : "Automatic refresh was delayed. Retrying in the background.",
-        );
-      }
-      return 8_000;
-    }
-  }, [load]);
-  usePollingTask(shouldPollRun ? pollRun : null, 4_000);
   const activeRetryCommandId =
     retryCommand?.commandId &&
     (retryCommand.status === "accepted" ||
@@ -1642,8 +1620,12 @@ function RunDetail({
     }
   };
   if (!permissions.read) return denied();
+  const shownError = runResource.error ?? error;
+  const backgroundRefreshWarning = runResource.refreshError
+    ? `Automatic refresh was delayed: ${runResource.refreshError}. Retrying in the background.`
+    : null;
   if (loading && !run) return <LoadingWorkspace label="Loading Creative Run lineage and outcomes" />;
-  if (!run) return <section className="rounded-xl bg-[var(--ad-red-bg)] p-5" role="alert">{error ?? t("Creative Run not found")} <button className="ml-2 underline" onClick={() => void load()} type="button">{t("Retry")}</button></section>;
+  if (!run) return <section className="rounded-xl bg-[var(--ad-red-bg)] p-5" role="alert">{shownError ?? t("Creative Run not found")} <button className="ml-2 underline" onClick={() => void runResource.refresh()} type="button">{t("Retry")}</button></section>;
   const retryCount = run.retryEligibility.eligibleCount;
   const selectedItemId = run.items[selected]?.id ?? `missing-${selected}`;
   const retryFailedTerminal =
@@ -1739,7 +1721,7 @@ function RunDetail({
       </div>
     </div>
   ) : null;
-  return <section aria-labelledby="creative-run-title"><Link className="inline-flex min-h-11 items-center gap-2 text-sm text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]" href="/admin/creative/runs"><ArrowLeft className="h-4 w-4" />  {t("Creative Runs")}</Link><div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between"><div><p className="text-xs uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">{t("Creative Run ·")} {run.id}</p><h2 className="mt-1 text-2xl font-semibold" id="creative-run-title">{run.title}</h2><div className="mt-2 flex flex-wrap gap-2"><span className="inline-flex items-center gap-1 text-xs"><span className="text-[var(--ad-text-muted)]">{t("Execution")}</span><StatusBadge value={run.executionOutcome} /></span><span className="inline-flex items-center gap-1 text-xs"><span className="text-[var(--ad-text-muted)]">{t("Review")}</span><StatusBadge value={run.reviewState} /></span><span className="inline-flex items-center gap-1 text-xs"><span className="text-[var(--ad-text-muted)]">{t("Deployment")}</span><StatusBadge value={run.deploymentState} /></span><span className="inline-flex items-center gap-1 text-xs"><span className="text-[var(--ad-text-muted)]">{t("Verification")}</span><StatusBadge value={run.verificationState} /></span></div></div><div className="flex flex-wrap gap-2"><WorkspaceButton disabled={loading} onClick={() => void load()}><RefreshCcw className={cn("h-4 w-4", loading && "animate-spin")} /> {loading ? t("Refreshing…") : t("Refresh")}</WorkspaceButton><WorkspaceButton aria-busy={retryBusy} disabled={!permissions.write || (retryCount === 0 && !retrySubmissionUnknown) || retrying} onClick={() => void retryFailed()}><RotateCcw className={cn("h-4 w-4", retryBusy && "animate-spin")} /> {retryLabel}</WorkspaceButton></div></div>{retryCommandStatus}<IncidentAttachment permissions={permissions} reload={reloadAfterCommit} run={run} /><div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-5">{(["generated", "failed", "reviewed", "approved", "placed"] as const).map((key) => <div className="rounded-lg bg-[var(--ad-surface)] p-3" key={key}><p className="text-xs capitalize text-[var(--ad-text-muted)]">{t(key)}</p><p className="mt-1 text-xl font-semibold tabular-nums">{run.counts[key]}<span className="text-xs font-normal text-[var(--ad-text-muted)]"> / {run.counts.total}</span></p></div>)}</div>{error ? <p className="mt-4 text-sm text-[var(--ad-red-text)]" role="alert">{error}</p> : null}{backgroundRefreshWarning ? <p className="mt-4 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">{backgroundRefreshWarning}</p> : null}{warning ? <p className="mt-4 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">{warning}</p> : null}<ReviewContext itemIndex={selected} run={run} /><div className="mt-5 flex gap-2 overflow-x-auto pb-2" aria-label={t("Creative items")}>{run.items.map((item, index) => <button aria-pressed={selected === index} className={cn("min-h-11 min-w-28 rounded-md border px-3 text-left text-xs focus-visible:outline focus-visible:outline-2", selected === index ? "border-[var(--ad-ink)] bg-black/[0.04]" : "border-[var(--ad-border)]")} key={item.id} onClick={() => setSelected(index)} type="button">{t("Item")} {item.ordinal + 1}<br /><span className="text-[var(--ad-text-muted)]">{t(item.executionState.replaceAll("_", " "))}</span></button>)}</div><AssetViewer onSelect={setSelected} run={run} selected={selected} /><ReviewForm itemIndex={selected} key={`review-${selectedItemId}`} onAdvance={setSelected} permissions={permissions} reload={reloadAfterCommit} run={run} /><PlacementForm itemIndex={selected} key={`placement-${selectedItemId}`} permissions={permissions} reload={reloadAfterCommit} run={run} /></section>;
+  return <section aria-labelledby="creative-run-title"><Link className="inline-flex min-h-11 items-center gap-2 text-sm text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]" href="/admin/creative/runs"><ArrowLeft className="h-4 w-4" />  {t("Creative Runs")}</Link><div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between"><div><p className="text-xs uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">{t("Creative Run ·")} {run.id}</p><h2 className="mt-1 text-2xl font-semibold" id="creative-run-title">{run.title}</h2><div className="mt-2 flex flex-wrap gap-2"><span className="inline-flex items-center gap-1 text-xs"><span className="text-[var(--ad-text-muted)]">{t("Execution")}</span><StatusBadge value={run.executionOutcome} /></span><span className="inline-flex items-center gap-1 text-xs"><span className="text-[var(--ad-text-muted)]">{t("Review")}</span><StatusBadge value={run.reviewState} /></span><span className="inline-flex items-center gap-1 text-xs"><span className="text-[var(--ad-text-muted)]">{t("Deployment")}</span><StatusBadge value={run.deploymentState} /></span><span className="inline-flex items-center gap-1 text-xs"><span className="text-[var(--ad-text-muted)]">{t("Verification")}</span><StatusBadge value={run.verificationState} /></span></div></div><div className="flex flex-wrap gap-2"><WorkspaceButton disabled={loading} onClick={() => void runResource.refresh()}><RefreshCcw className={cn("h-4 w-4", loading && "animate-spin")} /> {loading ? t("Refreshing…") : t("Refresh")}</WorkspaceButton><WorkspaceButton aria-busy={retryBusy} disabled={!permissions.write || (retryCount === 0 && !retrySubmissionUnknown) || retrying} onClick={() => void retryFailed()}><RotateCcw className={cn("h-4 w-4", retryBusy && "animate-spin")} /> {retryLabel}</WorkspaceButton></div></div>{retryCommandStatus}<IncidentAttachment permissions={permissions} reload={reloadAfterCommit} run={run} /><div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-5">{(["generated", "failed", "reviewed", "approved", "placed"] as const).map((key) => <div className="rounded-lg bg-[var(--ad-surface)] p-3" key={key}><p className="text-xs capitalize text-[var(--ad-text-muted)]">{t(key)}</p><p className="mt-1 text-xl font-semibold tabular-nums">{run.counts[key]}<span className="text-xs font-normal text-[var(--ad-text-muted)]"> / {run.counts.total}</span></p></div>)}</div>{shownError ? <p className="mt-4 text-sm text-[var(--ad-red-text)]" role="alert">{shownError}</p> : null}{backgroundRefreshWarning ? <p className="mt-4 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">{backgroundRefreshWarning}</p> : null}{warning ? <p className="mt-4 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">{warning}</p> : null}<ReviewContext itemIndex={selected} run={run} /><div className="mt-5 flex gap-2 overflow-x-auto pb-2" aria-label={t("Creative items")}>{run.items.map((item, index) => <button aria-pressed={selected === index} className={cn("min-h-11 min-w-28 rounded-md border px-3 text-left text-xs focus-visible:outline focus-visible:outline-2", selected === index ? "border-[var(--ad-ink)] bg-black/[0.04]" : "border-[var(--ad-border)]")} key={item.id} onClick={() => setSelected(index)} type="button">{t("Item")} {item.ordinal + 1}<br /><span className="text-[var(--ad-text-muted)]">{t(item.executionState.replaceAll("_", " "))}</span></button>)}</div><AssetViewer onSelect={setSelected} run={run} selected={selected} /><ReviewForm itemIndex={selected} key={`review-${selectedItemId}`} onAdvance={setSelected} permissions={permissions} reload={reloadAfterCommit} run={run} /><PlacementForm itemIndex={selected} key={`placement-${selectedItemId}`} permissions={permissions} reload={reloadAfterCommit} run={run} /></section>;
 }
 
 export function CreativeRunWorkspace({

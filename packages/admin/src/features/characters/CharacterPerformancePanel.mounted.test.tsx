@@ -7,6 +7,10 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AdminI18nProvider } from "@/components/admin/i18n";
 import {
+  characterWorkspaceDetail,
+  withCharacterWorkspaceDetail,
+} from "./character-workspace-fixture";
+import {
   characterPerformanceHasObservations,
   MonitorPanel,
   PerformancePanel,
@@ -14,44 +18,117 @@ import {
   portfolioDecisions,
 } from "./CharacterWorkspace";
 
-const releaseId = "editorial-release:alexa-reeves:a5c8ca4f";
+type WorkspaceRelease = CharacterWorkspaceDetail["releases"][number]["release"];
+type ContributionMargin =
+  CharacterWorkspaceDetail["performance"][number]["contributionMargin"];
 
-const workspace = {
-  character: { id: "alexa-reeves" },
-  serving: { state: "live", currentReleaseId: releaseId },
-  releases: [{ release: { id: releaseId, version: 1 } }],
-  performance: [{
-    window: "7d",
+// SPEC: 完整的 release / 毛利投影；各用例只覆盖自己关心的字段。
+// INTENT: 这两处都在数组里，覆盖时整条替换——契约给它们加字段，这里必须补上。
+function workspaceRelease(overrides: Partial<WorkspaceRelease> = {}): WorkspaceRelease {
+  return {
+    id: "character-release",
+    projectId: "project-1",
+    revisionId: "revision-1",
+    characterContentVersionId: "content-version-1",
+    visualProfileId: null,
+    visualProfileVersion: null,
+    referenceSetRevisionId: null,
+    generationProvenance: {},
+    releasePlacementManifest: {},
+    snapshotHash: "snapshot-hash",
+    readiness: "ready",
+    legacy: false,
+    status: "published",
+    publishedAt: "2026-07-16T12:00:00.000Z",
+    supersedesId: null,
+    rollbackOfReleaseId: null,
+    version: 1,
+    createdAt: "2026-07-16T12:00:00.000Z",
+    updatedAt: "2026-07-16T12:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function contributionMargin(
+  overrides: Partial<ContributionMargin> = {},
+): ContributionMargin {
+  return {
+    valueMicros: null,
+    currency: null,
+    attributedRevenueMicros: null,
+    refundMicros: null,
+    creditMicros: null,
+    variableCostMicros: null,
+    qualityState: "no_data",
+    evidence: [],
+    ...overrides,
+  };
+}
+
+type WorkspaceReleaseEntry = CharacterWorkspaceDetail["releases"][number];
+type PerformanceWindow = CharacterWorkspaceDetail["performance"][number];
+
+function releaseEntry(release: WorkspaceRelease): WorkspaceReleaseEntry {
+  return { release, checks: [], monitors: [] };
+}
+
+function performanceWindow(
+  overrides: Partial<PerformanceWindow> = {},
+): PerformanceWindow {
+  return {
+    characterContentVersionId: "content-version-1",
+    characterReleaseId: "character-release",
     placementId: null,
+    window: "7d",
+    windowStart: "2026-07-09T00:00:00.000Z",
+    windowEnd: "2026-07-16T00:00:00.000Z",
+    eligibleImpressions: 0,
+    detailViews: 0,
+    firstSuccessfulExchanges: 0,
+    qceCount: 0,
+    relationshipActivations: 0,
+    sameCharacterD7EligiblePairs: 0,
+    sameCharacterD7Returns: 0,
+    paidAttributions: 0,
+    detailCtr: null,
+    chatStartRate: null,
     qceRate: null,
     sameCharacterD7: null,
     sampleSize: 0,
     maturity: "immature",
     qualityState: "no_data",
     coverageState: "unavailable",
-    contributionMargin: { valueMicros: null },
-    characterReleaseId: releaseId,
-  }],
-  portfolio: { latestDecision: null },
-} as unknown as CharacterWorkspaceDetail;
+    latestDataAt: null,
+    evidence: [],
+    contributionMargin: contributionMargin(),
+    ...overrides,
+  };
+}
 
-const brokenPipelineWorkspace = {
-  ...workspace,
+const releaseId = "editorial-release:alexa-reeves:a5c8ca4f";
+
+const workspace = characterWorkspaceDetail({
+  character: { id: "alexa-reeves" },
+  serving: { state: "live", currentReleaseId: releaseId },
+  releases: [releaseEntry(workspaceRelease({ id: releaseId }))],
+  performance: [performanceWindow({ characterReleaseId: releaseId })],
+  portfolio: { latestDecision: null },
+});
+
+const brokenPipelineWorkspace = withCharacterWorkspaceDetail(workspace, {
   performance: [{
     ...workspace.performance[0],
     qualityState: "invalid",
     coverageState: "invalid",
   }],
-} as unknown as CharacterWorkspaceDetail;
+});
 
 // 观察窗口已经走完，却还是一条观测都没有 —— 这不是"再等等"，是投放或埋点没通。
-const staleNoDataWorkspace = {
-  ...workspace,
+const staleNoDataWorkspace = withCharacterWorkspaceDetail(workspace, {
   performance: [{ ...workspace.performance[0], maturity: "insufficient_data" }],
-} as unknown as CharacterWorkspaceDetail;
+});
 
-const repeatedNoDataWorkspace = {
-  ...workspace,
+const repeatedNoDataWorkspace = withCharacterWorkspaceDetail(workspace, {
   performance: [
     { ...workspace.performance[0], maturity: "insufficient_data" },
     {
@@ -60,9 +137,9 @@ const repeatedNoDataWorkspace = {
       placementId: "character_avatar",
     },
   ],
-} as unknown as CharacterWorkspaceDetail;
+});
 
-const blockedPreviewWorkspace = {
+const blockedPreviewWorkspace = characterWorkspaceDetail({
   character: { id: "alexa-reeves" },
   project: {
     draftAssetRouteAuthority: {
@@ -112,12 +189,11 @@ const blockedPreviewWorkspace = {
   },
   releases: [],
   qaRuns: [],
-} as unknown as CharacterWorkspaceDetail;
+});
 
-const monitorWorkspace = {
-  ...workspace,
-  releases: [{ release: { id: releaseId, version: 1 }, monitors: [] }],
-} as unknown as CharacterWorkspaceDetail;
+const monitorWorkspace = withCharacterWorkspaceDetail(workspace, {
+  releases: [releaseEntry(workspaceRelease({ id: releaseId }))],
+});
 
 let container: HTMLDivElement;
 let root: Root;

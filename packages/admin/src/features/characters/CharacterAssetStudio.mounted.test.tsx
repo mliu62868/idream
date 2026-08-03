@@ -33,6 +33,10 @@ vi.mock("@/components/admin/i18n", () => ({
   }),
 }));
 
+import {
+  characterWorkspaceDetail,
+  withCharacterWorkspaceDetail,
+} from "./character-workspace-fixture";
 import { CharacterAssetStudio } from "./CharacterAssetStudio";
 import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import {
@@ -88,8 +92,12 @@ const productionPurposes = [
 // 服务端 journey 投影：图池完成度、下一张该做什么都读它。
 // 这里按「已经在当前路线下可用的用途」构造，和服务端 projectCurrentDraftAssetPack 的口径一致
 // —— 被软删/路线过期的选择不算 available。
-function journeyFor(available: readonly string[] = []) {
-  const progress = (availablePurposes: readonly string[]) => ({
+function journeyFor(
+  available: readonly (typeof productionPurposes)[number][] = [],
+) {
+  const progress = (
+    availablePurposes: readonly (typeof productionPurposes)[number][],
+  ) => ({
     availablePurposes: [...availablePurposes],
     missingPurposes: productionPurposes.filter(
       (purpose) => !availablePurposes.includes(purpose),
@@ -99,11 +107,61 @@ function journeyFor(available: readonly string[] = []) {
   });
   return {
     assetPack: { draft: progress(available), live: progress([]) },
-    release: { servingState: "inactive", currentReleaseId: null, candidateReleaseId: null },
+    release: {
+      servingState: "inactive" as const,
+      currentReleaseId: null,
+      candidateReleaseId: null,
+    },
   };
 }
 
-const data = {
+type RouteQualification =
+  CharacterWorkspaceDetail["visual"]["routeQualifications"][number];
+
+// SPEC: 一条完整的路线资格；各用例只覆盖自己关心的字段。
+// INTENT: routeQualifications 是数组，覆盖时整条替换——契约给它加字段，这里必须补上，
+//         不能像以前那样靠 `as unknown as` 把整块类型检查关掉。
+function routeQualification(
+  overrides: Partial<RouteQualification> = {},
+): RouteQualification {
+  return {
+    id: "qualification-1",
+    routeFingerprint: "route-fingerprint",
+    generationProfileKey: "profile-reference-v1",
+    generationProfileVersion: 1,
+    workflowKey: "qwen-image-edit-img2img",
+    workflowVersion: 1,
+    style: "realistic",
+    matrixKey: "mounted-matrix",
+    sampleCount: 40,
+    passCount: 40,
+    identityMatch: 0.97,
+    result: "qualified",
+    evidence: {},
+    policyVersion: "character-release-policy-v2",
+    evaluatedAt: "2026-07-16T12:00:00.000Z",
+    expiresAt: null,
+    stale: false,
+    identityContract: {
+      maxReferences: 1,
+      acceptedRoles: ["identity_anchor"],
+      supportsLookReference: false,
+      supportsSourceImageWithIdentity: false,
+    },
+    profileCapabilities: {
+      referenceImages: true,
+      initImage: false,
+    },
+    sourceVariationAuthority: {
+      routeFingerprint: "route-fingerprint",
+      ready: true,
+      blocker: null,
+    },
+    ...overrides,
+  };
+}
+
+const data = characterWorkspaceDetail({
   character: {
     id: "character-no-bootstrap-route",
     name: "Mira",
@@ -145,7 +203,7 @@ const data = {
       productionDeepLink: "/admin/characters/character-no-bootstrap-route?tab=assets",
     },
   },
-} as unknown as CharacterWorkspaceDetail;
+});
 
 describe("Character Asset Studio bootstrap route projection", () => {
   let container: HTMLDivElement;
@@ -191,8 +249,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
   });
 
   it("opens ready characters in the recurring image library with a new-batch composer", async () => {
-    const readyData = {
-      ...data,
+    const readyData = withCharacterWorkspaceDetail(data, {
       character: {
         ...data.character,
         id: "character-ready-library",
@@ -205,7 +262,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
           status: "current",
           missingPurposes: [],
           stalePurposes: [],
-          blockers: [],
+          qaBlockers: [],
         },
       },
       preview: {
@@ -231,18 +288,17 @@ describe("Character Asset Studio bootstrap route projection", () => {
           profile: null,
         },
         readiness: { ...data.visual.readiness, ready: true, blockers: [] },
-        routeQualifications: [{
+        routeQualifications: [routeQualification({
           id: "qualification-alexa",
           generationProfileKey: "profile-alexa",
-          result: "qualified",
-          stale: false,
           sourceVariationAuthority: {
+            routeFingerprint: "route-alexa",
             ready: false,
             blocker: "workflow_source_identity_combination_unsupported",
           },
-        }],
+        })],
       },
-    } as unknown as CharacterWorkspaceDetail;
+    });
 
     await act(async () => root.render(<CharacterAssetStudio
       commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
@@ -267,8 +323,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
   });
 
   it("does not claim the generation route is locked when only identity evidence is ready", async () => {
-    const routeBlockedData = {
-      ...data,
+    const routeBlockedData = withCharacterWorkspaceDetail(data, {
       character: {
         ...data.character,
         id: "character-route-blocked",
@@ -291,6 +346,8 @@ describe("Character Asset Studio bootstrap route projection", () => {
             available: true,
             url: "/mira.webp",
             thumbnailUrl: null,
+            qualityScore: null,
+            identityScore: null,
           }],
         },
         routeQualifications: [],
@@ -307,10 +364,11 @@ describe("Character Asset Studio bootstrap route projection", () => {
           blockers: [{
             code: "generation_route_unqualified",
             message: "No qualified generation route exists.",
+            deepLink: "/admin/characters/character-no-bootstrap-route?tab=identity",
           }],
         },
       },
-    } as unknown as CharacterWorkspaceDetail;
+    });
 
     await act(async () => root.render(<CharacterAssetStudio
       commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
@@ -330,8 +388,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
   });
 
   it("explains live-portrait enablement and keeps a failed repair beside the action", async () => {
-    const repairableData = {
-      ...data,
+    const repairableData = withCharacterWorkspaceDetail(data, {
       character: {
         ...data.character,
         id: "character-repairable-live-portrait",
@@ -353,6 +410,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
           blockers: [{
             code: "identity_missing",
             message: "No immutable Visual Identity version is pinned.",
+            deepLink: "/admin/characters/character-no-bootstrap-route?tab=identity",
           }],
         },
         imageReadiness: {
@@ -364,7 +422,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
           },
         },
       },
-    } as unknown as CharacterWorkspaceDetail;
+    });
     adminV2Request.mockImplementation(async (path) => {
       if (path.includes("/image-readiness/repair")) {
         throw new Error("Admin authority request failed (500)");
@@ -502,10 +560,9 @@ describe("Character Asset Studio bootstrap route projection", () => {
       }
       throw new Error(`Unexpected Admin request: ${path}`);
     });
-    const committedData = {
-      ...data,
+    const committedData = withCharacterWorkspaceDetail(data, {
       character: { ...data.character, id: characterId },
-    } as unknown as CharacterWorkspaceDetail;
+    });
 
     await act(async () => root.render(
       <CharacterAssetStudio
@@ -621,10 +678,9 @@ describe("Character Asset Studio bootstrap route projection", () => {
       }
       throw new Error(`Unexpected Admin request: ${path}`);
     });
-    const committedData = {
-      ...data,
+    const committedData = withCharacterWorkspaceDetail(data, {
       character: { ...data.character, id: characterId },
-    } as unknown as CharacterWorkspaceDetail;
+    });
 
     await act(async () => root.render(
       <CharacterAssetStudio
@@ -726,7 +782,9 @@ describe("Character Asset Studio bootstrap route projection", () => {
       }
       throw new Error(`Unexpected Admin request: ${path}`);
     });
-    const readyVisual = {
+    // INTENT: 只写这一屏用得上的那几块；videoSources / routeEvaluation 由 base 补齐，
+    //         所以标成 Partial 再交给 withCharacterWorkspaceDetail 深合并。
+    const readyVisual: Partial<CharacterWorkspaceDetail["visual"]> = {
       activeIdentity: {
         id: "identity-source-v1",
         version: 1,
@@ -738,6 +796,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
         immutableHash: "identity-source-hash",
         evidenceState: "reviewed_bootstrap",
         defaultSeed: null,
+        anchorAssetIds: [],
         createdFrom: "mounted-test",
         createdAt: "2026-07-16T12:00:00.000Z",
       },
@@ -809,11 +868,10 @@ describe("Character Asset Studio bootstrap route projection", () => {
         productionDeepLink: "/admin/characters/character-source-v1?tab=assets",
       },
     };
-    const blockedData = {
-      ...data,
+    const blockedData = withCharacterWorkspaceDetail(data, {
       character: { ...data.character, id: "character-source-v1" },
       visual: readyVisual,
-    } as unknown as CharacterWorkspaceDetail;
+    });
 
     await act(async () => root.render(<CharacterAssetStudio
       commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
@@ -836,11 +894,10 @@ describe("Character Asset Studio bootstrap route projection", () => {
     );
     expect(container.textContent).toContain("Review generation route");
 
-    const supportedData = {
-      ...blockedData,
+    const supportedData = withCharacterWorkspaceDetail(blockedData, {
       visual: {
         ...readyVisual,
-        routeQualifications: readyVisual.routeQualifications.map((route) => ({
+        routeQualifications: (readyVisual.routeQualifications ?? []).map((route) => ({
           ...route,
           profileCapabilities: {
             referenceImages: true,
@@ -853,7 +910,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
           },
         })),
       },
-    } as unknown as CharacterWorkspaceDetail;
+    });
     await act(async () => root.render(<CharacterAssetStudio
       commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
       data={supportedData}
@@ -872,8 +929,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
   });
 
   it("offers one bounded regeneration path for a preserved pack pinned to the previous route", async () => {
-    const stalePackData = {
-      ...data,
+    const stalePackData = withCharacterWorkspaceDetail(data, {
       character: { ...data.character, id: "character-stale-pack" },
       project: {
         ...data.project,
@@ -1000,7 +1056,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
         },
         readiness: { ...data.visual.readiness, ready: true, blockers: [] },
       },
-    } as unknown as CharacterWorkspaceDetail;
+    });
     adminV2Request.mockImplementation(async (path, options) => {
       if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") {
         return { batch: { id: "run-cover-q2" }, replayed: false };
@@ -1088,8 +1144,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
       if (path === "/api/v2/admin/creative/runs/running-run") return runningDetail;
       throw new Error(`Unexpected Admin request: ${path}`);
     });
-    const normalData = {
-      ...data,
+    const normalData = withCharacterWorkspaceDetail(data, {
       character: { ...data.character, id: "character-ready" },
       visual: {
         ...data.visual,
@@ -1169,7 +1224,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
         },
         readiness: { ...data.visual.readiness, ready: true, blockers: [] },
       },
-    } as unknown as CharacterWorkspaceDetail;
+    });
 
     await act(async () => {
       root.render(<CharacterAssetStudio
@@ -1245,8 +1300,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
       if (path === `/api/v2/admin/creative/runs/${pinnedRunId}`) return pinnedDetail;
       throw new Error(`Unexpected Admin request: ${path}`);
     });
-    const pinnedData = {
-      ...data,
+    const pinnedData = withCharacterWorkspaceDetail(data, {
       project: {
         ...data.project,
         draftImageAssetId: "pinned-asset",
@@ -1261,7 +1315,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
           },
         },
       },
-    } as unknown as CharacterWorkspaceDetail;
+    });
 
     await act(async () => root.render(<CharacterAssetStudio
       commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
@@ -1283,8 +1337,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
   });
 
   it("recovers lost first-portrait creation with the exact actor-scoped request and verifies by GET only", async () => {
-    const bootstrapData = {
-      ...data,
+    const bootstrapData = withCharacterWorkspaceDetail(data, {
       character: {
         ...data.character,
         id: "character-create-recovery",
@@ -1303,7 +1356,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
           },
         },
       },
-    } as unknown as CharacterWorkspaceDetail;
+    });
     const createKeys: string[] = [];
     const createBodies: unknown[] = [];
     let createPosts = 0;
@@ -1560,8 +1613,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
       },
     ]);
 
-    const wrongSlotProjection = {
-      ...data,
+    const wrongSlotProjection = withCharacterWorkspaceDetail(data, {
       project: {
         ...data.project,
         draftImageAssetId: selectedAssetId,
@@ -1581,7 +1633,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
           },
         },
       },
-    } as unknown as CharacterWorkspaceDetail;
+    });
     await render(wrongSlotProjection);
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -1594,8 +1646,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
     });
     expect(container.textContent).toContain("Verify selection");
 
-    const exactProjection = {
-      ...wrongSlotProjection,
+    const exactProjection = withCharacterWorkspaceDetail(wrongSlotProjection, {
       project: {
         ...wrongSlotProjection.project,
         draftAssetPack: {
@@ -1616,7 +1667,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
           },
         },
       },
-    } as unknown as CharacterWorkspaceDetail;
+    });
     await render(exactProjection);
     await waitUntil(() =>
       readActiveDurableMutationIntent({
@@ -1847,8 +1898,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
       requestSnapshot: trustedVerification,
     });
 
-    const exactProjection = {
-      ...data,
+    const exactProjection = withCharacterWorkspaceDetail(data, {
       project: {
         ...data.project,
         draftImageAssetId: trustedVerification.draftImageAssetId,
@@ -1904,7 +1954,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
           profile: null,
         },
       },
-    } as unknown as CharacterWorkspaceDetail;
+    });
     await render(exactProjection);
     await waitUntil(() =>
       readActiveDurableMutationIntent({
