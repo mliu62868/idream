@@ -1,11 +1,13 @@
-import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
-import path from "node:path";
 import { looksLikeMockChatResponse } from "@idream/shared";
 import { chatModelTimeoutMs } from "@idream/shared/env";
 import { PipelineChatModel } from "./providers/chat/pipeline";
 import type { ChatChunk, ChatModel } from "./providers/types";
 import type { ChatModelProbeEvidence, ProbeReportOf } from "./readiness/evidence";
+import {
+  probeCliArg,
+  probeReportPath,
+  writeProbeReport,
+} from "./readiness/probe-report";
 
 type ProbeOptions = {
   report: string | null;
@@ -28,19 +30,11 @@ class MockProbeChatModel implements ChatModel {
   }
 }
 
-function readArg(name: string) {
-  const prefix = `--${name}=`;
-  const inline = process.argv.find((arg) => arg.startsWith(prefix));
-  if (inline) return inline.slice(prefix.length);
-  const index = process.argv.indexOf(`--${name}`);
-  return index >= 0 ? process.argv[index + 1] : undefined;
-}
-
 function readOptions(): ProbeOptions {
   return {
-    report: readArg("report") ?? process.env.CHAT_MODEL_PROBE_REPORT ?? null,
+    report: probeReportPath("chatModelProbe"),
     prompt:
-      readArg("prompt") ??
+      probeCliArg("prompt") ??
       "Reply with a short launch readiness acknowledgement.",
   };
 }
@@ -63,9 +57,7 @@ async function main() {
   });
 
   if (options.report) {
-    const reportPath = resolveWorkspacePath(options.report);
-    await mkdir(path.dirname(reportPath), { recursive: true });
-    await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+    await writeProbeReport(options.report, report);
   }
 
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
@@ -175,27 +167,6 @@ function createChatModel(input: {
 function requireValue(name: string, value: string | null | undefined) {
   if (!value?.trim()) throw new Error(`${name} is required for chat model probe`);
   return value;
-}
-
-function resolveWorkspacePath(filePath: string) {
-  if (path.isAbsolute(filePath)) return filePath;
-  return path.resolve(workspaceRoot(), filePath);
-}
-
-function workspaceRoot() {
-  let current = process.cwd();
-  while (true) {
-    if (
-      existsSync(path.join(current, "package.json")) &&
-      (existsSync(path.join(current, "turbo.json")) ||
-        existsSync(path.join(current, "bun.lock")))
-    ) {
-      return current;
-    }
-    const parent = path.dirname(current);
-    if (parent === current) return process.cwd();
-    current = parent;
-  }
 }
 
 main().catch((error: unknown) => {

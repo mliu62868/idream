@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
-import path from "node:path";
 import { GoCamAgeVerificationProvider } from "./providers/verify/gocam";
 import { MockAgeVerificationProvider } from "./providers/verify/mock";
 import type { AgeVerificationProvider } from "./providers/types";
 import type { AgeVerificationProbeEvidence, ProbeReportOf } from "./readiness/evidence";
+import {
+  probeCliArg,
+  probeReportPath,
+  writeProbeReport,
+} from "./readiness/probe-report";
 
 type ProbeOptions = {
   report: string | null;
@@ -15,18 +17,10 @@ type ProbeOptions = {
 // SPEC: 写出的 JSON 由 launch gate 的 evidence 契约约束，两端共用 readiness/evidence.ts。
 type AgeProbeReport = ProbeReportOf<AgeVerificationProbeEvidence>;
 
-function readArg(name: string) {
-  const prefix = `--${name}=`;
-  const inline = process.argv.find((arg) => arg.startsWith(prefix));
-  if (inline) return inline.slice(prefix.length);
-  const index = process.argv.indexOf(`--${name}`);
-  return index >= 0 ? process.argv[index + 1] : undefined;
-}
-
 function readOptions(): ProbeOptions {
   return {
-    report: readArg("report") ?? process.env.AGE_VERIFICATION_PROBE_REPORT ?? null,
-    jurisdiction: readArg("jurisdiction") ?? "US",
+    report: probeReportPath("ageVerificationProbe"),
+    jurisdiction: probeCliArg("jurisdiction") ?? "US",
   };
 }
 
@@ -39,9 +33,7 @@ async function main() {
   });
 
   if (options.report) {
-    const reportPath = resolveWorkspacePath(options.report);
-    await mkdir(path.dirname(reportPath), { recursive: true });
-    await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+    await writeProbeReport(options.report, report);
   }
 
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
@@ -141,27 +133,6 @@ function createAgeVerificationProvider(provider: string): AgeVerificationProvide
 function requireValue(name: string, value: string | undefined) {
   if (!value?.trim()) throw new Error(`${name} is required for age verification probe`);
   return value;
-}
-
-function resolveWorkspacePath(filePath: string) {
-  if (path.isAbsolute(filePath)) return filePath;
-  return path.resolve(workspaceRoot(), filePath);
-}
-
-function workspaceRoot() {
-  let current = process.cwd();
-  while (true) {
-    if (
-      existsSync(path.join(current, "package.json")) &&
-      (existsSync(path.join(current, "turbo.json")) ||
-        existsSync(path.join(current, "bun.lock")))
-    ) {
-      return current;
-    }
-    const parent = path.dirname(current);
-    if (parent === current) return process.cwd();
-    current = parent;
-  }
 }
 
 main().catch((error: unknown) => {

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { createMedia, createUser } from "@/server/test/helpers";
@@ -812,5 +812,50 @@ describe("Admin cutover invariant adversarial release authority", () => {
       throw new Error("rollback-orphan-fixture");
     })).rejects.toThrow("rollback-orphan-fixture");
     expect(checked).toBe(true);
+  });
+
+  // SPEC: 去重不变量由唯一索引守住，所以对账要查的是"索引还在吗"，不是"有重复行吗"。
+  // INVARIANT: 这条自检必须真的能红 —— 在会回滚的事务里删掉其中一个索引，检查必须失败。
+  //            被它取代的两条旧检查（GROUP BY 已唯一的列 HAVING count(*) > 1）在这里恒返回零行，
+  //            即使索引被删也一样绿，正是它们该被替换的原因。
+  it("fails closed when a projector dedupe unique index is dropped", async () => {
+    const baseline = await auditAdminCutoverInvariants(prisma);
+    expect(baseline.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "projection_dedupe_constraint_missing", status: "passed" }),
+    ]));
+
+    let checked = false;
+    await expect(prisma.$transaction(async (tx) => {
+      // 按列集合反查索引名再删 —— 索引名归 Prisma 生成，测试不该把它抄成第二处字面量。
+      const [target] = await tx.$queryRaw<{ indexname: string }[]>(Prisma.sql`
+        SELECT i.relname::text AS indexname
+        FROM pg_index x
+        JOIN pg_class i ON i.oid = x.indexrelid
+        JOIN pg_class c ON c.oid = x.indrelid
+        WHERE c.relname = 'chat_exchange_facts' AND x.indisunique AND x.indnatts = 1
+          AND (SELECT a.attname FROM pg_attribute a
+                WHERE a.attrelid = c.oid AND a.attnum = x.indkey[0]) = 'exchangeId'
+      `);
+      expect(target?.indexname).toBeTruthy();
+      await tx.$executeRawUnsafe(`DROP INDEX "${target.indexname}"`);
+      const report = await auditAdminCutoverInvariants(tx);
+      expect(report.checks).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          key: "projection_dedupe_constraint_missing",
+          status: "failed",
+          sampleIds: ["chat_exchange_facts:exchangeId"],
+        }),
+      ]));
+      expect(report).toMatchObject({ qualityState: "invalid", decisionUse: "blocked" });
+      checked = true;
+      throw new Error("rollback-dropped-index");
+    })).rejects.toThrow("rollback-dropped-index");
+    expect(checked).toBe(true);
+
+    // 回滚后索引必须回来，否则后续用例会在一个被削弱的库上跑。
+    const restored = await auditAdminCutoverInvariants(prisma);
+    expect(restored.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "projection_dedupe_constraint_missing", status: "passed" }),
+    ]));
   });
 });

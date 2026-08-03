@@ -1,10 +1,11 @@
-import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
-import path from "node:path";
 import { prisma } from "@/server/lib/db";
 import { isProductionLtxVideoProfile } from "@/server/modules/generation/production-video-profile";
 import { publicCharacterAudienceWhere } from "@/server/modules/ourdream/public-content-audience";
 import type { ProbeReportOf, ProductConfigProbeEvidence } from "./readiness/evidence";
+import {
+  probeReportPath,
+  writeProbeReport,
+} from "./readiness/probe-report";
 
 type ProbeOptions = {
   report: string | null;
@@ -13,17 +14,9 @@ type ProbeOptions = {
 // SPEC: 写出的 JSON 由 launch gate 的 evidence 契约约束，两端共用 readiness/evidence.ts。
 type ProductConfigProbeReport = ProbeReportOf<ProductConfigProbeEvidence>;
 
-function readArg(name: string) {
-  const prefix = `--${name}=`;
-  const inline = process.argv.find((arg) => arg.startsWith(prefix));
-  if (inline) return inline.slice(prefix.length);
-  const index = process.argv.indexOf(`--${name}`);
-  return index >= 0 ? process.argv[index + 1] : undefined;
-}
-
 function readOptions(): ProbeOptions {
   return {
-    report: readArg("report") ?? process.env.PRODUCT_CONFIG_PROBE_REPORT ?? null,
+    report: probeReportPath("productConfigProbe"),
   };
 }
 
@@ -32,9 +25,7 @@ async function main() {
   const report = await runProbe();
 
   if (options.report) {
-    const reportPath = resolveWorkspacePath(options.report);
-    await mkdir(path.dirname(reportPath), { recursive: true });
-    await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+    await writeProbeReport(options.report, report);
   }
 
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
@@ -181,27 +172,6 @@ async function runProbe(): Promise<ProductConfigProbeReport> {
     };
   } finally {
     await prisma.$disconnect();
-  }
-}
-
-function resolveWorkspacePath(filePath: string) {
-  if (path.isAbsolute(filePath)) return filePath;
-  return path.resolve(workspaceRoot(), filePath);
-}
-
-function workspaceRoot() {
-  let current = process.cwd();
-  while (true) {
-    if (
-      existsSync(path.join(current, "package.json")) &&
-      (existsSync(path.join(current, "turbo.json")) ||
-        existsSync(path.join(current, "bun.lock")))
-    ) {
-      return current;
-    }
-    const parent = path.dirname(current);
-    if (parent === current) return process.cwd();
-    current = parent;
   }
 }
 

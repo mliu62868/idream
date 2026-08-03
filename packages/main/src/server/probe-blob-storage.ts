@@ -1,12 +1,15 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import path from "node:path";
+import { readFile, rm } from "node:fs/promises";
 import { S3CompatibleBlobStore } from "@idream/shared";
 import { resolveLocalBlobPath } from "@idream/shared/storage/local-blob";
 import { MockBlobStore } from "./providers/blob/mock";
 import type { BlobStore, ProviderFailure, ProviderResult } from "./providers/types";
 import type { BlobStorageProbeEvidence, ProbeReportOf } from "./readiness/evidence";
+import {
+  probeCliArg,
+  probeReportPath,
+  writeProbeReport,
+} from "./readiness/probe-report";
 
 type ProbeOptions = {
   report: string | null;
@@ -37,19 +40,11 @@ type ReadbackEvidence = {
 // INTENT: configurationError 只在对象存储配置不合法的早退路径出现，故标成按路径可省。
 type BlobStorageProbeReport = ProbeReportOf<BlobStorageProbeEvidence, "configurationError">;
 
-function readArg(name: string) {
-  const prefix = `--${name}=`;
-  const inline = process.argv.find((arg) => arg.startsWith(prefix));
-  if (inline) return inline.slice(prefix.length);
-  const index = process.argv.indexOf(`--${name}`);
-  return index >= 0 ? process.argv[index + 1] : undefined;
-}
-
 function readOptions(): ProbeOptions {
-  const ttlSeconds = Number.parseInt(readArg("ttl") ?? "60", 10);
+  const ttlSeconds = Number.parseInt(probeCliArg("ttl") ?? "60", 10);
   return {
-    report: readArg("report") ?? process.env.BLOB_STORAGE_PROBE_REPORT ?? null,
-    keyPrefix: readArg("key-prefix") ?? "launch-probes",
+    report: probeReportPath("blobStorageProbe"),
+    keyPrefix: probeCliArg("key-prefix") ?? "launch-probes",
     ttlSeconds:
       Number.isFinite(ttlSeconds) && ttlSeconds > 0
         ? Math.min(ttlSeconds, 604_800)
@@ -85,9 +80,7 @@ async function main() {
   });
 
   if (options.report) {
-    const reportPath = resolveWorkspacePath(options.report);
-    await mkdir(path.dirname(reportPath), { recursive: true });
-    await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+    await writeProbeReport(options.report, report);
   }
 
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
@@ -341,27 +334,6 @@ function requireEnv(name: string, value: string | undefined) {
 
 function sha256Hex(value: Uint8Array) {
   return createHash("sha256").update(value).digest("hex");
-}
-
-function resolveWorkspacePath(filePath: string) {
-  if (path.isAbsolute(filePath)) return filePath;
-  return path.resolve(workspaceRoot(), filePath);
-}
-
-function workspaceRoot() {
-  let current = process.cwd();
-  while (true) {
-    if (
-      existsSync(path.join(current, "package.json")) &&
-      (existsSync(path.join(current, "turbo.json")) ||
-        existsSync(path.join(current, "bun.lock")))
-    ) {
-      return current;
-    }
-    const parent = path.dirname(current);
-    if (parent === current) return process.cwd();
-    current = parent;
-  }
 }
 
 main().catch((error: unknown) => {

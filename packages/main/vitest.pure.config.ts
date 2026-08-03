@@ -24,6 +24,7 @@ export default defineConfig({
       "src/server/modules/voice-defaults.test.ts",
       "src/server/next-standalone-runtime.test.ts",
       "src/server/probe-web-surface-assets.test.ts",
+      "src/server/readiness/probe-report.test.ts",
       "src/server/cms/**/*.test.ts",
       "src/server/providers/**/*.test.ts",
       "src/server/seed-nondestructive.test.ts",
