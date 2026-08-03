@@ -1,5 +1,4 @@
 import {
-  unknownGenerationReconciliationCommandSchema,
   unknownGenerationReconciliationResultSchema,
 } from "@idream/shared/admin";
 import { Errors } from "@/server/lib/errors";
@@ -22,9 +21,7 @@ export async function POST(
   const { id } = await context.params;
   return adminV2Route(async () => {
     const actor = await actorWithPermission(request, "generation.job.requeue");
-    const body = unknownGenerationReconciliationCommandSchema.parse(
-      await jsonBody(request),
-    );
+    const body = await jsonBody(request, "unknownGenerationReconciliationCommandSchema+idempotency-key");
     if (body.confirmation !== `${id}:${body.resolution}`) {
       throw Errors.badRequest(
         "Confirmation did not match unknown Generation reconciliation target",

@@ -1,4 +1,4 @@
-import { creativeRunCreateRequestSchema, creativeRunCreateResultSchema } from "@idream/shared/admin";
+import { creativeRunCreateResultSchema } from "@idream/shared/admin";
 import { actorWithPermission, jsonBody } from "@/server/modules/admin-v2/shared/authority";
 import { Errors } from "@/server/lib/errors";
 import { createProductionBatchCore } from "@/server/modules/admin/content-ops";
@@ -22,7 +22,7 @@ export function POST(request: Request) {
     if (!request.headers.get("idempotency-key")?.trim()) {
       throw Errors.badRequest("Idempotency-Key is required for Creative Run creation");
     }
-    const body = creativeRunCreateRequestSchema.parse(await jsonBody(request));
+    const body = await jsonBody(request, "creativeRunCreateRequestSchema+idempotency-key");
     const response = await createProductionBatchCore(request, actor, body);
     const envelope = await response.json() as {
       readonly data?: {

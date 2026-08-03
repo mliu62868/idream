@@ -1,5 +1,4 @@
 import {
-  characterIdentityBootstrapRequestSchema,
   characterIdentityBootstrapResponseSchema,
 } from "@idream/shared/admin";
 import { env } from "@/server/lib/env";
@@ -23,7 +22,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const { id } = await context.params;
   return adminV2Route(async () => {
     const actor = await actorWithPermission(request, "character.project.write", { characterId: id });
-    const body = characterIdentityBootstrapRequestSchema.parse(await jsonBody(request));
+    const body = await jsonBody(request, "characterIdentityBootstrapRequestSchema+idempotency-key+if-match");
     requireMatchingProjectVersion(request, body.entityVersion);
     const idempotencyKey = requireIdempotencyKey(request);
     const requestId = request.headers.get("x-request-id")?.trim() || crypto.randomUUID();

@@ -1,5 +1,4 @@
 import {
-  characterReleaseValidationRequestSchema,
   characterReleaseValidationResultSchema,
 } from "@idream/shared/admin";
 import { env } from "@/server/lib/env";
@@ -17,7 +16,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const { id, releaseId } = await context.params;
   return adminV2Route(async () => {
     const actor = await actorWithPermission(request, "character.release.publish", { characterId: id });
-    const body = characterReleaseValidationRequestSchema.parse(await jsonBody(request));
+    const body = await jsonBody(request, "characterReleaseValidationRequestSchema+idempotency-key");
     if (body.confirmation !== `${id}:${releaseId}:validate`) {
       throw Errors.badRequest("Confirmation did not match Release validation target");
     }

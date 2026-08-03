@@ -1,5 +1,4 @@
 import {
-  characterImageReadinessRepairRequestSchema,
   characterImageReadinessRepairResponseSchema,
 } from "@idream/shared/admin";
 import { env } from "@/server/lib/env";
@@ -45,9 +44,7 @@ export async function POST(
       "character.project.write",
       { characterId: id },
     );
-    const body = characterImageReadinessRepairRequestSchema.parse(
-      await jsonBody(request),
-    );
+    const body = await jsonBody(request, "characterImageReadinessRepairRequestSchema+idempotency-key+if-match");
     if (body.confirmation !== `PREPARE IMAGE PRODUCTION ${id}`) {
       throw Errors.badRequest(
         "Confirmation did not match the Character image-readiness repair",

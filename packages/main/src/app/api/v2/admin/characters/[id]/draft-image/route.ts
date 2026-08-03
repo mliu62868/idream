@@ -1,15 +1,14 @@
-import {
-  characterDraftImageSelectionRequestSchema,
-} from "@idream/shared/admin";
-import type { z } from "zod";
 import { selectCharacterDraftImage } from "@/server/modules/admin-v2/characters/asset-studio";
 import { executeAdminMutation } from "@/server/modules/admin-v2/shared/admin-mutation";
+import type { AdminV2RequestBody } from "@/server/modules/admin-v2/shared/authority";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-type DraftImageSelection = z.infer<typeof characterDraftImageSelectionRequestSchema>;
+type DraftImageSelection = AdminV2RequestBody<
+  "characterDraftImageSelectionRequestSchema+idempotency-key+if-match"
+>;
 
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;

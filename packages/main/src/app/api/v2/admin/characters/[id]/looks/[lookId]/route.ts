@@ -1,4 +1,3 @@
-import { characterLookArchiveRequestSchema } from "@idream/shared/admin";
 import { env } from "@/server/lib/env";
 import { archiveCharacterLookAsAdmin } from "@/server/modules/admin-v2/characters/looks";
 import { actorWithPermission, jsonBody } from "@/server/modules/admin-v2/shared/authority";
@@ -16,7 +15,7 @@ export function PATCH(
   return adminV2Route(async () => {
     const actor = await actorWithPermission(request, "content.official.write");
     const { id, lookId } = await context.params;
-    const body = characterLookArchiveRequestSchema.parse(await jsonBody(request));
+    const body = await jsonBody(request, "characterLookArchiveRequestSchema+idempotency-key");
     const idempotencyKey = requireIdempotencyKey(request);
     const requestId =
       request.headers.get("x-request-id")?.trim() || crypto.randomUUID();

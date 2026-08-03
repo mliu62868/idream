@@ -1,5 +1,4 @@
 import {
-  characterProjectCreateRequestSchema,
   characterProjectCreateResponseSchema,
 } from "@idream/shared/admin";
 import { Errors } from "@/server/lib/errors";
@@ -15,7 +14,7 @@ export function POST(request: Request) {
     const actor = await actorWithPermission(request, "character.project.write");
     const idempotencyKey = request.headers.get("idempotency-key")?.trim();
     if (!idempotencyKey) throw Errors.badRequest("Idempotency-Key is required");
-    const body = characterProjectCreateRequestSchema.parse(await jsonBody(request));
+    const body = await jsonBody(request, "characterProjectCreateRequestSchema+idempotency-key");
     const result = characterProjectCreateResponseSchema.parse(await createCharacterProject({
       actor,
       request: body,

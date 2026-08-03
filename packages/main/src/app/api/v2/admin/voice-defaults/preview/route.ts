@@ -11,6 +11,8 @@ export const runtime = "nodejs";
 export async function POST(request: Request) {
   return adminV2Route(async () => {
     await actorWithPermission(request, "generation.config.read");
-    return previewVoiceDefault(await jsonBody(request));
+    return previewVoiceDefault(
+      await jsonBody(request, "voiceDefaultPreviewRequestSchema"),
+    );
   });
 }

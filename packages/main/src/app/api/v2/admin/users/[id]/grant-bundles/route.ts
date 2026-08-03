@@ -1,7 +1,6 @@
 import {
   adminGrantBundleListSchema,
   adminGrantBundleMutationSchema,
-  adminGrantBundleWriteSchema,
 } from "@idream/shared/admin";
 import { grantUserBundle, listUserGrantBundles } from "@/server/modules/admin-v2/permissions/grant-bundles";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
@@ -23,7 +22,7 @@ export async function POST(request: Request, context: Context) {
   const { id } = await context.params;
   return adminV2Route(async () => {
     const actor = await actorWithPermission(request, "user.role.write");
-    const body = adminGrantBundleWriteSchema.parse(await jsonBody(request));
+    const body = await jsonBody(request, "adminGrantBundleWriteSchema+idempotency-key");
     const idempotencyKey = requireIdempotencyKey(request);
     const requestId = request.headers.get("x-request-id")?.trim() || crypto.randomUUID();
     const result = await executeAtomicIdempotentMutation({

@@ -1,5 +1,4 @@
 import {
-  creativePlacementPublishRequestSchema,
   creativePlacementPublishResultSchema,
 } from "@idream/shared/admin";
 import { env } from "@/server/lib/env";
@@ -18,7 +17,7 @@ export async function POST(request: Request, context: Context) {
   const { id } = await context.params;
   return adminV2Route(async () => {
     const actor = await actorWithPermission(request, "creative.placement.publish");
-    const body = creativePlacementPublishRequestSchema.parse(await jsonBody(request));
+    const body = await jsonBody(request, "creativePlacementPublishRequestSchema+idempotency-key");
     const idempotencyKey = requireIdempotencyKey(request);
     const requestId = request.headers.get("x-request-id")?.trim() || crypto.randomUUID();
     return executeAtomicIdempotentMutation({

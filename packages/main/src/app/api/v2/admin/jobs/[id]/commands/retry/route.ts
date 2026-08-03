@@ -1,5 +1,4 @@
 import {
-  retryGenerationRequestCommandSchema,
   retryGenerationRequestResultSchema,
 } from "@idream/shared/admin";
 import { retryGenerationRequest } from "@/server/ai/generation-request-lifecycle";
@@ -16,7 +15,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const { id } = await context.params;
   return adminV2Route(async () => {
     const actor = await actorWithPermission(request, "generation.job.requeue");
-    const body = retryGenerationRequestCommandSchema.parse(await jsonBody(request));
+    const body = await jsonBody(request, "retryGenerationRequestCommandSchema+idempotency-key");
     if (body.confirmation !== `${id}:retry`) {
       throw Errors.badRequest("Confirmation did not match Generation Request retry target");
     }

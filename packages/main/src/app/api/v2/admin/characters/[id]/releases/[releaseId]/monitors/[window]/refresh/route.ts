@@ -1,5 +1,4 @@
 import {
-  characterReleaseMonitorRefreshRequestSchema,
   characterReleaseMonitorRefreshResultSchema,
 } from "@idream/shared/admin";
 import { env } from "@/server/lib/env";
@@ -21,7 +20,7 @@ export async function POST(
   return adminV2Route(async () => {
     const actor = await actorWithPermission(request, "character.release.review", { characterId: id });
     if (window !== "24h" && window !== "72h") throw Errors.badRequest("Monitor window must be 24h or 72h");
-    const body = characterReleaseMonitorRefreshRequestSchema.parse(await jsonBody(request));
+    const body = await jsonBody(request, "characterReleaseMonitorRefreshRequestSchema+idempotency-key");
     const idempotencyKey = requireIdempotencyKey(request);
     const requestId = request.headers.get("x-request-id")?.trim() || crypto.randomUUID();
     return executeAtomicIdempotentMutation({

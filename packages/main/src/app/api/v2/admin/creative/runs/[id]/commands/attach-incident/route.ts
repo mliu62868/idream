@@ -1,5 +1,4 @@
 import {
-  creativeRunAttachIncidentRequestSchema,
   creativeRunAttachIncidentResultSchema,
 } from "@idream/shared/admin";
 import { env } from "@/server/lib/env";
@@ -17,7 +16,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   return adminV2Route(async () => {
     const actor = await actorWithPermission(request, "ops.incident.manage");
     await actorWithPermission(request, "creative.run.write");
-    const body = creativeRunAttachIncidentRequestSchema.parse(await jsonBody(request));
+    const body = await jsonBody(request, "creativeRunAttachIncidentRequestSchema+idempotency-key");
     const idempotencyKey = requireIdempotencyKey(request);
     const requestId = request.headers.get("x-request-id")?.trim() || crypto.randomUUID();
     return executeAtomicIdempotentMutation({
