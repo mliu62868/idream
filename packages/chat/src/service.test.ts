@@ -14,7 +14,8 @@ vi.mock("./queue.js", async (importOriginal) => {
   return { ...actual, enqueue: enqueueMock };
 });
 
-const { ChatError, regenerate } = await import("./service.js");
+const { ChatError } = await import("./errors.js");
+const { regenerate } = await import("./service.js");
 
 interface FakeData {
   message?: unknown;

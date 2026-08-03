@@ -3,8 +3,8 @@
 // Auth: the caller (web.ts) has already verified the BFF signature and resolved
 // userId — the router re-checks authz against views inside each service call.
 import type { Prisma } from "../generated/client/client.js";
+import { ChatError } from "./errors.js";
 import {
-  ChatError,
   archiveSession,
   assertMessageStreamAccess,
   confirmImageAttachment,

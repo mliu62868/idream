@@ -22,6 +22,8 @@ import {
   withTurnAuthority,
 } from "./file-mutations.js";
 import { loadSessionLinkage } from "./relationship-authority.js";
+import { ChatError } from "./errors.js";
+import { assertSessionAccess, lifecycleOf, requireSession } from "./session-access.js";
 import { resolvePolicy, snapshotFromView } from "./policy.js";
 import type { ChatPolicy } from "./policy.js";
 import { logger } from "./logger.js";
@@ -32,16 +34,6 @@ import {
   type ChatGeneratePayload,
   type ChatImageRequestedPayload,
 } from "@idream/shared/contracts";
-
-export class ChatError extends Error {
-  constructor(
-    public code: string,
-    message: string,
-    public status = 400,
-  ) {
-    super(message);
-  }
-}
 
 export interface ChatContext {
   prisma: ChatPrismaClient;
@@ -194,10 +186,11 @@ export async function getSession(
   override?: Partial<ChatContext>,
 ) {
   const { prisma } = ctx(override);
-  const session = await prisma.chatSession.findUnique({ where: { id: input.sessionId } });
-  if (!session || session.userId !== input.userId || session.status === "deleted") {
-    throw new ChatError("session_not_found", "session not found", 404);
-  }
+  // 读路径：已归档的会话仍可打开，只有已删除的看不到。入参是 sessionId，用 404 盖住归属。
+  const session = await requireSession(prisma, input, {
+    require: "not_deleted",
+    denial: { kind: "not_found" },
+  });
   const newestMessages = await prisma.message.findMany({
     where: { sessionId: session.id, deletedAt: null, status: { not: "deleted" } },
     // Fetch the tail, not the oldest page. Assistant sorts before user in the
@@ -456,10 +449,11 @@ export async function sendMessage(
   override?: Partial<ChatContext>,
 ): Promise<SendResult> {
   const { prisma, projectorPrisma } = ctx(override);
-  const session = await prisma.chatSession.findUnique({ where: { id: input.sessionId } });
-  if (!session || session.userId !== input.userId || session.status !== "active") {
-    throw new ChatError("session_not_found", "session not found", 404);
-  }
+  // 写路径：只有活跃会话能发言。入参是 sessionId，用 404 盖住"存在但不是你的"。
+  const session = await requireSession(prisma, input, {
+    require: "active",
+    denial: { kind: "not_found" },
+  });
 
   const content = normalizeMessageContent(input.content);
   const idempotencyKey = normalizeIdempotencyKey(
@@ -502,10 +496,11 @@ export async function sendMessage(
     async (tx) => {
     await advisoryLock(tx, `send:${input.userId}:${idempotencyKey}`);
     await assertEligible(tx, input.userId, session.characterId);
-    const currentSession = await tx.chatSession.findUnique({ where: { id: session.id } });
-    if (!currentSession || currentSession.userId !== input.userId || currentSession.status !== "active") {
-      throw new ChatError("session_not_found", "session not found", 404);
-    }
+    // 事务内复查：与上面同一条规则、同一个映射，只是换成事务客户端读。
+    const currentSession = await requireSession(tx, { sessionId: session.id, userId: input.userId }, {
+      require: "active",
+      denial: { kind: "not_found" },
+    });
     const replay = await tx.chatSendReceipt.findUnique({
       where: {
         userId_idempotencyKey: {
@@ -649,13 +644,12 @@ export async function editUserMessage(
   if (!message || message.role !== "user" || message.deletedAt || message.status === "deleted") {
     throw new ChatError("message_not_found", "user message not found", 404);
   }
-  const session = await prisma.chatSession.findUnique({ where: { id: message.sessionId } });
-  if (!session || session.userId !== input.userId) {
-    throw new ChatError("forbidden", "not your message", 403);
-  }
-  if (session.status !== "active") {
-    throw new ChatError("session_not_active", "session is not active", 409);
-  }
+  // 入参是 messageId：上面那次消息查询已经泄漏了存在性，再假装 404 没有意义 ——
+  // 归属不符是 403，生命周期不合是 409。这条分歧是有意的，不是漂移。
+  const session = await requireSession(prisma, { sessionId: message.sessionId, userId: input.userId }, {
+    require: "active",
+    denial: { kind: "owner_forbidden", forbiddenMessage: "not your message" },
+  });
 
   const content = normalizeMessageContent(input.content);
 
@@ -775,13 +769,11 @@ export async function editUserMessage(
           where: { id: currentLinkedAssistants[0].id },
         })
       : null;
-    if (
-      !currentSession ||
-      currentSession.userId !== input.userId ||
-      currentSession.status !== "active"
-    ) {
-      throw new ChatError("session_not_active", "session is not active", 409);
-    }
+    // 事务内复查：外层已放行过一次，此处不满足只可能是并发改动 → 一律 409。
+    assertSessionAccess(currentSession, input, {
+      require: "active",
+      denial: { kind: "conflict" },
+    });
     if (
       !currentMessage ||
       currentMessage.role !== "user" ||
@@ -952,13 +944,11 @@ export async function regenerate(
   if (!message || message.role !== "assistant") {
     throw new ChatError("message_not_found", "assistant message not found", 404);
   }
-  const session = await prisma.chatSession.findUnique({ where: { id: message.sessionId } });
-  if (!session || session.userId !== input.userId) {
-    throw new ChatError("forbidden", "not your message", 403);
-  }
-  if (session.status !== "active") {
-    throw new ChatError("session_not_active", "session is not active", 409);
-  }
+  // 同 editUserMessage：入参是 messageId，存在性已泄漏 —— 归属 403、生命周期 409。
+  const session = await requireSession(prisma, { sessionId: message.sessionId, userId: input.userId }, {
+    require: "active",
+    denial: { kind: "owner_forbidden", forbiddenMessage: "not your message" },
+  });
   if (message.deletedAt || ["blocked", "deleted"].includes(message.status)) {
     throw new ChatError("message_not_regenerable", "message cannot be regenerated", 409);
   }
@@ -1001,14 +991,12 @@ export async function regenerate(
       tx.message.findUnique({ where: { id: lastUser.id } }),
       loadSessionLinkage(tx, session.id),
     ]);
-    if (
-      !currentSession ||
-      currentSession.userId !== input.userId ||
-      currentSession.status !== "active" ||
-      currentSession.deletedAt
-    ) {
-      throw new ChatError("session_not_active", "session is not active", 409);
-    }
+    // 事务内复查：外层已放行过一次，此处不满足只可能是并发改动 → 一律 409。
+    // （原先这里比别处多查一个 deletedAt —— 现在 lifecycleOf 一律两个字段都看。）
+    assertSessionAccess(currentSession, input, {
+      require: "active",
+      denial: { kind: "conflict" },
+    });
     if (
       !current ||
       current.role !== "assistant" ||
@@ -1092,7 +1080,8 @@ export async function assertMessageStreamAccess(
     where: { id: input.messageId },
     include: { session: true },
   });
-  if (!message || message.session.userId !== input.userId || message.session.status === "deleted") {
+  // 这里的会话是 include 出来的，形状和别处不同，但生命周期判定共用同一个入口。
+  if (!message || message.session.userId !== input.userId || lifecycleOf(message.session) === "deleted") {
     throw new ChatError("message_not_found", "message not found", 404);
   }
 }
@@ -1102,10 +1091,13 @@ export async function archiveSession(
   override?: Partial<ChatContext>,
 ) {
   const { prisma } = ctx(override);
-  const session = await prisma.chatSession.findUnique({ where: { id: input.sessionId } });
-  if (!session || session.userId !== input.userId) {
-    throw new ChatError("session_not_found", "session not found", 404);
-  }
+  // BUGFIX: 此前这里只查归属、不查生命周期，于是一个**已被擦除**的会话可以被它的
+  // 主人 archive 回来 —— status 从 "deleted" 翻成 "archived"，而 listSessions 只按
+  // status 过滤，被擦除的会话就带着空消息列表重新出现在抽屉里。擦除必须是终态。
+  const session = await requireSession(prisma, input, {
+    require: "not_deleted",
+    denial: { kind: "not_found" },
+  });
   return prisma.chatSession.update({ where: { id: session.id }, data: { status: "archived" } });
 }
 
@@ -1117,10 +1109,11 @@ export async function renameSession(
   override?: Partial<ChatContext>,
 ) {
   const { prisma } = ctx(override);
-  const session = await prisma.chatSession.findUnique({ where: { id: input.sessionId } });
-  if (!session || session.userId !== input.userId || session.status === "deleted") {
-    throw new ChatError("session_not_found", "session not found", 404);
-  }
+  // 已归档的会话仍可改名；已删除的不行。
+  const session = await requireSession(prisma, input, {
+    require: "not_deleted",
+    denial: { kind: "not_found" },
+  });
   const title = input.title.trim();
   if (!title || title.length > MAX_TITLE_LENGTH) {
     throw new ChatError("bad_request", `title must be 1-${MAX_TITLE_LENGTH} characters`, 400);
@@ -1144,10 +1137,12 @@ export async function setNoMemory(
     },
     async (tx) => {
       await assertActiveUserAuthority(tx, input.userId);
-      const session = await tx.chatSession.findUnique({ where: { id: input.sessionId } });
-      if (!session || session.userId !== input.userId) {
-        throw new ChatError("session_not_found", "session not found", 404);
-      }
+      // BUGFIX: 同 archiveSession —— 此前不查生命周期，已擦除的会话还能被切记忆开关，
+      // 而那次写入会 increment contextRevision，等于在一个终态对象上继续留痕。
+      const session = await requireSession(tx, input, {
+        require: "not_deleted",
+        denial: { kind: "not_found" },
+      });
       return tx.chatSession.update({
         where: { id: session.id },
         data: {
