@@ -8,6 +8,7 @@
 import "dotenv/config";
 import path from "node:path";
 import {
+  chatModelTimeoutMs,
   DEFAULT_MODERATION_PROVIDER,
   DEFAULT_MODERATION_TIMEOUT_MS,
   DEFAULT_REDIS_URL,
@@ -64,10 +65,9 @@ export const env = {
     const parsed = Number.parseInt(raw, 10);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : 8_000;
   },
+  // 与 main 的 probe-chat-model 共用同一个解析 —— 探针的预算必须就是生产的预算。
   get CHAT_MODEL_TIMEOUT_MS() {
-    const raw = process.env.CHAT_MODEL_TIMEOUT_MS ?? "45000";
-    const parsed = Number.parseInt(raw, 10);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : 45_000;
+    return chatModelTimeoutMs();
   },
   // Tier → real model aliases (design P0-D). The policy resolver maps an
   // entitlement tier to ONE of these; the provider streams with the resolved

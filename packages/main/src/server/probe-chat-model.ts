@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { looksLikeMockChatResponse } from "@idream/shared";
+import { chatModelTimeoutMs } from "@idream/shared/env";
 import { PipelineChatModel } from "./providers/chat/pipeline";
 import type { ChatChunk, ChatModel } from "./providers/types";
 import type { ChatModelProbeEvidence, ProbeReportOf } from "./readiness/evidence";
@@ -164,10 +165,10 @@ function createChatModel(input: {
     baseUrl: requireValue("CHAT_MODEL_BASE_URL or PIPELINE_API_URL", input.baseUrl),
     apiKey: process.env.CHAT_MODEL_API_KEY ?? process.env.PIPELINE_API_TOKEN,
     model: requireValue("CHAT_MODEL_NAME or PIPELINE_CHAT_MODEL_DEFAULT", input.model),
-    timeoutMs: Number.parseInt(
-      process.env.CHAT_MODEL_TIMEOUT_MS ?? process.env.PIPELINE_TIMEOUT_MS ?? "60000",
-      10,
-    ),
+    // 用 chat 生产的预算，而不是探针自己的一套。此前这里是
+    // `CHAT_MODEL_TIMEOUT_MS ?? PIPELINE_TIMEOUT_MS ?? 60000` —— 比 chat 多一级
+    // 回退、默认值也更大，于是一次 50s 的响应在探针里全绿、在 chat 里早就超时了。
+    timeoutMs: chatModelTimeoutMs(),
   });
 }
 

@@ -50,6 +50,23 @@ export function mainWebUrlOrigin(raw: string | undefined = process.env.MAIN_WEB_
   return (raw ?? DEFAULT_MAIN_WEB_URL).replace(/\/$/, "");
 }
 
+export const DEFAULT_CHAT_MODEL_TIMEOUT_MS = 45_000;
+
+/**
+ * SPEC: chat 调用模型时的超时预算，毫秒。
+ * INTENT: chat 解析成 `CHAT_MODEL_TIMEOUT_MS ?? 45s`，而 main 的 probe-chat-model
+ * 解析成 `CHAT_MODEL_TIMEOUT_MS ?? PIPELINE_TIMEOUT_MS ?? 60s` —— 多一级回退、
+ * 默认值也更大。于是探针会给一次 50s 的响应打绿灯，而 chat 在生产里早把它超时掉了：
+ * 一份"模型健康"的报告，说的却不是生产的行为。探针必须用生产的预算，所以两边共用
+ * 这一个解析。与 mainWebUrlOrigin 同样的理由：同一个基准、同一套归一化、一处定义。
+ */
+export function chatModelTimeoutMs(
+  raw: string | undefined = process.env.CHAT_MODEL_TIMEOUT_MS,
+): number {
+  const parsed = Number.parseInt(raw ?? String(DEFAULT_CHAT_MODEL_TIMEOUT_MS), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_CHAT_MODEL_TIMEOUT_MS;
+}
+
 export const DEFAULT_MODERATION_PROVIDER = "mock";
 export const moderationProviderSchema = z.enum(["mock", "pipeline", "safety-gateway"]);
 export const DEFAULT_MODERATION_TIMEOUT_MS = 5_000;
