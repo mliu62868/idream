@@ -17,9 +17,9 @@ import {
 
 // SPEC: 角色创建模板库（特性 B）。模板是"创建脚手架"——前台选完即与已建角色脱钩，
 //       不做继承/版本逻辑。admin 读写按 content.* 权限授权；前台只读公开 active 列表。
-// INTENT: 单一文件聚合 service handler，接缝由编排者统一接到 admin/public dispatch。
+// INTENT: 单一文件聚合 admin service handler，接缝由编排者统一接到 admin dispatch。
+//         前台公开只读投影不住这里 —— 见 ourdream/character-templates.ts。
 // INVARIANTS: 落库前文本字段必须过 moderateText("...","input")，blocked → 403。
-//             listActiveTemplates 不要求 admin 权限（公开只读，仅返回 isActive）。
 
 const TARGET_TYPE = "character_template";
 
@@ -244,24 +244,4 @@ export async function setTemplateActive(request: Request, id: string): Promise<R
   });
 
   return ok({ template });
-}
-
-// GET /api/v1/character-templates — 前台公开只读：仅 active，按 sortOrder。无 admin 权限要求。
-export async function listActiveTemplates(): Promise<Response> {
-  const items = await prisma.characterTemplate.findMany({
-    where: { isActive: true },
-    orderBy: { sortOrder: "asc" },
-    select: {
-      id: true,
-      name: true,
-      summary: true,
-      gender: true,
-      style: true,
-      appearance: true,
-      advancedDetails: true,
-      tags: true,
-      coverAssetId: true,
-    },
-  });
-  return ok({ items });
 }

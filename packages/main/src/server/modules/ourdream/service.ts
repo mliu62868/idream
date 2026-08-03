@@ -17,7 +17,7 @@ import {
 import { parseCharacterReleaseAssetManifest } from "@idream/shared/admin";
 import { assignWorkflowReferenceSlots } from "@idream/shared/gen-workflow";
 import { resolveLocalBlobPath, resolveLocalBlobRoot } from "@idream/shared/storage/local-blob";
-import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
@@ -56,12 +56,29 @@ import {
   resumeSubscription,
 } from "./billing-checkout";
 import {
+  activeSubscriptionWhere,
+  billingAccessDTO,
+  entitlementMap,
+  publicSubscriptionDTO,
+} from "./subscription-lifecycle";
+import {
+  community,
+  communityFollowedCreatorIds,
+  creatorProfile,
+  feed,
+  feedCharacterId,
+  feedCollectionId,
+  feedPublicCharacterByItemId,
+  followUser,
+  unfollowUser,
+} from "./discovery";
+import {
   ensureReviewCaseForAppeal,
   ensureReviewCaseForReport,
   ensureSupportCaseForRequest,
 } from "@/server/modules/admin-v2/cases/service";
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
-import { listActiveTemplates } from "@/server/modules/admin/characters/templates";
+import { listActiveTemplates } from "./character-templates";
 import {
   IDENTITY_ASSEMBLER_VERSION,
   assembleIdentityPrompt,
@@ -92,11 +109,7 @@ import {
 } from "@/processes/chat-outbox";
 import { appendCanonicalMetricEvent } from "@/server/modules/admin-v2/metrics/event-writer";
 import { createClassifiedAnalyticsEvent } from "@/server/modules/admin-v2/metrics/classified-event-writer";
-import {
-  ExperimentRuntimeError,
-  assignExperiment,
-  recordExperimentExposure,
-} from "@/server/modules/admin-v2/experiments/runtime";
+import { recordExperimentExposure } from "@/server/modules/admin-v2/experiments/runtime";
 import {
   dreamcoinBalance,
   postDreamcoinEntry,
@@ -146,7 +159,6 @@ import {
 } from "@/server/lib/user-data-provenance";
 import { empty, fail, ok } from "@/server/lib/http";
 import { getOurdreamRoute, ourdreamRoutePaths } from "@/lib/ourdream-data";
-import { billingPeriodEnd } from "@/lib/billing-period";
 import { isPublicRouteDiscoverable } from "@/lib/public-route-authority";
 import { activeAnnouncements, readAnnouncements } from "@/server/announcements/store";
 import { logger } from "@/server/lib/logger";
@@ -155,7 +167,6 @@ import {
   redeemCodeHashCandidates,
 } from "@/server/lib/redeem-codes";
 import { providers } from "@/server/providers";
-import { paymentProviderCapabilities } from "@/server/providers/payment/capabilities";
 import type { OurdreamRoute, OurdreamRouteTemplate } from "@/types/ourdream";
 import {
   dimensionsForImageOrientation,
@@ -163,24 +174,14 @@ import {
   normalizeImageOrientation,
 } from "./generation-dimensions";
 import {
-  issueExposureContext,
+  metricExposureSubject,
   verifyExposureContext,
-  type ExposureSubject,
 } from "./exposure-context";
-import {
-  parseCommunityCampaignAuthoredCopy,
-  resolveCommunityCampaignPlacements,
-} from "./community-campaigns";
 import { createVoiceClip as createDurableVoiceClip } from "./voice-clip";
-import {
-  FEATURED_SETTING_KEY,
-  parseFeaturedSetting,
-} from "./featured-setting";
 import {
   activeCustomerUserWhere,
   nonSyntheticMediaAssetWhere,
   publicCharacterAudienceWhere,
-  publicCollectionAudienceWhere,
   publicFeedbackAudienceWhere,
   publicReadableMediaAssetWhere,
   resolvePublicCharacterReleaseAssetPack,
@@ -192,7 +193,6 @@ const generationOrientations = [...imageOrientations, "2:3"] as [
 ];
 
 type ApiMethod = "GET" | "POST" | "PATCH" | "DELETE" | "PUT";
-type JsonRecord = Record<string, Prisma.JsonValue>;
 type SearchRouteSuggestion = {
   description: string;
   href: string;
@@ -373,32 +373,6 @@ const mediaCollectionUpdateSchema = z.object({
 
 const mediaCollectionItemSchema = z.object({
   mediaAssetId: z.string(),
-});
-
-export const checkoutSchema = z.object({
-  planId: z.string().optional(),
-  slug: z.enum(["premium", "deluxe"]).optional(),
-  billingPeriod: z.enum(["monthly", "yearly"]).default("monthly"),
-  returnPath: z
-    .string()
-    .max(240)
-    .refine((value) => value.startsWith("/") && !value.startsWith("//"), {
-      message: "returnPath must be an internal path",
-    })
-    .default("/profile"),
-  autoConfirm: z.boolean().default(true),
-});
-
-export const checkoutOfferSnapshotSchema = z.object({
-  version: z.literal(1),
-  planId: z.string().min(1),
-  slug: z.string().min(1),
-  name: z.string().min(1),
-  billingPeriod: z.enum(["monthly", "yearly"]),
-  priceCents: z.number().int().nonnegative(),
-  currency: z.string().min(1),
-  includedDreamcoins: z.number().int().nonnegative(),
-  features: z.record(z.string(), z.unknown()),
 });
 
 const reportSchema = z.object({
@@ -4718,7 +4692,7 @@ async function listMedia(request: Request) {
   });
 }
 
-function mediaCollectionInclude(publicOnly = false) {
+export function mediaCollectionInclude(publicOnly = false) {
   const mediaAssetWhere: Prisma.MediaAssetWhereInput = {
     deletedAt: null,
     safetyStatus: "passed",
@@ -4759,7 +4733,7 @@ function mediaCollectionInclude(publicOnly = false) {
   } satisfies Prisma.MediaCollectionInclude;
 }
 
-type MediaCollectionWithRelations = Prisma.MediaCollectionGetPayload<{
+export type MediaCollectionWithRelations = Prisma.MediaCollectionGetPayload<{
   include: ReturnType<typeof mediaCollectionInclude>;
 }>;
 
@@ -6342,7 +6316,7 @@ async function deleteRequest(request: Request) {
   return response;
 }
 
-async function submitReport(
+export async function submitReport(
   request: Request,
   preset?: { targetType: string; targetId: string },
 ) {
@@ -6744,939 +6718,6 @@ function feedbackItemDTO(item: ProductFeedbackItemRow, votedIds: Set<string>) {
     createdAt: item.createdAt.toISOString(),
     updatedAt: item.updatedAt.toISOString(),
   };
-}
-
-async function feed(request: Request, segments: string[]) {
-  const ctx = await getAuthCtx(request);
-  requireAgeGate(ctx);
-  const [, action, itemId, subAction] = segments;
-  if (request.method === "GET") {
-    // 运营策展：feed.featured（AppSetting）里仍 public+approved 的角色仅在首页置顶；
-    // recent public collections are interleaved on the first page so Feed is not just a catalog mirror.
-    const url = new URL(request.url);
-    const limit = clampInt(url.searchParams.get("limit"), 1, 60, 20);
-    const cursorState = decodeFeedCursor(url.searchParams.get("cursor"));
-    const requestedScopeItemId = feedScopeItemId(url.searchParams.get("item"));
-    if (
-      cursorState &&
-      requestedScopeItemId &&
-      cursorState.scopeItemId !== requestedScopeItemId
-    ) {
-      throw Errors.badRequest("Feed cursor does not match the requested item");
-    }
-    const requestedItemId =
-      cursorState?.scopeItemId ?? requestedScopeItemId;
-    const publicWhere = publicCharacterAudienceWhere;
-
-    if (cursorState) {
-      const stablePage = await prisma.character.findMany({
-        where: {
-          AND: [
-            publicWhere,
-            { createdAt: { lte: cursorState.snapshotAt } },
-            cursorState.excludedCharacterIds.length > 0
-              ? { id: { notIn: cursorState.excludedCharacterIds } }
-              : {},
-            cursorState.lastCreatedAt && cursorState.lastId
-              ? {
-                  OR: [
-                    { createdAt: { lt: cursorState.lastCreatedAt } },
-                    {
-                      createdAt: cursorState.lastCreatedAt,
-                      id: { lt: cursorState.lastId },
-                    },
-                  ],
-                }
-              : {},
-          ],
-        },
-        include: characterInclude(ctx.userId),
-        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-        take: limit + 1,
-      });
-      const page = stablePage.slice(0, limit);
-      const lastCharacter = page.at(-1);
-      return ok({
-        items: page.map(feedCharacterItemDTO),
-        focusedItemId: null,
-        nextCursor:
-          stablePage.length > limit && lastCharacter
-            ? encodeFeedCursor({
-                scopeItemId: cursorState.scopeItemId,
-                snapshotAt: cursorState.snapshotAt,
-                expiresAt: cursorState.expiresAt,
-                excludedCharacterIds: cursorState.excludedCharacterIds,
-                lastCreatedAt: lastCharacter.createdAt,
-                lastId: lastCharacter.id,
-              })
-            : null,
-      });
-    }
-
-    const snapshotAt = new Date();
-    const focusedCharacterId = requestedItemId ? feedCharacterId(requestedItemId) : null;
-    const focusedCollectionId = requestedItemId ? feedCollectionId(requestedItemId) : null;
-    const snapshotPublicWhere = {
-      AND: [publicWhere, { createdAt: { lte: snapshotAt } }],
-    } satisfies Prisma.CharacterWhereInput;
-    const [featuredSetting, focusedCharacter, focusedCollection] = await Promise.all([
-      prisma.appSetting.findUnique({
-        where: { key: FEATURED_SETTING_KEY },
-      }),
-      focusedCharacterId
-        ? prisma.character.findFirst({
-            where: { AND: [snapshotPublicWhere, { id: focusedCharacterId }] },
-            include: characterInclude(ctx.userId),
-          })
-        : null,
-      focusedCollectionId
-        ? prisma.mediaCollection.findFirst({
-            where: {
-              AND: [
-                feedPublicCollectionWhere([], focusedCollectionId),
-                { createdAt: { lte: snapshotAt } },
-              ],
-            },
-            include: mediaCollectionInclude(true),
-          })
-        : null,
-    ]);
-    const focusedItem = focusedCharacter
-      ? feedCharacterItemDTO(focusedCharacter)
-      : focusedCollection
-        ? feedCollectionItemDTO(focusedCollection)
-        : null;
-    const focusedItemSlotCount = focusedItem ? 1 : 0;
-    const collectionLimit = Math.min(
-      2,
-      Math.floor(limit / 4),
-      Math.max(0, limit - focusedItemSlotCount),
-    );
-    const characterBudget = Math.max(
-      0,
-      limit - focusedItemSlotCount - collectionLimit,
-    );
-    const featuredIds = parseFeaturedSetting(featuredSetting?.value).characterIds;
-    // Keep at least one live-ranked character in a character-bearing first page.
-    // The immutable continuation cursor owns every first-page exclusion, so later
-    // requests never recalculate this budget when the client changes `limit`.
-    const maxPinnedFeatured = Math.max(0, characterBudget - 1);
-    const pinnedFeaturedIds = [
-      ...new Set(featuredIds.filter((id) => id !== focusedCharacter?.id)),
-    ].slice(0, maxPinnedFeatured);
-    const excludedFirstQueryIds = [
-      ...new Set(
-        [...pinnedFeaturedIds, focusedCharacter?.id].filter(
-          (id): id is string => Boolean(id),
-        ),
-      ),
-    ];
-    const [popular, featured, recentCollections, publicCharacterCount] = await Promise.all([
-      prisma.character.findMany({
-        where: {
-          AND: [
-            snapshotPublicWhere,
-            excludedFirstQueryIds.length > 0
-              ? { id: { notIn: excludedFirstQueryIds } }
-              : {},
-          ],
-        },
-        include: characterInclude(ctx.userId),
-        orderBy: [{ stats: { chatsCount: "desc" } }, { createdAt: "desc" }, { id: "desc" }],
-        take: characterBudget + 1,
-      }),
-      pinnedFeaturedIds.length > 0
-        ? prisma.character.findMany({
-            where: {
-              AND: [
-                snapshotPublicWhere,
-                { id: { in: pinnedFeaturedIds } },
-              ],
-            },
-            include: characterInclude(ctx.userId),
-          })
-        : [],
-      collectionLimit > 0
-        ? prisma.mediaCollection.findMany({
-            where: {
-              AND: [
-                feedPublicCollectionWhere(
-                  focusedCollection ? [focusedCollection.id] : [],
-                ),
-                { createdAt: { lte: snapshotAt } },
-              ],
-            },
-            include: mediaCollectionInclude(true),
-            orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-            take: collectionLimit,
-          })
-        : [],
-      prisma.character.count({ where: snapshotPublicWhere }),
-    ]);
-    const featuredById = new Map(featured.map((character) => [character.id, character]));
-    const orderedFeatured = pinnedFeaturedIds
-      .map((id) => featuredById.get(id))
-      .filter((character): character is (typeof featured)[number] => character !== undefined)
-      .slice(0, characterBudget);
-    const popularPage = popular.slice(
-      0,
-      Math.max(0, characterBudget - orderedFeatured.length),
-    );
-    const characterItems = [...orderedFeatured, ...popularPage].map(feedCharacterItemDTO);
-    const collectionItems = recentCollections.map(feedCollectionItemDTO);
-    const items = [
-      ...(focusedItem ? [focusedItem] : []),
-      ...interleaveFeedItems(characterItems, collectionItems),
-    ];
-    const renderedCharacterIds = [
-      ...new Set(
-        items.flatMap((item) =>
-          item.type === "character" ? [item.character.id] : [],
-        ),
-      ),
-    ];
-    return ok({
-      items,
-      focusedItemId: focusedItem?.id ?? null,
-      nextCursor:
-        publicCharacterCount > renderedCharacterIds.length
-          ? encodeFeedCursor({
-              scopeItemId: requestedScopeItemId,
-              snapshotAt,
-              expiresAt: new Date(snapshotAt.getTime() + FEED_CURSOR_TTL_MS),
-              excludedCharacterIds: renderedCharacterIds,
-              lastCreatedAt: null,
-              lastId: null,
-            })
-          : null,
-    });
-  }
-  if (request.method === "POST" && action === "restart") return ok({ cursor: null });
-  if (action === "items" && itemId && subAction === "like") {
-    const character = await feedPublicCharacterByItemId(itemId);
-    if (!character) throw Errors.notFound("Feed item not found");
-    const characterId = character.id;
-    if (request.method === "POST") {
-      const user = requireUser(ctx);
-      const countsAsEngagement = await isCustomerEngagementActor(user.id);
-      // 幂等且并发安全：只有真正插入 like 行的请求才推进统计。
-      const createdCount = await prisma.$transaction(async (tx) => {
-        const created = await tx.characterLike.createMany({
-          data: [{ userId: user.id, characterId }],
-          skipDuplicates: true,
-        });
-        if (created.count > 0 && countsAsEngagement) {
-          await tx.characterStats.upsert({
-            where: { characterId },
-            update: { likesCount: { increment: 1 } },
-            create: { characterId, likesCount: 1 },
-          });
-        }
-        return created.count;
-      });
-      if (createdCount > 0) {
-        await trackEvent("feed_item_liked", { itemId }, ctx);
-      }
-      return ok({ liked: true });
-    }
-    if (request.method === "DELETE") {
-      const user = requireUser(ctx);
-      const countsAsEngagement = await isCustomerEngagementActor(user.id);
-      // 对称：仅当确实删除了一行 like 才 -1，且永不低于 0。
-      const removed = await prisma.characterLike.deleteMany({
-        where: { userId: user.id, characterId },
-      });
-      if (removed.count > 0 && countsAsEngagement) {
-        await prisma.characterStats.updateMany({
-          where: { characterId, likesCount: { gt: 0 } },
-          data: { likesCount: { decrement: 1 } },
-        });
-      }
-      return ok({ liked: false });
-    }
-  }
-  if (request.method === "POST" && action === "items" && itemId && subAction === "remix") {
-    const character = await feedPublicCharacterByItemId(itemId);
-    if (!character) throw Errors.notFound("Feed item not found");
-    const characterId = character.id;
-    await trackEvent("feed_item_remixed", { itemId, characterId }, ctx);
-    const params = new URLSearchParams({
-      characterId,
-      remixFeedItemId: `character:${characterId}`,
-    });
-    return ok({
-      remixUrl: `/generate?${params.toString()}`,
-      characterId,
-      remixFeedItemId: `character:${characterId}`,
-    });
-  }
-  if (request.method === "POST" && action === "items" && itemId && subAction === "share") {
-    const canonicalItemId = await canonicalPublicFeedItemId(itemId);
-    if (!canonicalItemId) throw Errors.notFound("Feed item not found");
-    await trackEvent("feed_item_shared", { itemId: canonicalItemId }, ctx);
-    return ok({ shareUrl: `/feed?item=${encodeURIComponent(canonicalItemId)}` });
-  }
-  if (request.method === "POST" && action === "items" && itemId && subAction === "report") {
-    return submitReport(request, {
-      targetType: "feed_item",
-      targetId: (await canonicalPublicFeedItemId(itemId)) ?? itemId,
-    });
-  }
-  throw Errors.notFound("Feed route not found", {
-    path: `/${segments.join("/")}`,
-  });
-}
-
-function feedCharacterId(itemId: string) {
-  let decoded = itemId;
-  try {
-    decoded = decodeURIComponent(itemId);
-  } catch {
-    return null;
-  }
-  return decoded.startsWith("character:") ? decoded.slice("character:".length) : null;
-}
-
-function feedScopeItemId(value: string | null) {
-  if (value === null) return null;
-  const normalized = value.trim();
-  if (normalized.length === 0) return null;
-  const isCharacter =
-    normalized.startsWith("character:") &&
-    normalized.length > "character:".length;
-  const isCollection =
-    normalized.startsWith("collection:") &&
-    normalized.length > "collection:".length;
-  if (normalized.length > 512 || (!isCharacter && !isCollection)) {
-    throw Errors.badRequest("Invalid Feed item scope");
-  }
-  return normalized;
-}
-
-type FeedCursorState = {
-  scopeItemId: string | null;
-  snapshotAt: Date;
-  expiresAt: Date;
-  excludedCharacterIds: string[];
-  lastCreatedAt: Date | null;
-  lastId: string | null;
-};
-
-const FEED_CURSOR_TTL_MS = 30 * 60 * 1_000;
-
-function decodeFeedCursor(value: string | null): FeedCursorState | null {
-  if (!value) return null;
-  if (value.length > 8_192) {
-    throw Errors.badRequest("Invalid or expired Feed cursor");
-  }
-  try {
-    const [encodedPayload, suppliedSignature, extra] = value.split(".");
-    if (!encodedPayload || !suppliedSignature || extra) {
-      throw Errors.badRequest("Invalid or expired Feed cursor");
-    }
-    const expected = Buffer.from(feedCursorSignature(encodedPayload));
-    const supplied = Buffer.from(suppliedSignature);
-    if (
-      expected.length !== supplied.length ||
-      !timingSafeEqual(expected, supplied)
-    ) {
-      throw Errors.badRequest("Invalid or expired Feed cursor");
-    }
-    const decoded: unknown = JSON.parse(
-      Buffer.from(encodedPayload, "base64url").toString("utf8"),
-    );
-    if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) {
-      throw Errors.badRequest("Invalid or expired Feed cursor");
-    }
-    const candidate = decoded as Record<string, unknown>;
-    if (candidate.v !== 2) {
-      throw Errors.badRequest("Invalid or expired Feed cursor");
-    }
-    const scopeItemId =
-      candidate.scopeItemId === null
-        ? null
-        : typeof candidate.scopeItemId === "string" &&
-            candidate.scopeItemId.length > 0 &&
-            candidate.scopeItemId.length <= 512
-        ? feedScopeItemId(candidate.scopeItemId)
-        : undefined;
-    const snapshotAt =
-      typeof candidate.snapshotAt === "string"
-        ? new Date(candidate.snapshotAt)
-        : new Date(Number.NaN);
-    const expiresAt =
-      typeof candidate.expiresAt === "string"
-        ? new Date(candidate.expiresAt)
-        : new Date(Number.NaN);
-    const lastCreatedAt =
-      candidate.lastCreatedAt === null
-        ? null
-        : typeof candidate.lastCreatedAt === "string"
-          ? new Date(candidate.lastCreatedAt)
-          : new Date(Number.NaN);
-    const lastId =
-      candidate.lastId === null
-        ? null
-        : typeof candidate.lastId === "string" &&
-            candidate.lastId.length > 0 &&
-            candidate.lastId.length <= 512
-          ? candidate.lastId
-          : undefined;
-    const excludedCharacterIds = Array.isArray(candidate.excludedCharacterIds)
-      ? candidate.excludedCharacterIds
-      : null;
-    if (
-      scopeItemId === undefined ||
-      !Number.isFinite(snapshotAt.getTime()) ||
-      snapshotAt.getTime() > Date.now() + 60_000 ||
-      !Number.isFinite(expiresAt.getTime()) ||
-      expiresAt <= snapshotAt ||
-      expiresAt.getTime() - snapshotAt.getTime() > FEED_CURSOR_TTL_MS ||
-      !excludedCharacterIds ||
-      excludedCharacterIds.length > 60 ||
-      excludedCharacterIds.some(
-        (id) => typeof id !== "string" || id.length === 0 || id.length > 512,
-      ) ||
-      new Set(excludedCharacterIds).size !== excludedCharacterIds.length ||
-      lastId === undefined ||
-      !Number.isFinite(lastCreatedAt?.getTime() ?? snapshotAt.getTime()) ||
-      (lastCreatedAt === null) !== (lastId === null) ||
-      (lastCreatedAt !== null && lastCreatedAt > snapshotAt)
-    ) {
-      throw Errors.badRequest("Invalid or expired Feed cursor");
-    }
-    if (expiresAt.getTime() <= Date.now()) {
-      throw Errors.gone("Feed cursor expired; refresh the Feed");
-    }
-    return {
-      scopeItemId,
-      snapshotAt,
-      expiresAt,
-      excludedCharacterIds: excludedCharacterIds as string[],
-      lastCreatedAt,
-      lastId,
-    };
-  } catch (error) {
-    if (error instanceof AppError) throw error;
-    throw Errors.badRequest("Invalid or expired Feed cursor");
-  }
-}
-
-function encodeFeedCursor(state: {
-  scopeItemId: string | null;
-  snapshotAt: Date;
-  expiresAt: Date;
-  excludedCharacterIds: string[];
-  lastCreatedAt: Date | null;
-  lastId: string | null;
-}) {
-  const encodedPayload = Buffer.from(
-    JSON.stringify({
-      v: 2,
-      scopeItemId: state.scopeItemId,
-      snapshotAt: state.snapshotAt.toISOString(),
-      expiresAt: state.expiresAt.toISOString(),
-      excludedCharacterIds: state.excludedCharacterIds,
-      lastCreatedAt: state.lastCreatedAt?.toISOString() ?? null,
-      lastId: state.lastId,
-    }),
-    "utf8",
-  ).toString("base64url");
-  return `${encodedPayload}.${feedCursorSignature(encodedPayload)}`;
-}
-
-function feedCursorSignature(encodedPayload: string) {
-  return createHmac("sha256", env.INTERNAL_TOKEN)
-    .update(`feed-pagination-v2\n${encodedPayload}`)
-    .digest("base64url");
-}
-
-async function feedPublicCharacterByItemId(itemId: string) {
-  const characterId = feedCharacterId(itemId);
-  if (!characterId) return null;
-  return prisma.character.findFirst({
-    where: {
-      AND: [
-        publicCharacterAudienceWhere,
-        { id: characterId },
-      ],
-    },
-    select: {
-      id: true,
-      creatorId: true,
-      name: true,
-    },
-  });
-}
-
-function feedCollectionId(itemId: string) {
-  let decoded = itemId;
-  try {
-    decoded = decodeURIComponent(itemId);
-  } catch {
-    return null;
-  }
-  return decoded.startsWith("collection:") ? decoded.slice("collection:".length) : null;
-}
-
-function feedPublicCollectionWhere(excludedIds: string[] = [], id?: string) {
-  const idFilter = id ? { id } : excludedIds.length > 0 ? { id: { notIn: excludedIds } } : {};
-  return {
-    AND: [
-      publicCollectionAudienceWhere,
-      idFilter,
-      {
-        items: {
-          some: {
-            mediaAsset: {
-              deletedAt: null,
-              safetyStatus: "passed",
-              visibility: { in: ["public_pack", "unlisted"] },
-            },
-          },
-        },
-      },
-    ],
-  } satisfies Prisma.MediaCollectionWhereInput;
-}
-
-async function canonicalPublicFeedItemId(itemId: string) {
-  const character = await feedPublicCharacterByItemId(itemId);
-  if (character) return `character:${character.id}`;
-
-  const collectionId = feedCollectionId(itemId);
-  if (!collectionId) return null;
-  const collection = await prisma.mediaCollection.findFirst({
-    where: feedPublicCollectionWhere([], collectionId),
-    select: { id: true },
-  });
-  return collection ? `collection:${collection.id}` : null;
-}
-
-function feedCharacterItemDTO(character: CharacterWithPublicRelations) {
-  return {
-    id: `character:${character.id}`,
-    type: "character" as const,
-    character: characterDTO(character),
-  };
-}
-
-function feedCollectionItemDTO(collection: MediaCollectionWithRelations) {
-  return {
-    id: `collection:${collection.id}`,
-    type: "collection" as const,
-    collection: mediaCollectionDTO(collection),
-  };
-}
-
-function interleaveFeedItems<T, U>(primary: T[], secondary: U[]) {
-  const items: Array<T | U> = [];
-  let secondaryIndex = 0;
-  primary.forEach((item, index) => {
-    items.push(item);
-    if ((index + 1) % 3 === 0 && secondaryIndex < secondary.length) {
-      items.push(secondary[secondaryIndex]);
-      secondaryIndex += 1;
-    }
-  });
-  while (secondaryIndex < secondary.length) {
-    items.push(secondary[secondaryIndex]);
-    secondaryIndex += 1;
-  }
-  return items;
-}
-
-async function community(request: Request, segments: string[]) {
-  const ctx = await getAuthCtx(request);
-  requireAgeGate(ctx);
-  const [, view] = segments;
-  const url = new URL(request.url);
-
-  if (view === "collections") {
-    const focusedCollectionId = url.searchParams.get("collection")?.trim() ?? "";
-    const [recentCollections, focusedCollection] = await Promise.all([
-      prisma.mediaCollection.findMany({
-        where: publicCollectionAudienceWhere,
-        include: mediaCollectionInclude(true),
-        orderBy: { createdAt: "desc" },
-        take: 20,
-      }),
-      focusedCollectionId
-        ? prisma.mediaCollection.findFirst({
-            where: {
-              AND: [
-                publicCollectionAudienceWhere,
-                { id: focusedCollectionId },
-              ],
-            },
-            include: mediaCollectionInclude(true),
-          })
-        : Promise.resolve(null),
-    ]);
-    const collections =
-      focusedCollection &&
-      !recentCollections.some((collection) => collection.id === focusedCollection.id)
-        ? [...recentCollections, focusedCollection]
-        : recentCollections;
-    return ok({ collections: collections.map(mediaCollectionDTO) });
-  }
-
-  if (view === "campaigns") {
-    const campaigns = await resolveCommunityCampaignPlacements(prisma);
-    return ok({
-      campaigns: campaigns.flatMap((placement) => {
-        const campaign = communityCampaignDTO(placement);
-        return campaign ? [campaign] : [];
-      }),
-    });
-  }
-
-  const exposureSubject = metricExposureSubject(ctx.userId, ctx.anonymousId);
-  let rankingAssignment: Awaited<ReturnType<typeof assignExperiment>> | null = null;
-  if (exposureSubject) {
-    try {
-      rankingAssignment = await assignExperiment(prisma, "community.character-ranking.v1", {
-        subjectType: exposureSubject.subjectType,
-        subjectId: exposureSubject.subjectId,
-        eligibilitySnapshot: { surface: "community.leaderboard" },
-      });
-    } catch (error) {
-      if (!(error instanceof ExperimentRuntimeError) || error.code !== "definition_not_running") throw error;
-    }
-  }
-  const publicCharacterWhere = publicCharacterAudienceWhere;
-  const followedCreatorIds = ctx.userId ? await communityFollowedCreatorIds(ctx.userId) : [];
-  const [characters, topDreamerRows, followedDreamerRows] = await Promise.all([
-    prisma.character.findMany({
-      where: {
-        ...publicCharacterWhere,
-        gender: url.searchParams.get("gender") ?? undefined,
-        style: url.searchParams.get("style") ?? undefined,
-        createdAt:
-          url.searchParams.get("release") === "30d"
-            ? { gte: new Date(Date.now() - 1000 * 60 * 60 * 24 * 30) }
-            : undefined,
-      },
-      include: characterInclude(ctx.userId),
-      orderBy: [{ stats: { likesCount: "desc" } }],
-      take: 20,
-    }),
-    communityDreamerRows(),
-    followedCreatorIds.length
-      ? communityDreamerRows({ creatorIds: followedCreatorIds, limit: followedCreatorIds.length })
-      : Promise.resolve([]),
-  ]);
-  const rankedCharacters = rankingAssignment?.status === "assigned" && rankingAssignment.variant === "relationship_first"
-    ? [...characters].sort((left, right) =>
-        (right.stats?.chatsCount ?? 0) - (left.stats?.chatsCount ?? 0) ||
-        (right.stats?.likesCount ?? 0) - (left.stats?.likesCount ?? 0) ||
-        left.id.localeCompare(right.id),
-      )
-    : characters;
-  const dreamerRows = mergeCommunityDreamerRows(followedDreamerRows, topDreamerRows);
-  const followingIds = new Set(followedCreatorIds);
-  const dreamers = dreamerRows.map((dreamer) => ({
-    id: dreamer.id,
-    displayName: dreamer.displayName,
-    image: dreamer.image,
-    characters: numberFromDb(dreamer.characters),
-    followers: numberFromDb(dreamer.followers),
-    likes: formatCount(numberFromDb(dreamer.likes)),
-    chats: formatCount(numberFromDb(dreamer.chats)),
-    likesCount: numberFromDb(dreamer.likes),
-    chatsCount: numberFromDb(dreamer.chats),
-    isFollowing: followingIds.has(dreamer.id),
-  }));
-  const exposureJourneyId = `community-journey-${cryptoRandomId("journey")}`;
-  return ok({
-    leaderboards: {
-      characters: rankedCharacters.map((character) => ({
-        ...characterDTO(character, ctx.userId),
-        exposureContext: exposureSubject && character.serving?.state === "live" &&
-          character.serving.currentRelease?.status === "published"
-          ? issueExposureContext({
-              ...exposureSubject,
-              characterId: character.id,
-              characterContentVersionId: character.serving.currentRelease.characterContentVersionId,
-              characterReleaseId: character.serving.currentRelease.id,
-              servingVersion: character.serving.version,
-              placementId: "community.leaderboard",
-              journeyId: exposureJourneyId,
-            }, env.BETTER_AUTH_SECRET)
-          : null,
-      })),
-      dreamers,
-      collections: [],
-    },
-    experimentAssignment: rankingAssignment?.status === "assigned" &&
-      rankingAssignment.assignmentId &&
-      (rankingAssignment.variant === "control" || rankingAssignment.variant === "relationship_first")
-      ? {
-          assignmentId: rankingAssignment.assignmentId,
-          variant: rankingAssignment.variant,
-          exposureId: `experiment-exposure-${cryptoRandomId("community-ranking")}`,
-          surface: "community.leaderboard",
-        }
-      : null,
-  });
-}
-
-function metricExposureSubject(
-  userId: string | null | undefined,
-  anonymousId: string | null | undefined,
-): ExposureSubject | null {
-  if (userId) return { subjectType: "user", subjectId: userId };
-  if (anonymousId) return { subjectType: "anonymous", subjectId: anonymousId };
-  return null;
-}
-
-type CommunityCampaignPlacement = Prisma.MediaAssetPlacementGetPayload<{
-  include: { mediaAsset: true };
-}>;
-
-function communityCampaignDTO(placement: CommunityCampaignPlacement) {
-  const copy = parseCommunityCampaignAuthoredCopy(placement.metadata);
-  if (!copy) return null;
-  const image = placement.mediaAsset.storageKey
-    ? mediaViewUrl(placement.mediaAsset)
-    : (placement.mediaAsset.thumbnailUrl ?? placement.mediaAsset.url);
-  return {
-    id: placement.id,
-    eyebrow: copy.eyebrow,
-    title: copy.title,
-    ctaLabel: copy.ctaLabel,
-    href: copy.href,
-    image,
-    source: "authority" as const,
-  };
-}
-
-type CommunityDreamerRow = {
-  id: string;
-  displayName: string;
-  image: string | null;
-  characters: number | bigint;
-  followers: number | bigint;
-  likes: number | bigint;
-  chats: number | bigint;
-};
-
-async function communityFollowedCreatorIds(userId: string) {
-  const rows = await prisma.follow.findMany({
-    where: { followerId: userId },
-    orderBy: { createdAt: "desc" },
-    select: { followeeId: true },
-  });
-  return rows.map((row) => row.followeeId);
-}
-
-function mergeCommunityDreamerRows(...groups: CommunityDreamerRow[][]) {
-  const rows: CommunityDreamerRow[] = [];
-  const seen = new Set<string>();
-  for (const group of groups) {
-    for (const row of group) {
-      if (seen.has(row.id)) continue;
-      seen.add(row.id);
-      rows.push(row);
-      if (rows.length >= 20) return rows;
-    }
-  }
-  return rows;
-}
-
-async function communityDreamerRows(options: { creatorIds?: string[]; limit?: number } = {}) {
-  const limit = Math.max(1, Math.min(options.limit ?? 20, 40));
-  const creators = await prisma.user.findMany({
-    where: {
-      ...activeCustomerUserWhere,
-      ...(options.creatorIds?.length
-        ? { id: { in: options.creatorIds } }
-        : {}),
-      charactersCreated: { some: publicCharacterAudienceWhere },
-    },
-    select: {
-      id: true,
-      displayName: true,
-      name: true,
-      image: true,
-      createdAt: true,
-      charactersCreated: {
-        where: publicCharacterAudienceWhere,
-        select: {
-          stats: {
-            select: {
-              likesCount: true,
-              chatsCount: true,
-            },
-          },
-        },
-      },
-      _count: {
-        select: {
-          followers: {
-            where: {
-              follower: {
-                is: activeCustomerUserWhere,
-              },
-            },
-          },
-        },
-      },
-    },
-  });
-  return creators
-    .map((creator) => {
-      const totals = creator.charactersCreated.reduce(
-        (sum, character) => ({
-          likes: sum.likes + (character.stats?.likesCount ?? 0),
-          chats: sum.chats + (character.stats?.chatsCount ?? 0),
-        }),
-        { likes: 0, chats: 0 },
-      );
-      return {
-        id: creator.id,
-        displayName: creator.displayName ?? creator.name ?? "Dreamer",
-        image: creator.image,
-        characters: creator.charactersCreated.length,
-        followers: creator._count.followers,
-        likes: totals.likes,
-        chats: totals.chats,
-        createdAt: creator.createdAt,
-      };
-    })
-    .sort((left, right) =>
-      (right.likes + right.chats) - (left.likes + left.chats) ||
-      right.characters - left.characters ||
-      right.createdAt.getTime() - left.createdAt.getTime()
-    )
-    .slice(0, limit)
-    .map((creator): CommunityDreamerRow => ({
-      id: creator.id,
-      displayName: creator.displayName,
-      image: creator.image,
-      characters: creator.characters,
-      followers: creator.followers,
-      likes: creator.likes,
-      chats: creator.chats,
-    }));
-}
-
-async function followUser(request: Request, targetId: string) {
-  const ctx = await getAuthCtx(request);
-  const user = requireUser(ctx);
-  if (targetId === user.id) throw Errors.badRequest("Cannot follow yourself");
-  const target = await prisma.user.findFirst({
-    where: {
-      id: targetId,
-      ...activeCustomerUserWhere,
-      charactersCreated: { some: publicCharacterAudienceWhere },
-    },
-  });
-  if (!target) throw Errors.notFound("User not found");
-  await prisma.follow.upsert({
-    where: { followerId_followeeId: { followerId: user.id, followeeId: targetId } },
-    update: {},
-    create: { followerId: user.id, followeeId: targetId },
-  });
-  return ok({
-    following: true,
-    followers: await activeFollowerCount(targetId),
-  });
-}
-
-async function unfollowUser(request: Request, targetId: string) {
-  const ctx = await getAuthCtx(request);
-  const user = requireUser(ctx);
-  await prisma.follow.deleteMany({
-    where: { followerId: user.id, followeeId: targetId },
-  });
-  return ok({
-    following: false,
-    followers: await activeFollowerCount(targetId),
-  });
-}
-
-function activeFollowerCount(targetId: string) {
-  return prisma.follow.count({
-    where: {
-      followeeId: targetId,
-      follower: { is: activeCustomerUserWhere },
-    },
-  });
-}
-
-// SPEC: public creator profile — displayName + totals + their public/approved characters.
-// INTENT: gives Community/Feed a place to lead to (§G); read-only, age-gated, no private data.
-async function creatorProfile(request: Request, creatorId: string) {
-  const ctx = await getAuthCtx(request);
-  requireAgeGate(ctx);
-  const creator = await prisma.user.findFirst({
-    where: {
-      id: creatorId,
-      ...activeCustomerUserWhere,
-      charactersCreated: { some: publicCharacterAudienceWhere },
-    },
-    select: { id: true, displayName: true, name: true, image: true, createdAt: true },
-  });
-  if (!creator) throw Errors.notFound("Creator not found");
-  const publicCreatorCharacterWhere: Prisma.CharacterWhereInput = {
-    AND: [
-      publicCharacterAudienceWhere,
-      { creatorId },
-    ],
-  };
-  const [characters, characterCount, characterTotals, followers, following] = await Promise.all([
-    prisma.character.findMany({
-      where: publicCreatorCharacterWhere,
-      include: characterInclude(ctx.userId),
-      orderBy: [{ stats: { likesCount: "desc" } }, { createdAt: "desc" }],
-      take: 24,
-    }),
-    prisma.character.count({ where: publicCreatorCharacterWhere }),
-    prisma.characterStats.aggregate({
-      where: { character: { is: publicCreatorCharacterWhere } },
-      _sum: { likesCount: true, chatsCount: true },
-    }),
-    prisma.follow.count({
-      where: {
-        followeeId: creatorId,
-        follower: {
-          is: {
-            dataClass: "customer",
-            status: "active",
-            deletedAt: null,
-          },
-        },
-      },
-    }),
-    ctx.userId
-      ? prisma.follow.findFirst({
-          where: { followerId: ctx.userId, followeeId: creatorId },
-          select: { followerId: true },
-        })
-      : null,
-  ]);
-  const totalLikes = characterTotals._sum.likesCount ?? 0;
-  const totalChats = characterTotals._sum.chatsCount ?? 0;
-  return ok({
-    creator: {
-      id: creator.id,
-      displayName: creator.displayName ?? creator.name ?? "Dreamer",
-      image: creator.image,
-      createdAt: creator.createdAt,
-      isFollowing: Boolean(following),
-      isSelf: ctx.userId === creator.id,
-      stats: {
-        characters: characterCount,
-        followers,
-        likes: formatCount(totalLikes),
-        chats: formatCount(totalChats),
-        likesCount: totalLikes,
-        chatsCount: totalChats,
-      },
-    },
-    characters: characters.map((character) => characterDTO(character, ctx.userId)),
-  });
 }
 
 async function duplicateCharacter(request: Request, id: string) {
@@ -8107,7 +7148,7 @@ async function archiveCharacter(request: Request, id: string) {
   return ok({ archived: true });
 }
 
-function characterInclude(userId?: string) {
+export function characterInclude(userId?: string) {
   return {
     imageAsset: true,
     stats: true,
@@ -8132,7 +7173,7 @@ function characterInclude(userId?: string) {
   } satisfies Prisma.CharacterInclude;
 }
 
-type CharacterWithPublicRelations = Prisma.CharacterGetPayload<{
+export type CharacterWithPublicRelations = Prisma.CharacterGetPayload<{
   include: ReturnType<typeof characterInclude>;
 }>;
 
@@ -8147,7 +7188,7 @@ function hasPublicListReleaseManifestAuthority(
     ) !== null;
 }
 
-function characterDTO(character: CharacterWithPublicRelations, viewerId?: string | null) {
+export function characterDTO(character: CharacterWithPublicRelations, viewerId?: string | null) {
   const visualProfile = character.visualProfiles[0] ?? null;
   const image = character.imageAsset?.url ?? missingCharacterImage;
   const official = character.source === "official";
@@ -8377,7 +7418,7 @@ function mediaProvenanceDTO(sourceJob?: {
   };
 }
 
-function mediaCollectionDTO(collection: MediaCollectionWithRelations) {
+export function mediaCollectionDTO(collection: MediaCollectionWithRelations) {
   const official = collection.source === "official";
   return {
     id: collection.id,
@@ -8399,7 +7440,7 @@ function mediaCollectionDTO(collection: MediaCollectionWithRelations) {
   };
 }
 
-function mediaViewUrl(asset: {
+export function mediaViewUrl(asset: {
   id: string;
   type: string;
   contentType?: string | null;
@@ -8688,7 +7729,7 @@ function intParam(value: string | null) {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-function clampInt(value: string | null, min: number, max: number, fallback: number) {
+export function clampInt(value: string | null, min: number, max: number, fallback: number) {
   const parsed = value ? Number.parseInt(value, 10) : fallback;
   if (!Number.isFinite(parsed)) return fallback;
   return Math.max(min, Math.min(max, parsed));
@@ -8704,17 +7745,17 @@ function decodeCursor(value: string | null) {
   return Number.isFinite(decoded) && decoded >= 0 ? decoded : 0;
 }
 
-function formatCount(value: number) {
+export function formatCount(value: number) {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
   return String(value);
 }
 
-function numberFromDb(value: number | bigint) {
+export function numberFromDb(value: number | bigint) {
   return typeof value === "bigint" ? Number(value) : value;
 }
 
-async function isCustomerEngagementActor(userId: string) {
+export async function isCustomerEngagementActor(userId: string) {
   const actor = await prisma.user.findFirst({
     where: {
       id: userId,
@@ -9867,715 +8908,6 @@ function hasCharacterGenerationRecipe(
   recipes: ReadonlyArray<{ readonly useCase: string }>,
 ) {
   return recipes.some((recipe) => recipe.useCase === "character");
-}
-
-export async function entitlementMap(userId: string) {
-  const now = new Date();
-  const [entitlements, activeSubscriptions] = await Promise.all([
-    prisma.entitlement.findMany({
-      where: {
-        userId,
-        OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
-      },
-    }),
-    prisma.subscription.findMany({
-      where: {
-        userId,
-        status: "active",
-        OR: [{ currentPeriodEnd: null }, { currentPeriodEnd: { gt: now } }],
-      },
-      include: { plan: true },
-      orderBy: [{ currentPeriodEnd: "desc" }, { createdAt: "desc" }],
-    }),
-  ]);
-  const map: Record<string, Prisma.JsonValue> = {};
-
-  for (const subscription of activeSubscriptions) {
-    if (map.plan === undefined) {
-      map.plan = {
-        slug: subscription.plan.slug,
-        billingPeriod: subscription.plan.billingPeriod,
-      };
-    }
-    mergeDerivedEntitlement(map, "premium_controls", true);
-    for (const [key, value] of Object.entries(subscription.plan.features as JsonRecord)) {
-      mergeDerivedEntitlement(map, featureKey(key), value ?? false);
-    }
-  }
-
-  for (const entitlement of entitlements) map[entitlement.key] = entitlement.value;
-  return map;
-}
-
-type PublicSubscriptionSource = {
-  id: string;
-  userId: string;
-  planId: string;
-  provider: string;
-  providerSubscriptionId: string | null;
-  status: string;
-  currentPeriodEnd: Date | null;
-  cancelAtPeriodEnd: boolean;
-};
-
-export async function publicSubscriptionDTO(subscription: PublicSubscriptionSource) {
-  const checkout = subscription.providerSubscriptionId
-    ? await prisma.checkoutSession.findUnique({
-        where: {
-          provider_providerSessionId: {
-            provider: subscription.provider,
-            providerSessionId: subscription.providerSubscriptionId,
-          },
-        },
-        select: { offerSnapshot: true, planId: true },
-      })
-    : null;
-  const offerSnapshot = checkoutOfferSnapshotSchema.safeParse(
-    checkout?.offerSnapshot,
-  );
-  const authoritativeOffer =
-    offerSnapshot.success &&
-    offerSnapshot.data.planId === subscription.planId &&
-    checkout?.planId === subscription.planId
-      ? offerSnapshot.data
-      : null;
-  const availability = authoritativeOffer
-    ? await publicOfferAvailability()
-    : null;
-  return {
-    id: subscription.id,
-    userId: subscription.userId,
-    planId: subscription.planId,
-    status: subscription.status,
-    offerAuthority: authoritativeOffer
-      ? "checkout_snapshot"
-      : "unavailable",
-    plan: authoritativeOffer
-      ? {
-          id: authoritativeOffer.planId,
-          slug: authoritativeOffer.slug,
-          name: authoritativeOffer.name,
-          billingPeriod: authoritativeOffer.billingPeriod,
-          priceCents: authoritativeOffer.priceCents,
-          includedDreamcoins: authoritativeOffer.includedDreamcoins,
-          features: publicFeatureProjection(
-            authoritativeOffer.features,
-            availability ?? { videoGeneration: false },
-          ),
-        }
-      : null,
-  };
-}
-
-export function billingAccessDTO(subscription: PublicSubscriptionSource) {
-  const capabilities = paymentProviderCapabilities(subscription.provider);
-  const benefitsEndAt =
-    subscription.currentPeriodEnd?.toISOString() ?? null;
-  return {
-    provider: subscription.provider,
-    ...capabilities,
-    benefitsEndAt,
-    renewsAt:
-      capabilities.billingModel === "recurring" &&
-      !subscription.cancelAtPeriodEnd
-        ? benefitsEndAt
-        : null,
-  };
-}
-
-export function assertRenewalMutationSupported(
-  subscription: Pick<PublicSubscriptionSource, "provider">,
-) {
-  const capabilities = paymentProviderCapabilities(subscription.provider);
-  if (capabilities.renewalCapability === "cancel_resume") return;
-  throw Errors.conflict(
-    capabilities.billingModel === "prepaid_period"
-      ? "This access is prepaid and does not renew automatically."
-      : "Renewal changes are not supported for this billing provider.",
-    {
-      code: "renewal_not_supported",
-      ...capabilities,
-    },
-  );
-}
-
-export async function assertNoActiveSamePlanAccessInTx(
-  tx: Prisma.TransactionClient,
-  userId: string,
-  planId: string,
-  now: Date,
-) {
-  await expireEndedSubscriptionsInTx(tx, userId, now);
-  const activeSamePlan = await tx.subscription.findFirst({
-    where: {
-      ...activeSubscriptionWhere(userId, now),
-      planId,
-    },
-    orderBy: [{ currentPeriodEnd: "desc" }, { createdAt: "desc" }],
-  });
-  if (!activeSamePlan) return;
-
-  const capabilities = paymentProviderCapabilities(activeSamePlan.provider);
-  throw Errors.conflict(
-    capabilities.billingModel === "prepaid_period"
-      ? "This prepaid plan is already active. Buy it again after the current access period ends."
-      : "This plan is already active.",
-    {
-      code: "active_prepaid_access_exists",
-      idempotencyAction: "new_key",
-      billingModel: capabilities.billingModel,
-      renewalCapability: capabilities.renewalCapability,
-      benefitsEndAt: activeSamePlan.currentPeriodEnd?.toISOString() ?? null,
-    },
-  );
-}
-
-export async function activeSamePlanProviderDispatchInTx(
-  tx: Prisma.TransactionClient,
-  userId: string,
-  planId: string,
-  excludedCheckoutId: string,
-  now: Date,
-) {
-  return tx.checkoutSession.findFirst({
-    where: {
-      id: { not: excludedCheckoutId },
-      userId,
-      planId,
-      status: "provider_dispatching",
-      providerSessionId: null,
-      providerAttemptedAt: { not: null },
-      dispatchToken: { not: null },
-      dispatchLeaseUntil: { gt: now },
-    },
-    select: {
-      id: true,
-      dispatchLeaseUntil: true,
-    },
-  });
-}
-
-async function expireEndedSubscriptionsInTx(
-  tx: Prisma.TransactionClient,
-  userId: string,
-  now: Date,
-) {
-  const ended = await tx.subscription.findMany({
-    where: {
-      userId,
-      status: "active",
-      currentPeriodEnd: { lte: now },
-    },
-    select: { id: true, userId: true },
-  });
-  if (ended.length === 0) return;
-
-  const endedIds = ended.map((subscription) => subscription.id);
-  await tx.subscription.updateMany({
-    where: {
-      id: { in: endedIds },
-      status: "active",
-      currentPeriodEnd: { lte: now },
-    },
-    data: {
-      status: "expired",
-      cancelAtPeriodEnd: false,
-    },
-  });
-  await tx.entitlement.deleteMany({
-    where: {
-      userId,
-      source: "subscription",
-      expiresAt: { lte: now },
-    },
-  });
-  for (const subscription of ended) {
-    await appendCanonicalMetricEvent(tx, {
-      sourceEventId: `subscription:${subscription.id}:ended:period_expired`,
-      eventType: METRIC_PRODUCT_EVENTS.subscriptionEnded,
-      occurredAt: now,
-      userId: subscription.userId,
-      context: { source: "checkout_expiry_reconciliation" },
-      payload: {
-        subscriptionId: subscription.id,
-        userId: subscription.userId,
-        reason: "period_expired",
-      },
-    });
-  }
-}
-
-export function activeSubscriptionWhere(userId: string, now = new Date()): Prisma.SubscriptionWhereInput {
-  return {
-    userId,
-    status: "active",
-    OR: [{ currentPeriodEnd: null }, { currentPeriodEnd: { gt: now } }],
-  };
-}
-
-function mergeDerivedEntitlement(
-  map: Record<string, Prisma.JsonValue>,
-  key: string,
-  value: Prisma.JsonValue,
-) {
-  const current = map[key];
-  if (current === undefined) {
-    map[key] = value;
-    return;
-  }
-  if (typeof current === "boolean" && typeof value === "boolean") {
-    map[key] = current || value;
-    return;
-  }
-  if (typeof current === "number" && typeof value === "number") {
-    map[key] = Math.max(current, value);
-  }
-}
-
-export async function findPlan(input: z.infer<typeof checkoutSchema>) {
-  const plan = input.planId
-    ? await prisma.plan.findUnique({ where: { id: input.planId } })
-    : await prisma.plan.findUnique({
-        where: {
-          slug_billingPeriod: {
-            slug: input.slug ?? "premium",
-            billingPeriod: input.billingPeriod,
-          },
-        },
-      });
-  if (!plan || !plan.active) throw Errors.notFound("Plan not found");
-  return plan;
-}
-
-export async function activateSubscriptionInTx(
-  tx: Prisma.TransactionClient,
-  userId: string,
-  planId: string,
-  providerSubscriptionId: string,
-  provider: string,
-  offerSnapshot: z.infer<typeof checkoutOfferSnapshotSchema>,
-  purchaseAuthority: {
-    checkoutId: string;
-    createdAt: Date;
-  },
-) {
-  if (offerSnapshot.planId !== planId) {
-    throw Errors.conflict("Checkout offer snapshot does not match its plan");
-  }
-  const entitlementPlan = {
-    slug: offerSnapshot.slug,
-    billingPeriod: offerSnapshot.billingPeriod,
-    features: offerSnapshot.features as Prisma.JsonValue,
-  };
-  const includedDreamcoins = offerSnapshot.includedDreamcoins;
-  // A payment replay is identified by the provider invoice, never merely by plan.
-  // Distinct settled invoices are distinct purchases and must not be silently
-  // discarded as a same-plan replay.
-  await lockUserLedger(tx, userId);
-  const competingDispatch = await activeSamePlanProviderDispatchInTx(
-    tx,
-    userId,
-    planId,
-    purchaseAuthority.checkoutId,
-    new Date(),
-  );
-  if (competingDispatch) {
-    return {
-      subscription: null,
-      created: false,
-      reconciliationRequired: false,
-      settlementDeferred: true,
-      deferredByCheckoutId: competingDispatch.id,
-    } as const;
-  }
-  const replay = await tx.subscription.findFirst({
-    where: {
-      provider,
-      providerSubscriptionId,
-    },
-  });
-  if (replay) {
-    if (replay.userId !== userId || replay.planId !== planId) {
-      throw Errors.conflict(
-        "The provider invoice is already bound to different billing authority.",
-        { provider, providerSubscriptionId },
-      );
-    }
-    if (replay.status === "active") {
-      await syncSubscriptionEntitlements(
-        tx,
-        userId,
-        entitlementPlan,
-        replay.currentPeriodEnd,
-      );
-    }
-    return {
-      subscription: replay,
-      created: false,
-      reconciliationRequired: false,
-      settlementDeferred: false,
-    } as const;
-  }
-
-  const now = new Date();
-  await expireEndedSubscriptionsInTx(tx, userId, now);
-  const superseded = await tx.subscription.findMany({
-    where: activeSubscriptionWhere(userId, now),
-    select: {
-      id: true,
-      userId: true,
-      planId: true,
-      provider: true,
-      providerSubscriptionId: true,
-      currentPeriodEnd: true,
-    },
-  });
-  const activePurchaseAuthority = await resolveActivePurchaseOrderAuthority(
-    tx,
-    superseded,
-    purchaseAuthority,
-  );
-  if (activePurchaseAuthority.kind === "unavailable") {
-    return {
-      subscription: null,
-      created: false,
-      reconciliationRequired: true,
-      reconciliationReason: "active_purchase_authority_unavailable",
-      settlementDeferred: false,
-    } as const;
-  }
-  const billingPeriod = offerSnapshot.billingPeriod;
-  if (billingPeriod !== "monthly" && billingPeriod !== "yearly") {
-    throw Errors.conflict("Plan billing period is not supported");
-  }
-
-  if (activePurchaseAuthority.kind === "newer") {
-    const newerAccess = activePurchaseAuthority.subscription;
-    const convertedAccess = convertedPrepaidAccessEnd({
-      currentOffer: offerSnapshot,
-      newerOffer: activePurchaseAuthority.offerSnapshot,
-      newerAccessEnd: newerAccess.currentPeriodEnd,
-      now,
-    });
-    if (!convertedAccess.ok) {
-      return {
-        subscription: null,
-        created: false,
-        reconciliationRequired: true,
-        reconciliationReason: "prepaid_value_conversion_unavailable",
-        settlementDeferred: false,
-      } as const;
-    }
-    const extendedEnd = convertedAccess.currentPeriodEnd;
-    const preserved = await tx.subscription.update({
-      where: { id: newerAccess.id },
-      data: { currentPeriodEnd: extendedEnd },
-    });
-    await tx.entitlement.updateMany({
-      where: { userId, source: "subscription" },
-      data: { expiresAt: extendedEnd },
-    });
-    const appliedPurchase = await tx.subscription.create({
-      data: {
-        userId,
-        planId,
-        provider,
-        providerSubscriptionId,
-        status: "checkout_completed",
-        currentPeriodEnd: extendedEnd,
-      },
-    });
-    await postDreamcoinEntry(tx, {
-      kind: "subscription_grant",
-      userId,
-      amount: includedDreamcoins,
-      sourceId: appliedPurchase.id,
-      idempotencyKey: `subscription:grant:${provider}:${providerSubscriptionId}`,
-    });
-    await appendCanonicalMetricEvent(tx, {
-      sourceEventId: `subscription:${appliedPurchase.id}:activated`,
-      eventType: METRIC_PRODUCT_EVENTS.subscriptionActivated,
-      occurredAt: appliedPurchase.createdAt,
-      userId,
-      context: {
-        providerSubscriptionId,
-        source: "late_purchase_applied_to_newer_access",
-        activeSubscriptionId: preserved.id,
-      },
-      payload: {
-        subscriptionId: appliedPurchase.id,
-        userId,
-        planId,
-      },
-    });
-    return {
-      subscription: preserved,
-      created: true,
-      reconciliationRequired: false,
-      settlementDeferred: false,
-    } as const;
-  }
-
-  const samePlanAccess = superseded.find(
-    (subscription) => subscription.planId === planId,
-  );
-  const supersededCount = await tx.subscription.updateMany({
-    where: activeSubscriptionWhere(userId, now),
-    data: { status: "canceled", cancelAtPeriodEnd: false },
-  });
-  if (supersededCount.count > 0) {
-    await tx.entitlement.deleteMany({ where: { userId, source: "subscription" } });
-    for (const previous of superseded) {
-      const samePlanPurchase = previous.planId === planId;
-      await appendCanonicalMetricEvent(tx, {
-        sourceEventId: `subscription:${previous.id}:ended:${providerSubscriptionId}`,
-        eventType: METRIC_PRODUCT_EVENTS.subscriptionEnded,
-        occurredAt: now,
-        userId: previous.userId,
-        context: {
-          source: samePlanPurchase
-            ? "new_prepaid_period"
-            : "plan_switch",
-        },
-        payload: {
-          subscriptionId: previous.id,
-          userId: previous.userId,
-          reason: samePlanPurchase
-            ? "superseded_by_new_prepaid_period"
-            : "superseded_by_plan_switch",
-        },
-      });
-    }
-  }
-  const periodStartsAt =
-    samePlanAccess?.currentPeriodEnd &&
-    samePlanAccess.currentPeriodEnd > now
-      ? samePlanAccess.currentPeriodEnd
-      : now;
-  const currentPeriodEnd = billingPeriodEnd(periodStartsAt, billingPeriod);
-  const subscription = await tx.subscription.create({
-    data: {
-      userId,
-      planId,
-      provider,
-      providerSubscriptionId,
-      status: "active",
-      currentPeriodEnd,
-    },
-  });
-  await syncSubscriptionEntitlements(tx, userId, entitlementPlan, currentPeriodEnd);
-  await postDreamcoinEntry(tx, {
-    kind: "subscription_grant",
-    userId,
-    amount: includedDreamcoins,
-    sourceId: subscription.id,
-    idempotencyKey: `subscription:grant:${provider}:${providerSubscriptionId}`,
-  });
-  await appendCanonicalMetricEvent(tx, {
-    sourceEventId: `subscription:${subscription.id}:activated`,
-    eventType: METRIC_PRODUCT_EVENTS.subscriptionActivated,
-    occurredAt: subscription.createdAt,
-    userId,
-    context: { providerSubscriptionId },
-    payload: { subscriptionId: subscription.id, userId, planId },
-  });
-  return {
-    subscription,
-    created: true,
-    reconciliationRequired: false,
-    settlementDeferred: false,
-  } as const;
-}
-
-async function resolveActivePurchaseOrderAuthority(
-  tx: Prisma.TransactionClient,
-  activeSubscriptions: readonly {
-    id: string;
-    userId: string;
-    planId: string;
-    provider: string;
-    providerSubscriptionId: string | null;
-    currentPeriodEnd: Date | null;
-  }[],
-  currentPurchase: {
-    checkoutId: string;
-    createdAt: Date;
-  },
-) {
-  // Provider delivery order is nondeterministic. The durable checkout intent is
-  // the purchase-order authority: createdAt orders intents, with id as the
-  // stable tie-breaker for the rare equal-timestamp case.
-  if (activeSubscriptions.length === 0) return { kind: "none" } as const;
-  const providerPurchases = activeSubscriptions.filter(
-    (
-      subscription,
-    ): subscription is typeof subscription & {
-      providerSubscriptionId: string;
-    } => subscription.providerSubscriptionId !== null,
-  );
-  if (providerPurchases.length !== activeSubscriptions.length) {
-    return { kind: "unavailable" } as const;
-  }
-
-  const checkoutAuthorities = await tx.checkoutSession.findMany({
-    where: {
-      OR: providerPurchases.map((subscription) => ({
-        provider: subscription.provider,
-        providerSessionId: subscription.providerSubscriptionId,
-      })),
-    },
-    select: {
-      id: true,
-      provider: true,
-      providerSessionId: true,
-      createdAt: true,
-      userId: true,
-      planId: true,
-      amountCents: true,
-      currency: true,
-      offerSnapshot: true,
-      status: true,
-    },
-  });
-  const checkoutByProviderInvoice = new Map(
-    checkoutAuthorities.map((checkout) => [
-      `${checkout.provider}:${checkout.providerSessionId ?? ""}`,
-      checkout,
-    ]),
-  );
-  const authorities = [];
-  for (const subscription of providerPurchases) {
-    const checkout = checkoutByProviderInvoice.get(
-      `${subscription.provider}:${subscription.providerSubscriptionId}`,
-    );
-    const offerSnapshot = checkoutOfferSnapshotSchema.safeParse(
-      checkout?.offerSnapshot,
-    );
-    if (
-      !checkout ||
-      checkout.userId !== subscription.userId ||
-      checkout.planId !== subscription.planId ||
-      checkout.status !== "completed" ||
-      !offerSnapshot.success ||
-      offerSnapshot.data.planId !== subscription.planId ||
-      checkout.amountCents !== offerSnapshot.data.priceCents ||
-      checkout.currency?.toLowerCase() !==
-        offerSnapshot.data.currency.toLowerCase()
-    ) {
-      return { kind: "unavailable" } as const;
-    }
-    authorities.push({
-      subscription,
-      checkout,
-      offerSnapshot: offerSnapshot.data,
-    });
-  }
-
-  const newer = authorities
-    .filter(
-      (candidate) =>
-        compareCheckoutPurchaseOrder(candidate.checkout, currentPurchase) > 0,
-    )
-    .sort((left, right) =>
-      compareCheckoutPurchaseOrder(right.checkout, left.checkout),
-    )[0];
-  return newer
-    ? {
-        kind: "newer",
-        subscription: newer.subscription,
-        offerSnapshot: newer.offerSnapshot,
-      } as const
-    : { kind: "none" } as const;
-}
-
-function convertedPrepaidAccessEnd(input: {
-  currentOffer: z.infer<typeof checkoutOfferSnapshotSchema>;
-  newerOffer: z.infer<typeof checkoutOfferSnapshotSchema>;
-  newerAccessEnd: Date | null;
-  now: Date;
-}) {
-  if (
-    input.currentOffer.priceCents <= 0 ||
-    input.newerOffer.priceCents <= 0 ||
-    input.currentOffer.currency.toLowerCase() !==
-      input.newerOffer.currency.toLowerCase()
-  ) {
-    return { ok: false } as const;
-  }
-  if (input.newerAccessEnd === null) {
-    return { ok: true, currentPeriodEnd: null } as const;
-  }
-
-  const startsAt =
-    input.newerAccessEnd > input.now ? input.newerAccessEnd : input.now;
-  const newerUnitEnd = billingPeriodEnd(
-    startsAt,
-    input.newerOffer.billingPeriod,
-  );
-  const newerUnitDurationMs =
-    newerUnitEnd.getTime() - startsAt.getTime();
-  const convertedDurationMs = Math.max(
-    1,
-    Math.floor(
-      newerUnitDurationMs *
-        (input.currentOffer.priceCents / input.newerOffer.priceCents),
-    ),
-  );
-  const convertedEndMs = startsAt.getTime() + convertedDurationMs;
-  if (
-    !Number.isSafeInteger(convertedDurationMs) ||
-    !Number.isFinite(convertedEndMs)
-  ) {
-    return { ok: false } as const;
-  }
-  return {
-    ok: true,
-    currentPeriodEnd: new Date(convertedEndMs),
-  } as const;
-}
-
-function compareCheckoutPurchaseOrder(
-  left: { id: string; createdAt: Date },
-  right: { checkoutId?: string; id?: string; createdAt: Date },
-) {
-  const createdAtDelta = left.createdAt.getTime() - right.createdAt.getTime();
-  if (createdAtDelta !== 0) return createdAtDelta;
-  return left.id.localeCompare(right.checkoutId ?? right.id ?? "");
-}
-
-async function syncSubscriptionEntitlements(
-  tx: Prisma.TransactionClient,
-  userId: string,
-  plan: {
-    slug: string;
-    billingPeriod: string;
-    features: Prisma.JsonValue;
-  },
-  expiresAt: Date | null,
-) {
-  await tx.entitlement.upsert({
-    where: { userId_key: { userId, key: "plan" } },
-    update: { value: { slug: plan.slug, billingPeriod: plan.billingPeriod }, source: "subscription", expiresAt },
-    create: { userId, key: "plan", value: { slug: plan.slug, billingPeriod: plan.billingPeriod }, source: "subscription", expiresAt },
-  });
-  const featureEntries = Object.entries(plan.features as JsonRecord);
-  for (const [key, value] of featureEntries) {
-    const entitlementValue = toInputJson(value ?? false);
-    await tx.entitlement.upsert({
-      where: { userId_key: { userId, key: featureKey(key) } },
-      update: { value: entitlementValue, source: "subscription", expiresAt },
-      create: { userId, key: featureKey(key), value: entitlementValue, source: "subscription", expiresAt },
-    });
-  }
-  await tx.entitlement.upsert({
-    where: { userId_key: { userId, key: "premium_controls" } },
-    update: { value: true, source: "subscription", expiresAt },
-    create: { userId, key: "premium_controls", value: true, source: "subscription", expiresAt },
-  });
-}
-
-function featureKey(key: string) {
-  return key.replace(/[A-Z]/g, (match) => `_${match.toLowerCase()}`);
 }
 
 async function readPreferences(userId: string) {

@@ -24,17 +24,8 @@ import { createClassifiedAnalyticsEvent } from "@/server/modules/admin-v2/metric
 import { providers } from "@/server/providers";
 import type { PaymentInvoice, ProviderResult } from "@/server/providers/types";
 import {
-  activateSubscriptionInTx,
-  activeSamePlanProviderDispatchInTx,
-  activeSubscriptionWhere,
-  assertNoActiveSamePlanAccessInTx,
-  assertRenewalMutationSupported,
-  billingAccessDTO,
   bodyText,
-  checkoutOfferSnapshotSchema,
-  checkoutSchema,
   cryptoRandomId,
-  findPlan,
   isRecord,
   jsonBody,
   lockCheckoutSession,
@@ -43,11 +34,22 @@ import {
   parseJsonText,
   publicFeatureProjection,
   publicOfferAvailability,
-  publicSubscriptionDTO,
   toInputJson,
   trackEvent,
   trackEventOnce,
 } from "./service";
+import {
+  activateSubscriptionInTx,
+  activeSamePlanProviderDispatchInTx,
+  activeSubscriptionWhere,
+  assertNoActiveSamePlanAccessInTx,
+  assertRenewalMutationSupported,
+  billingAccessDTO,
+  checkoutOfferSnapshotSchema,
+  checkoutSchema,
+  findPlan,
+  publicSubscriptionDTO,
+} from "./subscription-lifecycle";
 
 export async function listPlans() {
   const [plans, availability] = await Promise.all([
