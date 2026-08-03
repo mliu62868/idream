@@ -4,6 +4,31 @@ import { pathToFileURL } from "node:url";
 import { looksLikeMockChatResponse } from "@idream/shared";
 import { defaultBullmqPrefix } from "@idream/shared/env";
 import { parse as parseDotenv } from "dotenv";
+// SPEC: evidence 契约的家在 readiness/evidence.ts —— 生产端（probe-*.ts）与这里共用同一份声明。
+import {
+  decodeAgeVerificationProbeEvidence,
+  decodeBlobStorageProbeEvidence,
+  decodeChatModelProbeEvidence,
+  decodeChatServiceProbeEvidence,
+  decodeImagePipelineProbeEvidence,
+  decodePaymentProviderProbeEvidence,
+  decodeProductConfigProbeEvidence,
+  decodePublicCatalogProbeEvidence,
+  decodeSafetyGatewayProbeEvidence,
+  decodeVoiceModelProbeEvidence,
+  decodeWebSurfaceProbeEvidence,
+  type AgeVerificationProbeEvidence,
+  type BlobStorageProbeEvidence,
+  type ChatModelProbeEvidence,
+  type ChatServiceProbeEvidence,
+  type ImagePipelineProbeEvidence,
+  type PaymentProviderProbeEvidence,
+  type ProductConfigProbeEvidence,
+  type PublicCatalogProbeEvidence,
+  type SafetyGatewayProbeEvidence,
+  type VoiceModelProbeEvidence,
+  type WebSurfaceProbeEvidence,
+} from "./readiness/evidence";
 
 const DEDICATED_CHAT_PROBE_USER_ID = "seed-chat-probe-user";
 
@@ -21,333 +46,6 @@ export interface LaunchReadinessReport {
   ok: boolean;
   summary: Record<LaunchReadinessStatus, number>;
   checks: LaunchReadinessCheck[];
-}
-
-export interface ImagePipelineProbeEvidence {
-  ok?: boolean;
-  checkedAt?: string | null;
-  durationMs?: number;
-  provider?: string | null;
-  pipelineUrl?: string | null;
-  model?: string | null;
-  orientation?: string;
-  count?: number;
-  generationJobId?: string;
-  loadError?: string;
-  finalize?: {
-    kind?: string | null;
-    assets?: number;
-    error?: { code?: string; message?: string } | null;
-  } | null;
-}
-
-export interface BlobStorageProbeEvidence {
-  ok?: boolean;
-  checkedAt?: string | null;
-  durationMs?: number;
-  provider?: string | null;
-  endpoint?: string | null;
-  bucket?: string | null;
-  key?: string;
-  bytes?: number;
-  loadError?: string;
-  put?: {
-    ok?: boolean;
-    size?: number;
-    error?: { code?: string; message?: string } | null;
-  } | null;
-  signedGetUrl?: {
-    ok?: boolean;
-    host?: string | null;
-    pathname?: string | null;
-    expiresInSeconds?: number;
-    error?: { code?: string; message?: string } | null;
-  } | null;
-  readback?: {
-    ok?: boolean;
-    source?: string | null;
-    status?: number;
-    bytes?: number;
-    matches?: boolean;
-    sha256?: string | null;
-    error?: string | null;
-  } | null;
-  delete?: {
-    ok?: boolean;
-    error?: { code?: string; message?: string } | null;
-  } | null;
-}
-
-export interface SafetyGatewayProbeEvidence {
-  ok?: boolean;
-  checkedAt?: string | null;
-  durationMs?: number;
-  provider?: string | null;
-  serviceUrl?: string | null;
-  targetType?: string | null;
-  status?: string | null;
-  policyCode?: string | null;
-  confidence?: number;
-  loadError?: string;
-  error?: { code?: string; message?: string } | null;
-}
-
-export interface ChatModelProbeEvidence {
-  ok?: boolean;
-  checkedAt?: string | null;
-  durationMs?: number;
-  provider?: string | null;
-  baseUrl?: string | null;
-  model?: string | null;
-  chunks?: number;
-  characters?: number;
-  assistantPreview?: string | null;
-  done?: boolean;
-  loadError?: string;
-  error?: { code?: string; message?: string } | null;
-}
-
-export interface ChatServiceProbeEvidence {
-  ok?: boolean;
-  checkedAt?: string | null;
-  durationMs?: number;
-  serviceUrl?: string | null;
-  userId?: string | null;
-  actorDataClass?: string | null;
-  dedicatedActor?: boolean;
-  characterId?: string | null;
-  characterSource?: string | null;
-  usedSignedBff?: boolean;
-  loadError?: string;
-  health?: {
-    ok?: boolean;
-    status?: number;
-    service?: string | null;
-    error?: string | null;
-  } | null;
-  signedRequest?: {
-    ok?: boolean;
-    status?: number;
-    sessionsCount?: number;
-    error?: string | null;
-  } | null;
-  unsignedRequest?: {
-    ok?: boolean;
-    status?: number;
-    error?: string | null;
-  } | null;
-  conversation?: {
-    ok?: boolean;
-    attempted?: boolean;
-    preflightCleanup?: {
-      ok?: boolean;
-      status?: number;
-      error?: string | null;
-    } | null;
-    createSession?: { ok?: boolean; status?: number; error?: string | null } | null;
-    sendMessage?: { ok?: boolean; status?: number; error?: string | null } | null;
-    stream?: {
-      ok?: boolean;
-      status?: number;
-      sawStart?: boolean;
-      sawDelta?: boolean;
-      sawDone?: boolean;
-      error?: string | null;
-    } | null;
-    getSession?: {
-      ok?: boolean;
-      status?: number;
-      assistantMessageId?: string;
-      assistantSent?: boolean;
-      assistantStatus?: string | null;
-      error?: string | null;
-    } | null;
-    noMemory?: {
-      ok?: boolean;
-      status?: number;
-      assistantMessageId?: string;
-      authorityPinned?: boolean;
-      relationshipUnchanged?: boolean;
-      memorySourceAbsent?: boolean;
-      error?: string | null;
-    } | null;
-    blockedInput?: {
-      ok?: boolean;
-      status?: number;
-      status_?: string | null;
-      error?: string | null;
-    } | null;
-    cleanup?: {
-      ok?: boolean;
-      status?: number;
-      memoryGone?: boolean;
-      memoriesDeleted?: number;
-      relationshipDeleted?: boolean;
-      relationshipsDeleted?: number;
-      relationshipsGone?: boolean;
-      sessionDeleted?: boolean;
-      sessionGone?: boolean;
-      error?: string | null;
-    } | null;
-    error?: string | null;
-  } | null;
-  error?: { code?: string; message?: string } | null;
-}
-
-export interface VoiceModelProbeEvidence {
-  ok?: boolean;
-  checkedAt?: string | null;
-  durationMs?: number;
-  provider?: string | null;
-  baseUrl?: string | null;
-  model?: string | null;
-  voiceId?: string | null;
-  key?: string | null;
-  audioDurationMs?: number;
-  voiceCloningAvailable?: boolean | null;
-  voiceCloneVerified?: boolean | null;
-  bytes?: number;
-  contentType?: string | null;
-  loadError?: string;
-  error?: { code?: string; message?: string } | null;
-}
-
-export interface PaymentProviderProbeEvidence {
-  ok?: boolean;
-  checkedAt?: string | null;
-  durationMs?: number;
-  provider?: string | null;
-  baseUrl?: string | null;
-  storeId?: string | null;
-  canViewStore?: boolean;
-  returnedStoreId?: string | null;
-  canCreateInvoice?: boolean;
-  invoiceId?: string | null;
-  checkoutUrl?: string | null;
-  invoiceAmountCents?: number;
-  invoiceCurrency?: string | null;
-  loadError?: string;
-  error?: { code?: string; message?: string } | null;
-}
-
-export interface AgeVerificationProbeEvidence {
-  ok?: boolean;
-  checkedAt?: string | null;
-  durationMs?: number;
-  provider?: string | null;
-  serviceUrl?: string | null;
-  jurisdiction?: string | null;
-  providerVerificationId?: string | null;
-  status?: string | null;
-  url?: string | null;
-  loadError?: string;
-  error?: { code?: string; message?: string } | null;
-}
-
-export interface ProductConfigProbeEvidence {
-  ok?: boolean;
-  checkedAt?: string | null;
-  durationMs?: number;
-  videoFeatureEnabled?: boolean;
-  activeImageProfiles?: number;
-  activeImageCharacterTemplates?: number;
-  activeImageFreeplayTemplates?: number;
-  activeImagePricingRules?: number;
-  activeVideoProfiles?: number;
-  activeVideoCharacterTemplates?: number;
-  activeVideoFreeplayTemplates?: number;
-  activeVideoPricingRules?: number;
-  activeVoicePricingRules?: number;
-  publicCharacters?: number;
-  publicCharactersWithSystemPrompt?: number;
-  loadError?: string;
-  error?: { code?: string; message?: string } | null;
-}
-
-export interface PublicCatalogProbeEvidence {
-  ok?: boolean;
-  checkedAt?: string | null;
-  durationMs?: number;
-  counts?: {
-    publicCharacters?: number;
-    publicCollections?: number;
-    publicCreators?: number;
-    publicFeedbackItems?: number;
-    distinctImages?: number;
-  } | null;
-  issueTotals?: {
-    total?: number;
-    fail?: number;
-    warn?: number;
-  } | null;
-  loadError?: string;
-  error?: { code?: string; message?: string } | null;
-}
-
-export interface WebSurfaceAssetEvidence {
-  ok?: boolean;
-  checked?: number;
-  failures?: readonly {
-    url?: string;
-    status?: number;
-    bytes?: number;
-    contentType?: string | null;
-    error?: string;
-  }[];
-}
-
-export interface WebSurfaceProbeEvidence {
-  ok?: boolean;
-  checkedAt?: string | null;
-  durationMs?: number;
-  mainUrl?: string | null;
-  adminUrl?: string | null;
-  loadError?: string;
-  home?: {
-    ok?: boolean;
-    status?: number;
-    bytes?: number;
-    contentType?: string | null;
-    containsBrand?: boolean;
-    nextErrorShell?: boolean;
-    assets?: WebSurfaceAssetEvidence | null;
-    error?: string | null;
-  } | null;
-  generate?: {
-    ok?: boolean;
-    status?: number;
-    bytes?: number;
-    contentType?: string | null;
-    containsGenerator?: boolean;
-    nextErrorShell?: boolean;
-    assets?: WebSurfaceAssetEvidence | null;
-    error?: string | null;
-  } | null;
-  apiAgeGate?: {
-    ok?: boolean;
-    status?: number;
-    code?: string | null;
-    reason?: string | null;
-    error?: string | null;
-  } | null;
-  admin?: {
-    ok?: boolean;
-    status?: number;
-    bytes?: number;
-    contentType?: string | null;
-    protected?: boolean;
-    protectedReason?: string | null;
-    nextErrorShell?: boolean;
-    assets?: WebSurfaceAssetEvidence | null;
-    error?: string | null;
-  } | null;
-  adminApi?: {
-    ok?: boolean;
-    status?: number;
-    code?: string | null;
-    error?: string | null;
-  } | null;
-  error?: { code?: string; message?: string } | null;
 }
 
 type EnvLike = Record<string, string | undefined>;
@@ -461,10 +159,6 @@ function isPublicHttpsUrl(value: string | undefined) {
   } catch {
     return false;
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }
 
 function isPostgresUrl(value: string | undefined) {
@@ -1894,7 +1588,7 @@ function loadImagePipelineProbeEvidence(env: EnvLike): ImagePipelineProbeEvidenc
   const reportPath = env.PIPELINE_IMAGE_PROBE_REPORT;
   if (!reportPath) return null;
   try {
-    return normalizeImagePipelineProbeEvidence(
+    return decodeImagePipelineProbeEvidence(
       JSON.parse(readFileSync(resolveWorkspacePath(reportPath), "utf8")),
     );
   } catch (error) {
@@ -1909,7 +1603,7 @@ function loadBlobStorageProbeEvidence(env: EnvLike): BlobStorageProbeEvidence | 
   const reportPath = env.BLOB_STORAGE_PROBE_REPORT;
   if (!reportPath) return null;
   try {
-    return normalizeBlobStorageProbeEvidence(
+    return decodeBlobStorageProbeEvidence(
       JSON.parse(readFileSync(resolveWorkspacePath(reportPath), "utf8")),
     );
   } catch (error) {
@@ -1924,7 +1618,7 @@ function loadSafetyGatewayProbeEvidence(env: EnvLike): SafetyGatewayProbeEvidenc
   const reportPath = env.SAFETY_GATEWAY_PROBE_REPORT;
   if (!reportPath) return null;
   try {
-    return normalizeSafetyGatewayProbeEvidence(
+    return decodeSafetyGatewayProbeEvidence(
       JSON.parse(readFileSync(resolveWorkspacePath(reportPath), "utf8")),
     );
   } catch (error) {
@@ -1939,7 +1633,7 @@ function loadChatServiceProbeEvidence(env: EnvLike): ChatServiceProbeEvidence | 
   const reportPath = env.CHAT_SERVICE_PROBE_REPORT;
   if (!reportPath) return null;
   try {
-    return normalizeChatServiceProbeEvidence(
+    return decodeChatServiceProbeEvidence(
       JSON.parse(readFileSync(resolveWorkspacePath(reportPath), "utf8")),
     );
   } catch (error) {
@@ -1954,7 +1648,7 @@ function loadChatModelProbeEvidence(env: EnvLike): ChatModelProbeEvidence | null
   const reportPath = env.CHAT_MODEL_PROBE_REPORT;
   if (!reportPath) return null;
   try {
-    return normalizeChatModelProbeEvidence(
+    return decodeChatModelProbeEvidence(
       JSON.parse(readFileSync(resolveWorkspacePath(reportPath), "utf8")),
     );
   } catch (error) {
@@ -1969,7 +1663,7 @@ function loadVoiceModelProbeEvidence(env: EnvLike): VoiceModelProbeEvidence | nu
   const reportPath = env.VOICE_MODEL_PROBE_REPORT;
   if (!reportPath) return null;
   try {
-    return normalizeVoiceModelProbeEvidence(
+    return decodeVoiceModelProbeEvidence(
       JSON.parse(readFileSync(resolveWorkspacePath(reportPath), "utf8")),
     );
   } catch (error) {
@@ -1984,7 +1678,7 @@ function loadPaymentProviderProbeEvidence(env: EnvLike): PaymentProviderProbeEvi
   const reportPath = env.PAYMENT_PROVIDER_PROBE_REPORT;
   if (!reportPath) return null;
   try {
-    return normalizePaymentProviderProbeEvidence(
+    return decodePaymentProviderProbeEvidence(
       JSON.parse(readFileSync(resolveWorkspacePath(reportPath), "utf8")),
     );
   } catch (error) {
@@ -1999,7 +1693,7 @@ function loadAgeVerificationProbeEvidence(env: EnvLike): AgeVerificationProbeEvi
   const reportPath = env.AGE_VERIFICATION_PROBE_REPORT;
   if (!reportPath) return null;
   try {
-    return normalizeAgeVerificationProbeEvidence(
+    return decodeAgeVerificationProbeEvidence(
       JSON.parse(readFileSync(resolveWorkspacePath(reportPath), "utf8")),
     );
   } catch (error) {
@@ -2014,7 +1708,7 @@ function loadProductConfigProbeEvidence(env: EnvLike): ProductConfigProbeEvidenc
   const reportPath = env.PRODUCT_CONFIG_PROBE_REPORT;
   if (!reportPath) return null;
   try {
-    return normalizeProductConfigProbeEvidence(
+    return decodeProductConfigProbeEvidence(
       JSON.parse(readFileSync(resolveWorkspacePath(reportPath), "utf8")),
     );
   } catch (error) {
@@ -2029,7 +1723,7 @@ function loadPublicCatalogProbeEvidence(env: EnvLike): PublicCatalogProbeEvidenc
   const reportPath = env.PUBLIC_CATALOG_PROBE_REPORT;
   if (!reportPath) return null;
   try {
-    return normalizePublicCatalogProbeEvidence(
+    return decodePublicCatalogProbeEvidence(
       JSON.parse(readFileSync(resolveWorkspacePath(reportPath), "utf8")),
     );
   } catch (error) {
@@ -2044,7 +1738,7 @@ function loadWebSurfaceProbeEvidence(env: EnvLike): WebSurfaceProbeEvidence | nu
   const reportPath = env.WEB_SURFACE_PROBE_REPORT;
   if (!reportPath) return null;
   try {
-    return normalizeWebSurfaceProbeEvidence(
+    return decodeWebSurfaceProbeEvidence(
       JSON.parse(readFileSync(resolveWorkspacePath(reportPath), "utf8")),
     );
   } catch (error) {
@@ -2086,676 +1780,6 @@ function workspaceRoot() {
     if (parent === current) return process.cwd();
     current = parent;
   }
-}
-
-function normalizeImagePipelineProbeEvidence(value: unknown): ImagePipelineProbeEvidence {
-  if (!isRecord(value)) {
-    return { ok: false, loadError: "probe report is not a JSON object" };
-  }
-
-  const finalize = isRecord(value.finalize)
-    ? {
-        kind: typeof value.finalize.kind === "string" ? value.finalize.kind : null,
-        assets: typeof value.finalize.assets === "number" ? value.finalize.assets : 0,
-        error: isRecord(value.finalize.error)
-          ? {
-              code:
-                typeof value.finalize.error.code === "string"
-                  ? value.finalize.error.code
-                  : undefined,
-              message:
-                typeof value.finalize.error.message === "string"
-                  ? value.finalize.error.message
-                  : undefined,
-            }
-          : null,
-      }
-    : null;
-
-  return {
-    ok: typeof value.ok === "boolean" ? value.ok : false,
-    checkedAt: typeof value.checkedAt === "string" ? value.checkedAt : null,
-    durationMs: typeof value.durationMs === "number" ? value.durationMs : undefined,
-    provider: typeof value.provider === "string" ? value.provider : null,
-    pipelineUrl: typeof value.pipelineUrl === "string" ? value.pipelineUrl : null,
-    model: typeof value.model === "string" ? value.model : null,
-    orientation: typeof value.orientation === "string" ? value.orientation : undefined,
-    count: typeof value.count === "number" ? value.count : undefined,
-    generationJobId:
-      typeof value.generationJobId === "string" ? value.generationJobId : undefined,
-    finalize,
-  };
-}
-
-function normalizeBlobStorageProbeEvidence(value: unknown): BlobStorageProbeEvidence {
-  if (!isRecord(value)) {
-    return { ok: false, loadError: "probe report is not a JSON object" };
-  }
-
-  const put = isRecord(value.put)
-    ? {
-        ok: typeof value.put.ok === "boolean" ? value.put.ok : false,
-        size: typeof value.put.size === "number" ? value.put.size : undefined,
-        error: normalizeProbeError(value.put.error),
-      }
-    : null;
-  const signedGetUrl = isRecord(value.signedGetUrl)
-    ? {
-        ok:
-          typeof value.signedGetUrl.ok === "boolean"
-            ? value.signedGetUrl.ok
-            : false,
-        host:
-          typeof value.signedGetUrl.host === "string"
-            ? value.signedGetUrl.host
-            : null,
-        pathname:
-          typeof value.signedGetUrl.pathname === "string"
-            ? value.signedGetUrl.pathname
-            : null,
-        expiresInSeconds:
-          typeof value.signedGetUrl.expiresInSeconds === "number"
-            ? value.signedGetUrl.expiresInSeconds
-            : undefined,
-        error: normalizeProbeError(value.signedGetUrl.error),
-      }
-    : null;
-  const readback = isRecord(value.readback)
-    ? {
-        ok: typeof value.readback.ok === "boolean" ? value.readback.ok : false,
-        source:
-          typeof value.readback.source === "string" ? value.readback.source : null,
-        status:
-          typeof value.readback.status === "number" ? value.readback.status : undefined,
-        bytes:
-          typeof value.readback.bytes === "number" ? value.readback.bytes : undefined,
-        matches:
-          typeof value.readback.matches === "boolean"
-            ? value.readback.matches
-            : false,
-        sha256:
-          typeof value.readback.sha256 === "string" ? value.readback.sha256 : null,
-        error:
-          typeof value.readback.error === "string" ? value.readback.error : null,
-      }
-    : null;
-  const deleteResult = isRecord(value.delete)
-    ? {
-        ok: typeof value.delete.ok === "boolean" ? value.delete.ok : false,
-        error: normalizeProbeError(value.delete.error),
-      }
-    : null;
-
-  return {
-    ok: typeof value.ok === "boolean" ? value.ok : false,
-    checkedAt: typeof value.checkedAt === "string" ? value.checkedAt : null,
-    durationMs: typeof value.durationMs === "number" ? value.durationMs : undefined,
-    provider: typeof value.provider === "string" ? value.provider : null,
-    endpoint: typeof value.endpoint === "string" ? value.endpoint : null,
-    bucket: typeof value.bucket === "string" ? value.bucket : null,
-    key: typeof value.key === "string" ? value.key : undefined,
-    bytes: typeof value.bytes === "number" ? value.bytes : undefined,
-    put,
-    signedGetUrl,
-    readback,
-    delete: deleteResult,
-  };
-}
-
-function normalizeSafetyGatewayProbeEvidence(value: unknown): SafetyGatewayProbeEvidence {
-  if (!isRecord(value)) {
-    return { ok: false, loadError: "probe report is not a JSON object" };
-  }
-
-  return {
-    ok: typeof value.ok === "boolean" ? value.ok : false,
-    checkedAt: typeof value.checkedAt === "string" ? value.checkedAt : null,
-    durationMs: typeof value.durationMs === "number" ? value.durationMs : undefined,
-    provider: typeof value.provider === "string" ? value.provider : null,
-    serviceUrl: typeof value.serviceUrl === "string" ? value.serviceUrl : null,
-    targetType: typeof value.targetType === "string" ? value.targetType : null,
-    status: typeof value.status === "string" ? value.status : null,
-    policyCode: typeof value.policyCode === "string" ? value.policyCode : null,
-    confidence:
-      typeof value.confidence === "number" ? value.confidence : undefined,
-    error: normalizeProbeError(value.error),
-  };
-}
-
-function normalizeChatServiceProbeEvidence(value: unknown): ChatServiceProbeEvidence {
-  if (!isRecord(value)) {
-    return { ok: false, loadError: "probe report is not a JSON object" };
-  }
-
-  const health = isRecord(value.health)
-    ? {
-        ok: typeof value.health.ok === "boolean" ? value.health.ok : false,
-        status: typeof value.health.status === "number" ? value.health.status : undefined,
-        service:
-          typeof value.health.service === "string" ? value.health.service : null,
-        error:
-          typeof value.health.error === "string" ? value.health.error : null,
-      }
-    : null;
-  const signedRequest = isRecord(value.signedRequest)
-    ? {
-        ok:
-          typeof value.signedRequest.ok === "boolean"
-            ? value.signedRequest.ok
-            : false,
-        status:
-          typeof value.signedRequest.status === "number"
-            ? value.signedRequest.status
-            : undefined,
-        sessionsCount:
-          typeof value.signedRequest.sessionsCount === "number"
-            ? value.signedRequest.sessionsCount
-            : undefined,
-        error:
-          typeof value.signedRequest.error === "string"
-            ? value.signedRequest.error
-            : null,
-      }
-    : null;
-  const unsignedRequest = isRecord(value.unsignedRequest)
-    ? {
-        ok:
-          typeof value.unsignedRequest.ok === "boolean"
-            ? value.unsignedRequest.ok
-            : false,
-        status:
-          typeof value.unsignedRequest.status === "number"
-            ? value.unsignedRequest.status
-            : undefined,
-        error:
-          typeof value.unsignedRequest.error === "string"
-            ? value.unsignedRequest.error
-            : null,
-      }
-    : null;
-  const conversation = isRecord(value.conversation)
-    ? {
-        ok: typeof value.conversation.ok === "boolean" ? value.conversation.ok : false,
-        attempted:
-          typeof value.conversation.attempted === "boolean"
-            ? value.conversation.attempted
-            : false,
-        preflightCleanup: normalizeProbeOperation(
-          value.conversation.preflightCleanup,
-        ),
-        createSession: normalizeProbeOperation(value.conversation.createSession),
-        sendMessage: normalizeProbeOperation(value.conversation.sendMessage),
-        stream: normalizeChatStreamProbeOperation(value.conversation.stream),
-        getSession: normalizeChatGetSessionProbeOperation(value.conversation.getSession),
-        noMemory: normalizeChatNoMemoryProbeOperation(
-          value.conversation.noMemory,
-        ),
-        blockedInput: normalizeChatBlockedInputProbeOperation(value.conversation.blockedInput),
-        cleanup: normalizeChatCleanupProbeOperation(value.conversation.cleanup),
-        error:
-          typeof value.conversation.error === "string"
-            ? value.conversation.error
-            : null,
-      }
-    : null;
-
-  return {
-    ok: typeof value.ok === "boolean" ? value.ok : false,
-    checkedAt: typeof value.checkedAt === "string" ? value.checkedAt : null,
-    durationMs: typeof value.durationMs === "number" ? value.durationMs : undefined,
-    serviceUrl: typeof value.serviceUrl === "string" ? value.serviceUrl : null,
-    userId: typeof value.userId === "string" ? value.userId : null,
-    actorDataClass:
-      typeof value.actorDataClass === "string" ? value.actorDataClass : null,
-    dedicatedActor:
-      typeof value.dedicatedActor === "boolean" ? value.dedicatedActor : false,
-    characterId: typeof value.characterId === "string" ? value.characterId : null,
-    characterSource:
-      typeof value.characterSource === "string" ? value.characterSource : null,
-    usedSignedBff:
-      typeof value.usedSignedBff === "boolean" ? value.usedSignedBff : false,
-    health,
-    signedRequest,
-    unsignedRequest,
-    conversation,
-    error: normalizeProbeError(value.error),
-  };
-}
-
-function normalizeProbeOperation(value: unknown) {
-  if (!isRecord(value)) return null;
-  return {
-    ok: typeof value.ok === "boolean" ? value.ok : false,
-    status: typeof value.status === "number" ? value.status : undefined,
-    error: typeof value.error === "string" ? value.error : null,
-  };
-}
-
-function normalizeChatStreamProbeOperation(value: unknown) {
-  const operation = normalizeProbeOperation(value);
-  if (!operation || !isRecord(value)) return operation;
-  return {
-    ...operation,
-    sawStart: typeof value.sawStart === "boolean" ? value.sawStart : false,
-    sawDelta: typeof value.sawDelta === "boolean" ? value.sawDelta : false,
-    sawDone: typeof value.sawDone === "boolean" ? value.sawDone : false,
-  };
-}
-
-function normalizeChatGetSessionProbeOperation(value: unknown) {
-  const operation = normalizeProbeOperation(value);
-  if (!operation || !isRecord(value)) return operation;
-  return {
-    ...operation,
-    assistantMessageId:
-      typeof value.assistantMessageId === "string"
-        ? value.assistantMessageId
-        : undefined,
-    assistantSent:
-      typeof value.assistantSent === "boolean" ? value.assistantSent : false,
-    assistantStatus:
-      typeof value.assistantStatus === "string" ? value.assistantStatus : null,
-  };
-}
-
-function normalizeChatBlockedInputProbeOperation(value: unknown) {
-  const operation = normalizeProbeOperation(value);
-  if (!operation || !isRecord(value)) return operation;
-  return {
-    ...operation,
-    status_: typeof value.status_ === "string" ? value.status_ : null,
-  };
-}
-
-function normalizeChatNoMemoryProbeOperation(value: unknown) {
-  const operation = normalizeProbeOperation(value);
-  if (!operation || !isRecord(value)) return operation;
-  return {
-    ...operation,
-    assistantMessageId:
-      typeof value.assistantMessageId === "string"
-        ? value.assistantMessageId
-        : undefined,
-    authorityPinned:
-      typeof value.authorityPinned === "boolean" ? value.authorityPinned : false,
-    relationshipUnchanged:
-      typeof value.relationshipUnchanged === "boolean"
-        ? value.relationshipUnchanged
-        : false,
-    memorySourceAbsent:
-      typeof value.memorySourceAbsent === "boolean"
-        ? value.memorySourceAbsent
-        : false,
-  };
-}
-
-function normalizeChatCleanupProbeOperation(value: unknown) {
-  const operation = normalizeProbeOperation(value);
-  if (!operation || !isRecord(value)) return operation;
-  return {
-    ...operation,
-    relationshipDeleted:
-      typeof value.relationshipDeleted === "boolean"
-        ? value.relationshipDeleted
-        : false,
-    memoryGone:
-      typeof value.memoryGone === "boolean" ? value.memoryGone : false,
-    memoriesDeleted:
-      typeof value.memoriesDeleted === "number"
-        ? value.memoriesDeleted
-        : undefined,
-    relationshipsDeleted:
-      typeof value.relationshipsDeleted === "number"
-        ? value.relationshipsDeleted
-        : undefined,
-    relationshipsGone:
-      typeof value.relationshipsGone === "boolean"
-        ? value.relationshipsGone
-        : false,
-    sessionDeleted:
-      typeof value.sessionDeleted === "boolean" ? value.sessionDeleted : false,
-    sessionGone:
-      typeof value.sessionGone === "boolean" ? value.sessionGone : false,
-  };
-}
-
-function normalizeChatModelProbeEvidence(value: unknown): ChatModelProbeEvidence {
-  if (!isRecord(value)) {
-    return { ok: false, loadError: "probe report is not a JSON object" };
-  }
-
-  return {
-    ok: typeof value.ok === "boolean" ? value.ok : false,
-    checkedAt: typeof value.checkedAt === "string" ? value.checkedAt : null,
-    durationMs: typeof value.durationMs === "number" ? value.durationMs : undefined,
-    provider: typeof value.provider === "string" ? value.provider : null,
-    baseUrl: typeof value.baseUrl === "string" ? value.baseUrl : null,
-    model: typeof value.model === "string" ? value.model : null,
-    chunks: typeof value.chunks === "number" ? value.chunks : undefined,
-    characters:
-      typeof value.characters === "number" ? value.characters : undefined,
-    assistantPreview:
-      typeof value.assistantPreview === "string" ? value.assistantPreview : null,
-    done: typeof value.done === "boolean" ? value.done : false,
-    error: normalizeProbeError(value.error),
-  };
-}
-
-function normalizeVoiceModelProbeEvidence(value: unknown): VoiceModelProbeEvidence {
-  if (!isRecord(value)) {
-    return { ok: false, loadError: "probe report is not a JSON object" };
-  }
-
-  return {
-    ok: typeof value.ok === "boolean" ? value.ok : false,
-    checkedAt: typeof value.checkedAt === "string" ? value.checkedAt : null,
-    durationMs: typeof value.durationMs === "number" ? value.durationMs : undefined,
-    provider: typeof value.provider === "string" ? value.provider : null,
-    baseUrl: typeof value.baseUrl === "string" ? value.baseUrl : null,
-    model: typeof value.model === "string" ? value.model : null,
-    voiceId: typeof value.voiceId === "string" ? value.voiceId : null,
-    key: typeof value.key === "string" ? value.key : null,
-    voiceCloningAvailable:
-      typeof value.voiceCloningAvailable === "boolean"
-        ? value.voiceCloningAvailable
-        : null,
-    voiceCloneVerified:
-      typeof value.voiceCloneVerified === "boolean"
-        ? value.voiceCloneVerified
-        : null,
-    audioDurationMs:
-      typeof value.audioDurationMs === "number" ? value.audioDurationMs : undefined,
-    bytes: typeof value.bytes === "number" ? value.bytes : undefined,
-    contentType: typeof value.contentType === "string" ? value.contentType : null,
-    error: normalizeProbeError(value.error),
-  };
-}
-
-function normalizePaymentProviderProbeEvidence(value: unknown): PaymentProviderProbeEvidence {
-  if (!isRecord(value)) {
-    return { ok: false, loadError: "probe report is not a JSON object" };
-  }
-
-  return {
-    ok: typeof value.ok === "boolean" ? value.ok : false,
-    checkedAt: typeof value.checkedAt === "string" ? value.checkedAt : null,
-    durationMs: typeof value.durationMs === "number" ? value.durationMs : undefined,
-    provider: typeof value.provider === "string" ? value.provider : null,
-    baseUrl: typeof value.baseUrl === "string" ? value.baseUrl : null,
-    storeId: typeof value.storeId === "string" ? value.storeId : null,
-    canViewStore:
-      typeof value.canViewStore === "boolean" ? value.canViewStore : false,
-    returnedStoreId:
-      typeof value.returnedStoreId === "string" ? value.returnedStoreId : null,
-    canCreateInvoice:
-      typeof value.canCreateInvoice === "boolean" ? value.canCreateInvoice : false,
-    invoiceId: typeof value.invoiceId === "string" ? value.invoiceId : null,
-    checkoutUrl: typeof value.checkoutUrl === "string" ? value.checkoutUrl : null,
-    invoiceAmountCents:
-      typeof value.invoiceAmountCents === "number"
-        ? value.invoiceAmountCents
-        : undefined,
-    invoiceCurrency:
-      typeof value.invoiceCurrency === "string" ? value.invoiceCurrency : null,
-    error: normalizeProbeError(value.error),
-  };
-}
-
-function normalizeAgeVerificationProbeEvidence(value: unknown): AgeVerificationProbeEvidence {
-  if (!isRecord(value)) {
-    return { ok: false, loadError: "probe report is not a JSON object" };
-  }
-
-  return {
-    ok: typeof value.ok === "boolean" ? value.ok : false,
-    checkedAt: typeof value.checkedAt === "string" ? value.checkedAt : null,
-    durationMs: typeof value.durationMs === "number" ? value.durationMs : undefined,
-    provider: typeof value.provider === "string" ? value.provider : null,
-    serviceUrl: typeof value.serviceUrl === "string" ? value.serviceUrl : null,
-    jurisdiction: typeof value.jurisdiction === "string" ? value.jurisdiction : null,
-    providerVerificationId:
-      typeof value.providerVerificationId === "string"
-        ? value.providerVerificationId
-        : null,
-    status: typeof value.status === "string" ? value.status : null,
-    url: typeof value.url === "string" ? value.url : null,
-    error: normalizeProbeError(value.error),
-  };
-}
-
-function normalizeProductConfigProbeEvidence(value: unknown): ProductConfigProbeEvidence {
-  if (!isRecord(value)) {
-    return { ok: false, loadError: "probe report is not a JSON object" };
-  }
-
-  return {
-    ok: typeof value.ok === "boolean" ? value.ok : false,
-    checkedAt: typeof value.checkedAt === "string" ? value.checkedAt : null,
-    durationMs: typeof value.durationMs === "number" ? value.durationMs : undefined,
-    videoFeatureEnabled:
-      typeof value.videoFeatureEnabled === "boolean"
-        ? value.videoFeatureEnabled
-        : undefined,
-    activeImageProfiles:
-      typeof value.activeImageProfiles === "number"
-        ? value.activeImageProfiles
-        : undefined,
-    activeImageCharacterTemplates:
-      typeof value.activeImageCharacterTemplates === "number"
-        ? value.activeImageCharacterTemplates
-        : undefined,
-    activeImageFreeplayTemplates:
-      typeof value.activeImageFreeplayTemplates === "number"
-        ? value.activeImageFreeplayTemplates
-        : undefined,
-    activeImagePricingRules:
-      typeof value.activeImagePricingRules === "number"
-        ? value.activeImagePricingRules
-        : undefined,
-    activeVideoProfiles:
-      typeof value.activeVideoProfiles === "number"
-        ? value.activeVideoProfiles
-        : undefined,
-    activeVideoCharacterTemplates:
-      typeof value.activeVideoCharacterTemplates === "number"
-        ? value.activeVideoCharacterTemplates
-        : undefined,
-    activeVideoFreeplayTemplates:
-      typeof value.activeVideoFreeplayTemplates === "number"
-        ? value.activeVideoFreeplayTemplates
-        : undefined,
-    activeVideoPricingRules:
-      typeof value.activeVideoPricingRules === "number"
-        ? value.activeVideoPricingRules
-        : undefined,
-    activeVoicePricingRules:
-      typeof value.activeVoicePricingRules === "number"
-        ? value.activeVoicePricingRules
-        : undefined,
-    publicCharacters:
-      typeof value.publicCharacters === "number" ? value.publicCharacters : undefined,
-    publicCharactersWithSystemPrompt:
-      typeof value.publicCharactersWithSystemPrompt === "number"
-        ? value.publicCharactersWithSystemPrompt
-        : undefined,
-    error: normalizeProbeError(value.error),
-  };
-}
-
-function normalizePublicCatalogProbeEvidence(value: unknown): PublicCatalogProbeEvidence {
-  if (!isRecord(value)) {
-    return { ok: false, loadError: "probe report is not a JSON object" };
-  }
-
-  const counts = isRecord(value.counts)
-    ? {
-        publicCharacters:
-          typeof value.counts.publicCharacters === "number"
-            ? value.counts.publicCharacters
-            : undefined,
-        publicCollections:
-          typeof value.counts.publicCollections === "number"
-            ? value.counts.publicCollections
-            : undefined,
-        publicCreators:
-          typeof value.counts.publicCreators === "number"
-            ? value.counts.publicCreators
-            : undefined,
-        publicFeedbackItems:
-          typeof value.counts.publicFeedbackItems === "number"
-            ? value.counts.publicFeedbackItems
-            : undefined,
-        distinctImages:
-          typeof value.counts.distinctImages === "number"
-            ? value.counts.distinctImages
-            : undefined,
-      }
-    : null;
-  const issueTotals = isRecord(value.issueTotals)
-    ? {
-        total:
-          typeof value.issueTotals.total === "number"
-            ? value.issueTotals.total
-            : undefined,
-        fail:
-          typeof value.issueTotals.fail === "number"
-            ? value.issueTotals.fail
-            : undefined,
-        warn:
-          typeof value.issueTotals.warn === "number"
-            ? value.issueTotals.warn
-            : undefined,
-      }
-    : null;
-
-  return {
-    ok: typeof value.ok === "boolean" ? value.ok : false,
-    checkedAt: typeof value.checkedAt === "string" ? value.checkedAt : null,
-    durationMs: typeof value.durationMs === "number" ? value.durationMs : undefined,
-    counts,
-    issueTotals,
-    error: normalizeProbeError(value.error),
-  };
-}
-
-function normalizeWebSurfaceProbeEvidence(value: unknown): WebSurfaceProbeEvidence {
-  if (!isRecord(value)) {
-    return { ok: false, loadError: "probe report is not a JSON object" };
-  }
-
-  return {
-    ok: typeof value.ok === "boolean" ? value.ok : false,
-    checkedAt: typeof value.checkedAt === "string" ? value.checkedAt : null,
-    durationMs: typeof value.durationMs === "number" ? value.durationMs : undefined,
-    mainUrl: typeof value.mainUrl === "string" ? value.mainUrl : null,
-    adminUrl: typeof value.adminUrl === "string" ? value.adminUrl : null,
-    home: normalizeWebPageEvidence(value.home, "containsBrand"),
-    generate: normalizeWebPageEvidence(value.generate, "containsGenerator"),
-    apiAgeGate: normalizeWebApiAgeGateEvidence(value.apiAgeGate),
-    admin: normalizeAdminWebEvidence(value.admin),
-    adminApi: normalizeAdminApiEvidence(value.adminApi),
-    error: normalizeProbeError(value.error),
-  };
-}
-
-function normalizeWebPageEvidence(
-  value: unknown,
-  markerKey: "containsBrand" | "containsGenerator",
-) {
-  if (!isRecord(value)) return null;
-  return {
-    ok: typeof value.ok === "boolean" ? value.ok : false,
-    status: typeof value.status === "number" ? value.status : undefined,
-    bytes: typeof value.bytes === "number" ? value.bytes : undefined,
-    contentType:
-      typeof value.contentType === "string" ? value.contentType : null,
-    [markerKey]:
-      typeof value[markerKey] === "boolean"
-        ? value[markerKey]
-        : undefined,
-    nextErrorShell:
-      typeof value.nextErrorShell === "boolean"
-        ? value.nextErrorShell
-        : undefined,
-    assets: normalizeWebAssetEvidence(value.assets),
-    error: typeof value.error === "string" ? value.error : null,
-  };
-}
-
-function normalizeWebApiAgeGateEvidence(value: unknown) {
-  if (!isRecord(value)) return null;
-  return {
-    ok: typeof value.ok === "boolean" ? value.ok : false,
-    status: typeof value.status === "number" ? value.status : undefined,
-    code: typeof value.code === "string" ? value.code : null,
-    reason: typeof value.reason === "string" ? value.reason : null,
-    error: typeof value.error === "string" ? value.error : null,
-  };
-}
-
-function normalizeAdminWebEvidence(value: unknown) {
-  if (!isRecord(value)) return null;
-  return {
-    ok: typeof value.ok === "boolean" ? value.ok : false,
-    status: typeof value.status === "number" ? value.status : undefined,
-    bytes: typeof value.bytes === "number" ? value.bytes : undefined,
-    contentType:
-      typeof value.contentType === "string" ? value.contentType : null,
-    protected:
-      typeof value.protected === "boolean" ? value.protected : undefined,
-    protectedReason:
-      typeof value.protectedReason === "string" ? value.protectedReason : null,
-    nextErrorShell:
-      typeof value.nextErrorShell === "boolean"
-        ? value.nextErrorShell
-        : undefined,
-    assets: normalizeWebAssetEvidence(value.assets),
-    error: typeof value.error === "string" ? value.error : null,
-  };
-}
-
-function normalizeWebAssetEvidence(
-  value: unknown,
-): WebSurfaceAssetEvidence | null {
-  if (!isRecord(value)) return null;
-  const failures = Array.isArray(value.failures)
-    ? value.failures.filter(isRecord).map((failure) => ({
-        url: typeof failure.url === "string" ? failure.url : undefined,
-        status:
-          typeof failure.status === "number" ? failure.status : undefined,
-        bytes: typeof failure.bytes === "number" ? failure.bytes : undefined,
-        contentType:
-          typeof failure.contentType === "string"
-            ? failure.contentType
-            : null,
-        error:
-          typeof failure.error === "string" ? failure.error : undefined,
-      }))
-    : [];
-  return {
-    ok: typeof value.ok === "boolean" ? value.ok : false,
-    checked:
-      typeof value.checked === "number" ? value.checked : undefined,
-    failures,
-  };
-}
-
-function normalizeAdminApiEvidence(value: unknown) {
-  if (!isRecord(value)) return null;
-  return {
-    ok: typeof value.ok === "boolean" ? value.ok : false,
-    status: typeof value.status === "number" ? value.status : undefined,
-    code: typeof value.code === "string" ? value.code : null,
-    error: typeof value.error === "string" ? value.error : null,
-  };
-}
-
-function normalizeProbeError(value: unknown) {
-  if (!isRecord(value)) return null;
-  return {
-    code: typeof value.code === "string" ? value.code : undefined,
-    message: typeof value.message === "string" ? value.message : undefined,
-  };
 }
 
 export function assessLaunchReadiness(
