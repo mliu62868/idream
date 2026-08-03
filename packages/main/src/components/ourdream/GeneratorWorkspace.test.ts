@@ -1,22 +1,25 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  exactGenerationQuoteForCount,
   fetchCharacterById,
   generatorConfigRequestIsCurrent,
   generatorImageEditModelOptions,
   generatorRouteAfterRemixExit,
-  generationErrorAuthorityAction,
   invalidateGeneratorConfigAuthority,
   loadGeneratorLooksForViewer,
   loadGeneratorWorkspaceInitialData,
   projectGeneratorModelSelection,
   revalidateGeneratorViewerAuthority,
   removeGeneratorCharacterViewerAuthority,
-  refreshGenerationQuoteAfterBalanceChange,
-  requestGenerationJobWithExactAuthority,
-  requestMediaVariationWithExactQuote,
   suspendGeneratorConfigAuthority,
 } from "./GeneratorWorkspace";
+// The generation request lifecycle these cases exercise now lives in its own
+// module; the workspace only renders it. See generation-request.test.ts for the
+// invariants that module owns.
+import {
+  exactGenerationQuoteForCount,
+  requestGenerationJobWithExactAuthority,
+  requestMediaVariationWithExactQuote,
+} from "@/lib/generation-write-client";
 import type { RuntimeGenerationQuote } from "@/lib/public-api-contracts";
 
 describe("generator model selection authority", () => {
@@ -505,32 +508,6 @@ describe("generator exact quote authority", () => {
     expect(idempotencyKeys.size).toBe(0);
   });
 
-  it.each(["queued spend", "terminal refund"])(
-    "invalidates affordability and requotes after a %s balance change",
-    () => {
-      const actions = {
-        clearQuote: vi.fn(),
-        clearQuoteFailure: vi.fn(),
-        refreshBalance: vi.fn(),
-        requestQuoteRefresh: vi.fn(),
-      };
-
-      refreshGenerationQuoteAfterBalanceChange(actions);
-
-      expect(actions.clearQuote).toHaveBeenCalledOnce();
-      expect(actions.clearQuoteFailure).toHaveBeenCalledOnce();
-      expect(actions.requestQuoteRefresh).toHaveBeenCalledOnce();
-      expect(actions.refreshBalance).toHaveBeenCalledOnce();
-    },
-  );
-
-  it("refreshes balance and exact affordability after a concurrent 402", () => {
-    expect(generationErrorAuthorityAction(402)).toBe(
-      "refresh_balance_and_quote",
-    );
-    expect(generationErrorAuthorityAction(409)).toBe("refresh_quote");
-    expect(generationErrorAuthorityAction(500)).toBe("none");
-  });
 });
 
 describe("generator viewer data bootstrap", () => {

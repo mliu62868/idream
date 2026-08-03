@@ -94,7 +94,10 @@ export type GenerationRequestAction =
   | { type: "quote_pending" }
   | { type: "quote_resolved"; key: string; quote: RuntimeGenerationQuote }
   | { type: "quote_failed"; key: string; message: string }
+  /** The viewer asked to reprice after seeing the failure. */
+  | { type: "quote_retry_requested" }
   | { type: "retry_quotes_pending" }
+  | { type: "retry_quotes_retry_requested" }
   | {
       type: "retry_quotes_resolved";
       quotes: Record<string, RuntimeGenerationRetryQuote>;
@@ -189,8 +192,17 @@ export function reduceGenerationRequest(
         quote: null,
         quoteFailure: { key: action.key, message: action.message },
       };
+    case "quote_retry_requested":
+      return {
+        ...state,
+        quote: null,
+        quoteFailure: null,
+        quoteNonce: state.quoteNonce + 1,
+      };
     case "retry_quotes_pending":
       return { ...state, retryQuotes: {}, retryQuoteFailures: {} };
+    case "retry_quotes_retry_requested":
+      return { ...state, retryQuoteNonce: state.retryQuoteNonce + 1 };
     case "retry_quotes_resolved":
       return {
         ...state,
@@ -288,8 +300,12 @@ export type GenerationRequestViewInput = {
   modeAvailable: boolean;
   /** A character, freeplay, or an image-edit source — something to generate for. */
   hasTarget: boolean;
-  /** False only while image-edit is selected without a source picked. */
-  hasEditSource: boolean;
+  /**
+   * The image-edit source this form would spend on: a media id, or null when
+   * image-edit is selected but nothing is picked yet. Undefined when the form
+   * is not editing an image at all.
+   */
+  editSourceMediaId?: string | null;
 };
 
 export type GenerationRequestView = {
@@ -326,6 +342,13 @@ export function projectGenerationRequest(
   const configLoaded = configIsLoaded(input.configAuthority);
   const insufficientBalance =
     configLoaded && estimatedCost !== null && exactQuote?.affordable === false;
+  const hasEditSource = input.editSourceMediaId !== null;
+  // An image edit is dispatched as a variation on its source, so the form is
+  // just as busy as it is during a plain generate.
+  const submitting =
+    state.submitting ||
+    (typeof input.editSourceMediaId === "string" &&
+      state.variationPendingMediaIds.has(input.editSourceMediaId));
 
   return {
     quote,
@@ -336,16 +359,16 @@ export function projectGenerationRequest(
     exactQuote,
     estimatedCost,
     insufficientBalance,
-    submitting: state.submitting,
+    submitting,
     // INVARIANT: only `ready` authority may submit. `anonymous` can see a price
     // but not spend; `suspended`/`revoked` have no config to price against.
     canSubmit:
-      !state.submitting &&
+      !submitting &&
       input.hasTarget &&
       input.configAuthority === "ready" &&
       estimatedCost !== null &&
       input.modeAvailable &&
-      input.hasEditSource &&
+      hasEditSource &&
       !insufficientBalance,
   };
 }

@@ -77,7 +77,6 @@ function viewInput(
     count: 1,
     modeAvailable: true,
     hasTarget: true,
-    hasEditSource: true,
     ...overrides,
   };
 }
@@ -999,9 +998,31 @@ describe("generation request projection", () => {
 
   it("blocks submission while the image-edit source is unpicked", () => {
     expect(
-      projectGenerationRequest(heldQuote(), viewInput({ hasEditSource: false }))
+      projectGenerationRequest(heldQuote(), viewInput({ editSourceMediaId: null }))
         .canSubmit,
     ).toBe(false);
+  });
+
+  it("counts an in-flight edit of the chosen source as the form submitting", () => {
+    const editing = stateWith({
+      quote: { key: "route-key", quote },
+      variationPendingMediaIds: new Set(["media-1"]),
+    });
+
+    const onSource = projectGenerationRequest(
+      editing,
+      viewInput({ editSourceMediaId: "media-1" }),
+    );
+    expect(onSource.submitting).toBe(true);
+    expect(onSource.canSubmit).toBe(false);
+
+    // A variation running on some other gallery card is not this form's write.
+    const elsewhere = projectGenerationRequest(
+      editing,
+      viewInput({ editSourceMediaId: "media-2" }),
+    );
+    expect(elsewhere.submitting).toBe(false);
+    expect(elsewhere.canSubmit).toBe(true);
   });
 
   it("blocks submission for an unavailable mode or a missing target", () => {
