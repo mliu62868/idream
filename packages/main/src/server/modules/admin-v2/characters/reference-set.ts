@@ -1,11 +1,10 @@
 import type { Prisma } from "@prisma/client";
-import {
-  characterReferenceSetPublishRequestSchema,
-  characterReferenceSetPublishResponseSchema,
-  type CharacterReferenceSetPublishRequest,
-} from "@idream/shared/admin";
+import { characterReferenceSetPublishResponseSchema } from "@idream/shared/admin";
 import { Errors } from "@/server/lib/errors";
-import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
+import type {
+  AdminActor,
+  AdminV2RequestBody,
+} from "@/server/modules/admin-v2/shared/authority";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { referenceSetSnapshotHash } from "./release-snapshot";
 import { lockCharacterGenerationAndMediaAssetAuthorities } from "./generation-authority-lock";
@@ -15,14 +14,19 @@ import {
   isMediaAssetOperationalForAuthority,
 } from "@/server/lib/media-asset-authority";
 
+// SPEC: the body the manifest declares for this operation, already parsed by the route.
+type ReferenceSetPublishRequest = AdminV2RequestBody<
+  "characterReferenceSetPublishRequestSchema+idempotency-key"
+>;
+
 export async function publishCharacterReferenceSet(input: {
   characterId: string;
   actor: AdminActor;
   requestId: string;
-  request: CharacterReferenceSetPublishRequest;
+  request: ReferenceSetPublishRequest;
   tx: Prisma.TransactionClient;
 }) {
-  const request = characterReferenceSetPublishRequestSchema.parse(input.request);
+  const request = input.request;
   if (request.confirmation !== `PUBLISH REFERENCES ${input.characterId}`) {
     throw Errors.badRequest("Confirmation did not match the Character reference publication");
   }

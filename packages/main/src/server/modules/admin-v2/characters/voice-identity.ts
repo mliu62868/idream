@@ -1,12 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   DEFAULT_FISH_AUDIO_DELIVERY,
-  characterVoiceActivationRequestSchema,
   characterVoiceActivationResponseSchema,
   characterVoiceCloneCreateRequestSchema,
   characterVoiceCloneCreateResponseSchema,
   characterVoiceProfileSchema,
-  characterVoiceSystemDefaultResetRequestSchema,
   characterVoiceSystemDefaultResetResponseSchema,
   fishAudioDeliverySettingsSchema,
   type CharacterVoiceProfile,
@@ -19,7 +17,10 @@ import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { providers } from "@/server/providers";
 import type { VoiceIdentityPort } from "@/server/providers/types";
-import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
+import type {
+  AdminActor,
+  AdminV2RequestBody,
+} from "@/server/modules/admin-v2/shared/authority";
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { operationalCharacterWhere } from "@/server/modules/metric-data-scope";
@@ -438,16 +439,25 @@ export async function createCharacterVoiceClone(input: {
   }
 }
 
+// SPEC: the bodies the manifest declares for the two voice write operations, already
+// parsed by their Route Handlers.
+type VoiceActivationRequest = AdminV2RequestBody<
+  "characterVoiceActivationRequestSchema+idempotency-key"
+>;
+type VoiceSystemDefaultResetRequest = AdminV2RequestBody<
+  "characterVoiceSystemDefaultResetRequestSchema+idempotency-key"
+>;
+
 export async function activateCharacterVoiceProfile(input: {
   characterId: string;
   profileId: string;
   actor: AdminActor;
   idempotencyKey: string;
   requestId: string;
-  request: unknown;
+  request: VoiceActivationRequest;
 }) {
   configuredFishVoiceIdentityPort("Voice activation");
-  const request = characterVoiceActivationRequestSchema.parse(input.request);
+  const request = input.request;
   const result = await executeAtomicIdempotentMutation({
     environment: env.APP_ENV,
     actor: input.actor,
@@ -586,11 +596,9 @@ export async function resetCharacterVoiceToSystemDefault(input: {
   actor: AdminActor;
   idempotencyKey: string;
   requestId: string;
-  request: unknown;
+  request: VoiceSystemDefaultResetRequest;
 }) {
-  const request = characterVoiceSystemDefaultResetRequestSchema.parse(
-    input.request,
-  );
+  const request = input.request;
   const result = await executeAtomicIdempotentMutation({
     environment: env.APP_ENV,
     actor: input.actor,

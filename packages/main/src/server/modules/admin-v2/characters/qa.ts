@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import {
-  characterQaRunCreateRequestSchema,
   characterQaRunSchema,
   type CharacterQaRun,
 } from "@idream/shared/admin";
@@ -8,7 +7,10 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
-import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
+import {
+  actorWithPermission,
+  type AdminV2RequestBody,
+} from "@/server/modules/admin-v2/shared/authority";
 import { canonicalSha256 } from "../shared/canonical-json";
 import { toInputJson } from "../shared/prisma-json";
 import {
@@ -34,10 +36,15 @@ import {
   evaluateDraftAssetPackAuthority,
 } from "./draft-asset-pack-authority";
 
+// SPEC: the body the manifest declares for this operation, already parsed by the route.
+type QaRunCreateRequest = AdminV2RequestBody<
+  "characterQaRunCreateRequestSchema+idempotency-key+if-match"
+>;
+
 export async function createCharacterQaRun(
   request: Request,
   characterId: string,
-  rawInput: unknown,
+  input: QaRunCreateRequest,
   options?: {
     readonly tx?: Prisma.TransactionClient;
     readonly actor?: { readonly id: string; readonly role: string };
@@ -45,7 +52,6 @@ export async function createCharacterQaRun(
   },
 ): Promise<CharacterQaRun> {
   const actor = options?.actor ?? await actorWithPermission(request, "character.release.review", { characterId });
-  const input = characterQaRunCreateRequestSchema.parse(rawInput);
   const execute = async (tx: Prisma.TransactionClient) => {
     await lockCharacterGenerationAuthority(tx, characterId);
     const project = await tx.characterProject.findFirst({ where: { characterId } });

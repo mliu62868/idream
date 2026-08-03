@@ -5,6 +5,7 @@ import {
   requireExecutableAdminV2Contract,
   type AdminV2ApiOperation,
   type AdminV2DeclaredOperation,
+  type AdminV2DeclaredOperationId,
   type AdminV2DeclaredRequestRef,
   type ExecutableAdminV2Contract,
 } from "@idream/shared/admin";
@@ -64,8 +65,12 @@ export type AdminMutationContext<Body> = {
   readonly expectedVersion?: number;
 };
 
+// SPEC: only an operation id the manifest declares may drive a mutation.
+// INTENT: `requireAdminMutationOperation` already fails closed at runtime, but a caller that
+// mistypes an id should never reach runtime — the union makes the typo a compile error, and
+// the same key already selects the request contract, so nothing else has to agree.
 export async function executeAdminMutation<Body, Prepared = undefined>(
-  operationId: string,
+  operationId: AdminV2DeclaredOperationId,
   request: Request,
   options: {
     readonly params: Readonly<Record<string, string>>;
