@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import type { CharacterWorkspaceDetail } from "@idream/shared/admin";
 import { describe, expect, it } from "vitest";
+import { characterWorkspaceDetail } from "./character-workspace-fixture";
 import {
   characterNoDataDiagnosis,
   characterOperationsFacts,
@@ -95,6 +96,23 @@ function factValue(data: CharacterWorkspaceDetail, label: string) {
   return characterOperationsFacts(data).find((fact) => fact.label === label);
 }
 
+type VisualAsset = CharacterWorkspaceDetail["visual"]["anchors"][number];
+
+// SPEC: 一条完整的视觉素材投影；各用例只覆盖自己关心的字段。
+// INTENT: anchors / references 是数组，覆盖时整条替换，缺字段会被契约挡下。
+function visualAsset(overrides: Partial<VisualAsset> = {}): VisualAsset {
+  return {
+    mediaAssetId: "visual-asset",
+    role: "identity_anchor",
+    available: true,
+    url: "/visual-asset.webp",
+    thumbnailUrl: null,
+    qualityScore: null,
+    identityScore: null,
+    ...overrides,
+  };
+}
+
 describe("Character production entry", () => {
   it("flags a live character whose primary image cannot serve image-to-video", () => {
     expect(characterVideoSourceBroken(workspace({ servingState: "live" }))).toBe(true);
@@ -136,19 +154,32 @@ describe("Character production entry", () => {
 
 describe("Character detail assets", () => {
   it("deduplicates factual recent images without inventing placeholders", () => {
-    const data = {
+    const data = characterWorkspaceDetail({
       character: { id: "character-1", imageUrl: "/primary.webp" },
       visual: {
         anchors: [
-          { mediaAssetId: "anchor-1", available: true, url: "/primary.webp", thumbnailUrl: null },
-          { mediaAssetId: "anchor-2", available: true, url: "/anchor.webp", thumbnailUrl: "/anchor-thumb.webp" },
+          visualAsset({ mediaAssetId: "anchor-1", url: "/primary.webp" }),
+          visualAsset({
+            mediaAssetId: "anchor-2",
+            url: "/anchor.webp",
+            thumbnailUrl: "/anchor-thumb.webp",
+          }),
         ],
         references: [
-          { mediaAssetId: "reference-1", available: false, url: "/hidden.webp", thumbnailUrl: null },
-          { mediaAssetId: "reference-2", available: true, url: "/reference.webp", thumbnailUrl: null },
+          visualAsset({
+            mediaAssetId: "reference-1",
+            role: "identity_reference",
+            available: false,
+            url: "/hidden.webp",
+          }),
+          visualAsset({
+            mediaAssetId: "reference-2",
+            role: "identity_reference",
+            url: "/reference.webp",
+          }),
         ],
       },
-    } as unknown as CharacterWorkspaceDetail;
+    });
 
     expect(characterRecentAssets(data)).toEqual([
       { id: "character-1:primary", url: "/primary.webp" },
