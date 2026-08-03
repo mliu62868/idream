@@ -1,12 +1,10 @@
 import {
-  characterPerformanceBackfillRequestSchema,
-  characterPerformanceBackfillResponseSchema,
   characterPerformanceReconciliationSchema,
 } from "@idream/shared/admin";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { ok } from "@/server/lib/http";
-import { actorWithPermission, jsonBody } from "@/server/modules/admin-v2/shared/authority";
+import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 import { toInputJson } from "../shared/prisma-json";
 
 export interface CharacterPerformanceBackfillOptions {
@@ -334,17 +332,6 @@ export async function reconcileCharacterPerformanceFacts(db: PrismaClient) {
       ? "directional" as const
       : "invalid" as const,
   };
-}
-
-export async function runCharacterPerformanceBackfill(request: Request) {
-  await actorWithPermission(request, "analytics.metric.export");
-  const body = characterPerformanceBackfillRequestSchema.parse(await jsonBody(request));
-  const report = body.kind === "funnel"
-    ? await backfillCharacterFunnelFacts(prisma, body)
-    : await backfillCharacterVariableCostFacts(prisma, body);
-  return ok(characterPerformanceBackfillResponseSchema.parse(report), {
-    headers: { "cache-control": "no-store" },
-  });
 }
 
 export async function getCharacterPerformanceReconciliation(request: Request) {

@@ -1,6 +1,5 @@
 import {
   characterPortfolioDecisionRecordSchema,
-  characterPortfolioDecisionRequestSchema,
   characterPortfolioQuerySchema,
   characterPortfolioResponseSchema,
   type CharacterPerformanceSummary,
@@ -22,7 +21,7 @@ import { ok } from "@/server/lib/http";
 import {
   isMediaAssetOperationalForAuthority,
 } from "@/server/lib/media-asset-authority";
-import { actorWithPermission, jsonBody } from "@/server/modules/admin-v2/shared/authority";
+import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 import {
   effectiveCharacterIdsForPermission,
 } from "@/server/admin/effective-permissions";
@@ -898,16 +897,4 @@ export async function listCharacterPortfolio(request: Request) {
     authorizedDraftAssetCharacterIds:
       draftAssetScope === null ? null : [...draftAssetScope],
   }), { headers: { "cache-control": "no-store" } });
-}
-
-export async function recordCharacterPortfolioDecision(request: Request, characterId: string) {
-  const actor = await actorWithPermission(request, "character.project.write", { characterId });
-  const body = characterPortfolioDecisionRequestSchema.parse(await jsonBody(request));
-  const decision = await createCharacterPortfolioDecision(prisma, {
-    characterId,
-    actor,
-    requestId: request.headers.get("x-request-id") ?? crypto.randomUUID(),
-    body,
-  });
-  return ok(decision, { status: 201, headers: { "cache-control": "no-store" } });
 }
