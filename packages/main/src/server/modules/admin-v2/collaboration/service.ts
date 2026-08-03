@@ -1,9 +1,6 @@
 import {
-  collaborationActivityCreateSchema,
   collaborationQuerySchema,
   collaborationTargetTypeSchema,
-  collaborationWatchSchema,
-  savedViewCreateSchema,
   savedViewDeleteSchema,
   savedViewListQuerySchema,
   savedViewUpdateSchema,
@@ -214,7 +211,10 @@ export async function listActivity(request: Request, rawTargetType: string, targ
 export async function createActivity(request: Request, rawTargetType: string, targetId: string) {
   const targetType = collaborationTargetTypeSchema.parse(rawTargetType);
   const actor = await actorWithPermission(request, targetDescriptors[targetType].write);
-  const input = collaborationActivityCreateSchema.parse(await jsonBody(request));
+  const input = await jsonBody(
+    request,
+    "POST /api/v2/admin/collaboration/:targetType/:targetId/activity",
+  );
   const key = requireIdempotencyKey(request);
   const hash = canonicalJsonHash({ targetType, targetId, input });
   const existing = await prisma.adminCollaborationActivity.findUnique({
@@ -340,7 +340,10 @@ export async function setWatching(request: Request, rawTargetType: string, targe
   const targetType = collaborationTargetTypeSchema.parse(rawTargetType);
   const actor = await actorWithPermission(request, targetDescriptors[targetType].read);
   await assertTarget(actor, targetType, targetId);
-  const input = collaborationWatchSchema.parse(await jsonBody(request));
+  const input = await jsonBody(
+    request,
+    "PUT /api/v2/admin/collaboration/:targetType/:targetId/watch",
+  );
   const key = requireIdempotencyKey(request);
   const hash = canonicalJsonHash({ targetType, targetId, input });
   const result = await prisma.$transaction(async (tx) => {
@@ -408,7 +411,7 @@ export async function listSavedViewsV2(request: Request) {
 }
 
 export async function createSavedViewV2(request: Request) {
-  const input = savedViewCreateSchema.parse(await jsonBody(request));
+  const input = await jsonBody(request, "POST /api/v2/admin/saved-views");
   const actor = await actorWithPermission(request, targetDescriptors[input.scope].read);
   const key = requireIdempotencyKey(request);
   const existing = await prisma.adminSavedView.findUnique({ where: { ownerId_idempotencyKey: { ownerId: actor.id, idempotencyKey: key } } });
@@ -421,6 +424,14 @@ export async function createSavedViewV2(request: Request) {
 }
 
 export async function updateSavedViewV2(request: Request, id: string) {
+  // SPEC: the only Admin v2 write still parsing its own body instead of naming its
+  // operation id.
+  // INTENT: the manifest declares `savedViewUpdateSchema+if-match`, so `jsonBody` would
+  // start demanding an If-Match header — and the shipped console (SavedViewsControl
+  // `updateSelected`) sends the version in `expectedVersion` only. Wiring this one would
+  // 400 every Saved View rename in production. Stale writes are already rejected: the
+  // `updateMany` below is version-scoped. Retire this branch by having the console pass
+  // `ifMatch: current.version`, then key it like the rest.
   const input = savedViewUpdateSchema.parse(await jsonBody(request));
   const current = await prisma.adminSavedView.findUnique({ where: { id } });
   if (!current) throw Errors.notFound("Saved view not found");

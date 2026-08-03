@@ -83,16 +83,40 @@ const allOfAndOneOfBy = (
   oneOf: NonEmptyPermissions,
 ): AdminV2Authorization => ({ kind: "all_of_and_one_of_by_resource", resolver, always, oneOf });
 
-function operation<const Method extends AdminV2HttpMethod, const Route extends AdminV2RoutePattern>(
+/**
+ * SPEC: an operation keeps the literal id and contract refs it was declared with.
+ * INTENT: widening the return to `AdminV2ApiOperation` collapsed every id into the
+ * `${Method} ${Route}` template and every ref into `${string}Schema`, so a caller could
+ * name a route or a schema that does not exist and only find out at runtime. Keying off
+ * this type makes both a compile error.
+ */
+type DeclaredOperation<
+  Method extends AdminV2HttpMethod,
+  Route extends AdminV2RoutePattern,
+  Request extends AdminV2RequestContractRef,
+  Response extends AdminV2SchemaContractRef,
+> = Omit<AdminV2ApiOperation, "id" | "method" | "route" | "contract"> & {
+  readonly id: `${Method} ${Route}`;
+  readonly method: Method;
+  readonly route: Route;
+  readonly contract: { readonly request: Request; readonly response: Response };
+};
+
+function operation<
+  const Method extends AdminV2HttpMethod,
+  const Route extends AdminV2RoutePattern,
+  const Request extends AdminV2RequestContractRef,
+  const Response extends AdminV2SchemaContractRef,
+>(
   method: Method,
   route: Route,
   authorization: AdminV2Authorization,
-  request: AdminV2RequestContractRef,
-  response: AdminV2SchemaContractRef,
+  request: Request,
+  response: Response,
   responseProjectionBy?: readonly AdminPermissionKey[],
   mutationOverride?: Partial<Pick<AdminV2MutationMetadata, "commandType" | "executionMode">>,
-): AdminV2ApiOperation {
-  const operationId = `${method} ${route}` as AdminV2OperationId;
+): DeclaredOperation<Method, Route, Request, Response> {
+  const operationId = `${method} ${route}` as `${Method} ${Route}`;
   const mutation = mutationMetadata(
     operationId,
     request,
@@ -291,6 +315,24 @@ export const ADMIN_V2_API_OPERATIONS = [
   operation("POST", "/api/v2/admin/users/:id/grant-bundles", allOf("user.role.write"), "adminGrantBundleWriteSchema+idempotency-key", "adminGrantBundleMutationSchema"),
   operation("DELETE", "/api/v2/admin/users/:id/grant-bundles/:bundleKey", allOf("user.role.write"), "adminGrantBundleRevokeSchema+idempotency-key", "adminGrantBundleMutationSchema"),
 ] as const satisfies readonly AdminV2ApiOperation[];
+
+/** One declared operation, literals intact. */
+export type AdminV2DeclaredOperation = (typeof ADMIN_V2_API_OPERATIONS)[number];
+/** Every operation id the manifest actually declares — not the `${Method} ${Route}` template. */
+export type AdminV2DeclaredOperationId = AdminV2DeclaredOperation["id"];
+/** Every request contract ref the manifest actually declares. */
+export type AdminV2DeclaredRequestRef = AdminV2DeclaredOperation["contract"]["request"];
+/**
+ * SPEC: operation id -> the request contract ref it declares.
+ * INTENT: a flat lookup, not `Extract` over the operation union — indexing 103 object types
+ * by a generic id is a conditional tsc refuses to represent ("union type too complex").
+ * An id union (pause/resume/retire) indexes to the union of their refs.
+ */
+type AdminV2DeclaredRequestRefById = {
+  [Operation in AdminV2DeclaredOperation as Operation["id"]]: Operation["contract"]["request"];
+};
+export type AdminV2DeclaredRequestRefFor<Id extends AdminV2DeclaredOperationId> =
+  AdminV2DeclaredRequestRefById[Id];
 
 function routePatternRegex(route: AdminV2RoutePattern): RegExp {
   const pattern = route

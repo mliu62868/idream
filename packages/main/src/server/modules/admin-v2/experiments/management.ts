@@ -1,9 +1,7 @@
 import {
-  experimentDefinitionCreateSchema,
   experimentDefinitionListQuerySchema,
   experimentDefinitionListSchema,
   experimentDefinitionSchema,
-  experimentLifecycleRequestSchema,
 } from "@idream/shared/admin";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
@@ -100,7 +98,7 @@ export async function getExperimentDefinition(request: Request, id: string) {
 
 export async function createExperimentDefinition(request: Request) {
   const actor = await actorWithPermission(request, "experiment.manage");
-  const input = experimentDefinitionCreateSchema.parse(await jsonBody(request));
+  const input = await jsonBody(request, "POST /api/v2/admin/experiments");
   const idempotencyKey = requireIdempotencyKey(request);
   const existing = await prisma.experimentDefinition.findUnique({ where: { createdById_createIdempotencyKey: { createdById: actor.id, createIdempotencyKey: idempotencyKey } } });
   if (existing) {
@@ -140,7 +138,10 @@ export async function createExperimentDefinition(request: Request) {
 
 async function applyExperimentLifecycle(request: Request, id: string, transition: "start" | "stop") {
   const actor = await actorWithPermission(request, "experiment.manage");
-  const input = experimentLifecycleRequestSchema.parse(await jsonBody(request));
+  const input = await jsonBody(
+    request,
+    `POST /api/v2/admin/experiments/:id/commands/${transition}` as const,
+  );
   const idempotencyKey = requireIdempotencyKey(request);
   const result = await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${actor.id}:${idempotencyKey}`}))`;

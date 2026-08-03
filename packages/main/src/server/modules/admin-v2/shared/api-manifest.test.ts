@@ -22,10 +22,26 @@ const LOCAL_BODY_PARSE = /[A-Za-z0-9_]+\s*\.\s*parse\(\s*await\s+jsonBody\(/;
 const UNDECLARED_BODY_READ = /jsonBody\(\s*request\s*\)/;
 /** Any manifest-shaped contract ref literal, wherever it appears in the file. */
 const CONTRACT_REF_LITERAL = /"([A-Za-z0-9_]+Schema(?:\+[a-z-]+)*)"/g;
+/** Any manifest-shaped operation id literal, quoted or templated. */
+const OPERATION_ID_LITERAL = /["`]((?:GET|POST|PUT|PATCH|DELETE) \/api\/v2\/admin\/[^"`]*)["`]/g;
 const routeRoot = join(
   dirname(fileURLToPath(import.meta.url)),
   "../../../../app/api/v2/admin",
 );
+const moduleRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+/**
+ * SPEC: modules that still parse their own HTTP body instead of naming their operation id,
+ * with the operation each one is stuck on. Empty is the goal.
+ * INTENT: an entry is a recorded debt, not a licence. The guard fails both ways — a new
+ * hand-parse cannot hide behind an old entry, and an entry that no longer offends must be
+ * deleted rather than left to rot.
+ */
+const MODULE_BODY_PARSE_DEBT: ReadonlyMap<string, string> = new Map([
+  // The console sends the version in the body only, so demanding If-Match here would 400
+  // every Saved View rename. See the SPEC note on `updateSavedViewV2`.
+  ["collaboration/service.ts", "PATCH /api/v2/admin/saved-views/:id"],
+]);
 
 async function routeFiles(directory: string): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true });
@@ -35,6 +51,40 @@ async function routeFiles(directory: string): Promise<string[]> {
     return entry.isFile() && entry.name === "route.ts" ? [path] : [];
   }));
   return nested.flat().sort();
+}
+
+async function moduleFiles(directory: string): Promise<string[]> {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const nested = await Promise.all(entries.map(async (entry) => {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) return moduleFiles(path);
+    const shipped = entry.isFile() &&
+      entry.name.endsWith(".ts") &&
+      !entry.name.includes(".test.");
+    return shipped ? [path] : [];
+  }));
+  return nested.flat().sort();
+}
+
+/** SPEC: the schemas a write body may be parsed with. GET refs are query parsers, not bodies. */
+function manifestBodyContractSymbols(): ReadonlySet<string> {
+  return new Set(
+    ADMIN_V2_API_OPERATIONS
+      .filter((operation) => operation.method !== "GET")
+      .map((operation) => operation.contract.request.split("+")[0]!)
+      .filter((ref) => ref.endsWith("Schema")),
+  );
+}
+
+/** `POST /api/v2/admin/x/${action}` must match at least one id the placeholder can stand for. */
+function namesADeclaredOperation(literal: string, declaredIds: ReadonlySet<string>): boolean {
+  if (declaredIds.has(literal)) return true;
+  if (!literal.includes("${")) return false;
+  const pattern = new RegExp(`^${literal
+    .split(/\$\{[^}]*\}/)
+    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("[A-Za-z0-9_-]+")}$`);
+  return [...declaredIds].some((id) => pattern.test(id));
 }
 
 function routePattern(file: string): string {
@@ -218,14 +268,8 @@ describe("Admin v2 API permission and contract manifest", () => {
       new Set(ADMIN_V2_API_OPERATIONS.map((operation) => operation.route)).size,
     );
 
-    // SPEC: the schemas a write body may be parsed with. Derived from the manifest, so a
-    // new operation joins the ban list on its own. GET refs are query parsers, not bodies.
-    const bodyContractSymbols = new Set(
-      ADMIN_V2_API_OPERATIONS
-        .filter((operation) => operation.method !== "GET")
-        .map((operation) => operation.contract.request.split("+")[0]!)
-        .filter((ref) => ref.endsWith("Schema")),
-    );
+    // Derived from the manifest, so a new operation joins the ban list on its own.
+    const bodyContractSymbols = manifestBodyContractSymbols();
     expect(bodyContractSymbols.size).toBeGreaterThan(0);
 
     const offenders: string[] = [];
@@ -269,6 +313,77 @@ describe("Admin v2 API permission and contract manifest", () => {
     expect(offenders).toEqual([]);
     // Self-check: an assertion that inspected no contract ref is not a guard.
     expect(filesNamingAContract).toBeGreaterThan(0);
+  });
+
+  it("keeps the request body schema inside the manifest, never in an Admin v2 module", async () => {
+    const files = await moduleFiles(moduleRoot);
+    // Self-check: a scan that loses the module tree must fail loudly, not pass empty.
+    expect(files.length).toBeGreaterThan(50);
+
+    const bodyContractSymbols = manifestBodyContractSymbols();
+    const declaredRefs = new Set<string>(
+      ADMIN_V2_API_OPERATIONS.map((operation) => operation.contract.request),
+    );
+    const declaredIds = new Set<string>(
+      ADMIN_V2_API_OPERATIONS.map((operation) => operation.id),
+    );
+
+    const offenders: string[] = [];
+    const settledDebt: string[] = [];
+    let filesNamingAnOperation = 0;
+
+    for (const file of files) {
+      const source = await readFile(file, "utf8");
+      const label = relative(moduleRoot, file).split(sep).join("/");
+      const readsBody = /\bjsonBody\(/.test(source);
+      const owed = MODULE_BODY_PARSE_DEBT.get(label);
+      const hands: string[] = [];
+
+      // INVARIANT: a module that reads an HTTP body names the operation, never a schema —
+      // an imported request schema is a second authority nothing reconciles with the manifest.
+      if (readsBody) {
+        const imports = (source.match(/^import[\s\S]*?;$/gm) ?? []).join("\n");
+        for (const symbol of bodyContractSymbols) {
+          if (new RegExp(`\\b${symbol}\\b`).test(imports)) {
+            hands.push(`${label}: imports request contract ${symbol}`);
+          }
+        }
+      }
+      if (LOCAL_BODY_PARSE.test(source)) {
+        hands.push(`${label}: re-parses the body jsonBody already parsed`);
+      }
+      if (UNDECLARED_BODY_READ.test(source)) {
+        hands.push(`${label}: reads jsonBody without naming its operation`);
+      }
+      if (owed !== undefined && hands.length === 0) {
+        settledDebt.push(`${label}: no longer parses its own body; drop the debt entry`);
+      }
+      if (owed === undefined) offenders.push(...hands);
+
+      const ids = [...source.matchAll(OPERATION_ID_LITERAL)].map((match) => match[1]!);
+      if (ids.length > 0) filesNamingAnOperation += 1;
+      for (const id of ids) {
+        if (!namesADeclaredOperation(id, declaredIds)) {
+          offenders.push(`${label}: names operation ${id}, which the manifest does not declare`);
+        }
+      }
+      for (const [, ref] of source.matchAll(CONTRACT_REF_LITERAL)) {
+        if (!declaredRefs.has(ref!)) {
+          offenders.push(`${label}: names ${ref}, which the manifest does not declare`);
+        }
+      }
+    }
+
+    expect(offenders).toEqual([]);
+    expect(settledDebt).toEqual([]);
+    // Self-check: every recorded debt must point at a real operation.
+    for (const [label, operationId] of MODULE_BODY_PARSE_DEBT) {
+      expect(files.map((file) => relative(moduleRoot, file).split(sep).join("/")), label)
+        .toContain(label);
+      expect(declaredIds.has(operationId), operationId).toBe(true);
+    }
+    // Self-check: an assertion that inspected no operation key is not a guard.
+    expect(filesNamingAnOperation).toBeGreaterThan(0);
   });
 
   it("keeps every combined transport exact across manifest, registry, and handlers", async () => {
