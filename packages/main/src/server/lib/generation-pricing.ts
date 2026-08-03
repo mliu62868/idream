@@ -1,6 +1,9 @@
 // SPEC: 生成计价单一实现（SSoT）：每个 mode 必须恰好有一个 active
 //       PricingRule，cost = ceil(base * outputCount * multiplier)。
 // INVARIANT: 缺失或重复 active 规则都必须 fail closed；绝不能猜规则或用历史常量扣款。
+// NOTE: 报价握手用来钉住这条规则的 pricingFingerprint 不在这里 —— 它是生成报价
+// 协议的一部分，与 routeFingerprint 一起住在
+// modules/ourdream/generation-quote.ts。本文件只回答"多少钱"。
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 

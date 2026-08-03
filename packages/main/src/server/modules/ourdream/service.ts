@@ -39,6 +39,15 @@ import {
 import { dispatchAdmin } from "@/server/modules/admin/service";
 import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
 import {
+  assertQuoteStillValid,
+  generationPlanRouteFingerprint,
+  generationPricingFingerprint,
+  generationQuoteAuthoritySchema,
+  quoteGeneration,
+  resolveGenerationPlan,
+  type GenerationProfileSelectionAuthority,
+} from "./generation-quote";
+import {
   ensureReviewCaseForAppeal,
   ensureReviewCaseForReport,
   ensureSupportCaseForRequest,
@@ -259,17 +268,6 @@ const generationControlsSchema = z
     orientation: z.enum(generationOrientations).optional(),
     model: z.string().trim().min(1).max(120).optional(),
     seconds: z.number().int().min(1).max(30).optional(),
-  })
-  .strict();
-
-const generationQuoteAuthoritySchema = z
-  .object({
-    profileId: z.string().trim().min(1).max(180),
-    profileVersion: z.number().int().positive(),
-    routeFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
-    pricingFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
-    outputCount: z.number().int().min(1).max(8),
-    costDreamcoins: z.number().int().nonnegative(),
   })
   .strict();
 
@@ -2134,58 +2132,13 @@ async function generationQuoteForUser(
     source?: GenerationSource;
   } = {},
 ) {
-  const plan = await resolveGenerationPlanForUser(userId, body, {
-    source: options.source,
+  const quoted = await quoteGeneration({
+    userId,
+    body,
     profileSelectionAuthority,
-    bootstrapVisualProfile: false,
+    source: options.source,
   });
-  const routeFingerprint = generationPlanRouteFingerprint(plan);
-  const pricingAuthority = await resolveGenerationPricingAuthority(body.mode);
-  const pricingFingerprint = generationPricingFingerprint(pricingAuthority);
-  const costs = Array.from(
-    { length: plan.profile.maxCount },
-    (_, index) => {
-      const outputCount = index + 1;
-      return {
-        outputCount,
-        costDreamcoins: generationCostFromAuthority(
-          pricingAuthority,
-          outputCount,
-          plan.profile.costMultiplier,
-        ),
-      };
-    },
-  );
-  const balance = await dreamcoinBalance(userId);
-  const orientations = jsonStringArray(plan.profile.allowedOrientations);
-  const defaultOrientation = orientations[0];
-  if (!defaultOrientation) {
-    throw Errors.unavailable(
-      "No executable orientation is configured for this generation route",
-    );
-  }
-
-  return ok({
-    quote: {
-      mode: body.mode,
-      profileId: plan.profile.profileKey,
-      profileVersion: plan.profile.version,
-      routeFingerprint,
-      pricing: {
-        ruleId: pricingAuthority.id,
-        ruleKey: pricingAuthority.ruleKey,
-        version: pricingAuthority.version,
-        effectiveFrom:
-          pricingAuthority.effectiveFrom?.toISOString() ?? null,
-        fingerprint: pricingFingerprint,
-      },
-      orientations,
-      defaultOrientation,
-      maxCount: plan.profile.maxCount,
-      costs,
-      balance,
-    },
-  });
+  return ok({ quote: quoted.quote });
 }
 
 // SPEC: turn selected mode/background/pose/outfit preset ids into a descriptive prompt fragment.
@@ -2269,9 +2222,9 @@ async function createGenerationJob(request: Request) {
   return ok(generationJobResponse(queued), { status: 202 });
 }
 
-type GenerationCreateBody = z.infer<typeof generationJobSchema>;
+export type GenerationCreateBody = z.infer<typeof generationJobSchema>;
 
-interface GenerationSource {
+export interface GenerationSource {
   sourceType: string;
   sourceId: string;
   sourceMeta?: Prisma.InputJsonValue;
@@ -2601,7 +2554,7 @@ function isUniqueConstraintError(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
 }
 
-async function resolveGenerationVisualProfile(
+export async function resolveGenerationVisualProfile(
   character: GenerationPromptCharacter,
   requestedProfileId?: string,
   opts: {
@@ -2640,7 +2593,7 @@ async function resolveGenerationVisualProfile(
   });
 }
 
-async function resolveGenerationLook(
+export async function resolveGenerationLook(
   userId: string,
   characterId: string | null,
   visualProfileId: string | null,
@@ -2908,242 +2861,6 @@ async function bootstrapCharacterVisualProfile(
   });
 }
 
-type GenerationProfileSelectionAuthority =
-  | "public_generator"
-  | "public_image_edit"
-  | "specialized";
-
-async function resolveGenerationPlanForUser(
-  userId: string,
-  body: GenerationCreateBody,
-  options: {
-    source?: GenerationSource;
-    fallbackToActiveOnStaleVisualProfile?: boolean;
-    profileSelectionAuthority?: GenerationProfileSelectionAuthority;
-    bootstrapVisualProfile?: boolean;
-  } = {},
-) {
-  const entitlements = await entitlementMap(userId);
-  const selectedModel = body.model ?? body.controls.model;
-  if (body.mode === "video" && !entitlements.video_generation) {
-    throw Errors.paymentRequired("Video generation requires Deluxe entitlement");
-  }
-  if (body.mode === "video" && !(await featureFlagEnabled("video_gen"))) {
-    throw Errors.forbidden("Video generation is disabled");
-  }
-  const systemPromptSource = isTrustedGenerationPromptSource(
-    options.source?.sourceType,
-  );
-  const freeCharacterMoment =
-    body.mode === "image" && Boolean(body.characterId) && Boolean(body.prompt);
-  if (
-    (body.negativePrompt || (body.prompt && !freeCharacterMoment)) &&
-    !systemPromptSource &&
-    !entitlements.premium_controls
-  ) {
-    throw Errors.paymentRequired("Custom prompt controls require Premium");
-  }
-  const recipe = await selectRecipe(
-    body.mode,
-    body.characterId ? "character" : "freeplay",
-  );
-  const character = body.characterId
-    ? body.mode === "video"
-      ? await publishedGenerationVideoCharacter(body.characterId)
-      : await generationCharacter(body.characterId, userId)
-    : null;
-  const consistencyMode = body.consistencyMode ?? "balanced";
-  const visualProfile =
-    body.mode === "image" && character
-      ? await resolveGenerationVisualProfile(character, body.visualProfileId, {
-          fallbackToActiveOnStale:
-            options.fallbackToActiveOnStaleVisualProfile,
-          bootstrapIfMissing: options.bootstrapVisualProfile !== false,
-        })
-      : null;
-  const selectedLook = await resolveGenerationLook(
-    userId,
-    character?.id ?? null,
-    visualProfile?.id ?? null,
-    body.controls.lookId,
-  );
-  const requestedLookReferenceAssetId =
-    selectedLook?.referenceAssetId ?? null;
-  const explicitSourceImageAssetId = (
-    body.controls as Record<string, unknown>
-  ).sourceImageAssetId;
-  const requestedSourceImageAssetId =
-    typeof explicitSourceImageAssetId === "string"
-      ? explicitSourceImageAssetId
-      : body.mode === "video"
-        ? character?.imageAssetId ?? null
-        : null;
-  const referenceRequirements =
-    body.mode === "image" && character && visualProfile
-      ? await generationReferenceRouteRequirements(visualProfile.id)
-      : [];
-  const hasRequestedSourceImage =
-    typeof requestedSourceImageAssetId === "string";
-  if (body.mode === "video" && !hasRequestedSourceImage) {
-    throw Errors.conflict(
-      "Image-to-video generation requires a Character with an available primary image",
-      { characterId: character?.id ?? null },
-    );
-  }
-  const requiresReferenceRouting =
-    (
-      body.mode === "image" &&
-      (
-        referenceRequirements.length > 0 ||
-        hasRequestedSourceImage ||
-        requestedLookReferenceAssetId !== null
-      )
-    ) ||
-    (body.mode === "video" && hasRequestedSourceImage);
-  const requirePublicTextToImageProfile =
-    body.mode === "image" &&
-    (
-      !requiresReferenceRouting ||
-      (
-        options.profileSelectionAuthority === "public_generator" &&
-        Boolean(selectedModel)
-      )
-    );
-  const requirePublicImageEditProfile =
-    body.mode === "image" &&
-    options.profileSelectionAuthority === "public_image_edit" &&
-    Boolean(selectedModel);
-  const profile = requiresReferenceRouting
-    ? await selectGenerationProfile(
-        body.mode,
-        selectedModel,
-        {
-          pinnedReferences: referenceRequirements,
-          sourceImageAssetId: hasRequestedSourceImage
-            ? requestedSourceImageAssetId
-            : null,
-          lookReferenceAssetId: requestedLookReferenceAssetId,
-        },
-        requirePublicTextToImageProfile,
-        entitlements,
-        requirePublicImageEditProfile,
-      )
-    : body.mode === "image"
-      ? await selectGenerationProfile(
-          body.mode,
-          selectedModel,
-          {
-            pinnedReferences: [],
-            sourceImageAssetId: null,
-            lookReferenceAssetId: null,
-          },
-          requirePublicTextToImageProfile,
-          entitlements,
-          requirePublicImageEditProfile,
-        )
-      : await selectGenerationProfile(
-          body.mode,
-          selectedModel,
-          undefined,
-          false,
-          entitlements,
-        );
-  if (
-    profile.requiredEntitlement &&
-    !entitlements[profile.requiredEntitlement]
-  ) {
-    throw Errors.paymentRequired("Selected model requires entitlement", {
-      entitlement: profile.requiredEntitlement,
-    });
-  }
-
-  const workflowDescriptor = await generationWorkflowDescriptor(
-    profile.workflowKey ?? profile.pipelineModel,
-  );
-  if (
-    hasRequestedSourceImage &&
-    referenceRequirements.length === 0
-  ) {
-    assertGenerationProfileCanDispatchReferences({
-      profile,
-      workflowDescriptor,
-      pinnedReferences: [],
-      sourceImageAssetId: requestedSourceImageAssetId,
-      lookReferenceAssetId: requestedLookReferenceAssetId,
-    });
-  }
-
-  return {
-    character,
-    consistencyMode,
-    entitlements,
-    hasRequestedSourceImage,
-    profile,
-    recipe,
-    referenceRequirements,
-    requestedLookReferenceAssetId,
-    requestedSourceImageAssetId,
-    selectedLook,
-    selectedModel,
-    visualProfile,
-    workflowDescriptor,
-  };
-}
-
-function generationPlanRouteFingerprint(
-  plan: Awaited<ReturnType<typeof resolveGenerationPlanForUser>>,
-) {
-  return createHash("sha256")
-    .update(JSON.stringify({
-      schemaVersion: "generation-plan-v1",
-      mode: plan.profile.mode,
-      profileId: plan.profile.profileKey,
-      profileVersion: plan.profile.version,
-      workflowKey:
-        plan.profile.workflowKey ?? plan.profile.pipelineModel,
-      workflowVersion:
-        plan.workflowDescriptor?.version ?? null,
-      workflowIdentity:
-        plan.workflowDescriptor?.identity ?? null,
-      recipeId: plan.recipe.recipeKey,
-      recipeVersion: plan.recipe.version,
-      characterId: plan.character?.id ?? null,
-      visualProfileId: plan.visualProfile?.id ?? null,
-      visualProfileVersion: plan.visualProfile?.version ?? null,
-      referenceRequirements: plan.referenceRequirements,
-      sourceImageAssetId:
-        typeof plan.requestedSourceImageAssetId === "string"
-          ? plan.requestedSourceImageAssetId
-          : null,
-      lookId: plan.selectedLook?.id ?? null,
-      lookUpdatedAt: plan.selectedLook?.updatedAt.toISOString() ?? null,
-      lookReferenceAssetId:
-        plan.selectedLook?.referenceAssetId ?? null,
-      allowedOrientations: jsonStringArray(
-        plan.profile.allowedOrientations,
-      ),
-      maxCount: plan.profile.maxCount,
-      costMultiplier: plan.profile.costMultiplier,
-    }))
-    .digest("hex");
-}
-
-function generationPricingFingerprint(
-  authority: Awaited<ReturnType<typeof resolveGenerationPricingAuthority>>,
-) {
-  return createHash("sha256")
-    .update(JSON.stringify({
-      schemaVersion: "generation-pricing-v1",
-      id: authority.id,
-      ruleKey: authority.ruleKey,
-      version: authority.version,
-      baseCost: authority.baseCost,
-      effectiveFrom: authority.effectiveFrom?.toISOString() ?? null,
-      updatedAt: authority.updatedAt.toISOString(),
-    }))
-    .digest("hex");
-}
-
 async function reserveInitialGenerationAttempt(
   tx: Prisma.TransactionClient,
   job: {
@@ -3211,7 +2928,7 @@ async function createGenerationJobForUser(
     );
   }
 
-  const plan = await resolveGenerationPlanForUser(userId, body, {
+  const plan = await resolveGenerationPlan(userId, body, {
     source: options.source,
     fallbackToActiveOnStaleVisualProfile:
       options.fallbackToActiveOnStaleVisualProfile,
@@ -3248,31 +2965,15 @@ async function createGenerationJobForUser(
     profile.costMultiplier,
   );
   const routeFingerprint = generationPlanRouteFingerprint(plan);
-  if (
-    body.quoteAuthority &&
-    (
-      body.quoteAuthority.profileId !== profile.profileKey ||
-      body.quoteAuthority.profileVersion !== profile.version ||
-      body.quoteAuthority.routeFingerprint !== routeFingerprint ||
-      body.quoteAuthority.pricingFingerprint !== pricingFingerprint ||
-      body.quoteAuthority.outputCount !== body.outputCount ||
-      body.quoteAuthority.costDreamcoins !== cost
-    )
-  ) {
-    throw Errors.conflict(
-      "Generation quote changed. Refresh the exact quote before submitting.",
-      {
-        quoted: body.quoteAuthority,
-        current: {
-          profileId: profile.profileKey,
-          profileVersion: profile.version,
-          routeFingerprint,
-          pricingFingerprint,
-          outputCount: body.outputCount,
-          costDreamcoins: cost,
-        },
-      },
-    );
+  if (body.quoteAuthority) {
+    assertQuoteStillValid(body.quoteAuthority, {
+      profileId: profile.profileKey,
+      profileVersion: profile.version,
+      routeFingerprint,
+      pricingFingerprint,
+      outputCount: body.outputCount,
+      costDreamcoins: cost,
+    });
   }
   if (body.outputCount > profile.maxCount) {
     throw Errors.badRequest("Output count exceeds selected model limit", {
@@ -3645,7 +3346,7 @@ async function createGenerationJobForUser(
   return job;
 }
 
-function isTrustedGenerationPromptSource(sourceType: string | undefined) {
+export function isTrustedGenerationPromptSource(sourceType: string | undefined) {
   return sourceType === "chat_image" || sourceType === "media_variation";
 }
 
@@ -4527,29 +4228,19 @@ async function retryGenerationJob(request: Request, id: string) {
     routeFingerprint,
     workflowDescriptor,
   } = authority;
-  if (
-    body.quoteAuthority.profileId !== profile.profileKey ||
-    body.quoteAuthority.profileVersion !== profile.version ||
-    body.quoteAuthority.routeFingerprint !== routeFingerprint ||
-    body.quoteAuthority.pricingFingerprint !== pricingFingerprint ||
-    body.quoteAuthority.outputCount !== job.outputCount ||
-    body.quoteAuthority.costDreamcoins !== cost
-  ) {
-    throw Errors.conflict(
-      "Generation retry quote changed. Refresh the exact quote before retrying.",
-      {
-        quoted: body.quoteAuthority,
-        current: {
-          profileId: profile.profileKey,
-          profileVersion: profile.version,
-          routeFingerprint,
-          pricingFingerprint,
-          outputCount: job.outputCount,
-          costDreamcoins: cost,
-        },
-      },
-    );
-  }
+  // 重试走同一条 fail-closed 协议，只是路线指纹来自被重试的 job 而不是新计划。
+  assertQuoteStillValid(
+    body.quoteAuthority,
+    {
+      profileId: profile.profileKey,
+      profileVersion: profile.version,
+      routeFingerprint,
+      pricingFingerprint,
+      outputCount: job.outputCount,
+      costDreamcoins: cost,
+    },
+    "retry",
+  );
   const availableBalance = await dreamcoinBalance(user.id);
   if (availableBalance < cost) {
     throw Errors.paymentRequired("Insufficient DreamCoins", {
@@ -10648,7 +10339,7 @@ export async function readableCharacter(id: string, userId: string) {
   return character;
 }
 
-async function generationCharacter(id: string, userId: string) {
+export async function generationCharacter(id: string, userId: string) {
   const character = await readableCharacter(id, userId);
   if (character.age < 18) {
     throw Errors.badRequest("Character is not eligible for generation", {
@@ -10663,7 +10354,7 @@ async function generationCharacter(id: string, userId: string) {
   return character;
 }
 
-async function publishedGenerationVideoCharacter(id: string) {
+export async function publishedGenerationVideoCharacter(id: string) {
   const character = await prisma.character.findFirst({
     where: {
       AND: [
@@ -11204,7 +10895,7 @@ type GenerationReferenceProfile = {
   readonly pipelineModel: string;
 };
 
-async function generationReferenceRouteRequirements(
+export async function generationReferenceRouteRequirements(
   visualProfileId: string,
 ): Promise<GenerationReferenceRouteRequirement[]> {
   const revision = await prisma.referenceSetRevision.findFirst({
@@ -11332,7 +11023,7 @@ function generationProfileReferenceIncompatibilities(input: {
   return [...new Set(reasons)];
 }
 
-function assertGenerationProfileCanDispatchReferences(input: {
+export function assertGenerationProfileCanDispatchReferences(input: {
   readonly profile: GenerationReferenceProfile;
   readonly workflowDescriptor: Awaited<ReturnType<typeof generationWorkflowDescriptor>>;
   readonly pinnedReferences: readonly GenerationReferenceRouteRequirement[];
@@ -11354,7 +11045,7 @@ function assertGenerationProfileCanDispatchReferences(input: {
   );
 }
 
-async function selectGenerationProfile(
+export async function selectGenerationProfile(
   mode: "image" | "video",
   requested?: string,
   referenceRequirements?: {
@@ -11492,7 +11183,7 @@ async function selectGenerationProfile(
   return fallbackProfile;
 }
 
-async function selectRecipe(mode: "image" | "video", useCase: "character" | "freeplay") {
+export async function selectRecipe(mode: "image" | "video", useCase: "character" | "freeplay") {
   const recipe = await prisma.generationRecipe.findFirst({
     where: { mode, useCase, status: "active" },
     orderBy: { version: "desc" },
@@ -11506,7 +11197,7 @@ async function selectRecipe(mode: "image" | "video", useCase: "character" | "fre
   return recipe;
 }
 
-async function featureFlagEnabled(key: string) {
+export async function featureFlagEnabled(key: string) {
   const flag = await prisma.featureFlag.findUnique({
     where: { key },
     select: { enabled: true, rolloutPercent: true },
