@@ -50,6 +50,12 @@ import {
 } from "@/lib/durable-mutation-intent";
 import { reconcileDurableMutationIntent } from "@/lib/durable-mutation-recovery";
 import { usePollingTask, type PollingTask } from "@/lib/authority-resource";
+import {
+  committedProjectionTargetId,
+  isProjectionRequestCancellation,
+  SupersededProjectionError,
+  useCommittedProjectionLoader,
+} from "@/lib/committed-projection";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import { cn } from "@/lib/utils";
 import { characterIdentityBootstrapMutation } from "@/features/image-workflow-transport";
@@ -473,16 +479,12 @@ function committedCharacterRunProjectionMatches(
     detail.target.id === characterId;
 }
 
-class SupersededAssetProjectionError extends Error {
-  constructor() {
-    super("A newer Character Asset Studio projection request replaced this one.");
-    this.name = "SupersededAssetProjectionError";
-  }
-}
-
-function isProjectionRequestCancellation(cause: unknown) {
-  return cause instanceof SupersededAssetProjectionError ||
-    (cause instanceof Error && cause.name === "AbortError");
+// SPEC: 已提交的 Run 暂时读不到 ≠ 提交失败。文案必须点明「重试校验即可，不要再发一次
+//       create」——否则运营台上的人会去点第二次生成，制造重复 Run。
+function committedRunProjectionUnavailable(detail: string | null) {
+  return detail
+    ? `The committed Run projection is still unavailable: ${detail}. Verification can be retried without another create request.`
+    : "The committed Run projection is still unavailable. Verification can be retried without another create request.";
 }
 
 function candidateState(item: CreativeRunDetail["items"][number]) {
@@ -1016,10 +1018,6 @@ export function CharacterAssetStudio({
       })
     );
   const runListRequestGate = useRef(createLatestRequestGate());
-  const runDetailRequestGate = useRef(createLatestRequestGate());
-  const runDetailInFlight = useRef(
-    new Map<string, Promise<CreativeRunDetail>>(),
-  );
   const selectRunId = useCallback((runId: string | null) => {
     selectedRunIdRef.current = runId;
     setSelectedRunId(runId);
@@ -1105,14 +1103,12 @@ export function CharacterAssetStudio({
       signal: options.signal,
     });
     const scoped = [...response.items].filter((run) => isCharacterAssetPurpose(run.purpose));
-    if (!request.isCurrent()) throw new SupersededAssetProjectionError();
+    if (!request.isCurrent()) throw new SupersededProjectionError();
     setRuns(scoped);
     const current = selectedRunIdRef.current;
-    const committedTargetId =
-      runCreationIntentRef.current?.status ===
-          "committed_projection_pending"
-        ? runCreationIntentRef.current.committedTargetId
-        : null;
+    const committedTargetId = committedProjectionTargetId(
+      runCreationIntentRef.current,
+    );
     const preserveCurrent = Boolean(
       current &&
       (
@@ -1135,46 +1131,32 @@ export function CharacterAssetStudio({
     return scoped;
   }, [nextIncompletePurpose, data.character.id, data.project.draftAssetSelections, selectRunId]);
 
-  const loadRun = useCallback(async (
-    runId: string,
-    options: { readonly signal?: AbortSignal } = {},
-  ) => {
-    if (selectedRunIdRef.current !== runId) {
-      throw new SupersededAssetProjectionError();
-    }
-    const existing = runDetailInFlight.current.get(runId);
-    if (existing) return existing;
-    const requestPromise = (async () => {
-      const request = runDetailRequestGate.current.begin();
-      const detail = await adminV2Request(
-        `/api/v2/admin/creative/runs/${runId}`,
-        {
-          schema: creativeRunDetailSchema,
-          signal: options.signal,
-        },
-      );
-      if (
-        !request.isCurrent() ||
-        selectedRunIdRef.current !== runId
-      ) {
-        throw new SupersededAssetProjectionError();
-      }
-      const committedIntent = runCreationIntentRef.current;
-      if (
-        committedIntent?.status ===
-            "committed_projection_pending" &&
-        committedIntent.committedTargetId === runId &&
-        !committedCharacterRunProjectionMatches(
-          committedIntent,
+  // SPEC: 精确读一份 Run 投影，并据此确认「刚提交的那笔生成」是否已被服务端认下。
+  // INTENT: 取消语义 / 在途去重 / 两道闸门顺序 / 失败分流全在 committed-projection 里；
+  //         这里只剩三样组件才知道的东西：怎么取、什么算「已反映」、成功后写哪些状态。
+  const runLoader = useCommittedProjectionLoader<CreativeRunDetail>({
+    fetch: (runId, signal) =>
+      adminV2Request(`/api/v2/admin/creative/runs/${runId}`, {
+        schema: creativeRunDetailSchema,
+        signal,
+      }),
+    isCurrentTarget: (runId) => selectedRunIdRef.current === runId,
+    committed: {
+      current: () => runCreationIntentRef.current,
+      reflects: (intent, detail) =>
+        committedCharacterRunProjectionMatches(
+          intent,
           detail,
           data.character.id,
-        )
-      ) {
-        throw new Error(
-          "The committed Run projection does not match this Character and image purpose. The workspace remains locked.",
-        );
-      }
+        ),
+      mismatchMessage:
+        "The committed Run projection does not match this Character and image purpose. The workspace remains locked.",
+      onReleased: () => updateRunCreationIntentState(null),
+    },
+    commit: (detail, verdict) => {
       setSelectedRun(detail);
+      // SPEC: 被草稿钉住的 Run 即使掉出最近 20 条也要留在列表里，否则运营台会看不到自己
+      //       正在评审的那一条。
       if (pinnedRunIds.has(detail.id)) {
         setRuns((current) =>
           current.some((run) => run.id === detail.id)
@@ -1200,39 +1182,15 @@ export function CharacterAssetStudio({
       if (isCharacterAssetPurpose(detail.purpose)) {
         setActivePurpose(detail.purpose);
       }
-      if (
-        committedIntent &&
-        committedCharacterRunProjectionMatches(
-          committedIntent,
-          detail,
-          data.character.id,
-        )
-      ) {
-        clearDurableMutationIntent(committedIntent);
-        if (
-          runCreationIntentRef.current?.idempotencyKey ===
-            committedIntent.idempotencyKey &&
-          runCreationIntentRef.current.committedTargetId ===
-            committedIntent.committedTargetId
-        ) {
-          updateRunCreationIntentState(null);
-        }
+      if (verdict.kind === "reflected") {
         setRefreshWarning(null);
         setMessage(
           "The committed generation receipt is visible in this exact Run. Review can continue.",
         );
       }
-      return detail;
-    })();
-    runDetailInFlight.current.set(runId, requestPromise);
-    try {
-      return await requestPromise;
-    } finally {
-      if (runDetailInFlight.current.get(runId) === requestPromise) {
-        runDetailInFlight.current.delete(runId);
-      }
-    }
-  }, [data.character.id, data.project.draftAssetSelections, pinnedRunIds, setActivePurpose, setSelectedRun, updateRunCreationIntentState]);
+    },
+  });
+  const loadRun = runLoader.load;
 
   useEffect(() => {
     if (!permissions.read) return;
@@ -1261,39 +1219,25 @@ export function CharacterAssetStudio({
   useEffect(() => {
     if (!selectedRunId || selectedRun?.id === selectedRunId) return;
     const controller = new AbortController();
-    const gate = runDetailRequestGate.current;
     const timer = window.setTimeout(() => {
       void loadRun(selectedRunId, { signal: controller.signal }).catch((cause: unknown) => {
-        if (!isProjectionRequestCancellation(cause)) {
-          const committedTargetId =
-            runCreationIntentRef.current?.status ===
-                "committed_projection_pending"
-              ? runCreationIntentRef.current.committedTargetId
-              : null;
-          if (committedTargetId === selectedRunId) {
-            setRefreshWarning(
-              cause instanceof Error
-                ? `The committed Run projection is still unavailable: ${cause.message}. Verification can be retried without another create request.`
-                : "The committed Run projection is still unavailable. Verification can be retried without another create request.",
-            );
-          } else {
-            setError(
-              cause instanceof Error
-                ? cause.message
-                : "Creative Run could not be loaded",
-            );
-          }
+        // SPEC: 失败的是不是「刚提交、还在等投影」的那一条，决定它进旁注还是进主错误。
+        const route = runLoader.routeFailure(selectedRunId, cause);
+        if (route.kind === "recoverable") {
+          setRefreshWarning(committedRunProjectionUnavailable(route.detail));
+        } else if (route.kind === "fatal") {
+          setError(route.detail ?? "Creative Run could not be loaded");
         }
       });
     }, 0);
     return () => {
       if (selectedRunIdRef.current === selectedRunId) {
-        gate.invalidate();
+        runLoader.invalidate();
       }
       controller.abort();
       window.clearTimeout(timer);
     };
-  }, [loadRun, selectedRun?.id, selectedRunId]);
+  }, [loadRun, runLoader, selectedRun?.id, selectedRunId]);
 
   const pollingRunId = selectedRun?.id ?? null;
   const shouldPollSelectedRun =
@@ -1505,7 +1449,7 @@ export function CharacterAssetStudio({
       bootstrapMode,
       options.identityCommitted,
     )) return;
-    runDetailRequestGate.current.invalidate();
+    runLoader.invalidate();
     setActivePurpose(purpose);
     setMessage(null);
     const selectedRunForPurpose = data.project.draftAssetSelections?.[purpose]?.runId;
@@ -1528,7 +1472,7 @@ export function CharacterAssetStudio({
       setBusy("generate");
       setError(null);
       try {
-        runDetailRequestGate.current.invalidate();
+        runLoader.invalidate();
         selectRunId(committedTargetId);
         setSelectedRun(null);
         await Promise.all([
@@ -1538,12 +1482,13 @@ export function CharacterAssetStudio({
           loadRun(committedTargetId),
         ]);
       } catch (cause) {
+        // INTENT: 这条路径的目标必然就是已提交的那一条，出口固定是旁注——不走 routeFailure，
+        //         因为并发的 loadRuns 失败也应留在旁注里，不该因为 intent 恰好刚被释放
+        //         就升级成主错误。
         if (!isProjectionRequestCancellation(cause)) {
-          setRefreshWarning(
-            cause instanceof Error
-              ? `The committed Run projection is still unavailable: ${cause.message}. Verification can be retried without another create request.`
-              : "The committed Run projection is still unavailable. Verification can be retried without another create request.",
-          );
+          setRefreshWarning(committedRunProjectionUnavailable(
+            cause instanceof Error ? cause.message : null,
+          ));
         }
       } finally {
         setBusy(null);
@@ -1611,7 +1556,7 @@ export function CharacterAssetStudio({
             },
           );
           updateRunCreationIntentState(committed);
-          runDetailRequestGate.current.invalidate();
+          runLoader.invalidate();
           selectRunId(receipt.committedTargetId);
           setSelectedRun(null);
           await Promise.all([
@@ -1795,7 +1740,7 @@ export function CharacterAssetStudio({
         ? "Variation run was committed from this candidate."
         : "Generation was committed. Results will appear here automatically.");
     try {
-      runDetailRequestGate.current.invalidate();
+      runLoader.invalidate();
       selectRunId(result.batch.id);
       setSelectedRun(null);
       await loadRuns({
@@ -1841,7 +1786,7 @@ export function CharacterAssetStudio({
       readonly itemId: string;
     },
   ) => {
-    runDetailRequestGate.current.invalidate();
+    runLoader.invalidate();
     selectRunId(snapshot.runId);
     const detail = await loadRun(snapshot.runId);
     await loadRuns({
@@ -3303,7 +3248,7 @@ export function CharacterAssetStudio({
               disabled={mutationContextLocked}
               key={run.id}
               onClick={() => {
-                runDetailRequestGate.current.invalidate();
+                runLoader.invalidate();
                 setSelectedRun(null);
                 selectRunId(run.id);
                 if (isCharacterAssetPurpose(run.purpose)) setActivePurpose(run.purpose);

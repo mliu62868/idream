@@ -522,10 +522,6 @@ describe("Character Asset Studio flow", () => {
       source.indexOf("const verifyReviewIntentProjection"),
       source.indexOf("const approveAndContinue"),
     );
-    const loadRunFlow = source.slice(
-      source.indexOf("const loadRun = useCallback"),
-      source.indexOf("useEffect(() =>", source.indexOf("const loadRun = useCallback")),
-    );
     const createCommitIndex = createFlow.indexOf(
       "updateRunCreationIntentState(committed)",
     );
@@ -536,13 +532,6 @@ describe("Character Asset Studio flow", () => {
     const createListReloadIndex = createFlow.indexOf(
       "preserveSelectedRunId: result.batch.id",
       createSelectionIndex,
-    );
-    const exactProjectionIndex = loadRunFlow.lastIndexOf(
-      "committedCharacterRunProjectionMatches(",
-    );
-    const createKeyReleaseIndex = loadRunFlow.indexOf(
-      "clearDurableMutationIntent(committedIntent)",
-      exactProjectionIndex,
     );
     const reviewReloadIndex = reviewFlow.indexOf(
       "const detail = await loadRun(snapshot.runId)",
@@ -558,8 +547,6 @@ describe("Character Asset Studio flow", () => {
     expect(createCommitIndex).toBeGreaterThan(-1);
     expect(createSelectionIndex).toBeGreaterThan(createCommitIndex);
     expect(createListReloadIndex).toBeGreaterThan(createSelectionIndex);
-    expect(exactProjectionIndex).toBeGreaterThan(-1);
-    expect(createKeyReleaseIndex).toBeGreaterThan(exactProjectionIndex);
     expect(createFlow).not.toContain(
       "clearDurableMutationIntent(committed)",
     );
@@ -580,12 +567,15 @@ describe("Character Asset Studio flow", () => {
     expect(source).toContain("characterAssetDraftSelectionRequestKey({");
   });
 
-  it("invalidates superseded and unmounted projection reads", () => {
+  // INTENT: "取代即取消" 与 "投影确认之后才释放幂等键" 原本靠断言 loadRun 里的源码文本
+  //         与语句先后来守，那锁的是实现文本不是行为。这段协议现在有名字了
+  //         （lib/committed-projection），两条不变量由 committed-projection.test.ts
+  //         驱动在途去重表与两道闸门真正验证，故此处只留组件自己仍然负责的部分。
+  it("aborts in-flight projection reads and keeps the run list gated", () => {
     const source = readFileSync(new URL("./CharacterAssetStudio.tsx", import.meta.url), "utf8");
 
     expect(source).toContain("createLatestRequestGate");
     expect(source).toContain("new AbortController()");
-    expect(source).toContain("throw new SupersededAssetProjectionError()");
     expect(source).toContain("controller.abort()");
   });
 
