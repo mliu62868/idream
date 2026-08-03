@@ -455,25 +455,48 @@ export function projectServerJobArrival(job: GenerationJobFact): ServerJobArriva
 // Quote transport
 // ---------------------------------------------------------------------------
 
-export type GenerationQuoteIntent = {
-  key: string;
+/**
+ * Everything that changes what a generation costs. Nothing else belongs here:
+ * the key derived from it is what decides whether a held quote still speaks for
+ * the form, so an omitted field would let a stale price authorize a new route.
+ */
+export type GenerationQuoteRequest = {
+  /** Null before the viewer's scope is known; still part of the key. */
+  viewerScope: string | null;
+  mode: GenerationMode;
+  consistencyMode: ConsistencyMode;
+  /** Absent means the route resolves the model itself. */
+  model?: string;
 } & (
-  | {
-      target: "variation";
-      mediaId: string;
-      consistencyMode: ConsistencyMode;
-      model?: string;
-    }
+  | { target: "variation"; mediaId: string }
   | {
       target: "generation";
-      mode: GenerationMode;
       characterId?: string;
       freeplay: boolean;
-      consistencyMode: ConsistencyMode;
-      model?: string;
       lookId?: string;
     }
 );
+
+/**
+ * INVARIANT: the key is a total function of the priced route. Every input that
+ * moves the price moves the key, which is why watching the key alone is enough
+ * to know a held quote went stale.
+ */
+export function generationQuoteKeyFor(request: GenerationQuoteRequest): string {
+  const variation = request.target === "variation";
+  return JSON.stringify({
+    viewerScope: request.viewerScope,
+    mode: request.mode,
+    sourceMediaId: variation ? request.mediaId : null,
+    characterId:
+      variation || request.freeplay ? null : (request.characterId ?? null),
+    // An image edit is priced as a source-driven route, never a character one.
+    freeplay: variation ? true : request.freeplay,
+    consistencyMode: request.consistencyMode,
+    lookId: variation ? null : (request.lookId ?? null),
+    explicitModelId: request.model ?? null,
+  });
+}
 
 export type GenerationQuoteOutcome =
   | { kind: "discarded" }
@@ -494,25 +517,26 @@ function requestErrorMessage(error: unknown, fallback: string) {
 }
 
 export async function loadGenerationQuote(
-  intent: GenerationQuoteIntent,
+  request: GenerationQuoteRequest,
   deps: TransportDeps = {},
 ): Promise<GenerationQuoteOutcome> {
   const fetcher = deps.fetcher ?? fetch;
+  const key = generationQuoteKeyFor(request);
   const url =
-    intent.target === "variation"
-      ? `/api/v1/media/${encodeURIComponent(intent.mediaId)}/variation/quote`
+    request.target === "variation"
+      ? `/api/v1/media/${encodeURIComponent(request.mediaId)}/variation/quote`
       : "/api/v1/generation/quote";
   const body =
-    intent.target === "variation"
-      ? { consistencyMode: intent.consistencyMode, model: intent.model }
+    request.target === "variation"
+      ? { consistencyMode: request.consistencyMode, model: request.model }
       : {
-          mode: intent.mode,
-          characterId: intent.freeplay ? undefined : intent.characterId,
-          freeplay: intent.freeplay,
-          consistencyMode: intent.consistencyMode,
+          mode: request.mode,
+          characterId: request.freeplay ? undefined : request.characterId,
+          freeplay: request.freeplay,
+          consistencyMode: request.consistencyMode,
           // Priced per output elsewhere; one is enough to resolve the route.
           outputCount: 1,
-          controls: { model: intent.model, lookId: intent.lookId },
+          controls: { model: request.model, lookId: request.lookId },
         };
 
   try {
@@ -529,12 +553,12 @@ export async function loadGenerationQuote(
     }
     const data = parseGenerationQuoteResponse(raw);
     if (deps.signal?.aborted) return { kind: "discarded" };
-    return { kind: "resolved", key: intent.key, quote: data.quote };
+    return { kind: "resolved", key, quote: data.quote };
   } catch (error) {
     if (deps.signal?.aborted || isAbortError(error)) return { kind: "discarded" };
     return {
       kind: "failed",
-      key: intent.key,
+      key,
       message: requestErrorMessage(error, QUOTE_UNAVAILABLE),
     };
   }
@@ -658,6 +682,9 @@ export type GenerationWriteRequest =
       /** Non-null only when the form's own quote is the one being spent. */
       quoteKey: string | null;
       queuedMessage: string;
+      // INTENT: `quote` and `quoteKey` are deliberately independent. Varying the
+      // form's own edit source from the gallery prices itself afresh yet still
+      // invalidates the form's quote when the route turns out to have moved.
     }
   | { kind: "retry"; jobId: string };
 
@@ -845,6 +872,14 @@ export async function runGenerationWrite(
       };
     }
   }
+  // A second click on a card already being varied is a duplicate, not a second
+  // request. Same rule as a retry, same silence.
+  if (
+    request.kind === "variation" &&
+    context.state.variationPendingMediaIds.has(request.mediaId)
+  ) {
+    return { kind: "rejected", statusMessage: "", authorityAction: "none" };
+  }
 
   const write: GenerationWriteKind =
     request.kind === "generation"
@@ -854,6 +889,11 @@ export async function runGenerationWrite(
         : { kind: "retry", jobId: request.jobId };
 
   context.dispatch({ type: "write_started", write });
+  // Without a quote in hand the write must price itself first, which is a
+  // visible extra round trip.
+  if (request.kind === "variation" && !request.quote) {
+    context.effects.showStatus("Checking the exact variation price…");
+  }
   const outcome = await writeOnce(request, context);
   const quoteKey = request.kind === "retry" ? null : request.quoteKey;
   context.dispatch({ type: "write_settled", write, outcome, quoteKey });

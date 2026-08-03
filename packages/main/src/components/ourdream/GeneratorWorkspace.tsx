@@ -21,7 +21,6 @@ import {
   useCallback,
   useEffect,
   useMemo,
-  useReducer,
   useRef,
   useState,
 } from "react";
@@ -69,20 +68,14 @@ import {
 import { isRecord } from "./workspace-helpers";
 import {
   countWithinQuote,
-  createGenerationIdempotencyKeys,
-  clearGenerationIdempotencyKeys,
   generatorConfigAuthorityState,
-  initialGenerationRequestState,
-  loadGenerationQuote,
-  loadGenerationRetryQuotes,
   orientationWithinQuote,
   pendingGenerationJobIds,
-  projectGenerationRequest,
   projectServerJobArrival,
-  reduceGenerationRequest,
-  runGenerationWrite,
+  type GenerationQuoteRequest,
   type GenerationRequestEffects,
 } from "@/lib/generation-request";
+import { useGenerationRequest } from "@/hooks/useGenerationRequest";
 
 type MediaItem = {
   id: string;
@@ -366,17 +359,6 @@ export function removeGeneratorCharacterViewerAuthority(
 export function GeneratorWorkspace() {
   const { accepted: ageGateAccepted } = useAgeGateAccess();
   const [config, setConfig] = useState<RuntimeGenerationConfig | null>(null);
-  // The whole quote → submit → poll → retry chain lives in one state machine so
-  // its invariants are testable without a DOM; see @/lib/generation-request.
-  const [generationRequest, dispatchGenerationRequest] = useReducer(
-    reduceGenerationRequest,
-    undefined,
-    initialGenerationRequestState,
-  );
-  const retryQuotes = generationRequest.retryQuotes;
-  const retryQuoteFailures = generationRequest.retryQuoteFailures;
-  const retryingJobIds = generationRequest.retryingJobIds;
-  const variationPendingIds = generationRequest.variationPendingMediaIds;
   const [characters, setCharacters] = useState<CharacterCardData[]>([]);
   const [charactersAuthority, setCharactersAuthority] = useState(initialAuthorityStatus);
   const [charactersRefreshNonce, setCharactersRefreshNonce] = useState(0);
@@ -549,12 +531,7 @@ export function GeneratorWorkspace() {
   const configRequestSerialRef = useRef(0);
   const viewerRevalidationGateRef =
     useRef<Promise<void> | null>(null);
-  const generationQuoteRequestControllerRef =
-    useRef<AbortController | null>(null);
-  const retryQuoteRequestControllerRef =
-    useRef<AbortController | null>(null);
   const generationPollInFlightRef = useRef(false);
-  const generationIdempotencyKeysRef = useRef(createGenerationIdempotencyKeys());
   const clearRemixIntent = useCallback(
     (nextCharacterId?: string | null) => {
       const currentUrl = new URL(window.location.href);
@@ -629,7 +606,8 @@ export function GeneratorWorkspace() {
       ? config?.image.availability.state === "available" &&
         config.image.models.length > 0
       : videoModeEnabled;
-  const generationQuoteKey =
+  // Null while the form does not describe a route the server can price.
+  const generationQuoteRequest: GenerationQuoteRequest | null =
     modeAvailable &&
     config?.viewer.authenticated === true &&
     (
@@ -637,35 +615,64 @@ export function GeneratorWorkspace() {
         ? Boolean(editSourceMediaId)
         : freeplay || Boolean(characterId)
     )
-      ? JSON.stringify({
-          viewerScope: config.viewer.scope,
-          mode,
-          sourceMediaId: imageEditMode ? editSourceMediaId : null,
-          characterId:
-            imageEditMode || freeplay ? null : characterId,
-          freeplay: imageEditMode ? true : freeplay,
-          consistencyMode,
-          lookId:
-            characterImageMode && selectedLookId
-              ? selectedLookId
-              : null,
-          explicitModelId:
-            modelSelectionProjection.requestModelId ?? null,
-        })
+      ? imageEditMode
+        ? {
+            viewerScope: config.viewer.scope,
+            mode,
+            consistencyMode,
+            model: modelSelectionProjection.requestModelId,
+            target: "variation",
+            mediaId: editSourceMediaId,
+          }
+        : {
+            viewerScope: config.viewer.scope,
+            mode,
+            consistencyMode,
+            model: modelSelectionProjection.requestModelId,
+            target: "generation",
+            characterId,
+            freeplay,
+            lookId:
+              characterImageMode && selectedLookId ? selectedLookId : undefined,
+          }
       : null;
-  const generationRequestView = projectGenerationRequest(generationRequest, {
-    quoteKey: generationQuoteKey,
-    configAuthority: generatorConfigAuthorityState(config, configError),
-    mode,
-    count,
-    modeAvailable,
-    hasTarget: imageEditMode || freeplay || Boolean(characterId),
-    editSourceMediaId: imageEditMode ? (selectedEditSource?.id ?? null) : undefined,
+  const retryQuoteScopeKey =
+    config?.viewer.authenticated === true
+      ? jobs
+          .filter((job) => job.status === "failed")
+          .map((job) => job.id)
+          .sort()
+          .join("|")
+      : "";
+  const generationRequest = useGenerationRequest({
+    quoteRequest: generationQuoteRequest,
+    retryQuoteScopeKey,
+    view: {
+      configAuthority: generatorConfigAuthorityState(config, configError),
+      mode,
+      count,
+      modeAvailable,
+      hasTarget: imageEditMode || freeplay || Boolean(characterId),
+      editSourceMediaId: imageEditMode
+        ? (selectedEditSource?.id ?? null)
+        : undefined,
+    },
+    onQuoteResolved: (quote) => {
+      setCount((current) => countWithinQuote(current, quote));
+      setOrientation((current) => orientationWithinQuote(current, quote));
+    },
   });
+  const {
+    balanceChanged: generationBalanceChanged,
+    resetViewerScope: resetGenerationRequestScope,
+    retryQuotes,
+    retryQuoteFailures,
+    retryingJobIds,
+    variationPendingMediaIds: variationPendingIds,
+  } = generationRequest;
   const {
     canSubmit,
     estimatedCost,
-    exactQuote,
     insufficientBalance,
     maxCount,
     orientations: allowedGeneratorOrientations,
@@ -673,7 +680,7 @@ export function GeneratorWorkspace() {
     quote: generationQuote,
     quoteError: generationQuoteError,
     submitting: pending,
-  } = generationRequestView;
+  } = generationRequest.view;
   const modeUnavailableMessage = generationModeUnavailableMessage(config, mode);
   const galleryTabs = useMemo<GalleryTab[]>(
     () => (videoModeEnabled ? ["image", "video", "liked"] : ["image", "liked"]),
@@ -723,14 +730,6 @@ export function GeneratorWorkspace() {
     (type: PresetConfig["type"]) => (config?.presets ?? []).filter((preset) => preset.type === type),
     [config],
   );
-  const retryQuoteScopeKey =
-    config?.viewer.authenticated === true
-      ? jobs
-          .filter((job) => job.status === "failed")
-          .map((job) => job.id)
-          .sort()
-          .join("|")
-      : "";
   const selectedMediaConfirmKey = Array.from(selectedMediaIds).sort().join("|");
   const bulkDeleteArmed =
     selectedMediaIds.size > 0 && bulkDeleteConfirmKey === selectedMediaConfirmKey;
@@ -779,15 +778,13 @@ export function GeneratorWorkspace() {
     setBulkDeleteConfirmKey(null);
     setDeleteConfirmPresetId(null);
     setLookEditorMediaId(null);
-    // A key only means anything to the viewer who minted it: keeping one across
-    // a scope change would let the next viewer replay someone else's write.
-    clearGenerationIdempotencyKeys(generationIdempotencyKeysRef.current);
-    dispatchGenerationRequest({ type: "viewer_scope_reset" });
+    resetGenerationRequestScope();
     invalidateLookScope();
     setLooksAuthority(readyAuthorityStatus());
   }, [
     abortPrivateViewerRequests,
     invalidateLookScope,
+    resetGenerationRequestScope,
     resetJobs,
     resetMedia,
     resetUserPresets,
@@ -845,8 +842,7 @@ export function GeneratorWorkspace() {
     () => () => {
       charactersRequestControllerRef.current?.abort();
       configRequestControllerRef.current?.abort();
-      generationQuoteRequestControllerRef.current?.abort();
-      retryQuoteRequestControllerRef.current?.abort();
+      // The two price reads are aborted by useGenerationRequest's own unmount.
       abortPrivateViewerRequests();
     },
     [abortPrivateViewerRequests],
@@ -1003,108 +999,9 @@ export function GeneratorWorkspace() {
   ]);
 
   const refreshBalanceAndQuoteAuthority = useCallback(() => {
-    dispatchGenerationRequest({ type: "balance_changed" });
+    generationBalanceChanged();
     void refreshConfig();
-  }, [refreshConfig]);
-
-  useEffect(() => {
-    generationQuoteRequestControllerRef.current?.abort();
-    if (!generationQuoteKey) return;
-
-    const controller = new AbortController();
-    generationQuoteRequestControllerRef.current = controller;
-    dispatchGenerationRequest({ type: "quote_pending" });
-
-    void (async () => {
-      const outcome = await loadGenerationQuote(
-        imageEditMode
-          ? {
-              key: generationQuoteKey,
-              target: "variation",
-              mediaId: editSourceMediaId,
-              consistencyMode,
-              model: modelSelectionProjection.requestModelId,
-            }
-          : {
-              key: generationQuoteKey,
-              target: "generation",
-              mode,
-              characterId,
-              freeplay,
-              consistencyMode,
-              model: modelSelectionProjection.requestModelId,
-              lookId:
-                characterImageMode && selectedLookId
-                  ? selectedLookId
-                  : undefined,
-            },
-        { signal: controller.signal },
-      );
-      if (generationQuoteRequestControllerRef.current === controller) {
-        generationQuoteRequestControllerRef.current = null;
-      }
-      if (outcome.kind === "discarded") return;
-      if (outcome.kind === "failed") {
-        dispatchGenerationRequest({
-          type: "quote_failed",
-          key: outcome.key,
-          message: outcome.message,
-        });
-        return;
-      }
-      dispatchGenerationRequest({
-        type: "quote_resolved",
-        key: outcome.key,
-        quote: outcome.quote,
-      });
-      // The fresh quote is authority over the form: a count or aspect ratio the
-      // resolved route does not sell cannot stay selected.
-      setCount((current) => countWithinQuote(current, outcome.quote));
-      setOrientation((current) =>
-        orientationWithinQuote(current, outcome.quote),
-      );
-    })();
-
-    return () => controller.abort();
-  }, [
-    characterId,
-    characterImageMode,
-    consistencyMode,
-    editSourceMediaId,
-    freeplay,
-    generationQuoteKey,
-    generationRequest.quoteNonce,
-    imageEditMode,
-    mode,
-    modelSelectionProjection.requestModelId,
-    selectedLookId,
-  ]);
-
-  useEffect(() => {
-    retryQuoteRequestControllerRef.current?.abort();
-    if (!retryQuoteScopeKey) {
-      dispatchGenerationRequest({ type: "retry_quotes_pending" });
-      return;
-    }
-    const controller = new AbortController();
-    retryQuoteRequestControllerRef.current = controller;
-    const jobIds = retryQuoteScopeKey.split("|").filter(Boolean);
-    dispatchGenerationRequest({ type: "retry_quotes_pending" });
-
-    void (async () => {
-      const outcome = await loadGenerationRetryQuotes(jobIds, {
-        signal: controller.signal,
-      });
-      if (outcome.kind === "discarded") return;
-      dispatchGenerationRequest({
-        type: "retry_quotes_resolved",
-        quotes: outcome.quotes,
-        failures: outcome.failures,
-      });
-    })();
-
-    return () => controller.abort();
-  }, [generationRequest.retryQuoteNonce, retryQuoteScopeKey]);
+  }, [generationBalanceChanged, refreshConfig]);
 
   const refreshIdentityMedia = useCallback(async () => {
     const viewerRequest = beginPrivateViewerRequest();
@@ -1487,6 +1384,8 @@ export function GeneratorWorkspace() {
     };
   }, [ageGateAccepted, jobs, pollGeneration]);
 
+  // What a queued generation does to this surface. The lifecycle rules around
+  // it live in @/lib/generation-request; none of them are repeated here.
   const generationRequestEffects: GenerationRequestEffects = {
     applyJob: (job) =>
       setJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]),
@@ -1499,15 +1398,6 @@ export function GeneratorWorkspace() {
       void pollGeneration(jobId);
     },
   };
-
-  function generationRequestContext() {
-    return {
-      state: generationRequest,
-      dispatch: dispatchGenerationRequest,
-      effects: generationRequestEffects,
-      keys: generationIdempotencyKeysRef.current,
-    };
-  }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1525,39 +1415,33 @@ export function GeneratorWorkspace() {
       });
       return;
     }
-    await runGenerationWrite(
+    await generationRequest.submit(
       {
-        kind: "generation",
-        quote: generationQuote,
-        quoteKey: generationQuoteKey,
-        body: {
-          mode,
-          characterId: freeplay ? undefined : characterId,
-          freeplay,
-          consistencyMode,
-          outputCount,
-          quoteAuthority: exactQuote?.authority,
-          prompt: canDescribeMoment && prompt ? prompt : undefined,
-          negativePrompt: canUsePrompt && negativePrompt ? negativePrompt : undefined,
-          remixFeedItemId: remixFeedItemId || undefined,
-          controls: {
-            orientation,
-            model: modelSelectionProjection.requestModelId,
-            seconds: mode === "video" ? 4 : undefined,
-            modePresetId: mode === "image" && modePresetId ? modePresetId : undefined,
-            backgroundPresetId: mode === "image" && backgroundPresetId ? backgroundPresetId : undefined,
-            posePresetId: mode === "image" && posePresetId ? posePresetId : undefined,
-            outfitPresetId: mode === "image" && outfitPresetId ? outfitPresetId : undefined,
-            lookId: characterImageMode && selectedLookId ? selectedLookId : undefined,
-          },
+        mode,
+        characterId: freeplay ? undefined : characterId,
+        freeplay,
+        consistencyMode,
+        outputCount,
+        prompt: canDescribeMoment && prompt ? prompt : undefined,
+        negativePrompt: canUsePrompt && negativePrompt ? negativePrompt : undefined,
+        remixFeedItemId: remixFeedItemId || undefined,
+        controls: {
+          orientation,
+          model: modelSelectionProjection.requestModelId,
+          seconds: mode === "video" ? 4 : undefined,
+          modePresetId: mode === "image" && modePresetId ? modePresetId : undefined,
+          backgroundPresetId: mode === "image" && backgroundPresetId ? backgroundPresetId : undefined,
+          posePresetId: mode === "image" && posePresetId ? posePresetId : undefined,
+          outfitPresetId: mode === "image" && outfitPresetId ? outfitPresetId : undefined,
+          lookId: characterImageMode && selectedLookId ? selectedLookId : undefined,
         },
       },
-      generationRequestContext(),
+      generationRequestEffects,
     );
   }
 
   async function retryJob(jobId: string) {
-    await runGenerationWrite({ kind: "retry", jobId }, generationRequestContext());
+    await generationRequest.retry(jobId, generationRequestEffects);
   }
 
   async function toggleLike(item: MediaItem) {
@@ -1762,27 +1646,15 @@ export function GeneratorWorkspace() {
     },
   ) {
     if (item.type !== "image") return;
-    if (variationPendingIds.has(item.id)) return;
-    if (!options?.quote) {
-      setStatus("Checking the exact variation price…");
-    }
-    await runGenerationWrite(
+    await generationRequest.createVariation(
       {
-        kind: "variation",
         mediaId: item.id,
-        outputCount: options?.outputCount ?? 1,
+        outputCount: options?.outputCount,
         consistencyMode,
         model: modelSelectionProjection.requestModelId,
-        quote: options?.quote ?? null,
-        // Only the form's own edit spends the form's quote; a gallery card
-        // prices itself and must not invalidate what the form is showing.
-        quoteKey:
-          imageEditMode && selectedEditSource?.id === item.id
-            ? generationQuoteKey
-            : null,
-        queuedMessage: imageEditMode ? "Image edit queued." : "Variation queued.",
+        quote: options?.quote,
       },
-      generationRequestContext(),
+      generationRequestEffects,
     );
   }
 
@@ -2832,9 +2704,7 @@ export function GeneratorWorkspace() {
                 <span>{generationQuoteError}</span>
                 <button
                   className="shrink-0 rounded-full border border-[rgb(255,184,112)]/50 px-3 py-1 text-[11px] font-black"
-                  onClick={() =>
-                    dispatchGenerationRequest({ type: "quote_retry_requested" })
-                  }
+                  onClick={generationRequest.requestQuoteRetry}
                   type="button"
                 >
                   Retry quote
@@ -3065,11 +2935,7 @@ export function GeneratorWorkspace() {
                         {retryQuoteFailures[job.id] && (
                           <button
                             className="w-fit rounded-full border border-white/20 px-3 py-1 text-[11px] font-black text-white"
-                            onClick={() =>
-                              dispatchGenerationRequest({
-                                type: "retry_quotes_retry_requested",
-                              })
-                            }
+                            onClick={generationRequest.requestRetryQuoteRetry}
                             type="button"
                           >
                             Retry price check

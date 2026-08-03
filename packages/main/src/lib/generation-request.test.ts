@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createGenerationIdempotencyKeys,
   generationAuthorityActionForStatus,
+  generationQuoteKeyFor,
   generationRetryRefusal,
   initialGenerationRequestState,
   loadGenerationQuote,
@@ -13,6 +14,7 @@ import {
   reduceGenerationRequest,
   runGenerationWrite,
   type GenerationRequestAction,
+  type GenerationQuoteRequest,
   type GenerationRequestEffects,
   type GenerationRequestState,
   type GenerationRequestViewInput,
@@ -829,6 +831,69 @@ describe("generation write outcome protocol", () => {
   });
 });
 
+// The hook watches only the quote key to know a held quote went stale, so the
+// key must move whenever anything that moves the price moves.
+describe("generation quote key", () => {
+  const baseline = {
+    viewerScope: "user:viewer-1",
+    mode: "image",
+    consistencyMode: "balanced",
+    target: "generation",
+    characterId: "character-1",
+    freeplay: false,
+  } as const satisfies GenerationQuoteRequest;
+
+  it.each([
+    ["the viewer", { viewerScope: "user:viewer-2" }],
+    ["the mode", { mode: "video" as const }],
+    ["the character", { characterId: "character-2" }],
+    ["freeplay", { freeplay: true }],
+    ["consistency", { consistencyMode: "strict" as const }],
+    ["the explicit model", { model: "public-t2i" }],
+    ["the look", { lookId: "look-1" }],
+  ])("changes when %s changes", (_field, drift) => {
+    expect(generationQuoteKeyFor({ ...baseline, ...drift })).not.toBe(
+      generationQuoteKeyFor(baseline),
+    );
+  });
+
+  it("is stable for an unchanged route", () => {
+    expect(generationQuoteKeyFor({ ...baseline })).toBe(
+      generationQuoteKeyFor(baseline),
+    );
+  });
+
+  it("never lets a character route and an image edit share a key", () => {
+    expect(
+      generationQuoteKeyFor({
+        viewerScope: "user:viewer-1",
+        mode: "image",
+        consistencyMode: "balanced",
+        target: "variation",
+        mediaId: "media-1",
+      }),
+    ).not.toBe(generationQuoteKeyFor(baseline));
+  });
+
+  it("prices an image edit as a source route, never a character one", () => {
+    const key = JSON.parse(
+      generationQuoteKeyFor({
+        viewerScope: "user:viewer-1",
+        mode: "image",
+        consistencyMode: "balanced",
+        target: "variation",
+        mediaId: "media-1",
+      }),
+    );
+    expect(key).toMatchObject({
+      sourceMediaId: "media-1",
+      characterId: null,
+      freeplay: true,
+      lookId: null,
+    });
+  });
+});
+
 describe("generation quote transport", () => {
   it("prices the resolved route for a character image request", async () => {
     const seen: Array<{ url: string; body: unknown }> = [];
@@ -840,21 +905,22 @@ describe("generation quote transport", () => {
       return Response.json({ ok: true, data: { quote } });
     }) as unknown as typeof fetch;
 
-    const outcome = await loadGenerationQuote(
-      {
-        key: "route-key",
-        target: "generation",
-        mode: "image",
-        characterId: "character-1",
-        freeplay: false,
-        consistencyMode: "balanced",
-        model: "public-t2i",
-        lookId: "look-1",
-      },
-      { fetcher },
-    );
+    const request: GenerationQuoteRequest = {
+      viewerScope: "user:viewer-1",
+      target: "generation",
+      mode: "image",
+      characterId: "character-1",
+      freeplay: false,
+      consistencyMode: "balanced",
+      model: "public-t2i",
+      lookId: "look-1",
+    };
+    const outcome = await loadGenerationQuote(request, { fetcher });
 
-    expect(outcome).toMatchObject({ kind: "resolved", key: "route-key" });
+    expect(outcome).toMatchObject({
+      kind: "resolved",
+      key: generationQuoteKeyFor(request),
+    });
     expect(seen[0]?.url).toBe("/api/v1/generation/quote");
     expect(seen[0]?.body).toMatchObject({
       mode: "image",
@@ -874,7 +940,7 @@ describe("generation quote transport", () => {
 
     await loadGenerationQuote(
       {
-        key: "route-key",
+        viewerScope: "user:viewer-1",
         target: "generation",
         mode: "image",
         characterId: "character-1",
@@ -896,7 +962,8 @@ describe("generation quote transport", () => {
 
     await loadGenerationQuote(
       {
-        key: "route-key",
+        viewerScope: "user:viewer-1",
+        mode: "image",
         target: "variation",
         mediaId: "media/with spaces",
         consistencyMode: "strict",
@@ -910,26 +977,24 @@ describe("generation quote transport", () => {
   });
 
   it("carries the server's own reason for an unpriceable route", async () => {
-    const outcome = await loadGenerationQuote(
-      {
-        key: "route-key",
-        target: "generation",
-        mode: "video",
-        freeplay: true,
-        consistencyMode: "balanced",
-      },
-      {
+    const request: GenerationQuoteRequest = {
+      viewerScope: "user:viewer-1",
+      target: "generation",
+      mode: "video",
+      freeplay: true,
+      consistencyMode: "balanced",
+    };
+    const outcome = await loadGenerationQuote(request, {
         fetcher: (async () =>
           Response.json(
-            { ok: false, error: { message: "Video is unavailable." } },
-            { status: 503 },
-          )) as unknown as typeof fetch,
-      },
-    );
+          { ok: false, error: { message: "Video is unavailable." } },
+          { status: 503 },
+        )) as unknown as typeof fetch,
+    });
 
     expect(outcome).toEqual({
       kind: "failed",
-      key: "route-key",
+      key: generationQuoteKeyFor(request),
       message: "Video is unavailable.",
     });
   });
@@ -940,7 +1005,7 @@ describe("generation quote transport", () => {
 
     const outcome = await loadGenerationQuote(
       {
-        key: "route-key",
+        viewerScope: "user:viewer-1",
         target: "generation",
         mode: "image",
         freeplay: true,
