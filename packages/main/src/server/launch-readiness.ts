@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { looksLikeMockChatResponse } from "@idream/shared";
+import { defaultBullmqPrefix } from "@idream/shared/env";
 import { parse as parseDotenv } from "dotenv";
 
 const DEDICATED_CHAT_PROBE_USER_ID = "seed-chat-probe-user";
@@ -486,14 +487,18 @@ function isChatServiceDatabaseUrl(value: string | undefined) {
   return isPostgresUrl(value) && postgresUser(value) === "chat_service";
 }
 
+// INTENT: 非生产的 prefix 默认值由 env 契约推导，不在这里第二次抄一遍字面量 ——
+// 三个服务的 env.ts 早先各抄一份默认值，这里再抄一份，同一条不变量四处防守而无一处定义。
+// "idream:chat" / "idream:gen" 是服务本地的历史默认值，契约里没有，保留为显式历史项。
+const NON_PRODUCTION_BULLMQ_PREFIXES = new Set([
+  ...(["development", "test"] as const).map((appEnv) => defaultBullmqPrefix(appEnv)),
+  "idream:chat",
+  "idream:gen",
+]);
+
 function isProductionBullmqPrefix(value: string | undefined) {
   if (typeof value !== "string" || !hasMinLength(value, 1)) return false;
-  return !new Set([
-    "idream:development",
-    "idream:test",
-    "idream:chat",
-    "idream:gen",
-  ]).has(value);
+  return !NON_PRODUCTION_BULLMQ_PREFIXES.has(value);
 }
 
 function isDurableChatFsRoot(value: string | undefined) {
