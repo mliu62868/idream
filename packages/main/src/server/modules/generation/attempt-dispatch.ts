@@ -15,7 +15,7 @@ import {
 import type { EnqueueJobInput } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
-import { generationWorkflowDescriptor } from "@/server/modules/admin/generation-catalog";
+import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
 import { normalizedGenerationReferenceRole } from "@/server/modules/admin-v2/characters/generation-route-authority";
 import { lockCharacterGenerationAuthority } from "@/server/modules/admin-v2/characters/generation-authority-lock";
 import {
@@ -580,7 +580,14 @@ async function existingGenerationRuntime(
     generationProfileKey: profile.profileKey,
     generationProfileVersion: profile.version,
     workflowKey,
-    workflowVersion: workflow?.version,
+    // INVARIANT: dispatched controls carry the Attempt's immutable workflow
+    // pin, not a freshly resolved descriptor version. Reading the live
+    // descriptor here forked from the pin two ways: a bumped descriptor
+    // version overwrote an older pinned Request, and a missing descriptor
+    // dropped the field entirely while the pin still carried the profile's
+    // runnerConfig fallback. Both made dispatch authority reject its own
+    // envelope.
+    workflowVersion: attempt.workflowVersion ?? workflow?.version,
     workflowIdentity: workflow?.identity,
     modelCapabilities: normalizedModelCapabilities(profile.runnerConfig, profile.runner === "sd_cpp"),
     sdcpp: profile.runner === "sd_cpp" ? sdcppProfileRuntimeConfig(profile) : undefined,

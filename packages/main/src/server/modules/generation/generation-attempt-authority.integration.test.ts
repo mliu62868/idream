@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { EnqueueJobInput } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
+import { checkExactGenerationDispatchAuthority } from "@/server/ai/generation-dispatch-evidence-authority";
+import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
 import {
   dispatchGenerationAttemptOutbox,
   reserveInitialGenerationAttempt,
@@ -47,6 +49,9 @@ describe("GenerationAttemptAuthority", () => {
       where: { requestId: { in: jobIds } },
     });
     await prisma.generationJob.deleteMany({ where: { id: { in: jobIds } } });
+    await prisma.generationModelProfile.deleteMany({
+      where: { id: { startsWith: prefix } },
+    });
     await prisma.user.delete({ where: { id: userId } });
     await prisma.$disconnect();
   });
@@ -122,6 +127,63 @@ describe("GenerationAttemptAuthority", () => {
     }
     return { job: failed, attempt: initial.attempt };
   }
+
+  // SPEC: the Attempt pin and the dispatched controls must name one workflow
+  // version. The Attempt pin falls back to the Profile's runnerConfig when no
+  // descriptor file resolves; the dispatched controls used to read the
+  // descriptor alone, so a profile pointing at an absent descriptor pinned a
+  // version the envelope silently dropped — and dispatch authority then
+  // rejected its own envelope as a workflow pin mismatch.
+  it("dispatches the Attempt workflow pin when no descriptor resolves", async () => {
+    const workflowKey = `${prefix}-absent-descriptor`;
+    await expect(generationWorkflowDescriptor(workflowKey)).resolves.toBeNull();
+    const profile = await prisma.generationModelProfile.create({
+      data: {
+        id: `${prefix}-profile`,
+        profileKey: `${prefix}-profile-key`,
+        label: "Absent descriptor profile",
+        mode: "image",
+        runner: "comfyui",
+        pipelineModel: `${prefix}-model`,
+        workflowKey,
+        runnerConfig: { workflowVersion: 5 },
+        allowedOrientations: ["portrait"],
+        status: "active",
+      },
+    });
+    const job = await prisma.generationJob.create({
+      data: {
+        id: `${prefix}-pinned-workflow-version`,
+        userId,
+        mode: "image",
+        controls: {},
+        presetIds: [],
+        outputCount: 1,
+        status: "queued",
+        provider: "mock",
+        profileId: profile.profileKey,
+        profileVersion: profile.version,
+      },
+    });
+
+    const reserved = await prisma.$transaction((tx) =>
+      reserveInitialGenerationAttempt(tx, reservationFor(job)),
+    );
+
+    expect(reserved.attempt.workflowVersion).toBe(5);
+    const queueInput = (reserved.outbox.payload as Record<string, unknown>)
+      .queueInput as Record<string, unknown>;
+    const queuePayload = queueInput.payload as Record<string, unknown>;
+    expect((queuePayload.controls as Record<string, unknown>).workflowVersion)
+      .toBe(5);
+    expect(
+      checkExactGenerationDispatchAuthority({
+        job,
+        attempt: reserved.attempt,
+        dispatch: reserved.outbox,
+      }),
+    ).toMatchObject({ ok: true });
+  });
 
   it("persists the dispatch intent before enqueue and recovers it exactly once", async () => {
     const job = await createJob("crash-window");

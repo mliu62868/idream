@@ -16,7 +16,7 @@ import { ok } from "@/server/lib/http";
 import {
   OPERATIONAL_USER_DATA_SCOPE,
   operationalGenerationJobWhere,
-} from "@/server/modules/admin/shared/metric-data-scope";
+} from "@/server/modules/metric-data-scope";
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
 

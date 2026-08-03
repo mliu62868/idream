@@ -13,7 +13,7 @@ import { Errors } from "@/server/lib/errors";
 import {
   operationalCharacterWhere,
   operationalMediaAssetWhere,
-} from "@/server/modules/admin/shared/metric-data-scope";
+} from "@/server/modules/metric-data-scope";
 import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";

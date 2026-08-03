@@ -43,7 +43,7 @@ describe("deep module authority boundaries", () => {
       .filter((file) => /dreamcoinLedger\.(create|upsert|update|delete)/.test(source(file)))
       .map((file) => path.relative(process.cwd(), file));
 
-    expect(writers).toEqual(["src/server/modules/admin/billing/ledger.ts"]);
+    expect(writers).toEqual(["src/server/modules/billing/ledger.ts"]);
   });
 
   it("forbids cross-service Redis delivery and the optional HTTP cutover flag", () => {

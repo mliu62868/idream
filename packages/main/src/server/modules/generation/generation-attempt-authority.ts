@@ -12,7 +12,7 @@ import {
 } from "@/server/events/main-outbox-transport";
 import { jobQueue, type EnqueueJobInput } from "@/server/jobs/queue";
 import { Errors } from "@/server/lib/errors";
-import { generationWorkflowDescriptor } from "@/server/modules/admin/generation-catalog";
+import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
 import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import {

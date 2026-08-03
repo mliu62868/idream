@@ -6,7 +6,7 @@ import {
   assignWorkflowReferenceSlots,
   type WorkflowReferenceRole,
 } from "@idream/shared/gen-workflow";
-import { generationWorkflowDescriptor } from "@/server/modules/admin/generation-catalog";
+import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
 
 type GenerationRouteAuthorityStore = Pick<
   Prisma.TransactionClient,

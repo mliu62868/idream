@@ -319,6 +319,8 @@ describe("Generation TransportExecution authority", () => {
           queue: "ai.image.generate",
           dedupeKey: `generation:${requestId}:attempt:${attemptNo}`,
           maxAttempts: 5,
+          // Must stay shape-complete: dispatch authority accepts only an
+          // envelope the real queue-input writer could have produced.
           payload: {
             version: 1,
             kind: "image",
@@ -329,6 +331,16 @@ describe("Generation TransportExecution authority", () => {
             provider: base.provider,
             model: base.model,
             controls: { workflowKey: base.model, workflowVersion: 1 },
+            userId,
+            characterId: null,
+            prompt: "transport authority test",
+            negativePrompt: null,
+            presetIds: [],
+            orientation: "portrait",
+            count: 1,
+            seed: requestId,
+            outputPrefix:
+              `gen/${requestId}/attempts/${reservedAttemptId}/`,
           },
         },
       },

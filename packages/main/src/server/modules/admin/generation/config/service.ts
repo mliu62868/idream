@@ -14,7 +14,7 @@ import {
   dimensionsForImageOrientation,
   imageOrientations,
 } from "@/server/modules/ourdream/generation-dimensions";
-import { workflowKeyExists } from "@/server/modules/admin/generation-catalog";
+import { workflowKeyExists } from "@/server/modules/generation/generation-catalog";
 import { actorWithPermission, jsonBody, toInputJson, writeAudit } from "@/server/modules/admin/shared/legacy-primitives";
 import { redactGenerationJob as redactJob } from "@/server/modules/admin/shared/presenters";
 import { decodeAdminListCursor, encodeAdminListCursor } from "@/server/modules/admin-v2/shared/list-cursor";

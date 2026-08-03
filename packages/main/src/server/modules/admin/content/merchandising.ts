@@ -19,7 +19,7 @@ import {
   operationalCharacterWhere,
   operationalContentReportWhere,
   operationalGenerationJobWhere,
-} from "@/server/modules/admin/shared/metric-data-scope";
+} from "@/server/modules/metric-data-scope";
 import {
   decodeAdminListCursor,
   encodeAdminListCursor,

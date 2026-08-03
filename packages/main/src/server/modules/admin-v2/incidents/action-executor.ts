@@ -1,8 +1,7 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { Errors } from "@/server/lib/errors";
 import { reserveRetryGenerationAttempt } from "@/server/modules/generation/generation-attempt-authority";
-import { ensureGenerationSettlementLinks } from "@/server/ai/generation-settlement";
-import { postDreamcoinEntry } from "@/server/modules/admin/billing/ledger";
+import { refundGenerationRequest } from "@/server/ai/generation-refund";
 import { claimControlPlaneCommand } from "../shared/control-plane-command";
 import { transitionControlPlaneCommandAttempt } from "../shared/control-plane-command-attempt";
 import { transitionControlPlaneCommand } from "../shared/control-plane-command-transition";
@@ -87,19 +86,12 @@ async function appendRefund(
   const job = await tx.generationJob.findUnique({ where: { id: input.jobId } });
   if (!job) throw Errors.notFound("Incident refund target Generation Request is missing");
   await tx.$queryRaw`SELECT id FROM "generation_jobs" WHERE id = ${job.id} FOR UPDATE`;
-  const settlement = await ensureGenerationSettlementLinks(tx, job.id);
-  const amount = settlement.refundable;
-  if (amount === 0) return { jobId: job.id, amount: 0, alreadySettled: true };
-  const idempotencyKey = `incident:${input.commandId}:refund:${job.id}`;
-  const existing = await tx.dreamcoinLedger.findUnique({ where: { idempotencyKey } });
-  await postDreamcoinEntry(tx, {
-    kind: "refund",
+  const amount = await refundGenerationRequest(tx, {
+    requestId: job.id,
     userId: job.userId,
-    amount,
-    sourceId: job.id,
-    idempotencyKey,
+    cause: { kind: "incident_action", commandId: input.commandId },
   });
-  return { jobId: job.id, amount, alreadySettled: Boolean(existing) };
+  return { jobId: job.id, amount, alreadySettled: amount === 0 };
 }
 
 export async function executeIncidentActionPlanCommand(

@@ -33,7 +33,7 @@ import {
 import {
   operationalCharacterSubmissionWhere,
   operationalContentReportWhere,
-} from "@/server/modules/admin/shared/metric-data-scope";
+} from "@/server/modules/metric-data-scope";
 
 const characterSelect = {
   id: true,

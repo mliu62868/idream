@@ -8,7 +8,7 @@ import {
   customerAnalyticsEventWhere,
   customerDreamcoinLedgerWhere,
   customerUserWhere,
-} from "@/server/modules/admin/shared/metric-data-scope";
+} from "@/server/modules/metric-data-scope";
 import { actorWithPermission, clampInt } from "@/server/modules/admin/shared/legacy-primitives";
 
 const ANALYTICS_EXPORT = "analytics.export" as const;

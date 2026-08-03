@@ -4,7 +4,7 @@ import {
   generationRouteRuntimeCompatibility,
   OPERATOR_SINGLE_IMAGE_ROUTE_MATRIX_KEY,
 } from "./generation-route-authority";
-import { generationWorkflowDescriptor } from "@/server/modules/admin/generation-catalog";
+import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
 import { canonicalSha256 } from "../shared/canonical-json";
 import { toInputJson } from "../shared/prisma-json";
 

@@ -15,7 +15,7 @@ import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
-import { dreamcoinBalance } from "@/server/modules/admin/billing/ledger";
+import { dreamcoinBalance } from "@/server/modules/billing/ledger";
 import {
   actorWithPermission,
   jsonBody,

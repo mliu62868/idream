@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
-import { markProductionItemGenerated } from "./content-production-state";
+import { markProductionItemGenerated } from "@/server/modules/content-production-state";
 
 describe("Content production item projection authority", () => {
   const suffix = randomUUID();

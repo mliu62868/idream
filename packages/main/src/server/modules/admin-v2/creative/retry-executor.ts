@@ -9,7 +9,7 @@ import {
   reserveRetryGenerationAttempt,
   resolveGenerationAttemptRetryAuthority,
 } from "@/server/modules/generation/generation-attempt-authority";
-import { generationWorkflowDescriptor } from "@/server/modules/admin/generation-catalog";
+import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
 import {
   hasHydratableMediaBlobAuthority,
   isMediaAssetOperationalForAuthority,

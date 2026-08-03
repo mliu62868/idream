@@ -16,6 +16,7 @@ import {
 } from "@prisma/client";
 import { recordMainToChatEvent } from "@/processes/chat-outbox";
 import { ensureGenerationSettlementLinks } from "@/server/ai/generation-settlement";
+import { refundGenerationRequest } from "@/server/ai/generation-refund";
 import { removeGenerationAttemptQueueJob } from "@/server/ai/generation-attempt-queue";
 import { transitionGenerationRequest } from "@/server/ai/generation-request-transition";
 import { adoptRecoveredUnknownArtifacts } from "@/server/ai/generation-evidence-transition-authority";
@@ -25,8 +26,7 @@ import { Errors } from "@/server/lib/errors";
 import {
   markProductionItemFailed,
   markProductionItemGenerated,
-} from "@/server/modules/admin/content-production-state";
-import { postDreamcoinEntry } from "@/server/modules/admin/billing/ledger";
+} from "@/server/modules/content-production-state";
 import { appendCanonicalMetricEvent } from "@/server/modules/admin-v2/metrics/event-writer";
 import { providers } from "@/server/providers";
 import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
@@ -239,18 +239,13 @@ export async function reconcileUnknownGenerationRequest(input: {
       requestStatus = transitioned.status;
       requestVersion = transitioned.version;
       if (request.sourceType !== "content_production_item") {
-        const settlement = await ensureGenerationSettlementLinks(tx, request.id);
-        const refundable = Math.min(request.costDreamcoins, settlement.refundable);
-        if (refundable > 0) {
-          const refund = await postDreamcoinEntry(tx, {
-            kind: "refund",
-            userId: request.userId,
-            amount: refundable,
-            sourceId: request.id,
-            idempotencyKey: `generation:${request.id}:unknown-confirmed-failed-refund`,
-          });
-          refundAmount = refund.delta;
-        }
+        const refundedAmount = await refundGenerationRequest(tx, {
+          requestId: request.id,
+          userId: request.userId,
+          cause: { kind: "unknown_confirmed" },
+          requested: request.costDreamcoins,
+        });
+        refundAmount = refundedAmount;
       }
       await markProductionItemFailed(tx, request.id);
       if (request.sourceType === "chat_image" && request.sourceId) {
@@ -673,16 +668,13 @@ async function adoptRecoveredSuccess(
             input.request.outputCount,
         )
       : 0;
-    refundAmount = Math.min(requestedRefund, settlement.refundable);
-    if (refundAmount > 0) {
-      await postDreamcoinEntry(tx, {
-        kind: "refund",
-        userId: input.request.userId,
-        amount: refundAmount,
-        sourceId: input.request.id,
-        idempotencyKey: `generation:${input.request.id}:partial-refund`,
-      });
-    }
+    const refundedAmount = await refundGenerationRequest(tx, {
+      requestId: input.request.id,
+      userId: input.request.userId,
+      cause: { kind: "partial" },
+      requested: requestedRefund,
+    });
+    refundAmount = refundedAmount;
   }
 
   const persistedAssets = [] as Array<{ id: string }>;

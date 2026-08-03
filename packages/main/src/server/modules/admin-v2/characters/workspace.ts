@@ -22,13 +22,13 @@ import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-executor";
 import { evaluateReleaseReadiness } from "./readiness";
 import { findOperationalGenerationRoute } from "./visual-authority";
 import { characterVisualProfileSnapshotHash, referenceSetSnapshotHash } from "./release-snapshot";
-import { generationWorkflowDescriptor } from "@/server/modules/admin/generation-catalog";
+import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
 import { canonicalSha256 } from "../shared/canonical-json";
 import {
   OPERATIONAL_USER_DATA_CLASS_SQL,
   operationalCharacterWhere,
   operationalMediaAssetWhere,
-} from "@/server/modules/admin/shared/metric-data-scope";
+} from "@/server/modules/metric-data-scope";
 import { ACTIVE_CONTROL_PLANE_COMMAND_STATUSES } from "../shared/control-plane-command";
 import { characterCommandCoordinationKey } from "./command-coordination";
 import { loadCharacterIdentityBootstrapAuthority } from "./identity-bootstrap-authority";

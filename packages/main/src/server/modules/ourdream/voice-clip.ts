@@ -14,7 +14,7 @@ import { env } from "@/server/lib/env";
 import { generationCostDreamcoins } from "@/server/lib/generation-pricing";
 import { ok } from "@/server/lib/http";
 import { logger } from "@/server/lib/logger";
-import { dreamcoinBalance, postDreamcoinEntry } from "@/server/modules/admin/billing/ledger";
+import { dreamcoinBalance, postDreamcoinEntry } from "@/server/modules/billing/ledger";
 import { canonicalJsonHash } from "@/server/modules/admin-v2/shared/idempotency";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { resolveCharacterVoiceAuthority } from "@/server/modules/voice-defaults";
