@@ -1336,10 +1336,11 @@ model GenerationModelProfile {
   profileKey          String
   label               String
   mode                String    @default("image") // enum: image | video
-  // 记账字段，不决定实际后端：gen 按 workflow 描述符的 backendKind 选后端（comfyui / drawthings）。
-  // 默认值 sd_cpp 指向一个 gen 里已不存在的 runner —— 保留是因为线上可能有沿用默认值的 profile，
-  // gen 侧把它映射到 backend 适配器后照常执行。要改默认值需单独迁移，见 db/sql/。
-  runner              String    @default("sd_cpp") // enum: pipeline | sd_cpp | mlx | comfyui | external
+  // SPEC: runner 只选 gen 的适配器层（comfyui→backend / mlx|external→pipeline / pipeline|mock 直通），
+  // 不决定具体后端 —— 后端由 workflow 描述符的 backendKind 决定（comfyui / drawthings）。
+  // INVARIANT: 这行注释里的 enum 就是合法取值的唯一清单，且必须全部能被 gen 的
+  // workerAdapterForRecordedProvider 映射；由 generation-runner-vocabulary.test.ts 断言集合相等。
+  runner              String    @default("comfyui") // enum: pipeline | mlx | comfyui | external
   pipelineModel       String
   workflowKey         String?
   sourceModelPath     String?
