@@ -61,7 +61,7 @@ import {
   getGenerationWorkflow,
   listGenerationBackends,
   listGenerationWorkflows,
-} from "@/server/modules/generation/generation-catalog";
+} from "./generation/backends-and-workflows";
 import { analyticsExport, analyticsRetention } from "./analytics-extra";
 import {
   listAdminAnnouncements,

@@ -299,13 +299,13 @@ describe("remaining Admin inventory provenance", () => {
   it("keeps generation and Creative Run list, detail, and commands operational-only", async () => {
     const jobs = await responseData(
       await listGenerationJobsV2(
-        adminRequest(`/api/v2/admin/generation/jobs?search=${prefix}&limit=100`),
+        adminRequest(`/api/v2/admin/jobs?search=${prefix}&limit=100`),
       ),
     );
     expect(ids(jobs.items)).toEqual(new Set([jobIds.customer, jobIds.internal]));
     await expect(
       getGenerationJobV2(
-        adminRequest(`/api/v2/admin/generation/jobs/${jobIds.fixture}`),
+        adminRequest(`/api/v2/admin/jobs/${jobIds.fixture}`),
         jobIds.fixture,
       ),
     ).rejects.toMatchObject({ status: 404 });

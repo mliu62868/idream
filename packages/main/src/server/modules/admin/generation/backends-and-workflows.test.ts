@@ -6,13 +6,14 @@ import {
   getGenerationWorkflow,
   listGenerationBackends,
   listGenerationWorkflows,
-} from "./generation-catalog";
+} from "./backends-and-workflows";
 
 // SPEC: 只读 admin API 单测 —— generation/backends 与 generation/workflows[/:workflowKey]。
 // 直接驱动 handler（dispatchAdmin 路由接缝已在 service.ts 挂好；本文件像本目录其它 handler
 // 单测一样不经过路由字符串解析）。覆盖：workflows 摘要不含 apiPrompt、detail 含 apiPrompt、
-// 未知 workflowKey 404、backends 恰好三条且 health 字段存在（comfyui 用不可达端口驱动
-// ok:false 分支的确定性，而不是依赖本机是否真的跑着 ComfyUI）、非 admin actor 403。
+// 未知 workflowKey 404、backends 恰好两条（comfyui + drawthings）且 health 字段存在
+// （comfyui 用不可达端口驱动 ok:false 分支的确定性，而不是依赖本机是否真的跑着
+// ComfyUI）、非 admin actor 403。
 // INVARIANTS: dev-auth 头（x-idream-*）仅在 APP_ENV=test 生效；前缀 P 隔离测试数据；
 // COMFYUI_API_URL/DRAWTHINGS_CLI 覆盖必须在 finally 里还原，避免污染其它用例。
 
