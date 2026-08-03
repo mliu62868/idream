@@ -90,8 +90,11 @@ async function requestIdempotentGenerationWrite(
   input: {
     body: Record<string, unknown>;
     createIdempotencyKey?: () => string;
+    // Each intent names its own failure, so a retry never reports itself as a
+    // fresh generation.
+    fallbackMessage: string;
     idempotencyKeys?: Map<string, string>;
-    intentKind: "generation" | "media_variation";
+    intentKind: "generation" | "media_variation" | "generation_retry";
     url: string;
   },
   fetcher: typeof fetch,
@@ -135,7 +138,7 @@ async function requestIdempotentGenerationWrite(
       input.idempotencyKeys?.delete(intentKey);
     }
     throw new GenerationRequestError(
-      raw?.error?.message ?? "Generation failed.",
+      raw?.error?.message ?? input.fallbackMessage,
       response.status,
     );
   }
@@ -151,11 +154,39 @@ export function requestGenerationJobWithExactAuthority(
   return requestIdempotentGenerationWrite(
     {
       ...input,
+      fallbackMessage: "Generation failed.",
       intentKind: "generation",
       url: "/api/v1/generation/jobs",
     },
     fetcher,
   );
+}
+
+/**
+ * A retry is a second write against the same failed job, so its intent — and
+ * therefore its idempotency key — is identified by the job's own URL.
+ */
+export async function requestGenerationRetryWithExactAuthority(
+  input: {
+    createIdempotencyKey?: () => string;
+    idempotencyKeys?: Map<string, string>;
+    jobId: string;
+    quoteAuthority: GenerationQuoteAuthority;
+  },
+  fetcher: typeof fetch = fetch,
+): Promise<GenerationWriteJob> {
+  const result = await requestIdempotentGenerationWrite(
+    {
+      body: { quoteAuthority: input.quoteAuthority },
+      createIdempotencyKey: input.createIdempotencyKey,
+      fallbackMessage: "Retry failed",
+      idempotencyKeys: input.idempotencyKeys,
+      intentKind: "generation_retry",
+      url: `/api/v1/generation/jobs/${encodeURIComponent(input.jobId)}/retry`,
+    },
+    fetcher,
+  );
+  return result.job;
 }
 
 export async function requestMediaVariationWithExactQuote(
@@ -216,6 +247,7 @@ export async function requestMediaVariationWithExactQuote(
         quoteAuthority: exactQuote.authority,
       },
       createIdempotencyKey: input.createIdempotencyKey,
+      fallbackMessage: "Generation failed.",
       idempotencyKeys: input.idempotencyKeys,
       intentKind: "media_variation",
       url: `/api/v1/media/${encodeURIComponent(input.mediaId)}/variation`,
@@ -224,7 +256,7 @@ export async function requestMediaVariationWithExactQuote(
   );
 }
 
-function apiPayloadErrorMessage(payload: unknown) {
+export function apiPayloadErrorMessage(payload: unknown) {
   if (
     typeof payload !== "object" ||
     payload === null ||
