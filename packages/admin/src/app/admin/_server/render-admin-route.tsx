@@ -1,8 +1,9 @@
 import type { Metadata } from "next";
 import { adminBootstrapSchema, type AdminBootstrap } from "@idream/shared/admin";
 import { headers } from "next/headers";
+import { notFound } from "next/navigation";
 import { AdminDevLogin } from "@/components/admin/AdminDevLogin";
-import { canReadAnyWorkspace } from "@/components/admin/nav-config";
+import { canReadAnyWorkspace, parseAdminPath } from "@/components/admin/nav-config";
 import { proxyToMain } from "@/server/main-proxy";
 import { AdminConsoleClientOnly } from "../AdminConsoleClientOnly";
 
@@ -29,6 +30,11 @@ export async function renderAdminRoute(
   searchParams: AdminSearchParams,
 ) {
   const query = await searchParams;
+  const initialSection = withSearchParams(section.join("/"), query);
+  // SPEC: 认不出的后台路径回 404，走 app/admin/not-found.tsx。
+  // INTENT: 在取 bootstrap 之前判——拼错的 URL 不该先打一次权威服务再显示成 Today。
+  if (!parseAdminPath(initialSection)) notFound();
+
   const headerList = await headers();
   const bootstrap = await loadBootstrap(headerList);
   if (!bootstrap) return <AdminAuthorityUnavailable />;
@@ -50,7 +56,7 @@ export async function renderAdminRoute(
       actor={bootstrap.actor}
       initialAccess={Boolean(bootstrap.actor)}
       initialPermissions={bootstrap.permissions}
-      initialSection={withSearchParams(section.join("/"), query)}
+      initialSection={initialSection}
       shellSignals={bootstrap.shellSignals}
       devLogout={bootstrap.devLogin.enabled}
     />

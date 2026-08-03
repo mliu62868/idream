@@ -11,11 +11,16 @@ import {
   defaultWorkModeForRole,
   navGroupsForPermissions,
   navItems,
-  normalizeSection,
   parseAdminPath,
   sectionIsPermitted,
   type WorkMode,
 } from "./nav-config";
+
+// parseAdminPath 解析出的是导航项本身；断言只关心它的 id 与子视图。
+function at(value: string) {
+  const parsed = parseAdminPath(value);
+  return parsed ? { sectionId: parsed.item.id, view: parsed.view } : null;
+}
 
 const NAV_IDS = [
   "dashboard", "generation/jobs", "generation/config", "generation/recipes", "generation/presets", "generation/dead-letter",
@@ -49,33 +54,44 @@ describe("admin navigation information architecture", () => {
   });
 
   it("maps canonical routes and query-backed saved views onto domain workspaces", () => {
-    expect(parseAdminPath("today")).toEqual({ sectionId: "dashboard", view: { kind: "list" } });
-    expect(parseAdminPath("characters/new")).toEqual({ sectionId: "content/official", view: { kind: "new" } });
-    expect(parseAdminPath("characters/releases")).toEqual({ sectionId: "content/official", view: { kind: "list" } });
-    expect(parseAdminPath("characters/calendar")).toEqual({ sectionId: "content/official", view: { kind: "list" } });
-    expect(parseAdminPath("characters/review")).toEqual({ sectionId: "content/review-queue", view: { kind: "list" } });
-    expect(parseAdminPath("characters/starters")).toEqual({ sectionId: "content/templates", view: { kind: "list" } });
-    expect(parseAdminPath("characters/taxonomy")).toEqual({ sectionId: "content/tags", view: { kind: "list" } });
-    expect(parseAdminPath("characters/char-1")).toEqual({ sectionId: "content/official", view: { kind: "detail", id: "char-1" } });
-    expect(parseAdminPath("cases?view=overdue").sectionId).toBe("cases");
-    expect(parseAdminPath("cases/case-1")).toEqual({ sectionId: "cases", view: { kind: "detail", id: "case-1" } });
-    expect(parseAdminPath("customers/customer-1")).toEqual({ sectionId: "users", view: { kind: "detail", id: "customer-1" } });
-    expect(parseAdminPath("ops/incidents").sectionId).toBe("ops/incidents");
-    expect(parseAdminPath("ops/incidents/incident-1")).toEqual({ sectionId: "ops/incidents", view: { kind: "detail", id: "incident-1" } });
-    expect(parseAdminPath("characters/char-1?tab=release&releaseId=release-1")).toEqual({ sectionId: "content/official", view: { kind: "detail", id: "char-1" } });
-    expect(parseAdminPath("system/audit?commandId=command-1")).toEqual({ sectionId: "audit-log", view: { kind: "list" } });
-    expect(parseAdminPath("growth/offers?view=promo").sectionId).toBe("promo");
-    expect(parseAdminPath("growth/characters").sectionId).toBe("growth/characters");
-    expect(parseAdminPath("ops/recipes?view=presets").sectionId).toBe("generation/presets");
-    expect(parseAdminPath("growth/merchandising?view=announcements").sectionId).toBe("announcements");
+    expect(at("today")).toEqual({ sectionId: "dashboard", view: { kind: "list" } });
+    expect(at("characters/new")).toEqual({ sectionId: "content/official", view: { kind: "new" } });
+    expect(at("characters/releases")).toEqual({ sectionId: "content/official", view: { kind: "list" } });
+    expect(at("characters/calendar")).toEqual({ sectionId: "content/official", view: { kind: "list" } });
+    expect(at("characters/review")).toEqual({ sectionId: "content/review-queue", view: { kind: "list" } });
+    expect(at("characters/starters")).toEqual({ sectionId: "content/templates", view: { kind: "list" } });
+    expect(at("characters/taxonomy")).toEqual({ sectionId: "content/tags", view: { kind: "list" } });
+    expect(at("characters/char-1")).toEqual({ sectionId: "content/official", view: { kind: "detail", id: "char-1" } });
+    expect(at("cases?view=overdue")?.sectionId).toBe("cases");
+    expect(at("cases/case-1")).toEqual({ sectionId: "cases", view: { kind: "detail", id: "case-1" } });
+    expect(at("customers/customer-1")).toEqual({ sectionId: "users", view: { kind: "detail", id: "customer-1" } });
+    expect(at("ops/incidents")?.sectionId).toBe("ops/incidents");
+    expect(at("ops/incidents/incident-1")).toEqual({ sectionId: "ops/incidents", view: { kind: "detail", id: "incident-1" } });
+    expect(at("characters/char-1?tab=release&releaseId=release-1")).toEqual({ sectionId: "content/official", view: { kind: "detail", id: "char-1" } });
+    expect(at("system/audit?commandId=command-1")).toEqual({ sectionId: "audit-log", view: { kind: "list" } });
+    expect(at("growth/offers?view=promo")?.sectionId).toBe("promo");
+    expect(at("growth/characters")?.sectionId).toBe("growth/characters");
+    expect(at("ops/recipes?view=presets")?.sectionId).toBe("generation/presets");
+    expect(at("growth/merchandising?view=announcements")?.sectionId).toBe("announcements");
+  });
+
+  // SPEC: 认不出的路径必须解析失败，好让路由层 notFound()。
+  // INTENT: 这里曾静默返回 dashboard —— 拼错的 URL 显示成 Today 且仍回 200。
+  it("refuses to resolve unknown paths instead of falling back to Today", () => {
+    expect(parseAdminPath("nope")).toBeNull();
+    expect(parseAdminPath("ops/does-not-exist")).toBeNull();
+    expect(parseAdminPath("characters/review/extra/deep")).toBeNull();
+    expect(parseAdminPath("")).toBeNull();
+    // 合法但只做子视图的段仍然解析得出，不能被一并判死。
+    expect(at("content/official/char-1")?.sectionId).toBe("content/official");
   });
 
   it("retains compatibility routes until their Case commands reach parity", () => {
-    for (const id of NAV_IDS) expect(normalizeSection(id)).toBe(id);
-    expect(normalizeSection("moderation")).toBe("moderation");
-    expect(normalizeSection("support")).toBe("support");
-    expect(normalizeSection("risk")).toBe("risk");
-    expect(normalizeSection("generation/models")).toBe("generation/config");
+    for (const id of NAV_IDS) expect(at(id)?.sectionId).toBe(id);
+    expect(at("moderation")?.sectionId).toBe("moderation");
+    expect(at("support")?.sectionId).toBe("support");
+    expect(at("risk")?.sectionId).toBe("risk");
+    expect(at("generation/models")?.sectionId).toBe("generation/config");
     expect(sectionIsPermitted("support", new Set(["support.request.read"]))).toBe(true);
     expect(sectionIsPermitted("moderation", new Set(["safety.review.read"]))).toBe(true);
     expect(navItems.some((item) => ["support", "moderation", "risk"].includes(item.id))).toBe(false);
