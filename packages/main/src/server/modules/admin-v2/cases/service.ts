@@ -7,6 +7,7 @@ import {
 } from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
+import { caseSeverityForPriority } from "./case-severity";
 import { toInputJson } from "../shared/prisma-json";
 import { isAdminCaseTransitionAllowed } from "../shared/state-transition-authority";
 import { transitionCase } from "./transition";
@@ -69,13 +70,6 @@ function supportStatus(status: string) {
   if (status === "closed") return "closed";
   if (status === "open") return "triaged";
   return "new";
-}
-
-function severityForPriority(priority: string) {
-  if (priority === "urgent") return "critical";
-  if (priority === "high") return "high";
-  if (priority === "low") return "low";
-  return "medium";
 }
 
 function priorityRank(priority: string) {
@@ -154,7 +148,7 @@ export async function ensureSupportCaseForRequest(db: Db, request: SupportReques
           ownerId: request.assignedToId,
           slaDueAt: slaFor(priority, request.createdAt),
           resolution: toInputJson({
-            severity: severityForPriority(priority),
+            severity: caseSeverityForPriority(priority),
             category: request.category,
           }),
         },
@@ -206,7 +200,7 @@ export async function ensureSupportCaseForRequest(db: Db, request: SupportReques
       where: { id: adminCase.id, version: adminCase.version },
       data: {
         resolution: toInputJson({
-          severity: severityForPriority(priority),
+          severity: caseSeverityForPriority(priority),
           category: request.category,
           summary: request.resolutionNotes?.trim() || `Imported terminal Support Request (${request.status})`,
           decision: request.status,
@@ -304,7 +298,7 @@ export async function synchronizeSupportCaseFromRequest(db: Db, request: Support
               overrideReason: "Legacy Support Request update does not include system verification.",
             },
           })
-        : toInputJson({ ...baseResolution, severity: severityForPriority(priority), category: request.category }),
+        : toInputJson({ ...baseResolution, severity: caseSeverityForPriority(priority), category: request.category }),
     },
   });
 }
@@ -398,7 +392,7 @@ export async function ensureReviewCaseForReport(db: Db, report: ContentReport) {
         status: "new",
         priority,
         slaDueAt: slaFor(priority, report.createdAt),
-        resolution: toInputJson({ severity: severityForPriority(priority) }),
+        resolution: toInputJson({ severity: caseSeverityForPriority(priority) }),
       },
       update: {},
     });
@@ -413,7 +407,7 @@ export async function ensureReviewCaseForReport(db: Db, report: ContentReport) {
               : slaFor(priority, report.createdAt),
           resolution: toInputJson({
             ...(existing.resolution as Record<string, unknown>),
-            severity: severityForPriority(priority),
+            severity: caseSeverityForPriority(priority),
           }),
           version: { increment: 1 },
         },

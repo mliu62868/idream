@@ -4,7 +4,7 @@ import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { selectCharacterDraftImage } from "./asset-studio";
 import { lockCharacterGenerationAuthority } from "./generation-authority-lock";
-import { recordCreativeReviewDecision } from "@/server/modules/admin-v2/creative/workflow";
+import { recordCreativeReviewDecision } from "@/server/modules/admin-v2/creative/review-decision";
 import { publishCharacterReferenceSet } from "./reference-set";
 import { getCharacterWorkspace } from "./workspace";
 import { issueCharacterPreviewToken } from "./preview-token";

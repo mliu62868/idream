@@ -890,14 +890,41 @@ describe("Admin v2 finite-state authority inventory", () => {
       mutationWritesField(path, "contentProductionBatch", "verificationState"),
     );
     expect(writers.sort()).toEqual([
+      "src/server/modules/admin-v2/creative/placement.ts",
       "src/server/modules/admin-v2/creative/retry-executor.ts",
-      "src/server/modules/admin-v2/creative/workflow.ts",
+      "src/server/modules/admin-v2/creative/review-decision.ts",
     ]);
     for (const path of writers) {
       expect(source(path), path).toContain("isCreativeRunWorkflowTransitionAllowed");
       expect(source(path), path).toContain("isCreativeRunVerificationTransitionAllowed");
     }
-    expect(source("src/server/modules/admin-v2/creative/workflow.ts")).toContain(
+  });
+
+  /**
+   * SPEC: 谁能写 MediaAssetPlacement —— 断言的是写者**集合**，不是某个符号名。
+   * INTENT: 投放的三个动作原先与评审、读投影同住一个文件，「哪些代码能改一条已上线投放」
+   * 要逐函数确认；拆开之后可以直接钉住集合。legacy 内容库 admin/content/placements.ts
+   * 服务的是非 Creative 来源的素材投放，是名单里的第二条；多出第三条就是新的漂移。
+   *
+   * 这里用文本扫描而不是 mutationWritesField：那个 AST 检测器要能解析出 Prisma client
+   * 的来源，而 legacy 那侧的事务是 `auditedTransaction("...", async (tx) => …)` 这种自定义
+   * 包装，tx 解析不出来 —— 它对整个 legacy 文件是隐形的。用 AST 检测器写这条守卫会得到
+   * 一个「只有一个写者」的假绿。
+   */
+  it("keeps MediaAssetPlacement writes to a known set of authorities", () => {
+    const mutation = /mediaAssetPlacement\s*\.\s*(create|createMany|update|updateMany|upsert|delete|deleteMany)\s*\(/;
+    // src/server/test 是 fixture 播种，不是写权威。
+    const scanned = productionTypeScript.filter((path) => !path.startsWith("src/server/test/"));
+    // 自检：目录改名后静默扫成空集合再全绿，比没有守卫更糟。
+    expect(scanned.length).toBeGreaterThan(200);
+    expect(scanned).toContain("src/server/modules/admin-v2/creative/placement.ts");
+
+    const writers = scanned.filter((path) => mutation.test(source(path)));
+    expect(writers.sort()).toEqual([
+      "src/server/modules/admin-v2/creative/placement.ts",
+      "src/server/modules/admin/content/placements.ts",
+    ]);
+    expect(source("src/server/modules/admin-v2/creative/placement.ts")).toContain(
       "isCreativePlacementVerificationTransitionAllowed",
     );
   });
@@ -907,8 +934,9 @@ describe("Admin v2 finite-state authority inventory", () => {
       mutationWritesField(path, "contentProductionItem", "status"),
     );
     expect(writers.sort()).toEqual([
+      "src/server/modules/admin-v2/creative/placement.ts",
       "src/server/modules/admin-v2/creative/retry-executor.ts",
-      "src/server/modules/admin-v2/creative/workflow.ts",
+      "src/server/modules/admin-v2/creative/review-decision.ts",
       "src/server/modules/content-production-state.ts",
     ]);
     for (const path of writers) {

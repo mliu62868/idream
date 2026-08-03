@@ -8,7 +8,7 @@ import {
 } from "./release-snapshot";
 import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
 import { loadCharacterIdentityBootstrapAuthority } from "./identity-bootstrap-authority";
-import { recordCreativeReviewDecision } from "@/server/modules/admin-v2/creative/workflow";
+import { recordCreativeReviewDecision } from "@/server/modules/admin-v2/creative/review-decision";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 
 describe("Character first identity bootstrap authority", () => {

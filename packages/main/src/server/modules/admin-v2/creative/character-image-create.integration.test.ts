@@ -18,10 +18,8 @@ import {
 } from "@/server/modules/admin-v2/characters/generation-authority-lock";
 import { patchContentAsset } from "@/server/modules/admin/content/assets";
 import { purgeQueuedGenerationJobs } from "@/server/test/helpers";
-import {
-  getCreativeRunDetail,
-  recordCreativeReviewDecision,
-} from "./workflow";
+import { recordCreativeReviewDecision } from "./review-decision";
+import { getCreativeRunDetail } from "./run-read";
 
 const { multiReferenceWorkflowKey } = vi.hoisted(() => ({
   multiReferenceWorkflowKey: "test-qwen-image-edit-multi-reference",

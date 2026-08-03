@@ -1,6 +1,6 @@
 import { creativeRunCreateOptionsSchema } from "@idream/shared/admin";
 import { ok } from "@/server/lib/http";
-import { getCreativeRunCreateOptions } from "@/server/modules/admin-v2/creative/workflow";
+import { getCreativeRunCreateOptions } from "@/server/modules/admin-v2/creative/create-options";
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 

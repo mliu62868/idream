@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { POST as attachIncident } from "@/app/api/v2/admin/creative/runs/[id]/commands/attach-incident/route";
 import { prisma } from "@/server/lib/db";
 import { createUser } from "@/server/test/helpers";
-import { getCreativeRunDetail } from "./workflow";
+import { getCreativeRunDetail } from "./run-read";
 
 describe("Creative Run Incident attachment", () => {
   const suffix = randomUUID();

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
-import { recordCreativeReviewDecision } from "./workflow";
+import { recordCreativeReviewDecision } from "./review-decision";
 import {
   createCharacter,
   createUser,

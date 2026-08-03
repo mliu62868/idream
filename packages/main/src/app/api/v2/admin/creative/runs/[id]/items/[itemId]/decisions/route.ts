@@ -3,7 +3,7 @@ import {
 } from "@idream/shared/admin";
 import { env } from "@/server/lib/env";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
-import { recordCreativeReviewDecision } from "@/server/modules/admin-v2/creative/workflow";
+import { recordCreativeReviewDecision } from "@/server/modules/admin-v2/creative/review-decision";
 import { actorWithPermission, jsonBody } from "@/server/modules/admin-v2/shared/authority";
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
 import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";

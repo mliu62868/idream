@@ -1,5 +1,5 @@
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
-import { getCreativeRunDetail } from "@/server/modules/admin-v2/creative/workflow";
+import { getCreativeRunDetail } from "@/server/modules/admin-v2/creative/run-read";
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 import { creativeRunDetailSchema } from "@idream/shared/admin";
 

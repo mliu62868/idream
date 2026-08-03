@@ -758,3 +758,152 @@ describe("Today mentions and collaboration watch aliases", () => {
     ]));
   });
 });
+
+/**
+ * SPEC: 按紧急度筛 All Work 时，SQL 选行与 TS 投影必须给出同一个答案。
+ * INTENT: totalCount 来自各来源的 SQL count，items 来自 projectRow 之后的 TS 过滤。
+ * 两侧对同一条规则各写一份时，页面会同时显示「共 N 条」和一页也翻不出来的空列表 ——
+ * 而且每个来源的规则此前写了三遍（SQL rank、选行谓词、TS 三段式），谁也不对账。
+ * 这里对每个紧急度断言「宣称的条数 == 真能翻出来的条数」，并断言四档之和等于不筛时的总数
+ * （即这四档在选行侧确实互斥且穷尽）。
+ */
+describe("Today All Work severity selection matches projection", () => {
+  const suffix = randomUUID();
+  const actorId = `today-severity-${suffix}`;
+  const characterId = `today-severity-character-${suffix}`;
+  const projectId = `today-severity-project-${suffix}`;
+  const creativeRunIds = [`today-severity-creative-high-${suffix}`, `today-severity-creative-medium-${suffix}`];
+  const caseIds = ["urgent", "high", "normal", "low"].map((priority) => `today-severity-case-${priority}-${suffix}`);
+  const incidentIds = ["critical", "high", "moderate", "low"].map((severity) => `today-severity-incident-${severity}-${suffix}`);
+  const releaseIds = ["blocked", "stale", "ready"].map((readiness) => `today-severity-release-${readiness}-${suffix}`);
+  const commandIds = ["failed", "running"].map((status) => `today-severity-command-${status}-${suffix}`);
+  const now = new Date("2026-07-11T12:00:00.000Z");
+
+  beforeAll(async () => {
+    await prisma.user.create({
+      data: { id: actorId, email: `${actorId}@example.test`, role: "admin", status: "active" },
+    });
+    await prisma.adminCase.createMany({
+      data: ["urgent", "high", "normal", "low"].map((priority, index) => ({
+        id: caseIds[index],
+        type: "support_request",
+        targetType: "user",
+        targetId: `severity-customer-${index}-${suffix}`,
+        caseKey: `severity-${index}-${suffix}`,
+        activeKey: `severity-active-${index}-${suffix}`,
+        status: "in_progress",
+        priority,
+        ownerId: actorId,
+        verificationState: "pending",
+      })),
+    });
+    // "moderate" 不在 severity 词表里：老的选行谓词写的是 `severity = 'medium'`，
+    // 投影却把未知值归一成 medium —— 这一行专门钉住那个洞。
+    await prisma.opsIncident.createMany({
+      data: ["critical", "high", "moderate", "low"].map((severity, index) => ({
+        id: incidentIds[index],
+        signature: `severity-${severity}-${suffix}`,
+        signatureVersion: "v1",
+        activeCorrelationKey: `severity-correlation-${index}-${suffix}`,
+        status: "mitigating",
+        severity,
+        ownerId: actorId,
+        firstSeen: now,
+        lastSeen: now,
+        impact: {},
+        mitigation: {},
+        verificationState: "pending",
+      })),
+    });
+    await prisma.character.create({
+      data: { id: characterId, name: "Severity fixture", age: 24, description: "Severity fixture", source: "official", appearance: {}, advancedDetails: {} },
+    });
+    await prisma.characterProject.create({
+      data: { id: projectId, characterId, ownerId: actorId, phase: "qa", audience: {}, successCriteria: [], activeKey: `severity-project-active-${suffix}` },
+    });
+    await prisma.characterRelease.createMany({
+      data: ["blocked", "stale", "ready"].map((readiness, index) => ({
+        id: releaseIds[index],
+        projectId,
+        revisionId: `severity-revision-${index}-${suffix}`,
+        characterContentVersionId: `severity-content-${index}-${suffix}`,
+        generationProvenance: {},
+        releasePlacementManifest: {},
+        snapshotHash: `severity-snapshot-${index}-${suffix}`,
+        readiness,
+        status: "in_review",
+      })),
+    });
+    await prisma.contentProductionBatch.createMany({
+      data: ["failed", "pending"].map((verificationState, index) => ({
+        id: creativeRunIds[index],
+        title: `Severity creative ${verificationState}`,
+        purpose: "homepage",
+        presetIds: [],
+        createdById: actorId,
+        ownerId: actorId,
+        priority: "normal",
+        lifecycleState: "active",
+        workflowStage: "review",
+        verificationState,
+      })),
+    });
+    await prisma.controlPlaneCommand.createMany({
+      data: ["failed", "running"].map((status, index) => ({
+        id: commandIds[index],
+        scope: `severity-${index}-${suffix}`,
+        idempotencyKey: `severity-key-${index}-${suffix}`,
+        commandType: "creative.run.retry",
+        targetType: "creative_run",
+        targetId: creativeRunIds[0],
+        actorId,
+        requestId: `severity-request-${index}-${suffix}`,
+        requestHash: `severity-hash-${index}-${suffix}`,
+        status,
+      })),
+    });
+  });
+
+  afterAll(async () => {
+    await prisma.controlPlaneCommand.deleteMany({ where: { id: { in: commandIds } } });
+    await prisma.contentProductionBatch.deleteMany({ where: { id: { in: creativeRunIds } } });
+    await prisma.characterRelease.deleteMany({ where: { projectId } });
+    await prisma.characterProject.deleteMany({ where: { id: projectId } });
+    await prisma.character.deleteMany({ where: { id: characterId } });
+    await prisma.opsIncident.deleteMany({ where: { id: { in: incidentIds } } });
+    await prisma.adminCase.deleteMany({ where: { id: { in: caseIds } } });
+    await prisma.user.deleteMany({ where: { id: actorId } });
+    await prisma.$disconnect();
+  });
+
+  async function allWork(severity?: "critical" | "high" | "medium" | "low") {
+    return buildTodayAllWork({
+      actor: { id: actorId, role: "admin" },
+      permissions: resolvePermissions("admin"),
+      query: allWorkQuery({ owner: "mine", ownerId: actorId, ...(severity ? { severity } : {}) }),
+      now,
+    });
+  }
+
+  it("returns exactly as many rows as it claims for every severity", async () => {
+    const severities = ["critical", "high", "medium", "low"] as const;
+    const pages = await Promise.all(severities.map((severity) => allWork(severity)));
+    const counted: Record<string, number> = {};
+    for (const [index, page] of pages.entries()) {
+      const severity = severities[index];
+      expect(page.items.map((item) => item.severity), severity).toEqual(page.items.map(() => severity));
+      expect(page.totalCount, severity).toBe(page.items.length);
+      expect(page.pageInfo.hasNextPage, severity).toBe(false);
+      counted[severity] = page.totalCount;
+    }
+    expect(counted).toEqual({ critical: 2, high: 5, medium: 5, low: 3 });
+  });
+
+  it("partitions the unfiltered set across the four severities without loss or overlap", async () => {
+    const unfiltered = await allWork();
+    const perSeverity = await Promise.all((["critical", "high", "medium", "low"] as const).map(allWork));
+    expect(perSeverity.reduce((sum, page) => sum + page.totalCount, 0)).toBe(unfiltered.totalCount);
+    expect(new Set(perSeverity.flatMap((page) => page.items.map((item) => item.sourceId))))
+      .toEqual(new Set(unfiltered.items.map((item) => item.sourceId)));
+  });
+});

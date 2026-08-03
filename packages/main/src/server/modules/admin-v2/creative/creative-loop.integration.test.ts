@@ -8,7 +8,7 @@ import { POST as publishPlacement } from "@/app/api/v2/admin/creative/runs/[id]/
 import { POST as verifyPlacement } from "@/app/api/v2/admin/creative/runs/[id]/placements/[placementId]/verification/route";
 import { POST as withdrawPlacement } from "@/app/api/v2/admin/creative/runs/[id]/placements/[placementId]/withdrawal/route";
 import { prisma } from "@/server/lib/db";
-import { verifyCreativePlacement } from "./workflow";
+import { verifyCreativePlacement } from "./placement";
 import {
   executeCreativeRetryCommand,
   verifyCreativeRetryCommands,

@@ -4,7 +4,7 @@ import {
   creativeIdentityReviewMode,
   deriveCreativeItemExecutionState,
   deriveCreativeRunContinuation,
-} from "./workflow";
+} from "./run-state";
 import { identityExperimentCandidateSeed } from "@/server/modules/admin-v2/creative/run-create";
 
 describe("Creative Run item execution projection", () => {

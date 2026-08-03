@@ -26,6 +26,18 @@ import { env } from "@/server/lib/env";
 import { AppError } from "@/server/lib/errors";
 import { fail, ok } from "@/server/lib/http";
 import { actorWithPermission, queryParams } from "@/server/modules/admin-v2/shared/authority";
+import {
+  CASE_SEVERITY,
+  CHARACTER_PROJECT_MENTION_SEVERITY,
+  COMMAND_FAILED_STATUSES,
+  COMMAND_SEVERITY,
+  CREATIVE_RUN_SEVERITY,
+  INCIDENT_SEVERITY,
+  RELEASE_SEVERITY,
+  SEVERITY_RANK,
+  releaseMonitorActionSql,
+  severityRankFilterSql,
+} from "./work-severity";
 
 const QUEUE_LIMIT = 10;
 const MAX_ALL_WORK_SCAN_LIMIT = 5_000;
@@ -214,6 +226,7 @@ async function findBoundedIncidentRows(input: {
   const pinnedRankSql = input.pinnedIds.length > 0
     ? Prisma.sql`CASE WHEN incident.id IN (${Prisma.join(input.pinnedIds)}) THEN 1 ELSE 0 END`
     : Prisma.sql`0`;
+  const severityRankSql = INCIDENT_SEVERITY.rankSql(Prisma.sql`incident`);
   const selectionSql = input.selection.scope === "active"
     ? Prisma.sql`
         AND incident.status IN (${Prisma.join(ACTIVE_INCIDENT_STATUSES)})
@@ -228,7 +241,7 @@ async function findBoundedIncidentRows(input: {
         ${input.selection.dueOrFailedBy
           ? Prisma.sql`AND (incident."slaDueAt" <= ${input.selection.dueOrFailedBy} OR incident."verificationState" = 'failed')`
           : Prisma.empty}
-        ${input.selection.filters?.severity ? Prisma.sql`AND incident.severity = ${input.selection.filters.severity}` : Prisma.empty}
+        ${severityRankFilterSql(severityRankSql, input.selection.filters?.severity)}
         ${input.selection.filters?.status ? Prisma.sql`AND incident.status = ${input.selection.filters.status}` : Prisma.empty}
         ${input.selection.filters ? sqlSlaFilter(Prisma.sql`incident."slaDueAt"`, input.selection.filters.sla, input.selection.filters.now) : Prisma.empty}
       `
@@ -247,7 +260,7 @@ async function findBoundedIncidentRows(input: {
       SELECT
         incident.id,
         ${pinnedRankSql} AS pinned_rank,
-        CASE incident.severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'low' THEN 1 ELSE 2 END AS severity_rank,
+        ${severityRankSql} AS severity_rank,
         incident."slaDueAt" AS due_at,
         incident."updatedAt" AS changed_at
       FROM "ops_incidents" incident
@@ -396,26 +409,10 @@ async function findBoundedReleaseRows(input: {
   const pinnedRankSql = input.pinnedIds.length > 0
     ? Prisma.sql`CASE WHEN release.id IN (${Prisma.join(input.pinnedIds)}) THEN 1 ELSE 0 END`
     : Prisma.sql`0`;
-  const monitorActionSql = Prisma.sql`
-    EXISTS (
-      SELECT 1
-      FROM "release_monitors" monitor
-      JOIN "character_serving" serving ON serving."currentReleaseId" = release.id
-      WHERE monitor."releaseId" = release.id
-        AND (
-          monitor.status = 'action_required'
-          OR monitor.verification ->> 'recommendation' = 'rollback_review'
-        )
-    )
-  `;
-  const severityFilterSql = input.selection.scope === "active" && input.selection.filters?.severity
-    ? input.selection.filters.severity === "critical"
-      ? Prisma.sql`AND FALSE`
-      : input.selection.filters.severity === "high"
-        ? Prisma.sql`AND (${monitorActionSql} OR release.readiness = 'blocked')`
-        : input.selection.filters.severity === "medium"
-          ? Prisma.sql`AND NOT (${monitorActionSql}) AND release.readiness = 'stale'`
-          : Prisma.sql`AND NOT (${monitorActionSql}) AND release.readiness NOT IN ('blocked', 'stale')`
+  const monitorActionSql = releaseMonitorActionSql(Prisma.sql`release`);
+  const severityRankSql = RELEASE_SEVERITY.rankSql(Prisma.sql`release`);
+  const severityFilterSql = input.selection.scope === "active"
+    ? severityRankFilterSql(severityRankSql, input.selection.filters?.severity)
     : Prisma.empty;
   const activeStatusFilterSql = input.selection.scope === "active" && input.selection.filters?.status
     ? Prisma.sql`AND release.status = ${input.selection.filters.status}`
@@ -468,11 +465,7 @@ async function findBoundedReleaseRows(input: {
         release.id,
         ${monitorActionSql} AS monitor_action_required,
         ${pinnedRankSql} AS pinned_rank,
-        CASE
-          WHEN ${monitorActionSql} OR release.readiness = 'blocked' THEN 3
-          WHEN release.readiness = 'stale' THEN 2
-          ELSE 1
-        END AS severity_rank,
+        ${severityRankSql} AS severity_rank,
         project."plannedLaunchAt" AS due_at,
         release."updatedAt" AS changed_at
       FROM "character_releases" release
@@ -533,21 +526,18 @@ function deploymentEnvironment(): TodayWorkItem["environment"] {
   return env.APP_ENV;
 }
 
-function caseSeverity(priority: string): TodayWorkItem["severity"] {
-  if (priority === "urgent") return "critical";
-  if (priority === "high") return "high";
-  if (priority === "low") return "low";
-  return "medium";
-}
-
 function normalizePriority(value: string): TodayWorkItem["priority"] {
   if (value === "urgent" || value === "high" || value === "low") return value;
   return "normal";
 }
 
-function normalizeSeverity(value: string): TodayWorkItem["severity"] {
-  if (value === "critical" || value === "high" || value === "low") return value;
-  return "medium";
+/** priority 与 severity 是两个判断，只是取值梯度恰好同形；不要合并成一份表达式。 */
+function priorityRankSql(table: Prisma.Sql) {
+  return Prisma.sql`CASE ${table}.priority
+    WHEN 'urgent' THEN ${Prisma.raw(String(priorityScore.urgent))}
+    WHEN 'high' THEN ${Prisma.raw(String(priorityScore.high))}
+    WHEN 'low' THEN ${Prisma.raw(String(priorityScore.low))}
+    ELSE ${Prisma.raw(String(priorityScore.normal))} END`;
 }
 
 function normalizeVerification(value: string): TodayWorkItem["verificationState"] {
@@ -560,7 +550,7 @@ function normalizeVerification(value: string): TodayWorkItem["verificationState"
 function commandVerification(status: string): TodayWorkItem["verificationState"] {
   if (status === "verifying") return "verifying";
   if (status === "succeeded") return "passed";
-  if (status === "failed" || status === "cancelled") return "failed";
+  if (COMMAND_FAILED_STATUSES.includes(status as typeof COMMAND_FAILED_STATUSES[number])) return "failed";
   return "pending";
 }
 
@@ -615,13 +605,13 @@ function projectRow(
       sourceStatus: item.status as TodayWorkItem["sourceStatus"],
       title: `${item.type.replaceAll("_", " ")} case`,
       summary: `${item.targetType} ${item.targetId} is ${item.status.replaceAll("_", " ")}`,
-      severity: caseSeverity(item.priority),
+      severity: CASE_SEVERITY.of(item),
       priority: normalizePriority(item.priority),
       impactSnapshot: { targetType: item.targetType, targetId: item.targetId, caseKey: item.caseKey },
       ownerId: item.ownerId,
       slaDueAt: item.slaDueAt?.toISOString() ?? null,
       recommendedAction: item.verificationState === "failed" ? "Reopen and verify the resolution" : "Review and advance the case",
-      rankingReason: rankingReason(caseSeverity(item.priority), item.slaDueAt, item.createdAt),
+      rankingReason: rankingReason(CASE_SEVERITY.of(item), item.slaDueAt, item.createdAt),
       deepLink: `/admin/cases/${encodeURIComponent(item.id)}`,
       verificationState: normalizeVerification(item.verificationState),
       lastChangedAt: item.updatedAt.toISOString(),
@@ -634,7 +624,7 @@ function projectRow(
   }
   if (row.sourceType === "ops_incident") {
     const item = row.row;
-    const severity = normalizeSeverity(item.severity);
+    const severity = INCIDENT_SEVERITY.of(item);
     return {
       sourceType: row.sourceType,
       sourceId: item.id,
@@ -660,7 +650,10 @@ function projectRow(
   }
   if (row.sourceType === "character_release") {
     const item = row.row;
-    const severity = row.monitorActionRequired || item.readiness === "blocked" ? "high" : item.readiness === "stale" ? "medium" : "low";
+    const severity = RELEASE_SEVERITY.of({
+      readiness: item.readiness,
+      monitorActionRequired: Boolean(row.monitorActionRequired),
+    });
     return {
       sourceType: row.sourceType,
       sourceId: item.id,
@@ -695,7 +688,7 @@ function projectRow(
   }
   if (row.sourceType === "creative_run") {
     const item = row.row;
-    const severity = item.verificationState === "failed" ? "high" : "medium";
+    const severity = CREATIVE_RUN_SEVERITY.of(item);
     return {
       sourceType: row.sourceType,
       sourceId: item.id,
@@ -734,7 +727,7 @@ function projectRow(
     sourceStatus: item.status as TodayWorkItem["sourceStatus"],
     title: item.commandType.replaceAll(".", " "),
     summary: `${item.targetType} ${item.targetId} command is ${item.status}`,
-    severity: verificationState === "failed" ? "high" : "medium",
+    severity: COMMAND_SEVERITY.of(item),
     priority: verificationState === "failed" ? "high" : "normal",
     impactSnapshot: {
       targetType: item.targetType,
@@ -746,7 +739,7 @@ function projectRow(
     ownerId: item.actorId,
     slaDueAt: item.leaseExpiresAt?.toISOString() ?? null,
     recommendedAction: item.needsReconciliation ? "Reconcile the uncertain downstream effect" : "Check command verification",
-    rankingReason: rankingReason(verificationState === "failed" ? "high" : "medium", item.leaseExpiresAt, item.createdAt),
+    rankingReason: rankingReason(COMMAND_SEVERITY.of(item), item.leaseExpiresAt, item.createdAt),
     deepLink: `/admin/system/audit?commandId=${encodeURIComponent(item.id)}`,
     verificationState,
     lastChangedAt: item.updatedAt.toISOString(),
@@ -765,7 +758,6 @@ function rankingReason(severity: TodayWorkItem["severity"], dueAt: Date | null, 
   return reasons.join(" · ");
 }
 
-const severityScore = { critical: 4, high: 3, medium: 2, low: 1 } as const;
 const priorityScore = { urgent: 4, high: 3, normal: 2, low: 1 } as const;
 
 const MODE_SOURCE_ORDER: Record<TodayWorkMode, readonly TodayWorkItem["sourceType"][]> = {
@@ -780,7 +772,7 @@ const MODE_SOURCE_ORDER: Record<TodayWorkMode, readonly TodayWorkItem["sourceTyp
 
 function compareItems(left: TodayWorkItem, right: TodayWorkItem, now: Date, workMode: TodayWorkMode) {
     if (left.pinned !== right.pinned) return left.pinned ? -1 : 1;
-    const severityDelta = severityScore[right.severity] - severityScore[left.severity];
+    const severityDelta = SEVERITY_RANK[right.severity] - SEVERITY_RANK[left.severity];
     if (severityDelta !== 0) return severityDelta;
     const modeOrder = MODE_SOURCE_ORDER[workMode];
     const modeDelta = modeOrder.indexOf(left.sourceType) - modeOrder.indexOf(right.sourceType);
@@ -972,8 +964,8 @@ async function findRankedMentionIds(input: {
       : Prisma.empty;
     sources.push(Prisma.sql`
       SELECT activity.id, ${pinnedRank} AS pinned_rank,
-        CASE target.priority WHEN 'urgent' THEN 4 WHEN 'high' THEN 3 WHEN 'low' THEN 1 ELSE 2 END AS severity_rank,
-        CASE target.priority WHEN 'urgent' THEN 4 WHEN 'high' THEN 3 WHEN 'low' THEN 1 ELSE 2 END AS priority_rank,
+        ${CASE_SEVERITY.rankSql(Prisma.sql`target`)} AS severity_rank,
+        ${priorityRankSql(Prisma.sql`target`)} AS priority_rank,
         target."slaDueAt" AS due_at, activity."createdAt" AS changed_at
       FROM "admin_collaboration_activities" activity
       JOIN "admin_cases" target ON target.id = activity."targetId"
@@ -996,10 +988,11 @@ async function findRankedMentionIds(input: {
           )
         )`
       : Prisma.empty;
+    const incidentRank = INCIDENT_SEVERITY.rankSql(Prisma.sql`target`);
     sources.push(Prisma.sql`
       SELECT activity.id, ${pinnedRank} AS pinned_rank,
-        CASE target.severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'low' THEN 1 ELSE 2 END AS severity_rank,
-        CASE target.severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'low' THEN 1 ELSE 2 END AS priority_rank,
+        ${incidentRank} AS severity_rank,
+        ${incidentRank} AS priority_rank,
         target."slaDueAt" AS due_at, activity."createdAt" AS changed_at
       FROM "admin_collaboration_activities" activity
       JOIN "ops_incidents" target ON target.id = activity."targetId"
@@ -1010,8 +1003,8 @@ async function findRankedMentionIds(input: {
   if (input.permissions.has("creative.run.read")) {
     sources.push(Prisma.sql`
       SELECT activity.id, ${pinnedRank} AS pinned_rank,
-        CASE WHEN target."verificationState" = 'failed' THEN 3 ELSE 2 END AS severity_rank,
-        CASE target.priority WHEN 'urgent' THEN 4 WHEN 'high' THEN 3 WHEN 'low' THEN 1 ELSE 2 END AS priority_rank,
+        ${CREATIVE_RUN_SEVERITY.rankSql(Prisma.sql`target`)} AS severity_rank,
+        ${priorityRankSql(Prisma.sql`target`)} AS priority_rank,
         target."dueAt" AS due_at, activity."createdAt" AS changed_at
       FROM "admin_collaboration_activities" activity
       JOIN "content_production_batches" target ON target.id = activity."targetId"
@@ -1020,10 +1013,11 @@ async function findRankedMentionIds(input: {
     `);
   }
   if (input.permissions.has("character.project.read")) {
+    const projectRank = CHARACTER_PROJECT_MENTION_SEVERITY.rankSql(Prisma.sql`target`, input.now);
     sources.push(Prisma.sql`
       SELECT activity.id, ${pinnedRank} AS pinned_rank,
-        CASE WHEN target."plannedLaunchAt" <= ${input.now} THEN 3 ELSE 2 END AS severity_rank,
-        CASE WHEN target."plannedLaunchAt" <= ${input.now} THEN 3 ELSE 2 END AS priority_rank,
+        ${projectRank} AS severity_rank,
+        ${projectRank} AS priority_rank,
         target."plannedLaunchAt" AS due_at, activity."createdAt" AS changed_at
       FROM "admin_collaboration_activities" activity
       JOIN "character_projects" target ON target.id = activity."targetId"
@@ -1032,7 +1026,7 @@ async function findRankedMentionIds(input: {
     `);
   }
   if (sources.length === 0) return { totalCount: 0, ids: [] as string[] };
-  const severityRank = input.filters?.severity ? severityScore[input.filters.severity] : null;
+  const severityRank = input.filters?.severity ? SEVERITY_RANK[input.filters.severity] : null;
   const severityFilterSql = severityRank ? Prisma.sql`AND severity_rank = ${severityRank}` : Prisma.empty;
   const slaFilterSql = input.filters ? sqlSlaFilter(Prisma.sql`due_at`, input.filters.sla, input.now) : Prisma.empty;
   const limitSql = input.limit === undefined ? Prisma.empty : Prisma.sql`WHERE ranked.ordinal <= ${input.limit}`;
@@ -1134,7 +1128,7 @@ async function findMentionRows(input: {
     }
     const project = projectsById.get(row.targetId);
     if (!project) return [];
-    const severity = project.plannedLaunchAt && project.plannedLaunchAt <= input.now ? "high" : "medium";
+    const severity = CHARACTER_PROJECT_MENTION_SEVERITY.of(project, input.now);
     return [{
       sourceType: "collaboration_mention",
       row,
@@ -1516,41 +1510,39 @@ export async function buildTodayAllWork(input: {
     limit: scanLimit,
     diagnostics: input.diagnostics,
   }) : { totalCount: 0, rows: [] };
+  const severityScopedCommandStatuses = query.severity
+    ? ACTIVE_COMMAND_STATUSES.filter((status) => COMMAND_SEVERITY.of({ status }) === query.severity)
+    : ACTIVE_COMMAND_STATUSES;
   const commandEligible = (!query.domain || query.domain === "control_plane_command")
     && requestedOwnerId !== null
     && (requestedOwnerId === undefined || requestedOwnerId === input.actor.id)
-    && (!query.severity || ["high", "medium"].includes(query.severity));
+    && severityScopedCommandStatuses.length > 0;
   const commandWhere = commandEligible ? {
     actorId: input.actor.id,
-    status: query.status
-      ? query.status
-      : query.severity === "high"
-        ? "failed"
-        : query.severity === "medium"
-          ? { in: ACTIVE_COMMAND_STATUSES.filter((status) => status !== "failed") }
-          : { in: ACTIVE_COMMAND_STATUSES },
+    status: query.status ?? { in: severityScopedCommandStatuses },
     id: withoutIds(idsFor("control_plane_command", "snoozed")),
     ...(query.sla ? { leaseExpiresAt: slaWhere } : {}),
   } satisfies Prisma.ControlPlaneCommandWhereInput : null;
-  const casePriority = query.severity === "critical" ? "urgent" : query.severity === "high" ? "high" : query.severity === "low" ? "low" : query.severity === "medium" ? { notIn: ["urgent", "high", "low"] } : undefined;
+  const caseSeverityWhere = query.severity ? CASE_SEVERITY.where(query.severity) : null;
   const caseWhere = caseScope && (!query.domain || query.domain === "admin_case") ? {
     AND: [caseScope, {
       status: query.status ?? { in: ACTIVE_CASE_STATUSES },
       id: withoutIds(idsFor("admin_case", "snoozed")),
       ...ownerWhere,
-      ...(casePriority ? { priority: casePriority } : {}),
+      ...(caseSeverityWhere ?? {}),
       ...(query.sla ? { slaDueAt: slaWhere } : {}),
     }],
   } satisfies Prisma.AdminCaseWhereInput : null;
   const incidentOwner = requestedOwnerId === undefined ? "all" as const : requestedOwnerId === null ? "unassigned" as const : { actorId: requestedOwnerId };
+  const creativeSeverityWhere = query.severity ? CREATIVE_RUN_SEVERITY.where(query.severity) : {};
   const creativeEligible = (!query.domain || query.domain === "creative_run")
     && (!query.status || query.status === "active")
-    && (!query.severity || ["high", "medium"].includes(query.severity));
+    && creativeSeverityWhere !== null;
   const creativeWhere = input.permissions.has("creative.run.read") && creativeEligible ? {
     lifecycleState: "active",
     id: withoutIds(idsFor("creative_run", "snoozed")),
     ...ownerWhere,
-    ...(query.severity === "high" ? { verificationState: "failed" } : query.severity === "medium" ? { verificationState: { not: "failed" } } : {}),
+    ...creativeSeverityWhere,
     ...(query.sla ? { dueAt: slaWhere } : {}),
   } satisfies Prisma.ContentProductionBatchWhereInput : null;
   const rows = await findQueueRows({
