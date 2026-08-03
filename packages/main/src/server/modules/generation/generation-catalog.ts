@@ -1,27 +1,19 @@
-// SPEC: 只读 admin API —— GET generation/backends（comfyui/drawthings + 健康探测）与
-// GET generation/workflows[/:workflowKey]（workflow 描述符目录只读展示，供工程排查）。
-// INTENT: main 不依赖 packages/gen（两者只通过 Redis 队列耦合），这里独立读取同一份
-// workflow 描述符 JSON（shared 的 loadWorkflowDescriptors）与同样的 env 默认值
-// （COMFYUI_API_URL/DRAWTHINGS_CLI/GEN_WORKFLOW_DIR，口径对齐 packages/gen/src/env.ts），
-// 保持配置语义一致但零运行时耦合。60s 进程内缓存：描述符文件是工程 seed，低频变更，
-// 不值得每次请求都扫目录。
-// INVARIANTS: 全部只读、全部要求 generation.config.read；workflows 列表摘要绝不包含
-// apiPrompt（体积大且是内部实现细节，只在 detail 端点展开供工程排查）。
+// SPEC: workflow 描述符目录的读取权威 —— 从磁盘加载 packages/gen 的 workflow 描述符 JSON，
+// 供生成链路（attempt-dispatch / generation-attempt-authority / ourdream 报价）与 admin
+// 只读页面共用同一份解析结果。
+// INTENT: main 不依赖 packages/gen（两者只通过 Redis 队列耦合），这里独立读取同一份描述符
+// JSON（shared 的 loadWorkflowDescriptors）与同样的 env 默认值（GEN_WORKFLOW_DIR，口径对齐
+// packages/gen/src/env.ts），保持配置语义一致但零运行时耦合。60s 进程内缓存：描述符文件是
+// 工程 seed，低频变更，不值得每次请求都扫目录。
+// INVARIANT: 本模块只做「读磁盘 + 解析 + 缓存」，不含任何 HTTP 层原语（ok()/actorWithPermission）。
+// 只读 admin API（generation/backends、generation/workflows）住在
+// modules/admin/generation/backends-and-workflows.ts —— 依赖方向单向为
+// modules/admin → modules/generation。
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { loadWorkflowDescriptors, type WorkflowDescriptor } from "@idream/shared/gen-workflow";
-import { resolveExecutable } from "@idream/shared";
-import { Errors } from "@/server/lib/errors";
-import { ok } from "@/server/lib/http";
-import { actorWithPermission } from "@/server/modules/admin/shared/legacy-primitives";
 
-const CONFIG_READ = "generation.config.read" as const;
-// health() 是就绪探测（诊断面板轮询），不是生成请求 —— 用固定短超时，不借用生成任务的
-// PIPELINE_TIMEOUT_MS（那个是分钟级，会让一次探针请求悬挂太久）。
-const HEALTH_TIMEOUT_MS = 3_000;
 const DESCRIPTOR_CACHE_TTL_MS = 60_000;
-
-type BackendHealth = { ok: boolean; detail?: string; latencyMs?: number };
 
 // SPEC: 目录解析顺序 —— 显式 env 优先；否则按「仓库根 cwd」「packages/main cwd」依次探测
 // 第一个真实存在的候选目录。两个候选分别对应「从仓库根跑（turbo/pm2）」与「cd
@@ -44,7 +36,8 @@ function resolveWorkflowDir(): string {
 
 let descriptorCache: { at: number; items: WorkflowDescriptor[] } | null = null;
 
-async function cachedDescriptors(): Promise<WorkflowDescriptor[]> {
+// SPEC: 全量描述符列表（admin 只读目录页用）。所有导出共用这一份 60s 缓存，不重复扫目录。
+export async function listWorkflowDescriptors(): Promise<WorkflowDescriptor[]> {
   const now = Date.now();
   if (descriptorCache && now - descriptorCache.at < DESCRIPTOR_CACHE_TTL_MS) {
     return descriptorCache.items;
@@ -55,110 +48,15 @@ async function cachedDescriptors(): Promise<WorkflowDescriptor[]> {
 }
 
 // SPEC: P2 Task 7 —— admin profile create/patch 校验 GenerationModelProfile.workflowKey
-// 是否为已知 workflow 描述符。复用同一份 60s 描述符缓存（避免重复扫目录），只暴露布尔
-// 判断，不把内部数组结构泄漏给调用方。
-// INTENT: admin/service.ts 已经 import 本模块的 listGenerationWorkflows 等（本模块反过来
-// import admin/service.ts 的 actorWithPermission），二者互相引用；两侧都只在函数体内使用
-// 对方的导出（非模块顶层求值），循环 import 在此安全。
+// 是否为已知 workflow 描述符。只暴露布尔判断，不把内部数组结构泄漏给调用方。
 export async function workflowKeyExists(workflowKey: string): Promise<boolean> {
-  const items = await cachedDescriptors();
+  const items = await listWorkflowDescriptors();
   return items.some((item) => item.workflowKey === workflowKey);
 }
 
 export async function generationWorkflowDescriptor(
   workflowKey: string,
 ): Promise<WorkflowDescriptor | null> {
-  const items = await cachedDescriptors();
+  const items = await listWorkflowDescriptors();
   return items.find((item) => item.workflowKey === workflowKey) ?? null;
-}
-
-// ---------------------------------------------------------------------------
-// GET generation/backends
-// ---------------------------------------------------------------------------
-
-async function comfyuiHealth(endpoint: string): Promise<BackendHealth> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
-  const startedAt = Date.now();
-  try {
-    const response = await fetch(`${endpoint}/system_stats`, { signal: controller.signal });
-    const latencyMs = Date.now() - startedAt;
-    if (!response.ok) {
-      return { ok: false, detail: `ComfyUI /system_stats HTTP ${response.status}`, latencyMs };
-    }
-    return { ok: true, latencyMs };
-  } catch (error) {
-    const aborted = error instanceof Error && error.name === "AbortError";
-    return {
-      ok: false,
-      detail: aborted
-        ? `ComfyUI /system_stats timed out after ${HEALTH_TIMEOUT_MS}ms`
-        : error instanceof Error
-          ? error.message
-          : String(error),
-    };
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function executableHealth(command: string): Promise<BackendHealth> {
-  try {
-    await resolveExecutable(command);
-    return { ok: true };
-  } catch (error) {
-    return { ok: false, detail: error instanceof Error ? error.message : String(error) };
-  }
-}
-
-// INVARIANT: env 读取放在 handler 内部（不是 module 顶层常量），测试才能按用例覆盖
-// COMFYUI_API_URL/DRAWTHINGS_CLI 后照常 import 生效。
-export async function listGenerationBackends(request: Request): Promise<Response> {
-  await actorWithPermission(request, CONFIG_READ);
-  const comfyuiEndpoint = process.env.COMFYUI_API_URL ?? "http://127.0.0.1:8188";
-  const drawThingsCli = process.env.DRAWTHINGS_CLI ?? "draw-things-cli";
-  const drawThingsModelsDir = process.env.DRAWTHINGS_MODELS_DIR;
-  const [comfyui, drawthings] = await Promise.all([
-    comfyuiHealth(comfyuiEndpoint),
-    executableHealth(drawThingsCli),
-  ]);
-  return ok({
-    items: [
-      { id: "comfyui", kind: "comfyui", endpoint: comfyuiEndpoint, health: comfyui },
-      {
-        id: "drawthings",
-        kind: "drawthings",
-        cliPath: drawThingsCli,
-        ...(drawThingsModelsDir ? { modelsDir: drawThingsModelsDir } : {}),
-        health: drawthings,
-      },
-    ],
-  });
-}
-
-// ---------------------------------------------------------------------------
-// GET generation/workflows[/:workflowKey]
-// ---------------------------------------------------------------------------
-
-type WorkflowSummary = Pick<
-  WorkflowDescriptor,
-  "workflowKey" | "modelId" | "backendKind" | "version" | "capabilities" | "inputs"
->;
-
-function toSummary(descriptor: WorkflowDescriptor): WorkflowSummary {
-  const { workflowKey, modelId, backendKind, version, capabilities, inputs } = descriptor;
-  return { workflowKey, modelId, backendKind, version, capabilities, inputs };
-}
-
-export async function listGenerationWorkflows(request: Request): Promise<Response> {
-  await actorWithPermission(request, CONFIG_READ);
-  const items = (await cachedDescriptors()).map(toSummary);
-  return ok({ items });
-}
-
-export async function getGenerationWorkflow(request: Request, workflowKey: string): Promise<Response> {
-  await actorWithPermission(request, CONFIG_READ);
-  const descriptor = (await cachedDescriptors()).find((item) => item.workflowKey === workflowKey);
-  if (!descriptor) throw Errors.notFound("Unknown workflowKey");
-  return ok({ workflow: descriptor });
 }

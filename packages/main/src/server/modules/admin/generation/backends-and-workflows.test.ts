@@ -6,7 +6,7 @@ import {
   getGenerationWorkflow,
   listGenerationBackends,
   listGenerationWorkflows,
-} from "./generation-catalog";
+} from "./backends-and-workflows";
 
 // SPEC: 只读 admin API 单测 —— generation/backends 与 generation/workflows[/:workflowKey]。
 // 直接驱动 handler（dispatchAdmin 路由接缝已在 service.ts 挂好；本文件像本目录其它 handler
