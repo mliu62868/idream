@@ -16,7 +16,7 @@ type CandidateDefinition = {
   key: string;
   profileId: string;
   expectedIntent?: string;
-  expectedRunner: "sd_cpp" | "comfyui";
+  expectedRunner: "comfyui";
   expectedPipelineModel?: string;
   expectedWorkflowKey?: string;
   expectedSourceSha256?: string;
@@ -521,11 +521,6 @@ async function inspectCandidate(
     ...activation.blockedReasons,
     candidate.requireConsistency && profile.mode === "image" && (consistencyRate === null || consistencyRate < 0.8)
       ? `consistencyRate is ${consistencyRate ?? "missing"}`
-      : null,
-    candidate.requireVerification &&
-    candidate.expectedRunner === "sd_cpp" &&
-    assetInspection?.suggestedRuntime === "comfyui_fp8_krea2_checkpoint"
-      ? "asset inspection suggests comfyui_fp8_krea2_checkpoint, not a proven sd_cpp template"
       : null,
     ...files
       .filter((file) => file.required && !file.exists)

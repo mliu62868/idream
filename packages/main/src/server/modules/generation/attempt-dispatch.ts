@@ -589,8 +589,7 @@ async function existingGenerationRuntime(
     // envelope.
     workflowVersion: attempt.workflowVersion ?? workflow?.version,
     workflowIdentity: workflow?.identity,
-    modelCapabilities: normalizedModelCapabilities(profile.runnerConfig, profile.runner === "sd_cpp"),
-    sdcpp: profile.runner === "sd_cpp" ? sdcppProfileRuntimeConfig(profile) : undefined,
+    modelCapabilities: normalizedModelCapabilities(profile.runnerConfig),
   });
   return {
     controls,
@@ -601,17 +600,20 @@ async function existingGenerationRuntime(
   };
 }
 
-export function normalizedModelCapabilities(
-  runnerConfig: Prisma.JsonValue | null,
-  sdCppDefault: boolean,
-) {
+// SPEC: capability defaults for a profile that declares nothing.
+// INTENT: `initImage` defaults to false. It used to default to true for
+// runner === "sd_cpp" (sd.cpp is intrinsically img2img-capable), but that runner
+// is retired and no surviving profile relied on the implicit default — every row
+// declares `initImage` explicitly. Making it unconditional keeps one default per
+// capability instead of one per runner.
+export function normalizedModelCapabilities(runnerConfig: Prisma.JsonValue | null) {
   const config = jsonRecord(runnerConfig);
   const capabilities = jsonRecord(config.capabilities);
   return {
     textToImage: booleanFromRecord(capabilities, "textToImage", true),
     stableSeed: booleanFromRecord(capabilities, "stableSeed", true),
     referenceImages: booleanFromRecord(capabilities, "referenceImages", false),
-    initImage: booleanFromRecord(capabilities, "initImage", sdCppDefault),
+    initImage: booleanFromRecord(capabilities, "initImage", false),
     lora: booleanFromRecord(capabilities, "lora", false),
   };
 }
@@ -853,76 +855,6 @@ function legacyCharacterGenerationAuthoritiesEqual(
       right.qualificationEvidenceSchemaVersion &&
     left.qualificationPolicyVersion === right.qualificationPolicyVersion
   );
-}
-
-function sdcppProfileRuntimeConfig(profile: {
-  profileKey: string;
-  version: number;
-  pipelineModel: string;
-  sourceModelPath: string | null;
-  convertedModelPath: string | null;
-  modelFormat: string;
-  runnerConfig: Prisma.JsonValue | null;
-  steps: number;
-  sampler: string;
-  scheduler: string;
-  cfgScale: number;
-  defaultWidth: number;
-  defaultHeight: number;
-}) {
-  const config = jsonRecord(profile.runnerConfig);
-  const conversion = jsonRecord(config.conversion);
-  return pruneUndefined({
-    profileKey: profile.profileKey,
-    profileVersion: profile.version,
-    apiModelId: profile.pipelineModel,
-    modelFormat: profile.modelFormat,
-    sourceModelPath: profile.sourceModelPath,
-    convertedModelPath: profile.convertedModelPath,
-    modelPath: stringFromRecord(config, "modelPath"),
-    diffusionModelPath: stringFromRecord(config, "diffusionModelPath"),
-    llmPath: stringFromRecord(config, "llmPath"),
-    vaePath: stringFromRecord(config, "vaePath"),
-    llmVisionPath: stringFromRecord(config, "llmVisionPath"),
-    clipLPath: stringFromRecord(config, "clipLPath"),
-    clipGPath: stringFromRecord(config, "clipGPath"),
-    t5xxlPath: stringFromRecord(config, "t5xxlPath"),
-    backend: stringFromRecord(config, "backend"),
-    loraModelDir: stringFromRecord(config, "loraModelDir"),
-    loraApplyMode: stringFromRecord(config, "loraApplyMode"),
-    loras: normalizeSdcppLoras(config.loras),
-    conversion: conversion.enabled === true
-      ? pruneUndefined({
-          enabled: true,
-          targetFormat: "gguf",
-          outputPath: stringFromRecord(conversion, "outputPath") ?? profile.convertedModelPath,
-          type: stringFromRecord(conversion, "type") ?? "q8_0",
-          sourceArg: stringFromRecord(conversion, "sourceArg") ?? "model",
-          convertName: conversion.convertName === true,
-          tensorTypeRules: stringFromRecord(conversion, "tensorTypeRules"),
-        })
-      : undefined,
-    steps: profile.steps,
-    sampler: profile.sampler,
-    scheduler: profile.scheduler,
-    cfgScale: profile.cfgScale,
-    defaultWidth: profile.defaultWidth,
-    defaultHeight: profile.defaultHeight,
-  });
-}
-
-function normalizeSdcppLoras(value: unknown) {
-  if (!Array.isArray(value)) return undefined;
-  const loras = value
-    .filter(isRecord)
-    .map((item) => pruneUndefined({
-      key: stringFromRecord(item, "key"),
-      path: stringFromRecord(item, "path"),
-      weight: typeof item.weight === "number" && Number.isFinite(item.weight) ? item.weight : 1,
-      enabled: item.enabled !== false,
-    }))
-    .filter((item) => typeof item.key === "string" || typeof item.path === "string");
-  return loras.length ? loras : undefined;
 }
 
 function jsonRecord(value: unknown): Record<string, unknown> {

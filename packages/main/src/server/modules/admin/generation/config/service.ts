@@ -31,11 +31,23 @@ async function featureEnabled(key: string) {
   const flag = await prisma.featureFlag.findUnique({ where: { key } });
   return Boolean(flag?.enabled);
 }
+// SPEC: the only legal GenerationModelProfile.runner values. Mirrors the enum
+// comment in prisma/schema.prisma; generation-runner-vocabulary.test.ts asserts
+// the two lists are the same set and that gen can map every one of them.
+// INTENT: a runner picks gen's adapter layer only — the concrete backend comes
+// from the workflow descriptor's backendKind.
+export const GENERATION_PROFILE_RUNNERS = [
+  "pipeline",
+  "mlx",
+  "comfyui",
+  "external",
+] as const;
+
 const modelProfileSchema = z.object({
   profileKey: z.string().trim().min(1).max(120),
   label: z.string().trim().min(1).max(120),
   mode: z.enum(["image", "video"]).default("image"),
-  runner: z.enum(["pipeline", "sd_cpp", "mlx", "comfyui", "external"]).default("sd_cpp"),
+  runner: z.enum(GENERATION_PROFILE_RUNNERS).default("comfyui"),
   pipelineModel: z.string().trim().min(1).max(160),
   workflowKey: z.string().trim().min(1).max(160).nullable().optional(),
   sourceModelPath: z.string().trim().max(500).nullable().optional(),
@@ -62,7 +74,7 @@ const modelProfilePatchSchema = z.object({
   profileKey: z.string().trim().min(1).max(120).optional(),
   label: z.string().trim().min(1).max(120).optional(),
   mode: z.enum(["image", "video"]).optional(),
-  runner: z.enum(["pipeline", "sd_cpp", "mlx", "comfyui", "external"]).optional(),
+  runner: z.enum(GENERATION_PROFILE_RUNNERS).optional(),
   pipelineModel: z.string().trim().min(1).max(160).optional(),
   workflowKey: z.string().trim().min(1).max(160).nullable().optional(),
   sourceModelPath: z.string().trim().max(500).nullable().optional(),
@@ -104,77 +116,6 @@ const modelImportRegisterSchema = z.object({
   copyToLibrary: z.boolean().default(false),
   reason: z.string().trim().min(3).max(2_000).optional(),
 });
-
-const optionalTrimmedText = (max: number) =>
-  z.preprocess(
-    (value) => {
-      if (value === null) return undefined;
-      if (typeof value === "string" && value.trim() === "") return undefined;
-      return value;
-    },
-    z.string().trim().min(1).max(max).optional(),
-  );
-
-const sdcppLoraSchema = z
-  .object({
-    key: optionalTrimmedText(160),
-    path: optionalTrimmedText(500),
-    weight: z.number().min(-4).max(4).default(1),
-    enabled: z.boolean().default(true),
-  })
-  .passthrough()
-  .superRefine((value, ctx) => {
-    if (!value.key && !value.path) {
-      ctx.addIssue({
-        code: "custom",
-        message: "LoRA entry requires key or path",
-        path: ["key"],
-      });
-    }
-  });
-
-const sdcppConversionSchema = z
-  .object({
-    enabled: z.boolean().default(false),
-    targetFormat: z.enum(["gguf"]).default("gguf"),
-    outputPath: z.string().trim().max(500).optional(),
-    type: z.string().trim().min(1).max(40).default("q8_0"),
-    sourceArg: z.enum(["model", "diffusion-model"]).default("model"),
-    convertName: z.boolean().default(false),
-    tensorTypeRules: z.string().trim().max(1_000).optional(),
-  })
-  .passthrough();
-
-const modelCapabilitiesSchema = z
-  .object({
-    textToImage: z.boolean().optional(),
-    stableSeed: z.boolean().optional(),
-    referenceImages: z.boolean().optional(),
-    initImage: z.boolean().optional(),
-    lora: z.boolean().optional(),
-  })
-  .passthrough();
-
-const sdcppRunnerConfigSchema = z
-  .object({
-    apiModelId: z.string().trim().min(1).max(160).optional(),
-    cliPath: optionalTrimmedText(500),
-    modelPath: optionalTrimmedText(500),
-    diffusionModelPath: optionalTrimmedText(500),
-    llmPath: optionalTrimmedText(500),
-    vaePath: optionalTrimmedText(500),
-    llmVisionPath: optionalTrimmedText(500),
-    clipLPath: optionalTrimmedText(500),
-    clipGPath: optionalTrimmedText(500),
-    t5xxlPath: optionalTrimmedText(500),
-    backend: optionalTrimmedText(120),
-    loraModelDir: optionalTrimmedText(500),
-    loraApplyMode: z.enum(["auto", "immediately", "at_runtime"]).optional(),
-    loras: z.array(sdcppLoraSchema).max(24).optional(),
-    conversion: sdcppConversionSchema.optional(),
-    capabilities: modelCapabilitiesSchema.optional(),
-  })
-  .passthrough();
 
 const publishSchema = z.object({
   reason: z.string().trim().min(3).max(2_000),
@@ -615,7 +556,6 @@ function modelImportDraftPatch(
   if (kind === "llm") return { llmPath: filePath };
   if (kind === "vae") return { vaePath: filePath };
 
-  const isKrea2Import = isKrea2ModelImport(slug, filePath);
   const isComfyuiFp8Krea2Import = isComfyuiFp8Krea2ModelImport(slug, filePath, metadataText);
   if (isComfyuiFp8Krea2Import) {
     return {
@@ -655,39 +595,22 @@ function modelImportDraftPatch(
       },
     };
   }
-  const convertedPath =
-    format === "safetensors" && !isKrea2Import
-      ? path.join(modelImportDirs().converted, `${slug}-q8_0.gguf`)
-      : filePath;
-  const krea2Patch = isKrea2Import
-    ? {
-        llmPath: path.join(os.homedir(), ".localai/models/krea2/text_encoders/Qwen3VL-4B-Instruct-Q4_K_M.gguf"),
-        vaePath: path.join(os.homedir(), ".localai/models/krea2/vae/wan_2.1_vae.safetensors"),
-        backend: "vae=cpu",
-        steps: "10",
-        sampler: "er_sde",
-        scheduler: "simple",
-        cfgScale: "1",
-      }
-    : {};
+  // INTENT: an unrecognized checkpoint drafts as a plain ComfyUI profile. The old
+  // fallback drafted an sd.cpp profile carrying a GGUF conversion step and sd.cpp
+  // CLI arguments (llmPath / vaePath / backend=vae=cpu); that runner is retired and
+  // its conversion apparatus went with it, so the draft would have described a
+  // profile nothing can execute. ComfyUI is the backend that loads a raw checkpoint.
   return {
-    profileKey: `sdcpp_${slug}`,
+    profileKey: `comfyui_${slug}`,
     label: titleFromSlug(slug),
-    runner: "sd_cpp",
+    runner: "comfyui",
     pipelineModel: slug,
     sourceModelPath: filePath,
-    diffusionModelPath: format === "safetensors" ? filePath : "",
-    convertedModelPath: format === "safetensors" && isKrea2Import ? "" : convertedPath,
+    diffusionModelPath: filePath,
+    convertedModelPath: "",
     modelFormat: format,
-    conversionEnabled: format === "safetensors" && !isKrea2Import,
-    conversionType: "q8_0",
-    conversionSourceArg: "model",
-    ...krea2Patch,
+    conversionEnabled: false,
   };
-}
-
-function isKrea2ModelImport(slug: string, filePath: string) {
-  return /krea[-_ ]?2/i.test(`${slug} ${filePath}`);
 }
 
 function isComfyuiFp8Krea2ModelImport(slug: string, filePath: string, metadataText: string) {
@@ -804,9 +727,8 @@ export async function createModelProfile(request: Request) {
   if (!modelDiagnosticsEnabled()) throw Errors.notFound("Admin API route not found");
   const actor = await actorWithPermission(request, "generation.config.write");
   const body = modelProfileSchema.parse(await jsonBody(request));
-  validateModelProfileConfig(body);
   await assertKnownWorkflowKey(body.workflowKey);
-  const runnerConfig = normalizedModelProfileRunnerConfig(body);
+  const runnerConfig = body.runnerConfig;
   const latest = await prisma.generationModelProfile.findFirst({
     where: { profileKey: body.profileKey },
     orderBy: { version: "desc" },
@@ -858,29 +780,14 @@ export async function patchModelProfile(request: Request, id: string) {
     }
     assertTargetConfirmation(body.confirmation, before.id);
   }
+  // INVARIANT: a disable-only PATCH (the emergency kill-switch) must not rewrite
+  // runnerConfig. Only carry it forward when the patch actually touches the runner
+  // shape, so disabling a misbehaving profile never depends on its config parsing.
   const shouldPersistRunnerConfig =
     body.runnerConfig !== undefined || body.pipelineModel !== undefined || body.runner !== undefined;
-  // Only re-validate/normalize the runner config when the patch actually changes it. A
-  // disable-only PATCH (the emergency kill-switch) must NOT run the strict sd_cpp schema over
-  // a profile's existing, possibly-legacy runnerConfig — a known-field violation there would
-  // throw 400 and block disabling a misbehaving profile.
-  let runnerConfig: ReturnType<typeof normalizedModelProfileRunnerConfig> | undefined;
-  if (shouldPersistRunnerConfig) {
-    const nextConfigInput: ModelProfileConfigInput = {
-      profileKey: body.profileKey ?? before.profileKey,
-      label: body.label ?? before.label,
-      mode: body.mode ?? (before.mode as "image" | "video"),
-      runner: body.runner ?? (before.runner as "pipeline" | "sd_cpp" | "mlx" | "comfyui" | "external"),
-      pipelineModel: body.pipelineModel ?? before.pipelineModel,
-      sourceModelPath: body.sourceModelPath === undefined ? before.sourceModelPath : body.sourceModelPath,
-      convertedModelPath:
-        body.convertedModelPath === undefined ? before.convertedModelPath : body.convertedModelPath,
-      modelFormat: body.modelFormat ?? (before.modelFormat as "safetensors" | "gguf" | "diffusers" | "external"),
-      runnerConfig: body.runnerConfig ?? jsonRecord(before.runnerConfig),
-    };
-    validateModelProfileConfig(nextConfigInput);
-    runnerConfig = normalizedModelProfileRunnerConfig(nextConfigInput);
-  }
+  const runnerConfig = shouldPersistRunnerConfig
+    ? body.runnerConfig ?? jsonRecord(before.runnerConfig)
+    : undefined;
   await assertKnownWorkflowKey(body.workflowKey);
 
   const updated = await prisma.generationModelProfile.update({
@@ -1310,130 +1217,6 @@ export async function createProfileTestJob(request: Request, id: string) {
   return ok({ job: redactJob(job) }, { status: 202 });
 }
 
-type ModelProfileConfigInput = {
-  profileKey: string;
-  label: string;
-  mode: "image" | "video";
-  runner: "pipeline" | "sd_cpp" | "mlx" | "comfyui" | "external";
-  pipelineModel: string;
-  sourceModelPath?: string | null;
-  convertedModelPath?: string | null;
-  modelFormat: "safetensors" | "gguf" | "diffusers" | "external";
-  runnerConfig?: Record<string, unknown>;
-};
-
-function validateModelProfileConfig(input: ModelProfileConfigInput) {
-  if (input.runner !== "sd_cpp") return;
-  const config = input.runnerConfig ? sdcppRunnerConfigSchema.parse(input.runnerConfig) : {};
-  const apiModelId = stringFromRecord(config, "apiModelId");
-  if (apiModelId && apiModelId !== input.pipelineModel) {
-    throw Errors.badRequest("sd_cpp runnerConfig.apiModelId must match pipelineModel");
-  }
-  if (isKrea2ModelProfile(input)) {
-    const llmPath = stringFromRecord(config, "llmPath");
-    const vaePath = stringFromRecord(config, "vaePath");
-    if (llmPath && isKnownKrea2IncompatibleTextEncoder(llmPath)) {
-      throw Errors.badRequest("Krea2 sd_cpp profiles require a Qwen3-VL 4B text encoder");
-    }
-    if (vaePath && isKnownKrea2IncompatibleVae(vaePath)) {
-      throw Errors.badRequest("Krea2 sd_cpp profiles require wan_2.1_vae.safetensors");
-    }
-  }
-  const conversion = config.conversion;
-  const sourcePath = firstText([
-    input.sourceModelPath,
-    config.diffusionModelPath,
-    config.modelPath,
-  ]);
-  const convertedPath = firstText([input.convertedModelPath, conversion?.outputPath]);
-
-  if (input.modelFormat === "safetensors" && sourcePath && !hasKnownModelExtension(sourcePath)) {
-    throw Errors.badRequest("sd_cpp safetensors profile sourceModelPath must point to a model file");
-  }
-  if (input.modelFormat === "gguf") {
-    const ggufPath = firstText([convertedPath, sourcePath]);
-    if (ggufPath && !ggufPath.endsWith(".gguf")) {
-      throw Errors.badRequest("sd_cpp gguf profile must use a .gguf source or converted model path");
-    }
-  }
-  if (conversion?.enabled) {
-    if (!sourcePath) throw Errors.badRequest("sd_cpp conversion requires a source model path");
-    if (!sourcePath.endsWith(".safetensors")) {
-      throw Errors.badRequest("sd_cpp conversion currently expects a .safetensors source model");
-    }
-    if (!convertedPath) throw Errors.badRequest("sd_cpp conversion requires convertedModelPath or conversion.outputPath");
-    if (!convertedPath.endsWith(".gguf")) {
-      throw Errors.badRequest("sd_cpp conversion output must be a .gguf path");
-    }
-  }
-}
-
-function normalizedModelProfileRunnerConfig(input: ModelProfileConfigInput) {
-  if (input.runner !== "sd_cpp") return input.runnerConfig;
-  const config = input.runnerConfig ? sdcppRunnerConfigSchema.parse(input.runnerConfig) : {};
-  const apiModelId = stringFromRecord(config, "apiModelId");
-  if (apiModelId && apiModelId !== input.pipelineModel) {
-    throw Errors.badRequest("sd_cpp runnerConfig.apiModelId must match pipelineModel");
-  }
-  return pruneUndefined({
-    ...config,
-    apiModelId: input.pipelineModel,
-    capabilities: normalizedModelCapabilities(config.capabilities, true),
-  });
-}
-
-function normalizedModelCapabilities(value: unknown, sdCppDefault: boolean) {
-  const capabilities = jsonRecord(value);
-  return {
-    textToImage: booleanFromRecord(capabilities, "textToImage", true),
-    stableSeed: booleanFromRecord(capabilities, "stableSeed", true),
-    referenceImages: booleanFromRecord(capabilities, "referenceImages", false),
-    initImage: booleanFromRecord(capabilities, "initImage", sdCppDefault),
-    lora: booleanFromRecord(capabilities, "lora", false),
-  };
-}
-
-function firstText(values: Array<string | null | undefined>) {
-  return values.find((value): value is string => Boolean(value?.trim()))?.trim();
-}
-
-function hasKnownModelExtension(value: string) {
-  return [".safetensors", ".gguf", ".ckpt", ".pt", ".pth"].some((suffix) =>
-    value.toLowerCase().endsWith(suffix),
-  );
-}
-
-function isKrea2ModelProfile(input: {
-  pipelineModel: string;
-  sourceModelPath?: string | null;
-  convertedModelPath?: string | null;
-  runnerConfig?: Record<string, unknown>;
-}) {
-  const config = input.runnerConfig ?? {};
-  return [
-    input.pipelineModel,
-    input.sourceModelPath,
-    input.convertedModelPath,
-    stringFromRecord(config, "diffusionModelPath"),
-    stringFromRecord(config, "modelPath"),
-  ].some((value) => (value ? /krea[-_ ]?2/i.test(value) : false));
-}
-
-function isKnownKrea2IncompatibleTextEncoder(value: string) {
-  const lowered = value.toLowerCase();
-  return lowered.includes("qwen3-4b-instruct") || lowered.includes("z-image");
-}
-
-function isKnownKrea2IncompatibleVae(value: string) {
-  const lowered = value.toLowerCase();
-  return (
-    lowered.endsWith("/ae.safetensors") ||
-    lowered.includes("flux.1-ae") ||
-    lowered.includes("qwen_image_vae") ||
-    lowered.includes("z-image")
-  );
-}
-
 function profileTestControls(
   profile: {
     profileKey: string;
@@ -1465,91 +1248,12 @@ function profileTestControls(
     width: dimensions.width,
     height: dimensions.height,
     adminTest: true,
-    sdcpp: profile.runner === "sd_cpp" ? sdcppProfileRuntimeConfig(profile) : undefined,
   });
-}
-
-function sdcppProfileRuntimeConfig(profile: {
-  profileKey: string;
-  version: number;
-  pipelineModel: string;
-  sourceModelPath: string | null;
-  convertedModelPath: string | null;
-  modelFormat: string;
-  runnerConfig: Prisma.JsonValue | null;
-  steps: number;
-  sampler: string;
-  scheduler: string;
-  cfgScale: number;
-  defaultWidth: number;
-  defaultHeight: number;
-}) {
-  const config = jsonRecord(profile.runnerConfig);
-  const conversion = jsonRecord(config.conversion);
-  return pruneUndefined({
-    profileKey: profile.profileKey,
-    profileVersion: profile.version,
-    apiModelId: profile.pipelineModel,
-    modelFormat: profile.modelFormat,
-    sourceModelPath: profile.sourceModelPath,
-    convertedModelPath: profile.convertedModelPath,
-    modelPath: stringFromRecord(config, "modelPath"),
-    diffusionModelPath: stringFromRecord(config, "diffusionModelPath"),
-    llmPath: stringFromRecord(config, "llmPath"),
-    vaePath: stringFromRecord(config, "vaePath"),
-    llmVisionPath: stringFromRecord(config, "llmVisionPath"),
-    clipLPath: stringFromRecord(config, "clipLPath"),
-    clipGPath: stringFromRecord(config, "clipGPath"),
-    t5xxlPath: stringFromRecord(config, "t5xxlPath"),
-    backend: stringFromRecord(config, "backend"),
-    loraModelDir: stringFromRecord(config, "loraModelDir"),
-    loraApplyMode: stringFromRecord(config, "loraApplyMode"),
-    loras: normalizeSdcppLoras(config.loras),
-    conversion:
-      conversion.enabled === true
-        ? pruneUndefined({
-            enabled: true,
-            targetFormat: "gguf",
-            outputPath: stringFromRecord(conversion, "outputPath") ?? profile.convertedModelPath,
-            type: stringFromRecord(conversion, "type") ?? "q8_0",
-            sourceArg: stringFromRecord(conversion, "sourceArg") ?? "model",
-            convertName: conversion.convertName === true,
-            tensorTypeRules: stringFromRecord(conversion, "tensorTypeRules"),
-          })
-        : undefined,
-    steps: profile.steps,
-    sampler: profile.sampler,
-    scheduler: profile.scheduler,
-    cfgScale: profile.cfgScale,
-    defaultWidth: profile.defaultWidth,
-    defaultHeight: profile.defaultHeight,
-  });
-}
-
-function normalizeSdcppLoras(value: unknown) {
-  if (!Array.isArray(value)) return undefined;
-  const loras = value
-    .filter(isRecord)
-    .map((item) =>
-      pruneUndefined({
-        key: stringFromRecord(item, "key"),
-        path: stringFromRecord(item, "path"),
-        weight: typeof item.weight === "number" && Number.isFinite(item.weight) ? item.weight : 1,
-        enabled: item.enabled !== false,
-      }),
-    )
-    .filter((item) => typeof item.key === "string" || typeof item.path === "string");
-  return loras.length ? loras : undefined;
 }
 
 function stringFromRecord(value: Record<string, unknown>, key: string) {
   const child = value[key];
   return typeof child === "string" && child.trim() ? child.trim() : undefined;
-}
-
-function booleanFromRecord(value: Record<string, unknown>, key: string, fallback: boolean) {
-  const child = value[key];
-  return typeof child === "boolean" ? child : fallback;
 }
 
 function numberFromRecord(value: Record<string, unknown>, key: string) {

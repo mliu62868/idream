@@ -1094,7 +1094,7 @@ describe("generation config control plane", () => {
         profileKey: `${P}profile`,
         label: "Admin Test v1",
         mode: "image",
-        runner: "sd_cpp",
+        runner: "comfyui",
         pipelineModel: "mock-image",
         allowedOrientations: ["1:1"],
         version: 1,
@@ -1111,7 +1111,7 @@ describe("generation config control plane", () => {
         profileKey: `${P}profile`,
         label: "Admin Test v2",
         mode: "image",
-        runner: "sd_cpp",
+        runner: "comfyui",
         pipelineModel: "mock-image-v2",
         allowedOrientations: ["1:1", "4:5"],
         dryRunSummary: { sampleCount: 20, successRate: 1, consistencyRate: 0.9 },
@@ -1219,7 +1219,7 @@ describe("generation config control plane", () => {
         profileKey: `${P}workflow-profile`,
         label: "Workflow Key Test",
         mode: "image",
-        runner: "sd_cpp",
+        runner: "comfyui",
         pipelineModel: "mock-image-workflow",
         allowedOrientations: ["1:1"],
         workflowKey: "does-not-exist-workflow",
@@ -1234,7 +1234,7 @@ describe("generation config control plane", () => {
         profileKey: `${P}workflow-profile`,
         label: "Workflow Key Test",
         mode: "image",
-        runner: "sd_cpp",
+        runner: "comfyui",
         pipelineModel: "mock-image-workflow",
         allowedOrientations: ["1:1"],
         workflowKey: "redcraft-krea2-redmix3-txt2img",
@@ -1300,7 +1300,7 @@ describe("generation config control plane", () => {
         profileKey,
         label: "Workflow Route Profile",
         mode: "image",
-        runner: "sd_cpp",
+        runner: "comfyui",
         pipelineModel: "mock-image-workflow-route",
         workflowKey: "redcraft-krea2-redmix3-txt2img",
         allowedOrientations: ["1:1"],
@@ -1334,7 +1334,7 @@ describe("generation config control plane", () => {
         profileKey: `${P}profile-bad-visual`,
         label: "Bad visual candidate",
         mode: "image",
-        runner: "sd_cpp",
+        runner: "comfyui",
         pipelineModel: "bad-visual-candidate",
         allowedOrientations: ["1:1"],
         version: 1,
@@ -1375,7 +1375,7 @@ describe("generation config control plane", () => {
         profileKey: `${P}profile-small-sample`,
         label: "Small sample candidate",
         mode: "image",
-        runner: "sd_cpp",
+        runner: "comfyui",
         pipelineModel: "small-sample-candidate",
         allowedOrientations: ["1:1"],
         version: 1,
@@ -1432,7 +1432,7 @@ describe("generation config control plane", () => {
         profileKey: `${P}profile-managed-no-verification`,
         label: "Managed model without verification",
         mode: "image",
-        runner: "sd_cpp",
+        runner: "comfyui",
         pipelineModel: "redcraftkrea2redmix_krea2edition",
         sourceModelPath: "/models/checkpoints/redcraftKREA2RedMix_krea2Edition.safetensors",
         allowedOrientations: ["1:1"],
@@ -1519,7 +1519,7 @@ describe("generation config control plane", () => {
         profileKey: `${P}draft-enable-guard`,
         label: "Draft enable guard",
         mode: "image",
-        runner: "sd_cpp",
+        runner: "comfyui",
         pipelineModel: "draft-enable-guard",
         allowedOrientations: ["1:1"],
         dryRunSummary: { sampleCount: 20, successRate: 1, consistencyRate: 0.9 },
@@ -1544,7 +1544,7 @@ describe("generation config control plane", () => {
         profileKey: `${P}profile-failed-dry-run`,
         label: "Failed dry-run candidate",
         mode: "image",
-        runner: "sd_cpp",
+        runner: "comfyui",
         pipelineModel: "failed-dry-run-candidate",
         allowedOrientations: ["1:1"],
         version: 1,
@@ -1590,7 +1590,7 @@ describe("generation config control plane", () => {
         profileKey: `${P}profile-failed-config-check`,
         label: "Failed configuration check candidate",
         mode: "image",
-        runner: "sd_cpp",
+        runner: "comfyui",
         pipelineModel: "failed-config-check-candidate",
         allowedOrientations: ["1:1"],
         version: 1,
@@ -1639,7 +1639,7 @@ describe("generation config control plane", () => {
         profileKey: `${P}profile-disable-key`,
         label: "Disable Guard",
         mode: "image",
-        runner: "sd_cpp",
+        runner: "comfyui",
         pipelineModel: "mock-image",
         allowedOrientations: ["1:1"],
         version: 1,
@@ -1695,7 +1695,7 @@ describe("generation config control plane", () => {
           profileKey: `${P}manual-create-hidden`,
           label: "Manual create hidden",
           mode: "image",
-          runner: "sd_cpp",
+          runner: "comfyui",
           pipelineModel: "manual-create-hidden",
           allowedOrientations: ["1:1"],
           dryRunSummary: { sampleCount: 20, successRate: 1, consistencyRate: 0.9 },
@@ -1710,7 +1710,7 @@ describe("generation config control plane", () => {
           profileKey: `${P}profile-diagnostics-guard`,
           label: "Diagnostics guard profile",
           mode: "image",
-          runner: "sd_cpp",
+          runner: "comfyui",
           pipelineModel: "mock-image",
           modelFormat: "safetensors",
           defaultWidth: 512,
@@ -1763,172 +1763,7 @@ describe("generation config control plane", () => {
     }
   });
 
-  it("accepts managed sd_cpp safetensors conversion and LoRA stack metadata", async () => {
-    const admin = await setupActor("admin", "sdcpp-profile");
-    const draft = await api("POST", "admin/generation/model-profiles", {
-      userId: admin,
-      role: "admin",
-      body: {
-        profileKey: `${P}sdcpp-managed`,
-        label: "Managed sdcpp import",
-        mode: "image",
-        runner: "sd_cpp",
-        pipelineModel: "managed-sdcpp",
-        sourceModelPath: "/models/checkpoints/managed.safetensors",
-        convertedModelPath: "/models/gguf/managed-q8_0.gguf",
-        modelFormat: "safetensors",
-        allowedOrientations: ["1:1"],
-        scheduler: "karras",
-        runnerConfig: {
-          apiModelId: "managed-sdcpp",
-          diffusionModelPath: "/models/checkpoints/managed.safetensors",
-          llmPath: "/models/text/qwen.gguf",
-          vaePath: "/models/vae/ae.safetensors",
-          llmVisionPath: "/models/text/qwen-vision.gguf",
-          backend: "vae=cpu",
-          conversion: {
-            enabled: true,
-            targetFormat: "gguf",
-            outputPath: "/models/gguf/managed-q8_0.gguf",
-            type: "q8_0",
-            sourceArg: "diffusion-model",
-          },
-          loraModelDir: "/models/loras",
-          loras: [{ key: "cinematic", path: "/models/loras/cinematic.safetensors", weight: 0.65 }],
-          capabilities: {
-            textToImage: true,
-            stableSeed: true,
-            referenceImages: false,
-            initImage: true,
-            lora: true,
-          },
-        },
-        dryRunSummary: { sampleCount: 1 },
-      },
-    });
-    expectOk(draft);
-    expect(draft.data.profile).toMatchObject({ scheduler: "karras" });
-    expect(draft.data.profile.runnerConfig).toMatchObject({
-      conversion: { enabled: true, outputPath: "/models/gguf/managed-q8_0.gguf" },
-      llmVisionPath: "/models/text/qwen-vision.gguf",
-      backend: "vae=cpu",
-      loras: [expect.objectContaining({ key: "cinematic", weight: 0.65 })],
-      capabilities: {
-        textToImage: true,
-        stableSeed: true,
-        referenceImages: false,
-        initImage: true,
-        lora: true,
-      },
-    });
-
-    const dryRun = await api("POST", `admin/generation/model-profiles/${draft.data.profile.id}/dry-run`, {
-      userId: admin,
-      role: "admin",
-      body: { reason: "verify managed import metadata", confirmation: "DRYRUN" },
-    });
-    expectError(dryRun, 400, "bad_request");
-
-    const exactDryRun = await api("POST", `admin/generation/model-profiles/${draft.data.profile.id}/dry-run`, {
-      userId: admin,
-      role: "admin",
-      body: { reason: "verify managed import metadata", confirmation: draft.data.profile.id },
-    });
-    expectOk(exactDryRun);
-    expect(exactDryRun.data.dryRun).toMatchObject({ status: "pass", total: 2 });
-
-    const invalid = await api("POST", "admin/generation/model-profiles", {
-      userId: admin,
-      role: "admin",
-      body: {
-        profileKey: `${P}sdcpp-invalid`,
-        label: "Invalid conversion",
-        mode: "image",
-        runner: "sd_cpp",
-        pipelineModel: "invalid-sdcpp",
-        sourceModelPath: "/models/checkpoints/invalid.ckpt",
-        convertedModelPath: "/models/gguf/invalid-q8_0.gguf",
-        modelFormat: "safetensors",
-        allowedOrientations: ["1:1"],
-        runnerConfig: {
-          conversion: {
-            enabled: true,
-            targetFormat: "gguf",
-            outputPath: "/models/gguf/invalid-q8_0.gguf",
-          },
-        },
-      },
-    });
-    expectError(invalid, 400, "bad_request");
-
-    const mismatchedApiModel = await api("POST", "admin/generation/model-profiles", {
-      userId: admin,
-      role: "admin",
-      body: {
-        profileKey: `${P}sdcpp-api-mismatch`,
-        label: "Invalid API model",
-        mode: "image",
-        runner: "sd_cpp",
-        pipelineModel: "redcraft-model",
-        sourceModelPath: "/models/checkpoints/redcraft.safetensors",
-        convertedModelPath: "/models/gguf/redcraft-q8_0.gguf",
-        modelFormat: "safetensors",
-        allowedOrientations: ["1:1"],
-        runnerConfig: {
-          apiModelId: "stale-default-model",
-          diffusionModelPath: "/models/checkpoints/redcraft.safetensors",
-        },
-      },
-    });
-    expectError(mismatchedApiModel, 400, "bad_request");
-
-    const invalidKrea2Components = await api("POST", "admin/generation/model-profiles", {
-      userId: admin,
-      role: "admin",
-      body: {
-        profileKey: `${P}sdcpp-krea2-wrong-components`,
-        label: "Invalid Krea2 components",
-        mode: "image",
-        runner: "sd_cpp",
-        pipelineModel: "redcraftkrea2redmix-krea2edition",
-        sourceModelPath: "/models/checkpoints/redcraftKREA2RedMix_krea2Edition.safetensors",
-        modelFormat: "safetensors",
-        allowedOrientations: ["1:1"],
-        runnerConfig: {
-          apiModelId: "redcraftkrea2redmix-krea2edition",
-          diffusionModelPath: "/models/checkpoints/redcraftKREA2RedMix_krea2Edition.safetensors",
-          llmPath: "/models/z-image-components/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
-          vaePath: "/models/z-image-components/split_files/vae/ae.safetensors",
-        },
-      },
-    });
-    expectError(invalidKrea2Components, 400, "bad_request");
-
-    const invalidKrea2QwenImageVae = await api("POST", "admin/generation/model-profiles", {
-      userId: admin,
-      role: "admin",
-      body: {
-        profileKey: `${P}sdcpp-krea2-qwen-image-vae`,
-        label: "Invalid Krea2 qwen image VAE",
-        mode: "image",
-        runner: "sd_cpp",
-        pipelineModel: "redcraftkrea2redmix-krea2edition",
-        sourceModelPath: "/models/checkpoints/redcraftKREA2RedMix_krea2Edition.safetensors",
-        modelFormat: "safetensors",
-        allowedOrientations: ["1:1"],
-        runnerConfig: {
-          apiModelId: "redcraftkrea2redmix-krea2edition",
-          diffusionModelPath: "/models/checkpoints/redcraftKREA2RedMix_krea2Edition.safetensors",
-          llmPath: "/models/krea2/text_encoders/Qwen3VL-4B-Instruct-Q4_K_M.gguf",
-          vaePath: "/models/krea2/vae/qwen_image_vae.safetensors",
-        },
-      },
-    });
-    expectError(invalidKrea2QwenImageVae, 400, "bad_request");
-    expect(invalidKrea2QwenImageVae.error?.message).toContain("wan_2.1_vae");
-  });
-
-  it("fails dry-run for non-sdcpp candidates with missing runtime components", async () => {
+  it("fails dry-run for candidates with missing runtime components", async () => {
     const admin = await setupActor("admin", "comfyui-component-dry-run");
     const draft = await api("POST", "admin/generation/model-profiles", {
       userId: admin,
@@ -1992,28 +1827,17 @@ describe("generation config control plane", () => {
       userId: admin,
       role: "admin",
       body: {
-        profileKey: `${P}sdcpp-test-job`,
-        label: "sdcpp test job draft",
+        profileKey: `${P}comfyui-test-job`,
+        label: "comfyui test job draft",
         mode: "image",
-        runner: "sd_cpp",
-        pipelineModel: "managed-sdcpp-test",
+        runner: "comfyui",
+        pipelineModel: "managed-comfyui-test",
         sourceModelPath: "/models/checkpoints/test.safetensors",
-        convertedModelPath: "/models/gguf/test-q8_0.gguf",
         modelFormat: "safetensors",
         allowedOrientations: ["1:1", "4:5"],
         runnerConfig: {
-          apiModelId: "managed-sdcpp-test",
+          apiModelId: "managed-comfyui-test",
           diffusionModelPath: "/models/checkpoints/test.safetensors",
-          llmPath: "/models/text/qwen.gguf",
-          vaePath: "/models/vae/ae.safetensors",
-          llmVisionPath: "/models/text/qwen-vision.gguf",
-          backend: "vae=cpu",
-          conversion: {
-            enabled: true,
-            outputPath: "/models/gguf/test-q8_0.gguf",
-            sourceArg: "diffusion-model",
-          },
-          loras: [{ key: "portrait", path: "/models/loras/portrait.safetensors", weight: 0.5 }],
         },
       },
     });
@@ -2047,7 +1871,7 @@ describe("generation config control plane", () => {
     expect(exactQueued.data.job).toMatchObject({
       status: "queued",
       costDreamcoins: 0,
-      profileId: `${P}sdcpp-test-job`,
+      profileId: `${P}comfyui-test-job`,
       profileVersion: draft.data.profile.version,
     });
 
@@ -2057,7 +1881,7 @@ describe("generation config control plane", () => {
     expect(stored).toMatchObject({
       userId: admin,
       costDreamcoins: 0,
-      provider: "sd_cpp",
+      provider: "comfyui",
       orientation: "4:5",
       sourceType: "admin_profile_test",
     });
@@ -2066,15 +1890,8 @@ describe("generation config control plane", () => {
       adminTest: true,
       width: 768,
       height: 960,
-      sdcpp: expect.objectContaining({
-        apiModelId: "managed-sdcpp-test",
-        diffusionModelPath: "/models/checkpoints/test.safetensors",
-        vaePath: "/models/vae/ae.safetensors",
-        llmVisionPath: "/models/text/qwen-vision.gguf",
-        backend: "vae=cpu",
-        loras: [expect.objectContaining({ key: "portrait", weight: 0.5 })],
-      }),
     });
+    expect(stored.controls).not.toHaveProperty("sdcpp");
 
     await runQueuedGenerationJobs(8);
     const completed = await prisma.generationJob.findUniqueOrThrow({
@@ -2115,65 +1932,6 @@ describe("generation config control plane", () => {
         }),
       ]),
     );
-  });
-
-  it("normalizes legacy sd_cpp apiModelId when queueing admin test jobs", async () => {
-    const admin = await setupActor("admin", "legacy-sdcpp-test-job");
-    const profile = await prisma.generationModelProfile.create({
-      data: {
-        profileKey: `${P}sdcpp-legacy-test-job`,
-        label: "Legacy sdcpp test job draft",
-        mode: "image",
-        runner: "sd_cpp",
-        pipelineModel: "legacy-redcraft-model",
-        sourceModelPath: "/models/checkpoints/legacy-redcraft.safetensors",
-        convertedModelPath: "/models/gguf/legacy-redcraft-q8_0.gguf",
-        modelFormat: "safetensors",
-        allowedOrientations: ["1:1"],
-        status: "draft",
-        runnerConfig: {
-          apiModelId: "stale-default-model",
-          diffusionModelPath: "/models/checkpoints/legacy-redcraft.safetensors",
-          llmPath: "/models/text/qwen.gguf",
-          vaePath: "/models/vae/ae.safetensors",
-        },
-      },
-    });
-
-    const queued = await api("POST", `admin/generation/model-profiles/${profile.id}/test-job`, {
-      userId: admin,
-      role: "admin",
-      body: {
-        prompt: "legacy profile smoke",
-        outputCount: 1,
-        reason: "verify legacy config normalization",
-        confirmation: profile.id,
-      },
-    });
-    expectOk(queued, 202);
-    const jobId = queued.data.job.id as string;
-    try {
-      const stored = await prisma.generationJob.findUniqueOrThrow({ where: { id: jobId } });
-      expect(stored.model).toBe("legacy-redcraft-model");
-      expect(stored.controls).toMatchObject({
-        sdcpp: expect.objectContaining({
-          apiModelId: "legacy-redcraft-model",
-          diffusionModelPath: "/models/checkpoints/legacy-redcraft.safetensors",
-        }),
-      });
-      const queueJob = await jobQueue.getByDedupeKey(
-        "ai.image.generate",
-        `generation:${jobId}:attempt:1`,
-      );
-      expect(queueJob?.payload).toMatchObject({
-        model: "legacy-redcraft-model",
-        controls: {
-          sdcpp: expect.objectContaining({ apiModelId: "legacy-redcraft-model" }),
-        },
-      });
-    } finally {
-      await jobQueue.removeByDedupePrefix(`generation:${jobId}`, ["ai.image.generate"]);
-    }
   });
 
   it("runs content production while enforcing Creative review and verified placement authority", async () => {
@@ -2861,7 +2619,7 @@ describe("generation config control plane", () => {
     }
   });
 
-  it("registers local sdcpp model and LoRA assets for engineering diagnostics", async () => {
+  it("registers local model and LoRA assets for engineering diagnostics", async () => {
     const admin = await setupActor("admin", "model-import");
     const previousRoot = process.env.ADMIN_MODEL_LIBRARY_DIR;
     const previousDiagnostics = process.env.ADMIN_MODEL_DIAGNOSTICS_ENABLED;
@@ -2900,10 +2658,11 @@ describe("generation config control plane", () => {
         kind: "model",
         format: "safetensors",
         draftPatch: expect.objectContaining({
+          runner: "comfyui",
           sourceModelPath: modelPath,
           diffusionModelPath: modelPath,
-          convertedModelPath: path.join(root, "gguf", "chrome_style-q8_0.gguf"),
-          conversionEnabled: true,
+          convertedModelPath: "",
+          conversionEnabled: false,
         }),
       });
 
@@ -2916,19 +2675,15 @@ describe("generation config control plane", () => {
       expect(krea2Model.data.asset).toMatchObject({
         kind: "model",
         format: "safetensors",
+        // A Krea2 checkpoint without the ComfyUI fp8 metadata signature gets the
+        // same generic ComfyUI draft as any other import: the sd.cpp branch that
+        // used to add llmPath/vaePath/backend=vae=cpu is retired with the runner.
         draftPatch: expect.objectContaining({
-          runner: "sd_cpp",
+          runner: "comfyui",
           sourceModelPath: krea2ModelPath,
           diffusionModelPath: krea2ModelPath,
           convertedModelPath: "",
           conversionEnabled: false,
-          llmPath: expect.stringContaining("Qwen3VL-4B-Instruct-Q4_K_M.gguf"),
-          vaePath: expect.stringContaining("wan_2.1_vae.safetensors"),
-          backend: "vae=cpu",
-          steps: "10",
-          sampler: "er_sde",
-          scheduler: "simple",
-          cfgScale: "1",
         }),
       });
 

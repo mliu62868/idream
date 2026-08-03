@@ -116,7 +116,7 @@ describe("generation catalog (admin, read-only)", () => {
         mode: "image",
         enabled: true,
         status: "active",
-        runner: { in: ["comfyui", "sd_cpp"] },
+        runner: "comfyui",
       },
       select: { profileKey: true, runner: true, workflowKey: true },
     });
@@ -131,9 +131,7 @@ describe("generation catalog (admin, read-only)", () => {
     ]));
     for (const profile of profiles) {
       expect(profile.workflowKey, `${profile.profileKey} is missing workflowKey`).toBeTruthy();
-      expect(workflows.get(profile.workflowKey ?? ""), profile.profileKey).toBe(
-        profile.runner === "sd_cpp" ? "sdcpp" : "comfyui",
-      );
+      expect(workflows.get(profile.workflowKey ?? ""), profile.profileKey).toBe("comfyui");
     }
   });
 
