@@ -142,7 +142,7 @@ describe("generation catalog (admin, read-only)", () => {
     expect(res.error.code).toBe("not_found");
   });
 
-  it("lists comfyui + sdcpp + drawthings backends, each with a health object", async () => {
+  it("lists comfyui + drawthings backends, each with a health object", async () => {
     const admin = await setupActor("admin", "backends");
     const originalComfyUrl = process.env.COMFYUI_API_URL;
     const originalDrawThingsCli = process.env.DRAWTHINGS_CLI;
@@ -155,21 +155,18 @@ describe("generation catalog (admin, read-only)", () => {
       expect(res.status).toBe(200);
 
       const items = res.data.items as Array<Record<string, unknown>>;
-      expect(items).toHaveLength(3);
+      expect(items).toHaveLength(2);
 
       const comfyui = items.find((item) => item.id === "comfyui") as Record<string, unknown>;
-      const sdcpp = items.find((item) => item.id === "sdcpp") as Record<string, unknown>;
       const drawthings = items.find((item) => item.id === "drawthings") as Record<string, unknown>;
       expect(comfyui).toBeTruthy();
-      expect(sdcpp).toBeTruthy();
       expect(drawthings).toBeTruthy();
+      // gen has no sd.cpp backend left, so the catalog must not advertise one.
+      expect(items.map((item) => item.id)).not.toContain("sdcpp");
 
       const comfyuiHealth = comfyui.health as Record<string, unknown>;
       expect(comfyuiHealth.ok).toBe(false);
       expect(typeof comfyuiHealth.detail).toBe("string");
-
-      const sdcppHealth = sdcpp.health as Record<string, unknown>;
-      expect(typeof sdcppHealth.ok).toBe("boolean");
 
       expect(drawthings.cliPath).toBe("/usr/bin/true");
       expect(drawthings.health).toEqual({ ok: true });

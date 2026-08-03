@@ -1,14 +1,13 @@
-// SPEC: 只读 admin API —— GET generation/backends（comfyui/sdcpp/drawthings + 健康探测）与
+// SPEC: 只读 admin API —— GET generation/backends（comfyui/drawthings + 健康探测）与
 // GET generation/workflows[/:workflowKey]（workflow 描述符目录只读展示，供工程排查）。
 // INTENT: main 不依赖 packages/gen（两者只通过 Redis 队列耦合），这里独立读取同一份
 // workflow 描述符 JSON（shared 的 loadWorkflowDescriptors）与同样的 env 默认值
-// （COMFYUI_API_URL/SDCPP_CLI/GEN_WORKFLOW_DIR，口径对齐 packages/gen/src/env.ts），
+// （COMFYUI_API_URL/DRAWTHINGS_CLI/GEN_WORKFLOW_DIR，口径对齐 packages/gen/src/env.ts），
 // 保持配置语义一致但零运行时耦合。60s 进程内缓存：描述符文件是工程 seed，低频变更，
 // 不值得每次请求都扫目录。
 // INVARIANTS: 全部只读、全部要求 generation.config.read；workflows 列表摘要绝不包含
 // apiPrompt（体积大且是内部实现细节，只在 detail 端点展开供工程排查）。
 import { existsSync } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { loadWorkflowDescriptors, type WorkflowDescriptor } from "@idream/shared/gen-workflow";
 import { resolveExecutable } from "@idream/shared";
@@ -113,22 +112,19 @@ async function executableHealth(command: string): Promise<BackendHealth> {
 }
 
 // INVARIANT: env 读取放在 handler 内部（不是 module 顶层常量），测试才能按用例覆盖
-// COMFYUI_API_URL/SDCPP_CLI 后照常 import 生效。
+// COMFYUI_API_URL/DRAWTHINGS_CLI 后照常 import 生效。
 export async function listGenerationBackends(request: Request): Promise<Response> {
   await actorWithPermission(request, CONFIG_READ);
   const comfyuiEndpoint = process.env.COMFYUI_API_URL ?? "http://127.0.0.1:8188";
-  const sdcppCli = process.env.SDCPP_CLI ?? path.join(os.homedir(), "bin", "sd-cli");
   const drawThingsCli = process.env.DRAWTHINGS_CLI ?? "draw-things-cli";
   const drawThingsModelsDir = process.env.DRAWTHINGS_MODELS_DIR;
-  const [comfyui, sdcpp, drawthings] = await Promise.all([
+  const [comfyui, drawthings] = await Promise.all([
     comfyuiHealth(comfyuiEndpoint),
-    executableHealth(sdcppCli),
     executableHealth(drawThingsCli),
   ]);
   return ok({
     items: [
       { id: "comfyui", kind: "comfyui", endpoint: comfyuiEndpoint, health: comfyui },
-      { id: "sdcpp", kind: "sdcpp", cliPath: sdcppCli, health: sdcpp },
       {
         id: "drawthings",
         kind: "drawthings",
