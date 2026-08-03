@@ -25,7 +25,10 @@ export async function POST(
         idempotencyKey: requireIdempotencyKey(request),
         requestId:
           request.headers.get("x-request-id")?.trim() || crypto.randomUUID(),
-        request: await jsonBody(request),
+        request: await jsonBody(
+          request,
+          "characterVoiceSystemDefaultResetRequestSchema+idempotency-key",
+        ),
       }),
     );
   });

@@ -1,7 +1,6 @@
 import {
   adminGrantBundleKeySchema,
   adminGrantBundleMutationSchema,
-  adminGrantBundleRevokeSchema,
 } from "@idream/shared/admin";
 import { revokeUserBundle } from "@/server/modules/admin-v2/permissions/grant-bundles";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
@@ -19,7 +18,7 @@ export async function DELETE(request: Request, context: Context) {
   return adminV2Route(async () => {
     const actor = await actorWithPermission(request, "user.role.write");
     const bundleKey = adminGrantBundleKeySchema.parse(params.bundleKey);
-    const body = adminGrantBundleRevokeSchema.parse(await jsonBody(request));
+    const body = await jsonBody(request, "adminGrantBundleRevokeSchema+idempotency-key");
     const idempotencyKey = requireIdempotencyKey(request);
     const requestId = request.headers.get("x-request-id")?.trim() || crypto.randomUUID();
     return executeAtomicIdempotentMutation({

@@ -1,4 +1,3 @@
-import { characterPortfolioDecisionRequestSchema } from "@idream/shared/admin";
 import { env } from "@/server/lib/env";
 import { createCharacterPortfolioDecisionInTransaction } from "@/server/modules/admin-v2/characters/portfolio";
 import { actorWithPermission, jsonBody } from "@/server/modules/admin-v2/shared/authority";
@@ -13,7 +12,7 @@ export function POST(request: Request, context: { params: Promise<{ id: string }
   return adminV2Route(async () => {
     const { id } = await context.params;
     const actor = await actorWithPermission(request, "character.project.write", { characterId: id });
-    const body = characterPortfolioDecisionRequestSchema.parse(await jsonBody(request));
+    const body = await jsonBody(request, "characterPortfolioDecisionRequestSchema+idempotency-key");
     const idempotencyKey = requireIdempotencyKey(request);
     const requestId = request.headers.get("x-request-id")?.trim() || crypto.randomUUID();
     const data = await executeAtomicIdempotentMutation({

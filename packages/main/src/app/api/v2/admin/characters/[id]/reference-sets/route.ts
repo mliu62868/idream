@@ -1,5 +1,4 @@
 import {
-  characterReferenceSetPublishRequestSchema,
   characterReferenceSetPublishResponseSchema,
 } from "@idream/shared/admin";
 import { env } from "@/server/lib/env";
@@ -16,7 +15,7 @@ export function POST(request: Request, context: { params: Promise<{ id: string }
   return adminV2Route(async () => {
     const actor = await actorWithPermission(request, "content.official.write");
     const { id } = await context.params;
-    const body = characterReferenceSetPublishRequestSchema.parse(await jsonBody(request));
+    const body = await jsonBody(request, "characterReferenceSetPublishRequestSchema+idempotency-key");
     const idempotencyKey = requireIdempotencyKey(request);
     const requestId = request.headers.get("x-request-id")?.trim() || crypto.randomUUID();
     const result = await executeAtomicIdempotentMutation({

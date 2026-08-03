@@ -1,4 +1,3 @@
-import { operationalWorkPreferenceUpdateSchema } from "@idream/shared/admin";
 import { effectivePermissions } from "@/server/admin/effective-permissions";
 import { updateOperationalWorkPreference } from "@/server/modules/admin-v2/today/preferences";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
@@ -18,7 +17,7 @@ export function PUT(request: Request) {
   return adminV2Route(async () => {
     const actor = await actorWithPermission(request, "dashboard.read");
     const permissions = await effectivePermissions(actor.id, actor.role);
-    const body = operationalWorkPreferenceUpdateSchema.parse(await jsonBody(request));
+    const body = await jsonBody(request, "operationalWorkPreferenceUpdateSchema+if-match");
     const expectedVersion = requiredIfMatch(request);
     return updateOperationalWorkPreference({
       actor,

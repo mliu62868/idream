@@ -1,4 +1,3 @@
-import { caseDecisionRequestSchema } from "@idream/shared/admin";
 import { env } from "@/server/lib/env";
 import { recordReviewCaseDecision } from "@/server/modules/admin-v2/cases/service";
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
@@ -13,7 +12,7 @@ export async function POST(request: Request, context: Context) {
   const { id } = await context.params;
   return adminV2Route(async () => {
     const actor = await actorWithPermission(request, "case.decide");
-    const body = caseDecisionRequestSchema.parse(await jsonBody(request));
+    const body = await jsonBody(request, "caseDecisionRequestSchema+idempotency-key");
     const idempotencyKey = requireIdempotencyKey(request);
     const requestId = request.headers.get("x-request-id")?.trim() || crypto.randomUUID();
     return executeAtomicIdempotentMutation({

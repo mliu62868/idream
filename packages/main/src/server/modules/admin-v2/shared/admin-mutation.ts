@@ -4,6 +4,7 @@ import {
   findAdminV2ApiOperation,
   requireExecutableAdminV2Contract,
   type AdminV2ApiOperation,
+  type AdminV2RequestContractRef,
   type ExecutableAdminV2Contract,
 } from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
@@ -101,7 +102,9 @@ export async function executeAdminMutation<Body, Prepared = undefined>(
   const permission = options.permission ?? staticPermission(definition.operation);
   await requireActorPermission(request, actor, permission, options.resource);
 
-  const body = definition.request.schema.parse(await mutationBody(request)) as Body;
+  const body = definition.request.schema.parse(
+    await mutationBody(request, definition.operation.contract.request),
+  ) as Body;
   const idempotencyKey = definition.request.requirements.includes("idempotency-key")
     ? requiredIdempotencyKey(request)
     : undefined;
@@ -198,8 +201,8 @@ function staticPermission(operation: AdminV2ApiOperation) {
   });
 }
 
-async function mutationBody(request: Request) {
-  return request.method === "DELETE" ? {} : jsonBody(request);
+async function mutationBody(request: Request, contract: AdminV2RequestContractRef) {
+  return request.method === "DELETE" ? {} : jsonBody(request, contract);
 }
 
 function requiredIdempotencyKey(request: Request) {

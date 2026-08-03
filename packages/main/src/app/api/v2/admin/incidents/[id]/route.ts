@@ -1,4 +1,3 @@
-import { incidentTriageRequestSchema } from "@idream/shared/admin";
 import { Errors } from "@/server/lib/errors";
 import { getIncidentDetail } from "@/server/modules/admin-v2/incidents/query";
 import { triageIncident } from "@/server/modules/admin-v2/incidents/workflow";
@@ -26,7 +25,7 @@ export async function PATCH(request: Request, context: Context) {
   const { id } = await context.params;
   return adminV2Route(async () => {
     const actor = await actorWithPermission(request, "ops.incident.manage");
-    const body = incidentTriageRequestSchema.parse(await jsonBody(request));
+    const body = await jsonBody(request, "incidentTriageRequestSchema+if-match");
     requireMatchingIfMatch(request, body.entityVersion);
     const updated = await triageIncident({
       incidentId: id,

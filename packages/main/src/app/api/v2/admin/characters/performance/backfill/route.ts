@@ -1,5 +1,4 @@
 import {
-  characterPerformanceBackfillRequestSchema,
   characterPerformanceBackfillResponseSchema,
 } from "@idream/shared/admin";
 import { env } from "@/server/lib/env";
@@ -16,7 +15,7 @@ export const runtime = "nodejs";
 export function POST(request: Request) {
   return adminV2Route(async () => {
     const actor = await actorWithPermission(request, "analytics.metric.export");
-    const body = characterPerformanceBackfillRequestSchema.parse(await jsonBody(request));
+    const body = await jsonBody(request, "characterPerformanceBackfillRequestSchema+idempotency-key");
     const idempotencyKey = requireIdempotencyKey(request);
     const requestId = request.headers.get("x-request-id")?.trim() || crypto.randomUUID();
     return executeAtomicIdempotentMutation({

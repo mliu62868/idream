@@ -1,6 +1,5 @@
 import {
   adminRecoverableMutationCommandTypeSchema,
-  adminMutationRecoveryRequestSchema,
   adminMutationRecoveryResultSchema,
   type AdminRecoverableMutationCommandType,
   type AdminMutationRecoveryRequest,
@@ -388,9 +387,7 @@ function isMutationRecoveryRace(cause: unknown) {
 
 export async function reconcileAdminMutationReceipt(request: Request) {
   const actor = await authenticatedAdminActor(request);
-  const body = adminMutationRecoveryRequestSchema.parse(
-    await jsonBody(request),
-  );
+  const body = await jsonBody(request, "adminMutationRecoveryRequestSchema+idempotency-key");
   const configuration = recoveryConfiguration[body.commandType];
   const expectedCharacter = expectedCharacterId(body);
   await requireActorPermission(
