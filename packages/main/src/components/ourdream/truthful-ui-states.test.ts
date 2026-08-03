@@ -65,7 +65,14 @@ describe("truthful public UI states", () => {
 
     expect(community).toContain('setStatus("Could not update follow. Please try again.")');
     expect(generator).toContain('setStatus("Could not update like. Restoring the current gallery.")');
-    expect(generator).toContain('setStatus("Retry failed. Check your connection and try again.")');
+    // A retry that never reached a server status says so, rather than reusing
+    // the server's own wording. The message moved with the write protocol.
+    expect(
+      readFileSync(
+        new URL("../../lib/generation-request.ts", import.meta.url),
+        "utf8",
+      ),
+    ).toContain('"Retry failed. Check your connection and try again."');
   });
 
   it("keeps server-rendered content in the tree while the age decision is pending", () => {

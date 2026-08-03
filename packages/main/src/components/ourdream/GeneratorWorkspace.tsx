@@ -16,13 +16,19 @@ import {
   Trash2,
   WandSparkles,
 } from "lucide-react";
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  FormEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { ReactNode } from "react";
 import type { CharacterCardData } from "@/types/ourdream";
 import {
   GENERATION_JOB_STATUSES,
   isCatalogMember,
-  isTerminalGenerationJobStatus,
   type GenerationJobStatus,
   type MediaAssetVisibility,
 } from "@idream/shared/catalog";
@@ -35,8 +41,6 @@ import {
   parseCharacterDetailResponse,
   parseCharacterLooksResponse,
   parseGenerationConfigResponse,
-  parseGenerationQuoteResponse,
-  parseGenerationRetryQuoteResponse,
   parseGenerationJobDetailResponse,
   parseGenerationJobsResponse,
   parseGeneratorCharactersResponse,
@@ -44,7 +48,6 @@ import {
   parseWorkspaceMediaResponse,
   type RuntimeGenerationConfig,
   type RuntimeGenerationQuote,
-  type RuntimeGenerationRetryQuote,
 } from "@/lib/public-api-contracts";
 import {
   authorityShowsEmpty,
@@ -64,17 +67,15 @@ import {
 } from "./draft-transfer";
 import { isRecord } from "./workspace-helpers";
 import {
-  GenerationRequestError,
-  exactGenerationQuoteForCount,
-  requestGenerationJobWithExactAuthority,
-  requestMediaVariationWithExactQuote,
-} from "@/lib/generation-write-client";
-
-export {
-  exactGenerationQuoteForCount,
-  requestGenerationJobWithExactAuthority,
-  requestMediaVariationWithExactQuote,
-} from "@/lib/generation-write-client";
+  countWithinQuote,
+  generatorConfigAuthorityState,
+  orientationWithinQuote,
+  pendingGenerationJobIds,
+  projectServerJobArrival,
+  type GenerationQuoteRequest,
+  type GenerationRequestEffects,
+} from "@/lib/generation-request";
+import { useGenerationRequest } from "@/hooks/useGenerationRequest";
 
 type MediaItem = {
   id: string;
@@ -355,47 +356,9 @@ export function removeGeneratorCharacterViewerAuthority(
   }));
 }
 
-export function refreshGenerationQuoteAfterBalanceChange(actions: {
-  clearQuote: () => void;
-  clearQuoteFailure: () => void;
-  refreshBalance: () => void;
-  requestQuoteRefresh: () => void;
-}) {
-  actions.clearQuote();
-  actions.clearQuoteFailure();
-  actions.requestQuoteRefresh();
-  actions.refreshBalance();
-}
-
-export function generationErrorAuthorityAction(
-  status: number,
-): "refresh_balance_and_quote" | "refresh_quote" | "none" {
-  if (status === 402) return "refresh_balance_and_quote";
-  if (status === 409) return "refresh_quote";
-  return "none";
-}
-
 export function GeneratorWorkspace() {
   const { accepted: ageGateAccepted } = useAgeGateAccess();
   const [config, setConfig] = useState<RuntimeGenerationConfig | null>(null);
-  const [generationQuoteState, setGenerationQuoteState] = useState<{
-    key: string;
-    quote: RuntimeGenerationQuote;
-  } | null>(null);
-  const [generationQuoteFailure, setGenerationQuoteFailure] = useState<{
-    key: string;
-    message: string;
-  } | null>(null);
-  const [generationQuoteRequestNonce, setGenerationQuoteRequestNonce] =
-    useState(0);
-  const [retryQuotes, setRetryQuotes] = useState<
-    Record<string, RuntimeGenerationRetryQuote>
-  >({});
-  const [retryQuoteFailures, setRetryQuoteFailures] = useState<
-    Record<string, string>
-  >({});
-  const [retryQuoteRequestNonce, setRetryQuoteRequestNonce] =
-    useState(0);
   const [characters, setCharacters] = useState<CharacterCardData[]>([]);
   const [charactersAuthority, setCharactersAuthority] = useState(initialAuthorityStatus);
   const [charactersRefreshNonce, setCharactersRefreshNonce] = useState(0);
@@ -490,13 +453,6 @@ export function GeneratorWorkspace() {
   const [view, setView] = useState<WorkspaceView>("create");
   const [status, setStatus] = useState("");
   const [configError, setConfigError] = useState("");
-  const [pending, setPending] = useState(false);
-  const [retryingJobIds, setRetryingJobIds] = useState<Set<string>>(
-    () => new Set(),
-  );
-  const [variationPendingIds, setVariationPendingIds] = useState<Set<string>>(
-    () => new Set(),
-  );
   const [failedMediaIds, setFailedMediaIds] = useState<Set<string>>(() => new Set());
   const [invalidPreviewMediaIds, setInvalidPreviewMediaIds] = useState<Set<string>>(() => new Set());
   const [failedLatestResultIds, setFailedLatestResultIds] = useState<Set<string>>(() => new Set());
@@ -575,16 +531,7 @@ export function GeneratorWorkspace() {
   const configRequestSerialRef = useRef(0);
   const viewerRevalidationGateRef =
     useRef<Promise<void> | null>(null);
-  const generationQuoteRequestControllerRef =
-    useRef<AbortController | null>(null);
-  const retryQuoteRequestControllerRef =
-    useRef<AbortController | null>(null);
   const generationPollInFlightRef = useRef(false);
-  const retryIdempotencyKeysRef = useRef<Map<string, string>>(new Map());
-  const generationSubmissionIdempotencyKeysRef =
-    useRef<Map<string, string>>(new Map());
-  const variationSubmissionIdempotencyKeysRef =
-    useRef<Map<string, string>>(new Map());
   const clearRemixIntent = useCallback(
     (nextCharacterId?: string | null) => {
       const currentUrl = new URL(window.location.href);
@@ -615,6 +562,18 @@ export function GeneratorWorkspace() {
   const selectedEditSourceForModel = editSourceMediaId
     ? media.find((item) => item.id === editSourceMediaId) ?? null
     : null;
+  const imageEditCandidates = useMemo(
+    () =>
+      media
+        .filter((item) => item.type === "image")
+        .filter((item) => !isBuiltInMediaPlaceholderUrl(item.thumbnailUrl ?? item.url))
+        .slice(0, 6),
+    [media],
+  );
+  const selectedEditSource = useMemo(
+    () => imageEditCandidates.find((item) => item.id === editSourceMediaId) ?? null,
+    [editSourceMediaId, imageEditCandidates],
+  );
   const availableModels = useMemo(
     () => {
       if (mode === "video" && videoModeEnabled) {
@@ -647,7 +606,8 @@ export function GeneratorWorkspace() {
       ? config?.image.availability.state === "available" &&
         config.image.models.length > 0
       : videoModeEnabled;
-  const generationQuoteKey =
+  // Null while the form does not describe a route the server can price.
+  const generationQuoteRequest: GenerationQuoteRequest | null =
     modeAvailable &&
     config?.viewer.authenticated === true &&
     (
@@ -655,54 +615,78 @@ export function GeneratorWorkspace() {
         ? Boolean(editSourceMediaId)
         : freeplay || Boolean(characterId)
     )
-      ? JSON.stringify({
-          viewerScope: config.viewer.scope,
-          mode,
-          sourceMediaId: imageEditMode ? editSourceMediaId : null,
-          characterId:
-            imageEditMode || freeplay ? null : characterId,
-          freeplay: imageEditMode ? true : freeplay,
-          consistencyMode,
-          lookId:
-            characterImageMode && selectedLookId
-              ? selectedLookId
-              : null,
-          explicitModelId:
-            modelSelectionProjection.requestModelId ?? null,
-        })
+      ? imageEditMode
+        ? {
+            viewerScope: config.viewer.scope,
+            mode,
+            consistencyMode,
+            model: modelSelectionProjection.requestModelId,
+            target: "variation",
+            mediaId: editSourceMediaId,
+          }
+        : {
+            viewerScope: config.viewer.scope,
+            mode,
+            consistencyMode,
+            model: modelSelectionProjection.requestModelId,
+            target: "generation",
+            characterId,
+            freeplay,
+            lookId:
+              characterImageMode && selectedLookId ? selectedLookId : undefined,
+          }
       : null;
-  const generationQuote =
-    generationQuoteKey &&
-    generationQuoteState?.key === generationQuoteKey
-      ? generationQuoteState.quote
-      : null;
-  const generationQuoteError =
-    generationQuoteKey &&
-    generationQuoteFailure?.key === generationQuoteKey
-      ? generationQuoteFailure.message
+  const retryQuoteScopeKey =
+    config?.viewer.authenticated === true
+      ? jobs
+          .filter((job) => job.status === "failed")
+          .map((job) => job.id)
+          .sort()
+          .join("|")
       : "";
-  const maxCount = generationQuote?.maxCount ?? 1;
-  const allowedGeneratorOrientations =
-    generationQuote?.orientations ?? [];
-  const outputCount =
-    mode === "video"
-      ? 1
-      : Math.max(1, Math.min(count, maxCount));
-  const exactQuote = exactGenerationQuoteForCount(
-    generationQuote,
+  const generationRequest = useGenerationRequest({
+    quoteRequest: generationQuoteRequest,
+    retryQuoteScopeKey,
+    view: {
+      configAuthority: generatorConfigAuthorityState(config, configError),
+      mode,
+      count,
+      modeAvailable,
+      hasTarget: imageEditMode || freeplay || Boolean(characterId),
+      editSourceMediaId: imageEditMode
+        ? (selectedEditSource?.id ?? null)
+        : undefined,
+    },
+    onQuoteResolved: (quote) => {
+      setCount((current) => countWithinQuote(current, quote));
+      setOrientation((current) => orientationWithinQuote(current, quote));
+    },
+  });
+  const {
+    balanceChanged: generationBalanceChanged,
+    resetViewerScope: resetGenerationRequestScope,
+    retryQuotes,
+    retryQuoteFailures,
+    retryingJobIds,
+    variationPendingMediaIds: variationPendingIds,
+  } = generationRequest;
+  const {
+    canSubmit,
+    estimatedCost,
+    insufficientBalance,
+    maxCount,
+    orientations: allowedGeneratorOrientations,
     outputCount,
-  );
-  const estimatedCost = exactQuote?.costDreamcoins ?? null;
+    quote: generationQuote,
+    quoteError: generationQuoteError,
+    submitting: pending,
+  } = generationRequest.view;
   const modeUnavailableMessage = generationModeUnavailableMessage(config, mode);
   const galleryTabs = useMemo<GalleryTab[]>(
     () => (videoModeEnabled ? ["image", "video", "liked"] : ["image", "liked"]),
     [videoModeEnabled],
   );
   const canUsePrompt = Boolean(config?.entitlements.premium_controls);
-  const insufficientBalance =
-    Boolean(config) &&
-    estimatedCost !== null &&
-    exactQuote?.affordable === false;
   const canDescribeMoment = canUsePrompt || characterImageMode;
   const anonymousViewer = config?.viewer?.authenticated === false;
   const upgradeHref = upgradeHrefForTarget(authReturnTarget);
@@ -712,18 +696,6 @@ export function GeneratorWorkspace() {
   const selectedCharacter = useMemo(
     () => characters.find((character) => character.id === characterId) ?? null,
     [characterId, characters],
-  );
-  const imageEditCandidates = useMemo(
-    () =>
-      media
-        .filter((item) => item.type === "image")
-        .filter((item) => !isBuiltInMediaPlaceholderUrl(item.thumbnailUrl ?? item.url))
-        .slice(0, 6),
-    [media],
-  );
-  const selectedEditSource = useMemo(
-    () => imageEditCandidates.find((item) => item.id === editSourceMediaId) ?? null,
-    [editSourceMediaId, imageEditCandidates],
   );
   const identityReferenceCount = useMemo(() => {
     const profile = selectedCharacter?.visualProfile;
@@ -758,23 +730,6 @@ export function GeneratorWorkspace() {
     (type: PresetConfig["type"]) => (config?.presets ?? []).filter((preset) => preset.type === type),
     [config],
   );
-  const canSubmit =
-    !pending &&
-    (imageEditMode || freeplay || Boolean(characterId)) &&
-    Boolean(config) &&
-    config?.viewer.authenticated === true &&
-    estimatedCost !== null &&
-    modeAvailable &&
-    (!imageEditMode || Boolean(selectedEditSource)) &&
-    !insufficientBalance;
-  const retryQuoteScopeKey =
-    config?.viewer.authenticated === true
-      ? jobs
-          .filter((job) => job.status === "failed")
-          .map((job) => job.id)
-          .sort()
-          .join("|")
-      : "";
   const selectedMediaConfirmKey = Array.from(selectedMediaIds).sort().join("|");
   const bulkDeleteArmed =
     selectedMediaIds.size > 0 && bulkDeleteConfirmKey === selectedMediaConfirmKey;
@@ -823,17 +778,13 @@ export function GeneratorWorkspace() {
     setBulkDeleteConfirmKey(null);
     setDeleteConfirmPresetId(null);
     setLookEditorMediaId(null);
-    retryIdempotencyKeysRef.current.clear();
-    generationSubmissionIdempotencyKeysRef.current.clear();
-    variationSubmissionIdempotencyKeysRef.current.clear();
-    setRetryingJobIds(new Set());
-    setRetryQuotes({});
-    setRetryQuoteFailures({});
+    resetGenerationRequestScope();
     invalidateLookScope();
     setLooksAuthority(readyAuthorityStatus());
   }, [
     abortPrivateViewerRequests,
     invalidateLookScope,
+    resetGenerationRequestScope,
     resetJobs,
     resetMedia,
     resetUserPresets,
@@ -891,8 +842,7 @@ export function GeneratorWorkspace() {
     () => () => {
       charactersRequestControllerRef.current?.abort();
       configRequestControllerRef.current?.abort();
-      generationQuoteRequestControllerRef.current?.abort();
-      retryQuoteRequestControllerRef.current?.abort();
+      // The two price reads are aborted by useGenerationRequest's own unmount.
       abortPrivateViewerRequests();
     },
     [abortPrivateViewerRequests],
@@ -1049,195 +999,9 @@ export function GeneratorWorkspace() {
   ]);
 
   const refreshBalanceAndQuoteAuthority = useCallback(() => {
-    refreshGenerationQuoteAfterBalanceChange({
-      clearQuote: () => setGenerationQuoteState(null),
-      clearQuoteFailure: () => setGenerationQuoteFailure(null),
-      requestQuoteRefresh: () =>
-        {
-          setGenerationQuoteRequestNonce((current) => current + 1);
-          setRetryQuoteRequestNonce((current) => current + 1);
-        },
-      refreshBalance: () => {
-        void refreshConfig();
-      },
-    });
-  }, [refreshConfig]);
-
-  useEffect(() => {
-    generationQuoteRequestControllerRef.current?.abort();
-    if (!generationQuoteKey) return;
-
-    const controller = new AbortController();
-    generationQuoteRequestControllerRef.current = controller;
-    setGenerationQuoteState(null);
-    setGenerationQuoteFailure(null);
-
-    void (async () => {
-      try {
-        const response = await fetch(
-          imageEditMode
-            ? `/api/v1/media/${encodeURIComponent(editSourceMediaId)}/variation/quote`
-            : "/api/v1/generation/quote",
-          {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          cache: "no-store",
-          signal: controller.signal,
-          body: JSON.stringify(
-            imageEditMode
-              ? {
-                  consistencyMode,
-                  model: modelSelectionProjection.requestModelId,
-                }
-              : {
-                  mode,
-                  characterId: freeplay ? undefined : characterId,
-                  freeplay,
-                  consistencyMode,
-                  outputCount: 1,
-                  controls: {
-                    model: modelSelectionProjection.requestModelId,
-                    lookId:
-                      characterImageMode && selectedLookId
-                        ? selectedLookId
-                        : undefined,
-                  },
-                },
-          ),
-        },
-        );
-        const raw = await response.json().catch(() => null);
-        if (!response.ok) {
-          throw new Error(
-            apiPayloadErrorMessage(raw) ??
-              "The exact generation price is unavailable.",
-          );
-        }
-        const data = parseGenerationQuoteResponse(raw);
-        if (controller.signal.aborted) return;
-        setGenerationQuoteState({
-          key: generationQuoteKey,
-          quote: data.quote,
-        });
-        setGenerationQuoteFailure(null);
-        setCount((current) =>
-          Math.max(1, Math.min(current, data.quote.maxCount)),
-        );
-        setOrientation((current) =>
-          data.quote.orientations.includes(current)
-            ? current
-            : data.quote.defaultOrientation,
-        );
-      } catch (error) {
-        if (
-          controller.signal.aborted ||
-          (error instanceof DOMException && error.name === "AbortError")
-        ) {
-          return;
-        }
-        setGenerationQuoteState(null);
-        setGenerationQuoteFailure({
-          key: generationQuoteKey,
-          message: requestErrorMessage(
-            error,
-            "The exact generation price is unavailable.",
-          ),
-        });
-      } finally {
-        if (generationQuoteRequestControllerRef.current === controller) {
-          generationQuoteRequestControllerRef.current = null;
-        }
-      }
-    })();
-
-    return () => controller.abort();
-  }, [
-    characterId,
-    characterImageMode,
-    consistencyMode,
-    editSourceMediaId,
-    freeplay,
-    generationQuoteKey,
-    generationQuoteRequestNonce,
-    imageEditMode,
-    mode,
-    modelSelectionProjection.requestModelId,
-    selectedLookId,
-  ]);
-
-  useEffect(() => {
-    retryQuoteRequestControllerRef.current?.abort();
-    if (!retryQuoteScopeKey) {
-      setRetryQuotes({});
-      setRetryQuoteFailures({});
-      return;
-    }
-    const controller = new AbortController();
-    retryQuoteRequestControllerRef.current = controller;
-    const jobIds = retryQuoteScopeKey.split("|").filter(Boolean);
-    setRetryQuotes({});
-    setRetryQuoteFailures({});
-
-    void (async () => {
-      const results = await Promise.all(
-        jobIds.map(async (jobId) => {
-          try {
-            const response = await fetch(
-              `/api/v1/generation/jobs/${encodeURIComponent(jobId)}/retry/quote`,
-              {
-                method: "POST",
-                headers: { "content-type": "application/json" },
-                cache: "no-store",
-                signal: controller.signal,
-                body: "{}",
-              },
-            );
-            const raw: unknown = await response.json().catch(() => null);
-            if (!response.ok) {
-              throw new Error(
-                apiPayloadErrorMessage(raw) ??
-                  "The exact retry price is unavailable.",
-              );
-            }
-            return {
-              jobId,
-              quote:
-                parseGenerationRetryQuoteResponse(raw).quote,
-              error: null,
-            };
-          } catch (error) {
-            if (
-              controller.signal.aborted ||
-              (error instanceof DOMException &&
-                error.name === "AbortError")
-            ) {
-              return null;
-            }
-            return {
-              jobId,
-              quote: null,
-              error: requestErrorMessage(
-                error,
-                "The exact retry price is unavailable.",
-              ),
-            };
-          }
-        }),
-      );
-      if (controller.signal.aborted) return;
-      const nextQuotes: Record<string, RuntimeGenerationRetryQuote> = {};
-      const nextFailures: Record<string, string> = {};
-      for (const result of results) {
-        if (!result) continue;
-        if (result.quote) nextQuotes[result.jobId] = result.quote;
-        if (result.error) nextFailures[result.jobId] = result.error;
-      }
-      setRetryQuotes(nextQuotes);
-      setRetryQuoteFailures(nextFailures);
-    })();
-
-    return () => controller.abort();
-  }, [retryQuoteRequestNonce, retryQuoteScopeKey]);
+    generationBalanceChanged();
+    void refreshConfig();
+  }, [generationBalanceChanged, refreshConfig]);
 
   const refreshIdentityMedia = useCallback(async () => {
     const viewerRequest = beginPrivateViewerRequest();
@@ -1497,19 +1261,15 @@ export function GeneratorWorkspace() {
       const payload = parseGenerationJobDetailResponse(await response.json());
       if (!privateViewerRequestIsCurrent(viewerRequest)) return;
       const job = payload.job;
-      const assets = payload.assets;
+      const arrival = projectServerJobArrival(job);
       setJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
-      if (job.status === "completed") {
-        setStatus("Generation complete.");
-        setLatestResults(assets);
+      if (arrival.statusMessage) setStatus(arrival.statusMessage);
+      if (arrival.showResults) {
+        setLatestResults(payload.assets);
         setGalleryTab(job.mode);
-        refreshBalanceAndQuoteAuthority();
-        void refreshMedia(job.mode);
       }
-      if (job.status === "failed" || job.status === "blocked" || job.status === "refunded") {
-        setStatus(statusMessage(job));
-        refreshBalanceAndQuoteAuthority();
-      }
+      if (arrival.refreshBalanceAndQuote) refreshBalanceAndQuoteAuthority();
+      if (arrival.showResults) void refreshMedia(job.mode);
     } catch (error) {
       if (!(error instanceof DOMException && error.name === "AbortError")) {
         setStatus("Generation status could not refresh. Retrying…");
@@ -1581,9 +1341,7 @@ export function GeneratorWorkspace() {
 
   useEffect(() => {
     if (!ageGateAccepted) return;
-    const pendingJobIds = jobs
-      .filter((job) => !isTerminalGenerationJobStatus(job.status))
-      .map((job) => job.id);
+    const pendingJobIds = pendingGenerationJobIds(jobs);
     if (pendingJobIds.length === 0) return;
     let cancelled = false;
     let timer: number | undefined;
@@ -1626,6 +1384,21 @@ export function GeneratorWorkspace() {
     };
   }, [ageGateAccepted, jobs, pollGeneration]);
 
+  // What a queued generation does to this surface. The lifecycle rules around
+  // it live in @/lib/generation-request; none of them are repeated here.
+  const generationRequestEffects: GenerationRequestEffects = {
+    applyJob: (job) =>
+      setJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]),
+    showStatus: setStatus,
+    revealJobs: showJobsView,
+    refreshBalance: () => {
+      void refreshConfig();
+    },
+    trackJob: (jobId) => {
+      void pollGeneration(jobId);
+    },
+  };
+
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!canSubmit) {
@@ -1634,144 +1407,41 @@ export function GeneratorWorkspace() {
       }
       return;
     }
-    setPending(true);
     setStatus("");
-    try {
-      if (imageEditMode && selectedEditSource) {
-        await createMediaVariation(selectedEditSource, {
-          outputCount,
-          quote: generationQuote,
-        });
-        return;
-      }
-      const result = await requestGenerationJobWithExactAuthority({
-        idempotencyKeys: generationSubmissionIdempotencyKeysRef.current,
-        body: {
-          mode,
-          characterId: freeplay ? undefined : characterId,
-          freeplay,
-          consistencyMode,
-          outputCount,
-          quoteAuthority:
-            imageEditMode ? undefined : exactQuote?.authority,
-          prompt: canDescribeMoment && prompt ? prompt : undefined,
-          negativePrompt: canUsePrompt && negativePrompt ? negativePrompt : undefined,
-          remixFeedItemId: remixFeedItemId || undefined,
-          controls: {
-            orientation,
-            model: modelSelectionProjection.requestModelId,
-            seconds: mode === "video" ? 4 : undefined,
-            modePresetId: mode === "image" && modePresetId ? modePresetId : undefined,
-            backgroundPresetId: mode === "image" && backgroundPresetId ? backgroundPresetId : undefined,
-            posePresetId: mode === "image" && posePresetId ? posePresetId : undefined,
-            outfitPresetId: mode === "image" && outfitPresetId ? outfitPresetId : undefined,
-            lookId: characterImageMode && selectedLookId ? selectedLookId : undefined,
-          },
-        },
+    if (imageEditMode && selectedEditSource) {
+      await createMediaVariation(selectedEditSource, {
+        outputCount,
+        quote: generationQuote,
       });
-      const job = result.job;
-      setJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
-      setStatus("Generation queued.");
-      showJobsView();
-      refreshBalanceAndQuoteAuthority();
-      void pollGeneration(job.id);
-    } catch (error) {
-      const message = requestErrorMessage(
-        error,
-        "Generation request failed. Check your connection and try again.",
-      );
-      setStatus(message);
-      const authorityAction =
-        error instanceof GenerationRequestError
-          ? generationErrorAuthorityAction(error.status)
-          : "none";
-      if (authorityAction === "refresh_quote") {
-        setGenerationQuoteState(null);
-        setGenerationQuoteFailure(
-          generationQuoteKey ? { key: generationQuoteKey, message } : null,
-        );
-        setGenerationQuoteRequestNonce((current) => current + 1);
-      } else if (authorityAction === "refresh_balance_and_quote") {
-        refreshBalanceAndQuoteAuthority();
-      }
-    } finally {
-      setPending(false);
+      return;
     }
+    await generationRequest.submit(
+      {
+        mode,
+        characterId: freeplay ? undefined : characterId,
+        freeplay,
+        consistencyMode,
+        outputCount,
+        prompt: canDescribeMoment && prompt ? prompt : undefined,
+        negativePrompt: canUsePrompt && negativePrompt ? negativePrompt : undefined,
+        remixFeedItemId: remixFeedItemId || undefined,
+        controls: {
+          orientation,
+          model: modelSelectionProjection.requestModelId,
+          seconds: mode === "video" ? 4 : undefined,
+          modePresetId: mode === "image" && modePresetId ? modePresetId : undefined,
+          backgroundPresetId: mode === "image" && backgroundPresetId ? backgroundPresetId : undefined,
+          posePresetId: mode === "image" && posePresetId ? posePresetId : undefined,
+          outfitPresetId: mode === "image" && outfitPresetId ? outfitPresetId : undefined,
+          lookId: characterImageMode && selectedLookId ? selectedLookId : undefined,
+        },
+      },
+      generationRequestEffects,
+    );
   }
 
   async function retryJob(jobId: string) {
-    if (retryingJobIds.has(jobId)) return;
-    const quote = retryQuotes[jobId];
-    if (!quote) {
-      setStatus(
-        retryQuoteFailures[jobId] ??
-          "Wait for the exact retry price before retrying.",
-      );
-      return;
-    }
-    if (quote.costDreamcoins > quote.balance) {
-      setStatus(
-        `Need ${quote.costDreamcoins} coins · you have ${quote.balance}.`,
-      );
-      return;
-    }
-    setRetryingJobIds((current) => new Set(current).add(jobId));
-    const idempotencyKey =
-      retryIdempotencyKeysRef.current.get(jobId) ?? crypto.randomUUID();
-    retryIdempotencyKeysRef.current.set(jobId, idempotencyKey);
-    try {
-      const response = await fetch(`/api/v1/generation/jobs/${jobId}/retry`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "idempotency-key": idempotencyKey,
-        },
-        body: JSON.stringify({
-          quoteAuthority: {
-            profileId: quote.profileId,
-            profileVersion: quote.profileVersion,
-            routeFingerprint: quote.routeFingerprint,
-            pricingFingerprint: quote.pricing.fingerprint,
-            outputCount: quote.outputCount,
-            costDreamcoins: quote.costDreamcoins,
-          },
-        }),
-      });
-      const payload = (await response.json().catch(() => null)) as ApiPayload<{
-        job: GenerationJob;
-      }> | null;
-      if (!response.ok || !payload?.data?.job) {
-        const message = payload?.error?.message ?? "Retry failed";
-        setStatus(message);
-        if (response.status >= 400 && response.status < 500) {
-          retryIdempotencyKeysRef.current.delete(jobId);
-        }
-        const authorityAction =
-          generationErrorAuthorityAction(response.status);
-        if (authorityAction === "refresh_balance_and_quote") {
-          refreshBalanceAndQuoteAuthority();
-        } else if (authorityAction === "refresh_quote") {
-          setRetryQuoteRequestNonce((current) => current + 1);
-        }
-        return;
-      }
-      const job = payload.data.job;
-      retryIdempotencyKeysRef.current.delete(jobId);
-      setJobs((current) => [
-        job,
-        ...current.filter((item) => item.id !== job.id),
-      ]);
-      setStatus("Retry queued.");
-      refreshBalanceAndQuoteAuthority();
-    } catch {
-      setStatus("Retry failed. Check your connection and try again.");
-    } finally {
-      setRetryingJobIds((current) => {
-        const next = new Set(current);
-        next.delete(jobId);
-        return next;
-      });
-    }
+    await generationRequest.retry(jobId, generationRequestEffects);
   }
 
   async function toggleLike(item: MediaItem) {
@@ -1976,56 +1646,16 @@ export function GeneratorWorkspace() {
     },
   ) {
     if (item.type !== "image") return;
-    if (variationPendingIds.has(item.id)) return;
-    setVariationPendingIds((current) => new Set(current).add(item.id));
-    if (!options?.quote) {
-      setStatus("Checking the exact variation price…");
-    }
-    try {
-      const result = await requestMediaVariationWithExactQuote({
+    await generationRequest.createVariation(
+      {
         mediaId: item.id,
-        outputCount: options?.outputCount ?? 1,
+        outputCount: options?.outputCount,
         consistencyMode,
         model: modelSelectionProjection.requestModelId,
         quote: options?.quote,
-        idempotencyKeys: variationSubmissionIdempotencyKeysRef.current,
-      });
-      const job = result.job;
-      setJobs((current) => [job, ...current.filter((itemJob) => itemJob.id !== job.id)]);
-      setStatus(imageEditMode ? "Image edit queued." : "Variation queued.");
-      showJobsView();
-      refreshBalanceAndQuoteAuthority();
-      void pollGeneration(job.id);
-    } catch (error) {
-      const message = requestErrorMessage(
-        error,
-        "Variation failed. Check your connection and try again.",
-      );
-      setStatus(message);
-      const authorityAction =
-        error instanceof GenerationRequestError
-          ? generationErrorAuthorityAction(error.status)
-          : "none";
-      if (
-        authorityAction === "refresh_quote" &&
-        imageEditMode &&
-        selectedEditSource?.id === item.id
-      ) {
-        setGenerationQuoteState(null);
-        setGenerationQuoteFailure(
-          generationQuoteKey ? { key: generationQuoteKey, message } : null,
-        );
-        setGenerationQuoteRequestNonce((current) => current + 1);
-      } else if (authorityAction === "refresh_balance_and_quote") {
-        refreshBalanceAndQuoteAuthority();
-      }
-    } finally {
-      setVariationPendingIds((current) => {
-        const next = new Set(current);
-        next.delete(item.id);
-        return next;
-      });
-    }
+      },
+      generationRequestEffects,
+    );
   }
 
   function switchGallery(tab: GalleryTab) {
@@ -3074,11 +2704,7 @@ export function GeneratorWorkspace() {
                 <span>{generationQuoteError}</span>
                 <button
                   className="shrink-0 rounded-full border border-[rgb(255,184,112)]/50 px-3 py-1 text-[11px] font-black"
-                  onClick={() => {
-                    setGenerationQuoteState(null);
-                    setGenerationQuoteFailure(null);
-                    setGenerationQuoteRequestNonce((current) => current + 1);
-                  }}
+                  onClick={generationRequest.requestQuoteRetry}
                   type="button"
                 >
                   Retry quote
@@ -3309,11 +2935,7 @@ export function GeneratorWorkspace() {
                         {retryQuoteFailures[job.id] && (
                           <button
                             className="w-fit rounded-full border border-white/20 px-3 py-1 text-[11px] font-black text-white"
-                            onClick={() =>
-                              setRetryQuoteRequestNonce(
-                                (current) => current + 1,
-                              )
-                            }
+                            onClick={generationRequest.requestRetryQuoteRetry}
                             type="button"
                           >
                             Retry price check
@@ -4109,9 +3731,3 @@ function jobStatusLabel(status: string, errorCode: string | null) {
     : label;
 }
 
-function statusMessage(job: GenerationJob) {
-  if (job.status === "blocked") return job.errorCode ? `Blocked: ${job.errorCode}` : "Blocked.";
-  if (job.status === "failed") return job.errorCode ? `Failed: ${job.errorCode}` : "Failed.";
-  if (job.status === "refunded") return "Refunded.";
-  return "Generation stopped.";
-}
