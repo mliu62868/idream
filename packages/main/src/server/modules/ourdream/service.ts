@@ -179,13 +179,22 @@ import {
 } from "./exposure-context";
 import { createVoiceClip as createDurableVoiceClip } from "./voice-clip";
 import {
-  activeCustomerUserWhere,
-  nonSyntheticMediaAssetWhere,
+  isCustomerEngagementActor,
   publicCharacterAudienceWhere,
   publicFeedbackAudienceWhere,
   publicReadableMediaAssetWhere,
   resolvePublicCharacterReleaseAssetPack,
 } from "./public-content-audience";
+import {
+  characterDTO,
+  characterInclude,
+  mediaCollectionDTO,
+  mediaCollectionInclude,
+  mediaFileExtension,
+  mediaViewUrl,
+  visualProfileDTO,
+  type CharacterWithPublicRelations,
+} from "./public-read-model";
 
 const generationOrientations = [...imageOrientations, "2:3"] as [
   (typeof imageOrientations)[number] | "2:3",
@@ -201,7 +210,6 @@ type SearchRouteSuggestion = {
 };
 
 const credentialProvider = "credential";
-const missingCharacterImage = "/images/ourdream/character-placeholder.svg";
 
 const signupSchema = z.object({
   email: z.string().email().transform((value) => value.toLowerCase()),
@@ -4692,51 +4700,6 @@ async function listMedia(request: Request) {
   });
 }
 
-export function mediaCollectionInclude(publicOnly = false) {
-  const mediaAssetWhere: Prisma.MediaAssetWhereInput = {
-    deletedAt: null,
-    safetyStatus: "passed",
-    ...(publicOnly
-      ? {
-          ...nonSyntheticMediaAssetWhere,
-          visibility: { in: ["public_pack", "unlisted"] },
-        }
-      : {}),
-  };
-  return {
-    items: {
-      where: { mediaAsset: { is: mediaAssetWhere } },
-      orderBy: { sortOrder: "asc" as const },
-      take: 4,
-      include: {
-        mediaAsset: {
-          select: {
-            id: true,
-            thumbnailUrl: true,
-            url: true,
-            storageKey: true,
-            contentType: true,
-            type: true,
-            deletedAt: true,
-            safetyStatus: true,
-            visibility: true,
-          },
-        },
-      },
-    },
-    owner: { select: { id: true, displayName: true, name: true } },
-    _count: {
-      select: {
-        items: { where: { mediaAsset: { is: mediaAssetWhere } } },
-      },
-    },
-  } satisfies Prisma.MediaCollectionInclude;
-}
-
-export type MediaCollectionWithRelations = Prisma.MediaCollectionGetPayload<{
-  include: ReturnType<typeof mediaCollectionInclude>;
-}>;
-
 async function listMediaCollections(request: Request) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
@@ -5867,33 +5830,6 @@ function mediaDownloadFilename(asset: {
   url: string;
 }) {
   return `idream-${asset.type}-${asset.id}${mediaFileExtension(asset)}`;
-}
-
-function mediaFileExtension(asset: {
-  contentType?: string | null;
-  storageKey?: string | null;
-  url: string;
-}) {
-  const byContentType: Record<string, string> = {
-    "image/gif": ".gif",
-    "image/jpeg": ".jpg",
-    "image/png": ".png",
-    "image/webp": ".webp",
-    "audio/flac": ".flac",
-    "audio/mpeg": ".mp3",
-    "audio/ogg": ".ogg",
-    "audio/wav": ".wav",
-    "audio/webm": ".webm",
-    "video/mp4": ".mp4",
-    "video/webm": ".webm",
-  };
-  if (asset.contentType && byContentType[asset.contentType]) {
-    return byContentType[asset.contentType];
-  }
-
-  const source = asset.storageKey ?? asset.url;
-  const match = /\.(flac|gif|jpe?g|mp3|mp4|ogg|png|wav|webm|webp)(?:[?#]|$)/i.exec(source);
-  return match ? `.${match[1].toLowerCase().replace("jpeg", "jpg")}` : "";
 }
 
 async function deleteMedia(request: Request, id: string) {
@@ -7148,35 +7084,6 @@ async function archiveCharacter(request: Request, id: string) {
   return ok({ archived: true });
 }
 
-export function characterInclude(userId?: string) {
-  return {
-    imageAsset: true,
-    stats: true,
-    tags: { include: { tag: true } },
-    visualProfiles: {
-      where: { status: "active" },
-      orderBy: { version: "desc" },
-      take: 1,
-      // 参考图数量对外走 active Reference Set（唯一权威），不读 profile 上的影子列。
-      include: {
-        referenceSetRevisions: {
-          where: { status: "active" },
-          orderBy: { revision: "desc" },
-          take: 1,
-          select: { references: { select: { mediaAssetId: true } } },
-        },
-      },
-    },
-    creator: { select: { id: true, displayName: true, name: true } },
-    serving: { include: { currentRelease: true } },
-    likes: userId ? { where: { userId }, select: { userId: true } } : false,
-  } satisfies Prisma.CharacterInclude;
-}
-
-export type CharacterWithPublicRelations = Prisma.CharacterGetPayload<{
-  include: ReturnType<typeof characterInclude>;
-}>;
-
 function hasPublicListReleaseManifestAuthority(
   character: CharacterWithPublicRelations,
 ) {
@@ -7186,53 +7093,6 @@ function hasPublicListReleaseManifestAuthority(
     parseCharacterReleaseAssetManifest(
       currentRelease.releasePlacementManifest,
     ) !== null;
-}
-
-export function characterDTO(character: CharacterWithPublicRelations, viewerId?: string | null) {
-  const visualProfile = character.visualProfiles[0] ?? null;
-  const image = character.imageAsset?.url ?? missingCharacterImage;
-  const official = character.source === "official";
-  const creatorName = official
-    ? "Official"
-    : (character.creator?.displayName ?? character.creator?.name ?? null);
-  return {
-    id: character.id,
-    name: character.name,
-    title: character.name,
-    age: String(character.age),
-    description: character.description,
-    visibility: character.visibility,
-    status: character.status,
-    source: official ? "official" : "user",
-    creatorType: official ? "official" : "user",
-    style: character.style,
-    gender: character.gender,
-    relationship: character.relationship,
-    creatorId: official ? null : character.creatorId,
-    creator: creatorName ?? "Creator",
-    creatorName,
-    canEditIdentity: Boolean(!official && viewerId && character.creatorId === viewerId),
-    image,
-    imageAssetId: character.imageAsset?.id ?? null,
-    thumbnailUrl: character.imageAsset?.thumbnailUrl ?? image,
-    hasImage: Boolean(character.imageAsset?.url),
-    likes: formatCount(character.stats?.likesCount ?? 0),
-    chats: formatCount(character.stats?.chatsCount ?? 0),
-    likesCount: character.stats?.likesCount ?? 0,
-    chatsCount: character.stats?.chatsCount ?? 0,
-    views: character.stats?.viewsCount ?? 0,
-    vivid: character.vivid,
-    liked: Array.isArray(character.likes) ? character.likes.length > 0 : false,
-    visualProfile: visualProfile
-      ? visualProfileDTO(
-          visualProfile,
-          visualProfile.referenceSetRevisions[0]?.references
-            .map((reference) => reference.mediaAssetId) ?? [],
-        )
-      : null,
-    tags: character.tags.map(({ tag }) => tag),
-    createdAt: character.createdAt,
-  };
 }
 
 async function characterDetailDTO(
@@ -7416,43 +7276,6 @@ function mediaProvenanceDTO(sourceJob?: {
     label: "Generated source",
     href: null,
   };
-}
-
-export function mediaCollectionDTO(collection: MediaCollectionWithRelations) {
-  const official = collection.source === "official";
-  return {
-    id: collection.id,
-    name: collection.name,
-    visibility: collection.visibility,
-    source: official ? "official" : "user",
-    ownerType: official ? "official" : "user",
-    ownerId: official ? null : collection.ownerId,
-    ownerName: official
-      ? "Official collection"
-      : (collection.owner.displayName ?? collection.owner.name),
-    itemCount: collection._count.items,
-    previews: collection.items
-      .map(({ mediaAsset }) =>
-        mediaAsset.storageKey ? mediaViewUrl(mediaAsset) : (mediaAsset.thumbnailUrl ?? mediaAsset.url),
-      )
-      .filter((url): url is string => Boolean(url)),
-    createdAt: collection.createdAt.toISOString(),
-  };
-}
-
-export function mediaViewUrl(asset: {
-  id: string;
-  type: string;
-  contentType?: string | null;
-  storageKey?: string | null;
-  url: string;
-}) {
-  const extension = mediaFileExtension(asset) || (asset.type === "image" ? ".png" : "");
-  return `/user-content/${mediaRouteToken(asset.id)}/content${extension}`;
-}
-
-function mediaRouteToken(id: string) {
-  return Buffer.from(id, "utf8").toString("base64url");
 }
 
 function generationJobInclude() {
@@ -7743,27 +7566,6 @@ function decodeCursor(value: string | null) {
   if (!value) return 0;
   const decoded = Number.parseInt(Buffer.from(value, "base64url").toString("utf8"), 10);
   return Number.isFinite(decoded) && decoded >= 0 ? decoded : 0;
-}
-
-export function formatCount(value: number) {
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
-  return String(value);
-}
-
-export function numberFromDb(value: number | bigint) {
-  return typeof value === "bigint" ? Number(value) : value;
-}
-
-export async function isCustomerEngagementActor(userId: string) {
-  const actor = await prisma.user.findFirst({
-    where: {
-      id: userId,
-      ...activeCustomerUserWhere,
-    },
-    select: { id: true },
-  });
-  return Boolean(actor);
 }
 
 async function assertDraftOwner(id: string, userId: string) {
@@ -8076,23 +7878,6 @@ function mediaMetadataWithQuality(
       ...qualityPatch,
     },
   });
-}
-
-// referenceAssetIds 由调用方从 active Reference Set 取（唯一权威）；字段名对外不变，
-// 前台 GeneratorWorkspace 用它显示参考图数量。
-function visualProfileDTO(
-  profile: GenerationVisualProfile,
-  referenceAssetIds: readonly string[],
-) {
-  return {
-    id: profile.id,
-    version: profile.version,
-    status: profile.status,
-    style: profile.style,
-    anchorAssetIds: profile.anchorAssetIds,
-    referenceAssetIds: [...referenceAssetIds],
-    defaultSeed: profile.defaultSeed,
-  };
 }
 
 type CharacterLookDTOInput = {

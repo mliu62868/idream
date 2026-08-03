@@ -319,6 +319,8 @@ type CharacterProductionJourney = {
 | 生成报价与提交校验 | `ourdream/generation-quote` | 六字段令牌（含双指纹） |
 | 订阅激活与权益派生 | `ourdream/subscription-lifecycle` | 计划 + provider 发票 + checkout purchase-order |
 | Feed 分页连续性 | `ourdream/discovery` 的签名游标 | limit（快照与排除集由游标自带） |
+| 公开面 Character / MediaCollection 的 wire 形状 | `ourdream/public-read-model` | 一行已读出的 row（`*Include` 与 `*DTO` 同源） |
+| 谁算客户互动 actor | `ourdream/public-content-audience` | userId（与 `activeCustomerUserWhere` 同一份判断） |
 | Admin 写请求 body 解析 | `jsonBody(request, ref)` | manifest contract ref |
 | 上线门禁证据形状 | `server/readiness/evidence` | probe 名（生产端必填 / 消费端全可选） |
 | probe 报告的 env 变量与解码器 | `server/readiness/probe-report` | probe 名（生产端写、门禁读同一个 key） |
