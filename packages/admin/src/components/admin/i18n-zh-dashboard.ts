@@ -1,0 +1,81 @@
+// SPEC: Today 工作台文案：待办面板、任务启动卡、总览指标。
+// INTENT: 对应 nav 的 Today 组。
+// INVARIANT: key 在所有 i18n-zh-*.ts 之间互斥——同一个 key 只能有一个域文件持有；
+// 由 i18n-zh-exclusivity.test.ts 强制。新增文案放它所属的域文件，不要另开「杂项」文件。
+export const adminZhDashboard: Record<string, string> = {
+  "Active users": "活跃用户",
+  "Added to Watching": "已添加关注",
+  "All Work failed to load": "全部工作加载失败",
+  "All authorized operational domains participate in ranking.": "所有已获授权的运营领域都会参与排序。",
+  "All work": "全部工作",
+  "Apply window": "应用时间窗口",
+  "Assigned support cases and their linked operational work are in scope.":
+    "当前范围包含已分配的客服工单及其关联运营工作。",
+  "Authoritative Today projection": "今日工作权威投影",
+  "Authoritative source objects you explicitly watch.": "你明确关注的权威来源对象。",
+  "Canonical Metrics v2": "标准指标 v2",
+  "Character releases and verification blockers are ranked first when present.":
+    "存在角色发布和验证阻塞项时，将优先排序。",
+  "Claim failed": "领取失败",
+  "Claimed by you": "已由你领取",
+  "Coin economy by reason": "金币经济按原因",
+  "Coins net": "金币净值",
+  "Common tasks": "常用任务",
+  "Compare certified product metrics with separately sourced legacy operational diagnostics.":
+    "对比经认证的产品指标和独立来源的旧版运营诊断数据。",
+  "Compare provider success, cost, and completion latency over a server-defined time window.":
+    "在服务端定义的时间窗口内比较提供方成功率、成本和完成延迟。",
+  "Complete authorized work, filtered and ranked by the same authority as Summary.":
+    "按照与摘要相同的权威规则筛选并排序全部已授权工作。",
+  "Creative execution and placement blockers are ranked first when present.":
+    "存在创意执行和铺位阻塞项时，将优先排序。",
+  "Domain": "领域",
+  "Health overview": "健康概览",
+  "Incidents and failed control-plane commands are ranked first.": "事故和失败的控制面命令将优先排序。",
+  "Inspect owner-scoped financial abuse signals while keeping response actions in their source domains.":
+    "检查负责人范围内的财务滥用信号，同时将处置操作保留在各自来源领域。",
+  "Loading All Work…": "正在加载全部工作…",
+  "Manual adjust anomalies": "手动调整异常",
+  "Moderation cases and verification failures are ranked first.": "审核工单和验证失败项将优先排序。",
+  "Multi-account device clusters": "多账号设备聚类",
+  "My shift": "我的班次",
+  "Needs your attention": "需要你处理的",
+  "Next best actions": "下一步最佳操作",
+  "No deadline": "无截止时间",
+  "No matching work right now.": "当前没有匹配的工作。",
+  "No {title}": "暂无{title}",
+  "Only work authorized by your effective permissions is shown.": "只显示当前有效权限已授权的工作。",
+  "Operational context": "运营上下文",
+  "Overdue or due-today work owned by you, plus commands awaiting completion or verification.":
+    "你负责的已超时或今日到期工作，以及等待完成或验证的命令。",
+  "Pinned": "已置顶",
+  "Preference update failed": "偏好更新失败",
+  "Provider health & cost": "供应商健康与成本",
+  "Queued generation jobs": "排队中的生成任务",
+  "Ranking policy: {version}": "排序策略：{version}",
+  "Recently resolved": "最近解决",
+  "Referral farming (≥3 invites)": "邀请套利（≥3 次邀请）",
+  "Removed from Watching": "已取消关注",
+  "Showing {shown} of {total} authoritative items": "显示 {shown}/{total} 条权威项目",
+  "Signups": "注册",
+  "Snooze 1h": "稍后 1 小时",
+  "Snoozed for one hour": "已推迟一小时",
+  "The ten highest-ranked authorized items. The total is computed from complete server-side counts.":
+    "排名最高的十条已授权事项；总数由服务端完整统计。",
+  "This authority is not available to the current operator.": "当前操作员无权访问此权威数据。",
+  "Today data status": "今日数据状态",
+  "Today view": "今日视图",
+  "Top events": "热门事件",
+  "Unassigned work": "未分配工作",
+  "Unowned work you are permitted to claim in its source domain.": "来源领域允许你领取的未分配工作。",
+  "Unpin": "取消置顶",
+  "Unpinned": "已取消置顶",
+  "Unwatch": "取消关注",
+  "Work completed and verified during the last 24 hours.": "过去 24 小时内已完成并通过验证的工作。",
+  "fresh {time}": "数据新鲜于 {time}",
+  "generation jobs": "生成任务",
+  "paying": "付费",
+  "signups": "注册",
+  "stale · retry available": "已过期 · 可重试",
+  "· sample": "· 样本",
+};

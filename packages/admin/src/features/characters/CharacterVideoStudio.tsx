@@ -42,6 +42,7 @@ import {
   updateDurableMutationIntent,
   type DurableMutationIntent,
 } from "@/lib/durable-mutation-intent";
+import { usePollingTask, type PollingTask } from "@/lib/authority-resource";
 import { reconcileDurableMutationIntent } from "@/lib/durable-mutation-recovery";
 import { cn } from "@/lib/utils";
 
@@ -338,6 +339,7 @@ export function CharacterVideoStudio({
   const [reviewIntent, setReviewIntent] = useState<DurableMutationIntent | null>(
     () => readActiveDurableMutationIntent({ scope: reviewIntentScope }),
   );
+  const videoPollFailures = useRef(0);
 
   const loadRun = useCallback(async (runId: string) => {
     const detail = await adminV2Request(
@@ -408,23 +410,30 @@ export function CharacterVideoStudio({
     };
   }, [loadRuns, permissions.read]);
 
-  const shouldPoll =
-    selectedRun !== null &&
-    ["pending", "running"].includes(selectedRun.executionOutcome);
-  useEffect(() => {
-    if (!selectedRun || !shouldPoll) return;
-    const runId = selectedRun.id;
-    const timer = window.setInterval(() => {
-      void loadRun(runId).catch((cause: unknown) => {
-        setError(
-          cause instanceof Error
-            ? cause.message
-            : "Video progress could not be refreshed",
-        );
-      });
-    }, 5_000);
-    return () => window.clearInterval(timer);
-  }, [loadRun, selectedRun, shouldPoll]);
+  // SPEC: 生成中的视频 Run 每 5s 刷新一次；连续失败按 2 倍退避，封顶 40s。
+  // INTENT: 这里原本是无退避的 setInterval——后端一旦不稳，它会以固定 5s 持续加压，
+  //         而且 setInterval 不等上一轮返回，慢响应时请求会叠在一起。
+  const pollingRunId =
+    selectedRun && ["pending", "running"].includes(selectedRun.executionOutcome)
+      ? selectedRun.id
+      : null;
+  const pollVideoRun = useCallback<PollingTask>(async () => {
+    if (!pollingRunId) return null;
+    try {
+      await loadRun(pollingRunId);
+      videoPollFailures.current = 0;
+      return 5_000;
+    } catch (cause: unknown) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Video progress could not be refreshed",
+      );
+      videoPollFailures.current += 1;
+      return 5_000 * 2 ** Math.min(videoPollFailures.current, 3);
+    }
+  }, [loadRun, pollingRunId]);
+  usePollingTask(pollingRunId ? pollVideoRun : null, 5_000);
 
   const verifyCreatedRun = async (
     intent: DurableMutationIntent,
