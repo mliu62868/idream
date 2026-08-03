@@ -614,6 +614,112 @@ describe("Character Asset Studio bootstrap route projection", () => {
     expect(container.textContent).toContain("Make current");
   });
 
+  // SPEC: 「已提交的 Run 还读不到」和「随便哪条 Run 读失败」是两件事，必须走两个出口。
+  // INTENT: 前者只是投影还没跟上，运营台该看到「重试校验即可」的旁注；把它渲染成红色错误
+  //         会让人以为生成失败，转头去点第二次生成——那正是幂等键要防的重复 Run。
+  it("keeps a failed committed-Run projection in the retry notice instead of the error exit", async () => {
+    const characterId = "character-committed-run-unavailable";
+    const actorId = "operator-committed-run-unavailable";
+    const runId = "committed-run-awaiting-projection";
+    const scope = `character-asset:create:${actorId}:${characterId}`;
+    const intent = beginDurableMutationIntent({
+      scope,
+      signature: "committed-run-awaiting-signature",
+      createIdempotencyKey: () => "committed-run-awaiting-key",
+      requestSnapshot: {
+        title: "Mira · Primary portrait",
+        purpose: "character_cover",
+        targetType: "character",
+        targetId: characterId,
+        profileId: "bootstrap-profile-v1",
+        presetIds: [],
+        referenceAssetIds: [],
+        bootstrapIdentity: true,
+        orientation: "4:5",
+        count: 4,
+        brief: "Define the first reviewed portrait for Mira.",
+        consistencyMode: "strict",
+        priority: "normal",
+        reason: "Create the reviewed first identity anchor",
+      },
+    });
+    updateDurableMutationIntent(intent, {
+      status: "committed_projection_pending",
+      committedTargetId: runId,
+    });
+    adminV2Request.mockImplementation(async (path) => {
+      if (path.includes("/api/v2/admin/creative/runs?")) {
+        return { items: [], pageInfo: { endCursor: null, hasNextPage: false } };
+      }
+      if (path === `/api/v2/admin/creative/runs/${runId}`) {
+        throw new Error("projection replica unavailable");
+      }
+      throw new Error(`Unexpected Admin request: ${path}`);
+    });
+
+    await act(async () => root.render(<CharacterAssetStudio
+      actorId={actorId}
+      commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
+      data={withCharacterWorkspaceDetail(data, {
+        character: { ...data.character, id: characterId },
+      })}
+      onContinue={() => undefined}
+      onProjectReload={async () => undefined}
+      permissions={{ read: true, create: true, review: true, selectDraft: true }}
+    />));
+    await waitUntil(() => container.textContent?.includes(
+      "The committed Run projection is still unavailable",
+    ) === true);
+
+    expect(container.textContent).toContain("projection replica unavailable");
+    expect(container.textContent).toContain(
+      "Verification can be retried without another create request",
+    );
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("routes a Run projection failure with nothing committed to the error exit", async () => {
+    const pinnedRunId = "draft-pinned-run-unavailable";
+    adminV2Request.mockImplementation(async (path) => {
+      if (path.includes("/api/v2/admin/creative/runs?")) {
+        return { items: [], pageInfo: { endCursor: null, hasNextPage: false } };
+      }
+      if (path === `/api/v2/admin/creative/runs/${pinnedRunId}`) {
+        throw new Error("Creative Run projection is temporarily unreadable");
+      }
+      throw new Error(`Unexpected Admin request: ${path}`);
+    });
+
+    await act(async () => root.render(<CharacterAssetStudio
+      commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
+      data={withCharacterWorkspaceDetail(data, {
+        project: {
+          ...data.project,
+          draftAssetSelections: {
+            character_cover: {
+              assetId: "pinned-asset",
+              runId: pinnedRunId,
+              itemId: "pinned-item",
+              reviewDecisionId: "pinned-review",
+              generationJobId: "pinned-job",
+            },
+          },
+        },
+      })}
+      onContinue={() => undefined}
+      onProjectReload={async () => undefined}
+      permissions={{ read: true, create: true, review: true, selectDraft: true }}
+    />));
+    await waitUntil(() => container.querySelector('[role="alert"]') !== null);
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "Creative Run projection is temporarily unreadable",
+    );
+    expect(container.textContent).not.toContain(
+      "The committed Run projection is still unavailable",
+    );
+  });
+
   it("keeps a committed Run receipt locked when the detail belongs to another Character", async () => {
     const characterId = "character-locked-run-projection";
     const actorId = "operator-locked-run-projection";

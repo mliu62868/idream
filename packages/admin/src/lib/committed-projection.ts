@@ -199,11 +199,6 @@ export function createCommittedProjectionLoader<TProjection>(
   };
 }
 
-/**
- * SPEC: 把 loader 绑到组件生命周期上——对象身份稳定，配置每次渲染刷新。
- * INVARIANT: 这个同步 effect 必须声明在所有取数 effect 之前——effect 按声明顺序执行，
- *            取数时读到的才是本次提交的最新配置。
- */
 // INTENT: 配置槽位是闭包变量而不是 ref —— loader 必须在渲染期就有稳定身份（它要进
 //         effect 依赖），而 ref 不允许在渲染期读取。
 function bindCommittedProjectionLoader<TProjection>(
@@ -218,6 +213,11 @@ function bindCommittedProjectionLoader<TProjection>(
   };
 }
 
+/**
+ * SPEC: 把 loader 绑到组件生命周期上——对象身份稳定，配置每次渲染刷新。
+ * INVARIANT: 这个同步 effect 必须声明在所有取数 effect 之前——effect 按声明顺序执行，
+ *            取数时读到的才是本次提交的最新配置。
+ */
 export function useCommittedProjectionLoader<TProjection>(
   options: CommittedProjectionLoaderOptions<TProjection>,
 ): CommittedProjectionLoader<TProjection> {
