@@ -921,3 +921,381 @@ describe("Creative Run asynchronous retry command", () => {
     )).toBe(false);
   });
 });
+
+const campaignRunId = "creative-run-campaign-mounted";
+const campaignItemId = "creative-item-campaign";
+
+// SPEC: 一个可评审、可投放的 campaign Run —— 评审表单与投放表单的行为都挂在它上面。
+function campaignRun(
+  overrides: {
+    readonly review?: CreativeRunDetail["items"][number]["review"];
+    readonly placement?: CreativeRunDetail["items"][number]["placement"];
+  } = {},
+): CreativeRunDetail {
+  const base = runDetail(4);
+  return {
+    ...base,
+    id: campaignRunId,
+    title: "Summer campaign hero",
+    purpose: "campaign",
+    reviewContext: {
+      ...base.reviewContext,
+      recipe: { key: "campaign-hero", version: 2, label: "Campaign hero" },
+    },
+    executionOutcome: "succeeded",
+    reviewState: "in_review",
+    retryEligibility: { eligibleItemIds: [], eligibleCount: 0 },
+    counts: { generated: 1, failed: 0, reviewed: 0, approved: 0, placed: 0, total: 1 },
+    items: [{
+      ...base.items[0]!,
+      id: campaignItemId,
+      status: "generated",
+      executionState: "ready",
+      retryability: "not_eligible",
+      asset: {
+        id: "creative-asset-campaign",
+        url: "/campaign.webp",
+        thumbnailUrl: null,
+        width: 1024,
+        height: 1024,
+      },
+      review: overrides.review ?? null,
+      placement: overrides.placement ?? null,
+    }],
+  };
+}
+
+const approvedReview = {
+  id: "creative-review-approved",
+  supersedesDecisionId: null,
+  decision: "approved",
+  identityConsistency: "unscored",
+  score: 88,
+  quality: {
+    artifactFree: true,
+    singleSubject: true,
+    intentMatch: true,
+    noVisibleText: true,
+  },
+  reason: "Sharp subject, correct campaign framing",
+  reviewerId: "anonymous",
+  createdAt: "2026-07-17T12:00:00.000Z",
+} as const;
+
+const stagedPlacement = {
+  id: "creative-placement-staged",
+  slot: "campaign",
+  status: "scheduled",
+  verificationState: "verifying",
+  targetType: "campaign",
+  targetId: "summer-collection",
+  verifiedAt: null,
+  rollbackPlacementId: null,
+} as const;
+
+function fieldByLabel(container: HTMLElement, label: string) {
+  const owner = [...container.querySelectorAll("label")].find(
+    (candidate) => candidate.textContent?.trim().startsWith(label),
+  );
+  return owner?.querySelector<HTMLInputElement | HTMLTextAreaElement>(
+    "input, textarea",
+  );
+}
+
+function changeField(
+  field: HTMLInputElement | HTMLTextAreaElement | null | undefined,
+  value: string,
+) {
+  if (!field) throw new Error("Field is not rendered");
+  const prototype = field instanceof HTMLTextAreaElement
+    ? HTMLTextAreaElement.prototype
+    : HTMLInputElement.prototype;
+  Object.getOwnPropertyDescriptor(prototype, "value")?.set?.call(field, value);
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+describe("Creative Run review and placement authority", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    (
+      globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
+    vi.useFakeTimers();
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      value: createMemoryStorage(),
+    });
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    adminV2Request.mockReset();
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    vi.useRealTimers();
+    window.localStorage.clear();
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  async function mountRun() {
+    await act(async () => root.render(
+      <CreativeRunWorkspace
+        permissions={permissions}
+        view={{ kind: "detail", id: campaignRunId }}
+      />,
+    ));
+    await advance();
+  }
+
+  it("shows the frozen recipe alongside the other review evidence", async () => {
+    const detail = campaignRun();
+    adminV2Request.mockImplementation(async () => detail);
+    await mountRun();
+
+    expect(container.textContent).toContain("Recipe");
+    expect(container.textContent).toContain("Campaign hero · v2");
+    expect(container.textContent).toContain("Image route");
+  });
+
+  it("keeps the review idempotency key until the projection refresh succeeds", async () => {
+    let projectionReads = 0;
+    const detail = campaignRun();
+    adminV2Request.mockImplementation(async (path, options) => {
+      if (options?.method === "POST" && path.includes("/decisions")) {
+        return { decisionId: "creative-review-1", replayed: false };
+      }
+      projectionReads += 1;
+      // INTENT: 第一次是挂载取数，必须成功；提交后的那次回读故意失败。
+      if (projectionReads > 1) throw new Error("projection gateway unavailable");
+      return detail;
+    });
+    await mountRun();
+
+    changeField(fieldByLabel(container, "Score"), "90");
+    changeField(
+      fieldByLabel(container, "Evidence and reason"),
+      "Subject is sharp and on brief",
+    );
+    await act(async () => {
+      buttonByText(container, "Approve")?.click();
+    });
+    await advance();
+
+    // SPEC: 命令已提交但投影没跟上——必须说清楚，且不能把请求键作废。
+    expect(container.textContent).toContain(
+      "Review decision was committed, but the latest projection could not be refreshed",
+    );
+    const firstDecision = adminV2Request.mock.calls.find(
+      ([path, options]) => options?.method === "POST" && path.includes("/decisions"),
+    );
+
+    await act(async () => {
+      buttonByText(container, "Approve")?.click();
+    });
+    await advance();
+    const decisions = adminV2Request.mock.calls.filter(
+      ([path, options]) => options?.method === "POST" && path.includes("/decisions"),
+    );
+    expect(decisions).toHaveLength(2);
+    // INVARIANT: 同一个请求重放必须复用同一把键；换键等于承认自己不知道上一次有没有生效。
+    expect(decisions[1]?.[1]?.idempotencyKey)
+      .toBe(firstDecision?.[1]?.idempotencyKey);
+  });
+
+  it("stages a campaign candidate with normalized authored copy and its own reason", async () => {
+    const detail = campaignRun({ review: approvedReview });
+    adminV2Request.mockImplementation(async (_path, options) => {
+      if (options?.method === "POST") return { placementId: "creative-placement-1" };
+      return detail;
+    });
+    await mountRun();
+
+    changeField(fieldByLabel(container, "Campaign destination key"), "summer-collection");
+    changeField(fieldByLabel(container, "Campaign eyebrow"), "  Featured  ");
+    changeField(fieldByLabel(container, "Campaign title"), "  Summer dreamers  ");
+    changeField(fieldByLabel(container, "Campaign CTA label"), "  Open collection  ");
+    changeField(fieldByLabel(container, "Staging reason"), "Approved hero for the summer push");
+    // SPEC: CTA 文案与去处要么都填、要么都不填。
+    expect(buttonByText(container, "Stage campaign candidate")?.disabled).toBe(true);
+    changeField(fieldByLabel(container, "Campaign CTA href"), "  /community?collection=summer  ");
+    expect(buttonByText(container, "Stage campaign candidate")?.disabled).toBe(false);
+
+    await act(async () => {
+      buttonByText(container, "Stage campaign candidate")?.click();
+    });
+    await advance();
+
+    const stage = adminV2Request.mock.calls.find(
+      ([path, options]) => options?.method === "POST" && path.endsWith("/placements"),
+    );
+    expect(stage?.[1]?.body).toMatchObject({
+      itemId: campaignItemId,
+      eyebrow: "Featured",
+      title: "Summer dreamers",
+      ctaLabel: "Open collection",
+      href: "/community?collection=summer",
+      reason: "Approved hero for the summer push",
+    });
+  });
+
+  it("collects the staged-withdrawal reason separately from the staging reason", async () => {
+    const detail = campaignRun({
+      review: approvedReview,
+      placement: stagedPlacement,
+    });
+    adminV2Request.mockImplementation(async (_path, options) => {
+      if (options?.method === "POST") return { withdrawn: true };
+      return detail;
+    });
+    await mountRun();
+
+    // SPEC: 已暂存后就没有 Staging reason 这个字段了，撤回必须自己给理由。
+    expect(fieldByLabel(container, "Staging reason")).toBeUndefined();
+    changeField(
+      fieldByLabel(container, "Withdrawal reason"),
+      "Campaign slot was reassigned before launch",
+    );
+    await act(async () => {
+      buttonByText(container, "Withdraw staged placement")?.click();
+    });
+    await advance();
+
+    const withdrawal = adminV2Request.mock.calls.find(
+      ([path, options]) => options?.method === "POST" && path.endsWith("/withdrawal"),
+    );
+    expect(withdrawal?.[0]).toContain(`/placements/${stagedPlacement.id}/withdrawal`);
+    expect(withdrawal?.[1]?.body).toMatchObject({
+      reason: "Campaign slot was reassigned before launch",
+    });
+  });
+
+  it("supersedes an unused approval instead of editing the immutable decision", async () => {
+    const detail = campaignRun({ review: approvedReview });
+    adminV2Request.mockImplementation(async (_path, options) => {
+      if (options?.method === "POST") return { decisionId: "creative-review-2" };
+      return detail;
+    });
+    await mountRun();
+
+    // SPEC: 原判定不可改；未被使用的批准只能被一条新的驳回取代。
+    expect(container.textContent).toContain("Immutable review decision");
+    expect(container.textContent).toContain("Sharp subject, correct campaign framing");
+    changeField(
+      fieldByLabel(container, "Withdrawal reason"),
+      "The campaign was cancelled before launch",
+    );
+    await act(async () => {
+      buttonByText(container, "Withdraw approval")?.click();
+    });
+    await advance();
+
+    const decision = adminV2Request.mock.calls.find(
+      ([path, options]) => options?.method === "POST" && path.includes("/decisions"),
+    );
+    // INVARIANT: 新判定必须指回它取代的那一条，并原样保留原有的分数与可见证据。
+    expect(decision?.[1]?.body).toMatchObject({
+      decision: "rejected",
+      supersedesDecisionId: approvedReview.id,
+      score: approvedReview.score,
+      identityConsistency: approvedReview.identityConsistency,
+      quality: approvedReview.quality,
+      reason: "The campaign was cancelled before launch",
+    });
+  });
+
+  /**
+   * SPEC: 提交成功、回读投影失败时，请求键必须原样留着，重放才不会变成第二次写入。
+   * INTENT: 四条写入路径（评审 / 暂存 / 激活 / 撤回）是同一段代码形状，各测一遍是因为
+   *         "把 delete 挪到 await reload() 之前"在任何一条上都会独立发生。
+   */
+  async function expectKeyRetainedAcrossFailedRefresh(input: {
+    readonly detail: CreativeRunDetail;
+    readonly commandPath: string;
+    readonly warning: string;
+    readonly act: () => Promise<void>;
+  }) {
+    let projectionReads = 0;
+    adminV2Request.mockImplementation(async (path, options) => {
+      if (options?.method === "POST") return { accepted: true };
+      projectionReads += 1;
+      // INTENT: 挂载那次必须成功；提交后的回读故意失败。
+      if (projectionReads > 1) throw new Error("projection gateway unavailable");
+      return input.detail;
+    });
+    await mountRun();
+
+    await input.act();
+    expect(container.textContent).toContain(input.warning);
+    await input.act();
+
+    const commands = adminV2Request.mock.calls.filter(
+      ([path, options]) =>
+        options?.method === "POST" && path.includes(input.commandPath),
+    );
+    expect(commands).toHaveLength(2);
+    expect(commands[1]?.[1]?.idempotencyKey).toBe(commands[0]?.[1]?.idempotencyKey);
+  }
+
+  it("keeps the staging idempotency key until the projection refresh succeeds", async () => {
+    const detail = campaignRun({ review: approvedReview });
+    await expectKeyRetainedAcrossFailedRefresh({
+      detail,
+      commandPath: "/placements",
+      warning: "Placement staging was committed, but the latest projection could not be refreshed",
+      act: async () => {
+        changeField(fieldByLabel(container, "Campaign destination key"), "summer-collection");
+        changeField(fieldByLabel(container, "Campaign eyebrow"), "Featured");
+        changeField(fieldByLabel(container, "Campaign title"), "Summer dreamers");
+        changeField(fieldByLabel(container, "Staging reason"), "Approved hero for the summer push");
+        await act(async () => {
+          buttonByText(container, "Stage campaign candidate")?.click();
+        });
+        await advance();
+      },
+    });
+  });
+
+  it("keeps the activation idempotency key until the projection refresh succeeds", async () => {
+    const detail = campaignRun({
+      review: approvedReview,
+      placement: stagedPlacement,
+    });
+    await expectKeyRetainedAcrossFailedRefresh({
+      detail,
+      commandPath: "/verification",
+      warning: "Placement activation was committed, but the latest projection could not be refreshed",
+      act: async () => {
+        await act(async () => {
+          buttonByText(container, "Verify & activate")?.click();
+        });
+        await advance();
+      },
+    });
+  });
+
+  it("keeps the withdrawal idempotency key until the projection refresh succeeds", async () => {
+    const detail = campaignRun({
+      review: approvedReview,
+      placement: stagedPlacement,
+    });
+    await expectKeyRetainedAcrossFailedRefresh({
+      detail,
+      commandPath: "/withdrawal",
+      warning: "Placement withdrawal was committed, but the latest projection could not be refreshed",
+      act: async () => {
+        changeField(
+          fieldByLabel(container, "Withdrawal reason"),
+          "Campaign slot was reassigned before launch",
+        );
+        await act(async () => {
+          buttonByText(container, "Withdraw staged placement")?.click();
+        });
+        await advance();
+      },
+    });
+  });
+});
