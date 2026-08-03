@@ -12,8 +12,7 @@ import {
   cancelGenerationAttemptDispatchOutboxes,
   reserveRetryGenerationAttempt,
 } from "@/server/modules/generation/generation-attempt-authority";
-import { ensureGenerationSettlementLinks } from "./generation-settlement";
-import { postDreamcoinEntry } from "@/server/modules/admin/billing/ledger";
+import { refundGenerationRequest } from "./generation-refund";
 import { transitionGenerationRequest } from "./generation-request-transition";
 import { removeGenerationAttemptQueueJob } from "./generation-attempt-queue";
 
@@ -64,18 +63,11 @@ export async function cancelGenerationRequest(input: {
         reason: input.reason,
       });
     }
-    const settlement = await ensureGenerationSettlementLinks(tx, job.id);
-    let refundAmount = 0;
-    if (settlement.refundable > 0) {
-      const refund = await postDreamcoinEntry(tx, {
-        kind: "refund",
-        userId: job.userId,
-        amount: settlement.refundable,
-        sourceId: job.id,
-        idempotencyKey: `generation:${job.id}:cancel-refund`,
-      });
-      refundAmount = refund.delta;
-    }
+    const refundAmount = await refundGenerationRequest(tx, {
+      requestId: job.id,
+      userId: job.userId,
+      cause: { kind: "cancel" },
+    });
     const response = { requestId: job.id, status: cancelled.status, version: cancelled.version, finishedAt: cancelledAt.toISOString(), refundAmount };
     const command = await tx.controlPlaneCommand.create({ data: { scope, idempotencyKey: input.idempotencyKey, commandType: "generation.request.cancel", targetType: "generation_request", targetId: job.id, actorId: input.actor.id, requestId: input.traceId, requestHash, requestPayload: toInputJson({ expectedVersion: input.expectedVersion, reason: input.reason }), expectedVersion: input.expectedVersion, retryMode: "idempotent", status: "succeeded", result: toInputJson(response), finishedAt: cancelledAt } });
     await tx.adminAuditLog.create({ data: { actorId: input.actor.id, actorRole: input.actor.role, action: "generation.request.cancelled", targetType: "generation_request", targetId: job.id, reason: input.reason, before: toInputJson({ status: job.status, version: job.version }), after: toInputJson({ ...response, commandId: command.id }), requestId: input.traceId } });

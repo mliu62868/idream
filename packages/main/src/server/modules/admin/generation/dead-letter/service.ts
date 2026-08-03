@@ -1,11 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
-import { ensureGenerationSettlementLinks } from "@/server/ai/generation-settlement";
+import { refundGenerationRequest } from "@/server/ai/generation-refund";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
-import { postDreamcoinEntry } from "@/server/modules/admin/billing/ledger";
 import { deriveGenerationJobState, deriveGenerationTimeline } from "@/server/modules/admin/generation-job-state";
 import {
   OPERATIONAL_USER_DATA_SCOPE,
@@ -298,18 +297,13 @@ export async function discardDeadLetterBatch(request: Request) {
 async function refundDiscardableJob(job: { id: string; userId: string; costDreamcoins: number; errorCode: string | null }) {
   return prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "generation_jobs" WHERE id = ${job.id} FOR UPDATE`;
-    const settlement = await ensureGenerationSettlementLinks(tx, job.id);
-    const amount = Math.min(job.costDreamcoins, settlement.refundable);
+    const amount = await refundGenerationRequest(tx, {
+      requestId: job.id,
+      userId: job.userId,
+      cause: { kind: "operator_manual" },
+      requested: job.costDreamcoins,
+    });
     const willRefund = amount > 0;
-    if (willRefund) {
-      await postDreamcoinEntry(tx, {
-        kind: "refund",
-        userId: job.userId,
-        amount,
-        sourceId: job.id,
-        idempotencyKey: `generation:${job.id}:refund`,
-      });
-    }
     await tx.generationJob.update({
       where: { id: job.id },
       data: { errorCode: job.errorCode ?? "discarded", version: { increment: 1 } },

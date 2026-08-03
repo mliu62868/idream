@@ -26,8 +26,7 @@ import {
   transitionGenerationRequest,
   transitionGenerationRequestWithDisposition,
 } from "./generation-request-transition";
-import { ensureGenerationSettlementLinks } from "./generation-settlement";
-import { postDreamcoinEntry } from "@/server/modules/admin/billing/ledger";
+import { refundGenerationRequest } from "./generation-refund";
 import { recordMainToChatEvent } from "@/processes/chat-outbox";
 import {
   deliverGenerationArtifacts,
@@ -829,18 +828,18 @@ async function finalizeGenerationCompleted(
     // credited on refund — their costDreamcoins is record-keeping only.
     const missingOutputs = Math.max(0, job.outputCount - payload.assets.length);
     if (missingOutputs > 0 && job.costDreamcoins > 0 && job.sourceType !== "content_production_item") {
-      const refundAmount = Math.ceil((job.costDreamcoins * missingOutputs) / job.outputCount);
-      await postDreamcoinEntry(tx, {
-        kind: "refund",
+      const amount = await refundGenerationRequest(tx, {
+        requestId: job.id,
         userId: job.userId,
-        amount: refundAmount,
-        sourceId: job.id,
-        idempotencyKey: `generation:${job.id}:partial-refund`,
+        cause: { kind: "partial" },
+        requested: Math.ceil((job.costDreamcoins * missingOutputs) / job.outputCount),
       });
-      await appendGenerationEvent(tx, job.id, "refunded", "Partial generation refund issued", {
-        amount: refundAmount,
-        missingOutputs,
-      });
+      if (amount > 0) {
+        await appendGenerationEvent(tx, job.id, "refunded", "Partial generation refund issued", {
+          amount,
+          missingOutputs,
+        });
+      }
     }
 
     const completedAt = new Date();
@@ -1352,17 +1351,14 @@ async function refundGeneration(
         },
       });
     }
-    const settlement = isDebitedJob ? await ensureGenerationSettlementLinks(tx, jobId) : { refundable: 0 };
-    const refundAmount = Math.min(cost, settlement.refundable);
-    if (refundAmount > 0 && isDebitedJob) {
-      await postDreamcoinEntry(tx, {
-        kind: "refund",
-        userId,
-        amount: refundAmount,
-        sourceId: jobId,
-        idempotencyKey: `generation:${jobId}:refund`,
-      });
-    }
+    const refundAmount = isDebitedJob
+      ? (await refundGenerationRequest(tx, {
+          requestId: jobId,
+          userId,
+          cause: { kind: "failed" },
+          requested: cost,
+        }))
+      : 0;
     if (attemptId) {
       await projectAttemptArtifactDisposition(tx, {
         requestId: jobId,
