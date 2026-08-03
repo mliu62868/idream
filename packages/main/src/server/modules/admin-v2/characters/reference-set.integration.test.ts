@@ -4,7 +4,7 @@ import { POST as publishReferenceSet } from "@/app/api/v2/admin/characters/[id]/
 import { prisma } from "@/server/lib/db";
 import { createCharacter, createUser, purgeTestData } from "@/server/test/helpers";
 import { createCharacterVisualProfile } from "@/server/modules/admin/characters/visual-profiles";
-import { patchContentAsset } from "@/server/modules/admin/content-ops";
+import { patchContentAsset } from "@/server/modules/admin/content/assets";
 
 describe("Character Reference Set publication", () => {
   const prefix = `zt-reference-set-${randomUUID()}-`;

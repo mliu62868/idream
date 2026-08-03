@@ -5,7 +5,7 @@ import {
   deriveCreativeItemExecutionState,
   deriveCreativeRunContinuation,
 } from "./workflow";
-import { identityExperimentCandidateSeed } from "@/server/modules/admin/content-ops";
+import { identityExperimentCandidateSeed } from "@/server/modules/admin-v2/creative/run-create";
 
 describe("Creative Run item execution projection", () => {
   it("shows provider work as generating while the durable item is still queued", () => {

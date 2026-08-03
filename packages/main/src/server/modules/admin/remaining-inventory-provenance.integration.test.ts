@@ -19,10 +19,12 @@ import {
 } from "@/server/modules/admin-v2/creative/workflow";
 import {
   getContentAsset,
-  getPlacement,
   listContentAssets,
+} from "@/server/modules/admin/content/assets";
+import {
+  getPlacement,
   listPlacements,
-} from "@/server/modules/admin/content-ops";
+} from "@/server/modules/admin/content/placements";
 import {
   listReviewQueue,
   reviewSubmission,

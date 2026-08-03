@@ -19,7 +19,7 @@ import {
 // SPEC: 铺位详情页 —— 字段 + 关联资产预览 + 发布/暂停/归档（spec §7 详情页）。
 // INTENT: 无单条 GET，复用列表接口按 id 过滤（与其余三件套架构一致）；铺位没有可编辑字段
 // （slot/targetType/targetId 由创建时定死），详情页只做状态流转，没有 view/edit 模式切换。
-// INVARIANTS: placementPatchSchema（content-ops.ts:120-126）要求 reason（≥3 字符）—— 三个动作全部
+// INVARIANTS: placementPatchSchema（server admin/content/placements.ts）要求 reason（≥3 字符）—— 三个动作全部
 // 走 ConfirmDialog 采集 reason；归档是破坏性操作（archived 后铺位不再生效），要求输入 slot 打对——
 // 铺位没有名字，用 slot 代替（T16 图片库同款例外）。
 type PendingAction = (typeof PATCH_ACTIONS)[number] | null;

@@ -9,12 +9,11 @@ import {
 import { api, createUser } from "@/server/test/helpers";
 import {
   bulkPatchContentAssets,
-  createPlacement,
   getContentAsset,
   listContentAssets,
   patchContentAsset,
-  patchPlacement,
-} from "./content-ops";
+} from "./assets";
+import { createPlacement, patchPlacement } from "./placements";
 
 describe("Image Library and legacy Placement authority", () => {
   const suffix = randomUUID();

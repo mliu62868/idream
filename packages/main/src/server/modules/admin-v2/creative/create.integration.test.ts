@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { creativeRunCreateRequestSchema } from "@idream/shared/admin";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { POST as createCreativeRun } from "@/app/api/v2/admin/creative/runs/route";
+import { POST as postCreativeRun } from "@/app/api/v2/admin/creative/runs/route";
 import { jobQueue } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
-import { createProductionBatchCore } from "@/server/modules/admin/content-ops";
+import { createCreativeRun } from "@/server/modules/admin-v2/creative/run-create";
 import { createUser } from "@/server/test/helpers";
 import { getCreativeRunDetail } from "./workflow";
 
@@ -131,7 +131,7 @@ describe("Creative Run v2 brief and launch", () => {
   });
 
   it("atomically creates lineage and replays the same idempotent brief", async () => {
-    const first = await createCreativeRun(request());
+    const first = await postCreativeRun(request());
     expect(first.status).toBe(202);
     const firstPayload = await first.json();
     batchId = firstPayload.data.batch.id as string;
@@ -198,7 +198,7 @@ describe("Creative Run v2 brief and launch", () => {
         status: "generated",
       },
     });
-    const replay = await createProductionBatchCore(
+    const replay = await createCreativeRun(
       request(),
       { id: actorId, role: "admin" },
       creativeRunCreateRequestSchema.parse(body),
@@ -241,12 +241,12 @@ describe("Creative Run v2 brief and launch", () => {
   });
 
   it("rejects reuse of the idempotency key for a different brief", async () => {
-    const response = await createCreativeRun(request({ ...body, count: 3 }));
+    const response = await postCreativeRun(request({ ...body, count: 3 }));
     expect(response.status).toBe(409);
   });
 
   it("rejects generic reference assets instead of silently dropping them", async () => {
-    const response = await createCreativeRun(new Request(
+    const response = await postCreativeRun(new Request(
       "http://localhost/api/v2/admin/creative/runs",
       {
         method: "POST",
@@ -269,7 +269,7 @@ describe("Creative Run v2 brief and launch", () => {
   it("rejects targeted generic Runs before creating production lineage", async () => {
     const targetedKey = `${idempotencyKey}-targeted-generic`;
     const beforeCount = await prisma.contentProductionBatch.count();
-    const response = await createCreativeRun(new Request(
+    const response = await postCreativeRun(new Request(
       "http://localhost/api/v2/admin/creative/runs",
       {
         method: "POST",
@@ -335,7 +335,7 @@ describe("Creative Run v2 brief and launch", () => {
       }),
     });
 
-    const response = await createCreativeRun(directedRequest);
+    const response = await postCreativeRun(directedRequest);
     expect(response.status).toBe(202);
     const payload = await response.json();
     const directedBatchId = payload.data.batch.id as string;

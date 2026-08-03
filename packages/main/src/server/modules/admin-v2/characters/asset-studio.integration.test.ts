@@ -10,7 +10,7 @@ import { getCharacterWorkspace } from "./workspace";
 import { issueCharacterPreviewToken } from "./preview-token";
 import { loadCharacterRendererPreview } from "./renderer-preview";
 import { createCharacterVisualProfile } from "@/server/modules/admin/characters/visual-profiles";
-import { patchContentAsset } from "@/server/modules/admin/content-ops";
+import { patchContentAsset } from "@/server/modules/admin/content/assets";
 import {
   characterVisualProfileSnapshotHash,
   referenceSetSnapshotHash,

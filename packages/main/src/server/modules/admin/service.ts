@@ -32,21 +32,25 @@ import { setCharacterChatTools } from "./characters/chat-tools";
 import { generateProductionDirections } from "./production-directions";
 import {
   approveProductionItem,
-  bulkPatchContentAssets,
-  createPlacement,
   estimateProductionBatch,
-  getContentAsset,
-  getPlacement,
   getProductionBatch,
-  listContentAssets,
-  listPlacements,
   listProductionBatches,
-  patchContentAsset,
-  patchPlacement,
-  preflightContentAssetArchive,
   regenerateProductionItem,
   rejectProductionItem,
-} from "./content-ops";
+} from "./content/production-batches";
+import {
+  bulkPatchContentAssets,
+  getContentAsset,
+  listContentAssets,
+  patchContentAsset,
+  preflightContentAssetArchive,
+} from "./content/assets";
+import {
+  createPlacement,
+  getPlacement,
+  listPlacements,
+  patchPlacement,
+} from "./content/placements";
 
 import { listCmsPages, getCmsPage, createCmsPage, patchCmsPage, publishCmsPage } from "./cms";
 import {

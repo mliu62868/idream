@@ -16,7 +16,7 @@ import {
   lockCharacterGenerationAuthority,
   lockMediaAssetAuthority,
 } from "@/server/modules/admin-v2/characters/generation-authority-lock";
-import { patchContentAsset } from "@/server/modules/admin/content-ops";
+import { patchContentAsset } from "@/server/modules/admin/content/assets";
 import { purgeQueuedGenerationJobs } from "@/server/test/helpers";
 import {
   getCreativeRunDetail,

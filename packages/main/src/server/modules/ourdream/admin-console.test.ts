@@ -2094,7 +2094,7 @@ describe("generation config control plane", () => {
       totalItems: 1,
       status: "queued",
     });
-    // 角色目标的 Run 恒为一张图（content-ops 的 single-frame 规则）。本用例要覆盖的是
+    // 角色目标的 Run 恒为一张图（Creative Run 创建权威的 single-frame 规则）。本用例要覆盖的是
     // 多条目下的计费与 attempt 一致性，故连开第二个 Run 而不是把一个 Run 撑成两张。
     const createdSecond = await createCreativeRunThroughV2({
       userId: admin,
