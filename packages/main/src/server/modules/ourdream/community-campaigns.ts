@@ -4,7 +4,7 @@ import {
   parseCreativeMediaAuthorityEvidence,
 } from "@/server/lib/creative-media-authority";
 import { nonSyntheticMediaAssetWhere } from "@/server/lib/media-asset-authority";
-import { operationalMediaAssetPlacementWhere } from "@/server/modules/admin/shared/metric-data-scope";
+import { operationalMediaAssetPlacementWhere } from "@/server/modules/metric-data-scope";
 
 type Db = PrismaClient | Prisma.TransactionClient;
 type CampaignPlacement = Prisma.MediaAssetPlacementGetPayload<{

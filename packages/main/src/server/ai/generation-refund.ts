@@ -1,5 +1,5 @@
 import type { Prisma } from "@prisma/client";
-import { postDreamcoinEntry } from "@/server/modules/admin/billing/ledger";
+import { postDreamcoinEntry } from "@/server/modules/billing/ledger";
 import { ensureGenerationSettlementLinks } from "./generation-settlement";
 
 // SPEC: why a Generation Request is being refunded. The cause — not the call

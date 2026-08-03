@@ -2,7 +2,7 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { characterReleasePlacements } from "@/server/modules/admin-v2/characters/character-release-contract";
-import { operationalMediaAssetPlacementWhere } from "@/server/modules/admin/shared/metric-data-scope";
+import { operationalMediaAssetPlacementWhere } from "@/server/modules/metric-data-scope";
 
 export type MediaAssetAuthorityDependency =
   | {

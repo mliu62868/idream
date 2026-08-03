@@ -909,7 +909,7 @@ describe("Admin v2 finite-state authority inventory", () => {
     expect(writers.sort()).toEqual([
       "src/server/modules/admin-v2/creative/retry-executor.ts",
       "src/server/modules/admin-v2/creative/workflow.ts",
-      "src/server/modules/admin/content-production-state.ts",
+      "src/server/modules/content-production-state.ts",
     ]);
     for (const path of writers) {
       const contents = source(path);
@@ -967,7 +967,7 @@ describe("Admin v2 finite-state authority inventory", () => {
     expect(batch).not.toMatch(/\bexecutionOutcome\b/);
     expect(batch).not.toMatch(/\breviewState\b/);
     expect(batch).not.toMatch(/\bdeploymentState\b/);
-    const derivation = source("src/server/modules/admin/content-production-state.ts");
+    const derivation = source("src/server/modules/content-production-state.ts");
     expect(derivation).toContain("reviewState");
     expect(derivation).toContain("deploymentState");
     expect(derivation).toContain("executionOutcome");

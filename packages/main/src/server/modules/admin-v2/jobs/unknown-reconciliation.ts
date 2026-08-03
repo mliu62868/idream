@@ -26,7 +26,7 @@ import { Errors } from "@/server/lib/errors";
 import {
   markProductionItemFailed,
   markProductionItemGenerated,
-} from "@/server/modules/admin/content-production-state";
+} from "@/server/modules/content-production-state";
 import { appendCanonicalMetricEvent } from "@/server/modules/admin-v2/metrics/event-writer";
 import { providers } from "@/server/providers";
 import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";

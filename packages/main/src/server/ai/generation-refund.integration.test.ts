@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
-import { postDreamcoinEntry } from "@/server/modules/admin/billing/ledger";
+import { postDreamcoinEntry } from "@/server/modules/billing/ledger";
 import {
   generationRefundIdempotencyKey,
   refundGenerationRequest,

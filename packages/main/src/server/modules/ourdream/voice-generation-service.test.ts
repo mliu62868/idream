@@ -5,7 +5,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { dispatchV1 } from "@/server/modules/ourdream/service";
 import { providers } from "@/server/providers";
-import { postDreamcoinEntry } from "@/server/modules/admin/billing/ledger";
+import { postDreamcoinEntry } from "@/server/modules/billing/ledger";
 import { reclaimExpiredVoiceClip } from "./voice-clip";
 import {
   AGE_GATE_COOKIE_HEADER,

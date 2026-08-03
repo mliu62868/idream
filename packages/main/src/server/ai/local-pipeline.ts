@@ -16,7 +16,7 @@ import { providers } from "@/server/providers";
 import {
   markProductionItemFailed,
   markProductionItemGenerated,
-} from "@/server/modules/admin/content-production-state";
+} from "@/server/modules/content-production-state";
 import {
   aiFinalizePayloadSchema,
   type AiFinalizePayload,

@@ -9,7 +9,7 @@ import { deriveGenerationJobState, deriveGenerationTimeline } from "@/server/mod
 import {
   OPERATIONAL_USER_DATA_SCOPE,
   operationalGenerationJobWhere,
-} from "@/server/modules/admin/shared/metric-data-scope";
+} from "@/server/modules/metric-data-scope";
 import { actorWithPermission, clampInt, jsonBody, toInputJson, writeAudit, type AdminActor } from "@/server/modules/admin/shared/legacy-primitives";
 import { publicUser, redactGenerationJob as redactJob } from "@/server/modules/admin/shared/presenters";
 import { decodeAdminListCursor, encodeAdminListCursor } from "@/server/modules/admin-v2/shared/list-cursor";

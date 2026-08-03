@@ -10,7 +10,7 @@ import { ok } from "@/server/lib/http";
 import {
   OPERATIONAL_METRIC_DATA_SCOPE,
   operationalGenerationJobWhere,
-} from "@/server/modules/admin/shared/metric-data-scope";
+} from "@/server/modules/metric-data-scope";
 import {
   actorWithPermission,
   clampInt,

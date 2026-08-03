@@ -9,7 +9,7 @@ import {
   jsonBody,
   writeAudit,
 } from "@/server/modules/admin/shared/legacy-primitives";
-import { operationalSupportRequestWhere } from "@/server/modules/admin/shared/metric-data-scope";
+import { operationalSupportRequestWhere } from "@/server/modules/metric-data-scope";
 import { synchronizeSupportCaseFromRequest } from "@/server/modules/admin-v2/cases/service";
 import {
   decodeAdminListCursor,

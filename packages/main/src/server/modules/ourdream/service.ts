@@ -37,7 +37,7 @@ import {
   PRODUCTION_LTX_VIDEO_PROFILE,
 } from "@/server/modules/generation/production-video-profile";
 import { dispatchAdmin } from "@/server/modules/admin/service";
-import { generationWorkflowDescriptor } from "@/server/modules/admin/generation-catalog";
+import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
 import {
   ensureReviewCaseForAppeal,
   ensureReviewCaseForReport,
@@ -83,7 +83,7 @@ import {
 import {
   dreamcoinBalance,
   postDreamcoinEntry,
-} from "@/server/modules/admin/billing/ledger";
+} from "@/server/modules/billing/ledger";
 import {
   clearSessionCookie,
   createAnonymousId,

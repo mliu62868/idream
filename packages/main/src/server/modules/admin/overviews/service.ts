@@ -12,7 +12,7 @@ import {
   customerSubscriptionWhere,
   customerUserWhere,
   operationalGenerationJobWhere,
-} from "@/server/modules/admin/shared/metric-data-scope";
+} from "@/server/modules/metric-data-scope";
 
 export async function analyticsOverview(request: Request) {
   await actorWithPermission(request, "analytics.export");

@@ -9,7 +9,7 @@ import {
   operationalContentProductionBatchWhere,
   operationalGenerationJobWhere,
   operationalUserWhere,
-} from "@/server/modules/admin/shared/metric-data-scope";
+} from "@/server/modules/metric-data-scope";
 
 export async function globalAdminSearch(request: Request) {
   const actor = await actorWithPermission(request, "dashboard.read");

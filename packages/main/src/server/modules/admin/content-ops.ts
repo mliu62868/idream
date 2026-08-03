@@ -38,7 +38,7 @@ import {
   deriveCreativeRunState,
   refreshContentProductionBatchStats,
   type CreativeRunLedgerFact,
-} from "./content-production-state";
+} from "@/server/modules/content-production-state";
 import {
   dispatchGenerationAttemptOutbox,
   reserveInitialGenerationAttempt,
@@ -50,7 +50,7 @@ import {
   encodeAdminListCursor,
   parseIsoCursorKey,
 } from "@/server/modules/admin-v2/shared/list-cursor";
-import { generationWorkflowDescriptor } from "./generation-catalog";
+import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
 import {
   ensureOperationalGenerationRoute,
   findOperationalGenerationRoute,
@@ -72,7 +72,7 @@ import {
 import {
   operationalMediaAssetPlacementWhere,
   operationalMediaAssetWhere,
-} from "@/server/modules/admin/shared/metric-data-scope";
+} from "@/server/modules/metric-data-scope";
 import { isProductionLtxVideoProfile } from "@/server/modules/generation/production-video-profile";
 
 const productionPurposeSchema =

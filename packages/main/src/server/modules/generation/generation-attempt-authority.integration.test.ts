@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { EnqueueJobInput } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
 import { checkExactGenerationDispatchAuthority } from "@/server/ai/generation-dispatch-evidence-authority";
-import { generationWorkflowDescriptor } from "@/server/modules/admin/generation-catalog";
+import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
 import {
   dispatchGenerationAttemptOutbox,
   reserveInitialGenerationAttempt,

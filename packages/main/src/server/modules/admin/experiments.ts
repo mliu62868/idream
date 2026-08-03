@@ -7,7 +7,7 @@ import {
   customerGenerationJobWhere,
   customerSubscriptionWhere,
   customerUserWhere,
-} from "@/server/modules/admin/shared/metric-data-scope";
+} from "@/server/modules/metric-data-scope";
 import { actorWithPermission } from "@/server/modules/admin/shared/legacy-primitives";
 
 export async function listExperiments(request: Request): Promise<Response> {

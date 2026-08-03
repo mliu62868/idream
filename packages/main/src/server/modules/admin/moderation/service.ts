@@ -12,7 +12,7 @@ import {
   operationalAppealWhere,
   operationalContentReportWhere,
   operationalMediaAssetWhere,
-} from "@/server/modules/admin/shared/metric-data-scope";
+} from "@/server/modules/metric-data-scope";
 import { ensureReviewCaseForAppeal, ensureReviewCaseForReport, recordReviewCaseDecision } from "@/server/modules/admin-v2/cases/service";
 import { canonicalRequestHash } from "@/server/modules/admin-v2/shared/control-plane-command";
 import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";

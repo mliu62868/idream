@@ -10,7 +10,7 @@ import {
 import { isMediaAssetOperationalForAuthority } from "@/server/lib/media-asset-authority";
 import { canonicalSha256 } from "../shared/canonical-json";
 import { characterIdentityReviewEvidencePassed } from "../shared/creative-review-quality";
-import { generationWorkflowDescriptor } from "@/server/modules/admin/generation-catalog";
+import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
 import {
   characterDraftAssetPurposes,
   draftAssetRouteEntries,

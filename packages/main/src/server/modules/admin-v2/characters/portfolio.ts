@@ -29,7 +29,7 @@ import {
 import {
   operationalCharacterWhere,
   operationalMediaAssetWhere,
-} from "@/server/modules/admin/shared/metric-data-scope";
+} from "@/server/modules/metric-data-scope";
 import { toInputJson } from "../shared/prisma-json";
 import {
   characterReleaseContract,

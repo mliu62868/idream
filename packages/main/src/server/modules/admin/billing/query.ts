@@ -9,7 +9,7 @@ import {
   CUSTOMER_METRIC_DATA_SCOPE,
   customerDreamcoinLedgerWhere,
   customerSubscriptionWhere,
-} from "@/server/modules/admin/shared/metric-data-scope";
+} from "@/server/modules/metric-data-scope";
 
 const ledgerQuerySchema = z.object({
   search: z.string().trim().min(1).max(200).optional(),

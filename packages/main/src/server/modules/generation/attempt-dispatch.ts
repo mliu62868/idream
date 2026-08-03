@@ -15,7 +15,7 @@ import {
 import type { EnqueueJobInput } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
-import { generationWorkflowDescriptor } from "@/server/modules/admin/generation-catalog";
+import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
 import { normalizedGenerationReferenceRole } from "@/server/modules/admin-v2/characters/generation-route-authority";
 import { lockCharacterGenerationAuthority } from "@/server/modules/admin-v2/characters/generation-authority-lock";
 import {

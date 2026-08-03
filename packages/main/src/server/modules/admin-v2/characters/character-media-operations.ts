@@ -12,7 +12,7 @@ import { VOICE_PROVIDER_REPLAY } from "@/server/providers/types";
 import {
   OPERATIONAL_USER_DATA_CLASSES,
   operationalGenerationJobWhere,
-} from "@/server/modules/admin/shared/metric-data-scope";
+} from "@/server/modules/metric-data-scope";
 import { resolveGenerationAttemptRetryAuthority } from "@/server/modules/generation/generation-attempt-authority";
 
 // SPEC: This projector only reads evidence owned by Generation and Voice authorities.

@@ -22,7 +22,7 @@ import type { VoiceIdentityPort } from "@/server/providers/types";
 import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
-import { operationalCharacterWhere } from "@/server/modules/admin/shared/metric-data-scope";
+import { operationalCharacterWhere } from "@/server/modules/metric-data-scope";
 
 const MAX_REFERENCE_BYTES = 15 * 1024 * 1024;
 const MIN_REFERENCE_BYTES = 1_024;

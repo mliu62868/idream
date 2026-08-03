@@ -27,9 +27,9 @@ const { multiReferenceWorkflowKey } = vi.hoisted(() => ({
   multiReferenceWorkflowKey: "test-qwen-image-edit-multi-reference",
 }));
 
-vi.mock("@/server/modules/admin/generation-catalog", async (importOriginal) => {
+vi.mock("@/server/modules/generation/generation-catalog", async (importOriginal) => {
   const actual = await importOriginal<
-    typeof import("@/server/modules/admin/generation-catalog")
+    typeof import("@/server/modules/generation/generation-catalog")
   >();
   return {
     ...actual,

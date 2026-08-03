@@ -19,7 +19,7 @@ import { reserveInitialGenerationAttempt } from "@/server/modules/generation/gen
 import { jobQueue } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
 import { referenceSetSnapshotHash } from "@/server/modules/admin-v2/characters/release-snapshot";
-import * as generationCatalog from "@/server/modules/admin/generation-catalog";
+import * as generationCatalog from "@/server/modules/generation/generation-catalog";
 import {
   api,
   completeQueuedCharacterPreview,

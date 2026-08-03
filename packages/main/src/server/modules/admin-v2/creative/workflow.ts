@@ -2,7 +2,7 @@ import { prisma } from "@/server/lib/db";
 import type { Prisma } from "@prisma/client";
 import { Errors } from "@/server/lib/errors";
 import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
-import { deriveCreativeRunState, type CreativeRunLedgerFact } from "@/server/modules/admin/content-production-state";
+import { deriveCreativeRunState, type CreativeRunLedgerFact } from "@/server/modules/content-production-state";
 import { toInputJson } from "../shared/prisma-json";
 import {
   isCreativePlacementVerificationTransitionAllowed,
@@ -24,14 +24,14 @@ import {
   parseIsoCursorKey,
 } from "@/server/modules/admin-v2/shared/list-cursor";
 import { creativeReviewQuality } from "@/server/modules/admin-v2/shared/creative-review-quality";
-import { operationalContentProductionBatchWhere } from "@/server/modules/admin/shared/metric-data-scope";
+import { operationalContentProductionBatchWhere } from "@/server/modules/metric-data-scope";
 import {
   CREATIVE_MEDIA_AUTHORITY_METADATA_KEY,
   evaluateCreativeMediaAuthority,
   parseCreativeMediaAuthorityEvidence,
   type CreativeMediaProviderSnapshot,
 } from "@/server/lib/creative-media-authority";
-import { generationWorkflowDescriptor } from "@/server/modules/admin/generation-catalog";
+import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
 import {
   lockCharacterGenerationAuthority,
   lockCharacterMediaAssetAuthorities,

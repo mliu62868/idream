@@ -11,7 +11,7 @@ import {
   operationalAnalyticsEventWhere,
   operationalGenerationJobWhere,
   operationalMediaAssetPlacementWhere,
-} from "@/server/modules/admin/shared/metric-data-scope";
+} from "@/server/modules/metric-data-scope";
 import { actorWithPermission, clampInt } from "@/server/modules/admin/shared/legacy-primitives";
 
 const CONFIG_READ = "generation.config.read" as const;

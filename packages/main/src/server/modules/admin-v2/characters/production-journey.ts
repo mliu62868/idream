@@ -9,7 +9,7 @@ import type {
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { isMediaAssetOperationalForAuthority } from "@/server/lib/media-asset-authority";
-import { operationalMediaAssetWhere } from "@/server/modules/admin/shared/metric-data-scope";
+import { operationalMediaAssetWhere } from "@/server/modules/metric-data-scope";
 import { ACTIVE_CONTROL_PLANE_COMMAND_STATUSES } from "../shared/control-plane-command";
 import { characterCommandCoordinationKey } from "./command-coordination";
 import { characterReleasePlacements } from "./character-release-contract";
