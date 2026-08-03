@@ -17,14 +17,10 @@ This version has breaking changes — APIs, conventions, and file structure may 
 ## What This Is
 一个全栈 AI 伴侣产品（参考站点 https://ourdream.ai/）。bun + Turborepo monorepo，按执行时间分级拆服务。
 
-## Tech Stack
-- **Monorepo:** bun + Turborepo，`packages/{main,chat,gen,admin,shared}`
-- **Framework:** Next.js 16 (App Router, React 19, TypeScript strict；middleware 更名 Proxy)
-- **DB/ORM:** PostgreSQL only + Prisma 7（main 与 chat 各自 schema，无 SQLite 双库）
-- **Async:** Redis/BullMQ + 常驻 pm2 worker（`ecosystem.config.js`）
-- **Auth:** better-auth（email+password+session）
-- **UI:** shadcn/ui + Tailwind v4；Lucide 图标
-- **AI/支付:** provider 抽象（自托管开源模型经 OpenAI 兼容流水线接入；加密货币支付）
+## 技术栈里读不出来的部分
+- Next.js 16 的 middleware 已更名 Proxy
+- PostgreSQL only；main 与 chat 各自 schema，**没有** SQLite 双库
+- AI 走自托管开源模型 + OpenAI 兼容流水线；支付走加密货币
 
 ## 文档与事实来源（SSoT）
 - 产品：`docs/product/`（PRD / FeatureMap / BackendFeatureSpec / ECONOMY_AND_PRICING / CONTENT_POLICY / ADMIN_CONSOLE_PLAN）
@@ -32,18 +28,9 @@ This version has breaking changes — APIs, conventions, and file structure may 
 - **实现状态唯一事实来源**：`docs/product/CURRENT_FUNCTIONAL_COVERAGE.md`；剩余工作见 `REMAINING_WORK_EXECUTION_PLAN.md`
 - 代码是最终事实来源：`packages/main/prisma/schema.prisma` + `packages/*/src`
 
-## Project Structure
-```
-packages/
-  shared/   # 跨包契约 SSoT（类型/协议）
-  main/     # Next 16 全栈：src/app 前端 + src/server 后端，Prisma+PG，计费/权益/生成/角色/admin
-  chat/     # 独立 chat 服务（独立 PG role + 文件层记忆/关系），main 经 BFF proxy + 事件交互
-  gen/      # 图片/视频生成 worker（写 blob）
-  admin/    # 管理后台 web
-db/sql/     # chat 服务库边界 SQL（由用户手工执行）
-docs/       # product / architecture / research(INSPECTION_GUIDE, SERVICE_INTEGRATION)
-ecosystem.config.js  # pm2 多进程
-```
+## 结构里不显然的两点
+- `packages/shared` 是跨包契约 SSoT（类型/协议）；`chat` 用独立 PG role + 文件层记忆，main 经 BFF proxy + 事件交互
+- `db/sql/` 是 chat 服务库边界 SQL，**由用户手工执行**，不要自己连库跑
 
 ## MOST IMPORTANT NOTES
 - When launching Claude Code agent teams, ALWAYS have each teammate work in their own worktree branch and merge everyone's work at the end, resolving any merge conflicts smartly since you are basically serving the orchestrator role and have full context to our goals, work given, work achieved, and desired outcomes.

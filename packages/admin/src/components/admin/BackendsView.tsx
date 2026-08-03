@@ -1,6 +1,6 @@
 "use client";
 
-// SPEC: 只读展示 generation backends（comfyui + sdcpp + drawthings）目录 —— kind、endpoint/cliPath、
+// SPEC: 只读展示 generation backends（comfyui + drawthings）目录 —— kind、endpoint/cliPath、
 //       健康探测结果（ok + latencyMs，或 fail + detail）。用 ReadonlyOpsView 表格渲染，
 //       与 jobs/dead-letter 运维页一致；不健康行用 FailureReason 出人话，endpoint/cliPath
 //       折进 EngineeringDetails，不裸露成表格列。

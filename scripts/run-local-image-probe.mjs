@@ -8,7 +8,7 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "..");
 
 const pipelineUrl = trimTrailingSlash(
-  process.env.PIPELINE_API_URL ?? process.env.SDCPP_IMAGE_URL ?? "http://127.0.0.1:8091",
+  process.env.PIPELINE_API_URL ?? "http://127.0.0.1:8091",
 );
 const pipelineToken = process.env.PIPELINE_API_TOKEN ?? "local-pipeline-token-0123456789";
 const imageSize = process.env.PIPELINE_IMAGE_SIZE_DEFAULT ?? "512x512";
@@ -71,8 +71,7 @@ async function readReadyz(url) {
     process.stderr.write(
       [
         `Image pipeline gateway is not ready at ${url}.`,
-        "Start the local gateway first, for example:",
-        "  bun run --filter @idream/gen serve:sdcpp-image",
+        "Start the local gateway first and point PIPELINE_API_URL at it.",
         "",
         error instanceof Error ? error.message : String(error),
         "",
