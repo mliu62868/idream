@@ -19,10 +19,9 @@ describe("Character and Creative operator workspaces", () => {
     const html = renderToStaticMarkup(<CreativeRunWorkspace permissions={{ read: true, write: true, review: true, place: true }} view={{ kind: "detail", id: "run-42" }} />);
     expect(html).toContain('role="status"');
     expect(html).toContain("Loading Creative Run lineage and outcomes");
-    expect(parseAdminPath("creative/runs/run-42")).toEqual({
-      sectionId: "content/production",
-      view: { kind: "detail", id: "run-42" },
-    });
+    const parsed = parseAdminPath("creative/runs/run-42");
+    expect(parsed?.item.id).toBe("content/production");
+    expect(parsed?.view).toEqual({ kind: "detail", id: "run-42" });
   });
 
   it("exposes the Creative brief-and-launch front half only with write authority", () => {

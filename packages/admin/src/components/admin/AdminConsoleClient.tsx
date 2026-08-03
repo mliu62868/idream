@@ -8,30 +8,11 @@ import {
   Ban,
   ChevronRight,
   Languages,
-  Loader2,
   Menu,
   RefreshCcw,
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { apiGet } from "@/components/admin/api";
-import { BackendsView } from "@/components/admin/BackendsView";
-import { GenerationMetricsView } from "@/components/admin/GenerationMetricsView";
-import { WorkflowsView } from "@/components/admin/WorkflowsView";
-import { StartersSection } from "@/components/admin/starters/StartersSection";
-import { RecipesSection } from "@/components/admin/recipes/RecipesSection";
-import { PresetsSection } from "@/components/admin/presets/PresetsSection";
-import { AssetsSection } from "@/components/admin/assets/AssetsSection";
-import { TagsView } from "@/components/admin/TagsView";
-import { ReviewQueueView } from "@/components/admin/ReviewQueueView";
-import { CmsView } from "@/components/admin/CmsView";
-import { ComplianceView } from "@/components/admin/ComplianceView";
-import { InsightsView } from "@/components/admin/InsightsView";
-import { AnnouncementsView } from "@/components/admin/AnnouncementsView";
-import { ExperimentsView } from "@/components/admin/ExperimentsView";
-import { TodayView, type TodayData, type TodayLegacyData } from "@/components/admin/today/TodayView";
-import { type TodayProjection } from "@idream/shared/admin";
-import { PlacementsSection } from "@/components/admin/placements/PlacementsSection";
 import {
   AdminI18nProvider,
   getStoredAdminLocale,
@@ -40,40 +21,16 @@ import {
   useAdminI18n,
 } from "@/components/admin/i18n";
 import {
-  adminSectionItem,
+  canReadWorkspace,
   parseAdminPath,
   defaultWorkModeForRole,
   navGroupsForPermissions,
-  sectionIsPermitted,
-  type AdminSubview,
+  type AdminPath,
   type NavItem,
   type WorkMode,
 } from "@/components/admin/nav-config";
 import type { AdminShellSignals } from "@/components/admin/shell-signals";
-import { IncidentWorkspace } from "@/features/incidents/IncidentWorkspace";
-import { CaseWorkspace } from "@/features/cases/CaseWorkspace";
-import { CustomerWorkspace } from "@/features/customers/CustomerWorkspace";
 import { GlobalAdminSearch } from "@/features/search/GlobalAdminSearch";
-import { CharacterPerformanceWorkspace, CharacterWorkspace } from "@/features/characters/CharacterWorkspace";
-import { CreativeRunWorkspace } from "@/features/creative/CreativeRunWorkspace";
-import { JobsView as GenerationJobsWorkspace } from "@/features/jobs/JobsView";
-import { AuditWorkspace } from "@/features/audit/AuditWorkspace";
-import { PricingWorkspace } from "@/features/pricing/PricingWorkspace";
-import { BillingWorkspace } from "@/features/billing/BillingWorkspace";
-import { GenerationConfigWorkspace } from "@/features/config/GenerationConfigWorkspace";
-import { DeadLetterWorkspace } from "@/features/dead-letter/DeadLetterWorkspace";
-import { AccessWorkspace } from "@/features/access/AccessWorkspace";
-import { ModerationWorkspace } from "@/features/moderation/ModerationWorkspace";
-import { SupportWorkspace } from "@/features/support/SupportWorkspace";
-import { PromoWorkspace } from "@/features/promo/PromoWorkspace";
-import { ApprovalsWorkspace } from "@/features/approvals/ApprovalsWorkspace";
-import { ChatOpsWorkspace } from "@/features/chat-ops/ChatOpsWorkspace";
-import { ContentMerchandisingWorkspace } from "@/features/content-merchandising/ContentMerchandisingWorkspace";
-import {
-  AnalyticsWorkspace,
-  ProviderOverviewWorkspace,
-  RiskWorkspace,
-} from "@/features/overviews/OverviewWorkspaces";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 
 type Actor = {
@@ -90,56 +47,6 @@ type AdminConsoleClientProps = {
   // dev-only：展示退出按钮以便切换内置账号。
   devLogout?: boolean;
 };
-
-type Row = Record<string, unknown>;
-
-
-type DashboardData = TodayData;
-
-type SectionData =
-  | { kind: "dashboard"; data: DashboardData }
-  | { kind: "users"; rows: Row[] }
-  // 自取数视图（组件内部 fetch），section 只需一个标记，不在此预取数据。
-  | {
-      kind: "selfFetch";
-      view:
-        | "jobs"
-        | "official"
-        | "production"
-        | "assets"
-        | "placements"
-        | "templates"
-        | "recipes"
-        | "presets"
-        | "tags"
-        | "review-queue"
-        | "cms"
-        | "compliance"
-        | "insights"
-        | "announcements"
-        | "experiments"
-        | "backends"
-        | "workflows"
-        | "generation-metrics"
-        | "incidents"
-        | "cases"
-        | "audit"
-        | "character-performance"
-        | "pricing"
-        | "billing"
-        | "config"
-        | "dead-letter"
-        | "access"
-        | "moderation"
-        | "support"
-        | "promo"
-        | "approvals"
-        | "chat"
-        | "content-merchandising"
-        | "analytics-overview"
-        | "risk-overview"
-        | "provider-overview";
-    };
 
 // SPEC: localStorage key for which folded sidebar nav groups the operator last expanded.
 const NAV_GROUPS_STORAGE_KEY = "idream.admin.openNavGroups";
@@ -172,35 +79,42 @@ export function AdminConsoleClient(props: AdminConsoleClientProps) {
     storeAdminLocale(locale);
   }, [locale, localeReady]);
 
+  // SPEC: 未知路径由服务端路由 notFound() 拦下（app/admin/_server/render-admin-route.tsx）。
+  // INVARIANT: 能渲染到这里的 initialSection 必然可解析；null 分支只为类型收窄，不是兜底 UI。
+  const path = parseAdminPath(props.initialSection);
+
   return (
     <AdminI18nProvider locale={locale}>
-      <AdminConsoleContent {...props} locale={locale} setLocale={setLocale} />
+      {path ? (
+        <AdminConsoleContent {...props} locale={locale} path={path} setLocale={setLocale} />
+      ) : null}
     </AdminI18nProvider>
   );
 }
 
 function AdminConsoleContent({
   actor,
-  initialSection,
   initialAccess,
   initialPermissions,
+  path,
   shellSignals,
   devLogout = false,
   locale,
   setLocale,
 }: AdminConsoleClientProps & {
   locale: AdminLocale;
+  path: AdminPath;
   setLocale: (locale: AdminLocale) => void;
 }) {
   const { t } = useAdminI18n();
   const sidebarNavRef = useRef<HTMLElement | null>(null);
   const mobileNavRef = useRef<HTMLElement | null>(null);
   const mobileNavTriggerRef = useRef<HTMLButtonElement | null>(null);
-  const { sectionId, view: subview } = parseAdminPath(initialSection);
-  const activeItem = adminSectionItem(sectionId);
+  const activeItem = path.item;
+  const sectionId = activeItem.id;
   const isCharacterWorkspace = sectionId === "content/official";
   const permissions = useMemo(() => new Set(initialPermissions), [initialPermissions]);
-  const canAccessActiveSection = sectionIsPermitted(sectionId, permissions);
+  const canAccessActiveSection = canReadWorkspace(activeItem, permissions);
   const [workMode, setWorkMode] = useState<WorkMode>(() => defaultWorkModeForRole(actor?.role));
   const navGroups = useMemo(
     () => navGroupsForPermissions(permissions, workMode),
@@ -211,13 +125,7 @@ function AdminConsoleContent({
   // 需要跳生成任务/供应商诊断的动作，裁完就没有出口，只能绕回 Today。非当前组本来就是
   // 折叠态（渐进披露），保留它们不增加视觉噪音，却能一步跳出去。
   const visibleNavGroups = navGroups;
-  const [data, setData] = useState<SectionData | null>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
-  // SPEC: 会拉取 section 数据时，首帧就必须是加载态。
-  // INTENT: renderSection(null) 返回 null，若初值为 false，SSR 与水合前的首帧会渲染
-  // 一整片空白内容区（体感是"后台坏了"），直到 useEffect 里的 load() 才补上 spinner。
-  const [loading, setLoading] = useState(() => initialAccess && canAccessActiveSection);
-  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!mobileNavOpen) return;
@@ -282,40 +190,6 @@ function AdminConsoleContent({
     });
     return () => window.cancelAnimationFrame(frame);
   }, [actor?.role]);
-
-  async function load(nextWorkMode: WorkMode = workMode) {
-    if (!initialAccess || !canAccessActiveSection) return;
-    setLoading(true);
-    setError(null);
-    try {
-      setData(await fetchSection(sectionId, {
-        workMode: nextWorkMode,
-      }));
-    } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Failed to load admin data");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      void load();
-    }, 0);
-    return () => window.clearTimeout(timer);
-    // sectionId is derived from the route; load should run when the route changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sectionId, initialAccess, canAccessActiveSection]);
-
-  useEffect(() => {
-    const onPopState = () => {
-      void load();
-    };
-    window.addEventListener("popstate", onPopState);
-    return () => window.removeEventListener("popstate", onPopState);
-    // load intentionally reads the restored URL at event time.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sectionId]);
 
   // SPEC: which folded nav groups are expanded; default all-collapsed (progressive
   // disclosure), persisted so an operator's expanded groups survive a reload.
@@ -544,7 +418,6 @@ function AdminConsoleContent({
                         onChange={(event) => {
                           const nextMode = event.target.value as WorkMode;
                           setWorkMode(nextMode);
-                          if (sectionId === "dashboard") void load(nextMode);
                           try {
                             window.localStorage.setItem(WORK_MODE_STORAGE_KEY, nextMode);
                           } catch {
@@ -573,15 +446,13 @@ function AdminConsoleContent({
                       <option value="zh">中文</option>
                     </select>
                   </label>
+                  {/* SPEC: 刷新只广播事件；各工作台自取数、自报加载态。 */}
                   <button
                     className="inline-flex h-9 items-center gap-2 rounded-md border border-[var(--ad-border)] px-3 text-sm text-[var(--ad-text)] hover:bg-black/[0.04]"
-                    onClick={() => {
-                      window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT));
-                      void load();
-                    }}
+                    onClick={() => window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT))}
                     type="button"
                   >
-                    {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+                    <RefreshCcw className="h-4 w-4" />
                     {t("Refresh")}
                   </button>
                   {devLogout ? (
@@ -603,15 +474,6 @@ function AdminConsoleContent({
           </header>
 
           <div className="p-4 md:p-6">
-            {error ? (
-              <div
-                aria-live="assertive"
-                className="mb-4 rounded-lg border border-[var(--ad-red-text)]/20 bg-[var(--ad-red-bg)] px-4 py-3 text-sm text-[var(--ad-red-text)]"
-                role="alert"
-              >
-                {error}
-              </div>
-            ) : null}
             {!canAccessActiveSection ? (
               <section
                 aria-labelledby="admin-section-denied-title"
@@ -626,18 +488,13 @@ function AdminConsoleContent({
                   {t("Your effective permission keys do not include this capability. Navigation updates after a permission change and refresh.")}
                 </p>
               </section>
-            ) : loading && !data ? (
-              <div className="flex h-48 items-center justify-center text-[var(--ad-text-muted)]">
-                <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                {t("Loading")}
-              </div>
             ) : (
-              renderSection(data, subview, {
-                reload: () => void load(),
-                permissions,
+              activeItem.render({
+                actorId: actor.id,
                 canRead: canAccessActiveSection,
+                permissions,
+                view: path.view,
                 workMode,
-                actorId: actor?.id ?? "anonymous",
               })
             )}
           </div>
@@ -707,228 +564,3 @@ function NavLink({ active, item, onNavigate }: { active: boolean; item: NavItem;
   );
 }
 
-async function fetchSection(
-  sectionId: string,
-  options: {
-    workMode?: WorkMode;
-  } = {},
-): Promise<SectionData> {
-  if (sectionId === "generation/jobs") {
-    return { kind: "selfFetch", view: "jobs" };
-  }
-  if (sectionId === "ops/incidents") return { kind: "selfFetch", view: "incidents" };
-  if (sectionId === "cases") return { kind: "selfFetch", view: "cases" };
-  if (sectionId === "audit-log") return { kind: "selfFetch", view: "audit" };
-  if (sectionId === "growth/characters") return { kind: "selfFetch", view: "character-performance" };
-  if (sectionId === "generation/dead-letter") {
-    return { kind: "selfFetch", view: "dead-letter" };
-  }
-  if (sectionId === "generation/models") {
-    return fetchSection("generation/config", options);
-  }
-  if (sectionId === "ops/providers") {
-    return { kind: "selfFetch", view: "provider-overview" };
-  }
-  if (sectionId === "generation/recipes") return { kind: "selfFetch", view: "recipes" };
-  if (sectionId === "generation/presets") return { kind: "selfFetch", view: "presets" };
-  if (sectionId === "generation/config") return { kind: "selfFetch", view: "config" };
-  if (sectionId === "moderation") return { kind: "selfFetch", view: "moderation" };
-  if (sectionId === "users") return { kind: "users", rows: [] };
-  if (sectionId === "system/access") return { kind: "selfFetch", view: "access" };
-  if (sectionId === "billing") {
-    return { kind: "selfFetch", view: "billing" };
-  }
-  if (sectionId === "pricing") return { kind: "selfFetch", view: "pricing" };
-  if (sectionId === "analytics") {
-    return { kind: "selfFetch", view: "analytics-overview" };
-  }
-  if (sectionId === "risk") {
-    return { kind: "selfFetch", view: "risk-overview" };
-  }
-  if (sectionId === "support") return { kind: "selfFetch", view: "support" };
-  if (sectionId === "content") {
-    return { kind: "selfFetch", view: "content-merchandising" };
-  }
-  if (sectionId === "content/production") return { kind: "selfFetch", view: "production" };
-  if (sectionId === "content/assets") return { kind: "selfFetch", view: "assets" };
-  if (sectionId === "content/placements") return { kind: "selfFetch", view: "placements" };
-  if (sectionId === "content/official") return { kind: "selfFetch", view: "official" };
-  if (sectionId === "content/templates") return { kind: "selfFetch", view: "templates" };
-  if (sectionId === "content/tags") return { kind: "selfFetch", view: "tags" };
-  if (sectionId === "content/review-queue") return { kind: "selfFetch", view: "review-queue" };
-  if (sectionId === "cms") return { kind: "selfFetch", view: "cms" };
-  if (sectionId === "compliance") return { kind: "selfFetch", view: "compliance" };
-  if (sectionId === "insights") return { kind: "selfFetch", view: "insights" };
-  if (sectionId === "announcements") return { kind: "selfFetch", view: "announcements" };
-  if (sectionId === "experiments") return { kind: "selfFetch", view: "experiments" };
-  if (sectionId === "generation/backends") return { kind: "selfFetch", view: "backends" };
-  if (sectionId === "generation/workflows") return { kind: "selfFetch", view: "workflows" };
-  if (sectionId === "generation/metrics") return { kind: "selfFetch", view: "generation-metrics" };
-  if (sectionId === "promo") return { kind: "selfFetch", view: "promo" };
-  if (sectionId === "approvals") return { kind: "selfFetch", view: "approvals" };
-  if (sectionId === "chat") return { kind: "selfFetch", view: "chat" };
-
-  const [legacy, projection] = await Promise.all([
-    apiGet<TodayLegacyData>("/api/v1/admin/dashboard"),
-    apiGet<TodayProjection>(`/api/v2/admin/today?workMode=${encodeURIComponent(options.workMode ?? "admin")}`),
-  ]);
-  return { kind: "dashboard", data: { legacy, projection } };
-}
-
-
-function renderSection(
-  section: SectionData | null,
-  subview: AdminSubview,
-  ctx: {
-    reload: () => void | Promise<void>;
-    permissions: ReadonlySet<AdminPermissionKey>;
-    canRead: boolean;
-    workMode: WorkMode;
-    actorId: string;
-  },
-) {
-  if (!section) return null;
-  if (section.kind === "dashboard") {
-    return <TodayView data={section.data} onPreferenceChanged={ctx.reload} workMode={ctx.workMode} />;
-  }
-  if (section.kind === "users") {
-    return <CustomerWorkspace initialCustomerId={subview.kind === "detail" ? subview.id : null} />;
-  }
-  if (section.kind === "selfFetch") {
-    if (section.view === "jobs") {
-      return <GenerationJobsWorkspace />;
-    }
-    if (section.view === "production") {
-      return <CreativeRunWorkspace actorId={ctx.actorId} permissions={{
-        read: ctx.canRead,
-        write: ctx.permissions.has("creative.run.write"),
-        review: ctx.permissions.has("creative.run.review"),
-        place: ctx.permissions.has("creative.placement.publish"),
-        manageIncident: ctx.permissions.has("ops.incident.manage"),
-      }} view={subview} />;
-    }
-    if (section.view === "assets") return <AssetsSection canReview={ctx.permissions.has("content.asset.review")} view={subview} />;
-    if (section.view === "placements") return <PlacementsSection canPublish={ctx.permissions.has("creative.placement.publish")} view={subview} />;
-    if (section.view === "official") {
-      return <CharacterWorkspace actorId={ctx.actorId} permissions={{
-        read: ctx.canRead,
-        writeProject: ctx.permissions.has("character.project.write"),
-        proposeRelease: ctx.permissions.has("character.release.propose"),
-        publishRelease: ctx.permissions.has("character.release.publish"),
-        reviewRelease: ctx.permissions.has("character.release.review"),
-        writeVisual: ctx.permissions.has("content.official.write"),
-        evaluateRoute: ctx.permissions.has("content.production.write"),
-        readAssets: ctx.permissions.has("creative.run.read"),
-        createAssets: ctx.permissions.has("creative.run.write"),
-        reviewAssets: ctx.permissions.has("creative.run.review"),
-        manageVoiceDefaults: ctx.permissions.has("generation.config.write"),
-      }} view={subview} />;
-    }
-    if (section.view === "templates") return <StartersSection view={subview} />;
-    if (section.view === "recipes") return <RecipesSection view={subview} />;
-    if (section.view === "presets") return <PresetsSection view={subview} />;
-    if (section.view === "tags") return <TagsView />;
-    if (section.view === "cms") return <CmsView />;
-    if (section.view === "compliance") return <ComplianceView />;
-    if (section.view === "insights") return <InsightsView />;
-    if (section.view === "announcements") return <AnnouncementsView />;
-    if (section.view === "experiments") return <ExperimentsView />;
-    if (section.view === "backends") return <BackendsView />;
-    if (section.view === "workflows") return <WorkflowsView />;
-    if (section.view === "generation-metrics") return <GenerationMetricsView />;
-    if (section.view === "incidents") {
-      return <IncidentWorkspace
-        canManage={ctx.permissions.has("ops.incident.manage")}
-        initialIncidentId={subview.kind === "detail" ? subview.id : null}
-        key={subview.kind === "detail" ? subview.id : "incident-list"}
-      />;
-    }
-    if (section.view === "cases") {
-      return (
-        <CaseWorkspace
-          canAssign={ctx.permissions.has("case.assign")}
-          canDecide={ctx.permissions.has("case.decide")}
-          initialCaseId={subview.kind === "detail" ? subview.id : null}
-          key={subview.kind === "detail" ? subview.id : "case-list"}
-        />
-      );
-    }
-    if (section.view === "audit") return <AuditWorkspace />;
-    if (section.view === "character-performance") {
-      return <CharacterPerformanceWorkspace
-        canOpenProjects={[
-          "character.project.read",
-          "character.release.read",
-          "character.performance.read",
-        ].every((permission) => ctx.permissions.has(permission as AdminPermissionKey))}
-        canRead={ctx.permissions.has("character.performance.read")}
-      />;
-    }
-    if (section.view === "pricing") return <PricingWorkspace canWrite={ctx.permissions.has("config.pricing.write")} />;
-    if (section.view === "billing") {
-      return (
-        <BillingWorkspace
-          canAdjust={ctx.permissions.has("billing.ledger.adjust")}
-          canReconcile={ctx.permissions.has("billing.checkout.reconcile")}
-        />
-      );
-    }
-    if (section.view === "config") {
-      return <GenerationConfigWorkspace permissions={{
-        manageProfiles: ctx.permissions.has("generation.config.write"),
-        manageFlags: ctx.permissions.has("config.feature_flag.write"),
-      }} />;
-    }
-    if (section.view === "dead-letter") {
-      return <DeadLetterWorkspace permissions={{
-        requeue: ctx.permissions.has("generation.job.requeue"),
-        discard: ctx.permissions.has("ops.deadletter.write"),
-      }} />;
-    }
-    if (section.view === "access") {
-      return <AccessWorkspace permissions={{
-        changeStatus: ctx.permissions.has("user.status.write"),
-        managePermissions: ctx.permissions.has("user.role.write"),
-      }} />;
-    }
-    if (section.view === "moderation") {
-      return <ModerationWorkspace canDecide={ctx.permissions.has("safety.review.write")} />;
-    }
-    if (section.view === "support") {
-      return (
-        <SupportWorkspace
-          canViewPlaintext={ctx.permissions.has("support.plaintext.view")}
-          canWrite={ctx.permissions.has("support.request.write")}
-        />
-      );
-    }
-    if (section.view === "promo") {
-      return <PromoWorkspace canWrite={ctx.permissions.has("growth.promo.write")} />;
-    }
-    if (section.view === "approvals") {
-      return <ApprovalsWorkspace canReview={ctx.permissions.has("admin.approval.review")} />;
-    }
-    if (section.view === "chat") {
-      return <ChatOpsWorkspace canRead={ctx.permissions.has("chat.ops.read")} />;
-    }
-    if (section.view === "content-merchandising") {
-      return <ContentMerchandisingWorkspace canWrite={ctx.permissions.has("content.takedown.write")} />;
-    }
-    if (section.view === "analytics-overview") {
-      return (
-        <AnalyticsWorkspace
-          canReadCanonical={ctx.canRead}
-          canReadLegacy={ctx.permissions.has("analytics.export")}
-        />
-      );
-    }
-    if (section.view === "risk-overview") {
-      return <RiskWorkspace canRead={ctx.permissions.has("billing.read")} />;
-    }
-    if (section.view === "provider-overview") {
-      return <ProviderOverviewWorkspace canRead={ctx.permissions.has("ops.queue.read")} />;
-    }
-    return <ReviewQueueView />;
-  }
-  return null;
-}
