@@ -1,24 +1,21 @@
 import { randomUUID } from "node:crypto";
 import {
   adminCommandAcceptedSchema,
-  adminCommandRequestSchema,
   adminCommandHeadersSchema,
-  caseCloseCommandRequestSchema,
-  characterReleasePublishCommandRequestSchema,
-  characterReleaseRollbackCommandRequestSchema,
-  characterReleaseScheduleCommandRequestSchema,
-  characterSessionReleaseMigrationCommandRequestSchema,
-  creativeRunRetryFailedCommandRequestSchema,
-  incidentResolveCommandRequestSchema,
   type AdminCommandRequest,
   type AdminCommandTargetType,
+  type AdminV2DeclaredRequestRefFor,
 } from "@idream/shared/admin";
-import { ZodError, type ZodType } from "zod";
+import { ZodError } from "zod";
 import { prisma } from "@/server/lib/db";
 import { AppError, Errors } from "@/server/lib/errors";
 import { fail, ok } from "@/server/lib/http";
 import { env } from "@/server/lib/env";
-import { actorWithPermission, jsonBody } from "@/server/modules/admin-v2/shared/authority";
+import {
+  actorWithPermission,
+  jsonBody,
+  type AdminV2RequestBody,
+} from "@/server/modules/admin-v2/shared/authority";
 import type { PermissionKey } from "@/server/admin/permissions";
 import {
   acceptControlPlaneCommand,
@@ -78,17 +75,43 @@ function parseIfMatch(value: string): number | null {
   return Number(normalized);
 }
 
-async function parseCommand<T extends AdminCommandRequest>(
+/**
+ * SPEC: the ten durable command operations this module owns.
+ * INTENT: the operation id is the only key `parseCommand` takes — the body type is derived
+ * from the manifest, so a request schema is never handed in a second time and cannot drift
+ * from what the route declares. The list is validated by the `jsonBody` call below: a member
+ * the manifest does not declare fails that call's constraint. It stays hand-written rather
+ * than filtered out of all 103 operations because a 103-wide derivation of the body type is
+ * a union tsc refuses to represent.
+ */
+type AdminCommandOperationId =
+  | "POST /api/v2/admin/cases/:id/commands/close"
+  | "POST /api/v2/admin/characters/:id/commands/pause"
+  | "POST /api/v2/admin/characters/:id/commands/resume"
+  | "POST /api/v2/admin/characters/:id/commands/retire"
+  | "POST /api/v2/admin/characters/:id/releases/:releaseId/commands/publish"
+  | "POST /api/v2/admin/characters/:id/releases/:releaseId/commands/rollback"
+  | "POST /api/v2/admin/characters/:id/releases/:releaseId/commands/schedule"
+  | "POST /api/v2/admin/chat/sessions/:sessionId/commands/migrate-release"
+  | "POST /api/v2/admin/creative/runs/:id/commands/retry-failed"
+  | "POST /api/v2/admin/incidents/:id/commands/resolve";
+
+type CommandBody<Id extends AdminCommandOperationId> =
+  AdminV2RequestBody<AdminV2DeclaredRequestRefFor<Id>> & AdminCommandRequest;
+
+async function parseCommand<const Id extends AdminCommandOperationId>(
   request: Request,
-  schema: ZodType<T>,
-): Promise<ParsedCommand<T>> {
+  operationId: Id,
+): Promise<ParsedCommand<CommandBody<Id>>> {
   const requestId = request.headers.get("x-request-id")?.trim() || randomUUID();
+  // INVARIANT: headers are validated before the body, so a missing Idempotency-Key still
+  // reports as a header failure rather than as the transport assertion inside jsonBody.
   const headers = adminCommandHeadersSchema.parse({
     idempotencyKey: request.headers.get("idempotency-key"),
     ifMatch: request.headers.get("if-match") ?? undefined,
     requestId,
   });
-  const body = schema.parse(await jsonBody(request));
+  const body = await jsonBody(request, operationId) as CommandBody<Id>;
   if (headers.ifMatch) {
     const matchedVersion = parseIfMatch(headers.ifMatch);
     if (matchedVersion === null || matchedVersion !== body.entityVersion) {
@@ -353,7 +376,10 @@ const publishReleaseDefinition = {
 export function publishCharacterRelease(request: Request, characterId: string, releaseId: string) {
   return commandResponse(request, async () => {
     const actor = await actorWithPermission(request, publishReleaseDefinition.permission, { characterId });
-    const parsed = await parseCommand(request, characterReleasePublishCommandRequestSchema);
+    const parsed = await parseCommand(
+      request,
+      "POST /api/v2/admin/characters/:id/releases/:releaseId/commands/publish",
+    );
     requireConfirmation(parsed.body.confirmation, `${characterId}:${releaseId}:publish`);
     const replay = await replayExactCommandBeforeMutablePreflight({
       actor,
@@ -409,7 +435,10 @@ const scheduleReleaseDefinition = {
 export function scheduleCharacterRelease(request: Request, characterId: string, releaseId: string) {
   return commandResponse(request, async () => {
     const actor = await actorWithPermission(request, scheduleReleaseDefinition.permission, { characterId });
-    const parsed = await parseCommand(request, characterReleaseScheduleCommandRequestSchema);
+    const parsed = await parseCommand(
+      request,
+      "POST /api/v2/admin/characters/:id/releases/:releaseId/commands/schedule",
+    );
     requireConfirmation(parsed.body.confirmation, `${characterId}:${releaseId}:schedule`);
     parsed.payload.scheduledAt = parsed.body.scheduledAt;
     const replay = await replayExactCommandBeforeMutablePreflight({
@@ -456,7 +485,10 @@ const rollbackReleaseDefinition = {
 export function rollbackCharacterRelease(request: Request, characterId: string, sourceReleaseId: string) {
   return commandResponse(request, async () => {
     const actor = await actorWithPermission(request, rollbackReleaseDefinition.permission, { characterId });
-    const parsed = await parseCommand(request, characterReleaseRollbackCommandRequestSchema);
+    const parsed = await parseCommand(
+      request,
+      "POST /api/v2/admin/characters/:id/releases/:releaseId/commands/rollback",
+    );
     requireConfirmation(parsed.body.confirmation, `${characterId}:${sourceReleaseId}:rollback`);
     parsed.payload.sourceReleaseId = sourceReleaseId;
     const replay = await replayExactCommandBeforeMutablePreflight({
@@ -531,7 +563,10 @@ export function changeCharacterServingState(
         ? servingRetireDefinition
         : servingPauseDefinition;
     const actor = await actorWithPermission(request, definition.permission, { characterId });
-    const parsed = await parseCommand(request, adminCommandRequestSchema);
+    const parsed = await parseCommand(
+      request,
+      `POST /api/v2/admin/characters/:id/commands/${action}` as const,
+    );
     requireConfirmation(parsed.body.confirmation, `${characterId}:${action}`);
     parsed.payload.retireProject = action === "retire";
     parsed.payload.characterId = characterId;
@@ -575,7 +610,10 @@ const migrateSessionReleaseDefinition = {
 export function migrateChatSessionRelease(request: Request, sessionId: string) {
   return commandResponse(request, async () => {
     const actor = await actorWithPermission(request, migrateSessionReleaseDefinition.permission);
-    const parsed = await parseCommand(request, characterSessionReleaseMigrationCommandRequestSchema);
+    const parsed = await parseCommand(
+      request,
+      "POST /api/v2/admin/chat/sessions/:sessionId/commands/migrate-release",
+    );
     requireConfirmation(
       parsed.body.confirmation,
       `${sessionId}:${parsed.body.toCharacterReleaseId}:migrate`,
@@ -647,7 +685,10 @@ const retryFailedDefinition = {
 export function retryFailedCreativeRun(request: Request, runId: string) {
   return commandResponse(request, async () => {
     const actor = await actorWithPermission(request, retryFailedDefinition.permission);
-    const parsed = await parseCommand(request, creativeRunRetryFailedCommandRequestSchema);
+    const parsed = await parseCommand(
+      request,
+      "POST /api/v2/admin/creative/runs/:id/commands/retry-failed",
+    );
     requireConfirmation(parsed.body.confirmation, `${runId}:retry-failed`);
     const replay = await replayCommandBeforeMutablePreflight({
       actor,
@@ -753,7 +794,10 @@ const resolveIncidentDefinition = {
 export function resolveIncident(request: Request, incidentId: string) {
   return commandResponse(request, async () => {
     const actor = await actorWithPermission(request, resolveIncidentDefinition.permission);
-    const parsed = await parseCommand(request, incidentResolveCommandRequestSchema);
+    const parsed = await parseCommand(
+      request,
+      "POST /api/v2/admin/incidents/:id/commands/resolve",
+    );
     requireConfirmation(parsed.body.confirmation, `${incidentId}:resolve`);
     const replay = await replayExactCommandBeforeMutablePreflight({
       actor,
@@ -788,7 +832,10 @@ const closeCaseDefinition = {
 export function closeCase(request: Request, caseId: string) {
   return commandResponse(request, async () => {
     const actor = await actorWithPermission(request, closeCaseDefinition.permission);
-    const parsed = await parseCommand(request, caseCloseCommandRequestSchema);
+    const parsed = await parseCommand(
+      request,
+      "POST /api/v2/admin/cases/:id/commands/close",
+    );
     requireConfirmation(parsed.body.confirmation, `${caseId}:close`);
     const replay = await replayExactCommandBeforeMutablePreflight({
       actor,

@@ -1,5 +1,4 @@
 import {
-  todayClaimRequestSchema,
   todayClaimResponseSchema,
   type TodayClaimRequest,
   type TodayClaimResponse,
@@ -185,7 +184,7 @@ async function applyClaim(
 }
 
 export async function claimTodayWorkItem(request: Request) {
-  const body = todayClaimRequestSchema.parse(await jsonBody(request));
+  const body = await jsonBody(request, "POST /api/v2/admin/today/claim");
   const idempotencyKey = requireIdempotencyKey(request);
   const requestId = request.headers.get("x-request-id")?.trim() || crypto.randomUUID();
   const actor = await claimActor(request, body);
