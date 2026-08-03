@@ -1,7 +1,7 @@
 // SPEC: 内容铺位（Placements）三件套的共享契约 —— 类型/端点/payload 构造（SSoT，三页共用）。
 // INVARIANTS: payload 字段与旧内容运营视图的 POST（ContentOpsViews.tsx:536-543）/
 // PATCH（:566-570）body 完全一致；placementCreateSchema/placementPatchSchema
-// （content-ops.ts:109-126）都要求 reason（≥3 字符）—— 与 Recipes/Presets 不同，铺位的创建与状态
+// （server admin/content/placements.ts）都要求 reason（≥3 字符）—— 与 Recipes/Presets 不同，铺位的创建与状态
 // 流转都走 ConfirmDialog/FormFooter 采集 reason（T14/T15 规则里"backend 收 reason"的分支，与
 // Assets 图片库同款）。PATCH 还要求 confirmation===完整 placement id——由调用方用已知 id 自动
 // 填充，不是运营手敲（真正需要手敲重复确认的只有 archive 这一步破坏性操作，走 ConfirmDialog 的
@@ -40,7 +40,7 @@ export const PLACEMENTS_BASE = "/api/v1/admin/content/placements";
 export const PLACEMENTS_LIST = `${PLACEMENTS_BASE}?limit=25`;
 export const APPROVED_ASSETS_LIST = "/api/v1/admin/content/assets?status=approved&limit=100";
 
-// 与 placementSlotSchema（content-ops.ts:42-50）一致。
+// 与 placementSlotSchema（server admin/content/placements.ts）一致。
 export const SLOTS = [
   "feed_card",
   "homepage_strip",
@@ -49,7 +49,7 @@ export const SLOTS = [
   "campaign",
 ] as const;
 
-// 与 productionTargetTypeSchema.exclude(["none"])（content-ops.ts:112）一致；沿用 旧内容运营视图
+// 与 productionTargetTypeSchema.exclude(["none"])（server admin/content/placements.ts）一致；沿用 旧内容运营视图
 // 原有下拉顺序。
 export const TARGET_TYPES = ["character", "template", "route_page", "campaign"] as const;
 

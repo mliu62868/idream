@@ -296,6 +296,7 @@ type CharacterProductionJourney = {
 | 图片/视频 provider execution | Gen execution Module | Attempt identity 与 pinned recipe |
 | Dreamcoin entry | Ledger Module | 类型化业务 intent |
 | Admin mutation admission | Admin Write Execution Module | operation id、target、领域 callback |
+| Creative Run 创建 | `admin-v2/creative/run-create` | manifest 声明的 run brief + actor |
 | 聚合状态变更 | 对应 aggregate transition | 目标状态与领域原因 |
 | Main ↔ Chat event delivery | Durable Exchange Module | 类型化 event envelope |
 | Character 运营下一步 | Character Journey projector | Character identity / snapshot |

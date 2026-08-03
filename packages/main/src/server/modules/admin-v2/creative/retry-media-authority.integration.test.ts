@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { POST as retryFailed } from "@/app/api/v2/admin/creative/runs/[id]/commands/retry-failed/route";
 import { prisma } from "@/server/lib/db";
-import { patchContentAsset } from "@/server/modules/admin/content-ops";
+import { patchContentAsset } from "@/server/modules/admin/content/assets";
 import { executeCreativeRetryCommand } from "./retry-executor";
 
 describe("Creative retry media and dispatch authority", () => {

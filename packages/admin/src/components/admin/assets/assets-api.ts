@@ -1,6 +1,6 @@
 // SPEC: 图片库两件套（列表 + 详情，无 /new）共享契约 —— 类型/端点/查询参数拼接/审核 PATCH body
 // 构造（SSoT，两页共用）。
-// INVARIANTS: assetPatchSchema（content-ops.ts:90-97）要求 reason（≥3 字符，trim 后）且
+// INVARIANTS: assetPatchSchema（server admin/content/assets.ts）要求 reason（≥3 字符，trim 后）且
 // confirmation===完整 id —— 与 Recipes/Presets（PATCH 无 reason，直连 apiWrite）不同，图片库的
 // 审核/保存写操作都要走 ConfirmDialog 采集 reason（T14/T15 规则里"backend 收 reason"的分支）。
 
