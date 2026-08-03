@@ -2,7 +2,7 @@ import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { GENERATION_PROFILE_RUNNERS } from "@/server/modules/admin/generation/config/service";
+import { GENERATION_PROFILE_RUNNERS } from "./runner-vocabulary";
 
 // SPEC: `GenerationModelProfile.runner` has three independent copies of one
 // vocabulary — the enum comment on schema.prisma's `runner` column, the

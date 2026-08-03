@@ -22,6 +22,7 @@ import {
   dispatchGenerationAttemptOutbox,
   reserveInitialGenerationAttempt,
 } from "@/server/modules/generation/generation-attempt-authority";
+import { GENERATION_PROFILE_RUNNERS } from "@/server/modules/generation/runner-vocabulary";
 
 export function modelDiagnosticsEnabled() {
   return process.env.ADMIN_MODEL_DIAGNOSTICS_ENABLED === "true";
@@ -31,18 +32,6 @@ async function featureEnabled(key: string) {
   const flag = await prisma.featureFlag.findUnique({ where: { key } });
   return Boolean(flag?.enabled);
 }
-// SPEC: the only legal GenerationModelProfile.runner values. Mirrors the enum
-// comment in prisma/schema.prisma; generation-runner-vocabulary.test.ts asserts
-// the two lists are the same set and that gen can map every one of them.
-// INTENT: a runner picks gen's adapter layer only — the concrete backend comes
-// from the workflow descriptor's backendKind.
-export const GENERATION_PROFILE_RUNNERS = [
-  "pipeline",
-  "mlx",
-  "comfyui",
-  "external",
-] as const;
-
 const modelProfileSchema = z.object({
   profileKey: z.string().trim().min(1).max(120),
   label: z.string().trim().min(1).max(120),
