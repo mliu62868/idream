@@ -6,6 +6,7 @@ import { S3CompatibleBlobStore } from "@idream/shared";
 import { resolveLocalBlobPath } from "@idream/shared/storage/local-blob";
 import { MockBlobStore } from "./providers/blob/mock";
 import type { BlobStore, ProviderFailure, ProviderResult } from "./providers/types";
+import type { BlobStorageProbeEvidence, ProbeReportOf } from "./readiness/evidence";
 
 type ProbeOptions = {
   report: string | null;
@@ -20,35 +21,21 @@ type OperationEvidence = {
   error?: { code?: string; message?: string };
 };
 
-type BlobStorageProbeReport = {
+// INTENT: 生产端自己的精确形状（source 是字面量联合、ok 必填），比契约里那份"能容忍脏 JSON 的
+//         全可选声明"更强；报告组装时由 tsc 校验它能落进契约。
+type ReadbackEvidence = {
   ok: boolean;
-  checkedAt: string;
-  durationMs: number;
-  provider: string;
-  endpoint: string | null;
-  bucket: string | null;
-  key: string;
-  contentType: string;
-  bytes: number;
-  sha256: string;
-  configurationError?: string;
-  put: OperationEvidence & { size?: number };
-  signedGetUrl: OperationEvidence & {
-    host?: string | null;
-    pathname?: string | null;
-    expiresInSeconds?: number;
-  };
-  readback: {
-    ok: boolean;
-    source: "filesystem" | "signed-url" | "skipped";
-    status?: number;
-    bytes?: number;
-    matches?: boolean;
-    sha256?: string;
-    error?: string;
-  };
-  delete: OperationEvidence;
+  source: "filesystem" | "signed-url" | "skipped";
+  status?: number;
+  bytes?: number;
+  matches?: boolean;
+  sha256?: string;
+  error?: string;
 };
+
+// SPEC: 写出的 JSON 由 launch gate 的 evidence 契约约束，两端共用 readiness/evidence.ts。
+// INTENT: configurationError 只在对象存储配置不合法的早退路径出现，故标成按路径可省。
+type BlobStorageProbeReport = ProbeReportOf<BlobStorageProbeEvidence, "configurationError">;
 
 function readArg(name: string) {
   const prefix = `--${name}=`;
@@ -230,7 +217,7 @@ async function readBackObject(input: {
   key: string;
   signedUrl: string;
   expectedSha256: string;
-}): Promise<BlobStorageProbeReport["readback"]> {
+}): Promise<ReadbackEvidence> {
   if (input.provider === "mock") {
     try {
       const body = await readFile(resolveLocalBlobPath(input.key));

@@ -9,6 +9,7 @@ import type {
   VoiceClipPort,
   VoiceIdentityPort,
 } from "./providers/types";
+import type { ProbeReportOf, VoiceModelProbeEvidence } from "./readiness/evidence";
 
 type ProbeOptions = {
   report: string | null;
@@ -16,22 +17,13 @@ type ProbeOptions = {
   voiceId: string;
 };
 
-type VoiceProbeReport = {
-  ok: boolean;
-  checkedAt: string;
-  durationMs: number;
-  provider: string;
-  baseUrl: string | null;
-  model: string | null;
-  voiceId: string;
-  key: string | null;
-  audioDurationMs: number | null;
-  voiceCloningAvailable: boolean | null;
-  voiceCloneVerified: boolean | null;
-  bytes?: number;
-  contentType?: string | null;
-  error: { code: string; message: string; retryable?: boolean } | null;
-};
+// SPEC: 写出的 JSON 由 launch gate 的 evidence 契约约束，两端共用 readiness/evidence.ts。
+// INTENT: bytes/contentType 只有拿到音频 blob 才有；audioDurationMs 以前在失败路径写 null，而契约
+//         声明的是 number，靠消费端把 null 洗成 undefined 才没炸 —— 现在改成按路径省略这个 key。
+type VoiceProbeReport = ProbeReportOf<
+  VoiceModelProbeEvidence,
+  "audioDurationMs" | "bytes" | "contentType"
+>;
 
 type StoredBlob = {
   key: string;
@@ -169,7 +161,7 @@ async function runProbe(input: {
         ok: false,
         durationMs: Date.now() - input.startedAt,
         key: null,
-        audioDurationMs: null,
+        audioDurationMs: undefined,
         voiceCloningAvailable,
         voiceCloneVerified,
         error: {
@@ -253,7 +245,7 @@ async function runProbe(input: {
           ok: false,
           durationMs: Date.now() - input.startedAt,
           key: null,
-          audioDurationMs: null,
+          audioDurationMs: undefined,
           voiceCloningAvailable,
           voiceCloneVerified: false,
           bytes: blob.stored?.size,
@@ -305,7 +297,7 @@ async function runProbe(input: {
       ok: false,
       durationMs: Date.now() - input.startedAt,
       key: null,
-      audioDurationMs: null,
+      audioDurationMs: undefined,
       voiceCloningAvailable,
       voiceCloneVerified,
       error: {

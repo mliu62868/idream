@@ -2,6 +2,12 @@ import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { SafetyGatewayModerationProvider } from "@idream/shared";
+import type { ProbeReportOf, SafetyGatewayProbeEvidence } from "./readiness/evidence";
+
+// SPEC: 写出的 JSON 由 launch gate 的 evidence 契约约束，两端共用 readiness/evidence.ts。
+// INTENT: confidence 标成按路径可省 —— 只有 moderation 调用成功时才有分数。以前这里写 null，
+//         而契约声明的是 number，靠消费端把 null 洗成 undefined 才没炸；现在直接省略这个 key。
+type SafetyProbeReport = ProbeReportOf<SafetyGatewayProbeEvidence, "confidence">;
 
 type ModerationStatus = "passed" | "flagged" | "blocked";
 
@@ -61,7 +67,7 @@ async function main() {
     targetType: options.targetType,
   });
   const ok = result.ok && result.data.status === "passed";
-  const report = {
+  const report: SafetyProbeReport = {
     ok,
     checkedAt,
     durationMs: Date.now() - startedAt,
@@ -70,7 +76,7 @@ async function main() {
     targetType: options.targetType,
     status: result.ok ? result.data.status : null,
     policyCode: result.ok ? result.data.policyCode ?? null : null,
-    confidence: result.ok ? result.data.confidence : null,
+    confidence: result.ok ? result.data.confidence : undefined,
     error: result.ok
       ? null
       : {

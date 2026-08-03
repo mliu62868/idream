@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import type { PaymentProviderProbeEvidence, ProbeReportOf } from "./readiness/evidence";
 
 type ProbeOptions = {
   report: string | null;
@@ -9,22 +10,8 @@ type ProbeOptions = {
   invoiceCurrency: string;
 };
 
-type PaymentProbeReport = {
-  ok: boolean;
-  checkedAt: string;
-  durationMs: number;
-  provider: string;
-  baseUrl: string | null;
-  storeId: string | null;
-  canViewStore: boolean;
-  returnedStoreId: string | null;
-  canCreateInvoice: boolean;
-  invoiceId: string | null;
-  checkoutUrl: string | null;
-  invoiceAmountCents: number;
-  invoiceCurrency: string;
-  error: { code: string; message: string; retryable?: boolean } | null;
-};
+// SPEC: 写出的 JSON 由 launch gate 的 evidence 契约约束，两端共用 readiness/evidence.ts。
+type PaymentProbeReport = ProbeReportOf<PaymentProviderProbeEvidence>;
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 

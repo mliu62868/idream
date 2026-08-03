@@ -8,19 +8,21 @@ import {
   formatLaunchReadinessReport,
   loadLaunchReadinessEnv,
   parseLaunchReadinessCliArgs,
-  type AgeVerificationProbeEvidence,
-  type BlobStorageProbeEvidence,
-  type ChatModelProbeEvidence,
-  type ChatServiceProbeEvidence,
-  type ImagePipelineProbeEvidence,
   type LaunchReadinessReport,
-  type PaymentProviderProbeEvidence,
-  type ProductConfigProbeEvidence,
-  type PublicCatalogProbeEvidence,
-  type SafetyGatewayProbeEvidence,
-  type VoiceModelProbeEvidence,
-  type WebSurfaceProbeEvidence,
 } from "./launch-readiness";
+import type {
+  AgeVerificationProbeEvidence,
+  BlobStorageProbeEvidence,
+  ChatModelProbeEvidence,
+  ChatServiceProbeEvidence,
+  ImagePipelineProbeEvidence,
+  PaymentProviderProbeEvidence,
+  ProductConfigProbeEvidence,
+  PublicCatalogProbeEvidence,
+  SafetyGatewayProbeEvidence,
+  VoiceModelProbeEvidence,
+  WebSurfaceProbeEvidence,
+} from "./readiness/evidence";
 
 const now = new Date("2026-06-25T00:00:00.000Z");
 const externalModerationServiceUrl = "https://moderation.ourdream.internal";

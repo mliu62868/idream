@@ -11,6 +11,7 @@ import {
 } from "@idream/shared/bff";
 import { prisma } from "./lib/db";
 import { publicCharacterAudienceWhere } from "./modules/ourdream/public-content-audience";
+import type { ChatServiceProbeEvidence, ProbeReportOf } from "./readiness/evidence";
 
 type ProbeOptions = {
   report: string | null;
@@ -24,6 +25,11 @@ type OperationEvidence = {
   status?: number;
   error?: string | null;
 };
+
+// INTENT: 生产端自己的精确形状（ok 必填、永不为 null），比契约里那份"能容忍脏 JSON 的
+//         全可选声明"更强；报告组装时由 tsc 校验它能落进契约。
+type HealthEvidence = OperationEvidence & { service?: string | null };
+type SignedRequestEvidence = OperationEvidence & { sessionsCount?: number };
 
 type NoMemoryEvidence = OperationEvidence & {
   assistantMessageId?: string;
@@ -63,23 +69,10 @@ type ConversationEvidence = {
   error?: string | null;
 };
 
-type ChatServiceProbeReport = {
-  ok: boolean;
-  checkedAt: string;
-  durationMs: number;
-  serviceUrl: string | null;
-  userId: string;
-  actorDataClass: string | null;
-  dedicatedActor: boolean;
-  characterId: string | null;
-  characterSource: "argument" | "database" | "missing";
-  usedSignedBff: boolean;
-  health: OperationEvidence & { service?: string | null };
-  signedRequest: OperationEvidence & { sessionsCount?: number };
-  unsignedRequest: OperationEvidence;
-  conversation: ConversationEvidence;
-  error: { code: string; message: string; retryable?: boolean } | null;
-};
+// SPEC: 写出的 JSON 由 launch gate 的 evidence 契约约束，两端共用 readiness/evidence.ts。
+// INTENT: 只把顶层收到契约上 —— 上面那几个嵌套类型（characterSource 的字面量联合、各步骤的
+//         OperationEvidence）比契约更精确，赋值时由 tsc 校验它们能落进契约，精度不丢。
+type ChatServiceProbeReport = ProbeReportOf<ChatServiceProbeEvidence>;
 
 const CHAT_PROBE_USER_ID = "seed-chat-probe-user";
 
@@ -193,11 +186,11 @@ export async function runProbe(input: {
   };
 
   const health = await probeHealth(input.serviceUrl);
-  let signedRequest: ChatServiceProbeReport["signedRequest"] = {
+  let signedRequest: SignedRequestEvidence = {
     ok: false,
     error: "CHAT_BFF_SIGNING_SECRET is required for chat service probe",
   };
-  let unsignedRequest: ChatServiceProbeReport["unsignedRequest"] = {
+  let unsignedRequest: OperationEvidence = {
     ok: false,
     error: "not attempted",
   };
@@ -1005,7 +998,7 @@ async function readStreamWithTimeout(res: Response, timeoutMs: number): Promise<
   return text;
 }
 
-async function probeHealth(serviceUrl: string | null): Promise<ChatServiceProbeReport["health"]> {
+async function probeHealth(serviceUrl: string | null): Promise<HealthEvidence> {
   if (!serviceUrl?.trim()) return { ok: false, error: "CHAT_SERVICE_URL is required" };
   try {
     const response = await fetch(new URL("/healthz", normalizedBase(serviceUrl)));
@@ -1029,7 +1022,7 @@ async function probeSignedSessions(input: {
   serviceUrl: string;
   secret: string;
   userId: string;
-}): Promise<ChatServiceProbeReport["signedRequest"]> {
+}): Promise<SignedRequestEvidence> {
   const method = "GET";
   const requestPath = "/api/v1/chat/sessions";
   const body = "";
@@ -1059,7 +1052,7 @@ async function probeSignedSessions(input: {
 
 async function probeUnsignedSessions(
   serviceUrl: string,
-): Promise<ChatServiceProbeReport["unsignedRequest"]> {
+): Promise<OperationEvidence> {
   try {
     const response = await fetch(
       new URL("/api/v1/chat/sessions", normalizedBase(serviceUrl)),
