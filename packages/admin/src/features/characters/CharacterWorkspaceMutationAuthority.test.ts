@@ -137,23 +137,53 @@ describe("Character workspace mutation authority", () => {
     }, 301_001)).toBe(false);
   });
 
-  it("pins persisted command journals to schema, actor, environment, and replay expiry", () => {
-    const source = readFileSync(new URL("./CharacterWorkspace.tsx", import.meta.url), "utf8");
+  // SPEC: 落盘的命令日志只对"同一套 schema、同一个人、同一个环境"有效。
+  // INTENT: 这三条曾经靠断言 CharacterWorkspace.tsx 的源码文本来守。日志的读侧是导出的，
+  //         直接喂它就能验——写侧只要少盖任一枚戳，读侧就会拒绝自己写的日志。
+  it("rejects persisted command journals from another schema, actor, or environment", () => {
+    const journal = {
+      schemaVersion: 1,
+      actorId: "operator-1",
+      environment: "https://admin.example.test",
+      commandId: null,
+      action: "Release publish",
+      signature: "publish:release-1",
+      endpoint: "/api/v2/admin/characters/character-1/releases/release-1/commands/publish",
+      body: { entityVersion: 1 },
+      idempotencyKey: "command-key-1",
+      createdAt: 1_000,
+    };
+    const parse = (record: object) => parsePendingCharacterCommandJournal(
+      JSON.stringify(record),
+      journal.actorId,
+      journal.environment,
+    );
 
-    expect(source).toContain("const CHARACTER_COMMAND_JOURNAL_SCHEMA_VERSION = 1");
-    expect(source).toContain("const UNKNOWN_COMMAND_AUTO_REPLAY_TTL_MS = 5 * 60_000");
-    expect(source).toContain("record.schemaVersion !== CHARACTER_COMMAND_JOURNAL_SCHEMA_VERSION");
-    expect(source).toContain("record.actorId !== actorId");
-    expect(source).toContain("record.environment !== environment");
-    expect(source).toContain("schemaVersion: CHARACTER_COMMAND_JOURNAL_SCHEMA_VERSION");
-    expect(source).toContain("actorId,\n        environment: browserCommandEnvironment()");
-    expect(source).toContain("environment: browserCommandEnvironment()");
-    expect(source).toMatch(
-      /autoReplayUntil:\s*command\.autoReplayUntil/,
-    );
-    expect(source).toMatch(
-      /\?\?\s*command\.createdAt \+ UNKNOWN_COMMAND_AUTO_REPLAY_TTL_MS/,
-    );
+    expect(parse(journal)).toMatchObject({ signature: "publish:release-1" });
+    expect(parse({ ...journal, schemaVersion: 2 })).toBeNull();
+    expect(parse({ ...journal, schemaVersion: undefined })).toBeNull();
+    expect(parse({ ...journal, actorId: "operator-2" })).toBeNull();
+    expect(parse({ ...journal, actorId: undefined })).toBeNull();
+    expect(parse({ ...journal, environment: "https://staging.example.test" })).toBeNull();
+    expect(parse({ ...journal, environment: undefined })).toBeNull();
+  });
+
+  // SPEC: 没写明过期时刻的日志，重放窗口从"命令创建时"起算 5 分钟，不是从"现在"起算。
+  // INTENT: 从 now 起算等于每读一次就续一次命，一个受理状态不明的命令能被无限重放。
+  it("bounds an unexpired journal from its creation time, not from now", () => {
+    const command = { commandId: null, createdAt: 1_000 } as const;
+    expect(characterCommandJournalCanAutoReplay(command, 301_000)).toBe(true);
+    expect(characterCommandJournalCanAutoReplay(command, 301_001)).toBe(false);
+    // 显式过期时刻优先于默认窗口。
+    expect(characterCommandJournalCanAutoReplay(
+      { ...command, autoReplayUntil: 2_000 },
+      2_001,
+    )).toBe(false);
+    // 已知 commandId 的命令不受重放窗口限制——它的受理状态是可查的。
+    expect(characterCommandJournalCanAutoReplay(
+      { commandId: "command-1", createdAt: 1_000 },
+      Number.MAX_SAFE_INTEGER,
+    )).toBe(true);
   });
 
   it("rejects journals with missing or invalid creation authority instead of extending replay from now", () => {
@@ -188,12 +218,8 @@ describe("Character workspace mutation authority", () => {
       )).toBeNull();
     }
 
-    const source = readFileSync(new URL("./CharacterWorkspace.tsx", import.meta.url), "utf8");
-    const parser = source.slice(
-      source.indexOf("export function parsePendingCharacterCommandJournal"),
-      source.indexOf("function readPendingCharacterCommand"),
-    );
-    expect(parser).not.toContain("Date.now()");
+    // INTENT: 这里原本还断言解析器源码里没有 "Date.now()"。上面这段已经证明了同一件事：
+    //         createdAt 不可信就整条作废，而不是拿当前时间给它续一个新的重放窗口。
   });
 
   it("keeps one durable command key per canonical signature and releases only that signature", () => {
@@ -316,6 +342,12 @@ describe("Character workspace mutation authority", () => {
     );
   });
 
+  // SPEC: 命令必须先落盘再发出；只有"服务端明确拒绝"才解锁写入。
+  // INTENT: 保留源码断言是有意的——这两条提交流程都关在 ReleasePanel / CharacterDetail
+  //         内部，没有导出的接缝，而它守的是一条安全不变量："先发后记"会在断网时留下
+  //         一个既没记录、又可能已生效的写入。挂载整个 CharacterWorkspace 详情页来打这条
+  //         成本远高于收益，所以这里明说：锁的是顺序与解锁条件，不是措辞。
+  //         下面刻意只比较顺序与关键调用，不比较缩进与行内文本。
   it("persists command intent before POST and only unlocks on a definitive rejection", () => {
     const source = readFileSync(new URL("./CharacterWorkspace.tsx", import.meta.url), "utf8");
     const releaseCommand = source.slice(
@@ -335,10 +367,15 @@ describe("Character workspace mutation authority", () => {
       );
       expect(flow).toContain("isDefinitiveCommandRejection(cause)");
       expect(flow).toContain("discardPendingCommand(submission)");
-      expect(flow).not.toContain("abortCommandSubmission();\n      setError");
+      // INVARIANT: 不得有"无条件中止并报错"的分支——受理状态不明时必须保持写入锁定。
+      expect(flow).not.toMatch(/abortCommandSubmission\(\);\s*setError/);
     }
   });
 
+  // SPEC: 命令恢复与轮询归 CharacterDetail，ReleasePanel 不碰命令状态接口。
+  // INTENT: 同上，保留源码断言。这条守的是作用域划分——ReleasePanel 会随投影刷新反复
+  //         重建，把恢复逻辑放进去等于每刷一次就重放一次命令。没有导出接缝能表达
+  //         "这段代码不在那个组件里"。
   it("recovers and polls commands at CharacterDetail scope, independent of ReleasePanel data", () => {
     const source = readFileSync(new URL("./CharacterWorkspace.tsx", import.meta.url), "utf8");
     const releasePanel = source.slice(
@@ -431,6 +468,11 @@ describe("Character workspace mutation authority", () => {
     });
   });
 
+  // SPEC: 受理状态未知的命令，任何情况下都不许直接解锁写入。
+  // INTENT: 保留源码断言。这是这一屏最硬的一条安全不变量：解锁意味着允许第二次写入，
+  //         而"上一次到底生效没有"此刻并不知道。recoverPendingCommand 是 useCallback
+  //         闭包，没有导出接缝；能表达"这条路径里不存在 discardPendingCommand"的，
+  //         目前只有源码断言。
   it("never unlocks an unknown command directly when replay authority is unavailable or ambiguous", () => {
     const source = readFileSync(new URL("./CharacterWorkspace.tsx", import.meta.url), "utf8");
     const recoveryStart = source.indexOf("const recoverPendingCommand = useCallback");
