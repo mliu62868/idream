@@ -5,10 +5,10 @@ import { creativeReviewQualityPassed } from "@/server/modules/admin-v2/shared/cr
 import { resolveCommunityCampaignPlacements } from "@/server/modules/ourdream/community-campaigns";
 import {
   publishDistributionPlacement,
-  recordCreativeReviewDecision,
   verifyCreativePlacement,
   withdrawCreativePlacement,
-} from "./workflow";
+} from "./placement";
+import { recordCreativeReviewDecision } from "./review-decision";
 
 describe("Creative workflow transition concurrency", () => {
   const suffix = randomUUID();

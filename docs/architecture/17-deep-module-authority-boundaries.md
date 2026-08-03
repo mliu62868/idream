@@ -298,6 +298,11 @@ type CharacterProductionJourney = {
 | Dreamcoin entry | Ledger Module | 类型化业务 intent |
 | Admin mutation admission | Admin Write Execution Module | operation id、target、领域 callback |
 | Creative Run 创建 | `admin-v2/creative/run-create` | manifest 声明的 run brief + actor |
+| Creative Run item 评审结论 | `admin-v2/creative/review-decision` | 决定 + 质量清单 + 期望版本 |
+| Creative 投放位状态与验证 | `admin-v2/creative/placement` | 投放位标识 + 期望版本 |
+| 素材可否面向客户发布 | `admin-v2/creative/customer-publishable-asset` | 素材 + 可选 pinned provider 快照 |
+| Today 工作项紧急度（SQL 与 TS 两侧） | `admin-v2/today/work-severity` | 来源类型 |
+| AdminCase priority→severity | `admin-v2/cases/case-severity` | priority |
 | 聚合状态变更 | 对应 aggregate transition | 目标状态与领域原因 |
 | Main ↔ Chat event delivery | Durable Exchange Module | 类型化 event envelope |
 | Character 运营下一步 | Character Journey projector | Character identity / snapshot |
@@ -342,7 +347,30 @@ type CharacterProductionJourney = {
 
 再补一条实证（`ourdream → admin` 依赖方向守卫）：**注释不是边界**。前台公开只读投影 `listActiveTemplates` 曾住在 `modules/admin/characters/templates.ts`，靠文件头一行「公开只读，不要求 admin 权限」声明它其实不属于那里。名字、位置、import 全都编译得过，符号黑名单抓不到。现在守的是「`modules/ourdream/**` 里出现的 `modules/admin/**` import 集合**恰好等于**白名单」，白名单只有 v1→admin 的 dispatch 接缝一条；多一条是新的错误方向，少一条说明白名单陈旧。按第 1 条：能抓住这类漂移的只有集合相等，不是任何形式的命名约定。
 
-### 3.3 先问检查器守的不变量能不能变成不可表示
+### 3.3 一个判断跨 SQL 与 TS 两侧时，收成同一个字面量
+
+`today/query.ts` 里每个工作来源的紧急度规则写三遍：SQL 排序用的 `severity_rank`、按紧急度
+选行的 WHERE 谓词、以及 `projectRow` 里的 TS 三段式。**选行走 SQL、投影走 TS，这不是巧合而是
+必然** —— 分页要在库里排序取前 N，展示要在进程里算字段。于是同一条规则必须有两种表达。
+
+两种表达无法归一成一份代码，但可以归一成同一个字面量：
+
+- 每条规则的 SQL 表达与 TS 表达写在相邻几行（`today/work-severity.ts`）；
+- 「按紧急度选行」一律由 rank 相等推导（`AND (<rank 表达式>) = <rank>`），不再手抄第三份谓词。
+  `character_release` 那份手抄谓词有四个分支，是最容易漂的一处；
+- 对账不靠形状守卫，靠一条**行为断言**：每个紧急度「宣称的条数 == 真能翻出来的条数」，且四档
+  之和等于不筛时的总数。两侧任一处改动而另一处不改，这条断言当场变红（已分别注入 TS 侧漂移与
+  SQL 侧漂移验证）。
+
+这条对账之所以值钱，是因为不一致的表现是**两个互相矛盾的答案同时返回**：`totalCount` 来自各
+来源的 SQL count，`items` 来自 TS 过滤之后的结果 —— 页面显示「共 N 条」却一条也翻不出来。
+
+顺带实证了 §3.1 第 2 条：`mediaAssetPlacement` 写者守卫若用仓库里现成的 AST 检测器
+（`mutationWritesField`）会得到假绿 —— 那个检测器要能解析出 Prisma client 的来源，而 legacy
+`admin/content/placements.ts` 的事务是 `auditedTransaction("...", async (tx) => …)` 这种自定义
+包装，`tx` 解析不出来，**整个文件对它隐形**。守卫改用文本扫描后才看得见两个写者。
+
+### 3.4 先问检查器守的不变量能不能变成不可表示
 
 离线检查器只在「不变量无法被类型或 schema 表达」时才有价值。新增或审查一个检查器时先按这个顺序问：
 

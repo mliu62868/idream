@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { executeCreativeRetryCommand } from "./retry-executor";
-import { recordCreativeReviewDecision } from "./workflow";
+import { recordCreativeReviewDecision } from "./review-decision";
 
 describe("Creative Run lifecycle guards", () => {
   const suffix = randomUUID();

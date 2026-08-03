@@ -16,7 +16,7 @@ import {
 import {
   getCreativeRunDetail,
   listCreativeRuns,
-} from "@/server/modules/admin-v2/creative/workflow";
+} from "@/server/modules/admin-v2/creative/run-read";
 import {
   getContentAsset,
   listContentAssets,

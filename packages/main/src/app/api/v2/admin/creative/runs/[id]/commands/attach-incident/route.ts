@@ -3,7 +3,9 @@ import {
 } from "@idream/shared/admin";
 import { env } from "@/server/lib/env";
 import { actorWithPermission, jsonBody } from "@/server/modules/admin-v2/shared/authority";
-import { attachCreativeRunToIncident } from "@/server/modules/admin-v2/creative/workflow";
+import {
+  attachCreativeRunToIncident,
+} from "@/server/modules/admin-v2/creative/incident-attachment";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
 import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";

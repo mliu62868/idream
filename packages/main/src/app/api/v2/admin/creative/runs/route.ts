@@ -2,7 +2,7 @@ import { creativeRunCreateResultSchema } from "@idream/shared/admin";
 import { actorWithPermission, jsonBody } from "@/server/modules/admin-v2/shared/authority";
 import { Errors } from "@/server/lib/errors";
 import { createCreativeRun } from "@/server/modules/admin-v2/creative/run-create";
-import { listCreativeRuns } from "@/server/modules/admin-v2/creative/workflow";
+import { listCreativeRuns } from "@/server/modules/admin-v2/creative/run-read";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 import { ok } from "@/server/lib/http";
 

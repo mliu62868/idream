@@ -6,7 +6,7 @@ import { jobQueue } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
 import { createCreativeRun } from "@/server/modules/admin-v2/creative/run-create";
 import { createUser } from "@/server/test/helpers";
-import { getCreativeRunDetail } from "./workflow";
+import { getCreativeRunDetail } from "./run-read";
 
 describe("Creative Run v2 brief and launch", () => {
   const suffix = randomUUID();

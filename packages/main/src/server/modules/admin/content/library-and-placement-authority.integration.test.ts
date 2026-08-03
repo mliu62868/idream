@@ -5,7 +5,7 @@ import { prisma } from "@/server/lib/db";
 import {
   publishDistributionPlacement,
   verifyCreativePlacement,
-} from "@/server/modules/admin-v2/creative/workflow";
+} from "@/server/modules/admin-v2/creative/placement";
 import { api, createUser } from "@/server/test/helpers";
 import {
   bulkPatchContentAssets,

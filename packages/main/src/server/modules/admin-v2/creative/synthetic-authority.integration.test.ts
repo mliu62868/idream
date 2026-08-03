@@ -3,11 +3,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { CREATIVE_MEDIA_AUTHORITY_METADATA_KEY } from "@/server/lib/creative-media-authority";
 import { resolveCommunityCampaignPlacements } from "@/server/modules/ourdream/community-campaigns";
-import {
-  publishDistributionPlacement,
-  recordCreativeReviewDecision,
-  verifyCreativePlacement,
-} from "./workflow";
+import { publishDistributionPlacement, verifyCreativePlacement } from "./placement";
+import { recordCreativeReviewDecision } from "./review-decision";
 
 describe("Creative customer media authority", () => {
   const suffix = randomUUID();

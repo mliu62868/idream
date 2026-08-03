@@ -2,7 +2,7 @@ import {
   creativePlacementWithdrawalResultSchema,
 } from "@idream/shared/admin";
 import { env } from "@/server/lib/env";
-import { withdrawCreativePlacement } from "@/server/modules/admin-v2/creative/workflow";
+import { withdrawCreativePlacement } from "@/server/modules/admin-v2/creative/placement";
 import { actorWithPermission, jsonBody } from "@/server/modules/admin-v2/shared/authority";
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
 import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
