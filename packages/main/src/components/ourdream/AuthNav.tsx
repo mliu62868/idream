@@ -9,6 +9,11 @@ import {
   type AuthUser,
 } from "@/lib/public-api-contracts";
 import { authHrefForTarget, authNextTargetFromPath } from "./authRedirect";
+import {
+  ACCOUNT_AUTHORITY_UNAVAILABLE,
+  authNavLogoutPresentation,
+  authNavMode,
+} from "./auth-nav-state";
 
 // SPEC: top-bar auth state. Reads /api/v1/me on mount; shows the signed-in user
 // (avatar + name + log out) when a session cookie is present, otherwise the
@@ -36,6 +41,8 @@ function AuthNavContent() {
   const authTarget = authNextTargetFromPath(pathname, searchParams?.toString() ?? "", hash);
   const loginHref = authHrefForTarget("/login", authTarget);
   const signupHref = authHrefForTarget("/signup", authTarget);
+  const mode = authNavMode(loadState, user !== null);
+  const logoutPresentation = authNavLogoutPresentation(logoutState);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -80,9 +87,9 @@ function AuthNavContent() {
   }
 
   // Reserve space while resolving to avoid a Login→name layout flash.
-  if (loadState === "loading") return <AuthNavLoading />;
+  if (mode === "loading") return <AuthNavLoading />;
 
-  if (loadState === "error") {
+  if (mode === "authority_error") {
     return (
       <button
         className="inline-flex h-8 items-center gap-2 rounded-full border border-white/15 px-3 text-[12px] font-bold text-[rgb(170,170,170)] transition-colors hover:border-white/30 hover:text-white"
@@ -94,7 +101,7 @@ function AuthNavContent() {
         type="button"
       >
         <RefreshCw className="h-3.5 w-3.5" />
-        Account unavailable
+        {ACCOUNT_AUTHORITY_UNAVAILABLE}
       </button>
     );
   }
@@ -120,14 +127,14 @@ function AuthNavContent() {
           onClick={logout}
           type="button"
         >
-          {logoutState === "pending" ? "Logging out…" : "Log out"}
+          {logoutPresentation.label}
         </button>
-        {logoutState === "error" ? (
+        {logoutPresentation.error ? (
           <span
             className="max-w-40 text-[11px] font-semibold text-red-300"
             role="alert"
           >
-            Log out failed. Try again.
+            {logoutPresentation.error}
           </span>
         ) : null}
       </div>

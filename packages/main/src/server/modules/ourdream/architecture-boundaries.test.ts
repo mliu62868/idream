@@ -87,55 +87,7 @@ describe("ourdream → admin dependency direction", () => {
 // 就是可以马上搬走的，不该留在这里。
 //
 // NOTE: 测试文件 import service 不是债务（service.test.ts 就该测 dispatchV1），不记账。
-const SERVICE_REVERSE_IMPORTS: Record<string, readonly string[]> = {
-  // 阻塞约束：`bodyText`/`jsonBody`/`parseJsonText`/`isRecord`/`toInputJson` 是通用
-  // HTTP/JSON 原语，该去 lib/；其余 lock*/public*Projection 属于结算与权益投影，
-  // 需要连同 service 里的订阅结算段一起搬。两件事互不相干，是分开的两刀。
-  "billing-checkout.ts": [
-    "bodyText",
-    "cryptoRandomId",
-    "isRecord",
-    "jsonBody",
-    "lockCheckoutSession",
-    "lockProviderEvent",
-    "lockUserLedger",
-    "parseJsonText",
-    "publicFeatureProjection",
-    "publicOfferAvailability",
-    "toInputJson",
-    "trackEvent",
-    "trackEventOnce",
-  ],
-  // 阻塞约束：submitReport 依赖 service 的 applyModerationAction，而后者又依赖
-  // discovery 的 feedCharacterId / feedCollectionId —— 直接搬会把循环换个方向重建。
-  // 要先把 feed item id 的编解码抽成独立模块，举报受理才能落地成自己的模块。
-  // clampInt / cryptoRandomId / trackEvent 是三个跨面原语，各自的家不在读模型里；
-  // 在 submitReport 那条边还在时先搬它们，只会让 import 变短而不改变依赖图。
-  "discovery.ts": ["clampInt", "cryptoRandomId", "submitReport", "trackEvent"],
-  // 阻塞约束：这一批是生成侧的 profile/recipe 选取与角色解析，权威仍在 service 的
-  // 生成段里；要搬得先把「生成请求的输入解析」整段抽出来。
-  "generation-quote.ts": [
-    "GenerationCreateBody",
-    "GenerationSource",
-    "assertGenerationProfileCanDispatchReferences",
-    "featureFlagEnabled",
-    "generationCharacter",
-    "generationReferenceRouteRequirements",
-    "isTrustedGenerationPromptSource",
-    "publishedGenerationVideoCharacter",
-    "resolveGenerationLook",
-    "resolveGenerationVisualProfile",
-    "selectGenerationProfile",
-    "selectRecipe",
-  ],
-  // 阻塞约束：同 billing-checkout —— 权益投影与账本锁还住在 service 的结算段里。
-  "subscription-lifecycle.ts": [
-    "lockUserLedger",
-    "publicFeatureProjection",
-    "publicOfferAvailability",
-    "toInputJson",
-  ],
-};
+const SERVICE_REVERSE_IMPORTS: Record<string, readonly string[]> = {};
 
 const SERVICE_SPECIFIER = ["./ser", "vice"].join("");
 

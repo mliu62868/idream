@@ -2,7 +2,10 @@ import type { Metadata } from "next";
 import { cookies } from "next/headers";
 import { AgeGateBoundary } from "@/components/ourdream/AgeGateBoundary";
 import { AnnouncementBanner } from "@/components/ourdream/AnnouncementBanner";
-import { AGE_GATE_COOKIE_NAME } from "@/lib/age-gate";
+import {
+  AGE_GATE_COOKIE_NAME,
+  ageGateAcceptedFromCookieValue,
+} from "@/lib/age-gate";
 import { publicSiteOrigin } from "@/lib/public-site-origin";
 import "./globals.css";
 
@@ -37,8 +40,9 @@ export default async function RootLayout({
   children: React.ReactNode;
 }>) {
   const cookieStore = await cookies();
-  const ageGateAccepted =
-    cookieStore.get(AGE_GATE_COOKIE_NAME)?.value === "true";
+  const ageGateAccepted = ageGateAcceptedFromCookieValue(
+    cookieStore.get(AGE_GATE_COOKIE_NAME)?.value,
+  );
 
   return (
     <html lang="en" className="dark h-full antialiased">

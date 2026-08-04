@@ -91,7 +91,12 @@ export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: st
         title: t("Save"),
         submitLabel: t("Save"),
         onSubmit: async (reason) => {
-          await apiWrite(`${ASSETS_LIST}/${id}`, "PATCH", assetPatchPayload({ id, draft, reason }));
+          await apiWrite(
+            `${ASSETS_LIST}/${id}`,
+            "PATCH",
+            assetPatchPayload({ id, draft, reason }),
+            { "idempotency-key": crypto.randomUUID() },
+          );
           try {
             await reload(true);
           } catch (refreshError) {
@@ -111,7 +116,12 @@ export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: st
       destructive: { expectedName: shortId },
       submitLabel: t("Archive"),
       onSubmit: async (reason) => {
-        await apiWrite(`${ASSETS_LIST}/${id}`, "PATCH", assetPatchPayload({ id, draft, reason, status: "archived" }));
+        await apiWrite(
+          `${ASSETS_LIST}/${id}`,
+          "PATCH",
+          assetPatchPayload({ id, draft, reason, status: "archived" }),
+          { "idempotency-key": crypto.randomUUID() },
+        );
         try {
           await reload(true);
           } catch (refreshError) {

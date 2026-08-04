@@ -33,6 +33,7 @@ import {
   readyAuthorityStatus,
 } from "./authority-state";
 import { authHrefForTarget } from "./authRedirect";
+import { publicOptimisticMutationFailure } from "./optimistic-write-state";
 
 // SPEC: campaign 投放位曝光/点击埋点，经既有 POST /api/v1/events/track。
 // INTENT: 只覆盖有公开渲染面的 campaign 槽位；feed_card/homepage_strip 等无渲染面槽位不造埋点（诚实数据）。
@@ -455,7 +456,7 @@ export function CommunityWorkspace() {
       }
       setStatus(await followErrorMessage(response));
     } catch {
-      setStatus("Could not update follow. Please try again.");
+      setStatus(publicOptimisticMutationFailure("follow").status);
     }
   }
 
@@ -488,7 +489,7 @@ export function CommunityWorkspace() {
         ),
       );
     } catch {
-      setStatus("Could not update follow. Please try again.");
+      setStatus(publicOptimisticMutationFailure("follow").status);
     } finally {
       setFollowPendingIds((current) => {
         const nextPending = new Set(current);

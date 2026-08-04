@@ -6,6 +6,7 @@ import {
   GENDER_FILTER_VALUES,
 } from "@/lib/character-taxonomy";
 import { categoryFilters } from "@/lib/ourdream-data";
+import { canStartAgeGatedLoad } from "@/lib/age-gate";
 import {
   parseCharacterListResponse,
   parseTagListResponse,
@@ -95,7 +96,7 @@ export function ExploreWorkspace() {
   useEffect(() => {
     // Rendered behind AgeGateBoundary, so acceptance is already guaranteed here —
     // load as soon as the URL-derived filters are parsed.
-    if (!ageGateAccepted || !initialized) return;
+    if (!canStartAgeGatedLoad(ageGateAccepted, initialized)) return;
     const timer = window.setTimeout(() => {
       void loadCharacters();
     }, 0);

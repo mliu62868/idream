@@ -317,7 +317,7 @@ describe("Admin v2 API permission and contract manifest", () => {
 
     expect(new Set(declared).size).toBe(declared.length);
     expect(declared).toEqual(implemented);
-    expect(declared).toHaveLength(103);
+    expect(declared).toHaveLength(108);
   });
 
   it("fails closed unless each operation has typed authority and request/response contracts", () => {

@@ -14,6 +14,7 @@ import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { createLatestRequestGate } from "@/lib/latest-request";
+import { canonicalListEmptyTitle } from "@/features/compatibility-lists/empty-state";
 import {
   approvalListPath,
   approvalQueryFromSearch,
@@ -219,11 +220,7 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
       ) : data && !rows.length ? (
         <EmptyState
           hint="The complete approval authority query returned no work."
-          title={
-            filtered
-              ? "No approval requests match these filters"
-              : "No approval requests are pending"
-          }
+          title={canonicalListEmptyTitle("approvals", filtered)}
         />
       ) : data ? (
         <DataTable

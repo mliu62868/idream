@@ -9,10 +9,8 @@
 // INVARIANT: 对账三态（provider 未答复 / 明确 not-found / 迟到结算）全部
 // fail closed —— 拿不准就不放权益，宁可让用户重试，也不凭猜测激活订阅。
 //
-// NOTE: 反向 import ./service 的那一批是仍与其余路由共用的助手（jsonBody /
-// toInputJson / trackEvent / DTO 投影 / 计划与订阅查询…）。与
-// generation-quote.ts 同理：mega-module 形态是既定决策，这里只搬走自成体系
-// 的结算域，不去拆共用助手。
+// INTENT: JSON、事件、权益和订阅助手都来自具名模块；结算域保持单向依赖，
+// service 只负责把匹配到的 HTTP 请求分发到这里。
 import { Prisma } from "@prisma/client";
 import { createHash, randomUUID } from "node:crypto";
 import { getAuthCtx, requireUser } from "@/server/lib/auth";
@@ -20,24 +18,22 @@ import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
+import { cryptoRandomId } from "@/server/lib/random-id";
+import {
+  bodyText,
+  isRecord,
+  jsonBody,
+  parseJsonText,
+  toInputJson,
+} from "@/server/lib/request-json";
 import { createClassifiedAnalyticsEvent } from "@/server/modules/admin-v2/metrics/classified-event-writer";
 import { providers } from "@/server/providers";
 import type { PaymentInvoice, ProviderResult } from "@/server/providers/types";
 import {
-  bodyText,
-  cryptoRandomId,
-  isRecord,
-  jsonBody,
-  lockCheckoutSession,
-  lockProviderEvent,
-  lockUserLedger,
-  parseJsonText,
   publicFeatureProjection,
   publicOfferAvailability,
-  toInputJson,
-  trackEvent,
-  trackEventOnce,
-} from "./service";
+} from "./offer-availability";
+import { trackEvent, trackEventOnce } from "./product-events";
 import {
   activateSubscriptionInTx,
   activeSamePlanProviderDispatchInTx,
@@ -48,8 +44,23 @@ import {
   checkoutOfferSnapshotSchema,
   checkoutSchema,
   findPlan,
+  lockUserLedger,
   publicSubscriptionDTO,
 } from "./subscription-lifecycle";
+
+async function lockProviderEvent(
+  tx: Prisma.TransactionClient,
+  providerEventId: string,
+) {
+  await tx.$queryRaw`SELECT id FROM "provider_events" WHERE id = ${providerEventId} FOR UPDATE`;
+}
+
+async function lockCheckoutSession(
+  tx: Prisma.TransactionClient,
+  checkoutId: string,
+) {
+  await tx.$queryRaw`SELECT id FROM "checkout_sessions" WHERE id = ${checkoutId} FOR UPDATE`;
+}
 
 export async function listPlans() {
   const [plans, availability] = await Promise.all([

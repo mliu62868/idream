@@ -12,6 +12,7 @@ export * from "./characters-release";
 export * from "./characters-performance";
 export * from "./characters-media-operations";
 export * from "./creative";
+export * from "./assets";
 export * from "./incidents";
 export * from "./cases";
 export * from "./customers";

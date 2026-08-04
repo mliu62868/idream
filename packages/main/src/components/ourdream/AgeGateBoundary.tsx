@@ -132,6 +132,25 @@ export function AgeGateBoundary({
   }, [state]);
 
   return (
+    <AgeGateFrame
+      onAccepted={() => setAuthoritativeAccepted(true)}
+      state={state}
+    >
+      {children}
+    </AgeGateFrame>
+  );
+}
+
+export function AgeGateFrame({
+  children,
+  onAccepted,
+  state,
+}: Readonly<{
+  children: React.ReactNode;
+  onAccepted: () => void;
+  state: AgeGateState;
+}>) {
+  return (
     <AgeGateAccessContext.Provider value={state}>
       <div
         data-age-gate-content=""
@@ -151,7 +170,7 @@ export function AgeGateBoundary({
       {state === "blocked" ? (
         <AgeGate
           forceVisible
-          onAccepted={() => setAuthoritativeAccepted(true)}
+          onAccepted={onAccepted}
         />
       ) : null}
     </AgeGateAccessContext.Provider>

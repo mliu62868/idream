@@ -1,6 +1,15 @@
 import type { Prisma } from "@prisma/client";
-import { z } from "zod";
-import { creativeRunCreateRequestSchema } from "@idream/shared";
+import {
+  contentAssetBulkPreflightRequestSchema,
+  contentAssetBulkRequestSchema,
+  contentAssetPatchRequestSchema,
+  contentAssetQuerySchema,
+  contentAssetReviewStatusSchema,
+  type ContentAssetBulkPreflightRequest,
+  type ContentAssetBulkRequest,
+  type ContentAssetPatchRequest,
+  type ContentAssetQuery,
+} from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
@@ -23,47 +32,16 @@ import { operationalMediaAssetWhere } from "@/server/modules/metric-data-scope";
 import {
   actorWithPermission,
   adminAuditData,
-  clampInt,
   jsonBody,
   toInputJson,
+  type AdminActor,
 } from "../shared/legacy-primitives";
 
-// SPEC: Image Library —— `/api/v1/admin/content/assets*`。列表、详情、单条/批量
-// metadata 编辑，以及归档前的依赖预检。
+// SPEC: Image Library 的 v1 兼容入口与 v2 权威域实现。列表、详情、单条/批量 metadata
+// 编辑，以及归档前的依赖预检共享同一组 domain functions。
 // INTENT: 这里只管素材的**运营元数据与归档生命周期**。审阅结论（approved/rejected）
 // 属于 Creative Run 的不可变决策，所以任何 archived 以外的 status 写入都 fail closed
 // 并给出回到 Run 的 repairPath —— 图库不得凭空造出或顶替一次审阅。
-
-const productionPurposeSchema = creativeRunCreateRequestSchema.shape.purpose;
-
-const assetReviewStatusSchema = z.enum(["draft", "generated", "approved", "rejected", "published", "archived"]);
-
-const optionalText = (max: number) =>
-  z.preprocess(
-    (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
-    z.string().trim().max(max).optional(),
-  );
-
-const assetPatchSchema = z.object({
-  status: assetReviewStatusSchema.optional(),
-  tags: z.array(z.string().trim().min(1).max(60)).max(48).optional(),
-  description: optionalText(2_000),
-  reason: z.string().trim().min(3).max(2_000),
-  confirmation: z.string().trim().min(1).max(160),
-}).strict();
-
-const assetBulkSchema = z.object({
-  assetIds: z.array(z.string().trim().min(1).max(180)).min(1).max(100),
-  status: assetReviewStatusSchema.optional(),
-  tags: z.array(z.string().trim().min(1).max(60)).max(48).optional(),
-  description: optionalText(2_000),
-  reason: z.string().trim().min(3).max(2_000),
-  confirmation: z.string().trim().min(1).max(20_000),
-});
-
-const assetBulkPreflightSchema = z.object({
-  assetIds: z.array(z.string().trim().min(1).max(180)).min(1).max(100),
-}).strict();
 
 type ContentAssetWithRelations = Prisma.MediaAssetGetPayload<{
   include: {
@@ -139,21 +117,26 @@ async function hydrateContentAssets(
 
 export async function listContentAssets(request: Request) {
   await actorWithPermission(request, "creative.asset.read");
-  const url = new URL(request.url);
-  const status = url.searchParams.get("status")?.trim() || undefined;
+  const query = contentAssetQuerySchema.parse(
+    Object.fromEntries(new URL(request.url).searchParams),
+  );
+  return ok(await listContentAssetsData(query));
+}
+
+export async function listContentAssetsV2(query: ContentAssetQuery) {
+  return listContentAssetsData(query);
+}
+
+async function listContentAssetsData(query: ContentAssetQuery) {
+  const { status, purpose, profileId, targetId, tag, limit } = query;
+  const search = query.search?.toLowerCase();
   const productionItemStatus = status === "archived" ? undefined : status;
-  const purpose = productionPurposeSchema.safeParse(url.searchParams.get("purpose")).data;
-  const profileId = url.searchParams.get("profileId")?.trim() || undefined;
-  const targetId = url.searchParams.get("targetId")?.trim() || undefined;
-  const tag = url.searchParams.get("tag")?.trim();
-  const search = url.searchParams.get("search")?.trim().toLowerCase() || undefined;
-  const limit = clampInt(url.searchParams.get("limit"), 1, 100, 25);
   const queryIdentity = { status, purpose, profileId, targetId, tag, search, sort: "created_desc" };
-  const cursorKeys = url.searchParams.get("cursor")
-    ? decodeAdminListCursor(url.searchParams.get("cursor")!, "content_assets", queryIdentity)
+  const cursorKeys = query.cursor
+    ? decodeAdminListCursor(query.cursor, "content_assets", queryIdentity)
     : null;
   const [cursorAt, cursorId] = cursorKeys
-    ? [parseIsoCursorKey(cursorKeys[0], "content_assets"), z.string().min(1).parse(cursorKeys[1])]
+    ? [parseIsoCursorKey(cursorKeys[0], "content_assets"), requiredCursorId(cursorKeys[1])]
     : [null, null];
   const productionAssetScope: Prisma.MediaAssetWhereInput = {
     productionItems: { some: { status: productionItemStatus, batch: { purpose, targetId } } },
@@ -164,7 +147,7 @@ export async function listContentAssets(request: Request) {
         productionItems: { none: {} },
         AND: [
           {
-            OR: (status ? [status] : assetReviewStatusSchema.options).map((platformStatus) => ({
+            OR: (status ? [status] : contentAssetReviewStatusSchema.options).map((platformStatus) => ({
               metadata: {
                 path: ["platformAsset", "status"],
                 equals: platformStatus,
@@ -233,7 +216,7 @@ export async function listContentAssets(request: Request) {
   const hasNextPage = matches.length > limit || !exhausted;
   const last = page.at(-1);
   const mediaAuthorityById = await resolveMediaAssetAuthorityMap(prisma, page);
-  return ok({
+  return {
     items: page.map((asset) =>
       contentAssetDTO(asset, mediaAuthorityById.get(asset.id)),
     ),
@@ -245,13 +228,20 @@ export async function listContentAssets(request: Request) {
     },
     asOf: new Date().toISOString(),
     freshness: "fresh",
-  });
+  };
+}
+
+function requiredCursorId(value: unknown) {
+  if (typeof value !== "string" || !value) {
+    throw Errors.badRequest("Invalid content assets cursor");
+  }
+  return value;
 }
 
 async function assertAssetLibraryMutationAllowed(
   db: Prisma.TransactionClient,
   assetId: string,
-  status: z.infer<typeof assetReviewStatusSchema> | undefined,
+  status: ContentAssetPatchRequest["status"],
 ) {
   if (status && status !== "archived") {
     const item = await db.contentProductionItem.findUnique({
@@ -284,7 +274,7 @@ async function assertAssetLibraryMutationAllowed(
 async function assertAssetLibraryMutationsAllowed(
   db: Prisma.TransactionClient,
   assetIds: readonly string[],
-  status: z.infer<typeof assetReviewStatusSchema> | undefined,
+  status: ContentAssetBulkRequest["status"],
 ) {
   if (status && status !== "archived") {
     const item = await db.contentProductionItem.findFirst({
@@ -334,6 +324,10 @@ function missingOrDeletedAssetIds(
 
 export async function getContentAsset(request: Request, id: string) {
   await actorWithPermission(request, "creative.asset.read");
+  return ok(await getContentAssetV2(id));
+}
+
+export async function getContentAssetV2(id: string) {
   const baseAsset = await prisma.mediaAsset.findFirst({
     where: operationalMediaAssetWhere({ id, deletedAt: null }),
   });
@@ -343,41 +337,54 @@ export async function getContentAsset(request: Request, id: string) {
   const authority = (
     await resolveMediaAssetAuthorityMap(prisma, [asset])
   ).get(asset.id);
-  return ok({
+  return {
     asset: {
       ...contentAssetDTO(asset, authority),
       authorityDependencies: await mediaAssetAuthorityDependencies(prisma, id),
     },
-  });
+  };
 }
 
 export async function patchContentAsset(request: Request, id: string) {
   const actor = await actorWithPermission(request, "content.asset.review");
-  const body = assetPatchSchema.parse(await jsonBody(request));
+  const body = contentAssetPatchRequestSchema.parse(await jsonBody(request));
+  const result = await auditedTransaction("content.asset.update", (tx) =>
+    patchContentAssetV2({ request, id, actor, body, tx })
+  );
+  return ok(result);
+}
+
+export async function patchContentAssetV2(input: {
+  request: Request;
+  id: string;
+  actor: AdminActor;
+  body: ContentAssetPatchRequest;
+  tx: Prisma.TransactionClient;
+  requestId?: string;
+}) {
+  const { request, id, actor, body, tx, requestId } = input;
   if (body.confirmation !== id) {
     throw Errors.badRequest("Confirmation did not match asset");
   }
-  const updated = await auditedTransaction("content.asset.update", async (tx) => {
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`media-asset-authority:${id}`}))`;
-    const asset = await tx.mediaAsset.findFirst({
-      where: operationalMediaAssetWhere({ id, deletedAt: null }),
-    });
-    if (!asset) throw Errors.notFound("Content asset not found");
-    await assertAssetLibraryMutationAllowed(tx, id, body.status);
-    await patchAssetMetadata(tx, id, {
-      status: body.status,
-      // Archival is a lifecycle-only action. Never replay metadata from an
-      // operator's stale detail-page draft over a newer curator write.
-      tags: body.status === "archived" ? undefined : body.tags,
-      description: body.status === "archived" ? undefined : body.description,
-    });
-    const nextBase = await tx.mediaAsset.findUniqueOrThrow({
-      where: { id },
-    });
-    const [next] = await hydrateContentAssets(tx, [nextBase]);
-    if (!next) throw Errors.notFound("Content asset not found");
-    await tx.adminAuditLog.create({
-      data: adminAuditData(request, actor, {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`media-asset-authority:${id}`}))`;
+  const asset = await tx.mediaAsset.findFirst({
+    where: operationalMediaAssetWhere({ id, deletedAt: null }),
+  });
+  if (!asset) throw Errors.notFound("Content asset not found");
+  await assertAssetLibraryMutationAllowed(tx, id, body.status);
+  await patchAssetMetadata(tx, id, {
+    status: body.status,
+    // Archival is a lifecycle-only action. Never replay metadata from an
+    // operator's stale detail-page draft over a newer curator write.
+    tags: body.status === "archived" ? undefined : body.tags,
+    description: body.status === "archived" ? undefined : body.description,
+  });
+  const nextBase = await tx.mediaAsset.findUniqueOrThrow({ where: { id } });
+  const [updated] = await hydrateContentAssets(tx, [nextBase]);
+  if (!updated) throw Errors.notFound("Content asset not found");
+  await tx.adminAuditLog.create({
+    data: {
+      ...adminAuditData(request, actor, {
         action: "content.asset.update",
         targetType: "media_asset",
         targetId: id,
@@ -388,18 +395,24 @@ export async function patchContentAsset(request: Request, id: string) {
           tags: body.status === "archived" ? null : body.tags ?? null,
         },
       }),
-    });
-    return next;
+      ...(requestId ? { requestId } : {}),
+    },
   });
   const authority = (
-    await resolveMediaAssetAuthorityMap(prisma, [updated])
+    await resolveMediaAssetAuthorityMap(tx, [updated])
   ).get(updated.id);
-  return ok({ asset: contentAssetDTO(updated, authority) });
+  return { asset: contentAssetDTO(updated, authority) };
 }
 
 export async function preflightContentAssetArchive(request: Request) {
   await actorWithPermission(request, "content.asset.review");
-  const body = assetBulkPreflightSchema.parse(await jsonBody(request));
+  const body = contentAssetBulkPreflightRequestSchema.parse(await jsonBody(request));
+  return ok(await preflightContentAssetArchiveV2(body));
+}
+
+export async function preflightContentAssetArchiveV2(
+  body: ContentAssetBulkPreflightRequest,
+) {
   const requestedAssetIds = [...new Set(body.assetIds)].sort();
   const assets = await prisma.mediaAsset.findMany({
     where: operationalMediaAssetWhere({
@@ -417,18 +430,32 @@ export async function preflightContentAssetArchive(request: Request) {
     prisma,
     requestedAssetIds,
   );
-  return ok({
+  return {
     assetIds: requestedAssetIds,
     blockers: requestedAssetIds.flatMap((assetId) => {
       const dependencies = dependenciesByAssetId.get(assetId) ?? [];
       return dependencies.length > 0 ? [{ assetId, dependencies }] : [];
     }),
-  });
+  };
 }
 
 export async function bulkPatchContentAssets(request: Request) {
   const actor = await actorWithPermission(request, "content.asset.review");
-  const body = assetBulkSchema.parse(await jsonBody(request));
+  const body = contentAssetBulkRequestSchema.parse(await jsonBody(request));
+  const result = await auditedTransaction("content.asset.bulk_update", (tx) =>
+    bulkPatchContentAssetsV2({ request, actor, body, tx })
+  );
+  return ok(result);
+}
+
+export async function bulkPatchContentAssetsV2(input: {
+  request: Request;
+  actor: AdminActor;
+  body: ContentAssetBulkRequest;
+  tx: Prisma.TransactionClient;
+  requestId?: string;
+}) {
+  const { request, actor, body, tx, requestId } = input;
   const requestedAssetIds = [...new Set(body.assetIds)].sort();
   const canonicalTargets = requestedAssetIds.length === body.assetIds.length
     && requestedAssetIds.every((assetId, index) => assetId === body.assetIds[index]);
@@ -440,54 +467,49 @@ export async function bulkPatchContentAssets(request: Request) {
   if (body.confirmation !== requestedAssetIds.join(",")) {
     throw Errors.badRequest("Confirmation did not match bulk asset targets");
   }
-  const updatedIds = await auditedTransaction("content.asset.bulk_update", async (tx) => {
-    for (const assetId of requestedAssetIds) {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`media-asset-authority:${assetId}`}))`;
-    }
-    // The row snapshot is intentionally loaded only after every authority
-    // lock is held. A concurrent customer delete/private mutation can finish
-    // before the locks are acquired, but can no longer turn this into a
-    // partial or misleading success.
-    const assets = await tx.mediaAsset.findMany({
-      where: operationalMediaAssetWhere({
-        id: { in: requestedAssetIds },
-      }),
-      select: { id: true, deletedAt: true, metadata: true },
+  for (const assetId of requestedAssetIds) {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`media-asset-authority:${assetId}`}))`;
+  }
+  // The row snapshot is intentionally loaded only after every authority
+  // lock is held. A concurrent customer delete/private mutation can finish
+  // before the locks are acquired, but can no longer turn this into a
+  // partial or misleading success.
+  const assets = await tx.mediaAsset.findMany({
+    where: operationalMediaAssetWhere({ id: { in: requestedAssetIds } }),
+    select: { id: true, deletedAt: true, metadata: true },
+  });
+  const missingAssetIds = missingOrDeletedAssetIds(requestedAssetIds, assets);
+  if (assets.length !== requestedAssetIds.length || missingAssetIds.length > 0) {
+    throw Errors.notFound("One or more content assets were not found", {
+      missingAssetIds,
     });
-    const missingAssetIds = missingOrDeletedAssetIds(requestedAssetIds, assets);
-    if (
-      assets.length !== requestedAssetIds.length
-      || missingAssetIds.length > 0
-    ) {
-      throw Errors.notFound("One or more content assets were not found", {
-        missingAssetIds,
-      });
-    }
-    await assertAssetLibraryMutationsAllowed(tx, requestedAssetIds, body.status);
-    for (const asset of assets) {
-      await patchAssetMetadata(tx, asset.id, {
-        status: body.status,
-        tags: body.status === "archived" ? undefined : body.tags,
-        description: body.status === "archived" ? undefined : body.description,
-      });
-    }
-    const committedIds = [...requestedAssetIds];
-    await tx.adminAuditLog.create({
-      data: adminAuditData(request, actor, {
+  }
+  await assertAssetLibraryMutationsAllowed(tx, requestedAssetIds, body.status);
+  for (const asset of assets) {
+    await patchAssetMetadata(tx, asset.id, {
+      status: body.status,
+      tags: body.status === "archived" ? undefined : body.tags,
+      description: body.status === "archived" ? undefined : body.description,
+    });
+  }
+  const updatedIds = [...requestedAssetIds];
+  await tx.adminAuditLog.create({
+    data: {
+      ...adminAuditData(request, actor, {
         action: "content.asset.bulk_update",
         targetType: "media_asset_batch",
-        targetId: `${committedIds.length} assets`,
+        targetId: `${updatedIds.length} assets`,
         reason: body.reason,
         after: {
-          assetIds: committedIds,
+          assetIds: updatedIds,
           status: body.status ?? null,
           tags: body.tags ?? null,
         },
       }),
-    });
-    return committedIds;
+      ...(requestId ? { requestId } : {}),
+    },
   });
-  return ok({ updatedIds });
+  return { updatedIds };
 }
 
 async function patchAssetMetadata(
@@ -536,6 +558,7 @@ function contentAssetDTO(
   const platformStatus = platform.status === "archived" ? "archived" : (item?.status ?? platform.status);
   return {
     ...mediaAssetDTO(asset, authority),
+    createdAt: asset.createdAt.toISOString(),
     platformStatus: platformStatus ?? "generated",
     purpose: item?.batch.purpose ?? platform.purpose ?? null,
     targetType: item?.batch.targetType ?? null,
@@ -569,7 +592,7 @@ function contentAssetDTO(
       targetType: placement.targetType,
       targetId: placement.targetId,
       status: placement.status,
-      publishedAt: placement.publishedAt,
+      publishedAt: placement.publishedAt?.toISOString() ?? null,
     })),
   };
 }

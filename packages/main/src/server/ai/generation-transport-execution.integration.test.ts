@@ -270,6 +270,7 @@ describe("Generation TransportExecution authority", () => {
         workflowKey: base.model,
         workflowVersion: 1,
         status: "cancelled",
+        finishedAt: new Date(base.occurredAt),
       },
     });
     await createDispatchAuthority(cancelledAttemptId, 1, cancelledJobId);

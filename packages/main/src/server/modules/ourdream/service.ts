@@ -15,7 +15,6 @@ import {
   TERMINAL_GENERATION_JOB_STATUSES,
 } from "@idream/shared/catalog";
 import { parseCharacterReleaseAssetManifest } from "@idream/shared/admin";
-import { assignWorkflowReferenceSlots } from "@idream/shared/gen-workflow";
 import { resolveLocalBlobPath, resolveLocalBlobRoot } from "@idream/shared/storage/local-blob";
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -34,7 +33,6 @@ import {
 } from "@/server/modules/generation/generation-attempt-authority";
 import {
   isProductionLtxVideoProfile,
-  PRODUCTION_LTX_VIDEO_PROFILE,
 } from "@/server/modules/generation/production-video-profile";
 import { dispatchAdmin } from "@/server/modules/admin/service";
 import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
@@ -59,6 +57,7 @@ import {
   activeSubscriptionWhere,
   billingAccessDTO,
   entitlementMap,
+  lockUserLedger,
   publicSubscriptionDTO,
 } from "./subscription-lifecycle";
 import {
@@ -66,30 +65,18 @@ import {
   communityFollowedCreatorIds,
   creatorProfile,
   feed,
-  feedCharacterId,
-  feedCollectionId,
   feedPublicCharacterByItemId,
   followUser,
   unfollowUser,
 } from "./discovery";
 import {
   ensureReviewCaseForAppeal,
-  ensureReviewCaseForReport,
   ensureSupportCaseForRequest,
 } from "@/server/modules/admin-v2/cases/service";
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 import { listActiveTemplates } from "./character-templates";
-import {
-  IDENTITY_ASSEMBLER_VERSION,
-  assembleIdentityPrompt,
-  toTraitRecord,
-  type IdentityTraits,
-} from "@/server/modules/ourdream/identity-assembler";
 import { isReusablePlatformAssetWhere } from "@/server/modules/ourdream/chat-image-reuse";
-import {
-  characterVisualProfileSnapshotHash,
-  referenceSetSnapshotHash,
-} from "@/server/modules/admin-v2/characters/release-snapshot";
+import { referenceSetSnapshotHash } from "@/server/modules/admin-v2/characters/release-snapshot";
 import {
   lockCharacterGenerationAuthority,
   lockCharacterMediaAssetAuthorities,
@@ -158,6 +145,15 @@ import {
   registeredUserDataClass,
 } from "@/server/lib/user-data-provenance";
 import { empty, fail, ok } from "@/server/lib/http";
+import { cryptoRandomId } from "@/server/lib/random-id";
+import {
+  bodyText,
+  isRecord,
+  jsonBody,
+  parseJsonText,
+  toInputJson,
+} from "@/server/lib/request-json";
+import { clampInt } from "@/server/lib/request-query";
 import { getOurdreamRoute, ourdreamRoutePaths } from "@/lib/ourdream-data";
 import { isPublicRouteDiscoverable } from "@/lib/public-route-authority";
 import { activeAnnouncements, readAnnouncements } from "@/server/announcements/store";
@@ -178,6 +174,44 @@ import {
   verifyExposureContext,
 } from "./exposure-context";
 import { createVoiceClip as createDurableVoiceClip } from "./voice-clip";
+import { trackEvent } from "./product-events";
+import { submitReport } from "./reports";
+import {
+  generationJobSchema,
+  type GenerationCreateBody,
+  type GenerationSource,
+} from "./generation-request-schema";
+import {
+  assertCharacterIdentityAuthorityMutable,
+  characterVisualProfileCreateData,
+  readableCharacter,
+  resolveGenerationLook,
+  resolveGenerationVisualProfile,
+  type GenerationPromptCharacter,
+  type GenerationVisualProfile,
+} from "./generation-character-authority";
+import {
+  featureFlagEnabled,
+  hasCharacterGenerationRecipe,
+  hasCompleteGenerationRecipeSet,
+  isExecutableGenerationProfile,
+  supportedProfileOrientations,
+} from "./generation-profile-catalog";
+import {
+  publicFeatureProjection,
+  publicOfferAvailability,
+} from "./offer-availability";
+import {
+  assertGenerationProfileCanDispatchReferences,
+  filterPublicTextToImageGenerationProfiles,
+  generationProfileReferenceIncompatibilities,
+  generationReferenceRouteRequirements,
+  generationRequirementsFromManifest,
+  normalizedGenerationReferenceRole,
+  projectPublicImageEditGenerationProfiles,
+  selectGenerationProfile,
+  selectRecipe,
+} from "./generation-profile-selection";
 import {
   isCustomerEngagementActor,
   publicCharacterAudienceWhere,
@@ -195,11 +229,6 @@ import {
   visualProfileDTO,
   type CharacterWithPublicRelations,
 } from "./public-read-model";
-
-const generationOrientations = [...imageOrientations, "2:3"] as [
-  (typeof imageOrientations)[number] | "2:3",
-  ...Array<(typeof imageOrientations)[number] | "2:3">,
-];
 
 type ApiMethod = "GET" | "POST" | "PATCH" | "DELETE" | "PUT";
 type SearchRouteSuggestion = {
@@ -264,71 +293,6 @@ const draftPreviewSelectSchema = z.object({
   previewJobId: z.string().trim().min(1),
 });
 
-const generationControlsSchema = z
-  .object({
-    modePresetId: z.string().trim().min(1).max(120).optional(),
-    backgroundPresetId: z.string().trim().min(1).max(120).optional(),
-    posePresetId: z.string().trim().min(1).max(120).optional(),
-    outfitPresetId: z.string().trim().min(1).max(120).optional(),
-    lookId: z.string().trim().min(1).max(120).optional(),
-    expression: z.string().trim().min(1).max(240).optional(),
-    pose: z.string().trim().min(1).max(240).optional(),
-    outfit: z.string().trim().min(1).max(400).optional(),
-    camera: z.string().trim().min(1).max(240).optional(),
-    lighting: z.string().trim().min(1).max(240).optional(),
-    styleDelta: z.string().trim().min(1).max(240).optional(),
-    orientation: z.enum(generationOrientations).optional(),
-    model: z.string().trim().min(1).max(120).optional(),
-    seconds: z.number().int().min(1).max(30).optional(),
-  })
-  .strict();
-
-const generationJobSchema = z
-  .object({
-    mode: z.enum(["image", "video"]).default("image"),
-    characterId: z.string().min(1).optional(),
-    visualProfileId: z.string().min(1).optional(),
-    consistencyMode: z.enum(["balanced", "strict", "creative"]).default("balanced"),
-    seed: z.string().trim().min(1).max(120).optional(),
-    freeplay: z.boolean().default(false),
-    prompt: z.string().trim().max(2_000).optional(),
-    negativePrompt: z.string().trim().max(1_000).optional(),
-    controls: generationControlsSchema.default({}),
-    presetIds: z.array(z.string()).max(12).default([]),
-    orientation: z.enum(generationOrientations).optional(),
-    outputCount: z.number().int().min(1).max(8).default(1),
-    model: z.string().max(80).optional(),
-    remixFeedItemId: z.string().max(180).optional(),
-    quoteAuthority: generationQuoteAuthoritySchema.optional(),
-  })
-  .superRefine((value, ctx) => {
-    if (Boolean(value.characterId) === value.freeplay) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["characterId"],
-        message: "Choose exactly one of characterId or freeplay",
-      });
-    }
-    if (value.freeplay && value.visualProfileId) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["visualProfileId"],
-        message: "Visual profile can only be used with a character",
-      });
-    }
-    if (
-      value.mode === "video" &&
-      value.controls.seconds !== undefined &&
-      value.controls.seconds !== 4
-    ) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["controls", "seconds"],
-        message: "LTX 2.3 video generation requires exactly four seconds",
-      });
-    }
-  });
-
 const presetCreateSchema = z.object({
   type: z.enum(["background", "pose", "outfit", "mode"]),
   category: z.string().max(80).optional(),
@@ -381,13 +345,6 @@ const mediaCollectionUpdateSchema = z.object({
 
 const mediaCollectionItemSchema = z.object({
   mediaAssetId: z.string(),
-});
-
-const reportSchema = z.object({
-  targetType: z.string().trim().min(1).max(80),
-  targetId: z.string().trim().min(1).max(160),
-  category: z.string().trim().min(1).max(120),
-  description: z.string().trim().max(2_000).optional(),
 });
 
 const appealTargetTypeSchema = z.enum(APPEAL_TARGET_TYPES);
@@ -2208,14 +2165,6 @@ async function createGenerationJob(request: Request) {
   return ok(generationJobResponse(queued), { status: 202 });
 }
 
-export type GenerationCreateBody = z.infer<typeof generationJobSchema>;
-
-export interface GenerationSource {
-  sourceType: string;
-  sourceId: string;
-  sourceMeta?: Prisma.InputJsonValue;
-}
-
 function requireGenerationWriteIdempotencyKey(request: Request) {
   const value = request.headers.get("idempotency-key")?.trim();
   if (!value) {
@@ -2295,33 +2244,6 @@ async function resolveFeedRemixGenerationSource(
   };
 }
 
-interface GenerationPromptCharacter {
-  id: string;
-  imageAssetId: string | null;
-  name: string;
-  age: number;
-  description: string;
-  relationship: string | null;
-  style: string | null;
-  gender: string | null;
-  appearance: Prisma.JsonValue;
-  advancedDetails: Prisma.JsonValue;
-}
-
-interface GenerationVisualProfile {
-  id: string;
-  characterId: string;
-  version: number;
-  status: string;
-  style: string;
-  identityPrompt: string;
-  negativeIdentityPrompt: string | null;
-  // 参考集不进这个类型：它的权威是 ReferenceSetRevision。anchorAssetIds 是候选图池，保留。
-  anchorAssetIds: Prisma.JsonValue;
-  defaultSeed: string | null;
-  adapterRefs: Prisma.JsonValue;
-}
-
 type ReferenceSetWithReferences = Prisma.ReferenceSetRevisionGetPayload<{
   include: { references: true };
 }>;
@@ -2337,77 +2259,6 @@ type CharacterVisualProfileSource = {
   advancedDetails: Prisma.JsonValue;
   imageAssetId?: string | null;
 };
-
-export function characterVisualProfileCreateData(input: {
-  characterId: string;
-  version: number;
-  status: "draft" | "active" | "archived";
-  style: string;
-  name: string;
-  age: number;
-  description: string;
-  gender: string;
-  appearance: Prisma.JsonValue;
-  advancedDetails: Prisma.JsonValue;
-  anchorAssetIds: string[];
-  createdFrom: string;
-}) {
-  // traits 是唯一真源：先抽取，再把 identityPrompt/traitsHash 作为版本化派生缓存拼装出来
-  // （见 identity-assembler.ts SPEC）。styleTraits 额外纳入 name/description——原
-  // buildCharacterIdentityPrompt 需要它们拼标题行/details，纳入后 assembler 才是 traits 的纯函数。
-  const faceTraits = extractVisualTraitRecord(input.appearance, "face");
-  const hairTraits = extractVisualTraitRecord(input.appearance, "hair");
-  const bodyTraits = extractVisualTraitRecord(input.appearance, "body");
-  const signatureTraits = extractVisualTraitRecord(input.advancedDetails, "signature");
-  const styleTraits = {
-    style: input.style,
-    gender: input.gender,
-    age: String(input.age),
-    name: input.name,
-    description: input.description,
-  };
-  const traits: IdentityTraits = {
-    face: toTraitRecord(faceTraits),
-    hair: toTraitRecord(hairTraits),
-    body: toTraitRecord(bodyTraits),
-    signature: toTraitRecord(signatureTraits),
-    style: toTraitRecord(styleTraits),
-  };
-  const { identityPrompt, traitsHash } = assembleIdentityPrompt(traits);
-  const negativeIdentityPrompt =
-    "different face, different hairstyle, different eye color, identity drift, inconsistent age presentation";
-  return {
-    characterId: input.characterId,
-    version: input.version,
-    status: input.status,
-    style: input.style,
-    identityPrompt,
-    negativeIdentityPrompt,
-    faceTraits: toInputJson(faceTraits),
-    hairTraits: toInputJson(hairTraits),
-    bodyTraits: toInputJson(bodyTraits),
-    signatureTraits: toInputJson(signatureTraits),
-    styleTraits: toInputJson(styleTraits),
-    anchorAssetIds: toInputJson(input.anchorAssetIds),
-    defaultSeed: `character:${input.characterId}:visual:${input.version}`,
-    adapterRefs: toInputJson({
-      identity: { traitsHash, assemblerVersion: IDENTITY_ASSEMBLER_VERSION, source: "derived" },
-    }),
-    immutableHash: characterVisualProfileSnapshotHash({
-      version: input.version,
-      style: input.style,
-      identityPrompt,
-      negativeIdentityPrompt,
-      faceTraits,
-      hairTraits,
-      bodyTraits,
-      signatureTraits,
-      styleTraits,
-    }),
-    evidenceState: "candidate",
-    createdFrom: input.createdFrom,
-  };
-}
 
 export async function createActiveCharacterVisualProfileVersion(
   tx: Prisma.TransactionClient,
@@ -2487,17 +2338,6 @@ export async function createActiveCharacterVisualProfileVersion(
   return created;
 }
 
-function extractVisualTraitRecord(value: Prisma.JsonValue, preferredKey: string) {
-  if (!isRecord(value)) return {};
-  const direct = value[preferredKey];
-  if (isRecord(direct)) return direct;
-  return Object.fromEntries(
-    Object.entries(value).filter(([, child]) =>
-      ["string", "number", "boolean"].includes(typeof child),
-    ),
-  );
-}
-
 // Dedup lookup for generation jobs: idempotencyKey first, then (sourceType, sourceId).
 // Shared by the cheap pre-check fast-path and the P2002 conflict fallback so both resolve
 // a duplicate request to the SAME existing job.
@@ -2538,105 +2378,6 @@ async function findExistingGenerationJob(
 
 function isUniqueConstraintError(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
-}
-
-export async function resolveGenerationVisualProfile(
-  character: GenerationPromptCharacter,
-  requestedProfileId?: string,
-  opts: {
-    fallbackToActiveOnStale?: boolean;
-    bootstrapIfMissing?: boolean;
-  } = {},
-): Promise<GenerationVisualProfile | null> {
-  if (requestedProfileId) {
-    const profile = await prisma.characterVisualProfile.findFirst({
-      where: { id: requestedProfileId, characterId: character.id },
-      orderBy: { version: "desc" },
-    });
-    if (!profile) {
-      // Chat path (fallbackToActiveOnStale): async fire-and-forget, so a stale/unknown
-      // passport id must never fail the image — fall back to whatever is active now.
-      if (opts.fallbackToActiveOnStale) {
-        return resolveActiveVisualProfile(character, {
-          bootstrapIfMissing: opts.bootstrapIfMissing,
-        });
-      }
-      throw Errors.notFound("Character visual profile not found");
-    }
-    if (profile.status === "archived") {
-      if (opts.fallbackToActiveOnStale) {
-        return resolveActiveVisualProfile(character, {
-          bootstrapIfMissing: opts.bootstrapIfMissing,
-        });
-      }
-      throw Errors.badRequest("Character visual profile is archived", { visualProfileId: requestedProfileId });
-    }
-    return profile;
-  }
-
-  return resolveActiveVisualProfile(character, {
-    bootstrapIfMissing: opts.bootstrapIfMissing,
-  });
-}
-
-export async function resolveGenerationLook(
-  userId: string,
-  characterId: string | null,
-  visualProfileId: string | null,
-  lookId?: string,
-) {
-  if (!lookId) return null;
-  if (!characterId || !visualProfileId) {
-    throw Errors.badRequest("A Character Look requires character image generation");
-  }
-  const look = await prisma.characterLook.findFirst({
-    where: { id: lookId, ownerId: userId, characterId, status: "active" },
-    include: {
-      referenceAsset: {
-        select: {
-          id: true,
-          ownerId: true,
-          characterId: true,
-          type: true,
-          deletedAt: true,
-          safetyStatus: true,
-          storageKey: true,
-          url: true,
-          metadata: true,
-        },
-      },
-    },
-  });
-  if (!look) throw Errors.notFound("Character Look not found");
-  if (look.visualProfileId !== visualProfileId) {
-    throw Errors.badRequest("Character Look must be rebased to the active identity", {
-      lookId,
-      lookVisualProfileId: look.visualProfileId,
-      activeVisualProfileId: visualProfileId,
-    });
-  }
-  if (
-    look.referenceAssetId &&
-    (
-      !look.referenceAsset ||
-      look.referenceAsset.ownerId !== userId ||
-      look.referenceAsset.characterId !== characterId ||
-      look.referenceAsset.type !== "image" ||
-      look.referenceAsset.deletedAt !== null ||
-      look.referenceAsset.safetyStatus !== "passed" ||
-      !isMediaAssetOperationalForAuthority(look.referenceAsset.metadata) ||
-      !hasHydratableMediaBlobAuthority(look.referenceAsset)
-    )
-  ) {
-    throw Errors.conflict(
-      "Character Look reference is unavailable. Update or rebase the Look before generating.",
-      {
-        lookId: look.id,
-        referenceAssetId: look.referenceAssetId,
-      },
-    );
-  }
-  return look;
 }
 
 async function assertGenerationLookAuthorityInTx(
@@ -2792,59 +2533,6 @@ async function assertRetryGenerationReferenceAuthoritiesInTx(
       },
     );
   }
-}
-
-async function resolveActiveVisualProfile(
-  character: GenerationPromptCharacter,
-  options: { bootstrapIfMissing?: boolean } = {},
-): Promise<GenerationVisualProfile | null> {
-  const legacyReleaseAuthority = await prisma.$transaction((tx) =>
-    loadLockedLiveEditorialLegacyGenerationAuthority(tx, character.id)
-  );
-  if (legacyReleaseAuthority) {
-    // A live editorial Release remains the current identity authority even if
-    // an unpinned active profile happens to coexist.
-    return null;
-  }
-  const active = await prisma.characterVisualProfile.findFirst({
-    where: { characterId: character.id, status: "active" },
-    orderBy: { version: "desc" },
-  });
-  if (active) return active;
-  if (options.bootstrapIfMissing === false) return null;
-  return bootstrapCharacterVisualProfile(character);
-}
-
-async function bootstrapCharacterVisualProfile(
-  character: GenerationPromptCharacter,
-): Promise<GenerationVisualProfile | null> {
-  return prisma.$transaction(async (tx) => {
-    await lockCharacterGenerationAuthority(tx, character.id);
-    const active = await tx.characterVisualProfile.findFirst({
-      where: { characterId: character.id, status: "active" },
-      orderBy: { version: "desc" },
-    });
-    if (active) return active;
-    await assertCharacterIdentityAuthorityMutable(tx, character.id);
-    const profile = await tx.characterVisualProfile.create({
-      data: characterVisualProfileCreateData({
-        characterId: character.id,
-        version: 1,
-        status: "active",
-        style: character.style ?? "realistic",
-        name: character.name,
-        age: character.age,
-        description: character.description,
-        gender: character.gender ?? "female",
-        appearance: character.appearance,
-        advancedDetails: character.advancedDetails,
-        anchorAssetIds: [],
-        createdFrom: "generation_bootstrap",
-      }),
-    });
-    await invalidateCharacterDraftAssetPack(tx, character.id);
-    return profile;
-  });
 }
 
 async function reserveInitialGenerationAttempt(
@@ -3330,10 +3018,6 @@ async function createGenerationJobForUser(
     });
   }
   return job;
-}
-
-export function isTrustedGenerationPromptSource(sourceType: string | undefined) {
-  return sourceType === "chat_image" || sourceType === "media_variation";
 }
 
 export async function createChatImageGenerationJob(payload: ChatImageRequestedPayload) {
@@ -6252,66 +5936,6 @@ async function deleteRequest(request: Request) {
   return response;
 }
 
-export async function submitReport(
-  request: Request,
-  preset?: { targetType: string; targetId: string },
-) {
-  const ctx = await getAuthCtx(request);
-  const body = reportSchema.partial({ targetType: true, targetId: true }).parse(await jsonBody(request));
-  const targetType = preset?.targetType ?? body.targetType;
-  const targetId = preset?.targetId ?? body.targetId;
-  if (!targetType || !targetId || !body.category) {
-    throw Errors.badRequest("targetType, targetId, and category are required");
-  }
-  const underage = body.category.includes("underage");
-  const priority = underage ? 1 : 3;
-  const report = await prisma.$transaction(async (tx) => {
-    const created = await tx.contentReport.create({
-      data: {
-        reporterId: ctx.userId,
-        targetType,
-        targetId,
-        category: body.category,
-        description: body.description,
-        priority,
-      },
-    });
-    await tx.moderationEvent.create({
-      data: {
-        targetType,
-        targetId,
-        layer: "community_report",
-        status: "flagged",
-        policyCode: body.category,
-        confidence: 1,
-        details: { reportId: created.id },
-      },
-    });
-    await ensureReviewCaseForReport(tx, created);
-    return created;
-  });
-
-  // Compliance (roadmap M9 / spec §4.4): underage reports are priority 1 and
-  // immediately hide the target pending human review — over-hiding is the safe
-  // failure mode for CSAM-adjacent reports. Auto-hide is best-effort: if the
-  // target can't be resolved we still record + triage the priority-1 report
-  // rather than failing the submission.
-  if (underage) {
-    try {
-      await applyModerationAction(targetType, targetId, body.category);
-    } catch (error) {
-      logger.error(
-        { error, targetType, targetId },
-        "underage auto-takedown could not resolve target; escalating via triage",
-      );
-    }
-  }
-  // The flagged moderationEvent + priority on the contentReport above are the
-  // triage record the admin review queue reads — no separate async triage pass.
-  await trackEvent("content_reported", { targetType, targetId, category: body.category }, ctx);
-  return ok({ report });
-}
-
 async function reportStatus(request: Request, id: string) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
@@ -7368,21 +6992,6 @@ function generationRefundAmount(events: GenerationJobWithRelations["events"]) {
   }, 0);
 }
 
-export async function jsonBody(request: Request): Promise<unknown> {
-  if (request.method === "GET" || request.method === "DELETE") return {};
-  return parseJsonText(await bodyText(request));
-}
-
-export async function bodyText(request: Request) {
-  if (request.method === "GET" || request.method === "DELETE") return "";
-  return request.text();
-}
-
-export function parseJsonText(text: string): unknown {
-  if (!text) return {};
-  return JSON.parse(text) as unknown;
-}
-
 function parseRequestCookies(request: Request) {
   const header = request.headers.get("cookie");
   const cookies = new Map<string, string>();
@@ -7392,14 +7001,6 @@ function parseRequestCookies(request: Request) {
     if (name) cookies.set(name, decodeURIComponent(value.join("=")));
   }
   return cookies;
-}
-
-export function toInputJson(value: unknown): Prisma.InputJsonValue {
-  return value as Prisma.InputJsonValue;
-}
-
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function jsonRecord(value: unknown): Record<string, unknown> {
@@ -7552,12 +7153,6 @@ function intParam(value: string | null) {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-export function clampInt(value: string | null, min: number, max: number, fallback: number) {
-  const parsed = value ? Number.parseInt(value, 10) : fallback;
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.max(min, Math.min(max, parsed));
-}
-
 function encodeCursor(value: number) {
   return Buffer.from(String(value), "utf8").toString("base64url");
 }
@@ -7574,49 +7169,6 @@ async function assertDraftOwner(id: string, userId: string) {
   });
   if (!draft) throw Errors.notFound("Character draft not found");
   return draft;
-}
-
-export async function readableCharacter(id: string, userId: string) {
-  const character = await prisma.character.findFirst({
-    where: {
-      id,
-      deletedAt: null,
-      OR: [
-        publicCharacterAudienceWhere,
-        { creatorId: userId },
-      ],
-    },
-  });
-  if (!character) throw Errors.notFound("Character not found");
-  return character;
-}
-
-export async function generationCharacter(id: string, userId: string) {
-  const character = await readableCharacter(id, userId);
-  if (character.age < 18) {
-    throw Errors.badRequest("Character is not eligible for generation", {
-      policyCode: "UNDERAGE",
-    });
-  }
-  if (character.status !== "approved") {
-    throw Errors.forbidden("Character is not approved for generation", {
-      status: character.status,
-    });
-  }
-  return character;
-}
-
-export async function publishedGenerationVideoCharacter(id: string) {
-  const character = await prisma.character.findFirst({
-    where: {
-      AND: [
-        { id, age: { gte: 18 } },
-        publicCharacterAudienceWhere,
-      ],
-    },
-  });
-  if (!character) throw Errors.notFound("Character not found");
-  return character;
 }
 
 async function assertMediaOwner(id: string, userId: string) {
@@ -7780,47 +7332,6 @@ async function assertIdentityTargetCharacterInTx(
   });
   if (!character) throw Errors.notFound("Owned character not found");
   return character;
-}
-
-async function assertCharacterIdentityAuthorityMutable(
-  tx: Prisma.TransactionClient,
-  characterId: string,
-) {
-  const serving = await tx.characterServing.findUnique({
-    where: { characterId },
-    select: { currentReleaseId: true, scheduledReleaseId: true },
-  });
-  if (serving?.currentReleaseId || serving?.scheduledReleaseId) {
-    throw Errors.conflict(
-      "Withdraw or replace serving Character Release authority before changing Visual Identity or Reference Set",
-      {
-        currentReleaseId: serving.currentReleaseId,
-        scheduledReleaseId: serving.scheduledReleaseId,
-        deepLink: `/admin/characters/${characterId}?tab=release`,
-      },
-    );
-  }
-  const projects = await tx.characterProject.findMany({
-    where: { characterId },
-    select: { id: true },
-  });
-  if (projects.length === 0) return;
-  const activeRelease = await tx.characterRelease.findFirst({
-    where: {
-      projectId: { in: projects.map((project) => project.id) },
-      status: { in: ["draft", "validating", "in_review", "approved"] },
-    },
-    select: { id: true, status: true },
-  });
-  if (!activeRelease) return;
-  throw Errors.conflict(
-    "Withdraw or finish the active Character Release before changing Visual Identity or Reference Set authority",
-    {
-      releaseId: activeRelease.id,
-      releaseStatus: activeRelease.status,
-      deepLink: `/admin/characters/${characterId}?tab=release`,
-    },
-  );
 }
 
 async function assertCharacterDisplayImageMutable(
@@ -8024,18 +7535,6 @@ async function currentAgeVerificationStatus(userId: string) {
   return latest?.status ?? "not_required";
 }
 
-export async function lockUserLedger(tx: Prisma.TransactionClient, userId: string) {
-  await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${userId} FOR UPDATE`;
-}
-
-export async function lockProviderEvent(tx: Prisma.TransactionClient, providerEventId: string) {
-  await tx.$queryRaw`SELECT id FROM "provider_events" WHERE id = ${providerEventId} FOR UPDATE`;
-}
-
-export async function lockCheckoutSession(tx: Prisma.TransactionClient, checkoutId: string) {
-  await tx.$queryRaw`SELECT id FROM "checkout_sessions" WHERE id = ${checkoutId} FOR UPDATE`;
-}
-
 async function appendGenerationEvent(
   tx: Prisma.TransactionClient,
   jobId: string,
@@ -8051,23 +7550,6 @@ async function appendGenerationEvent(
       metadata: toInputJson(metadata),
     },
   });
-}
-
-// SPEC: capability defaults for a profile that declares nothing.
-// INTENT: `initImage` defaults to false. The old default was `runner === "sd_cpp"`,
-// the only runner treated as intrinsically img2img-capable; that runner is retired
-// and no surviving profile relied on the implicit default (every row declares
-// `initImage` explicitly), so this is a zero-row behavior change.
-function generationModelCapabilities(runnerConfig: Prisma.JsonValue) {
-  const config = jsonRecord(runnerConfig);
-  const capabilities = jsonRecord(config.capabilities);
-  return {
-    textToImage: booleanFromRecord(capabilities, "textToImage", true),
-    stableSeed: booleanFromRecord(capabilities, "stableSeed", true),
-    referenceImages: booleanFromRecord(capabilities, "referenceImages", false),
-    initImage: booleanFromRecord(capabilities, "initImage", false),
-    lora: booleanFromRecord(capabilities, "lora", false),
-  };
 }
 
 function stringFromRecord(value: Record<string, unknown>, key: string) {
@@ -8116,387 +7598,6 @@ async function generationCost(mode: "image" | "video", outputCount: number, mult
   return generationCostDreamcoins(mode, outputCount, multiplier);
 }
 
-type GenerationReferenceRouteRequirement = {
-  readonly assetId: string;
-  readonly role: "identity_anchor" | "identity_reference";
-};
-
-type GenerationReferenceProfile = {
-  readonly profileKey: string;
-  readonly version: number;
-  readonly runner: string;
-  readonly runnerConfig: Prisma.JsonValue | null;
-  readonly workflowKey: string | null;
-  readonly pipelineModel: string;
-};
-
-export async function generationReferenceRouteRequirements(
-  visualProfileId: string,
-): Promise<GenerationReferenceRouteRequirement[]> {
-  const revision = await prisma.referenceSetRevision.findFirst({
-    where: { visualProfileId, status: "active" },
-    orderBy: { revision: "desc" },
-    select: {
-      references: {
-        orderBy: { position: "asc" },
-        select: { mediaAssetId: true, role: true },
-      },
-    },
-  });
-  return revision?.references.map((reference) => ({
-    assetId: reference.mediaAssetId,
-    role: normalizedGenerationReferenceRole(reference.role),
-  })) ?? [];
-}
-
-function generationRequirementsFromManifest(
-  value: unknown,
-): GenerationReferenceRouteRequirement[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((entry) => {
-    const record = jsonRecord(entry);
-    const assetId = stringFromRecord(record, "mediaAssetId");
-    const role = stringFromRecord(record, "role");
-    if (
-      !assetId ||
-      !role ||
-      role === "source_image" ||
-      role === "look_reference"
-    ) {
-      return [];
-    }
-    return [{
-      assetId,
-      role: normalizedGenerationReferenceRole(role),
-    }];
-  });
-}
-
-function normalizedGenerationReferenceRole(
-  role: string,
-): GenerationReferenceRouteRequirement["role"] {
-  return role === "primary_face" || role === "identity_anchor"
-    ? "identity_anchor"
-    : "identity_reference";
-}
-
-function generationProfileReferenceIncompatibilities(input: {
-  readonly profile: GenerationReferenceProfile;
-  readonly workflowDescriptor: Awaited<ReturnType<typeof generationWorkflowDescriptor>>;
-  readonly pinnedReferences: readonly GenerationReferenceRouteRequirement[];
-  readonly sourceImageAssetId: string | null;
-  readonly lookReferenceAssetId: string | null;
-}) {
-  const capabilities = generationModelCapabilities(input.profile.runnerConfig ?? {});
-  const reasons: string[] = [];
-  if (
-    (
-      input.pinnedReferences.length > 0 ||
-      input.lookReferenceAssetId
-    ) &&
-    !capabilities.referenceImages
-  ) {
-    reasons.push("profile_reference_images_unsupported");
-  }
-  if (input.sourceImageAssetId && !capabilities.initImage) {
-    reasons.push("profile_source_image_unsupported");
-  }
-  const workflow = input.workflowDescriptor;
-  const requiredRoles = [
-    ...input.pinnedReferences.map((reference) => reference.role),
-    ...(input.lookReferenceAssetId ? ["look_reference" as const] : []),
-    ...(input.sourceImageAssetId ? ["source_image" as const] : []),
-  ];
-  if (!workflow && requiredRoles.length > 0) {
-    reasons.push("workflow_descriptor_missing");
-  }
-  if (workflow) {
-    if (
-      requiredRoles.length > 0 &&
-      (
-        !workflow.capabilities.includes("referenceImages") ||
-        workflow.identity.mode === "none"
-      )
-    ) {
-      reasons.push("workflow_reference_images_unsupported");
-    }
-    const acceptedRoles = new Set(workflow.identity.acceptedRoles);
-    if (
-      acceptedRoles.size > 0 &&
-      requiredRoles.some((role) => !acceptedRoles.has(role))
-    ) {
-      reasons.push("workflow_reference_role_unsupported");
-    }
-    const slotAuthority = assignWorkflowReferenceSlots(
-      workflow,
-      requiredRoles,
-    );
-    if (!slotAuthority.ok) {
-      reasons.push(
-        slotAuthority.reason === "reference_cardinality_mismatch"
-          ? "workflow_reference_cardinality_mismatch"
-          : "workflow_reference_slot_assignment_unsupported",
-      );
-    }
-    if (
-      input.lookReferenceAssetId &&
-      !workflow.identity.supportsLookReference
-    ) {
-      reasons.push("workflow_look_reference_unsupported");
-    }
-    if (
-      input.sourceImageAssetId &&
-      (
-        input.pinnedReferences.length > 0 ||
-        Boolean(input.lookReferenceAssetId)
-      ) &&
-      !workflow.identity.supportsSourceImageWithIdentity
-    ) {
-      reasons.push("workflow_source_with_identity_unsupported");
-    }
-  }
-  return [...new Set(reasons)];
-}
-
-export function assertGenerationProfileCanDispatchReferences(input: {
-  readonly profile: GenerationReferenceProfile;
-  readonly workflowDescriptor: Awaited<ReturnType<typeof generationWorkflowDescriptor>>;
-  readonly pinnedReferences: readonly GenerationReferenceRouteRequirement[];
-  readonly sourceImageAssetId: string | null;
-  readonly lookReferenceAssetId: string | null;
-}) {
-  const incompatibilities = generationProfileReferenceIncompatibilities(input);
-  if (incompatibilities.length === 0) return;
-  throw Errors.conflict(
-    "Selected generation profile cannot preserve the complete pinned Character reference authority",
-    {
-      profileId: input.profile.profileKey,
-      profileVersion: input.profile.version,
-      pinnedReferenceAssetIds: input.pinnedReferences.map((reference) => reference.assetId),
-      sourceImageAssetId: input.sourceImageAssetId,
-      lookReferenceAssetId: input.lookReferenceAssetId,
-      incompatibilities,
-    },
-  );
-}
-
-export async function selectGenerationProfile(
-  mode: "image" | "video",
-  requested?: string,
-  referenceRequirements?: {
-    readonly pinnedReferences: readonly GenerationReferenceRouteRequirement[];
-    readonly sourceImageAssetId: string | null;
-    readonly lookReferenceAssetId: string | null;
-  },
-  requirePublicTextToImageProfile = false,
-  accessibleEntitlements?: Readonly<Record<string, Prisma.JsonValue>>,
-  requirePublicImageEditProfile = false,
-) {
-  const where: Prisma.GenerationModelProfileWhereInput = {
-    mode,
-    status: "active",
-    enabled: true,
-    ...(mode === "video"
-      ? {
-          profileKey: PRODUCTION_LTX_VIDEO_PROFILE.profileKey,
-          runner: PRODUCTION_LTX_VIDEO_PROFILE.runner,
-          pipelineModel: PRODUCTION_LTX_VIDEO_PROFILE.pipelineModel,
-          workflowKey: PRODUCTION_LTX_VIDEO_PROFILE.workflowKey,
-        }
-      : {}),
-    OR: requested
-      ? [{ profileKey: requested }, { id: requested }, { pipelineModel: requested }]
-      : undefined,
-  };
-  const queriedCandidates = await prisma.generationModelProfile.findMany({
-    where,
-    orderBy: requested
-      ? [{ version: "desc" }]
-      : [{ costMultiplier: "asc" }, { version: "desc" }],
-  });
-  const automaticCandidates = requested
-    ? queriedCandidates
-    : queriedCandidates.filter(
-        (candidate) => !generationProfileIsExplicitSelectionOnly(candidate),
-      );
-  const eligibleCandidates =
-    mode === "video"
-      ? automaticCandidates.filter(
-          (candidate) =>
-            isProductionLtxVideoProfile(candidate) &&
-            isExecutableGenerationProfile(candidate),
-        )
-      : requirePublicTextToImageProfile
-        ? await filterPublicTextToImageGenerationProfiles(automaticCandidates)
-        : requirePublicImageEditProfile
-          ? (
-              await projectPublicImageEditGenerationProfiles(
-                automaticCandidates,
-              )
-            ).map(({ profile }) => profile)
-          : automaticCandidates.filter(isExecutableGenerationProfile);
-  const accessibleCandidates =
-    !requested && accessibleEntitlements
-      ? eligibleCandidates.filter(
-          (candidate) =>
-            !candidate.requiredEntitlement ||
-            Boolean(
-              accessibleEntitlements[candidate.requiredEntitlement],
-            ),
-        )
-      : eligibleCandidates;
-  const gatedCandidates =
-    !requested && accessibleEntitlements
-      ? eligibleCandidates.filter(
-          (candidate) => !accessibleCandidates.includes(candidate),
-        )
-      : [];
-  if (referenceRequirements) {
-    // Prefer an accessible compatible route. Only if none exists do we return
-    // a gated compatible route so the caller can surface the exact entitlement
-    // requirement instead of silently selecting it ahead of an accessible one.
-    for (const candidateGroup of [accessibleCandidates, gatedCandidates]) {
-      for (const candidate of candidateGroup) {
-        const workflowDescriptor = await generationWorkflowDescriptor(
-          candidate.workflowKey ?? candidate.pipelineModel,
-        );
-        if (
-          generationProfileReferenceIncompatibilities({
-            profile: candidate,
-            workflowDescriptor,
-            ...referenceRequirements,
-          }).length === 0
-        ) {
-          return candidate;
-        }
-      }
-    }
-    if (eligibleCandidates.length === 0) {
-      if (requested) {
-        throw Errors.conflict("Requested generation profile is unavailable", {
-          mode,
-          requestedProfile: requested,
-        });
-      }
-      throw Errors.unavailable(
-        "No active generation model profile is configured",
-        { mode, reason: "no_active_model" },
-      );
-    }
-    throw Errors.conflict(
-      requested
-        ? "The selected generation profile cannot preserve pinned Character references"
-        : "No active generation profile can preserve pinned Character references",
-      {
-        requestedProfile: requested ?? null,
-        pinnedReferenceAssetIds: referenceRequirements.pinnedReferences.map(
-          (reference) => reference.assetId,
-        ),
-        sourceImageAssetId: referenceRequirements.sourceImageAssetId,
-        lookReferenceAssetId: referenceRequirements.lookReferenceAssetId,
-      },
-    );
-  }
-  const requestedProfile = requested ? eligibleCandidates[0] : null;
-  if (requested && !requestedProfile) {
-    throw Errors.conflict("Requested generation profile is unavailable", {
-      mode,
-      requestedProfile: requested,
-    });
-  }
-  const fallbackProfile =
-    requestedProfile ??
-    accessibleCandidates[0] ??
-    gatedCandidates[0] ??
-    eligibleCandidates[0];
-  if (!fallbackProfile) {
-    throw Errors.unavailable(
-      "No active generation model profile is configured",
-      { mode, reason: "no_active_model" },
-    );
-  }
-  return fallbackProfile;
-}
-
-export async function selectRecipe(mode: "image" | "video", useCase: "character" | "freeplay") {
-  const recipe = await prisma.generationRecipe.findFirst({
-    where: { mode, useCase, status: "active" },
-    orderBy: { version: "desc" },
-  });
-  if (!recipe) {
-    throw Errors.unavailable(
-      "No active generation prompt recipe is configured",
-      { mode, useCase, reason: "no_active_recipe" },
-    );
-  }
-  return recipe;
-}
-
-export async function featureFlagEnabled(key: string) {
-  const flag = await prisma.featureFlag.findUnique({
-    where: { key },
-    select: { enabled: true, rolloutPercent: true },
-  });
-  if (!flag?.enabled || flag.rolloutPercent !== 100) return false;
-  return true;
-}
-
-type PublicOfferAvailability = {
-  readonly videoGeneration: boolean;
-};
-
-export async function publicOfferAvailability(): Promise<PublicOfferAvailability> {
-  const now = new Date();
-  const [videoEnabled, videoProfiles, videoRecipes, videoPricing] = await Promise.all([
-    featureFlagEnabled("video_gen"),
-    prisma.generationModelProfile.findMany({
-      where: { mode: "video", status: "active", enabled: true },
-    }),
-    prisma.generationRecipe.findMany({
-      where: { mode: "video", status: "active" },
-      select: { useCase: true },
-    }),
-    prisma.pricingRule.findMany({
-      where: {
-        mode: "video",
-        status: "active",
-        OR: [{ effectiveFrom: null }, { effectiveFrom: { lte: now } }],
-      },
-      select: { id: true },
-      take: 2,
-    }),
-  ]);
-
-  return {
-    videoGeneration:
-      videoEnabled &&
-      videoProfiles.some(
-        (profile) =>
-          isProductionLtxVideoProfile(profile) &&
-          isExecutableGenerationProfile(profile),
-      ) &&
-      hasCharacterGenerationRecipe(videoRecipes) &&
-      videoPricing.length === 1,
-  };
-}
-
-export function publicFeatureProjection(
-  value: unknown,
-  availability: PublicOfferAvailability,
-) {
-  const features =
-    typeof value === "object" && value !== null && !Array.isArray(value)
-      ? { ...(value as Record<string, unknown>) }
-      : {};
-
-  if (!availability.videoGeneration) {
-    if ("videoGeneration" in features) features.videoGeneration = false;
-    if ("video_generation" in features) features.video_generation = false;
-  }
-
-  return features;
-}
-
 function profileConfigDTO(profile: {
   id: string;
   profileKey: string;
@@ -8528,142 +7629,6 @@ function profileConfigDTO(profile: {
   };
 }
 
-function supportedProfileOrientations(value: Prisma.JsonValue) {
-  return jsonStringArray(value).filter(
-    (orientation) =>
-      orientation === "2:3" ||
-      imageOrientations.includes(
-        orientation as (typeof imageOrientations)[number],
-      ),
-  );
-}
-
-function isExecutableGenerationProfile(profile: {
-  readonly allowedOrientations: Prisma.JsonValue;
-  readonly maxCount: number;
-  readonly rolloutPercent: number;
-}) {
-  return (
-    profile.rolloutPercent === 100 &&
-    profile.maxCount >= 1 &&
-    profile.maxCount <= 8 &&
-    supportedProfileOrientations(profile.allowedOrientations).length > 0
-  );
-}
-
-type PublicTextToImageGenerationProfile = {
-  readonly mode: string;
-  readonly runner: string;
-  readonly runnerConfig: Prisma.JsonValue | null;
-  readonly workflowKey: string | null;
-  readonly pipelineModel: string;
-  readonly allowedOrientations: Prisma.JsonValue;
-  readonly maxCount: number;
-  readonly rolloutPercent: number;
-};
-
-async function isPublicTextToImageGenerationProfile(
-  profile: PublicTextToImageGenerationProfile,
-) {
-  if (
-    profile.mode !== "image" ||
-    !isExecutableGenerationProfile(profile)
-  ) {
-    return false;
-  }
-
-  const configuredCapabilities = jsonRecord(
-    jsonRecord(profile.runnerConfig).capabilities,
-  );
-  const configuredTextToImage = configuredCapabilities.textToImage;
-  if (configuredTextToImage === false) return false;
-
-  const workflow = await generationWorkflowDescriptor(
-    profile.workflowKey ?? profile.pipelineModel,
-  );
-  if (workflow) {
-    return (
-      workflow.capabilities.includes("textToImage") &&
-      !workflow.inputs.some((input) => input.type === "image")
-    );
-  }
-
-  // INVARIANT: a profile without a declarative workflow needs affirmative runtime
-  // authority — it must declare textToImage itself. The one runner that used to be
-  // admitted implicitly (sd_cpp, intrinsically text-to-image) is retired; every
-  // profile that actually reaches public selection declares the capability.
-  return configuredTextToImage === true;
-}
-
-async function filterPublicTextToImageGenerationProfiles<
-  T extends PublicTextToImageGenerationProfile,
->(profiles: readonly T[]): Promise<T[]> {
-  const eligibility = await Promise.all(
-    profiles.map(async (profile) => ({
-      profile,
-      eligible: await isPublicTextToImageGenerationProfile(profile),
-    })),
-  );
-  return eligibility.flatMap(({ profile, eligible }) =>
-    eligible ? [profile] : [],
-  );
-}
-
-type PublicImageEditReferenceMode = "source_only" | "identity_source";
-
-function generationProfilePublicSelection(profile: {
-  readonly runnerConfig: Prisma.JsonValue | null;
-}) {
-  return jsonRecord(jsonRecord(profile.runnerConfig).publicSelection);
-}
-
-function generationProfileIsExplicitSelectionOnly(profile: {
-  readonly runnerConfig: Prisma.JsonValue | null;
-}) {
-  return generationProfilePublicSelection(profile).explicitOnly === true;
-}
-
-async function projectPublicImageEditGenerationProfiles<
-  T extends PublicTextToImageGenerationProfile,
->(profiles: readonly T[]) {
-  const projections = await Promise.all(
-    profiles.map(async (profile) => {
-      const publicSelection = generationProfilePublicSelection(profile);
-      if (
-        publicSelection.surface !== "generator_image_edit" ||
-        profile.mode !== "image" ||
-        !isExecutableGenerationProfile(profile) ||
-        !generationModelCapabilities(profile.runnerConfig ?? {}).initImage
-      ) {
-        return null;
-      }
-      const workflow = await generationWorkflowDescriptor(
-        profile.workflowKey ?? profile.pipelineModel,
-      );
-      if (
-        !workflow ||
-        !workflow.capabilities.includes("img2img") ||
-        !workflow.inputs.some(
-          (input) =>
-            input.type === "image" &&
-            "referenceRoles" in input &&
-            input.referenceRoles?.includes("source_image"),
-        )
-      ) {
-        return null;
-      }
-      const referenceMode: PublicImageEditReferenceMode =
-        workflow.identity.supportsSourceImageWithIdentity
-          ? "identity_source"
-          : "source_only";
-      return { profile, referenceMode, workflowDescriptor: workflow };
-    }),
-  );
-  return projections.flatMap((projection) =>
-    projection ? [projection] : [],
-  );
-}
-
 function recipeConfigDTO(recipe: {
   id: string;
   recipeKey: string;
@@ -8682,19 +7647,6 @@ function recipeConfigDTO(recipe: {
   };
 }
 
-function hasCompleteGenerationRecipeSet(
-  recipes: ReadonlyArray<{ readonly useCase: string }>,
-) {
-  const useCases = new Set(recipes.map((recipe) => recipe.useCase));
-  return useCases.has("character") && useCases.has("freeplay");
-}
-
-function hasCharacterGenerationRecipe(
-  recipes: ReadonlyArray<{ readonly useCase: string }>,
-) {
-  return recipes.some((recipe) => recipe.useCase === "character");
-}
-
 async function readPreferences(userId: string) {
   const preferences = await prisma.userPreferences.findUnique({
     where: { userId },
@@ -8709,124 +7661,8 @@ async function readPreferences(userId: string) {
   };
 }
 
-async function applyModerationAction(
-  targetType: string,
-  targetId: string,
-  policyCode?: string,
-) {
-  // INVARIANT: a takedown must actually remove something. Feed items wrap a
-  // character, so resolve and take that down; unknown target types throw so the
-  // caller can escalate instead of recording a false "blocked" event.
-  const removedCharacterId = await prisma.$transaction(async (tx) => {
-    let characterId: string | null = null;
-    if (targetType === "character") {
-      const removed = await tx.character.updateMany({
-        where: { id: targetId },
-        data: { status: "removed" },
-      });
-      if (removed.count > 0) characterId = targetId;
-    } else if (targetType === "media") {
-      await lockMediaAssetAuthority(tx, targetId);
-      await tx.mediaAsset.updateMany({
-        where: { id: targetId },
-        data: { safetyStatus: "blocked" },
-      });
-    } else if (targetType === "feed_item") {
-      const feedTargetCharacterId = feedCharacterId(targetId);
-      const collectionId = feedCollectionId(targetId);
-      if (feedTargetCharacterId) {
-        const removed = await tx.character.updateMany({
-          where: { id: feedTargetCharacterId },
-          data: { status: "removed" },
-        });
-        if (removed.count > 0) {
-          characterId = feedTargetCharacterId;
-          await recordMainToChatEvent({
-            eventId: `character_removed_${feedTargetCharacterId}_${randomUUID()}`,
-            eventType: MAIN_TO_CHAT_EVENTS.characterRemoved,
-            aggregateType: "character",
-            aggregateId: feedTargetCharacterId,
-            payload: { characterId: feedTargetCharacterId },
-          }, tx);
-        }
-      } else if (collectionId) {
-        await tx.mediaCollection.updateMany({
-          where: { id: collectionId },
-          data: { visibility: "private" },
-        });
-      } else {
-        throw Errors.badRequest(`Cannot resolve feed_item moderation target: ${targetId}`);
-      }
-    } else {
-      throw Errors.badRequest(`Unsupported moderation target type: ${targetType}`);
-    }
-    await tx.moderationEvent.create({
-      data: {
-        targetType,
-        targetId,
-        layer: "human_review",
-        status: "blocked",
-        policyCode,
-        details: {},
-      },
-    });
-    if (characterId && targetType === "character") {
-      await recordMainToChatEvent({
-        eventId: `character_removed_${characterId}_${randomUUID()}`,
-        eventType: MAIN_TO_CHAT_EVENTS.characterRemoved,
-        aggregateType: "character",
-        aggregateId: characterId,
-        payload: { characterId },
-      }, tx);
-    }
-    return characterId;
-  });
-  if (removedCharacterId) {
-    try {
-      await dispatchPendingChatEvents();
-    } catch (error) {
-      logger.error(
-        { error, characterId: removedCharacterId },
-        "failed to dispatch durable Chat character removal",
-      );
-    }
-  }
-}
-
-export async function trackEvent(
-  name: string,
-  props: unknown,
-  ctx: { userId?: string; anonymousId?: string },
-) {
-  return createClassifiedAnalyticsEvent(prisma, {
-    userId: ctx.userId,
-    anonymousId: ctx.anonymousId,
-    name,
-    props,
-  });
-}
-
-export async function trackEventOnce(
-  name: string,
-  props: unknown,
-  ctx: { userId?: string; anonymousId?: string },
-  sourceEventId: string,
-) {
-  return createClassifiedAnalyticsEvent(prisma, {
-    userId: ctx.userId,
-    anonymousId: ctx.anonymousId,
-    name,
-    props,
-    sourceEventId,
-  });
-}
-
 function referralCode(userId: string) {
   return `DREAM-${userId.slice(-8).toUpperCase()}`;
-}
-
-export function cryptoRandomId(prefix: string) {
-  return `${prefix}_${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
 }
 
 function supportTicketId() {

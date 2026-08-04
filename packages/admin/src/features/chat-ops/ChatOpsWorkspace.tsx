@@ -10,6 +10,7 @@ import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { createLatestRequestGate } from "@/lib/latest-request";
+import { canonicalListEmptyTitle } from "@/features/compatibility-lists/empty-state";
 import {
   chatOpsPath,
   chatOpsQueryFromSearch,
@@ -340,11 +341,7 @@ export function ChatOpsWorkspace({ canRead }: { canRead: boolean }) {
           <DiagnosticsNotice data={states.sessions.data} />
           <AuthorityTable
             authority="sessions"
-            empty={
-              sessionFiltered(query)
-                ? "No chat sessions match these filters"
-                : "No chat sessions exist yet"
-            }
+            empty={canonicalListEmptyTitle("chat_sessions", sessionFiltered(query))}
             rows={states.sessions.data?.items ?? []}
             state={states.sessions}
           />

@@ -386,17 +386,29 @@ export function HelpDeskWorkspace() {
         ? parsePendingFeedbackVote(JSON.stringify(resumed.value))
         : null;
     if (resumed?.kind === "support" && restoredSupport) {
-      if (saveSupportDraft(viewerScope, restoredSupport)) {
+      if (shouldClearTransferredHelpDeskDraft({
+        saved: saveSupportDraft(viewerScope, restoredSupport),
+        sourceScope: resumed.sourceScope,
+        targetScope: viewerScope,
+      })) {
         clearSupportDraft(resumed.sourceScope);
       }
     }
     if (resumed?.kind === "feedback" && restoredFeedback) {
-      if (saveFeedbackDraft(viewerScope, restoredFeedback)) {
+      if (shouldClearTransferredHelpDeskDraft({
+        saved: saveFeedbackDraft(viewerScope, restoredFeedback),
+        sourceScope: resumed.sourceScope,
+        targetScope: viewerScope,
+      })) {
         clearFeedbackDraft(resumed.sourceScope);
       }
     }
     if (resumed?.kind === "appeal" && restoredAppeal) {
-      if (saveAppealDraft(viewerScope, restoredAppeal)) {
+      if (shouldClearTransferredHelpDeskDraft({
+        saved: saveAppealDraft(viewerScope, restoredAppeal),
+        sourceScope: resumed.sourceScope,
+        targetScope: viewerScope,
+      })) {
         clearAppealDraft(resumed.sourceScope);
       }
     }
@@ -1310,6 +1322,14 @@ function helpDeskAuthReturnTarget(
       sourceScope,
     }) ?? draftTransferPath("helpdesk")
   );
+}
+
+export function shouldClearTransferredHelpDeskDraft(input: {
+  saved: boolean;
+  sourceScope: string;
+  targetScope: string;
+}) {
+  return input.saved && input.sourceScope !== input.targetScope;
 }
 
 function consumeHelpDeskResume(targetScope: string): {

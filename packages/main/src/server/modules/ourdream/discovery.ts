@@ -16,11 +16,8 @@
 // 预算、不会重复或漏掉条目。签名用 INTERNAL_TOKEN，校验走 timingSafeEqual；解不开、
 // 版本不对、超 TTL 一律 fail closed（400 / 410），不降级成"当作第一页"。
 //
-// NOTE: 公开读模型已经抽到 ./public-read-model，这里与 service 同向依赖它，不再互相 import。
-// 仍反向 import ./service 的只剩 submitReport 与三个跨面原语（clampInt / cryptoRandomId /
-// trackEvent）。submitReport 挪不动的原因是它依赖 service 的 applyModerationAction，
-// 而后者又依赖本文件的 feedCharacterId / feedCollectionId —— 要先把 feed item id 编解码
-// 抽出去，才能把举报受理搬成自己的模块。见提交说明。
+// INTENT: 公开读模型、feed id、举报、事件和请求原语都由具名模块提供；discovery
+// 只编排公开发现面，不再与 service 互相 import。
 import { Prisma } from "@prisma/client";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import {
@@ -32,6 +29,8 @@ import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { AppError, Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
+import { cryptoRandomId } from "@/server/lib/random-id";
+import { clampInt } from "@/server/lib/request-query";
 import {
   ExperimentRuntimeError,
   assignExperiment,
@@ -65,11 +64,11 @@ import {
   type MediaCollectionWithRelations,
 } from "./public-read-model";
 import {
-  clampInt,
-  cryptoRandomId,
-  submitReport,
-  trackEvent,
-} from "./service";
+  feedCharacterId,
+  feedCollectionId,
+} from "./feed-item-id";
+import { trackEvent } from "./product-events";
+import { submitReport } from "./reports";
 
 // Prisma 的聚合计数在 PostgreSQL 上回 bigint，直接进 JSON 会抛 TypeError。
 function numberFromDb(value: number | bigint) {
@@ -357,16 +356,6 @@ export async function feed(request: Request, segments: string[]) {
   });
 }
 
-export function feedCharacterId(itemId: string) {
-  let decoded = itemId;
-  try {
-    decoded = decodeURIComponent(itemId);
-  } catch {
-    return null;
-  }
-  return decoded.startsWith("character:") ? decoded.slice("character:".length) : null;
-}
-
 function feedScopeItemId(value: string | null) {
   if (value === null) return null;
   const normalized = value.trim();
@@ -537,16 +526,6 @@ export async function feedPublicCharacterByItemId(itemId: string) {
       name: true,
     },
   });
-}
-
-export function feedCollectionId(itemId: string) {
-  let decoded = itemId;
-  try {
-    decoded = decodeURIComponent(itemId);
-  } catch {
-    return null;
-  }
-  return decoded.startsWith("collection:") ? decoded.slice("collection:".length) : null;
 }
 
 function feedPublicCollectionWhere(excludedIds: string[] = [], id?: string) {

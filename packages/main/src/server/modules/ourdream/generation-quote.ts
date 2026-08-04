@@ -11,20 +11,9 @@
 // 与路线，必须就是真正执行并扣款的那一条。这里不做"就近价"、不做四舍五入、
 // 不做降级：只有完全一致才放行。
 //
-// 为什么单独成模块：这条协议原本没有任何 interface 声明它的存在，唯一可执行的
-// 表达在测试脚手架里（test/helpers.ts 自动补 quote 的补偿逻辑）。要读懂它得在
-// 一个 12k 行的 service.ts 里靠行号来回跳 5 处。收进来之后，`quoteGeneration`
-// 与 `assertQuoteStillValid` 就是这条协议的具名入口。
-//
-// 为什么还从 ./service 反向 import：计划解析依赖 service.ts 里的目录查询与路线
-// 选择（selectGenerationProfile 一族，连同其传递依赖近 700 行，且在 service.ts
-// 内另有多个调用者）。mega-module 形态是 docs/architecture/01、05 明文记录的
-// 有意决策，把那一族一并拆出去等于重开已定决策。因此这里只收口「报价协议」，
-// 计划所需的目录查询仍留在 service.ts —— 形成一个与仓库既有形态一致的循环
-// import（service.ts <-> admin/characters/templates.ts 早已如此）。本模块只在
-// 函数体内引用 service.ts 的符号，模块求值期不触碰，ESM 下安全。
+// INTENT: 报价、计划解析、目录选择和角色生成权威都已是具名模块；调用方向保持
+// service -> generation-quote -> 各权威模块，避免报价协议再次退回路由分发文件。
 import { createHash } from "node:crypto";
-import { z } from "zod";
 import { Errors } from "@/server/lib/errors";
 import {
   generationCostFromAuthority,
@@ -32,22 +21,32 @@ import {
   type GenerationPricingAuthority,
 } from "@/server/lib/generation-pricing";
 import { dreamcoinBalance } from "@/server/modules/billing/ledger";
+import { featureFlagEnabled } from "./generation-profile-catalog";
 import {
-  assertGenerationProfileCanDispatchReferences,
-  featureFlagEnabled,
-  generationCharacter,
-  generationReferenceRouteRequirements,
   isTrustedGenerationPromptSource,
+  type GenerationCreateBody,
+  type GenerationSource,
+} from "./generation-request-schema";
+import {
+  generationCharacter,
   publishedGenerationVideoCharacter,
   resolveGenerationLook,
   resolveGenerationVisualProfile,
+} from "./generation-character-authority";
+import {
+  assertGenerationProfileCanDispatchReferences,
+  generationReferenceRouteRequirements,
   selectGenerationProfile,
   selectRecipe,
-  type GenerationCreateBody,
-  type GenerationSource,
-} from "./service";
+} from "./generation-profile-selection";
 import { entitlementMap } from "./subscription-lifecycle";
 import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
+import type { GenerationQuoteAuthority } from "./generation-quote-contract";
+
+export {
+  generationQuoteAuthoritySchema,
+  type GenerationQuoteAuthority,
+} from "./generation-quote-contract";
 
 // SPEC: 报价令牌 —— 客户端从报价里投影出来、提交时原样回传的六个字段。
 // INVARIANT: 六个字段**全部**参与比对，缺一不可，各自钉住一件事：
@@ -63,21 +62,6 @@ import { generationWorkflowDescriptor } from "@/server/modules/generation/genera
 //   - costDreamcoins：最终扣款额。前三个指纹都相等时它本应自然相等，
 //     保留它是最后一道对账闸门 —— 计价公式若被改成同规则不同算法，
 //     指纹不变而金额会变，只有这一项能抓住。
-export const generationQuoteAuthoritySchema = z
-  .object({
-    profileId: z.string().trim().min(1).max(180),
-    profileVersion: z.number().int().positive(),
-    routeFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
-    pricingFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
-    outputCount: z.number().int().min(1).max(8),
-    costDreamcoins: z.number().int().nonnegative(),
-  })
-  .strict();
-
-export type GenerationQuoteAuthority = z.infer<
-  typeof generationQuoteAuthoritySchema
->;
-
 export type GenerationProfileSelectionAuthority =
   | "public_generator"
   | "public_image_edit"

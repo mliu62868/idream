@@ -38,7 +38,7 @@ export type ApprovedAsset = {
 
 export const PLACEMENTS_BASE = "/api/v1/admin/content/placements";
 export const PLACEMENTS_LIST = `${PLACEMENTS_BASE}?limit=25`;
-export const APPROVED_ASSETS_LIST = "/api/v1/admin/content/assets?status=approved&limit=100";
+export const APPROVED_ASSETS_LIST = "/api/v2/admin/assets?status=approved&limit=100";
 
 // 与 placementSlotSchema（server admin/content/placements.ts）一致。
 export const SLOTS = [

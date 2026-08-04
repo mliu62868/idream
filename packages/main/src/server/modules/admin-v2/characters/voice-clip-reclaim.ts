@@ -10,7 +10,7 @@ import {
   Errors,
   type AppErrorCode,
 } from "@/server/lib/errors";
-import { readableCharacter } from "@/server/modules/ourdream/service";
+import { readableCharacter } from "@/server/modules/ourdream/generation-character-authority";
 import { entitlementMap } from "@/server/modules/ourdream/subscription-lifecycle";
 import {
   reclaimExpiredVoiceClip,

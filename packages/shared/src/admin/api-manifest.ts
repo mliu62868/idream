@@ -266,6 +266,12 @@ export const ADMIN_V2_API_OPERATIONS = [
   operation("POST", "/api/v2/admin/creative/runs/:id/placements/:placementId/verification", allOf("creative.placement.publish"), "creativePlacementVerificationRequestSchema+idempotency-key", "creativePlacementVerificationResultSchema"),
   operation("POST", "/api/v2/admin/creative/runs/:id/placements/:placementId/withdrawal", allOf("creative.placement.publish"), "creativePlacementWithdrawalRequestSchema+idempotency-key", "creativePlacementWithdrawalResultSchema"),
 
+  operation("GET", "/api/v2/admin/assets", allOf("creative.asset.read"), "contentAssetQuerySchema", "contentAssetListResponseSchema"),
+  operation("GET", "/api/v2/admin/assets/:id", allOf("creative.asset.read"), "path:id", "contentAssetDetailResponseSchema"),
+  operation("PATCH", "/api/v2/admin/assets/:id", allOf("content.asset.review"), "contentAssetPatchRequestSchema+idempotency-key", "contentAssetMutationResponseSchema"),
+  operation("POST", "/api/v2/admin/assets/bulk/preflight", allOf("content.asset.review"), "contentAssetBulkPreflightRequestSchema", "contentAssetBulkPreflightResponseSchema"),
+  operation("POST", "/api/v2/admin/assets/bulk", allOf("content.asset.review"), "contentAssetBulkRequestSchema+idempotency-key", "contentAssetBulkMutationResponseSchema"),
+
   operation("GET", "/api/v2/admin/customers", allOf("customer.read"), "customerListQuerySchema", "customerListResponseSchema"),
   operation("GET", "/api/v2/admin/customers/:id", allOf("customer.read"), "path:id", "customer360Schema"),
 

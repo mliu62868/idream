@@ -72,13 +72,22 @@ function pickLines(value: unknown): string {
 const DEFAULT_PREVIEW = "/images/ourdream/character-placeholder.svg";
 const STORAGE_KEY_PREFIX = "ourdream.create.draft.v2";
 
-function draftStorageKeyForScope(viewerScope: string) {
+export function draftStorageKeyForScope(viewerScope: string) {
   return `${STORAGE_KEY_PREFIX}:${viewerScope}`;
+}
+
+export function viewerScopeFromAuthority(input: {
+  userId?: string | null;
+  anonymousId?: string | null;
+}) {
+  if (input.userId) return `user:${input.userId}`;
+  if (input.anonymousId) return `anonymous:${input.anonymousId}`;
+  return null;
 }
 
 const STEPS = ["Identity", "Appearance", "Personality", "Preview", "Publish"] as const;
 
-type WizardState = {
+export type WizardState = {
   draftId: string;
   confirmedPreviewJobId: string;
   confirmedPreviewUrl: string;
@@ -124,9 +133,13 @@ const INITIAL: WizardState = {
   visibility: "private",
 };
 
+export function initialCharacterDraft(): WizardState {
+  return { ...INITIAL };
+}
+
 export function CreateWorkspace() {
   const { accepted: ageGateAccepted } = useAgeGateAccess();
-  const [state, setState] = useState<WizardState>(INITIAL);
+  const [state, setState] = useState<WizardState>(initialCharacterDraft);
   const [preview, setPreview] = useState(DEFAULT_PREVIEW);
   const [previewStatus, setPreviewStatus] = useState<PreviewStatus>("idle");
   const [previewCandidates, setPreviewCandidates] = useState<PreviewCandidate[]>([]);
@@ -172,11 +185,7 @@ export function CreateWorkspace() {
         if (controller.signal.aborted) return;
         const userId = payload.user?.id;
         const anonymousId = payload.anonymousId;
-        const nextScope = userId
-          ? `user:${userId}`
-          : anonymousId
-            ? `anonymous:${anonymousId}`
-            : null;
+        const nextScope = viewerScopeFromAuthority({ userId, anonymousId });
         if (nextScope) {
           if (userId) consumeDraftTransfer(nextScope);
           setViewerScope(nextScope);

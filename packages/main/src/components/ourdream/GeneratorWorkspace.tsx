@@ -76,6 +76,8 @@ import {
   type GenerationRequestEffects,
 } from "@/lib/generation-request";
 import { useGenerationRequest } from "@/hooks/useGenerationRequest";
+import { publicOptimisticMutationFailure } from "./optimistic-write-state";
+import { canStartAgeGatedLoad } from "@/lib/age-gate";
 
 type MediaItem = {
   id: string;
@@ -323,7 +325,7 @@ export async function loadGeneratorWorkspaceInitialData(
   ageGateAccepted: boolean,
   loaders: GeneratorInitialDataLoaders,
 ) {
-  if (!ageGateAccepted) return;
+  if (!canStartAgeGatedLoad(ageGateAccepted)) return;
   const [viewerAuthenticated] = await Promise.all([
     loaders.loadConfig(),
     loaders.loadCharacters(),
@@ -1459,12 +1461,14 @@ export function GeneratorWorkspace() {
         method: nextLiked ? "POST" : "DELETE",
       });
       if (!response.ok) {
-        setStatus("Could not update like. Restoring the current gallery.");
-        void refreshMedia(galleryTab);
+        const failure = publicOptimisticMutationFailure("gallery_like");
+        setStatus(failure.status);
+        if (failure.reloadAuthority) void refreshMedia(galleryTab);
       }
     } catch {
-      setStatus("Could not update like. Restoring the current gallery.");
-      void refreshMedia(galleryTab);
+      const failure = publicOptimisticMutationFailure("gallery_like");
+      setStatus(failure.status);
+      if (failure.reloadAuthority) void refreshMedia(galleryTab);
     }
   }
 
@@ -3731,4 +3735,3 @@ function jobStatusLabel(status: string, errorCode: string | null) {
     ? `${label}: ${errorCode}`
     : label;
 }
-

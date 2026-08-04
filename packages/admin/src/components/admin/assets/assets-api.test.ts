@@ -22,14 +22,14 @@ afterEach(() => {
 
 describe("assetsListPath", () => {
   it("returns the bare endpoint when no filters (or 'all') are given", () => {
-    expect(assetsListPath()).toBe("/api/v1/admin/content/assets");
-    expect(assetsListPath({ status: "all", purpose: "all" })).toBe("/api/v1/admin/content/assets");
+    expect(assetsListPath()).toBe("/api/v2/admin/assets");
+    expect(assetsListPath({ status: "all", purpose: "all" })).toBe("/api/v2/admin/assets");
   });
 
   it("appends status and purpose as query params", () => {
-    expect(assetsListPath({ status: "approved" })).toBe("/api/v1/admin/content/assets?status=approved");
+    expect(assetsListPath({ status: "approved" })).toBe("/api/v2/admin/assets?status=approved");
     expect(assetsListPath({ status: "approved", purpose: "feed" })).toBe(
-      "/api/v1/admin/content/assets?status=approved&purpose=feed",
+      "/api/v2/admin/assets?status=approved&purpose=feed",
     );
   });
 });
@@ -206,7 +206,10 @@ describe("bulk asset archival", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledWith(ASSETS_BULK, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": expect.any(String),
+      },
       body: JSON.stringify({
         assetIds: ["asset-a", "asset-b"],
         status: "archived",

@@ -10,6 +10,7 @@ import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
+import { canonicalListEmptyTitle } from "@/features/compatibility-lists/empty-state";
 import {
   deadLetterConfirmation,
   deadLetterListPath,
@@ -170,7 +171,7 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
               {permissions.discard ? <ActionButton danger disabled={selectedIds.length === 0} icon={<Trash2 className="h-4 w-4" />} label="Discard selected" onClick={() => requestAction({ allowed: permissions.discard, title: `Discard ${selectedIds.length} jobs`, endpoint: "/api/v1/admin/generation/dead-letter/discard", ids: selectedIds, reasonRequired: true, methodLabel: `Discard ${selectedIds.length} jobs` })} /> : null}
             </div>
           </div>
-          {rows.length === 0 ? <EmptyState action={filtered ? <button className="min-h-11 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" onClick={() => navigate(defaultDeadLetterQuery)} type="button">{t("Clear filters")}</button> : undefined} hint={filtered ? "The complete dead-letter authority query returned no matches." : "No failed or blocked generation requests require triage."} title={filtered ? "No dead-letter jobs match these filters" : "No dead-letter jobs"} /> : (
+          {rows.length === 0 ? <EmptyState action={filtered ? <button className="min-h-11 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" onClick={() => navigate(defaultDeadLetterQuery)} type="button">{t("Clear filters")}</button> : undefined} hint={filtered ? "The complete dead-letter authority query returned no matches." : "No failed or blocked generation requests require triage."} title={canonicalListEmptyTitle("dead_letter", filtered)} /> : (
             <div aria-label={t("Dead-letter Queue scrollable table")} className="overflow-x-auto rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]" role="region" tabIndex={0}>
               <table className="w-full min-w-[980px] text-left text-sm">
                 <caption className="sr-only">{t("Dead-letter Queue")}</caption>

@@ -17,6 +17,7 @@ import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
+import { canonicalListEmptyTitle } from "@/features/compatibility-lists/empty-state";
 import {
   billingAdjustmentConfirmation,
   billingLedgerPath,
@@ -490,13 +491,10 @@ function freshnessTime(value: string | null) {
 
 function BillingEmpty({ filtered, kind, onClear }: { filtered: boolean; kind: string; onClear: () => void }) {
   const { t } = useAdminI18n();
-  const title = filtered
-    ? kind === "ledger entries"
-      ? "No ledger entries match these filters"
-      : "No subscriptions match these filters"
-    : kind === "ledger entries"
-      ? "No ledger entries exist yet"
-      : "No subscriptions exist yet";
+  const title = canonicalListEmptyTitle(
+    kind === "ledger entries" ? "ledger" : "subscriptions",
+    filtered,
+  );
   return <EmptyState action={filtered ? <button className="min-h-11 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" onClick={onClear} type="button">{t("Clear filters")}</button> : undefined} hint={filtered ? `The complete authority query returned no ${kind}.` : `No ${kind} exist in the authority yet.`} title={title} />;
 }
 

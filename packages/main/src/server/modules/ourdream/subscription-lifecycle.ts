@@ -13,28 +13,31 @@
 // 的 createdAt（id 为并列时的稳定 tiebreaker）决定，不由到达顺序决定；拿不到完整
 // purchase-order 证据时返回 reconciliationRequired，不猜。
 //
-// NOTE: 反向 import ./service 的四个符号（lockUserLedger / toInputJson /
-// publicOfferAvailability / publicFeatureProjection）与 billing-checkout.ts 同理：
-// mega-module 形态是既定决策，这里只搬走自成体系的订阅域，不去拆共用助手。
-// publicOfferAvailability 留在 service 是因为它依赖那边的 generation profile/recipe
-// 可执行性判定，搬过来要一起拖走三个不相干的 helper。
+// INTENT: 订阅域只依赖 JSON、权益可用性和事件记录等具名模块；路由分发文件不再
+// 反向提供域助手，因此生命周期可以独立测试，也不会与 service 形成循环依赖。
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { METRIC_PRODUCT_EVENTS } from "@idream/shared/contracts";
 import { billingPeriodEnd } from "@/lib/billing-period";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
+import { toInputJson } from "@/server/lib/request-json";
 import { appendCanonicalMetricEvent } from "@/server/modules/admin-v2/metrics/event-writer";
 import { postDreamcoinEntry } from "@/server/modules/billing/ledger";
 import { paymentProviderCapabilities } from "@/server/providers/payment/capabilities";
 import {
-  lockUserLedger,
   publicFeatureProjection,
   publicOfferAvailability,
-  toInputJson,
-} from "./service";
+} from "./offer-availability";
 
 type JsonRecord = Record<string, Prisma.JsonValue>;
+
+export async function lockUserLedger(
+  tx: Prisma.TransactionClient,
+  userId: string,
+) {
+  await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${userId} FOR UPDATE`;
+}
 
 export const checkoutSchema = z.object({
   planId: z.string().optional(),

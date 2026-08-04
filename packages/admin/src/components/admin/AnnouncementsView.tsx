@@ -6,7 +6,12 @@ import { useCallback, useEffect, useState } from "react";
 import { ChevronRight, Loader2, Plus, RefreshCcw, Search, Trash2 } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
-import { buildCompatibilityListUrl, readCompatibilityListQuery } from "@/features/compatibility-lists/query";
+import {
+  announcementListPath,
+  announcementQueryFromSearch,
+  announcementWorkspaceUrl,
+  type AnnouncementQuery,
+} from "./announcements-query";
 
 type Announcement = {
   id: string;
@@ -45,22 +50,16 @@ export function AnnouncementsView() {
   const [error, setError] = useState<string | null>(null);
   const [actionDraft, setActionDraft] = useState<AnnouncementActionDraft | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
-  const [query, setQuery] = useState({ announcementSearch: "", announcementLevel: "", announcementActive: "", announcementCursor: "" });
+  const [query, setQuery] = useState<AnnouncementQuery>({ announcementSearch: "", announcementLevel: "", announcementActive: "", announcementCursor: "" });
   const [pageInfo, setPageInfo] = useState<{ endCursor: string | null; hasNextPage: boolean }>({ endCursor: null, hasNextPage: false });
 
   const load = useCallback(async (params = new URLSearchParams(window.location.search)) => {
     setLoading(true);
     setError(null);
     try {
-      const restored = readCompatibilityListQuery(params, ["announcementSearch", "announcementLevel", "announcementActive", "announcementCursor"]);
-      setQuery(restored as typeof query);
-      const apiParams = new URLSearchParams();
-      if (restored.announcementSearch) apiParams.set("search", restored.announcementSearch);
-      if (restored.announcementLevel) apiParams.set("level", restored.announcementLevel);
-      if (restored.announcementActive) apiParams.set("active", restored.announcementActive);
-      if (restored.announcementCursor) apiParams.set("cursor", restored.announcementCursor);
-      apiParams.set("limit", "25");
-      const data = await apiGet<{ items: Announcement[]; pageInfo: { endCursor: string | null; hasNextPage: boolean } }>(`/api/v1/admin/announcements?${apiParams.toString()}`);
+      const restored = announcementQueryFromSearch(params.toString());
+      setQuery(restored);
+      const data = await apiGet<{ items: Announcement[]; pageInfo: { endCursor: string | null; hasNextPage: boolean } }>(announcementListPath(restored));
       setItems(data.items);
       setPageInfo(data.pageInfo);
     } catch (err) {
@@ -81,11 +80,11 @@ export function AnnouncementsView() {
   }, [load]);
 
   function navigate(updates: Record<string, string | null>, clearCursor = false) {
-    const next = buildCompatibilityListUrl(
+    const next = announcementWorkspaceUrl(
       window.location.pathname,
       window.location.search,
       updates,
-      clearCursor ? ["announcementCursor"] : [],
+      clearCursor,
     );
     window.history.pushState(null, "", next);
     void load(new URLSearchParams(window.location.search));

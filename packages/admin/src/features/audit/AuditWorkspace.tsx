@@ -10,6 +10,7 @@ import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
 import { createLatestRequestGate } from "@/lib/latest-request";
+import { canonicalListEmptyTitle } from "@/features/compatibility-lists/empty-state";
 import {
   auditCommandPath,
   auditListPath,
@@ -146,7 +147,7 @@ export function AuditWorkspace() {
         <EmptyState
           action={filtered ? <button className="min-h-11 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" onClick={clearFilters} type="button">{t("Clear filters")}</button> : undefined}
           hint={filtered ? "The complete server-side query returned no records. Clear filters to inspect the authority." : "Auditable operator actions will appear after the first consequential command is recorded."}
-          title={filtered ? "No audit events match these filters" : "No audit events exist yet"}
+          title={canonicalListEmptyTitle("audit", filtered)}
         />
       ) : rows ? <AuditRecords rows={rows} /> : null}
 

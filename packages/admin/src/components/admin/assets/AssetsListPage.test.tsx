@@ -48,6 +48,7 @@ function asset(id: string, status: string): ContentAsset {
     type: "image",
     url: `/assets/${id}.webp`,
     thumbnailUrl: `/assets/${id}-thumb.webp`,
+    contentType: "image/webp",
     isSynthetic: false,
     customerPublishable: true,
     publishabilityReasons: [],
@@ -62,6 +63,8 @@ function asset(id: string, status: string): ContentAsset {
     targetId: "character-1",
     tags: [],
     description: id,
+    promptSummary: null,
+    metadata: {},
     sourceJob: null,
     sourceBatch: null,
     placements: [],
@@ -238,7 +241,7 @@ describe("AssetsListPage request authority", () => {
     expect(container.textContent).toContain("No selected asset was changed.");
     expect(document.querySelector('[role="dialog"]')).toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/v1/admin/content/assets/bulk/preflight");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/v2/admin/assets/bulk/preflight");
   });
 
   it("requires the exact canonical IDs and submits one atomic archive before refreshing and clearing", async () => {
@@ -290,7 +293,7 @@ describe("AssetsListPage request authority", () => {
     await waitUntil(() => fetchMock.mock.calls.length === 2);
     await waitUntil(() => container.textContent?.includes("2 assets archived. The selection was cleared.") === true);
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/v1/admin/content/assets/bulk/preflight");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/v2/admin/assets/bulk/preflight");
     expect(JSON.parse(fetchMock.mock.calls[1]?.[1]?.body as string)).toEqual({
       assetIds: ["asset-a", "asset-b"],
       status: "archived",

@@ -13,6 +13,7 @@ import { shouldBypassNextImageOptimizer } from "@/lib/image-delivery";
 import { useAgeGateAccess } from "./AgeGateBoundary";
 import { authHrefForTarget } from "./authRedirect";
 import { countLabel } from "./workspace-helpers";
+import { feedLoadFailure, shouldApplyFeedResponse } from "./feed-load-state";
 
 type FeedCharacterItem = Extract<PublicFeedItem, { type: "character" }>;
 type FeedCollectionItem = Extract<PublicFeedItem, { type: "collection" }>;
@@ -82,7 +83,11 @@ export function FeedWorkspace() {
         requestedItemId,
         controller.signal,
       );
-      if (requestSerial !== requestSerialRef.current) return;
+      if (!shouldApplyFeedResponse({
+        requestSerial,
+        currentSerial: requestSerialRef.current,
+        aborted: controller.signal.aborted,
+      })) return;
       if (payload.ok === false) {
         throw new FeedLoadError(
           payload.error?.message ?? "Accept the age gate to view feed.",
@@ -106,24 +111,26 @@ export function FeedWorkspace() {
       setNextCursor(payload.data.nextCursor);
       setSnapshotStale(false);
     } catch (error) {
-      if (
-        controller.signal.aborted ||
-        requestSerial !== requestSerialRef.current
-      ) {
-        return;
-      }
+      if (!shouldApplyFeedResponse({
+        requestSerial,
+        currentSerial: requestSerialRef.current,
+        aborted: controller.signal.aborted,
+      })) return;
       const message =
         error instanceof FeedLoadError ? error.message : "Feed unavailable.";
-      if (cursor) {
-        setStatus("Could not load more dreams. Showing the loaded results.");
-      } else if (loadedScopeRef.current !== null) {
-        setSnapshotStale(true);
-        setStatus(`${message} Showing the last loaded results.`);
-      } else {
-        setStatus(message);
-      }
+      const failure = feedLoadFailure({
+        message,
+        loadingMore: Boolean(cursor),
+        hasSnapshot: loadedScopeRef.current !== null,
+      });
+      setSnapshotStale(failure.snapshotStale);
+      setStatus(failure.status);
     } finally {
-      if (requestSerial !== requestSerialRef.current) return;
+      if (!shouldApplyFeedResponse({
+        requestSerial,
+        currentSerial: requestSerialRef.current,
+        aborted: controller.signal.aborted,
+      })) return;
       if (cursor) setLoadingMore(false);
       else setLoading(false);
     }
