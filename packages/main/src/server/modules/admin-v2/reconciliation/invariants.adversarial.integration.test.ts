@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { createMedia, createUser } from "@/server/test/helpers";
 import { recordGenerationAttemptEvent } from "@/server/ai/generation-attempt-events";
+import { adminCaseActiveKey } from "../cases/service";
 import {
   characterReleaseSnapshotHash,
   characterVisualProfileSnapshotHash,
@@ -44,9 +45,6 @@ describe("Admin cutover invariant adversarial release authority", () => {
   const overRefundRequestId = `${prefix}-over-refund-request`;
   const capturedLedgerId = `${prefix}-captured-ledger`;
   const refundLedgerId = `${prefix}-refund-ledger`;
-  const terminalCaseId = `${prefix}-terminal-case-with-active-key`;
-  const activeCaseWithoutKeyId = `${prefix}-active-case-without-key`;
-  const terminalIncidentId = `${prefix}-terminal-incident-with-active-key`;
   const cancelledRequestId = `${prefix}-cancelled-request-with-succeeded-attempt`;
   const mismatchedSucceededRequestId = `${prefix}-mismatched-succeeded-request`;
   const cancelledAttemptId = `${prefix}-cancelled-request-attempt`;
@@ -459,43 +457,6 @@ describe("Admin cutover invariant adversarial release authority", () => {
         { requestId: overRefundRequestId, ledgerEntryId: refundLedgerId, kind: "refund" },
       ],
     });
-    await prisma.adminCase.createMany({
-      data: [
-        {
-          id: terminalCaseId,
-          type: "support_request",
-          targetType: "user",
-          targetId: userId,
-          caseKey: `${prefix}:terminal`,
-          activeKey: `${prefix}:terminal-active-key`,
-          status: "resolved",
-        },
-        {
-          id: activeCaseWithoutKeyId,
-          type: "support_request",
-          targetType: "user",
-          targetId: userId,
-          caseKey: `${prefix}:active-without-key`,
-          activeKey: null,
-          status: "in_progress",
-        },
-      ],
-    });
-    await prisma.opsIncident.create({
-      data: {
-        id: terminalIncidentId,
-        signature: `${prefix}:terminal-signature`,
-        signatureVersion: "generation-error-v1",
-        activeCorrelationKey: `${prefix}:terminal-correlation`,
-        status: "resolved",
-        severity: "medium",
-        firstSeen: new Date("2026-07-11T00:00:00.000Z"),
-        lastSeen: new Date("2026-07-11T00:01:00.000Z"),
-        impact: {},
-        mitigation: {},
-        verificationState: "passed",
-      },
-    });
     await prisma.generationJob.createMany({
       data: [
         {
@@ -597,8 +558,6 @@ describe("Admin cutover invariant adversarial release authority", () => {
   });
 
   afterAll(async () => {
-    await prisma.adminCase.deleteMany({ where: { id: { in: [terminalCaseId, activeCaseWithoutKeyId] } } });
-    await prisma.opsIncident.deleteMany({ where: { id: terminalIncidentId } });
     await prisma.generationFulfillmentFact.deleteMany({ where: { requestId: mismatchedSucceededRequestId } });
     await prisma.generationSettlementLink.deleteMany({ where: { requestId: unlinkedSettlementRequestId } });
     await prisma.dreamcoinLedger.deleteMany({ where: { id: unlinkedSettlementLedgerId } });
@@ -720,21 +679,6 @@ describe("Admin cutover invariant adversarial release authority", () => {
         status: "failed",
         sampleIds: expect.arrayContaining([`${unlinkedSettlementRequestId}:${unlinkedSettlementLedgerId}`]),
       }),
-      expect.objectContaining({
-        key: "terminal_case_retains_active_key",
-        status: "failed",
-        sampleIds: expect.arrayContaining([terminalCaseId]),
-      }),
-      expect.objectContaining({
-        key: "active_case_missing_active_key",
-        status: "failed",
-        sampleIds: expect.arrayContaining([activeCaseWithoutKeyId]),
-      }),
-      expect.objectContaining({
-        key: "terminal_incident_retains_active_correlation_key",
-        status: "failed",
-        sampleIds: expect.arrayContaining([terminalIncidentId]),
-      }),
     ]));
     const succeededMismatch = report.checks.find((check) => check.key === "succeeded_request_delivery_count_mismatch");
     expect(succeededMismatch?.sampleIds).not.toContain(cancelledRequestId);
@@ -812,6 +756,156 @@ describe("Admin cutover invariant adversarial release authority", () => {
       throw new Error("rollback-orphan-fixture");
     })).rejects.toThrow("rollback-orphan-fixture");
     expect(checked).toBe(true);
+  });
+
+  it("rejects active identity states that the database constraints make invalid", async () => {
+    const invalidCases = [
+      {
+        id: `${prefix}-constraint-active-case-missing-key`,
+        caseKey: `${prefix}:missing-active-key`,
+        activeKey: null,
+        status: "in_progress",
+      },
+      {
+        id: `${prefix}-constraint-terminal-case-retains-key`,
+        caseKey: `${prefix}:terminal-retains-key`,
+        activeKey: adminCaseActiveKey(
+          "support_request",
+          "user",
+          userId,
+          `${prefix}:terminal-retains-key`,
+        ),
+        status: "resolved",
+      },
+      {
+        id: `${prefix}-constraint-case-key-formula-mismatch`,
+        caseKey: `${prefix}:formula-mismatch`,
+        activeKey: `${prefix}:wrong-active-key`,
+        status: "new",
+      },
+    ];
+    for (const invalidCase of invalidCases) {
+      await expect(prisma.adminCase.create({
+        data: {
+          ...invalidCase,
+          type: "support_request",
+          targetType: "user",
+          targetId: userId,
+        },
+      })).rejects.toThrow(/admin_cases_active_key_identity/);
+    }
+    await expect(prisma.adminCase.count({
+      where: { id: { in: invalidCases.map(({ id }) => id) } },
+    })).resolves.toBe(0);
+
+    const invalidIncidentId = `${prefix}-constraint-invalid-incident`;
+    await expect(prisma.opsIncident.create({
+      data: {
+        id: invalidIncidentId,
+        signature: `${prefix}:terminal-signature`,
+        signatureVersion: "generation-error-v1",
+        activeCorrelationKey: `${prefix}:terminal-correlation`,
+        status: "resolved",
+        severity: "medium",
+        firstSeen: new Date("2026-07-11T00:00:00.000Z"),
+        lastSeen: new Date("2026-07-11T00:01:00.000Z"),
+        impact: {},
+        mitigation: {},
+        verificationState: "passed",
+      },
+    })).rejects.toThrow(/ops_incidents_terminal_releases_active_correlation_key/);
+    await expect(prisma.opsIncident.findUnique({ where: { id: invalidIncidentId } }))
+      .resolves.toBeNull();
+  });
+
+  it("fails closed when an active identity CHECK constraint is dropped", async () => {
+    const baseline = await auditAdminCutoverInvariants(prisma);
+    expect(baseline.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "active_identity_constraint_missing", status: "passed" }),
+    ]));
+
+    let checked = false;
+    await expect(prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(
+        'ALTER TABLE admin_cases DROP CONSTRAINT "admin_cases_active_key_identity"',
+      );
+      await tx.$executeRawUnsafe(
+        'ALTER TABLE ops_incidents DROP CONSTRAINT "ops_incidents_terminal_releases_active_correlation_key"',
+      );
+      const report = await auditAdminCutoverInvariants(tx);
+      expect(report.checks).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          key: "active_identity_constraint_missing",
+          status: "failed",
+          sampleIds: [
+            "admin_cases:admin_cases_active_key_identity",
+            "ops_incidents:ops_incidents_terminal_releases_active_correlation_key",
+          ],
+        }),
+      ]));
+      expect(report).toMatchObject({ qualityState: "invalid", decisionUse: "blocked" });
+      checked = true;
+      throw new Error("rollback-dropped-active-identity-constraints");
+    })).rejects.toThrow("rollback-dropped-active-identity-constraints");
+    expect(checked).toBe(true);
+
+    const restored = await auditAdminCutoverInvariants(prisma);
+    expect(restored.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "active_identity_constraint_missing", status: "passed" }),
+    ]));
+  });
+
+  it("fails closed when a named active identity CHECK is weakened", async () => {
+    let checked = false;
+    await expect(prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(
+        'ALTER TABLE admin_cases DROP CONSTRAINT "admin_cases_active_key_identity"',
+      );
+      await tx.$executeRawUnsafe(
+        'ALTER TABLE admin_cases ADD CONSTRAINT "admin_cases_active_key_identity" CHECK (true)',
+      );
+      const report = await auditAdminCutoverInvariants(tx);
+      expect(report.checks).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          key: "active_identity_constraint_missing",
+          status: "failed",
+          sampleIds: ["admin_cases:admin_cases_active_key_identity"],
+        }),
+      ]));
+      expect(report).toMatchObject({ qualityState: "invalid", decisionUse: "blocked" });
+      checked = true;
+      throw new Error("rollback-weakened-case-active-identity-constraint");
+    })).rejects.toThrow("rollback-weakened-case-active-identity-constraint");
+    expect(checked).toBe(true);
+
+    const restored = await auditAdminCutoverInvariants(prisma);
+    expect(restored.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "active_identity_constraint_missing", status: "passed" }),
+    ]));
+  });
+
+  it("fails closed when the Case active identity unique index is dropped", async () => {
+    let checked = false;
+    await expect(prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe('DROP INDEX "admin_cases_activeKey_key"');
+      const report = await auditAdminCutoverInvariants(tx);
+      expect(report.checks).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          key: "active_identity_constraint_missing",
+          status: "failed",
+          sampleIds: ["admin_cases:activeKey_unique"],
+        }),
+      ]));
+      expect(report).toMatchObject({ qualityState: "invalid", decisionUse: "blocked" });
+      checked = true;
+      throw new Error("rollback-dropped-case-active-identity-index");
+    })).rejects.toThrow("rollback-dropped-case-active-identity-index");
+    expect(checked).toBe(true);
+
+    const restored = await auditAdminCutoverInvariants(prisma);
+    expect(restored.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "active_identity_constraint_missing", status: "passed" }),
+    ]));
   });
 
   // SPEC: 去重不变量由唯一索引守住，所以对账要查的是"索引还在吗"，不是"有重复行吗"。

@@ -611,39 +611,69 @@ const sqlChecks: readonly SqlInvariant[] = [
       SELECT id, count(*) OVER()::int AS total FROM violations ORDER BY id LIMIT 20
     `,
   },
+  // SPEC: Active identity invalid states are rejected by CHECK + UNIQUE constraints.
+  // INTENT: Query the authority itself; scanning for rows the database cannot store is constant-green theater.
+  // INVARIANT: A validated constraint with the right name but a weaker expression is not the authority.
   {
-    key: "duplicate_active_case",
-    description: "A Case identity may have at most one active aggregate",
-    evidence: "active admin_cases grouped by type/target/caseKey",
+    key: "active_identity_constraint_missing",
+    description:
+      "Case and Incident active identity lifecycle constraints must remain database-enforced",
+    evidence:
+      "validated CHECK constraints plus the admin_cases activeKey unique index",
     query: Prisma.sql`
-      WITH violations AS (
-        SELECT min(id) AS id FROM admin_cases
-        WHERE status NOT IN ('closed', 'resolved')
-        GROUP BY type, "targetType", "targetId", "caseKey" HAVING count(*) > 1
+      WITH expected_checks(id, tablename, constraint_name, expression_hash) AS (
+        VALUES
+          ('admin_cases:admin_cases_active_key_identity',
+            'admin_cases', 'admin_cases_active_key_identity',
+            'e599bd00e0c71ee2f3caaa64e31d8ea3'),
+          ('ops_incidents:ops_incidents_terminal_releases_active_correlation_key',
+            'ops_incidents', 'ops_incidents_terminal_releases_active_correlation_key',
+            'b1ad33fd15ee005adfe3835aee69d83f')
+      ),
+      present AS (
+        SELECT c.relname::text AS tablename, x.conname::text AS constraint_name,
+          md5(pg_get_expr(x.conbin, x.conrelid)) AS expression_hash
+        FROM pg_constraint x
+        JOIN pg_class c ON c.oid = x.conrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE x.contype = 'c' AND x.convalidated
+          AND n.nspname = current_schema()
+          AND c.relname IN ('admin_cases', 'ops_incidents')
+      ),
+      expected_unique_indexes(id, tablename, columns) AS (
+        VALUES
+          ('admin_cases:activeKey_unique', 'admin_cases', ARRAY['activeKey'])
+      ),
+      present_unique_indexes AS (
+        SELECT c.relname::text AS tablename,
+          array_agg(a.attname::text ORDER BY k.ord) AS columns
+        FROM pg_index i
+        JOIN pg_class c ON c.oid = i.indrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord)
+        JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum
+        WHERE i.indisunique AND i.indisvalid AND i.indisready AND i.indislive
+          AND i.indpred IS NULL
+          AND n.nspname = current_schema()
+          AND c.relname = 'admin_cases'
+        GROUP BY i.indexrelid, c.relname
+      ),
+      violations AS (
+        SELECT e.id FROM expected_checks e
+        WHERE NOT EXISTS (
+          SELECT 1 FROM present p
+          WHERE p.tablename = e.tablename
+            AND p.constraint_name = e.constraint_name
+            AND p.expression_hash = e.expression_hash
+        )
+        UNION ALL
+        SELECT e.id FROM expected_unique_indexes e
+        WHERE NOT EXISTS (
+          SELECT 1 FROM present_unique_indexes p
+          WHERE p.tablename = e.tablename AND p.columns = e.columns
+        )
       )
       SELECT id, count(*) OVER()::int AS total FROM violations ORDER BY id LIMIT 20
-    `,
-  },
-  {
-    key: "active_case_missing_active_key",
-    description: "Every active Case must hold its deterministic active identity key",
-    evidence: "AdminCase active lifecycle states require activeKey for database-enforced uniqueness",
-    query: Prisma.sql`
-      SELECT c.id, count(*) OVER()::int AS total
-      FROM admin_cases c
-      WHERE c.status NOT IN ('closed', 'resolved') AND c."activeKey" IS NULL
-      ORDER BY c.id LIMIT 20
-    `,
-  },
-  {
-    key: "terminal_case_retains_active_key",
-    description: "Terminal Cases must release the active identity key before recurrence",
-    evidence: "resolved/closed AdminCase rows must have activeKey=NULL",
-    query: Prisma.sql`
-      SELECT c.id, count(*) OVER()::int AS total
-      FROM admin_cases c
-      WHERE c.status IN ('closed', 'resolved') AND c."activeKey" IS NOT NULL
-      ORDER BY c.id LIMIT 20
     `,
   },
   {
@@ -660,18 +690,6 @@ const sqlChecks: readonly SqlInvariant[] = [
         HAVING count(DISTINCT o."incidentId") > 1
       )
       SELECT id, count(*) OVER()::int AS total FROM violations ORDER BY id LIMIT 20
-    `,
-  },
-  {
-    key: "terminal_incident_retains_active_correlation_key",
-    description: "Terminal Incidents must release their active correlation identity before recurrence",
-    evidence: "resolved/closed/duplicate/merged OpsIncident rows must have activeCorrelationKey=NULL",
-    query: Prisma.sql`
-      SELECT i.id, count(*) OVER()::int AS total
-      FROM ops_incidents i
-      WHERE i.status IN ('resolved', 'closed', 'duplicate', 'merged')
-        AND i."activeCorrelationKey" IS NOT NULL
-      ORDER BY i.id LIMIT 20
     `,
   },
   // SPEC: 投影去重不是靠事后数重复行守住的，是靠唯一索引 —— 所以这里查的是"那些索引还在吗"。

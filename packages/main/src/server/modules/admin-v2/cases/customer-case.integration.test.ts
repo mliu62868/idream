@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { backfillCustomerCases } from "@/server/modules/admin-v2/backfill/production-runner";
 import {
+  adminCaseActiveKey,
   recordReviewCaseDecisionAtomic,
   reopenOrRecurCase,
   recordCustomerCaseAction,
@@ -313,7 +314,12 @@ describe("Support and billing Case depth", () => {
         targetType: "user",
         targetId: customerId,
         caseKey: `restricted-review-${suffix}`,
-        activeKey: `restricted-review-active-${suffix}`,
+        activeKey: adminCaseActiveKey(
+          "content_report",
+          "user",
+          customerId,
+          `restricted-review-${suffix}`,
+        ),
         status: "new",
         priority: "high",
         slaDueAt: new Date(Date.now() + 60_000),
@@ -357,7 +363,7 @@ describe("Support and billing Case depth", () => {
       targetType: "user",
       targetId: customerId,
       caseKey: `old-terminal-${suffix}`,
-      activeKey: `support_request:user:${customerId}:old-terminal-${suffix}`,
+      activeKey: null,
       status: "resolved",
       priority: "normal",
       updatedAt: new Date(Date.now() - 60_000),
@@ -374,7 +380,7 @@ describe("Support and billing Case depth", () => {
     expect(result.adminCase).toMatchObject({ status: "new", caseKey: prior.caseKey });
     await expect(prisma.adminCase.findUnique({ where: { id: prior.id } })).resolves.toMatchObject({
       activeKey: null,
-      version: 2,
+      version: 1,
     });
     await expect(prisma.caseEvidence.findFirst({
       where: { caseId: result.adminCase.id, sourceType: "case_recurrence", sourceId: prior.id },

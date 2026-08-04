@@ -6,6 +6,7 @@ import { prisma } from "@/server/lib/db";
 import { updateOperationalWorkPreference } from "./preferences";
 import { claimTodayWorkItem } from "./claim";
 import { buildTodayAllWork, buildTodayProjection, getTodayAllWork, getTodayProjection } from "./query";
+import { adminCaseActiveKey } from "@/server/modules/admin-v2/cases/service";
 
 /** `buildTodayAllWork` now takes the query the HTTP boundary already parsed, defaults included. */
 function allWorkQuery(partial: Partial<TodayAllWorkQuery>): TodayAllWorkQuery {
@@ -31,7 +32,12 @@ describe("Today authoritative projection", () => {
           targetType: "user",
           targetId: `customer-${index}`,
           caseKey: `support-${index}-${suffix}`,
-          activeKey: `active-${index}-${suffix}`,
+          activeKey: adminCaseActiveKey(
+            "support_request",
+            "user",
+            `customer-${index}`,
+            `support-${index}-${suffix}`,
+          ),
           status: "in_progress",
           priority: index === 0 ? "urgent" : "high",
           ownerId: actorId,
@@ -46,7 +52,12 @@ describe("Today authoritative projection", () => {
           targetType: "user",
           targetId: "unassigned-customer",
           caseKey: `unassigned-${suffix}`,
-          activeKey: `unassigned-active-${suffix}`,
+          activeKey: adminCaseActiveKey(
+            "support_request",
+            "user",
+            "unassigned-customer",
+            `unassigned-${suffix}`,
+          ),
           status: "new",
           priority: "normal",
           ownerId: null,
@@ -451,7 +462,12 @@ describe("Today complete-set ranking and collaboration bridge", () => {
         targetType: "user",
         targetId: `ranking-customer-${index}-${suffix}`,
         caseKey: `ranking-${index}-${suffix}`,
-        activeKey: `ranking-active-${index}-${suffix}`,
+        activeKey: adminCaseActiveKey(
+          "support_request",
+          "user",
+          `ranking-customer-${index}-${suffix}`,
+          `ranking-${index}-${suffix}`,
+        ),
         status: "in_progress",
         priority: index === 0 ? "urgent" : "low",
         ownerId: actorId,
@@ -516,7 +532,12 @@ describe("Today mentions and collaboration watch aliases", () => {
         targetType: "user",
         targetId: `visible-customer-${suffix}`,
         caseKey: `visible-${suffix}`,
-        activeKey: `visible-active-${suffix}`,
+        activeKey: adminCaseActiveKey(
+          "support_request",
+          "user",
+          `visible-customer-${suffix}`,
+          `visible-${suffix}`,
+        ),
         status: "new",
         priority: "normal",
         slaDueAt: new Date("2026-07-15T00:00:00.000Z"),
@@ -527,7 +548,12 @@ describe("Today mentions and collaboration watch aliases", () => {
         targetType: "character",
         targetId: `hidden-character-${suffix}`,
         caseKey: `hidden-${suffix}`,
-        activeKey: `hidden-active-${suffix}`,
+        activeKey: adminCaseActiveKey(
+          "content_report",
+          "character",
+          `hidden-character-${suffix}`,
+          `hidden-${suffix}`,
+        ),
         status: "new",
         priority: "high",
         slaDueAt: new Date("2026-07-12T00:00:00.000Z"),
@@ -790,7 +816,12 @@ describe("Today All Work severity selection matches projection", () => {
         targetType: "user",
         targetId: `severity-customer-${index}-${suffix}`,
         caseKey: `severity-${index}-${suffix}`,
-        activeKey: `severity-active-${index}-${suffix}`,
+        activeKey: adminCaseActiveKey(
+          "support_request",
+          "user",
+          `severity-customer-${index}-${suffix}`,
+          `severity-${index}-${suffix}`,
+        ),
         status: "in_progress",
         priority,
         ownerId: actorId,

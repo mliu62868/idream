@@ -397,7 +397,7 @@ type CharacterProductionJourney = {
    （`projection_dedupe_constraint_missing`：期望的唯一约束集合必须恰好存在于 `pg_index`）。
    **行数几乎没变，但它从「查一个不可能的状态」变成了「查那个不可能性还成立吗」。**
 4. **删不掉但需要 DB 约束的，只出 SQL，不自己执行**，并且约束落地前不要先删检查
-   （见 `db/sql/2026-08-03-invariant-collapse-check-constraints.sql`：admin_cases 的
+   （见 `packages/main/prisma/manual/2026-08-03-invariant-collapse-check-constraints.sql`：admin_cases 的
    activeKey 身份约束一旦生效，三条 Case 检查同时不可表示）。
 5. **不是所有检查器都能收**。跨存储集合关系（Redis Bull row ↔ PostgreSQL Outbox row）、
    真实进程崩溃恢复（`readiness/dependency-chaos-process`）没有类型或 schema 表达形式，

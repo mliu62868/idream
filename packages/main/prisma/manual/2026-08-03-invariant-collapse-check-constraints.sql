@@ -1,7 +1,7 @@
 -- 把 admin_cases / ops_incidents 的「活跃身份键」不变量从离线对账搬进数据库约束。
--- DEV: 由用户执行。PROD: 部署时执行。**不由 agent 连库执行。**
+-- DEV: 由用户执行，或由用户明确授权 agent 执行。PROD: 仅由发布系统执行。
 --
--- 背景：packages/main/src/server/modules/admin-v2/reconciliation/invariants.ts 里有三条
+-- 背景：packages/main/src/server/modules/admin-v2/reconciliation/invariants.ts 里有四条
 -- SQL 检查（active_case_missing_active_key / terminal_case_retains_active_key /
 -- duplicate_active_case）事后统计违规行。它们守的是同一件事：
 --
@@ -72,7 +72,7 @@ ALTER TABLE public.ops_incidents
 COMMIT;
 
 -- ============================================================================
--- 第 2 步：约束落地并验证后，删除 invariants.ts 里这三条已不可表示的 SQL 检查
+-- 第 2 步：约束落地并验证后，删除 invariants.ts 里这四条已不可表示的 SQL 检查
 --   - active_case_missing_active_key
 --   - terminal_case_retains_active_key
 --   - duplicate_active_case

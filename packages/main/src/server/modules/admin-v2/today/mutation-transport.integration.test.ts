@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { POST as claimTodayRoute } from "@/app/api/v2/admin/today/claim/route";
 import { PUT as updateTodayPreferenceRoute } from "@/app/api/v2/admin/today/preferences/route";
 import { prisma } from "@/server/lib/db";
+import { adminCaseActiveKey } from "@/server/modules/admin-v2/cases/service";
 
 describe("Today mutation transport", () => {
   const suffix = randomUUID();
@@ -47,7 +48,12 @@ describe("Today mutation transport", () => {
         targetType: "user",
         targetId: `customer-${suffix}`,
         caseKey: `today-mutation-${suffix}`,
-        activeKey: `today-mutation-active-${suffix}`,
+        activeKey: adminCaseActiveKey(
+          "support_request",
+          "user",
+          `customer-${suffix}`,
+          `today-mutation-${suffix}`,
+        ),
         status: "new",
         priority: "normal",
         verificationState: "pending",
@@ -60,7 +66,12 @@ describe("Today mutation transport", () => {
         targetType: "user",
         targetId: `rollback-customer-${suffix}`,
         caseKey: `today-mutation-rollback-${suffix}`,
-        activeKey: `today-mutation-rollback-active-${suffix}`,
+        activeKey: adminCaseActiveKey(
+          "support_request",
+          "user",
+          `rollback-customer-${suffix}`,
+          `today-mutation-rollback-${suffix}`,
+        ),
         status: "new",
         priority: "normal",
         verificationState: "pending",

@@ -39,7 +39,12 @@ function appealCaseKey(appeal: Pick<Appeal, "originalDecisionId" | "targetType" 
   return `appeal:${appeal.originalDecisionId ?? `${appeal.targetType}:${appeal.targetId}`}`;
 }
 
-function activeKey(type: string, targetType: string, targetId: string, caseKey: string) {
+export function adminCaseActiveKey(
+  type: string,
+  targetType: string,
+  targetId: string,
+  caseKey: string,
+) {
   return `${type}:${targetType}:${targetId}:${caseKey}`;
 }
 
@@ -124,7 +129,7 @@ export async function applyCustomerCaseBackfill(db: Db, request: SupportRequest)
 export async function ensureSupportCaseForRequest(db: Db, request: SupportRequest) {
   const type = supportCaseType(request.category);
   const key = supportCaseKey(request);
-  const keyActive = activeKey(type, "user", request.userId, key);
+  const keyActive = adminCaseActiveKey(type, "user", request.userId, key);
   const sourceEvidence = await db.caseEvidence.findFirst({
     where: { sourceType: "support_request", sourceId: request.id },
   });
@@ -280,7 +285,7 @@ export async function synchronizeSupportCaseFromRequest(db: Db, request: Support
     data: {
       activeKey: terminal
         ? null
-        : activeKey(current.type, current.targetType, current.targetId, current.caseKey),
+        : adminCaseActiveKey(current.type, current.targetType, current.targetId, current.caseKey),
       priority,
       ownerId: request.assignedToId,
       slaDueAt: terminal ? request.resolvedAt ?? request.updatedAt : slaFor(priority, request.createdAt),
@@ -376,7 +381,7 @@ async function addBillingEvidence(db: Db, caseId: string, userId: string) {
 
 export async function ensureReviewCaseForReport(db: Db, report: ContentReport) {
   const key = reportCaseKey(report);
-  const keyActive = activeKey("content_report", report.targetType, report.targetId, key);
+  const keyActive = adminCaseActiveKey("content_report", report.targetType, report.targetId, key);
   const existing = await db.adminCase.findUnique({ where: { activeKey: keyActive } });
   let adminCase = existing;
   if (ACTIVE_REPORT_STATUSES.includes(report.status)) {
@@ -468,7 +473,7 @@ export async function ensureReviewCaseForReport(db: Db, report: ContentReport) {
 
 export async function ensureReviewCaseForAppeal(db: Db, appeal: Appeal) {
   const key = appealCaseKey(appeal);
-  const keyActive = activeKey("appeal", appeal.targetType, appeal.targetId, key);
+  const keyActive = adminCaseActiveKey("appeal", appeal.targetType, appeal.targetId, key);
   let adminCase = await db.adminCase.findUnique({ where: { activeKey: keyActive } });
   if (appeal.status === "open") {
     adminCase = await db.adminCase.upsert({
@@ -1210,7 +1215,12 @@ export async function reopenOrRecurCase(input: {
     assertCaseScope(current, input.actor);
     if (current.version !== input.expectedVersion) throw Errors.conflict("Case version changed");
     if (!isAdminCaseTransitionAllowed(current.status, "reopened")) throw Errors.conflict("Only terminal Cases can be reopened");
-    const activeKey = `${current.type}:${current.targetType}:${current.targetId}:${current.caseKey}`;
+    const activeKey = adminCaseActiveKey(
+      current.type,
+      current.targetType,
+      current.targetId,
+      current.caseKey,
+    );
     const existingActive = await tx.adminCase.findFirst({ where: { activeKey, id: { not: current.id } }, select: { id: true } });
     if (existingActive) throw Errors.conflict("A recurrence of this Case is already active", { activeCaseId: existingActive.id });
     const cutoff = Date.now() - (input.reopenWindowMs ?? 7 * 24 * 60 * 60 * 1_000);
@@ -1239,31 +1249,6 @@ export async function reopenOrRecurCase(input: {
       await tx.mainOutboxEvent.create({ data: { eventType: "admin.case.reopened.v2", aggregateType: "admin_case", aggregateId: current.id, payload: toInputJson({ caseId: current.id, version: updated.version }) } });
       return { mode: "reopened" as const, adminCase: updated };
     }
-    const terminal = current.activeKey === null
-      ? current
-      : await tx.adminCase.update({
-          where: { id: current.id, version: current.version },
-          data: { activeKey: null, version: { increment: 1 } },
-        });
-    if (current.activeKey !== null) {
-      await tx.adminAuditLog.create({ data: {
-        actorId: input.actor.id,
-        actorRole: input.actor.role,
-        action: "case.terminal_identity.released",
-        targetType: "admin_case",
-        targetId: current.id,
-        reason: "Release stale terminal active identity before creating recurrence",
-        before: toInputJson({ status: current.status, activeKey: current.activeKey, version: current.version }),
-        after: toInputJson({ status: terminal.status, activeKey: terminal.activeKey, version: terminal.version }),
-        requestId: `${input.requestId}:release-terminal-identity`,
-      } });
-      await tx.mainOutboxEvent.create({ data: {
-        eventType: "admin.case.terminal_identity_released.v2",
-        aggregateType: "admin_case",
-        aggregateId: current.id,
-        payload: toInputJson({ caseId: current.id, version: terminal.version }),
-      } });
-    }
     const recurrence = await tx.adminCase.create({ data: {
       type: current.type,
       targetType: current.targetType,
@@ -1274,14 +1259,14 @@ export async function reopenOrRecurCase(input: {
       priority: current.priority,
       ownerId: current.ownerId,
       slaDueAt: current.slaDueAt ? new Date(Date.now() + Math.max(60_000, current.slaDueAt.getTime() - current.createdAt.getTime())) : null,
-      resolution: toInputJson({ recurrenceOfCaseId: terminal.id, recurrenceReason: input.reason }),
+      resolution: toInputJson({ recurrenceOfCaseId: current.id, recurrenceReason: input.reason }),
       verificationState: "pending",
     } });
     await tx.caseEvidence.create({ data: {
       caseId: recurrence.id,
       sourceType: "case_recurrence",
-      sourceId: terminal.id,
-      snapshot: toInputJson({ priorCaseId: terminal.id, priorStatus: terminal.status, priorVersion: terminal.version, closedAt: terminal.updatedAt }),
+      sourceId: current.id,
+      snapshot: toInputJson({ priorCaseId: current.id, priorStatus: current.status, priorVersion: current.version, closedAt: current.updatedAt }),
       occurredAt: new Date(),
     } });
     await tx.adminAuditLog.create({ data: {
@@ -1291,11 +1276,11 @@ export async function reopenOrRecurCase(input: {
       targetType: "admin_case",
       targetId: recurrence.id,
       reason: input.reason,
-      before: toInputJson({ priorCaseId: terminal.id, status: terminal.status, version: terminal.version }),
+      before: toInputJson({ priorCaseId: current.id, status: current.status, version: current.version }),
       after: toInputJson({ recurrenceCaseId: recurrence.id, status: recurrence.status, version: recurrence.version }),
       requestId: input.requestId,
     } });
-    await tx.mainOutboxEvent.create({ data: { eventType: "admin.case.recurrence.created.v2", aggregateType: "admin_case", aggregateId: recurrence.id, payload: toInputJson({ caseId: recurrence.id, priorCaseId: terminal.id, priorCaseVersion: terminal.version, version: recurrence.version }) } });
+    await tx.mainOutboxEvent.create({ data: { eventType: "admin.case.recurrence.created.v2", aggregateType: "admin_case", aggregateId: recurrence.id, payload: toInputJson({ caseId: recurrence.id, priorCaseId: current.id, priorCaseVersion: current.version, version: recurrence.version }) } });
     return { mode: "recurrence" as const, adminCase: recurrence };
   };
   return db ? execute(db) : prisma.$transaction(execute);

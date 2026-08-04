@@ -47,7 +47,15 @@ describe("Incident correlation correction and close lifecycle", () => {
       expect.objectContaining({ action: "merge", fromIncidentId: splitIncidentId, toIncidentId: incidentB }),
     ]);
 
-    const resolved = await prisma.opsIncident.update({ where: { id: incidentB }, data: { status: "resolved", verificationState: "passed", version: { increment: 1 } } });
+    const resolved = await prisma.opsIncident.update({
+      where: { id: incidentB },
+      data: {
+        status: "resolved",
+        activeCorrelationKey: null,
+        verificationState: "passed",
+        version: { increment: 1 },
+      },
+    });
     const closed = await closeIncidentWithPostmortem({ incidentId: incidentB, expectedVersion: resolved.version, actor, summary: "Recovered the generation route and reconciled every affected request.", rootCause: "Provider route regression", contributingFactors: ["Capacity alert lag"], correctiveActions: ["Add route canary"], evidenceRefs: [`monitor://${suffix}`], reason: "Postmortem reviewed", requestId: `close-${suffix}` });
     expect(closed).toMatchObject({ incidentId: incidentB, status: "closed", verificationState: "passed" });
     await expect(prisma.opsIncident.findUniqueOrThrow({ where: { id: incidentB } })).resolves.toMatchObject({ status: "closed", activeCorrelationKey: null });

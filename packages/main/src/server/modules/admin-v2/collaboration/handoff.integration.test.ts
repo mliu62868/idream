@@ -4,6 +4,7 @@ import { POST as activityRoute } from "@/app/api/v2/admin/collaboration/[targetT
 import { resolvePermissions } from "@/server/admin/permissions";
 import { prisma } from "@/server/lib/db";
 import { buildTodayProjection } from "@/server/modules/admin-v2/today/query";
+import { adminCaseActiveKey } from "@/server/modules/admin-v2/cases/service";
 
 describe("collaboration handoff authority transfer", () => {
   const suffix = randomUUID();
@@ -116,6 +117,12 @@ describe("collaboration handoff authority transfer", () => {
         targetType: "user",
         targetId: `handoff-customer-${suffix}`,
         caseKey: `handoff-${suffix}`,
+        activeKey: adminCaseActiveKey(
+          "support_request",
+          "user",
+          `handoff-customer-${suffix}`,
+          `handoff-${suffix}`,
+        ),
         status: "in_progress",
         ownerId: previousOwnerId,
         slaDueAt: now,

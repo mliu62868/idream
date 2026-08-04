@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import IORedis from "ioredis";
 import pg from "pg";
 import { defaultTestDatabaseUrl } from "../../../test-database-url";
@@ -208,6 +209,25 @@ async function alignDeferrableAuthorityConstraints(url: string) {
   }
 }
 
+async function installInvariantAuthorityConstraints(url: string) {
+  const schema = postgresSchema(url);
+  const source = await readFile(
+    new URL(
+      "../../../prisma/manual/2026-08-03-invariant-collapse-check-constraints.sql",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const sql = source.replaceAll("public.", `${quoteIdentifier(schema)}.`);
+  const client = new pg.Client({ connectionString: postgresUrl(url) });
+  await client.connect();
+  try {
+    await client.query(sql);
+  } finally {
+    await client.end();
+  }
+}
+
 export default async function setup() {
   const childEnv = {
     ...process.env,
@@ -223,6 +243,7 @@ export default async function setup() {
 
     const options = { stdio: "inherit" as const, env: childEnv };
     execFileSync("node", ["scripts/db-push.mjs"], options);
+    await installInvariantAuthorityConstraints(DATABASE_URL);
     await alignDeferrableAuthorityConstraints(DATABASE_URL);
     execFileSync("npx", ["tsx", "prisma/seed.ts"], options);
 

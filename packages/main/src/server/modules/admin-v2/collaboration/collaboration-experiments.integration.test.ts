@@ -8,6 +8,7 @@ import { PUT as watchRoute } from "@/app/api/v2/admin/collaboration/[targetType]
 import { GET as mentionsRoute } from "@/app/api/v2/admin/collaboration/mentions/route";
 import { POST as createViewRoute } from "@/app/api/v2/admin/saved-views/route";
 import { PATCH as patchViewRoute } from "@/app/api/v2/admin/saved-views/[id]/route";
+import { adminCaseActiveKey } from "@/server/modules/admin-v2/cases/service";
 
 describe("admin collaboration, saved views, and managed experiments", () => {
   const suffix = randomUUID();
@@ -50,6 +51,12 @@ describe("admin collaboration, saved views, and managed experiments", () => {
         targetType: "character",
         targetId: `${suffix}-target`,
         caseKey: `${suffix}-review`,
+        activeKey: adminCaseActiveKey(
+          "content_report",
+          "character",
+          `${suffix}-target`,
+          `${suffix}-review`,
+        ),
       },
     });
   });

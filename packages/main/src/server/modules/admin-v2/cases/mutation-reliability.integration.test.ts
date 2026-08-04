@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { POST as assignCaseRoute } from "@/app/api/v2/admin/cases/[id]/assignment/route";
 import { prisma } from "@/server/lib/db";
+import { adminCaseActiveKey } from "./service";
 
 describe("Case mutation reliability", () => {
   const suffix = randomUUID();
@@ -36,7 +37,12 @@ describe("Case mutation reliability", () => {
       targetType: "user",
       targetId: `customer-${suffix}`,
       caseKey: `reliability-${suffix}`,
-      activeKey: `reliability-active-${suffix}`,
+      activeKey: adminCaseActiveKey(
+        "support_request",
+        "user",
+        `customer-${suffix}`,
+        `reliability-${suffix}`,
+      ),
       status: "new",
       priority: "normal",
       verificationState: "pending",
@@ -47,7 +53,12 @@ describe("Case mutation reliability", () => {
       targetType: "user",
       targetId: `rollback-customer-${suffix}`,
       caseKey: `rollback-${suffix}`,
-      activeKey: `rollback-active-${suffix}`,
+      activeKey: adminCaseActiveKey(
+        "support_request",
+        "user",
+        `rollback-customer-${suffix}`,
+        `rollback-${suffix}`,
+      ),
       status: "new",
       priority: "normal",
       verificationState: "pending",

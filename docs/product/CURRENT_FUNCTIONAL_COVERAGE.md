@@ -1,21 +1,22 @@
 # iDream 当前功能覆盖审计
 
-更新日期：2026-08-03
+更新日期：2026-08-04
 
 ## 结论
 
 这份文档是当前代码态的功能覆盖表，覆盖的是“用户能否完整使用”和“有没有测试证据”。它补充并修正 `ProductFeatureMap.md` 里 2026-06-13 的旧状态描述。
 
-当前状态：**2026-08-03 结构债计划中 agent 可执行的代码、测试与本地真实浏览器复验已经闭环。根级 `bun run test` 为 `454 passed files + 2 skipped files / 3,270 passed tests + 3 skipped tests`，`bun run check` 的 lint、typecheck 与 production build 全部通过；lint 只有 `prisma/seed.ts` 的 2 条既有 unused-constant warning。Main release 为 `idream-2c2566b1-dfb3-408c-838f-41acbd6f61ad`，Admin release 为 `idream-cbacceac-cd04-4804-b108-99c196a43e3b`，build ID 均为 `build-TfctsWXpff2fKS`。重启本地 Main/Admin PM2 开发进程后，`/generate` 与 `/admin/characters` 均为 HTTP 200；应用内真实浏览器完成取消/退款、Today 审计、Alexa 详情/审核/Release、Image Library 与 Creative Runs 旅程，最终 Main/Admin console 为 `0 warning / 0 error`。就本结构债台账而言，仍未完成的是用户/发布系统拥有的开发库 CHECK 约束与生产 SQL/migrations；production canary 属项目上线门禁，不计入结构债。除此外，本轮没有新建 Character Release，因此项目级的全新 generate → review → draft asset pack → QA → Release → serving 浏览器旅程仍由 `REMAINING_WORK_EXECUTION_PLAN.md` 跟踪，本地证据也不能替代生产证据。**
+当前状态：**2026-08-04 结构债台账的本地代码、测试、数据库约束与真实浏览器复验已经闭环。开发库两条 active-identity CHECK 约束已 validated，被取代的四条恒真离线扫描已删除，对账现在直接验证 CHECK 与 Case `activeKey` 唯一索引权威。生产 SQL/migrations 与 production canary 仍由项目上线流程执行；本轮没有新建 Character Release，因此全新 generate → review → draft asset pack → QA → Release → serving 浏览器旅程仍由 `REMAINING_WORK_EXECUTION_PLAN.md` 跟踪。**
 
-## 2026-08-03 结构债执行
+## 2026-08-03–04 结构债执行
 
 - `ourdream/service.ts` 从 8842 行收敛到约 7650 行；HTTP/JSON、feed id、举报、结算/offer、生成请求/角色/profile/quote、事件与文本审核均进入具名权威模块。架构守卫证明非测试 ourdream 模块对 `./service` 的反向 import 精确集合为空；Admin 角色模块也不再从路由分发器获取审核函数。
 - Release executor 从 1927 行收敛到 1197 行，Run create 从 1779 行收敛到 1301 行；其余 UI workspace 与 Case aggregate 通过 deletion test 判定保持内聚，只抽可独立测试且能真正隐藏知识的接缝，不按行数机械拆文件。
 - Image Library 已拥有五个 manifest-governed Admin v2 operations，Shared 是 request/response contract SSoT，Admin 列表、详情、批量 preflight/archive 与 Placements approved selector 全部消费 v2。数据库集成测试覆盖 list、detail、幂等 patch replay、preflight 和 bulk archive，并验证 Audit 不重复。
 - Main/Admin 的正向源码文本断言已改为纯函数/渲染行为测试；负向全目录假数据守卫继续保留。generation transport 的 cancelled terminal fixture 已补齐终态时间，不全局放宽 test timeout。
 - 本地浏览器闭环：应用内真实浏览器以本地开发账号打开 Alexa Character Workspace 的详情、图片审核与 Release，以及 Image Library、Today、Creative Runs。取消探针 `cmse027yj0001mul7k46dn1g8` 在 `/generate` 显示 queued、余额 `1000 → 995`；Admin v2 精确取消后页面显示 `Cancelled` / `Generation stopped.`、余额恢复 `1000`，Today 同步投影已验证命令。浏览器还抓到 Character Recent assets 的 LCP warning；改为首屏 eager load 后 Main/Admin console 均为 `0 warning / 0 error`。
-- 未完成边界：开发库的 active-key CHECK 约束尚未执行，因此 reconciliation 中三条离线检查仍必须保留；生产 SQL/migrations 未由 agent 执行；本地浏览器证据不替代 production canary。详见 `STRUCTURAL_DEBT_EXECUTION_PLAN.md` §1 与“下一步”。
+- 2026-08-04 数据库收口：开发库两条 active-identity CHECK 约束已 validated；reconciliation 删除四条恒真行扫描，改为验证 CHECK 存在且 validated，并验证承接 Case 去重的 `activeKey` 唯一索引。测试库从同一 SQL 安装约束，并验证非法状态被数据库拒绝、任一权威缺失时对账 fail closed。生产 SQL/migrations 与 canary 仍未执行。详见 `STRUCTURAL_DEBT_EXECUTION_PLAN.md` §1 与“下一步”。
+- 最终统一验证：根级 `bun run test` 为 6/6 package tasks，五包合计 `454 passed files + 2 skipped / 3,274 passed tests + 3 skipped`；`git diff --check && bun run check` 的 diff whitespace、lint、typecheck、production build 全部通过。当前构建身份为 Main `idream-c5c4ef04-20f8-4fff-ac3c-208ba25e3466`、Admin `idream-4022f2fe-128c-4b6d-ad35-04fc64a15852`、build ID `build-TfctsWXpff2fKS`。
 
 ## 2026-08-01 媒体生成权威与运营闭环
 

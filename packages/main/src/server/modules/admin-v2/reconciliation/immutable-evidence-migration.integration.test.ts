@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { prismaPgSchema, prismaPgSearchPath } from "@/server/lib/prisma-adapter";
+import { adminCaseActiveKey } from "@/server/modules/admin-v2/cases/service";
 
 describe("immutable admin evidence database guards", () => {
   const suffix = crypto.randomUUID();
@@ -53,7 +54,15 @@ describe("immutable admin evidence database guards", () => {
     const metric = await prisma.metricDefinitionSnapshot.create({ data: { key: `${suffix}:metric`, version: 1, definition: {}, queryHash: "a".repeat(64), qualityState: "certified", effectiveAt: new Date() } });
     await expect(prisma.metricDefinitionSnapshot.update({ where: { id: metric.id }, data: { qualityState: "invalid" } })).rejects.toThrow(/immutable/);
 
-    const adminCase = await prisma.adminCase.create({ data: { type: "test", targetType: "test", targetId: suffix, caseKey: `${suffix}:case` } });
+    const adminCase = await prisma.adminCase.create({
+      data: {
+        type: "test",
+        targetType: "test",
+        targetId: suffix,
+        caseKey: `${suffix}:case`,
+        activeKey: adminCaseActiveKey("test", "test", suffix, `${suffix}:case`),
+      },
+    });
     const evidence = await prisma.caseEvidence.create({ data: { caseId: adminCase.id, sourceType: "test", sourceId: `${suffix}:evidence`, snapshot: { original: true }, occurredAt: new Date() } });
     await expect(prisma.caseEvidence.update({ where: { id: evidence.id }, data: { snapshot: { rewritten: true } } })).rejects.toThrow(/immutable/);
 

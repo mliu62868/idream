@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { listCases } from "./query";
+import { adminCaseActiveKey } from "./service";
 
 describe("Admin Case authoritative search", () => {
   const suffix = randomUUID();
@@ -46,6 +47,12 @@ describe("Admin Case authoritative search", () => {
           targetType: "user",
           targetId: customerId,
           caseKey: `decoy-${suffix}`,
+          activeKey: adminCaseActiveKey(
+            "support_request",
+            "user",
+            customerId,
+            `decoy-${suffix}`,
+          ),
           status: "new",
           updatedAt: new Date("2026-07-12T10:00:00.000Z"),
         },
@@ -55,6 +62,12 @@ describe("Admin Case authoritative search", () => {
           targetType: "user",
           targetId: customerId,
           caseKey: `target-${suffix}`,
+          activeKey: adminCaseActiveKey(
+            "support_request",
+            "user",
+            customerId,
+            `target-${suffix}`,
+          ),
           status: "new",
           updatedAt: new Date("2026-07-12T11:00:00.000Z"),
         },
