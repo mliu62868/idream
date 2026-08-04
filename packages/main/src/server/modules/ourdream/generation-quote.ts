@@ -173,41 +173,46 @@ export async function resolveGenerationPlan(
     body.mode === "image" &&
     options.profileSelectionAuthority === "public_image_edit" &&
     Boolean(selectedModel);
-  const profile = requiresReferenceRouting
-    ? await selectGenerationProfile(
-        body.mode,
-        selectedModel,
-        {
-          pinnedReferences: referenceRequirements,
-          sourceImageAssetId: hasRequestedSourceImage
-            ? requestedSourceImageAssetId
-            : null,
-          lookReferenceAssetId: requestedLookReferenceAssetId,
-        },
-        requirePublicTextToImageProfile,
-        entitlements,
-        requirePublicImageEditProfile,
-      )
-    : body.mode === "image"
-      ? await selectGenerationProfile(
-          body.mode,
-          selectedModel,
-          {
-            pinnedReferences: [],
-            sourceImageAssetId: null,
-            lookReferenceAssetId: null,
-          },
-          requirePublicTextToImageProfile,
-          entitlements,
-          requirePublicImageEditProfile,
-        )
-      : await selectGenerationProfile(
-          body.mode,
-          selectedModel,
-          undefined,
-          false,
-          entitlements,
-        );
+  const catalogScope = requirePublicTextToImageProfile
+    ? "public_text_to_image"
+    : requirePublicImageEditProfile
+      ? "public_image_edit"
+      : "executable";
+  const requestedReferenceRequirements = {
+    pinnedReferences: referenceRequirements,
+    sourceImageAssetId: hasRequestedSourceImage
+      ? requestedSourceImageAssetId
+      : null,
+    lookReferenceAssetId: requestedLookReferenceAssetId,
+  };
+  const profile = body.mode === "image"
+    ? await selectGenerationProfile({
+        mode: "image",
+        requested: selectedModel,
+        referenceRequirements: requiresReferenceRouting
+          ? requestedReferenceRequirements
+          : {
+              pinnedReferences: [],
+              sourceImageAssetId: null,
+              lookReferenceAssetId: null,
+            },
+        catalogScope,
+        accessibleEntitlements: entitlements,
+      })
+    : await selectGenerationProfile({
+        mode: "video",
+        requested: selectedModel,
+        referenceRequirements: requiresReferenceRouting
+          ? {
+              pinnedReferences: referenceRequirements,
+              sourceImageAssetId: hasRequestedSourceImage
+                ? requestedSourceImageAssetId
+                : null,
+              lookReferenceAssetId: requestedLookReferenceAssetId,
+            }
+          : undefined,
+        accessibleEntitlements: entitlements,
+      });
   if (
     profile.requiredEntitlement &&
     !entitlements[profile.requiredEntitlement]

@@ -60,7 +60,8 @@ idream/
 | 谁 | 能 import 谁 |
 | --- | --- |
 | `app/api/v1/[...resource]/route.ts` | 仅 `modules/ourdream/service.ts` 的 `dispatchV1` |
-| `modules/ourdream/service.ts`、`modules/admin/*` | `lib/db`（直接用 Prisma）、`lib/*`、`providers/*`、`server/bff`、`jobs/queue` |
+| `modules/ourdream/service.ts`、`modules/admin/*`、`server/ai/*` | `lib/db`（直接用 Prisma）、`lib/*`、`providers/*`、`server/bff`、`server/moderation/*`、`jobs/queue` |
+| `server/moderation/*` | `lib/db`、`lib/*`、`providers/*`；不 import 产品域模块 |
 | `providers/*` | SDK、`lib/*`（除业务模块） |
 | `lib/*` | 仅彼此与基础库，**不 import 任何 modules** |
 | 跨包 | 经 `packages/shared` 共享契约；chat 经 `server/bff/chat-proxy` 代理，不直连 |

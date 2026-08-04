@@ -13,7 +13,7 @@ Use these documents as the current source of truth:
 - `docs/product/PRODUCTION_SECRET_CHECKLIST.md`: production env and secret checklist.
 - `docs/product-audits/current-implementation/pm-audit.md`: PM/UX gaps.
 - `docs/product/ADMIN_CONSOLE_FIRST_PRINCIPLES_REMEDIATION_PLAN.md`: management-console correctness, operating model, migration gates, and 90-day remediation sequence.
-- `docs/product/STRUCTURAL_DEBT_EXECUTION_PLAN.md`: the open structural ledger left by the authority-consolidation waves — pending DB executions the user owns, `service.ts` teardown ordered by its reverse-import ledger, and the test-harness debt. Updated 2026-08-03 against `3c6e88687`.
+- `docs/product/STRUCTURAL_DEBT_EXECUTION_PLAN.md`: the structural-debt execution record — agent-owned service decomposition, Admin v2 Image Library, behavior tests, and authenticated local browser evidence are complete; dev/production DB execution remains external to the structural ledger, while production canary is tracked here as a project release gate. Updated 2026-08-03 from baseline `3c6e88687`.
 - `docs/product/DEEP_MODULE_AUTHORITY_EXECUTION_PLAN.md`: implemented Gen/Ledger/Admin mutation/state transition/Main↔Chat/Character Journey authority-deepening work; local generation, bidirectional durable exchange, Chat probe, Admin replay, PM2, HTTP and persistence Gates now pass. The remaining local Gates are the real Character browser operator journey and an operator-approved cutover away from the deleted customer default image workflow; implementation status remains tracked only in `CURRENT_FUNCTIONAL_COVERAGE.md`.
 
 ### 2026-07-18 current local truth

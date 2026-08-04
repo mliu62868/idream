@@ -9,7 +9,7 @@ import {
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
-import { moderateText } from "@/server/modules/ourdream/service";
+import { moderateText } from "@/server/moderation/text-authority";
 import {
   decodeAdminListCursor,
   encodeAdminListCursor,

@@ -23,7 +23,7 @@ import {
   clampInt,
   jsonBody,
 } from "@/server/modules/admin/shared/legacy-primitives";
-import { moderateText } from "@/server/modules/ourdream/service";
+import { moderateText } from "@/server/moderation/text-authority";
 import { acceptControlPlaneCommand } from "@/server/modules/admin-v2/shared/control-plane-command";
 import { executeCharacterReleaseCommand } from "@/server/modules/admin-v2/characters/release-executor";
 import { createCharacterProject } from "@/server/modules/admin-v2/characters/creation";

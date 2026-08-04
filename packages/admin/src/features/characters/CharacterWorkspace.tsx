@@ -1539,6 +1539,7 @@ function ProjectEditor({
                     className="aspect-square w-full rounded-md object-cover"
                     height={160}
                     key={asset.id}
+                    loading="eager"
                     src={asset.url}
                     unoptimized
                     width={160}

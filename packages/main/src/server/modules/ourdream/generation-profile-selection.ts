@@ -175,18 +175,41 @@ export function assertGenerationProfileCanDispatchReferences(input: {
   );
 }
 
-export async function selectGenerationProfile(
-  mode: "image" | "video",
-  requested?: string,
-  referenceRequirements?: {
+export type GenerationProfileCatalogScope =
+  | "executable"
+  | "public_text_to_image"
+  | "public_image_edit";
+
+type GenerationProfileSelectionCommon = {
+  readonly requested?: string;
+  readonly referenceRequirements?: {
     readonly pinnedReferences: readonly GenerationReferenceRouteRequirement[];
     readonly sourceImageAssetId: string | null;
     readonly lookReferenceAssetId: string | null;
-  },
-  requirePublicTextToImageProfile = false,
-  accessibleEntitlements?: Readonly<Record<string, Prisma.JsonValue>>,
-  requirePublicImageEditProfile = false,
+  };
+  readonly accessibleEntitlements?: Readonly<Record<string, Prisma.JsonValue>>;
+};
+
+export type GenerationProfileSelectionInput =
+  | (GenerationProfileSelectionCommon & {
+      readonly mode: "image";
+      readonly catalogScope?: GenerationProfileCatalogScope;
+    })
+  | (GenerationProfileSelectionCommon & {
+      readonly mode: "video";
+      readonly catalogScope?: "executable";
+    });
+
+export async function selectGenerationProfile(
+  input: GenerationProfileSelectionInput,
 ) {
+  const {
+    mode,
+    requested,
+    referenceRequirements,
+    catalogScope = "executable",
+    accessibleEntitlements,
+  } = input;
   const where: Prisma.GenerationModelProfileWhereInput = {
     mode,
     status: "active",
@@ -225,9 +248,9 @@ export async function selectGenerationProfile(
             isProductionLtxVideoProfile(candidate) &&
             isExecutableGenerationProfile(candidate),
         )
-      : requirePublicTextToImageProfile
+      : catalogScope === "public_text_to_image"
         ? await filterPublicTextToImageGenerationProfiles(automaticCandidates)
-        : requirePublicImageEditProfile
+        : catalogScope === "public_image_edit"
           ? (
               await projectPublicImageEditGenerationProfiles(
                 automaticCandidates,

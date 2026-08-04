@@ -12,7 +12,7 @@ import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { appendCanonicalMetricEvent } from "@/server/modules/admin-v2/metrics/event-writer";
 import { createClassifiedAnalyticsEvent } from "@/server/modules/admin-v2/metrics/classified-event-writer";
-import { providers } from "@/server/providers";
+import { moderateText } from "@/server/moderation/text-authority";
 import {
   markProductionItemFailed,
   markProductionItemGenerated,
@@ -1254,33 +1254,6 @@ async function markGenerationModeratingOutput(generationJobId: string, assetCoun
     }
     return true;
   });
-}
-
-async function moderateText(
-  targetType: string,
-  targetId: string,
-  content: string,
-  layer: string,
-) {
-  const result = await providers.moderation.check({
-    targetType: "text",
-    content,
-  });
-  if (!result.ok) throw new Error(result.error.message);
-
-  await prisma.moderationEvent.create({
-    data: {
-      targetType,
-      targetId,
-      layer,
-      status: result.data.status,
-      policyCode: result.data.policyCode,
-      confidence: result.data.confidence,
-      details: {},
-    },
-  });
-
-  return result.data;
 }
 
 async function refundGeneration(

@@ -1,149 +1,138 @@
-# 结构债执行计划
+# 结构债执行记录
 
-Updated: 2026-08-03 · 基线 commit `3c6e88687`
+Updated: 2026-08-03 · 基线 `3c6e88687` · 主实施 `1da17ffbd`
 
-## 这份文档管什么
+## 结论
 
-第 5、6 波「同一个事实在多处解析、副本互相分歧」清理之后剩下的账。**只记还没做的**，已完成的部分在 `docs/product/DEEP_MODULE_AUTHORITY_EXECUTION_PLAN.md` 与 `docs/architecture/17-deep-module-authority-boundaries.md`（ADR-13）。
+原计划界定的 §2 结构债、§3 测试装置与 §1.3 本地认证复验已经实施；在这份结构债台账内，剩余项是仓库边界外的数据库执行门禁：开发库 CHECK 约束与生产迁移。项目级的全新 Character generate → review → draft asset pack → QA → Release → serving 浏览器旅程不属于本台账，仍由 `REMAINING_WORK_EXECUTION_PLAN.md` 跟踪。
 
-不管产品范围与上线门禁 —— 那是 `REMAINING_WORK_EXECUTION_PLAN.md`；不管实现状态 —— 那是 `CURRENT_FUNCTIONAL_COVERAGE.md`。
-
-三节各自的性质不同：§1 只有用户能做，§2/§3 agent 可以开工。**§1 是 §2 的前置**（有一项代码删除等着数据库约束落地）。
+这份文档保留计划、取舍和证据，避免把“源码完成”误写成“数据库与运行态已完成”。实现状态的 SSoT 仍是 `CURRENT_FUNCTIONAL_COVERAGE.md`，上线门禁仍是 `REMAINING_WORK_EXECUTION_PLAN.md`。
 
 ---
 
-## §1 阻塞在用户身上
+## §1 外部执行门禁（未完成）
 
 ### 1.1 dev 库：活跃身份键 CHECK 约束
 
-- **执行**：`db/sql/2026-08-03-invariant-collapse-check-constraints.sql`（目标 `postgresql://kk@localhost:5432/idream`）
-- **状态**：文件里第 0 步的四条只读预检**已跑，全部零行**，约束可以干净落地。写入被权限分类器拦下，需要用户执行或放开一条 Bash 权限规则。
-- **落地后才能做**（这是 §2 的一部分，但被这条卡着）：删掉 `packages/main/src/server/modules/admin-v2/reconciliation/invariants.ts` 的三条离线检查 —— `duplicate_active_case`（:615）、`active_case_missing_active_key`（:628）、`terminal_case_retains_active_key`（:639）。约束加上之后它们守的状态在数据库层面不可表示。
-  - `duplicate_active_case` 现在还额外有害：它把 `activeKey` 的推导公式抄了第二遍（`GROUP BY` 那四列），公式一改就开始报假阳性，而它并不拥有那个公式。
-  - `terminal_incident_retains_active_correlation_key`（:666）**保留** —— SQL 里对 `ops_incidents` 只搬了「终态必须释放」这一个方向，与它逐字等价，删不掉也不该删。
-- **验收**：约束存在（`SELECT conname FROM pg_constraint WHERE conrelid IN ('public.admin_cases'::regclass,'public.ops_incidents'::regclass) AND contype='c'` 非空）+ `bun run check` 绿。
-- **顺序硬约束**：约束没落地就别删那三条检查。**这是唯一一处删除依赖外部执行的地方。**
+- **由用户执行**：`db/sql/2026-08-03-invariant-collapse-check-constraints.sql`，目标 `postgresql://kk@localhost:5432/idream`。
+- **当前证据**：2026-08-03 只读查询 `pg_constraint`，目标 CHECK 约束仍不存在。仓库规则禁止 agent 连接数据库执行写入。
+- **落地后才能删除**：`packages/main/src/server/modules/admin-v2/reconciliation/invariants.ts` 的三条离线检查：
+  - `duplicate_active_case`
+  - `active_case_missing_active_key`
+  - `terminal_case_retains_active_key`
+- **继续保留**：`terminal_incident_retains_active_correlation_key`。SQL 只覆盖 `ops_incidents` 终态释放方向，不能替代这条完整检查。
+- **验收**：目标约束能从 `pg_constraint` 查到，然后删除上述三条检查并重新执行 `bun run check`。
 
-### 1.2 生产库三项
+约束没落地前不得提前删检查；这是当前唯一依赖外部执行的代码删除。
 
-dev 库已经是目标状态，以下只对生产：
+### 1.2 生产库
 
-| 项 | 文件 / migration | 顺序约束 |
+以下都由用户/发布系统执行，agent 只交付脚本：
+
+| 项 | 文件 / migration | 顺序 |
 |---|---|---|
-| artifact 状态合并 | `db/sql/2026-08-02-generation-artifact-late-after-cancel-merge.sql` | **必须在新代码激活之前跑**。残留的 `late_after_cancel` 行在新代码下会解析失败 |
-| 两条 prisma migration | `20260801201500_voice_clip_authority`、`20260801203000_generation_terminal_record_authority` | 常规 `prisma migrate deploy`；dev 已 applied |
-| runner 退役 sd_cpp | `db/sql/2026-08-03-generation-model-profile-runner-retire-sd-cpp.sql` | 无序。dev 命中 0 行（11 comfyui + 1 pipeline），跑它是为了让结果无条件成立，不是因为已知有行需要改 |
+| artifact 状态合并 | `db/sql/2026-08-02-generation-artifact-late-after-cancel-merge.sql` | 新代码激活前 |
+| Voice / TerminalRecord schema | `20260801201500_voice_clip_authority`、`20260801203000_generation_terminal_record_authority` | `prisma migrate deploy` |
+| 退役 `sd_cpp` runner | `db/sql/2026-08-03-generation-model-profile-runner-retire-sd-cpp.sql` | 无额外顺序 |
 
-按 CLAUDE.md：**agent 不连生产库**，只产出 SQL。
+### 1.3 认证后的真实浏览器复验（已完成）
 
-### 1.3 认证后的手工验证
+2026-08-03 使用应用内真实浏览器与本地开发登录态完成：
 
-我的硬禁区是输密码认证，以下两处只能由用户过：
+- `/generate` 创建取消探针 `cmse027yj0001mul7k46dn1g8`：页面先显示 queued，余额 `1000 → 995`；Admin v2 以精确 request/version/confirmation 取消后，页面投影 `Cancelled` 与 `Generation stopped.`，余额回到 `1000`，不再作为活动任务轮询；
+- Today 把同一 `generation request cancel` 命令投影为最近解决、验证已通过；
+- Alexa Character Workspace 实际打开详情、图片审核和 Release。审核 UI 明确把可见质量、身份一致性、Approve/Reject 与草稿采用分开；Release 显示当前线上版本及 `1/3` 图片资产包缺口，没有把 incomplete 伪装成 ready；
+- Image Library、Creative Runs、Today 均完成真实数据加载；Image Library v2 列表、批量选择/归档入口可见；
+- 浏览器发现并修复 Character 详情 Recent assets 的 LCP lazy-load warning，重载后首屏四张图片均为 `loading=eager`；Main/Admin 最终 console 为 `0 warning / 0 error`。
 
-- **`/generate` 生成页** —— 第 6 波修的 `cancelled` 终态就在这里（此前 cancelled 的任务会永久轮询、余额不刷新）。
-- **Admin console** —— 第 5、6 波改了 93 个路由的响应接缝、Creative 拆分、Today 的 severity 排序。表现层没有自动化 E2E 覆盖到的部分需要人眼。
+这轮没有制造新的 Character Release 来覆盖真实线上版本；现有 Alexa 权威链与未完成资产包被原样保留。浏览器证据来自应用内 Browser，不是源码检查、HTTP 探针或独立 Playwright 替代品。
 
 ---
 
-## §2 结构债
+## §2 结构债（已完成）
 
-按「切一刀的收益 / 风险」排序。每一刀都必须能单独合入并跑绿 `bun run check`。
+### 2.1 `ourdream/service.ts`
 
-### 2.1 `ourdream/service.ts` 8842 行 —— 台账已建，按台账拆
+结果：`8842 → 7650` 行；非测试 ourdream 模块对 `./service` 的反向 import 台账为 `{}`。
 
-反向 import 台账在 `packages/main/src/server/modules/ourdream/architecture-boundaries.test.ts`，逐文件逐符号**集合相等**：多一个符号说明新债没记账，少一个说明台账陈旧。四个欠债模块各自写明了阻塞约束。按可动性排：
+- HTTP/JSON 与 query 原语进入 `server/lib/request-json.ts`、`request-query.ts`，有纯函数测试；
+- feed item id 编解码进入 `feed-item-id.ts`，举报进入 `reports.ts`，原依赖环消失；
+- 订阅/结算共享权威进入 `subscription-lifecycle.ts`、`offer-availability.ts` 与 `billing-checkout.ts`；
+- 生成请求、角色、profile catalog/selection、quote contract 分别进入具名模块；
+- 产品事件进入 `product-events.ts`；
+- 文本审核与持久事件进入 `moderation-authority.ts`，Admin 不再从路由分发器取领域函数；
+- profile 选择改为单一 options Interface，目录范围用 `executable | public_text_to_image | public_image_edit` 判别联合表达，不再暴露两个可组合成非法状态的布尔参数；
+- 共享随机 ID helper 使用 `randomUUID()`，名称与实现一致。
 
-**（a）HTTP/JSON 原语搬去 `lib/` —— 立刻能做，无阻塞**
+`architecture-boundaries.test.ts` 同时守依赖方向、反向 import 精确集合和公开读模型单实现。
 
-`bodyText` / `jsonBody` / `parseJsonText` / `isRecord` / `toInputJson` 现在住在 `service.ts`，被 `billing-checkout.ts` 反向 import。它们是通用原语，和 v1 路由表没有关系。搬完更新台账。
+### 2.2 其余大文件：按 deletion test 处理
 
-风险：低。纯位移，无行为变化。
-
-**（b）feed item id 编解码抽独立模块 → 解开 submitReport 的环 —— 第一刀应该切这里**
-
-现状是个环：`discovery.ts` 反向 import `service.submitReport` → `submitReport` 依赖 `service.applyModerationAction` → 后者依赖 `discovery.feedCharacterId` / `feedCollectionId`。直接把 `submitReport` 搬进 discovery 只是把环换个方向重建。
-
-先把 feed item id 的编解码抽成独立模块（两个函数，无状态），环就断了，举报受理才能落地成自己的模块。
-
-风险：低-中。编解码是纯函数；`applyModerationAction` 本身不动。
-
-**（c）结算段搬家 —— `billing-checkout.ts` 与 `subscription-lifecycle.ts` 是同一刀**
-
-两者共享 `lockUserLedger` / `publicFeatureProjection` / `publicOfferAvailability` / `toInputJson`，`billing-checkout` 另有 `lockCheckoutSession` / `lockProviderEvent`。权益投影与账本锁都还住在 `service.ts` 的订阅结算段里，要搬就一起搬，分两次搬会中途留下一个更难描述的中间态。
-
-风险：中。碰账本锁，但不碰生成写路径。
-
-**（d）生成请求输入解析整段抽出 —— 独立开一轮，别塞进结构轮**
-
-`generation-quote.ts` 反向 import 了 12 个符号（`GenerationCreateBody` / `selectGenerationProfile` / `selectRecipe` / `resolveGenerationLook` / `resolveGenerationVisualProfile` / `assertGenerationProfileCanDispatchReferences` …），权威全在 `service.ts` 的生成段里。
-
-**这块坐在生成写路径上，有锁和事务。** 第 6 波负责 service 瘦身的 agent 明确判断它的风险与「纯结构轮」不匹配，建议单独开一轮 —— 采纳这个判断。开这一轮时先建基线数字（见 `docs/agents/` 与 worktree 陷阱记录），改动配套集成测试。
-
-### 2.2 其余大文件
-
-没有台账，先量再切。切之前先回答「删掉它复杂度会消失，还是会散到 N 个调用点」（deletion test）—— 答案是「消失」的就别拆。
-
-| 文件 | 行数 | 备注 |
+| 文件 | 结果 | 判断 |
 |---|---|---|
-| `admin/src/features/characters/CharacterWorkspace.tsx` | 5641 | 表现层；第 6 波已抽出 `character-command-journal.ts`（944 行）把可靠性协议拿走了 |
-| `main/src/components/ourdream/GeneratorWorkspace.tsx` | 3734 | 表现层；与 §3.1 的组件接缝抽取是同一件事 |
-| `admin/src/features/characters/CharacterAssetStudio.tsx` | 3280 | 表现层 |
-| `main/src/server/modules/admin-v2/characters/release-executor.ts` | 1927 | 服务端；Release/Serving 生命周期 |
-| `main/src/server/modules/admin-v2/creative/run-create.ts` | 1779 | 服务端；第 6 波已把 `workflow.ts`(2087) 拆成 8 个模块，这个是同族剩下的 |
-| `main/src/server/modules/admin-v2/cases/service.ts` | 1302 | 服务端 |
+| `release-executor.ts` | `1927 → 1197` | validation 与 snapshot value 抽出后，执行器保留 Release/Serving 编排 |
+| `run-create.ts` | `1779 → 1301` | profile/recipe/target/reference/bootstrap 解析进入 `run-create-authority.ts` |
+| `CharacterWorkspace.tsx` | 保持 5641 | 可靠性 journal 已抽出；继续切 UI 状态只会把同一复杂度散到调用点 |
+| `GeneratorWorkspace.tsx` | 保持约 3737 | 只抽可独立行为测试的状态接缝，不拆第二套 workspace authority |
+| `CharacterAssetStudio.tsx` | 保持 3280 | 生产旅程状态是一个运营聚合，不按面板机械拆分 |
+| `cases/service.ts` | 保持 1302 | Case lifecycle 是一个内聚 aggregate；删除文件不会删除复杂度 |
 
-### 2.3 v1 asset 生命周期还没有 v2 面
+这不是以行数作为完成条件。只切能把知识收进更小 Interface 的模块；删除后只会把分支复制到 N 个调用点的文件保留。
 
-v1 资产生命周期仍只有 `app/api/v1/[...resource]` 这一个 catch-all 出口，没有对应的 v2 路由与 manifest 条目。第 5 波把 93 个 v2 路由全部收进了 manifest 键控的响应接缝（`ROUTE_SEAM_DEBT` 已清空），v1 这块是唯一还没进这套体系的。
+### 2.3 Image Library v2 面
 
-做之前先确认它值不值得做 —— 如果 v1 asset 面在受控 beta 里没有真实调用方，YAGNI，不做，把这条从计划里删掉即可。
+已进入 Admin v2 manifest 与统一响应/权限/幂等接缝：
+
+- `GET /api/v2/admin/assets`
+- `GET /api/v2/admin/assets/:id`
+- `PATCH /api/v2/admin/assets/:id`
+- `POST /api/v2/admin/assets/bulk/preflight`
+- `POST /api/v2/admin/assets/bulk`
+
+共享契约 SSoT 位于 `packages/shared/src/admin/contracts/assets.ts`；Admin 客户端与 Placements approved asset selector 已切 v2。真实数据库集成测试覆盖 list → detail → idempotent patch/replay → preflight → bulk archive，并验证 replay 不重复写 Audit。
 
 ---
 
-## §3 测试装置
+## §3 测试装置（已完成）
 
-### 3.1 `truthful-ui-states.test.ts` 的正向源码文本断言
+### 3.1 Main truthful UI states
 
-- **现状**：11 个 `it`，27 条正向 `toContain` 钉源码字面量（`expect(feed).toContain("requestSerialRef")` 这种），4 条 `not.toContain`。
-- **4 条负向断言是有效的、不要动** —— 它们守「假数据不出现在任何渲染路径」，第 6 波已经把扫描域从 4 个硬编码文件扩到 `components/ourdream/*.tsx` + `lib/*.{ts,json}` 目录遍历，并加了自检（`.tsx` 数 > 20）。守卫的扫描域比形状更重要：硬编码文件清单只能抓清单内的漂移。
-- **27 条正向断言要改成行为断言**。它们现在钉的是实现细节：改个变量名测试就红，而真正的行为回归它们抓不到。
-- **做法**：把组件里的判断抽成可测的纯函数接缝，测函数不测源码文本。`creatorLoadErrorMessage` 已经是这个形状，照抄它。**这需要重构组件，是独立一轮的活**，不是顺手能改的。
+原 27 条正向源码字面量断言已替换为行为接缝测试。状态判断进入 `age-gate.ts`、`auth-nav-state.ts`、`feed-load-state.ts`、`optimistic-write-state.ts` 等纯函数；测试验证输入/输出，而不是变量名或组件源码文本。
 
-### 3.2 `remaining-canonical-lists.test.ts` 的 10 条 `toContain`
+四条负向全目录扫描继续保留，仍守“假数据不能进入任何渲染路径”，并保留扫描域自检。
 
-同类问题。第 6 波已经给负向断言加了 `allFeatureSources()` 目录遍历 + 自检（≥ 18 个 feature）；正向那 10 条钉的是 blob 拼接后的字面量，扩域改不动它们的形状，同样要靠抽接缝。
+### 3.2 Admin canonical lists
 
-### 3.3 `packages/main` 全量测试的间歇性失败
+原正向 `toContain` 字面量断言已改为 query/empty-state 行为测试。Announcements query 与兼容列表 empty state 使用具名纯函数；负向目录扫描及 feature 数量自检保留。
 
-- **`packages/main` 没有配 `testTimeout`** —— 一堆真连库的集成测试跑在 vitest 给单测的 5s 默认预算上。这是隐患，但**要改需要多次观测支撑**：盲目放大会掩盖真正卡死的用例。
-- 已实测两例（2026-08-03，均单独跑必过）：
-  1. `admin/generation/inventory-provenance.integration.test.ts` —— 5009ms 超时。成因已查清（v1 `listGenerationJobs` 不支持 `search`，只能拉未过滤的 100 行带两个 `include`，成本随 `GenerationJob` 表在套件里累积增长），已就地加 20s 显式超时并写明理由。**不缩小 limit** —— 那会让 fixture/audit 有可能因为落在窗口外而「看起来被正确排除」，assertion 名存实亡。
-  2. `ai/generation-transport-execution.integration.test.ts` —— "rejects the pre-provider running handshake…" **8ms 断言失败**。未修，根因未查。
-- **8ms 是断言失败不是超时**，在共享 `idream_test` 库上通常意味着用例之间有共享状态泄漏。这是关于测试隔离的真实信号，值得单独查一轮。
-- **实践**：全量跑挂一条时先 `bunx vitest run <那个文件>` 单独重跑再下结论，别当成刚合并的分支互相干扰。
+### 3.3 Main 间歇性测试
+
+- `inventory-provenance.integration.test.ts` 保留 20s 的用例级预算，不全局放大 `testTimeout`；
+- `generation-transport-execution.integration.test.ts` 的 cancelled terminal fixture 补齐 `finishedAt`，消除跨测试状态导致的错误握手判定；
+- 不把“单独重跑通过”当成全量通过；最终仍以全量 suite 的退出码为准。
+
+### 3.4 最终验证
+
+- 根级 `bun run test`：6/6 package tasks 成功，`454 passed files + 2 skipped files / 3,270 passed tests + 3 skipped tests`；
+- 根级 `bun run check`：lint、typecheck 与 production build 全部通过；lint 只有 `prisma/seed.ts` 的 2 条既有 warning；
+- production build 产出 Main `idream-2c2566b1-dfb3-408c-838f-41acbd6f61ad`、Admin `idream-cbacceac-cd04-4804-b108-99c196a43e3b`，共同 build ID `build-TfctsWXpff2fKS`；
+- 重启本地 Main/Admin PM2 开发进程后，`/generate` 与 `/admin/characters` 均返回 HTTP 200；浏览器证据见 §1.3。
 
 ---
 
 ## §4 明确不做
 
-写在这里是为了下一轮不要重新捡起来讨论。
-
-- **内容审核 / safety gateway 的松紧、合规论证** —— 既定产品决策（见 AGENTS.md）。`MODERATION_PROVIDER=mock`、`safety-gateway` 分支保留不启用是有意的，不是缺口。mock provider 里的未成年拦截与角色 `age≥18` 是保留的硬底线，保持现状。
-- **`CharacterTemplate` 数据模型** —— 上一轮数据模型精简明确决定保持现状。
-- **`docs/design-references/ourdream-safety-docs.json`（69KB 抓取语料）** —— 不删。AGENTS.md 说参考站点有研究价值。第 6 波加的断言是保证它不进任何渲染路径，不是要清掉它。
-- **给 `pipeline@8091` 的 legacy 图像检查开绿灯** —— `launch:probe:pipeline` 诚实地是 `6/7`，那个网关没运行。当前用的是 workflow-native backend，这条失败不代表它坏了，但**也不能把 pipeline 套件叫做 passing**。
-- **视频生成第一期** —— 已延后到 V1.1，video 恒 mock 是设计内行为。
+- 不改既定 moderation provider 取向；
+- 不改 `CharacterTemplate` 数据模型；
+- 不删除 `docs/design-references/ourdream-safety-docs.json`，只保证它不进入渲染路径；
+- 不把未运行的 legacy `pipeline@8091` 检查写成 passing；
+- 不把 V1.1 视频生成写成当前闭环。
 
 ---
 
-## 建议的执行顺序
+## 下一步
 
-1. **用户跑 §1.1**（dev CHECK 约束）→ agent 删 invariants.ts 三条检查。这条链最短、收益明确、且是唯一被外部执行卡住的删除。
-2. **§2.1(a)** HTTP/JSON 原语搬 `lib/` —— 纯位移，热身。
-3. **§2.1(b)** feed item id 编解码抽出，解开 submitReport 的环 —— service.ts 拆解的真正第一刀。
-4. **§2.1(c)** 结算段搬家。
-5. 到这里 `service.ts` 的台账应该只剩 `generation-quote.ts` 一条。**§2.1(d) 单独开一轮**，配套集成测试。
-6. §3.1 / §3.2 的接缝抽取再单独一轮（碰组件，和上面几刀是不同的风险面）。
-7. §3.3 的隔离问题需要先多观测几次，不要在没有第三例之前动整套验证装置。
+1. 用户执行 §1.1；agent 再删除三条已由 CHECK 约束取代的离线检查并跑全量验证。
+2. 发布系统按 §1.2 执行生产迁移与脚本。
 
-§1.2 / §1.3 与上述并行，随用户方便。
+项目上线门禁（不计入本结构债台账）：生产部署后重新执行与 §1.3 同级的 production canary；本地证据不能替代生产证据。

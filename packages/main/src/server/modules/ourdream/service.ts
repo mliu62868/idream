@@ -176,6 +176,7 @@ import {
 import { createVoiceClip as createDurableVoiceClip } from "./voice-clip";
 import { trackEvent } from "./product-events";
 import { submitReport } from "./reports";
+import { moderateText } from "@/server/moderation/text-authority";
 import {
   generationJobSchema,
   type GenerationCreateBody,
@@ -1555,17 +1556,16 @@ async function previewDraft(request: Request, id: string) {
     throw Errors.forbidden("Draft failed safety checks", moderation);
   }
 
-  const profile = await selectGenerationProfile(
-    "image",
-    undefined,
-    {
+  const profile = await selectGenerationProfile({
+    mode: "image",
+    referenceRequirements: {
       pinnedReferences: [],
       sourceImageAssetId: null,
       lookReferenceAssetId: null,
     },
-    true,
-    await entitlementMap(user.id),
-  );
+    catalogScope: "public_text_to_image",
+    accessibleEntitlements: await entitlementMap(user.id),
+  });
   const recipe = await selectRecipe("image", "character");
   const allowedOrientations = jsonStringArray(profile.allowedOrientations);
   const orientation = allowedOrientations.includes("4:5")
@@ -3657,13 +3657,12 @@ async function resolveGenerationRetryAuthority(
     : generationJobRequiresPinnedLegacyAuthority(job) &&
         !job.profileId &&
         job.profileVersion === null
-      ? await selectGenerationProfile(
-          job.mode,
-          job.model ?? undefined,
-          retryReferenceRequirements,
-          false,
-          entitlements,
-        )
+      ? await selectGenerationProfile({
+          mode: job.mode,
+          requested: job.model ?? undefined,
+          referenceRequirements: retryReferenceRequirements,
+          accessibleEntitlements: entitlements,
+        })
       : null;
   if (!profile) {
     throw Errors.conflict(
@@ -7498,33 +7497,6 @@ function variationScenePrompt(prompt: string | null | undefined) {
       ? scene
       : "the selected image composition, pose, outfit, lighting, and mood";
   return clampPrompt(`More like this image: ${safeScene}`, 900);
-}
-
-export async function moderateText(
-  targetType: string,
-  targetId: string,
-  content: string,
-  layer: string,
-) {
-  const result = await providers.moderation.check({
-    targetType: "text",
-    content,
-  });
-  if (!result.ok) throw Errors.internal(result.error.message, result.error);
-
-  await prisma.moderationEvent.create({
-    data: {
-      targetType,
-      targetId,
-      layer,
-      status: result.data.status,
-      policyCode: result.data.policyCode,
-      confidence: result.data.confidence,
-      details: {},
-    },
-  });
-
-  return result.data;
 }
 
 async function currentAgeVerificationStatus(userId: string) {

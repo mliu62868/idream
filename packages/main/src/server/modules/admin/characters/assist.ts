@@ -10,7 +10,7 @@ import {
   type AdminTextGenerationRuntime,
 } from "@/server/modules/admin/shared/admin-text-generation";
 import { actorWithPermission, jsonBody } from "@/server/modules/admin/shared/legacy-primitives";
-import { moderateText } from "@/server/modules/ourdream/service";
+import { moderateText } from "@/server/moderation/text-authority";
 import { CHARACTER_STYLES, GENDERS } from "@idream/shared/catalog";
 
 const assistSchema = z.object({
