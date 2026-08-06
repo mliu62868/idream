@@ -6,6 +6,7 @@ import {
   BFF_USER_HEADER,
   signBffContext,
 } from "@idream/shared/bff";
+import { loadCharacterSoulSnapshot } from "@idream/shared";
 import { prisma } from "./lib/db";
 import { publicCharacterAudienceWhere } from "./modules/ourdream/public-content-audience";
 import type { ChatServiceProbeEvidence, ProbeReportOf } from "./readiness/evidence";
@@ -289,7 +290,7 @@ async function resolveProbeCharacter(
   const explicit = characterId?.trim();
   if (explicit) return { id: explicit, source: "argument" };
   try {
-    const character = await prisma.character.findFirst({
+    const characters = await prisma.character.findMany({
       where: {
         AND: [
           publicCharacterAudienceWhere,
@@ -297,14 +298,50 @@ async function resolveProbeCharacter(
         ],
       },
       orderBy: [{ source: "asc" }, { createdAt: "desc" }],
-      select: { id: true },
+      select: {
+        id: true,
+        currentContentVersionId: true,
+        serving: {
+          select: {
+            currentRelease: {
+              select: { characterContentVersionId: true },
+            },
+          },
+        },
+      },
     });
-    if (character) return { id: character.id, source: "database" };
+    const effectiveContentVersionIds = characters
+      .map((character) =>
+        character.serving?.currentRelease?.characterContentVersionId ??
+        character.currentContentVersionId
+      )
+      .filter((id): id is string => Boolean(id));
+    const contentVersions = effectiveContentVersionIds.length > 0
+      ? await prisma.characterContentVersion.findMany({
+          where: { id: { in: [...new Set(effectiveContentVersionIds)] } },
+          select: { id: true, personaSnapshot: true },
+        })
+      : [];
+    const snapshotByContentVersionId = new Map(
+      contentVersions.map((version) => [version.id, version.personaSnapshot]),
+    );
+    const selectedId = selectSoulReadyProbeCharacter(characters.map((character) => {
+      const contentVersionId =
+        character.serving?.currentRelease?.characterContentVersionId ??
+        character.currentContentVersionId;
+      return {
+        id: character.id,
+        personaSnapshot: contentVersionId
+          ? snapshotByContentVersionId.get(contentVersionId) ?? null
+          : null,
+      };
+    }));
+    if (selectedId) return { id: selectedId, source: "database" };
     return {
       id: null,
       source: "missing",
       error:
-        "CHAT_SERVICE_PROBE_CHARACTER_ID is not set and no public approved adult character exists in the main DB",
+        "CHAT_SERVICE_PROBE_CHARACTER_ID is not set and no public approved adult character has a complete immutable Soul in the main DB",
     };
   } catch (error) {
     return {
@@ -315,6 +352,20 @@ async function resolveProbeCharacter(
       }`,
     };
   }
+}
+
+export function selectSoulReadyProbeCharacter(
+  candidates: ReadonlyArray<{ id: string; personaSnapshot: unknown | null }>,
+): string | null {
+  for (const candidate of candidates) {
+    if (
+      candidate.personaSnapshot !== null &&
+      loadCharacterSoulSnapshot(candidate.personaSnapshot).ok
+    ) {
+      return candidate.id;
+    }
+  }
+  return null;
 }
 
 /** Make a signed BFF request to the chat service (signature covers method+path+body). */

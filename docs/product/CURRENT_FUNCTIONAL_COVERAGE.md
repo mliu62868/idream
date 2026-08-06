@@ -1,12 +1,12 @@
 # iDream 当前功能覆盖审计
 
-更新日期：2026-08-05
+更新日期：2026-08-06
 
 ## 结论
 
 这份文档是当前代码态的功能覆盖表，覆盖的是“用户能否完整使用”和“有没有测试证据”。它补充并修正 `ProductFeatureMap.md` 里 2026-06-13 的旧状态描述。
 
-当前状态：**Character Soul Runtime 的仓库实现、隔离数据库测试、生产构建与真实 Admin 浏览器编辑已经完成；Alexa 已从 legacy Soul v2 创建出零诊断的 schema v1 Soul v3，但没有绕过 QA/Release 改变 Serving。Main 与 Chat 的目标库迁移仍须由用户手工执行。当前 Chat 因缺少 Scene 表而由 `/readyz` 明确返回 503；全新素材链的 cover 生成又被 Generation transport 409 / 缺失 immutable TerminalRecord 阻断，因此本轮没有把 QA、Release、Publish 或 Chat 对话冒充为已闭环。**
+当前状态：**Character Soul Runtime 的仓库实现、开发库迁移、生产构建、真实 Admin 浏览器编辑与签名 Chat 对话探针已经完成；Alexa 已从 legacy Soul v2 创建出零诊断的 schema v1 Soul v3，但没有绕过 QA/Release 改变 Serving。本地 Main public 权威与 Chat schema 已统一到同一 PostgreSQL 5432 实例，Chat `/readyz` 为 200，真实 Chat/memory profile 预热及默认 signed/unsigned/no-memory/cleanup 探针通过。全新素材链的 cover 生成仍被 Generation transport 409 / 缺失 immutable TerminalRecord 阻断，因此本轮没有把 QA、Release 或 Publish 冒充为已闭环。**
 
 ## 2026-08-05 Character Soul Runtime
 
@@ -14,8 +14,8 @@
 - **独立版本操作**：Admin Soul 工作台直接读取 immutable workspace snapshot，可编辑全部 Soul 维度、对比当前草稿与 Serving 固定版本的 prompt/opening、查看 diagnostics，并通过新的幂等 + version-CAS API 创建 ContentVersion/Revision。该操作保留 opening 与 appearance snapshot 的精确字节，不隐式 QA、Release 或 Publish；repo Soul import 默认 dry-run，audit/import 也只建立内容版本权威。
 - **对话运行时**：`PreparedTurn` 成为 system/messages/tools、模型 profile、预算与 trace 的唯一生成输入；Scene revision、消息 `sceneVersion`、持久 `runtimeTrace`、no-memory Scene-only、历史 regenerate、append-only relationship evidence、确定性 reducer/hysteresis/rebuild、统一模型 profile 与首 token/idle/completion timeout 已接入。一次统一提取同时产出 memory candidates、relationship evidence 与 Scene delta；Voice 合成接收与消息精确对应的 Scene。relationship 不再按消息数自动晋级。
 - **Release 证据门**：QA 不再只凭素材检查通过；它要求固定 Soul fingerprint/compiler/content version 的十场景行为评测，并要求当前配置中去重后的 free/premium/deluxe 精确 provider/base URL/model/tool-capability profile 全部提供真实 live canary 证据。阻塞场景或任一 profile canary 未通过时，Release validation 与 Publish 均 fail closed；历史 QA 若没有这两类证据也不能发布新 Release。
-- **部署门禁**：Chat readiness 在 worker admission 前验证 `chat.messages.scene_version/runtime_trace` 与 `chat.chat_scene_revisions`，并按去重后的精确 profile 预热真实模型、tool schema 和 memory extractor surface；目标库缺 migration 时保持 worker 未启动、拒绝新 turn 并返回 503，而不是在发送消息后 500。Main launch gate 同时审计数据库拓扑、read view 与 Soul authority。目标库 SQL 为 `packages/main/prisma/migrations/20260805210000_character_soul_current_content_pointer/migration.sql`、`packages/main/prisma/migrations/20260805213000_character_soul_release_evidence/migration.sql`、`db/sql/2026-08-05-character-soul-runtime.sql`、`db/sql/2026-08-05-chat-scene-state.sql` 与 `db/sql/2026-08-05-character-soul-release-evidence.sql`，本轮未代用户执行。
-- **验证证据**：root lint/typecheck/production build 通过；Shared `40 files / 235 tests`、Admin `100 / 531`、Chat `32 / 249`、Main `275 passed files + 2 skipped / 2,102 passed tests + 3 skipped`，Gen `16 / 188`，PM2 配置 `25/25`。
+- **部署门禁**：Chat readiness 在 worker admission 前验证 `chat.messages.scene_version/runtime_trace` 与 `chat.chat_scene_revisions`，并按去重后的精确 profile 预热真实模型、tool schema 和 memory extractor surface；目标库缺 migration 时保持 worker 未启动、拒绝新 turn 并返回 503，而不是在发送消息后 500。Main launch gate 同时审计数据库拓扑、read view 与 Soul authority。目标库 SQL 为 `packages/main/prisma/migrations/20260805210000_character_soul_current_content_pointer/migration.sql`、`packages/main/prisma/migrations/20260805213000_character_soul_release_evidence/migration.sql`、`db/sql/2026-08-05-character-soul-runtime.sql`、`db/sql/2026-08-05-chat-scene-state.sql` 与 `db/sql/2026-08-05-character-soul-release-evidence.sql`；本地开发库已执行并完成结构验证。原先分离在 5433 的 Chat schema/history 已逐表等量复制到 Main 使用的 5432，源实例保留作回滚，运行连接已切换到单库权威。
+- **验证证据**：root lint/typecheck/production build 通过；Shared `40 files / 235 tests`、Admin `100 / 531`、Chat `32 / 249`、Main `275 passed files + 2 skipped / 2,103 passed tests + 3 skipped`，Gen `16 / 188`，PM2 配置 `25/25`。默认 Chat service 探针会跳过缺少完整 immutable Soul 的历史 ContentVersion，本轮自动选择 Soul-ready 角色后完成 signed 200、unsigned 401、会话 201、消息 202、SSE start/delta/done、no-memory authority 与清理闭环。
 - **真实浏览器边界**：Alexa legacy Soul v2（fingerprint `ace8489c6979622b8268b12950223a40f92786e6c2cec7db40d3b84e3766cd79`）可完整解码；浏览器创建 Soul v3（ContentVersion `cmsh1x0h6014zmul7b05gdna3`，fingerprint `3b51428844eb0c8c35b6713f114c180a32f94a51dd48a9e6346e55dcfde02b64`）后 diagnostics 为零且旧 Serving pin 未变。新 hero/chat 素材完成视觉审核与 draft 采用；QA 提交正确拒绝缺少现行 generation/review authority 的 legacy cover。正常 cover 再生成未产生 provider transport 或 TerminalRecord，Generation fail-closed 为 `terminal_record_missing`；这是当前运营闭环阻塞，不是 Soul Release 已完成。
 
 ## 2026-08-03–04 结构债执行
