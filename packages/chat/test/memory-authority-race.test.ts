@@ -314,9 +314,12 @@ describe("memory extraction turn authority", () => {
       processMemoryExtract(extractPayload(turn), prisma),
     ).resolves.toMatchObject({ skipped: null });
     expect(await listMemories(USERS.cleanup, CHAR)).not.toEqual([]);
-    expect(
-      (await getRelationshipState(USERS.cleanup, CHAR)).summary,
-    ).toContain("CleanupSecret");
+    const relationship = await getRelationshipState(USERS.cleanup, CHAR);
+    expect(relationship.signals.turns).toBe(1);
+    // Relationship state is a qualitative projection; raw user secrets stay
+    // only in source-linked memory/evidence authority and never in its summary.
+    expect(relationship.summary).toContain("self-disclosure");
+    expect(relationship.summary).not.toContain("CleanupSecret");
 
     await deleteSession(
       { userId: USERS.cleanup, sessionId: turn.sessionId },

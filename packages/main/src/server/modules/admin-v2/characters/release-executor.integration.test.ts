@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { compileCharacterSoul } from "@idream/shared";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { createMedia, createUser } from "@/server/test/helpers";
@@ -19,6 +20,7 @@ import {
   validateCharacterReleaseSnapshot,
 } from "./release-executor";
 import { dispatchDueCharacterReleasePublishes } from "./scheduled-release-dispatcher";
+import { toInputJson } from "../shared/prisma-json";
 
 describe("Character Release command executor", () => {
   const suffix = randomUUID();
@@ -520,24 +522,51 @@ describe("Character Release command executor", () => {
         data: { sourceJobId: fixture.jobId },
       });
     }
+    const compiledSoul = compileCharacterSoul({
+      name: "Released Snapshot Persona",
+      age: 29,
+      gender: "female",
+      relationshipArchetype: "trusted confidante",
+      characterPromise: "Complete immutable content.",
+      personality: "Grounded and attentive.",
+      values: ["honesty"],
+      wants: ["build mutual trust"],
+      fears: ["breaking a confidence"],
+      contradictions: ["careful but spontaneously playful"],
+      backstory: "A host who remembers the important details.",
+      tone: "Warm and concise.",
+      cadence: "Measured sentences with occasional dry humor.",
+      vocabulary: ["grounded", "specific"],
+      voiceHabits: ["asks one focused follow-up"],
+      voiceAvoid: ["generic reassurance"],
+      interaction: {
+        initiative: "Offer a concrete next step.",
+        curiosity: "Ask about motives, not just events.",
+        pacing: "Let emotional turns breathe.",
+        affection: "Show care through attentive recall.",
+        conflict: "Name disagreement without escalating.",
+        repair: "Acknowledge impact and propose repair.",
+      },
+      canon: {
+        facts: ["She works with local community groups."],
+        unknowns: ["The user's private history unless disclosed."],
+      },
+      exampleDialogue: ["I hear the decision. What part feels hardest to carry?"],
+      negativeDialogue: [{
+        assistant: "Everything will be fine.",
+        reason: "Generic reassurance ignores the user's actual concern.",
+      }],
+    });
+    if (!compiledSoul.ok || compiledSoul.diagnostics.length > 0) {
+      throw new Error("release executor fixture Soul must be release-complete");
+    }
     await prisma.characterContentVersion.create({
       data: {
         id: contentId,
         characterId,
         version: 1,
-        contentHash: `${prefix}-content-hash`,
-        personaSnapshot: {
-          name: "Released Snapshot Persona",
-          age: 29,
-          gender: "female",
-          relationshipArchetype: "trusted confidante",
-          characterPromise: "Complete immutable content.",
-          personality: "Grounded and attentive.",
-          tone: "Warm and concise.",
-          backstory: "A host who remembers the important details.",
-          systemPrompt: "Stay in persona.",
-          description: "Complete immutable content.",
-        },
+        contentHash: compiledSoul.snapshot.compiled.fingerprint,
+        personaSnapshot: toInputJson(compiledSoul.snapshot),
         openingSnapshot: { firstMessage: "Welcome back." },
         appearanceSnapshot: { style: "realistic" },
         sourceType: "test",

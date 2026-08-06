@@ -27,19 +27,32 @@ describe("characterDraftSnapshots", () => {
     });
 
     expect(snapshots.personaSnapshot).toMatchObject({
-      name: "Mara Vale",
-      relationship: "long-term partner",
-      relationshipArchetype: "long-term partner",
-      description: "A perceptive partner who notices what goes unsaid.",
+      schemaVersion: 1,
+      soul: {
+        identity: {
+          name: "Mara Vale",
+          relationshipArchetype: "long-term partner",
+          characterPromise: "A perceptive partner who notices what goes unsaid.",
+        },
+      },
+      compiled: {
+        compilerVersion: "character-soul-1",
+        fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
     });
-    expect(snapshots.personaSnapshot.systemPrompt).toContain(
+    expect(snapshots.personaSnapshot.compiled.systemPrompt).toContain(
       "Patient, wry, and fiercely dependable.",
     );
-    expect(snapshots.personaSnapshot.systemPrompt).toContain(
+    expect(snapshots.personaSnapshot.compiled.systemPrompt).toContain(
       "Low-key warmth, concise sentences, and dry humor.",
     );
-    expect(snapshots.personaSnapshot.systemPrompt).toContain(
+    expect(snapshots.personaSnapshot.compiled.systemPrompt).toContain(
       "long-term partner",
     );
+    expect(snapshots.renderedSoulMarkdown).toContain("# Mara Vale — Character Soul");
+    expect(snapshots.diagnostics).toContainEqual(expect.objectContaining({
+      code: "inner_life_values_missing",
+      severity: "warning",
+    }));
   });
 });

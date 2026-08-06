@@ -1,16 +1,20 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { compileCharacterSoul } from "@idream/shared";
 import { POST as createCreativeRun } from "@/app/api/v2/admin/creative/runs/route";
 import { prisma } from "@/server/lib/db";
 import { getCharacterWorkspace } from "@/server/modules/admin-v2/characters/workspace";
 import { isProductionLtxVideoProfile } from "@/server/modules/generation/production-video-profile";
 import { purgeQueuedGenerationJobs } from "@/server/test/helpers";
+import { toInputJson } from "../shared/prisma-json";
 
 describe("Character video Creative Run authority", () => {
   const suffix = randomUUID();
   const actorId = `character-video-actor-${suffix}`;
   const characterId = `character-video-character-${suffix}`;
   const projectId = `character-video-project-${suffix}`;
+  const contentId = `character-video-content-${suffix}`;
+  const revisionId = `character-video-revision-${suffix}`;
   const otherCharacterId = `character-video-other-${suffix}`;
   const publishedPrimaryAssetId = `character-video-primary-${suffix}`;
   const sourceAssetId = `character-video-source-${suffix}`;
@@ -99,6 +103,61 @@ describe("Character video Creative Run authority", () => {
         },
       ],
     });
+    const compiledSoul = compileCharacterSoul({
+      name: "Mara",
+      age: 27,
+      gender: "female",
+      relationshipArchetype: "trusted companion",
+      characterPromise: "A warm, self-assured companion.",
+      personality: "Observant, direct, and emotionally grounded.",
+      values: ["honesty"],
+      wants: ["build mutual trust"],
+      fears: ["breaking a confidence"],
+      contradictions: ["careful but spontaneously playful"],
+      backstory: "She learned dependable companionship through community work.",
+      tone: "Warm and concise.",
+      cadence: "Measured sentences with occasional dry humor.",
+      vocabulary: ["grounded", "specific"],
+      voiceHabits: ["asks one focused follow-up"],
+      voiceAvoid: ["generic reassurance"],
+      interaction: {
+        initiative: "Offer a concrete next step.",
+        curiosity: "Ask about motives, not just events.",
+        pacing: "Let emotional turns breathe.",
+        affection: "Show care through attentive recall.",
+        conflict: "Name disagreement without escalating.",
+        repair: "Acknowledge impact and propose repair.",
+      },
+      canon: {
+        facts: ["She works with local community groups."],
+        unknowns: ["The user's private history unless disclosed."],
+      },
+      exampleDialogue: ["I hear the decision. What part feels hardest to carry?"],
+      negativeDialogue: [{
+        assistant: "Everything will be fine.",
+        reason: "Generic reassurance ignores the user's actual concern.",
+      }],
+    });
+    if (!compiledSoul.ok || compiledSoul.diagnostics.length > 0) {
+      throw new Error("video workspace fixture Soul must be release-complete");
+    }
+    await prisma.characterContentVersion.create({
+      data: {
+        id: contentId,
+        characterId,
+        version: 1,
+        contentHash: compiledSoul.snapshot.compiled.fingerprint,
+        personaSnapshot: toInputJson(compiledSoul.snapshot),
+        openingSnapshot: { firstMessage: "Tell me what happened." },
+        appearanceSnapshot: { style: "realistic" },
+        sourceType: "test",
+        createdById: actorId,
+      },
+    });
+    await prisma.character.update({
+      where: { id: characterId },
+      data: { currentContentVersionId: contentId },
+    });
     await prisma.characterProject.create({
       data: {
         id: projectId,
@@ -107,6 +166,16 @@ describe("Character video Creative Run authority", () => {
         audience: {},
         successCriteria: ["Video preserves the Character identity"],
         activeKey: `character-video:${characterId}`,
+      },
+    });
+    await prisma.characterRevision.create({
+      data: {
+        id: revisionId,
+        projectId,
+        revision: 1,
+        characterContentVersionId: contentId,
+        projectSnapshot: {},
+        createdById: actorId,
       },
     });
     await prisma.mediaAsset.createMany({

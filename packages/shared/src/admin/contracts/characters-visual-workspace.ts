@@ -670,6 +670,32 @@ export const characterWorkspaceDetailSchema = z
       })
       .strict(),
     project: characterWorkspaceProjectSchema,
+    soul: z.object({
+      valid: z.boolean(),
+      current: z.object({
+        contentVersionId: adminIdSchema,
+        version: z.number().int().positive(),
+        schemaVersion: z.number().int().nonnegative().nullable(),
+        compilerVersion: z.string().nullable(),
+        fingerprint: z.string().nullable(),
+        estimatedTokens: z.number().int().nonnegative().nullable(),
+        soul: z.record(z.string(), z.unknown()).nullable(),
+        markdown: z.string().nullable(),
+        systemPrompt: z.string().nullable(),
+        diagnostics: z.array(z.object({
+          code: z.string(),
+          path: z.array(z.string()),
+          severity: z.enum(["error", "warning"]),
+          message: z.string(),
+        }).strict()).readonly(),
+      }).strict(),
+      previous: z.object({
+        contentVersionId: adminIdSchema,
+        version: z.number().int().positive(),
+        fingerprint: z.string().nullable(),
+      }).strict().nullable(),
+      changedFields: z.array(z.string()).readonly(),
+    }).strict(),
     journey: characterProductionJourneySchema,
     mediaOperations: characterMediaOperationsProjectionSchema,
     visual: characterVisualWorkspaceSchema,

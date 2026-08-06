@@ -183,6 +183,9 @@ module.exports = {
       args: "src/main.ts",
       exec_mode: "fork",
       instances: 1, // ⚠️ local FS single-writer
+      // Warm model calls and active generations are allowed to finish after
+      // admission closes; PM2 must not cut the process off at its 1.6s default.
+      kill_timeout: 5 * 60 * 1_000,
       ...sourceWatch("packages/chat/src", "packages/shared/src"),
       env: {
         ...runtimeIdentityEnv,

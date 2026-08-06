@@ -13,6 +13,10 @@ import { createSseResponse } from "./stream.js";
 import { persistInboundEvent } from "./inbox.js";
 import { enqueue } from "./queue.js";
 import { CHAT_QUEUES, idempotencyKeys } from "@idream/shared/contracts";
+import {
+  runtimeReadiness,
+  type RuntimeReadiness,
+} from "./runtime-readiness.js";
 
 const BFF_TTL_MS = 30_000;
 const MAX_BODY_BYTES = 64 * 1024;
@@ -26,9 +30,9 @@ const privateJsonHeaders = {
   vary: "Authorization, Cookie, X-iDream-BFF, X-iDream-BFF-User",
 };
 
-export function createChatServer() {
+export function createChatServer(readiness: RuntimeReadiness = runtimeReadiness) {
   return createServer((req, res) => {
-    handle(req, res).catch((error) => {
+    handle(req, res, readiness).catch((error) => {
       logger.error({ err: error }, "unhandled request error");
       if (!res.headersSent) res.writeHead(500, privateJsonHeaders);
       res.end(JSON.stringify({ error: "internal" }));
@@ -36,11 +40,26 @@ export function createChatServer() {
   });
 }
 
-async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function handle(
+  req: IncomingMessage,
+  res: ServerResponse,
+  readiness: RuntimeReadiness,
+): Promise<void> {
   const url = new URL(req.url ?? "/", "http://internal");
   if (url.pathname === "/healthz") {
     res.writeHead(200, privateJsonHeaders);
     res.end(JSON.stringify({ ok: true, service: "chat" }));
+    return;
+  }
+  if (url.pathname === "/readyz") {
+    const snapshot = readiness.snapshot();
+    res.writeHead(readiness.canAcceptTurns() ? 200 : 503, privateJsonHeaders);
+    res.end(JSON.stringify({ ok: readiness.canAcceptTurns(), service: "chat", ...snapshot }));
+    return;
+  }
+  if (!readiness.canAcceptTurns()) {
+    res.writeHead(503, privateJsonHeaders);
+    res.end(JSON.stringify({ error: "service_not_ready" }));
     return;
   }
 

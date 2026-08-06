@@ -430,9 +430,10 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
     expectOk(submit);
     expect(submit.data.character).toMatchObject({ status: "approved", visibility: "private" });
     const characterId = submit.data.character.id as string;
-    await expect(
-      prisma.character.findUniqueOrThrow({ where: { id: characterId } }),
-    ).resolves.toMatchObject({
+    const createdCharacter = await prisma.character.findUniqueOrThrow({
+      where: { id: characterId },
+    });
+    expect(createdCharacter).toMatchObject({
       relationship: "childhood friend",
       advancedDetails: expect.objectContaining({
         personality: "Bold, observant, and protective.",
@@ -443,6 +444,44 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
       systemPrompt: expect.stringContaining(
         "Bold, observant, and protective.",
       ),
+    });
+    expect(createdCharacter.currentContentVersionId).toEqual(expect.any(String));
+    const firstContent = await prisma.characterContentVersion.findUniqueOrThrow({
+      where: { id: createdCharacter.currentContentVersionId! },
+    });
+    expect(firstContent).toMatchObject({
+      characterId,
+      version: 1,
+      sourceType: "user",
+      personaSnapshot: expect.objectContaining({
+        schemaVersion: 1,
+        compiled: expect.objectContaining({
+          compilerVersion: "character-soul-1",
+          fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+        }),
+      }),
+    });
+
+    const edited = await api("PATCH", `characters/${characterId}`, {
+      userId,
+      ageGate: true,
+      body: { description: "My private companion, now ready for a new journey." },
+    });
+    expectOk(edited);
+    const afterEdit = await prisma.character.findUniqueOrThrow({ where: { id: characterId } });
+    expect(afterEdit.currentContentVersionId).not.toBe(firstContent.id);
+    const contentHistory = await prisma.characterContentVersion.findMany({
+      where: { characterId },
+      orderBy: { version: "asc" },
+    });
+    expect(contentHistory.map((item) => item.version)).toEqual([1, 2]);
+    expect(contentHistory[0]?.personaSnapshot).toEqual(firstContent.personaSnapshot);
+    expect(contentHistory[1]?.personaSnapshot).toMatchObject({
+      soul: {
+        identity: {
+          characterPromise: "My private companion, now ready for a new journey.",
+        },
+      },
     });
 
     const library = await api("GET", "library/created", { userId, ageGate: true });

@@ -1,4 +1,5 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
+import { loadCharacterSoulSnapshot } from "@idream/shared";
 import { nonSyntheticMediaAssetWhere } from "@/server/lib/media-asset-authority";
 import { claimControlPlaneCommand } from "../shared/control-plane-command";
 import { transitionControlPlaneCommandAttempt } from "../shared/control-plane-command-attempt";
@@ -92,16 +93,22 @@ function releasedCharacterProjection(content: {
   openingSnapshot: Prisma.JsonValue;
   appearanceSnapshot: Prisma.JsonValue;
 }) {
-  const persona = record(content.personaSnapshot);
+  const soulResult = loadCharacterSoulSnapshot(content.personaSnapshot);
   const opening = record(content.openingSnapshot);
   const appearance = record(content.appearanceSnapshot);
-  const name = stringValue(persona.name);
-  const description = stringValue(persona.characterPromise) ?? stringValue(persona.description);
-  const age = typeof persona.age === "number" && Number.isInteger(persona.age) && persona.age >= 18
-    ? persona.age
-    : null;
-  const gender = stringValue(persona.gender);
-  const relationship = stringValue(persona.relationshipArchetype);
+  if (!soulResult.ok) {
+    throw new ReleaseCommandError(
+      "release_content_projection_incomplete",
+      "Release content has no valid immutable Character Soul",
+      { diagnostics: soulResult.diagnostics.map((item) => item.code) },
+    );
+  }
+  const { identity } = soulResult.snapshot.soul;
+  const name = identity.name;
+  const description = identity.characterPromise;
+  const age = identity.age;
+  const gender = identity.gender;
+  const relationship = identity.relationshipArchetype;
   const style = stringValue(appearance.style);
   const firstMessage = stringValue(opening.firstMessage);
   if (!name || !description || age === null || !gender || !relationship || !style || !firstMessage) {
@@ -111,17 +118,7 @@ function releasedCharacterProjection(content: {
       { name: Boolean(name), description: Boolean(description), age, gender, relationship, style, firstMessage: Boolean(firstMessage) },
     );
   }
-  const systemPrompt = stringValue(persona.systemPrompt) ?? [
-    stringValue(persona.personality),
-    stringValue(persona.tone),
-    stringValue(persona.backstory),
-  ].filter((value): value is string => value !== null).join("\n\n");
-  if (!systemPrompt) {
-    throw new ReleaseCommandError(
-      "release_content_projection_incomplete",
-      "Release content has no serving system prompt",
-    );
-  }
+  const systemPrompt = soulResult.snapshot.compiled.systemPrompt;
   return {
     name,
     age,
@@ -131,7 +128,12 @@ function releasedCharacterProjection(content: {
     gender,
     relationship,
     appearance: toInputJson(appearance),
-    advancedDetails: toInputJson({ ...persona, ...opening }),
+    advancedDetails: toInputJson({
+      soul: soulResult.snapshot.soul,
+      opening,
+      soulFingerprint: soulResult.snapshot.compiled.fingerprint,
+      compilerVersion: soulResult.snapshot.compiled.compilerVersion,
+    }),
   };
 }
 

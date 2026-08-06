@@ -127,21 +127,18 @@ describe("P0-E: no-memory / incognito", () => {
     const jsonl = path.join(fsRoot, "sessions", user, `${session.id}.jsonl`);
     expect(await exists(jsonl)).toBe(false);
 
-    // No memory.extract job enqueued, and no memory file written.
-    expect(await drainQueue(CHAT_QUEUES.memoryExtract, async () => {})).toBe(0);
+    // Scene advances off the hot path even in incognito mode. The same job must
+    // not write memory, relationship evidence, summary, or file-layer traces.
+    expect(await drainQueue(CHAT_QUEUES.memoryExtract, async (job) => {
+      expect(
+        await processMemoryExtract(job.payload as Parameters<typeof processMemoryExtract>[0], prisma),
+      ).toEqual({ written: 0, skipped: "scene_only_memory_disabled" });
+    })).toBe(1);
     expect(await exists(path.join(fsRoot, "mem", user, CHAR, "memory.md"))).toBe(false);
     expect(await exists(path.join(fsRoot, "mem", user, CHAR, "relationship.md"))).toBe(false);
-
-    const manual = await processMemoryExtract(
-      {
-        sessionId: session.id,
-        assistantMessageId: sent.assistantMessageId,
-        userMessageId: sent.userMessageId,
-        attempt: 1,
-      },
-      prisma,
-    );
-    expect(manual).toEqual({ written: 0, skipped: "turn_memory_disabled" });
+    expect(await prisma.chatSceneRevision.count({
+      where: { sessionId: session.id, sourceAssistantMessageId: sent.assistantMessageId },
+    })).toBe(1);
 
     // Compensation must use the same immutable authority, not the restored flag.
     // Other sequential test files can leave unrelated recoverable rows in this
@@ -266,7 +263,10 @@ describe("P0-E: no-memory / incognito", () => {
         },
         prisma,
       ),
-    ).toEqual({ written: 0, skipped: "turn_memory_legacy_unknown" });
+    ).toEqual({ written: 0, skipped: "scene_only_legacy_unknown" });
+    expect(await prisma.chatSceneRevision.count({
+      where: { sessionId: session.id, sourceAssistantMessageId: assistant.id },
+    })).toBe(1);
     expect(await exists(path.join(fsRoot, "mem", user, CHAR, "memory.md"))).toBe(false);
     expect(await exists(path.join(fsRoot, "mem", user, CHAR, "relationship.md"))).toBe(false);
   });
@@ -327,7 +327,7 @@ describe("P1-B: relationship state is injected into the model context", () => {
     // The agent trace records the exact system prompt the model received.
     const jsonl = await readFile(path.join(fsRoot, "sessions", user, `${session.id}.jsonl`), "utf8");
     const turn = JSON.parse(jsonl.trim().split("\n")[0]) as { system: string };
-    expect(turn.system).toContain("Relationship:");
+    expect(turn.system).toContain("Relationship State");
     expect(turn.system).toContain("comfortable intimacy"); // 'close' stage tone
     expect(turn.system).toContain("inside jokes about sailing"); // narrative summary
     expect(sent.status).toBe("generating");

@@ -310,8 +310,70 @@ describe("chat providers", () => {
     const next = providers.chat.stream({
       messages: [{ role: "user", content: "hello" }],
     })[Symbol.asyncIterator]().next();
-    const assertion = expect(next).rejects.toThrow("Chat model request timed out after 25ms");
+    const assertion = expect(next).rejects.toThrow("Chat model first_token timed out after 25ms");
 
+    await vi.advanceTimersByTimeAsync(25);
+    await assertion;
+  });
+
+  it("does not treat a role-only SSE frame as the first token", async () => {
+    vi.useFakeTimers();
+    const encoder = new TextEncoder();
+    const fetchMock = vi.fn(async (_url: URL, init?: RequestInit) =>
+      new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n'));
+          init?.signal?.addEventListener("abort", () => controller.error(new DOMException("aborted", "AbortError")));
+        },
+      })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    process.env = {
+      ...oldEnv,
+      CHAT_MODEL_PROVIDER: "openai",
+      CHAT_MODEL_BASE_URL: "https://pipeline.internal.example.com/v1",
+      CHAT_MODEL_FIRST_TOKEN_TIMEOUT_MS: "25",
+      CHAT_MODEL_IDLE_TIMEOUT_MS: "100",
+      MODERATION_PROVIDER: "mock",
+    };
+
+    const { createProviders } = await import("./providers.js");
+    const next = createProviders().chat.stream({
+      messages: [{ role: "user", content: "hello" }],
+    })[Symbol.asyncIterator]().next();
+    const assertion = expect(next).rejects.toThrow("Chat model first_token timed out after 25ms");
+    await vi.advanceTimersByTimeAsync(25);
+    await assertion;
+  });
+
+  it("uses the idle timeout only after real assistant output", async () => {
+    vi.useFakeTimers();
+    const encoder = new TextEncoder();
+    const fetchMock = vi.fn(async (_url: URL, init?: RequestInit) =>
+      new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"hello"}}]}\n\n'));
+          init?.signal?.addEventListener("abort", () => controller.error(new DOMException("aborted", "AbortError")));
+        },
+      })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    process.env = {
+      ...oldEnv,
+      CHAT_MODEL_PROVIDER: "openai",
+      CHAT_MODEL_BASE_URL: "https://pipeline.internal.example.com/v1",
+      CHAT_MODEL_FIRST_TOKEN_TIMEOUT_MS: "100",
+      CHAT_MODEL_IDLE_TIMEOUT_MS: "25",
+      MODERATION_PROVIDER: "mock",
+    };
+
+    const { createProviders } = await import("./providers.js");
+    const iterator = createProviders().chat.stream({
+      messages: [{ role: "user", content: "hello" }],
+    })[Symbol.asyncIterator]();
+    await expect(iterator.next()).resolves.toMatchObject({ value: { delta: "hello" } });
+    const next = iterator.next();
+    const assertion = expect(next).rejects.toThrow("Chat model idle timed out after 25ms");
     await vi.advanceTimersByTimeAsync(25);
     await assertion;
   });
@@ -393,7 +455,8 @@ describe("chat providers", () => {
       CHAT_MODERATION_PROVIDER: "mock",
     };
 
-    await expect(import("./providers.js")).rejects.toThrow(
+    const { createProviders } = await import("./providers.js");
+    expect(() => createProviders()).toThrow(
       /Production requires non-mock chat providers:.*CHAT_MODEL_PROVIDER.*MODERATION_PROVIDER/,
     );
   });
@@ -409,7 +472,8 @@ describe("chat providers", () => {
       MODERATION_API_KEY: "moderation-api-key",
     };
 
-    await expect(import("./providers.js")).rejects.toThrow(
+    const { createProviders } = await import("./providers.js");
+    expect(() => createProviders()).toThrow(
       "MODERATION_SERVICE_URL is required when MODERATION_PROVIDER=safety-gateway",
     );
   });

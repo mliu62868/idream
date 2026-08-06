@@ -33,7 +33,7 @@ SELECT
   vp.version AS visual_profile_version,
   vp."identityPrompt" AS identity_prompt,
   COALESCE((c."advancedDetails"->>'imageToolEnabled')::boolean, true) AS image_tool_enabled,
-  cr."characterContentVersionId" AS character_content_version_id,
+  COALESCE(cr."characterContentVersionId", c."currentContentVersionId") AS character_content_version_id,
   cr.id AS character_release_id,
   c."deletedAt" AS deleted_at
 FROM public.characters c

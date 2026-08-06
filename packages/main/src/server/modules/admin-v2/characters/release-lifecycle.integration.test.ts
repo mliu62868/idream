@@ -8,7 +8,9 @@ import { CHARACTER_RELEASE_POLICY_VERSION, executeCharacterReleaseCommand } from
 import { env } from "@/server/lib/env";
 import { canonicalSha256 } from "../shared/canonical-json";
 import { characterQaCheckKeySchema } from "@idream/shared/admin";
+import { compileCharacterSoul } from "@idream/shared";
 import { createCharacterQaRun } from "./qa";
+import { toInputJson } from "../shared/prisma-json";
 
 describe("Character Release proposal and review lifecycle", () => {
   const suffix = randomUUID();
@@ -201,7 +203,43 @@ describe("Character Release proposal and review lifecycle", () => {
         finishedAt: new Date(),
       },
     });
-    await prisma.characterContentVersion.create({ data: { id: contentId, characterId, version: 1, contentHash: `release-lifecycle-content-hash-${suffix}`, personaSnapshot: { name: "Released Candidate", age: 25, gender: "female", relationshipArchetype: "companion", characterPromise: "Complete persona", description: "Complete persona", systemPrompt: "Stay consistent" }, openingSnapshot: { firstMessage: "Hello" }, appearanceSnapshot: { style: "realistic" }, sourceType: "test", createdById: actorId } });
+    const compiledSoul = compileCharacterSoul({
+      name: "Released Candidate",
+      age: 25,
+      gender: "female",
+      relationshipArchetype: "companion",
+      characterPromise: "A consistent release candidate",
+      personality: "Observant, direct, and emotionally grounded.",
+      values: ["honesty"],
+      wants: ["build mutual trust"],
+      fears: ["breaking a confidence"],
+      contradictions: ["careful but spontaneously playful"],
+      backstory: "She learned to value dependable companionship through years of community work.",
+      tone: "Warm and concise.",
+      cadence: "Measured sentences with occasional dry humor.",
+      vocabulary: ["grounded", "specific"],
+      voiceHabits: ["asks one focused follow-up"],
+      voiceAvoid: ["generic reassurance"],
+      interaction: {
+        initiative: "Offer a concrete next step.",
+        curiosity: "Ask about motives, not just events.",
+        pacing: "Let emotional turns breathe.",
+        affection: "Show care through attentive recall.",
+        conflict: "Name disagreement without escalating.",
+        repair: "Acknowledge impact and propose repair.",
+      },
+      canon: {
+        facts: ["She works with local community groups."],
+        unknowns: ["The user's private history unless disclosed."],
+      },
+      exampleDialogue: ["I hear the decision. What part feels hardest to carry?"],
+      negativeDialogue: [{
+        assistant: "Everything will be fine.",
+        reason: "Generic reassurance ignores the user's actual concern.",
+      }],
+    });
+    if (!compiledSoul.ok) throw new Error("release fixture Soul must compile");
+    await prisma.characterContentVersion.create({ data: { id: contentId, characterId, version: 1, contentHash: compiledSoul.snapshot.compiled.fingerprint, personaSnapshot: toInputJson(compiledSoul.snapshot), openingSnapshot: { firstMessage: "Hello" }, appearanceSnapshot: { style: "realistic" }, sourceType: "test", createdById: actorId } });
     await prisma.characterProject.create({ data: { id: projectId, characterId, ownerId: actorId, phase: "qa", audience: {}, successCriteria: ["five_turn_qa"], draftImageAssetId: draftAssetId, draftAssetPack, activeKey: `official:${characterId}` } });
     await prisma.characterRevision.create({ data: { id: revisionId, projectId, revision: 1, characterContentVersionId: contentId, projectSnapshot: {}, createdById: actorId } });
     await prisma.characterQaRun.create({ data: {

@@ -234,6 +234,7 @@ export const ADMIN_V2_API_OPERATIONS = [
   operation("POST", "/api/v2/admin/characters/:id/portfolio-decisions", allOf("character.project.write"), "characterPortfolioDecisionRequestSchema+idempotency-key", "characterPortfolioDecisionRecordSchema"),
   operation("GET", "/api/v2/admin/characters/:id/project", allOf("character.project.write"), "path:id", "characterProjectDraftResumeSchema"),
   operation("PATCH", "/api/v2/admin/characters/:id/project", allOf("character.project.write"), "characterProjectDraftPatchRequestSchema+if-match", "characterWorkspaceProjectSchema"),
+  operation("POST", "/api/v2/admin/characters/:id/soul/versions", allOf("character.project.write"), "characterSoulVersionCreateRequestSchema+idempotency-key+if-match", "characterSoulVersionCreateResponseSchema"),
   operation("PATCH", "/api/v2/admin/characters/:id/draft-image", allOf("character.project.write"), "characterDraftImageSelectionRequestSchema+idempotency-key+if-match", "characterDraftImageSelectionResultSchema", undefined, { commandType: "character.project.draft_image.select" }),
   operation("POST", "/api/v2/admin/characters/:id/identity-bootstrap", allOf("character.project.write"), "characterIdentityBootstrapRequestSchema+idempotency-key+if-match", "characterIdentityBootstrapResponseSchema"),
   operation("POST", "/api/v2/admin/characters/:id/image-readiness/repair", allOf("character.project.write"), "characterImageReadinessRepairRequestSchema+idempotency-key+if-match", "characterImageReadinessRepairResponseSchema"),

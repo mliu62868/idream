@@ -1,7 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
+import { compileCharacterSoul } from "@idream/shared";
 import { buildContext } from "../src/context.js";
+import { prepareCompanionTurn } from "../src/prepared-turn.js";
 import { createChatPrisma } from "../src/db.js";
 import {
   attachmentReleaseIdForRetry,
@@ -31,6 +33,15 @@ async function seedRelease(input: {
   systemPrompt: string;
   status?: string;
 }) {
+  const compiled = compileCharacterSoul({
+    name: `Pinned ${input.version}`,
+    age: 24,
+    gender: "female",
+    relationshipArchetype: "trusted companion",
+    characterPromise: input.systemPrompt,
+    personality: "Steady and perceptive.",
+  });
+  if (!compiled.ok) throw new Error(JSON.stringify(compiled.diagnostics));
   await superPool.query(
     `INSERT INTO public.character_content_versions
       (id, "characterId", version, "contentHash", "personaSnapshot", "openingSnapshot", "appearanceSnapshot", "sourceType", "createdAt")
@@ -40,12 +51,7 @@ async function seedRelease(input: {
       CHARACTER_ID,
       input.version,
       `hash-${input.version}`,
-      JSON.stringify({
-        name: `Pinned ${input.version}`,
-        age: 24,
-        description: `Persona ${input.version}`,
-        systemPrompt: input.systemPrompt,
-      }),
+      JSON.stringify(compiled.snapshot),
       JSON.stringify({ firstMessage: `Opening ${input.version}` }),
     ],
   );
@@ -75,6 +81,18 @@ beforeAll(async () => {
     );
   }
   await acceptAgeGate(superPool, USERS);
+  const adminSoul = compileCharacterSoul({
+    name: "Pinned Admin Persona",
+    age: 29,
+    gender: "female",
+    relationshipArchetype: "devoted wife",
+    characterPromise: "Your steady partner through a difficult homecoming.",
+    personality: "Patient, perceptive, and quietly playful.",
+    tone: "Warm, concise, and grounded; she never speaks like a generic assistant.",
+    backstory: "You built a home together before work kept you apart for a year.",
+    exampleDialogue: ["You look exhausted. Sit with me and tell me what happened."],
+  });
+  if (!adminSoul.ok) throw new Error(JSON.stringify(adminSoul.diagnostics));
   await superPool.query(
     `INSERT INTO public.characters
       (id, name, age, description, visibility, status, source, style, gender, appearance, "advancedDetails", "createdAt", "updatedAt")
@@ -117,18 +135,7 @@ beforeAll(async () => {
      VALUES ('content-pin-admin-v1', $1, 1, 'hash-admin-v1', $2::jsonb, $3::jsonb, '{}'::jsonb, 'admin_v2', now())`,
     [
       ADMIN_CHARACTER_ID,
-      JSON.stringify({
-        name: "Pinned Admin Persona",
-        age: 29,
-        gender: "female",
-        relationshipArchetype: "devoted wife",
-        characterPromise: "Your steady partner through a difficult homecoming.",
-        description: "Your steady partner through a difficult homecoming.",
-        personality: "Patient, perceptive, and quietly playful.",
-        tone: "Warm, concise, and grounded; she never speaks like a generic assistant.",
-        backstory: "You built a home together before work kept you apart for a year.",
-        exampleDialogue: ["You look exhausted. Sit with me and tell me what happened."],
-      }),
+      JSON.stringify(adminSoul.snapshot),
       JSON.stringify({ firstMessage: "You're finally home. Come here." }),
     ],
   );
@@ -245,8 +252,27 @@ describe("Character Release → Chat serving pin", () => {
       turnMemoryEnabled: true,
       userMessageId: oldTurn.userMessageId,
     });
-    expect(oldContext.persona.systemPrompt).toBe("Immutable persona version one");
+    expect(oldContext.persona.systemPrompt).toContain("Immutable persona version one");
     expect(oldContext.persona.characterReleaseId).toBe("release-pin-v1");
+    const prepared = await prepareCompanionTurn({
+      prisma,
+      userId: USERS[0],
+      characterId: CHARACTER_ID,
+      sessionId: oldSession.id,
+      turnMemoryEnabled: true,
+      userMessageId: oldTurn.userMessageId,
+    });
+    expect(prepared.trace).toMatchObject({
+      characterContentVersionId: "content-pin-v1",
+      characterReleaseId: "release-pin-v1",
+      compilerVersion: "character-soul-1",
+      sceneVersion: 0,
+    });
+    expect(prepared.trace.soulFingerprint).not.toBe("legacy-unattributed");
+    expect(prepared.messages).toContainEqual({ role: "assistant", content: "Opening 1" });
+    expect(prepared.budget.maxInputTokens).toBeGreaterThanOrEqual(
+      prepared.budget.usedInputTokens,
+    );
 
     const newSession = await createSession({ userId: USERS[1], characterId: CHARACTER_ID }, { prisma });
     expect(newSession.characterContentVersionId).toBe("content-pin-v2");

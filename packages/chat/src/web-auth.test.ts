@@ -5,6 +5,7 @@ import {
   createChatServer,
   resolveUser,
 } from "./web.js";
+import { RuntimeReadiness } from "./runtime-readiness.js";
 
 function request(headers: Record<string, string>): IncomingMessage {
   return {
@@ -52,7 +53,9 @@ describe("chat web authentication boundary", () => {
   it("rejects a message send without Idempotency-Key before dispatch", async () => {
     delete process.env.CHAT_BFF_SIGNING_SECRET;
     process.env.APP_ENV = "test";
-    const server = createChatServer();
+    const readiness = new RuntimeReadiness();
+    readiness.warmed();
+    const server = createChatServer(readiness);
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     try {
       const address = server.address();
@@ -79,6 +82,26 @@ describe("chat web authentication boundary", () => {
       await expect(response.json()).resolves.toMatchObject({
         error: "idempotency_key_required",
       });
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error ? reject(error) : resolve());
+      });
+    }
+  });
+
+  it("keeps liveness up while readiness gates business traffic", async () => {
+    const readiness = new RuntimeReadiness();
+    const server = createChatServer(readiness);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("missing test address");
+      const origin = `http://127.0.0.1:${address.port}`;
+      expect((await fetch(`${origin}/healthz`)).status).toBe(200);
+      expect((await fetch(`${origin}/readyz`)).status).toBe(503);
+      expect((await fetch(`${origin}/api/v1/chat/sessions`)).status).toBe(503);
+      readiness.warmed();
+      expect((await fetch(`${origin}/readyz`)).status).toBe(200);
     } finally {
       await new Promise<void>((resolve, reject) => {
         server.close((error) => error ? reject(error) : resolve());

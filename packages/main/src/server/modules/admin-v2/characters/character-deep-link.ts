@@ -13,6 +13,7 @@
 // 与 packages/admin/src/features/image-workflow-transport.ts 的 characterWorkspaceTabs 同集合。
 export const CHARACTER_WORKSPACE_TABS = [
   "project",
+  "soul",
   "visual",
   "assets",
   "video",

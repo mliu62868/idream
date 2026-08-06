@@ -5,6 +5,7 @@
 import path from "node:path";
 import {
   readWhole,
+  appendLine,
   writeAtomic,
   chatFsPaths,
   listPrefix,
@@ -19,6 +20,23 @@ export interface RelationshipState {
   signals: { warmth: number; familiarity: number; turns: number };
   summary: string;
   version: number;
+}
+
+export type RelationshipEvidenceKind =
+  | "self_disclosure"
+  | "trust"
+  | "affection"
+  | "shared_plan"
+  | "conflict"
+  | "repair"
+  | "boundary_respected";
+
+export interface RelationshipEvidence {
+  sourceAssistantMessageId: string;
+  sourceUserMessageId: string;
+  kind: RelationshipEvidenceKind;
+  confidence: number;
+  extractorVersion: string;
 }
 
 /**
@@ -60,6 +78,164 @@ const EMPTY: RelationshipState = {
   version: 0,
 };
 
+const EVIDENCE_WEIGHT: Record<
+  RelationshipEvidenceKind,
+  { warmth: number; familiarity: number }
+> = {
+  self_disclosure: { warmth: 0, familiarity: 2 },
+  trust: { warmth: 2, familiarity: 0 },
+  affection: { warmth: 3, familiarity: 0 },
+  shared_plan: { warmth: 0, familiarity: 2 },
+  conflict: { warmth: -2, familiarity: 0 },
+  repair: { warmth: 2, familiarity: 0 },
+  boundary_respected: { warmth: 0, familiarity: 1 },
+};
+
+const STAGE_DEMOTION_THRESHOLDS: Record<RelationshipStage, number> = {
+  new: 0,
+  familiar: 4,
+  close: 16,
+  committed: 44,
+};
+
+export function emptyRelationshipState(): RelationshipState {
+  return { ...EMPTY, signals: { ...EMPTY.signals } };
+}
+
+/**
+ * SPEC: Relationship stage is a deterministic projection of source-linked
+ * evidence. Evidence retries are idempotent and a single assistant turn cannot
+ * skip stages even when it carries several strong evidence kinds.
+ */
+export function reduceRelationship(
+  previous: RelationshipState,
+  evidence: RelationshipEvidence[],
+): RelationshipState {
+  const unique = new Map<string, RelationshipEvidence>();
+  for (const item of evidence) {
+    if (!validEvidence(item)) continue;
+    unique.set(evidenceKey(item), item);
+  }
+  const byTurn = new Map<string, RelationshipEvidence[]>();
+  for (const item of unique.values()) {
+    const rows = byTurn.get(item.sourceAssistantMessageId) ?? [];
+    rows.push(item);
+    byTurn.set(item.sourceAssistantMessageId, rows);
+  }
+
+  let state: RelationshipState = {
+    ...previous,
+    signals: { ...previous.signals },
+  };
+  for (const turnEvidence of byTurn.values()) {
+    let warmth = state.signals.warmth;
+    let familiarity = state.signals.familiarity;
+    for (const item of turnEvidence) {
+      const weight = EVIDENCE_WEIGHT[item.kind];
+      warmth += Math.round(weight.warmth * item.confidence);
+      familiarity += Math.round(weight.familiarity * item.confidence);
+    }
+    const signals = {
+      warmth: Math.max(0, warmth),
+      familiarity: Math.max(0, familiarity),
+      turns: state.signals.turns + 1,
+    };
+    state = {
+      stage: projectStageWithHysteresis(
+        state.stage,
+        signals.warmth + signals.familiarity,
+      ),
+      signals,
+      summary: state.summary,
+      version: state.version + 1,
+    };
+  }
+  const summary = evidenceSummary([...unique.values()].map((item) => item.kind));
+  return { ...state, summary: summary || previous.summary };
+}
+
+export function relationshipEvidenceForTurn(input: {
+  userMessageId: string;
+  assistantMessageId: string;
+  userText: string;
+  assistantText: string;
+}): RelationshipEvidence[] {
+  const kinds = new Set<RelationshipEvidenceKind>();
+  const user = input.userText.trim().replace(/\s+/g, " ");
+  const assistant = input.assistantText.trim().replace(/\s+/g, " ");
+  if (WARMTH_SIGNAL_PATTERNS.some((pattern) => pattern.test(user))) {
+    kinds.add(/trust|safe|信任|安心/i.test(user) ? "trust" : "affection");
+  }
+  if (FAMILIARITY_SIGNAL_PATTERNS.some((pattern) => pattern.test(user))) {
+    kinds.add("self_disclosure");
+  }
+  if (/\b(?:we should|let'?s|our plan)\b|(?:我们|一起)(?:计划|下次|以后)/iu.test(user)) {
+    kinds.add("shared_plan");
+  }
+  if (/\b(?:i disagree|that hurt|i'?m upset|you ignored)\b|我(?:不同意|生气|受伤)|你(?:忽略|没听)/iu.test(user)) {
+    kinds.add("conflict");
+  }
+  if (/\b(?:i'?m sorry|let'?s try again|make this right)\b|对不起|重新来|和好/iu.test(user + " " + assistant)) {
+    kinds.add("repair");
+  }
+  if (/\b(?:i understand|i won'?t|we can avoid)\b|我明白|我不会|我们可以避开/iu.test(assistant) && /\b(?:don'?t|boundary|avoid)\b|不要|别提|边界/iu.test(user)) {
+    kinds.add("boundary_respected");
+  }
+  return [...kinds].map((kind) => ({
+    sourceAssistantMessageId: input.assistantMessageId,
+    sourceUserMessageId: input.userMessageId,
+    kind,
+    confidence: 1,
+    extractorVersion: "relationship-evidence-1",
+  }));
+}
+
+function validEvidence(value: RelationshipEvidence): boolean {
+  return Boolean(
+    value.sourceAssistantMessageId &&
+    value.sourceUserMessageId &&
+    value.extractorVersion &&
+    Number.isFinite(value.confidence) &&
+    value.confidence >= 0 &&
+    value.confidence <= 1,
+  );
+}
+
+function evidenceKey(value: RelationshipEvidence): string {
+  return `${value.sourceAssistantMessageId}:${value.kind}:${value.extractorVersion}`;
+}
+
+function projectStageWithHysteresis(
+  current: RelationshipStage,
+  score: number,
+): RelationshipStage {
+  const currentIndex = STAGE_ORDER.indexOf(current);
+  const targetIndex = STAGE_ORDER.indexOf(stageForScore(score));
+  if (targetIndex > currentIndex) return STAGE_ORDER[currentIndex + 1] ?? current;
+  if (
+    targetIndex < currentIndex &&
+    score <= STAGE_DEMOTION_THRESHOLDS[current]
+  ) {
+    return STAGE_ORDER[currentIndex - 1] ?? "new";
+  }
+  return current;
+}
+
+function evidenceSummary(kinds: RelationshipEvidenceKind[]): string {
+  const unique = new Set(kinds);
+  const phrases: string[] = [];
+  if (unique.has("self_disclosure")) phrases.push("meaningful self-disclosure");
+  if (unique.has("trust")) phrases.push("expressed trust");
+  if (unique.has("affection")) phrases.push("expressed affection");
+  if (unique.has("shared_plan")) phrases.push("shared plans");
+  if (unique.has("conflict")) phrases.push("open conflict");
+  if (unique.has("boundary_respected")) phrases.push("respected boundaries");
+  if (unique.has("repair")) phrases.push("successful repair");
+  if (phrases.length === 0) return "";
+  if (phrases.length === 1) return `The bond reflects ${phrases[0]}.`;
+  return `The bond reflects ${phrases.slice(0, -1).join(", ")} and ${phrases.at(-1)}.`;
+}
+
 export interface RelationshipPatch {
   warmth?: number;
   familiarity?: number;
@@ -77,6 +253,170 @@ export interface RelationshipRepairSnapshot {
   state: RelationshipState;
   appliedTurnKeys: string[];
   cutoverBaseline: RelationshipCutoverBaseline | null;
+}
+
+type RelationshipEvidenceLogRecord =
+  | { recordType: "baseline"; state: RelationshipState }
+  | { recordType: "evidence"; evidence: RelationshipEvidence }
+  | { recordType: "remove"; sourceMessageIds: string[] };
+
+export async function appendRelationshipEvidenceOnce(
+  userId: string,
+  characterId: string,
+  evidence: RelationshipEvidence[],
+): Promise<{ state: RelationshipState; appended: number }> {
+  const rel = chatFsPaths.relationship(userId, characterId);
+  const evidencePath = chatFsPaths.relationshipEvidence(userId, characterId);
+  return withFileMutationLock(rel, async () => {
+    const records = parseEvidenceLog(await readWhole(evidencePath));
+    if (!records.some((record) => record.recordType === "baseline")) {
+      const baseline: RelationshipEvidenceLogRecord = {
+        recordType: "baseline",
+        state: parseRelationship(await readWhole(rel)),
+      };
+      await appendLine(evidencePath, JSON.stringify(baseline));
+      records.push(baseline);
+    }
+    const current = activeEvidence(records);
+    const known = new Set(current.map(evidenceKey));
+    let appended = 0;
+    for (const item of evidence) {
+      if (!validEvidence(item) || known.has(evidenceKey(item))) continue;
+      const record: RelationshipEvidenceLogRecord = {
+        recordType: "evidence",
+        evidence: item,
+      };
+      await appendLine(evidencePath, JSON.stringify(record));
+      records.push(record);
+      known.add(evidenceKey(item));
+      appended += 1;
+    }
+    const state = stateFromEvidenceLog(records);
+    await writeAtomic(
+      rel,
+      renderRelationship(
+        state,
+        [...new Set(activeEvidence(records).map((item) => item.sourceAssistantMessageId))],
+      ),
+    );
+    return { state, appended };
+  });
+}
+
+/** Append tombstones for deleted sources, then rebuild from the canonical log. */
+export async function rebuildRelationshipFromEvidence(
+  userId: string,
+  characterId: string,
+  validSourceMessageIds: ReadonlySet<string>,
+): Promise<{ state: RelationshipState; evidenceCount: number; hasLedger: boolean }> {
+  const rel = chatFsPaths.relationship(userId, characterId);
+  const evidencePath = chatFsPaths.relationshipEvidence(userId, characterId);
+  return withFileMutationLock(rel, async () => {
+    const records = parseEvidenceLog(await readWhole(evidencePath));
+    if (records.length === 0) {
+      return { state: parseRelationship(await readWhole(rel)), evidenceCount: 0, hasLedger: false };
+    }
+    const invalid = [...new Set(activeEvidence(records).flatMap((item) =>
+      validSourceMessageIds.has(item.sourceAssistantMessageId) &&
+      validSourceMessageIds.has(item.sourceUserMessageId)
+        ? []
+        : [item.sourceAssistantMessageId, item.sourceUserMessageId]
+    ))].sort();
+    if (invalid.length > 0) {
+      const removal: RelationshipEvidenceLogRecord = {
+        recordType: "remove",
+        sourceMessageIds: invalid,
+      };
+      await appendLine(evidencePath, JSON.stringify(removal));
+      records.push(removal);
+    }
+    const active = activeEvidence(records);
+    const state = stateFromEvidenceLog(records);
+    await writeAtomic(
+      rel,
+      renderRelationship(
+        state,
+        [...new Set(active.map((item) => item.sourceAssistantMessageId))],
+      ),
+    );
+    return { state, evidenceCount: active.length, hasLedger: true };
+  });
+}
+
+export async function resetRelationshipEvidenceBaseline(
+  userId: string,
+  characterId: string,
+): Promise<void> {
+  const rel = chatFsPaths.relationship(userId, characterId);
+  const evidencePath = chatFsPaths.relationshipEvidence(userId, characterId);
+  await withFileMutationLock(rel, async () => {
+    const baseline: RelationshipEvidenceLogRecord = {
+      recordType: "baseline",
+      state: parseRelationship(await readWhole(rel)),
+    };
+    await appendLine(evidencePath, JSON.stringify(baseline));
+  });
+}
+
+export async function deleteRelationshipEvidence(
+  userId: string,
+  characterId: string,
+): Promise<void> {
+  await deletePrefix(chatFsPaths.relationshipEvidence(userId, characterId));
+}
+
+function parseEvidenceLog(raw: string | null): RelationshipEvidenceLogRecord[] {
+  if (!raw) return [];
+  const records: RelationshipEvidenceLogRecord[] = [];
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const value = JSON.parse(line) as RelationshipEvidenceLogRecord;
+      if (value.recordType === "baseline" && value.state) records.push(value);
+      else if (value.recordType === "evidence" && validEvidence(value.evidence)) records.push(value);
+      if (
+        value.recordType === "remove" &&
+        Array.isArray(value.sourceMessageIds) &&
+        value.sourceMessageIds.every((item) => typeof item === "string")
+      ) records.push(value);
+    } catch {
+      // A corrupt line cannot acquire authority; valid records still rebuild.
+    }
+  }
+  return records;
+}
+
+function activeEvidence(records: RelationshipEvidenceLogRecord[]): RelationshipEvidence[] {
+  const baselineIndex = records.reduce(
+    (latest, record, index) => record.recordType === "baseline" ? index : latest,
+    -1,
+  );
+  const removed = new Set(
+    records.slice(baselineIndex + 1).flatMap((record) =>
+      record.recordType === "remove" ? record.sourceMessageIds : []
+    ),
+  );
+  const unique = new Map<string, RelationshipEvidence>();
+  for (const record of records.slice(baselineIndex + 1)) {
+    if (record.recordType !== "evidence") continue;
+    if (
+      removed.has(record.evidence.sourceAssistantMessageId) ||
+      removed.has(record.evidence.sourceUserMessageId)
+    ) continue;
+    unique.set(evidenceKey(record.evidence), record.evidence);
+  }
+  return [...unique.values()];
+}
+
+function stateFromEvidenceLog(records: RelationshipEvidenceLogRecord[]): RelationshipState {
+  const baseline = [...records].reverse().find(
+    (record): record is Extract<RelationshipEvidenceLogRecord, { recordType: "baseline" }> =>
+      record.recordType === "baseline",
+  );
+  return reduceRelationship(
+    baseline?.state ?? emptyRelationshipState(),
+    activeEvidence(records),
+  );
 }
 
 /** Apply one generated turn exactly once. BullMQ is at-least-once, so relationship

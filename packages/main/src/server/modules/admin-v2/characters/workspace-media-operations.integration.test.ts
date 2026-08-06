@@ -1,17 +1,21 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { compileCharacterSoul } from "@idream/shared";
 import {
   DEFAULT_FISH_AUDIO_DELIVERY,
   characterMediaOperationsProjectionSchema,
 } from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
 import { getCharacterWorkspace } from "./workspace";
+import { toInputJson } from "../shared/prisma-json";
 
 describe("Character media operations projection", () => {
   const suffix = randomUUID();
   const userId = `media-ops-user-${suffix}`;
   const characterId = `media-ops-character-${suffix}`;
   const projectId = `media-ops-project-${suffix}`;
+  const contentId = `media-ops-content-${suffix}`;
+  const revisionId = `media-ops-revision-${suffix}`;
 
   beforeAll(async () => {
     await prisma.user.create({
@@ -32,6 +36,28 @@ describe("Character media operations projection", () => {
         advancedDetails: {},
       },
     });
+    const compiledSoul = compileCharacterSoul({
+      name: "Media Ops Character",
+      age: 28,
+      gender: "female",
+      relationshipArchetype: "trusted companion",
+      characterPromise: "Character media operations projection fixture.",
+      personality: "Observant and direct.",
+    });
+    if (!compiledSoul.ok) throw new Error("media operations fixture Soul must compile");
+    await prisma.characterContentVersion.create({
+      data: {
+        id: contentId,
+        characterId,
+        version: 1,
+        contentHash: compiledSoul.snapshot.compiled.fingerprint,
+        personaSnapshot: toInputJson(compiledSoul.snapshot),
+        openingSnapshot: { firstMessage: "Hello." },
+        appearanceSnapshot: {},
+        sourceType: "test",
+        createdById: userId,
+      },
+    });
     await prisma.characterProject.create({
       data: {
         id: projectId,
@@ -39,6 +65,16 @@ describe("Character media operations projection", () => {
         audience: {},
         successCriteria: [],
         draftAssetPack: {},
+      },
+    });
+    await prisma.characterRevision.create({
+      data: {
+        id: revisionId,
+        projectId,
+        revision: 1,
+        characterContentVersionId: contentId,
+        projectSnapshot: {},
+        createdById: userId,
       },
     });
   });

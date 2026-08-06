@@ -50,6 +50,23 @@ const base = {
     version: 1,
     updatedAt: "2026-07-30T12:00:00.000Z",
   },
+  soul: {
+    valid: true,
+    current: {
+      contentVersionId: "content-fixture",
+      version: 1,
+      schemaVersion: 1,
+      compilerVersion: "character-soul-1",
+      fingerprint: "fixture-fingerprint",
+      estimatedTokens: 256,
+      soul: {},
+      markdown: "# Mira",
+      systemPrompt: "You are Mira.",
+      diagnostics: [],
+    },
+    previous: null,
+    changedFields: [],
+  },
   journey: {
     projectionVersion: 1,
     asOf: "2026-07-30T12:00:00.000Z",

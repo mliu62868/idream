@@ -59,7 +59,11 @@ import {
 } from "./memories.js";
 import { recordOutbox } from "./outbox.js";
 import {
+  appendRelationshipEvidenceOnce,
   deleteRelationship,
+  deleteRelationshipEvidence,
+  rebuildRelationshipFromEvidence,
+  resetRelationshipEvidenceBaseline,
   restoreRelationshipCutoverBaseline,
   setRelationshipOnce,
   updateRelationshipOnce,
@@ -78,6 +82,22 @@ const memoryCandidateSchema = z.object({
   text: z.string().min(1),
   confidence: z.number(),
   sourceMessageIds: z.array(z.string().min(1)),
+});
+
+const relationshipEvidenceSchema = z.object({
+  sourceAssistantMessageId: z.string().min(1),
+  sourceUserMessageId: z.string().min(1),
+  kind: z.enum([
+    "self_disclosure",
+    "trust",
+    "affection",
+    "shared_plan",
+    "conflict",
+    "repair",
+    "boundary_respected",
+  ]),
+  confidence: z.number().min(0).max(1),
+  extractorVersion: z.string().min(1),
 });
 
 const fileMutationSchema = z.discriminatedUnion("kind", [
@@ -104,6 +124,7 @@ const fileMutationSchema = z.discriminatedUnion("kind", [
     summaryDelta: z.string(),
     warmth: z.number().int().min(0).max(1).optional(),
     familiarity: z.number().int().min(0).max(1).optional(),
+    relationshipEvidence: z.array(relationshipEvidenceSchema).optional(),
     candidates: z.array(memoryCandidateSchema),
     maxStored: z.number().int().nonnegative(),
   }),
@@ -211,11 +232,28 @@ export async function applyPendingChatFileMutationsTx(
               characterId: mutation.characterId,
             })
           : null;
+      const validRelationshipEvidenceSourceIds =
+        mutation.kind === "relationship_rebuild"
+          ? new Set((await tx.message.findMany({
+              where: {
+                session: {
+                  userId,
+                  characterId: mutation.characterId,
+                  status: { not: "deleted" },
+                  deletedAt: null,
+                },
+                status: "sent",
+                deletedAt: null,
+              },
+              select: { id: true },
+            })).map((message) => message.id))
+          : null;
       await applyFileMutation(
         userId,
         row.id,
         mutation,
         relationshipProjection,
+        validRelationshipEvidenceSourceIds,
       );
       if (mutation.kind === "memory_extract") {
         const claimed = await tx.message.updateMany({
@@ -540,6 +578,7 @@ async function applyFileMutation(
   mutationId: string,
   mutation: ChatFileMutation,
   relationshipProjection: RelationshipProjectionOperation[] | null,
+  validRelationshipEvidenceSourceIds: ReadonlySet<string> | null,
 ): Promise<void> {
   switch (mutation.kind) {
     case "turn_forget":
@@ -559,16 +598,25 @@ async function applyFileMutation(
       await deletePrefix(["mem", userId]);
       return;
     case "memory_extract":
-      await updateRelationshipOnce(
-        userId,
-        mutation.characterId,
-        mutation.turnKey,
-        {
-          summaryDelta: mutation.summaryDelta,
-          warmth: mutation.warmth ?? 0,
-          familiarity: mutation.familiarity ?? 0,
-        },
-      );
+      if (mutation.relationshipEvidence) {
+        await appendRelationshipEvidenceOnce(
+          userId,
+          mutation.characterId,
+          mutation.relationshipEvidence,
+        );
+      } else {
+        // Explicit schemaVersion 0 adapter for already-committed intents.
+        await updateRelationshipOnce(
+          userId,
+          mutation.characterId,
+          mutation.turnKey,
+          {
+            summaryDelta: mutation.summaryDelta,
+            warmth: mutation.warmth ?? 0,
+            familiarity: mutation.familiarity ?? 0,
+          },
+        );
+      }
       if (mutation.candidates.length > 0) {
         await consolidateMemories(
           userId,
@@ -596,11 +644,25 @@ async function applyFileMutation(
           ...(mutation.stage !== undefined ? { stage: mutation.stage } : {}),
         },
       );
+      await resetRelationshipEvidenceBaseline(
+        userId,
+        mutation.characterId,
+      );
       return;
     case "relationship_delete":
       await deleteRelationship(userId, mutation.characterId);
+      await deleteRelationshipEvidence(userId, mutation.characterId);
       return;
     case "relationship_rebuild":
+      if (!validRelationshipEvidenceSourceIds) {
+        throw new Error("relationship evidence rebuild requires valid source ids");
+      }
+      const evidenceRebuild = await rebuildRelationshipFromEvidence(
+        userId,
+        mutation.characterId,
+        validRelationshipEvidenceSourceIds,
+      );
+      if (evidenceRebuild.hasLedger) return;
       await deleteRelationship(userId, mutation.characterId);
       for (const operation of relationshipProjection ?? []) {
         if (operation.kind === "baseline") {

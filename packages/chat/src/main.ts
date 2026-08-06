@@ -4,15 +4,45 @@ import { startWeb } from "./web.js";
 import { startWorker } from "./worker.js";
 import { closeStreamPublisher } from "./stream.js";
 import { logger } from "./logger.js";
+import {
+  runtimeReadiness,
+  warmRuntime,
+} from "./runtime-readiness.js";
 
 const server = startWeb();
-const worker = startWorker();
+let worker: ReturnType<typeof startWorker> | null = null;
+let warmupRetry: ReturnType<typeof setTimeout> | null = null;
+let shuttingDown = false;
+
+async function startRuntime(): Promise<void> {
+  if (shuttingDown || worker) return;
+  try {
+    await warmRuntime();
+    if (shuttingDown) return;
+    worker = startWorker();
+    logger.info(runtimeReadiness.snapshot(), "chat runtime ready");
+  } catch (error) {
+    logger.error({ err: error }, "chat runtime warm-up failed; staying unready");
+    if (!shuttingDown) {
+      warmupRetry = setTimeout(() => void startRuntime(), 5_000);
+      warmupRetry.unref();
+    }
+  }
+}
+
+void startRuntime();
 
 async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  runtimeReadiness.stopAccepting();
+  if (warmupRetry) clearTimeout(warmupRetry);
   logger.info({ signal }, "chat shutting down");
-  await worker.close().catch((err) => logger.error({ err }, "worker close failed"));
+  await Promise.all([
+    worker?.close().catch((err) => logger.error({ err }, "worker close failed")),
+    new Promise<void>((resolve) => server.close(() => resolve())),
+  ]);
   await closeStreamPublisher().catch((err) => logger.error({ err }, "stream publisher close failed"));
-  server.close();
   process.exit(0);
 }
 

@@ -10,6 +10,7 @@ import type {
 // 旧的 ?tab=portfolio 深链会回落到概览（characterWorkspaceTabFromSearch 的缺省）。
 export const characterWorkspaceTabs = [
   "project",
+  "soul",
   "visual",
   "assets",
   "video",

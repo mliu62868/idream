@@ -136,7 +136,7 @@ export async function createCharacterProject(input: {
           name: persona.name,
           age: persona.age,
           description: persona.characterPromise,
-          systemPrompt: personaSnapshot.systemPrompt,
+          systemPrompt: personaSnapshot.compiled.systemPrompt,
           visibility: "private",
           status: "draft",
           source: "official",
@@ -144,7 +144,11 @@ export async function createCharacterProject(input: {
           gender: persona.gender,
           relationship: persona.relationshipArchetype,
           appearance: toInputJson(appearanceSnapshot),
-          advancedDetails: toInputJson({ ...personaSnapshot, ...openingSnapshot }),
+          advancedDetails: toInputJson({
+            ...persona,
+            ...openingSnapshot,
+            soulFingerprint: personaSnapshot.compiled.fingerprint,
+          }),
         },
       });
       await tx.characterStats.create({ data: { characterId } });

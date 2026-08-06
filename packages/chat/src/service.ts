@@ -534,6 +534,15 @@ export async function sendMessage(
       await assertTurnCapacity(tx, input.userId, session.id, turnPolicy);
     }
     const pin = await resolveSessionPin(tx, currentSession);
+    const latestScene = await tx.chatSceneRevision.findFirst({
+      where: { sessionId: session.id },
+      orderBy: { version: "desc" },
+      select: { version: true },
+    });
+    // INVARIANT: the user turn pins the Scene that existed before this exchange.
+    // Later extraction creates a new revision for future turns; regeneration keeps
+    // reading this exact anchor instead of today's mutable scene head.
+    const sceneVersion = latestScene?.version ?? 0;
     const turnOccurredAt = new Date();
     const engagementSessionId = await allocateEngagementSessionId(tx, session.id, turnOccurredAt);
     await tx.message.create({
@@ -547,6 +556,7 @@ export async function sendMessage(
         engagementSessionId,
         characterContentVersionId: pin.characterContentVersionId,
         characterReleaseId: pin.characterReleaseId,
+        sceneVersion,
         createdAt: turnOccurredAt,
         updatedAt: turnOccurredAt,
       },
@@ -561,6 +571,7 @@ export async function sendMessage(
         attempt: 1,
         replyToMessageId: userMessageId,
         memoryAuthority: currentSession.memoryEnabled ? "enabled" : "disabled",
+        sceneVersion,
         createdAt: turnOccurredAt,
         updatedAt: turnOccurredAt,
       },
@@ -844,6 +855,7 @@ export async function editUserMessage(
           status: moderation.status === "blocked" ? "blocked" : "pending",
           attempt,
           replyToMessageId: message.id,
+          sceneVersion: currentMessage.sceneVersion,
           model: null,
           tokenCount: null,
           safetyStatus: moderation.status === "blocked" ? "blocked" : "unknown",
@@ -859,6 +871,7 @@ export async function editUserMessage(
           status: moderation.status === "blocked" ? "blocked" : "pending",
           attempt,
           replyToMessageId: message.id,
+          sceneVersion: currentMessage.sceneVersion,
           safetyStatus: moderation.status === "blocked" ? "blocked" : "unknown",
           memoryAuthority: currentSession.memoryEnabled
             ? "enabled"

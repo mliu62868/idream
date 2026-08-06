@@ -1,5 +1,5 @@
 import { Prisma, PrismaClient } from "@prisma/client";
-import { buildCharacterSystemPrompt } from "@idream/shared";
+import { compileCharacterSoul } from "@idream/shared";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -580,7 +580,7 @@ async function seedCharacters() {
       firstMessage: card.firstMessage,
       exampleDialogue: [...card.exampleDialogue],
     };
-    const systemPrompt = buildCharacterSystemPrompt({
+    const compiledSoul = compileCharacterSoul({
       name: card.title,
       age,
       description: card.description,
@@ -591,6 +591,12 @@ async function seedCharacters() {
       appearance: { sourceImage: card.image },
       advancedDetails: personaDetails,
     });
+    if (!compiledSoul.ok) {
+      throw new Error(
+        `Official seed Soul failed to compile for ${card.id}: ${JSON.stringify(compiledSoul.diagnostics)}`,
+      );
+    }
+    const systemPrompt = compiledSoul.snapshot.compiled.systemPrompt;
     const [existingAsset, existingCharacter] = await Promise.all([
       prisma.mediaAsset.findUnique({
         where: { id: mediaAssetId },

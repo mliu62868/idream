@@ -11,6 +11,7 @@ import { Pool } from "pg";
 import { createChatPrisma } from "../src/db.js";
 import { createSession, editUserMessage, sendMessage, regenerate } from "../src/service.js";
 import { processGenerate } from "../src/generate.js";
+import { processMemoryExtract } from "../src/memory.js";
 import { drainQueue, obliterate } from "../src/queue.js";
 import { listStreamEvents, streamKey } from "../src/stream.js";
 import { CHAT_QUEUES } from "@idream/shared/contracts";
@@ -24,6 +25,7 @@ const USER = "u_hot";
 const TURN_USER = "u_hot_turn";
 const EDIT_USER = "u_hot_edit";
 const IDEMPOTENCY_USER = "u_hot_idempotency";
+const EMPTY_USER = "u_hot_empty";
 const CHAR = "c_hot";
 
 beforeAll(async () => {
@@ -52,7 +54,12 @@ beforeAll(async () => {
      VALUES ($1, $2, 'active', now(), now()) ON CONFLICT (id) DO NOTHING`,
     [IDEMPOTENCY_USER, "hot-idempotency@test.dev"],
   );
-  await acceptAgeGate(superPool, [USER, TURN_USER, EDIT_USER, IDEMPOTENCY_USER]);
+  await superPool.query(
+    `INSERT INTO public.users (id, email, status, "createdAt", "updatedAt")
+     VALUES ($1, $2, 'active', now(), now()) ON CONFLICT (id) DO NOTHING`,
+    [EMPTY_USER, "hot-empty@test.dev"],
+  );
+  await acceptAgeGate(superPool, [USER, TURN_USER, EDIT_USER, IDEMPOTENCY_USER, EMPTY_USER]);
   await superPool.query(
     `INSERT INTO public.characters (id, name, age, description, visibility, status, style, gender, appearance, "advancedDetails", "createdAt", "updatedAt")
      VALUES ($1, 'Hot', 22, 'desc', 'public', 'approved', 'realistic', 'female', '{}', '{}', now(), now())
@@ -252,23 +259,40 @@ describe("chat hot path (P0-3)", () => {
     expect(versions.filter((version) => version.selected).length).toBe(1);
   });
 
-  it("regenerating an old assistant turn uses that turn, not newer session context", async () => {
+  it("regenerating an old turn uses its pinned Scene instead of future state", async () => {
+    await obliterate(CHAT_QUEUES.memoryExtract);
     const session = await createSession({ userId: TURN_USER, characterId: CHAR }, { prisma });
     const first = await sendMessage(
-      { userId: TURN_USER, sessionId: session.id, content: "first turn apples" },
+      { userId: TURN_USER, sessionId: session.id, content: "We are in the kitchen with apples." },
       { prisma },
     );
     await drainQueue(CHAT_QUEUES.generate, async (job) => {
       await processGenerate(job.payload as Parameters<typeof processGenerate>[0], prisma);
+    });
+    await drainQueue(CHAT_QUEUES.memoryExtract, async (job) => {
+      await processMemoryExtract(
+        job.payload as Parameters<typeof processMemoryExtract>[0],
+        prisma,
+      );
     });
 
-    await sendMessage(
-      { userId: TURN_USER, sessionId: session.id, content: "second turn bananas" },
+    const second = await sendMessage(
+      { userId: TURN_USER, sessionId: session.id, content: "Now we are at the beach with bananas." },
       { prisma },
     );
+    expect((await prisma.message.findUniqueOrThrow({ where: { id: second.userMessageId } })).sceneVersion).toBe(1);
     await drainQueue(CHAT_QUEUES.generate, async (job) => {
       await processGenerate(job.payload as Parameters<typeof processGenerate>[0], prisma);
     });
+    await drainQueue(CHAT_QUEUES.memoryExtract, async (job) => {
+      await processMemoryExtract(
+        job.payload as Parameters<typeof processMemoryExtract>[0],
+        prisma,
+      );
+    });
+    expect((await prisma.chatSceneRevision.findFirstOrThrow({
+      where: { sessionId: session.id, version: 2 },
+    })).snapshot).toMatchObject({ location: "the beach" });
 
     await regenerate({ userId: TURN_USER, messageId: first.assistantMessageId }, { prisma });
     await drainQueue(CHAT_QUEUES.generate, async (job) => {
@@ -276,8 +300,58 @@ describe("chat hot path (P0-3)", () => {
     });
 
     const regenerated = await prisma.message.findUnique({ where: { id: first.assistantMessageId } });
-    expect(regenerated?.content).toContain("first turn apples");
-    expect(regenerated?.content).not.toContain("second turn bananas");
+    expect(regenerated?.content).toContain("kitchen with apples");
+    expect(regenerated?.content).not.toContain("beach with bananas");
+    expect((await prisma.message.findUniqueOrThrow({ where: { id: first.userMessageId } })).sceneVersion).toBe(0);
+    const turns = (await readFile(
+      path.join(fsRoot, "sessions", TURN_USER, `${session.id}.jsonl`),
+      "utf8",
+    )).trim().split("\n").map((line) => JSON.parse(line) as {
+      attempt: number;
+      assistantMessageId: string;
+      preparedTurn: { trace: { sceneVersion: number } };
+    });
+    expect(turns.find((turn) =>
+      turn.assistantMessageId === first.assistantMessageId && turn.attempt === 2
+    )?.preparedTurn.trace.sceneVersion).toBe(0);
+    await drainQueue(CHAT_QUEUES.memoryExtract, async (job) => {
+      await processMemoryExtract(
+        job.payload as Parameters<typeof processMemoryExtract>[0],
+        prisma,
+      );
+    });
+    expect((await prisma.chatSceneRevision.findFirstOrThrow({
+      where: { sessionId: session.id, version: 3 },
+    })).snapshot).toMatchObject({ location: "the kitchen" });
+  });
+
+  it("fails closed when the model emits no assistant content", async () => {
+    await obliterate(CHAT_QUEUES.generate);
+    await obliterate(CHAT_QUEUES.memoryExtract);
+    const session = await createSession({ userId: EMPTY_USER, characterId: CHAR }, { prisma });
+    const sent = await sendMessage(
+      { userId: EMPTY_USER, sessionId: session.id, content: "plain empty-response probe" },
+      { prisma },
+    );
+    process.env.CHAT_MOCK_EMPTY_RESPONSE = "true";
+    try {
+      let outcome: Awaited<ReturnType<typeof processGenerate>> | null = null;
+      expect(await drainQueue(CHAT_QUEUES.generate, async (job) => {
+        outcome = await processGenerate(
+          job.payload as Parameters<typeof processGenerate>[0],
+          prisma,
+        );
+      })).toBe(1);
+      expect(outcome).toEqual({ status: "failed" });
+    } finally {
+      delete process.env.CHAT_MOCK_EMPTY_RESPONSE;
+    }
+    expect((await prisma.message.findUniqueOrThrow({
+      where: { id: sent.assistantMessageId },
+    })).status).toBe("failed");
+    expect((await listStreamEvents(streamKey(sent.assistantMessageId))).map((row) => row.event))
+      .toContainEqual(expect.objectContaining({ type: "error", code: "empty_model_response" }));
+    expect(await drainQueue(CHAT_QUEUES.memoryExtract, async () => {})).toBe(0);
   });
 
   it("blocks unsafe input: status=blocked, no streamUrl, no generation enqueued (P0-B)", async () => {

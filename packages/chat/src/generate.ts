@@ -12,7 +12,11 @@ import type { ChatPrismaClient } from "./db.js";
 import { chatPrisma, chatProjectorPrisma } from "./db.js";
 import { providers } from "./providers.js";
 import type { ChatToolCall, ModelMessage } from "./providers.js";
-import { buildContext, type BuiltContext } from "./context.js";
+import type { BuiltContext } from "./context.js";
+import {
+  prepareCompanionTurn,
+  preparedTurnRuntime,
+} from "./prepared-turn.js";
 import { characterAvailableToUser } from "./character-eligibility.js";
 import { appendStreamEvent, streamKey } from "./stream.js";
 import { recordOutbox, scheduleOutboxDelivery } from "./outbox.js";
@@ -30,12 +34,10 @@ import {
   GENERATE_IMAGE_ASYNC_TOOL,
   imageToolCaption,
   planAgentToolCall,
-  registryChatTools,
   shouldPlanImageTool,
   type AgentToolCallPlan,
   type ImageAgentToolCall,
 } from "./agent-tools.js";
-import { buildCompanionSystemPrompt } from "./prompt.js";
 import {
   CHAT_QUEUES,
   CHAT_TO_MAIN_EVENTS,
@@ -151,7 +153,7 @@ export async function processGenerate(
 
   try {
   const key = streamKey(payload.assistantMessageId);
-  const context = await buildContext({
+  const prepared = await prepareCompanionTurn({
     prisma,
     userId: session.userId,
     characterId: session.characterId,
@@ -159,11 +161,12 @@ export async function processGenerate(
     turnMemoryEnabled,
     userMessageId: payload.userMessageId,
   });
+  const context = preparedTurnRuntime(prepared);
   await hooks.afterContextBuilt?.(context);
 
   await appendStreamEvent(key, { type: "start", attempt: payload.attempt });
 
-  const modelMessages = buildModelMessages(context);
+  const modelMessages = prepared.messages;
   const chunks: string[] = [];
   let seq = 0;
   let imageToolCall: ImageAgentToolCall | null = null;
@@ -171,7 +174,7 @@ export async function processGenerate(
   // native function call produced it, "agent_tool_call" for the legacy regex+planner path.
   let toolCallTrigger: "agent_fc" | "agent_tool_call" = "agent_tool_call";
 
-  const fcEnabled = providers.chat.supportsTools === true && context.policy.imageToolEnabled;
+  const fcEnabled = providers.chat.supportsTools === true && prepared.tools.length > 0;
 
   const streamDelta = async (delta: string): Promise<void> => {
     await heartbeat();
@@ -237,10 +240,14 @@ export async function processGenerate(
   const runPlannerFallback = async (): Promise<void> => {
     // policy.imageToolEnabled off (entitlement or character advancedDetails.imageToolEnabled=false)
     // suppresses the tool entirely — not just the FC path, so the legacy planner must not run either.
-    if (!context.policy.imageToolEnabled) return;
-    if (!shouldPlanImageTool(context)) return;
+    if (prepared.tools.length === 0) return;
+    if (!shouldPlanImageTool(prepared)) return;
     try {
-      const toolPlan = await planAgentToolCall({ chat: providers.chat, model: context.policy.model, context });
+      const toolPlan = await planAgentToolCall({
+        chat: providers.chat,
+        model: context.policy.model,
+        turn: prepared,
+      });
       imageToolCall = toolPlan.toolCall;
       toolCallTrigger = "agent_tool_call";
     } catch {
@@ -287,7 +294,7 @@ export async function processGenerate(
           model: context.policy.model,
           characterName: context.persona.name,
           messages: modelMessages,
-          tools: registryChatTools(),
+          tools: prepared.tools,
         })) {
           if (part.toolCalls) toolCalls = part.toolCalls;
           if (part.delta) await streamDelta(part.delta);
@@ -336,15 +343,18 @@ export async function processGenerate(
 
   let content = chunks.join("");
   if (!content.trim()) {
-    const fallback = emptyAssistantReply(context.persona.name);
-    seq += 1;
-    chunks.push(fallback);
-    content = fallback;
-    await appendStreamEvent(key, { type: "delta", attempt: payload.attempt, seq, delta: fallback });
+    await failAssistant(prisma, payload.assistantMessageId);
+    await appendStreamEvent(key, {
+      type: "error",
+      attempt: payload.attempt,
+      code: "empty_model_response",
+      retryable: true,
+    });
+    return { status: "failed" };
   }
   const model = context.policy.model;
   const usage = {
-    promptTokens: estimateTokens(modelMessages.map((m) => m.content).join("\n")),
+    promptTokens: prepared.budget.usedInputTokens,
     completionTokens: estimateTokens(content),
   };
 
@@ -367,6 +377,10 @@ export async function processGenerate(
         toolCalls: imageToolCall ? [imageToolCall] : [],
         moderation,
         model,
+        preparedTurn: {
+          trace: prepared.trace,
+          budget: prepared.budget,
+        },
       })) as Record<string, unknown>
     : null;
 
@@ -399,9 +413,10 @@ export async function processGenerate(
 
   await appendStreamEvent(key, { type: "done", attempt: payload.attempt, usage });
 
-  // Derive long-term memory off the hot path from the exact authoritative PG turn.
-  // session.jsonl is diagnostic only and is deliberately not an availability dependency.
-  if (!blocked && turnMemoryEnabled) {
+  // Scene is ordinary session continuity and advances even for an incognito turn.
+  // The worker independently gates file memory and relationship writes using the
+  // immutable per-turn memoryAuthority captured on the assistant message.
+  if (!blocked) {
     await enqueue({
       queue: CHAT_QUEUES.memoryExtract,
       payload: {
@@ -753,27 +768,6 @@ async function failAssistant(prisma: ChatPrismaClient, assistantMessageId: strin
     where: { id: assistantMessageId, status: { in: ["pending", "generating"] } },
     data: { status: "failed" },
   });
-}
-
-function emptyAssistantReply(characterName: string) {
-  return `${characterName || "The character"} is here, but the last model reply came back empty. Please send that again.`;
-}
-
-function buildModelMessages(
-  context: BuiltContext,
-): Array<{ role: "system" | "user" | "assistant"; content: string }> {
-  const system = buildCompanionSystemPrompt(context);
-
-  return [
-    { role: "system", content: system },
-    ...context.recentMessages.map((m) => ({
-      role: m.role,
-      // P4 Task 5: photo awareness — reminds the model it already sent this photo,
-      // as a suffix line on the MODEL message only (never stored, never shown to
-      // the user; see context.ts photoSummary derivation).
-      content: m.photoSummary ? `${m.content}\n[You sent a photo: ${m.photoSummary}]` : m.content,
-    })),
-  ];
 }
 
 function buildSummary(context: BuiltContext, assistantContent: string): string {

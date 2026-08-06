@@ -8,13 +8,16 @@
 import "dotenv/config";
 import path from "node:path";
 import {
-  chatModelTimeoutMs,
   DEFAULT_MODERATION_PROVIDER,
   DEFAULT_MODERATION_TIMEOUT_MS,
   DEFAULT_REDIS_URL,
   defaultBullmqPrefix,
   mainWebUrlOrigin,
 } from "@idream/shared/env";
+import {
+  resolveChatMemoryExtractProfile,
+  resolveChatModelProfile,
+} from "@idream/shared";
 
 function required(name: string, fallback?: string): string {
   const value = process.env[name] ?? fallback;
@@ -50,24 +53,31 @@ export const env = {
     return path.resolve(process.env.CHAT_FS_ROOT ?? "./data/chat");
   },
   get CHAT_MODEL_PROVIDER() {
-    return process.env.CHAT_MODEL_PROVIDER ?? process.env.CHAT_PROVIDER ?? "mock";
+    return resolveChatModelProfile(process.env).provider;
   },
   // OpenAI-compatible chat model (local mlx via oMLX / LM Studio, or any OpenAI
   // API). Only read when CHAT_MODEL_PROVIDER=openai. Base URL includes /v1.
   get CHAT_MODEL_BASE_URL() {
-    return process.env.CHAT_MODEL_BASE_URL ?? process.env.PIPELINE_API_URL ?? "http://127.0.0.1:8061/v1";
+    return resolveChatModelProfile(process.env).baseUrl;
   },
   get CHAT_MODEL_NAME() {
-    return process.env.CHAT_MODEL_NAME ?? process.env.PIPELINE_CHAT_MODEL_DEFAULT ?? "Qwen3.6-35B-A3B-uncensored-heretic-Native-MTP-Preserved-mlx-8Bit";
+    return resolveChatModelProfile(process.env).model;
   },
   get CHAT_MODEL_MAX_TOKENS() {
-    const raw = process.env.CHAT_MODEL_MAX_TOKENS ?? "8000";
-    const parsed = Number.parseInt(raw, 10);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : 8_000;
+    return resolveChatModelProfile(process.env).maxOutputTokens;
   },
   // 与 main 的 probe-chat-model 共用同一个解析 —— 探针的预算必须就是生产的预算。
   get CHAT_MODEL_TIMEOUT_MS() {
-    return chatModelTimeoutMs();
+    return resolveChatModelProfile(process.env).idleTimeoutMs;
+  },
+  get CHAT_MODEL_FIRST_TOKEN_TIMEOUT_MS() {
+    return resolveChatModelProfile(process.env).firstTokenTimeoutMs;
+  },
+  get CHAT_MODEL_IDLE_TIMEOUT_MS() {
+    return resolveChatModelProfile(process.env).idleTimeoutMs;
+  },
+  get CHAT_MODEL_COMPLETE_TIMEOUT_MS() {
+    return resolveChatModelProfile(process.env).completionTimeoutMs;
   },
   // Tier → real model aliases (design P0-D). The policy resolver maps an
   // entitlement tier to ONE of these; the provider streams with the resolved
@@ -75,16 +85,16 @@ export const env = {
   // not a label. Each defaults to CHAT_MODEL_NAME so a single-model deploy still
   // works unchanged.
   get CHAT_MODEL_FREE() {
-    return process.env.CHAT_MODEL_FREE ?? this.CHAT_MODEL_NAME;
+    return resolveChatModelProfile(process.env, "free").model;
   },
   get CHAT_MODEL_PREMIUM() {
-    return process.env.CHAT_MODEL_PREMIUM ?? this.CHAT_MODEL_NAME;
+    return resolveChatModelProfile(process.env, "premium").model;
   },
   get CHAT_MODEL_DELUXE() {
-    return process.env.CHAT_MODEL_DELUXE ?? this.CHAT_MODEL_NAME;
+    return resolveChatModelProfile(process.env, "deluxe").model;
   },
   get CHAT_MODEL_API_KEY() {
-    return process.env.CHAT_MODEL_API_KEY ?? process.env.PIPELINE_API_TOKEN ?? "";
+    return resolveChatModelProfile(process.env).apiKey;
   },
   get MODERATION_PROVIDER() {
     return (
@@ -139,8 +149,7 @@ export const env = {
     return process.env.CHAT_MEMORY_EXTRACT === "igrep" ? "igrep" : "heuristic";
   },
   get MEMORY_EXTRACT_TIMEOUT_MS() {
-    const parsed = Number.parseInt(process.env.CHAT_MEMORY_EXTRACT_TIMEOUT_MS ?? "45000", 10);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : 45_000;
+    return resolveChatMemoryExtractProfile(process.env).timeoutMs;
   },
   // Whether the igrep extractor passes --llm (semantic). Default on in igrep mode;
   // set CHAT_MEMORY_EXTRACT_LLM=false to use igrep's deterministic path only.
@@ -151,15 +160,15 @@ export const env = {
   // product chose; pair it with EXTRA_BODY below to disable thinking so it emits
   // parseable observations[] JSON.
   get MEMORY_EXTRACT_MODEL() {
-    return process.env.CHAT_MEMORY_EXTRACT_MODEL ?? "Qwen3.5-4B-MLX-4bit";
+    return resolveChatMemoryExtractProfile(process.env).model;
   },
   // OpenAI-compatible endpoint igrep's extractor calls. Reuses the chat model
   // endpoint/key (omlx) by default, with dedicated overrides.
   get MEMORY_EXTRACT_LLM_URL() {
-    return process.env.CHAT_MEMORY_EXTRACT_LLM_URL ?? this.CHAT_MODEL_BASE_URL;
+    return resolveChatMemoryExtractProfile(process.env).baseUrl;
   },
   get MEMORY_EXTRACT_LLM_KEY() {
-    return process.env.CHAT_MEMORY_EXTRACT_LLM_KEY ?? this.CHAT_MODEL_API_KEY ?? "omlx";
+    return resolveChatMemoryExtractProfile(process.env).apiKey;
   },
   // Extra OpenAI request body passed to the extractor's LLM. Default disables
   // Qwen "thinking" (reasoning prose breaks the observations[] JSON parse). Set

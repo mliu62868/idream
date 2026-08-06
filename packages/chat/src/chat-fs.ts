@@ -43,6 +43,12 @@ export const chatFsPaths = {
   ],
   memory: (userId: string, charId: string) => ["mem", userId, charId, "memory.md"],
   relationship: (userId: string, charId: string) => ["mem", userId, charId, "relationship.md"],
+  relationshipEvidence: (userId: string, charId: string) => [
+    "mem",
+    userId,
+    charId,
+    "relationship-evidence.jsonl",
+  ],
   boundaries: (userId: string) => ["mem", userId, "global", "boundaries.md"],
   userPrefix: (userId: string) => [userId],
 } as const;

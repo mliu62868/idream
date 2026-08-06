@@ -4,6 +4,7 @@ import {
   characterQaProvenanceMatchesRun,
   parseCharacterReleaseAssetManifest,
 } from "@idream/shared/admin";
+import { loadCharacterSoulSnapshot } from "@idream/shared";
 import { env } from "@/server/lib/env";
 import {
   evaluateMediaAssetCustomerPublishability,
@@ -454,7 +455,9 @@ export async function validateCharacterReleaseSnapshot(
       : [placement.slotKey];
   });
   const avatarAsset = avatarAssetId ? placementAssetById.get(avatarAssetId) ?? null : null;
-  const persona = content ? releaseRecord(content.personaSnapshot) : {};
+  const soulResult = content
+    ? loadCharacterSoulSnapshot(content.personaSnapshot)
+    : null;
   const opening = content ? releaseRecord(content.openingSnapshot) : {};
   const checks: ValidationCheck[] = [
     {
@@ -489,13 +492,40 @@ export async function validateCharacterReleaseSnapshot(
       evidence: { revisionId: release.revisionId },
     },
     {
-      key: "persona_complete",
-      passed:
-        content !== null &&
-        (releaseString(persona.systemPrompt) !== null ||
-          releaseString(persona.description) !== null),
+      key: "soul_snapshot_valid",
+      passed: soulResult?.ok === true,
       evidence: {
         characterContentVersionId: release.characterContentVersionId,
+        schemaVersion: soulResult?.ok
+          ? soulResult.snapshot.schemaVersion
+          : null,
+        compilerVersion: soulResult?.ok
+          ? soulResult.snapshot.compiled.compilerVersion
+          : null,
+        soulFingerprint: soulResult?.ok
+          ? soulResult.snapshot.compiled.fingerprint
+          : null,
+        estimatedTokens: soulResult?.ok
+          ? soulResult.snapshot.compiled.estimatedTokens
+          : null,
+        diagnostics: soulResult?.diagnostics ?? [],
+      },
+    },
+    {
+      key: "soul_release_policy",
+      // Legacy Releases retain their explicit immutable prompt through the
+      // schemaVersion 0 decoder. Every newly governed Release must finish all
+      // Soul authoring dimensions rather than hide gaps behind generic filler.
+      passed:
+        soulResult?.ok === true &&
+        (release.legacy || soulResult.diagnostics.length === 0),
+      evidence: {
+        legacyRelease: release.legacy,
+        warningCodes: soulResult?.ok
+          ? soulResult.diagnostics
+              .filter((item) => item.severity === "warning")
+              .map((item) => item.code)
+          : [],
       },
     },
     {

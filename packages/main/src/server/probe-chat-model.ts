@@ -1,6 +1,9 @@
-import { looksLikeMockChatResponse } from "@idream/shared";
-import { chatModelTimeoutMs } from "@idream/shared/env";
-import { PipelineChatModel } from "./providers/chat/pipeline";
+import {
+  looksLikeMockChatResponse,
+  resolveChatModelProfile,
+  type ChatModelProfile,
+} from "@idream/shared";
+import { OpenAIChatModel } from "../../../chat/src/providers";
 import type { ChatChunk, ChatModel } from "./providers/types";
 import type { ChatModelProbeEvidence, ProbeReportOf } from "./readiness/evidence";
 import {
@@ -42,16 +45,9 @@ function readOptions(): ProbeOptions {
 async function main() {
   const options = readOptions();
   const startedAt = Date.now();
-  const provider = process.env.CHAT_MODEL_PROVIDER ?? process.env.CHAT_PROVIDER ?? "mock";
-  const baseUrl = process.env.CHAT_MODEL_BASE_URL ?? process.env.PIPELINE_API_URL ?? null;
-  const model =
-    process.env.CHAT_MODEL_NAME ??
-    process.env.PIPELINE_CHAT_MODEL_DEFAULT ??
-    (provider === "mock" ? "mock-chat-probe" : null);
+  const profile = resolveChatModelProfile(process.env);
   const report = await runProbe({
-    provider,
-    baseUrl,
-    model,
+    profile,
     prompt: options.prompt,
     startedAt,
   });
@@ -65,22 +61,20 @@ async function main() {
 }
 
 async function runProbe(input: {
-  provider: string;
-  baseUrl: string | null;
-  model: string | null;
+  profile: ChatModelProfile;
   prompt: string;
   startedAt: number;
 }): Promise<ChatProbeReport> {
   const checkedAt = new Date().toISOString();
   const baseReport = {
     checkedAt,
-    provider: input.provider,
-    baseUrl: input.baseUrl,
-    model: input.model,
+    provider: input.profile.provider,
+    baseUrl: input.profile.baseUrl,
+    model: input.profile.model,
   };
 
   try {
-    const chat = createChatModel(input);
+    const chat = createChatModel(input.profile);
     let chunks = 0;
     let characters = 0;
     let done = false;
@@ -143,30 +137,10 @@ async function runProbe(input: {
   }
 }
 
-function createChatModel(input: {
-  provider: string;
-  baseUrl: string | null;
-  model: string | null;
-}): ChatModel {
-  if (input.provider === "mock") return new MockProbeChatModel();
-  if (input.provider !== "pipeline" && input.provider !== "openai") {
-    throw new Error(`Unsupported chat model provider: ${input.provider}`);
-  }
-
-  return new PipelineChatModel({
-    baseUrl: requireValue("CHAT_MODEL_BASE_URL or PIPELINE_API_URL", input.baseUrl),
-    apiKey: process.env.CHAT_MODEL_API_KEY ?? process.env.PIPELINE_API_TOKEN,
-    model: requireValue("CHAT_MODEL_NAME or PIPELINE_CHAT_MODEL_DEFAULT", input.model),
-    // 用 chat 生产的预算，而不是探针自己的一套。此前这里是
-    // `CHAT_MODEL_TIMEOUT_MS ?? PIPELINE_TIMEOUT_MS ?? 60000` —— 比 chat 多一级
-    // 回退、默认值也更大，于是一次 50s 的响应在探针里全绿、在 chat 里早就超时了。
-    timeoutMs: chatModelTimeoutMs(),
-  });
-}
-
-function requireValue(name: string, value: string | null | undefined) {
-  if (!value?.trim()) throw new Error(`${name} is required for chat model probe`);
-  return value;
+function createChatModel(profile: ChatModelProfile): ChatModel {
+  if (profile.provider === "mock") return new MockProbeChatModel();
+  // The probe executes the exact production adapter and timeout semantics.
+  return new OpenAIChatModel(profile);
 }
 
 main().catch((error: unknown) => {

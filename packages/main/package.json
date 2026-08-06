@@ -45,6 +45,8 @@
     "admin:backfill:operations": "tsx src/processes/admin-production-backfill.ts",
     "admin:backfill:generation-attempt-events": "tsx src/processes/generation-attempt-event-backfill.ts",
     "admin:repair:editorial-visual-identities": "tsx src/scripts/repair-editorial-visual-identities.ts",
+    "character-soul:import": "tsx src/scripts/import-character-soul.ts",
+    "character-soul:audit": "tsx src/scripts/audit-character-soul-authority.ts",
     "metrics:backfill": "tsx src/scripts/metrics-backfill.ts",
     "metrics:refresh": "tsx src/scripts/metrics-refresh.ts",
     "admin:readiness:load": "tsx src/scripts/admin-production-like-readiness.ts",

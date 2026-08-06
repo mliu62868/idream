@@ -140,6 +140,7 @@ model ChatSession {
   attachments       MessageAttachment[]
   releaseMigrations ChatSessionReleaseMigration[]
   sendReceipts      ChatSendReceipt[]
+  sceneRevisions    ChatSceneRevision[]
 
   @@index([userId, lastMessageAt(sort: Desc)], map: "chat_sessions_user_last_idx")
   @@index([characterId], map: "chat_sessions_character_idx")
@@ -206,6 +207,7 @@ model Message {
   characterReleaseId        String?   @map("character_release_id")
   memoryAuthority           String    @default("legacy_unknown") @map("memory_authority")
   memoryExtractedAttempt    Int       @default(0) @map("memory_extracted_attempt")
+  sceneVersion              Int       @default(0) @map("scene_version")
   createdAt                 DateTime  @default(now()) @map("created_at")
   updatedAt                 DateTime  @default(now()) @updatedAt @map("updated_at")
   deletedAt                 DateTime? @map("deleted_at")
@@ -218,6 +220,24 @@ model Message {
   @@index([status, updatedAt], map: "messages_status_updated_idx")
   @@index([replyToMessageId], map: "messages_reply_to_idx")
   @@map("messages")
+  @@schema("chat")
+}
+
+model ChatSceneRevision {
+  id                       String   @id
+  sessionId                String   @map("session_id")
+  version                  Int
+  sourceAssistantMessageId String   @map("source_assistant_message_id")
+  sourceAttempt            Int      @map("source_attempt")
+  snapshot                 Json
+  createdAt                DateTime @default(now()) @map("created_at")
+
+  session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, version], map: "chat_scene_revisions_session_version_key")
+  @@unique([sourceAssistantMessageId, sourceAttempt], map: "chat_scene_revisions_source_attempt_key")
+  @@index([sessionId, createdAt], map: "chat_scene_revisions_session_created_idx")
+  @@map("chat_scene_revisions")
   @@schema("chat")
 }
 

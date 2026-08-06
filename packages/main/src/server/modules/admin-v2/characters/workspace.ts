@@ -8,6 +8,7 @@ import {
   characterProjectDraftResumeSchema,
   characterQaRunSchema,
 } from "@idream/shared/admin";
+import { loadCharacterSoulSnapshot } from "@idream/shared";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
@@ -67,6 +68,86 @@ import { generationCostDreamcoins } from "@/server/lib/generation-pricing";
 import { isProductionLtxVideoProfile } from "@/server/modules/generation/production-video-profile";
 
 const CHARACTER_VIDEO_HEALTH_WINDOW_DAYS = 7;
+
+type SoulContentVersion = {
+  id: string;
+  version: number;
+  personaSnapshot: Prisma.JsonValue;
+};
+
+function characterSoulWorkspaceProjection(
+  versions: readonly SoulContentVersion[],
+) {
+  const current = versions[0];
+  if (!current) throw Errors.notFound("Character Soul content version not found");
+  const loaded = loadCharacterSoulSnapshot(current.personaSnapshot);
+  const previousRow = versions[1] ?? null;
+  const previousLoaded = previousRow
+    ? loadCharacterSoulSnapshot(previousRow.personaSnapshot)
+    : null;
+  const raw = record(current.personaSnapshot);
+  return {
+    valid: loaded.ok,
+    current: {
+      contentVersionId: current.id,
+      version: current.version,
+      schemaVersion:
+        typeof raw.schemaVersion === "number" ? raw.schemaVersion : 0,
+      compilerVersion: loaded.ok
+        ? loaded.snapshot.compiled.compilerVersion
+        : null,
+      fingerprint: loaded.ok ? loaded.snapshot.compiled.fingerprint : null,
+      estimatedTokens: loaded.ok
+        ? loaded.snapshot.compiled.estimatedTokens
+        : null,
+      soul: loaded.ok
+        ? loaded.snapshot.soul as unknown as Record<string, unknown>
+        : null,
+      markdown: loaded.ok ? loaded.renderedMarkdown : null,
+      systemPrompt: loaded.ok
+        ? loaded.snapshot.compiled.systemPrompt
+        : null,
+      diagnostics: loaded.diagnostics,
+    },
+    previous: previousRow
+      ? {
+          contentVersionId: previousRow.id,
+          version: previousRow.version,
+          fingerprint: previousLoaded?.ok
+            ? previousLoaded.snapshot.compiled.fingerprint
+            : null,
+        }
+      : null,
+    changedFields:
+      loaded.ok && previousLoaded?.ok
+        ? changedSoulFields(
+            previousLoaded.snapshot.soul as unknown as Record<string, unknown>,
+            loaded.snapshot.soul as unknown as Record<string, unknown>,
+          )
+        : [],
+  };
+}
+
+function changedSoulFields(
+  previous: Record<string, unknown>,
+  current: Record<string, unknown>,
+  prefix = "soul",
+): string[] {
+  const keys = new Set([...Object.keys(previous), ...Object.keys(current)]);
+  return [...keys].sort().flatMap((key) => {
+    const before = previous[key];
+    const after = current[key];
+    const path = `${prefix}.${key}`;
+    if (isPlainRecord(before) && isPlainRecord(after)) {
+      return changedSoulFields(before, after, path);
+    }
+    return JSON.stringify(before) === JSON.stringify(after) ? [] : [path];
+  });
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 async function loadCharacterVideoGenerationEstimate() {
   const profile = await prisma.generationModelProfile.findFirst({
@@ -748,7 +829,7 @@ export function visualBlockerDeepLink(
 }
 
 export async function getCharacterWorkspace(characterId: string) {
-  const [character, project, serving, activeCommand, activeLooks, voiceProfiles] = await Promise.all([
+  const [character, project, serving, activeCommand, activeLooks, voiceProfiles, contentVersions] = await Promise.all([
     prisma.character.findFirst({
       where: operationalCharacterWhere({ id: characterId, deletedAt: null }),
       include: { imageAsset: true, stats: true },
@@ -788,8 +869,17 @@ export async function getCharacterWorkspace(characterId: string) {
       orderBy: [{ version: "desc" }, { id: "desc" }],
       take: 20,
     }),
+    prisma.characterContentVersion.findMany({
+      where: { characterId },
+      orderBy: [{ version: "desc" }, { id: "desc" }],
+      take: 2,
+    }),
   ]);
   if (!character || !project) throw Errors.notFound("Character Project not found");
+  if (!contentVersions[0]) {
+    throw Errors.notFound("Character Soul content version not found");
+  }
+  const soul = characterSoulWorkspaceProjection(contentVersions);
   const activeVoiceProfile =
     voiceProfiles.find((profile) => profile.status === "active") ?? null;
   const candidateVoiceProfile =
@@ -1171,6 +1261,7 @@ export async function getCharacterWorkspace(characterId: string) {
       updatedAt: character.updatedAt.toISOString(),
     },
     project: projectDto(project, qualifiedRoute?.routeFingerprint ?? null),
+    soul,
     journey: portfolioItem.journey,
     mediaOperations,
     visual: {
@@ -1440,6 +1531,8 @@ export async function getCharacterProjectDraftForResume(characterId: string) {
     : null;
   const projectView = projectDto(project, qualifiedRoute?.routeFingerprint ?? null);
   const persona = record(content.personaSnapshot);
+  const loadedSoul = loadCharacterSoulSnapshot(content.personaSnapshot);
+  const soul = loadedSoul.ok ? loadedSoul.snapshot.soul : null;
   const opening = record(content.openingSnapshot);
   const appearance = record(content.appearanceSnapshot);
   return characterProjectDraftResumeSchema.parse({
@@ -1457,16 +1550,29 @@ export async function getCharacterProjectDraftForResume(characterId: string) {
         differentiation: projectView.differentiation,
       },
       persona: {
-        name: text(persona.name) || character.name,
-        age: typeof persona.age === "number" ? persona.age : character.age,
-        gender: text(persona.gender) || character.gender,
-        relationshipArchetype: text(persona.relationshipArchetype) || character.relationship,
-        characterPromise: text(persona.characterPromise) || character.description,
-        personality: text(persona.personality),
-        tone: text(persona.tone),
-        backstory: text(persona.backstory),
+        name: soul?.identity.name || text(persona.name) || character.name,
+        age: soul?.identity.age ?? (typeof persona.age === "number" ? persona.age : character.age),
+        gender: soul?.identity.gender || text(persona.gender) || character.gender,
+        relationshipArchetype: soul?.identity.relationshipArchetype || text(persona.relationshipArchetype) || character.relationship,
+        characterPromise: soul?.identity.characterPromise || text(persona.characterPromise) || character.description,
+        personality: soul?.innerLife.personality ?? text(persona.personality),
+        values: soul?.innerLife.values,
+        wants: soul?.innerLife.wants,
+        fears: soul?.innerLife.fears,
+        contradictions: soul?.innerLife.contradictions,
+        tone: soul?.voice.tone ?? text(persona.tone),
+        cadence: soul?.voice.cadence,
+        vocabulary: soul?.voice.vocabulary,
+        voiceHabits: soul?.voice.habits,
+        voiceAvoid: soul?.voice.avoid,
+        backstory: soul?.innerLife.backstory ?? text(persona.backstory),
         firstMessage: text(opening.firstMessage),
-        exampleDialogue: strings(persona.exampleDialogue as Prisma.JsonValue | undefined),
+        exampleDialogue: soul
+          ? soul.dialogue.positive.map((example) => example.assistant)
+          : strings(persona.exampleDialogue as Prisma.JsonValue | undefined),
+        interaction: soul?.interaction,
+        canon: soul?.canon,
+        negativeDialogue: soul?.dialogue.negative,
       },
       visualDirection: {
         identityAnchor: text(appearance.identityAnchor),

@@ -30,14 +30,16 @@ SELECT
   c.status        AS status,
   c."voiceId"     AS voice_id,
   c."updatedAt"   AS updated_at
-  ,NULL::text      AS visual_profile_id
-  ,NULL::integer   AS visual_profile_version
-  ,NULL::text      AS identity_prompt
+  ,vp.id            AS visual_profile_id
+  ,vp.version       AS visual_profile_version
+  ,vp."identityPrompt" AS identity_prompt
   ,COALESCE((c."advancedDetails"->>'imageToolEnabled')::boolean, true) AS image_tool_enabled
-  ,cr."characterContentVersionId" AS character_content_version_id
+  ,COALESCE(cr."characterContentVersionId", c."currentContentVersionId") AS character_content_version_id
   ,cr.id            AS character_release_id
   ,c."deletedAt"    AS deleted_at
 FROM public.characters c
+LEFT JOIN public.character_visual_profiles vp
+  ON vp."characterId" = c.id AND vp.status = 'active'
 LEFT JOIN public.character_serving cs ON cs."characterId" = c.id
 LEFT JOIN public.character_releases cr ON cr.id = cs."currentReleaseId";
 

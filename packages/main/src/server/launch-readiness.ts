@@ -4,6 +4,9 @@ import { pathToFileURL } from "node:url";
 import { looksLikeMockChatResponse } from "@idream/shared";
 import { defaultBullmqPrefix } from "@idream/shared/env";
 import { parse as parseDotenv } from "dotenv";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { PrismaClient } from "@prisma/client";
+import { auditCharacterSoulAuthority } from "./modules/admin-v2/characters/soul-authority-audit";
 // SPEC: evidence 契约的家在 readiness/evidence.ts —— 生产端（probe-*.ts）与这里共用同一份声明。
 import type {
   AgeVerificationProbeEvidence,
@@ -1905,7 +1908,83 @@ function isCliEntrypoint() {
   );
 }
 
-if (isCliEntrypoint()) {
+async function addCharacterSoulAuthorityPreflight(
+  env: EnvLike,
+  checks: LaunchReadinessCheck[],
+) {
+  const databaseUrl = env.DATABASE_URL;
+  if (!isPostgresUrl(databaseUrl)) {
+    checks.push({
+      id: "character-soul-authority",
+      area: "Chat",
+      status: "fail",
+      message: "Character Soul authority audit could not run without a PostgreSQL DATABASE_URL.",
+      remediation: "Set the target Main database URL and rerun check:launch.",
+    });
+    return;
+  }
+  const db = new PrismaClient({
+    adapter: new PrismaPg({ connectionString: databaseUrl }),
+  });
+  try {
+    const audit = await auditCharacterSoulAuthority(db);
+    checks.push(
+      {
+        id: "character-read-model-topology",
+        area: "Chat",
+        status: audit.topology.mode === "same_cluster_views" ? "pass" : "fail",
+        message: audit.topology.mode === "same_cluster_views"
+          ? `Character read model uses same-cluster views in ${audit.topology.database}.`
+          : "Required same-cluster Character read views are absent.",
+        remediation: "Apply the canonical core read-view SQL before starting Chat.",
+      },
+      {
+        id: "character-read-model-parity",
+        area: "Chat",
+        status: audit.readModel.parityMismatches === 0 ? "pass" : "fail",
+        message: `${audit.readModel.parityMismatches} Character serving/pointer read-model mismatches.`,
+        remediation: "Inspect character-soul:audit output and repair the canonical view or serving pointers.",
+      },
+      {
+        id: "character-soul-snapshot-load",
+        area: "Chat",
+        status: audit.snapshots.invalid.length === 0 ? "pass" : "fail",
+        message: `${audit.snapshots.valid}/${audit.snapshots.referenced} serving/current/pinned Soul references load successfully.`,
+        remediation: "Resolve every invalid referenced snapshot before cutover; do not silently fall back to mutable Character columns.",
+      },
+      {
+        id: "character-soul-v1-current",
+        area: "Chat",
+        status: audit.drain.legacyServingSnapshots === 0 && audit.drain.legacyCurrentPointers === 0
+          ? "pass"
+          : "fail",
+        message: `${audit.drain.legacyServingSnapshots} legacy serving snapshots; ${audit.drain.legacyCurrentPointers} legacy current user pointers.`,
+        remediation: "Import reviewed v1 Souls and explicitly publish official Releases; materialize user current pointers.",
+      },
+      {
+        id: "character-soul-pin-drain",
+        area: "Chat",
+        status: audit.drain.nullPinSessions === 0 && audit.drain.legacyPinnedSessions === 0
+          ? "pass"
+          : "warn",
+        message: `${audit.drain.activeSessions} active sessions; ${audit.drain.nullPinSessions} null pins; ${audit.drain.legacyPinnedSessions} legacy pins.`,
+        remediation: "Observe drain and use the compatibility-QA migration command only when an old session must move.",
+      },
+    );
+  } catch (error) {
+    checks.push({
+      id: "character-soul-authority",
+      area: "Chat",
+      status: "fail",
+      message: `Character Soul authority audit failed: ${error instanceof Error ? error.message : String(error)}`,
+      remediation: "Run character-soul:audit against the target database and repair topology, permissions, or snapshot authority.",
+    });
+  } finally {
+    await db.$disconnect();
+  }
+}
+
+async function runLaunchReadinessCli() {
   try {
     const cliOptions = parseLaunchReadinessCliArgs(process.argv.slice(2));
     if (cliOptions.help) {
@@ -1929,6 +2008,7 @@ if (isCliEntrypoint()) {
           });
         }
       }
+      await addCharacterSoulAuthorityPreflight(env, preflightChecks);
       const report = assessLaunchReadiness({ env, preflightChecks });
       const output = cliOptions.json
         ? `${JSON.stringify(report, null, 2)}\n`
@@ -1942,4 +2022,8 @@ if (isCliEntrypoint()) {
     process.stderr.write(`Launch readiness failed before checks: ${message}\n`);
     process.exitCode = 2;
   }
+}
+
+if (isCliEntrypoint()) {
+  void runLaunchReadinessCli();
 }

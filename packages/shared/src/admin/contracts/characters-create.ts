@@ -18,11 +18,35 @@ export const characterDraftPersonaSchema = z
     gender: z.enum(["female", "male", "trans"]),
     relationshipArchetype: z.string().trim().min(1).max(500),
     characterPromise: z.string().trim().min(1).max(1_000),
-    personality: z.string().trim().min(1).max(4_000),
-    tone: z.string().trim().min(1).max(2_000),
-    backstory: z.string().trim().min(1).max(8_000),
-    firstMessage: z.string().trim().min(1).max(4_000),
-    exampleDialogue: z.array(z.string().trim().min(1).max(2_000)).min(1).max(24),
+    personality: z.string().trim().max(4_000),
+    tone: z.string().trim().max(2_000),
+    backstory: z.string().trim().max(8_000),
+    values: z.array(z.string().trim().min(1).max(500)).max(24).optional(),
+    wants: z.array(z.string().trim().min(1).max(500)).max(24).optional(),
+    fears: z.array(z.string().trim().min(1).max(500)).max(24).optional(),
+    contradictions: z.array(z.string().trim().min(1).max(500)).max(24).optional(),
+    firstMessage: z.string().trim().max(4_000),
+    exampleDialogue: z.array(z.string().trim().min(1).max(2_000)).max(24),
+    cadence: z.string().trim().max(2_000).optional(),
+    vocabulary: z.array(z.string().trim().min(1).max(300)).max(48).optional(),
+    voiceHabits: z.array(z.string().trim().min(1).max(500)).max(24).optional(),
+    voiceAvoid: z.array(z.string().trim().min(1).max(500)).max(24).optional(),
+    interaction: z.object({
+      initiative: z.string().trim().max(2_000),
+      curiosity: z.string().trim().max(2_000),
+      pacing: z.string().trim().max(2_000),
+      affection: z.string().trim().max(2_000),
+      conflict: z.string().trim().max(2_000),
+      repair: z.string().trim().max(2_000),
+    }).strict().optional(),
+    canon: z.object({
+      facts: z.array(z.string().trim().min(1).max(1_000)).max(48),
+      unknowns: z.array(z.string().trim().min(1).max(1_000)).max(48),
+    }).strict().optional(),
+    negativeDialogue: z.array(z.object({
+      assistant: z.string().trim().min(1).max(2_000),
+      reason: z.string().trim().min(1).max(1_000),
+    }).strict()).max(24).optional(),
   })
   .strict();
 
@@ -223,6 +247,29 @@ export const characterProjectDraftPatchRequestSchema = z
   })
   .strict();
 
+export const characterSoulVersionCreateRequestSchema = z
+  .object({
+    entityVersion: z.number().int().positive(),
+    expectedContentVersionId: adminIdSchema,
+    persona: characterDraftPersonaSchema,
+    reason: z.string().trim().min(3).max(2_000),
+  })
+  .strict();
+
+export const characterSoulVersionCreateResponseSchema = z
+  .object({
+    characterId: adminIdSchema,
+    projectId: adminIdSchema,
+    projectVersion: z.number().int().positive(),
+    contentVersionId: adminIdSchema,
+    contentVersion: z.number().int().positive(),
+    revisionId: adminIdSchema,
+    revision: z.number().int().positive(),
+    fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+    replayed: z.boolean(),
+  })
+  .strict();
+
 export type CharacterProject = z.infer<typeof characterProjectSchema>;
 
 export type CharacterDraftPersona = z.infer<typeof characterDraftPersonaSchema>;
@@ -240,3 +287,7 @@ export type CharacterProjectDraftAuthority = z.infer<typeof characterProjectDraf
 export type CharacterProjectDraftResume = z.infer<typeof characterProjectDraftResumeSchema>;
 
 export type CharacterProjectDraftPatchRequest = z.infer<typeof characterProjectDraftPatchRequestSchema>;
+
+export type CharacterSoulVersionCreateRequest = z.infer<typeof characterSoulVersionCreateRequestSchema>;
+
+export type CharacterSoulVersionCreateResponse = z.infer<typeof characterSoulVersionCreateResponseSchema>;

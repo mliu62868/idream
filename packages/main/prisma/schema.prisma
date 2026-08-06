@@ -172,6 +172,9 @@ model Character {
   appearance      Json
   advancedDetails Json
   vivid           Boolean   @default(false)
+  // Exact immutable authoring pointer for user-owned Characters. Official
+  // Characters resolve through CharacterServing -> CharacterRelease instead.
+  currentContentVersionId String?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
   deletedAt       DateTime?
@@ -195,6 +198,7 @@ model Character {
   @@index([visibility, status])
   @@index([source, visibility, status])
   @@index([creatorId])
+  @@index([currentContentVersionId])
   @@index([gender, style])
   @@index([createdAt])
   @@map("characters")

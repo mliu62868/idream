@@ -13,6 +13,8 @@ import {
   type GenerateImageAsyncToolCall,
 } from "./agent-tools.js";
 import type { BuiltContext } from "./context.js";
+import type { PreparedTurn } from "./prepared-turn.js";
+import { buildCompanionSystemPrompt } from "./prompt.js";
 import type { ChatModel } from "./providers.js";
 
 const context = {
@@ -58,10 +60,49 @@ const context = {
   boundaries: [],
   longTermMemories: [],
   relationship: null,
+  scene: {
+    schemaVersion: 1,
+    version: 0,
+    location: null,
+    time: null,
+    participants: [],
+    emotionalBeat: null,
+    unresolvedThreads: [],
+  },
+  sceneVersion: 0,
+  openingMessage: null,
+  dropped: [],
   canUpdateSessionSummary: true,
   sessionContextRevision: 0n,
   fileContextRevision: 0n,
 } satisfies BuiltContext;
+
+function prepared(value: BuiltContext = context): PreparedTurn {
+  return {
+    messages: [
+      { role: "system", content: buildCompanionSystemPrompt(value) },
+      ...value.recentMessages.map((message) => ({
+        role: message.role,
+        content: message.content,
+      })),
+    ],
+    tools: registryChatTools(),
+    budget: {
+      maxInputTokens: 6_000,
+      usedInputTokens: 100,
+      dropped: [],
+    },
+    trace: {
+      characterContentVersionId: "ccv_1",
+      characterReleaseId: null,
+      soulFingerprint: "fingerprint",
+      compilerVersion: "character-soul-1",
+      sceneVersion: 0,
+      relationshipVersion: null,
+      fileContextRevision: "0",
+    },
+  };
+}
 
 describe("agent image tool planning", () => {
   it("parses a model-selected async image tool call", () => {
@@ -110,13 +151,13 @@ describe("agent image tool planning", () => {
       },
     };
 
-    const plan = await planAgentToolCall({ chat: fakeChat, model: "local-model", context });
+    const plan = await planAgentToolCall({ chat: fakeChat, model: "local-model", turn: prepared() });
 
     expect(plan.toolCall).toEqual(fakeToolCall);
   });
 
   it("builds planner messages without embedding regex trigger rules", () => {
-    const messages = buildToolPlannerMessages(context);
+    const messages = buildToolPlannerMessages(prepared());
     expect(messages[0]?.content).toContain("Available tool");
     expect(messages[0]?.content).toContain("BOUNDARIES");
     expect(messages[0]?.content).toContain("mandatory constraints");
@@ -125,7 +166,7 @@ describe("agent image tool planning", () => {
   });
 
   it("injects the visual passport identity line into the planner prompt", () => {
-    const messages = buildToolPlannerMessages(context);
+    const messages = buildToolPlannerMessages(prepared());
     expect(messages[0]?.content).toContain("Your appearance (keep consistent when sending photos):");
     expect(messages[0]?.content).toContain(context.persona.identityPrompt);
   });
@@ -177,12 +218,12 @@ describe("agent tool registry", () => {
       recentMessages: [{ id: "m1", role: "user", content }],
     });
 
-    expect(shouldPlanImageTool(withMessage("send me a photo"))).toBe(true);
-    expect(shouldPlanImageTool(withMessage("show me a picture of you"))).toBe(true);
-    expect(shouldPlanImageTool(withMessage("can I get a selfie"))).toBe(true);
+    expect(shouldPlanImageTool(prepared(withMessage("send me a photo")))).toBe(true);
+    expect(shouldPlanImageTool(prepared(withMessage("show me a picture of you")))).toBe(true);
+    expect(shouldPlanImageTool(prepared(withMessage("can I get a selfie")))).toBe(true);
     // requires BOTH a trigger verb/noun AND a visual noun — a lone trigger word is not enough
-    expect(shouldPlanImageTool(withMessage("generate a summary of our chat"))).toBe(false);
-    expect(shouldPlanImageTool(withMessage("how are you today"))).toBe(false);
+    expect(shouldPlanImageTool(prepared(withMessage("generate a summary of our chat")))).toBe(false);
+    expect(shouldPlanImageTool(prepared(withMessage("how are you today")))).toBe(false);
   });
 
   it("keeps hasVisualRequestIntent semantics unchanged via shouldPlanImageTool (ZH regex)", () => {
@@ -191,14 +232,14 @@ describe("agent tool registry", () => {
       recentMessages: [{ id: "m1", role: "user", content }],
     });
 
-    expect(shouldPlanImageTool(withMessage("给我一张坐在窗边的照片"))).toBe(true);
-    expect(shouldPlanImageTool(withMessage("发一张自拍给我"))).toBe(true);
-    expect(shouldPlanImageTool(withMessage("生成一张图给我看看"))).toBe(true);
-    expect(shouldPlanImageTool(withMessage("你今天怎么样"))).toBe(false);
+    expect(shouldPlanImageTool(prepared(withMessage("给我一张坐在窗边的照片")))).toBe(true);
+    expect(shouldPlanImageTool(prepared(withMessage("发一张自拍给我")))).toBe(true);
+    expect(shouldPlanImageTool(prepared(withMessage("生成一张图给我看看")))).toBe(true);
+    expect(shouldPlanImageTool(prepared(withMessage("你今天怎么样")))).toBe(false);
   });
 
   it("drives the planner prompt's tool listing from the registry", () => {
-    const messages = buildToolPlannerMessages(context);
+    const messages = buildToolPlannerMessages(prepared());
     const tool = findAgentTool(GENERATE_IMAGE_ASYNC_TOOL)!;
     expect(messages[0]?.content).toContain(tool.name);
     expect(messages[0]?.content).toContain("Available tool");
@@ -210,8 +251,8 @@ describe("agent tool registry", () => {
       recentMessages: [{ id: "m1", role: "user", content }],
     });
 
-    expect(shouldPlanImageTool(withMessage("SEND ME 一张自拍 please"))).toBe(true);
-    expect(shouldPlanImageTool(withMessage("Hey, 给我一张坐在窗边的照片 thanks"))).toBe(true);
+    expect(shouldPlanImageTool(prepared(withMessage("SEND ME 一张自拍 please")))).toBe(true);
+    expect(shouldPlanImageTool(prepared(withMessage("Hey, 给我一张坐在窗边的照片 thanks")))).toBe(true);
   });
 
   it("parseCall returns a discriminated plan for valid args, and null for invalid args, without throwing", () => {
@@ -273,10 +314,10 @@ describe("edit_last_image tool", () => {
       recentMessages: [{ id: "m1", role: "user", content }],
     });
 
-    expect(shouldPlanImageTool(withMessage("把刚才那张照片改成雪山背景"))).toBe(true);
-    expect(shouldPlanImageTool(withMessage("换个背景"))).toBe(true);
-    expect(shouldPlanImageTool(withMessage("背景换成沙滩"))).toBe(true);
-    expect(shouldPlanImageTool(withMessage("重新P一下这张图"))).toBe(true);
+    expect(shouldPlanImageTool(prepared(withMessage("把刚才那张照片改成雪山背景")))).toBe(true);
+    expect(shouldPlanImageTool(prepared(withMessage("换个背景")))).toBe(true);
+    expect(shouldPlanImageTool(prepared(withMessage("背景换成沙滩")))).toBe(true);
+    expect(shouldPlanImageTool(prepared(withMessage("重新P一下这张图")))).toBe(true);
   });
 
   it("matches EN edit-intent phrasing (edit/change/redo/make it/turn it into + photo/picture/image/background/that)", () => {
@@ -285,10 +326,10 @@ describe("edit_last_image tool", () => {
       recentMessages: [{ id: "m1", role: "user", content }],
     });
 
-    expect(shouldPlanImageTool(withMessage("can you change the background in that photo"))).toBe(true);
-    expect(shouldPlanImageTool(withMessage("edit that picture please"))).toBe(true);
-    expect(shouldPlanImageTool(withMessage("turn that photo into a snowy scene"))).toBe(true);
-    expect(shouldPlanImageTool(withMessage("how are you today"))).toBe(false);
+    expect(shouldPlanImageTool(prepared(withMessage("can you change the background in that photo")))).toBe(true);
+    expect(shouldPlanImageTool(prepared(withMessage("edit that picture please")))).toBe(true);
+    expect(shouldPlanImageTool(prepared(withMessage("turn that photo into a snowy scene")))).toBe(true);
+    expect(shouldPlanImageTool(prepared(withMessage("how are you today")))).toBe(false);
   });
 
   it("planner path: parseAgentToolPlan resolves an edit_last_image tool call via the registry", () => {
@@ -307,7 +348,7 @@ describe("edit_last_image tool", () => {
   });
 
   it("buildToolPlannerMessages lists edit_last_image and its arguments.instruction guidance", () => {
-    const messages = buildToolPlannerMessages(context);
+    const messages = buildToolPlannerMessages(prepared());
     expect(messages[0]?.content).toContain(EDIT_LAST_IMAGE_TOOL);
     expect(messages[0]?.content).toContain("arguments.instruction");
   });

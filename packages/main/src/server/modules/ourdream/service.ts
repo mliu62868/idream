@@ -2,7 +2,6 @@ import {
   Prisma,
   type GenerationJob as GenerationJobRow,
 } from "@prisma/client";
-import { buildCharacterSystemPrompt } from "@idream/shared";
 import {
   APPEAL_TARGET_TYPES,
   CHARACTER_STYLES,
@@ -77,6 +76,12 @@ import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority"
 import { listActiveTemplates } from "./character-templates";
 import { isReusablePlatformAssetWhere } from "@/server/modules/ourdream/chat-image-reuse";
 import { referenceSetSnapshotHash } from "@/server/modules/admin-v2/characters/release-snapshot";
+import {
+  UserCharacterSoulCompileError,
+  compileUserCharacterContent,
+  materializeUserCharacterContentVersion,
+  type UserCharacterSoulInput,
+} from "./character-soul";
 import {
   lockCharacterGenerationAuthority,
   lockCharacterMediaAssetAuthorities,
@@ -1784,14 +1789,13 @@ async function submitDraft(request: Request, id: string) {
       missingFields: missingPersonaFields,
     });
   }
-  const systemPrompt = buildCharacterSystemPrompt({
+  const userContent = compileUserSoulOrBadRequest({
     name: draftName,
     age: body.age,
     description,
     relationship,
     style,
     gender,
-    tags: jsonStringArray(draft.tags),
     appearance: draft.appearance,
     advancedDetails: draft.advancedDetails,
   });
@@ -1819,7 +1823,7 @@ async function submitDraft(request: Request, id: string) {
         name: draftName,
         age: body.age,
         description,
-        systemPrompt,
+        systemPrompt: userContent.personaSnapshot.compiled.systemPrompt,
         visibility: body.visibility,
         status: body.visibility === "public" ? "pending_review" : "approved",
         style,
@@ -1829,6 +1833,18 @@ async function submitDraft(request: Request, id: string) {
         appearance: toInputJson(draft.appearance ?? {}),
         advancedDetails: toInputJson(draft.advancedDetails ?? {}),
       },
+    });
+
+    const contentVersion = await materializeUserCharacterContentVersion({
+      tx,
+      characterId: created.id,
+      sourceId: draft.id,
+      createdById: user.id,
+      content: userContent,
+    });
+    await tx.character.update({
+      where: { id: created.id },
+      data: { currentContentVersionId: contentVersion.id },
     });
 
     const claimedAnchor = await tx.mediaAsset.updateMany({
@@ -1880,7 +1896,7 @@ async function submitDraft(request: Request, id: string) {
       },
     });
 
-    return created;
+    return tx.character.findUniqueOrThrow({ where: { id: created.id } });
   });
 
   // Input moderation already ran synchronously above (moderateText); no async pass.
@@ -6342,22 +6358,29 @@ async function duplicateCharacter(request: Request, id: string) {
     }
 
     const name = `${lockedSource.name} Copy`;
+    const immutablePersonaSnapshot = await loadCurrentCharacterPersonaSnapshot(
+      tx,
+      lockedSource.id,
+      lockedSource.currentContentVersionId,
+    );
+    const userContent = compileUserSoulOrBadRequest({
+      name,
+      age: lockedSource.age,
+      description: lockedSource.description,
+      relationship: lockedSource.relationship,
+      style: lockedSource.style,
+      gender: lockedSource.gender,
+      appearance: lockedSource.appearance,
+      advancedDetails: lockedSource.advancedDetails,
+      immutablePersonaSnapshot,
+    });
     const created = await tx.character.create({
       data: {
         creatorId: user.id,
         name,
         age: lockedSource.age,
         description: lockedSource.description,
-        systemPrompt: buildCharacterSystemPrompt({
-          name,
-          age: lockedSource.age,
-          description: lockedSource.description,
-          relationship: lockedSource.relationship,
-          style: lockedSource.style,
-          gender: lockedSource.gender,
-          appearance: lockedSource.appearance,
-          advancedDetails: lockedSource.advancedDetails,
-        }),
+        systemPrompt: userContent.personaSnapshot.compiled.systemPrompt,
         visibility: "private",
         status: "approved",
         style: lockedSource.style,
@@ -6367,6 +6390,17 @@ async function duplicateCharacter(request: Request, id: string) {
         appearance: toInputJson(lockedSource.appearance ?? {}),
         advancedDetails: toInputJson(lockedSource.advancedDetails ?? {}),
       },
+    });
+    const contentVersion = await materializeUserCharacterContentVersion({
+      tx,
+      characterId: created.id,
+      sourceId: lockedSource.id,
+      createdById: user.id,
+      content: userContent,
+    });
+    await tx.character.update({
+      where: { id: created.id },
+      data: { currentContentVersionId: contentVersion.id },
     });
 
     const sourceBlobLocator = sourceImageAsset
@@ -6486,6 +6520,26 @@ async function updateCharacter(request: Request, id: string) {
     if (!existing) throw Errors.notFound("Character not found");
     const nextName = body.name ?? existing.name;
     const nextDescription = body.description ?? existing.description;
+    const immutablePersonaSnapshot = shouldRebuildPrompt
+      ? await loadCurrentCharacterPersonaSnapshot(
+          tx,
+          existing.id,
+          existing.currentContentVersionId,
+        )
+      : null;
+    const userContent = shouldRebuildPrompt
+      ? compileUserSoulOrBadRequest({
+          name: nextName,
+          age: existing.age,
+          description: nextDescription,
+          relationship: existing.relationship,
+          style: existing.style,
+          gender: existing.gender,
+          appearance: existing.appearance,
+          advancedDetails: existing.advancedDetails,
+          immutablePersonaSnapshot: immutablePersonaSnapshot ?? undefined,
+        })
+      : null;
     const activeProfile = shouldRebuildPrompt
       ? await tx.characterVisualProfile.findFirst({
           where: { characterId: id, status: "active" },
@@ -6539,23 +6593,22 @@ async function updateCharacter(request: Request, id: string) {
         "Synthetic media cannot be published as a character identity",
       );
     }
+    const contentVersion = userContent
+      ? await materializeUserCharacterContentVersion({
+          tx,
+          characterId: existing.id,
+          sourceId: existing.id,
+          createdById: user.id,
+          content: userContent,
+        })
+      : null;
     const updated = await tx.character.update({
       where: { id: existing.id },
       data: {
         name: body.name,
         description: body.description,
-        systemPrompt: shouldRebuildPrompt
-          ? buildCharacterSystemPrompt({
-              name: nextName,
-              age: existing.age,
-              description: nextDescription,
-              relationship: existing.relationship,
-              style: existing.style,
-              gender: existing.gender,
-              appearance: existing.appearance,
-              advancedDetails: existing.advancedDetails,
-            })
-          : undefined,
+        systemPrompt: userContent?.personaSnapshot.compiled.systemPrompt,
+        currentContentVersionId: contentVersion?.id,
         visibility: body.visibility,
         status: body.visibility === "public"
           ? "pending_review"
@@ -7016,6 +7069,44 @@ function jsonStringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string")
     : [];
+}
+
+function compileUserSoulOrBadRequest(input: UserCharacterSoulInput) {
+  try {
+    return compileUserCharacterContent(input);
+  } catch (error) {
+    if (error instanceof UserCharacterSoulCompileError) {
+      throw Errors.badRequest("Complete the Character Soul before saving", {
+        diagnostics: error.diagnostics,
+      });
+    }
+    throw error;
+  }
+}
+
+async function loadCurrentCharacterPersonaSnapshot(
+  tx: Prisma.TransactionClient,
+  characterId: string,
+  currentContentVersionId: string | null,
+): Promise<unknown | undefined> {
+  let contentVersionId = currentContentVersionId;
+  if (!contentVersionId) {
+    const serving = await tx.characterServing.findUnique({
+      where: { characterId },
+      select: {
+        currentRelease: {
+          select: { characterContentVersionId: true },
+        },
+      },
+    });
+    contentVersionId = serving?.currentRelease?.characterContentVersionId ?? null;
+  }
+  if (!contentVersionId) return undefined;
+  const content = await tx.characterContentVersion.findFirst({
+    where: { id: contentVersionId, characterId },
+    select: { personaSnapshot: true },
+  });
+  return content?.personaSnapshot;
 }
 
 function requiredCharacterPersonaFields(input: {

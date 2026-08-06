@@ -247,7 +247,10 @@ export interface CreateCharacterInput {
   status?: string;
   style?: string;
   gender?: string;
+  relationship?: string | null;
   systemPrompt?: string;
+  appearance?: Prisma.InputJsonValue;
+  advancedDetails?: Prisma.InputJsonValue;
   imageAssetId?: string;
   likes?: number;
   chats?: number;
@@ -267,10 +270,17 @@ export async function createCharacter(input: CreateCharacterInput) {
       status: input.status ?? "approved",
       style: input.style ?? "realistic",
       gender: input.gender ?? "female",
+      relationship: input.relationship ?? "trusted companion",
       systemPrompt: input.systemPrompt ?? null,
       imageAssetId: input.imageAssetId ?? null,
-      appearance: {},
-      advancedDetails: {},
+      appearance: input.appearance ?? {},
+      advancedDetails: input.advancedDetails ?? {
+        personality: "Observant, emotionally specific, and consistent.",
+        tone: "Natural, direct, and concise.",
+        backstory: "A stable integration fixture with explicit persona context.",
+        firstMessage: "I'm here. What should we talk about?",
+        exampleDialogue: ["Tell me the part that matters most."],
+      },
     },
   });
   await prisma.characterStats.create({

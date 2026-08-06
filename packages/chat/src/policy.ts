@@ -3,7 +3,7 @@
 // EXAMPLE: resolvePolicy({modelTier:"deluxe",...}) → { model, maxContextMessages,
 //          maxMemories, rateLimitPerHour, voiceEnabled, allowMemoryWrite, ... }
 import type { ChatEntitlementView } from "./db.js";
-import { env } from "./env.js";
+import { resolveChatModelProfile } from "@idream/shared";
 
 export interface EntitlementSnapshot {
   modelTier: string;
@@ -75,9 +75,7 @@ export function resolvePolicy(
  * the CHAT_MODEL_* aliases unset, so every tier resolves to CHAT_MODEL_NAME.
  */
 export function modelForTier(tier: string): string {
-  if (tier === "deluxe") return env.CHAT_MODEL_DELUXE;
-  if (tier === "premium") return env.CHAT_MODEL_PREMIUM;
-  return env.CHAT_MODEL_FREE;
+  return resolveChatModelProfile(process.env, tier).model;
 }
 
 /** Normalize a Prisma entitlement view row (nullable for unknown users) → snapshot. */

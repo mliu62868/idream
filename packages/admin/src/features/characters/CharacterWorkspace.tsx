@@ -47,6 +47,7 @@ import {
 import { CharacterVideoStudio } from "@/features/characters/CharacterVideoStudio";
 import { CharacterCreateWizard } from "@/features/characters/CharacterCreateWizard";
 import { CharacterVoicePanel } from "@/features/characters/CharacterVoicePanel";
+import { CharacterSoulPanel } from "@/features/characters/CharacterSoulPanel";
 import {
   VisualIdentityExperimentWorkbench,
   type ActivateIdentityCandidateInput,
@@ -130,6 +131,7 @@ type Tab = CharacterWorkspaceTab;
 
 const characterWorkspaceTabLabels: Record<Tab, string> = {
   project: "Details",
+  soul: "Soul",
   visual: "Visual identity",
   assets: "Images",
   video: "Video",
@@ -5498,6 +5500,13 @@ function CharacterDetail({
               await loadAuthoritative();
             }}
             permissions={guardedPermissions}
+            runCommittedMutation={runCommittedMutation}
+          />
+        ) : tab === "soul" ? (
+          <CharacterSoulPanel
+            canWrite={guardedPermissions.writeProject}
+            data={data}
+            key={data.soul.current.contentVersionId}
             runCommittedMutation={runCommittedMutation}
           />
         ) : tab === "visual" ? (

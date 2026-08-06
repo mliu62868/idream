@@ -3,7 +3,7 @@
 // views. Long-term memory + boundaries from the file layer, with a TIMEOUT budget:
 // on timeout/error we degrade to "recent messages only" and never block the reply
 // (design §5 hot-path degradation). memory_enabled=false reads NO long-term memory.
-import { resolveCharacterPersonaSnapshot } from "@idream/shared";
+import { loadCharacterSoulSnapshot } from "@idream/shared";
 import type { ChatPrismaClient, ChatCharacterView } from "./db.js";
 import { env } from "./env.js";
 import { resolvePolicy, snapshotFromView, type ChatPolicy } from "./policy.js";
@@ -13,13 +13,18 @@ import {
   CHAT_CONTEXT_INVALIDATING_FILE_MUTATIONS,
   withReadableChatFileSnapshot,
 } from "./file-mutations.js";
+import {
+  emptySceneState,
+  parseSceneState,
+  type SceneState,
+} from "./scene.js";
 
 const MEMORY_READ_TIMEOUT_MS = 250;
 
 const PHOTO_AWARENESS_MESSAGE_WINDOW = 6;
 
 export interface BuiltContext {
-  persona: ChatCharacterView;
+  persona: ResolvedChatPersona;
   policy: ChatPolicy;
   sessionSummary: string | null;
   recentMessages: Array<{
@@ -34,13 +39,25 @@ export interface BuiltContext {
   boundaries: string[];
   longTermMemories: string[];
   /** Qualitative companion bond for tone/continuity (P1-B). Null when none/incognito. */
-  relationship: { stage: string; summary: string } | null;
+  relationship: { stage: string; summary: string; version: number } | null;
+  /** Immutable Scene revision pinned by the user turn being answered. */
+  scene: SceneState;
+  sceneVersion: number;
+  /** Immutable pinned opening, injected only for the first turn. */
+  openingMessage: string | null;
+  /** Budget degradation is explicit; callers must surface it in PreparedTurn. */
+  dropped: Array<"memory" | "summary" | "transcript">;
   /** False for no-memory sessions and old-turn regenerations. */
   canUpdateSessionSummary: boolean;
   /** Privacy/context fence revalidated after the model returns. */
   sessionContextRevision: bigint;
   fileContextRevision: bigint;
 }
+
+export type ResolvedChatPersona = ChatCharacterView & {
+  soulFingerprint?: string | null;
+  compilerVersion?: string | null;
+};
 
 export interface BuildContextInput {
   prisma: ChatPrismaClient;
@@ -81,6 +98,7 @@ async function buildContextSnapshot(
             createdAt: true,
             characterContentVersionId: true,
             characterReleaseId: true,
+            sceneVersion: true,
           },
         })
       : Promise.resolve(null),
@@ -115,12 +133,40 @@ async function buildContextSnapshot(
       `pinned content version ${pinnedContentVersionId} is unavailable for character ${characterId}`,
     );
   }
-  const persona = contentVersion
+  const persona: ResolvedChatPersona = contentVersion
     ? personaFromImmutableContent(currentPersona, contentVersion.personaSnapshot, {
         characterContentVersionId: contentVersion.contentVersionId,
         characterReleaseId: pinnedReleaseId,
       })
-    : currentPersona;
+    : { ...currentPersona, soulFingerprint: null, compilerVersion: null };
+
+  const sceneVersion = anchor?.sceneVersion ?? 0;
+  const scene = sceneVersion === 0
+    ? emptySceneState()
+    : parseSceneState((await prisma.chatSceneRevision.findFirst({
+        where: { sessionId, version: sceneVersion },
+        select: { snapshot: true },
+      }))?.snapshot);
+  if (!scene) {
+    throw new Error(
+      `scene revision ${sceneVersion} is unavailable for session ${sessionId}`,
+    );
+  }
+  const priorUserMessage = anchor
+    ? await prisma.message.findFirst({
+        where: {
+          sessionId,
+          role: "user",
+          status: "sent",
+          deletedAt: null,
+          createdAt: { lt: anchor.createdAt },
+        },
+        select: { id: true },
+      })
+    : null;
+  const openingMessage = anchor && !priorUserMessage
+    ? openingMessageFromSnapshot(contentVersion?.openingSnapshot)
+    : null;
 
   const policy = resolvePolicy(snapshotFromView(entitlementRow), {
     memoryEnabled: turnMemoryEnabled,
@@ -144,7 +190,11 @@ async function buildContextSnapshot(
   const orderedRecent: BuiltContext["recentMessages"] = recent
     .reverse()
     .map((m) => ({ id: m.id, role: m.role as "user" | "assistant", content: m.content }));
-  const recentMessages = fitRecentTranscript(orderedRecent, policy.maxContextChars);
+  const fittedTranscript = fitRecentTranscript(orderedRecent, policy.maxContextChars);
+  const recentMessages = fittedTranscript.messages;
+  const dropped: BuiltContext["dropped"] = fittedTranscript.dropped
+    ? ["transcript"]
+    : [];
 
   // P4 Task 5: photo awareness. Only the most recent window of assistant turns is
   // worth reminding the model about — older deliveries are already summarized away
@@ -203,14 +253,16 @@ async function buildContextSnapshot(
       env.MEMORY_RETRIEVAL === "igrep"
         ? env.MEMORY_RETRIEVAL_TIMEOUT_MS + MEMORY_READ_TIMEOUT_MS
         : MEMORY_READ_TIMEOUT_MS;
-    longTermMemories = await withTimeout(read, budget, []);
+    const memoryRead = await withTimeoutStatus(read, budget, []);
+    longTermMemories = memoryRead.value;
+    if (!memoryRead.ok) dropped.push("memory");
 
     // Relationship is degradable like ordinary memories. A committed pending
     // mutation is not: buildContext's shared user lock makes this one coherent
     // PG + file authority snapshot.
     const relRead = getRelationshipState(userId, characterId).then((value) =>
       value.version > 0
-        ? { stage: value.stage, summary: value.summary }
+        ? { stage: value.stage, summary: value.summary, version: value.version }
         : null,
     );
     relationship = await withTimeout(
@@ -247,10 +299,22 @@ async function buildContextSnapshot(
     boundaries,
     longTermMemories,
     relationship,
+    scene,
+    sceneVersion,
+    openingMessage,
+    dropped,
     canUpdateSessionSummary: turnMemoryEnabled && anchoredToLatestTurn,
     sessionContextRevision: session?.contextRevision ?? 0n,
     fileContextRevision: latestInvalidatingMutation?.sequence ?? 0n,
   };
+}
+
+function openingMessageFromSnapshot(value: unknown): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const firstMessage = (value as Record<string, unknown>).firstMessage;
+  return typeof firstMessage === "string" && firstMessage.trim()
+    ? firstMessage.trim()
+    : null;
 }
 
 function personaFromImmutableContent(
@@ -260,29 +324,32 @@ function personaFromImmutableContent(
     readonly characterContentVersionId: string;
     readonly characterReleaseId: string | null;
   },
-): ChatCharacterView {
-  const snapshot = resolveCharacterPersonaSnapshot(snapshotValue);
-  if (!snapshot) {
+): ResolvedChatPersona {
+  const loaded = loadCharacterSoulSnapshot(snapshotValue);
+  if (!loaded.ok) {
     throw new Error(
-      `character content ${pin.characterContentVersionId} has no complete immutable persona`,
+      `character content ${pin.characterContentVersionId} has no complete immutable Soul: ${loaded.diagnostics.map((item) => item.code).join(",")}`,
     );
   }
+  const identity = loaded.snapshot.soul.identity;
   return {
     ...current,
-    name: snapshot.name,
-    age: snapshot.age,
-    description: snapshot.description,
-    systemPrompt: snapshot.systemPrompt,
-    relationship: snapshot.relationship,
+    name: identity.name,
+    age: identity.age,
+    description: identity.characterPromise,
+    systemPrompt: loaded.snapshot.compiled.systemPrompt,
+    relationship: identity.relationshipArchetype,
     characterContentVersionId: pin.characterContentVersionId,
     characterReleaseId: pin.characterReleaseId,
+    soulFingerprint: loaded.snapshot.compiled.fingerprint,
+    compilerVersion: loaded.snapshot.compiled.compilerVersion,
   };
 }
 
 function fitRecentTranscript(
   messages: BuiltContext["recentMessages"],
   maxChars: number,
-): BuiltContext["recentMessages"] {
+): { messages: BuiltContext["recentMessages"]; dropped: boolean } {
   const selected: BuiltContext["recentMessages"] = [];
   let used = 0;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -300,7 +367,7 @@ function fitRecentTranscript(
   }
   // Never begin a clipped context with an orphan assistant response.
   if (selected.length > 1 && selected[0]?.role === "assistant") selected.shift();
-  return selected;
+  return { messages: selected, dropped: selected.length < messages.length };
 }
 
 const IDENTITY_PROMPT_MAX = 400;
@@ -325,6 +392,26 @@ function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
       () => {
         clearTimeout(timer);
         resolve(fallback);
+      },
+    );
+  });
+}
+
+function withTimeoutStatus<T>(
+  promise: Promise<T>,
+  ms: number,
+  fallback: T,
+): Promise<{ value: T; ok: boolean }> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve({ value: fallback, ok: false }), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve({ value, ok: true });
+      },
+      () => {
+        clearTimeout(timer);
+        resolve({ value: fallback, ok: false });
       },
     );
   });

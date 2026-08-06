@@ -94,6 +94,7 @@ CREATE TABLE IF NOT EXISTS chat.messages (
   character_release_id text,                             -- exact release when present; never inferred later
   memory_authority text NOT NULL DEFAULT 'legacy_unknown', -- enabled|disabled captured on the assistant turn
   memory_extracted_attempt integer NOT NULL DEFAULT 0,  -- latest attempt derived into file memory
+  scene_version integer NOT NULL DEFAULT 0,             -- Scene revision visible when this turn began
   created_at    timestamp NOT NULL DEFAULT (timezone('utc', now())),
   updated_at    timestamp NOT NULL DEFAULT (timezone('utc', now())),
   deleted_at    timestamp,
@@ -108,6 +109,8 @@ ALTER TABLE chat.messages
   ADD COLUMN IF NOT EXISTS character_release_id text;
 ALTER TABLE chat.messages
   ADD COLUMN IF NOT EXISTS memory_extracted_attempt integer NOT NULL DEFAULT 0;
+ALTER TABLE chat.messages
+  ADD COLUMN IF NOT EXISTS scene_version integer NOT NULL DEFAULT 0;
 ALTER TABLE chat.messages
   ADD COLUMN IF NOT EXISTS memory_authority text NOT NULL DEFAULT 'legacy_unknown';
 DO $$
@@ -131,6 +134,28 @@ CREATE INDEX IF NOT EXISTS messages_status_updated_idx
   ON chat.messages (status, updated_at);
 CREATE INDEX IF NOT EXISTS messages_reply_to_idx
   ON chat.messages (reply_to_message_id);
+
+CREATE TABLE IF NOT EXISTS chat.chat_scene_revisions (
+  id                          text PRIMARY KEY,
+  session_id                  text NOT NULL REFERENCES chat.chat_sessions(id) ON DELETE CASCADE,
+  version                     integer NOT NULL,
+  source_assistant_message_id text NOT NULL,
+  source_attempt              integer NOT NULL,
+  snapshot                    jsonb NOT NULL,
+  created_at                  timestamp NOT NULL DEFAULT (timezone('utc', now())),
+  CONSTRAINT chat_scene_revisions_version_check CHECK (version > 0),
+  CONSTRAINT chat_scene_revisions_source_attempt_check CHECK (source_attempt > 0),
+  CONSTRAINT chat_scene_revisions_snapshot_schema_check CHECK (
+    snapshot @> '{"schemaVersion": 1}'::jsonb
+    AND (snapshot->>'version')::integer = version
+  )
+);
+CREATE UNIQUE INDEX IF NOT EXISTS chat_scene_revisions_session_version_key
+  ON chat.chat_scene_revisions (session_id, version);
+CREATE UNIQUE INDEX IF NOT EXISTS chat_scene_revisions_source_attempt_key
+  ON chat.chat_scene_revisions (source_assistant_message_id, source_attempt);
+CREATE INDEX IF NOT EXISTS chat_scene_revisions_session_created_idx
+  ON chat.chat_scene_revisions (session_id, created_at);
 
 CREATE TABLE IF NOT EXISTS chat.message_versions (
   id         text PRIMARY KEY,

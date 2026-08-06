@@ -119,8 +119,9 @@ export async function reconcile(
   }
 
   // Finalization is durable before this derived job is scheduled. Re-enqueue any
-  // selected attempt whose file-memory watermark lags, covering a crash or Redis
-  // outage after the assistant was committed.
+  // selected attempt whose Scene revision is absent, plus memory-enabled turns
+  // whose file-memory watermark lags. Scene is session state and therefore also
+  // advances for incognito turns.
   // Apply the watermark predicate before LIMIT. Filtering in JavaScript after
   // selecting the newest 200 lets already-extracted rows permanently starve an
   // older lagging turn.
@@ -137,9 +138,32 @@ export async function reconcile(
     WHERE role = 'assistant'
       AND status = 'sent'
       AND deleted_at IS NULL
-      AND memory_authority = 'enabled'
-      AND memory_extracted_attempt < attempt
-    ORDER BY updated_at DESC
+      AND (
+        (
+          memory_authority = 'enabled'
+          AND (
+            memory_extracted_attempt < attempt
+            OR NOT EXISTS (
+              SELECT 1
+              FROM chat.chat_scene_revisions scene
+              WHERE scene.source_assistant_message_id = chat.messages.id
+                AND scene.source_attempt = chat.messages.attempt
+            )
+          )
+        )
+        OR (
+          memory_authority = 'disabled'
+          AND NOT EXISTS (
+            SELECT 1
+            FROM chat.chat_scene_revisions scene
+            WHERE scene.source_assistant_message_id = chat.messages.id
+              AND scene.source_attempt = chat.messages.attempt
+          )
+        )
+      )
+    ORDER BY
+      (memory_authority = 'enabled' AND memory_extracted_attempt < attempt) DESC,
+      updated_at DESC
     LIMIT 200
   `;
   let scheduledMemory = 0;

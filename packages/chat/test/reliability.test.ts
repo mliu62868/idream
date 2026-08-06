@@ -310,7 +310,10 @@ describe("reconcile (P0-4 convergence)", () => {
     }, 250);
     expect(scheduled).toContain("rel_memory_starvation_lagging");
     expect(scheduled).not.toContain("rel_memory_starvation_unknown");
-    expect(scheduled.some((id) => id.startsWith("rel_memory_starvation_extracted_"))).toBe(false);
+    // Already-extracted legacy rows still need a Scene revision. Memory lag is
+    // ordered first so that this Scene backfill cannot starve it.
+    expect(scheduled).toHaveLength(200);
+    expect(scheduled.some((id) => id.startsWith("rel_memory_starvation_extracted_"))).toBe(true);
     await obliterate(CHAT_QUEUES.memoryExtract);
   });
 

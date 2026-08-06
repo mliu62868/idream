@@ -4,10 +4,10 @@
 // blocked/deleted/no-memory content must NEVER become long-term memory (PRD §7.2).
 // Each memory line carries source_message_ids back-linking PG.
 import type { ChatPrismaClient } from "./db.js";
+import type { Prisma } from "../generated/client/client.js";
 import { chatPrisma, chatProjectorPrisma } from "./db.js";
 import {
-  relationshipSignalForTurn,
-  relationshipTurnSummary,
+  relationshipEvidenceForTurn,
 } from "./relationship.js";
 import { extractCandidates } from "./extract.js";
 import { resolvePolicy, snapshotFromView } from "./policy.js";
@@ -17,6 +17,13 @@ import {
 } from "./file-mutations.js";
 import type { ChatMemoryExtractPayload } from "@idream/shared/contracts";
 import { loadSessionLinkage } from "./relationship-authority.js";
+import { createId } from "./id.js";
+import {
+  applySceneDelta,
+  deriveSceneDelta,
+  emptySceneState,
+  parseSceneState,
+} from "./scene.js";
 
 export type MemoryExtractPayload = ChatMemoryExtractPayload;
 
@@ -46,12 +53,20 @@ export async function processMemoryExtract(
     return { written: 0, skipped: "wrong_assistant" };
   }
   if (assistant.attempt !== payload.attempt) return { written: 0, skipped: "stale_attempt" };
-  if (assistant.memoryExtractedAttempt >= payload.attempt) return { written: 0, skipped: "already_extracted" };
-  if (assistant.memoryAuthority === "disabled") {
-    return { written: 0, skipped: "turn_memory_disabled" };
-  }
-  if (assistant.memoryAuthority !== "enabled") {
-    return { written: 0, skipped: "turn_memory_legacy_unknown" };
+  const existingScene = await prisma.chatSceneRevision.findUnique({
+    where: {
+      sourceAssistantMessageId_sourceAttempt: {
+        sourceAssistantMessageId: assistant.id,
+        sourceAttempt: payload.attempt,
+      },
+    },
+  });
+  if (
+    assistant.memoryAuthority === "enabled" &&
+    assistant.memoryExtractedAttempt >= payload.attempt &&
+    existingScene
+  ) {
+    return { written: 0, skipped: "already_extracted" };
   }
   const { linkage } = await loadSessionLinkage(prisma, session.id);
   const userMessage = linkage.sources.get(assistant.id);
@@ -76,11 +91,17 @@ export async function processMemoryExtract(
 
   // Semantic extraction (igrep mem derive) when enabled, regex floor otherwise —
   // off the hot path, so a slow LLM only delays this worker, never a reply.
-  const candidates = await extractCandidates({
+  const candidates = assistant.memoryAuthority === "enabled"
+    ? await extractCandidates({
+        userText: userMessage.content,
+        sourceMessageId: userMessage.id,
+        userId: session.userId,
+        characterId: session.characterId,
+      })
+    : [];
+  const sceneDelta = deriveSceneDelta({
     userText: userMessage.content,
-    sourceMessageId: userMessage.id,
-    userId: session.userId,
-    characterId: session.characterId,
+    assistantText: assistant.content,
   });
   await hooks.beforeAuthorityLock?.();
 
@@ -99,12 +120,21 @@ export async function processMemoryExtract(
       currentSession,
       currentAssistant,
       currentUserMessage,
+      currentSceneRevision,
       { linkage: currentLinkage },
     ] =
       await Promise.all([
         tx.chatSession.findUnique({ where: { id: session.id } }),
         tx.message.findUnique({ where: { id: assistant.id } }),
         tx.message.findUnique({ where: { id: userMessage.id } }),
+        tx.chatSceneRevision.findUnique({
+          where: {
+            sourceAssistantMessageId_sourceAttempt: {
+              sourceAssistantMessageId: assistant.id,
+              sourceAttempt: payload.attempt,
+            },
+          },
+        }),
         loadSessionLinkage(tx, session.id),
       ]);
     if (
@@ -126,14 +156,12 @@ export async function processMemoryExtract(
     if (currentAssistant.attempt !== payload.attempt) {
       return { written: 0, skipped: "stale_attempt" };
     }
-    if (currentAssistant.memoryExtractedAttempt >= payload.attempt) {
+    if (
+      currentAssistant.memoryAuthority === "enabled" &&
+      currentAssistant.memoryExtractedAttempt >= payload.attempt &&
+      currentSceneRevision
+    ) {
       return { written: 0, skipped: "already_extracted" };
-    }
-    if (currentAssistant.memoryAuthority === "disabled") {
-      return { written: 0, skipped: "turn_memory_disabled" };
-    }
-    if (currentAssistant.memoryAuthority !== "enabled") {
-      return { written: 0, skipped: "turn_memory_legacy_unknown" };
     }
     if (
       !currentUserMessage ||
@@ -158,15 +186,64 @@ export async function processMemoryExtract(
 
     await hooks.afterAuthorityLocked?.();
 
+    if (!currentSceneRevision) {
+      const anchor = currentUserMessage.sceneVersion === 0
+        ? emptySceneState()
+        : parseSceneState((await tx.chatSceneRevision.findFirst({
+            where: {
+              sessionId: currentSession.id,
+              version: currentUserMessage.sceneVersion,
+            },
+            select: { snapshot: true },
+          }))?.snapshot);
+      if (!anchor) {
+        return { written: 0, skipped: "invalid_scene_anchor" };
+      }
+      const latest = await tx.chatSceneRevision.findFirst({
+        where: { sessionId: currentSession.id },
+        orderBy: { version: "desc" },
+        select: { version: true },
+      });
+      const nextScene = {
+        ...applySceneDelta(anchor, sceneDelta),
+        version: (latest?.version ?? 0) + 1,
+      };
+      await tx.chatSceneRevision.create({
+        data: {
+          id: createId("scene"),
+          sessionId: currentSession.id,
+          version: nextScene.version,
+          sourceAssistantMessageId: currentAssistant.id,
+          sourceAttempt: payload.attempt,
+          snapshot: nextScene as unknown as Prisma.InputJsonValue,
+        },
+      });
+    }
+
+    if (currentAssistant.memoryAuthority !== "enabled") {
+      // Scene continuity is ordinary conversation state, not long-term memory.
+      // Incognito turns advance Scene but write no files, relationship evidence,
+      // summary, or candidate memories.
+      return {
+        written: 0,
+        skipped: currentAssistant.memoryAuthority === "disabled"
+          ? "scene_only_memory_disabled"
+          : "scene_only_legacy_unknown",
+      };
+    }
+
     const entitlement = await tx.chatEntitlementView.findUnique({
       where: { userId: currentSession.userId },
     });
     const policy = resolvePolicy(snapshotFromView(entitlement), {
       memoryEnabled: true,
     });
-    const relationshipSignal = relationshipSignalForTurn(
-      currentUserMessage.content,
-    );
+    const relationshipEvidence = relationshipEvidenceForTurn({
+      userMessageId: currentUserMessage.id,
+      assistantMessageId: currentAssistant.id,
+      userText: currentUserMessage.content,
+      assistantText: currentAssistant.content,
+    });
     // Commit only the immutable intent here. The projector advances the DB
     // watermark in the same completion transaction that marks this intent
     // applied, so `memoryExtractedAttempt` never claims a file write that has
@@ -178,9 +255,8 @@ export async function processMemoryExtract(
       characterId: currentSession.characterId,
       turnKey: currentAssistant.id,
       attempt: payload.attempt,
-      summaryDelta: relationshipTurnSummary(currentUserMessage.content),
-      warmth: relationshipSignal.warmth,
-      familiarity: relationshipSignal.familiarity,
+      summaryDelta: "",
+      relationshipEvidence,
       candidates,
       maxStored: policy.maxStoredMemories,
     });

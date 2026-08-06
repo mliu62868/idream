@@ -1140,7 +1140,7 @@ describe("memory.extract (P1-1)", () => {
     expect(mem).toContain("src:"); // source back-link to PG message
   });
 
-  it("no-memory session: derivation is skipped (privacy gate)", async () => {
+  it("no-memory session: advances Scene but skips cross-session derivation", async () => {
     const created = await dispatchChat({ method: "POST", path: "/api/v1/chat/sessions", userId: USER, body: { characterId: CHAR } });
     const sessionId = created.kind === "json" ? (created.body as { id: string }).id : "";
     await setNoMemory({ userId: USER, sessionId, memoryEnabled: false });
@@ -1155,7 +1155,17 @@ describe("memory.extract (P1-1)", () => {
     await drainGen();
 
     const res = await processMemoryExtract({ sessionId, assistantMessageId, attempt: 1 });
-    expect(res.skipped).toBe("turn_memory_disabled");
+    expect(res.skipped).toBe("scene_only_memory_disabled");
     expect(res.written).toBe(0);
+    expect(await prisma.chatSceneRevision.count({
+      where: { sessionId, sourceAssistantMessageId: assistantMessageId },
+    })).toBe(1);
+    expect(await prisma.chatFileMutation.count({
+      where: {
+        userId: USER,
+        kind: "memory_extract",
+        payload: { path: ["turnKey"], equals: assistantMessageId },
+      },
+    })).toBe(0);
   });
 });

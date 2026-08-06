@@ -1,7 +1,11 @@
 // SPEC: Chat service only needs two providers — the chat model (streaming) and
 // moderation (input/output). Slim, self-contained; no image/video/payment/blob.
 // INTENT: keep the chat deploy artifact thin (design §10 dependency isolation).
-import { SafetyGatewayModerationProvider } from "@idream/shared";
+import {
+  SafetyGatewayModerationProvider,
+  resolveChatModelProfile,
+  type ChatModelProfile,
+} from "@idream/shared";
 import { pipelineEndpoint } from "@idream/shared/env";
 import { env } from "./env.js";
 import { logger } from "./logger.js";
@@ -84,6 +88,10 @@ class MockChatModel implements ChatModel {
 
   async *stream(input: Parameters<ChatModel["stream"]>[0]): AsyncIterable<ChatChunk> {
     lastMockStreamMessages = input.messages;
+    if (process.env.CHAT_MOCK_EMPTY_RESPONSE === "true") {
+      yield { delta: "", done: true, toolCalls: [] };
+      return;
+    }
     const lastUser =
       [...input.messages].reverse().find((m) => m.role === "user")?.content ?? "";
     const reply = `Mock ${input.characterName ?? "character"} reply: ${lastUser}`.trim();
@@ -117,35 +125,43 @@ function readMockToolCalls(): ChatToolCall[] {
 // model — see packages/chat/.env. INVARIANT: yields only assistant `content`
 // deltas; a reasoning model's `reasoning_content` is dropped so thinking never
 // leaks into the reply. EXAMPLE: provider=openai, model=Qwen3.5-4B-MLX-4bit.
-class OpenAIChatModel implements ChatModel {
+type FetchLike = typeof fetch;
+
+export class OpenAIChatModel implements ChatModel {
   constructor(
-    private readonly baseUrl: string,
-    private readonly model: string,
-    private readonly apiKey: string,
-    // "pipeline" is the production gateway alias and does not (yet) expose
-    // function-calling; "openai" targets oMLX/LM Studio directly, which does.
-    readonly supportsTools: boolean = true,
+    private readonly profile: ChatModelProfile,
+    private readonly fetchImpl: FetchLike = fetch,
   ) {}
+
+  get supportsTools(): boolean {
+    return this.profile.supportsTools;
+  }
 
   async *stream(input: Parameters<ChatModel["stream"]>[0]): AsyncIterable<ChatChunk> {
     // Per-turn model from policy (tier-resolved) wins; fall back to the deploy
     // default so an un-tiered config still streams (design P0-D).
-    const model = input.model || this.model;
+    const model = input.model || this.profile.model;
     const controller = new AbortController();
-    const timeoutMs = env.CHAT_MODEL_TIMEOUT_MS;
-    // INVARIANT: this is an IDLE timeout, not a total one. A reasoning model can stream a
-    // long reply for far more than timeoutMs of wall-clock (each delta awaits a Redis write
-    // downstream), so a single timer spanning the whole stream would abort a healthy slow
-    // reply mid-flight — leaving the assistant message stuck empty with no retry. We reset
-    // it on every received chunk below; only a connection silent for timeoutMs (truly hung) aborts.
-    let timeout = setTimeout(() => controller.abort(), timeoutMs);
+    let timeoutPhase: "first_token" | "idle" = "first_token";
+    let timeout = setTimeout(
+      () => controller.abort(),
+      this.profile.firstTokenTimeoutMs,
+    );
+    const armIdleTimeout = () => {
+      timeoutPhase = "idle";
+      clearTimeout(timeout);
+      timeout = setTimeout(
+        () => controller.abort(),
+        this.profile.idleTimeoutMs,
+      );
+    };
 
     try {
-      const res = await fetch(chatCompletionEndpoint(this.baseUrl), {
+      const res = await this.fetchImpl(chatCompletionEndpoint(this.profile.baseUrl), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
+          ...(this.profile.apiKey ? { Authorization: `Bearer ${this.profile.apiKey}` } : {}),
         },
         signal: controller.signal,
         // INVARIANT: Qwen reasoning models (4B/27B via oMLX/SGLang/vLLM) stream their
@@ -158,7 +174,7 @@ class OpenAIChatModel implements ChatModel {
           model,
           messages: input.messages,
           stream: true,
-          max_tokens: env.CHAT_MODEL_MAX_TOKENS,
+          max_tokens: this.profile.maxOutputTokens,
           chat_template_kwargs: { enable_thinking: false },
           ...(input.tools && input.tools.length > 0
             ? {
@@ -181,9 +197,6 @@ class OpenAIChatModel implements ChatModel {
       // `arguments`. Accumulate by index and flatten once the stream ends.
       const toolCallsByIndex = new Map<number, { id: string; name: string; arguments: string }>();
       for await (const bytes of res.body as unknown as AsyncIterable<Uint8Array>) {
-        // Reset the idle timer: progress was made, so the stream is alive.
-        clearTimeout(timeout);
-        timeout = setTimeout(() => controller.abort(), timeoutMs);
         buffer += decoder.decode(bytes, { stream: true });
         // SSE frames are separated by a blank line; events carry `data: <json>`.
         let nl: number;
@@ -204,6 +217,19 @@ class OpenAIChatModel implements ChatModel {
               function?: { name?: string; arguments?: string };
             }>;
           };
+          const hasToolOutput = delta.tool_calls?.some((fragment) =>
+            Boolean(
+              fragment.id ||
+              fragment.function?.name ||
+              fragment.function?.arguments,
+            )
+          ) ?? false;
+          // First-token and inter-token silence are different failure modes.
+          // Role-only SSE frames, proxy heartbeats, and reasoning we deliberately
+          // discard are not assistant output and cannot satisfy warm readiness.
+          if ((delta.content?.length ?? 0) > 0 || hasToolOutput) {
+            armIdleTimeout();
+          }
           accumulateToolCalls(toolCallsByIndex, delta.tool_calls);
           if (delta.content) yield { delta: delta.content, done: false };
         }
@@ -211,7 +237,12 @@ class OpenAIChatModel implements ChatModel {
       yield { delta: "", done: true, toolCalls: flattenToolCalls(toolCallsByIndex) };
     } catch (error) {
       if (controller.signal.aborted) {
-        throw new Error(`Chat model request timed out after ${timeoutMs}ms`);
+        const timeoutMs = timeoutPhase === "first_token"
+          ? this.profile.firstTokenTimeoutMs
+          : this.profile.idleTimeoutMs;
+        throw new Error(
+          `Chat model ${timeoutPhase} timed out after ${timeoutMs}ms`,
+        );
       }
       throw error;
     } finally {
@@ -220,24 +251,24 @@ class OpenAIChatModel implements ChatModel {
   }
 
   async complete(input: Parameters<ChatModel["complete"]>[0]): Promise<ChatCompletion> {
-    const model = input.model || this.model;
+    const model = input.model || this.profile.model;
     const controller = new AbortController();
-    const timeoutMs = env.CHAT_MODEL_TIMEOUT_MS;
+    const timeoutMs = this.profile.completionTimeoutMs;
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
-      const res = await fetch(chatCompletionEndpoint(this.baseUrl), {
+      const res = await this.fetchImpl(chatCompletionEndpoint(this.profile.baseUrl), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
+          ...(this.profile.apiKey ? { Authorization: `Bearer ${this.profile.apiKey}` } : {}),
         },
         signal: controller.signal,
         body: JSON.stringify({
           model,
           messages: input.messages,
           stream: false,
-          max_tokens: input.maxTokens ?? Math.min(env.CHAT_MODEL_MAX_TOKENS, 1_400),
+          max_tokens: input.maxTokens ?? Math.min(this.profile.maxOutputTokens, 1_400),
           chat_template_kwargs: { enable_thinking: false },
         }),
       });
@@ -398,7 +429,8 @@ function assertProductionChatProvidersReady() {
 // Studio / OpenAI, or the production gateway alias) and differ only in whether
 // function-calling ("openai") or not ("pipeline", not yet exposed) is supported.
 function createOpenAICompatibleChatModel(supportsTools: boolean): OpenAIChatModel {
-  return new OpenAIChatModel(env.CHAT_MODEL_BASE_URL, env.CHAT_MODEL_NAME, env.CHAT_MODEL_API_KEY, supportsTools);
+  const profile = resolveChatModelProfile(process.env);
+  return new OpenAIChatModel({ ...profile, supportsTools });
 }
 
 export function createProviders(): ChatProviders {
@@ -419,7 +451,13 @@ export function createProviders(): ChatProviders {
   }
 }
 
-export const providers = createProviders();
+let resolvedProviders: ChatProviders | null = null;
+export const providers = new Proxy({} as ChatProviders, {
+  get(_target, property: keyof ChatProviders) {
+    resolvedProviders ??= createProviders();
+    return resolvedProviders[property];
+  },
+});
 
 function chatCompletionEndpoint(baseUrl: string) {
   return pipelineEndpoint(baseUrl, "/chat/completions");
