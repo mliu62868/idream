@@ -1,5 +1,6 @@
 import {
   VOICE_PROVIDER_REPLAY,
+  voiceSceneInstructions,
   type BlobStore,
   type ProviderResult,
   type VoiceClipPort,
@@ -79,6 +80,8 @@ export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
       data: {
         key,
         durationMs: rendered.data.durationMs,
+        sceneApplied: true,
+        sceneAdapter: "pocket-tts-scene-1",
       },
     };
   }
@@ -93,6 +96,7 @@ export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
     requestId?: string;
     attemptNo?: number;
     idempotencyKey?: string;
+    scene?: Parameters<VoiceClipPort["synthesize"]>[0]["scene"];
   }) {
     const response = await this.request(this.speechEndpoint, {
       method: "POST",
@@ -113,6 +117,10 @@ export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
         input: limitText(input.text, this.maxInputChars),
         voice: input.voiceId?.trim() || this.defaultVoiceId,
         response_format: "wav",
+        ...(input.scene ? {
+          scene: input.scene,
+          scene_instructions: voiceSceneInstructions(input.scene),
+        } : {}),
       }),
     });
     if (!response.ok) return response;

@@ -141,8 +141,15 @@ export function loadCharacterSoulSnapshot(stored: unknown): CharacterSoulResult 
   if (!root) {
     return failed("soul_snapshot_invalid", [], "Character Soul snapshot must be an object.");
   }
-  if (root.schemaVersion !== CHARACTER_SOUL_SCHEMA_VERSION) {
+  if (root.schemaVersion === undefined || root.schemaVersion === null || root.schemaVersion === 0) {
     return loadLegacySnapshot(root);
+  }
+  if (root.schemaVersion !== CHARACTER_SOUL_SCHEMA_VERSION) {
+    return failed(
+      "soul_schema_version_unsupported",
+      ["schemaVersion"],
+      `Character Soul schema ${String(root.schemaVersion)} is not supported by this runtime.`,
+    );
   }
 
   const diagnostics: SoulDiagnostic[] = [];
@@ -255,7 +262,11 @@ function adaptAuthoringDraft(
     interaction,
     canon,
     dialogue: {
-      positive: dialogue.positive ?? legacyDialogueExamples(examples),
+      positive:
+        dialogue.positive ??
+        root.positiveDialogue ??
+        advanced.positiveDialogue ??
+        legacyDialogueExamples(examples),
       negative: dialogue.negative ?? root.negativeDialogue ?? advanced.negativeDialogue,
     },
   }, diagnostics);

@@ -3,10 +3,10 @@
 // INTENT: keep the chat deploy artifact thin (design §10 dependency isolation).
 import {
   SafetyGatewayModerationProvider,
+  OpenAICompatibleChatModel,
   resolveChatModelProfile,
   type ChatModelProfile,
 } from "@idream/shared";
-import { pipelineEndpoint } from "@idream/shared/env";
 import { env } from "./env.js";
 import { logger } from "./logger.js";
 
@@ -57,6 +57,8 @@ export interface ChatModel {
     /** Real provider model resolved from the entitlement tier (policy.modelForTier). */
     model?: string;
     messages: ModelMessage[];
+    characterName?: string;
+    tools?: ChatToolDefinition[];
     maxTokens?: number;
   }): Promise<ChatCompletion>;
 }
@@ -125,172 +127,7 @@ function readMockToolCalls(): ChatToolCall[] {
 // model — see packages/chat/.env. INVARIANT: yields only assistant `content`
 // deltas; a reasoning model's `reasoning_content` is dropped so thinking never
 // leaks into the reply. EXAMPLE: provider=openai, model=Qwen3.5-4B-MLX-4bit.
-type FetchLike = typeof fetch;
-
-export class OpenAIChatModel implements ChatModel {
-  constructor(
-    private readonly profile: ChatModelProfile,
-    private readonly fetchImpl: FetchLike = fetch,
-  ) {}
-
-  get supportsTools(): boolean {
-    return this.profile.supportsTools;
-  }
-
-  async *stream(input: Parameters<ChatModel["stream"]>[0]): AsyncIterable<ChatChunk> {
-    // Per-turn model from policy (tier-resolved) wins; fall back to the deploy
-    // default so an un-tiered config still streams (design P0-D).
-    const model = input.model || this.profile.model;
-    const controller = new AbortController();
-    let timeoutPhase: "first_token" | "idle" = "first_token";
-    let timeout = setTimeout(
-      () => controller.abort(),
-      this.profile.firstTokenTimeoutMs,
-    );
-    const armIdleTimeout = () => {
-      timeoutPhase = "idle";
-      clearTimeout(timeout);
-      timeout = setTimeout(
-        () => controller.abort(),
-        this.profile.idleTimeoutMs,
-      );
-    };
-
-    try {
-      const res = await this.fetchImpl(chatCompletionEndpoint(this.profile.baseUrl), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(this.profile.apiKey ? { Authorization: `Bearer ${this.profile.apiKey}` } : {}),
-        },
-        signal: controller.signal,
-        // INVARIANT: Qwen reasoning models (4B/27B via oMLX/SGLang/vLLM) stream their
-        // chain-of-thought into BOTH `reasoning_content` AND `content`. Dropping
-        // reasoning_content (below) is not enough; we must also disable thinking at the
-        // template level or "Thinking Process:" leaks into the reply. `chat_template_kwargs`
-        // is honored by self-hosted OpenAI-compatible servers (the product's only target;
-        // hosted OpenAI is not used) and is a no-op for non-reasoning models (0.8B).
-        body: JSON.stringify({
-          model,
-          messages: input.messages,
-          stream: true,
-          max_tokens: this.profile.maxOutputTokens,
-          chat_template_kwargs: { enable_thinking: false },
-          ...(input.tools && input.tools.length > 0
-            ? {
-                tools: input.tools.map((t) => ({
-                  type: "function",
-                  function: { name: t.name, description: t.description, parameters: t.parameters },
-                })),
-              }
-            : {}),
-        }),
-      });
-      if (!res.ok || !res.body) {
-        throw new Error(`Chat model HTTP ${res.status}: ${await res.text().catch(() => "")}`);
-      }
-
-      const decoder = new TextDecoder();
-      let buffer = "";
-      // INVARIANT: tool_calls stream as fragments keyed by `index` — the first
-      // fragment for a slot carries id+name, later ones only append to
-      // `arguments`. Accumulate by index and flatten once the stream ends.
-      const toolCallsByIndex = new Map<number, { id: string; name: string; arguments: string }>();
-      for await (const bytes of res.body as unknown as AsyncIterable<Uint8Array>) {
-        buffer += decoder.decode(bytes, { stream: true });
-        // SSE frames are separated by a blank line; events carry `data: <json>`.
-        let nl: number;
-        while ((nl = buffer.indexOf("\n")) !== -1) {
-          const line = buffer.slice(0, nl).trim();
-          buffer = buffer.slice(nl + 1);
-          if (!line.startsWith("data:")) continue;
-          const payload = line.slice(5).trim();
-          if (payload === "[DONE]") {
-            yield { delta: "", done: true, toolCalls: flattenToolCalls(toolCallsByIndex) };
-            return;
-          }
-          const delta = (JSON.parse(payload).choices?.[0]?.delta ?? {}) as {
-            content?: string;
-            tool_calls?: Array<{
-              index: number;
-              id?: string;
-              function?: { name?: string; arguments?: string };
-            }>;
-          };
-          const hasToolOutput = delta.tool_calls?.some((fragment) =>
-            Boolean(
-              fragment.id ||
-              fragment.function?.name ||
-              fragment.function?.arguments,
-            )
-          ) ?? false;
-          // First-token and inter-token silence are different failure modes.
-          // Role-only SSE frames, proxy heartbeats, and reasoning we deliberately
-          // discard are not assistant output and cannot satisfy warm readiness.
-          if ((delta.content?.length ?? 0) > 0 || hasToolOutput) {
-            armIdleTimeout();
-          }
-          accumulateToolCalls(toolCallsByIndex, delta.tool_calls);
-          if (delta.content) yield { delta: delta.content, done: false };
-        }
-      }
-      yield { delta: "", done: true, toolCalls: flattenToolCalls(toolCallsByIndex) };
-    } catch (error) {
-      if (controller.signal.aborted) {
-        const timeoutMs = timeoutPhase === "first_token"
-          ? this.profile.firstTokenTimeoutMs
-          : this.profile.idleTimeoutMs;
-        throw new Error(
-          `Chat model ${timeoutPhase} timed out after ${timeoutMs}ms`,
-        );
-      }
-      throw error;
-    } finally {
-      clearTimeout(timeout);
-    }
-  }
-
-  async complete(input: Parameters<ChatModel["complete"]>[0]): Promise<ChatCompletion> {
-    const model = input.model || this.profile.model;
-    const controller = new AbortController();
-    const timeoutMs = this.profile.completionTimeoutMs;
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
-
-    try {
-      const res = await this.fetchImpl(chatCompletionEndpoint(this.profile.baseUrl), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(this.profile.apiKey ? { Authorization: `Bearer ${this.profile.apiKey}` } : {}),
-        },
-        signal: controller.signal,
-        body: JSON.stringify({
-          model,
-          messages: input.messages,
-          stream: false,
-          max_tokens: input.maxTokens ?? Math.min(this.profile.maxOutputTokens, 1_400),
-          chat_template_kwargs: { enable_thinking: false },
-        }),
-      });
-      if (!res.ok) {
-        throw new Error(`Chat model HTTP ${res.status}: ${await res.text().catch(() => "")}`);
-      }
-
-      const data = (await res.json()) as {
-        choices?: Array<{ message?: { content?: unknown } }>;
-      };
-      const content = data.choices?.[0]?.message?.content;
-      return { content: typeof content === "string" ? content : "" };
-    } catch (error) {
-      if (controller.signal.aborted) {
-        throw new Error(`Chat model request timed out after ${timeoutMs}ms`);
-      }
-      throw error;
-    } finally {
-      clearTimeout(timeout);
-    }
-  }
-}
+export class OpenAIChatModel extends OpenAICompatibleChatModel implements ChatModel {}
 
 const BLOCKED_TERMS = ["underage", "minor", "csam"];
 
@@ -331,29 +168,6 @@ class SafetyGatewayChatModerationProvider implements ModerationProvider {
 // INVARIANT: keep-first on id/name — some providers repeat the id/name on every
 // fragment at an index rather than only the first, and a differing repeat must
 // not clobber the value the earlier fragment already established.
-function accumulateToolCalls(
-  byIndex: Map<number, { id: string; name: string; arguments: string }>,
-  fragments: Array<{ index: number; id?: string; function?: { name?: string; arguments?: string } }> | undefined,
-): void {
-  if (!fragments) return;
-  for (const fragment of fragments) {
-    const existing = byIndex.get(fragment.index) ?? { id: "", name: "", arguments: "" };
-    byIndex.set(fragment.index, {
-      id: existing.id || fragment.id || "",
-      name: existing.name || fragment.function?.name || "",
-      arguments: existing.arguments + (fragment.function?.arguments ?? ""),
-    });
-  }
-}
-
-function flattenToolCalls(
-  byIndex: Map<number, { id: string; name: string; arguments: string }>,
-): ChatToolCall[] {
-  return [...byIndex.entries()]
-    .sort(([a], [b]) => a - b)
-    .map(([, call]) => call);
-}
-
 function chunk(text: string, size: number): string[] {
   if (!text) return [""];
   const out: string[] = [];
@@ -458,7 +272,3 @@ export const providers = new Proxy({} as ChatProviders, {
     return resolvedProviders[property];
   },
 });
-
-function chatCompletionEndpoint(baseUrl: string) {
-  return pipelineEndpoint(baseUrl, "/chat/completions");
-}

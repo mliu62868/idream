@@ -24,6 +24,10 @@ import {
   type VoiceClipPort,
 } from "@/server/providers/types";
 import { createVoiceClipPortForKey } from "@/server/providers/voice/factory";
+import {
+  fetchChatMessageVoiceAuthority,
+  type ChatMessageVoiceAuthority,
+} from "@/server/bff/chat-proxy";
 
 const voiceClipSchema = z.object({
   characterId: z.string().min(1),
@@ -39,6 +43,16 @@ export const voiceClipSynthesisPayloadSchema = z
     text: z.string().trim().min(1).max(2_000),
     sessionId: z.string().min(1).nullable(),
     intent: z.enum(["play", "prewarm"]),
+    sceneVersion: z.number().int().nonnegative().optional(),
+    scene: z.object({
+      schemaVersion: z.literal(1),
+      version: z.number().int().nonnegative(),
+      location: z.string().nullable(),
+      time: z.string().nullable(),
+      participants: z.array(z.string()),
+      emotionalBeat: z.string().nullable(),
+      unresolvedThreads: z.array(z.string()),
+    }).strict().nullable().optional(),
   })
   .strict();
 
@@ -51,7 +65,7 @@ export const pinnedVoiceProviderPayloadSchema = z.object({
   delivery: fishAudioDeliverySettingsSchema,
 });
 
-const VOICE_CLIP_CACHE_VERSION = 7;
+const VOICE_CLIP_CACHE_VERSION = 8;
 const VOICE_CLIP_WAIT_MS = 220_000;
 const VOICE_CLIP_POLL_MS = 25;
 
@@ -73,6 +87,10 @@ export type VoiceClipDependencies = {
     characterId: string,
     userId: string,
   ) => Promise<VoiceCharacter>;
+  readonly messageVoiceAuthority?: (
+    request: Request,
+    input: { sessionId: string; messageId: string; testOnlyText?: string; characterId?: string },
+  ) => Promise<ChatMessageVoiceAuthority>;
 };
 
 type VoiceRequestClaim =
@@ -109,11 +127,30 @@ export async function createVoiceClip(
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   const body = voiceClipSchema.parse(await request.json());
+  const messageAuthority = body.sessionId
+    ? await (deps.messageVoiceAuthority ?? fetchChatMessageVoiceAuthority)(request, {
+        sessionId: body.sessionId,
+        messageId: body.messageId,
+        testOnlyText: body.text,
+        characterId: body.characterId,
+      }).catch((cause) => {
+        throw Errors.unavailable("Chat message authority is unavailable for Voice", {
+          cause: cause instanceof Error ? cause.message : String(cause),
+        });
+      })
+    : null;
+  if (messageAuthority && messageAuthority.characterId !== body.characterId) {
+    throw Errors.conflict("Voice message belongs to another Character");
+  }
+  const authoritativeText = messageAuthority?.text ?? body.text;
+  const authoritativeScene = messageAuthority?.scene ?? null;
   const synthesisPayload = voiceClipSynthesisPayloadSchema.parse({
     version: 1,
-    text: body.text,
+    text: authoritativeText,
     sessionId: body.sessionId ?? null,
     intent: body.intent,
+    sceneVersion: messageAuthority?.sceneVersion ?? 0,
+    scene: authoritativeScene,
   });
   const prewarming = body.intent === "prewarm";
 
@@ -184,7 +221,9 @@ export async function createVoiceClip(
     characterId: character.id,
     messageId: body.messageId,
     sessionId: body.sessionId ?? null,
-    text: body.text,
+    text: authoritativeText,
+    sceneVersion: messageAuthority?.sceneVersion ?? 0,
+    scene: authoritativeScene,
   });
   const claim = await claimVoiceRequest({
     userId: user.id,
@@ -482,6 +521,7 @@ async function executeOwnedVoiceClaim(input: {
       voiceId: providerPayload.voiceId,
       tone: providerPayload.tone,
       delivery: providerPayload.delivery,
+      scene: body.scene ?? null,
     });
   } catch (cause) {
     if (voiceProvider.providerReplay === "non_replayable") {
@@ -668,6 +708,10 @@ async function executeOwnedVoiceClaim(input: {
         delivery: providerPayload.delivery,
         durationMs,
         providerKey: result.data.key,
+        sceneVersion: body.sceneVersion ?? 0,
+        scene: body.scene ?? null,
+        sceneApplied: result.data.sceneApplied ?? !body.scene,
+        sceneAdapter: result.data.sceneAdapter ?? "unreported",
         providerIdempotencyKey,
         costDreamcoins: cost,
         generationIntent: prewarming ? "automatic" : "requested",

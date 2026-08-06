@@ -23,13 +23,22 @@ export interface UserCharacterSoulInput {
   style: string;
   appearance: unknown;
   advancedDetails: unknown;
-  immutablePersonaSnapshot?: unknown;
+  immutableContentSnapshot?: {
+    personaSnapshot: unknown;
+    openingSnapshot: unknown;
+    appearanceSnapshot: unknown;
+  };
 }
 
 export function compileUserCharacterContent(input: UserCharacterSoulInput) {
-  const immutable = input.immutablePersonaSnapshot === undefined
+  const immutable = input.immutableContentSnapshot === undefined
     ? null
-    : loadCharacterSoulSnapshot(input.immutablePersonaSnapshot);
+    : loadCharacterSoulSnapshot(input.immutableContentSnapshot.personaSnapshot);
+  if (immutable && !immutable.ok) {
+    // INVARIANT: once a Character has an immutable content pointer, edits may
+    // never reconstruct missing authority from mutable compatibility columns.
+    throw new UserCharacterSoulCompileError(immutable.diagnostics);
+  }
   const draft = immutable?.ok
     ? {
         soul: {
@@ -56,10 +65,10 @@ export function compileUserCharacterContent(input: UserCharacterSoulInput) {
   if (!compiled.ok) throw new UserCharacterSoulCompileError(compiled.diagnostics);
 
   const details = record(input.advancedDetails);
-  const openingSnapshot = {
+  const openingSnapshot = input.immutableContentSnapshot?.openingSnapshot ?? {
     firstMessage: text(details.firstMessage) || null,
   };
-  const appearanceSnapshot = {
+  const appearanceSnapshot = input.immutableContentSnapshot?.appearanceSnapshot ?? {
     style: input.style,
     appearance: input.appearance ?? {},
   };

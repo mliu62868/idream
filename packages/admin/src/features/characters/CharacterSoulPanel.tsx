@@ -36,6 +36,7 @@ export function CharacterSoulPanel({
   const [persona, setPersonaDraft] = useState<CharacterDraftPersona | null>(initialPersona);
   const [reason, setReason] = useState(() => t("Create reviewed Character Soul version"));
   const [busy, setBusy] = useState(false);
+  const [dialogueError, setDialogueError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(() =>
     initialPersona ? null : t("Character Soul could not be loaded"),
   );
@@ -140,7 +141,7 @@ export function CharacterSoulPanel({
         </p>
         {data.soul.changedFields.length > 0 ? (
           <div className="mt-4">
-            <p className="text-sm font-semibold">{t("Changed from version")} {data.soul.previous?.version}</p>
+            <p className="text-sm font-semibold">{t("Changed from Serving version")} {data.soul.previous?.version}</p>
             <div className="mt-2 flex flex-wrap gap-2">
               {data.soul.changedFields.map((field) => (
                 <code className="rounded bg-[var(--ad-muted)] px-2 py-1 text-xs" key={field}>{field}</code>
@@ -169,6 +170,14 @@ export function CharacterSoulPanel({
         <div className="mt-5 grid gap-5 lg:grid-cols-2">
           <Field label={t("Name")} value={persona.name} onChange={(value) => setPersona({ name: value })} />
           <Field label={t("Age")} type="number" value={String(persona.age)} onChange={(value) => setPersona({ age: Number(value) })} />
+          <label className="text-sm font-medium">
+            {t("Gender")}
+            <select className={`${fieldClass} mt-2`} onChange={(event) => setPersona({ gender: event.target.value as CharacterDraftPersona["gender"] })} value={persona.gender}>
+              <option value="female">{t("Female")}</option>
+              <option value="male">{t("Male")}</option>
+              <option value="trans">{t("Trans")}</option>
+            </select>
+          </label>
           <Field label={t("Relationship archetype")} value={persona.relationshipArchetype} onChange={(value) => setPersona({ relationshipArchetype: value })} />
           <Field label={t("Character promise")} value={persona.characterPromise} onChange={(value) => setPersona({ characterPromise: value })} />
           <Area label={t("Personality")} value={persona.personality} onChange={(value) => setPersona({ personality: value })} />
@@ -187,7 +196,15 @@ export function CharacterSoulPanel({
           ))}
           <ListField label={t("Canon facts")} lineSuffix={t("one per line")} value={persona.canon?.facts} onChange={(facts) => setPersona({ canon: { facts, unknowns: persona.canon?.unknowns ?? [] } })} />
           <ListField label={t("Canon unknowns")} lineSuffix={t("one per line")} value={persona.canon?.unknowns} onChange={(unknowns) => setPersona({ canon: { facts: persona.canon?.facts ?? [], unknowns } })} />
-          <ListField label={t("Positive dialogue examples")} lineSuffix={t("one per line")} value={persona.exampleDialogue} onChange={(value) => setPersona({ exampleDialogue: value })} />
+          <PositiveDialogueField
+            label={t("Positive dialogue examples · JSON")}
+            value={persona.positiveDialogue ?? []}
+            onError={setDialogueError}
+            onChange={(positiveDialogue) => setPersona({
+              positiveDialogue,
+              exampleDialogue: positiveDialogue.map((item) => item.assistant),
+            })}
+          />
           <Area
             label={t("Negative dialogue · assistant text :: reason · one per line")}
             value={(persona.negativeDialogue ?? []).map((item) => `${item.assistant} :: ${item.reason}`).join("\n")}
@@ -204,9 +221,10 @@ export function CharacterSoulPanel({
           {t("Reason")}
           <input className={`${fieldClass} mt-2`} onChange={(event) => setReason(event.target.value)} value={reason} />
         </label>
+        {dialogueError ? <p className="mt-3 text-sm text-[var(--ad-red-text)]" role="alert">{dialogueError}</p> : null}
         {error ? <p className="mt-3 text-sm text-[var(--ad-red-text)]" role="alert">{error}</p> : null}
         <div className="mt-5">
-          <WorkspaceButton disabled={!canWrite || busy || reason.trim().length < 3} onClick={() => void createVersion()} tone="primary">
+          <WorkspaceButton disabled={!canWrite || busy || Boolean(dialogueError) || reason.trim().length < 3} onClick={() => void createVersion()} tone="primary">
             {busy ? t("Creating version…") : t("Create Soul version")}
           </WorkspaceButton>
         </div>
@@ -220,7 +238,7 @@ export function CharacterSoulPanel({
   );
 }
 
-function soulDraftFromWorkspace(data: CharacterWorkspaceDetail): CharacterDraftPersona | null {
+export function soulDraftFromWorkspace(data: CharacterWorkspaceDetail): CharacterDraftPersona | null {
   const soul = data.soul.current.soul;
   if (!soul) return null;
   const identity = asRecord(soul.identity);
@@ -254,6 +272,7 @@ function soulDraftFromWorkspace(data: CharacterWorkspaceDetail): CharacterDraftP
           return typeof item.assistant === "string" ? [item.assistant] : [];
         })
       : [],
+    positiveDialogue: Array.isArray(dialogue.positive) ? dialogue.positive : [],
     interaction,
     canon: {
       facts: stringList(canon.facts),
@@ -287,6 +306,35 @@ function Field({ label, value, onChange, type = "text" }: {
 
 function Area({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
   return <label className="text-sm font-medium">{label}<textarea className={`${textAreaClass} mt-2 min-h-24`} onChange={(event) => onChange(event.target.value)} value={value} /></label>;
+}
+
+function PositiveDialogueField({ label, value, onChange, onError }: {
+  label: string;
+  value: NonNullable<CharacterDraftPersona["positiveDialogue"]>;
+  onChange: (value: NonNullable<CharacterDraftPersona["positiveDialogue"]>) => void;
+  onError: (value: string | null) => void;
+}) {
+  const [raw, setRaw] = useState(() => JSON.stringify(value, null, 2));
+  const parse = (next: string) => {
+    setRaw(next);
+    try {
+      const candidate = characterDraftPersonaSchema.shape.positiveDialogue.safeParse(JSON.parse(next));
+      if (!candidate.success) {
+        onError(candidate.error.issues[0]?.message ?? "Invalid positive dialogue");
+        return;
+      }
+      onError(null);
+      onChange(candidate.data ?? []);
+    } catch {
+      onError("Positive dialogue must be valid JSON");
+    }
+  };
+  return (
+    <label className="text-sm font-medium">
+      {label}
+      <textarea className={`${textAreaClass} mt-2 min-h-56 font-mono text-xs`} onChange={(event) => parse(event.target.value)} value={raw} />
+    </label>
+  );
 }
 
 function ListField({ label, lineSuffix, value = [], onChange }: { label: string; lineSuffix: string; value?: readonly string[]; onChange: (value: string[]) => void }) {

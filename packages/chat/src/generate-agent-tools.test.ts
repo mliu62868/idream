@@ -131,7 +131,7 @@ function fakePrisma(
     },
     messageVersion: {
       updateMany: async () => ({}),
-      create: async () => ({}),
+      update: async () => ({}),
     },
     chatUsage: {
       upsert: async () => ({}),
@@ -184,6 +184,9 @@ function fakePrisma(
         return { count: 1 };
       },
     },
+    messageVersion: {
+      upsert: async () => ({}),
+    },
     chatSession: {
       findUnique: async () => ({
         id: "sess_1",
@@ -231,6 +234,19 @@ const context = {
     characterReleaseId: "release_v3",
   },
   policy: {
+    tier: "free",
+    modelProfile: {
+      adapter: "mock-v1",
+      provider: "mock",
+      baseUrl: "http://127.0.0.1:8061/v1",
+      model: "local-model",
+      apiKey: "",
+      maxOutputTokens: 8_000,
+      firstTokenTimeoutMs: 45_000,
+      idleTimeoutMs: 45_000,
+      completionTimeoutMs: 45_000,
+      supportsTools: true,
+    },
     model: "local-model",
     maxContextMessages: 12,
     maxContextChars: 24_000,
@@ -297,7 +313,7 @@ describe("chat generate agent image tool", () => {
       await vi.advanceTimersByTimeAsync(61_000);
 
       const leaseRenewals = rootMessageUpdates.filter(
-        (call) => call.where?.status === "generating",
+        (call) => call.where?.status === "generating" && call.data.updatedAt instanceof Date,
       );
       expect(leaseRenewals).toHaveLength(2);
 

@@ -6,7 +6,11 @@
 SET ROLE chat_owner;
 
 ALTER TABLE chat.messages
-  ADD COLUMN IF NOT EXISTS scene_version integer NOT NULL DEFAULT 0;
+  ADD COLUMN IF NOT EXISTS scene_version integer NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS runtime_trace jsonb;
+
+ALTER TABLE chat.message_versions
+  ADD COLUMN IF NOT EXISTS runtime_trace jsonb;
 
 CREATE TABLE IF NOT EXISTS chat.chat_scene_revisions (
   id                          text PRIMARY KEY,

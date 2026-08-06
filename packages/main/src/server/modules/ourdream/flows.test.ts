@@ -476,6 +476,8 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
     });
     expect(contentHistory.map((item) => item.version)).toEqual([1, 2]);
     expect(contentHistory[0]?.personaSnapshot).toEqual(firstContent.personaSnapshot);
+    expect(contentHistory[1]?.openingSnapshot).toEqual(firstContent.openingSnapshot);
+    expect(contentHistory[1]?.appearanceSnapshot).toEqual(firstContent.appearanceSnapshot);
     expect(contentHistory[1]?.personaSnapshot).toMatchObject({
       soul: {
         identity: {

@@ -8,7 +8,7 @@ import {
   characterProjectDraftResumeSchema,
   characterQaRunSchema,
 } from "@idream/shared/admin";
-import { loadCharacterSoulSnapshot } from "@idream/shared";
+import { loadCharacterSoulSnapshot, requiredChatCanaryProfiles } from "@idream/shared";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
@@ -77,11 +77,14 @@ type SoulContentVersion = {
 
 function characterSoulWorkspaceProjection(
   versions: readonly SoulContentVersion[],
+  servingVersion: SoulContentVersion | null,
 ) {
   const current = versions[0];
   if (!current) throw Errors.notFound("Character Soul content version not found");
   const loaded = loadCharacterSoulSnapshot(current.personaSnapshot);
-  const previousRow = versions[1] ?? null;
+  // SPEC: operator diffs answer "what will change in Serving?", not merely
+  // "what changed since the last draft?".
+  const previousRow = servingVersion;
   const previousLoaded = previousRow
     ? loadCharacterSoulSnapshot(previousRow.personaSnapshot)
     : null;
@@ -125,6 +128,13 @@ function characterSoulWorkspaceProjection(
             loaded.snapshot.soul as unknown as Record<string, unknown>,
           )
         : [],
+    requiredCanaryProfiles: requiredChatCanaryProfiles(process.env).map(
+      ({ tier, profile }) => ({
+        tier,
+        provider: profile.provider,
+        model: profile.model,
+      }),
+    ),
   };
 }
 
@@ -835,7 +845,14 @@ export async function getCharacterWorkspace(characterId: string) {
       include: { imageAsset: true, stats: true },
     }),
     prisma.characterProject.findFirst({ where: { characterId }, orderBy: { updatedAt: "desc" } }),
-    prisma.characterServing.findUnique({ where: { characterId } }),
+    prisma.characterServing.findUnique({
+      where: { characterId },
+      include: {
+        currentRelease: {
+          select: { characterContentVersionId: true },
+        },
+      },
+    }),
     prisma.controlPlaneCommand.findFirst({
       where: {
         coordinationKey: characterCommandCoordinationKey(characterId),
@@ -872,14 +889,21 @@ export async function getCharacterWorkspace(characterId: string) {
     prisma.characterContentVersion.findMany({
       where: { characterId },
       orderBy: [{ version: "desc" }, { id: "desc" }],
-      take: 2,
+      take: 1,
     }),
   ]);
   if (!character || !project) throw Errors.notFound("Character Project not found");
   if (!contentVersions[0]) {
     throw Errors.notFound("Character Soul content version not found");
   }
-  const soul = characterSoulWorkspaceProjection(contentVersions);
+  const servingContentVersionId = serving?.currentRelease?.characterContentVersionId ?? null;
+  const servingContentVersion = servingContentVersionId
+    ? await prisma.characterContentVersion.findFirst({
+        where: { id: servingContentVersionId, characterId },
+        select: { id: true, version: true, personaSnapshot: true },
+      })
+    : null;
+  const soul = characterSoulWorkspaceProjection(contentVersions, servingContentVersion);
   const activeVoiceProfile =
     voiceProfiles.find((profile) => profile.status === "active") ?? null;
   const candidateVoiceProfile =

@@ -66,6 +66,7 @@ const base = {
     },
     previous: null,
     changedFields: [],
+    requiredCanaryProfiles: [{ tier: "free", provider: "mock", model: "fixture-model" }],
   },
   journey: {
     projectionVersion: 1,

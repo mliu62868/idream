@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 import {
+  characterSoulBehaviorBlockingCases,
   characterQaRunSchema,
   type CharacterQaRun,
 } from "@idream/shared/admin";
+import { loadCharacterSoulSnapshot, requiredChatCanaryProfiles } from "@idream/shared";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
@@ -36,6 +38,7 @@ import {
   discoverDraftAssetPackSourceAssetIds,
   evaluateDraftAssetPackAuthority,
 } from "./draft-asset-pack-authority";
+import { executeCharacterSoulQaEvidence } from "./soul-evaluation";
 
 // SPEC: the body the manifest declares for this operation, already parsed by the route.
 type QaRunCreateRequest = AdminV2RequestBody<
@@ -53,6 +56,41 @@ export async function createCharacterQaRun(
   },
 ): Promise<CharacterQaRun> {
   const actor = options?.actor ?? await actorWithPermission(request, "character.release.review", { characterId });
+  // Provider calls happen before the transaction. The transaction re-reads and
+  // locks the same Project/Revision/ContentVersion, so any drift rejects the run.
+  const evidenceDb = options?.tx ?? prisma;
+  const evidenceProject = await evidenceDb.characterProject.findFirst({
+    where: { characterId },
+    select: { id: true, version: true },
+  });
+  if (!evidenceProject) throw Errors.notFound("Character Project not found");
+  if (evidenceProject.version !== input.entityVersion) {
+    throw Errors.conflict("Character Project changed before QA execution", {
+      expectedVersion: input.entityVersion,
+      currentVersion: evidenceProject.version,
+    });
+  }
+  const evidenceRevision = await evidenceDb.characterRevision.findFirst({
+    where: { projectId: evidenceProject.id },
+    orderBy: { revision: "desc" },
+    select: { characterContentVersionId: true },
+  });
+  const evidenceContent = evidenceRevision
+    ? await evidenceDb.characterContentVersion.findFirst({
+        where: { id: evidenceRevision.characterContentVersionId, characterId },
+        select: { id: true, personaSnapshot: true },
+      })
+    : null;
+  const evidenceSoul = evidenceContent
+    ? loadCharacterSoulSnapshot(evidenceContent.personaSnapshot)
+    : null;
+  if (!evidenceContent || !evidenceSoul?.ok || evidenceSoul.diagnostics.length > 0) {
+    throw Errors.conflict("Character QA requires a complete immutable Character Soul");
+  }
+  const executedEvidence = await executeCharacterSoulQaEvidence({
+    characterContentVersionId: evidenceContent.id,
+    soul: evidenceSoul.snapshot,
+  });
   const execute = async (tx: Prisma.TransactionClient) => {
     await lockCharacterGenerationAuthority(tx, characterId);
     const project = await tx.characterProject.findFirst({ where: { characterId } });
@@ -121,6 +159,46 @@ export async function createCharacterQaRun(
       orderBy: { revision: "desc" },
     });
     if (!revision) throw Errors.conflict("Character QA requires an immutable Character Revision");
+    const contentVersion = await tx.characterContentVersion.findFirst({
+      where: {
+        id: revision.characterContentVersionId,
+        characterId,
+      },
+      select: { id: true, personaSnapshot: true },
+    });
+    const soul = contentVersion
+      ? loadCharacterSoulSnapshot(contentVersion.personaSnapshot)
+      : null;
+    if (!contentVersion || !soul?.ok || soul.diagnostics.length > 0) {
+      throw Errors.conflict("Character QA requires a complete immutable Character Soul");
+    }
+    if (
+      executedEvidence.behaviorEvaluation.characterContentVersionId !== contentVersion.id ||
+      executedEvidence.behaviorEvaluation.soulFingerprint !== soul.snapshot.compiled.fingerprint ||
+      executedEvidence.behaviorEvaluation.compilerVersion !== soul.snapshot.compiled.compilerVersion
+    ) {
+      throw Errors.conflict("Behavior Evaluation does not match the immutable Character Soul");
+    }
+    const expectedCanaries = requiredChatCanaryProfiles(process.env);
+    const actualCanaries = new Map(executedEvidence.liveCanaries.map((canary) => [canary.tier, canary]));
+    const canaryAuthorityMatches =
+      actualCanaries.size === executedEvidence.liveCanaries.length &&
+      executedEvidence.liveCanaries.length === expectedCanaries.length &&
+      expectedCanaries.every(({ tier, profile }) => {
+        const canary = actualCanaries.get(tier);
+        return Boolean(
+          canary &&
+          canary.adapter === profile.adapter &&
+          canary.provider === profile.provider &&
+          canary.model === profile.model &&
+          canary.characterContentVersionId === contentVersion.id &&
+          canary.soulFingerprint === soul.snapshot.compiled.fingerprint &&
+          canary.compilerVersion === soul.snapshot.compiled.compilerVersion
+        );
+      });
+    if (!canaryAuthorityMatches) {
+      throw Errors.conflict("Live canary evidence does not cover every distinct production Chat profile");
+    }
     const visualProfile = await tx.characterVisualProfile.findFirst({
       where: { characterId, status: "active" },
       orderBy: { version: "desc" },
@@ -244,7 +322,14 @@ export async function createCharacterQaRun(
       );
     }
     const id = `character-qa:${randomUUID()}`;
-    const status = input.checks.every((check) => check.result === "passed") ? "passed" : "failed";
+    const blockingBehaviorPassed = executedEvidence.behaviorEvaluation.cases.every((entry) =>
+      !characterSoulBehaviorBlockingCases.has(entry.key) || entry.result === "passed"
+    );
+    const status = input.checks.every((check) => check.result === "passed") &&
+        blockingBehaviorPassed &&
+        executedEvidence.liveCanaries.every((canary) => canary.result === "passed")
+      ? "passed"
+      : "failed";
     const checks = input.checks.map((check) => ({ ...check, ownerId: actor.id }));
     const draftAssetPackHash = canonicalSha256(project.draftAssetPack);
     const evidenceHash = canonicalSha256({
@@ -264,6 +349,8 @@ export async function createCharacterQaRun(
       ownerId: actor.id,
       status,
       checks,
+      behaviorEvaluation: executedEvidence.behaviorEvaluation,
+      liveCanaries: executedEvidence.liveCanaries,
     });
     const qaRun = await tx.characterQaRun.create({
       data: {
@@ -282,6 +369,8 @@ export async function createCharacterQaRun(
         ownerId: actor.id,
         status,
         checks: toInputJson(checks),
+        behaviorEvaluation: toInputJson(executedEvidence.behaviorEvaluation),
+        liveCanaries: toInputJson(executedEvidence.liveCanaries),
         evidenceHash,
       },
     });
@@ -358,6 +447,8 @@ export async function createCharacterQaRun(
     return characterQaRunSchema.parse({
       ...qaRun,
       checks,
+      behaviorEvaluation: executedEvidence.behaviorEvaluation,
+      liveCanaries: executedEvidence.liveCanaries,
       createdAt: qaRun.createdAt.toISOString(),
     });
   };

@@ -21,6 +21,7 @@ import {
 } from "./release-executor";
 import { dispatchDueCharacterReleasePublishes } from "./scheduled-release-dispatcher";
 import { toInputJson } from "../shared/prisma-json";
+import { characterSoulQaEvidence } from "@/server/test/character-soul-evidence";
 
 describe("Character Release command executor", () => {
   const suffix = randomUUID();
@@ -595,6 +596,10 @@ describe("Character Release command executor", () => {
     });
     await prisma.characterQaRun.create({
       data: {
+        ...characterSoulQaEvidence({
+          characterContentVersionId: contentId,
+          personaSnapshot: compiledSoul.snapshot,
+        }),
         id: qaRunId,
         characterId,
         projectId,

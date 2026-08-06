@@ -1,6 +1,7 @@
 import { pipelineEndpoint } from "@idream/shared/env";
 import {
   VOICE_PROVIDER_REPLAY,
+  voiceSceneInstructions,
   type BlobStore,
   type ProviderResult,
   type VoiceClipPort,
@@ -84,6 +85,10 @@ export class PipelineVoiceModel implements VoiceClipPort {
         voiceText,
         this.maxInputCharsPerRequest,
       );
+      const sceneInstructions = voiceSceneInstructions(input.scene);
+      const deliveryInstructions = [input.tone, sceneInstructions]
+        .filter(Boolean)
+        .join("\n");
       for (const [chunkIndex, chunk] of voiceChunks.entries()) {
         const response = await this.fetchImpl(this.endpoint, {
           method: "POST",
@@ -103,7 +108,9 @@ export class PipelineVoiceModel implements VoiceClipPort {
             input: chunk,
             voice: input.voiceId ?? this.defaultVoiceId,
             response_format: "wav",
-            ...(this.sendInstructions && input.tone ? { instructions: input.tone } : {}),
+            ...(this.sendInstructions && deliveryInstructions
+              ? { instructions: deliveryInstructions }
+              : {}),
           }),
           signal: controller.signal,
         });
@@ -139,6 +146,10 @@ export class PipelineVoiceModel implements VoiceClipPort {
         data: {
           key,
           durationMs: durationMs ?? estimateDurationMs(voiceText),
+          sceneApplied: !input.scene || this.sendInstructions,
+          sceneAdapter: this.sendInstructions
+            ? "openai-speech-instructions-1"
+            : "unsupported-no-instructions",
         },
       };
     } catch (error) {

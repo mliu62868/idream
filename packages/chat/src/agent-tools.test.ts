@@ -39,6 +39,19 @@ const context = {
     characterReleaseId: null,
   },
   policy: {
+    tier: "free",
+    modelProfile: {
+      adapter: "openai-compatible-v1",
+      provider: "openai",
+      baseUrl: "http://127.0.0.1:8061/v1",
+      model: "local-model",
+      apiKey: "",
+      maxOutputTokens: 8000,
+      firstTokenTimeoutMs: 45_000,
+      idleTimeoutMs: 45_000,
+      completionTimeoutMs: 45_000,
+      supportsTools: true,
+    },
     model: "local-model",
     maxContextMessages: 12,
     maxContextChars: 24_000,
@@ -79,6 +92,8 @@ const context = {
 
 function prepared(value: BuiltContext = context): PreparedTurn {
   return {
+    model: value.policy.model,
+    characterName: value.persona.name,
     messages: [
       { role: "system", content: buildCompanionSystemPrompt(value) },
       ...value.recentMessages.map((message) => ({
@@ -87,6 +102,13 @@ function prepared(value: BuiltContext = context): PreparedTurn {
       })),
     ],
     tools: registryChatTools(),
+    profile: {
+      tier: value.policy.tier,
+      provider: value.policy.modelProfile.provider,
+      baseUrl: value.policy.modelProfile.baseUrl,
+      model: value.policy.modelProfile.model,
+      supportsTools: value.policy.modelProfile.supportsTools,
+    },
     budget: {
       maxInputTokens: 6_000,
       usedInputTokens: 100,
@@ -100,6 +122,13 @@ function prepared(value: BuiltContext = context): PreparedTurn {
       sceneVersion: 0,
       relationshipVersion: null,
       fileContextRevision: "0",
+      profile: {
+        tier: value.policy.tier,
+        provider: value.policy.modelProfile.provider,
+        baseUrl: value.policy.modelProfile.baseUrl,
+        model: value.policy.modelProfile.model,
+        supportsTools: value.policy.modelProfile.supportsTools,
+      },
     },
   };
 }

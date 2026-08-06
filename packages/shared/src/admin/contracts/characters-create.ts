@@ -27,6 +27,12 @@ export const characterDraftPersonaSchema = z
     contradictions: z.array(z.string().trim().min(1).max(500)).max(24).optional(),
     firstMessage: z.string().trim().max(4_000),
     exampleDialogue: z.array(z.string().trim().min(1).max(2_000)).max(24),
+    positiveDialogue: z.array(z.object({
+      context: z.string().trim().max(2_000).nullable(),
+      user: z.string().trim().max(2_000).nullable(),
+      assistant: z.string().trim().min(1).max(2_000),
+      demonstrates: z.array(z.string().trim().min(1).max(500)).max(24),
+    }).strict()).max(24).optional(),
     cadence: z.string().trim().max(2_000).optional(),
     vocabulary: z.array(z.string().trim().min(1).max(300)).max(48).optional(),
     voiceHabits: z.array(z.string().trim().min(1).max(500)).max(24).optional(),

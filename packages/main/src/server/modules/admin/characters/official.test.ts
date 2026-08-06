@@ -13,6 +13,7 @@ import {
   createUser,
   purgeTestData,
 } from "@/server/test/helpers";
+import { characterSoulQaEvidence } from "@/server/test/character-soul-evidence";
 import {
   characterReleaseSnapshotHash,
   characterVisualProfileSnapshotHash,
@@ -533,6 +534,10 @@ describe("official character CMS", () => {
     const contentVersion = await prisma.characterContentVersion.findUniqueOrThrow({
       where: { id: revision.characterContentVersionId },
     });
+    const soulQaEvidence = characterSoulQaEvidence({
+      characterContentVersionId: contentVersion.id,
+      personaSnapshot: contentVersion.personaSnapshot,
+    });
     const referenceSetHash = referenceSetSnapshotHash({
       visualProfileId: activeProfile.id,
       revision: 1,
@@ -784,6 +789,8 @@ describe("official character CMS", () => {
         ownerId: admin,
         status: "passed",
         checks: [],
+        behaviorEvaluation: soulQaEvidence.behaviorEvaluation,
+        liveCanaries: soulQaEvidence.liveCanaries,
         evidenceHash: qaEvidenceHash,
       },
     });

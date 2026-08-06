@@ -48,7 +48,11 @@ export function characterQaMutation(
   reason: string,
   idempotencyKey: string,
 ): ImageWorkflowMutation<CharacterQaRunCreateRequest> {
-  const body: CharacterQaRunCreateRequest = { entityVersion, checks, reason };
+  const body: CharacterQaRunCreateRequest = {
+    entityVersion,
+    checks,
+    reason,
+  };
   return {
     path: `/api/v2/admin/characters/${characterId}/qa-runs`,
     options: {

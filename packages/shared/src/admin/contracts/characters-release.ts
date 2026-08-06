@@ -166,6 +166,78 @@ export const characterQaCheckSchema = characterQaCheckInputSchema.extend({
   ownerId: adminIdSchema,
 }).strict();
 
+export const characterSoulBehaviorCaseKeys = [
+  "initial_meeting",
+  "user_low",
+  "flirt",
+  "challenge_viewpoint",
+  "canon_question",
+  "memory_missing",
+  "context_injection",
+  "tool_request",
+  "regenerate_old_turn",
+  "no_memory",
+] as const;
+
+export const characterSoulBehaviorBlockingCases = new Set<
+  (typeof characterSoulBehaviorCaseKeys)[number]
+>([
+  "memory_missing",
+  "context_injection",
+  "regenerate_old_turn",
+  "no_memory",
+]);
+
+export const characterSoulBehaviorEvaluationSchema = z.object({
+  suiteVersion: z.literal("character-soul-behavior-1"),
+  evaluatorVersion: z.string().trim().min(1).max(200),
+  characterContentVersionId: adminIdSchema,
+  soulFingerprint: z.string().trim().min(1),
+  compilerVersion: z.string().trim().min(1),
+  cases: z.array(z.object({
+    key: z.enum(characterSoulBehaviorCaseKeys),
+    gate: z.enum(["blocking", "advisory"]),
+    result: z.enum(["passed", "failed"]),
+    evidenceRef: z.string().trim().min(1).max(1_000),
+    prompt: z.string().max(8_000).optional(),
+    response: z.string().max(20_000).optional(),
+    rationale: z.string().max(4_000).optional(),
+  }).strict()).length(characterSoulBehaviorCaseKeys.length),
+}).strict().superRefine((value, ctx) => {
+  const keys = new Set(value.cases.map((entry) => entry.key));
+  if (keys.size !== characterSoulBehaviorCaseKeys.length ||
+    characterSoulBehaviorCaseKeys.some((key) => !keys.has(key))) {
+    ctx.addIssue({ code: "custom", path: ["cases"], message: "Behavior Evaluation requires every canonical case exactly once" });
+  }
+  value.cases.forEach((entry, index) => {
+    const expected = characterSoulBehaviorBlockingCases.has(entry.key)
+      ? "blocking"
+      : "advisory";
+    if (entry.gate !== expected) {
+      ctx.addIssue({ code: "custom", path: ["cases", index, "gate"], message: `${entry.key} must be ${expected}` });
+    }
+  });
+});
+
+export const characterSoulLiveCanarySchema = z.object({
+  tier: z.enum(["free", "premium", "deluxe"]),
+  provider: z.string().trim().min(1).max(200),
+  model: z.string().trim().min(1).max(500),
+  adapter: z.string().trim().min(1).max(200),
+  characterContentVersionId: adminIdSchema,
+  soulFingerprint: z.string().trim().min(1),
+  compilerVersion: z.string().trim().min(1),
+  firstTokenMs: z.number().nonnegative(),
+  totalMs: z.number().nonnegative(),
+  coldStart: z.boolean(),
+  result: z.enum(["passed", "failed"]),
+  evidenceRef: z.string().trim().min(1).max(1_000),
+  responseHash: z.string().trim().min(1).optional(),
+}).strict().refine((value) => value.totalMs >= value.firstTokenMs, {
+  path: ["totalMs"],
+  message: "totalMs must be greater than or equal to firstTokenMs",
+});
+
 export const characterQaRunCreateRequestSchema = z.object({
   entityVersion: z.number().int().positive(),
   checks: z.array(characterQaCheckInputSchema).length(7),
@@ -194,6 +266,8 @@ export const characterQaRunSchema = z.object({
   ownerId: adminIdSchema,
   status: z.enum(["passed", "failed"]),
   checks: z.array(characterQaCheckSchema).length(7).readonly(),
+  behaviorEvaluation: characterSoulBehaviorEvaluationSchema.nullable(),
+  liveCanaries: z.array(characterSoulLiveCanarySchema).min(1).max(3).readonly().nullable(),
   evidenceHash: z.string().trim().min(1),
   createdAt: adminIsoDateTimeSchema,
 }).strict();
@@ -299,6 +373,8 @@ export type CharacterQaCheckInput = z.infer<typeof characterQaCheckInputSchema>;
 export type CharacterQaRunCreateRequest = z.infer<typeof characterQaRunCreateRequestSchema>;
 
 export type CharacterQaRun = z.infer<typeof characterQaRunSchema>;
+export type CharacterSoulBehaviorEvaluation = z.infer<typeof characterSoulBehaviorEvaluationSchema>;
+export type CharacterSoulLiveCanary = z.infer<typeof characterSoulLiveCanarySchema>;
 
 export type CharacterReleaseProposalRequest = z.infer<typeof characterReleaseProposalRequestSchema>;
 

@@ -775,7 +775,7 @@ describe("voice generation service contract", () => {
     const stale = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: staleId } });
     expect(stale.deletedAt).toBeInstanceOf(Date);
     const replacement = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: res.data.assetId } });
-    expect((replacement.metadata as { cacheVersion?: number }).cacheVersion).toBe(7);
+    expect((replacement.metadata as { cacheVersion?: number }).cacheVersion).toBe(8);
     expect((replacement.metadata as { costDreamcoins?: number }).costDreamcoins).toBe(0);
     expect((replacement.metadata as { replacedAssetIds?: string[] }).replacedAssetIds).toEqual([
       staleId,

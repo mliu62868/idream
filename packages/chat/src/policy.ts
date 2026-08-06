@@ -3,7 +3,7 @@
 // EXAMPLE: resolvePolicy({modelTier:"deluxe",...}) → { model, maxContextMessages,
 //          maxMemories, rateLimitPerHour, voiceEnabled, allowMemoryWrite, ... }
 import type { ChatEntitlementView } from "./db.js";
-import { resolveChatModelProfile } from "@idream/shared";
+import { resolveChatModelProfile, type ChatModelProfile } from "@idream/shared";
 
 export interface EntitlementSnapshot {
   modelTier: string;
@@ -14,6 +14,8 @@ export interface EntitlementSnapshot {
 }
 
 export interface ChatPolicy {
+  tier: string;
+  modelProfile: ChatModelProfile;
   model: string;
   maxContextMessages: number;
   /** Hard character budget for recent transcript input (separate from output tokens). */
@@ -46,11 +48,13 @@ export function resolvePolicy(
 ): ChatPolicy {
   const tier = ent.modelTier;
   const isPaid = tier === "premium" || tier === "deluxe";
-  const model = modelForTier(tier);
+  const modelProfile = resolveChatModelProfile(process.env, tier);
 
   const memoryAllowed = opts.memoryEnabled;
   return {
-    model,
+    tier,
+    modelProfile,
+    model: modelProfile.model,
     maxContextMessages: isPaid ? BASE_CONTEXT * 2 : BASE_CONTEXT,
     maxContextChars: isPaid ? BASE_CONTEXT_CHARS * 2 : BASE_CONTEXT_CHARS,
     maxMemories: memoryAllowed ? Math.round(BASE_MEMORIES * Math.max(1, ent.memoryMultiplier)) : 0,

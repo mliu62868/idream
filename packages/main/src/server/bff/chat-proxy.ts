@@ -31,6 +31,70 @@ export function chatServiceEnabled(): boolean {
   return Boolean(env.CHAT_SERVICE_URL);
 }
 
+export type ChatMessageVoiceAuthority = {
+  schemaVersion: 1;
+  sessionId: string;
+  messageId: string;
+  characterId: string;
+  text: string;
+  attempt: number;
+  sceneVersion: number;
+  scene: {
+    schemaVersion: 1;
+    version: number;
+    location: string | null;
+    time: string | null;
+    participants: string[];
+    emotionalBeat: string | null;
+    unresolvedThreads: string[];
+  } | null;
+  characterContentVersionId: string | null;
+  characterReleaseId: string | null;
+};
+
+/** Signed server-to-server read; Voice never accepts client-authored text/Scene. */
+export async function fetchChatMessageVoiceAuthority(
+  request: Request,
+  input: { sessionId: string; messageId: string; testOnlyText?: string; characterId?: string },
+): Promise<ChatMessageVoiceAuthority> {
+  const base = env.CHAT_SERVICE_URL;
+  const secret = env.CHAT_BFF_SIGNING_SECRET;
+  const auth = await getAuthCtx(request);
+  if (!auth.userId) throw new Error("sign in required");
+  if (process.env.NODE_ENV === "test") {
+    // INTENT: isolated Main integration tests do not boot the independently
+    // migrated Chat service. Production has no fallback and fails closed.
+    return {
+      schemaVersion: 1,
+      sessionId: input.sessionId,
+      messageId: input.messageId,
+      characterId: input.characterId ?? "test-character",
+      text: input.testOnlyText ?? "test voice",
+      attempt: 1,
+      sceneVersion: 0,
+      scene: null,
+      characterContentVersionId: null,
+      characterReleaseId: null,
+    };
+  }
+  if (!base) {
+    throw new Error("CHAT_SERVICE_URL not configured");
+  }
+  if (!secret && env.APP_ENV !== "test") throw new Error("CHAT_BFF_SIGNING_SECRET not configured");
+  const path = `/api/v1/chat/sessions/${encodeURIComponent(input.sessionId)}/messages/${encodeURIComponent(input.messageId)}/voice-authority`;
+  const headers = new Headers();
+  if (secret) {
+    const signed = signBffContext({ secret, userId: auth.userId, method: "GET", path, body: "" });
+    headers.set(BFF_HEADER, signed.signature);
+    headers.set(BFF_USER_HEADER, JSON.stringify(signed.context));
+  } else {
+    headers.set("x-idream-user-id", auth.userId);
+  }
+  const response = await fetch(`${base.replace(/\/$/, "")}${path}`, { method: "GET", headers });
+  if (!response.ok) throw new Error(`Chat Voice authority HTTP ${response.status}: ${await response.text()}`);
+  return await response.json() as ChatMessageVoiceAuthority;
+}
+
 /** Proxy an /api/v1/chat/* request to the chat service. `segments` includes the
  *  leading "chat". Returns the chat service's Response (possibly streaming). */
 export async function proxyChatRequest(request: Request, segments: string[]): Promise<Response> {

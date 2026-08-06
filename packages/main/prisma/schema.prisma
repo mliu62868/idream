@@ -194,6 +194,7 @@ model Character {
   voiceProfiles     CharacterVoiceProfile[]
   likes             CharacterLike[]
   serving           CharacterServing?
+  currentContentVersion CharacterContentVersion? @relation("CharacterCurrentContentVersion", fields: [currentContentVersionId, id], references: [id, characterId], onDelete: Restrict, onUpdate: Cascade, map: "characters_currentContentVersion_character_fkey")
 
   @@index([visibility, status])
   @@index([source, visibility, status])
@@ -1576,9 +1577,11 @@ model CharacterContentVersion {
   sourceId           String?
   createdById        String?
   createdAt          DateTime @default(now())
+  currentForCharacters Character[] @relation("CharacterCurrentContentVersion")
 
   @@unique([characterId, version])
   @@unique([characterId, contentHash])
+  @@unique([id, characterId], map: "character_content_versions_id_characterId_key")
   @@index([sourceType, sourceId])
   @@map("character_content_versions")
 }
@@ -1714,6 +1717,8 @@ model CharacterQaRun {
   ownerId                   String
   status                    String
   checks                    Json
+  behaviorEvaluation        Json?    @map("behavior_evaluation")
+  liveCanaries              Json?    @map("live_canaries")
   evidenceHash              String   @unique
   createdAt                 DateTime @default(now())
 

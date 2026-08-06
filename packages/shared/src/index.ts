@@ -3,6 +3,7 @@ export * from "./contracts/index";
 export * from "./bff/signing";
 export * from "./chat/persona";
 export * from "./chat/model-profile";
+export * from "./chat/openai-compatible-model";
 export * from "./media/mock-video";
 export * from "./storage/s3-blob";
 export * from "./moderation/safety-gateway";

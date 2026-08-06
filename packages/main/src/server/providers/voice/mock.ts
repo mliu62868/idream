@@ -23,7 +23,10 @@ export class MockVoiceModel implements VoiceClipPort {
       });
       if (!stored.ok) return stored;
     }
-    return { ok: true as const, data: { key, durationMs } };
+    return {
+      ok: true as const,
+      data: { key, durationMs, sceneApplied: true, sceneAdapter: "mock-scene-1" },
+    };
   }
 }
 

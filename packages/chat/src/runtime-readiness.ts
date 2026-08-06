@@ -2,6 +2,12 @@
 // process accept a real turn". Readiness requires DB, Redis and an actual model
 // warm-up through the production adapter.
 import Redis from "ioredis";
+import {
+  OpenAICompatibleChatModel,
+  resolveChatMemoryExtractProfile,
+  resolveChatModelProfile,
+  type ChatModelProfile,
+} from "@idream/shared";
 import type { ChatPrismaClient } from "./db.js";
 import { chatPrisma } from "./db.js";
 import type { ChatModel } from "./providers.js";
@@ -15,6 +21,7 @@ export interface RuntimeReadinessSnapshot {
   warming: boolean;
   lastError: string | null;
   warmedAt: string | null;
+  warmedProfiles: string[];
 }
 
 export class RuntimeReadiness {
@@ -25,6 +32,7 @@ export class RuntimeReadiness {
     warming: false,
     lastError: null,
     warmedAt: null,
+    warmedProfiles: [],
   };
 
   snapshot(): RuntimeReadinessSnapshot {
@@ -35,13 +43,14 @@ export class RuntimeReadiness {
     this.state = { ...this.state, ready: false, warming: true, lastError: null };
   }
 
-  warmed(): void {
+  warmed(profiles: string[] = []): void {
     this.state = {
       ...this.state,
       ready: true,
       warming: false,
       lastError: null,
       warmedAt: new Date().toISOString(),
+      warmedProfiles: profiles,
     };
   }
 
@@ -70,7 +79,7 @@ export async function assertChatSchemaReady(prisma: ChatPrismaClient): Promise<v
   // exact relations used by every turn makes an unapplied Scene migration fail
   // before admission rather than during message creation.
   await prisma.$queryRaw`
-    SELECT messages.scene_version, revisions.version
+    SELECT messages.scene_version, messages.runtime_trace, revisions.version
     FROM chat.messages AS messages
     LEFT JOIN chat.chat_scene_revisions AS revisions
       ON revisions.session_id = messages.session_id
@@ -81,6 +90,8 @@ export async function assertChatSchemaReady(prisma: ChatPrismaClient): Promise<v
 export async function warmRuntime(input: {
   prisma?: ChatPrismaClient;
   chat?: ChatModel;
+  memoryChat?: ChatModel;
+  profiles?: ChatModelProfile[];
   pingRedis?: () => Promise<void>;
   readiness?: RuntimeReadiness;
 } = {}): Promise<void> {
@@ -92,24 +103,80 @@ export async function warmRuntime(input: {
     await assertChatSchemaReady(prisma);
     await (input.pingRedis ?? pingRedis)();
 
-    let output = "";
-    for await (const chunk of chat.stream({
+    const profiles = distinctProfiles(input.profiles ?? ["free", "premium", "deluxe"].map(
+      (tier) => resolveChatModelProfile(process.env, tier),
+    ));
+    const warmedProfiles: string[] = [];
+    for (const profile of profiles) {
+      let output = "";
+      for await (const chunk of chat.stream({
+        model: profile.model,
+        messages: [
+          {
+            role: "system",
+            content: "You are a runtime warm-up probe. Reply with READY only.",
+          },
+          { role: "user", content: "READY" },
+        ],
+        tools: profile.supportsTools ? [READINESS_TOOL] : [],
+      })) {
+        output += chunk.delta;
+      }
+      if (!output.trim()) {
+        throw new Error(`chat model warm-up returned no content for ${profile.model}`);
+      }
+      warmedProfiles.push(`chat:${profile.provider}:${profile.model}`);
+    }
+
+    const memory = resolveChatMemoryExtractProfile(process.env);
+    const defaultProfile = profiles[0] ?? resolveChatModelProfile(process.env);
+    const memoryChat = input.memoryChat ?? input.chat ?? (
+      defaultProfile.provider === "mock"
+        ? chat
+        : new OpenAICompatibleChatModel({
+            ...defaultProfile,
+            baseUrl: memory.baseUrl,
+            model: memory.model,
+            apiKey: memory.apiKey,
+            completionTimeoutMs: memory.timeoutMs,
+          })
+    );
+    const extracted = await memoryChat.complete({
+      model: memory.model,
       messages: [
-        {
-          role: "system",
-          content: "You are a runtime warm-up probe. Reply with READY only.",
-        },
+        { role: "system", content: "Return {} to confirm memory extraction readiness." },
         { role: "user", content: "READY" },
       ],
-    })) {
-      output += chunk.delta;
-    }
-    if (!output.trim()) throw new Error("chat model warm-up returned no content");
-    readiness.warmed();
+      maxTokens: 16,
+    });
+    if (!extracted.content.trim()) throw new Error("memory extractor warm-up returned no content");
+    warmedProfiles.push(`memory:${memory.model}`);
+    readiness.warmed(warmedProfiles);
   } catch (error) {
     readiness.failed(error);
     throw error;
   }
+}
+
+const READINESS_TOOL = {
+  name: "runtime_readiness_probe",
+  description: "Validate that the exact production tool schema is accepted.",
+  parameters: {
+    type: "object",
+    properties: { ready: { type: "boolean" } },
+    required: ["ready"],
+    additionalProperties: false,
+  },
+};
+
+function distinctProfiles(profiles: ChatModelProfile[]): ChatModelProfile[] {
+  const seen = new Set<string>();
+  return profiles.filter((profile) => {
+    const key = `${profile.provider}\u0000${profile.baseUrl}\u0000${profile.model}\u0000${profile.supportsTools}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 async function pingRedis(): Promise<void> {

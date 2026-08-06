@@ -1123,6 +1123,16 @@ const chatMessageSchema = z
     content: z.string(),
     status: z.string().optional(),
     attachments: z.array(chatAttachmentSchema).optional(),
+    sceneVersion: z.number().int().nonnegative().optional(),
+    scene: z.object({
+      schemaVersion: z.literal(1),
+      version: z.number().int().nonnegative(),
+      location: z.string().nullable(),
+      time: z.string().nullable(),
+      participants: z.array(z.string()),
+      emotionalBeat: z.string().nullable(),
+      unresolvedThreads: z.array(z.string()),
+    }).nullable().optional(),
   })
   .passthrough();
 

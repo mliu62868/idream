@@ -53,7 +53,35 @@ export interface VoiceClipPort {
     // character today; later a per-message emotion tag from chat can flow in here.
     tone?: string;
     delivery?: FishAudioDeliverySettings;
-  }): Promise<ProviderResult<{ key: string; durationMs: number }>>;
+    scene?: {
+      version: number;
+      location: string | null;
+      time: string | null;
+      participants: string[];
+      emotionalBeat: string | null;
+      unresolvedThreads: string[];
+    } | null;
+  }): Promise<ProviderResult<{
+    key: string;
+    durationMs: number;
+    sceneApplied?: boolean;
+    sceneAdapter?: string;
+  }>>;
+}
+
+export function voiceSceneInstructions(
+  scene: Parameters<VoiceClipPort["synthesize"]>[0]["scene"],
+): string | null {
+  if (!scene) return null;
+  return [
+    scene.location ? `Location: ${scene.location}.` : null,
+    scene.time ? `Time: ${scene.time}.` : null,
+    scene.emotionalBeat ? `Emotional beat: ${scene.emotionalBeat}.` : null,
+    scene.participants.length > 0 ? `Present: ${scene.participants.join(", ")}.` : null,
+    scene.unresolvedThreads.length > 0
+      ? `Unresolved context: ${scene.unresolvedThreads.join("; ")}.`
+      : null,
+  ].filter(Boolean).join(" ") || "Maintain continuity with the current scene.";
 }
 
 export interface VoiceIdentityPort {

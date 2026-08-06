@@ -3346,6 +3346,12 @@ export function PreviewDiff({
               </fieldset>
             ))}
           </div>
+          <div className="mt-6 rounded-lg border border-[var(--ad-border)] p-4">
+            <h4 className="font-semibold">{t("Character Soul Behavior Evaluation")}</h4>
+            <p className="mt-2 text-sm text-[var(--ad-text-muted)]">
+              {t("Submitting QA runs the versioned behavior evaluator and every distinct production Chat profile on the server. Transcripts, timings, adapter identity, and hashes are recorded automatically.")}
+            </p>
+          </div>
           <label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">
             {t("QA reason")}
             <input

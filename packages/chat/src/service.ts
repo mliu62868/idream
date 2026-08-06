@@ -27,6 +27,7 @@ import { assertSessionAccess, lifecycleOf, requireSession } from "./session-acce
 import { resolvePolicy, snapshotFromView } from "./policy.js";
 import type { ChatPolicy } from "./policy.js";
 import { logger } from "./logger.js";
+import { parseSceneState } from "./scene.js";
 import {
   CHAT_QUEUES,
   CHAT_TO_MAIN_EVENTS,
@@ -211,8 +212,72 @@ export async function getSession(
     session,
     messages: messages.map((message) => ({
       ...message,
+      scene: runtimeScene(message.runtimeTrace),
       attachments: byMessage.get(message.id) ?? [],
     })),
+  };
+}
+
+function runtimeScene(value: unknown): unknown | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const scene = (value as Record<string, unknown>).scene;
+  return scene && typeof scene === "object" && !Array.isArray(scene) ? scene : null;
+}
+
+/** Exact, user-authorized assistant bytes consumed by downstream Voice. */
+export async function getMessageVoiceAuthority(
+  input: { userId: string; sessionId: string; messageId: string },
+  override?: Partial<ChatContext>,
+) {
+  const { prisma } = ctx(override);
+  await assertActiveUserAuthority(prisma, input.userId);
+  const session = await requireSession(prisma, input, {
+    require: "not_deleted",
+    denial: { kind: "not_found" },
+  });
+  const message = await prisma.message.findFirst({
+    where: {
+      id: input.messageId,
+      sessionId: session.id,
+      role: "assistant",
+      status: "sent",
+      deletedAt: null,
+    },
+    include: {
+      versions: { where: { selected: true }, take: 2 },
+    },
+  });
+  if (!message) throw new ChatError("message_not_found", "message not found", 404);
+  if (message.versions.length !== 1) {
+    throw new ChatError("message_version_ambiguous", "assistant message has no unique selected version", 409);
+  }
+  const version = message.versions[0]!;
+  if (version.content !== message.content) {
+    throw new ChatError("message_version_drift", "selected assistant bytes do not match the message", 409);
+  }
+  const trace = version.runtimeTrace;
+  if (!trace || typeof trace !== "object" || Array.isArray(trace)) {
+    throw new ChatError("runtime_trace_missing", "assistant attempt runtime trace is missing", 409);
+  }
+  const traceRecord = trace as Record<string, unknown>;
+  if (traceRecord.schemaVersion !== 1 || traceRecord.attempt !== version.attempt) {
+    throw new ChatError("runtime_trace_invalid", "assistant attempt runtime trace is invalid", 409);
+  }
+  const scene = parseSceneState(traceRecord.scene);
+  if (traceRecord.scene !== null && !scene) {
+    throw new ChatError("runtime_scene_invalid", "assistant attempt Scene is invalid", 409);
+  }
+  return {
+    schemaVersion: 1 as const,
+    sessionId: session.id,
+    messageId: message.id,
+    characterId: session.characterId,
+    text: version.content,
+    attempt: version.attempt,
+    sceneVersion: scene?.version ?? 0,
+    scene,
+    characterContentVersionId: message.characterContentVersionId,
+    characterReleaseId: message.characterReleaseId,
   };
 }
 

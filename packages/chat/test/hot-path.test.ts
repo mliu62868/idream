@@ -161,6 +161,11 @@ describe("chat hot path (P0-3)", () => {
       where: { messageId: res.assistantMessageId, selected: true },
     });
     expect(version?.content).toBe(after?.content);
+    expect(version?.runtimeTrace).toMatchObject({
+      schemaVersion: 1,
+      attempt: 1,
+      assistantMessageId: res.assistantMessageId,
+    });
 
     // usage incremented
     const usage = await prisma.chatUsage.findFirst({ where: { userId: USER } });
@@ -203,6 +208,7 @@ describe("chat hot path (P0-3)", () => {
     expect(versions.length).toBe(2);
     expect(versions.filter((v) => v.selected).length).toBe(1);
     expect(versions.at(-1)?.attempt).toBe(2);
+    expect(versions.map((version) => (version.runtimeTrace as { attempt?: number })?.attempt)).toEqual([1, 2]);
   });
 
   it("edits the latest user turn and regenerates the paired assistant reply", async () => {

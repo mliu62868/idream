@@ -11,6 +11,8 @@ import {
   imageReferenceInputsForGenerationJob,
 } from "@/server/ai/reference-images";
 import { dispatchV1 } from "@/server/modules/ourdream/service";
+import { compileUserCharacterContent } from "@/server/modules/ourdream/character-soul";
+import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import {
   AGE_GATE_COOKIE_HEADER,
   api,
@@ -42,12 +44,24 @@ async function seedCurrentPublicCharacterAuthority(input: {
   const avatarAssetId = `${input.characterId}-public-avatar`;
   const projectId = `${input.characterId}-public-project`;
   const releaseId = `${input.characterId}-public-release`;
+  const contentVersionId = `${releaseId}-content`;
   const snapshotHash = `${releaseId}-snapshot`;
 
   await prisma.$transaction(async (tx) => {
     const character = await tx.character.findUniqueOrThrow({
       where: { id: input.characterId },
-      select: { creatorId: true, source: true },
+      select: {
+        creatorId: true,
+        source: true,
+        name: true,
+        age: true,
+        gender: true,
+        relationship: true,
+        description: true,
+        style: true,
+        appearance: true,
+        advancedDetails: true,
+      },
     });
     const generatedUserRelease = character.source === "user";
     if (generatedUserRelease && character.creatorId !== input.ownerId) {
@@ -77,9 +91,34 @@ async function seedCurrentPublicCharacterAuthority(input: {
         },
       })),
     });
+    const compiledContent = compileUserCharacterContent({
+      name: character.name,
+      age: character.age,
+      gender: character.gender,
+      relationship: character.relationship,
+      description: character.description,
+      style: character.style,
+      appearance: character.appearance,
+      advancedDetails: character.advancedDetails,
+    });
+    await tx.characterContentVersion.create({
+      data: {
+        id: contentVersionId,
+        characterId: input.characterId,
+        version: 1,
+        contentHash: compiledContent.contentHash,
+        personaSnapshot: toInputJson(compiledContent.personaSnapshot),
+        openingSnapshot: toInputJson(compiledContent.openingSnapshot),
+        appearanceSnapshot: toInputJson(compiledContent.appearanceSnapshot),
+        sourceType: "test",
+      },
+    });
     await tx.character.update({
       where: { id: input.characterId },
-      data: { imageAssetId: avatarAssetId },
+      data: {
+        imageAssetId: avatarAssetId,
+        currentContentVersionId: contentVersionId,
+      },
     });
     await tx.characterProject.create({
       data: {
@@ -95,7 +134,7 @@ async function seedCurrentPublicCharacterAuthority(input: {
         id: releaseId,
         projectId,
         revisionId: `${releaseId}-revision`,
-        characterContentVersionId: `${releaseId}-content`,
+        characterContentVersionId: contentVersionId,
         generationProvenance: generatedUserRelease
           ? {
               schemaVersion: "character-release-generation-provenance-v2",
@@ -1769,8 +1808,15 @@ describe("feed, community, policies, analytics", () => {
         source: "user",
         style: "realistic",
         gender: "female",
+        relationship: "trusted companion",
         appearance: {},
-        advancedDetails: {},
+        advancedDetails: {
+          personality: "Observant, emotionally specific, and consistent.",
+          tone: "Natural, direct, and concise.",
+          backstory: "A stable aggregate fixture with explicit persona context.",
+          firstMessage: "I'm here. What should we talk about?",
+          exampleDialogue: ["Tell me the part that matters most."],
+        },
       })),
     });
     await prisma.characterStats.createMany({

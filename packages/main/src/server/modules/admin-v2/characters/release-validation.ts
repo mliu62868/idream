@@ -1,10 +1,13 @@
 import type { Prisma } from "@prisma/client";
 import {
+  characterSoulBehaviorBlockingCases,
+  characterSoulBehaviorEvaluationSchema,
+  characterSoulLiveCanarySchema,
   characterQaAuthorityMatches,
   characterQaProvenanceMatchesRun,
   parseCharacterReleaseAssetManifest,
 } from "@idream/shared/admin";
-import { loadCharacterSoulSnapshot } from "@idream/shared";
+import { loadCharacterSoulSnapshot, requiredChatCanaryProfiles } from "@idream/shared";
 import { env } from "@/server/lib/env";
 import {
   evaluateMediaAssetCustomerPublishability,
@@ -458,6 +461,45 @@ export async function validateCharacterReleaseSnapshot(
   const soulResult = content
     ? loadCharacterSoulSnapshot(content.personaSnapshot)
     : null;
+  const behaviorEvaluation = characterSoulBehaviorEvaluationSchema.safeParse(
+    characterQaRun?.behaviorEvaluation,
+  );
+  const behaviorAuthorityPassed = Boolean(
+    behaviorEvaluation.success &&
+    soulResult?.ok &&
+    behaviorEvaluation.data.characterContentVersionId === release.characterContentVersionId &&
+    behaviorEvaluation.data.soulFingerprint === soulResult.snapshot.compiled.fingerprint &&
+    behaviorEvaluation.data.compilerVersion === soulResult.snapshot.compiled.compilerVersion &&
+    behaviorEvaluation.data.cases.every((entry) =>
+      !characterSoulBehaviorBlockingCases.has(entry.key) || entry.result === "passed"
+    ),
+  );
+  const rawCanaries = Array.isArray(characterQaRun?.liveCanaries)
+    ? characterQaRun.liveCanaries
+    : [];
+  const parsedCanaries = rawCanaries.map((value) => characterSoulLiveCanarySchema.safeParse(value));
+  const canaries = parsedCanaries.flatMap((value) => value.success ? [value.data] : []);
+  const expectedCanaries = requiredChatCanaryProfiles(process.env);
+  const canaryByTier = new Map(canaries.map((canary) => [canary.tier, canary]));
+  const liveCanaryAuthorityPassed = Boolean(
+    soulResult?.ok &&
+    parsedCanaries.every((value) => value.success) &&
+    canaryByTier.size === canaries.length &&
+    canaries.length === expectedCanaries.length &&
+    expectedCanaries.every(({ tier, profile: expected }) => {
+      const canary = canaryByTier.get(tier);
+      return Boolean(
+        canary &&
+        canary.result === "passed" &&
+        canary.adapter === expected.adapter &&
+        canary.provider === expected.provider &&
+        canary.model === expected.model &&
+        canary.characterContentVersionId === release.characterContentVersionId &&
+        canary.soulFingerprint === soulResult.snapshot.compiled.fingerprint &&
+        canary.compilerVersion === soulResult.snapshot.compiled.compilerVersion
+      );
+    }),
+  );
   const opening = content ? releaseRecord(content.openingSnapshot) : {};
   const checks: ValidationCheck[] = [
     {
@@ -526,6 +568,44 @@ export async function validateCharacterReleaseSnapshot(
               .filter((item) => item.severity === "warning")
               .map((item) => item.code)
           : [],
+      },
+    },
+    {
+      key: "soul_behavior_evaluation",
+      passed: release.legacy || behaviorAuthorityPassed,
+      evidence: {
+        legacyRelease: release.legacy,
+        qaRunId: characterQaRun?.id ?? null,
+        suiteVersion: behaviorEvaluation.success
+          ? behaviorEvaluation.data.suiteVersion
+          : null,
+        evaluatorVersion: behaviorEvaluation.success
+          ? behaviorEvaluation.data.evaluatorVersion
+          : null,
+        immutableAuthorityMatches: behaviorAuthorityPassed,
+      },
+    },
+    {
+      key: "soul_live_model_canaries",
+      passed: release.legacy || liveCanaryAuthorityPassed,
+      evidence: {
+        legacyRelease: release.legacy,
+        qaRunId: characterQaRun?.id ?? null,
+        requiredProfiles: expectedCanaries.map(({ tier, profile }) => ({
+          tier,
+          provider: profile.provider,
+          model: profile.model,
+        })),
+        observedProfiles: canaries.map((canary) => ({
+          tier: canary.tier,
+          provider: canary.provider,
+          model: canary.model,
+          firstTokenMs: canary.firstTokenMs,
+          totalMs: canary.totalMs,
+          coldStart: canary.coldStart,
+          result: canary.result,
+          evidenceRef: canary.evidenceRef,
+        })),
       },
     },
     {

@@ -161,6 +161,7 @@ export async function planAgentToolCall(input: {
 }): Promise<AgentToolPlan> {
   const messages = buildToolPlannerMessages(input.turn);
   const completion = await input.chat.complete({
+    ...input.turn,
     model: input.model,
     messages,
     maxTokens: 1_400,

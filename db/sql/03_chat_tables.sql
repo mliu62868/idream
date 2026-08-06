@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS chat.messages (
   memory_authority text NOT NULL DEFAULT 'legacy_unknown', -- enabled|disabled captured on the assistant turn
   memory_extracted_attempt integer NOT NULL DEFAULT 0,  -- latest attempt derived into file memory
   scene_version integer NOT NULL DEFAULT 0,             -- Scene revision visible when this turn began
+  runtime_trace jsonb,                                   -- immutable-attempt model/Soul/Scene trace
   created_at    timestamp NOT NULL DEFAULT (timezone('utc', now())),
   updated_at    timestamp NOT NULL DEFAULT (timezone('utc', now())),
   deleted_at    timestamp,
@@ -111,6 +112,8 @@ ALTER TABLE chat.messages
   ADD COLUMN IF NOT EXISTS memory_extracted_attempt integer NOT NULL DEFAULT 0;
 ALTER TABLE chat.messages
   ADD COLUMN IF NOT EXISTS scene_version integer NOT NULL DEFAULT 0;
+ALTER TABLE chat.messages
+  ADD COLUMN IF NOT EXISTS runtime_trace jsonb;
 ALTER TABLE chat.messages
   ADD COLUMN IF NOT EXISTS memory_authority text NOT NULL DEFAULT 'legacy_unknown';
 DO $$
@@ -164,8 +167,11 @@ CREATE TABLE IF NOT EXISTS chat.message_versions (
   model      text,
   selected   boolean NOT NULL DEFAULT false,
   attempt    integer NOT NULL DEFAULT 1,
+  runtime_trace jsonb,                                   -- immutable evidence for this exact attempt
   created_at timestamp NOT NULL DEFAULT (timezone('utc', now()))
 );
+ALTER TABLE chat.message_versions
+  ADD COLUMN IF NOT EXISTS runtime_trace jsonb;
 CREATE INDEX IF NOT EXISTS message_versions_message_idx
   ON chat.message_versions (message_id);
 

@@ -178,6 +178,31 @@ describe("dispatchChat router", () => {
     const messages = (read.body as { messages: Array<{ id: string; status: string; role: string }> }).messages;
     const assistant = messages.find((m) => m.id === assistantMessageId);
     expect(assistant?.status).toBe("sent");
+
+    const voiceAuthority = await dispatchChat({
+      method: "GET",
+      path: `/api/v1/chat/sessions/${sessionId}/messages/${assistantMessageId}/voice-authority`,
+      userId: USER,
+    });
+    expect(voiceAuthority).toMatchObject({
+      kind: "json",
+      status: 200,
+      body: {
+        sessionId,
+        messageId: assistantMessageId,
+        characterId: CHAR,
+        attempt: 1,
+      },
+    });
+    if (voiceAuthority.kind === "json") {
+      expect((voiceAuthority.body as { text: string }).text.length).toBeGreaterThan(0);
+    }
+    const foreignVoiceAuthority = await dispatchChat({
+      method: "GET",
+      path: `/api/v1/chat/sessions/${sessionId}/messages/${assistantMessageId}/voice-authority`,
+      userId: IMG_USER,
+    });
+    expect(foreignVoiceAuthority).toMatchObject({ kind: "json", status: 404 });
   });
 
   it("stream route returns an sse descriptor", async () => {

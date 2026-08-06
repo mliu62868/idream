@@ -1,5 +1,6 @@
 import {
   VOICE_PROVIDER_REPLAY,
+  voiceSceneInstructions,
   type BlobStore,
   type ProviderResult,
   type VoiceClipPort,
@@ -79,7 +80,12 @@ export class FishAudioVoiceModel implements VoiceClipPort, VoiceIdentityPort {
     if (!stored.ok) return stored;
     return {
       ok: true as const,
-      data: { key, durationMs: rendered.data.durationMs },
+      data: {
+        key,
+        durationMs: rendered.data.durationMs,
+        sceneApplied: true,
+        sceneAdapter: "fish-audio-scene-1",
+      },
     };
   }
 
@@ -188,6 +194,7 @@ export class FishAudioVoiceModel implements VoiceClipPort, VoiceIdentityPort {
     voiceId?: string;
     tone?: string;
     delivery?: Parameters<VoiceClipPort["synthesize"]>[0]["delivery"];
+    scene?: Parameters<VoiceClipPort["synthesize"]>[0]["scene"];
     requestId?: string;
     attemptNo?: number;
     idempotencyKey?: string;
@@ -213,6 +220,10 @@ export class FishAudioVoiceModel implements VoiceClipPort, VoiceIdentityPort {
         response_format: "wav",
         ...(input.delivery ? { delivery: input.delivery } : {}),
         ...(input.tone ? { tone: input.tone } : {}),
+        ...(input.scene ? {
+          scene: input.scene,
+          scene_instructions: voiceSceneInstructions(input.scene),
+        } : {}),
       }),
     });
     if (!response.ok) return response;

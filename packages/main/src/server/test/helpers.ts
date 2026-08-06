@@ -1003,6 +1003,10 @@ export async function purgeTestData(prefix: string) {
       where: { referenceSetRevisionId: { in: referenceSets.map((referenceSet) => referenceSet.id) } },
     });
     await prisma.referenceSetRevision.deleteMany({ where: { id: { in: referenceSets.map((referenceSet) => referenceSet.id) } } });
+    await prisma.character.updateMany({
+      where: { id: { in: projectCharacterIds } },
+      data: { currentContentVersionId: null },
+    });
     await prisma.characterContentVersion.deleteMany({ where: { characterId: { in: projectCharacterIds } } });
   }
   await prisma.generationRouteQualification.deleteMany({ where: { OR: [{ id: sw }, { routeFingerprint: sw }] } });

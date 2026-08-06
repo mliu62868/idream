@@ -239,6 +239,18 @@ describe("CharacterSoul", () => {
       severity: "error",
     }));
   });
+
+  it("fails closed for a future Soul schema instead of decoding it as legacy", () => {
+    const result = loadCharacterSoulSnapshot({
+      schemaVersion: 2,
+      systemPrompt: "A future runtime owns these bytes.",
+    });
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics).toContainEqual(expect.objectContaining({
+      code: "soul_schema_version_unsupported",
+      severity: "error",
+    }));
+  });
 });
 
 describe("chat persona helpers", () => {

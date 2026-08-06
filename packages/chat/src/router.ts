@@ -11,6 +11,7 @@ import {
   createSession,
   editUserMessage,
   getSession,
+  getMessageVoiceAuthority,
   listSessions,
   regenerate,
   renameSession,
@@ -118,6 +119,18 @@ async function route(req: ChatRequest): Promise<ChatResponse> {
         sessionId,
         content: str(b.content),
         idempotencyKey: req.idempotencyKey,
+      }));
+    }
+    if (
+      segs.length === 5 &&
+      segs[2] === "messages" &&
+      segs[4] === "voice-authority" &&
+      method === "GET"
+    ) {
+      return json(200, await getMessageVoiceAuthority({
+        userId,
+        sessionId,
+        messageId: segs[3],
       }));
     }
     if (segs.length === 3 && segs[2] === "archive" && method === "POST") {

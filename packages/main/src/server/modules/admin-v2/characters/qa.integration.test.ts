@@ -5,6 +5,7 @@ import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { POST as createQaRunRoute } from "@/app/api/v2/admin/characters/[id]/qa-runs/route";
 import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
+import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import {
   characterVisualProfileSnapshotHash,
   referenceSetSnapshotHash,
@@ -12,6 +13,8 @@ import {
 import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-executor";
 import { createCharacterQaRun } from "./qa";
 import { lockMediaAssetAuthority } from "./generation-authority-lock";
+import { compileCharacterSoul } from "@idream/shared";
+import { characterSoulQaEvidence } from "@/server/test/character-soul-evidence";
 
 describe("Character QA evidence authority", () => {
   const suffix = randomUUID();
@@ -71,6 +74,42 @@ describe("Character QA evidence authority", () => {
       generationRouteFingerprint: routeQ1Fingerprint,
     },
   };
+  const compiledSoul = compileCharacterSoul({
+    name: "QA authority character",
+    age: 28,
+    gender: "female",
+    relationshipArchetype: "trusted companion",
+    characterPromise: "A precise and dependable companion",
+    personality: "Observant and direct",
+    tone: "Warm and concise",
+    cadence: "Measured sentences",
+    vocabulary: ["tell me"],
+    voiceHabits: ["asks one precise question"],
+    voiceAvoid: ["generic assistant language"],
+    backstory: "An adult companion with a stable history",
+    values: ["honesty"],
+    wants: ["connection"],
+    fears: ["misunderstanding"],
+    contradictions: ["bold but careful"],
+    interaction: { initiative: "balanced", curiosity: "specific", pacing: "steady", affection: "earned", conflict: "direct", repair: "explicit" },
+    canon: { facts: ["Adult"], unknowns: ["Unstated facts stay unknown"] },
+    dialogue: {
+      positive: [{ context: "opening", user: "Hello", assistant: "Tell me what matters.", demonstrates: ["direct"] }],
+      negative: [{ assistant: "How may I assist?", reason: "generic" }],
+    },
+  });
+  if (!compiledSoul.ok || compiledSoul.diagnostics.length > 0) {
+    throw new Error("QA fixture Soul failed to compile");
+  }
+  const compiledSoulSnapshot = compiledSoul.snapshot;
+
+  function soulEvidence(result: "passed" | "failed" = "passed") {
+    return characterSoulQaEvidence({
+      characterContentVersionId: contentId,
+      personaSnapshot: compiledSoulSnapshot,
+      result,
+    });
+  }
 
   function checks(result: "passed" | "failed" = "passed") {
     return characterQaCheckKeySchema.options.map((key, index) => ({
@@ -123,7 +162,7 @@ describe("Character QA evidence authority", () => {
       characterId,
       version: 1,
       contentHash: `character-qa-content-hash-${suffix}`,
-      personaSnapshot: { description: "QA fixture" },
+      personaSnapshot: toInputJson(compiledSoulSnapshot),
       openingSnapshot: { firstMessage: "Hello" },
       appearanceSnapshot: {},
       sourceType: "test",
@@ -753,6 +792,7 @@ describe("Character QA evidence authority", () => {
       const input = {
         entityVersion: 1,
         checks: checks(),
+        ...soulEvidence(),
         reason: "QA must lock every discovered More-like source before reading authority",
       };
       const qaTransaction = prisma.$transaction(async (tx) => {

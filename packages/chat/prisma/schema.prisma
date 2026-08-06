@@ -208,6 +208,7 @@ model Message {
   memoryAuthority           String    @default("legacy_unknown") @map("memory_authority")
   memoryExtractedAttempt    Int       @default(0) @map("memory_extracted_attempt")
   sceneVersion              Int       @default(0) @map("scene_version")
+  runtimeTrace              Json?     @map("runtime_trace")
   createdAt                 DateTime  @default(now()) @map("created_at")
   updatedAt                 DateTime  @default(now()) @updatedAt @map("updated_at")
   deletedAt                 DateTime? @map("deleted_at")
@@ -269,13 +270,14 @@ model MessageAttachment {
 }
 
 model MessageVersion {
-  id        String   @id
-  messageId String   @map("message_id")
-  content   String
-  model     String?
-  selected  Boolean  @default(false)
-  attempt   Int      @default(1)
-  createdAt DateTime @default(now()) @map("created_at")
+  id           String   @id
+  messageId    String   @map("message_id")
+  content      String
+  model        String?
+  selected     Boolean  @default(false)
+  attempt      Int      @default(1)
+  runtimeTrace Json?    @map("runtime_trace")
+  createdAt    DateTime @default(now()) @map("created_at")
 
   message Message @relation(fields: [messageId], references: [id])
 

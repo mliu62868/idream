@@ -163,6 +163,41 @@ export async function processGenerate(
   });
   const context = preparedTurnRuntime(prepared);
   await hooks.afterContextBuilt?.(context);
+  const runtimeTrace = JSON.parse(JSON.stringify({
+    schemaVersion: 1,
+    attempt: payload.attempt,
+    assistantMessageId: payload.assistantMessageId,
+    userMessageId: payload.userMessageId,
+    profile: prepared.profile,
+    trace: prepared.trace,
+    budget: prepared.budget,
+    scene: context.scene,
+  })) as Prisma.InputJsonValue;
+  const attemptVersionId = `mv:${payload.assistantMessageId}:${payload.attempt}`;
+  // INVARIANT: every attempt that reaches PreparedTurn records its exact model
+  // and immutable content authority even when file memory is disabled or the
+  // provider later fails before producing a token.
+  await prisma.message.updateMany({
+    where: {
+      id: payload.assistantMessageId,
+      status: "generating",
+      attempt: payload.attempt,
+    },
+    data: { runtimeTrace },
+  });
+  await prisma.messageVersion.upsert({
+    where: { id: attemptVersionId },
+    create: {
+      id: attemptVersionId,
+      messageId: payload.assistantMessageId,
+      content: "",
+      model: prepared.model,
+      selected: false,
+      attempt: payload.attempt,
+      runtimeTrace,
+    },
+    update: { runtimeTrace },
+  });
 
   await appendStreamEvent(key, { type: "start", attempt: payload.attempt });
 
@@ -184,11 +219,7 @@ export async function processGenerate(
   };
 
   const streamPlain = async (): Promise<void> => {
-    for await (const part of providers.chat.stream({
-      model: context.policy.model,
-      characterName: context.persona.name,
-      messages: modelMessages,
-    })) {
+    for await (const part of providers.chat.stream(prepared)) {
       if (part.delta) await streamDelta(part.delta);
     }
   };
@@ -220,7 +251,7 @@ export async function processGenerate(
     let reply = "";
     try {
       const completion = await providers.chat.complete({
-        model: context.policy.model,
+        ...prepared,
         messages: followupMessages,
         maxTokens: 300,
       });
@@ -245,7 +276,7 @@ export async function processGenerate(
     try {
       const toolPlan = await planAgentToolCall({
         chat: providers.chat,
-        model: context.policy.model,
+        model: prepared.model,
         turn: prepared,
       });
       imageToolCall = toolPlan.toolCall;
@@ -290,12 +321,7 @@ export async function processGenerate(
       let toolCalls: ChatToolCall[] = [];
       let fellBackAlready = false;
       try {
-        for await (const part of providers.chat.stream({
-          model: context.policy.model,
-          characterName: context.persona.name,
-          messages: modelMessages,
-          tools: prepared.tools,
-        })) {
+        for await (const part of providers.chat.stream(prepared)) {
           if (part.toolCalls) toolCalls = part.toolCalls;
           if (part.delta) await streamDelta(part.delta);
         }
@@ -352,7 +378,7 @@ export async function processGenerate(
     });
     return { status: "failed" };
   }
-  const model = context.policy.model;
+  const model = prepared.model;
   const usage = {
     promptTokens: prepared.budget.usedInputTokens,
     completionTokens: estimateTokens(content),
@@ -570,15 +596,9 @@ async function finalize(
         where: { messageId: payload.assistantMessageId, selected: true },
         data: { selected: false },
       });
-      await tx.messageVersion.create({
-        data: {
-          id: createId("mv"),
-          messageId: payload.assistantMessageId,
-          content,
-          model,
-          selected: true,
-          attempt: payload.attempt,
-        },
+      await tx.messageVersion.update({
+        where: { id: `mv:${payload.assistantMessageId}:${payload.attempt}` },
+        data: { content, model, selected: true },
       });
 
       // usage++ (period = UTC day; free quota is daily, design P0-C)

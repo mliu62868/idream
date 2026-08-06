@@ -695,6 +695,11 @@ export const characterWorkspaceDetailSchema = z
         fingerprint: z.string().nullable(),
       }).strict().nullable(),
       changedFields: z.array(z.string()).readonly(),
+      requiredCanaryProfiles: z.array(z.object({
+        tier: z.enum(["free", "premium", "deluxe"]),
+        provider: z.string().min(1),
+        model: z.string().min(1),
+      }).strict()).min(1).max(3).readonly(),
     }).strict(),
     journey: characterProductionJourneySchema,
     mediaOperations: characterMediaOperationsProjectionSchema,

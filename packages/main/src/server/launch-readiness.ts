@@ -1966,7 +1966,7 @@ async function addCharacterSoulAuthorityPreflight(
         area: "Chat",
         status: audit.drain.nullPinSessions === 0 && audit.drain.legacyPinnedSessions === 0
           ? "pass"
-          : "warn",
+          : "fail",
         message: `${audit.drain.activeSessions} active sessions; ${audit.drain.nullPinSessions} null pins; ${audit.drain.legacyPinnedSessions} legacy pins.`,
         remediation: "Observe drain and use the compatibility-QA migration command only when an old session must move.",
       },

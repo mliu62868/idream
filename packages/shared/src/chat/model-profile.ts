@@ -1,6 +1,7 @@
 export type ChatModelProvider = "mock" | "openai" | "pipeline";
 
 export interface ChatModelProfile {
+  adapter: "mock-v1" | "openai-compatible-v1";
   provider: ChatModelProvider;
   baseUrl: string;
   model: string;
@@ -48,6 +49,7 @@ export function resolveChatModelProfile(
     DEFAULT_TIMEOUT_MS,
   );
   return {
+    adapter: provider === "mock" ? "mock-v1" : "openai-compatible-v1",
     provider,
     baseUrl:
       source.CHAT_MODEL_BASE_URL ??
@@ -85,6 +87,18 @@ export function resolveChatMemoryExtractProfile(
     apiKey: source.CHAT_MEMORY_EXTRACT_LLM_KEY ?? chat.apiKey ?? "omlx",
     timeoutMs: positiveInt(source.CHAT_MEMORY_EXTRACT_TIMEOUT_MS, 45_000),
   };
+}
+
+/** Exact distinct production surfaces that must each carry live Soul canary evidence. */
+export function requiredChatCanaryProfiles(source: Environment = process.env) {
+  const seen = new Set<string>();
+  return (["free", "premium", "deluxe"] as const).flatMap((tier) => {
+    const profile = resolveChatModelProfile(source, tier);
+    const key = `${profile.adapter}\u0000${profile.provider}\u0000${profile.baseUrl}\u0000${profile.model}\u0000${profile.supportsTools}`;
+    if (seen.has(key)) return [];
+    seen.add(key);
+    return [{ tier, profile }];
+  });
 }
 
 function parseProvider(value: string): ChatModelProvider {

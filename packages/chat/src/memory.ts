@@ -6,10 +6,6 @@
 import type { ChatPrismaClient } from "./db.js";
 import type { Prisma } from "../generated/client/client.js";
 import { chatPrisma, chatProjectorPrisma } from "./db.js";
-import {
-  relationshipEvidenceForTurn,
-} from "./relationship.js";
-import { extractCandidates } from "./extract.js";
 import { resolvePolicy, snapshotFromView } from "./policy.js";
 import {
   projectChatFileMutations,
@@ -20,10 +16,10 @@ import { loadSessionLinkage } from "./relationship-authority.js";
 import { createId } from "./id.js";
 import {
   applySceneDelta,
-  deriveSceneDelta,
   emptySceneState,
   parseSceneState,
 } from "./scene.js";
+import { extractTurnDerivations } from "./turn-extraction.js";
 
 export type MemoryExtractPayload = ChatMemoryExtractPayload;
 
@@ -91,18 +87,17 @@ export async function processMemoryExtract(
 
   // Semantic extraction (igrep mem derive) when enabled, regex floor otherwise —
   // off the hot path, so a slow LLM only delays this worker, never a reply.
-  const candidates = assistant.memoryAuthority === "enabled"
-    ? await extractCandidates({
-        userText: userMessage.content,
-        sourceMessageId: userMessage.id,
-        userId: session.userId,
-        characterId: session.characterId,
-      })
-    : [];
-  const sceneDelta = deriveSceneDelta({
+  const extraction = await extractTurnDerivations({
+    userId: session.userId,
+    characterId: session.characterId,
+    userMessageId: userMessage.id,
+    assistantMessageId: assistant.id,
     userText: userMessage.content,
     assistantText: assistant.content,
+    memoryEnabled: assistant.memoryAuthority === "enabled",
   });
+  const candidates = extraction.memoryCandidates;
+  const sceneDelta = extraction.sceneDelta;
   await hooks.beforeAuthorityLock?.();
 
   // The same user+turn advisory lock serializes extraction with send, edit,
@@ -238,12 +233,7 @@ export async function processMemoryExtract(
     const policy = resolvePolicy(snapshotFromView(entitlement), {
       memoryEnabled: true,
     });
-    const relationshipEvidence = relationshipEvidenceForTurn({
-      userMessageId: currentUserMessage.id,
-      assistantMessageId: currentAssistant.id,
-      userText: currentUserMessage.content,
-      assistantText: currentAssistant.content,
-    });
+    const relationshipEvidence = extraction.relationshipEvidence;
     // Commit only the immutable intent here. The projector advances the DB
     // watermark in the same completion transaction that marks this intent
     // applied, so `memoryExtractedAttempt` never claims a file write that has

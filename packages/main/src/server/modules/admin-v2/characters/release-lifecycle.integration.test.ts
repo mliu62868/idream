@@ -11,6 +11,7 @@ import { characterQaCheckKeySchema } from "@idream/shared/admin";
 import { compileCharacterSoul } from "@idream/shared";
 import { createCharacterQaRun } from "./qa";
 import { toInputJson } from "../shared/prisma-json";
+import { characterSoulQaEvidence } from "@/server/test/character-soul-evidence";
 
 describe("Character Release proposal and review lifecycle", () => {
   const suffix = randomUUID();
@@ -56,6 +57,7 @@ describe("Character Release proposal and review lifecycle", () => {
   };
   let visualProfileHash = "";
   let referenceSetHash = "";
+  let soulEvidence!: ReturnType<typeof characterSoulQaEvidence>;
 
   beforeAll(async () => {
     await prisma.user.create({ data: { id: actorId, email: `${actorId}@idream.internal`, role: "admin", status: "active" } });
@@ -239,10 +241,15 @@ describe("Character Release proposal and review lifecycle", () => {
       }],
     });
     if (!compiledSoul.ok) throw new Error("release fixture Soul must compile");
+    soulEvidence = characterSoulQaEvidence({
+      characterContentVersionId: contentId,
+      personaSnapshot: compiledSoul.snapshot,
+    });
     await prisma.characterContentVersion.create({ data: { id: contentId, characterId, version: 1, contentHash: compiledSoul.snapshot.compiled.fingerprint, personaSnapshot: toInputJson(compiledSoul.snapshot), openingSnapshot: { firstMessage: "Hello" }, appearanceSnapshot: { style: "realistic" }, sourceType: "test", createdById: actorId } });
     await prisma.characterProject.create({ data: { id: projectId, characterId, ownerId: actorId, phase: "qa", audience: {}, successCriteria: ["five_turn_qa"], draftImageAssetId: draftAssetId, draftAssetPack, activeKey: `official:${characterId}` } });
     await prisma.characterRevision.create({ data: { id: revisionId, projectId, revision: 1, characterContentVersionId: contentId, projectSnapshot: {}, createdById: actorId } });
     await prisma.characterQaRun.create({ data: {
+      ...soulEvidence,
       id: qaRunId,
       characterId,
       projectId,
@@ -340,6 +347,7 @@ describe("Character Release proposal and review lifecycle", () => {
       data: { safetyStatus: "passed" },
     });
     await prisma.characterQaRun.create({ data: {
+      ...soulEvidence,
       id: failedQaRunId,
       characterId,
       projectId,
@@ -371,6 +379,7 @@ describe("Character Release proposal and review lifecycle", () => {
       },
     });
     await prisma.characterQaRun.create({ data: {
+      ...soulEvidence,
       id: recoveredQaRunId,
       characterId,
       projectId,
@@ -439,6 +448,7 @@ describe("Character Release proposal and review lifecycle", () => {
       characterId,
       {
         entityVersion: projectAfterProposal.version,
+        ...soulEvidence,
         checks: characterQaCheckKeySchema.options.map((key, index) => ({
           key,
           result: index === 0 ? "failed" : "passed",
@@ -494,6 +504,7 @@ describe("Character Release proposal and review lifecycle", () => {
       details: { blockers: expect.arrayContaining(["character_qa_authority_mismatch"]) },
     });
     await prisma.characterQaRun.create({ data: {
+      ...soulEvidence,
       id: replacementQaRunId,
       characterId,
       projectId,
@@ -533,6 +544,7 @@ describe("Character Release proposal and review lifecycle", () => {
       { method: "POST", headers },
     );
     await prisma.characterQaRun.create({ data: {
+      ...soulEvidence,
       id: postProposalFailedQaRunId,
       characterId,
       projectId,

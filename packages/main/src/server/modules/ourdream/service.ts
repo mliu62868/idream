@@ -6358,7 +6358,7 @@ async function duplicateCharacter(request: Request, id: string) {
     }
 
     const name = `${lockedSource.name} Copy`;
-    const immutablePersonaSnapshot = await loadCurrentCharacterPersonaSnapshot(
+    const immutableContentSnapshot = await loadCurrentCharacterContentSnapshot(
       tx,
       lockedSource.id,
       lockedSource.currentContentVersionId,
@@ -6372,7 +6372,7 @@ async function duplicateCharacter(request: Request, id: string) {
       gender: lockedSource.gender,
       appearance: lockedSource.appearance,
       advancedDetails: lockedSource.advancedDetails,
-      immutablePersonaSnapshot,
+      immutableContentSnapshot,
     });
     const created = await tx.character.create({
       data: {
@@ -6520,8 +6520,8 @@ async function updateCharacter(request: Request, id: string) {
     if (!existing) throw Errors.notFound("Character not found");
     const nextName = body.name ?? existing.name;
     const nextDescription = body.description ?? existing.description;
-    const immutablePersonaSnapshot = shouldRebuildPrompt
-      ? await loadCurrentCharacterPersonaSnapshot(
+    const immutableContentSnapshot = shouldRebuildPrompt
+      ? await loadCurrentCharacterContentSnapshot(
           tx,
           existing.id,
           existing.currentContentVersionId,
@@ -6537,7 +6537,7 @@ async function updateCharacter(request: Request, id: string) {
           gender: existing.gender,
           appearance: existing.appearance,
           advancedDetails: existing.advancedDetails,
-          immutablePersonaSnapshot: immutablePersonaSnapshot ?? undefined,
+          immutableContentSnapshot: immutableContentSnapshot ?? undefined,
         })
       : null;
     const activeProfile = shouldRebuildPrompt
@@ -7084,11 +7084,15 @@ function compileUserSoulOrBadRequest(input: UserCharacterSoulInput) {
   }
 }
 
-async function loadCurrentCharacterPersonaSnapshot(
+async function loadCurrentCharacterContentSnapshot(
   tx: Prisma.TransactionClient,
   characterId: string,
   currentContentVersionId: string | null,
-): Promise<unknown | undefined> {
+): Promise<{
+  personaSnapshot: unknown;
+  openingSnapshot: unknown;
+  appearanceSnapshot: unknown;
+} | undefined> {
   let contentVersionId = currentContentVersionId;
   if (!contentVersionId) {
     const serving = await tx.characterServing.findUnique({
@@ -7104,9 +7108,16 @@ async function loadCurrentCharacterPersonaSnapshot(
   if (!contentVersionId) return undefined;
   const content = await tx.characterContentVersion.findFirst({
     where: { id: contentVersionId, characterId },
-    select: { personaSnapshot: true },
+    select: {
+      personaSnapshot: true,
+      openingSnapshot: true,
+      appearanceSnapshot: true,
+    },
   });
-  return content?.personaSnapshot;
+  if (!content) {
+    throw Errors.conflict("The Character's immutable content version is unavailable");
+  }
+  return content;
 }
 
 function requiredCharacterPersonaFields(input: {

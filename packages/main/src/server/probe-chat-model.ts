@@ -1,9 +1,9 @@
 import {
   looksLikeMockChatResponse,
+  OpenAICompatibleChatModel,
   resolveChatModelProfile,
   type ChatModelProfile,
 } from "@idream/shared";
-import { OpenAIChatModel } from "../../../chat/src/providers";
 import type { ChatChunk, ChatModel } from "./providers/types";
 import type { ChatModelProbeEvidence, ProbeReportOf } from "./readiness/evidence";
 import {
@@ -140,7 +140,7 @@ async function runProbe(input: {
 function createChatModel(profile: ChatModelProfile): ChatModel {
   if (profile.provider === "mock") return new MockProbeChatModel();
   // The probe executes the exact production adapter and timeout semantics.
-  return new OpenAIChatModel(profile);
+  return new OpenAICompatibleChatModel(profile);
 }
 
 main().catch((error: unknown) => {

@@ -11,8 +11,17 @@ import { buildCompanionSystemPrompt } from "./prompt.js";
 import { registryChatTools } from "./agent-tools.js";
 
 export interface PreparedTurn {
+  model: string;
+  characterName: string;
   messages: ModelMessage[];
   tools: ChatToolDefinition[];
+  profile: {
+    tier: string;
+    provider: string;
+    baseUrl: string;
+    model: string;
+    supportsTools: boolean;
+  };
   budget: {
     maxInputTokens: number;
     usedInputTokens: number;
@@ -26,6 +35,7 @@ export interface PreparedTurn {
     sceneVersion: number;
     relationshipVersion: number | null;
     fileContextRevision: string;
+    profile: PreparedTurn["profile"];
   };
 }
 
@@ -44,43 +54,34 @@ export async function prepareCompanionTurn(
   input: PrepareCompanionTurnInput,
 ): Promise<PreparedTurn> {
   const context = await buildContext(input);
-  const messages = buildModelMessages(context);
-  const fixedContextChars = messages
-    .filter((message) => message.role === "system")
-    .reduce((total, message) => total + message.content.length, 0) +
-    (context.openingMessage?.length ?? 0) +
-    context.recentMessages.reduce(
-      (total, message) => total + (message.photoSummary?.length ?? 0),
-      0,
-    );
-  const usedInputTokens = estimateTokens(
-    messages.map((message) => message.content).join("\n"),
-  );
+  const fitted = fitPreparedTurnBudget(context);
+  const profile: PreparedTurn["profile"] = {
+    tier: fitted.context.policy.tier,
+    provider: fitted.context.policy.modelProfile.provider,
+    baseUrl: fitted.context.policy.modelProfile.baseUrl,
+    model: fitted.context.policy.modelProfile.model,
+    supportsTools: fitted.context.policy.modelProfile.supportsTools,
+  };
   const prepared: PreparedTurn = {
-    messages,
-    tools: context.policy.imageToolEnabled ? registryChatTools() : [],
-    budget: {
-      // Existing policy budgets transcript characters. Keep the approximation
-      // explicit until a tokenizer is introduced; do not pretend it is exact.
-      maxInputTokens: Math.max(
-        1,
-        Math.ceil((context.policy.maxContextChars + fixedContextChars) / 4),
-      ),
-      usedInputTokens,
-      dropped: [...context.dropped],
-    },
+    model: profile.model,
+    characterName: fitted.context.persona.name,
+    messages: fitted.messages,
+    tools: fitted.tools,
+    profile,
+    budget: fitted.budget,
     trace: {
       characterContentVersionId:
-        context.persona.characterContentVersionId ?? "legacy-unattributed",
-      characterReleaseId: context.persona.characterReleaseId,
-      soulFingerprint: context.persona.soulFingerprint ?? "legacy-unattributed",
-      compilerVersion: context.persona.compilerVersion ?? "legacy-unattributed",
-      sceneVersion: context.sceneVersion,
-      relationshipVersion: context.relationship?.version ?? null,
-      fileContextRevision: context.fileContextRevision.toString(),
+        fitted.context.persona.characterContentVersionId ?? "legacy-unattributed",
+      characterReleaseId: fitted.context.persona.characterReleaseId,
+      soulFingerprint: fitted.context.persona.soulFingerprint ?? "legacy-unattributed",
+      compilerVersion: fitted.context.persona.compilerVersion ?? "legacy-unattributed",
+      sceneVersion: fitted.context.sceneVersion,
+      relationshipVersion: fitted.context.relationship?.version ?? null,
+      fileContextRevision: fitted.context.fileContextRevision.toString(),
+      profile,
     },
   };
-  runtimeByPreparedTurn.set(prepared, context);
+  runtimeByPreparedTurn.set(prepared, fitted.context);
   return prepared;
 }
 
@@ -104,6 +105,76 @@ function buildModelMessages(context: BuiltContext): ModelMessage[] {
         : message.content,
     })),
   ];
+}
+
+/**
+ * INVARIANT: the tier budget covers every adapter byte. Degradation order is
+ * fixed and observable: memory, then summary, then the oldest transcript.
+ */
+export function fitPreparedTurnBudget(context: BuiltContext): {
+  context: BuiltContext;
+  messages: ModelMessage[];
+  tools: ChatToolDefinition[];
+  budget: PreparedTurn["budget"];
+} {
+  const fitted: BuiltContext = {
+    ...context,
+    longTermMemories: [...context.longTermMemories],
+    recentMessages: context.recentMessages.map((message) => ({ ...message })),
+    dropped: [...context.dropped],
+  };
+  const tools = fitted.policy.imageToolEnabled ? registryChatTools() : [];
+  const maxInputTokens = Math.max(1, Math.ceil(fitted.policy.maxContextChars / 4));
+  const dropped = new Set(fitted.dropped);
+  const calculate = () => {
+    const messages = buildModelMessages(fitted);
+    const usedInputTokens = estimateTokens(
+      `${messages.map((message) => message.content).join("\n")}\n${JSON.stringify(tools)}`,
+    );
+    return { messages, usedInputTokens };
+  };
+
+  let calculated = calculate();
+  if (calculated.usedInputTokens > maxInputTokens && fitted.longTermMemories.length > 0) {
+    fitted.longTermMemories = [];
+    dropped.add("memory");
+    calculated = calculate();
+  }
+  if (calculated.usedInputTokens > maxInputTokens && fitted.sessionSummary) {
+    fitted.sessionSummary = null;
+    dropped.add("summary");
+    calculated = calculate();
+  }
+  while (calculated.usedInputTokens > maxInputTokens && fitted.recentMessages.length > 1) {
+    // INVARIANT: the transcript is a sequence of user-led exchanges. Dropping a
+    // single message can make an old assistant reply look like an unsolicited
+    // instruction, so budget pressure removes the whole oldest exchange.
+    fitted.recentMessages.shift();
+    while (
+      fitted.recentMessages.length > 1 &&
+      fitted.recentMessages[0]?.role !== "user"
+    ) {
+      fitted.recentMessages.shift();
+    }
+    dropped.add("transcript");
+    calculated = calculate();
+  }
+  if (calculated.usedInputTokens > maxInputTokens) {
+    throw new Error(
+      `PreparedTurn fixed context requires ${calculated.usedInputTokens} tokens but tier ${fitted.policy.tier} allows ${maxInputTokens}`,
+    );
+  }
+  fitted.dropped = [...dropped];
+  return {
+    context: fitted,
+    messages: calculated.messages,
+    tools,
+    budget: {
+      maxInputTokens,
+      usedInputTokens: calculated.usedInputTokens,
+      dropped: [...dropped],
+    },
+  };
 }
 
 function estimateTokens(text: string): number {
