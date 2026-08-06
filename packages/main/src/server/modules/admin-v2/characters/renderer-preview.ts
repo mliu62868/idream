@@ -44,6 +44,13 @@ function exactPackMatches(
   return previewPurposes.every((purpose) => actual[purpose] === expected[purpose]);
 }
 
+export function characterPreviewMediaUrl(value: string, token: string) {
+  if (!value.startsWith("/user-content/")) return value;
+  const url = new URL(value, "http://localhost");
+  url.searchParams.set("characterPreview", token);
+  return `${url.pathname}${url.search}`;
+}
+
 export async function loadCharacterRendererPreview(token: string) {
   const authority = verifyCharacterPreviewToken(token, env.BETTER_AUTH_SECRET);
   if (!authority) return null;
@@ -110,8 +117,10 @@ export async function loadCharacterRendererPreview(token: string) {
     const asset = imageAssetById.get(assetId)!;
     return [purpose, {
       assetId,
-      url: asset.url,
-      thumbnailUrl: asset.thumbnailUrl,
+      url: characterPreviewMediaUrl(asset.url, token),
+      thumbnailUrl: asset.thumbnailUrl
+        ? characterPreviewMediaUrl(asset.thumbnailUrl, token)
+        : null,
     }];
   })) as Record<PreviewPurpose, {
     assetId: string;

@@ -15,6 +15,7 @@ import {
   isCharacterAssetApprovalActionable,
   isCharacterIdentityAuthorityReady,
   nextIncompleteCharacterAssetPurpose,
+  preferredCharacterAssetRunId,
   resolveCharacterCandidateVisualState,
   resolveCharacterCustomerPreviewAssets,
   resolveCharacterAssetReviewEvidence,
@@ -40,6 +41,61 @@ function journey(
 }
 
 describe("Character Asset Studio flow", () => {
+  it("opens a newer active Run instead of mistaking the draft-pinned Run for the review target", () => {
+    const counts = {
+      total: 1,
+      generated: 1,
+      reviewed: 0,
+      approved: 0,
+      placed: 0,
+      failed: 0,
+    };
+    expect(preferredCharacterAssetRunId({
+      purpose: "character_cover",
+      pinnedRunId: "draft-run",
+      runs: [
+        {
+          id: "new-review-run",
+          purpose: "character_cover",
+          lifecycleState: "active",
+          executionOutcome: "succeeded",
+          reviewState: "pending",
+          counts,
+        },
+        {
+          id: "draft-run",
+          purpose: "character_cover",
+          lifecycleState: "active",
+          executionOutcome: "succeeded",
+          reviewState: "complete",
+          counts: { ...counts, reviewed: 1, approved: 1 },
+        },
+      ],
+    })).toBe("new-review-run");
+  });
+
+  it("keeps the draft-pinned Run as the default when newer history has no remaining action", () => {
+    expect(preferredCharacterAssetRunId({
+      purpose: "character_cover",
+      pinnedRunId: "draft-run",
+      runs: [{
+        id: "closed-rejected-run",
+        purpose: "character_cover",
+        lifecycleState: "closed",
+        executionOutcome: "succeeded",
+        reviewState: "complete",
+        counts: {
+          total: 1,
+          generated: 1,
+          reviewed: 1,
+          approved: 0,
+          placed: 0,
+          failed: 0,
+        },
+      }],
+    })).toBe("draft-run");
+  });
+
   it("summarizes authority blockers as operator actions without leaking raw codes", () => {
     expect(characterAssetReadinessSummary([
       "visual_anchor_missing",

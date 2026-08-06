@@ -66,6 +66,34 @@ export type CharacterAssetPurpose = typeof characterAssetPurposes[number];
 export const characterAssetStudioLayoutClass =
   "grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_380px]";
 
+type CharacterAssetRunChoice = Pick<
+  CreativeRun,
+  "id" | "purpose" | "lifecycleState" | "executionOutcome" | "reviewState" | "counts"
+>;
+
+export function preferredCharacterAssetRunId(input: {
+  readonly runs: readonly CharacterAssetRunChoice[];
+  readonly purpose: CharacterAssetPurpose;
+  readonly pinnedRunId?: string | null;
+}) {
+  const purposeRuns = input.runs.filter((run) => run.purpose === input.purpose);
+  // INVARIANT: 草稿选择是发布候选权威，不是审核焦点权威。新活跃 Run 只要仍有
+  // 生成、审核或采用动作，就必须先展示；否则运营会误把旧草稿当成刚生成的候选。
+  const actionable = purposeRuns.find((run) =>
+    run.id !== input.pinnedRunId &&
+    run.lifecycleState === "active" &&
+    (
+      run.executionOutcome !== "succeeded" ||
+      run.reviewState !== "complete" ||
+      run.counts.approved > run.counts.placed
+    )
+  );
+  return actionable?.id ??
+    input.pinnedRunId ??
+    purposeRuns[0]?.id ??
+    null;
+}
+
 export type CharacterSourceVariationBlocker =
   | "no_qualified_route"
   | "profile_init_image_unsupported"
@@ -1123,9 +1151,11 @@ export function CharacterAssetStudio({
         data.project.draftAssetSelections?.[desiredPurpose]?.runId;
       selectRunId(
         committedTargetId ??
-          selectedRunForPurpose ??
-          scoped.find((run) => run.purpose === desiredPurpose)?.id ??
-          null,
+          preferredCharacterAssetRunId({
+            runs: scoped,
+            purpose: desiredPurpose,
+            pinnedRunId: selectedRunForPurpose,
+          }),
       );
     }
     return scoped;
@@ -1453,9 +1483,11 @@ export function CharacterAssetStudio({
     setActivePurpose(purpose);
     setMessage(null);
     const selectedRunForPurpose = data.project.draftAssetSelections?.[purpose]?.runId;
-    const existing = runs.find((run) => run.id === selectedRunForPurpose) ??
-      runs.find((run) => run.purpose === purpose);
-    const nextRunId = selectedRunForPurpose ?? existing?.id ?? null;
+    const nextRunId = preferredCharacterAssetRunId({
+      runs,
+      purpose,
+      pinnedRunId: selectedRunForPurpose,
+    });
     selectRunId(nextRunId);
     if (!nextRunId || nextRunId !== selectedRun?.id) setSelectedRun(null);
     setSelectedIndex(0);

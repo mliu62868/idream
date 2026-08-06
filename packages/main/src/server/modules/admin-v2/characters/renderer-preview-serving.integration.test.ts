@@ -2,9 +2,13 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
+import { dispatchV1 } from "@/server/modules/ourdream/service";
 import { getCharacterWorkspace } from "./workspace";
 import { issueCharacterPreviewToken } from "./preview-token";
-import { loadCharacterRendererPreview } from "./renderer-preview";
+import {
+  characterPreviewMediaUrl,
+  loadCharacterRendererPreview,
+} from "./renderer-preview";
 
 describe.sequential("Character renderer preview Serving authority", () => {
   const suffix = randomUUID();
@@ -331,5 +335,47 @@ describe.sequential("Character renderer preview Serving authority", () => {
       });
     }
     await expect(loadCharacterRendererPreview(token)).resolves.toBeNull();
+  });
+
+  it("authorizes only token-pinned media inside the signed renderer preview", async () => {
+    const token = await liveToken();
+    expect(characterPreviewMediaUrl(
+      `/user-content/${Buffer.from(assetPack.character_cover).toString("base64url")}/content.webp`,
+      token,
+    )).toContain(`characterPreview=${encodeURIComponent(token)}`);
+    expect(characterPreviewMediaUrl("https://cdn.example/cover.webp", token)).toBe(
+      "https://cdn.example/cover.webp",
+    );
+
+    const originalUrl = `/assets/${assetPack.character_cover}.webp`;
+    await prisma.mediaAsset.update({
+      where: { id: assetPack.character_cover },
+      data: { url: "https://cdn.example/renderer-cover.webp" },
+    });
+    try {
+      const response = await dispatchV1(
+        new Request(
+          `http://localhost/api/v1/media/${assetPack.character_cover}/content?characterPreview=${encodeURIComponent(token)}`,
+        ),
+        ["media", assetPack.character_cover, "content"],
+      );
+      expect(response.status).toBe(302);
+      expect(response.headers.get("location")).toBe(
+        "https://cdn.example/renderer-cover.webp",
+      );
+
+      const unpinned = await dispatchV1(
+        new Request(
+          `http://localhost/api/v1/media/not-in-preview/content?characterPreview=${encodeURIComponent(token)}`,
+        ),
+        ["media", "not-in-preview", "content"],
+      );
+      expect(unpinned.status).toBe(404);
+    } finally {
+      await prisma.mediaAsset.update({
+        where: { id: assetPack.character_cover },
+        data: { url: originalUrl },
+      });
+    }
   });
 });

@@ -235,6 +235,7 @@ import {
   visualProfileDTO,
   type CharacterWithPublicRelations,
 } from "./public-read-model";
+import { loadCharacterRendererPreview } from "@/server/modules/admin-v2/characters/renderer-preview";
 
 type ApiMethod = "GET" | "POST" | "PATCH" | "DELETE" | "PUT";
 type SearchRouteSuggestion = {
@@ -5356,6 +5357,28 @@ async function downloadMedia(request: Request, id: string) {
 }
 
 async function contentMedia(request: Request, id: string) {
+  const previewToken = new URL(request.url).searchParams.get("characterPreview");
+  if (previewToken) {
+    const preview = await loadCharacterRendererPreview(previewToken);
+    const exactAsset = preview
+      ? Object.values(preview.assetPack).find((asset) => asset.assetId === id)
+      : null;
+    if (!preview || !exactAsset) throw Errors.notFound("Media not found");
+    const asset = await prisma.mediaAsset.findFirst({
+      where: {
+        id,
+        characterId: preview.authority.characterId,
+        type: "image",
+        safetyStatus: "passed",
+        deletedAt: null,
+      },
+    });
+    if (!asset || !isMediaAssetOperationalForAuthority(asset.metadata)) {
+      throw Errors.notFound("Media not found");
+    }
+    // INVARIANT: 签名预览只能读取 token 精确钉住的三张图；它不授予普通媒体库权限。
+    return contentMediaAsset(request, asset);
+  }
   const ctx = await getAuthCtx(request);
   if (ctx.userId && ctx.role && ctx.role !== "user") {
     await actorWithPermission(request, "content.asset.read");
