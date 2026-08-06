@@ -43,7 +43,9 @@ const CHARACTER_PROJECT_PHASE_AUTHORITY = defineTransitionAuthority(CHARACTER_PR
   producing: ["qa", "retired"],
   qa: ["qa", "producing", "launch_ready", "retired"],
   launch_ready: ["producing", "live_management", "retired"],
-  live_management: ["producing", "retired"],
+  // INTENT: a live Character can submit an independently reviewed replacement
+  // Release without taking the current Serving pointer offline.
+  live_management: ["producing", "qa", "retired"],
   retired: [],
 });
 

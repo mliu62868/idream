@@ -3535,6 +3535,17 @@ function ReleaseSummary({
   );
 }
 
+export function characterReleaseConfirmationVisible(input: {
+  readonly hasCandidate: boolean;
+  readonly hasReleasableQaRun: boolean;
+  readonly servingState: string | null;
+}) {
+  return input.hasCandidate ||
+    input.hasReleasableQaRun ||
+    input.servingState === "live" ||
+    input.servingState === "paused";
+}
+
 function ReleasePanel({
   data,
   permissions,
@@ -3664,6 +3675,11 @@ function ReleasePanel({
   const releasePreparationNeedsAssets =
     !data.project.draftAssetRouteAuthority.qaReady ||
     !data.preview.draft.assetPackReady;
+  const confirmationVisible = characterReleaseConfirmationVisible({
+    hasCandidate: Boolean(candidate),
+    hasReleasableQaRun: Boolean(releasableQaRun),
+    servingState: data.serving?.state ?? null,
+  });
   const propose = async () => {
     setBusy("propose");
     setError(null);
@@ -3917,7 +3933,7 @@ function ReleasePanel({
             </Link>
           </div>
         ) : null}
-        {candidate || releasableQaRun ? (
+        {confirmationVisible ? (
           <>
             <label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">
               {t("Reason")}
@@ -3927,7 +3943,7 @@ function ReleasePanel({
                 value={reason}
               />
             </label>
-            {!candidate ? (
+            {!candidate && releasableQaRun ? (
               <label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">
                 {t("Passed QA Run for this draft")}
                 <select
@@ -3995,7 +4011,7 @@ function ReleasePanel({
               </p>
             ) : null}
             <div className="mt-4 grid gap-2">
-              {!candidate ? (
+              {!candidate && releasableQaRun ? (
                 <WorkspaceButton
                   disabled={
                     !permissions.proposeRelease ||

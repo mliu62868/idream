@@ -482,6 +482,12 @@ describe("community collections", () => {
       (community.data.collections as Array<{ id: string }>).map((item) => item.id),
     ).not.toContain(privateCollection.data.collection.id);
 
+    const nonOwnerAuthority = await api("GET", "me", {
+      userId: other,
+      ageGate: true,
+    });
+    expectOk(nonOwnerAuthority);
+
     const ownerContent = await dispatchV1(
       new Request(`http://localhost/api/v1/media/${syntheticMediaId}/content`, {
         headers: {
@@ -505,9 +511,20 @@ describe("community collections", () => {
     );
     expect(nonOwnerContent.status).toBe(404);
 
+    const anonymousAuthority = await api("POST", "age-gate/accept", {
+      body: {
+        sourcePath: "/community",
+        policyVersion: "2026-06-13",
+      },
+    });
+    expectOk(anonymousAuthority);
+
     const publicContent = await dispatchV1(
       new Request(`http://localhost/api/v1/media/${syntheticMediaId}/content`, {
-        headers: { cookie: AGE_GATE_COOKIE_HEADER },
+        headers: {
+          cookie: AGE_GATE_COOKIE_HEADER,
+          "x-idream-anonymous-id": anonymousAuthority.data.anonymousId as string,
+        },
       }),
       ["media", syntheticMediaId, "content"],
     );
@@ -541,9 +558,21 @@ describe("community collections", () => {
     });
     await createMedia({ id: privateMediaId, ownerId: owner, visibility: "private" });
 
+    const acceptance = await api("POST", "age-gate/accept", {
+      body: {
+        sourcePath: "/community",
+        policyVersion: "2026-06-13",
+      },
+    });
+    expectOk(acceptance);
+    const anonymousId = acceptance.data.anonymousId as string;
+
     const publicResponse = await dispatchV1(
       new Request(`http://localhost/api/v1/media/${publicMediaId}/content`, {
-        headers: { cookie: AGE_GATE_COOKIE_HEADER },
+        headers: {
+          cookie: AGE_GATE_COOKIE_HEADER,
+          "x-idream-anonymous-id": anonymousId,
+        },
       }),
       ["media", publicMediaId, "content"],
     );
@@ -553,7 +582,10 @@ describe("community collections", () => {
 
     const privateResponse = await dispatchV1(
       new Request(`http://localhost/api/v1/media/${privateMediaId}/content`, {
-        headers: { cookie: AGE_GATE_COOKIE_HEADER },
+        headers: {
+          cookie: AGE_GATE_COOKIE_HEADER,
+          "x-idream-anonymous-id": anonymousId,
+        },
       }),
       ["media", privateMediaId, "content"],
     );

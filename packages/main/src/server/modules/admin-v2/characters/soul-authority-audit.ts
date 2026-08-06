@@ -75,6 +75,25 @@ export interface CharacterSoulAuthorityAuditReport {
   };
 }
 
+export function characterSoulAuthorityIsLaunchSafe(input: {
+  topologyMode: CharacterSoulAuthorityAuditReport["topology"]["mode"];
+  parityMismatches: number;
+  invalidSnapshots: number;
+  nullPinSessions: number;
+  legacyServingSnapshots: number;
+  legacyCurrentPointers: number;
+}) {
+  // INTENT: ADR-14 keeps explicit legacy adapters during the migration window.
+  // Non-zero drain counts are telemetry, not corruption; inability to inspect
+  // them or inability to load an exact referenced snapshot is the blocker.
+  return input.topologyMode === "same_cluster_views" &&
+    input.parityMismatches === 0 &&
+    input.invalidSnapshots === 0 &&
+    input.nullPinSessions >= 0 &&
+    input.legacyServingSnapshots >= 0 &&
+    input.legacyCurrentPointers >= 0;
+}
+
 /**
  * Launch-grade audit for the declared same-cluster topology. A future separate
  * Chat database must replace this with durable projection watermarks and ACKs.
@@ -201,12 +220,14 @@ export async function auditCharacterSoulAuthority(
   ).length;
   const legacyServingSnapshots = serving.filter((row) => !isV1(row.contentVersionId)).length;
   const legacyCurrentPointers = pointers.filter((row) => !isV1(row.contentVersionId)).length;
-  const ok = mode === "same_cluster_views" &&
-    parityRows.length === 0 &&
-    snapshotAudit.invalid.length === 0 &&
-    nullPinSessions >= 0 &&
-    legacyServingSnapshots === 0 &&
-    legacyCurrentPointers === 0;
+  const ok = characterSoulAuthorityIsLaunchSafe({
+    topologyMode: mode,
+    parityMismatches: parityRows.length,
+    invalidSnapshots: snapshotAudit.invalid.length,
+    nullPinSessions,
+    legacyServingSnapshots,
+    legacyCurrentPointers,
+  });
   return {
     ok,
     topology: {

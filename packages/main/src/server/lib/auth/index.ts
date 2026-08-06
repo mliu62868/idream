@@ -130,8 +130,6 @@ export async function getAuthCtx(request?: Request): Promise<AuthCtx> {
       ? headers?.get("x-idream-anonymous-id")
       : undefined) ??
     undefined;
-  const ageGateCookieAccepted = cookies.get(AGE_GATE_COOKIE) === "true";
-
   const testUserId = testAuthHeadersEnabled
     ? headers?.get("x-idream-user-id")
     : undefined;
@@ -160,7 +158,10 @@ export async function getAuthCtx(request?: Request): Promise<AuthCtx> {
     userId: user?.id,
     role: roleFromUser(user),
     anonymousId,
-    ageGateAccepted: ageGateCookieAccepted || acceptedInDb,
+    // INVARIANT: every service observes the same persisted acceptance. The
+    // browser cookie is only a recovery hint handled by AgeGateBoundary; Chat
+    // cannot read it and must never disagree with Main about eligibility.
+    ageGateAccepted: acceptedInDb,
     ageVerificationStatus: verificationStatus,
   };
 }

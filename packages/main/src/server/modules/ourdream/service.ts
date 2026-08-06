@@ -900,15 +900,24 @@ async function acceptAgeGate(request: Request) {
   const ctx = await getAuthCtx(request);
   const anonymousId = ctx.anonymousId ?? createAnonymousId();
 
-  await prisma.ageGateAcceptance.create({
-    data: {
-      userId: ctx.userId,
-      anonymousId,
-      country: body.country,
-      sourcePath: body.sourcePath,
+  const existing = await prisma.ageGateAcceptance.findFirst({
+    where: {
+      ...(ctx.userId ? { userId: ctx.userId } : { anonymousId }),
       policyVersion: body.policyVersion,
     },
+    select: { id: true },
   });
+  if (!existing) {
+    await prisma.ageGateAcceptance.create({
+      data: {
+        userId: ctx.userId,
+        anonymousId,
+        country: body.country,
+        sourcePath: body.sourcePath,
+        policyVersion: body.policyVersion,
+      },
+    });
+  }
   await trackEvent("age_gate_accepted", { sourcePath: body.sourcePath }, ctx);
 
   const response = ok({ accepted: true, anonymousId });

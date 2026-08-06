@@ -51,15 +51,7 @@ export function AgeGateBoundary({
       return;
     }
 
-    if (hasAgeGateCookie()) {
-      const timer = window.setTimeout(
-        () => setAuthoritativeAccepted(true),
-        0,
-      );
-      return () => window.clearTimeout(timer);
-    }
-
-    if (readLocalAcceptance()) {
+    if (hasAgeGateCookie() || readLocalAcceptance()) {
       let alive = true;
       let acceptedExternally = false;
       const accept = () => {
@@ -67,7 +59,7 @@ export function AgeGateBoundary({
         setAuthoritativeAccepted(true);
       };
       window.addEventListener("idream-age-gate-accepted", accept);
-      restoreAgeGateCookie()
+      restoreAgeGateAuthority()
         .then(() => {
           if (alive && !acceptedExternally) {
             setAuthoritativeAccepted(true);
@@ -208,7 +200,7 @@ function isAgeGateBypassPath(pathname: string) {
   );
 }
 
-async function restoreAgeGateCookie() {
+async function restoreAgeGateAuthority() {
   const response = await fetch("/api/v1/age-gate/accept", {
     method: "POST",
     headers: { "content-type": "application/json" },

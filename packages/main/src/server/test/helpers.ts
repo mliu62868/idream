@@ -79,6 +79,7 @@ export async function api(
   path: string,
   options: ApiOptions = {},
 ): Promise<ApiResult> {
+  const testAnonymousId = await materializeAgeGateAuthority(options);
   let requestBody = options.body;
   const requestBodyObject = isJsonObject(requestBody) ? requestBody : {};
   if (
@@ -114,7 +115,7 @@ export async function api(
   if (requestBody !== undefined) headers["content-type"] = "application/json";
   if (options.userId) headers["x-idream-user-id"] = options.userId;
   if (options.role) headers["x-idream-role"] = options.role;
-  if (options.anonymousId) headers["x-idream-anonymous-id"] = options.anonymousId;
+  if (testAnonymousId) headers["x-idream-anonymous-id"] = testAnonymousId;
   if (
     path.startsWith("admin/") &&
     ["POST", "PATCH", "PUT", "DELETE"].includes(method) &&
@@ -159,6 +160,37 @@ export async function api(
     headers: response.headers,
     setCookies: response.headers.getSetCookie(),
   };
+}
+
+async function materializeAgeGateAuthority(options: ApiOptions) {
+  const carriesLegacyAcceptance =
+    options.ageGate === true ||
+    options.cookie
+      ?.split(";")
+      .some((cookie) => cookie.trim() === AGE_GATE_COOKIE_HEADER);
+  if (!carriesLegacyAcceptance) return options.anonymousId;
+
+  const anonymousId = options.userId
+    ? options.anonymousId
+    : (options.anonymousId ?? "test-age-gate-anonymous");
+  const existing = await prisma.ageGateAcceptance.findFirst({
+    where: {
+      ...(options.userId ? { userId: options.userId } : { anonymousId }),
+      policyVersion: "2026-06-13",
+    },
+    select: { id: true },
+  });
+  if (!existing) {
+    await prisma.ageGateAcceptance.create({
+      data: {
+        userId: options.userId,
+        anonymousId,
+        policyVersion: "2026-06-13",
+        sourcePath: "test-helper",
+      },
+    });
+  }
+  return anonymousId;
 }
 
 function isJsonObject(value: unknown): value is Record<string, any> {

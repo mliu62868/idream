@@ -6,6 +6,7 @@ import {
   characterNoDataDiagnosis,
   characterOperationsFacts,
   characterReleaseOrdinals,
+  characterReleaseConfirmationVisible,
   characterRecentAssets,
   characterVideoSourceBroken,
   characterWorkspaceTabLabel,
@@ -114,6 +115,19 @@ function visualAsset(overrides: Partial<VisualAsset> = {}): VisualAsset {
 }
 
 describe("Character production entry", () => {
+  it("keeps destructive Serving confirmation available without a Release candidate", () => {
+    expect(characterReleaseConfirmationVisible({
+      hasCandidate: false,
+      hasReleasableQaRun: false,
+      servingState: "live",
+    })).toBe(true);
+    expect(characterReleaseConfirmationVisible({
+      hasCandidate: false,
+      hasReleasableQaRun: false,
+      servingState: null,
+    })).toBe(false);
+  });
+
   it("flags a live character whose primary image cannot serve image-to-video", () => {
     expect(characterVideoSourceBroken(workspace({ servingState: "live" }))).toBe(true);
   });

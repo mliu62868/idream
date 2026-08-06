@@ -314,6 +314,35 @@ test("age gate restores the API cookie from prior browser acceptance", async ({
   await expect(page.getByRole("button", { name: "Chat" })).toBeVisible();
 });
 
+test("age gate re-materializes database authority from a legacy cookie", async ({
+  context,
+  page,
+}) => {
+  await context.clearCookies();
+  await context.addCookies([
+    {
+      name: "AdultContentAcceptedOD",
+      value: "true",
+      domain: "127.0.0.1",
+      path: "/",
+    },
+  ]);
+  let restoreAttempts = 0;
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      new URL(request.url()).pathname === "/api/v1/age-gate/accept"
+    ) {
+      restoreAttempts += 1;
+    }
+  });
+
+  await page.goto("/");
+
+  await expect(page.locator('a[href^="/characters/"]').first()).toBeVisible();
+  expect(restoreAttempts).toBeGreaterThanOrEqual(1);
+});
+
 test("flow 2: signup through the UI creates an authenticated session", async ({ page }) => {
   const email = uniqueEmail("signup");
   await page.goto("/signup");

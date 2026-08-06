@@ -554,7 +554,7 @@ export async function proposeCharacterRelease(input: {
       projectId: project.id,
       to: "qa",
       expected: {
-        from: project.phase as "idea" | "planned" | "producing",
+        from: project.phase as "idea" | "planned" | "producing" | "live_management",
         version: project.version,
       },
     });

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { compileCharacterSoul } from "@idream/shared";
-import { auditSoulSnapshots } from "./soul-authority-audit";
+import {
+  auditSoulSnapshots,
+  characterSoulAuthorityIsLaunchSafe,
+} from "./soul-authority-audit";
 
 describe("Character Soul authority audit", () => {
   it("reports exact owners of missing or invalid pinned snapshots", () => {
@@ -21,5 +24,32 @@ describe("Character Soul authority audit", () => {
     expect(result.invalid).toEqual([
       expect.objectContaining({ ownerId: "session-1", contentVersionId: "missing" }),
     ]);
+  });
+
+  it("treats legacy and null-pin drain counts as observable migration state", () => {
+    expect(characterSoulAuthorityIsLaunchSafe({
+      topologyMode: "same_cluster_views",
+      parityMismatches: 0,
+      invalidSnapshots: 0,
+      nullPinSessions: 271,
+      legacyServingSnapshots: 15,
+      legacyCurrentPointers: 0,
+    })).toBe(true);
+    expect(characterSoulAuthorityIsLaunchSafe({
+      topologyMode: "same_cluster_views",
+      parityMismatches: 0,
+      invalidSnapshots: 1,
+      nullPinSessions: 0,
+      legacyServingSnapshots: 0,
+      legacyCurrentPointers: 0,
+    })).toBe(false);
+    expect(characterSoulAuthorityIsLaunchSafe({
+      topologyMode: "same_cluster_views",
+      parityMismatches: 0,
+      invalidSnapshots: 0,
+      nullPinSessions: -1,
+      legacyServingSnapshots: 0,
+      legacyCurrentPointers: 0,
+    })).toBe(false);
   });
 });

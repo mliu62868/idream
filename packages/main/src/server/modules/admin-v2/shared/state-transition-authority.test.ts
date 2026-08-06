@@ -49,7 +49,7 @@ const matrices: readonly MatrixCase[] = [
       producing: ["qa", "retired"],
       qa: ["qa", "producing", "launch_ready", "retired"],
       launch_ready: ["producing", "live_management", "retired"],
-      live_management: ["producing", "retired"],
+      live_management: ["producing", "qa", "retired"],
       retired: [],
     },
     permits: isCharacterProjectPhaseTransitionAllowed,
