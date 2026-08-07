@@ -1,6 +1,6 @@
 # iDream 后台技术架构（Architecture）
 
-更新日期：2026-07-30
+更新日期：2026-08-05
 目标产品：Ourdream.ai 克隆（18+ AI 角色扮演 / AI 伴侣平台）
 目标站点：https://ourdream.ai/
 
@@ -50,6 +50,7 @@ packages/main/prisma/schema.prisma + packages/*/src ← 代码（最终事实来
 | 15 | [15-admin-operating-system-authority-adr.md](./15-admin-operating-system-authority-adr.md) | Admin v2 authority、命令/事件可靠性、渐进切换与回滚 ADR | Product、架构、后端、运营 |
 | 16 | [16-character-asset-studio-authority.md](./16-character-asset-studio-authority.md) | Character Asset Studio 的生成、审核、草稿采用与 Release 发布权威 | Product、架构、后端、运营 |
 | 17 | [17-deep-module-authority-boundaries.md](./17-deep-module-authority-boundaries.md) | Gen、Ledger、Admin mutation、状态变更、跨服务交换与 Character Journey 的深模块权威 ADR | Product、架构、后端、运营 |
+| 18 | [18-character-soul-runtime-design.md](./18-character-soul-runtime-design.md) | Character Soul、Chat turn context、关系证据、场景状态与 Release/运行时一致性设计 | Product、架构、后端、运营 |
 
 > 实现状态（已落地/暂缓）以 [`CURRENT_FUNCTIONAL_COVERAGE.md`](../product/CURRENT_FUNCTIONAL_COVERAGE.md) 为唯一事实来源；剩余工作执行计划见 [`REMAINING_WORK_EXECUTION_PLAN.md`](../product/REMAINING_WORK_EXECUTION_PLAN.md)。
 > 管理后台方案见 [ADMIN_CONSOLE_PLAN.md](../product/ADMIN_CONSOLE_PLAN.md)；生成（图片/视频/语音）契约见 [BackendFeatureSpec.md](../product/BackendFeatureSpec.md) §5.5。
@@ -93,6 +94,7 @@ packages/main/prisma/schema.prisma + packages/*/src ← 代码（最终事实来
 | ADR-11 | **Admin 是领域 authority 上的决策执行系统**：shared contract + fail-closed BFF + command/outbox + shadow/canary cutover | 状态、指标、权限、审计和回滚都可独立证明 |
 | ADR-12 | **Character Asset Studio 复用现有生成、审核、草稿、Release 与 Serving authority** | 采用只改草稿，只有显式发布改变线上角色 |
 | ADR-13 | **六个深 Module 吸收重复的可靠性协议**：Gen、Ledger、Admin mutation、聚合 transition、Durable Exchange、Character Journey | 每个高风险事实只有一个窄写入口；状态与部署配置不再漂移 |
+| ADR-14（Proposed） | **Character Soul 是版本化结构化权威；SOUL.md 与 system prompt 都是派生产物** | Release 与 Chat 共享一个解释 Interface；静态人格不再与关系、记忆、场景混写 |
 
 ## 4. 不可妥协的合规底线（贯穿全文，P0）
 
