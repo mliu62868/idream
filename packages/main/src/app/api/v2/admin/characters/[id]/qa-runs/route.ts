@@ -1,5 +1,8 @@
 import { env } from "@/server/lib/env";
-import { createCharacterQaRun } from "@/server/modules/admin-v2/characters/qa";
+import {
+  createCharacterQaRun,
+  prepareCharacterQaEvidence,
+} from "@/server/modules/admin-v2/characters/qa";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 import { actorWithPermission, jsonBody } from "@/server/modules/admin-v2/shared/authority";
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
@@ -29,7 +32,13 @@ export async function POST(
       target: { type: "character", id },
       expectedVersion: body.entityVersion,
       payload: body,
-      mutate: (tx) => createCharacterQaRun(request, id, body, { tx, actor, requestId }),
+      prepare: () => prepareCharacterQaEvidence(id, body.entityVersion),
+      mutate: (tx, preparedEvidence) => createCharacterQaRun(request, id, body, {
+        tx,
+        actor,
+        requestId,
+        preparedEvidence,
+      }),
     });
     return Response.json({ ok: true, data }, { status: 201 });
   });

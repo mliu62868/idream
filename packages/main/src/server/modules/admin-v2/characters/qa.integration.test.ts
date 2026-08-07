@@ -806,6 +806,7 @@ describe("Character QA evidence authority", () => {
               tx,
               actor: { id: actorId, role: "admin" },
               requestId: `character-qa-source-lock-${suffix}`,
+              preparedEvidence: soulEvidence(),
             },
           );
         } catch (error) {

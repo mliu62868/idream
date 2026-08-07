@@ -4,7 +4,7 @@ import {
   characterQaRunSchema,
   type CharacterQaRun,
 } from "@idream/shared/admin";
-import { loadCharacterSoulSnapshot, requiredChatCanaryProfiles } from "@idream/shared";
+import { loadCharacterSoulSnapshot } from "@idream/shared";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
@@ -38,45 +38,44 @@ import {
   discoverDraftAssetPackSourceAssetIds,
   evaluateDraftAssetPackAuthority,
 } from "./draft-asset-pack-authority";
-import { executeCharacterSoulQaEvidence } from "./soul-evaluation";
+import {
+  executeCharacterSoulQaEvidence,
+  requiredCharacterSoulChatProfiles,
+  type CharacterSoulEvaluationPeer,
+} from "./soul-evaluation";
 
 // SPEC: the body the manifest declares for this operation, already parsed by the route.
 type QaRunCreateRequest = AdminV2RequestBody<
   "characterQaRunCreateRequestSchema+idempotency-key+if-match"
 >;
 
-export async function createCharacterQaRun(
-  request: Request,
+export type PreparedCharacterQaEvidence = Awaited<
+  ReturnType<typeof executeCharacterSoulQaEvidence>
+>;
+
+/** Slow provider work is prepared outside the serializable mutation. */
+export async function prepareCharacterQaEvidence(
   characterId: string,
-  input: QaRunCreateRequest,
-  options?: {
-    readonly tx?: Prisma.TransactionClient;
-    readonly actor?: { readonly id: string; readonly role: string };
-    readonly requestId?: string;
-  },
-): Promise<CharacterQaRun> {
-  const actor = options?.actor ?? await actorWithPermission(request, "character.release.review", { characterId });
-  // Provider calls happen before the transaction. The transaction re-reads and
-  // locks the same Project/Revision/ContentVersion, so any drift rejects the run.
-  const evidenceDb = options?.tx ?? prisma;
-  const evidenceProject = await evidenceDb.characterProject.findFirst({
+  entityVersion: number,
+): Promise<PreparedCharacterQaEvidence> {
+  const evidenceProject = await prisma.characterProject.findFirst({
     where: { characterId },
     select: { id: true, version: true },
   });
   if (!evidenceProject) throw Errors.notFound("Character Project not found");
-  if (evidenceProject.version !== input.entityVersion) {
+  if (evidenceProject.version !== entityVersion) {
     throw Errors.conflict("Character Project changed before QA execution", {
-      expectedVersion: input.entityVersion,
+      expectedVersion: entityVersion,
       currentVersion: evidenceProject.version,
     });
   }
-  const evidenceRevision = await evidenceDb.characterRevision.findFirst({
+  const evidenceRevision = await prisma.characterRevision.findFirst({
     where: { projectId: evidenceProject.id },
     orderBy: { revision: "desc" },
     select: { characterContentVersionId: true },
   });
   const evidenceContent = evidenceRevision
-    ? await evidenceDb.characterContentVersion.findFirst({
+    ? await prisma.characterContentVersion.findFirst({
         where: { id: evidenceRevision.characterContentVersionId, characterId },
         select: { id: true, personaSnapshot: true },
       })
@@ -87,10 +86,73 @@ export async function createCharacterQaRun(
   if (!evidenceContent || !evidenceSoul?.ok || evidenceSoul.diagnostics.length > 0) {
     throw Errors.conflict("Character QA requires a complete immutable Character Soul");
   }
-  const executedEvidence = await executeCharacterSoulQaEvidence({
+
+  const servingPeers = await prisma.characterServing.findMany({
+    where: {
+      characterId: { not: characterId },
+      state: "live",
+      currentReleaseId: { not: null },
+    },
+    select: {
+      characterId: true,
+      currentRelease: {
+        select: { characterContentVersionId: true },
+      },
+    },
+    orderBy: { characterId: "asc" },
+  });
+  const peerContentIds = servingPeers.flatMap((peer) =>
+    peer.currentRelease ? [peer.currentRelease.characterContentVersionId] : []
+  );
+  const peerContents = await prisma.characterContentVersion.findMany({
+    where: { id: { in: peerContentIds } },
+    select: { id: true, characterId: true, personaSnapshot: true },
+  });
+  const peerById = new Map(peerContents.map((content) => [content.id, content]));
+  const peers: CharacterSoulEvaluationPeer[] = servingPeers.map((peer) => {
+    const contentId = peer.currentRelease?.characterContentVersionId;
+    const content = contentId ? peerById.get(contentId) : null;
+    const loaded = content
+      ? loadCharacterSoulSnapshot(content.personaSnapshot)
+      : null;
+    if (!contentId || !content || content.characterId !== peer.characterId) {
+      throw Errors.conflict(
+        "Character distinctiveness evaluation could not resolve a live peer Content Version",
+        { peerCharacterId: peer.characterId, peerCharacterContentVersionId: contentId ?? null },
+      );
+    }
+    return {
+      characterId: peer.characterId,
+      characterContentVersionId: content.id,
+      soul: loaded?.ok ? loaded.snapshot : null,
+    };
+  });
+  return executeCharacterSoulQaEvidence({
     characterContentVersionId: evidenceContent.id,
     soul: evidenceSoul.snapshot,
+    peers,
   });
+}
+
+export async function createCharacterQaRun(
+  request: Request,
+  characterId: string,
+  input: QaRunCreateRequest,
+  options?: {
+    readonly tx?: Prisma.TransactionClient;
+    readonly actor?: { readonly id: string; readonly role: string };
+    readonly requestId?: string;
+    readonly preparedEvidence?: PreparedCharacterQaEvidence;
+  },
+): Promise<CharacterQaRun> {
+  const actor = options?.actor ?? await actorWithPermission(request, "character.release.review", { characterId });
+  if (options?.tx && !options.preparedEvidence) {
+    throw new Error("Character QA evidence must be prepared before opening a transaction");
+  }
+  // The transaction re-reads and locks Project/Revision/ContentVersion, so
+  // authority drift after provider execution rejects the prepared evidence.
+  const executedEvidence = options?.preparedEvidence ??
+    await prepareCharacterQaEvidence(characterId, input.entityVersion);
   const execute = async (tx: Prisma.TransactionClient) => {
     await lockCharacterGenerationAuthority(tx, characterId);
     const project = await tx.characterProject.findFirst({ where: { characterId } });
@@ -179,7 +241,7 @@ export async function createCharacterQaRun(
     ) {
       throw Errors.conflict("Behavior Evaluation does not match the immutable Character Soul");
     }
-    const expectedCanaries = requiredChatCanaryProfiles(process.env);
+    const expectedCanaries = requiredCharacterSoulChatProfiles();
     const actualCanaries = new Map(executedEvidence.liveCanaries.map((canary) => [canary.tier, canary]));
     const canaryAuthorityMatches =
       actualCanaries.size === executedEvidence.liveCanaries.length &&

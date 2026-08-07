@@ -3458,6 +3458,117 @@ export function PreviewDiff({
                         </div>
                       ))}
                     </div>
+                    {run.behaviorEvaluation ? (
+                      <div className="mt-4 border-t border-black/10 pt-3">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <strong>{t("Character Soul Behavior Evaluation")}</strong>
+                          <span className="text-[var(--ad-text-muted)]">
+                            {run.behaviorEvaluation.suiteVersion} · {run.behaviorEvaluation.evaluatorVersion}
+                          </span>
+                        </div>
+                        <div className="mt-2 grid gap-2">
+                          {run.behaviorEvaluation.cases.map((behaviorCase) => (
+                            <details
+                              className="rounded-md bg-white/60 p-2"
+                              key={behaviorCase.key}
+                            >
+                              <summary className="cursor-pointer">
+                                <span className="flex flex-wrap items-center justify-between gap-2">
+                                  <strong>{t(behaviorCase.key.replaceAll("_", " "))}</strong>
+                                  <span className="flex items-center gap-2">
+                                    <StatusBadge value={behaviorCase.gate} />
+                                    <StatusBadge value={behaviorCase.result} />
+                                  </span>
+                                </span>
+                              </summary>
+                              {behaviorCase.prompt ? (
+                                <p className="mt-2 whitespace-pre-wrap">
+                                  <strong>{t("Prompt:")}</strong> {behaviorCase.prompt}
+                                </p>
+                              ) : null}
+                              {behaviorCase.response ? (
+                                <p className="mt-2 whitespace-pre-wrap text-[var(--ad-text-muted)]">
+                                  <strong>{t("Response:")}</strong> {behaviorCase.response}
+                                </p>
+                              ) : null}
+                              {behaviorCase.rationale ? (
+                                <p className="mt-2 text-[var(--ad-text-muted)]">
+                                  <strong>{t("Rationale:")}</strong> {behaviorCase.rationale}
+                                </p>
+                              ) : null}
+                              <p className="mt-2 break-all">
+                                {t("Evidence:")} {behaviorCase.evidenceRef}
+                              </p>
+                            </details>
+                          ))}
+                        </div>
+                        {run.behaviorEvaluation.distinctiveness ? (
+                          <div className="mt-3 rounded-md bg-white/60 p-2">
+                            <strong>{t("Official character pairwise distinctiveness")}</strong>
+                            <p className="mt-1 text-[var(--ad-text-muted)]">
+                              {run.behaviorEvaluation.distinctiveness.suiteVersion} · {run.behaviorEvaluation.distinctiveness.profile.provider} / {run.behaviorEvaluation.distinctiveness.profile.model}
+                            </p>
+                            <div className="mt-2 grid gap-2">
+                              {run.behaviorEvaluation.distinctiveness.comparisons.map((comparison) => (
+                                <div
+                                  className="rounded border border-black/10 p-2"
+                                  key={comparison.peerCharacterContentVersionId}
+                                >
+                                  <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <span className="break-all">
+                                      {comparison.peerCharacterId} · {comparison.peerCharacterContentVersionId}
+                                    </span>
+                                    <StatusBadge value={comparison.result} />
+                                  </div>
+                                  <p className="mt-1 text-[var(--ad-text-muted)]">
+                                    {comparison.rationale}
+                                  </p>
+                                  <p className="mt-1 break-all text-[var(--ad-text-muted)]">
+                                    {Object.entries(comparison.dimensions)
+                                      .map(([key, passed]) => `${key}=${passed ? "pass" : "fail"}`)
+                                      .join(" · ")}
+                                  </p>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="mt-3 text-[var(--ad-amber-text)]">
+                            {t("Historical QA Run predates pairwise distinctiveness evidence.")}
+                          </p>
+                        )}
+                      </div>
+                    ) : null}
+                    {run.liveCanaries ? (
+                      <div className="mt-4 border-t border-black/10 pt-3">
+                        <strong>{t("Exact production model canaries")}</strong>
+                        <div className="mt-2 grid gap-2">
+                          {run.liveCanaries.map((canary) => (
+                            <div
+                              className="rounded-md bg-white/60 p-2"
+                              key={`${canary.tier}:${canary.provider}:${canary.model}`}
+                            >
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <span>
+                                  {canary.tier} · {canary.adapter} · {canary.provider} / {canary.model}
+                                </span>
+                                <StatusBadge value={canary.result} />
+                              </div>
+                              <p className="mt-1 text-[var(--ad-text-muted)]">
+                                {t("First token {first}ms · total {total}ms · {temperature}", {
+                                  first: Math.round(canary.firstTokenMs),
+                                  total: Math.round(canary.totalMs),
+                                  temperature: t(canary.coldStart ? "cold" : "warm"),
+                                })}
+                              </p>
+                              <p className="mt-1 break-all text-[var(--ad-text-muted)]">
+                                {t("Evidence:")} {canary.evidenceRef}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
                   </details>
                 </article>
               );

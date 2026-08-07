@@ -7,7 +7,7 @@ import {
   characterQaProvenanceMatchesRun,
   parseCharacterReleaseAssetManifest,
 } from "@idream/shared/admin";
-import { loadCharacterSoulSnapshot, requiredChatCanaryProfiles } from "@idream/shared";
+import { loadCharacterSoulSnapshot } from "@idream/shared";
 import { env } from "@/server/lib/env";
 import {
   evaluateMediaAssetCustomerPublishability,
@@ -44,6 +44,7 @@ import {
   unavailableCharacterReferenceMediaIds,
 } from "./reference-media-authority";
 import { findLatestCharacterQaAuthorityRun } from "./qa-authority";
+import { requiredCharacterSoulChatProfiles } from "./soul-evaluation";
 
 interface ValidationCheck {
   readonly key: string;
@@ -479,7 +480,7 @@ export async function validateCharacterReleaseSnapshot(
     : [];
   const parsedCanaries = rawCanaries.map((value) => characterSoulLiveCanarySchema.safeParse(value));
   const canaries = parsedCanaries.flatMap((value) => value.success ? [value.data] : []);
-  const expectedCanaries = requiredChatCanaryProfiles(process.env);
+  const expectedCanaries = requiredCharacterSoulChatProfiles();
   const canaryByTier = new Map(canaries.map((canary) => [canary.tier, canary]));
   const liveCanaryAuthorityPassed = Boolean(
     soulResult?.ok &&

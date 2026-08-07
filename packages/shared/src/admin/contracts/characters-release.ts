@@ -188,6 +188,52 @@ export const characterSoulBehaviorBlockingCases = new Set<
   "no_memory",
 ]);
 
+export const characterSoulDistinctivenessDimensions = [
+  "voice_cadence",
+  "initiative_curiosity",
+  "conflict_repair",
+  "values_promise",
+  "generic_phrase_overlap",
+] as const;
+
+const characterSoulDistinctivenessSchema = z.object({
+  suiteVersion: z.literal("character-soul-distinctiveness-1"),
+  evaluatorVersion: z.string().trim().min(1).max(200),
+  inputs: z.array(z.enum(characterSoulBehaviorCaseKeys))
+    .length(characterSoulBehaviorCaseKeys.length)
+    .readonly(),
+  profile: z.object({
+    tier: z.enum(["free", "premium", "deluxe"]),
+    provider: z.string().trim().min(1).max(200),
+    model: z.string().trim().min(1).max(500),
+    adapter: z.string().trim().min(1).max(200),
+  }).strict(),
+  comparisons: z.array(z.object({
+    peerCharacterId: adminIdSchema,
+    peerCharacterContentVersionId: adminIdSchema,
+    peerSoulFingerprint: z.string().trim().min(1),
+    result: z.enum(["passed", "failed"]),
+    dimensions: z.record(
+      z.enum(characterSoulDistinctivenessDimensions),
+      z.boolean(),
+    ),
+    rationale: z.string().trim().min(1).max(4_000),
+    evidenceRef: z.string().trim().min(1).max(1_000),
+  }).strict()).max(100).readonly(),
+}).strict().superRefine((value, ctx) => {
+  const inputs = new Set(value.inputs);
+  if (
+    inputs.size !== characterSoulBehaviorCaseKeys.length ||
+    characterSoulBehaviorCaseKeys.some((key) => !inputs.has(key))
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["inputs"],
+      message: "Distinctiveness evaluation requires every canonical input exactly once",
+    });
+  }
+});
+
 export const characterSoulBehaviorEvaluationSchema = z.object({
   suiteVersion: z.literal("character-soul-behavior-1"),
   evaluatorVersion: z.string().trim().min(1).max(200),
@@ -203,6 +249,9 @@ export const characterSoulBehaviorEvaluationSchema = z.object({
     response: z.string().max(20_000).optional(),
     rationale: z.string().max(4_000).optional(),
   }).strict()).length(characterSoulBehaviorCaseKeys.length),
+  // Existing immutable QA rows predate pairwise evidence. New server-executed
+  // runs always populate this field; optional decode preserves their history.
+  distinctiveness: characterSoulDistinctivenessSchema.optional(),
 }).strict().superRefine((value, ctx) => {
   const keys = new Set(value.cases.map((entry) => entry.key));
   if (keys.size !== characterSoulBehaviorCaseKeys.length ||

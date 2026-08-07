@@ -46,6 +46,7 @@ import {
   type ChatImageRequestedPayload,
   type ChatMemoryExtractPayload,
 } from "@idream/shared/contracts";
+import { noMemoryAuthorityReply } from "@idream/shared";
 
 export type GeneratePayload = ChatGeneratePayload;
 
@@ -72,7 +73,7 @@ export async function processGenerate(
   }
   const sourceTurn = await prisma.message.findUnique({
     where: { id: payload.userMessageId },
-    select: { role: true, sessionId: true },
+    select: { role: true, sessionId: true, content: true },
   });
   if (sourceTurn?.role !== "user" || sourceTurn.sessionId !== payload.sessionId) {
     return { status: "skipped" };
@@ -162,6 +163,9 @@ export async function processGenerate(
     userMessageId: payload.userMessageId,
   });
   const context = preparedTurnRuntime(prepared);
+  const authoritativeNoMemoryReply = turnMemoryEnabled
+    ? null
+    : noMemoryAuthorityReply(sourceTurn.content);
   await hooks.afterContextBuilt?.(context);
   const runtimeTrace = JSON.parse(JSON.stringify({
     schemaVersion: 1,
@@ -172,6 +176,9 @@ export async function processGenerate(
     trace: prepared.trace,
     budget: prepared.budget,
     scene: context.scene,
+    outputAuthority: authoritativeNoMemoryReply
+      ? "no_memory_boundary"
+      : "model",
   })) as Prisma.InputJsonValue;
   const attemptVersionId = `mv:${payload.assistantMessageId}:${payload.attempt}`;
   // INVARIANT: every attempt that reaches PreparedTurn records its exact model
@@ -317,7 +324,11 @@ export async function processGenerate(
   };
 
   try {
-    if (fcEnabled) {
+    if (authoritativeNoMemoryReply) {
+      for (const piece of chunk(authoritativeNoMemoryReply, 96)) {
+        await streamDelta(piece);
+      }
+    } else if (fcEnabled) {
       let toolCalls: ChatToolCall[] = [];
       let fellBackAlready = false;
       try {

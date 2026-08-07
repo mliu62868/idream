@@ -307,6 +307,19 @@ export interface ChatServiceProbeEvidence {
       assistantMessageId?: string;
       assistantSent?: boolean;
       assistantStatus?: string | null;
+      derivationSettled?: boolean;
+      error?: string | null;
+    } | null;
+    regenerateAnchor?: {
+      ok?: boolean;
+      status?: number;
+      assistantMessageId?: string;
+      originalAttempt?: number;
+      regeneratedAttempt?: number;
+      originalSceneVersion?: number | null;
+      futureUserSceneVersion?: number | null;
+      futureSceneVersion?: number | null;
+      regeneratedSceneVersion?: number | null;
       error?: string | null;
     } | null;
     noMemory?: {
@@ -400,6 +413,17 @@ const chatServiceProbeEvidenceSchema: z.ZodType<ChatServiceProbeEvidence> = z.ob
       assistantMessageId: optionalText,
       assistantSent: flag,
       assistantStatus: nullableText,
+      derivationSettled: flag,
+    }),
+    regenerateAnchor: nullableObject({
+      ...chatProbeOperationShape,
+      assistantMessageId: optionalText,
+      originalAttempt: optionalCount,
+      regeneratedAttempt: optionalCount,
+      originalSceneVersion: optionalCount,
+      futureUserSceneVersion: optionalCount,
+      futureSceneVersion: optionalCount,
+      regeneratedSceneVersion: optionalCount,
     }),
     noMemory: nullableObject({
       ...chatProbeOperationShape,

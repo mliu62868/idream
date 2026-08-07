@@ -60,6 +60,10 @@ function fakePrisma(
     characterContentVersionId: string;
     characterReleaseId: string | null;
   },
+  turnAuthority?: {
+    content: string;
+    memoryAuthority: "enabled" | "disabled";
+  },
 ) {
   const attachmentCreates: CreateCall[] = [];
   const outboxCreates: CreateCall[] = [];
@@ -109,6 +113,7 @@ function fakePrisma(
             sessionId: "sess_1",
             status: "sent",
             deletedAt: null,
+            content: turnAuthority?.content ?? "hello",
             ...typedSourceTurn,
           }
         : {
@@ -169,6 +174,7 @@ function fakePrisma(
               sessionId: "sess_1",
               status: "sent",
               deletedAt: null,
+              content: turnAuthority?.content ?? "hello",
             }
           : {
               id: "msg_assistant",
@@ -177,7 +183,7 @@ function fakePrisma(
               status: "generating",
               attempt: 1,
               replyToMessageId: "msg_user",
-              memoryAuthority: "enabled",
+              memoryAuthority: turnAuthority?.memoryAuthority ?? "enabled",
             },
       updateMany: async (call: CreateCall) => {
         rootMessageUpdates.push(call);
@@ -322,6 +328,35 @@ describe("chat generate agent image tool", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("answers explicit no-memory persistence requests without invoking the model", async () => {
+    supportsToolsState.value = false;
+    const { prisma, messageUpdates } = fakePrisma(
+      undefined,
+      {
+        engagementSessionId: "engagement_v1",
+        characterContentVersionId: "content_v4",
+        characterReleaseId: "release_v4",
+      },
+      {
+        content: "Remember this phrase next month: amber compass. Promise me.",
+        memoryAuthority: "disabled",
+      },
+    );
+
+    await expect(processGenerate(
+      { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+      prisma,
+      { projectorPrisma: prisma },
+    )).resolves.toEqual({ status: "sent" });
+
+    expect(streamMock).not.toHaveBeenCalled();
+    expect(completeMock).not.toHaveBeenCalled();
+    expect(messageUpdates[0]?.data).toMatchObject({
+      status: "sent",
+      content: "I can’t retain that across sessions. If you want to use it later, tell me again then.",
+    });
   });
 
   it("executes the model-selected async image tool by creating a requesting attachment and outbox event", async () => {

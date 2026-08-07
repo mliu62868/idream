@@ -41,6 +41,16 @@ type NoMemoryEvidence = OperationEvidence & {
   relationshipUnchanged?: boolean;
 };
 
+type RegenerateAnchorEvidence = OperationEvidence & {
+  assistantMessageId?: string;
+  originalAttempt?: number;
+  regeneratedAttempt?: number;
+  originalSceneVersion?: number | null;
+  futureUserSceneVersion?: number | null;
+  futureSceneVersion?: number | null;
+  regeneratedSceneVersion?: number | null;
+};
+
 type CleanupEvidence = OperationEvidence & {
   memoryGone?: boolean;
   memoriesDeleted?: number;
@@ -65,7 +75,9 @@ type ConversationEvidence = {
     assistantMessageId?: string;
     assistantSent?: boolean;
     assistantStatus?: string | null;
+    derivationSettled?: boolean;
   };
+  regenerateAnchor: RegenerateAnchorEvidence;
   noMemory: NoMemoryEvidence;
   blockedInput: OperationEvidence & { status_?: string };
   cleanup: CleanupEvidence;
@@ -120,6 +132,7 @@ function skippedConversation(reason: string): ConversationEvidence {
     sendMessage: SKIPPED_OP,
     stream: SKIPPED_OP,
     getSession: SKIPPED_OP,
+    regenerateAnchor: SKIPPED_OP,
     noMemory: SKIPPED_OP,
     blockedInput: SKIPPED_OP,
     cleanup: SKIPPED_OP,
@@ -419,6 +432,7 @@ async function probeConversation(input: {
     sendMessage: { ok: false, error: "not attempted" },
     stream: { ok: false, error: "not attempted" },
     getSession: { ok: false, error: "not attempted" },
+    regenerateAnchor: { ok: false, error: "not attempted" },
     noMemory: { ok: false, error: "not attempted" },
     blockedInput: { ok: false, error: "not attempted" },
     cleanup: { ok: false, error: "not attempted" },
@@ -447,7 +461,9 @@ async function probeConversation(input: {
     // 2) send message
     const sendRes = await signedFetch({
       ...input, method: "POST", path: `/api/v1/chat/sessions/${sessionId}/messages`,
-      body: JSON.stringify({ content: "hello from the launch probe" }),
+      body: JSON.stringify({
+        content: "Tonight we're in the rooftop garden with Mina. I feel calm, and we still need to choose the train.",
+      }),
       idempotencyKey: `chat-probe:${input.runId}:normal`,
     });
     const sent = (await sendRes.json().catch(() => ({}))) as {
@@ -483,16 +499,102 @@ async function probeConversation(input: {
       assistant.status === "sent" &&
       Boolean(assistant.content?.trim());
     evidence.getSession = {
-      ok: normal.status === 200 && assistantSent,
+      ok: normal.status === 200 && assistantSent && normal.settled === true,
       status: normal.status,
       assistantMessageId: sent.assistantMessageId,
       assistantSent,
       assistantStatus: assistant?.status ?? null,
+      derivationSettled: normal.settled,
+    };
+
+    // 5) Create a later Scene revision, then regenerate the first assistant
+    // attempt. The regenerated PreparedTurn must retain the original user
+    // anchor (Scene v0) rather than reading the later Scene head.
+    const futureSend = await signedFetch({
+      ...input,
+      method: "POST",
+      path: `/api/v1/chat/sessions/${sessionId}/messages`,
+      body: JSON.stringify({
+        content: "Now we move to the train station at dawn, after choosing the train.",
+      }),
+      idempotencyKey: `chat-probe:${input.runId}:future-scene`,
+    });
+    const futureTurn = (await futureSend.json().catch(() => ({}))) as {
+      assistantMessageId?: string;
+      userMessageId?: string;
+    };
+    const futureStream = futureTurn.assistantMessageId
+      ? await probeStream({ ...input, assistantMessageId: futureTurn.assistantMessageId })
+      : { ok: false, error: "missing future assistantMessageId" };
+    const futureState = futureTurn.assistantMessageId
+      ? await waitForSessionMessage({
+          ...input,
+          sessionId,
+          assistantMessageId: futureTurn.assistantMessageId,
+          requireMemoryExtracted: true,
+        })
+      : { status: 0, message: null, settled: false };
+    const regenerate = await signedFetch({
+      ...input,
+      method: "POST",
+      path: `/api/v1/chat/messages/${sent.assistantMessageId}/regenerate`,
+    });
+    const regenerated = (await regenerate.json().catch(() => ({}))) as {
+      assistantMessageId?: string;
+      attempt?: number;
+    };
+    const regeneratedStream = regenerated.assistantMessageId
+      ? await probeStream({ ...input, assistantMessageId: regenerated.assistantMessageId })
+      : { ok: false, error: "missing regenerated assistantMessageId" };
+    const regeneratedState = regenerated.assistantMessageId
+      ? await waitForSessionMessage({
+          ...input,
+          sessionId,
+          assistantMessageId: regenerated.assistantMessageId,
+          requireMemoryExtracted: true,
+        })
+      : { status: 0, message: null, settled: false };
+    const originalSceneVersion = sceneVersion(assistant?.scene);
+    const futureUserSceneVersion = futureState.messages?.find(
+      (message) => message.id === futureTurn.userMessageId,
+    )?.sceneVersion ?? null;
+    const futureSceneVersion = sceneVersion(futureState.message?.scene);
+    const regeneratedSceneVersion = sceneVersion(regeneratedState.message?.scene);
+    evidence.regenerateAnchor = {
+      ok:
+        futureSend.status === 202 &&
+        futureStream.ok &&
+        futureState.settled === true &&
+        regenerate.status === 202 &&
+        regeneratedStream.ok &&
+        regeneratedState.settled === true &&
+        originalSceneVersion === 0 &&
+        futureUserSceneVersion === 1 &&
+        futureSceneVersion === 1 &&
+        regeneratedSceneVersion === originalSceneVersion &&
+        regeneratedState.message?.attempt === regenerated.attempt,
+      status: regenerate.status,
+      assistantMessageId: regenerated.assistantMessageId,
+      originalAttempt: assistant?.attempt,
+      regeneratedAttempt: regeneratedState.message?.attempt,
+      originalSceneVersion,
+      futureUserSceneVersion,
+      futureSceneVersion,
+      regeneratedSceneVersion,
+      error:
+        futureStream.ok &&
+        regeneratedStream.ok &&
+        originalSceneVersion === 0 &&
+        futureUserSceneVersion === 1 &&
+        futureSceneVersion === 1 &&
+        regeneratedSceneVersion === originalSceneVersion
+          ? null
+          : `futureStream=${futureStream.ok}; futureSettled=${futureState.settled}; regenerateStream=${regeneratedStream.ok}; regenerateSettled=${regeneratedState.settled}; scenes=${originalSceneVersion}/${futureUserSceneVersion}/${futureSceneVersion}/${regeneratedSceneVersion}`,
     };
 
     const relationshipBefore = await readProbeRelationship(input);
 
-    // 5) no-memory smoke: the assistant row must pin disabled even though the
+    // 6) no-memory smoke: the assistant row must pin disabled even though the
     // session is later restored, with no relationship or memory derivation.
     const disableMemory = await signedFetch({
       ...input, method: "POST", path: `/api/v1/chat/sessions/${sessionId}/memory`,
@@ -561,7 +663,7 @@ async function probeConversation(input: {
         : `disable=${disableMemory.status}; stream=${noMemStream.ok}; authority=${authorityPinned}; relationship=${relationshipUnchanged}; memory=${memorySourceAbsent}`,
     };
 
-    // 6) blocked-input smoke: the mock/safety provider blocks the underage keyword.
+    // 7) blocked-input smoke: the mock/safety provider blocks the underage keyword.
     const blockedRes = await signedFetch({
       ...input, method: "POST", path: `/api/v1/chat/sessions/${sessionId}/messages`,
       body: JSON.stringify({ content: "this references csam content" }),
@@ -592,6 +694,8 @@ type ProbeSessionMessage = {
   memoryExtractedAttempt?: number;
   role?: string;
   status?: string;
+  sceneVersion?: number;
+  scene?: unknown;
 };
 
 async function cleanupExistingProbeState(input: {
@@ -869,10 +973,15 @@ async function waitForSessionMessage(input: {
   sessionId: string;
   assistantMessageId: string;
   requireMemoryExtracted: boolean;
-}): Promise<{ status: number; message: ProbeSessionMessage | null }> {
+}): Promise<{
+  status: number;
+  message: ProbeSessionMessage | null;
+  messages?: ProbeSessionMessage[];
+  settled?: boolean;
+}> {
   const deadline =
     Date.now() +
-    readPositiveIntEnv("CHAT_SERVICE_PROBE_SETTLE_TIMEOUT_MS", 15_000);
+    readPositiveIntEnv("CHAT_SERVICE_PROBE_SETTLE_TIMEOUT_MS", 90_000);
   let lastStatus = 0;
   let lastMessage: ProbeSessionMessage | null = null;
   while (Date.now() < deadline) {
@@ -898,11 +1007,16 @@ async function waitForSessionMessage(input: {
         lastMessage.memoryExtractedAttempt >= lastMessage.attempt
       );
     if (response.status === 200 && sent && memoryComplete) {
-      return { status: response.status, message: lastMessage };
+      return {
+        status: response.status,
+        message: lastMessage,
+        messages: body.messages,
+        settled: true,
+      };
     }
     await delay(100);
   }
-  return { status: lastStatus, message: lastMessage };
+  return { status: lastStatus, message: lastMessage, settled: false };
 }
 
 async function readProbeRelationship(input: {
@@ -975,10 +1089,19 @@ function finalizeConversation(evidence: ConversationEvidence): ConversationEvide
     evidence.sendMessage.ok &&
     evidence.stream.ok &&
     evidence.getSession.ok &&
+    evidence.regenerateAnchor.ok &&
     evidence.noMemory.ok &&
     evidence.blockedInput.ok &&
     evidence.cleanup.ok;
   return evidence;
+}
+
+function sceneVersion(value: unknown): number | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const version = (value as Record<string, unknown>).version;
+  return typeof version === "number" && Number.isInteger(version) && version >= 0
+    ? version
+    : null;
 }
 
 async function probeStream(input: {

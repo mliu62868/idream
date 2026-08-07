@@ -525,9 +525,19 @@ function addChatServiceProbeCheck(
       }
       if (
         probe.conversation.getSession?.ok !== true ||
-        probe.conversation.getSession.assistantSent !== true
+        probe.conversation.getSession.assistantSent !== true ||
+        probe.conversation.getSession.derivationSettled !== true
       ) {
         problems.push("conversation smoke did not reload the assistant message");
+      }
+      if (
+        probe.conversation.regenerateAnchor?.ok !== true ||
+        probe.conversation.regenerateAnchor.originalSceneVersion !== 0 ||
+        probe.conversation.regenerateAnchor.futureUserSceneVersion !== 1 ||
+        probe.conversation.regenerateAnchor.futureSceneVersion !== 1 ||
+        probe.conversation.regenerateAnchor.regeneratedSceneVersion !== 0
+      ) {
+        problems.push("conversation smoke did not prove old-turn Scene anchoring");
       }
       if (
         probe.conversation.noMemory?.ok !== true ||
