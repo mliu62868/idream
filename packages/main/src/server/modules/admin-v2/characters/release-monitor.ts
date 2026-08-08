@@ -339,30 +339,35 @@ export async function collectReleaseMonitorFacts(
     where: { projectId: release.projectId, id: { not: release.id }, publishedAt: { lt: release.publishedAt } },
     orderBy: { publishedAt: "desc" },
   });
-  const [exchanges, generations, serving, character, contentVersion, placementAssets, usageFacts, previousMonitor] = await Promise.all([
-    db.chatExchangeFact.findMany({
+  const exchanges = await db.chatExchangeFact.findMany({
       where: {
         characterReleaseId: release.id,
         eligible: true,
         occurredAt: { gte: release.publishedAt, lte: observationEnd },
       },
       select: { userId: true, engagementSessionId: true, occurredAt: true },
-    }),
-    db.generationFulfillmentFact.findMany({
+    });
+  const generations = await db.generationFulfillmentFact.findMany({
       where: {
         characterReleaseId: release.id,
         eligible: true,
         occurredAt: { gte: release.publishedAt, lte: observationEnd },
       },
       select: { outcome: true, deliveredOutputCount: true, expectedOutputCount: true, occurredAt: true },
-    }),
-    db.characterServing.findUnique({ where: { characterId: projectCharacterId } }),
-    db.character.findUnique({ where: { id: projectCharacterId } }),
-    db.characterContentVersion.findUnique({ where: { id: release.characterContentVersionId } }),
-    placementAssetIds.length > 0
-      ? db.mediaAsset.findMany({ where: { id: { in: placementAssetIds } } })
-      : Promise.resolve([]),
-    db.aiUsageFact.findMany({
+    });
+  const serving = await db.characterServing.findUnique({
+    where: { characterId: projectCharacterId },
+  });
+  const character = await db.character.findUnique({
+    where: { id: projectCharacterId },
+  });
+  const contentVersion = await db.characterContentVersion.findUnique({
+    where: { id: release.characterContentVersionId },
+  });
+  const placementAssets = placementAssetIds.length > 0
+    ? await db.mediaAsset.findMany({ where: { id: { in: placementAssetIds } } })
+    : [];
+  const usageFacts = await db.aiUsageFact.findMany({
       where: {
         releaseId: release.id,
         environment: "production",
@@ -371,11 +376,17 @@ export async function collectReleaseMonitorFacts(
         occurredAt: { gte: release.publishedAt, lte: observationEnd },
       },
       select: { latencyMs: true, costMicros: true, occurredAt: true },
-    }),
-    previousRelease
-      ? db.releaseMonitor.findUnique({ where: { releaseId_window: { releaseId: previousRelease.id, window: input.window } } })
-      : Promise.resolve(null),
-  ]);
+    });
+  const previousMonitor = previousRelease
+    ? await db.releaseMonitor.findUnique({
+        where: {
+          releaseId_window: {
+            releaseId: previousRelease.id,
+            window: input.window,
+          },
+        },
+      })
+    : null;
   const mature = now.getTime() >= windowEnd.getTime();
   const failedGenerations = generations.filter((row) => row.outcome !== "succeeded").length;
   const generationFailureRate = generations.length > 0 ? failedGenerations / generations.length : null;

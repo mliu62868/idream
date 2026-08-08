@@ -211,37 +211,38 @@ export async function evaluateDraftAssetPackAuthority(
   const generationJobIds = selectedEntries.flatMap(({ entry }) =>
     entry.generationJobId ? [entry.generationJobId] : []
   );
-  const [assets, items, decisions, attempts, workflow, generationProfile] =
-    await Promise.all([
-    tx.mediaAsset.findMany({ where: { id: { in: assetIds } } }),
-    tx.contentProductionItem.findMany({
-      where: { id: { in: itemIds } },
-      include: { batch: true, job: true },
-    }),
-    tx.creativeReviewDecision.findMany({
-      where: { runItemId: { in: itemIds } },
-      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    }),
-    tx.generationAttempt.findMany({
-      where: {
-        requestId: { in: generationJobIds },
-        status: "succeeded",
-      },
-      orderBy: [
-        { requestId: "asc" },
-        { attemptNo: "desc" },
-        { id: "desc" },
-      ],
-    }),
-    generationWorkflowDescriptor(input.currentRoute.workflowKey),
-    tx.generationModelProfile.findFirst({
-      where: {
-        profileKey: input.currentRoute.generationProfileKey,
-        version: input.currentRoute.generationProfileVersion,
-        status: "active",
-      },
-    }),
-  ]);
+  const assets = await tx.mediaAsset.findMany({
+    where: { id: { in: assetIds } },
+  });
+  const items = await tx.contentProductionItem.findMany({
+    where: { id: { in: itemIds } },
+    include: { batch: true, job: true },
+  });
+  const decisions = await tx.creativeReviewDecision.findMany({
+    where: { runItemId: { in: itemIds } },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+  });
+  const attempts = await tx.generationAttempt.findMany({
+    where: {
+      requestId: { in: generationJobIds },
+      status: "succeeded",
+    },
+    orderBy: [
+      { requestId: "asc" },
+      { attemptNo: "desc" },
+      { id: "desc" },
+    ],
+  });
+  const workflow = await generationWorkflowDescriptor(
+    input.currentRoute.workflowKey,
+  );
+  const generationProfile = await tx.generationModelProfile.findFirst({
+    where: {
+      profileKey: input.currentRoute.generationProfileKey,
+      version: input.currentRoute.generationProfileVersion,
+      status: "active",
+    },
+  });
   const assetById = new Map(assets.map((asset) => [asset.id, asset]));
   const itemById = new Map(items.map((item) => [item.id, item]));
   const latestDecisionByItemId = new Map<string, (typeof decisions)[number]>();

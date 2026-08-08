@@ -808,16 +808,14 @@ async function generationDispatchAuthoritySnapshot(
       reason: "request_not_found",
     };
   }
-  const [request, attempt] = await Promise.all([
-    tx.generationJob.findUnique({
-      where: { id: identity.requestId },
-      select: { status: true },
-    }),
-    tx.generationAttempt.findUnique({
-      where: { id: identity.attemptId },
-      select: { requestId: true, attemptNo: true, status: true },
-    }),
-  ]);
+  const request = await tx.generationJob.findUnique({
+    where: { id: identity.requestId },
+    select: { status: true },
+  });
+  const attempt = await tx.generationAttempt.findUnique({
+    where: { id: identity.attemptId },
+    select: { requestId: true, attemptNo: true, status: true },
+  });
   if (!request) {
     return {
       authorized: false,

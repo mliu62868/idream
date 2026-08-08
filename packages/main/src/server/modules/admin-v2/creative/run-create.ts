@@ -813,32 +813,30 @@ export async function createCreativeRun(
         );
       }
     } else if (characterVideoRun && body.targetId) {
-      const [currentProfile, currentRecipe, currentSource] = await Promise.all([
-        tx.generationModelProfile.findUnique({
-          where: { id: profile.id },
+      const currentProfile = await tx.generationModelProfile.findUnique({
+        where: { id: profile.id },
+      });
+      const currentRecipe = await tx.generationRecipe.findUnique({
+        where: { id: recipe.id },
+        select: {
+          id: true,
+          recipeKey: true,
+          version: true,
+          mode: true,
+          useCase: true,
+          status: true,
+        },
+      });
+      const currentSource = await tx.mediaAsset.findFirst({
+        where: operationalMediaAssetWhere({
+          id: additionalReferenceAssets[0]?.id,
+          type: "image",
+          safetyStatus: "passed",
+          deletedAt: null,
+          characterId: body.targetId,
         }),
-        tx.generationRecipe.findUnique({
-          where: { id: recipe.id },
-          select: {
-            id: true,
-            recipeKey: true,
-            version: true,
-            mode: true,
-            useCase: true,
-            status: true,
-          },
-        }),
-        tx.mediaAsset.findFirst({
-          where: operationalMediaAssetWhere({
-            id: additionalReferenceAssets[0]?.id,
-            type: "image",
-            safetyStatus: "passed",
-            deletedAt: null,
-            characterId: body.targetId,
-          }),
-          select: { id: true, metadata: true },
-        }),
-      ]);
+        select: { id: true, metadata: true },
+      });
       if (
         !currentProfile ||
         !isProductionLtxVideoProfile(currentProfile) ||

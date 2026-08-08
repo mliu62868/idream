@@ -111,27 +111,27 @@ export async function processMemoryExtract(
       projectorPrisma,
     },
     async (tx, recordIntent) => {
-    const [
-      currentSession,
-      currentAssistant,
-      currentUserMessage,
-      currentSceneRevision,
-      { linkage: currentLinkage },
-    ] =
-      await Promise.all([
-        tx.chatSession.findUnique({ where: { id: session.id } }),
-        tx.message.findUnique({ where: { id: assistant.id } }),
-        tx.message.findUnique({ where: { id: userMessage.id } }),
-        tx.chatSceneRevision.findUnique({
-          where: {
-            sourceAssistantMessageId_sourceAttempt: {
-              sourceAssistantMessageId: assistant.id,
-              sourceAttempt: payload.attempt,
-            },
-          },
-        }),
-        loadSessionLinkage(tx, session.id),
-      ]);
+    const currentSession = await tx.chatSession.findUnique({
+      where: { id: session.id },
+    });
+    const currentAssistant = await tx.message.findUnique({
+      where: { id: assistant.id },
+    });
+    const currentUserMessage = await tx.message.findUnique({
+      where: { id: userMessage.id },
+    });
+    const currentSceneRevision = await tx.chatSceneRevision.findUnique({
+      where: {
+        sourceAssistantMessageId_sourceAttempt: {
+          sourceAssistantMessageId: assistant.id,
+          sourceAttempt: payload.attempt,
+        },
+      },
+    });
+    const { linkage: currentLinkage } = await loadSessionLinkage(
+      tx,
+      session.id,
+    );
     if (
       !currentSession ||
       currentSession.userId !== session.userId ||

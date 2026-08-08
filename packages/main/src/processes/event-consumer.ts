@@ -90,15 +90,13 @@ async function resolveChatProjectionAuthority(
   userId: string,
   characterId: string,
 ): Promise<ChatEventEffectResult> {
-  const [customerAuthority, character] = await Promise.all([
-    resolveChatCustomerAuthority(tx, userId),
-    characterId
-      ? tx.character.findFirst({
-          where: { id: characterId, deletedAt: null },
-          select: { id: true },
-        })
-      : Promise.resolve(null),
-  ]);
+  const customerAuthority = await resolveChatCustomerAuthority(tx, userId);
+  const character = characterId
+    ? await tx.character.findFirst({
+        where: { id: characterId, deletedAt: null },
+        select: { id: true },
+      })
+    : null;
   if (customerAuthority.status === "skipped") return customerAuthority;
   if (!character) {
     return {
@@ -170,28 +168,26 @@ async function chatImageRequestPrivacyWasRevoked(
   tx: Prisma.TransactionClient,
   payload: ReturnType<typeof chatImageRequestedPayloadSchema.parse>,
 ): Promise<boolean> {
-  const [sessionProjection, exchangeFact] = await Promise.all([
-    tx.recentChat.findUnique({
-      where: { sessionId: payload.sessionId },
-      select: { userId: true, status: true },
-    }),
-    payload.exchangeId
-      ? tx.chatExchangeFact.findUnique({
-          where: { exchangeId: payload.exchangeId },
-          select: { userId: true, correctionType: true },
-        })
-      : tx.chatExchangeFact.findFirst({
-          where: {
-            userId: payload.userId,
-            sessionId: payload.sessionId,
-            OR: [
-              { assistantMessageId: payload.messageId },
-              { selectedAssistantMessageId: payload.messageId },
-            ],
-          },
-          select: { userId: true, correctionType: true },
-        }),
-  ]);
+  const sessionProjection = await tx.recentChat.findUnique({
+    where: { sessionId: payload.sessionId },
+    select: { userId: true, status: true },
+  });
+  const exchangeFact = payload.exchangeId
+    ? await tx.chatExchangeFact.findUnique({
+        where: { exchangeId: payload.exchangeId },
+        select: { userId: true, correctionType: true },
+      })
+    : await tx.chatExchangeFact.findFirst({
+        where: {
+          userId: payload.userId,
+          sessionId: payload.sessionId,
+          OR: [
+            { assistantMessageId: payload.messageId },
+            { selectedAssistantMessageId: payload.messageId },
+          ],
+        },
+        select: { userId: true, correctionType: true },
+      });
   if (
     sessionProjection?.userId === payload.userId &&
     sessionProjection.status === "deleted"

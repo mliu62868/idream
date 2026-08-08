@@ -290,17 +290,15 @@ export async function createCharacterVoiceClone(input: {
       },
       mutate: async (tx, prepared) => {
         await tx.$queryRaw`SELECT "id" FROM "characters" WHERE "id" = ${input.characterId} FOR UPDATE`;
-        const [currentCandidate, latest] = await Promise.all([
-          tx.characterVoiceProfile.findFirst({
-            where: { characterId: input.characterId, status: "candidate" },
-            orderBy: [{ version: "desc" }, { id: "desc" }],
-          }),
-          tx.characterVoiceProfile.findFirst({
-            where: { characterId: input.characterId },
-            orderBy: [{ version: "desc" }, { id: "desc" }],
-            select: { version: true },
-          }),
-        ]);
+        const currentCandidate = await tx.characterVoiceProfile.findFirst({
+          where: { characterId: input.characterId, status: "candidate" },
+          orderBy: [{ version: "desc" }, { id: "desc" }],
+        });
+        const latest = await tx.characterVoiceProfile.findFirst({
+          where: { characterId: input.characterId },
+          orderBy: [{ version: "desc" }, { id: "desc" }],
+          select: { version: true },
+        });
         const now = new Date();
         if (currentCandidate) {
           await tx.characterVoiceProfile.update({
@@ -477,24 +475,22 @@ export async function activateCharacterVoiceProfile(input: {
       }>>`SELECT "id", "voiceId" FROM "characters" WHERE "id" = ${input.characterId} FOR UPDATE`;
       const lockedCharacter = lockedCharacters[0];
       if (!lockedCharacter) throw Errors.notFound("Character not found");
-      const [candidate, current] = await Promise.all([
-        tx.characterVoiceProfile.findFirst({
-          where: {
-            id: input.profileId,
-            characterId: input.characterId,
-            provider: "fish_audio",
-            status: "candidate",
-          },
-          include: {
-            referenceAsset: true,
-            previewAsset: true,
-          },
-        }),
-        tx.characterVoiceProfile.findFirst({
-          where: { characterId: input.characterId, status: "active" },
-          orderBy: [{ version: "desc" }, { id: "desc" }],
-        }),
-      ]);
+      const candidate = await tx.characterVoiceProfile.findFirst({
+        where: {
+          id: input.profileId,
+          characterId: input.characterId,
+          provider: "fish_audio",
+          status: "candidate",
+        },
+        include: {
+          referenceAsset: true,
+          previewAsset: true,
+        },
+      });
+      const current = await tx.characterVoiceProfile.findFirst({
+        where: { characterId: input.characterId, status: "active" },
+        orderBy: [{ version: "desc" }, { id: "desc" }],
+      });
       if (!candidate) {
         throw Errors.conflict("Voice profile is no longer an activatable candidate", {
           characterId: input.characterId,

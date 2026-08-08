@@ -25,18 +25,18 @@ export async function exportAccount(
 ): Promise<AccountExport> {
   return withReadableChatFileSnapshot(
     userId,
-    async () => {
-      const sessions = await prisma.chatSession.findMany({
+    async (tx) => {
+      const sessions = await tx.chatSession.findMany({
         where: { userId },
       });
       const sessionIds = sessions.map((session) => session.id);
       const messages = sessionIds.length
-        ? await prisma.message.findMany({
+        ? await tx.message.findMany({
             where: { sessionId: { in: sessionIds } },
             orderBy: { createdAt: "asc" },
           })
         : [];
-      const usage = await prisma.chatUsage.findMany({ where: { userId } });
+      const usage = await tx.chatUsage.findMany({ where: { userId } });
 
       const memFiles = await listPrefix(["mem", userId]);
       const memories: AccountExport["memories"] = [];

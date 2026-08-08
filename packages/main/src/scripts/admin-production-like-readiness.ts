@@ -209,27 +209,27 @@ function verifyJobsPage(page: GenerationJobListResponse) {
 
 async function queryAnalyticsEventCoverage(db: Prisma.TransactionClient) {
   const startedAt = performance.now();
-  const [totalCount, eventNameGroups, authorityGroups] = await Promise.all([
-    db.analyticsEvent.count({ where: { sourceService: "load-harness" } }),
-    db.analyticsEvent.groupBy({
-      by: ["name"],
-      where: { sourceService: "load-harness", name: { in: [...EVENT_NAMES] } },
-      _count: { _all: true },
-      orderBy: { name: "asc" },
-      take: 10,
-    }),
-    db.analyticsEvent.groupBy({
-      by: ["environment", "dataClass", "trustClass"],
-      where: { sourceService: "load-harness" },
-      _count: { _all: true },
-      orderBy: [
-        { environment: "asc" },
-        { dataClass: "asc" },
-        { trustClass: "asc" },
-      ],
-      take: 10,
-    }),
-  ]);
+  const totalCount = await db.analyticsEvent.count({
+    where: { sourceService: "load-harness" },
+  });
+  const eventNameGroups = await db.analyticsEvent.groupBy({
+    by: ["name"],
+    where: { sourceService: "load-harness", name: { in: [...EVENT_NAMES] } },
+    _count: { _all: true },
+    orderBy: { name: "asc" },
+    take: 10,
+  });
+  const authorityGroups = await db.analyticsEvent.groupBy({
+    by: ["environment", "dataClass", "trustClass"],
+    where: { sourceService: "load-harness" },
+    _count: { _all: true },
+    orderBy: [
+      { environment: "asc" },
+      { dataClass: "asc" },
+      { trustClass: "asc" },
+    ],
+    take: 10,
+  });
   const groupedCount = eventNameGroups.reduce((sum, row) => sum + row._count._all, 0);
   return {
     durationMs: performance.now() - startedAt,

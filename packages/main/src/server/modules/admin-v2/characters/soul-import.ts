@@ -183,10 +183,14 @@ export async function importRepositorySoul(input: {
 
   return input.db.$transaction(async (tx) => {
     await lockCharacterGenerationAuthority(tx, characterId);
-    const [lockedContent, lockedRevision] = await Promise.all([
-      tx.characterContentVersion.findFirst({ where: { characterId }, orderBy: { version: "desc" } }),
-      tx.characterRevision.findFirst({ where: { projectId: project.id }, orderBy: { revision: "desc" } }),
-    ]);
+    const lockedContent = await tx.characterContentVersion.findFirst({
+      where: { characterId },
+      orderBy: { version: "desc" },
+    });
+    const lockedRevision = await tx.characterRevision.findFirst({
+      where: { projectId: project.id },
+      orderBy: { revision: "desc" },
+    });
     if (!lockedContent || lockedContent.contentHash !== latestContent.contentHash) {
       throw new Error("Character Content Version changed after preflight; rerun the import");
     }

@@ -16,6 +16,7 @@ import {
 } from "../src/relationship.js";
 import { exportAccount } from "../src/export.js";
 import { readWhole, chatFsPaths } from "../src/chat-fs.js";
+import { withReadableChatFileSnapshot } from "../src/file-mutations.js";
 import { CHAT_QUEUES } from "@idream/shared/contracts";
 import { acceptAgeGate } from "./fixtures.js";
 
@@ -117,6 +118,16 @@ describe("relationship.md (P1-2)", () => {
 });
 
 describe("account export (P1-3)", () => {
+  it("exposes the locked transaction reader to cross-store snapshot callers", async () => {
+    const sessionCount = await withReadableChatFileSnapshot(
+      USER,
+      (tx) => tx.chatSession.count({ where: { userId: USER } }),
+      prisma,
+    );
+
+    expect(sessionCount).toBeGreaterThanOrEqual(0);
+  });
+
   it("aggregates PG messages + file memories + relationship", async () => {
     const created = await dispatchChat({ method: "POST", path: "/api/v1/chat/sessions", userId: USER, body: { characterId: CHAR } });
     const sessionId = created.kind === "json" ? (created.body as { id: string }).id : "";

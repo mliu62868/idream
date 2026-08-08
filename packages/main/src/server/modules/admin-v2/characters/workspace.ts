@@ -1815,17 +1815,19 @@ export async function refreshCharacterReleaseMonitor(input: {
   readonly requestId?: string;
 }, db?: Prisma.TransactionClient) {
   const execute = async (tx: Prisma.TransactionClient) => {
-  const [character, project, release] = await Promise.all([
-    tx.character.findFirst({
-      where: operationalCharacterWhere({
-        id: input.characterId,
-        deletedAt: null,
-      }),
-      select: { id: true },
+  const character = await tx.character.findFirst({
+    where: operationalCharacterWhere({
+      id: input.characterId,
+      deletedAt: null,
     }),
-    tx.characterProject.findFirst({ where: { characterId: input.characterId } }),
-    tx.characterRelease.findUnique({ where: { id: input.releaseId } }),
-  ]);
+    select: { id: true },
+  });
+  const project = await tx.characterProject.findFirst({
+    where: { characterId: input.characterId },
+  });
+  const release = await tx.characterRelease.findUnique({
+    where: { id: input.releaseId },
+  });
   if (!character || !project || !release || release.projectId !== project.id) {
     throw Errors.notFound("Character Release not found");
   }

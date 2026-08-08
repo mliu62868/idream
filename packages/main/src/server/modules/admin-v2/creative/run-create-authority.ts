@@ -212,18 +212,16 @@ export async function resolveProductionBootstrapAuthority(
   characterId: string,
   brief: string | null,
 ) {
-  const [project, content] = await Promise.all([
-    db.characterProject.findFirst({
-      where: { characterId },
-      orderBy: { updatedAt: "desc" },
-      select: { id: true, version: true, phase: true },
-    }),
-    db.characterContentVersion.findFirst({
-      where: { characterId },
-      orderBy: { version: "desc" },
-      select: { id: true, appearanceSnapshot: true },
-    }),
-  ]);
+  const project = await db.characterProject.findFirst({
+    where: { characterId },
+    orderBy: { updatedAt: "desc" },
+    select: { id: true, version: true, phase: true },
+  });
+  const content = await db.characterContentVersion.findFirst({
+    where: { characterId },
+    orderBy: { version: "desc" },
+    select: { id: true, appearanceSnapshot: true },
+  });
   if (!project || !content || !["idea", "planned", "producing"].includes(project.phase)) return null;
   return {
     projectId: project.id,

@@ -63,11 +63,13 @@ async function assertEligible(
   userId: string,
   characterId: string,
 ) {
-  const [user, character, eligibility] = await Promise.all([
-    prisma.chatUserView.findUnique({ where: { userId } }),
-    prisma.chatCharacterView.findUnique({ where: { characterId } }),
-    prisma.chatUserEligibilityView.findUnique({ where: { userId } }),
-  ]);
+  const user = await prisma.chatUserView.findUnique({ where: { userId } });
+  const character = await prisma.chatCharacterView.findUnique({
+    where: { characterId },
+  });
+  const eligibility = await prisma.chatUserEligibilityView.findUnique({
+    where: { userId },
+  });
   if (!user || user.status !== "active" || user.deletedAt) {
     throw new ChatError("user_inactive", "user not active", 403);
   }
@@ -793,27 +795,24 @@ export async function editUserMessage(
     },
     async (tx, recordIntent) => {
     await assertActiveUserAuthority(tx, input.userId);
-    const [
-      currentSession,
-      currentMessage,
-      { messages: currentMessages, linkage: currentLinkage },
-      currentLatestUser,
-    ] =
-      await Promise.all([
-        tx.chatSession.findUnique({ where: { id: session.id } }),
-        tx.message.findUnique({ where: { id: message.id } }),
-        loadSessionLinkage(tx, session.id),
-        tx.message.findFirst({
-          where: {
-            sessionId: session.id,
-            role: "user",
-            deletedAt: null,
-            status: { not: "deleted" },
-          },
-          orderBy: { createdAt: "desc" },
-          select: { id: true },
-        }),
-      ]);
+    const currentSession = await tx.chatSession.findUnique({
+      where: { id: session.id },
+    });
+    const currentMessage = await tx.message.findUnique({
+      where: { id: message.id },
+    });
+    const { messages: currentMessages, linkage: currentLinkage } =
+      await loadSessionLinkage(tx, session.id);
+    const currentLatestUser = await tx.message.findFirst({
+      where: {
+        sessionId: session.id,
+        role: "user",
+        deletedAt: null,
+        status: { not: "deleted" },
+      },
+      orderBy: { createdAt: "desc" },
+      select: { id: true },
+    });
     if (
       currentLinkage.ambiguousAssistantIds.some((assistantId) =>
         currentLinkage.candidateSourceIds
@@ -1058,17 +1057,19 @@ export async function regenerate(
     async (tx) => {
     await assertActiveUserAuthority(tx, input.userId);
     await assertTurnCapacity(tx, input.userId, session.id, policy, message.id);
-    const [
-      currentSession,
-      current,
-      currentSource,
-      { linkage: currentLinkage },
-    ] = await Promise.all([
-      tx.chatSession.findUnique({ where: { id: session.id } }),
-      tx.message.findUnique({ where: { id: message.id } }),
-      tx.message.findUnique({ where: { id: lastUser.id } }),
-      loadSessionLinkage(tx, session.id),
-    ]);
+    const currentSession = await tx.chatSession.findUnique({
+      where: { id: session.id },
+    });
+    const current = await tx.message.findUnique({
+      where: { id: message.id },
+    });
+    const currentSource = await tx.message.findUnique({
+      where: { id: lastUser.id },
+    });
+    const { linkage: currentLinkage } = await loadSessionLinkage(
+      tx,
+      session.id,
+    );
     // 事务内复查：外层已放行过一次，此处不满足只可能是并发改动 → 一律 409。
     // （原先这里比别处多查一个 deletedAt —— 现在 lifecycleOf 一律两个字段都看。）
     assertSessionAccess(currentSession, input, {

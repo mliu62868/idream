@@ -177,12 +177,13 @@ export async function reconcileUnknownGenerationRequest(input: {
 
     const nextReviewAt = validateNextReviewAt(input.command, now);
     if (input.command.resolution === "confirm_failed") {
-      const [deliveredCount, resolvedSuccess] = await Promise.all([
-        tx.generationDelivery.count({
-          where: { requestId: request.id, status: "delivered" },
-        }),
-        validatedUnknownSuccessResolution(tx, latestAttempt.id),
-      ]);
+      const deliveredCount = await tx.generationDelivery.count({
+        where: { requestId: request.id, status: "delivered" },
+      });
+      const resolvedSuccess = await validatedUnknownSuccessResolution(
+        tx,
+        latestAttempt.id,
+      );
       if (resolvedSuccess) {
         throw Errors.conflict(
           "Recovered provider success exists; confirm_failed cannot overwrite it",
@@ -584,32 +585,31 @@ async function adoptRecoveredSuccess(
     terminalRecordRef: payload.terminalRecordRef,
     terminalRecordChecksum: payload.terminalRecordChecksum,
   });
-  const [resolutionReceipt, unknownTransport, artifacts, priorAssets, deliveredBefore] =
-    await Promise.all([
-      tx.inboundEventReceipt.findUnique({
-        where: {
-          sourceService_sourceEventId: {
-            sourceService: input.evidence.receiptSource,
-            sourceEventId: input.attempt.id,
-          },
-        },
-      }),
-      tx.generationTransportExecution.findFirst({
-        where: {
-          attemptId: input.attempt.id,
-          status: "unknown",
-        },
-        orderBy: { transportAttemptNo: "desc" },
-      }),
-      tx.generationArtifact.findMany({
-        where: { attemptId: input.attempt.id },
-        orderBy: { ordinal: "asc" },
-      }),
-      tx.mediaAsset.count({ where: { sourceJobId: input.request.id } }),
-      tx.generationDelivery.count({
-        where: { requestId: input.request.id, status: "delivered" },
-      }),
-    ]);
+  const resolutionReceipt = await tx.inboundEventReceipt.findUnique({
+    where: {
+      sourceService_sourceEventId: {
+        sourceService: input.evidence.receiptSource,
+        sourceEventId: input.attempt.id,
+      },
+    },
+  });
+  const unknownTransport = await tx.generationTransportExecution.findFirst({
+    where: {
+      attemptId: input.attempt.id,
+      status: "unknown",
+    },
+    orderBy: { transportAttemptNo: "desc" },
+  });
+  const artifacts = await tx.generationArtifact.findMany({
+    where: { attemptId: input.attempt.id },
+    orderBy: { ordinal: "asc" },
+  });
+  const priorAssets = await tx.mediaAsset.count({
+    where: { sourceJobId: input.request.id },
+  });
+  const deliveredBefore = await tx.generationDelivery.count({
+    where: { requestId: input.request.id, status: "delivered" },
+  });
   if (
     resolutionReceipt?.processingState !== "processed" ||
     !recoveredReceiptHashMatches(

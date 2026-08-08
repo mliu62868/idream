@@ -515,36 +515,32 @@ async function finalize(
       projectorPrisma,
     },
     async (tx, recordIntent) => {
-    const [
-      currentUser,
-      currentSession,
-      currentCharacter,
-      current,
-      sourceTurn,
-      latestInvalidatingMutation,
-    ] =
-      await Promise.all([
-        tx.chatUserView.findUnique({ where: { userId: session.userId } }),
-        tx.chatSession.findUnique({ where: { id: session.id } }),
-        tx.chatCharacterView.findUnique({
-          where: { characterId: session.characterId },
-        }),
-        tx.message.findUnique({
-          where: { id: payload.assistantMessageId },
-        }),
-        tx.message.findUnique({ where: { id: payload.userMessageId } }),
-        tx.chatFileMutation.findFirst({
-          where: {
-            userId: session.userId,
-            status: "applied",
-            kind: {
-              in: [...CHAT_CONTEXT_INVALIDATING_FILE_MUTATIONS],
-            },
-          },
-          orderBy: { sequence: "desc" },
-          select: { sequence: true },
-        }),
-      ]);
+    const currentUser = await tx.chatUserView.findUnique({
+      where: { userId: session.userId },
+    });
+    const currentSession = await tx.chatSession.findUnique({
+      where: { id: session.id },
+    });
+    const currentCharacter = await tx.chatCharacterView.findUnique({
+      where: { characterId: session.characterId },
+    });
+    const current = await tx.message.findUnique({
+      where: { id: payload.assistantMessageId },
+    });
+    const sourceTurn = await tx.message.findUnique({
+      where: { id: payload.userMessageId },
+    });
+    const latestInvalidatingMutation = await tx.chatFileMutation.findFirst({
+      where: {
+        userId: session.userId,
+        status: "applied",
+        kind: {
+          in: [...CHAT_CONTEXT_INVALIDATING_FILE_MUTATIONS],
+        },
+      },
+      orderBy: { sequence: "desc" },
+      select: { sequence: true },
+    });
     if (
       !currentUser ||
       currentUser.status !== "active" ||

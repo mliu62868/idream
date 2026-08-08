@@ -295,25 +295,23 @@ async function inspectAndQuarantineStaleGeneration(input: {
         FOR UPDATE
       `);
     }
-    const [transport, latestAttemptEvent, dispatchRows] = await Promise.all([
-      transportCandidate
-        ? tx.generationTransportExecution.findUnique({
-            where: { id: transportCandidate.id },
-          })
-        : null,
-      tx.generationAttemptEvent.findFirst({
-        where: { attemptId: attempt.id },
-        orderBy: { sequence: "desc" },
-        select: { occurredAt: true },
-      }),
-      tx.mainOutboxEvent.findMany({
-        where: {
-          aggregateId: job.id,
-          eventType: { in: [...MAIN_OUTBOX_GENERATION_DISPATCH_EVENT_TYPES] },
-        },
-        orderBy: { createdAt: "desc" },
-      }),
-    ]);
+    const transport = transportCandidate
+      ? await tx.generationTransportExecution.findUnique({
+          where: { id: transportCandidate.id },
+        })
+      : null;
+    const latestAttemptEvent = await tx.generationAttemptEvent.findFirst({
+      where: { attemptId: attempt.id },
+      orderBy: { sequence: "desc" },
+      select: { occurredAt: true },
+    });
+    const dispatchRows = await tx.mainOutboxEvent.findMany({
+      where: {
+        aggregateId: job.id,
+        eventType: { in: [...MAIN_OUTBOX_GENERATION_DISPATCH_EVENT_TYPES] },
+      },
+      orderBy: { createdAt: "desc" },
+    });
     const dispatch = dispatchRows.find(
       (row) => jsonRecord(row.payload).attemptId === attempt.id,
     );

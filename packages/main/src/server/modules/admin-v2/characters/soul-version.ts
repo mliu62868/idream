@@ -35,17 +35,17 @@ export async function createCharacterSoulVersion(input: {
 }, db: Prisma.TransactionClient | typeof prisma = prisma): Promise<CharacterSoulVersionResult> {
   const execute = async (tx: Prisma.TransactionClient) => {
     await lockCharacterGenerationAuthority(tx, input.characterId);
-    const [character, project, currentContent] = await Promise.all([
-      tx.character.findFirst({
-        where: operationalCharacterWhere({ id: input.characterId, deletedAt: null }),
-        select: { id: true },
-      }),
-      tx.characterProject.findFirst({ where: { characterId: input.characterId } }),
-      tx.characterContentVersion.findFirst({
-        where: { characterId: input.characterId },
-        orderBy: [{ version: "desc" }, { id: "desc" }],
-      }),
-    ]);
+    const character = await tx.character.findFirst({
+      where: operationalCharacterWhere({ id: input.characterId, deletedAt: null }),
+      select: { id: true },
+    });
+    const project = await tx.characterProject.findFirst({
+      where: { characterId: input.characterId },
+    });
+    const currentContent = await tx.characterContentVersion.findFirst({
+      where: { characterId: input.characterId },
+      orderBy: [{ version: "desc" }, { id: "desc" }],
+    });
     if (!character || !project || !currentContent) {
       throw Errors.notFound("Character Soul authority not found");
     }

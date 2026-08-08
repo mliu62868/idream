@@ -5,6 +5,7 @@
 // (design §5 hot-path degradation). memory_enabled=false reads NO long-term memory.
 import { loadCharacterSoulSnapshot } from "@idream/shared";
 import type { ChatPrismaClient, ChatCharacterView } from "./db.js";
+import type { Prisma } from "../generated/client/client.js";
 import { env } from "./env.js";
 import { resolvePolicy, snapshotFromView, type ChatPolicy } from "./policy.js";
 import { readBoundaries, retrieveMemories } from "./retrieval.js";
@@ -73,41 +74,49 @@ export interface BuildContextInput {
 export async function buildContext(input: BuildContextInput): Promise<BuiltContext> {
   return withReadableChatFileSnapshot(
     input.userId,
-    () => buildContextSnapshot(input),
+    (tx) => buildContextSnapshot({ ...input, prisma: tx }),
     input.prisma,
   );
 }
 
+type BuildContextSnapshotInput = Omit<BuildContextInput, "prisma"> & {
+  prisma: ChatPrismaClient | Prisma.TransactionClient;
+};
+
 async function buildContextSnapshot(
-  input: BuildContextInput,
+  input: BuildContextSnapshotInput,
 ): Promise<BuiltContext> {
   const { prisma, userId, characterId, sessionId, turnMemoryEnabled, userMessageId } = input;
 
-  const [currentPersona, entitlementRow, session, anchorUserMessage, latestUserMessage] = await Promise.all([
-    prisma.chatCharacterView.findUnique({ where: { characterId } }),
-    prisma.chatEntitlementView.findUnique({ where: { userId } }),
-    prisma.chatSession.findUnique({ where: { id: sessionId } }),
-    userMessageId
-      ? prisma.message.findUnique({
-          where: { id: userMessageId },
-          select: {
-            id: true,
-            sessionId: true,
-            role: true,
-            status: true,
-            createdAt: true,
-            characterContentVersionId: true,
-            characterReleaseId: true,
-            sceneVersion: true,
-          },
-        })
-      : Promise.resolve(null),
-    prisma.message.findFirst({
-      where: { sessionId, role: "user", status: "sent", deletedAt: null },
-      orderBy: { createdAt: "desc" },
-      select: { id: true },
-    }),
-  ]);
+  const currentPersona = await prisma.chatCharacterView.findUnique({
+    where: { characterId },
+  });
+  const entitlementRow = await prisma.chatEntitlementView.findUnique({
+    where: { userId },
+  });
+  const session = await prisma.chatSession.findUnique({
+    where: { id: sessionId },
+  });
+  const anchorUserMessage = userMessageId
+    ? await prisma.message.findUnique({
+        where: { id: userMessageId },
+        select: {
+          id: true,
+          sessionId: true,
+          role: true,
+          status: true,
+          createdAt: true,
+          characterContentVersionId: true,
+          characterReleaseId: true,
+          sceneVersion: true,
+        },
+      })
+    : null;
+  const latestUserMessage = await prisma.message.findFirst({
+    where: { sessionId, role: "user", status: "sent", deletedAt: null },
+    orderBy: { createdAt: "desc" },
+    select: { id: true },
+  });
   if (!currentPersona) throw new Error(`character ${characterId} not visible to chat`);
   const anchor =
     anchorUserMessage?.sessionId === sessionId &&

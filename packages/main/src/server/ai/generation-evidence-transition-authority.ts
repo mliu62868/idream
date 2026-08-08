@@ -183,21 +183,19 @@ async function assertMediaAssetBinding(
     WHERE id = ${assetId}
     FOR SHARE
   `);
-  const [asset, attempt] = await Promise.all([
-    tx.mediaAsset.findUnique({
-      where: { id: assetId },
-      select: {
-        ownerId: true,
-        sourceJobId: true,
-        providerAssetId: true,
-        metadata: true,
-      },
-    }),
-    tx.generationAttempt.findUnique({
-      where: { id: artifact.attemptId },
-      select: { requestId: true },
-    }),
-  ]);
+  const asset = await tx.mediaAsset.findUnique({
+    where: { id: assetId },
+    select: {
+      ownerId: true,
+      sourceJobId: true,
+      providerAssetId: true,
+      metadata: true,
+    },
+  });
+  const attempt = await tx.generationAttempt.findUnique({
+    where: { id: artifact.attemptId },
+    select: { requestId: true },
+  });
   const requestOwnerId = attempt
     ? await generationRequestOwnerId(tx, attempt.requestId, artifact.id)
     : null;

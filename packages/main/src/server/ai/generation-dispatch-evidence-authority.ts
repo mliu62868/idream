@@ -269,20 +269,18 @@ export async function resolveExactGenerationDispatchAuthority(
     return mismatch("generation_dispatch_identity_mismatch");
   }
 
-  const [job, rows] = await Promise.all([
-    tx.generationJob.findUnique({
-      where: { id: attempt.requestId },
-      select: { id: true, mode: true },
-    }),
-    tx.mainOutboxEvent.findMany({
-      where: {
-        aggregateType: "generation_request",
-        aggregateId: attempt.requestId,
-        eventType: { in: [...MAIN_OUTBOX_GENERATION_DISPATCH_EVENT_TYPES] },
-      },
-      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    }),
-  ]);
+  const job = await tx.generationJob.findUnique({
+    where: { id: attempt.requestId },
+    select: { id: true, mode: true },
+  });
+  const rows = await tx.mainOutboxEvent.findMany({
+    where: {
+      aggregateType: "generation_request",
+      aggregateId: attempt.requestId,
+      eventType: { in: [...MAIN_OUTBOX_GENERATION_DISPATCH_EVENT_TYPES] },
+    },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+  });
   if (!job) return mismatch("generation_request_not_found");
 
   const matchingRows = rows.filter(

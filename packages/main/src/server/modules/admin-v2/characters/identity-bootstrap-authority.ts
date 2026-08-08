@@ -15,62 +15,69 @@ export async function loadCharacterIdentityBootstrapAuthority(
   db: Prisma.TransactionClient,
   characterId: string,
 ): Promise<CharacterIdentityBootstrapAuthority> {
-  const [character, projects, profiles, serving] = await Promise.all([
-    db.character.findUnique({
-      where: { id: characterId },
-      select: {
-        id: true,
-        imageAssetId: true,
-        imageAsset: {
-          select: {
-            id: true,
-            deletedAt: true,
-            type: true,
-            safetyStatus: true,
-            characterId: true,
-            metadata: true,
-          },
+  const character = await db.character.findUnique({
+    where: { id: characterId },
+    select: {
+      id: true,
+      imageAssetId: true,
+      imageAsset: {
+        select: {
+          id: true,
+          deletedAt: true,
+          type: true,
+          safetyStatus: true,
+          characterId: true,
+          metadata: true,
         },
       },
-    }),
-    db.characterProject.findMany({
-      where: { characterId },
-      orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
-      select: {
-        id: true,
-        version: true,
-        phase: true,
-        draftImageAssetId: true,
-        draftAssetPack: true,
-      },
-    }),
-    db.characterVisualProfile.findMany({
-      where: { characterId },
-      orderBy: [{ version: "asc" }, { id: "asc" }],
-      select: {
-        id: true,
-        version: true,
-        status: true,
-        evidenceState: true,
-        createdFrom: true,
-      },
-    }),
-    db.characterServing.findUnique({
-      where: { characterId },
-      select: { currentReleaseId: true, scheduledReleaseId: true },
-    }),
-  ]);
+    },
+  });
+  const projects = await db.characterProject.findMany({
+    where: { characterId },
+    orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+    select: {
+      id: true,
+      version: true,
+      phase: true,
+      draftImageAssetId: true,
+      draftAssetPack: true,
+    },
+  });
+  const profiles = await db.characterVisualProfile.findMany({
+    where: { characterId },
+    orderBy: [{ version: "asc" }, { id: "asc" }],
+    select: {
+      id: true,
+      version: true,
+      status: true,
+      evidenceState: true,
+      createdFrom: true,
+    },
+  });
+  const serving = await db.characterServing.findUnique({
+    where: { characterId },
+    select: { currentReleaseId: true, scheduledReleaseId: true },
+  });
   const profileIds = profiles.map((profile) => profile.id);
   const projectIds = projects.map((project) => project.id);
-  const [referenceSetCount, referenceCandidateCount, lookCount, generationJobCount, releaseCount, passedQaCount] =
-    await Promise.all([
-      db.referenceSetRevision.count({ where: { visualProfileId: { in: profileIds } } }),
-      db.referenceCandidate.count({ where: { visualProfileId: { in: profileIds } } }),
-      db.characterLook.count({ where: { visualProfileId: { in: profileIds } } }),
-      db.generationJob.count({ where: { visualProfileId: { in: profileIds } } }),
-      db.characterRelease.count({ where: { projectId: { in: projectIds } } }),
-      db.characterQaRun.count({ where: { characterId, status: "passed" } }),
-    ]);
+  const referenceSetCount = await db.referenceSetRevision.count({
+    where: { visualProfileId: { in: profileIds } },
+  });
+  const referenceCandidateCount = await db.referenceCandidate.count({
+    where: { visualProfileId: { in: profileIds } },
+  });
+  const lookCount = await db.characterLook.count({
+    where: { visualProfileId: { in: profileIds } },
+  });
+  const generationJobCount = await db.generationJob.count({
+    where: { visualProfileId: { in: profileIds } },
+  });
+  const releaseCount = await db.characterRelease.count({
+    where: { projectId: { in: projectIds } },
+  });
+  const passedQaCount = await db.characterQaRun.count({
+    where: { characterId, status: "passed" },
+  });
   const latestProject = projects[0] ?? null;
   const currentImageOperational = Boolean(
     character?.imageAsset &&

@@ -52,24 +52,27 @@ async function deriveIncidentRecoveryChecks(
   const errorClass = stringValue(signature.errorClass);
   const normalizedError = stringValue(signature.normalizedError);
 
-  const [jobs, requestAttempts, plans, ledger] = await Promise.all([
-    requestIds.length > 0
-      ? tx.generationJob.findMany({ where: { id: { in: requestIds } } })
-      : [],
-    requestIds.length > 0
-      ? tx.generationAttempt.findMany({
-          where: { requestId: { in: requestIds } },
-          orderBy: [{ requestId: "asc" }, { attemptNo: "desc" }],
-        })
-      : [],
-    tx.incidentActionPlan.findMany({ where: { incidentId: incident.id } }),
-    requestIds.length > 0
-      ? tx.dreamcoinLedger.findMany({
-          where: { sourceId: { in: requestIds }, reason: { in: ["generation_spend", "refund"] } },
-          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-        })
-      : [],
-  ]);
+  const jobs = requestIds.length > 0
+    ? await tx.generationJob.findMany({ where: { id: { in: requestIds } } })
+    : [];
+  const requestAttempts = requestIds.length > 0
+    ? await tx.generationAttempt.findMany({
+        where: { requestId: { in: requestIds } },
+        orderBy: [{ requestId: "asc" }, { attemptNo: "desc" }],
+      })
+    : [];
+  const plans = await tx.incidentActionPlan.findMany({
+    where: { incidentId: incident.id },
+  });
+  const ledger = requestIds.length > 0
+    ? await tx.dreamcoinLedger.findMany({
+        where: {
+          sourceId: { in: requestIds },
+          reason: { in: ["generation_spend", "refund"] },
+        },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      })
+    : [];
   const commands = plans.length > 0
     ? await tx.controlPlaneCommand.findMany({
         where: {

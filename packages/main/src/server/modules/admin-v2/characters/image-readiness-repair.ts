@@ -278,48 +278,46 @@ export async function repairLegacyEditorialVisualIdentity(input: {
     input.characterId,
     discoveredAssetIds,
   );
-  const [character, current, mediaAssets, project] = await Promise.all([
-    input.tx.character.findUnique({
-      where: { id: input.characterId },
-      select: {
-        id: true,
-        name: true,
-        description: true,
-        style: true,
-        appearance: true,
-      },
-    }),
-    input.tx.characterVisualProfile.findFirst({
-      where: { characterId: input.characterId, status: "active" },
-      orderBy: { version: "desc" },
-      include: {
-        referenceSetRevisions: {
-          where: { status: "active" },
-          orderBy: { revision: "desc" },
-          take: 1,
-          include: {
-            references: { orderBy: { position: "asc" } },
-          },
+  const character = await input.tx.character.findUnique({
+    where: { id: input.characterId },
+    select: {
+      id: true,
+      name: true,
+      description: true,
+      style: true,
+      appearance: true,
+    },
+  });
+  const current = await input.tx.characterVisualProfile.findFirst({
+    where: { characterId: input.characterId, status: "active" },
+    orderBy: { version: "desc" },
+    include: {
+      referenceSetRevisions: {
+        where: { status: "active" },
+        orderBy: { revision: "desc" },
+        take: 1,
+        include: {
+          references: { orderBy: { position: "asc" } },
         },
       },
-    }),
-    input.tx.mediaAsset.findMany({
-      where: { id: { in: discoveredAssetIds } },
-      select: {
-        id: true,
-        characterId: true,
-        type: true,
-        deletedAt: true,
-        safetyStatus: true,
-        metadata: true,
-      },
-    }),
-    input.tx.characterProject.findFirst({
-      where: { characterId: input.characterId },
-      orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
-      select: { id: true },
-    }),
-  ]);
+    },
+  });
+  const mediaAssets = await input.tx.mediaAsset.findMany({
+    where: { id: { in: discoveredAssetIds } },
+    select: {
+      id: true,
+      characterId: true,
+      type: true,
+      deletedAt: true,
+      safetyStatus: true,
+      metadata: true,
+    },
+  });
+  const project = await input.tx.characterProject.findFirst({
+    where: { characterId: input.characterId },
+    orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+    select: { id: true },
+  });
   if (!character || !current) {
     throw Errors.conflict(
       "The Character identity authority changed during editorial repair",

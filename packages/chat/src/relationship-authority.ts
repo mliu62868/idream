@@ -101,19 +101,20 @@ export async function loadSessionLinkage(
   messages: RelationshipMessage[];
   linkage: RelationshipLinkage;
 }> {
-  const [messages, receipts] = await Promise.all([
-    db.message.findMany({
-      where: { sessionId },
-      select: relationshipMessageSelect,
-    }),
-    db.chatSendReceipt.findMany({
-      where: { sessionId },
-      select: {
-        userMessageId: true,
-        assistantMessageId: true,
-      },
-    }),
-  ]);
+  // A transaction adapter owns one pg client; concurrent queries on that
+  // client are deprecated and will be rejected by pg 9. Keep this reader valid
+  // for both the pooled client and the transaction adapter.
+  const messages = await db.message.findMany({
+    where: { sessionId },
+    select: relationshipMessageSelect,
+  });
+  const receipts = await db.chatSendReceipt.findMany({
+    where: { sessionId },
+    select: {
+      userMessageId: true,
+      assistantMessageId: true,
+    },
+  });
   return { messages, linkage: resolveRelationshipLinkage(messages, receipts) };
 }
 

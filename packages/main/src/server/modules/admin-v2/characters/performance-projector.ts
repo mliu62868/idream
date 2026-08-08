@@ -30,8 +30,7 @@ export async function refreshCharacterFunnelDaily(
   },
 ) {
   const placementWhere = input.placementId === null ? {} : { placementId: input.placementId };
-  const [exposures, exchanges] = await Promise.all([
-    tx.characterExposureFact.findMany({
+  const exposures = await tx.characterExposureFact.findMany({
       where: {
         characterId: input.characterId,
         characterContentVersionId: input.characterContentVersionId,
@@ -42,8 +41,8 @@ export async function refreshCharacterFunnelDaily(
         occurredAt: { gte: input.productDay, lt: nextDay(input.productDay) },
       },
       select: { eventType: true, occurredAt: true },
-    }),
-    tx.chatExchangeFact.findMany({
+    });
+  const exchanges = await tx.chatExchangeFact.findMany({
       where: {
         characterId: input.characterId,
         characterContentVersionId: input.characterContentVersionId,
@@ -61,8 +60,7 @@ export async function refreshCharacterFunnelDaily(
         productDay: true,
         occurredAt: true,
       },
-    }),
-  ]);
+    });
   const sessions = new Map<string, {
     userId: string;
     chatSessionId: string;

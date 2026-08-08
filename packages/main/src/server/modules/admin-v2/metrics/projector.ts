@@ -153,26 +153,29 @@ async function hasAuthoritativeGenerationFulfillment(
     readonly deliveredOutputCount: number;
   },
 ): Promise<boolean> {
-  const [request, attempts, deliveries] = await Promise.all([
-    tx.generationJob.findUnique({
-      where: { id: payload.requestId },
-      select: { userId: true, outputCount: true, deliveredOutputCount: true, status: true },
-    }),
-    tx.generationAttempt.findMany({
-      where: { requestId: payload.requestId, status: "succeeded" },
-      select: { id: true },
-    }),
-    tx.generationDelivery.findMany({
-      where: {
-        requestId: payload.requestId,
-        status: "delivered",
-        targetType: "user_library",
-        targetId: payload.userId,
-        deliveredAt: { not: null },
-      },
-      select: { artifactId: true },
-    }),
-  ]);
+  const request = await tx.generationJob.findUnique({
+    where: { id: payload.requestId },
+    select: {
+      userId: true,
+      outputCount: true,
+      deliveredOutputCount: true,
+      status: true,
+    },
+  });
+  const attempts = await tx.generationAttempt.findMany({
+    where: { requestId: payload.requestId, status: "succeeded" },
+    select: { id: true },
+  });
+  const deliveries = await tx.generationDelivery.findMany({
+    where: {
+      requestId: payload.requestId,
+      status: "delivered",
+      targetType: "user_library",
+      targetId: payload.userId,
+      deliveredAt: { not: null },
+    },
+    select: { artifactId: true },
+  });
   if (!request ||
     request.userId !== payload.userId ||
     request.status !== "completed" ||
@@ -303,15 +306,19 @@ async function applyEvent(tx: Transaction, event: MetricProductEvent): Promise<M
       (payload.visibleRatio >= 0.5 && payload.visibleDurationMs >= 500);
     if (!eligibleContext || !eligibleImpression) return { status: "skipped", reason: "ineligible_data" };
 
-    const [contentVersion, release, parent] = await Promise.all([
-      tx.characterContentVersion.findUnique({ where: { id: payload.characterContentVersionId } }),
-      payload.characterReleaseId
-        ? tx.characterRelease.findUnique({ where: { id: payload.characterReleaseId } })
-        : Promise.resolve(null),
-      payload.parentExposureId
-        ? tx.characterExposureFact.findUnique({ where: { exposureId: payload.parentExposureId } })
-        : Promise.resolve(null),
-    ]);
+    const contentVersion = await tx.characterContentVersion.findUnique({
+      where: { id: payload.characterContentVersionId },
+    });
+    const release = payload.characterReleaseId
+      ? await tx.characterRelease.findUnique({
+          where: { id: payload.characterReleaseId },
+        })
+      : null;
+    const parent = payload.parentExposureId
+      ? await tx.characterExposureFact.findUnique({
+          where: { exposureId: payload.parentExposureId },
+        })
+      : null;
     if (!contentVersion || contentVersion.characterId !== payload.characterId) {
       return { status: "skipped", reason: "invalid_content_version_attribution" };
     }

@@ -511,7 +511,7 @@ export async function withTurnAuthority<T>(
  */
 export async function withReadableChatFileSnapshot<T>(
   userId: string,
-  read: () => Promise<T>,
+  read: (tx: Prisma.TransactionClient) => Promise<T>,
   prisma: ChatPrismaClient = chatPrisma,
   authorityPrisma: ChatPrismaClient = chatProjectorPrisma,
 ): Promise<T> {
@@ -527,7 +527,10 @@ export async function withReadableChatFileSnapshot<T>(
           `chat file projection pending for ${userId}: ${pending}`,
         );
       }
-      return read();
+      // INVARIANT: cross-store readers must use the transaction that owns the
+      // shared user lock. Capturing the outer Prisma client silently escapes
+      // this seam and can interleave queries with a transaction client.
+      return read(tx);
     },
     { timeout: 30_000 },
   );
@@ -538,12 +541,16 @@ async function assertMemoryExtractAuthority(
   userId: string,
   mutation: Extract<ChatFileMutation, { kind: "memory_extract" }>,
 ): Promise<void> {
-  const [session, assistant, source, { linkage }] = await Promise.all([
-    tx.chatSession.findUnique({ where: { id: mutation.sessionId } }),
-    tx.message.findUnique({ where: { id: mutation.turnKey } }),
-    tx.message.findUnique({ where: { id: mutation.userMessageId } }),
-    loadSessionLinkage(tx, mutation.sessionId),
-  ]);
+  const session = await tx.chatSession.findUnique({
+    where: { id: mutation.sessionId },
+  });
+  const assistant = await tx.message.findUnique({
+    where: { id: mutation.turnKey },
+  });
+  const source = await tx.message.findUnique({
+    where: { id: mutation.userMessageId },
+  });
+  const { linkage } = await loadSessionLinkage(tx, mutation.sessionId);
   if (
     !session ||
     session.userId !== userId ||

@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import ts from "typescript";
 
 function source(path: string) {
   return readFileSync(path, "utf8");
@@ -19,6 +20,75 @@ function productionTypeScriptFiles(directory: string): string[] {
 }
 
 describe("deep module authority boundaries", () => {
+  it("loads Main Prisma relations with one database join", () => {
+    const schema = source("prisma/schema.prisma");
+
+    // INVARIANT: the query relation strategy fans nested reads out inside an
+    // adapter transaction. pg 9 rejects concurrent queries on that one client.
+    expect(schema).toMatch(
+      /previewFeatures\s*=\s*\[[^\]]*"relationJoins"[^\]]*\]/,
+    );
+  });
+
+  it("keeps transaction adapters serial instead of multiplexing one pg client", () => {
+    const offenders = ["src", "../chat/src"]
+      .flatMap(productionTypeScriptFiles)
+      .flatMap((file) => {
+        const text = source(file);
+        const syntax = ts.createSourceFile(
+          file,
+          text,
+          ts.ScriptTarget.Latest,
+          true,
+        );
+        const lines: string[] = [];
+        const visit = (node: ts.Node) => {
+          if (ts.isCallExpression(node) && node.expression.getText(syntax) === "Promise.all") {
+            const call = node.getText(syntax);
+            let owner: ts.Node | undefined = node.parent;
+            while (
+              owner &&
+              !ts.isFunctionDeclaration(owner) &&
+              !ts.isFunctionExpression(owner) &&
+              !ts.isArrowFunction(owner) &&
+              !ts.isMethodDeclaration(owner)
+            ) {
+              owner = owner.parent;
+            }
+            const typedTransactionNames = owner && "parameters" in owner
+              ? owner.parameters.flatMap((parameter) =>
+                  ts.isIdentifier(parameter.name) &&
+                  parameter.type?.getText(syntax).includes("TransactionClient")
+                    ? [parameter.name.text]
+                    : [],
+                )
+              : [];
+            const usesTransactionAdapter =
+              /\b(?:tx|input\.tx)\./.test(call) ||
+              typedTransactionNames.some((name) =>
+                new RegExp(`\\b${name}\\.`).test(call),
+              );
+            if (!usesTransactionAdapter) {
+              ts.forEachChild(node, visit);
+              return;
+            }
+            lines.push(
+              `${path.relative(process.cwd(), file)}:${
+                syntax.getLineAndCharacterOfPosition(node.getStart(syntax)).line + 1
+              }`,
+            );
+          }
+          ts.forEachChild(node, visit);
+        };
+        visit(syntax);
+        return lines;
+      });
+
+    // INVARIANT: Prisma transaction adapters own one pg client. Promise.all
+    // multiplexes queries onto it, which pg 8 deprecates and pg 9 rejects.
+    expect(offenders).toEqual([]);
+  });
+
   it("keeps image and video provider execution out of Main", () => {
     const pipeline = source("src/server/ai/local-pipeline.ts");
     const finalizer = source("src/processes/finalizer.ts");

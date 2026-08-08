@@ -58,18 +58,20 @@ export async function bootstrapCharacterIdentity(input: {
   );
   await input.tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`character-identity-bootstrap:${input.characterId}`}))`;
   const bootstrapAuthority = await loadCharacterIdentityBootstrapAuthority(input.tx, input.characterId);
-  const [character, project, content, serving] = await Promise.all([
-    input.tx.character.findUnique({ where: { id: input.characterId } }),
-    input.tx.characterProject.findFirst({
-      where: { characterId: input.characterId },
-      orderBy: { updatedAt: "desc" },
-    }),
-    input.tx.characterContentVersion.findFirst({
-      where: { characterId: input.characterId },
-      orderBy: { version: "desc" },
-    }),
-    input.tx.characterServing.findUnique({ where: { characterId: input.characterId } }),
-  ]);
+  const character = await input.tx.character.findUnique({
+    where: { id: input.characterId },
+  });
+  const project = await input.tx.characterProject.findFirst({
+    where: { characterId: input.characterId },
+    orderBy: { updatedAt: "desc" },
+  });
+  const content = await input.tx.characterContentVersion.findFirst({
+    where: { characterId: input.characterId },
+    orderBy: { version: "desc" },
+  });
+  const serving = await input.tx.characterServing.findUnique({
+    where: { characterId: input.characterId },
+  });
   if (!character || !project || !content) {
     throw Errors.notFound("Character Project draft authority is incomplete");
   }
@@ -111,37 +113,42 @@ export async function bootstrapCharacterIdentity(input: {
       batchId: request.runId,
       mediaAssetId: request.assetId,
     },
-    include: {
-      batch: true,
-      mediaAsset: true,
-      job: true,
-    },
   });
+  const batch = item
+    ? await input.tx.contentProductionBatch.findUnique({ where: { id: item.batchId } })
+    : null;
   if (
     !item ||
-    item.batch.targetType !== "character" ||
-    item.batch.targetId !== input.characterId ||
-    item.batch.purpose !== "character_cover"
+    !batch ||
+    batch.targetType !== "character" ||
+    batch.targetId !== input.characterId ||
+    batch.purpose !== "character_cover"
   ) {
     throw Errors.badRequest("Identity anchor must come from this Character's primary portrait Run");
   }
-  if (!item.job || record(item.job.sourceMeta).bootstrapIdentity !== true) {
+  // INTENT: a multi-relation `include` makes Prisma's query-plan interpreter
+  // issue relation reads concurrently on this one pg transaction client.
+  // Load each authority serially; pg 9 rejects multiplexing one connection.
+  const job = item.jobId
+    ? await input.tx.generationJob.findUnique({ where: { id: item.jobId } })
+    : null;
+  if (!job || record(job.sourceMeta).bootstrapIdentity !== true) {
     throw Errors.conflict("Identity anchor must come from an explicit first-portrait bootstrap Run");
   }
-  if (item.job.visualProfileId !== null || item.job.referenceSetRevisionId !== null) {
+  if (job.visualProfileId !== null || job.referenceSetRevisionId !== null) {
     throw Errors.conflict("Identity bootstrap cannot depend on a prior identity authority");
   }
   if (
-    item.job.status !== "completed" ||
-    (Array.isArray(item.job.referenceAssetIds) && item.job.referenceAssetIds.length > 0)
+    job.status !== "completed" ||
+    (Array.isArray(job.referenceAssetIds) && job.referenceAssetIds.length > 0)
   ) {
     throw Errors.conflict("Identity bootstrap requires a completed generation with no prior references");
   }
-  const bootstrapMeta = record(item.job.sourceMeta);
+  const bootstrapMeta = record(job.sourceMeta);
   const expectedVisualBriefHash = canonicalSha256({
     characterContentVersionId: content.id,
     appearanceSnapshot: content.appearanceSnapshot,
-    brief: item.batch.brief,
+    brief: batch.brief,
   });
   if (
     bootstrapMeta.bootstrapProjectVersion !== project.version ||
@@ -153,15 +160,18 @@ export async function bootstrapCharacterIdentity(input: {
   ) {
     throw Errors.conflict("The first-portrait Run is stale against the current Character Project or identity history");
   }
+  const mediaAsset = item.mediaAssetId
+    ? await input.tx.mediaAsset.findUnique({ where: { id: item.mediaAssetId } })
+    : null;
   if (
-    !item.mediaAsset ||
-    item.mediaAsset.deletedAt ||
-    item.mediaAsset.type !== "image" ||
-    item.mediaAsset.safetyStatus !== "passed" ||
-    !isMediaAssetOperationalForAuthority(item.mediaAsset.metadata) ||
-    !hasHydratableMediaBlobAuthority(item.mediaAsset) ||
-    item.mediaAsset.characterId !== input.characterId ||
-    item.mediaAsset.sourceJobId !== item.job.id
+    !mediaAsset ||
+    mediaAsset.deletedAt ||
+    mediaAsset.type !== "image" ||
+    mediaAsset.safetyStatus !== "passed" ||
+    !isMediaAssetOperationalForAuthority(mediaAsset.metadata) ||
+    !hasHydratableMediaBlobAuthority(mediaAsset) ||
+    mediaAsset.characterId !== input.characterId ||
+    mediaAsset.sourceJobId !== job.id
   ) {
     throw Errors.conflict("The reviewed bootstrap asset is unavailable or its generation lineage is invalid");
   }
@@ -174,7 +184,7 @@ export async function bootstrapCharacterIdentity(input: {
     where: {
       id: request.reviewDecisionId,
       runItemId: item.id,
-      artifactId: item.mediaAsset.id,
+      artifactId: mediaAsset.id,
     },
   });
   const latestDecision = await input.tx.creativeReviewDecision.findFirst({
@@ -219,8 +229,8 @@ export async function bootstrapCharacterIdentity(input: {
     bodyTraits,
     signatureTraits,
     styleTraits,
-    anchorAssetIds: [item.mediaAsset.id],
-    referenceAssetIds: [item.mediaAsset.id],
+    anchorAssetIds: [mediaAsset.id],
+    referenceAssetIds: [mediaAsset.id],
   };
   if (bootstrapAuthority.recoverableProfileIds.length > 0) {
     await input.tx.characterVisualProfile.updateMany({
@@ -245,22 +255,22 @@ export async function bootstrapCharacterIdentity(input: {
       bodyTraits: toInputJson(bodyTraits),
       signatureTraits: toInputJson(signatureTraits),
       styleTraits: toInputJson(styleTraits),
-      anchorAssetIds: toInputJson([item.mediaAsset.id]),
-      defaultSeed: item.job.seed ?? item.job.id,
+      anchorAssetIds: toInputJson([mediaAsset.id]),
+      defaultSeed: job.seed ?? job.id,
       adapterRefs: toInputJson({
         bootstrapIdentity: true,
-        generationJobId: item.job.id,
-        generationProfileKey: item.job.profileId,
-        generationProfileVersion: item.job.profileVersion,
-        workflowKey: item.job.model,
+        generationJobId: job.id,
+        generationProfileKey: job.profileId,
+        generationProfileVersion: job.profileVersion,
+        workflowKey: job.model,
       }),
       immutableHash: characterVisualProfileSnapshotHash(profileSnapshot),
       evidenceState: "reviewed_bootstrap",
-      createdFrom: `identity_bootstrap:${item.job.id}`,
+      createdFrom: `identity_bootstrap:${job.id}`,
     },
   });
   const references = [{
-    mediaAssetId: item.mediaAsset.id,
+    mediaAssetId: mediaAsset.id,
     position: 0,
     role: "primary_face",
     weight: 1,
@@ -272,7 +282,7 @@ export async function bootstrapCharacterIdentity(input: {
       revision: 1,
       status: "active",
       selectorVersion,
-      createdFrom: `identity_bootstrap:${item.job.id}`,
+      createdFrom: `identity_bootstrap:${job.id}`,
       snapshotHash: referenceSetSnapshotHash({
         visualProfileId: visualProfile.id,
         revision: 1,
@@ -292,8 +302,8 @@ export async function bootstrapCharacterIdentity(input: {
   await input.tx.referenceCandidate.create({
     data: {
       visualProfileId: visualProfile.id,
-      mediaAssetId: item.mediaAsset.id,
-      sourceJobId: item.job.id,
+      mediaAssetId: mediaAsset.id,
+      sourceJobId: job.id,
       proposedRole: "primary_face",
       qualityScore: decision.score,
       source: "identity_bootstrap",
@@ -304,18 +314,18 @@ export async function bootstrapCharacterIdentity(input: {
 
   const nextPack = {
     character_cover: {
-      assetId: item.mediaAsset.id,
-      runId: item.batch.id,
+      assetId: mediaAsset.id,
+      runId: batch.id,
       itemId: item.id,
       reviewDecisionId: decision.id,
-      generationJobId: item.job.id,
+      generationJobId: job.id,
       bootstrapIdentity: true,
     },
   };
   const changed = await input.tx.characterProject.updateMany({
     where: { id: project.id, version: project.version },
     data: {
-      draftImageAssetId: item.mediaAsset.id,
+      draftImageAssetId: mediaAsset.id,
       draftAssetPack: toInputJson(nextPack),
       version: { increment: 1 },
     },
@@ -347,8 +357,8 @@ export async function bootstrapCharacterIdentity(input: {
         visualProfileVersion: visualProfile.version,
         referenceSetRevisionId: referenceSet.id,
         referenceSetRevision: referenceSet.revision,
-        anchorAssetId: item.mediaAsset.id,
-        generationJobId: item.job.id,
+        anchorAssetId: mediaAsset.id,
+        generationJobId: job.id,
       }),
       requestId: input.requestId,
     },
@@ -363,7 +373,7 @@ export async function bootstrapCharacterIdentity(input: {
       metadata: toInputJson({
         visualProfileId: visualProfile.id,
         referenceSetRevisionId: referenceSet.id,
-        anchorAssetId: item.mediaAsset.id,
+        anchorAssetId: mediaAsset.id,
         projectVersion: updatedProject.version,
       }),
       idempotencyKey: `character_identity_bootstrap:${input.requestId}`,
@@ -382,8 +392,8 @@ export async function bootstrapCharacterIdentity(input: {
         visualProfileVersion: visualProfile.version,
         referenceSetRevisionId: referenceSet.id,
         referenceSetRevision: referenceSet.revision,
-        anchorAssetId: item.mediaAsset.id,
-        generationJobId: item.job.id,
+        anchorAssetId: mediaAsset.id,
+        generationJobId: job.id,
       }),
     },
   });
@@ -394,8 +404,8 @@ export async function bootstrapCharacterIdentity(input: {
     visualProfileVersion: visualProfile.version,
     referenceSetRevisionId: referenceSet.id,
     referenceSetRevision: referenceSet.revision,
-    anchorAssetId: item.mediaAsset.id,
-    draftImageAssetId: item.mediaAsset.id,
+    anchorAssetId: mediaAsset.id,
+    draftImageAssetId: mediaAsset.id,
     deepLink: characterWorkspaceTabLink(input.characterId, "assets"),
     replayed: false,
   });
