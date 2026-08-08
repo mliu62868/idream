@@ -336,55 +336,59 @@ export async function queryGenerationJobsV2Authority(input: {
   const cursor = query.cursor ? decodeCursor(query.cursor, query.sort, queryHash) : null;
   const pageWhere: Prisma.GenerationJobWhereInput = cursor ? { AND: [filters, cursorWhere(cursor)] } : filters;
 
-  const [rows, totals, statusGroups, modeGroups, providerGroups, sourceGroups] = await Promise.all([
-    db.generationJob.findMany({
-      where: pageWhere,
-      orderBy: sortOrder(query.sort),
-      take: query.limit + 1,
-      include: { _count: { select: { assets: true } } },
-    }),
-    db.generationJob.aggregate({
-      where: filters,
-      _count: { _all: true },
-      _sum: { costDreamcoins: true, outputCount: true, deliveredOutputCount: true },
-    }),
-    db.generationJob.groupBy({ by: ["status"], where: filters, _count: { _all: true } }),
-    db.generationJob.groupBy({ by: ["mode"], where: filters, _count: { _all: true } }),
-    db.generationJob.groupBy({ by: ["provider"], where: filters, _count: { _all: true } }),
-    db.generationJob.groupBy({ by: ["sourceType"], where: filters, _count: { _all: true } }),
-  ]);
+  const rows = await db.generationJob.findMany({
+    where: pageWhere,
+    orderBy: sortOrder(query.sort),
+    take: query.limit + 1,
+    include: { _count: { select: { assets: true } } },
+  });
+  const totals = await db.generationJob.aggregate({
+    where: filters,
+    _count: { _all: true },
+    _sum: { costDreamcoins: true, outputCount: true, deliveredOutputCount: true },
+  });
+  const statusGroups = await db.generationJob.groupBy({ by: ["status"], where: filters, _count: { _all: true } });
+  const modeGroups = await db.generationJob.groupBy({ by: ["mode"], where: filters, _count: { _all: true } });
+  const providerGroups = await db.generationJob.groupBy({ by: ["provider"], where: filters, _count: { _all: true } });
+  const sourceGroups = await db.generationJob.groupBy({ by: ["sourceType"], where: filters, _count: { _all: true } });
   const hasNextPage = rows.length > query.limit;
   const page = rows.slice(0, query.limit);
   const last = page.at(-1);
   const pageIds = page.map((row) => row.id);
-  const [attempts, deliveryGroups, settlementLinks, reconciliationEvents] = pageIds.length > 0 ? await Promise.all([
-    db.generationAttempt.findMany({
-      where: { requestId: { in: pageIds } },
-      orderBy: [{ requestId: "asc" }, { attemptNo: "desc" }],
-    }),
-    db.generationDelivery.groupBy({
-      by: ["requestId", "status"],
-      where: { requestId: { in: pageIds } },
-      _count: { _all: true },
-    }),
-    db.generationSettlementLink.findMany({
-      where: { requestId: { in: pageIds } },
-      select: { requestId: true, ledgerEntryId: true },
-    }),
-    db.generationJobEvent.findMany({
-      where: {
-        jobId: { in: pageIds },
-        type: {
-          in: [
-            "unknown_reconciliation_adopt_succeeded",
-            "unknown_reconciliation_confirm_failed",
-            "unknown_reconciliation_remain_unknown",
-          ],
+  const attempts = pageIds.length > 0
+    ? await db.generationAttempt.findMany({
+        where: { requestId: { in: pageIds } },
+        orderBy: [{ requestId: "asc" }, { attemptNo: "desc" }],
+      })
+    : [];
+  const deliveryGroups = pageIds.length > 0
+    ? await db.generationDelivery.groupBy({
+        by: ["requestId", "status"],
+        where: { requestId: { in: pageIds } },
+        _count: { _all: true },
+      })
+    : [];
+  const settlementLinks = pageIds.length > 0
+    ? await db.generationSettlementLink.findMany({
+        where: { requestId: { in: pageIds } },
+        select: { requestId: true, ledgerEntryId: true },
+      })
+    : [];
+  const reconciliationEvents = pageIds.length > 0
+    ? await db.generationJobEvent.findMany({
+        where: {
+          jobId: { in: pageIds },
+          type: {
+            in: [
+              "unknown_reconciliation_adopt_succeeded",
+              "unknown_reconciliation_confirm_failed",
+              "unknown_reconciliation_remain_unknown",
+            ],
+          },
         },
-      },
-      orderBy: [{ jobId: "asc" }, { createdAt: "desc" }, { id: "desc" }],
-    }),
-  ]) : [[], [], [], []];
+        orderBy: [{ jobId: "asc" }, { createdAt: "desc" }, { id: "desc" }],
+      })
+    : [];
   const ledgerEntries = settlementLinks.length > 0 ? await db.dreamcoinLedger.findMany({
     where: { id: { in: settlementLinks.map((link) => link.ledgerEntryId) } },
     select: { id: true, delta: true, reason: true },

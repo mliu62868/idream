@@ -192,45 +192,36 @@ export async function runPublicCatalogProbe(
   const startedAt = Date.now();
 
   try {
-    const [
-      characters,
-      rawCharacters,
-      collections,
-      rawCollections,
-      feedbackItems,
-      rawFeedbackItems,
-    ] = await Promise.all([
-      db.character.findMany({
-        where: publicCharacterAudienceWhere,
-        include: characterInclude,
-        orderBy: { createdAt: "desc" },
-      }),
-      db.character.findMany({
-        where: rawPublicCharacterWhere,
-        include: characterInclude,
-        orderBy: { createdAt: "desc" },
-      }),
-      db.mediaCollection.findMany({
-        where: publicCollectionAudienceWhere,
-        include: collectionInclude,
-        orderBy: { createdAt: "desc" },
-      }),
-      db.mediaCollection.findMany({
-        where: rawPublicCollectionWhere,
-        include: collectionInclude,
-        orderBy: { createdAt: "desc" },
-      }),
-      db.productFeedbackItem.findMany({
-        where: publicFeedbackAudienceWhere,
-        include: feedbackInclude,
-        orderBy: [{ voteCount: "desc" }, { createdAt: "desc" }],
-      }),
-      db.productFeedbackItem.findMany({
-        where: rawPublicFeedbackWhere,
-        include: feedbackInclude,
-        orderBy: [{ voteCount: "desc" }, { createdAt: "desc" }],
-      }),
-    ]);
+    const characters = await db.character.findMany({
+      where: publicCharacterAudienceWhere,
+      include: characterInclude,
+      orderBy: { createdAt: "desc" },
+    });
+    const rawCharacters = await db.character.findMany({
+      where: rawPublicCharacterWhere,
+      include: characterInclude,
+      orderBy: { createdAt: "desc" },
+    });
+    const collections = await db.mediaCollection.findMany({
+      where: publicCollectionAudienceWhere,
+      include: collectionInclude,
+      orderBy: { createdAt: "desc" },
+    });
+    const rawCollections = await db.mediaCollection.findMany({
+      where: rawPublicCollectionWhere,
+      include: collectionInclude,
+      orderBy: { createdAt: "desc" },
+    });
+    const feedbackItems = await db.productFeedbackItem.findMany({
+      where: publicFeedbackAudienceWhere,
+      include: feedbackInclude,
+      orderBy: [{ voteCount: "desc" }, { createdAt: "desc" }],
+    });
+    const rawFeedbackItems = await db.productFeedbackItem.findMany({
+      where: rawPublicFeedbackWhere,
+      include: feedbackInclude,
+      orderBy: [{ voteCount: "desc" }, { createdAt: "desc" }],
+    });
 
     const issues: CatalogIssue[] = [];
     const creatorIds = new Set<string>();

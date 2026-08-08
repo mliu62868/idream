@@ -68,7 +68,7 @@ async function createProductionShape(tx: Prisma.TransactionClient) {
 
   await tx.$executeRaw(Prisma.sql`
     INSERT INTO "admin_cases"
-      (id, type, "targetType", "targetId", "caseKey", status, priority,
+      (id, type, "targetType", "targetId", "caseKey", "activeKey", status, priority,
        "ownerId", "slaDueAt", "verificationState", "createdAt", "updatedAt")
     SELECT
       'case-' || i::text,
@@ -76,6 +76,10 @@ async function createProductionShape(tx: Prisma.TransactionClient) {
       CASE WHEN i = 1 THEN 'user' ELSE 'character' END,
       CASE WHEN i = 1 THEN 'load-user' ELSE 'target-' || i::text END,
       'load-' || i::text,
+      CASE WHEN i % 5 = 4 THEN NULL ELSE
+        (CASE WHEN i = 1 THEN 'support_request:user:load-user:' ELSE 'content_report:character:target-' || i::text || ':' END)
+        || 'load-' || i::text
+      END,
       (ARRAY['new','triaged','in_progress','waiting','resolved'])[1 + (i % 5)],
       CASE WHEN i = ${CASES} THEN 'urgent'
         ELSE (ARRAY['urgent','high','normal','low'])[1 + (i % 4)] END,

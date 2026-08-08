@@ -114,23 +114,21 @@ async function refreshIncidentImpact(db: Db, incidentId: string) {
   });
   const requestIds = [...new Set(occurrences.flatMap((row) => (row.requestId ? [row.requestId] : [])))];
   const attemptIds = [...new Set(occurrences.flatMap((row) => (row.attemptId ? [row.attemptId] : [])))];
-  const [jobs, transports, ledger] = await Promise.all([
-    requestIds.length
-      ? db.generationJob.findMany({ where: { id: { in: requestIds } }, select: { userId: true } })
-      : [],
-    attemptIds.length
-      ? db.generationTransportExecution.findMany({
-          where: { attemptId: { in: attemptIds } },
-          select: { costMicros: true },
-        })
-      : [],
-    requestIds.length
-      ? db.dreamcoinLedger.findMany({
-          where: { sourceId: { in: requestIds }, reason: "refund", delta: { gt: 0 } },
-          select: { delta: true },
-        })
-      : [],
-  ]);
+  const jobs = requestIds.length
+    ? await db.generationJob.findMany({ where: { id: { in: requestIds } }, select: { userId: true } })
+    : [];
+  const transports = attemptIds.length
+    ? await db.generationTransportExecution.findMany({
+        where: { attemptId: { in: attemptIds } },
+        select: { costMicros: true },
+      })
+    : [];
+  const ledger = requestIds.length
+    ? await db.dreamcoinLedger.findMany({
+        where: { sourceId: { in: requestIds }, reason: "refund", delta: { gt: 0 } },
+        select: { delta: true },
+      })
+    : [];
   const failedCostMicros = transports.reduce(
     (sum, row) => sum + Number(row.costMicros ?? BigInt(0)),
     0,
@@ -375,17 +373,15 @@ async function occurrenceSnapshot(db: Db, incidentId: string) {
   });
   const attemptIds = occurrences.flatMap((row) => (row.attemptId ? [row.attemptId] : []));
   const requestIds = occurrences.flatMap((row) => (row.requestId ? [row.requestId] : []));
-  const [attempts, ledger] = await Promise.all([
-    attemptIds.length
-      ? db.generationAttempt.findMany({ where: { id: { in: attemptIds } } })
-      : [],
-    requestIds.length
-      ? db.dreamcoinLedger.findMany({
-          where: { sourceId: { in: requestIds }, reason: { in: ["generation_spend", "refund"] } },
-          select: { sourceId: true, reason: true, delta: true },
-        })
-      : [],
-  ]);
+  const attempts = attemptIds.length
+    ? await db.generationAttempt.findMany({ where: { id: { in: attemptIds } } })
+    : [];
+  const ledger = requestIds.length
+    ? await db.dreamcoinLedger.findMany({
+        where: { sourceId: { in: requestIds }, reason: { in: ["generation_spend", "refund"] } },
+        select: { sourceId: true, reason: true, delta: true },
+      })
+    : [];
   const attemptsById = new Map(attempts.map((attempt) => [attempt.id, attempt]));
   return occurrences.map((row) => ({
     id: row.id,

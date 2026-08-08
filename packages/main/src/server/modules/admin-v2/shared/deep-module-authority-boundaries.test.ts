@@ -19,6 +19,118 @@ function productionTypeScriptFiles(directory: string): string[] {
   });
 }
 
+function transactionCapableTypeNames(syntax: ts.SourceFile): Set<string> {
+  const declarations = syntax.statements.filter(
+    (statement): statement is ts.TypeAliasDeclaration | ts.InterfaceDeclaration =>
+      ts.isTypeAliasDeclaration(statement) || ts.isInterfaceDeclaration(statement),
+  );
+  const capable = new Set(["TransactionClient"]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const declaration of declarations) {
+      if (capable.has(declaration.name.text)) continue;
+      const text = declaration.getText(syntax);
+      if (
+        [...capable].some((name) =>
+          new RegExp(`\\b${name}\\b`).test(text),
+        )
+      ) {
+        capable.add(declaration.name.text);
+        changed = true;
+      }
+    }
+  }
+  return capable;
+}
+
+function bindingNames(name: ts.BindingName): string[] {
+  if (ts.isIdentifier(name)) return [name.text];
+  return name.elements.flatMap((element) =>
+    ts.isOmittedExpression(element) ? [] : bindingNames(element.name),
+  );
+}
+
+function transactionParameterNames(
+  owner: ts.FunctionLikeDeclaration,
+  syntax: ts.SourceFile,
+): string[] {
+  const capableTypes = transactionCapableTypeNames(syntax);
+  const typed = owner.parameters.flatMap((parameter) => {
+    const type = parameter.type?.getText(syntax) ?? "";
+    return [...capableTypes].some((name) =>
+      new RegExp(`\\b${name}\\b`).test(type),
+    )
+      ? bindingNames(parameter.name)
+      : [];
+  });
+  const parentCall = ts.isCallExpression(owner.parent) ? owner.parent : null;
+  const inferred = parentCall && /\.\$transaction$/.test(parentCall.expression.getText(syntax))
+    ? owner.parameters.flatMap((parameter) => bindingNames(parameter.name))
+    : [];
+  const names = new Set([...typed, ...inferred]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const visit = (node: ts.Node) => {
+      if (node !== owner && ts.isFunctionLike(node)) return;
+      if (ts.isVariableDeclaration(node) && node.initializer) {
+        const initializer = node.initializer.getText(syntax);
+        if (
+          [...names].some((name) =>
+            new RegExp(`^${name}(?:\\.|$)`).test(initializer),
+          )
+        ) {
+          for (const name of bindingNames(node.name)) {
+            if (!names.has(name)) {
+              names.add(name);
+              changed = true;
+            }
+          }
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(owner);
+  }
+  return [...names];
+}
+
+function transactionPromiseAllLines(syntax: ts.SourceFile): number[] {
+  const lines: number[] = [];
+  const visit = (node: ts.Node) => {
+    if (ts.isCallExpression(node) && node.expression.getText(syntax) === "Promise.all") {
+      const call = node.getText(syntax);
+      let owner: ts.Node | undefined = node.parent;
+      while (
+        owner &&
+        !ts.isFunctionDeclaration(owner) &&
+        !ts.isFunctionExpression(owner) &&
+        !ts.isArrowFunction(owner) &&
+        !ts.isMethodDeclaration(owner)
+      ) {
+        owner = owner.parent;
+      }
+      const typedTransactionNames = owner && "parameters" in owner
+        ? transactionParameterNames(owner, syntax)
+        : [];
+      const usesTransactionAdapter =
+        /\b(?:tx|input\.tx)\b/.test(call) ||
+        typedTransactionNames.some((name) =>
+          new RegExp(`\\b${name}\\b`).test(call),
+        );
+      if (usesTransactionAdapter) {
+        lines.push(
+          syntax.getLineAndCharacterOfPosition(node.getStart(syntax)).line + 1,
+        );
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(syntax);
+  return lines;
+}
+
 describe("deep module authority boundaries", () => {
   it("loads Main Prisma relations with one database join", () => {
     const schema = source("prisma/schema.prisma");
@@ -41,52 +153,36 @@ describe("deep module authority boundaries", () => {
           ts.ScriptTarget.Latest,
           true,
         );
-        const lines: string[] = [];
-        const visit = (node: ts.Node) => {
-          if (ts.isCallExpression(node) && node.expression.getText(syntax) === "Promise.all") {
-            const call = node.getText(syntax);
-            let owner: ts.Node | undefined = node.parent;
-            while (
-              owner &&
-              !ts.isFunctionDeclaration(owner) &&
-              !ts.isFunctionExpression(owner) &&
-              !ts.isArrowFunction(owner) &&
-              !ts.isMethodDeclaration(owner)
-            ) {
-              owner = owner.parent;
-            }
-            const typedTransactionNames = owner && "parameters" in owner
-              ? owner.parameters.flatMap((parameter) =>
-                  ts.isIdentifier(parameter.name) &&
-                  parameter.type?.getText(syntax).includes("TransactionClient")
-                    ? [parameter.name.text]
-                    : [],
-                )
-              : [];
-            const usesTransactionAdapter =
-              /\b(?:tx|input\.tx)\./.test(call) ||
-              typedTransactionNames.some((name) =>
-                new RegExp(`\\b${name}\\.`).test(call),
-              );
-            if (!usesTransactionAdapter) {
-              ts.forEachChild(node, visit);
-              return;
-            }
-            lines.push(
-              `${path.relative(process.cwd(), file)}:${
-                syntax.getLineAndCharacterOfPosition(node.getStart(syntax)).line + 1
-              }`,
-            );
-          }
-          ts.forEachChild(node, visit);
-        };
-        visit(syntax);
-        return lines;
+        return transactionPromiseAllLines(syntax).map(
+          (line) => `${path.relative(process.cwd(), file)}:${line}`,
+        );
       });
 
     // INVARIANT: Prisma transaction adapters own one pg client. Promise.all
     // multiplexes queries onto it, which pg 8 deprecates and pg 9 rejects.
     expect(offenders).toEqual([]);
+  });
+
+  it("recognizes aliased, destructured, and inferred transaction adapters", () => {
+    const syntax = ts.createSourceFile(
+      "transaction-fixture.ts",
+      `type Db = PrismaClient | Prisma.TransactionClient;
+async function aliased(input: { db: Db }) {
+  const { db } = input;
+  await Promise.all([db.character.count(), db.mediaAsset.count()]);
+}
+prisma.$transaction(async (database) => {
+  await Promise.all([database.character.count(), database.mediaAsset.count()]);
+  await Promise.all([first(database), second(database)]);
+});
+async function pooled(db: PrismaClient) {
+  await Promise.all([db.character.count(), db.mediaAsset.count()]);
+}`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+
+    expect(transactionPromiseAllLines(syntax)).toEqual([4, 7, 8]);
   });
 
   it("keeps image and video provider execution out of Main", () => {

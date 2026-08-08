@@ -309,17 +309,15 @@ export async function synchronizeSupportCaseFromRequest(db: Db, request: Support
 }
 
 async function addBillingEvidence(db: Db, caseId: string, userId: string) {
-  const [subscription, ledger] = await Promise.all([
-    db.subscription.findFirst({
-      where: { userId },
-      include: { plan: true },
-      orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
-    }),
-    db.dreamcoinLedger.findFirst({
-      where: { userId },
-      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    }),
-  ]);
+  const subscription = await db.subscription.findFirst({
+    where: { userId },
+    include: { plan: true },
+    orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+  });
+  const ledger = await db.dreamcoinLedger.findFirst({
+    where: { userId },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+  });
   if (subscription) {
     await db.caseEvidence.upsert({
       where: {

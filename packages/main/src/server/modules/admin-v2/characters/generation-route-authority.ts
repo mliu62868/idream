@@ -306,16 +306,14 @@ export async function evaluateEffectiveGenerationRouteAuthority(
     return qualificationState;
   }
   const qualification = input.qualification;
-  const [profile, workflow] = await Promise.all([
-    db.generationModelProfile.findFirst({
-      where: {
-        profileKey: qualification.generationProfileKey,
-        version: qualification.generationProfileVersion,
-        status: "active",
-      },
-    }),
-    generationWorkflowDescriptor(qualification.workflowKey),
-  ]);
+  const profile = await db.generationModelProfile.findFirst({
+    where: {
+      profileKey: qualification.generationProfileKey,
+      version: qualification.generationProfileVersion,
+      status: "active",
+    },
+  });
+  const workflow = await generationWorkflowDescriptor(qualification.workflowKey);
   if (!profile || !profile.enabled || profile.rolloutPercent <= 0) {
     return {
       state: "unqualified" as const,

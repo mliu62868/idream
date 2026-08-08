@@ -164,25 +164,14 @@ export async function mediaAssetAuthorityDependenciesBatch(
   );
   if (assetIds.length === 0) return dependenciesByAssetId;
   const requestedAssetIdSet = new Set(assetIds);
-  const [
-    primaryImageCharacters,
-    placements,
-    draftProjects,
-    visualProfiles,
-    referenceSnapshots,
-    activeCharacterLooks,
-    activeGenerationJobs,
-    activeCreativeItems,
-    servings,
-  ] = await Promise.all([
-    db.character.findMany({
+  const primaryImageCharacters = await db.character.findMany({
       where: {
         imageAssetId: { in: assetIds },
         deletedAt: null,
       },
       select: { id: true, imageAssetId: true },
-    }),
-    db.mediaAssetPlacement.findMany({
+  });
+  const placements = await db.mediaAssetPlacement.findMany({
       where: operationalMediaAssetPlacementWhere({
         mediaAssetId: { in: assetIds },
         status: { in: ["published", "scheduled"] },
@@ -198,11 +187,11 @@ export async function mediaAssetAuthorityDependenciesBatch(
         metadata: true,
       },
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    }),
-    // CharacterProject intentionally has no Prisma Character relation. Keep
-    // this as one bounded query, but join raw authority truth so historical
-    // active Project rows cannot pin media after their Character was deleted.
-    db.$queryRaw<CharacterProjectDraftAuthorityRow[]>(Prisma.sql`
+  });
+  // CharacterProject intentionally has no Prisma Character relation. Keep
+  // this as one bounded query, but join raw authority truth so historical
+  // active Project rows cannot pin media after their Character was deleted.
+  const draftProjects = await db.$queryRaw<CharacterProjectDraftAuthorityRow[]>(Prisma.sql`
       SELECT
         project."id",
         project."characterId",
@@ -229,9 +218,9 @@ export async function mediaAssetAuthorityDependenciesBatch(
           OR project."draftAssetPack" ->> 'character_chat'
             IN (${Prisma.join(assetIds)})
         )
-    `),
-    // 依赖判定走 active Reference Set（唯一权威），不再按 profile 上的影子列做 array_contains。
-    db.characterVisualProfile.findMany({
+  `);
+  // 依赖判定走 active Reference Set（唯一权威），不再按 profile 上的影子列做 array_contains。
+  const visualProfiles = await db.characterVisualProfile.findMany({
       where: {
         status: "active",
         character: { deletedAt: null },
@@ -252,8 +241,8 @@ export async function mediaAssetAuthorityDependenciesBatch(
           select: { references: { select: { mediaAssetId: true } } },
         },
       },
-    }),
-    db.characterVisualReferenceSnapshot.findMany({
+  });
+  const referenceSnapshots = await db.characterVisualReferenceSnapshot.findMany({
       where: {
         mediaAssetId: { in: assetIds },
         referenceSetRevision: {
@@ -274,8 +263,8 @@ export async function mediaAssetAuthorityDependenciesBatch(
           },
         },
       },
-    }),
-    db.characterLook.findMany({
+  });
+  const activeCharacterLooks = await db.characterLook.findMany({
       where: {
         referenceAssetId: { in: assetIds },
         status: { in: ["active", "needs_rebase"] },
@@ -287,8 +276,8 @@ export async function mediaAssetAuthorityDependenciesBatch(
         referenceAssetId: true,
         status: true,
       },
-    }),
-    db.generationJob.findMany({
+  });
+  const activeGenerationJobs = await db.generationJob.findMany({
       where: {
         status: {
           in: ["queued", "moderating_input", "running", "moderating_output"],
@@ -337,8 +326,8 @@ export async function mediaAssetAuthorityDependenciesBatch(
           select: { batchId: true },
         },
       },
-    }),
-    db.contentProductionItem.findMany({
+  });
+  const activeCreativeItems = await db.contentProductionItem.findMany({
       where: {
         mediaAssetId: { in: assetIds },
         status: { in: ["queued", "generated", "approved"] },
@@ -355,12 +344,12 @@ export async function mediaAssetAuthorityDependenciesBatch(
           },
         },
       },
-    }),
-    // Serving is deliberately not prefiltered through a JSON path. One
-    // relation query loads the only current/scheduled Releases that can be
-    // authoritative, then the canonical parser handles both the object
-    // manifest and the legacy raw-array form.
-    db.characterServing.findMany({
+  });
+  // Serving is deliberately not prefiltered through a JSON path. One
+  // relation query loads the only current/scheduled Releases that can be
+  // authoritative, then the canonical parser handles both the object
+  // manifest and the legacy raw-array form.
+  const servings = await db.characterServing.findMany({
       where: {
         AND: [
           { character: { deletedAt: null } },
@@ -393,8 +382,7 @@ export async function mediaAssetAuthorityDependenciesBatch(
           },
         },
       },
-    }),
-  ]);
+  });
 
   for (const project of draftProjects) {
     for (const assetId of new Set(projectDraftAssetIds(project))) {

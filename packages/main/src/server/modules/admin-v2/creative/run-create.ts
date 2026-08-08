@@ -723,10 +723,15 @@ export async function createCreativeRun(
           FOR UPDATE
         `;
       }
-      const [currentBootstrapAuthority, currentIdentityBootstrapAuthority] = await Promise.all([
-        resolveProductionBootstrapAuthority(tx, body.targetId, body.brief ?? null),
-        loadCharacterIdentityBootstrapAuthority(tx, body.targetId),
-      ]);
+      const currentBootstrapAuthority = await resolveProductionBootstrapAuthority(
+        tx,
+        body.targetId,
+        body.brief ?? null,
+      );
+      const currentIdentityBootstrapAuthority = await loadCharacterIdentityBootstrapAuthority(
+        tx,
+        body.targetId,
+      );
       const existingBootstrapJob = await tx.generationJob.findFirst({
         where: {
           characterId: body.targetId,

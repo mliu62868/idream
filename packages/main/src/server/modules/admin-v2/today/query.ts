@@ -190,10 +190,12 @@ async function findBoundedCaseRows(input: {
     recordSourceQuery(input.diagnostics, "admin_case", `${pinnedOnly ? "pinned:" : ""}${lane.lane}`, rows.length, input.limit);
     return rows;
   };
-  const [totalCount, ...laneRows] = await Promise.all([
-    input.db.adminCase.count({ where: input.where }),
-    ...priorityLanes.flatMap((lane) => [readLane(lane, true), readLane(lane, false)]),
-  ]);
+  const totalCount = await input.db.adminCase.count({ where: input.where });
+  const laneRows: AdminCase[][] = [];
+  for (const lane of priorityLanes) {
+    laneRows.push(await readLane(lane, true));
+    laneRows.push(await readLane(lane, false));
+  }
   return { totalCount, rows: uniqueById(laneRows.flat()) };
 }
 
@@ -324,10 +326,12 @@ async function findBoundedCommandRows(input: {
     recordSourceQuery(input.diagnostics, "control_plane_command", `${pinnedOnly ? "pinned:" : ""}${lane.lane}`, rows.length, input.limit);
     return rows;
   };
-  const [totalCount, ...laneRows] = await Promise.all([
-    input.db.controlPlaneCommand.count({ where: input.where }),
-    ...statusLanes.flatMap((lane) => [readLane(lane, true), readLane(lane, false)]),
-  ]);
+  const totalCount = await input.db.controlPlaneCommand.count({ where: input.where });
+  const laneRows: ControlPlaneCommand[][] = [];
+  for (const lane of statusLanes) {
+    laneRows.push(await readLane(lane, true));
+    laneRows.push(await readLane(lane, false));
+  }
   return { totalCount, rows: uniqueById(laneRows.flat()) };
 }
 
@@ -373,10 +377,12 @@ async function findBoundedCreativeRows(input: {
     recordSourceQuery(input.diagnostics, "creative_run", `${pinnedOnly ? "pinned:" : ""}${lane.lane}`, rows.length, input.limit);
     return rows;
   };
-  const [totalCount, ...laneRows] = await Promise.all([
-    input.db.contentProductionBatch.count({ where: input.where }),
-    ...lanes.flatMap((lane) => [readLane(lane, true), readLane(lane, false)]),
-  ]);
+  const totalCount = await input.db.contentProductionBatch.count({ where: input.where });
+  const laneRows: ContentProductionBatch[][] = [];
+  for (const lane of lanes) {
+    laneRows.push(await readLane(lane, true));
+    laneRows.push(await readLane(lane, false));
+  }
   return { totalCount, rows: uniqueById(laneRows.flat()) };
 }
 
@@ -883,43 +889,41 @@ async function findQueueRows(input: {
   // Any row in the global top ten must also be in its source's top ten under
   // the same total order. Query bounded, rank-preserving lanes per source,
   // retain exact counts separately, then merge the at-most-ten candidates.
-  const [caseRows, incidentRows, commandRows, releaseRows, creativeRows] = await Promise.all([
-    findBoundedCaseRows({
+  const caseRows = await findBoundedCaseRows({
       db: input.db,
       where: input.caseWhere,
       pinnedIds: input.pinnedIds.cases,
       diagnostics: input.diagnostics,
       limit: limit ?? undefined,
-    }),
-    findBoundedIncidentRows({
+  });
+  const incidentRows = await findBoundedIncidentRows({
       db: input.db,
       selection: input.incidentSelection,
       pinnedIds: input.pinnedIds.incidents,
       diagnostics: input.diagnostics,
       limit: limit ?? undefined,
-    }),
-    findBoundedCommandRows({
+  });
+  const commandRows = await findBoundedCommandRows({
       db: input.db,
       where: commandWhere,
       pinnedIds: input.pinnedIds.commands,
       diagnostics: input.diagnostics,
       limit: limit ?? undefined,
-    }),
-    findBoundedReleaseRows({
+  });
+  const releaseRows = await findBoundedReleaseRows({
       db: input.db,
       selection: input.releaseSelection,
       pinnedIds: input.pinnedIds.releases,
       diagnostics: input.diagnostics,
       limit: limit ?? undefined,
-    }),
-    findBoundedCreativeRows({
+  });
+  const creativeRows = await findBoundedCreativeRows({
       db: input.db,
       where: input.creativeWhere,
       pinnedIds: input.pinnedIds.creativeRuns,
       diagnostics: input.diagnostics,
       limit: limit ?? undefined,
-    }),
-  ]);
+  });
   return {
     totalCount: caseRows.totalCount + incidentRows.totalCount + commandRows.totalCount + releaseRows.totalCount + creativeRows.totalCount + (input.mentionTotalCount ?? input.mentions?.length ?? 0),
     rows: sourceRows(caseRows.rows, incidentRows.rows, commandRows.rows, releaseRows.rows, creativeRows.rows, input.mentions),
@@ -1093,20 +1097,18 @@ async function findMentionRows(input: {
   const incidentIds = ids("incident");
   const projectIds = ids("character_project");
   const creativeIds = ids("creative_run");
-  const [cases, incidents, projects, creativeRuns] = await Promise.all([
-    input.permissions.has("case.read") && caseIds.length > 0
-      ? input.db.adminCase.findMany({ where: { id: { in: caseIds } }, ...(input.limit === undefined ? {} : { take: input.limit }) })
-      : [],
-    input.permissions.has("ops.incident.read") && incidentIds.length > 0
-      ? input.db.opsIncident.findMany({ where: { id: { in: incidentIds } }, ...(input.limit === undefined ? {} : { take: input.limit }) })
-      : [],
-    input.permissions.has("character.project.read") && projectIds.length > 0
-      ? input.db.characterProject.findMany({ where: { id: { in: projectIds } }, ...(input.limit === undefined ? {} : { take: input.limit }) })
-      : [],
-    input.permissions.has("creative.run.read") && creativeIds.length > 0
-      ? input.db.contentProductionBatch.findMany({ where: { id: { in: creativeIds } }, ...(input.limit === undefined ? {} : { take: input.limit }) })
-      : [],
-  ]);
+  const cases = input.permissions.has("case.read") && caseIds.length > 0
+    ? await input.db.adminCase.findMany({ where: { id: { in: caseIds } }, ...(input.limit === undefined ? {} : { take: input.limit }) })
+    : [];
+  const incidents = input.permissions.has("ops.incident.read") && incidentIds.length > 0
+    ? await input.db.opsIncident.findMany({ where: { id: { in: incidentIds } }, ...(input.limit === undefined ? {} : { take: input.limit }) })
+    : [];
+  const projects = input.permissions.has("character.project.read") && projectIds.length > 0
+    ? await input.db.characterProject.findMany({ where: { id: { in: projectIds } }, ...(input.limit === undefined ? {} : { take: input.limit }) })
+    : [];
+  const creativeRuns = input.permissions.has("creative.run.read") && creativeIds.length > 0
+    ? await input.db.contentProductionBatch.findMany({ where: { id: { in: creativeIds } }, ...(input.limit === undefined ? {} : { take: input.limit }) })
+    : [];
   const casesById = new Map(cases.map((row) => [row.id, row]));
   const incidentsById = new Map(incidents.map((row) => [row.id, row]));
   const projectsById = new Map(projects.map((row) => [row.id, row]));
@@ -1238,8 +1240,7 @@ export async function buildTodayProjection(input: {
   });
   const mentions = mentionRows.rows;
 
-  const [myShift, nextBest, unassigned, recentlyResolved] = await Promise.all([
-    findQueueRows({
+  const myShift = await findQueueRows({
       db,
       caseWhere: activeCaseWhere && { AND: [activeCaseWhere, { ownerId: input.actor.id }, { OR: [{ slaDueAt: { lte: endOfToday } }, { verificationState: "failed" }] }] },
       incidentSelection: activeIncidentSelection && {
@@ -1257,8 +1258,8 @@ export async function buildTodayProjection(input: {
       mentionTotalCount: mentionRows.totalCount,
       pinnedIds,
       diagnostics: input.diagnostics,
-    }),
-    findQueueRows({
+  });
+  const nextBest = await findQueueRows({
       db,
       caseWhere: activeCaseWhere,
       incidentSelection: activeIncidentSelection,
@@ -1270,8 +1271,8 @@ export async function buildTodayProjection(input: {
       mentionTotalCount: mentionRows.totalCount,
       pinnedIds,
       diagnostics: input.diagnostics,
-    }),
-    findQueueRows({
+  });
+  const unassigned = await findQueueRows({
       db,
       caseWhere: input.permissions.has("case.assign") && activeCaseWhere
         ? { AND: [activeCaseWhere, { ownerId: null }] }
@@ -1289,8 +1290,8 @@ export async function buildTodayProjection(input: {
       permissions: input.permissions,
       pinnedIds,
       diagnostics: input.diagnostics,
-    }),
-    findQueueRows({
+  });
+  const recentlyResolved = await findQueueRows({
       db,
       caseWhere: caseScope && { AND: [caseScope, { status: { in: RESOLVED_CASE_STATUSES }, verificationState: { in: ["passed", "overridden"] }, updatedAt: { gte: recentCutoff } }] },
       incidentSelection: incidentReadable
@@ -1304,8 +1305,7 @@ export async function buildTodayProjection(input: {
       permissions: input.permissions,
       pinnedIds,
       diagnostics: input.diagnostics,
-    }),
-  ]);
+  });
 
   const watchedPreferences = preferences.filter((item) => item.watching);
   const watchedCaseIds = watchedPreferences.filter((item) => ["admin_case", "case"].includes(item.sourceType)).map((item) => item.sourceId);
