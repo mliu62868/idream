@@ -1,12 +1,19 @@
 # iDream 当前功能覆盖审计
 
-更新日期：2026-08-06
+更新日期：2026-08-08
 
 ## 结论
 
 这份文档是当前代码态的功能覆盖表，覆盖的是“用户能否完整使用”和“有没有测试证据”。它补充并修正 `ProductFeatureMap.md` 里 2026-06-13 的旧状态描述。
 
 当前状态：**Character Soul Runtime 的仓库实现、开发库迁移、生产构建、真实 Admin 发布与签名 Chat 对话闭环已经完成。Alexa 的 schema v1 Soul v3 已连同三槽精确素材包通过 evaluator-4 QA、Release 提议、独立批准、固定快照校验和 Publish，当前 Serving 指向 Admin Release #5（`cmsi6ziej000offl7v0y4wr6d`）/ ContentVersion `cmsh1x0h6014zmul7b05gdna3`。旧会话继续固定各自创建时的 Release，新会话固定 Release #5、`character-soul-1` fingerprint 与精确 Qwen profile；公开详情页读取 Release 固定的 hero。Character Soul 权威审计为 17/17 引用快照可加载、0 parity mismatch、0 invalid snapshot；15 个可解析 legacy Serving 与 271 个历史 null pin 作为迁移期 drain 指标保留，不被误判为损坏状态。**
+
+## 2026-08-08 Prisma 事务与 Chat 跨存储快照收口
+
+- **根因**：Main 与 Chat 的 interactive transaction 在同一个 `pg` client 上用 `Promise.all` 复用事务连接；Main 的多 relation `include/select` 还会在事务内隐式扇出查询。`pg` 8 已为这种重入发出弃用告警，`pg` 9 将直接拒绝。Chat 的 `withReadableChatFileSnapshot` 虽持有 shared user advisory lock，回调却可捕获外层 Prisma client，读取并不受该锁定事务约束。
+- **修复**：Main/Chat 的事务内数据库访问改为串行；Main Prisma 启用 `relationJoins`，让 relation 读取由数据库单查询完成；Chat snapshot 回调必须接收并使用拥有 advisory lock 的 `TransactionClient`。全目录 AST 守卫禁止生产代码再次把 transaction adapter 放进 `Promise.all`，并锁定 Main relation join 策略；Chat 回归用例证明 snapshot reader 获得锁定事务。
+- **验证**：带 `--trace-deprecation` 的定向 Chat/Main 回归与根级全量测试均无 `pg` 并发弃用告警；Shared `41 files / 237 tests`、Admin `100 / 535`、Chat `32 / 252`、Main `276 passed files + 2 skipped / 2,110 passed tests + 3 skipped`、Gen `17 / 190`，五包合计 `466 passed files + 2 skipped / 3,324 passed tests + 3 skipped`。`git diff --check`、lint、typecheck、Admin/Main production build 全部通过。应用内真实浏览器复验 Alexa Character Workspace 的详情、图片与 Release，确认当前 Release #5 / Serving、三槽素材、独立审核与发布边界，console 为 `0 warning / 0 error`；没有写业务数据。
+- **上线边界**：`relationJoins` 是 Prisma client 查询策略，不产生数据库 schema migration。本轮没有连接或修改生产库；生产 migration/backfill、固定读写 canary、legacy drain 与观察窗口仍由发布系统执行，不能用本地通过替代。
 
 ## 2026-08-05 Character Soul Runtime
 
