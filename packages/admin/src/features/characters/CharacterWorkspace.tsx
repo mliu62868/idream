@@ -57,7 +57,7 @@ import {
 import {
   committedCharacterProjectionWarning,
   createCharacterCommandJournal,
-  type PendingCharacterCommand,
+  type CharacterCommandRecoveryCopy,
 } from "./character-command-journal";
 
 type Tab = CharacterWorkspaceTab;
@@ -86,6 +86,60 @@ function localCleanupWarning(cause: unknown) {
     ? `The authoritative workspace refreshed, but local cleanup needs attention: ${cause.message}`
     : "The authoritative workspace refreshed, but local cleanup needs attention.";
 }
+
+/**
+ * SPEC: 恢复回路每一种处置对应的一句运营文案。
+ * INTENT: 处置本身（能不能重放、该不该解锁、等多久）全在 journal 里，所以这张表改错也改不动
+ *         安全语义；反过来，任何一支漏了措辞都会立刻表现为"运营看不到发生了什么"。
+ */
+const characterCommandRecoveryCopy: CharacterCommandRecoveryCopy = {
+  attached: ({ action }) =>
+    `${action} is already active according to server authority. The workspace attached to that command instead of submitting a second one.`,
+  windowExpired: ({ action }) =>
+    `${action} requires fresh operator confirmation before the saved request can be replayed.`,
+  evidenceIncomplete: ({ action }) =>
+    `${action} recovery journal is incomplete. The authoritative workspace must be reconciled before writes resume.`,
+  replayBlocked: ({ action }) =>
+    `${action} acceptance cannot be proven with the current session or permissions. The original command may already exist, so Character writes remain locked while the exact idempotent request waits to retry.`,
+  replayUnreconciled: ({ action }) =>
+    `${action} replay was rejected, but the original acceptance is still unknown. Server-side Character authority must reconcile the active command before writes resume.`,
+  replayReconciled: ({ action, cause }) =>
+    cause instanceof Error
+      ? `${action} replay was rejected, and server-side Character authority confirmed that no active command remains: ${cause.message}`
+      : `${action} replay was rejected, and server-side Character authority confirmed that no active command remains.`,
+  replayRetrying: ({ action, cause }) =>
+    cause instanceof Error
+      ? `${action} acceptance is still unknown: ${cause.message}. Retrying the exact command safely.`
+      : `${action} acceptance is still unknown. Retrying the exact command safely.`,
+  commandFailed: ({ action, status }) =>
+    `${action} command ${status}. Open command evidence for the authoritative result.`,
+  evidenceMissingCleared: ({ action }) =>
+    `${action} command evidence was unavailable, and server-side Character authority confirmed that no command remains active.`,
+  evidenceMissingLocked: ({ action }) =>
+    `${action} command evidence is unavailable. Character writes remain locked until server authority can be reconciled.`,
+  statusBlocked: ({ action }) =>
+    `${action} command evidence cannot be read with the current session or permissions. The command may still be running, so Character writes remain locked.`,
+  statusUnavailable: ({ action, cause }) =>
+    cause instanceof Error
+      ? `${action} status could not be refreshed: ${cause.message}`
+      : `${action} status could not be refreshed.`,
+  reconcileNotice: ({ action, reason }) => {
+    if (reason === "evidence_incomplete") {
+      return `${action} recovery evidence is incomplete. Server authority must be reconciled before writes resume.`;
+    }
+    if (reason === "replay_rejected") {
+      return `${action} replay was rejected after its original response was lost. Server-side Character authority must prove that no command remains active before writes resume.`;
+    }
+    if (reason === "evidence_missing") {
+      return `${action} command evidence returned 404. Server-side Character authority must prove that no command remains active before writes resume.`;
+    }
+    return `${action} was completed or cleared in another tab. This tab must refresh server authority before writes resume.`;
+  },
+  reconcileStillActive: ({ action }) =>
+    `${action} is still active according to server authority. Character writes remain locked.`,
+  reconcileFailed: ({ action, cause }) =>
+    committedCharacterProjectionWarning(`${action} command reconciliation`, cause),
+};
 
 function CharacterDetail({
   actorId,
@@ -281,14 +335,6 @@ function CharacterDetail({
     },
     [id, journal, runCommittedMutation],
   );
-  const settlePendingCommand = useCallback(
-    (
-      action: string,
-      commandId: string | undefined,
-      afterRefresh?: () => void,
-    ) => refreshCommittedProjection(action, commandId, afterRefresh),
-    [refreshCommittedProjection],
-  );
   const refreshAuthoritativeWorkspace = useCallback(async () => {
     const current = journal.getSnapshot().notice;
     if (
@@ -328,54 +374,6 @@ function CharacterDetail({
     }
     return true;
   }, [journal, loadAuthoritative]);
-  const reconcilePendingCommandAuthority = useCallback(
-    async (command: PendingCharacterCommand, message: string) => {
-      if (!journal.currentCommandIs(command)) return false;
-      const generation = journal.getGeneration();
-      journal.setNotice({
-        kind: "refresh_required",
-        message,
-        ...(command.commandId ? { commandId: command.commandId } : {}),
-      });
-      try {
-        const authoritative = await loadAuthoritative();
-        if (
-          !journal.isCurrentGeneration(generation) ||
-          !journal.currentCommandIs(command)
-        )
-          return false;
-        if (authoritative.activeCommand) {
-          const active = journal.attachAuthorityCommand(
-            authoritative.activeCommand,
-          );
-          journal.setRecoveryError(
-            `${active.action} is still active according to server authority. Character writes remain locked.`,
-          );
-          return false;
-        }
-        if (!journal.discard(command)) return false;
-        journal.setRecoveryError(null);
-        return true;
-      } catch (cause) {
-        if (
-          !journal.isCurrentGeneration(generation) ||
-          !journal.currentCommandIs(command)
-        )
-          return false;
-        setError(null);
-        journal.setNotice({
-          kind: "refresh_required",
-          message: committedCharacterProjectionWarning(
-            `${command.action} command reconciliation`,
-            cause,
-          ),
-          ...(command.commandId ? { commandId: command.commandId } : {}),
-        });
-        return false;
-      }
-    },
-    [journal, loadAuthoritative],
-  );
   useEffect(() => {
     if (!permissions.read) return;
     const gate = requestGate.current;
@@ -405,17 +403,20 @@ function CharacterDetail({
       }
       const current = journal.getSnapshot().command;
       if (!current) return;
-      void reconcilePendingCommandAuthority(
-        current,
-        `${current.action} was completed or cleared in another tab. This tab must refresh server authority before writes resume.`,
-      );
+      void journal.reconcileAuthority({
+        command: current,
+        copy: characterCommandRecoveryCopy,
+        reason: "cross_tab_cleared",
+        load: loadAuthoritative,
+        clearLoadError: () => setError(null),
+      });
     };
     window.addEventListener("storage", onStorage);
     return () => {
       window.clearTimeout(timer);
       window.removeEventListener("storage", onStorage);
     };
-  }, [journal, reconcilePendingCommandAuthority]);
+  }, [journal, loadAuthoritative]);
   // INTENT: 与上面的日志恢复一样延后一个 tick 再切页签——effect 里同步 setState 会触发级联
   //          渲染（构建期 react-hooks/set-state-in-effect 会拦），而这里本来就是"服务端说还有
   //          命令在跑"的异步事实，不需要在同一次提交里生效。
@@ -435,10 +436,7 @@ function CharacterDetail({
     }, 0);
     return () => window.clearTimeout(timer);
   }, [data?.activeCommand, journal]);
-  // SPEC: 待决命令的恢复循环。每个分支只做两件事——把 journal 的处置翻成一句运营能读的话，
-  //       并把它给的重试间隔交回调度器。
-  // INTENT: 处置本身（能不能重放、该不该解锁、等多久）全在 journal 里，所以这里改错文案
-  //         也改不动安全语义；反过来，任何一条出口漏接都会立刻表现为"运营看不到发生了什么"。
+  // SPEC: 待决命令的恢复循环。整轮推进归 journal —— 这里只把它给出的重试间隔交回调度器。
   // INVARIANT: cancelled 只在本轮开始前判一次，拿到 journal 的处置之后不再中途退出。
   //            journal 的每次状态推进（受理 / 挂到别的命令 / 标记终态）都会 publish 并触发
   //            重渲染，于是本轮任务当场被换掉、cancelled 立刻为 true——中途判一次就等于把
@@ -447,113 +445,17 @@ function CharacterDetail({
   const recoverPendingCommand = useCallback<PollingTask>(
     async (context): Promise<PollDecision> => {
       if (!pendingCommand || context.cancelled) return null;
-      if (!pendingCommand.commandId) {
-        const replay = await journal.replay(pendingCommand);
-        switch (replay.kind) {
-          case "accepted":
-            return null;
-          case "attached":
-            journal.setRecoveryError(
-              `${replay.command.action} is already active according to server authority. The workspace attached to that command instead of submitting a second one.`,
-            );
-            return null;
-          case "window_expired":
-            journal.setRecoveryError(
-              `${pendingCommand.action} requires fresh operator confirmation before the saved request can be replayed.`,
-            );
-            return null;
-          case "evidence_incomplete":
-            journal.setRecoveryError(
-              `${pendingCommand.action} recovery journal is incomplete. The authoritative workspace must be reconciled before writes resume.`,
-            );
-            await reconcilePendingCommandAuthority(
-              pendingCommand,
-              `${pendingCommand.action} recovery evidence is incomplete. Server authority must be reconciled before writes resume.`,
-            );
-            return null;
-          case "blocked":
-            journal.setRecoveryError(
-              `${pendingCommand.action} acceptance cannot be proven with the current session or permissions. The original command may already exist, so Character writes remain locked while the exact idempotent request waits to retry.`,
-            );
-            return replay.retryInMs;
-          case "reconcile": {
-            journal.setRecoveryError(
-              `${pendingCommand.action} replay was rejected, but the original acceptance is still unknown. Server-side Character authority must reconcile the active command before writes resume.`,
-            );
-            const reconciled = await reconcilePendingCommandAuthority(
-              pendingCommand,
-              `${pendingCommand.action} replay was rejected after its original response was lost. Server-side Character authority must prove that no command remains active before writes resume.`,
-            );
-            if (reconciled) {
-              journal.setRecoveryError(
-                replay.cause instanceof Error
-                  ? `${pendingCommand.action} replay was rejected, and server-side Character authority confirmed that no active command remains: ${replay.cause.message}`
-                  : `${pendingCommand.action} replay was rejected, and server-side Character authority confirmed that no active command remains.`,
-              );
-            }
-            return null;
-          }
-          case "retry":
-            journal.setRecoveryError(
-              replay.cause instanceof Error
-                ? `${pendingCommand.action} acceptance is still unknown: ${replay.cause.message}. Retrying the exact command safely.`
-                : `${pendingCommand.action} acceptance is still unknown. Retrying the exact command safely.`,
-            );
-            return replay.retryInMs;
-        }
-      }
-
-      const status = await journal.pollStatus(pendingCommand);
-      switch (status.kind) {
-        case "settled":
-          await settlePendingCommand(
-            status.succeeded
-              ? pendingCommand.action
-              : `${pendingCommand.action} ${status.status}`,
-            pendingCommand.commandId,
-            () => journal.discard(pendingCommand),
-          );
-          journal.setRecoveryError(
-            status.succeeded
-              ? null
-              : `${pendingCommand.action} command ${status.status}. Open command evidence for the authoritative result.`,
-          );
-          return null;
-        case "evidence_missing": {
-          const reconciled = await reconcilePendingCommandAuthority(
-            pendingCommand,
-            `${pendingCommand.action} command evidence returned 404. Server-side Character authority must prove that no command remains active before writes resume.`,
-          );
-          journal.setRecoveryError(
-            reconciled
-              ? `${pendingCommand.action} command evidence was unavailable, and server-side Character authority confirmed that no command remains active.`
-              : `${pendingCommand.action} command evidence is unavailable. Character writes remain locked until server authority can be reconciled.`,
-          );
-          return null;
-        }
-        case "blocked":
-          journal.setRecoveryError(
-            `${pendingCommand.action} command evidence cannot be read with the current session or permissions. The command may still be running, so Character writes remain locked.`,
-          );
-          return status.retryInMs;
-        case "unavailable":
-          journal.setRecoveryError(
-            status.cause instanceof Error
-              ? `${pendingCommand.action} status could not be refreshed: ${status.cause.message}`
-              : `${pendingCommand.action} status could not be refreshed.`,
-          );
-          return status.retryInMs;
-        case "running":
-          journal.setRecoveryError(null);
-          return status.retryInMs;
-      }
+      const outcome = await journal.recover({
+        command: pendingCommand,
+        copy: characterCommandRecoveryCopy,
+        load: loadAuthoritative,
+        settle: ({ action, commandId, onSettled }) =>
+          refreshCommittedProjection(action, commandId, onSettled),
+        clearLoadError: () => setError(null),
+      });
+      return outcome.retryInMs;
     },
-    [
-      journal,
-      pendingCommand,
-      reconcilePendingCommandAuthority,
-      settlePendingCommand,
-    ],
+    [journal, loadAuthoritative, pendingCommand, refreshCommittedProjection],
   );
   usePollingTask(
     pendingCommand && !pendingCommand.terminal ? recoverPendingCommand : null,
