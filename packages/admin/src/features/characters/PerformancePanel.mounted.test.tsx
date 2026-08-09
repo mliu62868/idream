@@ -12,10 +12,9 @@ import {
 } from "./character-workspace-fixture";
 import {
   characterPerformanceHasObservations,
-  MonitorPanel,
   PerformancePanel,
   portfolioDecisions,
-} from "./CharacterWorkspace";
+} from "./PerformancePanel";
 
 type WorkspaceRelease = CharacterWorkspaceDetail["releases"][number]["release"];
 type ContributionMargin =
@@ -138,10 +137,6 @@ const repeatedNoDataWorkspace = withCharacterWorkspaceDetail(workspace, {
   ],
 });
 
-const monitorWorkspace = withCharacterWorkspaceDetail(workspace, {
-  releases: [releaseEntry(workspaceRelease({ id: releaseId }))],
-});
-
 let container: HTMLDivElement;
 let root: Root;
 
@@ -230,24 +225,4 @@ describe("Character performance panel — zh operators", () => {
     expect(textareas.some((value) => value.includes("同角色 D7 退化"))).toBe(true);
   });
 
-  // SPEC: 护栏卡的窗口名由 route_qualification 拼出来，状态是枚举，两处都曾漏翻成
-  // 「route qualification 护栏 / not required」——中英混排就出现在运营最常看的这一屏。
-  it("translates the release guardrail window and its empty status", () => {
-    act(() => {
-      root.render(
-        <AdminI18nProvider locale="zh">
-          <MonitorPanel
-            data={monitorWorkspace}
-            onOpenVisual={() => undefined}
-            permissions={{ reviewRelease: true } as never}
-            runCommittedMutation={(async () => ({ result: undefined, refreshed: false })) as never}
-          />
-        </AdminI18nProvider>,
-      );
-    });
-    expect(container.textContent).toContain("图片线路资格");
-    expect(container.textContent).toContain("无需处理");
-    expect(container.textContent).not.toContain("route qualification");
-    expect(container.textContent).not.toContain("not required");
-  });
 });

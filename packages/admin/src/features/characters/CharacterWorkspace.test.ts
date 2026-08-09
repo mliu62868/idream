@@ -1,9 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import {
-  characterNoDataDiagnosis,
-  characterWorkspaceTabLabel,
-} from "./CharacterWorkspace";
+import { characterWorkspaceTabLabel } from "./CharacterWorkspace";
 
 const workspaceSource = readFileSync(
   new URL("./CharacterWorkspace.tsx", import.meta.url),
@@ -34,27 +31,3 @@ describe("Character production entry", () => {
 
 // SPEC: 工作台顶部必须直接说清角色线上状态；以前只有折叠的「技术状态」，运营开页看不出
 // 一个 live 角色和一个草稿角色的区别。
-describe("Character operations facts", () => {
-
-  // SPEC: 零观测要给运营一个动作，不是一个状态。窗口没走完 = 等；窗口走完了还是零 = 查投放。
-  it("turns zero observations into either wait or investigate", () => {
-    expect(characterNoDataDiagnosis({
-      qualityState: "no_data", maturity: "immature", window: "7d",
-    })).toMatchObject({ alert: false });
-    expect(characterNoDataDiagnosis({
-      qualityState: "no_data", maturity: "insufficient_data", window: "7d",
-    })).toMatchObject({ alert: true });
-  });
-
-  it("stays silent when the metric is not a no-data metric", () => {
-    expect(characterNoDataDiagnosis({
-      qualityState: "invalid", maturity: "insufficient_data", window: "7d",
-    })).toBeNull();
-    expect(characterNoDataDiagnosis({
-      qualityState: "certified", maturity: "mature", window: "28d",
-    })).toBeNull();
-  });
-
-
-
-});
