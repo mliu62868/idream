@@ -9,6 +9,7 @@ import {
   latestCharacterQaAuthorityRun,
   type CharacterPortfolioItem,
   type CharacterMediaOperationsProjection,
+  type AdminPermissionKey,
   type CharacterQaCheckInput,
   type CharacterWorkspaceDetail,
 } from "@idream/shared/admin";
@@ -71,6 +72,7 @@ import {
 } from "@/lib/admin-v2-api";
 import {
   adminV2Operation,
+  adminV2OperationAllowed,
   adminV2OperationEndpoint,
 } from "@/lib/admin-v2-operation";
 import {
@@ -97,19 +99,47 @@ import {
   type PendingCharacterCommand,
 } from "./character-command-journal";
 
-type Permissions = {
-  read: boolean;
-  writeProject: boolean;
-  proposeRelease: boolean;
-  publishRelease: boolean;
-  reviewRelease: boolean;
-  writeVisual: boolean;
-  evaluateRoute: boolean;
-  readAssets: boolean;
-  createAssets: boolean;
-  reviewAssets: boolean;
-  manageVoiceDefaults: boolean;
-};
+/**
+ * SPEC: 角色运营台每一个受写入门控的能力 → 它需要的 effective permission key。
+ * INTENT: shell 曾经在 nav 的 render 里手拼这 11 个键传下来，那层拼装没有任何编译期约束；
+ *         下游又把其中 8 个逐条与 `!writesLocked` 相与，漏掉的 manageVoiceDefaults 让「保存
+ *         系统语音默认」在 durable command 待决期间仍然可点 —— 运营点下去得到的是一个抛出的
+ *         错误而不是禁用态。键集和写入锁各自只剩一处，这一类漏项不再可表达。
+ */
+export const CHARACTER_WORKSPACE_WRITES = {
+  writeProject: "character.project.write",
+  proposeRelease: "character.release.propose",
+  publishRelease: "character.release.publish",
+  reviewRelease: "character.release.review",
+  writeVisual: "content.official.write",
+  evaluateRoute: "content.production.write",
+  createAssets: "creative.run.write",
+  reviewAssets: "creative.run.review",
+  manageVoiceDefaults: "generation.config.write",
+} as const satisfies Record<string, AdminPermissionKey>;
+
+type CharacterWorkspaceWrite = keyof typeof CHARACTER_WORKSPACE_WRITES;
+
+type Permissions =
+  & { readonly read: boolean; readonly readAssets: boolean }
+  & { readonly [Capability in CharacterWorkspaceWrite]: boolean };
+
+export function characterWorkspacePermissions(
+  granted: ReadonlySet<AdminPermissionKey>,
+  writesLocked: boolean,
+): Permissions {
+  const writes = Object.fromEntries(
+    Object.entries(CHARACTER_WORKSPACE_WRITES).map(([capability, permission]) => [
+      capability,
+      granted.has(permission) && !writesLocked,
+    ]),
+  ) as { [Capability in CharacterWorkspaceWrite]: boolean };
+  return {
+    read: adminV2OperationAllowed("GET /api/v2/admin/characters/:id", granted),
+    readAssets: granted.has("creative.run.read"),
+    ...writes,
+  };
+}
 
 type ProjectDraft = Pick<
   CharacterWorkspaceDetail["project"],
@@ -4802,12 +4832,16 @@ export function PerformancePanel({
 function CharacterDetail({
   actorId,
   id,
-  permissions,
+  permissions: granted,
 }: {
   actorId: string;
   id: string;
-  permissions: Permissions;
+  permissions: ReadonlySet<AdminPermissionKey>;
 }) {
+  const permissions = useMemo(
+    () => characterWorkspacePermissions(granted, false),
+    [granted],
+  );
   const { locale, t } = useAdminI18n();
   const [data, setData] = useState<CharacterWorkspaceDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -5417,17 +5451,7 @@ function CharacterDetail({
     data.character.imageUrl;
   const visibleTabs = characterWorkspaceTabs;
   const writesLocked = commandWritesLocked || data.activeCommand !== null;
-  const guardedPermissions = {
-    ...permissions,
-    writeProject: permissions.writeProject && !writesLocked,
-    proposeRelease: permissions.proposeRelease && !writesLocked,
-    publishRelease: permissions.publishRelease && !writesLocked,
-    reviewRelease: permissions.reviewRelease && !writesLocked,
-    writeVisual: permissions.writeVisual && !writesLocked,
-    evaluateRoute: permissions.evaluateRoute && !writesLocked,
-    createAssets: permissions.createAssets && !writesLocked,
-    reviewAssets: permissions.reviewAssets && !writesLocked,
-  };
+  const guardedPermissions = characterWorkspacePermissions(granted, writesLocked);
   return (
     <section aria-labelledby="character-workspace-title">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
@@ -5564,9 +5588,7 @@ function CharacterDetail({
         </div>
       ) : null}
       <CharacterMediaOperationsCard
-        canReclaimVoice={
-          guardedPermissions.writeProject && !writesLocked
-        }
+        canReclaimVoice={guardedPermissions.writeProject}
         onReclaimVoice={reclaimVoiceRequest}
         projection={data.mediaOperations}
         reclaimingVoiceRequestId={reclaimingVoiceRequestId}
@@ -5678,7 +5700,7 @@ function CharacterDetail({
         ) : tab === "voice" ? (
           <CharacterVoicePanel
             canActivate={guardedPermissions.publishRelease}
-            canManageDefaults={permissions.manageVoiceDefaults}
+            canManageDefaults={guardedPermissions.manageVoiceDefaults}
             canWrite={guardedPermissions.writeProject}
             data={data}
             runCommittedMutation={runCommittedMutation}
@@ -5728,12 +5750,13 @@ function CharacterDetail({
 export function CharacterWorkspace({
   actorId,
   view,
-  permissions,
+  permissions: granted,
 }: {
   actorId: string;
   view: AdminSubview;
-  permissions: Permissions;
+  permissions: ReadonlySet<AdminPermissionKey>;
 }) {
+  const permissions = characterWorkspacePermissions(granted, false);
   if (view.kind === "new") {
     return (
       <CharacterCreateWizard
@@ -5748,7 +5771,7 @@ export function CharacterWorkspace({
       actorId={actorId}
       id={view.id}
       key={`${actorId}:${view.id}`}
-      permissions={permissions}
+      permissions={granted}
     />
   ) : (
     <CharacterPortfolio
@@ -5762,18 +5785,19 @@ export function CharacterWorkspace({
 }
 
 export function CharacterPerformanceWorkspace({
-  canOpenProjects,
-  canRead,
+  permissions,
 }: {
-  canOpenProjects: boolean;
-  canRead: boolean;
+  permissions: ReadonlySet<AdminPermissionKey>;
 }) {
   return (
     <CharacterPortfolio
       canOpenAssets={false}
       canCreate={false}
-      canOpenProjects={canOpenProjects}
-      canRead={canRead}
+      canOpenProjects={adminV2OperationAllowed(
+        "GET /api/v2/admin/characters/:id",
+        permissions,
+      )}
+      canRead={permissions.has("character.performance.read")}
       mode="performance"
     />
   );

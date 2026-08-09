@@ -1,6 +1,7 @@
 import {
   ADMIN_V2_API_OPERATIONS_BY_ID,
   requireAdminV2ContractSchema,
+  type AdminPermissionKey,
   type AdminV2ApiOperation,
   type AdminV2ContractSchemaFor,
   type AdminV2DeclaredOperationId,
@@ -73,6 +74,29 @@ export type AdminV2OperationRequest<Id extends AdminV2DeclaredOperationId> = {
   readonly operationId: Id;
   readonly options: AdminV2OperationOptions<Id>;
 };
+
+/**
+ * SPEC: 一组 effective permission 够不够发起某个 operation —— 用来决定要不要给运营这个入口。
+ * INTENT: nav 曾经把 `GET /characters/:id` 的 authorization 声明逐字抄一遍再 `as` 强转成
+ *         AdminPermissionKey，抄漏一个键就是少一个入口，而且抄错也没人报错。
+ * INVARIANT: 只回答静态声明能不能过。resource 维度的 one_of 最终由服务端按具体目标裁决，
+ *            这里给的是「值不值得把按钮点亮」，不是授权结论。
+ */
+export function adminV2OperationAllowed(
+  id: AdminV2DeclaredOperationId,
+  permissions: ReadonlySet<AdminPermissionKey>,
+): boolean {
+  const { authorization } = ADMIN_V2_API_OPERATIONS_BY_ID[id] as AdminV2ApiOperation;
+  if (authorization.kind === "bootstrap") return true;
+  if (authorization.kind === "all_of") {
+    return authorization.permissions.every((permission) => permissions.has(permission));
+  }
+  if (authorization.kind === "one_of_by_resource") {
+    return authorization.permissions.some((permission) => permissions.has(permission));
+  }
+  return authorization.always.every((permission) => permissions.has(permission)) &&
+    authorization.oneOf.some((permission) => permissions.has(permission));
+}
 
 export type AdminV2OperationPathParams<Id extends AdminV2DeclaredOperationId> =
   AdminV2OperationOptions<Id>["path"];

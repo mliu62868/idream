@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
 import { act } from "react";
+import type { AdminPermissionKey } from "@idream/shared/admin";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -43,19 +44,21 @@ const workspace = characterWorkspaceDetail({
   releases: [],
 });
 
-const permissions = {
-  read: true,
-  writeProject: true,
-  proposeRelease: true,
-  publishRelease: true,
-  reviewRelease: true,
-  writeVisual: true,
-  evaluateRoute: true,
-  readAssets: true,
-  createAssets: true,
-  reviewAssets: true,
-  manageVoiceDefaults: true,
-};
+const permissions = new Set<AdminPermissionKey>([
+  "character.project.read",
+  "character.release.read",
+  "character.performance.read",
+  "character.project.write",
+  "character.release.propose",
+  "character.release.publish",
+  "character.release.review",
+  "content.official.write",
+  "content.production.write",
+  "creative.run.read",
+  "creative.run.write",
+  "creative.run.review",
+  "generation.config.write",
+]);
 
 const pendingCommandKey =
   "idream:admin:character:operator-a:character-1:pending-command";

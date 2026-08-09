@@ -166,19 +166,7 @@ export const navItems: NavItem[] = [
     render: (ctx) => <TodayWorkspace workMode={ctx.workMode} /> }),
 
   apiItem({ id: "content/official", label: "Characters", href: "/admin/characters", icon: ShieldCheck, group: "Character Studio", apiWorkspace: "character_workspace",
-    render: (ctx) => <CharacterWorkspace actorId={ctx.actorId} permissions={{
-      read: ctx.canRead,
-      writeProject: ctx.permissions.has("character.project.write"),
-      proposeRelease: ctx.permissions.has("character.release.propose"),
-      publishRelease: ctx.permissions.has("character.release.publish"),
-      reviewRelease: ctx.permissions.has("character.release.review"),
-      writeVisual: ctx.permissions.has("content.official.write"),
-      evaluateRoute: ctx.permissions.has("content.production.write"),
-      readAssets: ctx.permissions.has("creative.run.read"),
-      createAssets: ctx.permissions.has("creative.run.write"),
-      reviewAssets: ctx.permissions.has("creative.run.review"),
-      manageVoiceDefaults: ctx.permissions.has("generation.config.write"),
-    }} view={ctx.view} /> }),
+    render: (ctx) => <CharacterWorkspace actorId={ctx.actorId} permissions={ctx.permissions} view={ctx.view} /> }),
   item({ id: "content/review-queue", label: "Character Review", href: "/admin/characters/review", icon: ClipboardCheck, group: "Character Studio", read: read("safety.review.read"),
     render: () => <ReviewQueueView /> }),
   item({ id: "content/templates", label: "Character Starters", href: "/admin/characters/starters", icon: Sparkles, group: "Character Studio", read: read("content.read"),
@@ -224,11 +212,7 @@ export const navItems: NavItem[] = [
   apiItem({ id: "insights", label: "Funnels & Retention", href: "/admin/growth/funnels", icon: BarChart3, group: "Growth", apiWorkspace: "metrics",
     render: () => <InsightsView /> }),
   apiTargetItem({ id: "growth/characters", label: "Character Performance", href: "/admin/growth/characters", icon: Activity, group: "Growth", apiWorkspace: "character_performance",
-    render: (ctx) => <CharacterPerformanceWorkspace
-      canOpenProjects={["character.project.read", "character.release.read", "character.performance.read"]
-        .every((permission) => ctx.permissions.has(permission as AdminPermissionKey))}
-      canRead={ctx.permissions.has("character.performance.read")}
-    /> }),
+    render: (ctx) => <CharacterPerformanceWorkspace permissions={ctx.permissions} /> }),
   apiItem({ id: "experiments", label: "Experiments", href: "/admin/growth/experiments", icon: Flag, group: "Growth", apiWorkspace: "experiments",
     render: () => <ExperimentsView /> }),
   item({ id: "content", label: "Featured Merchandising", href: "/admin/growth/merchandising?view=featured", icon: Library, group: "Growth", read: read("content.read"),
