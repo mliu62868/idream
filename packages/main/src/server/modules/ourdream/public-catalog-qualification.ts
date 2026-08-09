@@ -2,6 +2,7 @@ import type { Prisma, PrismaClient } from "@prisma/client";
 import { evaluateMediaAssetCustomerPublishability } from "@/server/lib/media-asset-authority";
 import { officialEditorialContentIdentity } from "@/server/modules/admin-v2/shared/character-content-identity";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
+import { CHARACTER_RELEASE_POLICY_VERSION } from "@/server/modules/admin-v2/characters/character-release-contract";
 import { characterReleaseSnapshotHash } from "@/server/modules/admin-v2/characters/release-snapshot";
 import {
   transitionCharacterRelease,
@@ -12,8 +13,6 @@ export const PUBLIC_CATALOG_QUALIFICATION_SCHEMA_VERSION =
   "public-catalog-qualification-v1";
 export const PUBLIC_CATALOG_EDITORIAL_IMPORT_POLICY_VERSION =
   "public-catalog-editorial-import-v1";
-export const MODERN_CHARACTER_RELEASE_POLICY_VERSION =
-  "character-release-policy-v2";
 
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -45,7 +44,7 @@ async function attachExistingModernQualification(
     where: {
       releaseId: release.id,
       snapshotHash: release.snapshotHash,
-      policyVersion: MODERN_CHARACTER_RELEASE_POLICY_VERSION,
+      policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
       result: "passed",
       finishedAt: { not: null },
     },

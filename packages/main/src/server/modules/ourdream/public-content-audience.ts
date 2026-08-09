@@ -10,10 +10,8 @@ import {
   hasHydratableMediaBlobAuthority,
   nonSyntheticMediaAssetWhere,
 } from "@/server/lib/media-asset-authority";
-import {
-  MODERN_CHARACTER_RELEASE_POLICY_VERSION,
-  PUBLIC_CATALOG_EDITORIAL_IMPORT_POLICY_VERSION,
-} from "./public-catalog-qualification";
+import { CHARACTER_RELEASE_POLICY_VERSION } from "@/server/modules/admin-v2/characters/character-release-contract";
+import { PUBLIC_CATALOG_EDITORIAL_IMPORT_POLICY_VERSION } from "./public-catalog-qualification";
 
 export {
   nonSyntheticMediaAssetWhere,
@@ -133,7 +131,7 @@ const publicCurrentReleaseWhere = {
         {
           generationProvenance: {
             path: ["policyVersion"],
-            equals: MODERN_CHARACTER_RELEASE_POLICY_VERSION,
+            equals: CHARACTER_RELEASE_POLICY_VERSION,
           },
         },
         {
@@ -150,7 +148,7 @@ const publicCurrentReleaseWhere = {
           revokedAt: null,
           validationRun: {
             is: {
-              policyVersion: MODERN_CHARACTER_RELEASE_POLICY_VERSION,
+              policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
               result: "passed",
               finishedAt: { not: null },
             },

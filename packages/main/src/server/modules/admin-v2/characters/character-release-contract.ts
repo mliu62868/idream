@@ -50,7 +50,13 @@ export function characterReleaseExactAssetPackByPurpose(
 
 const STRICT_RELEASE_PROVENANCE_SCHEMA =
   "character-release-generation-provenance-v2";
-const STRICT_RELEASE_POLICY_VERSION = "character-release-policy-v2";
+// SPEC: 当前发布策略版本 —— 证据按它判新旧，升版即让旧 Release 的合格证明失效。
+// INTENT: 住在发布契约这一层，是因为它同时被三方要用：release-validation 签发证据、
+// 本文件的严格发布契约验收证据、ourdream 的公开目录只认这一版的证据。此前三处各存一份
+// 字面量（STRICT_RELEASE_POLICY_VERSION / MODERN_CHARACTER_RELEASE_POLICY_VERSION），
+// 升版时漏改任何一处都是静默放行旧证据。release-validation 依赖本文件，所以常量只能沉在
+// 这一侧；那边保留同名再导出，调用方的 import 路径不变。
+export const CHARACTER_RELEASE_POLICY_VERSION = "character-release-policy-v2";
 const STRICT_RELEASE_SLOTS = [
   "character_avatar",
   "character_hero",
@@ -104,7 +110,7 @@ function hasStrictReleaseResponseAuthority(
   const avatar = placements.find(
     (placement) => placement.slotKey === "character_avatar",
   );
-  return release.policyVersion === STRICT_RELEASE_POLICY_VERSION &&
+  return release.policyVersion === CHARACTER_RELEASE_POLICY_VERSION &&
     placements.length === STRICT_RELEASE_SLOTS.length &&
     new Set(slotKeys).size === STRICT_RELEASE_SLOTS.length &&
     STRICT_RELEASE_SLOTS.every((slotKey) => slotKeys.includes(slotKey)) &&
@@ -144,7 +150,7 @@ function strictReleaseProjection(
 
   if (
     provenance.schemaVersion !== STRICT_RELEASE_PROVENANCE_SCHEMA ||
-    provenance.policyVersion !== STRICT_RELEASE_POLICY_VERSION ||
+    provenance.policyVersion !== CHARACTER_RELEASE_POLICY_VERSION ||
     !manifest ||
     !avatar ||
     !visualProfileId ||
@@ -176,7 +182,7 @@ function strictReleaseProjection(
       slotVersion: placement.slotVersion,
       assetId: placement.assetId,
     })),
-    policyVersion: STRICT_RELEASE_POLICY_VERSION,
+    policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
   };
 }
 
