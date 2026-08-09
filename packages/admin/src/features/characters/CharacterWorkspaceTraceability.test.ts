@@ -1,11 +1,11 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { characterMonitorWindows } from "./CharacterWorkspace";
 import {
-  characterMonitorWindows,
   latestQaRunForCurrentWorkspaceAuthority,
   qaRunMatchesCurrentWorkspaceAuthority,
   releasableQaRunForCurrentWorkspaceAuthority,
-} from "./CharacterWorkspace";
+} from "./character-qa-authority";
 
 const currentAuthority = {
   character: { id: "character-1" },

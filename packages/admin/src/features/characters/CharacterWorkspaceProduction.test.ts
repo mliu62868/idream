@@ -5,12 +5,12 @@ import { characterWorkspaceDetail } from "./character-workspace-fixture";
 import {
   characterNoDataDiagnosis,
   characterOperationsFacts,
-  characterReleaseOrdinals,
   characterReleaseConfirmationVisible,
   characterRecentAssets,
   characterVideoSourceBroken,
   characterWorkspaceTabLabel,
 } from "./CharacterWorkspace";
+import { characterReleaseOrdinals } from "./character-workspace-format";
 
 const workspaceSource = readFileSync(
   new URL("./CharacterWorkspace.tsx", import.meta.url),

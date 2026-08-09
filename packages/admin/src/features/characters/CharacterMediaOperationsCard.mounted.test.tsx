@@ -17,7 +17,7 @@ vi.mock("@/components/admin/i18n", () => ({
   }),
 }));
 
-import { CharacterMediaOperationsCard } from "./CharacterWorkspace";
+import { CharacterMediaOperationsCard } from "./CharacterMediaOperationsCard";
 
 const requestId = "voice-request-expired-1";
 const confirmation = `RECLAIM VOICE ${requestId}`;

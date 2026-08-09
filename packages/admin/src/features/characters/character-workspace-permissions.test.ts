@@ -3,7 +3,7 @@ import type { AdminPermissionKey } from "@idream/shared/admin";
 import {
   CHARACTER_WORKSPACE_WRITES,
   characterWorkspacePermissions,
-} from "./CharacterWorkspace";
+} from "./character-workspace-permissions";
 
 const granted = new Set<AdminPermissionKey>([
   "character.project.read",

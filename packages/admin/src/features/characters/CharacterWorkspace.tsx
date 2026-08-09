@@ -1,14 +1,11 @@
 "use client";
 
-import { AdminText, adminDateLocale, useAdminI18n } from "@/components/admin/i18n";
-import { ConfirmDialog } from "@/components/admin/ui/ConfirmDialog";
+import { adminDateLocale, useAdminI18n } from "@/components/admin/i18n";
 import Link from "next/link";
 import Image from "next/image";
 import {
   characterQaAuthorityMatches,
-  latestCharacterQaAuthorityRun,
   type CharacterPortfolioItem,
-  type CharacterMediaOperationsProjection,
   type AdminPermissionKey,
   type CharacterQaCheckInput,
   type CharacterWorkspaceDetail,
@@ -92,6 +89,25 @@ import {
   type CharacterPortfolioUrlState,
 } from "./portfolio-query";
 import {
+  characterWorkspacePermissions,
+  type CharacterWorkspacePermissions,
+  type RunCommittedCharacterMutation,
+} from "./character-workspace-permissions";
+import {
+  characterReleaseOrdinals,
+  percent,
+} from "./character-workspace-format";
+import {
+  currentWorkspaceQaAuthority,
+  latestQaRunForCurrentWorkspaceAuthority,
+  releasableQaRunForCurrentWorkspaceAuthority,
+} from "./character-qa-authority";
+import { permissionDenied } from "./character-permission-denied";
+import {
+  CharacterMediaOperationsCard,
+  shouldReleaseVoiceReclaimIdempotencyKey,
+} from "./CharacterMediaOperationsCard";
+import {
   committedCharacterProjectionWarning,
   createCharacterCommandJournal,
   type CharacterCommandJournal,
@@ -99,47 +115,7 @@ import {
   type PendingCharacterCommand,
 } from "./character-command-journal";
 
-/**
- * SPEC: 角色运营台每一个受写入门控的能力 → 它需要的 effective permission key。
- * INTENT: shell 曾经在 nav 的 render 里手拼这 11 个键传下来，那层拼装没有任何编译期约束；
- *         下游又把其中 8 个逐条与 `!writesLocked` 相与，漏掉的 manageVoiceDefaults 让「保存
- *         系统语音默认」在 durable command 待决期间仍然可点 —— 运营点下去得到的是一个抛出的
- *         错误而不是禁用态。键集和写入锁各自只剩一处，这一类漏项不再可表达。
- */
-export const CHARACTER_WORKSPACE_WRITES = {
-  writeProject: "character.project.write",
-  proposeRelease: "character.release.propose",
-  publishRelease: "character.release.publish",
-  reviewRelease: "character.release.review",
-  writeVisual: "content.official.write",
-  evaluateRoute: "content.production.write",
-  createAssets: "creative.run.write",
-  reviewAssets: "creative.run.review",
-  manageVoiceDefaults: "generation.config.write",
-} as const satisfies Record<string, AdminPermissionKey>;
-
-type CharacterWorkspaceWrite = keyof typeof CHARACTER_WORKSPACE_WRITES;
-
-type Permissions =
-  & { readonly read: boolean; readonly readAssets: boolean }
-  & { readonly [Capability in CharacterWorkspaceWrite]: boolean };
-
-export function characterWorkspacePermissions(
-  granted: ReadonlySet<AdminPermissionKey>,
-  writesLocked: boolean,
-): Permissions {
-  const writes = Object.fromEntries(
-    Object.entries(CHARACTER_WORKSPACE_WRITES).map(([capability, permission]) => [
-      capability,
-      granted.has(permission) && !writesLocked,
-    ]),
-  ) as { [Capability in CharacterWorkspaceWrite]: boolean };
-  return {
-    read: adminV2OperationAllowed("GET /api/v2/admin/characters/:id", granted),
-    readAssets: granted.has("creative.run.read"),
-    ...writes,
-  };
-}
+type Permissions = CharacterWorkspacePermissions;
 
 type ProjectDraft = Pick<
   CharacterWorkspaceDetail["project"],
@@ -171,220 +147,6 @@ const characterWorkspaceTabLabels: Record<Tab, string> = {
 
 export function characterWorkspaceTabLabel(tab: Tab) {
   return characterWorkspaceTabLabels[tab];
-}
-
-const mediaOperationLabels = {
-  image: "Image",
-  video: "Video",
-  voice: "Voice",
-} as const;
-
-const mediaRecoveryLabels = {
-  not_needed: "No recovery needed",
-  retryable: "Retry available",
-  operator_action: "Operator action required",
-  not_recoverable: "Not retryable",
-  unavailable: "Recovery unavailable",
-} as const;
-
-function mediaOperationDuration(durationMs: number | null) {
-  if (durationMs === null) return "Unavailable";
-  const totalSeconds = Math.round(durationMs / 1_000);
-  if (totalSeconds < 60) return `${totalSeconds}s`;
-  return `${Math.floor(totalSeconds / 60)}m ${totalSeconds % 60}s`;
-}
-
-export function shouldReleaseVoiceReclaimIdempotencyKey(cause: unknown) {
-  if (!(cause instanceof AdminV2RequestError)) return false;
-  const details =
-    cause.details &&
-    typeof cause.details === "object" &&
-    !Array.isArray(cause.details)
-      ? cause.details as Record<string, unknown>
-      : {};
-  return !(
-    cause.status === 409 &&
-    cause.code === "conflict" &&
-    details.reason === "command_in_progress"
-  );
-}
-
-export function CharacterMediaOperationsCard({
-  projection,
-  canReclaimVoice = false,
-  reclaimingVoiceRequestId = null,
-  onReclaimVoice,
-}: {
-  readonly projection: CharacterMediaOperationsProjection;
-  readonly canReclaimVoice?: boolean;
-  readonly reclaimingVoiceRequestId?: string | null;
-  readonly onReclaimVoice?: (input: {
-    readonly requestId: string;
-    readonly confirmation: string;
-    readonly reason: string;
-  }) => Promise<void>;
-}) {
-  const { t } = useAdminI18n();
-  const [pendingReclaim, setPendingReclaim] = useState<{
-    readonly requestId: string;
-    readonly confirmation: string;
-    readonly attemptNo: number;
-    readonly provider: string | null;
-  } | null>(null);
-  return (
-    <>
-    <section
-      aria-labelledby="character-media-operations-title"
-      className="mt-4 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]"
-    >
-      <div className="border-b border-[var(--ad-border)] px-4 py-3">
-        <h3 className="text-sm font-semibold" id="character-media-operations-title">
-          {t("Recent media operations")}
-        </h3>
-        <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
-          {t("Latest authoritative request per modality")}
-        </p>
-      </div>
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[760px] text-left text-xs">
-          <thead className="text-[var(--ad-text-muted)]">
-            <tr className="border-b border-[var(--ad-border)]">
-              <th className="px-4 py-2 font-semibold" scope="col">{t("Media")}</th>
-              <th className="px-3 py-2 font-semibold" scope="col">{t("Latest run")}</th>
-              <th className="px-3 py-2 font-semibold" scope="col">{t("Evidence")}</th>
-              <th className="px-3 py-2 font-semibold" scope="col">{t("Recovery")}</th>
-              <th className="px-4 py-2 text-right font-semibold" scope="col">{t("Open")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {projection.operations.map((operation) => (
-              <tr
-                className="border-b border-[var(--ad-border)] last:border-b-0"
-                data-media-operation={operation.modality}
-                key={operation.modality}
-              >
-                <th className="px-4 py-3 text-sm font-semibold" scope="row">
-                  {t(mediaOperationLabels[operation.modality])}
-                </th>
-                <td className="px-3 py-3">
-                  {operation.status ? <StatusBadge value={operation.status} /> : t("No runs")}
-                  <span className="mt-1 block max-w-44 truncate font-mono text-[10px] text-[var(--ad-text-muted)]">
-                    {operation.requestId ?? t("Unavailable")}
-                  </span>
-                </td>
-                <td className="px-3 py-3 text-[var(--ad-text-muted)]">
-                  <span className="block">
-                    {operation.provider?.key ?? t("Provider unavailable")}
-                    {operation.attempt ? ` · ${t("Attempt")} ${operation.attempt.number}` : ""}
-                  </span>
-                  <span className="mt-1 block">
-                    {t("Time")} {mediaOperationDuration(operation.timing?.latencyMs ?? null)}
-                    {" · "}{operation.costDreamcoins === null
-                      ? t("Cost unavailable")
-                      : t("{cost} Dreamcoins", { cost: operation.costDreamcoins })}
-                    {" · "}{operation.output
-                      ? t(operation.output.availability === "available"
-                          ? "Available"
-                          : operation.output.availability === "deleted"
-                            ? "Deleted"
-                            : "Unavailable")
-                      : t("No output")}
-                  </span>
-                </td>
-                <td className="max-w-64 px-3 py-3">
-                  <span className="font-semibold">
-                    {t(mediaRecoveryLabels[operation.recoverability.state])}
-                  </span>
-                  {operation.recoverability.reason ? (
-                    <span className="mt-1 block text-[var(--ad-text-muted)]">
-                      {t(operation.recoverability.reason)}
-                    </span>
-                  ) : null}
-                  {operation.modality === "voice" &&
-                  operation.requestId &&
-                  operation.recoverability.actionHref &&
-                  operation.recoverability.actionConfirmation ? (
-                    <button
-                      className="mt-2 block font-semibold underline disabled:cursor-not-allowed disabled:opacity-50"
-                      disabled={
-                        !canReclaimVoice ||
-                        !onReclaimVoice ||
-                        reclaimingVoiceRequestId === operation.requestId
-                      }
-                      onClick={() =>
-                        setPendingReclaim({
-                          requestId: operation.requestId!,
-                          confirmation:
-                            operation.recoverability.actionConfirmation!,
-                          attemptNo: operation.attempt?.number ?? 1,
-                          provider: operation.provider?.key ?? null,
-                        })
-                      }
-                      type="button"
-                    >
-                      {t(
-                        reclaimingVoiceRequestId === operation.requestId
-                          ? "Reclaiming Voice request…"
-                          : "Reclaim Voice request",
-                      )}
-                    </button>
-                  ) : null}
-                </td>
-                <td className="px-4 py-3 text-right">
-                  <Link className="font-semibold underline" href={operation.studioHref}>
-                    {t("Open Studio")}
-                  </Link>
-                  {operation.operationsHref ? (
-                    <Link className="ml-3 font-semibold underline" href={operation.operationsHref}>
-                      {t("Open operations")}
-                    </Link>
-                  ) : null}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <p className="border-t border-[var(--ad-border)] px-4 py-2 text-xs text-[var(--ad-text-muted)]">
-        {t("Run completion does not approve or publish an asset.")} {t("Review and Release remain separate decisions.")}
-      </p>
-    </section>
-    {pendingReclaim && onReclaimVoice ? (
-      <ConfirmDialog
-        onClose={() => setPendingReclaim(null)}
-        spec={{
-          title: t("Reclaim expired Voice request"),
-          summary: (
-            <div className="space-y-2">
-              <p>
-                {t("Request")} <code>{pendingReclaim.requestId}</code>
-                {" · "}{t("Attempt")} {pendingReclaim.attemptNo}
-                {" · "}{pendingReclaim.provider ?? t("Provider unavailable")}
-              </p>
-              <p>
-                {t(
-                  "The reclaim reuses the pinned provider request and idempotency key, then rechecks the user's current Voice allowance and Dreamcoin balance.",
-                )}
-              </p>
-            </div>
-          ),
-          destructive: {
-            expectedName: pendingReclaim.confirmation,
-            inputLabel: t("Type the projected Voice reclaim confirmation"),
-          },
-          reasonLabel: t("Operational reason (≥3)"),
-          submitLabel: t("Reclaim Voice request"),
-          onSubmit: (reason) =>
-            onReclaimVoice({
-              requestId: pendingReclaim.requestId,
-              confirmation: pendingReclaim.confirmation,
-              reason,
-            }),
-        }}
-      />
-    ) : null}
-    </>
-  );
 }
 
 // SPEC: 视频是 character I2V，源图恒为角色主图（service.ts 的 mode==="video" 守卫）。
@@ -473,12 +235,6 @@ export function characterOperationsFacts(
   ];
 }
 
-type RunCommittedCharacterMutation = <T>(input: {
-  readonly action: string;
-  readonly commit: () => Promise<T>;
-  readonly afterRefresh?: () => void;
-}) => Promise<{ readonly result: T; readonly refreshed: boolean }>;
-
 // SPEC: 把 journal 给出的非受理处置翻译成操作员能读的一句话。
 // INTENT: 处置本身（解锁 / 保持锁定 / 改挂到别的命令）已经由 journal 做完并生效了，
 // 这里只负责措辞——所以三种出口的文案改错也改不动写入锁的行为。
@@ -498,10 +254,6 @@ function commandSubmissionMessage(
   return outcome.cause instanceof Error
     ? outcome.cause.message
     : `${action} acceptance is unknown. The same command will be replayed safely.`;
-}
-
-function percent(value: number | null) {
-  return value === null ? "N/A" : `${(value * 100).toFixed(1)}%`;
 }
 
 // SPEC: 零观测本身不是结论——「窗口还没走完」要等，「整个窗口都没有」要查投放和埋点。
@@ -562,22 +314,6 @@ export function characterPortfolioPerformanceLabel(
   return `${metrics.join(" · ")} · ${performance.maturity.replaceAll("_", " ")}`;
 }
 
-// SPEC: 发布卡片与回滚下拉必须让运营一眼分辨"哪个更新"。
-// INTENT: CharacterRelease.version 是行级乐观锁计数（每次改动 +1），不是发布序号——
-// 直接渲染成 "Release v{version}" 会出现"v2 比 v1 更早发布"这种读反的顺序。
-// 这里按发布时间给出单调递增的序号；version 仍用于命令的并发校验，只在技术证据里出现。
-export function characterReleaseOrdinals(
-  items: readonly { readonly release: { id: string; publishedAt: string | null; createdAt: string } }[],
-) {
-  const stamp = (release: { publishedAt: string | null; createdAt: string }) =>
-    Date.parse(release.publishedAt ?? release.createdAt);
-  return new Map(
-    [...items]
-      .sort((left, right) => stamp(left.release) - stamp(right.release))
-      .map((item, index) => [item.release.id, index + 1] as const),
-  );
-}
-
 export function characterMonitorWindows(
   monitors: ReadonlyArray<{ readonly window: string }>,
 ) {
@@ -589,24 +325,6 @@ export function characterMonitorWindows(
       ...monitors.map((monitor) => monitor.window),
     ]),
   ];
-}
-
-function permissionDenied(label: string) {
-  return (
-    <section
-      aria-labelledby="permission-title"
-      className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-8"
-    >
-      <ShieldAlert className="h-6 w-6 text-[var(--ad-text-muted)]" />
-      <h2 className="mt-4 text-lg font-semibold" id="permission-title">
-        <AdminText text="No permission" />
-      </h2>
-      <p className="mt-2 text-sm text-[var(--ad-text-muted)]">
-        <AdminText text="Your effective grants do not include" /> {label}
-        <AdminText text=". Ask an administrator for the matching scoped permission." />
-      </p>
-    </section>
-  );
 }
 
 export function CharacterPortfolioVisual({
@@ -2798,107 +2516,6 @@ const qaCheckKeys: readonly CharacterQaCheckInput["key"][] = [
 type CharacterQaCheckDraft = Omit<CharacterQaCheckInput, "result"> & {
   result: "" | CharacterQaCheckInput["result"];
 };
-
-type CharacterWorkspaceQaAuthorityRun = Pick<
-  CharacterWorkspaceDetail["qaRuns"][number],
-  | "id"
-  | "status"
-  | "createdAt"
-  | "characterId"
-  | "projectId"
-  | "projectVersion"
-  | "characterContentVersionId"
-  | "visualProfileId"
-  | "visualProfileVersion"
-  | "visualProfileHash"
-  | "referenceSetRevisionId"
-  | "referenceSetRevision"
-  | "referenceSetHash"
-  | "draftAssetPackHash"
->;
-
-type CharacterWorkspaceQaAuthority = {
-  readonly character: {
-    readonly id: string;
-  };
-  readonly project: {
-    readonly id: string;
-    readonly version: number;
-    readonly draftAssetPackHash: string;
-    readonly draftAssetRouteAuthority?: {
-      readonly status: "empty" | "current" | "stale" | "route_unavailable";
-      readonly qaReady?: boolean;
-    };
-  };
-  readonly preview: {
-    readonly draft: {
-      readonly contentVersionId: string | null;
-      readonly assetPackReady?: boolean;
-    };
-  };
-  readonly visual: {
-    readonly activeIdentity: {
-      readonly id: string;
-      readonly version: number;
-      readonly immutableHash: string | null;
-    } | null;
-    readonly activeReferenceSet: {
-      readonly id: string;
-      readonly revision: number;
-      readonly snapshotHash: string | null;
-    } | null;
-  };
-};
-
-function currentWorkspaceQaAuthority(data: CharacterWorkspaceQaAuthority) {
-  return {
-    characterId: data.character.id,
-    projectId: data.project.id,
-    characterContentVersionId: data.preview.draft.contentVersionId,
-    projectVersion: data.project.version,
-    visualProfileId: data.visual.activeIdentity?.id ?? null,
-    visualProfileVersion: data.visual.activeIdentity?.version ?? null,
-    visualProfileHash: data.visual.activeIdentity?.immutableHash ?? null,
-    referenceSetRevisionId: data.visual.activeReferenceSet?.id ?? null,
-    referenceSetRevision: data.visual.activeReferenceSet?.revision ?? null,
-    referenceSetHash: data.visual.activeReferenceSet?.snapshotHash ?? null,
-    draftAssetPackHash: data.project.draftAssetPackHash,
-  };
-}
-
-export function qaRunMatchesCurrentWorkspaceAuthority(
-  run: Omit<CharacterWorkspaceQaAuthorityRun, "id" | "createdAt">,
-  data: CharacterWorkspaceQaAuthority,
-) {
-  return (
-    data.project.draftAssetRouteAuthority?.qaReady !== false &&
-    data.project.draftAssetRouteAuthority?.status !== "stale" &&
-    data.project.draftAssetRouteAuthority?.status !== "route_unavailable" &&
-    data.preview.draft.assetPackReady !== false &&
-    run.status === "passed" &&
-    characterQaAuthorityMatches(run, currentWorkspaceQaAuthority(data))
-  );
-}
-
-export function latestQaRunForCurrentWorkspaceAuthority<
-  T extends CharacterWorkspaceQaAuthorityRun,
->(runs: readonly T[], data: CharacterWorkspaceQaAuthority) {
-  if (
-    data.project.draftAssetRouteAuthority?.qaReady === false ||
-    data.project.draftAssetRouteAuthority?.status === "stale" ||
-    data.project.draftAssetRouteAuthority?.status === "route_unavailable" ||
-    data.preview.draft.assetPackReady === false
-  )
-    return null;
-  return latestCharacterQaAuthorityRun(runs, currentWorkspaceQaAuthority(data));
-}
-
-export function releasableQaRunForCurrentWorkspaceAuthority<
-  T extends CharacterWorkspaceQaAuthorityRun,
->(runs: readonly T[], data: CharacterWorkspaceQaAuthority) {
-  const latest = latestQaRunForCurrentWorkspaceAuthority(runs, data);
-  return latest?.status === "passed" ? latest : null;
-}
 
 export function PreviewDiff({
   data,

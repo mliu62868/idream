@@ -9,7 +9,7 @@ import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import {
   CharacterMediaOperationsCard,
   shouldReleaseVoiceReclaimIdempotencyKey,
-} from "./CharacterWorkspace";
+} from "./CharacterMediaOperationsCard";
 
 function operation(
   modality: "image" | "video" | "voice",
