@@ -6,7 +6,7 @@ import {
   uniqueAvailableVisualAssets,
   VisualIdentityPanel,
   type VisualIdentityPanelData,
-} from "./CharacterWorkspace";
+} from "./VisualIdentityPanel";
 
 const data = {
   character: {
