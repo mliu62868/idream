@@ -1,8 +1,8 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { CharacterListEmptyState } from "./CharacterPortfolio";
+import { CharacterListEmptyState } from "./CharacterListEmptyState";
 
-describe("Character Portfolio list", () => {
+describe("Character Portfolio empty states", () => {
   it("uses Character-specific empty states instead of operations queue language", () => {
     const empty = renderToStaticMarkup(
       <CharacterListEmptyState filtered={false} onClear={() => undefined} />,
