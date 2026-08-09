@@ -1,6 +1,7 @@
 import {
   characterSoulBehaviorBlockingCases,
   characterSoulBehaviorCaseKeys,
+  characterSoulBehaviorEvaluatorVersion,
   type CharacterSoulBehaviorEvaluation,
   type CharacterSoulLiveCanary,
 } from "@idream/shared/admin";
@@ -23,7 +24,7 @@ export function characterSoulQaEvidence(input: {
   return {
     behaviorEvaluation: {
       suiteVersion: "character-soul-behavior-1",
-      evaluatorVersion: "test-evaluator-1",
+      evaluatorVersion: characterSoulBehaviorEvaluatorVersion,
       characterContentVersionId: input.characterContentVersionId,
       soulFingerprint: loaded.snapshot.compiled.fingerprint,
       compilerVersion: loaded.snapshot.compiled.compilerVersion,

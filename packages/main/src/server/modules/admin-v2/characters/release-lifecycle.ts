@@ -3,16 +3,14 @@ import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 import { CHARACTER_RELEASE_POLICY_VERSION, validateCharacterReleaseSnapshot } from "./release-executor";
+import {
+  characterReleaseProposalBlockers,
+  evaluateCharacterReleaseSnapshot,
+} from "./release-validation";
 import { findOperationalGenerationRoute } from "./visual-authority";
 import { env } from "@/server/lib/env";
-import {
-  characterQaAuthorityMatches,
-} from "@idream/shared/admin";
-import {
-  characterReleaseSnapshotHash,
-  characterVisualProfileSnapshotHash,
-  referenceSetSnapshotHash,
-} from "./release-snapshot";
+import { characterReleaseSnapshotHash } from "./release-snapshot";
+import { releaseStringArray } from "./release-snapshot-values";
 import { toInputJson } from "../shared/prisma-json";
 import { canonicalSha256 } from "../shared/canonical-json";
 import {
@@ -23,20 +21,11 @@ import {
   transitionCharacterProject,
   transitionCharacterRelease,
 } from "./transition";
-import { characterIdentityReviewEvidencePassed } from "../shared/creative-review-quality";
 import {
   lockCharacterGenerationAuthority,
   lockCharacterMediaAssetAuthorities,
 } from "./generation-authority-lock";
-import {
-  characterReferenceMediaAuthoritySelect,
-  unavailableCharacterReferenceMediaIds,
-} from "./reference-media-authority";
-import { findLatestCharacterQaAuthorityRun } from "./qa-authority";
-import {
-  hasHydratableMediaBlobAuthority,
-  isMediaAssetOperationalForAuthority,
-} from "@/server/lib/media-asset-authority";
+import { characterReferenceMediaAuthoritySelect } from "./reference-media-authority";
 import {
   discoverDraftAssetPackSourceAssetIds,
   evaluateDraftAssetPackAuthority,
@@ -85,22 +74,6 @@ function draftPackEntry(value: Prisma.JsonValue, key: string): DraftPackEntry | 
     bootstrapIdentity: entry.bootstrapIdentity === true,
     selectedFromProject: true,
   };
-}
-
-function record(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {};
-}
-
-function jsonStringArray(value: Prisma.JsonValue | null): string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string")
-    : [];
-}
-
-function referenceManifestEntries(value: Prisma.JsonValue | null) {
-  return Array.isArray(value) ? value.map(record) : [];
 }
 
 export async function proposeCharacterRelease(input: {
@@ -189,12 +162,6 @@ export async function proposeCharacterRelease(input: {
       },
       orderBy: { revision: "desc" },
     }) : null;
-    const visualProfileHash = profile
-      ? characterVisualProfileSnapshotHash(profile)
-      : null;
-    const referenceSetHash = referenceSet
-      ? referenceSetSnapshotHash(referenceSet)
-      : null;
     const route = profile ? await findOperationalGenerationRoute(tx, {
       style: profile.style,
       policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
@@ -236,39 +203,12 @@ export async function proposeCharacterRelease(input: {
       { purpose: "character_hero", slotKey: "character_hero", ...draftPackEntry(project.draftAssetPack, "character_hero") },
       { purpose: "character_chat", slotKey: "character_chat", ...draftPackEntry(project.draftAssetPack, "character_chat") },
     ].filter((entry): entry is { purpose: string; slotKey: string } & DraftPackEntry => typeof entry.assetId === "string");
-    const draftAssets = await tx.mediaAsset.findMany({
-      where: { id: { in: [...new Set(draftAssetEntries.map((entry) => entry.assetId))] } },
-    });
-    const draftAssetById = new Map(draftAssets.map((asset) => [asset.id, asset]));
-    const releaseImageAssetId = draftAssetEntries.find((entry) => entry.slotKey === "character_avatar")?.assetId ?? null;
-    const releaseImageAsset = releaseImageAssetId ? draftAssetById.get(releaseImageAssetId) ?? null : null;
-    const invalidPackEntries = draftAssetEntries.filter((entry) => {
-      const asset = draftAssetById.get(entry.assetId);
-      if (
-        !asset ||
-        asset.deletedAt ||
-        asset.safetyStatus !== "passed" ||
-        !isMediaAssetOperationalForAuthority(asset.metadata) ||
-        !hasHydratableMediaBlobAuthority(asset)
-      ) return true;
-      return asset.characterId !== input.characterId;
-    });
     const selectedEntries = draftAssetEntries.filter((entry) => entry.selectedFromProject);
     const selectedItems = await tx.contentProductionItem.findMany({
       where: { id: { in: selectedEntries.flatMap((entry) => entry.itemId ? [entry.itemId] : []) } },
       include: { batch: true, job: true },
     });
     const selectedItemById = new Map(selectedItems.map((item) => [item.id, item]));
-    const latestDecisions = await tx.creativeReviewDecision.findMany({
-      where: { runItemId: { in: selectedEntries.flatMap((entry) => entry.itemId ? [entry.itemId] : []) } },
-      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    });
-    const latestDecisionByItemId = new Map<string, (typeof latestDecisions)[number]>();
-    for (const decision of latestDecisions) {
-      if (!latestDecisionByItemId.has(decision.runItemId)) {
-        latestDecisionByItemId.set(decision.runItemId, decision);
-      }
-    }
     const generationAttempts = await tx.generationAttempt.findMany({
       where: {
         requestId: {
@@ -284,187 +224,16 @@ export async function proposeCharacterRelease(input: {
         latestAttemptByJobId.set(attempt.requestId, attempt);
       }
     }
-    const invalidLineageEntries = selectedEntries.filter((entry) => {
-      if (!entry.runId || !entry.itemId || !entry.reviewDecisionId || !entry.generationJobId) return true;
-      const item = selectedItemById.get(entry.itemId);
-      const latestDecision = latestDecisionByItemId.get(entry.itemId);
-      const asset = draftAssetById.get(entry.assetId);
+    // 血缘不完整的槽位不进 provenance：候选快照因此缺 pinned 条目，规则引擎的
+    // release_asset_generation_authority 与 release_assets_customer_publishable 当场失败关闭。
+    const placementGenerationProvenance = draftAssetEntries.flatMap((entry) => {
+      const item = entry.itemId ? selectedItemById.get(entry.itemId) ?? null : null;
       const job = item?.job ?? null;
-      const latestAttempt = latestAttemptByJobId.get(entry.generationJobId);
-      const sourceMeta = record(job?.sourceMeta);
-      const manifestEntries = referenceManifestEntries(job?.referenceManifest ?? null);
-      const manifestAssetIds = manifestEntries.flatMap((manifestEntry) =>
-        typeof manifestEntry.mediaAssetId === "string" ? [manifestEntry.mediaAssetId] : []
-      );
-      const referenceAssetIds = jsonStringArray(job?.referenceAssetIds ?? null);
-      const exactRouteFingerprintMatches =
-        sourceMeta.generationRouteQualificationId === route?.id &&
-        sourceMeta.generationRouteFingerprint === route?.routeFingerprint &&
-        entry.generationRouteFingerprint === route?.routeFingerprint;
-      const bootstrapAuthorityMatches = Boolean(
-        entry.bootstrapIdentity &&
-        entry.purpose === "character_cover" &&
-        job &&
-        profile &&
-        referenceSet &&
-        sourceMeta.bootstrapIdentity === true &&
-        job.visualProfileId === null &&
-        job.referenceSetRevisionId === null &&
-        jsonStringArray(job.referenceAssetIds).length === 0 &&
-        (!Array.isArray(job.referenceManifest) || job.referenceManifest.length === 0) &&
-        profile.createdFrom === `identity_bootstrap:${entry.generationJobId}` &&
-        referenceSet.createdFrom === `identity_bootstrap:${entry.generationJobId}` &&
-        profile.evidenceState === "reviewed_bootstrap" &&
-        record(profile.adapterRefs).bootstrapIdentity === true &&
-        record(profile.adapterRefs).generationJobId === entry.generationJobId &&
-        referenceSet.references.some((reference) => reference.mediaAssetId === entry.assetId),
-      );
-      const qualifiedIdentityRouteMatches = Boolean(
-        !entry.bootstrapIdentity &&
-        job &&
-        profile &&
-        referenceSet &&
-        route &&
-        latestAttempt &&
-        job.visualProfileId === profile.id &&
-        job.visualProfileVersion === profile.version &&
-        job.referenceSetRevisionId === referenceSet.id &&
-        referenceAssetIds.length > 0 &&
-        manifestEntries.length > 0 &&
-        canonicalSha256([...referenceAssetIds].sort()) === canonicalSha256([...manifestAssetIds].sort()) &&
-        manifestEntries.every((manifestEntry) =>
-          manifestEntry.referenceSetRevisionId === referenceSet.id &&
-          manifestEntry.snapshotHash === referenceSet.snapshotHash
-        ) &&
-        sourceMeta.referenceSetRevisionId === referenceSet.id &&
-        exactRouteFingerprintMatches &&
-        job.profileId === route.generationProfileKey &&
-        job.profileVersion === route.generationProfileVersion &&
-        job.model === route.workflowKey &&
-        latestAttempt.profileKey === route.generationProfileKey &&
-        latestAttempt.profileVersion === route.generationProfileVersion &&
-        latestAttempt.workflowKey === route.workflowKey &&
-        latestAttempt.workflowVersion === route.workflowVersion,
-      );
-      return !item ||
-        item.batchId !== entry.runId ||
-        item.jobId !== entry.generationJobId ||
-        item.mediaAssetId !== entry.assetId ||
-        item.batch.targetType !== "character" ||
-        item.batch.targetId !== input.characterId ||
-        item.batch.purpose !== entry.purpose ||
-        !["approved", "published"].includes(item.status) ||
-        !job ||
-        job.id !== entry.generationJobId ||
-        job.status !== "completed" ||
-        job.mode !== "image" ||
-        job.deliveredOutputCount < 1 ||
-        job.characterId !== input.characterId ||
-        job.sourceType !== "content_production_item" ||
-        job.sourceId !== item.id ||
-        sourceMeta.batchId !== item.batchId ||
-        sourceMeta.purpose !== entry.purpose ||
-        sourceMeta.targetType !== "character" ||
-        sourceMeta.targetId !== input.characterId ||
-        sourceMeta.bootstrapIdentity !== entry.bootstrapIdentity ||
-        !job.profileId ||
-        !job.profileVersion ||
-        !job.model ||
-        !job.provider ||
-        !asset ||
-        asset.sourceJobId !== job.id ||
-        !latestAttempt ||
-        latestAttempt.status !== "succeeded" ||
-        latestAttempt.provider !== job.provider ||
-        latestAttempt.profileKey !== job.profileId ||
-        latestAttempt.profileVersion !== job.profileVersion ||
-        latestAttempt.workflowKey !== job.model ||
-        !latestDecision ||
-        latestDecision.id !== entry.reviewDecisionId ||
-        latestDecision.artifactId !== entry.assetId ||
-        !characterIdentityReviewEvidencePassed({
-          bootstrapIdentity: entry.bootstrapIdentity,
-          decision: latestDecision.decision,
-          identityConsistency: latestDecision.identityConsistency,
-          score: latestDecision.score,
-          evidence: latestDecision.evidence,
-        }) ||
-        (!bootstrapAuthorityMatches && !qualifiedIdentityRouteMatches);
-    });
-    const unavailableReferenceMediaIds = referenceSet
-      ? unavailableCharacterReferenceMediaIds(
-          referenceSet.references,
-          input.characterId,
-        )
-      : [];
-    const qaAuthoritySnapshot = revision ? {
-      characterId: input.characterId,
-      projectId: project.id,
-      characterContentVersionId: revision.characterContentVersionId,
-      projectVersion: project.version,
-      visualProfileId: profile?.id ?? null,
-      visualProfileVersion: profile?.version ?? null,
-      visualProfileHash,
-      referenceSetRevisionId: referenceSet?.id ?? null,
-      referenceSetRevision: referenceSet?.revision ?? null,
-      referenceSetHash,
-      draftAssetPackHash: canonicalSha256(project.draftAssetPack),
-    } : null;
-    const latestQaRun = qaAuthoritySnapshot
-      ? await findLatestCharacterQaAuthorityRun(tx, qaAuthoritySnapshot)
-      : null;
-    const blockers = [
-      ...(!character ? ["character_missing"] : []),
-      ...(!revision ? ["revision_missing"] : []),
-      ...(!qaRun || qaRun.status !== "passed" ? ["character_qa_not_passed"] : []),
-      ...(qaRun && qaAuthoritySnapshot &&
-        !characterQaAuthorityMatches(qaRun, qaAuthoritySnapshot)
-        ? ["character_qa_authority_mismatch"]
-        : []),
-      ...(qaRun && qaAuthoritySnapshot && latestQaRun?.id !== qaRun.id
-        ? ["character_qa_not_latest_authority"]
-        : []),
-      ...(!profile?.immutableHash
-        ? ["active_visual_profile_missing_or_unsealed"]
-        : profile.immutableHash !== visualProfileHash
-          ? ["active_visual_profile_hash_invalid"]
-          : []),
-      ...(!referenceSet?.snapshotHash || !referenceSet.references.length
-        ? ["active_reference_set_missing_or_empty"]
-        : referenceSet.snapshotHash !== referenceSetHash
-          ? ["active_reference_set_hash_invalid"]
-          : []),
-      ...(unavailableReferenceMediaIds.length > 0
-        ? ["active_reference_set_media_unavailable"]
-        : []),
-      ...(!route ? ["qualified_generation_route_missing"] : []),
-      ...(!releaseImageAsset ||
-        releaseImageAsset.deletedAt ||
-        releaseImageAsset.safetyStatus !== "passed" ||
-        !isMediaAssetOperationalForAuthority(releaseImageAsset.metadata) ||
-        !hasHydratableMediaBlobAuthority(releaseImageAsset)
-        ? ["approved_avatar_missing"]
-        : []),
-      ...(draftAssetEntries.length !== 3 ||
-        selectedEntries.length !== 3 ||
-        exactDraftAssetPackAuthority?.ready !== true
-        ? ["approved_asset_pack_incomplete"]
-        : []),
-      ...(invalidPackEntries.length > 0 ||
-        (exactDraftAssetPackAuthority?.invalidAssetPurposes.length ?? 0) > 0
-        ? ["approved_asset_pack_invalid"]
-        : []),
-      ...(invalidLineageEntries.length > 0 ||
-        (exactDraftAssetPackAuthority?.invalidLineagePurposes.length ?? 0) > 0
-        ? ["approved_asset_pack_lineage_invalid"]
-        : []),
-    ];
-    if (blockers.length > 0) throw Errors.conflict("Character is not ready to propose a Release", { blockers });
-    const placementGenerationProvenance = draftAssetEntries.map((entry) => {
-      const item = selectedItemById.get(entry.itemId!)!;
-      const job = item.job!;
-      const attempt = latestAttemptByJobId.get(job.id)!;
-      return {
+      const attempt = entry.generationJobId
+        ? latestAttemptByJobId.get(entry.generationJobId) ?? null
+        : null;
+      if (!job || !attempt || job.id !== entry.generationJobId) return [];
+      return [{
         slotKey: entry.slotKey,
         assetId: entry.assetId,
         runId: entry.runId,
@@ -480,7 +249,7 @@ export async function proposeCharacterRelease(input: {
         visualProfileId: job.visualProfileId,
         visualProfileVersion: job.visualProfileVersion,
         referenceSetRevisionId: job.referenceSetRevisionId,
-        referenceAssetIds: jsonStringArray(job.referenceAssetIds),
+        referenceAssetIds: releaseStringArray(job.referenceAssetIds),
         referenceManifestHash: job.referenceManifest
           ? canonicalSha256(job.referenceManifest)
           : null,
@@ -489,42 +258,42 @@ export async function proposeCharacterRelease(input: {
         attemptId: attempt.id,
         attemptNo: attempt.attemptNo,
         completedAt: job.completedAt?.toISOString() ?? null,
-      };
+      }];
     });
     const generationProvenance = {
       schemaVersion: "character-release-generation-provenance-v2",
       policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
       requiredReleaseRoute: {
-        routeFingerprint: route!.routeFingerprint,
-        matrixKey: route!.matrixKey,
-        generationProfileKey: route!.generationProfileKey,
-        generationProfileVersion: route!.generationProfileVersion,
-        workflowKey: route!.workflowKey,
-        workflowVersion: route!.workflowVersion,
+        routeFingerprint: route?.routeFingerprint ?? null,
+        matrixKey: route?.matrixKey ?? null,
+        generationProfileKey: route?.generationProfileKey ?? null,
+        generationProfileVersion: route?.generationProfileVersion ?? null,
+        workflowKey: route?.workflowKey ?? null,
+        workflowVersion: route?.workflowVersion ?? null,
       },
       visualAuthority: {
-        visualProfileId: profile!.id,
-        visualProfileVersion: profile!.version,
-        visualProfileHash: profile!.immutableHash,
-        referenceSetRevisionId: referenceSet!.id,
-        referenceSetHash: referenceSet!.snapshotHash,
+        visualProfileId: profile?.id ?? null,
+        visualProfileVersion: profile?.version ?? null,
+        visualProfileHash: profile?.immutableHash ?? null,
+        referenceSetRevisionId: referenceSet?.id ?? null,
+        referenceSetHash: referenceSet?.snapshotHash ?? null,
       },
       placements: placementGenerationProvenance,
       characterQa: {
         status: "passed",
-        qaRunId: qaRun!.id,
-        evidenceHash: qaRun!.evidenceHash,
-        characterId: qaRun!.characterId,
-        projectId: qaRun!.projectId,
-        characterContentVersionId: qaRun!.characterContentVersionId,
-        projectVersion: qaRun!.projectVersion,
-        visualProfileId: qaRun!.visualProfileId,
-        visualProfileVersion: qaRun!.visualProfileVersion,
-        visualProfileHash: qaRun!.visualProfileHash,
-        referenceSetRevisionId: qaRun!.referenceSetRevisionId,
-        referenceSetRevision: qaRun!.referenceSetRevision,
-        referenceSetHash: qaRun!.referenceSetHash,
-        draftAssetPackHash: qaRun!.draftAssetPackHash,
+        qaRunId: qaRun?.id ?? null,
+        evidenceHash: qaRun?.evidenceHash ?? null,
+        characterId: qaRun?.characterId ?? null,
+        projectId: qaRun?.projectId ?? null,
+        characterContentVersionId: qaRun?.characterContentVersionId ?? null,
+        projectVersion: qaRun?.projectVersion ?? null,
+        visualProfileId: qaRun?.visualProfileId ?? null,
+        visualProfileVersion: qaRun?.visualProfileVersion ?? null,
+        visualProfileHash: qaRun?.visualProfileHash ?? null,
+        referenceSetRevisionId: qaRun?.referenceSetRevisionId ?? null,
+        referenceSetRevision: qaRun?.referenceSetRevision ?? null,
+        referenceSetHash: qaRun?.referenceSetHash ?? null,
+        draftAssetPackHash: qaRun?.draftAssetPackHash ?? null,
       },
     };
     const releasePlacementManifest = {
@@ -542,14 +311,48 @@ export async function proposeCharacterRelease(input: {
     };
     const snapshot = {
       projectId: project.id,
-      revisionId: revision!.id,
-      characterContentVersionId: revision!.characterContentVersionId,
-      visualProfileId: profile!.id,
-      visualProfileVersion: profile!.version,
-      referenceSetRevisionId: referenceSet!.id,
+      revisionId: revision?.id ?? null,
+      characterContentVersionId: revision?.characterContentVersionId ?? null,
+      visualProfileId: profile?.id ?? null,
+      visualProfileVersion: profile?.version ?? null,
+      referenceSetRevisionId: referenceSet?.id ?? null,
       generationProvenance,
       releasePlacementManifest,
     };
+    const snapshotHash = characterReleaseSnapshotHash(snapshot);
+    const evaluation = await evaluateCharacterReleaseSnapshot(
+      tx,
+      {
+        ...snapshot,
+        snapshotHash,
+        legacy: false,
+        rollbackOfReleaseId: null,
+        liveQaAuthority: {
+          projectVersion: project.version,
+          draftAssetPackHash: canonicalSha256(project.draftAssetPack),
+        },
+      },
+      CHARACTER_RELEASE_POLICY_VERSION,
+      new Date(),
+    );
+    // §3.2：草稿包权威回答的是另一个问题 ——「活的草稿包此刻还自洽吗」。它比 manifest 侧那道闸
+    // 更严（source_image 分区、workflow 槽位能力、来源图评审血缘），而发布后 manifest 已不可变，
+    // 这个问题不再存在。所以它留在提案侧，不并进规则引擎。
+    const blockers = [
+      ...characterReleaseProposalBlockers(evaluation.failed),
+      ...(draftAssetEntries.length !== 3 ||
+        selectedEntries.length !== 3 ||
+        exactDraftAssetPackAuthority?.ready !== true
+        ? ["approved_asset_pack_incomplete"]
+        : []),
+      ...((exactDraftAssetPackAuthority?.invalidAssetPurposes.length ?? 0) > 0
+        ? ["approved_asset_pack_invalid"]
+        : []),
+      ...((exactDraftAssetPackAuthority?.invalidLineagePurposes.length ?? 0) > 0
+        ? ["approved_asset_pack_lineage_invalid"]
+        : []),
+    ];
+    if (blockers.length > 0) throw Errors.conflict("Character is not ready to propose a Release", { blockers });
     await transitionCharacterProject(tx, {
       projectId: project.id,
       to: "qa",
@@ -560,9 +363,12 @@ export async function proposeCharacterRelease(input: {
     });
     const release = await tx.characterRelease.create({ data: {
       ...snapshot,
+      // revision_is_immutable_and_pinned 已通过，revision 必然存在。
+      revisionId: revision!.id,
+      characterContentVersionId: revision!.characterContentVersionId,
       generationProvenance: toInputJson(generationProvenance),
       releasePlacementManifest: toInputJson(releasePlacementManifest),
-      snapshotHash: characterReleaseSnapshotHash(snapshot),
+      snapshotHash,
       status: "in_review",
       readiness: "unknown",
     } });

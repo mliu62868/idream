@@ -234,6 +234,16 @@ const characterSoulDistinctivenessSchema = z.object({
   }
 });
 
+// SPEC: 产出行为/区分度证据的评测器身份。Release 门禁按它比对，升版后旧证据自动失效。
+// INTENT: 这两个字面量此前只活在 soul-evaluation.ts 里，各写两遍（evidenceRef 的哈希输入 +
+// 字段本身），且没有任何一处与门禁对账 —— 换评测器既不会让旧证据失效，也没有编译期约束保证
+// 那两份拷贝一致。收成常量后写入端与门禁引用同一个条目（对照 suiteVersion 的 z.literal 与
+// GENERATION_ROUTE_EVALUATOR_VERSION 的既有比较写法）。
+export const characterSoulBehaviorEvaluatorVersion = "character-soul-evaluator-4";
+
+export const characterSoulDistinctivenessEvaluatorVersion =
+  "character-soul-distinctiveness-evaluator-4";
+
 export const characterSoulBehaviorEvaluationSchema = z.object({
   suiteVersion: z.literal("character-soul-behavior-1"),
   evaluatorVersion: z.string().trim().min(1).max(200),
