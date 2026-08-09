@@ -13,6 +13,7 @@ import {
   type CharacterReleaseCreationState,
 } from "../shared/state-transition-authority";
 import { lockCharacterGenerationAuthority } from "./generation-authority-lock";
+import { projectServingToCharacter } from "./serving-projection";
 import { PUBLIC_CATALOG_QUALIFICATION_SCHEMA_VERSION } from "@/server/modules/ourdream/public-catalog-qualification";
 import { evaluateEditorialReleaseAuthorityInTransaction } from "@/server/modules/ourdream/public-release-authority";
 import {
@@ -576,14 +577,11 @@ async function publishRelease(
       true,
     );
   }
-  await tx.character.update({
-    where: { id: characterId },
-    data: {
-      ...releasedCharacterProjection(validation.content!),
-      status: "approved",
-      visibility: "public",
-      imageAssetId: validation.avatarAssetId,
-    },
+  await projectServingToCharacter(tx, {
+    characterId,
+    state: "live",
+    avatarAssetId: validation.avatarAssetId,
+    content: releasedCharacterProjection(validation.content!),
   });
   // Keep the write order compatible with databases that still have the
   // original statement-time qualification trigger: the Release assets and
@@ -950,15 +948,10 @@ async function executeServingState(
         : {}),
     },
   });
-  await tx.character.update({
-    where: { id: command.targetId },
-    data: pausing || retiring
-      ? { status: "archived", visibility: "private" }
-      : {
-          status: "approved",
-          visibility: "public",
-          imageAssetId: resumeAssetId,
-        },
+  await projectServingToCharacter(tx, {
+    characterId: command.targetId,
+    state: nextState,
+    ...(pausing || retiring ? {} : { avatarAssetId: resumeAssetId }),
   });
   if (retiring) {
     await transitionCharacterProject(tx, {

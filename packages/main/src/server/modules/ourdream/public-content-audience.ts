@@ -161,9 +161,14 @@ const publicCurrentReleaseWhere = {
   ],
 } as const satisfies Prisma.CharacterReleaseWhereInput;
 
+// SPEC: 「谁能看到这个角色」的唯一答案。
+// INVARIANT: age >= 18 属于这个答案本身，不是调用方的附加条款。此前它不在谓词里，于是每个读路径
+// 都得自己记得 AND 一次 —— 记得的只有一处，其余全靠 rawPublicCharacterWhere 的 status/visibility
+// 间接兜底。这条只许收紧、不许放宽。
 export const publicCharacterAudienceWhere = {
   AND: [
     rawPublicCharacterWhere,
+    { age: { gte: 18 } },
     {
       OR: [
         { source: "official" },
