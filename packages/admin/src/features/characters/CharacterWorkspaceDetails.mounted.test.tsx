@@ -21,6 +21,21 @@ import { CharacterWorkspace } from "./CharacterWorkspace";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
 
+// INTENT: 一次 0ms flush 在机器忙的时候接不住「加载 -> 投影 -> 重渲染」这条链，
+//         等到条件成立为止才是稳的。
+async function waitUntil(predicate: () => boolean, label: string) {
+  const deadline = Date.now() + 2_000;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${label}`);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+}
+
+const VOICE_DEFAULTS_READ_ONLY =
+  "Read-only: generation.config.write is required to change system voice defaults.";
+
 const permissions = new Set<AdminPermissionKey>([
   "character.project.read",
   "character.release.read",
@@ -125,12 +140,9 @@ describe("Character workspace details", () => {
         </AdminI18nProvider>,
       );
     });
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-
-    expect(container.textContent).toContain(
-      "Read-only: generation.config.write is required to change system voice defaults.",
+    await waitUntil(
+      () => container.textContent?.includes(VOICE_DEFAULTS_READ_ONLY) === true,
+      "the locked system voice defaults notice",
     );
   });
 
@@ -152,12 +164,11 @@ describe("Character workspace details", () => {
         </AdminI18nProvider>,
       );
     });
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-
-    expect(container.textContent).not.toContain(
-      "Read-only: generation.config.write is required to change system voice defaults.",
+    await waitUntil(
+      () => container.textContent?.includes("System voice defaults") === true,
+      "the system voice defaults panel",
     );
+
+    expect(container.textContent).not.toContain(VOICE_DEFAULTS_READ_ONLY);
   });
 });

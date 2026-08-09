@@ -4,6 +4,7 @@ import {
   type AdminCommandStatus,
 } from "@idream/shared/admin";
 import { AdminV2RequestError, adminV2Request } from "@/lib/admin-v2-api";
+import { adminV2OperationEndpoint } from "@/lib/admin-v2-operation";
 
 /**
  * SPEC: 角色运营台一条**异步 durable command** 的完整可靠性协议 —— 幂等身份、落盘意图、
@@ -833,7 +834,9 @@ export function createCharacterCommandJournal(options: {
     async pollStatus(target) {
       try {
         const status = await request<AdminCommandStatus>(
-          `/api/v2/admin/commands/${encodeURIComponent(target.commandId!)}`,
+          adminV2OperationEndpoint("GET /api/v2/admin/commands/:commandId", {
+            commandId: target.commandId!,
+          }),
           { schema: adminCommandStatusSchema },
         );
         if (!["failed", "cancelled", "succeeded"].includes(status.status)) {

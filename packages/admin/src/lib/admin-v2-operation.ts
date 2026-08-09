@@ -86,7 +86,8 @@ export function adminV2OperationAllowed(
   id: AdminV2DeclaredOperationId,
   permissions: ReadonlySet<AdminPermissionKey>,
 ): boolean {
-  const { authorization } = ADMIN_V2_API_OPERATIONS_BY_ID[id] as AdminV2ApiOperation;
+  const operation: AdminV2ApiOperation = ADMIN_V2_API_OPERATIONS_BY_ID[id];
+  const { authorization } = operation;
   if (authorization.kind === "bootstrap") return true;
   if (authorization.kind === "all_of") {
     return authorization.permissions.every((permission) => permissions.has(permission));
