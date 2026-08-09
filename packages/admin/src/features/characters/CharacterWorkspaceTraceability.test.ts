@@ -237,7 +237,7 @@ describe("Character workspace traceability", () => {
   });
 
   it("renders pinned release lineage evidence", () => {
-    const source = readFileSync(new URL("./CharacterWorkspace.tsx", import.meta.url), "utf8");
+    const source = readFileSync(new URL("./ReleasePanel.tsx", import.meta.url), "utf8");
 
     expect(source).toContain('t("Technical evidence")');
     expect(source).toContain('t("Current live release")');

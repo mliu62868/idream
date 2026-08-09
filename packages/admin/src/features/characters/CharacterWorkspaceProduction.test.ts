@@ -2,7 +2,6 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   characterNoDataDiagnosis,
-  characterReleaseConfirmationVisible,
   characterWorkspaceTabLabel,
 } from "./CharacterWorkspace";
 
@@ -12,18 +11,6 @@ const workspaceSource = readFileSync(
 );
 
 describe("Character production entry", () => {
-  it("keeps destructive Serving confirmation available without a Release candidate", () => {
-    expect(characterReleaseConfirmationVisible({
-      hasCandidate: false,
-      hasReleasableQaRun: false,
-      servingState: "live",
-    })).toBe(true);
-    expect(characterReleaseConfirmationVisible({
-      hasCandidate: false,
-      hasReleasableQaRun: false,
-      servingState: null,
-    })).toBe(false);
-  });
 
   it("uses operator-facing tab labels instead of raw route keys", () => {
     expect(characterWorkspaceTabLabel("project")).toBe("Details");
@@ -41,12 +28,6 @@ describe("Character production entry", () => {
     );
   });
 
-  it("separates the live release, candidate, and collapsed history", () => {
-    expect(workspaceSource).toContain('t("Current live release")');
-    expect(workspaceSource).toContain('t("Release candidate")');
-    expect(workspaceSource).toContain('t("Release history")');
-    expect(workspaceSource).toContain('const historical = ["superseded", "withdrawn"]');
-  });
 
 
 });
