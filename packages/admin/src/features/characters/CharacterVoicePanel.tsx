@@ -41,12 +41,21 @@ export function CharacterVoicePanel({
   canActivate,
   canManageDefaults,
   runCommittedMutation,
+  takeIdempotencyKey,
+  releaseIdempotencyKey,
 }: {
   data: CharacterWorkspaceDetail;
   canWrite: boolean;
   canActivate: boolean;
   canManageDefaults: boolean;
   runCommittedMutation: RunCommittedMutation;
+  /**
+   * SPEC: 同一个业务签名跨刷新拿到同一个幂等键；写入落地后由 afterRefresh 释放。
+   * INTENT: 这四处原本每次点击现开一个 crypto.randomUUID()，于是一次网络抖动后的重试就是
+   *         第二次真实写入 —— 声音克隆会重复扣费，激活/重置会重复改线上音色。
+   */
+  takeIdempotencyKey: (signature: string) => string;
+  releaseIdempotencyKey: (signature: string) => void;
 }) {
   const { t, locale } = useAdminI18n();
   const fileInput = useRef<HTMLInputElement>(null);
@@ -132,16 +141,25 @@ export function CharacterVoicePanel({
     form.set("sampleText", sampleText.trim());
     form.set("delivery", JSON.stringify(cloneDelivery));
     form.set("reason", reason.trim());
+    const signature = `voice-clone:${data.character.id}:${JSON.stringify({
+      audio: [file.name, file.size, file.lastModified],
+      language: data.voice.runtimeLanguage,
+      referenceText: referenceText.trim(),
+      sampleText: sampleText.trim(),
+      delivery: cloneDelivery,
+      reason: reason.trim(),
+    })}`;
     try {
       const mutation = await runCommittedMutation({
         action: "Fish Audio voice clone",
         commit: () =>
           adminV2Operation("POST /api/v2/admin/characters/:id/voice-clones", {
             path: { id: data.character.id },
-            idempotencyKey: crypto.randomUUID(),
+            idempotencyKey: takeIdempotencyKey(signature),
             form,
           }),
         afterRefresh: () => {
+          releaseIdempotencyKey(signature);
           setFile(null);
           setReferenceText("");
           setReason("");
@@ -165,6 +183,12 @@ export function CharacterVoicePanel({
     setBusy(true);
     setError(null);
     setMessage(null);
+    const body = {
+      reason: activationReason.trim(),
+      expectedActiveProfileId: active?.id ?? null,
+      expectedCurrentVoiceId: data.voice.currentVoiceId,
+    };
+    const signature = `voice-activate:${data.character.id}:${candidate.id}:${JSON.stringify(body)}`;
     try {
       const mutation = await runCommittedMutation({
         action: "Activate Fish Audio voice",
@@ -173,15 +197,14 @@ export function CharacterVoicePanel({
             "POST /api/v2/admin/characters/:id/voice-clones/:profileId/activate",
             {
               path: { id: data.character.id, profileId: candidate.id },
-              idempotencyKey: crypto.randomUUID(),
-              body: {
-                reason: activationReason.trim(),
-                expectedActiveProfileId: active?.id ?? null,
-                expectedCurrentVoiceId: data.voice.currentVoiceId,
-              },
+              idempotencyKey: takeIdempotencyKey(signature),
+              body,
             },
           ),
-        afterRefresh: () => setActivationReason(""),
+        afterRefresh: () => {
+          releaseIdempotencyKey(signature);
+          setActivationReason("");
+        },
       });
       setMessage(
         mutation.result.replayed
@@ -202,21 +225,24 @@ export function CharacterVoicePanel({
     setBusy(true);
     setError(null);
     setMessage(null);
+    const body = {
+      expectedVersion: data.voice.systemDefaults.settingVersion,
+      defaultVoiceId: defaultDraft.defaultVoiceId,
+      genderVoiceIds: defaultDraft.genderVoiceIds,
+      delivery: defaultDraft.delivery,
+      reason: defaultReason.trim(),
+    };
+    const signature = `voice-system-defaults:${JSON.stringify(body)}`;
     try {
       const mutation = await runCommittedMutation({
         action: "Update system voice defaults",
         commit: () =>
           adminV2Operation("PUT /api/v2/admin/voice-defaults", {
-            idempotencyKey: crypto.randomUUID(),
-            body: {
-              expectedVersion: data.voice.systemDefaults.settingVersion,
-              defaultVoiceId: defaultDraft.defaultVoiceId,
-              genderVoiceIds: defaultDraft.genderVoiceIds,
-              delivery: defaultDraft.delivery,
-              reason: defaultReason.trim(),
-            },
+            idempotencyKey: takeIdempotencyKey(signature),
+            body,
           }),
         afterRefresh: () => {
+          releaseIdempotencyKey(signature);
           setDefaultReason("");
           setDefaultDraftOverride(null);
         },
@@ -248,6 +274,12 @@ export function CharacterVoicePanel({
     setBusy(true);
     setError(null);
     setMessage(null);
+    const body = {
+      reason: resetReason.trim(),
+      expectedActiveProfileId: active?.id ?? null,
+      expectedCurrentVoiceId: data.voice.currentVoiceId,
+    };
+    const signature = `voice-reset:${data.character.id}:${JSON.stringify(body)}`;
     try {
       const mutation = await runCommittedMutation({
         action: "Reset character voice to system default",
@@ -256,15 +288,14 @@ export function CharacterVoicePanel({
             "POST /api/v2/admin/characters/:id/voice-defaults/reset",
             {
               path: { id: data.character.id },
-              idempotencyKey: crypto.randomUUID(),
-              body: {
-                reason: resetReason.trim(),
-                expectedActiveProfileId: active?.id ?? null,
-                expectedCurrentVoiceId: data.voice.currentVoiceId,
-              },
+              idempotencyKey: takeIdempotencyKey(signature),
+              body,
             },
           ),
-        afterRefresh: () => setResetReason(""),
+        afterRefresh: () => {
+          releaseIdempotencyKey(signature);
+          setResetReason("");
+        },
       });
       setMessage(
         mutation.result.replayed

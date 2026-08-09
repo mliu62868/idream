@@ -4,8 +4,8 @@ import type { AdminPermissionKey } from "@idream/shared/admin";
 import {
   CharacterPerformanceWorkspace,
   CharacterWorkspace,
-  qaRunMatchesCurrentWorkspaceAuthority,
 } from "./characters/CharacterWorkspace";
+import { qaRunMatchesCurrentWorkspaceAuthority } from "./characters/character-qa-authority";
 import { CreativeRunWorkspace } from "./creative/CreativeRunWorkspace";
 import { parseAdminPath } from "@/components/admin/nav-config";
 

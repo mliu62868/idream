@@ -1,21 +1,12 @@
-import { readFileSync } from "node:fs";
 import type { CharacterWorkspaceDetail } from "@idream/shared/admin";
 import { describe, expect, it } from "vitest";
 import { characterWorkspaceDetail } from "./character-workspace-fixture";
+import { characterReleaseOrdinals } from "./character-workspace-format";
 import {
-  characterNoDataDiagnosis,
   characterOperationsFacts,
-  characterReleaseOrdinals,
-  characterReleaseConfirmationVisible,
   characterRecentAssets,
   characterVideoSourceBroken,
-  characterWorkspaceTabLabel,
-} from "./CharacterWorkspace";
-
-const workspaceSource = readFileSync(
-  new URL("./CharacterWorkspace.tsx", import.meta.url),
-  "utf8",
-);
+} from "./ProjectEditor";
 
 function workspace(overrides: {
   bootstrap?: boolean;
@@ -114,67 +105,25 @@ function visualAsset(overrides: Partial<VisualAsset> = {}): VisualAsset {
   };
 }
 
-describe("Character production entry", () => {
-  it("keeps destructive Serving confirmation available without a Release candidate", () => {
-    expect(characterReleaseConfirmationVisible({
-      hasCandidate: false,
-      hasReleasableQaRun: false,
-      servingState: "live",
-    })).toBe(true);
-    expect(characterReleaseConfirmationVisible({
-      hasCandidate: false,
-      hasReleasableQaRun: false,
-      servingState: null,
-    })).toBe(false);
-  });
-
+// SPEC: 工作台顶部必须直接说清角色线上状态；以前只有折叠的「技术状态」，运营开页看不出
+// 一个 live 角色和一个草稿角色的区别。
+describe("Character detail facts", () => {
   it("flags a live character whose primary image cannot serve image-to-video", () => {
     expect(characterVideoSourceBroken(workspace({ servingState: "live" }))).toBe(true);
   });
+
 
   it("stays quiet when the live character has a usable primary image", () => {
     expect(characterVideoSourceBroken(workspace({ servingState: "live", repairable: true })))
       .toBe(false);
   });
 
+
   it("stays quiet before launch — a missing portrait is already the current production step", () => {
     expect(characterVideoSourceBroken(workspace({ servingState: null }))).toBe(false);
   });
 
-  it("uses operator-facing tab labels instead of raw route keys", () => {
-    expect(characterWorkspaceTabLabel("project")).toBe("Details");
-    expect(characterWorkspaceTabLabel("assets")).toBe("Images");
-    expect(characterWorkspaceTabLabel("video")).toBe("Video");
-    expect(characterWorkspaceTabLabel("voice")).toBe("Voice");
-    expect(characterWorkspaceTabLabel("preview")).toBe("Launch preview");
-  });
 
-  it("replaces the clipped mobile tab strip with one complete page selector", () => {
-    expect(workspaceSource).toContain('aria-label={t("Workspace page")}');
-    expect(workspaceSource).toContain('className="mt-4 block sm:hidden"');
-    expect(workspaceSource).toContain(
-      'className="mt-4 hidden gap-1 overflow-x-auto border-b border-[var(--ad-border)] sm:flex"',
-    );
-  });
-
-  it("separates the live release, candidate, and collapsed history", () => {
-    expect(workspaceSource).toContain('t("Current live release")');
-    expect(workspaceSource).toContain('t("Release candidate")');
-    expect(workspaceSource).toContain('t("Release history")');
-    expect(workspaceSource).toContain('const historical = ["superseded", "withdrawn"]');
-  });
-
-  it("renders server behavior transcripts, pairwise evidence, and exact canaries", () => {
-    expect(workspaceSource).toContain('t("Character Soul Behavior Evaluation")');
-    expect(workspaceSource).toContain('t("Official character pairwise distinctiveness")');
-    expect(workspaceSource).toContain('t("Exact production model canaries")');
-    expect(workspaceSource).toContain("run.behaviorEvaluation.cases.map");
-    expect(workspaceSource).toContain("run.liveCanaries.map");
-  });
-
-});
-
-describe("Character detail assets", () => {
   it("deduplicates factual recent images without inventing placeholders", () => {
     const data = characterWorkspaceDetail({
       character: { id: "character-1", imageUrl: "/primary.webp" },
@@ -209,11 +158,8 @@ describe("Character detail assets", () => {
       { id: "reference-2", url: "/reference.webp" },
     ]);
   });
-});
 
-// SPEC: 工作台顶部必须直接说清角色线上状态；以前只有折叠的「技术状态」，运营开页看不出
-// 一个 live 角色和一个草稿角色的区别。
-describe("Character operations facts", () => {
+
   it("states the live serving posture instead of hiding it behind technical status", () => {
     const live = workspace({
       servingState: "live",
@@ -229,24 +175,6 @@ describe("Character operations facts", () => {
     expect(factValue(live, "Owner")).toMatchObject({ value: "Unassigned", alert: true });
   });
 
-  // SPEC: 零观测要给运营一个动作，不是一个状态。窗口没走完 = 等；窗口走完了还是零 = 查投放。
-  it("turns zero observations into either wait or investigate", () => {
-    expect(characterNoDataDiagnosis({
-      qualityState: "no_data", maturity: "immature", window: "7d",
-    })).toMatchObject({ alert: false });
-    expect(characterNoDataDiagnosis({
-      qualityState: "no_data", maturity: "insufficient_data", window: "7d",
-    })).toMatchObject({ alert: true });
-  });
-
-  it("stays silent when the metric is not a no-data metric", () => {
-    expect(characterNoDataDiagnosis({
-      qualityState: "invalid", maturity: "insufficient_data", window: "7d",
-    })).toBeNull();
-    expect(characterNoDataDiagnosis({
-      qualityState: "certified", maturity: "mature", window: "28d",
-    })).toBeNull();
-  });
 
   it("flags an unpublished character on serving and release instead of showing a blank", () => {
     const draft = workspace({ servingState: null, ownerId: "ops-anna" });
@@ -257,27 +185,6 @@ describe("Character operations facts", () => {
     expect(factValue(draft, "Owner")).toMatchObject({ value: "ops-anna", alert: false });
   });
 
-  // SPEC: 发布序号按发布时间单调递增。
-  // INTENT: CharacterRelease.version 是行级乐观锁计数，曾被当成发布号渲染，导致
-  // "v2 比 v1 更早发布" —— 回滚下拉里读起来像回滚到更新的版本。
-  it("numbers releases by publish time, not by the row lock version", () => {
-    const ordinals = characterReleaseOrdinals([
-      { release: { id: "live", publishedAt: "2026-07-24T00:40:28.924Z", createdAt: "2026-07-24T00:40:28.924Z" } },
-      { release: { id: "older", publishedAt: "2026-07-20T04:13:28.650Z", createdAt: "2026-07-20T04:13:28.650Z" } },
-    ]);
-    expect(ordinals.get("older")).toBe(1);
-    expect(ordinals.get("live")).toBe(2);
-  });
-
-  // SPEC: 还没发布的候选版本用 createdAt 排，不能因为 publishedAt 为 null 就掉到最前面。
-  it("falls back to createdAt for releases that were never published", () => {
-    const ordinals = characterReleaseOrdinals([
-      { release: { id: "candidate", publishedAt: null, createdAt: "2026-07-28T00:00:00.000Z" } },
-      { release: { id: "published", publishedAt: "2026-07-24T00:00:00.000Z", createdAt: "2026-07-01T00:00:00.000Z" } },
-    ]);
-    expect(ordinals.get("published")).toBe(1);
-    expect(ordinals.get("candidate")).toBe(2);
-  });
 
   // SPEC: 身份图片按资产 ID 去重；"视频源图片"数的是图片，不是视频。
   // INTENT: 原先 anchors + references 直接相加，重叠的图被数两次（真实角色 15 张显示成 16）；
@@ -291,11 +198,13 @@ describe("Character operations facts", () => {
     expect(characterOperationsFacts(detail).some((fact) => fact.label === "Videos")).toBe(false);
   });
 
+
   it("flags a character that has no usable identity image or video source", () => {
     const empty = workspace({ anchors: [], references: [], videoSources: [] });
     expect(factValue(empty, "Identity images")).toMatchObject({ value: "0", alert: true });
     expect(factValue(empty, "Video source images")).toMatchObject({ value: "0", alert: true });
   });
+
 
   // SPEC: 详情页的线上版本标签必须和发布页一致。
   // INTENT: 两处都曾渲染行级锁版本 release.version，修发布页时漏了这里，

@@ -139,6 +139,83 @@ export type CharacterCommandAuthoritySnapshot = {
   readonly activeCommand: AdminCommandStatus | null;
 };
 
+/**
+ * SPEC: 恢复循环推进一轮之后的处置。协议出口（重放 7 种 + 轮询 5 种）在这里塌成运营看得懂的
+ *       终局，`reconcile` 与 `evidence_missing` 各自分成「对账清干净了」和「仍然锁着」两支。
+ */
+export type CharacterCommandRecoveryDisposition =
+  | "accepted"
+  | "attached"
+  | "window_expired"
+  | "evidence_incomplete"
+  | "replay_blocked"
+  | "replay_reconciled"
+  | "replay_unreconciled"
+  | "replay_retrying"
+  | "succeeded"
+  | "failed"
+  | "evidence_missing_cleared"
+  | "evidence_missing_locked"
+  | "status_blocked"
+  | "status_unavailable"
+  | "running";
+
+/**
+ * SPEC: 每一个处置对应的一句运营文案。
+ * INVARIANT: 这张表只决定**措辞**。能不能重放、该不该解锁、等多久，全部在 journal 里定死——
+ *            改错这里的任何一句都改不动写入锁的行为；反过来，漏接一支只会让运营看不到发生了什么。
+ */
+export type CharacterCommandRecoveryCopy = {
+  readonly attached: (input: { readonly action: string }) => string;
+  readonly windowExpired: (input: { readonly action: string }) => string;
+  readonly evidenceIncomplete: (input: { readonly action: string }) => string;
+  readonly replayBlocked: (input: { readonly action: string }) => string;
+  readonly replayUnreconciled: (input: { readonly action: string }) => string;
+  readonly replayReconciled: (input: {
+    readonly action: string;
+    readonly cause: unknown;
+  }) => string;
+  readonly replayRetrying: (input: {
+    readonly action: string;
+    readonly cause: unknown;
+  }) => string;
+  readonly commandFailed: (input: {
+    readonly action: string;
+    readonly status: string;
+  }) => string;
+  readonly evidenceMissingCleared: (input: { readonly action: string }) => string;
+  readonly evidenceMissingLocked: (input: { readonly action: string }) => string;
+  readonly statusBlocked: (input: { readonly action: string }) => string;
+  readonly statusUnavailable: (input: {
+    readonly action: string;
+    readonly cause: unknown;
+  }) => string;
+  /** 与服务端对账期间挂出的通知（不是旁注），按触发它的出口分三句。 */
+  readonly reconcileNotice: (input: {
+    readonly action: string;
+    readonly reason:
+      | "evidence_incomplete"
+      | "replay_rejected"
+      | "evidence_missing"
+      | "cross_tab_cleared";
+  }) => string;
+  /** 对账发现服务端仍有命令活着。 */
+  readonly reconcileStillActive: (input: { readonly action: string }) => string;
+  /** 对账本身读不到权威投影。 */
+  readonly reconcileFailed: (input: {
+    readonly action: string;
+    readonly cause: unknown;
+  }) => string;
+};
+
+export type CharacterCommandRecoveryOutcome = {
+  readonly disposition: CharacterCommandRecoveryDisposition;
+  /** 本轮结束后挂在运营面前的那句话；journal 已经应用过了。 */
+  readonly message: string | null;
+  /** 交回调度器的下一轮间隔；null = 这条命令不需要再轮询。 */
+  readonly retryInMs: number | null;
+};
+
 export type CharacterMutationRefreshResult<
   T extends CharacterCommandAuthoritySnapshot,
 > =
@@ -466,6 +543,47 @@ export type CharacterCommandJournal = {
     command: PendingCharacterCommand,
   ) => number;
 
+  /**
+   * SPEC: 把一条待决命令往前推一轮 —— 重放或轮询、必要时与服务端对账、该解锁就解锁，
+   *       最后按调用方给的文案表挂出一句话。
+   * INTENT: 这段回路曾是调用方里 110 行 12 分支的 switch，每一支都要自己记得「哪些出口
+   *         允许解锁、哪些必须继续锁、哪些要先跟服务端对账」。措辞留给调用方（`copy`），
+   *         安全语义收在这里，于是改文案改不坏写入锁，而漏接一支只会少一句提示。
+   */
+  /**
+   * SPEC: 让服务端权威证明「这条命令已经不活着了」，据此解锁或继续锁定。
+   * INTENT: 恢复循环内部要用它，跨标签页清空日志时调用方也要用它——两处走同一份实现，
+   *         「哪些情况允许解锁」不会因为入口不同而分叉。
+   */
+  readonly reconcileAuthority: <T extends CharacterCommandAuthoritySnapshot>(input: {
+    readonly command: PendingCharacterCommand;
+    readonly copy: CharacterCommandRecoveryCopy;
+    readonly reason: Parameters<
+      CharacterCommandRecoveryCopy["reconcileNotice"]
+    >[0]["reason"];
+    readonly load: () => Promise<T>;
+    readonly clearLoadError?: () => void;
+  }) => Promise<boolean>;
+
+  readonly recover: <T extends CharacterCommandAuthoritySnapshot>(input: {
+    readonly command: PendingCharacterCommand;
+    readonly copy: CharacterCommandRecoveryCopy;
+    /** 读一份权威投影。 */
+    readonly load: () => Promise<T>;
+    /** 把一条已终结的命令收口到权威投影；失败时由调用方挂出 refresh_required 通知。 */
+    readonly settle: (input: {
+      readonly action: string;
+      readonly commandId: string;
+      readonly onSettled: () => void;
+    }) => Promise<unknown>;
+    /**
+     * 对账读不到权威投影时，收起调用方自己的加载错误。
+     * INTENT: 同一件事只说一遍——journal 接下来会挂出 refresh_required 通知，红色报错留在
+     *         屏幕上只会让运营以为出了两个问题。
+     */
+    readonly clearLoadError?: () => void;
+  }) => Promise<CharacterCommandRecoveryOutcome>;
+
   /** 服务端权威说这条命令还活着：日志改挂到它上面。 */
   readonly attachAuthorityCommand: (
     active: AdminCommandStatus,
@@ -750,6 +868,146 @@ export function createCharacterCommandJournal(options: {
     return true;
   };
 
+  const setRecoveryError = (message: string | null) => {
+    recoveryError = message;
+    publish();
+  };
+
+  const currentCommandIs = (target: PendingCharacterCommand) =>
+    command !== null && isSamePendingCharacterCommand(command, target);
+
+  const replay = async (
+    target: PendingCharacterCommand,
+  ): Promise<CharacterCommandReplay> => {
+    if (!characterCommandJournalCanAutoReplay(target, now())) {
+      notice = {
+        kind: "command_reconfirmation_required",
+        message: `${target.action} was saved before acceptance could be proven, but the automatic replay window expired. Review the action and explicitly resume it; no old command will run automatically.`,
+      };
+      publish();
+      return { kind: "window_expired" };
+    }
+    if (!target.endpoint || target.body === undefined || !target.idempotencyKey) {
+      markTerminal(target);
+      return { kind: "evidence_incomplete" };
+    }
+    const sent = await sendCommand(target);
+    if (sent.kind !== "failed") return sent;
+    const disposition = characterCommandReplayFailureDisposition(
+      sent.cause instanceof AdminV2RequestError ? sent.cause.status : null,
+    );
+    if (disposition === "keep_locked") {
+      return {
+        kind: "blocked",
+        cause: sent.cause,
+        retryInMs: COMMAND_BLOCKED_RETRY_MS,
+      };
+    }
+    if (disposition === "reconcile") {
+      return { kind: "reconcile", cause: sent.cause };
+    }
+    return {
+      kind: "retry",
+      cause: sent.cause,
+      retryInMs: COMMAND_REPLAY_RETRY_MS,
+    };
+  };
+
+  const pollStatus = async (
+    target: PendingCharacterCommand,
+  ): Promise<CharacterCommandStatusOutcome> => {
+    try {
+      const status = await request<AdminCommandStatus>(
+        adminV2OperationEndpoint("GET /api/v2/admin/commands/:commandId", {
+          commandId: target.commandId!,
+        }),
+        { schema: adminCommandStatusSchema },
+      );
+      if (!["failed", "cancelled", "succeeded"].includes(status.status)) {
+        return { kind: "running", retryInMs: COMMAND_STATUS_POLL_MS };
+      }
+      markTerminal(target);
+      return {
+        kind: "settled",
+        status: status.status,
+        succeeded: status.status === "succeeded",
+      };
+    } catch (cause) {
+      if (cause instanceof AdminV2RequestError && cause.status === 404) {
+        markTerminal(target);
+        return { kind: "evidence_missing" };
+      }
+      if (
+        cause instanceof AdminV2RequestError &&
+        [401, 403].includes(cause.status)
+      ) {
+        return {
+          kind: "blocked",
+          cause,
+          retryInMs: COMMAND_BLOCKED_RETRY_MS,
+        };
+      }
+      return { kind: "unavailable", cause, retryInMs: COMMAND_STATUS_POLL_MS };
+    }
+  };
+
+  /**
+   * SPEC: 让服务端权威回答「这条命令还活着吗」，据此解锁或继续锁定。
+   * INVARIANT: 跨每一次 await 都要重验代际与命令身份——期间日志可能已经被换成另一条命令，
+   *            拿旧命令的结论去解锁等于放行一次本不该发生的写入。
+   */
+  const reconcile = async <T extends CharacterCommandAuthoritySnapshot>(
+    target: PendingCharacterCommand,
+    copy: CharacterCommandRecoveryCopy,
+    reason: Parameters<CharacterCommandRecoveryCopy["reconcileNotice"]>[0]["reason"],
+    load: () => Promise<T>,
+    clearLoadError?: () => void,
+  ) => {
+    if (!currentCommandIs(target)) return false;
+    const reconcileGeneration = generation;
+    const withCommandId = target.commandId
+      ? { commandId: target.commandId }
+      : {};
+    notice = {
+      kind: "refresh_required",
+      message: copy.reconcileNotice({ action: target.action, reason }),
+      ...withCommandId,
+    };
+    publish();
+    try {
+      const authoritative = await load();
+      if (
+        generation !== reconcileGeneration ||
+        !currentCommandIs(target)
+      )
+        return false;
+      if (authoritative.activeCommand) {
+        const active = remember(
+          pendingCommandFromAuthority(authoritative.activeCommand),
+        );
+        setRecoveryError(copy.reconcileStillActive({ action: active.action }));
+        return false;
+      }
+      if (!discard(target)) return false;
+      setRecoveryError(null);
+      return true;
+    } catch (cause) {
+      if (
+        generation !== reconcileGeneration ||
+        !currentCommandIs(target)
+      )
+        return false;
+      clearLoadError?.();
+      notice = {
+        kind: "refresh_required",
+        message: copy.reconcileFailed({ action: target.action, cause }),
+        ...withCommandId,
+      };
+      publish();
+      return false;
+    }
+  };
+
   return {
     subscribe(listener) {
       listeners.add(listener);
@@ -797,73 +1055,126 @@ export function createCharacterCommandJournal(options: {
       }
       return { kind: "unknown", cause: sent.cause };
     },
-    async replay(target) {
-      if (!characterCommandJournalCanAutoReplay(target, now())) {
-        notice = {
-          kind: "command_reconfirmation_required",
-          message: `${target.action} was saved before acceptance could be proven, but the automatic replay window expired. Review the action and explicitly resume it; no old command will run automatically.`,
-        };
-        publish();
-        return { kind: "window_expired" };
-      }
-      if (!target.endpoint || target.body === undefined || !target.idempotencyKey) {
-        markTerminal(target);
-        return { kind: "evidence_incomplete" };
-      }
-      const sent = await sendCommand(target);
-      if (sent.kind !== "failed") return sent;
-      const disposition = characterCommandReplayFailureDisposition(
-        sent.cause instanceof AdminV2RequestError ? sent.cause.status : null,
-      );
-      if (disposition === "keep_locked") {
-        return {
-          kind: "blocked",
-          cause: sent.cause,
-          retryInMs: COMMAND_BLOCKED_RETRY_MS,
-        };
-      }
-      if (disposition === "reconcile") {
-        return { kind: "reconcile", cause: sent.cause };
-      }
-      return {
-        kind: "retry",
-        cause: sent.cause,
-        retryInMs: COMMAND_REPLAY_RETRY_MS,
-      };
-    },
-    async pollStatus(target) {
-      try {
-        const status = await request<AdminCommandStatus>(
-          adminV2OperationEndpoint("GET /api/v2/admin/commands/:commandId", {
-            commandId: target.commandId!,
-          }),
-          { schema: adminCommandStatusSchema },
-        );
-        if (!["failed", "cancelled", "succeeded"].includes(status.status)) {
-          return { kind: "running", retryInMs: COMMAND_STATUS_POLL_MS };
+    replay,
+    pollStatus,
+    reconcileAuthority: ({ command: target, copy, reason, load, clearLoadError }) =>
+      reconcile(target, copy, reason, load, clearLoadError),
+    async recover({ command: target, copy, load, settle, clearLoadError }) {
+      const settled = (
+        disposition: CharacterCommandRecoveryDisposition,
+        retryInMs: number | null = null,
+      ): CharacterCommandRecoveryOutcome => ({
+        disposition,
+        message: recoveryError,
+        retryInMs,
+      });
+
+      if (!target.commandId) {
+        const replayed = await replay(target);
+        switch (replayed.kind) {
+          case "accepted":
+            return settled("accepted");
+          case "attached":
+            setRecoveryError(copy.attached({ action: replayed.command.action }));
+            return settled("attached");
+          case "window_expired":
+            setRecoveryError(copy.windowExpired({ action: target.action }));
+            return settled("window_expired");
+          case "evidence_incomplete":
+            setRecoveryError(copy.evidenceIncomplete({ action: target.action }));
+            await reconcile(
+              target,
+              copy,
+              "evidence_incomplete",
+              load,
+              clearLoadError,
+            );
+            return settled("evidence_incomplete");
+          case "blocked":
+            setRecoveryError(copy.replayBlocked({ action: target.action }));
+            return settled("replay_blocked", replayed.retryInMs);
+          case "reconcile": {
+            setRecoveryError(copy.replayUnreconciled({ action: target.action }));
+            const cleared = await reconcile(
+              target,
+              copy,
+              "replay_rejected",
+              load,
+              clearLoadError,
+            );
+            if (cleared) {
+              setRecoveryError(
+                copy.replayReconciled({
+                  action: target.action,
+                  cause: replayed.cause,
+                }),
+              );
+            }
+            return settled(cleared ? "replay_reconciled" : "replay_unreconciled");
+          }
+          case "retry":
+            setRecoveryError(
+              copy.replayRetrying({
+                action: target.action,
+                cause: replayed.cause,
+              }),
+            );
+            return settled("replay_retrying", replayed.retryInMs);
         }
-        markTerminal(target);
-        return {
-          kind: "settled",
-          status: status.status,
-          succeeded: status.status === "succeeded",
-        };
-      } catch (cause) {
-        if (cause instanceof AdminV2RequestError && cause.status === 404) {
-          markTerminal(target);
-          return { kind: "evidence_missing" };
+      }
+
+      const status = await pollStatus(target);
+      switch (status.kind) {
+        case "settled":
+          await settle({
+            action: status.succeeded
+              ? target.action
+              : `${target.action} ${status.status}`,
+            commandId: target.commandId,
+            onSettled: () => {
+              discard(target);
+            },
+          });
+          setRecoveryError(
+            status.succeeded
+              ? null
+              : copy.commandFailed({
+                  action: target.action,
+                  status: status.status,
+                }),
+          );
+          return settled(status.succeeded ? "succeeded" : "failed");
+        case "evidence_missing": {
+          const cleared = await reconcile(
+            target,
+            copy,
+            "evidence_missing",
+            load,
+            clearLoadError,
+          );
+          setRecoveryError(
+            cleared
+              ? copy.evidenceMissingCleared({ action: target.action })
+              : copy.evidenceMissingLocked({ action: target.action }),
+          );
+          return settled(
+            cleared ? "evidence_missing_cleared" : "evidence_missing_locked",
+          );
         }
-        if (
-          cause instanceof AdminV2RequestError &&
-          [401, 403].includes(cause.status)
-        ) {
-          return {
-            kind: "blocked",
-            cause,
-            retryInMs: COMMAND_BLOCKED_RETRY_MS,
-          };
-        }
-        return { kind: "unavailable", cause, retryInMs: COMMAND_STATUS_POLL_MS };
+        case "blocked":
+          setRecoveryError(copy.statusBlocked({ action: target.action }));
+          return settled("status_blocked", status.retryInMs);
+        case "unavailable":
+          setRecoveryError(
+            copy.statusUnavailable({
+              action: target.action,
+              cause: status.cause,
+            }),
+          );
+          return settled("status_unavailable", status.retryInMs);
+        case "running":
+          setRecoveryError(null);
+          return settled("running", status.retryInMs);
       }
     },
     initialRecoveryDelayMs: (target) =>
@@ -929,18 +1240,14 @@ export function createCharacterCommandJournal(options: {
       }
       return { status: "unlocked", projection };
     },
-    currentCommandIs: (target) =>
-      command !== null && isSamePendingCharacterCommand(command, target),
+    currentCommandIs,
     getGeneration: () => generation,
     isCurrentGeneration: (candidate) => generation === candidate,
     setNotice(next) {
       notice = next;
       publish();
     },
-    setRecoveryError(message) {
-      recoveryError = message;
-      publish();
-    },
+    setRecoveryError,
     takeIdempotencyKey,
     releaseIdempotencyKey,
   };

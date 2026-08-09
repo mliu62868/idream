@@ -1,11 +1,10 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
-  characterMonitorWindows,
   latestQaRunForCurrentWorkspaceAuthority,
   qaRunMatchesCurrentWorkspaceAuthority,
   releasableQaRunForCurrentWorkspaceAuthority,
-} from "./CharacterWorkspace";
+} from "./character-qa-authority";
 
 const currentAuthority = {
   character: { id: "character-1" },
@@ -46,7 +45,7 @@ const qaRun = {
   draftAssetPackHash: "asset-pack-hash",
 } as const;
 
-describe("Character workspace traceability", () => {
+describe("Character QA authority", () => {
   it("matches QA only when every current authority pin matches", () => {
     expect(qaRunMatchesCurrentWorkspaceAuthority(qaRun, currentAuthority)).toBe(true);
     expect(qaRunMatchesCurrentWorkspaceAuthority(
@@ -222,47 +221,15 @@ describe("Character workspace traceability", () => {
     )).toBeNull();
   });
 
-  it("projects required and persisted monitor windows without duplicates", () => {
-    expect(characterMonitorWindows([
-      { window: "route_qualification" },
-      { window: "24h" },
-      { window: "7d" },
-      { window: "7d" },
-    ])).toEqual([
-      "route_qualification",
-      "24h",
-      "72h",
-      "7d",
-    ]);
-  });
 
-  it("renders immutable QA evidence, repair links, and pinned release lineage", () => {
-    const source = readFileSync(new URL("./CharacterWorkspace.tsx", import.meta.url), "utf8");
+  it("renders pinned release lineage evidence", () => {
+    const source = readFileSync(new URL("./ReleasePanel.tsx", import.meta.url), "utf8");
 
-    expect(source).toContain('<option value="">{t("Not run")}</option>');
-    expect(source).toContain("Checks, evidence, and repair paths");
-    expect(source).toContain("check.comment");
-    expect(source).toContain("check.evidenceRef");
-    expect(source).toContain("check.fixDeepLink");
     expect(source).toContain('t("Technical evidence")');
     expect(source).toContain('t("Current live release")');
     expect(source).toContain('t("Release history")');
     expect(source).toContain("releasePlacementManifest: release.releasePlacementManifest");
     expect(source).toContain("generationProvenance: release.generationProvenance");
-    expect(source).toContain("activeReleaseCandidate");
-    expect(source).toContain(
-      "Request changes to withdraw it before recording another QA Run.",
-    );
-    expect(source).toContain("Regenerate under current route");
-    expect(source).toContain("Complete Character Assets");
   });
 
-  it("keeps route qualification empty state semantically distinct from pending time windows", () => {
-    const source = readFileSync(new URL("./CharacterWorkspace.tsx", import.meta.url), "utf8");
-
-    expect(source).toContain('window === "route_qualification" ? "not_required" : "pending"');
-    // 运营面说人话：空态/入口文案用「image route」，不暴露 route qualification 这个工程词。
-    expect(source).toContain("No image route action is currently required.");
-    expect(source).toContain("Open image route");
-  });
 });

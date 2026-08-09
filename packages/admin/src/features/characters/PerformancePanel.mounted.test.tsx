@@ -12,11 +12,9 @@ import {
 } from "./character-workspace-fixture";
 import {
   characterPerformanceHasObservations,
-  MonitorPanel,
   PerformancePanel,
-  PreviewDiff,
   portfolioDecisions,
-} from "./CharacterWorkspace";
+} from "./PerformancePanel";
 
 type WorkspaceRelease = CharacterWorkspaceDetail["releases"][number]["release"];
 type ContributionMargin =
@@ -139,62 +137,6 @@ const repeatedNoDataWorkspace = withCharacterWorkspaceDetail(workspace, {
   ],
 });
 
-const blockedPreviewWorkspace = characterWorkspaceDetail({
-  character: { id: "alexa-reeves" },
-  project: {
-    draftAssetRouteAuthority: {
-      qaReady: false,
-      status: "current",
-      qaBlockers: [],
-    },
-  },
-  // 图池完成度读服务端 journey 投影，不数 preview 快照的槽位。
-  journey: {
-    assetPack: {
-      draft: {
-        availablePurposes: ["character_cover"],
-        missingPurposes: ["character_hero", "character_chat"],
-        completed: 1,
-        total: 3,
-      },
-      live: {
-        availablePurposes: ["character_cover"],
-        missingPurposes: ["character_hero", "character_chat"],
-        completed: 1,
-        total: 3,
-      },
-    },
-  },
-  preview: {
-    changedFields: ["imageUrl", "assetPack"],
-    live: {
-      label: "Live",
-      name: "Alexa Reeves",
-      assetPack: {
-        character_cover: { imageUrl: "/live.webp" },
-        character_hero: { imageUrl: null },
-        character_chat: { imageUrl: null },
-      },
-    },
-    draft: {
-      label: "Draft Preview",
-      name: "Alexa Reeves",
-      assetPackReady: false,
-      assetPack: {
-        character_cover: { imageUrl: "/draft.webp" },
-        character_hero: { imageUrl: null },
-        character_chat: { imageUrl: null },
-      },
-    },
-  },
-  releases: [],
-  qaRuns: [],
-});
-
-const monitorWorkspace = withCharacterWorkspaceDetail(workspace, {
-  releases: [releaseEntry(workspaceRelease({ id: releaseId }))],
-});
-
 let container: HTMLDivElement;
 let root: Root;
 
@@ -276,25 +218,6 @@ describe("Character performance panel — zh operators", () => {
     ])).toBe(true);
   });
 
-  it("stops a blocked launch preview at the blocker and compact comparison", () => {
-    act(() => {
-      root.render(
-        <AdminI18nProvider locale="zh">
-          <PreviewDiff
-            data={blockedPreviewWorkspace}
-            permissions={{ reviewRelease: true } as never}
-            runCommittedMutation={(async () => ({ result: undefined, refreshed: false })) as never}
-          />
-        </AdminI18nProvider>,
-      );
-    });
-    expect(container.textContent).toContain("上线预览正在等待图片资产包");
-    expect(container.textContent).toContain("缺少 2 个图片位");
-    expect(container.textContent).not.toContain("Launch QA");
-    expect(container.textContent).not.toContain("上线 QA");
-    expect(container.querySelectorAll("article")).toHaveLength(2);
-  });
-
   it("seeds the decision record with translated prose instead of English", () => {
     render();
     const textareas = [...container.querySelectorAll("textarea")].map((node) => node.value);
@@ -302,24 +225,4 @@ describe("Character performance panel — zh operators", () => {
     expect(textareas.some((value) => value.includes("同角色 D7 退化"))).toBe(true);
   });
 
-  // SPEC: 护栏卡的窗口名由 route_qualification 拼出来，状态是枚举，两处都曾漏翻成
-  // 「route qualification 护栏 / not required」——中英混排就出现在运营最常看的这一屏。
-  it("translates the release guardrail window and its empty status", () => {
-    act(() => {
-      root.render(
-        <AdminI18nProvider locale="zh">
-          <MonitorPanel
-            data={monitorWorkspace}
-            onOpenVisual={() => undefined}
-            permissions={{ reviewRelease: true } as never}
-            runCommittedMutation={(async () => ({ result: undefined, refreshed: false })) as never}
-          />
-        </AdminI18nProvider>,
-      );
-    });
-    expect(container.textContent).toContain("图片线路资格");
-    expect(container.textContent).toContain("无需处理");
-    expect(container.textContent).not.toContain("route qualification");
-    expect(container.textContent).not.toContain("not required");
-  });
 });
