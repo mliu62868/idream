@@ -1,6 +1,6 @@
 import { characterProjectDraftResumeSchema } from "@idream/shared/admin";
 import { actorWithPermission, jsonBody } from "@/server/modules/admin-v2/shared/authority";
-import { getCharacterProjectDraftForResume, updateCharacterProjectDraft } from "@/server/modules/admin-v2/characters/workspace";
+import { getCharacterProjectDraftForResume, updateCharacterProjectDraft } from "@/server/modules/admin-v2/characters/project-draft";
 import { requireMatchingProjectVersion } from "@/server/modules/admin-v2/characters/project-version";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 

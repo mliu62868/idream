@@ -6,7 +6,8 @@ import { POST as refreshReleaseMonitor } from "@/app/api/v2/admin/characters/[id
 import { GET as listActivityRoute } from "@/app/api/v2/admin/collaboration/[targetType]/[targetId]/activity/route";
 import { PATCH as patchCharacterProjectRoute } from "@/app/api/v2/admin/characters/[id]/project/route";
 import { GET as getCharacterWorkspaceRoute } from "@/app/api/v2/admin/characters/[id]/route";
-import { getCharacterWorkspace, updateCharacterProjectDraft } from "./workspace";
+import { getCharacterWorkspace } from "./workspace";
+import { updateCharacterProjectDraft } from "./project-draft";
 import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-validation";
 import { env } from "@/server/lib/env";
 import { characterVisualProfileSnapshotHash, referenceSetSnapshotHash } from "./release-snapshot";

@@ -30,7 +30,7 @@ import { createCharacterProject } from "@/server/modules/admin-v2/characters/cre
 import {
   getCharacterProjectDraftForResume,
   updateCharacterProjectDraft,
-} from "@/server/modules/admin-v2/characters/workspace";
+} from "@/server/modules/admin-v2/characters/project-draft";
 import { CHARACTER_STYLES, GENDERS } from "@idream/shared/catalog";
 
 const OFFICIAL_PERMISSION = "content.official.write" as const;

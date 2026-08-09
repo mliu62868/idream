@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
+import { getCharacterWorkspace } from "@/server/modules/admin-v2/characters/workspace";
 import {
   getCharacterProjectDraftForResume,
-  getCharacterWorkspace,
   updateCharacterProjectDraft,
-} from "@/server/modules/admin-v2/characters/workspace";
+} from "@/server/modules/admin-v2/characters/project-draft";
 import {
   listCharacterPortfolio,
 } from "@/server/modules/admin-v2/characters/portfolio";

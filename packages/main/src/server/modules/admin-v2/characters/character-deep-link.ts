@@ -64,3 +64,41 @@ export function characterWorkspaceAnchorLink(
   const target = CHARACTER_WORKSPACE_ANCHORS[anchor];
   return `${characterWorkspaceTabLink(characterId, target.tab)}#${target.id}`;
 }
+
+// SPEC: 生图（打磨）闸 ≠ 发布闸。这里只保留「没有它就画不出图」的条件。
+// INTENT: 密封 hash（*_unsealed）是内容的派生缓存，它的价值是发布时锁住身份，对生成一张
+// 草稿图没有意义；却曾要求运营「铸一个新版本」才能继续——用改数据的手段去修一个只需重算的
+// 值。发布链仍在 readiness.ts 里检查这两项，打磨阶段不再被它拦住。
+export const VISUAL_BLOCKER_CODES = [
+  "visual_identity_missing", "visual_anchor_missing", "visual_traits_incomplete",
+  "reference_set_not_active", "reference_assets_unavailable",
+  "generation_route_unqualified", "generation_route_stale",
+] as const;
+type VisualBlockerCode = (typeof VISUAL_BLOCKER_CODES)[number];
+
+export function isVisualBlockerCode(code: string): code is VisualBlockerCode {
+  return (VISUAL_BLOCKER_CODES as readonly string[]).includes(code);
+}
+
+// SPEC: blocker 的 deepLink 直达能完成该动作的控件，不是 Visual 页首。
+// INVARIANT: 每个 VisualBlockerCode 都有目标锚点——漏一个是编译错误，不靠测试兜。
+const VISUAL_BLOCKER_ANCHORS: Readonly<
+  Record<VisualBlockerCode, CharacterWorkspaceAnchor>
+> = {
+  visual_identity_missing: "visual_identity_version",
+  visual_anchor_missing: "visual_identity_version",
+  visual_traits_incomplete: "visual_identity_version",
+  reference_set_not_active: "visual_reference_set",
+  reference_assets_unavailable: "visual_reference_set",
+  generation_route_unqualified: "route_qualification_workbench",
+  generation_route_stale: "route_qualification_workbench",
+};
+
+export function visualBlockerDeepLink(
+  characterId: string,
+  code: string,
+): string {
+  return isVisualBlockerCode(code)
+    ? characterWorkspaceAnchorLink(characterId, VISUAL_BLOCKER_ANCHORS[code])
+    : characterWorkspaceTabLink(characterId, "visual");
+}

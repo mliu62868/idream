@@ -1,21 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   CHARACTER_WORKSPACE_ANCHORS,
+  VISUAL_BLOCKER_CODES,
   characterWorkspaceAnchorLink,
   characterWorkspaceLink,
   characterWorkspaceTabLink,
+  visualBlockerDeepLink,
 } from "./character-deep-link";
-import { visualBlockerDeepLink } from "./workspace";
-
-const VISUAL_BLOCKER_CODES = [
-  "visual_identity_missing",
-  "visual_anchor_missing",
-  "visual_traits_incomplete",
-  "reference_set_not_active",
-  "reference_assets_unavailable",
-  "generation_route_unqualified",
-  "generation_route_stale",
-] as const;
 
 describe("character workspace deep links", () => {
   it("escapes the character id in every shape", () => {

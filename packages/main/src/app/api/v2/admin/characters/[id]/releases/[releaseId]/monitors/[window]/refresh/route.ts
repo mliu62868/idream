@@ -4,7 +4,7 @@ import {
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { actorWithPermission, jsonBody } from "@/server/modules/admin-v2/shared/authority";
-import { refreshCharacterReleaseMonitor } from "@/server/modules/admin-v2/characters/workspace";
+import { refreshCharacterReleaseMonitor } from "@/server/modules/admin-v2/characters/release-monitor";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
 import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";

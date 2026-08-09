@@ -64,6 +64,23 @@ export function draftAssetRouteEntries(
   }));
 }
 
+// 只要 assetId 的读法：运营台的 project.draftAssetPack 与「有没有草稿图工作」都只关心
+// 每个用途选了哪张图，不关心它是怎么来的。
+export function characterAssetPack(
+  value: Prisma.JsonValue,
+): Partial<Record<CharacterDraftAssetPurpose, string>> {
+  const source = record(value);
+  return Object.fromEntries(
+    characterDraftAssetPurposes.flatMap((purpose) => {
+      const entry = source[purpose];
+      if (typeof entry === "string") return [[purpose, entry]];
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+      const assetId = (entry as Record<string, unknown>).assetId;
+      return typeof assetId === "string" ? [[purpose, assetId]] : [];
+    }),
+  );
+}
+
 /**
  * Draft selections remain immutable history when the global qualified route
  * advances. This projection only says whether each pointer can still authorize

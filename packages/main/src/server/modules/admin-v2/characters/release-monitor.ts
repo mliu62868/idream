@@ -9,6 +9,9 @@ import {
   isMockGenerationProvider,
   type MediaAssetCustomerPublishabilityReason,
 } from "@/server/lib/media-asset-authority";
+import { inTransaction } from "@/server/lib/db";
+import { Errors } from "@/server/lib/errors";
+import { operationalCharacterWhere } from "@/server/modules/metric-data-scope";
 import { toInputJson } from "../shared/prisma-json";
 import {
   evaluateEffectiveGenerationRouteAuthority,
@@ -897,4 +900,71 @@ export async function dispatchDueReleaseMonitors(
     failed: failures.length,
     failures,
   };
+}
+
+/**
+ * SPEC: 运营手动刷新某个窗口的发布监控，把当次事实写成审计与外发事件。
+ * INTENT: 与 dispatchDueReleaseMonitors 共用 collectReleaseMonitorFacts——同一份事实，
+ * 一条是调度器按期跑，这条是运营在工作台上点。
+ */
+export async function refreshCharacterReleaseMonitor(input: {
+  readonly characterId: string;
+  readonly releaseId: string;
+  readonly expectedVersion: number;
+  readonly window: ReleaseMonitorWindow;
+  readonly actor?: { readonly id: string; readonly role: string };
+  readonly requestId?: string;
+}, db?: Prisma.TransactionClient) {
+  return inTransaction(db, async (tx) => {
+    const character = await tx.character.findFirst({
+      where: operationalCharacterWhere({
+        id: input.characterId,
+        deletedAt: null,
+      }),
+      select: { id: true },
+    });
+    const project = await tx.characterProject.findFirst({
+      where: { characterId: input.characterId },
+    });
+    const release = await tx.characterRelease.findUnique({
+      where: { id: input.releaseId },
+    });
+    if (!character || !project || !release || release.projectId !== project.id) {
+      throw Errors.notFound("Character Release not found");
+    }
+    if (release.version !== input.expectedVersion) {
+      throw Errors.conflict("Character Release changed before monitor refresh", {
+        currentVersion: release.version,
+      });
+    }
+    const result = await collectReleaseMonitorFacts(tx, {
+      releaseId: release.id,
+      window: input.window,
+    });
+    const response = {
+      releaseId: release.id,
+      window: input.window,
+      status: result.monitor.status,
+      mature: result.mature,
+      recommendation: result.recommendation,
+      observed: result.observed,
+    };
+    await tx.adminAuditLog.create({ data: {
+      actorId: input.actor?.id ?? "system",
+      actorRole: input.actor?.role ?? "system",
+      action: "character.release.monitor.refreshed",
+      targetType: "character_release",
+      targetId: release.id,
+      reason: `Refresh ${input.window} release monitor`,
+      after: toInputJson(response),
+      requestId: input.requestId,
+    } });
+    await tx.mainOutboxEvent.create({ data: {
+      eventType: "character.release.monitor.refreshed.v2",
+      aggregateType: "character_release",
+      aggregateId: release.id,
+      payload: toInputJson(response),
+    } });
+    return response;
+  });
 }
