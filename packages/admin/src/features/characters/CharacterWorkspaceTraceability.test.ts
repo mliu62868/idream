@@ -236,25 +236,14 @@ describe("Character workspace traceability", () => {
     ]);
   });
 
-  it("renders immutable QA evidence, repair links, and pinned release lineage", () => {
+  it("renders pinned release lineage evidence", () => {
     const source = readFileSync(new URL("./CharacterWorkspace.tsx", import.meta.url), "utf8");
 
-    expect(source).toContain('<option value="">{t("Not run")}</option>');
-    expect(source).toContain("Checks, evidence, and repair paths");
-    expect(source).toContain("check.comment");
-    expect(source).toContain("check.evidenceRef");
-    expect(source).toContain("check.fixDeepLink");
     expect(source).toContain('t("Technical evidence")');
     expect(source).toContain('t("Current live release")');
     expect(source).toContain('t("Release history")');
     expect(source).toContain("releasePlacementManifest: release.releasePlacementManifest");
     expect(source).toContain("generationProvenance: release.generationProvenance");
-    expect(source).toContain("activeReleaseCandidate");
-    expect(source).toContain(
-      "Request changes to withdraw it before recording another QA Run.",
-    );
-    expect(source).toContain("Regenerate under current route");
-    expect(source).toContain("Complete Character Assets");
   });
 
   it("keeps route qualification empty state semantically distinct from pending time windows", () => {

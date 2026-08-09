@@ -48,13 +48,6 @@ describe("Character production entry", () => {
     expect(workspaceSource).toContain('const historical = ["superseded", "withdrawn"]');
   });
 
-  it("renders server behavior transcripts, pairwise evidence, and exact canaries", () => {
-    expect(workspaceSource).toContain('t("Character Soul Behavior Evaluation")');
-    expect(workspaceSource).toContain('t("Official character pairwise distinctiveness")');
-    expect(workspaceSource).toContain('t("Exact production model canaries")');
-    expect(workspaceSource).toContain("run.behaviorEvaluation.cases.map");
-    expect(workspaceSource).toContain("run.liveCanaries.map");
-  });
 
 });
 

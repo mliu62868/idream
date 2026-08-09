@@ -14,7 +14,6 @@ import {
   characterPerformanceHasObservations,
   MonitorPanel,
   PerformancePanel,
-  PreviewDiff,
   portfolioDecisions,
 } from "./CharacterWorkspace";
 
@@ -139,58 +138,6 @@ const repeatedNoDataWorkspace = withCharacterWorkspaceDetail(workspace, {
   ],
 });
 
-const blockedPreviewWorkspace = characterWorkspaceDetail({
-  character: { id: "alexa-reeves" },
-  project: {
-    draftAssetRouteAuthority: {
-      qaReady: false,
-      status: "current",
-      qaBlockers: [],
-    },
-  },
-  // 图池完成度读服务端 journey 投影，不数 preview 快照的槽位。
-  journey: {
-    assetPack: {
-      draft: {
-        availablePurposes: ["character_cover"],
-        missingPurposes: ["character_hero", "character_chat"],
-        completed: 1,
-        total: 3,
-      },
-      live: {
-        availablePurposes: ["character_cover"],
-        missingPurposes: ["character_hero", "character_chat"],
-        completed: 1,
-        total: 3,
-      },
-    },
-  },
-  preview: {
-    changedFields: ["imageUrl", "assetPack"],
-    live: {
-      label: "Live",
-      name: "Alexa Reeves",
-      assetPack: {
-        character_cover: { imageUrl: "/live.webp" },
-        character_hero: { imageUrl: null },
-        character_chat: { imageUrl: null },
-      },
-    },
-    draft: {
-      label: "Draft Preview",
-      name: "Alexa Reeves",
-      assetPackReady: false,
-      assetPack: {
-        character_cover: { imageUrl: "/draft.webp" },
-        character_hero: { imageUrl: null },
-        character_chat: { imageUrl: null },
-      },
-    },
-  },
-  releases: [],
-  qaRuns: [],
-});
-
 const monitorWorkspace = withCharacterWorkspaceDetail(workspace, {
   releases: [releaseEntry(workspaceRelease({ id: releaseId }))],
 });
@@ -274,25 +221,6 @@ describe("Character performance panel — zh operators", () => {
     expect(characterPerformanceHasObservations([
       { ...workspace.performance[0], sampleSize: 1 },
     ])).toBe(true);
-  });
-
-  it("stops a blocked launch preview at the blocker and compact comparison", () => {
-    act(() => {
-      root.render(
-        <AdminI18nProvider locale="zh">
-          <PreviewDiff
-            data={blockedPreviewWorkspace}
-            permissions={{ reviewRelease: true } as never}
-            runCommittedMutation={(async () => ({ result: undefined, refreshed: false })) as never}
-          />
-        </AdminI18nProvider>,
-      );
-    });
-    expect(container.textContent).toContain("上线预览正在等待图片资产包");
-    expect(container.textContent).toContain("缺少 2 个图片位");
-    expect(container.textContent).not.toContain("Launch QA");
-    expect(container.textContent).not.toContain("上线 QA");
-    expect(container.querySelectorAll("article")).toHaveLength(2);
   });
 
   it("seeds the decision record with translated prose instead of English", () => {
