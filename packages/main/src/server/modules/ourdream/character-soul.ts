@@ -5,7 +5,7 @@ import {
   type SoulDiagnostic,
 } from "@idream/shared";
 import type { Prisma } from "@prisma/client";
-import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
+import { characterContentHash } from "@/server/modules/admin-v2/shared/character-content-identity";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 
 export class UserCharacterSoulCompileError extends Error {
@@ -72,9 +72,8 @@ export function compileUserCharacterContent(input: UserCharacterSoulInput) {
     style: input.style,
     appearance: input.appearance ?? {},
   };
-  const contentHash = canonicalSha256({
-    soul: compiled.snapshot.soul,
-    compilerVersion: compiled.snapshot.compiled.compilerVersion,
+  const contentHash = characterContentHash({
+    personaSnapshot: compiled.snapshot,
     openingSnapshot,
     appearanceSnapshot,
   });

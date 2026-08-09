@@ -1,6 +1,6 @@
 import { compileCharacterSoul, type CharacterSoulSnapshot } from "@idream/shared";
 import type { Prisma, PrismaClient } from "@prisma/client";
-import { canonicalSha256 } from "../shared/canonical-json";
+import { characterContentHash } from "../shared/character-content-identity";
 import { toInputJson } from "../shared/prisma-json";
 import { lockCharacterGenerationAuthority } from "./generation-authority-lock";
 
@@ -83,9 +83,8 @@ export function prepareRepositorySoulImport(
     personaSnapshot: compiled.snapshot,
     openingSnapshot,
     appearanceSnapshot,
-    contentHash: canonicalSha256({
-      soul: compiled.snapshot.soul,
-      compilerVersion: compiled.snapshot.compiled.compilerVersion,
+    contentHash: characterContentHash({
+      personaSnapshot: compiled.snapshot,
       openingSnapshot,
       appearanceSnapshot,
     }),

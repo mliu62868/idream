@@ -1,6 +1,6 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { evaluateMediaAssetCustomerPublishability } from "@/server/lib/media-asset-authority";
-import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
+import { officialEditorialContentIdentity } from "@/server/modules/admin-v2/shared/character-content-identity";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { characterReleaseSnapshotHash } from "@/server/modules/admin-v2/characters/release-snapshot";
 import {
@@ -19,40 +19,6 @@ function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
-}
-
-function officialEditorialContentSnapshot(character: {
-  name: string;
-  age: number;
-  description: string;
-  systemPrompt: string | null;
-  style: string;
-  gender: string;
-  relationship: string | null;
-  appearance: Prisma.JsonValue;
-  advancedDetails: Prisma.JsonValue;
-}) {
-  const advanced = record(character.advancedDetails);
-  return {
-    persona: {
-      name: character.name,
-      age: character.age,
-      description: character.description,
-      systemPrompt: character.systemPrompt,
-      relationship: character.relationship,
-    },
-    opening: {
-      firstMessage:
-        typeof advanced.firstMessage === "string"
-          ? advanced.firstMessage
-          : null,
-    },
-    appearance: {
-      style: character.style,
-      gender: character.gender,
-      structured: character.appearance,
-    },
-  };
 }
 
 async function attachExistingModernQualification(
@@ -160,8 +126,8 @@ export async function ensureOfficialEditorialCatalogQualification(
       );
     }
 
-    const contentSnapshot = officialEditorialContentSnapshot(character);
-    const contentHash = canonicalSha256(contentSnapshot);
+    const { snapshot: contentSnapshot, contentHash } =
+      officialEditorialContentIdentity(character);
     const currentRelease = character.serving?.currentRelease ?? null;
     const currentReleaseContent = currentRelease
       ? await tx.characterContentVersion.findUnique({

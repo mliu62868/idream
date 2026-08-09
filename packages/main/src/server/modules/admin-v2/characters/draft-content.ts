@@ -3,7 +3,7 @@ import type {
   CharacterDraftVisualDirection,
 } from "@idream/shared/admin";
 import { compileCharacterSoul } from "@idream/shared";
-import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
+import { characterContentHash } from "@/server/modules/admin-v2/shared/character-content-identity";
 
 export function characterDraftSnapshots(content: {
   persona: CharacterDraftPersona;
@@ -41,12 +41,8 @@ export function characterSoulVersionSnapshots(content: {
     personaSnapshot,
     openingSnapshot,
     appearanceSnapshot,
-    // INTENT: compiled prompt bytes are deterministic output. Hash canonical
-    // Soul + compiler identity so compiler upgrades create a new version while
-    // runtime artifacts never become a second authoring authority.
-    contentHash: canonicalSha256({
-      soul: personaSnapshot.soul,
-      compilerVersion: personaSnapshot.compiled.compilerVersion,
+    contentHash: characterContentHash({
+      personaSnapshot,
       openingSnapshot,
       appearanceSnapshot,
     }),

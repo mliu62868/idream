@@ -4,6 +4,10 @@ import {
   isMediaAssetOperationalForAuthority,
 } from "@/server/lib/media-asset-authority";
 import { canonicalSha256 } from "../shared/canonical-json";
+import {
+  legacyCutoverContentIdentity,
+  type LegacyCharacterContentFields,
+} from "../shared/character-content-identity";
 import { toInputJson } from "../shared/prisma-json";
 import {
   characterReleaseSnapshotHash,
@@ -93,37 +97,11 @@ function summaryOf(value: Prisma.JsonValue): BackfillSummary {
   };
 }
 
-function contentSnapshot(character: {
-  id: string;
-  name: string;
-  age: number;
-  description: string;
-  systemPrompt: string | null;
-  style: string;
-  gender: string;
-  appearance: Prisma.JsonValue;
-  advancedDetails: Prisma.JsonValue;
-  source: string;
-  status: string;
-}) {
-  const advanced = record(character.advancedDetails);
-  return {
-    persona: {
-      name: character.name,
-      age: character.age,
-      description: character.description,
-      systemPrompt: character.systemPrompt,
-      personality: advanced.personality ?? null,
-    },
-    opening: { firstMessage: advanced.firstMessage ?? null },
-    appearance: {
-      style: character.style,
-      gender: character.gender,
-      structured: character.appearance,
-      visualBrief: advanced.visualBrief ?? null,
-    },
-  };
-}
+type BackfillCharacter = LegacyCharacterContentFields & {
+  readonly id: string;
+  readonly source: string;
+  readonly status: string;
+};
 
 async function scopedCounts(
   db: PrismaClient,
@@ -154,10 +132,9 @@ async function scopedCounts(
 
 async function ensureContentVersion(
   tx: Prisma.TransactionClient,
-  character: Parameters<typeof contentSnapshot>[0],
+  character: BackfillCharacter,
 ) {
-  const snapshot = contentSnapshot(character);
-  const contentHash = canonicalSha256(snapshot);
+  const { snapshot, contentHash } = legacyCutoverContentIdentity(character);
   const existing = await tx.characterContentVersion.findUnique({
     where: {
       characterId_contentHash: { characterId: character.id, contentHash },
@@ -185,7 +162,7 @@ async function ensureContentVersion(
 
 async function ensureProjectAndRevision(
   tx: Prisma.TransactionClient,
-  character: Parameters<typeof contentSnapshot>[0],
+  character: BackfillCharacter,
   contentVersionId: string,
 ) {
   const projectId = `legacy-project:${character.id}`;
