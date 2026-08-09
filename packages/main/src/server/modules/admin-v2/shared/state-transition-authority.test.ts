@@ -58,8 +58,8 @@ const matrices: readonly MatrixCase[] = [
     name: "Character Release",
     states: CHARACTER_RELEASE_STATES,
     allowed: {
-      draft: ["validating"],
-      validating: ["in_review"],
+      draft: [],
+      validating: [],
       in_review: ["withdrawn", "approved"],
       approved: ["published"],
       published: ["superseded", "withdrawn"],
