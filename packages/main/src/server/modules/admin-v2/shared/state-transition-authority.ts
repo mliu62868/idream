@@ -53,9 +53,27 @@ export function isCharacterProjectPhaseTransitionAllowed(from: string, to: strin
   return CHARACTER_PROJECT_PHASE_AUTHORITY.permits(from, to);
 }
 
+// SPEC: Release 的合法创建入口状态 —— 创建也要过状态机的门。
+// INTENT: Release 不是「建出来再一步步推进」的：propose 一次性钉死不可变快照后直接进评审，
+// rollback 复制一份已验证过的历史快照直接进 approved，编辑态导入直接进 published。状态机此前
+// 只管更新、创建绕过它，也没有任何地方写明这一点。`satisfies CharacterReleaseCreationState`
+// 让创建点选错入口状态变成编译错误。
+export const CHARACTER_RELEASE_CREATION_STATES = [
+  "in_review",
+  "approved",
+  "published",
+] as const;
+
+export type CharacterReleaseCreationState =
+  (typeof CHARACTER_RELEASE_CREATION_STATES)[number];
+
+// INVARIANT: draft / validating 没有任何写入者 —— 上面三个入口状态覆盖了全部创建路径，也没有
+// 转移能到达它们。两个取值保留在 `characterReleaseStatusSchema`（跨包 wire 契约）与 Prisma 列
+// 默认值里，所以这里不删取值，只让它们没有出边：万一有人绕过入口状态建出一行 draft，它会卡死，
+// 而不是悄悄走完发布链。
 const CHARACTER_RELEASE_AUTHORITY = defineTransitionAuthority(CHARACTER_RELEASE_STATES, {
-  draft: ["validating"],
-  validating: ["in_review"],
+  draft: [],
+  validating: [],
   in_review: ["withdrawn", "approved"],
   approved: ["published"],
   published: ["superseded", "withdrawn"],

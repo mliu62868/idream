@@ -10,7 +10,9 @@ import {
 import {
   characterSoulBehaviorBlockingCases,
   characterSoulBehaviorCaseKeys,
+  characterSoulBehaviorEvaluatorVersion,
   characterSoulDistinctivenessDimensions,
+  characterSoulDistinctivenessEvaluatorVersion,
   type CharacterSoulBehaviorEvaluation,
   type CharacterSoulLiveCanary,
 } from "@idream/shared/admin";
@@ -98,7 +100,7 @@ export async function executeCharacterSoulQaEvidence(input: {
     }
     const evidenceRef = `sha256:${canonicalSha256({
       suiteVersion: "character-soul-behavior-1",
-      evaluatorVersion: "character-soul-evaluator-4",
+      evaluatorVersion: characterSoulBehaviorEvaluatorVersion,
       key,
       prompt,
       response,
@@ -118,7 +120,7 @@ export async function executeCharacterSoulQaEvidence(input: {
   }
   const behaviorEvaluation: CharacterSoulBehaviorEvaluation = {
     suiteVersion: "character-soul-behavior-1",
-    evaluatorVersion: "character-soul-evaluator-4",
+    evaluatorVersion: characterSoulBehaviorEvaluatorVersion,
     characterContentVersionId: input.characterContentVersionId,
     soulFingerprint: input.soul.compiled.fingerprint,
     compilerVersion: input.soul.compiled.compilerVersion,
@@ -273,7 +275,7 @@ async function evaluateDistinctiveness(input: {
       rationale,
       evidenceRef: `sha256:${canonicalSha256({
         suiteVersion: "character-soul-distinctiveness-1",
-        evaluatorVersion: "character-soul-distinctiveness-evaluator-4",
+        evaluatorVersion: characterSoulDistinctivenessEvaluatorVersion,
         profile: publicProfile(input.profile),
         candidateResponses,
         peerResponses,
@@ -288,7 +290,7 @@ async function evaluateDistinctiveness(input: {
   }
   return {
     suiteVersion: "character-soul-distinctiveness-1",
-    evaluatorVersion: "character-soul-distinctiveness-evaluator-4",
+    evaluatorVersion: characterSoulDistinctivenessEvaluatorVersion,
     inputs: [...characterSoulBehaviorCaseKeys],
     profile: {
       tier: "free",

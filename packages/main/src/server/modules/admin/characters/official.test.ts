@@ -19,7 +19,7 @@ import {
   characterVisualProfileSnapshotHash,
   referenceSetSnapshotHash,
 } from "@/server/modules/admin-v2/characters/release-snapshot";
-import { CHARACTER_RELEASE_POLICY_VERSION } from "@/server/modules/admin-v2/characters/release-executor";
+import { CHARACTER_RELEASE_POLICY_VERSION } from "@/server/modules/admin-v2/characters/release-validation";
 import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
 import {
   createOfficialCharacter,

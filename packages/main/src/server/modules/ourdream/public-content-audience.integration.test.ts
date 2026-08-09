@@ -431,6 +431,36 @@ describe("public content audience", () => {
     );
   });
 
+  // age >= 18 属于「谁能看到这个角色」这个答案本身。此前它不在谓词里，每个读路径都得自己记得
+  // AND 一次；漏掉的路径不会有任何编译期或运行期信号。
+  it("excludes an otherwise fully qualified character whose age drifted under 18", async () => {
+    const restore = await prisma.character.findUniqueOrThrow({
+      where: { id: characterIds.official },
+      select: { age: true },
+    });
+    await prisma.character.update({
+      where: { id: characterIds.official },
+      data: { age: 17 },
+    });
+    try {
+      await expect(
+        prisma.character.count({
+          where: { AND: [publicCharacterAudienceWhere, { id: characterIds.official }] },
+        }),
+      ).resolves.toBe(0);
+    } finally {
+      await prisma.character.update({
+        where: { id: characterIds.official },
+        data: { age: restore.age },
+      });
+    }
+    await expect(
+      prisma.character.count({
+        where: { AND: [publicCharacterAudienceWhere, { id: characterIds.official }] },
+      }),
+    ).resolves.toBe(1);
+  });
+
   it("fails closed for an official character without a qualified live Release", async () => {
     const characterId = `audience-unqualified-official-${suffix}`;
     await prisma.character.create({

@@ -11,7 +11,7 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { ok } from "@/server/lib/http";
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
-import { CHARACTER_RELEASE_POLICY_VERSION } from "../characters/release-executor";
+import { CHARACTER_RELEASE_POLICY_VERSION } from "../characters/release-validation";
 import {
   characterReleaseSnapshotHash,
   characterVisualProfileSnapshotHash,

@@ -15,7 +15,7 @@ import {
   characterVisualProfileSnapshotHash,
   referenceSetSnapshotHash,
 } from "./release-snapshot";
-import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-executor";
+import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-validation";
 import { toInputJson } from "../shared/prisma-json";
 
 describe.sequential("Character Asset Studio draft image authority", () => {

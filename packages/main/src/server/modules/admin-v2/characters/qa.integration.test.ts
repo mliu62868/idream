@@ -10,7 +10,7 @@ import {
   characterVisualProfileSnapshotHash,
   referenceSetSnapshotHash,
 } from "./release-snapshot";
-import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-executor";
+import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-validation";
 import { createCharacterQaRun } from "./qa";
 import { lockMediaAssetAuthority } from "./generation-authority-lock";
 import { compileCharacterSoul } from "@idream/shared";

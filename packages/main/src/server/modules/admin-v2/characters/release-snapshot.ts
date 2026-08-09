@@ -58,8 +58,8 @@ export function referenceSetSnapshotHash(input: {
 
 export function characterReleaseSnapshotHash(input: {
   readonly projectId: string;
-  readonly revisionId: string;
-  readonly characterContentVersionId: string;
+  readonly revisionId: string | null;
+  readonly characterContentVersionId: string | null;
   readonly visualProfileId: string | null;
   readonly visualProfileVersion: number | null;
   readonly referenceSetRevisionId: string | null;

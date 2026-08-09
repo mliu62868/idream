@@ -2,6 +2,7 @@ import type { Prisma } from "@prisma/client";
 import {
   characterSoulBehaviorBlockingCases,
   characterSoulBehaviorEvaluationSchema,
+  characterSoulBehaviorEvaluatorVersion,
   characterSoulLiveCanarySchema,
   characterQaAuthorityMatches,
   characterQaProvenanceMatchesRun,
@@ -25,7 +26,6 @@ import {
   lockCharacterGenerationAuthority,
   lockCharacterMediaAssetAuthorities,
 } from "./generation-authority-lock";
-import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-policy";
 import {
   characterReleaseSnapshotHash,
   characterVisualProfileSnapshotHash,
@@ -37,6 +37,7 @@ import {
   releasePlacements,
   releaseRecord,
   releaseString,
+  releaseStringArray,
   requiredReleaseRoute,
 } from "./release-snapshot-values";
 import {
@@ -46,29 +47,143 @@ import {
 import { findLatestCharacterQaAuthorityRun } from "./qa-authority";
 import { requiredCharacterSoulChatProfiles } from "./soul-evaluation";
 
+// SPEC: 当前发布策略版本 —— 证据按它判新旧，升版即让旧 Release 的合格证明失效。
+export const CHARACTER_RELEASE_POLICY_VERSION = "character-release-policy-v2";
+
+export const releaseCheckKeys = [
+  "release_generation_authority_kind",
+  "project_character_authority",
+  "revision_is_immutable_and_pinned",
+  "soul_snapshot_valid",
+  "soul_release_policy",
+  "soul_behavior_evaluation",
+  "soul_live_model_canaries",
+  "opening_complete",
+  "visual_identity_exact_version",
+  "reference_set_published_snapshot",
+  "generation_route_qualified",
+  "character_qa_passed",
+  "release_avatar_manifest_available",
+  "release_asset_manifest_available",
+  "release_assets_customer_publishable",
+  "release_asset_review_authority",
+  "release_asset_generation_authority",
+  "snapshot_hash_matches",
+] as const;
+
+export type ReleaseCheckKey = (typeof releaseCheckKeys)[number];
+
 interface ValidationCheck {
-  readonly key: string;
+  readonly key: ReleaseCheckKey;
   readonly passed: boolean;
   readonly evidence: Record<string, unknown>;
 }
 
-function jsonStringArray(value: Prisma.JsonValue | null): string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string")
-    : [];
+type ReleaseBlockerResolver = (evidence: Record<string, unknown>) => string;
+
+/**
+ * SPEC: check key → 提案响应里的 blocker code，全仓唯一一份。
+ *
+ * INTENT: propose 此前自己算 12 个 blocker，与这 18 道闸同规异名（三对一一对应但拼写不同）且
+ * 可以互相矛盾。现在只有一台引擎，这张表只负责把它的裁决翻回 propose 早已对外发布的词表。
+ * `null` 表示这道闸在提案侧本来就没有名字（Soul 四道门、快照哈希、客户可发布性等），直接透出
+ * check key —— 提案此前根本不查它们。
+ *
+ * INVARIANT: `satisfies Record<ReleaseCheckKey, …>` 让「新增一道闸却没决定它的 code」变成编译
+ * 错误。四道闸的 code 比闸本身更细，按 evidence 还原，分支顺序即优先级。
+ */
+const RELEASE_PROPOSAL_BLOCKER_CODES = {
+  release_generation_authority_kind: null,
+  project_character_authority: (evidence) =>
+    evidence.characterExists === false ? "character_missing" : "project_missing",
+  revision_is_immutable_and_pinned: () => "revision_missing",
+  soul_snapshot_valid: null,
+  soul_release_policy: null,
+  soul_behavior_evaluation: null,
+  soul_live_model_canaries: null,
+  opening_complete: null,
+  visual_identity_exact_version: (evidence) =>
+    evidence.immutableHash === null
+      ? "active_visual_profile_missing_or_unsealed"
+      : "active_visual_profile_hash_invalid",
+  reference_set_published_snapshot: (evidence) =>
+    Array.isArray(evidence.unavailableReferenceMediaIds) &&
+    evidence.unavailableReferenceMediaIds.length > 0
+      ? "active_reference_set_media_unavailable"
+      : evidence.snapshotHash === null || evidence.referenceCount === 0
+        ? "active_reference_set_missing_or_empty"
+        : "active_reference_set_hash_invalid",
+  generation_route_qualified: () => "qualified_generation_route_missing",
+  character_qa_passed: (evidence) =>
+    evidence.authorityStatus !== "passed"
+      ? "character_qa_not_passed"
+      : evidence.authorityMatches === false
+        ? "character_qa_authority_mismatch"
+        : "character_qa_not_latest_authority",
+  release_avatar_manifest_available: () => "approved_avatar_missing",
+  release_asset_manifest_available: null,
+  release_assets_customer_publishable: null,
+  release_asset_review_authority: null,
+  release_asset_generation_authority: null,
+  snapshot_hash_matches: null,
+} as const satisfies Readonly<
+  Record<ReleaseCheckKey, ReleaseBlockerResolver | null>
+>;
+
+export function characterReleaseProposalBlockers(
+  failed: readonly { readonly key: ReleaseCheckKey; readonly evidence: Record<string, unknown> }[],
+) {
+  return [
+    ...new Set(
+      failed.map((check) => {
+        const resolve: ReleaseBlockerResolver | null =
+          RELEASE_PROPOSAL_BLOCKER_CODES[check.key];
+        return resolve ? resolve(check.evidence) : check.key;
+      }),
+    ),
+  ];
 }
 
 function referenceManifestEntries(value: Prisma.JsonValue | null) {
   return Array.isArray(value) ? value.map(releaseRecord) : [];
 }
 
-export async function validateCharacterReleaseSnapshot(
+/**
+ * SPEC: 「这份发布快照是否合法」的唯一输入形状。
+ *
+ * INTENT: 提案时还没有 CharacterRelease 行，但要回答的是同一个问题。把引擎的入参从「一行
+ * Release」放宽成「一份候选快照」之后，propose 与 publish/resume 共用同一台规则引擎——此前
+ * propose 内联了一份约 300 行的平行实现，两边同规异名且可以互相矛盾（propose 完全不看 Soul
+ * 四道门，于是能提出一个必然发布失败的候选）。
+ *
+ * 持久化的 Release 行结构上就是一份候选快照，无需适配器。
+ */
+export interface CharacterReleaseSnapshotCandidate {
+  readonly projectId: string;
+  readonly revisionId: string | null;
+  readonly characterContentVersionId: string | null;
+  readonly visualProfileId: string | null;
+  readonly visualProfileVersion: number | null;
+  readonly referenceSetRevisionId: string | null;
+  readonly generationProvenance: Prisma.JsonValue;
+  readonly releasePlacementManifest: Prisma.JsonValue;
+  readonly snapshotHash: string;
+  readonly legacy: boolean;
+  readonly rollbackOfReleaseId: string | null;
+  /**
+   * INVARIANT: Release 行不 pin projectVersion 与 draftAssetPackHash，因此对已发布快照这两项
+   * 只能拿 QA Run 自己的值比较（自比恒真）。提案时它们是活事实——「QA 是不是针对当前草稿包和
+   * 当前 project 版本跑的」——由调用方显式喂进来，同一台引擎才答得了这个问题。
+   */
+  readonly liveQaAuthority?: {
+    readonly projectVersion: number;
+    readonly draftAssetPackHash: string | null;
+  };
+}
+
+export async function evaluateCharacterReleaseSnapshot(
   tx: Prisma.TransactionClient,
-  release: Awaited<
-    ReturnType<
-      Prisma.TransactionClient["characterRelease"]["findUniqueOrThrow"]
-    >
-  >,
+  release: CharacterReleaseSnapshotCandidate,
   policyVersion: string,
   now: Date,
 ) {
@@ -102,12 +217,23 @@ export async function validateCharacterReleaseSnapshot(
   const project = await tx.characterProject.findUnique({
     where: { id: release.projectId },
   });
-  const revision = await tx.characterRevision.findUnique({
-    where: { id: release.revisionId },
-  });
-  const content = await tx.characterContentVersion.findUnique({
-    where: { id: release.characterContentVersionId },
-  });
+  // CharacterProject.characterId 没有外键约束，Character 行确实可能不在了。
+  const character = project
+    ? await tx.character.findUnique({
+        where: { id: project.characterId },
+        select: { id: true },
+      })
+    : null;
+  const revision = release.revisionId
+    ? await tx.characterRevision.findUnique({
+        where: { id: release.revisionId },
+      })
+    : null;
+  const content = release.characterContentVersionId
+    ? await tx.characterContentVersion.findUnique({
+        where: { id: release.characterContentVersionId },
+      })
+    : null;
   const profile = release.visualProfileId
     ? await tx.characterVisualProfile.findUnique({
         where: { id: release.visualProfileId },
@@ -186,6 +312,28 @@ export async function validateCharacterReleaseSnapshot(
   const characterQaRun = characterQaRunId
     ? await tx.characterQaRun.findUnique({ where: { id: characterQaRunId } })
     : null;
+  const expectedQaAuthority = characterQaRun
+    ? {
+        characterId: project?.characterId ?? null,
+        projectId: release.projectId,
+        characterContentVersionId: release.characterContentVersionId,
+        projectVersion:
+          release.liveQaAuthority?.projectVersion ?? characterQaRun.projectVersion,
+        visualProfileId: release.visualProfileId,
+        visualProfileVersion: release.visualProfileVersion,
+        visualProfileHash: currentVisualHash,
+        referenceSetRevisionId: release.referenceSetRevisionId,
+        referenceSetRevision: referenceSet?.revision ?? null,
+        referenceSetHash: currentReferenceHash,
+        draftAssetPackHash:
+          release.liveQaAuthority?.draftAssetPackHash ??
+          characterQaRun.draftAssetPackHash,
+      }
+    : null;
+  const characterQaAuthorityMatched = Boolean(
+    expectedQaAuthority &&
+      characterQaAuthorityMatches(characterQaRun, expectedQaAuthority),
+  );
   const latestCharacterQaRun = strictCharacterQa && characterQaRun
     ? await findLatestCharacterQaAuthorityRun(tx, {
         characterId: characterQaRun.characterId,
@@ -364,7 +512,7 @@ export async function validateCharacterReleaseSnapshot(
     const manifestAssetIds = manifestEntries.flatMap((manifestEntry) =>
       typeof manifestEntry.mediaAssetId === "string" ? [manifestEntry.mediaAssetId] : []
     );
-    const referenceAssetIds = jsonStringArray(job?.referenceAssetIds ?? null);
+    const referenceAssetIds = releaseStringArray(job?.referenceAssetIds ?? null);
     const commonAuthorityMatches = Boolean(
       item &&
       job &&
@@ -468,6 +616,8 @@ export async function validateCharacterReleaseSnapshot(
   const behaviorAuthorityPassed = Boolean(
     behaviorEvaluation.success &&
     soulResult?.ok &&
+    // 换评测器即让旧证据失效：证据必须由当前评测器产出。
+    behaviorEvaluation.data.evaluatorVersion === characterSoulBehaviorEvaluatorVersion &&
     behaviorEvaluation.data.characterContentVersionId === release.characterContentVersionId &&
     behaviorEvaluation.data.soulFingerprint === soulResult.snapshot.compiled.fingerprint &&
     behaviorEvaluation.data.compilerVersion === soulResult.snapshot.compiled.compilerVersion &&
@@ -519,10 +669,11 @@ export async function validateCharacterReleaseSnapshot(
     },
     {
       key: "project_character_authority",
-      passed: project !== null,
+      passed: project !== null && character !== null,
       evidence: {
         projectId: release.projectId,
         characterId: project?.characterId ?? null,
+        characterExists: character !== null,
       },
     },
     {
@@ -693,23 +844,13 @@ export async function validateCharacterReleaseSnapshot(
         latestCharacterQaRun?.id === characterQaRun.id &&
         (!strictCharacterQa || (
           characterQaProvenanceMatchesRun(characterQa, characterQaRun) &&
-          characterQaAuthorityMatches(characterQaRun, {
-            characterId: project?.characterId ?? null,
-            projectId: release.projectId,
-            characterContentVersionId: release.characterContentVersionId,
-            projectVersion: characterQaRun.projectVersion,
-            visualProfileId: release.visualProfileId,
-            visualProfileVersion: release.visualProfileVersion,
-            visualProfileHash: currentVisualHash,
-            referenceSetRevisionId: release.referenceSetRevisionId,
-            referenceSetRevision: referenceSet?.revision ?? null,
-            referenceSetHash: currentReferenceHash,
-            draftAssetPackHash: characterQaRun.draftAssetPackHash,
-          })
+          characterQaAuthorityMatched
         )),
       evidence: {
         status: characterQa.status ?? null,
         qaRunId: characterQaRunId,
+        // 提案侧按这三项把单一 check 还原成它更细的 blocker 词表，顺序即优先级。
+        authorityMatches: characterQaAuthorityMatched,
         evidenceHash: characterQa.evidenceHash ?? null,
         authorityStatus: characterQaRun?.status ?? null,
         latestAuthorityQaRunId: latestCharacterQaRun?.id ?? null,
@@ -774,18 +915,50 @@ export async function validateCharacterReleaseSnapshot(
     },
   ];
   const failed = checks.filter((check) => !check.passed);
+  return {
+    checks,
+    failed,
+    project,
+    content,
+    avatarAssetId,
+    snapshotHash: canonicalSnapshotHash,
+  };
+}
+
+/**
+ * SPEC: 对一行已持久化的 Release 跑同一台引擎，并把这次裁决落成不可变证据。
+ *
+ * INTENT: 证据只在有 Release 行时才写得下（ReleaseValidationRun 外键指向它）。提案阶段的候选
+ * 快照没有行，因此走 evaluate；两条路径的判据完全相同，差别只在留不留痕。
+ */
+export async function validateCharacterReleaseSnapshot(
+  tx: Prisma.TransactionClient,
+  release: Awaited<
+    ReturnType<
+      Prisma.TransactionClient["characterRelease"]["findUniqueOrThrow"]
+    >
+  >,
+  policyVersion: string,
+  now: Date,
+) {
+  const evaluation = await evaluateCharacterReleaseSnapshot(
+    tx,
+    release,
+    policyVersion,
+    now,
+  );
   const run = await tx.releaseValidationRun.create({
     data: {
       releaseId: release.id,
-      snapshotHash: canonicalSnapshotHash,
+      snapshotHash: evaluation.snapshotHash,
       policyVersion,
-      result: failed.length === 0 ? "passed" : "failed",
+      result: evaluation.failed.length === 0 ? "passed" : "failed",
       startedAt: now,
       finishedAt: now,
     },
   });
   await tx.releaseCheckResult.createMany({
-    data: checks.map((check) => ({
+    data: evaluation.checks.map((check) => ({
       validationRunId: run.id,
       checkKey: check.key,
       result: check.passed ? "passed" : "failed",
@@ -793,5 +966,5 @@ export async function validateCharacterReleaseSnapshot(
       checkedAt: now,
     })),
   });
-  return { run, checks, failed, project, content, avatarAssetId };
+  return { run, ...evaluation };
 }

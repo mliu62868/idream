@@ -8,7 +8,7 @@ import {
   characterVisualProfileSnapshotHash,
   referenceSetSnapshotHash,
 } from "@/server/modules/admin-v2/characters/release-snapshot";
-import { CHARACTER_RELEASE_POLICY_VERSION } from "@/server/modules/admin-v2/characters/release-executor";
+import { CHARACTER_RELEASE_POLICY_VERSION } from "@/server/modules/admin-v2/characters/release-validation";
 import { evaluateEffectiveGenerationRouteAuthority } from "@/server/modules/admin-v2/characters/generation-route-authority";
 import { createCharacterVisualProfile } from "@/server/modules/admin/characters/visual-profiles";
 import { publishCharacterReferenceSet } from "@/server/modules/admin-v2/characters/reference-set";

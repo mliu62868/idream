@@ -15,10 +15,12 @@ import {
 } from "./release-snapshot";
 import { canonicalSha256 } from "../shared/canonical-json";
 import {
-  CHARACTER_RELEASE_POLICY_VERSION,
   executeCharacterReleaseCommand,
-  validateCharacterReleaseSnapshot,
 } from "./release-executor";
+import {
+  CHARACTER_RELEASE_POLICY_VERSION,
+  validateCharacterReleaseSnapshot,
+} from "./release-validation";
 import { dispatchDueCharacterReleasePublishes } from "./scheduled-release-dispatcher";
 import { toInputJson } from "../shared/prisma-json";
 import { characterSoulQaEvidence } from "@/server/test/character-soul-evidence";

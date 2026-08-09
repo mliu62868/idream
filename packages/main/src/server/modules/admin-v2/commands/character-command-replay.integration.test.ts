@@ -6,7 +6,7 @@ import { POST as publishRelease } from "@/app/api/v2/admin/characters/[id]/relea
 import { POST as rollbackRelease } from "@/app/api/v2/admin/characters/[id]/releases/[releaseId]/commands/rollback/route";
 import { POST as scheduleRelease } from "@/app/api/v2/admin/characters/[id]/releases/[releaseId]/commands/schedule/route";
 import { prisma } from "@/server/lib/db";
-import { CHARACTER_RELEASE_POLICY_VERSION } from "@/server/modules/admin-v2/characters/release-executor";
+import { CHARACTER_RELEASE_POLICY_VERSION } from "@/server/modules/admin-v2/characters/release-validation";
 
 describe("Character authoritative command replay before mutable preflight", () => {
   const suffix = randomUUID();

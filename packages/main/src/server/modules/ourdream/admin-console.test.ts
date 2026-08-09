@@ -9,7 +9,7 @@ import { drainLocalAiPipeline } from "@/server/ai/local-pipeline";
 import { jobQueue } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
-import { CHARACTER_RELEASE_POLICY_VERSION } from "@/server/modules/admin-v2/characters/release-executor";
+import { CHARACTER_RELEASE_POLICY_VERSION } from "@/server/modules/admin-v2/characters/release-validation";
 import { POST as createCreativeRunV2 } from "@/app/api/v2/admin/creative/runs/route";
 import {
   characterVisualProfileSnapshotHash,

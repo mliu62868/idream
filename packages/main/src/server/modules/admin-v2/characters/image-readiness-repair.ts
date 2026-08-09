@@ -27,7 +27,7 @@ import {
   type CharacterImageAssetAuthority,
 } from "./image-readiness-authority";
 import { canonicalSha256 } from "../shared/canonical-json";
-import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-executor";
+import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-validation";
 import {
   characterVisualProfileSnapshotHash,
   referenceSetSnapshotHash,

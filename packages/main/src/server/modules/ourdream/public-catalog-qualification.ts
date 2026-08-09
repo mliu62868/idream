@@ -333,17 +333,14 @@ export async function ensureOfficialEditorialCatalogQualification(
       await transitionCharacterRelease(tx, {
         releaseId: currentRelease.id,
         to: "superseded",
-        expected: { from: "published", version: currentRelease.version },
+        expectedVersion: currentRelease.version,
       });
     }
     if (character.serving) {
       await transitionCharacterServing(tx, {
         servingId: character.serving.id,
         to: "live",
-        expected: {
-          from: character.serving.state as "inactive" | "live" | "paused",
-          version: character.serving.version,
-        },
+        expectedVersion: character.serving.version,
         data: {
           currentReleaseId: release.id,
           scheduledReleaseId: null,

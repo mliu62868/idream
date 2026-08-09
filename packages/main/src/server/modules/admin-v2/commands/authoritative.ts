@@ -23,7 +23,7 @@ import {
   IdempotencyConflictError,
 } from "../shared/control-plane-command";
 import { canonicalSha256 } from "../shared/canonical-json";
-import { CHARACTER_RELEASE_POLICY_VERSION } from "../characters/release-executor";
+import { CHARACTER_RELEASE_POLICY_VERSION } from "../characters/release-validation";
 import { characterCommandCoordinationKey } from "../characters/command-coordination";
 import { executeAcceptedAdminCommand } from "./executor";
 import { generationProfileHealth } from "../creative/retry-executor";

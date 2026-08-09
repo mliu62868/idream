@@ -10,6 +10,12 @@ export function releaseString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
 }
 
+export function releaseStringArray(value: Prisma.JsonValue | null): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
 export interface ReleasePlacement {
   readonly slotKey: string;
   readonly assetId: string;

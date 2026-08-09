@@ -41,7 +41,7 @@ import {
   evaluateCharacterPerformance,
   utcProductDayCeiling,
 } from "./performance";
-import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-executor";
+import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-validation";
 import { findOperationalGenerationRoute } from "./visual-authority";
 import { characterWorkspaceTabLink } from "./character-deep-link";
 import {

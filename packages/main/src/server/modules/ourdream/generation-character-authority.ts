@@ -47,6 +47,8 @@ export async function readableCharacter(id: string, userId: string) {
 
 export async function generationCharacter(id: string, userId: string) {
   const character = await readableCharacter(id, userId);
+  // readableCharacter 的 creatorId 分支绕开了公开受众谓词，所以这里是创作者自有角色的唯一年龄闸，
+  // 不是 publicCharacterAudienceWhere 的重复。
   if (character.age < 18) {
     throw Errors.badRequest("Character is not eligible for generation", {
       policyCode: "UNDERAGE",
@@ -63,7 +65,7 @@ export async function generationCharacter(id: string, userId: string) {
 export async function publishedGenerationVideoCharacter(id: string) {
   const character = await prisma.character.findFirst({
     where: {
-      AND: [{ id, age: { gte: 18 } }, publicCharacterAudienceWhere],
+      AND: [{ id }, publicCharacterAudienceWhere],
     },
   });
   if (!character) throw Errors.notFound("Character not found");

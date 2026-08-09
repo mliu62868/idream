@@ -32,7 +32,7 @@ import {
   evaluateDraftAssetRouteAuthority,
 } from "./draft-asset-route-authority";
 import { findOperationalGenerationRoute } from "./visual-authority";
-import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-executor";
+import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-validation";
 import { characterWorkspaceTabLink } from "./character-deep-link";
 import {
   discoverDraftAssetPackSourceAssetIds,
