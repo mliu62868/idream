@@ -19,7 +19,7 @@ import { collectReleaseMonitorFacts } from "./release-monitor";
 import { toInputJson } from "../shared/prisma-json";
 import { characterDraftSnapshots } from "./draft-content";
 import { issueCharacterPreviewToken } from "./preview-token";
-import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-executor";
+import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-validation";
 import { evaluateReleaseReadiness } from "./readiness";
 import { findOperationalGenerationRoute } from "./visual-authority";
 import { characterVisualProfileSnapshotHash, referenceSetSnapshotHash } from "./release-snapshot";

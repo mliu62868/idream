@@ -5,7 +5,7 @@ import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { createUser } from "@/server/test/helpers";
 import { toInputJson } from "../shared/prisma-json";
-import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-executor";
+import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-validation";
 import {
   createCharacterPortfolioDecision,
   listCharacterPortfolio,

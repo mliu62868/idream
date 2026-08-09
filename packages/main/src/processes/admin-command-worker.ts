@@ -3,10 +3,8 @@ import type { PrismaClient } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { logger } from "@/server/lib/logger";
-import {
-  CHARACTER_RELEASE_POLICY_VERSION,
-  executeCharacterReleaseCommand,
-} from "@/server/modules/admin-v2/characters/release-executor";
+import { executeCharacterReleaseCommand } from "@/server/modules/admin-v2/characters/release-executor";
+import { CHARACTER_RELEASE_POLICY_VERSION } from "@/server/modules/admin-v2/characters/release-validation";
 import {
   dispatchDueReleaseMonitors,
   dispatchStaleReleaseRoutes,

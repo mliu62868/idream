@@ -7,7 +7,7 @@ import { GET as listActivityRoute } from "@/app/api/v2/admin/collaboration/[targ
 import { PATCH as patchCharacterProjectRoute } from "@/app/api/v2/admin/characters/[id]/project/route";
 import { GET as getCharacterWorkspaceRoute } from "@/app/api/v2/admin/characters/[id]/route";
 import { getCharacterWorkspace, updateCharacterProjectDraft } from "./workspace";
-import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-executor";
+import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-validation";
 import { env } from "@/server/lib/env";
 import { characterVisualProfileSnapshotHash, referenceSetSnapshotHash } from "./release-snapshot";
 import { canonicalSha256 } from "../shared/canonical-json";

@@ -2,10 +2,12 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
-import { CHARACTER_RELEASE_POLICY_VERSION, validateCharacterReleaseSnapshot } from "./release-executor";
+
 import {
+  CHARACTER_RELEASE_POLICY_VERSION,
   characterReleaseProposalBlockers,
   evaluateCharacterReleaseSnapshot,
+  validateCharacterReleaseSnapshot,
 } from "./release-validation";
 import { findOperationalGenerationRoute } from "./visual-authority";
 import { env } from "@/server/lib/env";

@@ -6,6 +6,7 @@ import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/share
 import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 import { characterReleaseContract } from "@/server/modules/admin-v2/characters/character-release-contract";
+import { requireMatchingProjectVersion } from "@/server/modules/admin-v2/characters/project-version";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -14,10 +15,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   return adminV2Route(request, async () => {
     const actor = await actorWithPermission(request, "character.release.review", { characterId: id });
     const body = await jsonBody(request, "characterReleaseReviewRequestSchema+idempotency-key+if-match");
-    const ifMatch = request.headers.get("if-match")?.trim().replace(/^W\//, "").replace(/^"|"$/g, "");
-    if (!ifMatch || !/^\d+$/.test(ifMatch) || Number(ifMatch) !== body.entityVersion) {
-      throw Errors.badRequest("If-Match must equal body entityVersion");
-    }
+    requireMatchingProjectVersion(request, body.entityVersion);
     if (body.confirmation !== `${id}:${releaseId}:${body.decision}`) throw Errors.badRequest("Confirmation did not match Release review target");
     const idempotencyKey = requireIdempotencyKey(request);
     const requestId = request.headers.get("x-request-id")?.trim() || crypto.randomUUID();

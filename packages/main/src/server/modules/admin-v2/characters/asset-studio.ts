@@ -21,7 +21,7 @@ import {
   hasHydratableMediaBlobAuthority,
   isMediaAssetOperationalForAuthority,
 } from "@/server/lib/media-asset-authority";
-import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-executor";
+import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-validation";
 import { characterWorkspaceTabLink } from "./character-deep-link";
 import { findOperationalGenerationRoute } from "./visual-authority";
 

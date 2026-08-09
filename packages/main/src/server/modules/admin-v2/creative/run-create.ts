@@ -27,7 +27,7 @@ import {
   ensureOperationalGenerationRoute,
   findOperationalGenerationRoute,
 } from "@/server/modules/admin-v2/characters/visual-authority";
-import { CHARACTER_RELEASE_POLICY_VERSION } from "@/server/modules/admin-v2/characters/release-executor";
+import { CHARACTER_RELEASE_POLICY_VERSION } from "@/server/modules/admin-v2/characters/release-validation";
 import {
   characterVisualProfileSnapshotHash,
   referenceSetSnapshotHash,

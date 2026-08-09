@@ -8,7 +8,7 @@ import { characterSoulBehaviorEvaluatorVersion } from "@idream/shared/admin";
 import { canonicalSha256 } from "../shared/canonical-json";
 import { toInputJson } from "../shared/prisma-json";
 import { characterSoulQaEvidence } from "@/server/test/character-soul-evidence";
-import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-policy";
+import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-validation";
 import {
   characterVisualProfileSnapshotHash,
   referenceSetSnapshotHash,

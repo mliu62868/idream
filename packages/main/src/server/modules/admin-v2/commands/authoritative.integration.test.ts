@@ -5,7 +5,7 @@ import { POST as publishRelease } from "@/app/api/v2/admin/characters/[id]/relea
 import { POST as retryFailed } from "@/app/api/v2/admin/creative/runs/[id]/commands/retry-failed/route";
 import { POST as resolveIncident } from "@/app/api/v2/admin/incidents/[id]/commands/resolve/route";
 import { POST as closeCase } from "@/app/api/v2/admin/cases/[id]/commands/close/route";
-import { CHARACTER_RELEASE_POLICY_VERSION } from "@/server/modules/admin-v2/characters/release-executor";
+import { CHARACTER_RELEASE_POLICY_VERSION } from "@/server/modules/admin-v2/characters/release-validation";
 
 describe("Admin API v2 authoritative command routes", () => {
   const suffix = randomUUID();

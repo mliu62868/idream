@@ -21,8 +21,10 @@ import {
   transitionCharacterRelease,
   transitionCharacterServing,
 } from "./transition";
-import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-policy";
-import { validateCharacterReleaseSnapshot } from "./release-validation";
+import {
+  CHARACTER_RELEASE_POLICY_VERSION,
+  validateCharacterReleaseSnapshot,
+} from "./release-validation";
 import {
   releaseAvatarAssetId as placementAssetId,
   releasePlacements,
@@ -30,8 +32,6 @@ import {
   releaseString as stringValue,
 } from "./release-snapshot-values";
 
-export { CHARACTER_RELEASE_POLICY_VERSION } from "./release-policy";
-export { validateCharacterReleaseSnapshot } from "./release-validation";
 
 // paused is an operator hold: an existing schedule remains durable and becomes
 // eligible after resume. retired is terminal and cannot accept new schedules.

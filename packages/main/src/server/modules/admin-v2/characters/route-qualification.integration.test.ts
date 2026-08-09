@@ -15,7 +15,7 @@ import { env } from "@/server/lib/env";
 import { createCharacter, createUser, purgeTestData } from "@/server/test/helpers";
 import { evaluateGenerationRouteQualification } from "./route-qualification";
 import { findQualifiedGenerationRoute } from "./visual-authority";
-import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-executor";
+import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-validation";
 import { canonicalSha256 } from "../shared/canonical-json";
 import {
   characterVisualProfileSnapshotHash,

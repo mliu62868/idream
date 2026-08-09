@@ -24,7 +24,7 @@ import {
   draftAssetRouteEntries,
   evaluateDraftAssetRouteAuthority,
 } from "./draft-asset-route-authority";
-import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-executor";
+import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-validation";
 import { findOperationalGenerationRoute } from "./visual-authority";
 
 export const characterProductionPurposes = [

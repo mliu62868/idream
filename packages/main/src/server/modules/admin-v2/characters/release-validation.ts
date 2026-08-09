@@ -26,7 +26,6 @@ import {
   lockCharacterGenerationAuthority,
   lockCharacterMediaAssetAuthorities,
 } from "./generation-authority-lock";
-import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-policy";
 import {
   characterReleaseSnapshotHash,
   characterVisualProfileSnapshotHash,
@@ -47,6 +46,9 @@ import {
 } from "./reference-media-authority";
 import { findLatestCharacterQaAuthorityRun } from "./qa-authority";
 import { requiredCharacterSoulChatProfiles } from "./soul-evaluation";
+
+// SPEC: 当前发布策略版本 —— 证据按它判新旧，升版即让旧 Release 的合格证明失效。
+export const CHARACTER_RELEASE_POLICY_VERSION = "character-release-policy-v2";
 
 export const releaseCheckKeys = [
   "release_generation_authority_kind",
