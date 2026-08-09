@@ -1,6 +1,6 @@
 import type { CharacterDraftPersona } from "@idream/shared/admin";
 import type { Prisma } from "@prisma/client";
-import { prisma } from "@/server/lib/db";
+import { inTransaction, prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
@@ -167,5 +167,5 @@ export async function createCharacterSoulVersion(input: {
     return result;
   };
 
-  return "$transaction" in db ? db.$transaction(execute) : execute(db);
+  return inTransaction(db, execute);
 }
