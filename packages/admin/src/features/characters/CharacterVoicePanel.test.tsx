@@ -39,6 +39,24 @@ async function runCommittedMutation<T>(input: {
   return { result, refreshed: true };
 }
 
+/**
+ * SPEC: journal 的幂等键存储替身 —— 同一个业务签名给同一个键，写入落地后释放。
+ */
+function createIdempotencyKeys() {
+  const keys = new Map<string, string>();
+  let sequence = 0;
+  return {
+    take: (signature: string) =>
+      keys.get(signature) ??
+      (keys.set(signature, `idem-${++sequence}`), keys.get(signature)!),
+    release: (signature: string) => {
+      keys.delete(signature);
+    },
+  };
+}
+
+let idempotencyKeys = createIdempotencyKeys();
+
 const candidateProfile = {
   id: "voice-candidate-1",
   version: 3,
@@ -130,6 +148,7 @@ describe("CharacterVoicePanel Fish Audio controls", () => {
     document.body.append(container);
     root = createRoot(container);
     adminV2Request.mockReset();
+    idempotencyKeys = createIdempotencyKeys();
   });
 
   afterEach(async () => {
@@ -152,7 +171,9 @@ describe("CharacterVoicePanel Fish Audio controls", () => {
         canManageDefaults={permissions.canManageDefaults ?? true}
         canWrite={permissions.canWrite ?? true}
         data={data}
+        releaseIdempotencyKey={idempotencyKeys.release}
         runCommittedMutation={runCommittedMutation}
+        takeIdempotencyKey={idempotencyKeys.take}
       />,
     ));
   }
@@ -250,6 +271,28 @@ describe("CharacterVoicePanel Fish Audio controls", () => {
       expectedActiveProfileId: "voice-active-1",
       expectedCurrentVoiceId: "fish-active-1",
     });
+  });
+
+  // SPEC: 重试一次失败的激活必须复用同一个幂等键。
+  // INTENT: 这四处写入原本每次点击现开一个 UUID —— 第一次请求其实已经到达服务端、只是响应
+  //         在网络上丢了的话，运营再点一次就是第二次真实激活。
+  it("replays a failed activation under the same idempotency key", async () => {
+    adminV2Request.mockRejectedValue(new Error("network down"));
+    await render();
+    await typeInto(
+      "#character-voice-activation-reason",
+      "Reviewed the candidate preview",
+    );
+
+    await act(async () => button("Activate reviewed voice")?.click());
+    await act(async () => button("Activate reviewed voice")?.click());
+
+    expect(adminV2Request).toHaveBeenCalledTimes(2);
+    const keys = adminV2Request.mock.calls.map(
+      ([, options]) => options?.idempotencyKey,
+    );
+    expect(keys[0]).toBeDefined();
+    expect(keys[1]).toBe(keys[0]);
   });
 
   it("blocks activation while the Fish Audio runtime is not ready", async () => {

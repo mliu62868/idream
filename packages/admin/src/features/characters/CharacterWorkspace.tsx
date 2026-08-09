@@ -863,7 +863,9 @@ function CharacterDetail({
             canManageDefaults={guardedPermissions.manageVoiceDefaults}
             canWrite={guardedPermissions.writeProject}
             data={data}
+            releaseIdempotencyKey={journal.releaseIdempotencyKey}
             runCommittedMutation={runCommittedMutation}
+            takeIdempotencyKey={journal.takeIdempotencyKey}
           />
         ) : tab === "preview" ? (
           <PreviewDiff

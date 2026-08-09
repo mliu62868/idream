@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { AdminCommandStatus } from "@idream/shared/admin";
 import { AdminV2RequestError, type adminV2Request } from "@/lib/admin-v2-api";
 import {
   characterCommandJournalCanAutoReplay,
@@ -6,6 +7,7 @@ import {
   createCharacterCommandJournal,
   parsePendingCharacterCommandJournal,
   type CharacterCommandJournal,
+  type CharacterCommandRecoveryCopy,
 } from "./character-command-journal";
 
 function deferred<T>() {
@@ -729,5 +731,350 @@ describe("character command journal — 落盘身份", () => {
     expect(listener).toHaveBeenCalled();
     expect(journal.getSnapshot()).not.toBe(before);
     expect(journal.getSnapshot()).toBe(journal.getSnapshot());
+  });
+});
+
+/**
+ * SPEC: 恢复回路的每一支都必须走得通，且各自给出自己的处置。
+ * INTENT: 这 15 个出口原本是调用方里一段 110 行的 switch，只能靠挂载整个工作台来间接摸到；
+ *         漏接一支不会有任何东西变红。收进 journal 之后每一支都是一次直接调用。
+ */
+const recoveryCopy: CharacterCommandRecoveryCopy = {
+  attached: ({ action }) => `attached:${action}`,
+  windowExpired: ({ action }) => `window-expired:${action}`,
+  evidenceIncomplete: ({ action }) => `evidence-incomplete:${action}`,
+  replayBlocked: ({ action }) => `replay-blocked:${action}`,
+  replayUnreconciled: ({ action }) => `replay-unreconciled:${action}`,
+  replayReconciled: ({ action, cause }) =>
+    `replay-reconciled:${action}:${cause instanceof Error ? cause.message : "?"}`,
+  replayRetrying: ({ action, cause }) =>
+    `replay-retrying:${action}:${cause instanceof Error ? cause.message : "?"}`,
+  commandFailed: ({ action, status }) => `command-failed:${action}:${status}`,
+  evidenceMissingCleared: ({ action }) => `evidence-missing-cleared:${action}`,
+  evidenceMissingLocked: ({ action }) => `evidence-missing-locked:${action}`,
+  statusBlocked: ({ action }) => `status-blocked:${action}`,
+  statusUnavailable: ({ action, cause }) =>
+    `status-unavailable:${action}:${cause instanceof Error ? cause.message : "?"}`,
+  reconcileNotice: ({ action, reason }) => `reconcile-notice:${action}:${reason}`,
+  reconcileStillActive: ({ action }) => `reconcile-still-active:${action}`,
+  reconcileFailed: ({ action }) => `reconcile-failed:${action}`,
+};
+
+const authorityCommand = {
+  commandId: "command-9",
+  commandType: "character.release.publish",
+  status: "running",
+  createdAt: "2026-07-16T10:00:00.000Z",
+} as unknown as AdminCommandStatus;
+
+function activeCommandConflictError(commandId: string) {
+  return new AdminV2RequestError("another command is active", 409, "conflict", {
+    activeCommandId: commandId,
+    activeCommandType: "character.release.publish",
+  });
+}
+
+/** 起一条受理状态不明的命令：首发失败，日志留着 endpoint / body / 幂等键。 */
+async function unknownAcceptance(
+  overrides: Partial<Parameters<typeof createCharacterCommandJournal>[0]> = {},
+) {
+  const context = createJournal(overrides);
+  context.server.rejectWith(new Error("network down"));
+  await context.journal.submit(releaseIntent);
+  return context;
+}
+
+/** 起一条已受理的命令：首发拿到 commandId，之后走轮询路径。 */
+async function acceptedCommand() {
+  const context = createJournal();
+  context.server.resolveWith({ commandId: "command-1" });
+  await context.journal.submit(releaseIntent);
+  return context;
+}
+
+function recoverInput(
+  journal: CharacterCommandJournal,
+  overrides: {
+    readonly load?: () => Promise<{ activeCommand: AdminCommandStatus | null }>;
+    readonly settle?: (input: {
+      action: string;
+      commandId: string;
+      onSettled: () => void;
+    }) => Promise<unknown>;
+  } = {},
+) {
+  return {
+    command: journal.getSnapshot().command!,
+    copy: recoveryCopy,
+    load: overrides.load ?? (async () => ({ activeCommand: null })),
+    settle:
+      overrides.settle ??
+      (async (input: { onSettled: () => void }) => {
+        input.onSettled();
+      }),
+  };
+}
+
+describe("character command journal — 恢复回路", () => {
+  it("clears the write lock when the replayed command is finally accepted", async () => {
+    const { journal, server } = await unknownAcceptance();
+    server.resolveWith({ commandId: "command-1" });
+
+    const outcome = await journal.recover(recoverInput(journal));
+
+    expect(outcome).toMatchObject({
+      disposition: "accepted",
+      message: null,
+      retryInMs: null,
+    });
+    expect(journal.getSnapshot().command?.commandId).toBe("command-1");
+  });
+
+  it("attaches to the command server authority says is already running", async () => {
+    const { journal, server } = await unknownAcceptance();
+    server.rejectWith(activeCommandConflictError("command-7"));
+
+    const outcome = await journal.recover(recoverInput(journal));
+
+    expect(outcome).toMatchObject({
+      disposition: "attached",
+      retryInMs: null,
+    });
+    expect(outcome.message).toBe("attached:release publish");
+    expect(journal.getSnapshot().command?.commandId).toBe("command-7");
+  });
+
+  it("stops replaying once the automatic window has expired", async () => {
+    let clock = 1_000;
+    const { journal } = await unknownAcceptance({ now: () => clock });
+    clock += 10 * 60_000;
+
+    const outcome = await journal.recover(recoverInput(journal));
+
+    expect(outcome).toMatchObject({
+      disposition: "window_expired",
+      message: "window-expired:Release publish",
+      retryInMs: null,
+    });
+    expect(journal.getSnapshot().notice?.kind).toBe(
+      "command_reconfirmation_required",
+    );
+  });
+
+  // SPEC: 日志缺件时不许原样重放，只能与服务端对账。
+  it("reconciles instead of replaying when the journal cannot be replayed exactly", async () => {
+    const { journal } = await unknownAcceptance();
+    const stored = journal.getSnapshot().command!;
+
+    const outcome = await journal.recover({
+      ...recoverInput(journal),
+      command: { ...stored, endpoint: undefined },
+    });
+
+    expect(outcome.disposition).toBe("evidence_incomplete");
+    // 对账干净了：日志已经丢弃，写入解锁。
+    expect(journal.getSnapshot().command).toBeNull();
+    expect(journal.getSnapshot().writesLocked).toBe(false);
+  });
+
+  // INVARIANT: 401/403 连「被拒绝」都算不上——保持锁定并继续等。
+  it("keeps writes locked and retries when the session cannot prove acceptance", async () => {
+    const { journal, server } = await unknownAcceptance();
+    server.rejectWith(
+      new AdminV2RequestError("no", 403, "forbidden"),
+    );
+
+    const outcome = await journal.recover(recoverInput(journal));
+
+    expect(outcome).toMatchObject({
+      disposition: "replay_blocked",
+      message: "replay-blocked:Release publish",
+    });
+    expect(outcome.retryInMs).toBeGreaterThan(0);
+    expect(journal.getSnapshot().writesLocked).toBe(true);
+  });
+
+  it("unlocks a rejected replay only after authority proves nothing is active", async () => {
+    const { journal, server } = await unknownAcceptance();
+    server.rejectWith(
+      new AdminV2RequestError("stale", 400, "bad_request"),
+    );
+
+    const outcome = await journal.recover(recoverInput(journal));
+
+    expect(outcome).toMatchObject({
+      disposition: "replay_reconciled",
+      message: "replay-reconciled:Release publish:stale",
+      retryInMs: null,
+    });
+    expect(journal.getSnapshot().writesLocked).toBe(false);
+  });
+
+  it("stays locked when a rejected replay finds an active command on the server", async () => {
+    const { journal, server } = await unknownAcceptance();
+    server.rejectWith(
+      new AdminV2RequestError("stale", 400, "bad_request"),
+    );
+
+    const outcome = await journal.recover(
+      recoverInput(journal, {
+        load: async () => ({ activeCommand: authorityCommand }),
+      }),
+    );
+
+    expect(outcome).toMatchObject({
+      disposition: "replay_unreconciled",
+      message: "reconcile-still-active:release publish",
+    });
+    expect(journal.getSnapshot().writesLocked).toBe(true);
+  });
+
+  it("retries an inconclusive replay failure on the protocol interval", async () => {
+    const { journal, server } = await unknownAcceptance();
+    server.rejectWith(new Error("socket hang up"));
+
+    const outcome = await journal.recover(recoverInput(journal));
+
+    expect(outcome).toMatchObject({
+      disposition: "replay_retrying",
+      message: "replay-retrying:Release publish:socket hang up",
+    });
+    expect(outcome.retryInMs).toBeGreaterThan(0);
+  });
+
+  it("settles and clears a command the worker finished successfully", async () => {
+    const { journal, server } = await acceptedCommand();
+    server.resolveWith({ status: "succeeded" });
+    const settle = vi.fn(async (input: { onSettled: () => void }) => {
+      input.onSettled();
+    });
+
+    const outcome = await journal.recover(recoverInput(journal, { settle }));
+
+    expect(outcome).toMatchObject({
+      disposition: "succeeded",
+      message: null,
+      retryInMs: null,
+    });
+    expect(settle).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "Release publish",
+        commandId: "command-1",
+      }),
+    );
+    expect(journal.getSnapshot().writesLocked).toBe(false);
+  });
+
+  it("names the terminal status when the worker failed the command", async () => {
+    const { journal, server } = await acceptedCommand();
+    server.resolveWith({ status: "failed" });
+
+    const outcome = await journal.recover(
+      recoverInput(journal, {
+        settle: async (input) => {
+          input.onSettled();
+        },
+      }),
+    );
+
+    expect(outcome).toMatchObject({
+      disposition: "failed",
+      message: "command-failed:Release publish:failed",
+    });
+  });
+
+  it("unlocks after 404 command evidence once authority proves nothing is active", async () => {
+    const { journal, server } = await acceptedCommand();
+    server.rejectWith(
+      new AdminV2RequestError("gone", 404, "not_found"),
+    );
+
+    const outcome = await journal.recover(recoverInput(journal));
+
+    expect(outcome).toMatchObject({
+      disposition: "evidence_missing_cleared",
+      message: "evidence-missing-cleared:Release publish",
+      retryInMs: null,
+    });
+    expect(journal.getSnapshot().writesLocked).toBe(false);
+  });
+
+  it("stays locked when 404 command evidence cannot be reconciled", async () => {
+    const { journal, server } = await acceptedCommand();
+    server.rejectWith(
+      new AdminV2RequestError("gone", 404, "not_found"),
+    );
+
+    const outcome = await journal.recover(
+      recoverInput(journal, {
+        load: async () => {
+          throw new Error("authority unreachable");
+        },
+      }),
+    );
+
+    expect(outcome).toMatchObject({
+      disposition: "evidence_missing_locked",
+      message: "evidence-missing-locked:Release publish",
+    });
+    expect(journal.getSnapshot().writesLocked).toBe(true);
+    expect(journal.getSnapshot().notice?.message).toBe(
+      "reconcile-failed:Release publish",
+    );
+  });
+
+  it("keeps polling when command evidence cannot be read with this session", async () => {
+    const { journal, server } = await acceptedCommand();
+    server.rejectWith(
+      new AdminV2RequestError("no", 401, "unauthorized"),
+    );
+
+    const outcome = await journal.recover(recoverInput(journal));
+
+    expect(outcome).toMatchObject({
+      disposition: "status_blocked",
+      message: "status-blocked:Release publish",
+    });
+    expect(outcome.retryInMs).toBeGreaterThan(0);
+  });
+
+  it("keeps polling when the status endpoint is simply unavailable", async () => {
+    const { journal, server } = await acceptedCommand();
+    server.rejectWith(new Error("gateway timeout"));
+
+    const outcome = await journal.recover(recoverInput(journal));
+
+    expect(outcome).toMatchObject({
+      disposition: "status_unavailable",
+      message: "status-unavailable:Release publish:gateway timeout",
+    });
+    expect(outcome.retryInMs).toBeGreaterThan(0);
+  });
+
+  it("says nothing while the command is still running", async () => {
+    const { journal, server } = await acceptedCommand();
+    server.resolveWith({ status: "running" });
+    journal.setRecoveryError("a stale note from an earlier round");
+
+    const outcome = await journal.recover(recoverInput(journal));
+
+    expect(outcome).toMatchObject({ disposition: "running", message: null });
+    expect(outcome.retryInMs).toBeGreaterThan(0);
+    expect(journal.getSnapshot().writesLocked).toBe(true);
+  });
+
+  // SPEC: 跨标签页清空日志走的是同一条对账实现，不是第二套判断。
+  it("reconciles a journal another tab cleared through the same authority path", async () => {
+    const { journal } = await unknownAcceptance();
+
+    const cleared = await journal.reconcileAuthority({
+      command: journal.getSnapshot().command!,
+      copy: recoveryCopy,
+      reason: "cross_tab_cleared",
+      load: async () => ({ activeCommand: null }),
+    });
+
+    expect(cleared).toBe(true);
+    expect(journal.getSnapshot().writesLocked).toBe(false);
   });
 });
