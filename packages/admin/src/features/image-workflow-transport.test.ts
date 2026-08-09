@@ -29,9 +29,9 @@ describe("image workflow browser transport", () => {
       "Use the reviewed first portrait as identity authority",
       "bootstrap-key",
     )).toMatchObject({
-      path: "/api/v2/admin/characters/character-1/identity-bootstrap",
+      operationId: "POST /api/v2/admin/characters/:id/identity-bootstrap",
       options: {
-        method: "POST",
+        path: { id: "character-1" },
         idempotencyKey: "bootstrap-key",
         ifMatch: 2,
         body: {
@@ -45,9 +45,9 @@ describe("image workflow browser transport", () => {
       },
     });
     expect(characterQaMutation("character-1", 7, [], "qa reason", "qa-key")).toMatchObject({
-      path: "/api/v2/admin/characters/character-1/qa-runs",
+      operationId: "POST /api/v2/admin/characters/:id/qa-runs",
       options: {
-        method: "POST",
+        path: { id: "character-1" },
         idempotencyKey: "qa-key",
         ifMatch: 7,
         body: { entityVersion: 7, checks: [], reason: "qa reason" },
@@ -61,9 +61,9 @@ describe("image workflow browser transport", () => {
       "character-1:propose-release",
       "release-key",
     )).toMatchObject({
-      path: "/api/v2/admin/characters/character-1/releases",
+      operationId: "POST /api/v2/admin/characters/:id/releases",
       options: {
-        method: "POST",
+        path: { id: "character-1" },
         idempotencyKey: "release-key",
         ifMatch: 8,
         body: {
@@ -86,9 +86,9 @@ describe("image workflow browser transport", () => {
       "character-1:release-1:approved",
       "review-key",
     )).toMatchObject({
-      path: "/api/v2/admin/characters/character-1/releases/release-1/review",
+      operationId: "POST /api/v2/admin/characters/:id/releases/:releaseId/review",
       options: {
-        method: "POST",
+        path: { id: "character-1", releaseId: "release-1" },
         idempotencyKey: "review-key",
         ifMatch: 3,
         body: {
@@ -100,9 +100,9 @@ describe("image workflow browser transport", () => {
       },
     });
     expect(creativeRetryFailedMutation("run-1", 4, "retry-key")).toMatchObject({
-      path: "/api/v2/admin/creative/runs/run-1/commands/retry-failed",
+      operationId: "POST /api/v2/admin/creative/runs/:id/commands/retry-failed",
       options: {
-        method: "POST",
+        path: { id: "run-1" },
         idempotencyKey: "retry-key",
         body: {
           entityVersion: 4,

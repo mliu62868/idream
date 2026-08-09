@@ -1,5 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import type { AdminPermissionKey } from "@idream/shared/admin";
 import {
   CharacterPerformanceWorkspace,
   CharacterWorkspace,
@@ -8,9 +9,17 @@ import {
 import { CreativeRunWorkspace } from "./creative/CreativeRunWorkspace";
 import { parseAdminPath } from "@/components/admin/nav-config";
 
+const FULL_CHARACTER_PERMISSIONS = new Set<AdminPermissionKey>([
+  "character.project.read",
+  "character.release.read",
+  "character.performance.read",
+  "character.project.write",
+  "creative.run.read",
+]);
+
 describe("Character and Creative operator workspaces", () => {
   it("renders explicit effective-permission denial instead of attempting a hidden write", () => {
-    const html = renderToStaticMarkup(<CharacterWorkspace actorId="test-admin" permissions={{ read: false, writeProject: false, proposeRelease: false, publishRelease: false, reviewRelease: false, writeVisual: false, evaluateRoute: false, readAssets: false, createAssets: false, reviewAssets: false, manageVoiceDefaults: false }} view={{ kind: "list" }} />);
+    const html = renderToStaticMarkup(<CharacterWorkspace actorId="test-admin" permissions={new Set()} view={{ kind: "list" }} />);
     expect(html).toContain("No permission");
     expect(html).toContain("character.project.read");
   });
@@ -37,7 +46,7 @@ describe("Character and Creative operator workspaces", () => {
   });
 
   it("renders Character-first search controls while Character data is loading", () => {
-    const html = renderToStaticMarkup(<CharacterWorkspace actorId="test-admin" permissions={{ read: true, writeProject: true, proposeRelease: true, publishRelease: true, reviewRelease: true, writeVisual: true, evaluateRoute: true, readAssets: true, createAssets: true, reviewAssets: true, manageVoiceDefaults: true }} view={{ kind: "list" }} />);
+    const html = renderToStaticMarkup(<CharacterWorkspace actorId="test-admin" permissions={FULL_CHARACTER_PERMISSIONS} view={{ kind: "list" }} />);
     expect(html).toContain("Characters");
     expect(html).not.toContain("Portfolio &amp; Projects");
     expect(html).toContain("Search characters");
@@ -55,7 +64,9 @@ describe("Character and Creative operator workspaces", () => {
 
   it("renders the analyst Character Performance route without granting Project access", () => {
     const html = renderToStaticMarkup(
-      <CharacterPerformanceWorkspace canOpenProjects={false} canRead={true} />,
+      <CharacterPerformanceWorkspace
+        permissions={new Set<AdminPermissionKey>(["character.performance.read"])}
+      />,
     );
     expect(html).toContain("Character Performance");
     expect(html).toContain("Loading release-attributed portfolio");

@@ -266,7 +266,7 @@ describe("Character create wizard restore authority", () => {
       if (
         path ===
           "/api/v2/admin/characters/existing-character/project" &&
-        !options?.method
+        options?.method === "GET"
       ) {
         throw new Error("restore unavailable");
       }
@@ -339,7 +339,7 @@ describe("Character create wizard restore authority", () => {
       if (
         path ===
           "/api/v2/admin/characters/existing-character/project" &&
-        !options?.method
+        options?.method === "GET"
       ) {
         restoreAttempts += 1;
         if (restoreAttempts === 1) throw new Error("temporary restore failure");
@@ -426,7 +426,7 @@ describe("Character create wizard restore authority", () => {
       if (
         path ===
           "/api/v2/admin/characters/legacy-character/project" &&
-        !options?.method
+        options?.method === "GET"
       ) {
         return {
           authority: {
@@ -506,7 +506,7 @@ describe("Character create wizard restore authority", () => {
       if (
         path ===
           "/api/v2/admin/characters/existing-character/project" &&
-        !options?.method
+        options?.method === "GET"
       ) {
         return {
           authority: {

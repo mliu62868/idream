@@ -11,7 +11,7 @@ import Link from "next/link";
 import type { FormEvent, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  AdminApiRequestError,
+  AdminV2RequestError,
   apiGet,
   apiWrite,
 } from "@/components/admin/api";
@@ -850,7 +850,7 @@ export function featuredVersionConflictFromError(
   cause: unknown,
 ): FeaturedVersionConflict | null {
   if (
-    !(cause instanceof AdminApiRequestError) ||
+    !(cause instanceof AdminV2RequestError) ||
     cause.status !== 409 ||
     !isRecord(cause.details) ||
     cause.details.reason !== "featured_setting_version_conflict" ||

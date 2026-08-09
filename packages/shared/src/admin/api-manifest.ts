@@ -341,6 +341,25 @@ type AdminV2DeclaredRequestRefById = {
 export type AdminV2DeclaredRequestRefFor<Id extends AdminV2DeclaredOperationId> =
   AdminV2DeclaredRequestRefById[Id];
 
+/** Same flat-lookup shape as the request refs, for the rest of the declaration. */
+type AdminV2DeclaredOperationById = {
+  [Operation in AdminV2DeclaredOperation as Operation["id"]]: Operation;
+};
+export type AdminV2DeclaredResponseRefFor<Id extends AdminV2DeclaredOperationId> =
+  AdminV2DeclaredOperationById[Id]["contract"]["response"];
+export type AdminV2DeclaredRouteFor<Id extends AdminV2DeclaredOperationId> =
+  AdminV2DeclaredOperationById[Id]["route"];
+
+/**
+ * SPEC: operation id -> its declaration, for callers that address an operation by id
+ *       instead of scanning for one by (method, pathname).
+ * INTENT: `Object.fromEntries` erases the literal keys, so the cast is what carries the
+ *         manifest's own guarantee — ids are unique, so every declared id is present.
+ */
+export const ADMIN_V2_API_OPERATIONS_BY_ID = Object.fromEntries(
+  ADMIN_V2_API_OPERATIONS.map((operation) => [operation.id, operation]),
+) as AdminV2DeclaredOperationById;
+
 function routePatternRegex(route: AdminV2RoutePattern): RegExp {
   const pattern = route
     .split("/")

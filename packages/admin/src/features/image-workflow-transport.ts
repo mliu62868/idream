@@ -5,6 +5,7 @@ import type {
   CharacterReleaseReviewRequest,
   CreativeRunRetryFailedCommandRequest,
 } from "@idream/shared/admin";
+import type { AdminV2OperationRequest } from "@/lib/admin-v2-operation";
 
 // SPEC: 上线之后的证据只有一个 tab —— 线上表现、组合决策和发布护栏是同一件事的三面。
 // 旧的 ?tab=portfolio 深链会回落到概览（characterWorkspaceTabFromSearch 的缺省）。
@@ -22,18 +23,6 @@ export const characterWorkspaceTabs = [
 
 export type CharacterWorkspaceTab = typeof characterWorkspaceTabs[number];
 
-type MutationOptions<TBody> = {
-  method: "POST";
-  body: TBody;
-  idempotencyKey?: string;
-  ifMatch?: number;
-};
-
-export type ImageWorkflowMutation<TBody> = {
-  path: string;
-  options: MutationOptions<TBody>;
-};
-
 export function characterWorkspaceTabFromSearch(search: string): CharacterWorkspaceTab {
   const requested = new URLSearchParams(search).get("tab");
   return characterWorkspaceTabs.includes(requested as CharacterWorkspaceTab)
@@ -47,16 +36,16 @@ export function characterQaMutation(
   checks: CharacterQaRunCreateRequest["checks"],
   reason: string,
   idempotencyKey: string,
-): ImageWorkflowMutation<CharacterQaRunCreateRequest> {
+): AdminV2OperationRequest<"POST /api/v2/admin/characters/:id/qa-runs"> {
   const body: CharacterQaRunCreateRequest = {
     entityVersion,
     checks,
     reason,
   };
   return {
-    path: `/api/v2/admin/characters/${characterId}/qa-runs`,
+    operationId: "POST /api/v2/admin/characters/:id/qa-runs",
     options: {
-      method: "POST",
+      path: { id: characterId },
       idempotencyKey,
       ifMatch: entityVersion,
       body,
@@ -73,7 +62,7 @@ export function characterIdentityBootstrapMutation(
   reviewDecisionId: string,
   reason: string,
   idempotencyKey: string,
-): ImageWorkflowMutation<CharacterIdentityBootstrapRequest> {
+): AdminV2OperationRequest<"POST /api/v2/admin/characters/:id/identity-bootstrap"> {
   const body: CharacterIdentityBootstrapRequest = {
     entityVersion,
     runId,
@@ -84,9 +73,9 @@ export function characterIdentityBootstrapMutation(
     confirmation: `BOOTSTRAP IDENTITY ${characterId}`,
   };
   return {
-    path: `/api/v2/admin/characters/${characterId}/identity-bootstrap`,
+    operationId: "POST /api/v2/admin/characters/:id/identity-bootstrap",
     options: {
-      method: "POST",
+      path: { id: characterId },
       idempotencyKey,
       ifMatch: entityVersion,
       body,
@@ -101,7 +90,7 @@ export function characterReleaseProposalMutation(
   reason: string,
   confirmation: string,
   idempotencyKey: string,
-): ImageWorkflowMutation<CharacterReleaseProposalRequest> {
+): AdminV2OperationRequest<"POST /api/v2/admin/characters/:id/releases"> {
   const body: CharacterReleaseProposalRequest = {
     entityVersion,
     qaRunId,
@@ -109,9 +98,9 @@ export function characterReleaseProposalMutation(
     confirmation,
   };
   return {
-    path: `/api/v2/admin/characters/${characterId}/releases`,
+    operationId: "POST /api/v2/admin/characters/:id/releases",
     options: {
-      method: "POST",
+      path: { id: characterId },
       idempotencyKey,
       ifMatch: entityVersion,
       body,
@@ -127,7 +116,7 @@ export function characterReleaseReviewMutation(
   reason: string,
   confirmation: string,
   idempotencyKey: string,
-): ImageWorkflowMutation<CharacterReleaseReviewRequest> {
+): AdminV2OperationRequest<"POST /api/v2/admin/characters/:id/releases/:releaseId/review"> {
   const body: CharacterReleaseReviewRequest = {
     entityVersion,
     decision,
@@ -135,9 +124,9 @@ export function characterReleaseReviewMutation(
     confirmation,
   };
   return {
-    path: `/api/v2/admin/characters/${characterId}/releases/${releaseId}/review`,
+    operationId: "POST /api/v2/admin/characters/:id/releases/:releaseId/review",
     options: {
-      method: "POST",
+      path: { id: characterId, releaseId },
       idempotencyKey,
       ifMatch: entityVersion,
       body,
@@ -149,7 +138,7 @@ export function creativeRetryFailedMutation(
   runId: string,
   entityVersion: number,
   idempotencyKey: string,
-): ImageWorkflowMutation<CreativeRunRetryFailedCommandRequest> {
+): AdminV2OperationRequest<"POST /api/v2/admin/creative/runs/:id/commands/retry-failed"> {
   const body: CreativeRunRetryFailedCommandRequest = {
     entityVersion,
     reason: {
@@ -159,9 +148,9 @@ export function creativeRetryFailedMutation(
     confirmation: `${runId}:retry-failed`,
   };
   return {
-    path: `/api/v2/admin/creative/runs/${runId}/commands/retry-failed`,
+    operationId: "POST /api/v2/admin/creative/runs/:id/commands/retry-failed",
     options: {
-      method: "POST",
+      path: { id: runId },
       idempotencyKey,
       body,
     },

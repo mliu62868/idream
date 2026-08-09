@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { AdminApiRequestError } from "@/components/admin/api";
+import { AdminV2RequestError } from "@/components/admin/api";
 import {
   ContentMerchandisingWorkspace,
   type FeaturedItem,
@@ -95,7 +95,7 @@ describe("Content merchandising permissions", () => {
   it("recognizes only the canonical Featured version conflict details", () => {
     expect(
       featuredVersionConflictFromError(
-        new AdminApiRequestError(
+        new AdminV2RequestError(
           "Featured configuration changed before this save was applied",
           409,
           "conflict",
@@ -112,7 +112,7 @@ describe("Content merchandising permissions", () => {
     });
     expect(
       featuredVersionConflictFromError(
-        new AdminApiRequestError("Other conflict", 409, "conflict", {}),
+        new AdminV2RequestError("Other conflict", 409, "conflict", {}),
       ),
     ).toBeNull();
   });

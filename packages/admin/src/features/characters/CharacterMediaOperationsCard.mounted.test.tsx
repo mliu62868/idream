@@ -136,10 +136,10 @@ describe("Character Voice reclaim confirmation", () => {
     expect(submit?.disabled).toBe(false);
     await act(async () => submit?.click());
     await waitUntil(() => onReclaimVoice.mock.calls.length === 1);
+    // SPEC: 投影里的 actionHref 只回答「这条请求可不可以由运营回收」；回收走哪条路由由
+    //       manifest 决定，不再从投影里读回来当 URL 用。
     expect(onReclaimVoice).toHaveBeenCalledWith({
       requestId,
-      actionHref:
-        `/api/v2/admin/characters/character-1/voice-clips/${requestId}/commands/reclaim`,
       confirmation,
       reason: "Recover after verified worker crash",
     });

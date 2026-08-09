@@ -7,13 +7,9 @@ import Image from "next/image";
 import {
   characterQaAuthorityMatches,
   latestCharacterQaAuthorityRun,
-  characterLookArchiveResponseSchema,
-  characterReferenceSetPublishResponseSchema,
-  characterVoiceClipReclaimResponseSchema,
-  characterPortfolioResponseSchema,
-  characterWorkspaceDetailSchema,
   type CharacterPortfolioItem,
   type CharacterMediaOperationsProjection,
+  type AdminPermissionKey,
   type CharacterQaCheckInput,
   type CharacterWorkspaceDetail,
 } from "@idream/shared/admin";
@@ -72,9 +68,13 @@ import {
 } from "@/features/operations/WorkspaceUi";
 import {
   AdminV2RequestError,
-  adminV2Request,
   setWorkspaceUrl,
 } from "@/lib/admin-v2-api";
+import {
+  adminV2Operation,
+  adminV2OperationAllowed,
+  adminV2OperationEndpoint,
+} from "@/lib/admin-v2-operation";
 import {
   useAuthorityResource,
   usePollingTask,
@@ -99,19 +99,47 @@ import {
   type PendingCharacterCommand,
 } from "./character-command-journal";
 
-type Permissions = {
-  read: boolean;
-  writeProject: boolean;
-  proposeRelease: boolean;
-  publishRelease: boolean;
-  reviewRelease: boolean;
-  writeVisual: boolean;
-  evaluateRoute: boolean;
-  readAssets: boolean;
-  createAssets: boolean;
-  reviewAssets: boolean;
-  manageVoiceDefaults: boolean;
-};
+/**
+ * SPEC: 角色运营台每一个受写入门控的能力 → 它需要的 effective permission key。
+ * INTENT: shell 曾经在 nav 的 render 里手拼这 11 个键传下来，那层拼装没有任何编译期约束；
+ *         下游又把其中 8 个逐条与 `!writesLocked` 相与，漏掉的 manageVoiceDefaults 让「保存
+ *         系统语音默认」在 durable command 待决期间仍然可点 —— 运营点下去得到的是一个抛出的
+ *         错误而不是禁用态。键集和写入锁各自只剩一处，这一类漏项不再可表达。
+ */
+export const CHARACTER_WORKSPACE_WRITES = {
+  writeProject: "character.project.write",
+  proposeRelease: "character.release.propose",
+  publishRelease: "character.release.publish",
+  reviewRelease: "character.release.review",
+  writeVisual: "content.official.write",
+  evaluateRoute: "content.production.write",
+  createAssets: "creative.run.write",
+  reviewAssets: "creative.run.review",
+  manageVoiceDefaults: "generation.config.write",
+} as const satisfies Record<string, AdminPermissionKey>;
+
+type CharacterWorkspaceWrite = keyof typeof CHARACTER_WORKSPACE_WRITES;
+
+type Permissions =
+  & { readonly read: boolean; readonly readAssets: boolean }
+  & { readonly [Capability in CharacterWorkspaceWrite]: boolean };
+
+export function characterWorkspacePermissions(
+  granted: ReadonlySet<AdminPermissionKey>,
+  writesLocked: boolean,
+): Permissions {
+  const writes = Object.fromEntries(
+    Object.entries(CHARACTER_WORKSPACE_WRITES).map(([capability, permission]) => [
+      capability,
+      granted.has(permission) && !writesLocked,
+    ]),
+  ) as { [Capability in CharacterWorkspaceWrite]: boolean };
+  return {
+    read: adminV2OperationAllowed("GET /api/v2/admin/characters/:id", granted),
+    readAssets: granted.has("creative.run.read"),
+    ...writes,
+  };
+}
 
 type ProjectDraft = Pick<
   CharacterWorkspaceDetail["project"],
@@ -192,7 +220,6 @@ export function CharacterMediaOperationsCard({
   readonly reclaimingVoiceRequestId?: string | null;
   readonly onReclaimVoice?: (input: {
     readonly requestId: string;
-    readonly actionHref: string;
     readonly confirmation: string;
     readonly reason: string;
   }) => Promise<void>;
@@ -200,7 +227,6 @@ export function CharacterMediaOperationsCard({
   const { t } = useAdminI18n();
   const [pendingReclaim, setPendingReclaim] = useState<{
     readonly requestId: string;
-    readonly actionHref: string;
     readonly confirmation: string;
     readonly attemptNo: number;
     readonly provider: string | null;
@@ -288,7 +314,6 @@ export function CharacterMediaOperationsCard({
                       onClick={() =>
                         setPendingReclaim({
                           requestId: operation.requestId!,
-                          actionHref: operation.recoverability.actionHref!,
                           confirmation:
                             operation.recoverability.actionConfirmation!,
                           attemptNo: operation.attempt?.number ?? 1,
@@ -352,7 +377,6 @@ export function CharacterMediaOperationsCard({
           onSubmit: (reason) =>
             onReclaimVoice({
               requestId: pendingReclaim.requestId,
-              actionHref: pendingReclaim.actionHref,
               confirmation: pendingReclaim.confirmation,
               reason,
             }),
@@ -1002,10 +1026,9 @@ function CharacterPortfolio({
     enabled: canRead,
     load: useCallback(async () => {
       try {
-        return await adminV2Request(
-          `/api/v2/admin/characters/portfolio?${characterPortfolioQuery(applied, true)}`,
-          { schema: characterPortfolioResponseSchema },
-        );
+        return await adminV2Operation("GET /api/v2/admin/characters/portfolio", {
+          query: characterPortfolioQuery(applied, true),
+        });
       } catch (reason) {
         // INTENT: 两种模式各有一句能读懂的兜底；抛出去让 resource 统一收成 error。
         throw reason instanceof Error ? reason : new Error(
@@ -1400,10 +1423,10 @@ function ProjectEditor({
         await runCommittedMutation({
           action: "Character Project autosave",
           commit: async () => {
-            const result = await adminV2Request(
-              `/api/v2/admin/characters/${data.character.id}/project`,
+            const result = await adminV2Operation(
+              "PATCH /api/v2/admin/characters/:id/project",
               {
-                method: "PATCH",
+                path: { id: data.character.id },
                 ifMatch: data.project.version,
                 body: {
                   ...draft,
@@ -2030,15 +2053,11 @@ export function VisualIdentityPanel({
       await runCommittedMutation({
         action: "Reference Set publication",
         commit: () =>
-          adminV2Request(
-            `/api/v2/admin/characters/${data.character.id}/reference-sets`,
-            {
-              method: "POST",
-              idempotencyKey: requestIdentity.key,
-              schema: characterReferenceSetPublishResponseSchema,
-              body,
-            },
-          ),
+          adminV2Operation("POST /api/v2/admin/characters/:id/reference-sets", {
+            path: { id: data.character.id },
+            idempotencyKey: requestIdentity.key,
+            body,
+          }),
         afterRefresh: () => {
           delete idempotencyKeys.current[requestIdentity.signature];
           setReferenceReason("");
@@ -2080,15 +2099,11 @@ export function VisualIdentityPanel({
       await runCommittedMutation({
         action: "Character Look archive",
         commit: () =>
-          adminV2Request(
-            `/api/v2/admin/characters/${data.character.id}/looks/${look.id}`,
-            {
-              method: "PATCH",
-              idempotencyKey: requestIdentity.key,
-              schema: characterLookArchiveResponseSchema,
-              body,
-            },
-          ),
+          adminV2Operation("PATCH /api/v2/admin/characters/:id/looks/:lookId", {
+            path: { id: data.character.id, lookId: look.id },
+            idempotencyKey: requestIdentity.key,
+            body,
+          }),
         afterRefresh: () => {
           delete idempotencyKeys.current[requestIdentity.signature];
           setSelectedLookId(null);
@@ -2970,7 +2985,7 @@ export function PreviewDiff({
       );
       await runCommittedMutation({
         action: "Character QA Run",
-        commit: () => adminV2Request(mutation.path, mutation.options),
+        commit: () => adminV2Operation(mutation.operationId, mutation.options),
         afterRefresh: () => {
           delete qaIdempotencyKeys.current[requestSignature];
         },
@@ -3746,7 +3761,10 @@ function ReleasePanel({
       const outcome = await journal.submit({
         action: `Release ${kind}`,
         signature: `${kind}:${releaseId}:${JSON.stringify(body)}`,
-        endpoint: `/api/v2/admin/characters/${data.character.id}/releases/${releaseId}/commands/${kind}`,
+        endpoint: adminV2OperationEndpoint(
+          `POST /api/v2/admin/characters/:id/releases/:releaseId/commands/${kind}`,
+          { id: data.character.id, releaseId },
+        ),
         body,
       });
       if (outcome.kind === "accepted") {
@@ -3815,7 +3833,7 @@ function ReleasePanel({
       );
       await runCommittedMutation({
         action: "Release proposal",
-        commit: () => adminV2Request(mutation.path, mutation.options),
+        commit: () => adminV2Operation(mutation.operationId, mutation.options),
         afterRefresh: () => {
           delete proposalIdempotencyKeys.current[requestSignature];
           setReleaseConfirmed(false);
@@ -3857,7 +3875,7 @@ function ReleasePanel({
       );
       await runCommittedMutation({
         action: "Release review",
-        commit: () => adminV2Request(mutation.path, mutation.options),
+        commit: () => adminV2Operation(mutation.operationId, mutation.options),
         afterRefresh: () => {
           delete releaseReviewIdempotencyKeys.current[requestSignature];
           setReleaseConfirmed(false);
@@ -3889,10 +3907,10 @@ function ReleasePanel({
       await runCommittedMutation({
         action: "Release validation",
         commit: () =>
-          adminV2Request(
-            `/api/v2/admin/characters/${data.character.id}/releases/${candidate.release.id}/validation`,
+          adminV2Operation(
+            "POST /api/v2/admin/characters/:id/releases/:releaseId/validation",
             {
-              method: "POST",
+              path: { id: data.character.id, releaseId: candidate.release.id },
               idempotencyKey,
               body: {
                 entityVersion: candidate.release.version,
@@ -3934,7 +3952,10 @@ function ReleasePanel({
       const outcome = await journal.submit({
         action: `Serving ${action}`,
         signature: `${action}:${data.character.id}:${JSON.stringify(body)}`,
-        endpoint: `/api/v2/admin/characters/${data.character.id}/commands/${action}`,
+        endpoint: adminV2OperationEndpoint(
+          `POST /api/v2/admin/characters/:id/commands/${action}`,
+          { id: data.character.id },
+        ),
         body,
       });
       if (outcome.kind === "accepted") {
@@ -4343,10 +4364,14 @@ export function MonitorPanel({
       await runCommittedMutation({
         action: `${window} Release monitor refresh`,
         commit: () =>
-          adminV2Request(
-            `/api/v2/admin/characters/${data.character.id}/releases/${current.release.id}/monitors/${window}/refresh`,
+          adminV2Operation(
+            "POST /api/v2/admin/characters/:id/releases/:releaseId/monitors/:window/refresh",
             {
-              method: "POST",
+              path: {
+                id: data.character.id,
+                releaseId: current.release.id,
+                window,
+              },
               idempotencyKey,
               body: { entityVersion: current.release.version },
             },
@@ -4563,10 +4588,10 @@ export function PerformancePanel({
       await runCommittedMutation({
         action: "Portfolio decision",
         commit: () =>
-          adminV2Request(
-            `/api/v2/admin/characters/${data.character.id}/portfolio-decisions`,
+          adminV2Operation(
+            "POST /api/v2/admin/characters/:id/portfolio-decisions",
             {
-              method: "POST",
+              path: { id: data.character.id },
               idempotencyKey,
               body,
             },
@@ -4807,12 +4832,16 @@ export function PerformancePanel({
 function CharacterDetail({
   actorId,
   id,
-  permissions,
+  permissions: granted,
 }: {
   actorId: string;
   id: string;
-  permissions: Permissions;
+  permissions: ReadonlySet<AdminPermissionKey>;
 }) {
+  const permissions = useMemo(
+    () => characterWorkspacePermissions(granted, false),
+    [granted],
+  );
   const { locale, t } = useAdminI18n();
   const [data, setData] = useState<CharacterWorkspaceDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -4849,8 +4878,8 @@ function CharacterDetail({
     setLoading(true);
     setError(null);
     try {
-      const next = await adminV2Request(`/api/v2/admin/characters/${id}`, {
-        schema: characterWorkspaceDetailSchema,
+      const next = await adminV2Operation("GET /api/v2/admin/characters/:id", {
+        path: { id },
       });
       if (request.isCurrent()) setData(next);
     } catch (cause) {
@@ -4871,8 +4900,8 @@ function CharacterDetail({
     setLoading(true);
     setError(null);
     try {
-      const next = await adminV2Request(`/api/v2/admin/characters/${id}`, {
-        schema: characterWorkspaceDetailSchema,
+      const next = await adminV2Operation("GET /api/v2/admin/characters/:id", {
+        path: { id },
       });
       setData(next);
       return next;
@@ -4953,7 +4982,6 @@ function CharacterDetail({
   const reclaimVoiceRequest = useCallback(
     async (input: {
       readonly requestId: string;
-      readonly actionHref: string;
       readonly confirmation: string;
       readonly reason: string;
     }) => {
@@ -4965,16 +4993,18 @@ function CharacterDetail({
         await runCommittedMutation({
           action: "Voice request reclaim",
           commit: () =>
-            adminV2Request(input.actionHref, {
-              method: "POST",
-              idempotencyKey,
-              body: {
-                requestId: input.requestId,
-                confirmation: input.confirmation,
-                reason: input.reason,
+            adminV2Operation(
+              "POST /api/v2/admin/characters/:id/voice-clips/:requestId/commands/reclaim",
+              {
+                path: { id, requestId: input.requestId },
+                idempotencyKey,
+                body: {
+                  requestId: input.requestId,
+                  confirmation: input.confirmation,
+                  reason: input.reason,
+                },
               },
-              schema: characterVoiceClipReclaimResponseSchema,
-            }),
+            ),
         });
         journal.releaseIdempotencyKey(signature);
       } catch (cause) {
@@ -4991,7 +5021,7 @@ function CharacterDetail({
         setReclaimingVoiceRequestId(null);
       }
     },
-    [journal, runCommittedMutation],
+    [id, journal, runCommittedMutation],
   );
   const settlePendingCommand = useCallback(
     (
@@ -5421,17 +5451,7 @@ function CharacterDetail({
     data.character.imageUrl;
   const visibleTabs = characterWorkspaceTabs;
   const writesLocked = commandWritesLocked || data.activeCommand !== null;
-  const guardedPermissions = {
-    ...permissions,
-    writeProject: permissions.writeProject && !writesLocked,
-    proposeRelease: permissions.proposeRelease && !writesLocked,
-    publishRelease: permissions.publishRelease && !writesLocked,
-    reviewRelease: permissions.reviewRelease && !writesLocked,
-    writeVisual: permissions.writeVisual && !writesLocked,
-    evaluateRoute: permissions.evaluateRoute && !writesLocked,
-    createAssets: permissions.createAssets && !writesLocked,
-    reviewAssets: permissions.reviewAssets && !writesLocked,
-  };
+  const guardedPermissions = characterWorkspacePermissions(granted, writesLocked);
   return (
     <section aria-labelledby="character-workspace-title">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
@@ -5568,9 +5588,7 @@ function CharacterDetail({
         </div>
       ) : null}
       <CharacterMediaOperationsCard
-        canReclaimVoice={
-          guardedPermissions.writeProject && !writesLocked
-        }
+        canReclaimVoice={guardedPermissions.writeProject}
         onReclaimVoice={reclaimVoiceRequest}
         projection={data.mediaOperations}
         reclaimingVoiceRequestId={reclaimingVoiceRequestId}
@@ -5682,7 +5700,7 @@ function CharacterDetail({
         ) : tab === "voice" ? (
           <CharacterVoicePanel
             canActivate={guardedPermissions.publishRelease}
-            canManageDefaults={permissions.manageVoiceDefaults}
+            canManageDefaults={guardedPermissions.manageVoiceDefaults}
             canWrite={guardedPermissions.writeProject}
             data={data}
             runCommittedMutation={runCommittedMutation}
@@ -5732,12 +5750,13 @@ function CharacterDetail({
 export function CharacterWorkspace({
   actorId,
   view,
-  permissions,
+  permissions: granted,
 }: {
   actorId: string;
   view: AdminSubview;
-  permissions: Permissions;
+  permissions: ReadonlySet<AdminPermissionKey>;
 }) {
+  const permissions = characterWorkspacePermissions(granted, false);
   if (view.kind === "new") {
     return (
       <CharacterCreateWizard
@@ -5752,7 +5771,7 @@ export function CharacterWorkspace({
       actorId={actorId}
       id={view.id}
       key={`${actorId}:${view.id}`}
-      permissions={permissions}
+      permissions={granted}
     />
   ) : (
     <CharacterPortfolio
@@ -5766,18 +5785,19 @@ export function CharacterWorkspace({
 }
 
 export function CharacterPerformanceWorkspace({
-  canOpenProjects,
-  canRead,
+  permissions,
 }: {
-  canOpenProjects: boolean;
-  canRead: boolean;
+  permissions: ReadonlySet<AdminPermissionKey>;
 }) {
   return (
     <CharacterPortfolio
       canOpenAssets={false}
       canCreate={false}
-      canOpenProjects={canOpenProjects}
-      canRead={canRead}
+      canOpenProjects={adminV2OperationAllowed(
+        "GET /api/v2/admin/characters/:id",
+        permissions,
+      )}
+      canRead={permissions.has("character.performance.read")}
       mode="performance"
     />
   );

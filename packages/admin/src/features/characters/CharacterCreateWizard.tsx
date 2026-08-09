@@ -3,18 +3,16 @@
 import { useAdminI18n } from "@/components/admin/i18n";
 import {
   characterProjectCreateRequestSchema,
-  characterProjectCreateResponseSchema,
   characterProjectDraftSchema,
-  characterProjectDraftResumeSchema,
   characterProjectProductionReadyDraftSchema,
-  characterWorkspaceProjectSchema,
   type CharacterProjectDraft,
   type CharacterProjectDraftAuthority,
 } from "@idream/shared/admin";
 import { ArrowLeft, ArrowRight, Check, Loader2, ShieldAlert } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { AdminV2RequestError, adminV2Request } from "@/lib/admin-v2-api";
+import { AdminV2RequestError } from "@/lib/admin-v2-api";
+import { adminV2Operation } from "@/lib/admin-v2-operation";
 import { cn } from "@/lib/utils";
 import { WorkspaceButton, fieldClass, textAreaClass } from "@/features/operations/WorkspaceUi";
 import {
@@ -312,9 +310,9 @@ export function CharacterCreateWizard({
             committedTargetId: receipt.committedTargetId,
           });
           setCreateIntent(committed);
-          const resumed = await adminV2Request(
-            `/api/v2/admin/characters/${encodeURIComponent(receipt.committedTargetId)}/project`,
-            { schema: characterProjectDraftResumeSchema },
+          const resumed = await adminV2Operation(
+            "GET /api/v2/admin/characters/:id/project",
+            { path: { id: receipt.committedTargetId } },
           );
           authorityRef.current = resumed.authority;
           lastSavedKeyRef.current = draftKey(resumed.draft);
@@ -386,9 +384,9 @@ export function CharacterCreateWizard({
           createIntent?.status === "committed_projection_pending" &&
           createIntent.committedTargetId
         ) {
-          const resumed = await adminV2Request(
-            `/api/v2/admin/characters/${encodeURIComponent(createIntent.committedTargetId)}/project`,
-            { schema: characterProjectDraftResumeSchema },
+          const resumed = await adminV2Operation(
+            "GET /api/v2/admin/characters/:id/project",
+            { path: { id: createIntent.committedTargetId } },
           );
           authorityRef.current = resumed.authority;
           lastSavedKeyRef.current = draftKey(resumed.draft);
@@ -477,10 +475,8 @@ export function CharacterCreateWizard({
         }
         pendingCreateIntent = intent;
         setCreateIntent(intent);
-        const created = await adminV2Request("/api/v2/admin/characters", {
-          method: "POST",
+        const created = await adminV2Operation("POST /api/v2/admin/characters", {
           idempotencyKey: intent.idempotencyKey,
-          schema: characterProjectCreateResponseSchema,
           body,
         });
         const committed = updateDurableMutationIntent(intent, {
@@ -509,10 +505,9 @@ export function CharacterCreateWizard({
           );
         }
       } else {
-        const saved = await adminV2Request(`/api/v2/admin/characters/${authorityRef.current.characterId}/project`, {
-          method: "PATCH",
+        const saved = await adminV2Operation("PATCH /api/v2/admin/characters/:id/project", {
+          path: { id: authorityRef.current.characterId },
           ifMatch: authorityRef.current.projectVersion,
-          schema: characterWorkspaceProjectSchema,
           body: {
             entityVersion: authorityRef.current.projectVersion,
             ownerId: snapshot.commercialIntent.ownerId,
@@ -595,8 +590,8 @@ export function CharacterCreateWizard({
     setSaveState("Saving");
     setError(null);
     try {
-      const resumed = await adminV2Request(`/api/v2/admin/characters/${encodeURIComponent(characterId)}/project`, {
-        schema: characterProjectDraftResumeSchema,
+      const resumed = await adminV2Operation("GET /api/v2/admin/characters/:id/project", {
+        path: { id: characterId },
       });
       authorityRef.current = resumed.authority;
       lastSavedKeyRef.current = draftKey(resumed.draft);

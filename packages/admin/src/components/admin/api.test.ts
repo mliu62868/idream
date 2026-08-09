@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  AdminApiRequestError,
+  AdminV2RequestError,
   apiWrite,
   formatApiError,
 } from "./api";
@@ -52,7 +52,7 @@ describe("admin API error formatting", () => {
         "PUT",
         {},
       ).catch((cause: unknown) => cause);
-      expect(error).toBeInstanceOf(AdminApiRequestError);
+      expect(error).toBeInstanceOf(AdminV2RequestError);
       expect(error).toMatchObject({
         status: 409,
         code: "conflict",
