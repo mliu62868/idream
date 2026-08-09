@@ -10,7 +10,7 @@ import {
 } from "@idream/shared/admin";
 import { loadCharacterSoulSnapshot, requiredChatCanaryProfiles } from "@idream/shared";
 import type { Prisma } from "@prisma/client";
-import { prisma } from "@/server/lib/db";
+import { inTransaction, prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
@@ -1866,5 +1866,5 @@ export async function refreshCharacterReleaseMonitor(input: {
   } });
   return response;
   };
-  return db ? execute(db) : prisma.$transaction(execute);
+  return inTransaction(db, execute);
 }

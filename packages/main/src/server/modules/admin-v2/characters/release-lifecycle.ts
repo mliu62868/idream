@@ -1,5 +1,5 @@
 import type { Prisma } from "@prisma/client";
-import { prisma } from "@/server/lib/db";
+import { inTransaction } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 
@@ -373,7 +373,7 @@ export async function proposeCharacterRelease(input: {
     await tx.mainOutboxEvent.create({ data: { eventType: "character.release.proposed.v2", aggregateType: "character_release", aggregateId: release.id, payload: toInputJson({ characterId: input.characterId, releaseId: release.id, snapshotHash: release.snapshotHash, version: release.version }) } });
     return release;
   };
-  return db ? execute(db) : prisma.$transaction(execute);
+  return inTransaction(db, execute);
 }
 
 export async function validateCharacterRelease(input: {
@@ -421,7 +421,7 @@ export async function validateCharacterRelease(input: {
       checks: validation.checks,
     };
   };
-  return db ? execute(db) : prisma.$transaction(execute);
+  return inTransaction(db, execute);
 }
 
 export async function reviewCharacterRelease(input: {
@@ -466,5 +466,5 @@ export async function reviewCharacterRelease(input: {
     await tx.mainOutboxEvent.create({ data: { eventType: `character.release.${input.decision}.v2`, aggregateType: "character_release", aggregateId: release.id, payload: toInputJson({ characterId: input.characterId, releaseId: release.id, status: updated.status, version: updated.version }) } });
     return updated;
   };
-  return db ? execute(db) : prisma.$transaction(execute);
+  return inTransaction(db, execute);
 }
