@@ -324,10 +324,10 @@ describe("Character Video Studio", () => {
     expect(container.textContent).toContain("13m 6s");
     expect(container.textContent).toContain("7-day average");
     await waitUntil(() => adminV2Request.mock.calls.some(
-      ([path, options]) => path.includes("/api/v2/admin/creative/runs?") && !options?.method,
+      ([path, options]) => path.includes("/api/v2/admin/creative/runs?") && options?.method === "GET",
     ));
     const listCall = adminV2Request.mock.calls.find(
-      ([path, options]) => path.includes("/api/v2/admin/creative/runs?") && !options?.method,
+      ([path, options]) => path.includes("/api/v2/admin/creative/runs?") && options?.method === "GET",
     );
     expect(new URL(String(listCall?.[0]), "http://localhost").searchParams.get("purpose"))
       .toBe("character_video");

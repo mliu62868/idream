@@ -1,12 +1,7 @@
 "use client";
 
 import {
-  characterVoiceActivationResponseSchema,
-  characterVoiceCloneCreateResponseSchema,
-  characterVoiceSystemDefaultResetResponseSchema,
   DEFAULT_FISH_AUDIO_DELIVERY,
-  voiceDefaultPreviewResponseSchema,
-  voiceDefaultSettingsUpdateResponseSchema,
   type FishAudioCatalogVoiceId,
   type FishAudioDeliverySettings,
   type CharacterWorkspaceDetail,
@@ -31,7 +26,7 @@ import {
   fieldClass,
   textAreaClass,
 } from "@/features/operations/WorkspaceUi";
-import { adminV2FormRequest, adminV2Request } from "@/lib/admin-v2-api";
+import { adminV2Operation } from "@/lib/admin-v2-operation";
 import { cn } from "@/lib/utils";
 
 type RunCommittedMutation = <T>(input: {
@@ -141,14 +136,11 @@ export function CharacterVoicePanel({
       const mutation = await runCommittedMutation({
         action: "Fish Audio voice clone",
         commit: () =>
-          adminV2FormRequest(
-            `/api/v2/admin/characters/${encodeURIComponent(data.character.id)}/voice-clones`,
-            {
-              form,
-              idempotencyKey: crypto.randomUUID(),
-              schema: characterVoiceCloneCreateResponseSchema,
-            },
-          ),
+          adminV2Operation("POST /api/v2/admin/characters/:id/voice-clones", {
+            path: { id: data.character.id },
+            idempotencyKey: crypto.randomUUID(),
+            form,
+          }),
         afterRefresh: () => {
           setFile(null);
           setReferenceText("");
@@ -177,17 +169,16 @@ export function CharacterVoicePanel({
       const mutation = await runCommittedMutation({
         action: "Activate Fish Audio voice",
         commit: () =>
-          adminV2Request(
-            `/api/v2/admin/characters/${encodeURIComponent(data.character.id)}/voice-clones/${encodeURIComponent(candidate.id)}/activate`,
+          adminV2Operation(
+            "POST /api/v2/admin/characters/:id/voice-clones/:profileId/activate",
             {
-              method: "POST",
+              path: { id: data.character.id, profileId: candidate.id },
               idempotencyKey: crypto.randomUUID(),
               body: {
                 reason: activationReason.trim(),
                 expectedActiveProfileId: active?.id ?? null,
                 expectedCurrentVoiceId: data.voice.currentVoiceId,
               },
-              schema: characterVoiceActivationResponseSchema,
             },
           ),
         afterRefresh: () => setActivationReason(""),
@@ -215,8 +206,7 @@ export function CharacterVoicePanel({
       const mutation = await runCommittedMutation({
         action: "Update system voice defaults",
         commit: () =>
-          adminV2Request("/api/v2/admin/voice-defaults", {
-            method: "PUT",
+          adminV2Operation("PUT /api/v2/admin/voice-defaults", {
             idempotencyKey: crypto.randomUUID(),
             body: {
               expectedVersion: data.voice.systemDefaults.settingVersion,
@@ -225,7 +215,6 @@ export function CharacterVoicePanel({
               delivery: defaultDraft.delivery,
               reason: defaultReason.trim(),
             },
-            schema: voiceDefaultSettingsUpdateResponseSchema,
           }),
         afterRefresh: () => {
           setDefaultReason("");
@@ -263,17 +252,16 @@ export function CharacterVoicePanel({
       const mutation = await runCommittedMutation({
         action: "Reset character voice to system default",
         commit: () =>
-          adminV2Request(
-            `/api/v2/admin/characters/${encodeURIComponent(data.character.id)}/voice-defaults/reset`,
+          adminV2Operation(
+            "POST /api/v2/admin/characters/:id/voice-defaults/reset",
             {
-              method: "POST",
+              path: { id: data.character.id },
               idempotencyKey: crypto.randomUUID(),
               body: {
                 reason: resetReason.trim(),
                 expectedActiveProfileId: active?.id ?? null,
                 expectedCurrentVoiceId: data.voice.currentVoiceId,
               },
-              schema: characterVoiceSystemDefaultResetResponseSchema,
             },
           ),
         afterRefresh: () => setResetReason(""),
@@ -299,10 +287,9 @@ export function CharacterVoicePanel({
     setPreviewBusy(voiceId);
     setError(null);
     try {
-      const preview = await adminV2Request(
-        "/api/v2/admin/voice-defaults/preview",
+      const preview = await adminV2Operation(
+        "POST /api/v2/admin/voice-defaults/preview",
         {
-          method: "POST",
           body: {
             voiceId,
             text:
@@ -311,7 +298,6 @@ export function CharacterVoicePanel({
                 : `Come a little closer. I’m ${data.character.name}. This is the system female voice preview.`,
             delivery: defaultDraft.delivery,
           },
-          schema: voiceDefaultPreviewResponseSchema,
         },
       );
       setCatalogPreview({

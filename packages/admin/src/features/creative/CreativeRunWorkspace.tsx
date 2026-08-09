@@ -2,7 +2,6 @@
 
 import Link from "next/link";
 import {
-  adminCommandAcceptedSchema,
   adminCommandStatusSchema,
   creativeRunCreateRequestSchema,
   creativeRunCreateResultSchema,
@@ -25,6 +24,7 @@ import {
   AdminV2RequestError,
   adminV2Request,
 } from "@/lib/admin-v2-api";
+import { adminV2Operation } from "@/lib/admin-v2-operation";
 import {
   useAuthorityResource,
   usePollingTask,
@@ -1437,10 +1437,7 @@ function RunDetail({
         intent.entityVersion,
         intent.idempotencyKey,
       );
-      const accepted = await adminV2Request(mutation.path, {
-        ...mutation.options,
-        schema: adminCommandAcceptedSchema,
-      });
+      const accepted = await adminV2Operation(mutation.operationId, mutation.options);
       const next: CreativeRetryCommandState = {
         actorId,
         createdAt: submitting.createdAt,

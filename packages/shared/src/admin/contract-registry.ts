@@ -1,5 +1,5 @@
 import { z } from "zod";
-import * as adminContracts from "./contracts/index";
+import { adminV2ContractSchema } from "./contract-schemas";
 
 type ContractEvidence = {
   readonly owner: `packages/${string}`;
@@ -96,8 +96,8 @@ export function resolveAdminV2Contract(ref: string): AdminV2ContractBinding | nu
   const transport = transportContracts[baseRef as keyof typeof transportContracts];
   if (transport) return executableBinding(baseRef, transport, "transport", requirements, "packages/shared/src/admin/contract-registry.ts");
 
-  const candidate = adminContracts[baseRef as keyof typeof adminContracts] as unknown;
-  if (!isZodSchema(candidate)) return null;
+  const candidate = adminV2ContractSchema(baseRef);
+  if (!candidate) return null;
   return executableBinding(
     baseRef,
     candidate,
@@ -152,11 +152,6 @@ function splitRequirements(ref: string) {
     (part): part is "idempotency-key" | "if-match" => part === "idempotency-key" || part === "if-match",
   );
   return { baseRef, requirements };
-}
-
-function isZodSchema(value: unknown): value is z.ZodType {
-  return typeof value === "object" && value !== null && "safeParse" in value &&
-    typeof (value as { safeParse?: unknown }).safeParse === "function";
 }
 
 type ZodDef = {

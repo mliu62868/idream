@@ -2,12 +2,12 @@
 
 import {
   characterDraftPersonaSchema,
-  characterSoulVersionCreateResponseSchema,
   type CharacterDraftPersona,
   type CharacterWorkspaceDetail,
 } from "@idream/shared/admin";
 import { useRef, useState } from "react";
-import { AdminV2RequestError, adminV2Request } from "@/lib/admin-v2-api";
+import { AdminV2RequestError } from "@/lib/admin-v2-api";
+import { adminV2Operation } from "@/lib/admin-v2-operation";
 import {
   LoadingWorkspace,
   WorkspaceButton,
@@ -87,10 +87,10 @@ export function CharacterSoulPanel({
       mutationKey.current = { signature, key: idempotencyKey };
       await runCommittedMutation({
         action: t("Create Character Soul version"),
-        commit: () => adminV2Request(
-          `/api/v2/admin/characters/${data.character.id}/soul/versions`,
+        commit: () => adminV2Operation(
+          "POST /api/v2/admin/characters/:id/soul/versions",
           {
-            method: "POST",
+            path: { id: data.character.id },
             idempotencyKey,
             ifMatch: data.project.version,
             body: {
@@ -99,7 +99,6 @@ export function CharacterSoulPanel({
               persona,
               reason,
             },
-            schema: characterSoulVersionCreateResponseSchema,
           },
         ),
       });

@@ -7,11 +7,6 @@ import Image from "next/image";
 import {
   characterQaAuthorityMatches,
   latestCharacterQaAuthorityRun,
-  characterLookArchiveResponseSchema,
-  characterReferenceSetPublishResponseSchema,
-  characterVoiceClipReclaimResponseSchema,
-  characterPortfolioResponseSchema,
-  characterWorkspaceDetailSchema,
   type CharacterPortfolioItem,
   type CharacterMediaOperationsProjection,
   type CharacterQaCheckInput,
@@ -72,9 +67,12 @@ import {
 } from "@/features/operations/WorkspaceUi";
 import {
   AdminV2RequestError,
-  adminV2Request,
   setWorkspaceUrl,
 } from "@/lib/admin-v2-api";
+import {
+  adminV2Operation,
+  adminV2OperationEndpoint,
+} from "@/lib/admin-v2-operation";
 import {
   useAuthorityResource,
   usePollingTask,
@@ -192,7 +190,6 @@ export function CharacterMediaOperationsCard({
   readonly reclaimingVoiceRequestId?: string | null;
   readonly onReclaimVoice?: (input: {
     readonly requestId: string;
-    readonly actionHref: string;
     readonly confirmation: string;
     readonly reason: string;
   }) => Promise<void>;
@@ -200,7 +197,6 @@ export function CharacterMediaOperationsCard({
   const { t } = useAdminI18n();
   const [pendingReclaim, setPendingReclaim] = useState<{
     readonly requestId: string;
-    readonly actionHref: string;
     readonly confirmation: string;
     readonly attemptNo: number;
     readonly provider: string | null;
@@ -288,7 +284,6 @@ export function CharacterMediaOperationsCard({
                       onClick={() =>
                         setPendingReclaim({
                           requestId: operation.requestId!,
-                          actionHref: operation.recoverability.actionHref!,
                           confirmation:
                             operation.recoverability.actionConfirmation!,
                           attemptNo: operation.attempt?.number ?? 1,
@@ -352,7 +347,6 @@ export function CharacterMediaOperationsCard({
           onSubmit: (reason) =>
             onReclaimVoice({
               requestId: pendingReclaim.requestId,
-              actionHref: pendingReclaim.actionHref,
               confirmation: pendingReclaim.confirmation,
               reason,
             }),
@@ -1002,10 +996,9 @@ function CharacterPortfolio({
     enabled: canRead,
     load: useCallback(async () => {
       try {
-        return await adminV2Request(
-          `/api/v2/admin/characters/portfolio?${characterPortfolioQuery(applied, true)}`,
-          { schema: characterPortfolioResponseSchema },
-        );
+        return await adminV2Operation("GET /api/v2/admin/characters/portfolio", {
+          query: characterPortfolioQuery(applied, true),
+        });
       } catch (reason) {
         // INTENT: 两种模式各有一句能读懂的兜底；抛出去让 resource 统一收成 error。
         throw reason instanceof Error ? reason : new Error(
@@ -1400,10 +1393,10 @@ function ProjectEditor({
         await runCommittedMutation({
           action: "Character Project autosave",
           commit: async () => {
-            const result = await adminV2Request(
-              `/api/v2/admin/characters/${data.character.id}/project`,
+            const result = await adminV2Operation(
+              "PATCH /api/v2/admin/characters/:id/project",
               {
-                method: "PATCH",
+                path: { id: data.character.id },
                 ifMatch: data.project.version,
                 body: {
                   ...draft,
@@ -2030,15 +2023,11 @@ export function VisualIdentityPanel({
       await runCommittedMutation({
         action: "Reference Set publication",
         commit: () =>
-          adminV2Request(
-            `/api/v2/admin/characters/${data.character.id}/reference-sets`,
-            {
-              method: "POST",
-              idempotencyKey: requestIdentity.key,
-              schema: characterReferenceSetPublishResponseSchema,
-              body,
-            },
-          ),
+          adminV2Operation("POST /api/v2/admin/characters/:id/reference-sets", {
+            path: { id: data.character.id },
+            idempotencyKey: requestIdentity.key,
+            body,
+          }),
         afterRefresh: () => {
           delete idempotencyKeys.current[requestIdentity.signature];
           setReferenceReason("");
@@ -2080,15 +2069,11 @@ export function VisualIdentityPanel({
       await runCommittedMutation({
         action: "Character Look archive",
         commit: () =>
-          adminV2Request(
-            `/api/v2/admin/characters/${data.character.id}/looks/${look.id}`,
-            {
-              method: "PATCH",
-              idempotencyKey: requestIdentity.key,
-              schema: characterLookArchiveResponseSchema,
-              body,
-            },
-          ),
+          adminV2Operation("PATCH /api/v2/admin/characters/:id/looks/:lookId", {
+            path: { id: data.character.id, lookId: look.id },
+            idempotencyKey: requestIdentity.key,
+            body,
+          }),
         afterRefresh: () => {
           delete idempotencyKeys.current[requestIdentity.signature];
           setSelectedLookId(null);
@@ -2970,7 +2955,7 @@ export function PreviewDiff({
       );
       await runCommittedMutation({
         action: "Character QA Run",
-        commit: () => adminV2Request(mutation.path, mutation.options),
+        commit: () => adminV2Operation(mutation.operationId, mutation.options),
         afterRefresh: () => {
           delete qaIdempotencyKeys.current[requestSignature];
         },
@@ -3746,7 +3731,10 @@ function ReleasePanel({
       const outcome = await journal.submit({
         action: `Release ${kind}`,
         signature: `${kind}:${releaseId}:${JSON.stringify(body)}`,
-        endpoint: `/api/v2/admin/characters/${data.character.id}/releases/${releaseId}/commands/${kind}`,
+        endpoint: adminV2OperationEndpoint(
+          `POST /api/v2/admin/characters/:id/releases/:releaseId/commands/${kind}`,
+          { id: data.character.id, releaseId },
+        ),
         body,
       });
       if (outcome.kind === "accepted") {
@@ -3815,7 +3803,7 @@ function ReleasePanel({
       );
       await runCommittedMutation({
         action: "Release proposal",
-        commit: () => adminV2Request(mutation.path, mutation.options),
+        commit: () => adminV2Operation(mutation.operationId, mutation.options),
         afterRefresh: () => {
           delete proposalIdempotencyKeys.current[requestSignature];
           setReleaseConfirmed(false);
@@ -3857,7 +3845,7 @@ function ReleasePanel({
       );
       await runCommittedMutation({
         action: "Release review",
-        commit: () => adminV2Request(mutation.path, mutation.options),
+        commit: () => adminV2Operation(mutation.operationId, mutation.options),
         afterRefresh: () => {
           delete releaseReviewIdempotencyKeys.current[requestSignature];
           setReleaseConfirmed(false);
@@ -3889,10 +3877,10 @@ function ReleasePanel({
       await runCommittedMutation({
         action: "Release validation",
         commit: () =>
-          adminV2Request(
-            `/api/v2/admin/characters/${data.character.id}/releases/${candidate.release.id}/validation`,
+          adminV2Operation(
+            "POST /api/v2/admin/characters/:id/releases/:releaseId/validation",
             {
-              method: "POST",
+              path: { id: data.character.id, releaseId: candidate.release.id },
               idempotencyKey,
               body: {
                 entityVersion: candidate.release.version,
@@ -3934,7 +3922,10 @@ function ReleasePanel({
       const outcome = await journal.submit({
         action: `Serving ${action}`,
         signature: `${action}:${data.character.id}:${JSON.stringify(body)}`,
-        endpoint: `/api/v2/admin/characters/${data.character.id}/commands/${action}`,
+        endpoint: adminV2OperationEndpoint(
+          `POST /api/v2/admin/characters/:id/commands/${action}`,
+          { id: data.character.id },
+        ),
         body,
       });
       if (outcome.kind === "accepted") {
@@ -4343,10 +4334,14 @@ export function MonitorPanel({
       await runCommittedMutation({
         action: `${window} Release monitor refresh`,
         commit: () =>
-          adminV2Request(
-            `/api/v2/admin/characters/${data.character.id}/releases/${current.release.id}/monitors/${window}/refresh`,
+          adminV2Operation(
+            "POST /api/v2/admin/characters/:id/releases/:releaseId/monitors/:window/refresh",
             {
-              method: "POST",
+              path: {
+                id: data.character.id,
+                releaseId: current.release.id,
+                window,
+              },
               idempotencyKey,
               body: { entityVersion: current.release.version },
             },
@@ -4563,10 +4558,10 @@ export function PerformancePanel({
       await runCommittedMutation({
         action: "Portfolio decision",
         commit: () =>
-          adminV2Request(
-            `/api/v2/admin/characters/${data.character.id}/portfolio-decisions`,
+          adminV2Operation(
+            "POST /api/v2/admin/characters/:id/portfolio-decisions",
             {
-              method: "POST",
+              path: { id: data.character.id },
               idempotencyKey,
               body,
             },
@@ -4849,8 +4844,8 @@ function CharacterDetail({
     setLoading(true);
     setError(null);
     try {
-      const next = await adminV2Request(`/api/v2/admin/characters/${id}`, {
-        schema: characterWorkspaceDetailSchema,
+      const next = await adminV2Operation("GET /api/v2/admin/characters/:id", {
+        path: { id },
       });
       if (request.isCurrent()) setData(next);
     } catch (cause) {
@@ -4871,8 +4866,8 @@ function CharacterDetail({
     setLoading(true);
     setError(null);
     try {
-      const next = await adminV2Request(`/api/v2/admin/characters/${id}`, {
-        schema: characterWorkspaceDetailSchema,
+      const next = await adminV2Operation("GET /api/v2/admin/characters/:id", {
+        path: { id },
       });
       setData(next);
       return next;
@@ -4953,7 +4948,6 @@ function CharacterDetail({
   const reclaimVoiceRequest = useCallback(
     async (input: {
       readonly requestId: string;
-      readonly actionHref: string;
       readonly confirmation: string;
       readonly reason: string;
     }) => {
@@ -4965,16 +4959,18 @@ function CharacterDetail({
         await runCommittedMutation({
           action: "Voice request reclaim",
           commit: () =>
-            adminV2Request(input.actionHref, {
-              method: "POST",
-              idempotencyKey,
-              body: {
-                requestId: input.requestId,
-                confirmation: input.confirmation,
-                reason: input.reason,
+            adminV2Operation(
+              "POST /api/v2/admin/characters/:id/voice-clips/:requestId/commands/reclaim",
+              {
+                path: { id, requestId: input.requestId },
+                idempotencyKey,
+                body: {
+                  requestId: input.requestId,
+                  confirmation: input.confirmation,
+                  reason: input.reason,
+                },
               },
-              schema: characterVoiceClipReclaimResponseSchema,
-            }),
+            ),
         });
         journal.releaseIdempotencyKey(signature);
       } catch (cause) {
@@ -4991,7 +4987,7 @@ function CharacterDetail({
         setReclaimingVoiceRequestId(null);
       }
     },
-    [journal, runCommittedMutation],
+    [id, journal, runCommittedMutation],
   );
   const settlePendingCommand = useCallback(
     (

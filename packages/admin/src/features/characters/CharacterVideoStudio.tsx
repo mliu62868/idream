@@ -4,11 +4,7 @@ import {
   CHARACTER_IDENTITY_APPROVAL_MIN_SCORE,
   characterVideoProductionRecipe,
   creativeReviewDecisionRequestSchema,
-  creativeReviewDecisionResultSchema,
   creativeRunCreateRequestSchema,
-  creativeRunCreateResultSchema,
-  creativeRunDetailSchema,
-  creativeRunListResponseSchema,
   type CharacterWorkspaceDetail,
   type CreativeReviewDecisionRequest,
   type CreativeRun,
@@ -31,10 +27,8 @@ import {
   fieldClass,
   textAreaClass,
 } from "@/features/operations/WorkspaceUi";
-import {
-  AdminV2RequestError,
-  adminV2Request,
-} from "@/lib/admin-v2-api";
+import { AdminV2RequestError } from "@/lib/admin-v2-api";
+import { adminV2Operation } from "@/lib/admin-v2-operation";
 import {
   claimDurableMutationIntent,
   clearDurableMutationIntent,
@@ -356,10 +350,9 @@ export function CharacterVideoStudio({
         targetId: data.character.id,
         sort: "updated_desc",
       });
-      const response = await adminV2Request(
-        `/api/v2/admin/creative/runs?${query}`,
-        { schema: creativeRunListResponseSchema },
-      );
+      const response = await adminV2Operation("GET /api/v2/admin/creative/runs", {
+        query,
+      });
       // INVARIANT: 这一屏只认 character_video，串了别的 purpose 宁可整块报错也不渲染。
       if (response.items.some((run) => run.purpose !== "character_video")) {
         throw new Error("The Character video query returned a non-video Run.");
@@ -373,10 +366,9 @@ export function CharacterVideoStudio({
 
   // INVARIANT: 详情必须是这个 Character 的视频 Run；不是就报错，不渲染别人的画面。
   const fetchRunDetail = useCallback(async (runId: string) => {
-    const detail = await adminV2Request(
-      `/api/v2/admin/creative/runs/${runId}`,
-      { schema: creativeRunDetailSchema },
-    );
+    const detail = await adminV2Operation("GET /api/v2/admin/creative/runs/:id", {
+      path: { id: runId },
+    });
     if (
       detail.purpose !== "character_video" ||
       detail.target.type !== "character" ||
@@ -556,15 +548,10 @@ export function CharacterVideoStudio({
       const mutation = await runCommittedMutation({
         action: "Create Character video",
         commit: async () => {
-          const result = await adminV2Request(
-            "/api/v2/admin/creative/runs",
-            {
-              method: "POST",
-              idempotencyKey: currentIntent.idempotencyKey,
-              schema: creativeRunCreateResultSchema,
-              body,
-            },
-          );
+          const result = await adminV2Operation("POST /api/v2/admin/creative/runs", {
+            idempotencyKey: currentIntent.idempotencyKey,
+            body,
+          });
           currentIntent = updateDurableMutationIntent(currentIntent, {
             status: "committed_projection_pending",
             committedTargetId: result.batch.id,
@@ -700,12 +687,11 @@ export function CharacterVideoStudio({
       const mutation = await runCommittedMutation({
         action: "Review Character video",
         commit: async () => {
-          const result = await adminV2Request(
-            `/api/v2/admin/creative/runs/${snapshot.runId}/items/${snapshot.itemId}/decisions`,
+          const result = await adminV2Operation(
+            "POST /api/v2/admin/creative/runs/:id/items/:itemId/decisions",
             {
-              method: "POST",
+              path: { id: snapshot.runId, itemId: snapshot.itemId },
               idempotencyKey: currentIntent.idempotencyKey,
-              schema: creativeReviewDecisionResultSchema,
               body: snapshot.body,
             },
           );

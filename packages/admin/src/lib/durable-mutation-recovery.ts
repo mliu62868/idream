@@ -1,8 +1,5 @@
-import {
-  adminMutationRecoveryResultSchema,
-  type AdminRecoverableMutationCommandType,
-} from "@idream/shared/admin";
-import { adminV2Request } from "./admin-v2-api";
+import type { AdminRecoverableMutationCommandType } from "@idream/shared/admin";
+import { adminV2Operation } from "./admin-v2-operation";
 import type { DurableMutationIntent } from "./durable-mutation-intent";
 
 type CharacterScopedRecoveryCommandType =
@@ -56,13 +53,8 @@ export function reconcileDurableMutationIntent(
           expectedCharacterId: input.expectedCharacterId,
         }
       : { commandType: input.commandType };
-  return adminV2Request(
-    "/api/v2/admin/mutation-receipts/reconcile",
-    {
-      method: "POST",
-      idempotencyKey: input.intent.idempotencyKey,
-      schema: adminMutationRecoveryResultSchema,
-      body,
-    },
-  );
+  return adminV2Operation("POST /api/v2/admin/mutation-receipts/reconcile", {
+    idempotencyKey: input.intent.idempotencyKey,
+    body,
+  });
 }

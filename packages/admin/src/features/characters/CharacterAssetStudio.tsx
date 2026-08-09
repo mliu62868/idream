@@ -4,16 +4,9 @@ import {
   CHARACTER_IDENTITY_APPROVAL_MIN_SCORE,
   adminMutationRecoveryVerificationSchema,
   characterDraftImageSelectionRequestSchema,
-  characterDraftImageSelectionResultSchema,
   characterIdentityBootstrapRequestSchema,
-  characterIdentityBootstrapResponseSchema,
-  characterImageReadinessRepairResponseSchema,
   creativeReviewDecisionRequestSchema,
-  creativeReviewDecisionResultSchema,
   creativeRunCreateRequestSchema,
-  creativeRunCreateResultSchema,
-  creativeRunDetailSchema,
-  creativeRunListResponseSchema,
   type CharacterWorkspaceDetail,
   type CreativeRun,
   type CreativeRunDetail,
@@ -37,10 +30,8 @@ import {
   fieldClass,
   textAreaClass,
 } from "@/features/operations/WorkspaceUi";
-import {
-  AdminV2RequestError,
-  adminV2Request,
-} from "@/lib/admin-v2-api";
+import { AdminV2RequestError } from "@/lib/admin-v2-api";
+import { adminV2Operation } from "@/lib/admin-v2-operation";
 import {
   claimDurableMutationIntent,
   clearDurableMutationIntent,
@@ -1126,9 +1117,9 @@ export function CharacterAssetStudio({
       targetId: data.character.id,
       sort: "updated_desc",
     });
-    const response = await adminV2Request(`/api/v2/admin/creative/runs?${query}`, {
-      schema: creativeRunListResponseSchema,
-      signal: options.signal,
+    const response = await adminV2Operation("GET /api/v2/admin/creative/runs", {
+      query,
+      ...(options.signal ? { signal: options.signal } : {}),
     });
     const scoped = [...response.items].filter((run) => isCharacterAssetPurpose(run.purpose));
     if (!request.isCurrent()) throw new SupersededProjectionError();
@@ -1166,8 +1157,8 @@ export function CharacterAssetStudio({
   //         这里只剩三样组件才知道的东西：怎么取、什么算「已反映」、成功后写哪些状态。
   const runLoader = useCommittedProjectionLoader<CreativeRunDetail>({
     fetch: (runId, signal) =>
-      adminV2Request(`/api/v2/admin/creative/runs/${runId}`, {
-        schema: creativeRunDetailSchema,
+      adminV2Operation("GET /api/v2/admin/creative/runs/:id", {
+        path: { id: runId },
         signal,
       }),
     isCurrentTarget: (runId) => selectedRunIdRef.current === runId,
@@ -1435,13 +1426,12 @@ export function CharacterAssetStudio({
     try {
       const committed = await commitProjectMutation({
         action: "Character image-production preparation",
-        commit: () => adminV2Request(
-          `/api/v2/admin/characters/${data.character.id}/image-readiness/repair`,
+        commit: () => adminV2Operation(
+          "POST /api/v2/admin/characters/:id/image-readiness/repair",
           {
-            method: "POST",
+            path: { id: data.character.id },
             idempotencyKey,
             ifMatch: data.project.version,
-            schema: characterImageReadinessRepairResponseSchema,
             body: {
               entityVersion: data.project.version,
               expectedReadinessFingerprint: readiness.fingerprint,
@@ -1733,10 +1723,8 @@ export function CharacterAssetStudio({
       readonly replayed: boolean;
     };
     try {
-      result = await adminV2Request("/api/v2/admin/creative/runs", {
-        method: "POST",
+      result = await adminV2Operation("POST /api/v2/admin/creative/runs", {
         idempotencyKey: intent.idempotencyKey,
-        schema: creativeRunCreateResultSchema,
         body,
       });
     } catch (cause) {
@@ -1931,12 +1919,11 @@ export function CharacterAssetStudio({
         );
         return;
       }
-      const result = await adminV2Request(
-        `/api/v2/admin/creative/runs/${snapshot.runId}/items/${snapshot.itemId}/decisions`,
+      const result = await adminV2Operation(
+        "POST /api/v2/admin/creative/runs/:id/items/:itemId/decisions",
         {
-          method: "POST",
+          path: { id: snapshot.runId, itemId: snapshot.itemId },
           idempotencyKey: reviewMutationIntent.idempotencyKey,
-          schema: creativeReviewDecisionResultSchema,
           body: snapshot.body,
         },
       );
@@ -2230,13 +2217,12 @@ export function CharacterAssetStudio({
             : "Draft asset selection recovery",
         commit: async () => {
           if (snapshot.kind === "bootstrap") {
-            const result = await adminV2Request(
-              `/api/v2/admin/characters/${data.character.id}/identity-bootstrap`,
+            const result = await adminV2Operation(
+              "POST /api/v2/admin/characters/:id/identity-bootstrap",
               {
-                method: "POST",
+                path: { id: data.character.id },
                 idempotencyKey: currentIntent.idempotencyKey,
                 ifMatch: snapshot.body.entityVersion,
-                schema: characterIdentityBootstrapResponseSchema,
                 body: snapshot.body,
               },
             );
@@ -2250,13 +2236,12 @@ export function CharacterAssetStudio({
             setSelectionMutationIntent(currentIntent);
             return result;
           }
-          const result = await adminV2Request(
-            `/api/v2/admin/characters/${data.character.id}/draft-image`,
+          const result = await adminV2Operation(
+            "PATCH /api/v2/admin/characters/:id/draft-image",
             {
-              method: "PATCH",
+              path: { id: data.character.id },
               idempotencyKey: currentIntent.idempotencyKey,
               ifMatch: snapshot.body.entityVersion,
-              schema: characterDraftImageSelectionResultSchema,
               body: snapshot.body,
             },
           );
@@ -2389,12 +2374,14 @@ export function CharacterAssetStudio({
     setBusy("review"); setError(null); setMessage(null); setRefreshWarning(null);
     let committed: DurableMutationIntent;
     try {
-      const result = await adminV2Request(`/api/v2/admin/creative/runs/${activeRunDetail.id}/items/${selectedItem.id}/decisions`, {
-        method: "POST",
-        idempotencyKey: intent.idempotencyKey,
-        schema: creativeReviewDecisionResultSchema,
-        body,
-      });
+      const result = await adminV2Operation(
+        "POST /api/v2/admin/creative/runs/:id/items/:itemId/decisions",
+        {
+          path: { id: activeRunDetail.id, itemId: selectedItem.id },
+          idempotencyKey: intent.idempotencyKey,
+          body,
+        },
+      );
       committed = updateDurableMutationIntent(intent, {
         status: "committed_projection_pending",
         committedTargetId: result.decisionId,
@@ -2533,10 +2520,7 @@ export function CharacterAssetStudio({
               bootstrapReason,
               intent.idempotencyKey,
             );
-            const result = await adminV2Request(mutation.path, {
-              ...mutation.options,
-              schema: characterIdentityBootstrapResponseSchema,
-            });
+            const result = await adminV2Operation(mutation.operationId, mutation.options);
             committedIntent = updateDurableMutationIntent(intent, {
               status: "committed_projection_pending",
               committedTargetId: result.referenceSetRevisionId,
@@ -2545,13 +2529,15 @@ export function CharacterAssetStudio({
             setMessage(`Identity version ${nextIdentityVersion}, its sealed Reference Set, and the draft primary image were committed.`);
             return result;
           }
-          const result = await adminV2Request(`/api/v2/admin/characters/${data.character.id}/draft-image`, {
-            method: "PATCH",
-            idempotencyKey: intent.idempotencyKey,
-            ifMatch: data.project.version,
-            schema: characterDraftImageSelectionResultSchema,
-            body: draftSelectionBody,
-          });
+          const result = await adminV2Operation(
+            "PATCH /api/v2/admin/characters/:id/draft-image",
+            {
+              path: { id: data.character.id },
+              idempotencyKey: intent.idempotencyKey,
+              ifMatch: data.project.version,
+              body: draftSelectionBody,
+            },
+          );
           committedIntent = updateDurableMutationIntent(intent, {
             status: "committed_projection_pending",
             committedTargetId: result.selectedAssetId,

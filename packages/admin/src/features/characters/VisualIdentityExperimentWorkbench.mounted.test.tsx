@@ -4,13 +4,11 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { adminV2FormRequest, adminV2Request } = vi.hoisted(() => ({
-  adminV2FormRequest: vi.fn(),
+const { adminV2Request } = vi.hoisted(() => ({
   adminV2Request: vi.fn(),
 }));
 
 vi.mock("@/lib/admin-v2-api", () => ({
-  adminV2FormRequest,
   adminV2Request,
 }));
 
@@ -232,7 +230,6 @@ describe("Visual Identity experiment activation", () => {
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
-    adminV2FormRequest.mockReset();
     adminV2Request.mockReset();
     adminV2Request.mockImplementation(async (path: string) => {
       if (path.endsWith("/image-sources")) return { items: [] };
@@ -603,13 +600,13 @@ describe("Visual Identity experiment activation", () => {
       height: 160,
       createdAt: "2026-07-24T13:00:00.000Z",
     };
-    adminV2FormRequest.mockResolvedValue({
-      asset: uploadedAsset,
-      replayed: false,
-    });
     adminV2Request.mockImplementation(
       async (path: string, options?: { method?: string }) => {
-        if (path.endsWith("/image-sources")) return { items: [] };
+        if (path.endsWith("/image-sources")) {
+          return options?.method === "POST"
+            ? { asset: uploadedAsset, replayed: false }
+            : { items: [] };
+        }
         if (
           path === "/api/v2/admin/creative/runs" &&
           options?.method === "POST"
@@ -662,9 +659,15 @@ describe("Visual Identity experiment activation", () => {
     await act(async () => {
       fileInput?.dispatchEvent(new Event("change", { bubbles: true }));
     });
-    await waitUntil(() => adminV2FormRequest.mock.calls.length === 1);
+    await waitUntil(() =>
+      adminV2Request.mock.calls.some(
+        ([, options]) => options?.method === "POST" && options?.form,
+      ),
+    );
 
-    const [uploadPath, uploadOptions] = adminV2FormRequest.mock.calls[0]!;
+    const [uploadPath, uploadOptions] = adminV2Request.mock.calls.find(
+      ([, options]) => options?.method === "POST" && options?.form,
+    )!;
     expect(uploadPath).toBe(
       "/api/v2/admin/characters/character-1/image-sources",
     );

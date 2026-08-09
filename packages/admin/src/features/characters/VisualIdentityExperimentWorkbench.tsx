@@ -3,13 +3,7 @@
 import Image from "next/image";
 import {
   CHARACTER_CANONICAL_PORTRAIT_IDENTITY_PROMPT,
-  characterImageSourceListResponseSchema,
-  characterImageSourceUploadResponseSchema,
-  creativeReviewDecisionResultSchema,
   creativeRunCreateRequestSchema,
-  creativeRunCreateResultSchema,
-  creativeRunDetailSchema,
-  creativeRunListResponseSchema,
   type CharacterImageSourceAsset,
   type CharacterVisualProfileCreateRequest,
   type CharacterWorkspaceDetail,
@@ -25,7 +19,7 @@ import {
   useState,
   type ChangeEvent,
 } from "react";
-import { adminV2FormRequest, adminV2Request } from "@/lib/admin-v2-api";
+import { adminV2Operation } from "@/lib/admin-v2-operation";
 import {
   useAuthorityResource,
   usePollingTask,
@@ -229,10 +223,9 @@ export function VisualIdentityExperimentWorkbench({
   const loadRun = useCallback(
     async (runId: string) => {
       setCandidateQualityConfirmed(false);
-      const detail = await adminV2Request(
-        `/api/v2/admin/creative/runs/${encodeURIComponent(runId)}`,
-        { schema: creativeRunDetailSchema },
-      );
+      const detail = await adminV2Operation("GET /api/v2/admin/creative/runs/:id", {
+        path: { id: runId },
+      });
       setRunDetails((current) => ({ ...current, [detail.id]: detail }));
       setSelectedRun(detail);
       setSelectedItemId((current) =>
@@ -248,10 +241,14 @@ export function VisualIdentityExperimentWorkbench({
   );
 
   const loadRuns = useCallback(async () => {
-    const response = await adminV2Request(
-      `/api/v2/admin/creative/runs?targetType=character&targetId=${encodeURIComponent(data.character.id)}&sort=updated_desc&limit=30`,
-      { schema: creativeRunListResponseSchema },
-    );
+    const response = await adminV2Operation("GET /api/v2/admin/creative/runs", {
+      query: new URLSearchParams({
+        targetType: "character",
+        targetId: data.character.id,
+        sort: "updated_desc",
+        limit: "30",
+      }),
+    });
     const experiments = response.items.filter(
       (run) => run.purpose === "identity_calibration",
     );
@@ -271,10 +268,9 @@ export function VisualIdentityExperimentWorkbench({
           }
           const results = await Promise.allSettled(
             experiments.map((run) =>
-              adminV2Request(
-                `/api/v2/admin/creative/runs/${encodeURIComponent(run.id)}`,
-                { schema: creativeRunDetailSchema },
-              ),
+              adminV2Operation("GET /api/v2/admin/creative/runs/:id", {
+                path: { id: run.id },
+              }),
             ),
           );
           if (!active) return;
@@ -313,9 +309,9 @@ export function VisualIdentityExperimentWorkbench({
   const uploadedSourcesResource = useAuthorityResource<SourceOption[]>({
     key: data.character.id,
     load: useCallback(async () => {
-      const response = await adminV2Request(
-        `/api/v2/admin/characters/${encodeURIComponent(data.character.id)}/image-sources`,
-        { schema: characterImageSourceListResponseSchema },
+      const response = await adminV2Operation(
+        "GET /api/v2/admin/characters/:id/image-sources",
+        { path: { id: data.character.id } },
       );
       return response.items.map(uploadedSourceOption);
     }, [data.character.id]),
@@ -450,12 +446,12 @@ export function VisualIdentityExperimentWorkbench({
     form.set("purpose", "identity_experiment_source");
     form.set("image", file, file.name);
     try {
-      const result = await adminV2FormRequest(
-        `/api/v2/admin/characters/${encodeURIComponent(data.character.id)}/image-sources`,
+      const result = await adminV2Operation(
+        "POST /api/v2/admin/characters/:id/image-sources",
         {
-          form,
+          path: { id: data.character.id },
           idempotencyKey: crypto.randomUUID(),
-          schema: characterImageSourceUploadResponseSchema,
+          form,
         },
       );
       const uploaded = uploadedSourceOption(result.asset);
@@ -523,10 +519,8 @@ export function VisualIdentityExperimentWorkbench({
     setError(null);
     setNotice(null);
     try {
-      const result = await adminV2Request("/api/v2/admin/creative/runs", {
-        method: "POST",
+      const result = await adminV2Operation("POST /api/v2/admin/creative/runs", {
         idempotencyKey,
-        schema: creativeRunCreateResultSchema,
         body: parsed.data,
       });
       idempotencyKeys.current.delete(signature);
@@ -612,12 +606,11 @@ export function VisualIdentityExperimentWorkbench({
     setBusy("review");
     setError(null);
     try {
-      await adminV2Request(
-        `/api/v2/admin/creative/runs/${selectedRun.id}/items/${selectedItem.id}/decisions`,
+      await adminV2Operation(
+        "POST /api/v2/admin/creative/runs/:id/items/:itemId/decisions",
         {
-          method: "POST",
+          path: { id: selectedRun.id, itemId: selectedItem.id },
           idempotencyKey,
-          schema: creativeReviewDecisionResultSchema,
           body,
         },
       );

@@ -4,14 +4,13 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { adminV2Request, adminV2FormRequest } = vi.hoisted(() => ({
+const { adminV2Request } = vi.hoisted(() => ({
   adminV2Request: vi.fn(),
-  adminV2FormRequest: vi.fn(),
 }));
 
 vi.mock("@/lib/admin-v2-api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/admin-v2-api")>();
-  return { ...actual, adminV2Request, adminV2FormRequest };
+  return { ...actual, adminV2Request };
 });
 vi.mock("@/components/admin/i18n", () => ({
   adminDateLocale: () => undefined,
@@ -131,7 +130,6 @@ describe("CharacterVoicePanel Fish Audio controls", () => {
     document.body.append(container);
     root = createRoot(container);
     adminV2Request.mockReset();
-    adminV2FormRequest.mockReset();
   });
 
   afterEach(async () => {
@@ -166,7 +164,7 @@ describe("CharacterVoicePanel Fish Audio controls", () => {
   }
 
   it("sends the authored delivery settings with the voice clone reference", async () => {
-    adminV2FormRequest.mockResolvedValue({
+    adminV2Request.mockResolvedValue({
       profile: candidateProfile,
       replayed: false,
     });
@@ -201,8 +199,8 @@ describe("CharacterVoicePanel Fish Audio controls", () => {
       form?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     });
 
-    expect(adminV2FormRequest).toHaveBeenCalledTimes(1);
-    const body = adminV2FormRequest.mock.calls[0]?.[1]?.form as FormData;
+    expect(adminV2Request).toHaveBeenCalledTimes(1);
+    const body = adminV2Request.mock.calls[0]?.[1]?.form as FormData;
     // SPEC: 声音身份（参考音频 + 逐字稿）与表演方向（delivery）是两件事，一次提交都要带上。
     expect(body.get("audio")).toBe(file);
     expect(body.get("referenceText")).toBe("Come a little closer.");

@@ -1,10 +1,12 @@
-type ApiError = {
+import type { AdminV2HttpMethod } from "@idream/shared/admin";
+
+export type ApiError = {
   code?: string;
   message?: string;
   details?: unknown;
 };
 
-type ApiEnvelope<T> =
+export type ApiEnvelope<T> =
   | { ok: true; data: T }
   | { ok: false; error: ApiError };
 
@@ -12,6 +14,13 @@ type RuntimeSchema<T> = {
   parse(value: unknown): T;
 };
 
+/**
+ * SPEC: 后台每一次 HTTP 失败都是这一个类。
+ * INTENT: 曾经 `lib/admin-v2-api` 与 `components/admin/api` 各有一个错误类、各自解一遍
+ *         同一个 `{ok,data}|{ok,error}` 信封。角色运营台同时用两套，18 处 `instanceof`
+ *         接不住另一套抛的错，状态码敏感的分支（幂等键该不该回收、409 该不该解锁）会静默
+ *         落到通用分支。类只能有一个，判等才有意义。
+ */
 export class AdminV2RequestError extends Error {
   constructor(
     message: string,
@@ -24,26 +33,33 @@ export class AdminV2RequestError extends Error {
   }
 }
 
+export type AdminV2FetchOptions<T> = {
+  method?: AdminV2HttpMethod;
+  /** JSON 请求体；与 `form` 互斥。 */
+  body?: unknown;
+  /** multipart 请求体；与 `body` 互斥。 */
+  form?: FormData;
+  idempotencyKey?: string;
+  ifMatch?: number;
+  headers?: Record<string, string>;
+  schema?: RuntimeSchema<T>;
+  signal?: AbortSignal;
+};
+
+/** 唯一的信封解码实现。 */
 export async function adminV2Request<T>(
   path: string,
-  options: {
-    method?: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
-    body?: unknown;
-    idempotencyKey?: string;
-    ifMatch?: number;
-    schema?: RuntimeSchema<T>;
-    signal?: AbortSignal;
-  } = {},
-) {
-  const headers = new Headers();
-  headers.set("x-request-id", crypto.randomUUID());
+  options: AdminV2FetchOptions<T> = {},
+): Promise<T> {
+  const headers = new Headers(options.headers);
+  if (!headers.has("x-request-id")) headers.set("x-request-id", crypto.randomUUID());
   if (options.body !== undefined) headers.set("content-type", "application/json");
   if (options.idempotencyKey) headers.set("idempotency-key", options.idempotencyKey);
   if (options.ifMatch !== undefined) headers.set("if-match", `"${options.ifMatch}"`);
   const response = await fetch(path, {
     method: options.method ?? "GET",
     headers,
-    body: options.body === undefined ? undefined : JSON.stringify(options.body),
+    body: options.form ?? (options.body === undefined ? undefined : JSON.stringify(options.body)),
     cache: "no-store",
     signal: options.signal,
   });
@@ -56,7 +72,7 @@ export async function adminV2Request<T>(
   }
   if (!payload.ok) {
     throw new AdminV2RequestError(
-      payload.error.message ?? payload.error.code ?? "Admin request failed",
+      formatApiError(payload.error, "Admin request failed"),
       response.status,
       payload.error.code,
       payload.error.details,
@@ -65,42 +81,42 @@ export async function adminV2Request<T>(
   return options.schema ? options.schema.parse(payload.data) : payload.data;
 }
 
-export async function adminV2FormRequest<T>(
-  path: string,
-  options: {
-    form: FormData;
-    idempotencyKey: string;
-    schema?: RuntimeSchema<T>;
-    signal?: AbortSignal;
-  },
-) {
-  const headers = new Headers({
-    "x-request-id": crypto.randomUUID(),
-    "idempotency-key": options.idempotencyKey,
-  });
-  const response = await fetch(path, {
-    method: "POST",
-    headers,
-    body: options.form,
-    cache: "no-store",
-    signal: options.signal,
-  });
-  const raw = await response.text();
-  let payload: ApiEnvelope<T>;
-  try {
-    payload = JSON.parse(raw) as ApiEnvelope<T>;
-  } catch {
-    throw new Error(`Admin authority request failed (${response.status})`);
+export function formatApiError(error: ApiError, fallback: string) {
+  const base = error.message ?? error.code ?? fallback;
+  const detail = apiErrorDetailsText(error.details);
+  return detail ? `${base}: ${detail}` : base;
+}
+
+function apiErrorDetailsText(details: unknown) {
+  if (typeof details !== "object" || details === null) return "";
+  const issues = (details as { issues?: unknown }).issues;
+  if (Array.isArray(issues)) {
+    const messages = issues
+      .flatMap((issue) => {
+        if (typeof issue !== "object" || issue === null) return [];
+        const path = (issue as { path?: unknown }).path;
+        const message = (issue as { message?: unknown }).message;
+        if (typeof message !== "string") return [];
+        return [
+          typeof path === "string" && path
+            ? `${path}: ${message}`
+            : message,
+        ];
+      })
+      .slice(0, 3);
+    if (messages.length > 0) return messages.join("; ");
   }
-  if (!payload.ok) {
-    throw new AdminV2RequestError(
-      payload.error.message ?? payload.error.code ?? "Admin request failed",
-      response.status,
-      payload.error.code,
-      payload.error.details,
-    );
-  }
-  return options.schema ? options.schema.parse(payload.data) : payload.data;
+  const fieldErrors = (details as { fieldErrors?: unknown }).fieldErrors;
+  if (typeof fieldErrors !== "object" || fieldErrors === null) return "";
+  const messages = Object.entries(fieldErrors as Record<string, unknown>)
+    .flatMap(([field, value]) => {
+      if (!Array.isArray(value)) return [];
+      return value
+        .map((message) => (typeof message === "string" ? `${field}: ${message}` : ""))
+        .filter(Boolean);
+    })
+    .slice(0, 3);
+  return messages.join("; ");
 }
 
 export type WorkspaceHistoryMode = "push" | "replace";
