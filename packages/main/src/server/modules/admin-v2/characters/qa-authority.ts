@@ -1,15 +1,8 @@
 import {
   latestCharacterQaAuthorityRun,
-  type CharacterQaAuthoritySnapshot,
+  type PersistedCharacterQaAuthoritySnapshot,
 } from "@idream/shared/admin";
 import type { Prisma } from "@prisma/client";
-
-type PersistedCharacterQaAuthoritySnapshot = CharacterQaAuthoritySnapshot & {
-  readonly characterId: string;
-  readonly projectId: string;
-  readonly characterContentVersionId: string;
-  readonly projectVersion: number;
-};
 
 export async function findLatestCharacterQaAuthorityRun(
   tx: Prisma.TransactionClient,
