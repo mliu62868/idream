@@ -6724,10 +6724,7 @@ async function archiveCharacter(request: Request, id: string) {
       await transitionCharacterServing(tx, {
         servingId: serving.id,
         to: "retired",
-        expected: {
-          from: serving.state as "inactive" | "live" | "paused",
-          version: serving.version,
-        },
+        expectedVersion: serving.version,
         data: {
         currentReleaseId: null,
         scheduledReleaseId: null,
@@ -6763,10 +6760,7 @@ async function archiveCharacter(request: Request, id: string) {
       await transitionCharacterProject(tx, {
         projectId: project.id,
         to: "retired",
-        expected: {
-          from: project.phase as "idea" | "planned" | "producing" | "qa" | "launch_ready" | "live_management",
-          version: project.version,
-        },
+        expectedVersion: project.version,
         data: { activeKey: null },
       });
     }

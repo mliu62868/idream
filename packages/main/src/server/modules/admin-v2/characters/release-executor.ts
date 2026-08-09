@@ -10,6 +10,7 @@ import {
   isCharacterProjectPhaseTransitionAllowed,
   isCharacterReleaseTransitionAllowed,
   isCharacterServingTransitionAllowed,
+  type CharacterReleaseCreationState,
 } from "../shared/state-transition-authority";
 import { lockCharacterGenerationAuthority } from "./generation-authority-lock";
 import { PUBLIC_CATALOG_QUALIFICATION_SCHEMA_VERSION } from "@/server/modules/ourdream/public-catalog-qualification";
@@ -494,53 +495,41 @@ async function publishRelease(
       "Another Release is scheduled",
     );
   }
-  if (!isCharacterServingTransitionAllowed(serving.state, "live")) {
-    throw new ReleaseCommandError(
-      "serving_state_conflict",
-      "CharacterServing cannot become live from its present state",
-      { servingState: serving.state },
-    );
-  }
   await transitionCharacterServing(tx, {
     servingId: serving.id,
     to: "live",
-    expected: {
-      from: serving.state as "inactive" | "live",
-      version: serving.version,
-      currentReleaseId: serving.currentReleaseId,
-    },
+    expectedVersion: serving.version,
+    expectedCurrentReleaseId: serving.currentReleaseId,
     data: {
       currentReleaseId: release.id,
       scheduledReleaseId: null,
       scheduledAt: null,
     },
+    conflict: () =>
+      new ReleaseCommandError(
+        "serving_state_conflict",
+        "CharacterServing cannot become live from its present state",
+        { servingState: serving.state },
+      ),
   });
   if (serving.currentReleaseId) {
-    const currentRelease = await tx.characterRelease.findUnique({
-      where: { id: serving.currentReleaseId },
-      select: { status: true, version: true },
-    });
-    if (
-      currentRelease &&
-      !isCharacterReleaseTransitionAllowed(currentRelease.status, "superseded")
-    ) {
-      throw new ReleaseCommandError(
-        "current_release_transition_invalid",
-        "Current Release cannot be superseded from its present state",
-        { releaseId: serving.currentReleaseId, status: currentRelease.status },
-        true,
-      );
-    }
+    const supersededReleaseId = serving.currentReleaseId;
     await transitionCharacterRelease(tx, {
-      releaseId: serving.currentReleaseId,
+      releaseId: supersededReleaseId,
       to: "superseded",
-      expected: { from: "published", version: currentRelease!.version },
+      conflict: () =>
+        new ReleaseCommandError(
+          "current_release_transition_invalid",
+          "Current Release cannot be superseded from its present state",
+          { releaseId: supersededReleaseId },
+          true,
+        ),
     });
   }
   await transitionCharacterRelease(tx, {
     releaseId: release.id,
     to: "published",
-    expected: { from: "approved", version: release.version },
+    expectedVersion: release.version,
     data: {
       readiness: "ready",
       publishedAt: now,
@@ -551,10 +540,7 @@ async function publishRelease(
     await transitionCharacterProject(tx, {
       projectId: project.id,
       to: "live_management",
-      expected: {
-        from: project.phase as "idea" | "launch_ready",
-        version: project.version,
-      },
+      expectedVersion: project.version,
     });
   }
   const publishedAssetIds = [
@@ -739,7 +725,7 @@ async function executeRollback(
       snapshotHash: source.snapshotHash,
       readiness: "unknown",
       legacy: false,
-      status: "approved",
+      status: "approved" satisfies CharacterReleaseCreationState,
       rollbackOfReleaseId: source.id,
       version: 1,
     },
@@ -954,10 +940,7 @@ async function executeServingState(
   await transitionCharacterServing(tx, {
     servingId: serving.id,
     to: nextState,
-    expected: {
-      from: expectedState,
-      version: serving.version,
-    },
+    expectedVersion: serving.version,
     data: {
       ...(retiring
         ? {
@@ -981,10 +964,7 @@ async function executeServingState(
     await transitionCharacterProject(tx, {
       projectId: project.id,
       to: "retired",
-      expected: {
-        from: project.phase as "idea" | "planned" | "producing" | "qa" | "launch_ready" | "live_management",
-        version: project.version,
-      },
+      expectedVersion: project.version,
       data: { activeKey: null },
     });
   }

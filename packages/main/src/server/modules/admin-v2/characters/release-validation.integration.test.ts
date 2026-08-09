@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { Prisma } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
@@ -333,7 +334,7 @@ describe("Character Release validation authority", () => {
   });
 
   it("fails release_asset_manifest_available when the manifest is not the exact three-slot pack", async () => {
-    const manifest = baseCandidate.releasePlacementManifest as { placements: unknown[] };
+    const manifest = baseCandidate.releasePlacementManifest as { placements: Prisma.JsonValue[] };
     await expect(failedKeys({
       releasePlacementManifest: { schemaVersion: 2, placements: manifest.placements.slice(0, 2) },
     })).resolves.toContain("release_asset_manifest_available");

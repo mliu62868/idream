@@ -13,10 +13,7 @@ import { characterReleaseSnapshotHash } from "./release-snapshot";
 import { releaseStringArray } from "./release-snapshot-values";
 import { toInputJson } from "../shared/prisma-json";
 import { canonicalSha256 } from "../shared/canonical-json";
-import {
-  isCharacterProjectPhaseTransitionAllowed,
-  isCharacterReleaseTransitionAllowed,
-} from "../shared/state-transition-authority";
+import type { CharacterReleaseCreationState } from "../shared/state-transition-authority";
 import {
   transitionCharacterProject,
   transitionCharacterRelease,
@@ -131,15 +128,6 @@ export async function proposeCharacterRelease(input: {
       authorityLockedAssetIds,
     );
 
-    if (
-      project.phase !== "qa" &&
-      !isCharacterProjectPhaseTransitionAllowed(project.phase, "qa")
-    ) {
-      throw Errors.conflict("Character Project cannot enter QA from its present phase", {
-        from: project.phase,
-        to: "qa",
-      });
-    }
     const existing = await tx.characterRelease.findFirst({
       where: { projectId: project.id, status: { in: ["draft", "validating", "in_review", "approved"] } },
     });
@@ -356,10 +344,7 @@ export async function proposeCharacterRelease(input: {
     await transitionCharacterProject(tx, {
       projectId: project.id,
       to: "qa",
-      expected: {
-        from: project.phase as "idea" | "planned" | "producing" | "live_management",
-        version: project.version,
-      },
+      expectedVersion: project.version,
     });
     const release = await tx.characterRelease.create({ data: {
       ...snapshot,
@@ -369,7 +354,7 @@ export async function proposeCharacterRelease(input: {
       generationProvenance: toInputJson(generationProvenance),
       releasePlacementManifest: toInputJson(releasePlacementManifest),
       snapshotHash,
-      status: "in_review",
+      status: "in_review" satisfies CharacterReleaseCreationState,
       readiness: "unknown",
     } });
     await tx.adminAuditLog.create({ data: {
@@ -455,32 +440,15 @@ export async function reviewCharacterRelease(input: {
     if (!project || project.characterId !== input.characterId) throw Errors.notFound("Character Release not found for Character");
     const status = input.decision === "approved" ? "approved" : "withdrawn";
     const projectPhase = input.decision === "approved" ? "launch_ready" : "producing";
-    if (
-      release.version !== input.expectedVersion ||
-      !isCharacterReleaseTransitionAllowed(release.status, status) ||
-      !isCharacterProjectPhaseTransitionAllowed(project.phase, projectPhase)
-    ) {
-      throw Errors.conflict("Release changed or transition is not allowed", {
-        from: release.status,
-        to: status,
-        projectPhase: { from: project.phase, to: projectPhase },
-      });
-    }
     const updated = await transitionCharacterRelease(tx, {
       releaseId: release.id,
       to: status,
-      expected: {
-        from: release.status as "in_review",
-        version: release.version,
-      },
+      expectedVersion: input.expectedVersion,
     });
     await transitionCharacterProject(tx, {
       projectId: project.id,
       to: projectPhase,
-      expected: {
-        from: project.phase as "qa",
-        version: project.version,
-      },
+      expectedVersion: project.version,
     });
     await tx.adminAuditLog.create({ data: {
       actorId: actor.id,
