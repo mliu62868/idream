@@ -56,8 +56,9 @@ export async function scheduleOutboxDelivery(
 }
 
 /**
- * chat.outbox.deliver handler: claim pending rows, send them to Main durable ingest,
- * mark delivered. Bounded batch; failures bump attempts + backoff via next_run_at.
+ * chat.outbox.deliver handler: read pending rows, send them to Main durable ingest,
+ * then converge each row monotonically. Bounded batch; failures bump attempts +
+ * backoff via next_run_at.
  */
 export async function deliverPendingOutbox(
   prisma: ChatPrismaClient = chatPrisma,
@@ -85,15 +86,12 @@ export async function deliverPendingOutbox(
         occurredAt: row.createdAt.toISOString(),
         payload: row.payload as Record<string, unknown>,
       });
-      await prisma.chatOutboxEvent.update({
-        where: { id: row.id },
-        data: { status: "delivered", deliveredAt: new Date() },
-      });
-      delivered += 1;
     } catch {
       const attempts = row.attempts + 1;
-      await prisma.chatOutboxEvent.update({
-        where: { id: row.id },
+      // INVARIANT: a stale failure may only advance the exact pending attempt
+      // it observed; it must never overwrite a durable ACK or a newer retry.
+      const transition = await prisma.chatOutboxEvent.updateMany({
+        where: { id: row.id, status: "pending", attempts: row.attempts },
         data: {
           attempts,
           // exponential-ish backoff: 30s * attempts
@@ -101,8 +99,18 @@ export async function deliverPendingOutbox(
           status: attempts >= 8 ? "failed" : "pending",
         },
       });
-      failed += 1;
+      failed += transition.count;
+      continue;
     }
+
+    // INTENT: receiver durable ACK is stronger evidence than local retry
+    // exhaustion. It may repair a concurrent failed write and is never
+    // followed by the failure path if this local persistence step errors.
+    const transition = await prisma.chatOutboxEvent.updateMany({
+      where: { id: row.id, status: { in: ["pending", "failed"] } },
+      data: { status: "delivered", deliveredAt: new Date() },
+    });
+    delivered += transition.count;
   }
   return { delivered, failed };
 }

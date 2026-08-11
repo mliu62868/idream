@@ -78,15 +78,12 @@ export async function dispatchPendingChatEvents(
   for (const row of rows) {
     try {
       await deliver(durableEventEnvelopeSchema.parse(row.payload));
-      await prisma.mainOutboxEvent.update({
-        where: { id: row.id },
-        data: { status: "delivered", deliveredAt: new Date(), lastError: Prisma.DbNull },
-      });
-      delivered += 1;
     } catch (error) {
       const attempts = row.attempts + 1;
-      await prisma.mainOutboxEvent.update({
-        where: { id: row.id },
+      // INVARIANT: a stale failure may only advance the exact pending attempt
+      // it observed; it must never overwrite a durable ACK or a newer retry.
+      const transition = await prisma.mainOutboxEvent.updateMany({
+        where: { id: row.id, status: "pending", attempts: row.attempts },
         data: {
           attempts,
           status: attempts >= 8 ? "failed" : "pending",
@@ -94,8 +91,18 @@ export async function dispatchPendingChatEvents(
           lastError: toInputJson({ message: error instanceof Error ? error.message : "chat delivery failed" }),
         },
       });
-      failed += 1;
+      failed += transition.count;
+      continue;
     }
+
+    // INTENT: receiver durable ACK is stronger evidence than local retry
+    // exhaustion. It may repair a concurrent failed write and is never
+    // followed by the failure path if this local persistence step errors.
+    const transition = await prisma.mainOutboxEvent.updateMany({
+      where: { id: row.id, status: { in: ["pending", "failed"] } },
+      data: { status: "delivered", deliveredAt: new Date(), lastError: Prisma.DbNull },
+    });
+    delivered += transition.count;
   }
   return { delivered, failed };
 }
