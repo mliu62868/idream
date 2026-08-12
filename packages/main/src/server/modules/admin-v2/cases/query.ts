@@ -53,6 +53,35 @@ export async function caseDto(row: Awaited<ReturnType<typeof prisma.adminCase.fi
       }
     }
   }
+  if (row.type === "content_report") {
+    const reportIds = evidence
+      .filter((item) => item.sourceType === "content_report")
+      .map((item) => item.sourceId);
+    if (reportIds.length > 0) {
+      // SPEC: the original Report Case and every Appeal Case must expose the
+      // same relationship in both directions; operators should never have to
+      // reconstruct the chain from internal decision identifiers.
+      const reviews = await prisma.moderationReview.findMany({
+        where: { reportId: { in: reportIds } },
+        select: { id: true },
+      });
+      const decisionIds = reviews.map((review) => review.id);
+      if (decisionIds.length > 0) {
+        const appeals = await prisma.appeal.findMany({
+          where: { originalDecisionId: { in: decisionIds } },
+          select: { id: true },
+        });
+        const appealIds = appeals.map((appeal) => appeal.id);
+        if (appealIds.length > 0) {
+          const appealEvidence = await prisma.caseEvidence.findMany({
+            where: { sourceType: "appeal", sourceId: { in: appealIds } },
+            select: { caseId: true },
+          });
+          relatedCaseIds.push(...appealEvidence.map((item) => item.caseId));
+        }
+      }
+    }
+  }
   const relatedIncidents = relatedIncidentCandidates.size > 0
     ? await prisma.opsIncident.findMany({ where: { id: { in: [...relatedIncidentCandidates] } }, select: { id: true } })
     : [];

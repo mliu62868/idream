@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { compileCharacterSoul } from "@idream/shared";
 import {
+  auditCharacterSoulAuthority,
   auditSoulSnapshots,
   characterSoulAuthorityIsLaunchSafe,
 } from "./soul-authority-audit";
@@ -51,5 +52,49 @@ describe("Character Soul authority audit", () => {
       legacyServingSnapshots: 0,
       legacyCurrentPointers: 0,
     })).toBe(false);
+  });
+
+  it("reads pinned Chat sessions through the Chat database role", async () => {
+    const mainRows = [
+      [{
+        database: "idream",
+        characterView: "core.chat_character_view",
+        contentView: "core.chat_character_content_version_view",
+        releaseView: "core.chat_character_release_view",
+      }],
+      [],
+      [],
+      [],
+    ];
+    const mainDb = {
+      $queryRaw: async () => {
+        const next = mainRows.shift();
+        if (!next) throw new Error("Main role cannot read chat.chat_sessions");
+        return next;
+      },
+      characterContentVersion: { findMany: async () => [] },
+    };
+    const chatRows = [
+      [{ database: "idream" }],
+      [],
+      [{ active: 0n, nullPins: 0n }],
+    ];
+    const chatDb = {
+      $queryRaw: async () => chatRows.shift() ?? [],
+    };
+
+    const audit = await (
+      auditCharacterSoulAuthority as unknown as (
+        main: typeof mainDb,
+        chat: typeof chatDb,
+      ) => ReturnType<typeof auditCharacterSoulAuthority>
+    )(mainDb, chatDb);
+
+    expect(audit.ok).toBe(true);
+    expect(audit.drain).toMatchObject({
+      activeSessions: 0,
+      nullPinSessions: 0,
+      legacyPinnedSessions: 0,
+    });
   });
 });

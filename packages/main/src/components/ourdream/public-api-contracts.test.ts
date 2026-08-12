@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   PublicApiContractError,
   parseAnnouncementsResponse,
+  parseAgeVerificationStatusResponse,
   parseAuthMeResponse,
   parseBillingPortalResponse,
   parseCharacterListResponse,
@@ -20,6 +21,7 @@ import {
   parseGenerationQuoteResponse,
   parseGenerationRetryQuoteResponse,
   parseGenerationJobsResponse,
+  parseHelpDeskHistoryResponse,
   parseChatSessionDetailResponse,
   parseLibraryResponse,
   parseMediaCollectionsResponse,
@@ -45,6 +47,87 @@ const character = {
 };
 
 describe("public API runtime contracts", () => {
+  it("accepts only canonical age verification statuses", () => {
+    expect(
+      parseAgeVerificationStatusResponse({
+        ok: true,
+        data: { status: "pending" },
+      }),
+    ).toEqual({ status: "pending" });
+    expect(
+      parseAgeVerificationStatusResponse({
+        ok: true,
+        data: { status: "verified" },
+      }),
+    ).toEqual({ status: "verified" });
+    expect(() =>
+      parseAgeVerificationStatusResponse({
+        ok: true,
+        data: { status: "approved" },
+      }),
+    ).toThrow(PublicApiContractError);
+  });
+
+  it("accepts customer Help Desk history and rejects internal fields", () => {
+    const payload = {
+      ok: true,
+      data: {
+        supportRequests: [{
+          id: "support-1",
+          ticketId: "SUP-123",
+          category: "bug",
+          subject: "Generator issue",
+          status: "resolved",
+          createdAt: "2026-08-11T10:00:00.000Z",
+          updatedAt: "2026-08-11T11:00:00.000Z",
+          resolution: {
+            outcome: "resolved",
+            resolvedAt: "2026-08-11T11:00:00.000Z",
+          },
+        }],
+        reports: [{
+          id: "report-1",
+          targetType: "character",
+          targetId: "character-1",
+          category: "other",
+          status: "closed",
+          createdAt: "2026-08-11T10:00:00.000Z",
+          decision: {
+            outcome: "closed",
+            decidedAt: "2026-08-11T11:00:00.000Z",
+          },
+          appealIds: ["appeal-1"],
+        }],
+        appeals: [{
+          id: "appeal-1",
+          targetType: "character",
+          targetId: "character-1",
+          status: "upheld",
+          createdAt: "2026-08-11T12:00:00.000Z",
+          relatedReportId: "report-1",
+          outcome: {
+            result: "upheld",
+            resolvedAt: "2026-08-11T13:00:00.000Z",
+          },
+        }],
+      },
+    };
+
+    expect(parseHelpDeskHistoryResponse(payload).reports[0]?.appealIds).toEqual([
+      "appeal-1",
+    ]);
+    expect(() => parseHelpDeskHistoryResponse({
+      ...payload,
+      data: {
+        ...payload.data,
+        supportRequests: [{
+          ...payload.data.supportRequests[0],
+          resolutionNotes: "private operator note",
+        }],
+      },
+    })).toThrow(PublicApiContractError);
+  });
+
   it("accepts intentional empty collections from complete success envelopes", () => {
     expect(
       parsePlansResponse({
@@ -399,7 +482,7 @@ describe("public API runtime contracts", () => {
         ok: true,
         data: {
           leaderboards: {
-            characters: [character],
+            characters: [{ ...character, isFollowing: false }],
             dreamers: [
               {
                 id: "creator-1",
@@ -939,6 +1022,54 @@ describe("public API runtime contracts", () => {
     ]) {
       expect(parse).toThrow(PublicApiContractError);
     }
+  });
+
+  it("preserves exact immutable opening authority and rejects malformed linkage", () => {
+    const payload = {
+      ok: true,
+      data: {
+        session: {
+          id: "session-opening",
+          title: "Opening",
+          character: { name: "Avery" },
+          messages: [
+            {
+              id: "message-opening",
+              role: "assistant",
+              content: "You made it.",
+              replyToMessageId: null,
+              runtimeTrace: {
+                schemaVersion: 1,
+                attempt: 1,
+                messageKind: "opening",
+                outputAuthority: "immutable_opening",
+              },
+            },
+          ],
+        },
+      },
+    };
+
+    expect(
+      parseChatSessionDetailResponse(payload).session.messages[0],
+    ).toMatchObject({
+      replyToMessageId: null,
+      runtimeTrace: {
+        messageKind: "opening",
+        outputAuthority: "immutable_opening",
+      },
+    });
+    expect(() => parseChatSessionDetailResponse({
+      ...payload,
+      data: {
+        session: {
+          ...payload.data.session,
+          messages: [
+            { ...payload.data.session.messages[0], replyToMessageId: 7 },
+          ],
+        },
+      },
+    })).toThrow(PublicApiContractError);
   });
 
   it("accepts current plans, catalog cards, feed items, and creator DTOs", () => {

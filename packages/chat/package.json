@@ -13,6 +13,7 @@
     "build": "echo 'source-only (tsx runtime), no build'",
     "db:generate": "prisma generate",
     "db:apply": "DB=${DB:-idream} SUPER=${SUPER:-kk} bash ../../db/sql/apply-validate.sh",
+    "probe:sentry": "tsx src/probe-sentry.ts",
     "repair:relationship-signals": "tsx src/repair-relationship-signals.ts",
     "start": "tsx src/main.ts"
   },
@@ -21,12 +22,13 @@
     "@prisma/adapter-pg": "7.6.0",
     "@prisma/client": "7.6.0",
     "@prisma/client-runtime-utils": "7.6.0",
+    "@sentry/node": "10.70.0",
     "bullmq": "^5.79.0",
+    "dotenv": "^17.4.2",
     "ioredis": "^5.11.1",
     "pg": "^8.21.0",
     "pino": "^10.3.1",
-    "zod": "^4.4.3",
-    "dotenv": "^17.4.2"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@prisma/engines": "7.6.0",

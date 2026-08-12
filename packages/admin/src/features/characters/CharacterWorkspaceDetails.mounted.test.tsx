@@ -15,6 +15,7 @@ vi.mock("@/lib/admin-v2-api", async (importOriginal) => {
 });
 
 import { AdminI18nProvider } from "@/components/admin/i18n";
+import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import { characterWorkspaceDetail } from "./character-workspace-fixture";
 import { CharacterWorkspace } from "./CharacterWorkspace";
 
@@ -31,6 +32,15 @@ async function waitUntil(predicate: () => boolean, label: string) {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
   }
+}
+
+function setInput(input: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(
+    HTMLInputElement.prototype,
+    "value",
+  )?.set;
+  setter?.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
 const VOICE_DEFAULTS_READ_ONLY =
@@ -99,6 +109,124 @@ describe("Character workspace details", () => {
       "eager",
       "eager",
     ]);
+  });
+
+  it("repairs a structured approved-customer Project gap and opens Images", async () => {
+    let prepared = false;
+    const submittedIdempotencyKeys: string[] = [];
+    adminV2Request.mockImplementation(async (
+      path: string,
+      options?: { method?: string; idempotencyKey?: string },
+    ) => {
+      if (path === "/api/v2/admin/characters/character-detail/project" && options?.method === "POST") {
+        submittedIdempotencyKeys.push(options.idempotencyKey ?? "");
+        if (submittedIdempotencyKeys.length === 1) {
+          throw new AdminV2RequestError("Temporary publication-prep failure", 503, "unavailable");
+        }
+        prepared = true;
+        return {
+          state: "publication_prep",
+          characterId: "character-detail",
+          submissionId: "submission-detail",
+          projectId: "project-detail",
+          revisionId: "revision-detail",
+          projectVersion: 1,
+          servingState: "inactive",
+          deepLink: "/admin/characters/character-detail?tab=assets",
+          created: true,
+          replayed: false,
+        };
+      }
+      if (!prepared) {
+        throw new AdminV2RequestError(
+          "Character Project not found",
+          404,
+          "not_found",
+          {
+            reason: "customer_publication_prep_missing",
+            characterId: "character-detail",
+            submissionId: "submission-detail",
+            recoveryOperation: "POST /api/v2/admin/characters/:id/project",
+          },
+        );
+      }
+      return workspace;
+    });
+
+    await act(async () => {
+      root.render(
+        <AdminI18nProvider locale="en">
+          <CharacterWorkspace
+            actorId="operator-a"
+            permissions={permissions}
+            view={{ kind: "detail", id: "character-detail" }}
+          />
+        </AdminI18nProvider>,
+      );
+    });
+    await waitUntil(
+      () => container.textContent?.includes("Approved · awaiting publication preparation") === true,
+      "publication preparation recovery",
+    );
+    const button = [...container.querySelectorAll("button")].find(
+      (candidate) => candidate.textContent?.includes("Prepare publication workspace"),
+    );
+    expect(button).toBeDefined();
+
+    await act(async () => {
+      button?.click();
+    });
+    expect(prepared).toBe(false);
+    expect(document.body.textContent).toContain(
+      "It does not create or publish a Release and does not make the Character visible in Explore or Community.",
+    );
+    const reason = document.body.querySelector<HTMLInputElement>(
+      'input[aria-label="Operational reason (≥3)"]',
+    );
+    const confirmation = document.body.querySelector<HTMLInputElement>(
+      'input[aria-label="Type the publication preparation confirmation"]',
+    );
+    expect(reason).toBeTruthy();
+    expect(confirmation).toBeTruthy();
+    await act(async () => {
+      setInput(reason!, "Repair the approved customer publication workspace");
+      setInput(confirmation!, "PREPARE PUBLICATION character-detail");
+    });
+    const submit = [...document.body.querySelectorAll("button")].find(
+      (candidate) =>
+        candidate !== button &&
+        candidate.textContent?.includes("Prepare publication workspace"),
+    );
+    expect(submit?.disabled).toBe(false);
+    await act(async () => {
+      submit?.click();
+    });
+    await waitUntil(
+      () => document.body.textContent?.includes("Temporary publication-prep failure") === true,
+      "inline publication preparation failure",
+    );
+    await act(async () => {
+      submit?.click();
+    });
+    await waitUntil(
+      () => prepared && window.location.search === "?tab=assets",
+      "prepared Images workspace",
+    );
+
+    expect(adminV2Request).toHaveBeenCalledWith(
+      "/api/v2/admin/characters/character-detail/project",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.objectContaining({
+          submissionId: "submission-detail",
+          reason: "Repair the approved customer publication workspace",
+          confirmation: "PREPARE PUBLICATION character-detail",
+        }),
+        idempotencyKey: expect.any(String),
+      }),
+    );
+    expect(submittedIdempotencyKeys).toHaveLength(2);
+    expect(new Set(submittedIdempotencyKeys).size).toBe(1);
   });
 
   /**

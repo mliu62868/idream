@@ -96,6 +96,38 @@ type ProfileWorkspaceProps = {
   routePath: string;
 };
 
+export function createdCharacterPublicationStatus(input: {
+  status?: string | null;
+  visibility?: string | null;
+  publicationState?: string | null;
+}) {
+  if (input.visibility === "public" && input.publicationState === "live") return "live";
+  if (
+    input.visibility === "public" &&
+    (
+      input.publicationState === "awaiting_publication" ||
+      (input.publicationState === undefined && input.status === "approved")
+    )
+  ) {
+    return "approved · awaiting publication";
+  }
+  return input.status?.replaceAll("_", " ") ?? "";
+}
+
+export function accountDeletionLoginHref(payload: unknown) {
+  const value = payload as {
+    data?: { deletion?: { graceEndsAt?: unknown } };
+  } | null;
+  const raw = value?.data?.deletion?.graceEndsAt;
+  if (typeof raw !== "string" || !Number.isFinite(Date.parse(raw))) {
+    return "/login";
+  }
+  const params = new URLSearchParams({
+    accountDeletionGraceEndsAt: new Date(raw).toISOString(),
+  });
+  return `/login?${params.toString()}`;
+}
+
 export function loadProfileForViewer(fetcher: ViewerFetcher = fetch) {
   return fetchProtectedForViewer(
     "/api/v1/profile",
@@ -618,8 +650,9 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
     }
     try {
       const response = await fetch("/api/v1/account/delete-request", { method: "POST" });
+      const payload = await response.json().catch(() => null);
       if (response.ok) {
-        window.location.href = "/login";
+        window.location.href = accountDeletionLoginHref(payload);
         return;
       }
       setStatus("Account deletion failed.");
@@ -758,7 +791,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
       }
       setStatus(
         next === "public"
-          ? "Submitted for review — public characters go live after approval."
+          ? "Submitted for review. Approval starts publication preparation; the character goes live after Release is published."
           : "Character set to private.",
       );
       await refreshLibrary(tab);
@@ -1307,6 +1340,9 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
             </div>
             <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
               Delete account
+              <span className="mt-1 block text-[11px] font-medium normal-case leading-5 text-[rgb(154,153,152)]">
+                Access ends immediately. Personal data is erased after the account-deletion grace period.
+              </span>
               <div className="mt-2 flex gap-2">
                 <input
                   aria-label="Delete confirmation"
@@ -1790,7 +1826,11 @@ function LibraryCard({
         <div className="mt-2 flex flex-wrap items-center gap-2">
           {item.status && (
             <span className="rounded-full bg-black/30 px-2 py-1 text-[11px] font-bold uppercase text-[rgb(170,170,170)]">
-              {item.status.replace("_", " ")}
+              {createdCharacterPublicationStatus({
+                status: item.status,
+                visibility: item.visibility,
+                publicationState: item.publicationState,
+              })}
             </span>
           )}
           <button
@@ -1914,4 +1954,3 @@ function triggerDownload(url: string) {
   link.click();
   link.remove();
 }
-

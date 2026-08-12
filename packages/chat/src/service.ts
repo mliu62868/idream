@@ -5,7 +5,7 @@
 // {assistantMessageId, streamUrl}. NO synchronous generation in the request.
 import { createHash } from "node:crypto";
 import type { ChatPrismaClient } from "./db.js";
-import type { Prisma } from "../generated/client/client.js";
+import { Prisma } from "../generated/client/client.js";
 import { chatPrisma, chatProjectorPrisma } from "./db.js";
 import { characterAvailableToUser } from "./character-eligibility.js";
 import { providers } from "./providers.js";
@@ -138,7 +138,10 @@ export async function createSession(
       where: { userId: input.userId, characterId: input.characterId, status: "active" },
       orderBy: { lastMessageAt: "desc" },
     });
-    if (existing) return existing;
+    if (existing) {
+      await materializeOpeningMessage(tx, existing);
+      return existing;
+    }
 
     const id = createId("sess");
     const created = await tx.chatSession.create({
@@ -155,6 +158,7 @@ export async function createSession(
         entryPlacementId: input.entryPlacementId ?? null,
       },
     });
+    await materializeOpeningMessage(tx, created);
     await recordOutbox(tx, {
       eventType: CHAT_TO_MAIN_EVENTS.sessionCreated,
       aggregateType: "session",
@@ -173,6 +177,74 @@ export async function createSession(
     }),
     projectorPrisma,
   );
+}
+
+async function materializeOpeningMessage(
+  tx: Prisma.TransactionClient,
+  session: {
+    id: string;
+    characterId: string;
+    characterContentVersionId: string | null;
+    characterReleaseId: string | null;
+    createdAt: Date;
+  },
+): Promise<void> {
+  if (!session.characterContentVersionId) return;
+  const existingMessage = await tx.message.findFirst({
+    where: { sessionId: session.id },
+    select: { id: true },
+  });
+  if (existingMessage) return;
+  const pinnedContent = await tx.chatCharacterContentVersionView.findUnique({
+    where: { contentVersionId: session.characterContentVersionId },
+  });
+  if (!pinnedContent || pinnedContent.characterId !== session.characterId) return;
+  const openingMessage = openingMessageFromSnapshot(
+    pinnedContent.openingSnapshot,
+  );
+  if (!openingMessage) return;
+  const messageId = createId("msg");
+  const runtimeTrace = {
+    schemaVersion: 1,
+    attempt: 1,
+    messageKind: "opening",
+    scene: null,
+    outputAuthority: "immutable_opening",
+  } satisfies Prisma.InputJsonObject;
+  await tx.message.create({
+    data: {
+      id: messageId,
+      sessionId: session.id,
+      role: "assistant",
+      content: openingMessage,
+      status: "sent",
+      safetyStatus: "passed",
+      memoryAuthority: "disabled",
+      characterContentVersionId: session.characterContentVersionId,
+      characterReleaseId: session.characterReleaseId,
+      runtimeTrace,
+      createdAt: session.createdAt,
+      updatedAt: session.createdAt,
+      versions: {
+        create: {
+          id: `mv:${messageId}:1`,
+          content: openingMessage,
+          selected: true,
+          attempt: 1,
+          runtimeTrace,
+          createdAt: session.createdAt,
+        },
+      },
+    },
+  });
+}
+
+function openingMessageFromSnapshot(value: unknown): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const firstMessage = (value as Record<string, unknown>).firstMessage;
+  return typeof firstMessage === "string" && firstMessage.trim()
+    ? firstMessage.trim()
+    : null;
 }
 
 export async function listSessions(userId: string, override?: Partial<ChatContext>) {
@@ -1170,14 +1242,65 @@ export async function archiveSession(
   override?: Partial<ChatContext>,
 ) {
   const { prisma } = ctx(override);
-  // BUGFIX: 此前这里只查归属、不查生命周期，于是一个**已被擦除**的会话可以被它的
-  // 主人 archive 回来 —— status 从 "deleted" 翻成 "archived"，而 listSessions 只按
-  // status 过滤，被擦除的会话就带着空消息列表重新出现在抽屉里。擦除必须是终态。
-  const session = await requireSession(prisma, input, {
-    require: "not_deleted",
-    denial: { kind: "not_found" },
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw(
+      Prisma.sql`
+        SELECT id
+        FROM chat.chat_sessions
+        WHERE id = ${input.sessionId}
+        FOR UPDATE
+      `,
+    );
+    // BUGFIX: 此前这里只查归属、不查生命周期，于是一个**已被擦除**的会话可以被它的
+    // 主人 archive 回来 —— status 从 "deleted" 翻成 "archived"，而 listSessions 只按
+    // status 过滤，被擦除的会话就带着空消息列表重新出现在抽屉里。擦除必须是终态。
+    const session = await requireSession(tx, input, {
+      require: "not_deleted",
+      denial: { kind: "not_found" },
+    });
+
+    // INVARIANT: a user archive ordered after a moderation removal overrides
+    // that exact causal event. Appeal restoration may not revive this session.
+    const removalSnapshots = await tx.chatModerationEvent.findMany({
+      where: {
+        targetType: "session",
+        targetId: session.id,
+        layer: "main_moderation_removal",
+        status: "archived_by_removal",
+      },
+      select: { details: true },
+    });
+    const overriddenRemovalEventIds = removalSnapshots.flatMap((snapshot) => {
+      const details = snapshot.details;
+      if (!details || typeof details !== "object" || Array.isArray(details)) {
+        throw new Error("character removal session evidence is invalid");
+      }
+      const sourceEventId = (details as Record<string, unknown>).sourceEventId;
+      if (typeof sourceEventId !== "string" || !sourceEventId) {
+        throw new Error("character removal session evidence has no source event");
+      }
+      return sourceEventId;
+    });
+    await tx.chatModerationEvent.create({
+      data: {
+        id: createId("mod"),
+        targetType: "session",
+        targetId: session.id,
+        layer: "user_session_lifecycle",
+        status: "user_archived",
+        details: {
+          version: 1,
+          overriddenRemovalEventIds: [
+            ...new Set(overriddenRemovalEventIds),
+          ].sort(),
+        },
+      },
+    });
+    return tx.chatSession.update({
+      where: { id: session.id },
+      data: { status: "archived" },
+    });
   });
-  return prisma.chatSession.update({ where: { id: session.id }, data: { status: "archived" } });
 }
 
 // Title is user-facing; cap at 80 chars so the drawer row never overflows (US-CH-04).

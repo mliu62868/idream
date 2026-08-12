@@ -22,7 +22,7 @@
 
 **尽量零 schema 迁移**：
 - CMS 复用既有 `RoutePage` 表（path/template/title/description/canonical/contentStatus/body）——**无新表**。
-- 合规复用 `User`（status/deletedAt）+ `AgeVerification`（status override）+ 既有擦除流（Main Outbox → Chat HTTP durable ingest → Inbox ACK 的 `userDeleted` 事件）——**无新表**，按需操作 + 审计。
+- 合规复用 `User`（status/deletedAt）+ `AgeVerification`（status override）。账号擦除的当前权威已由 `AccountDeletion` receipt 与 `user.account_deletion.requested.v2` 取代本设计稿中的旧 `userDeleted` 直发；以 `CURRENT_FUNCTIONAL_COVERAGE.md` 为准。
 - 生成健康度从 `GenerationJob` 只读聚合；dry-run 写既有 `GenerationModelProfile.dryRunSummary(Json)`——**无新表**。
 - 双人审批硬门控复用 `AdminActionRequest`（加一个 `consumed` 语义：用 `status=consumed` 表示已执行，**无新列**）。
 - analytics 导出/留存从核心表 + `AnalyticsEvent` 只读计算——**无新表**。
@@ -72,7 +72,7 @@ T4 全部复用现有 key：`generation.config.read/write`（健康度/dry-run�
 | POST | `/admin/compliance/users/:id/erase` | `compliance.write` | reason+typed | `compliance.erase` |
 
 - 导出：聚合该用户的 profile/subscriptions/ledger/jobs/characters/reports 等**结构化**数据为 JSON（敏感明文 prompt/chat 不含——明文仍走 §13 consent/legal hold）。
-- 擦除：复用 `deleteRequest` 流（置 `status=deleted`+`deletedAt`、删 session、入队 chat 擦除 `userDeleted`），但针对 **target 用户** + 强制 reason+typed + 审计；幂等（已 deleted 直接幂等返回）。
+- 擦除：复用当前 `requestAccountDeletion`（立即撤销访问、建立 30 天 grace receipt、到期入队 v2 Chat 擦除），但针对 **target 用户** + 强制 reason+typed + 审计；幂等由 AccountDeletion authority 判定。
 
 ### 4.2 年龄验证复核队列
 | Method | Path | key | 确认 | 审计 |

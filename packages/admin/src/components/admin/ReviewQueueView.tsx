@@ -35,6 +35,33 @@ type PendingDecision = {
   decision: Decision;
 };
 
+type ReviewDecisionResult = {
+  submission: { status: string };
+  publication: {
+    state: "publication_prep";
+    projectId: string;
+    revisionId: string;
+    servingState: string;
+    deepLink: string;
+    created: boolean;
+  } | null;
+};
+
+export function reviewDecisionSuccess(result: ReviewDecisionResult) {
+  if (result.submission.status === "approved" && result.publication) {
+    return {
+      message: "Approved. Awaiting publication: complete assets, QA, and Release before the character goes live.",
+      href: result.publication.deepLink,
+    };
+  }
+  return {
+    message: result.submission.status === "approved"
+      ? "Approved. This decision did not publish the character."
+      : "Review decision recorded.",
+    href: null,
+  };
+}
+
 type ReportFilter = "all" | "reported" | "clean";
 
 type SavedReviewQueueFilters = {
@@ -74,6 +101,7 @@ export function ReviewQueueView() {
   const [cursor, setCursor] = useState<string | undefined>();
   const [pageInfo, setPageInfo] = useState({ endCursor: null as string | null, hasNextPage: false });
   const [ready, setReady] = useState(false);
+  const [success, setSuccess] = useState<{ message: string; href: string | null } | null>(null);
   const savedViewCreateKey = useRef<string | null>(null);
   const savedViewDeleteKeys = useRef(new Map<string, string>());
 
@@ -178,8 +206,15 @@ export function ReviewQueueView() {
   return (
     <div className="space-y-4">
       <p className="text-xs text-[var(--ad-text-muted)]">
-        角色人审队列：仅展示 status=pending 的提交。Approve 将角色置为 approved，Reject 置为 rejected，均需理由并审计。
+        角色人审队列：仅展示 status=pending 的提交。Approve 将角色置为 approved 并进入发布准备；只有 Release 发布后角色才会公开。Reject 置为 rejected，均需理由并审计。
       </p>
+
+      {success ? (
+        <p className="text-xs text-[var(--ad-green-text)]" role="status">
+          {success.message}{" "}
+          {success.href ? <a className="font-semibold underline underline-offset-4" href={success.href}>{t("Open Character Asset Studio")}</a> : null}
+        </p>
+      ) : null}
 
       {error ? <p role="alert" className="text-xs text-[var(--ad-red-text)]">{error}</p> : null}
 
@@ -378,7 +413,8 @@ export function ReviewQueueView() {
         <DecisionDialog
           pending={pending}
           onClose={() => setPending(null)}
-          onDone={async () => {
+          onDone={async (result) => {
+            setSuccess(reviewDecisionSuccess(result));
             setPending(null);
             await load(cursor);
           }}
@@ -395,7 +431,7 @@ function DecisionDialog({
 }: {
   pending: PendingDecision;
   onClose: () => void;
-  onDone: () => Promise<void>;
+  onDone: (result: ReviewDecisionResult) => Promise<void>;
 }) {
   const { t, value: valueLabel } = useAdminI18n();
   const { item, decision } = pending;
@@ -458,7 +494,7 @@ function DecisionDialog({
     const requestKey = idempotencyKey.current ?? crypto.randomUUID();
     idempotencyKey.current = requestKey;
     try {
-      await apiWrite(
+      const result = await apiWrite<ReviewDecisionResult>(
         `/api/v1/admin/content/review-queue/${item.submissionId}/decision`,
         "POST",
         {
@@ -469,7 +505,7 @@ function DecisionDialog({
         },
         { "idempotency-key": requestKey },
       );
-      await onDone();
+      await onDone(result);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Decision failed");
       setBusy(false);
@@ -492,6 +528,7 @@ function DecisionDialog({
         </h3>
         <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
           确认提交后角色将被置为 {decision === "approve" ? valueLabel("approved") : valueLabel("rejected")}。
+          {decision === "approve" ? " 审核通过后进入发布准备，仍需完成 Asset、QA 与 Release 才会上线。" : null}
         </p>
         <div className="mt-4 space-y-3">
           <textarea

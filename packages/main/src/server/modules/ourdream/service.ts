@@ -112,7 +112,6 @@ import {
   createSessionToken,
   getAuthCtx,
   hashPassword,
-  mergeAnonymous,
   requireAgeGate,
   requireAgeVerified,
   requireUser,
@@ -164,6 +163,10 @@ import { isPublicRouteDiscoverable } from "@/lib/public-route-authority";
 import { activeAnnouncements, readAnnouncements } from "@/server/announcements/store";
 import { logger } from "@/server/lib/logger";
 import {
+  accountDeletionPublicState,
+  requestAccountDeletion,
+} from "@/server/account-deletion-authority";
+import {
   redeemCodeDreamcoins,
   redeemCodeHashCandidates,
 } from "@/server/lib/redeem-codes";
@@ -179,7 +182,7 @@ import {
   verifyExposureContext,
 } from "./exposure-context";
 import { createVoiceClip as createDurableVoiceClip } from "./voice-clip";
-import { trackEvent } from "./product-events";
+import { trackEvent, trackEventBestEffort } from "./product-events";
 import { submitReport } from "./reports";
 import { moderateText } from "@/server/moderation/text-authority";
 import {
@@ -694,6 +697,9 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
   if (resource === "support" && id === "requests" && !action && method === "POST") {
     return submitSupportRequest(request);
   }
+  if (resource === "support" && id === "history" && !action && method === "GET") {
+    return customerHelpDeskHistory(request);
+  }
   if (resource === "feed") return feed(request, segments);
   if (resource === "community") return community(request, segments);
   if (resource === "creators" && id && !action && method === "GET") {
@@ -746,6 +752,12 @@ async function signup(request: Request) {
         },
       },
     });
+    if (anonymousId) {
+      await tx.ageGateAcceptance.updateMany({
+        where: { anonymousId, userId: null },
+        data: { userId: created.id },
+      });
+    }
     await postDreamcoinEntry(tx, {
       kind: "signup_bonus",
       userId: created.id,
@@ -797,10 +809,24 @@ async function signup(request: Request) {
       payload: { userId: created.id },
     });
     return created;
+  }).catch(async (error) => {
+    // Concurrent requests can both pass the cheap pre-check. Resolve the
+    // database uniqueness winner to the same public conflict contract instead
+    // of leaking a Prisma P2002 as a 500.
+    if (isUniqueConstraintError(error)) {
+      const concurrent = await prisma.user.findUnique({
+        where: { email: body.email },
+        select: { id: true },
+      });
+      if (concurrent) throw Errors.conflict("Email already registered");
+    }
+    throw error;
   });
-
-  await mergeAnonymous(user.id, ctx.anonymousId);
-  await trackEvent("signup", { source: "api" }, { userId: user.id, anonymousId: ctx.anonymousId });
+  await trackEventBestEffort(
+    "signup",
+    { source: "api" },
+    { userId: user.id, anonymousId: ctx.anonymousId },
+  );
 
   const response = ok({
     user: userDTO(user),
@@ -838,24 +864,33 @@ async function login(request: Request) {
     throw Errors.unauthorized("Invalid email or password");
   }
 
-  if (account.user.status !== "active" || account.user.deletedAt) {
-    throw Errors.forbidden("Account is not active");
-  }
-
   const token = createSessionToken();
   const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 30);
-  await prisma.session.create({
-    data: {
-      userId: account.userId,
-      token,
-      expiresAt,
-      userAgent: request.headers.get("user-agent"),
-    },
+  const currentUser = await prisma.$transaction(async (tx) => {
+    // Account deletion uses the same User-root lock before revoking sessions.
+    // Re-check beneath that lock so a login that read credentials just before
+    // deletion cannot create a fresh session after revocation committed.
+    await tx.$queryRaw(Prisma.sql`
+      SELECT id FROM users WHERE id = ${account.userId} FOR UPDATE
+    `);
+    const user = await tx.user.findUnique({ where: { id: account.userId } });
+    if (!user || user.status !== "active" || user.deletedAt) {
+      throw Errors.forbidden("Account is not active");
+    }
+    await tx.session.create({
+      data: {
+        userId: account.userId,
+        token,
+        expiresAt,
+        userAgent: request.headers.get("user-agent"),
+      },
+    });
+    return user;
   });
-  await trackEvent("login", { source: "api" }, { userId: account.userId });
+  await trackEventBestEffort("login", { source: "api" }, { userId: account.userId });
 
   const response = ok({
-    user: userDTO(account.user),
+    user: userDTO(currentUser),
     session: { expiresAt },
   });
   response.headers.append("set-cookie", sessionCookie(token, expiresAt));
@@ -918,7 +953,11 @@ async function acceptAgeGate(request: Request) {
       },
     });
   }
-  await trackEvent("age_gate_accepted", { sourcePath: body.sourcePath }, ctx);
+  await trackEventBestEffort(
+    "age_gate_accepted",
+    { sourcePath: body.sourcePath },
+    { userId: ctx.userId, anonymousId },
+  );
 
   const response = ok({ accepted: true, anonymousId });
   response.headers.append("set-cookie", ageGateCookie());
@@ -935,26 +974,79 @@ async function ageVerificationStatus(request: Request) {
 async function createAgeVerificationSession(request: Request) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
-  const result = await providers.ageVerification.createSession({ userId: user.id });
-  if (!result.ok) throw Errors.internal(result.error.message, result.error);
-
-  const verification = await prisma.ageVerification.create({
+  // INVARIANT: the local intent exists before the provider can call us back.
+  // A provider may finish verification before createSession returns; the
+  // response path must enrich that same row, never append a newer pending row.
+  const intent = await prisma.ageVerification.create({
     data: {
       userId: user.id,
-      provider: result.data.provider,
-      providerVerificationId: result.data.providerVerificationId,
-      status: result.data.status,
-      metadata: {},
+      provider: env.AGE_VERIFICATION_PROVIDER,
+      status: "pending",
+      metadata: toInputJson({
+        callbackUrl: env.AGE_VERIFY_CALLBACK_URL ?? null,
+        linkBackUrl: env.AGE_VERIFY_LINK_BACK_URL ?? null,
+        sessionUrl: null,
+      }),
     },
   });
 
+  let result: Awaited<ReturnType<typeof providers.ageVerification.createSession>>;
+  try {
+    result = await providers.ageVerification.createSession({ userId: user.id });
+  } catch (error) {
+    await markAgeVerificationIntentFailed(intent.id);
+    throw error;
+  }
+  if (!result.ok) {
+    await markAgeVerificationIntentFailed(intent.id);
+    throw Errors.internal(result.error.message, result.error);
+  }
+
+  await prisma.ageVerification.updateMany({
+    where: { id: intent.id, status: { in: ["required", "pending"] } },
+    data: {
+      provider: result.data.provider,
+      providerVerificationId: result.data.providerVerificationId,
+      status: result.data.status,
+    },
+  });
+  // The callback may have terminalized the row while createSession was in flight.
+  // Enrich its immutable launch-route snapshot without regressing that status.
+  await prisma.ageVerification.update({
+    where: { id: intent.id },
+    data: {
+      provider: result.data.provider,
+      providerVerificationId: result.data.providerVerificationId,
+      metadata: toInputJson({
+        callbackUrl: env.AGE_VERIFY_CALLBACK_URL ?? null,
+        linkBackUrl: env.AGE_VERIFY_LINK_BACK_URL ?? null,
+        sessionUrl: result.data.url ?? null,
+      }),
+    },
+  });
+  const verification = await prisma.ageVerification.findUniqueOrThrow({
+    where: { id: intent.id },
+  });
+
   return ok({ verification, url: result.data.url });
+}
+
+async function markAgeVerificationIntentFailed(id: string) {
+  await prisma.ageVerification.updateMany({
+    where: { id, status: { in: ["required", "pending"] } },
+    data: { status: "failed" },
+  });
 }
 
 // SPEC (BackendFeatureSpec §5.1): identity-verification provider callback.
 // INVARIANTS: idempotent by provider event id; applies the reported status to
 // the user's latest age_verification exactly once.
 async function ageVerificationWebhook(request: Request, provider: string) {
+  if (provider !== env.AGE_VERIFICATION_PROVIDER) {
+    throw Errors.badRequest(
+      "Webhook provider does not match the configured age verification provider",
+    );
+  }
   const rawBody = await bodyText(request);
   const payload = parseJsonText(rawBody);
   const incomingEventId =
@@ -962,9 +1054,16 @@ async function ageVerificationWebhook(request: Request, provider: string) {
     (isRecord(payload) && typeof payload.providerEventId === "string"
       ? payload.providerEventId
       : cryptoRandomId("age_evt"));
+  const incomingDeliveryId =
+    request.headers.get("x-provider-delivery-id") ??
+    request.headers.get("x-gocam-delivery-id") ??
+    (isRecord(payload) && typeof payload.deliveryId === "string"
+      ? payload.deliveryId
+      : incomingEventId);
 
   const parsed = await providers.ageVerification.parseWebhook({
     providerEventId: incomingEventId,
+    deliveryId: incomingDeliveryId,
     payload,
     rawBody,
     signature:
@@ -976,22 +1075,66 @@ async function ageVerificationWebhook(request: Request, provider: string) {
   if (!parsed.ok) throw Errors.badRequest(parsed.error.message, parsed.error);
 
   const eventId = parsed.data.providerEventId;
-
-  const already = await prisma.providerEvent.findUnique({
-    where: { provider_providerEventId: { provider, providerEventId: eventId } },
+  const payloadHash = canonicalJsonHash(payload);
+  const targetHash = canonicalJsonHash({
+    providerVerificationId: parsed.data.providerVerificationId ?? null,
+    status: parsed.data.status,
+    userId: parsed.data.userId ?? null,
   });
-  if (already?.processedAt) return ok({ processed: false, idempotent: true });
-
-  const event = await prisma.providerEvent.upsert({
+  let event = await prisma.providerEvent.upsert({
     where: { provider_providerEventId: { provider, providerEventId: eventId } },
-    update: { payload: toInputJson(payload) },
+    update: {},
     create: {
       provider,
       providerEventId: eventId,
       type: "age.verification",
       payload: toInputJson(payload),
+      targetHash,
     },
   });
+  if (event.type !== "age.verification") {
+    throw Errors.conflict("Age verification event type changed across deliveries", {
+      providerEventId: eventId,
+    });
+  }
+  if (!event.targetHash) {
+    if (canonicalJsonHash(event.payload) !== payloadHash) {
+      throw Errors.conflict("Age verification event payload changed across deliveries", {
+        providerEventId: eventId,
+      });
+    }
+    await prisma.providerEvent.updateMany({
+      where: { id: event.id, targetHash: null },
+      data: { targetHash },
+    });
+    event = await prisma.providerEvent.findUniqueOrThrow({ where: { id: event.id } });
+  }
+  if (event.targetHash !== targetHash) {
+    throw Errors.conflict("Age verification event target changed across deliveries", {
+      providerEventId: eventId,
+    });
+  }
+  const delivery = await prisma.providerEventDelivery.upsert({
+    where: {
+      eventId_deliveryId: {
+        eventId: event.id,
+        deliveryId: parsed.data.deliveryId,
+      },
+    },
+    update: {},
+    create: {
+      eventId: event.id,
+      deliveryId: parsed.data.deliveryId,
+      payload: toInputJson(payload),
+      payloadHash,
+    },
+  });
+  if (delivery.payloadHash !== payloadHash) {
+    throw Errors.conflict("Age verification delivery payload changed", {
+      providerEventId: eventId,
+    });
+  }
+  if (event.processedAt) return ok({ processed: false, idempotent: true });
 
   const { userId, providerVerificationId, status } = parsed.data;
   if (userId || providerVerificationId) {
@@ -1560,7 +1703,22 @@ async function previewDraft(request: Request, id: string) {
   const user = requireUser(ctx);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
+  const idempotencyKey = requireGenerationWriteIdempotencyKey(request);
   const draft = await assertDraftOwner(id, user.id);
+  const requestFingerprint = generationWriteRequestFingerprint(
+    "character.preview.create",
+    {},
+    draft.id,
+  );
+  const existingReservation = await findCharacterPreviewReservation(
+    user.id,
+    draft.id,
+    idempotencyKey,
+  );
+  if (existingReservation) {
+    await wakeQueuedGenerationDispatch(existingReservation.generationJob);
+    return ok({ previewJob: existingReservation.previewJob });
+  }
   const moderation = await moderateText(
     "character_draft",
     id,
@@ -1607,68 +1765,113 @@ async function previewDraft(request: Request, id: string) {
   // INVARIANT: Preview business state, Generation Request, first Attempt and
   // dispatch Outbox either all exist or none do. Gen consumes the same formal
   // image envelope as every other image use case.
-  const reservation = await prisma.$transaction(async (tx) => {
-    const previewJob = await tx.characterPreviewJob.create({
-      data: {
-        draftId: id,
-        status: "queued",
-        provider: profile.runner,
-      },
-    });
-    const generationJob = await tx.generationJob.create({
-      data: {
-        userId: user.id,
-        mode: "image",
-        prompt,
-        negativePrompt: recipe.negativeBase,
-        controls: toInputJson(pruneUndefined({
-          width: dimensions.width,
-          height: dimensions.height,
-          orientation,
-          workflowKey: profile.workflowKey ?? undefined,
-        })),
-        presetIds: toInputJson([]),
-        model: profile.workflowKey ?? profile.pipelineModel,
-        profileId: profile.profileKey,
-        profileVersion: profile.version,
-        recipeId: recipe.recipeKey,
-        recipeVersion: recipe.version,
-        orientation,
-        outputCount: 1,
-        costDreamcoins: 0,
-        provider: profile.runner,
-        sourceType: "character_preview",
-        sourceId: previewJob.id,
-        sourceMeta: toInputJson({
+  let reservation;
+  try {
+    reservation = await prisma.$transaction(async (tx) => {
+      const previewJob = await tx.characterPreviewJob.create({
+        data: {
           draftId: id,
-          previewJobId: previewJob.id,
-        }),
-      },
+          status: "queued",
+          provider: profile.runner,
+        },
+      });
+      const generationJob = await tx.generationJob.create({
+        data: {
+          userId: user.id,
+          idempotencyKey,
+          momentSpec: toInputJson({ requestFingerprint }),
+          mode: "image",
+          prompt,
+          negativePrompt: recipe.negativeBase,
+          controls: toInputJson(pruneUndefined({
+            width: dimensions.width,
+            height: dimensions.height,
+            orientation,
+            workflowKey: profile.workflowKey ?? undefined,
+          })),
+          presetIds: toInputJson([]),
+          model: profile.workflowKey ?? profile.pipelineModel,
+          profileId: profile.profileKey,
+          profileVersion: profile.version,
+          recipeId: recipe.recipeKey,
+          recipeVersion: recipe.version,
+          orientation,
+          outputCount: 1,
+          costDreamcoins: 0,
+          provider: profile.runner,
+          sourceType: "character_preview",
+          sourceId: previewJob.id,
+          sourceMeta: toInputJson({
+            draftId: id,
+            previewJobId: previewJob.id,
+          }),
+        },
+      });
+      await appendGenerationEvent(
+        tx,
+        generationJob.id,
+        "created",
+        "Character Preview Generation Request accepted",
+        { previewJobId: previewJob.id, draftId: id },
+      );
+      await appendGenerationEvent(
+        tx,
+        generationJob.id,
+        "queued",
+        "Character Preview Generation Request queued",
+        {},
+      );
+      const attempt = await reserveInitialGenerationAttempt(tx, generationJob);
+      return {
+        previewJob,
+        outboxId: attempt.outbox.id,
+      };
     });
-    await appendGenerationEvent(
-      tx,
-      generationJob.id,
-      "created",
-      "Character Preview Generation Request accepted",
-      { previewJobId: previewJob.id, draftId: id },
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) throw error;
+    // A concurrent replay can lose the unique-key race after the first request
+    // committed. Resolve that same durable Preview/Generation pair instead of
+    // turning a safe retry into a second reservation.
+    const replay = await findCharacterPreviewReservation(
+      user.id,
+      draft.id,
+      idempotencyKey,
     );
-    await appendGenerationEvent(
-      tx,
-      generationJob.id,
-      "queued",
-      "Character Preview Generation Request queued",
-      {},
-    );
-    const attempt = await reserveInitialGenerationAttempt(tx, generationJob);
-    return {
-      previewJob,
-      outboxId: attempt.outbox.id,
-    };
-  });
+    if (!replay) throw error;
+    await wakeQueuedGenerationDispatch(replay.generationJob);
+    return ok({ previewJob: replay.previewJob });
+  }
   await dispatchGenerationAttemptOutbox(prisma, {
     outboxIds: [reservation.outboxId],
   });
   return ok({ previewJob: reservation.previewJob });
+}
+
+async function findCharacterPreviewReservation(
+  userId: string,
+  draftId: string,
+  idempotencyKey: string,
+) {
+  const generationJob = await prisma.generationJob.findFirst({
+    where: { userId, idempotencyKey },
+  });
+  if (!generationJob) return null;
+  if (generationJob.sourceType !== "character_preview" || !generationJob.sourceId) {
+    throw Errors.conflict(
+      "Idempotency-Key was already used for a different generation request",
+      { generationJobId: generationJob.id },
+    );
+  }
+  const previewJob = await prisma.characterPreviewJob.findFirst({
+    where: { id: generationJob.sourceId, draftId },
+  });
+  if (!previewJob) {
+    throw Errors.conflict(
+      "Idempotency-Key was already used for a different Character Preview request",
+      { generationJobId: generationJob.id },
+    );
+  }
+  return { generationJob, previewJob };
 }
 
 // GET character-drafts/:id/preview — poll one async preview by durable identity.
@@ -2207,7 +2410,10 @@ function requireGenerationWriteIdempotencyKey(request: Request) {
 }
 
 function generationWriteRequestFingerprint(
-  commandType: "generation.create" | "media.variation.create",
+  commandType:
+    | "generation.create"
+    | "media.variation.create"
+    | "character.preview.create",
   body: unknown,
   targetId?: string,
 ) {
@@ -3583,8 +3789,13 @@ async function listGenerationJobs(request: Request) {
     take: limit + 1,
   });
   const page = jobs.slice(0, limit);
+  const latestAttemptStatuses = await latestGenerationAttemptStatuses(
+    page.map((job) => job.id),
+  );
   return ok({
-    items: page.map(generationJobDTO),
+    items: page.map((job) =>
+      generationJobDTO(job, latestAttemptStatuses.get(job.id) ?? null),
+    ),
     nextCursor: jobs.length > limit ? encodeCursor(offset + limit) : null,
   });
 }
@@ -3599,7 +3810,28 @@ async function getGenerationJob(request: Request, id: string) {
     include: generationJobInclude(),
   });
   if (!job) throw Errors.notFound("Generation job not found");
-  return ok(generationJobResponse(job));
+  const latestAttempt = await prisma.generationAttempt.findFirst({
+    where: { requestId: job.id },
+    select: { status: true },
+    orderBy: { attemptNo: "desc" },
+  });
+  return ok(generationJobResponse(job, latestAttempt?.status ?? null));
+}
+
+async function latestGenerationAttemptStatuses(requestIds: string[]) {
+  if (requestIds.length === 0) return new Map<string, string>();
+  const attempts = await prisma.generationAttempt.findMany({
+    where: { requestId: { in: requestIds } },
+    select: { requestId: true, status: true },
+    orderBy: [{ requestId: "asc" }, { attemptNo: "desc" }],
+  });
+  const latestStatuses = new Map<string, string>();
+  for (const attempt of attempts) {
+    if (!latestStatuses.has(attempt.requestId)) {
+      latestStatuses.set(attempt.requestId, attempt.status);
+    }
+  }
+  return latestStatuses;
 }
 
 function requireGenerationRetryIdempotencyKey(request: Request) {
@@ -5953,32 +6185,14 @@ async function signOutAll(request: Request) {
 async function deleteRequest(request: Request) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
-  const eventId = `user_deleted_${user.id}`;
-  await prisma.$transaction(async (tx) => {
-    await tx.user.update({
-      where: { id: user.id },
-      data: { status: "deleted", deletedAt: new Date() },
-    });
-    await tx.session.deleteMany({ where: { userId: user.id } });
-    await recordMainToChatEvent({
-      eventId,
-      eventType: MAIN_TO_CHAT_EVENTS.userDeleted,
-      aggregateType: "user",
-      aggregateId: user.id,
-      payload: { userId: user.id },
-    }, tx);
+  const deletion = await prisma.$transaction((tx) =>
+    requestAccountDeletion(tx, { userId: user.id }),
+  );
+
+  const response = ok({
+    requested: true,
+    deletion: accountDeletionPublicState(deletion),
   });
-
-  // The response is authorized by the committed Main transaction above.
-  // Immediate dispatch is only a latency optimization: the durable pending row
-  // remains retryable when Chat HTTP ingress is unavailable.
-  try {
-    await dispatchPendingChatEvents();
-  } catch (error) {
-    logger.error({ error, userId: user.id }, "failed to dispatch durable chat account erasure");
-  }
-
-  const response = ok({ requested: true });
   response.headers.append("set-cookie", clearSessionCookie());
   return response;
 }
@@ -5989,12 +6203,49 @@ async function reportStatus(request: Request, id: string) {
   const report = await prisma.contentReport.findFirst({
     where: {
       id,
-      OR: [{ reporterId: user.id }, { reporterId: null }],
+      reporterId: user.id,
     },
-    include: { reviews: true },
+    select: {
+      id: true,
+      targetType: true,
+      targetId: true,
+      category: true,
+      status: true,
+      createdAt: true,
+      reviews: {
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        select: { id: true, decision: true, createdAt: true },
+      },
+    },
   });
   if (!report) throw Errors.notFound("Report not found");
-  return ok({ report });
+  const decisionIds = [report.id, ...report.reviews.map((review) => review.id)];
+  const appeals = await prisma.appeal.findMany({
+    where: {
+      userId: user.id,
+      originalDecisionId: { in: decisionIds },
+    },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    select: { id: true },
+  });
+  const latestReview = report.reviews[0];
+  return ok({
+    report: {
+      id: report.id,
+      targetType: report.targetType,
+      targetId: report.targetId,
+      category: report.category,
+      status: report.status,
+      createdAt: report.createdAt.toISOString(),
+      decision: latestReview
+        ? {
+            outcome: latestReview.decision,
+            decidedAt: latestReview.createdAt.toISOString(),
+          }
+        : null,
+      appealIds: appeals.map((appeal) => appeal.id),
+    },
+  });
 }
 
 async function createAppeal(request: Request) {
@@ -6010,14 +6261,113 @@ async function createAppeal(request: Request) {
     })
     .parse(await jsonBody(request));
   const appeal = await prisma.$transaction(async (tx) => {
+    const decisionId = await resolveAppealDecisionAuthority(tx, {
+      userId: user.id,
+      targetType: body.targetType,
+      targetId: body.targetId,
+      originalDecisionId: body.originalDecisionId,
+    });
     const created = await tx.appeal.create({
-      data: { userId: user.id, ...body },
+      data: {
+        userId: user.id,
+        targetType: body.targetType,
+        targetId: body.targetId,
+        appealText: body.appealText,
+        originalDecisionId: decisionId,
+      },
     });
     await ensureReviewCaseForAppeal(tx, created);
     return created;
   });
   await trackEvent("moderation_appeal_started", { appealId: appeal.id }, ctx);
   return ok({ appeal });
+}
+
+async function resolveAppealDecisionAuthority(
+  tx: Prisma.TransactionClient,
+  input: {
+    userId: string;
+    targetType: z.infer<typeof appealTargetTypeSchema>;
+    targetId: string;
+    originalDecisionId?: string;
+  },
+) {
+  const exactDecisionId = input.originalDecisionId ??
+    (input.targetType === "moderation_decision" ? input.targetId : undefined);
+  if (
+    input.targetType === "moderation_decision" &&
+    input.originalDecisionId &&
+    input.originalDecisionId !== input.targetId
+  ) {
+    throw Errors.badRequest("Appeal target does not match the moderation decision");
+  }
+
+  const targetOwnedByUser = await appealTargetOwnedByUser(tx, input);
+  const decision = exactDecisionId
+    ? await tx.moderationReview.findUnique({
+        where: { id: exactDecisionId },
+        select: {
+          id: true,
+          report: {
+            select: { reporterId: true, targetType: true, targetId: true },
+          },
+        },
+      })
+    : await tx.moderationReview.findFirst({
+        where: {
+          report: {
+            is: {
+              targetType: input.targetType,
+              targetId: input.targetId,
+            },
+          },
+        },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        select: {
+          id: true,
+          report: {
+            select: { reporterId: true, targetType: true, targetId: true },
+          },
+        },
+      });
+  if (!decision?.report) {
+    throw Errors.badRequest("Appeal requires an existing moderation decision");
+  }
+  if (
+    input.targetType !== "moderation_decision" &&
+    (decision.report.targetType !== input.targetType ||
+      decision.report.targetId !== input.targetId)
+  ) {
+    throw Errors.badRequest("Appeal target does not match the moderation decision");
+  }
+  if (decision.report.reporterId !== input.userId && !targetOwnedByUser) {
+    throw Errors.forbidden("Moderation decision does not belong to this user");
+  }
+  return decision.id;
+}
+
+async function appealTargetOwnedByUser(
+  tx: Prisma.TransactionClient,
+  input: {
+    userId: string;
+    targetType: z.infer<typeof appealTargetTypeSchema>;
+    targetId: string;
+  },
+) {
+  if (input.targetType === "user_profile") return input.targetId === input.userId;
+  if (input.targetType === "character") {
+    return Boolean(await tx.character.findFirst({
+      where: { id: input.targetId, creatorId: input.userId },
+      select: { id: true },
+    }));
+  }
+  if (input.targetType === "media") {
+    return Boolean(await tx.mediaAsset.findFirst({
+      where: { id: input.targetId, ownerId: input.userId },
+      select: { id: true },
+    }));
+  }
+  return false;
 }
 
 async function policies() {
@@ -6190,6 +6540,143 @@ async function submitSupportRequest(request: Request) {
     },
     { status: 201 },
   );
+}
+
+async function customerHelpDeskHistory(request: Request) {
+  const ctx = await getAuthCtx(request);
+  const viewer = requireUser(ctx);
+  const customer = await prisma.user.findFirst({
+    where: {
+      id: viewer.id,
+      dataClass: "customer",
+      status: "active",
+      deletedAt: null,
+    },
+    select: { id: true },
+  });
+  if (!customer) throw Errors.forbidden("Customer history is unavailable for this account");
+
+  const [supportRequests, reports, appeals] = await Promise.all([
+    prisma.supportRequest.findMany({
+      where: {
+        userId: customer.id,
+        user: {
+          is: { dataClass: "customer", status: "active", deletedAt: null },
+        },
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      select: {
+        id: true,
+        ticketId: true,
+        category: true,
+        subject: true,
+        status: true,
+        createdAt: true,
+        updatedAt: true,
+        resolvedAt: true,
+      },
+    }),
+    prisma.contentReport.findMany({
+      where: {
+        reporterId: customer.id,
+        reporter: {
+          is: { dataClass: "customer", status: "active", deletedAt: null },
+        },
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      select: {
+        id: true,
+        targetType: true,
+        targetId: true,
+        category: true,
+        status: true,
+        createdAt: true,
+        reviews: {
+          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+          select: { id: true, decision: true, createdAt: true },
+        },
+      },
+    }),
+    prisma.appeal.findMany({
+      where: {
+        userId: customer.id,
+        user: {
+          is: { dataClass: "customer", status: "active", deletedAt: null },
+        },
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      select: {
+        id: true,
+        targetType: true,
+        targetId: true,
+        originalDecisionId: true,
+        status: true,
+        createdAt: true,
+        resolvedAt: true,
+      },
+    }),
+  ]);
+
+  const reportByDecisionId = new Map<string, string>();
+  for (const report of reports) {
+    reportByDecisionId.set(report.id, report.id);
+    for (const review of report.reviews) reportByDecisionId.set(review.id, report.id);
+  }
+  const reportAppealIds = new Map<string, string[]>();
+  for (const appeal of appeals) {
+    if (!appeal.originalDecisionId) continue;
+    const reportId = reportByDecisionId.get(appeal.originalDecisionId);
+    if (!reportId) continue;
+    const current = reportAppealIds.get(reportId) ?? [];
+    current.push(appeal.id);
+    reportAppealIds.set(reportId, current);
+  }
+
+  return ok({
+    supportRequests: supportRequests.map((item) => ({
+      id: item.id,
+      ticketId: item.ticketId,
+      category: item.category,
+      subject: item.subject,
+      status: item.status,
+      createdAt: item.createdAt.toISOString(),
+      updatedAt: item.updatedAt.toISOString(),
+      resolution: item.resolvedAt
+        ? { outcome: item.status, resolvedAt: item.resolvedAt.toISOString() }
+        : null,
+    })),
+    reports: reports.map((item) => {
+      const latestReview = item.reviews[0];
+      return {
+        id: item.id,
+        targetType: item.targetType,
+        targetId: item.targetId,
+        category: item.category,
+        status: item.status,
+        createdAt: item.createdAt.toISOString(),
+        decision: latestReview
+          ? {
+              outcome: latestReview.decision,
+              decidedAt: latestReview.createdAt.toISOString(),
+            }
+          : null,
+        appealIds: reportAppealIds.get(item.id) ?? [],
+      };
+    }),
+    appeals: appeals.map((item) => ({
+      id: item.id,
+      targetType: item.targetType,
+      targetId: item.targetId,
+      status: item.status,
+      createdAt: item.createdAt.toISOString(),
+      relatedReportId: item.originalDecisionId
+        ? (reportByDecisionId.get(item.originalDecisionId) ?? null)
+        : null,
+      outcome: item.resolvedAt
+        ? { result: item.status, resolvedAt: item.resolvedAt.toISOString() }
+        : null,
+    })),
+  });
 }
 
 async function listFeedbackItems(request: Request) {
@@ -6634,6 +7121,43 @@ async function updateCharacter(request: Request, id: string) {
           content: userContent,
         })
       : null;
+    if (body.visibility === "private") {
+      const serving = await tx.characterServing.findUnique({
+        where: { characterId: existing.id },
+      });
+      if (serving?.state === "live") {
+        // INVARIANT: private presentation and live Serving authority cannot coexist.
+        // Keep the immutable Release pinned so a later reviewed publication can resume it.
+        await transitionCharacterServing(tx, {
+          servingId: serving.id,
+          to: "paused",
+          expectedVersion: serving.version,
+          expectedCurrentReleaseId: serving.currentReleaseId,
+          data: {
+            scheduledReleaseId: null,
+            scheduledAt: null,
+          },
+        });
+      } else if (serving && (serving.scheduledReleaseId || serving.scheduledAt)) {
+        // INVARIANT: a private Character cannot retain a future publish command.
+        // Inactive and paused Serving remain non-live; only the mutable schedule is cancelled.
+        const cancelled = await tx.characterServing.updateMany({
+          where: {
+            id: serving.id,
+            state: serving.state,
+            version: serving.version,
+          },
+          data: {
+            scheduledReleaseId: null,
+            scheduledAt: null,
+            version: { increment: 1 },
+          },
+        });
+        if (cancelled.count !== 1) {
+          throw Errors.conflict("Character Serving changed before privacy update");
+        }
+      }
+    }
     const updated = await tx.character.update({
       where: { id: existing.id },
       data: {
@@ -6991,7 +7515,21 @@ type GenerationJobWithRelations = Prisma.GenerationJobGetPayload<{
   include: ReturnType<typeof generationJobInclude>;
 }>;
 
-function generationJobDTO(job: GenerationJobWithRelations) {
+function effectiveGenerationJobStatus(
+  storedStatus: string,
+  latestAttemptStatus: string | null,
+) {
+  // INTENT: Attempt owns execution liveness, while Job remains authoritative
+  // for moderation phases and every business terminal state.
+  return storedStatus === "queued" && latestAttemptStatus === "running"
+    ? "running"
+    : storedStatus;
+}
+
+function generationJobDTO(
+  job: GenerationJobWithRelations,
+  latestAttemptStatus: string | null = null,
+) {
   return {
     id: job.id,
     userId: job.userId,
@@ -7019,7 +7557,7 @@ function generationJobDTO(job: GenerationJobWithRelations) {
     recipeVersion: job.recipeVersion,
     orientation: job.orientation,
     outputCount: job.outputCount,
-    status: job.status,
+    status: effectiveGenerationJobStatus(job.status, latestAttemptStatus),
     costDreamcoins: job.costDreamcoins,
     provider: job.provider,
     sourceType: job.sourceType,
@@ -7032,7 +7570,10 @@ function generationJobDTO(job: GenerationJobWithRelations) {
   };
 }
 
-function generationJobResponse(job: GenerationJobWithRelations) {
+function generationJobResponse(
+  job: GenerationJobWithRelations,
+  latestAttemptStatus: string | null = null,
+) {
   const refunded = generationRefundAmount(job.events);
   const missingOutputs = Math.max(0, job.outputCount - job.assets.length);
   const sourceJob = {
@@ -7041,7 +7582,7 @@ function generationJobResponse(job: GenerationJobWithRelations) {
     sourceMeta: job.sourceMeta,
   };
   return {
-    job: generationJobDTO(job),
+    job: generationJobDTO(job, latestAttemptStatus),
     assets: job.assets.map((asset) => mediaDTO({ ...asset, sourceJob })),
     events: job.events.map((event) => ({
       id: event.id,

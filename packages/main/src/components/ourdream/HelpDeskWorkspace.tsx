@@ -29,7 +29,11 @@ import {
 import {
   parseFeedbackItemResponse,
   parseFeedbackItemsResponse,
+  parseHelpDeskHistoryResponse,
   parseViewerAuthorityResponse,
+  type HelpDeskAppeal,
+  type HelpDeskReport,
+  type HelpDeskSupportRequest,
   type PublicFeedbackItem as FeedbackItem,
 } from "@/lib/public-api-contracts";
 import {
@@ -161,6 +165,18 @@ type PendingFeedbackVote = {
   title: string;
 };
 
+type HelpDeskHistory = {
+  supportRequests: HelpDeskSupportRequest[];
+  reports: HelpDeskReport[];
+  appeals: HelpDeskAppeal[];
+};
+
+const EMPTY_HELP_DESK_HISTORY: HelpDeskHistory = {
+  supportRequests: [],
+  reports: [],
+  appeals: [],
+};
+
 const FEEDBACK_DRAFT_STORAGE_KEY = "ourdream.helpdesk.feedbackDraft.v1";
 const APPEAL_DRAFT_STORAGE_KEY = "ourdream.helpdesk.appealDraft.v1";
 const INITIAL_FEEDBACK_DRAFT: FeedbackDraft = {
@@ -234,6 +250,9 @@ export function HelpDeskWorkspace() {
   const [appealDraft, setAppealDraft] = useState<AppealDraft>(INITIAL_APPEAL_DRAFT);
   const [appealStatus, setAppealStatus] = useState("");
   const [appealSubmitting, setAppealSubmitting] = useState(false);
+  const [history, setHistory] = useState<HelpDeskHistory>(EMPTY_HELP_DESK_HISTORY);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState("");
   const [viewerScope, setViewerScope] = useState<string | null>(null);
   const viewerScopeRef = useRef<string | null>(null);
   const hydratedViewerScopeRef = useRef<string | null>(null);
@@ -322,6 +341,32 @@ export function HelpDeskWorkspace() {
       setFeedbackLoading(false);
     }
   }, [ageGateAccepted]);
+
+  const loadHelpDeskHistory = useCallback(async () => {
+    const requestedScope = viewerScopeRef.current;
+    if (!requestedScope?.startsWith("user:")) return;
+    setHistoryLoading(true);
+    setHistoryError("");
+    try {
+      const response = await fetch("/api/v1/support/history", {
+        cache: "no-store",
+      });
+      const raw = await response.json();
+      if (viewerScopeRef.current !== requestedScope) return;
+      if (!response.ok) {
+        setHistory(EMPTY_HELP_DESK_HISTORY);
+        setHistoryError(apiErrorMessage(raw) ?? "Could not load your Help Desk history.");
+        return;
+      }
+      setHistory(parseHelpDeskHistoryResponse(raw));
+    } catch {
+      if (viewerScopeRef.current !== requestedScope) return;
+      setHistory(EMPTY_HELP_DESK_HISTORY);
+      setHistoryError("Could not load your Help Desk history.");
+    } finally {
+      if (viewerScopeRef.current === requestedScope) setHistoryLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     if (!ageGateAccepted) return;
@@ -431,6 +476,20 @@ export function HelpDeskWorkspace() {
     }, 0);
     return () => window.clearTimeout(timer);
   }, [loadFeedbackItems, viewerScope]);
+
+  useEffect(() => {
+    if (!viewerScope) return;
+    const timer = window.setTimeout(() => {
+      if (viewerScope.startsWith("user:")) {
+        void loadHelpDeskHistory();
+        return;
+      }
+      setHistory(EMPTY_HELP_DESK_HISTORY);
+      setHistoryLoading(false);
+      setHistoryError("");
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [loadHelpDeskHistory, viewerScope]);
 
   useEffect(() => {
     const draft = appealDraftFromSearch(window.location.search);
@@ -557,6 +616,7 @@ export function HelpDeskWorkspace() {
       setStatus(`Support request ${request?.ticketId ?? "received"} received.`);
       if (viewerScopeRef.current) clearSupportDraft(viewerScopeRef.current);
       setSupportDraft(INITIAL_SUPPORT_DRAFT);
+      void loadHelpDeskHistory();
     } catch {
       setStatus("Support request failed. Try again.");
     } finally {
@@ -698,6 +758,7 @@ export function HelpDeskWorkspace() {
       setAppealStatus(`Appeal ${payload.data.appeal.id} submitted.`);
       if (viewerScopeRef.current) clearAppealDraft(viewerScopeRef.current);
       setAppealDraft(INITIAL_APPEAL_DRAFT);
+      void loadHelpDeskHistory();
     } catch {
       setAppealStatus("Appeal failed. Try again.");
     } finally {
@@ -923,24 +984,13 @@ export function HelpDeskWorkspace() {
           )}
         </div>
 
-        <div className="rounded-[14px] border border-white/10 bg-[rgb(18,18,18)] p-5">
-          <Scale className="h-5 w-5 text-[rgb(253,95,194)]" />
-          <h2 className="mt-4 text-[22px] font-black uppercase leading-7 text-white">
-            Track reports and appeals
-          </h2>
-          <p className="mt-3 text-[13px] font-medium leading-6 text-[rgb(170,170,170)]">
-            Use a target ID from a character, media item, feed item, chat message, user profile,
-            or review notice. Submitted appeals appear in the admin moderation queue.
-          </p>
-          <div className="mt-5 grid gap-2 text-[13px] font-semibold text-white">
-            <Link className="rounded-[10px] bg-[rgb(36,36,36)] px-3 py-3 hover:bg-[rgb(53,53,54)]" href="/terms">
-              Terms and policy index
-            </Link>
-            <Link className="rounded-[10px] bg-[rgb(36,36,36)] px-3 py-3 hover:bg-[rgb(53,53,54)]" href="/safety/moderation/appeals">
-              Appeal process
-            </Link>
-          </div>
-        </div>
+        <HelpDeskHistoryPanel
+          authenticated={viewerScope?.startsWith("user:") ?? false}
+          error={historyError}
+          history={history}
+          loading={historyLoading}
+          onRefresh={() => void loadHelpDeskHistory()}
+        />
       </section>
 
       <section className="mt-10 grid gap-4 lg:grid-cols-[minmax(0,1fr)_420px]">
@@ -1156,6 +1206,221 @@ export function HelpDeskWorkspace() {
       </section>
     </div>
   );
+}
+
+export function HelpDeskHistoryPanel({
+  authenticated,
+  error,
+  history,
+  loading,
+  onRefresh,
+}: Readonly<{
+  authenticated: boolean;
+  error: string;
+  history: HelpDeskHistory;
+  loading: boolean;
+  onRefresh: () => void;
+}>) {
+  const empty =
+    history.supportRequests.length === 0 &&
+    history.reports.length === 0 &&
+    history.appeals.length === 0;
+
+  return (
+    <div
+      className="rounded-[14px] border border-white/10 bg-[rgb(18,18,18)] p-5"
+      data-testid="helpdesk-history"
+    >
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <p className="text-[12px] font-black uppercase leading-4 text-[rgb(253,95,194)]">
+            Your history
+          </p>
+          <h2 className="mt-2 text-[22px] font-black uppercase leading-7 text-white">
+            Requests, reports & appeals
+          </h2>
+        </div>
+        <button
+          aria-label="Refresh Help Desk history"
+          className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-white/10 bg-[rgb(36,36,36)] text-white transition hover:bg-[rgb(53,53,54)] disabled:cursor-wait disabled:opacity-60"
+          disabled={!authenticated || loading}
+          onClick={onRefresh}
+          type="button"
+        >
+          <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+        </button>
+      </div>
+
+      {!authenticated ? (
+        <p className="mt-4 rounded-[10px] bg-[rgb(28,28,28)] p-4 text-[13px] font-semibold leading-5 text-[rgb(170,170,170)]">
+          Sign in to see your submitted requests and their outcomes after refresh.
+        </p>
+      ) : null}
+
+      {authenticated && loading && empty ? (
+        <p
+          aria-live="polite"
+          className="mt-4 rounded-[10px] bg-[rgb(28,28,28)] p-4 text-[13px] font-semibold text-[rgb(170,170,170)]"
+          role="status"
+        >
+          Loading your Help Desk history...
+        </p>
+      ) : null}
+
+      {authenticated && error ? (
+        <div
+          aria-live="assertive"
+          className="mt-4 rounded-[10px] bg-[rgb(28,28,28)] p-4"
+          role="alert"
+        >
+          <p className="text-[13px] font-semibold leading-5 text-white">{error}</p>
+          <button
+            className="mt-3 inline-flex h-9 items-center justify-center rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)]"
+            onClick={onRefresh}
+            type="button"
+          >
+            Retry
+          </button>
+        </div>
+      ) : null}
+
+      {authenticated && !loading && !error && empty ? (
+        <p className="mt-4 rounded-[10px] bg-[rgb(28,28,28)] p-4 text-[13px] font-semibold leading-5 text-[rgb(170,170,170)]">
+          No support requests, reports, or appeals yet.
+        </p>
+      ) : null}
+
+      {authenticated && !error && !empty ? (
+        <div className="mt-4 max-h-[680px] space-y-5 overflow-y-auto pr-1">
+          {history.supportRequests.length > 0 ? (
+            <HistoryGroup title="Support requests">
+              {history.supportRequests.map((item) => (
+                <HistoryCard
+                  key={item.id}
+                  status={item.status}
+                  subtitle={`${item.category} · ${formatHelpDeskTimestamp(item.createdAt)}`}
+                  title={item.ticketId}
+                >
+                  <p>{item.subject}</p>
+                  {item.resolution ? (
+                    <p>Resolution: {historyStatusLabel(item.resolution.outcome)}</p>
+                  ) : null}
+                </HistoryCard>
+              ))}
+            </HistoryGroup>
+          ) : null}
+
+          {history.reports.length > 0 ? (
+            <HistoryGroup title="Reports">
+              {history.reports.map((item) => (
+                <HistoryCard
+                  key={item.id}
+                  status={item.status}
+                  subtitle={`${item.category} · ${formatHelpDeskTimestamp(item.createdAt)}`}
+                  title={`Report ${item.id}`}
+                >
+                  <p className="break-all">{item.targetType}: {item.targetId}</p>
+                  {item.decision ? (
+                    <p>Decision: {historyStatusLabel(item.decision.outcome)}</p>
+                  ) : null}
+                  {item.appealIds.map((appealId) => (
+                    <p className="break-all" key={appealId}>Appeal {appealId}</p>
+                  ))}
+                </HistoryCard>
+              ))}
+            </HistoryGroup>
+          ) : null}
+
+          {history.appeals.length > 0 ? (
+            <HistoryGroup title="Appeals">
+              {history.appeals.map((item) => (
+                <HistoryCard
+                  key={item.id}
+                  status={item.status}
+                  subtitle={`${item.targetType} · ${formatHelpDeskTimestamp(item.createdAt)}`}
+                  title={`Appeal ${item.id}`}
+                >
+                  <p className="break-all">Target: {item.targetId}</p>
+                  {item.relatedReportId ? (
+                    <p className="break-all">Related report: {item.relatedReportId}</p>
+                  ) : null}
+                  {item.outcome ? (
+                    <p>Outcome: {historyStatusLabel(item.outcome.result)}</p>
+                  ) : null}
+                </HistoryCard>
+              ))}
+            </HistoryGroup>
+          ) : null}
+        </div>
+      ) : null}
+
+      <div className="mt-5 grid gap-2 text-[13px] font-semibold text-white">
+        <Link className="rounded-[10px] bg-[rgb(36,36,36)] px-3 py-3 hover:bg-[rgb(53,53,54)]" href="/terms">
+          Terms and policy index
+        </Link>
+        <Link className="rounded-[10px] bg-[rgb(36,36,36)] px-3 py-3 hover:bg-[rgb(53,53,54)]" href="/safety/moderation/appeals">
+          Appeal process
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+function HistoryGroup({ children, title }: Readonly<{ children: ReactNode; title: string }>) {
+  return (
+    <section>
+      <h3 className="text-[11px] font-black uppercase tracking-[0.12em] text-[rgb(170,170,170)]">
+        {title}
+      </h3>
+      <div className="mt-2 grid gap-2">{children}</div>
+    </section>
+  );
+}
+
+function HistoryCard({
+  children,
+  status,
+  subtitle,
+  title,
+}: Readonly<{
+  children: ReactNode;
+  status: string;
+  subtitle: string;
+  title: string;
+}>) {
+  return (
+    <article className="rounded-[10px] border border-white/10 bg-[rgb(28,28,28)] p-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <h4 className="break-all text-[13px] font-black leading-5 text-white">{title}</h4>
+          <p className="mt-1 text-[11px] font-semibold text-[rgb(140,140,140)]">{subtitle}</p>
+        </div>
+        <span className="rounded-full bg-white/10 px-2 py-1 text-[10px] font-black uppercase text-white">
+          {historyStatusLabel(status)}
+        </span>
+      </div>
+      <div className="mt-2 space-y-1 text-[12px] font-medium leading-5 text-[rgb(190,190,190)]">
+        {children}
+      </div>
+    </article>
+  );
+}
+
+function historyStatusLabel(value: string) {
+  return value
+    .split("_")
+    .filter(Boolean)
+    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(" ");
+}
+
+function formatHelpDeskTimestamp(value: string) {
+  return new Intl.DateTimeFormat("en-US", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(new Date(value));
 }
 
 function SupportLink({

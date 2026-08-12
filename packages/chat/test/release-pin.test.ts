@@ -8,6 +8,8 @@ import { createChatPrisma } from "../src/db.js";
 import {
   attachmentReleaseIdForRetry,
   createSession,
+  getMessageVoiceAuthority,
+  getSession,
   sendMessage,
 } from "../src/service.js";
 import { acceptAgeGate, ingestMainEvent } from "./fixtures.js";
@@ -24,6 +26,8 @@ const USERS = [
   "release-pin-migrate",
   "release-pin-entry",
   "release-pin-admin",
+  "release-pin-opening",
+  "release-pin-opening-repair",
 ];
 
 async function seedRelease(input: {
@@ -158,6 +162,100 @@ afterAll(async () => {
 });
 
 describe("Character Release → Chat serving pin", () => {
+  it("persists the pinned Release opening as the first visible assistant message", async () => {
+    const session = await createSession({
+      userId: USERS[6],
+      characterId: ADMIN_CHARACTER_ID,
+    }, { prisma });
+
+    const firstLoad = await getSession({
+      userId: USERS[6],
+      sessionId: session.id,
+    }, { prisma });
+    const refreshed = await getSession({
+      userId: USERS[6],
+      sessionId: session.id,
+    }, { prisma });
+
+    for (const loaded of [firstLoad, refreshed]) {
+      expect(loaded.messages).toHaveLength(1);
+      expect(loaded.messages[0]).toMatchObject({
+        role: "assistant",
+        content: "You're finally home. Come here.",
+        status: "sent",
+        characterContentVersionId: "content-pin-admin-v1",
+        characterReleaseId: "release-pin-admin-v1",
+      });
+    }
+    const opening = firstLoad.messages[0]!;
+    await expect(getMessageVoiceAuthority({
+      userId: USERS[6],
+      sessionId: session.id,
+      messageId: opening.id,
+    }, { prisma })).resolves.toMatchObject({
+      text: "You're finally home. Come here.",
+      attempt: 1,
+      sceneVersion: 0,
+      characterContentVersionId: "content-pin-admin-v1",
+      characterReleaseId: "release-pin-admin-v1",
+    });
+
+    const turn = await sendMessage({
+      userId: USERS[6],
+      sessionId: session.id,
+      content: "I came back for you.",
+    }, { prisma });
+    const prepared = await prepareCompanionTurn({
+      prisma,
+      userId: USERS[6],
+      characterId: ADMIN_CHARACTER_ID,
+      sessionId: session.id,
+      turnMemoryEnabled: true,
+      userMessageId: turn.userMessageId,
+    });
+    expect(
+      prepared.messages.filter(
+        (message) => message.content === "You're finally home. Come here.",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("idempotently repairs an empty active session created before opening persistence", async () => {
+    const stale = await prisma.chatSession.create({
+      data: {
+        id: "release-pin-empty-active-session",
+        userId: USERS[7],
+        characterId: ADMIN_CHARACTER_ID,
+        characterContentVersionId: "content-pin-admin-v1",
+        characterReleaseId: "release-pin-admin-v1",
+        releasePinnedAt: new Date(),
+      },
+    });
+
+    const firstRetry = await createSession({
+      userId: USERS[7],
+      characterId: ADMIN_CHARACTER_ID,
+    }, { prisma });
+    const secondRetry = await createSession({
+      userId: USERS[7],
+      characterId: ADMIN_CHARACTER_ID,
+    }, { prisma });
+    const loaded = await getSession({
+      userId: USERS[7],
+      sessionId: stale.id,
+    }, { prisma });
+
+    expect(firstRetry.id).toBe(stale.id);
+    expect(secondRetry.id).toBe(stale.id);
+    expect(loaded.messages).toHaveLength(1);
+    expect(loaded.messages[0]).toMatchObject({
+      role: "assistant",
+      content: "You're finally home. Come here.",
+      characterContentVersionId: "content-pin-admin-v1",
+      characterReleaseId: "release-pin-admin-v1",
+    });
+  });
+
   it("reconstructs a pinned persona from the real Admin snapshot shape without mutable fallbacks", async () => {
     const session = await createSession({
       userId: USERS[5],

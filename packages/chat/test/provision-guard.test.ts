@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   assertSafeChatTestDatabaseName,
@@ -11,6 +13,67 @@ import {
 } from "./global-setup.js";
 
 describe("chat test database provisioning guard", () => {
+  it("keeps the operator apply path portable and role posture fail closed", () => {
+    const repoRoot = path.resolve(process.cwd(), "../..");
+    const apply = readFileSync(
+      path.join(repoRoot, "db/sql/apply-validate.sh"),
+      "utf8",
+    );
+    const roles = readFileSync(
+      path.join(repoRoot, "db/sql/01_schemas_roles.sql"),
+      "utf8",
+    );
+    const chatTables = readFileSync(
+      path.join(repoRoot, "db/sql/03_chat_tables.sql"),
+      "utf8",
+    );
+    const grants = readFileSync(
+      path.join(repoRoot, "db/sql/04_grants.sql"),
+      "utf8",
+    );
+
+    expect(apply).not.toMatch(/\$\{?BASHPID\b/);
+    expect(apply).toContain("$(date -u +%Y%m%d%H%M%S)_$$_${RANDOM}");
+    expect(apply.indexOf("VALIDATION_PREFIX=")).toBeLessThan(
+      apply.indexOf("== applying boundary SQL"),
+    );
+    expect(roles).toContain("('core_owner', false)");
+    expect(roles).toContain("('chat_owner', false)");
+    expect(roles).toContain("('chat_service', true)");
+    expect(roles).toContain("('chat_projector', true)");
+    expect(roles).toContain("rolcanlogin IS DISTINCT FROM");
+    expect(roles).toContain("pg_has_role(");
+    expect(chatTables).toContain(
+      "DROP TRIGGER IF EXISTS message_memory_authority_immutable",
+    );
+    expect(chatTables).toContain(
+      "DROP INDEX IF EXISTS chat.messages_memory_reconcile_eligible_idx",
+    );
+    expect(chatTables).toContain(
+      "DROP CONSTRAINT IF EXISTS chat_scene_revisions_snapshot_schema_check",
+    );
+    expect(chatTables).toContain(
+      "ADD COLUMN IF NOT EXISTS response_status text",
+    );
+    expect(chatTables).toContain(
+      "DROP CONSTRAINT IF EXISTS chat_send_receipts_response_status_check",
+    );
+    expect(chatTables).toContain(
+      "DROP INDEX IF EXISTS chat.chat_send_receipts_user_idempotency_key",
+    );
+    expect(grants).toContain(
+      "REVOKE ALL ON ALL TABLES IN SCHEMA public FROM chat_service, chat_projector",
+    );
+    expect(apply).toContain("pg_get_triggerdef");
+    expect(apply).toContain("pg_get_constraintdef");
+    expect(apply).toContain("pg_get_indexdef");
+    expect(apply).toContain("send receipt columns are complete");
+    expect(apply).toContain("duplicate send idempotency receipt");
+    expect(apply).toContain("invalid send response status");
+    expect(apply).toContain('projector SELECT public.users');
+    expect(apply).toContain('projector SELECT public.entitlements');
+  });
+
   it("refuses production-like database names before destructive provisioning", () => {
     expect(() => assertSafeChatTestDatabaseName("idream")).toThrow(
       "Refusing to recreate non-test chat database",

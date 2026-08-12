@@ -74,6 +74,7 @@ describe("GoCamAgeVerificationProvider", () => {
       ok: true,
       data: {
         providerEventId: "gocam-session-1",
+        deliveryId: "fallback-event",
         userId: "user-1",
         providerVerificationId: "gocam-session-1",
         status: "verified",
@@ -101,6 +102,37 @@ describe("GoCamAgeVerificationProvider", () => {
         code: "invalid_signature",
         message: "Go.cam age webhook signature is required",
         retryable: false,
+      },
+    });
+  });
+
+  it("keeps stable event identity separate from provider redelivery identity", async () => {
+    const provider = new GoCamAgeVerificationProvider({
+      serviceUrl: "https://age.internal.example.com",
+      apiKey: "age-api-key",
+      webhookSecret: "age-webhook-secret",
+      fetchImpl: vi.fn(),
+    });
+    const rawBody = JSON.stringify({
+      providerEventId: "event-stable-1",
+      deliveryId: "delivery-replay-2",
+      sessionId: "gocam-session-1",
+      userData: "user-1",
+      state: "verified",
+    });
+
+    await expect(
+      provider.parseWebhook({
+        providerEventId: "header-delivery-2",
+        rawBody,
+        payload: JSON.parse(rawBody) as unknown,
+        signature: signature("age-webhook-secret", rawBody),
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      data: {
+        providerEventId: "event-stable-1",
+        deliveryId: "delivery-replay-2",
       },
     });
   });

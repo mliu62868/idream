@@ -1,5 +1,6 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import {
+  ACCOUNT_DELETION_V2_INGEST_PATH,
   durableAckSchema,
   durableEventEnvelopeSchema,
   MAIN_TO_CHAT_EVENTS,
@@ -21,13 +22,16 @@ export async function recordMainToChatEvent(input: {
   aggregateType?: string;
   aggregateId?: string;
   payload: Record<string, unknown>;
+  occurredAt?: Date;
+  /** Keep the durable intent pending until this product-authoritative due time. */
+  deliverAfter?: Date;
 }, db: Db = prisma): Promise<void> {
   const envelope = durableEventEnvelopeSchema.parse({
     sourceService: "main",
     sourceEventId: input.eventId,
     eventType: input.eventType,
     schemaVersion: input.schemaVersion ?? 1,
-    occurredAt: new Date().toISOString(),
+    occurredAt: (input.occurredAt ?? new Date()).toISOString(),
     aggregateType: input.aggregateType ?? "chat_effect",
     aggregateId: input.aggregateId ?? input.eventId,
     payload: input.payload,
@@ -40,6 +44,7 @@ export async function recordMainToChatEvent(input: {
       aggregateType: envelope.aggregateType,
       aggregateId: envelope.aggregateId,
       payload: toInputJson(envelope),
+      ...(input.deliverAfter ? { nextRunAt: input.deliverAfter } : {}),
     },
     update: {},
   });
@@ -53,7 +58,11 @@ export async function dispatchPendingChatEvents(
   const eventTypes = Object.values(MAIN_TO_CHAT_EVENTS);
   const [oldestPending, rows] = await Promise.all([
     prisma.mainOutboxEvent.findFirst({
-      where: { status: "pending", eventType: { in: eventTypes } },
+      where: {
+        status: "pending",
+        nextRunAt: { lte: now },
+        eventType: { in: eventTypes },
+      },
       orderBy: { createdAt: "asc" },
       select: { createdAt: true },
     }),
@@ -80,14 +89,23 @@ export async function dispatchPendingChatEvents(
       await deliver(durableEventEnvelopeSchema.parse(row.payload));
     } catch (error) {
       const attempts = row.attempts + 1;
+      const rollbackSafeAccountDeletion =
+        row.eventType === MAIN_TO_CHAT_EVENTS.accountDeletionRequestedV2;
       // INVARIANT: a stale failure may only advance the exact pending attempt
       // it observed; it must never overwrite a durable ACK or a newer retry.
+      // Account deletion v2 never enters an unrecoverable transport tombstone:
+      // a rolled-back Chat intentionally returns 404 on its capability route.
       const transition = await prisma.mainOutboxEvent.updateMany({
         where: { id: row.id, status: "pending", attempts: row.attempts },
         data: {
           attempts,
-          status: attempts >= 8 ? "failed" : "pending",
-          nextRunAt: new Date(Date.now() + attempts * 30_000),
+          status:
+            !rollbackSafeAccountDeletion && attempts >= 8
+              ? "failed"
+              : "pending",
+          nextRunAt: new Date(
+            Date.now() + Math.min(attempts, 120) * 30_000,
+          ),
           lastError: toInputJson({ message: error instanceof Error ? error.message : "chat delivery failed" }),
         },
       });
@@ -107,15 +125,24 @@ export async function dispatchPendingChatEvents(
   return { delivered, failed };
 }
 
-export function resolveChatDurableIngestUrl(chatServiceUrl: string | undefined): string {
+export function resolveChatDurableIngestUrl(
+  chatServiceUrl: string | undefined,
+  eventType?: MainToChatEventType,
+): string {
   if (!chatServiceUrl?.trim()) {
     throw new Error("CHAT_SERVICE_URL is required for Main to Chat durable delivery");
   }
-  return `${chatServiceUrl.replace(/\/$/, "")}/internal/events/ingest`;
+  const path = eventType === MAIN_TO_CHAT_EVENTS.accountDeletionRequestedV2
+    ? ACCOUNT_DELETION_V2_INGEST_PATH
+    : "/internal/events/ingest";
+  return `${chatServiceUrl.replace(/\/$/, "")}${path}`;
 }
 
 async function deliverToChat(event: DurableEventEnvelope): Promise<void> {
-  const response = await fetch(resolveChatDurableIngestUrl(env.CHAT_SERVICE_URL), {
+  const response = await fetch(resolveChatDurableIngestUrl(
+    env.CHAT_SERVICE_URL,
+    event.eventType as MainToChatEventType,
+  ), {
     method: "POST",
     headers: { "content-type": "application/json", "x-internal-token": env.INTERNAL_TOKEN },
     body: JSON.stringify(event),

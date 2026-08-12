@@ -695,12 +695,14 @@ export async function community(request: Request, segments: string[]) {
     likesCount: numberFromDb(dreamer.likes),
     chatsCount: numberFromDb(dreamer.chats),
     isFollowing: followingIds.has(dreamer.id),
+    // INVARIANT: Follow rejects self; the read model must not advertise that impossible command.
+    isSelf: dreamer.id === ctx.userId,
   }));
   const exposureJourneyId = `community-journey-${cryptoRandomId("journey")}`;
   return ok({
     leaderboards: {
       characters: rankedCharacters.map((character) => ({
-        ...characterDTO(character, ctx.userId),
+        ...characterDTO(character, ctx.userId, followingIds),
         exposureContext: exposureSubject && character.serving?.state === "live" &&
           character.serving.currentRelease?.status === "published"
           ? issueExposureContext({
@@ -975,6 +977,12 @@ export async function creatorProfile(request: Request, creatorId: string) {
         chatsCount: totalChats,
       },
     },
-    characters: characters.map((character) => characterDTO(character, ctx.userId)),
+    characters: characters.map((character) =>
+      characterDTO(
+        character,
+        ctx.userId,
+        new Set(following ? [creatorId] : []),
+      ),
+    ),
   });
 }

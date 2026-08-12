@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-// SPEC: 上线就绪探针的 evidence 契约 —— 11 个 probe-*.ts 作为独立进程跑真实依赖后写 JSON，
+// SPEC: 上线就绪探针的 evidence 契约 —— 12 个 probe-*.ts 作为独立进程跑真实依赖后写 JSON，
 //       launch-readiness.ts 经 *_PROBE_REPORT 环境变量读回来判定门禁。本文件是这条进程边界上
 //       唯一的形状定义：生产端 import 接口来标注自己写出的 report，消费端 import 同一份接口来读。
 // INTENT: 进程边界是真 seam，不合并；要收的只是"契约以前只存在于消费端"这件事。以前生产端一个
@@ -95,17 +95,45 @@ const probeError = nullableObject({ code: optionalText, message: optionalText })
 // image pipeline（生产端在 packages/gen，跨包，这里只声明消费契约）
 // ---------------------------------------------------------------------------
 
+export interface GenBlobAuthorityEvidence {
+  provider?: string | null;
+  endpoint?: string | null;
+  bucket?: string | null;
+  root?: string | null;
+}
+
+const genBlobAuthorityEvidence = nullableObject({
+  provider: nullableText,
+  endpoint: nullableText,
+  bucket: nullableText,
+  root: nullableText,
+});
+
 export interface ImagePipelineProbeEvidence {
   ok?: boolean;
   checkedAt?: string | null;
   durationMs?: number;
   provider?: string | null;
   pipelineUrl?: string | null;
+  backendKind?: string | null;
+  backendTarget?: string | null;
+  workflowKey?: string | null;
+  workflowVersion?: number | null;
   model?: string | null;
   orientation?: string;
   count?: number;
+  blobAuthority?: GenBlobAuthorityEvidence | null;
+  blobRoot?: string | null;
   generationJobId?: string;
   loadError?: string;
+  terminal?: {
+    ref?: string | null;
+    checksum?: string | null;
+    outcome?: string | null;
+    assets?: number;
+    error?: ProbeErrorEvidence | null;
+  } | null;
+  /** Legacy pre-TerminalRecord evidence; retained only so old reports decode and fail closed clearly. */
   finalize?: {
     kind?: string | null;
     assets?: number;
@@ -119,10 +147,31 @@ const imagePipelineProbeEvidenceSchema: z.ZodType<ImagePipelineProbeEvidence> = 
   durationMs: optionalCount,
   provider: nullableText,
   pipelineUrl: nullableText,
+  backendKind: nullableText,
+  backendTarget: nullableText,
+  workflowKey: nullableText,
+  workflowVersion: z
+    .number()
+    .nullish()
+    .catch(null)
+    .transform((value) => value ?? null),
   model: nullableText,
   orientation: optionalText,
   count: optionalCount,
+  blobAuthority: genBlobAuthorityEvidence,
+  blobRoot: nullableText,
   generationJobId: optionalText,
+  terminal: nullableObject({
+    ref: nullableText,
+    checksum: nullableText,
+    outcome: nullableText,
+    assets: z
+      .number()
+      .optional()
+      .catch(0)
+      .transform((value) => value ?? 0),
+    error: probeError,
+  }),
   finalize: nullableObject({
     kind: nullableText,
     // INVARIANT: 旧 normalizer 这里的兜底是 0 而不是 undefined，别顺手改成 optionalCount。
@@ -137,6 +186,149 @@ const imagePipelineProbeEvidenceSchema: z.ZodType<ImagePipelineProbeEvidence> = 
 
 export function decodeImagePipelineProbeEvidence(value: unknown): ImagePipelineProbeEvidence {
   return decodeTopLevel(imagePipelineProbeEvidenceSchema, value);
+}
+
+// ---------------------------------------------------------------------------
+// video generation
+// ---------------------------------------------------------------------------
+
+export interface VideoGenerationProbeEvidence {
+  ok?: boolean;
+  checkedAt?: string | null;
+  durationMs?: number;
+  provider?: string | null;
+  backendKind?: string | null;
+  backendTarget?: string | null;
+  workflowKey?: string | null;
+  workflowVersion?: number | null;
+  model?: string | null;
+  seconds?: number;
+  referenceSha256?: string | null;
+  generationJobId?: string;
+  blobAuthority?: GenBlobAuthorityEvidence | null;
+  loadError?: string;
+  terminal?: {
+    ref?: string | null;
+    checksum?: string | null;
+    outcome?: string | null;
+    assets?: number;
+    error?: ProbeErrorEvidence | null;
+  } | null;
+}
+
+const videoGenerationProbeEvidenceSchema: z.ZodType<VideoGenerationProbeEvidence> = z.object({
+  ok: flag,
+  checkedAt: nullableText,
+  durationMs: optionalCount,
+  provider: nullableText,
+  backendKind: nullableText,
+  backendTarget: nullableText,
+  workflowKey: nullableText,
+  workflowVersion: z
+    .number()
+    .nullish()
+    .catch(null)
+    .transform((value) => value ?? null),
+  model: nullableText,
+  seconds: optionalCount,
+  referenceSha256: nullableText,
+  generationJobId: optionalText,
+  blobAuthority: genBlobAuthorityEvidence,
+  terminal: nullableObject({
+    ref: nullableText,
+    checksum: nullableText,
+    outcome: nullableText,
+    assets: z
+      .number()
+      .optional()
+      .catch(0)
+      .transform((value) => value ?? 0),
+    error: probeError,
+  }),
+});
+
+export function decodeVideoGenerationProbeEvidence(
+  value: unknown,
+): VideoGenerationProbeEvidence {
+  return decodeTopLevel(videoGenerationProbeEvidenceSchema, value);
+}
+
+// ---------------------------------------------------------------------------
+// Main-persisted generation authority
+// ---------------------------------------------------------------------------
+
+export interface GenerationPersistenceProbeEvidence {
+  ok?: boolean;
+  checkedAt?: string | null;
+  observedAt?: string | null;
+  mode?: string | null;
+  generationJobId?: string | null;
+  attemptId?: string | null;
+  attemptNo?: number;
+  jobStatus?: string | null;
+  attemptStatus?: string | null;
+  provider?: string | null;
+  profileKey?: string | null;
+  profileVersion?: number | null;
+  workflowKey?: string | null;
+  workflowVersion?: number | null;
+  terminal?: {
+    ref?: string | null;
+    checksum?: string | null;
+    receiptId?: string | null;
+    receiptState?: string | null;
+    outboxState?: string | null;
+    transportCount?: number;
+    transportStatus?: string | null;
+    artifactCount?: number;
+    deliveredCount?: number;
+    mediaAssetCount?: number;
+  } | null;
+  loadError?: string;
+  error?: ProbeErrorEvidence | null;
+}
+
+const generationPersistenceProbeEvidenceSchema: z.ZodType<GenerationPersistenceProbeEvidence> =
+  z.object({
+    ok: flag,
+    checkedAt: nullableText,
+    observedAt: nullableText,
+    mode: nullableText,
+    generationJobId: nullableText,
+    attemptId: nullableText,
+    attemptNo: optionalCount,
+    jobStatus: nullableText,
+    attemptStatus: nullableText,
+    provider: nullableText,
+    profileKey: nullableText,
+    profileVersion: z.number().int().positive().nullish().catch(null),
+    workflowKey: nullableText,
+    workflowVersion: z.number().int().positive().nullish().catch(null),
+    terminal: nullableObject({
+      ref: nullableText,
+      checksum: nullableText,
+      receiptId: nullableText,
+      receiptState: nullableText,
+      outboxState: nullableText,
+      transportCount: optionalCount,
+      transportStatus: nullableText,
+      artifactCount: optionalCount,
+      deliveredCount: optionalCount,
+      mediaAssetCount: optionalCount,
+    }),
+    error: probeError,
+  });
+
+function decodeGenerationPersistenceProbeEvidence(value: unknown) {
+  return decodeTopLevel(generationPersistenceProbeEvidenceSchema, value);
+}
+
+export function decodeImageGenerationPersistenceProbeEvidence(value: unknown) {
+  return decodeGenerationPersistenceProbeEvidence(value);
+}
+
+export function decodeVideoGenerationPersistenceProbeEvidence(value: unknown) {
+  return decodeGenerationPersistenceProbeEvidence(value);
 }
 
 // ---------------------------------------------------------------------------
@@ -545,11 +737,38 @@ export interface PaymentProviderProbeEvidence {
   storeId?: string | null;
   canViewStore?: boolean;
   returnedStoreId?: string | null;
+  /** Read-only lookup of the exact invoice bound to a real product CheckoutSession. */
+  canLookupInvoice?: boolean;
+  /** Legacy detached-invoice smoke field; current terminal probes always leave it false. */
   canCreateInvoice?: boolean;
   invoiceId?: string | null;
   checkoutUrl?: string | null;
   invoiceAmountCents?: number;
   invoiceCurrency?: string | null;
+  terminal?: {
+    authorityVersion?: string | null;
+    checkoutId?: string | null;
+    checkoutStatus?: string | null;
+    checkoutReturnPath?: string | null;
+    providerInvoiceId?: string | null;
+    providerInvoiceStatus?: string | null;
+    providerInvoiceAdditionalStatus?: string | null;
+    providerLookupVerified?: boolean;
+    providerEventId?: string | null;
+    providerEventType?: string | null;
+    providerEventProcessedAt?: string | null;
+    providerEventTargetHash?: string | null;
+    providerDeliveryCount?: number;
+    providerDeliveryIds?: string[];
+    providerDeliveryPayloadHashes?: string[];
+    replayVerified?: boolean;
+    subscriptionId?: string | null;
+    subscriptionStatus?: string | null;
+    subscriptionEffectCount?: number;
+    entitlementCount?: number;
+    ledgerEntryId?: string | null;
+    ledgerEntryCount?: number;
+  } | null;
   loadError?: string;
   error?: ProbeErrorEvidence | null;
 }
@@ -563,11 +782,36 @@ const paymentProviderProbeEvidenceSchema: z.ZodType<PaymentProviderProbeEvidence
   storeId: nullableText,
   canViewStore: flag,
   returnedStoreId: nullableText,
+  canLookupInvoice: flag,
   canCreateInvoice: flag,
   invoiceId: nullableText,
   checkoutUrl: nullableText,
   invoiceAmountCents: optionalCount,
   invoiceCurrency: nullableText,
+  terminal: z.object({
+    authorityVersion: nullableText,
+    checkoutId: nullableText,
+    checkoutStatus: nullableText,
+    checkoutReturnPath: nullableText,
+    providerInvoiceId: nullableText,
+    providerInvoiceStatus: nullableText,
+    providerInvoiceAdditionalStatus: nullableText,
+    providerLookupVerified: flag,
+    providerEventId: nullableText,
+    providerEventType: nullableText,
+    providerEventProcessedAt: nullableText,
+    providerEventTargetHash: nullableText,
+    providerDeliveryCount: optionalCount,
+    providerDeliveryIds: z.array(z.string()).optional(),
+    providerDeliveryPayloadHashes: z.array(z.string()).optional(),
+    replayVerified: flag,
+    subscriptionId: nullableText,
+    subscriptionStatus: nullableText,
+    subscriptionEffectCount: optionalCount,
+    entitlementCount: optionalCount,
+    ledgerEntryId: nullableText,
+    ledgerEntryCount: optionalCount,
+  }).optional().nullable(),
   error: probeError,
 });
 
@@ -589,6 +833,24 @@ export interface AgeVerificationProbeEvidence {
   providerVerificationId?: string | null;
   status?: string | null;
   url?: string | null;
+  terminal?: {
+    authorityVersion?: string | null;
+    verificationId?: string | null;
+    verificationStatus?: string | null;
+    verifiedAt?: string | null;
+    callbackUrl?: string | null;
+    linkBackUrl?: string | null;
+    providerEventId?: string | null;
+    providerEventType?: string | null;
+    providerEventProcessedAt?: string | null;
+    providerEventTargetHash?: string | null;
+    providerDeliveryCount?: number;
+    providerDeliveryIds?: string[];
+    providerDeliveryPayloadHashes?: string[];
+    providerPayloadHash?: string | null;
+    verificationEffectCount?: number;
+    replayVerified?: boolean;
+  } | null;
   loadError?: string;
   error?: ProbeErrorEvidence | null;
 }
@@ -603,6 +865,24 @@ const ageVerificationProbeEvidenceSchema: z.ZodType<AgeVerificationProbeEvidence
   providerVerificationId: nullableText,
   status: nullableText,
   url: nullableText,
+  terminal: z.object({
+    authorityVersion: nullableText,
+    verificationId: nullableText,
+    verificationStatus: nullableText,
+    verifiedAt: nullableText,
+    callbackUrl: nullableText,
+    linkBackUrl: nullableText,
+    providerEventId: nullableText,
+    providerEventType: nullableText,
+    providerEventProcessedAt: nullableText,
+    providerEventTargetHash: nullableText,
+    providerDeliveryCount: optionalCount,
+    providerDeliveryIds: z.array(z.string()).optional(),
+    providerDeliveryPayloadHashes: z.array(z.string()).optional(),
+    providerPayloadHash: nullableText,
+    verificationEffectCount: optionalCount,
+    replayVerified: flag,
+  }).optional().nullable(),
   error: probeError,
 });
 
@@ -620,6 +900,14 @@ export interface ProductConfigProbeEvidence {
   durationMs?: number;
   videoFeatureEnabled?: boolean;
   activeImageProfiles?: number;
+  activeImageExecutionBindings?: Array<{
+    profileId?: string;
+    runner?: string;
+    model?: string;
+    workflowKey?: string | null;
+    workflowVersion?: number | null;
+  }>;
+  invalidActiveImageProfileIds?: string[];
   activeImageCharacterTemplates?: number;
   activeImageFreeplayTemplates?: number;
   activeImagePricingRules?: number;
@@ -642,6 +930,22 @@ const productConfigProbeEvidenceSchema: z.ZodType<ProductConfigProbeEvidence> = 
   durationMs: optionalCount,
   videoFeatureEnabled: optionalFlag,
   activeImageProfiles: optionalCount,
+  activeImageExecutionBindings: z
+    .array(
+      z.object({
+        profileId: optionalText,
+        runner: optionalText,
+        model: optionalText,
+        workflowKey: nullableText,
+        workflowVersion: z
+          .number()
+          .nullish()
+          .catch(null)
+          .transform((value) => value ?? null),
+      }),
+    )
+    .optional(),
+  invalidActiveImageProfileIds: z.array(z.string()).optional(),
   activeImageCharacterTemplates: optionalCount,
   activeImageFreeplayTemplates: optionalCount,
   activeImagePricingRules: optionalCount,
@@ -844,4 +1148,66 @@ const webSurfaceProbeEvidenceSchema: z.ZodType<WebSurfaceProbeEvidence> = z.obje
 
 export function decodeWebSurfaceProbeEvidence(value: unknown): WebSurfaceProbeEvidence {
   return decodeTopLevel(webSurfaceProbeEvidenceSchema, value);
+}
+
+// ---------------------------------------------------------------------------
+// Sentry canary
+// ---------------------------------------------------------------------------
+
+export interface SentryCanaryProbeEvidence {
+  ok?: boolean;
+  checkedAt?: string | null;
+  durationMs?: number;
+  provider?: string | null;
+  service?: string | null;
+  emitter?: string | null;
+  release?: string | null;
+  correlationId?: string | null;
+  eventId?: string | null;
+  projectId?: string | null;
+  verified?: boolean;
+  verifiedAt?: string | null;
+  loadError?: string;
+  error?: ProbeErrorEvidence | null;
+}
+
+export const SENTRY_CANARY_SERVICES = ["main", "admin", "chat", "gen"] as const;
+export type SentryCanaryService = (typeof SENTRY_CANARY_SERVICES)[number];
+
+const sentryCanaryProbeEvidenceSchema: z.ZodType<SentryCanaryProbeEvidence> = z.object({
+  ok: flag,
+  checkedAt: nullableText,
+  durationMs: optionalCount,
+  provider: nullableText,
+  service: nullableText,
+  emitter: nullableText,
+  release: nullableText,
+  correlationId: nullableText,
+  eventId: nullableText,
+  projectId: nullableText,
+  verified: optionalFlag,
+  verifiedAt: nullableText,
+  error: probeError,
+});
+
+function decodeSentryCanaryProbeEvidence(
+  value: unknown,
+): SentryCanaryProbeEvidence {
+  return decodeTopLevel(sentryCanaryProbeEvidenceSchema, value);
+}
+
+export function decodeSentryMainCanaryProbeEvidence(value: unknown) {
+  return decodeSentryCanaryProbeEvidence(value);
+}
+
+export function decodeSentryAdminCanaryProbeEvidence(value: unknown) {
+  return decodeSentryCanaryProbeEvidence(value);
+}
+
+export function decodeSentryChatCanaryProbeEvidence(value: unknown) {
+  return decodeSentryCanaryProbeEvidence(value);
+}
+
+export function decodeSentryGenCanaryProbeEvidence(value: unknown) {
+  return decodeSentryCanaryProbeEvidence(value);
 }

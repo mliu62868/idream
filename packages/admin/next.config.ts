@@ -7,6 +7,12 @@ const mainWebURL = (process.env.MAIN_WEB_URL ?? "http://127.0.0.1:3000").replace
 const isolatedDistDir = process.env.IDREAM_NEXT_DIST_DIR?.trim();
 const isolatedTsconfigPath = process.env.IDREAM_NEXT_TSCONFIG?.trim();
 const playwrightRunId = process.env.PW_RUN_ID?.trim();
+const sourceDevelopment =
+  process.env.IDREAM_NEXT_DEVELOPMENT === "1" &&
+  process.env.NODE_ENV !== "production" &&
+  isolatedDistDir === ".next-development" &&
+  !isolatedTsconfigPath &&
+  !playwrightRunId;
 const isolatedDistMatch = isolatedDistDir?.match(
   /^\.next\/playwright-admin-(\d+)-([a-f0-9]{8})$/,
 );
@@ -14,9 +20,17 @@ const isolatedTsconfigMatch = isolatedTsconfigPath?.match(
   /^\.next\/playwright-config-admin-(\d+)-([a-f0-9]{8})\/tsconfig\.json$/,
 );
 
-if (isolatedDistDir && !isolatedDistMatch) {
+if (isolatedDistDir && !isolatedDistMatch && !sourceDevelopment) {
   throw new Error(
     "IDREAM_NEXT_DIST_DIR must be a Playwright-owned Admin directory",
+  );
+}
+if (
+  process.env.IDREAM_NEXT_DEVELOPMENT === "1" &&
+  !sourceDevelopment
+) {
+  throw new Error(
+    "Admin source development must use its dedicated .next-development directory",
   );
 }
 if (isolatedTsconfigPath && !isolatedTsconfigMatch) {
@@ -25,12 +39,13 @@ if (isolatedTsconfigPath && !isolatedTsconfigMatch) {
   );
 }
 if (
-  Boolean(isolatedDistDir) !== Boolean(isolatedTsconfigPath) ||
-  (isolatedDistMatch &&
-    isolatedTsconfigMatch &&
-    (isolatedDistMatch[1] !== isolatedTsconfigMatch[1] ||
-      isolatedDistMatch[2] !== isolatedTsconfigMatch[2] ||
-      isolatedDistMatch[2] !== playwrightRunId))
+  !sourceDevelopment &&
+  (Boolean(isolatedDistDir) !== Boolean(isolatedTsconfigPath) ||
+    (isolatedDistMatch &&
+      isolatedTsconfigMatch &&
+      (isolatedDistMatch[1] !== isolatedTsconfigMatch[1] ||
+        isolatedDistMatch[2] !== isolatedTsconfigMatch[2] ||
+        isolatedDistMatch[2] !== playwrightRunId)))
 ) {
   throw new Error(
     "Playwright Admin distDir, tsconfig, port, and PW_RUN_ID must identify the same run",

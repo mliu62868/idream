@@ -5,6 +5,7 @@ node_modules/
 
 # Build
 .next/
+.next-development/
 .next-runtime/
 out/
 build/
@@ -92,4 +93,5 @@ packages/chat/data/
 packages/admin/data/
 packages/main/data/
 .data/pocket-tts/
+.data/fish-audio/idempotency/
 .gstack/

@@ -113,7 +113,13 @@ const fileMutationSchema = z.discriminatedUnion("kind", [
     characterId: z.string().min(1),
     messageIds: z.array(z.string().min(1)),
   }),
-  z.object({ kind: z.literal("account_delete") }),
+  z.object({
+    kind: z.literal("account_delete"),
+    deletionRequestEventId: z.string().min(1),
+    // Optional keeps already-persisted legacy rows readable. Only `true`
+    // authorizes the dedicated v2 completion protocol.
+    requestBound: z.literal(true).optional(),
+  }),
   z.object({
     kind: z.literal("memory_extract"),
     sessionId: z.string().min(1),
@@ -159,6 +165,36 @@ const fileMutationSchema = z.discriminatedUnion("kind", [
 ]);
 
 export type ChatFileMutation = z.infer<typeof fileMutationSchema>;
+
+function parsePersistedFileMutation(input: {
+  readonly id: string;
+  readonly kind: string;
+  readonly payload: unknown;
+}): ChatFileMutation {
+  const payload =
+    input.payload &&
+    typeof input.payload === "object" &&
+    !Array.isArray(input.payload)
+      ? (input.payload as Record<string, unknown>)
+      : null;
+  if (
+    input.kind === "account_delete" &&
+    payload &&
+    (payload.kind === undefined || payload.kind === "account_delete") &&
+    payload.deletionRequestEventId === undefined &&
+    payload.requestBound !== true
+  ) {
+    // INTENT: pre-v2 pending rows had no request identity. The row id is
+    // immutable, so this adapter gives every retry the same legacy-only
+    // completion identity without granting request-bound v2 authority.
+    return fileMutationSchema.parse({
+      ...payload,
+      kind: "account_delete",
+      deletionRequestEventId: `legacy-chat-file-mutation:${input.id}`,
+    });
+  }
+  return fileMutationSchema.parse(input.payload);
+}
 
 class ChatFileProjectionRaceError extends Error {
   constructor(userId: string) {
@@ -221,7 +257,7 @@ export async function applyPendingChatFileMutationsTx(
     });
     if (rows.length === 0) break;
     for (const row of rows) {
-      const mutation = fileMutationSchema.parse(row.payload);
+      const mutation = parsePersistedFileMutation(row);
       if (mutation.kind === "memory_extract") {
         await assertMemoryExtractAuthority(tx, userId, mutation);
       }
@@ -317,12 +353,33 @@ export async function applyPendingChatFileMutationsTx(
         });
       }
       if (mutation.kind === "account_delete") {
-        await recordOutbox(tx, {
-          eventType: CHAT_TO_MAIN_EVENTS.accountErasureCompleted,
-          aggregateType: "user",
-          aggregateId: userId,
-          payload: { userId, fileMutationId: row.id },
-        });
+        if (mutation.requestBound) {
+          await recordOutbox(tx, {
+            eventType: CHAT_TO_MAIN_EVENTS.accountErasureCompletedV2,
+            aggregateType: "user",
+            aggregateId: userId,
+            schemaVersion: 2,
+            status: "request_bound",
+            payload: {
+              version: 2,
+              binding: "request_bound",
+              userId,
+              fileMutationId: row.id,
+              deletionRequestEventId: mutation.deletionRequestEventId,
+            },
+          });
+        } else {
+          await recordOutbox(tx, {
+            eventType: CHAT_TO_MAIN_EVENTS.accountErasureCompleted,
+            aggregateType: "user",
+            aggregateId: userId,
+            payload: {
+              userId,
+              fileMutationId: row.id,
+              deletionRequestEventId: mutation.deletionRequestEventId,
+            },
+          });
+        }
       }
       if (mutation.kind === "relationship_delete") {
         await tx.$queryRaw`
@@ -758,7 +815,11 @@ function appliedFileMutationReceipt(
         sessionId: mutation.sessionId,
       };
     case "account_delete":
-      return { kind: mutation.kind };
+      return {
+        kind: mutation.kind,
+        deletionRequestEventId: mutation.deletionRequestEventId,
+        ...(mutation.requestBound ? { requestBound: true } : {}),
+      };
   }
 }
 

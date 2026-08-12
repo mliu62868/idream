@@ -55,6 +55,12 @@ export const env = {
   get APP_ENV(): string {
     return process.env.APP_ENV ?? DEFAULT_APP_ENV;
   },
+  get SENTRY_DSN(): string | undefined {
+    return process.env.SENTRY_DSN;
+  },
+  get SENTRY_RELEASE(): string | undefined {
+    return process.env.SENTRY_RELEASE;
+  },
   /** Redis for BullMQ. GEN_REDIS_URL wins, else shared REDIS_URL, else local. */
   get REDIS_URL(): string {
     return process.env.GEN_REDIS_URL ?? process.env.REDIS_URL ?? DEFAULT_REDIS_URL;
@@ -82,6 +88,29 @@ export const env = {
     return parseGenBlobAdapter(
       process.env.GEN_BLOB_PROVIDER ?? process.env.BLOB_PROVIDER ?? "mock",
     );
+  },
+  // INVARIANT: live reports bind the worker's exact Blob target without ever
+  // serializing access keys or other write credentials.
+  get BLOB_AUTHORITY(): {
+    provider: GenBlobAdapter;
+    endpoint: string | null;
+    bucket: string | null;
+    root: string | null;
+  } {
+    const provider = this.BLOB_PROVIDER;
+    return provider === "mock"
+      ? {
+          provider,
+          endpoint: null,
+          bucket: null,
+          root: this.BLOB_ROOT,
+        }
+      : {
+          provider,
+          endpoint: this.BLOB_ENDPOINT ?? null,
+          bucket: this.BLOB_BUCKET ?? null,
+          root: null,
+        };
   },
   get BLOB_ENDPOINT(): string | undefined {
     return process.env.BLOB_ENDPOINT;

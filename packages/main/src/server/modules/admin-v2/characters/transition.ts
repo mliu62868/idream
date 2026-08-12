@@ -80,7 +80,10 @@ export async function transitionCharacterProject(
     readonly projectId: string;
     readonly to: ProjectPhase;
     readonly expectedVersion?: number;
-    readonly data?: Omit<Prisma.CharacterProjectUpdateManyMutationInput, "phase" | "version">;
+    readonly data?: Omit<
+      Prisma.CharacterProjectUncheckedUpdateManyInput,
+      "phase" | "version"
+    >;
     readonly conflict?: TransitionConflict;
   },
 ) {
@@ -105,6 +108,49 @@ export async function transitionCharacterProject(
   });
   if (changed.count !== 1) {
     throw conflictError(input.conflict, "Character Project changed before transition", {
+      projectId: input.projectId,
+    });
+  }
+  return tx.characterProject.findUniqueOrThrow({ where: { id: input.projectId } });
+}
+
+/**
+ * Update retained publication evidence after a Project has reached its final
+ * state without reopening the phase machine.
+ *
+ * INVARIANT: only a retired Project may use this metadata-only CAS; phase
+ * writers remain exclusively owned by `transitionCharacterProject`.
+ */
+export async function updateRetiredCharacterProjectMetadata(
+  tx: Prisma.TransactionClient,
+  input: {
+    readonly projectId: string;
+    readonly data: Omit<
+      Prisma.CharacterProjectUncheckedUpdateManyInput,
+      "phase" | "version"
+    >;
+  },
+) {
+  const current = await tx.characterProject.findUnique({
+    where: { id: input.projectId },
+    select: { phase: true, version: true },
+  });
+  if (!current || current.phase !== "retired") {
+    throw Errors.conflict("Character Project is not retired", {
+      projectId: input.projectId,
+      phase: current?.phase ?? null,
+    });
+  }
+  const changed = await tx.characterProject.updateMany({
+    where: {
+      id: input.projectId,
+      phase: "retired",
+      version: current.version,
+    },
+    data: { ...input.data, version: { increment: 1 } },
+  });
+  if (changed.count !== 1) {
+    throw Errors.conflict("Character Project changed before metadata update", {
       projectId: input.projectId,
     });
   }

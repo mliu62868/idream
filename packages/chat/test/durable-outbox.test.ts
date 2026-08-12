@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { deliverPendingOutbox } from "../src/outbox.js";
+import {
+  deliverPendingOutbox,
+  deliverRequestBoundAccountErasureCompletion,
+} from "../src/outbox.js";
 import type { ChatPrismaClient } from "../src/db.js";
 
 function fakePrisma() {
@@ -99,6 +102,49 @@ function concurrentFakePrisma() {
   };
 }
 
+function requestBoundFakePrisma(initialStatus = "request_bound") {
+  let row = {
+    id: "chat-account-erasure-v2-1",
+    eventType: "chat.account_erasure.completed.v2",
+    aggregateType: "user",
+    aggregateId: "user-1",
+    payload: {
+      version: 2,
+      binding: "request_bound",
+      userId: "user-1",
+      fileMutationId: "file-mutation-1",
+      deletionRequestEventId: "main-deletion-request-1",
+    },
+    schemaVersion: 2,
+    status: initialStatus,
+    attempts: 0,
+    nextRunAt: new Date(0),
+    createdAt: new Date("2026-08-11T12:00:00.000Z"),
+    deliveredAt: initialStatus === "delivered" ? new Date() : null,
+  };
+  const prisma = {
+    chatOutboxEvent: {
+      findFirst: vi.fn(async () => ({ ...row })),
+      findUnique: vi.fn(async () => ({ status: row.status })),
+      updateMany: vi.fn(async (input: {
+        where: { status?: string; attempts?: number };
+        data: Partial<typeof row>;
+      }) => {
+        if (
+          (input.where.status && input.where.status !== row.status) ||
+          (input.where.attempts !== undefined &&
+            input.where.attempts !== row.attempts)
+        ) {
+          return { count: 0 };
+        }
+        row = { ...row, ...input.data };
+        return { count: 1 };
+      }),
+    },
+  } as unknown as ChatPrismaClient;
+  return { prisma, current: () => ({ ...row }) };
+}
+
 describe("chat durable outbox delivery", () => {
   it("does not mark delivered when main durable ACK fails", async () => {
     const { prisma, updates } = fakePrisma();
@@ -147,5 +193,51 @@ describe("chat durable outbox delivery", () => {
 
     await Promise.all([failed, acknowledged]);
     expect(state.current()).toMatchObject({ status: "delivered", attempts: 8 });
+  });
+
+  it("keeps request-bound completion out of delivered when rolled-back Main has no capability route", async () => {
+    const state = requestBoundFakePrisma();
+    await expect(deliverRequestBoundAccountErasureCompletion(
+      "main-deletion-request-1",
+      state.prisma,
+      async () => {
+        throw new Error("rolled-back Main returned 404");
+      },
+    )).rejects.toThrow("rolled-back Main returned 404");
+    expect(state.current()).toMatchObject({
+      status: "request_bound",
+      attempts: 1,
+    });
+  });
+
+  it("marks request-bound completion delivered only after Main projection ACK", async () => {
+    const state = requestBoundFakePrisma();
+    let projected = false;
+    await expect(deliverRequestBoundAccountErasureCompletion(
+      "main-deletion-request-1",
+      state.prisma,
+      async (event) => {
+        expect(state.current().status).toBe("request_bound");
+        expect(event).toMatchObject({
+          eventType: "chat.account_erasure.completed.v2",
+          schemaVersion: 2,
+          payload: { binding: "request_bound" },
+        });
+        projected = true;
+      },
+    )).resolves.toMatchObject({ delivered: true });
+    expect(projected).toBe(true);
+    expect(state.current().status).toBe("delivered");
+  });
+
+  it("redelivers a prior delivered marker through the dedicated route for forward repair", async () => {
+    const state = requestBoundFakePrisma("delivered");
+    const acknowledge = vi.fn(async () => {});
+    await expect(deliverRequestBoundAccountErasureCompletion(
+      "main-deletion-request-1",
+      state.prisma,
+      acknowledge,
+    )).resolves.toMatchObject({ delivered: true });
+    expect(acknowledge).toHaveBeenCalledTimes(1);
   });
 });

@@ -29,6 +29,12 @@ describe("auth redirect helpers", () => {
     expect(authHrefForTarget("/signup", "/type/romantic-ai-girlfriend")).toBe(
       "/signup?next=%2Ftype%2Fromantic-ai-girlfriend",
     );
+    expect(
+      safeInternalAuthRedirect(
+        "/age-verification/return?next=%2Fgenerate",
+        origin,
+      ),
+    ).toBe("/age-verification/return?next=%2Fgenerate");
   });
 
   it("rejects external, protocol-relative, auth-loop, and non-product targets", () => {

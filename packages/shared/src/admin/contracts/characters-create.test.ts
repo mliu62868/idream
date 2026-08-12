@@ -5,6 +5,8 @@ import {
   characterProjectDraftSchema,
   characterProjectDraftPatchRequestSchema,
   characterProjectProductionReadyDraftSchema,
+  customerCharacterPublicationPrepRequestSchema,
+  customerCharacterPublicationPrepResponseSchema,
 } from "./characters-create";
 
 const validCreate = {
@@ -45,6 +47,30 @@ const validCreate = {
 } as const;
 
 describe("Character Project create contract", () => {
+  it("binds historical customer publication preparation to its reviewed submission", () => {
+    expect(customerCharacterPublicationPrepRequestSchema.parse({
+      submissionId: "submission-1",
+      reason: "Repair approved publication preparation",
+      confirmation: "PREPARE PUBLICATION character-1",
+    })).toMatchObject({ submissionId: "submission-1" });
+    expect(customerCharacterPublicationPrepRequestSchema.safeParse({
+      reason: "Repair approved publication preparation",
+      confirmation: "PREPARE PUBLICATION character-1",
+    }).success).toBe(false);
+    expect(customerCharacterPublicationPrepResponseSchema.parse({
+      state: "publication_prep",
+      characterId: "character-1",
+      submissionId: "submission-1",
+      projectId: "project-1",
+      revisionId: "revision-1",
+      projectVersion: 1,
+      servingState: "inactive",
+      deepLink: "/admin/characters/character-1?tab=assets",
+      created: true,
+      replayed: false,
+    })).toMatchObject({ servingState: "inactive", replayed: false });
+  });
+
   it("accepts a complete official draft and a strict authority response", () => {
     expect(characterProjectCreateRequestSchema.parse(validCreate)).toMatchObject({ persona: { age: 28 } });
     expect(characterProjectCreateResponseSchema.parse({

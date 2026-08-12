@@ -51,6 +51,36 @@ function failedRow(value: ReturnType<typeof payload>): QueueJobSnapshot {
 }
 
 describe("failed generation source recovery", () => {
+  it("keeps a legacy request-level residue invalid and never retries it", async () => {
+    const providers = createMockGenProviders();
+    const value = payload(`legacy-residue-${crypto.randomUUID()}`);
+    const legacyDedupeKey = `generation:${value.generationJobId}`;
+    const row: QueueJobSnapshot = {
+      ...failedRow(value),
+      id: bullMqJobIdForDedupeKey(legacyDedupeKey),
+      dedupeKey: legacyDedupeKey,
+    };
+    const retry = vi.fn(async () => ({ status: "retried" as const, job: null }));
+
+    const result = await recoverFailedGenerationSourceJobs({
+      mode: "image",
+      blob: providers.blob,
+      cursor: { offset: 0 },
+      queue: {
+        inspectFailed: async () => [row],
+        isPaused: async () => false,
+        retry,
+      },
+    });
+
+    expect(result).toMatchObject({ scanned: 1, recovered: 0 });
+    expect(result.invalid).toEqual([{
+      bullJobId: row.id,
+      reason: "dedupe_mismatch",
+    }]);
+    expect(retry).not.toHaveBeenCalled();
+  });
+
   it("retries only an exact failed source row backed by its Blob terminal record", async () => {
     const providers = createMockGenProviders();
     const suffix = crypto.randomUUID();

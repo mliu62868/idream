@@ -185,7 +185,8 @@ pipeline voice adapter 仍保留为回滚路径，但不再是当前默认；已
 
 ```bash
 bun run launch:probe:pipeline
-bun run launch:probe:image:local
+bun run --filter @idream/gen probe:image -- --model <active-product-config-model> --report .tmp/launch-image-probe.json
+bun run launch:probe:video -- --model ltx23-gtanimation-i2v --reference <reviewed-character-image> --report .tmp/launch-video-probe.json
 bun run launch:probe:generation-model-candidates -- --report .tmp/launch-generation-model-candidates.json
 bun run launch:probe:web-surface -- --report .tmp/launch-web-surface-probe.json
 bun run launch:probe:product-config -- --report .tmp/launch-product-config-probe.json
@@ -197,8 +198,19 @@ bun run launch:probe:blob -- --report .tmp/launch-blob-probe.json
 bun run launch:probe:payment -- --report .tmp/launch-payment-probe.json
 bun run launch:probe:age -- --report .tmp/launch-age-probe.json
 bun run launch:probe:safety -- --report .tmp/launch-safety-probe.json
+bun run launch:probe:sentry:main -- --report .tmp/launch-sentry-main-probe.json
+bun run launch:probe:sentry:admin -- --report .tmp/launch-sentry-admin-probe.json
+bun run launch:probe:sentry:chat -- --report .tmp/launch-sentry-chat-probe.json
+bun run launch:probe:sentry:gen -- --report .tmp/launch-sentry-gen-probe.json
 bun run check:launch:direct -- --launch-env-file .tmp/production-launch.env
 ```
+
+`LAUNCH_SCOPE` is a closed release contract: `full` is the default and requires
+every product area; `core` excludes only Billing and Age Verification when those
+areas are explicitly outside the release. It does not suppress migrations,
+ProductConfig, HTTPS/secrets, Redis, Chat, Gen, Blob, Sentry, or any other gate.
+Unknown values fail closed. Put the chosen value in the same launch env file that
+will feed PM2 so the preflight and runtime use one authority.
 
 `launch:probe:chat-service` must prove more than BFF reachability: it runs a signed
 conversation smoke (session create, message send, SSE stream, reload, no-memory
@@ -206,9 +218,19 @@ send, and blocked-input handling). If `CHAT_SERVICE_PROBE_CHARACTER_ID` is unset
 the probe auto-selects a public approved adult character from the main DB; use
 `--character-id=...` when a fixed production probe character is required.
 
-以下 8091 显式命令只用于需要审计旧 OpenAI-compatible image adapter 的场景；
+Sentry readiness requires four distinct, fresh reports from the package-bound
+`probe:sentry` entrypoints. The CLI intentionally rejects a relabeled `--service`;
+each package loads its own SDK/runtime and binds the captured event plus resolved
+Sentry tags to `main` / `admin` / `chat` / `gen`. A missing, mislabeled, or stale
+runtime report keeps the launch gate closed.
+
+`probe:image` 必须使用 production Gen adapter/blob env，且 model/workflow/version 必须与
+`probe:product-config` 返回的全部公开图片 execution bindings 一致；报告包含 immutable
+TerminalRecord ref/checksum。Video 启用时还必须用审核过的角色源图运行 `probe:video`，
+完成固定 LTX workflow、MP4 decode 检查和 TerminalRecord 持久化。以下 8091 显式命令只用于需要审计旧 OpenAI-compatible image adapter 的场景；
 它要求另行提供外部 gateway，仓库没有可启动它的 `serve:sdcpp-image` 脚本。当前
-workflow-native backend 的健康检查使用本节顶部 `smoke:backend` 命令。
+workflow-native backend 的工程 smoke 使用本节顶部 `smoke:backend` 命令，但公开上线
+门禁只接受上述 workflow-bound `probe:image` / `probe:video` 报告。
 
 ```bash
 mkdir -p .tmp
@@ -562,12 +584,13 @@ export default defineConfig({
 
 **实际部署 = pm2 自托管常驻进程拓扑（见 §4.3，`ecosystem.config.js`）**。队列由 BullMQ 常驻 worker 持续消费（ADR-5），**不需要 Cron drain**。仅周期性维护任务（清理过期 session/软删媒体、额度结算）需要定时器，可用 pm2 cron restart、容器内调度或外部 cron 触发对应 `/api/internal/*` 端点（校验 `INTERNAL_TOKEN`）。
 
-- `next.config.ts` 已 `output:"standalone"`（pm2 与 Docker 均用）。
+- Main/Admin production build 生成各自的 `.next-runtime` immutable release，PM2 只从当前 release pointer 启动。
 - `/api/internal/*` 由 `INTERNAL_TOKEN` 保护，`proxy.ts` matcher 排除 `/api/internal`。
 - 长任务/流式 route 配 `maxDuration`（route segment config）。
 
-### 4.2 Docker（备选自托管）
-- 既有 `Dockerfile` + `docker-compose.yml`：app + Postgres。Cron 用容器内调度（如 `node-cron` 触发 drain，或外部 cron 调 `/api/internal`）。
+### 4.2 本地 Docker 基础设施
+
+`docker-compose.yml` 只负责 PostgreSQL 与 Redis。产品运行必须走 §4.3 的完整 PM2 拓扑；仓库不提供会遗漏 Admin、Chat、Gen、finalizer、consumer 与 Voice 的 Main-only 容器入口。
 
 ### 4.3 PM2（自托管进程拓扑）
 
@@ -618,15 +641,84 @@ bun run build
 bun run pm2:start:production
 ```
 
-三个 production wrapper（start/restart/reload）使用同一 fail-closed 协议：先在 Main、Gen、
+三个 production wrapper（start/restart/reload）使用同一 fail-closed 协议：先要求调用环境明确
+`APP_ENV=production`，并用之后传给 PM2 的同一份环境执行所选 `LAUNCH_SCOPE` 的完整
+`check:launch:direct`；`full` 是默认，`core` 只允许显式排除 Billing 与 Age Verification；任一门禁失败时
+不得暂停队列或修改 PM2。通过后，才在 Main、Gen、
 finalizer 仍在线时全局 pause image/video/terminal-ingest/finalize 四条 BullMQ queue；等待 active row
 归零。Gen 可把新 terminal record 投进暂停的 durable relay，Main 可把已摄入 record 的
 `pending / dispatched` terminal Outbox 投进暂停的 finalize queue。之后先停止请求入口与
 direct producer（`main-web`、`admin-web`、`chat`、`main-event-consumer`、
 `admin-command-worker`），再停止 `gen-image`、`gen-video`，最后停止 `gen-finalizer`。
 `pm2 jlist` 确认全部非 voice app 静止后，才只读检查 Postgres generation authority、terminal
-Outbox 与 Redis in-flight row。PM2 action 返回 0 仍不等于发布成功：wrapper 会继续有限时轮询
-9 个 logical app 的精确期望实例数，全部 `online` 后验证 Main/Admin HTTP、Chat `/healthz`、
+Outbox 与 Redis in-flight row。静止点还会运行 Gen image+video ownership gate：同时核对 PM2 精确
+cwd/entrypoint/slot、OS wrapper→实际 `src/image.ts` / `src/video.ts` child/PGID、以及 BullMQ worker 的
+`runId.slot.pid` 名称；daemon orphan、外部进程、匿名/旧 run worker、数量或 PID 映射不一致都会保持
+queue paused，且检测器永不发送 signal。PM2 启动后、resume 前以本次 wrapper 生成的 runId 再要求三源
+一一对应。`GEN_VIDEO_PROVIDER=mock` 只在已验证的 `video_gen=false` 产品配置下成立；此时 production
+ecosystem 不登记 `gen-video`，门禁严格要求 video 的 PM2/OS/Redis 三源均为 0。现场只读检查可运行
+`bun run probe:gen-image-ownership`（名称保留兼容，实际同时检查 image+video）；发现 orphan 后必须在 queue 已暂停、
+active=0 且连续两次 PID/PGID/start-time fingerprint 相同时由人工清理，禁止 `pkill -f` 或批量终止 PM2
+daemon children。不要手工拼 PID 或直接执行 `kill`。
+
+orphan 恢复前必须先运行只读 `bun run --cwd packages/main check:generation-cutover`。若报告中存在需人工确认的
+历史 `ai.video.generate` failed residue，必须在运行 `generation:quiesce-for-orphan-recovery` **之前**完成下面的
+typed acknowledgement；否则 quiesce 会先全局暂停四条 queue，再因该 residue 持续阻断 drain，最终超时且不进入
+PM2 stop。Bull row 不允许物理删除。只有 Job/latest Attempt/terminal event、三次 transport、archived artifact、
+suppressed delivery、spend/refund/settlement links 与 Blob 终态仍全部满足严格条件时，dry-run 才会给出 confirmation：
+
+```bash
+cd packages/main
+bun run generation-cutover:acknowledge-failed-source-residue -- \
+  --actor-id <bootstrap.actor.id> --queue ai.video.generate --bull-job-id <bull-job-id> \
+  > /secure/operator/failed-source-plan.json
+
+bun run generation-cutover:acknowledge-failed-source-residue -- \
+  --apply --actor-id <same-bootstrap.actor.id> \
+  --plan-file /secure/operator/failed-source-plan.json \
+  --reason '<review reason>' --request-id <request-id> --idempotency-key <key> \
+  --confirmation '<exact confirmation from dry-run>'
+
+# 必须确认 ok=true、该 row 位于 ignoredHistory，且 failedRecoveryRows/issues 均为空。
+bun run check:generation-cutover
+cd ../..
+```
+
+`--actor-id` 必须来自本次实际执行人员已登录 Admin 后的 `GET /api/v2/admin/bootstrap`：使用返回的
+`bootstrap.actor.id`，并确认 `bootstrap.permissions` 包含 `ops.deadletter.write`。dry-run 与 apply 必须由同一人执行；
+换班时新操作者必须重新 dry-run。CLI 还会重新校验该 User 当前存在、`status=active` 且具备有效权限。禁止借用他人
+actor、从数据库随意挑选账号、使用测试身份或为了恢复临时伪造授权。development wall 的 `admin` 快捷账号当前映射
+`seed-admin-user`，这只校准本地开发审计；production 必须使用真实生产登录操作者，不能沿用 seed 身份。
+
+apply 只在 Main 写入一份幂等 command receipt 与 Admin audit，不修改 Redis/Bull。cutover 与 drain 每次都
+重新核对 retained row hash、DB/ledger/archive 和 Blob 缺失；任一事实漂移会立刻恢复阻断。完成上述前置条件后，
+仓库的 orphan 恢复协议才从 quiesce 开始：
+
+```bash
+# 1. 仅在 cutover 已无 blocking residue 后，全局 pause/drain，再按 admission → Gen workers → finalizer
+#    顺序只停止已登记进程。
+#    该命令故意不跑 launch gate、不启动任何进程，也绝不 resume queue。
+bun run generation:quiesce-for-orphan-recovery
+
+# 2. 默认只读；连续采集两次 PM2/OS/Redis/cutover 状态，记录每个 PGID 的全部成员。
+bun run generation:plan-orphan-recovery \
+  > /secure/operator/gen-orphan-recovery-plan.json
+
+# 3. 人工核对 safeToApply=true、targets 和 typed confirmation 后才执行。
+bun run generation:apply-orphan-recovery -- \
+  --plan-file /secure/operator/gen-orphan-recovery-plan.json \
+  --confirmation '<exact confirmation from plan>'
+```
+
+plan 只有在四条 Generation queue 全部 paused、active Request / in-flight Bull row /
+pending terminal Outbox 均为 0、已登记 image/video worker 均已停止、两次完整快照一致、且所有目标都仍是
+PM2 daemon orphan 时才给出 confirmation。apply 会重新采集同样的现场并要求 target fingerprint 完全相同，
+然后只向计划内的精确 PGID 发送一次 `SIGTERM`；不使用 `SIGKILL`，不停止 PM2 daemon，不改 Redis/DB，
+也不恢复 queue。若进程未优雅退出或任何事实漂移，命令失败且 queue 保持 paused。完成后重新运行受控
+PM2 wrapper；只有 cutover、运行态 readiness 与 ready ownership 全部通过时 wrapper 才会 resume。
+
+PM2 action 返回 0 仍不等于发布成功：wrapper 会继续有限时轮询
+目标 logical app（video 开启时 9 个、关闭时 8 个）的精确期望实例数，全部 `online` 后验证 Main/Admin HTTP、Chat `/readyz`、
 Fish `/health`，并运行 Gen `preflight` 检查 ComfyUI model refs 和视频验真所需的
 `ffprobe` / `ffmpeg`；全部通过才 resume 四条 queue。
 若活动 Request 的最新 queued/running Attempt 已绑定 `terminalRecordRef`，门禁还要求 terminal Outbox
@@ -648,19 +740,28 @@ queue paused；resume 部分失败会 best-effort 重新 pause 全部 queue。�
 5 分钟 PM2 `kill_timeout`，作为 pause/drain 之外的最后防线。
 
 开发/生产模式之间切换会改变 web 的 script、cwd 和 exec mode，也会改变
-worker watch 设置。PM2 的普通 restart 不会重写这些进程定义，因此切换模式
-时先 delete、再用目标模式 start 一次并 `pm2 save`：
+worker watch 设置。从开发态切到生产态直接使用受控 wrapper；它会完成完整
+launch、pause/drain、ownership 与 authority 门禁，删除所有已登记的 owned runtime 并确认整个 namespace
+为空，再从 ecosystem 全新创建。这样既替换开发定义，也不会让 PM2 `--update-env` 合并保留旧的可选
+provider 环境变量；新运行态通过精确定义、HTTP/preflight、ownership 后才 resume：
 
 ```bash
-pm2 delete ecosystem.config.js
-bun run pm2:start:production # 切回开发态则使用 bun run pm2:start
+bun run pm2:start:production
 pm2 save
 ```
+
+生产态切回开发态会被 wrapper 明确拒绝。不要用 `pm2 delete`、直接
+`pm2 restart` 或 `pm2 reload` 绕过该拒绝；这不是普通模式切换，而是需要先
+下线公开入口、完成 generation pause/drain 与静止 ownership 核验的受控维护。
+在仓库提供对称的 gated teardown 命令前，保持生产拓扑，不执行手工切换。
 
 同一模式内使用 `bun run pm2:restart`：wrapper 会从 PM2 持久 mode marker（旧拓扑则从明确的 web
 entrypoint）识别 development/production；混合或无法识别的拓扑直接失败。生产也可显式使用
 `bun run pm2:restart:production`。不要直接调用 `pm2 restart ecosystem.config.js` 绕过 generation
 queue pause/drain 门禁；无参数 `bun run pm2:start` 也会拒绝覆盖正在运行的 production 拓扑。
+`bun run pm2:stop` 同样经过 pause/drain、分层 stop 和 quiescent ownership；只有证明 Gen 三源为 0 后
+才停止 `fish-audio`，并故意让四条 Generation queue 保持 paused。后续必须用受控 start/restart 完成
+readiness 后恢复，不能直接手工 resume。
 
 当 `ecosystem.config.js` 增删进程后，确认 `pm2 list` 与目标拓扑一致，然后执行 `pm2 save`。否则 `pm2 resurrect` 或机器重启可能恢复旧 dump（例如已延后的 `gen-video` 或重复的 `main-web`）。
 
@@ -683,19 +784,18 @@ client reference manifest 缺失。
 流水线（对齐 global verify 体系 L1-L4）使用 bun workspace、Postgres 和 Redis：
 
 ```
-1. setup bun 1.3.14 + bun install --frozen-lockfile
+1. setup Node 24 + bun 1.3.14 + bun install --frozen-lockfile
 2. install Playwright Chromium
-3. bun run check                         # 全包 lint + typecheck + build
-4. bun run --filter @idream/main test    # 主站 L2/L3，Postgres + Redis
-5. bun run --filter @idream/chat test    # chat 边界和服务测试，Postgres + Redis
-6. bun run --filter @idream/gen test     # 生成 worker/provider 测试
-7. bun run --filter @idream/shared test  # 跨服务 contract 测试
-8. prepare idream_e2e DB + seed
-9. start main-web dev server
-10. bun run --filter @idream/main test:e2e # L4 Playwright
+3. bun run check                              # 全包 lint + typecheck + build
+4. packages/main coverage + Admin/Chat/Gen/Shared tests
+5. bun run test:pm2-config                    # production wrapper fail-closed contracts
+6. prisma migrate deploy                      # CI 临时源库先落完整 history
+7. bun run --filter @idream/main admin:readiness:migrations
+8. bun run --filter @idream/main test:e2e     # Playwright 独占派生 DB/Redis namespace，
+                                               # 自管 Main/Admin/Chat/Gen/finalizer 进程
 ```
 
-- **迁移在部署前于 CI/部署流水线跑** `prisma migrate deploy`（prod direct URL），失败则阻断发布。
+- **迁移在部署前于 CI/部署流水线跑** `prisma migrate deploy`（prod direct URL），随后以 fresh/upgrade 临时库演练完整 migration chain；任一步失败都阻断发布。
 - `bun run check` 是本地最小门；上线前还必须跑 `bun run --filter @idream/main test:e2e` 和 `bun run check:launch -- --launch-env-file .tmp/production-launch.env`。
 - 数据库迁移 SQL **只能由具备权限者/CI 执行**（global rule：模式变更 SQL 由用户/CI 跑，Claude 只产出）。
 
@@ -709,12 +809,36 @@ client reference manifest 缺失。
 | 生成迁移 | `bun run --filter @idream/main db:migrate:dev`（产生迁移文件，提交 git） | 开发者 |
 | 加性能索引 | 在迁移目录手写 raw SQL（`pg_trgm` 等，03 §5） | 开发者 |
 | 部署应用内表迁移 | `bun run --filter @idream/main db:migrate:deploy`（prod direct URL） | CI |
-| **DB 边界变更** | `db/sql/*.sql`（`bash db/sql/apply-validate.sh`）：`01_schemas_roles` / `02_core_views` / `03_character_management` / `03_chat_tables` / `04_grants` / `05_main_recent_chats` | **用户在 prod 执行** |
+| **DB 边界变更** | DBA/IAM 先创建 `core_owner` / `chat_owner` / `chat_service` / `chat_projector` 并注入真实凭据；随后执行 `bash db/sql/apply-validate.sh`，其唯一权威顺序为 `01_schemas_roles` → `02_core_views` → `03_chat_tables` → `04_grants` | **用户在 prod 执行** |
 | 回滚 | 写"down"迁移或新正向修复迁移（Prisma 不自动回滚） | CI + 评审 |
 
 **破坏性变更**（删列/改类型）：分两步（先兼容加列/双写 → 迁移数据 → 再删旧），避免停机。
 
 > `db/sql/` 是跨服务库边界的 SSoT：Chat 请求路径以 `chat_service` 连接，只读 Main 的 core/billing/compliance 视图并写请求事务/文件 intent；文件投影器以独立 `chat_projector` 连接，只有实际完成 `CHAT_FS_ROOT` 副作用后才能推进 mutation receipt。两种角色均由 grant/trigger 强制，不能用一个全权运行时连接替代。这些 DDL 不归 Prisma `db push` 管。
+
+`01_schemas_roles.sql` 只验证四个角色已由 DBA/IAM 创建，不创建 `_change_me` LOGIN，并要求
+`core_owner` / `chat_owner` 为 `NOLOGIN`、`chat_service` / `chat_projector` 为 `LOGIN`。曾运行旧版
+placeholder bootstrap 的集群，升级前必须由 DBA/IAM 先轮换两个 runtime role 的真实且不同 secret，
+再把两个 owner role 收紧为 `NOLOGIN`；凭据通过 secret manager 或 DBA 的交互式密码流程注入，不能写入
+仓库或 shell history。`03_chat_tables.sql` 已包含 entry attribution、每 turn memory 不可变 trigger/index、
+Scene/Soul/runtime trace 与 file mutation 权威；dated SQL 仅保留为历史升级证据，不进入日常 manifest。
+`04_grants.sql` 在一个事务内完成 broad grant 与 append-only/投影器收窄。新环境必须先跑完整 Prisma
+migration history，再暂停 Chat writer/projector，执行上述四步并通过结构、权限正向/负向验证；不得把
+`03_character_management`、`05_main_recent_chats` 或任何 Main/public dated SQL 混入 Chat boundary apply。
+
+旧集群的最小人工修复使用交互式 `psql`，密码只通过 `\password` 输入：
+
+```sql
+ALTER ROLE core_owner NOLOGIN;
+ALTER ROLE chat_owner NOLOGIN;
+REVOKE core_owner, chat_owner FROM chat_service, chat_projector;
+\password chat_service
+\password chat_projector
+```
+
+完成后再执行 `apply-validate.sh`；不要把密码写成 `ALTER ROLE ... PASSWORD '...'` 放进 runbook、CI log
+或 shell history。本机或生产角色姿态不合格时，测试/部署失败是正确的 fail-closed 结果，不应让测试
+harness 自动改写现有集群角色。
 
 ## 7. 备份与容灾
 
@@ -723,6 +847,9 @@ client reference manifest 缺失。
 - PostgreSQL 使用与目标服务兼容的 `pg_dump` / `pg_restore`；`CHAT_FS_ROOT` 和本地 `BLOB_ROOT` 分别生成归档与逐文件 manifest/checksum。使用 R2/S3 时启用版本化/跨区复制，并把精确 object-version inventory 与 DB/Chat FS checkpoint 绑定。
 - 每个 checkpoint 必须写明数据库名/schema migration count、Chat FS root、Blob provider/root、静默时间、artifact id 与 SHA-256；不得覆盖已有备份。
 - 恢复演练必须进入隔离的 disposable DB/Chat FS/Blob root，校验全部 checksum、目录 manifest、migration status、业务计数和无悬空引用后再删除临时目标。只证明 `pg_restore` 成功不等于 Chat 文件和媒体可恢复。
+- 仓库权威入口是 `bun run recovery:rehearse`。默认只输出脱敏 plan 并以非零退出码报告缺失条件；不会 dump、建库、复制对象或停服务。实际执行必须在受控维护窗先完成既有 quiesce 流程，再以 `APP_ENV=production IDREAM_QUIESCED=1` 加 `--apply --bundle-name <idream-recovery-...> --confirmation "CREATE RECOVERY REHEARSAL <同名>"` 运行；Main / Chat / Gen 使用不同 env 文件时分别传 `--launch-env-file`、`--chat-env-file`、`--gen-env-file`。工具会再次拒绝 live PM2/端口、active DB client、非 exact migration、非零 durable-work、split DB/Blob authority、symlink 与覆盖已有 bundle。
+- apply 会在原子发布前完成：PostgreSQL 16 custom dump → fresh 隔离库 restore → counts/schema/逐表 digest/sequence/database authority exact compare；Chat FS tar → 临时目录逐文件 mode/SHA compare；local Blob 同样归档恢复，R2/S3 则要求 bucket versioning，用 AWS CLI 读取 exact live VersionId、逐对象下载并复制到 invocation 专属临时 prefix、按返回 VersionId 重读比较，随后只删除本次创建的 exact versions 并确认 prefix 归零。失败只清 fresh restore DB、staging、publish lock 与已记录的临时 object versions，绝不删除源对象或覆盖最终 bundle。
+- 将发布后的扁平 bundle 路径写入 `RECOVERY_REHEARSAL_BUNDLE`，并按需要设置 `RECOVERY_REHEARSAL_MAX_AGE_MINUTES`（默认 `1440`）。`check:launch` 会直接验证 master SHA-256、禁止 symlink/未入 manifest 的文件、拒绝伪造的非 `PGDMP` dump、非 gzip 文件归档、越界/弱 digest 文件 manifest 与不完整 logical/role/database/remote-object authority，要求 source/isolated-restore 的 DB counts/schema/logical、Chat FS 与 Blob inventory 逐字节一致，并绑定当前仓库的 exact migration count/latest；旧 migration-60 bundle、占位文件或未静默的 durable-work counts 都会失败关闭。
 - 2026-07-18 controlled-beta 最终 checkpoint 已按上述合同完成。Artifact base 为 `/Users/kk/code/idream/local-backups/idream-main-final-20260718-60/idream-main-final-20260718-60`；bundle 目录 mode `0700`、23 个文件均为 `0600`、总大小 171M，bundle SHA checks 全部通过。源端为 migrations `60`（latest `20260718012000`）、20 users、characters / Releases / Servings / Qualifications / MediaAssets 各 16、234 base tables / 7 views / 1 sequence；Main outbox `3,936`（pending/failed `0`）、inbound `5,738`（received `0`）。Chat 为 294 sessions / 818 messages / 4 attachments、outbox `1,552` / inbox `488`（pending/failed `0`）、file mutations `5`（pending `0`）；Chat FS 为 429 files / 550,987 bytes，Blob 为 13,634 files / 162,163,688 bytes，Main/Gen effective mock root 一致。
 - PostgreSQL client `18.3` 对 server `16.14` 的隔离恢复中，source/restore counts、schema、logical DB、Chat FS 与 Blob 比较全部为 `0` difference（equal），disposable restore DB 清理后 remaining `0`。恢复后 PM2 7 logical apps / 8 processes 全部 online，Main/Admin HTTP 200、Chat health `ok`。演练过程捕获并修复了 zero-dim ACL、`psql -c` substitution、null `datacl` marker 与 `bsdtar` umask mode 四类 fail-closed 缺陷；最终 artifact 不含这些失败状态。本次自动证明是 same-cluster throwaway restore；bundle 提供 role/database authority manifests 与 fresh-cluster runbook，但角色密码和外部 secrets 仍须由 secret manager 注入，不能把本地证明扩大为无前置条件的 fresh-cluster/public-production 恢复认证。
 - ledger、审核与其他审计证据按既定保留策略长期保存；定期执行上述三层恢复演练。

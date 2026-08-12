@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, Check, ImageIcon, Loader2, Sparkles, Wand2 } from "lucide-react";
 import { CHARACTER_VISIBILITY, isCatalogMember } from "@idream/shared/catalog";
 import {
@@ -23,6 +23,16 @@ import {
   stashDraftTransfer,
 } from "./draft-transfer";
 import { isRecord } from "./workspace-helpers";
+import {
+  CREATE_PREVIEW_CANDIDATE_COUNT,
+  continueCreatePreviewBatch,
+  newCreatePreviewBatch,
+  parseCreatePreviewBatch,
+  retryCreatePreviewBatch,
+  type CreatePreviewBatch,
+  type CreatePreviewCandidate,
+  type CreatePreviewJobStatus,
+} from "./create-preview-flow";
 
 type DraftPayload = {
   ok?: boolean;
@@ -31,18 +41,11 @@ type DraftPayload = {
     draft?: { id: string };
     character?: { id: string; name: string; status?: string };
     asset?: { id?: string; url: string; isSynthetic?: boolean };
-    previewJob?: { id: string; status: string };
+    previewJob?: { id: string; status: string; errorCode?: string | null };
   };
 };
 
 type PreviewStatus = "idle" | "generating" | "complete" | "failed";
-
-type PreviewCandidate = {
-  previewJobId: string;
-  assetId: string;
-  url: string;
-  isSynthetic: boolean;
-};
 
 // Templates store free-form Json; pull a usable string for the draft's prompt-shaped fields.
 function pickString(value: unknown, ...keys: string[]): string {
@@ -89,6 +92,7 @@ const STEPS = ["Identity", "Appearance", "Personality", "Preview", "Publish"] as
 
 export type WizardState = {
   draftId: string;
+  previewBatch: CreatePreviewBatch | null;
   confirmedPreviewJobId: string;
   confirmedPreviewUrl: string;
   step: number;
@@ -112,6 +116,7 @@ export type WizardState = {
 
 const INITIAL: WizardState = {
   draftId: "",
+  previewBatch: null,
   confirmedPreviewJobId: "",
   confirmedPreviewUrl: "",
   step: 0,
@@ -142,7 +147,6 @@ export function CreateWorkspace() {
   const [state, setState] = useState<WizardState>(initialCharacterDraft);
   const [preview, setPreview] = useState(DEFAULT_PREVIEW);
   const [previewStatus, setPreviewStatus] = useState<PreviewStatus>("idle");
-  const [previewCandidates, setPreviewCandidates] = useState<PreviewCandidate[]>([]);
   const [selectedPreviewJobId, setSelectedPreviewJobId] = useState("");
   const [status, setStatus] = useState("");
   const [createdCharacterId, setCreatedCharacterId] = useState("");
@@ -161,15 +165,58 @@ export function CreateWorkspace() {
     "loading" | "ready" | "error"
   >("loading");
   const [templatesAttempt, setTemplatesAttempt] = useState(0);
+  const previewRunRef = useRef(0);
+  const previewRunSequenceRef = useRef(0);
+  const stateRef = useRef(state);
 
   const step = state.step;
+  const previewCandidates = state.previewBatch?.candidates ?? [];
   const set = useCallback(
     <K extends keyof WizardState>(key: K, value: WizardState[K]) =>
       setState((current) => ({ ...current, [key]: value })),
     [],
   );
-  const requestApi = (path: string, body?: unknown, method = "POST") =>
-    api(path, body, method, () => createDraftTransfer(viewerScope, state));
+  const requestApi = useCallback(
+    (
+      path: string,
+      body?: unknown,
+      method = "POST",
+      options?: { idempotencyKey?: string; signal?: AbortSignal },
+    ) =>
+      api(
+        path,
+        body,
+        method,
+        () => createDraftTransfer(viewerScope, stateRef.current),
+        options,
+      ),
+    [viewerScope],
+  );
+  const persistPreviewBatch = useCallback(
+    (batch: CreatePreviewBatch) => {
+      setState((current) => ({ ...current, previewBatch: batch }));
+      if (storageKey) {
+        persistPreviewBatchForStorage(storageKey, batch, stateRef.current);
+      }
+      const firstCandidate = batch.candidates[0];
+      if (firstCandidate) {
+        setSelectedPreviewJobId((current) => current || firstCandidate.previewJobId);
+        if (batch.candidates.length === 1) setPreview(firstCandidate.url);
+      }
+    },
+    [storageKey],
+  );
+
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+
+  useEffect(
+    () => () => {
+      previewRunRef.current = 0;
+    },
+    [],
+  );
 
   // Resolve a stable viewer identity before touching local storage so drafts never
   // leak from one signed-in account to another on a shared browser.
@@ -215,9 +262,23 @@ export function CreateWorkspace() {
     /* eslint-disable react-hooks/set-state-in-effect -- one-shot hydration from browser storage */
     if (restored) {
       setState(restored);
-      if (restored.confirmedPreviewUrl) {
-        setPreview(restored.confirmedPreviewUrl);
+      const restoredCandidate = restored.previewBatch?.candidates.find(
+        (candidate) => candidate.previewJobId === restored.confirmedPreviewJobId,
+      ) ?? restored.previewBatch?.candidates[0];
+      const restoredPreviewUrl = restored.confirmedPreviewUrl || restoredCandidate?.url;
+      if (restoredPreviewUrl) {
+        setPreview(restoredPreviewUrl);
+        setSelectedPreviewJobId(
+          restored.confirmedPreviewJobId || restoredCandidate?.previewJobId || "",
+        );
+      }
+      if (restored.previewBatch?.phase === "complete") {
         setPreviewStatus("complete");
+      } else if (restored.previewBatch?.phase === "running") {
+        setPreviewStatus("generating");
+      } else if (restored.previewBatch?.phase === "failed") {
+        setPreviewStatus("failed");
+        setStatus(restored.previewBatch.errorMessage);
       }
     }
     setHydrated(true);
@@ -261,6 +322,7 @@ export function CreateWorkspace() {
     setTemplateId(template.id);
     setState((current) => ({
       ...current,
+      previewBatch: null,
       confirmedPreviewJobId: "",
       confirmedPreviewUrl: "",
       gender: template.gender || current.gender,
@@ -285,7 +347,6 @@ export function CreateWorkspace() {
     }));
     setPreview(DEFAULT_PREVIEW);
     setPreviewStatus("idle");
-    setPreviewCandidates([]);
     setSelectedPreviewJobId("");
     setStatus(`Started from "${template.name}". Edit any field before publishing.`);
   }
@@ -294,12 +355,12 @@ export function CreateWorkspace() {
     setState((current) => ({
       ...current,
       [key]: value,
+      previewBatch: null,
       confirmedPreviewJobId: "",
       confirmedPreviewUrl: "",
     }));
     setPreview(DEFAULT_PREVIEW);
     setPreviewStatus("idle");
-    setPreviewCandidates([]);
     setSelectedPreviewJobId("");
   }
 
@@ -377,85 +438,132 @@ export function CreateWorkspace() {
     set("step", Math.max(step - 1, 0));
   }
 
+  const runPreviewBatch = useCallback(
+    async (draftId: string, initialBatch: CreatePreviewBatch) => {
+      if (previewRunRef.current !== 0) return;
+      previewRunSequenceRef.current += 1;
+      const runId = previewRunSequenceRef.current;
+      previewRunRef.current = runId;
+      setPending(true);
+      setPreviewStatus("generating");
+      setStatus("");
+      try {
+        const settled = await continueCreatePreviewBatch(initialBatch, {
+          enqueue: async (_candidateNumber, requestKey, signal) => {
+            const queued = await requestApi(
+              `/api/v1/character-drafts/${draftId}/preview`,
+              {},
+              "POST",
+              { idempotencyKey: requestKey, signal },
+            );
+            const previewJob = queued.data?.previewJob;
+            if (!previewJob?.id) {
+              throw new Error("Preview generation did not return a durable job.");
+            }
+            return {
+              id: previewJob.id,
+              status: previewJob.status === "running" ? "running" : "queued",
+            };
+          },
+          read: async (previewJobId, signal) => {
+            const payload = await requestApi(
+              `/api/v1/character-drafts/${draftId}/preview?previewJobId=${encodeURIComponent(previewJobId)}`,
+              undefined,
+              "GET",
+              { signal },
+            );
+            const previewJob = payload.data?.previewJob;
+            const asset = payload.data?.asset;
+            const candidate =
+              previewJob?.id === previewJobId && asset?.id && asset.url
+                ? {
+                    previewJobId,
+                    assetId: asset.id,
+                    url: asset.url,
+                    isSynthetic: asset.isSynthetic === true,
+                  }
+                : null;
+            return {
+              id: previewJob?.id ?? "",
+              status: normalizePreviewJobStatus(previewJob?.status),
+              asset: candidate,
+              errorMessage: previewJob?.errorCode
+                ? `Preview generation failed (${previewJob.errorCode}). Try again.`
+                : undefined,
+            };
+          },
+          persist: persistPreviewBatch,
+          isActive: () => previewRunRef.current === runId,
+        });
+        if (previewRunRef.current !== runId) return;
+        if (settled.phase === "complete") {
+          const selected = settled.candidates[0];
+          if (selected) {
+            setPreview(selected.url);
+            setSelectedPreviewJobId((current) => current || selected.previewJobId);
+          }
+          setPreviewStatus("complete");
+          return;
+        }
+        setPreviewStatus("failed");
+        setStatus(settled.errorMessage || "Preview generation failed. Try again.");
+      } finally {
+        if (previewRunRef.current === runId) {
+          previewRunRef.current = 0;
+          setPending(false);
+        }
+      }
+    },
+    [persistPreviewBatch, requestApi],
+  );
+
   async function generatePreview() {
+    if (pending) return;
     setPending(true);
     setPreviewStatus("generating");
     setStatus("");
-    setPreviewCandidates([]);
-    setSelectedPreviewJobId("");
-    set("confirmedPreviewJobId", "");
-    set("confirmedPreviewUrl", "");
     try {
       const draftId = await ensureDraft();
       await saveStep(3);
-      const generated: PreviewCandidate[] = [];
-      for (let index = 0; index < 4; index += 1) {
-        // Preview generation is async (worker-backed): enqueue, then poll the job
-        // status until it settles. We generate candidates one-by-one so GET .../preview
-        // always points at the job we just created.
-        const queued = await requestApi(
-          `/api/v1/character-drafts/${draftId}/preview`,
-          {},
-        );
-        const previewJobId = queued.data?.previewJob?.id;
-        if (!previewJobId) throw new Error("Preview generation failed. Try again.");
-        const result = await pollPreview(draftId, previewJobId);
-        if (!result?.asset?.url || !result.asset.id) continue;
-        const candidate = {
-          previewJobId,
-          assetId: result.asset.id,
-          url: result.asset.url,
-          isSynthetic: result.asset.isSynthetic === true,
-        };
-        generated.push(candidate);
-        setPreviewCandidates([...generated]);
-        if (index === 0) {
-          setPreview(candidate.url);
-          setSelectedPreviewJobId(candidate.previewJobId);
-        }
+      const existingBatch = state.previewBatch;
+      const retrying = existingBatch?.phase === "failed";
+      const batch = existingBatch?.phase === "failed"
+        ? retryCreatePreviewBatch(existingBatch)
+        : newCreatePreviewBatch();
+      if (!retrying) {
+        setPreview(DEFAULT_PREVIEW);
+        setSelectedPreviewJobId("");
       }
-      const selected = generated[0];
-      if (selected) {
-        setPreview(selected.url);
-        setSelectedPreviewJobId(selected.previewJobId);
-        setPreviewStatus("complete");
-      } else {
-        throw new Error("Preview generation failed. Try again.");
-      }
+      setState((current) => ({
+        ...current,
+        previewBatch: batch,
+        confirmedPreviewJobId: "",
+        confirmedPreviewUrl: "",
+      }));
+      persistPreviewBatch(batch);
+      await runPreviewBatch(draftId, batch);
     } catch (error) {
       setPreviewStatus("failed");
       setStatus(messageFrom(error));
-    } finally {
       setPending(false);
     }
   }
 
-  // Poll the preview job until completed (returns the asset) or failed/timeout.
-  async function pollPreview(
-    draftId: string,
-    previewJobId: string,
-  ): Promise<{
-    asset?: { id?: string; url?: string; isSynthetic?: boolean } | null;
-  } | null> {
-    for (let attempt = 0; attempt < 50; attempt += 1) {
-      const status = await requestApi(
-        `/api/v1/character-drafts/${draftId}/preview?previewJobId=${encodeURIComponent(previewJobId)}`,
-        undefined,
-        "GET",
-      );
-      const job = status.data?.previewJob;
-      if (job?.id !== previewJobId) {
-        await new Promise((resolve) => setTimeout(resolve, 500));
-        continue;
-      }
-      if (job?.status === "completed") return { asset: status.data?.asset ?? null };
-      if (job?.status === "failed") throw new Error("Preview generation failed. Try again.");
-      await new Promise((resolve) => setTimeout(resolve, 1_200));
+  useEffect(() => {
+    const batch = state.previewBatch;
+    if (
+      !hydrated ||
+      !storageKey ||
+      !state.draftId ||
+      batch?.phase !== "running" ||
+      previewRunRef.current !== 0
+    ) {
+      return;
     }
-    throw new Error("Preview timed out. Try again.");
-  }
+    void runPreviewBatch(state.draftId, batch);
+  }, [hydrated, runPreviewBatch, state.draftId, state.previewBatch, storageKey]);
 
-  function handleCandidateSelect(candidate: PreviewCandidate) {
+  function handleCandidateSelect(candidate: CreatePreviewCandidate) {
     setStatus("");
     setPreview(candidate.url);
     setSelectedPreviewJobId(candidate.previewJobId);
@@ -527,7 +635,7 @@ export function CreateWorkspace() {
       setStatus(
         character
           ? character.status === "pending_review"
-            ? `${character.name} submitted for review. Public characters go live after approval.`
+            ? `${character.name} submitted for review. Approval starts publication preparation; the character goes live after Release is published.`
             : `Saved ${character.name} to My AI.`
           : "Character submitted.",
       );
@@ -541,12 +649,12 @@ export function CreateWorkspace() {
       if (message === "Choose an identity image before publishing this character") {
         setState((current) => ({
           ...current,
+          previewBatch: null,
           confirmedPreviewJobId: "",
           confirmedPreviewUrl: "",
           step: 3,
         }));
         setPreviewStatus("idle");
-        setPreviewCandidates([]);
         setSelectedPreviewJobId("");
       }
       setStatus(message);
@@ -897,6 +1005,24 @@ export function CreateWorkspace() {
                 <p className="text-[13px] font-medium text-[rgb(170,170,170)]">
                   Generate four identity candidates, then choose the image that should define how {state.name} looks.
                 </p>
+                {state.previewBatch && (
+                  <p
+                    aria-live="polite"
+                    className="text-[13px] font-semibold text-[rgb(170,170,170)]"
+                    data-testid="create-preview-progress"
+                    role="status"
+                  >
+                    Candidate {state.previewBatch.currentCandidateNumber} of{" "}
+                    {CREATE_PREVIEW_CANDIDATE_COUNT} ·{" "}
+                    {state.previewBatch.phase === "complete"
+                      ? "completed"
+                      : state.previewBatch.phase === "failed"
+                        ? "failed"
+                        : (state.previewBatch.activeJobStatus ?? "queued")}
+                    {" · "}
+                    {state.previewBatch.candidates.length} completed
+                  </p>
+                )}
                 <button
                   className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-[rgb(36,36,36)] text-[14px] font-black text-white disabled:opacity-60"
                   disabled={pending}
@@ -908,7 +1034,11 @@ export function CreateWorkspace() {
                   ) : (
                     <Wand2 className="h-4 w-4" />
                   )}
-                  {previewStatus === "complete" ? "Regenerate preview candidates" : "Generate preview candidates"}
+                  {previewStatus === "complete"
+                    ? "Regenerate preview candidates"
+                    : previewStatus === "failed"
+                      ? "Retry preview candidates"
+                      : "Generate preview candidates"}
                 </button>
                 {previewCandidates.length > 0 && (
                   <div className="grid grid-cols-2 gap-3" data-testid="create-preview-candidates">
@@ -1154,10 +1284,17 @@ async function api(
   body?: unknown,
   method = "POST",
   createResumeTarget?: () => string | null,
+  options?: { idempotencyKey?: string; signal?: AbortSignal },
 ) {
   const response = await fetch(path, {
     method,
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...(options?.idempotencyKey
+        ? { "Idempotency-Key": options.idempotencyKey }
+        : {}),
+    },
+    signal: options?.signal,
     // GET/HEAD cannot carry a body — only serialize for write methods.
     body: method === "GET" || method === "HEAD" ? undefined : JSON.stringify(body),
   });
@@ -1175,6 +1312,30 @@ async function api(
     throw new Error(payload.error?.message ?? "Sign in, accept the age gate, then try again.");
   }
   return payload;
+}
+
+function persistPreviewBatchForStorage(
+  storageKey: string,
+  batch: CreatePreviewBatch,
+  fallbackDraft: WizardState,
+) {
+  try {
+    const raw = window.localStorage.getItem(storageKey);
+    const stored = raw ? parseWizardDraft(JSON.parse(raw)) : null;
+    window.localStorage.setItem(
+      storageKey,
+      JSON.stringify({ ...(stored ?? fallbackDraft), previewBatch: batch }),
+    );
+  } catch {
+    // The in-memory flow remains usable when browser storage is unavailable.
+  }
+}
+
+function normalizePreviewJobStatus(value: unknown): CreatePreviewJobStatus {
+  if (value === "running" || value === "completed" || value === "failed") {
+    return value;
+  }
+  return "queued";
 }
 
 function createDraftTransfer(viewerScope: string | null, draft: WizardState) {
@@ -1211,10 +1372,11 @@ function consumeDraftTransfer(targetScope: string) {
   }
 }
 
-function parseWizardDraft(value: unknown): WizardState | null {
+export function parseWizardDraft(value: unknown): WizardState | null {
   if (!isRecord(value)) return null;
   const restored: WizardState = {
     draftId: draftString(value.draftId, 200),
+    previewBatch: parseCreatePreviewBatch(value.previewBatch),
     confirmedPreviewJobId: draftString(
       value.confirmedPreviewJobId,
       200,

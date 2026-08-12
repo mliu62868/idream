@@ -384,7 +384,12 @@ function AdminConsoleContent({
           </div>
         ) : null}
 
-        <section className="min-w-0 flex-1" id="admin-main-content" inert={mobileNavOpen ? true : undefined}>
+        <section
+          className="min-w-0 flex-1"
+          id="admin-main-content"
+          inert={mobileNavOpen ? true : undefined}
+          tabIndex={-1}
+        >
           <header className="sticky top-0 z-20 border-b border-[var(--ad-border)] bg-[rgba(247,246,243,0.92)] backdrop-blur">
             <div className="grid gap-3 px-4 py-3 md:px-6 lg:flex lg:min-h-14 lg:items-center">
               <div className="flex min-w-0 items-center gap-3">
@@ -563,4 +568,3 @@ function NavLink({ active, item, onNavigate }: { active: boolean; item: NavItem;
     </Link>
   );
 }
-

@@ -2,7 +2,12 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { GenerationTerminalRecordIngest } from "@idream/shared/contracts";
+import { pathToFileURL } from "node:url";
+import type {
+  GenerationTerminalRecordIngest,
+  ImageGeneratePayload,
+} from "@idream/shared/contracts";
+import { loadWorkflowDescriptors } from "./backend/workflow";
 import { env } from "./env";
 import { processImageGenerate } from "./pipeline";
 
@@ -13,6 +18,13 @@ type ProbeOptions = {
   model: string;
   orientation: string;
   report: string | null;
+};
+
+type ProbeBackendBinding = {
+  backendKind: "comfyui" | "drawthings" | null;
+  backendTarget: string | null;
+  workflowKey: string | null;
+  workflowVersion: number | null;
 };
 
 function readArg(name: string) {
@@ -39,26 +51,45 @@ async function main() {
   const options = readOptions();
   const startedAt = Date.now();
   const generationJobId = `probe_${randomUUID()}`;
+  const attemptId = `attempt_${randomUUID()}`;
   const terminalIngests: GenerationTerminalRecordIngest[] = [];
+  const backendBinding = await resolveProbeBackendBinding(options.model);
+  const controls: Record<string, unknown> = {
+    source: "probe-image-pipeline",
+    ...(backendBinding.workflowKey && backendBinding.workflowVersion
+      ? {
+          workflowKey: backendBinding.workflowKey,
+          workflowVersion: backendBinding.workflowVersion,
+        }
+      : {}),
+  };
+
+  // INVARIANT: keep this object typed as the actual queue contract. A future
+  // required Attempt field must break typecheck here instead of leaving the
+  // launch probe as a stale raw object that only fails after deployment.
+  const payload: ImageGeneratePayload = {
+    version: 1,
+    kind: "image",
+    requestId: `req_${generationJobId}`,
+    generationJobId,
+    attemptId,
+    attemptNo: 1,
+    provider: env.IMAGE_PROVIDER,
+    userId: "probe-user",
+    characterId: null,
+    prompt: options.prompt,
+    negativePrompt: options.negativePrompt,
+    controls,
+    presetIds: [],
+    orientation: options.orientation,
+    count: options.count,
+    seed: `probe-${Date.now()}`,
+    model: options.model,
+    outputPrefix: `probe/${generationJobId}/`,
+  };
 
   await processImageGenerate(
-    {
-      version: 1,
-      kind: "image",
-      requestId: `req_${generationJobId}`,
-      generationJobId,
-      userId: "probe-user",
-      characterId: null,
-      prompt: options.prompt,
-      negativePrompt: options.negativePrompt,
-      controls: { source: "probe-image-pipeline" },
-      presetIds: [],
-      orientation: options.orientation,
-      count: options.count,
-      seed: `probe-${Date.now()}`,
-      model: options.model,
-      outputPrefix: `probe/${generationJobId}/`,
-    },
+    payload,
     {
       acknowledgeTerminalRecord: async (input) => {
         terminalIngests.push(input);
@@ -86,9 +117,14 @@ async function main() {
     durationMs: Date.now() - startedAt,
     provider: env.IMAGE_PROVIDER,
     pipelineUrl: env.PIPELINE_API_URL ?? null,
+    backendKind: backendBinding.backendKind,
+    backendTarget: backendBinding.backendTarget,
+    workflowKey: backendBinding.workflowKey,
+    workflowVersion: backendBinding.workflowVersion,
     model: options.model,
     orientation: options.orientation,
     count: options.count,
+    blobAuthority: env.BLOB_AUTHORITY,
     blobRoot: env.BLOB_ROOT,
     generationJobId,
     terminal: terminalIngest
@@ -115,10 +151,53 @@ async function main() {
   if (!ok) process.exitCode = 1;
 }
 
-main().catch((error: unknown) => {
-  process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`);
-  process.exitCode = 1;
-});
+if (isCliEntrypoint()) {
+  void main().catch((error: unknown) => {
+    process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`);
+    process.exitCode = 1;
+  });
+}
+
+async function resolveProbeBackendBinding(
+  model: string,
+): Promise<ProbeBackendBinding> {
+  if (env.IMAGE_PROVIDER !== "backend") {
+    return {
+      backendKind: null,
+      backendTarget: null,
+      workflowKey: null,
+      workflowVersion: null,
+    };
+  }
+
+  const descriptors = await loadWorkflowDescriptors(env.GEN_WORKFLOW_DIR);
+  const descriptor = descriptors.find(
+    (candidate) =>
+      candidate.modelId === model || candidate.workflowKey === model,
+  );
+  if (!descriptor) {
+    throw new Error(
+      `Image launch probe model ${model} has no workflow descriptor in ${env.GEN_WORKFLOW_DIR}`,
+    );
+  }
+
+  return {
+    backendKind: descriptor.backendKind,
+    backendTarget:
+      descriptor.backendKind === "comfyui"
+        ? env.COMFYUI_API_URL
+        : env.DRAWTHINGS_CLI,
+    workflowKey: descriptor.workflowKey,
+    workflowVersion: descriptor.version,
+  };
+}
+
+function isCliEntrypoint() {
+  return (
+    typeof process.argv[1] === "string" &&
+    import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href
+  );
+}
 
 function resolveWorkspacePath(filePath: string) {
   if (path.isAbsolute(filePath)) return filePath;

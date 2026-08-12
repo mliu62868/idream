@@ -230,6 +230,12 @@ describe("Support and billing Case depth", () => {
       requestId: `case-authority-verification-${suffix}`,
     });
     expect(verified).toMatchObject({ status: "resolved", verificationState: "passed", activeKey: null });
+    await expect(prisma.supportRequest.findUniqueOrThrow({ where: { id: supportRequestId } })).resolves.toMatchObject({
+      status: "resolved",
+      assignedToId: supportCase.ownerId,
+      resolutionNotes: "Escalated the shared generation failure signature.",
+      resolvedAt: expect.any(Date),
+    });
     const verificationDecision = await prisma.decisionRecord.findFirstOrThrow({
       where: { sourceType: "admin_case", sourceId: supportCase.id, decision: "verification_passed" },
       orderBy: { createdAt: "desc" },

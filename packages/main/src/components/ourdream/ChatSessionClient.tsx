@@ -32,6 +32,20 @@ import { MessageActions } from "./chat/MessageActions";
 import { authHrefForTarget } from "./authRedirect";
 import { LegacyTestAssetBadge } from "./LegacyTestAssetBadge";
 import {
+  chatStreamErrorDisposition,
+  chatStreamMessageIsInProgress,
+  chatStreamMessageIsTerminal,
+  chatStreamMessagesNeedReconciliation,
+  chatStreamTerminalErrorMessage,
+  reconcileChatStreamAuthority,
+} from "./chat-stream-recovery";
+import {
+  canRegenerateChatMessage,
+  canSubmitChatMessage,
+  chatMessageActionPaddingClass,
+  isImmutableOpeningMessage,
+} from "./chat-message-actions";
+import {
   GenerationRequestError,
   requestMediaVariationWithExactQuote,
 } from "@/lib/generation-write-client";
@@ -109,18 +123,13 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   const voiceClipUrlsRef = useRef<Map<string, string>>(new Map());
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const sessionMutationEpochRef = useRef(0);
-  const canSend = content.trim().length > 0 && !pending;
   const hasActiveAttachment = messages.some((message) =>
     (message.attachments ?? []).some((attachment) =>
       ["requesting", "queued", "running"].includes(attachment.status),
     ),
   );
-  const hasEmptyGeneratingReply = messages.some(
-    (message) =>
-      message.role === "assistant" &&
-      !message.content.trim() &&
-      (message.status === "generating" || message.status === "pending"),
-  );
+  const hasGeneratingReply = chatStreamMessagesNeedReconciliation(messages);
+  const canSend = canSubmitChatMessage(content, pending, hasGeneratingReply);
 
   // SPEC: Keep the newest message (and its streaming deltas) in view; without this
   //       the reply renders below the fold and the input is pushed off-screen.
@@ -186,7 +195,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   useEffect(() => {
     if (!ageGateAccepted) return;
     if (
-      (!hasActiveAttachment && !hasEmptyGeneratingReply) ||
+      (!hasActiveAttachment && !hasGeneratingReply) ||
       pending ||
       editingPending ||
       memoryPending
@@ -263,7 +272,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     ageGateAccepted,
     editingPending,
     hasActiveAttachment,
-    hasEmptyGeneratingReply,
+    hasGeneratingReply,
     id,
     memoryPending,
     pending,
@@ -410,7 +419,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const text = content.trim();
-    if (!text || pending) return;
+    if (!canSubmitChatMessage(text, pending, hasGeneratingReply)) return;
     setStatus(null);
     setQuotaReached(false);
     setContent("");
@@ -578,6 +587,16 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
 
   function applySession(session: ChatSession) {
     if (session.id !== id) return;
+    let recoveredStream = false;
+    for (const message of session.messages) {
+      if (!chatStreamMessageIsTerminal(message)) continue;
+      const source = streamSources.current.get(message.id);
+      if (!source) continue;
+      source.close();
+      streamSources.current.delete(message.id);
+      recoveredStream = true;
+    }
+    if (recoveredStream) setStatus(null);
     setTitle(session.title ?? session.character.name);
     setMessages(session.messages);
     setDeleteConfirmMessageId(null);
@@ -726,7 +745,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   //       swap the bubble to that id, clear it, and reuse streamAssistant() so the
   //       new reply streams in identically to a normal turn.
   async function regenerate(messageId: string) {
-    if (pending) return;
+    if (pending || hasGeneratingReply) return;
     setStatus(null);
     setDeleteConfirmMessageId(null);
     sessionMutationEpochRef.current += 1;
@@ -787,21 +806,21 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
       streamSources.current.delete(assistantId);
     };
 
-    const finishEmpty = async () => {
+    const finish = async () => {
       if (finished) return;
       finished = true;
-      if (streamed) return;
-      if (fallback) {
+      if (!streamed && fallback) {
         setMessages((current) =>
           current.map((message) =>
             message.id === assistantId ? { ...message, content: fallback } : message,
           ),
         );
-        return;
       }
-      if (await recoverAssistantFromSession(assistantId)) return;
-      setMessages((current) => current.filter((message) => message.id !== assistantId));
-      setStatus("Reply failed to load. Please try again.");
+      const outcome = await recoverAssistantFromSession(assistantId);
+      if (!streamed && !fallback && outcome === "terminal_empty") {
+        setMessages((current) => current.filter((message) => message.id !== assistantId));
+        setStatus("Reply failed to load. Please try again.");
+      }
     };
 
     source.addEventListener("delta", (event) => {
@@ -816,32 +835,34 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     });
 
     source.addEventListener("done", () => {
-      void finishEmpty()
-        .then(() => fetchSession().then(applySession).catch(() => {}))
-        .finally(close);
+      setStatus(null);
+      void finish().finally(close);
     });
 
-    source.addEventListener("error", () => {
-      void finishEmpty().finally(close);
+    source.addEventListener("error", (event) => {
+      const payload = parseStreamEvent(event);
+      if (chatStreamErrorDisposition(payload) === "reconnect") {
+        setStatus("Reply interrupted. Reconnecting…");
+        return;
+      }
+      if (finished) return;
+      finished = true;
+      const terminalMessage = chatStreamTerminalErrorMessage(payload);
+      void recoverAssistantFromSession(assistantId).finally(() => {
+        setStatus(terminalMessage);
+        close();
+      });
     });
   }
 
   async function recoverAssistantFromSession(assistantId: string) {
-    for (let attempt = 0; attempt < 6; attempt += 1) {
-      if (attempt > 0) await new Promise((resolve) => window.setTimeout(resolve, 500));
-      try {
-        const session = await fetchSession();
-        applySession(session);
-        const assistant = session.messages.find((message) => message.id === assistantId);
-        if (assistant?.content.trim()) return true;
-        if (assistant && assistant.status && !["generating", "pending"].includes(assistant.status)) {
-          return false;
-        }
-      } catch {
-        return false;
-      }
-    }
-    return false;
+    return reconcileChatStreamAuthority({
+      apply: applySession,
+      assistantId,
+      messages: (session: ChatSession) => session.messages,
+      read: () => fetchSession(),
+      wait: () => new Promise((resolve) => window.setTimeout(resolve, 500)),
+    });
   }
 
   const latestUserMessageId = newestUserMessageId(messages);
@@ -874,15 +895,37 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
               <div className="mt-6 flex min-h-[55vh] flex-1 flex-col gap-3 rounded-[20px] border border-white/10 bg-[rgb(18,18,18)] p-4">
                 {messages.map((message) => {
                   const isUser = message.role === "user";
+                  const immutableOpening = isImmutableOpeningMessage(message);
+                  const replyInProgress = chatStreamMessageIsInProgress(message);
                   const isEditing = editingMessageId === message.id;
                   const messageDeleteConfirm = deleteConfirmMessageId === message.id;
+                  const showMessageActions = !isEditing && !replyInProgress;
+                  const canEditMessage =
+                    isUser &&
+                    message.id === latestUserMessageId &&
+                    !latestReplyInProgress;
+                  const canRegenerateMessage =
+                    !immutableOpening &&
+                    canRegenerateChatMessage(message, hasGeneratingReply);
+                  const canPlayMessage = !isUser && Boolean(message.content.trim());
+                  const messageActionCount = showMessageActions
+                    ? 2 +
+                      Number(canEditMessage) +
+                      Number(canRegenerateMessage) +
+                      Number(canPlayMessage)
+                    : 0;
+                  const actionPaddingClass = chatMessageActionPaddingClass(
+                    messageActionCount,
+                    messageDeleteConfirm,
+                  );
                   return (
                     <div
+                      aria-busy={!isUser && replyInProgress}
                       aria-label={isUser ? "Your message" : "Assistant message"}
-                      className={`group relative max-w-[78%] rounded-[16px] px-4 py-3 text-[14px] leading-6 ${
+                      className={`group relative max-w-[78%] rounded-[16px] px-4 py-3 text-[14px] leading-6 ${actionPaddingClass} ${
                         isUser
-                          ? `ml-auto bg-white text-[rgb(13,13,13)] ${messageDeleteConfirm ? "pr-[128px]" : "pr-[76px]"}`
-                          : `bg-[rgb(36,36,36)] text-white ${messageDeleteConfirm ? "pr-[156px]" : "pr-[104px]"}`
+                          ? "ml-auto bg-white text-[rgb(13,13,13)]"
+                          : "bg-[rgb(36,36,36)] text-white"
                       }`}
                       data-message-id={message.id}
                       data-testid={`chat-message-${message.role}`}
@@ -935,15 +978,22 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
                         </form>
                       ) : !isUser && message.status === "blocked" && !message.content.trim() ? (
                         BLOCKED_ASSISTANT_NOTICE
+                      ) : !isUser && replyInProgress ? (
+                        <>
+                          {message.content}
+                          <span
+                            aria-label="Assistant is typing"
+                            className={`inline-flex items-center gap-1 py-0.5 ${message.content.trim() ? "ml-2" : ""}`}
+                            role="status"
+                          >
+                            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-white/60 [animation-delay:-0.3s]" />
+                            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-white/60 [animation-delay:-0.15s]" />
+                            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-white/60" />
+                          </span>
+                        </>
                       ) : !isUser && !message.content.trim() ? (
-                        <span
-                          aria-label="Assistant is typing"
-                          className="inline-flex items-center gap-1 py-0.5"
-                          role="status"
-                        >
-                          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-white/60 [animation-delay:-0.3s]" />
-                          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-white/60 [animation-delay:-0.15s]" />
-                          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-white/60" />
+                        <span aria-label="Assistant reply unavailable" role="status">
+                          Reply unavailable.
                         </span>
                       ) : (
                         message.content
@@ -985,7 +1035,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
                           ))}
                         </div>
                       ) : null}
-                      {!isEditing ? (
+                      {showMessageActions ? (
                         <MessageActions
                           isUser={isUser}
                           pending={pending || editingPending}
@@ -997,18 +1047,22 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
                                 : undefined
                           }
                           onEdit={
-                            isUser && message.id === latestUserMessageId && !latestReplyInProgress
+                            canEditMessage
                               ? () => beginEdit(message)
                               : undefined
                           }
                           onReport={() => reportMessage(message.id)}
                           onDelete={() => deleteMessage(message.id)}
                           deleteConfirm={messageDeleteConfirm}
-                          onRegenerate={isUser ? undefined : () => regenerate(message.id)}
+                          onRegenerate={
+                            canRegenerateMessage
+                              ? () => regenerate(message.id)
+                              : undefined
+                          }
                           onPlay={
-                            isUser || !message.content.trim()
-                              ? undefined
-                              : () => playMessage(message.id, message.content)
+                            canPlayMessage
+                              ? () => playMessage(message.id, message.content)
+                              : undefined
                           }
                         />
                       ) : null}

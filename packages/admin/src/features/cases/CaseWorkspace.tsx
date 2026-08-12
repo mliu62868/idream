@@ -63,7 +63,7 @@ type CaseDetail = {
 
 export function CaseWorkspace({ canAssign, canDecide, initialCaseId = null }: { canAssign: boolean; canDecide: boolean; initialCaseId?: string | null }) {
   const { locale, t } = useAdminI18n();
-  const [initialUrlState] = useState(() => stateFromLocation(initialCaseId));
+  const [initialUrlState] = useState(() => initialCaseWorkspaceState(initialCaseId));
   const [query, setQuery] = useState<CaseQueryDraft>(initialUrlState.query);
   const [list, setList] = useState<CaseList | null>(null);
   const [selectedId, setSelectedId] = useState(initialUrlState.selectedId);
@@ -74,7 +74,6 @@ export function CaseWorkspace({ canAssign, canDecide, initialCaseId = null }: { 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const firstQuery = useRef(query);
   const history = useRef(createWorkspaceHistoryController(initialUrlState));
   const listRequestId = useRef(0);
   const detailRequestId = useRef(0);
@@ -112,12 +111,18 @@ export function CaseWorkspace({ canAssign, canDecide, initialCaseId = null }: { 
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      if (!initialCaseId) history.current.replace(initialUrlState, writeCaseUrl);
-      void loadList(firstQuery.current);
-      if (initialUrlState.selectedId) void loadDetail(initialUrlState.selectedId);
+      const restored = stateFromLocation(initialCaseId);
+      history.current.restore(restored);
+      setQuery(restored.query);
+      setSelectedSavedViewId(restored.savedViewId);
+      setSelectedId(restored.selectedId);
+      setDetail(null);
+      if (!initialCaseId) history.current.replace(restored, writeCaseUrl);
+      void loadList(restored.query);
+      if (restored.selectedId) void loadDetail(restored.selectedId);
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [initialCaseId, initialUrlState, loadDetail, loadList]);
+  }, [initialCaseId, loadDetail, loadList]);
 
   useEffect(() => {
     return observeWorkspacePopState(window, () => stateFromLocation(null), (restored) => {
@@ -318,6 +323,16 @@ function CaseInspector({ busy, canAssign, canDecide, detail, onClose, onMutate }
 
 function Select({ label, onChange, options, value }: { label: string; onChange: (value: string) => void; options: readonly string[]; value: string }) { const { t } = useAdminI18n(); return <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t(label)}<select className={fieldClass} onChange={(event) => onChange(event.target.value)} value={value}>{options.map((option) => <option key={option || "all"} value={option}>{option ? t(option.replaceAll("_", " ")) : t("All")}</option>)}</select></label>; }
 function Stat({ label, value }: { label: string; value: ReactNode }) { const { t } = useAdminI18n(); return <div><dt className="text-[10px] font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">{t(label)}</dt><dd className="mt-1 truncate font-mono text-sm text-[var(--ad-ink)]" title={typeof value === "string" ? value : undefined}>{value}</dd></div>; }
-function stateFromLocation(initialCaseId: string | null) { const parsed = typeof window === "undefined" ? { query: defaultCaseQuery, selectedId: null, savedViewId: null } : parseCaseWorkspaceParams(new URLSearchParams(window.location.search)); return { ...parsed, selectedId: initialCaseId ?? parsed.selectedId ?? (typeof window === "undefined" ? null : workspaceDetailId(window.location.pathname, "/admin/cases")) }; }
+// INVARIANT: server and first browser render must use the same state; location is restored after hydration.
+function initialCaseWorkspaceState(initialCaseId: string | null): CaseWorkspaceUrlState {
+  return { query: defaultCaseQuery, selectedId: initialCaseId, savedViewId: null };
+}
+function stateFromLocation(initialCaseId: string | null): CaseWorkspaceUrlState {
+  const parsed = parseCaseWorkspaceParams(new URLSearchParams(window.location.search));
+  return {
+    ...parsed,
+    selectedId: initialCaseId ?? parsed.selectedId ?? workspaceDetailId(window.location.pathname, "/admin/cases"),
+  };
+}
 function writeCaseUrl(state: CaseWorkspaceUrlState, mode: "push" | "replace") { setWorkspaceUrl(buildCaseWorkspaceParams(state), { mode, pathname: caseWorkspacePath(state.selectedId) }); }
 function message(error: unknown) { return error instanceof Error ? error.message : "Case operation failed"; }

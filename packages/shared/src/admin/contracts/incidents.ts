@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   adminCursorQuerySchema,
   adminAuditEntrySchema,
+  adminCommandReasonSchema,
   adminCommandRequestSchema,
   adminIdSchema,
   adminIsoDateTimeSchema,
@@ -319,10 +320,120 @@ export const incidentQuerySchema = adminCursorQuerySchema.extend({
 
 export const incidentListResponseSchema = adminListResponseSchema(incidentSchema);
 
+export const incidentCorrelationOutboxEventQuerySchema = z
+  .object({
+    status: z.literal("failed").default("failed"),
+    cursor: z.string().trim().min(1).optional(),
+    limit: z.coerce.number().int().min(1).max(100).default(50),
+  })
+  .strict();
+
+export const incidentCorrelationReplayEligibilitySchema = z.enum([
+  "eligible",
+  "invalid_payload",
+  "attempt_missing",
+  "attempt_not_correlatable",
+]);
+
+export const incidentCorrelationOutboxEventSchema = z
+  .object({
+    id: adminIdSchema,
+    eventType: z.literal("generation.incident.correlate.v2"),
+    aggregateType: z.string().trim().min(1),
+    aggregateId: adminIdSchema,
+    status: z.literal("failed"),
+    attempts: z.number().int().nonnegative(),
+    attemptId: adminIdSchema.nullable(),
+    attemptStatus: z.string().trim().min(1).nullable(),
+    replayEligibility: incidentCorrelationReplayEligibilitySchema,
+    lastErrorCode: z.string().trim().min(1).nullable(),
+    lastErrorMessage: z.string().trim().min(1).nullable(),
+    payloadHash: z.string().regex(/^[a-f0-9]{64}$/),
+    nextRunAt: adminIsoDateTimeSchema,
+    createdAt: adminIsoDateTimeSchema,
+    updatedAt: adminIsoDateTimeSchema,
+  })
+  .strict();
+
+export const incidentCorrelationOutboxEventListResponseSchema =
+  adminListResponseSchema(incidentCorrelationOutboxEventSchema);
+
+export const INCIDENT_CORRELATION_REPLAY_CONFIRMATION =
+  "REPLAY_INCIDENT_CORRELATION_FAILED" as const;
+
+export const incidentCorrelationOutboxReplayRequestSchema = z
+  .object({
+    events: z
+      .array(z.object({
+        id: adminIdSchema,
+        expectedAttempts: z.number().int().nonnegative(),
+        expectedUpdatedAt: adminIsoDateTimeSchema,
+        expectedPayloadHash: z.string().regex(/^[a-f0-9]{64}$/),
+      }).strict())
+      .min(1)
+      .max(100),
+    reason: adminCommandReasonSchema,
+    confirmation: z.literal(INCIDENT_CORRELATION_REPLAY_CONFIRMATION),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const seen = new Set<string>();
+    value.events.forEach((event, index) => {
+      if (seen.has(event.id)) {
+        context.addIssue({
+          code: "custom",
+          path: ["events", index, "id"],
+          message: "event ids must be unique",
+        });
+      }
+      seen.add(event.id);
+    });
+  });
+
+export const incidentCorrelationOutboxReplayOutcomeSchema = z.enum([
+  "requeued",
+  "already_delivered",
+  "already_requeued",
+  "stale",
+  "payload_hash_mismatch",
+  "invalid_payload",
+  "attempt_missing",
+  "attempt_not_correlatable",
+  "not_found",
+]);
+
+export const incidentCorrelationOutboxReplayResultSchema = z
+  .object({
+    results: z.array(z.object({
+      id: adminIdSchema,
+      outcome: incidentCorrelationOutboxReplayOutcomeSchema,
+      priorAttempts: z.number().int().nonnegative().nullable(),
+      payloadHash: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
+    }).strict()).readonly(),
+    requeuedCount: z.number().int().nonnegative(),
+    replayed: z.boolean(),
+  })
+  .strict();
+
 export type OpsIncident = z.infer<typeof incidentSchema>;
 export type IncidentOccurrence = z.infer<typeof incidentOccurrenceSchema>;
 export type IncidentActionPlan = z.infer<typeof incidentActionPlanSchema>;
 export type IncidentQuery = z.infer<typeof incidentQuerySchema>;
+export type IncidentCorrelationOutboxEvent = z.infer<
+  typeof incidentCorrelationOutboxEventSchema
+>;
+export type IncidentCorrelationOutboxEventListResponse = z.infer<
+  typeof incidentCorrelationOutboxEventListResponseSchema
+>;
+export type IncidentCorrelationOutboxEventQuery = z.infer<
+  typeof incidentCorrelationOutboxEventQuerySchema
+>;
+export type IncidentCorrelationOutboxReplayRequest = z.infer<
+  typeof incidentCorrelationOutboxReplayRequestSchema
+>;
+export type IncidentCorrelationOutboxReplayResult = z.infer<
+  typeof incidentCorrelationOutboxReplayResultSchema
+>;
 export type IncidentResolveCommandRequest = z.infer<typeof incidentResolveCommandRequestSchema>;
 export type IncidentTriageRequest = z.infer<typeof incidentTriageRequestSchema>;
 export type IncidentRecoveryVerificationRequest = z.infer<

@@ -1,6 +1,7 @@
 // SPEC: gen/video process entry. Consumes ai.video.generate; for each job runs
 // the pipeline (provider → blob terminal record → durable Main relay). Long-running with
 // graceful shutdown: SIGTERM/SIGINT close the worker so in-flight jobs drain.
+import { captureGenerationRuntimeFailure } from "./instrumentation";
 import { GEN_QUEUES } from "@idream/shared/contracts";
 import { env } from "./env";
 import { logger } from "./logger";
@@ -10,6 +11,7 @@ import { runWorker } from "./queue";
 import { startGenerationSourceRecovery } from "./failed-source-recovery";
 import { enqueueTerminalRecordRelay } from "./terminal-record";
 import { recordTransportExecution } from "./transport-execution";
+import { videoWorkerIdentity } from "./worker-identity";
 
 // Video generation is deferred (V1.1). In the intended deferred state the provider
 // is mock and there is nothing to consume — and asserting production readiness at
@@ -23,6 +25,13 @@ if (env.VIDEO_PROVIDER === "mock") {
 
 assertProductionProviderReady("video");
 
+const videoWorkerName = videoWorkerIdentity({
+  appEnv: env.APP_ENV,
+  pid: process.pid,
+  runId: process.env.GEN_VIDEO_WORKER_RUN_ID,
+  slot: process.env.NODE_APP_INSTANCE,
+});
+
 const sourceRecovery = startGenerationSourceRecovery({
   mode: "video",
   blob: providers.blob,
@@ -31,19 +40,36 @@ const sourceRecovery = startGenerationSourceRecovery({
       logger.warn(result, "video failed-source recovery scan completed");
     }
   },
-  onError: (err) => logger.error({ err }, "video failed-source recovery scan failed"),
+  onError: (err) => {
+    captureGenerationRuntimeFailure({
+      boundary: "source-recovery",
+      error: err,
+      mode: "video",
+    });
+    logger.error({ err }, "video failed-source recovery scan failed");
+  },
 });
 
-const worker = runWorker(GEN_QUEUES.videoGenerate, async (job) => {
-  await processVideoGenerate(job.payload, {
-    attemptsMade: job.attemptsMade,
-    maxAttempts: job.maxAttempts,
-    acknowledgeTerminalRecord: enqueueTerminalRecordRelay,
-    recordTransportExecution,
-  });
-});
+const worker = runWorker(
+  GEN_QUEUES.videoGenerate,
+  async (job) => {
+    await processVideoGenerate(job.payload, {
+      attemptsMade: job.attemptsMade,
+      maxAttempts: job.maxAttempts,
+      acknowledgeTerminalRecord: enqueueTerminalRecordRelay,
+      recordTransportExecution,
+    });
+  },
+  { workerName: videoWorkerName },
+);
 
 worker.on("failed", (job, err) => {
+  captureGenerationRuntimeFailure({
+    boundary: "worker",
+    error: err,
+    jobId: job?.id ? String(job.id) : undefined,
+    mode: "video",
+  });
   logger.error({ jobId: job?.id, err: err.message }, "video generate job failed");
 });
 worker.on("completed", (job) => {

@@ -10,6 +10,7 @@ const canonicalPageFiles = [
   "today/page.tsx",
   "characters/page.tsx",
   "characters/new/page.tsx",
+  "characters/review/page.tsx",
   "characters/[id]/page.tsx",
   "creative/runs/page.tsx",
   "creative/runs/[id]/page.tsx",
@@ -64,6 +65,48 @@ describe("canonical Admin route shell", () => {
     expect(serverMarkup).toContain('aria-controls="admin-mobile-navigation"');
     expect(serverMarkup).toContain('aria-expanded="false"');
     expect(serverMarkup).not.toContain('id="admin-mobile-navigation"');
+  });
+
+  it("gives the skip link a focusable main-content target", () => {
+    const markup = renderToString(
+      <AdminConsoleClient
+        actor={{ id: "operator-1", role: "admin" }}
+        initialAccess
+        initialPermissions={["dashboard.read"]}
+        initialSection="today"
+        shellSignals={{
+          environment: "test",
+          dataClass: "fixture",
+          fixtureState: "included",
+          productTimezone: "UTC",
+          freshness: { state: "reported", label: "2026-08-11T00:00:00.000Z" },
+        }}
+      />,
+    );
+
+    expect(markup).toMatch(/<section[^>]*id="admin-main-content"[^>]*tabindex="-1"/);
+  });
+
+  it("renders the canonical character review route as the pending submissions queue", () => {
+    const markup = renderToString(
+      <AdminConsoleClient
+        actor={{ id: "moderator-1", role: "moderator" }}
+        initialAccess
+        initialPermissions={["safety.review.read"]}
+        initialSection="characters/review"
+        shellSignals={{
+          environment: "test",
+          dataClass: "fixture",
+          fixtureState: "included",
+          productTimezone: "UTC",
+          freshness: { state: "reported", label: "2026-08-11T00:00:00.000Z" },
+        }}
+      />,
+    );
+
+    expect(markup).toContain("Character Review");
+    expect(markup).toContain("Pending submissions");
+    expect(markup).toContain('name="review-queue-search"');
   });
 
   it("uses an accessible drawer instead of a horizontal link strip below desktop", async () => {

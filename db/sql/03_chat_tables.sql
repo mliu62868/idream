@@ -19,6 +19,9 @@ CREATE TABLE IF NOT EXISTS chat.chat_sessions (
   memory_summary     text,                              -- rolling summary (PG)
   log_extracted_seq  bigint NOT NULL DEFAULT 0,         -- session.jsonl derive watermark (D3)
   context_revision   bigint NOT NULL DEFAULT 0,         -- generation privacy/context fence
+  entry_exposure_id  text,                              -- Main-owned exposure attribution
+  entry_journey_id   text,
+  entry_placement_id text,
   last_message_at    timestamp,
   created_at         timestamp NOT NULL DEFAULT (timezone('utc', now())),
   updated_at         timestamp NOT NULL DEFAULT (timezone('utc', now())),
@@ -28,7 +31,10 @@ ALTER TABLE chat.chat_sessions
   ADD COLUMN IF NOT EXISTS character_content_version_id text,
   ADD COLUMN IF NOT EXISTS character_release_id text,
   ADD COLUMN IF NOT EXISTS release_pinned_at timestamp,
-  ADD COLUMN IF NOT EXISTS context_revision bigint NOT NULL DEFAULT 0;
+  ADD COLUMN IF NOT EXISTS context_revision bigint NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS entry_exposure_id text,
+  ADD COLUMN IF NOT EXISTS entry_journey_id text,
+  ADD COLUMN IF NOT EXISTS entry_placement_id text;
 CREATE INDEX IF NOT EXISTS chat_sessions_user_last_idx
   ON chat.chat_sessions (user_id, last_message_at DESC);
 CREATE INDEX IF NOT EXISTS chat_sessions_character_idx
@@ -51,9 +57,46 @@ CREATE TABLE IF NOT EXISTS chat.chat_send_receipts (
   CONSTRAINT chat_send_receipts_response_status_check
     CHECK (response_status IN ('generating', 'blocked'))
 );
-CREATE UNIQUE INDEX IF NOT EXISTS chat_send_receipts_user_idempotency_key
+ALTER TABLE chat.chat_send_receipts
+  ADD COLUMN IF NOT EXISTS id text,
+  ADD COLUMN IF NOT EXISTS user_id text,
+  ADD COLUMN IF NOT EXISTS session_id text,
+  ADD COLUMN IF NOT EXISTS idempotency_key text,
+  ADD COLUMN IF NOT EXISTS request_hash text,
+  ADD COLUMN IF NOT EXISTS user_message_id text,
+  ADD COLUMN IF NOT EXISTS assistant_message_id text,
+  ADD COLUMN IF NOT EXISTS response_status text,
+  ADD COLUMN IF NOT EXISTS safety_policy_code text,
+  ADD COLUMN IF NOT EXISTS created_at timestamp DEFAULT (timezone('utc', now()));
+ALTER TABLE chat.chat_send_receipts
+  ALTER COLUMN id SET NOT NULL,
+  ALTER COLUMN user_id SET NOT NULL,
+  ALTER COLUMN session_id SET NOT NULL,
+  ALTER COLUMN idempotency_key SET NOT NULL,
+  ALTER COLUMN request_hash SET NOT NULL,
+  ALTER COLUMN user_message_id SET NOT NULL,
+  ALTER COLUMN assistant_message_id SET NOT NULL,
+  ALTER COLUMN response_status SET NOT NULL,
+  ALTER COLUMN safety_policy_code DROP NOT NULL,
+  ALTER COLUMN created_at SET DEFAULT (timezone('utc', now())),
+  ALTER COLUMN created_at SET NOT NULL;
+-- This manifest runs with Chat writers paused. Recreate the complete receipt
+-- authority so a same-name partial predecessor or weak index cannot pass.
+ALTER TABLE chat.chat_send_receipts
+  DROP CONSTRAINT IF EXISTS chat_send_receipts_pkey,
+  DROP CONSTRAINT IF EXISTS chat_send_receipts_session_id_fkey,
+  DROP CONSTRAINT IF EXISTS chat_send_receipts_response_status_check;
+ALTER TABLE chat.chat_send_receipts
+  ADD CONSTRAINT chat_send_receipts_pkey PRIMARY KEY (id),
+  ADD CONSTRAINT chat_send_receipts_session_id_fkey
+    FOREIGN KEY (session_id) REFERENCES chat.chat_sessions(id) ON DELETE CASCADE,
+  ADD CONSTRAINT chat_send_receipts_response_status_check
+    CHECK (response_status IN ('generating', 'blocked'));
+DROP INDEX IF EXISTS chat.chat_send_receipts_user_idempotency_key;
+DROP INDEX IF EXISTS chat.chat_send_receipts_session_idx;
+CREATE UNIQUE INDEX chat_send_receipts_user_idempotency_key
   ON chat.chat_send_receipts (user_id, idempotency_key);
-CREATE INDEX IF NOT EXISTS chat_send_receipts_session_idx
+CREATE INDEX chat_send_receipts_session_idx
   ON chat.chat_send_receipts (session_id);
 
 CREATE TABLE IF NOT EXISTS chat.chat_session_release_migrations (
@@ -116,20 +159,13 @@ ALTER TABLE chat.messages
   ADD COLUMN IF NOT EXISTS runtime_trace jsonb;
 ALTER TABLE chat.messages
   ADD COLUMN IF NOT EXISTS memory_authority text NOT NULL DEFAULT 'legacy_unknown';
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1
-    FROM pg_constraint
-    WHERE conrelid = 'chat.messages'::regclass
-      AND conname = 'messages_memory_authority_check'
-  ) THEN
-    ALTER TABLE chat.messages
-      ADD CONSTRAINT messages_memory_authority_check
-      CHECK (memory_authority IN ('enabled', 'disabled', 'legacy_unknown'));
-  END IF;
-END
-$$;
+-- This manifest runs with Chat writers paused. Recreate owned constraints and
+-- indexes so a same-name, weaker manual definition can never be trusted.
+ALTER TABLE chat.messages
+  DROP CONSTRAINT IF EXISTS messages_memory_authority_check;
+ALTER TABLE chat.messages
+  ADD CONSTRAINT messages_memory_authority_check
+  CHECK (memory_authority IN ('enabled', 'disabled', 'legacy_unknown'));
 CREATE INDEX IF NOT EXISTS messages_session_created_idx
   ON chat.messages (session_id, created_at);
 -- reconciler hot scan: stuck `generating`
@@ -137,6 +173,39 @@ CREATE INDEX IF NOT EXISTS messages_status_updated_idx
   ON chat.messages (status, updated_at);
 CREATE INDEX IF NOT EXISTS messages_reply_to_idx
   ON chat.messages (reply_to_message_id);
+
+-- Memory enablement is captured per assistant turn. A later preference change
+-- must not rewrite the authority under which an existing turn was generated.
+CREATE OR REPLACE FUNCTION chat.reject_message_memory_authority_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF NEW.memory_authority IS DISTINCT FROM OLD.memory_authority THEN
+    RAISE EXCEPTION
+      'message memory_authority is immutable (message id=%)',
+      OLD.id
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+DROP TRIGGER IF EXISTS message_memory_authority_immutable ON chat.messages;
+CREATE TRIGGER message_memory_authority_immutable
+  BEFORE UPDATE OF memory_authority ON chat.messages
+  FOR EACH ROW
+  EXECUTE FUNCTION chat.reject_message_memory_authority_mutation();
+
+DROP INDEX IF EXISTS chat.messages_memory_reconcile_eligible_idx;
+CREATE INDEX messages_memory_reconcile_eligible_idx
+  ON chat.messages (updated_at DESC)
+  WHERE role = 'assistant'
+    AND status = 'sent'
+    AND deleted_at IS NULL
+    AND memory_authority = 'enabled'
+    AND memory_extracted_attempt < attempt
+    AND reply_to_message_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS chat.chat_scene_revisions (
   id                          text PRIMARY KEY,
@@ -153,11 +222,26 @@ CREATE TABLE IF NOT EXISTS chat.chat_scene_revisions (
     AND (snapshot->>'version')::integer = version
   )
 );
-CREATE UNIQUE INDEX IF NOT EXISTS chat_scene_revisions_session_version_key
+ALTER TABLE chat.chat_scene_revisions
+  DROP CONSTRAINT IF EXISTS chat_scene_revisions_version_check,
+  DROP CONSTRAINT IF EXISTS chat_scene_revisions_source_attempt_check,
+  DROP CONSTRAINT IF EXISTS chat_scene_revisions_snapshot_schema_check;
+ALTER TABLE chat.chat_scene_revisions
+  ADD CONSTRAINT chat_scene_revisions_version_check CHECK (version > 0),
+  ADD CONSTRAINT chat_scene_revisions_source_attempt_check
+    CHECK (source_attempt > 0),
+  ADD CONSTRAINT chat_scene_revisions_snapshot_schema_check CHECK (
+    snapshot @> '{"schemaVersion": 1}'::jsonb
+    AND (snapshot->>'version')::integer = version
+  );
+DROP INDEX IF EXISTS chat.chat_scene_revisions_session_version_key;
+DROP INDEX IF EXISTS chat.chat_scene_revisions_source_attempt_key;
+DROP INDEX IF EXISTS chat.chat_scene_revisions_session_created_idx;
+CREATE UNIQUE INDEX chat_scene_revisions_session_version_key
   ON chat.chat_scene_revisions (session_id, version);
-CREATE UNIQUE INDEX IF NOT EXISTS chat_scene_revisions_source_attempt_key
+CREATE UNIQUE INDEX chat_scene_revisions_source_attempt_key
   ON chat.chat_scene_revisions (source_assistant_message_id, source_attempt);
-CREATE INDEX IF NOT EXISTS chat_scene_revisions_session_created_idx
+CREATE INDEX chat_scene_revisions_session_created_idx
   ON chat.chat_scene_revisions (session_id, created_at);
 
 CREATE TABLE IF NOT EXISTS chat.message_versions (
@@ -236,7 +320,7 @@ CREATE TABLE IF NOT EXISTS chat.chat_outbox_events (
   aggregate_id   text NOT NULL,
   payload        jsonb NOT NULL DEFAULT '{}'::jsonb,
   schema_version integer NOT NULL DEFAULT 1,
-  status         text NOT NULL DEFAULT 'pending',       -- pending|delivered|failed
+  status         text NOT NULL DEFAULT 'pending',       -- pending|request_bound|delivered|failed
   attempts       integer NOT NULL DEFAULT 0,
   next_run_at    timestamp NOT NULL DEFAULT (timezone('utc', now())),
   created_at     timestamp NOT NULL DEFAULT (timezone('utc', now())),
@@ -383,6 +467,7 @@ CREATE INDEX IF NOT EXISTS chat_file_mutations_user_pending_idx
   ON chat.chat_file_mutations (user_id, status, sequence);
 
 CREATE OR REPLACE FUNCTION chat.redact_file_mutation_payload(
+  mutation_id text,
   mutation_kind text,
   mutation_payload jsonb
 )
@@ -428,15 +513,55 @@ AS $$
       'kind', mutation_kind,
       'sessionId', mutation_payload -> 'sessionId'
     )
+    WHEN 'account_delete' THEN jsonb_build_object(
+      'kind', mutation_kind,
+      'deletionRequestEventId', COALESCE(
+        mutation_payload -> 'deletionRequestEventId',
+        to_jsonb('legacy-chat-file-mutation:' || mutation_id)
+      )
+    ) || CASE
+      WHEN mutation_payload ->> 'requestBound' = 'true'
+        THEN jsonb_build_object('requestBound', true)
+      ELSE '{}'::jsonb
+    END
     ELSE jsonb_build_object('kind', mutation_kind)
   END
 $$;
+
+CREATE OR REPLACE FUNCTION chat.redact_file_mutation_payload(
+  mutation_kind text,
+  mutation_payload jsonb
+)
+RETURNS jsonb
+LANGUAGE sql
+IMMUTABLE
+PARALLEL SAFE
+AS $$
+  SELECT chat.redact_file_mutation_payload(
+    NULL,
+    mutation_kind,
+    mutation_payload
+  )
+$$;
+
+-- Pre-v2 pending account erasure intents did not carry a request identity.
+-- Bind them one-way to their immutable ledger id before the canonical payload
+-- constraint is installed; request-bound rows are never synthesized.
+UPDATE chat.chat_file_mutations
+SET payload = jsonb_build_object(
+  'kind', 'account_delete',
+  'deletionRequestEventId', 'legacy-chat-file-mutation:' || id
+)
+WHERE status = 'pending'
+  AND kind = 'account_delete'
+  AND payload ->> 'deletionRequestEventId' IS NULL
+  AND COALESCE(payload ->> 'requestBound', 'false') <> 'true';
 
 -- Applied rows from the pre-receipt implementation may contain model prompts,
 -- memory candidates, or deleted source text. Convert them one-way to the same
 -- content-free receipt the runtime writes at completion.
 UPDATE chat.chat_file_mutations
-SET payload = chat.redact_file_mutation_payload(kind, payload),
+SET payload = chat.redact_file_mutation_payload(id, kind, payload),
     attempts = GREATEST(attempts, 1),
     applied_at = COALESCE(applied_at, created_at),
     last_error = NULL
@@ -529,7 +654,7 @@ BEGIN
      OR NEW.applied_at IS NULL
      OR NEW.last_error IS NOT NULL
      OR NEW.payload IS DISTINCT FROM
-        chat.redact_file_mutation_payload(OLD.kind, OLD.payload) THEN
+        chat.redact_file_mutation_payload(OLD.id, OLD.kind, OLD.payload) THEN
     RAISE EXCEPTION 'chat file mutation completion evidence is invalid';
   END IF;
   RETURN NEW;
@@ -658,7 +783,7 @@ CREATE TABLE IF NOT EXISTS chat.chat_inbox_events (
   payload_hash text NOT NULL,
   event_type   text NOT NULL,
   payload      jsonb NOT NULL DEFAULT '{}'::jsonb,
-  status       text NOT NULL DEFAULT 'pending',         -- pending|consumed|failed
+  status       text NOT NULL DEFAULT 'pending',         -- pending|processing|consumed|consumed_v2|failed|quarantined|discarded_target_missing
   attempts     integer NOT NULL DEFAULT 0,
   created_at   timestamp NOT NULL DEFAULT (timezone('utc', now())),
   processed_at timestamp,

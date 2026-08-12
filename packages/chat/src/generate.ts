@@ -46,7 +46,10 @@ import {
   type ChatImageRequestedPayload,
   type ChatMemoryExtractPayload,
 } from "@idream/shared/contracts";
-import { noMemoryAuthorityReply } from "@idream/shared";
+import {
+  ChatModelOutputLimitError,
+  noMemoryAuthorityReply,
+} from "@idream/shared";
 
 export type GeneratePayload = ChatGeneratePayload;
 
@@ -367,10 +370,11 @@ export async function processGenerate(
       else await streamPlain();
     }
   } catch (error) {
+    const outputLimitReached = error instanceof ChatModelOutputLimitError;
     await appendStreamEvent(key, {
       type: "error",
       attempt: payload.attempt,
-      code: "provider_failed",
+      code: outputLimitReached ? "provider_output_limit" : "provider_failed",
       retryable: seq === 0,
     });
     if (seq === 0) throw error instanceof Error ? error : new Error(String(error));

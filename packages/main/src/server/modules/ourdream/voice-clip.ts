@@ -54,7 +54,29 @@ export const voiceClipSynthesisPayloadSchema = z
       unresolvedThreads: z.array(z.string()),
     }).strict().nullable().optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((payload, ctx) => {
+    const hasSceneVersion = payload.sceneVersion !== undefined;
+    const hasScene = payload.scene !== undefined;
+    if (hasSceneVersion !== hasScene) {
+      ctx.addIssue({
+        code: "custom",
+        path: hasSceneVersion ? ["scene"] : ["sceneVersion"],
+        message: "sceneVersion and scene must be pinned together",
+      });
+      return;
+    }
+    if (
+      hasSceneVersion &&
+      payload.sceneVersion !== (payload.scene?.version ?? 0)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["sceneVersion"],
+        message: "sceneVersion must match the pinned scene revision",
+      });
+    }
+  });
 
 export const pinnedVoiceProviderPayloadSchema = z.object({
   providerKey: z.enum(["mock", "pipeline", "pocket_tts", "fish_audio"]),

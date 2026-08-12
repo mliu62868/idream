@@ -331,6 +331,12 @@ describe("CharacterVoicePanel Fish Audio controls", () => {
       .not.toBeNull();
     expect(container.querySelector('[data-testid="system-voice-defaults"]'))
       .not.toBeNull();
+    const systemDefaultsSummary = container.querySelector(
+      '[data-testid="system-voice-defaults"] > summary',
+    );
+    // SPEC: 窄屏时操作入口独占一行，不能把说明文案压成逐词换行。
+    expect(systemDefaultsSummary?.className).toContain("flex-col");
+    expect(systemDefaultsSummary?.className).toContain("sm:flex-row");
     expect(container.textContent).toContain("Live voice");
     expect(container.textContent).toContain("Current voice and runtime");
     expect(container.textContent).toContain("System voice defaults");

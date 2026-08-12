@@ -120,8 +120,7 @@ export async function applyPublicContentCleanup(
         AND: [
           {
             id: { in: characterIds },
-            source: "user",
-            visibility: "public",
+            ...rawPublicCharacterWhere,
           },
           { NOT: publicCharacterAudienceWhere },
         ],
@@ -133,8 +132,7 @@ export async function applyPublicContentCleanup(
         AND: [
           {
             id: { in: collectionIds },
-            source: "user",
-            visibility: "public",
+            ...rawPublicCollectionWhere,
           },
           { NOT: publicCollectionAudienceWhere },
         ],
@@ -146,8 +144,7 @@ export async function applyPublicContentCleanup(
         AND: [
           {
             id: { in: feedbackItemIds },
-            sourceKey: null,
-            visibility: "public",
+            ...rawPublicFeedbackWhere,
           },
           { NOT: publicFeedbackAudienceWhere },
         ],

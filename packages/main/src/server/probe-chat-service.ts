@@ -15,6 +15,7 @@ import {
   probeReportPath,
   writeProbeReport,
 } from "./readiness/probe-report";
+import { observeChatSseAcrossReconnects } from "./readiness/chat-sse-probe";
 
 type ProbeOptions = {
   report: string | null;
@@ -1112,16 +1113,29 @@ async function probeStream(input: {
 }): Promise<ConversationEvidence["stream"]> {
   const path = `/api/v1/chat/messages/${input.assistantMessageId}/stream`;
   try {
-    const res = await signedFetch({ ...input, method: "GET", path });
-    if (!res.ok || !res.body) return { ok: false, status: res.status, error: `HTTP ${res.status}` };
-    const text = await readStreamWithTimeout(
-      res,
-      readPositiveIntEnv("CHAT_SERVICE_PROBE_STREAM_TIMEOUT_MS", 90_000),
-    );
-    const sawStart = /event:\s*start|"type"\s*:\s*"start"/.test(text);
-    const sawDelta = /event:\s*delta|"type"\s*:\s*"delta"/.test(text);
-    const sawDone = /event:\s*done|"type"\s*:\s*"done"/.test(text);
-    return { ok: sawStart && sawDelta && sawDone, status: res.status, sawStart, sawDelta, sawDone };
+    const observed = await observeChatSseAcrossReconnects({
+      timeoutMs: readPositiveIntEnv(
+        "CHAT_SERVICE_PROBE_STREAM_TIMEOUT_MS",
+        180_000,
+      ),
+      open: (lastEventId) =>
+        signedFetch({
+          ...input,
+          method: "GET",
+          path,
+          ...(lastEventId
+            ? { query: `lastEventId=${encodeURIComponent(lastEventId)}` }
+            : {}),
+        }),
+    });
+    return {
+      ok: observed.ok,
+      status: observed.status,
+      sawStart: observed.sawStart,
+      sawDelta: observed.sawDelta,
+      sawDone: observed.sawDone,
+      ...(observed.error ? { error: observed.error } : {}),
+    };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
@@ -1132,36 +1146,6 @@ function readPositiveIntEnv(name: string, fallback: number): number {
   if (!raw) return fallback;
   const value = Number.parseInt(raw, 10);
   return Number.isFinite(value) && value > 0 ? value : fallback;
-}
-
-/** Read an SSE response body until `done` is seen or the timeout elapses. */
-async function readStreamWithTimeout(res: Response, timeoutMs: number): Promise<string> {
-  const reader = (res.body as ReadableStream<Uint8Array>).getReader();
-  const decoder = new TextDecoder();
-  let text = "";
-  const deadline = Date.now() + timeoutMs;
-  try {
-    while (Date.now() < deadline) {
-      let timeout: ReturnType<typeof setTimeout> | null = null;
-      const timeoutPromise = new Promise<{ done: true; value: undefined }>((resolve) => {
-        timeout = setTimeout(
-          () => resolve({ done: true, value: undefined }),
-          Math.max(0, deadline - Date.now()),
-        );
-      });
-      const { done, value } = await Promise.race([
-        reader.read(),
-        timeoutPromise,
-      ]);
-      if (timeout) clearTimeout(timeout);
-      if (done) break;
-      if (value) text += decoder.decode(value, { stream: true });
-      if (/event:\s*done|"type"\s*:\s*"done"/.test(text)) break;
-    }
-  } finally {
-    await reader.cancel().catch(() => {});
-  }
-  return text;
 }
 
 async function probeHealth(serviceUrl: string | null): Promise<HealthEvidence> {

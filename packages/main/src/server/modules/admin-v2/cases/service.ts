@@ -949,8 +949,13 @@ export async function verifyReviewCase(input: {
         to: nextStatus,
       });
     }
+    const currentResolution = current.resolution as Record<string, unknown>;
+    const resolutionSummary =
+      typeof currentResolution.summary === "string"
+        ? currentResolution.summary
+        : "Resolved from the verified Customer Case outcome.";
     const resolution = {
-      ...(current.resolution as Record<string, unknown>),
+      ...currentResolution,
       verification: {
         state: input.state,
         evidenceRefs: [...input.evidenceRefs],
@@ -974,6 +979,26 @@ export async function verifyReviewCase(input: {
         resolution: toInputJson(resolution),
       },
     });
+    if (
+      input.state !== "failed" &&
+      ["support_request", "billing_dispute"].includes(current.type)
+    ) {
+      const supportEvidence = await tx.caseEvidence.findFirst({
+        where: { caseId: current.id, sourceType: "support_request" },
+        select: { sourceId: true },
+      });
+      if (supportEvidence) {
+        await tx.supportRequest.update({
+          where: { id: supportEvidence.sourceId },
+          data: {
+            status: "resolved",
+            assignedToId: current.ownerId,
+            resolutionNotes: resolutionSummary,
+            resolvedAt: verifiedAt,
+          },
+        });
+      }
+    }
     await tx.adminAuditLog.create({
       data: {
         actorId: input.actor.id,

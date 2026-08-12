@@ -11,7 +11,7 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     services:
       postgres:
@@ -28,7 +28,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
       redis:
-        image: redis:7
+        image: redis:8
         ports:
           - 6379:6379
         options: >-
@@ -55,6 +55,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.14.1
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -69,8 +74,8 @@ jobs:
       - name: Check packages
         run: bun run check
 
-      - name: Test main
-        run: bun run --filter @idream/main test
+      - name: Test admin
+        run: bun run --filter @idream/admin test
 
       - name: Check main coverage
         run: bun run --filter @idream/main coverage
@@ -84,53 +89,19 @@ jobs:
       - name: Test shared contracts
         run: bun run --filter @idream/shared test
 
-      - name: Prepare E2E database
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/idream_e2e
-          REDIS_URL: redis://127.0.0.1:6379/13
-          BULLMQ_PREFIX: idream:e2e
-        run: |
-          bun --cwd packages/main --eval '
-            import pg from "pg";
-            const client = new pg.Client({ connectionString: "postgresql://postgres:postgres@127.0.0.1:5432/postgres" });
-            await client.connect();
-            try {
-              await client.query("CREATE DATABASE idream_e2e");
-            } catch (error) {
-              if (error?.code !== "42P04") throw error;
-            } finally {
-              await client.end();
-            }
-          '
-          bun run --filter @idream/main db:push
-          bun run --filter @idream/main db:seed
+      - name: Test PM2 production orchestration
+        run: bun run test:pm2-config
 
-      - name: Start main-web for E2E
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/idream_e2e
-          REDIS_URL: redis://127.0.0.1:6379/13
-          BULLMQ_PREFIX: idream:e2e
-          INTERNAL_TOKEN: development-internal-token
-        run: nohup bun run --filter @idream/main dev -- --port 3000 > /tmp/idream-main-web.log 2>&1 &
-
-      - name: Wait for main-web
+      - name: Rehearse migration chain
         run: |
-          for i in $(seq 1 60); do
-            if curl -sSf "$PW_BASE_URL" >/dev/null 2>&1; then
-              echo "main-web is up"
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "main-web did not become ready"
-          exit 1
+          bun run --filter @idream/main db:migrate:deploy
+          bun run --filter @idream/main check:migration-authority
+          bun run --filter @idream/main admin:readiness:migrations
 
       - name: Run E2E
         env:
-          DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/idream_e2e
-          REDIS_URL: redis://127.0.0.1:6379/13
-          BULLMQ_PREFIX: idream:e2e
-          INTERNAL_TOKEN: development-internal-token
+          PW_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/idream_test
+          PW_REDIS_URL: redis://127.0.0.1:6379/14
         run: bun run --filter @idream/main test:e2e
 
       - name: Upload Playwright traces
@@ -139,14 +110,5 @@ jobs:
         with:
           name: playwright-traces
           path: packages/main/test-results/
-          retention-days: 7
-          if-no-files-found: ignore
-
-      - name: Upload main-web log
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: main-web-log
-          path: /tmp/idream-main-web.log
           retention-days: 7
           if-no-files-found: ignore

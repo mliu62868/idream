@@ -9,6 +9,7 @@ import {
 } from "./common";
 import {
   characterProjectPhaseSchema,
+  characterServingStateSchema,
 } from "./characters-common";
 
 export const characterDraftPersonaSchema = z
@@ -194,6 +195,29 @@ export const characterProjectCreateResponseSchema = z
   })
   .strict();
 
+export const customerCharacterPublicationPrepRequestSchema = z
+  .object({
+    submissionId: adminIdSchema,
+    reason: z.string().trim().min(3).max(2_000),
+    confirmation: z.string().trim().min(1).max(240),
+  })
+  .strict();
+
+export const customerCharacterPublicationPrepResponseSchema = z
+  .object({
+    state: z.literal("publication_prep"),
+    characterId: adminIdSchema,
+    submissionId: adminIdSchema,
+    projectId: adminIdSchema,
+    revisionId: adminIdSchema,
+    projectVersion: z.number().int().positive(),
+    servingState: characterServingStateSchema,
+    deepLink: z.string().startsWith("/admin/characters/"),
+    created: z.boolean(),
+    replayed: z.boolean(),
+  })
+  .strict();
+
 export const characterProjectDraftAuthoritySchema = z
   .object({
     characterId: adminIdSchema,
@@ -285,6 +309,10 @@ export type CharacterDraftVisualDirection = z.infer<typeof characterDraftVisualD
 export type CharacterProjectCreateRequest = z.infer<typeof characterProjectCreateRequestSchema>;
 
 export type CharacterProjectCreateResponse = z.infer<typeof characterProjectCreateResponseSchema>;
+
+export type CustomerCharacterPublicationPrepRequest = z.infer<typeof customerCharacterPublicationPrepRequestSchema>;
+
+export type CustomerCharacterPublicationPrepResponse = z.infer<typeof customerCharacterPublicationPrepResponseSchema>;
 
 export type CharacterProjectDraft = z.infer<typeof characterProjectDraftSchema>;
 

@@ -363,6 +363,13 @@ type PublicTextToImageGenerationProfile = {
   readonly rolloutPercent: number;
 };
 
+export function generationProfileDeclaresTextToImage(profile: {
+  readonly runnerConfig: Prisma.JsonValue | null;
+}) {
+  return jsonRecord(jsonRecord(profile.runnerConfig).capabilities)
+    .textToImage === true;
+}
+
 async function isPublicTextToImageGenerationProfile(
   profile: PublicTextToImageGenerationProfile,
 ) {
@@ -382,13 +389,13 @@ async function isPublicTextToImageGenerationProfile(
   const workflow = await generationWorkflowDescriptor(
     profile.workflowKey ?? profile.pipelineModel,
   );
-  if (workflow) {
-    return (
-      workflow.capabilities.includes("textToImage") &&
-      !workflow.inputs.some((input) => input.type === "image")
-    );
+  if (!workflow) {
+    return profile.runner !== "comfyui" && configuredTextToImage === true;
   }
-  return configuredTextToImage === true;
+  return (
+    workflow.capabilities.includes("textToImage") &&
+    !workflow.inputs.some((input) => input.type === "image")
+  );
 }
 
 export async function filterPublicTextToImageGenerationProfiles<

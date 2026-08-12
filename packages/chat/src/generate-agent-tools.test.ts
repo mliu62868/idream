@@ -478,6 +478,41 @@ describe("chat generate agent image tool", () => {
     );
   });
 
+  it("records an output-limit terminal instead of completing partial provider text", async () => {
+    const { ChatModelOutputLimitError } = await import("@idream/shared");
+    buildContextMock.mockResolvedValue({
+      ...context,
+      recentMessages: [{ id: "msg_user", role: "user", content: "hello" }],
+    });
+    streamMock.mockImplementation(async function* limitedStream() {
+      yield { delta: "So, are we just going to stare at the ocean, or", done: false };
+      throw new ChatModelOutputLimitError(64);
+    });
+    const { prisma, rootMessageUpdates, messageUpdates } = fakePrisma();
+
+    const result = await processGenerate(
+      { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+      prisma,
+      { projectorPrisma: prisma },
+    );
+
+    expect(result).toEqual({ status: "failed" });
+    expect(rootMessageUpdates.at(-1)?.data).toMatchObject({ status: "failed" });
+    expect(messageUpdates).toHaveLength(0);
+    expect(appendStreamEventMock).toHaveBeenCalledWith(
+      "chat:stream:msg_assistant",
+      expect.objectContaining({
+        type: "error",
+        code: "provider_output_limit",
+        retryable: false,
+      }),
+    );
+    expect(appendStreamEventMock).not.toHaveBeenCalledWith(
+      "chat:stream:msg_assistant",
+      expect.objectContaining({ type: "done" }),
+    );
+  });
+
   it("FC path: a legal native tool call coexists with the prose already streamed (text+image same turn)", async () => {
     streamMock.mockImplementation(async function* fcStream() {
       yield { delta: "I'd love to share this with you.", done: false };

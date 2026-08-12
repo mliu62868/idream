@@ -41,6 +41,28 @@ export const PLACEMENT_IMPRESSION_EVENT = "placement_impression";
 export const PLACEMENT_CLICK_EVENT = "placement_click";
 export const CHARACTER_EXPOSURE_EVENT = "character.exposure.recorded.v2";
 
+export async function requestCommunityFollow(
+  creatorId: string,
+  isFollowing: boolean,
+  fetcher: typeof fetch = fetch,
+) {
+  const response = await fetcher(`/api/v1/users/${creatorId}/follow`, {
+    method: isFollowing ? "DELETE" : "POST",
+  });
+  return {
+    response,
+    authority: response.ok
+      ? parseFollowMutationResponse(await response.json())
+      : null,
+    signupHref: response.status === 401
+      ? authHrefForTarget(
+          "/signup",
+          `/creators/${encodeURIComponent(creatorId)}`,
+        )
+      : null,
+  };
+}
+
 function trackPlacementEvent(name: string, placementId: string, slot: string) {
   if (typeof window === "undefined") return;
   const payload = JSON.stringify({ name, props: { placementId, slot } });
@@ -438,48 +460,26 @@ export function CommunityWorkspace() {
     return () => window.clearTimeout(timer);
   }, [collectionsAuthority, focusedCollection, focusedCollectionId]);
 
-  async function follow(creatorId?: string | null) {
-    if (!creatorId) {
-      setStatus("This creator cannot be followed.");
-      return;
-    }
+  async function toggleFollowCreator(creatorId: string, isFollowing: boolean) {
+    if (followPendingIds.has(creatorId)) return;
+    setFollowPendingIds((current) => new Set(current).add(creatorId));
     try {
-      const response = await fetch(`/api/v1/users/${creatorId}/follow`, { method: "POST" });
-      if (response.ok) {
-        parseFollowMutationResponse(await response.json());
-        setStatus("Creator followed.");
-        return;
-      }
-      if (response.status === 401) {
-        redirectToCreatorSignup(creatorId);
-        return;
-      }
-      setStatus(await followErrorMessage(response));
-    } catch {
-      setStatus(publicOptimisticMutationFailure("follow").status);
-    }
-  }
-
-  async function toggleFollowDreamer(dreamer: Dreamer) {
-    if (followPendingIds.has(dreamer.id)) return;
-    const next = !dreamer.isFollowing;
-    setFollowPendingIds((current) => new Set(current).add(dreamer.id));
-    try {
-      const response = await fetch(`/api/v1/users/${dreamer.id}/follow`, {
-        method: next ? "POST" : "DELETE",
-      });
+      const { response, authority, signupHref } = await requestCommunityFollow(
+        creatorId,
+        isFollowing,
+      );
       if (!response.ok) {
-        if (response.status === 401) {
-          redirectToCreatorSignup(dreamer.id);
+        if (signupHref) {
+          window.location.assign(signupHref);
           return;
         }
         setStatus(await followErrorMessage(response));
         return;
       }
-      const authority = parseFollowMutationResponse(await response.json());
+      if (!authority) return;
       setDreamers((current) =>
         current.map((item) =>
-          item.id === dreamer.id
+          item.id === creatorId
             ? {
                 ...item,
                 isFollowing: authority.following,
@@ -488,12 +488,19 @@ export function CommunityWorkspace() {
             : item,
         ),
       );
+      setCharacters((current) =>
+        current.map((item) =>
+          item.creatorId === creatorId
+            ? { ...item, isFollowing: authority.following }
+            : item,
+        ),
+      );
     } catch {
       setStatus(publicOptimisticMutationFailure("follow").status);
     } finally {
       setFollowPendingIds((current) => {
         const nextPending = new Set(current);
-        nextPending.delete(dreamer.id);
+        nextPending.delete(creatorId);
         return nextPending;
       });
     }
@@ -686,76 +693,13 @@ export function CommunityWorkspace() {
               <DreamerSkeletons />
             ) : dreamers.length > 0 ? (
               visibleDreamers.map((dreamer) => (
-                <article
-                  className="rounded-[14px] bg-[rgb(18,18,18)] p-4"
-                  data-testid="community-dreamer-card"
+                <CommunityDreamerCard
+                  dreamer={dreamer}
+                  followPending={followPendingIds.has(dreamer.id)}
                   key={dreamer.id}
-                >
-                  <Link className="flex items-center gap-3" href={`/creators/${dreamer.id}`}>
-                    {dreamer.image ? (
-                      <Image
-                        alt=""
-                        className="h-12 w-12 rounded-full object-cover"
-                        height={48}
-                        src={dreamer.image}
-                        unoptimized={shouldBypassNextImageOptimizer(dreamer.image)}
-                        width={48}
-                      />
-                    ) : (
-                      <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[rgb(36,36,36)] text-[14px] font-black uppercase text-white">
-                        {dreamer.displayName.slice(0, 1)}
-                      </div>
-                    )}
-                    <div className="min-w-0">
-                      <h3 className="truncate text-[15px] font-black uppercase hover:underline">
-                        {dreamer.displayName}
-                      </h3>
-                      <p className="mt-1 text-[12px] font-medium text-[rgb(170,170,170)]">
-                        {countLabel(dreamer.characters, "character")} ·{" "}
-                        {countLabel(dreamer.followers, "follower")}
-                      </p>
-                    </div>
-                  </Link>
-                  {(dreamer.likesCount ?? 0) > 0 || (dreamer.chatsCount ?? 0) > 0 ? (
-                    <p className="mt-3 text-[12px] font-medium text-[rgb(170,170,170)]">
-                      {(dreamer.likesCount ?? 0) > 0 ? `${dreamer.likes} likes` : null}
-                      {(dreamer.likesCount ?? 0) > 0 && (dreamer.chatsCount ?? 0) > 0 ? " · " : null}
-                      {(dreamer.chatsCount ?? 0) > 0 ? `${dreamer.chats} chats` : null}
-                    </p>
-                  ) : (
-                    <p className="mt-3 text-[12px] font-medium text-[rgb(170,170,170)]">
-                      Public creator
-                    </p>
-                  )}
-                  <div className="mt-4 flex gap-2">
-                    <button
-                      className={`inline-flex h-9 flex-1 items-center justify-center gap-2 rounded-full text-[12px] font-black ${
-                        dreamer.isFollowing
-                          ? "bg-[rgb(36,36,36)] text-white"
-                          : "bg-white text-[rgb(13,13,13)]"
-                      }`}
-                      disabled={followPendingIds.has(dreamer.id)}
-                      onClick={() => toggleFollowDreamer(dreamer)}
-                      type="button"
-                    >
-                      <HeartHandshake className="h-4 w-4" />
-                      {followPendingIds.has(dreamer.id)
-                        ? "Updating..."
-                        : dreamer.isFollowing
-                          ? "Following"
-                          : "Follow"}
-                    </button>
-                    <button
-                      aria-label={`Report user profile ${dreamer.displayName}`}
-                      className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-[rgb(36,36,36)] text-white"
-                      onClick={() => reportDreamer(dreamer.id)}
-                      title="Report profile"
-                      type="button"
-                    >
-                      <Flag className="h-4 w-4" />
-                    </button>
-                  </div>
-                </article>
+                  onReport={reportDreamer}
+                  onToggleFollow={toggleFollowCreator}
+                />
               ))
             ) : authorityShowsEmpty(leaderboardsAuthority, dreamers.length) ? (
               <p className="text-[13px] font-medium text-[rgb(170,170,170)]">
@@ -788,10 +732,13 @@ export function CommunityWorkspace() {
               visibleCharacters.map((character) => (
                 <CommunityCharacterCard
                   character={character}
+                  followPending={Boolean(
+                    character.creatorId && followPendingIds.has(character.creatorId),
+                  )}
                   key={character.id}
                   onEligibleImpression={recordRankingExposure}
-                  onFollow={follow}
                   onReport={report}
+                  onToggleFollow={toggleFollowCreator}
                 />
               ))
             ) : authorityShowsEmpty(leaderboardsAuthority, characters.length) ? (
@@ -901,16 +848,106 @@ export function CommunityWorkspace() {
   );
 }
 
-function CommunityCharacterCard({
+export function CommunityDreamerCard({
+  dreamer,
+  followPending,
+  onReport,
+  onToggleFollow,
+}: {
+  dreamer: Dreamer;
+  followPending: boolean;
+  onReport: (dreamerId: string) => Promise<void>;
+  onToggleFollow: (creatorId: string, isFollowing: boolean) => Promise<void>;
+}) {
+  return (
+    <article
+      className="rounded-[14px] bg-[rgb(18,18,18)] p-4"
+      data-testid="community-dreamer-card"
+    >
+      <Link className="flex items-center gap-3" href={`/creators/${dreamer.id}`}>
+        {dreamer.image ? (
+          <Image
+            alt=""
+            className="h-12 w-12 rounded-full object-cover"
+            height={48}
+            src={dreamer.image}
+            unoptimized={shouldBypassNextImageOptimizer(dreamer.image)}
+            width={48}
+          />
+        ) : (
+          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[rgb(36,36,36)] text-[14px] font-black uppercase text-white">
+            {dreamer.displayName.slice(0, 1)}
+          </div>
+        )}
+        <div className="min-w-0">
+          <h3 className="truncate text-[15px] font-black uppercase hover:underline">
+            {dreamer.displayName}
+          </h3>
+          <p className="mt-1 text-[12px] font-medium text-[rgb(170,170,170)]">
+            {countLabel(dreamer.characters, "character")} ·{" "}
+            {countLabel(dreamer.followers, "follower")}
+          </p>
+        </div>
+      </Link>
+      {(dreamer.likesCount ?? 0) > 0 || (dreamer.chatsCount ?? 0) > 0 ? (
+        <p className="mt-3 text-[12px] font-medium text-[rgb(170,170,170)]">
+          {(dreamer.likesCount ?? 0) > 0 ? `${dreamer.likes} likes` : null}
+          {(dreamer.likesCount ?? 0) > 0 && (dreamer.chatsCount ?? 0) > 0 ? " · " : null}
+          {(dreamer.chatsCount ?? 0) > 0 ? `${dreamer.chats} chats` : null}
+        </p>
+      ) : (
+        <p className="mt-3 text-[12px] font-medium text-[rgb(170,170,170)]">
+          Public creator
+        </p>
+      )}
+      <div className="mt-4 flex gap-2">
+        {!dreamer.isSelf ? (
+          <button
+            className={`inline-flex h-9 flex-1 items-center justify-center gap-2 rounded-full text-[12px] font-black ${
+              dreamer.isFollowing
+                ? "bg-[rgb(36,36,36)] text-white"
+                : "bg-white text-[rgb(13,13,13)]"
+            }`}
+            disabled={followPending}
+            onClick={() =>
+              void onToggleFollow(dreamer.id, Boolean(dreamer.isFollowing))
+            }
+            type="button"
+          >
+            <HeartHandshake className="h-4 w-4" />
+            {followPending
+              ? "Updating..."
+              : dreamer.isFollowing
+                ? "Following"
+                : "Follow"}
+          </button>
+        ) : null}
+        <button
+          aria-label={`Report user profile ${dreamer.displayName}`}
+          className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-[rgb(36,36,36)] text-white"
+          onClick={() => void onReport(dreamer.id)}
+          title="Report profile"
+          type="button"
+        >
+          <Flag className="h-4 w-4" />
+        </button>
+      </div>
+    </article>
+  );
+}
+
+export function CommunityCharacterCard({
   character,
-  onFollow,
+  followPending,
   onEligibleImpression,
   onReport,
+  onToggleFollow,
 }: {
   character: CommunityCharacter;
-  onFollow: (creatorId?: string | null) => Promise<void>;
+  followPending: boolean;
   onEligibleImpression: () => void;
   onReport: (characterId: string) => Promise<void>;
+  onToggleFollow: (creatorId: string, isFollowing: boolean) => Promise<void>;
 }) {
   const cardRef = useRef<HTMLElement | null>(null);
   const impressionRecordedRef = useRef(false);
@@ -1016,14 +1053,35 @@ function CommunityCharacterCard({
           )}
         </p>
         <div className="mt-4 flex gap-2">
-          <button
-            className="inline-flex h-9 flex-1 items-center justify-center gap-2 rounded-full bg-white text-[12px] font-black text-[rgb(13,13,13)]"
-            onClick={() => void onFollow(character.creatorId)}
-            type="button"
-          >
-            <HeartHandshake className="h-4 w-4" />
-            Follow
-          </button>
+          {character.source === "official" || !character.creatorId ? (
+            <span className="inline-flex h-9 flex-1 items-center justify-center rounded-full bg-[rgb(36,36,36)] text-[12px] font-black text-white">
+              Official
+            </span>
+          ) : character.canEditIdentity ? (
+            <span className="inline-flex h-9 flex-1 items-center justify-center rounded-full bg-[rgb(36,36,36)] text-[12px] font-black text-white">
+              Your character
+            </span>
+          ) : (
+            <button
+              className={`inline-flex h-9 flex-1 items-center justify-center gap-2 rounded-full text-[12px] font-black ${
+                character.isFollowing
+                  ? "bg-[rgb(36,36,36)] text-white"
+                  : "bg-white text-[rgb(13,13,13)]"
+              }`}
+              disabled={followPending}
+              onClick={() =>
+                void onToggleFollow(character.creatorId!, character.isFollowing)
+              }
+              type="button"
+            >
+              <HeartHandshake className="h-4 w-4" />
+              {followPending
+                ? "Updating..."
+                : character.isFollowing
+                  ? "Following"
+                  : "Follow"}
+            </button>
+          )}
           <button
             aria-label={`Report ${character.title}`}
             className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-[rgb(36,36,36)] text-white"
@@ -1184,12 +1242,6 @@ function CollectionSkeletons() {
         />
       ))}
     </>
-  );
-}
-
-function redirectToCreatorSignup(creatorId: string) {
-  window.location.assign(
-    authHrefForTarget("/signup", `/creators/${encodeURIComponent(creatorId)}`),
   );
 }
 

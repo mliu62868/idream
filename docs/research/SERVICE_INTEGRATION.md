@@ -213,7 +213,7 @@ Chat 完成后向主站投递事件，而不是通过主站 finalizer 落库：
 ```text
 user.updated
 user.suspended
-user.deleted
+user.account_deletion.requested.v2
 character.updated
 character.removed
 character.visibility_changed
@@ -227,7 +227,7 @@ Chat 不把这些事件当作唯一权威来源；权威读取仍来自只读 vi
 用户删除账号：
 
 ```text
-Main Site -> user.deleted -> Chat
+Main Site -> user.account_deletion.requested.v2 -> Chat
 Chat:
   1. 标记/删除该 user 的 chat_sessions/messages/memories/relationships
   2. 删除 runtime vector index 和 stream cache

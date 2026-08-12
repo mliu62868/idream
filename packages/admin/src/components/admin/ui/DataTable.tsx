@@ -16,18 +16,20 @@ export function DataTable({
   rows,
   empty,
   caption = "Data table",
+  minimumWidthClassName = "min-w-[640px]",
 }: {
   headers: DataTableHeader[];
   rows: DataTableRow[];
   empty?: ReactNode;
   caption?: string;
+  minimumWidthClassName?: string;
 }) {
   const { t } = useAdminI18n();
   const translatedCaption = t(caption);
   if (rows.length === 0 && empty) return <>{empty}</>;
   return (
     <div aria-label={t("{caption} scrollable table", { caption: translatedCaption })} className="overflow-x-auto rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]" role="region" tabIndex={0}>
-      <table className="w-full min-w-[640px] text-left text-sm">
+      <table className={`w-full ${minimumWidthClassName} text-left text-sm`}>
         <caption className="sr-only">{translatedCaption}</caption>
         <thead>
           <tr className="border-b border-[var(--ad-border)] text-xs uppercase tracking-[0.05em] text-[var(--ad-text-muted)]">

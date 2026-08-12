@@ -8,12 +8,14 @@
 //   - 擦除幂等：已 deleted 用户重复擦除直接幂等返回。
 //   - 审计只记 targetId/元数据，绝不写入导出内容明文。
 import { z } from "zod";
-import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
 import { actorWithPermission, clampInt, jsonBody, writeAudit } from "@/server/modules/admin/shared/legacy-primitives";
-import { recordMainToChatEvent } from "@/processes/chat-outbox";
+import {
+  accountDeletionPublicState,
+  requestAccountDeletion,
+} from "@/server/account-deletion-authority";
 
 const COMPLIANCE_READ = "compliance.read" as const;
 const COMPLIANCE_WRITE = "compliance.write" as const;
@@ -97,32 +99,26 @@ export async function eraseUser(request: Request, userId: string): Promise<Respo
   }
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) throw Errors.notFound("User not found");
-  if (user.status === "deleted" && user.deletedAt) {
-    return ok({ erased: true, idempotent: true });
-  }
-  await prisma.$transaction(async (tx) => {
-    await tx.user.update({
-      where: { id: userId },
-      data: { status: "deleted", deletedAt: new Date() },
-    });
-    await tx.session.deleteMany({ where: { userId } });
-    await recordMainToChatEvent({
-      eventId: `user_deleted_${userId}`,
-      eventType: MAIN_TO_CHAT_EVENTS.userDeleted,
-      aggregateType: "user",
-      aggregateId: userId,
-      payload: { userId },
-    }, tx);
-  });
+  const deletion = await prisma.$transaction((tx) =>
+    requestAccountDeletion(tx, { userId }),
+  );
   await writeAudit(request, actor, {
     action: "compliance.erase",
     targetType: "user",
     targetId: userId,
     reason: body.reason,
     before: { status: user.status },
-    after: { status: "deleted" },
+    after: {
+      status: "deleted",
+      deletionId: deletion.id,
+      graceEndsAt: deletion.graceEndsAt.toISOString(),
+    },
   });
-  return ok({ erased: true });
+  return ok({
+    erased: true,
+    idempotent: !deletion.created,
+    deletion: accountDeletionPublicState(deletion),
+  });
 }
 
 export async function listAgeVerifications(request: Request): Promise<Response> {

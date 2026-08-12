@@ -4,7 +4,10 @@ import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import pg from "pg";
 
-const sourceUrl = new URL(process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5433/idream");
+const sourceUrl = new URL(
+  process.env.DATABASE_URL ??
+    "postgresql://postgres:postgres@localhost:5433/idream",
+);
 const runId = Date.now();
 const freshDatabaseName = `idream_admin_rehearsal_fresh_${runId}`;
 const upgradeDatabaseName = `idream_admin_rehearsal_upgrade_${runId}`;
@@ -37,7 +40,8 @@ function runPrisma(databaseName, args) {
     },
     encoding: "utf8",
   });
-  if (result.status !== 0) throw new Error(`${result.stdout}\n${result.stderr}`);
+  if (result.status !== 0)
+    throw new Error(`${result.stdout}\n${result.stderr}`);
   return result.stdout;
 }
 
@@ -46,23 +50,30 @@ function deploy(databaseName) {
 }
 
 function isNoopDeploy(output) {
-  return output.includes("No pending migrations") || output.includes("already in sync");
+  return (
+    output.includes("No pending migrations") ||
+    output.includes("already in sync")
+  );
 }
 
 async function loadExpectedMigrationHistory() {
-  const migrations = (await readdir(migrationsDirectory, { withFileTypes: true }))
+  const migrations = (
+    await readdir(migrationsDirectory, { withFileTypes: true })
+  )
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
     .sort();
-  return Promise.all(migrations.map(async (migrationName) => {
-    const sql = await readFile(
-      path.join(migrationsDirectory, migrationName, "migration.sql"),
-    );
-    return {
-      migrationName,
-      checksum: createHash("sha256").update(sql).digest("hex"),
-    };
-  }));
+  return Promise.all(
+    migrations.map(async (migrationName) => {
+      const sql = await readFile(
+        path.join(migrationsDirectory, migrationName, "migration.sql"),
+      );
+      return {
+        migrationName,
+        checksum: createHash("sha256").update(sql).digest("hex"),
+      };
+    }),
+  );
 }
 
 function evaluateMigrationHistory(rows, expectedMigrations) {
@@ -73,10 +84,7 @@ function evaluateMigrationHistory(rows, expectedMigrations) {
     ]),
   );
   const actualByName = new Map(
-    rows.map((migration) => [
-      migration.migration_name,
-      migration.checksum,
-    ]),
+    rows.map((migration) => [migration.migration_name, migration.checksum]),
   );
   const localOnly = expectedMigrations
     .map((migration) => migration.migrationName)
@@ -87,11 +95,13 @@ function evaluateMigrationHistory(rows, expectedMigrations) {
   const checksumMismatches = rows.flatMap((migration) => {
     const expectedChecksum = expectedByName.get(migration.migration_name);
     if (!expectedChecksum || expectedChecksum === migration.checksum) return [];
-    return [{
-      migrationName: migration.migration_name,
-      databaseChecksum: migration.checksum,
-      fileChecksum: expectedChecksum,
-    }];
+    return [
+      {
+        migrationName: migration.migration_name,
+        databaseChecksum: migration.checksum,
+        fileChecksum: expectedChecksum,
+      },
+    ];
   });
   return {
     localCount: expectedMigrations.length,
@@ -100,9 +110,9 @@ function evaluateMigrationHistory(rows, expectedMigrations) {
     databaseOnly,
     checksumMismatches,
     complete:
-      localOnly.length === 0
-      && databaseOnly.length === 0
-      && rows.length === expectedMigrations.length,
+      localOnly.length === 0 &&
+      databaseOnly.length === 0 &&
+      rows.length === expectedMigrations.length,
     checksumsMatch: checksumMismatches.length === 0,
   };
 }
@@ -130,11 +140,15 @@ async function createDatabase(admin, databaseName) {
 }
 
 async function dropDatabase(admin, databaseName) {
-  await admin.query(
-    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1",
-    [databaseName],
-  ).catch(() => undefined);
-  await admin.query(`DROP DATABASE IF EXISTS "${databaseName}"`).catch(() => undefined);
+  await admin
+    .query(
+      "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1",
+      [databaseName],
+    )
+    .catch(() => undefined);
+  await admin
+    .query(`DROP DATABASE IF EXISTS "${databaseName}"`)
+    .catch(() => undefined);
 }
 
 async function expectDeferredTransactionFailure(
@@ -160,7 +174,7 @@ async function expectDeferredTransactionFailure(
     return {
       statementsCompleted,
       rejected: expectedMessages.some((candidate) =>
-        message.includes(candidate)
+        message.includes(candidate),
       ),
       message,
     };
@@ -171,8 +185,7 @@ async function exerciseDeferredPublicCatalogQualificationAuthority(
   db,
   databaseName,
 ) {
-  const fixture =
-    `migration-rehearsal-public-qualification-${runId}-${databaseName}`;
+  const fixture = `migration-rehearsal-public-qualification-${runId}-${databaseName}`;
   const userId = `${fixture}-user`;
   const characterId = `${fixture}-character`;
   const projectId = `${fixture}-project`;
@@ -344,7 +357,7 @@ async function exerciseDeferredPublicCatalogQualificationAuthority(
     placements: strictManifest.placements.map((placement) =>
       placement.slotKey === "character_avatar"
         ? { ...placement, assetId: previousAssetId }
-        : placement
+        : placement,
     ),
   };
   await insertGeneratedRelease({
@@ -355,22 +368,24 @@ async function exerciseDeferredPublicCatalogQualificationAuthority(
   });
   const mismatchedQualification = await expectDeferredTransactionFailure(
     db,
-    [{
-      text: `INSERT INTO public_catalog_qualifications
+    [
+      {
+        text: `INSERT INTO public_catalog_qualifications
         (id, "releaseId", "releaseSnapshotHash", kind, "validationRunId",
          evidence, "qualifiedAt")
        VALUES ($1, $2, $3, 'generated_release', $4, $5::jsonb, NOW())`,
-      values: [
-        failedQualificationId,
-        failedReleaseId,
-        failedSnapshotHash,
-        failedValidationId,
-        JSON.stringify({
-          schemaVersion: "public-catalog-qualification-v1",
-          policyVersion: "character-release-policy-v2",
-        }),
-      ],
-    }],
+        values: [
+          failedQualificationId,
+          failedReleaseId,
+          failedSnapshotHash,
+          failedValidationId,
+          JSON.stringify({
+            schemaVersion: "public-catalog-qualification-v1",
+            policyVersion: "character-release-policy-v2",
+          }),
+        ],
+      },
+    ],
     "public catalog qualification requires the exact Character avatar projection",
   );
   const failedQualificationCount = await db.query(
@@ -394,22 +409,24 @@ async function exerciseDeferredPublicCatalogQualificationAuthority(
     });
     const rejection = await expectDeferredTransactionFailure(
       db,
-      [{
-        text: `INSERT INTO public_catalog_qualifications
+      [
+        {
+          text: `INSERT INTO public_catalog_qualifications
           (id, "releaseId", "releaseSnapshotHash", kind, "validationRunId",
            evidence, "qualifiedAt")
          VALUES ($1, $2, $3, 'generated_release', $4, $5::jsonb, NOW())`,
-        values: [
-          malformedQualificationId,
-          malformedReleaseId,
-          malformedSnapshotHash,
-          malformedValidationId,
-          JSON.stringify({
-            schemaVersion: "public-catalog-qualification-v1",
-            policyVersion: "character-release-policy-v2",
-          }),
-        ],
-      }],
+          values: [
+            malformedQualificationId,
+            malformedReleaseId,
+            malformedSnapshotHash,
+            malformedValidationId,
+            JSON.stringify({
+              schemaVersion: "public-catalog-qualification-v1",
+              policyVersion: "character-release-policy-v2",
+            }),
+          ],
+        },
+      ],
       "generated public qualification requires exact policy and required route authority",
     );
     const preserved = await db.query(
@@ -529,8 +546,8 @@ async function exerciseDeferredPublicCatalogQualificationAuthority(
     return {
       ...rejection,
       rolledBack:
-        preserved.rows[0]?.servingPreserved === true
-        && preserved.rows[0]?.qualificationRolledBack === true,
+        preserved.rows[0]?.servingPreserved === true &&
+        preserved.rows[0]?.qualificationRolledBack === true,
     };
   }
 
@@ -553,7 +570,7 @@ async function exerciseDeferredPublicCatalogQualificationAuthority(
     placements: strictManifest.placements.map((placement) =>
       placement.slotKey === "character_hero"
         ? { ...placement, slotVersion: 9_007_199_254_740_992 }
-        : placement
+        : placement,
     ),
   };
   const unsafeSlotVersionAuthority = await rejectMalformedManifestAuthority(
@@ -565,7 +582,7 @@ async function exerciseDeferredPublicCatalogQualificationAuthority(
     placements: strictManifest.placements.map((placement) =>
       placement.slotKey === "character_chat"
         ? { ...placement, runId: "\t" }
-        : placement
+        : placement,
     ),
   };
   const tabOnlyLineageAuthority = await rejectMalformedManifestAuthority(
@@ -575,16 +592,15 @@ async function exerciseDeferredPublicCatalogQualificationAuthority(
 
   const unhydratableHeroAsset = await expectDeferredTransactionFailure(
     db,
-    [{
-      text: `UPDATE media_assets
+    [
+      {
+        text: `UPDATE media_assets
        SET "storageKey" = NULL,
            url = $2
        WHERE id = $1`,
-      values: [
-        heroAssetId,
-        `/user-content/${fixture}/hero-relative.png`,
-      ],
-    }],
+        values: [heroAssetId, `/user-content/${fixture}/hero-relative.png`],
+      },
+    ],
     "live public generated Character requires three exact hydratable Character assets",
   );
   const heroAfterRejectedBlobUpdate = await db.query(
@@ -596,12 +612,14 @@ async function exerciseDeferredPublicCatalogQualificationAuthority(
 
   const privateHeroAsset = await expectDeferredTransactionFailure(
     db,
-    [{
-      text: `UPDATE media_assets
+    [
+      {
+        text: `UPDATE media_assets
        SET visibility = 'private'
        WHERE id = $1`,
-      values: [heroAssetId],
-    }],
+        values: [heroAssetId],
+      },
+    ],
     "live public generated Character requires three exact publishable Character assets",
   );
   const heroAfterRejectedUpdate = await db.query(
@@ -611,8 +629,9 @@ async function exerciseDeferredPublicCatalogQualificationAuthority(
 
   const blockedChatAsset = await expectDeferredTransactionFailure(
     db,
-    [{
-      text: `UPDATE media_assets
+    [
+      {
+        text: `UPDATE media_assets
        SET metadata = jsonb_set(
          metadata,
          '{platformAsset}',
@@ -620,8 +639,9 @@ async function exerciseDeferredPublicCatalogQualificationAuthority(
          true
        )
        WHERE id = $1`,
-      values: [chatAssetId],
-    }],
+        values: [chatAssetId],
+      },
+    ],
     "live public generated Character requires three exact publishable Character assets",
   );
   const chatAfterRejectedUpdate = await db.query(
@@ -633,10 +653,12 @@ async function exerciseDeferredPublicCatalogQualificationAuthority(
 
   const deletedHeroAsset = await expectDeferredTransactionFailure(
     db,
-    [{
-      text: `DELETE FROM media_assets WHERE id = $1`,
-      values: [heroAssetId],
-    }],
+    [
+      {
+        text: `DELETE FROM media_assets WHERE id = $1`,
+        values: [heroAssetId],
+      },
+    ],
     "live public generated Character requires three exact publishable Character assets",
   );
   const heroAfterRejectedDelete = await db.query(
@@ -652,15 +674,16 @@ async function exerciseDeferredPublicCatalogQualificationAuthority(
   );
   let secondaryDeleteActiveQualification;
   try {
-    secondaryDeleteActiveQualification =
-      await expectDeferredTransactionFailure(
-        db,
-        [{
+    secondaryDeleteActiveQualification = await expectDeferredTransactionFailure(
+      db,
+      [
+        {
           text: `DELETE FROM public_catalog_qualifications WHERE id = $1`,
           values: [qualificationId],
-        }],
-        "live public Character requires one exact non-revoked qualification",
-      );
+        },
+      ],
+      "live public Character requires one exact non-revoked qualification",
+    );
   } finally {
     await db.query(
       `ALTER TABLE public_catalog_qualifications
@@ -679,10 +702,12 @@ async function exerciseDeferredPublicCatalogQualificationAuthority(
 
   const deleteActiveQualification = await expectDeferredTransactionFailure(
     db,
-    [{
-      text: `DELETE FROM public_catalog_qualifications WHERE id = $1`,
-      values: [qualificationId],
-    }],
+    [
+      {
+        text: `DELETE FROM public_catalog_qualifications WHERE id = $1`,
+        values: [qualificationId],
+      },
+    ],
     [
       "public catalog qualification cannot be deleted; revoke it instead",
       "live public Character requires one exact non-revoked qualification",
@@ -703,12 +728,14 @@ async function exerciseDeferredPublicCatalogQualificationAuthority(
 
   const immutableUpdate = await expectDeferredTransactionFailure(
     db,
-    [{
-      text: `UPDATE public_catalog_qualifications
+    [
+      {
+        text: `UPDATE public_catalog_qualifications
        SET evidence = '{"tampered":true}'::jsonb
        WHERE id = $1`,
-      values: [qualificationId],
-    }],
+        values: [qualificationId],
+      },
+    ],
     "public catalog qualification is immutable except for one-way revocation",
   );
   const evidenceAfterRejectedUpdate = await db.query(
@@ -734,12 +761,14 @@ async function exerciseDeferredPublicCatalogQualificationAuthority(
   );
   const unrevocation = await expectDeferredTransactionFailure(
     db,
-    [{
-      text: `UPDATE public_catalog_qualifications
+    [
+      {
+        text: `UPDATE public_catalog_qualifications
        SET "revokedAt" = NULL
        WHERE id = $1`,
-      values: [qualificationId],
-    }],
+        values: [qualificationId],
+      },
+    ],
     "public catalog qualification is immutable except for one-way revocation",
   );
   const revocationAfterRejectedUpdate = await db.query(
@@ -760,10 +789,10 @@ async function exerciseDeferredPublicCatalogQualificationAuthority(
     tabOnlyLineageAuthority,
     unhydratableHeroAsset,
     unhydratableHeroAssetRolledBack:
-      heroAfterRejectedBlobUpdate.rows[0]?.storageKey
-        === `${fixture}/hero.png`
-      && heroAfterRejectedBlobUpdate.rows[0]?.url
-        === `https://example.test/${fixture}/hero.png`,
+      heroAfterRejectedBlobUpdate.rows[0]?.storageKey ===
+        `${fixture}/hero.png` &&
+      heroAfterRejectedBlobUpdate.rows[0]?.url ===
+        `https://example.test/${fixture}/hero.png`,
     privateHeroAsset,
     privateHeroAssetRolledBack:
       heroAfterRejectedUpdate.rows[0]?.visibility === "public_pack",
@@ -771,21 +800,20 @@ async function exerciseDeferredPublicCatalogQualificationAuthority(
     blockedChatAssetRolledBack:
       chatAfterRejectedUpdate.rows[0]?.platformStatus === null,
     deletedHeroAsset,
-    deletedHeroAssetRolledBack:
-      heroAfterRejectedDelete.rows[0]?.count === 1,
+    deletedHeroAssetRolledBack: heroAfterRejectedDelete.rows[0]?.count === 1,
     secondaryDeleteActiveQualification,
     secondaryDeleteRolledBack:
-      liveChainAfterSecondaryRejectedDelete.rowCount === 1
-      && liveChainAfterSecondaryRejectedDelete.rows[0]?.qualificationId
-        === qualificationId,
+      liveChainAfterSecondaryRejectedDelete.rowCount === 1 &&
+      liveChainAfterSecondaryRejectedDelete.rows[0]?.qualificationId ===
+        qualificationId,
     deleteActiveQualification,
     activeQualificationDeleteRolledBack:
-      liveChainAfterRejectedDelete.rowCount === 1
-      && liveChainAfterRejectedDelete.rows[0]?.state === "live"
-      && liveChainAfterRejectedDelete.rows[0]?.currentReleaseId === releaseId
-      && liveChainAfterRejectedDelete.rows[0]?.qualificationId
-        === qualificationId
-      && liveChainAfterRejectedDelete.rows[0]?.revokedAt === null,
+      liveChainAfterRejectedDelete.rowCount === 1 &&
+      liveChainAfterRejectedDelete.rows[0]?.state === "live" &&
+      liveChainAfterRejectedDelete.rows[0]?.currentReleaseId === releaseId &&
+      liveChainAfterRejectedDelete.rows[0]?.qualificationId ===
+        qualificationId &&
+      liveChainAfterRejectedDelete.rows[0]?.revokedAt === null,
     immutableUpdate,
     immutableEvidencePreserved:
       evidenceAfterRejectedUpdate.rows[0]?.evidence?.tampered !== true,
@@ -858,13 +886,17 @@ async function exerciseLocalEvidenceTerminalMigration(db, databaseName) {
     );
   }
 
-  const migrationSql = await Promise.all([
-    localEvidenceTerminalMigration,
-    imageReadinessLocalEvidenceTerminalMigration,
-  ].map((migration) => readFile(
-    path.join(migrationsDirectory, migration, "migration.sql"),
-    "utf8",
-  )));
+  const migrationSql = await Promise.all(
+    [
+      localEvidenceTerminalMigration,
+      imageReadinessLocalEvidenceTerminalMigration,
+    ].map((migration) =>
+      readFile(
+        path.join(migrationsDirectory, migration, "migration.sql"),
+        "utf8",
+      ),
+    ),
+  );
   for (const sql of migrationSql) await db.query(sql);
   const first = await db.query(
     `SELECT
@@ -893,49 +925,44 @@ async function exerciseLocalEvidenceTerminalMigration(db, databaseName) {
   const unrelated = firstById.get(fixtures[3].id);
   return {
     rows: first.rows,
-    targetRowsTerminal: terminalRows.every(({ fixture: expected, persisted }) =>
-      persisted?.status === "delivered"
-      && persisted.deliveredAt instanceof Date
-      && persisted.deliveredAt.getTime() === expected.createdAt.getTime()
+    targetRowsTerminal: terminalRows.every(
+      ({ fixture: expected, persisted }) =>
+        persisted?.status === "delivered" &&
+        persisted.deliveredAt instanceof Date &&
+        persisted.deliveredAt.getTime() === expected.createdAt.getTime(),
     ),
     targetEvidencePreserved: terminalRows.every(
       ({ fixture: expected, persisted }) =>
-        persisted?.attempts === expected.attempts
-        && persisted.payload?.evidence === expected.payload.evidence,
+        persisted?.attempts === expected.attempts &&
+        persisted.payload?.evidence === expected.payload.evidence,
     ),
     terminalReasonRecorded: terminalRows.every(
       ({ fixture: expected, persisted }) =>
-        persisted?.lastError?.outcome === "local_evidence"
-        && persisted.lastError.reason ===
-          "local_evidence_has_no_transport_sink"
-        && persisted.lastError.terminalizedBy === (
-          expected.eventType === "character.image_readiness.repaired.v1"
+        persisted?.lastError?.outcome === "local_evidence" &&
+        persisted.lastError.reason === "local_evidence_has_no_transport_sink" &&
+        persisted.lastError.terminalizedBy ===
+          (expected.eventType === "character.image_readiness.repaired.v1"
             ? imageReadinessLocalEvidenceTerminalMigration
-            : localEvidenceTerminalMigration
-        ),
+            : localEvidenceTerminalMigration),
     ),
     previousErrorPreserved:
       firstById.get(fixtures[0].id)?.lastError?.message ===
-        "historical pending transport"
-      && firstById.get(fixtures[1].id)?.lastError?.previousLastError ===
+        "historical pending transport" &&
+      firstById.get(fixtures[1].id)?.lastError?.previousLastError ===
         "historical scalar error",
     unrelatedRowPreserved:
-      unrelated?.status === "pending"
-      && unrelated.deliveredAt === null
-      && unrelated.attempts === fixtures[3].attempts
-      && unrelated.payload?.evidence === fixtures[3].payload.evidence
-      && unrelated.lastError === null,
+      unrelated?.status === "pending" &&
+      unrelated.deliveredAt === null &&
+      unrelated.attempts === fixtures[3].attempts &&
+      unrelated.payload?.evidence === fixtures[3].payload.evidence &&
+      unrelated.lastError === null,
     repeatedApplicationNoop:
       JSON.stringify(first.rows) === JSON.stringify(second.rows),
   };
 }
 
-async function exerciseSyntheticPreviewQuarantineForwardFix(
-  db,
-  databaseName,
-) {
-  const fixture =
-    `migration-rehearsal-synthetic-preview-${runId}-${databaseName}`;
+async function exerciseSyntheticPreviewQuarantineForwardFix(db, databaseName) {
+  const fixture = `migration-rehearsal-synthetic-preview-${runId}-${databaseName}`;
   const userId = `${fixture}-user`;
   const tolerantAssetId = `${fixture}-yes`;
   const unrelatedAssetId = `${fixture}-unrelated`;
@@ -996,52 +1023,282 @@ async function exerciseSyntheticPreviewQuarantineForwardFix(
   const unrelated = firstById.get(unrelatedAssetId);
   return {
     tolerantSyntheticValueQuarantined:
-      tolerant?.visibility === "unlisted"
-      && tolerant.characterId === null
-      && tolerant.metadata?.quarantined === true
-      && tolerant.metadata?.quarantineReason ===
-        "synthetic_character_preview",
+      tolerant?.visibility === "unlisted" &&
+      tolerant.characterId === null &&
+      tolerant.metadata?.quarantined === true &&
+      tolerant.metadata?.quarantineReason === "synthetic_character_preview",
     unrelatedValuePreserved:
-      unrelated?.visibility === "private"
-      && unrelated.characterId === null
-      && unrelated.metadata?.synthetic === "legacy"
-      && unrelated.metadata?.quarantined === undefined,
+      unrelated?.visibility === "private" &&
+      unrelated.characterId === null &&
+      unrelated.metadata?.synthetic === "legacy" &&
+      unrelated.metadata?.quarantined === undefined,
     repeatedApplicationNoop:
       JSON.stringify(first.rows) === JSON.stringify(second.rows),
   };
 }
 
+async function exerciseRuntimeSchemaReconciliation(db, databaseName) {
+  const fixture = `runtime-reconciliation-${runId}-${databaseName}`;
+  const modelProfileId = `${fixture}-model-profile`;
+  const artifactId = `${fixture}-artifact`;
+  const userId = `${fixture}-user`;
+  const characterId = `${fixture}-character`;
+  const visualProfileId = `${fixture}-visual-profile`;
+  const referenceSetRevisionId = `${fixture}-reference-set`;
+  const coveredAssetId = `${fixture}-covered-asset`;
+  const missingAssetId = `${fixture}-missing-asset`;
+  await db.query(
+    `INSERT INTO generation_model_profiles
+      (id, "profileKey", label, runner, "pipelineModel",
+       "allowedOrientations", "updatedAt")
+     VALUES ($1, $2, 'Legacy runner rehearsal', 'sd_cpp',
+       'legacy-runner-rehearsal', '["portrait"]'::jsonb, NOW())`,
+    [modelProfileId, `${fixture}-profile-key`],
+  );
+  await db.query(
+    `INSERT INTO generation_artifacts
+      (id, "attemptId", ordinal, "terminalRecordChecksum", "validationState")
+     VALUES ($1, $2, 1, $3, 'late_after_cancel')`,
+    [artifactId, `${fixture}-attempt`, `${fixture}-checksum`],
+  );
+
+  const migrationSql = await readFile(
+    path.join(
+      migrationsDirectory,
+      "20260811143000_runtime_schema_reconciliation",
+      "migration.sql",
+    ),
+    "utf8",
+  );
+
+  // The migration has already run through Prisma on this disposable database.
+  // Recreate only the retired shadow shape so direct execution can prove the
+  // manual-partial states without changing migration history.
+  await db.query(
+    `ALTER TABLE character_visual_profiles
+       ADD COLUMN "referenceAssetIds" JSONB NOT NULL DEFAULT '[]'::jsonb`,
+  );
+  await db.query(
+    `INSERT INTO users
+      (id, email, "emailVerified", role, status, "updatedAt")
+     VALUES ($1, $2, false, 'admin', 'active', NOW())`,
+    [userId, `${userId}@example.test`],
+  );
+  await db.query(
+    `INSERT INTO characters
+      (id, "creatorId", name, age, description, appearance,
+       "advancedDetails", "updatedAt")
+     VALUES ($1, $2, 'Runtime reconciliation Character', 28,
+       'Verifies profile shadow parity before destructive DDL.',
+       '{}'::jsonb, '{}'::jsonb, NOW())`,
+    [characterId, userId],
+  );
+  await db.query(
+    `INSERT INTO media_assets
+      (id, "ownerId", type, url, "storageKey", "contentType",
+       visibility, "safetyStatus", metadata)
+     VALUES
+       ($1, $3, 'image', $4, $5, 'image/png', 'private', 'passed', '{}'::jsonb),
+       ($2, $3, 'image', $6, $7, 'image/png', 'private', 'passed', '{}'::jsonb)`,
+    [
+      coveredAssetId,
+      missingAssetId,
+      userId,
+      `https://example.test/${coveredAssetId}.png`,
+      `${fixture}/covered.png`,
+      `https://example.test/${missingAssetId}.png`,
+      `${fixture}/missing.png`,
+    ],
+  );
+  await db.query(
+    `INSERT INTO character_visual_profiles
+      (id, "characterId", status, "identityPrompt",
+       "faceTraits", "hairTraits", "bodyTraits", "signatureTraits",
+       "styleTraits", "anchorAssetIds", "referenceAssetIds",
+       "adapterRefs", "createdFrom", "updatedAt")
+     VALUES ($1, $2, 'active', 'Stable reconciliation identity',
+       '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
+       '{}'::jsonb, '[]'::jsonb, '{"unexpected":"shape"}'::jsonb,
+       '[]'::jsonb, 'migration_rehearsal', NOW())`,
+    [visualProfileId, characterId],
+  );
+  await db.query(
+    `INSERT INTO reference_set_revisions
+      (id, "visualProfileId", revision, status, "createdFrom")
+     VALUES ($1, $2, 1, 'active', 'migration_rehearsal')`,
+    [referenceSetRevisionId, visualProfileId],
+  );
+  await db.query(
+    `INSERT INTO character_visual_reference_snapshots
+      (id, "referenceSetRevisionId", "mediaAssetId", position, role,
+       "selectionReason")
+     VALUES ($1, $2, $3, 0, 'identity_reference', 'migration_rehearsal')`,
+    [`${fixture}-covered-snapshot`, referenceSetRevisionId, coveredAssetId],
+  );
+
+  async function expectMigrationRejection(expectedMessage) {
+    try {
+      await db.query(migrationSql);
+      return false;
+    } catch (error) {
+      await db.query("ROLLBACK").catch(() => undefined);
+      return (
+        error?.code === "23514" && String(error.message).includes(expectedMessage)
+      );
+    }
+  }
+
+  async function rejectedStateWasPreserved(expectedShadow) {
+    const state = await db.query(
+      `SELECT
+         (SELECT runner FROM generation_model_profiles WHERE id = $1) AS runner,
+         (SELECT "validationState" FROM generation_artifacts WHERE id = $2)
+           AS artifact_state,
+         EXISTS (
+           SELECT 1 FROM information_schema.columns
+           WHERE table_schema = 'public'
+             AND table_name = 'character_visual_profiles'
+             AND column_name = 'referenceAssetIds'
+         ) AS visual_profile_shadow_exists`,
+      [modelProfileId, artifactId],
+    );
+    const row = state.rows[0] ?? {};
+    if (row.visual_profile_shadow_exists !== true) return false;
+    const shadow = await db.query(
+      `SELECT "referenceAssetIds" AS value
+       FROM character_visual_profiles
+       WHERE id = $1`,
+      [visualProfileId],
+    );
+    return (
+      row.runner === "sd_cpp" &&
+      row.artifact_state === "late_after_cancel" &&
+      JSON.stringify(shadow.rows[0]?.value) === JSON.stringify(expectedShadow)
+    );
+  }
+
+  const malformedShadowRejected = await expectMigrationRejection(
+    "referenceAssetIds must be a JSON array of non-empty media asset ids",
+  );
+  const malformedShadowTransactionRolledBack =
+    await rejectedStateWasPreserved({ unexpected: "shape" });
+
+  const driftedShadow = [coveredAssetId, missingAssetId];
+  await db.query(
+    `UPDATE character_visual_profiles
+     SET "referenceAssetIds" = $2::jsonb
+     WHERE id = $1`,
+    [visualProfileId, JSON.stringify(driftedShadow)],
+  );
+  const driftedShadowRejected = await expectMigrationRejection(
+    "referenceAssetIds shadow parity failed",
+  );
+  const driftedShadowTransactionRolledBack =
+    await rejectedStateWasPreserved(driftedShadow);
+
+  await db.query(
+    `INSERT INTO character_visual_reference_snapshots
+      (id, "referenceSetRevisionId", "mediaAssetId", position, role,
+       "selectionReason")
+     VALUES ($1, $2, $3, 1, 'identity_reference', 'migration_rehearsal')`,
+    [`${fixture}-missing-snapshot`, referenceSetRevisionId, missingAssetId],
+  );
+  await db.query(migrationSql);
+
+  const authority = await db.query(
+    `SELECT
+       (SELECT runner FROM generation_model_profiles WHERE id = $1) AS runner,
+       (SELECT "validationState" FROM generation_artifacts WHERE id = $2)
+         AS artifact_state,
+       (SELECT column_default
+          FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND table_name = 'generation_model_profiles'
+           AND column_name = 'runner') AS runner_default,
+       EXISTS (
+         SELECT 1 FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND table_name = 'character_visual_profiles'
+           AND column_name = 'referenceAssetIds'
+       ) AS visual_profile_shadow_exists,
+       EXISTS (
+         SELECT 1 FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND table_name = 'generation_jobs'
+           AND column_name = 'referenceAssetIds'
+       ) AS generation_job_reference_snapshot_exists`,
+    [modelProfileId, artifactId],
+  );
+  await db.query("DELETE FROM character_visual_profiles WHERE id = $1", [
+    visualProfileId,
+  ]);
+  await db.query("DELETE FROM media_assets WHERE id = ANY($1::text[])", [
+    [coveredAssetId, missingAssetId],
+  ]);
+  await db.query("DELETE FROM characters WHERE id = $1", [characterId]);
+  await db.query("DELETE FROM users WHERE id = $1", [userId]);
+  await db.query("DELETE FROM generation_artifacts WHERE id = $1", [
+    artifactId,
+  ]);
+  await db.query("DELETE FROM generation_model_profiles WHERE id = $1", [
+    modelProfileId,
+  ]);
+  const row = authority.rows[0] ?? {};
+  return {
+    malformedShadowRejected,
+    malformedShadowTransactionRolledBack,
+    driftedShadowRejected,
+    driftedShadowTransactionRolledBack,
+    runnerBackfilled: row.runner === "comfyui",
+    artifactStateBackfilled: row.artifact_state === "late_after_cancelled",
+    runnerDefaultReconciled:
+      typeof row.runner_default === "string" &&
+      row.runner_default.includes("comfyui"),
+    visualProfileShadowRemoved: row.visual_profile_shadow_exists === false,
+    generationJobReferenceSnapshotPreserved:
+      row.generation_job_reference_snapshot_exists === true,
+  };
+}
+
 async function inspectExpandedSchema(databaseName) {
-  const db = new pg.Client({ connectionString: databaseUrl(databaseName).toString() });
+  const db = new pg.Client({
+    connectionString: databaseUrl(databaseName).toString(),
+  });
   await db.connect();
   try {
+    const runtimeSchemaReconciliation =
+      await exerciseRuntimeSchemaReconciliation(db, databaseName);
     const tables = await db.query(
       `SELECT tablename
        FROM pg_tables
        WHERE schemaname = 'public' AND tablename = ANY($1::text[])
        ORDER BY tablename`,
-      [[
-        "character_serving",
-        "character_qa_runs",
-        "control_plane_commands",
-        "generation_transport_executions",
-        "incident_postmortems",
-        "metric_definition_snapshots",
-      ]],
+      [
+        [
+          "character_serving",
+          "character_qa_runs",
+          "control_plane_commands",
+          "generation_transport_executions",
+          "incident_postmortems",
+          "metric_definition_snapshots",
+        ],
+      ],
     );
     const triggers = await db.query(
       `SELECT tgname
        FROM pg_trigger
        WHERE NOT tgisinternal AND tgname = ANY($1::text[])
        ORDER BY tgname`,
-      [[
-        "analytics_events_immutable",
-        "character_release_snapshot_immutable",
-        "character_qa_runs_immutable_update",
-        "generation_attempt_terminal_event_required",
-        "generation_transport_execution_lifecycle",
-        "incident_postmortems_immutable",
-      ]],
+      [
+        [
+          "analytics_events_immutable",
+          "character_release_snapshot_immutable",
+          "character_qa_runs_immutable_update",
+          "generation_attempt_terminal_event_required",
+          "generation_transport_execution_lifecycle",
+          "incident_postmortems_immutable",
+        ],
+      ],
     );
     const generationColumns = await db.query(
       `SELECT column_name, is_nullable, column_default
@@ -1058,9 +1315,13 @@ async function inspectExpandedSchema(databaseName) {
        WHERE conname LIKE 'character_serving_%_fkey'
        ORDER BY conname`,
     );
-    const unvalidated = servingConstraints.rows.filter((row) => !row.convalidated);
+    const unvalidated = servingConstraints.rows.filter(
+      (row) => !row.convalidated,
+    );
     for (const constraint of unvalidated) {
-      await db.query(`ALTER TABLE character_serving VALIDATE CONSTRAINT "${constraint.conname}"`);
+      await db.query(
+        `ALTER TABLE character_serving VALIDATE CONSTRAINT "${constraint.conname}"`,
+      );
     }
     const validatedServingConstraints = await db.query(
       `SELECT conname, condeferrable, convalidated
@@ -1092,11 +1353,13 @@ async function inspectExpandedSchema(databaseName) {
          AND tgrelid = 'public_catalog_qualifications'::regclass
          AND tgname = ANY($1::text[])
        ORDER BY tgname`,
-      [[
-        "live_public_authority_v2_from_qualification_delete",
-        "public_catalog_qualification_authority",
-        "public_catalog_qualification_policy_route_authority",
-      ]],
+      [
+        [
+          "live_public_authority_v2_from_qualification_delete",
+          "public_catalog_qualification_authority",
+          "public_catalog_qualification_policy_route_authority",
+        ],
+      ],
     );
     const livePublicMediaAssetAuthorityTriggers = await db.query(
       `SELECT
@@ -1109,18 +1372,28 @@ async function inspectExpandedSchema(databaseName) {
          AND tgrelid = 'media_assets'::regclass
          AND tgname = 'live_public_authority_v2_from_media_asset'`,
     );
+    const accountDeletionAuthorityTriggers = await db.query(
+      `SELECT
+         tgname,
+         tgdeferrable,
+         tginitdeferred,
+         pg_get_triggerdef(oid) AS definition
+       FROM pg_trigger
+       WHERE NOT tgisinternal
+         AND tgrelid = 'users'::regclass
+         AND tgname = 'customer_account_deletion_authority_required'`,
+    );
     const publicQualificationAuthority =
       await exerciseDeferredPublicCatalogQualificationAuthority(
         db,
         databaseName,
       );
-    const localEvidenceTerminal =
-      await exerciseLocalEvidenceTerminalMigration(db, databaseName);
+    const localEvidenceTerminal = await exerciseLocalEvidenceTerminalMigration(
+      db,
+      databaseName,
+    );
     const syntheticPreviewQuarantineForwardFix =
-      await exerciseSyntheticPreviewQuarantineForwardFix(
-        db,
-        databaseName,
-      );
+      await exerciseSyntheticPreviewQuarantineForwardFix(db, databaseName);
     const referenceSetFixture = `migration-rehearsal-reference-set-${runId}-${databaseName}`;
     let duplicateActiveReferenceSetRejected = false;
     await db.query("BEGIN");
@@ -1137,25 +1410,19 @@ async function inspectExpandedSchema(databaseName) {
         `INSERT INTO character_visual_profiles
           (id, "characterId", status, "identityPrompt",
            "faceTraits", "hairTraits", "bodyTraits", "signatureTraits",
-           "styleTraits", "anchorAssetIds", "referenceAssetIds",
+           "styleTraits", "anchorAssetIds",
            "adapterRefs", "createdFrom", "updatedAt")
          VALUES ($1, $2, 'active', 'Stable rehearsal identity',
            '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
-           '{}'::jsonb, '[]'::jsonb, '[]'::jsonb,
+           '{}'::jsonb, '[]'::jsonb,
            '[]'::jsonb, 'migration_rehearsal', NOW())`,
-        [
-          `${referenceSetFixture}-profile`,
-          `${referenceSetFixture}-character`,
-        ],
+        [`${referenceSetFixture}-profile`, `${referenceSetFixture}-character`],
       );
       await db.query(
         `INSERT INTO reference_set_revisions
           (id, "visualProfileId", revision, status, "createdFrom")
          VALUES ($1, $2, 1, 'active', 'migration_rehearsal')`,
-        [
-          `${referenceSetFixture}-revision-1`,
-          `${referenceSetFixture}-profile`,
-        ],
+        [`${referenceSetFixture}-revision-1`, `${referenceSetFixture}-profile`],
       );
       await db.query("SAVEPOINT duplicate_active_reference_set");
       try {
@@ -1173,9 +1440,7 @@ async function inspectExpandedSchema(databaseName) {
           error?.code === "23505" &&
           error?.constraint ===
             "reference_set_revisions_one_active_per_visual_profile_key";
-        await db.query(
-          "ROLLBACK TO SAVEPOINT duplicate_active_reference_set",
-        );
+        await db.query("ROLLBACK TO SAVEPOINT duplicate_active_reference_set");
       }
     } finally {
       await db.query("ROLLBACK");
@@ -1196,9 +1461,14 @@ async function inspectExpandedSchema(databaseName) {
     );
     let qaImmutableUpdateRejected = false;
     try {
-      await db.query(`UPDATE character_qa_runs SET status = 'failed' WHERE id = $1`, [qaRunId]);
+      await db.query(
+        `UPDATE character_qa_runs SET status = 'failed' WHERE id = $1`,
+        [qaRunId],
+      );
     } catch (error) {
-      qaImmutableUpdateRejected = String(error).includes("character_qa_runs are immutable");
+      qaImmutableUpdateRejected = String(error).includes(
+        "character_qa_runs are immutable",
+      );
     }
     await db.query(`DELETE FROM character_qa_runs WHERE id = $1`, [qaRunId]);
     return {
@@ -1213,48 +1483,78 @@ async function inspectExpandedSchema(databaseName) {
         publicQualificationAuthorityTriggers.rows,
       livePublicMediaAssetAuthorityTriggers:
         livePublicMediaAssetAuthorityTriggers.rows,
+      accountDeletionAuthorityTriggers:
+        accountDeletionAuthorityTriggers.rows,
       publicQualificationAuthority,
       localEvidenceTerminal,
       syntheticPreviewQuarantineForwardFix,
+      runtimeSchemaReconciliation,
       checks: {
-        migrationHistoryComplete:
-          migrationHistoryAuthority.complete,
+        migrationHistoryComplete: migrationHistoryAuthority.complete,
         migrationHistoryChecksumsMatch:
           migrationHistoryAuthority.checksumsMatch,
         expandedTablesPresent: tables.rowCount === 6,
         databaseGuardsPresent: triggers.rowCount === 6,
         qaImmutableUpdateRejected,
         servingConstraintsPresent:
-          servingConstraints.rowCount === 3
-          && servingConstraints.rows.every((row) => row.condeferrable === true),
+          servingConstraints.rowCount === 3 &&
+          servingConstraints.rows.every((row) => row.condeferrable === true),
         servingConstraintsValidateAfterBackfill:
-          validatedServingConstraints.rowCount === 3
-          && validatedServingConstraints.rows.every((row) => row.convalidated === true),
+          validatedServingConstraints.rowCount === 3 &&
+          validatedServingConstraints.rows.every(
+            (row) => row.convalidated === true,
+          ),
         previousAppWriteShapeCompatible: generationColumns.rows.every(
-          (column) => column.is_nullable === "YES" || column.column_default !== null,
+          (column) =>
+            column.is_nullable === "YES" || column.column_default !== null,
         ),
+        accountDeletionAuthorityDeferred: (() => {
+          const trigger = accountDeletionAuthorityTriggers.rows[0];
+          return (
+            accountDeletionAuthorityTriggers.rowCount === 1 &&
+            trigger?.tgdeferrable === true &&
+            trigger.tginitdeferred === true &&
+            trigger.definition.includes("CREATE CONSTRAINT TRIGGER") &&
+            trigger.definition.includes("INSERT") &&
+            trigger.definition.includes("UPDATE")
+          );
+        })(),
         referenceSetSingleActiveIndexPresent:
           referenceSetActiveIndexes.rowCount === 1 &&
           referenceSetActiveIndexes.rows[0].indexdef.includes("WHERE") &&
           referenceSetActiveIndexes.rows[0].indexdef.includes("status") &&
-          referenceSetActiveIndexes.rows[0].indexdef.includes(
-            "'active'::text",
-          ),
+          referenceSetActiveIndexes.rows[0].indexdef.includes("'active'::text"),
         duplicateActiveReferenceSetRejected,
-        localEvidenceRowsTerminal:
-          localEvidenceTerminal.targetRowsTerminal,
+        generationRunnerDefaultReconciled:
+          runtimeSchemaReconciliation.runnerDefaultReconciled,
+        retiredGenerationRunnerBackfilled:
+          runtimeSchemaReconciliation.runnerBackfilled,
+        retiredArtifactStateBackfilled:
+          runtimeSchemaReconciliation.artifactStateBackfilled,
+        malformedVisualProfileShadowRejected:
+          runtimeSchemaReconciliation.malformedShadowRejected,
+        malformedVisualProfileShadowRollbackPreserved:
+          runtimeSchemaReconciliation.malformedShadowTransactionRolledBack,
+        driftedVisualProfileShadowRejected:
+          runtimeSchemaReconciliation.driftedShadowRejected,
+        driftedVisualProfileShadowRollbackPreserved:
+          runtimeSchemaReconciliation.driftedShadowTransactionRolledBack,
+        visualProfileShadowAuthorityRemoved:
+          runtimeSchemaReconciliation.visualProfileShadowRemoved,
+        generationJobReferenceSnapshotPreserved:
+          runtimeSchemaReconciliation.generationJobReferenceSnapshotPreserved,
+        localEvidenceRowsTerminal: localEvidenceTerminal.targetRowsTerminal,
         localEvidencePayloadAndAttemptsPreserved:
           localEvidenceTerminal.targetEvidencePreserved,
         localEvidenceTerminalReasonRecorded:
-          localEvidenceTerminal.terminalReasonRecorded
-          && localEvidenceTerminal.previousErrorPreserved,
+          localEvidenceTerminal.terminalReasonRecorded &&
+          localEvidenceTerminal.previousErrorPreserved,
         unrelatedOutboxRowPreserved:
           localEvidenceTerminal.unrelatedRowPreserved,
         localEvidenceTerminalMigrationIdempotent:
           localEvidenceTerminal.repeatedApplicationNoop,
         tolerantSyntheticPreviewQuarantined:
-          syntheticPreviewQuarantineForwardFix
-            .tolerantSyntheticValueQuarantined,
+          syntheticPreviewQuarantineForwardFix.tolerantSyntheticValueQuarantined,
         unrelatedSyntheticMetadataPreserved:
           syntheticPreviewQuarantineForwardFix.unrelatedValuePreserved,
         syntheticPreviewForwardFixIdempotent:
@@ -1262,118 +1562,124 @@ async function inspectExpandedSchema(databaseName) {
         publicQualificationAuthorityDeferred: (() => {
           const trigger = publicQualificationAuthorityTriggers.rows.find(
             (candidate) =>
-              candidate.tgname ===
-                "public_catalog_qualification_authority",
+              candidate.tgname === "public_catalog_qualification_authority",
           );
-          return trigger?.tgdeferrable === true
-            && trigger.tginitdeferred === true
-            && trigger.definition.includes("CREATE CONSTRAINT TRIGGER")
-            && trigger.definition.includes("DELETE");
+          return (
+            trigger?.tgdeferrable === true &&
+            trigger.tginitdeferred === true &&
+            trigger.definition.includes("CREATE CONSTRAINT TRIGGER") &&
+            trigger.definition.includes("DELETE")
+          );
         })(),
         livePublicQualificationDeleteAuthorityDeferred: (() => {
           const trigger = publicQualificationAuthorityTriggers.rows.find(
             (candidate) =>
               candidate.tgname ===
-                "live_public_authority_v2_from_qualification_delete",
+              "live_public_authority_v2_from_qualification_delete",
           );
-          return trigger?.tgdeferrable === true
-            && trigger.tginitdeferred === true
-            && trigger.definition.includes("CREATE CONSTRAINT TRIGGER")
-            && trigger.definition.includes("DELETE");
+          return (
+            trigger?.tgdeferrable === true &&
+            trigger.tginitdeferred === true &&
+            trigger.definition.includes("CREATE CONSTRAINT TRIGGER") &&
+            trigger.definition.includes("DELETE")
+          );
         })(),
         publicQualificationPolicyRouteAuthorityDeferred: (() => {
           const trigger = publicQualificationAuthorityTriggers.rows.find(
             (candidate) =>
               candidate.tgname ===
-                "public_catalog_qualification_policy_route_authority",
+              "public_catalog_qualification_policy_route_authority",
           );
-          return trigger?.tgdeferrable === true
-            && trigger.tginitdeferred === true
-            && trigger.definition.includes("CREATE CONSTRAINT TRIGGER")
-            && trigger.definition.includes("INSERT");
+          return (
+            trigger?.tgdeferrable === true &&
+            trigger.tginitdeferred === true &&
+            trigger.definition.includes("CREATE CONSTRAINT TRIGGER") &&
+            trigger.definition.includes("INSERT")
+          );
         })(),
         livePublicMediaAssetAuthorityCoversDelete: (() => {
           const trigger = livePublicMediaAssetAuthorityTriggers.rows[0];
-          return livePublicMediaAssetAuthorityTriggers.rowCount === 1
-            && trigger?.tgdeferrable === true
-            && trigger.tginitdeferred === true
-            && trigger.definition.includes("CREATE CONSTRAINT TRIGGER")
-            && trigger.definition.includes("DELETE");
+          return (
+            livePublicMediaAssetAuthorityTriggers.rowCount === 1 &&
+            trigger?.tgdeferrable === true &&
+            trigger.tginitdeferred === true &&
+            trigger.definition.includes("CREATE CONSTRAINT TRIGGER") &&
+            trigger.definition.includes("DELETE")
+          );
         })(),
         qualificationCanPrecedeProjectionInOneTransaction:
-          publicQualificationAuthority
-            .committedAfterQualificationBeforeProjection,
+          publicQualificationAuthority.committedAfterQualificationBeforeProjection,
         mismatchedQualificationRejectedAtCommit:
           publicQualificationAuthority.mismatchedQualification
-            .statementsCompleted
-          && publicQualificationAuthority.mismatchedQualification.rejected,
+            .statementsCompleted &&
+          publicQualificationAuthority.mismatchedQualification.rejected,
         failedQualificationTransactionRolledBack:
           publicQualificationAuthority.failedQualificationRolledBack,
         missingGeneratedPolicyRejectedAtCommit:
           publicQualificationAuthority.missingPolicyAuthority
-            .statementsCompleted
-          && publicQualificationAuthority.missingPolicyAuthority.rejected
-          && publicQualificationAuthority.missingPolicyAuthority.rolledBack,
+            .statementsCompleted &&
+          publicQualificationAuthority.missingPolicyAuthority.rejected &&
+          publicQualificationAuthority.missingPolicyAuthority.rolledBack,
         topLevelGeneratedRouteRejectedAtCommit:
           publicQualificationAuthority.topLevelRouteAuthority
-            .statementsCompleted
-          && publicQualificationAuthority.topLevelRouteAuthority.rejected
-          && publicQualificationAuthority.topLevelRouteAuthority.rolledBack,
+            .statementsCompleted &&
+          publicQualificationAuthority.topLevelRouteAuthority.rejected &&
+          publicQualificationAuthority.topLevelRouteAuthority.rolledBack,
         livePublicMalformedManifestRejectedAtCommit:
           publicQualificationAuthority.missingLineageManifestAuthority
-            .statementsCompleted
-          && publicQualificationAuthority.missingLineageManifestAuthority
-            .rejected
-          && publicQualificationAuthority.missingLineageManifestAuthority
+            .statementsCompleted &&
+          publicQualificationAuthority.missingLineageManifestAuthority
+            .rejected &&
+          publicQualificationAuthority.missingLineageManifestAuthority
             .rolledBack,
         livePublicUnsafeSlotVersionRejectedAtCommit:
           publicQualificationAuthority.unsafeSlotVersionAuthority
-            .statementsCompleted
-          && publicQualificationAuthority.unsafeSlotVersionAuthority.rejected
-          && publicQualificationAuthority.unsafeSlotVersionAuthority.rolledBack,
+            .statementsCompleted &&
+          publicQualificationAuthority.unsafeSlotVersionAuthority.rejected &&
+          publicQualificationAuthority.unsafeSlotVersionAuthority.rolledBack,
         livePublicTabOnlyLineageRejectedAtCommit:
           publicQualificationAuthority.tabOnlyLineageAuthority
-            .statementsCompleted
-          && publicQualificationAuthority.tabOnlyLineageAuthority.rejected
-          && publicQualificationAuthority.tabOnlyLineageAuthority.rolledBack,
+            .statementsCompleted &&
+          publicQualificationAuthority.tabOnlyLineageAuthority.rejected &&
+          publicQualificationAuthority.tabOnlyLineageAuthority.rolledBack,
         livePublicHeroBlobAuthorityRejectedAtCommit:
           publicQualificationAuthority.unhydratableHeroAsset
-            .statementsCompleted
-          && publicQualificationAuthority.unhydratableHeroAsset.rejected
-          && publicQualificationAuthority.unhydratableHeroAssetRolledBack,
+            .statementsCompleted &&
+          publicQualificationAuthority.unhydratableHeroAsset.rejected &&
+          publicQualificationAuthority.unhydratableHeroAssetRolledBack,
         livePublicHeroVisibilityRejectedAtCommit:
-          publicQualificationAuthority.privateHeroAsset.statementsCompleted
-          && publicQualificationAuthority.privateHeroAsset.rejected
-          && publicQualificationAuthority.privateHeroAssetRolledBack,
+          publicQualificationAuthority.privateHeroAsset.statementsCompleted &&
+          publicQualificationAuthority.privateHeroAsset.rejected &&
+          publicQualificationAuthority.privateHeroAssetRolledBack,
         livePublicChatBlockedRejectedAtCommit:
-          publicQualificationAuthority.blockedChatAsset.statementsCompleted
-          && publicQualificationAuthority.blockedChatAsset.rejected
-          && publicQualificationAuthority.blockedChatAssetRolledBack,
+          publicQualificationAuthority.blockedChatAsset.statementsCompleted &&
+          publicQualificationAuthority.blockedChatAsset.rejected &&
+          publicQualificationAuthority.blockedChatAssetRolledBack,
         livePublicHeroDeleteRejectedAtCommit:
-          publicQualificationAuthority.deletedHeroAsset.statementsCompleted
-          && publicQualificationAuthority.deletedHeroAsset.rejected
-          && publicQualificationAuthority.deletedHeroAssetRolledBack,
+          publicQualificationAuthority.deletedHeroAsset.statementsCompleted &&
+          publicQualificationAuthority.deletedHeroAsset.rejected &&
+          publicQualificationAuthority.deletedHeroAssetRolledBack,
         secondaryDeleteAuthorityIndependentlyRejectsAtCommit:
           publicQualificationAuthority.secondaryDeleteActiveQualification
-            .statementsCompleted
-          && publicQualificationAuthority.secondaryDeleteActiveQualification
-            .rejected
-          && publicQualificationAuthority.secondaryDeleteRolledBack,
+            .statementsCompleted &&
+          publicQualificationAuthority.secondaryDeleteActiveQualification
+            .rejected &&
+          publicQualificationAuthority.secondaryDeleteRolledBack,
         activeQualificationDeleteRejectedAtCommit:
           publicQualificationAuthority.deleteActiveQualification
-            .statementsCompleted
-          && publicQualificationAuthority.deleteActiveQualification.rejected,
+            .statementsCompleted &&
+          publicQualificationAuthority.deleteActiveQualification.rejected,
         activeQualificationDeleteRolledBack:
           publicQualificationAuthority.activeQualificationDeleteRolledBack,
         qualificationImmutableAtCommit:
-          publicQualificationAuthority.immutableUpdate.statementsCompleted
-          && publicQualificationAuthority.immutableUpdate.rejected
-          && publicQualificationAuthority.immutableEvidencePreserved,
+          publicQualificationAuthority.immutableUpdate.statementsCompleted &&
+          publicQualificationAuthority.immutableUpdate.rejected &&
+          publicQualificationAuthority.immutableEvidencePreserved,
         qualificationOneWayRevocation:
-          publicQualificationAuthority.oneWayRevocationCommitted
-          && publicQualificationAuthority.unrevocation.statementsCompleted
-          && publicQualificationAuthority.unrevocation.rejected
-          && publicQualificationAuthority.revocationPreserved,
+          publicQualificationAuthority.oneWayRevocationCommitted &&
+          publicQualificationAuthority.unrevocation.statementsCompleted &&
+          publicQualificationAuthority.unrevocation.rejected &&
+          publicQualificationAuthority.revocationPreserved,
       },
     };
   } finally {
@@ -1386,7 +1692,9 @@ async function applyBaselineSnapshot(databaseName) {
     path.join(migrationsDirectory, baselineMigration, "migration.sql"),
     "utf8",
   );
-  const db = new pg.Client({ connectionString: databaseUrl(databaseName).toString() });
+  const db = new pg.Client({
+    connectionString: databaseUrl(databaseName).toString(),
+  });
   await db.connect();
   try {
     await db.query(baselineSql);
@@ -1397,7 +1705,9 @@ async function applyBaselineSnapshot(databaseName) {
 }
 
 async function exercisePreviousAppWriteShape(databaseName) {
-  const db = new pg.Client({ connectionString: databaseUrl(databaseName).toString() });
+  const db = new pg.Client({
+    connectionString: databaseUrl(databaseName).toString(),
+  });
   await db.connect();
   try {
     const userId = `rehearsal-user-${runId}`;
@@ -1419,13 +1729,112 @@ async function exercisePreviousAppWriteShape(databaseName) {
        WHERE id = $1`,
       [jobId],
     );
-    const result = await db.query(
+    const jobResult = await db.query(
       `SELECT status, "deliveredOutputCount", version
        FROM generation_jobs
        WHERE id = $1`,
       [jobId],
     );
-    return result.rows[0] ?? null;
+    let rollbackSoftDeleteRejected = false;
+    await db.query("BEGIN");
+    try {
+      await db.query(
+        `UPDATE users
+         SET status = 'deleted', "deletedAt" = NOW(), "updatedAt" = NOW()
+         WHERE id = $1`,
+        [userId],
+      );
+      await db.query(`DELETE FROM sessions WHERE "userId" = $1`, [userId]);
+      await db.query("COMMIT");
+    } catch (error) {
+      rollbackSoftDeleteRejected =
+        error?.code === "23514" &&
+        error?.constraint === "customer_account_deletion_authority_required";
+      await db.query("ROLLBACK");
+    }
+    const rollbackState = await db.query(
+      `SELECT
+         (SELECT status FROM users WHERE id = $1) AS user_status,
+         (SELECT count(*)::integer FROM account_deletions WHERE "userId" = $1)
+           AS deletion_count`,
+      [userId],
+    );
+
+    const deletionId = `rehearsal-account-deletion-${runId}`;
+    const deletionEventId = `user_deleted_${userId}`;
+    await db.query("BEGIN");
+    await db.query(
+      `UPDATE users
+       SET status = 'deleted', "deletedAt" = NOW(), "updatedAt" = NOW()
+       WHERE id = $1`,
+      [userId],
+    );
+    await db.query(
+      `INSERT INTO account_deletions
+        (id, "userId", "subjectHash", status, "requestedAt", "graceEndsAt",
+         "chatRequestEventId", "updatedAt")
+       VALUES (
+         $1::text,
+         $2::text,
+         encode(sha256(convert_to($2::text, 'UTF8')), 'hex'),
+         'awaiting_chat',
+         NOW(),
+         NOW() + INTERVAL '30 days',
+         $3,
+         NOW()
+       )`,
+      [deletionId, userId, deletionEventId],
+    );
+    await db.query(
+      `INSERT INTO main_outbox_events
+        (id, "eventType", "aggregateType", "aggregateId", payload, status,
+         attempts, "nextRunAt", "createdAt", "updatedAt")
+       SELECT
+         $1,
+         'user.account_deletion.requested.v2',
+         'user',
+         $2,
+         jsonb_build_object(
+           'sourceService', 'main',
+           'sourceEventId', $1::text,
+           'eventType', 'user.account_deletion.requested.v2',
+           'schemaVersion', 2,
+           'occurredAt', to_char(ad."requestedAt", 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+           'aggregateType', 'user',
+           'aggregateId', $2::text,
+           'payload', jsonb_build_object('userId', $2::text)
+         ),
+         'pending',
+         0,
+         ad."graceEndsAt",
+         ad."requestedAt",
+         NOW()
+       FROM account_deletions ad
+       WHERE ad.id = $3::text`,
+      [deletionEventId, userId, deletionId],
+    );
+    await db.query("COMMIT");
+    const currentDeletionState = await db.query(
+      `SELECT
+         u.status AS user_status,
+         ad.status AS deletion_status,
+         moe.status AS outbox_status,
+         moe."eventType" AS outbox_event_type,
+         moe.payload ->> 'eventType' AS envelope_event_type,
+         (moe.payload ->> 'schemaVersion')::integer AS envelope_schema_version,
+         moe."nextRunAt" = ad."graceEndsAt" AS due_time_matches
+       FROM users u
+       JOIN account_deletions ad ON ad."userId" = u.id
+       JOIN main_outbox_events moe ON moe.id = ad."chatRequestEventId"
+       WHERE u.id = $1`,
+      [userId],
+    );
+    return {
+      jobRow: jobResult.rows[0] ?? null,
+      rollbackSoftDeleteRejected,
+      rollbackState: rollbackState.rows[0] ?? null,
+      currentDeletionState: currentDeletionState.rows[0] ?? null,
+    };
   } finally {
     await db.end();
   }
@@ -1437,8 +1846,7 @@ const sourceMigrationHistory = await inspectMigrationHistory(
 if (process.argv.includes("--history-only")) {
   const report = {
     status:
-      sourceMigrationHistory.complete
-      && sourceMigrationHistory.checksumsMatch
+      sourceMigrationHistory.complete && sourceMigrationHistory.checksumsMatch
         ? "pass"
         : "fail",
     sourceMigrationHistory,
@@ -1464,11 +1872,15 @@ try {
 
   // This is the application rollback leg: an older binary writes only the
   // baseline column set after the additive schema has landed.
-  const previousAppRow = await exercisePreviousAppWriteShape(upgradeDatabaseName);
+  const previousAppWrite =
+    await exercisePreviousAppWriteShape(upgradeDatabaseName);
+  const previousAppRow = previousAppWrite.jobRow;
   // Re-deploying the current application/migrations proves the forward-fix leg
   // remains a no-op and preserves the old binary's durable write.
   const forwardFixDeploy = deploy(upgradeDatabaseName);
-  const db = new pg.Client({ connectionString: databaseUrl(upgradeDatabaseName).toString() });
+  const db = new pg.Client({
+    connectionString: databaseUrl(upgradeDatabaseName).toString(),
+  });
   await db.connect();
   const preservedPreviousAppRow = await db.query(
     `SELECT status, "deliveredOutputCount", version
@@ -1480,26 +1892,44 @@ try {
 
   const checks = {
     sourceMigrationHistoryComplete: sourceMigrationHistory.complete,
-    sourceMigrationHistoryChecksumsMatch:
-      sourceMigrationHistory.checksumsMatch,
+    sourceMigrationHistoryChecksumsMatch: sourceMigrationHistory.checksumsMatch,
     freshDeployAppliedEveryMigration:
-      !freshFirstDeploy.includes("failed") && freshSchema.checks.expandedTablesPresent,
+      !freshFirstDeploy.includes("failed") &&
+      freshSchema.checks.expandedTablesPresent,
     freshRedeployIsIdempotent: isNoopDeploy(freshSecondDeploy),
-    currentSnapshotBaselineResolved: !upgradeFirstDeploy.includes(baselineMigration),
+    currentSnapshotBaselineResolved:
+      !upgradeFirstDeploy.includes(baselineMigration),
     currentSnapshotForwardDeployApplied:
-      !upgradeFirstDeploy.includes("failed") && upgradeSchema.checks.expandedTablesPresent,
+      !upgradeFirstDeploy.includes("failed") &&
+      upgradeSchema.checks.expandedTablesPresent,
     currentSnapshotRedeployIsIdempotent: isNoopDeploy(upgradeSecondDeploy),
     applicationRollbackWriteCompatible:
-      previousAppRow?.status === "failed"
-      && previousAppRow.deliveredOutputCount === 0
-      && previousAppRow.version === 1,
+      previousAppRow?.status === "failed" &&
+      previousAppRow.deliveredOutputCount === 0 &&
+      previousAppRow.version === 1,
+    rollbackSoftDeleteWithoutAuthorityRejected:
+      previousAppWrite.rollbackSoftDeleteRejected === true &&
+      previousAppWrite.rollbackState?.user_status === "active" &&
+      previousAppWrite.rollbackState?.deletion_count === 0,
+    currentAccountDeletionWriteAccepted:
+      previousAppWrite.currentDeletionState?.user_status === "deleted" &&
+      previousAppWrite.currentDeletionState?.deletion_status === "awaiting_chat" &&
+      previousAppWrite.currentDeletionState?.outbox_status === "pending" &&
+      previousAppWrite.currentDeletionState?.outbox_event_type ===
+        "user.account_deletion.requested.v2" &&
+      previousAppWrite.currentDeletionState?.envelope_event_type ===
+        "user.account_deletion.requested.v2" &&
+      previousAppWrite.currentDeletionState?.envelope_schema_version === 2 &&
+      previousAppWrite.currentDeletionState?.due_time_matches === true,
     forwardFixRedeployIsIdempotent: isNoopDeploy(forwardFixDeploy),
     forwardFixPreservesRollbackWrite:
-      preservedPreviousAppRow.rows[0]?.status === "failed"
-      && preservedPreviousAppRow.rows[0]?.deliveredOutputCount === 0
-      && preservedPreviousAppRow.rows[0]?.version === 1,
+      preservedPreviousAppRow.rows[0]?.status === "failed" &&
+      preservedPreviousAppRow.rows[0]?.deliveredOutputCount === 0 &&
+      preservedPreviousAppRow.rows[0]?.version === 1,
     freshSchemaGuardsPass: Object.values(freshSchema.checks).every(Boolean),
-    upgradedSchemaGuardsPass: Object.values(upgradeSchema.checks).every(Boolean),
+    upgradedSchemaGuardsPass: Object.values(upgradeSchema.checks).every(
+      Boolean,
+    ),
   };
   const report = {
     status: Object.values(checks).every(Boolean) ? "pass" : "fail",
@@ -1516,6 +1946,7 @@ try {
         databaseName: upgradeDatabaseName,
         baselineMigration,
         previousAppRow,
+        previousAppWrite,
         preservedPreviousAppRow: preservedPreviousAppRow.rows[0] ?? null,
         schema: upgradeSchema,
       },

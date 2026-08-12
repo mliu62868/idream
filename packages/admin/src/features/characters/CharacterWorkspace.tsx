@@ -1,6 +1,7 @@
 "use client";
 
 import { adminDateLocale, useAdminI18n } from "@/components/admin/i18n";
+import { ConfirmDialog } from "@/components/admin/ui/ConfirmDialog";
 import Link from "next/link";
 import Image from "next/image";
 import {
@@ -29,7 +30,7 @@ import {
   type CharacterWorkspaceTab,
 } from "@/features/image-workflow-transport";
 import { LoadingWorkspace, fieldClass } from "@/features/operations/WorkspaceUi";
-import { setWorkspaceUrl } from "@/lib/admin-v2-api";
+import { AdminV2RequestError, setWorkspaceUrl } from "@/lib/admin-v2-api";
 import {
   adminV2Operation,
   adminV2OperationAllowed,
@@ -76,6 +77,36 @@ const characterWorkspaceTabLabels: Record<Tab, string> = {
 
 export function characterWorkspaceTabLabel(tab: Tab) {
   return characterWorkspaceTabLabels[tab];
+}
+
+type CustomerPublicationPrepRecovery = {
+  characterId: string;
+  submissionId: string;
+};
+
+type PendingPublicationPrep = CustomerPublicationPrepRecovery & {
+  idempotencyKey: string;
+};
+
+export function customerPublicationPrepRecoveryFromError(
+  cause: unknown,
+  characterId: string,
+): CustomerPublicationPrepRecovery | null {
+  if (
+    !(cause instanceof AdminV2RequestError) ||
+    cause.status !== 404 ||
+    !cause.details ||
+    typeof cause.details !== "object" ||
+    Array.isArray(cause.details)
+  ) return null;
+  const details = cause.details as Record<string, unknown>;
+  return details.reason === "customer_publication_prep_missing" &&
+    details.characterId === characterId &&
+    typeof details.submissionId === "string" &&
+    details.submissionId.length > 0 &&
+    details.recoveryOperation === "POST /api/v2/admin/characters/:id/project"
+    ? { characterId, submissionId: details.submissionId }
+    : null;
 }
 
 // SPEC: 把 journal 给出的非受理处置翻译成操作员能读的一句话。
@@ -158,6 +189,9 @@ function CharacterDetail({
   const [data, setData] = useState<CharacterWorkspaceDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [publicationPrepRecovery, setPublicationPrepRecovery] = useState<CustomerPublicationPrepRecovery | null>(null);
+  const [pendingPublicationPrep, setPendingPublicationPrep] = useState<PendingPublicationPrep | null>(null);
+  const publicationPrepIdempotencyKey = useRef<string | null>(null);
   const [reclaimingVoiceRequestId, setReclaimingVoiceRequestId] = useState<
     string | null
   >(null);
@@ -189,6 +223,7 @@ function CharacterDetail({
     const request = requestGate.current.begin();
     setLoading(true);
     setError(null);
+    setPublicationPrepRecovery(null);
     try {
       const next = await adminV2Operation("GET /api/v2/admin/characters/:id", {
         path: { id },
@@ -196,17 +231,49 @@ function CharacterDetail({
       if (request.isCurrent()) setData(next);
     } catch (cause) {
       if (request.isCurrent()) {
-        setError(
-          cause instanceof Error
+        const recovery = customerPublicationPrepRecoveryFromError(cause, id);
+        setPublicationPrepRecovery(recovery);
+        setError(recovery
+          ? null
+          : cause instanceof Error
             ? cause.message
-            : "Character workspace could not be loaded",
-        );
+            : "Character workspace could not be loaded");
       }
       throw cause;
     } finally {
       if (request.isCurrent()) setLoading(false);
     }
   }, [id]);
+  const preparePublicationWorkspace = useCallback(async (
+    pending: PendingPublicationPrep,
+    reason: string,
+  ) => {
+    setError(null);
+    try {
+      await adminV2Operation("POST /api/v2/admin/characters/:id/project", {
+        path: { id },
+        idempotencyKey: pending.idempotencyKey,
+        body: {
+          submissionId: pending.submissionId,
+          reason,
+          confirmation: `PREPARE PUBLICATION ${id}`,
+        },
+      });
+    } catch (cause) {
+      const failure = cause instanceof Error
+        ? cause
+        : new Error("Publication workspace could not be prepared");
+      setError(failure.message);
+      throw failure;
+    }
+    publicationPrepIdempotencyKey.current = null;
+    setPendingPublicationPrep(null);
+    setTab("assets");
+    setWorkspaceUrl(new URLSearchParams({ tab: "assets" }), {
+      mode: "replace",
+    });
+    await load().catch(() => undefined);
+  }, [id, load]);
   const loadAuthoritative = useCallback(async () => {
     requestGate.current.invalidate();
     setLoading(true);
@@ -552,22 +619,76 @@ function CharacterDetail({
             {commandRecoveryError}
           </p>
         ) : null}
-        <div
-          className="rounded-xl bg-[var(--ad-red-bg)] p-5 text-sm text-[var(--ad-red-text)]"
-          role="alert"
-        >
-          {error ??
-            (loading
-              ? t("Loading the authoritative Character workspace…")
-              : t("Character not found"))}
-          <button
-            className="ml-2 font-semibold underline"
-            onClick={() => void load().catch(() => undefined)}
-            type="button"
+        {publicationPrepRecovery && permissions.writeProject ? (
+          <div
+            className="rounded-xl bg-[var(--ad-yellow-bg)] p-5 text-sm text-[var(--ad-yellow-text)]"
+            role="status"
           >
-            {t("Retry workspace")}
-          </button>
-        </div>
+            <p className="font-semibold">{t("Approved · awaiting publication preparation")}</p>
+            <p className="mt-2">
+              {t("Prepare the Project, immutable Revision, and inactive Serving workspace. This does not publish a Release or make the Character public.")}
+            </p>
+            {error ? <p className="mt-2" role="alert">{error}</p> : null}
+            <button
+              className="mt-3 font-semibold underline"
+              onClick={() => {
+                publicationPrepIdempotencyKey.current ??= crypto.randomUUID();
+                setPendingPublicationPrep({
+                  ...publicationPrepRecovery,
+                  idempotencyKey: publicationPrepIdempotencyKey.current,
+                });
+              }}
+              type="button"
+            >
+              {t("Prepare publication workspace")}
+            </button>
+          </div>
+        ) : (
+          <div
+            className="rounded-xl bg-[var(--ad-red-bg)] p-5 text-sm text-[var(--ad-red-text)]"
+            role="alert"
+          >
+            {error ??
+              (loading
+                ? t("Loading the authoritative Character workspace…")
+                : t("Character not found"))}
+            <button
+              className="ml-2 font-semibold underline"
+              onClick={() => void load().catch(() => undefined)}
+              type="button"
+            >
+              {t("Retry workspace")}
+            </button>
+          </div>
+        )}
+        {pendingPublicationPrep ? (
+          <ConfirmDialog
+            onClose={() => setPendingPublicationPrep(null)}
+            spec={{
+              title: t("Prepare publication workspace"),
+              summary: (
+                <div className="space-y-2">
+                  <p>
+                    {t("This creates the Character Project, immutable Revision, and inactive Serving workspace.")}
+                  </p>
+                  <p>
+                    {t("It does not create or publish a Release and does not make the Character visible in Explore or Community.")}
+                  </p>
+                </div>
+              ),
+              destructive: {
+                expectedName: `PREPARE PUBLICATION ${id}`,
+                inputLabel: t("Type the publication preparation confirmation"),
+              },
+              reasonLabel: t("Operational reason (≥3)"),
+              submitLabel: t("Prepare publication workspace"),
+              onSubmit: (reason) => preparePublicationWorkspace(
+                pendingPublicationPrep,
+                reason,
+              ),
+            }}
+          />
+        ) : null}
       </section>
     );
   }

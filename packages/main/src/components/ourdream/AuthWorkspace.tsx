@@ -1,6 +1,12 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import {
+  FormEvent,
+  useCallback,
+  useEffect,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { ArrowRight } from "lucide-react";
 import Link from "next/link";
 import { parseViewerAuthorityResponse } from "@/lib/public-api-contracts";
@@ -16,6 +22,13 @@ export function AuthWorkspace({
   const [pending, setPending] = useState(false);
   const [interactive, setInteractive] = useState(false);
   const [loginRecoveryHref, setLoginRecoveryHref] = useState("/login");
+  const accountDeletionGraceEndsAt = accountDeletionGraceEndsAtFromSearch(
+    useSyncExternalStore(
+      subscribeLocationSearch,
+      () => window.location.search,
+      () => "",
+    ),
+  );
   const shouldShowSignupLoginRecovery =
     mode === "signup" && status === "Email already registered";
 
@@ -96,6 +109,20 @@ export function AuthWorkspace({
           data-auth-ready={interactive ? "true" : "false"}
           onSubmit={submit}
         >
+          {mode === "login" && accountDeletionGraceEndsAt && (
+            <p
+              className="mb-4 rounded-[12px] border border-white/10 bg-[rgb(36,36,36)] p-3 text-[13px] font-medium leading-5 text-[rgb(190,190,190)]"
+              data-testid="account-deletion-grace-notice"
+              role="status"
+            >
+              Account access ended immediately. Personal-data erasure becomes
+              due after the grace period at{" "}
+              <time dateTime={accountDeletionGraceEndsAt}>
+                {new Date(accountDeletionGraceEndsAt).toLocaleString()}
+              </time>
+              .
+            </p>
+          )}
           {mode === "signup" && (
             <label className="block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
               Display name
@@ -183,4 +210,15 @@ function authRedirectTarget() {
 function authLoginRecoveryHref() {
   const target = authRedirectTarget();
   return target === "/" ? "/login" : authHrefForTarget("/login", target);
+}
+
+export function accountDeletionGraceEndsAtFromSearch(search: string) {
+  const raw = new URLSearchParams(search).get("accountDeletionGraceEndsAt");
+  if (!raw || !Number.isFinite(Date.parse(raw))) return null;
+  return new Date(raw).toISOString();
+}
+
+function subscribeLocationSearch(onChange: () => void) {
+  window.addEventListener("popstate", onChange);
+  return () => window.removeEventListener("popstate", onChange);
 }

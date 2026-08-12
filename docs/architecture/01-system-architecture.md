@@ -225,8 +225,8 @@ Chat worker:
    dev：本地 `next dev` + 本地 Postgres（Postgres-only）+ provider 的 mock/sandbox 实现
 ```
 
-- **主部署 Vercel**：Fluid Compute（Node.js，非 edge-only），默认函数超时已放宽（见知识更新）；Cron 触发 worker。
-- **备选 Docker**：`next.config.ts` 已 `output: "standalone"`，配 `docker-compose.yml` 可自托管（见 10）。
+- **产品部署 PM2**：`ecosystem.config.js` 管理 Main、Admin、Chat、Gen、finalizer、consumer、Admin worker 与 Voice 的完整常驻拓扑；生产 wrapper 在任何进程/队列变更前执行上线门禁。
+- **Docker 仅用于本地基础设施**：`docker-compose.yml` 只启动 PostgreSQL 与 Redis，不提供不完整的 Main-only 产品容器入口。
 - **数据库**：prod 用 Neon/Supabase（Vercel Marketplace，**Vercel Postgres 已下线**）；app 走 pooled 连接，migrate 走 direct 连接。
 - 详细环境矩阵、env 变量、连接池与迁移 runbook 见 [10-operations.md](./10-operations.md)。
 

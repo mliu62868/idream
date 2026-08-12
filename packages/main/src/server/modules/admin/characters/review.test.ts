@@ -1,8 +1,13 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { handle } from "@/server/lib/http";
-import { createCharacter, createUser, purgeTestData } from "@/server/test/helpers";
+import { compileUserCharacterContent } from "@/server/modules/ourdream/character-soul";
+import { getCharacterWorkspace } from "@/server/modules/admin-v2/characters/workspace";
+import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
+import { api, createCharacter, createMedia, createUser, purgeTestData } from "@/server/test/helpers";
 import { listReviewQueue, reviewSubmission } from "./review";
+import { POST as preparePublicationProject } from "@/app/api/v2/admin/characters/[id]/project/route";
+import { GET as getCharacterWorkspaceRoute } from "@/app/api/v2/admin/characters/[id]/route";
 
 const P = "zt-creview-";
 
@@ -15,14 +20,21 @@ afterAll(async () => {
   await prisma.$disconnect();
 });
 
-type Caller = { userId?: string; role?: string; body?: Record<string, unknown> };
+type Caller = {
+  userId?: string;
+  role?: string;
+  body?: Record<string, unknown>;
+  idempotencyKey?: string;
+};
 
 function buildRequest(method: string, path: string, opts: Caller) {
   const headers: Record<string, string> = {};
   if (opts.userId) headers["x-idream-user-id"] = opts.userId;
   if (opts.role) headers["x-idream-role"] = opts.role;
   if (opts.body !== undefined) headers["content-type"] = "application/json";
-  if (method !== "GET") headers["idempotency-key"] = crypto.randomUUID();
+  if (method !== "GET") {
+    headers["idempotency-key"] = opts.idempotencyKey ?? crypto.randomUUID();
+  }
   return new Request(`http://test.local/${path}`, {
     method,
     headers,
@@ -47,6 +59,20 @@ async function callReview(id: string, opts: Caller) {
   return parse(await handle(() => reviewSubmission(request, id))(request));
 }
 
+async function callPublicationPrep(characterId: string, opts: Caller) {
+  const request = buildRequest("POST", `api/v2/admin/characters/${characterId}/project`, opts);
+  return parse(await preparePublicationProject(request, {
+    params: Promise.resolve({ id: characterId }),
+  }));
+}
+
+async function callCharacterWorkspace(characterId: string, opts: Caller) {
+  const request = buildRequest("GET", `api/v2/admin/characters/${characterId}`, opts);
+  return parse(await getCharacterWorkspaceRoute(request, {
+    params: Promise.resolve({ id: characterId }),
+  }));
+}
+
 async function seedSubmission(suffix: string, status = "pending", charStatus = "pending_review") {
   const submitterId = `${P}submitter-${suffix}`;
   const characterId = `${P}char-${suffix}`;
@@ -67,6 +93,62 @@ async function seedSubmission(suffix: string, status = "pending", charStatus = "
     },
   });
   return { submission, characterId, submitterId };
+}
+
+async function seedPublishableSubmission(suffix: string) {
+  const seeded = await seedSubmission(suffix);
+  await prisma.user.update({
+    where: { id: seeded.submitterId },
+    data: { dataClass: "customer" },
+  });
+  await prisma.character.update({
+    where: { id: seeded.characterId },
+    data: { source: "user" },
+  });
+  const character = await prisma.character.findUniqueOrThrow({
+    where: { id: seeded.characterId },
+  });
+  const imageAssetId = `${P}image-${suffix}`;
+  await createMedia({
+    id: imageAssetId,
+    ownerId: seeded.submitterId,
+    visibility: "private",
+    safetyStatus: "passed",
+  });
+  await prisma.mediaAsset.update({
+    where: { id: imageAssetId },
+    data: { characterId: character.id },
+  });
+  const content = compileUserCharacterContent({
+    name: character.name,
+    age: character.age,
+    gender: character.gender,
+    relationship: character.relationship,
+    description: character.description,
+    style: character.style,
+    appearance: character.appearance,
+    advancedDetails: character.advancedDetails,
+  });
+  const contentVersionId = `${P}content-${suffix}`;
+  await prisma.characterContentVersion.create({
+    data: {
+      id: contentVersionId,
+      characterId: character.id,
+      version: 1,
+      contentHash: content.contentHash,
+      personaSnapshot: toInputJson(content.personaSnapshot),
+      openingSnapshot: toInputJson(content.openingSnapshot),
+      appearanceSnapshot: toInputJson(content.appearanceSnapshot),
+      sourceType: "user",
+      sourceId: seeded.submission.id,
+      createdById: seeded.submitterId,
+    },
+  });
+  await prisma.character.update({
+    where: { id: character.id },
+    data: { imageAssetId, currentContentVersionId: contentVersionId },
+  });
+  return { ...seeded, imageAssetId, contentVersionId };
 }
 
 describe("character review queue (D)", () => {
@@ -144,6 +226,185 @@ describe("character review queue (D)", () => {
       where: { action: "content.submission.review", targetId: characterId },
     });
     expect(audit).not.toBeNull();
+  });
+
+  it("approve opens an inactive publication-prep workspace without publishing the character", async () => {
+    const moderator = `${P}mod-publication-prep`;
+    await createUser({ id: moderator, role: "moderator" });
+    const seeded = await seedPublishableSubmission("publication-prep");
+
+    const res = await callReview(seeded.submission.id, {
+      userId: moderator,
+      role: "moderator",
+      body: {
+        decision: "approve",
+        reviewReason: "identity and content approved",
+        reason: "prepare approved customer character for release",
+        confirmation: seeded.submission.id,
+      },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.data.publication).toMatchObject({
+      state: "publication_prep",
+      deepLink: `/admin/characters/${seeded.characterId}?tab=assets`,
+    });
+    const workspace = await getCharacterWorkspace(seeded.characterId);
+    expect(workspace.project).toMatchObject({
+      characterId: seeded.characterId,
+      phase: "producing",
+    });
+    expect(workspace.serving).toMatchObject({ state: "inactive" });
+    expect(workspace.releases).toEqual([]);
+    await expect(prisma.characterRevision.findFirst({
+      where: {
+        projectId: workspace.project.id,
+        characterContentVersionId: seeded.contentVersionId,
+      },
+    })).resolves.not.toBeNull();
+    await expect(prisma.mediaAsset.findUnique({ where: { id: seeded.imageAssetId } }))
+      .resolves.toMatchObject({ visibility: "private" });
+
+    const explore = await api("GET", "characters", {
+      ageGate: true,
+      query: { q: "Pending publication-prep" },
+    });
+    expect(explore.status).toBe(200);
+    expect(explore.data.items).toEqual([]);
+  });
+
+  it("repairs an already-approved customer Character into the same publication-prep workspace", async () => {
+    const admin = `${P}admin-publication-repair`;
+    await createUser({ id: admin, role: "admin" });
+    const seeded = await seedPublishableSubmission("publication-repair");
+    await prisma.$transaction([
+      prisma.character.update({
+        where: { id: seeded.characterId },
+        data: { status: "approved" },
+      }),
+      prisma.characterSubmission.update({
+        where: { id: seeded.submission.id },
+        data: { status: "approved", reviewerId: admin, reviewedAt: new Date() },
+      }),
+    ]);
+
+    const missing = await callCharacterWorkspace(seeded.characterId, {
+      userId: admin,
+      role: "admin",
+    });
+    expect(missing.status).toBe(404);
+    expect(missing.error).toMatchObject({
+      code: "not_found",
+      details: {
+        reason: "customer_publication_prep_missing",
+        characterId: seeded.characterId,
+        submissionId: seeded.submission.id,
+        recoveryOperation: "POST /api/v2/admin/characters/:id/project",
+      },
+    });
+
+    const idempotencyKey = `${P}publication-repair-key`;
+    const res = await callPublicationPrep(seeded.characterId, {
+      userId: admin,
+      role: "admin",
+      idempotencyKey,
+      body: {
+        submissionId: seeded.submission.id,
+        reason: "repair missing publication preparation authority",
+        confirmation: `PREPARE PUBLICATION ${seeded.characterId}`,
+      },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.data).toMatchObject({
+      state: "publication_prep",
+      servingState: "inactive",
+      deepLink: `/admin/characters/${seeded.characterId}?tab=assets`,
+      created: true,
+      replayed: false,
+    });
+    const replay = await callPublicationPrep(seeded.characterId, {
+      userId: admin,
+      role: "admin",
+      idempotencyKey,
+      body: {
+        submissionId: seeded.submission.id,
+        reason: "repair missing publication preparation authority",
+        confirmation: `PREPARE PUBLICATION ${seeded.characterId}`,
+      },
+    });
+    expect(replay.data).toMatchObject({
+      projectId: res.data.projectId,
+      replayed: true,
+    });
+    await expect(getCharacterWorkspace(seeded.characterId)).resolves.toMatchObject({
+      project: { phase: "producing" },
+      serving: { state: "inactive" },
+      releases: [],
+    });
+    const workspaceRoute = await callCharacterWorkspace(seeded.characterId, {
+      userId: admin,
+      role: "admin",
+    });
+    expect(workspaceRoute.status).toBe(200);
+    expect(workspaceRoute.data).toMatchObject({
+      project: { phase: "producing" },
+      serving: { state: "inactive" },
+      releases: [],
+    });
+    await expect(prisma.characterProject.count({
+      where: { characterId: seeded.characterId },
+    })).resolves.toBe(1);
+    await expect(prisma.characterRevision.count({
+      where: { projectId: res.data.projectId },
+    })).resolves.toBe(1);
+    await expect(prisma.adminAuditLog.count({
+      where: {
+        action: "character.publication_prepared",
+        targetId: res.data.projectId,
+      },
+    })).resolves.toBe(1);
+    await expect(prisma.mainOutboxEvent.count({
+      where: {
+        eventType: "admin.customer_character.publication_prepared.v1",
+        aggregateId: res.data.projectId,
+      },
+    })).resolves.toBe(1);
+  });
+
+  it("rejects publication preparation when the approved submission belongs to another Character", async () => {
+    const admin = `${P}admin-publication-mismatch`;
+    await createUser({ id: admin, role: "admin" });
+    const target = await seedPublishableSubmission("publication-mismatch-target");
+    const other = await seedPublishableSubmission("publication-mismatch-other");
+    await prisma.$transaction([
+      prisma.character.update({ where: { id: target.characterId }, data: { status: "approved" } }),
+      prisma.characterSubmission.update({
+        where: { id: target.submission.id },
+        data: { status: "approved", reviewerId: admin, reviewedAt: new Date() },
+      }),
+      prisma.character.update({ where: { id: other.characterId }, data: { status: "approved" } }),
+      prisma.characterSubmission.update({
+        where: { id: other.submission.id },
+        data: { status: "approved", reviewerId: admin, reviewedAt: new Date() },
+      }),
+    ]);
+
+    const res = await callPublicationPrep(target.characterId, {
+      userId: admin,
+      role: "admin",
+      body: {
+        submissionId: other.submission.id,
+        reason: "must not cross Character review authority",
+        confirmation: `PREPARE PUBLICATION ${target.characterId}`,
+      },
+    });
+
+    expect(res.status).toBe(409);
+    expect(res.error.code).toBe("conflict");
+    await expect(prisma.characterProject.count({
+      where: { characterId: target.characterId },
+    })).resolves.toBe(0);
   });
 
   it("reject sets character + submission status to rejected", async () => {

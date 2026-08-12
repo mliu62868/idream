@@ -334,8 +334,8 @@ describe("P1-B: relationship state is injected into the model context", () => {
   });
 });
 
-describe("P0-F: user.deleted erases the chat domain", () => {
-  it("removes PG rows + file layer and emits chat.account_erasure.completed", async () => {
+describe("P0-F: account deletion v2 erases the chat domain", () => {
+  it("removes PG rows + file layer and emits request-bound v2 completion", async () => {
     const user = "u_p0_erase";
     const session = await createSession({ userId: user, characterId: CHAR }, { prisma });
     const sent = await sendMessage(
@@ -354,7 +354,8 @@ describe("P0-F: user.deleted erases the chat domain", () => {
     await ingestMainEvent(
       {
         sourceEventId: `evt_del_${user}`,
-        eventType: MAIN_TO_CHAT_EVENTS.userDeleted,
+        eventType: MAIN_TO_CHAT_EVENTS.accountDeletionRequestedV2,
+        schemaVersion: 2,
         occurredAt: new Date().toISOString(),
         aggregateType: "user",
         aggregateId: user,
@@ -370,7 +371,50 @@ describe("P0-F: user.deleted erases the chat domain", () => {
     expect(await exists(path.join(fsRoot, "sessions", user))).toBe(false);
     expect(await exists(path.join(fsRoot, "mem", user))).toBe(false);
     // Completion event recorded for main to observe.
-    const outbox = await prisma.chatOutboxEvent.findMany({ where: { aggregateId: user } });
-    expect(outbox.some((e) => e.eventType === "chat.account_erasure.completed")).toBe(true);
+    const firstCompletion = await prisma.chatOutboxEvent.findFirstOrThrow({
+      where: {
+        aggregateId: user,
+        eventType: "chat.account_erasure.completed.v2",
+      },
+    });
+    expect(firstCompletion.payload).toMatchObject({
+      version: 2,
+      binding: "request_bound",
+      deletionRequestEventId: `evt_del_${user}`,
+    });
+
+    // A pre-authority deployment may already have completed Chat erasure. A
+    // later Main backfill uses a new request identity and must receive its own
+    // causally bound completion instead of being suppressed by the legacy row.
+    await prisma.chatOutboxEvent.update({
+      where: { id: firstCompletion.id },
+      data: { status: "delivered", deliveredAt: new Date() },
+    });
+    const backfillRequestId = `evt_del_${user}_backfill`;
+    await ingestMainEvent(
+      {
+        sourceEventId: backfillRequestId,
+        eventType: MAIN_TO_CHAT_EVENTS.accountDeletionRequestedV2,
+        schemaVersion: 2,
+        occurredAt: new Date().toISOString(),
+        aggregateType: "user",
+        aggregateId: user,
+        payload: { userId: user },
+      },
+      prisma,
+    );
+    const backfillCompletion = await prisma.chatOutboxEvent.findFirstOrThrow({
+      where: {
+        aggregateId: user,
+        eventType: "chat.account_erasure.completed.v2",
+        payload: {
+          path: ["deletionRequestEventId"],
+          equals: backfillRequestId,
+        },
+      },
+    });
+    expect(backfillCompletion.payload).toMatchObject({
+      deletionRequestEventId: backfillRequestId,
+    });
   });
 });

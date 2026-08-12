@@ -22,6 +22,41 @@ import {
 
 const P = "zt-authz-";
 
+async function withRejectedAnalytics(
+  names: readonly string[],
+  run: () => Promise<void>,
+) {
+  const rejectedNames = names
+    .map((name) => `'${name.replaceAll("'", "''")}'`)
+    .join(", ");
+  await prisma.$executeRawUnsafe(`
+    CREATE OR REPLACE FUNCTION test_reject_selected_analytics()
+    RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      IF NEW.name IN (${rejectedNames}) THEN
+        RAISE EXCEPTION 'injected analytics failure for %', NEW.name;
+      END IF;
+      RETURN NEW;
+    END
+    $$
+  `);
+  await prisma.$executeRawUnsafe(`
+    CREATE TRIGGER test_reject_selected_analytics
+    BEFORE INSERT ON analytics_events
+    FOR EACH ROW EXECUTE FUNCTION test_reject_selected_analytics()
+  `);
+  try {
+    await run();
+  } finally {
+    await prisma.$executeRawUnsafe(
+      "DROP TRIGGER IF EXISTS test_reject_selected_analytics ON analytics_events",
+    );
+    await prisma.$executeRawUnsafe(
+      "DROP FUNCTION IF EXISTS test_reject_selected_analytics()",
+    );
+  }
+}
+
 beforeAll(async () => {
   await purgeTestData(P);
 });
@@ -61,6 +96,104 @@ describe("auth lifecycle (cookie session)", () => {
     expect(me.data.user).not.toHaveProperty("password");
   });
 
+  it("atomically links anonymous age authority without rewriting immutable analytics history", async () => {
+    const anonymousId = `${P}immutable-anon`;
+    const email = `${P}immutable-signup@test.local`;
+    const acceptance = await prisma.ageGateAcceptance.create({
+      data: {
+        anonymousId,
+        policyVersion: "2026-06-13",
+        sourcePath: "/explore",
+      },
+    });
+    const anonymousEvent = await prisma.analyticsEvent.create({
+      data: {
+        anonymousId,
+        name: "character_viewed",
+        props: { source: "explore" },
+        sourceService: "web",
+      },
+    });
+
+    const signup = await api("POST", "auth/signup", {
+      ageGate: true,
+      anonymousId,
+      body: { email, password: "password123", name: "Immutable Signup" },
+    });
+    expectOk(signup);
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { email } });
+    await expect(prisma.ageGateAcceptance.findUniqueOrThrow({
+      where: { id: acceptance.id },
+      select: { userId: true, anonymousId: true },
+    })).resolves.toEqual({ userId: user.id, anonymousId });
+    await expect(prisma.analyticsEvent.findUniqueOrThrow({
+      where: { id: anonymousEvent.id },
+      select: { userId: true, anonymousId: true, props: true },
+    })).resolves.toEqual({
+      userId: null,
+      anonymousId,
+      props: { source: "explore" },
+    });
+  });
+
+  it("does not let optional signup telemetry flip a committed account to 500", async () => {
+    const email = `${P}atomic-failure@test.local`;
+    await withRejectedAnalytics(["signup"], async () => {
+      const signup = await api("POST", "auth/signup", {
+        ageGate: true,
+        anonymousId: `${P}atomic-failure-anon`,
+        body: { email, password: "password123", name: "Atomic Failure" },
+      });
+      expectOk(signup);
+      expect(signup.setCookies.join(";")).toContain("idream_session=");
+      await expect(prisma.user.count({ where: { email } })).resolves.toBe(1);
+      await expect(prisma.account.count({ where: { accountId: email } })).resolves.toBe(1);
+    });
+  });
+
+  it("rolls back the account when required canonical signup evidence fails", async () => {
+    const email = `${P}canonical-failure@test.local`;
+    await withRejectedAnalytics(
+      ["customer.signup.completed.v2"],
+      async () => {
+        const signup = await api("POST", "auth/signup", {
+          ageGate: true,
+          anonymousId: `${P}canonical-failure-anon`,
+          body: { email, password: "password123", name: "Canonical Failure" },
+        });
+        expectError(signup, 500, "internal");
+        await expect(prisma.user.count({ where: { email } })).resolves.toBe(0);
+        await expect(prisma.account.count({ where: { accountId: email } })).resolves.toBe(0);
+      },
+    );
+  });
+
+  it("normalizes concurrent duplicate signup races to one success and deterministic conflicts", async () => {
+    const email = `${P}concurrent@test.local`;
+    const anonymousId = `${P}concurrent-anon`;
+    await prisma.ageGateAcceptance.create({
+      data: {
+        anonymousId,
+        policyVersion: "2026-06-13",
+        sourcePath: "/signup",
+      },
+    });
+    const results = await Promise.all(
+      Array.from({ length: 8 }, () => api("POST", "auth/signup", {
+        ageGate: true,
+        anonymousId,
+        body: { email, password: "password123", name: "Concurrent" },
+      })),
+    );
+
+    expect(results.filter((result) => result.status === 200)).toHaveLength(1);
+    expect(results.filter((result) => result.status === 409)).toHaveLength(7);
+    expect(results.every((result) => [200, 409].includes(result.status))).toBe(true);
+    await expect(prisma.user.count({ where: { email } })).resolves.toBe(1);
+    await expect(prisma.account.count({ where: { accountId: email } })).resolves.toBe(1);
+  });
+
   it("rejects duplicate email with 409 and bad credentials with 401", async () => {
     const email = `${P}bob@test.local`;
     await api("POST", "auth/signup", {
@@ -83,6 +216,74 @@ describe("auth lifecycle (cookie session)", () => {
     });
     expectOk(goodLogin);
     expect(goodLogin.setCookies.join(";")).toContain("idream_session=");
+  });
+
+  it("keeps login and the fresh age gate usable when legacy telemetry fails", async () => {
+    const email = `${P}telemetry-failure@test.local`;
+    const signup = await api("POST", "auth/signup", {
+      ageGate: true,
+      body: { email, password: "password123", name: "Telemetry Failure" },
+    });
+    expectOk(signup);
+    const userId = signup.data.user.id as string;
+    const sessionsBefore = await prisma.session.count({ where: { userId } });
+
+    await withRejectedAnalytics(
+      ["login", "age_gate_accepted"],
+      async () => {
+        const login = await api("POST", "auth/login", {
+          body: { email, password: "password123" },
+        });
+        expectOk(login);
+        expect(login.setCookies.join(";")).toContain("idream_session=");
+        await expect(prisma.session.count({ where: { userId } })).resolves.toBe(
+          sessionsBefore + 1,
+        );
+
+        const accepted = await api("POST", "age-gate/accept", {
+          body: { sourcePath: "/explore", policyVersion: "2026-06-13" },
+        });
+        expectOk(accepted);
+        const acceptedCookies = accepted.setCookies.join(";");
+        expect(acceptedCookies).toContain("AdultContentAcceptedOD=true");
+        expect(acceptedCookies).toContain("idream_anonymous_id=");
+        const anonymousId = accepted.data.anonymousId as string;
+        await expect(prisma.ageGateAcceptance.count({
+          where: { anonymousId, policyVersion: "2026-06-13" },
+        })).resolves.toBe(1);
+
+        const replay = await api("POST", "age-gate/accept", {
+          anonymousId,
+          cookie: cookieHeader(accepted.setCookies),
+          body: { sourcePath: "/explore", policyVersion: "2026-06-13" },
+        });
+        expectOk(replay);
+        await expect(prisma.ageGateAcceptance.count({
+          where: { anonymousId, policyVersion: "2026-06-13" },
+        })).resolves.toBe(1);
+      },
+    );
+
+    const trackedAnonymousId = `${P}tracked-age-anon`;
+    const tracked = await api("POST", "age-gate/accept", {
+      anonymousId: trackedAnonymousId,
+      body: { sourcePath: "/community", policyVersion: "2026-06-13" },
+    });
+    expectOk(tracked);
+    await expect(prisma.analyticsEvent.findFirstOrThrow({
+      where: { name: "age_gate_accepted", anonymousId: trackedAnonymousId },
+      orderBy: { createdAt: "desc" },
+      select: { userId: true, anonymousId: true, dataClass: true, actor: true },
+    })).resolves.toEqual({
+      userId: null,
+      anonymousId: trackedAnonymousId,
+      dataClass: "customer",
+      actor: {
+        type: "anonymous",
+        anonymousId: trackedAnonymousId,
+        isInternal: false,
+      },
+    });
   });
 
   it("rejects public signup on reserved internal email domains", async () => {

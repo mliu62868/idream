@@ -62,6 +62,7 @@ export interface CharacterSoulAuthorityAuditReport {
   topology: {
     mode: "same_cluster_views" | "invalid";
     database: string;
+    chatDatabase: string;
     requiredViews: Record<string, boolean>;
   };
   readModel: { parityMismatches: number; rows: unknown[] };
@@ -100,6 +101,7 @@ export function characterSoulAuthorityIsLaunchSafe(input: {
  */
 export async function auditCharacterSoulAuthority(
   db: PrismaClient,
+  chatDb: Pick<PrismaClient, "$queryRaw"> = db,
 ): Promise<CharacterSoulAuthorityAuditReport> {
   const topologyRows = await db.$queryRaw<Array<{
     database: string;
@@ -114,6 +116,10 @@ export async function auditCharacterSoulAuthority(
       to_regclass('core.chat_character_release_view')::text AS "releaseView"
   `;
   const topology = topologyRows[0];
+  const chatTopologyRows = await chatDb.$queryRaw<Array<{ database: string }>>`
+    SELECT current_database() AS database
+  `;
+  const chatDatabase = chatTopologyRows[0]?.database ?? "unknown";
   const requiredViews = {
     chatCharacterView: topology?.characterView === "core.chat_character_view",
     chatCharacterContentVersionView:
@@ -121,7 +127,8 @@ export async function auditCharacterSoulAuthority(
     chatCharacterReleaseView:
       topology?.releaseView === "core.chat_character_release_view",
   };
-  const mode = Object.values(requiredViews).every(Boolean)
+  const mode = Object.values(requiredViews).every(Boolean) &&
+      chatDatabase === topology?.database
     ? "same_cluster_views" as const
     : "invalid" as const;
 
@@ -173,12 +180,12 @@ export async function auditCharacterSoulAuthority(
   let activeSessions = 0;
   let nullPinSessions = 0;
   try {
-    pinned = await db.$queryRaw<Array<{ ownerId: string; contentVersionId: string }>>`
+    pinned = await chatDb.$queryRaw<Array<{ ownerId: string; contentVersionId: string }>>`
       SELECT id AS "ownerId", character_content_version_id AS "contentVersionId"
       FROM chat.chat_sessions
       WHERE status = 'active' AND character_content_version_id IS NOT NULL
     `;
-    const counts = await db.$queryRaw<Array<{ active: bigint; nullPins: bigint }>>`
+    const counts = await chatDb.$queryRaw<Array<{ active: bigint; nullPins: bigint }>>`
       SELECT
         COUNT(*) FILTER (WHERE status = 'active') AS active,
         COUNT(*) FILTER (WHERE status = 'active' AND character_content_version_id IS NULL) AS "nullPins"
@@ -233,6 +240,7 @@ export async function auditCharacterSoulAuthority(
     topology: {
       mode,
       database: topology?.database ?? "unknown",
+      chatDatabase,
       requiredViews,
     },
     readModel: { parityMismatches: parityRows.length, rows: parityRows },

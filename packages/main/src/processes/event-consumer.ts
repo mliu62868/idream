@@ -8,6 +8,8 @@ import {
   MAIN_TO_CHAT_EVENTS,
   CHAT_TO_MAIN_EVENTS,
   chatExchangeCorrectionV2Schema,
+  chatAccountErasureCompletedPayloadSchema,
+  chatAccountErasureCompletedV2PayloadSchema,
   chatImageRequestedPayloadSchema,
   chatSessionReleaseMigrationAppliedPayloadSchema,
 } from "@idream/shared/contracts";
@@ -26,6 +28,10 @@ import { transitionControlPlaneCommand } from "@/server/modules/admin-v2/shared/
 import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
 import { activeCustomerUserWhere } from "@/server/modules/ourdream/public-content-audience";
 import { updateGenerationRequestSourceMeta } from "@/server/ai/generation-request-transition";
+import {
+  acceptChatAccountErasureCompletion,
+  dispatchPendingAccountDeletionBlobDeletes,
+} from "@/server/account-deletion-authority";
 
 interface InboundEvent {
   eventId: string;
@@ -66,6 +72,8 @@ export interface ChatEventApplyHooks {
 
 const CHAT_EVENT_APPLIED = { status: "applied" } as const;
 const CHAT_PROJECTION_RECEIPT_NAMESPACE = "main.product_projection";
+export const ACCOUNT_ERASURE_COMPLETION_V2_SOURCE_SERVICE =
+  "chat.account_erasure_completion_v2";
 
 async function resolveChatCustomerAuthority(
   tx: Prisma.TransactionClient,
@@ -474,9 +482,36 @@ async function applyChatEventEffect(
       }
       return CHAT_EVENT_APPLIED;
     }
-    case CHAT_TO_MAIN_EVENTS.accountErasureCompleted:
-      logger.info({ userId: event.aggregateId }, "chat account erasure completed");
+    case CHAT_TO_MAIN_EVENTS.accountErasureCompleted: {
+      // Legacy completions remain ingestible for rolling compatibility, but
+      // they cannot advance the v2 request authority. A current Chat repair
+      // will emit the request-bound completion on the dedicated route.
+      chatAccountErasureCompletedPayloadSchema.parse(event.payload);
+      logger.info(
+        { sourceEventId: event.eventId },
+        "legacy account erasure completion observed",
+      );
       return CHAT_EVENT_APPLIED;
+    }
+    case CHAT_TO_MAIN_EVENTS.accountErasureCompletedV2: {
+      if (
+        event.sourceService !== ACCOUNT_ERASURE_COMPLETION_V2_SOURCE_SERVICE ||
+        event.schemaVersion !== 2
+      ) {
+        throw new Error(
+          "account erasure completion v2 requires its dedicated ingress",
+        );
+      }
+      const payload = chatAccountErasureCompletedV2PayloadSchema.parse(
+        event.payload,
+      );
+      await acceptChatAccountErasureCompletion(tx, {
+        sourceEventId: event.eventId,
+        aggregateId: event.aggregateId,
+        payload,
+      });
+      return CHAT_EVENT_APPLIED;
+    }
     case CHAT_TO_MAIN_EVENTS.sessionReleaseMigrationApplied: {
       const payload = chatSessionReleaseMigrationAppliedPayloadSchema.parse(event.payload);
       const command = await tx.controlPlaneCommand.findUnique({
@@ -771,6 +806,7 @@ export function startEventConsumer(): { close(): Promise<void> } {
   const reconcile = async () => {
     await dispatchPendingProductEvents();
     await dispatchPendingChatEvents();
+    await dispatchPendingAccountDeletionBlobDeletes();
   };
   const projectionTimer = setInterval(() => {
     reconcile().catch((err) => logger.error({ err }, "durable event reconciliation failed"));

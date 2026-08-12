@@ -169,6 +169,68 @@ export const chatImageFailedPayloadSchema = z
   })
   .passthrough();
 
+// Legacy transport only. Main records it for rolling compatibility but never
+// advances v2 deletion authority from this aggregate-level event. The request
+// id is optional because older Chat binaries did not emit it.
+export const chatAccountErasureCompletedPayloadSchema = z
+  .object({
+    userId: z.string().min(1),
+    fileMutationId: z.string().min(1),
+    deletionRequestEventId: z.string().min(1).optional(),
+  })
+  .strict();
+
+// SPEC: v2 completion is meaningful only as the terminal response to one exact
+// Main deletion request. `binding` is deliberately literal so a generic or
+// aggregate-level completion cannot be mistaken for request authority.
+export const chatAccountErasureCompletedV2PayloadSchema = z
+  .object({
+    version: z.literal(2),
+    binding: z.literal("request_bound"),
+    userId: z.string().min(1),
+    fileMutationId: z.string().min(1),
+    deletionRequestEventId: z.string().min(1),
+  })
+  .strict();
+
+export const accountDeletionRequestedV2PayloadSchema = z
+  .object({
+    userId: z.string().min(1),
+  })
+  .strict();
+
+// SPEC: A moderation removal identifies the exact decision that caused Chat
+// to archive sessions. Aggregate-only character events are not reversible.
+export const characterModerationRemovedPayloadSchema = z
+  .object({
+    version: z.literal(1),
+    binding: z.literal("moderation_decision"),
+    characterId: z.string().min(1),
+    moderationDecisionId: z.string().min(1),
+    previousRemovalEventId: z.string().min(1).nullable(),
+  })
+  .strict();
+
+// SPEC: An appeal restoration is bound to one immutable removal event. Chat
+// must restore only the sessions captured by that event's causal snapshot.
+export const characterModerationRestorationPayloadSchema = z
+  .object({
+    version: z.literal(1),
+    binding: z.literal("removal_event"),
+    appealId: z.string().min(1),
+    characterId: z.string().min(1),
+    moderationDecisionId: z.string().min(1),
+    removalEventId: z.string().min(1),
+  })
+  .strict();
+
+export type CharacterModerationRemovedPayload = z.infer<
+  typeof characterModerationRemovedPayloadSchema
+>;
+export type CharacterModerationRestorationPayload = z.infer<
+  typeof characterModerationRestorationPayloadSchema
+>;
+
 export const chatSessionReleaseMigrationRequestedPayloadSchema = z
   .object({
     commandId: z.string().min(1),
@@ -552,6 +614,15 @@ export type ChatImageRequestedPayload = z.infer<typeof chatImageRequestedPayload
 export type ChatImageAcceptedPayload = z.infer<typeof chatImageAcceptedPayloadSchema>;
 export type ChatImageCompletedPayload = z.infer<typeof chatImageCompletedPayloadSchema>;
 export type ChatImageFailedPayload = z.infer<typeof chatImageFailedPayloadSchema>;
+export type ChatAccountErasureCompletedPayload = z.infer<
+  typeof chatAccountErasureCompletedPayloadSchema
+>;
+export type ChatAccountErasureCompletedV2Payload = z.infer<
+  typeof chatAccountErasureCompletedV2PayloadSchema
+>;
+export type AccountDeletionRequestedV2Payload = z.infer<
+  typeof accountDeletionRequestedV2PayloadSchema
+>;
 export type MemorySyncPayload = z.infer<typeof memorySyncPayloadSchema>;
 export type MemoryForgetPayload = z.infer<typeof memoryForgetPayloadSchema>;
 export type MemoryRebuildPayload = z.infer<typeof memoryRebuildPayloadSchema>;

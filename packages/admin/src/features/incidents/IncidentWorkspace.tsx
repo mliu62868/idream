@@ -36,6 +36,7 @@ import {
   textAreaClass,
   WorkspaceButton,
 } from "../operations/WorkspaceUi";
+import { IncidentCorrelationOutbox } from "./IncidentCorrelationOutbox";
 
 type IncidentList = AdminListResponse<OpsIncident>;
 
@@ -64,7 +65,17 @@ type IncidentPlan = {
   expiresAt: string;
 };
 
-export function IncidentWorkspace({ canManage, initialIncidentId = null }: { canManage: boolean; initialIncidentId?: string | null }) {
+export function IncidentWorkspace({
+  canManage,
+  canReadCorrelationOutbox = false,
+  canReplayCorrelationOutbox = false,
+  initialIncidentId = null,
+}: {
+  canManage: boolean;
+  canReadCorrelationOutbox?: boolean;
+  canReplayCorrelationOutbox?: boolean;
+  initialIncidentId?: string | null;
+}) {
   const { locale, t } = useAdminI18n();
   const [initialUrlState] = useState(() => stateFromLocation(initialIncidentId));
   const [query, setQuery] = useState<IncidentQueryDraft>(initialUrlState.query);
@@ -216,6 +227,11 @@ export function IncidentWorkspace({ canManage, initialIncidentId = null }: { can
           </p>
         ) : null}
       </header>
+
+      <IncidentCorrelationOutbox
+        canRead={canReadCorrelationOutbox}
+        canReplay={canReplayCorrelationOutbox}
+      />
 
       <SavedViewsControl
         currentState={incidentSavedState(query)}

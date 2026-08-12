@@ -11,6 +11,7 @@ const INCIDENT_SIGNATURE_VERSION = "generation-error-v1";
 const INCIDENT_CORRELATION_POLICY_VERSION = "generation-correlation-v1";
 const OPEN_INCIDENT_STATUSES = ["detected", "triaged", "mitigating", "monitoring"] as const;
 const DEFAULT_JOIN_GAP_MS = 24 * 60 * 60 * 1_000;
+export const INCIDENT_CORRELATION_MAX_ATTEMPTS = 8;
 const INCIDENT_CORRELATION_POLICIES = {
   [INCIDENT_CORRELATION_POLICY_VERSION]: { joinGapMs: DEFAULT_JOIN_GAP_MS },
 } as const;
@@ -60,6 +61,12 @@ function stableSignature(attempt: FailedAttemptSource) {
     signature: canonicalSha256(components),
     components,
   };
+}
+
+export function isGenerationIncidentCorrelationReplayEligible(
+  attempt: FailedAttemptSource,
+) {
+  return stableSignature(attempt) !== null;
 }
 
 export function transformGenerationIncidentBackfill(attempt: FailedAttemptSource) {
@@ -280,9 +287,55 @@ export async function dispatchGenerationIncidentCorrelation(
     const payload = asRecord(row.payload);
     const attemptId = typeof payload.attemptId === "string" ? payload.attemptId : null;
     try {
-      if (!attemptId) throw new Error("Incident correlation outbox payload is invalid");
+      if (!attemptId) {
+        const attempts = row.attempts + 1;
+        const transition = await db.mainOutboxEvent.updateMany({
+          where: {
+            id: row.id,
+            status: row.status,
+            attempts: row.attempts,
+            nextRunAt: row.nextRunAt,
+          },
+          data: {
+            status: "rejected",
+            attempts,
+            lastError: toInputJson({
+              outcome: "quarantined",
+              code: "incident_correlation_payload_invalid",
+              message: "Incident correlation outbox payload is invalid",
+              attemptId: null,
+              attempts,
+            }),
+          },
+        });
+        failed += transition.count;
+        continue;
+      }
       const attempt = await db.generationAttempt.findUnique({ where: { id: attemptId } });
-      if (!attempt) throw new Error("Generation Attempt for Incident correlation is missing");
+      if (!attempt) {
+        const attempts = row.attempts + 1;
+        const transition = await db.mainOutboxEvent.updateMany({
+          where: {
+            id: row.id,
+            status: row.status,
+            attempts: row.attempts,
+            nextRunAt: row.nextRunAt,
+          },
+          data: {
+            status: "failed",
+            attempts,
+            lastError: toInputJson({
+              outcome: "quarantined",
+              code: "generation_attempt_missing",
+              message: "Generation Attempt for Incident correlation is missing",
+              attemptId,
+              attempts,
+            }),
+          },
+        });
+        failed += transition.count;
+        continue;
+      }
       if (!stableSignature(attempt)) {
         await db.$transaction(async (tx) => {
           await tx.mainOutboxEvent.update({
@@ -322,18 +375,35 @@ export async function dispatchGenerationIncidentCorrelation(
       });
       correlated += 1;
     } catch (error) {
-      await db.mainOutboxEvent.update({
-        where: { id: row.id },
+      const attempts = row.attempts + 1;
+      const exhausted = attempts >= INCIDENT_CORRELATION_MAX_ATTEMPTS;
+      const transition = await db.mainOutboxEvent.updateMany({
+        where: {
+          id: row.id,
+          status: row.status,
+          attempts: row.attempts,
+          nextRunAt: row.nextRunAt,
+        },
         data: {
-          status: "pending",
-          attempts: { increment: 1 },
-          nextRunAt: new Date(Date.now() + 30_000),
+          // INVARIANT: automatic retries are bounded. Exhaustion remains a
+          // durable failed carrier until the operator requeues this exact
+          // revision through the incident-correlation outbox authority.
+          status: exhausted ? "failed" : "pending",
+          attempts,
+          nextRunAt: new Date(Date.now() + Math.min(attempts, 30) * 30_000),
           lastError: toInputJson({
+            outcome: exhausted ? "retry_exhausted" : "retryable",
+            code: "incident_correlation_failed",
             message: error instanceof Error ? error.message : "Incident correlation failed",
+            attemptId,
+            attempts,
+            maxAttempts: INCIDENT_CORRELATION_MAX_ATTEMPTS,
           }),
         },
       });
-      failed += 1;
+      // INVARIANT: a late failure can only advance the exact retry it read;
+      // it must never regress a concurrent durable delivery.
+      failed += transition.count;
     }
   }
   return { examined: rows.length, correlated, unavailable, failed };

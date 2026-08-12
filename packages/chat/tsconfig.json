@@ -16,7 +16,8 @@
       "@idream/shared/contracts": ["../shared/src/contracts/index.ts"],
       "@idream/shared/env": ["../shared/src/contracts/env.ts"],
       "@idream/shared/bff": ["../shared/src/bff/signing.ts"],
-      "@idream/shared/chat/limits": ["../shared/src/chat/limits.ts"]
+      "@idream/shared/chat/limits": ["../shared/src/chat/limits.ts"],
+      "@idream/shared/observability/sentry": ["../shared/src/observability/sentry.ts"]
     }
   },
   "include": ["src/**/*.ts", "prisma.config.ts"],

@@ -7,19 +7,22 @@
     "node": ">=22"
   },
   "scripts": {
-    "dev": "next dev --port 3001",
+    "dev": "IDREAM_NEXT_DEVELOPMENT=1 IDREAM_NEXT_DIST_DIR=.next-development next dev --port 3001",
     "build": "node ../../scripts/build-next-standalone.mjs packages/admin",
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "check": "npm run lint && npm run typecheck && npm run build",
-    "test": "vitest run"
+    "test": "vitest run",
+    "probe:sentry": "tsx src/probe-sentry.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.3.0",
     "@idream/shared": "workspace:*",
+    "@sentry/nextjs": "10.70.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "dotenv": "^17.4.2",
     "lucide-react": "^1.6.0",
     "next": "16.2.1",
     "react": "19.2.4",

@@ -8,7 +8,10 @@ import type { ChatPrismaClient } from "./db.js";
 import { chatPrisma, chatProjectorPrisma } from "./db.js";
 import { appendStreamEvent, streamKey } from "./stream.js";
 import { deliverPendingOutbox } from "./outbox.js";
-import { reprocessPendingInbox } from "./inbox.js";
+import {
+  reprocessAccountDeletionRequestsV2,
+  reprocessPendingInbox,
+} from "./inbox.js";
 import { enqueue } from "./queue.js";
 import { projectChatFileMutations } from "./file-mutations.js";
 import { loadSessionLinkage } from "./relationship-authority.js";
@@ -205,7 +208,12 @@ export async function reconcile(
   }
 
   const { delivered } = await deliverPendingOutbox(prisma);
-  const inboxApplied = await reprocessPendingInbox(prisma);
+  const accountDeletionV2Applied = await reprocessAccountDeletionRequestsV2(
+    prisma,
+    projectorPrisma,
+  );
+  const inboxApplied =
+    accountDeletionV2Applied + await reprocessPendingInbox(prisma);
   const [pendingFileMutations, oldestPendingFileMutation] =
     await Promise.all([
       prisma.chatFileMutation.count({ where: { status: "pending" } }),

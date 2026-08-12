@@ -27,7 +27,7 @@ export function CharacterGrid({
 }>) {
   return (
     <section className="w-full px-2 md:px-[60px]">
-      <div className="grid grid-cols-2 gap-2 md:grid-cols-5 md:gap-3">
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-3 md:gap-3 lg:grid-cols-4 xl:grid-cols-5">
         {cards.map((card, index) => (
           <div key={card.id} className="contents">
             <CharacterCard card={card} imageLoading={index < 5 ? "eager" : "lazy"} />
@@ -42,7 +42,7 @@ export function CharacterGrid({
                   className="object-cover"
                   fill
                   loading="eager"
-                  sizes="(max-width: 767px) 0px, calc((100vw - 168px) / 5)"
+                  sizes="(max-width: 767px) 0px, (max-width: 1023px) calc((100vw - 320px) / 3), (max-width: 1279px) calc((100vw - 332px) / 4), calc((100vw - 344px) / 5)"
                   src="/images/ourdream/promo-card-female.webp"
                   unoptimized
                 />

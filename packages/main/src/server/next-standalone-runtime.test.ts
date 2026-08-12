@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
@@ -159,12 +159,56 @@ afterEach(() => {
 });
 
 describe("immutable Next standalone runtime releases", () => {
+  it("isolates source-backed development artifacts from production .next builds", async () => {
+    const mutableEnv = process.env as unknown as Record<
+      string,
+      string | undefined
+    >;
+    const previous = {
+      development: mutableEnv.IDREAM_NEXT_DEVELOPMENT,
+      distDir: mutableEnv.IDREAM_NEXT_DIST_DIR,
+      nodeEnv: mutableEnv.NODE_ENV,
+    };
+    mutableEnv.IDREAM_NEXT_DEVELOPMENT = "1";
+    mutableEnv.IDREAM_NEXT_DIST_DIR = ".next-development";
+    mutableEnv.NODE_ENV = "development";
+    try {
+      for (const packageName of ["main", "admin"]) {
+        const configUrl = pathToFileURL(
+          path.join(workspaceRoot, "packages", packageName, "next.config.ts"),
+        );
+        configUrl.searchParams.set("development-isolation", packageName);
+        const loaded = await import(configUrl.href) as {
+          default: { distDir?: string };
+        };
+        expect(loaded.default.distDir).toBe(".next-development");
+      }
+    } finally {
+      if (previous.development === undefined) {
+        delete mutableEnv.IDREAM_NEXT_DEVELOPMENT;
+      } else {
+        mutableEnv.IDREAM_NEXT_DEVELOPMENT = previous.development;
+      }
+      if (previous.distDir === undefined) {
+        delete mutableEnv.IDREAM_NEXT_DIST_DIR;
+      } else {
+        mutableEnv.IDREAM_NEXT_DIST_DIR = previous.distDir;
+      }
+      if (previous.nodeEnv === undefined) {
+        delete mutableEnv.NODE_ENV;
+      } else {
+        mutableEnv.NODE_ENV = previous.nodeEnv;
+      }
+    }
+  });
+
   it("keeps immutable runtime releases outside the ESLint source scope", () => {
     for (const packageName of ["main", "admin"]) {
       const config = readFileSync(
         path.join(workspaceRoot, "packages", packageName, "eslint.config.mjs"),
         "utf8",
       );
+      expect(config).toContain('".next-development/**"');
       expect(config).toContain('".next-runtime/**"');
     }
   });

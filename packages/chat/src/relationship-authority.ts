@@ -62,6 +62,7 @@ const relationshipMessageSelect = {
   replyToMessageId: true,
   memoryAuthority: true,
   memoryExtractedAttempt: true,
+  runtimeTrace: true,
   createdAt: true,
   deletedAt: true,
 } as const;
@@ -77,6 +78,7 @@ export interface RelationshipMessage {
   replyToMessageId: string | null;
   memoryAuthority: string;
   memoryExtractedAttempt: number;
+  runtimeTrace?: unknown;
   createdAt: Date;
   deletedAt: Date | null;
 }
@@ -143,7 +145,11 @@ export function resolveRelationshipLinkage(
   }
 
   const assistants = messages
-    .filter((message) => message.role === "assistant")
+    .filter(
+      (message) =>
+        message.role === "assistant" &&
+        !isImmutableOpeningMessage(message),
+    )
     .sort(compareMessages);
   const users = messages
     .filter((message) => message.role === "user")
@@ -284,6 +290,21 @@ export function resolveRelationshipLinkage(
     ambiguousAssistantIds: [...ambiguous].sort(),
     candidateSourceIds,
   };
+}
+
+function isImmutableOpeningMessage(message: RelationshipMessage): boolean {
+  const trace = message.runtimeTrace;
+  return Boolean(
+    message.replyToMessageId === null &&
+      message.memoryAuthority === "disabled" &&
+      trace &&
+      typeof trace === "object" &&
+      !Array.isArray(trace) &&
+      (trace as Record<string, unknown>).schemaVersion === 1 &&
+      (trace as Record<string, unknown>).messageKind === "opening" &&
+      (trace as Record<string, unknown>).outputAuthority ===
+        "immutable_opening",
+  );
 }
 
 export type RelationshipProjectionOperation =

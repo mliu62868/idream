@@ -47,6 +47,7 @@ function activeHrefForPath(path: string) {
   }
   if (path.startsWith("/custom")) return "/custom";
   if (path.startsWith("/profile")) return "/profile";
+  if (path.startsWith("/age-verification")) return "/profile";
   if (path.startsWith("/feed")) return "/feed";
   if (path.startsWith("/community")) return "/community";
   if (path.startsWith("/helpdesk")) return "/helpdesk";
@@ -90,6 +91,7 @@ function AppTopbar({
             alt="ourdream.ai"
             className="h-3.5 w-auto"
             height={15}
+            loading="eager"
             src="/images/ourdream/ourdream-logo.svg"
             width={130}
           />

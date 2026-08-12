@@ -23,10 +23,78 @@ function userInfo(user, password) {
 }
 
 function psqlSuper(target, db, sql) {
-  execFileSync("psql", ["-U", target.superUser, "-h", target.host, "-p", target.port, "-d", db, "-v", "ON_ERROR_STOP=1", "-q", "-c", sql], {
-    env: { ...process.env, PGPASSWORD: target.superPassword },
-    stdio: ["ignore", "ignore", "inherit"],
-  });
+  execFileSync(
+    "psql",
+    [
+      "-U",
+      target.superUser,
+      "-h",
+      target.host,
+      "-p",
+      target.port,
+      "-d",
+      db,
+      "-v",
+      "ON_ERROR_STOP=1",
+      "-q",
+      "-c",
+      sql,
+    ],
+    {
+      env: { ...process.env, PGPASSWORD: target.superPassword },
+      stdio: ["ignore", "ignore", "inherit"],
+    },
+  );
+}
+
+function sqlLiteral(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+// Test clusters are the only place where this harness owns role creation,
+// posture, and disposable credentials.
+// Production role/IAM bootstrap is intentionally outside 01_schemas_roles.sql.
+function ensureChatBoundaryTestRoles(target) {
+  psqlSuper(
+    target,
+    "postgres",
+    `
+      DO $roles$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'core_owner') THEN
+          CREATE ROLE core_owner NOLOGIN;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'chat_owner') THEN
+          CREATE ROLE chat_owner NOLOGIN;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'chat_service') THEN
+          EXECUTE format(
+            'CREATE ROLE chat_service LOGIN PASSWORD %L',
+            ${sqlLiteral(target.chatServicePassword)}
+          );
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'chat_projector') THEN
+          EXECUTE format(
+            'CREATE ROLE chat_projector LOGIN PASSWORD %L',
+            ${sqlLiteral(target.chatProjectorPassword)}
+          );
+        END IF;
+
+        ALTER ROLE core_owner NOLOGIN;
+        ALTER ROLE chat_owner NOLOGIN;
+        EXECUTE format(
+          'ALTER ROLE chat_service LOGIN PASSWORD %L',
+          ${sqlLiteral(target.chatServicePassword)}
+        );
+        EXECUTE format(
+          'ALTER ROLE chat_projector LOGIN PASSWORD %L',
+          ${sqlLiteral(target.chatProjectorPassword)}
+        );
+        REVOKE core_owner, chat_owner FROM chat_service, chat_projector;
+      END
+      $roles$;
+    `,
+  );
 }
 
 function psqlFile(target, db, file, role) {
@@ -56,7 +124,11 @@ function psqlFile(target, db, file, role) {
 }
 
 function validateTurnMemoryAuthorityUpgrade(target, db) {
-  psqlFile(target, db, path.join(repoRoot, "db", "sql", "01_schemas_roles.sql"));
+  psqlFile(
+    target,
+    db,
+    path.join(repoRoot, "db", "sql", "01_schemas_roles.sql"),
+  );
   psqlSuper(
     target,
     db,
@@ -82,7 +154,12 @@ function validateTurnMemoryAuthorityUpgrade(target, db) {
   psqlFile(
     target,
     db,
-    path.join(repoRoot, "db", "sql", "2026-07-18-chat-turn-memory-authority.sql"),
+    path.join(
+      repoRoot,
+      "db",
+      "sql",
+      "2026-07-18-chat-turn-memory-authority.sql",
+    ),
     "chat_owner",
   );
   psqlSuper(
@@ -117,7 +194,11 @@ function validateTurnMemoryAuthorityUpgrade(target, db) {
 }
 
 function validateFileMutationAuthorityUpgrade(target, db) {
-  psqlFile(target, db, path.join(repoRoot, "db", "sql", "01_schemas_roles.sql"));
+  psqlFile(
+    target,
+    db,
+    path.join(repoRoot, "db", "sql", "01_schemas_roles.sql"),
+  );
   psqlSuper(
     target,
     db,
@@ -301,12 +382,12 @@ export function provisionChatTestDb() {
     requirePlaywright: process.env.CHAT_TEST_REQUIRE_PLAYWRIGHT === "1",
   });
   assertSafeChatTestDatabaseTarget(target, {
-    allowRemoteReset:
-      process.env.CHAT_TEST_ALLOW_REMOTE_RESET === "1",
+    allowRemoteReset: process.env.CHAT_TEST_ALLOW_REMOTE_RESET === "1",
     ci: process.env.CI === "true",
-    confirmedDatabaseName:
-      process.env.CHAT_TEST_RESET_CONFIRM,
+    confirmedDatabaseName: process.env.CHAT_TEST_RESET_CONFIRM,
   });
+
+  ensureChatBoundaryTestRoles(target);
 
   // 1. fresh database
   psqlSuper(target, "postgres", `DROP DATABASE IF EXISTS ${db} WITH (FORCE);`);
@@ -329,19 +410,23 @@ export function provisionChatTestDb() {
   // genuinely idempotent against its own latest view/table shape, not merely
   // installable on a fresh database.
   for (let pass = 0; pass < 2; pass += 1) {
-    execFileSync("bash", [path.join(repoRoot, "db", "sql", "apply-validate.sh")], {
-      stdio: ["ignore", "inherit", "inherit"],
-      env: {
-        ...process.env,
-        DB: db,
-        SUPER: target.superUser,
-        SUPER_PASSWORD: target.superPassword,
-        CHAT_SERVICE_PASSWORD: target.chatServicePassword,
-        CHAT_PROJECTOR_PASSWORD: target.chatProjectorPassword,
-        PGHOST: target.host,
-        PGPORT: target.port,
+    execFileSync(
+      "bash",
+      [path.join(repoRoot, "db", "sql", "apply-validate.sh")],
+      {
+        stdio: ["ignore", "inherit", "inherit"],
+        env: {
+          ...process.env,
+          DB: db,
+          SUPER: target.superUser,
+          SUPER_PASSWORD: target.superPassword,
+          CHAT_SERVICE_PASSWORD: target.chatServicePassword,
+          CHAT_PROJECTOR_PASSWORD: target.chatProjectorPassword,
+          PGHOST: target.host,
+          PGPORT: target.port,
+        },
       },
-    });
+    );
   }
 
   return {
@@ -358,7 +443,8 @@ export function chatTestDatabaseNameForWorkspace(
 ) {
   if (!isLinkedWorktree) return "idream_chat_test";
   const resolvedRoot = path.resolve(workspaceRoot);
-  const suffix = path.basename(resolvedRoot)
+  const suffix = path
+    .basename(resolvedRoot)
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "_")
     .replace(/^_+|_+$/g, "")
@@ -382,29 +468,20 @@ export function defaultChatTestDatabaseName() {
 
 export function chatTestDatabaseTarget() {
   return {
-    database:
-      process.env.CHAT_TEST_DB ??
-      defaultChatTestDatabaseName(),
+    database: process.env.CHAT_TEST_DB ?? defaultChatTestDatabaseName(),
     host: process.env.PGHOST ?? "localhost",
     port: process.env.PGPORT ?? "5433",
     superUser: process.env.PG_SUPER ?? "postgres",
     superPassword:
-      process.env.PGPASSWORD ??
-      process.env.POSTGRES_PASSWORD ??
-      "postgres",
+      process.env.PGPASSWORD ?? process.env.POSTGRES_PASSWORD ?? "postgres",
     chatServicePassword:
-      process.env.CHAT_SERVICE_PASSWORD ??
-      "chat_service_change_me",
+      process.env.CHAT_SERVICE_PASSWORD ?? "chat_service_change_me",
     chatProjectorPassword:
-      process.env.CHAT_PROJECTOR_PASSWORD ??
-      "chat_projector_change_me",
+      process.env.CHAT_PROJECTOR_PASSWORD ?? "chat_projector_change_me",
   };
 }
 
-export function assertSafeChatTestDatabaseTarget(
-  target,
-  authority = {},
-) {
+export function assertSafeChatTestDatabaseTarget(target, authority = {}) {
   assertSafeChatTestDatabaseName(target.database);
   const hostname = String(target.host ?? "")
     .replace(/^\[|\]$/g, "")
@@ -432,7 +509,9 @@ export function assertSafeChatTestDatabaseTarget(
 export function chatTestBullMqPrefix(target) {
   const identity = JSON.stringify({
     database: target.database,
-    host: String(target.host).replace(/^\[|\]$/g, "").toLowerCase(),
+    host: String(target.host)
+      .replace(/^\[|\]$/g, "")
+      .toLowerCase(),
     port: target.port || "5432",
   });
   const digest = createHash("sha256").update(identity).digest("hex");

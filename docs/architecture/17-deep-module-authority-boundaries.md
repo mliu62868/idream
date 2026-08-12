@@ -493,6 +493,12 @@ admission/direct producer，后停 Gen worker，finalizer 最后。`pm2 jlist` �
 4. 删除跨服务 Redis producer/consumer 与 env；
 5. 回滚时回滚 sender/receiver 版本组合，保留 pending Outbox，不恢复第二交付路径。
 
+账号删除 terminal handshake 更严格：Main 的 v2 request 只有在 Chat 删除效果和 Main completion
+投影都成功后才能 ACK/delivered。Chat completion 使用专属 v2 event、`request_bound` outbox 状态
+与 Main 专属 Route Handler；generic ingress/dispatcher 都拒绝或不选择该事件。Main completion
+receipt 使用独立 namespace，不能被旧 generic no-op receipt 阻断；Chat 前滚时把旧 `consumed`
+receipt 视为可修复证据，只有专属 Main ACK 后才写 `consumed_v2`。
+
 本 ADR 不要求新增数据库表。若实施发现必须修改 schema，只提交 Prisma migration / SQL 脚本，由用户执行；agent 不直接连接数据库改表。
 
 ## 7. Verification

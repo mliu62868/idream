@@ -240,12 +240,14 @@ export interface AgeVerificationProvider {
   >;
   parseWebhook(input: {
     providerEventId: string;
+    deliveryId?: string;
     payload: unknown;
     signature?: string;
     rawBody?: string;
   }): Promise<
     ProviderResult<{
       providerEventId: string;
+      deliveryId: string;
       userId?: string;
       providerVerificationId?: string;
       status: "pending" | "verified" | "failed" | "expired";

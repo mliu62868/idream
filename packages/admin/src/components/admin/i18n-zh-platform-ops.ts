@@ -67,6 +67,63 @@ export const adminZhPlatformOps: Record<string, string> = {
   "Chat Service status": "Chat Service 状态",
   "Chat moderation events": "聊天审核事件",
   "Chat usage and quota": "聊天用量与额度",
+  "Every Main → Chat durable event is either pending or delivered.":
+    "每个 Main → Chat 持久化事件都处于待处理或已交付状态。",
+  "Every Main → Chat durable event is pending, delivered, or explicitly terminalized.":
+    "每个 Main → Chat 持久化事件都处于待处理、已交付或已显式终结状态。",
+  "Failed Main to Chat delivery table": "Main → Chat 交付失败表格",
+  "Failed Main to Chat durable deliveries": "Main → Chat 持久化交付失败记录",
+  "Aggregate": "聚合目标",
+  "Receiver authority": "Chat 接收端权威",
+  "Attempts / retry": "尝试次数 / 下次重试",
+  "Envelope hash": "信封哈希",
+  "Event": "事件",
+  "Inspect failed durable events and explicitly return selected envelopes to the worker queue.":
+    "检查交付失败的持久化事件，并将选中的信封显式送回 worker 队列。",
+  "Main → Chat failed delivery": "Main → Chat 交付失败",
+  "Main → Chat failed delivery refresh failed:":
+    "Main → Chat 交付失败记录刷新失败：",
+  "Main → Chat replay result · {summary}.":
+    "Main → Chat 重放结果 · {summary}。",
+  "Main → Chat target-missing result · {summary}.":
+    "Main → Chat 目标缺失处理结果 · {summary}。",
+  "Next failed delivery page": "下一页交付失败记录",
+  "No failed Main → Chat deliveries": "暂无 Main → Chat 交付失败记录",
+  "Replay selected": "重放选中项",
+  "Record target missing": "记录目标缺失",
+  "Record expected target missing ({count})": "记录预期目标缺失（{count}）",
+  "Target-missing confirmation": "目标缺失确认",
+  "Target-missing reason (≥3)": "目标缺失原因（至少 3 个字符）",
+  "Expected target missing": "预期目标缺失",
+  "Target present · replay eligible": "目标存在 · 可重放",
+  "Exact receiver receipt · replay eligible": "接收端精确回执 · 可重放",
+  "No receiver target required · replay eligible": "无需接收端目标 · 可重放",
+  "Target missing already recorded": "目标缺失已记录",
+  "Receiver envelope hash conflict": "接收端信封哈希冲突",
+  "Receiver receipt quarantined": "接收端回执已隔离",
+  "Receiver authority unavailable": "接收端权威不可用",
+  "Invalid event payload": "事件载荷无效",
+  "Invalid durable envelope": "持久化信封无效",
+  "No safe action is available for this receiver authority state":
+    "当前接收端权威状态没有可安全执行的操作",
+  "Replay confirmation": "重放确认",
+  "Replay Main → Chat failed events ({count})":
+    "重放 Main → Chat 失败事件（{count}）",
+  "Replay reason (≥3)": "重放原因（至少 3 个字符）",
+  "Replay unavailable · invalid durable envelope":
+    "无法重放 · 持久化信封无效",
+  "Replay unavailable · ops.deadletter.write is not granted":
+    "无法重放 · 尚未授予 ops.deadletter.write",
+  "Select all failed Main to Chat events": "全选 Main → Chat 交付失败事件",
+  "Select failed event {id}": "选择交付失败事件 {id}",
+  "Last error": "最后错误",
+  "Queue replay": "加入重放队列",
+  "The worker will retry the unchanged durable envelopes; no event is sent from this browser request.":
+    "worker 将重试未改动的持久化信封；此浏览器请求不会直接发送事件。",
+  "This records that no user-visible Chat effect was applied. Main becomes terminal only after Chat stores the original envelope hash as a target-missing receipt.":
+    "该操作明确记录未产生用户可见的 Chat 效果；仅当 Chat 以原始信封哈希保存目标缺失回执后，Main 才进入终态。",
+  "Unavailable · ops.queue.read is not granted":
+    "不可用 · 尚未授予 ops.queue.read",
   "Check backend health — needs engineering": "检查后端健康，需工程处理",
   "Civitai config paste": "粘贴 Civitai 配置",
   "Clear LoRA": "清空 LoRA",
@@ -91,6 +148,28 @@ export const adminZhPlatformOps: Record<string, string> = {
   "Corrective actions (one per line)": "纠正措施（每行一项）",
   "Correlated failures, frozen mitigation scope, and recovery evidence in one operational root.":
     "在一个运营根节点中统一查看关联故障、冻结的缓解范围和恢复证据。",
+  "Incident correlation failed delivery": "事故关联交付失败",
+  "Inspect terminally failed generation-to-Incident carriers and return only exact eligible revisions to the worker queue.":
+    "检查生成到事故关联的终态失败载体，仅将精确且符合条件的版本送回 worker 队列。",
+  "Incident correlation replay result · {summary}.": "事故关联重放结果 · {summary}。",
+  "Incident correlation failed delivery refresh failed:": "事故关联失败载体刷新失败：",
+  "Loading incident correlation failed delivery": "正在加载事故关联失败载体",
+  "Every incident correlation carrier is pending, delivered, or explicitly quarantined.":
+    "每个事故关联载体都处于待处理、已交付或已显式隔离状态。",
+  "No failed incident correlation deliveries": "暂无事故关联交付失败记录",
+  "Select all replay-eligible incident correlation events": "全选可重放的事故关联事件",
+  "Select replay-eligible": "选择可重放项",
+  "Replay authority": "重放权威",
+  "Select failed incident correlation event {id}": "选择事故关联失败事件 {id}",
+  "Replay incident correlation failed events ({count})": "重放事故关联失败事件（{count}）",
+  "The worker will retry the unchanged correlation payloads; this browser request does not correlate an Incident.":
+    "worker 将重试未改动的关联载荷；此浏览器请求不会直接关联事故。",
+  "Attempts": "尝试次数",
+  "Revision": "版本",
+  "eligible": "符合重放条件",
+  "invalid payload": "载荷无效",
+  "attempt missing": "尝试记录缺失",
+  "attempt not correlatable": "尝试记录不可关联",
   "Correlation corrections": "关联关系修正",
   "Cost/latency evidence reference": "成本/延迟证据引用",
   "Create 40-sample matrix": "创建 40 样本矩阵",

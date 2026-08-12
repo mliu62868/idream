@@ -1,73 +1,4 @@
 services:
-  app:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: runner
-    image: ai-website-cloner:latest
-    container_name: ai-website-cloner
-    restart: unless-stopped
-    ports:
-      - "${PORT:-3000}:3000"
-    environment:
-      - NODE_ENV=production
-      - NEXT_TELEMETRY_DISABLED=1
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-idream}
-      - REDIS_URL=redis://redis:6379/0
-      - BULLMQ_PREFIX=${BULLMQ_PREFIX:-idream:prod}
-    env_file:
-      - path: .env.local
-        required: false
-      - path: .env
-        required: false
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/ || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_started
-
-  dev:
-    build:
-      context: .
-      dockerfile: Dockerfile.dev
-    image: ai-website-cloner:dev
-    container_name: ai-website-cloner-dev
-    restart: unless-stopped
-    ports:
-      - "${DEV_PORT:-3001}:3000"
-    environment:
-      - NODE_ENV=development
-      - NEXT_TELEMETRY_DISABLED=1
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-idream}
-      - REDIS_URL=redis://redis:6379/0
-      - BULLMQ_PREFIX=${BULLMQ_PREFIX:-idream:dev}
-    env_file:
-      - path: .env.local
-        required: false
-      - path: .env
-        required: false
-    volumes:
-      - .:/app
-      - /app/node_modules
-      - /app/.next
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/ || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 15s
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_started
-
   # Local Postgres for main + chat-service boundary. Host port 5433 avoids native
   # pg / Supabase on 5432. DB `idream` holds main's public.* base tables + chat
   # schema/views (bootstrap: db/sql/*).
@@ -91,7 +22,7 @@ services:
 
   redis:
     image: redis:8-alpine
-    container_name: ai-website-cloner-redis
+    container_name: idream-redis
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
     ports:

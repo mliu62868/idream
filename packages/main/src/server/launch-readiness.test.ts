@@ -2,24 +2,30 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
+import { describe, expect, it, vi } from "vitest";
 import {
-  assessLaunchReadiness,
+  assessLaunchReadiness as assessLaunchReadinessRaw,
   formatLaunchReadinessReport,
   loadLaunchReadinessEnv,
   parseLaunchReadinessCliArgs,
   type LaunchReadinessReport,
 } from "./launch-readiness";
+import { inspectMainToChatFailedBacklog } from "./readiness/main-to-chat-backlog-authority";
 import type {
   AgeVerificationProbeEvidence,
   BlobStorageProbeEvidence,
   ChatModelProbeEvidence,
   ChatServiceProbeEvidence,
+  GenerationPersistenceProbeEvidence,
   ImagePipelineProbeEvidence,
   PaymentProviderProbeEvidence,
   ProductConfigProbeEvidence,
   PublicCatalogProbeEvidence,
   SafetyGatewayProbeEvidence,
+  SentryCanaryProbeEvidence,
+  SentryCanaryService,
+  VideoGenerationProbeEvidence,
   VoiceModelProbeEvidence,
   WebSurfaceProbeEvidence,
 } from "./readiness/evidence";
@@ -41,7 +47,8 @@ const productionEnv = {
   REDIS_URL: "redis://redis.ourdream.internal:6379/0",
   BULLMQ_PREFIX: "idream:prod",
   CHAT_PROVIDER: "pipeline",
-  CHAT_DATABASE_URL: "postgresql://chat_service:secret@db.ourdream.internal:5432/idream",
+  CHAT_DATABASE_URL:
+    "postgresql://chat_service:secret@db.ourdream.internal:5432/idream",
   CHAT_FS_ROOT: "/var/lib/idream/chat",
   CHAT_MODEL_PROVIDER: "pipeline",
   CHAT_MODEL_BASE_URL: "https://pipeline.ourdream.internal",
@@ -72,6 +79,11 @@ const productionEnv = {
   PIPELINE_VIDEO_MODEL_DEFAULT: "video-default",
   COMFYUI_API_URL: "https://comfyui-video.ourdream.internal",
   PIPELINE_IMAGE_PROBE_REPORT: ".tmp/launch-image-probe.json",
+  VIDEO_GENERATION_PROBE_REPORT: ".tmp/launch-video-probe.json",
+  GENERATION_IMAGE_PERSISTENCE_PROBE_REPORT:
+    ".tmp/launch-image-persistence-probe.json",
+  GENERATION_VIDEO_PERSISTENCE_PROBE_REPORT:
+    ".tmp/launch-video-persistence-probe.json",
   VOICE_MODEL_PROBE_REPORT: ".tmp/launch-voice-probe.json",
   BLOB_STORAGE_PROBE_REPORT: ".tmp/launch-blob-probe.json",
   BTCPAY_BASE_URL: "https://btcpay.ourdream.ai",
@@ -83,13 +95,25 @@ const productionEnv = {
   AGE_VERIFY_API_KEY: "production-age-token-0123456789",
   AGE_VERIFY_WEBHOOK_SECRET: "production-age-webhook-secret-0123456789",
   AGE_VERIFY_LINK_BACK_URL: "https://ourdream.ai/age-verification/return",
-  AGE_VERIFY_CALLBACK_URL: "https://ourdream.ai/api/v1/age-verification/webhooks/gocam",
+  AGE_VERIFY_CALLBACK_URL:
+    "https://ourdream.ai/api/v1/age-verification/webhooks/gocam",
   AGE_VERIFICATION_PROBE_REPORT: ".tmp/launch-age-probe.json",
   BLOB_BUCKET: "idream-private-media",
   BLOB_ENDPOINT: "https://a1b2c3d4e5f6.r2.cloudflarestorage.com",
   BLOB_ACCESS_KEY_ID: "blob-access-key",
   BLOB_SECRET_ACCESS_KEY: "blob-secret-key",
   SENTRY_DSN: "https://public@o123456.ingest.sentry.io/987654",
+  SENTRY_RELEASE: "idream@0123456789abcdef",
+  NEXT_PUBLIC_SENTRY_DSN: "https://public@o123456.ingest.sentry.io/987654",
+  NEXT_PUBLIC_APP_ENV: "production",
+  SENTRY_MAIN_PROBE_REPORT: ".tmp/launch-sentry-main-probe.json",
+  SENTRY_MAIN_PROBE_MAX_AGE_MINUTES: "1440",
+  SENTRY_ADMIN_PROBE_REPORT: ".tmp/launch-sentry-admin-probe.json",
+  SENTRY_ADMIN_PROBE_MAX_AGE_MINUTES: "1440",
+  SENTRY_CHAT_PROBE_REPORT: ".tmp/launch-sentry-chat-probe.json",
+  SENTRY_CHAT_PROBE_MAX_AGE_MINUTES: "1440",
+  SENTRY_GEN_PROBE_REPORT: ".tmp/launch-sentry-gen-probe.json",
+  SENTRY_GEN_PROBE_MAX_AGE_MINUTES: "1440",
 } satisfies Record<string, string>;
 
 const externalModerationEnv = {
@@ -115,12 +139,118 @@ function passingImageProbe(
     model: productionEnv.PIPELINE_IMAGE_MODEL_DEFAULT,
     orientation: "1:1",
     count: 1,
+    blobRoot: "/var/lib/idream/blob",
     generationJobId: "probe_123",
-    finalize: {
-      kind: "generation.completed",
+    backendKind: null,
+    backendTarget: null,
+    workflowKey: null,
+    workflowVersion: null,
+    blobAuthority: {
+      provider: productionEnv.BLOB_PROVIDER,
+      endpoint: productionEnv.BLOB_ENDPOINT,
+      bucket: productionEnv.BLOB_BUCKET,
+      root: null,
+    },
+    terminal: {
+      ref: "gen/terminal-records/attempt_probe/terminal.json",
+      checksum: "a".repeat(64),
+      outcome: "succeeded",
       assets: 1,
       error: null,
     },
+    ...override,
+  };
+}
+
+function passingBackendImageProbe(
+  override: Partial<ImagePipelineProbeEvidence> = {},
+): ImagePipelineProbeEvidence {
+  return passingImageProbe({
+    provider: "backend",
+    pipelineUrl: null,
+    backendKind: "comfyui",
+    backendTarget: "https://comfyui.ourdream.internal",
+    model: "redcraft-krea2-redmix3-txt2img",
+    workflowKey: "redcraft-krea2-redmix3-txt2img",
+    workflowVersion: 1,
+    ...override,
+  });
+}
+
+function passingVideoProbe(
+  override: Partial<VideoGenerationProbeEvidence> = {},
+): VideoGenerationProbeEvidence {
+  return {
+    ok: true,
+    checkedAt: "2026-06-24T23:55:30.000Z",
+    durationMs: 620_000,
+    provider: "backend",
+    backendKind: "comfyui",
+    backendTarget: productionEnv.COMFYUI_API_URL,
+    workflowKey: "ltx23-gtanimation-i2v",
+    workflowVersion: 1,
+    model: "ltx23-gtanimation-i2v",
+    seconds: 4,
+    referenceSha256: "c".repeat(64),
+    generationJobId: "probe_video_123",
+    blobAuthority: {
+      provider: productionEnv.BLOB_PROVIDER,
+      endpoint: productionEnv.BLOB_ENDPOINT,
+      bucket: productionEnv.BLOB_BUCKET,
+      root: null,
+    },
+    terminal: {
+      ref: "gen/terminal-records/attempt_video_probe/terminal.json",
+      checksum: "d".repeat(64),
+      outcome: "succeeded",
+      assets: 1,
+      error: null,
+    },
+    ...override,
+  };
+}
+
+function passingGenerationPersistenceProbe(
+  mode: "image" | "video",
+  override: Partial<GenerationPersistenceProbeEvidence> = {},
+): GenerationPersistenceProbeEvidence {
+  const isVideo = mode === "video";
+  return {
+    ok: true,
+    checkedAt: isVideo
+      ? "2026-06-24T23:58:30.000Z"
+      : "2026-06-24T23:58:00.000Z",
+    observedAt: isVideo
+      ? "2026-06-24T23:58:00.000Z"
+      : "2026-06-24T23:57:30.000Z",
+    mode,
+    generationJobId: isVideo ? "job_video_123" : "job_image_123",
+    attemptId: isVideo ? "attempt_video_123" : "attempt_image_123",
+    attemptNo: 1,
+    jobStatus: "completed",
+    attemptStatus: "succeeded",
+    provider: "backend",
+    profileKey: isVideo ? "video-default" : "image-premium",
+    profileVersion: 1,
+    workflowKey: isVideo
+      ? "ltx23-gtanimation-i2v"
+      : "redcraft-krea2-redmix3-txt2img",
+    workflowVersion: 1,
+    terminal: {
+      ref: isVideo
+        ? "gen/terminal-records/attempt_video_123/terminal.json"
+        : "gen/terminal-records/attempt_image_123/terminal.json",
+      checksum: (isVideo ? "d" : "a").repeat(64),
+      receiptId: isVideo ? "receipt_video_123" : "receipt_image_123",
+      receiptState: "processed",
+      outboxState: "delivered",
+      transportCount: 1,
+      transportStatus: "succeeded",
+      artifactCount: 1,
+      deliveredCount: 1,
+      mediaAssetCount: 1,
+    },
+    error: null,
     ...override,
   };
 }
@@ -323,6 +453,16 @@ function passingProductConfigProbe(
     durationMs: 222,
     videoFeatureEnabled: false,
     activeImageProfiles: 1,
+    activeImageExecutionBindings: [
+      {
+        profileId: "profile-image-pipeline-v1",
+        runner: "pipeline",
+        model: productionEnv.PIPELINE_IMAGE_MODEL_DEFAULT,
+        workflowKey: null,
+        workflowVersion: null,
+      },
+    ],
+    invalidActiveImageProfileIds: [],
     activeImageCharacterTemplates: 1,
     activeImageFreeplayTemplates: 1,
     activeImagePricingRules: 1,
@@ -336,6 +476,23 @@ function passingProductConfigProbe(
     error: null,
     ...override,
   };
+}
+
+function passingBackendProductConfigProbe(
+  override: Partial<ProductConfigProbeEvidence> = {},
+): ProductConfigProbeEvidence {
+  return passingProductConfigProbe({
+    activeImageExecutionBindings: [
+      {
+        profileId: "profile-image-backend-v1",
+        runner: "comfyui",
+        model: "redcraft-krea2-redmix3-txt2img",
+        workflowKey: "redcraft-krea2-redmix3-txt2img",
+        workflowVersion: 1,
+      },
+    ],
+    ...override,
+  });
 }
 
 function passingWebSurfaceProbe(
@@ -432,11 +589,36 @@ function passingPaymentProbe(
     storeId: productionEnv.BTCPAY_STORE_ID,
     canViewStore: true,
     returnedStoreId: productionEnv.BTCPAY_STORE_ID,
+    canLookupInvoice: true,
     canCreateInvoice: true,
     invoiceId: "btcpay-probe-invoice-1",
     checkoutUrl: "https://btcpay.ourdream.ai/i/btcpay-probe-invoice-1",
     invoiceAmountCents: 1,
     invoiceCurrency: "USD",
+    terminal: {
+      authorityVersion: "payment_product_settlement_v1",
+      checkoutId: "checkout-probe-1",
+      checkoutStatus: "completed",
+      checkoutReturnPath: "/generate",
+      providerInvoiceId: "btcpay-probe-invoice-1",
+      providerInvoiceStatus: "settled",
+      providerInvoiceAdditionalStatus: "none",
+      providerLookupVerified: true,
+      providerEventId: "btcpay-event-1",
+      providerEventType: "invoice.confirmed",
+      providerEventProcessedAt: "2026-06-24T23:58:30.000Z",
+      providerEventTargetHash: "a".repeat(64),
+      providerDeliveryCount: 2,
+      providerDeliveryIds: ["btcpay-delivery-1", "btcpay-delivery-2"],
+      providerDeliveryPayloadHashes: ["d".repeat(64), "e".repeat(64)],
+      replayVerified: true,
+      subscriptionId: "subscription-probe-1",
+      subscriptionStatus: "active",
+      subscriptionEffectCount: 1,
+      entitlementCount: 3,
+      ledgerEntryId: "ledger-probe-1",
+      ledgerEntryCount: 1,
+    },
     error: null,
     ...override,
   };
@@ -453,11 +635,79 @@ function passingAgeProbe(
     serviceUrl: productionEnv.AGE_VERIFY_SERVICE_URL,
     jurisdiction: "US",
     providerVerificationId: "gocam-session-1",
-    status: "pending",
+    status: "verified",
     url: "https://go.cam/verify/session-1",
+    terminal: {
+      authorityVersion: "age_verified_callback_v1",
+      verificationId: "age-verification-probe-1",
+      verificationStatus: "verified",
+      verifiedAt: "2026-06-24T23:59:20.000Z",
+      callbackUrl: productionEnv.AGE_VERIFY_CALLBACK_URL,
+      linkBackUrl: productionEnv.AGE_VERIFY_LINK_BACK_URL,
+      providerEventId: "gocam-event-1",
+      providerEventType: "age.verification",
+      providerEventProcessedAt: "2026-06-24T23:59:20.000Z",
+      providerEventTargetHash: "b".repeat(64),
+      providerDeliveryCount: 2,
+      providerDeliveryIds: ["gocam-delivery-1", "gocam-delivery-2"],
+      providerDeliveryPayloadHashes: ["f".repeat(64), "f".repeat(64)],
+      providerPayloadHash: "c".repeat(64),
+      verificationEffectCount: 1,
+      replayVerified: true,
+    },
     error: null,
     ...override,
   };
+}
+
+function passingSentryProbe(
+  service: SentryCanaryService = "main",
+  override: Partial<SentryCanaryProbeEvidence> = {},
+): SentryCanaryProbeEvidence {
+  return {
+    ok: true,
+    checkedAt: "2026-06-24T23:59:00.000Z",
+    durationMs: 321,
+    provider: "sentry",
+    service,
+    emitter:
+      service === "main"
+        ? "main-nextjs"
+        : service === "admin"
+          ? "admin-nextjs"
+          : service === "chat"
+            ? "chat-node"
+            : "gen-node",
+    release: "idream@0123456789abcdef",
+    correlationId: "sentry-canary-123",
+    eventId: "0123456789abcdef0123456789abcdef",
+    projectId: "987654",
+    verified: true,
+    verifiedAt: "2026-06-24T23:59:01.000Z",
+    error: null,
+    ...override,
+  };
+}
+
+function passingSentryProbes() {
+  return {
+    sentryMainCanaryProbe: passingSentryProbe("main"),
+    sentryAdminCanaryProbe: passingSentryProbe("admin"),
+    sentryChatCanaryProbe: passingSentryProbe("chat"),
+    sentryGenCanaryProbe: passingSentryProbe("gen"),
+  };
+}
+
+function assessLaunchReadiness(
+  options: Parameters<typeof assessLaunchReadinessRaw>[0] = {},
+) {
+  return assessLaunchReadinessRaw({
+    imageGenerationPersistenceProbe:
+      passingGenerationPersistenceProbe("image"),
+    videoGenerationPersistenceProbe:
+      passingGenerationPersistenceProbe("video"),
+    ...options,
+  });
 }
 
 function failedIds(report: LaunchReadinessReport) {
@@ -471,7 +721,10 @@ function checkById(report: LaunchReadinessReport, id: string) {
 }
 
 function envTemplateValues(relativePath: string) {
-  const content = readFileSync(fileURLToPath(new URL(relativePath, import.meta.url)), "utf8");
+  const content = readFileSync(
+    fileURLToPath(new URL(relativePath, import.meta.url)),
+    "utf8",
+  );
   return Object.fromEntries(
     content
       .split(/\r?\n/)
@@ -491,6 +744,195 @@ function dotenvContent(values: Record<string, string>) {
 }
 
 describe("launch readiness", () => {
+  it("does not treat a configured Sentry DSN as live observability evidence", () => {
+    const report = assessLaunchReadiness({
+      env: {
+        APP_ENV: "production",
+        SENTRY_DSN: "https://public@o123456.ingest.sentry.io/987654",
+        SENTRY_MAIN_PROBE_REPORT: ".tmp/launch-sentry-main-probe.json",
+        SENTRY_ADMIN_PROBE_REPORT: ".tmp/launch-sentry-admin-probe.json",
+        SENTRY_CHAT_PROBE_REPORT: ".tmp/launch-sentry-chat-probe.json",
+        SENTRY_GEN_PROBE_REPORT: ".tmp/launch-sentry-gen-probe.json",
+      },
+      now,
+      sentryMainCanaryProbe: null,
+      sentryAdminCanaryProbe: null,
+      sentryChatCanaryProbe: null,
+      sentryGenCanaryProbe: null,
+    });
+
+    expect(
+      report.checks.find((check) => check.id === "sentry-dsn")?.status,
+    ).toBe("pass");
+    expect(
+      report.checks.find((check) => check.id === "sentry-live-probe"),
+    ).toMatchObject({
+      status: "fail",
+    });
+  });
+
+  it("requires an explicit production marker for browser Sentry", () => {
+    const report = assessLaunchReadiness({
+      env: {
+        APP_ENV: "production",
+        SENTRY_DSN: "https://public@o123456.ingest.sentry.io/987654",
+        NEXT_PUBLIC_SENTRY_DSN:
+          "https://public@o123456.ingest.sentry.io/987654",
+      },
+      now,
+      sentryMainCanaryProbe: null,
+      sentryAdminCanaryProbe: null,
+      sentryChatCanaryProbe: null,
+      sentryGenCanaryProbe: null,
+    });
+
+    expect(
+      report.checks.find((check) => check.id === "sentry-browser-app-env"),
+    ).toMatchObject({
+      status: "fail",
+    });
+  });
+
+  it("accepts fresh correlation-tagged Sentry canaries from all four runtimes", () => {
+    const probe: SentryCanaryProbeEvidence = {
+      ok: true,
+      checkedAt: "2026-06-24T23:59:00.000Z",
+      durationMs: 321,
+      provider: "sentry",
+      service: "main",
+      emitter: "main-nextjs",
+      release: "idream@0123456789abcdef",
+      correlationId: "sentry-canary-123",
+      eventId: "0123456789abcdef0123456789abcdef",
+      projectId: "987654",
+      verified: true,
+      verifiedAt: "2026-06-24T23:59:01.000Z",
+      error: null,
+    };
+    const report = assessLaunchReadiness({
+      env: {
+        APP_ENV: "production",
+        SENTRY_DSN: "https://public@o123456.ingest.sentry.io/987654",
+        SENTRY_RELEASE: "idream@0123456789abcdef",
+        SENTRY_MAIN_PROBE_REPORT: ".tmp/launch-sentry-main-probe.json",
+        SENTRY_ADMIN_PROBE_REPORT: ".tmp/launch-sentry-admin-probe.json",
+        SENTRY_CHAT_PROBE_REPORT: ".tmp/launch-sentry-chat-probe.json",
+        SENTRY_GEN_PROBE_REPORT: ".tmp/launch-sentry-gen-probe.json",
+      },
+      now,
+      ...passingSentryProbes(),
+      sentryMainCanaryProbe: probe,
+    });
+
+    expect(
+      report.checks.find((check) => check.id === "sentry-live-probe"),
+    ).toMatchObject({
+      status: "pass",
+    });
+  });
+
+  it.each([
+    ["main", "sentryMainCanaryProbe"],
+    ["admin", "sentryAdminCanaryProbe"],
+    ["chat", "sentryChatCanaryProbe"],
+    ["gen", "sentryGenCanaryProbe"],
+  ] as const)(
+    "rejects a missing %s runtime Sentry canary",
+    (service, probeName) => {
+      const report = assessLaunchReadiness({
+        env: productionEnv,
+        now,
+        ...passingSentryProbes(),
+        [probeName]: null,
+      });
+
+      expect(checkById(report, "sentry-live-probe")).toMatchObject({
+        status: "fail",
+      });
+      expect(checkById(report, "sentry-live-probe")?.message).toContain(
+        `${service} runtime report`,
+      );
+    },
+  );
+
+  it.each([
+    ["main", "sentryMainCanaryProbe"],
+    ["admin", "sentryAdminCanaryProbe"],
+    ["chat", "sentryChatCanaryProbe"],
+    ["gen", "sentryGenCanaryProbe"],
+  ] as const)(
+    "rejects a legacy %s Sentry report that does not prove its runtime emitter",
+    (service, probeName) => {
+      const report = assessLaunchReadiness({
+        env: productionEnv,
+        now,
+        ...passingSentryProbes(),
+        [probeName]: {
+          ...passingSentryProbe(service),
+          emitter: undefined,
+        },
+      });
+
+      expect(checkById(report, "sentry-live-probe")).toMatchObject({
+        status: "fail",
+      });
+      expect(checkById(report, "sentry-live-probe")?.message).toContain(
+        `${service} runtime emitter`,
+      );
+    },
+  );
+
+  it.each([
+    ["main", "sentryMainCanaryProbe", "admin"],
+    ["admin", "sentryAdminCanaryProbe", "chat"],
+    ["chat", "sentryChatCanaryProbe", "gen"],
+    ["gen", "sentryGenCanaryProbe", "main"],
+  ] as const)(
+    "rejects a %s runtime report labeled as another service",
+    (service, probeName, wrongService) => {
+      const report = assessLaunchReadiness({
+        env: productionEnv,
+        now,
+        ...passingSentryProbes(),
+        [probeName]: passingSentryProbe(wrongService),
+      });
+
+      expect(checkById(report, "sentry-live-probe")).toMatchObject({
+        status: "fail",
+      });
+      expect(checkById(report, "sentry-live-probe")?.message).toContain(
+        `${service} runtime report service is not ${service}`,
+      );
+    },
+  );
+
+  it.each([
+    ["main", "sentryMainCanaryProbe"],
+    ["admin", "sentryAdminCanaryProbe"],
+    ["chat", "sentryChatCanaryProbe"],
+    ["gen", "sentryGenCanaryProbe"],
+  ] as const)(
+    "rejects a stale %s runtime Sentry canary",
+    (service, probeName) => {
+      const report = assessLaunchReadiness({
+        env: productionEnv,
+        now,
+        ...passingSentryProbes(),
+        [probeName]: passingSentryProbe(service, {
+          checkedAt: "2026-06-20T00:00:00.000Z",
+          verifiedAt: "2026-06-20T00:00:01.000Z",
+        }),
+      });
+
+      expect(checkById(report, "sentry-live-probe")).toMatchObject({
+        status: "fail",
+      });
+      expect(checkById(report, "sentry-live-probe")?.message).toContain(
+        `${service} runtime probe is older`,
+      );
+    },
+  );
+
   it("fails closed for an empty or local-development environment", () => {
     const report = assessLaunchReadiness({ env: {}, now });
 
@@ -505,7 +947,6 @@ describe("launch readiness", () => {
         "chat-model-live-probe",
         "voice-model-live-probe",
         "gen-image-provider",
-        "pipeline-api-url",
         "pipeline-image-live-probe",
         "product-config-live-probe",
         "public-catalog-live-probe",
@@ -515,6 +956,50 @@ describe("launch readiness", () => {
         "payment-provider-live-probe",
         "sentry-dsn",
       ]),
+    );
+    expect(report.checks.map((check) => check.id)).not.toContain(
+      "pipeline-api-url",
+    );
+    expect(report.checks.map((check) => check.id)).not.toContain(
+      "pipeline-api-token",
+    );
+    expect(report.checks.map((check) => check.id)).not.toContain(
+      "pipeline-image-model",
+    );
+  });
+
+  it("does not require legacy pipeline credentials for a mock image provider", () => {
+    const report = assessLaunchReadiness({
+      env: {
+        ...productionEnv,
+        GEN_IMAGE_PROVIDER: "mock",
+        PIPELINE_API_URL: "",
+        PIPELINE_API_TOKEN: "",
+        PIPELINE_IMAGE_MODEL_DEFAULT: "",
+      },
+      imagePipelineProbe: null,
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingProductConfigProbe(),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
+      now,
+    });
+
+    expect(checkById(report, "gen-image-provider")?.status).toBe("fail");
+    expect(report.checks.map((check) => check.id)).not.toContain(
+      "pipeline-api-url",
+    );
+    expect(report.checks.map((check) => check.id)).not.toContain(
+      "pipeline-api-token",
+    );
+    expect(report.checks.map((check) => check.id)).not.toContain(
+      "pipeline-image-model",
     );
   });
 
@@ -537,15 +1022,15 @@ describe("launch readiness", () => {
 
     expect(report.ok).toBe(false);
     expect(failedIds(report)).toEqual(
-      expect.arrayContaining([
-        "age-verification-provider-implementation",
-      ]),
+      expect.arrayContaining(["age-verification-provider-implementation"]),
     );
     expect(failedIds(report)).not.toContain("chat-provider-non-mock");
     expect(failedIds(report)).not.toContain("chat-provider-implementation");
     expect(failedIds(report)).not.toContain("voice-provider-implementation");
     expect(failedIds(report)).not.toContain("payment-provider-implementation");
-    expect(failedIds(report)).not.toContain("moderation-provider-implementation");
+    expect(failedIds(report)).not.toContain(
+      "moderation-provider-implementation",
+    );
     expect(failedIds(report)).not.toContain("blob-provider-implementation");
     expect(failedIds(report)).not.toContain("gen-image-provider");
   });
@@ -571,7 +1056,271 @@ describe("launch readiness", () => {
     expect(failedIds(report)).toContain("pipeline-image-live-probe");
   });
 
+  it("fails closed when generation reports predate Blob authority evidence", () => {
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      imagePipelineProbe: passingImageProbe({ blobAuthority: undefined }),
+      videoGenerationProbe: passingVideoProbe({ blobAuthority: undefined }),
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingProductConfigProbe({
+        videoFeatureEnabled: true,
+        activeVideoProfiles: 1,
+        activeVideoCharacterTemplates: 1,
+        activeVideoFreeplayTemplates: 1,
+        activeVideoPricingRules: 1,
+      }),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
+      now,
+    });
+
+    expect(checkById(report, "pipeline-image-live-probe")).toMatchObject({
+      status: "fail",
+    });
+    expect(checkById(report, "video-generation-live-probe")).toMatchObject({
+      status: "fail",
+    });
+    expect(checkById(report, "pipeline-image-live-probe")?.message).toContain(
+      "Blob authority",
+    );
+    expect(checkById(report, "video-generation-live-probe")?.message).toContain(
+      "Blob authority",
+    );
+  });
+
+  it("rejects generation reports bound to a different Blob target", () => {
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      imagePipelineProbe: passingImageProbe({
+        blobAuthority: {
+          provider: "r2",
+          endpoint: "https://different.r2.cloudflarestorage.com",
+          bucket: productionEnv.BLOB_BUCKET,
+          root: null,
+        },
+      }),
+      videoGenerationProbe: passingVideoProbe({
+        blobAuthority: {
+          provider: "r2",
+          endpoint: productionEnv.BLOB_ENDPOINT,
+          bucket: "different-private-media",
+          root: null,
+        },
+      }),
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingProductConfigProbe({
+        videoFeatureEnabled: true,
+        activeVideoProfiles: 1,
+        activeVideoCharacterTemplates: 1,
+        activeVideoFreeplayTemplates: 1,
+        activeVideoPricingRules: 1,
+      }),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
+      now,
+    });
+
+    expect(checkById(report, "pipeline-image-live-probe")?.message).toContain(
+      "Blob endpoint",
+    );
+    expect(checkById(report, "video-generation-live-probe")?.message).toContain(
+      "Blob bucket",
+    );
+  });
+
+  it("rejects Gen Blob provider drift even when reports match the Gen override", () => {
+    const driftedBlobAuthority = {
+      provider: "s3",
+      endpoint: productionEnv.BLOB_ENDPOINT,
+      bucket: productionEnv.BLOB_BUCKET,
+      root: null,
+    } as const;
+    const report = assessLaunchReadiness({
+      env: {
+        ...productionEnv,
+        GEN_BLOB_PROVIDER: "s3",
+      },
+      imagePipelineProbe: passingImageProbe({
+        blobAuthority: driftedBlobAuthority,
+      }),
+      videoGenerationProbe: passingVideoProbe({
+        blobAuthority: driftedBlobAuthority,
+      }),
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingProductConfigProbe({
+        videoFeatureEnabled: true,
+        activeVideoProfiles: 1,
+        activeVideoCharacterTemplates: 1,
+        activeVideoFreeplayTemplates: 1,
+        activeVideoPricingRules: 1,
+      }),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
+      now,
+    });
+
+    expect(checkById(report, "pipeline-image-live-probe")?.message).toContain(
+      "does not match Main BLOB_PROVIDER",
+    );
+    expect(checkById(report, "video-generation-live-probe")?.message).toContain(
+      "does not match Main BLOB_PROVIDER",
+    );
+  });
+
   it("passes the generation image provider check for a backend (ComfyUI) deploy", () => {
+    const report = assessLaunchReadiness({
+      env: {
+        ...productionEnv,
+        GEN_IMAGE_PROVIDER: "backend",
+        COMFYUI_API_URL: "https://comfyui.ourdream.internal",
+      },
+      imagePipelineProbe: passingBackendImageProbe(),
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingBackendProductConfigProbe(),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
+      now,
+    });
+
+    expect(checkById(report, "gen-image-provider")?.status).toBe("pass");
+    expect(checkById(report, "comfyui-api-url")?.status).toBe("pass");
+    expect(failedIds(report)).not.toContain("gen-image-provider");
+    expect(failedIds(report)).not.toContain("comfyui-api-url");
+    // A backend deploy skips legacy gateway credentials but still requires a
+    // real workflow-bound TerminalRecord probe through the backend adapter.
+    expect(failedIds(report)).not.toContain("pipeline-image-live-probe");
+    expect(report.checks.map((check) => check.id)).not.toContain(
+      "pipeline-api-url",
+    );
+    expect(report.checks.map((check) => check.id)).not.toContain(
+      "pipeline-api-token",
+    );
+    expect(report.checks.map((check) => check.id)).toContain(
+      "pipeline-image-live-probe",
+    );
+  });
+
+  it("rejects a backend image probe that does not cover the active public binding", () => {
+    const report = assessLaunchReadiness({
+      env: {
+        ...productionEnv,
+        GEN_IMAGE_PROVIDER: "backend",
+        COMFYUI_API_URL: "https://comfyui.ourdream.internal",
+      },
+      imagePipelineProbe: passingBackendImageProbe({
+        model: "unrelated-model",
+        workflowKey: "unrelated-workflow",
+        workflowVersion: 9,
+      }),
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingBackendProductConfigProbe(),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
+      now,
+    });
+
+    expect(report.ok).toBe(false);
+    expect(checkById(report, "pipeline-image-live-probe")?.message).toContain(
+      "does not cover active public image profile binding",
+    );
+  });
+
+  it("rejects a legacy image report without immutable terminal evidence", () => {
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      imagePipelineProbe: passingImageProbe({ terminal: undefined }),
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingProductConfigProbe(),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
+      now,
+    });
+
+    expect(report.ok).toBe(false);
+    expect(checkById(report, "pipeline-image-live-probe")?.message).toContain(
+      "predates immutable terminal record evidence",
+    );
+  });
+
+  it("does not treat a Gen provider terminal record as Main persistence evidence", () => {
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      imagePipelineProbe: passingImageProbe(),
+      productConfigProbe: passingProductConfigProbe(),
+      imageGenerationPersistenceProbe: null,
+      now,
+    });
+
+    expect(checkById(report, "pipeline-image-live-probe")?.status).toBe(
+      "pass",
+    );
+    expect(
+      checkById(report, "generation-image-main-persistence")?.status,
+    ).toBe("fail");
+  });
+
+  it("requires fresh exact Main generation finalization evidence", () => {
+    const base = passingGenerationPersistenceProbe("image");
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      imagePipelineProbe: passingImageProbe(),
+      productConfigProbe: passingProductConfigProbe(),
+      imageGenerationPersistenceProbe: passingGenerationPersistenceProbe(
+        "image",
+        {
+          checkedAt: "2026-06-24T23:59:00.000Z",
+          observedAt: "2026-06-23T23:59:00.000Z",
+          terminal: { ...base.terminal, deliveredCount: 0 },
+        },
+      ),
+      now,
+    });
+
+    expect(
+      checkById(report, "generation-image-main-persistence"),
+    ).toMatchObject({ status: "fail" });
+    expect(
+      checkById(report, "generation-image-main-persistence")?.message,
+    ).toContain("artifact, delivery, and MediaAsset counts do not match");
+  });
+
+  it("fails closed when a backend image deploy has no live generation probe", () => {
     const report = assessLaunchReadiness({
       env: {
         ...productionEnv,
@@ -592,15 +1341,8 @@ describe("launch readiness", () => {
       now,
     });
 
-    expect(checkById(report, "gen-image-provider")?.status).toBe("pass");
-    expect(checkById(report, "comfyui-api-url")?.status).toBe("pass");
-    expect(failedIds(report)).not.toContain("gen-image-provider");
-    expect(failedIds(report)).not.toContain("comfyui-api-url");
-    // A backend deploy is not blocked on the legacy pipeline gateway probe/checks.
-    expect(failedIds(report)).not.toContain("pipeline-image-live-probe");
-    expect(report.checks.map((check) => check.id)).not.toContain("pipeline-api-url");
-    expect(report.checks.map((check) => check.id)).not.toContain("pipeline-api-token");
-    expect(report.checks.map((check) => check.id)).not.toContain("pipeline-image-live-probe");
+    expect(report.ok).toBe(false);
+    expect(failedIds(report)).toContain("pipeline-image-live-probe");
   });
 
   it("fails the ComfyUI URL check for a backend deploy missing COMFYUI_API_URL", () => {
@@ -654,7 +1396,9 @@ describe("launch readiness", () => {
 
     expect(checkById(report, "gen-image-provider")?.status).toBe("pass");
     expect(checkById(report, "drawthings-cli")?.status).toBe("pass");
-    expect(report.checks.map((check) => check.id)).not.toContain("comfyui-api-url");
+    expect(report.checks.map((check) => check.id)).not.toContain(
+      "comfyui-api-url",
+    );
   });
 
   it("requires the split chat service to use its own least-privilege database role", () => {
@@ -806,7 +1550,8 @@ describe("launch readiness", () => {
     const report = assessLaunchReadiness({
       env: {
         ...productionEnv,
-        AGE_VERIFY_LINK_BACK_URL: "http://localhost:3000/age-verification/return",
+        AGE_VERIFY_LINK_BACK_URL:
+          "http://localhost:3000/age-verification/return",
         AGE_VERIFY_CALLBACK_URL: "",
       },
       imagePipelineProbe: passingImageProbe(),
@@ -933,7 +1678,9 @@ describe("launch readiness", () => {
   });
 
   it("parses launch gate CLI options for env files and JSON output", () => {
-    expect(parseLaunchReadinessCliArgs(["--launch-env-file", "prod.env", "--json"])).toEqual({
+    expect(
+      parseLaunchReadinessCliArgs(["--launch-env-file", "prod.env", "--json"]),
+    ).toEqual({
       envFile: "prod.env",
       help: false,
       json: true,
@@ -943,11 +1690,13 @@ describe("launch readiness", () => {
       help: false,
       json: false,
     });
-    expect(parseLaunchReadinessCliArgs(["--launch-env-file=prod.env"])).toEqual({
-      envFile: "prod.env",
-      help: false,
-      json: false,
-    });
+    expect(parseLaunchReadinessCliArgs(["--launch-env-file=prod.env"])).toEqual(
+      {
+        envFile: "prod.env",
+        help: false,
+        json: false,
+      },
+    );
     expect(parseLaunchReadinessCliArgs(["--env-file=prod.env"])).toEqual({
       envFile: "prod.env",
       help: false,
@@ -965,7 +1714,10 @@ describe("launch readiness", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "idream-launch-"));
     try {
       const envFile = path.join(dir, "production.env");
-      writeFileSync(envFile, dotenvContent(productionEnv));
+      writeFileSync(
+        envFile,
+        dotenvContent({ ...productionEnv, LAUNCH_SCOPE: "core" }),
+      );
 
       const loadedEnv = loadLaunchReadinessEnv(envFile, {
         APP_ENV: "development",
@@ -985,13 +1737,45 @@ describe("launch readiness", () => {
         productConfigProbe: passingProductConfigProbe(),
         webSurfaceProbe: passingWebSurfaceProbe(),
         publicCatalogProbe: passingPublicCatalogProbe(),
+        ...passingSentryProbes(),
         now,
       });
 
       expect(loadedEnv.APP_ENV).toBe("production");
+      expect(loadedEnv.LAUNCH_SCOPE).toBe("core");
       expect(loadedEnv.DATABASE_URL).toBe(productionEnv.DATABASE_URL);
       expect(loadedEnv.CHAT_PROVIDER).toBe("pipeline");
       expect(report.ok).toBe(true);
+    } finally {
+      rmSync(dir, { force: true, recursive: true });
+    }
+  });
+
+  it("does not inherit product credentials omitted from an explicit launch env file", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "idream-launch-isolated-"));
+    try {
+      const envFile = path.join(dir, "production.env");
+      writeFileSync(
+        envFile,
+        "APP_ENV=production\nMAIN_WEB_URL=https://ourdream.ai\n",
+      );
+
+      const loadedEnv = loadLaunchReadinessEnv(envFile, {
+        PATH: "/usr/bin:/bin",
+        DATABASE_URL: productionEnv.DATABASE_URL,
+        CHAT_MODEL_API_KEY: productionEnv.CHAT_MODEL_API_KEY,
+        PAYMENT_PROVIDER_PROBE_REPORT:
+          productionEnv.PAYMENT_PROVIDER_PROBE_REPORT,
+      });
+
+      expect(loadedEnv).toMatchObject({
+        APP_ENV: "production",
+        MAIN_WEB_URL: "https://ourdream.ai",
+        PATH: "/usr/bin:/bin",
+      });
+      expect(loadedEnv.DATABASE_URL).toBeUndefined();
+      expect(loadedEnv.CHAT_MODEL_API_KEY).toBeUndefined();
+      expect(loadedEnv.PAYMENT_PROVIDER_PROBE_REPORT).toBeUndefined();
     } finally {
       rmSync(dir, { force: true, recursive: true });
     }
@@ -1011,13 +1795,15 @@ describe("launch readiness", () => {
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
       publicCatalogProbe: passingPublicCatalogProbe(),
+      ...passingSentryProbes(),
       now,
       preflightChecks: [
         {
           id: "launch-env-file",
           area: "Runtime",
           status: "fail",
-          message: "Launch env file does not exist: .tmp/production-launch.env.",
+          message:
+            "Launch env file does not exist: .tmp/production-launch.env.",
           remediation: "Create the production launch env file.",
         },
       ],
@@ -1031,13 +1817,43 @@ describe("launch readiness", () => {
     expect(failedIds(report)).toContain("launch-env-file");
   });
 
+  it("fails the launch backlog authority for exact failed Main to Chat carriers", async () => {
+    const count = vi.fn().mockResolvedValue(48);
+
+    await expect(inspectMainToChatFailedBacklog({
+      mainOutboxEvent: { count },
+    })).resolves.toEqual({
+      ok: false,
+      failed: 48,
+    });
+    expect(count).toHaveBeenCalledWith({
+      where: {
+        eventType: { in: Object.values(MAIN_TO_CHAT_EVENTS) },
+        status: "failed",
+      },
+    });
+  });
+
+  it("passes the launch backlog authority when every Main to Chat carrier is recoverable or terminal", async () => {
+    const count = vi.fn().mockResolvedValue(0);
+
+    await expect(inspectMainToChatFailedBacklog({
+      mainOutboxEvent: { count },
+    })).resolves.toEqual({
+      ok: true,
+      failed: 0,
+    });
+  });
+
   it("fails when the live image probe did not complete a generation", () => {
     const report = assessLaunchReadiness({
       env: productionEnv,
       imagePipelineProbe: passingImageProbe({
         ok: false,
-        finalize: {
-          kind: "generation.failed",
+        terminal: {
+          ref: "gen/terminal-records/attempt_probe/terminal.json",
+          checksum: "b".repeat(64),
+          outcome: "failed",
           assets: 0,
           error: { code: "timeout", message: "Pipeline timed out" },
         },
@@ -1052,6 +1868,7 @@ describe("launch readiness", () => {
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
       publicCatalogProbe: passingPublicCatalogProbe(),
+      ...passingSentryProbes(),
       now,
     });
 
@@ -1247,10 +2064,7 @@ describe("launch readiness", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "idream-chat-probe-"));
     try {
       const reportPath = path.join(dir, "chat-service.json");
-      writeFileSync(
-        reportPath,
-        JSON.stringify(passingChatServiceProbe()),
-      );
+      writeFileSync(reportPath, JSON.stringify(passingChatServiceProbe()));
       const report = assessLaunchReadiness({
         env: {
           ...productionEnv,
@@ -1334,11 +2148,15 @@ describe("launch readiness", () => {
 
     expect(report.ok).toBe(false);
     expect(
-      report.checks.find((check) => check.id === "chat-service-live-probe")?.message,
+      report.checks.find((check) => check.id === "chat-service-live-probe")
+        ?.message,
     ).toContain("probe actor is not classified as audit");
     expect(
-      report.checks.find((check) => check.id === "chat-service-live-probe")?.message,
-    ).toContain("probe user id is not the dedicated actor seed-chat-probe-user");
+      report.checks.find((check) => check.id === "chat-service-live-probe")
+        ?.message,
+    ).toContain(
+      "probe user id is not the dedicated actor seed-chat-probe-user",
+    );
   });
 
   it("fails when the live chat service probe does not prove unsigned requests are rejected", () => {
@@ -1402,7 +2220,8 @@ describe("launch readiness", () => {
     expect(report.ok).toBe(false);
     expect(failedIds(report)).toContain("chat-service-live-probe");
     expect(
-      report.checks.find((check) => check.id === "chat-service-live-probe")?.message,
+      report.checks.find((check) => check.id === "chat-service-live-probe")
+        ?.message,
     ).toContain("conversation smoke did not complete");
   });
 
@@ -1445,7 +2264,9 @@ describe("launch readiness", () => {
     expect(message).toContain(
       "conversation smoke did not prove no-memory turn authority",
     );
-    expect(message).toContain("conversation smoke did not clean its audit state");
+    expect(message).toContain(
+      "conversation smoke did not clean its audit state",
+    );
   });
 
   it("fails when the live chat service probe is stale", () => {
@@ -1667,11 +2488,15 @@ describe("launch readiness", () => {
       }),
     });
 
-    expect(checkById(missingAccess, "voice-model-live-probe")?.message)
-      .toContain("did not confirm oMLX voice cloning");
-    expect(checkById(cloneBroken, "voice-model-live-probe")?.message)
-      .toContain("did not complete clone, synthesize, and delete");
-    expect(checkById(cloneReady, "voice-model-live-probe")?.status).toBe("pass");
+    expect(
+      checkById(missingAccess, "voice-model-live-probe")?.message,
+    ).toContain("did not confirm oMLX voice cloning");
+    expect(checkById(cloneBroken, "voice-model-live-probe")?.message).toContain(
+      "did not complete clone, synthesize, and delete",
+    );
+    expect(checkById(cloneReady, "voice-model-live-probe")?.status).toBe(
+      "pass",
+    );
   });
 
   it("requires Fish Audio probe evidence to include resident MLX cloning", () => {
@@ -1719,13 +2544,15 @@ describe("launch readiness", () => {
       };
       writeFileSync(
         reportPath,
-        JSON.stringify(passingVoiceProbe({
-          provider: "pocket-tts",
-          baseUrl: pocketEnv.POCKET_TTS_API_URL,
-          model: pocketEnv.POCKET_TTS_MODEL,
-          voiceCloningAvailable: true,
-          voiceCloneVerified: true,
-        })),
+        JSON.stringify(
+          passingVoiceProbe({
+            provider: "pocket-tts",
+            baseUrl: pocketEnv.POCKET_TTS_API_URL,
+            model: pocketEnv.POCKET_TTS_MODEL,
+            voiceCloningAvailable: true,
+            voiceCloneVerified: true,
+          }),
+        ),
       );
       const report = assessLaunchReadiness({
         env: pocketEnv,
@@ -1823,6 +2650,7 @@ describe("launch readiness", () => {
   it("fails when the live payment provider probe has only legacy store-read evidence", () => {
     const {
       canCreateInvoice: _canCreateInvoice,
+      canLookupInvoice: _canLookupInvoice,
       invoiceId: _invoiceId,
       checkoutUrl: _checkoutUrl,
       invoiceAmountCents: _invoiceAmountCents,
@@ -1831,6 +2659,7 @@ describe("launch readiness", () => {
     } = passingPaymentProbe();
 
     void _canCreateInvoice;
+    void _canLookupInvoice;
     void _invoiceId;
     void _checkoutUrl;
     void _invoiceAmountCents;
@@ -1855,11 +2684,46 @@ describe("launch readiness", () => {
     expect(report.ok).toBe(false);
     expect(failedIds(report)).toContain("payment-provider-live-probe");
     expect(checkById(report, "payment-provider-live-probe")?.message).toContain(
-      "probe could not create a BTCPay invoice",
+      "probe could not look up the product-bound BTCPay invoice",
     );
   });
 
-  it("fails when the live payment provider probe cannot create an invoice", () => {
+  it("rejects outbound-only BTCPay evidence without a product settlement authority", () => {
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      paymentProviderProbe: passingPaymentProbe({ terminal: null }),
+      now,
+    });
+
+    expect(checkById(report, "payment-provider-live-probe")).toMatchObject({
+      status: "fail",
+    });
+    expect(checkById(report, "payment-provider-live-probe")?.message).toContain(
+      "product checkout settlement evidence is missing",
+    );
+  });
+
+  it("rejects settlement replay evidence without two auditable delivery identities", () => {
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      paymentProviderProbe: passingPaymentProbe({
+        terminal: {
+          ...passingPaymentProbe().terminal!,
+          providerDeliveryIds: ["same-delivery", "same-delivery"],
+        },
+      }),
+      now,
+    });
+
+    expect(checkById(report, "payment-provider-live-probe")).toMatchObject({
+      status: "fail",
+    });
+    expect(checkById(report, "payment-provider-live-probe")?.message).toContain(
+      "replay was not proven idempotent",
+    );
+  });
+
+  it("fails when the live payment provider probe cannot look up the product invoice", () => {
     const report = assessLaunchReadiness({
       env: productionEnv,
       imagePipelineProbe: passingImageProbe(),
@@ -1870,7 +2734,7 @@ describe("launch readiness", () => {
       chatServiceProbe: passingChatServiceProbe(),
       paymentProviderProbe: passingPaymentProbe({
         ok: false,
-        canCreateInvoice: false,
+        canLookupInvoice: false,
         invoiceId: null,
         checkoutUrl: null,
         error: {
@@ -1888,7 +2752,7 @@ describe("launch readiness", () => {
     expect(report.ok).toBe(false);
     expect(failedIds(report)).toContain("payment-provider-live-probe");
     expect(checkById(report, "payment-provider-live-probe")?.message).toContain(
-      "probe could not create a BTCPay invoice",
+      "probe could not look up the product-bound BTCPay invoice",
     );
   });
 
@@ -1936,7 +2800,42 @@ describe("launch readiness", () => {
     expect(failedIds(report)).toContain("age-verification-live-probe");
   });
 
-  it("fails when the live age verification probe cannot create a pending session", () => {
+  it("rejects outbound-only Go.cam evidence without a signed verified callback authority", () => {
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      ageVerificationProbe: passingAgeProbe({ terminal: null }),
+      now,
+    });
+
+    expect(checkById(report, "age-verification-live-probe")).toMatchObject({
+      status: "fail",
+    });
+    expect(checkById(report, "age-verification-live-probe")?.message).toContain(
+      "verified callback evidence is missing",
+    );
+  });
+
+  it("rejects age replay evidence without one exact terminalized effect", () => {
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      ageVerificationProbe: passingAgeProbe({
+        terminal: {
+          ...passingAgeProbe().terminal!,
+          verificationEffectCount: 2,
+        },
+      }),
+      now,
+    });
+
+    expect(checkById(report, "age-verification-live-probe")).toMatchObject({
+      status: "fail",
+    });
+    expect(checkById(report, "age-verification-live-probe")?.message).toContain(
+      "replay was not proven idempotent",
+    );
+  });
+
+  it("fails when the live age verification probe cannot audit a verified product intent", () => {
     const report = assessLaunchReadiness({
       env: productionEnv,
       imagePipelineProbe: passingImageProbe(),
@@ -2003,6 +2902,7 @@ describe("launch readiness", () => {
       productConfigProbe: passingProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
       publicCatalogProbe: passingPublicCatalogProbe(),
+      ...passingSentryProbes(),
       now,
     });
     expect(report.ok).toBe(true);
@@ -2047,6 +2947,80 @@ describe("launch readiness", () => {
     expect(report.checks.map((check) => check.id)).toContain(
       "gen-video-provider",
     );
+  });
+
+  it("lets the explicit core launch scope omit billing and age authority without weakening other gates", () => {
+    const report = assessLaunchReadiness({
+      env: {
+        ...productionEnv,
+        LAUNCH_SCOPE: "core",
+        PAYMENT_PROVIDER: "mock",
+        AGE_VERIFICATION_PROVIDER: "mock",
+        BTCPAY_BASE_URL: "",
+        BTCPAY_STORE_ID: "",
+        BTCPAY_API_KEY: "",
+        BTCPAY_WEBHOOK_SECRET: "",
+        PAYMENT_PROVIDER_PROBE_REPORT: "",
+        AGE_VERIFY_SERVICE_URL: "",
+        AGE_VERIFY_API_KEY: "",
+        AGE_VERIFY_WEBHOOK_SECRET: "",
+        AGE_VERIFY_LINK_BACK_URL: "",
+        AGE_VERIFY_CALLBACK_URL: "",
+        AGE_VERIFICATION_PROBE_REPORT: "",
+      },
+      imagePipelineProbe: passingImageProbe(),
+      ageVerificationProbe: null,
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      paymentProviderProbe: null,
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingProductConfigProbe(),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
+      ...passingSentryProbes(),
+      now,
+    });
+
+    expect(report.ok).toBe(true);
+    expect(checkById(report, "launch-scope")).toMatchObject({
+      status: "pass",
+    });
+    expect(report.checks.map((check) => check.id)).not.toEqual(
+      expect.arrayContaining([
+        "payment-provider-non-mock",
+        "payment-api-key",
+        "payment-provider-live-probe",
+        "age-verification-provider-non-mock",
+        "age-verification-service-url",
+        "age-verification-live-probe",
+      ]),
+    );
+  });
+
+  it("fails closed on an unknown launch scope instead of treating it as core", () => {
+    const report = assessLaunchReadiness({
+      env: { ...productionEnv, LAUNCH_SCOPE: "skip-everything" },
+      imagePipelineProbe: passingImageProbe(),
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingProductConfigProbe(),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
+      ...passingSentryProbes(),
+      now,
+    });
+
+    expect(report.ok).toBe(false);
+    expect(checkById(report, "launch-scope")).toMatchObject({
+      status: "fail",
+    });
   });
 
   it("fails when the web surface probe is missing", () => {
@@ -2207,6 +3181,42 @@ describe("launch readiness", () => {
     expect(failedIds(report)).toContain("web-surface-live-probe");
   });
 
+  it("rejects a development login wall as production admin protection", () => {
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      imagePipelineProbe: passingImageProbe(),
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingProductConfigProbe(),
+      webSurfaceProbe: passingWebSurfaceProbe({
+        admin: {
+          ok: true,
+          status: 200,
+          bytes: 8_000,
+          contentType: "text/html; charset=utf-8",
+          protected: true,
+          protectedReason: "dev_login_wall",
+          nextErrorShell: false,
+          assets: { ok: true, checked: 8, failures: [] },
+          error: null,
+        },
+      }),
+      publicCatalogProbe: passingPublicCatalogProbe(),
+      now,
+    });
+
+    expect(report.ok).toBe(false);
+    expect(failedIds(report)).toContain("web-surface-live-probe");
+    expect(checkById(report, "web-surface-live-probe")?.message).toContain(
+      "production access denial",
+    );
+  });
+
   it("fails when HTML is healthy but a linked Next asset is missing", () => {
     const report = assessLaunchReadiness({
       env: productionEnv,
@@ -2231,13 +3241,15 @@ describe("launch readiness", () => {
           assets: {
             ok: false,
             checked: 8,
-            failures: [{
-              url: "https://app.example/_next/static/chunks/missing.js",
-              status: 500,
-              bytes: 21,
-              contentType: "text/plain",
-              error: "Linked Next asset returned HTTP 500",
-            }],
+            failures: [
+              {
+                url: "https://app.example/_next/static/chunks/missing.js",
+                status: 500,
+                bytes: 21,
+                contentType: "text/plain",
+                error: "Linked Next asset returned HTTP 500",
+              },
+            ],
           },
           error: null,
         },
@@ -2354,6 +3366,52 @@ describe("launch readiness", () => {
     expect(failedIds(report)).toContain("product-config-live-probe");
   });
 
+  it("fails when an active ComfyUI image profile has no workflow descriptor", () => {
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      imagePipelineProbe: passingImageProbe(),
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingProductConfigProbe({
+        invalidActiveImageProfileIds: ["seed-profile-image-premium-v1"],
+      }),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
+      now,
+    });
+
+    expect(report.ok).toBe(false);
+    expect(failedIds(report)).toContain("product-config-live-probe");
+  });
+
+  it("fails closed for a fresh legacy product config report without descriptor evidence", () => {
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      imagePipelineProbe: passingImageProbe(),
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingProductConfigProbe({
+        invalidActiveImageProfileIds: undefined,
+      }),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
+      now,
+    });
+
+    expect(report.ok).toBe(false);
+    expect(failedIds(report)).toContain("product-config-live-probe");
+  });
+
   it("fails when public characters have no chat system prompts", () => {
     const report = assessLaunchReadiness({
       env: productionEnv,
@@ -2373,6 +3431,30 @@ describe("launch readiness", () => {
           code: "product_config_incomplete",
           message: "public characters have no chat system prompts",
         },
+      }),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
+      now,
+    });
+
+    expect(report.ok).toBe(false);
+    expect(failedIds(report)).toContain("product-config-live-probe");
+  });
+
+  it("fails when even one public character has no chat system prompt", () => {
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      imagePipelineProbe: passingImageProbe(),
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingProductConfigProbe({
+        publicCharacters: 16,
+        publicCharactersWithSystemPrompt: 15,
       }),
       webSurfaceProbe: passingWebSurfaceProbe(),
       publicCatalogProbe: passingPublicCatalogProbe(),
@@ -2433,12 +3515,15 @@ describe("launch readiness", () => {
       }),
       webSurfaceProbe: passingWebSurfaceProbe(),
       publicCatalogProbe: passingPublicCatalogProbe(),
+      ...passingSentryProbes(),
       now,
     });
 
     expect(report.ok).toBe(true);
     expect(report.summary.warn).toBe(0);
-    expect(report.checks.find((check) => check.id === "gen-video-provider")).toMatchObject({
+    expect(
+      report.checks.find((check) => check.id === "gen-video-provider"),
+    ).toMatchObject({
       status: "pass",
     });
   });
@@ -2451,6 +3536,7 @@ describe("launch readiness", () => {
         COMFYUI_API_URL: "https://comfyui-video.ourdream.internal",
       },
       imagePipelineProbe: passingImageProbe(),
+      videoGenerationProbe: passingVideoProbe(),
       ageVerificationProbe: passingAgeProbe(),
       blobStorageProbe: passingBlobProbe(),
       chatModelProbe: passingChatProbe(),
@@ -2472,6 +3558,80 @@ describe("launch readiness", () => {
 
     expect(checkById(report, "gen-video-provider")?.status).toBe("pass");
     expect(checkById(report, "video-comfyui-api-url")?.status).toBe("pass");
+    expect(checkById(report, "pipeline-image-live-probe")?.status).toBe("pass");
+    expect(checkById(report, "video-generation-live-probe")?.status).toBe(
+      "pass",
+    );
+  });
+
+  it("rejects video evidence that is not bound to the exact production recipe", () => {
+    const report = assessLaunchReadiness({
+      env: {
+        ...productionEnv,
+        GEN_VIDEO_PROVIDER: "backend",
+        COMFYUI_API_URL: "https://comfyui-video.ourdream.internal",
+      },
+      imagePipelineProbe: passingImageProbe(),
+      videoGenerationProbe: passingVideoProbe({
+        workflowVersion: 2,
+        referenceSha256: "not-a-source-hash",
+      }),
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingProductConfigProbe({
+        videoFeatureEnabled: true,
+        activeVideoProfiles: 1,
+        activeVideoCharacterTemplates: 1,
+        activeVideoPricingRules: 1,
+      }),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
+      now,
+    });
+
+    expect(report.ok).toBe(false);
+    expect(checkById(report, "video-generation-live-probe")?.message).toContain(
+      "workflow version does not match",
+    );
+    expect(checkById(report, "video-generation-live-probe")?.message).toContain(
+      "exact source image bytes",
+    );
+  });
+
+  it("fails closed when enabled production video has no live workflow probe", () => {
+    const report = assessLaunchReadiness({
+      env: {
+        ...productionEnv,
+        GEN_VIDEO_PROVIDER: "backend",
+        COMFYUI_API_URL: "https://comfyui-video.ourdream.internal",
+      },
+      imagePipelineProbe: passingImageProbe(),
+      videoGenerationProbe: null,
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingProductConfigProbe({
+        videoFeatureEnabled: true,
+        activeVideoProfiles: 1,
+        activeVideoCharacterTemplates: 1,
+        activeVideoPricingRules: 1,
+      }),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
+      now,
+    });
+
+    expect(report.ok).toBe(false);
+    expect(failedIds(report)).toContain("video-generation-live-probe");
   });
 
   it("rejects the generic pipeline provider for production video", () => {
@@ -2551,40 +3711,56 @@ describe("launch readiness", () => {
   });
 
   it("keeps production env templates aligned with the launch gate", () => {
-    const mainKeys = new Set(Object.keys(envTemplateValues("../../.env.production.example")));
-    const chatKeys = new Set(Object.keys(envTemplateValues("../../../chat/.env.production.example")));
-    const genKeys = new Set(Object.keys(envTemplateValues("../../../gen/.env.production.example")));
+    const mainKeys = new Set(
+      Object.keys(envTemplateValues("../../.env.production.example")),
+    );
+    const chatKeys = new Set(
+      Object.keys(envTemplateValues("../../../chat/.env.production.example")),
+    );
+    const genKeys = new Set(
+      Object.keys(envTemplateValues("../../../gen/.env.production.example")),
+    );
 
-    expect([...Object.keys(productionEnv)].filter((key) => !mainKeys.has(key))).toEqual([]);
-    expect([...[
-      "CHAT_DATABASE_URL",
-      "CHAT_REDIS_URL",
-      "BULLMQ_PREFIX",
-      "CHAT_FS_ROOT",
-      "CHAT_PORT",
-      "CHAT_BFF_SIGNING_SECRET",
-      "CHAT_MODEL_PROVIDER",
-      "CHAT_MODEL_BASE_URL",
-      "CHAT_MODEL_NAME",
-      "CHAT_MODEL_API_KEY",
-      "CHAT_MODERATION_PROVIDER",
-      "CHAT_MODERATION_TIMEOUT_MS",
-    ]].filter((key) => !chatKeys.has(key))).toEqual([]);
-    expect([...[
-      "GEN_REDIS_URL",
-      "GEN_IMAGE_PROVIDER",
-      "GEN_VIDEO_PROVIDER",
-      "GEN_MODERATION_PROVIDER",
-      "PIPELINE_API_URL",
-      "PIPELINE_API_TOKEN",
-      "PIPELINE_IMAGE_MODEL_DEFAULT",
-      "PIPELINE_VIDEO_MODEL_DEFAULT",
-      "GEN_BLOB_PROVIDER",
-      "BLOB_ENDPOINT",
-      "BLOB_BUCKET",
-      "BLOB_ACCESS_KEY_ID",
-      "BLOB_SECRET_ACCESS_KEY",
-    ]].filter((key) => !genKeys.has(key))).toEqual([]);
+    expect(
+      [...Object.keys(productionEnv)].filter((key) => !mainKeys.has(key)),
+    ).toEqual([]);
+    expect(
+      [
+        ...[
+          "CHAT_DATABASE_URL",
+          "CHAT_REDIS_URL",
+          "BULLMQ_PREFIX",
+          "CHAT_FS_ROOT",
+          "CHAT_PORT",
+          "CHAT_BFF_SIGNING_SECRET",
+          "CHAT_MODEL_PROVIDER",
+          "CHAT_MODEL_BASE_URL",
+          "CHAT_MODEL_NAME",
+          "CHAT_MODEL_API_KEY",
+          "CHAT_MODERATION_PROVIDER",
+          "CHAT_MODERATION_TIMEOUT_MS",
+        ],
+      ].filter((key) => !chatKeys.has(key)),
+    ).toEqual([]);
+    expect(
+      [
+        ...[
+          "GEN_REDIS_URL",
+          "GEN_IMAGE_PROVIDER",
+          "GEN_VIDEO_PROVIDER",
+          "GEN_MODERATION_PROVIDER",
+          "PIPELINE_API_URL",
+          "PIPELINE_API_TOKEN",
+          "PIPELINE_IMAGE_MODEL_DEFAULT",
+          "PIPELINE_VIDEO_MODEL_DEFAULT",
+          "GEN_BLOB_PROVIDER",
+          "BLOB_ENDPOINT",
+          "BLOB_BUCKET",
+          "BLOB_ACCESS_KEY_ID",
+          "BLOB_SECRET_ACCESS_KEY",
+        ],
+      ].filter((key) => !genKeys.has(key)),
+    ).toEqual([]);
   });
 
   it("keeps the production video worker on the workflow-native backend", () => {

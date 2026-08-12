@@ -225,6 +225,18 @@ export async function resolveGenerationPlan(
   const workflowDescriptor = await generationWorkflowDescriptor(
     profile.workflowKey ?? profile.pipelineModel,
   );
+  if (profile.runner === "comfyui" && !workflowDescriptor) {
+    throw Errors.unavailable(
+      "Configured generation workflow descriptor is unavailable",
+      {
+        mode: profile.mode,
+        reason: "workflow_descriptor_missing",
+        profileKey: profile.profileKey,
+        profileVersion: profile.version,
+        workflowKey: profile.workflowKey ?? profile.pipelineModel,
+      },
+    );
+  }
   if (
     hasRequestedSourceImage &&
     referenceRequirements.length === 0

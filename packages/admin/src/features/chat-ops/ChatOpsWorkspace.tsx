@@ -1,15 +1,26 @@
 "use client";
 
+import {
+  MAIN_TO_CHAT_REPLAY_CONFIRMATION,
+  MAIN_TO_CHAT_TARGET_MISSING_CONFIRMATION,
+  type MainToChatOutboxEvent,
+  type MainToChatOutboxEventListResponse,
+} from "@idream/shared/admin";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { Loader2, RefreshCcw, RotateCcw, Search } from "lucide-react";
 import type { FormEvent } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiGet } from "@/components/admin/api";
+import {
+  ConfirmDialog,
+  type ConfirmSpec,
+} from "@/components/admin/ui/ConfirmDialog";
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { createLatestRequestGate } from "@/lib/latest-request";
+import { adminV2Operation } from "@/lib/admin-v2-operation";
 import { canonicalListEmptyTitle } from "@/features/compatibility-lists/empty-state";
 import {
   chatOpsPath,
@@ -46,6 +57,112 @@ type AuthorityState = {
   refreshedAt: string | null;
 };
 
+export function mainToChatReplayPayload(
+  events: readonly MainToChatOutboxEvent[],
+  reason: string,
+) {
+  return {
+    events: events.map((event) => ({
+      id: event.id,
+      expectedAttempts: event.attempts,
+      expectedUpdatedAt: event.updatedAt,
+    })),
+    reason: {
+      code: "operator_replay",
+      summary: reason.trim(),
+    },
+    confirmation: MAIN_TO_CHAT_REPLAY_CONFIRMATION,
+  };
+}
+
+export function summarizeMainToChatReplay(
+  results: ReadonlyArray<{ readonly outcome: string }>,
+) {
+  const counts = new Map<string, number>();
+  for (const { outcome } of results) {
+    counts.set(outcome, (counts.get(outcome) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([outcome, count]) => `${outcome}: ${count}`)
+    .join(" · ");
+}
+
+export function mainToChatTargetMissingPayload(
+  events: readonly MainToChatOutboxEvent[],
+  reason: string,
+) {
+  return {
+    events: events.map((event) => ({
+      id: event.id,
+      expectedAttempts: event.attempts,
+      expectedUpdatedAt: event.updatedAt,
+      expectedEnvelopeHash: event.envelopeHash!,
+      expectedTarget: event.receiverAuthority.target!,
+    })),
+    reason: {
+      code: "receiver_target_missing",
+      summary: reason.trim(),
+    },
+    confirmation: MAIN_TO_CHAT_TARGET_MISSING_CONFIRMATION,
+  };
+}
+
+function replayAllowed(event: MainToChatOutboxEvent) {
+  return event.envelopeHash !== null && [
+    "exact_receipt",
+    "target_present",
+    "no_target_required",
+  ].includes(event.receiverAuthority.disposition);
+}
+
+function targetMissingDiscardAllowed(event: MainToChatOutboxEvent) {
+  return event.envelopeHash !== null &&
+    [
+      "expected_target_missing",
+      // Chat may have committed its idempotent receipt before Main rolled back.
+      // Re-running this command finalizes Main; replay must remain disabled.
+      "discarded_target_missing",
+    ].includes(event.receiverAuthority.disposition) &&
+    event.receiverAuthority.target !== null;
+}
+
+function rowActionable(
+  event: MainToChatOutboxEvent,
+  canReplay: boolean,
+  canDiscardMissing: boolean,
+) {
+  return (canReplay && replayAllowed(event)) ||
+    (canDiscardMissing && targetMissingDiscardAllowed(event));
+}
+
+function receiverAuthorityLabel(
+  disposition: MainToChatOutboxEvent["receiverAuthority"]["disposition"],
+) {
+  switch (disposition) {
+    case "expected_target_missing":
+      return "Expected target missing";
+    case "target_present":
+      return "Target present · replay eligible";
+    case "exact_receipt":
+      return "Exact receiver receipt · replay eligible";
+    case "no_target_required":
+      return "No receiver target required · replay eligible";
+    case "discarded_target_missing":
+      return "Target missing already recorded";
+    case "receiver_hash_conflict":
+      return "Receiver envelope hash conflict";
+    case "receiver_quarantined":
+      return "Receiver receipt quarantined";
+    case "invalid_event_payload":
+      return "Invalid event payload";
+    case "invalid_envelope":
+      return "Invalid durable envelope";
+    case "unavailable":
+      return "Receiver authority unavailable";
+  }
+}
+
 const authorities: ChatOpsAuthority[] = [
   "overview",
   "providers",
@@ -69,7 +186,17 @@ function initialStates(): Record<ChatOpsAuthority, AuthorityState> {
   ) as Record<ChatOpsAuthority, AuthorityState>;
 }
 
-export function ChatOpsWorkspace({ canRead }: { canRead: boolean }) {
+export function ChatOpsWorkspace({
+  canRead,
+  canReadMainOutbox = false,
+  canReplayMainOutbox = false,
+  canDiscardMissingMainOutbox = false,
+}: {
+  canRead: boolean;
+  canReadMainOutbox?: boolean;
+  canReplayMainOutbox?: boolean;
+  canDiscardMissingMainOutbox?: boolean;
+}) {
   const { t } = useAdminI18n();
   const [query, setQuery] = useState<ChatOpsQuery>(() => currentQuery());
   const [draft, setDraft] = useState<ChatOpsQuery>(() => currentQuery());
@@ -278,6 +405,11 @@ export function ChatOpsWorkspace({ canRead }: { canRead: boolean }) {
           </button>
         </div>
       </form>
+      <MainToChatFailedOutboxPanel
+        canRead={canReadMainOutbox}
+        canReplay={canReplayMainOutbox}
+        canDiscardMissing={canDiscardMissingMainOutbox}
+      />
       {canRead ? (
         <>
           <AuthorityError
@@ -341,7 +473,10 @@ export function ChatOpsWorkspace({ canRead }: { canRead: boolean }) {
           <DiagnosticsNotice data={states.sessions.data} />
           <AuthorityTable
             authority="sessions"
-            empty={canonicalListEmptyTitle("chat_sessions", sessionFiltered(query))}
+            empty={canonicalListEmptyTitle(
+              "chat_sessions",
+              sessionFiltered(query),
+            )}
             rows={states.sessions.data?.items ?? []}
             state={states.sessions}
           />
@@ -378,6 +513,428 @@ export function ChatOpsWorkspace({ canRead }: { canRead: boolean }) {
             query={query}
           />
         </>
+      ) : null}
+    </section>
+  );
+}
+
+function MainToChatFailedOutboxPanel({
+  canRead,
+  canReplay,
+  canDiscardMissing,
+}: {
+  canRead: boolean;
+  canReplay: boolean;
+  canDiscardMissing: boolean;
+}) {
+  const { t } = useAdminI18n();
+  const [data, setData] =
+    useState<MainToChatOutboxEventListResponse | null>(null);
+  const [loading, setLoading] = useState(canRead);
+  const [error, setError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const gate = useRef(createLatestRequestGate());
+
+  const load = useCallback(
+    async (cursor = "") => {
+      if (!canRead) return;
+      const request = gate.current.begin();
+      setLoading(true);
+      setError(null);
+      const params = new URLSearchParams({ status: "failed", limit: "50" });
+      if (cursor) params.set("cursor", cursor);
+      try {
+        const response = await adminV2Operation(
+          "GET /api/v2/admin/chat/main-outbox-events",
+          { query: params },
+        );
+        if (!request.isCurrent()) return;
+        setData(response);
+        setSelected(new Set());
+      } catch (cause) {
+        if (!request.isCurrent()) return;
+        setError(
+          cause instanceof Error
+            ? cause.message
+            : "Main to Chat failed outbox request failed",
+        );
+      } finally {
+        if (request.isCurrent()) setLoading(false);
+      }
+    },
+    [canRead],
+  );
+
+  useEffect(() => {
+    const requestGate = gate.current;
+    const initialLoad = window.setTimeout(() => void load(), 0);
+    const refresh = () => void load();
+    window.addEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, refresh);
+    return () => {
+      window.clearTimeout(initialLoad);
+      requestGate.invalidate();
+      window.removeEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, refresh);
+    };
+  }, [load]);
+
+  const rows = data?.items ?? [];
+  const selectableRows: MainToChatOutboxEvent[] = [];
+  const selectedRows: MainToChatOutboxEvent[] = [];
+  for (const row of rows) {
+    if (!rowActionable(row, canReplay, canDiscardMissing)) continue;
+    selectableRows.push(row);
+    if (selected.has(row.id)) selectedRows.push(row);
+  }
+  const replayRows = selectedRows.filter(replayAllowed);
+  const targetMissingRows = selectedRows.filter(targetMissingDiscardAllowed);
+  const allSelected =
+    selectableRows.length > 0 && selectedRows.length === selectableRows.length;
+
+  function toggle(id: string) {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function requestReplay() {
+    if (
+      !canReplay ||
+      selectedRows.length === 0 ||
+      replayRows.length !== selectedRows.length
+    ) return;
+    const replayRevision = [...replayRows];
+    const idempotencyKey = crypto.randomUUID();
+    setConfirmation({
+      title: t("Replay Main → Chat failed events ({count})", {
+        count: replayRevision.length,
+      }),
+      summary: (
+        <span>
+          {t(
+            "The worker will retry the unchanged durable envelopes; no event is sent from this browser request.",
+          )}
+        </span>
+      ),
+      destructive: {
+        expectedName: MAIN_TO_CHAT_REPLAY_CONFIRMATION,
+        inputLabel: t("Replay confirmation"),
+      },
+      requireReason: true,
+      reasonLabel: t("Replay reason (≥3)"),
+      submitLabel: t("Queue replay"),
+      onSubmit: async (reason) => {
+        const result = await adminV2Operation(
+          "POST /api/v2/admin/chat/main-outbox-events/commands/replay",
+          {
+            body: mainToChatReplayPayload(replayRevision, reason),
+            idempotencyKey,
+          },
+        );
+        setNotice(t("Main → Chat replay result · {summary}.", {
+          summary: summarizeMainToChatReplay(result.results),
+        }));
+        await load();
+      },
+    });
+  }
+
+  function requestTargetMissingDisposition() {
+    if (
+      !canDiscardMissing ||
+      selectedRows.length === 0 ||
+      targetMissingRows.length !== selectedRows.length
+    ) return;
+    const missingRows = [...targetMissingRows];
+    const idempotencyKey = crypto.randomUUID();
+    setConfirmation({
+      title: t("Record expected target missing ({count})", {
+        count: missingRows.length,
+      }),
+      summary: (
+        <span>
+          {t(
+            "This records that no user-visible Chat effect was applied. Main becomes terminal only after Chat stores the original envelope hash as a target-missing receipt.",
+          )}
+        </span>
+      ),
+      destructive: {
+        expectedName: MAIN_TO_CHAT_TARGET_MISSING_CONFIRMATION,
+        inputLabel: t("Target-missing confirmation"),
+      },
+      requireReason: true,
+      reasonLabel: t("Target-missing reason (≥3)"),
+      submitLabel: t("Record target missing"),
+      onSubmit: async (reason) => {
+        const result = await adminV2Operation(
+          "POST /api/v2/admin/chat/main-outbox-events/commands/discard-target-missing",
+          {
+            body: mainToChatTargetMissingPayload(missingRows, reason),
+            idempotencyKey,
+          },
+        );
+        setNotice(t("Main → Chat target-missing result · {summary}.", {
+          summary: summarizeMainToChatReplay(result.results),
+        }));
+        await load();
+      },
+    });
+  }
+
+  return (
+    <section
+      aria-labelledby="main-to-chat-failed-title"
+      className="space-y-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="font-semibold" id="main-to-chat-failed-title">
+            {t("Main → Chat failed delivery")}
+          </h2>
+          <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">
+            {t(
+              "Inspect failed durable events and explicitly return selected envelopes to the worker queue.",
+            )}
+          </p>
+        </div>
+        <div className="text-right text-xs font-semibold text-[var(--ad-text-muted)]">
+          {!canRead ? (
+            <p>{t("Unavailable · ops.queue.read is not granted")}</p>
+          ) : !canReplay ? (
+            <p>
+              {t("Replay unavailable · ops.deadletter.write is not granted")}
+            </p>
+          ) : null}
+        </div>
+      </div>
+      {notice ? (
+        <p
+          className="rounded-md bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]"
+          data-testid="main-to-chat-replay-status"
+          role="status"
+        >
+          {notice}
+        </p>
+      ) : null}
+      {error ? (
+        <p
+          className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]"
+          role="alert"
+        >
+          {t("Main → Chat failed delivery refresh failed:")} {error}
+          <button
+            className="ml-3 min-h-8 rounded border border-current px-2 font-semibold"
+            onClick={() => void load()}
+            type="button"
+          >
+            {t("Retry")}
+          </button>
+        </p>
+      ) : null}
+      {!canRead ? null : loading && !data ? (
+        <Loading
+          authority={t("Main → Chat failed delivery")}
+          state={{ data: null, loading: true, error: null, refreshedAt: null }}
+        />
+      ) : rows.length === 0 ? (
+        <EmptyState
+          hint={t(
+            "Every Main → Chat durable event is pending, delivered, or explicitly terminalized.",
+          )}
+          title={t("No failed Main → Chat deliveries")}
+        />
+      ) : (
+        <>
+          {canReplay || canDiscardMissing ? (
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="flex items-center gap-2 text-xs text-[var(--ad-text-muted)]">
+                <input
+                  aria-label={t("Select all failed Main to Chat events")}
+                  checked={allSelected}
+                  onChange={() =>
+                    setSelected(
+                      allSelected
+                        ? new Set()
+                        : new Set(selectableRows.map((row) => row.id)),
+                    )
+                  }
+                  type="checkbox"
+                />
+                {t("Select all")}
+              </label>
+              <span className="text-xs text-[var(--ad-text-muted)]">
+                {selectedRows.length} {t("selected")}
+              </span>
+              {canReplay ? (
+                <button
+                  className="ml-auto inline-flex min-h-9 items-center gap-2 rounded-md border border-[var(--ad-border)] px-3 text-sm font-semibold disabled:opacity-40"
+                  disabled={
+                    selectedRows.length === 0 ||
+                    replayRows.length !== selectedRows.length
+                  }
+                  onClick={requestReplay}
+                  type="button"
+                >
+                  <RefreshCcw className="h-4 w-4" />
+                  {t("Replay selected")}
+                </button>
+              ) : null}
+              {canDiscardMissing ? (
+                <button
+                  className={`${canReplay ? "" : "ml-auto "}inline-flex min-h-9 items-center gap-2 rounded-md border border-[var(--ad-border)] px-3 text-sm font-semibold disabled:opacity-40`}
+                  disabled={
+                    selectedRows.length === 0 ||
+                    targetMissingRows.length !== selectedRows.length
+                  }
+                  onClick={requestTargetMissingDisposition}
+                  type="button"
+                >
+                  <RotateCcw className="h-4 w-4" />
+                  {t("Record target missing")}
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+          <div
+            aria-label={t("Failed Main to Chat delivery table")}
+            className="overflow-x-auto rounded-lg border border-[var(--ad-border)]"
+            role="region"
+            tabIndex={0}
+          >
+            <table className="w-full min-w-[1080px] text-left text-sm">
+              <caption className="sr-only">
+                {t("Failed Main to Chat durable deliveries")}
+              </caption>
+              <thead>
+                <tr className="border-b border-[var(--ad-border)] text-xs uppercase text-[var(--ad-text-muted)]">
+                  {[
+                    ...(canReplay || canDiscardMissing ? [""] : []),
+                    "Event",
+                    "Aggregate",
+                    "Receiver authority",
+                    "Attempts / retry",
+                    "Last error",
+                    "Envelope hash",
+                    "Updated",
+                  ].map((header, index) => (
+                    <th
+                      className="px-3 py-3 font-medium"
+                      key={`${header}-${index}`}
+                      scope="col"
+                    >
+                      {header ? t(header) : header}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row, index) => {
+                  const disabledReasonId =
+                    `main-to-chat-replay-disabled-${index}`;
+                  return (
+                    <tr
+                      className="border-b border-[var(--ad-border)] last:border-0"
+                      key={row.id}
+                    >
+                      {canReplay || canDiscardMissing ? (
+                        <td className="px-3 py-3">
+                          <input
+                            aria-describedby={
+                              !rowActionable(row, canReplay, canDiscardMissing)
+                                ? disabledReasonId
+                                : undefined
+                            }
+                            aria-label={t("Select failed event {id}", {
+                              id: row.id,
+                            })}
+                            checked={selected.has(row.id)}
+                            disabled={!rowActionable(
+                              row,
+                              canReplay,
+                              canDiscardMissing,
+                            )}
+                            onChange={() => toggle(row.id)}
+                            type="checkbox"
+                          />
+                        </td>
+                      ) : null}
+                      <td className="px-3 py-3">
+                        <p className="font-medium">{row.eventType}</p>
+                        <p className="font-mono text-xs text-[var(--ad-text-muted)]">
+                          {row.id}
+                        </p>
+                      </td>
+                      <td className="max-w-80 px-3 py-3 text-xs">
+                        <p className="font-semibold">
+                          {t(receiverAuthorityLabel(row.receiverAuthority.disposition))}
+                        </p>
+                        {row.receiverAuthority.target ? (
+                          <p className="break-all font-mono text-[11px] text-[var(--ad-text-muted)]">
+                            {row.receiverAuthority.target.kind}:{row.receiverAuthority.target.id}
+                            {row.receiverAuthority.targetStatus
+                              ? ` · ${row.receiverAuthority.targetStatus}`
+                              : ""}
+                          </p>
+                        ) : null}
+                        {row.envelopeHash !== null &&
+                        !rowActionable(row, canReplay, canDiscardMissing) ? (
+                          <span className="sr-only" id={disabledReasonId}>
+                            {t("No safe action is available for this receiver authority state")}
+                          </span>
+                        ) : null}
+                      </td>
+                      <td className="px-3 py-3">
+                        <p>{row.aggregateType}</p>
+                        <p className="font-mono text-xs text-[var(--ad-text-muted)]">
+                          {row.aggregateId}
+                        </p>
+                      </td>
+                      <td className="px-3 py-3">
+                        <p>{row.attempts}</p>
+                        <p className="text-xs text-[var(--ad-text-muted)]">
+                          {date(row.nextRunAt)}
+                        </p>
+                      </td>
+                      <td className="max-w-80 px-3 py-3 text-xs">
+                        {row.lastErrorMessage ?? "—"}
+                      </td>
+                      <td className="max-w-72 break-all px-3 py-3 font-mono text-[11px]">
+                        {row.envelopeHash ?? (
+                          <span id={disabledReasonId}>
+                            {t("Replay unavailable · invalid durable envelope")}
+                            {` · ${row.storedEnvelopeHash}`}
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-3 py-3 text-xs">{date(row.updatedAt)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          {data?.pageInfo.hasNextPage && data.pageInfo.endCursor ? (
+            <button
+              className="inline-flex min-h-11 items-center gap-2 rounded border border-[var(--ad-border)] px-4 text-sm font-semibold"
+              disabled={loading}
+              onClick={() => void load(data.pageInfo.endCursor ?? "")}
+              type="button"
+            >
+              <RefreshCcw className="h-4 w-4" />
+              {t("Next failed delivery page")}
+            </button>
+          ) : null}
+        </>
+      )}
+      {confirmation ? (
+        <ConfirmDialog
+          onClose={() => setConfirmation(null)}
+          spec={confirmation}
+        />
       ) : null}
     </section>
   );
@@ -558,17 +1115,18 @@ function AuthorityError({
       className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]"
       role="alert"
     >
-      {authority}  {t("authority refresh failed:")} {state.error}
+      {authority} {t("authority refresh failed:")} {state.error}
       <button
         className="ml-3 min-h-8 rounded border border-current px-2"
         onClick={() => void retry(query, authority)}
         type="button"
       >
-
         {t("Retry")} {authority}
       </button>
       {state.data ? (
-        <span className="ml-2">{t("The last good snapshot remains visible.")}</span>
+        <span className="ml-2">
+          {t("The last good snapshot remains visible.")}
+        </span>
       ) : null}
     </div>
   );
@@ -612,23 +1170,37 @@ function Freshness({
   if (state.loading && state.data)
     return (
       <span>
-        {authority}{t(": refreshing · showing snapshot from")} {time}
+        {authority}
+        {t(": refreshing · showing snapshot from")} {time}
       </span>
     );
   if (state.error && state.data)
     return (
       <span>
-        {authority}{t(": stale · last good")} {time}
+        {authority}
+        {t(": stale · last good")} {time}
       </span>
     );
-  if (state.error) return <span>{authority}{t(": unavailable")}</span>;
+  if (state.error)
+    return (
+      <span>
+        {authority}
+        {t(": unavailable")}
+      </span>
+    );
   if (state.data)
     return (
       <span>
-        {authority}{t(": current client snapshot ·")} {time}
+        {authority}
+        {t(": current client snapshot ·")} {time}
       </span>
     );
-  return <span>{authority}{t(": refreshing · no snapshot yet")}</span>;
+  return (
+    <span>
+      {authority}
+      {t(": refreshing · no snapshot yet")}
+    </span>
+  );
 }
 
 function Loading({
@@ -642,8 +1214,7 @@ function Loading({
   return !state.data && state.loading ? (
     <div className="rounded-lg border p-4" role="status">
       <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />
-
-      {t("Loading")} {authority}  {t("authority")}
+      {t("Loading")} {authority} {t("authority")}
     </div>
   ) : null;
 }
@@ -707,9 +1278,9 @@ function sessionFiltered(query: ChatOpsQuery) {
 function eventFiltered(query: ChatOpsQuery) {
   return Boolean(
     query.eventStatus !== "all" ||
-      query.eventLayer !== "all" ||
-      query.policyCode ||
-      query.targetId,
+    query.eventLayer !== "all" ||
+    query.policyCode ||
+    query.targetId,
   );
 }
 
@@ -731,4 +1302,9 @@ function display(value: unknown) {
   )
     return String(value);
   return value === null || value === undefined ? "—" : JSON.stringify(value);
+}
+
+function date(value: unknown) {
+  const parsed = new Date(text(value));
+  return Number.isNaN(parsed.getTime()) ? "—" : parsed.toLocaleString();
 }

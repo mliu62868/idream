@@ -6,6 +6,15 @@
 // packages/main/src/server/modules/admin-v2/characters/{production-journey,readiness,renderer-preview}.ts。
 // 它们在 admin 源码里没有字面量，静态扫描判不出「在用」。删之前先查后端。
 export const adminZhCharacters: Record<string, string> = {
+  "Approved · awaiting publication preparation": "已审核 · 等待发布准备",
+  "Prepare publication workspace": "准备发布工作区",
+  "Prepare the Project, immutable Revision, and inactive Serving workspace. This does not publish a Release or make the Character public.":
+    "准备项目、不可变修订和未激活的 Serving 工作区。此操作不会发布 Release，也不会让角色公开可见。",
+  "This creates the Character Project, immutable Revision, and inactive Serving workspace.":
+    "此操作会创建角色项目、不可变修订和未激活的 Serving 工作区。",
+  "It does not create or publish a Release and does not make the Character visible in Explore or Community.":
+    "此操作不会创建或发布 Release，也不会让角色出现在 Explore 或 Community。",
+  "Type the publication preparation confirmation": "输入发布准备确认文本",
   "A newer Soul or Project version exists. Reload before creating another version.": "存在更新的 Soul 或项目版本。请刷新后再创建版本。",
   "Cadence": "节奏",
   "Canon facts": "设定事实",

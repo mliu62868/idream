@@ -45,6 +45,15 @@ export interface OpenAICompatibleChatModelContract {
 
 type FetchLike = typeof fetch;
 
+export class ChatModelOutputLimitError extends Error {
+  readonly code = "chat_model_output_limit";
+
+  constructor(readonly maxTokens: number) {
+    super(`Chat model stopped at the max output token limit (${maxTokens})`);
+    this.name = "ChatModelOutputLimitError";
+  }
+}
+
 /**
  * SPEC: One deploy-neutral OpenAI-compatible adapter is shared by Chat and
  * readiness probes. Service packages must not import each other's source.
@@ -113,20 +122,25 @@ export class OpenAICompatibleChatModel implements OpenAICompatibleChatModelContr
             yield { delta: "", done: true, toolCalls: flattenToolCalls(toolCallsByIndex) };
             return;
           }
-          const delta = (JSON.parse(payload).choices?.[0]?.delta ?? {}) as {
-            content?: string;
-            tool_calls?: Array<{
-              index: number;
-              id?: string;
-              function?: { name?: string; arguments?: string };
-            }>;
+          const choice = (JSON.parse(payload).choices?.[0] ?? {}) as {
+            finish_reason?: unknown;
+            delta?: {
+              content?: string;
+              tool_calls?: Array<{
+                index: number;
+                id?: string;
+                function?: { name?: string; arguments?: string };
+              }>;
+            };
           };
+          const delta = choice.delta ?? {};
           const hasToolOutput = delta.tool_calls?.some((fragment) => Boolean(
             fragment.id || fragment.function?.name || fragment.function?.arguments,
           )) ?? false;
           if ((delta.content?.length ?? 0) > 0 || hasToolOutput) armIdleTimeout();
           accumulateToolCalls(toolCallsByIndex, delta.tool_calls);
           if (delta.content) yield { delta: delta.content, done: false };
+          assertOutputWasComplete(choice.finish_reason, this.profile.maxOutputTokens);
         }
       }
       yield { delta: "", done: true, toolCalls: flattenToolCalls(toolCallsByIndex) };
@@ -148,6 +162,7 @@ export class OpenAICompatibleChatModel implements OpenAICompatibleChatModelContr
     const controller = new AbortController();
     const timeoutMs = this.profile.completionTimeoutMs;
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const maxTokens = input.maxTokens ?? Math.min(this.profile.maxOutputTokens, 1_400);
     try {
       const response = await this.fetchImpl(chatCompletionEndpoint(this.profile.baseUrl), {
         method: "POST",
@@ -160,7 +175,7 @@ export class OpenAICompatibleChatModel implements OpenAICompatibleChatModelContr
           model,
           messages: input.messages,
           stream: false,
-          max_tokens: input.maxTokens ?? Math.min(this.profile.maxOutputTokens, 1_400),
+          max_tokens: maxTokens,
           chat_template_kwargs: { enable_thinking: false },
         }),
       });
@@ -168,9 +183,14 @@ export class OpenAICompatibleChatModel implements OpenAICompatibleChatModelContr
         throw new Error(`Chat model HTTP ${response.status}: ${await response.text().catch(() => "")}`);
       }
       const data = await response.json() as {
-        choices?: Array<{ message?: { content?: unknown } }>;
+        choices?: Array<{
+          finish_reason?: unknown;
+          message?: { content?: unknown };
+        }>;
       };
-      const content = data.choices?.[0]?.message?.content;
+      const choice = data.choices?.[0];
+      assertOutputWasComplete(choice?.finish_reason, maxTokens);
+      const content = choice?.message?.content;
       return { content: typeof content === "string" ? content : "" };
     } catch (error) {
       if (controller.signal.aborted) {
@@ -181,6 +201,10 @@ export class OpenAICompatibleChatModel implements OpenAICompatibleChatModelContr
       clearTimeout(timeout);
     }
   }
+}
+
+function assertOutputWasComplete(finishReason: unknown, maxTokens: number): void {
+  if (finishReason === "length") throw new ChatModelOutputLimitError(maxTokens);
 }
 
 function chatCompletionEndpoint(baseUrl: string): URL {

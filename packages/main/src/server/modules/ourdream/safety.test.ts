@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
+import { getCaseDetail } from "@/server/modules/admin-v2/cases/query";
 import {
   api,
   completeQueuedCharacterPreview,
@@ -492,6 +493,70 @@ describe("admin moderation queue + audit", () => {
         where: { sourceType: "admin_case", sourceId: evidence.caseId, decision: "actioned" },
       }),
     ).not.toBeNull();
+
+    const appeal = await api("POST", "appeals", {
+      userId: SYS,
+      ageGate: true,
+      body: {
+        targetType: "character",
+        targetId: target,
+        appealText: "Please review the removal decision again.",
+      },
+    });
+    expectOk(appeal);
+    expect(appeal.data.appeal).toMatchObject({
+      targetType: "character",
+      targetId: target,
+      originalDecisionId: decision.data.review.id,
+    });
+
+    const appealEvidence = await prisma.caseEvidence.findFirstOrThrow({
+      where: { sourceType: "appeal", sourceId: appeal.data.appeal.id as string },
+    });
+    const appealCaseResponse = await getCaseDetail(
+      new Request(`http://localhost/api/v2/admin/cases/${appealEvidence.caseId}`, {
+        headers: {
+          "x-idream-user-id": admin,
+          "x-idream-role": "admin",
+        },
+      }),
+      appealEvidence.caseId,
+    );
+    expect((await appealCaseResponse.json()).data.case.relatedCaseIds).toContain(evidence.caseId);
+    const reportCaseResponse = await getCaseDetail(
+      new Request(`http://localhost/api/v2/admin/cases/${evidence.caseId}`, {
+        headers: {
+          "x-idream-user-id": admin,
+          "x-idream-role": "admin",
+        },
+      }),
+      evidence.caseId,
+    );
+    expect((await reportCaseResponse.json()).data.case.relatedCaseIds).toContain(
+      appealEvidence.caseId,
+    );
+
+    const overturned = await api(
+      "PATCH",
+      `admin/moderation/appeals/${appeal.data.appeal.id as string}`,
+      {
+        userId: admin,
+        role: "admin",
+        body: {
+          outcome: "overturned",
+          reason: "The removal decision was incorrect after a second review",
+          confirmation: "OVERTURN",
+        },
+      },
+    );
+    expectOk(overturned);
+    await expect(prisma.character.findUniqueOrThrow({ where: { id: target } })).resolves.toMatchObject({
+      status: "approved",
+    });
+    await expect(prisma.adminCase.findUniqueOrThrow({ where: { id: appealEvidence.caseId } })).resolves.toMatchObject({
+      status: "resolved",
+      verificationState: "passed",
+    });
   });
 
   it("serializes an audited media decision with the shared MediaAsset authority lock", async () => {

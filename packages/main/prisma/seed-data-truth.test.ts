@@ -491,6 +491,45 @@ describe("seed data provenance", () => {
     });
   });
 
+  it("seeds both public image routes on the registered RedMix3 descriptor", async () => {
+    const profiles = await prisma.generationModelProfile.findMany({
+      where: {
+        profileKey: {
+          in: ["profile_image_default_v1", "profile_image_premium_v1"],
+        },
+        status: "active",
+      },
+      select: {
+        profileKey: true,
+        pipelineModel: true,
+        workflowKey: true,
+        runner: true,
+        enabled: true,
+        rolloutPercent: true,
+      },
+      orderBy: { profileKey: "asc" },
+    });
+
+    expect(profiles).toEqual([
+      {
+        profileKey: "profile_image_default_v1",
+        pipelineModel: "redcraft-krea2-redmix3-fp8",
+        workflowKey: "redcraft-krea2-redmix3-txt2img",
+        runner: "comfyui",
+        enabled: true,
+        rolloutPercent: 100,
+      },
+      {
+        profileKey: "profile_image_premium_v1",
+        pipelineModel: "redcraft-krea2-redmix3-fp8",
+        workflowKey: "redcraft-krea2-redmix3-txt2img",
+        runner: "comfyui",
+        enabled: true,
+        rolloutPercent: 100,
+      },
+    ]);
+  });
+
   it("migrates the legacy Dark Beast row in place using a configurable ComfyUI model root", async () => {
     const profileId = "seed-profile-sdcpp-darkbeast-krea2-img2img-v1";
     await prisma.generationModelProfile.update({

@@ -65,6 +65,7 @@ import { SupportWorkspace } from "@/features/support/SupportWorkspace";
 import { PromoWorkspace } from "@/features/promo/PromoWorkspace";
 import { ApprovalsWorkspace } from "@/features/approvals/ApprovalsWorkspace";
 import { ChatOpsWorkspace } from "@/features/chat-ops/ChatOpsWorkspace";
+import { adminV2OperationAllowed } from "@/lib/admin-v2-operation";
 import { ContentMerchandisingWorkspace } from "@/features/content-merchandising/ContentMerchandisingWorkspace";
 import {
   AnalyticsWorkspace,
@@ -229,6 +230,14 @@ export const navItems: NavItem[] = [
   apiItem({ id: "ops/incidents", label: "Incidents", href: "/admin/ops/incidents", icon: ShieldAlert, group: "Platform Operations", apiWorkspace: "incidents",
     render: (ctx) => <IncidentWorkspace
       canManage={ctx.permissions.has("ops.incident.manage")}
+      canReadCorrelationOutbox={adminV2OperationAllowed(
+        "GET /api/v2/admin/incidents/correlation-outbox",
+        ctx.permissions,
+      )}
+      canReplayCorrelationOutbox={adminV2OperationAllowed(
+        "POST /api/v2/admin/incidents/correlation-outbox/commands/replay",
+        ctx.permissions,
+      )}
       initialIncidentId={detailId(ctx.view)}
       key={detailId(ctx.view) ?? "incident-list"}
     /> }),
@@ -257,7 +266,21 @@ export const navItems: NavItem[] = [
   item({ id: "generation/workflows", label: "Workflow Diagnostics", href: "/admin/ops/recipes?view=workflows", icon: Workflow, group: "Platform Operations", read: read("generation.config.read"),
     render: () => <WorkflowsView /> }),
   item({ id: "chat", label: "Chat Operations", href: "/admin/ops/chat", icon: MessageSquare, group: "Platform Operations", read: read("chat.ops.read"),
-    render: (ctx) => <ChatOpsWorkspace canRead={ctx.permissions.has("chat.ops.read")} /> }),
+    render: (ctx) => <ChatOpsWorkspace
+      canRead={ctx.permissions.has("chat.ops.read")}
+      canReadMainOutbox={adminV2OperationAllowed(
+        "GET /api/v2/admin/chat/main-outbox-events",
+        ctx.permissions,
+      )}
+      canReplayMainOutbox={adminV2OperationAllowed(
+        "POST /api/v2/admin/chat/main-outbox-events/commands/replay",
+        ctx.permissions,
+      )}
+      canDiscardMissingMainOutbox={adminV2OperationAllowed(
+        "POST /api/v2/admin/chat/main-outbox-events/commands/discard-target-missing",
+        ctx.permissions,
+      )}
+    /> }),
 
   item({ id: "approvals", label: "Approvals", href: "/admin/system/approvals", icon: ClipboardCheck, group: "System", read: read("admin.approval.review"),
     render: (ctx) => <ApprovalsWorkspace canReview={ctx.permissions.has("admin.approval.review")} /> }),

@@ -73,7 +73,7 @@ packages/main/prisma/schema.prisma + packages/*/src ← 代码（最终事实来
 | 管理后台 | 独立 `@idream/admin` web/BFF + main `/api/v2/admin/*` authority；v1 仅兼容观测 | Today、Character、Creative、Incident、Case、Metrics、系统控制面，见 ADR-11 |
 | 对象存储 | 抽象 `BlobStore`；S3 兼容（R2）/ 本地 fs（dev） | 签名 URL，见 02-ADR-8 |
 | 限流 | DB 令牌桶 / Redis（prod 推荐） | 见 02-ADR-9 |
-| 部署 | pm2 多进程（`ecosystem.config.js`，6+ 进程）；`output: standalone` 支持 Docker | 见 10 |
+| 部署 | pm2 完整多进程拓扑（`ecosystem.config.js`）；Docker Compose 仅提供本地 PostgreSQL/Redis | 见 10 |
 | 测试 | Vitest（L1/L2/L3）+ Playwright（L4） | 见 11 |
 | 日志/监控 | pino 结构化日志 + Sentry + 自建 analytics 事件 | 见 09/10 |
 

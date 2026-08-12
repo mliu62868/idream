@@ -95,7 +95,35 @@ export async function getCharacterWorkspace(characterId: string) {
       take: 1,
     }),
   ]);
-  if (!character || !project) throw Errors.notFound("Character Project not found");
+  if (!character) throw Errors.notFound("Character not found");
+  if (!project) {
+    const approvedSubmission =
+      character.source === "user" &&
+      character.visibility === "public" &&
+      character.status === "approved" &&
+      character.currentContentVersionId
+        ? await prisma.characterSubmission.findFirst({
+            where: { characterId, status: "approved" },
+            orderBy: [
+              { reviewedAt: "desc" },
+              { submittedAt: "desc" },
+              { id: "desc" },
+            ],
+            select: { id: true },
+          })
+        : null;
+    throw Errors.notFound(
+      "Character Project not found",
+      approvedSubmission
+        ? {
+            reason: "customer_publication_prep_missing",
+            characterId,
+            submissionId: approvedSubmission.id,
+            recoveryOperation: "POST /api/v2/admin/characters/:id/project",
+          }
+        : undefined,
+    );
+  }
   if (!contentVersions[0]) {
     throw Errors.notFound("Character Soul content version not found");
   }

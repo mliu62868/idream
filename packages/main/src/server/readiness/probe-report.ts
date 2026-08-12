@@ -7,11 +7,18 @@ import {
   decodeChatModelProbeEvidence,
   decodeChatServiceProbeEvidence,
   decodeImagePipelineProbeEvidence,
+  decodeImageGenerationPersistenceProbeEvidence,
   decodePaymentProviderProbeEvidence,
   decodeProductConfigProbeEvidence,
   decodePublicCatalogProbeEvidence,
   decodeSafetyGatewayProbeEvidence,
+  decodeSentryAdminCanaryProbeEvidence,
+  decodeSentryChatCanaryProbeEvidence,
+  decodeSentryGenCanaryProbeEvidence,
+  decodeSentryMainCanaryProbeEvidence,
   decodeVoiceModelProbeEvidence,
+  decodeVideoGenerationProbeEvidence,
+  decodeVideoGenerationPersistenceProbeEvidence,
   decodeWebSurfaceProbeEvidence,
 } from "./evidence";
 
@@ -37,6 +44,21 @@ export const PROBE_REPORTS = {
     reportEnvKey: "PIPELINE_IMAGE_PROBE_REPORT",
     maxAgeEnvKey: "PIPELINE_IMAGE_PROBE_MAX_AGE_MINUTES",
     decode: decodeImagePipelineProbeEvidence,
+  },
+  videoGenerationProbe: {
+    reportEnvKey: "VIDEO_GENERATION_PROBE_REPORT",
+    maxAgeEnvKey: "VIDEO_GENERATION_PROBE_MAX_AGE_MINUTES",
+    decode: decodeVideoGenerationProbeEvidence,
+  },
+  imageGenerationPersistenceProbe: {
+    reportEnvKey: "GENERATION_IMAGE_PERSISTENCE_PROBE_REPORT",
+    maxAgeEnvKey: "GENERATION_IMAGE_PERSISTENCE_PROBE_MAX_AGE_MINUTES",
+    decode: decodeImageGenerationPersistenceProbeEvidence,
+  },
+  videoGenerationPersistenceProbe: {
+    reportEnvKey: "GENERATION_VIDEO_PERSISTENCE_PROBE_REPORT",
+    maxAgeEnvKey: "GENERATION_VIDEO_PERSISTENCE_PROBE_MAX_AGE_MINUTES",
+    decode: decodeVideoGenerationPersistenceProbeEvidence,
   },
   blobStorageProbe: {
     reportEnvKey: "BLOB_STORAGE_PROBE_REPORT",
@@ -88,9 +110,39 @@ export const PROBE_REPORTS = {
     maxAgeEnvKey: "WEB_SURFACE_PROBE_MAX_AGE_MINUTES",
     decode: decodeWebSurfaceProbeEvidence,
   },
+  sentryMainCanaryProbe: {
+    reportEnvKey: "SENTRY_MAIN_PROBE_REPORT",
+    maxAgeEnvKey: "SENTRY_MAIN_PROBE_MAX_AGE_MINUTES",
+    decode: decodeSentryMainCanaryProbeEvidence,
+  },
+  sentryAdminCanaryProbe: {
+    reportEnvKey: "SENTRY_ADMIN_PROBE_REPORT",
+    maxAgeEnvKey: "SENTRY_ADMIN_PROBE_MAX_AGE_MINUTES",
+    decode: decodeSentryAdminCanaryProbeEvidence,
+  },
+  sentryChatCanaryProbe: {
+    reportEnvKey: "SENTRY_CHAT_PROBE_REPORT",
+    maxAgeEnvKey: "SENTRY_CHAT_PROBE_MAX_AGE_MINUTES",
+    decode: decodeSentryChatCanaryProbeEvidence,
+  },
+  sentryGenCanaryProbe: {
+    reportEnvKey: "SENTRY_GEN_PROBE_REPORT",
+    maxAgeEnvKey: "SENTRY_GEN_PROBE_MAX_AGE_MINUTES",
+    decode: decodeSentryGenCanaryProbeEvidence,
+  },
 } as const satisfies Record<string, ProbeReportSpec>;
 
 export type ProbeName = keyof typeof PROBE_REPORTS;
+
+export const SENTRY_CANARY_PROBE_NAMES = {
+  main: "sentryMainCanaryProbe",
+  admin: "sentryAdminCanaryProbe",
+  chat: "sentryChatCanaryProbe",
+  gen: "sentryGenCanaryProbe",
+} as const satisfies Record<
+  import("./evidence").SentryCanaryService,
+  ProbeName
+>;
 
 export type ProbeEvidenceOf<K extends ProbeName> = ReturnType<
   (typeof PROBE_REPORTS)[K]["decode"]

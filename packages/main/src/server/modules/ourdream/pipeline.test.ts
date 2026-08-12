@@ -507,6 +507,95 @@ describe("local AI service pipeline", () => {
     }
   });
 
+  it("replays one Character Preview reservation when its response is lost", async () => {
+    const userId = `${P}preview-idempotent-user`;
+    await createUser({ id: userId });
+    const draft = await api("POST", "character-drafts", {
+      userId,
+      ageGate: true,
+      body: { name: "Preview Replay", gender: "female", style: "realistic" },
+    });
+    expectOk(draft);
+    const draftId = draft.data.draft.id as string;
+    const idempotencyKey = `${P}preview-response-lost`;
+
+    const first = await api("POST", `character-drafts/${draftId}/preview`, {
+      userId,
+      ageGate: true,
+      headers: { "Idempotency-Key": idempotencyKey },
+    });
+    const replay = await api("POST", `character-drafts/${draftId}/preview`, {
+      userId,
+      ageGate: true,
+      headers: { "Idempotency-Key": idempotencyKey },
+    });
+    expectOk(first);
+    expectOk(replay);
+    expect(replay.data.previewJob.id).toBe(first.data.previewJob.id);
+
+    const generationJobs = await prisma.generationJob.findMany({
+      where: { userId, idempotencyKey },
+    });
+    expect(generationJobs).toHaveLength(1);
+    expect(generationJobs[0]?.momentSpec).toMatchObject({
+      requestFingerprint: expect.any(String),
+    });
+    cleanupJobDedupeKeys.push(`generation:${generationJobs[0]!.id}`);
+    await expect(
+      prisma.generationAttempt.count({
+        where: { requestId: generationJobs[0]!.id },
+      }),
+    ).resolves.toBe(1);
+
+    const crossCommandReplay = await api("POST", "generation/jobs", {
+      userId,
+      ageGate: true,
+      headers: { "Idempotency-Key": idempotencyKey },
+      body: { mode: "image", characterId: CHAR, outputCount: 1 },
+    });
+    expectError(crossCommandReplay, 409, "conflict");
+    expect(crossCommandReplay.error?.message).toContain(
+      "Idempotency-Key was already used for a different generation request",
+    );
+    // INTENT: this test stops at reservation replay and never invokes Gen. The
+    // queued fixture must not consume a later test's one-shot provider mock.
+    await expect(
+      jobQueue.removeByDedupePrefix(`generation:${generationJobs[0]!.id}`, [
+        "ai.image.generate",
+      ]),
+    ).resolves.toBe(1);
+    await expect(
+      jobQueue.getByDedupeKey(
+        "ai.image.generate",
+        `generation:${generationJobs[0]!.id}:attempt:1`,
+      ),
+    ).resolves.toBeNull();
+  });
+
+  it("requires Character Preview callers to provide a durable idempotency key", async () => {
+    const userId = `${P}preview-missing-key-user`;
+    await createUser({ id: userId });
+    const draft = await api("POST", "character-drafts", {
+      userId,
+      ageGate: true,
+      body: { name: "Preview Key", gender: "female", style: "realistic" },
+    });
+    expectOk(draft);
+
+    const response = await api(
+      "POST",
+      `character-drafts/${draft.data.draft.id as string}/preview`,
+      {
+        userId,
+        ageGate: true,
+        autoGenerationIdempotencyKey: false,
+      },
+    );
+
+    expectError(response, 400, "bad_request");
+    expect(response.error?.message).toContain("Idempotency-Key");
+  });
+
   it("projects unknown, business retry, blocked replay, and late results through Generation authority", async () => {
     const userId = `${P}preview-no-body-user`;
     await createUser({ id: userId });

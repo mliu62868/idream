@@ -18,6 +18,7 @@ import {
   resolveChatMemoryExtractProfile,
   resolveChatModelProfile,
 } from "@idream/shared";
+import { ACCOUNT_ERASURE_COMPLETION_V2_INGEST_PATH } from "@idream/shared/contracts";
 
 function required(name: string, fallback?: string): string {
   const value = process.env[name] ?? fallback;
@@ -28,6 +29,15 @@ function required(name: string, fallback?: string): string {
 }
 
 export const env = {
+  get APP_ENV() {
+    return process.env.APP_ENV;
+  },
+  get SENTRY_DSN() {
+    return process.env.SENTRY_DSN;
+  },
+  get SENTRY_RELEASE() {
+    return process.env.SENTRY_RELEASE;
+  },
   get DATABASE_URL() {
     return required("CHAT_DATABASE_URL", process.env.DATABASE_URL);
   },
@@ -127,6 +137,9 @@ export const env = {
   },
   get MAIN_INTERNAL_INGEST_URL() {
     return `${mainWebUrlOrigin()}/api/internal/events/ingest`;
+  },
+  get MAIN_ACCOUNT_ERASURE_COMPLETION_V2_INGEST_URL() {
+    return `${mainWebUrlOrigin()}${ACCOUNT_ERASURE_COMPLETION_V2_INGEST_PATH}`;
   },
   get PORT() {
     return Number.parseInt(process.env.CHAT_PORT ?? "3100", 10);

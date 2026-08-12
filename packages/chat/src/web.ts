@@ -10,9 +10,22 @@ import { env } from "./env.js";
 import { logger } from "./logger.js";
 import { dispatchChat, type ChatRequest } from "./router.js";
 import { createSseResponse } from "./stream.js";
-import { persistInboundEvent } from "./inbox.js";
+import {
+  consumeAccountDeletionRequestV2,
+  persistAccountDeletionRequestV2,
+  persistInboundEvent,
+} from "./inbox.js";
+import {
+  discardMainToChatTargetMissing,
+  inspectMainToChatReceiverAuthority,
+} from "./main-outbox-authority.js";
 import { enqueue } from "./queue.js";
-import { CHAT_QUEUES, idempotencyKeys } from "@idream/shared/contracts";
+import {
+  ACCOUNT_DELETION_V2_INGEST_PATH,
+  CHAT_QUEUES,
+  MAIN_TO_CHAT_EVENTS,
+  idempotencyKeys,
+} from "@idream/shared/contracts";
 import {
   runtimeReadiness,
   type RuntimeReadiness,
@@ -72,9 +85,34 @@ async function handle(
       res.end(JSON.stringify({ error: "unauthorized" }));
       return;
     }
+    if (
+      url.pathname === ACCOUNT_DELETION_V2_INGEST_PATH &&
+      req.method === "POST"
+    ) {
+      const event = safeJson(await readBody(req));
+      const ack = await persistAccountDeletionRequestV2(event);
+      if (ack.acknowledged && ack.receiptId) {
+        // This response is the Main request's transport commit point. Finish
+        // Chat erasure and Main's dedicated completion projection before ACK.
+        await consumeAccountDeletionRequestV2(ack.receiptId);
+      }
+      res.writeHead(ack.acknowledged ? 200 : 409, privateJsonHeaders);
+      res.end(JSON.stringify(ack));
+      return;
+    }
     if (url.pathname === "/internal/events/ingest" && req.method === "POST") {
       const raw = await readBody(req);
       const event = safeJson(raw);
+      if (
+        event &&
+        typeof event === "object" &&
+        "eventType" in event &&
+        event.eventType === MAIN_TO_CHAT_EVENTS.accountDeletionRequestedV2
+      ) {
+        res.writeHead(409, privateJsonHeaders);
+        res.end(JSON.stringify({ error: "account_deletion_v2_route_required" }));
+        return;
+      }
       const ack = await persistInboundEvent(event);
       if (ack.acknowledged && ack.receiptId) {
         await enqueue({
@@ -85,6 +123,28 @@ async function handle(
       }
       res.writeHead(ack.acknowledged ? 200 : 409, privateJsonHeaders);
       res.end(JSON.stringify(ack));
+      return;
+    }
+    if (
+      url.pathname === "/internal/events/main-outbox-authority" &&
+      req.method === "POST"
+    ) {
+      const result = await inspectMainToChatReceiverAuthority(
+        safeJson(await readBody(req)),
+      );
+      res.writeHead(200, privateJsonHeaders);
+      res.end(JSON.stringify(result));
+      return;
+    }
+    if (
+      url.pathname === "/internal/events/discard-target-missing" &&
+      req.method === "POST"
+    ) {
+      const result = await discardMainToChatTargetMissing(
+        safeJson(await readBody(req)),
+      );
+      res.writeHead(200, privateJsonHeaders);
+      res.end(JSON.stringify(result));
       return;
     }
     const result = await dispatchChatAdmin({

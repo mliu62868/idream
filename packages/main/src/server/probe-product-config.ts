@@ -1,5 +1,10 @@
 import { prisma } from "@/server/lib/db";
+import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
 import { isProductionLtxVideoProfile } from "@/server/modules/generation/production-video-profile";
+import {
+  filterPublicTextToImageGenerationProfiles,
+  generationProfileDeclaresTextToImage,
+} from "@/server/modules/ourdream/generation-profile-selection";
 import { publicCharacterAudienceWhere } from "@/server/modules/ourdream/public-content-audience";
 import type { ProbeReportOf, ProductConfigProbeEvidence } from "./readiness/evidence";
 import {
@@ -39,7 +44,7 @@ async function runProbe(): Promise<ProductConfigProbeReport> {
   try {
     const [
       videoFlag,
-      activeImageProfiles,
+      activeImageProfileCandidates,
       activeImageCharacterTemplates,
       activeImageFreeplayTemplates,
       activeImagePricingRules,
@@ -52,8 +57,19 @@ async function runProbe(): Promise<ProductConfigProbeReport> {
       publicCharactersWithSystemPrompt,
     ] = await Promise.all([
       prisma.featureFlag.findUnique({ where: { key: "video_gen" } }),
-      prisma.generationModelProfile.count({
+      prisma.generationModelProfile.findMany({
         where: { mode: "image", status: "active", enabled: true },
+        select: {
+          id: true,
+          mode: true,
+          runner: true,
+          runnerConfig: true,
+          pipelineModel: true,
+          workflowKey: true,
+          allowedOrientations: true,
+          maxCount: true,
+          rolloutPercent: true,
+        },
       }),
       prisma.generationRecipe.count({
         where: { mode: "image", useCase: "character", status: "active" },
@@ -89,11 +105,42 @@ async function runProbe(): Promise<ProductConfigProbeReport> {
 
     const videoFeatureEnabled =
       videoFlag?.enabled === true && videoFlag.rolloutPercent === 100;
+    const eligibleImageProfiles =
+      await filterPublicTextToImageGenerationProfiles(
+        activeImageProfileCandidates,
+      );
+    const eligibleImageProfileIds = new Set(
+      eligibleImageProfiles.map((profile) => profile.id),
+    );
+    const activeImageExecutionBindings = await Promise.all(
+      eligibleImageProfiles.map(async (profile) => {
+        const descriptor = profile.workflowKey
+          ? await generationWorkflowDescriptor(profile.workflowKey)
+          : null;
+        return {
+          profileId: profile.id,
+          runner: profile.runner,
+          // Main dispatches workflowKey when present; this is the exact value
+          // copied into the immutable Attempt and resolved by Gen.
+          model: profile.workflowKey ?? profile.pipelineModel,
+          workflowKey: profile.workflowKey,
+          workflowVersion: descriptor?.version ?? null,
+        };
+      }),
+    );
+    const activeImageProfiles = eligibleImageProfiles.length;
+    const invalidActiveImageProfileIds = activeImageProfileCandidates
+      .filter(generationProfileDeclaresTextToImage)
+      .filter((profile) => !eligibleImageProfileIds.has(profile.id))
+      .map((profile) => profile.id);
     const activeVideoProfiles = activeVideoProfileCandidates.filter(
       isProductionLtxVideoProfile,
     ).length;
     const failureReasons = [
       activeImageProfiles < 1 ? "missing active image model profile" : null,
+      invalidActiveImageProfileIds.length > 0
+        ? `active image profiles are not public text-to-image executable: ${invalidActiveImageProfileIds.join(", ")}`
+        : null,
       activeImageCharacterTemplates < 1
         ? "missing active image character prompt template"
         : null,
@@ -115,8 +162,8 @@ async function runProbe(): Promise<ProductConfigProbeReport> {
       activeVoicePricingRules !== 1
         ? `voice pricing requires exactly one active rule (found ${activeVoicePricingRules})`
         : null,
-      publicCharacters > 0 && publicCharactersWithSystemPrompt < 1
-        ? "public characters have no chat system prompts"
+      publicCharactersWithSystemPrompt !== publicCharacters
+        ? `${publicCharacters - publicCharactersWithSystemPrompt} public character(s) have no chat system prompt`
         : null,
     ].filter((reason): reason is string => Boolean(reason));
 
@@ -126,6 +173,8 @@ async function runProbe(): Promise<ProductConfigProbeReport> {
       durationMs: Date.now() - startedAt,
       videoFeatureEnabled,
       activeImageProfiles,
+      activeImageExecutionBindings,
+      invalidActiveImageProfileIds,
       activeImageCharacterTemplates,
       activeImageFreeplayTemplates,
       activeImagePricingRules,
@@ -153,6 +202,8 @@ async function runProbe(): Promise<ProductConfigProbeReport> {
       durationMs: Date.now() - startedAt,
       videoFeatureEnabled: false,
       activeImageProfiles: 0,
+      activeImageExecutionBindings: [],
+      invalidActiveImageProfileIds: [],
       activeImageCharacterTemplates: 0,
       activeImageFreeplayTemplates: 0,
       activeImagePricingRules: 0,

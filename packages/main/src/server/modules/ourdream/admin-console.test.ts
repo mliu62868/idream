@@ -3,12 +3,14 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { Prisma } from "@prisma/client";
+import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { parseGenerationConfigResponse } from "@/lib/public-api-contracts";
 import type { AiFinalizePayload } from "@/server/ai/schemas";
 import { drainLocalAiPipeline } from "@/server/ai/local-pipeline";
 import { jobQueue } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
+import { ACCOUNT_DELETION_GRACE_PERIOD_MS } from "@/server/account-deletion-authority";
 import { CHARACTER_RELEASE_POLICY_VERSION } from "@/server/modules/admin-v2/characters/release-validation";
 import { POST as createCreativeRunV2 } from "@/app/api/v2/admin/creative/runs/route";
 import {
@@ -517,6 +519,128 @@ describe("admin support request inbox", () => {
 });
 
 describe("admin appeal queue", () => {
+  it("keeps a legacy moderation-decision appeal open without deterministic removal authority", async () => {
+    const userId = `${P}decision-appeal-user`;
+    const characterId = `${P}decision-appeal-character`;
+    const admin = await setupActor("admin", "decision-appeal");
+    await createUser({ id: userId, dataClass: "customer" });
+    await createCharacter({
+      id: characterId,
+      creatorId: userId,
+      visibility: "public",
+      status: "removed",
+    });
+    const report = await prisma.contentReport.create({
+      data: {
+        reporterId: userId,
+        targetType: "character",
+        targetId: characterId,
+        category: "other_prohibited_content",
+        status: "closed",
+      },
+    });
+    const decision = await prisma.moderationReview.create({
+      data: {
+        reportId: report.id,
+        reviewerId: admin,
+        decision: "actioned",
+        policyCode: "other_prohibited_content",
+      },
+    });
+    const appeal = await prisma.appeal.create({
+      data: {
+        userId,
+        targetType: "moderation_decision",
+        targetId: decision.id,
+        originalDecisionId: decision.id,
+        appealText: "Please reverse this exact moderation decision.",
+      },
+    });
+
+    const response = await api(
+      "PATCH",
+      `admin/moderation/appeals/${appeal.id}`,
+      {
+        userId: admin,
+        role: "admin",
+        body: {
+          outcome: "overturned",
+          reason: "The original content decision was incorrect",
+          confirmation: "OVERTURN",
+        },
+      },
+    );
+
+    expectError(response, 409, "conflict");
+    await expect(
+      prisma.character.findUniqueOrThrow({ where: { id: characterId } }),
+    ).resolves.toMatchObject({ status: "removed" });
+    await expect(
+      prisma.appeal.findUniqueOrThrow({ where: { id: appeal.id } }),
+    ).resolves.toMatchObject({
+      status: "open",
+      reviewerId: null,
+      resolvedAt: null,
+    });
+  });
+
+  it("keeps an appeal open when its canonical target no longer exists", async () => {
+    const userId = `${P}missing-target-appeal-user`;
+    const missingCharacterId = `${P}missing-target-character`;
+    const admin = await setupActor("admin", "missing-target-appeal");
+    await createUser({ id: userId, dataClass: "customer" });
+    const report = await prisma.contentReport.create({
+      data: {
+        reporterId: userId,
+        targetType: "character",
+        targetId: missingCharacterId,
+        category: "other_prohibited_content",
+        status: "closed",
+      },
+    });
+    const decision = await prisma.moderationReview.create({
+      data: {
+        reportId: report.id,
+        reviewerId: admin,
+        decision: "actioned",
+      },
+    });
+    const appeal = await prisma.appeal.create({
+      data: {
+        userId,
+        targetType: "moderation_decision",
+        targetId: decision.id,
+        originalDecisionId: decision.id,
+        appealText: "Please reverse this decision.",
+      },
+    });
+
+    expectError(
+      await api("PATCH", `admin/moderation/appeals/${appeal.id}`, {
+        userId: admin,
+        role: "admin",
+        body: {
+          outcome: "overturned",
+          reason: "The original decision was incorrect",
+          confirmation: "OVERTURN",
+        },
+      }),
+      409,
+      "conflict",
+    );
+    await expect(
+      prisma.appeal.findUniqueOrThrow({ where: { id: appeal.id } }),
+    ).resolves.toMatchObject({ status: "open", reviewerId: null, resolvedAt: null });
+    expect(
+      await prisma.mainOutboxEvent.count({
+        where: {
+          aggregateId: appeal.id,
+          eventType: "admin.moderation.appeal_decided.v2",
+        },
+      }),
+    ).toBe(0);
+  });
+
   it("lets reviewers resolve appeals and restores supported overturned targets", async () => {
     const userId = `${P}appeal-user`;
     const charId = `${P}appeal-char`;
@@ -4962,6 +5086,22 @@ describe("admin compliance: DSAR + age verification (T2)", () => {
     });
     expectOk(erased);
     expect(erased.data.erased).toBe(true);
+    expect(erased.data.deletion).toMatchObject({
+      status: "awaiting_chat",
+      gracePeriodMs: ACCOUNT_DELETION_GRACE_PERIOD_MS,
+      graceEndsAt: expect.any(String),
+    });
+    const deletion = await prisma.accountDeletion.findUniqueOrThrow({
+      where: { userId: target },
+    });
+    await expect(prisma.mainOutboxEvent.findUniqueOrThrow({
+      where: { id: deletion.chatRequestEventId ?? "missing" },
+    })).resolves.toMatchObject({
+      eventType: MAIN_TO_CHAT_EVENTS.accountDeletionRequestedV2,
+      aggregateId: target,
+      status: "pending",
+      nextRunAt: deletion.graceEndsAt,
+    });
     // idempotent second erase
     const again = await api("POST", `admin/compliance/users/${target}/erase`, {
       userId: admin,

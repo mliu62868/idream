@@ -1,12 +1,12 @@
-// pm2 process topology (design §12). Eight logical apps / nine processes by
-// default (gen-image has two instances), graded by execution-time SLA.
+// pm2 process topology (design §12). Up to nine logical apps / ten processes
+// (gen-image has two instances); mock video omits gen-video in every mode.
 // Development is the default: web apps use Next dev/Fast Refresh and source
 // services use PM2 watch. Production keeps the immutable standalone web runtime.
 //   bun run pm2:start              # development; no build required
 //   bun run pm2:status
 //   bun run pm2:restart            # detect current mode; production stays gated
 //   bun run pm2:start:production   # production; build first
-//   pm2 restart chat                   # single-instance: brief gap, reconciler heals
+// Always use the gated wrapper above; direct PM2 restarts bypass queue fences.
 // IDREAM_PM2_MODE accepts only "development" or "production". Switching modes
 // changes the process definitions, so delete/recreate the ecosystem once; normal
 // source and .env changes only need Fast Refresh, PM2 watch, or `bun run pm2:restart`.
@@ -49,13 +49,21 @@ const localEnvValue = (envPath, key) => {
     if (!match || match[1] !== key) continue;
     const rawValue = (match[2] ?? "").trim();
     const quote = rawValue[0];
-    if ((quote === "\"" || quote === "'") && rawValue.at(-1) === quote) {
+    if ((quote === '"' || quote === "'") && rawValue.at(-1) === quote) {
       return rawValue.slice(1, -1);
     }
     return rawValue.replace(/\s+#.*$/, "");
   }
   return undefined;
 };
+// Gen loads packages/gen/.env without overriding the shell. Resolve topology
+// through that same authority so PM2 never registers a mock worker that exits
+// before creating the Bull consumer the wrapper expects to count.
+const genVideoProvider =
+  process.env.GEN_VIDEO_PROVIDER ??
+  localEnvValue(dir("packages/gen/.env"), "GEN_VIDEO_PROVIDER") ??
+  "mock";
+const videoWorkerEnabled = genVideoProvider !== "mock";
 // REDIS_URL must resolve IDENTICALLY across main-web (which enqueues) and gen-finalizer
 // (which consumes) — otherwise generation jobs stick forever. Durable Main↔Chat delivery
 // does not use Redis. Which vars are cross-service, and their one set of defaults, is
@@ -71,8 +79,12 @@ const mainRedisEnv = mainRedisUrl ? { REDIS_URL: mainRedisUrl } : {};
 // deployed environments the secret manager injects it. For local pm2 runs,
 // reuse the main .env value selectively so gen callbacks cannot silently run
 // with an empty token while main-web validates a populated one.
-const internalToken = process.env.INTERNAL_TOKEN ?? localEnvValue(dir("packages/main/.env"), "INTERNAL_TOKEN");
-const sharedInternalEnv = internalToken ? { INTERNAL_TOKEN: internalToken } : {};
+const internalToken =
+  process.env.INTERNAL_TOKEN ??
+  localEnvValue(dir("packages/main/.env"), "INTERNAL_TOKEN");
+const sharedInternalEnv = internalToken
+  ? { INTERNAL_TOKEN: internalToken }
+  : {};
 const mainEnvPath = dir("packages/main/.env");
 const mainEnvValue = (key, fallback) =>
   process.env[key] ?? localEnvValue(mainEnvPath, key) ?? fallback;
@@ -96,14 +108,19 @@ module.exports = {
       ),
       env: {
         ...runtimeIdentityEnv,
-        FISH_AUDIO_HOST: mainEnvValue("FISH_AUDIO_HOST", fishAudioApiUrl.hostname),
+        FISH_AUDIO_HOST: mainEnvValue(
+          "FISH_AUDIO_HOST",
+          fishAudioApiUrl.hostname,
+        ),
         FISH_AUDIO_PORT: mainEnvValue(
           "FISH_AUDIO_PORT",
           fishAudioApiUrl.port ||
             (fishAudioApiUrl.protocol === "https:" ? "443" : "80"),
         ),
-        FISH_AUDIO_MODEL:
-          mainEnvValue("FISH_AUDIO_MODEL", "fish-audio-s2-pro-8bit"),
+        FISH_AUDIO_MODEL: mainEnvValue(
+          "FISH_AUDIO_MODEL",
+          "fish-audio-s2-pro-8bit",
+        ),
         FISH_AUDIO_MODEL_PATH: mainEnvValue(
           "FISH_AUDIO_MODEL_PATH",
           path.join(
@@ -138,9 +155,9 @@ module.exports = {
       name: "main-web",
       cwd: isDevelopment ? dir("packages/main") : dir("."),
       script: isDevelopment
-        ? "node_modules/next/dist/bin/next"
+        ? "scripts/start-development.cjs"
         : "scripts/start-next-standalone.cjs",
-      args: isDevelopment ? "dev" : "packages/main",
+      args: isDevelopment ? undefined : "packages/main",
       exec_mode: isDevelopment ? "fork" : "cluster",
       // Was "max" → one worker per CPU core, which floods `pm2 list` on many-core
       // machines. Cap to a small fixed count (override with MAIN_WEB_INSTANCES).
@@ -151,6 +168,12 @@ module.exports = {
       env: {
         ...runtimeIdentityEnv,
         PORT: process.env.MAIN_WEB_PORT ?? "3000",
+        ...(isDevelopment
+          ? {
+              IDREAM_NEXT_DEVELOPMENT: "1",
+              IDREAM_NEXT_DIST_DIR: ".next-development",
+            }
+          : {}),
         ...mainRedisEnv,
         ...sharedInternalEnv,
       },
@@ -171,6 +194,12 @@ module.exports = {
       env: {
         ...runtimeIdentityEnv,
         PORT: process.env.ADMIN_WEB_PORT ?? "3001",
+        ...(isDevelopment
+          ? {
+              IDREAM_NEXT_DEVELOPMENT: "1",
+              IDREAM_NEXT_DIST_DIR: ".next-development",
+            }
+          : {}),
         ...sharedInternalEnv,
       },
       // config from packages/admin/.env (next + dotenv load it)
@@ -214,25 +243,35 @@ module.exports = {
       env: {
         ...runtimeIdentityEnv,
         ...sharedInternalEnv,
+        ...(process.env.GEN_IMAGE_WORKER_RUN_ID
+          ? { GEN_IMAGE_WORKER_RUN_ID: process.env.GEN_IMAGE_WORKER_RUN_ID }
+          : {}),
       },
     },
-    {
-      name: "gen-video",
-      cwd: dir("packages/gen"),
-      script: "node_modules/tsx/dist/cli.mjs",
-      args: "src/video.ts",
-      exec_mode: "fork",
-      instances: 1,
-      kill_timeout: 35 * 60 * 1_000,
-      // Video jobs can run for 10–30 minutes. A dev watch restart after the
-      // ComfyUI submit but before manifest ingest creates an orphan prompt and
-      // BullMQ retry duplicate, so this worker is always restarted explicitly.
-      watch: false,
-      env: {
-        ...runtimeIdentityEnv,
-        ...sharedInternalEnv,
-      },
-    },
+    ...(videoWorkerEnabled
+      ? [
+          {
+            name: "gen-video",
+            cwd: dir("packages/gen"),
+            script: "node_modules/tsx/dist/cli.mjs",
+            args: "src/video.ts",
+            exec_mode: "fork",
+            instances: 1,
+            kill_timeout: 35 * 60 * 1_000,
+            // Video jobs can run for 10–30 minutes. A dev watch restart after the
+            // ComfyUI submit but before manifest ingest creates an orphan prompt and
+            // BullMQ retry duplicate, so this worker is always restarted explicitly.
+            watch: false,
+            env: {
+              ...runtimeIdentityEnv,
+              ...sharedInternalEnv,
+              ...(process.env.GEN_VIDEO_WORKER_RUN_ID
+                ? { GEN_VIDEO_WORKER_RUN_ID: process.env.GEN_VIDEO_WORKER_RUN_ID }
+                : {}),
+            },
+          },
+        ]
+      : []),
     // medium · async — main-side authority write-back
     {
       name: "gen-finalizer",

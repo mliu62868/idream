@@ -2,6 +2,7 @@ export type AuthRoute = "/login" | "/signup";
 
 const allowedAuthRedirectPrefixes = [
   "/",
+  "/age-verification",
   "/ai-boyfriend",
   "/ai-girlfriend",
   "/ai-instructions",

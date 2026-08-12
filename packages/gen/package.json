@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Generation Service \u2014 gen/image + gen/video. Slow async workers: payload self-contained, write blob only, NO DB authority. Durable terminal records enter a Main-owned relay for projection.",
+  "description": "Generation Service — gen/image + gen/video. Slow async workers: payload self-contained, write blob only, NO DB authority. Durable terminal records enter a Main-owned relay for projection.",
   "engines": {
     "node": ">=22"
   },
@@ -14,6 +14,8 @@
     "start:image": "tsx src/image.ts",
     "start:video": "tsx src/video.ts",
     "probe:image": "tsx src/probe-image-pipeline.ts",
+    "probe:video": "tsx src/probe-video-pipeline.ts",
+    "probe:sentry": "tsx src/probe-sentry.ts",
     "probe:character-consistency": "tsx src/probe-character-consistency.ts",
     "probe:redcraft-comfyui": "tsx src/probe-redcraft-comfyui.ts",
     "sync:comfyui-workflows": "tsx src/sync-comfyui-workflows.ts",
@@ -22,11 +24,12 @@
   },
   "dependencies": {
     "@idream/shared": "workspace:*",
+    "@sentry/node": "10.70.0",
     "bullmq": "^5.79.0",
+    "dotenv": "^17.4.2",
     "ioredis": "^5.11.1",
     "pino": "^10.3.1",
-    "zod": "^4.4.3",
-    "dotenv": "^17.4.2"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^24",

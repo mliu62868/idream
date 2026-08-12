@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { recordGenerationAttemptEvent } from "@/server/ai/generation-attempt-events";
 import { dispatchGenerationIncidentCorrelation } from "./service";
@@ -11,6 +11,9 @@ describe("Generation failure to Incident production seam", () => {
   const incompleteJobId = `incident-dispatch-incomplete-job-${suffix}`;
   const completeAttemptId = `incident-dispatch-attempt-${suffix}`;
   const incompleteAttemptId = `incident-dispatch-incomplete-attempt-${suffix}`;
+  const malformedOutboxId = `incident-dispatch-malformed-${suffix}`;
+  const missingOutboxId = `incident-dispatch-missing-${suffix}`;
+  const retryBudgetOutboxId = `incident-dispatch-retry-budget-${suffix}`;
 
   beforeAll(async () => {
     await prisma.user.create({
@@ -54,7 +57,12 @@ describe("Generation failure to Incident production seam", () => {
       where: { targetId: { in: [...incidentIds, completeAttemptId, incompleteAttemptId] } },
     });
     await prisma.mainOutboxEvent.deleteMany({
-      where: { aggregateId: { in: [completeAttemptId, incompleteAttemptId] } },
+      where: {
+        OR: [
+          { aggregateId: { in: [completeAttemptId, incompleteAttemptId] } },
+          { id: { in: [malformedOutboxId, missingOutboxId, retryBudgetOutboxId] } },
+        ],
+      },
     });
     await prisma.opsIncidentOccurrence.deleteMany({
       where: { attemptId: { in: [completeAttemptId, incompleteAttemptId] } },
@@ -141,5 +149,93 @@ describe("Generation failure to Incident production seam", () => {
     expect(await prisma.mainOutboxEvent.findUniqueOrThrow({
       where: { id: `generation_incident_correlation_${incompleteAttemptId}` },
     })).toMatchObject({ status: "delivered", attempts: 1 });
+  });
+
+  it("terminally rejects malformed correlation payloads", async () => {
+    await prisma.mainOutboxEvent.create({
+      data: {
+        id: malformedOutboxId,
+        eventType: "generation.incident.correlate.v2",
+        aggregateType: "generation_attempt",
+        aggregateId: malformedOutboxId,
+        payload: {},
+      },
+    });
+
+    await expect(dispatchGenerationIncidentCorrelation(prisma, {
+      outboxIds: [malformedOutboxId],
+    })).resolves.toMatchObject({ examined: 1, failed: 1 });
+    expect(await prisma.mainOutboxEvent.findUniqueOrThrow({
+      where: { id: malformedOutboxId },
+    })).toMatchObject({
+      status: "rejected",
+      attempts: 1,
+      lastError: {
+        outcome: "quarantined",
+        code: "incident_correlation_payload_invalid",
+      },
+    });
+    await expect(dispatchGenerationIncidentCorrelation(prisma, {
+      outboxIds: [malformedOutboxId],
+    })).resolves.toMatchObject({ examined: 0 });
+  });
+
+  it("terminally fails correlation work whose authoritative Attempt is missing", async () => {
+    await prisma.mainOutboxEvent.create({
+      data: {
+        id: missingOutboxId,
+        eventType: "generation.incident.correlate.v2",
+        aggregateType: "generation_attempt",
+        aggregateId: `missing-attempt-${suffix}`,
+        payload: { attemptId: `missing-attempt-${suffix}` },
+      },
+    });
+
+    await expect(dispatchGenerationIncidentCorrelation(prisma, {
+      outboxIds: [missingOutboxId],
+    })).resolves.toMatchObject({ examined: 1, failed: 1 });
+    expect(await prisma.mainOutboxEvent.findUniqueOrThrow({
+      where: { id: missingOutboxId },
+    })).toMatchObject({
+      status: "failed",
+      attempts: 1,
+      lastError: {
+        outcome: "quarantined",
+        code: "generation_attempt_missing",
+      },
+    });
+  });
+
+  it("moves an exhausted transient failure to the operator-recoverable failed queue", async () => {
+    await prisma.mainOutboxEvent.create({
+      data: {
+        id: retryBudgetOutboxId,
+        eventType: "generation.incident.correlate.v2",
+        aggregateType: "generation_attempt",
+        aggregateId: completeAttemptId,
+        payload: { attemptId: completeAttemptId },
+        attempts: 7,
+      },
+    });
+    const lookup = vi.spyOn(prisma.generationAttempt, "findUnique")
+      .mockRejectedValueOnce(new Error("temporary database outage"));
+
+    await expect(dispatchGenerationIncidentCorrelation(prisma, {
+      outboxIds: [retryBudgetOutboxId],
+    })).resolves.toMatchObject({ examined: 1, failed: 1 });
+    lookup.mockRestore();
+    expect(await prisma.mainOutboxEvent.findUniqueOrThrow({
+      where: { id: retryBudgetOutboxId },
+    })).toMatchObject({
+      status: "failed",
+      attempts: 8,
+      lastError: {
+        outcome: "retry_exhausted",
+        code: "incident_correlation_failed",
+      },
+    });
+    await expect(dispatchGenerationIncidentCorrelation(prisma, {
+      outboxIds: [retryBudgetOutboxId],
+    })).resolves.toMatchObject({ examined: 0 });
   });
 });

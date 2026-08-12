@@ -1,6 +1,6 @@
 import type { BlobStore } from "../types";
 import { resolveLocalBlobRoot } from "@idream/shared/storage/local-blob";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export class MockBlobStore implements BlobStore {
@@ -55,7 +55,10 @@ export class MockBlobStore implements BlobStore {
     }
   }
 
-  async delete() {
+  async delete(input: Parameters<BlobStore["delete"]>[0]) {
+    // S3 DELETE is idempotent (including missing objects); the local adapter
+    // must preserve the same crash-retry contract.
+    await rm(path.join(blobRoot(), input.key), { force: true });
     return {
       ok: true as const,
       data: {

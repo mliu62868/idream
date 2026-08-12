@@ -94,6 +94,11 @@ export class GoCamAgeVerificationProvider implements AgeVerificationProvider {
     if (!signatureResult.ok) return signatureResult;
 
     const payload = asRecord(input.payload);
+    const deliveryId =
+      stringField(payload, "deliveryId") ??
+      stringField(payload, "id") ??
+      input.deliveryId ??
+      input.providerEventId;
     const providerEventId =
       stringField(payload, "providerEventId") ??
       stringField(payload, "eventId") ??
@@ -103,6 +108,7 @@ export class GoCamAgeVerificationProvider implements AgeVerificationProvider {
       ok: true as const,
       data: {
         providerEventId,
+        deliveryId,
         userId: stringField(payload, "userId") ?? stringField(payload, "userData"),
         providerVerificationId:
           stringField(payload, "providerVerificationId") ??

@@ -1,6 +1,16 @@
 import type { Pool } from "pg";
-import { chatPrisma, type ChatPrismaClient } from "../src/db.js";
-import { consumeDurableInbox, persistInboundEvent } from "../src/inbox.js";
+import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
+import {
+  chatPrisma,
+  chatProjectorPrisma,
+  type ChatPrismaClient,
+} from "../src/db.js";
+import {
+  consumeAccountDeletionRequestV2,
+  consumeDurableInbox,
+  persistAccountDeletionRequestV2,
+  persistInboundEvent,
+} from "../src/inbox.js";
 
 /** Explicitly satisfy the product's age-gate precondition for chat integration fixtures. */
 export async function acceptAgeGate(pool: Pool, userIds: readonly string[]): Promise<void> {
@@ -41,13 +51,40 @@ export async function ingestMainEvent(
   envelope: MainToChatEnvelope,
   prisma: ChatPrismaClient = chatPrisma,
 ): Promise<{ applied: boolean }> {
-  const ack = await persistInboundEvent(
-    { sourceService: "main", schemaVersion: 1, ...envelope },
-    prisma,
-  );
+  const durableEnvelope = {
+    sourceService: "main",
+    schemaVersion: 1,
+    ...envelope,
+  };
+  const ack = envelope.eventType === MAIN_TO_CHAT_EVENTS.accountDeletionRequestedV2
+    ? await persistAccountDeletionRequestV2(durableEnvelope, prisma)
+    : await persistInboundEvent(durableEnvelope, prisma);
   if (!ack.acknowledged || !ack.receiptId) {
     throw new Error(
       `inbound event main:${envelope.sourceEventId} is ${ack.status}`,
+    );
+  }
+  if (envelope.eventType === MAIN_TO_CHAT_EVENTS.accountDeletionRequestedV2) {
+    return consumeAccountDeletionRequestV2(
+      ack.receiptId,
+      prisma,
+      chatProjectorPrisma,
+      async (deletionRequestEventId, db) => {
+        const completion = await db.chatOutboxEvent.findFirstOrThrow({
+          where: {
+            eventType: "chat.account_erasure.completed.v2",
+            payload: {
+              path: ["deletionRequestEventId"],
+              equals: deletionRequestEventId,
+            },
+          },
+        });
+        await db.chatOutboxEvent.update({
+          where: { id: completion.id },
+          data: { status: "delivered", deliveredAt: new Date() },
+        });
+        return { eventId: completion.id, delivered: true as const };
+      },
     );
   }
   return consumeDurableInbox(ack.receiptId, prisma);

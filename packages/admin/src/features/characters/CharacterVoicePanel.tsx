@@ -881,8 +881,8 @@ export function CharacterVoicePanel({
         className="group overflow-hidden rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)]"
         data-testid="system-voice-defaults"
       >
-        <summary className="flex cursor-pointer list-none items-start justify-between gap-4 p-5 sm:p-6">
-          <div className="flex items-start gap-3">
+        <summary className="flex cursor-pointer list-none flex-col items-start justify-between gap-4 p-5 sm:flex-row sm:p-6">
+          <div className="flex min-w-0 items-start gap-3">
             <div className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-[var(--ad-blue-bg)] text-[var(--ad-blue-text)]">
               <Settings2 aria-hidden="true" className="h-5 w-5" />
             </div>
@@ -910,7 +910,7 @@ export function CharacterVoicePanel({
               </div>
             </div>
           </div>
-          <span className="shrink-0 rounded-md border border-[var(--ad-border)] px-3 py-2 text-xs font-semibold text-[var(--ad-text-muted)]">
+          <span className="shrink-0 self-start rounded-md border border-[var(--ad-border)] px-3 py-2 text-xs font-semibold text-[var(--ad-text-muted)]">
             <span className="group-open:hidden">
               {t("Open system defaults")}
             </span>

@@ -24,6 +24,35 @@ function message(
 }
 
 describe("relationship exchange linkage authority", () => {
+  it("does not treat an immutable opening message as an unlinked exchange", () => {
+    const result = resolveRelationshipLinkage(
+      [
+        message({
+          id: "opening_1",
+          role: "assistant",
+          memoryAuthority: "disabled",
+          createdAt: new Date("2026-07-18T11:59:00.000Z"),
+          runtimeTrace: {
+            schemaVersion: 1,
+            messageKind: "opening",
+            outputAuthority: "immutable_opening",
+          },
+        }),
+        message({ id: "user_1", role: "user" }),
+        message({
+          id: "assistant_1",
+          role: "assistant",
+          replyToMessageId: "user_1",
+        }),
+      ],
+      [],
+    );
+
+    expect(result.sources.get("assistant_1")?.id).toBe("user_1");
+    expect(result.sources.has("opening_1")).toBe(false);
+    expect(result.ambiguousAssistantIds).toEqual([]);
+  });
+
   it("does not assign one same-time legacy user to two assistants", () => {
     const result = resolveRelationshipLinkage(
       [

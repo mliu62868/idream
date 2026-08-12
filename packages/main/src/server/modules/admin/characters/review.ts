@@ -34,6 +34,7 @@ import {
   operationalCharacterSubmissionWhere,
   operationalContentReportWhere,
 } from "@/server/modules/metric-data-scope";
+import { ensureCustomerCharacterPublicationPrep } from "@/server/modules/admin-v2/characters/publication-prep";
 
 const characterSelect = {
   id: true,
@@ -44,6 +45,7 @@ const characterSelect = {
   status: true,
   description: true,
   imageAssetId: true,
+  source: true,
   createdAt: true,
 } as const;
 
@@ -204,6 +206,13 @@ export async function reviewSubmission(request: Request, id: string): Promise<Re
 
       const nextStatus = body.decision === "approve" ? "approved" : "rejected";
       const reviewedAt = new Date();
+      const publication = body.decision === "approve"
+        ? await ensureCustomerCharacterPublicationPrep(tx, {
+            characterId: submission.characterId,
+            submissionId: submission.id,
+            actorId: actor.id,
+          })
+        : null;
       await tx.character.update({
         where: { id: submission.characterId },
         data: { status: nextStatus },
@@ -234,6 +243,7 @@ export async function reviewSubmission(request: Request, id: string): Promise<Re
             characterStatus: nextStatus,
             submissionStatus: nextStatus,
             imageAssetId,
+            publication,
           }),
           requestId,
         },
@@ -250,10 +260,11 @@ export async function reviewSubmission(request: Request, id: string): Promise<Re
             imageAssetId,
             actorId: actor.id,
             requestId,
+            publication,
           }),
         },
       });
-      return { submission: updated };
+      return { submission: updated, publication };
     },
   });
   return ok(result);

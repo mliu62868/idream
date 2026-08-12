@@ -12,8 +12,10 @@ import { creatorLoadErrorMessage } from "./CreatorProfileClient";
 import {
   draftStorageKeyForScope,
   initialCharacterDraft,
+  parseWizardDraft,
   viewerScopeFromAuthority,
 } from "./CreateWorkspace";
+import { newCreatePreviewBatch } from "./create-preview-flow";
 import { AgeGateFrame } from "./AgeGateBoundary";
 import {
   ACCOUNT_AUTHORITY_UNAVAILABLE,
@@ -24,6 +26,11 @@ import { feedLoadFailure, shouldApplyFeedResponse } from "./feed-load-state";
 import { publicOptimisticMutationFailure } from "./optimistic-write-state";
 import { loadGeneratorWorkspaceInitialData } from "./GeneratorWorkspace";
 import { shouldClearTransferredHelpDeskDraft } from "./HelpDeskWorkspace";
+import {
+  accountDeletionLoginHref,
+  createdCharacterPublicationStatus,
+} from "./ProfileWorkspace";
+import { accountDeletionGraceEndsAtFromSearch } from "./AuthWorkspace";
 
 function source(name: string): string {
   return readFileSync(new URL(`./${name}`, import.meta.url), "utf8");
@@ -48,6 +55,69 @@ function publishableSources(): { path: string; text: string }[] {
 }
 
 describe("truthful public UI states", () => {
+  it("eager-loads the above-the-fold route logo", () => {
+    expect(source("OurdreamRoutePage.tsx")).toMatch(
+      /<Image[\s\S]*?loading="eager"[\s\S]*?src="\/images\/ourdream\/ourdream-logo\.svg"/,
+    );
+  });
+
+  it("keeps character cards readable beside the tablet sidebar", () => {
+    expect(source("CharacterGrid.tsx")).toContain(
+      "md:grid-cols-3 md:gap-3 lg:grid-cols-4 xl:grid-cols-5",
+    );
+    expect(source("CharacterGrid.tsx")).not.toContain(
+      "md:grid-cols-5 md:gap-3",
+    );
+  });
+
+  it("carries the exact account-erasure due time into the signed-out UI", () => {
+    const graceEndsAt = "2026-09-10T12:00:00.000Z";
+    expect(accountDeletionLoginHref({
+      data: { deletion: { graceEndsAt } },
+    })).toBe(
+      "/login?accountDeletionGraceEndsAt=2026-09-10T12%3A00%3A00.000Z",
+    );
+    expect(accountDeletionGraceEndsAtFromSearch(
+      "?accountDeletionGraceEndsAt=2026-09-10T12%3A00%3A00.000Z",
+    )).toBe(graceEndsAt);
+    expect(accountDeletionGraceEndsAtFromSearch(
+      "?accountDeletionGraceEndsAt=not-a-date",
+    )).toBeNull();
+  });
+
+  it("states that approval still awaits operator Release publication", () => {
+    expect(createdCharacterPublicationStatus({
+      status: "approved",
+      visibility: "public",
+      publicationState: "awaiting_publication",
+    })).toBe("approved · awaiting publication");
+    expect(createdCharacterPublicationStatus({
+      status: "approved",
+      visibility: "public",
+      publicationState: "live",
+    })).toBe("live");
+    expect(createdCharacterPublicationStatus({
+      status: "approved",
+      visibility: "private",
+      publicationState: "live",
+    })).toBe("approved");
+    expect(createdCharacterPublicationStatus({
+      status: "approved",
+      visibility: "private",
+      publicationState: "awaiting_publication",
+    })).toBe("approved");
+    expect(createdCharacterPublicationStatus({
+      status: "pending_review",
+      visibility: "public",
+    })).toBe("pending review");
+    expect(source("CreateWorkspace.tsx")).toContain(
+      "Approval starts publication preparation; the character goes live after Release is published.",
+    );
+    expect(source("CreateWorkspace.tsx")).not.toContain(
+      "Public characters go live after approval.",
+    );
+  });
+
   it("distinguishes creator auth, age, not-found, and dependency failures", () => {
     expect(creatorLoadErrorMessage(401)).toBe("Sign in to view this creator.");
     expect(creatorLoadErrorMessage(403)).toBe("Accept the age gate to view this creator.");
@@ -87,6 +157,41 @@ describe("truthful public UI states", () => {
 
     // Negative source guards are deliberate: fake seed content must never regain a render path.
     expect(source("CreateWorkspace.tsx")).not.toContain('name: "Nova Vale"');
+  });
+
+  it("restores the active preview job through the existing viewer-scoped draft authority", () => {
+    const activeBatch = {
+      ...newCreatePreviewBatch(1_000),
+      currentCandidateNumber: 2,
+      activePreviewJobId: "preview-job-2",
+      activeJobStatus: "running" as const,
+      candidates: [
+        {
+          previewJobId: "preview-job-1",
+          assetId: "asset-1",
+          url: "/user-content/asset-1",
+          isSynthetic: false,
+        },
+      ],
+    };
+
+    expect(
+      parseWizardDraft({
+        ...initialCharacterDraft(),
+        draftId: "draft-1",
+        step: 3,
+        previewBatch: JSON.parse(JSON.stringify(activeBatch)),
+      }),
+    ).toMatchObject({
+      draftId: "draft-1",
+      step: 3,
+      previewBatch: {
+        phase: "running",
+        currentCandidateNumber: 2,
+        activePreviewJobId: "preview-job-2",
+        activeJobStatus: "running",
+      },
+    });
   });
 
   it("rejects superseded feed responses and labels stale snapshots", () => {

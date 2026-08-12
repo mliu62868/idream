@@ -5,6 +5,7 @@
 // INVARIANTS: terminal event (done|error) closes the stream; stream is capped.
 import IORedis from "ioredis";
 import { chatStreamEventSchema, type ChatStreamEvent } from "@idream/shared/contracts";
+import { redisConnectionOptions } from "@idream/shared/env";
 import { env } from "./env.js";
 
 const STREAM_MAXLEN = 1000;
@@ -13,7 +14,7 @@ const SSE_DEADLINE_MS = 60_000;
 const BLOCK_MS = 5_000;
 
 function createRedis(): IORedis {
-  return new IORedis(env.REDIS_URL, { maxRetriesPerRequest: null });
+  return new IORedis(redisConnectionOptions(env.REDIS_URL));
 }
 
 // SPEC: ONE shared publisher for the non-blocking stream ops (XADD/XRANGE).

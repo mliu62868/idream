@@ -19,7 +19,8 @@
       "@idream/shared/storage": ["../shared/src/storage/s3-blob.ts"],
       "@idream/shared/storage/local-blob": ["../shared/src/storage/local-blob.ts"],
       "@idream/shared/moderation": ["../shared/src/moderation/safety-gateway.ts"],
-      "@idream/shared/gen-workflow": ["../shared/src/gen/workflow.ts"]
+      "@idream/shared/gen-workflow": ["../shared/src/gen/workflow.ts"],
+      "@idream/shared/observability/sentry": ["../shared/src/observability/sentry.ts"]
     }
   },
   "include": ["src/**/*.ts"],

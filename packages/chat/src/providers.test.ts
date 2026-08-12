@@ -206,6 +206,43 @@ describe("chat providers", () => {
     expect(chunks.at(-1)).toEqual({ delta: "", done: true, toolCalls: [] });
   });
 
+  it("does not silently complete a reply when the provider stops at the output-token limit", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(
+        [
+          'data: {"choices":[{"delta":{"content":"So, are we just going to stare at the ocean, or"},"finish_reason":null}]}',
+          'data: {"choices":[{"delta":{},"finish_reason":"length"}]}',
+          "data: [DONE]",
+          "",
+        ].join("\n\n"),
+        { headers: { "content-type": "text/event-stream" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    process.env = {
+      ...oldEnv,
+      CHAT_MODEL_PROVIDER: "openai",
+      CHAT_MODEL_BASE_URL: "https://openai.internal.example.com/v1",
+      MODERATION_PROVIDER: "mock",
+    };
+
+    const { createProviders } = await import("./providers.js");
+    const providers = createProviders();
+    const chunks: Array<{ delta: string; done: boolean }> = [];
+    const drain = async () => {
+      for await (const chunk of providers.chat.stream({
+        messages: [{ role: "user", content: "keep the conversation going" }],
+      })) {
+        chunks.push(chunk);
+      }
+    };
+
+    await expect(drain()).rejects.toThrow("Chat model stopped at the max output token limit");
+    expect(chunks).toEqual([
+      { delta: "So, are we just going to stare at the ocean, or", done: false },
+    ]);
+  });
+
   it("MockChatModel returns supportsTools=true and reads CHAT_MOCK_TOOL_CALLS_JSON", async () => {
     process.env = {
       ...oldEnv,
@@ -284,6 +321,34 @@ describe("chat providers", () => {
       stream: false,
       max_tokens: 512,
     });
+  });
+
+  it("rejects a non-stream completion stopped by its output-token limit", async () => {
+    const fetchMock = vi.fn(async () =>
+      Response.json({
+        choices: [
+          {
+            finish_reason: "length",
+            message: { content: '{"tool":"generate_image_async"' },
+          },
+        ],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    process.env = {
+      ...oldEnv,
+      CHAT_MODEL_PROVIDER: "pipeline",
+      CHAT_MODEL_BASE_URL: "https://pipeline.internal.example.com/v1",
+      MODERATION_PROVIDER: "mock",
+    };
+
+    const { createProviders } = await import("./providers.js");
+    await expect(
+      createProviders().chat.complete({
+        messages: [{ role: "user", content: "plan tools" }],
+        maxTokens: 64,
+      }),
+    ).rejects.toThrow("Chat model stopped at the max output token limit (64)");
   });
 
   it("times out a hung OpenAI-compatible chat provider", async () => {

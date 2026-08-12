@@ -50,7 +50,7 @@ export function CharacterCard({
         alt=""
         fill
         loading={imageLoading}
-        sizes="(max-width: 767px) 183px, 210px"
+        sizes="(max-width: 767px) calc((100vw - 24px) / 2), (max-width: 1023px) calc((100vw - 320px) / 3), (max-width: 1279px) calc((100vw - 332px) / 4), calc((100vw - 344px) / 5)"
         className="object-cover object-top"
         unoptimized={imageUnoptimized || shouldBypassNextImageOptimizer(card.image)}
       />

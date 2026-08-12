@@ -933,6 +933,15 @@ async function cleanupPublicE2EFixtures() {
       : []),
   ];
   if (contentReportTargets.length > 0) {
+    const reportIds = await prisma.contentReport.findMany({
+      where: { OR: contentReportTargets },
+      select: { id: true },
+    });
+    if (reportIds.length > 0) {
+      await prisma.moderationReview.deleteMany({
+        where: { reportId: { in: reportIds.map((report) => report.id) } },
+      });
+    }
     await prisma.contentReport.deleteMany({ where: { OR: contentReportTargets } });
   }
 
@@ -1047,6 +1056,7 @@ async function cleanupChatDatabaseFixtures(userIds: string[]) {
 
 test("help desk submits a tracked support request", async ({ page }) => {
   const { email } = await startSignedInAdultSession(page, "helpdesk");
+  const user = await prisma.user.findUniqueOrThrow({ where: { email }, select: { id: true } });
 
   const consoleErrors: string[] = [];
   const pageErrors: string[] = [];
@@ -1121,10 +1131,41 @@ test("help desk submits a tracked support request", async ({ page }) => {
   await expect(featureCard.getByRole("button", { name: /Voted 1/ })).toBeVisible();
 
   const appealTarget = `appeal-target-${Date.now()}`;
+  const appealDecision = `decision-e2e-helpdesk-${Date.now()}`;
+  await prisma.character.create({
+    data: {
+      id: appealTarget,
+      creatorId: user.id,
+      name: uniqueName("Helpdesk appeal target"),
+      age: 28,
+      description: "A customer-owned Character with a moderation decision under appeal.",
+      appearance: {},
+      advancedDetails: {},
+      status: "removed",
+      visibility: "private",
+    },
+  });
+  const appealReport = await prisma.contentReport.create({
+    data: {
+      reporterId: user.id,
+      targetType: "character",
+      targetId: appealTarget,
+      category: "other_prohibited_content",
+      status: "closed",
+    },
+  });
+  await prisma.moderationReview.create({
+    data: {
+      id: appealDecision,
+      reportId: appealReport.id,
+      reviewerId: "e2e-reviewer",
+      decision: "actioned",
+    },
+  });
   await expect(page.getByRole("heading", { name: /ask for another review/i })).toBeVisible();
   await page.getByLabel("Target type").selectOption("character");
   await page.getByLabel("Target ID or link").fill(appealTarget);
-  await page.getByLabel("Decision ID").fill("decision-e2e-helpdesk");
+  await page.getByLabel("Decision ID").fill(appealDecision);
   await page
     .getByLabel("Appeal details")
     .fill("Please review this character decision again with the attached context.");
@@ -1133,13 +1174,12 @@ test("help desk submits a tracked support request", async ({ page }) => {
   await expect(page.getByTestId("appeal-status")).toHaveAttribute("role", "status");
   await expect(page.getByTestId("appeal-status")).toHaveAttribute("aria-live", "polite");
 
-  const user = await prisma.user.findUniqueOrThrow({ where: { email }, select: { id: true } });
   const appeal = await prisma.appeal.findFirst({
     where: { userId: user.id, targetType: "character", targetId: appealTarget },
   });
   expect(appeal).toMatchObject({
     appealText: "Please review this character decision again with the attached context.",
-    originalDecisionId: "decision-e2e-helpdesk",
+    originalDecisionId: appealDecision,
     status: "open",
   });
   expect(pageErrors).toEqual([]);
@@ -1473,7 +1513,7 @@ test("help desk signup redirect preserves anonymous appeal draft", async ({ page
   await expect(page.getByRole("heading", { name: /ask for another review/i })).toBeVisible();
   const appealForm = page.getByTestId("appeal-form");
   const appealDetails = appealForm.locator('textarea[name="appealText"]');
-  await appealForm.getByLabel("Target type").selectOption("media");
+  await appealForm.getByLabel("Target type").selectOption("character");
   await appealForm.getByLabel("Target ID or link").fill(targetId);
   await appealForm.getByLabel("Decision ID").fill(decisionId);
   await appealDetails.fill(appealText);
@@ -1495,13 +1535,43 @@ test("help desk signup redirect preserves anonymous appeal draft", async ({ page
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/helpdesk");
   await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
-  await expect(appealForm.getByLabel("Target type")).toHaveValue("media");
+  await expect(appealForm.getByLabel("Target type")).toHaveValue("character");
   await expect(appealForm.getByLabel("Target ID or link")).toHaveValue(targetId);
   await expect(appealForm.getByLabel("Decision ID")).toHaveValue(decisionId);
   await expect(appealDetails).toHaveValue(appealText);
   await expect(page.getByTestId("appeal-status")).toContainText(/appeal draft was restored/i);
 
   const user = await prisma.user.findUniqueOrThrow({ where: { email }, select: { id: true } });
+  await prisma.character.create({
+    data: {
+      id: targetId,
+      creatorId: user.id,
+      name: uniqueName("Signup appeal target"),
+      age: 28,
+      description: "A customer-owned Character whose appeal draft survived signup.",
+      appearance: {},
+      advancedDetails: {},
+      status: "removed",
+      visibility: "private",
+    },
+  });
+  const report = await prisma.contentReport.create({
+    data: {
+      reporterId: user.id,
+      targetType: "character",
+      targetId,
+      category: "other_prohibited_content",
+      status: "closed",
+    },
+  });
+  await prisma.moderationReview.create({
+    data: {
+      id: decisionId,
+      reportId: report.id,
+      reviewerId: "e2e-reviewer",
+      decision: "actioned",
+    },
+  });
   await expect
     .poll(() =>
       page.evaluate((key) => window.localStorage.getItem(key), anonymousAppealKeys[0]!),
@@ -1534,7 +1604,7 @@ test("help desk signup redirect preserves anonymous appeal draft", async ({ page
     .toBeNull();
 
   const appeal = await prisma.appeal.findFirst({
-    where: { userId: user.id, targetType: "media", targetId },
+    where: { userId: user.id, targetType: "character", targetId },
   });
   expect(appeal).toMatchObject({
     appealText,
@@ -2173,7 +2243,16 @@ async function expectGenerationAccepted(page: Page, timeout = 10_000) {
 }
 
 async function generateAndConfirmCharacterIdentity(page: Page) {
-  await page.getByRole("button", { name: "Generate preview candidates" }).click();
+  await page
+    .getByRole("button", { name: /^(Generate|Retry) preview candidates$/ })
+    .click();
+  const progress = page.getByTestId("create-preview-progress");
+  await expect(progress).toHaveAttribute("role", "status");
+  await expect(progress).toHaveAttribute("aria-live", "polite");
+  await expect(progress).toHaveText(
+    /Candidate [1-4] of 4 · (queued|running|completed) · \d completed/,
+    { timeout: 10_000 },
+  );
   const candidates = page.getByTestId("create-preview-candidates").locator("button");
   for (let attempt = 0; attempt < 16; attempt += 1) {
     if ((await candidates.count()) === 4) break;
@@ -2185,6 +2264,7 @@ async function generateAndConfirmCharacterIdentity(page: Page) {
     await page.waitForTimeout(350);
   }
   await expect(candidates).toHaveCount(4, { timeout: 20_000 });
+  await expect(progress).toHaveText("Candidate 4 of 4 · completed · 4 completed");
   await page.getByTestId("create-confirm-identity").click();
   await expect(page.getByText("Identity confirmed. This is how the character will look.")).toBeVisible({
     timeout: 10_000,
@@ -2193,13 +2273,16 @@ async function generateAndConfirmCharacterIdentity(page: Page) {
 }
 
 async function expectAssistantReplyVisible(page: Page) {
-  const assistantMessages = page.getByTestId("chat-message-assistant");
+  const assistantMessages = page
+    .getByTestId("chat-message-assistant")
+    .filter({ has: page.getByTestId("chat-regenerate") });
   await expect(assistantMessages).toHaveCount(1, { timeout: 15_000 });
   await expect
     .poll(async () => (await assistantMessages.textContent())?.trim().length ?? 0, {
       timeout: 15_000,
     })
     .toBeGreaterThan(0);
+  return assistantMessages;
 }
 
 test("explore UI syncs filters to URL and paginates results", async ({ page }) => {
@@ -2978,7 +3061,7 @@ test("create UI walks the multi-step builder and shows the character in My AI", 
 
   await originalShell.getByRole("button", { name: "Publish" }).click();
   await expect(
-    page.getByText("Submitted for review — public characters go live after approval."),
+    page.getByText("Submitted for review. Approval starts publication preparation; the character goes live after Release is published."),
   ).toBeVisible({ timeout: 10_000 });
   await expect(originalShell.getByText("pending review", { exact: true })).toBeVisible({
     timeout: 10_000,
@@ -3111,7 +3194,7 @@ test("create UI resumes a draft and submits public characters for review", async
   await publishStep.getByRole("button", { name: "public" }).click();
   await page.getByTestId("create-submit").click();
   await expect(
-    page.getByText(`${characterName} submitted for review. Public characters go live after approval.`),
+    page.getByText(`${characterName} submitted for review. Approval starts publication preparation; the character goes live after Release is published.`),
   ).toBeVisible({ timeout: 20_000 });
 
   await page.getByRole("link", { name: "View in My AI" }).click();
@@ -3285,6 +3368,15 @@ test("chat UI starts from character detail, sends a message, and persists histor
   await page.getByRole("button", { name: "Chat" }).click();
   await expect(page).toHaveURL(/\/chat\/[^/]+$/);
 
+  const openingBubble = page.getByTestId("chat-message-assistant");
+  await expect(openingBubble).toHaveCount(1, { timeout: 10_000 });
+  await expect
+    .poll(async () => (await openingBubble.textContent())?.trim().length ?? 0)
+    .toBeGreaterThan(0);
+  await expect(openingBubble.getByTestId("chat-regenerate")).toHaveCount(0);
+  await expect(openingBubble.getByTestId("chat-play-voice")).toBeVisible();
+  await expect(openingBubble).toHaveClass(/pr-\[108px\]/);
+
   const messageInput = page.getByRole("textbox", { name: "Message", exact: true });
   const sendButton = page.getByRole("button", { name: "Send message" });
   await expect(sendButton).toBeDisabled();
@@ -3305,7 +3397,9 @@ test("chat UI starts from character detail, sends a message, and persists histor
   await expect(page.getByTestId("chat-session-status")).toHaveAttribute("role", "status");
   await expect(page.getByTestId("chat-session-status")).toHaveAttribute("aria-live", "polite");
   await expectContentReport("chat_message", reportedMessageId ?? "");
-  await expectAssistantReplyVisible(page);
+  const assistantReply = await expectAssistantReplyVisible(page);
+  await expect(reportedMessage).toHaveClass(/pr-\[108px\]/);
+  await expect(assistantReply).toHaveClass(/pr-\[140px\]/);
 
   await page.reload();
   await expect(page.getByTestId("chat-message-user").filter({ hasText: message })).toBeVisible({
@@ -3349,7 +3443,9 @@ test("chat UI opens Generate with character context and renders chat image attac
     timeout: 10_000,
   });
   await expectAssistantReplyVisible(page);
-  const assistantBubble = page.getByTestId("chat-message-assistant");
+  const assistantBubble = page
+    .getByTestId("chat-message-assistant")
+    .filter({ has: page.getByTestId("chat-regenerate") });
   const assistantMessageId = await assistantBubble.getAttribute("data-message-id");
   expect(assistantMessageId).toBeTruthy();
 
@@ -3730,7 +3826,8 @@ test("chat UI exposes edit, regenerate, delete, memory toggle, and the session l
   await expect(page.getByTestId("chat-message-user").filter({ hasText: message })).toHaveCount(0);
   await expectAssistantReplyVisible(page);
 
-  // Regenerate: the single assistant bubble refreshes its content (no extra bubble).
+  // Regenerate: the single reply bubble refreshes its content; the immutable
+  // opening remains a separate, non-regenerable assistant message.
   await page.getByTestId("chat-message-assistant").getByTestId("chat-regenerate").click();
   await expectAssistantReplyVisible(page);
 
@@ -3751,6 +3848,7 @@ test("chat UI exposes edit, regenerate, delete, memory toggle, and the session l
     .getByTestId("chat-message-user")
     .filter({ hasText: editedMessage });
   await editedBubbleBeforeConfirm.getByTestId("chat-delete-message").click();
+  await expect(editedBubbleBeforeConfirm).toHaveClass(/pr-\[144px\]/);
   await expect(page.getByText("Press Confirm delete to remove this message.")).toBeVisible({
     timeout: 10_000,
   });

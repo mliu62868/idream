@@ -3,12 +3,7 @@
 //   - enqueueDurable(queue, payload) -> hand immutable evidence to its owner
 // INTENT: Ported from packages/main jobs/queue.ts but stripped of Prisma — gen
 // has no DB and only produces the Main-owned terminal relay lifecycle.
-import {
-  type Job as BullJob,
-  Queue,
-  Worker,
-  type JobsOptions,
-} from "bullmq";
+import { type Job as BullJob, Queue, Worker, type JobsOptions } from "bullmq";
 import type { RedisOptions } from "ioredis";
 import { bullMqJobIdForDedupeKey } from "@idream/shared/contracts";
 import { redisConnectionOptions } from "@idream/shared/env";
@@ -144,9 +139,13 @@ export async function inspectFailed(
       offset + limit - 1,
       true,
     );
-    return Promise.all(jobs.filter(Boolean).map(async (job) =>
-      toQueueJobSnapshot(queueName, job, await job.getState())
-    ));
+    return Promise.all(
+      jobs
+        .filter(Boolean)
+        .map(async (job) =>
+          toQueueJobSnapshot(queueName, job, await job.getState()),
+        ),
+    );
   } finally {
     await queue.close();
   }
@@ -209,7 +208,7 @@ export async function retryFailedByDedupeKey(input: {
 export function runWorker(
   queueName: string,
   handler: (job: QueueJob) => Promise<void>,
-  options: { concurrency?: number } = {},
+  options: { concurrency?: number; workerName?: string } = {},
 ): Worker<BullJobData> {
   return new Worker<BullJobData>(
     queueName,
@@ -224,9 +223,19 @@ export function runWorker(
       });
     },
     {
-      concurrency: options.concurrency ?? 2,
+      ...queueWorkerRuntimeOptions(options),
       connection: redisOptions(),
       prefix: env.BULLMQ_PREFIX,
     },
   );
+}
+
+export function queueWorkerRuntimeOptions(options: {
+  concurrency?: number;
+  workerName?: string;
+}) {
+  return {
+    concurrency: options.concurrency ?? 2,
+    ...(options.workerName ? { name: options.workerName } : {}),
+  };
 }

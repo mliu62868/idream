@@ -29,6 +29,11 @@ export const durableAckSchema = z.discriminatedUnion("status", [
     status: z.literal("quarantined"),
     receiptId: z.string().min(1).nullable(),
   }).strict(),
+  z.object({
+    acknowledged: z.literal(false),
+    status: z.literal("discarded_target_missing"),
+    receiptId: z.string().min(1),
+  }).strict(),
 ]);
 
 const generationTerminalAssetSchema = z.object({

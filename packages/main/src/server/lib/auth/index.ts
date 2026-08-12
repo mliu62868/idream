@@ -196,27 +196,6 @@ export function requireAgeVerified(ctx: AuthCtx) {
   }
 }
 
-export async function mergeAnonymous(userId: string, anonymousId?: string) {
-  if (!anonymousId) return;
-
-  const owner = await prisma.user.findUnique({
-    where: { anonymousId },
-    select: { id: true },
-  });
-  if (owner && owner.id !== userId) return;
-
-  await prisma.$transaction([
-    prisma.ageGateAcceptance.updateMany({
-      where: { anonymousId, userId: null },
-      data: { userId },
-    }),
-    prisma.analyticsEvent.updateMany({
-      where: { anonymousId, userId: null },
-      data: { userId },
-    }),
-  ]);
-}
-
 function serializeCookie(
   name: string,
   value: string,

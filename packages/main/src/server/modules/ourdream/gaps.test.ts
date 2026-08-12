@@ -1,9 +1,10 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Prisma } from "@prisma/client";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { resolveLocalBlobPath } from "@idream/shared/storage/local-blob";
 import { prisma } from "@/server/lib/db";
+import { providers } from "@/server/providers";
 import {
   AGE_GATE_COOKIE_HEADER,
   api,
@@ -119,6 +120,72 @@ describe("preset editing (PATCH)", () => {
 });
 
 describe("age verification webhook", () => {
+  it("rejects a callback whose route provider differs from the configured provider", async () => {
+    const userId = `${P}verify-provider-mismatch`;
+    const providerEventId = `${P}verify-provider-mismatch-event`;
+    await createUser({ id: userId });
+    const verification = await prisma.ageVerification.create({
+      data: { userId, provider: "mock", status: "pending", metadata: {} },
+    });
+
+    const webhook = await api("POST", "age-verification/webhooks/gocam", {
+      headers: { "x-provider-event-id": providerEventId },
+      body: { userId, status: "verified", providerEventId },
+    });
+    expectError(webhook, 400, "bad_request");
+
+    await expect(
+      prisma.ageVerification.findUniqueOrThrow({ where: { id: verification.id } }),
+    ).resolves.toMatchObject({ provider: "mock", status: "pending" });
+    expect(
+      await prisma.providerEvent.count({
+        where: { provider: "gocam", providerEventId },
+      }),
+    ).toBe(0);
+  });
+
+  it("preserves a verified callback that arrives before session creation returns", async () => {
+    const userId = `${P}verify-callback-race`;
+    const providerVerificationId = `${P}verify-callback-race-session`;
+    const providerEventId = `${P}verify-callback-race-event`;
+    await createUser({ id: userId });
+
+    const createSession = vi
+      .spyOn(providers.ageVerification, "createSession")
+      .mockImplementationOnce(async () => {
+        const webhook = await api("POST", "age-verification/webhooks/mock", {
+          headers: { "x-provider-event-id": providerEventId },
+          body: {
+            userId,
+            providerVerificationId,
+            status: "verified",
+            providerEventId,
+          },
+        });
+        expectOk(webhook);
+        return {
+          ok: true,
+          data: {
+            provider: "mock",
+            providerVerificationId,
+            status: "pending",
+          },
+        };
+      });
+
+    try {
+      const session = await api("POST", "age-verification/sessions", { userId });
+      expectOk(session);
+      expect(session.data.verification.status).toBe("verified");
+
+      const status = await api("GET", "age-verification/status", { userId });
+      expect(status.data.status).toBe("verified");
+      expect(await prisma.ageVerification.count({ where: { userId } })).toBe(1);
+    } finally {
+      createSession.mockRestore();
+    }
+  });
+
   it("applies the reported status and is idempotent", async () => {
     const userId = `${P}verify-hook`;
     await createUser({ id: userId });
@@ -127,7 +194,10 @@ describe("age verification webhook", () => {
     });
 
     const webhook = await api("POST", "age-verification/webhooks/mock", {
-      headers: { "x-provider-event-id": `${P}age-evt-1` },
+      headers: {
+        "x-provider-event-id": `${P}age-evt-1`,
+        "x-provider-delivery-id": `${P}age-delivery-1`,
+      },
       body: { userId, status: "verified", providerEventId: `${P}age-evt-1` },
     });
     expectOk(webhook);
@@ -136,14 +206,45 @@ describe("age verification webhook", () => {
     const status = await api("GET", "age-verification/status", { userId });
     expect(status.data.status).toBe("verified");
 
+    const replayBody = {
+      userId,
+      status: "verified",
+      providerEventId: `${P}age-evt-1`,
+    };
     const replay = await api("POST", "age-verification/webhooks/mock", {
-      headers: { "x-provider-event-id": `${P}age-evt-1` },
-      body: { userId, status: "failed", providerEventId: `${P}age-evt-1` },
+      headers: {
+        "x-provider-event-id": `${P}age-evt-1`,
+        "x-provider-delivery-id": `${P}age-delivery-2`,
+      },
+      body: replayBody,
     });
     expectOk(replay);
     expect(replay.data).toMatchObject({ idempotent: true, processed: false });
+    const persistedEvent = await prisma.providerEvent.findUniqueOrThrow({
+      where: {
+        provider_providerEventId: {
+          provider: "mock",
+          providerEventId: `${P}age-evt-1`,
+        },
+      },
+      include: { deliveries: true },
+    });
+    expect(persistedEvent.deliveries.map((delivery) => delivery.deliveryId).sort()).toEqual([
+      `${P}age-delivery-1`,
+      `${P}age-delivery-2`,
+    ]);
 
-    // Replay must not overwrite the already-applied status.
+    const conflict = await api("POST", "age-verification/webhooks/mock", {
+      headers: {
+        "x-provider-event-id": `${P}age-evt-1`,
+        "x-provider-delivery-id": `${P}age-delivery-3`,
+      },
+      body: { ...replayBody, status: "failed" },
+    });
+    expectError(conflict, 409, "conflict");
+
+    // A changed payload for the same provider event cannot overwrite or hide
+    // the authority established by the first signed delivery.
     const after = await api("GET", "age-verification/status", { userId });
     expect(after.data.status).toBe("verified");
   });

@@ -34,6 +34,7 @@ import {
 import { validateGenerationTerminalRelaySnapshot } from "./generation-terminal-relay-validation";
 import { validateGenerationFinalizeRelaySnapshot } from "./generation-finalize-relay-validation";
 import { dispatchPendingGenerationTerminalRecords } from "./generation-terminal-record-ingest";
+import { isAcknowledgedLegacyFailedGenerationSourceResidue } from "./generation-failed-source-repair";
 
 const ACTIVE_GENERATION_STATUSES = [
   "queued",
@@ -92,6 +93,7 @@ export type GenerationDispatchCutoverIssue = {
 
 type GenerationDispatchCutoverOptions = {
   readonly generationJobIds?: readonly string[];
+  readonly terminalRecordProbe?: (attemptId: string) => Promise<boolean>;
   readonly queueInspector?: Pick<
     JobQueue,
     "inspectInFlight" | "getByDedupeKey"
@@ -99,6 +101,7 @@ type GenerationDispatchCutoverOptions = {
 };
 
 type GenerationQueueDrainOptions = {
+  readonly terminalRecordProbe?: (attemptId: string) => Promise<boolean>;
   readonly queueInspector?: Pick<
     JobQueue,
     "inspectInFlight" | "inspectPaused"
@@ -504,6 +507,16 @@ export async function assessGenerationDispatchCutoverReadiness(
       });
       continue;
     }
+    if (row.queue === GEN_QUEUES.videoGenerate && !exact) {
+      const acknowledgement =
+        await isAcknowledgedLegacyFailedGenerationSourceResidue(db, row, {
+          terminalRecordProbe: options.terminalRecordProbe,
+        });
+      if (acknowledgement.acknowledged) {
+        ignoredFailedSourceHistory.add(`${row.queue}:${row.id}`);
+        continue;
+      }
+    }
     if (exact && !NON_TERMINAL_ATTEMPT_STATUSES.has(exact.attempt.status)) {
       ignoredFailedSourceHistory.add(`${row.queue}:${row.id}`);
       continue;
@@ -603,6 +616,7 @@ export async function assessGenerationQueueDrainReadiness(
   const failedClassification = await classifyDrainFailedRows(
     db,
     failedRecoveryRows,
+    options.terminalRecordProbe,
   );
   const activeBullRows = rows
     .filter((row) => row.state === "active")
@@ -668,6 +682,7 @@ export async function assessGenerationQueueDrainReadiness(
 async function classifyDrainFailedRows(
   db: PrismaClient,
   rows: readonly QueueJobSnapshot[],
+  terminalRecordProbe?: (attemptId: string) => Promise<boolean>,
 ) {
   const sourceRows = rows.filter(
     (row) => row.queue === GEN_QUEUES.imageGenerate || row.queue === GEN_QUEUES.videoGenerate,
@@ -741,6 +756,16 @@ async function classifyDrainFailedRows(
       terminalOutboxes: [],
       requireLatest: false,
     });
+    if (row.queue === GEN_QUEUES.videoGenerate && !exact) {
+      const acknowledgement =
+        await isAcknowledgedLegacyFailedGenerationSourceResidue(db, row, {
+          terminalRecordProbe,
+        });
+      if (acknowledgement.acknowledged) {
+        ignoredHistory.push(row);
+        continue;
+      }
+    }
     if (exact && !NON_TERMINAL_ATTEMPT_STATUSES.has(exact.attempt.status)) {
       ignoredHistory.push(row);
     } else if (exact && await hasExactAttemptTerminalRecord(exact)) {

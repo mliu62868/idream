@@ -1,7 +1,11 @@
 {
   "compilerOptions": {
     "target": "ES2017",
-    "lib": ["dom", "dom.iterable", "esnext"],
+    "lib": [
+      "dom",
+      "dom.iterable",
+      "esnext"
+    ],
     "allowJs": true,
     "skipLibCheck": true,
     "strict": true,
@@ -19,10 +23,21 @@
       }
     ],
     "paths": {
-      "@/*": ["./src/*"],
-      "@idream/shared/admin": ["../shared/src/admin/index.ts"],
-      "@idream/shared/admin/contracts": ["../shared/src/admin/contracts/index.ts"],
-      "@idream/shared/admin/permissions": ["../shared/src/admin/permissions.ts"],
+      "@/*": [
+        "./src/*"
+      ],
+      "@idream/shared/admin": [
+        "../shared/src/admin/index.ts"
+      ],
+      "@idream/shared/admin/contracts": [
+        "../shared/src/admin/contracts/index.ts"
+      ],
+      "@idream/shared/admin/permissions": [
+        "../shared/src/admin/permissions.ts"
+      ],
+      "@idream/shared/observability/sentry": [
+        "../shared/src/observability/sentry.ts"
+      ]
     }
   },
   "include": [
@@ -30,7 +45,11 @@
     "**/*.ts",
     "**/*.tsx",
     ".next/types/**/*.ts",
-    ".next/dev/types/**/*.ts"
+    ".next/dev/types/**/*.ts",
+    ".next-development/types/**/*.ts",
+    ".next-development/dev/types/**/*.ts"
   ],
-  "exclude": ["node_modules"]
+  "exclude": [
+    "node_modules"
+  ]
 }

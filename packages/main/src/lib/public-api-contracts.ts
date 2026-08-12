@@ -245,6 +245,23 @@ const profileResponseSchema = successEnvelope(
     }),
 );
 
+export const ageVerificationStatusSchema = z.enum([
+  "not_required",
+  "required",
+  "pending",
+  "verified",
+  "failed",
+  "expired",
+]);
+
+const ageVerificationStatusResponseSchema = successEnvelope(
+  z.object({ status: ageVerificationStatusSchema }).strict(),
+);
+
+export type PublicAgeVerificationStatus = z.infer<
+  typeof ageVerificationStatusSchema
+>;
+
 const billingPortalResponseSchema = successEnvelope(
   z
     .object({
@@ -527,6 +544,72 @@ const reportResponseSchema = successEnvelope(
   }),
 );
 
+const helpDeskSupportRequestSchema = z
+  .object({
+    id: nonEmptyString,
+    ticketId: nonEmptyString,
+    category: nonEmptyString,
+    subject: nonEmptyString,
+    status: nonEmptyString,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    resolution: z
+      .object({
+        outcome: nonEmptyString,
+        resolvedAt: timestamp,
+      })
+      .strict()
+      .nullable(),
+  })
+  .strict();
+
+const helpDeskReportSchema = z
+  .object({
+    id: nonEmptyString,
+    targetType: nonEmptyString,
+    targetId: nonEmptyString,
+    category: nonEmptyString,
+    status: nonEmptyString,
+    createdAt: timestamp,
+    decision: z
+      .object({
+        outcome: nonEmptyString,
+        decidedAt: timestamp,
+      })
+      .strict()
+      .nullable(),
+    appealIds: z.array(nonEmptyString),
+  })
+  .strict();
+
+const helpDeskAppealSchema = z
+  .object({
+    id: nonEmptyString,
+    targetType: nonEmptyString,
+    targetId: nonEmptyString,
+    status: nonEmptyString,
+    createdAt: timestamp,
+    relatedReportId: nonEmptyString.nullable(),
+    outcome: z
+      .object({
+        result: nonEmptyString,
+        resolvedAt: timestamp,
+      })
+      .strict()
+      .nullable(),
+  })
+  .strict();
+
+const helpDeskHistoryResponseSchema = successEnvelope(
+  z
+    .object({
+      supportRequests: z.array(helpDeskSupportRequestSchema),
+      reports: z.array(helpDeskReportSchema),
+      appeals: z.array(helpDeskAppealSchema),
+    })
+    .strict(),
+);
+
 export const feedbackItemSchema = z
   .object({
     id: nonEmptyString,
@@ -578,6 +661,7 @@ const communityCharacterSchema = publicCharacterCardSchema
   .extend({
     style: z.string().optional(),
     gender: z.string().optional(),
+    isFollowing: z.boolean(),
     exposureContext: exposureContextSchema.nullable().optional(),
   })
   .passthrough();
@@ -594,6 +678,7 @@ const communityDreamerSchema = z
     likesCount: nonNegativeInteger.optional(),
     chatsCount: nonNegativeInteger.optional(),
     isFollowing: z.boolean().optional(),
+    isSelf: z.boolean().optional(),
   })
   .passthrough();
 
@@ -1060,6 +1145,12 @@ const libraryItemSchema = z
     prompt: z.string().nullable().optional(),
     visibility: z.string().optional(),
     status: z.string().optional(),
+    publicationState: z.enum([
+      "pending_review",
+      "awaiting_publication",
+      "live",
+      "not_public",
+    ]).optional(),
     character: libraryCharacterSchema.optional(),
   })
   .passthrough();
@@ -1122,6 +1213,8 @@ const chatMessageSchema = z
     role: nonEmptyString,
     content: z.string(),
     status: z.string().optional(),
+    replyToMessageId: nonEmptyString.nullable().optional(),
+    runtimeTrace: z.record(z.string(), z.unknown()).nullable().optional(),
     attachments: z.array(chatAttachmentSchema).optional(),
     sceneVersion: z.number().int().nonnegative().optional(),
     scene: z.object({
@@ -1176,6 +1269,9 @@ export type AuthUser = z.infer<typeof authUserSchema>;
 export type PublicAnnouncement = z.infer<typeof announcementSchema>;
 export type PublicCharacterDetail = z.infer<typeof characterDetailSchema>;
 export type PublicFeedbackItem = z.infer<typeof feedbackItemSchema>;
+export type HelpDeskSupportRequest = z.infer<typeof helpDeskSupportRequestSchema>;
+export type HelpDeskReport = z.infer<typeof helpDeskReportSchema>;
+export type HelpDeskAppeal = z.infer<typeof helpDeskAppealSchema>;
 export type PublicCharacterTemplate = z.infer<typeof characterTemplateSchema>;
 export type CommunityCharacter = z.infer<typeof communityCharacterSchema>;
 export type CommunityDreamer = z.infer<typeof communityDreamerSchema>;
@@ -1224,6 +1320,14 @@ export function parseProfileResponse(payload: unknown) {
     profileResponseSchema,
     payload,
     "profile",
+  ).data;
+}
+
+export function parseAgeVerificationStatusResponse(payload: unknown) {
+  return parseContract(
+    ageVerificationStatusResponseSchema,
+    payload,
+    "age verification status",
   ).data;
 }
 
@@ -1338,6 +1442,14 @@ export function parseCharacterLikeResponse(payload: unknown) {
 
 export function parseReportResponse(payload: unknown) {
   return parseContract(reportResponseSchema, payload, "report").data;
+}
+
+export function parseHelpDeskHistoryResponse(payload: unknown) {
+  return parseContract(
+    helpDeskHistoryResponseSchema,
+    payload,
+    "Help Desk history",
+  ).data;
 }
 
 export function parseFeedbackItemsResponse(payload: unknown) {

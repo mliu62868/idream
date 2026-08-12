@@ -1,6 +1,12 @@
 import { randomUUID } from "node:crypto";
 import type { Prisma } from "@prisma/client";
-import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
+import {
+  MAIN_TO_CHAT_EVENTS,
+  characterModerationRemovalEventId,
+  characterModerationRemovedPayloadSchema,
+  characterModerationRestorationEventId,
+  characterModerationRestorationPayloadSchema,
+} from "@idream/shared/contracts";
 import { z } from "zod";
 import { recordMainToChatEvent } from "@/processes/chat-outbox";
 import { prisma } from "@/server/lib/db";
@@ -42,6 +48,106 @@ const mediaReviewDecisionSchema = z.object({
   reason: z.string().trim().min(3).max(2_000),
   confirmation: z.string().trim().min(1).max(160),
 });
+
+const mediaModerationStateSchema = z
+  .object({
+    safetyStatus: z.string().min(1),
+    visibility: z.string().min(1),
+  })
+  .strict();
+
+const characterModerationActionSnapshotSchema = z
+  .object({
+    version: z.literal(1),
+    targetType: z.literal("character"),
+    moderationDecisionId: z.string().min(1),
+    previousModerationDecisionId: z.string().min(1).nullable(),
+    before: z.object({ status: z.string().min(1) }).strict(),
+    after: z.object({ status: z.literal("removed") }).strict(),
+  })
+  .strict();
+
+const moderationEffectOwnerDetailsSchema = z
+  .object({
+    version: z.literal(1),
+    moderationDecisionId: z.string().min(1).nullable(),
+  })
+  .strict();
+
+const mediaModerationActionSnapshotSchema = z
+  .object({
+    version: z.literal(1),
+    moderationDecisionId: z.string().min(1),
+    previousModerationDecisionId: z.string().min(1).nullable(),
+    before: mediaModerationStateSchema,
+    after: mediaModerationStateSchema,
+  })
+  .strict();
+
+function mediaModerationActionSnapshotId(moderationDecisionId: string) {
+  return `moderation_action_snapshot_${moderationDecisionId}`;
+}
+
+function moderationEffectOwnerId(targetType: string, targetId: string) {
+  return `moderation_effect_owner:${targetType}:${targetId}`;
+}
+
+async function currentModerationEffectOwner(
+  db: Prisma.TransactionClient | typeof prisma,
+  targetType: string,
+  targetId: string,
+) {
+  const owner = await db.moderationEvent.findUnique({
+    where: { id: moderationEffectOwnerId(targetType, targetId) },
+  });
+  if (!owner) return null;
+  if (
+    owner.targetType !== targetType ||
+    owner.targetId !== targetId ||
+    owner.layer !== "admin_decision_effect_owner"
+  ) {
+    throw Errors.conflict("Moderation effect owner authority is inconsistent");
+  }
+  const details = moderationEffectOwnerDetailsSchema.safeParse(owner.details);
+  if (!details.success) {
+    throw Errors.conflict("Moderation effect owner authority is invalid");
+  }
+  if (owner.status === "cleared") return null;
+  if (owner.status !== "active" || !details.data.moderationDecisionId) {
+    throw Errors.conflict("Moderation effect owner authority is invalid");
+  }
+  return details.data.moderationDecisionId;
+}
+
+async function setModerationEffectOwner(
+  db: Prisma.TransactionClient | typeof prisma,
+  input: {
+    targetType: string;
+    targetId: string;
+    moderationDecisionId: string | null;
+  },
+) {
+  const details = moderationEffectOwnerDetailsSchema.parse({
+    version: 1,
+    moderationDecisionId: input.moderationDecisionId,
+  });
+  await db.moderationEvent.upsert({
+    where: { id: moderationEffectOwnerId(input.targetType, input.targetId) },
+    create: {
+      id: moderationEffectOwnerId(input.targetType, input.targetId),
+      targetType: input.targetType,
+      targetId: input.targetId,
+      layer: "admin_decision_effect_owner",
+      status: input.moderationDecisionId ? "active" : "cleared",
+      policyCode: "moderation_effect_owner_v1",
+      details: toInputJson(details),
+    },
+    update: {
+      status: input.moderationDecisionId ? "active" : "cleared",
+      details: toInputJson(details),
+    },
+  });
+}
 
 type ModerationCommandInput = {
   request: Request;
@@ -410,7 +516,14 @@ export async function moderationDecision(request: Request, reportId: string) {
         notes: body.notes,
       } });
       const updated = await tx.contentReport.update({ where: { id: reportId }, data: { status: body.decision } });
-      if (body.decision === "actioned") await applyModerationAction(current.targetType, current.targetId, tx);
+      if (body.decision === "actioned") {
+        await applyModerationAction(
+          current.targetType,
+          current.targetId,
+          review.id,
+          tx,
+        );
+      }
       const adminCase = await ensureReviewCaseForReport(tx, current);
       if (!adminCase) throw Errors.conflict("Open report did not produce a Review Case");
       const evidence = await tx.caseEvidence.findUniqueOrThrow({ where: { caseId_sourceType_sourceId: { caseId: adminCase.id, sourceType: "content_report", sourceId: current.id } } });
@@ -465,8 +578,13 @@ export async function appealDecision(request: Request, appealId: string) {
       if (!current) throw Errors.notFound("Appeal not found");
       if (body.outcome !== "open" && current.status !== "open") throw Errors.conflict("Appeal already has a terminal decision");
       const restored = body.outcome === "overturned"
-        ? await restoreAppealTarget(current.targetType, current.targetId, tx)
+        ? await restoreCanonicalAppealTarget(current, tx)
         : { targetRestored: false };
+      if (body.outcome === "overturned" && !restored.targetRestored) {
+        throw Errors.conflict(
+          "Appeal target could not be restored; the decision was not applied",
+        );
+      }
       const updated = await tx.appeal.update({
         where: { id: appealId },
         data: body.outcome === "open"
@@ -518,26 +636,65 @@ function appealOutcomeConfirmation(outcome: z.infer<typeof appealDecisionSchema>
 async function applyModerationAction(
   targetType: string,
   targetId: string,
+  moderationDecisionId: string,
   db: Prisma.TransactionClient | typeof prisma = prisma,
 ) {
   // INVARIANT: "actioned" must actually take content down. Feed items wrap a
   // character, so resolve and remove it; unknown target types throw so the
   // decision transaction rolls back instead of marking a report falsely handled.
   if (targetType === "character") {
-    const removed = await db.character.updateMany({
-      where: { id: targetId },
-      data: { status: "removed" },
-    });
-    if (removed.count > 0) {
-      await recordCharacterRemoved(db, targetId);
-    }
+    await applyCharacterModerationAction(db, targetId, moderationDecisionId);
     return;
   }
   if (targetType === "media") {
     await lockMediaAssetAuthority(db, targetId);
-    await db.mediaAsset.updateMany({
-      where: { id: targetId },
+    const asset = await db.mediaAsset.findFirst({
+      where: { id: targetId, deletedAt: null },
+      select: { safetyStatus: true, visibility: true },
+    });
+    if (!asset) throw Errors.conflict("Moderation media target no longer exists");
+    const previousModerationDecisionId = await currentModerationEffectOwner(
+      db,
+      "media",
+      targetId,
+    );
+    const snapshot = mediaModerationActionSnapshotSchema.parse({
+      version: 1,
+      moderationDecisionId,
+      previousModerationDecisionId,
+      before: {
+        safetyStatus: asset.safetyStatus,
+        visibility: asset.visibility,
+      },
+      after: { safetyStatus: "blocked", visibility: "private" },
+    });
+    await db.moderationEvent.create({
+      data: {
+        id: mediaModerationActionSnapshotId(moderationDecisionId),
+        targetType: "media",
+        targetId,
+        layer: "admin_decision_effect",
+        status: "actioned",
+        policyCode: "moderation_action_snapshot_v1",
+        details: toInputJson(snapshot),
+      },
+    });
+    const updated = await db.mediaAsset.updateMany({
+      where: {
+        id: targetId,
+        deletedAt: null,
+        safetyStatus: snapshot.before.safetyStatus,
+        visibility: snapshot.before.visibility,
+      },
       data: { safetyStatus: "blocked", visibility: "private" },
+    });
+    if (updated.count !== 1) {
+      throw Errors.conflict("Moderation media target changed before action");
+    }
+    await setModerationEffectOwner(db, {
+      targetType: "media",
+      targetId,
+      moderationDecisionId,
     });
     return;
   }
@@ -546,28 +703,98 @@ async function applyModerationAction(
     if (!characterId) {
       throw Errors.badRequest(`Cannot resolve feed_item moderation target: ${targetId}`);
     }
-    const removed = await db.character.updateMany({
-      where: { id: characterId },
-      data: { status: "removed" },
-    });
-    if (removed.count > 0) {
-      await recordCharacterRemoved(db, characterId);
-    }
+    await applyCharacterModerationAction(
+      db,
+      characterId,
+      moderationDecisionId,
+    );
     return;
   }
   throw Errors.badRequest(`Unsupported moderation target type: ${targetType}`);
 }
 
+async function applyCharacterModerationAction(
+  db: Prisma.TransactionClient | typeof prisma,
+  characterId: string,
+  moderationDecisionId: string,
+) {
+  await lockCharacterGenerationAuthority(db, characterId);
+  const character = await db.character.findFirst({
+    where: { id: characterId, deletedAt: null },
+    select: { status: true },
+  });
+  if (!character) {
+    throw Errors.conflict("Moderation Character target no longer exists");
+  }
+  const previousModerationDecisionId = await currentModerationEffectOwner(
+    db,
+    "character",
+    characterId,
+  );
+  const snapshot = characterModerationActionSnapshotSchema.parse({
+    version: 1,
+    targetType: "character",
+    moderationDecisionId,
+    previousModerationDecisionId,
+    before: { status: character.status },
+    after: { status: "removed" },
+  });
+  await db.moderationEvent.create({
+    data: {
+      id: mediaModerationActionSnapshotId(moderationDecisionId),
+      targetType: "character",
+      targetId: characterId,
+      layer: "admin_decision_effect",
+      status: "actioned",
+      policyCode: "moderation_action_snapshot_v1",
+      details: toInputJson(snapshot),
+    },
+  });
+  const removed = await db.character.updateMany({
+    where: {
+      id: characterId,
+      deletedAt: null,
+      status: snapshot.before.status,
+    },
+    data: { status: snapshot.after.status },
+  });
+  if (removed.count !== 1) {
+    throw Errors.conflict("Moderation Character target changed before action");
+  }
+  await setModerationEffectOwner(db, {
+    targetType: "character",
+    targetId: characterId,
+    moderationDecisionId,
+  });
+  await recordCharacterRemoved(
+    db,
+    characterId,
+    moderationDecisionId,
+    previousModerationDecisionId,
+  );
+}
+
 async function recordCharacterRemoved(
   db: Prisma.TransactionClient | typeof prisma,
   characterId: string,
+  moderationDecisionId: string,
+  previousModerationDecisionId: string | null,
 ) {
+  const payload = characterModerationRemovedPayloadSchema.parse({
+    version: 1,
+    binding: "moderation_decision",
+    characterId,
+    moderationDecisionId,
+    previousRemovalEventId: previousModerationDecisionId
+      ? characterModerationRemovalEventId(previousModerationDecisionId)
+      : null,
+  });
   await recordMainToChatEvent({
-    eventId: `character_removed_${characterId}_${randomUUID()}`,
+    eventId: characterModerationRemovalEventId(moderationDecisionId),
     eventType: MAIN_TO_CHAT_EVENTS.characterRemoved,
     aggregateType: "character",
     aggregateId: characterId,
-    payload: { characterId },
+    payload,
   }, db);
 }
 
@@ -575,18 +802,39 @@ async function restoreAppealTarget(
   targetType: string,
   targetId: string,
   db: Prisma.TransactionClient | typeof prisma = prisma,
+  moderationDecisionId?: string,
 ) {
   if (targetType === "character") {
+    if (moderationDecisionId) {
+      return restoreCharacterModerationAction(
+        db,
+        targetId,
+        moderationDecisionId,
+        targetType,
+      );
+    }
     const result = await db.character.updateMany({
       where: { id: targetId },
       data: { status: "approved" },
     });
-    return { targetRestored: result.count > 0, restoredTargetType: targetType };
+    return {
+      targetRestored: result.count > 0,
+      restoredTargetType: targetType,
+      restoredTargetId: targetId,
+    };
   }
   if (targetType === "feed_item") {
     const characterId = feedItemCharacterId(targetId);
     if (!characterId) {
       return { targetRestored: false, restoredTargetType: targetType, restoreReason: "unresolvable_feed_item" };
+    }
+    if (moderationDecisionId) {
+      return restoreCharacterModerationAction(
+        db,
+        characterId,
+        moderationDecisionId,
+        targetType,
+      );
     }
     const result = await db.character.updateMany({
       where: { id: characterId },
@@ -596,20 +844,256 @@ async function restoreAppealTarget(
   }
   if (targetType === "media") {
     await lockMediaAssetAuthority(db, targetId);
+    if (moderationDecisionId) {
+      const currentOwner = await currentModerationEffectOwner(
+        db,
+        "media",
+        targetId,
+      );
+      if (currentOwner !== moderationDecisionId) {
+        throw Errors.conflict(
+          "Another action or owner mutation superseded this Media decision",
+        );
+      }
+      const evidence = await db.moderationEvent.findUnique({
+        where: { id: mediaModerationActionSnapshotId(moderationDecisionId) },
+      });
+      if (
+        !evidence ||
+        evidence.targetType !== "media" ||
+        evidence.targetId !== targetId ||
+        evidence.layer !== "admin_decision_effect" ||
+        evidence.status !== "actioned"
+      ) {
+        throw Errors.conflict("Media moderation action snapshot is unavailable");
+      }
+      const parsed = mediaModerationActionSnapshotSchema.safeParse(
+        evidence.details,
+      );
+      if (
+        !parsed.success ||
+        parsed.data.moderationDecisionId !== moderationDecisionId
+      ) {
+        throw Errors.conflict("Media moderation action snapshot is inconsistent");
+      }
+      const snapshot = parsed.data;
+      const result = await db.mediaAsset.updateMany({
+        where: {
+          id: targetId,
+          deletedAt: null,
+          safetyStatus: snapshot.after.safetyStatus,
+          visibility: snapshot.after.visibility,
+        },
+        data: {
+          safetyStatus: snapshot.before.safetyStatus,
+          visibility: snapshot.before.visibility,
+        },
+      });
+      if (result.count !== 1) {
+        throw Errors.conflict(
+          "Media changed after the moderation action; the appeal was not applied",
+        );
+      }
+      await setModerationEffectOwner(db, {
+        targetType: "media",
+        targetId,
+        moderationDecisionId: snapshot.previousModerationDecisionId,
+      });
+      return {
+        targetRestored: true,
+        restoredTargetType: targetType,
+        restoredTargetId: targetId,
+      };
+    }
     const result = await db.mediaAsset.updateMany({
       where: { id: targetId },
       data: { safetyStatus: "passed" },
     });
-    return { targetRestored: result.count > 0, restoredTargetType: targetType };
+    return {
+      targetRestored: result.count > 0,
+      restoredTargetType: targetType,
+      restoredTargetId: targetId,
+    };
   }
   if (targetType === "user_profile") {
     const result = await db.user.updateMany({
       where: { id: targetId, status: { not: "deleted" } },
       data: { status: "active" },
     });
-    return { targetRestored: result.count > 0, restoredTargetType: targetType };
+    return {
+      targetRestored: result.count > 0,
+      restoredTargetType: targetType,
+      restoredTargetId: targetId,
+    };
   }
   return { targetRestored: false, restoredTargetType: targetType, restoreReason: "manual_followup_required" };
+}
+
+async function restoreCharacterModerationAction(
+  db: Prisma.TransactionClient | typeof prisma,
+  characterId: string,
+  moderationDecisionId: string,
+  restoredTargetType: "character" | "feed_item",
+) {
+  await lockCharacterGenerationAuthority(db, characterId);
+  const currentOwner = await currentModerationEffectOwner(
+    db,
+    "character",
+    characterId,
+  );
+  if (currentOwner !== moderationDecisionId) {
+    throw Errors.conflict(
+      "Another action or owner mutation superseded this Character decision",
+    );
+  }
+  const evidence = await db.moderationEvent.findUnique({
+    where: { id: mediaModerationActionSnapshotId(moderationDecisionId) },
+  });
+  if (
+    !evidence ||
+    evidence.targetType !== "character" ||
+    evidence.targetId !== characterId ||
+    evidence.layer !== "admin_decision_effect" ||
+    evidence.status !== "actioned"
+  ) {
+    throw Errors.conflict("Character moderation action snapshot is unavailable");
+  }
+  const parsed = characterModerationActionSnapshotSchema.safeParse(
+    evidence.details,
+  );
+  if (
+    !parsed.success ||
+    parsed.data.moderationDecisionId !== moderationDecisionId
+  ) {
+    throw Errors.conflict("Character moderation action snapshot is inconsistent");
+  }
+  const restored = await db.character.updateMany({
+    where: {
+      id: characterId,
+      deletedAt: null,
+      status: parsed.data.after.status,
+    },
+    data: { status: parsed.data.before.status },
+  });
+  if (restored.count !== 1) {
+    throw Errors.conflict(
+      "Character changed after the moderation action; the appeal was not applied",
+    );
+  }
+  await setModerationEffectOwner(db, {
+    targetType: "character",
+    targetId: characterId,
+    moderationDecisionId: parsed.data.previousModerationDecisionId,
+  });
+  return {
+    targetRestored: true,
+    restoredTargetType,
+    restoredTargetId: characterId,
+  };
+}
+
+async function restoreCanonicalAppealTarget(
+  appeal: {
+    id: string;
+    targetType: string;
+    targetId: string;
+    originalDecisionId: string | null;
+  },
+  db: Prisma.TransactionClient | typeof prisma = prisma,
+) {
+  const decisionId = appeal.originalDecisionId ??
+    (appeal.targetType === "moderation_decision" ? appeal.targetId : null);
+  if (!decisionId) {
+    return restoreAppealTarget(appeal.targetType, appeal.targetId, db);
+  }
+
+  const decision = await db.moderationReview.findUnique({
+    where: { id: decisionId },
+    select: {
+      id: true,
+      report: { select: { targetType: true, targetId: true } },
+    },
+  });
+  if (!decision?.report) {
+    throw Errors.conflict("Appeal moderation decision is no longer available");
+  }
+  if (
+    appeal.targetType === "moderation_decision" &&
+    appeal.targetId !== decision.id
+  ) {
+    throw Errors.conflict("Appeal does not match its moderation decision");
+  }
+  if (
+    appeal.targetType !== "moderation_decision" &&
+    (appeal.targetType !== decision.report.targetType ||
+      appeal.targetId !== decision.report.targetId)
+  ) {
+    throw Errors.conflict("Appeal target does not match its moderation decision");
+  }
+  const restored = await restoreAppealTarget(
+    decision.report.targetType,
+    decision.report.targetId,
+    db,
+    decision.id,
+  );
+  if (
+    restored.targetRestored &&
+    (decision.report.targetType === "character" ||
+      decision.report.targetType === "feed_item") &&
+    restored.restoredTargetId
+  ) {
+    await recordCharacterModerationRestoration(db, {
+      appealId: appeal.id,
+      characterId: restored.restoredTargetId,
+      moderationDecisionId: decision.id,
+    });
+  }
+  return restored;
+}
+
+async function recordCharacterModerationRestoration(
+  db: Prisma.TransactionClient | typeof prisma,
+  input: {
+    appealId: string;
+    characterId: string;
+    moderationDecisionId: string;
+  },
+) {
+  const removalEventId = characterModerationRemovalEventId(
+    input.moderationDecisionId,
+  );
+  const removal = await db.mainOutboxEvent.findUnique({
+    where: { id: removalEventId },
+    select: { eventType: true, aggregateType: true, aggregateId: true },
+  });
+  // INVARIANT: an older aggregate-only removal cannot authorize a successful
+  // Appeal. Returning success here would approve Main while Chat remains
+  // archived, so the whole Appeal transaction must stay open for manual work.
+  if (
+    !removal ||
+    removal.eventType !== MAIN_TO_CHAT_EVENTS.characterRemoved ||
+    removal.aggregateType !== "character" ||
+    removal.aggregateId !== input.characterId
+  ) {
+    throw Errors.conflict(
+      "Character removal has no deterministic Chat restoration authority",
+    );
+  }
+  const payload = characterModerationRestorationPayloadSchema.parse({
+    version: 1,
+    binding: "removal_event",
+    appealId: input.appealId,
+    characterId: input.characterId,
+    moderationDecisionId: input.moderationDecisionId,
+    removalEventId,
+  });
+  await recordMainToChatEvent({
+    eventId: characterModerationRestorationEventId(input.appealId),
+    eventType: MAIN_TO_CHAT_EVENTS.characterModerationRestorationRequested,
+    aggregateType: "character",
+    aggregateId: input.characterId,
+    payload,
+  }, db);
 }
 
 // Feed item ids are encoded as `character:<id>` (see ourdream feed handlers).

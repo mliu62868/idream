@@ -97,7 +97,10 @@ const SERVICE_SOURCE_ROOTS = [
 
 const HAND_ROLLED_PARSES: { fingerprint: string; owner: string }[] = [
   {
-    fingerprint: "decodeURIComponent(url.username)",
+    // PostgreSQL URLs legitimately decode credentials too. The BullMQ-only
+    // invariant is the blocking Redis retry policy, so key the guard to that
+    // instead of rejecting every URL parser in the repository.
+    fingerprint: "maxRetriesPerRequest: null",
     owner: "redisConnectionOptions() from @idream/shared/env",
   },
   {

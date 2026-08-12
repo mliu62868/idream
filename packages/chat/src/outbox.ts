@@ -10,7 +10,9 @@ import { enqueue } from "./queue.js";
 import {
   CHAT_QUEUES,
   CHAT_TO_MAIN_EVENTS,
+  chatAccountErasureCompletedV2PayloadSchema,
   durableAckSchema,
+  durableEventEnvelopeSchema,
   type DurableEventEnvelope,
 } from "@idream/shared/contracts";
 import { env } from "./env.js";
@@ -24,7 +26,11 @@ export interface OutboxRecord {
   aggregateId: string;
   payload: Record<string, unknown>;
   schemaVersion?: number;
+  /** Dedicated request/response evidence that generic dispatchers must ignore. */
+  status?: "pending" | "request_bound";
 }
+
+export const REQUEST_BOUND_OUTBOX_STATUS = "request_bound" as const;
 
 /** Insert an outbox row within an existing transaction (atomic with the effect). */
 export async function recordOutbox(
@@ -40,6 +46,7 @@ export async function recordOutbox(
       aggregateId: record.aggregateId,
       payload: record.payload as Prisma.InputJsonValue,
       schemaVersion: record.schemaVersion ?? 1,
+      status: record.status ?? "pending",
     },
   });
   return id;
@@ -67,7 +74,11 @@ export async function deliverPendingOutbox(
 ): Promise<{ delivered: number; failed: number }> {
   const now = new Date();
   const pending = await prisma.chatOutboxEvent.findMany({
-    where: { status: "pending", nextRunAt: { lte: now } },
+    where: {
+      status: "pending",
+      eventType: { not: CHAT_TO_MAIN_EVENTS.accountErasureCompletedV2 },
+      nextRunAt: { lte: now },
+    },
     orderBy: { createdAt: "asc" },
     take: batch,
   });
@@ -115,6 +126,107 @@ export async function deliverPendingOutbox(
   return { delivered, failed };
 }
 
+/**
+ * Deliver the exact request-bound account-erasure completion to Main.
+ *
+ * INTENT: this bypasses the generic Chat outbox dispatcher. The receiver must
+ * finish its AccountDeletion projection before this function persists a local
+ * ACK; callers may only ACK the original Main request after this returns.
+ */
+export async function deliverRequestBoundAccountErasureCompletion(
+  deletionRequestEventId: string,
+  prisma: ChatPrismaClient = chatPrisma,
+  acknowledge: (event: DurableEventEnvelope) => Promise<void> =
+    acknowledgeAccountErasureCompletionWithMain,
+): Promise<{ eventId: string; delivered: true }> {
+  const row = await prisma.chatOutboxEvent.findFirst({
+    where: {
+      eventType: CHAT_TO_MAIN_EVENTS.accountErasureCompletedV2,
+      schemaVersion: 2,
+      payload: {
+        path: ["deletionRequestEventId"],
+        equals: deletionRequestEventId,
+      },
+    },
+    orderBy: { createdAt: "asc" },
+  });
+  if (!row) {
+    throw new Error(
+      `request-bound account erasure completion is missing for ${deletionRequestEventId}`,
+    );
+  }
+  if (
+    row.status !== REQUEST_BOUND_OUTBOX_STATUS &&
+    row.status !== "delivered"
+  ) {
+    throw new Error(
+      `account erasure completion ${row.id} has unsafe status ${row.status}`,
+    );
+  }
+  const payload = chatAccountErasureCompletedV2PayloadSchema.parse(row.payload);
+  if (
+    row.aggregateType !== "user" ||
+    row.aggregateId !== payload.userId ||
+    payload.deletionRequestEventId !== deletionRequestEventId
+  ) {
+    throw new Error(`account erasure completion ${row.id} changed authority`);
+  }
+  const envelope = durableEventEnvelopeSchema.parse({
+    sourceService: "chat",
+    sourceEventId: row.id,
+    eventType: row.eventType,
+    schemaVersion: row.schemaVersion,
+    aggregateType: row.aggregateType,
+    aggregateId: row.aggregateId,
+    occurredAt: row.createdAt.toISOString(),
+    payload,
+  });
+
+  try {
+    // Always redeliver, including after a local delivered marker. This repairs
+    // the window where a rolled-back Main binary ACKed a generic no-op before
+    // the dedicated receipt namespace existed.
+    await acknowledge(envelope);
+  } catch (error) {
+    if (row.status === REQUEST_BOUND_OUTBOX_STATUS) {
+      const attempts = row.attempts + 1;
+      await prisma.chatOutboxEvent.updateMany({
+        where: {
+          id: row.id,
+          status: REQUEST_BOUND_OUTBOX_STATUS,
+          attempts: row.attempts,
+        },
+        data: {
+          attempts,
+          nextRunAt: new Date(
+            Date.now() + Math.min(attempts, 120) * 30_000,
+          ),
+        },
+      }).catch(() => undefined);
+    }
+    throw error;
+  }
+
+  if (row.status === REQUEST_BOUND_OUTBOX_STATUS) {
+    const transition = await prisma.chatOutboxEvent.updateMany({
+      where: { id: row.id, status: REQUEST_BOUND_OUTBOX_STATUS },
+      data: { status: "delivered", deliveredAt: new Date() },
+    });
+    if (transition.count !== 1) {
+      const current = await prisma.chatOutboxEvent.findUnique({
+        where: { id: row.id },
+        select: { status: true },
+      });
+      if (current?.status !== "delivered") {
+        throw new Error(
+          `account erasure completion ${row.id} ACK was not persisted`,
+        );
+      }
+    }
+  }
+  return { eventId: row.id, delivered: true };
+}
+
 async function acknowledgeWithMain(event: DurableEventEnvelope): Promise<void> {
   const response = await fetch(env.MAIN_INTERNAL_INGEST_URL, {
     method: "POST",
@@ -127,4 +239,28 @@ async function acknowledgeWithMain(event: DurableEventEnvelope): Promise<void> {
   if (!response.ok) throw new Error(`main durable ingest returned ${response.status}`);
   const ack = durableAckSchema.parse(await response.json());
   if (!ack.acknowledged) throw new Error(`main did not durably acknowledge ${event.sourceEventId}`);
+}
+
+async function acknowledgeAccountErasureCompletionWithMain(
+  event: DurableEventEnvelope,
+): Promise<void> {
+  const response = await fetch(env.MAIN_ACCOUNT_ERASURE_COMPLETION_V2_INGEST_URL, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-internal-token": env.INTERNAL_TOKEN,
+    },
+    body: JSON.stringify(event),
+  });
+  if (!response.ok) {
+    throw new Error(
+      `main account erasure completion ingest returned ${response.status}`,
+    );
+  }
+  const ack = durableAckSchema.parse(await response.json());
+  if (!ack.acknowledged || ack.receiptId !== event.sourceEventId) {
+    throw new Error(
+      `main did not project account erasure completion ${event.sourceEventId}`,
+    );
+  }
 }

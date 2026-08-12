@@ -110,6 +110,14 @@ export default defineConfig({
         "../shared/src/gen/workflow.ts",
         import.meta.url,
       ).pathname,
+      "@idream/shared/observability/sentry": new URL(
+        "../shared/src/observability/sentry.ts",
+        import.meta.url,
+      ).pathname,
+      "@idream/shared/observability/sentry-canary": new URL(
+        "../shared/src/observability/sentry-canary.ts",
+        import.meta.url,
+      ).pathname,
       "@idream/shared": new URL("../shared/src/index.ts", import.meta.url).pathname,
     },
   },

@@ -1,10 +1,9 @@
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   MAIN_TO_CHAT_EVENTS,
   METRIC_PRODUCT_EVENTS,
 } from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
-import { jobQueue } from "@/server/jobs/queue";
 import { providers } from "@/server/providers";
 import {
   hydratedImageReferenceInputs,
@@ -536,7 +535,7 @@ describe("referrals + account", () => {
     expect(login.error?.message).toBe("Account is not active");
   });
 
-  it("commits account deletion and its Chat erasure intent when immediate enqueue fails", async () => {
+  it("commits account deletion and keeps its Chat erasure intent pending until graceEndsAt", async () => {
     const userId = `${P}account-delete-outbox`;
     const eventId = `user_deleted_${userId}`;
     await createUser({ id: userId });
@@ -547,16 +546,15 @@ describe("referrals + account", () => {
         expiresAt: new Date(Date.now() + 100_000),
       },
     });
-    const enqueue = vi.spyOn(jobQueue, "enqueue").mockRejectedValue(
-      new Error("Redis unavailable"),
-    );
-    try {
-      const deleted = await api("POST", "account/delete-request", { userId });
-      expectOk(deleted);
-      expect(deleted.data).toMatchObject({ requested: true });
-    } finally {
-      enqueue.mockRestore();
-    }
+    const deleted = await api("POST", "account/delete-request", { userId });
+    expectOk(deleted);
+    expect(deleted.data).toMatchObject({
+      requested: true,
+      deletion: {
+        status: "awaiting_chat",
+        graceEndsAt: expect.any(String),
+      },
+    });
 
     await expect(prisma.user.findUniqueOrThrow({
       where: { id: userId },
@@ -568,15 +566,17 @@ describe("referrals + account", () => {
     await expect(prisma.mainOutboxEvent.findUniqueOrThrow({
       where: { id: eventId },
     })).resolves.toMatchObject({
-      eventType: MAIN_TO_CHAT_EVENTS.userDeleted,
+      eventType: MAIN_TO_CHAT_EVENTS.accountDeletionRequestedV2,
       aggregateType: "user",
       aggregateId: userId,
       status: "pending",
-      attempts: 1,
+      attempts: 0,
+      nextRunAt: new Date(deleted.data.deletion.graceEndsAt as string),
       payload: expect.objectContaining({
         sourceService: "main",
         sourceEventId: eventId,
-        eventType: MAIN_TO_CHAT_EVENTS.userDeleted,
+        eventType: MAIN_TO_CHAT_EVENTS.accountDeletionRequestedV2,
+        schemaVersion: 2,
         payload: { userId },
       }),
     });
@@ -1672,10 +1672,20 @@ describe("feed, community, policies, analytics", () => {
     const res = await api("GET", "community/leaderboards", { ageGate: true });
     expectOk(res);
     expect(res.data.leaderboards).toHaveProperty("characters");
+    const characters = res.data.leaderboards.characters as Array<{
+      id: string;
+      creatorId: string | null;
+      isFollowing: boolean;
+    }>;
+    expect(characters.find((character) => character.id === CHAR)).toMatchObject({
+      creatorId: null,
+      isFollowing: false,
+    });
     const dreamers = res.data.leaderboards.dreamers as Array<{
       id: string;
       displayName: string;
       characters: number;
+      isSelf: boolean;
     }>;
     expect(dreamers).toEqual(
       expect.arrayContaining([
@@ -1687,7 +1697,20 @@ describe("feed, community, policies, analytics", () => {
     );
     const sysDreamer = dreamers.find((dreamer) => dreamer.id === SYS);
     expect(sysDreamer?.characters).toBeGreaterThanOrEqual(1);
+    expect(sysDreamer?.isSelf).toBe(false);
     expect(JSON.stringify(dreamers)).not.toContain("@test.local");
+
+    const signedIn = await api("GET", "community/leaderboards", {
+      userId: SYS,
+      ageGate: true,
+    });
+    expectOk(signedIn);
+    expect(
+      (signedIn.data.leaderboards.dreamers as Array<{
+        id: string;
+        isSelf: boolean;
+      }>).find((dreamer) => dreamer.id === SYS),
+    ).toMatchObject({ isSelf: true });
   });
 
   it("returns published community campaign banners", async () => {
@@ -1755,6 +1778,7 @@ describe("feed, community, policies, analytics", () => {
       source: "user",
       visibility: "public",
       status: "approved",
+      style: `${P}creator-follow-style`,
     });
     await seedCurrentPublicCharacterAuthority({
       characterId,
@@ -1779,6 +1803,7 @@ describe("feed, community, policies, analytics", () => {
         creatorType: "user",
         creatorId: ownerId,
         creatorName: "Profile Creator",
+        isFollowing: false,
       }),
     ]);
 
@@ -1787,6 +1812,25 @@ describe("feed, community, policies, analytics", () => {
     const after = await api("GET", `creators/${ownerId}`, { userId: viewer, ageGate: true });
     expectOk(after);
     expect(after.data.creator.isFollowing).toBe(true);
+    expect(
+      (after.data.characters as Array<{
+        id: string;
+        isFollowing: boolean;
+      }>).find((character) => character.id === characterId),
+    ).toMatchObject({ isFollowing: true });
+
+    const communityAfterFollow = await api("GET", "community/leaderboards", {
+      userId: viewer,
+      ageGate: true,
+      query: { style: `${P}creator-follow-style` },
+    });
+    expectOk(communityAfterFollow);
+    expect(
+      (communityAfterFollow.data.leaderboards.characters as Array<{
+        id: string;
+        isFollowing: boolean;
+      }>).find((character) => character.id === characterId),
+    ).toMatchObject({ isFollowing: true });
   });
 
   it("reports all-character creator totals while limiting the returned card page", async () => {
@@ -2416,13 +2460,35 @@ describe("appeals", () => {
   it("creates a moderation appeal", async () => {
     const userId = `${P}appealer`;
     await createUser({ id: userId });
+    const targetId = `${P}appealer-character`;
+    await createCharacter({ id: targetId, creatorId: userId, status: "removed" });
+    const report = await prisma.contentReport.create({
+      data: {
+        id: `${P}appealer-report`,
+        targetType: "character",
+        targetId,
+        category: "other_prohibited_content",
+        status: "closed",
+      },
+    });
+    const decision = await prisma.moderationReview.create({
+      data: {
+        id: `${P}appealer-decision`,
+        reportId: report.id,
+        reviewerId: SYS,
+        decision: "actioned",
+      },
+    });
     const res = await api("POST", "appeals", {
       userId,
       ageGate: true,
-      body: { targetType: "character", targetId: CHAR, appealText: "please review again" },
+      body: { targetType: "character", targetId, appealText: "please review again" },
     });
     expectOk(res);
-    expect(res.data.appeal).toMatchObject({ targetId: CHAR });
+    expect(res.data.appeal).toMatchObject({
+      targetId,
+      originalDecisionId: decision.id,
+    });
     const evidence = await prisma.caseEvidence.findFirstOrThrow({
       where: { sourceType: "appeal", sourceId: res.data.appeal.id as string },
     });

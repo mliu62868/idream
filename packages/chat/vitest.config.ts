@@ -50,6 +50,10 @@ export default defineConfig({
         "../shared/src/contracts/env.ts",
         import.meta.url,
       ).pathname,
+      "@idream/shared/observability/sentry": new URL(
+        "../shared/src/observability/sentry.ts",
+        import.meta.url,
+      ).pathname,
       // Bare specifier stays LAST — Vite alias matching is prefix-based, first match wins.
       "@idream/shared": new URL("../shared/src/index.ts", import.meta.url).pathname,
     },

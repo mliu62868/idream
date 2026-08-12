@@ -18,7 +18,14 @@ export class MockAgeVerificationProvider implements AgeVerificationProvider {
     return {
       ok: true as const,
       data: {
-        providerEventId: input.providerEventId,
+        providerEventId:
+          typeof payload.providerEventId === "string"
+            ? payload.providerEventId
+            : input.providerEventId,
+        deliveryId:
+          typeof payload.deliveryId === "string"
+            ? payload.deliveryId
+            : input.deliveryId ?? input.providerEventId,
         userId: typeof payload.userId === "string" ? payload.userId : undefined,
         providerVerificationId:
           typeof payload.providerVerificationId === "string"

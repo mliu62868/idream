@@ -1,19 +1,39 @@
 // P0-4 + P0-5 acceptance: inbox idempotency, reconcile convergence, maintain
 // rolling/TTL, privacy deletion across PG + files.
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm, readFile, writeFile, mkdir, readdir, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Pool } from "pg";
-import { createChatPrisma, createChatProjectorPrisma } from "../src/db.js";
-import { persistInboundEvent, reprocessPendingInbox } from "../src/inbox.js";
+import {
+  createChatPrisma,
+  createChatProjectorPrisma,
+  type ChatPrismaClient,
+} from "../src/db.js";
+import {
+  ACCOUNT_DELETION_V2_CONSUMED_STATUS,
+  consumeAccountDeletionRequestV2,
+  persistAccountDeletionRequestV2,
+  persistInboundEvent,
+  reprocessPendingInbox,
+} from "../src/inbox.js";
 import { reconcile } from "../src/reconcile.js";
 import { rollSessionLog, pruneExpiredSegments } from "../src/maintain.js";
 import { deleteMessage, deleteSession, deleteAccount } from "../src/privacy.js";
-import { withTurnAuthority } from "../src/file-mutations.js";
+import { archiveSession } from "../src/service.js";
+import {
+  applyPendingChatFileMutationsTx,
+  withTurnAuthority,
+} from "../src/file-mutations.js";
 import { appendLine, chatFsPaths, listPrefix, readWhole } from "../src/chat-fs.js";
 import { drainQueue, obliterate } from "../src/queue.js";
-import { CHAT_QUEUES, MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
+import {
+  CHAT_QUEUES,
+  CHAT_TO_MAIN_EVENTS,
+  MAIN_TO_CHAT_EVENTS,
+  characterModerationRemovalEventId,
+  characterModerationRestorationEventId,
+} from "@idream/shared/contracts";
 import { acceptAgeGate, ingestMainEvent } from "./fixtures.js";
 
 const prisma = createChatPrisma();
@@ -23,7 +43,53 @@ let fsRoot: string;
 const USER = "u_rel";
 const STARVATION_USER = "u_rel_memory_starvation";
 const TURN_AUTHORITY_USER = "u_rel_turn_authority";
+const MODERATION_RESTORE_USER = "u_rel_moderation_restore";
+const MODERATION_RESTORE_RACE_USER = "u_rel_moderation_restore_race";
+const MODERATION_RESTORE_STALE_USER = "u_rel_moderation_restore_stale";
 const CHAR = "c_rel";
+const MODERATION_RESTORE_CHAR = "c_rel_moderation_restore";
+
+function accountDeletionV2Envelope(userId: string, sourceEventId: string) {
+  return {
+    sourceService: "main",
+    sourceEventId,
+    eventType: MAIN_TO_CHAT_EVENTS.accountDeletionRequestedV2,
+    schemaVersion: 2,
+    occurredAt: "2026-08-11T12:00:00.000Z",
+    aggregateType: "user",
+    aggregateId: userId,
+    payload: { userId },
+  } as const;
+}
+
+async function acknowledgeRequestBoundCompletion(
+  deletionRequestEventId: string,
+  db: ChatPrismaClient,
+) {
+  const completion = await db.chatOutboxEvent.findFirstOrThrow({
+    where: {
+      eventType: CHAT_TO_MAIN_EVENTS.accountErasureCompletedV2,
+      payload: {
+        path: ["deletionRequestEventId"],
+        equals: deletionRequestEventId,
+      },
+    },
+  });
+  expect(completion).toMatchObject({
+    status: "request_bound",
+    schemaVersion: 2,
+    payload: {
+      version: 2,
+      binding: "request_bound",
+      deletionRequestEventId,
+    },
+  });
+  await db.chatOutboxEvent.update({
+    where: { id: completion.id },
+    data: { status: "delivered", deliveredAt: new Date() },
+  });
+  return { eventId: completion.id, delivered: true as const };
+}
 
 beforeAll(async () => {
   fsRoot = await mkdtemp(path.join(tmpdir(), "chat-rel-"));
@@ -40,11 +106,35 @@ beforeAll(async () => {
     `INSERT INTO public.users (id,email,status,"createdAt","updatedAt") VALUES ($1,$2,'active',now(),now()) ON CONFLICT (id) DO NOTHING`,
     [TURN_AUTHORITY_USER, "rel-turn-authority@test.dev"],
   );
-  await acceptAgeGate(superPool, [USER, STARVATION_USER, TURN_AUTHORITY_USER]);
+  await superPool.query(
+    `INSERT INTO public.users (id,email,status,"createdAt","updatedAt") VALUES ($1,$2,'active',now(),now()) ON CONFLICT (id) DO NOTHING`,
+    [MODERATION_RESTORE_USER, "rel-moderation-restore@test.dev"],
+  );
+  await superPool.query(
+    `INSERT INTO public.users (id,email,status,"createdAt","updatedAt") VALUES ($1,$2,'active',now(),now()) ON CONFLICT (id) DO NOTHING`,
+    [MODERATION_RESTORE_RACE_USER, "rel-moderation-restore-race@test.dev"],
+  );
+  await superPool.query(
+    `INSERT INTO public.users (id,email,status,"createdAt","updatedAt") VALUES ($1,$2,'active',now(),now()) ON CONFLICT (id) DO NOTHING`,
+    [MODERATION_RESTORE_STALE_USER, "rel-moderation-restore-stale@test.dev"],
+  );
+  await acceptAgeGate(superPool, [
+    USER,
+    STARVATION_USER,
+    TURN_AUTHORITY_USER,
+    MODERATION_RESTORE_USER,
+    MODERATION_RESTORE_RACE_USER,
+    MODERATION_RESTORE_STALE_USER,
+  ]);
   await superPool.query(
     `INSERT INTO public.characters (id,name,age,description,visibility,status,style,gender,appearance,"advancedDetails","createdAt","updatedAt")
      VALUES ($1,'Rel',24,'d','public','approved','realistic','female','{}','{}',now(),now()) ON CONFLICT (id) DO NOTHING`,
     [CHAR],
+  );
+  await superPool.query(
+    `INSERT INTO public.characters (id,name,age,description,visibility,status,style,gender,appearance,"advancedDetails","createdAt","updatedAt")
+     VALUES ($1,'Restore',24,'d','public','approved','realistic','female','{}','{}',now(),now()) ON CONFLICT (id) DO NOTHING`,
+    [MODERATION_RESTORE_CHAR],
   );
 });
 
@@ -166,6 +256,242 @@ describe("inbox (P0-4 main→chat, idempotent)", () => {
     expect(second.applied).toBe(false); // idempotent on sourceEventId
   });
 
+  it("restores only sessions archived by the exact moderation removal event", async () => {
+    const active = await prisma.chatSession.create({
+      data: {
+        id: "rel_mod_restore_active",
+        userId: MODERATION_RESTORE_USER,
+        characterId: MODERATION_RESTORE_CHAR,
+        status: "active",
+      },
+    });
+    const userArchivedBefore = await prisma.chatSession.create({
+      data: {
+        id: "rel_mod_restore_user_before",
+        userId: MODERATION_RESTORE_USER,
+        characterId: MODERATION_RESTORE_CHAR,
+        status: "archived",
+      },
+    });
+    const userArchivedAfter = await prisma.chatSession.create({
+      data: {
+        id: "rel_mod_restore_user_after",
+        userId: MODERATION_RESTORE_USER,
+        characterId: MODERATION_RESTORE_CHAR,
+        status: "active",
+      },
+    });
+    const moderationDecisionId = "rel_mod_restore_decision";
+    const removalEventId = characterModerationRemovalEventId(
+      moderationDecisionId,
+    );
+
+    await expect(
+      ingestMainEvent(
+        {
+          sourceEventId: removalEventId,
+          eventType: MAIN_TO_CHAT_EVENTS.characterRemoved,
+          occurredAt: new Date().toISOString(),
+          aggregateType: "character",
+          aggregateId: MODERATION_RESTORE_CHAR,
+          payload: {
+            version: 1,
+            binding: "moderation_decision",
+            characterId: MODERATION_RESTORE_CHAR,
+            moderationDecisionId,
+            previousRemovalEventId: null,
+          },
+        },
+        prisma,
+      ),
+    ).resolves.toMatchObject({ applied: true });
+
+    await archiveSession(
+      {
+        userId: MODERATION_RESTORE_USER,
+        sessionId: userArchivedAfter.id,
+      },
+      { prisma, projectorPrisma },
+    );
+
+    const restorationEvent = {
+      sourceEventId: characterModerationRestorationEventId(
+        "rel_mod_restore_appeal",
+      ),
+      eventType:
+        MAIN_TO_CHAT_EVENTS.characterModerationRestorationRequested,
+      occurredAt: new Date().toISOString(),
+      aggregateType: "character",
+      aggregateId: MODERATION_RESTORE_CHAR,
+      payload: {
+        version: 1,
+        binding: "removal_event",
+        appealId: "rel_mod_restore_appeal",
+        characterId: MODERATION_RESTORE_CHAR,
+        moderationDecisionId,
+        removalEventId,
+      },
+    } as const;
+    await expect(ingestMainEvent(restorationEvent, prisma)).resolves.toMatchObject({
+      applied: true,
+    });
+
+    const sessions = await prisma.chatSession.findMany({
+      where: {
+        id: {
+          in: [active.id, userArchivedBefore.id, userArchivedAfter.id],
+        },
+      },
+      orderBy: { id: "asc" },
+      select: { id: true, status: true },
+    });
+    expect(sessions).toEqual([
+      { id: active.id, status: "active" },
+      { id: userArchivedAfter.id, status: "archived" },
+      { id: userArchivedBefore.id, status: "archived" },
+    ]);
+    await expect(ingestMainEvent(restorationEvent, prisma)).resolves.toMatchObject({
+      applied: false,
+    });
+  });
+
+  it("keeps the causal session archived when a replacement became active before restoration", async () => {
+    const causalSession = await prisma.chatSession.create({
+      data: {
+        id: "rel_mod_restore_race_causal",
+        userId: MODERATION_RESTORE_RACE_USER,
+        characterId: MODERATION_RESTORE_CHAR,
+        status: "active",
+      },
+    });
+    const moderationDecisionId = "rel_mod_restore_race_decision";
+    const removalEventId = characterModerationRemovalEventId(
+      moderationDecisionId,
+    );
+    await ingestMainEvent(
+      {
+        sourceEventId: removalEventId,
+        eventType: MAIN_TO_CHAT_EVENTS.characterRemoved,
+        occurredAt: new Date().toISOString(),
+        aggregateType: "character",
+        aggregateId: MODERATION_RESTORE_CHAR,
+        payload: {
+          version: 1,
+          binding: "moderation_decision",
+          characterId: MODERATION_RESTORE_CHAR,
+          moderationDecisionId,
+          previousRemovalEventId: null,
+        },
+      },
+      prisma,
+    );
+    const replacement = await prisma.chatSession.create({
+      data: {
+        id: "rel_mod_restore_race_replacement",
+        userId: MODERATION_RESTORE_RACE_USER,
+        characterId: MODERATION_RESTORE_CHAR,
+        status: "active",
+      },
+    });
+
+    await ingestMainEvent(
+      {
+        sourceEventId: characterModerationRestorationEventId(
+          "rel_mod_restore_race_appeal",
+        ),
+        eventType:
+          MAIN_TO_CHAT_EVENTS.characterModerationRestorationRequested,
+        occurredAt: new Date().toISOString(),
+        aggregateType: "character",
+        aggregateId: MODERATION_RESTORE_CHAR,
+        payload: {
+          version: 1,
+          binding: "removal_event",
+          appealId: "rel_mod_restore_race_appeal",
+          characterId: MODERATION_RESTORE_CHAR,
+          moderationDecisionId,
+          removalEventId,
+        },
+      },
+      prisma,
+    );
+
+    await expect(
+      prisma.chatSession.findMany({
+        where: { id: { in: [causalSession.id, replacement.id] } },
+        orderBy: { id: "asc" },
+        select: { id: true, status: true },
+      }),
+    ).resolves.toEqual([
+      { id: causalSession.id, status: "archived" },
+      { id: replacement.id, status: "active" },
+    ]);
+  });
+
+  it("rejects restoration A after removal B became the current Character effect", async () => {
+    const session = await prisma.chatSession.create({
+      data: {
+        id: "rel_mod_restore_stale_session",
+        userId: MODERATION_RESTORE_STALE_USER,
+        characterId: MODERATION_RESTORE_CHAR,
+        status: "active",
+      },
+    });
+    const decisionA = "rel_mod_restore_stale_decision_a";
+    const decisionB = "rel_mod_restore_stale_decision_b";
+    const removalA = characterModerationRemovalEventId(decisionA);
+    const removalB = characterModerationRemovalEventId(decisionB);
+    for (const [sourceEventId, moderationDecisionId, previousRemovalEventId] of [
+      [removalA, decisionA, null],
+      [removalB, decisionB, removalA],
+    ] as const) {
+      await ingestMainEvent(
+        {
+          sourceEventId,
+          eventType: MAIN_TO_CHAT_EVENTS.characterRemoved,
+          occurredAt: new Date().toISOString(),
+          aggregateType: "character",
+          aggregateId: MODERATION_RESTORE_CHAR,
+          payload: {
+            version: 1,
+            binding: "moderation_decision",
+            characterId: MODERATION_RESTORE_CHAR,
+            moderationDecisionId,
+            previousRemovalEventId,
+          },
+        },
+        prisma,
+      );
+    }
+
+    await expect(
+      ingestMainEvent(
+        {
+          sourceEventId: characterModerationRestorationEventId(
+            "rel_mod_restore_stale_appeal_a",
+          ),
+          eventType:
+            MAIN_TO_CHAT_EVENTS.characterModerationRestorationRequested,
+          occurredAt: new Date().toISOString(),
+          aggregateType: "character",
+          aggregateId: MODERATION_RESTORE_CHAR,
+          payload: {
+            version: 1,
+            binding: "removal_event",
+            appealId: "rel_mod_restore_stale_appeal_a",
+            characterId: MODERATION_RESTORE_CHAR,
+            moderationDecisionId: decisionA,
+            removalEventId: removalA,
+          },
+        },
+        prisma,
+      ),
+    ).rejects.toThrow("current removal effect");
+    await expect(
+      prisma.chatSession.findUniqueOrThrow({ where: { id: session.id } }),
+    ).resolves.toMatchObject({ status: "archived" });
+  });
+
   it("atomically claims concurrent deliveries so only one worker applies the event", async () => {
     const event = {
       sourceEventId: `rel_concurrent_${Date.now()}`,
@@ -207,6 +533,10 @@ describe("reconcile (P0-4 convergence)", () => {
   });
 
   it("selects lagging enabled turns before LIMIT and excludes legacy unknown turns", async () => {
+    // This test owns the global LIMIT=200 population. Earlier sequential files
+    // also leave sent turns in the shared integration database; keep them from
+    // changing which 200 rows this fixture is proving.
+    await prisma.chatSession.deleteMany();
     const session = await prisma.chatSession.create({
       data: {
         id: "rel_memory_starvation_session",
@@ -440,7 +770,10 @@ describe("reconcile (P0-4 convergence)", () => {
         select: { status: true, attempts: true },
       }),
     ).toMatchObject({ status: "pending", attempts: 1 });
-    await deleteAccount({ userId: poisonUser }, prisma);
+    await deleteAccount({
+      userId: poisonUser,
+      deletionRequestEventId: `reliability-poison-delete-${poisonUser}`,
+    }, prisma);
   });
 });
 
@@ -467,6 +800,198 @@ describe("maintain (P0-5 rolling/TTL)", () => {
 });
 
 describe("privacy deletion (P0-5, PG + files)", () => {
+  it("projects a pending legacy account deletion intent without blocking the ledger", async () => {
+    const suffix = `${process.pid}-${Date.now()}`;
+    const userId = `u_erase_legacy_file_${suffix}`;
+    const mutationId = `legacy_account_delete_${suffix}`;
+    await superPool.query(
+      `INSERT INTO public.users (id,email,status,"createdAt","updatedAt") VALUES ($1,$2,'active',now(),now())`,
+      [userId, `${userId}@test.dev`],
+    );
+    await acceptAgeGate(superPool, [userId]);
+    const legacyClient = await superPool.connect();
+    try {
+      await legacyClient.query("BEGIN");
+      await legacyClient.query("SET LOCAL session_replication_role = replica");
+      await legacyClient.query(
+        `INSERT INTO chat.chat_file_mutations (id, user_id, kind, payload)
+         VALUES ($1, $2, 'account_delete', '{"kind":"account_delete"}'::jsonb)`,
+        [mutationId, userId],
+      );
+      await legacyClient.query("COMMIT");
+    } finally {
+      legacyClient.release();
+    }
+
+    await expect(
+      projectorPrisma.$transaction((tx) =>
+        applyPendingChatFileMutationsTx(tx, userId),
+      ),
+    ).resolves.toBe(1);
+    await expect(
+      prisma.chatOutboxEvent.findFirst({
+        where: {
+          eventType: CHAT_TO_MAIN_EVENTS.accountErasureCompleted,
+          payload: {
+            path: ["deletionRequestEventId"],
+            equals: `legacy-chat-file-mutation:${mutationId}`,
+          },
+        },
+      }),
+    ).resolves.toBeTruthy();
+  });
+
+  it("repairs a legacy consumed/no-op v2 receipt before ACKing Main", async () => {
+    const suffix = `${process.pid}-${Date.now()}`;
+    const userId = `u_erase_consumed_${suffix}`;
+    const sourceEventId = `erase-consumed-request-${suffix}`;
+    const sessionId = `erase-consumed-session-${suffix}`;
+    await superPool.query(
+      `INSERT INTO public.users (id,email,status,"createdAt","updatedAt") VALUES ($1,$2,'active',now(),now())`,
+      [userId, `${userId}@test.dev`],
+    );
+    await acceptAgeGate(superPool, [userId]);
+    await prisma.chatSession.create({
+      data: { id: sessionId, userId, characterId: CHAR, status: "active" },
+    });
+    await appendLine(chatFsPaths.sessionLog(userId, sessionId), "{}");
+    const ack = await persistAccountDeletionRequestV2(
+      accountDeletionV2Envelope(userId, sourceEventId),
+      prisma,
+    );
+    if (!ack.receiptId) throw new Error("missing v2 deletion receipt");
+
+    // Simulate the rolled-back binary's default branch: unknown v2 event was
+    // marked successful but no account effect or completion was produced.
+    await prisma.chatInboxEvent.update({
+      where: { id: ack.receiptId },
+      data: { status: "consumed", consumedAt: new Date() },
+    });
+    const deliver = vi.fn(acknowledgeRequestBoundCompletion);
+    await expect(consumeAccountDeletionRequestV2(
+      ack.receiptId,
+      prisma,
+      projectorPrisma,
+      deliver,
+    )).resolves.toEqual({ applied: true });
+
+    await expect(prisma.chatSession.count({ where: { userId } })).resolves.toBe(0);
+    await expect(prisma.chatInboxEvent.findUniqueOrThrow({
+      where: { id: ack.receiptId },
+    })).resolves.toMatchObject({
+      status: ACCOUNT_DELETION_V2_CONSUMED_STATUS,
+    });
+    expect(deliver).toHaveBeenCalledTimes(1);
+  });
+
+  it("recovers after the account file mutation committed but projection stopped", async () => {
+    const suffix = `${process.pid}-${Date.now()}`;
+    const userId = `u_erase_file_window_${suffix}`;
+    const sourceEventId = `erase-file-window-request-${suffix}`;
+    await superPool.query(
+      `INSERT INTO public.users (id,email,status,"createdAt","updatedAt") VALUES ($1,$2,'active',now(),now())`,
+      [userId, `${userId}@test.dev`],
+    );
+    await acceptAgeGate(superPool, [userId]);
+    const ack = await persistAccountDeletionRequestV2(
+      accountDeletionV2Envelope(userId, sourceEventId),
+      prisma,
+    );
+    if (!ack.receiptId) throw new Error("missing v2 deletion receipt");
+    const unavailableProjector = {
+      $transaction: async () => {
+        throw new Error("projector stopped after domain commit");
+      },
+      chatFileMutation: {
+        findFirst: async () => null,
+      },
+    } as unknown as ChatPrismaClient;
+
+    await expect(deleteAccount({
+      userId,
+      deletionRequestEventId: sourceEventId,
+      requestBound: true,
+    }, prisma, unavailableProjector)).rejects.toThrow(
+      "projector stopped after domain commit",
+    );
+    await expect(prisma.chatFileMutation.findFirst({
+      where: { userId, status: "pending" },
+    })).resolves.toMatchObject({
+      kind: "account_delete",
+      payload: expect.objectContaining({ requestBound: true }),
+    });
+
+    await expect(consumeAccountDeletionRequestV2(
+      ack.receiptId,
+      prisma,
+      projectorPrisma,
+      acknowledgeRequestBoundCompletion,
+    )).resolves.toEqual({ applied: true });
+    await expect(prisma.chatFileMutation.count({
+      where: { userId, status: "pending" },
+    })).resolves.toBe(0);
+    await expect(prisma.chatOutboxEvent.findFirst({
+      where: {
+        eventType: CHAT_TO_MAIN_EVENTS.accountErasureCompletedV2,
+        payload: { path: ["deletionRequestEventId"], equals: sourceEventId },
+      },
+    })).resolves.toMatchObject({ status: "delivered" });
+  });
+
+  it("replaces a legacy completion swallowed by old Main with dedicated v2 evidence", async () => {
+    const suffix = `${process.pid}-${Date.now()}`;
+    const userId = `u_erase_old_main_${suffix}`;
+    const sourceEventId = `erase-old-main-request-${suffix}`;
+    await superPool.query(
+      `INSERT INTO public.users (id,email,status,"createdAt","updatedAt") VALUES ($1,$2,'active',now(),now())`,
+      [userId, `${userId}@test.dev`],
+    );
+    await acceptAgeGate(superPool, [userId]);
+    const ack = await persistAccountDeletionRequestV2(
+      accountDeletionV2Envelope(userId, sourceEventId),
+      prisma,
+    );
+    if (!ack.receiptId) throw new Error("missing v2 deletion receipt");
+
+    await deleteAccount({
+      userId,
+      deletionRequestEventId: sourceEventId,
+    }, prisma, projectorPrisma);
+    const legacyCompletion = await prisma.chatOutboxEvent.findFirstOrThrow({
+      where: {
+        eventType: CHAT_TO_MAIN_EVENTS.accountErasureCompleted,
+        payload: { path: ["deletionRequestEventId"], equals: sourceEventId },
+      },
+    });
+    await prisma.chatOutboxEvent.update({
+      where: { id: legacyCompletion.id },
+      data: { status: "delivered", deliveredAt: new Date() },
+    });
+    await prisma.chatInboxEvent.update({
+      where: { id: ack.receiptId },
+      data: { status: "consumed", consumedAt: new Date() },
+    });
+
+    const deliver = vi.fn(acknowledgeRequestBoundCompletion);
+    await expect(consumeAccountDeletionRequestV2(
+      ack.receiptId,
+      prisma,
+      projectorPrisma,
+      deliver,
+    )).resolves.toEqual({ applied: true });
+    expect(deliver).toHaveBeenCalledTimes(1);
+    await expect(prisma.chatOutboxEvent.findFirst({
+      where: {
+        eventType: CHAT_TO_MAIN_EVENTS.accountErasureCompletedV2,
+        payload: { path: ["deletionRequestEventId"], equals: sourceEventId },
+      },
+    })).resolves.toMatchObject({
+      schemaVersion: 2,
+      status: "delivered",
+      payload: expect.objectContaining({ binding: "request_bound" }),
+    });
+  });
+
   it("deleteSession removes messages + jsonl", async () => {
     const s = await prisma.chatSession.create({
       data: { id: "rel_del", userId: USER, characterId: CHAR, status: "active" },
@@ -732,7 +1257,10 @@ describe("privacy deletion (P0-5, PG + files)", () => {
       await writeFile(path.join(fsRoot, "mem", u, "global", "boundaries.md"), "b");
     });
 
-    await deleteAccount({ userId: u }, prisma);
+    await deleteAccount({
+      userId: u,
+      deletionRequestEventId: `reliability-delete-${u}`,
+    }, prisma);
 
     expect(await prisma.chatSession.findMany({ where: { userId: u } })).toEqual([]);
     expect(await listPrefix(["sessions", u])).toEqual([]);
@@ -740,6 +1268,8 @@ describe("privacy deletion (P0-5, PG + files)", () => {
     const erasure = await prisma.chatOutboxEvent.findFirst({
       where: { aggregateId: u, eventType: "chat.account_erasure.completed" },
     });
-    expect(erasure).not.toBeNull();
+    expect(erasure?.payload).toMatchObject({
+      deletionRequestEventId: `reliability-delete-${u}`,
+    });
   });
 });

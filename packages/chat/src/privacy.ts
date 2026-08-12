@@ -371,14 +371,25 @@ export async function deleteSession(
 }
 
 export async function deleteAccount(
-  input: { userId: string },
+  input: {
+    userId: string;
+    deletionRequestEventId: string;
+    requestBound?: boolean;
+  },
   prisma: ChatPrismaClient = chatPrisma,
   projectorPrisma: ChatPrismaClient = chatProjectorPrisma,
 ): Promise<void> {
+  const completionEventType = input.requestBound
+    ? CHAT_TO_MAIN_EVENTS.accountErasureCompletedV2
+    : CHAT_TO_MAIN_EVENTS.accountErasureCompleted;
   const alreadyCompleted = await prisma.chatOutboxEvent.findFirst({
     where: {
       aggregateId: input.userId,
-      eventType: CHAT_TO_MAIN_EVENTS.accountErasureCompleted,
+      eventType: completionEventType,
+      payload: {
+        path: ["deletionRequestEventId"],
+        equals: input.deletionRequestEventId,
+      },
     },
     select: { id: true },
   });
@@ -389,7 +400,11 @@ export async function deleteAccount(
     const completedInsideLock = await tx.chatOutboxEvent.findFirst({
       where: {
         aggregateId: input.userId,
-        eventType: CHAT_TO_MAIN_EVENTS.accountErasureCompleted,
+        eventType: completionEventType,
+        payload: {
+          path: ["deletionRequestEventId"],
+          equals: input.deletionRequestEventId,
+        },
       },
       select: { id: true },
     });
@@ -400,7 +415,11 @@ export async function deleteAccount(
     const accountDeleteMutationId = await recordChatFileMutation(
       tx,
       input.userId,
-      { kind: "account_delete" },
+      {
+        kind: "account_delete",
+        deletionRequestEventId: input.deletionRequestEventId,
+        ...(input.requestBound ? { requestBound: true as const } : {}),
+      },
     );
     await tx.$queryRaw`
       SELECT chat.purge_file_mutations_for_account(

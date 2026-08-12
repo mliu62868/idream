@@ -64,8 +64,10 @@ export function SupportWorkspace({
   canWrite: boolean;
 }) {
   const { t } = useAdminI18n();
-  const [query, setQuery] = useState<SupportQuery>(() => currentQuery());
-  const [draft, setDraft] = useState<SupportQuery>(() => currentQuery());
+  // INVARIANT: the server render and first client render use the same state.
+  // URL-owned filters are restored only after hydration.
+  const [query, setQuery] = useState<SupportQuery>(defaultSupportQuery);
+  const [draft, setDraft] = useState<SupportQuery>(defaultSupportQuery);
   const [data, setData] = useState<ListResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -77,7 +79,6 @@ export function SupportWorkspace({
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const gate = useRef(createLatestRequestGate());
-  const initialQuery = useRef(query);
   const savedViewCreateKey = useRef<string | null>(null);
   const savedViewDeleteKeys = useRef(new Map<string, string>());
 
@@ -122,17 +123,20 @@ export function SupportWorkspace({
 
   useEffect(() => {
     const requestGate = gate.current;
-    void load(initialQuery.current);
-    void loadSavedViews();
     const restore = () => {
       const next = currentQuery();
       setQuery(next);
       setDraft(next);
       void load(next);
     };
+    const timer = window.setTimeout(() => {
+      void loadSavedViews();
+      restore();
+    }, 0);
     window.addEventListener("popstate", restore);
     window.addEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, restore);
     return () => {
+      window.clearTimeout(timer);
       requestGate.invalidate();
       window.removeEventListener("popstate", restore);
       window.removeEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, restore);
@@ -479,6 +483,7 @@ export function SupportWorkspace({
             "Created",
             "Actions",
           ]}
+          minimumWidthClassName="min-w-[2000px]"
           rows={supportRows(rows, canWrite, confirmAction)}
         />
       ) : null}

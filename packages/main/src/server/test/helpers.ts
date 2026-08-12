@@ -128,7 +128,8 @@ export async function api(
     options.autoGenerationIdempotencyKey !== false &&
     (
       path === "generation/jobs" ||
-      /^media\/[^/]+\/variation$/.test(path)
+      /^media\/[^/]+\/variation$/.test(path) ||
+      /^character-drafts\/[^/]+\/preview$/.test(path)
     ) &&
     !hasIdempotencyKey
   ) {
@@ -1065,6 +1066,18 @@ export async function purgeTestData(prefix: string) {
   await prisma.characterDraft.deleteMany({ where: { OR: [{ id: sw }, { ownerId: sw }] } });
   await prisma.ageGateAcceptance.deleteMany({
     where: { OR: [{ anonymousId: sw }, { userId: sw }, { sourcePath: sw }] },
+  });
+
+  // AccountDeletion intentionally has no User FK because its anonymous
+  // terminal receipt outlives the account. Non-terminal test workflows must
+  // therefore be removed explicitly before their fixture User is purged.
+  await prisma.accountDeletion.deleteMany({
+    where: {
+      OR: [
+        { userId: sw },
+        ...(purgeUserIds.length > 0 ? [{ userId: { in: purgeUserIds } }] : []),
+      ],
+    },
   });
 
   // Users cascade most remaining per-user rows (sessions, subs, ledger, jobs...).

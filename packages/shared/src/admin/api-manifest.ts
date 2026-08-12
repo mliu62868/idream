@@ -169,6 +169,7 @@ export const ADMIN_COMMAND_TARGET_READ_PERMISSIONS = {
   character_serving: "character.release.read",
   chat_session: "character.release.read",
   creative_run: "creative.run.read",
+  incident_correlation_outbox_batch: "ops.incident.read",
   incident_action_plan: "ops.incident.read",
   ops_incident: "ops.incident.read",
 } as const satisfies Record<string, AdminPermissionKey>;
@@ -233,6 +234,7 @@ export const ADMIN_V2_API_OPERATIONS = [
   operation("POST", "/api/v2/admin/characters/:id/commands/retire", allOf("character.release.publish"), "adminCommandRequestSchema+idempotency-key", "adminCommandAcceptedSchema"),
   operation("POST", "/api/v2/admin/characters/:id/portfolio-decisions", allOf("character.project.write"), "characterPortfolioDecisionRequestSchema+idempotency-key", "characterPortfolioDecisionRecordSchema"),
   operation("GET", "/api/v2/admin/characters/:id/project", allOf("character.project.write"), "path:id", "characterProjectDraftResumeSchema"),
+  operation("POST", "/api/v2/admin/characters/:id/project", allOf("character.project.write"), "customerCharacterPublicationPrepRequestSchema+idempotency-key", "customerCharacterPublicationPrepResponseSchema", undefined, { commandType: "character.publication.prepare", executionMode: "atomic" }),
   operation("PATCH", "/api/v2/admin/characters/:id/project", allOf("character.project.write"), "characterProjectDraftPatchRequestSchema+if-match", "characterWorkspaceProjectSchema"),
   operation("POST", "/api/v2/admin/characters/:id/soul/versions", allOf("character.project.write"), "characterSoulVersionCreateRequestSchema+idempotency-key+if-match", "characterSoulVersionCreateResponseSchema"),
   operation("PATCH", "/api/v2/admin/characters/:id/draft-image", allOf("character.project.write"), "characterDraftImageSelectionRequestSchema+idempotency-key+if-match", "characterDraftImageSelectionResultSchema", undefined, { commandType: "character.project.draft_image.select" }),
@@ -248,6 +250,28 @@ export const ADMIN_V2_API_OPERATIONS = [
   operation("POST", "/api/v2/admin/characters/:id/releases/:releaseId/validation", allOf("character.release.publish"), "characterReleaseValidationRequestSchema+idempotency-key", "characterReleaseValidationResultSchema"),
 
   operation("POST", "/api/v2/admin/chat/sessions/:sessionId/commands/migrate-release", allOf("character.release.publish"), "characterSessionReleaseMigrationCommandRequestSchema+idempotency-key", "adminCommandAcceptedSchema"),
+  operation("GET", "/api/v2/admin/chat/main-outbox-events", allOf("chat.ops.read", "ops.queue.read"), "mainToChatOutboxEventQuerySchema", "mainToChatOutboxEventListResponseSchema"),
+  operation(
+    "POST",
+    "/api/v2/admin/chat/main-outbox-events/commands/replay",
+    allOf("chat.ops.read", "ops.deadletter.write"),
+    "mainToChatOutboxReplayRequestSchema+idempotency-key",
+    "mainToChatOutboxReplayResultSchema",
+    undefined,
+    { commandType: "chat.main_outbox.replay", executionMode: "atomic" },
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/chat/main-outbox-events/commands/discard-target-missing",
+    allOf("chat.ops.read", "ops.deadletter.write"),
+    "mainToChatOutboxTargetMissingDispositionRequestSchema+idempotency-key",
+    "mainToChatOutboxTargetMissingDispositionResultSchema",
+    undefined,
+    {
+      commandType: "chat.main_outbox.discard_target_missing",
+      executionMode: "atomic",
+    },
+  ),
 
   operation("GET", "/api/v2/admin/collaboration/:targetType/:targetId/activity", oneOfBy("collaboration_target_read", ...collaborationRead), "collaborationQuerySchema", "collaborationActivityListResponseSchema"),
   operation("POST", "/api/v2/admin/collaboration/:targetType/:targetId/activity", oneOfBy("collaboration_target_write", ...collaborationWrite), "collaborationActivityCreateSchema+idempotency-key", "collaborationActivityMutationSchema"),
@@ -286,6 +310,16 @@ export const ADMIN_V2_API_OPERATIONS = [
   operation("POST", "/api/v2/admin/generation/requests/:id/commands/cancel", allOf("generation.job.requeue"), "generationRequestCancelSchema+idempotency-key", "generationRequestCancelResultSchema"),
 
   operation("GET", "/api/v2/admin/incidents", allOf("ops.incident.read"), "incidentQuerySchema", "incidentListResponseSchema"),
+  operation("GET", "/api/v2/admin/incidents/correlation-outbox", allOf("ops.incident.read", "ops.queue.read"), "incidentCorrelationOutboxEventQuerySchema", "incidentCorrelationOutboxEventListResponseSchema"),
+  operation(
+    "POST",
+    "/api/v2/admin/incidents/correlation-outbox/commands/replay",
+    allOf("ops.incident.manage", "ops.deadletter.write"),
+    "incidentCorrelationOutboxReplayRequestSchema+idempotency-key",
+    "incidentCorrelationOutboxReplayResultSchema",
+    undefined,
+    { commandType: "incident.correlation_outbox.replay", executionMode: "atomic" },
+  ),
   operation("POST", "/api/v2/admin/incidents/backfill", allOf("ops.incident.manage"), "adminBackfillRequestSchema+idempotency-key", "adminBackfillResultSchema"),
   operation("GET", "/api/v2/admin/incidents/:id", allOf("ops.incident.read"), "path:id", "incidentDetailSchema"),
   operation("PATCH", "/api/v2/admin/incidents/:id", allOf("ops.incident.manage"), "incidentTriageRequestSchema+if-match", "incidentTriageResultSchema"),

@@ -231,7 +231,8 @@ bun run launch:probe:blob -- --report .tmp/launch-blob-probe.json
 3. 运行所有 probe：
 
 ```bash
-bun run launch:probe:image:local
+bun run --filter @idream/gen probe:image -- --model <active-product-config-model> --report .tmp/launch-image-probe.json
+bun run launch:probe:video -- --model ltx23-gtanimation-i2v --reference <reviewed-character-image> --report .tmp/launch-video-probe.json
 bun run launch:probe:web-surface -- --report .tmp/launch-web-surface-probe.json
 bun run launch:probe:product-config -- --report .tmp/launch-product-config-probe.json
 bun run launch:probe:catalog -- --report .tmp/public-catalog-probe.json
@@ -241,6 +242,10 @@ bun run launch:probe:voice -- --report .tmp/launch-voice-probe.json
 bun run launch:probe:blob -- --report .tmp/launch-blob-probe.json
 bun run launch:probe:payment -- --report .tmp/launch-payment-probe.json
 bun run launch:probe:age -- --report .tmp/launch-age-probe.json
+bun run launch:probe:sentry:main -- --report .tmp/launch-sentry-main-probe.json
+bun run launch:probe:sentry:admin -- --report .tmp/launch-sentry-admin-probe.json
+bun run launch:probe:sentry:chat -- --report .tmp/launch-sentry-chat-probe.json
+bun run launch:probe:sentry:gen -- --report .tmp/launch-sentry-gen-probe.json
 ```
 
 4. 运行最终 gate：

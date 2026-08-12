@@ -16,24 +16,75 @@
 --   * Neither runtime role receives a grant on public.* base tables; Main data is
 --     exposed only through the read models granted to chat_service.
 --
--- Passwords below are PLACEHOLDERS. Set real secrets (or use IAM/peer auth) before
--- production. Runtime config must provide distinct chat_service request and
--- chat_projector projector credentials; do not collapse them into one app role.
+-- Role bootstrap is deliberately outside this file. A DBA/IAM authority must
+-- pre-create all four roles and configure the two runtime identities with real,
+-- distinct credentials. Silently creating placeholder LOGIN roles makes a clean
+-- production install look successful while leaving Chat unable to authenticate.
 
 -- ---- roles -------------------------------------------------------------------
 DO $$
+DECLARE
+  missing_roles text;
+  invalid_posture text;
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'core_owner') THEN
-    CREATE ROLE core_owner LOGIN PASSWORD 'core_owner_change_me';
+  SELECT string_agg(required.role_name, ', ' ORDER BY required.role_name)
+  INTO missing_roles
+  FROM unnest(ARRAY[
+    'core_owner',
+    'chat_owner',
+    'chat_service',
+    'chat_projector'
+  ]) AS required(role_name)
+  WHERE NOT EXISTS (
+    SELECT 1
+    FROM pg_roles
+    WHERE rolname = required.role_name
+  );
+
+  IF missing_roles IS NOT NULL THEN
+    RAISE EXCEPTION
+      'Chat boundary roles must be provisioned by DBA/IAM before apply: %',
+      missing_roles;
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'chat_owner') THEN
-    CREATE ROLE chat_owner LOGIN PASSWORD 'chat_owner_change_me';
+
+  SELECT string_agg(
+    role_state.role_name || ' must be ' ||
+      CASE WHEN role_state.must_login THEN 'LOGIN' ELSE 'NOLOGIN' END,
+    ', ' ORDER BY role_state.role_name
+  )
+  INTO invalid_posture
+  FROM (
+    VALUES
+      ('core_owner', false),
+      ('chat_owner', false),
+      ('chat_service', true),
+      ('chat_projector', true)
+  ) AS role_state(role_name, must_login)
+  JOIN pg_roles AS r ON r.rolname = role_state.role_name
+  WHERE r.rolcanlogin IS DISTINCT FROM role_state.must_login;
+
+  IF invalid_posture IS NOT NULL THEN
+    RAISE EXCEPTION
+      'Chat boundary role posture must be repaired by DBA/IAM before apply: %',
+      invalid_posture;
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'chat_service') THEN
-    CREATE ROLE chat_service LOGIN PASSWORD 'chat_service_change_me';
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'chat_projector') THEN
-    CREATE ROLE chat_projector LOGIN PASSWORD 'chat_projector_change_me';
+
+  IF EXISTS (
+    SELECT 1
+    FROM (VALUES
+      ('chat_service', 'core_owner'),
+      ('chat_service', 'chat_owner'),
+      ('chat_projector', 'core_owner'),
+      ('chat_projector', 'chat_owner')
+    ) AS forbidden(runtime_role, owner_role)
+    WHERE pg_has_role(
+      forbidden.runtime_role,
+      forbidden.owner_role,
+      'MEMBER'
+    )
+  ) THEN
+    RAISE EXCEPTION
+      'Chat runtime roles must not inherit or hold membership in owner roles';
   END IF;
 END
 $$;
@@ -50,7 +101,6 @@ CREATE SCHEMA IF NOT EXISTS chat       AUTHORIZATION chat_owner;
 -- (Views run with the view owner's privileges; chat_service never touches public.)
 GRANT USAGE ON SCHEMA public TO core_owner;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO core_owner;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO core_owner;
 
 -- chat_service may resolve names in the view schemas (but only SELECT the views,
 -- granted in 04_grants.sql). It must NOT get USAGE on public.

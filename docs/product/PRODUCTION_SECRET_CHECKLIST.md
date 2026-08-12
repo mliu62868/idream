@@ -33,6 +33,7 @@ Store these generated values:
 | --- | --- |
 | `APP_ENV=production` | Required by launch gate |
 | `NODE_ENV=production` | Required by service runtime |
+| `LAUNCH_SCOPE` | `full` by default; `core` excludes only Billing and Age Verification from this release while every other launch check remains mandatory |
 | `BETTER_AUTH_URL` | Public HTTPS main origin |
 | `MAIN_WEB_URL` | Public HTTPS main origin |
 | `ADMIN_WEB_URL` | Public HTTPS admin origin |
@@ -54,7 +55,7 @@ Store these generated values:
 | `BLOB_PROVIDER` | Production adapter value expected by launch gate |
 | `AGE_VERIFICATION_PROVIDER` | Production adapter value expected by launch gate |
 | `GEN_IMAGE_PROVIDER` | Generation worker image adapter; current workflow-native architecture uses `backend` |
-| `GEN_VIDEO_PROVIDER` | Keep `mock` while `video_gen=false`; set `pipeline` only when the video gateway is tested and video is enabled |
+| `GEN_VIDEO_PROVIDER` | Keep `mock` while `video_gen=false`; enabled production video uses the workflow-native `backend` route |
 | `ADMIN_MODEL_DIAGNOSTICS_ENABLED` | Keep `false` for normal production Admin; set `true` only during engineering diagnostics |
 | `ADMIN_MODEL_LIBRARY_DIR` | Optional diagnostics-only server-side model import directory |
 
@@ -84,11 +85,12 @@ Store these generated values:
 | `PIPELINE_VOICE_API_URL` | Explicit rollback voice gateway only |
 | `PIPELINE_VOICE_API_TOKEN` | Explicit rollback voice gateway token only |
 | `PIPELINE_VOICE_MODEL_DEFAULT` | Explicit rollback voice model alias only |
-| `POCKET_TTS_API_URL` | Co-located voice registry adapter, normally `http://127.0.0.1:8062/v1` |
-| `POCKET_TTS_API_TOKEN` | Shared internal token used by Main and the registry adapter |
-| `POCKET_TTS_MODEL` | oMLX model id, currently `pocket-tts-4bit` |
-| `POCKET_TTS_OMLX_API_URL` | oMLX OpenAI-compatible endpoint, normally `http://127.0.0.1:8061/v1` |
-| `POCKET_TTS_OMLX_API_TOKEN` | oMLX API token used only by the registry adapter |
+| `FISH_AUDIO_API_URL` | Fish Audio gateway, normally `http://127.0.0.1:8062/v1` |
+| `FISH_AUDIO_API_TOKEN` | Shared internal token used by Main and the Fish gateway |
+| `FISH_AUDIO_MODEL` | Exact voice model id, currently `fish-audio-s2-pro-8bit` |
+| `FISH_AUDIO_MODEL_PATH` | Deployed Fish Audio S2 Pro 8-bit model directory |
+| `FISH_AUDIO_SYSTEM_REFERENCE_AUDIO` | Reviewed system-voice reference WAV |
+| `FISH_AUDIO_SYSTEM_REFERENCE_MANIFEST` | Exact transcript/identity manifest for that WAV |
 
 ## Generation Worker Values
 
@@ -97,7 +99,8 @@ Store these generated values:
 | `GEN_IMAGE_PROVIDER` | `backend` for the current production worker |
 | `COMFYUI_API_URL` | Workflow-native ComfyUI API; current local runtime is `http://127.0.0.1:8188` |
 | `GEN_WORKFLOW_DIR` | Descriptor root; normally the deployed `packages/gen/workflows` directory |
-| `GEN_VIDEO_PROVIDER` | Keep `mock` while `video_gen=false`; set `pipeline` only with tested video gateway |
+| `GEN_VIDEO_PROVIDER` | Keep `mock` while `video_gen=false`; production video uses the workflow-native `backend` route |
+| `VIDEO_GENERATION_PROBE_REFERENCE` | Reviewed production-like character image used only by the explicit video launch probe |
 | `GEN_MODERATION_PROVIDER` | Current product scope uses `mock`; service URL/API key are not required unless this changes |
 | `PIPELINE_IMAGE_SIZE_DEFAULT` | Production default image size |
 | `GEN_BLOB_PROVIDER` | Must match main-web object storage |
@@ -125,7 +128,7 @@ step passes.
 | `AGE_VERIFY_SERVICE_URL` | Age gateway service URL |
 | `AGE_VERIFY_API_KEY` | Age gateway API token |
 | `AGE_VERIFY_WEBHOOK_SECRET` | Callback signature secret |
-| `AGE_VERIFY_LINK_BACK_URL` | Public HTTPS return URL |
+| `AGE_VERIFY_LINK_BACK_URL` | Canonical public HTTPS return page (`/age-verification/return`); it polls the signed-in status and resumes only a validated internal `next` path |
 | `AGE_VERIFY_CALLBACK_URL` | Public HTTPS webhook URL |
 
 ## Blob Storage Values
@@ -148,8 +151,16 @@ Treat these as one quiesced recovery checkpoint:
 | `CHAT_FS_ROOT` | Archive plus per-file manifest/checksum; contains canonical session, memory, relationship, and boundary state |
 | Local `BLOB_ROOT` | Archive plus per-object manifest/checksum when `BLOB_PROVIDER=mock`; for R2/S3 bind the checkpoint to versioned object inventory instead |
 | Checkpoint metadata | Quiesced timestamp, artifact ids, SHA-256 values, provider/root identifiers, and disposable-restore result |
+| `RECOVERY_REHEARSAL_BUNDLE` | Absolute or workspace-relative path to the published flat bundle whose basename prefixes every artifact |
+| `RECOVERY_REHEARSAL_MAX_AGE_MINUTES` | Maximum accepted age of the bundle checksum manifest; default `1440` |
 
 Do not call a database-only dump a complete iDream backup. Stop writers and verify outbox/inbox, generation queues, and pending Chat file mutations are drained before capturing the three layers.
+
+The published bundle must contain a PostgreSQL custom-format `PGDMP` archive, canonical Main+Chat schema/logical/role/database manifests, gzip Chat FS archive, strict per-entry SHA-256 file manifests, and either a gzip local Blob archive or a non-empty versioned remote-object inventory. Checksummed placeholder text, path traversal entries, weak digests and source/restore byte drift are rejected by `check:launch`.
+
+Use `bun run recovery:rehearse -- --help` for the canonical producer. Its default mode is a read-only sanitized plan. Apply requires the exact typed confirmation plus `APP_ENV=production IDREAM_QUIESCED=1`; R2/S3 apply additionally requires a configured AWS CLI and bucket versioning so the tool can read exact source VersionIds, verify temporary restore copies, and remove only those recorded temporary versions.
+
+`check:launch` reads this bundle directly. It verifies every SHA-256 entry, rejects symlinks/unmanifested files, requires exact source/isolated-restore equality for database counts/schema/logical state, Chat FS and Blob inventories, requires PostgreSQL 16 and the repository's exact latest migration, and rejects non-zero durable-work counters or stale evidence. The historical migration-60 bundle therefore cannot satisfy a migration-71 launch.
 
 The 2026-07-18 controlled-beta checkpoint satisfies this local contract:
 
@@ -172,11 +183,16 @@ These must point at fresh reports before public launch:
 | `PUBLIC_CATALOG_PROBE_REPORT` | `bun run launch:probe:catalog -- --report .tmp/public-catalog-probe.json` |
 | `CHAT_SERVICE_PROBE_REPORT` | `bun run launch:probe:chat-service -- --report .tmp/launch-chat-service-probe.json` |
 | `CHAT_MODEL_PROBE_REPORT` | `bun run launch:probe:chat -- --report .tmp/launch-chat-probe.json` |
-| `PIPELINE_IMAGE_PROBE_REPORT` | `bun run launch:probe:image:local` |
+| `PIPELINE_IMAGE_PROBE_REPORT` | `bun run --filter @idream/gen probe:image -- --model <active-product-config-model> --report .tmp/launch-image-probe.json` using the production Gen adapter/workflow/blob env |
+| `VIDEO_GENERATION_PROBE_REPORT` | `bun run launch:probe:video -- --model ltx23-gtanimation-i2v --reference <reviewed-character-image> --report .tmp/launch-video-probe.json` |
 | `VOICE_MODEL_PROBE_REPORT` | `bun run launch:probe:voice -- --report .tmp/launch-voice-probe.json` |
-| `PAYMENT_PROVIDER_PROBE_REPORT` | `bun run launch:probe:payment -- --report .tmp/launch-payment-probe.json` |
-| `AGE_VERIFICATION_PROBE_REPORT` | `bun run launch:probe:age -- --report .tmp/launch-age-probe.json` |
+| `PAYMENT_PROVIDER_PROBE_REPORT` | Complete and replay a real product checkout, then run `bun run launch:probe:payment -- --checkout-id <checkout-id> --report .tmp/launch-payment-probe.json` |
+| `AGE_VERIFICATION_PROBE_REPORT` | Complete and replay a real signed callback, then run `bun run launch:probe:age -- --age-verification-id <verification-id> --report .tmp/launch-age-probe.json` |
 | `BLOB_STORAGE_PROBE_REPORT` | `bun run launch:probe:blob -- --report .tmp/launch-blob-probe.json` |
+| `SENTRY_MAIN_PROBE_REPORT` | `bun run launch:probe:sentry:main -- --report .tmp/launch-sentry-main-probe.json` |
+| `SENTRY_ADMIN_PROBE_REPORT` | `bun run launch:probe:sentry:admin -- --report .tmp/launch-sentry-admin-probe.json` |
+| `SENTRY_CHAT_PROBE_REPORT` | `bun run launch:probe:sentry:chat -- --report .tmp/launch-sentry-chat-probe.json` |
+| `SENTRY_GEN_PROBE_REPORT` | `bun run launch:probe:sentry:gen -- --report .tmp/launch-sentry-gen-probe.json` |
 
 ## Final Gate
 
@@ -186,4 +202,6 @@ After all production values and probe reports are present:
 bun run check:launch -- --launch-env-file .tmp/production-launch.env --json
 ```
 
+Set `LAUNCH_SCOPE=core` in the explicit launch env only when Billing and Age
+Verification are outside the approved release scope. Unknown values fail closed.
 Public launch remains red until this command passes against production-like services.

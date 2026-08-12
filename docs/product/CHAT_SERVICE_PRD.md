@@ -586,7 +586,7 @@ outbox:<eventId>
 ```text
 user.updated
 user.suspended
-user.deleted
+user.account_deletion.requested.v2
 character.updated
 character.removed
 character.visibility_changed
@@ -635,7 +635,7 @@ P0 控制：
 P1 控制：
 
 - 账号导出包含 Chat Service 的 messages、memories、relationship snapshots。
-- 账号删除由主站发 `user.deleted`，Chat 执行聊天域删除/匿名化，并回传 `chat.account_erasure.completed`。
+- 账号删除由主站通过专属 capability route 发 `user.account_deletion.requested.v2`，Chat 执行聊天域删除/匿名化，并回传带精确 request event id 的 `chat.account_erasure.completed`；`user.deleted` 仅保留消费历史已持久化事件。
 
 删除不能只从检索结果中过滤，必须清理可检索索引、摘要缓存和 source linkage。
 

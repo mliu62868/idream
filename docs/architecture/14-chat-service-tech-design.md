@@ -260,12 +260,18 @@ user_fact/pref  → 按 character + recency + confidence 取 top maxMemories
 ## 6. 跨服务事件契约
 
 **Chat → 主站**（Chat outbox，至少一次，消费者按 eventId 幂等）
-`chat.session.created` `chat.message.completed` `chat.message.blocked` `chat.session.deleted` `chat.memory.updated` `chat.relationship.updated` `chat.usage.incremented` `chat.safety.flagged` `chat.account_erasure.completed`
+`chat.session.created` `chat.message.completed` `chat.message.blocked` `chat.session.deleted` `chat.memory.updated` `chat.relationship.updated` `chat.usage.incremented` `chat.safety.flagged` `chat.account_erasure.completed`（legacy） `chat.account_erasure.completed.v2`
+
+账号删除 v2 不走普通异步 Chat outbox：Chat 同步消费精确 request，文件删除成功后生成
+`status=request_bound` 的 v2 completion，再直投 Main 专属 endpoint。Main 在独立 receipt namespace
+中原子投影 completion 后才 ACK；Chat 随后把 completion 记为 delivered、Inbox 记为
+`consumed_v2`，最后才 ACK 原 Main request。旧 dispatcher 只选择 `pending`，因此不能吞掉
+request-bound completion；前滚 reconciler 会重驱旧 binary 留下的 `consumed` no-op receipt。
 
 > 相对 PRD §11.2 **故意不发** `chat.message.created`（主站只需 completed/blocked；每条 user 消息发事件无价值）。如有消费者依赖，再补。
 
 **主站 → Chat**（Main outbox → `chat.chat_inbox_events` → `chat.inbox.consume`；缓存失效/阻断/补偿，非权威来源——权威仍读 view）
-`user.suspended` `user.deleted` `character.updated` `character.removed` `character.visibility_changed` `entitlement.updated` `age_eligibility.updated` `policy.updated`
+`user.suspended` `user.account_deletion.requested.v2` `user.deleted`（legacy only） `character.updated` `character.removed` `character.visibility_changed` `entitlement.updated` `age_eligibility.updated` `policy.updated`
 
 契约类型 + **队列名 + 幂等键格式**都以 `@idream/shared` 为 SSoT，两侧共享，避免漂移。
 

@@ -51,13 +51,28 @@ export type CharacterWithPublicRelations = Prisma.CharacterGetPayload<{
   include: ReturnType<typeof characterInclude>;
 }>;
 
-export function characterDTO(character: CharacterWithPublicRelations, viewerId?: string | null) {
+export function characterDTO(
+  character: CharacterWithPublicRelations,
+  viewerId?: string | null,
+  followedCreatorIds?: ReadonlySet<string>,
+) {
   const visualProfile = character.visualProfiles[0] ?? null;
   const image = character.imageAsset?.url ?? missingCharacterImage;
   const official = character.source === "official";
   const creatorName = official
     ? "Official"
     : (character.creator?.displayName ?? character.creator?.name ?? null);
+  const publicationState =
+    character.visibility === "public" &&
+    character.status === "approved" &&
+    character.serving?.state === "live" &&
+    character.serving.currentRelease?.status === "published"
+      ? "live"
+      : character.visibility === "public" && character.status === "approved"
+        ? "awaiting_publication"
+        : character.visibility === "public" && character.status === "pending_review"
+          ? "pending_review"
+          : "not_public";
   return {
     id: character.id,
     name: character.name,
@@ -66,6 +81,7 @@ export function characterDTO(character: CharacterWithPublicRelations, viewerId?:
     description: character.description,
     visibility: character.visibility,
     status: character.status,
+    publicationState,
     source: official ? "official" : "user",
     creatorType: official ? "official" : "user",
     style: character.style,
@@ -74,6 +90,15 @@ export function characterDTO(character: CharacterWithPublicRelations, viewerId?:
     creatorId: official ? null : character.creatorId,
     creator: creatorName ?? "Creator",
     creatorName,
+    ...(followedCreatorIds
+      ? {
+          isFollowing: Boolean(
+            !official &&
+            character.creatorId &&
+            followedCreatorIds.has(character.creatorId),
+          ),
+        }
+      : {}),
     canEditIdentity: Boolean(!official && viewerId && character.creatorId === viewerId),
     image,
     imageAssetId: character.imageAsset?.id ?? null,

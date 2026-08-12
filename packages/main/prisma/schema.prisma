@@ -65,6 +65,78 @@ model User {
   @@map("users")
 }
 
+// SPEC: Account erasure is a cross-service workflow, not a User soft-delete.
+// This receipt deliberately has no User FK because the terminal state outlives
+// the hard-deleted account and contains only a one-way subject hash.
+model AccountDeletion {
+  id                    String    @id
+  userId                String?   @unique
+  subjectHash           String    @unique
+  status                String    @default("awaiting_chat") // awaiting_chat | deleting_blobs | finalizing | completed
+  requestedAt           DateTime  @default(now())
+  graceEndsAt           DateTime
+  chatRequestEventId    String?   @unique
+  chatCompletionEventId String?   @unique
+  chatFileMutationId    String?
+  chatCompletedAt       DateTime?
+  blobExpectedCount     Int       @default(0)
+  blobDeletedCount      Int       @default(0)
+  mainPurgedAt          DateTime?
+  completedAt           DateTime?
+  lastError             Json?
+  version               Int       @default(1)
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+  blobReceipts          AccountDeletionBlobReceipt[]
+  ledgerEntries         ErasedDreamcoinLedgerEntry[]
+
+  @@index([status, updatedAt])
+  @@map("account_deletions")
+}
+
+// SPEC: One row is both the durable Blob delete intent and its terminal
+// receipt. The key stays available only until Main is fully purged.
+model AccountDeletionBlobReceipt {
+  id             String          @id @default(cuid())
+  deletionId     String
+  storageKey     String?
+  storageKeyHash String
+  status         String          @default("pending") // pending | processing | deleted
+  attempts       Int             @default(0)
+  nextAttemptAt  DateTime        @default(now())
+  leaseOwner     String?
+  leaseExpiresAt DateTime?
+  lastError      Json?
+  deletedAt      DateTime?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  deletion       AccountDeletion @relation(fields: [deletionId], references: [id], onDelete: Cascade)
+
+  @@unique([deletionId, storageKeyHash])
+  @@index([status, nextAttemptAt, leaseExpiresAt])
+  @@map("account_deletion_blob_receipts")
+}
+
+// INTENT: Finance keeps the minimum append-only arithmetic needed to explain
+// historical balances without retaining a User row, email, provider id, or
+// reversible source identifier.
+model ErasedDreamcoinLedgerEntry {
+  id              String          @id @default(cuid())
+  deletionId      String
+  sourceEntryHash String
+  sourceIdHash    String?
+  delta           Int
+  balanceAfter    Int
+  reason          String
+  occurredAt      DateTime
+  archivedAt      DateTime        @default(now())
+  deletion        AccountDeletion @relation(fields: [deletionId], references: [id], onDelete: Cascade)
+
+  @@unique([deletionId, sourceEntryHash])
+  @@index([reason, occurredAt])
+  @@map("erased_dreamcoin_ledger_entries")
+}
+
 model Session {
   id        String   @id @default(cuid())
   userId    String
