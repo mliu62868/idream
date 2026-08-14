@@ -4,7 +4,9 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  INCIDENT_CORRELATION_ATTEMPT_MISSING_DISCARD_CONFIRMATION,
   INCIDENT_CORRELATION_REPLAY_CONFIRMATION,
+  incidentCorrelationOutboxAttemptMissingDiscardResultSchema,
   incidentCorrelationOutboxEventListResponseSchema,
   incidentCorrelationOutboxReplayResultSchema,
 } from "@idream/shared/admin";
@@ -60,6 +62,14 @@ const replayResponse = incidentCorrelationOutboxReplayResultSchema.parse({
   requeuedCount: 1,
   replayed: false,
 });
+const discardAttemptMissingResponse =
+  incidentCorrelationOutboxAttemptMissingDiscardResultSchema.parse({
+    id: missingAttempt.id,
+    outcome: "discarded_target_missing",
+    priorAttempts: missingAttempt.attempts,
+    payloadHash: missingAttempt.payloadHash,
+    replayed: false,
+  });
 const idempotencyKey = "22222222-2222-4222-8222-222222222222";
 
 describe("IncidentCorrelationOutbox mounted operator flow", () => {
@@ -144,6 +154,86 @@ describe("IncidentCorrelationOutbox mounted operator flow", () => {
     );
     expect(container.textContent).toContain("requeued: 1");
     expect(container.textContent).toContain("No failed incident correlation deliveries");
+  });
+
+  it("records attempt-missing separately and retries the same exact command", async () => {
+    let reads = 0;
+    let writes = 0;
+    adminV2Operation.mockImplementation(async (operation: string) => {
+      if (operation === "GET /api/v2/admin/incidents/correlation-outbox") {
+        reads += 1;
+        return reads === 1 ? initialResponse : emptyResponse;
+      }
+      if (
+        operation ===
+        "POST /api/v2/admin/incidents/correlation-outbox/commands/discard-attempt-missing"
+      ) {
+        writes += 1;
+        if (writes === 1) throw new Error("temporary command transport failure");
+        return discardAttemptMissingResponse;
+      }
+      throw new Error(`Unexpected Admin v2 operation: ${operation}`);
+    });
+
+    await act(async () => {
+      root.render(
+        <IncidentCorrelationOutbox
+          canDiscardAttemptMissing
+          canRead
+          canReplay
+        />,
+      );
+    });
+    await waitUntil(() =>
+      findButton("Record source authority missing", container) !== null,
+    );
+    await click(findButton("Record source authority missing", container));
+    const dialog = await waitForDialog();
+    await enter(
+      dialog.querySelector<HTMLInputElement>('input[aria-label="Disposition reason (≥3)"]'),
+      "GenerationAttempt was never persisted",
+    );
+    await enter(
+      dialog.querySelector<HTMLInputElement>('input[aria-label="Disposition confirmation"]'),
+      INCIDENT_CORRELATION_ATTEMPT_MISSING_DISCARD_CONFIRMATION,
+    );
+    await click(findButton("Record terminal disposition", dialog));
+    await waitUntil(() =>
+      dialog.textContent?.includes("temporary command transport failure") === true,
+    );
+    await click(findButton("Record terminal disposition", dialog));
+
+    await waitUntil(() => reads === 2);
+    expect(adminV2Operation).toHaveBeenNthCalledWith(
+      2,
+      "POST /api/v2/admin/incidents/correlation-outbox/commands/discard-attempt-missing",
+      {
+        body: {
+          id: missingAttempt.id,
+          expectedAttempts: missingAttempt.attempts,
+          expectedUpdatedAt: missingAttempt.updatedAt,
+          expectedPayloadHash: missingAttempt.payloadHash,
+          expectedAttemptId: missingAttempt.attemptId,
+          reason: {
+            code: "source_authority_missing",
+            summary: "GenerationAttempt was never persisted",
+          },
+          confirmation: INCIDENT_CORRELATION_ATTEMPT_MISSING_DISCARD_CONFIRMATION,
+        },
+        idempotencyKey,
+      },
+    );
+    expect(adminV2Operation).toHaveBeenNthCalledWith(
+      3,
+      "POST /api/v2/admin/incidents/correlation-outbox/commands/discard-attempt-missing",
+      expect.objectContaining({ idempotencyKey }),
+    );
+    expect(container.textContent).toContain(
+      "discarded_target_missing",
+    );
+    expect(container.textContent).toContain(
+      "No failed incident correlation deliveries",
+    );
   });
 });
 

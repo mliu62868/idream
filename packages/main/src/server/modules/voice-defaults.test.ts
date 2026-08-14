@@ -5,6 +5,7 @@ const voiceProfileState = vi.hoisted(() => ({
   profile: null as {
     provider: string;
     deliverySettings: unknown;
+    version: number;
   } | null,
 }));
 
@@ -68,6 +69,7 @@ describe("system voice defaults", () => {
     voiceProfileState.profile = {
       provider: "pocket_tts",
       deliverySettings: {},
+      version: 1,
     };
 
     await expect(resolveCharacterVoiceAuthority({
@@ -89,6 +91,7 @@ describe("system voice defaults", () => {
         preset: "intimate",
         intensity: 62,
       },
+      version: 3,
     };
 
     await expect(resolveCharacterVoiceAuthority({
@@ -99,6 +102,7 @@ describe("system voice defaults", () => {
       voiceId: "idream-fish-voice",
       source: "character_clone",
       settingVersion: null,
+      characterVoiceProfileVersion: 3,
       delivery: {
         preset: "intimate",
         intensity: 62,

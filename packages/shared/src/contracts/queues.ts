@@ -17,6 +17,15 @@ export const MAIN_QUEUES = {
   aiFinalize: "app.ai.finalize",
 } as const;
 
+// INVARIANT: queue pause/drain, cutover inspection, recovery receipts and their
+// verifier cover this one exact set.
+export const GENERATION_CUTOVER_QUEUES = [
+  GEN_QUEUES.imageGenerate,
+  GEN_QUEUES.videoGenerate,
+  MAIN_QUEUES.generationTerminalIngest,
+  MAIN_QUEUES.aiFinalize,
+] as const;
+
 /** Chat service internal queues (chat/web → chat/worker, and chat maintenance). */
 export const CHAT_QUEUES = {
   /** chat/web enqueues; chat/worker consumes — produce the assistant reply. */

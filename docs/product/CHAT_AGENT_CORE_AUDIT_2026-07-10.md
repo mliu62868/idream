@@ -47,9 +47,52 @@ bun run --filter @idream/chat typecheck
 部署顺序：
 
 ```bash
+CHAT_DATABASE_URL=<chat_service-runtime-url> PGHOST=<host> PGPORT=<port> \
 DB=<database> SUPER=<owner> bash db/sql/apply-validate.sh
 bun run --filter @idream/chat db:generate
 pm2 restart chat
 ```
+
+当前 operator entry 会在 DDL 前拒绝 `CHAT_DATABASE_URL` query 中的 target/credential override，
+拒绝 `DB` 含 `=` 或 `postgres://` / `postgresql://` 而被 `psql -d` 解释成 conninfo/URI，拒绝 URL
+database path 的多个前导 `/`，拒绝逗号
+分隔的 multi-host `PGHOST`，并拒绝 ambient `PGHOSTADDR` / `PGSERVICE` / `PGSERVICEFILE` /
+`PGDATABASE` / `PGUSER` / `PGOPTIONS`。
+上述 URL 解析与 target 对比使用 runtime `node-pg` parser。入口检测到 shell xtrace 时会在 DDL 前
+fail fast；调用者也不得把 secret 放入 `PS4`，因为 Bash 在脚本首条命令前就会展开该前缀。部署和
+Chat test provision 的所有 `psql` 调用均带 `-X`、拒绝 ambient target override；测试角色密码只经
+`psql` stdin 输入，不进入 argv 或异常文本。
+
+Chat test provision 在任何 `DROP DATABASE` 前用两个独立真实 credential 分别认证为 `chat_service` 与
+`chat_projector`；测试库重建持有按 cluster/database 标识的 PostgreSQL advisory lease，角色 bootstrap
+另持有 cluster advisory transaction lock 并在得锁后重查姿态。与 runtime 指向同一 PostgreSQL cluster
+时只复用已经 canonical 的四个角色；任一 Chat runtime URL 已配置时都禁止 bootstrap。只有显式确认的
+非 runtime disposable cluster 才允许在锁内只创建缺失角色，绝不 `ALTER ROLE` 或轮换既有密码；姿态
+漂移直接失败。`packages/chat/vitest.config.ts` 显式加载包内 `.env`，因此从 monorepo root 由 Turbo 启动
+Chat test task 也使用相同 target authority；Turbo 的 `@idream/chat#test` 固定 `cache:false`，不会用历史
+缓存冒充本次数据库边界测试已执行。
+
+Chat readiness 不是单次启动探针：request 必须满足
+`session_user=current_user=chat_service`，projector 必须满足
+`session_user=current_user=chat_projector`，两边还要通过精确 least-privilege catalog grants 并指向
+同一 PostgreSQL server address/port/database。DB/Redis/schema/capability 证据最多缓存 5 秒；真实
+provider failure 只锁存新 turn/generate admission，读取与 internal/durable ingress 继续可用。恢复循环
+按 5→60 秒退避 singleflight 执行完整 warmup，成功后自动恢复。每次 warmup 同时绑定递增 attempt 与开始
+时的 invalidation epoch；只有当前 attempt 且 epoch 未变化的成功结果能恢复 admission，warmup 期间的新
+provider failure 会推进 epoch，旧完成不能覆盖新失败。Recovery 重启后的 signed Chat 证据为
+`.tmp/launch-chat-service-probe-2026-08-14-final-user-journeys.json`（`ok=true`），覆盖 unsigned
+401、signed session/message/SSE/reload/regenerate Scene anchor/no-memory/blocked-input/cleanup。Gate 证据为
+`.tmp/check-launch-2026-08-14-final-user-journeys.json`；`LAUNCH_SCOPE=core` 下为 44 pass / 23 fail /
+0 warn / 67 total，支付与年龄验证不参与结论，公开上线仍是 NO-GO。Gate 的 Main/Admin/Chat/Gen env
+authority 独立解析，跨服务 APP_ENV、token/BFF、BullMQ prefix 与 source revision 必须等值；非 Sentry 本地必需 probe
+均绑定同一最终 revision。四包 Sentry probes 也以该 revision 诚实记录外部 canary 未完成；source-revision authority 已通过，剩余失败为 23 个 production-envelope 检查。
+
+最终自动化证据为 Chat 37 files / 348 tests、全仓 537 passed files + 2 skipped / 3,869 passed tests +
+3 skipped、Turbo test tasks 6/6（Chat `cache:false` 强制执行）、typecheck 6/6、lint 2/2、production build
+tasks 5/5、PM2/operator/source-revision tests 84/84。最终后端补丁后真实 Chrome 复验 public character detail 的 1280 与
+390×844 响应式状态、可见 Tab 焦点及 Chat CTA 的 401→signup 认证边界；Browser Back 捕获
+`pageshow.persisted=true`，返回后 `checking=false`、heading=`Mara Vale Launch`、
+`documentWidth=innerWidth=390`，无横向溢出。完整 authenticated 客户/Admin Chrome 旅程早于该补丁；
+当前 signed Chat 是 authenticated runtime 全链证明，不能表述为 Chrome。
 
 新增列均为向后兼容：`chat.messages.reply_to_message_id` nullable，`memory_extracted_attempt` 默认 0。旧行保留基于 timestamp 的只读回退；所有新 turn 使用显式关系。

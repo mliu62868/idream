@@ -152,6 +152,8 @@ export const adminZhPlatformOps: Record<string, string> = {
   "Inspect terminally failed generation-to-Incident carriers and return only exact eligible revisions to the worker queue.":
     "检查生成到事故关联的终态失败载体，仅将精确且符合条件的版本送回 worker 队列。",
   "Incident correlation replay result · {summary}.": "事故关联重放结果 · {summary}。",
+  "Incident correlation attempt-missing disposition · {outcome}.":
+    "事故关联缺失尝试终态处置 · {outcome}。",
   "Incident correlation failed delivery refresh failed:": "事故关联失败载体刷新失败：",
   "Loading incident correlation failed delivery": "正在加载事故关联失败载体",
   "Every incident correlation carrier is pending, delivered, or explicitly quarantined.":
@@ -170,6 +172,12 @@ export const adminZhPlatformOps: Record<string, string> = {
   "invalid payload": "载荷无效",
   "attempt missing": "尝试记录缺失",
   "attempt not correlatable": "尝试记录不可关联",
+  "Record source authority missing": "记录源权威缺失",
+  "This preserves the failed carrier and records that its GenerationAttempt source authority is still absent; no user effect is applied.":
+    "保留失败载体，并记录其 GenerationAttempt 源权威仍然缺失；不会产生用户侧效果。",
+  "Disposition confirmation": "处置确认",
+  "Disposition reason (≥3)": "处置原因（≥3）",
+  "Record terminal disposition": "记录终态处置",
   "Correlation corrections": "关联关系修正",
   "Cost/latency evidence reference": "成本/延迟证据引用",
   "Create 40-sample matrix": "创建 40 样本矩阵",

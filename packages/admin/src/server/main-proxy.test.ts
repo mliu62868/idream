@@ -74,6 +74,7 @@ describe("Admin main HTTP proxy", () => {
   });
   it("forwards method, query, cookie, and body without hop-by-hop headers", async () => {
     vi.stubEnv("ADMIN_BFF_SIGNING_SECRET", SIGNING_SECRET);
+    vi.stubEnv("SENTRY_RELEASE", "idream@admin-revision-123");
     const fetchMock = vi.fn(async (target: URL, init: RequestInit) => {
       expect(target.toString()).toBe("http://127.0.0.1:3000/api/v1/admin/users?status=active");
       expect(init.method).toBe("POST");
@@ -116,6 +117,9 @@ describe("Admin main HTTP proxy", () => {
 
     expect(response.status).toBe(202);
     expect(response.headers.get("set-cookie")).toContain("admin=renewed");
+    expect(response.headers.get("x-idream-admin-source-revision")).toBe(
+      "idream@admin-revision-123",
+    );
     await expect(response.json()).resolves.toEqual({ ok: true });
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(renderPrometheusMetrics()).toContain(

@@ -15,14 +15,31 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import {
+  MAIN_OUTBOX_TRANSPORT_EVENT_TYPES,
+  MAIN_OUTBOX_TRANSPORT_KNOWN_STATUSES,
+} from "@/server/events/main-outbox-transport";
 import type { ExpectedMigration } from "./migration-authority";
 import { inspectMigrationAuthority } from "./migration-authority";
-import { inspectRecoveryRehearsalBundle } from "./recovery-rehearsal-authority";
+import {
+  renderRecoveryDatabaseAuthoritySql,
+  type RecoveryDatabaseAuthority,
+} from "./recovery-database-authority";
+export { orderDatabaseAclEntries } from "./recovery-database-authority";
+import {
+  computeRecoverySourceCheckpointSha256,
+  inspectRecoveryRehearsalBundle,
+  type RecoveryRehearsalSourceAuthority,
+} from "./recovery-rehearsal-authority";
 import {
   buildFileAuthorityManifest,
+  assertNoRecoveryAmbientLibpqTargetOverrides,
+  parseRecoveryPostgresConnection,
+  RECOVERY_AMBIENT_LIBPQ_TARGET_VARIABLES,
   selectLiveBlobVersions,
   validateRecoveryCounts,
   type LiveBlobVersion,
+  type RecoveryPostgresConnection,
   type RecoveryRehearsalPlan,
 } from "./recovery-rehearsal-producer";
 
@@ -49,42 +66,7 @@ export type RecoveryRehearsalExecution = {
   readonly blobProvider: string;
 };
 
-type PostgresConnection = {
-  readonly host: string;
-  readonly port: string;
-  readonly database: string;
-  readonly user: string;
-  readonly password: string;
-};
-
-export type DatabaseAclEntry = {
-  readonly grantor: string;
-  readonly grantor_is_superuser: boolean;
-  readonly grantee: string;
-  readonly privilege: string;
-  readonly grantable: boolean;
-};
-
-type DatabaseAuthority = {
-  readonly database: {
-    readonly owner: string;
-    readonly encoding: string;
-    readonly locale_provider: string;
-    readonly collate: string;
-    readonly ctype: string;
-    readonly icu_locale: string | null;
-    readonly icu_rules: string | null;
-    readonly tablespace: string;
-    readonly connection_limit: number;
-    readonly comment: string | null;
-    readonly acl_is_null: boolean;
-    readonly acl: readonly DatabaseAclEntry[];
-  };
-  readonly database_role_settings: readonly {
-    readonly role: string | null;
-    readonly settings: readonly string[];
-  }[];
-};
+type DatabaseAuthority = RecoveryDatabaseAuthority;
 
 type RoleAuthority = {
   readonly required_roles: readonly string[];
@@ -106,19 +88,32 @@ const ownedRuntimeNames = new Set([
   "main-event-consumer",
   "admin-command-worker",
 ]);
-const livePm2Statuses = new Set(["online", "launching", "one-launch-status"]);
+const quiescedPm2Statuses = new Set(["stopped", "errored"]);
 
-const COUNT_SQL = String.raw`
+const mainOutboxTransportEventTypesSql = MAIN_OUTBOX_TRANSPORT_EVENT_TYPES
+  .map((eventType) => `'${eventType.replaceAll("'", "''")}'`)
+  .join(", ");
+const mainOutboxTransportKnownStatusesSql = MAIN_OUTBOX_TRANSPORT_KNOWN_STATUSES
+  .map((status) => `'${status.replaceAll("'", "''")}'`)
+  .join(", ");
+
+export const RECOVERY_COUNT_SQL = String.raw`
 SELECT jsonb_build_object(
   'migrations', (SELECT count(*) FROM public._prisma_migrations WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL),
   'latest_migration', (SELECT migration_name FROM public._prisma_migrations WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL ORDER BY finished_at DESC, migration_name DESC LIMIT 1),
   'main_outbox_pending', (SELECT count(*) FROM public.main_outbox_events WHERE status = 'pending'),
   'main_outbox_failed', (SELECT count(*) FROM public.main_outbox_events WHERE status = 'failed'),
+  'main_outbox_transport_pending', (SELECT count(*) FROM public.main_outbox_events WHERE "eventType" IN (${mainOutboxTransportEventTypesSql}) AND status = 'pending'),
+  'main_outbox_transport_failed', (SELECT count(*) FROM public.main_outbox_events WHERE "eventType" IN (${mainOutboxTransportEventTypesSql}) AND status = 'failed'),
+  'main_outbox_dispatched', (SELECT count(*) FROM public.main_outbox_events WHERE "eventType" IN (${mainOutboxTransportEventTypesSql}) AND status = 'dispatched'),
+  'main_outbox_transport_unknown', (SELECT count(*) FROM public.main_outbox_events WHERE "eventType" IN (${mainOutboxTransportEventTypesSql}) AND status NOT IN (${mainOutboxTransportKnownStatusesSql})),
   'inbound_event_received', (SELECT count(*) FROM public.inbound_event_receipts WHERE "processingState" = 'received'),
+  'inbound_event_processing', (SELECT count(*) FROM public.inbound_event_receipts WHERE "processingState" = 'processing'),
   'chat_outbox_pending', (SELECT count(*) FROM chat.chat_outbox_events WHERE status = 'pending'),
   'chat_outbox_failed', (SELECT count(*) FROM chat.chat_outbox_events WHERE status = 'failed'),
   'chat_inbox_pending', (SELECT count(*) FROM chat.chat_inbox_events WHERE status = 'pending'),
   'chat_inbox_failed', (SELECT count(*) FROM chat.chat_inbox_events WHERE status = 'failed'),
+  'chat_inbox_processing', (SELECT count(*) FROM chat.chat_inbox_events WHERE status = 'processing'),
   'chat_file_mutations_pending', (SELECT count(*) FROM chat.chat_file_mutations WHERE status = 'pending')
 );`;
 
@@ -333,28 +328,30 @@ function sha256(value: Buffer | string) {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function parsePostgresConnection(raw: string | undefined): PostgresConnection {
-  if (!raw) throw new Error("DATABASE_URL is required");
-  const url = new URL(raw);
-  if (url.protocol !== "postgres:" && url.protocol !== "postgresql:") {
-    throw new Error("DATABASE_URL must be PostgreSQL");
+function assertSameDatabaseAuthority(
+  source: RecoveryPostgresConnection,
+  candidate: RecoveryPostgresConnection,
+  label: string,
+) {
+  if (
+    candidate.host.toLowerCase() !== source.host.toLowerCase() ||
+    candidate.port !== source.port ||
+    candidate.database !== source.database
+  ) {
+    throw new Error(`${label} must target the exact Main source database`);
   }
-  const database = decodeURIComponent(url.pathname.replace(/^\/+/, ""));
-  if (!url.hostname || !database || !url.username) {
-    throw new Error("DATABASE_URL is incomplete");
-  }
-  return {
-    host: url.hostname,
-    port: url.port || "5432",
-    database,
-    user: decodeURIComponent(url.username),
-    password: decodeURIComponent(url.password),
-  };
 }
 
-function postgresEnv(connection: PostgresConnection, env: NodeJS.ProcessEnv) {
+function postgresEnv(
+  connection: RecoveryPostgresConnection,
+  env: NodeJS.ProcessEnv,
+) {
+  const childEnv = { ...env };
+  for (const name of RECOVERY_AMBIENT_LIBPQ_TARGET_VARIABLES) {
+    delete childEnv[name];
+  }
   return {
-    ...env,
+    ...childEnv,
     PGHOST: connection.host,
     PGPORT: connection.port,
     PGUSER: connection.user,
@@ -365,7 +362,7 @@ function postgresEnv(connection: PostgresConnection, env: NodeJS.ProcessEnv) {
 
 function psql(
   runner: RecoveryCommandRunner,
-  connection: PostgresConnection,
+  connection: RecoveryPostgresConnection,
   env: NodeJS.ProcessEnv,
   stage: string,
   sql: string,
@@ -378,6 +375,36 @@ function psql(
     input: sql,
     stage,
   }).stdout.toString("utf8").trim();
+}
+
+function assertChatDatabaseAuthority(
+  runner: RecoveryCommandRunner,
+  env: NodeJS.ProcessEnv,
+  source: RecoveryPostgresConnection,
+  connection: RecoveryPostgresConnection,
+  label: string,
+  expectedRole: "chat_service" | "chat_projector",
+  stage: string,
+) {
+  assertSameDatabaseAuthority(source, connection, label);
+  const identity = parseJson<{
+    session_user?: unknown;
+    current_user?: unknown;
+    database?: unknown;
+  }>(psql(
+    runner,
+    connection,
+    env,
+    stage,
+    "SELECT jsonb_build_object('session_user', session_user, 'current_user', current_user, 'database', current_database());",
+  ), stage);
+  if (
+    identity.session_user !== expectedRole ||
+    identity.current_user !== expectedRole ||
+    identity.database !== source.database
+  ) {
+    throw new Error(`${label} did not authenticate as exact role ${expectedRole}`);
+  }
 }
 
 function parseJson<T>(value: string, stage: string): T {
@@ -417,94 +444,8 @@ function canonicalSchema(value: Buffer) {
   return Buffer.from(`${filtered.join("\n")}\n`);
 }
 
-function quoteIdentifier(value: string) {
-  return `"${value.replaceAll('"', '""')}"`;
-}
-
 function quoteLiteral(value: string) {
   return `'${value.replaceAll("'", "''")}'`;
-}
-
-// INVARIANT: a delegated GRANT can only be replayed after its grantor has the
-// same privilege with grant option. Database owners and superusers are roots.
-export function orderDatabaseAclEntries(
-  owner: string,
-  entries: readonly DatabaseAclEntry[],
-) {
-  const pending = [...entries];
-  const ordered: DatabaseAclEntry[] = [];
-  const delegated = new Map<string, Set<string>>();
-  while (pending.length > 0) {
-    const index = pending.findIndex((entry) =>
-      entry.grantor === owner ||
-      entry.grantor_is_superuser ||
-      delegated.get(entry.privilege)?.has(entry.grantor)
-    );
-    if (index < 0) {
-      throw new Error("database ACL grant chain is not replayable");
-    }
-    const [entry] = pending.splice(index, 1);
-    ordered.push(entry!);
-    if (entry!.grantable && entry!.grantee !== "PUBLIC") {
-      const authorities = delegated.get(entry!.privilege) ?? new Set<string>();
-      authorities.add(entry!.grantee);
-      delegated.set(entry!.privilege, authorities);
-    }
-  }
-  return ordered;
-}
-
-function databaseAuthorityRestoreSql(authority: DatabaseAuthority) {
-  const database = authority.database;
-  const lines = [
-    "\\set ON_ERROR_STOP on",
-    "\\if :{?target_database}",
-    "\\else",
-    "SELECT 1 / 0;",
-    "\\endif",
-    `SELECT format('ALTER DATABASE %I WITH CONNECTION LIMIT ${database.connection_limit}', :'target_database') \\gexec`,
-    database.comment === null
-      ? "SELECT format('COMMENT ON DATABASE %I IS NULL', :'target_database') \\gexec"
-      : `SELECT format('COMMENT ON DATABASE %I IS %L', :'target_database', ${quoteLiteral(database.comment)}) \\gexec`,
-  ];
-  if (!database.acl_is_null) {
-    const grantees = new Set(database.acl.map((entry) => entry.grantee));
-    grantees.add("PUBLIC");
-    for (const grantee of grantees) {
-      const rendered = grantee === "PUBLIC" ? "PUBLIC" : quoteIdentifier(grantee);
-      lines.push(
-        `SELECT format('REVOKE ALL PRIVILEGES ON DATABASE %I FROM ${rendered}', :'target_database') \\gexec`,
-      );
-    }
-    for (const entry of orderDatabaseAclEntries(database.owner, database.acl)) {
-      const grantee = entry.grantee === "PUBLIC"
-        ? "PUBLIC"
-        : quoteIdentifier(entry.grantee);
-      lines.push(`SET SESSION AUTHORIZATION ${quoteIdentifier(entry.grantor)};`);
-      lines.push(
-        `SELECT format('GRANT ${entry.privilege} ON DATABASE %I TO ${grantee}${entry.grantable ? " WITH GRANT OPTION" : ""}', :'target_database') \\gexec`,
-      );
-      lines.push("RESET SESSION AUTHORIZATION;");
-    }
-  }
-  for (const entry of authority.database_role_settings) {
-    for (const setting of entry.settings) {
-      const separator = setting.indexOf("=");
-      if (separator <= 0) throw new Error("database role setting is malformed");
-      const name = quoteIdentifier(setting.slice(0, separator));
-      const value = quoteLiteral(setting.slice(separator + 1));
-      if (entry.role === null) {
-        lines.push(
-          `SELECT format('ALTER DATABASE %I SET ${name} TO %L', :'target_database', ${value}) \\gexec`,
-        );
-      } else {
-        lines.push(
-          `SELECT format('ALTER ROLE ${quoteIdentifier(entry.role)} IN DATABASE %I SET ${name} TO %L', :'target_database', ${value}) \\gexec`,
-        );
-      }
-    }
-  }
-  return `${lines.join("\n")}\n`;
 }
 
 function bundleFiles(staging: string, bundleName: string) {
@@ -532,6 +473,8 @@ function bundleFiles(staging: string, bundleName: string) {
     blobRestoreManifest: `${base}.blob.restore.sha256`,
     fileAuthorities: `${base}.file-authorities.json`,
     toolVersions: `${base}.tool-versions.json`,
+    quiescenceReceipt: `${base}.quiescence-receipt.json`,
+    metadata: `${base}.metadata.json`,
     proof: `${base}.proof.sh`,
     restoreRunbook: `${base}.RESTORE.md`,
     checksums: `${base}.sha256`,
@@ -565,7 +508,10 @@ function parsePm2Json(value: string) {
   throw new Error("PM2 jlist did not return a JSON array");
 }
 
-function assertRuntimeQuiescent(runner: RecoveryCommandRunner, env: NodeJS.ProcessEnv) {
+export function captureRuntimeQuiescence(
+  runner: RecoveryCommandRunner,
+  env: NodeJS.ProcessEnv,
+) {
   const processes = parsePm2Json(runner.run({
     command: "pm2",
     args: ["jlist"],
@@ -578,10 +524,15 @@ function assertRuntimeQuiescent(runner: RecoveryCommandRunner, env: NodeJS.Proce
       ? process.pm2_env as Record<string, unknown>
       : null;
     const status = typeof pm2Env?.status === "string" ? pm2Env.status : null;
-    if (name && ownedRuntimeNames.has(name) && status && livePm2Statuses.has(status)) {
-      throw new Error(`runtime is not quiescent: ${name} is ${status}`);
+    if (
+      name &&
+      ownedRuntimeNames.has(name) &&
+      !quiescedPm2Statuses.has(status ?? "")
+    ) {
+      throw new Error(`runtime is not quiescent: ${name} is ${status ?? "unknown"}`);
     }
   }
+  const ports: Array<{ port: number; listener: false }> = [];
   for (const port of [3000, 3001, 3100]) {
     const result = runner.run({
       command: "lsof",
@@ -593,25 +544,162 @@ function assertRuntimeQuiescent(runner: RecoveryCommandRunner, env: NodeJS.Proce
     if (result.status === 0 && result.stdout.toString("utf8").trim()) {
       throw new Error(`runtime is not quiescent: TCP port ${port} has a listener`);
     }
+    ports.push({ port, listener: false });
   }
+  return {
+    processes: processes.flatMap((process) => {
+      const name = typeof process.name === "string" ? process.name : null;
+      if (!name || !ownedRuntimeNames.has(name)) return [];
+      const pm2Env = process.pm2_env && typeof process.pm2_env === "object"
+        ? process.pm2_env as Record<string, unknown>
+        : null;
+      return [{
+        name,
+        pmId: typeof process.pm_id === "number" ? process.pm_id : null,
+        status: typeof pm2Env?.status === "string" ? pm2Env.status : null,
+      }];
+    }).sort((left, right) =>
+      left.name.localeCompare(right.name) || (left.pmId ?? -1) - (right.pmId ?? -1)
+    ),
+    ports,
+  };
+}
+
+function parseJsonObjectSuffix(value: string, stage: string) {
+  const lines = value.split(/\r?\n/u);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (!lines[index]?.trimStart().startsWith("{")) continue;
+    try {
+      const parsed = JSON.parse(lines.slice(index).join("\n").trim()) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      // bun may print its command prefix before the final JSON report.
+    }
+  }
+  throw new Error(`${stage} did not return a JSON authority report`);
+}
+
+function assertGenerationQuiescenceReport(
+  report: Record<string, unknown>,
+  stage: string,
+) {
+  if (report.ok !== true) {
+    throw new Error(`${stage} did not prove quiescence`);
+  }
+  return report;
+}
+
+function captureQuiescenceReceipt(input: {
+  readonly runner: RecoveryCommandRunner;
+  readonly env: NodeJS.ProcessEnv;
+  readonly workspaceRoot: string;
+  readonly queueAuthority: RecoveryRehearsalPlan["queueAuthority"];
+}) {
+  const mainCwd = path.join(input.workspaceRoot, "packages/main");
+  const mainRedisUrl = input.env.IDREAM_MAIN_REDIS_URL ?? input.env.REDIS_URL;
+  const genRedisUrl = input.env.IDREAM_GEN_REDIS_URL ??
+    input.env.GEN_REDIS_URL ?? input.env.REDIS_URL;
+  if (!mainRedisUrl || !genRedisUrl || !input.queueAuthority.prefix) {
+    throw new Error("quiescence queue execution authority is incomplete");
+  }
+  // INTENT: APP_ENV is only the recovery safety fence. Every child gets the
+  // already-resolved service queue authority explicitly, so a temporary
+  // production fence cannot redirect development-prefixed queues.
+  const quiescenceEnv = {
+    ...input.env,
+    REDIS_URL: mainRedisUrl,
+    GEN_REDIS_URL: genRedisUrl,
+    BULLMQ_PREFIX: input.queueAuthority.prefix,
+  };
+  const pauseAndDrain = assertGenerationQuiescenceReport(
+    parseJsonObjectSuffix(input.runner.run({
+      command: "bun",
+      args: ["run", "generation-cutover:pause-and-drain"],
+      cwd: mainCwd,
+      env: quiescenceEnv,
+      stage: "generation_pause_and_drain",
+    }).stdout.toString("utf8"), "generation_pause_and_drain"),
+    "generation_pause_and_drain",
+  );
+  const cutover = assertGenerationQuiescenceReport(
+    parseJsonObjectSuffix(input.runner.run({
+      command: "bun",
+      args: ["run", "check:generation-cutover"],
+      cwd: mainCwd,
+      env: quiescenceEnv,
+      stage: "generation_cutover_authority",
+    }).stdout.toString("utf8"), "generation_cutover_authority"),
+    "generation_cutover_authority",
+  );
+  if (
+    cutover.activeRequests !== 0 ||
+    cutover.inFlightBullRows !== 0 ||
+    cutover.pendingTerminalOutboxes !== 0
+  ) {
+    throw new Error("generation_cutover_authority retained active authority");
+  }
+  const ownership = assertGenerationQuiescenceReport(
+    parseJsonObjectSuffix(input.runner.run({
+      command: "node",
+      args: [
+        path.join(input.workspaceRoot, "scripts/check-gen-image-worker-ownership.cjs"),
+        "--mode",
+        "quiescent",
+        "--expected",
+        "0",
+        "--expected-video",
+        "0",
+        "--attempts",
+        "10",
+      ],
+      cwd: input.workspaceRoot,
+      env: quiescenceEnv,
+      stage: "generation_worker_ownership",
+    }).stdout.toString("utf8"), "generation_worker_ownership"),
+    "generation_worker_ownership",
+  );
+  const expected = ownership.expected && typeof ownership.expected === "object"
+    ? ownership.expected as Record<string, unknown>
+    : null;
+  if (
+    ownership.mode !== "quiescent" ||
+    expected?.image !== 0 ||
+    expected.video !== 0
+  ) {
+    throw new Error("generation_worker_ownership did not prove zero ownership");
+  }
+  const runtime = captureRuntimeQuiescence(input.runner, input.env);
+  const facts = {
+    runtime,
+    generation: { pauseAndDrain, cutover, ownership },
+    queueAuthority: input.queueAuthority,
+  };
+  return {
+    schemaVersion: 1 as const,
+    checkedAt: new Date().toISOString(),
+    ...facts,
+    fingerprint: sha256(JSON.stringify(facts)),
+  };
 }
 
 function captureCounts(
   runner: RecoveryCommandRunner,
-  connection: PostgresConnection,
+  connection: RecoveryPostgresConnection,
   env: NodeJS.ProcessEnv,
   stage: string,
   database = connection.database,
 ) {
   return parseJson<Record<string, unknown>>(
-    psql(runner, connection, env, stage, COUNT_SQL, database),
+    psql(runner, connection, env, stage, RECOVERY_COUNT_SQL, database),
     stage,
   );
 }
 
 function captureCanonicalSchema(
   runner: RecoveryCommandRunner,
-  connection: PostgresConnection,
+  connection: RecoveryPostgresConnection,
   env: NodeJS.ProcessEnv,
   stage: string,
   database = connection.database,
@@ -632,7 +720,7 @@ function captureCanonicalSchema(
 
 function captureLogicalManifest(
   runner: RecoveryCommandRunner,
-  connection: PostgresConnection,
+  connection: RecoveryPostgresConnection,
   env: NodeJS.ProcessEnv,
   stage: string,
   schema: Buffer,
@@ -695,16 +783,27 @@ function blobManifest(objects: readonly (LiveBlobVersion & { readonly sha256: st
   ).join("\n")}\n`;
 }
 
-function awsEnv(env: NodeJS.ProcessEnv) {
-  const access = env.BLOB_ACCESS_KEY_ID ?? env.BLOB_ACCESS_KEY ?? env.AWS_ACCESS_KEY_ID;
-  const secret = env.BLOB_SECRET_ACCESS_KEY ?? env.BLOB_SECRET_KEY ?? env.AWS_SECRET_ACCESS_KEY;
+function awsEnv(
+  env: NodeJS.ProcessEnv,
+  authority: "source" | "recovery",
+) {
+  const access = authority === "recovery"
+    ? env.RECOVERY_BLOB_ACCESS_KEY_ID
+    : env.BLOB_ACCESS_KEY_ID ?? env.BLOB_ACCESS_KEY ?? env.AWS_ACCESS_KEY_ID;
+  const secret = authority === "recovery"
+    ? env.RECOVERY_BLOB_SECRET_ACCESS_KEY
+    : env.BLOB_SECRET_ACCESS_KEY ?? env.BLOB_SECRET_KEY ?? env.AWS_SECRET_ACCESS_KEY;
   if (!access || !secret) throw new Error("Blob credentials are required");
   return {
     ...env,
     AWS_ACCESS_KEY_ID: access,
     AWS_SECRET_ACCESS_KEY: secret,
-    AWS_REGION: env.BLOB_REGION ?? "auto",
-    AWS_DEFAULT_REGION: env.BLOB_REGION ?? "auto",
+    AWS_REGION: authority === "recovery"
+      ? env.RECOVERY_BLOB_REGION ?? "auto"
+      : env.BLOB_REGION ?? "auto",
+    AWS_DEFAULT_REGION: authority === "recovery"
+      ? env.RECOVERY_BLOB_REGION ?? "auto"
+      : env.BLOB_REGION ?? "auto",
     AWS_EC2_METADATA_DISABLED: "true",
     AWS_PAGER: "",
   };
@@ -716,13 +815,132 @@ function aws(
   endpoint: string,
   args: readonly string[],
   stage: string,
+  authority: "source" | "recovery" = "source",
 ) {
   return runner.run({
     command: "aws",
     args: ["--endpoint-url", endpoint, "s3api", ...args, "--no-cli-pager"],
-    env: awsEnv(env),
+    env: awsEnv(env, authority),
     stage,
   }).stdout.toString("utf8");
+}
+
+type RemoteBlobHead = {
+  readonly ChecksumSHA256?: unknown;
+  readonly ContentType?: unknown;
+  readonly CacheControl?: unknown;
+  readonly Metadata?: unknown;
+  readonly ObjectLockMode?: unknown;
+  readonly ObjectLockRetainUntilDate?: unknown;
+  readonly ObjectLockLegalHoldStatus?: unknown;
+};
+
+type RecoveryObjectRetention = {
+  readonly mode: "GOVERNANCE" | "COMPLIANCE";
+  readonly retainUntil: string;
+};
+
+export function resolveRecoveryObjectRetention(
+  source: RemoteBlobHead,
+  policyStartedAt: Date,
+  retentionDays: number,
+): RecoveryObjectRetention {
+  if (!Number.isSafeInteger(retentionDays) || retentionDays < 1) {
+    throw new Error("recovery Blob retention days must be positive");
+  }
+  const policyUntil = policyStartedAt.getTime() + retentionDays * 86_400_000;
+  const sourceUntil = typeof source.ObjectLockRetainUntilDate === "string"
+    ? Date.parse(source.ObjectLockRetainUntilDate)
+    : Number.NaN;
+  const retainUntil = new Date(
+    Number.isFinite(sourceUntil) ? Math.max(policyUntil, sourceUntil) : policyUntil,
+  ).toISOString();
+  const mode = source.ObjectLockMode === "GOVERNANCE" ||
+      source.ObjectLockMode === "COMPLIANCE"
+    ? source.ObjectLockMode
+    : "COMPLIANCE";
+  return { mode, retainUntil };
+}
+
+function sortedStringRecord(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (!entries.every(([, entry]) => typeof entry === "string")) return null;
+  return Object.fromEntries(entries.sort(([left], [right]) =>
+    left.localeCompare(right)
+  )) as Record<string, string>;
+}
+
+export function buildRemoteBlobRestorePutArgs(input: {
+  readonly bucket: string;
+  readonly key: string;
+  readonly body: string;
+  readonly checksumSha256: string;
+  readonly source: RemoteBlobHead;
+  readonly retention?: RecoveryObjectRetention;
+}) {
+  const args = [
+    "put-object",
+    "--bucket",
+    input.bucket,
+    "--key",
+    input.key,
+    "--body",
+    input.body,
+    "--checksum-algorithm",
+    "SHA256",
+    "--checksum-sha256",
+    input.checksumSha256,
+  ];
+  if (typeof input.source.ContentType === "string") {
+    args.push("--content-type", input.source.ContentType);
+  }
+  if (typeof input.source.CacheControl === "string") {
+    args.push("--cache-control", input.source.CacheControl);
+  }
+  const metadata = sortedStringRecord(input.source.Metadata);
+  if (metadata) args.push("--metadata", JSON.stringify(metadata));
+  const retentionMode = input.retention?.mode ?? input.source.ObjectLockMode;
+  const retainUntil = input.retention?.retainUntil ??
+    input.source.ObjectLockRetainUntilDate;
+  if (typeof retentionMode === "string") {
+    args.push("--object-lock-mode", retentionMode);
+  }
+  if (typeof retainUntil === "string") {
+    args.push(
+      "--object-lock-retain-until-date",
+      retainUntil,
+    );
+  }
+  if (typeof input.source.ObjectLockLegalHoldStatus === "string") {
+    args.push(
+      "--object-lock-legal-hold-status",
+      input.source.ObjectLockLegalHoldStatus,
+    );
+  }
+  args.push("--output", "json");
+  return args;
+}
+
+function remoteBlobMetadata(value: RemoteBlobHead) {
+  const retainUntil = typeof value.ObjectLockRetainUntilDate === "string"
+    ? Date.parse(value.ObjectLockRetainUntilDate)
+    : Number.NaN;
+  return {
+    contentType: typeof value.ContentType === "string" ? value.ContentType : null,
+    cacheControl: typeof value.CacheControl === "string" ? value.CacheControl : null,
+    metadata: sortedStringRecord(value.Metadata) ?? {},
+    objectLockMode:
+      typeof value.ObjectLockMode === "string" ? value.ObjectLockMode : null,
+    objectLockRetainUntilDate:
+      Number.isFinite(retainUntil)
+        ? new Date(retainUntil).toISOString()
+        : null,
+    objectLockLegalHoldStatus:
+      typeof value.ObjectLockLegalHoldStatus === "string"
+        ? value.ObjectLockLegalHoldStatus
+        : null,
+  };
 }
 
 async function captureRemoteBlob(
@@ -731,11 +949,14 @@ async function captureRemoteBlob(
   plan: RecoveryRehearsalPlan,
   files: BundleFiles,
   scratch: string,
-  cleanupVersions: Array<{ key: string; versionId: string }>,
 ) {
   const endpoint = plan.blob.endpoint;
   const bucket = plan.blob.bucket;
-  if (!endpoint || !bucket) throw new Error("remote Blob authority is incomplete");
+  const recoveryEndpoint = plan.blob.recovery.endpoint;
+  const recoveryBucket = plan.blob.recovery.bucket;
+  if (!endpoint || !bucket || !recoveryEndpoint || !recoveryBucket) {
+    throw new Error("remote Blob recovery authorities are incomplete");
+  }
   const raw = parseJson<{
     Versions?: readonly Record<string, unknown>[];
     DeleteMarkers?: readonly Record<string, unknown>[];
@@ -747,12 +968,85 @@ async function captureRemoteBlob(
     "json",
   ], "blob_list_versions"), "blob_list_versions");
   const objects = selectLiveBlobVersions(raw);
-  const proven: Array<LiveBlobVersion & { sha256: string }> = [];
+  const proven: Array<LiveBlobVersion & {
+    sha256: string;
+    metadata: ReturnType<typeof remoteBlobMetadata>;
+    recovery: {
+      endpoint: string;
+      bucket: string;
+      key: string;
+      versionId: string;
+      checksumSha256: string;
+      objectLockMode: "GOVERNANCE" | "COMPLIANCE";
+      objectLockRetainUntilDate: string;
+    };
+  }> = [];
   const restorePrefix = `.idream-recovery/${plan.bundleName}`;
+  const retentionDays = plan.blob.recovery.retentionDays;
+  if (!retentionDays) throw new Error("remote Blob retention policy is incomplete");
+  const retentionPolicyStartedAt = new Date();
+  for (const [authority, authorityEndpoint, authorityBucket] of [
+    ["source", endpoint, bucket],
+    ["recovery", recoveryEndpoint, recoveryBucket],
+  ] as const) {
+    const versioning = parseJson<{ Status?: unknown }>(aws(
+      runner,
+      env,
+      authorityEndpoint,
+      ["get-bucket-versioning", "--bucket", authorityBucket, "--output", "json"],
+      `blob_${authority}_bucket_versioning`,
+      authority,
+    ), `blob_${authority}_bucket_versioning`);
+    if (versioning.Status !== "Enabled") {
+      throw new Error(`${authority} Blob bucket versioning is not Enabled`);
+    }
+  }
+  const objectLock = parseJson<{ ObjectLockEnabled?: unknown }>(aws(
+    runner,
+    env,
+    recoveryEndpoint,
+    ["get-object-lock-configuration", "--bucket", recoveryBucket, "--output", "json"],
+    "blob_recovery_object_lock",
+    "recovery",
+  ), "blob_recovery_object_lock");
+  if (objectLock.ObjectLockEnabled !== "Enabled") {
+    throw new Error("recovery Blob bucket Object Lock is not Enabled");
+  }
+  const existingRecoveryPrefix = parseJson<{
+    Versions?: readonly Record<string, unknown>[];
+    DeleteMarkers?: readonly Record<string, unknown>[];
+  }>(aws(runner, env, recoveryEndpoint, [
+    "list-object-versions",
+    "--bucket",
+    recoveryBucket,
+    "--prefix",
+    `${restorePrefix}/`,
+    "--output",
+    "json",
+  ], "blob_recovery_prefix_absence", "recovery"), "blob_recovery_prefix_absence");
+  if (
+    (existingRecoveryPrefix.Versions?.length ?? 0) > 0 ||
+    (existingRecoveryPrefix.DeleteMarkers?.length ?? 0) > 0
+  ) {
+    throw new Error("remote Blob recovery prefix is not empty");
+  }
   for (let index = 0; index < objects.length; index += 1) {
     const object = objects[index]!;
     const sourcePath = path.join(scratch, `blob-source-${index}`);
     const restorePath = path.join(scratch, `blob-restore-${index}`);
+    const sourceHead = parseJson<RemoteBlobHead>(aws(runner, env, endpoint, [
+      "head-object",
+      "--bucket",
+      bucket,
+      "--key",
+      object.key,
+      "--version-id",
+      object.versionId,
+      "--checksum-mode",
+      "ENABLED",
+      "--output",
+      "json",
+    ], `blob_head_source_${index}`), `blob_head_source_${index}`);
     aws(runner, env, endpoint, [
       "get-object",
       "--bucket",
@@ -768,36 +1062,93 @@ async function captureRemoteBlob(
       throw new Error(`Blob source size differs from inventory: ${object.key}`);
     }
     const restoreKey = `${restorePrefix}/${object.key}`;
-    const put = parseJson<{ VersionId?: unknown }>(aws(runner, env, endpoint, [
-      "put-object",
-      "--bucket",
-      bucket,
-      "--key",
-      restoreKey,
-      "--body",
-      sourcePath,
-      "--output",
-      "json",
-    ], `blob_put_restore_${index}`), `blob_put_restore_${index}`);
+    const checksumSha256 = createHash("sha256").update(sourceBytes).digest("base64");
+    if (sourceHead.ChecksumSHA256 !== checksumSha256) {
+      throw new Error(`remote Blob source checksum differs: ${object.key}`);
+    }
+    const retention = resolveRecoveryObjectRetention(
+      sourceHead,
+      retentionPolicyStartedAt,
+      retentionDays,
+    );
+    const put = parseJson<{ VersionId?: unknown }>(aws(
+      runner,
+      env,
+      recoveryEndpoint,
+      buildRemoteBlobRestorePutArgs({
+        bucket: recoveryBucket,
+        key: restoreKey,
+        body: sourcePath,
+        checksumSha256,
+        source: sourceHead,
+        retention,
+      }),
+      `blob_put_restore_${index}`,
+      "recovery",
+    ), `blob_put_restore_${index}`);
     if (typeof put.VersionId !== "string" || put.VersionId === "null") {
       throw new Error("remote Blob restore copy did not return a version id");
     }
-    cleanupVersions.push({ key: restoreKey, versionId: put.VersionId });
-    aws(runner, env, endpoint, [
+    aws(runner, env, recoveryEndpoint, [
       "get-object",
       "--bucket",
-      bucket,
+      recoveryBucket,
       "--key",
       restoreKey,
       "--version-id",
       put.VersionId,
       restorePath,
-    ], `blob_get_restore_${index}`);
+    ], `blob_get_restore_${index}`, "recovery");
     const restoreBytes = await readFile(restorePath);
     if (!sourceBytes.equals(restoreBytes)) {
       throw new Error(`remote Blob isolated restore differs: ${object.key}`);
     }
-    proven.push({ ...object, sha256: sha256(sourceBytes) });
+    const restoreHead = parseJson<RemoteBlobHead>(aws(
+      runner,
+      env,
+      recoveryEndpoint,
+      [
+        "head-object",
+        "--bucket",
+        recoveryBucket,
+        "--key",
+        restoreKey,
+        "--version-id",
+        put.VersionId,
+        "--checksum-mode",
+        "ENABLED",
+        "--output",
+        "json",
+      ],
+      `blob_head_restore_${index}`,
+      "recovery",
+    ), `blob_head_restore_${index}`);
+    if (restoreHead.ChecksumSHA256 !== checksumSha256) {
+      throw new Error(`remote Blob recovery checksum differs: ${object.key}`);
+    }
+    const expectedRestoreMetadata = {
+      ...remoteBlobMetadata(sourceHead),
+      objectLockMode: retention.mode,
+      objectLockRetainUntilDate: retention.retainUntil,
+    };
+    if (JSON.stringify(expectedRestoreMetadata) !==
+        JSON.stringify(remoteBlobMetadata(restoreHead))) {
+      throw new Error(`remote Blob metadata or retention differs: ${object.key}`);
+    }
+    proven.push({
+      ...object,
+      sha256: sha256(sourceBytes),
+      metadata: remoteBlobMetadata(sourceHead),
+      recovery: {
+        endpoint: recoveryEndpoint,
+        bucket: recoveryBucket,
+        key: restoreKey,
+        versionId: put.VersionId,
+        checksumSha256,
+        objectLockMode: retention.mode,
+        objectLockRetainUntilDate: retention.retainUntil,
+      },
+    });
   }
   const manifest = blobManifest(proven);
   await writeFile(files.blobSourceManifest, manifest, { mode: 0o600 });
@@ -806,17 +1157,18 @@ async function captureRemoteBlob(
     provider: plan.blob.provider,
     endpoint,
     bucket,
+    recoveryAuthority: plan.blob.recovery,
     objects: proven,
   }, null, 2)}\n`, { mode: 0o600 });
   return {
     manifest,
-    objects: proven.map(({ sha256: _sha256, ...object }) => object),
+    objects: proven,
     files: proven.length,
     bytes: proven.reduce((sum, object) => sum + object.size, 0),
   };
 }
 
-function listRemoteBlobVersions(
+function captureSourceBlobAuthority(
   runner: RecoveryCommandRunner,
   env: NodeJS.ProcessEnv,
   plan: RecoveryRehearsalPlan,
@@ -824,7 +1176,77 @@ function listRemoteBlobVersions(
 ) {
   const endpoint = plan.blob.endpoint;
   const bucket = plan.blob.bucket;
-  if (!endpoint || !bucket) throw new Error("remote Blob authority is incomplete");
+  if (!endpoint || !bucket) throw new Error("source Blob authority is incomplete");
+  return listSourceBlobVersions(runner, env, plan, `${stage}_versions`).map(
+    (object, index) => {
+      const head = parseJson<RemoteBlobHead>(aws(runner, env, endpoint, [
+        "head-object",
+        "--bucket",
+        bucket,
+        "--key",
+        object.key,
+        "--version-id",
+        object.versionId,
+        "--checksum-mode",
+        "ENABLED",
+        "--output",
+        "json",
+      ], `${stage}_head_${index}`), `${stage}_head_${index}`);
+      return {
+        ...object,
+        checksumSha256:
+          typeof head.ChecksumSHA256 === "string" ? head.ChecksumSHA256 : null,
+        metadata: remoteBlobMetadata(head),
+      };
+    },
+  );
+}
+
+function expectedSourceBlobAuthority(
+  objects: readonly (LiveBlobVersion & {
+    readonly sha256?: string;
+    readonly metadata?: ReturnType<typeof remoteBlobMetadata>;
+  })[],
+) {
+  return objects.map((object) => ({
+    key: object.key,
+    versionId: object.versionId,
+    etag: object.etag,
+    size: object.size,
+    checksumSha256: object.sha256
+      ? Buffer.from(object.sha256, "hex").toString("base64")
+      : null,
+    metadata: object.metadata ?? null,
+  }));
+}
+
+export function remoteBlobSourceAuthorityMatches(
+  current: readonly {
+    readonly key: string;
+    readonly versionId: string;
+    readonly etag: string;
+    readonly size: number;
+    readonly checksumSha256: string | null;
+    readonly metadata: ReturnType<typeof remoteBlobMetadata>;
+  }[],
+  captured: readonly (LiveBlobVersion & {
+    readonly sha256?: string;
+    readonly metadata?: ReturnType<typeof remoteBlobMetadata>;
+  })[],
+) {
+  return JSON.stringify(current) ===
+    JSON.stringify(expectedSourceBlobAuthority(captured));
+}
+
+export function listSourceBlobVersions(
+  runner: RecoveryCommandRunner,
+  env: NodeJS.ProcessEnv,
+  plan: RecoveryRehearsalPlan,
+  stage: string,
+) {
+  const endpoint = plan.blob.endpoint;
+  const bucket = plan.blob.bucket;
+  if (!endpoint || !bucket) throw new Error("source Blob authority is incomplete");
   return selectLiveBlobVersions(parseJson<{
     Versions?: readonly Record<string, unknown>[];
     DeleteMarkers?: readonly Record<string, unknown>[];
@@ -834,50 +1256,7 @@ function listRemoteBlobVersions(
     bucket,
     "--output",
     "json",
-  ], stage), stage));
-}
-
-async function cleanupRemoteBlob(
-  runner: RecoveryCommandRunner,
-  env: NodeJS.ProcessEnv,
-  plan: RecoveryRehearsalPlan,
-  cleanupVersions: readonly { key: string; versionId: string }[],
-) {
-  const endpoint = plan.blob.endpoint;
-  const bucket = plan.blob.bucket;
-  if (!endpoint || !bucket) return;
-  for (const version of cleanupVersions.toReversed()) {
-    try {
-      aws(runner, env, endpoint, [
-        "delete-object",
-        "--bucket",
-        bucket,
-        "--key",
-        version.key,
-        "--version-id",
-        version.versionId,
-      ], "blob_cleanup_restore_copy");
-    } catch {
-      // Cleanup is rechecked below and converted into a failed rehearsal.
-    }
-  }
-  if (cleanupVersions.length > 0) {
-    const raw = parseJson<{
-      Versions?: readonly Record<string, unknown>[];
-      DeleteMarkers?: readonly Record<string, unknown>[];
-    }>(aws(runner, env, endpoint, [
-      "list-object-versions",
-      "--bucket",
-      bucket,
-      "--prefix",
-      `.idream-recovery/${plan.bundleName}/`,
-      "--output",
-      "json",
-    ], "blob_cleanup_verify"), "blob_cleanup_verify");
-    if ((raw.Versions?.length ?? 0) > 0 || (raw.DeleteMarkers?.length ?? 0) > 0) {
-      throw new Error("remote Blob rehearsal copies were not fully cleaned up");
-    }
-  }
+  ], stage, "source"), stage));
 }
 
 async function captureLocalFiles(
@@ -926,13 +1305,14 @@ async function writeBundleMetadata(input: {
   blob: { files: number; bytes: number };
   runner: RecoveryCommandRunner;
   env: NodeJS.ProcessEnv;
-  connection: PostgresConnection;
+  connection: RecoveryPostgresConnection;
+  sourceAuthority: RecoveryRehearsalSourceAuthority;
 }) {
   await writeFile(input.files.roles, `${JSON.stringify(input.roleAuthority, null, 2)}\n`, { mode: 0o600 });
   await writeFile(input.files.databaseAuthority, `${JSON.stringify(input.databaseAuthority, null, 2)}\n`, { mode: 0o600 });
   await writeFile(
     input.files.databaseAuthorityRestore,
-    databaseAuthorityRestoreSql(input.databaseAuthority),
+    renderRecoveryDatabaseAuthoritySql(input.databaseAuthority),
     { mode: 0o600 },
   );
   await writeFile(input.files.fileAuthorities, `${JSON.stringify({
@@ -967,6 +1347,27 @@ async function writeBundleMetadata(input: {
     psql: version("psql", ["--version"], "tool_psql_version"),
     server_version: serverVersion,
     server_version_num: serverVersionNum,
+  }, null, 2)}\n`, { mode: 0o600 });
+  const checkpointFiles = [
+    input.files.quiescenceReceipt,
+    input.files.sourceCounts,
+    input.files.sourceSchema,
+    input.files.sourceLogical,
+    input.files.chatSourceManifest,
+    input.files.blobSourceManifest,
+    ...(input.plan.blob.provider === "mock" ? [] : [input.files.blobInventory]),
+  ];
+  const sourceCheckpointSha256 = computeRecoverySourceCheckpointSha256(
+    await Promise.all(checkpointFiles.map(async (file) => ({
+      filename: path.basename(file),
+      bytes: await readFile(file),
+    }))),
+  );
+  await writeFile(input.files.metadata, `${JSON.stringify({
+    schemaVersion: 1,
+    completedAt: new Date().toISOString(),
+    sourceCheckpointSha256,
+    sourceAuthority: input.sourceAuthority,
   }, null, 2)}\n`, { mode: 0o600 });
   const invocation = [
     "#!/usr/bin/env bash",
@@ -1026,7 +1427,43 @@ export async function executeRecoveryRehearsal(input: {
     throw new Error("recovery rehearsal apply requires a safe confirmed plan");
   }
   const runner = input.runner ?? new SystemRecoveryCommandRunner();
-  const connection = parsePostgresConnection(input.env.DATABASE_URL);
+  // Fail before mkdir/tool preflight: no recovery effect may begin until all
+  // three runtime URLs have one exact node-pg authority and libpq has no ambient
+  // alternate target.
+  assertNoRecoveryAmbientLibpqTargetOverrides(input.env);
+  const sourceConnection = parseRecoveryPostgresConnection(
+    input.env.DATABASE_URL,
+    "DATABASE_URL",
+  );
+  const connection = parseRecoveryPostgresConnection(
+    input.env.RECOVERY_DATABASE_URL,
+    "RECOVERY_DATABASE_URL",
+  );
+  const chatConnection = parseRecoveryPostgresConnection(
+    input.env.CHAT_DATABASE_URL,
+    "CHAT_DATABASE_URL",
+  );
+  const projectorConnection = parseRecoveryPostgresConnection(
+    input.env.CHAT_PROJECTOR_DATABASE_URL,
+    "CHAT_PROJECTOR_DATABASE_URL",
+  );
+  assertSameDatabaseAuthority(
+    sourceConnection,
+    connection,
+    "RECOVERY_DATABASE_URL",
+  );
+  assertSameDatabaseAuthority(sourceConnection, chatConnection, "CHAT_DATABASE_URL");
+  assertSameDatabaseAuthority(
+    sourceConnection,
+    projectorConnection,
+    "CHAT_PROJECTOR_DATABASE_URL",
+  );
+  if (chatConnection.user !== "chat_service") {
+    throw new Error("CHAT_DATABASE_URL must use chat_service");
+  }
+  if (projectorConnection.user !== "chat_projector") {
+    throw new Error("CHAT_PROJECTOR_DATABASE_URL must use chat_projector");
+  }
   const parent = path.dirname(input.plan.bundlePath);
   const finalBundle = input.plan.bundlePath;
   const lockPath = path.join(parent, `.${input.plan.bundleName}.publish.lock`);
@@ -1036,7 +1473,6 @@ export async function executeRecoveryRehearsal(input: {
   let restoreDatabase: string | null = null;
   let lockHeld = false;
   let primaryError: unknown = null;
-  const remoteCleanupVersions: Array<{ key: string; versionId: string }> = [];
 
   try {
     await mkdir(parent, { mode: 0o700, recursive: true });
@@ -1074,11 +1510,39 @@ export async function executeRecoveryRehearsal(input: {
     for (const [command, args] of requiredTools) {
       runner.run({ command, args, env: input.env, stage: `tool_preflight_${command}` });
     }
-    assertRuntimeQuiescent(runner, input.env);
+    const quiescenceReceipt = captureQuiescenceReceipt({
+      runner,
+      env: input.env,
+      workspaceRoot: input.workspaceRoot,
+      queueAuthority: input.plan.queueAuthority,
+    });
+    await writeFile(
+      files.quiescenceReceipt,
+      `${JSON.stringify(quiescenceReceipt, null, 2)}\n`,
+      { mode: 0o600 },
+    );
+    assertChatDatabaseAuthority(
+      runner,
+      input.env,
+      sourceConnection,
+      chatConnection,
+      "CHAT_DATABASE_URL",
+      "chat_service",
+      "chat_request_database_authority",
+    );
+    assertChatDatabaseAuthority(
+      runner,
+      input.env,
+      sourceConnection,
+      projectorConnection,
+      "CHAT_PROJECTOR_DATABASE_URL",
+      "chat_projector",
+      "chat_projector_database_authority",
+    );
 
     const migrationAuthority = await (
       input.inspectMigration ?? inspectMigrationAuthority
-    )(input.env.DATABASE_URL!);
+    )(input.env.RECOVERY_DATABASE_URL!);
     if (!migrationAuthority.schemaPostconditionsChecked || !migrationAuthority.ok) {
       throw new Error("source migration authority is not exact");
     }
@@ -1179,7 +1643,6 @@ export async function executeRecoveryRehearsal(input: {
         input.plan,
         files,
         scratch,
-        remoteCleanupVersions,
       );
     }
 
@@ -1231,14 +1694,15 @@ export async function executeRecoveryRehearsal(input: {
       if (await buildFileAuthorityManifest(input.plan.blob.root!) !== blob.manifest) {
         throw new Error("BLOB_ROOT changed during checkpoint");
       }
-    } else if (
-      JSON.stringify(listRemoteBlobVersions(
+    } else if (!remoteBlobSourceAuthorityMatches(
+      captureSourceBlobAuthority(
         runner,
         input.env,
         input.plan,
         "post_dump_blob_versions",
-      )) !== JSON.stringify(blob.objects)
-    ) {
+      ),
+      blob.objects ?? [],
+    )) {
       throw new Error("remote Blob authority changed during checkpoint");
     }
 
@@ -1274,7 +1738,7 @@ export async function executeRecoveryRehearsal(input: {
       env: postgresEnv(connection, input.env),
       stage: "restore_database_create",
     });
-    const authoritySql = databaseAuthorityRestoreSql(databaseAuthority);
+    const authoritySql = renderRecoveryDatabaseAuthoritySql(databaseAuthority);
     await writeFile(files.databaseAuthorityRestore, authoritySql, { mode: 0o600 });
     runner.run({
       command: "psql",
@@ -1355,8 +1819,6 @@ export async function executeRecoveryRehearsal(input: {
     });
     restoreDatabase = null;
 
-    await cleanupRemoteBlob(runner, input.env, input.plan, remoteCleanupVersions);
-    remoteCleanupVersions.splice(0);
     const finalCounts = captureCounts(
       runner,
       connection,
@@ -1392,14 +1854,15 @@ export async function executeRecoveryRehearsal(input: {
       if (await buildFileAuthorityManifest(input.plan.blob.root!) !== blob.manifest) {
         throw new Error("BLOB_ROOT changed during isolated restore");
       }
-    } else if (
-      JSON.stringify(listRemoteBlobVersions(
+    } else if (!remoteBlobSourceAuthorityMatches(
+      captureSourceBlobAuthority(
         runner,
         input.env,
         input.plan,
         "final_source_blob_versions",
-      )) !== JSON.stringify(blob.objects)
-    ) {
+      ),
+      blob.objects ?? [],
+    )) {
       throw new Error("remote Blob authority changed during isolated restore");
     }
     const finalActiveClients = psql(
@@ -1412,6 +1875,29 @@ export async function executeRecoveryRehearsal(input: {
     if (finalActiveClients !== "0") {
       throw new Error("source database gained active clients during isolated restore");
     }
+    const provider = input.plan.blob.provider;
+    if (provider !== "mock" && provider !== "r2" && provider !== "s3") {
+      throw new Error("recovery Blob provider is not exact");
+    }
+    const sourceAuthority: RecoveryRehearsalSourceAuthority = {
+      database: {
+        host: sourceConnection.host,
+        port: Number.parseInt(sourceConnection.port, 10),
+        database: sourceConnection.database,
+      },
+      chatFsRoot: chatRoot,
+      queue: {
+        redis: input.plan.queueAuthority.redis!,
+        prefix: input.plan.queueAuthority.prefix!,
+      },
+      blob: {
+        provider,
+        endpoint: input.plan.blob.endpoint,
+        bucket: input.plan.blob.bucket,
+        root: input.plan.blob.root,
+        recoveryRetentionDays: input.plan.blob.recovery.retentionDays,
+      },
+    };
     await writeBundleMetadata({
       plan: input.plan,
       files,
@@ -1423,12 +1909,15 @@ export async function executeRecoveryRehearsal(input: {
       runner,
       env: input.env,
       connection,
+      sourceAuthority,
     });
     await publishChecksums(staging, files);
     await chmod(staging, 0o700);
     const inspection = await inspectRecoveryRehearsalBundle({
       bundlePath: staging,
       expectedMigrations: input.expectedMigrations,
+      expectedSourceAuthority: sourceAuthority,
+      commandRunner: runner,
       now: new Date(),
       maxAgeMinutes: 60,
     });
@@ -1464,13 +1953,6 @@ export async function executeRecoveryRehearsal(input: {
           env: postgresEnv(connection, input.env),
           stage: "restore_database_failure_cleanup",
         });
-      } catch (error) {
-        cleanupErrors.push(error);
-      }
-    }
-    if (remoteCleanupVersions.length > 0) {
-      try {
-        await cleanupRemoteBlob(runner, input.env, input.plan, remoteCleanupVersions);
       } catch (error) {
         cleanupErrors.push(error);
       }

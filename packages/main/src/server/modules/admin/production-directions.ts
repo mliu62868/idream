@@ -3,6 +3,7 @@ import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
 import {
+  adminTextRuntimeIdentity,
   assertAdminTextGenerationAvailable,
   generateAdminText,
   type AdminTextGenerationRuntime,
@@ -165,5 +166,6 @@ export async function generateProductionDirections(
   return ok({
     directions,
     source: "model",
+    runtime: adminTextRuntimeIdentity(runtime),
   });
 }

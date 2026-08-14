@@ -202,15 +202,20 @@ bun run launch:probe:sentry:main -- --report .tmp/launch-sentry-main-probe.json
 bun run launch:probe:sentry:admin -- --report .tmp/launch-sentry-admin-probe.json
 bun run launch:probe:sentry:chat -- --report .tmp/launch-sentry-chat-probe.json
 bun run launch:probe:sentry:gen -- --report .tmp/launch-sentry-gen-probe.json
-bun run check:launch:direct -- --launch-env-file .tmp/production-launch.env
+bun run check:launch:direct -- \
+  --launch-env-file .tmp/production-main.env \
+  --admin-env-file .tmp/production-admin.env \
+  --chat-env-file .tmp/production-chat.env \
+  --gen-env-file .tmp/production-gen.env \
+  --report .tmp/check-launch.json
 ```
 
 `LAUNCH_SCOPE` is a closed release contract: `full` is the default and requires
 every product area; `core` excludes only Billing and Age Verification when those
 areas are explicitly outside the release. It does not suppress migrations,
 ProductConfig, HTTPS/secrets, Redis, Chat, Gen, Blob, Sentry, or any other gate.
-Unknown values fail closed. Put the chosen value in the same launch env file that
-will feed PM2 so the preflight and runtime use one authority.
+Unknown values fail closed. Put the chosen value in the Main authority that will
+feed PM2; Chat and Gen must use their own exact deployed env authorities.
 
 `launch:probe:chat-service` must prove more than BFF reachability: it runs a signed
 conversation smoke (session create, message send, SSE stream, reload, no-memory
@@ -272,12 +277,17 @@ bun run --filter @idream/main probe:age -- \
 bun run --filter @idream/main probe:safety -- \
   --report .tmp/launch-safety-probe.json
 
-bun run check:launch:direct -- --launch-env-file .tmp/production-launch.env
+bun run check:launch:direct -- \
+  --launch-env-file .tmp/production-main.env \
+  --admin-env-file .tmp/production-admin.env \
+  --chat-env-file .tmp/production-chat.env \
+  --gen-env-file .tmp/production-gen.env \
+  --report .tmp/check-launch.json
 ```
 
-`.tmp/production-launch.env` 应来自 secret manager 导出，或由
-`packages/main/.env.production.example` 复制后填入真实生产值；不要提交到 git。
-这份文件必须包含 `APP_ENV=production`、所有 provider/密钥/外部服务配置，以及
+`.tmp/production-main.env`、`.tmp/production-admin.env`、`.tmp/production-chat.env`、`.tmp/production-gen.env` 应来自 secret manager
+对实际部署服务的精确导出；可分别参考对应 package 的 production example，且都不得提交到 git。Main 文件
+必须包含 `APP_ENV=production`、Main provider/密钥/外部服务配置，以及
 `PIPELINE_IMAGE_PROBE_REPORT=.tmp/launch-image-probe.json` 和
 `WEB_SURFACE_PROBE_REPORT=.tmp/launch-web-surface-probe.json`、
 `PRODUCT_CONFIG_PROBE_REPORT=.tmp/launch-product-config-probe.json`、
@@ -289,22 +299,20 @@ bun run check:launch:direct -- --launch-env-file .tmp/production-launch.env
 `AGE_VERIFICATION_PROBE_REPORT=.tmp/launch-age-probe.json`、
 `BLOB_STORAGE_PROBE_REPORT=.tmp/launch-blob-probe.json`、以及
 `SAFETY_GATEWAY_PROBE_REPORT=.tmp/launch-safety-probe.json`。
-`--launch-env-file` 中的值会覆盖当前 shell 的 dev env，适合在部署前做可重复的生产门禁。
+传入显式 service env 文件时，对应文件是产品配置的完整 authority，ambient product credential/probe 不参与
+补值，只继承 PATH/TMP 等运行命令所需白名单；缺项会失败关闭。不传显式文件时，Gate 与真实 runtime 一致地
+采用 shell-over-default-file 优先级，不能让 package `.env` 覆盖部署 shell。三服务值不会互相回退。
 需要机器可读结果时加 `--json`。
 
 `APP_ENV=production` 时主站拒绝使用 mock
 chat/voice/moderation/payment/blob/age-verification provider，且必须配置
 `CHAT_SERVICE_URL` 与 `CHAT_BFF_SIGNING_SECRET`。`check:launch` 会进一步
-检查 Postgres、Redis、Sentry、对象存储、支付 webhook、审核、年龄验证和图片
-Pipeline 配置。当前 `check:launch` 仍保留 legacy
-`PIPELINE_IMAGE_PROBE_REPORT` 合同：报告必须证明 provider 为 `pipeline`、模型和
-`PIPELINE_API_URL` 匹配、finalizer payload 为 `generation.completed`，且至少
-产出 1 个 asset；否则 `check:launch` 失败。该门禁尚未随 controlled-beta 的当前
-`backend -> ComfyUI :8188` runtime 一起切换；因此 2026-07-18 未运行 legacy
-`:8091` gateway 时组合探针为 6/7，不能把这一项写成 backend 健康失败，也不能把
-整套 launch gate 写成已通过。当前 backend 能力由 `smoke:backend` 的真实
-workflow-native 出图独立证明；公开上线前仍需提供合格的 pipeline 报告，或在代码审查后
-显式更新 launch 合同。门禁还要求 `WEB_SURFACE_PROBE_REPORT` 指向最近一次 web surface
+检查 Postgres、Redis、Sentry、对象存储、支付 webhook、审核、年龄验证和图片生成配置。
+`PIPELINE_IMAGE_PROBE_REPORT` 是历史兼容变量名，但报告必须匹配 Gen 自身 env 中的有效 provider、
+active Product Config model/workflow/version、Blob authority、immutable TerminalRecord 与 Main persistence
+链。当前 `backend -> ComfyUI :8188` 可在这些事实精确一致时通过；legacy `pipeline :8091` 只在 Gen
+实际选择该 provider 时才是所需权威，不能再作为 backend 路线的隐式前置条件。门禁还要求
+`WEB_SURFACE_PROBE_REPORT` 指向最近一次 web surface
 probe 报告，证明 main-web 首页和 `/generate` 返回健康 HTML、未过 age gate 的公开 API
 按 403 fail-closed、admin-web 未登录时返回 protected state，且 admin JSON API 未登录时按
 401 fail-closed；否则服务进程在线但用户入口或管理入口不可用时不能误报为可上线。门禁还要求
@@ -796,7 +804,7 @@ client reference manifest 缺失。
 ```
 
 - **迁移在部署前于 CI/部署流水线跑** `prisma migrate deploy`（prod direct URL），随后以 fresh/upgrade 临时库演练完整 migration chain；任一步失败都阻断发布。
-- `bun run check` 是本地最小门；上线前还必须跑 `bun run --filter @idream/main test:e2e` 和 `bun run check:launch -- --launch-env-file .tmp/production-launch.env`。
+- `bun run check` 是本地最小门；上线前还必须跑 `bun run --filter @idream/main test:e2e` 和 `bun run check:launch -- --launch-env-file .tmp/production-main.env --admin-env-file .tmp/production-admin.env --chat-env-file .tmp/production-chat.env --gen-env-file .tmp/production-gen.env --report .tmp/check-launch.json`，四份文件必须对应实际部署的四个 service authority。
 - 数据库迁移 SQL **只能由具备权限者/CI 执行**（global rule：模式变更 SQL 由用户/CI 跑，Claude 只产出）。
 
 ## 6. 迁移 Runbook（Postgres-only）
@@ -809,12 +817,45 @@ client reference manifest 缺失。
 | 生成迁移 | `bun run --filter @idream/main db:migrate:dev`（产生迁移文件，提交 git） | 开发者 |
 | 加性能索引 | 在迁移目录手写 raw SQL（`pg_trgm` 等，03 §5） | 开发者 |
 | 部署应用内表迁移 | `bun run --filter @idream/main db:migrate:deploy`（prod direct URL） | CI |
-| **DB 边界变更** | DBA/IAM 先创建 `core_owner` / `chat_owner` / `chat_service` / `chat_projector` 并注入真实凭据；随后执行 `bash db/sql/apply-validate.sh`，其唯一权威顺序为 `01_schemas_roles` → `02_core_views` → `03_chat_tables` → `04_grants` | **用户在 prod 执行** |
+| **DB 边界变更** | DBA/IAM 先创建 `core_owner` / `chat_owner` / `chat_service` / `chat_projector` 并注入真实凭据；从部署中的 `CHAT_DATABASE_URL` 取脱敏后的 exact `PGHOST` / `PGPORT` / `DB`，显式设置 `SUPER` 后执行 `bash db/sql/apply-validate.sh`。脚本用 runtime `node-pg` parser 在任何 DDL 前要求 URL 用户为 `chat_service` 且三元组逐项一致；拒绝 URL query 的 target/credential override、多前导 `/` database path、可被 `psql -d` 解释成 conninfo/URI 的 `DB`、comma-separated multi-host `PGHOST` 和 ambient libpq target override；其唯一权威顺序为 `01_schemas_roles` → `02_core_views` → `03_chat_tables` → `04_grants` | **用户在 prod 执行** |
 | 回滚 | 写"down"迁移或新正向修复迁移（Prisma 不自动回滚） | CI + 评审 |
 
 **破坏性变更**（删列/改类型）：分两步（先兼容加列/双写 → 迁移数据 → 再删旧），避免停机。
 
 > `db/sql/` 是跨服务库边界的 SSoT：Chat 请求路径以 `chat_service` 连接，只读 Main 的 core/billing/compliance 视图并写请求事务/文件 intent；文件投影器以独立 `chat_projector` 连接，只有实际完成 `CHAT_FS_ROOT` 副作用后才能推进 mutation receipt。两种角色均由 grant/trigger 强制，不能用一个全权运行时连接替代。这些 DDL 不归 Prisma `db push` 管。
+
+Chat runtime readiness 通过 request/projector 两个真实连接验证 request 的
+`session_user=current_user=chat_service`、projector 的
+`session_user=current_user=chat_projector`，并按 catalog privilege 核对两者精确 least-privilege grants；
+两条连接还必须指向相同 server address、port 与 database。DB/Redis/schema/capability 证据的 freshness
+上限为 5 秒，过期后 `/readyz` 与新 turn/generate admission 会 singleflight 重验。真实 provider 失败只
+锁存这些会排队新模型生成的入口；读取与受认证的 internal/durable ingress 继续可用。恢复循环以
+5 秒起步、最大 60 秒退避，singleflight 执行完整 warmup，成功后自动恢复新 turn admission。每次 warmup
+同时绑定递增的 attempt 与开始时的 invalidation epoch；只有当前 attempt 且 epoch 未变化的成功结果能恢复
+admission。warmup 期间出现的新 provider failure 会推进 epoch，因此旧 warmup 完成不能覆盖更新的失败。
+最终 signed Chat 证据写入
+`.tmp/launch-chat-service-probe-2026-08-14-final-user-journeys.json`：unsigned 请求为 401，signed
+session/message/SSE/reload/regenerate Scene anchor/no-memory/blocked-input/cleanup 全链通过。
+Gate 证据为 `.tmp/check-launch-2026-08-14-final-user-journeys.json`（`LAUNCH_SCOPE=core`，44 pass /
+23 fail / 0 warn / 67 total），支付与年龄验证不参与该结论。resolver 分别从 Main、Admin、Chat、Gen env
+解析服务权威；APP_ENV、跨服务 token/BFF、BullMQ prefix 与 release 不得跨服务漂移，Chat 模型/Redis/BFF
+及 Gen provider/ComfyUI/model 也不得回退到 Main 或 ambient process 制造假绿。23 个失败项均属于 production
+envelope：development `APP_ENV`；public HTTPS Main/Better Auth URL；Better Auth
+secret、internal token、cron secret 及 token separation；production web-surface；production Redis 与 BullMQ
+prefix；non-mock Blob 及 bucket/endpoint/access/secret；Main pipeline token；Chat/Admin BFF secret；Chat model
+key；Sentry DSN、browser env/DSN 与 Main/Admin/Chat/Gen 四 runtime canary。当前 Admin text
+与本地真实 Chat/Image/Video/Voice probes 已绑定统一 source revision；四包 Sentry probes 也以同一 revision 记录了当前无外部凭据时的明确失败，因此 source-revision authority 通过，而 Sentry live canary 仍失败。
+新 Gate JSON 自带 `generatedAt`、expected release、probe evidence digest 与脱敏 environment digest；公开上线仍是 NO-GO。
+
+最终自动化证据为 Shared 46 files / 254 tests、Gen 21 / 202、Main 315 passed files + 2 skipped /
+2,479 passed tests + 3 skipped、Chat 37 / 348、Admin 118 / 586；合计 537 passed files + 2 skipped /
+3,869 passed tests + 3 skipped。Turbo test tasks 6/6（`@idream/chat#test` 设为 `cache:false` 并真实执行）、
+typecheck 6/6、lint 2/2、production build tasks 5/5、PM2/operator/source-revision tests 84/84。最终后端补丁后，真实 Chrome 重跑
+当前 public character detail（1280 与 390×844）、可见 Tab 焦点及 Chat CTA 的 401→
+`/signup?next=%2Fcharacters%2Fcmsozhlsn0023i2l7m71veczu` 认证边界；随后 Browser Back 的注入
+`pageshow` 证据为 `persisted=true`，恢复后 `checking=false`、heading=`Mara Vale Launch`、
+`documentWidth=innerWidth=390`，无横向溢出。AgeGate focused 2 files / 18 tests、Main typecheck 与 scoped
+lint 通过。完整 authenticated 客户/Admin Chrome 旅程早于该补丁，不能表述为当前 revision 又完整重跑。
 
 `01_schemas_roles.sql` 只验证四个角色已由 DBA/IAM 创建，不创建 `_change_me` LOGIN，并要求
 `core_owner` / `chat_owner` 为 `NOLOGIN`、`chat_service` / `chat_projector` 为 `LOGIN`。曾运行旧版
@@ -822,7 +863,17 @@ placeholder bootstrap 的集群，升级前必须由 DBA/IAM 先轮换两个 run
 再把两个 owner role 收紧为 `NOLOGIN`；凭据通过 secret manager 或 DBA 的交互式密码流程注入，不能写入
 仓库或 shell history。`03_chat_tables.sql` 已包含 entry attribution、每 turn memory 不可变 trigger/index、
 Scene/Soul/runtime trace 与 file mutation 权威；dated SQL 仅保留为历史升级证据，不进入日常 manifest。
-`04_grants.sql` 在一个事务内完成 broad grant 与 append-only/投影器收窄。新环境必须先跑完整 Prisma
+`04_grants.sql` 在一个事务内先撤销历史 broad/default grant，再按运行时代码的实际 SQL surface 重建
+exact allowlist。`chat_service` 仍持有普通 Chat domain 表 CRUD、Scene SELECT/INSERT、file mutation SELECT
+与四列 intent INSERT；`chat_projector` 只有所需表的 SELECT，UPDATE 进一步限于 session
+`log_extracted_seq` + Prisma 自动写入的 `updated_at`、message `memory_extracted_attempt` + `updated_at`
+和 file-mutation receipt 五列，outbox INSERT 也只开放 Prisma `recordOutbox` 实际写入的十列（含其展开的
+`attempts` / `next_run_at` / `created_at` 默认值）。projector 无 sequence 权限；request 仅有 file-mutation sequence USAGE。
+两者均无 schema CREATE、table TRUNCATE/REFERENCES/TRIGGER，且只能 EXECUTE 明列的
+redactor/purge 函数。readiness 与 apply-validate 都遍历当前 Chat tables/columns/sequences/functions/default ACL，
+未知对象或任一额外权限都会 fail closed。脚本不会全局改写 `public` schema/table 的 PUBLIC ACL，以免改变
+Main 或其他数据库角色；如果既有 PUBLIC ACL 让 Chat 继承 CREATE 或 public table/column 权限，入口会在 DDL 前
+把它报告为外部 DBA posture blocker。新环境必须先跑完整 Prisma
 migration history，再暂停 Chat writer/projector，执行上述四步并通过结构、权限正向/负向验证；不得把
 `03_character_management`、`05_main_recent_chats` 或任何 Main/public dated SQL 混入 Chat boundary apply。
 
@@ -836,22 +887,41 @@ REVOKE core_owner, chat_owner FROM chat_service, chat_projector;
 \password chat_projector
 ```
 
-完成后再执行 `apply-validate.sh`；不要把密码写成 `ALTER ROLE ... PASSWORD '...'` 放进 runbook、CI log
+完成后再用部署时的 `CHAT_DATABASE_URL` 和显式 `PGHOST` / `PGPORT` / `DB` / `SUPER` 执行
+`apply-validate.sh`；该入口没有数据库默认值，目标不一致会在 DDL 前退出。URL query 不能携带
+`database` / `dbname` / `host` / `hostaddr` / `passfile` / `password` / `port` / `service` / `user` / `username`
+覆盖；`DB` 必须是 plain database name，不能包含 `=` 或使用 `postgres://` / `postgresql://` URI，避免
+被 `psql -d` 重新解释为 conninfo；URL database path 不能以多个 `/` 开头，且 `PGHOST` 不能是逗号分隔的 multi-host failover 列表。环境中不得残留
+`PGHOSTADDR` / `PGSERVICE` / `PGSERVICEFILE` / `PGDATABASE` / `PGUSER` / `PGOPTIONS`。
+入口拒绝在 shell xtrace 下运行：Bash 会在脚本首条命令前展开 `PS4`，脚本本身无法追回已被
+`PS4` 输出的环境 secret，所以调用者不得启用 `bash -x`，也不得把 secret 放入 `PS4`。所有 `psql`
+调用固定带 `-X`，不加载本机 `.psqlrc`。Chat test provision 同样会在任何 destructive `psql` 前拒绝
+上述 ambient 变量；角色 credential 只经 `psql` stdin 传入，不进入 argv/异常文本。不要把密码写成
+`ALTER ROLE ... PASSWORD '...'` 放进 runbook、CI log
 或 shell history。本机或生产角色姿态不合格时，测试/部署失败是正确的 fail-closed 结果，不应让测试
 harness 自动改写现有集群角色。
+
+Chat test provision 在任何 `DROP DATABASE` 前必须用两个独立真实 credential 分别认证为
+`chat_service` 与 `chat_projector`；测试库重建持有按 cluster/database 标识的 PostgreSQL advisory lease，
+角色 bootstrap 另持有 cluster advisory transaction lock 并在得锁后重查姿态。与 runtime 复用同一
+PostgreSQL cluster 时只能复用已经 canonical 的四个角色；任一 Chat runtime URL 已配置时都禁止 bootstrap。
+只有目标是非 runtime disposable cluster，且 operator 显式提供与 host/port authority 精确一致的
+`CHAT_TEST_DISPOSABLE_CLUSTER_CONFIRM`，才允许在锁内只 `CREATE` 缺失角色；既有角色永不 `ALTER ROLE`
+或轮换密码，姿态漂移直接失败。Chat Vitest config 显式加载包内 `.env`，保证从 monorepo root 经 Turbo
+进入 package task 时得到同一 target authority；Turbo 的 `@idream/chat#test` 固定 `cache:false`，不能用
+历史缓存冒充这次数据库边界测试已执行。
 
 ## 7. 备份与容灾
 
 - 一份可恢复的 iDream checkpoint 是同一静默边界下的**一致性集合**：Main PostgreSQL、`CHAT_FS_ROOT` 与媒体 Blob。只备份数据库不能称为完整 current-state backup，因为 Chat 的 session trace / memory / relationship 权威在文件层，local/mock Blob 的媒体字节也不在 PostgreSQL。
-- 备份前先停止所有写入进程并确认 Main/Chat outbox、inbox、生成队列及 `chat_file_mutations` pending 均已清空；同时确认 Main/Admin/Chat 端口无 listener。不能在请求角色仍能新增 intent、projector 仍在改文件或 worker 仍在写 Blob 时分别抓取三个副本。
-- PostgreSQL 使用与目标服务兼容的 `pg_dump` / `pg_restore`；`CHAT_FS_ROOT` 和本地 `BLOB_ROOT` 分别生成归档与逐文件 manifest/checksum。使用 R2/S3 时启用版本化/跨区复制，并把精确 object-version inventory 与 DB/Chat FS checkpoint 绑定。
+- 备份前先停止所有写入进程，并在一个固定 checkpoint 时间上确认没有正在提交的跨权威变更：Main transport outbox 不得为 `dispatched` 或未知状态，Main/Chat inbox 不得为 `processing`，生成队列与 `chat_file_mutations` 不得有正在执行的 mutation；同时确认 Main/Admin/Chat 端口无 listener。稳定的 future-scheduled、pending 或 failed durable intent 属于待恢复的产品事实，必须进入 source/restore counts 并逐字段一致，不能为做备份而提前投递、删除或伪装成已处理。
+- PostgreSQL 使用与目标服务兼容的 `pg_dump` / `pg_restore`；`CHAT_FS_ROOT` 和本地 `BLOB_ROOT` 分别生成归档与逐文件 manifest/checksum。使用 R2/S3 时，live bucket 与独立 recovery endpoint/bucket 都必须启用版本化，并把精确 object-version、metadata、checksum、retention inventory 与 DB/Chat FS checkpoint 绑定；没有第二 authority 时失败关闭，不能把同一 bucket 内的临时复制当容灾证明。
 - 每个 checkpoint 必须写明数据库名/schema migration count、Chat FS root、Blob provider/root、静默时间、artifact id 与 SHA-256；不得覆盖已有备份。
 - 恢复演练必须进入隔离的 disposable DB/Chat FS/Blob root，校验全部 checksum、目录 manifest、migration status、业务计数和无悬空引用后再删除临时目标。只证明 `pg_restore` 成功不等于 Chat 文件和媒体可恢复。
-- 仓库权威入口是 `bun run recovery:rehearse`。默认只输出脱敏 plan 并以非零退出码报告缺失条件；不会 dump、建库、复制对象或停服务。实际执行必须在受控维护窗先完成既有 quiesce 流程，再以 `APP_ENV=production IDREAM_QUIESCED=1` 加 `--apply --bundle-name <idream-recovery-...> --confirmation "CREATE RECOVERY REHEARSAL <同名>"` 运行；Main / Chat / Gen 使用不同 env 文件时分别传 `--launch-env-file`、`--chat-env-file`、`--gen-env-file`。工具会再次拒绝 live PM2/端口、active DB client、非 exact migration、非零 durable-work、split DB/Blob authority、symlink 与覆盖已有 bundle。
-- apply 会在原子发布前完成：PostgreSQL 16 custom dump → fresh 隔离库 restore → counts/schema/逐表 digest/sequence/database authority exact compare；Chat FS tar → 临时目录逐文件 mode/SHA compare；local Blob 同样归档恢复，R2/S3 则要求 bucket versioning，用 AWS CLI 读取 exact live VersionId、逐对象下载并复制到 invocation 专属临时 prefix、按返回 VersionId 重读比较，随后只删除本次创建的 exact versions 并确认 prefix 归零。失败只清 fresh restore DB、staging、publish lock 与已记录的临时 object versions，绝不删除源对象或覆盖最终 bundle。
-- 将发布后的扁平 bundle 路径写入 `RECOVERY_REHEARSAL_BUNDLE`，并按需要设置 `RECOVERY_REHEARSAL_MAX_AGE_MINUTES`（默认 `1440`）。`check:launch` 会直接验证 master SHA-256、禁止 symlink/未入 manifest 的文件、拒绝伪造的非 `PGDMP` dump、非 gzip 文件归档、越界/弱 digest 文件 manifest 与不完整 logical/role/database/remote-object authority，要求 source/isolated-restore 的 DB counts/schema/logical、Chat FS 与 Blob inventory 逐字节一致，并绑定当前仓库的 exact migration count/latest；旧 migration-60 bundle、占位文件或未静默的 durable-work counts 都会失败关闭。
-- 2026-07-18 controlled-beta 最终 checkpoint 已按上述合同完成。Artifact base 为 `/Users/kk/code/idream/local-backups/idream-main-final-20260718-60/idream-main-final-20260718-60`；bundle 目录 mode `0700`、23 个文件均为 `0600`、总大小 171M，bundle SHA checks 全部通过。源端为 migrations `60`（latest `20260718012000`）、20 users、characters / Releases / Servings / Qualifications / MediaAssets 各 16、234 base tables / 7 views / 1 sequence；Main outbox `3,936`（pending/failed `0`）、inbound `5,738`（received `0`）。Chat 为 294 sessions / 818 messages / 4 attachments、outbox `1,552` / inbox `488`（pending/failed `0`）、file mutations `5`（pending `0`）；Chat FS 为 429 files / 550,987 bytes，Blob 为 13,634 files / 162,163,688 bytes，Main/Gen effective mock root 一致。
-- PostgreSQL client `18.3` 对 server `16.14` 的隔离恢复中，source/restore counts、schema、logical DB、Chat FS 与 Blob 比较全部为 `0` difference（equal），disposable restore DB 清理后 remaining `0`。恢复后 PM2 7 logical apps / 8 processes 全部 online，Main/Admin HTTP 200、Chat health `ok`。演练过程捕获并修复了 zero-dim ACL、`psql -c` substitution、null `datacl` marker 与 `bsdtar` umask mode 四类 fail-closed 缺陷；最终 artifact 不含这些失败状态。本次自动证明是 same-cluster throwaway restore；bundle 提供 role/database authority manifests 与 fresh-cluster runbook，但角色密码和外部 secrets 仍须由 secret manager 注入，不能把本地证明扩大为无前置条件的 fresh-cluster/public-production 恢复认证。
+- 仓库权威入口是 `bun run recovery:rehearse`。默认只输出脱敏 plan 并以非零退出码报告缺失条件；不会 dump、建库、复制对象或停服务。实际执行必须在受控维护窗先完成既有 runtime quiesce 流程，再以 `APP_ENV=production IDREAM_QUIESCED=1 RECOVERY_DATABASE_URL=<exact-source-superuser-url>` 加 `--apply --bundle-name <idream-recovery-...> --confirmation "CREATE RECOVERY REHEARSAL <同名>"` 运行；Main / Chat / Gen 使用不同 env 文件时分别传 `--launch-env-file`、`--chat-env-file`、`--gen-env-file`。Main 的 `DATABASE_URL` 只声明 source identity，专用 recovery URL 必须 exact same host/port/database 且实际认证为 superuser，secret 不进入 plan/metadata。apply 复用 Generation queue pause/drain、cutover 和 worker-ownership 检查；Main/Gen service env 的 effective Redis target 与 BullMQ prefix 必须 exact，并显式传给三个子检查及写入 receipt，临时 recovery `APP_ENV=production` 不能改变 service 默认 prefix。只接受明确 terminal PM2 state，并把 fresh quiescence receipt/fingerprint 写入 bundle；随后拒绝残留 listener、active DB client、非 exact migration、任何 in-flight/未知 mutation 状态、split DB/Blob authority、symlink 与覆盖已有 bundle。稳定 durable backlog 会被保留并纳入 exact restore 比较。
+- apply 会在原子发布前完成：PostgreSQL 16 custom dump → fresh 隔离库 restore → counts/schema/逐表 digest/sequence/database authority exact compare；Chat FS tar → 临时目录逐文件 mode/SHA compare；local Blob 同样归档恢复，R2/S3 则要求 live 与 recovery bucket versioning、recovery bucket Object Lock，以及正整数 `RECOVERY_BLOB_RETENTION_DAYS`；AWS CLI 从 exact live VersionId 读取，向独立 recovery endpoint/bucket 写入 checksum/metadata，并以 source retention 与 policy retention 中较晚者作为明确 GOVERNANCE/COMPLIANCE retain-until，再按返回 VersionId 重读比较。成功写入的 recovery versions 是持久恢复 authority，不能在演练结束时删掉；bundle 记录它们的 exact endpoint/bucket/key/VersionId/checksum/retention，重复 bundle prefix 失败关闭。失败只清 fresh restore DB、local staging 与 publish lock，绝不删除源对象、已写入的受 retention 保护 recovery version 或覆盖最终 bundle。
+- 将发布后的扁平 bundle 路径写入 `RECOVERY_REHEARSAL_BUNDLE`，operator 审阅后用 `shasum -a 256 <bundle>/<bundle>.sha256` 计算 checksum-manifest digest，并将 lowercase 结果写入 `RECOVERY_REHEARSAL_APPROVED_SHA256`；按需要设置 `RECOVERY_REHEARSAL_MAX_AGE_MINUTES`（默认 `1440`）。`check:launch` 要求 approved digest exact match，并使用真实 `pg_restore --list`、`tar -tzf`、临时提取后的 manifest reconstruction 验证 archive，校验 fresh quiescence receipt，禁止 symlink/未入 manifest 的文件，要求 source/isolated-restore 的 DB counts/schema/logical、稳定 backlog、Chat FS 与 Blob inventory 逐字节一致。Gate 通过同一 Main/Chat/Gen env resolver 计算 `CHAT_FS_ROOT` fingerprint，并与 authenticated signed Chat probe 返回的 canonical fingerprint 对账；旧 migration-60 bundle、缺 receipt 的旧 bundle、占位文件或仍有 `dispatched` / `processing` / unknown mutation 的 checkpoint 都会失败关闭，不能靠重签旧 bundle 通过。
+- 当前本地 Recovery 已按上述合同在真实维护窗完成。权威 bundle 固定为 `.tmp/recovery-bundles/idream-recovery-local-20260814-final-user-journeys`；完成时间、master manifest digest 与 source authority 只由 checksummed bundle 和结构化 Gate JSON 机器校验，tracked runbook 不复制一次性 digest。PostgreSQL 16 的 71/71 migration source 与 isolated restore、schema/logical/counts、Chat FS、local mock Blob、DB/queue authority 均 exact；quiescence receipt 证明只阻断 in-flight，稳定 durable backlog 原样保留并逐项相等。恢复证据关闭本地三权威 Recovery Gate，但 local mock Blob 不能替代 production non-mock 对象存储，角色密码和外部 secrets 仍须由 secret manager 注入，也不能扩大为无前置条件的 public-production 恢复认证。
 - ledger、审核与其他审计证据按既定保留策略长期保存；定期执行上述三层恢复演练。
 
 ## 8. 可观测性

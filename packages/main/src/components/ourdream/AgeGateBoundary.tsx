@@ -7,6 +7,7 @@ import { parseViewerAuthorityResponse } from "@/lib/public-api-contracts";
 import { AgeGate } from "./AgeGate";
 
 export type AgeGateState = "checking" | "accepted" | "blocked";
+export type AgeGateHistoryRecoveryAction = "restore" | "recheck" | null;
 
 const AGE_GATE_STORAGE_KEY = "AdultContentAcceptedOD";
 const AGE_GATE_COOKIE =
@@ -26,6 +27,7 @@ export function AgeGateBoundary({
   const pathname = usePathname();
   const [authoritativeAccepted, setAuthoritativeAccepted] =
     useState(initialAccepted);
+  const [historyRecoveryEpoch, setHistoryRecoveryEpoch] = useState(0);
   const [resolution, setResolution] = useState<{
     pathname: string;
     state: AgeGateState;
@@ -112,7 +114,23 @@ export function AgeGateBoundary({
       controller.abort();
       window.removeEventListener("idream-age-gate-accepted", accept);
     };
-  }, [authoritativeAccepted, pathname]);
+  }, [authoritativeAccepted, historyRecoveryEpoch, pathname]);
+
+  useEffect(() => {
+    const recoverFromHistory = (event: PageTransitionEvent) => {
+      const action = ageGateHistoryRecoveryAction({
+        persisted: event.persisted,
+        acceptedLocally: hasAgeGateCookie() || readLocalAcceptance(),
+      });
+      if (action === "restore" || action === "recheck") {
+        setAuthoritativeAccepted(false);
+        setResolution({ pathname, state: "checking" });
+        setHistoryRecoveryEpoch((epoch) => epoch + 1);
+      }
+    };
+    window.addEventListener("pageshow", recoverFromHistory);
+    return () => window.removeEventListener("pageshow", recoverFromHistory);
+  }, [pathname]);
 
   useEffect(() => {
     if (state === "accepted") return;
@@ -175,6 +193,20 @@ export function useAgeGateAccess() {
     accepted: state === "accepted",
     state,
   } as const;
+}
+
+// BFCache restores the exact suspended React heap. If navigation froze the
+// boundary between a pathname update and its authority effect, no dependency
+// changes after restore and the full-screen checking state would be permanent.
+export function ageGateHistoryRecoveryAction(input: {
+  persisted: boolean;
+  acceptedLocally: boolean;
+}): AgeGateHistoryRecoveryAction {
+  if (!input.persisted) return null;
+  // A browser cookie/localStorage value is only a recovery hint. Main's
+  // persisted acceptance is the cross-service authority, so BFCache must run
+  // the normal rematerialization request before protected UI becomes active.
+  return input.acceptedLocally ? "restore" : "recheck";
 }
 
 function readLocalAcceptance() {

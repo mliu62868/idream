@@ -10,7 +10,7 @@ import path from "node:path";
 import { Pool } from "pg";
 import { createChatPrisma } from "../src/db.js";
 import { createSession, editUserMessage, sendMessage, regenerate } from "../src/service.js";
-import { processGenerate } from "../src/generate.js";
+import { processGenerate, processGenerateJob } from "../src/generate.js";
 import { processMemoryExtract } from "../src/memory.js";
 import { drainQueue, obliterate } from "../src/queue.js";
 import { listStreamEvents, streamKey } from "../src/stream.js";
@@ -331,7 +331,7 @@ describe("chat hot path (P0-3)", () => {
     })).snapshot).toMatchObject({ location: "the kitchen" });
   });
 
-  it("fails closed when the model emits no assistant content", async () => {
+  it("retries an empty provider response against the same assistant placeholder", async () => {
     await obliterate(CHAT_QUEUES.generate);
     await obliterate(CHAT_QUEUES.memoryExtract);
     const session = await createSession({ userId: EMPTY_USER, characterId: CHAR }, { prisma });
@@ -339,25 +339,45 @@ describe("chat hot path (P0-3)", () => {
       { userId: EMPTY_USER, sessionId: session.id, content: "plain empty-response probe" },
       { prisma },
     );
+    let retryJob: Parameters<typeof processGenerateJob>[0] | null = null;
     process.env.CHAT_MOCK_EMPTY_RESPONSE = "true";
     try {
-      let outcome: Awaited<ReturnType<typeof processGenerate>> | null = null;
       expect(await drainQueue(CHAT_QUEUES.generate, async (job) => {
-        outcome = await processGenerate(
-          job.payload as Parameters<typeof processGenerate>[0],
+        retryJob = {
+          payload: job.payload as Parameters<typeof processGenerate>[0],
+          attemptsMade: job.attemptsMade,
+          maxAttempts: job.maxAttempts,
+        };
+        await processGenerateJob(
+          retryJob,
           prisma,
         );
-      })).toBe(1);
-      expect(outcome).toEqual({ status: "failed" });
+      })).toBe(0);
     } finally {
       delete process.env.CHAT_MOCK_EMPTY_RESPONSE;
     }
     expect((await prisma.message.findUniqueOrThrow({
       where: { id: sent.assistantMessageId },
-    })).status).toBe("failed");
+    })).status).toBe("generating");
     expect((await listStreamEvents(streamKey(sent.assistantMessageId))).map((row) => row.event))
-      .toContainEqual(expect.objectContaining({ type: "error", code: "empty_model_response" }));
-    expect(await drainQueue(CHAT_QUEUES.memoryExtract, async () => {})).toBe(0);
+      .toContainEqual(expect.objectContaining({
+        type: "error",
+        code: "empty_model_response",
+        retryable: true,
+      }));
+    expect(retryJob).not.toBeNull();
+    await expect(processGenerateJob(
+      {
+        ...retryJob!,
+        attemptsMade: retryJob!.attemptsMade + 1,
+      },
+      prisma,
+    )).resolves.toEqual({ status: "sent" });
+    expect((await prisma.message.findUniqueOrThrow({
+      where: { id: sent.assistantMessageId },
+    })).status).toBe("sent");
+    expect(await drainQueue(CHAT_QUEUES.memoryExtract, async () => {})).toBe(1);
+    await obliterate(CHAT_QUEUES.generate);
   });
 
   it("blocks unsafe input: status=blocked, no streamUrl, no generation enqueued (P0-B)", async () => {

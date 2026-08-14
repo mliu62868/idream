@@ -1,19 +1,30 @@
-import { existsSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  chatFsRootFingerprint,
+  resolveChatFsRoot,
   characterVideoProductionRecipe,
   looksLikeMockChatResponse,
 } from "@idream/shared";
-import { defaultBullmqPrefix } from "@idream/shared/env";
+import {
+  defaultBullmqPrefix,
+  mainProviderKeysForLaunchScope,
+  requiredNonMockMainProviderKeysForLaunchScope,
+  resolveLaunchScope,
+  type LaunchScope,
+  type MainLaunchProviderKey,
+} from "@idream/shared/env";
 import { resolveLocalBlobRoot } from "@idream/shared/storage/local-blob";
 import { SENTRY_CANARY_EMITTERS } from "@idream/shared/observability/sentry-canary";
-import { parse as parseDotenv } from "dotenv";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
+import { isPublicHttpsUrl } from "../lib/public-site-origin";
 import { auditCharacterSoulAuthority } from "./modules/admin-v2/characters/soul-authority-audit";
 // SPEC: evidence 契约的家在 readiness/evidence.ts —— 生产端（probe-*.ts）与这里共用同一份声明。
 import type {
+  AdminTextProbeEvidence,
   AgeVerificationProbeEvidence,
   BlobStorageProbeEvidence,
   ChatModelProbeEvidence,
@@ -48,6 +59,8 @@ import {
 } from "./readiness/migration-authority";
 import { inspectMainToChatFailedBacklog } from "./readiness/main-to-chat-backlog-authority";
 import { inspectRecoveryRehearsalBundle } from "./readiness/recovery-rehearsal-authority";
+import { resolveRecoveryRehearsalSourceAuthority } from "./readiness/recovery-rehearsal-producer";
+import { loadRecoveryServiceEnvironment } from "./readiness/recovery-service-environment";
 
 const DEDICATED_CHAT_PROBE_USER_ID = "seed-chat-probe-user";
 
@@ -63,34 +76,58 @@ export interface LaunchReadinessCheck {
 
 export interface LaunchReadinessReport {
   ok: boolean;
+  generatedAt: string;
+  sourceRevision: string | null;
+  evidenceDigest: string;
+  environmentDigest: string;
   summary: Record<LaunchReadinessStatus, number>;
   checks: LaunchReadinessCheck[];
 }
 
 type EnvLike = Record<string, string | undefined>;
 
-type LaunchScope = "full" | "core";
+function canonicalJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJsonValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([, entry]) => entry !== undefined)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, entry]) => [key, canonicalJsonValue(entry)]),
+    );
+  }
+  return value;
+}
 
-const criticalProviderKeys = [
-  "CHAT_PROVIDER",
-  "VOICE_PROVIDER",
-  "MODERATION_PROVIDER",
-  "PAYMENT_PROVIDER",
-  "BLOB_PROVIDER",
-  "AGE_VERIFICATION_PROVIDER",
-] as const;
+function sha256Canonical(value: unknown) {
+  return createHash("sha256")
+    .update(JSON.stringify(canonicalJsonValue(value)))
+    .digest("hex");
+}
 
-type CriticalProviderKey = (typeof criticalProviderKeys)[number];
+function environmentDigestInput(env: EnvLike) {
+  const sensitive =
+    /(?:authorization|cookie|database_url|dsn|key|password|secret|token)/iu;
+  return Object.fromEntries(
+    Object.entries(env)
+      .filter(([, value]) => value !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, value]) => [
+        key,
+        sensitive.test(key) ? (value?.trim() ? "present" : "missing") : value,
+      ]),
+  );
+}
 
 export interface LaunchReadinessCapabilities {
-  mainProviderImplementations: Record<CriticalProviderKey, readonly string[]>;
+  mainProviderImplementations: Record<MainLaunchProviderKey, readonly string[]>;
   genImageProviders: readonly string[];
   genVideoProviders: readonly string[];
 }
 
 export type LaunchReadinessCapabilityOverride = {
   mainProviderImplementations?: Partial<
-    Record<CriticalProviderKey, readonly string[]>
+    Record<MainLaunchProviderKey, readonly string[]>
   >;
   genImageProviders?: readonly string[];
   genVideoProviders?: readonly string[];
@@ -106,6 +143,10 @@ export interface LaunchReadinessOptions extends LaunchReadinessProbeOptions {
 
 export interface LaunchReadinessCliOptions {
   envFile?: string;
+  adminEnvFile?: string;
+  chatEnvFile?: string;
+  genEnvFile?: string;
+  reportFile?: string;
   help: boolean;
   json: boolean;
 }
@@ -142,11 +183,6 @@ function mergeCapabilities(
   };
 }
 
-function resolveLaunchScope(env: EnvLike): LaunchScope | null {
-  const configured = env.LAUNCH_SCOPE?.trim() || "full";
-  return configured === "full" || configured === "core" ? configured : null;
-}
-
 function summarize(checks: LaunchReadinessCheck[]) {
   return checks.reduce<Record<LaunchReadinessStatus, number>>(
     (summary, check) => {
@@ -162,20 +198,6 @@ function isUrl(value: string | undefined) {
   try {
     new URL(value);
     return true;
-  } catch {
-    return false;
-  }
-}
-
-function isPublicHttpsUrl(value: string | undefined) {
-  if (!value || isPlaceholderValue(value)) return false;
-  try {
-    const url = new URL(value);
-    const hostname = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-    return (
-      url.protocol === "https:" &&
-      !new Set(["localhost", "127.0.0.1", "::1"]).has(hostname)
-    );
   } catch {
     return false;
   }
@@ -238,6 +260,16 @@ function hasMinLength(value: string | undefined, minLength: number) {
     value.length >= minLength &&
     !isPlaceholderValue(value)
   );
+}
+
+function genAuthorityValue(
+  env: EnvLike,
+  sanitizedKey: string,
+  legacyKey: string,
+) {
+  return env[sanitizedKey] !== undefined
+    ? env[sanitizedKey]
+    : env[legacyKey];
 }
 
 function isPlaceholderValue(value: string | undefined) {
@@ -392,18 +424,15 @@ function addProviderChecks(
   capabilities: LaunchReadinessCapabilities,
   scope: LaunchScope,
 ) {
-  const providerKeys =
-    scope === "core"
-      ? criticalProviderKeys.filter(
-          (key) =>
-            key !== "PAYMENT_PROVIDER" && key !== "AGE_VERIFICATION_PROVIDER",
-        )
-      : criticalProviderKeys;
+  const providerKeys = mainProviderKeysForLaunchScope(scope);
+  const requiredNonMockProviders = new Set(
+    requiredNonMockMainProviderKeysForLaunchScope(scope),
+  );
 
   for (const key of providerKeys) {
     const configured = env[key] ?? "mock";
     const providerId = kebab(key);
-    const mockAllowed = key === "MODERATION_PROVIDER";
+    const mockAllowed = !requiredNonMockProviders.has(key);
 
     addCheck(checks, {
       id: `${providerId}-non-mock`,
@@ -434,6 +463,27 @@ function addProviderChecks(
       remediation: implementationReady
         ? undefined
         : `Implement and test the ${configured} adapter for ${key}.`,
+    });
+  }
+
+  if (env.CHAT_PROVIDER === "pipeline") {
+    addValueCheck(checks, {
+      id: "main-chat-pipeline-api-url",
+      area: "Chat",
+      label: "Main pipeline chat API URL",
+      value: env.PIPELINE_API_URL,
+      url: true,
+      remediation:
+        "Set PIPELINE_API_URL in Main's production environment; CHAT_MODEL_BASE_URL configures the split Chat service and cannot replace it.",
+    });
+    addValueCheck(checks, {
+      id: "main-chat-pipeline-api-token",
+      area: "Chat",
+      label: "Main pipeline chat API token",
+      value: env.PIPELINE_API_TOKEN,
+      minLength: 16,
+      remediation:
+        "Set PIPELINE_API_TOKEN in Main's production environment; CHAT_MODEL_API_KEY configures the split Chat service and cannot replace it.",
     });
   }
 }
@@ -551,6 +601,30 @@ function addChatServiceProbeCheck(
       probe.signedRequest.status !== 200
     ) {
       problems.push("signed chat request did not return HTTP 200");
+    }
+    let expectedChatFsFingerprint: string | null = null;
+    try {
+      if (env.CHAT_FS_ROOT) {
+        expectedChatFsFingerprint = chatFsRootFingerprint(
+          resolveChatFsRoot(
+            env.CHAT_FS_ROOT,
+            resolveWorkspacePath("packages/chat"),
+          ),
+        );
+      }
+    } catch {
+      expectedChatFsFingerprint = null;
+    }
+    if (
+      probe.runtimeAuthority?.ok !== true ||
+      probe.runtimeAuthority.status !== 200 ||
+      !expectedChatFsFingerprint ||
+      probe.runtimeAuthority.chatFsRootFingerprint !==
+        expectedChatFsFingerprint
+    ) {
+      problems.push(
+        "signed Chat runtime authority does not match canonical CHAT_FS_ROOT",
+      );
     }
     if (probe.unsignedRequest?.status !== 401) {
       problems.push("unsigned chat request was not rejected with HTTP 401");
@@ -712,6 +786,117 @@ function addChatModelProbeCheck(
       problems.length === 0
         ? undefined
         : `Run \`bun run --filter @idream/main probe:chat -- --report .tmp/launch-chat-probe.json\` against the real chat model gateway, then set ${PROBE_REPORTS[probeName].reportEnvKey} before check:launch.`,
+  });
+}
+
+function addAdminTextProbeCheck(
+  checks: LaunchReadinessCheck[],
+  env: EnvLike,
+  probe: AdminTextProbeEvidence | null,
+  now: Date,
+) {
+  const problems: string[] = [];
+  const probeName: ProbeName = "adminTextProbe";
+  addMissingProbeReportProblem(problems, env, probeName);
+  if (!probe) {
+    problems.push("no probe report was loaded");
+  } else if (probe.loadError) {
+    problems.push(probe.loadError);
+  } else {
+    if (probe.ok !== true) problems.push("probe did not complete successfully");
+    if (probe.provider !== env.CHAT_PROVIDER) {
+      problems.push(
+        `probe provider is ${probe.provider ?? "unknown"}, not ${env.CHAT_PROVIDER ?? "unset"}`,
+      );
+    }
+    for (const [label, runtime] of [
+      ["Character Assist", probe.characterAssist?.runtime],
+      ["Production Directions", probe.productionDirections?.runtime],
+    ] as const) {
+      if (
+        runtime?.provider !== probe.provider ||
+        !sameUrl(runtime?.pipelineUrl, probe.pipelineUrl) ||
+        runtime?.model !== probe.model
+      ) {
+        problems.push(`${label} runtime identity is missing or inconsistent`);
+      }
+    }
+    if (!sameUrl(probe.pipelineUrl, env.PIPELINE_API_URL)) {
+      problems.push("probe pipeline URL does not match Main PIPELINE_API_URL");
+    }
+    if (probe.model !== env.PIPELINE_CHAT_MODEL_DEFAULT) {
+      problems.push(
+        "probe model does not match Main PIPELINE_CHAT_MODEL_DEFAULT",
+      );
+    }
+    if (!sameUrl(probe.adminUrl, env.ADMIN_WEB_URL)) {
+      problems.push("probe Admin URL does not match ADMIN_WEB_URL");
+    }
+    if (
+      !hasMinLength(env.ADMIN_TEXT_PROBE_CHARACTER_ID, 1) ||
+      probe.characterId !== env.ADMIN_TEXT_PROBE_CHARACTER_ID
+    ) {
+      problems.push(
+        "probe Character does not match ADMIN_TEXT_PROBE_CHARACTER_ID",
+      );
+    }
+    if (probe.authMode !== "cookie" && probe.authMode !== "authorization") {
+      problems.push("probe did not use an authenticated Admin credential");
+    }
+    if (!hasMinLength(probe.correlationId ?? undefined, 1)) {
+      problems.push("probe correlation id is missing");
+    }
+    if (
+      probe.requestIds?.characterAssist !== `${probe.correlationId}-assist` ||
+      probe.requestIds?.productionDirections !==
+        `${probe.correlationId}-directions`
+    ) {
+      problems.push("probe request ids are not bound to its correlation id");
+    }
+    if (
+      probe.characterAssist?.ok !== true ||
+      probe.characterAssist.status !== 200 ||
+      (probe.characterAssist.descriptionCharacters ?? 0) < 1 ||
+      (probe.characterAssist.nameIdeas ?? 0) < 1 ||
+      (probe.characterAssist.personalityCharacters ?? 0) < 1 ||
+      (probe.characterAssist.speakingStyleCharacters ?? 0) < 1 ||
+      (probe.characterAssist.firstMessageCharacters ?? 0) < 1 ||
+      (probe.characterAssist.visualBriefCharacters ?? 0) < 1
+    ) {
+      problems.push("Character Assist did not return the complete structured draft");
+    }
+    if (
+      probe.productionDirections?.ok !== true ||
+      probe.productionDirections.status !== 200 ||
+      probe.productionDirections.directions !== 4 ||
+      probe.productionDirections.source !== "model" ||
+      (probe.productionDirections.scenePromptCharacters ?? 0) < 1
+    ) {
+      problems.push(
+        "Production Directions did not return four structured model directions",
+      );
+    }
+    if (
+      probe.cleanup?.fixture !== "not_created" ||
+      probe.cleanup.immutableModerationAudit !== "retained_by_authority"
+    ) {
+      problems.push("probe side-effect accounting is missing or invalid");
+    }
+    addProbeFreshnessProblems(problems, env, probeName, probe.checkedAt, now);
+  }
+
+  addCheck(checks, {
+    id: "admin-text-live-probe",
+    area: "Admin",
+    status: problems.length === 0 ? "pass" : "fail",
+    message:
+      problems.length === 0
+        ? "Recent authenticated Admin probe exercised Character Assist and Production Directions and observed Main's exact pipeline runtime identity."
+        : `Admin text probe evidence is missing or invalid: ${problems.join("; ")}.`,
+    remediation:
+      problems.length === 0
+        ? undefined
+        : `Run \`bun run --filter @idream/main probe:admin-text -- --allow-immutable-audit --character-id <reviewed-character-id> --report .tmp/launch-admin-text-probe.json\` with an authenticated Admin credential, then set ${PROBE_REPORTS[probeName].reportEnvKey} before check:launch. Character Assist retains immutable moderation audit rows.`,
   });
 }
 
@@ -1278,6 +1463,31 @@ function addImagePipelineChecks(
   now: Date,
 ) {
   const configured = env.GEN_IMAGE_PROVIDER ?? "mock";
+  const genPipelineApiUrl = genAuthorityValue(
+    env,
+    "IDREAM_GEN_PIPELINE_API_URL",
+    "PIPELINE_API_URL",
+  );
+  const genPipelineApiToken = genAuthorityValue(
+    env,
+    "IDREAM_GEN_PIPELINE_API_TOKEN",
+    "PIPELINE_API_TOKEN",
+  );
+  const genComfyuiApiUrl = genAuthorityValue(
+    env,
+    "IDREAM_GEN_COMFYUI_API_URL",
+    "COMFYUI_API_URL",
+  );
+  const genDrawThingsCli = genAuthorityValue(
+    env,
+    "IDREAM_GEN_DRAWTHINGS_CLI",
+    "DRAWTHINGS_CLI",
+  );
+  const genImageModel = genAuthorityValue(
+    env,
+    "IDREAM_GEN_PIPELINE_IMAGE_MODEL_DEFAULT",
+    "PIPELINE_IMAGE_MODEL_DEFAULT",
+  );
   const supported = capabilities.genImageProviders.includes(configured);
   // "pipeline" (legacy OpenAI-compat gateway) and "backend" (P1: gen worker calls
   // ComfyUI/sd-cli directly via GenBackend) are both valid non-mock production
@@ -1300,52 +1510,52 @@ function addImagePipelineChecks(
   });
 
   if (configured === "backend") {
-    const hasDrawThings = hasMinLength(env.DRAWTHINGS_CLI, 1);
-    const hasComfyui = hasMinLength(env.COMFYUI_API_URL, 1);
+    const hasDrawThings = hasMinLength(genDrawThingsCli, 1);
+    const hasComfyui = hasMinLength(genComfyuiApiUrl, 1);
 
     if (hasDrawThings) {
-      addRequiredCheck(checks, env, {
+      addValueCheck(checks, {
         id: "drawthings-cli",
         area: "Generation",
-        key: "DRAWTHINGS_CLI",
         label: "Draw Things CLI",
+        value: genDrawThingsCli,
         minLength: 1,
         remediation:
           "Set DRAWTHINGS_CLI to the pinned executable used by drawthings workflows.",
       });
     }
     if (hasComfyui || !hasDrawThings) {
-      addRequiredCheck(checks, env, {
+      addValueCheck(checks, {
         id: "comfyui-api-url",
         area: "Generation",
-        key: "COMFYUI_API_URL",
-        label: "ComfyUI API URL",
+        label: "Gen ComfyUI API URL",
+        value: genComfyuiApiUrl,
         url: true,
         remediation:
           "Set COMFYUI_API_URL, or configure DRAWTHINGS_CLI for the backend workflows in use.",
       });
     }
   } else if (configured === "pipeline") {
-    addRequiredCheck(checks, env, {
+    addValueCheck(checks, {
       id: "pipeline-api-url",
       area: "Generation",
-      key: "PIPELINE_API_URL",
-      label: "Pipeline API URL",
+      label: "Gen pipeline API URL",
+      value: genPipelineApiUrl,
       url: true,
       remediation:
-        "Set PIPELINE_API_URL to the internal ComfyUI/Z-Image gateway.",
+        "Set PIPELINE_API_URL in Gen's production environment to the internal ComfyUI/Z-Image gateway.",
     });
-    addRequiredCheck(checks, env, {
+    addValueCheck(checks, {
       id: "pipeline-api-token",
       area: "Generation",
-      key: "PIPELINE_API_TOKEN",
-      label: "Pipeline API token",
+      label: "Gen pipeline API token",
+      value: genPipelineApiToken,
       minLength: 16,
       remediation:
-        "Set PIPELINE_API_TOKEN so product services authenticate to the pipeline.",
+        "Set PIPELINE_API_TOKEN in Gen's production environment so its worker authenticates to the pipeline.",
     });
 
-    const model = env.PIPELINE_IMAGE_MODEL_DEFAULT;
+    const model = genImageModel;
     addCheck(checks, {
       id: "pipeline-image-model",
       area: "Generation",
@@ -1355,7 +1565,7 @@ function addImagePipelineChecks(
         : "Default image model is not set in product env.",
       remediation: hasMinLength(model, 1)
         ? undefined
-        : "Set PIPELINE_IMAGE_MODEL_DEFAULT or document the default model in the pipeline service.",
+        : "Set PIPELINE_IMAGE_MODEL_DEFAULT in Gen's production environment or document the default model in the pipeline service.",
     });
   }
 
@@ -1373,6 +1583,11 @@ function addVideoPipelineChecks(
   productConfigProbe: ProductConfigProbeEvidence | null,
 ) {
   const configured = env.GEN_VIDEO_PROVIDER ?? "mock";
+  const genComfyuiApiUrl = genAuthorityValue(
+    env,
+    "IDREAM_GEN_COMFYUI_API_URL",
+    "COMFYUI_API_URL",
+  );
   if (!configured || configured === "mock") {
     const productConfigOk =
       productConfigProbe?.ok === true && !productConfigProbe.loadError;
@@ -1417,14 +1632,14 @@ function addVideoPipelineChecks(
   });
 
   if (configured === "backend") {
-    addRequiredCheck(checks, env, {
+    addValueCheck(checks, {
       id: "video-comfyui-api-url",
       area: "Generation",
-      key: "COMFYUI_API_URL",
-      label: "Video ComfyUI API URL",
+      label: "Gen video ComfyUI API URL",
+      value: genComfyuiApiUrl,
       url: true,
       remediation:
-        "Set COMFYUI_API_URL to the ComfyUI runtime hosting the pinned LTX video workflow.",
+        "Set COMFYUI_API_URL in Gen's production environment to the ComfyUI runtime hosting the pinned LTX video workflow.",
     });
   }
 }
@@ -1436,6 +1651,11 @@ function addVideoGenerationProbeCheck(
   probe: VideoGenerationProbeEvidence | null,
   now: Date,
 ) {
+  const genComfyuiApiUrl = genAuthorityValue(
+    env,
+    "IDREAM_GEN_COMFYUI_API_URL",
+    "COMFYUI_API_URL",
+  );
   const probeName: ProbeName = "videoGenerationProbe";
   if (
     productConfigProbe?.ok === true &&
@@ -1479,8 +1699,10 @@ function addVideoGenerationProbeCheck(
         `probe backend is ${probe.backendKind ?? "unknown"}, not comfyui`,
       );
     }
-    if (!sameUrl(probe.backendTarget, env.COMFYUI_API_URL)) {
-      problems.push("probe ComfyUI target does not match COMFYUI_API_URL");
+    if (!sameUrl(probe.backendTarget, genComfyuiApiUrl)) {
+      problems.push(
+        "probe ComfyUI target does not match Gen ComfyUI authority",
+      );
     }
     if (probe.workflowKey !== characterVideoProductionRecipe.workflowKey) {
       problems.push(
@@ -1942,6 +2164,26 @@ function addImagePipelineProbeCheck(
   const problems: string[] = [];
   const probeName: ProbeName = "imagePipelineProbe";
   const configuredProvider = env.GEN_IMAGE_PROVIDER ?? "mock";
+  const genPipelineApiUrl = genAuthorityValue(
+    env,
+    "IDREAM_GEN_PIPELINE_API_URL",
+    "PIPELINE_API_URL",
+  );
+  const genComfyuiApiUrl = genAuthorityValue(
+    env,
+    "IDREAM_GEN_COMFYUI_API_URL",
+    "COMFYUI_API_URL",
+  );
+  const genDrawThingsCli = genAuthorityValue(
+    env,
+    "IDREAM_GEN_DRAWTHINGS_CLI",
+    "DRAWTHINGS_CLI",
+  );
+  const genImageModel = genAuthorityValue(
+    env,
+    "IDREAM_GEN_PIPELINE_IMAGE_MODEL_DEFAULT",
+    "PIPELINE_IMAGE_MODEL_DEFAULT",
+  );
 
   addMissingProbeReportProblem(problems, env, probeName);
   if (!probe) {
@@ -1956,18 +2198,20 @@ function addImagePipelineProbeCheck(
       );
     }
     if (configuredProvider === "pipeline") {
-      if (!sameUrl(probe.pipelineUrl, env.PIPELINE_API_URL)) {
-        problems.push("probe pipeline URL does not match PIPELINE_API_URL");
+      if (!sameUrl(probe.pipelineUrl, genPipelineApiUrl)) {
+        problems.push("probe pipeline URL does not match Gen pipeline URL");
       }
     } else if (configuredProvider === "backend") {
       if (probe.backendKind === "comfyui") {
-        if (!sameUrl(probe.backendTarget, env.COMFYUI_API_URL)) {
-          problems.push("probe ComfyUI target does not match COMFYUI_API_URL");
+        if (!sameUrl(probe.backendTarget, genComfyuiApiUrl)) {
+          problems.push(
+            "probe ComfyUI target does not match Gen ComfyUI authority",
+          );
         }
       } else if (probe.backendKind === "drawthings") {
         if (
           !hasMinLength(probe.backendTarget ?? undefined, 1) ||
-          probe.backendTarget !== env.DRAWTHINGS_CLI
+          probe.backendTarget !== genDrawThingsCli
         ) {
           problems.push(
             "probe Draw Things target does not match DRAWTHINGS_CLI",
@@ -1986,10 +2230,10 @@ function addImagePipelineProbeCheck(
     }
     if (
       configuredProvider === "pipeline" &&
-      hasMinLength(env.PIPELINE_IMAGE_MODEL_DEFAULT, 1) &&
-      probe.model !== env.PIPELINE_IMAGE_MODEL_DEFAULT
+      hasMinLength(genImageModel, 1) &&
+      probe.model !== genImageModel
     ) {
-      problems.push("probe model does not match PIPELINE_IMAGE_MODEL_DEFAULT");
+      problems.push("probe model does not match Gen image model");
     }
     const executionBindings = productConfigProbe?.activeImageExecutionBindings;
     if (
@@ -2067,11 +2311,26 @@ function addGenBlobAuthorityProblems(
 ) {
   const mainProvider = env.BLOB_PROVIDER ?? "mock";
   const genProvider = env.GEN_BLOB_PROVIDER ?? mainProvider;
+  const genEndpoint = env.IDREAM_GEN_BLOB_ENDPOINT ?? env.BLOB_ENDPOINT;
+  const genBucket = env.IDREAM_GEN_BLOB_BUCKET ?? env.BLOB_BUCKET;
+  const mainRoot = resolveLocalBlobRoot(env.BLOB_ROOT);
+  const genRoot = resolveLocalBlobRoot(
+    env.IDREAM_GEN_BLOB_ROOT ?? env.BLOB_ROOT,
+  );
 
   if (genProvider !== mainProvider) {
     problems.push(
       `configured Gen Blob provider ${genProvider || "empty"} does not match Main BLOB_PROVIDER ${mainProvider || "empty"}`,
     );
+  }
+  if (
+    (genProvider === "r2" || genProvider === "s3") &&
+    (!sameUrl(genEndpoint, env.BLOB_ENDPOINT) || genBucket !== env.BLOB_BUCKET)
+  ) {
+    problems.push("configured Gen Blob endpoint/bucket does not match Main authority");
+  }
+  if (genProvider === "mock" && genRoot !== mainRoot) {
+    problems.push("configured Gen local Blob root does not match Main authority");
   }
   if (!authority) {
     problems.push("probe does not identify the effective Gen Blob authority");
@@ -2084,11 +2343,11 @@ function addGenBlobAuthorityProblems(
   }
 
   if (genProvider === "r2" || genProvider === "s3") {
-    if (!sameUrl(authority.endpoint, env.BLOB_ENDPOINT)) {
-      problems.push("probe Blob endpoint does not match BLOB_ENDPOINT");
+    if (!sameUrl(authority.endpoint, genEndpoint)) {
+      problems.push("probe Blob endpoint does not match Gen runtime authority");
     }
-    if (authority.bucket !== env.BLOB_BUCKET) {
-      problems.push("probe Blob bucket does not match BLOB_BUCKET");
+    if (authority.bucket !== genBucket) {
+      problems.push("probe Blob bucket does not match Gen runtime authority");
     }
     if (authority.root !== null) {
       problems.push(
@@ -2099,9 +2358,9 @@ function addGenBlobAuthorityProblems(
   }
 
   if (genProvider === "mock") {
-    if (authority.root !== resolveLocalBlobRoot(env.BLOB_ROOT)) {
+    if (authority.root !== genRoot) {
       problems.push(
-        "probe Blob root does not match the shared local BLOB_ROOT",
+        "probe Blob root does not match the Gen runtime authority",
       );
     }
     if (authority.endpoint !== null || authority.bucket !== null) {
@@ -2316,45 +2575,122 @@ function resolveProbeEvidence(
   return resolved as { [K in ProbeName]: ProbeEvidenceOf<K> | null };
 }
 
-export function loadLaunchReadinessEnv(
-  envFile: string,
-  baseEnv: EnvLike = process.env,
-): EnvLike {
-  const filePath = resolveWorkspacePath(envFile);
-  const parsed = parseDotenv(readFileSync(filePath));
-  const runtimeEnvKeys = [
-    "PATH",
-    "HOME",
-    "USER",
-    "LOGNAME",
-    "SHELL",
-    "TMPDIR",
-    "TMP",
-    "TEMP",
-    "LANG",
-    "LC_ALL",
-    "TZ",
-    "TERM",
-    "CI",
-    "NODE_OPTIONS",
-    "NO_COLOR",
-    "FORCE_COLOR",
-  ] as const;
-  const runtimeEnv: EnvLike = {};
-  for (const key of runtimeEnvKeys) {
-    if (baseEnv[key] !== undefined) runtimeEnv[key] = baseEnv[key];
+function isReleaseRevision(value: string | null | undefined) {
+  const revision = value?.trim() ?? "";
+  return (
+    revision.length >= 7 &&
+    revision.length <= 160 &&
+    !/(?:change[_-]?me|development|local|placeholder|replace|unknown)/iu.test(
+      revision,
+    )
+  );
+}
+
+function requiredRevisionProbeNames(
+  scope: LaunchScope,
+  env: EnvLike,
+  probes: { [K in ProbeName]: ProbeEvidenceOf<K> | null },
+) {
+  const names = new Set<ProbeName>([
+    "imagePipelineProbe",
+    "imageGenerationPersistenceProbe",
+    "blobStorageProbe",
+    "chatServiceProbe",
+    "chatModelProbe",
+    "adminTextProbe",
+    "voiceModelProbe",
+    "productConfigProbe",
+    "publicCatalogProbe",
+    "webSurfaceProbe",
+    "sentryMainCanaryProbe",
+    "sentryAdminCanaryProbe",
+    "sentryChatCanaryProbe",
+    "sentryGenCanaryProbe",
+  ]);
+  if (
+    probes.productConfigProbe?.ok === true &&
+    !probes.productConfigProbe.loadError &&
+    probes.productConfigProbe.videoFeatureEnabled === true
+  ) {
+    names.add("videoGenerationProbe");
+    names.add("videoGenerationPersistenceProbe");
   }
-  return {
-    ...runtimeEnv,
-    ...parsed,
-  };
+  if (
+    (env.MODERATION_PROVIDER ?? "mock") !== "mock" ||
+    (env.CHAT_MODERATION_PROVIDER ?? "mock") !== "mock"
+  ) {
+    names.add("safetyGatewayProbe");
+  }
+  if (scope === "full") {
+    names.add("paymentProviderProbe");
+    names.add("ageVerificationProbe");
+  }
+  return names;
+}
+
+function addSourceRevisionAuthorityCheck(
+  checks: LaunchReadinessCheck[],
+  env: EnvLike,
+  probes: { [K in ProbeName]: ProbeEvidenceOf<K> | null },
+  scope: LaunchScope,
+) {
+  const expectedRevision = env.IDREAM_MAIN_SOURCE_REVISION?.trim() ?? "";
+  const serviceRevisions = [
+    env.IDREAM_MAIN_SOURCE_REVISION,
+    env.IDREAM_ADMIN_SOURCE_REVISION,
+    env.IDREAM_CHAT_SOURCE_REVISION,
+    env.IDREAM_GEN_SOURCE_REVISION,
+  ];
+  const problems: string[] = [];
+  if (
+    !isReleaseRevision(expectedRevision) ||
+    serviceRevisions.some((revision) => revision?.trim() !== expectedRevision)
+  ) {
+    problems.push("Main, Admin, Chat, and Gen source revisions are missing or inconsistent");
+  }
+  for (const name of requiredRevisionProbeNames(scope, env, probes)) {
+    const revision = probes[name]?.sourceRevision?.trim() ?? "";
+    if (!expectedRevision || revision !== expectedRevision) {
+      problems.push(`${PROBE_REPORTS[name].reportEnvKey} is not bound to the expected revision`);
+    }
+  }
+  if (
+    probes.chatServiceProbe?.runtimeAuthority?.sourceRevision?.trim() !==
+    env.IDREAM_CHAT_SOURCE_REVISION?.trim()
+  ) {
+    problems.push("signed Chat runtime authority is not bound to the Chat revision");
+  }
+  const adminText = probes.adminTextProbe;
+  if (
+    adminText?.adminSourceRevision?.trim() !==
+      env.IDREAM_ADMIN_SOURCE_REVISION?.trim() ||
+    adminText?.characterAssist?.runtime?.sourceRevision?.trim() !==
+      expectedRevision ||
+    adminText?.productionDirections?.runtime?.sourceRevision?.trim() !==
+      expectedRevision
+  ) {
+    problems.push("Admin BFF and Main text runtime are not bound to their revisions");
+  }
+  addCheck(checks, {
+    id: "source-revision-authority",
+    area: "Runtime",
+    status: problems.length === 0 ? "pass" : "fail",
+    message:
+      problems.length === 0
+        ? `All required runtime and probe evidence is bound to ${expectedRevision}.`
+        : `Source revision authority is incomplete: ${problems.join("; ")}.`,
+    remediation:
+      problems.length === 0
+        ? undefined
+        : "Deploy one immutable source revision to Main, Admin, Chat, and Gen; set the same SENTRY_RELEASE/IDREAM_SOURCE_REVISION in each service; rerun every required probe from that revision before check:launch.",
+  });
 }
 
 export function assessLaunchReadiness(
   options: LaunchReadinessOptions = {},
 ): LaunchReadinessReport {
   const env = options.env ?? process.env;
-  const configuredScope = resolveLaunchScope(env);
+  const configuredScope = resolveLaunchScope(env.LAUNCH_SCOPE);
   const scope = configuredScope ?? "full";
   const capabilities = mergeCapabilities(options.capabilities);
   // INVARIANT: 显式传入（含 null）优先于按 env 读文件；未传才落回 *_PROBE_REPORT。
@@ -2377,16 +2713,27 @@ export function assessLaunchReadiness(
         ? "Set LAUNCH_SCOPE to full or core; unknown values never weaken the full launch gate."
         : undefined,
   });
+  addSourceRevisionAuthorityCheck(checks, env, probes, scope);
 
   addCheck(checks, {
     id: "app-env-production",
     area: "Runtime",
-    status: env.APP_ENV === "production" ? "pass" : "fail",
+    status:
+      env.APP_ENV === "production" &&
+      env.IDREAM_ADMIN_APP_ENV === "production" &&
+      env.IDREAM_CHAT_APP_ENV === "production" &&
+      env.IDREAM_GEN_APP_ENV === "production"
+        ? "pass"
+        : "fail",
     message:
-      env.APP_ENV === "production"
-        ? "APP_ENV is production."
-        : `APP_ENV is ${env.APP_ENV ?? "unset"}.`,
-    remediation: "Run the launch gate with APP_ENV=production.",
+      env.APP_ENV === "production" &&
+      env.IDREAM_ADMIN_APP_ENV === "production" &&
+      env.IDREAM_CHAT_APP_ENV === "production" &&
+      env.IDREAM_GEN_APP_ENV === "production"
+        ? "Main, Admin, Chat, and Gen APP_ENV are production."
+        : "Main, Admin, Chat, and Gen are not all configured with APP_ENV=production.",
+    remediation:
+      "Run Main, Admin, Chat, and Gen with APP_ENV=production before evaluating the launch gate.",
   });
 
   addCheck(checks, {
@@ -2438,13 +2785,20 @@ export function assessLaunchReadiness(
       "Generate a unique production BETTER_AUTH_SECRET with at least 32 characters.",
   });
 
-  addRequiredCheck(checks, env, {
+  const internalTokenAuthoritiesMatch =
+    hasMinLength(env.INTERNAL_TOKEN, 16) &&
+    env.IDREAM_ADMIN_INTERNAL_TOKEN === env.INTERNAL_TOKEN &&
+    env.IDREAM_CHAT_INTERNAL_TOKEN === env.INTERNAL_TOKEN &&
+    env.IDREAM_GEN_INTERNAL_TOKEN === env.INTERNAL_TOKEN;
+  addCheck(checks, {
     id: "internal-token",
     area: "Security",
-    key: "INTERNAL_TOKEN",
-    label: "Internal API token",
-    minLength: 16,
-    remediation: "Set INTERNAL_TOKEN to a production-only secret.",
+    status: internalTokenAuthoritiesMatch ? "pass" : "fail",
+    message: internalTokenAuthoritiesMatch
+      ? "Main, Admin, Chat, and Gen use one internal token authority."
+      : "Main, Admin, Chat, and Gen internal tokens are missing or inconsistent.",
+    remediation:
+      "Set the same production INTERNAL_TOKEN in the Main, Admin, Chat, and Gen service environments.",
   });
   addRequiredCheck(checks, env, {
     id: "cron-secret",
@@ -2487,10 +2841,22 @@ export function assessLaunchReadiness(
   addCheck(checks, {
     id: "bullmq-prefix",
     area: "Queues",
-    status: isProductionBullmqPrefix(env.BULLMQ_PREFIX) ? "pass" : "fail",
-    message: isProductionBullmqPrefix(env.BULLMQ_PREFIX)
-      ? "BULLMQ_PREFIX is explicitly configured for production."
-      : "BULLMQ_PREFIX is missing or still a service-local development default.",
+    status:
+      env.IDREAM_CHAT_APP_ENV === "production" &&
+      env.IDREAM_GEN_APP_ENV === "production" &&
+      isProductionBullmqPrefix(env.BULLMQ_PREFIX) &&
+      env.IDREAM_CHAT_BULLMQ_PREFIX === env.BULLMQ_PREFIX &&
+      env.IDREAM_GEN_BULLMQ_PREFIX === env.BULLMQ_PREFIX
+        ? "pass"
+        : "fail",
+    message:
+      env.IDREAM_CHAT_APP_ENV === "production" &&
+      env.IDREAM_GEN_APP_ENV === "production" &&
+      isProductionBullmqPrefix(env.BULLMQ_PREFIX) &&
+      env.IDREAM_CHAT_BULLMQ_PREFIX === env.BULLMQ_PREFIX &&
+      env.IDREAM_GEN_BULLMQ_PREFIX === env.BULLMQ_PREFIX
+        ? "Main, Chat, and Gen share one explicit production BullMQ prefix."
+        : "Main, Chat, and Gen are not bound to one production BullMQ prefix.",
     remediation:
       "Set one shared production BULLMQ_PREFIX, such as idream:prod, for main-web, chat, and gen workers.",
   });
@@ -2505,27 +2871,36 @@ export function assessLaunchReadiness(
     url: true,
     remediation: "Deploy packages/chat and set CHAT_SERVICE_URL.",
   });
-  addRequiredCheck(checks, env, {
+  const chatBffAuthoritiesMatch =
+    hasMinLength(env.CHAT_BFF_SIGNING_SECRET, 32) &&
+    env.IDREAM_CHAT_BFF_SIGNING_SECRET === env.CHAT_BFF_SIGNING_SECRET;
+  addCheck(checks, {
     id: "chat-bff-signing-secret",
     area: "Chat",
-    key: "CHAT_BFF_SIGNING_SECRET",
-    label: "Chat BFF signing secret",
-    minLength: 32,
+    status: chatBffAuthoritiesMatch ? "pass" : "fail",
+    message: chatBffAuthoritiesMatch
+      ? "Main and Chat share one production BFF signing authority."
+      : "Main and Chat BFF signing secrets are missing or inconsistent.",
     remediation:
       "Set CHAT_BFF_SIGNING_SECRET to the same shared secret used by packages/chat.",
   });
-  addRequiredCheck(checks, env, {
+  const adminBffAuthoritiesMatch =
+    hasMinLength(env.ADMIN_BFF_SIGNING_SECRET, 32) &&
+    env.IDREAM_ADMIN_BFF_SIGNING_SECRET === env.ADMIN_BFF_SIGNING_SECRET;
+  addCheck(checks, {
     id: "admin-bff-signing-secret",
     area: "Admin",
-    key: "ADMIN_BFF_SIGNING_SECRET",
-    label: "Admin BFF signing secret",
-    minLength: 32,
+    status: adminBffAuthoritiesMatch ? "pass" : "fail",
+    message: adminBffAuthoritiesMatch
+      ? "Main and Admin share one production BFF signing authority."
+      : "Main and Admin BFF signing secrets are missing or inconsistent.",
     remediation:
       "Set ADMIN_BFF_SIGNING_SECRET to the same shared secret used by packages/admin.",
   });
   addChatServiceChecks(checks, env);
   addChatServiceProbeCheck(checks, env, probes.chatServiceProbe, now);
   addChatModelProbeCheck(checks, env, probes.chatModelProbe, now);
+  addAdminTextProbeCheck(checks, env, probes.adminTextProbe, now);
   addChatModerationChecks(checks, env);
 
   addImagePipelineChecks(
@@ -2769,6 +3144,10 @@ export function assessLaunchReadiness(
   const summary = summarize(checks);
   return {
     ok: summary.fail === 0,
+    generatedAt: now.toISOString(),
+    sourceRevision: env.IDREAM_MAIN_SOURCE_REVISION?.trim() || null,
+    evidenceDigest: sha256Canonical(probes),
+    environmentDigest: sha256Canonical(environmentDigestInput(env)),
     summary,
     checks,
   };
@@ -2803,6 +3182,15 @@ export function parseLaunchReadinessCliArgs(
       options.json = true;
       continue;
     }
+    if (arg === "--report") {
+      const next = args[index + 1];
+      if (!next || next.startsWith("--")) {
+        throw new Error("--report requires a path");
+      }
+      options.reportFile = next;
+      index += 1;
+      continue;
+    }
     if (arg === "--help" || arg === "-h") {
       options.help = true;
       continue;
@@ -2816,6 +3204,21 @@ export function parseLaunchReadinessCliArgs(
       index += 1;
       continue;
     }
+    if (
+      arg === "--admin-env-file" ||
+      arg === "--chat-env-file" ||
+      arg === "--gen-env-file"
+    ) {
+      const next = args[index + 1];
+      if (!next || next.startsWith("--")) {
+        throw new Error(`${arg} requires a path`);
+      }
+      if (arg === "--admin-env-file") options.adminEnvFile = next;
+      else if (arg === "--chat-env-file") options.chatEnvFile = next;
+      else options.genEnvFile = next;
+      index += 1;
+      continue;
+    }
     if (arg.startsWith("--launch-env-file=")) {
       const envFile = arg.slice("--launch-env-file=".length);
       if (!envFile) throw new Error("--launch-env-file requires a path");
@@ -2826,6 +3229,30 @@ export function parseLaunchReadinessCliArgs(
       const envFile = arg.slice("--env-file=".length);
       if (!envFile) throw new Error("--env-file requires a path");
       options.envFile = envFile;
+      continue;
+    }
+    if (arg.startsWith("--chat-env-file=")) {
+      const envFile = arg.slice("--chat-env-file=".length);
+      if (!envFile) throw new Error("--chat-env-file requires a path");
+      options.chatEnvFile = envFile;
+      continue;
+    }
+    if (arg.startsWith("--admin-env-file=")) {
+      const envFile = arg.slice("--admin-env-file=".length);
+      if (!envFile) throw new Error("--admin-env-file requires a path");
+      options.adminEnvFile = envFile;
+      continue;
+    }
+    if (arg.startsWith("--gen-env-file=")) {
+      const envFile = arg.slice("--gen-env-file=".length);
+      if (!envFile) throw new Error("--gen-env-file requires a path");
+      options.genEnvFile = envFile;
+      continue;
+    }
+    if (arg.startsWith("--report=")) {
+      const reportFile = arg.slice("--report=".length);
+      if (!reportFile) throw new Error("--report requires a path");
+      options.reportFile = reportFile;
       continue;
     }
 
@@ -2842,9 +3269,22 @@ function formatLaunchReadinessHelp() {
     "",
     "Options:",
     "  --launch-env-file <path>  Load dotenv values before running the launch gate.",
+    "  --admin-env-file <path>   Load Admin runtime authority from its dotenv file.",
+    "  --chat-env-file <path>    Load Chat runtime authority from its dotenv file.",
+    "  --gen-env-file <path>     Load Gen runtime authority from its dotenv file.",
+    "  --report <path>           Write the structured report as JSON.",
     "  --json                    Print the structured report as JSON.",
     "  -h, --help                Show this help.",
   ].join("\n");
+}
+
+export async function writeLaunchReadinessReport(
+  reportFile: string,
+  report: LaunchReadinessReport,
+) {
+  const target = path.resolve(reportFile);
+  await mkdir(path.dirname(target), { recursive: true });
+  await writeFile(target, `${JSON.stringify(report, null, 2)}\n`, "utf8");
 }
 
 function isCliEntrypoint() {
@@ -3082,6 +3522,20 @@ async function addRecoveryRehearsalPreflight(
     });
     return;
   }
+  const approvedBundleDigest =
+    env.RECOVERY_REHEARSAL_APPROVED_SHA256?.trim() ?? "";
+  if (!/^[a-f0-9]{64}$/u.test(approvedBundleDigest)) {
+    checks.push({
+      id: "recovery-rehearsal-authority",
+      area: "Recovery",
+      status: "fail",
+      message:
+        "The recovery bundle has no exact operator-approved manifest digest.",
+      remediation:
+        "Review the published bundle manifest, record sha256(<bundle>.sha256) as RECOVERY_REHEARSAL_APPROVED_SHA256 outside the bundle, and rerun check:launch.",
+    });
+    return;
+  }
 
   const parsedMaxAge = Number.parseInt(
     env.RECOVERY_REHEARSAL_MAX_AGE_MINUTES ?? "1440",
@@ -3091,9 +3545,16 @@ async function addRecoveryRehearsalPreflight(
     Number.isFinite(parsedMaxAge) && parsedMaxAge > 0 ? parsedMaxAge : 1440;
   try {
     const expectedMigrations = await loadExpectedMigrationAuthority();
+    const expectedSourceAuthority = resolveRecoveryRehearsalSourceAuthority({
+      env,
+      workspaceRoot: resolveWorkspacePath("."),
+      chatWorkingDirectory: resolveWorkspacePath("packages/chat"),
+    });
     const authority = await inspectRecoveryRehearsalBundle({
       bundlePath: resolveWorkspacePath(configuredPath),
       expectedMigrations,
+      expectedSourceAuthority,
+      approvedBundleDigest,
       now: new Date(),
       maxAgeMinutes,
     });
@@ -3129,20 +3590,26 @@ async function runLaunchReadinessCli() {
     } else {
       const preflightChecks: LaunchReadinessCheck[] = [];
       let env: EnvLike = process.env;
-      if (cliOptions.envFile) {
-        const envFilePath = resolveWorkspacePath(cliOptions.envFile);
-        if (existsSync(envFilePath)) {
-          env = loadLaunchReadinessEnv(cliOptions.envFile);
-        } else {
-          preflightChecks.push({
-            id: "launch-env-file",
-            area: "Runtime",
-            status: "fail",
-            message: `Launch env file does not exist: ${envFilePath}.`,
-            remediation:
-              "Create a production launch env file from packages/main/.env.production.example, fill real secrets and provider credentials, then rerun check:launch.",
-          });
-        }
+      try {
+        env = loadRecoveryServiceEnvironment({
+          workspaceRoot: resolveWorkspacePath("."),
+          launchEnvFile: cliOptions.envFile ?? null,
+          adminEnvFile: cliOptions.adminEnvFile ?? null,
+          chatEnvFile: cliOptions.chatEnvFile ?? null,
+          genEnvFile: cliOptions.genEnvFile ?? null,
+          processEnv: process.env,
+        });
+      } catch (error) {
+        preflightChecks.push({
+          id: "launch-env-file",
+          area: "Runtime",
+          status: "fail",
+          message: error instanceof Error
+            ? error.message
+            : "Service environment resolution failed.",
+          remediation:
+            "Create exact Main, Admin, Chat, and Gen production env files and pass them to check:launch.",
+        });
       }
       await addMigrationAuthorityPreflight(env, preflightChecks);
       await addMainToChatBacklogPreflight(env, preflightChecks);
@@ -3152,6 +3619,10 @@ async function runLaunchReadinessCli() {
       const output = cliOptions.json
         ? `${JSON.stringify(report, null, 2)}\n`
         : `${formatLaunchReadinessReport(report)}\n`;
+
+      if (cliOptions.reportFile) {
+        await writeLaunchReadinessReport(cliOptions.reportFile, report);
+      }
 
       process.stdout.write(output);
       process.exitCode = report.ok ? 0 : 1;

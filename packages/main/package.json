@@ -67,6 +67,7 @@
     "probe:catalog": "tsx src/server/probe-public-catalog.ts",
     "cleanup:public-content": "tsx src/server/cleanup-public-content.ts",
     "probe:chat": "tsx src/server/probe-chat-model.ts",
+    "probe:admin-text": "tsx src/server/probe-admin-text.ts",
     "probe:chat-service": "tsx src/server/probe-chat-service.ts",
     "probe:generation-model-candidates": "tsx src/server/probe-generation-model-candidates.ts",
     "probe:generation-persistence": "tsx src/server/probe-generation-persistence.ts",

@@ -117,6 +117,10 @@ describe("proxyChatRequest", () => {
     "fails closed when the signing secret is missing in %s",
     async (appEnv) => {
       process.env.APP_ENV = appEnv;
+      if (appEnv === "production") {
+        process.env.BETTER_AUTH_URL = "https://ourdream.ai";
+        process.env.MAIN_WEB_URL = "https://ourdream.ai";
+      }
       delete process.env.CHAT_BFF_SIGNING_SECRET;
       vi.resetModules();
       const { proxyChatRequest } = await import("./chat-proxy");

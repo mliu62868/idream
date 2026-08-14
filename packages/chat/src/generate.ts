@@ -21,7 +21,7 @@ import { characterAvailableToUser } from "./character-eligibility.js";
 import { appendStreamEvent, streamKey } from "./stream.js";
 import { recordOutbox, scheduleOutboxDelivery } from "./outbox.js";
 import { createId } from "./id.js";
-import { enqueue } from "./queue.js";
+import { enqueue, type ChatJob } from "./queue.js";
 import { logger } from "./logger.js";
 import {
   CHAT_CONTEXT_INVALIDATING_FILE_MUTATIONS,
@@ -50,12 +50,52 @@ import {
   ChatModelOutputLimitError,
   noMemoryAuthorityReply,
 } from "@idream/shared";
+import { runtimeReadiness } from "./runtime-readiness.js";
 
 export type GeneratePayload = ChatGeneratePayload;
 
 export interface GenerateHooks {
   afterContextBuilt?: (context: BuiltContext) => Promise<void> | void;
+  jobAttempt?: Pick<ChatJob, "attemptsMade" | "maxAttempts">;
   projectorPrisma?: ChatPrismaClient;
+}
+
+export type GenerateWorkerJob = Pick<
+  ChatJob<GeneratePayload>,
+  "payload" | "attemptsMade" | "maxAttempts"
+>;
+
+/** BullMQ-facing seam: retries reuse the same durable assistant placeholder. */
+export async function processGenerateJob(
+  job: GenerateWorkerJob,
+  prisma: ChatPrismaClient = chatPrisma,
+  hooks: GenerateHooks = {},
+) {
+  return processGenerate(job.payload, prisma, {
+    ...hooks,
+    jobAttempt: {
+      attemptsMade: job.attemptsMade,
+      maxAttempts: job.maxAttempts,
+    },
+  });
+}
+
+export async function terminalizeGenerateJobFailure(
+  payload: GeneratePayload,
+  prisma: ChatPrismaClient = chatPrisma,
+): Promise<boolean> {
+  const terminalized = await failAssistant(
+    prisma,
+    payload.assistantMessageId,
+  );
+  if (!terminalized) return false;
+  await appendStreamEvent(streamKey(payload.assistantMessageId), {
+    type: "error",
+    attempt: payload.attempt,
+    code: "generation_retries_exhausted",
+    retryable: false,
+  }).catch(() => {});
+  return true;
 }
 
 export async function processGenerate(
@@ -371,11 +411,16 @@ export async function processGenerate(
     }
   } catch (error) {
     const outputLimitReached = error instanceof ChatModelOutputLimitError;
+    const retryable = seq === 0 && hasWorkerRetryRemaining(hooks.jobAttempt);
+    if (!outputLimitReached) runtimeReadiness.invalidate(error);
+    if (seq === 0 && !retryable) {
+      await failAssistant(prisma, payload.assistantMessageId);
+    }
     await appendStreamEvent(key, {
       type: "error",
       attempt: payload.attempt,
       code: outputLimitReached ? "provider_output_limit" : "provider_failed",
-      retryable: seq === 0,
+      retryable,
     });
     if (seq === 0) throw error instanceof Error ? error : new Error(String(error));
     await failAssistant(prisma, payload.assistantMessageId);
@@ -384,14 +429,19 @@ export async function processGenerate(
 
   let content = chunks.join("");
   if (!content.trim()) {
-    await failAssistant(prisma, payload.assistantMessageId);
+    const error = new Error("chat model returned an empty response");
+    const retryable = hasWorkerRetryRemaining(hooks.jobAttempt);
+    runtimeReadiness.invalidate(error);
+    if (!retryable) {
+      await failAssistant(prisma, payload.assistantMessageId);
+    }
     await appendStreamEvent(key, {
       type: "error",
       attempt: payload.attempt,
       code: "empty_model_response",
-      retryable: true,
+      retryable,
     });
-    return { status: "failed" };
+    throw error;
   }
   const model = prepared.model;
   const usage = {
@@ -794,11 +844,22 @@ async function finalize(
   );
 }
 
-async function failAssistant(prisma: ChatPrismaClient, assistantMessageId: string): Promise<void> {
-  await prisma.message.updateMany({
+async function failAssistant(
+  prisma: ChatPrismaClient,
+  assistantMessageId: string,
+): Promise<boolean> {
+  const failed = await prisma.message.updateMany({
     where: { id: assistantMessageId, status: { in: ["pending", "generating"] } },
     data: { status: "failed" },
   });
+  return failed.count > 0;
+}
+
+function hasWorkerRetryRemaining(
+  jobAttempt: GenerateHooks["jobAttempt"],
+): boolean {
+  return jobAttempt === undefined ||
+    jobAttempt.attemptsMade + 1 < jobAttempt.maxAttempts;
 }
 
 function buildSummary(context: BuiltContext, assistantContent: string): string {

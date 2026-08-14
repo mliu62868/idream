@@ -3,6 +3,7 @@ import { pathToFileURL } from "node:url";
 import { prisma } from "./lib/db";
 import { canonicalJsonHash } from "./modules/admin-v2/shared/idempotency";
 import type { AgeVerificationProbeEvidence, ProbeReportOf } from "./readiness/evidence";
+import { isPublicHttpsUrl } from "../lib/public-site-origin";
 import {
   probeCliArg,
   probeReportPath,
@@ -391,16 +392,6 @@ function sameUrl(left: string | null, right: string | null) {
     leftUrl.hash = "";
     rightUrl.hash = "";
     return leftUrl.href === rightUrl.href;
-  } catch {
-    return false;
-  }
-}
-
-function isPublicHttpsUrl(value: string | null) {
-  if (!value) return false;
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:" && !["localhost", "127.0.0.1", "::1"].includes(url.hostname);
   } catch {
     return false;
   }

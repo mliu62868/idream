@@ -16,7 +16,10 @@ import {
   viewerScopeFromAuthority,
 } from "./CreateWorkspace";
 import { newCreatePreviewBatch } from "./create-preview-flow";
-import { AgeGateFrame } from "./AgeGateBoundary";
+import {
+  AgeGateFrame,
+  ageGateHistoryRecoveryAction,
+} from "./AgeGateBoundary";
 import {
   ACCOUNT_AUTHORITY_UNAVAILABLE,
   authNavLogoutPresentation,
@@ -281,6 +284,27 @@ describe("truthful public UI states", () => {
     expect(source("AgeGateBoundary.tsx")).not.toContain(
       'return <div className="min-h-screen bg-black" aria-hidden="true" />',
     );
+  });
+
+  it("re-resolves age authority when an accepted page returns from bfcache", () => {
+    expect(
+      ageGateHistoryRecoveryAction({
+        persisted: false,
+        acceptedLocally: true,
+      }),
+    ).toBeNull();
+    expect(
+      ageGateHistoryRecoveryAction({
+        persisted: true,
+        acceptedLocally: true,
+      }),
+    ).toBe("restore");
+    expect(
+      ageGateHistoryRecoveryAction({
+        persisted: true,
+        acceptedLocally: false,
+      }),
+    ).toBe("recheck");
   });
 
   it("clears the anonymous help-desk draft only after owner-scope persistence", () => {

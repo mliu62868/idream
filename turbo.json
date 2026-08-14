@@ -21,6 +21,10 @@
     "lint": {},
     "test": {
       "dependsOn": ["^build"]
+    },
+    "@idream/chat#test": {
+      "dependsOn": ["^build"],
+      "cache": false
     }
   }
 }

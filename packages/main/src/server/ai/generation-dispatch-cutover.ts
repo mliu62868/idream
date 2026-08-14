@@ -11,6 +11,7 @@ import {
   generationTerminalFinalizeDedupeKey,
   generationTerminalRecordChecksum,
   generationTerminalRecordIngestSchema,
+  GENERATION_CUTOVER_QUEUES,
   GEN_QUEUES,
   idempotencyKeys,
   MAIN_QUEUES,
@@ -62,12 +63,7 @@ const TERMINAL_FINALIZE_KINDS: readonly string[] = [
 // INVARIANT: in-flight 扫描与 failed 扫描必须覆盖同一组队列。这里曾是两份逐字相同的列表，
 // 往其中一份加队列而漏掉另一份，会让新队列上的 failed row 不再被检查 —— 一个 fail-open 的口子，
 // 且编译期与测试都不会响。现在只有一份。
-export const GENERATION_CUTOVER_QUEUES = [
-  GEN_QUEUES.imageGenerate,
-  GEN_QUEUES.videoGenerate,
-  MAIN_QUEUES.generationTerminalIngest,
-  MAIN_QUEUES.aiFinalize,
-] as const;
+export { GENERATION_CUTOVER_QUEUES } from "@idream/shared/contracts";
 
 export type GenerationDispatchCutoverIssue = {
   readonly generationJobId: string | null;

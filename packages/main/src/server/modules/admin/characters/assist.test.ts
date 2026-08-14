@@ -23,6 +23,11 @@ type CallResult = {
       firstMessage?: string;
       visualBrief?: string;
     };
+    runtime?: {
+      provider: string;
+      pipelineUrl: string | null;
+      model: string | null;
+    };
   } | undefined;
   errorCode: string | undefined;
 };
@@ -44,6 +49,8 @@ function pipelineRuntime(
 ): AdminTextGenerationRuntime {
   return {
     provider: "pipeline",
+    pipelineUrl: "https://pipeline.test.invalid/v1",
+    model: "test-model",
     async *stream(input) {
       const systemPrompt =
         input.messages.find((message) => message.role === "system")?.content ?? "";
@@ -154,7 +161,59 @@ describe("character AI assist", () => {
         visualBrief:
           "Soft brown eyes, dark wavy hair, paint-marked linen, amber and slate palette.",
       },
+      runtime: {
+        provider: "pipeline",
+        pipelineUrl: "https://pipeline.test.invalid/v1",
+        model: "test-model",
+      },
     });
+  });
+
+  it("does not overlap requests against a single-model runtime", async () => {
+    let active = 0;
+    let maxActive = 0;
+    const responseFor = (systemPrompt: string) => {
+      if (systemPrompt.includes("background bio")) return "A concise adult companion biography.";
+      if (systemPrompt.includes("personality traits")) return "observant, warm, precise";
+      if (systemPrompt.includes("speaking style")) return "Warm and measured. She notices details.";
+      if (systemPrompt.includes("first message")) return "Come sit with me for a while.";
+      if (systemPrompt.includes("visual art direction")) return "Dark hair, tailored coat, amber light.";
+      if (systemPrompt.includes("exactly 3 distinctive character names")) return "Mara Vale\nElin Rowe\nNora Voss";
+      throw new Error("Unexpected system prompt");
+    };
+    const runtime: AdminTextGenerationRuntime = {
+      provider: "pipeline",
+      pipelineUrl: "https://pipeline.test.invalid/v1",
+      model: "single-model",
+      async *stream(input) {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          if (active > 1) throw new Error("single-model gateway received overlap");
+          const systemPrompt =
+            input.messages.find((message) => message.role === "system")?.content ?? "";
+          yield { delta: responseFor(systemPrompt), done: false };
+          yield { delta: "", done: true };
+        } finally {
+          active -= 1;
+        }
+      },
+    };
+
+    const result = await call(
+      generateCharacterDraft(
+        makeRequest({
+          userId: `${P}admin`,
+          role: "admin",
+          body: { seed: "a patient listener who hosts a late-night radio show" },
+        }),
+        runtime,
+      ),
+    );
+
+    expect(result.status).toBe(200);
+    expect(maxActive).toBe(1);
   });
 
   it("rejects a mock-shaped response even when the runtime is mislabeled as real", async () => {

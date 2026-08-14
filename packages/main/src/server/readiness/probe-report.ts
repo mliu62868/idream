@@ -3,6 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   decodeAgeVerificationProbeEvidence,
+  decodeAdminTextProbeEvidence,
   decodeBlobStorageProbeEvidence,
   decodeChatModelProbeEvidence,
   decodeChatServiceProbeEvidence,
@@ -80,6 +81,11 @@ export const PROBE_REPORTS = {
     maxAgeEnvKey: "CHAT_MODEL_PROBE_MAX_AGE_MINUTES",
     decode: decodeChatModelProbeEvidence,
   },
+  adminTextProbe: {
+    reportEnvKey: "ADMIN_TEXT_PROBE_REPORT",
+    maxAgeEnvKey: "ADMIN_TEXT_PROBE_MAX_AGE_MINUTES",
+    decode: decodeAdminTextProbeEvidence,
+  },
   voiceModelProbe: {
     reportEnvKey: "VOICE_MODEL_PROBE_REPORT",
     maxAgeEnvKey: "VOICE_MODEL_PROBE_MAX_AGE_MINUTES",
@@ -146,7 +152,9 @@ export const SENTRY_CANARY_PROBE_NAMES = {
 
 export type ProbeEvidenceOf<K extends ProbeName> = ReturnType<
   (typeof PROBE_REPORTS)[K]["decode"]
->;
+> & {
+  sourceRevision?: string | null;
+};
 
 /** 门禁的 probe 注入面：由 PROBE_REPORTS 映射，不能少一个也不能多一个。 */
 export type LaunchReadinessProbeOptions = {
@@ -185,9 +193,21 @@ export function loadProbeReport<K extends ProbeName>(
   const reportPath = env[spec.reportEnvKey];
   if (!reportPath) return null;
   try {
-    return spec.decode(
-      JSON.parse(readFileSync(resolveWorkspacePath(reportPath), "utf8")),
-    ) as ProbeEvidenceOf<K>;
+    const raw = JSON.parse(
+      readFileSync(resolveWorkspacePath(reportPath), "utf8"),
+    ) as unknown;
+    const decoded = spec.decode(raw) as ProbeEvidenceOf<K>;
+    if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
+      const record = raw as Record<string, unknown>;
+      const revision =
+        typeof record.sourceRevision === "string"
+          ? record.sourceRevision
+          : typeof record.release === "string"
+            ? record.release
+            : null;
+      decoded.sourceRevision = revision;
+    }
+    return decoded;
   } catch (error) {
     return {
       ok: false,
@@ -219,5 +239,13 @@ export function probeReportPath(
 export async function writeProbeReport(reportPath: string, report: unknown) {
   const resolved = resolveWorkspacePath(reportPath);
   await mkdir(path.dirname(resolved), { recursive: true });
-  await writeFile(resolved, `${JSON.stringify(report, null, 2)}\n`);
+  const sourceRevision =
+    process.env.IDREAM_SOURCE_REVISION?.trim() ||
+    process.env.SENTRY_RELEASE?.trim() ||
+    null;
+  const revisionBoundReport =
+    typeof report === "object" && report !== null && !Array.isArray(report)
+      ? { ...(report as Record<string, unknown>), sourceRevision }
+      : report;
+  await writeFile(resolved, `${JSON.stringify(revisionBoundReport, null, 2)}\n`);
 }

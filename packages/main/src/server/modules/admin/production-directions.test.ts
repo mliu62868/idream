@@ -11,7 +11,17 @@ const P = "zt-production-directions-";
 type CallResult = {
   status: number;
   ok: boolean;
-  data: { directions?: Array<Record<string, unknown>>; source?: string } | undefined;
+  data:
+    | {
+        directions?: Array<Record<string, unknown>>;
+        source?: string;
+        runtime?: {
+          provider: string;
+          pipelineUrl: string | null;
+          model: string | null;
+        };
+      }
+    | undefined;
   errorCode: string | undefined;
 };
 
@@ -61,6 +71,8 @@ async function call(handler: Promise<Response>): Promise<CallResult> {
 function pipelineRuntime(output: string): AdminTextGenerationRuntime {
   return {
     provider: "pipeline",
+    pipelineUrl: "https://pipeline.test.invalid/v1",
+    model: "test-model",
     async *stream() {
       yield { delta: output, done: false };
       yield { delta: "", done: true };
@@ -159,6 +171,11 @@ describe("production creative directions", () => {
       ),
     ).toBe(true);
     expect(result.data?.source).toBe("model");
+    expect(result.data?.runtime).toEqual({
+      provider: "pipeline",
+      pipelineUrl: "https://pipeline.test.invalid/v1",
+      model: "test-model",
+    });
   });
 
   it("creates starter directions from the character when the operator leaves both prompt fields blank", async () => {
@@ -187,6 +204,8 @@ describe("production creative directions", () => {
   it("returns 503 without directions when the real provider throws", async () => {
     const failingRuntime: AdminTextGenerationRuntime = {
       provider: "pipeline",
+      pipelineUrl: "https://pipeline.test.invalid/v1",
+      model: "test-model",
       async *stream() {
         throw new Error("chat backend offline");
       },

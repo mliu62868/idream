@@ -61,6 +61,9 @@ export const env = {
   get SENTRY_RELEASE(): string | undefined {
     return process.env.SENTRY_RELEASE;
   },
+  get SOURCE_REVISION(): string | undefined {
+    return process.env.IDREAM_SOURCE_REVISION ?? process.env.SENTRY_RELEASE;
+  },
   /** Redis for BullMQ. GEN_REDIS_URL wins, else shared REDIS_URL, else local. */
   get REDIS_URL(): string {
     return process.env.GEN_REDIS_URL ?? process.env.REDIS_URL ?? DEFAULT_REDIS_URL;

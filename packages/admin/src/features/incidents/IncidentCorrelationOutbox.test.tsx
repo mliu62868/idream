@@ -1,11 +1,13 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
+  INCIDENT_CORRELATION_ATTEMPT_MISSING_DISCARD_CONFIRMATION,
   INCIDENT_CORRELATION_REPLAY_CONFIRMATION,
   type IncidentCorrelationOutboxEvent,
 } from "@idream/shared/admin";
 import {
   IncidentCorrelationOutbox,
+  incidentCorrelationAttemptMissingDiscardPayload,
   incidentCorrelationReplayPayload,
   summarizeIncidentCorrelationReplay,
 } from "./IncidentCorrelationOutbox";
@@ -57,6 +59,26 @@ describe("Incident correlation failed-outbox workspace", () => {
         },
         confirmation: INCIDENT_CORRELATION_REPLAY_CONFIRMATION,
       });
+  });
+
+  it("pins source-missing disposition separately to the listed attempt id", () => {
+    expect(incidentCorrelationAttemptMissingDiscardPayload({
+      ...event,
+      attemptId: "attempt-missing",
+      attemptStatus: null,
+      replayEligibility: "attempt_missing",
+    }, "  Source row never existed  ")).toEqual({
+      id: event.id,
+      expectedAttempts: event.attempts,
+      expectedUpdatedAt: event.updatedAt,
+      expectedPayloadHash: event.payloadHash,
+      expectedAttemptId: "attempt-missing",
+      reason: {
+        code: "source_authority_missing",
+        summary: "Source row never existed",
+      },
+      confirmation: INCIDENT_CORRELATION_ATTEMPT_MISSING_DISCARD_CONFIRMATION,
+    });
   });
 
   it("keeps every partial outcome visible to the operator", () => {

@@ -1,12 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  INCIDENT_CORRELATION_ATTEMPT_MISSING_DISCARD_CONFIRMATION,
+  incidentCorrelationOutboxAttemptMissingDiscardRequestSchema,
+  incidentCorrelationOutboxAttemptMissingDiscardResultSchema,
   incidentCorrelationOutboxEventListResponseSchema,
   incidentCorrelationOutboxReplayRequestSchema,
   incidentCorrelationOutboxReplayResultSchema,
 } from "@idream/shared/admin";
 import { GET as listIncidentCorrelationOutboxRoute } from "@/app/api/v2/admin/incidents/correlation-outbox/route";
 import { POST as replayIncidentCorrelationOutboxRoute } from "@/app/api/v2/admin/incidents/correlation-outbox/commands/replay/route";
+import { POST as discardAttemptMissingIncidentCorrelationOutboxRoute } from "@/app/api/v2/admin/incidents/correlation-outbox/commands/discard-attempt-missing/route";
 import { prisma } from "@/server/lib/db";
 import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
@@ -100,6 +104,63 @@ function replayRequest(input: {
 async function replayData(response: Response) {
   const envelope = await response.json() as { readonly data?: unknown };
   return incidentCorrelationOutboxReplayResultSchema.parse(envelope.data);
+}
+
+function discardAttemptMissingBody(row: Awaited<ReturnType<typeof failedRow>>) {
+  const expectedAttemptId = correlationPayloadAttemptId(row.payload);
+  if (!expectedAttemptId) throw new Error("Discard fixture requires an attempt id");
+  return incidentCorrelationOutboxAttemptMissingDiscardRequestSchema.parse({
+    id: row.id,
+    expectedAttempts: row.attempts,
+    expectedUpdatedAt: row.updatedAt.toISOString(),
+    expectedPayloadHash: canonicalSha256(row.payload),
+    expectedAttemptId,
+    reason: {
+      code: "source_authority_missing",
+      summary: "GenerationAttempt is still absent",
+    },
+    confirmation: INCIDENT_CORRELATION_ATTEMPT_MISSING_DISCARD_CONFIRMATION,
+  });
+}
+
+function discardAttemptMissingRequest(input: {
+  readonly body: ReturnType<typeof discardAttemptMissingBody>;
+  readonly actorId?: string;
+  readonly idempotencyKey?: string;
+}) {
+  return new Request(
+    "http://localhost/api/v2/admin/incidents/correlation-outbox/commands/discard-attempt-missing",
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-idream-user-id": input.actorId ?? routeActors.authorized,
+        "x-idream-role": "admin",
+        "x-request-id": randomUUID(),
+        ...(input.idempotencyKey
+          ? { "idempotency-key": input.idempotencyKey }
+          : {}),
+      },
+      body: JSON.stringify(input.body),
+    },
+  );
+}
+
+async function discardAttemptMissingData(response: Response) {
+  const envelope = await response.json() as { readonly data?: unknown };
+  return incidentCorrelationOutboxAttemptMissingDiscardResultSchema.parse(
+    envelope.data,
+  );
+}
+
+function correlationPayloadAttemptId(payload: unknown) {
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+    return null;
+  }
+  const attemptId = (payload as { attemptId?: unknown }).attemptId;
+  return typeof attemptId === "string" && attemptId.trim()
+    ? attemptId.trim()
+    : null;
 }
 
 describe("Incident correlation failed outbox operator recovery", () => {
@@ -366,6 +427,205 @@ describe("Incident correlation failed outbox operator recovery", () => {
       .resolves.toBe(1);
     await expect(prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id: row.id } }))
       .resolves.toMatchObject({ status: "delivered", payload: row.payload });
+  });
+
+  it("idempotently terminalizes an exact failed carrier whose GenerationAttempt is still missing", async () => {
+    const missingAttemptId = `${prefix}-attempt-terminally-missing`;
+    const row = await failedRow(
+      `${prefix}-discard-attempt-missing`,
+      missingAttemptId,
+    );
+    const body = discardAttemptMissingBody(row);
+    const idempotencyKey = `${prefix}-discard-attempt-missing-command`;
+
+    const firstResponse = await discardAttemptMissingIncidentCorrelationOutboxRoute(
+      discardAttemptMissingRequest({ body, idempotencyKey }),
+    );
+    expect(firstResponse.status).toBe(200);
+    const first = await discardAttemptMissingData(firstResponse);
+    expect(first).toEqual({
+      id: row.id,
+      outcome: "discarded_target_missing",
+      priorAttempts: row.attempts,
+      payloadHash: body.expectedPayloadHash,
+      replayed: false,
+    });
+    await expect(prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id: row.id } }))
+      .resolves.toMatchObject({
+        status: "discarded_target_missing",
+        attempts: row.attempts,
+        payload: row.payload,
+        lastError: row.lastError,
+        deliveredAt: null,
+      });
+
+    const retryResponse = await discardAttemptMissingIncidentCorrelationOutboxRoute(
+      discardAttemptMissingRequest({ body, idempotencyKey }),
+    );
+    expect(retryResponse.status).toBe(200);
+    expect(await discardAttemptMissingData(retryResponse)).toEqual({
+      ...first,
+      replayed: true,
+    });
+    await expect(prisma.adminAuditLog.findMany({
+      where: {
+        targetId: row.id,
+        action: "incident.correlation_outbox.discarded_attempt_missing",
+      },
+      select: { after: true },
+    })).resolves.toEqual([{
+      after: expect.objectContaining({
+        status: "discarded_target_missing",
+        attempts: row.attempts,
+        payloadHash: body.expectedPayloadHash,
+        expectedAttemptId: missingAttemptId,
+        payloadPreserved: true,
+        lastErrorPreserved: true,
+        userEffectApplied: false,
+        sourceAuthorityMissing: true,
+      }),
+    }]);
+    await expect(prisma.controlPlaneCommand.findFirstOrThrow({
+      where: { actorId: routeActors.authorized, idempotencyKey },
+    })).resolves.toMatchObject({
+      commandType: "incident.correlation_outbox.discard_attempt_missing",
+      targetType: "incident_correlation_outbox_event",
+      targetId: row.id,
+      status: "succeeded",
+    });
+    await expect(dispatchGenerationIncidentCorrelation(prisma, {
+      outboxIds: [row.id],
+    })).resolves.toMatchObject({ examined: 0 });
+  });
+
+  it.each([
+    [routeActors.missingIncidentManage, "ops.incident.manage"],
+    [routeActors.missingDeadletterWrite, "ops.deadletter.write"],
+  ] as const)(
+    "fails attempt-missing disposition closed when %s lacks %s",
+    async (actorId, permission) => {
+      const row = await failedRow(
+        `${prefix}-discard-permission-${actorId}`,
+        `${prefix}-missing-for-${actorId}`,
+      );
+      const response = await discardAttemptMissingIncidentCorrelationOutboxRoute(
+        discardAttemptMissingRequest({
+          actorId,
+          body: discardAttemptMissingBody(row),
+          idempotencyKey: `${prefix}-discard-permission-command-${actorId}`,
+        }),
+      );
+      expect(response.status).toBe(403);
+      expect(await response.json()).toMatchObject({
+        error: { code: "forbidden", details: { permission } },
+      });
+      await expect(prisma.mainOutboxEvent.findUniqueOrThrow({
+        where: { id: row.id },
+      })).resolves.toMatchObject({ status: "failed", attempts: row.attempts });
+      await expect(prisma.controlPlaneCommand.count({
+        where: { actorId },
+      })).resolves.toBe(0);
+    },
+  );
+
+  it("requires Idempotency-Key before attempting an attempt-missing disposition", async () => {
+    const row = await failedRow(
+      `${prefix}-discard-missing-idempotency`,
+      `${prefix}-discard-missing-idempotency-attempt`,
+    );
+    const response = await discardAttemptMissingIncidentCorrelationOutboxRoute(
+      discardAttemptMissingRequest({ body: discardAttemptMissingBody(row) }),
+    );
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      error: { code: "bad_request", message: "Idempotency-Key header is required" },
+    });
+    await expect(prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id: row.id } }))
+      .resolves.toMatchObject({ status: "failed", attempts: row.attempts });
+  });
+
+  it("refuses to terminalize when the exact source now exists", async () => {
+    const row = await failedRow(`${prefix}-discard-attempt-present`);
+    const response = await discardAttemptMissingIncidentCorrelationOutboxRoute(
+      discardAttemptMissingRequest({
+        body: discardAttemptMissingBody(row),
+        idempotencyKey: `${prefix}-discard-attempt-present-command`,
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(await discardAttemptMissingData(response)).toMatchObject({
+      id: row.id,
+      outcome: "attempt_present",
+      priorAttempts: row.attempts,
+      payloadHash: canonicalSha256(row.payload),
+      replayed: false,
+    });
+    await expect(prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id: row.id } }))
+      .resolves.toMatchObject({
+        status: "failed",
+        attempts: row.attempts,
+        payload: row.payload,
+        lastError: row.lastError,
+      });
+    await expect(prisma.adminAuditLog.count({
+      where: {
+        targetId: row.id,
+        action: "incident.correlation_outbox.discarded_attempt_missing",
+      },
+    })).resolves.toBe(0);
+  });
+
+  it("keeps hash, revision, and attempt-id mismatches failed and unaudited", async () => {
+    const missingAttemptId = `${prefix}-discard-mismatch-attempt`;
+    const row = await failedRow(
+      `${prefix}-discard-mismatch`,
+      missingAttemptId,
+    );
+    const exact = discardAttemptMissingBody(row);
+    const cases = [
+      {
+        name: "hash",
+        body: { ...exact, expectedPayloadHash: "f".repeat(64) },
+        outcome: "payload_hash_mismatch",
+      },
+      {
+        name: "revision",
+        body: { ...exact, expectedAttempts: exact.expectedAttempts - 1 },
+        outcome: "stale",
+      },
+      {
+        name: "attempt-id",
+        body: { ...exact, expectedAttemptId: `${missingAttemptId}-other` },
+        outcome: "attempt_id_mismatch",
+      },
+    ] as const;
+    for (const mismatch of cases) {
+      const response = await discardAttemptMissingIncidentCorrelationOutboxRoute(
+        discardAttemptMissingRequest({
+          body: mismatch.body,
+          idempotencyKey: `${prefix}-discard-mismatch-${mismatch.name}`,
+        }),
+      );
+      expect(response.status).toBe(200);
+      expect(await discardAttemptMissingData(response)).toMatchObject({
+        id: row.id,
+        outcome: mismatch.outcome,
+        replayed: false,
+      });
+    }
+    await expect(prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id: row.id } }))
+      .resolves.toMatchObject({
+        status: "failed",
+        attempts: row.attempts,
+        payload: row.payload,
+        lastError: row.lastError,
+      });
+    await expect(prisma.adminAuditLog.count({
+      where: {
+        targetId: row.id,
+        action: "incident.correlation_outbox.discarded_attempt_missing",
+      },
+    })).resolves.toBe(0);
   });
 
   it("leaves stale, changed, invalid, and uncorrelatable carriers untouched", async () => {

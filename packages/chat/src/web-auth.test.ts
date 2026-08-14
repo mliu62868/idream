@@ -6,6 +6,7 @@ import {
   resolveUser,
 } from "./web.js";
 import { RuntimeReadiness } from "./runtime-readiness.js";
+import { chatFsRootFingerprint } from "@idream/shared";
 
 function request(headers: Record<string, string>): IncomingMessage {
   return {
@@ -17,6 +18,8 @@ function request(headers: Record<string, string>): IncomingMessage {
 describe("chat web authentication boundary", () => {
   afterEach(() => {
     process.env.APP_ENV = "test";
+    delete process.env.IDREAM_SOURCE_REVISION;
+    delete process.env.SENTRY_RELEASE;
     process.env.CHAT_BFF_SIGNING_SECRET =
       "test-bff-secret-0123456789abcdef";
   });
@@ -89,6 +92,38 @@ describe("chat web authentication boundary", () => {
     }
   });
 
+  it("returns the effective Chat FS authority fingerprint only across the authenticated boundary", async () => {
+    delete process.env.CHAT_BFF_SIGNING_SECRET;
+    process.env.APP_ENV = "test";
+    process.env.CHAT_FS_ROOT = "/var/lib/idream/chat-runtime";
+    process.env.IDREAM_SOURCE_REVISION = "idream@chat-revision-123";
+    process.env.SENTRY_RELEASE = "idream@unrelated-sentry-release";
+    const readiness = new RuntimeReadiness();
+    readiness.warmed();
+    const server = createChatServer(readiness);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("missing test address");
+      const url = `http://127.0.0.1:${address.port}/api/v1/chat/runtime-authority`;
+      expect((await fetch(url)).status).toBe(401);
+      const response = await fetch(url, {
+        headers: { "x-idream-user-id": "test-user" },
+      });
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({
+        chatFsRootFingerprint: chatFsRootFingerprint(
+          "/var/lib/idream/chat-runtime",
+        ),
+        sourceRevision: "idream@chat-revision-123",
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error ? reject(error) : resolve());
+      });
+    }
+  });
+
   it("keeps liveness up while readiness gates business traffic", async () => {
     const readiness = new RuntimeReadiness();
     const server = createChatServer(readiness);
@@ -99,7 +134,12 @@ describe("chat web authentication boundary", () => {
       const origin = `http://127.0.0.1:${address.port}`;
       expect((await fetch(`${origin}/healthz`)).status).toBe(200);
       expect((await fetch(`${origin}/readyz`)).status).toBe(503);
-      expect((await fetch(`${origin}/api/v1/chat/sessions`)).status).toBe(503);
+      expect((await fetch(`${origin}/api/v1/chat/sessions`)).status).toBe(401);
+      expect((await fetch(`${origin}/api/v1/chat/sessions/session-1/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content: "hello" }),
+      })).status).toBe(503);
       readiness.warmed();
       expect((await fetch(`${origin}/readyz`)).status).toBe(200);
     } finally {

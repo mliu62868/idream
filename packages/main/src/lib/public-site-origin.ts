@@ -22,7 +22,7 @@ export function publicSiteOrigin(
     try {
       const url = new URL(candidate);
       if (url.protocol !== "http:" && url.protocol !== "https:") continue;
-      if (source.APP_ENV === "production" && !isPublicHttpsOrigin(url)) {
+      if (source.APP_ENV === "production" && !isPublicHttpsUrl(url)) {
         continue;
       }
       return new URL(url.origin);
@@ -34,10 +34,41 @@ export function publicSiteOrigin(
   return new URL(DEFAULT_PUBLIC_SITE_ORIGIN);
 }
 
-function isPublicHttpsOrigin(url: URL) {
-  const hostname = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+export function isPublicHttpsUrl(value: string | URL | null | undefined) {
+  if (!value) return false;
+  let url: URL;
+  try {
+    url = typeof value === "string" ? new URL(value) : value;
+  } catch {
+    return false;
+  }
+
+  const hostname = url.hostname
+    .replace(/^\[|\]$/g, "")
+    .replace(/\.$/u, "")
+    .toLowerCase();
+  const isIpLiteral =
+    hostname.includes(":") || /^(?:\d{1,3}\.){3}\d{1,3}$/u.test(hostname);
+  const isPrivateDnsName = [
+    ".internal",
+    ".invalid",
+    ".local",
+    ".localhost",
+    ".onion",
+    ".test",
+    ".home.arpa",
+    ".example",
+    ".example.com",
+    ".example.net",
+    ".example.org",
+  ].some((suffix) => hostname === suffix.slice(1) || hostname.endsWith(suffix));
+
   return (
     url.protocol === "https:" &&
-    !new Set(["localhost", "127.0.0.1", "::1"]).has(hostname)
+    url.username === "" &&
+    url.password === "" &&
+    hostname.includes(".") &&
+    !isIpLiteral &&
+    !isPrivateDnsName
   );
 }

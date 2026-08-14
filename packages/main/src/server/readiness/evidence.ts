@@ -474,6 +474,13 @@ export interface ChatServiceProbeEvidence {
     sessionsCount?: number;
     error?: string | null;
   } | null;
+  runtimeAuthority?: {
+    ok?: boolean;
+    status?: number;
+    chatFsRootFingerprint?: string | null;
+    sourceRevision?: string | null;
+    error?: string | null;
+  } | null;
   unsignedRequest?: {
     ok?: boolean;
     status?: number;
@@ -583,6 +590,13 @@ const chatServiceProbeEvidenceSchema: z.ZodType<ChatServiceProbeEvidence> = z.ob
     sessionsCount: optionalCount,
     error: nullableText,
   }),
+  runtimeAuthority: nullableObject({
+    ok: flag,
+    status: optionalCount,
+    chatFsRootFingerprint: nullableText,
+    sourceRevision: nullableText,
+    error: nullableText,
+  }),
   unsignedRequest: nullableObject({
     ok: flag,
     status: optionalCount,
@@ -679,6 +693,127 @@ const chatModelProbeEvidenceSchema: z.ZodType<ChatModelProbeEvidence> = z.object
 
 export function decodeChatModelProbeEvidence(value: unknown): ChatModelProbeEvidence {
   return decodeTopLevel(chatModelProbeEvidenceSchema, value);
+}
+
+// ---------------------------------------------------------------------------
+// Main Admin text generation
+// ---------------------------------------------------------------------------
+
+export interface AdminTextProbeEvidence {
+  ok?: boolean;
+  checkedAt?: string | null;
+  durationMs?: number;
+  provider?: string | null;
+  pipelineUrl?: string | null;
+  model?: string | null;
+  adminSourceRevision?: string | null;
+  adminUrl?: string | null;
+  characterId?: string | null;
+  authMode?: string | null;
+  correlationId?: string | null;
+  requestIds?: {
+    characterAssist?: string | null;
+    productionDirections?: string | null;
+  } | null;
+  characterAssist?: {
+    ok?: boolean;
+    status?: number;
+    adminSourceRevision?: string | null;
+    descriptionCharacters?: number;
+    nameIdeas?: number;
+    personalityCharacters?: number;
+    speakingStyleCharacters?: number;
+    firstMessageCharacters?: number;
+    visualBriefCharacters?: number;
+    runtime?: {
+      provider?: string | null;
+      pipelineUrl?: string | null;
+      model?: string | null;
+      sourceRevision?: string | null;
+    } | null;
+    error?: string | null;
+  } | null;
+  productionDirections?: {
+    ok?: boolean;
+    status?: number;
+    adminSourceRevision?: string | null;
+    directions?: number;
+    source?: string | null;
+    scenePromptCharacters?: number;
+    runtime?: {
+      provider?: string | null;
+      pipelineUrl?: string | null;
+      model?: string | null;
+      sourceRevision?: string | null;
+    } | null;
+    error?: string | null;
+  } | null;
+  cleanup?: {
+    fixture?: string | null;
+    immutableModerationAudit?: string | null;
+  } | null;
+  loadError?: string;
+  error?: ProbeErrorEvidence | null;
+}
+
+const adminTextProbeEvidenceSchema: z.ZodType<AdminTextProbeEvidence> = z.object({
+  ok: flag,
+  checkedAt: nullableText,
+  durationMs: optionalCount,
+  provider: nullableText,
+  pipelineUrl: nullableText,
+  model: nullableText,
+  adminSourceRevision: nullableText,
+  adminUrl: nullableText,
+  characterId: nullableText,
+  authMode: nullableText,
+  correlationId: nullableText,
+  requestIds: nullableObject({
+    characterAssist: nullableText,
+    productionDirections: nullableText,
+  }),
+  characterAssist: nullableObject({
+    ok: flag,
+    status: optionalCount,
+    adminSourceRevision: nullableText,
+    descriptionCharacters: optionalCount,
+    nameIdeas: optionalCount,
+    personalityCharacters: optionalCount,
+    speakingStyleCharacters: optionalCount,
+    firstMessageCharacters: optionalCount,
+    visualBriefCharacters: optionalCount,
+    runtime: nullableObject({
+      provider: nullableText,
+      pipelineUrl: nullableText,
+      model: nullableText,
+      sourceRevision: nullableText,
+    }),
+    error: nullableText,
+  }),
+  productionDirections: nullableObject({
+    ok: flag,
+    status: optionalCount,
+    adminSourceRevision: nullableText,
+    directions: optionalCount,
+    source: nullableText,
+    scenePromptCharacters: optionalCount,
+    runtime: nullableObject({
+      provider: nullableText,
+      pipelineUrl: nullableText,
+      model: nullableText,
+      sourceRevision: nullableText,
+    }),
+    error: nullableText,
+  }),
+  cleanup: nullableObject({
+    fixture: nullableText,
+    immutableModerationAudit: nullableText,
+  }),
+  error: probeError,
+});
+
+export function decodeAdminTextProbeEvidence(value: unknown): AdminTextProbeEvidence {
+  return decodeTopLevel(adminTextProbeEvidenceSchema, value);
 }
 
 // ---------------------------------------------------------------------------

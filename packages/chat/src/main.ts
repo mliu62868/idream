@@ -15,6 +15,18 @@ let worker: ReturnType<typeof startWorker> | null = null;
 let warmupRetry: ReturnType<typeof setTimeout> | null = null;
 let shuttingDown = false;
 
+runtimeReadiness.configureFullWarmupRecovery(async () => {
+  if (shuttingDown) throw new Error("chat is shutting down");
+  try {
+    await warmRuntime();
+    logger.info(runtimeReadiness.snapshot(), "chat runtime recovered");
+  } catch (error) {
+    captureChatRuntimeWarmupFailure(error);
+    logger.error({ err: error }, "chat runtime recovery warm-up failed");
+    throw error;
+  }
+});
+
 async function startRuntime(): Promise<void> {
   if (shuttingDown || worker) return;
   try {

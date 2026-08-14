@@ -5,6 +5,7 @@ import { z } from "zod";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
 import {
+  adminTextRuntimeIdentity,
   assertAdminTextGenerationAvailable,
   generateAdminText,
   type AdminTextGenerationRuntime,
@@ -47,15 +48,10 @@ export async function generateCharacterDraft(
   const traits = [body.gender, body.style].filter(Boolean).join(", ");
   const context = traits ? `${body.seed} (${traits})` : body.seed;
 
-  const [
-    description,
-    personality,
-    speakingStyle,
-    firstMessage,
-    visualBrief,
-    rawNameIdeas,
-  ] = await Promise.all([
-    generateAdminText({
+  // INVARIANT: the configured local model is a single runtime. Six concurrent
+  // streams queue behind one model and later requests can exhaust their first-
+  // token budget before inference starts, turning a healthy provider into 503.
+  const description = await generateAdminText({
       messages: [
         {
           role: "system",
@@ -64,8 +60,8 @@ export async function generateCharacterDraft(
         },
         { role: "user", content: context },
       ],
-    }, runtime),
-    generateAdminText({
+    }, runtime);
+  const personality = await generateAdminText({
       messages: [
         {
           role: "system",
@@ -74,8 +70,8 @@ export async function generateCharacterDraft(
         },
         { role: "user", content: context },
       ],
-    }, runtime),
-    generateAdminText({
+    }, runtime);
+  const speakingStyle = await generateAdminText({
       messages: [
         {
           role: "system",
@@ -84,8 +80,8 @@ export async function generateCharacterDraft(
         },
         { role: "user", content: context },
       ],
-    }, runtime),
-    generateAdminText({
+    }, runtime);
+  const firstMessage = await generateAdminText({
       messages: [
         {
           role: "system",
@@ -94,8 +90,8 @@ export async function generateCharacterDraft(
         },
         { role: "user", content: context },
       ],
-    }, runtime),
-    generateAdminText({
+    }, runtime);
+  const visualBrief = await generateAdminText({
       messages: [
         {
           role: "system",
@@ -104,8 +100,8 @@ export async function generateCharacterDraft(
         },
         { role: "user", content: context },
       ],
-    }, runtime),
-    generateAdminText({
+    }, runtime);
+  const rawNameIdeas = await generateAdminText({
       messages: [
         {
           role: "system",
@@ -114,8 +110,7 @@ export async function generateCharacterDraft(
         },
         { role: "user", content: context },
       ],
-    }, runtime),
-  ]);
+    }, runtime);
 
   const nameIdeas = nameIdeasFromText(rawNameIdeas);
 
@@ -133,5 +128,6 @@ export async function generateCharacterDraft(
     description,
     nameIdeas,
     advancedDetails: { personality, speakingStyle, firstMessage, visualBrief },
+    runtime: adminTextRuntimeIdentity(runtime),
   });
 }

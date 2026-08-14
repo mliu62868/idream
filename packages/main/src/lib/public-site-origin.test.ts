@@ -31,9 +31,9 @@ describe("publicSiteOrigin", () => {
       publicSiteOrigin({
         APP_ENV: "production",
         MAIN_WEB_URL: "http://main.example.com",
-        BETTER_AUTH_URL: "https://auth.example.com",
+        BETTER_AUTH_URL: "https://auth.ourdream.ai",
       }).href,
-    ).toBe("https://auth.example.com/");
+    ).toBe("https://auth.ourdream.ai/");
     expect(
       publicSiteOrigin({
         APP_ENV: "production",

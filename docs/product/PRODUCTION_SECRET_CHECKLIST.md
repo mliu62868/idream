@@ -140,6 +140,13 @@ step passes.
 | `BLOB_REGION` | `auto` for R2 or provider region |
 | `BLOB_ACCESS_KEY_ID` | Object storage access key |
 | `BLOB_SECRET_ACCESS_KEY` | Object storage secret |
+| `RECOVERY_BLOB_ENDPOINT` | Independent recovery R2/S3 endpoint; must differ from the live endpoint |
+| `RECOVERY_BLOB_BUCKET` | Independently versioned recovery bucket; must differ from the live bucket |
+| `RECOVERY_BLOB_REGION` | Recovery authority region (`auto` for R2) |
+| `RECOVERY_BLOB_ACCESS_KEY_ID` | Recovery-only object storage access key |
+| `RECOVERY_BLOB_SECRET_ACCESS_KEY` | Recovery-only object storage secret |
+| `RECOVERY_BLOB_RETENTION_DAYS` | Positive Object Lock retention policy applied to every recovery version |
+| `RECOVERY_DATABASE_URL` | Temporary recovery actor URL; superuser on the exact Main host/port/database, never source identity |
 
 ## Backup And Restore Values
 
@@ -152,25 +159,34 @@ Treat these as one quiesced recovery checkpoint:
 | Local `BLOB_ROOT` | Archive plus per-object manifest/checksum when `BLOB_PROVIDER=mock`; for R2/S3 bind the checkpoint to versioned object inventory instead |
 | Checkpoint metadata | Quiesced timestamp, artifact ids, SHA-256 values, provider/root identifiers, and disposable-restore result |
 | `RECOVERY_REHEARSAL_BUNDLE` | Absolute or workspace-relative path to the published flat bundle whose basename prefixes every artifact |
+| `RECOVERY_REHEARSAL_APPROVED_SHA256` | Lowercase SHA-256 of `<bundle>/<bundle>.sha256`, copied into the launch env only after explicit operator review |
 | `RECOVERY_REHEARSAL_MAX_AGE_MINUTES` | Maximum accepted age of the bundle checksum manifest; default `1440` |
 
-Do not call a database-only dump a complete iDream backup. Stop writers and verify outbox/inbox, generation queues, and pending Chat file mutations are drained before capturing the three layers.
+Do not call a database-only dump a complete iDream backup. Stop writers and verify that transport outbox/inbox, generation queues, and Chat file mutations have no `dispatched`, `processing`, unknown, or otherwise in-flight mutation before capturing the three layers. Stable scheduled/pending/failed durable intents are preserved product state: record them in source/restore counts and require exact equality instead of deleting or prematurely delivering them.
 
-The published bundle must contain a PostgreSQL custom-format `PGDMP` archive, canonical Main+Chat schema/logical/role/database manifests, gzip Chat FS archive, strict per-entry SHA-256 file manifests, and either a gzip local Blob archive or a non-empty versioned remote-object inventory. Checksummed placeholder text, path traversal entries, weak digests and source/restore byte drift are rejected by `check:launch`.
+The published bundle must contain a PostgreSQL custom-format archive accepted by real `pg_restore --list`, canonical Main+Chat schema/logical/role/database manifests, a gzip Chat FS archive whose real `tar` listing and extracted tree reconstruct the signed file manifest, a fresh quiescence receipt, and either an equivalently reconstructed local Blob archive or a non-empty versioned remote-object inventory. Remote inventory must prove exact bytes, checksum, metadata, retention and the created version in an independent recovery endpoint/bucket. Magic bytes, checksummed placeholder text, path traversal entries, weak digests and source/restore drift are rejected by `check:launch`.
 
-Use `bun run recovery:rehearse -- --help` for the canonical producer. Its default mode is a read-only sanitized plan. Apply requires the exact typed confirmation plus `APP_ENV=production IDREAM_QUIESCED=1`; R2/S3 apply additionally requires a configured AWS CLI and bucket versioning so the tool can read exact source VersionIds, verify temporary restore copies, and remove only those recorded temporary versions.
+Use `bun run recovery:rehearse -- --help` for the canonical producer. Its default mode is a read-only sanitized plan. Apply requires the exact typed confirmation plus `APP_ENV=production IDREAM_QUIESCED=1`; pass `--launch-env-file`, `--chat-env-file` and `--gen-env-file` when the services have separate runtime env files. The shared resolver keeps those three authorities separate: Chat model/Redis/BFF and Gen provider/ComfyUI/model values may not fall back to Main or ambient process values. Apply reuses the Generation pause/drain and worker-ownership checks, accepts only explicit terminal PM2 states, and records the fresh quiescence facts and fingerprint in the bundle. R2/S3 apply additionally requires a configured AWS CLI, live bucket versioning, and an independently credentialed/versioned recovery endpoint and bucket; without that second authority it fails closed. Local `mock` Blob remains a local archive.
 
-`check:launch` reads this bundle directly. It verifies every SHA-256 entry, rejects symlinks/unmanifested files, requires exact source/isolated-restore equality for database counts/schema/logical state, Chat FS and Blob inventories, requires PostgreSQL 16 and the repository's exact latest migration, and rejects non-zero durable-work counters or stale evidence. The historical migration-60 bundle therefore cannot satisfy a migration-71 launch.
+`check:launch` reads this bundle directly. It requires `RECOVERY_REHEARSAL_APPROVED_SHA256` to equal the SHA-256 of the master checksum manifest, runs the real archive inspections again, verifies the quiescence receipt, and requires exact source/isolated-restore equality for database counts/schema/logical state—including stable durable backlog—plus Chat FS and Blob inventories. It also resolves Main/Chat/Gen env independently and compares the expected `CHAT_FS_ROOT` fingerprint with the authenticated signed Chat probe response. It requires PostgreSQL 16 and the repository's exact latest migration, and rejects in-flight/unknown mutation counters or stale evidence. The historical migration-60 bundle and every bundle created before the quiescence-receipt contract therefore fail closed; create a fresh bundle rather than re-signing one.
 
-The 2026-07-18 controlled-beta checkpoint satisfies this local contract:
+After reviewing a newly published bundle, bind that exact checksum manifest in the launch env:
 
-- Artifact base: `/Users/kk/code/idream/local-backups/idream-main-final-20260718-60/idream-main-final-20260718-60`; bundle directory mode `0700`, 23 files all mode `0600`, total size 171M, and all bundle SHA checks pass.
-- Source snapshot: 60 migrations (latest `20260718012000`), 20 users, 16 characters / Releases / live Servings / active qualifications / media assets, 234 base tables, 7 views, and 1 sequence. Main outbox is `3,936` with zero pending/failed; Main inbound is `5,738` with zero received. Chat has 294 sessions / 818 messages / 4 attachments, outbox `1,552` and inbox `488` with zero pending/failed, and 5 file mutations with zero pending.
-- `CHAT_FS_ROOT` is 429 files / 550,987 bytes. Local Blob is 13,634 files / 162,163,688 bytes, and Main/Gen resolve the same effective mock root.
-- PostgreSQL client `18.3` restored against server `16.14`. Source-to-restore counts, schema, logical DB, Chat FS, and Blob comparisons all report zero difference; the disposable restore DB has zero remaining instances after cleanup.
-- After restore, all 7 logical PM2 apps / 8 processes are online; Main/Admin HTTP return 200 and Chat health is `ok`.
+```bash
+shasum -a 256 <bundle-dir>/<bundle-name>.sha256
+# Copy the lowercase digest to RECOVERY_REHEARSAL_APPROVED_SHA256.
+```
 
-This checkpoint closes local current-state recovery only. The automated proof was a same-cluster throwaway restore; the bundle includes role/database authority manifests and a fresh-cluster runbook, while role passwords and external secrets remain intentionally excluded and must come from the secret manager. It is post-incident evidence, not a pre-reset archive, and does not change public-production readiness from `NOT_EVALUATED`.
+The current local checkpoint satisfying this contract is:
+
+- Current local bundle: `.tmp/recovery-bundles/idream-recovery-local-20260814-final-user-journeys`.
+- Approved checksum-manifest digest: read the exact lower-case SHA-256 from the completed bundle's external approval and verify it through `RECOVERY_REHEARSAL_APPROVED_SHA256`; do not copy a rotating digest into this tracked checklist.
+- Completion time: `2026-08-13T02:08:19.069Z`.
+- PostgreSQL 16 migration authority is 71/71; source and isolated restore schema/logical/counts, Chat FS, local mock Blob, DB authority and queue authority are exact.
+- The fresh quiescence receipt blocks in-flight mutations only. Stable scheduled/pending/failed durable backlog is preserved unchanged and compared exactly; it is never drained, deleted or relabeled merely to make a checkpoint pass.
+- PM2 restart restored queues plus Image 2/2 and Video 1/1 ownership, and the subsequent signed Chat probe passed. The last post-Recovery host observation had 10 iDream PM2 app instances online; Main `/` was 200, Admin `/` was the expected 307 redirect, and Chat `/readyz` was 200. Generation cutover had zero active requests, in-flight Bull rows, and pending terminal outboxes, one `ignoredHistory` row, and `issues=[]`. This runtime observation predates the source-bound revision now under review.
+
+This checkpoint closes the current local Recovery Gate. It does not turn local mock Blob into production object storage and does not replace a production checkpoint against independently retained non-mock recovery versions. Role passwords and external secrets remain intentionally excluded and must come from the secret manager.
 
 ## Probe Report Variables
 
@@ -198,10 +214,17 @@ These must point at fresh reports before public launch:
 
 After all production values and probe reports are present:
 
+Set the same immutable `SENTRY_RELEASE` (or `IDREAM_SOURCE_REVISION`) in Main,
+Admin, Chat, and Gen before starting them. Every required probe must be rerun
+from that release; Chat's signed runtime endpoint, Admin's BFF response header,
+and Main's Admin-text runtime identity are compared with the expected release.
+
 ```bash
-bun run check:launch -- --launch-env-file .tmp/production-launch.env --json
+bun run check:launch -- --launch-env-file .tmp/production-main.env --admin-env-file .tmp/production-admin.env --chat-env-file .tmp/production-chat.env --gen-env-file .tmp/production-gen.env --report .tmp/check-launch.json --json
 ```
 
 Set `LAUNCH_SCOPE=core` in the explicit launch env only when Billing and Age
 Verification are outside the approved release scope. Unknown values fail closed.
 Public launch remains red until this command passes against production-like services.
+
+Current local evidence is `.tmp/check-launch-2026-08-13-final-source.json`: `LAUNCH_SCOPE=core`, 44 pass / 23 fail / 0 warn / 67 total. Payment and age verification are excluded. The 23 failures are exactly `app-env-production`, `main-web-url`, `better-auth-url`, `better-auth-secret`, `internal-token`, `cron-secret`, `service-token-separation`, `web-surface-live-probe`, `redis-url`, `bullmq-prefix`, `blob-provider-non-mock`, `main-chat-pipeline-api-token`, `chat-bff-signing-secret`, `admin-bff-signing-secret`, `chat-model-api-key`, `blob-bucket`, `blob-endpoint`, `blob-access-key`, `blob-secret-key`, `sentry-dsn`, `sentry-browser-app-env`, `sentry-browser-dsn`, and `sentry-live-probe`. Recovery and Admin text live evidence pass locally. Four package-specific Sentry probes bind their explicit failed canaries to the same source revision, so source-revision authority passes; production still requires real Sentry credentials and verified ingest/query before `sentry-live-probe` can pass. Old reports or server runtime identities without the expected revision fail closed.

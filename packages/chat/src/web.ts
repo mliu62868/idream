@@ -5,6 +5,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 import { BFF_HEADER, BFF_USER_HEADER, verifyBffContext, type BffContext } from "@idream/shared/bff";
+import { chatFsRootFingerprint } from "@idream/shared";
 import { dispatchChatAdmin } from "./admin.js";
 import { env } from "./env.js";
 import { logger } from "./logger.js";
@@ -65,14 +66,10 @@ async function handle(
     return;
   }
   if (url.pathname === "/readyz") {
+    await readiness.refreshDependencies();
     const snapshot = readiness.snapshot();
     res.writeHead(readiness.canAcceptTurns() ? 200 : 503, privateJsonHeaders);
     res.end(JSON.stringify({ ok: readiness.canAcceptTurns(), service: "chat", ...snapshot }));
-    return;
-  }
-  if (!readiness.canAcceptTurns()) {
-    res.writeHead(503, privateJsonHeaders);
-    res.end(JSON.stringify({ error: "service_not_ready" }));
     return;
   }
 
@@ -157,6 +154,33 @@ async function handle(
     return;
   }
 
+  const method = req.method ?? "GET";
+  const isMessageSend =
+    method === "POST" &&
+    /^\/api\/v1\/chat\/sessions\/[^/]+\/messages\/?$/.test(url.pathname);
+  const requiresTurnAdmission =
+    isMessageSend ||
+    (
+      method === "POST" &&
+      /^\/api\/v1\/(?:chat\/)?messages\/[^/]+\/regenerate\/?$/.test(
+        url.pathname,
+      )
+    ) ||
+    (
+      method === "PATCH" &&
+      /^\/api\/v1\/(?:chat\/)?messages\/[^/]+\/?$/.test(url.pathname)
+    );
+  // INVARIANT: provider readiness gates only operations that enqueue a fresh
+  // model turn. Reads and durable internal ingress stay usable during recovery.
+  if (requiresTurnAdmission) {
+    await readiness.refreshDependencies();
+    if (!readiness.canAcceptTurns()) {
+      res.writeHead(503, privateJsonHeaders);
+      res.end(JSON.stringify({ error: "service_not_ready" }));
+      return;
+    }
+  }
+
   let raw: string;
   try {
     raw = await readBody(req);
@@ -172,9 +196,17 @@ async function handle(
     res.end(JSON.stringify({ error: "unauthorized", reason: auth.reason }));
     return;
   }
-  const isMessageSend =
-    req.method === "POST" &&
-    /^\/api\/v1\/chat\/sessions\/[^/]+\/messages\/?$/.test(url.pathname);
+  if (
+    method === "GET" &&
+    url.pathname === "/api/v1/chat/runtime-authority"
+  ) {
+    res.writeHead(200, privateJsonHeaders);
+    res.end(JSON.stringify({
+      chatFsRootFingerprint: chatFsRootFingerprint(env.CHAT_FS_ROOT),
+      sourceRevision: env.SOURCE_REVISION?.trim() || null,
+    }));
+    return;
+  }
   const idempotencyKey = header(req, "idempotency-key")?.trim();
   if (isMessageSend && !idempotencyKey) {
     res.writeHead(400, privateJsonHeaders);
@@ -186,7 +218,7 @@ async function handle(
   }
 
   const request: ChatRequest = {
-    method: req.method ?? "GET",
+    method,
     path: url.pathname,
     userId: auth.userId,
     body: raw ? safeJson(raw) : undefined,

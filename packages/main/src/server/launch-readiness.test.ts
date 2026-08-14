@@ -3,16 +3,20 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
+import { chatFsRootFingerprint } from "@idream/shared";
 import { describe, expect, it, vi } from "vitest";
 import {
   assessLaunchReadiness as assessLaunchReadinessRaw,
   formatLaunchReadinessReport,
-  loadLaunchReadinessEnv,
   parseLaunchReadinessCliArgs,
+  writeLaunchReadinessReport,
   type LaunchReadinessReport,
 } from "./launch-readiness";
+import { loadRecoveryServiceEnvironment } from "./readiness/recovery-service-environment";
 import { inspectMainToChatFailedBacklog } from "./readiness/main-to-chat-backlog-authority";
+import { PROBE_NAMES } from "./readiness/probe-report";
 import type {
+  AdminTextProbeEvidence,
   AgeVerificationProbeEvidence,
   BlobStorageProbeEvidence,
   ChatModelProbeEvidence,
@@ -37,15 +41,27 @@ const externalModerationProbeReport = ".tmp/launch-safety-probe.json";
 
 const productionEnv = {
   APP_ENV: "production",
+  IDREAM_ADMIN_APP_ENV: "production",
+  IDREAM_CHAT_APP_ENV: "production",
+  IDREAM_GEN_APP_ENV: "production",
+  IDREAM_MAIN_SOURCE_REVISION: "idream@0123456789abcdef",
+  IDREAM_ADMIN_SOURCE_REVISION: "idream@0123456789abcdef",
+  IDREAM_CHAT_SOURCE_REVISION: "idream@0123456789abcdef",
+  IDREAM_GEN_SOURCE_REVISION: "idream@0123456789abcdef",
   BETTER_AUTH_URL: "https://ourdream.ai",
   MAIN_WEB_URL: "https://ourdream.ai",
   ADMIN_WEB_URL: "https://admin.ourdream.ai",
   DATABASE_URL: "postgresql://app:secret@db.ourdream.internal:5432/idream",
   BETTER_AUTH_SECRET: "production-auth-secret-0123456789abcdef",
   INTERNAL_TOKEN: "production-internal-token-0123456789",
+  IDREAM_ADMIN_INTERNAL_TOKEN: "production-internal-token-0123456789",
+  IDREAM_CHAT_INTERNAL_TOKEN: "production-internal-token-0123456789",
+  IDREAM_GEN_INTERNAL_TOKEN: "production-internal-token-0123456789",
   CRON_SECRET: "production-cron-token-0123456789",
   REDIS_URL: "redis://redis.ourdream.internal:6379/0",
   BULLMQ_PREFIX: "idream:prod",
+  IDREAM_CHAT_BULLMQ_PREFIX: "idream:prod",
+  IDREAM_GEN_BULLMQ_PREFIX: "idream:prod",
   CHAT_PROVIDER: "pipeline",
   CHAT_DATABASE_URL:
     "postgresql://chat_service:secret@db.ourdream.internal:5432/idream",
@@ -55,6 +71,9 @@ const productionEnv = {
   CHAT_MODEL_NAME: "chat-default",
   CHAT_MODEL_API_KEY: "production-pipeline-token-0123456789",
   CHAT_MODEL_PROBE_REPORT: ".tmp/launch-chat-probe.json",
+  ADMIN_TEXT_PROBE_REPORT: ".tmp/launch-admin-text-probe.json",
+  ADMIN_TEXT_PROBE_MAX_AGE_MINUTES: "1440",
+  ADMIN_TEXT_PROBE_CHARACTER_ID: "reviewed-character-1",
   CHAT_MODERATION_PROVIDER: "mock",
   VOICE_PROVIDER: "pipeline",
   MODERATION_PROVIDER: "mock",
@@ -63,7 +82,11 @@ const productionEnv = {
   AGE_VERIFICATION_PROVIDER: "gocam",
   CHAT_SERVICE_URL: "https://chat.ourdream.internal",
   CHAT_BFF_SIGNING_SECRET: "production-chat-bff-secret-0123456789",
+  IDREAM_CHAT_BFF_SIGNING_SECRET:
+    "production-chat-bff-secret-0123456789",
   ADMIN_BFF_SIGNING_SECRET: "production-admin-bff-secret-0123456789",
+  IDREAM_ADMIN_BFF_SIGNING_SECRET:
+    "production-admin-bff-secret-0123456789",
   CHAT_SERVICE_PROBE_REPORT: ".tmp/launch-chat-service-probe.json",
   PRODUCT_CONFIG_PROBE_REPORT: ".tmp/launch-product-config-probe.json",
   PUBLIC_CATALOG_PROBE_REPORT: ".tmp/public-catalog-probe.json",
@@ -73,6 +96,7 @@ const productionEnv = {
   PIPELINE_API_URL: "https://pipeline.ourdream.internal",
   PIPELINE_VOICE_API_URL: "https://voice.ourdream.internal/v1",
   PIPELINE_API_TOKEN: "production-pipeline-token-0123456789",
+  PIPELINE_CHAT_MODEL_DEFAULT: "chat-default",
   PIPELINE_VOICE_API_TOKEN: "production-voice-token-0123456789",
   PIPELINE_IMAGE_MODEL_DEFAULT: "pornmaster-zimage-turbo",
   PIPELINE_VOICE_MODEL_DEFAULT: "voice-default",
@@ -331,6 +355,15 @@ function passingChatServiceProbe(
       sessionsCount: 0,
       error: null,
     },
+    runtimeAuthority: {
+      ok: true,
+      status: 200,
+      chatFsRootFingerprint: chatFsRootFingerprint(
+        productionEnv.CHAT_FS_ROOT,
+      ),
+      sourceRevision: productionEnv.IDREAM_CHAT_SOURCE_REVISION,
+      error: null,
+    },
     unsignedRequest: {
       ok: true,
       status: 401,
@@ -419,6 +452,65 @@ function passingChatProbe(
     characters: 24,
     assistantPreview: "Launch readiness acknowledged.",
     done: true,
+    error: null,
+    ...override,
+  };
+}
+
+function passingAdminTextProbe(
+  override: Partial<AdminTextProbeEvidence> = {},
+): AdminTextProbeEvidence {
+  return {
+    ok: true,
+    checkedAt: "2026-06-24T23:58:15.000Z",
+    durationMs: 2_345,
+    provider: productionEnv.CHAT_PROVIDER,
+    pipelineUrl: productionEnv.PIPELINE_API_URL,
+    model: productionEnv.PIPELINE_CHAT_MODEL_DEFAULT,
+    adminSourceRevision: productionEnv.IDREAM_ADMIN_SOURCE_REVISION,
+    adminUrl: productionEnv.ADMIN_WEB_URL,
+    characterId: "reviewed-character-1",
+    authMode: "cookie",
+    correlationId: "admin-text-probe-correlation-123",
+    requestIds: {
+      characterAssist: "admin-text-probe-correlation-123-assist",
+      productionDirections: "admin-text-probe-correlation-123-directions",
+    },
+    characterAssist: {
+      ok: true,
+      status: 200,
+      descriptionCharacters: 72,
+      nameIdeas: 3,
+      personalityCharacters: 31,
+      speakingStyleCharacters: 54,
+      firstMessageCharacters: 46,
+      visualBriefCharacters: 62,
+      runtime: {
+        provider: productionEnv.CHAT_PROVIDER,
+        pipelineUrl: productionEnv.PIPELINE_API_URL,
+        model: productionEnv.PIPELINE_CHAT_MODEL_DEFAULT,
+        sourceRevision: productionEnv.IDREAM_MAIN_SOURCE_REVISION,
+      },
+      error: null,
+    },
+    productionDirections: {
+      ok: true,
+      status: 200,
+      directions: 4,
+      source: "model",
+      scenePromptCharacters: 286,
+      runtime: {
+        provider: productionEnv.CHAT_PROVIDER,
+        pipelineUrl: productionEnv.PIPELINE_API_URL,
+        model: productionEnv.PIPELINE_CHAT_MODEL_DEFAULT,
+        sourceRevision: productionEnv.IDREAM_MAIN_SOURCE_REVISION,
+      },
+      error: null,
+    },
+    cleanup: {
+      fixture: "not_created",
+      immutableModerationAudit: "retained_by_authority",
+    },
     error: null,
     ...override,
   };
@@ -701,13 +793,32 @@ function passingSentryProbes() {
 function assessLaunchReadiness(
   options: Parameters<typeof assessLaunchReadinessRaw>[0] = {},
 ) {
-  return assessLaunchReadinessRaw({
+  const revisionBound = {
+    adminTextProbe: passingAdminTextProbe(),
     imageGenerationPersistenceProbe:
       passingGenerationPersistenceProbe("image"),
     videoGenerationPersistenceProbe:
       passingGenerationPersistenceProbe("video"),
     ...options,
-  });
+  } as Record<string, unknown>;
+  for (const name of PROBE_NAMES) {
+    const evidence = revisionBound[name];
+    if (
+      typeof evidence !== "object" ||
+      evidence === null ||
+      Array.isArray(evidence) ||
+      "sourceRevision" in evidence
+    ) {
+      continue;
+    }
+    revisionBound[name] = {
+      ...(evidence as Record<string, unknown>),
+      sourceRevision: productionEnv.SENTRY_RELEASE,
+    };
+  }
+  return assessLaunchReadinessRaw(
+    revisionBound as Parameters<typeof assessLaunchReadinessRaw>[0],
+  );
 }
 
 function failedIds(report: LaunchReadinessReport) {
@@ -854,6 +965,77 @@ describe("launch readiness", () => {
       );
     },
   );
+
+  it("fails closed when a probe report belongs to another source revision", () => {
+    const imageProbe = passingImageProbe() as ImagePipelineProbeEvidence & {
+      sourceRevision: string;
+    };
+    imageProbe.sourceRevision = "idream@stale-revision";
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      imagePipelineProbe: imageProbe,
+      videoGenerationProbe: passingVideoProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      chatModelProbe: passingChatProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      productConfigProbe: passingProductConfigProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      ...passingSentryProbes(),
+      now,
+    });
+
+    expect(failedIds(report)).toContain("source-revision-authority");
+  });
+
+  it("binds the structured Gate report to its timestamp, release, evidence, and masked environment", () => {
+    const first = assessLaunchReadiness({
+      env: productionEnv,
+      imagePipelineProbe: passingImageProbe(),
+      productConfigProbe: passingProductConfigProbe(),
+      now,
+    });
+    const second = assessLaunchReadiness({
+      env: { ...productionEnv, BETTER_AUTH_SECRET: "another-secret-value-at-least-32-characters" },
+      imagePipelineProbe: passingImageProbe({ terminal: null }),
+      productConfigProbe: passingProductConfigProbe(),
+      now,
+    });
+
+    expect(first).toMatchObject({
+      generatedAt: now.toISOString(),
+      sourceRevision: productionEnv.IDREAM_MAIN_SOURCE_REVISION,
+    });
+    expect(first.evidenceDigest).toMatch(/^[a-f0-9]{64}$/u);
+    expect(first.environmentDigest).toMatch(/^[a-f0-9]{64}$/u);
+    expect(second.evidenceDigest).not.toBe(first.evidenceDigest);
+    expect(second.environmentDigest).toBe(first.environmentDigest);
+  });
+
+  it("fails closed when a signed service runtime belongs to another source revision", () => {
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      chatServiceProbe: passingChatServiceProbe({
+        runtimeAuthority: {
+          ...passingChatServiceProbe().runtimeAuthority,
+          sourceRevision: "idream@stale-chat-runtime",
+        },
+      }),
+      adminTextProbe: passingAdminTextProbe({
+        adminSourceRevision: "idream@stale-admin-runtime",
+      }),
+      productConfigProbe: passingProductConfigProbe(),
+      now,
+    });
+
+    expect(checkById(report, "source-revision-authority")?.message).toContain(
+      "signed Chat runtime authority",
+    );
+    expect(checkById(report, "source-revision-authority")?.message).toContain(
+      "Admin BFF and Main text runtime",
+    );
+  });
 
   it.each([
     ["main", "sentryMainCanaryProbe"],
@@ -1185,6 +1367,33 @@ describe("launch readiness", () => {
     );
   });
 
+  it("rejects a Gen env file target that drifts from Main even when the probe still matches Main", () => {
+    const report = assessLaunchReadiness({
+      env: {
+        ...productionEnv,
+        IDREAM_GEN_BLOB_ENDPOINT:
+          "https://different-gen.r2.cloudflarestorage.com",
+        IDREAM_GEN_BLOB_BUCKET: "different-gen-bucket",
+      },
+      imagePipelineProbe: passingImageProbe(),
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingProductConfigProbe(),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
+      now,
+    });
+
+    expect(checkById(report, "pipeline-image-live-probe")?.message).toContain(
+      "configured Gen Blob endpoint/bucket does not match Main authority",
+    );
+  });
+
   it("passes the generation image provider check for a backend (ComfyUI) deploy", () => {
     const report = assessLaunchReadiness({
       env: {
@@ -1371,6 +1580,82 @@ describe("launch readiness", () => {
     expect(failedIds(report)).toContain("comfyui-api-url");
   });
 
+  it("binds backend image checks and evidence to Gen's ComfyUI authority", () => {
+    const report = assessLaunchReadiness({
+      env: {
+        ...productionEnv,
+        GEN_IMAGE_PROVIDER: "backend",
+        COMFYUI_API_URL: "https://main-comfy.ourdream.internal",
+        IDREAM_GEN_COMFYUI_API_URL: "https://gen-comfy.ourdream.internal",
+      },
+      imagePipelineProbe: passingBackendImageProbe({
+        backendTarget: "https://main-comfy.ourdream.internal",
+      }),
+      now,
+    });
+
+    expect(checkById(report, "pipeline-image-live-probe")?.message).toContain(
+      "Gen ComfyUI authority",
+    );
+  });
+
+  it("binds pipeline image checks, model, and evidence to Gen without replacing Main's pipeline", () => {
+    const report = assessLaunchReadiness({
+      env: {
+        ...productionEnv,
+        PIPELINE_API_URL: "https://main-chat.ourdream.internal/v1",
+        PIPELINE_API_TOKEN: "main-chat-pipeline-token",
+        PIPELINE_IMAGE_MODEL_DEFAULT: "wrong-main-model",
+        IDREAM_GEN_PIPELINE_API_URL: "https://gen-image.ourdream.internal/v1",
+        IDREAM_GEN_PIPELINE_API_TOKEN: "gen-image-pipeline-token",
+        IDREAM_GEN_PIPELINE_IMAGE_MODEL_DEFAULT: "gen-image-model",
+      },
+      imagePipelineProbe: passingImageProbe({
+        pipelineUrl: "https://main-chat.ourdream.internal/v1",
+        model: "wrong-main-model",
+      }),
+      now,
+    });
+
+    expect(checkById(report, "pipeline-image-live-probe")?.message).toContain(
+      "Gen pipeline URL",
+    );
+    expect(checkById(report, "pipeline-image-live-probe")?.message).toContain(
+      "Gen image model",
+    );
+    expect(checkById(report, "pipeline-api-url")).toMatchObject({
+      status: "pass",
+    });
+    expect(checkById(report, "main-chat-pipeline-api-url")).toMatchObject({
+      status: "pass",
+    });
+  });
+
+  it("does not let Main's pipeline values hide missing Gen pipeline config", () => {
+    const report = assessLaunchReadiness({
+      env: {
+        ...productionEnv,
+        PIPELINE_API_URL: "https://main-chat.ourdream.internal/v1",
+        PIPELINE_API_TOKEN: "main-chat-pipeline-token",
+        PIPELINE_IMAGE_MODEL_DEFAULT: "main-image-model",
+        IDREAM_GEN_PIPELINE_API_URL: "",
+        IDREAM_GEN_PIPELINE_API_TOKEN: "",
+        IDREAM_GEN_PIPELINE_IMAGE_MODEL_DEFAULT: "",
+      },
+      now,
+    });
+
+    expect(checkById(report, "pipeline-api-url")).toMatchObject({
+      status: "fail",
+    });
+    expect(checkById(report, "pipeline-api-token")).toMatchObject({
+      status: "fail",
+    });
+    expect(checkById(report, "pipeline-image-model")).toMatchObject({
+      status: "warn",
+    });
+  });
+
   it("accepts a Draw Things-only backend deploy without requiring ComfyUI", () => {
     const report = assessLaunchReadiness({
       env: {
@@ -1449,6 +1734,60 @@ describe("launch readiness", () => {
     expect(failedIds(report)).toContain("bullmq-prefix");
   });
 
+  it.each([
+    ["IDREAM_ADMIN_APP_ENV", "development", "app-env-production"],
+    ["IDREAM_CHAT_APP_ENV", "development", "app-env-production"],
+    ["IDREAM_GEN_APP_ENV", "development", "app-env-production"],
+    ["IDREAM_CHAT_BULLMQ_PREFIX", "idream:chat", "bullmq-prefix"],
+    ["IDREAM_GEN_BULLMQ_PREFIX", "idream:gen", "bullmq-prefix"],
+    ["IDREAM_CHAT_INTERNAL_TOKEN", "wrong-chat-token", "internal-token"],
+    ["IDREAM_GEN_INTERNAL_TOKEN", "wrong-gen-token", "internal-token"],
+    ["IDREAM_ADMIN_INTERNAL_TOKEN", "wrong-admin-token", "internal-token"],
+    [
+      "IDREAM_ADMIN_SOURCE_REVISION",
+      "idream@another-revision",
+      "source-revision-authority",
+    ],
+    [
+      "IDREAM_CHAT_BFF_SIGNING_SECRET",
+      "wrong-chat-bff-secret-0123456789abcdef",
+      "chat-bff-signing-secret",
+    ],
+    [
+      "IDREAM_ADMIN_BFF_SIGNING_SECRET",
+      "wrong-admin-bff-secret-0123456789abcdef",
+      "admin-bff-signing-secret",
+    ],
+  ] as const)(
+    "fails %s when a service env authority drifts",
+    (key, value, expectedFailure) => {
+      const report = assessLaunchReadiness({
+        env: {
+          ...productionEnv,
+          IDREAM_ADMIN_APP_ENV: "production",
+          IDREAM_CHAT_APP_ENV: "production",
+          IDREAM_GEN_APP_ENV: "production",
+          IDREAM_CHAT_BULLMQ_PREFIX: productionEnv.BULLMQ_PREFIX,
+          IDREAM_GEN_BULLMQ_PREFIX: productionEnv.BULLMQ_PREFIX,
+          IDREAM_CHAT_INTERNAL_TOKEN: productionEnv.INTERNAL_TOKEN,
+          IDREAM_GEN_INTERNAL_TOKEN: productionEnv.INTERNAL_TOKEN,
+          IDREAM_ADMIN_INTERNAL_TOKEN: productionEnv.INTERNAL_TOKEN,
+          IDREAM_CHAT_BFF_SIGNING_SECRET:
+            productionEnv.CHAT_BFF_SIGNING_SECRET,
+          IDREAM_ADMIN_BFF_SIGNING_SECRET:
+            productionEnv.ADMIN_BFF_SIGNING_SECRET,
+          IDREAM_MAIN_SOURCE_REVISION: productionEnv.SENTRY_RELEASE,
+          IDREAM_ADMIN_SOURCE_REVISION: productionEnv.SENTRY_RELEASE,
+          IDREAM_CHAT_SOURCE_REVISION: productionEnv.SENTRY_RELEASE,
+          IDREAM_GEN_SOURCE_REVISION: productionEnv.SENTRY_RELEASE,
+          [key]: value,
+        },
+      });
+
+      expect(failedIds(report)).toContain(expectedFailure);
+    },
+  );
+
   it("requires Better Auth to use the public production origin", () => {
     const report = assessLaunchReadiness({
       env: {
@@ -1520,6 +1859,29 @@ describe("launch readiness", () => {
 
     expect(report.ok).toBe(false);
     expect(failedIds(report)).toContain("better-auth-url");
+  });
+
+  it("does not classify private origins as public HTTPS", () => {
+    for (const url of [
+      "https://10.0.0.1",
+      "https://100.64.0.1",
+      "https://169.254.1.1",
+      "https://172.16.0.1",
+      "https://192.168.1.1",
+      "https://[fc00::1]",
+      "https://[fe80::1]",
+      "https://auth.local",
+      "https://auth.internal",
+    ]) {
+      const report = assessLaunchReadiness({
+        env: {
+          ...productionEnv,
+          BETTER_AUTH_URL: url,
+        },
+      });
+
+      expect(checkById(report, "better-auth-url")?.status, url).toBe("fail");
+    }
   });
 
   it("requires the split chat service to use durable file storage", () => {
@@ -1679,9 +2041,16 @@ describe("launch readiness", () => {
 
   it("parses launch gate CLI options for env files and JSON output", () => {
     expect(
-      parseLaunchReadinessCliArgs(["--launch-env-file", "prod.env", "--json"]),
+      parseLaunchReadinessCliArgs([
+        "--launch-env-file",
+        "prod.env",
+        "--report",
+        ".tmp/gate.json",
+        "--json",
+      ]),
     ).toEqual({
       envFile: "prod.env",
+      reportFile: ".tmp/gate.json",
       help: false,
       json: true,
     });
@@ -1702,15 +2071,48 @@ describe("launch readiness", () => {
       help: false,
       json: false,
     });
+    expect(parseLaunchReadinessCliArgs([
+      "--launch-env-file",
+      "main.env",
+      "--admin-env-file=admin.env",
+      "--chat-env-file=chat.env",
+      "--gen-env-file",
+      "gen.env",
+    ])).toEqual({
+      envFile: "main.env",
+      adminEnvFile: "admin.env",
+      chatEnvFile: "chat.env",
+      genEnvFile: "gen.env",
+      help: false,
+      json: false,
+    });
     expect(() => parseLaunchReadinessCliArgs(["--launch-env-file"])).toThrow(
       "--launch-env-file requires a path",
+    );
+    expect(() => parseLaunchReadinessCliArgs(["--admin-env-file"])).toThrow(
+      "--admin-env-file requires a path",
+    );
+    expect(() => parseLaunchReadinessCliArgs(["--report"])).toThrow(
+      "--report requires a path",
     );
     expect(() => parseLaunchReadinessCliArgs(["--unknown"])).toThrow(
       "Unknown option: --unknown",
     );
   });
 
-  it("loads production launch env from a dotenv file with file values taking precedence", () => {
+  it("writes the exact structured Gate report to an operator-selected artifact", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "idream-launch-report-"));
+    try {
+      const target = path.join(dir, "nested", "gate.json");
+      const report = assessLaunchReadiness({ env: productionEnv, now });
+      await writeLaunchReadinessReport(target, report);
+      expect(JSON.parse(readFileSync(target, "utf8"))).toEqual(report);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("loads isolated production service env files with file values taking precedence", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "idream-launch-"));
     try {
       const envFile = path.join(dir, "production.env");
@@ -1719,10 +2121,18 @@ describe("launch readiness", () => {
         dotenvContent({ ...productionEnv, LAUNCH_SCOPE: "core" }),
       );
 
-      const loadedEnv = loadLaunchReadinessEnv(envFile, {
-        APP_ENV: "development",
-        DATABASE_URL: "file:./dev.db",
-        CHAT_PROVIDER: "mock",
+      const loadedEnv = loadRecoveryServiceEnvironment({
+        workspaceRoot: dir,
+        launchEnvFile: envFile,
+        chatEnvFile: envFile,
+        genEnvFile: envFile,
+        processEnv: {
+          NODE_ENV: "test",
+          APP_ENV: "development",
+          DATABASE_URL: "file:./dev.db",
+          CHAT_PROVIDER: "mock",
+        },
+        loadDefaultFiles: false,
       });
       const report = assessLaunchReadiness({
         env: loadedEnv,
@@ -1745,7 +2155,10 @@ describe("launch readiness", () => {
       expect(loadedEnv.LAUNCH_SCOPE).toBe("core");
       expect(loadedEnv.DATABASE_URL).toBe(productionEnv.DATABASE_URL);
       expect(loadedEnv.CHAT_PROVIDER).toBe("pipeline");
-      expect(report.ok).toBe(true);
+      expect(
+        report.ok,
+        checkById(report, "source-revision-authority")?.message,
+      ).toBe(true);
     } finally {
       rmSync(dir, { force: true, recursive: true });
     }
@@ -1760,12 +2173,20 @@ describe("launch readiness", () => {
         "APP_ENV=production\nMAIN_WEB_URL=https://ourdream.ai\n",
       );
 
-      const loadedEnv = loadLaunchReadinessEnv(envFile, {
-        PATH: "/usr/bin:/bin",
-        DATABASE_URL: productionEnv.DATABASE_URL,
-        CHAT_MODEL_API_KEY: productionEnv.CHAT_MODEL_API_KEY,
-        PAYMENT_PROVIDER_PROBE_REPORT:
-          productionEnv.PAYMENT_PROVIDER_PROBE_REPORT,
+      const loadedEnv = loadRecoveryServiceEnvironment({
+        workspaceRoot: dir,
+        launchEnvFile: envFile,
+        chatEnvFile: envFile,
+        genEnvFile: envFile,
+        processEnv: {
+          NODE_ENV: "test",
+          PATH: "/usr/bin:/bin",
+          DATABASE_URL: productionEnv.DATABASE_URL,
+          CHAT_MODEL_API_KEY: productionEnv.CHAT_MODEL_API_KEY,
+          PAYMENT_PROVIDER_PROBE_REPORT:
+            productionEnv.PAYMENT_PROVIDER_PROBE_REPORT,
+        },
+        loadDefaultFiles: false,
       });
 
       expect(loadedEnv).toMatchObject({
@@ -1774,7 +2195,7 @@ describe("launch readiness", () => {
         PATH: "/usr/bin:/bin",
       });
       expect(loadedEnv.DATABASE_URL).toBeUndefined();
-      expect(loadedEnv.CHAT_MODEL_API_KEY).toBeUndefined();
+      expect(loadedEnv.CHAT_MODEL_API_KEY).toBe("");
       expect(loadedEnv.PAYMENT_PROVIDER_PROBE_REPORT).toBeUndefined();
     } finally {
       rmSync(dir, { force: true, recursive: true });
@@ -2091,6 +2512,31 @@ describe("launch readiness", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("fails when the signed Chat probe observed a different Chat FS authority", () => {
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      chatServiceProbe: passingChatServiceProbe({
+        runtimeAuthority: {
+          ok: true,
+          status: 200,
+          chatFsRootFingerprint: chatFsRootFingerprint(
+            "/var/lib/idream/chat-other",
+          ),
+          error: null,
+        },
+      }),
+      now,
+    });
+
+    expect(
+      report.checks.find((check) => check.id === "chat-service-live-probe"),
+    ).toMatchObject({ status: "fail" });
+    expect(
+      report.checks.find((check) => check.id === "chat-service-live-probe")
+        ?.message,
+    ).toContain("CHAT_FS_ROOT");
   });
 
   it("fails when the live chat service probe cannot complete a signed request", () => {
@@ -2905,7 +3351,10 @@ describe("launch readiness", () => {
       ...passingSentryProbes(),
       now,
     });
-    expect(report.ok).toBe(true);
+    expect(
+      report.ok,
+      checkById(report, "source-revision-authority")?.message,
+    ).toBe(true);
     expect(report.summary.fail).toBe(0);
     expect(report.summary.warn).toBe(0);
     expect(report.checks.map((check) => check.id)).toContain(
@@ -2983,7 +3432,10 @@ describe("launch readiness", () => {
       now,
     });
 
-    expect(report.ok).toBe(true);
+    expect(
+      report.ok,
+      checkById(report, "source-revision-authority")?.message,
+    ).toBe(true);
     expect(checkById(report, "launch-scope")).toMatchObject({
       status: "pass",
     });
@@ -2997,6 +3449,110 @@ describe("launch readiness", () => {
         "age-verification-live-probe",
       ]),
     );
+  });
+
+  it("does not let split Chat credentials satisfy Main's pipeline chat adapter", () => {
+    const report = assessLaunchReadiness({
+      env: {
+        ...productionEnv,
+        LAUNCH_SCOPE: "core",
+        GEN_IMAGE_PROVIDER: "backend",
+        PIPELINE_API_URL: "",
+        PIPELINE_API_TOKEN: "",
+        CHAT_MODEL_BASE_URL: "https://split-chat.ourdream.internal",
+        CHAT_MODEL_API_KEY: "split-chat-model-token-0123456789",
+      },
+      imagePipelineProbe: passingBackendImageProbe(),
+      chatModelProbe: passingChatProbe({
+        baseUrl: "https://split-chat.ourdream.internal",
+      }),
+      now,
+    });
+
+    expect(checkById(report, "main-chat-pipeline-api-url")).toMatchObject({
+      status: "fail",
+    });
+    expect(checkById(report, "main-chat-pipeline-api-token")).toMatchObject({
+      status: "fail",
+    });
+  });
+
+  it("fails closed when Main Admin text live evidence is missing", () => {
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      adminTextProbe: null,
+      now,
+    });
+
+    expect(checkById(report, "admin-text-live-probe")).toMatchObject({
+      status: "fail",
+    });
+  });
+
+  it("rejects stale Main Admin text live evidence", () => {
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      adminTextProbe: passingAdminTextProbe({
+        checkedAt: "2026-06-20T00:00:00.000Z",
+      }),
+      now,
+    });
+
+    expect(checkById(report, "admin-text-live-probe")).toMatchObject({
+      status: "fail",
+    });
+    expect(checkById(report, "admin-text-live-probe")?.message).toContain(
+      "older",
+    );
+  });
+
+  it("rejects Admin text evidence from a different Main pipeline URL", () => {
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      adminTextProbe: passingAdminTextProbe({
+        pipelineUrl: "https://different-pipeline.ourdream.internal",
+      }),
+      now,
+    });
+
+    expect(checkById(report, "admin-text-live-probe")).toMatchObject({
+      status: "fail",
+    });
+    expect(checkById(report, "admin-text-live-probe")?.message).toContain(
+      "PIPELINE_API_URL",
+    );
+  });
+
+  it.each(["characterAssist", "productionDirections"] as const)(
+    "rejects Admin text evidence when %s fails",
+    (operation) => {
+      const report = assessLaunchReadiness({
+        env: productionEnv,
+        adminTextProbe: passingAdminTextProbe({
+          [operation]: {
+            ...passingAdminTextProbe()[operation],
+            ok: false,
+          },
+        }),
+        now,
+      });
+
+      expect(checkById(report, "admin-text-live-probe")).toMatchObject({
+        status: "fail",
+      });
+    },
+  );
+
+  it("accepts fresh Main Admin text evidence only when both structured routes pass", () => {
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      adminTextProbe: passingAdminTextProbe(),
+      now,
+    });
+
+    expect(checkById(report, "admin-text-live-probe")).toMatchObject({
+      status: "pass",
+    });
   });
 
   it("fails closed on an unknown launch scope instead of treating it as core", () => {
@@ -3711,8 +4267,27 @@ describe("launch readiness", () => {
   });
 
   it("keeps production env templates aligned with the launch gate", () => {
+    const synthesizedServiceAuthorityKeys = new Set([
+      "IDREAM_ADMIN_APP_ENV",
+      "IDREAM_CHAT_APP_ENV",
+      "IDREAM_GEN_APP_ENV",
+      "IDREAM_ADMIN_INTERNAL_TOKEN",
+      "IDREAM_CHAT_INTERNAL_TOKEN",
+      "IDREAM_GEN_INTERNAL_TOKEN",
+      "IDREAM_CHAT_BULLMQ_PREFIX",
+      "IDREAM_GEN_BULLMQ_PREFIX",
+      "IDREAM_CHAT_BFF_SIGNING_SECRET",
+      "IDREAM_ADMIN_BFF_SIGNING_SECRET",
+      "IDREAM_MAIN_SOURCE_REVISION",
+      "IDREAM_ADMIN_SOURCE_REVISION",
+      "IDREAM_CHAT_SOURCE_REVISION",
+      "IDREAM_GEN_SOURCE_REVISION",
+    ]);
     const mainKeys = new Set(
       Object.keys(envTemplateValues("../../.env.production.example")),
+    );
+    const adminKeys = new Set(
+      Object.keys(envTemplateValues("../../../admin/.env.production.example")),
     );
     const chatKeys = new Set(
       Object.keys(envTemplateValues("../../../chat/.env.production.example")),
@@ -3722,7 +4297,15 @@ describe("launch readiness", () => {
     );
 
     expect(
-      [...Object.keys(productionEnv)].filter((key) => !mainKeys.has(key)),
+      [...Object.keys(productionEnv)].filter(
+        (key) =>
+          !synthesizedServiceAuthorityKeys.has(key) && !mainKeys.has(key),
+      ),
+    ).toEqual([]);
+    expect(
+      ["APP_ENV", "INTERNAL_TOKEN", "ADMIN_BFF_SIGNING_SECRET"].filter(
+        (key) => !adminKeys.has(key),
+      ),
     ).toEqual([]);
     expect(
       [
@@ -3746,6 +4329,7 @@ describe("launch readiness", () => {
       [
         ...[
           "GEN_REDIS_URL",
+          "INTERNAL_TOKEN",
           "GEN_IMAGE_PROVIDER",
           "GEN_VIDEO_PROVIDER",
           "GEN_MODERATION_PROVIDER",

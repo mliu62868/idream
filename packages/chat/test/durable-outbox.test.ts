@@ -146,6 +146,112 @@ function requestBoundFakePrisma(initialStatus = "request_bound") {
 }
 
 describe("chat durable outbox delivery", () => {
+  it("never sends Vitest outbox rows to an ambient Main runtime", async () => {
+    const previous = {
+      appEnv: process.env.APP_ENV,
+      bullmqPrefix: process.env.BULLMQ_PREFIX,
+      playwright: process.env.PLAYWRIGHT_E2E,
+      runId: process.env.PW_RUN_ID,
+    };
+    process.env.APP_ENV = "test";
+    process.env.BULLMQ_PREFIX = "idream:test";
+    delete process.env.PLAYWRIGHT_E2E;
+    delete process.env.PW_RUN_ID;
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const { prisma, updates } = fakePrisma();
+      expect(await deliverPendingOutbox(prisma)).toEqual({
+        delivered: 0,
+        failed: 1,
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(updates[0]).toMatchObject({
+        data: { status: "pending", attempts: 1 },
+      });
+    } finally {
+      vi.unstubAllGlobals();
+      restoreEnv("APP_ENV", previous.appEnv);
+      restoreEnv("BULLMQ_PREFIX", previous.bullmqPrefix);
+      restoreEnv("PLAYWRIGHT_E2E", previous.playwright);
+      restoreEnv("PW_RUN_ID", previous.runId);
+    }
+  });
+
+  it("keeps the Vitest ingest fence when a test rewrites APP_ENV", async () => {
+    const previous = {
+      appEnv: process.env.APP_ENV,
+      bullmqPrefix: process.env.BULLMQ_PREFIX,
+      playwright: process.env.PLAYWRIGHT_E2E,
+      runId: process.env.PW_RUN_ID,
+    };
+    process.env.APP_ENV = "development";
+    process.env.BULLMQ_PREFIX = "idream:development";
+    delete process.env.PLAYWRIGHT_E2E;
+    delete process.env.PW_RUN_ID;
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const { prisma, updates } = fakePrisma();
+      expect(await deliverPendingOutbox(prisma)).toEqual({
+        delivered: 0,
+        failed: 1,
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(updates[0]).toMatchObject({
+        data: { status: "pending", attempts: 1 },
+      });
+    } finally {
+      vi.unstubAllGlobals();
+      restoreEnv("APP_ENV", previous.appEnv);
+      restoreEnv("BULLMQ_PREFIX", previous.bullmqPrefix);
+      restoreEnv("PLAYWRIGHT_E2E", previous.playwright);
+      restoreEnv("PW_RUN_ID", previous.runId);
+    }
+  });
+
+  it("allows Main ingest only for the run-owned Playwright authority", async () => {
+    const previous = {
+      appEnv: process.env.APP_ENV,
+      bullmqPrefix: process.env.BULLMQ_PREFIX,
+      mainWebUrl: process.env.MAIN_WEB_URL,
+      playwright: process.env.PLAYWRIGHT_E2E,
+      runId: process.env.PW_RUN_ID,
+    };
+    process.env.APP_ENV = "test";
+    process.env.PLAYWRIGHT_E2E = "1";
+    process.env.PW_RUN_ID = "isolated-run";
+    process.env.BULLMQ_PREFIX = "idream:e2e:3300:isolated-run";
+    process.env.MAIN_WEB_URL = "http://127.0.0.1:3300";
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        acknowledged: true,
+        status: "persisted",
+        receiptId: "chat-event-1",
+      }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const { prisma } = fakePrisma();
+      expect(await deliverPendingOutbox(prisma)).toEqual({
+        delivered: 1,
+        failed: 0,
+      });
+      expect(fetchMock).toHaveBeenCalledWith(
+        "http://127.0.0.1:3300/api/internal/events/ingest",
+        expect.objectContaining({ method: "POST" }),
+      );
+    } finally {
+      vi.unstubAllGlobals();
+      restoreEnv("APP_ENV", previous.appEnv);
+      restoreEnv("BULLMQ_PREFIX", previous.bullmqPrefix);
+      restoreEnv("MAIN_WEB_URL", previous.mainWebUrl);
+      restoreEnv("PLAYWRIGHT_E2E", previous.playwright);
+      restoreEnv("PW_RUN_ID", previous.runId);
+    }
+  });
+
   it("does not mark delivered when main durable ACK fails", async () => {
     const { prisma, updates } = fakePrisma();
     const result = await deliverPendingOutbox(prisma, 100, async () => {
@@ -241,3 +347,8 @@ describe("chat durable outbox delivery", () => {
     expect(acknowledge).toHaveBeenCalledTimes(1);
   });
 });
+
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}

@@ -11,9 +11,12 @@ import {
   DEFAULT_REDIS_URL,
   crossServiceEnvShape,
   defaultBullmqPrefix,
+  mainProviderKeysForLaunchScope,
   mainWebUrlOrigin,
   pipelineEndpoint,
+  requiredNonMockMainProviderKeysForLaunchScope,
   resolveAlias,
+  resolveLaunchScope,
 } from "./env";
 
 // SPEC: this guard is the enforcement half of the cross-service env contract.
@@ -160,6 +163,30 @@ describe("共享解析只能有一份", () => {
 });
 
 describe("cross-service env contract", () => {
+  it("keeps launch scope parsing and Main provider requirements in one contract", () => {
+    expect(resolveLaunchScope(undefined)).toBe("full");
+    expect(resolveLaunchScope("  core  ")).toBe("core");
+    expect(resolveLaunchScope("skip")).toBeNull();
+    expect(mainProviderKeysForLaunchScope("core")).toEqual([
+      "CHAT_PROVIDER",
+      "VOICE_PROVIDER",
+      "MODERATION_PROVIDER",
+      "BLOB_PROVIDER",
+    ]);
+    expect(requiredNonMockMainProviderKeysForLaunchScope("core")).toEqual([
+      "CHAT_PROVIDER",
+      "VOICE_PROVIDER",
+      "BLOB_PROVIDER",
+    ]);
+    expect(requiredNonMockMainProviderKeysForLaunchScope("full")).toEqual([
+      "CHAT_PROVIDER",
+      "VOICE_PROVIDER",
+      "BLOB_PROVIDER",
+      "PAYMENT_PROVIDER",
+      "AGE_VERIFICATION_PROVIDER",
+    ]);
+  });
+
   it("is the only place the shared defaults are written down", () => {
     const violations: string[] = [];
     for (const [service, file] of Object.entries(SERVICE_ENV_FILES)) {

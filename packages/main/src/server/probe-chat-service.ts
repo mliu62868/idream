@@ -34,6 +34,10 @@ type OperationEvidence = {
 //         全可选声明"更强；报告组装时由 tsc 校验它能落进契约。
 type HealthEvidence = OperationEvidence & { service?: string | null };
 type SignedRequestEvidence = OperationEvidence & { sessionsCount?: number };
+type RuntimeAuthorityEvidence = OperationEvidence & {
+  chatFsRootFingerprint?: string | null;
+  sourceRevision?: string | null;
+};
 
 type NoMemoryEvidence = OperationEvidence & {
   assistantMessageId?: string;
@@ -201,6 +205,10 @@ export async function runProbe(input: {
     ok: false,
     error: "not attempted",
   };
+  let runtimeAuthority: RuntimeAuthorityEvidence = {
+    ok: false,
+    error: "CHAT_BFF_SIGNING_SECRET is required for runtime authority probe",
+  };
   let conversation: ConversationEvidence = skippedConversation(
     "CHAT_SERVICE_PROBE_CHARACTER_ID not set — conversation smoke skipped",
   );
@@ -231,6 +239,11 @@ export async function runProbe(input: {
       secret: input.secret,
       userId: input.userId,
     });
+    runtimeAuthority = await probeSignedRuntimeAuthority({
+      serviceUrl: input.serviceUrl,
+      secret: input.secret,
+      userId: input.userId,
+    });
     unsignedRequest = await probeUnsignedSessions(input.serviceUrl);
     const character = await resolveProbeCharacter(input.characterId);
     if (!character.id) {
@@ -253,6 +266,7 @@ export async function runProbe(input: {
       durationMs: Date.now() - startedAt,
       health,
       signedRequest,
+      runtimeAuthority,
       unsignedRequest,
       conversation,
       error: {
@@ -266,6 +280,7 @@ export async function runProbe(input: {
   const ok =
     health.ok &&
     signedRequest.ok &&
+    runtimeAuthority.ok &&
     unsignedRequest.status === 401 &&
     // A SKIPPED conversation smoke (no eligible character, or main DB unreachable) must NOT
     // report green: launch-readiness fails on conversation.attempted !== true, so the probe's
@@ -282,6 +297,7 @@ export async function runProbe(input: {
     durationMs: Date.now() - startedAt,
     health,
     signedRequest,
+    runtimeAuthority,
     unsignedRequest,
     conversation,
     error: ok
@@ -1197,6 +1213,51 @@ async function probeSignedSessions(input: {
     status: response.status,
     sessionsCount: isSessionList ? json.length : undefined,
     error: response.status === 200 ? null : `HTTP ${response.status}`,
+  };
+}
+
+async function probeSignedRuntimeAuthority(input: {
+  serviceUrl: string;
+  secret: string;
+  userId: string;
+}): Promise<RuntimeAuthorityEvidence> {
+  const method = "GET";
+  const requestPath = "/api/v1/chat/runtime-authority";
+  const body = "";
+  const { signature, context } = signBffContext({
+    secret: input.secret,
+    userId: input.userId,
+    method,
+    path: requestPath,
+    body,
+  });
+  const response = await fetch(new URL(requestPath, normalizedBase(input.serviceUrl)), {
+    method,
+    headers: {
+      [BFF_HEADER]: signature,
+      [BFF_USER_HEADER]: JSON.stringify(context),
+    },
+  });
+  const json = (await response.json().catch(() => undefined)) as unknown;
+  const fingerprint = isRecord(json) &&
+      typeof json.chatFsRootFingerprint === "string"
+    ? json.chatFsRootFingerprint
+    : null;
+  const sourceRevision = isRecord(json) && typeof json.sourceRevision === "string"
+    ? json.sourceRevision
+    : null;
+  return {
+    ok:
+      response.status === 200 &&
+      /^[a-f0-9]{64}$/u.test(fingerprint ?? "") &&
+      Boolean(sourceRevision?.trim()),
+    status: response.status,
+    chatFsRootFingerprint: fingerprint,
+    sourceRevision,
+    error:
+      response.status === 200 && fingerprint && sourceRevision
+        ? null
+        : `HTTP ${response.status}`,
   };
 }
 

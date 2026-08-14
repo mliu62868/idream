@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFile, rm } from "node:fs/promises";
+import "dotenv/config";
 import { S3CompatibleBlobStore } from "@idream/shared";
 import {
   BLOB_ACCESS_KEY_ID_ALIASES,

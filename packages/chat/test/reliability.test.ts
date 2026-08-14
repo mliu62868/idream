@@ -533,9 +533,31 @@ describe("reconcile (P0-4 convergence)", () => {
   });
 
   it("selects lagging enabled turns before LIMIT and excludes legacy unknown turns", async () => {
+    const previousSession = await prisma.chatSession.create({
+      data: {
+        id: "rel_memory_starvation_previous_session",
+        userId: STARVATION_USER,
+        characterId: CHAR,
+        status: "active",
+      },
+    });
+    await prisma.chatSessionReleaseMigration.create({
+      data: {
+        id: "rel_memory_starvation_previous_migration",
+        commandId: "rel_memory_starvation_previous_command",
+        sessionId: previousSession.id,
+        characterId: CHAR,
+        toCharacterContentVersionId: "rel_memory_starvation_previous_content",
+        reason: "preceding test fixture",
+        compatibilityQa: { status: "passed" },
+        requestedById: "reliability-test",
+      },
+    });
     // This test owns the global LIMIT=200 population. Earlier sequential files
     // also leave sent turns in the shared integration database; keep them from
-    // changing which 200 rows this fixture is proving.
+    // changing which 200 rows this fixture is proving. Release migrations are
+    // non-cascading audit children, so the reset must remove them first.
+    await prisma.chatSessionReleaseMigration.deleteMany();
     await prisma.chatSession.deleteMany();
     const session = await prisma.chatSession.create({
       data: {

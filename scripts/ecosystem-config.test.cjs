@@ -184,6 +184,41 @@ test("development is the source-backed default", () => {
   ]);
 });
 
+test("every runtime receives the operator-approved source identity", () => {
+  const originalRevision = process.env.IDREAM_SOURCE_REVISION;
+  const originalRelease = process.env.SENTRY_RELEASE;
+  try {
+    process.env.IDREAM_SOURCE_REVISION = "idream-worktree-test-revision";
+    process.env.SENTRY_RELEASE = "idream-worktree-test-release";
+    const config = loadConfig("development");
+
+    for (const app of config.apps) {
+      assert.equal(
+        app.env.IDREAM_SOURCE_REVISION,
+        "idream-worktree-test-revision",
+        `${app.name} source revision`,
+      );
+      assert.equal(
+        app.env.SENTRY_RELEASE,
+        "idream-worktree-test-release",
+        `${app.name} Sentry release`,
+      );
+    }
+  } finally {
+    if (originalRevision === undefined) {
+      delete process.env.IDREAM_SOURCE_REVISION;
+    } else {
+      process.env.IDREAM_SOURCE_REVISION = originalRevision;
+    }
+    if (originalRelease === undefined) {
+      delete process.env.SENTRY_RELEASE;
+    } else {
+      process.env.SENTRY_RELEASE = originalRelease;
+    }
+    delete require.cache[require.resolve(configPath)];
+  }
+});
+
 test("development omits the video process when the effective Gen provider is mock", () => {
   const mockConfig = loadConfig("development", {
     GEN_VIDEO_PROVIDER: "mock",
@@ -735,6 +770,7 @@ test("a generic development restart preserves the detected source topology", () 
   const status = runPm2Ecosystem({
     args: ["current", "restart"],
     env: { PATH: process.env.PATH, GEN_VIDEO_PROVIDER: "backend" },
+    computeSourceRevision: () => "idream-worktree-current-revision",
     spawnSync: scriptedSpawn(
       [
         {
@@ -790,6 +826,10 @@ test("a generic development restart preserves the detected source topology", () 
     ["bun", ["run", "generation-cutover:resume"]],
   ]);
   assert.equal(calls[11].options.env.IDREAM_PM2_MODE, "development");
+  assert.equal(
+    calls[11].options.env.IDREAM_SOURCE_REVISION,
+    "idream-worktree-current-revision",
+  );
   assert.deepEqual(
     ownershipChecks.map(({ expected, expectedVideo, mode }) => ({
       expected,

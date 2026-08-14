@@ -9,7 +9,13 @@ function runtime(
   stream: AdminTextGenerationRuntime["stream"],
   provider: AdminTextGenerationRuntime["provider"] = "pipeline",
 ): AdminTextGenerationRuntime {
-  return { provider, stream };
+  return {
+    provider,
+    pipelineUrl:
+      provider === "pipeline" ? "https://pipeline.test.invalid/v1" : null,
+    model: provider === "pipeline" ? "test-model" : null,
+    stream,
+  };
 }
 
 async function unavailableCode(

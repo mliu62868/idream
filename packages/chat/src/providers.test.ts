@@ -522,8 +522,30 @@ describe("chat providers", () => {
 
     const { createProviders } = await import("./providers.js");
     expect(() => createProviders()).toThrow(
-      /Production requires non-mock chat providers:.*CHAT_MODEL_PROVIDER.*MODERATION_PROVIDER/,
+      "Production requires non-mock chat providers: CHAT_MODEL_PROVIDER",
     );
+  });
+
+  it("allows production startup with a real chat model and configured mock moderation", async () => {
+    vi.resetModules();
+    process.env = {
+      ...oldEnv,
+      APP_ENV: "production",
+      CHAT_MODEL_PROVIDER: "openai",
+      CHAT_MODEL_BASE_URL: "https://pipeline.internal.example.com/v1",
+      CHAT_MODEL_API_KEY: "pipeline-api-key",
+      MODERATION_PROVIDER: "mock",
+      CHAT_MODERATION_PROVIDER: "mock",
+    };
+
+    const { createProviders } = await import("./providers.js");
+    const providers = createProviders();
+
+    expect(providers.chat.supportsTools).toBe(true);
+    await expect(providers.moderation.check({
+      targetType: "text",
+      content: "ordinary adult conversation",
+    })).resolves.toEqual({ status: "passed", confidence: 0.5 });
   });
 
   it("rejects safety gateway startup without a service URL", async () => {

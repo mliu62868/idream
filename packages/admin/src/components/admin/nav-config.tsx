@@ -230,6 +230,10 @@ export const navItems: NavItem[] = [
   apiItem({ id: "ops/incidents", label: "Incidents", href: "/admin/ops/incidents", icon: ShieldAlert, group: "Platform Operations", apiWorkspace: "incidents",
     render: (ctx) => <IncidentWorkspace
       canManage={ctx.permissions.has("ops.incident.manage")}
+      canDiscardAttemptMissingCorrelationOutbox={adminV2OperationAllowed(
+        "POST /api/v2/admin/incidents/correlation-outbox/commands/discard-attempt-missing",
+        ctx.permissions,
+      )}
       canReadCorrelationOutbox={adminV2OperationAllowed(
         "GET /api/v2/admin/incidents/correlation-outbox",
         ctx.permissions,

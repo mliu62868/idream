@@ -74,7 +74,7 @@ Redis (Chat Service 专用, CHAT_REDIS_URL): BullMQ 内部队列 + token Stream
 | `core_owner` | 主站迁移 | core/billing/compliance 全权 + 建只读 view + GRANT |
 | `chat_owner` | chat 迁移 | `chat` schema DDL（建表/索引/迁移） |
 | `chat_service` | 请求/领域事务运行时 | SELECT on Main read views；普通 `chat.*` domain transaction；对 `chat_file_mutations` 仅 SELECT + intent columns INSERT；不能直接完成/删除 intent，账户擦除只走校验 canonical intent 的窄函数；**无** Main base-table 写权 |
-| `chat_projector` | durable file projector | 使用独立连接；普通 `chat.*` 投影事务，对 `chat_file_mutations` 仅 SELECT/UPDATE，不能直接 INSERT/DELETE；trigger 只允许合法 pending → applied/failed，擦除只走窄函数 |
+| `chat_projector` | durable file projector | 使用独立连接；只读 sessions/messages/send receipts/file mutation/outbox，UPDATE 仅开放 session `log_extracted_seq` + Prisma 自动写入的 `updated_at`、message `memory_extracted_attempt` + `updated_at` 与 file-mutation receipt 五列，outbox INSERT 仅开放 Prisma `recordOutbox` 实际写入的十列（含展开的三个默认列）；无 sequence/DDL/额外函数能力 |
 
 ```sql
 -- 由 core_owner 执行（主站迁移）：建 schema、view、授权
@@ -87,8 +87,9 @@ GRANT SELECT ON compliance.chat_user_eligibility_view TO chat_service;
 
 -- 完整 grant/revoke 顺序以 db/sql/04_grants.sql 为准：
 -- chat_service 可写普通 domain 表，但对 file ledger 只可读并插入 intent columns。
--- chat_projector 使用独立连接完成 file ledger UPDATE；直接 INSERT/DELETE 被拒，
--- 账户擦除只能调用校验 canonical intent 的 SECURITY DEFINER 窄函数。
+-- chat_projector 使用独立连接；file ledger completion、session/message
+-- watermark 与 outbox insert 都是列级 grant，直接 INSERT/DELETE 和额外列被拒。
+-- 账户/relationship 擦除只能调用校验 canonical intent 的 SECURITY DEFINER 窄函数。
 ```
 
 > **数据库 SQL 由你执行**（schema 变更红线）。本文只给脚本。view DDL 见 PRD §5。
@@ -107,7 +108,7 @@ view ChatUserView { user_id String @id ... @@schema("core") @@map("chat_user_vie
 model ChatSession  { id String @id ... @@schema("chat") @@map("chat_sessions") }
 ```
 
-**验收测试（负向，P0 必须）**：除拒绝 `chat_service` 写 Main base table/read-only view 外，还必须拒绝请求角色完成/删除 intent、注入 sequence、修改 applied receipt，以及 projector 插入/删除 intent、越权 purge 或非法 lifecycle transition。2026-07-18 当前目标库已通过正向能力路径和 15 项负向拒绝检查；这道 migration-applied 测试是“边界有牙齿”的证明。
+**验收测试（负向，P0 必须）**：除拒绝 `chat_service` 写 Main base table/read-only view 外，还必须拒绝请求角色完成/删除 intent、注入 sequence、修改 applied receipt，以及 projector 插入/删除 intent、越权 purge 或非法 lifecycle transition。catalog 校验必须遍历所有 Chat relation/column/sequence/function/default ACL，拒绝 schema CREATE、TRUNCATE/REFERENCES/TRIGGER、额外 function EXECUTE 和任何 projector 非 allowlist 表/列；隔离库还要用真实 Prisma projector 链证明最小 grant 足够。PUBLIC schema/table posture 属数据库级共享权威，Chat apply 不得为自身收窄而全局改写；若其继承权限会扩大 Chat，必须在 DDL 前 fail closed 交由 DBA 修复。这道 migration-applied 测试是“边界有牙齿”的证明。
 
 ---
 

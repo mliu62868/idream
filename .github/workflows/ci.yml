@@ -47,7 +47,9 @@ jobs:
       PGPORT: 5432
       PG_SUPER: postgres
       PGPASSWORD: postgres
+      CHAT_PROJECTOR_PASSWORD: chat_projector_change_me
       CHAT_SERVICE_PASSWORD: chat_service_change_me
+      CHAT_TEST_DISPOSABLE_CLUSTER_CONFIRM: loopback:5432
       CHAT_REDIS_URL: redis://127.0.0.1:6379/14
       PW_BASE_URL: http://127.0.0.1:3000
 

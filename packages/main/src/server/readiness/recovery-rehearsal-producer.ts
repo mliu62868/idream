@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import { lstat, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { Client } from "pg";
+import { resolveChatFsRoot } from "@idream/shared";
+import type { RecoveryRehearsalSourceAuthority } from "./recovery-rehearsal-authority";
 
 export type RecoveryRehearsalCliOptions = {
   readonly apply: boolean;
@@ -27,13 +30,29 @@ export type RecoveryRehearsalPlan = {
     readonly database: string | null;
     readonly user: string | null;
   };
+  readonly recoveryDatabase: {
+    readonly host: string | null;
+    readonly port: number | null;
+    readonly database: string | null;
+    readonly user: string | null;
+  };
   readonly chatFsRoot: string | null;
+  readonly queueAuthority: {
+    readonly redis: string | null;
+    readonly prefix: string | null;
+  };
   readonly blob: {
     readonly provider: string | null;
     readonly endpoint: string | null;
     readonly bucket: string | null;
     readonly region: string | null;
     readonly root: string | null;
+    readonly recovery: {
+      readonly endpoint: string | null;
+      readonly bucket: string | null;
+      readonly region: string | null;
+      readonly retentionDays: number | null;
+    };
   };
   readonly migrationAuthority: {
     readonly count: number;
@@ -43,17 +62,42 @@ export type RecoveryRehearsalPlan = {
 
 type RecoveryCounts = Record<string, unknown>;
 export type RecoveryEnvironment = Readonly<Record<string, string | undefined>>;
+export type RecoveryPostgresConnection = {
+  readonly host: string;
+  readonly port: string;
+  readonly database: string;
+  readonly user: string;
+  readonly password: string;
+};
+
+export const RECOVERY_AMBIENT_LIBPQ_TARGET_VARIABLES = [
+  "PGHOSTADDR",
+  "PGSERVICE",
+  "PGSERVICEFILE",
+  "PGDATABASE",
+  "PGUSER",
+  "PGOPTIONS",
+] as const;
+
+const forbiddenPostgresUrlOverrides = new Set([
+  "database",
+  "dbname",
+  "host",
+  "hostaddr",
+  "passfile",
+  "password",
+  "port",
+  "service",
+  "user",
+  "username",
+]);
 
 const safeBundleName = /^idream-recovery-[A-Za-z0-9._-]+$/u;
-const quiescentCountKeys = [
-  "main_outbox_pending",
-  "main_outbox_failed",
-  "inbound_event_received",
-  "chat_outbox_pending",
-  "chat_outbox_failed",
-  "chat_inbox_pending",
-  "chat_inbox_failed",
-  "chat_file_mutations_pending",
+const inFlightMutationCountKeys = [
+  "main_outbox_dispatched",
+  "main_outbox_transport_unknown",
+  "inbound_event_processing",
+  "chat_inbox_processing",
 ] as const;
 
 function nextValue(args: readonly string[], index: number, flag: string) {
@@ -122,28 +166,87 @@ export function parseRecoveryRehearsalCliArgs(
   };
 }
 
-function parsePostgresUrl(raw: string | undefined) {
-  if (!raw) return null;
+export function assertNoRecoveryAmbientLibpqTargetOverrides(
+  env: RecoveryEnvironment,
+) {
+  for (const name of RECOVERY_AMBIENT_LIBPQ_TARGET_VARIABLES) {
+    if (env[name]) {
+      throw new Error(
+        `ambient libpq target variable ${name} is not allowed`,
+      );
+    }
+  }
+}
+
+export function parseRecoveryPostgresConnection(
+  raw: string | undefined,
+  label: string,
+): RecoveryPostgresConnection {
+  if (!raw || raw !== raw.trim()) {
+    throw new Error(`${label} must be an unambiguous PostgreSQL URL`);
+  }
   try {
     const url = new URL(raw);
     if (url.protocol !== "postgres:" && url.protocol !== "postgresql:") {
-      return null;
+      throw new Error("protocol");
     }
-    const database = decodeURIComponent(url.pathname.replace(/^\/+/, ""));
-    if (!url.hostname || !database || !url.username) return null;
+    for (const key of url.searchParams.keys()) {
+      if (forbiddenPostgresUrlOverrides.has(key.toLowerCase())) {
+        throw new Error("query override");
+      }
+    }
+    if (url.pathname.startsWith("//")) throw new Error("database path");
+    if (!url.hostname || url.hostname.includes(",") || !url.username) {
+      throw new Error("authority");
+    }
+    const decodedDatabase = decodeURIComponent(url.pathname.slice(1));
+    const normalizedDatabase = decodedDatabase.toLowerCase();
+    if (
+      !decodedDatabase ||
+      decodedDatabase.includes("=") ||
+      normalizedDatabase.startsWith("postgres://") ||
+      normalizedDatabase.startsWith("postgresql://")
+    ) {
+      throw new Error("database name");
+    }
+    // Keep the operator path on the same parser as Chat runtime. The explicit
+    // URL components below independently ensure node-pg did not derive target
+    // authority from ambient PG* state.
+    const effective = new Client({ connectionString: raw });
+    const expectedPort = Number.parseInt(url.port || "5432", 10);
+    const expectedUser = decodeURIComponent(url.username);
+    if (
+      String(effective.host).toLowerCase() !== url.hostname.toLowerCase() ||
+      effective.port !== expectedPort ||
+      effective.database !== decodeURI(url.pathname.slice(1)) ||
+      effective.user !== expectedUser
+    ) {
+      throw new Error("effective authority");
+    }
     return {
-      host: url.hostname,
-      port: Number.parseInt(url.port || "5432", 10),
-      database,
-      user: decodeURIComponent(url.username),
+      host: String(effective.host),
+      port: String(effective.port),
+      database: effective.database!,
+      user: effective.user!,
       password: decodeURIComponent(url.password),
     };
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith(`${label} `)) {
+      throw error;
+    }
+    throw new Error(`${label} must be an unambiguous PostgreSQL URL`);
+  }
+}
+
+function tryParsePostgresUrl(raw: string | undefined, label: string) {
+  try {
+    return parseRecoveryPostgresConnection(raw, label);
   } catch {
     return null;
   }
 }
 
-function databaseIdentity(value: ReturnType<typeof parsePostgresUrl>) {
+function databaseIdentity(value: RecoveryPostgresConnection | null) {
   return value
     ? `${value.host.toLowerCase()}:${value.port}/${value.database}`
     : null;
@@ -155,6 +258,23 @@ function normalizedEndpoint(value: string | undefined) {
     const url = new URL(value);
     if (url.protocol !== "https:" || url.username || url.password) return null;
     return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function normalizedRedisAuthority(value: string | undefined) {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    if (!new Set(["redis:", "rediss:"]).has(url.protocol)) return null;
+    if (!url.hostname || url.search || url.hash) return null;
+    const database = url.pathname.replace(/^\//u, "") || "0";
+    if (!/^(?:0|[1-9][0-9]*)$/u.test(database)) return null;
+    const port = Number.parseInt(url.port || "6379", 10);
+    if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) return null;
+    // Credentials are execution input, never bundle/plan authority.
+    return `${url.protocol}//${url.hostname.toLowerCase()}:${port}/${database}`;
   } catch {
     return null;
   }
@@ -176,25 +296,13 @@ function resolveLocalRoot(workspaceRoot: string, raw: string | undefined, fallba
   return path.resolve(workspaceRoot, raw?.trim() || fallback);
 }
 
-export function resolveRecoveryRehearsalPlan(input: {
-  readonly options: RecoveryRehearsalCliOptions;
+function resolveRecoverySourceTargets(input: {
   readonly env: RecoveryEnvironment;
-  readonly expectedMigrationCount: number;
-  readonly latestMigration: string | null;
   readonly workspaceRoot: string;
-}): RecoveryRehearsalPlan {
-  const blockers: string[] = [];
-  const timestamp = new Date().toISOString().replace(/[-:]/gu, "").replace(/\.\d{3}Z$/u, "Z");
-  const bundleName = input.options.bundleName ??
-    `idream-recovery-${timestamp}-${input.expectedMigrationCount}`;
-  const confirmation = `CREATE RECOVERY REHEARSAL ${bundleName}`;
-  const database = parsePostgresUrl(input.env.DATABASE_URL);
-  const chatDatabase = parsePostgresUrl(input.env.CHAT_DATABASE_URL);
-  const projectorDatabase = parsePostgresUrl(
-    input.env.CHAT_PROJECTOR_DATABASE_URL,
-  );
+  readonly chatWorkingDirectory?: string;
+}) {
+  const database = tryParsePostgresUrl(input.env.DATABASE_URL, "DATABASE_URL");
   const provider = input.env.BLOB_PROVIDER?.trim() || "mock";
-  const genProvider = input.env.GEN_BLOB_PROVIDER?.trim() || provider;
   const endpoint = provider === "mock"
     ? null
     : normalizedEndpoint(input.env.BLOB_ENDPOINT);
@@ -207,6 +315,139 @@ export function resolveRecoveryRehearsalPlan(input: {
   const root = provider === "mock"
     ? resolveLocalRoot(input.workspaceRoot, input.env.BLOB_ROOT, "data/blob")
     : null;
+  const chatFsRoot = input.env.CHAT_FS_ROOT?.trim()
+    ? resolveChatFsRoot(
+        input.env.CHAT_FS_ROOT,
+        input.chatWorkingDirectory ?? path.join(input.workspaceRoot, "packages/chat"),
+      )
+    : null;
+  return { database, provider, endpoint, bucket, region, root, chatFsRoot };
+}
+
+export function resolveRecoveryRehearsalSourceAuthority(input: {
+  readonly env: RecoveryEnvironment;
+  readonly workspaceRoot: string;
+  readonly chatWorkingDirectory?: string;
+}): RecoveryRehearsalSourceAuthority {
+  assertNoRecoveryAmbientLibpqTargetOverrides(input.env);
+  const targets = resolveRecoverySourceTargets(input);
+  const mainRedis = normalizedRedisAuthority(
+    input.env.IDREAM_MAIN_REDIS_URL ?? input.env.REDIS_URL,
+  );
+  const genRedis = normalizedRedisAuthority(
+    input.env.IDREAM_GEN_REDIS_URL ?? input.env.GEN_REDIS_URL ?? input.env.REDIS_URL,
+  );
+  const mainPrefix =
+    input.env.IDREAM_MAIN_BULLMQ_PREFIX?.trim() || input.env.BULLMQ_PREFIX?.trim();
+  const genPrefix =
+    input.env.IDREAM_GEN_BULLMQ_PREFIX?.trim() || input.env.BULLMQ_PREFIX?.trim();
+  const recoveryRetentionDaysRaw = input.env.RECOVERY_BLOB_RETENTION_DAYS?.trim();
+  const recoveryRetentionDays = recoveryRetentionDaysRaw &&
+      /^(?:[1-9][0-9]*)$/u.test(recoveryRetentionDaysRaw)
+    ? Number.parseInt(recoveryRetentionDaysRaw, 10)
+    : null;
+  const chatDatabase = tryParsePostgresUrl(
+    input.env.CHAT_DATABASE_URL,
+    "CHAT_DATABASE_URL",
+  );
+  const projectorDatabase = tryParsePostgresUrl(
+    input.env.CHAT_PROJECTOR_DATABASE_URL,
+    "CHAT_PROJECTOR_DATABASE_URL",
+  );
+  if (!targets.database) {
+    throw new Error("DATABASE_URL must identify the current PostgreSQL source");
+  }
+  if (
+    !chatDatabase || chatDatabase.user !== "chat_service" ||
+    !projectorDatabase || projectorDatabase.user !== "chat_projector" ||
+    databaseIdentity(targets.database) !== databaseIdentity(chatDatabase) ||
+    databaseIdentity(targets.database) !== databaseIdentity(projectorDatabase)
+  ) {
+    throw new Error(
+      "Main, Chat request, and Chat projector must use their exact roles on one database authority",
+    );
+  }
+  if (!targets.chatFsRoot) {
+    throw new Error("CHAT_FS_ROOT must identify the current Chat file source");
+  }
+  if (!mainRedis || mainRedis !== genRedis || !mainPrefix || mainPrefix !== genPrefix) {
+    throw new Error("Main and Gen must use one exact Redis and BullMQ queue authority");
+  }
+  if (
+    targets.provider !== "mock" &&
+    targets.provider !== "r2" &&
+    targets.provider !== "s3"
+  ) {
+    throw new Error("BLOB_PROVIDER must identify the current Blob source");
+  }
+  if (
+    targets.provider !== "mock" &&
+    (!targets.endpoint || !targets.bucket)
+  ) {
+    throw new Error("remote Blob source authority is incomplete");
+  }
+  if (targets.provider !== "mock" && !recoveryRetentionDays) {
+    throw new Error("remote Blob recovery retention authority is incomplete");
+  }
+  return {
+    database: {
+      host: targets.database.host,
+      port: Number.parseInt(targets.database.port, 10),
+      database: targets.database.database,
+    },
+    chatFsRoot: targets.chatFsRoot,
+    queue: { redis: mainRedis, prefix: mainPrefix },
+    blob: {
+      provider: targets.provider,
+      endpoint: targets.endpoint,
+      bucket: targets.bucket,
+      root: targets.root,
+      recoveryRetentionDays:
+        targets.provider === "mock" ? null : recoveryRetentionDays,
+    },
+  };
+}
+
+export function resolveRecoveryRehearsalPlan(input: {
+  readonly options: RecoveryRehearsalCliOptions;
+  readonly env: RecoveryEnvironment;
+  readonly expectedMigrationCount: number;
+  readonly latestMigration: string | null;
+  readonly workspaceRoot: string;
+  readonly chatWorkingDirectory?: string;
+}): RecoveryRehearsalPlan {
+  const blockers: string[] = [];
+  const timestamp = new Date().toISOString().replace(/[-:]/gu, "").replace(/\.\d{3}Z$/u, "Z");
+  const bundleName = input.options.bundleName ??
+    `idream-recovery-${timestamp}-${input.expectedMigrationCount}`;
+  const confirmation = `CREATE RECOVERY REHEARSAL ${bundleName}`;
+  const sourceTargets = resolveRecoverySourceTargets({
+    env: input.env,
+    workspaceRoot: input.workspaceRoot,
+    chatWorkingDirectory: input.chatWorkingDirectory,
+  });
+  const {
+    database,
+    provider,
+    endpoint,
+    bucket,
+    region,
+    root,
+    chatFsRoot,
+  } = sourceTargets;
+  const recoveryDatabase = tryParsePostgresUrl(
+    input.env.RECOVERY_DATABASE_URL,
+    "RECOVERY_DATABASE_URL",
+  );
+  const chatDatabase = tryParsePostgresUrl(
+    input.env.CHAT_DATABASE_URL,
+    "CHAT_DATABASE_URL",
+  );
+  const projectorDatabase = tryParsePostgresUrl(
+    input.env.CHAT_PROJECTOR_DATABASE_URL,
+    "CHAT_PROJECTOR_DATABASE_URL",
+  );
+  const genProvider = input.env.GEN_BLOB_PROVIDER?.trim() || provider;
   const genRoot = genProvider === "mock"
     ? resolveLocalRoot(
         input.workspaceRoot,
@@ -222,19 +463,55 @@ export function resolveRecoveryRehearsalPlan(input: {
   const genBucket = genProvider === "mock"
     ? null
     : input.env.IDREAM_GEN_BLOB_BUCKET?.trim() || bucket;
-  const chatFsRoot = input.env.CHAT_FS_ROOT?.trim()
-    ? resolveLocalRoot(input.workspaceRoot, input.env.CHAT_FS_ROOT, "data/chat")
+  const mainRedis = normalizedRedisAuthority(
+    input.env.IDREAM_MAIN_REDIS_URL ?? input.env.REDIS_URL,
+  );
+  const genRedis = normalizedRedisAuthority(
+    input.env.IDREAM_GEN_REDIS_URL ?? input.env.GEN_REDIS_URL ?? input.env.REDIS_URL,
+  );
+  const mainPrefix = input.env.IDREAM_MAIN_BULLMQ_PREFIX?.trim() ||
+    input.env.BULLMQ_PREFIX?.trim() || null;
+  const genPrefix = input.env.IDREAM_GEN_BULLMQ_PREFIX?.trim() ||
+    input.env.BULLMQ_PREFIX?.trim() || null;
+  const recoveryEndpoint = provider === "mock"
+    ? null
+    : normalizedEndpoint(input.env.RECOVERY_BLOB_ENDPOINT);
+  const recoveryBucket = provider === "mock"
+    ? null
+    : input.env.RECOVERY_BLOB_BUCKET?.trim() || null;
+  const recoveryRegion = provider === "mock"
+    ? null
+    : input.env.RECOVERY_BLOB_REGION?.trim() || null;
+  const recoveryRetentionDaysRaw = provider === "mock"
+    ? null
+    : input.env.RECOVERY_BLOB_RETENTION_DAYS?.trim() || null;
+  const recoveryRetentionDays = recoveryRetentionDaysRaw &&
+      /^(?:[1-9][0-9]*)$/u.test(recoveryRetentionDaysRaw)
+    ? Number.parseInt(recoveryRetentionDaysRaw, 10)
     : null;
-
-  if (input.env.APP_ENV !== "production") {
+  if ((input.env.IDREAM_RECOVERY_APP_ENV ?? input.env.APP_ENV) !== "production") {
     blockers.push("APP_ENV must be production");
   }
   if (input.env.IDREAM_QUIESCED !== "1") {
     blockers.push("IDREAM_QUIESCED must be 1");
   }
-  if (!database) blockers.push("DATABASE_URL must be a valid PostgreSQL URL");
+  if (!database) {
+    blockers.push("DATABASE_URL must be an unambiguous PostgreSQL URL");
+  }
+  if (!recoveryDatabase) {
+    blockers.push("RECOVERY_DATABASE_URL must be an unambiguous PostgreSQL URL");
+  } else if (databaseIdentity(database) !== databaseIdentity(recoveryDatabase)) {
+    blockers.push("RECOVERY_DATABASE_URL must identify the exact Main source database");
+  }
   if (!chatDatabase || !projectorDatabase) {
-    blockers.push("CHAT_DATABASE_URL and CHAT_PROJECTOR_DATABASE_URL are required");
+    blockers.push(
+      "CHAT_DATABASE_URL and CHAT_PROJECTOR_DATABASE_URL must be unambiguous PostgreSQL URLs",
+    );
+  }
+  for (const name of RECOVERY_AMBIENT_LIBPQ_TARGET_VARIABLES) {
+    if (input.env[name]) {
+      blockers.push(`ambient libpq target variable ${name} is not allowed`);
+    }
   }
   if (
     databaseIdentity(database) === null ||
@@ -270,6 +547,12 @@ export function resolveRecoveryRehearsalPlan(input: {
   }
   if (provider !== genProvider) {
     blockers.push("Main and Gen Blob providers must match");
+  }
+  if (!mainRedis || !genRedis || mainRedis !== genRedis) {
+    blockers.push("Main and Gen Redis authorities must match");
+  }
+  if (!mainPrefix || !genPrefix || mainPrefix !== genPrefix) {
+    blockers.push("Main and Gen BullMQ prefixes must match");
   }
   if (
     provider === "mock" &&
@@ -318,6 +601,39 @@ export function resolveRecoveryRehearsalPlan(input: {
     ) {
       blockers.push("Blob authority contains placeholder values");
     }
+    if (!recoveryEndpoint) {
+      blockers.push(
+        "RECOVERY_BLOB_ENDPOINT must identify an independent HTTPS authority",
+      );
+    }
+    if (!recoveryBucket) {
+      blockers.push(
+        "RECOVERY_BLOB_BUCKET must identify an independent versioned bucket",
+      );
+    }
+    if (recoveryEndpoint === endpoint) {
+      blockers.push("Recovery Blob endpoint must differ from the live endpoint");
+    }
+    if (recoveryBucket === bucket) {
+      blockers.push("Recovery Blob bucket must differ from the live bucket");
+    }
+    if (!input.env.RECOVERY_BLOB_ACCESS_KEY_ID?.trim()) {
+      blockers.push("Recovery Blob access credential is required");
+    }
+    if (!input.env.RECOVERY_BLOB_SECRET_ACCESS_KEY?.trim()) {
+      blockers.push("Recovery Blob signing credential is required");
+    }
+    if (!recoveryRetentionDays || !Number.isSafeInteger(recoveryRetentionDays)) {
+      blockers.push("RECOVERY_BLOB_RETENTION_DAYS must be a positive integer");
+    }
+    if (
+      isPlaceholder(recoveryEndpoint) ||
+      isPlaceholder(recoveryBucket) ||
+      isPlaceholder(input.env.RECOVERY_BLOB_ACCESS_KEY_ID) ||
+      isPlaceholder(input.env.RECOVERY_BLOB_SECRET_ACCESS_KEY)
+    ) {
+      blockers.push("Recovery Blob authority contains placeholder values");
+    }
   }
   if (
     input.options.apply &&
@@ -336,12 +652,34 @@ export function resolveRecoveryRehearsalPlan(input: {
     blockers,
     database: {
       host: database?.host ?? null,
-      port: database?.port ?? null,
+      port: database ? Number.parseInt(database.port, 10) : null,
       database: database?.database ?? null,
       user: database?.user ?? null,
     },
+    recoveryDatabase: {
+      host: recoveryDatabase?.host ?? null,
+      port: recoveryDatabase ? Number.parseInt(recoveryDatabase.port, 10) : null,
+      database: recoveryDatabase?.database ?? null,
+      user: recoveryDatabase?.user ?? null,
+    },
     chatFsRoot,
-    blob: { provider, endpoint, bucket, region, root },
+    queueAuthority: {
+      redis: mainRedis,
+      prefix: mainPrefix,
+    },
+    blob: {
+      provider,
+      endpoint,
+      bucket,
+      region,
+      root,
+      recovery: {
+        endpoint: recoveryEndpoint,
+        bucket: recoveryBucket,
+        region: recoveryRegion,
+        retentionDays: recoveryRetentionDays,
+      },
+    },
     migrationAuthority: {
       count: input.expectedMigrationCount,
       latest: input.latestMigration,
@@ -495,9 +833,11 @@ export function validateRecoveryCounts(
       `migration authority is ${String(counts.migrations)}/${expectedMigrationCount} with latest ${String(counts.latest_migration)}, expected ${latestMigration ?? "none"}`,
     );
   }
-  for (const key of quiescentCountKeys) {
+  for (const key of inFlightMutationCountKeys) {
     if (counts[key] !== 0) {
-      problems.push(`checkpoint is not quiescent: ${key}=${String(counts[key])}`);
+      problems.push(
+        `checkpoint has in-flight mutation: ${key}=${String(counts[key])}`,
+      );
     }
   }
   return problems;

@@ -22,10 +22,19 @@ function runDevelopment(options = {}) {
   if (generated.error) throw generated.error;
   if (generated.status !== 0) return generated.status ?? 1;
 
-  // INVARIANT: production builds own .next. A source-backed dev server must
-  // never read or write that directory while an immutable release is built.
-  runtime.env.IDREAM_NEXT_DEVELOPMENT = "1";
-  runtime.env.IDREAM_NEXT_DIST_DIR = ".next-development";
+  const playwrightOwnsNext = Boolean(
+    runtime.env.PW_RUN_ID &&
+      runtime.env.IDREAM_NEXT_DIST_DIR &&
+      runtime.env.IDREAM_NEXT_TSCONFIG,
+  );
+  // INVARIANT: production builds own .next. Ordinary source development uses
+  // .next-development, while Playwright keeps the stricter run-owned paths
+  // supplied by its environment authority. next.config.ts validates those
+  // three Playwright values together before Next writes anything.
+  if (!playwrightOwnsNext) {
+    runtime.env.IDREAM_NEXT_DEVELOPMENT = "1";
+    runtime.env.IDREAM_NEXT_DIST_DIR = ".next-development";
+  }
 
   // INVARIANT: Next must load only after Prisma Client matches the checked-out
   // schema. Turbopack does not reliably evict a Client already loaded from

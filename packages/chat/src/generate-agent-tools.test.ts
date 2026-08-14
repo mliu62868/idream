@@ -13,6 +13,7 @@ const enqueueMock = vi.hoisted(() => vi.fn(async () => {}));
 // re-mocking the whole providers module (mirrors CHAT_MOCK_SUPPORTS_TOOLS on the
 // real MockChatModel, see providers.ts).
 const supportsToolsState = vi.hoisted(() => ({ value: true }));
+const runtimeReadinessInvalidateMock = vi.hoisted(() => vi.fn());
 
 vi.mock("./db.js", () => ({ chatPrisma: {} }));
 vi.mock("./providers.js", () => ({
@@ -45,8 +46,11 @@ vi.mock("./chat-fs.js", () => ({
   chatFsPaths: { sessionLog: () => "/tmp/session.jsonl" },
 }));
 vi.mock("./queue.js", () => ({ enqueue: enqueueMock }));
+vi.mock("./runtime-readiness.js", () => ({
+  runtimeReadiness: { invalidate: runtimeReadinessInvalidateMock },
+}));
 
-const { processGenerate } = await import("./generate.js");
+const { processGenerate, processGenerateJob } = await import("./generate.js");
 
 type CreateCall = { data: Record<string, unknown>; where?: Record<string, unknown> };
 
@@ -292,6 +296,7 @@ describe("chat generate agent image tool", () => {
     appendStreamEventMock.mockClear();
     appendLineMock.mockClear();
     enqueueMock.mockClear();
+    runtimeReadinessInvalidateMock.mockClear();
     buildContextMock.mockResolvedValue(context);
     moderationMock.mockResolvedValue({ status: "passed", confidence: 0.5 });
     supportsToolsState.value = true;
@@ -476,6 +481,9 @@ describe("chat generate agent image tool", () => {
       "chat:stream:msg_assistant",
       expect.objectContaining({ type: "error", code: "provider_failed", retryable: false }),
     );
+    expect(runtimeReadinessInvalidateMock).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "provider disconnected" }),
+    );
   });
 
   it("records an output-limit terminal instead of completing partial provider text", async () => {
@@ -510,6 +518,120 @@ describe("chat generate agent image tool", () => {
     expect(appendStreamEventMock).not.toHaveBeenCalledWith(
       "chat:stream:msg_assistant",
       expect.objectContaining({ type: "done" }),
+    );
+    expect(runtimeReadinessInvalidateMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps an empty provider response retryable without terminalizing the assistant", async () => {
+    supportsToolsState.value = false;
+    buildContextMock.mockResolvedValue({
+      ...context,
+      policy: { ...context.policy, imageToolEnabled: false },
+      recentMessages: [{ id: "msg_user", role: "user", content: "hello" }],
+    });
+    streamMock.mockImplementation(async function* emptyStream() {
+      yield { delta: "", done: true };
+    });
+    const { prisma, rootMessageUpdates } = fakePrisma();
+
+    await expect(processGenerate(
+      { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+      prisma,
+      { projectorPrisma: prisma },
+    )).rejects.toThrow("chat model returned an empty response");
+
+    expect(rootMessageUpdates).not.toContainEqual(
+      expect.objectContaining({ data: expect.objectContaining({ status: "failed" }) }),
+    );
+    expect(appendStreamEventMock).toHaveBeenCalledWith(
+      "chat:stream:msg_assistant",
+      expect.objectContaining({
+        type: "error",
+        code: "empty_model_response",
+        retryable: true,
+      }),
+    );
+    expect(runtimeReadinessInvalidateMock).toHaveBeenCalledOnce();
+    expect(runtimeReadinessInvalidateMock).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "chat model returned an empty response" }),
+    );
+  });
+
+  it("lets the worker retry the same assistant after an empty provider response", async () => {
+    supportsToolsState.value = false;
+    buildContextMock.mockResolvedValue({
+      ...context,
+      policy: { ...context.policy, imageToolEnabled: false },
+      recentMessages: [{ id: "msg_user", role: "user", content: "hello" }],
+    });
+    streamMock
+      .mockImplementationOnce(async function* emptyStream() {
+        yield { delta: "", done: true };
+      })
+      .mockImplementationOnce(async function* recoveredStream() {
+        yield { delta: "recovered reply", done: true };
+      });
+    const { prisma, rootMessageUpdates } = fakePrisma();
+    const payload = {
+      sessionId: "sess_1",
+      assistantMessageId: "msg_assistant",
+      userMessageId: "msg_user",
+      attempt: 1,
+    };
+
+    await expect(processGenerateJob(
+      { payload, attemptsMade: 0, maxAttempts: 2 },
+      prisma,
+      { projectorPrisma: prisma },
+    )).rejects.toThrow("chat model returned an empty response");
+    await expect(processGenerateJob(
+      { payload, attemptsMade: 1, maxAttempts: 2 },
+      prisma,
+      { projectorPrisma: prisma },
+    )).resolves.toEqual({ status: "sent" });
+
+    expect(rootMessageUpdates).not.toContainEqual(
+      expect.objectContaining({ data: expect.objectContaining({ status: "failed" }) }),
+    );
+  });
+
+  it("terminalizes an empty provider response only on the final worker attempt", async () => {
+    supportsToolsState.value = false;
+    buildContextMock.mockResolvedValue({
+      ...context,
+      policy: { ...context.policy, imageToolEnabled: false },
+      recentMessages: [{ id: "msg_user", role: "user", content: "hello" }],
+    });
+    streamMock.mockImplementation(async function* emptyStream() {
+      yield { delta: "", done: true };
+    });
+    const { prisma, rootMessageUpdates } = fakePrisma();
+
+    await expect(processGenerateJob(
+      {
+        payload: {
+          sessionId: "sess_1",
+          assistantMessageId: "msg_assistant",
+          userMessageId: "msg_user",
+          attempt: 1,
+        },
+        attemptsMade: 1,
+        maxAttempts: 2,
+      },
+      prisma,
+      { projectorPrisma: prisma },
+    )).rejects.toThrow("chat model returned an empty response");
+
+    expect(rootMessageUpdates).toContainEqual(
+      expect.objectContaining({ data: expect.objectContaining({ status: "failed" }) }),
+    );
+    expect(appendStreamEventMock).toHaveBeenCalledWith(
+      "chat:stream:msg_assistant",
+      expect.objectContaining({
+        type: "error",
+        code: "empty_model_response",
+        retryable: false,
+      }),
     );
   });
 

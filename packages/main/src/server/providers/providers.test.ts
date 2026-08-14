@@ -83,6 +83,72 @@ describe("mock providers", () => {
     );
   });
 
+  it("accepts production core startup with mock moderation, payment, and age providers", async () => {
+    vi.resetModules();
+    process.env = {
+      ...oldEnv,
+      APP_ENV: "production",
+      LAUNCH_SCOPE: "core",
+      DATABASE_URL: "postgresql://app:password@postgres.example.com:5432/idream",
+      BETTER_AUTH_URL: "https://ourdream.ai",
+      MAIN_WEB_URL: "https://ourdream.ai",
+      BETTER_AUTH_SECRET: "production-secret-please-change-0123456789abcdef",
+      INTERNAL_TOKEN: "production-internal-token-0123456789",
+      CRON_SECRET: "production-cron-token-0123456789",
+      CHAT_SERVICE_URL: "https://chat.internal.example",
+      CHAT_BFF_SIGNING_SECRET: "production-bff-secret-0123456789abcdef",
+      ADMIN_BFF_SIGNING_SECRET: "production-admin-bff-secret-0123456789abcdef",
+      CHAT_PROVIDER: "pipeline",
+      PIPELINE_API_URL: "https://pipeline.internal.example/v1",
+      PIPELINE_API_TOKEN: "production-pipeline-token-0123456789",
+      VOICE_PROVIDER: "pipeline",
+      MODERATION_PROVIDER: "mock",
+      PAYMENT_PROVIDER: "mock",
+      BLOB_PROVIDER: "r2",
+      BLOB_ENDPOINT: "https://account.r2.cloudflarestorage.com",
+      BLOB_BUCKET: "private-media",
+      BLOB_ACCESS_KEY_ID: "production-blob-access-key",
+      BLOB_SECRET_ACCESS_KEY: "production-blob-secret-key",
+      AGE_VERIFICATION_PROVIDER: "mock",
+    };
+
+    await expect(import("./index")).resolves.toHaveProperty("providers");
+  });
+
+  it("rejects mock payment and age providers in the full production scope", async () => {
+    vi.resetModules();
+    process.env = {
+      ...oldEnv,
+      APP_ENV: "production",
+      LAUNCH_SCOPE: "full",
+      DATABASE_URL: "postgresql://app:password@postgres.example.com:5432/idream",
+      BETTER_AUTH_URL: "https://ourdream.ai",
+      MAIN_WEB_URL: "https://ourdream.ai",
+      BETTER_AUTH_SECRET: "production-secret-please-change-0123456789abcdef",
+      INTERNAL_TOKEN: "production-internal-token-0123456789",
+      CRON_SECRET: "production-cron-token-0123456789",
+      CHAT_SERVICE_URL: "https://chat.internal.example",
+      CHAT_BFF_SIGNING_SECRET: "production-bff-secret-0123456789abcdef",
+      ADMIN_BFF_SIGNING_SECRET: "production-admin-bff-secret-0123456789abcdef",
+      CHAT_PROVIDER: "pipeline",
+      PIPELINE_API_URL: "https://pipeline.internal.example/v1",
+      PIPELINE_API_TOKEN: "production-pipeline-token-0123456789",
+      VOICE_PROVIDER: "pipeline",
+      MODERATION_PROVIDER: "mock",
+      PAYMENT_PROVIDER: "mock",
+      BLOB_PROVIDER: "r2",
+      BLOB_ENDPOINT: "https://account.r2.cloudflarestorage.com",
+      BLOB_BUCKET: "private-media",
+      BLOB_ACCESS_KEY_ID: "production-blob-access-key",
+      BLOB_SECRET_ACCESS_KEY: "production-blob-secret-key",
+      AGE_VERIFICATION_PROVIDER: "mock",
+    };
+
+    await expect(import("./index")).rejects.toThrow(
+      "Production requires non-mock providers: PAYMENT_PROVIDER, AGE_VERIFICATION_PROVIDER",
+    );
+  });
+
   it("rejects production startup when Better Auth uses a localhost origin", async () => {
     vi.resetModules();
     process.env = {

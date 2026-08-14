@@ -1,5 +1,6 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type {
+  IncidentCorrelationOutboxAttemptMissingDiscardRequest,
   IncidentCorrelationOutboxEventQuery,
   IncidentCorrelationOutboxReplayRequest,
 } from "@idream/shared/admin";
@@ -297,6 +298,184 @@ export async function replayFailedIncidentCorrelationOutboxEvents(
   };
 }
 
+export async function discardAttemptMissingIncidentCorrelationOutboxEvent(
+  input: {
+    readonly body: IncidentCorrelationOutboxAttemptMissingDiscardRequest;
+    readonly actor: AdminActor;
+    readonly requestId: string;
+  },
+  tx: Prisma.TransactionClient,
+) {
+  const requested = input.body;
+  // INVARIANT: the operator decision is valid only for one locked carrier
+  // revision; every status, payload and source-authority check below observes
+  // that same row until the terminal transition commits.
+  const locked = await tx.$queryRaw<Array<{ id: string }>>`
+    SELECT "id"
+    FROM "main_outbox_events"
+    WHERE "id" = ${requested.id}
+    FOR UPDATE
+  `;
+  if (locked.length !== 1) {
+    return attemptMissingDiscardResult(requested.id, "not_found");
+  }
+
+  const row = await tx.mainOutboxEvent.findUnique({
+    where: { id: requested.id },
+  });
+  if (!row || row.eventType !== INCIDENT_CORRELATION_EVENT_TYPE) {
+    return attemptMissingDiscardResult(requested.id, "not_found");
+  }
+  const payloadHash = canonicalSha256(row.payload);
+  if (payloadHash !== requested.expectedPayloadHash) {
+    return attemptMissingDiscardResult(
+      row.id,
+      "payload_hash_mismatch",
+      row.attempts,
+      payloadHash,
+    );
+  }
+  const attemptId = payloadAttemptId(row.payload);
+  if (!attemptId) {
+    return attemptMissingDiscardResult(
+      row.id,
+      "invalid_payload",
+      row.attempts,
+      payloadHash,
+    );
+  }
+  if (
+    attemptId !== requested.expectedAttemptId ||
+    row.aggregateType !== "generation_attempt" ||
+    row.aggregateId !== requested.expectedAttemptId
+  ) {
+    return attemptMissingDiscardResult(
+      row.id,
+      "attempt_id_mismatch",
+      row.attempts,
+      payloadHash,
+    );
+  }
+  if (row.status === "discarded_target_missing") {
+    return attemptMissingDiscardResult(
+      row.id,
+      "already_discarded_target_missing",
+      row.attempts,
+      payloadHash,
+    );
+  }
+  if (row.status === "delivered") {
+    return attemptMissingDiscardResult(
+      row.id,
+      "already_delivered",
+      row.attempts,
+      payloadHash,
+    );
+  }
+  if (row.status === "pending" || row.status === "dispatched") {
+    return attemptMissingDiscardResult(
+      row.id,
+      "already_requeued",
+      row.attempts,
+      payloadHash,
+    );
+  }
+  if (
+    row.status !== "failed" ||
+    row.attempts !== requested.expectedAttempts ||
+    row.updatedAt.getTime() !== new Date(requested.expectedUpdatedAt).getTime()
+  ) {
+    return attemptMissingDiscardResult(
+      row.id,
+      "stale",
+      row.attempts,
+      payloadHash,
+    );
+  }
+
+  const attempt = await tx.generationAttempt.findUnique({
+    where: { id: requested.expectedAttemptId },
+    select: { id: true },
+  });
+  if (attempt) {
+    return attemptMissingDiscardResult(
+      row.id,
+      "attempt_present",
+      row.attempts,
+      payloadHash,
+    );
+  }
+
+  const transitioned = await tx.mainOutboxEvent.updateMany({
+    where: {
+      id: row.id,
+      eventType: INCIDENT_CORRELATION_EVENT_TYPE,
+      status: "failed",
+      attempts: requested.expectedAttempts,
+      updatedAt: new Date(requested.expectedUpdatedAt),
+    },
+    data: {
+      // INTENT: Main outbox already recognizes this terminal status. Audit
+      // evidence below narrows the reason to a missing GenerationAttempt source
+      // authority, so no parallel status vocabulary or DB migration is needed.
+      status: "discarded_target_missing",
+    },
+  });
+  if (transitioned.count !== 1) {
+    throw Errors.conflict(
+      "Incident correlation outbox revision changed while terminalizing",
+      { eventId: row.id },
+    );
+  }
+
+  const lastErrorHash = row.lastError === null
+    ? null
+    : canonicalSha256(row.lastError);
+  await tx.adminAuditLog.create({
+    data: {
+      actorId: input.actor.id,
+      actorRole: input.actor.role,
+      action: "incident.correlation_outbox.discarded_attempt_missing",
+      targetType: "incident_correlation_outbox_event",
+      targetId: row.id,
+      reason: reasonText(requested.reason),
+      before: toInputJson({
+        eventType: row.eventType,
+        aggregateType: row.aggregateType,
+        aggregateId: row.aggregateId,
+        status: row.status,
+        attempts: row.attempts,
+        updatedAt: row.updatedAt.toISOString(),
+        payloadHash,
+        expectedAttemptId: requested.expectedAttemptId,
+        lastErrorHash,
+      }),
+      after: toInputJson({
+        eventType: row.eventType,
+        aggregateType: row.aggregateType,
+        aggregateId: row.aggregateId,
+        status: "discarded_target_missing",
+        attempts: row.attempts,
+        payloadHash,
+        expectedAttemptId: requested.expectedAttemptId,
+        lastErrorHash,
+        payloadPreserved: true,
+        lastErrorPreserved: true,
+        userEffectApplied: false,
+        sourceAuthorityMissing: true,
+      }),
+      requestId: input.requestId,
+    },
+  });
+
+  return attemptMissingDiscardResult(
+    row.id,
+    "discarded_target_missing",
+    row.attempts,
+    payloadHash,
+  );
+}
+
 function replayResult(
   id: string,
   outcome:
@@ -315,6 +494,29 @@ function replayResult(
   return { id, outcome, priorAttempts, payloadHash };
 }
 
-function reasonText(reason: IncidentCorrelationOutboxReplayRequest["reason"]) {
+function attemptMissingDiscardResult(
+  id: string,
+  outcome:
+    | "discarded_target_missing"
+    | "already_discarded_target_missing"
+    | "already_delivered"
+    | "already_requeued"
+    | "stale"
+    | "payload_hash_mismatch"
+    | "invalid_payload"
+    | "attempt_id_mismatch"
+    | "attempt_present"
+    | "not_found",
+  priorAttempts: number | null = null,
+  payloadHash: string | null = null,
+) {
+  return { id, outcome, priorAttempts, payloadHash };
+}
+
+function reasonText(
+  reason:
+    | IncidentCorrelationOutboxReplayRequest["reason"]
+    | IncidentCorrelationOutboxAttemptMissingDiscardRequest["reason"],
+) {
   return [reason.code, reason.summary, reason.details].filter(Boolean).join(": ");
 }

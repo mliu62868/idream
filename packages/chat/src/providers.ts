@@ -217,24 +217,16 @@ function requireProviderEnv(
   return value;
 }
 
-// SPEC: refuse to boot the chat service on mock providers in production, mirroring
+// SPEC: refuse to boot the chat service on a mock model in production, mirroring
 // the main/gen provider guards. INTENT: launch-readiness CLI already flags mock chat,
 // but a deploy must also fail closed in-process so a misconfig can't quietly serve
-// templated "Mock … reply" text or skip output moderation. INVARIANT: APP_ENV is the
-// single production switch shared across services.
+// templated "Mock … reply" text. Moderation mock is an intentional production mode.
+// INVARIANT: APP_ENV is the single production switch shared across services.
 function assertProductionChatProvidersReady() {
   if (process.env.APP_ENV !== "production") return;
-
-  const mockProviders = [
-    ["CHAT_MODEL_PROVIDER", env.CHAT_MODEL_PROVIDER],
-    ["MODERATION_PROVIDER", env.MODERATION_PROVIDER],
-  ]
-    .filter(([, provider]) => provider === "mock")
-    .map(([name]) => name);
-
-  if (mockProviders.length > 0) {
+  if (env.CHAT_MODEL_PROVIDER === "mock") {
     throw new Error(
-      `Production requires non-mock chat providers: ${mockProviders.join(", ")}`,
+      "Production requires non-mock chat providers: CHAT_MODEL_PROVIDER",
     );
   }
 }

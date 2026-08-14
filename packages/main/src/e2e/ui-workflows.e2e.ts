@@ -3,8 +3,17 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { deflateSync } from "node:zlib";
 import path from "node:path";
-import { mockVideoMp4Bytes } from "@idream/shared";
+import {
+  CHAT_TO_MAIN_EVENTS,
+  MAIN_TO_CHAT_EVENTS,
+  mockVideoMp4Bytes,
+} from "@idream/shared";
 import { resolveLocalBlobPath } from "@idream/shared/storage/local-blob";
+import { dispatchPendingChatEvents } from "@/processes/chat-outbox";
+import {
+  ACCOUNT_DELETION_GRACE_PERIOD_MS,
+  dispatchPendingAccountDeletionBlobDeletes,
+} from "@/server/account-deletion-authority";
 import { localAiQueueNames } from "@/server/ai/local-pipeline";
 import {
   characterVisualProfileSnapshotHash,
@@ -19,6 +28,8 @@ import { assertPlaywrightChatDatabaseUrl } from "../../playwright-environment";
 const chatPrisma = new ChatPrismaClient({
   adapter: new PrismaPg({ connectionString: chatDatabaseUrl(), max: 5 }),
 });
+const accountErasureCompletionReceiptSource =
+  "main.product_projection:chat.account_erasure_completion_v2";
 
 test.beforeAll(async () => {
   await cleanupPublicE2EFixtures();
@@ -816,6 +827,23 @@ function chatFsRoot() {
     );
   }
   return path.resolve(configuredRoot);
+}
+
+async function fileExists(target: string) {
+  try {
+    await readFile(target);
+    return true;
+  } catch (error) {
+    if (
+      error &&
+      typeof error === "object" &&
+      "code" in error &&
+      error.code === "ENOENT"
+    ) {
+      return false;
+    }
+    throw error;
+  }
 }
 
 async function seedChatCompanionFiles(email: string, characterId: string) {
@@ -5782,7 +5810,64 @@ test("profile account management signs out sessions and deletes the account", as
   await page.getByRole("button", { name: "Sign out all sessions" }).click();
   await expect(page).toHaveURL(/\/login$/);
 
-  await startSignedInAdultSession(page, "profile-delete");
+  const { email } = await startSignedInAdultSession(page, "profile-delete");
+  const user = await prisma.user.findUniqueOrThrow({
+    where: { email },
+    select: { id: true },
+  });
+  const mediaId = await seedDownloadableMedia(email);
+  const media = await prisma.mediaAsset.findUniqueOrThrow({
+    where: { id: mediaId },
+    select: { storageKey: true },
+  });
+  expect(media.storageKey).not.toBeNull();
+  const blobPath = resolveLocalBlobPath(media.storageKey!);
+  const chatSessionId = `e2e-ui-account-delete-session-${Date.now()}`;
+  await chatPrisma.chatSession.create({
+    data: {
+      id: chatSessionId,
+      userId: user.id,
+      characterId: "e2e-ui-account-delete-character",
+      title: "Account deletion terminal canary",
+    },
+  });
+  await chatPrisma.message.create({
+    data: {
+      id: `${chatSessionId}-message`,
+      sessionId: chatSessionId,
+      role: "user",
+      content: "account deletion terminal canary",
+      status: "sent",
+    },
+  });
+  await chatPrisma.chatUsage.create({
+    data: {
+      id: `${chatSessionId}-usage`,
+      userId: user.id,
+      sessionId: chatSessionId,
+      messagesUsed: 1,
+      periodStart: new Date(Date.now() - 60_000),
+      periodEnd: new Date(Date.now() + 60_000),
+    },
+  });
+  const chatLogPath = path.join(
+    chatFsRoot(),
+    "sessions",
+    user.id,
+    `${chatSessionId}.jsonl`,
+  );
+  await mkdir(path.dirname(chatLogPath), { recursive: true });
+  await writeFile(chatLogPath, '{"kind":"account-delete-canary"}\n');
+  const chatMemoryPath = path.join(
+    chatFsRoot(),
+    "mem",
+    user.id,
+    "account-delete-canary",
+    "memory.md",
+  );
+  await mkdir(path.dirname(chatMemoryPath), { recursive: true });
+  await writeFile(chatMemoryPath, "Account deletion terminal canary memory.\n");
+
   await page.goto("/profile");
   const deleteButton = page.getByRole("button", { name: "Delete", exact: true });
   await expect(deleteButton).toBeDisabled();
@@ -5790,6 +5875,234 @@ test("profile account management signs out sessions and deletes the account", as
   await expect(deleteButton).toBeDisabled();
   await page.getByLabel("Delete confirmation").fill("DELETE");
   await expect(deleteButton).toBeEnabled();
+  const deletionResponsePromise = page.waitForResponse((response) =>
+    response.request().method() === "POST" &&
+    new URL(response.url()).pathname === "/api/v1/account/delete-request"
+  );
   await deleteButton.click();
-  await expect(page).toHaveURL(/\/login$/);
+  const deletionResponse = await deletionResponsePromise;
+  const deletionResponseBody = await deletionResponse.text();
+  expect(deletionResponse.ok(), deletionResponseBody).toBeTruthy();
+  const deletionPayload = JSON.parse(deletionResponseBody) as {
+    data: { deletion: { graceEndsAt: string } };
+  };
+  await expect(page).toHaveURL(/\/login\?accountDeletionGraceEndsAt=/);
+  expect(new URL(page.url()).pathname).toBe("/login");
+  expect(new URL(page.url()).searchParams.get("accountDeletionGraceEndsAt"))
+    .toBe(deletionPayload.data.deletion.graceEndsAt);
+  await expect(page.getByTestId("account-deletion-grace-notice")).toBeVisible();
+
+  const deletion = await prisma.accountDeletion.findUniqueOrThrow({
+    where: { userId: user.id },
+  });
+  const requestEventId = `user_deleted_${user.id}`;
+  const requestOutbox = await prisma.mainOutboxEvent.findUniqueOrThrow({
+    where: { id: requestEventId },
+  });
+  expect(deletion).toMatchObject({
+    status: "awaiting_chat",
+    chatRequestEventId: requestEventId,
+    chatCompletedAt: null,
+    completedAt: null,
+  });
+  expect(
+    deletion.graceEndsAt.getTime() - deletion.requestedAt.getTime(),
+  ).toBe(ACCOUNT_DELETION_GRACE_PERIOD_MS);
+  expect(requestOutbox).toMatchObject({
+    status: "pending",
+    attempts: 0,
+    nextRunAt: deletion.graceEndsAt,
+  });
+  await expect(
+    prisma.user.findUnique({ where: { id: user.id } }),
+  ).resolves.toMatchObject({ status: "deleted" });
+  await expect(
+    prisma.session.count({ where: { userId: user.id } }),
+  ).resolves.toBe(0);
+  await expect(
+    chatPrisma.chatSession.findUnique({ where: { id: chatSessionId } }),
+  ).resolves.not.toBeNull();
+  expect(await fileExists(chatLogPath)).toBe(true);
+  expect(await fileExists(chatMemoryPath)).toBe(true);
+  expect(await fileExists(blobPath)).toBe(true);
+  await expect(
+    prisma.mediaAsset.findUnique({ where: { id: mediaId } }),
+  ).resolves.not.toBeNull();
+
+  await waitForAuthWorkspaceReady(page);
+  await page.getByLabel("Email").filter({ visible: true }).fill(email);
+  await page.getByLabel("Password").filter({ visible: true }).fill("password123");
+  await page.getByRole("button", { name: "Login" }).click();
+  await expect(page.getByTestId("auth-status")).toHaveText("Account is not active");
+
+  // INTENT: the browser proves the real 30-day contract above. This run owns
+  // its disposable Main/Chat DBs, Redis namespace, Chat FS, and Blob root, so
+  // advancing only this exact workflow is the safe clock seam for exercising
+  // the destructive terminal chain without waiting 30 wall-clock days.
+  const dueAt = new Date(deletion.requestedAt.getTime() + 1);
+  expect(dueAt.getTime()).toBeLessThanOrEqual(Date.now());
+  await prisma.$transaction(async (tx) => {
+    const advancedDeletion = await tx.accountDeletion.updateMany({
+      where: {
+        id: deletion.id,
+        userId: user.id,
+        status: "awaiting_chat",
+        chatRequestEventId: requestEventId,
+        requestedAt: deletion.requestedAt,
+        graceEndsAt: deletion.graceEndsAt,
+      },
+      data: { graceEndsAt: dueAt, version: { increment: 1 } },
+    });
+    if (advancedDeletion.count !== 1) {
+      throw new Error("Account deletion clock authority changed before E2E advance");
+    }
+    const advancedOutbox = await tx.mainOutboxEvent.updateMany({
+      where: {
+        id: requestEventId,
+        eventType: MAIN_TO_CHAT_EVENTS.accountDeletionRequestedV2,
+        aggregateId: user.id,
+        status: "pending",
+        nextRunAt: deletion.graceEndsAt,
+      },
+      data: { nextRunAt: dueAt },
+    });
+    if (advancedOutbox.count !== 1) {
+      throw new Error("Account deletion outbox authority changed before E2E advance");
+    }
+  });
+
+  await expect.poll(async () => {
+    await dispatchPendingChatEvents(10);
+    return (await prisma.mainOutboxEvent.findUnique({
+      where: { id: requestEventId },
+      select: { status: true },
+    }))?.status;
+  }, { timeout: 45_000 }).toBe("delivered");
+  await expect(
+    prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id: requestEventId } }),
+  ).resolves.toMatchObject({ status: "delivered", deliveredAt: expect.any(Date) });
+  await expect(
+    chatPrisma.chatInboxEvent.findUniqueOrThrow({
+      where: {
+        sourceService_sourceEventId: {
+          sourceService: "main",
+          sourceEventId: requestEventId,
+        },
+      },
+    }),
+  ).resolves.toMatchObject({ status: "consumed_v2", consumedAt: expect.any(Date) });
+  await expect(
+    chatPrisma.chatSession.findUnique({ where: { id: chatSessionId } }),
+  ).resolves.toBeNull();
+  await expect(
+    chatPrisma.message.count({ where: { sessionId: chatSessionId } }),
+  ).resolves.toBe(0);
+  await expect(
+    chatPrisma.chatUsage.count({ where: { userId: user.id } }),
+  ).resolves.toBe(0);
+  await expect(
+    chatPrisma.chatFileMutation.count({ where: { userId: user.id } }),
+  ).resolves.toBe(0);
+  expect(await fileExists(chatLogPath)).toBe(false);
+  expect(await fileExists(chatMemoryPath)).toBe(false);
+
+  const completion = await chatPrisma.chatOutboxEvent.findFirstOrThrow({
+    where: {
+      eventType: CHAT_TO_MAIN_EVENTS.accountErasureCompletedV2,
+      aggregateId: user.id,
+    },
+  });
+  expect(completion).toMatchObject({
+    schemaVersion: 2,
+    status: "delivered",
+    deliveredAt: expect.any(Date),
+    payload: expect.objectContaining({
+      version: 2,
+      binding: "request_bound",
+      userId: user.id,
+      deletionRequestEventId: requestEventId,
+    }),
+  });
+  await expect(
+    prisma.inboundEventReceipt.findUniqueOrThrow({
+      where: {
+        sourceService_sourceEventId: {
+          sourceService: accountErasureCompletionReceiptSource,
+          sourceEventId: completion.id,
+        },
+      },
+    }),
+  ).resolves.toMatchObject({
+    processingState: "processed",
+    processedAt: expect.any(Date),
+  });
+  await expect(
+    prisma.accountDeletion.findUniqueOrThrow({ where: { id: deletion.id } }),
+  ).resolves.toMatchObject({
+    status: "deleting_blobs",
+    chatCompletionEventId: completion.id,
+    chatCompletedAt: expect.any(Date),
+    blobExpectedCount: 1,
+    blobDeletedCount: 0,
+  });
+  await expect(
+    prisma.accountDeletionBlobReceipt.findMany({
+      where: { deletionId: deletion.id },
+    }),
+  ).resolves.toEqual([
+    expect.objectContaining({
+      storageKey: media.storageKey,
+      status: "pending",
+    }),
+  ]);
+
+  await expect(
+    dispatchPendingAccountDeletionBlobDeletes({
+      deletionIds: [deletion.id],
+      now: new Date(),
+      workerId: `e2e-account-delete-${process.env.PW_RUN_ID}`,
+    }),
+  ).resolves.toEqual({ deleted: 1, failed: 0, completed: 1 });
+  expect(await fileExists(blobPath)).toBe(false);
+  await expect(
+    prisma.user.findUnique({ where: { id: user.id } }),
+  ).resolves.toBeNull();
+  await expect(
+    prisma.mediaAsset.findUnique({ where: { id: mediaId } }),
+  ).resolves.toBeNull();
+  await expect(
+    prisma.accountDeletion.findUniqueOrThrow({ where: { id: deletion.id } }),
+  ).resolves.toMatchObject({
+    userId: null,
+    status: "completed",
+    chatRequestEventId: null,
+    blobExpectedCount: 1,
+    blobDeletedCount: 1,
+    mainPurgedAt: expect.any(Date),
+    completedAt: expect.any(Date),
+    lastError: null,
+  });
+  await expect(
+    prisma.mainOutboxEvent.findUnique({ where: { id: requestEventId } }),
+  ).resolves.toBeNull();
+  await expect(
+    prisma.accountDeletionBlobReceipt.findMany({
+      where: { deletionId: deletion.id },
+    }),
+  ).resolves.toEqual([
+    expect.objectContaining({
+      storageKey: null,
+      status: "deleted",
+      deletedAt: expect.any(Date),
+      attempts: expect.any(Number),
+      leaseOwner: null,
+      leaseExpiresAt: null,
+      storageKeyHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+    }),
+  ]);
+  const terminalBlobReceipt = await prisma.accountDeletionBlobReceipt.findFirstOrThrow({
+    where: { deletionId: deletion.id },
+    select: { attempts: true },
+  });
+  expect(terminalBlobReceipt.attempts).toBeGreaterThanOrEqual(1);
 });

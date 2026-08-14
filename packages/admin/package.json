@@ -7,7 +7,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "dev": "IDREAM_NEXT_DEVELOPMENT=1 IDREAM_NEXT_DIST_DIR=.next-development next dev --port 3001",
+    "dev": "PORT=3001 node scripts/start-development.cjs",
     "build": "node ../../scripts/build-next-standalone.mjs packages/admin",
     "start": "next start",
     "lint": "eslint",

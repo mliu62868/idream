@@ -298,4 +298,10 @@ function addProvenanceHeaders(
 ) {
   if (domain) headers.set("x-idream-admin-domain", domain);
   headers.set("x-idream-admin-read-authority", readAuthority);
+  const sourceRevision =
+    process.env.IDREAM_SOURCE_REVISION?.trim() ||
+    process.env.SENTRY_RELEASE?.trim();
+  if (sourceRevision) {
+    headers.set("x-idream-admin-source-revision", sourceRevision);
+  }
 }

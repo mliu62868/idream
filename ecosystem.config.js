@@ -32,7 +32,15 @@ if (runtimeMode !== "development" && runtimeMode !== "production") {
   );
 }
 const isDevelopment = runtimeMode === "development";
-const runtimeIdentityEnv = { IDREAM_PM2_MODE: runtimeMode };
+const runtimeIdentityEnv = {
+  IDREAM_PM2_MODE: runtimeMode,
+  ...(process.env.IDREAM_SOURCE_REVISION
+    ? { IDREAM_SOURCE_REVISION: process.env.IDREAM_SOURCE_REVISION }
+    : {}),
+  ...(process.env.SENTRY_RELEASE
+    ? { SENTRY_RELEASE: process.env.SENTRY_RELEASE }
+    : {}),
+};
 const sourceWatch = (...paths) =>
   isDevelopment
     ? {

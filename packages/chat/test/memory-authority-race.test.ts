@@ -805,7 +805,7 @@ describe("canonical relationship rebuild", () => {
     await projectorPrisma.$executeRaw`
       UPDATE chat.chat_file_mutations
       SET status = 'applied',
-          payload = chat.redact_file_mutation_payload(kind, payload),
+          payload = chat.redact_file_mutation_payload(id, kind, payload),
           attempts = attempts + 1,
           applied_at = timezone('utc', now())
       WHERE user_id = ${USERS.scale}

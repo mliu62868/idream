@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  INCIDENT_CORRELATION_ATTEMPT_MISSING_DISCARD_CONFIRMATION,
   INCIDENT_CORRELATION_REPLAY_CONFIRMATION,
   type IncidentCorrelationOutboxEvent,
   type IncidentCorrelationOutboxEventListResponse,
@@ -36,6 +37,27 @@ export function incidentCorrelationReplayPayload(
   };
 }
 
+export function incidentCorrelationAttemptMissingDiscardPayload(
+  event: IncidentCorrelationOutboxEvent,
+  reason: string,
+) {
+  if (!event.attemptId) {
+    throw new Error("Attempt-missing disposition requires an attempt id");
+  }
+  return {
+    id: event.id,
+    expectedAttempts: event.attempts,
+    expectedUpdatedAt: event.updatedAt,
+    expectedPayloadHash: event.payloadHash,
+    expectedAttemptId: event.attemptId,
+    reason: {
+      code: "source_authority_missing",
+      summary: reason.trim(),
+    },
+    confirmation: INCIDENT_CORRELATION_ATTEMPT_MISSING_DISCARD_CONFIRMATION,
+  };
+}
+
 export function summarizeIncidentCorrelationReplay(
   results: ReadonlyArray<{ readonly outcome: string }>,
 ) {
@@ -50,9 +72,11 @@ export function summarizeIncidentCorrelationReplay(
 }
 
 export function IncidentCorrelationOutbox({
+  canDiscardAttemptMissing = false,
   canRead,
   canReplay,
 }: {
+  readonly canDiscardAttemptMissing?: boolean;
   readonly canRead: boolean;
   readonly canReplay: boolean;
 }) {
@@ -153,6 +177,48 @@ export function IncidentCorrelationOutbox({
     });
   }
 
+  function requestAttemptMissingDisposition(
+    row: IncidentCorrelationOutboxEvent,
+  ) {
+    if (
+      !canDiscardAttemptMissing ||
+      row.replayEligibility !== "attempt_missing" ||
+      !row.attemptId
+    ) return;
+    const exactRevision = row;
+    const idempotencyKey = crypto.randomUUID();
+    setConfirmation({
+      title: t("Record source authority missing"),
+      summary: t(
+        "This preserves the failed carrier and records that its GenerationAttempt source authority is still absent; no user effect is applied.",
+      ),
+      destructive: {
+        expectedName:
+          INCIDENT_CORRELATION_ATTEMPT_MISSING_DISCARD_CONFIRMATION,
+        inputLabel: t("Disposition confirmation"),
+      },
+      reasonLabel: t("Disposition reason (≥3)"),
+      submitLabel: t("Record terminal disposition"),
+      onSubmit: async (reason) => {
+        const result = await adminV2Operation(
+          "POST /api/v2/admin/incidents/correlation-outbox/commands/discard-attempt-missing",
+          {
+            body: incidentCorrelationAttemptMissingDiscardPayload(
+              exactRevision,
+              reason,
+            ),
+            idempotencyKey,
+          },
+        );
+        setNotice(t(
+          "Incident correlation attempt-missing disposition · {outcome}.",
+          { outcome: result.outcome },
+        ));
+        await load();
+      },
+    });
+  }
+
   return (
     <section
       aria-labelledby="incident-correlation-outbox-title"
@@ -235,6 +301,7 @@ export function IncidentCorrelationOutbox({
                   <th className="px-3 py-2">{t("Replay authority")}</th>
                   <th className="px-3 py-2">{t("Last error")}</th>
                   <th className="px-3 py-2">{t("Revision")}</th>
+                  <th className="px-3 py-2">{t("Terminal disposition")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -275,6 +342,21 @@ export function IncidentCorrelationOutbox({
                         <p>{t("Attempts")}: {row.attempts}</p>
                         <p className="mt-1 font-mono" title={row.payloadHash}>{row.payloadHash.slice(0, 12)}</p>
                         <time className="mt-1 block" dateTime={row.updatedAt}>{new Date(row.updatedAt).toLocaleString()}</time>
+                      </td>
+                      <td className="px-3 py-3">
+                        {canDiscardAttemptMissing &&
+                        row.replayEligibility === "attempt_missing" &&
+                        row.attemptId ? (
+                          <button
+                            className="min-h-9 rounded-md border border-[var(--ad-border)] px-3 text-xs font-semibold"
+                            onClick={() => requestAttemptMissingDisposition(row)}
+                            type="button"
+                          >
+                            {t("Record source authority missing")}
+                          </button>
+                        ) : (
+                          <span className="text-xs text-[var(--ad-text-muted)]">—</span>
+                        )}
                       </td>
                     </tr>
                   );

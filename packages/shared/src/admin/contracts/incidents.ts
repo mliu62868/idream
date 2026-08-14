@@ -415,6 +415,46 @@ export const incidentCorrelationOutboxReplayResultSchema = z
   })
   .strict();
 
+export const INCIDENT_CORRELATION_ATTEMPT_MISSING_DISCARD_CONFIRMATION =
+  "DISCARD_INCIDENT_CORRELATION_ATTEMPT_MISSING" as const;
+
+export const incidentCorrelationOutboxAttemptMissingDiscardRequestSchema = z
+  .object({
+    id: adminIdSchema,
+    expectedAttempts: z.number().int().nonnegative(),
+    expectedUpdatedAt: adminIsoDateTimeSchema,
+    expectedPayloadHash: z.string().regex(/^[a-f0-9]{64}$/),
+    expectedAttemptId: adminIdSchema,
+    reason: adminCommandReasonSchema,
+    confirmation: z.literal(
+      INCIDENT_CORRELATION_ATTEMPT_MISSING_DISCARD_CONFIRMATION,
+    ),
+  })
+  .strict();
+
+export const incidentCorrelationOutboxAttemptMissingDiscardOutcomeSchema = z.enum([
+  "discarded_target_missing",
+  "already_discarded_target_missing",
+  "already_delivered",
+  "already_requeued",
+  "stale",
+  "payload_hash_mismatch",
+  "invalid_payload",
+  "attempt_id_mismatch",
+  "attempt_present",
+  "not_found",
+]);
+
+export const incidentCorrelationOutboxAttemptMissingDiscardResultSchema = z
+  .object({
+    id: adminIdSchema,
+    outcome: incidentCorrelationOutboxAttemptMissingDiscardOutcomeSchema,
+    priorAttempts: z.number().int().nonnegative().nullable(),
+    payloadHash: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
+    replayed: z.boolean(),
+  })
+  .strict();
+
 export type OpsIncident = z.infer<typeof incidentSchema>;
 export type IncidentOccurrence = z.infer<typeof incidentOccurrenceSchema>;
 export type IncidentActionPlan = z.infer<typeof incidentActionPlanSchema>;
@@ -433,6 +473,12 @@ export type IncidentCorrelationOutboxReplayRequest = z.infer<
 >;
 export type IncidentCorrelationOutboxReplayResult = z.infer<
   typeof incidentCorrelationOutboxReplayResultSchema
+>;
+export type IncidentCorrelationOutboxAttemptMissingDiscardRequest = z.infer<
+  typeof incidentCorrelationOutboxAttemptMissingDiscardRequestSchema
+>;
+export type IncidentCorrelationOutboxAttemptMissingDiscardResult = z.infer<
+  typeof incidentCorrelationOutboxAttemptMissingDiscardResultSchema
 >;
 export type IncidentResolveCommandRequest = z.infer<typeof incidentResolveCommandRequestSchema>;
 export type IncidentTriageRequest = z.infer<typeof incidentTriageRequestSchema>;

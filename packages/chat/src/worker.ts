@@ -9,20 +9,50 @@ import {
 } from "@idream/shared/contracts";
 import { runWorker } from "./queue.js";
 import { logger } from "./logger.js";
-import { processGenerate } from "./generate.js";
+import {
+  processGenerateJob,
+  terminalizeGenerateJobFailure,
+} from "./generate.js";
 import { processMemoryExtract } from "./memory.js";
 import { deliverPendingOutbox } from "./outbox.js";
 import { consumeDurableInbox, reprocessPendingInbox } from "./inbox.js";
 import { reconcile } from "./reconcile.js";
 import { pruneExpiredSegments } from "./maintain.js";
+import { runtimeReadiness } from "./runtime-readiness.js";
 
 const RECONCILE_INTERVAL_MS = 30_000;
 const MAINTAIN_INTERVAL_MS = 60 * 60_000;
 
+// INVARIANT: provider readiness is turn admission. Durable convergence workers
+// run independently and retry against the concrete dependency that failed.
+async function admitWorkerJob(): Promise<void> {
+  if (!(await runtimeReadiness.refreshDependencies())) {
+    throw new Error("chat runtime is not ready");
+  }
+}
+
 export function startWorker(): { close: () => Promise<void> } {
   const workers: Worker[] = [
     runWorker(CHAT_QUEUES.generate, async (job) => {
-      await processGenerate(chatGeneratePayloadSchema.parse(job.payload));
+      const payload = chatGeneratePayloadSchema.parse(job.payload);
+      try {
+        await admitWorkerJob();
+        await processGenerateJob({
+          payload,
+          attemptsMade: job.attemptsMade,
+          maxAttempts: job.maxAttempts,
+        });
+      } catch (error) {
+        if (job.attemptsMade + 1 >= job.maxAttempts) {
+          await terminalizeGenerateJobFailure(payload).catch((terminalError) => {
+            logger.error(
+              { err: terminalError, assistantMessageId: payload.assistantMessageId },
+              "chat generation retry exhaustion terminalization failed",
+            );
+          });
+        }
+        throw error;
+      }
     }, { concurrency: 2 }),
 
     runWorker(CHAT_QUEUES.memoryExtract, async (job) => {

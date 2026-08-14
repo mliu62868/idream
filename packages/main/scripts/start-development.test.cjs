@@ -67,3 +67,33 @@ test("development startup fails closed when Prisma generation fails", () => {
   assert.equal(status, 29);
   assert.equal(loadedNext, false);
 });
+
+test("development startup preserves Playwright-owned Next directories", () => {
+  const runtime = {
+    argv: ["/runtime/node", "start-development.cjs", "--port", "3940"],
+    env: {
+      PW_RUN_ID: "acd11234",
+      IDREAM_NEXT_DIST_DIR: ".next/playwright-main-3940-acd11234",
+      IDREAM_NEXT_TSCONFIG:
+        ".next/playwright-config-main-3940-acd11234/tsconfig.json",
+    },
+    execPath: "/runtime/node",
+  };
+
+  const status = runDevelopment({
+    process: runtime,
+    spawnSync: () => ({ status: 0 }),
+    loadNext: () => {},
+  });
+
+  assert.equal(status, 0);
+  assert.equal(runtime.env.IDREAM_NEXT_DEVELOPMENT, undefined);
+  assert.equal(
+    runtime.env.IDREAM_NEXT_DIST_DIR,
+    ".next/playwright-main-3940-acd11234",
+  );
+  assert.equal(
+    runtime.env.IDREAM_NEXT_TSCONFIG,
+    ".next/playwright-config-main-3940-acd11234/tsconfig.json",
+  );
+});

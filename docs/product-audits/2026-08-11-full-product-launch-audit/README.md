@@ -1,6 +1,6 @@
 # iDream 全产品 Chrome 上线审计
 
-审计日期：2026-08-11  
+审计日期：2026-08-11，最终复核 2026-08-14
 范围：Main、Admin、Chat、Image/Video/Voice、Create、Release、Community、Profile、Help/Case、运行编排与 Launch Gate；按本轮用户指令，支付、年龄验证和合规不参与结论  
 浏览器：用户指定的 Chrome；真实登录态、真实本地模型与产品数据库
 
@@ -8,18 +8,18 @@
 
 **当前结论：NO-GO，不能签发公开上线。**
 
-本轮已把本地核心产品链从“页面可点”推进到真实用户与运营闭环：注册、公开发现、SSE Chat、真实 RedMix3 图片、真实 LTX Video、Gallery、Demo Upgrade、四张 Create Preview、审核、三槽 Release 素材、Soul、QA、Release/Serving、公开消费、Community Follow、Support/Report/Appeal 及 Admin Ops 都有 Chrome 或不可变运行证据。最初的 8 个 Gen orphan 与历史 Video residue 已按受控流程收口；当前 Image/Video worker ownership 和 generation cutover 都为绿色。
+本轮已把本地核心产品从“页面可点”推进到真实用户、运营与服务闭环证据：注册、公开发现、SSE Chat、真实 RedMix3 图片、真实 LTX Video、Gallery、Demo Upgrade、四张 Create Preview、审核、三槽 Release 素材、Soul、QA、Release/Serving、公开消费、Community Follow、Support/Report/Appeal 及 Admin Ops 都有 Chrome 或不可变运行证据。最初的 8 个 Gen orphan 与历史 Video residue 已按受控流程收口；当前 Image/Video worker ownership、generation cutover、Chat readiness 与 fresh service/model probe 都为绿色。
 
 仍然阻断上线的是明确的权威边界，而不是“再点几页”：
 
-1. 产品数据库为 **67/71 migrations**。四条尚未由 operator 执行：Premium RedMix3 cutover、runtime schema reconciliation、Voice scene payload authority、Account Deletion terminal authority。
-2. Product Config 仍因 active `seed-profile-image-premium-v1` 指向已删除 workflow 而失败；源码已 fail closed，迁移已产出，不能绕过或原地改写历史 v1。
-3. 当前 Main `.env` 在固定 `LAUNCH_SCOPE=core` 下的 Launch Gate 为 **22 pass / 37 fail / 1 warn**；该可执行契约只排除支付与年龄验证，未知 scope 会失败关闭，合规按本轮范围不参与结论。新门禁已分别证明最近一次 Image/Video 从 Gen TerminalRecord 到 Main Job/Attempt/receipt/outbox/artifact/delivery/MediaAsset 的持久化投影，但范围内仍缺 production HTTPS/secrets、Redis/prefix、真实 Chat/Gen 产品环境、对象存储、四个 runtime 的 Sentry canary，以及 migration-71 三层恢复演练；失败的 Product Config 仍使 Gate 正确拒绝把独立的直接 Gen provider probe 当成当前产品配置的上线凭据。
+1. 本地 runtime 数据库已从 **67/71** 受控迁移到 PostgreSQL 16 **71/71**；迁移前有 checksummed Main PostgreSQL + Chat FS + Blob snapshot，迁移后 exact catalog authority、fresh/upgrade/redeploy/rollback rehearsal 均通过。
+2. Product Config 已通过：legacy Premium v1 archived，两个 RedMix3 v2 profile active，并与真实 RedMix3 provider probe 和 Main persistence evidence 对齐。
+3. 最新 Gate `.tmp/check-launch-2026-08-14-final-user-journeys.json` 为 **44 pass / 23 fail / 0 warn / 67 total**，scope 为 `core`，支付与年龄验证不参与结论。JSON 自带 `generatedAt`、expected source revision、probe evidence digest 与脱敏 environment digest。Gate resolver 分别绑定 Main、Admin、Chat、Gen env，检查 APP_ENV、internal/BFF authority、BullMQ prefix 与 source revision 等值，并禁止 Chat/Gen 从 Main 或 ambient process 回退。四运行时以及 Chat/Image/Video/Voice/Admin-text/Persistence probes 已统一绑定最终 worktree revision；四包 Sentry probes 也以同一 revision 记录当前无外部凭据时的明确失败，所以 source-revision authority 通过。Main migration 71/71、Main→Chat backlog 0、Generation cutover 与 Image 2/2/Video 1/1 ownership 绿色；23 个失败项均为 public HTTPS、生产 secrets/Redis/prefix、non-mock Blob 与 Sentry production-envelope 检查。
 4. 原有 48 条 `chat.image.failed` target-missing durable event 已闭合。处置前只读对账为 48 failed / 0 Chat receipt / 0 attachment target / 0 source outbox / 0 replayable；Chrome 通过双权限、Idempotency-Key、reason、exact confirmation 和 CAS snapshot 批量执行 `Record target missing`，结果为 `discarded_target_missing: 48`。处置后只读审计为 failed `0`，Chat terminal receipt `48`，Main audit `48`；没有 replay，也没有伪造用户效果。
-5. Account Deletion 已有 30 天 grace、rollback-safe v2 Main→Chat 请求、精确 Chat completion、Blob lease/retry、Main hard-delete/匿名 ledger 和隔离 71-migration rehearsal；但产品库未执行迁移。Chrome 用一次性客户实际提交删除时，API 因 `public.account_deletions` 不存在返回 500/P2021，事务回滚、账号仍有效，直接证明当前部署尚不能完成该旅程。
-6. Sentry runtime 接线不能替代真实 canary ingest/query；当前 71-migration 状态也没有新的 DB + Chat FS + Blob 一致性备份与独立 restore rehearsal。
+5. Account Deletion 的历史 Chrome P2021/500 发生在迁移前且事务安全回滚。当前 revision 的 run-owned Playwright destructive browser canary 已完成；随后用户明确授权删除专用一次性客户，真实 Chrome 在当前产品 runtime 提交 DELETE 并跳转到带 `accountDeletionGraceEndsAt` 的登录页，重新登录得到 `Account is not active`。原 30 天 grace 事实保留；仅该 actor 的 AccountDeletion 与 request Outbox 在一个精确 CAS 事务内推进到期，真实 Main→Chat HTTP、Chat PG/FS 清除、request-bound completion、2 条 Blob receipt 与 Main hard-delete 全部终态。匿名 AccountDeletion receipt 保留，用户、媒体、订阅、权益、请求 Outbox 与两段 Voice WAV 均被清除，未触碰其他用户数据。
+6. 当前本地 Recovery 已真实完成：权威 bundle 为 `.tmp/recovery-bundles/idream-recovery-local-20260814-final-user-journeys`；完成时间、master manifest digest 与 source authority 由 checksummed bundle 和结构化 Gate JSON 机器校验，tracked 审计不复制一次性 digest。PostgreSQL 16 migration 71/71 isolated restore、Chat FS、local mock Blob、DB/queue authority 全部 exact。维护窗只阻断 in-flight，稳定 durable backlog原样保留并逐项相等。该项已通过本地 Gate；仍需补的是 production non-mock Blob 与 Sentry 四 runtime canary 等 production envelope，不是再伪造一个本地恢复文件。
 
-因此本报告证明的是：**本地核心产品与运营流程已广泛闭环，多个真实缺陷已经修复；在明确排除支付、年龄验证与合规后，范围内的生产环境、四条 operator migration、历史 backlog 处置和恢复演练仍是公开上线 stop-ship。**
+因此本报告证明的是：**代码、同一 source revision 的运行 probes、Voice/Account Deletion 当前 Chrome 证据与历史编号旅程覆盖本地核心产品、运营、Chat 服务与三权威 Recovery，迁移与历史 backlog 已收口；但完整 authenticated Chrome 编号旅程尚未作为一套在最终 revision 上重跑，23 个 production-envelope 检查仍使公开上线保持 NO-GO。**
 
 ## 编号用户旅程
 
@@ -45,6 +45,12 @@ Chrome 首次注册暴露了 auth partial-commit：核心账号/Session 已提�
 
 Alexa 与 Mara 都完成用户消息→SSE partial→terminal reply→刷新持久化。`finish_reason=length` 不再被冒充 done；生成中 partial 文本保持 typing，Play/Regenerate 只在终态出现。
 
+2026-08-12 Chat boundary 恢复后又以用户指定的真实 Chrome 重跑 Alexa：从角色页进入新会话，opening message 首屏可见；发送唯一验收消息后先出现 `Assistant is typing`，终态前 Send 与消息动作保持禁用/隐藏，真实模型返回两句中文后 Play/Regenerate 才出现；刷新同一 session 后用户消息与 assistant reply 均持久。Chrome 网络证据中 document、session、relationship、voice 均为 HTTP 200，console warning/error 为 0。证据汇总及截图位于 `.tmp/chrome-launch-evidence-2026-08-12/`。
+
+最终 readiness 权限/新鲜度门禁加载并重启 Chat 后，同一 Chrome session 再发送「请用一句话确认顶层甲板之后，你会带我去哪里」；页面先显示 typing 且禁用 Send，随后真实模型返回「主舱。我想看看是谁在酒醒之前，谁在酒精之后。」；刷新后该轮仍持久，Admin Chat Ops 仍显示 connected、0 failed delivery，两个页面新增 console warning/error 均为 0。该轮与最终 runtime artifact 已追加到同目录 `summary.json`。
+
+时间边界：上述完整 authenticated 客户/Admin Chrome 旅程发生在最终后端补丁之前。补丁与 Recovery 重启后，当前 Chrome 复验 public character detail 的 1280 与 390×844 响应式状态、可见 Tab 焦点和 Chat CTA 的 401→signup 认证边界；Browser Back 的注入 `pageshow` 证据为 `persisted=true`，恢复后 `checking=false`、heading=`Mara Vale Launch`、`documentWidth=innerWidth=390`，无横向溢出。完整登录旅程没有再次执行；当前 signed Chat probe 是完整 authenticated runtime 证明，但不能冒充 Chrome。
+
 ![Alexa Chat 回复](./09-chat-reply.png)
 
 ![刷新后历史](./10-chat-reload-persisted.png)
@@ -61,7 +67,7 @@ Chrome 角色生成经历 queued→completed；Freeplay 有显式模型选择；
 
 ![Gallery Like 筛选](./21-gallery-liked-filter.png)
 
-仍有 stop-ship：历史 Premium v1 数据尚未迁移；公开 selection/quote 已拒绝缺 descriptor 的 ComfyUI profile。
+历史缺陷已闭合：Premium v1 已归档，两个 executable RedMix3 v2 profile active；公开 selection/quote 继续拒绝缺 descriptor 的 ComfyUI profile。当前剩余边界是 production object storage / secrets / public deployment envelope，不再是该数据迁移。
 
 ### 5. Upgrade 与 Billing — Demo 闭环；本轮不参与上线判定
 
@@ -161,17 +167,21 @@ Cases/Support 的 SSR 首帧已与浏览器一致，mount 后恢复 URL view；S
 
 Appeal overturn 现在绑定原 moderation decision 的当前 effect ownership：后续 decision、owner archive 或 legacy 无因果 authority 的状态都会 409 并保持 Appeal open；Media 按不可变 before/after snapshot 做 CAS 恢复。Character 恢复事件只激活由该 removal 归档且仍由它持有的 Chat session，用户主动归档、后续 removal 和批准后新建的替代 active session都不会被误改。
 
-### 13. Profile 与 Account Deletion — 普通功能可用，终态代码完成、当前产品库未迁移
+### 13. Profile 与 Account Deletion — 普通功能可用，终态实现完成、current-runtime Chrome 待签发
 
 Profile、偏好、无效兑换反馈、账单展示可用。Account Deletion 现具备：30 天 grace、立即撤销 session/login、到期才发 `user.account_deletion.requested.v2`、Blob durable lease/retry、晚到 Generation 抑制、Main PII/media hard delete、最小匿名 ledger 和 completed receipt。已发布角色的 immutable Qualification/Release/Validation 证据不会被删除；finalizer 只做 one-way revoke、退役并匿名化 Project，避免 deferred database authority 在提交时回滚。v2 请求只走专属 capability route；Chat 在同一受控路径同步完成删除、写入 request-bound completion，并等待 Main 专属端点原子投影后才 ACK。generic ingress/dispatcher 拒绝 v2；Main 使用独立 receipt namespace，旧 Chat 将 inbox 标 consumed、file mutation 提交后中断、旧 Main 吞掉 legacy completion 三个整栈/混合版本回滚窗口都可在 forward deploy 后重驱。完整 71-migration fresh/upgrade/redeploy/rollback rehearsal已在隔离库通过并清理。
 
-Chrome 使用独立的一次性客户真实输入 `DELETE` 并提交。由于产品库未执行 `20260811190000_account_deletion_terminal_authority`，Main 在插入 `public.account_deletions` 时返回 Prisma P2021/HTTP 500；事务回滚，未产生删除请求、未撤销该账号，也没有启动 Chat/Blob 清理。这条流程因此被当前部署事实阻断，不能签发为 production closed。
+Chrome 使用独立的一次性客户真实输入 `DELETE` 并提交。截图中的操作发生在迁移前：由于当时 runtime 未执行 `20260811190000_account_deletion_terminal_authority`，Main 在插入 `public.account_deletions` 时返回 Prisma P2021/HTTP 500；事务回滚，未产生删除请求、未撤销该账号，也没有启动 Chat/Blob 清理。这张截图只保留为历史失败与回滚正确性的证据。当前 revision 先在 run-owned Playwright 浏览器环境重跑 destructive terminal canary，再由用户授权的产品 Chrome disposable actor 完成 Main→Chat→Blob→Main 终态；后者的登录撤销、30 天 grace 事实、精确到期 CAS、Chat PG/FS 清理、2 条 Blob receipt 与匿名 completed receipt 均已核对。
 
 ![账户删除被未应用迁移阻断](./88-account-deletion-migration-blocked.jpg)
 
 ### 14. Admin Chat Ops 与 durable backlog — 操作面与数据终态闭合
 
 Admin 原先可见 48 条 failed Main→Chat event；live receiver authority 全部判定 `Expected target missing`，Replay 禁用，`Record target missing` 需双权限、Idempotency-Key、reason、exact confirmation 和 CAS snapshot。2026-08-11 的 Chrome operator flow 已完成该终态处置：UI 显示 `discarded_target_missing: 48`，随后空态；只读审计 failed `0`，Chat terminal receipt `48`，Main audit `48`。
+
+2026-08-12 真实 Chrome 硬刷新 `/admin/ops/chat` 后显示 `Chat Service connected`、failed delivery 空态、model HTTP 200 / listed=true；overview、provider health、failed outbox、sessions、usage、moderation-events 六个 Admin API 全部 HTTP 200，console warning/error 为 0。对应截图为 `.tmp/chrome-launch-evidence-2026-08-12/admin-chat-ops-connected.png`。
+
+2026-08-12 的后续审计发现普通 Chat Vitest 曾可解析 ambient Main ingest URL。测试入口现已限制为带 run id、派生 Redis prefix 和显式 Playwright 标记的 run-owned 环境；精确泄漏 fixture 已清理，当前只读复核的 failed、replayable、reconciliation-required 均为 `0`。
 
 ![Main→Chat backlog](./31-admin-chat-outbox-backlog.png)
 
@@ -183,15 +193,15 @@ Admin 原先可见 48 条 failed Main→Chat event；live receiver authority 全
 
 本轮执行的是只针对 48 条 `receiver_target_missing` 载荷的 audited terminal disposition，不是 replay；原 envelope 与无用户效果的终态证据保留，不能把它描述为消息已恢复。
 
-### 15. Voice — provider probe 绿色，产品 Browser 全链仍受迁移阻断
+### 15. Voice — Admin 候选制作、激活与客户 Chat 播放已签发
 
 Admin 已能生成 Alexa system voice preview。新的 Fish Audio probe 完成 clone→synthesize→delete，`fish-audio-s2-pro-8bit`、5.83 秒 WAV、514,222 bytes，确认 `voiceCloneVerified=true`。
 
-补充 Chrome 在 390/768/1280 px 复验了当前 Alexa Voice 工作台：三种视口均为 page overflow `0`、可见图片 broken `0`。390 px 首轮发现 System Voice Defaults 操作按钮挤压说明文案，修复后操作入口独占下一行，说明恢复为正常两行；证据见 continuation `119`–`121`。浏览器控制的本地参考音频上传仍因 Chrome 扩展没有 file-URL access 而不可用，本轮没有绕过该权限边界。
+补充 Chrome 在 390/768/1280 px 复验了当前 Alexa Voice 工作台：三种视口均为 page overflow `0`、可见图片 broken `0`。390 px 首轮发现 System Voice Defaults 操作按钮挤压说明文案，修复后操作入口独占下一行，说明恢复为正常两行；证据见 continuation `119`–`121`。最终 revision 另在 Mara Vale Launch 上完成了本地 MP3 参考音频选择、Fish candidate version 1 创建、15.117664 秒预览完整播放（`ended=true`、无 media error）、填写激活审计理由并明确启用；页面权威状态变为 `Voice version 1 / Character override / Sensual`，且成功提示明确新 Chat speech 使用该声音。
 
 ![System voice preview](./38-admin-alexa-system-voice-preview.png)
 
-但 Voice clip scene payload 的新 DB constraint migration 未应用；专属 clone candidate→试听→activate/publish→Chat 音频持久化/刷新播放不能在当前产品库被诚实签发。
+Voice clip scene payload constraint 已随本地 PostgreSQL 16 runtime 升到 71/71，并由 exact catalog postcondition 验证。Admin 的 clone candidate→试听→activate 已签发。随后使用专用一次性客户按真实 Demo Upgrade HTTP authority获得 Voice 权益，在 Mara 会话生成 opening 与真实模型 reply 两段 clip；两段分别播放到自然结束，刷新后仍可重播，且 clip 固定 active CharacterVoiceProfile version 1。没有猜测密码、手改 Subscription/Entitlement 或伪造完成状态。该客户随后按 Account Deletion authority 清除，两段音频 Blob 同步删除。
 
 ### 16. Runtime、部署与恢复 — 本地运行绿色，生产 envelope 缺失
 
@@ -222,28 +232,31 @@ Docker app 假拓扑已移除，Compose 只保留本地 Postgres+Redis。PM2 pro
 
 ## 当前验证证据
 
-- Chrome：真实双客户 + Admin，覆盖上述编号旅程；另用一次性客户实测 Account Deletion，准确暴露未应用迁移导致的 P2021/500，且事务回滚、没有误删账号。最新 Mara opening/回复/刷新导航没有 page error。Main/Admin production build 在两个开发服务保持在线时成功后，fresh Chrome 仍得到一致 SSR/client grid、0 warning/error、0 broken image、0 页面横向溢出，证据见 continuation `104`。最终 390/768/1280 px 复验覆盖 Explore、Mara detail、Admin Today、Chat Ops 与 Alexa Voice 共 15 个页面状态：全部 page overflow `0`、可见图片 broken `0`；前 12 个状态另有 console warning/error `0`，Voice 三视口完成可见布局与图片核验；键盘焦点证据见 continuation `117`–`118`，Voice 响应式证据见 `119`–`121`。
+- Chrome：完整 authenticated 双客户 + Admin 编号旅程及历史截图仍按各自记录 revision 有效。最终后端补丁与 Recovery 重启后，当前真实 Chrome 复验 public character detail：1280 桌面与 emulated 390×844 均可用；Tab 后 Explore 获得可见焦点；Chat CTA 先得到预期 `POST /api/v1/chat/sessions` 401，再进入 `/signup?next=%2Fcharacters%2Fcmsozhlsn0023i2l7m71veczu`。Browser Back 捕获 `pageshow.persisted=true`，回到角色页后 `checking=false`、heading=`Mara Vale Launch`、`documentWidth=innerWidth=390`，无横向溢出。另有一次性客户在 Chrome 完成 Mara opening/reply Voice 自然结束播放、刷新持久化，以及 Account Deletion 浏览器提交→登录拒绝→Main/Chat/Blob/Main 终态与派生数据清理。结构化页面、DB/FS/Blob 证据与 focused 回归承担可重复验证。这仍不是全部编号 authenticated Chrome 套件在一个 revision 的整套重跑；signed Chat probe 是可重复的 authenticated transport 证据。
 - Fresh Image probe：backend/ComfyUI、RedMix3 workflow v1、832×832 PNG、TerminalRecord succeeded。
 - Fresh Video probe：backend/LTX workflow v1、固定 4 秒 recipe、TerminalRecord succeeded。
 - Fresh Fish Voice probe：clone/synthesize/delete succeeded。
 - Fresh web/catalog probes：PASS。
-- Fresh Product Config probe：FAIL，仅明确指出 stale Premium v1。
-- Fresh local launch Gate：`LAUNCH_SCOPE=core` 结果 22 pass / 37 fail / 1 warn；机器门禁只排除支付与年龄验证，合规不计入本轮判定；迁移 authority 明确 67/71，Main→Chat backlog authority 在受审计终态处置后为零并通过，最近一次 Image/Video 的 Main 持久化投影分别通过独立只读证据检查，Recovery authority 仍拒绝缺失的 migration-71 三层恢复演练。仓库现已补齐 `bun run recovery:rehearse` 的脱敏 plan、typed apply、PG16/Chat FS/local-or-versioned-remote Blob 隔离恢复、失败清理与 verifier round-trip，但本轮未对产品 DB/R2/PM2 执行 apply，不能把代码入口冒充成恢复证据。最新落盘 Gate 证据为 `.tmp/check-launch-2026-08-12-final-core.json`，响应式与键盘补充证据见 `../2026-08-11-launch-continuation/`。
-- Disposable PostgreSQL 16：fresh 71/71 + seed 与 legacy Premium v1 → RedMix3 v2 upgrade 两种状态均通过 exact migration authority 和 Product Config；upgrade 保留 archived v1 的 Krea2 历史执行字段并创建 active Premium v2。PostgreSQL 14 的同一 checker 现在在读取 PG16-only catalog 之前结构化失败，不再崩溃。两类一次性数据库均已清理，没有执行产品迁移。
-- Runtime ownership：PASS；Generation cutover：PASS。
-- 根级 `bun run test`：6/6 Turbo tasks 成功；Shared 45 files / 250 tests；Admin 118 / 584；Chat 35 / 276；Gen 21 / 202；Main 310 passed files + 2 skipped / 2,381 passed tests + 3 skipped。五包合计 529 passed files + 2 skipped / 3,693 passed tests + 3 skipped；跳过项是显式 opt-in 的真实进程 chaos，不冒充已执行。
-- 根级 `bun run check`：Main/Admin lint、五包 typecheck、Shared/Chat/Gen build 与 Admin/Main Next 16 production build 全部 PASS。
-- PM2 config：74/74 PASS；`docker compose config --quiet` PASS；`git diff --check` PASS。
-- Account Deletion 最新 request-bound v2 变更后：Chat durable outbox 7/7、rollback/reliability 18/18、P0 semantics 11/11；Main dedicated ingress 5/5、authority 8/8、event consumer 18/18。71/71 fresh/upgrade/redeploy/rollback rehearsal PASS，临时数据库清理为 0。
+- Fresh Product Config probe：PASS；两个 RedMix3 v2 profile active，17/17 public character prompts 完整。
+- 当前 local launch Gate：`.tmp/check-launch-2026-08-14-final-user-journeys.json` 在 `LAUNCH_SCOPE=core` 下为 44 pass / 23 fail / 0 warn / 67 total；支付、年龄验证不参与结论。Main→Chat backlog、Recovery、Generation、Admin text、产品证据与 source-revision authority 通过；23 个 production-envelope 检查全部保留在结构化 JSON 中，仍阻止公开上线。
+- PostgreSQL 16：当前本地 runtime 已是 71/71；fresh+seed、legacy Premium v1→RedMix3 v2 upgrade、redeploy/rollback-forward-fix 均通过 exact migration authority。upgrade 保留 archived v1 的 Krea2 历史执行字段并创建 active Premium v2；迁移前 snapshot 已完成 PostgreSQL isolated restore，临时 rehearsal 数据库均已清理。Chat operator apply 入口以 runtime `node-pg` parser 拒绝 `CHAT_DATABASE_URL` query 的 target/credential 覆盖和多前导 `/` database path，拒绝可被 `psql -d` 解释成 conninfo/URI 的 `DB`、逗号分隔 multi-host `PGHOST` 与 ambient `PGHOSTADDR` / `PGSERVICE` / `PGSERVICEFILE` / `PGDATABASE` / `PGUSER` / `PGOPTIONS`；入口发现 shell xtrace 会在 DDL 前 fail fast，调用者也不得把 secret 放入 Bash 在首条命令前展开的 `PS4`。部署与 Chat test provision 的所有 `psql` 都固定使用 `-X` 并拒绝 ambient target override；测试角色密码只经 `psql` stdin 输入，不进入 argv 或异常文本。任何 `DROP DATABASE` 前必须用双角色真实 credential 分别认证为 `chat_service` / `chat_projector`，测试库重建持有 cluster/database advisory lease。任一 Chat runtime URL 已配置就禁止 bootstrap；只有显式确认的非 runtime disposable cluster 才能在 cluster advisory transaction lock 内重查姿态并只创建缺失角色，既有角色绝不 `ALTER ROLE` 或轮换密码。Chat Vitest config 显式加载包内 `.env`，使 Turbo root entry 使用同一 authority；Turbo 的 `@idream/chat#test` 固定 `cache:false`。
+- Chat boundary operator 事故边界：首次执行误用旧默认，目标是 native PostgreSQL 5432 的 `idream`，不是产品 runtime；事前快照为 `.tmp/product-db-snapshots/idream-before-chat-boundary-20260812T1444Z.dump`，SHA-256 `37d871b7c6daab28efdead8623cfb7be00b6492b12c51eef6bbf2588a084f27a`。该次 apply 只建立/规范 Chat boundary schema/roles，没有删除客户数据，因此未回滚，也不能记录成产品 runtime 变更。实际 runtime `localhost:5433/idream_runtime_20260812` 另有事前快照 `.tmp/product-db-snapshots/idream-runtime-20260812-before-chat-boundary-20260812T1448Z.dump`，SHA-256 `cfded071fb51b0c30927bf6ba175a7592a07878435f353ec3c5c33d27e605f50`；随后使用显式 host/port/database target 成功 apply 并验证。
+- Runtime ownership 与 Generation cutover 在 Recovery 重启后重新确认：Image 2/2、Video 1/1，queues resumed，0 ownership issue。
+- 最后一次 post-Recovery 宿主观测：10 个 iDream PM2 app 实例均 online；Main `/` 为 200、Admin `/` 为预期 307 redirect、Chat `/readyz` 为 200。Generation ownership `issues=[]`；cutover 为 active requests 0、in-flight Bull rows 0、pending terminal outboxes 0、1 条 `ignoredHistory`、`issues=[]`。该运行态早于当前 source-bound revision；不存在 Main/Admin readiness 路径，此前对不存在路径的 404 不是服务停机证据。
+- 五包最新全量测试：Shared 46 files / 254 tests；Gen 21 / 202；Main 315 passed files + 2 skipped / 2,479 passed tests + 3 skipped；Chat 37 / 348；Admin 118 / 586。五包合计 537 passed files + 2 skipped / 3,869 passed tests + 3 skipped；Turbo test tasks 6/6 通过，Chat 因 `cache:false` 强制真实执行，跳过项是显式 opt-in 的真实进程 chaos，不冒充已执行。
+- 根级验证：typecheck 6/6、lint 2/2、production build 5/5 全部 PASS。
+- PM2 config：78/78 PASS；`git diff --check` PASS。
+- AgeGate bfcache 回归：`pageshow.persisted` 会推进恢复 epoch 并重新执行权威 `restoreAgeGateAuthority()` POST；成功前受限内容保持 `inert`，失败则回到 blocked，cookie/localStorage 只作为恢复提示，不能自行提升为接受权威。focused 2 files / 18 tests、Main typecheck 与 scoped lint PASS。
+- Account Deletion 最新 request-bound v2 变更后：Chat durable outbox、rollback/reliability、P0 semantics 及 Main ingress/authority/event consumer 聚焦测试通过；run-owned destructive browser canary 与用户授权的产品 Chrome disposable actor 都通过 Main→Chat→Blob→Main 全链并清理派生资源。匿名 terminal receipt 保留，产品用户与派生资产已确认不存在。
 
 ## 上线前必须完成的顺序
 
-1. 部署当前 fail-closed 代码并暂停相关写入；由 DBA/operator 审阅并执行四条 pending Prisma migration。
-2. 重跑 migration authority 与 Product Config；必须为 71/71，Premium v1 archived、Premium v2 RedMix3 active，Voice/Account Deletion constraint 存在。
+1. 在生产环境复用本轮受控顺序：部署 fail-closed 代码、暂停相关写入、生成三层 checkpoint，再审阅并执行当前 71-migration chain；不得把本地 runtime 迁移当成生产执行证据。
+2. 重跑 migration authority 与 Product Config；必须为 71/71，Premium v1 archived、Premium v2 RedMix3 active，Voice/Account Deletion postcondition 精确通过。
 3. 重跑 Main→Chat 只读审计并要求 failed/replayable/reconciliation-required 持续为零；若上线前出现新 failed row，只允许逐条按 receiver authority 重新分类，不能重复处置已终态化的 48 条历史记录。
 4. 用 production HTTPS、secrets、Postgres/Redis/prefix、Chat/Gen/Fish、R2/S3、Sentry 配置运行 `LAUNCH_SCOPE=core` Gate；该固定 scope 只排除支付与年龄验证，合规继续不计入本轮判定。
 5. 补齐范围内外部闭环：Blob write/sign/read/delete、四 runtime Sentry canary ingest/query。
-6. 生成当前 71-migration 的 DB + Chat FS + Blob 一致性备份，并在独立环境完成 restore rehearsal。
+6. 在生产维护窗按已通过的本地合同生成 production DB + Chat FS + non-mock Blob 一致性 checkpoint，并对 production 独立 recovery authority 重做 restore；本地 71/71 bundle 不替代生产数据与对象存储证据。
 7. 在 production-like revision 重跑 Image/Video/Voice/Chat fresh probes及完整 Chrome 客户/运营旅程，要求 unexpected console error 与网络 4xx/5xx 为 0。
 8. 完成容量、错误预算观察窗口和 Product/Engineering/Release 明确签字后，才允许公开流量。
 
@@ -251,5 +264,5 @@ Docker app 假拓扑已移除，Compose 只保留本地 Postgres+Redis。PM2 pro
 
 - 截图证明的是当前 Chrome 可见状态，不等于生产容量、外部 SLA 或长期并发稳定性。
 - 本地 mock Blob 不能替代对象存储；支付、年龄验证与合规没有参与本轮结论。
-- 未执行产品 DB migration、production secret 写入、恢复 apply 或生产发布；48 条历史 target-missing carrier 的受审计终态处置已真实执行并在上文单列证据。
-- 当前 Account Deletion 与 Voice 代码虽有隔离回归；Account Deletion 的 Chrome 提交已用 P2021/500 直接证明 Browser 终态被未应用迁移阻断，Voice Browser 终态同样尚未具备迁移前提。
+- 已执行本地 runtime DB migration、canonical Recovery publish/isolated restore 和 48 条历史 target-missing carrier 的受审计终态处置；尚未执行生产环境迁移、production secret/non-mock Blob 写入或生产发布。本地 Recovery 证据不能替代 production authority。
+- Account Deletion 的 P2021/500 是迁移前历史证据；迁移后的 run-owned Browser canary与用户授权的产品 Chrome current-runtime destructive 终态均已通过。Voice 的 Admin 上传、候选完整试听、明确激活与专用 entitlement 客户 Chat 音频生成、自然结束播放、刷新持久化均已通过。二者仍需在 production release/authority 上重复，不能把本地证明升级为生产签发。

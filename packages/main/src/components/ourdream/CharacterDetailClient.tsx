@@ -101,7 +101,7 @@ function CharacterDetailView({ id }: Readonly<{ id: string }>) {
     setStatus("");
     try {
       const response = await fetch(`/api/v1/characters/${character.id}/like`, {
-        method: "POST",
+        method: character.liked ? "DELETE" : "POST",
       });
       if (response.status === 401) {
         window.location.assign(signupUrlForCurrentCharacter());

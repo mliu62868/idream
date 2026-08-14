@@ -77,7 +77,7 @@ describe("Character Soul authority audit", () => {
     const chatRows = [
       [{ database: "idream" }],
       [],
-      [{ active: 0n, nullPins: 0n }],
+      [{ active: BigInt(0), nullPins: BigInt(0) }],
     ];
     const chatDb = {
       $queryRaw: async () => chatRows.shift() ?? [],

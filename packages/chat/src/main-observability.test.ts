@@ -5,6 +5,7 @@ const runtime = vi.hoisted(() => ({
   logger: { error: vi.fn(), info: vi.fn() },
   startWeb: vi.fn(() => ({ close: vi.fn() })),
   startWorker: vi.fn(),
+  configureFullWarmupRecovery: vi.fn(),
   warmRuntime: vi.fn(async () => {
     throw new Error("warm-up failed");
   }),
@@ -18,7 +19,11 @@ vi.mock("./worker.js", () => ({ startWorker: runtime.startWorker }));
 vi.mock("./stream.js", () => ({ closeStreamPublisher: vi.fn() }));
 vi.mock("./logger.js", () => ({ logger: runtime.logger }));
 vi.mock("./runtime-readiness.js", () => ({
-  runtimeReadiness: { snapshot: vi.fn(), stopAccepting: vi.fn() },
+  runtimeReadiness: {
+    configureFullWarmupRecovery: runtime.configureFullWarmupRecovery,
+    snapshot: vi.fn(),
+    stopAccepting: vi.fn(),
+  },
   warmRuntime: runtime.warmRuntime,
 }));
 
@@ -40,6 +45,8 @@ afterEach(() => {
 describe("chat process observability wiring", () => {
   it("captures a runtime warm-up failure before scheduling a retry", async () => {
     await import("./main.js");
+
+    expect(runtime.configureFullWarmupRecovery).toHaveBeenCalledOnce();
 
     await vi.waitFor(() => {
       expect(runtime.captureWarmupFailure).toHaveBeenCalledOnce();

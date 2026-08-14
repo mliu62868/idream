@@ -1,4 +1,5 @@
 import { S3CompatibleBlobStore, SafetyGatewayModerationProvider } from "@idream/shared";
+import { requiredNonMockMainProviderKeysForLaunchScope } from "@idream/shared/env";
 import { env } from "@/server/lib/env";
 import { MockBlobStore } from "./blob/mock";
 import { MockChatModel } from "./chat/mock";
@@ -41,16 +42,9 @@ function unsupportedProvider(name: string, value: string, supported: readonly st
 function assertProductionProvidersConfigured() {
   if (env.APP_ENV !== "production") return;
 
-  const mockProviders = [
-    ["CHAT_PROVIDER", env.CHAT_PROVIDER],
-    ["VOICE_PROVIDER", env.VOICE_PROVIDER],
-    ["MODERATION_PROVIDER", env.MODERATION_PROVIDER],
-    ["PAYMENT_PROVIDER", env.PAYMENT_PROVIDER],
-    ["BLOB_PROVIDER", env.BLOB_PROVIDER],
-    ["AGE_VERIFICATION_PROVIDER", env.AGE_VERIFICATION_PROVIDER],
-  ]
-    .filter(([, provider]) => provider === "mock")
-    .map(([name]) => name);
+  const mockProviders = requiredNonMockMainProviderKeysForLaunchScope(
+    env.LAUNCH_SCOPE,
+  ).filter((name) => env[name] === "mock");
 
   if (mockProviders.length > 0) {
     throw new Error(

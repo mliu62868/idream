@@ -4,6 +4,7 @@ const path = require("node:path");
 const {
   loadGenEnvironment,
 } = require("./check-gen-image-worker-ownership.cjs");
+const { computeSourceRevision } = require("./source-revision.cjs");
 
 const repoRoot = path.resolve(__dirname, "..");
 const productionGateCwd = path.join(repoRoot, "packages/main");
@@ -539,8 +540,15 @@ function runPm2Ecosystem(options = {}) {
   // Development needs the same post-start proof as production; otherwise a
   // successful PM2 exit can coexist with an older anonymous/orphan consumer.
   const workerRunId = `pm2-${randomUUID()}`;
+  const startsRuntime = !new Set(["quiesce", "stop"]).has(action);
+  const sourceRevision =
+    env.IDREAM_SOURCE_REVISION ??
+    (startsRuntime
+      ? (options.computeSourceRevision ?? computeSourceRevision)(repoRoot)
+      : undefined);
   const runtimeEnv = {
     ...productionProcessEnv(env, mode),
+    ...(sourceRevision ? { IDREAM_SOURCE_REVISION: sourceRevision } : {}),
     GEN_IMAGE_WORKER_RUN_ID: workerRunId,
     GEN_VIDEO_WORKER_RUN_ID: workerRunId,
   };

@@ -125,6 +125,7 @@ async function main() {
         : null;
   const report = {
     ok,
+    sourceRevision: env.SOURCE_REVISION?.trim() || null,
     checkedAt: new Date().toISOString(),
     durationMs: Date.now() - startedAt,
     provider: env.VIDEO_PROVIDER,

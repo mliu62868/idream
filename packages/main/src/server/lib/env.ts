@@ -6,7 +6,9 @@ import {
   DEFAULT_APP_ENV,
   DEFAULT_BLOB_REGION,
   crossServiceEnvShape,
+  launchScopeSchema,
 } from "@idream/shared/env";
+import { isPublicHttpsUrl } from "../../lib/public-site-origin";
 import { DB_PROVIDER, DEFAULT_POSTGRES_DATABASE_URL } from "./constants";
 
 const appEnv = process.env.APP_ENV ?? DEFAULT_APP_ENV;
@@ -23,24 +25,12 @@ function isPostgresUrl(value: string) {
   return value.startsWith("postgresql://") || value.startsWith("postgres://");
 }
 
-function isPublicHttpsOrigin(value: string) {
-  try {
-    const url = new URL(value);
-    const hostname = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-    return (
-      url.protocol === "https:" &&
-      !new Set(["localhost", "127.0.0.1", "::1"]).has(hostname)
-    );
-  } catch {
-    return false;
-  }
-}
-
 const EnvSchema = z.object({
   // Cross-service variables (APP_ENV / REDIS_URL / BULLMQ_PREFIX / INTERNAL_TOKEN /
   // MAIN_WEB_URL / MODERATION_* / PIPELINE_API_*) come from the shared contract so
   // main, chat and gen cannot drift apart. See @idream/shared/env.
   ...crossServiceEnvShape(appEnv),
+  LAUNCH_SCOPE: launchScopeSchema,
   NODE_ENV: z.string().optional(),
   DB_PROVIDER: z.literal(DB_PROVIDER).default(DB_PROVIDER),
   DATABASE_URL: z.string().min(1).refine(isPostgresUrl, {
@@ -146,7 +136,7 @@ const EnvSchema = z.object({
   if (
     value.APP_ENV === "production" &&
     !isProductionBuild &&
-    !isPublicHttpsOrigin(value.BETTER_AUTH_URL)
+    !isPublicHttpsUrl(value.BETTER_AUTH_URL)
   ) {
     ctx.addIssue({
       code: "custom",
@@ -157,7 +147,7 @@ const EnvSchema = z.object({
   if (
     value.APP_ENV === "production" &&
     !isProductionBuild &&
-    (!value.MAIN_WEB_URL || !isPublicHttpsOrigin(value.MAIN_WEB_URL))
+    (!value.MAIN_WEB_URL || !isPublicHttpsUrl(value.MAIN_WEB_URL))
   ) {
     ctx.addIssue({
       code: "custom",

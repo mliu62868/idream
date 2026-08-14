@@ -27,6 +27,64 @@ import { z } from "zod";
 export const DEFAULT_APP_ENV = "development";
 export const appEnvSchema = z.enum(["development", "test", "preview", "production"]);
 
+export const DEFAULT_LAUNCH_SCOPE = "full";
+export const launchScopeSchema = z.preprocess(
+  (value) =>
+    typeof value === "string" && value.trim().length > 0
+      ? value.trim()
+      : DEFAULT_LAUNCH_SCOPE,
+  z.enum(["full", "core"]),
+);
+export type LaunchScope = z.infer<typeof launchScopeSchema>;
+
+export const MAIN_LAUNCH_PROVIDER_KEYS = [
+  "CHAT_PROVIDER",
+  "VOICE_PROVIDER",
+  "MODERATION_PROVIDER",
+  "PAYMENT_PROVIDER",
+  "BLOB_PROVIDER",
+  "AGE_VERIFICATION_PROVIDER",
+] as const;
+export type MainLaunchProviderKey = (typeof MAIN_LAUNCH_PROVIDER_KEYS)[number];
+
+const CORE_LAUNCH_PROVIDER_KEYS = [
+  "CHAT_PROVIDER",
+  "VOICE_PROVIDER",
+  "MODERATION_PROVIDER",
+  "BLOB_PROVIDER",
+] as const satisfies readonly MainLaunchProviderKey[];
+const CORE_NON_MOCK_PROVIDER_KEYS = [
+  "CHAT_PROVIDER",
+  "VOICE_PROVIDER",
+  "BLOB_PROVIDER",
+] as const satisfies readonly MainLaunchProviderKey[];
+const FULL_NON_MOCK_PROVIDER_KEYS = [
+  ...CORE_NON_MOCK_PROVIDER_KEYS,
+  "PAYMENT_PROVIDER",
+  "AGE_VERIFICATION_PROVIDER",
+] as const satisfies readonly MainLaunchProviderKey[];
+
+export function resolveLaunchScope(value: string | undefined): LaunchScope | null {
+  const parsed = launchScopeSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
+export function mainProviderKeysForLaunchScope(
+  scope: LaunchScope,
+): readonly MainLaunchProviderKey[] {
+  return scope === "core" ? CORE_LAUNCH_PROVIDER_KEYS : MAIN_LAUNCH_PROVIDER_KEYS;
+}
+
+// SPEC: mock moderation is a valid product authority in every launch scope.
+// Core requires real Chat, Voice, and Blob; full adds Billing and Age Verification.
+export function requiredNonMockMainProviderKeysForLaunchScope(
+  scope: LaunchScope,
+): readonly MainLaunchProviderKey[] {
+  return scope === "core"
+    ? CORE_NON_MOCK_PROVIDER_KEYS
+    : FULL_NON_MOCK_PROVIDER_KEYS;
+}
+
 /**
  * SPEC: the BullMQ key prefix. Producer and consumer MUST agree.
  * INVARIANT: this is the single definition of the formula — main, chat and gen all

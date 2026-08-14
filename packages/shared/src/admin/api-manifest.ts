@@ -170,6 +170,7 @@ export const ADMIN_COMMAND_TARGET_READ_PERMISSIONS = {
   chat_session: "character.release.read",
   creative_run: "creative.run.read",
   incident_correlation_outbox_batch: "ops.incident.read",
+  incident_correlation_outbox_event: "ops.incident.read",
   incident_action_plan: "ops.incident.read",
   ops_incident: "ops.incident.read",
 } as const satisfies Record<string, AdminPermissionKey>;
@@ -319,6 +320,18 @@ export const ADMIN_V2_API_OPERATIONS = [
     "incidentCorrelationOutboxReplayResultSchema",
     undefined,
     { commandType: "incident.correlation_outbox.replay", executionMode: "atomic" },
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/incidents/correlation-outbox/commands/discard-attempt-missing",
+    allOf("ops.incident.manage", "ops.deadletter.write"),
+    "incidentCorrelationOutboxAttemptMissingDiscardRequestSchema+idempotency-key",
+    "incidentCorrelationOutboxAttemptMissingDiscardResultSchema",
+    undefined,
+    {
+      commandType: "incident.correlation_outbox.discard_attempt_missing",
+      executionMode: "atomic",
+    },
   ),
   operation("POST", "/api/v2/admin/incidents/backfill", allOf("ops.incident.manage"), "adminBackfillRequestSchema+idempotency-key", "adminBackfillResultSchema"),
   operation("GET", "/api/v2/admin/incidents/:id", allOf("ops.incident.read"), "path:id", "incidentDetailSchema"),

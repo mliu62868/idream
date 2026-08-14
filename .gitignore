@@ -94,4 +94,5 @@ packages/admin/data/
 packages/main/data/
 .data/pocket-tts/
 .data/fish-audio/idempotency/
+.data/fish-audio/voices/
 .gstack/

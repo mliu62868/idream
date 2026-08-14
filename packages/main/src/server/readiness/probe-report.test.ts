@@ -1,9 +1,16 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import * as evidence from "./evidence";
-import { PROBE_NAMES, PROBE_REPORTS, resolveWorkspacePath } from "./probe-report";
+import {
+  loadProbeReport,
+  PROBE_NAMES,
+  PROBE_REPORTS,
+  resolveWorkspacePath,
+  writeProbeReport,
+} from "./probe-report";
 
 // SPEC: 一个 probe 的 env 变量名此前在 6 处字面量里各存一份（生产端 1、消费端 5），没有任何东西
 //       对账“probe 写的 key”与“门禁读的 key”是同一个。现在只有 PROBE_REPORTS 一份。
@@ -32,6 +39,26 @@ function sourceFiles(root: string): string[] {
 }
 
 describe("launch probe report registry", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("binds persisted evidence to the producing source revision", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "idream-probe-revision-"));
+    const reportPath = path.join(directory, "chat-model.json");
+    vi.stubEnv("SENTRY_RELEASE", "idream@revision-abc123");
+    try {
+      await writeProbeReport(reportPath, {
+        ok: true,
+        checkedAt: "2026-08-12T00:00:00.000Z",
+      });
+      const loaded = loadProbeReport(
+        { CHAT_MODEL_PROBE_REPORT: reportPath },
+        "chatModelProbe",
+      );
+      expect(loaded?.sourceRevision).toBe("idream@revision-abc123");
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
   it("registers every evidence decoder exactly once", () => {
     const declaredDecoders = Object.entries(evidence)
       .filter(([name, value]) => name.startsWith("decode") && typeof value === "function")

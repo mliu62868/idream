@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { DEFAULT_FISH_AUDIO_DELIVERY } from "@idream/shared/admin";
 import { resolveLocalBlobPath } from "@idream/shared/storage/local-blob";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
@@ -742,6 +743,96 @@ describe("voice generation service contract", () => {
     expect(second.data.assetId).toBe(first.data.assetId);
     expect(await dreamcoinBalance(userId)).toBe(98);
     expect(await prisma.mediaAsset.count({ where: { ownerId: userId, type: "voice" } })).toBe(1);
+  });
+
+  it("pins an activated Character voice profile instead of requiring a system setting version", async () => {
+    const userId = `${P}character-clone-user`;
+    const messageId = `${P}character-clone-message`;
+    const referenceAssetId = `${P}character-clone-reference`;
+    const profileId = `${P}character-clone-profile`;
+    const providerVoiceId = `${P}character-clone-voice`;
+    await createUser({ id: userId });
+    await grantVoice(userId, 30);
+    await prisma.mediaAsset.create({
+      data: {
+        id: referenceAssetId,
+        ownerId: SYS,
+        characterId: CHAR,
+        type: "audio",
+        url: `/api/v1/media/${referenceAssetId}/content`,
+        contentType: "audio/wav",
+        visibility: "private",
+        safetyStatus: "passed",
+        metadata: {},
+      },
+    });
+    await prisma.characterVoiceProfile.create({
+      data: {
+        id: profileId,
+        characterId: CHAR,
+        version: 1,
+        provider: "fish_audio",
+        providerVoiceId,
+        model: "fish-audio-s2-pro-8bit",
+        language: "english",
+        deliverySettings: DEFAULT_FISH_AUDIO_DELIVERY,
+        status: "active",
+        referenceAssetId,
+        sampleText: "Pinned Character voice profile",
+        createdById: SYS,
+      },
+    });
+    await prisma.character.update({
+      where: { id: CHAR },
+      data: { voiceId: providerVoiceId },
+    });
+
+    try {
+      const response = await api("POST", "generation/voice", {
+        userId,
+        ageGate: true,
+        body: {
+          characterId: CHAR,
+          messageId,
+          text: "Speak with the activated Character voice",
+        },
+      });
+
+      expectOk(response, 201);
+      expect(
+        await prisma.voiceClipRequest.findUniqueOrThrow({
+          where: { userId_messageId: { userId, messageId } },
+          select: { providerPayload: true },
+        }),
+      ).toMatchObject({
+        providerPayload: {
+          voiceId: providerVoiceId,
+          voiceAuthority: "character_clone",
+          characterVoiceProfileVersion: 1,
+          systemVoiceSettingVersion: null,
+        },
+      });
+      expect(
+        await prisma.mediaAsset.findUniqueOrThrow({
+          where: { id: response.data.assetId },
+          select: { metadata: true },
+        }),
+      ).toMatchObject({
+        metadata: {
+          voiceId: providerVoiceId,
+          voiceAuthority: "character_clone",
+          characterVoiceProfileVersion: 1,
+          systemVoiceSettingVersion: null,
+        },
+      });
+    } finally {
+      await prisma.character.update({
+        where: { id: CHAR },
+        data: { voiceId: null },
+      });
+      await prisma.characterVoiceProfile.deleteMany({ where: { id: profileId } });
+      await prisma.mediaAsset.deleteMany({ where: { id: referenceAssetId } });
+    }
   });
 
   it("regenerates stale cached voice clips without charging again", async () => {

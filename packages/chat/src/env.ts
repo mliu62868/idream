@@ -6,7 +6,6 @@
 // (pm2 sets cwd=packages/chat). `pm2 start --only chat` does NOT apply the per-app
 // cwd, so start chat via the full ecosystem (or `bun run pm2:start`), not `--only`.
 import "dotenv/config";
-import path from "node:path";
 import {
   DEFAULT_MODERATION_PROVIDER,
   DEFAULT_MODERATION_TIMEOUT_MS,
@@ -15,6 +14,7 @@ import {
   mainWebUrlOrigin,
 } from "@idream/shared/env";
 import {
+  resolveChatFsRoot,
   resolveChatMemoryExtractProfile,
   resolveChatModelProfile,
 } from "@idream/shared";
@@ -28,6 +28,27 @@ function required(name: string, fallback?: string): string {
   return value;
 }
 
+function assertRunOwnedTestMainIngest(): void {
+  const isTestProcess =
+    process.env.APP_ENV === "test" ||
+    process.env.NODE_ENV === "test" ||
+    process.env.VITEST === "true";
+  if (!isTestProcess) return;
+  const runId = process.env.PW_RUN_ID?.trim();
+  const prefix = process.env.BULLMQ_PREFIX ?? "";
+  const e2ePrefix = `${defaultBullmqPrefix("e2e")}:`;
+  if (
+    process.env.PLAYWRIGHT_E2E !== "1" ||
+    !runId ||
+    !prefix.startsWith(e2ePrefix) ||
+    !prefix.endsWith(`:${runId}`)
+  ) {
+    throw new Error(
+      "Refusing Main ingest from a non-Playwright Chat test process",
+    );
+  }
+}
+
 export const env = {
   get APP_ENV() {
     return process.env.APP_ENV;
@@ -37,6 +58,9 @@ export const env = {
   },
   get SENTRY_RELEASE() {
     return process.env.SENTRY_RELEASE;
+  },
+  get SOURCE_REVISION() {
+    return process.env.IDREAM_SOURCE_REVISION ?? process.env.SENTRY_RELEASE;
   },
   get DATABASE_URL() {
     return required("CHAT_DATABASE_URL", process.env.DATABASE_URL);
@@ -60,7 +84,10 @@ export const env = {
     return process.env.BULLMQ_PREFIX ?? defaultBullmqPrefix(process.env.APP_ENV);
   },
   get CHAT_FS_ROOT() {
-    return path.resolve(process.env.CHAT_FS_ROOT ?? "./data/chat");
+    return resolveChatFsRoot(
+      process.env.CHAT_FS_ROOT ?? "./data/chat",
+      process.cwd(),
+    );
   },
   get CHAT_MODEL_PROVIDER() {
     return resolveChatModelProfile(process.env).provider;
@@ -136,9 +163,11 @@ export const env = {
     return process.env.INTERNAL_TOKEN ?? "";
   },
   get MAIN_INTERNAL_INGEST_URL() {
+    assertRunOwnedTestMainIngest();
     return `${mainWebUrlOrigin()}/api/internal/events/ingest`;
   },
   get MAIN_ACCOUNT_ERASURE_COMPLETION_V2_INGEST_URL() {
+    assertRunOwnedTestMainIngest();
     return `${mainWebUrlOrigin()}${ACCOUNT_ERASURE_COMPLETION_V2_INGEST_PATH}`;
   },
   get PORT() {

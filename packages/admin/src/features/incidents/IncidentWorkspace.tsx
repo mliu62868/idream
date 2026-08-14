@@ -66,11 +66,13 @@ type IncidentPlan = {
 };
 
 export function IncidentWorkspace({
+  canDiscardAttemptMissingCorrelationOutbox = false,
   canManage,
   canReadCorrelationOutbox = false,
   canReplayCorrelationOutbox = false,
   initialIncidentId = null,
 }: {
+  canDiscardAttemptMissingCorrelationOutbox?: boolean;
   canManage: boolean;
   canReadCorrelationOutbox?: boolean;
   canReplayCorrelationOutbox?: boolean;
@@ -229,6 +231,7 @@ export function IncidentWorkspace({
       </header>
 
       <IncidentCorrelationOutbox
+        canDiscardAttemptMissing={canDiscardAttemptMissingCorrelationOutbox}
         canRead={canReadCorrelationOutbox}
         canReplay={canReplayCorrelationOutbox}
       />

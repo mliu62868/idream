@@ -78,14 +78,33 @@ export const voiceClipSynthesisPayloadSchema = z
     }
   });
 
-export const pinnedVoiceProviderPayloadSchema = z.object({
-  providerKey: z.enum(["mock", "pipeline", "pocket_tts", "fish_audio"]),
-  voiceId: z.string().min(1),
-  voiceAuthority: z.string().min(1),
-  systemVoiceSettingVersion: z.number().int().nonnegative(),
-  tone: z.string().min(1),
-  delivery: fishAudioDeliverySettingsSchema,
-});
+export const pinnedVoiceProviderPayloadSchema = z
+  .object({
+    providerKey: z.enum(["mock", "pipeline", "pocket_tts", "fish_audio"]),
+    voiceId: z.string().min(1),
+    voiceAuthority: z.enum(["system_default", "character_clone"]),
+    systemVoiceSettingVersion: z.number().int().nonnegative().nullable(),
+    characterVoiceProfileVersion: z.number().int().positive().nullable().default(null),
+    tone: z.string().min(1),
+    delivery: fishAudioDeliverySettingsSchema,
+  })
+  .superRefine((payload, ctx) => {
+    const systemAuthority = payload.voiceAuthority === "system_default";
+    if (systemAuthority !== (payload.systemVoiceSettingVersion !== null)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["systemVoiceSettingVersion"],
+        message: "system voice authority must pin exactly one system setting version",
+      });
+    }
+    if (systemAuthority === (payload.characterVoiceProfileVersion !== null)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["characterVoiceProfileVersion"],
+        message: "character clone authority must pin exactly one Character voice profile version",
+      });
+    }
+  });
 
 const VOICE_CLIP_CACHE_VERSION = 8;
 const VOICE_CLIP_WAIT_MS = 220_000;
@@ -234,6 +253,7 @@ export async function createVoiceClip(
     voiceId: voiceAuthority.voiceId,
     voiceAuthority: voiceAuthority.source,
     systemVoiceSettingVersion: voiceAuthority.settingVersion,
+    characterVoiceProfileVersion: voiceAuthority.characterVoiceProfileVersion,
     tone: characterVoiceTone(character),
     delivery: voiceAuthority.delivery,
   });
@@ -726,6 +746,8 @@ async function executeOwnedVoiceClaim(input: {
         voiceAuthority: providerPayload.voiceAuthority,
         systemVoiceSettingVersion:
           providerPayload.systemVoiceSettingVersion,
+        characterVoiceProfileVersion:
+          providerPayload.characterVoiceProfileVersion,
         tone: providerPayload.tone,
         delivery: providerPayload.delivery,
         durationMs,

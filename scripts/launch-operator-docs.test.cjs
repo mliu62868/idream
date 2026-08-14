@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
+const rootPackage = require("../package.json");
 
 const repoRoot = path.resolve(__dirname, "..");
 const operatorDocs = [
@@ -25,6 +26,13 @@ test("launch operator docs use the package-bound Sentry probes", () => {
       assert.match(contents, new RegExp(escapeRegExp(command)));
     }
   }
+});
+
+test("the root Chat model probe loads the Chat runtime authority", () => {
+  assert.equal(
+    rootPackage.scripts["launch:probe:chat"],
+    "node --env-file=packages/main/.env --env-file=packages/chat/.env packages/main/node_modules/.bin/tsx packages/main/src/server/probe-chat-model.ts",
+  );
 });
 
 function escapeRegExp(value) {

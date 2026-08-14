@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  INCIDENT_CORRELATION_ATTEMPT_MISSING_DISCARD_CONFIRMATION,
   INCIDENT_CORRELATION_REPLAY_CONFIRMATION,
+  incidentCorrelationOutboxAttemptMissingDiscardRequestSchema,
+  incidentCorrelationOutboxAttemptMissingDiscardResultSchema,
   incidentCorrelationOutboxEventListResponseSchema,
   incidentCorrelationOutboxReplayRequestSchema,
   incidentCorrelationOutboxReplayResultSchema,
 } from "./contracts";
+import { findAdminV2ApiOperation } from "./api-manifest";
 import type {
   IncidentCorrelationOutboxEvent,
   IncidentCorrelationOutboxEventListResponse,
@@ -59,6 +63,53 @@ describe("incident correlation failed-outbox contracts", () => {
       reason: { code: "dependency_recovered", summary: "Postgres is healthy" },
       confirmation: INCIDENT_CORRELATION_REPLAY_CONFIRMATION,
     })).toThrow(/unique/i);
+  });
+
+  it("pins attempt-missing disposition to the exact failed carrier and missing source id", () => {
+    expect(incidentCorrelationOutboxAttemptMissingDiscardRequestSchema.parse({
+      ...revision,
+      expectedAttemptId: "attempt-missing",
+      reason: {
+        code: "source_authority_missing",
+        summary: "The GenerationAttempt does not exist",
+      },
+      confirmation: INCIDENT_CORRELATION_ATTEMPT_MISSING_DISCARD_CONFIRMATION,
+    })).toMatchObject({
+      ...revision,
+      expectedAttemptId: "attempt-missing",
+      confirmation: "DISCARD_INCIDENT_CORRELATION_ATTEMPT_MISSING",
+    });
+
+    expect(incidentCorrelationOutboxAttemptMissingDiscardResultSchema.parse({
+      id: revision.id,
+      outcome: "discarded_target_missing",
+      priorAttempts: 8,
+      payloadHash: revision.expectedPayloadHash,
+      replayed: false,
+    })).toMatchObject({
+      outcome: "discarded_target_missing",
+      replayed: false,
+    });
+  });
+
+  it("declares the audited attempt-missing disposition as an atomic dual-authority command", () => {
+    expect(findAdminV2ApiOperation(
+      "POST",
+      "/api/v2/admin/incidents/correlation-outbox/commands/discard-attempt-missing",
+    )).toMatchObject({
+      authorization: {
+        kind: "all_of",
+        permissions: ["ops.incident.manage", "ops.deadletter.write"],
+      },
+      contract: {
+        request: "incidentCorrelationOutboxAttemptMissingDiscardRequestSchema+idempotency-key",
+        response: "incidentCorrelationOutboxAttemptMissingDiscardResultSchema",
+      },
+      mutation: {
+        commandType: "incident.correlation_outbox.discard_attempt_missing",
+        executionMode: "atomic",
+      },
+    });
   });
 
   it("reports partial replay outcomes without collapsing them into success", () => {

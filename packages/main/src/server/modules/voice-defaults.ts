@@ -66,13 +66,14 @@ export async function resolveCharacterVoiceAuthority(input: {
         status: "active",
       },
       orderBy: [{ version: "desc" }, { id: "desc" }],
-      select: { deliverySettings: true, provider: true },
+      select: { deliverySettings: true, provider: true, version: true },
     });
     if (profile?.provider === "fish_audio") {
       return {
         voiceId: input.voiceId.trim(),
         source: "character_clone" as const,
         settingVersion: null,
+        characterVoiceProfileVersion: profile.version,
         delivery: deliverySettings(profile.deliverySettings),
       };
     }
@@ -82,6 +83,7 @@ export async function resolveCharacterVoiceAuthority(input: {
     voiceId: voiceIdForGender(defaults, input.gender),
     source: "system_default" as const,
     settingVersion: defaults.settingVersion,
+    characterVoiceProfileVersion: null,
     delivery: defaults.delivery,
   };
 }

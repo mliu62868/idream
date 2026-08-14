@@ -35,6 +35,17 @@ function createPrisma(connectionString: string): PrismaClient {
   });
 }
 
+function createLazyPrisma(factory: () => PrismaClient): PrismaClient {
+  let client: PrismaClient | undefined;
+  return new Proxy({} as PrismaClient, {
+    get(_target, property) {
+      client ??= factory();
+      const value = Reflect.get(client, property, client);
+      return typeof value === "function" ? value.bind(client) : value;
+    },
+  });
+}
+
 export function createChatPrisma(): PrismaClient {
   return createPrisma(connectionString());
 }
@@ -45,8 +56,12 @@ export function createChatProjectorPrisma(): PrismaClient {
 
 export const chatPrisma: PrismaClient =
   globalForChatPrisma.chatPrisma ?? createChatPrisma();
+// INTENT: the web process must still expose health/readiness diagnostics when
+// the independent projector credential is absent. Its first real use happens
+// during warmRuntime, where the error is captured and readiness stays false.
 export const chatProjectorPrisma: PrismaClient =
-  globalForChatPrisma.chatProjectorPrisma ?? createChatProjectorPrisma();
+  globalForChatPrisma.chatProjectorPrisma ??
+  createLazyPrisma(createChatProjectorPrisma);
 
 if (process.env.NODE_ENV !== "production") {
   globalForChatPrisma.chatPrisma = chatPrisma;
