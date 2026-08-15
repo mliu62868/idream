@@ -44,7 +44,10 @@ describe("launch probe report registry", () => {
   it("binds persisted evidence to the producing source revision", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "idream-probe-revision-"));
     const reportPath = path.join(directory, "chat-model.json");
-    vi.stubEnv("SENTRY_RELEASE", "idream@revision-abc123");
+    // INTENT: `.env` contains the local worktree revision and production gives
+    // IDREAM_SOURCE_REVISION precedence over SENTRY_RELEASE. Stub the authority
+    // this function actually reads so the test is independent of local env.
+    vi.stubEnv("IDREAM_SOURCE_REVISION", "idream@revision-abc123");
     try {
       await writeProbeReport(reportPath, {
         ok: true,

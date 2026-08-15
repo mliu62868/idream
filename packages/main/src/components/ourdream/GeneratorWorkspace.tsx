@@ -55,6 +55,7 @@ import {
   initialAuthorityStatus,
   loadingAuthorityStatus,
   readyAuthorityStatus,
+  type AuthorityStatus,
 } from "./authority-state";
 import { useViewerResource } from "@/hooks/useViewerResource";
 import { useAgeGateAccess } from "./AgeGateBoundary";
@@ -233,6 +234,7 @@ type GeneratorModelOption = {
 export function projectGeneratorModelSelection(
   selection: GeneratorModelSelection,
   models: readonly GeneratorModelOption[],
+  automaticLabel = "Auto (identity-aware)",
 ) {
   const selected = selection.explicit
     ? models.find((model) => model.id === selection.id)
@@ -244,10 +246,20 @@ export function projectGeneratorModelSelection(
         selectValue: selected.id,
       }
     : {
-        displayedLabel: "Auto (identity-aware)",
+        displayedLabel: automaticLabel,
         requestModelId: undefined,
         selectValue: "",
       };
+}
+
+export function generatorVideoModeCopy(characterTitle: string) {
+  return {
+    promptLabel: "Motion direction",
+    promptPlaceholder:
+      "Describe movement, camera motion, and pacing for this starting image",
+    sourceTitle: "Animate this image",
+    sourceDescription: `This exact ${characterTitle} image is the first frame. Video adds motion; it does not replace the outfit, lighting, or location.`,
+  } as const;
 }
 
 export function generatorImageEditModelOptions(
@@ -344,9 +356,22 @@ export async function loadGeneratorLooksForViewer(
   viewerAuthenticated: boolean | undefined,
   canEditIdentity: boolean,
   loadLooks: () => Promise<void>,
+  settleWithoutRequest: () => void,
 ) {
-  if (viewerAuthenticated !== true || !canEditIdentity) return;
+  if (viewerAuthenticated !== true) return;
+  if (!canEditIdentity) {
+    settleWithoutRequest();
+    return;
+  }
   await loadLooks();
+}
+
+export function generatorShowsSavedLooksEmpty(
+  canEditIdentity: boolean,
+  status: AuthorityStatus,
+  itemCount: number,
+) {
+  return canEditIdentity && authorityShowsEmpty(status, itemCount);
 }
 
 export function removeGeneratorCharacterViewerAuthority(
@@ -600,8 +625,13 @@ export function GeneratorWorkspace() {
     ],
   );
   const modelSelectionProjection = useMemo(
-    () => projectGeneratorModelSelection(modelSelection, availableModels),
-    [availableModels, modelSelection],
+    () =>
+      projectGeneratorModelSelection(
+        modelSelection,
+        availableModels,
+        mode === "video" ? "Auto (animate source)" : "Auto (identity-aware)",
+      ),
+    [availableModels, mode, modelSelection],
   );
   const modeAvailable =
     mode === "image"
@@ -691,6 +721,7 @@ export function GeneratorWorkspace() {
   const canUsePrompt = Boolean(config?.entitlements.premium_controls);
   const canDescribeMoment = canUsePrompt || characterImageMode;
   const anonymousViewer = config?.viewer?.authenticated === false;
+  const configAuthorityUnavailable = Boolean(configError && !config);
   const upgradeHref = upgradeHrefForTarget(authReturnTarget);
   const insufficientBalanceHref = anonymousViewer
     ? authHrefForTarget("/signup", authReturnTarget)
@@ -698,6 +729,9 @@ export function GeneratorWorkspace() {
   const selectedCharacter = useMemo(
     () => characters.find((character) => character.id === characterId) ?? null,
     [characterId, characters],
+  );
+  const videoModeCopy = generatorVideoModeCopy(
+    selectedCharacter?.title ?? "character",
   );
   const identityReferenceCount = useMemo(() => {
     const profile = selectedCharacter?.visualProfile;
@@ -1330,6 +1364,12 @@ export function GeneratorWorkspace() {
           config?.viewer.authenticated,
           selectedCharacter?.canEditIdentity === true,
           refreshLooks,
+          () => {
+            setLooks([]);
+            setSelectedLookId("");
+            looksCharacterIdRef.current = "";
+            setLooksAuthority(readyAuthorityStatus());
+          },
         ),
       0,
     );
@@ -2124,7 +2164,8 @@ export function GeneratorWorkspace() {
                     ))}
                   </select>
                 </label>
-                {charactersAuthority.phase === "loading" &&
+                {!configAuthorityUnavailable &&
+                charactersAuthority.phase === "loading" &&
                 !charactersAuthority.hasSnapshot ? (
                   <p className="mt-2 text-[12px] font-semibold text-[rgb(170,170,170)]">
                     Loading your characters…
@@ -2168,7 +2209,7 @@ export function GeneratorWorkspace() {
               </>
             )}
 
-            {characterImageMode && (
+            {selectedCharacter && characterImageMode && (
               <div className="mt-4">
                 <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
                   Character identity
@@ -2234,7 +2275,11 @@ export function GeneratorWorkspace() {
                     </select>
                   </label>
                 )}
-                {!anonymousViewer && authorityShowsEmpty(looksAuthority, looks.length) ? (
+                {!anonymousViewer && generatorShowsSavedLooksEmpty(
+                  selectedCharacter?.canEditIdentity === true,
+                  looksAuthority,
+                  looks.length,
+                ) ? (
                   <p className="mt-3 text-[12px] font-semibold text-[rgb(114,113,112)]">
                     No saved Looks for this character yet.
                   </p>
@@ -2242,9 +2287,39 @@ export function GeneratorWorkspace() {
               </div>
             )}
 
+            {mode === "video" && selectedCharacter ? (
+              <div
+                className="mt-4 flex gap-3 rounded-[10px] border border-white/10 bg-black/25 p-3"
+                data-testid="generator-video-source"
+              >
+                <div className="relative h-24 w-20 shrink-0 overflow-hidden rounded-[8px] bg-[rgb(36,36,36)]">
+                  <Image
+                    alt={`${selectedCharacter.title} animation source`}
+                    className="object-cover object-top"
+                    fill
+                    sizes="80px"
+                    src={selectedCharacter.image}
+                    unoptimized={isPrivateMediaUrl(selectedCharacter.image)}
+                  />
+                </div>
+                <div className="min-w-0 py-1">
+                  <p className="text-[12px] font-black uppercase text-white">
+                    {videoModeCopy.sourceTitle}
+                  </p>
+                  <p className="mt-1 text-[12px] font-medium leading-5 text-[rgb(170,170,170)]">
+                    {videoModeCopy.sourceDescription}
+                  </p>
+                </div>
+              </div>
+            ) : null}
+
             {!imageEditMode && (
               <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
-                {characterImageMode ? "Describe the moment" : "Scene Prompt"}
+                {mode === "video"
+                  ? videoModeCopy.promptLabel
+                  : characterImageMode
+                    ? "Describe the moment"
+                    : "Scene Prompt"}
                 <textarea
                   aria-label="Prompt"
                   className="mt-2 min-h-24 w-full rounded-[10px] bg-[rgb(36,36,36)] p-4 text-[13px] font-semibold text-white outline-none disabled:text-[rgb(114,113,112)]"
@@ -2254,7 +2329,9 @@ export function GeneratorWorkspace() {
                   onChange={(event) => setPrompt(event.target.value)}
                   placeholder={
                     canDescribeMoment
-                      ? characterImageMode
+                      ? mode === "video"
+                        ? videoModeCopy.promptPlaceholder
+                        : characterImageMode
                         ? `What is ${selectedCharacter?.title ?? "the character"} doing, where are they, and how does the moment feel?`
                         : "Scene, pose, mood"
                       : "Premium control"
@@ -2350,7 +2427,7 @@ export function GeneratorWorkspace() {
                   }}
                   value={modelSelectionProjection.selectValue}
                 >
-                  <option value="">Auto (identity-aware)</option>
+                  <option value="">{modelSelectionProjection.displayedLabel}</option>
                   {availableModels.map((item) => (
                     <option key={item.id} value={item.id}>
                       {item.label}
@@ -2860,29 +2937,40 @@ export function GeneratorWorkspace() {
                 </button>
               </div>
               <div className="grid gap-3">
-                {anonymousViewer ? (
+                {configAuthorityUnavailable ? (
+                  <GeneratorAuthorityNotice
+                    hasSnapshot={false}
+                    message="Generation jobs are unavailable until the generator reconnects."
+                    onRetry={() => void refreshWorkspaceAuthority()}
+                  />
+                ) : anonymousViewer ? (
                   <GeneratorPrivateDataAuthHint label="your generation jobs" />
                 ) : null}
-                {!anonymousViewer && jobsAuthority.phase === "error" ? (
+                {!configAuthorityUnavailable &&
+                !anonymousViewer &&
+                jobsAuthority.phase === "error" ? (
                   <GeneratorAuthorityNotice
                     hasSnapshot={jobsAuthority.hasSnapshot}
                     message={jobsAuthority.error ?? "Jobs could not load."}
                     onRetry={() => void refreshJobs()}
                   />
                 ) : null}
-                {!anonymousViewer &&
+                {!configAuthorityUnavailable &&
+                !anonymousViewer &&
                 jobsAuthority.phase === "loading" &&
                 !jobsAuthority.hasSnapshot ? (
                   <div className="rounded-[10px] bg-[rgb(36,36,36)] p-5 text-[13px] font-medium text-[rgb(170,170,170)]">
                     Loading jobs…
                   </div>
                 ) : null}
-                {!anonymousViewer && authorityShowsEmpty(jobsAuthority, jobs.length) && (
+                {!configAuthorityUnavailable &&
+                !anonymousViewer &&
+                authorityShowsEmpty(jobsAuthority, jobs.length) && (
                   <div className="rounded-[10px] bg-[rgb(36,36,36)] p-5 text-[13px] font-medium text-[rgb(170,170,170)]">
                     No jobs yet.
                   </div>
                 )}
-                {jobs.map((job) => (
+                {!configAuthorityUnavailable && jobs.map((job) => (
                   <div
                     className="rounded-[10px] bg-[rgb(36,36,36)] p-4"
                     data-generation-job-id={job.id}
@@ -2895,7 +2983,7 @@ export function GeneratorWorkspace() {
                           {job.mode === "image" ? "Image" : "Video"} x{job.outputCount}
                         </p>
                         <p className="mt-1 text-[12px] font-medium text-[rgb(170,170,170)]">
-                          {jobStatusLabel(job.status, job.errorCode)}
+                          {generatorJobStatusLabel(job.mode, job.status, job.errorCode)}
                         </p>
                       </div>
                       <span className="rounded-full bg-black/30 px-3 py-1 text-[11px] font-bold uppercase text-white">
@@ -3048,7 +3136,18 @@ export function GeneratorWorkspace() {
                   <GeneratorPrivateDataAuthHint label="your private gallery" />
                 </div>
               ) : null}
-              {!anonymousViewer && mediaAuthority.phase === "error" ? (
+              {configAuthorityUnavailable ? (
+                <div className="mb-4">
+                  <GeneratorAuthorityNotice
+                    hasSnapshot={false}
+                    message="Your gallery is unavailable until the generator reconnects."
+                    onRetry={() => void refreshWorkspaceAuthority()}
+                  />
+                </div>
+              ) : null}
+              {!configAuthorityUnavailable &&
+              !anonymousViewer &&
+              mediaAuthority.phase === "error" ? (
                 <div className="mb-4">
                   <GeneratorAuthorityNotice
                     hasSnapshot={mediaAuthority.hasSnapshot}
@@ -3057,7 +3156,8 @@ export function GeneratorWorkspace() {
                   />
                 </div>
               ) : null}
-              {!anonymousViewer &&
+              {!configAuthorityUnavailable &&
+              !anonymousViewer &&
               mediaAuthority.phase === "loading" &&
               !mediaAuthority.hasSnapshot ? (
                 <div className="mb-4 rounded-[10px] bg-[rgb(36,36,36)] p-5 text-[13px] font-medium text-[rgb(170,170,170)]">
@@ -3105,7 +3205,7 @@ export function GeneratorWorkspace() {
                 </div>
               )}
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                {media.map((item, index) => {
+                {!configAuthorityUnavailable && media.map((item, index) => {
                   const source = item.thumbnailUrl ?? item.url;
                   const isUnavailable =
                     failedMediaIds.has(item.id) ||
@@ -3288,7 +3388,9 @@ export function GeneratorWorkspace() {
                     </div>
                   );
                 })}
-                {!anonymousViewer && authorityShowsEmpty(mediaAuthority, media.length) && (
+                {!configAuthorityUnavailable &&
+                !anonymousViewer &&
+                authorityShowsEmpty(mediaAuthority, media.length) && (
                   <div className="col-span-full grid min-h-40 place-items-center rounded-[10px] bg-[rgb(36,36,36)] text-[13px] font-medium text-[rgb(170,170,170)]">
                     <div className="flex items-center gap-2">
                       <ImageIcon className="h-4 w-4" />
@@ -3728,8 +3830,18 @@ const jobStatusLabels: Record<GenerationJobStatus, string> = {
   cancelled: "Cancelled",
 };
 
-function jobStatusLabel(status: string, errorCode: string | null) {
+export function generatorJobStatusLabel(
+  mode: GenerationMode,
+  status: string,
+  errorCode: string | null,
+) {
   if (!isCatalogMember(GENERATION_JOB_STATUSES, status)) return status;
+  if (mode === "video" && status === "queued") {
+    return "Waiting to render · usually 6–10 min";
+  }
+  if (mode === "video" && status === "running") {
+    return "Rendering source image · usually 6–10 min";
+  }
   const label = jobStatusLabels[status];
   return errorCode && (status === "blocked" || status === "failed")
     ? `${label}: ${errorCode}`

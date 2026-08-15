@@ -58,10 +58,13 @@ export function CharacterCard({
 
       <div className="absolute inset-x-0 bottom-0 p-2">
         <div className="min-w-0">
-          <h2 className="line-clamp-2 text-[16px] font-bold leading-[18px] text-white">
+          <h2
+            aria-label={`${card.title}, age ${card.age}`}
+            className="line-clamp-2 text-[16px] font-bold leading-[18px] text-white"
+          >
             {card.title}
             <span
-              aria-label={`age ${card.age}`}
+              aria-hidden="true"
               className="ml-2 whitespace-nowrap text-[14px] font-bold leading-[16px]"
             >
               · {card.age}

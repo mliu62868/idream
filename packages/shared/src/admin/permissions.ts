@@ -23,6 +23,7 @@ export const ADMIN_PERMISSION_KEYS = [
   "billing.read",
   "billing.ledger.adjust",
   "billing.checkout.reconcile",
+  "billing.subscription.refund",
   "config.feature_flag.write",
   "config.pricing.write",
   "ops.queue.read",

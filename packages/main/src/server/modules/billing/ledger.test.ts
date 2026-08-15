@@ -101,6 +101,46 @@ describe("postDreamcoinEntry", () => {
     expect(ledger.creates()).toBe(1);
   });
 
+  it("reverses an exact subscription grant and restores it idempotently when the provider cancels", async () => {
+    const ledger = inMemoryLedger();
+    await postDreamcoinEntry(ledger.tx, {
+      kind: "subscription_grant",
+      userId: "user-1",
+      amount: 1_500,
+      sourceId: "subscription-1",
+      idempotencyKey: "subscription:grant:btcpay:invoice-1",
+    });
+    const reversal = await postDreamcoinEntry(ledger.tx, {
+      kind: "subscription_refund",
+      userId: "user-1",
+      amount: 1_500,
+      sourceId: "subscription-1",
+      idempotencyKey: "subscription:refund:subscription-1:grant-reversal",
+    });
+    const restorationIntent = {
+      kind: "subscription_refund_restore" as const,
+      userId: "user-1",
+      amount: 1_500,
+      sourceId: "subscription-1",
+      idempotencyKey: "subscription:refund:subscription-1:grant-restore",
+    };
+    const restoration = await postDreamcoinEntry(ledger.tx, restorationIntent);
+    const replay = await postDreamcoinEntry(ledger.tx, restorationIntent);
+
+    expect(reversal).toMatchObject({
+      delta: -1_500,
+      balanceAfter: 0,
+      reason: "subscription_refund",
+    });
+    expect(restoration).toMatchObject({
+      delta: 1_500,
+      balanceAfter: 1_500,
+      reason: "subscription_refund_restore",
+    });
+    expect(replay.id).toBe(restoration.id);
+    expect(ledger.creates()).toBe(3);
+  });
+
   it("canonicalizes referral and admin-adjustment identities", async () => {
     const ledger = inMemoryLedger();
     await postDreamcoinEntry(ledger.tx, {

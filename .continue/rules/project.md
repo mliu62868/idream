@@ -39,6 +39,13 @@ This version has breaking changes — APIs, conventions, and file structure may 
 - `packages/shared` 是跨包契约 SSoT（类型/协议）；`chat` 用独立 PG role + 文件层记忆，main 经 BFF proxy + 事件交互
 - `db/sql/` 是 chat 服务库边界 SQL，**由用户手工执行**，不要自己连库跑
 
+## 真实端到端验证 —— 已授权付费请求
+
+- 用户要求“全面端到端检查”“真实完整验证”或同等目标时，必须走完真实用户与运营链路；不要因为请求会产生费用或写入状态，就跳过 Chat 消息、图片 / 视频 / 语音生成、重试恢复、交付、持久化、额度扣减等关键路径。
+- **常规按量 API、模型与生成请求已获授权，无需再次询问。** 使用最低充分次数与规格，记录实际 provider、model / workflow、request / attempt / artifact 标识、耗时、额度或费用，以及最终交付和持久化结果；mock、页面可点击或本地构建不能替代这层证据。
+- 验证使用受控测试账号与可识别测试内容，完成后清理可安全清理的数据；发现异常重试、失控排队或费用异常时立即停止继续消费并报告。
+- 此授权不自动包含充值、购买订阅、向第三方转账、公开发布、不可逆删除等不同性质的外部动作；除非当前请求明确包含，否则仍按原有边界处理。
+
 ## MOST IMPORTANT NOTES
 - When launching Claude Code agent teams, ALWAYS have each teammate work in their own worktree branch and merge everyone's work at the end, resolving any merge conflicts smartly since you are basically serving the orchestrator role and have full context to our goals, work given, work achieved, and desired outcomes.
 - After editing `AGENTS.md`, run `bash scripts/sync-agent-rules.sh` to regenerate platform-specific instruction files.

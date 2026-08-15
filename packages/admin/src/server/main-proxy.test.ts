@@ -74,6 +74,7 @@ describe("Admin main HTTP proxy", () => {
   });
   it("forwards method, query, cookie, and body without hop-by-hop headers", async () => {
     vi.stubEnv("ADMIN_BFF_SIGNING_SECRET", SIGNING_SECRET);
+    vi.stubEnv("IDREAM_SOURCE_REVISION", "");
     vi.stubEnv("SENTRY_RELEASE", "idream@admin-revision-123");
     const fetchMock = vi.fn(async (target: URL, init: RequestInit) => {
       expect(target.toString()).toBe("http://127.0.0.1:3000/api/v1/admin/users?status=active");

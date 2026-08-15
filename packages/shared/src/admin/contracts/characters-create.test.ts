@@ -145,6 +145,68 @@ describe("Character Project create contract", () => {
     }).success).toBe(false);
   });
 
+  it("creates a Character without a launch brief", () => {
+    // SPEC: positioning 四项 + successCriteria / productionPackage / qaPlan 可空。
+    // INTENT: 它们此前是创建必填，18 道发布闸一道都不查，落库列本来可空，角色页「编辑详情」里也有
+    //         同一份编辑器——创建口不该再立一堵墙。
+    const noBrief = {
+      ...validCreate,
+      positioning: {
+        audience: "",
+        companionNeed: "",
+        hypothesis: "",
+        differentiation: "",
+      },
+      commercialIntent: {
+        ...validCreate.commercialIntent,
+        successCriteria: [],
+        productionPackage: "",
+        qaPlan: "",
+      },
+    };
+    expect(characterProjectCreateRequestSchema.safeParse(noBrief).success).toBe(
+      true,
+    );
+    expect(
+      characterProjectDraftPatchRequestSchema.safeParse({
+        entityVersion: 1,
+        ownerId: null,
+        audience: "",
+        companionNeed: "",
+        hypothesis: "",
+        differentiation: "",
+        targetPlacementKeys: [],
+        successCriteria: [],
+        productionPackage: "",
+        qaPlan: "",
+        plannedLaunchAt: null,
+        reason: "Clear the launch brief until launch planning starts",
+      }).success,
+    ).toBe(true);
+  });
+
+  it("requires a personality or a tone so Soul compilation cannot fail server-side", () => {
+    // SPEC: compileCharacterSoul 唯一的 error 级诊断就是这一条；契约不表达它，请求就会在服务端
+    //       throw 成 500，运营只看到「创建结果未知」。
+    const persona = { ...validCreate.persona, personality: "", tone: "" };
+    expect(
+      characterProjectCreateRequestSchema.safeParse({ ...validCreate, persona })
+        .success,
+    ).toBe(false);
+    expect(
+      characterProjectCreateRequestSchema.safeParse({
+        ...validCreate,
+        persona: { ...persona, personality: "Observant and measured" },
+      }).success,
+    ).toBe(true);
+    expect(
+      characterProjectCreateRequestSchema.safeParse({
+        ...validCreate,
+        persona: { ...persona, tone: "Warm, concise, grounded" },
+      }).success,
+    ).toBe(true);
+  });
+
   it("accepts immutable content autosave through the versioned Project PATCH contract", () => {
     const validPatch = {
       entityVersion: 1,

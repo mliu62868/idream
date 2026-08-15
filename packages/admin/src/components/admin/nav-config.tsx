@@ -201,6 +201,7 @@ export const navItems: NavItem[] = [
     render: (ctx) => <BillingWorkspace
       canAdjust={ctx.permissions.has("billing.ledger.adjust")}
       canReconcile={ctx.permissions.has("billing.checkout.reconcile")}
+      canRefund={ctx.permissions.has("billing.subscription.refund")}
     /> }),
   item({ id: "compliance", label: "Account Requests", href: "/admin/customer-ops/account-requests", icon: ShieldAlert, group: "Customer Operations", read: read("compliance.read"),
     render: () => <ComplianceView /> }),

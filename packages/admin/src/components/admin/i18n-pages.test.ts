@@ -132,6 +132,17 @@ export const UI_KEYS = [
   "Type the name to confirm",
 ];
 
+export const BILLING_REFUND_KEYS = [
+  "Full refund", "Issue full refund",
+  "Issue the full provider refund of {amount}. Access is frozen immediately and the exact {count} Dreamcoin subscription grant is reversed; coins already spent remain consumed.",
+  "Open claim",
+  "Read the provider Pull Payment and payout authority, then project its current state into subscription, entitlement, and Dreamcoin records.",
+  "Reconcile", "Reconcile provider state", "Reconcile refund {id}",
+  "Reconciliation reason", "Refund reason", "Refund reconciliation confirmation",
+  "Refund state", "Refund subscription {id}", "Subscription refund confirmation",
+  "Subscription {id} refund is {state}.",
+];
+
 // SPEC: 角色工作台顶部的运营事实条 + 已上线降级文案（characterOperationsFacts /
 // Character Production Journey 展示文案）。这条是运营开页第一眼看的东西，漏英文最刺眼。
 export const CHARACTER_OPERATIONS_KEYS = [
@@ -184,6 +195,10 @@ describe("admin i18n — trio pages have zh", () => {
     for (const key of UI_KEYS) expect(hasAdminZh(key)).toBe(true);
   });
 
+  it("subscription refund operator journey", () => {
+    for (const key of BILLING_REFUND_KEYS) expect(hasAdminZh(key)).toBe(true);
+  });
+
   it("character workspace operations facts", () => {
     for (const key of CHARACTER_OPERATIONS_KEYS) expect(hasAdminZh(key)).toBe(true);
   });
@@ -193,5 +208,26 @@ describe("admin i18n — trio pages have zh", () => {
   it("keeps the Performance tab distinct from voice delivery style", () => {
     expect(translateAdmin("zh", "Performance")).toBe("表现");
     expect(translateAdmin("zh", "Voice delivery")).toBe("演绎风格");
+  });
+
+  it("localizes Generation Jobs decision and settlement language", () => {
+    expect(translateAdmin("zh", "Unknown review")).toBe("未知结果复核");
+    expect(translateAdmin("zh", "Matching jobs")).toBe("匹配任务");
+    expect(translateAdmin("zh", "captured")).toBe("已扣款");
+    expect(translateAdmin("zh", "cancelled")).toBe("已取消");
+    expect(translateAdmin("zh", "delivered")).toBe("已交付");
+    expect(translateAdmin("zh", "Typed event")).toBe("类型化事件");
+    expect(translateAdmin("zh", "Review / settlement")).toBe("复核 / 结算");
+    expect(translateAdmin("zh", "legacy projection: {status}", { status: "已完成" })).toBe("旧版投影：已完成");
+    expect(translateAdmin("zh", "{captured} captured · {refunded} refunded", { captured: 9, refunded: 0 })).toBe("已扣款 9 · 已退款 0");
+  });
+
+  it("localizes Today loading and recovery states", () => {
+    expect(translateAdmin("zh", "Refreshing Today. Showing the last loaded snapshot."))
+      .toBe("正在刷新今日工作，当前显示上次加载的快照。");
+    expect(translateAdmin("zh", "Today refresh failed. Showing the last loaded snapshot."))
+      .toBe("今日工作刷新失败，当前显示上次加载的快照。");
+    expect(translateAdmin("zh", "Today's work could not be loaded."))
+      .toBe("今日工作加载失败。");
   });
 });

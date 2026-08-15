@@ -35,6 +35,7 @@ import {
   parseProfilePreferencesResponse,
   parseTagListResponse,
   type PublicBillingAccess,
+  type PublicSubscriptionRefund,
   type PublicSubscription,
   type RuntimeLibraryItem as LibraryItem,
   type RuntimeMediaCollection as MediaCollection,
@@ -95,6 +96,31 @@ type CollectionVisibility = MediaCollection["visibility"];
 type ProfileWorkspaceProps = {
   routePath: string;
 };
+
+export function profileLibraryCardPresentation(item: LibraryItem) {
+  const contentType = item.contentType?.toLowerCase() ?? "";
+  const isAudioItem =
+    item.type === "voice" || item.type === "audio" || contentType.startsWith("audio/");
+  const isMediaItem = item.type === "image" || item.type === "video" || isAudioItem;
+  const fallbackMediaTitle = isAudioItem
+    ? "Generated voice clip"
+    : item.type === "video"
+      ? "Generated video"
+      : "Generated image";
+  const character = item.character;
+
+  return {
+    title:
+      item.title ??
+      item.name ??
+      character?.title ??
+      character?.name ??
+      (isMediaItem ? fallbackMediaTitle : item.id),
+    // INTENT: Generated media prompts contain identity-lock and runtime instructions.
+    // Keep those searchable, but do not expose implementation text as customer-facing card copy.
+    summary: isMediaItem ? null : item.prompt ?? item.description ?? null,
+  };
+}
 
 export function createdCharacterPublicationStatus(input: {
   status?: string | null;
@@ -235,6 +261,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
   const [subscription, setSubscription] = useState<PublicSubscription | null>(null);
   const [billingAccess, setBillingAccess] =
     useState<PublicBillingAccess | null>(null);
+  const [refund, setRefund] = useState<PublicSubscriptionRefund | null>(null);
   const [entitlements, setEntitlements] = useState<Record<string, unknown>>({});
   const [displayName, setDisplayName] = useState("");
   const [profileName, setProfileName] = useState("");
@@ -280,6 +307,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
     setPlan(null);
     setSubscription(null);
     setBillingAccess(null);
+    setRefund(null);
     setEntitlements({});
     setDisplayName("");
     setProfileName("");
@@ -334,6 +362,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
       setBalance(profileData.balance);
       setSubscription(profileData.subscription);
       setBillingAccess(profileData.billingAccess);
+      setRefund(profileData.refund);
       setEntitlements(profileData.entitlements);
       setPlan(
         profileData.subscription?.plan
@@ -920,6 +949,13 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
     : plan
       ? "No active paid access"
       : "Billing and access status unavailable";
+  const refundStatus = refund
+    ? refund.state === "completed"
+      ? `Full refund completed · ${refund.reversedDreamcoins.toLocaleString()} Dreamcoins reversed · balance ${refund.balanceAfter.toLocaleString()}`
+      : refund.state === "canceled"
+        ? `Refund canceled · subscription access and ${refund.reversedDreamcoins.toLocaleString()} Dreamcoins restored`
+        : `Full refund ${refund.state.replaceAll("_", " ")} · access frozen · ${refund.reversedDreamcoins.toLocaleString()} Dreamcoins reversed`
+    : null;
   const isMyAiRoute = routePath.startsWith("/custom");
   const workspaceTitle = isMyAiRoute ? "My AI" : "Profile";
   const authRequiredTitle = isMyAiRoute ? "Sign in to open My AI" : "Sign in to open Profile";
@@ -1141,6 +1177,19 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
               {plan ?? "Plan unavailable"}
             </p>
             <p className="mt-1 text-[12px] font-medium text-[rgb(170,170,170)]">{billingStatus}</p>
+            {refund && refundStatus ? (
+              <div className="mt-3 rounded-[10px] bg-[rgb(29,29,29)] p-3" data-testid="profile-refund-status">
+                <p className="text-[12px] font-bold text-white">{refundStatus}</p>
+                <p className="mt-1 text-[11px] font-medium text-[rgb(170,170,170)]">
+                  Refund reference {refund.reference}
+                </p>
+                {refund.claimUrl ? (
+                  <a className="mt-2 inline-flex h-9 items-center justify-center rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)]" href={refund.claimUrl} rel="noreferrer" target="_blank">
+                    Claim refund
+                  </a>
+                ) : null}
+              </div>
+            ) : null}
             <div className="mt-3 flex flex-wrap gap-2">
               {!plan && profileAuthority.phase === "error" ? (
                 <button
@@ -1572,8 +1621,7 @@ function LibraryCard({
   onToggleVisibility?: (id: string, current?: string) => void;
 }>) {
   const character = item.character;
-  const title = item.title ?? item.name ?? character?.title ?? character?.name ?? item.id;
-  const summary = item.prompt ?? item.description ?? null;
+  const { summary, title } = profileLibraryCardPresentation(item);
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState(title);
   const [editDescription, setEditDescription] = useState(summary ?? "");

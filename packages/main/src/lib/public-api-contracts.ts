@@ -141,6 +141,45 @@ export const publicSubscriptionSchema = z
 
 export type PublicSubscription = z.infer<typeof publicSubscriptionSchema>;
 
+export const publicSubscriptionRefundSchema = z
+  .object({
+    subscriptionId: nonEmptyString,
+    checkoutId: nonEmptyString,
+    reference: nonEmptyString,
+    state: z.enum([
+      "provider_dispatching",
+      "provider_unknown",
+      "claimable",
+      "awaiting_approval",
+      "awaiting_payment",
+      "in_progress",
+      "completed",
+      "canceled",
+    ]),
+    amountCents: z.number().int().positive(),
+    currency: nonEmptyString,
+    reversedDreamcoins: z.number().int().positive(),
+    balanceAfter: z.number().int(),
+    claimUrl: z.string().url().nullable(),
+    providerRefundId: z.string().nullable(),
+    payouts: z.array(
+      z.object({
+        payoutId: nonEmptyString,
+        state: nonEmptyString,
+        paymentProofId: z.string().nullable(),
+      }).strict(),
+    ),
+    requestedAt: timestamp,
+    completedAt: timestamp.nullable(),
+    restoredAt: timestamp.nullable(),
+    restoredBalanceAfter: z.number().int().nullable(),
+  })
+  .strict();
+
+export type PublicSubscriptionRefund = z.infer<
+  typeof publicSubscriptionRefundSchema
+>;
+
 const checkoutIdempotencyActionSchema = z.enum(["same_key", "new_key"]);
 export type CheckoutIdempotencyAction = z.infer<
   typeof checkoutIdempotencyActionSchema
@@ -231,6 +270,7 @@ const profileResponseSchema = successEnvelope(
       balance: z.number().finite(),
       subscription: publicSubscriptionSchema.nullable(),
       billingAccess: billingAccessSchema.nullable(),
+      refund: publicSubscriptionRefundSchema.nullable().default(null),
       entitlements: z.record(z.string(), z.unknown()),
     })
     .strict()

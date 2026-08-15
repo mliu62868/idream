@@ -79,6 +79,10 @@ import {
   billingAdjustment,
   resolveCheckoutReconciliation,
 } from "./billing/command";
+import {
+  reconcileSubscriptionRefund,
+  requestSubscriptionRefund,
+} from "./billing/refund";
 import { billingLedger, billingReconciliation, listSubscriptions } from "./billing/query";
 import { listFeatureFlags, patchFeatureFlag } from "./config/feature-flags";
 import {
@@ -300,6 +304,24 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
     }
     if (id === "adjustments" && !action && method === "POST") {
       return billingAdjustment(request);
+    }
+    if (
+      id === "subscriptions" &&
+      action &&
+      child === "refund" &&
+      !grandchild &&
+      method === "POST"
+    ) {
+      return requestSubscriptionRefund(request, action);
+    }
+    if (
+      id === "subscriptions" &&
+      action &&
+      child === "refund" &&
+      grandchild === "reconcile" &&
+      method === "POST"
+    ) {
+      return reconcileSubscriptionRefund(request, action);
     }
   }
 

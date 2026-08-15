@@ -38,22 +38,22 @@ export function CharacterDetailHero({
         <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(8,8,8,.88)_0%,rgba(8,8,8,.48)_48%,rgba(8,8,8,.08)_78%),linear-gradient(0deg,rgba(8,8,8,.84)_0%,transparent_58%)]" />
       </div>
 
-      <div className="absolute inset-x-0 bottom-0 flex max-w-3xl flex-col justify-end p-6 md:inset-y-0 md:bottom-auto md:p-12">
+      <div className="absolute inset-x-0 bottom-0 flex max-w-3xl flex-col justify-end p-6 lg:inset-y-0 lg:bottom-auto lg:p-12">
         <p className="text-[12px] font-black uppercase leading-4 text-[rgb(253,95,194)]">
           {character.style ?? "realistic"} companion
         </p>
         <div className="mt-3 flex flex-wrap items-end gap-x-3 gap-y-2">
-          <h1 className="text-[40px] font-black uppercase leading-[0.95] md:text-[72px]">
+          <h1 className="text-[40px] font-black uppercase leading-[0.95] lg:text-[72px]">
             {character.title}
           </h1>
           <span
             aria-label={`${character.age} years old`}
-            className="pb-1 text-[28px] font-black leading-none text-white/80 md:pb-2 md:text-[42px]"
+            className="pb-1 text-[28px] font-black leading-none text-white/80 lg:pb-2 lg:text-[42px]"
           >
             {character.age}
           </span>
         </div>
-        <p className="mt-5 line-clamp-3 max-w-2xl text-[15px] font-medium leading-7 text-white/75 md:text-[17px]">
+        <p className="mt-5 line-clamp-3 max-w-2xl text-[15px] font-medium leading-7 text-white/75 lg:text-[17px]">
           {character.description}
         </p>
         <div className="mt-5 flex flex-wrap gap-2">

@@ -1,6 +1,6 @@
 # iDream 当前功能覆盖审计
 
-更新日期：2026-08-14
+更新日期：2026-08-15
 
 ## 结论
 
@@ -21,7 +21,7 @@
 - **发布入口**：production PM2 wrapper 现在容忍 `pm2 jlist` 版本提示噪声、以 Chat `/readyz` 而非纯 liveness `/healthz` 判定、在任何 pause/drain/PM2 mutation 前要求 `APP_ENV=production` 并以同一 runtime env 执行 launch gate。Main/Admin source development 固定使用 `.next-development`，production build 独占 `.next`；Chrome 已证明两个生产构建在线执行后不会再污染开发 SSR 或产生 hydration mismatch。Docker 已收口为 PostgreSQL/Redis 本地基础设施；完整产品唯一部署拓扑为 PM2。CI 已固定 Node 24/Redis 8、加入 Admin/PM2/migration rehearsal，并让 Playwright 独占派生 DB、Redis namespace 和全部测试进程。
 - **验证边界**：完整 authenticated 双客户与 Admin 的注册、发现、真实 Chat、Image、Video、Gallery、Create、审核、Release/Soul/QA/Serving、Community、Support/Report/Appeal 与 Ops Chrome 旅程早于最终后端补丁，因此没有被冒充为一套当前 revision 重跑。当前 continuation 另用一次性客户真实完成 signup、SSE Chat、entitled Voice playback、图片生成与四候选 Create；Mara Vale Launch 的 Admin Voice 已完成本地 MP3 上传、Fish candidate version 1 创建、15.117664 秒预览完整播放和带理由激活，live 状态为 `Character override`。随后专用 Demo-plan 客户在同一 Mara Chat 中生成 opening 与真实模型 reply 两段音频，分别播放到自然结束，刷新后仍可重播；角色 clone profile version 1 被固定到 Voice clip authority。该客户随后按用户授权完成上述 Account Deletion 终态，所有派生音频也由 Blob worker 删除。BFCache 恢复会推进 epoch 并重新执行权威 `restoreAgeGateAuthority()` POST；成功前受限内容保持 `inert`，失败回到 blocked，cookie/localStorage 只作为恢复提示。最新自动化为 Shared 46/254、Gen 21/202、Main 315 passed files + 2 skipped / 2,479 passed tests + 3 skipped、Chat 37/348、Admin 118/586；合计 537 passed files + 2 skipped / 3,869 passed tests + 3 skipped。Turbo test tasks 6/6、typecheck 6/6、lint 2/2、production build 5/5、PM2/operator/source-revision 84/84 全绿，Chat `cache:false` 强制真实执行。最终 runtime/probe/Gate 证据均绑定同一 source revision。
 - **仍未闭合**：当前 23 个 Gate 失败 ID 见结构化报告；它们是 public HTTPS、production secrets、Redis/BullMQ prefix、non-mock Blob、BFF/model/pipeline tokens 与 Sentry browser/four-runtime canary 等 production envelope，另需 production backfill/canary/观察窗口和发布签发。Voice 客户播放与 Account Deletion destructive Chrome 已在本地 current runtime 单独签发；剩余浏览器工作是把全部编号 customer/Admin 旅程在一个 production-like release 上整套重跑，而不是重复这两个已完成的局部链。支付、年龄验证与合规不列入本轮缺口。
-- **Billing 当前口径**：mock 与 BTCPay adapter 都表达一次性 prepaid access，不自动续订；当前 UI 不提供 Manage/Cancel/Resume renewal。下方历史矩阵中出现的 cancel/resume 浏览器记录只描述已被替换的旧契约，不是当前功能承诺。
+- **Billing 当前口径**：mock 与 BTCPay adapter 都表达一次性 prepaid access，不自动续订；当前 UI 不提供 Manage/Cancel/Resume renewal。正常已结算 subscription 的全额退款由独立 `billing.subscription.refund` Admin 权限驱动：先创建 durable command，再按 checkout 的精确 `amountCents/currency` 调 provider；访问和 subscription entitlement 立即冻结，本次 subscription grant 用 append-only `subscription_refund` 精确冲销，已经消费的 Dreamcoin 不返还。`refund_pending` 期间在 checkout intent、provider dispatch 和 settlement activation 三层阻断或隔离新 subscription；provider 取消只有在不存在 competing active subscription 时才恢复原订阅/权益并用 `subscription_refund_restore` 回补，重试使用新 command id 和独立幂等键。BTCPay 只接受 `Custom` 精确法币金额，create/read/project 在 `claimable/in_progress/completed/canceled` 任一状态的根金额、根币种、每笔 payout 币种或累计金额不一致时都 fail closed；Pull Payment/payout webhook 或人工 reconcile 将状态收敛到 checkout、subscription、用户 Profile 与 Admin Billing。2026-08-15 真实 Testnet 以 `$19.99 USD → 1,999 sats` 完成取消恢复、重试、链上 payout、余额 242 与 wallet 清理；这是本地受控 beta 证据，不是公开生产支付批准。下方历史矩阵中出现的 cancel/resume 浏览器记录只描述已被替换的旧契约，不是当前功能承诺。
 
 ## 2026-08-08 Prisma 事务与 Chat 跨存储快照收口
 

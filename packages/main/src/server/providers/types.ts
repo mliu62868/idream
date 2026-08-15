@@ -167,6 +167,33 @@ export type PaymentInvoice = {
   currency: string;
 };
 
+export type PaymentRefundState =
+  | "claimable"
+  | "awaiting_approval"
+  | "awaiting_payment"
+  | "in_progress"
+  | "completed"
+  | "canceled";
+
+export type PaymentRefundPayout = {
+  payoutId: string;
+  amount: string;
+  currency: string;
+  state: Exclude<PaymentRefundState, "claimable">;
+  paymentProofId?: string;
+};
+
+export type PaymentRefund = {
+  provider: "mock" | "btcpay";
+  refundId: string;
+  reference: string;
+  claimUrl: string;
+  amount: string;
+  currency: string;
+  state: PaymentRefundState;
+  payouts: PaymentRefundPayout[];
+};
+
 export type BillingModel = "prepaid_period" | "recurring" | "unknown";
 export type RenewalCapability = "none" | "cancel_resume";
 
@@ -193,19 +220,42 @@ export interface PaymentProvider {
   }): Promise<
     ProviderResult<PaymentInvoice | null>
   >;
+  createRefund(input: {
+    invoiceId: string;
+    reference: string;
+    reason: string;
+    amountCents: number;
+    currency: string;
+    signal?: AbortSignal;
+  }): Promise<ProviderResult<PaymentRefund>>;
+  findRefund(input: {
+    reference?: string;
+    refundId?: string;
+    signal?: AbortSignal;
+  }): Promise<ProviderResult<PaymentRefund | null>>;
   parseWebhook(input: {
     providerEventId: string;
     payload: unknown;
     signature?: string;
     rawBody?: string;
   }): Promise<
-    ProviderResult<{
-      providerEventId: string;
-      deliveryId: string;
-      type: "invoice.confirmed" | "invoice.ignored";
-      invoiceId?: string;
-      orderId?: string;
-    }>
+    ProviderResult<
+      | {
+          providerEventId: string;
+          deliveryId: string;
+          type: "invoice.confirmed" | "invoice.ignored";
+          invoiceId?: string;
+          orderId?: string;
+        }
+      | {
+          providerEventId: string;
+          deliveryId: string;
+          type: "refund.updated";
+          refundId: string;
+          payoutId: string;
+          payoutState: Exclude<PaymentRefundState, "claimable">;
+        }
+    >
   >;
 }
 

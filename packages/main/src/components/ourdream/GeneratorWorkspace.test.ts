@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   fetchCharacterById,
+  generatorJobStatusLabel,
+  generatorVideoModeCopy,
+  generatorShowsSavedLooksEmpty,
   generatorConfigRequestIsCurrent,
   generatorImageEditModelOptions,
   generatorRouteAfterRemixExit,
@@ -53,6 +56,20 @@ describe("generator model selection authority", () => {
     });
   });
 
+  it("describes automatic video routing as source animation, not identity-aware scene generation", () => {
+    expect(
+      projectGeneratorModelSelection(
+        { id: "", explicit: false },
+        models,
+        "Auto (animate source)",
+      ),
+    ).toEqual({
+      displayedLabel: "Auto (animate source)",
+      requestModelId: undefined,
+      selectValue: "",
+    });
+  });
+
   it("offers only the image-edit models compatible with the selected source", () => {
     const editModels = [
       {
@@ -83,6 +100,30 @@ describe("generator model selection authority", () => {
     expect(generatorImageEditModelOptions(editModels, null)).toEqual(
       editModels,
     );
+  });
+});
+
+describe("generator video product contract", () => {
+  it("explains that video animates the pinned character image", () => {
+    expect(generatorVideoModeCopy("Alexa Reeves")).toEqual({
+      promptLabel: "Motion direction",
+      promptPlaceholder:
+        "Describe movement, camera motion, and pacing for this starting image",
+      sourceTitle: "Animate this image",
+      sourceDescription:
+        "This exact Alexa Reeves image is the first frame. Video adds motion; it does not replace the outfit, lighting, or location.",
+    });
+  });
+
+  it("sets an honest minutes-level expectation while local video is waiting or rendering", () => {
+    expect(generatorJobStatusLabel("video", "queued", null)).toBe(
+      "Waiting to render · usually 6–10 min",
+    );
+    expect(generatorJobStatusLabel("video", "running", null)).toBe(
+      "Rendering source image · usually 6–10 min",
+    );
+    expect(generatorJobStatusLabel("video", "completed", null)).toBe("Completed");
+    expect(generatorJobStatusLabel("image", "running", null)).toBe("Generating");
   });
 });
 
@@ -145,28 +186,41 @@ describe("generator target character lookup", () => {
 });
 
 describe("generator saved Looks authority", () => {
-  it("does not run the protected Looks loader for an anonymous viewer", async () => {
-    const loadLooks = vi.fn(async () => undefined);
+  it("hides the owner-only empty state for a public non-owner character", () => {
+    const ready = { phase: "ready", error: null, hasSnapshot: true } as const;
 
-    await loadGeneratorLooksForViewer(false, true, loadLooks);
-
-    expect(loadLooks).not.toHaveBeenCalled();
+    expect(generatorShowsSavedLooksEmpty(false, ready, 0)).toBe(false);
+    expect(generatorShowsSavedLooksEmpty(true, ready, 0)).toBe(true);
   });
 
-  it("does not request owner-only Looks for a public non-owner character", async () => {
+  it("does not run the protected Looks loader for an anonymous viewer", async () => {
     const loadLooks = vi.fn(async () => undefined);
+    const settleWithoutRequest = vi.fn();
 
-    await loadGeneratorLooksForViewer(true, false, loadLooks);
+    await loadGeneratorLooksForViewer(false, true, loadLooks, settleWithoutRequest);
 
     expect(loadLooks).not.toHaveBeenCalled();
+    expect(settleWithoutRequest).not.toHaveBeenCalled();
+  });
+
+  it("settles owner-only Looks without a request for a public non-owner character", async () => {
+    const loadLooks = vi.fn(async () => undefined);
+    const settleWithoutRequest = vi.fn();
+
+    await loadGeneratorLooksForViewer(true, false, loadLooks, settleWithoutRequest);
+
+    expect(loadLooks).not.toHaveBeenCalled();
+    expect(settleWithoutRequest).toHaveBeenCalledOnce();
   });
 
   it("runs the protected Looks loader for an authenticated character owner", async () => {
     const loadLooks = vi.fn(async () => undefined);
+    const settleWithoutRequest = vi.fn();
 
-    await loadGeneratorLooksForViewer(true, true, loadLooks);
+    await loadGeneratorLooksForViewer(true, true, loadLooks, settleWithoutRequest);
 
     expect(loadLooks).toHaveBeenCalledOnce();
+    expect(settleWithoutRequest).not.toHaveBeenCalled();
   });
 
   it("removes viewer-relative edit authority before a new scope loads", () => {

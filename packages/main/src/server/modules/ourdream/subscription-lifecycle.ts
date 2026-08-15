@@ -226,6 +226,33 @@ export async function assertNoActiveSamePlanAccessInTx(
   );
 }
 
+export async function pendingSubscriptionRefundInTx(
+  tx: Prisma.TransactionClient,
+  userId: string,
+) {
+  return tx.subscription.findFirst({
+    where: { userId, status: "refund_pending" },
+    orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+    select: { id: true },
+  });
+}
+
+export async function assertNoSubscriptionRefundPendingInTx(
+  tx: Prisma.TransactionClient,
+  userId: string,
+) {
+  const pending = await pendingSubscriptionRefundInTx(tx, userId);
+  if (!pending) return;
+  throw Errors.conflict(
+    "A subscription refund is still pending. Wait for it to complete or be canceled before starting another checkout.",
+    {
+      reason: "subscription_refund_pending",
+      subscriptionId: pending.id,
+      idempotencyAction: "new_key",
+    },
+  );
+}
+
 export async function activeSamePlanProviderDispatchInTx(
   tx: Prisma.TransactionClient,
   userId: string,
@@ -368,6 +395,16 @@ export async function activateSubscriptionInTx(
   // Distinct settled invoices are distinct purchases and must not be silently
   // discarded as a same-plan replay.
   await lockUserLedger(tx, userId);
+  const pendingRefund = await pendingSubscriptionRefundInTx(tx, userId);
+  if (pendingRefund) {
+    return {
+      subscription: null,
+      created: false,
+      reconciliationRequired: true,
+      reconciliationReason: "subscription_refund_pending",
+      settlementDeferred: false,
+    } as const;
+  }
   const competingDispatch = await activeSamePlanProviderDispatchInTx(
     tx,
     userId,
@@ -739,7 +776,7 @@ function compareCheckoutPurchaseOrder(
   return left.id.localeCompare(right.checkoutId ?? right.id ?? "");
 }
 
-async function syncSubscriptionEntitlements(
+export async function syncSubscriptionEntitlements(
   tx: Prisma.TransactionClient,
   userId: string,
   plan: {

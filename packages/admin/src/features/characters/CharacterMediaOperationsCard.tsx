@@ -22,11 +22,28 @@ const mediaRecoveryLabels = {
   unavailable: "Recovery unavailable",
 } as const;
 
-function mediaOperationDuration(durationMs: number | null) {
-  if (durationMs === null) return "Unavailable";
+function mediaOperationDuration(durationMs: number) {
   const totalSeconds = Math.round(durationMs / 1_000);
   if (totalSeconds < 60) return `${totalSeconds}s`;
   return `${Math.floor(totalSeconds / 60)}m ${totalSeconds % 60}s`;
+}
+
+/**
+ * SPEC: 只有"运营真能去做点什么"的恢复态才让这张证据表默认展开。
+ *
+ * INTENT: 这张表此前恒定展开在角色页最顶上——标题下面第一屏就是三行 request ID、provider、
+ * attempt 和耗时，角色本身被挤到折叠线以下。它是排障证据，不是角色的门面；顺利时"三个都完成了"
+ * 一行就说完了。`unavailable` 表示这个模态压根没跑过（契约里 requestId===null 必须收敛到它），
+ * 那是空状态不是故障，同样不值得抢占开屏。
+ */
+export function characterMediaOperationsNeedAttention(
+  projection: CharacterMediaOperationsProjection,
+) {
+  return projection.operations.some((operation) =>
+    ["retryable", "operator_action", "not_recoverable"].includes(
+      operation.recoverability.state,
+    ),
+  );
 }
 
 export function shouldReleaseVoiceReclaimIdempotencyKey(cause: unknown) {
@@ -60,6 +77,7 @@ export function CharacterMediaOperationsCard({
   }) => Promise<void>;
 }) {
   const { t } = useAdminI18n();
+  const needsAttention = characterMediaOperationsNeedAttention(projection);
   const [pendingReclaim, setPendingReclaim] = useState<{
     readonly requestId: string;
     readonly confirmation: string;
@@ -68,19 +86,26 @@ export function CharacterMediaOperationsCard({
   } | null>(null);
   return (
     <>
-    <section
-      aria-labelledby="character-media-operations-title"
+    <details
       className="mt-4 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]"
+      open={needsAttention}
     >
-      <div className="border-b border-[var(--ad-border)] px-4 py-3">
-        <h3 className="text-sm font-semibold" id="character-media-operations-title">
+      <summary className="cursor-pointer px-4 py-3">
+        <span className="text-sm font-semibold" id="character-media-operations-title">
           {t("Recent media operations")}
-        </h3>
-        <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
-          {t("Latest authoritative request per modality")}
-        </p>
-      </div>
-      <div className="overflow-x-auto">
+        </span>
+        <span className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--ad-text-muted)]">
+          {projection.operations.map((operation) => (
+            <span className="inline-flex items-center gap-1.5" key={operation.modality}>
+              {t(mediaOperationLabels[operation.modality])}
+              {operation.status
+                ? <StatusBadge value={operation.status} />
+                : t("No runs")}
+            </span>
+          ))}
+        </span>
+      </summary>
+      <div className="overflow-x-auto border-t border-[var(--ad-border)]">
         <table className="w-full min-w-[760px] text-left text-xs">
           <thead className="text-[var(--ad-text-muted)]">
             <tr className="border-b border-[var(--ad-border)]">
@@ -113,7 +138,9 @@ export function CharacterMediaOperationsCard({
                     {operation.attempt ? ` · ${t("Attempt")} ${operation.attempt.number}` : ""}
                   </span>
                   <span className="mt-1 block">
-                    {t("Time")} {mediaOperationDuration(operation.timing?.latencyMs ?? null)}
+                    {t("Time")} {operation.timing?.latencyMs === null || operation.timing?.latencyMs === undefined
+                      ? t("Unavailable")
+                      : mediaOperationDuration(operation.timing.latencyMs)}
                     {" · "}{operation.costDreamcoins === null
                       ? t("Cost unavailable")
                       : t("{cost} Dreamcoins", { cost: operation.costDreamcoins })}
@@ -183,7 +210,7 @@ export function CharacterMediaOperationsCard({
       <p className="border-t border-[var(--ad-border)] px-4 py-2 text-xs text-[var(--ad-text-muted)]">
         {t("Run completion does not approve or publish an asset.")} {t("Review and Release remain separate decisions.")}
       </p>
-    </section>
+    </details>
     {pendingReclaim && onReclaimVoice ? (
       <ConfirmDialog
         onClose={() => setPendingReclaim(null)}

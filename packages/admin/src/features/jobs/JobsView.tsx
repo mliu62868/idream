@@ -290,7 +290,7 @@ export function JobsView() {
             ["Dreamcoins cost", jobs.data.summary.totalCostDreamcoins],
             ["Requested outputs", jobs.data.summary.totalOutputCount],
             ["Delivered outputs", jobs.data.summary.totalDeliveredOutputCount],
-          ].map(([label, amount]) => <div className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3" key={label}><p className="text-xs text-[var(--ad-text-muted)]">{label}</p><p className="mt-1 text-lg font-semibold tabular-nums">{amount}</p></div>)}
+          ].map(([label, amount]) => <div className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3" key={label}><p className="text-xs text-[var(--ad-text-muted)]">{t(String(label))}</p><p className="mt-1 text-lg font-semibold tabular-nums">{amount}</p></div>)}
         </section>
       ) : null}
 
@@ -364,9 +364,9 @@ function GenerationJobInspector({ detail, error, jobId, loading, locale, onClose
       {request && detail ? (
         <div className="space-y-5 p-4">
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <Metric label="Request outcome" value={value(request.requestOutcome)} meta={`legacy projection: ${request.legacyStatus}`} />
-            <Metric label="Delivery" value={`${request.delivery.deliveredCount}/${request.delivery.expectedOutputCount}`} meta={`${request.delivery.pendingCount} pending · ${request.delivery.failedCount} failed`} />
-            <Metric label="Settlement" value={value(request.settlement.view)} meta={`${request.settlement.capturedDreamcoins} captured · ${request.settlement.refundedDreamcoins} refunded`} />
+            <Metric label="Request outcome" value={value(request.requestOutcome)} meta={t("legacy projection: {status}", { status: value(request.legacyStatus) })} />
+            <Metric label="Delivery" value={`${request.delivery.deliveredCount}/${request.delivery.expectedOutputCount}`} meta={t("{pending} pending · {failed} failed", { pending: request.delivery.pendingCount, failed: request.delivery.failedCount })} />
+            <Metric label="Settlement" value={value(request.settlement.view)} meta={t("{captured} captured · {refunded} refunded", { captured: request.settlement.capturedDreamcoins, refunded: request.settlement.refundedDreamcoins })} />
             <Metric label="Freshness" value={detail.freshness} meta={compactDate(detail.asOf, locale)} />
           </div>
           <UnknownGenerationReconciliationControls
@@ -378,7 +378,7 @@ function GenerationJobInspector({ detail, error, jobId, loading, locale, onClose
             headers={["Attempt", "Outcome", "Provider / route", "Failure authority", "Finished"]}
             rows={detail.attempts.map((attempt) => [
               `#${attempt.attemptNo} · ${shortId(attempt.id)}`,
-              attempt.status,
+              value(attempt.status),
               [attempt.provider, attempt.profileKey, attempt.workflowKey].filter(Boolean).join(" · ") || "—",
               [attempt.errorClass, attempt.errorCode, attempt.retryability].filter(Boolean).join(" · ") || "—",
               attempt.finishedAt ? compactDate(attempt.finishedAt, locale) : "—",
@@ -390,7 +390,7 @@ function GenerationJobInspector({ detail, error, jobId, loading, locale, onClose
             rows={detail.transportExecutions.map((execution) => [
               `#${execution.transportAttemptNo} · ${shortId(execution.id)}`,
               `${shortId(execution.attemptId)} · ${execution.provider ?? "—"}`,
-              execution.status,
+              value(execution.status),
               execution.costMicros === null ? "Unavailable" : `${execution.costMicros.toLocaleString(locale)} μ`,
               execution.terminalRecordRef ?? "—",
               execution.finishedAt ? compactDate(execution.finishedAt, locale) : "—",
@@ -400,18 +400,18 @@ function GenerationJobInspector({ detail, error, jobId, loading, locale, onClose
             <AuthorityTable
               caption="Artifacts and validation"
               headers={["Artifact", "Attempt", "Validation", "Archive", "Asset"]}
-              rows={detail.artifacts.map((artifact) => [shortId(artifact.id), shortId(artifact.attemptId), artifact.validationState, artifact.archiveState, artifact.assetId ? shortId(artifact.assetId) : "—"])}
+              rows={detail.artifacts.map((artifact) => [shortId(artifact.id), shortId(artifact.attemptId), value(artifact.validationState), value(artifact.archiveState), artifact.assetId ? shortId(artifact.assetId) : "—"])}
             />
             <AuthorityTable
               caption="Delivery outcomes"
               headers={["Artifact", "Target", "Outcome", "Delivered"]}
-              rows={detail.deliveries.map((delivery) => [shortId(delivery.artifactId), `${delivery.targetType}:${shortId(delivery.targetId)}`, delivery.status, delivery.deliveredAt ? compactDate(delivery.deliveredAt, locale) : "—"])}
+              rows={detail.deliveries.map((delivery) => [shortId(delivery.artifactId), `${delivery.targetType}:${shortId(delivery.targetId)}`, value(delivery.status), delivery.deliveredAt ? compactDate(delivery.deliveredAt, locale) : "—"])}
             />
           </div>
           <AuthorityTable
             caption="Immutable Attempt events"
             headers={["Sequence", "Attempt", "Typed event", "Outcome", "Occurred"]}
-            rows={detail.events.map((event) => [String(event.sequence), shortId(event.attemptId), event.eventType, event.outcome ?? "—", compactDate(event.occurredAt, locale)])}
+            rows={detail.events.map((event) => [String(event.sequence), shortId(event.attemptId), event.eventType, event.outcome ? value(event.outcome) : "—", compactDate(event.occurredAt, locale)])}
           />
           <AuthorityTable
             caption="Append-only Settlement entries"
@@ -422,12 +422,12 @@ function GenerationJobInspector({ detail, error, jobId, loading, locale, onClose
             caption="Unknown outcome reconciliation decisions"
             headers={["Decision", "Attempt / actor", "Reason", "Evidence", "Review / settlement", "Occurred"]}
             rows={detail.unknownReconciliations.map((decision) => [
-              decision.resolution,
+              value(decision.resolution),
               `${shortId(decision.attemptId)} · ${shortId(decision.actorId)}`,
               decision.reason,
               decision.providerEvidenceRefs.join(" · ") || "—",
               decision.nextReviewAt
-                ? `${decision.reviewStatus} · ${compactDate(decision.nextReviewAt, locale)}`
+                ? `${value(decision.reviewStatus)} · ${compactDate(decision.nextReviewAt, locale)}`
                 : decision.deliveredCount > 0
                   ? `${decision.deliveredCount} delivered · ${decision.refundAmount} Dreamcoins refund`
                   : `${decision.refundAmount} Dreamcoins refund`,
@@ -461,7 +461,8 @@ function IconAction({ disabled = false, icon, label, onClick }: { disabled?: boo
 }
 
 function Metric({ label, meta, value }: { label: string; meta: string; value: ReactNode }) {
-  return <div className="rounded-lg border border-[var(--ad-border)] p-3"><p className="text-xs text-[var(--ad-text-muted)]">{label}</p><p className="mt-1 font-semibold">{value}</p><p className="mt-1 text-xs text-[var(--ad-text-muted)]">{meta}</p></div>;
+  const { t } = useAdminI18n();
+  return <div className="rounded-lg border border-[var(--ad-border)] p-3"><p className="text-xs text-[var(--ad-text-muted)]">{t(label)}</p><p className="mt-1 font-semibold">{value}</p><p className="mt-1 text-xs text-[var(--ad-text-muted)]">{meta}</p></div>;
 }
 
 function shortId(value: string) {

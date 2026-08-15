@@ -28,10 +28,13 @@ import {
 import { feedLoadFailure, shouldApplyFeedResponse } from "./feed-load-state";
 import { publicOptimisticMutationFailure } from "./optimistic-write-state";
 import { loadGeneratorWorkspaceInitialData } from "./GeneratorWorkspace";
+import { CharacterCard } from "./CharacterCard";
+import { CharacterGrid } from "./CharacterGrid";
 import { shouldClearTransferredHelpDeskDraft } from "./HelpDeskWorkspace";
 import {
   accountDeletionLoginHref,
   createdCharacterPublicationStatus,
+  profileLibraryCardPresentation,
 } from "./ProfileWorkspace";
 import { accountDeletionGraceEndsAtFromSearch } from "./AuthWorkspace";
 
@@ -58,6 +61,62 @@ function publishableSources(): { path: string; text: string }[] {
 }
 
 describe("truthful public UI states", () => {
+  it("uses inclusive creator and discovery copy", () => {
+    expect(source("CreateWorkspace.tsx")).toContain(
+      "Create Your Dream AI Character",
+    );
+    expect(source("CreateWorkspace.tsx")).not.toContain(
+      "Create Your Dream AI Girl",
+    );
+    expect(source("TopControls.tsx")).toContain(
+      "Try 'slow-burn elf' or 'anime adventurer'",
+    );
+    expect(source("TopControls.tsx")).not.toContain("Petite asian");
+  });
+
+  it("keeps the discovery search focus visible at mobile and desktop breakpoints", () => {
+    expect(
+      source("TopControls.tsx").match(
+        /focus-within:ring-2 focus-within:ring-white\/50/g,
+      ),
+    ).toHaveLength(2);
+  });
+
+  it("keeps tablet discovery and character actions unobstructed", () => {
+    expect(source("PromoToast.tsx")).toContain(
+      "shadow-[2px_2px_8px_3px_rgba(0,0,0,0.25)] lg:block",
+    );
+    expect(source("PromoToast.tsx")).not.toContain(
+      "shadow-[2px_2px_8px_3px_rgba(0,0,0,0.25)] md:block",
+    );
+    expect(source("CharacterDetailHero.tsx")).toContain(
+      "p-6 lg:inset-y-0 lg:bottom-auto lg:p-12",
+    );
+    expect(source("CharacterDetailHero.tsx")).toContain(
+      "leading-[0.95] lg:text-[72px]",
+    );
+  });
+
+  it("keeps runtime media identifiers and identity prompts out of library cards", () => {
+    expect(profileLibraryCardPresentation({
+      id: "media_internal_123",
+      type: "image",
+      prompt: "identity-lock runtime instructions",
+    })).toEqual({
+      title: "Generated image",
+      summary: null,
+    });
+    expect(profileLibraryCardPresentation({
+      id: "character-1",
+      type: "character",
+      name: "Alexa",
+      description: "A public character summary.",
+    })).toEqual({
+      title: "Alexa",
+      summary: "A public character summary.",
+    });
+  });
+
   it("eager-loads the above-the-fold route logo", () => {
     expect(source("OurdreamRoutePage.tsx")).toMatch(
       /<Image[\s\S]*?loading="eager"[\s\S]*?src="\/images\/ourdream\/ourdream-logo\.svg"/,
@@ -71,6 +130,64 @@ describe("truthful public UI states", () => {
     expect(source("CharacterGrid.tsx")).not.toContain(
       "md:grid-cols-5 md:gap-3",
     );
+  });
+
+  it("does not turn generator dependency failure into character or gallery facts", () => {
+    const generator = source("GeneratorWorkspace.tsx");
+
+    expect(generator).toContain("selectedCharacter && characterImageMode");
+    expect(generator).toContain("!configAuthorityUnavailable &&\n                charactersAuthority.phase");
+    expect(generator).toContain(
+      "Generation jobs are unavailable until the generator reconnects.",
+    );
+    expect(generator).toContain(
+      "Your gallery is unavailable until the generator reconnects.",
+    );
+  });
+
+  it("distinguishes initial discovery loading from a filter refresh", () => {
+    const initial = renderToStaticMarkup(createElement(CharacterGrid, {
+      cards: [],
+      loading: true,
+    }));
+    const refreshing = renderToStaticMarkup(createElement(CharacterGrid, {
+      cards: [{
+        id: "alexa-reeves",
+        title: "Alexa Reeves",
+        age: "19",
+        description: "A character summary.",
+        likes: "0",
+        chats: "2",
+        chatsCount: 2,
+        creator: "Official",
+        image: "/images/ourdream/card-alexa-reeves.webp",
+      }],
+      loading: true,
+    }));
+
+    expect(initial).toContain("Loading characters...");
+    expect(initial).toContain('aria-busy="true"');
+    expect(refreshing).toContain("Refreshing characters...");
+    expect(refreshing).not.toContain("Loading more characters...");
+  });
+
+  it("gives character card headings a complete name-and-age accessible label", () => {
+    const html = renderToStaticMarkup(createElement(CharacterCard, {
+      card: {
+        id: "alexa-reeves",
+        title: "Alexa Reeves",
+        age: "19",
+        description: "A character summary.",
+        likes: "0",
+        chats: "2",
+        chatsCount: 2,
+        creator: "Official",
+        image: "/images/ourdream/card-alexa-reeves.webp",
+      },
+    }));
+
+    expect(html).toMatch(/<h2 aria-label="Alexa Reeves, age 19"/);
+    expect(html).toContain('<span aria-hidden="true"');
   });
 
   it("carries the exact account-erasure due time into the signed-out UI", () => {

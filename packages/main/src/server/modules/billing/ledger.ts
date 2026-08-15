@@ -21,6 +21,13 @@ type PositiveLedgerIntent = {
 export type LedgerIntent =
   | PositiveLedgerIntent
   | {
+      readonly kind: "subscription_refund" | "subscription_refund_restore";
+      readonly userId: string;
+      readonly amount: number;
+      readonly sourceId: string;
+      readonly idempotencyKey: string;
+    }
+  | {
       readonly kind: "referral";
       readonly beneficiary: "invitee" | "inviter";
       readonly userId: string;
@@ -131,7 +138,11 @@ function canonicalizeLedgerIntent(intent: LedgerIntent): CanonicalLedgerIntent {
   }
   return {
     userId,
-    delta: intent.kind === "generation_spend" ? -intent.amount : intent.amount,
+    delta:
+      intent.kind === "generation_spend" ||
+      intent.kind === "subscription_refund"
+        ? -intent.amount
+        : intent.amount,
     reason: intent.kind,
     sourceId,
     idempotencyKey,

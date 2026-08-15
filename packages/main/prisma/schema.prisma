@@ -983,7 +983,7 @@ model Subscription {
   provider               String // enum: mock | btcpay | nowpayments | cryptomus | coingate
   providerCustomerId     String?
   providerSubscriptionId String?
-  status                 String    @default("checkout_created") // enum: checkout_created | checkout_completed | active | past_due | canceled | expired
+  status                 String    @default("checkout_created") // enum: checkout_created | checkout_completed | active | past_due | canceled | expired | refund_pending | refunded
   currentPeriodEnd       DateTime?
   cancelAtPeriodEnd      Boolean   @default(false)
   createdAt              DateTime  @default(now())
@@ -1016,7 +1016,7 @@ model DreamcoinLedger {
   userId         String
   delta          Int
   balanceAfter   Int
-  reason         String // enum: signup_bonus | subscription_grant | generation_spend | refund | redeem | referral | admin_adjust
+  reason         String // enum: signup_bonus | subscription_grant | subscription_refund | subscription_refund_restore | generation_spend | refund | redeem | referral | admin_adjust
   sourceId       String?
   idempotencyKey String?  @unique
   createdAt      DateTime @default(now())
@@ -1042,7 +1042,7 @@ model CheckoutSession {
   currency                        String?
   offerSnapshot                   Json?
   autoConfirm                     Boolean   @default(false)
-  status                          String    @default("provider_pending") // provider_pending | provider_dispatching | provider_unknown | created | completed | expired | canceled
+  status                          String    @default("provider_pending") // provider_pending | provider_dispatching | provider_unknown | created | completed | expired | canceled | refund_pending | refunded
   dispatchToken                   String?
   dispatchLeaseUntil              DateTime?
   providerAttemptedAt             DateTime?

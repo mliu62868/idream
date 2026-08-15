@@ -133,7 +133,7 @@ export function TopControls({
           </span>
         </Link>
 
-        <label className="mb-3 flex h-10 items-center gap-2 rounded-full bg-[rgb(53,53,54)] px-4 text-[12px] font-medium leading-4 text-[rgb(170,170,170)] md:hidden">
+        <label className="mb-3 flex h-10 items-center gap-2 rounded-full bg-[rgb(53,53,54)] px-4 text-[12px] font-medium leading-4 text-[rgb(170,170,170)] transition-shadow focus-within:ring-2 focus-within:ring-white/50 md:hidden">
           <Search className="h-4 w-4 shrink-0" />
           <input
             aria-label="Search characters"
@@ -188,14 +188,14 @@ export function TopControls({
             ) : null}
           </div>
 
-          <label className="hidden h-9 items-center gap-2 rounded-full bg-[rgb(53,53,54)] px-4 text-[12px] font-medium leading-4 text-[rgb(170,170,170)] md:flex">
+          <label className="hidden h-9 items-center gap-2 rounded-full bg-[rgb(53,53,54)] px-4 text-[12px] font-medium leading-4 text-[rgb(170,170,170)] transition-shadow focus-within:ring-2 focus-within:ring-white/50 md:flex">
             <Search className="h-4 w-4" />
             <input
               aria-label="Search characters"
               className="min-w-0 flex-1 bg-transparent text-white outline-none placeholder:text-[rgb(170,170,170)]"
               name="character-search"
               onChange={(event) => onQueryChange?.(event.target.value)}
-              placeholder="Try 'Busty blonde' or 'Petite asian'"
+              placeholder="Try 'slow-burn elf' or 'anime adventurer'"
               value={query}
             />
           </label>

@@ -107,6 +107,10 @@ import {
   postDreamcoinEntry,
 } from "@/server/modules/billing/ledger";
 import {
+  parseSubscriptionRefundEvidence,
+  publicSubscriptionRefundDTO,
+} from "@/server/modules/billing/subscription-refund";
+import {
   clearSessionCookie,
   createAnonymousId,
   createSessionToken,
@@ -5987,7 +5991,14 @@ async function library(request: Request, tab: string) {
 async function profile(request: Request) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
-  const [fullUser, balance, subscription, entitlements, availability] = await Promise.all([
+  const [
+    fullUser,
+    balance,
+    subscription,
+    refundCheckout,
+    entitlements,
+    availability,
+  ] = await Promise.all([
     prisma.user.findUnique({ where: { id: user.id }, include: { preferences: true } }),
     dreamcoinBalance(user.id),
     prisma.subscription.findFirst({
@@ -5995,17 +6006,29 @@ async function profile(request: Request) {
       include: { plan: true },
       orderBy: { createdAt: "desc" },
     }),
+    prisma.checkoutSession.findFirst({
+      where: {
+        userId: user.id,
+        status: { in: ["refund_pending", "refunded", "provider_unknown"] },
+      },
+      orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+      select: { reconciliationEvidence: true },
+    }),
     entitlementMap(user.id),
     publicOfferAvailability(),
   ]);
   const publicSubscription = subscription
     ? await publicSubscriptionDTO(subscription)
     : null;
+  const refund = parseSubscriptionRefundEvidence(
+    refundCheckout?.reconciliationEvidence,
+  );
   return ok({
     user: fullUser,
     balance,
     subscription: publicSubscription,
     billingAccess: subscription ? billingAccessDTO(subscription) : null,
+    refund: refund ? publicSubscriptionRefundDTO(refund) : null,
     entitlements: publicFeatureProjection(entitlements, availability),
   });
 }

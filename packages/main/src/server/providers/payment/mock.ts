@@ -17,6 +17,19 @@ export class MockPaymentProvider implements PaymentProvider {
       currency: string;
     }
   >();
+  private readonly refunds = new Map<
+    string,
+    {
+      provider: "mock";
+      refundId: string;
+      reference: string;
+      claimUrl: string;
+      amount: string;
+      currency: string;
+      state: "claimable";
+      payouts: [];
+    }
+  >();
 
   async createInvoice(input: Parameters<PaymentProvider["createInvoice"]>[0]) {
     if (input.signal?.aborted) return abortedPaymentRequest();
@@ -49,6 +62,33 @@ export class MockPaymentProvider implements PaymentProvider {
     };
   }
 
+  async createRefund(input: Parameters<PaymentProvider["createRefund"]>[0]) {
+    if (input.signal?.aborted) return abortedPaymentRequest();
+    const refundId = `mock-refund-${input.invoiceId}`;
+    const data = {
+      provider: "mock" as const,
+      refundId,
+      reference: input.reference,
+      claimUrl: `https://mock-payments.idream.local/refunds/${refundId}`,
+      amount: (input.amountCents / 100).toFixed(2),
+      currency: input.currency.toLowerCase(),
+      state: "claimable" as const,
+      payouts: [] as [],
+    };
+    this.refunds.set(input.reference, data);
+    return { ok: true as const, data };
+  }
+
+  async findRefund(input: Parameters<PaymentProvider["findRefund"]>[0]) {
+    if (input.signal?.aborted) return abortedPaymentRequest();
+    const data = input.reference
+      ? this.refunds.get(input.reference) ?? null
+      : [...this.refunds.values()].find(
+          (refund) => refund.refundId === input.refundId,
+        ) ?? null;
+    return { ok: true as const, data };
+  }
+
   async parseWebhook(input: Parameters<PaymentProvider["parseWebhook"]>[0]) {
     const payload =
       typeof input.payload === "object" && input.payload !== null
@@ -76,6 +116,46 @@ export class MockPaymentProvider implements PaymentProvider {
         : typeof payload.orderId === "string"
           ? payload.orderId
           : undefined;
+
+    if (payload.type === "refund.updated" || payload.type === "PayoutUpdated") {
+      const refundId =
+        typeof payload.refundId === "string"
+          ? payload.refundId
+          : typeof payload.pullPaymentId === "string"
+            ? payload.pullPaymentId
+            : null;
+      const payoutId =
+        typeof payload.payoutId === "string" ? payload.payoutId : null;
+      const payoutState =
+        typeof payload.payoutState === "string" &&
+        [
+          "awaiting_approval",
+          "awaiting_payment",
+          "in_progress",
+          "completed",
+          "canceled",
+        ].includes(payload.payoutState)
+          ? payload.payoutState as
+              | "awaiting_approval"
+              | "awaiting_payment"
+              | "in_progress"
+              | "completed"
+              | "canceled"
+          : null;
+      if (refundId && payoutId && payoutState) {
+        return {
+          ok: true as const,
+          data: {
+            providerEventId,
+            deliveryId,
+            type: "refund.updated" as const,
+            refundId,
+            payoutId,
+            payoutState,
+          },
+        };
+      }
+    }
 
     return {
       ok: true as const,

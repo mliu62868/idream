@@ -37,7 +37,7 @@ export function PromoToast() {
   if (!visible) return null;
 
   return (
-    <aside className="fixed bottom-6 right-6 z-30 hidden w-[300px] rounded-[20px] bg-[rgb(46,46,46)] p-3 shadow-[2px_2px_8px_3px_rgba(0,0,0,0.25)] md:block">
+    <aside className="fixed bottom-6 right-6 z-30 hidden w-[300px] rounded-[20px] bg-[rgb(46,46,46)] p-3 shadow-[2px_2px_8px_3px_rgba(0,0,0,0.25)] lg:block">
       <div className="relative h-[178px] overflow-hidden rounded-[14px]">
         <Image
           src="/images/ourdream/promo-card-female.webp"

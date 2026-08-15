@@ -1,6 +1,9 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { characterReleaseConfirmationVisible } from "./ReleasePanel";
+import {
+  characterReleaseCheckLabel,
+  characterReleaseConfirmationVisible,
+} from "./ReleasePanel";
 
 const workspaceSource = readFileSync(
   new URL("./ReleasePanel.tsx", import.meta.url),
@@ -8,6 +11,15 @@ const workspaceSource = readFileSync(
 );
 
 describe("Character release panel", () => {
+  it("presents release checks as operator language", () => {
+    expect(characterReleaseCheckLabel("release_generation_authority_kind"))
+      .toBe("Generation authority");
+    expect(characterReleaseCheckLabel("release_asset_review_authority"))
+      .toBe("Asset review authority");
+    expect(characterReleaseCheckLabel("custom_release_check"))
+      .toBe("custom release check");
+  });
+
   it("keeps destructive Serving confirmation available without a Release candidate", () => {
     expect(characterReleaseConfirmationVisible({
       hasCandidate: false,

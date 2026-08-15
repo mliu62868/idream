@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { providers } from "@/server/providers";
+import { activateSubscriptionInTx } from "@/server/modules/ourdream/subscription-lifecycle";
 import {
   api,
   createCharacter,
@@ -23,6 +24,62 @@ import {
 // - webhook is idempotent: a repeated provider event changes state once
 
 const P = "zt-bill-";
+
+describe("subscription refund checkout exclusion", () => {
+  it("quarantines a settled purchase while another subscription refund is pending", async () => {
+    const userId = await setupUser("refund-pending-settlement");
+    const planId = await setupPlan("refund-pending-settlement");
+    await prisma.subscription.create({
+      data: {
+        userId,
+        planId,
+        provider: "mock",
+        providerSubscriptionId: `${P}refund-pending-old-invoice`,
+        status: "refund_pending",
+        currentPeriodEnd: new Date(Date.now() + 30 * 24 * 60 * 60 * 1_000),
+      },
+    });
+
+    const result = await prisma.$transaction((tx) =>
+      activateSubscriptionInTx(
+        tx,
+        userId,
+        planId,
+        `${P}refund-pending-new-invoice`,
+        "mock",
+        {
+          version: 1,
+          planId,
+          slug: `${P}premium-refund-pending-settlement`,
+          name: "Premium",
+          billingPeriod: "monthly",
+          priceCents: 1_999,
+          currency: "usd",
+          includedDreamcoins: 1_000,
+          features: { imageGeneration: true },
+        },
+        {
+          checkoutId: `${P}refund-pending-new-checkout`,
+          createdAt: new Date(),
+        },
+      ),
+    );
+
+    expect(result).toMatchObject({
+      subscription: null,
+      reconciliationRequired: true,
+      reconciliationReason: "subscription_refund_pending",
+    });
+    await expect(
+      prisma.subscription.count({ where: { userId, status: "active" } }),
+    ).resolves.toBe(0);
+    await expect(
+      prisma.dreamcoinLedger.count({
+        where: { userId, reason: "subscription_grant" },
+      }),
+    ).resolves.toBe(0);
+  });
+});
 
 async function setupUser(suffix: string) {
   const id = `${P}u-${suffix}`;
@@ -2273,6 +2330,94 @@ describe("webhook idempotency", () => {
         voiceEnabled: true,
       },
     });
+  });
+
+  it("persists the provider-authoritative additional status for a bound settled invoice", async () => {
+    const userId = await setupUser("bound-paid-over");
+    const planId = await setupPlan("bound-paid-over", 805);
+    const checkout = await checkoutApi(userId, {
+      planId,
+      autoConfirm: false,
+    });
+    expectOk(checkout);
+    const checkoutId = checkout.data.checkout.id as string;
+    const invoiceId = checkout.data.invoice.invoiceId as string;
+    const lookup = vi
+      .spyOn(providers.payment, "findInvoiceByOrderId")
+      .mockResolvedValue({
+        ok: true,
+        data: {
+          provider: "mock",
+          invoiceId,
+          checkoutUrl: checkout.data.invoice.checkoutUrl as string,
+          status: "settled",
+          additionalStatus: "paid_over",
+          orderId: checkoutId,
+          amountCents: 1999,
+          currency: "usd",
+        },
+      });
+
+    try {
+      const settled = await api("POST", "billing/webhooks/mock", {
+        headers: {
+          "x-provider-event-id": `${P}bound-paid-over-event`,
+        },
+        body: {
+          invoiceId,
+          orderId: checkoutId,
+          providerEventId: `${P}bound-paid-over-event`,
+        },
+      });
+      expectOk(settled);
+      expect(lookup).toHaveBeenCalledTimes(1);
+      await expect(
+        prisma.checkoutSession.findUniqueOrThrow({
+          where: { id: checkoutId },
+          select: {
+            status: true,
+            providerInvoiceStatus: true,
+            providerInvoiceAdditionalStatus: true,
+          },
+        }),
+      ).resolves.toEqual({
+        status: "completed",
+        providerInvoiceStatus: "settled",
+        providerInvoiceAdditionalStatus: "paid_over",
+      });
+      await prisma.checkoutSession.update({
+        where: { id: checkoutId },
+        data: { providerInvoiceAdditionalStatus: "none" },
+      });
+      const replay = await api("POST", "billing/webhooks/mock", {
+        headers: {
+          "x-provider-event-id": `${P}bound-paid-over-delivery-2`,
+        },
+        body: {
+          invoiceId,
+          orderId: checkoutId,
+          originalDeliveryId: `${P}bound-paid-over-event`,
+          deliveryId: `${P}bound-paid-over-delivery-2`,
+        },
+      });
+      expectOk(replay);
+      expect(replay.data).toMatchObject({
+        idempotent: true,
+        processed: false,
+      });
+      expect(lookup).toHaveBeenCalledTimes(2);
+      await expect(
+        prisma.checkoutSession.findUniqueOrThrow({
+          where: { id: checkoutId },
+          select: { providerInvoiceAdditionalStatus: true },
+        }),
+      ).resolves.toEqual({
+        providerInvoiceAdditionalStatus: "paid_over",
+      });
+      expect(await dreamcoinBalance(userId)).toBe(805);
+    } finally {
+      lookup.mockRestore();
+    }
   });
 
   it("activates once on first event and is a no-op on replay", async () => {

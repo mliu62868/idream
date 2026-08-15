@@ -27,6 +27,11 @@ import {
   toInputJson,
 } from "@/server/lib/request-json";
 import { createClassifiedAnalyticsEvent } from "@/server/modules/admin-v2/metrics/classified-event-writer";
+import {
+  parseSubscriptionRefundEvidence,
+  projectSubscriptionRefundInTx,
+  publicSubscriptionRefundDTO,
+} from "@/server/modules/billing/subscription-refund";
 import { providers } from "@/server/providers";
 import type { PaymentInvoice, ProviderResult } from "@/server/providers/types";
 import {
@@ -39,6 +44,7 @@ import {
   activeSamePlanProviderDispatchInTx,
   activeSubscriptionWhere,
   assertNoActiveSamePlanAccessInTx,
+  assertNoSubscriptionRefundPendingInTx,
   assertRenewalMutationSupported,
   billingAccessDTO,
   checkoutOfferSnapshotSchema,
@@ -60,6 +66,48 @@ async function lockCheckoutSession(
   checkoutId: string,
 ) {
   await tx.$queryRaw`SELECT id FROM "checkout_sessions" WHERE id = ${checkoutId} FOR UPDATE`;
+}
+
+async function convergeProcessedSettlementReplayInTx(
+  tx: Prisma.TransactionClient,
+  provider: string,
+  invoice: PaymentInvoice,
+) {
+  const identity = await tx.checkoutSession.findUnique({
+    where: {
+      provider_providerSessionId: {
+        provider,
+        providerSessionId: invoice.invoiceId,
+      },
+    },
+    select: { id: true },
+  });
+  if (!identity) return;
+
+  await lockCheckoutSession(tx, identity.id);
+  const checkoutSession = await tx.checkoutSession.findUniqueOrThrow({
+    where: { id: identity.id },
+  });
+  if (
+    checkoutSession.provider !== provider ||
+    checkoutSession.id !== invoice.orderId
+  ) {
+    throw Errors.conflict("Webhook replay does not match its invoice checkout", {
+      checkoutId: checkoutSession.id,
+      providerInvoiceId: invoice.invoiceId,
+    });
+  }
+  assertRecoveredInvoiceMatchesCheckout(checkoutSession, invoice);
+  if (checkoutSession.status !== "completed") return;
+
+  await tx.checkoutSession.update({
+    where: { id: checkoutSession.id },
+    data: {
+      providerInvoiceStatus: "settled",
+      providerInvoiceAdditionalStatus: invoice.additionalStatus,
+      providerLastLookupAt: new Date(),
+    },
+  });
 }
 
 export async function listPlans() {
@@ -143,6 +191,7 @@ export async function checkout(request: Request) {
       );
     }
     const now = new Date();
+    await assertNoSubscriptionRefundPendingInTx(tx, user.id);
     await assertNoActiveSamePlanAccessInTx(
       tx,
       user.id,
@@ -327,9 +376,11 @@ function checkoutRequestHash(input: {
 }
 
 function billingProviderEventTargetHash(input: {
-  type: "invoice.confirmed" | "invoice.ignored";
+  type: "invoice.confirmed" | "invoice.ignored" | "refund.updated";
   invoiceId?: string;
   orderId?: string;
+  refundId?: string;
+  payoutId?: string;
 }) {
   return createHash("sha256")
     .update(
@@ -337,9 +388,107 @@ function billingProviderEventTargetHash(input: {
         type: input.type,
         invoiceId: input.invoiceId ?? null,
         orderId: input.orderId ?? null,
+        refundId: input.refundId ?? null,
+        payoutId: input.payoutId ?? null,
       }),
     )
     .digest("hex");
+}
+
+async function convergeRefundWebhook(input: {
+  provider: string;
+  eventId: string;
+  refundId: string;
+  payoutId: string;
+}) {
+  const existingEvent = await prisma.providerEvent.findUnique({
+    where: { id: input.eventId },
+    select: { processedAt: true },
+  });
+  if (existingEvent?.processedAt) {
+    return ok({ processed: false, idempotent: true });
+  }
+  const lookup = await providers.payment.findRefund({
+    refundId: input.refundId,
+  });
+  if (!lookup.ok) {
+    throw Errors.unavailable(
+      "Payment provider refund lookup is temporarily unavailable",
+      lookup.error,
+    );
+  }
+  if (!lookup.data) {
+    throw Errors.unavailable("Provider refund is not visible yet", {
+      refundId: input.refundId,
+    });
+  }
+  const referencePrefix = "idream-refund:";
+  if (!lookup.data.reference.startsWith(referencePrefix)) {
+    throw Errors.conflict("Provider refund has no iDream checkout authority", {
+      refundId: input.refundId,
+    });
+  }
+  const checkoutId = lookup.data.reference
+    .slice(referencePrefix.length)
+    .split(":", 1)[0];
+  const checkout = await prisma.checkoutSession.findUnique({
+    where: { id: checkoutId },
+    select: {
+      id: true,
+      provider: true,
+      status: true,
+      needsReconciliation: true,
+      reconciliationEvidence: true,
+    },
+  });
+  const evidence = parseSubscriptionRefundEvidence(
+    checkout?.reconciliationEvidence,
+  );
+  if (
+    !checkout ||
+    checkout.provider !== input.provider ||
+    !["refund_pending", "provider_unknown"].includes(checkout.status) ||
+    !checkout.needsReconciliation ||
+    evidence?.reference !== lookup.data.reference ||
+    evidence.providerRefundId !== input.refundId
+  ) {
+    throw Errors.unavailable(
+      "Refund event is valid but its checkout authority is not available yet; retry delivery.",
+      { refundId: input.refundId, deferred: true },
+    );
+  }
+  if (!lookup.data.payouts.some((payout) => payout.payoutId === input.payoutId)) {
+    throw Errors.unavailable("Provider payout is not visible on its refund yet", {
+      refundId: input.refundId,
+      payoutId: input.payoutId,
+    });
+  }
+
+  const result = await prisma.$transaction(async (tx) => {
+    await lockProviderEvent(tx, input.eventId);
+    const event = await tx.providerEvent.findUniqueOrThrow({
+      where: { id: input.eventId },
+    });
+    if (event.processedAt) return { processed: false, idempotent: true };
+    await lockCheckoutSession(tx, checkout.id);
+    await tx.$queryRaw`SELECT id FROM "subscriptions" WHERE id = ${evidence.subscriptionId} FOR UPDATE`;
+    const projected = await projectSubscriptionRefundInTx(tx, {
+      checkoutId: checkout.id,
+      expectedReference: evidence.reference,
+      providerRefund: lookup.data!,
+    });
+    await tx.providerEvent.update({
+      where: { id: input.eventId },
+      data: { processedAt: new Date() },
+    });
+    return {
+      processed: true,
+      subscriptionId: projected.evidence.subscriptionId,
+      subscriptionStatus: projected.subscriptionStatus,
+      refund: publicSubscriptionRefundDTO(projected.evidence),
+    };
+  });
+  return ok(result);
 }
 
 const CHECKOUT_PROVIDER_RECONCILIATION_GRACE_MS = 30 * 60 * 1_000;
@@ -510,6 +659,7 @@ async function dispatchCheckoutInvoiceWithAccessExclusion(
     if (!claimable) return { kind: "busy" } as const;
 
     await lockUserLedger(tx, plan.userId);
+    await assertNoSubscriptionRefundPendingInTx(tx, plan.userId);
     await assertNoActiveSamePlanAccessInTx(
       tx,
       plan.userId,
@@ -1334,27 +1484,41 @@ export async function billingWebhook(request: Request, provider: string) {
     });
   }
 
+  if (parsed.data.type === "refund.updated") {
+    return convergeRefundWebhook({
+      provider,
+      eventId: event.id,
+      refundId: parsed.data.refundId,
+      payoutId: parsed.data.payoutId,
+    });
+  }
+  const invoiceEvent = parsed.data;
+
   let verifiedOrderInvoice: PaymentInvoice | null = null;
   if (
-    parsed.data.type === "invoice.confirmed" &&
-    parsed.data.invoiceId &&
-    parsed.data.orderId
+    invoiceEvent.type === "invoice.confirmed" &&
+    invoiceEvent.invoiceId &&
+    invoiceEvent.orderId
   ) {
     const alreadyBound = await prisma.checkoutSession.findUnique({
       where: {
         provider_providerSessionId: {
           provider,
-          providerSessionId: parsed.data.invoiceId,
+          providerSessionId: invoiceEvent.invoiceId,
         },
       },
-      select: { id: true },
+      select: { failureCode: true },
     });
-    if (!alreadyBound) {
+    const settlementAlreadyQuarantined =
+      alreadyBound &&
+      (isLateSettledAbandonedCheckout(alreadyBound) ||
+        isCheckoutReconciliationResolved(alreadyBound));
+    if (!settlementAlreadyQuarantined) {
       const lookup = await paymentProviderRequestWithDeadline(
         "invoice_lookup_timeout",
         (signal) =>
           providers.payment.findInvoiceByOrderId({
-            orderId: parsed.data.orderId!,
+            orderId: invoiceEvent.orderId!,
             signal,
           }),
       );
@@ -1367,19 +1531,19 @@ export async function billingWebhook(request: Request, provider: string) {
       if (!lookup.data) {
         throw Errors.unavailable(
           "Settled payment could not yet be verified by its provider order id",
-          { orderId: parsed.data.orderId },
+          { orderId: invoiceEvent.orderId },
         );
       }
       if (
         lookup.data.provider !== provider ||
-        lookup.data.invoiceId !== parsed.data.invoiceId ||
+        lookup.data.invoiceId !== invoiceEvent.invoiceId ||
         lookup.data.status !== "settled"
       ) {
         throw Errors.conflict(
           "Webhook settlement does not match the provider invoice authority",
           {
-            invoiceId: parsed.data.invoiceId,
-            orderId: parsed.data.orderId,
+            invoiceId: invoiceEvent.invoiceId,
+            orderId: invoiceEvent.orderId,
           },
         );
       }
@@ -1399,9 +1563,18 @@ export async function billingWebhook(request: Request, provider: string) {
     // failed activation/checkout update rolls back and remains retryable.
     await lockProviderEvent(tx, event.id);
     const current = await tx.providerEvent.findUniqueOrThrow({ where: { id: event.id } });
-    if (current.processedAt) return { processed: false, idempotent: true };
+    if (current.processedAt) {
+      if (verifiedOrderInvoice) {
+        await convergeProcessedSettlementReplayInTx(
+          tx,
+          provider,
+          verifiedOrderInvoice,
+        );
+      }
+      return { processed: false, idempotent: true };
+    }
 
-    if (parsed.data.type === "invoice.ignored") {
+    if (invoiceEvent.type === "invoice.ignored") {
       await tx.providerEvent.update({
         where: { id: event.id },
         data: { processedAt: new Date() },
@@ -1409,7 +1582,7 @@ export async function billingWebhook(request: Request, provider: string) {
       return { processed: true };
     }
 
-    if (!parsed.data.invoiceId) {
+    if (!invoiceEvent.invoiceId) {
       throw Errors.badRequest("Confirmed payment webhook is missing an invoice id");
     }
 
@@ -1417,23 +1590,23 @@ export async function billingWebhook(request: Request, provider: string) {
       where: {
         provider_providerSessionId: {
           provider,
-          providerSessionId: parsed.data.invoiceId,
+          providerSessionId: invoiceEvent.invoiceId,
         },
       },
       select: { id: true },
     });
     if (
       checkoutIdentity &&
-      parsed.data.orderId &&
-      checkoutIdentity.id !== parsed.data.orderId
+      invoiceEvent.orderId &&
+      checkoutIdentity.id !== invoiceEvent.orderId
     ) {
       throw Errors.conflict("Webhook order does not match its invoice checkout", {
         checkoutId: checkoutIdentity.id,
       });
     }
-    if (!checkoutIdentity && parsed.data.orderId) {
+    if (!checkoutIdentity && invoiceEvent.orderId) {
       const byOrderId = await tx.checkoutSession.findUnique({
-        where: { id: parsed.data.orderId },
+        where: { id: invoiceEvent.orderId },
         select: { id: true, provider: true },
       });
       if (byOrderId?.provider === provider) {
@@ -1457,8 +1630,8 @@ export async function billingWebhook(request: Request, provider: string) {
       });
     }
     if (
-      parsed.data.orderId &&
-      checkoutSession.id !== parsed.data.orderId
+      invoiceEvent.orderId &&
+      checkoutSession.id !== invoiceEvent.orderId
     ) {
       throw Errors.conflict("Webhook order does not match its invoice checkout", {
         checkoutId: checkoutSession.id,
@@ -1466,11 +1639,17 @@ export async function billingWebhook(request: Request, provider: string) {
     }
     if (
       checkoutSession.providerSessionId &&
-      checkoutSession.providerSessionId !== parsed.data.invoiceId
+      checkoutSession.providerSessionId !== invoiceEvent.invoiceId
     ) {
       throw Errors.conflict("Webhook invoice does not match the checkout order", {
         checkoutId: checkoutSession.id,
       });
+    }
+    if (verifiedOrderInvoice) {
+      assertRecoveredInvoiceMatchesCheckout(
+        checkoutSession,
+        verifiedOrderInvoice,
+      );
     }
     if (isLateSettledAbandonedCheckout(checkoutSession)) {
       await tx.providerEvent.update({
@@ -1554,7 +1733,7 @@ export async function billingWebhook(request: Request, provider: string) {
         },
       });
     }
-    if (checkoutSession.providerSessionId !== parsed.data.invoiceId) {
+    if (checkoutSession.providerSessionId !== invoiceEvent.invoiceId) {
       throw Errors.conflict("Checkout invoice changed before webhook settlement", {
         checkoutId: checkoutSession.id,
       });
@@ -1565,7 +1744,9 @@ export async function billingWebhook(request: Request, provider: string) {
         data: {
           providerInvoiceStatus: "settled",
           providerInvoiceAdditionalStatus:
-            checkoutSession.providerInvoiceAdditionalStatus ?? "none",
+            verifiedOrderInvoice?.additionalStatus ??
+            checkoutSession.providerInvoiceAdditionalStatus ??
+            "none",
         },
       });
       await tx.providerEvent.update({
@@ -1591,7 +1772,7 @@ export async function billingWebhook(request: Request, provider: string) {
       tx,
       checkoutSession.userId,
       checkoutSession.planId,
-      parsed.data.invoiceId,
+      invoiceEvent.invoiceId,
       provider,
       offerSnapshot.data,
       {
@@ -1621,7 +1802,9 @@ export async function billingWebhook(request: Request, provider: string) {
         status: "completed",
         providerInvoiceStatus: "settled",
         providerInvoiceAdditionalStatus:
-          checkoutSession.providerInvoiceAdditionalStatus ?? "none",
+          verifiedOrderInvoice?.additionalStatus ??
+          checkoutSession.providerInvoiceAdditionalStatus ??
+          "none",
         failureCode: null,
         needsReconciliation: false,
       },

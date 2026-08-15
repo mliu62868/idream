@@ -1,6 +1,6 @@
 # 08 · 计费、权益与 dreamcoin
 
-更新日期：2026-07-31
+更新日期：2026-08-15
 
 落地 `BackendFeatureSpec §3.5/§4.5/§5.8` 与 ADR-4（支付抽象 + **加密货币**）。核心三件事：**订阅生命周期**、**权益（entitlement）派生**、**dreamcoin append-only ledger**。
 
@@ -45,6 +45,7 @@ invoice_created → awaiting_payment → confirming(链上确认中) → active(
 - **激活**：**只由 IPN/webhook + 足够链上确认驱动**（§3），不信前端回跳；确认到账 → `currentPeriodEnd = now + period` + 发权益 + 月度 dreamcoins。
 - **续费提醒**：临期由 cron 通知用户再次付款（无自动扣款）。
 - **dreamcoin 充值**：一次性加密付款，确认后经 `reward.ledger` 入账。
+- **正常订单全额退款**：只允许具有 `billing.subscription.refund` 的 Admin 对已结算 prepaid subscription 发起。`AdminCommand → PaymentProvider.createRefund → immutable refund evidence → webhook/reconcile projection` 是唯一链路；前端不能直接改 subscription 或 ledger。
 
 ## 3. Webhook / IPN 幂等（关键正确性）
 
@@ -72,7 +73,7 @@ worker billing.webhook（必须等"已确认/已结算"才发权益）:
 
 **铁律**：`balance(user) = SUM(dreamcoin_ledger.delta WHERE userId)`。**没有"余额字段"被就地写**。`balanceAfter` 仅为审计快照。
 
-生产写入口只有 `postDreamcoinEntry(tx, intent)`。调用方提交类型化业务 intent（`signup_bonus | subscription_grant | generation_spend | refund | redeem | referral | admin_adjust`），不得自由组合 `delta/reason`，也不得直接写 `DreamcoinLedger`。该 Module 在同一事务内负责用户行锁、余额派生、符号与规范 reason、幂等 replay/conflict、`balanceAfter` 和 GenerationSettlement 关联。
+生产写入口只有 `postDreamcoinEntry(tx, intent)`。调用方提交类型化业务 intent（`signup_bonus | subscription_grant | subscription_refund | subscription_refund_restore | generation_spend | refund | redeem | referral | admin_adjust`），不得自由组合 `delta/reason`，也不得直接写 `DreamcoinLedger`。该 Module 在同一事务内负责用户行锁、余额派生、符号与规范 reason、幂等 replay/conflict、`balanceAfter` 和 GenerationSettlement 关联。
 
 ```ts
 await postDreamcoinEntry(tx, {
@@ -123,10 +124,17 @@ async function has(userId: string, key: string): Promise<boolean> {
   - 语音分钟额度仍使用 `Plan.features.voiceMinutes`（滚动窗口），额度用尽后按 clip 兜底扣 coin；`voiceEnabled` 作能力门。
   - 免费聊天额度（每日 messages）仍用 `chat_usage`（ECONOMY §3）——消息免费，只限频，不走 coin。
 
-## 7. 退款、争议、降级
+## 7. 正常订阅退款、争议、降级
 
-- 退款（人工/争议）：`admin_adjust` 负 delta 或冲正；订阅争议 webhook → `past_due/canceled`。
-- 降级/到期：`recomputeEntitlements` 移除高阶权益；已发放 dreamcoins **不回收**（除非欺诈，走 admin_adjust 留证）。
+正常已结算 prepaid subscription 的全额退款不走 `admin_adjust`：
+
+1. Admin 二次确认精确 subscription、全额 checkout 金额和理由，服务端创建 durable command。
+2. 事务内锁定 subscription/checkout/user，立即将 subscription 投影为 `refund_pending`、移除 subscription entitlements，并用 `subscription_refund` 冲销**本次 grant 的精确数量**。允许余额为负；已消费 Dreamcoin 不返还，也不把余额 clamp 到 0。
+3. provider refund request 必须携带 checkout 的 `amountCents/currency`。BTCPay 使用 `Custom`，不用会把超额付款一起退掉的 `RateThen`；create response 与后续 Pull Payment/payout read 在 `claimable/in_progress/completed/canceled` 任一状态下，根金额、根币种、每笔 payout 币种和累计金额都必须与请求精确一致，否则 `refund_create_invalid` 并 fail closed。
+4. provider `claimable/in_progress/completed` 通过验签 webhook 或显式 reconcile 更新 immutable refund evidence；`completed` 将 checkout/subscription 收敛为 `refunded`，用户 Profile 显示完成凭据。
+5. `refund_pending` 期间禁止该用户创建或 dispatch 新 subscription checkout；已在途的晚到结算进入 reconciliation，不能激活第二份订阅。provider `canceled` 只有在不存在 competing active subscription 时才能恢复原 subscription period 与 entitlements，并用 `subscription_refund_restore` 回补精确 grant。新退款尝试使用新 command id，reversal/restore 幂等键包含 command id，不与被取消尝试混用。
+
+争议/晚到结算仍使用各自 reconciliation authority；不得伪装成正常 subscription refund。到期由 `recomputeEntitlements` 移除高阶权益。
 
 ## 8. 支付方式（已定：加密货币，见 ADR-4）
 
@@ -141,4 +149,5 @@ async function has(userId: string, key: string): Promise<boolean> {
 - [ ] dreamcoin 全为 append-only ledger 条目，余额可由 ledger 重算。
 - [ ] 订阅状态仅由验签 + 幂等 webhook 改变。
 - [ ] 生成预留/结算/退款净额收敛，可重入不重复扣退。
+- [ ] 正常 subscription 全额退款精确匹配 checkout 金额/币种；取消恢复和 command 重试不重复冲销或回补。
 - [ ] 换 PSP 不触碰 billing 数据模型。

@@ -16,6 +16,8 @@ describe("Phase 0 metric truth containment", () => {
     expect(html).toContain("Flag Monitoring");
     expect(html).toContain("no assignment or exposure records");
     expect(html).toContain("min-h-11");
+    expect(html).toContain("bg-[var(--ad-ink)]");
+    expect(html).not.toContain("var(--ad-accent)");
     expect(html).toContain('pattern="[a-z0-9][a-z0-9._\\-]*"');
     expect(html).not.toContain("lift=");
     expect(html).not.toContain(">Experiments<");

@@ -8,6 +8,7 @@ import {
 import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import {
   CharacterMediaOperationsCard,
+  characterMediaOperationsNeedAttention,
   shouldReleaseVoiceReclaimIdempotencyKey,
 } from "./CharacterMediaOperationsCard";
 
@@ -114,6 +115,47 @@ describe("Character media operations card", () => {
     expect(html).toContain(
       "Review and Release remain separate decisions.",
     );
+  });
+
+  it("opens itself only when a recovery is actually actionable", () => {
+    // SPEC: 这张排障证据表默认让位给角色本身；只有 retryable / operator_action /
+    // not_recoverable 才值得抢占角色页开屏。
+    expect(characterMediaOperationsNeedAttention(projection)).toBe(true);
+    expect(
+      renderToStaticMarkup(
+        createElement(CharacterMediaOperationsCard, { projection }),
+      ),
+    ).toContain("<details");
+
+    const settled = characterMediaOperationsProjectionSchema.parse({
+      projectionVersion: 1,
+      asOf: "2026-08-02T03:10:00.000Z",
+      operations: [
+        operation("image", "assets"),
+        operation("video", "video"),
+        // 从未跑过的模态收敛成 unavailable，那是空状态不是故障。
+        operation("voice", "voice", {
+          requestId: null,
+          status: null,
+          attempt: null,
+          provider: null,
+          timing: null,
+          costDreamcoins: null,
+          output: null,
+          operationsHref: null,
+          recoverability: { state: "unavailable", reason: null },
+        }),
+      ],
+    }) satisfies CharacterMediaOperationsProjection;
+
+    expect(characterMediaOperationsNeedAttention(settled)).toBe(false);
+    const html = renderToStaticMarkup(
+      createElement(CharacterMediaOperationsCard, { projection: settled }),
+    );
+    expect(html).not.toContain("<details open");
+    // 收起时摘要仍然一眼说清三个模态各自的状态。
+    expect(html).toContain("No runs");
+    expect(html).toContain("succeeded");
   });
 
   it("retains the durable key while the accepted reclaim command is in progress", () => {

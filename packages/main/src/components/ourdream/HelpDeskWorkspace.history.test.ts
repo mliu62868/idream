@@ -1,9 +1,36 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { HelpDeskHistoryPanel } from "./HelpDeskWorkspace";
+import {
+  HelpDeskHistoryPanel,
+  helpDeskHistoryFailure,
+} from "./HelpDeskWorkspace";
 
 describe("HelpDeskHistoryPanel", () => {
+  it("does not offer retry for a stable non-customer authority boundary", () => {
+    expect(helpDeskHistoryFailure(403, {
+      error: { message: "Customer history is unavailable for this account" },
+    })).toEqual({
+      message: "Help Desk history is available to customer accounts. This signed-in account is not a customer account.",
+      retryable: false,
+    });
+    const html = renderToStaticMarkup(createElement(HelpDeskHistoryPanel, {
+      authenticated: true,
+      loading: false,
+      error: "Help Desk history is available to customer accounts.",
+      errorRetryable: false,
+      onRefresh: vi.fn(),
+      history: {
+        supportRequests: [],
+        reports: [],
+        appeals: [],
+      },
+    }));
+
+    expect(html).toContain("Help Desk history is available to customer accounts.");
+    expect(html).not.toContain("Retry");
+  });
+
   it("renders durable support, report, linkage, and appeal outcomes", () => {
     const html = renderToStaticMarkup(createElement(HelpDeskHistoryPanel, {
       authenticated: true,

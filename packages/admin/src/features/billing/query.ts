@@ -65,6 +65,30 @@ export function billingRefundAcknowledgementConfirmation(checkoutId: string) {
   return `${checkoutId.trim()}:refund_acknowledged`;
 }
 
+export function billingSubscriptionRefundConfirmation(subscriptionId: string) {
+  return `${subscriptionId.trim()}:refund`;
+}
+
+export function billingSubscriptionRefundReconcileConfirmation(
+  subscriptionId: string,
+) {
+  return `${subscriptionId.trim()}:refund_reconcile`;
+}
+
+export function isSubscriptionRefundable(
+  subscription: Pick<
+    AdminBillingSubscriptionListItem,
+    "status" | "canRefund" | "checkoutId"
+  >,
+) {
+  return (
+    subscription.status === "active" &&
+    subscription.canRefund === true &&
+    typeof subscription.checkoutId === "string" &&
+    subscription.checkoutId.length > 0
+  );
+}
+
 export function isRefundAcknowledgementCandidate(
   checkout: Readonly<Record<string, unknown>>,
 ) {
@@ -90,3 +114,4 @@ function set(params: URLSearchParams, key: string, value: string) {
   const normalized = value.trim();
   if (normalized && normalized !== "all") params.set(key, normalized);
 }
+import type { AdminBillingSubscriptionListItem } from "@idream/shared/admin";

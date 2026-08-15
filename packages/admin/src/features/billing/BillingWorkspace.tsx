@@ -11,6 +11,12 @@ import {
   X,
 } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
+import {
+  adminBillingSubscriptionListResponseSchema,
+  adminSubscriptionRefundCommandResponseSchema,
+  type AdminBillingSubscriptionListItem,
+  type AdminBillingSubscriptionListResponse,
+} from "@idream/shared/admin";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
@@ -23,11 +29,14 @@ import {
   billingLedgerPath,
   billingQueryFromSearch,
   billingRefundAcknowledgementConfirmation,
+  billingSubscriptionRefundConfirmation,
+  billingSubscriptionRefundReconcileConfirmation,
   billingSubscriptionsPath,
   billingWorkspaceUrl,
   defaultBillingQuery,
   isBillingQueryFiltered,
   isRefundAcknowledgementCandidate,
+  isSubscriptionRefundable,
   parseLedgerAdjustmentDelta,
   type BillingQuery,
 } from "./query";
@@ -39,9 +48,9 @@ type BillingDataScope = {
   includedDataClasses: string[];
   excludedDataClasses: string[];
 };
-type BillingListResponse = {
+type BillingListResponse<T = BillingRecord> = {
   dataScope: BillingDataScope;
-  items: BillingRecord[];
+  items: T[];
   pageInfo?: BillingPageInfo;
 };
 type BillingReconciliation = {
@@ -72,15 +81,19 @@ const emptyAuthorityState = <T,>(): AuthorityState<T> => ({
 export function BillingWorkspace({
   canAdjust,
   canReconcile,
+  canRefund,
 }: {
   canAdjust: boolean;
   canReconcile: boolean;
+  canRefund: boolean;
 }) {
-  const { t } = useAdminI18n();
-  const [query, setQuery] = useState<BillingQuery>(() => currentQuery());
-  const [queryDraft, setQueryDraft] = useState<BillingQuery>(() => currentQuery());
+  const { t, value: valueLabel } = useAdminI18n();
+  // INVARIANT: server and first browser render use identical state. URL-owned
+  // filters are restored after hydration so bookmarked operator views stay safe.
+  const [query, setQuery] = useState<BillingQuery>(defaultBillingQuery);
+  const [queryDraft, setQueryDraft] = useState<BillingQuery>(defaultBillingQuery);
   const [ledgerState, setLedgerState] = useState<AuthorityState<BillingListResponse>>(emptyAuthorityState);
-  const [subscriptionState, setSubscriptionState] = useState<AuthorityState<BillingListResponse>>(emptyAuthorityState);
+  const [subscriptionState, setSubscriptionState] = useState<AuthorityState<AdminBillingSubscriptionListResponse>>(emptyAuthorityState);
   const [reconciliationState, setReconciliationState] = useState<AuthorityState<BillingReconciliation>>(emptyAuthorityState);
   const [adjustment, setAdjustment] = useState<AdjustmentDraft>(emptyAdjustment);
   const [refundReference, setRefundReference] = useState("");
@@ -91,7 +104,6 @@ export function BillingWorkspace({
     subscriptions: createLatestRequestGate(),
     reconciliation: createLatestRequestGate(),
   });
-  const initialQuery = useRef(query);
 
   const loadLedger = useCallback(async (next: BillingQuery) => {
     const request = requestGates.current.ledger.begin();
@@ -115,7 +127,9 @@ export function BillingWorkspace({
     const request = requestGates.current.subscriptions.begin();
     setSubscriptionState((current) => ({ ...current, error: null, loading: true }));
     try {
-      const data = await apiGet<BillingListResponse>(billingSubscriptionsPath(next));
+      const data = adminBillingSubscriptionListResponseSchema.parse(
+        await apiGet<unknown>(billingSubscriptionsPath(next)),
+      );
       if (!request.isCurrent()) return;
       setSubscriptionState({ data, error: null, loading: false, refreshedAt: new Date().toISOString() });
     } catch (cause) {
@@ -155,7 +169,6 @@ export function BillingWorkspace({
 
   useEffect(() => {
     const gates = requestGates.current;
-    load(initialQuery.current);
     const restore = () => {
       const restored = currentQuery();
       setQuery(restored);
@@ -168,9 +181,11 @@ export function BillingWorkspace({
       setQueryDraft(refreshed);
       load(refreshed);
     };
+    const timer = window.setTimeout(restore, 0);
     window.addEventListener("popstate", restore);
     window.addEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, refresh);
     return () => {
+      window.clearTimeout(timer);
       gates.ledger.invalidate();
       gates.subscriptions.invalidate();
       gates.reconciliation.invalidate();
@@ -272,9 +287,136 @@ export function BillingWorkspace({
     });
   }
 
+  function requestSubscriptionRefund(
+    subscription: AdminBillingSubscriptionListItem,
+  ) {
+    if (!canRefund || !isSubscriptionRefundable(subscription)) return;
+    const subscriptionId = subscription.id;
+    const confirmationTarget =
+      billingSubscriptionRefundConfirmation(subscriptionId);
+    const amountCents = subscription.amountCents ?? 0;
+    const includedDreamcoins = subscription.includedDreamcoins;
+    const idempotencyKey = crypto.randomUUID();
+    setConfirmation({
+      title: t("Refund subscription {id}", { id: subscriptionId }),
+      summary: (
+        <span>
+          {t("Issue the full provider refund of {amount}. Access is frozen immediately and the exact {count} Dreamcoin subscription grant is reversed; coins already spent remain consumed.", {
+            amount: money(amountCents, subscription.currency ?? "usd"),
+            count: includedDreamcoins.toLocaleString(),
+          })}
+        </span>
+      ),
+      destructive: {
+        expectedName: confirmationTarget,
+        inputLabel: t("Subscription refund confirmation"),
+      },
+      reasonLabel: t("Refund reason"),
+      submitLabel: t("Issue full refund"),
+      onSubmit: async (reason) => {
+        const result = adminSubscriptionRefundCommandResponseSchema.parse(
+          await apiWrite<unknown>(
+            `/api/v1/admin/billing/subscriptions/${encodeURIComponent(subscriptionId)}/refund`,
+            "POST",
+            { reason, confirmation: confirmationTarget },
+            { "idempotency-key": idempotencyKey },
+          ),
+        );
+        setNotice(t("Subscription {id} refund is {state}.", {
+          id: subscriptionId,
+          state: result.refund.state,
+        }));
+        load(query);
+      },
+    });
+  }
+
+  function requestSubscriptionRefundReconciliation(
+    subscription: AdminBillingSubscriptionListItem,
+  ) {
+    if (!canRefund) return;
+    const subscriptionId = subscription.id;
+    if (!subscriptionId) return;
+    const confirmationTarget =
+      billingSubscriptionRefundReconcileConfirmation(subscriptionId);
+    const idempotencyKey = crypto.randomUUID();
+    setConfirmation({
+      title: t("Reconcile refund {id}", { id: subscriptionId }),
+      summary: (
+        <span>
+          {t("Read the provider Pull Payment and payout authority, then project its current state into subscription, entitlement, and Dreamcoin records.")}
+        </span>
+      ),
+      destructive: {
+        expectedName: confirmationTarget,
+        inputLabel: t("Refund reconciliation confirmation"),
+      },
+      reasonLabel: t("Reconciliation reason"),
+      submitLabel: t("Reconcile provider state"),
+      onSubmit: async (reason) => {
+        const result = adminSubscriptionRefundCommandResponseSchema.parse(
+          await apiWrite<unknown>(
+            `/api/v1/admin/billing/subscriptions/${encodeURIComponent(subscriptionId)}/refund/reconcile`,
+            "POST",
+            { reason, confirmation: confirmationTarget },
+            { "idempotency-key": idempotencyKey },
+          ),
+        );
+        setNotice(t("Subscription {id} refund is {state}.", {
+          id: subscriptionId,
+          state: result.refund.state,
+        }));
+        load(query);
+      },
+    });
+  }
+
   const filtered = isBillingQueryFiltered(query);
   const ledger = ledgerState.data?.items ?? [];
   const subscriptions = subscriptionState.data?.items ?? [];
+  const subscriptionRows: DataTableRow[] = subscriptions.map((row, index) => {
+    const refund = row.refund;
+    const refundState = refund?.state ?? "";
+    const claimUrl = refund?.claimUrl ?? "";
+    const action = isSubscriptionRefundable(row) ? (
+      canRefund ? (
+        <button
+          className="inline-flex min-h-9 items-center gap-2 rounded-md bg-[var(--ad-ink)] px-3 text-xs font-semibold text-white"
+          onClick={() => requestSubscriptionRefund(row)}
+          type="button"
+        >
+          <ReceiptText className="h-4 w-4" /> {t("Full refund")}
+        </button>
+      ) : "—"
+    ) : refundState && refundState !== "completed" && refundState !== "canceled" ? (
+      <div className="flex flex-wrap gap-2">
+        {claimUrl ? (
+          <a className="inline-flex min-h-9 items-center rounded-md border border-[var(--ad-border)] px-3 text-xs font-semibold" href={claimUrl} rel="noreferrer" target="_blank">{t("Open claim")}</a>
+        ) : null}
+        {canRefund ? (
+          <button className="inline-flex min-h-9 items-center rounded-md border border-[var(--ad-border)] px-3 text-xs font-semibold" onClick={() => requestSubscriptionRefundReconciliation(row)} type="button">{t("Reconcile")}</button>
+        ) : null}
+      </div>
+    ) : refundState ? (
+      <span>{valueLabel(refundState)}{refund?.providerRefundId ? ` · ${refund.providerRefundId}` : ""}</span>
+    ) : "—";
+    return {
+      id: row.id || `subscription-${index}`,
+      cells: [
+        row.id,
+        row.userId,
+        row.userEmail,
+        row.plan,
+        row.billingPeriod,
+        row.provider,
+        valueLabel(row.status),
+        display(row.currentPeriodEnd),
+        display(row.cancelAtPeriodEnd),
+        refundState ? valueLabel(refundState) : "—",
+        action,
+      ],
+    };
+  });
   const reconciliation = reconciliationState.data;
   const hasRefundCandidates =
     reconciliation?.checkoutExceptions.some(isRefundAcknowledgementCandidate) ??
@@ -327,7 +469,7 @@ export function BillingWorkspace({
     <section aria-labelledby="billing-workspace-title" className="space-y-5">
       <div id="billing-workspace-title">
         <PageHeader
-          purpose="Reconcile subscription and Dreamcoin authority, then make tightly audited ledger corrections."
+          purpose={t("Reconcile subscription and Dreamcoin authority, then make tightly audited ledger corrections.")}
           title={t("Billing & Ledger")}
         />
       </div>
@@ -341,13 +483,14 @@ export function BillingWorkspace({
         <div className="flex flex-wrap gap-2">
           {!canAdjust ? <strong>{t("Ledger read only · billing.ledger.adjust is not granted")}</strong> : null}
           {!canReconcile ? <strong>{t("Reconciliation read only · billing.checkout.reconcile is not granted")}</strong> : null}
+          {!canRefund ? <strong>{t("Subscription refund read only · billing.subscription.refund is not granted")}</strong> : null}
         </div>
       </div>
 
       <form className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 md:grid-cols-2 xl:grid-cols-[minmax(260px,1fr)_200px_220px_auto]" onSubmit={apply}>
-        <Field label="Search billing authority" onChange={(search) => setQueryDraft((current) => ({ ...current, search }))} placeholder={t("user, email, subscription, or source")} value={queryDraft.search} />
-        <Select label="Ledger reason" onChange={(ledgerReason) => setQueryDraft((current) => ({ ...current, ledgerReason }))} options={["", "signup_bonus", "subscription_grant", "generation_spend", "refund", "redeem", "referral", "admin_adjust"]} value={queryDraft.ledgerReason} />
-        <Select label="Subscription status" onChange={(subscriptionStatus) => setQueryDraft((current) => ({ ...current, subscriptionStatus }))} options={["", "checkout_created", "checkout_completed", "active", "past_due", "canceled", "expired"]} value={queryDraft.subscriptionStatus} />
+        <Field label={t("Search billing authority")} onChange={(search) => setQueryDraft((current) => ({ ...current, search }))} placeholder={t("user, email, subscription, or source")} value={queryDraft.search} />
+        <Select label={t("Ledger reason")} onChange={(ledgerReason) => setQueryDraft((current) => ({ ...current, ledgerReason }))} options={["", "signup_bonus", "subscription_grant", "subscription_refund", "subscription_refund_restore", "generation_spend", "refund", "redeem", "referral", "admin_adjust"]} value={queryDraft.ledgerReason} />
+        <Select label={t("Subscription status")} onChange={(subscriptionStatus) => setQueryDraft((current) => ({ ...current, subscriptionStatus }))} options={["", "checkout_created", "checkout_completed", "active", "past_due", "canceled", "expired", "refund_pending", "refunded"]} value={queryDraft.subscriptionStatus} />
         <div className="flex items-end gap-2">
           <button className="min-h-11 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white" type="submit">{t("Apply")}</button>
           {filtered ? <button aria-label={t("Clear billing filters")} className="grid min-h-11 min-w-11 place-items-center rounded-md border border-[var(--ad-border)]" onClick={clearFilters} type="button"><X className="h-4 w-4" /></button> : null}
@@ -433,7 +576,7 @@ export function BillingWorkspace({
           />
           </> : null}
           {subscriptionState.data ? <>
-          <DataTable caption="Customer subscriptions" empty={<BillingEmpty filtered={Boolean(query.search || query.subscriptionStatus)} kind="subscriptions" onClear={clearFilters} />} headers={["ID", "User", "Email", "Plan", "Period", "Provider", "Status", "Period end", "Cancel at end"]} rows={tableRows(subscriptions, ["id", "userId", "userEmail", "plan", "billingPeriod", "provider", "status", "currentPeriodEnd", "cancelAtPeriodEnd"], "subscription")} />
+          <DataTable caption="Customer subscriptions" empty={<BillingEmpty filtered={Boolean(query.search || query.subscriptionStatus)} kind="subscriptions" onClear={clearFilters} />} headers={["ID", "User", "Email", "Plan", "Period", "Provider", "Status", "Period end", "Cancel at end", "Refund state", "Action"]} rows={subscriptionRows} stickyLastColumn />
           <NextPageButton label="Next subscription page" loading={subscriptionState.loading} onClick={() => navigate({ ...query, subscriptionCursor: subscriptionState.data?.pageInfo?.endCursor ?? "" })} pageInfo={subscriptionState.data.pageInfo ?? emptyPageInfo} />
           </> : null}
           {ledgerState.data ? <>
@@ -512,7 +655,8 @@ function Field({ label, onChange, placeholder, value }: { label: string; onChang
 }
 
 function Select({ label, onChange, options, value }: { label: string; onChange: (value: string) => void; options: readonly string[]; value: string }) {
-  return <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{label}<select className="min-h-11 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm" onChange={(event) => onChange(event.target.value)} value={value}>{options.map((option) => <option key={option || "all"} value={option}>{option || "All"}</option>)}</select></label>;
+  const { t, value: valueLabel } = useAdminI18n();
+  return <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{label}<select className="min-h-11 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm" onChange={(event) => onChange(event.target.value)} value={value}>{options.map((option) => <option key={option || "all"} value={option}>{option ? valueLabel(option) : t("All")}</option>)}</select></label>;
 }
 
 function tableRows(rows: BillingRecord[], keys: readonly string[], prefix: string): DataTableRow[] {
@@ -532,6 +676,17 @@ function currentQuery() {
 
 function text(value: unknown) {
   return typeof value === "string" ? value : "";
+}
+
+function money(amountCents: number, currency: string) {
+  try {
+    return new Intl.NumberFormat("en", {
+      style: "currency",
+      currency: currency || "USD",
+    }).format(amountCents / 100);
+  } catch {
+    return `${amountCents} ${currency || "currency cents"}`;
+  }
 }
 
 function display(value: unknown): ReactNode {

@@ -101,7 +101,7 @@ export function ExperimentsView() {
       <form className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 md:grid-cols-[1fr_2fr_auto]" onSubmit={(event) => void createDraft(event)}>
         <label className="grid gap-1 text-xs"><span>{t("Experiment key")}</span><input className="min-h-11 rounded-md border border-[var(--ad-border)] bg-transparent px-3" onChange={(event) => setKey(event.target.value)} pattern="[a-z0-9][a-z0-9._\-]*" required value={key} /></label>
         <label className="grid gap-1 text-xs"><span>{t("Hypothesis")}</span><input className="min-h-11 rounded-md border border-[var(--ad-border)] bg-transparent px-3" minLength={10} onChange={(event) => setHypothesis(event.target.value)} required value={hypothesis} /></label>
-        <button className="min-h-11 self-end rounded-md bg-[var(--ad-accent)] px-4 text-sm text-white disabled:opacity-50" disabled={busy === "create"} type="submit">{busy === "create" ? t("Creating…") : t("Create draft")}</button>
+        <button className="min-h-11 self-end rounded-md bg-[var(--ad-ink)] px-4 text-sm text-white disabled:opacity-50" disabled={busy === "create"} type="submit">{busy === "create" ? t("Creating…") : t("Create draft")}</button>
       </form>
 
       <section aria-labelledby="managed-experiments-heading" className="space-y-3">

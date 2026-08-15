@@ -71,6 +71,15 @@ describe("CaseWorkspace browser URL interactions", () => {
   beforeEach(() => {
     adminV2Request.mockReset();
     adminV2Request.mockImplementation(async (path) => {
+      if (path.startsWith("/api/v2/admin/collaboration/case/case-1/activity?")) {
+        return {
+          items: [],
+          actors: [],
+          watching: false,
+          watcherIds: [],
+          pageInfo: { endCursor: null, hasNextPage: false },
+        };
+      }
       if (path === "/api/v2/admin/cases/case-1") {
         return { case: adminCase, evidence: [], decisions: [], activity: [] };
       }

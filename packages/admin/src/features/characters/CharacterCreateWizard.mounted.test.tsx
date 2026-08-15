@@ -186,7 +186,7 @@ describe("Character create wizard restore authority", () => {
       });
       await waitUntil(() =>
         hydrationContainer.querySelector("textarea")?.value ===
-          "Adult companion audience"
+          "A dependable conversational presence"
       );
       expect(hydrationContainer.textContent).toContain(
         "Required information complete.",
@@ -217,7 +217,7 @@ describe("Character create wizard restore authority", () => {
     });
     await waitUntil(() =>
       container.querySelector("textarea")?.value ===
-        "Adult companion audience"
+        "A dependable conversational presence"
     );
 
     const audience = container.querySelector("textarea");
@@ -239,7 +239,7 @@ describe("Character create wizard restore authority", () => {
 
     const next = [...container.querySelectorAll("button")].find(
       (button) =>
-        button.textContent?.includes("Continue to persona") &&
+        button.textContent?.includes("Continue to visual direction") &&
         !button.disabled,
     );
     await act(async () => next?.click());
@@ -383,7 +383,7 @@ describe("Character create wizard restore authority", () => {
     });
     await waitUntil(() =>
       container.querySelector("textarea")?.value ===
-        "Adult companion audience"
+        "A dependable conversational presence"
     );
     const audience = container.querySelector("textarea");
     await act(async () => {
@@ -454,9 +454,9 @@ describe("Character create wizard restore authority", () => {
     });
     await waitUntil(() =>
       container.querySelector("textarea")?.value ===
-        "Define the adult audience for this companion"
+        "A dependable conversational presence"
     );
-    for (let index = 0; index < 4; index += 1) {
+    for (let index = 0; index < 2; index += 1) {
       const advance = [...container.querySelectorAll("button")].find(
         (button) =>
           button.textContent?.toLowerCase().includes("continue") &&
@@ -466,16 +466,18 @@ describe("Character create wizard restore authority", () => {
     }
 
     await waitUntil(() => container.textContent?.includes(
-      "Production & launch",
+      "Visual identity",
     ) === true);
     const finish = [...container.querySelectorAll("button")].find(
       (button) => button.textContent?.includes(
         "Save character & open portrait studio",
       ),
     );
+    // SPEC: 遗留草稿里的 instructional sentinel 仍然拦住最终创建，即使它落在向导已不再渲染的
+    // positioning 字段上——production-ready 校验吃的是整份草稿，不是当前这一屏。
     expect(finish?.disabled).toBe(true);
     expect(container.textContent).toContain(
-      "Review the complete Character before creating its server authority.",
+      "Review the character before creating it.",
     );
     expect(adminV2Request.mock.calls.some(([path, options]) =>
       path === "/api/v2/admin/characters" &&
@@ -528,7 +530,7 @@ describe("Character create wizard restore authority", () => {
     });
     await waitUntil(() =>
       container.querySelector("textarea")?.value ===
-        "Adult companion audience"
+        "A dependable conversational presence"
     );
     expect(container.querySelector("textarea")?.disabled).toBe(false);
     expect(container.textContent).not.toContain(
@@ -572,12 +574,7 @@ describe("Character create wizard restore authority", () => {
         <CharacterCreateWizard actorId="operator-a" canCreate />,
       );
     });
-    for (const label of [
-      "Continue to persona",
-      "Continue",
-      "Continue",
-      "Continue",
-    ]) {
+    for (const label of ["Continue to visual direction", "Continue"]) {
       await waitUntil(() =>
         [...container.querySelectorAll("button")].some((button) =>
           button.textContent?.includes(label) &&
@@ -702,7 +699,7 @@ describe("Character create wizard restore authority", () => {
       ) === true
     );
 
-    expect(container.textContent).toContain("1.Positioning");
+    expect(container.textContent).toContain("1.Persona");
     expect(container.textContent).not.toContain("Failed to save");
     expect(readActiveDurableMutationIntent({
       scope: "character-project:create:operator-a",

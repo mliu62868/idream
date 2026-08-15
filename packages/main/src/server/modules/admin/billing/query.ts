@@ -1,8 +1,13 @@
 import type { Prisma } from "@prisma/client";
+import { adminBillingSubscriptionListResponseSchema } from "@idream/shared/admin";
 import { z } from "zod";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
+import {
+  parseSubscriptionRefundEvidence,
+  publicSubscriptionRefundDTO,
+} from "@/server/modules/billing/subscription-refund";
 import { decodeAdminListCursor, encodeAdminListCursor } from "@/server/modules/admin-v2/shared/list-cursor";
 import { actorWithPermission } from "@/server/modules/admin/shared/legacy-primitives";
 import {
@@ -22,7 +27,7 @@ const ledgerQuerySchema = z.object({
 const subscriptionQuerySchema = z.object({
   search: z.string().trim().min(1).max(200).optional(),
   userId: z.string().trim().min(1).max(160).optional(),
-  status: z.enum(["checkout_created", "checkout_completed", "active", "past_due", "canceled", "expired"]).optional(),
+  status: z.enum(["checkout_created", "checkout_completed", "active", "past_due", "canceled", "expired", "refund_pending", "refunded"]).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
   cursor: z.string().trim().min(1).optional(),
 }).strict();
@@ -109,23 +114,63 @@ export async function listSubscriptions(request: Request) {
     take: limit + 1,
   });
   const page = subscriptions.slice(0, limit);
-  return ok({
+  const checkoutKeys = page.flatMap((subscription) =>
+    subscription.providerSubscriptionId
+      ? [{
+          provider: subscription.provider,
+          providerSessionId: subscription.providerSubscriptionId,
+        }]
+      : [],
+  );
+  const checkouts = checkoutKeys.length
+    ? await prisma.checkoutSession.findMany({
+        where: { OR: checkoutKeys },
+      })
+    : [];
+  const checkoutByProviderIdentity = new Map(
+    checkouts.map((checkout) => [
+      `${checkout.provider}:${checkout.providerSessionId ?? ""}`,
+      checkout,
+    ]),
+  );
+  return ok(adminBillingSubscriptionListResponseSchema.parse({
     dataScope: CUSTOMER_METRIC_DATA_SCOPE,
-    items: page.map((subscription) => ({
-      id: subscription.id,
-      userId: subscription.userId,
-      userEmail: subscription.user.email,
-      plan: subscription.plan.slug,
-      billingPeriod: subscription.plan.billingPeriod,
-      provider: subscription.provider,
-      status: subscription.status,
-      currentPeriodEnd: subscription.currentPeriodEnd,
-      cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
-      providerSubscriptionId: subscription.providerSubscriptionId,
-      createdAt: subscription.createdAt,
-    })),
+    items: page.map((subscription) => {
+      const checkout = subscription.providerSubscriptionId
+        ? checkoutByProviderIdentity.get(
+            `${subscription.provider}:${subscription.providerSubscriptionId}`,
+          )
+        : undefined;
+      const refund = checkout
+        ? parseSubscriptionRefundEvidence(checkout.reconciliationEvidence)
+        : null;
+      return {
+        id: subscription.id,
+        userId: subscription.userId,
+        userEmail: subscription.user.email,
+        plan: subscription.plan.slug,
+        billingPeriod: subscription.plan.billingPeriod,
+        includedDreamcoins: subscription.plan.includedDreamcoins,
+        provider: subscription.provider,
+        status: subscription.status,
+        currentPeriodEnd: subscription.currentPeriodEnd?.toISOString() ?? null,
+        cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
+        providerSubscriptionId: subscription.providerSubscriptionId,
+        checkoutId: checkout?.id ?? null,
+        amountCents: checkout?.amountCents ?? null,
+        currency: checkout?.currency ?? null,
+        refund: refund ? publicSubscriptionRefundDTO(refund) : null,
+        canRefund: Boolean(
+          subscription.status === "active" &&
+          checkout?.status === "completed" &&
+          checkout.providerInvoiceStatus === "settled" &&
+          (!refund || refund.state === "canceled"),
+        ),
+        createdAt: subscription.createdAt.toISOString(),
+      };
+    }),
     pageInfo: pageInfo("billing_subscriptions", queryIdentity, page, subscriptions.length > limit),
-  });
+  }));
 }
 
 export async function billingReconciliation(request: Request) {

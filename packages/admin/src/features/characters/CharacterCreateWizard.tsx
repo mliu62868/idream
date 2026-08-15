@@ -42,7 +42,13 @@ type ResumeState =
 
 class ReconciledUncommittedCharacter extends Error {}
 
-const steps = ["Positioning", "Persona", "Visual direction", "Commercial intent", "Review"] as const;
+// SPEC: 创建只问「一个角色之所以是角色」的两件事——它是谁，它长什么样。
+// INTENT: 此前是五步：受众/陪伴需求/假设/差异化四段市场简报排在最前，角色的名字要翻到第二步才
+// 出现，全程 13 个必填自由文本才换来一个角色。那七项上线简报字段发布闸一道都不查，而且角色页的
+// 「编辑详情」里本来就有一份同样的编辑器——这堵墙只是把同一张表单挪到了最早的位置。现在它们回到
+// 创建之后按需填写，创建口只留 6 个真必填。
+export const characterCreateSteps = ["Persona", "Visual direction", "Review & create"] as const;
+const steps = characterCreateSteps;
 
 const initialDraft: Draft = {
   positioning: {
@@ -79,36 +85,28 @@ const initialDraft: Draft = {
   },
 };
 
-const stepRequirements = [
-  "Describe the audience, recurring need, hypothesis, and differentiation.",
-  "Complete every required persona field and add at least one dialogue example.",
+// SPEC: 每一句只说这一步真正拦人的东西，不多列一项。
+// INTENT: 旧文案写「补齐每个必填人格字段并至少加一条对话示例」，但 exampleDialogue 在契约里没有
+// 下限，性格/语气/开场白也都不是必填——那句话把不存在的门槛说成了门槛。
+export const characterCreateStepRequirements = [
+  "Give the character a name, a relationship, a promise, and either a personality or a tone.",
   "Define the identity anchor, stable traits, style, and reference direction.",
-  "Add a measurable success criterion, production package, and QA plan.",
-  "Review the complete Character before creating its server authority.",
+  "Review the character before creating it.",
 ] as const;
+const stepRequirements = characterCreateStepRequirements;
 
 export function isCharacterCreateStepComplete(
   draft: Draft,
   step: number,
 ) {
   if (step === 0) {
-    return characterProjectDraftSchema.shape.positioning.safeParse(
-      draft.positioning,
-    ).success;
-  }
-  if (step === 1) {
     return characterProjectDraftSchema.shape.persona.safeParse(
       draft.persona,
     ).success;
   }
-  if (step === 2) {
+  if (step === 1) {
     return characterProjectDraftSchema.shape.visualDirection.safeParse(
       draft.visualDirection,
-    ).success;
-  }
-  if (step === 3) {
-    return characterProjectDraftSchema.shape.commercialIntent.safeParse(
-      draft.commercialIntent,
     ).success;
   }
   return characterProjectProductionReadyDraftSchema.safeParse(draft).success;
@@ -672,7 +670,7 @@ export function CharacterCreateWizard({
     if (["checking", "restoring", "restore_failed"].includes(resumeState)) {
       return;
     }
-    if (!createIntent && !isCharacterCreateStepComplete(draft, 4)) return;
+    if (!createIntent && !isCharacterCreateStepComplete(draft, steps.length - 1)) return;
     try {
       await persist(draft, true);
       const destination = authorityRef.current?.deepLink;
@@ -746,11 +744,11 @@ export function CharacterCreateWizard({
         </p>
         <div className="mt-2 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <h2 className="text-2xl font-semibold">{t("Create Character Project")}</h2>
+            <h2 className="text-2xl font-semibold">{t("Create Character")}</h2>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--ad-text-muted)]">
               {authority
                 ? t("This server draft autosaves immutable Project and content revisions.")
-                : t("Complete the required sections without creating placeholder data. This browser keeps the draft until Review creates the Character authority.")}
+                : t("Two steps: who the character is, and what they look like. Audience, launch brief and QA plan are filled in later under the character's details.")}
             </p>
           </div>
           <SaveIndicator state={saveState} />
@@ -758,14 +756,14 @@ export function CharacterCreateWizard({
         <ol className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-5" aria-label={t("Character creation progress")}>
           {steps.map((label, index) => (
             <li aria-current={index === step ? "step" : undefined} className={cn("rounded-md border px-3 py-2 text-xs", index === step ? "border-[var(--ad-ink)] font-semibold" : "border-[var(--ad-border)] text-[var(--ad-text-muted)]")} key={label}>
-              <span className="mr-1 tabular-nums">{index + 1}.</span>{label}
+              <span className="mr-1 tabular-nums">{index + 1}.</span>{t(label)}
             </li>
           ))}
         </ol>
       </header>
 
       <div className="mt-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 sm:p-6">
-        <h2 className="text-lg font-semibold">{currentLabel}</h2>
+        <h2 className="text-lg font-semibold">{t(currentLabel)}</h2>
         <p className="mt-1 text-xs text-[var(--ad-text-muted)]">{t("Project version")} {authority?.projectVersion ?? t("not created")}</p>
         <fieldset
           className="mt-5"
@@ -774,11 +772,9 @@ export function CharacterCreateWizard({
             Boolean(createIntent)
           }
         >
-          {step === 0 ? <PositioningStep draft={draft} update={update} /> : null}
-          {step === 1 ? <PersonaStep draft={draft} update={update} /> : null}
-          {step === 2 ? <VisualStep draft={draft} update={update} /> : null}
-          {step === 3 ? <CommercialStep draft={draft} update={update} /> : null}
-          {step === 4 ? <ReviewStep draft={draft} /> : null}
+          {step === 0 ? <PersonaStep draft={draft} update={update} /> : null}
+          {step === 1 ? <VisualStep draft={draft} update={update} /> : null}
+          {step === 2 ? <ReviewStep draft={draft} /> : null}
         </fieldset>
         <p
           className={cn(
@@ -861,7 +857,7 @@ export function CharacterCreateWizard({
                   ? t("Reconcile saved request")
                   : t("Resume Character creation")
                 : step === 0
-                  ? t("Continue to persona")
+                  ? t("Continue to visual direction")
                   : t("Continue")} <ArrowRight className="h-4 w-4" />
             </WorkspaceButton>
           ) : (
@@ -911,9 +907,12 @@ function Field({
   required?: boolean;
   type?: "text" | "number" | "datetime-local";
 }) {
+  // INTENT: 表单 label 此前直接渲染字面量，绕过了 i18n —— 中文模式下整张创建表单的字段名仍是英文，
+  // 而这些 key 在 zh 词表里本来就有。
+  const { t } = useAdminI18n();
   return (
     <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
-      {label}
+      {t(label)}
       <input
         className={`${fieldClass} mt-1`}
         min={type === "number" ? 18 : undefined}
@@ -940,9 +939,10 @@ function Area({
   placeholder?: string;
   required?: boolean;
 }) {
+  const { t } = useAdminI18n();
   return (
     <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
-      {label}
+      {t(label)}
       <textarea
         className={`${textAreaClass} mt-1`}
         onChange={(event) => onChange(event.target.value)}
@@ -954,18 +954,18 @@ function Area({
   );
 }
 
-function PositioningStep({ draft, update }: StepProps) {
-  const { t } = useAdminI18n();
-  const set = (field: keyof Draft["positioning"], value: string) => update("positioning", { ...draft.positioning, [field]: value });
-  return <Grid><Area label="Audience" onChange={(value) => set("audience", value)} placeholder={t("Adults winding down after high-pressure work")} value={draft.positioning.audience} /><Area label="Companion need" onChange={(value) => set("companionNeed", value)} placeholder={t("A dependable evening ritual that helps them decompress")} value={draft.positioning.companionNeed} /><Area label="Hypothesis" onChange={(value) => set("hypothesis", value)} placeholder={t("Specific evening rituals improve qualified conversations")} value={draft.positioning.hypothesis} /><Area label="Differentiation" onChange={(value) => set("differentiation", value)} placeholder={t("Calm direction without generic affirmation")} value={draft.positioning.differentiation} /></Grid>;
-}
-
 type StepProps = { draft: Draft; update: <K extends keyof Draft>(section: K, value: Draft[K]) => void };
 
+// SPEC: 必填 = name / relationshipArchetype / characterPromise + (personality 或 tone 至少一个)。
+// INTENT: 这六项此前全部渲染成 required，但 backstory / firstMessage / exampleDialogue 在 persona
+// 契约里都没有下限，步骤完成度也只走 zod——星号是假的，写不写都能过。开场白与人格深度真正的闸在
+// 发布侧（opening_complete / soul_* 四道门），不该在创建口假装拦一次。
+// personality/tone 是唯一的例外：Soul 编译器要求两者至少有一个，两个都空会在服务端 throw，所以
+// 这条规则已经进了 persona 契约，这里按对方是否已填互相切换 required。
 function PersonaStep({ draft, update }: StepProps) {
   const { t } = useAdminI18n();
   const set = <K extends keyof Draft["persona"]>(field: K, value: Draft["persona"][K]) => update("persona", { ...draft.persona, [field]: value });
-  return <div className="space-y-4"><Grid><Field label="Name" onChange={(value) => set("name", value)} placeholder={t("Mara")} value={draft.persona.name} /><Field label="Age (18+)" onChange={(value) => set("age", Math.max(18, Number(value) || 18))} type="number" value={draft.persona.age} /><label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Gender")}<select className={`${fieldClass} mt-1`} onChange={(event) => set("gender", event.target.value as Draft["persona"]["gender"])} value={draft.persona.gender}><option value="female">{t("Female")}</option><option value="male">{t("Male")}</option><option value="trans">{t("Trans")}</option></select></label><Field label="Relationship archetype" onChange={(value) => set("relationshipArchetype", value)} placeholder={t("Steady confidante")} value={draft.persona.relationshipArchetype} /></Grid><Grid><Area label="Character promise" onChange={(value) => set("characterPromise", value)} placeholder={t("A precise, warm place to put the day down")} value={draft.persona.characterPromise} /><Area label="Personality" onChange={(value) => set("personality", value)} placeholder={t("Observant, measured, gently challenging")} value={draft.persona.personality} /><Area label="Tone" onChange={(value) => set("tone", value)} placeholder={t("Warm, concise, grounded")} value={draft.persona.tone} /><Area label="Backstory" onChange={(value) => set("backstory", value)} placeholder={t("The experiences that shaped this character's point of view")} value={draft.persona.backstory} /><Area label="First message" onChange={(value) => set("firstMessage", value)} placeholder={t("You made it. What do you need to put down tonight?")} value={draft.persona.firstMessage} /><Area label="Example dialogue (one per line)" onChange={(value) => set("exampleDialogue", lines(value))} placeholder={t("Tell me the part you keep replaying.")} value={draft.persona.exampleDialogue.join("\n")} /></Grid></div>;
+  return <div className="space-y-4"><Grid><Field label="Name" onChange={(value) => set("name", value)} placeholder={t("Mara")} value={draft.persona.name} /><Field label="Age (18+)" onChange={(value) => set("age", Math.max(18, Number(value) || 18))} type="number" value={draft.persona.age} /><label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Gender")}<select className={`${fieldClass} mt-1`} onChange={(event) => set("gender", event.target.value as Draft["persona"]["gender"])} value={draft.persona.gender}><option value="female">{t("Female")}</option><option value="male">{t("Male")}</option><option value="trans">{t("Trans")}</option></select></label><Field label="Relationship archetype" onChange={(value) => set("relationshipArchetype", value)} placeholder={t("Steady confidante")} value={draft.persona.relationshipArchetype} /></Grid><Grid><Area label="Character promise" onChange={(value) => set("characterPromise", value)} placeholder={t("A precise, warm place to put the day down")} value={draft.persona.characterPromise} /><Area label="Personality" onChange={(value) => set("personality", value)} placeholder={t("Observant, measured, gently challenging")} required={draft.persona.tone.length === 0} value={draft.persona.personality} /><Area label="Tone" onChange={(value) => set("tone", value)} placeholder={t("Warm, concise, grounded")} required={draft.persona.personality.length === 0} value={draft.persona.tone} /><Area label="Backstory (optional)" onChange={(value) => set("backstory", value)} placeholder={t("The experiences that shaped this character's point of view")} required={false} value={draft.persona.backstory} /><Area label="First message (optional)" onChange={(value) => set("firstMessage", value)} placeholder={t("You made it. What do you need to put down tonight?")} required={false} value={draft.persona.firstMessage} /><Area label="Example dialogue (optional, one per line)" onChange={(value) => set("exampleDialogue", lines(value))} placeholder={t("Tell me the part you keep replaying.")} required={false} value={draft.persona.exampleDialogue.join("\n")} /></Grid><p className="text-xs leading-5 text-[var(--ad-text-muted)]">{t("Optional fields can be written now or later in Soul. Publishing checks the opening line and Soul quality separately.")}</p></div>;
 }
 
 function VisualStep({ draft, update }: StepProps) {
@@ -974,23 +974,9 @@ function VisualStep({ draft, update }: StepProps) {
   return <Grid><Area label="Identity anchor" onChange={(value) => set("identityAnchor", value)} placeholder={t("Composed late-night radio host")} value={draft.visualDirection.identityAnchor} /><Area label="Stable traits (one per line)" onChange={(value) => set("stableTraits", lines(value))} placeholder={"Dark wavy hair\nWarm brown eyes"} value={draft.visualDirection.stableTraits.join("\n")} /><label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Visual style")}<select className={`${fieldClass} mt-1`} onChange={(event) => set("style", event.target.value as Draft["visualDirection"]["style"])} value={draft.visualDirection.style}><option value="realistic">{t("Realistic")}</option><option value="anime">{t("Anime")}</option><option value="hybrid">{t("Hybrid")}</option><option value="other">{t("Other")}</option></select></label><Area label="Reference direction" onChange={(value) => set("referenceDirection", value)} placeholder={t("Low-key tungsten portraiture with an intimate editorial crop")} value={draft.visualDirection.referenceDirection} /></Grid>;
 }
 
-function CommercialStep({ draft, update }: StepProps) {
-  const { t } = useAdminI18n();
-  const set = <K extends keyof Draft["commercialIntent"]>(field: K, value: Draft["commercialIntent"][K]) => update("commercialIntent", { ...draft.commercialIntent, [field]: value });
-  return <Grid><Field label="Owner ID (optional)" onChange={(value) => set("ownerId", value.trim() || null)} placeholder={t("Assign after creation if needed")} required={false} value={draft.commercialIntent.ownerId ?? ""} /><Field label="Planned launch (optional)" onChange={(value) => set("plannedLaunchAt", value ? new Date(value).toISOString() : null)} required={false} type="datetime-local" value={dateInput(draft.commercialIntent.plannedLaunchAt)} /><Area label="Target placements (optional, one per line)" onChange={(value) => set("targetPlacementKeys", lines(value))} placeholder={"feed_card\nevening_collection"} required={false} value={draft.commercialIntent.targetPlacementKeys.join("\n")} /><Area label="Success criteria (one per line)" onChange={(value) => set("successCriteria", lines(value))} placeholder={t("QCE improves without D7 regression")} value={draft.commercialIntent.successCriteria.join("\n")} /><Area label="Production package" onChange={(value) => set("productionPackage", value)} placeholder={t("Primary portrait, hero, and chat image baseline")} value={draft.commercialIntent.productionPackage} /><Area label="QA plan" onChange={(value) => set("qaPlan", value)} placeholder={t("Mobile and desktop preview plus five-turn conversation review")} value={draft.commercialIntent.qaPlan} /></Grid>;
-}
-
 function ReviewStep({ draft }: { draft: Draft }) {
+  const { t } = useAdminI18n();
   const sections = [
-    {
-      title: "Positioning",
-      rows: [
-        ["Audience", draft.positioning.audience],
-        ["Companion need", draft.positioning.companionNeed],
-        ["Hypothesis", draft.positioning.hypothesis],
-        ["Differentiation", draft.positioning.differentiation],
-      ],
-    },
     {
       title: "Persona & conversation",
       rows: [
@@ -1016,26 +1002,6 @@ function ReviewStep({ draft }: { draft: Draft }) {
         ["Reference direction", draft.visualDirection.referenceDirection],
       ],
     },
-    {
-      title: "Production & launch",
-      rows: [
-        ["Owner", draft.commercialIntent.ownerId ?? "Unassigned"],
-        [
-          "Planned launch",
-          draft.commercialIntent.plannedLaunchAt
-            ? new Date(draft.commercialIntent.plannedLaunchAt).toLocaleString()
-            : "Not scheduled",
-        ],
-        [
-          "Placements",
-          draft.commercialIntent.targetPlacementKeys.join(" · ") ||
-            "No placements selected",
-        ],
-        ["Success criteria", draft.commercialIntent.successCriteria.join("\n")],
-        ["Production package", draft.commercialIntent.productionPackage],
-        ["QA plan", draft.commercialIntent.qaPlan],
-      ],
-    },
   ];
   return (
     <div className="grid gap-4">
@@ -1045,7 +1011,7 @@ function ReviewStep({ draft }: { draft: Draft }) {
           key={section.title}
         >
           <h3 className="border-b border-[var(--ad-border)] bg-black/[0.025] px-3 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-[var(--ad-text-muted)]">
-            {section.title}
+            {t(section.title)}
           </h3>
           <dl className="divide-y divide-[var(--ad-border)]">
             {section.rows.map(([label, value]) => (
@@ -1054,7 +1020,7 @@ function ReviewStep({ draft }: { draft: Draft }) {
                 key={label}
               >
                 <dt className="text-xs font-semibold text-[var(--ad-text-muted)]">
-                  {label}
+                  {t(label)}
                 </dt>
                 <dd className="whitespace-pre-line text-sm leading-6">
                   {value}
@@ -1070,8 +1036,4 @@ function ReviewStep({ draft }: { draft: Draft }) {
 
 function lines(value: string) {
   return value.split("\n").map((item) => item.trim()).filter(Boolean);
-}
-
-function dateInput(value: string | null) {
-  return value ? value.slice(0, 16) : "";
 }

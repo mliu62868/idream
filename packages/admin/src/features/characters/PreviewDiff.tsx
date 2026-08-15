@@ -40,6 +40,60 @@ type CharacterQaCheckDraft = Omit<CharacterQaCheckInput, "result"> & {
   result: "" | CharacterQaCheckInput["result"];
 };
 
+const previewChangeLabels: Record<string, string> = {
+  new_release: "First release",
+  name: "Character name",
+  description: "Description",
+  persona: "Persona",
+  opening: "Opening message",
+  appearance: "Appearance",
+  imageUrl: "Cover image",
+  assetPack: "Image pack",
+};
+
+export function releasePreviewChangeSummary(changedFields: readonly string[]) {
+  return {
+    firstRelease: changedFields.includes("new_release"),
+    labels: changedFields.map((field) => previewChangeLabels[field] ?? field.replaceAll("_", " ")),
+  };
+}
+
+function ReleaseChangeSummary({ changedFields }: { changedFields: readonly string[] }) {
+  const { t } = useAdminI18n();
+  const summary = releasePreviewChangeSummary(changedFields);
+  const message = summary.firstRelease
+    ? "First release — nothing is live yet."
+    : summary.labels.length
+      ? "{count} areas differ from Live."
+      : "No draft changes detected.";
+  return (
+    <section
+      aria-labelledby="release-change-summary-title"
+      className="mb-4 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"
+      data-testid="release-change-summary"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-sm font-semibold" id="release-change-summary-title">
+          {t("Release change summary")}
+        </h2>
+        <span className="text-xs font-semibold tabular-nums text-[var(--ad-text-muted)]">
+          {summary.labels.length}
+        </span>
+      </div>
+      <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">
+        {t(message, { count: summary.labels.length })}
+      </p>
+      {summary.labels.length ? (
+        <div className="mt-3 flex flex-wrap gap-2" aria-label={t("Changed fields")}>
+          {summary.labels.map((label) => (
+            <StatusBadge key={label} tone="warn" value={label} />
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 export function PreviewDiff({
   data,
   permissions,
@@ -178,16 +232,7 @@ export function PreviewDiff({
               {t("Current and draft assets")}
             </h2>
           </div>
-          {/* SPEC: 待发布的改动要列出改了什么，不能只给个计数。
-              INTENT: 详情页写"未发布改动 2"、这里也只显示"2 项变更"，运营无从判断该不该发布。
-              未被阻塞的分支一直是列字段名的，阻塞分支同样列出来，两条路径口径一致。 */}
-          {data.preview.changedFields.length ? (
-            <div className="mt-2 flex flex-wrap gap-2" aria-label={t("Changed fields")}>
-              {data.preview.changedFields.map((field) => (
-                <StatusBadge key={field} tone="warn" value={`${field} changed`} />
-              ))}
-            </div>
-          ) : null}
+          <ReleaseChangeSummary changedFields={data.preview.changedFields} />
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
             {snapshots.map((snapshot) => {
               const cover = snapshot.assetPack.character_cover;
@@ -235,14 +280,7 @@ export function PreviewDiff({
   }
   return (
     <div>
-      <div
-        className="mb-4 flex flex-wrap gap-2"
-        aria-label={t("Changed fields")}
-      >
-        {data.preview.changedFields.map((field) => (
-          <StatusBadge key={field} tone="warn" value={`${field} changed`} />
-        ))}
-      </div>
+      <ReleaseChangeSummary changedFields={data.preview.changedFields} />
       {exactDraftAssetPackAllowsQa ? (
         <section aria-labelledby="real-renderer-preview-title">
           <div className="flex flex-wrap items-end justify-between gap-2">

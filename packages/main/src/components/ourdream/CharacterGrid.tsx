@@ -26,7 +26,10 @@ export function CharacterGrid({
   onRetry?: () => void;
 }>) {
   return (
-    <section className="w-full px-2 md:px-[60px]">
+    <section
+      aria-busy={loading || loadingMore}
+      className="w-full px-2 md:px-[60px]"
+    >
       <div className="grid grid-cols-2 gap-2 md:grid-cols-3 md:gap-3 lg:grid-cols-4 xl:grid-cols-5">
         {cards.map((card, index) => (
           <div key={card.id} className="contents">
@@ -73,7 +76,7 @@ export function CharacterGrid({
           role="status"
         >
           <LoaderCircle className="h-4 w-4 animate-spin" />
-          Loading more characters...
+          {cards.length > 0 ? "Refreshing characters..." : "Loading characters..."}
         </div>
       )}
 

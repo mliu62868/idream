@@ -334,17 +334,22 @@ export function ReviewQueueView() {
           <h2 className="text-sm font-semibold">{t("Pending submissions")}</h2>
           <span className="text-xs text-[var(--ad-text-muted)]">{queueCount}</span>
         </div>
-        <div className="overflow-x-auto">
+        <div
+          aria-label={t("{caption} scrollable table", { caption: t("Pending character submissions") })}
+          className="overflow-x-auto"
+          role="region"
+          tabIndex={0}
+        >
           <table className="w-full min-w-[860px] border-collapse text-left text-sm">
             <caption className="sr-only">{t("Pending character submissions")}</caption>
             <thead className="bg-black/[0.03] text-[11px] uppercase text-[var(--ad-text-muted)]">
               <tr>
-                {["name", "gender", "style", "description", "reports", "submittedAt"].map((column) => (
+                {["Name", "Gender", "Style", "Description", "Reports", "submittedAt"].map((column) => (
                   <th key={column} className="border-b border-[var(--ad-border)] px-3 py-2 font-semibold" scope="col">
                     {t(column)}
                   </th>
                 ))}
-                <th className="border-b border-[var(--ad-border)] px-3 py-2 font-semibold" scope="col">{t("Actions")}</th>
+                <th className="sticky right-0 z-10 border-b border-l border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 py-2 font-semibold" scope="col">{t("Actions")}</th>
               </tr>
             </thead>
             <tbody>
@@ -360,7 +365,7 @@ export function ReviewQueueView() {
                     <span className={cn(item.reportCount > 0 && "text-[var(--ad-yellow-text)]")}>{item.reportCount}</span>
                   </td>
                   <td className="px-3 py-2 align-top text-[var(--ad-text-muted)]">{formatDate(item.submittedAt)}</td>
-                  <td className="px-3 py-2 align-top">
+                  <td className="sticky right-0 z-10 border-l border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 py-2 align-top">
                     <div className="flex gap-1">
                       <button
                         className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs text-[var(--ad-text)] hover:border-[var(--ad-ink)]"

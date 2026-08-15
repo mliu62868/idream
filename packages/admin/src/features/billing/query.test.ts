@@ -3,12 +3,15 @@ import {
   billingAdjustmentConfirmation,
   billingLedgerPath,
   billingRefundAcknowledgementConfirmation,
+  billingSubscriptionRefundConfirmation,
+  billingSubscriptionRefundReconcileConfirmation,
   billingQueryFromSearch,
   billingSubscriptionsPath,
   billingWorkspaceUrl,
   defaultBillingQuery,
   isBillingQueryFiltered,
   isRefundAcknowledgementCandidate,
+  isSubscriptionRefundable,
   parseLedgerAdjustmentDelta,
 } from "./query";
 
@@ -79,5 +82,27 @@ describe("billing workspace query", () => {
     expect(
       billingRefundAcknowledgementConfirmation(" checkout-1 "),
     ).toBe("checkout-1:refund_acknowledged");
+  });
+
+  it("binds subscription refund actions to an active settled authority", () => {
+    const candidate = {
+      id: "subscription-1",
+      checkoutId: "checkout-1",
+      status: "active",
+      canRefund: true,
+    };
+    expect(isSubscriptionRefundable(candidate)).toBe(true);
+    expect(
+      isSubscriptionRefundable({ ...candidate, status: "refund_pending" }),
+    ).toBe(false);
+    expect(
+      isSubscriptionRefundable({ ...candidate, canRefund: false }),
+    ).toBe(false);
+    expect(billingSubscriptionRefundConfirmation(" subscription-1 ")).toBe(
+      "subscription-1:refund",
+    );
+    expect(
+      billingSubscriptionRefundReconcileConfirmation(" subscription-1 "),
+    ).toBe("subscription-1:refund_reconcile");
   });
 });

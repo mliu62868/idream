@@ -249,6 +249,249 @@ describe("BtcPayPaymentProvider", () => {
     expect(init?.method).toBe("GET");
   });
 
+  it("creates a full on-chain invoice refund with a durable product reference", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      Response.json({
+        id: "pull-refund-1",
+        name: "idream-refund:checkout-1",
+        description: "Customer requested a full refund.",
+        currency: "USD",
+        amount: "19.99",
+        archived: false,
+        viewLink: "https://btcpay.example.com/pull-payments/pull-refund-1",
+      }),
+    );
+    const provider = createProvider(fetchMock);
+
+    await expect(
+      provider.createRefund({
+        invoiceId: "inv-123",
+        reference: "idream-refund:checkout-1",
+        reason: "Customer requested a full refund.",
+        amountCents: 1_999,
+        currency: "usd",
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      data: {
+        provider: "btcpay",
+        refundId: "pull-refund-1",
+        reference: "idream-refund:checkout-1",
+        claimUrl: "https://btcpay.example.com/pull-payments/pull-refund-1",
+        amount: "19.99",
+        currency: "usd",
+        state: "claimable",
+        payouts: [],
+      },
+    });
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect(String(url)).toBe(
+      "https://btcpay.example.com/api/v1/invoices/inv-123/refund",
+    );
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(String(init?.body))).toEqual({
+      name: "idream-refund:checkout-1",
+      description: "Customer requested a full refund.",
+      payoutMethodId: "BTC-CHAIN",
+      refundVariant: "Custom",
+      customAmount: "19.99",
+      customCurrency: "USD",
+      subtractPercentage: "0",
+    });
+  });
+
+  it("rejects a provider refund whose amount exceeds the product purchase", async () => {
+    const fetchMock = vi.fn(async () =>
+      Response.json({
+        id: "pull-refund-overpaid",
+        name: "idream-refund:checkout-1",
+        description: "Customer requested a full refund.",
+        currency: "BTC",
+        amount: "0.000055",
+        archived: false,
+        viewLink: "https://btcpay.example.com/pull-payments/pull-refund-overpaid",
+      }),
+    );
+    const provider = createProvider(fetchMock);
+
+    await expect(
+      provider.createRefund({
+        invoiceId: "inv-overpaid",
+        reference: "idream-refund:checkout-1",
+        reason: "Customer requested a full refund.",
+        amountCents: 1_999,
+        currency: "usd",
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "refund_create_invalid", retryable: false },
+    });
+  });
+
+  it("projects an archived unclaimed pull payment as canceled", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/stores/store-1/pull-payments")) {
+        return Response.json([
+          {
+            id: "pull-refund-archived",
+            name: "idream-refund:checkout-1:command-1",
+            description: "Canceled before a customer claim.",
+            currency: "USD",
+            amount: "19.99",
+            archived: true,
+            viewLink:
+              "https://btcpay.example.com/pull-payments/pull-refund-archived",
+          },
+        ]);
+      }
+      return Response.json([]);
+    });
+    const provider = createProvider(fetchMock);
+
+    await expect(
+      provider.findRefund({
+        reference: "idream-refund:checkout-1:command-1",
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      data: {
+        refundId: "pull-refund-archived",
+        state: "canceled",
+        amount: "19.99",
+        currency: "usd",
+      },
+    });
+  });
+
+  it("recovers a refund by its durable reference and proves its completed payout", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/stores/store-1/pull-payments")) {
+        return Response.json([
+          {
+            id: "pull-refund-1",
+            name: "idream-refund:checkout-1",
+            description: "Customer requested a full refund.",
+            currency: "BTC",
+            amount: "0.00001999",
+            archived: false,
+            viewLink: "https://btcpay.example.com/pull-payments/pull-refund-1",
+          },
+        ]);
+      }
+      return Response.json([
+        {
+          id: "payout-1",
+          pullPaymentId: "pull-refund-1",
+          originalCurrency: "BTC",
+          originalAmount: "0.00001999",
+          payoutCurrency: "BTC",
+          payoutAmount: "0.00001999",
+          payoutMethodId: "BTC-CHAIN",
+          state: "Completed",
+          paymentProof: { id: "refund-transaction-1" },
+        },
+      ]);
+    });
+    const provider = createProvider(fetchMock);
+
+    await expect(
+      provider.findRefund({ reference: "idream-refund:checkout-1" }),
+    ).resolves.toEqual({
+      ok: true,
+      data: {
+        provider: "btcpay",
+        refundId: "pull-refund-1",
+        reference: "idream-refund:checkout-1",
+        claimUrl: "https://btcpay.example.com/pull-payments/pull-refund-1",
+        amount: "0.00001999",
+        currency: "btc",
+        state: "completed",
+        payouts: [
+          {
+            payoutId: "payout-1",
+            amount: "0.00001999",
+            currency: "btc",
+            state: "completed",
+            paymentProofId: "refund-transaction-1",
+          },
+        ],
+      },
+    });
+  });
+
+  it("rejects a completed refund with an additional payout in another currency", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/stores/store-1/pull-payments")) {
+        return Response.json([
+          {
+            id: "pull-refund-cross-currency",
+            name: "idream-refund:checkout-cross-currency",
+            currency: "USD",
+            amount: "19.99",
+            archived: false,
+            viewLink:
+              "https://btcpay.example.com/pull-payments/pull-refund-cross-currency",
+          },
+        ]);
+      }
+      return Response.json([
+        {
+          id: "payout-usd",
+          originalCurrency: "USD",
+          originalAmount: "19.99",
+          state: "Completed",
+        },
+        {
+          id: "payout-eur-extra",
+          originalCurrency: "EUR",
+          originalAmount: "1.00",
+          state: "Completed",
+        },
+      ]);
+    });
+    const provider = createProvider(fetchMock);
+
+    await expect(
+      provider.findRefund({
+        reference: "idream-refund:checkout-cross-currency",
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "refund_lookup_invalid", retryable: false },
+    });
+  });
+
+  it("parses payout updates as refund events after signature verification", async () => {
+    const provider = createProvider();
+    const rawBody = JSON.stringify({
+      deliveryId: "delivery-refund-1",
+      type: "PayoutUpdated",
+      payoutId: "payout-1",
+      pullPaymentId: "pull-refund-1",
+      payoutState: "Completed",
+    });
+
+    await expect(
+      provider.parseWebhook({
+        providerEventId: "fallback-event",
+        payload: JSON.parse(rawBody) as unknown,
+        rawBody,
+        signature: signature(rawBody),
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      data: {
+        providerEventId: "delivery-refund-1",
+        deliveryId: "delivery-refund-1",
+        type: "refund.updated",
+        refundId: "pull-refund-1",
+        payoutId: "payout-1",
+        payoutState: "completed",
+      },
+    });
+  });
+
   it.each([
     ["Processing", "None", "processing", "none"],
     ["Settled", "PaidOver", "settled", "paid_over"],

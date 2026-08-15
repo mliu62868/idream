@@ -55,7 +55,24 @@ export const characterDraftPersonaSchema = z
       reason: z.string().trim().min(1).max(1_000),
     }).strict()).max(24).optional(),
   })
-  .strict();
+  .strict()
+  /**
+   * SPEC: 一个角色至少要有性格或语气其中之一。
+   *
+   * INTENT: 这条此前只活在服务端——createCharacterProject 会调 compileCharacterSoul，而它唯一的
+   * error 级诊断就是「At least innerLife.personality or voice.tone is required」，其余 15 条都是
+   * warning。契约不表达这条，于是两个都留空的请求能通过全部前端校验，再在服务端 throw 成 500，
+   * 运营只看到「创建结果未知」。规则搬回契约后，同一份 schema 同时管住向导的步骤完成度和请求准入，
+   * 拦截发生在能读懂的地方。
+   */
+  .superRefine((persona, ctx) => {
+    if (persona.personality.length > 0 || persona.tone.length > 0) return;
+    ctx.addIssue({
+      code: "custom",
+      path: ["personality"],
+      message: "Give the character a personality or a tone",
+    });
+  });
 
 export const characterDraftVisualDirectionSchema = z
   .object({
@@ -66,14 +83,28 @@ export const characterDraftVisualDirectionSchema = z
   })
   .strict();
 
+/**
+ * SPEC: 上线简报（positioning + commercialIntent 的 successCriteria/productionPackage/qaPlan）
+ * 是可空的，创建一个角色不需要它们。
+ *
+ * INTENT: 这七项此前是创建必填，于是「新建角色」的第一步是写四段市场简报，名字排在第二步——
+ * 运营要先交论文才能拿到一个角色。而它们在 18 道发布闸里一道都不被检查，落库列本来也可空
+ * (CharacterProject.hypothesis/differentiation 是 String?)，且角色页的「编辑详情」里早就有一份
+ * 一模一样的编辑器。也就是说这堵墙既不保护发布，也不是唯一入口，只是把表单挪到了最早的位置。
+ * 现在它们在创建后按需填写；真正定义「一个角色之所以是角色」的仍然必填：name /
+ * relationshipArchetype / characterPromise / identityAnchor / stableTraits / referenceDirection。
+ *
+ * INVARIANT: 只放宽下限，max 长度与下面的 instructional sentinel 拒绝原样保留——sentinel 比的是
+ * 精确相等，空串永远不等于任何 sentinel，所以「不许把提示文案当数据存进去」这条继续成立。
+ */
 const characterProjectDraftObjectSchema = z
   .object({
     positioning: z
       .object({
-        audience: z.string().trim().min(1).max(2_000),
-        companionNeed: z.string().trim().min(1).max(2_000),
-        hypothesis: z.string().trim().min(1).max(4_000),
-        differentiation: z.string().trim().min(1).max(4_000),
+        audience: z.string().trim().max(2_000),
+        companionNeed: z.string().trim().max(2_000),
+        hypothesis: z.string().trim().max(4_000),
+        differentiation: z.string().trim().max(4_000),
       })
       .strict(),
     persona: characterDraftPersonaSchema,
@@ -83,9 +114,9 @@ const characterProjectDraftObjectSchema = z
         ownerId: adminIdSchema.nullable(),
         plannedLaunchAt: adminIsoDateTimeSchema.nullable(),
         targetPlacementKeys: z.array(z.string().trim().min(1).max(120)).max(24),
-        successCriteria: z.array(z.string().trim().min(1).max(500)).min(1).max(24),
-        productionPackage: z.string().trim().min(1).max(4_000),
-        qaPlan: z.string().trim().min(1).max(4_000),
+        successCriteria: z.array(z.string().trim().min(1).max(500)).max(24),
+        productionPackage: z.string().trim().max(4_000),
+        qaPlan: z.string().trim().max(4_000),
       })
       .strict(),
   })
@@ -240,12 +271,12 @@ export const characterProjectSchema = z
     characterId: adminIdSchema,
     ownerId: adminIdSchema.nullable(),
     phase: characterProjectPhaseSchema,
-    audience: z.string().trim().min(1),
-    companionNeed: z.string().trim().min(1),
-    hypothesis: z.string().trim().min(1),
-    differentiation: z.string().trim().min(1),
+    audience: z.string().trim(),
+    companionNeed: z.string().trim(),
+    hypothesis: z.string().trim(),
+    differentiation: z.string().trim(),
     targetPlacementKeys: z.array(z.string().trim().min(1)).readonly(),
-    successCriteria: z.array(z.string().trim().min(1)).min(1).readonly(),
+    successCriteria: z.array(z.string().trim().min(1)).readonly(),
     plannedLaunchAt: adminIsoDateTimeSchema.nullable(),
     version: z.number().int().nonnegative(),
     createdAt: adminIsoDateTimeSchema,
@@ -257,12 +288,12 @@ export const characterProjectDraftPatchRequestSchema = z
   .object({
     entityVersion: z.number().int().nonnegative(),
     ownerId: adminIdSchema.nullable(),
-    audience: z.string().trim().min(1).max(2_000),
-    companionNeed: z.string().trim().min(1).max(2_000),
-    hypothesis: z.string().trim().min(1).max(4_000),
-    differentiation: z.string().trim().min(1).max(4_000),
+    audience: z.string().trim().max(2_000),
+    companionNeed: z.string().trim().max(2_000),
+    hypothesis: z.string().trim().max(4_000),
+    differentiation: z.string().trim().max(4_000),
     targetPlacementKeys: z.array(z.string().trim().min(1).max(120)).max(24),
-    successCriteria: z.array(z.string().trim().min(1).max(500)).min(1).max(24),
+    successCriteria: z.array(z.string().trim().min(1).max(500)).max(24),
     productionPackage: z.string().trim().max(4_000).default(""),
     qaPlan: z.string().trim().max(4_000).default(""),
     plannedLaunchAt: adminIsoDateTimeSchema.nullable(),

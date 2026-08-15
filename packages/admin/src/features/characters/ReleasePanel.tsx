@@ -48,6 +48,31 @@ function commandSubmissionMessage(
 
 type CharacterReleaseItem = CharacterWorkspaceDetail["releases"][number];
 
+const releaseCheckLabels: Record<string, string> = {
+  release_generation_authority_kind: "Generation authority",
+  project_character_authority: "Character project authority",
+  revision_is_immutable_and_pinned: "Pinned immutable revision",
+  soul_snapshot_valid: "Soul snapshot",
+  soul_release_policy: "Soul release policy",
+  soul_behavior_evaluation: "Soul behavior evaluation",
+  soul_live_model_canaries: "Live model canaries",
+  opening_complete: "Opening message",
+  visual_identity_exact_version: "Visual identity version",
+  reference_set_published_snapshot: "Published reference set",
+  generation_route_qualified: "Qualified generation route",
+  character_qa_passed: "Character QA",
+  release_avatar_manifest_available: "Avatar placement",
+  release_asset_manifest_available: "Image pack placement",
+  release_assets_customer_publishable: "Customer-publishable assets",
+  release_asset_review_authority: "Asset review authority",
+  release_asset_generation_authority: "Asset generation authority",
+  snapshot_hash_matches: "Snapshot integrity",
+};
+
+export function characterReleaseCheckLabel(checkKey: string) {
+  return releaseCheckLabels[checkKey] ?? checkKey.replaceAll("_", " ");
+}
+
 function ReleaseSummary({
   item,
   ordinal,
@@ -82,7 +107,7 @@ function ReleaseSummary({
               className="flex items-center justify-between rounded bg-black/[0.03] px-3 py-2 text-xs"
               key={check.checkKey}
             >
-              <span>{check.checkKey}</span>
+              <span>{t(characterReleaseCheckLabel(check.checkKey))}</span>
               <StatusBadge value={check.result} />
             </div>
           ))}

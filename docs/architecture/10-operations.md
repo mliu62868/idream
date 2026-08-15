@@ -102,6 +102,7 @@ ComfyUI 升级**不需要重新打补丁**：custom_nodes 不会被升级触碰�
 重放。升级后只需重启并验证：
 
 ```bash
+bun run comfyui:start # 首次注册或 PM2 进程丢失时
 pm2 restart comfyui-idream
 cd packages/gen && bun run preflight && bun run smoke:backend
 ```

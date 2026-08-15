@@ -708,7 +708,7 @@ export function CreateWorkspace() {
     <section className="px-4 pb-12 pt-10 md:px-[60px] md:pb-16">
       <div className="mx-auto max-w-6xl">
         <h1 className="text-center text-[clamp(28px,6vw,52px)] font-black leading-none text-white">
-          Create Your Dream AI Girl
+          Create Your Dream AI Character
         </h1>
 
         <ol className="mt-8 flex flex-wrap justify-center gap-2" data-testid="create-steps">

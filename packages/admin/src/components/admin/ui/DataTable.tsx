@@ -17,12 +17,15 @@ export function DataTable({
   empty,
   caption = "Data table",
   minimumWidthClassName = "min-w-[640px]",
+  stickyLastColumn = false,
 }: {
   headers: DataTableHeader[];
   rows: DataTableRow[];
   empty?: ReactNode;
   caption?: string;
   minimumWidthClassName?: string;
+  /** Keeps row actions reachable while wide operational tables scroll. */
+  stickyLastColumn?: boolean;
 }) {
   const { t } = useAdminI18n();
   const translatedCaption = t(caption);
@@ -33,13 +36,14 @@ export function DataTable({
         <caption className="sr-only">{translatedCaption}</caption>
         <thead>
           <tr className="border-b border-[var(--ad-border)] text-xs uppercase tracking-[0.05em] text-[var(--ad-text-muted)]">
-            {headers.map((header) => {
+            {headers.map((header, index) => {
               const definition = typeof header === "string" ? { label: header } : header;
               const translatedLabel = t(definition.label);
+              const isSticky = stickyLastColumn && index === headers.length - 1;
               return (
               <th
                 aria-sort={definition.sortDirection && definition.sortDirection !== "none" ? definition.sortDirection : undefined}
-                className="px-4 py-3 font-medium"
+                className={`px-4 py-3 font-medium ${isSticky ? "sticky right-0 z-10 border-l border-[var(--ad-border)] bg-[var(--ad-surface)] shadow-[-8px_0_12px_-12px_rgba(0,0,0,0.35)]" : ""}`}
                 key={definition.label}
                 scope="col"
               >
@@ -72,8 +76,10 @@ export function DataTable({
               } : undefined}
               tabIndex={row.href ? 0 : undefined}
             >
-              {row.cells.map((cell, index) => (
-                <td className="px-4 py-3 align-middle" key={index}>
+              {row.cells.map((cell, index) => {
+                const isSticky = stickyLastColumn && index === row.cells.length - 1;
+                return (
+                <td className={`px-4 py-3 align-middle ${isSticky ? "sticky right-0 z-[1] border-l border-[var(--ad-border)] bg-[var(--ad-surface)] shadow-[-8px_0_12px_-12px_rgba(0,0,0,0.35)]" : ""}`} key={index}>
                   {row.href && index === 0 ? (
                     <Link className="block font-medium text-[var(--ad-ink)]" href={row.href}>
                       {cell}
@@ -82,7 +88,8 @@ export function DataTable({
                     cell
                   )}
                 </td>
-              ))}
+                );
+              })}
             </tr>
           ))}
         </tbody>

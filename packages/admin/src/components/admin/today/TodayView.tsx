@@ -4,7 +4,7 @@ import { todayAllWorkResponseSchema, type TodayAllWorkResponse, type TodayProjec
 import Link from "next/link";
 import { ArrowRight, Bell, CheckCircle2, Clock3, Eye, Inbox, Pin, UserPlus, UserRound } from "lucide-react";
 import { useEffect, useState } from "react";
-import { useAdminI18n } from "@/components/admin/i18n";
+import { translateAdmin, useAdminI18n, type AdminLocale } from "@/components/admin/i18n";
 import type { WorkMode } from "@/components/admin/nav-config";
 import { adminV2Request } from "@/lib/admin-v2-api";
 import { parseTodayUrl, todayAllWorkPath, todayBrowserPath, type TodayUrlState } from "./query";
@@ -109,8 +109,8 @@ export function TodayView({ data, onPreferenceChanged, workMode }: { data: Today
       </section>
 
       <div aria-label={t("Today view")} className="flex gap-1 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-1" role="tablist">
-        <button aria-selected={urlState.tab === "summary"} className="min-h-10 rounded-md px-4 text-sm font-semibold aria-selected:bg-[var(--ad-accent)] aria-selected:text-white" onClick={() => navigate({ tab: "summary", limit: 25 })} role="tab" type="button">{t("Summary")}</button>
-        <button aria-selected={urlState.tab === "all"} className="min-h-10 rounded-md px-4 text-sm font-semibold aria-selected:bg-[var(--ad-accent)] aria-selected:text-white" onClick={() => navigate({ ...urlState, tab: "all" })} role="tab" type="button">{t("All work")}</button>
+        <button aria-selected={urlState.tab === "summary"} className="min-h-10 rounded-md px-4 text-sm font-semibold aria-selected:bg-[var(--ad-ink)] aria-selected:text-white" onClick={() => navigate({ tab: "summary", limit: 25 })} role="tab" type="button">{t("Summary")}</button>
+        <button aria-selected={urlState.tab === "all"} className="min-h-10 rounded-md px-4 text-sm font-semibold aria-selected:bg-[var(--ad-ink)] aria-selected:text-white" onClick={() => navigate({ ...urlState, tab: "all" })} role="tab" type="button">{t("All work")}</button>
       </div>
 
       {urlState.tab === "summary" ? <>
@@ -124,6 +124,7 @@ export function TodayView({ data, onPreferenceChanged, workMode }: { data: Today
 
       <WorkQueue
         description={t("The ten highest-ranked authorized items. The total is computed from complete server-side counts.")}
+        groupRelatedCreativeRuns
         icon={Clock3}
         queue={projection.nextBestActions}
         onPreferenceChanged={refresh}
@@ -194,6 +195,7 @@ function TodayFilter({ label, onChange, value, values }: { label: string; onChan
 function WorkQueue({
   compact = false,
   description,
+  groupRelatedCreativeRuns = false,
   icon: Icon,
   queue,
   onPreferenceChanged,
@@ -201,12 +203,16 @@ function WorkQueue({
 }: {
   compact?: boolean;
   description: string;
+  groupRelatedCreativeRuns?: boolean;
   icon: typeof Clock3;
   queue: TodayProjection["myShift"];
   onPreferenceChanged: () => void | Promise<void>;
   title: string;
 }) {
   const { t } = useAdminI18n();
+  const groups = groupRelatedCreativeRuns
+    ? groupTodayQueueItems(queue.items)
+    : queue.items.map((item) => ({ key: `${item.sourceType}:${item.sourceId}`, items: [item] }));
   return (
     <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]" data-testid={`today-queue-${title.toLowerCase().replaceAll(" ", "-")}`}>
       <div className="border-b border-[var(--ad-border)] p-4">
@@ -223,7 +229,16 @@ function WorkQueue({
         <p className="p-4 text-xs text-[var(--ad-text-muted)]">{t("No matching work right now.")}</p>
       ) : (
         <div className="divide-y divide-[var(--ad-border)]">
-          {queue.items.map((item) => <WorkItem compact={compact} item={item} key={`${item.sourceType}:${item.sourceId}`} onPreferenceChanged={onPreferenceChanged} watched={title === "Watching"} />)}
+          {groups.map((group) => group.items.length === 1 ? (
+            <WorkItem compact={compact} item={group.items[0]} key={group.key} onPreferenceChanged={onPreferenceChanged} watched={title === "Watching"} />
+          ) : (
+            <RelatedCreativeRuns
+              compact={compact}
+              items={group.items}
+              key={group.key}
+              onPreferenceChanged={onPreferenceChanged}
+            />
+          ))}
         </div>
       )}
       {queue.totalCount > queue.items.length ? (
@@ -232,6 +247,84 @@ function WorkQueue({
         </p>
       ) : null}
     </section>
+  );
+}
+
+type TodayQueueItemGroup = {
+  key: string;
+  items: TodayWorkItem[];
+  creativeKey: string | null;
+};
+
+function creativeRunGroupKey(item: TodayWorkItem) {
+  if (item.sourceType !== "creative_run") return null;
+  const { purpose, targetId, targetType } = item.impactSnapshot;
+  if (
+    typeof purpose !== "string" || !purpose ||
+    typeof targetId !== "string" || !targetId ||
+    typeof targetType !== "string" || !targetType
+  ) return null;
+  return `${targetType}:${targetId}:${purpose}`;
+}
+
+// INTENT: Keep the server's rank order intact. Only adjacent runs can collapse;
+// grouping across another ranked item would visually move lower-priority work upward.
+export function groupTodayQueueItems(items: readonly TodayWorkItem[]): TodayQueueItemGroup[] {
+  const groups: TodayQueueItemGroup[] = [];
+  for (const item of items) {
+    const creativeKey = creativeRunGroupKey(item);
+    const previous = groups.at(-1);
+    if (creativeKey && previous?.creativeKey === creativeKey) {
+      previous.items.push(item);
+      continue;
+    }
+    groups.push({
+      key: creativeKey ? `creative:${creativeKey}:${item.sourceId}` : `${item.sourceType}:${item.sourceId}`,
+      items: [item],
+      creativeKey,
+    });
+  }
+  return groups;
+}
+
+function RelatedCreativeRuns({
+  compact,
+  items,
+  onPreferenceChanged,
+}: {
+  compact: boolean;
+  items: TodayWorkItem[];
+  onPreferenceChanged: () => void | Promise<void>;
+}) {
+  const { locale, t } = useAdminI18n();
+  const first = items[0];
+  const targetId = String(first.impactSnapshot.targetId).replaceAll("_", " ");
+  const purpose = todayOperationalText(
+    String(first.impactSnapshot.purpose).replaceAll("_", " "),
+    locale,
+  );
+  return (
+    <div data-testid="today-related-creative-runs">
+      <div className="border-b border-[var(--ad-border)] bg-black/[0.02] px-4 py-2">
+        <p className="text-xs font-semibold">
+          {t("{count} related Creative Runs", { count: items.length })}
+        </p>
+        <p className="mt-0.5 text-[10px] text-[var(--ad-text-muted)]">
+          {targetId} · {purpose}
+        </p>
+      </div>
+      <WorkItem compact={compact} item={first} onPreferenceChanged={onPreferenceChanged} watched={false} />
+      <details className="border-t border-[var(--ad-border)]">
+        <summary className="cursor-pointer px-4 py-3 text-xs font-semibold text-[var(--ad-text-muted)]">
+          {t("Review {count} more", { count: items.length - 1 })}
+        </summary>
+        <div className="divide-y divide-[var(--ad-border)] border-t border-[var(--ad-border)] bg-black/[0.015]">
+          {items.slice(1).map((item) => (
+            <WorkItem compact={compact} item={item} key={item.sourceId} onPreferenceChanged={onPreferenceChanged} watched={false} />
+          ))}
+        </div>
+      </details>
+    </div>
   );
 }
 
@@ -288,9 +381,9 @@ function WorkItem({ compact, item, onPreferenceChanged, watched }: { compact: bo
             {item.pinned ? <span className="text-[10px] font-semibold uppercase">{t("Pinned")}</span> : null}
           </div>
           <Link className="group mt-2 flex items-center gap-2 text-sm font-semibold" href={item.deepLink}><span className="truncate">{t(item.title)}</span><ArrowRight className="h-4 w-4 shrink-0 text-[var(--ad-text-muted)] transition-transform group-hover:translate-x-0.5" /></Link>
-          <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">{t(item.summary)}</p>
-          {!compact ? <p className="mt-2 text-xs">{t(item.recommendedAction)}</p> : null}
-          <p className="mt-2 text-[10px] leading-4 text-[var(--ad-text-muted)]">{t(item.rankingReason)}</p>
+          <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">{todayOperationalText(item.summary, locale)}</p>
+          {!compact ? <p className="mt-2 text-xs">{todayOperationalText(item.recommendedAction, locale)}</p> : null}
+          <p className="mt-2 text-[10px] leading-4 text-[var(--ad-text-muted)]">{todayOperationalText(item.rankingReason, locale)}</p>
           <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-[var(--ad-text-muted)]">
             <span>{t("Owner")}: {item.ownerId ?? t("Unassigned")}</span>
             <span>{t("SLA")}: {item.slaDueAt ? formatDateTime(item.slaDueAt, locale) : t("No deadline")}</span>
@@ -301,13 +394,57 @@ function WorkItem({ compact, item, onPreferenceChanged, watched }: { compact: bo
             <button className="inline-flex min-h-9 items-center gap-1 rounded border border-[var(--ad-border)] px-2 text-xs disabled:opacity-50" disabled={busy} onClick={() => void updatePreference({ watching: !watched }, watched ? "Removed from Watching" : "Added to Watching")} type="button"><Eye className="h-3.5 w-3.5" />{watched ? t("Unwatch") : t("Watch")}</button>
             <button className="inline-flex min-h-9 items-center gap-1 rounded border border-[var(--ad-border)] px-2 text-xs disabled:opacity-50" disabled={busy} onClick={() => void updatePreference({ pinned: !item.pinned }, item.pinned ? "Unpinned" : "Pinned")} type="button"><Pin className="h-3.5 w-3.5" />{item.pinned ? t("Unpin") : t("Pin")}</button>
             <button className="inline-flex min-h-9 items-center gap-1 rounded border border-[var(--ad-border)] px-2 text-xs disabled:opacity-50" disabled={busy} onClick={() => void updatePreference({ snoozedUntil: new Date(Date.now() + 60 * 60 * 1_000).toISOString() }, "Snoozed for one hour")} type="button"><Bell className="h-3.5 w-3.5" />{t("Snooze 1h")}</button>
-            {item.claim ? <button className="inline-flex min-h-9 items-center gap-1 rounded bg-[var(--ad-accent)] px-2 text-xs font-semibold text-white disabled:opacity-50" disabled={busy} onClick={() => void claimItem()} type="button"><UserPlus className="h-3.5 w-3.5" />{t("Claim")}</button> : null}
+            {item.claim ? <button className="inline-flex min-h-9 items-center gap-1 rounded bg-[var(--ad-ink)] px-2 text-xs font-semibold text-white disabled:opacity-50" disabled={busy} onClick={() => void claimItem()} type="button"><UserPlus className="h-3.5 w-3.5" />{t("Claim")}</button> : null}
           </div>
           {status ? <p className="mt-2 text-xs text-[var(--ad-text-muted)]" role="status">{t(status)}</p> : null}
         </div>
       </div>
     </div>
   );
+}
+
+export function todayOperationalText(text: string, locale: AdminLocale) {
+  if (locale === "en") return text;
+
+  const entityState = /^([a-z_]+) (.+) is ([a-z_]+)$/i.exec(text);
+  if (entityState) {
+    const [, entityType, entityId, state] = entityState;
+    const [targetType, ...targetId] = entityId.split(":");
+    const target = targetId.length
+      ? `${translateAdmin(locale, targetType)}:${targetId.join(":")}`
+      : entityId;
+    return `${translateAdmin(locale, entityType.replaceAll("_", " "))} ${target} · ${translateAdmin(locale, state)}`;
+  }
+
+  const incidentState = /^Incident is ([a-z_]+)$/i.exec(text);
+  if (incidentState) {
+    return `${translateAdmin(locale, "Incident")} · ${translateAdmin(locale, incidentState[1])}`;
+  }
+
+  if (text.includes(" · ")) {
+    return text.split(" · ").map((segment) => todayOperationalSegment(segment, locale)).join(" · ");
+  }
+  return translateAdmin(locale, text);
+}
+
+function todayOperationalSegment(segment: string, locale: AdminLocale) {
+  const severity = /^([a-z_]+) severity$/i.exec(segment);
+  if (severity) {
+    return `${translateAdmin(locale, "Severity")}：${translateAdmin(locale, severity[1])}`;
+  }
+  const sla = /^SLA (.+)$/i.exec(segment);
+  if (sla) return `SLA：${formatOperationalDate(sla[1], locale)}`;
+  const openSince = /^open since (.+)$/i.exec(segment);
+  if (openSince) return `开始于 ${formatOperationalDate(openSince[1], locale)}`;
+  const readiness = /^readiness ([a-z_]+)$/i.exec(segment);
+  if (readiness) {
+    return `${translateAdmin(locale, "Readiness")}：${translateAdmin(locale, readiness[1])}`;
+  }
+  return translateAdmin(locale, segment);
+}
+
+function formatOperationalDate(value: string, locale: AdminLocale) {
+  return Number.isNaN(new Date(value).getTime()) ? value : formatDateTime(value, locale);
 }
 
 function formatDateTime(value: string, locale: "en" | "zh") {

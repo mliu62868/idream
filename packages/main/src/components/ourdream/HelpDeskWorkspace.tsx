@@ -253,6 +253,7 @@ export function HelpDeskWorkspace() {
   const [history, setHistory] = useState<HelpDeskHistory>(EMPTY_HELP_DESK_HISTORY);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState("");
+  const [historyErrorRetryable, setHistoryErrorRetryable] = useState(true);
   const [viewerScope, setViewerScope] = useState<string | null>(null);
   const viewerScopeRef = useRef<string | null>(null);
   const hydratedViewerScopeRef = useRef<string | null>(null);
@@ -347,6 +348,7 @@ export function HelpDeskWorkspace() {
     if (!requestedScope?.startsWith("user:")) return;
     setHistoryLoading(true);
     setHistoryError("");
+    setHistoryErrorRetryable(true);
     try {
       const response = await fetch("/api/v1/support/history", {
         cache: "no-store",
@@ -354,8 +356,10 @@ export function HelpDeskWorkspace() {
       const raw = await response.json();
       if (viewerScopeRef.current !== requestedScope) return;
       if (!response.ok) {
+        const failure = helpDeskHistoryFailure(response.status, raw);
         setHistory(EMPTY_HELP_DESK_HISTORY);
-        setHistoryError(apiErrorMessage(raw) ?? "Could not load your Help Desk history.");
+        setHistoryError(failure.message);
+        setHistoryErrorRetryable(failure.retryable);
         return;
       }
       setHistory(parseHelpDeskHistoryResponse(raw));
@@ -363,6 +367,7 @@ export function HelpDeskWorkspace() {
       if (viewerScopeRef.current !== requestedScope) return;
       setHistory(EMPTY_HELP_DESK_HISTORY);
       setHistoryError("Could not load your Help Desk history.");
+      setHistoryErrorRetryable(true);
     } finally {
       if (viewerScopeRef.current === requestedScope) setHistoryLoading(false);
     }
@@ -487,6 +492,7 @@ export function HelpDeskWorkspace() {
       setHistory(EMPTY_HELP_DESK_HISTORY);
       setHistoryLoading(false);
       setHistoryError("");
+      setHistoryErrorRetryable(true);
     }, 0);
     return () => window.clearTimeout(timer);
   }, [loadHelpDeskHistory, viewerScope]);
@@ -987,6 +993,7 @@ export function HelpDeskWorkspace() {
         <HelpDeskHistoryPanel
           authenticated={viewerScope?.startsWith("user:") ?? false}
           error={historyError}
+          errorRetryable={historyErrorRetryable}
           history={history}
           loading={historyLoading}
           onRefresh={() => void loadHelpDeskHistory()}
@@ -1211,12 +1218,14 @@ export function HelpDeskWorkspace() {
 export function HelpDeskHistoryPanel({
   authenticated,
   error,
+  errorRetryable = true,
   history,
   loading,
   onRefresh,
 }: Readonly<{
   authenticated: boolean;
   error: string;
+  errorRetryable?: boolean;
   history: HelpDeskHistory;
   loading: boolean;
   onRefresh: () => void;
@@ -1243,7 +1252,7 @@ export function HelpDeskHistoryPanel({
         <button
           aria-label="Refresh Help Desk history"
           className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-white/10 bg-[rgb(36,36,36)] text-white transition hover:bg-[rgb(53,53,54)] disabled:cursor-wait disabled:opacity-60"
-          disabled={!authenticated || loading}
+          disabled={!authenticated || loading || (Boolean(error) && !errorRetryable)}
           onClick={onRefresh}
           type="button"
         >
@@ -1269,18 +1278,20 @@ export function HelpDeskHistoryPanel({
 
       {authenticated && error ? (
         <div
-          aria-live="assertive"
+          aria-live={errorRetryable ? "assertive" : "polite"}
           className="mt-4 rounded-[10px] bg-[rgb(28,28,28)] p-4"
-          role="alert"
+          role={errorRetryable ? "alert" : "status"}
         >
           <p className="text-[13px] font-semibold leading-5 text-white">{error}</p>
-          <button
-            className="mt-3 inline-flex h-9 items-center justify-center rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)]"
-            onClick={onRefresh}
-            type="button"
-          >
-            Retry
-          </button>
+          {errorRetryable ? (
+            <button
+              className="mt-3 inline-flex h-9 items-center justify-center rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)]"
+              onClick={onRefresh}
+              type="button"
+            >
+              Retry
+            </button>
+          ) : null}
         </div>
       ) : null}
 
@@ -1770,6 +1781,23 @@ function apiErrorMessage(payload: unknown) {
   }
   const message = (error as Record<string, unknown>).message;
   return typeof message === "string" ? message : undefined;
+}
+
+export function helpDeskHistoryFailure(status: number, payload: unknown) {
+  const message = apiErrorMessage(payload);
+  if (
+    status === 403 &&
+    message === "Customer history is unavailable for this account"
+  ) {
+    return {
+      message: "Help Desk history is available to customer accounts. This signed-in account is not a customer account.",
+      retryable: false,
+    } as const;
+  }
+  return {
+    message: message ?? "Could not load your Help Desk history.",
+    retryable: true,
+  } as const;
 }
 
 function appealErrorMessage(status: number, fallback?: string) {

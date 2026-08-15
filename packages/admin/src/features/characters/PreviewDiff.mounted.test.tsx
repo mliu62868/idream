@@ -5,7 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AdminI18nProvider } from "@/components/admin/i18n";
 import { characterWorkspaceDetail } from "./character-workspace-fixture";
-import { PreviewDiff } from "./PreviewDiff";
+import { PreviewDiff, releasePreviewChangeSummary } from "./PreviewDiff";
 
 const blockedPreviewWorkspace = characterWorkspaceDetail({
   character: { id: "alexa-reeves" },
@@ -74,6 +74,17 @@ afterEach(() => {
 });
 
 describe("Character launch preview — zh operators", () => {
+  it("turns authority field keys into an operator-readable release summary", () => {
+    expect(releasePreviewChangeSummary(["name", "opening", "assetPack"])).toEqual({
+      firstRelease: false,
+      labels: ["Character name", "Opening message", "Image pack"],
+    });
+    expect(releasePreviewChangeSummary(["new_release"])).toEqual({
+      firstRelease: true,
+      labels: ["First release"],
+    });
+  });
+
   it("stops a blocked launch preview at the blocker and compact comparison", () => {
     act(() => {
       root.render(
@@ -87,6 +98,10 @@ describe("Character launch preview — zh operators", () => {
       );
     });
     expect(container.textContent).toContain("上线预览正在等待图片资产包");
+    expect(container.textContent).toContain("发布变更摘要");
+    expect(container.textContent).toContain("与线上版本有 2 个方面不同");
+    expect(container.textContent).toContain("封面图片");
+    expect(container.textContent).toContain("图片资产包");
     expect(container.textContent).toContain("缺少 2 个图片位");
     expect(container.textContent).not.toContain("Launch QA");
     expect(container.textContent).not.toContain("上线 QA");

@@ -51,6 +51,7 @@ import {
 } from "@/lib/generation-write-client";
 
 type ChatLoadState = "loading" | "ready" | "signed-out" | "error";
+type ChatUpgradeReason = "dreamcoins" | "messages" | "voice";
 
 type VoiceClipRequestResult = {
   url: string | null;
@@ -58,12 +59,27 @@ type VoiceClipRequestResult = {
     | "allowance_exhausted"
     | "disabled"
     | "failed"
+    | "insufficient_balance"
     | "not_entitled"
-    | "payment_required"
     | null;
 };
 
 const BLOCKED_ASSISTANT_NOTICE = "I can’t help with that request.";
+
+export function chatUpgradeLinkLabel(reason: ChatUpgradeReason) {
+  if (reason === "voice") return "Upgrade for voice access";
+  if (reason === "dreamcoins") return "Get more dreamcoins";
+  return "Upgrade for unlimited messages";
+}
+
+export function voicePaymentRequiredReason(payload: unknown) {
+  const details = (
+    payload as { error?: { details?: { entitlement?: unknown } } }
+  )?.error?.details;
+  return details?.entitlement === "voice_enabled"
+    ? ("not_entitled" as const)
+    : ("insufficient_balance" as const);
+}
 
 function upgradeHrefForChatSession(sessionId: string) {
   return `/upgrade?returnTo=${encodeURIComponent(`/chat/${encodeURIComponent(sessionId)}`)}`;
@@ -90,7 +106,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   const [content, setContent] = useState("");
   const [pending, setPending] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
-  const [quotaReached, setQuotaReached] = useState(false);
+  const [upgradeReason, setUpgradeReason] = useState<ChatUpgradeReason | null>(null);
   const [characterId, setCharacterId] = useState<string | null>(null);
   const [canUpdateIdentity, setCanUpdateIdentity] = useState(false);
   const [memoryEnabled, setMemoryEnabled] = useState(true);
@@ -340,7 +356,8 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
           }),
         });
         if (response.status === 402) {
-          return { url: null, reason: "payment_required" };
+          const payload = await response.json().catch(() => null);
+          return { url: null, reason: voicePaymentRequiredReason(payload) };
         }
         if (!response.ok) return { url: null, reason: "failed" };
         const payload = (await response.json()) as {
@@ -384,17 +401,20 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     }
     stopVoice();
     setStatus(null);
+    setUpgradeReason(null);
     try {
       let result = await requestVoiceClip(messageId, text, "play");
       if (result.reason === "allowance_exhausted") {
         result = await requestVoiceClip(messageId, text, "play");
       }
-      if (
-        result.reason === "not_entitled" ||
-        result.reason === "payment_required"
-      ) {
-        setQuotaReached(true);
+      if (result.reason === "not_entitled") {
+        setUpgradeReason("voice");
         setStatus("Voice playback needs a plan with voice enabled.");
+        return;
+      }
+      if (result.reason === "insufficient_balance") {
+        setUpgradeReason("dreamcoins");
+        setStatus("Voice playback needs more dreamcoins.");
         return;
       }
       if (!result.url) {
@@ -421,7 +441,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     const text = content.trim();
     if (!canSubmitChatMessage(text, pending, hasGeneratingReply)) return;
     setStatus(null);
-    setQuotaReached(false);
+    setUpgradeReason(null);
     setContent("");
     setPending(true);
     sessionMutationEpochRef.current += 1;
@@ -446,7 +466,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
       });
       // Quota exhausted: keep the user's input and surface the upgrade path (P0-C).
       if (response.status === 402) {
-        setQuotaReached(true);
+        setUpgradeReason("messages");
         setStatus("Daily free message limit reached.");
         setContent(text);
         return;
@@ -527,7 +547,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     if (!next || editingPending) return;
     setStatus(null);
     setDeleteConfirmMessageId(null);
-    setQuotaReached(false);
+    setUpgradeReason(null);
     setEditingPending(true);
     sessionMutationEpochRef.current += 1;
     try {
@@ -537,7 +557,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
         body: JSON.stringify({ content: next }),
       });
       if (response.status === 402) {
-        setQuotaReached(true);
+        setUpgradeReason("messages");
         setStatus("Daily free message limit reached.");
         return;
       }
@@ -1101,11 +1121,11 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
                   role="status"
                 >
                   {status}
-                  {quotaReached ? (
+                  {upgradeReason ? (
                     <>
                       {" "}
                       <Link className="underline hover:text-white" href={upgradeHrefForChatSession(id)}>
-                        Upgrade for unlimited messages
+                        {chatUpgradeLinkLabel(upgradeReason)}
                       </Link>
                       .
                     </>

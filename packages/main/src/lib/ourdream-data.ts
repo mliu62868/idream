@@ -299,7 +299,7 @@ const routeOverrides: Record<
     template: "marketing",
   },
   "/create": {
-    title: "Create Your Dream AI Girl",
+    title: "Create Your Dream AI Character",
     description:
       "Character creator with style controls, preview cards, and guided fields for building a private or public AI companion.",
     template: "create",
