@@ -74,6 +74,8 @@ export const adminZhCharacters: Record<string, string> = {
   "Image to image": "图生图",
   "In progress": "进行中",
   "In use": "当前使用",
+  "It does not publish a Release. Live chat keeps the released Soul until a Release ships this version.":
+    "此操作不发布 Release。线上对话仍使用已发布的灵魂版本，直到有 Release 带上这一版。",
   "Keep adjusting from this one": "从这张继续调整",
   "Live {completed}/{total}": "线上 {completed}/{total}",
   "Loaded this run's parameter snapshot. Adjust it to create a new run.": "已载入这一轮的参数快照；修改后可创建新一轮。",
@@ -148,6 +150,8 @@ export const adminZhCharacters: Record<string, string> = {
   "Text to image": "文生图",
   "The selected candidate is now the source for the next image-to-image run. Adjust the prompt before generating.":
     "已把所选候选图设为下一轮图生图来源；请继续修改提示词后再生成。",
+  "This becomes the authoritative persona for new chat. Version {version} is kept as history and is not deleted.":
+    "它将成为新对话的人格权威。第 {version} 版会作为历史版本保留，不会被删除。",
   "This creates the Character Project, immutable Revision, and inactive Serving workspace.":
     "此操作会创建角色项目、不可变修订和未激活的 Serving 工作区。",
   "It does not create or publish a Release and does not make the Character visible in Explore or Community.":
