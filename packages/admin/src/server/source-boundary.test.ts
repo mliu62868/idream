@@ -148,7 +148,7 @@ describe("admin source boundary", () => {
     const chat = await readFile(path.join(packageRoot, "src/features/chat-ops/ChatOpsWorkspace.tsx"), "utf8").catch(() => "");
 
     expect(catchAll).not.toContain("function ChatOpsView");
-    expect(catchAll).not.toContain("/api/v1/admin/chat/");
+    expect(catchAll).not.toContain("/api/v2/admin/chat/");
     expect(chat).toContain("export function ChatOpsWorkspace");
   });
 
@@ -167,9 +167,9 @@ describe("admin source boundary", () => {
     expect(catchAll).not.toContain("function AnalyticsView");
     expect(catchAll).not.toContain("function RiskView");
     expect(catchAll).not.toContain("function ProviderOpsView");
-    expect(catchAll).not.toContain("/api/v1/admin/analytics/overview");
-    expect(catchAll).not.toContain("/api/v1/admin/risk/abuse");
-    expect(catchAll).not.toContain("/api/v1/admin/ops/providers");
+    expect(catchAll).not.toContain("/api/v2/admin/analytics/overview");
+    expect(catchAll).not.toContain("/api/v2/admin/risk/abuse");
+    expect(catchAll).not.toContain("/api/v2/admin/ops/providers");
     expect(overviews).toContain("export function AnalyticsWorkspace");
     expect(overviews).toContain("export function RiskWorkspace");
     expect(overviews).toContain("export function ProviderOverviewWorkspace");

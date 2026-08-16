@@ -1,11 +1,14 @@
+// SPEC: 后台四张只读运营大盘 —— dashboard、analytics overview、risk/abuse、ops/providers。
+// INTENT: 三张窗口型大盘共用同一个 from/to 查询契约，但各自声明自己的响应契约；
+//         legacy 口径（activation / conversion）保留 `qualityState:"invalid"` 的诚实标注，
+//         而不是把没认证的数字直接当结论发出去。
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
-import { ok } from "@/server/lib/http";
-import { actorWithPermission } from "@/server/modules/admin/shared/legacy-primitives";
 import {
   CUSTOMER_METRIC_DATA_SCOPE,
   OPERATIONAL_METRIC_DATA_SCOPE,
   customerAnalyticsEventWhere,
+  customerContentReportWhere,
   customerDreamcoinLedgerWhere,
   customerGenerationJobWhere,
   customerReferralWhere,
@@ -13,10 +16,107 @@ import {
   customerUserWhere,
   operationalGenerationJobWhere,
 } from "@/server/modules/metric-data-scope";
+import { actorWithPermission, queryParams } from "@/server/modules/admin-v2/shared/authority";
+
+type WindowQuery = { readonly from?: string; readonly to?: string };
+
+function resolveWindow(query: WindowQuery, label: string) {
+  const now = new Date();
+  const to = query.to ? new Date(query.to) : now;
+  const from = query.from
+    ? new Date(query.from)
+    : new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
+    throw Errors.badRequest(`Invalid ${label} window`);
+  }
+  return { from, to, createdAt: { gte: from, lte: to } };
+}
+
+function featureFlagDto(flag: {
+  key: string;
+  label: string;
+  enabled: boolean;
+  rolloutPercent: number;
+  hardPolicy: boolean;
+}) {
+  return {
+    key: flag.key,
+    label: flag.label,
+    enabled: flag.enabled,
+    rolloutPercent: flag.rolloutPercent,
+    hardPolicy: flag.hardPolicy,
+  };
+}
+
+export async function adminDashboard(request: Request) {
+  await actorWithPermission(request, "dashboard.read");
+  const [
+    activeUsers,
+    suspendedUsers,
+    queuedJobs,
+    failedJobs,
+    completedJobs,
+    blockedJobs,
+    openReports,
+    activeSubscriptions,
+    flags,
+  ] = await Promise.all([
+    prisma.user.count({
+      where: customerUserWhere({ status: "active", deletedAt: null }),
+    }),
+    prisma.user.count({ where: customerUserWhere({ status: "suspended" }) }),
+    prisma.generationJob.count({
+      where: customerGenerationJobWhere({
+        status: { in: ["queued", "moderating_input", "running", "moderating_output"] },
+      }),
+    }),
+    prisma.generationJob.count({
+      where: customerGenerationJobWhere({ status: "failed" }),
+    }),
+    prisma.generationJob.count({
+      where: customerGenerationJobWhere({ status: "completed" }),
+    }),
+    prisma.generationJob.count({
+      where: customerGenerationJobWhere({ status: "blocked" }),
+    }),
+    prisma.contentReport.count({
+      where: customerContentReportWhere({
+        status: { in: ["open", "triaged", "reviewing"] },
+      }),
+    }),
+    prisma.subscription.count({
+      where: customerSubscriptionWhere({ status: "active" }),
+    }),
+    prisma.featureFlag.findMany({ orderBy: { key: "asc" }, take: 8 }),
+  ]);
+
+  const totalFinished = completedJobs + failedJobs + blockedJobs;
+  const successRate =
+    totalFinished > 0 ? Math.round((completedJobs / totalFinished) * 100) : null;
+
+  return {
+    dataScope: CUSTOMER_METRIC_DATA_SCOPE,
+    metrics: {
+      users: { active: activeUsers, suspended: suspendedUsers },
+      generation: {
+        queued: queuedJobs,
+        failed: failedJobs,
+        blocked: blockedJobs,
+        successRate,
+      },
+      moderation: { openReports },
+      billing: { activeSubscriptions },
+    },
+    featureFlags: flags.map(featureFlagDto),
+  };
+}
 
 export async function analyticsOverview(request: Request) {
   await actorWithPermission(request, "analytics.export");
-  const { from, to, createdAt } = windowFromRequest(request, "analytics");
+  const { from, to, createdAt } = resolveWindow(
+    queryParams(request, "GET /api/v2/admin/analytics/overview"),
+    "analytics",
+  );
   const [
     signups,
     activatedRows,
@@ -27,9 +127,7 @@ export async function analyticsOverview(request: Request) {
     ledgerByReason,
     eventRows,
   ] = await Promise.all([
-    prisma.user.count({
-      where: customerUserWhere({ createdAt, deletedAt: null }),
-    }),
+    prisma.user.count({ where: customerUserWhere({ createdAt, deletedAt: null }) }),
     prisma.generationJob.groupBy({
       by: ["userId"],
       where: customerGenerationJobWhere({ createdAt }),
@@ -44,17 +142,11 @@ export async function analyticsOverview(request: Request) {
       _count: { _all: true },
     }),
     prisma.dreamcoinLedger.aggregate({
-      where: customerDreamcoinLedgerWhere({
-        createdAt,
-        delta: { gt: 0 },
-      }),
+      where: customerDreamcoinLedgerWhere({ createdAt, delta: { gt: 0 } }),
       _sum: { delta: true },
     }),
     prisma.dreamcoinLedger.aggregate({
-      where: customerDreamcoinLedgerWhere({
-        createdAt,
-        delta: { lt: 0 },
-      }),
+      where: customerDreamcoinLedgerWhere({ createdAt, delta: { lt: 0 } }),
       _sum: { delta: true },
     }),
     prisma.dreamcoinLedger.groupBy({
@@ -71,17 +163,13 @@ export async function analyticsOverview(request: Request) {
   ]);
   const activatedUsers = activatedRows.length;
   const payingUsers = payingRows.length;
-  const conversionRate =
-    signups > 0 ? Math.round((payingUsers / signups) * 100) : 0;
+  const conversionRate = signups > 0 ? Math.round((payingUsers / signups) * 100) : 0;
   const statusCount = (status: string) =>
     generationByStatus.find((row) => row.status === status)?._count._all ?? 0;
-  const total = generationByStatus.reduce(
-    (sum, row) => sum + row._count._all,
-    0,
-  );
+  const total = generationByStatus.reduce((sum, row) => sum + row._count._all, 0);
   const coinsGranted = grantedAgg._sum.delta ?? 0;
   const coinsSpent = spentAgg._sum.delta ?? 0;
-  return ok({
+  return {
     dataScope: CUSTOMER_METRIC_DATA_SCOPE,
     window: { from: from.toISOString(), to: to.toISOString() },
     funnel: {
@@ -89,9 +177,9 @@ export async function analyticsOverview(request: Request) {
       activatedUsers: null,
       payingUsers: null,
       conversionRate: null,
-      qualityState: "invalid",
-      validForDecisions: false,
-      metricVersion: "legacy-v1",
+      qualityState: "invalid" as const,
+      validForDecisions: false as const,
+      metricVersion: "legacy-v1" as const,
       reason:
         "Legacy activation used any generation job and conversion mixed unrelated windows; certified cohort metrics are not available yet.",
       legacyObserved: { activatedUsers, payingUsers, conversionRate },
@@ -101,8 +189,8 @@ export async function analyticsOverview(request: Request) {
       completed: statusCount("completed"),
       failed: statusCount("failed"),
       blocked: statusCount("blocked"),
-      qualityState: "directional",
-      validForDecisions: false,
+      qualityState: "directional" as const,
+      validForDecisions: false as const,
       reason:
         "Legacy status counts are operational diagnostics, not fulfillment outcomes.",
     },
@@ -122,12 +210,15 @@ export async function analyticsOverview(request: Request) {
       .map((row) => ({ name: row.name, count: row._count._all }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 12),
-  });
+  };
 }
 
 export async function abuseOverview(request: Request) {
   await actorWithPermission(request, "billing.read");
-  const { from, to, createdAt } = windowFromRequest(request, "risk");
+  const { from, to, createdAt } = resolveWindow(
+    queryParams(request, "GET /api/v2/admin/risk/abuse"),
+    "risk",
+  );
   const [signupGroups, referralGroups, adjustGroups] = await Promise.all([
     prisma.analyticsEvent.groupBy({
       by: ["anonymousId"],
@@ -145,10 +236,7 @@ export async function abuseOverview(request: Request) {
     }),
     prisma.dreamcoinLedger.groupBy({
       by: ["userId"],
-      where: customerDreamcoinLedgerWhere({
-        reason: "admin_adjust",
-        createdAt,
-      }),
+      where: customerDreamcoinLedgerWhere({ reason: "admin_adjust", createdAt }),
       _sum: { delta: true },
       _count: { _all: true },
     }),
@@ -175,7 +263,7 @@ export async function abuseOverview(request: Request) {
     users.add(event.userId);
     accounts.set(event.anonymousId, users);
   }
-  return ok({
+  return {
     dataScope: CUSTOMER_METRIC_DATA_SCOPE,
     window: { from: from.toISOString(), to: to.toISOString() },
     deviceClusters: flagged
@@ -201,12 +289,15 @@ export async function abuseOverview(request: Request) {
       }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 20),
-  });
+  };
 }
 
 export async function providerOps(request: Request) {
   await actorWithPermission(request, "ops.queue.read");
-  const { from, to, createdAt } = windowFromRequest(request, "provider");
+  const { from, to, createdAt } = resolveWindow(
+    queryParams(request, "GET /api/v2/admin/ops/providers"),
+    "provider",
+  );
   const [grouped, completedJobs] = await Promise.all([
     prisma.generationJob.groupBy({
       by: ["provider", "status"],
@@ -237,13 +328,8 @@ export async function providerOps(request: Request) {
   >();
   for (const row of grouped) {
     const provider = row.provider ?? "unknown";
-    const value = stats.get(provider) ?? {
-      total: 0,
-      completed: 0,
-      failed: 0,
-      blocked: 0,
-      coinsCost: 0,
-    };
+    const value = stats.get(provider) ??
+      { total: 0, completed: 0, failed: 0, blocked: 0, coinsCost: 0 };
     value.total += row._count._all;
     value.coinsCost += row._sum.costDreamcoins ?? 0;
     if (row.status === "completed") value.completed += row._count._all;
@@ -267,39 +353,20 @@ export async function providerOps(request: Request) {
         provider,
         ...value,
         successRate:
-          finished > 0
-            ? Math.round((value.completed / finished) * 100)
-            : null,
+          finished > 0 ? Math.round((value.completed / finished) * 100) : null,
         avgCostPerJob:
-          value.total > 0
-            ? Math.round((value.coinsCost / value.total) * 10) / 10
-            : 0,
+          value.total > 0 ? Math.round((value.coinsCost / value.total) * 10) / 10 : 0,
         latencyP50Ms: percentile(sorted, 50),
         latencyP95Ms: percentile(sorted, 95),
         latencySamples: sorted.length,
       };
     })
     .sort((a, b) => b.total - a.total);
-  return ok({
+  return {
     dataScope: OPERATIONAL_METRIC_DATA_SCOPE,
     window: { from: from.toISOString(), to: to.toISOString() },
     providers,
-  });
-}
-
-function windowFromRequest(request: Request, label: string) {
-  const url = new URL(request.url);
-  const now = new Date();
-  const to = url.searchParams.get("to")
-    ? new Date(url.searchParams.get("to") as string)
-    : now;
-  const from = url.searchParams.get("from")
-    ? new Date(url.searchParams.get("from") as string)
-    : new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
-    throw Errors.badRequest(`Invalid ${label} window`);
-  }
-  return { from, to, createdAt: { gte: from, lte: to } };
+  };
 }
 
 function percentile(sorted: number[], p: number): number | null {
@@ -308,5 +375,5 @@ function percentile(sorted: number[], p: number): number | null {
     0,
     Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1),
   );
-  return sorted[index];
+  return sorted[index] ?? null;
 }

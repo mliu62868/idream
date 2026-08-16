@@ -80,7 +80,7 @@ export function AnalyticsWorkspace({
       await loadState(
         legacyGate.current,
         setLegacy,
-        overviewPath("/api/v1/admin/analytics/overview", next),
+        overviewPath("/api/v2/admin/analytics/overview", next),
         "Legacy analytics could not be loaded",
       );
     },
@@ -143,7 +143,7 @@ export function RiskWorkspace({ canRead }: { canRead: boolean }) {
   return (
     <SingleOverview<RiskData>
       canRead={canRead}
-      endpoint="/api/v1/admin/risk/abuse"
+      endpoint="/api/v2/admin/risk/abuse"
       permission="billing.read"
       purpose="Inspect owner-scoped financial abuse signals while keeping response actions in their source domains."
       render={(data) => (
@@ -177,7 +177,7 @@ export function ProviderOverviewWorkspace({ canRead }: { canRead: boolean }) {
   return (
     <SingleOverview<ProviderData>
       canRead={canRead}
-      endpoint="/api/v1/admin/ops/providers"
+      endpoint="/api/v2/admin/ops/providers"
       permission="ops.queue.read"
       purpose="Compare provider success, cost, and completion latency over a server-defined time window."
       render={(data) => (

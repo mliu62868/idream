@@ -533,7 +533,7 @@ async function probeAdminApi(
     totalSignal: AbortSignal;
   },
 ): Promise<AdminApiEvidence> {
-  let url = "/api/v1/admin/dashboard";
+  let url = "/api/v2/admin/dashboard";
   try {
     url = buildUrl(baseUrl, url);
     const response = await fetchWithDeadline(runtime.fetch, url, {

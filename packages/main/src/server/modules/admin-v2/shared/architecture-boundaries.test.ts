@@ -144,18 +144,6 @@ describe("Admin v2 architecture boundaries", () => {
     expect(approvals).toContain("export async function listApprovals");
   });
 
-  it("keeps Chat Ops proxy authority out of the dispatcher monolith", async () => {
-    const root = path.join(process.cwd(), "src/server/modules/admin");
-    const dispatcher = await readFile(path.join(root, "service.ts"), "utf8");
-    const chat = await readFile(path.join(root, "chat/service.ts"), "utf8").catch(() => "");
-
-    expect(dispatcher).not.toContain("type ChatAdminProxyResult");
-    expect(dispatcher).not.toContain("async function proxyChatAdmin");
-    expect(dispatcher).not.toContain("async function chatOpsOverview");
-    expect(chat).toContain("export async function chatOpsOverview");
-    expect(chat).not.toContain(["@/server/modules/admin", "service"].join("/"));
-  });
-
   it("keeps content merchandising authority out of the dispatcher monolith", async () => {
     const root = path.join(process.cwd(), "src/server/modules/admin");
     const dispatcher = await readFile(path.join(root, "service.ts"), "utf8");
@@ -167,17 +155,12 @@ describe("Admin v2 architecture boundaries", () => {
     expect(content).toContain("executeIdempotentDomainCommand");
   });
 
-  it("keeps overview and generic saved-view authorities out of the dispatcher", async () => {
+  it("keeps generic saved-view authority out of the dispatcher", async () => {
     const root = path.join(process.cwd(), "src/server/modules/admin");
     const dispatcher = await readFile(path.join(root, "service.ts"), "utf8");
-    const overviews = await readFile(path.join(root, "overviews/service.ts"), "utf8").catch(() => "");
     const savedViews = await readFile(path.join(root, "saved-views/service.ts"), "utf8").catch(() => "");
-    expect(dispatcher).not.toContain("async function analyticsOverview");
-    expect(dispatcher).not.toContain("async function abuseOverview");
-    expect(dispatcher).not.toContain("async function providerOps");
     expect(dispatcher).not.toContain("async function listSavedViews");
     expect(dispatcher).not.toContain("const savedViewCreateSchema");
-    expect(overviews).toContain("export async function analyticsOverview");
     expect(savedViews).toContain("export async function createSavedView");
     expect(savedViews).toContain("executeIdempotentDomainCommand");
   });
@@ -185,14 +168,12 @@ describe("Admin v2 architecture boundaries", () => {
   it("leaves the legacy dispatcher as a route table and compatibility export surface", async () => {
     const root = path.join(process.cwd(), "src/server/modules/admin");
     const dispatcher = await readFile(path.join(root, "service.ts"), "utf8");
-    const dashboard = await readFile(path.join(root, "dashboard/service.ts"), "utf8");
     const generation = await readFile(path.join(root, "generation/catalog-admin.ts"), "utf8");
     expect(dispatcher.match(/(?:export )?async function /g)).toEqual([
       "export async function ",
     ]);
     expect(dispatcher).not.toContain("prisma.");
     expect(dispatcher).not.toContain("z.object(");
-    expect(dashboard).toContain("export async function adminDashboard");
     expect(generation).toContain("export async function listRecipes");
     expect(generation).toContain("export async function listAdminPresets");
   });

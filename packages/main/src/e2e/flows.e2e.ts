@@ -622,7 +622,7 @@ test("flow 8: admin control-plane API routes respond", async ({ page }) => {
     "x-idream-role": "admin",
   };
 
-  const dashboard = await page.request.get("/api/v1/admin/dashboard", { headers });
+  const dashboard = await page.request.get("/api/v2/admin/dashboard", { headers });
   expect(dashboard.ok()).toBeTruthy();
   expect((await dashboard.json()).data.metrics.generation).toBeTruthy();
 

@@ -115,7 +115,7 @@ const idempotencyKey = "11111111-1111-4111-8111-111111111111";
 
 const chatReadFixtures = new Map<string, unknown>([
   [
-    "/api/v1/admin/chat/overview",
+    "/api/v2/admin/chat/overview",
     {
       configured: true,
       overview: {
@@ -131,7 +131,7 @@ const chatReadFixtures = new Map<string, unknown>([
     },
   ],
   [
-    "/api/v1/admin/chat/provider-health",
+    "/api/v2/admin/chat/provider-health",
     {
       configured: true,
       items: [
@@ -151,7 +151,7 @@ const chatReadFixtures = new Map<string, unknown>([
     },
   ],
   [
-    "/api/v1/admin/chat/sessions?limit=50&status=active",
+    "/api/v2/admin/chat/sessions?limit=50&status=active",
     {
       configured: true,
       items: [
@@ -173,7 +173,7 @@ const chatReadFixtures = new Map<string, unknown>([
     },
   ],
   [
-    "/api/v1/admin/chat/usage?limit=50",
+    "/api/v2/admin/chat/usage?limit=50",
     {
       configured: true,
       items: [
@@ -194,7 +194,7 @@ const chatReadFixtures = new Map<string, unknown>([
     },
   ],
   [
-    "/api/v1/admin/chat/moderation-events?limit=50",
+    "/api/v2/admin/chat/moderation-events?limit=50",
     {
       configured: true,
       items: [
