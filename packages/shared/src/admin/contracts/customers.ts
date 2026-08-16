@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { adminIdSchema, adminIsoDateTimeSchema } from "./common";
+import { adminIdSchema, adminIsoDateTimeSchema, adminPageInfoSchema } from "./common";
 import { operationsCaseSchema } from "./cases";
 
 export const customerListQuerySchema = z.object({
@@ -7,6 +7,7 @@ export const customerListQuerySchema = z.object({
   status: z.string().trim().max(40).default(""),
   limit: z.coerce.number().int().min(1).max(100).default(30),
   cursor: z.string().trim().min(1).optional(),
+  before: z.string().trim().min(1).optional(),
 }).strict();
 
 export const customerListItemSchema = z.object({
@@ -24,10 +25,7 @@ export const customerListItemSchema = z.object({
 
 export const customerListResponseSchema = z.object({
   items: z.array(customerListItemSchema).readonly(),
-  pageInfo: z.object({
-    endCursor: z.string().nullable(),
-    hasNextPage: z.boolean(),
-  }).strict(),
+  pageInfo: adminPageInfoSchema,
   query: z.object({
     search: z.string(),
     status: z.string(),

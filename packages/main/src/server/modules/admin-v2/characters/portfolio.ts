@@ -22,6 +22,11 @@ import {
 } from "@/server/lib/media-asset-authority";
 import { actorWithPermission, queryParams } from "@/server/modules/admin-v2/shared/authority";
 import {
+  type AdminKeysetKey,
+  type AdminKeysetPaging,
+  paginateAdminKeyset,
+} from "@/server/modules/admin-v2/shared/list-cursor";
+import {
   effectiveCharacterIdsForPermission,
 } from "@/server/admin/effective-permissions";
 import {
@@ -401,6 +406,36 @@ async function filteredCharacterIds(
   }, new Set(filters[0]))];
 }
 
+// SPEC: 运营排序 —— 每个值只用 character_projects 上的非空标量列，keyset 才成立。
+// INTENT: 没有「blocked 优先」和「按 journey 阶段」两个值：readiness 来自
+// CharacterServing → CharacterRelease 两跳，phase 的字典序又不是生产顺序（idea /
+// launch_ready / live_management / planned / producing / qa / retired），两者都排不出
+// 可分页的顺序。要「先处理有问题的」用 readiness=blocked 或 attention=true 先筛掉，
+// 再按 updated_desc 排 —— 筛选跨页有效，排序只在页内有效。
+const PORTFOLIO_ID_KEY: AdminKeysetKey<CharacterProject> = {
+  field: "id",
+  direction: "asc",
+  value: (project) => project.id,
+};
+const PORTFOLIO_SORT_KEYS: Record<
+  CharacterPortfolioQuery["sort"],
+  readonly AdminKeysetKey<CharacterProject>[]
+> = {
+  project_id_asc: [PORTFOLIO_ID_KEY],
+  updated_desc: [
+    { field: "updatedAt", direction: "desc", type: "datetime", value: (project) => project.updatedAt },
+    { ...PORTFOLIO_ID_KEY, direction: "desc" },
+  ],
+  updated_asc: [
+    { field: "updatedAt", direction: "asc", type: "datetime", value: (project) => project.updatedAt },
+    PORTFOLIO_ID_KEY,
+  ],
+  created_desc: [
+    { field: "createdAt", direction: "desc", type: "datetime", value: (project) => project.createdAt },
+    { ...PORTFOLIO_ID_KEY, direction: "desc" },
+  ],
+};
+
 export async function listCharacterPortfolioData(
   db: PrismaClient,
   query: CharacterPortfolioQuery,
@@ -413,18 +448,27 @@ export async function listCharacterPortfolioData(
 ) {
   const asOf = input.asOf ?? new Date();
   const characterIds = await filteredCharacterIds(db, query, input.authorizedCharacterIds ?? null, asOf);
-  const projects = await db.characterProject.findMany({
-    where: {
-      phase: query.phase,
-      ownerId: input.assignedActorId ?? query.ownerId,
-      id: query.cursor ? { gt: query.cursor } : undefined,
-      ...(characterIds ? { characterId: { in: characterIds } } : {}),
-    },
-    orderBy: { id: "asc" },
-    take: query.limit + 1,
+  const where: Prisma.CharacterProjectWhereInput = {
+    phase: query.phase,
+    ownerId: input.assignedActorId ?? query.ownerId,
+    ...(characterIds ? { characterId: { in: characterIds } } : {}),
+  };
+  const { items: page, pageInfo } = await paginateAdminKeyset({
+    scope: "character_portfolio",
+    // 排序进 identity：换了排序，旧游标的键就对不上了，必须失效而不是静默错位。
+    queryIdentity: { ...query, cursor: undefined, before: undefined, limit: undefined },
+    cursor: query.cursor,
+    before: query.before,
+    limit: query.limit,
+    keys: PORTFOLIO_SORT_KEYS[query.sort],
+    fetch: (paging: AdminKeysetPaging<Prisma.CharacterProjectOrderByWithRelationInput>) =>
+      db.characterProject.findMany({
+        where: { AND: [where, ...paging.cursorWhere] },
+        orderBy: paging.orderBy,
+        take: paging.take,
+      }),
+    count: () => db.characterProject.count({ where }),
   });
-  const hasNextPage = projects.length > query.limit;
-  const page = projects.slice(0, query.limit);
   const pageCharacterIds = [...new Set(page.map((project) => project.characterId))];
   const activeVisualAuthorities = pageCharacterIds.length > 0
     ? await db.characterVisualProfile.findMany({
@@ -800,10 +844,7 @@ export async function listCharacterPortfolioData(
   }
   return characterPortfolioResponseSchema.parse({
     items,
-    pageInfo: {
-      endCursor: hasNextPage ? page.at(-1)?.id ?? null : null,
-      hasNextPage,
-    },
+    pageInfo,
     asOf: asOf.toISOString(),
     freshness: orphanProjectIds.length > 0 ? "degraded" : "fresh",
     dataQuality,

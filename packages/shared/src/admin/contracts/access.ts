@@ -30,6 +30,7 @@ export const accessUserListQuerySchema = z
     status: accessUserStatusSchema.optional(),
     dataClass: adminDataClassSchema.optional(),
     cursor: z.string().min(1).optional(),
+    before: z.string().trim().min(1).optional(),
     limit: z.coerce.number().int().min(1).max(100).optional(),
   })
   .strict();

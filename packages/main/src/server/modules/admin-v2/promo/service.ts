@@ -22,8 +22,9 @@ import {
   type AdminActor,
 } from "@/server/modules/admin-v2/shared/authority";
 import {
-  decodeAdminListCursor,
-  encodeAdminListCursor,
+  type AdminKeysetPaging,
+  CREATED_AT_DESC_KEYS,
+  paginateAdminKeyset,
 } from "@/server/modules/admin-v2/shared/list-cursor";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 
@@ -32,29 +33,26 @@ export async function listRedeemCodes(request: Request) {
   const query = queryParams(request, "GET /api/v2/admin/promo/redeem-codes");
   const { search, status, limit } = query;
   const queryIdentity = { search, status };
-  const cursorKeys = query.cursor
-    ? decodeAdminListCursor(query.cursor, "redeem_codes", queryIdentity)
-    : undefined;
-  const cursorWhere: Prisma.RedeemCodeWhereInput | undefined = cursorKeys
-    ? (() => {
-        const createdAt = cursorDate(cursorKeys, 0, "redeem_codes");
-        const id = cursorString(cursorKeys, 1, "redeem_codes");
-        return {
-          OR: [{ createdAt: { lt: createdAt } }, { createdAt, id: { lt: id } }],
-        };
-      })()
-    : undefined;
-  const codes = await prisma.redeemCode.findMany({
-    where: {
-      status,
-      id: search ? { contains: search } : undefined,
-      AND: cursorWhere,
-    },
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    take: limit + 1,
-    include: { _count: { select: { redemptions: true } } },
+  const where: Prisma.RedeemCodeWhereInput = {
+    status,
+    id: search ? { contains: search } : undefined,
+  };
+  const { items: page, pageInfo } = await paginateAdminKeyset({
+    scope: "redeem_codes",
+    queryIdentity,
+    cursor: query.cursor,
+    before: query.before,
+    limit,
+    keys: CREATED_AT_DESC_KEYS,
+    fetch: (paging: AdminKeysetPaging<Prisma.RedeemCodeOrderByWithRelationInput>) =>
+      prisma.redeemCode.findMany({
+        where: { AND: [where, ...paging.cursorWhere] },
+        orderBy: paging.orderBy,
+        take: paging.take,
+        include: { _count: { select: { redemptions: true } } },
+      }),
+    count: () => prisma.redeemCode.count({ where }),
   });
-  const page = codes.slice(0, limit);
   return {
     items: page.map((code) => ({
       id: code.id,
@@ -65,13 +63,7 @@ export async function listRedeemCodes(request: Request) {
       expiresAt: code.expiresAt?.toISOString() ?? null,
       createdAt: code.createdAt.toISOString(),
     })),
-    pageInfo: pageInfo(
-      "redeem_codes",
-      queryIdentity,
-      page,
-      codes.length > limit,
-      (row) => [row.createdAt.toISOString(), row.id],
-    ),
+    pageInfo,
   };
 }
 
@@ -203,36 +195,33 @@ export async function listReferrals(request: Request) {
   const query = queryParams(request, "GET /api/v2/admin/promo/referrals");
   const { search, inviterId, status, limit } = query;
   const queryIdentity = { search, inviterId, status };
-  const cursorKeys = query.cursor
-    ? decodeAdminListCursor(query.cursor, "referrals", queryIdentity)
-    : undefined;
-  const cursorWhere: Prisma.ReferralWhereInput | undefined = cursorKeys
-    ? (() => {
-        const createdAt = cursorDate(cursorKeys, 0, "referrals");
-        const id = cursorString(cursorKeys, 1, "referrals");
-        return {
-          OR: [{ createdAt: { lt: createdAt } }, { createdAt, id: { lt: id } }],
-        };
-      })()
-    : undefined;
-  const rows = await prisma.referral.findMany({
-    where: {
-      inviterId,
-      status,
-      OR: search
-        ? [
-            { id: { contains: search } },
-            { inviterId: { contains: search } },
-            { inviteeId: { contains: search } },
-            { code: { contains: search } },
-          ]
-        : undefined,
-      AND: cursorWhere,
-    },
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    take: limit + 1,
+  const where: Prisma.ReferralWhereInput = {
+    inviterId,
+    status,
+    OR: search
+      ? [
+          { id: { contains: search } },
+          { inviterId: { contains: search } },
+          { inviteeId: { contains: search } },
+          { code: { contains: search } },
+        ]
+      : undefined,
+  };
+  const { items: page, pageInfo } = await paginateAdminKeyset({
+    scope: "referrals",
+    queryIdentity,
+    cursor: query.cursor,
+    before: query.before,
+    limit,
+    keys: CREATED_AT_DESC_KEYS,
+    fetch: (paging: AdminKeysetPaging<Prisma.ReferralOrderByWithRelationInput>) =>
+      prisma.referral.findMany({
+        where: { AND: [where, ...paging.cursorWhere] },
+        orderBy: paging.orderBy,
+        take: paging.take,
+      }),
+    count: () => prisma.referral.count({ where }),
   });
-  const page = rows.slice(0, limit);
   return {
     items: page.map((row) => ({
       id: row.id,
@@ -244,13 +233,7 @@ export async function listReferrals(request: Request) {
       rewardStatus: row.rewardStatus,
       createdAt: row.createdAt.toISOString(),
     })),
-    pageInfo: pageInfo(
-      "referrals",
-      queryIdentity,
-      page,
-      rows.length > limit,
-      (row) => [row.createdAt.toISOString(), row.id],
-    ),
+    pageInfo,
   };
 }
 
@@ -261,36 +244,5 @@ function promoAuditIdentity(request: Request, actor: AdminActor, requestId: stri
     requestId,
     ipHash: adminRequestIpHash(request),
     userAgent: adminRequestUserAgent(request),
-  };
-}
-
-function cursorString(keys: readonly unknown[], index: number, scope: string) {
-  const value = keys[index];
-  if (typeof value !== "string" || !value)
-    throw Errors.badRequest(`${scope} cursor key is invalid`);
-  return value;
-}
-
-function cursorDate(keys: readonly unknown[], index: number, scope: string) {
-  const value = new Date(cursorString(keys, index, scope));
-  if (Number.isNaN(value.getTime()))
-    throw Errors.badRequest(`${scope} cursor timestamp is invalid`);
-  return value;
-}
-
-function pageInfo<T>(
-  scope: string,
-  queryIdentity: unknown,
-  page: readonly T[],
-  hasNextPage: boolean,
-  keys: (row: T) => readonly (string | number | boolean | null)[],
-) {
-  const last = page.at(-1);
-  return {
-    endCursor:
-      hasNextPage && last
-        ? encodeAdminListCursor(scope, queryIdentity, keys(last))
-        : null,
-    hasNextPage,
   };
 }

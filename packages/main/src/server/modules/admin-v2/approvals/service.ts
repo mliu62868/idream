@@ -17,8 +17,9 @@ import {
   type AdminV2RequestBody,
 } from "@/server/modules/admin-v2/shared/authority";
 import {
-  decodeAdminListCursor,
-  encodeAdminListCursor,
+  type AdminKeysetPaging,
+  CREATED_AT_DESC_KEYS,
+  paginateAdminKeyset,
 } from "@/server/modules/admin-v2/shared/list-cursor";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 
@@ -69,56 +70,36 @@ function serializeApproval(row: ApprovalRow): ApprovalMutationResponse["request"
 
 export async function listApprovals(request: Request): Promise<ApprovalListResponse> {
   await actorWithPermission(request, "admin.approval.review");
-  const { search, status, limit, cursor } = queryParams(request, "GET /api/v2/admin/approvals");
+  const { search, status, limit, cursor, before } = queryParams(request, "GET /api/v2/admin/approvals");
   const queryIdentity = { search, status };
-  const cursorKeys = cursor
-    ? decodeAdminListCursor(cursor, "approvals", queryIdentity)
-    : undefined;
-  const cursorWhere: Prisma.AdminActionRequestWhereInput | undefined =
-    cursorKeys
-      ? (() => {
-          const createdAt = cursorDate(cursorKeys, 0);
-          const id = cursorString(cursorKeys, 1);
-          return {
-            OR: [
-              { createdAt: { lt: createdAt } },
-              { createdAt, id: { lt: id } },
-            ],
-          };
-        })()
-      : undefined;
-  const rows = await prisma.adminActionRequest.findMany({
-    where: {
-      status,
-      OR: search
-        ? [
-            { id: { contains: search } },
-            { action: { contains: search } },
-            { permissionKey: { contains: search } },
-            { targetId: { contains: search } },
-            { requestedById: { contains: search } },
-          ]
-        : undefined,
-      AND: cursorWhere,
-    },
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    take: limit + 1,
-  });
-  const page = rows.slice(0, limit);
-  const last = page.at(-1);
-  return {
-    items: page.map(serializeApproval),
-    pageInfo: {
-      endCursor:
-        rows.length > limit && last
-          ? encodeAdminListCursor("approvals", queryIdentity, [
-              last.createdAt.toISOString(),
-              last.id,
-            ])
-          : null,
-      hasNextPage: rows.length > limit,
-    },
+  const where: Prisma.AdminActionRequestWhereInput = {
+    status,
+    OR: search
+      ? [
+          { id: { contains: search } },
+          { action: { contains: search } },
+          { permissionKey: { contains: search } },
+          { targetId: { contains: search } },
+          { requestedById: { contains: search } },
+        ]
+      : undefined,
   };
+  const { items, pageInfo } = await paginateAdminKeyset({
+    scope: "approvals",
+    queryIdentity,
+    cursor,
+    before,
+    limit,
+    keys: CREATED_AT_DESC_KEYS,
+    fetch: (paging: AdminKeysetPaging<Prisma.AdminActionRequestOrderByWithRelationInput>) =>
+      prisma.adminActionRequest.findMany({
+        where: { AND: [where, ...paging.cursorWhere] },
+        orderBy: paging.orderBy,
+        take: paging.take,
+      }),
+    count: () => prisma.adminActionRequest.count({ where }),
+  });
+  return { items: items.map(serializeApproval), pageInfo };
 }
 
 export async function createApproval(request: Request): Promise<ApprovalMutationResponse> {
@@ -237,20 +218,4 @@ export async function rejectApproval(
 
 function assertConfirmation(value: string, target: string) {
   if (value !== target) throw Errors.badRequest("Confirmation did not match target");
-}
-
-function cursorString(keys: readonly unknown[], index: number) {
-  const value = keys[index];
-  if (typeof value !== "string" || !value) {
-    throw Errors.badRequest("approvals cursor key is invalid");
-  }
-  return value;
-}
-
-function cursorDate(keys: readonly unknown[], index: number) {
-  const value = new Date(cursorString(keys, index));
-  if (Number.isNaN(value.getTime())) {
-    throw Errors.badRequest("approvals cursor timestamp is invalid");
-  }
-  return value;
 }

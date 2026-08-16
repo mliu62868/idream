@@ -4,57 +4,47 @@ import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
 import { actorWithPermission, queryParams } from "@/server/modules/admin-v2/shared/authority";
+import {
+  type AdminKeysetPaging,
+  CREATED_AT_DESC_KEYS,
+  paginateAdminKeyset,
+} from "@/server/modules/admin-v2/shared/list-cursor";
 import { caseDto } from "./query";
 
 const ACTIVE_CASE_STATUSES = ["new", "triaged", "in_progress", "waiting", "reopened"];
 
-function encodeCursor(row: { createdAt: Date; id: string }) {
-  return Buffer.from(JSON.stringify({ createdAt: row.createdAt.toISOString(), id: row.id }), "utf8").toString("base64url");
-}
-
-function decodeCursor(value?: string) {
-  if (!value) return null;
-  try {
-    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as { createdAt?: unknown; id?: unknown };
-    if (typeof parsed.createdAt !== "string" || typeof parsed.id !== "string" || Number.isNaN(Date.parse(parsed.createdAt))) {
-      throw new Error("invalid cursor");
-    }
-    return { createdAt: new Date(parsed.createdAt), id: parsed.id };
-  } catch {
-    throw Errors.badRequest("Invalid Customer cursor");
-  }
-}
-
 export async function listCustomers(request: Request) {
   await actorWithPermission(request, "customer.read");
   const query = queryParams(request, "GET /api/v2/admin/customers");
-  const cursor = decodeCursor(query.cursor);
   const since30d = new Date(Date.now() - 30 * 24 * 60 * 60 * 1_000);
-  const rows = await prisma.user.findMany({
-    where: {
-      role: "user",
-      dataClass: "customer",
-      ...(query.status ? { status: query.status } : {}),
-      ...(query.search ? {
-        OR: [
-          { id: { contains: query.search, mode: "insensitive" } },
-          { email: { contains: query.search, mode: "insensitive" } },
-          { displayName: { contains: query.search, mode: "insensitive" } },
-          { name: { contains: query.search, mode: "insensitive" } },
-        ],
-      } : {}),
-      ...(cursor ? {
-        OR: [
-          { createdAt: { lt: cursor.createdAt } },
-          { createdAt: cursor.createdAt, id: { lt: cursor.id } },
-        ],
-      } : {}),
-    },
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    take: query.limit + 1,
+  const where: Prisma.UserWhereInput = {
+    role: "user",
+    dataClass: "customer",
+    ...(query.status ? { status: query.status } : {}),
+    ...(query.search ? {
+      OR: [
+        { id: { contains: query.search, mode: "insensitive" } },
+        { email: { contains: query.search, mode: "insensitive" } },
+        { displayName: { contains: query.search, mode: "insensitive" } },
+        { name: { contains: query.search, mode: "insensitive" } },
+      ],
+    } : {}),
+  };
+  const { items: pageRows, pageInfo } = await paginateAdminKeyset({
+    scope: "customers",
+    queryIdentity: { search: query.search, status: query.status },
+    cursor: query.cursor,
+    before: query.before,
+    limit: query.limit,
+    keys: CREATED_AT_DESC_KEYS,
+    fetch: (paging: AdminKeysetPaging<Prisma.UserOrderByWithRelationInput>) =>
+      prisma.user.findMany({
+        where: { AND: [where, ...paging.cursorWhere] },
+        orderBy: paging.orderBy,
+        take: paging.take,
+      }),
+    count: () => prisma.user.count({ where }),
   });
-  const hasNextPage = rows.length > query.limit;
-  const pageRows = rows.slice(0, query.limit);
   const customerIds = pageRows.map((row) => row.id);
   const [ledgerRows, caseCounts, failureCounts, subscriptionRows, chatActivity] = customerIds.length > 0
     ? await Promise.all([
@@ -109,10 +99,7 @@ export async function listCustomers(request: Request) {
   });
   const model = customerListResponseSchema.parse({
     items,
-    pageInfo: {
-      endCursor: hasNextPage && pageRows.at(-1) ? encodeCursor(pageRows.at(-1)!) : null,
-      hasNextPage,
-    },
+    pageInfo,
     query: { search: query.search, status: query.status, limit: query.limit, cursor: query.cursor ?? null },
     asOf: new Date().toISOString(),
     freshness: "fresh",

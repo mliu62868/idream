@@ -19,6 +19,7 @@ export const adminRedeemCodeQuerySchema = z
     status: z.string().trim().min(1).max(80).optional(),
     limit: z.coerce.number().int().min(1).max(100).default(100),
     cursor: z.string().trim().min(1).optional(),
+    before: z.string().trim().min(1).optional(),
   })
   .strict();
 
@@ -80,6 +81,7 @@ export const adminReferralQuerySchema = z
     status: z.string().trim().min(1).max(80).optional(),
     limit: z.coerce.number().int().min(1).max(100).default(100),
     cursor: z.string().trim().min(1).optional(),
+    before: z.string().trim().min(1).optional(),
   })
   .strict();
 

@@ -476,6 +476,7 @@ export const generationDeadLetterQuerySchema = z
     errorCode: z.string().trim().min(1).max(200).optional(),
     limit: z.coerce.number().int().min(1).max(100).optional(),
     cursor: z.string().min(1).optional(),
+    before: z.string().trim().min(1).optional(),
   })
   .strict();
 
