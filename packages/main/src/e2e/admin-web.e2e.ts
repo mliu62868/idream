@@ -629,7 +629,7 @@ test("admin users and billing actions write audit trail and clear adjustment for
         idempotencyKey: refreshLedgerId,
       },
     });
-    const subscriptionRoute = "**/api/v1/admin/billing/subscriptions**";
+    const subscriptionRoute = "**/api/v2/admin/billing/subscriptions**";
     await page.route(subscriptionRoute, (route) => route.fulfill({
       body: JSON.stringify({
         ok: false,
@@ -1426,7 +1426,8 @@ test("admin API allows an authorized write (admin creates a pricing draft)", asy
   await startRoleSession(page, "admin");
   const ruleKey = `e2e_rule_${Date.now()}`;
   try {
-    const create = await page.request.post(`${adminURL}/api/v1/admin/pricing/rules`, {
+    const create = await page.request.post(`${adminURL}/api/v2/admin/pricing/rules`, {
+      headers: { "idempotency-key": crypto.randomUUID() },
       data: {
         ruleKey,
         label: "E2E rule",
@@ -1866,8 +1867,17 @@ test("admin API forbids under-privileged roles (403 on writes they lack)", async
   // support holds content.read but NOT content.takedown.write / config.pricing.write.
   await startRoleSession(page, "support");
 
-  const pricing = await page.request.post(`${adminURL}/api/v1/admin/pricing/rules`, {
-    data: { ruleKey: "e2e_forbidden", label: "x", mode: "image", baseCost: 5, multiplier: 1 },
+  const pricing = await page.request.post(`${adminURL}/api/v2/admin/pricing/rules`, {
+    headers: { "idempotency-key": crypto.randomUUID() },
+    data: {
+      ruleKey: "e2e_forbidden",
+      label: "x",
+      mode: "image",
+      baseCost: 5,
+      multiplier: 1,
+      reason: "E2E forbidden pricing write",
+      confirmation: "e2e_forbidden",
+    },
   });
   expect(pricing.status()).toBe(403);
 

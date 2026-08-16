@@ -103,7 +103,12 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
     setWriting(true);
     setError(null);
     try {
-      await apiWrite("/api/v1/admin/pricing/rules", "POST", pricingDraftPayload(pricingDraft));
+      await apiWrite(
+        "/api/v2/admin/pricing/rules",
+        "POST",
+        pricingDraftPayload(pricingDraft),
+        { "idempotency-key": crypto.randomUUID() },
+      );
       setPricingDraft((current) => ({ ...current, reason: "", confirmation: "" }));
       const next = { ...query, cursor: "" };
       navigate(next, "replace");
@@ -117,13 +122,19 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
   function confirmVersionAction(row: PricingRecord, action: "publish" | "rollback") {
     const id = text(row.id);
     const name = text(row.label) || text(row.ruleKey) || id;
+    const idempotencyKey = crypto.randomUUID();
     setConfirmation({
       title: `${capitalize(action)} pricing rule`,
       summary: <span>{name}  {t("· version")} {display(row.version)}</span>,
       destructive: { expectedName: name },
       submitLabel: capitalize(action),
       onSubmit: async (reason) => {
-        await apiWrite(`/api/v1/admin/pricing/rules/${encodeURIComponent(id)}/${action}`, "POST", { reason, confirmation: id });
+        await apiWrite(
+          `/api/v2/admin/pricing/rules/${encodeURIComponent(id)}/${action}`,
+          "POST",
+          { reason, confirmation: id },
+          { "idempotency-key": idempotencyKey },
+        );
         const next = { ...query, cursor: "" };
         navigate(next, "replace");
       },

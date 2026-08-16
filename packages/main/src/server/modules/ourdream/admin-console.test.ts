@@ -13,6 +13,8 @@ import { env } from "@/server/lib/env";
 import { ACCOUNT_DELETION_GRACE_PERIOD_MS } from "@/server/account-deletion-authority";
 import { CHARACTER_RELEASE_POLICY_VERSION } from "@/server/modules/admin-v2/characters/release-validation";
 import { POST as createCreativeRunV2 } from "@/app/api/v2/admin/creative/runs/route";
+import { POST as adminBillingAdjustmentV2 } from "@/app/api/v2/admin/billing/adjustments/route";
+import { GET as adminBillingLedgerV2 } from "@/app/api/v2/admin/billing/ledger/route";
 import {
   characterVisualProfileSnapshotHash,
   referenceSetSnapshotHash,
@@ -28,6 +30,7 @@ import {
   purgeTestData,
   runQueuedGenerationJobs,
 } from "@/server/test/helpers";
+import { adminV2Route } from "@/server/test/admin-v2-route-client";
 
 const P = "zt-admin-";
 const seedPricingAuthorities = [
@@ -74,6 +77,26 @@ async function setupActor(
   const id = `${P}${role}-${suffix}`;
   await createUser({ id, role, dataClass: "internal" });
   return id;
+}
+
+// billing 已迁到 /api/v2/admin；这两个端点在本文件里只作为权限矩阵的探针使用，
+// 它们自己的行为由 modules/admin-v2/billing/*.integration.test.ts 覆盖。
+function adminLedgerRead(userId: string, role: string) {
+  return adminV2Route(adminBillingLedgerV2, { path: "billing/ledger", userId, role });
+}
+
+function adminLedgerAdjust(
+  userId: string,
+  role: string,
+  body: Record<string, unknown>,
+) {
+  return adminV2Route(adminBillingAdjustmentV2, {
+    method: "POST",
+    path: "billing/adjustments",
+    userId,
+    role,
+    body,
+  });
 }
 
 async function createCreativeRunThroughV2(input: {
@@ -337,12 +360,12 @@ describe("admin permission keys", () => {
     expectOk(await api("GET", "admin/dashboard", { userId: analyst, role: "analyst" }));
     expectOk(await api("GET", "admin/users", { userId: support, role: "support" }));
     expectOk(await api("GET", "admin/generation/model-profiles", { userId: ops, role: "ops" }));
-    expectOk(await api("GET", "admin/billing/ledger", { userId: support, role: "support" }));
+    expectOk(await adminLedgerRead(support, "support"));
     expectOk(await api("GET", "admin/audit-log", { userId: admin, role: "admin" }));
 
     expectError(await api("GET", "admin/users", { userId: analyst, role: "analyst" }), 403);
     expectError(await api("GET", "admin/generation/model-profiles", { userId: support, role: "support" }), 403);
-    expectError(await api("GET", "admin/billing/ledger", { userId: ops, role: "ops" }), 403);
+    expectError(await adminLedgerRead(ops, "ops"), 403);
     expectError(await api("GET", "admin/dashboard", { userId: user, role: "user" }), 403);
   });
 });
@@ -2979,167 +3002,8 @@ describe("generation config control plane", () => {
   });
 });
 
-describe("pricing control plane", () => {
-  it("gates pricing reads/writes by permission key", async () => {
-    const admin = await setupActor("admin", "pricing-perm");
-    const support = await setupActor("support", "pricing-perm");
-    const ops = await setupActor("ops", "pricing-perm");
-
-    // 读 billing.read（admin+support 可见），写 config.pricing.write（admin only）。
-    expectOk(await api("GET", "admin/pricing/rules", { userId: support, role: "support" }));
-    expectOk(await api("GET", "admin/pricing/rules", { userId: admin, role: "admin" }));
-    expectError(await api("GET", "admin/pricing/rules", { userId: ops, role: "ops" }), 403);
-    expectError(
-      await api("POST", "admin/pricing/rules", {
-        userId: support,
-        role: "support",
-        body: { ruleKey: `${P}noop`, label: "x", mode: "video", baseCost: 10 },
-      }),
-      403,
-    );
-
-    const voice = await api("POST", "admin/pricing/rules", {
-      userId: admin,
-      role: "admin",
-      body: {
-        ruleKey: `${P}voice_pricing`,
-        label: "Voice overflow",
-        mode: "voice",
-        baseCost: 2,
-        reason: "voice pricing draft",
-        confirmation: `${P}voice_pricing`,
-      },
-    });
-    expectOk(voice);
-    expect(voice.data.rule).toMatchObject({ mode: "voice", status: "draft" });
-
-    const wrongConfirmation = await api("POST", "admin/pricing/rules", {
-      userId: admin,
-      role: "admin",
-      body: {
-        ruleKey: `${P}voice_pricing_wrong`,
-        label: "Voice wrong confirmation",
-        mode: "voice",
-        baseCost: 3,
-        reason: "wrong confirmation",
-        confirmation: "CREATE",
-      },
-    });
-    expectError(wrongConfirmation, 400, "bad_request");
-    expect(await prisma.pricingRule.count({ where: { ruleKey: `${P}voice_pricing_wrong` } })).toBe(0);
-  });
-
-  it("publishes and rolls back pricing rules with audit, keeping one active per mode", async () => {
-    const admin = await setupActor("admin", "pricing");
-    const ruleKey = `${P}video_base`;
-    await prisma.pricingRule.create({
-      data: {
-        id: `${P}pricing-v1`,
-        ruleKey,
-        label: "Video base v1",
-        mode: "video",
-        baseCost: 80,
-        multiplier: 1,
-        version: 1,
-        status: "active",
-        publishedAt: new Date(),
-      },
-    });
-
-    const draft = await api("POST", "admin/pricing/rules", {
-      userId: admin,
-      role: "admin",
-      body: {
-        ruleKey,
-        label: "Video base v2",
-        mode: "video",
-        baseCost: 60,
-        multiplier: 1,
-        reason: "create promo price draft",
-        confirmation: ruleKey,
-      },
-    });
-    expectOk(draft);
-    expect(draft.data.rule).toMatchObject({ status: "draft", version: 2, baseCost: 60 });
-
-    // 只有 draft 能编辑；active 规则改价必须走新 draft + publish。
-    const editActive = await api("PATCH", `admin/pricing/rules/${P}pricing-v1`, {
-      userId: admin,
-      role: "admin",
-      body: { baseCost: 70 },
-    });
-    expectError(editActive, 400, "bad_request");
-
-    const publish = await api("POST", `admin/pricing/rules/${draft.data.rule.id}/publish`, {
-      userId: admin,
-      role: "admin",
-      body: { reason: "promo price drop", confirmation: "PUBLISH" },
-    });
-    expectError(publish, 400, "bad_request");
-
-    const futurePublish = await api("POST", `admin/pricing/rules/${draft.data.rule.id}/publish`, {
-      userId: admin,
-      role: "admin",
-      body: {
-        reason: "unsupported scheduled price",
-        confirmation: draft.data.rule.id,
-        effectiveFrom: new Date(Date.now() + 86_400_000).toISOString(),
-      },
-    });
-    expectError(futurePublish, 400, "bad_request");
-    expect(futurePublish.error?.message).toContain("effectiveFrom cannot be in the future");
-
-    const exactPublish = await api("POST", `admin/pricing/rules/${draft.data.rule.id}/publish`, {
-      userId: admin,
-      role: "admin",
-      body: { reason: "promo price drop", confirmation: draft.data.rule.id },
-    });
-    expectOk(exactPublish);
-    expect(exactPublish.data.rule).toMatchObject({ status: "active", version: 2, baseCost: 60 });
-    expect(await prisma.pricingRule.findUnique({ where: { id: `${P}pricing-v1` } })).toMatchObject({
-      status: "archived",
-    });
-    // 不变量：每个 mode 至多一个 active 规则（generationCost 的资金侧 SSoT）。
-    expect(
-      await prisma.pricingRule.count({ where: { ruleKey, mode: "video", status: "active" } }),
-    ).toBe(1);
-
-    const rollback = await api("POST", `admin/pricing/rules/${exactPublish.data.rule.id}/rollback`, {
-      userId: admin,
-      role: "admin",
-      body: { reason: "promo ended", confirmation: "ROLLBACK" },
-    });
-    expectError(rollback, 400, "bad_request");
-
-    const exactRollback = await api("POST", `admin/pricing/rules/${exactPublish.data.rule.id}/rollback`, {
-      userId: admin,
-      role: "admin",
-      body: { reason: "promo ended", confirmation: exactPublish.data.rule.id },
-    });
-    expectOk(exactRollback);
-    expect(exactRollback.data).toMatchObject({ fromVersion: 2, toVersion: 1 });
-    expect(await prisma.pricingRule.findUnique({ where: { id: `${P}pricing-v1` } })).toMatchObject({
-      status: "active",
-      baseCost: 80,
-    });
-
-    const actions = (
-      await prisma.adminAuditLog.findMany({
-        where: { actorId: admin, targetType: "pricing_rule" },
-      })
-    ).map((audit) => audit.action);
-    expect(actions).toEqual(
-      expect.arrayContaining([
-        "config.pricing.create",
-        "config.pricing.publish",
-        "config.pricing.rollback",
-      ]),
-    );
-  });
-});
-
 describe("admin writes are audited", () => {
-  it("suspends users, adjusts ledger by append-only entry, and blocks hard-policy flags", async () => {
+  it("suspends users, changes roles, and blocks hard-policy flags", async () => {
     const admin = await setupActor("admin", "writes");
     const target = `${P}target-user`;
     await createUser({ id: target });
@@ -3181,45 +3045,6 @@ describe("admin writes are audited", () => {
       },
     })).resolves.toBe(2);
 
-    const wrongAdjustConfirmation = await api("POST", "admin/billing/adjustments", {
-      userId: admin,
-      role: "admin",
-      body: { userId: target, delta: 42, reason: "wrong adjustment confirmation", confirmation: "ADJUST" },
-    });
-    expectError(wrongAdjustConfirmation, 400, "bad_request");
-    expect(await dreamcoinBalance(target)).toBe(0);
-
-    const adjustmentKey = `${P}billing-adjustment-idempotency`;
-    const adjust = await api("POST", "admin/billing/adjustments", {
-      userId: admin,
-      role: "admin",
-      headers: { "idempotency-key": adjustmentKey },
-      body: { userId: target, delta: 42, reason: "support credit", confirmation: `${target}:42` },
-    });
-    expectOk(adjust);
-    expect(await dreamcoinBalance(target)).toBe(42);
-    expect(adjust.data.ledgerEntry.reason).toBe("admin_adjust");
-    const replay = await api("POST", "admin/billing/adjustments", {
-      userId: admin,
-      role: "admin",
-      headers: { "idempotency-key": adjustmentKey },
-      body: { userId: target, delta: 42, reason: "support credit replay", confirmation: `${target}:42` },
-    });
-    expectOk(replay);
-    expect(replay.data.replayed).toBe(true);
-    expect(await dreamcoinBalance(target)).toBe(42);
-    await expect(prisma.dreamcoinLedger.count({ where: { idempotencyKey: adjustmentKey } })).resolves.toBe(1);
-    await expect(prisma.adminAuditLog.count({
-      where: { action: "billing.ledger.adjust", targetId: target },
-    })).resolves.toBe(1);
-    const conflict = await api("POST", "admin/billing/adjustments", {
-      userId: admin,
-      role: "admin",
-      headers: { "idempotency-key": adjustmentKey },
-      body: { userId: target, delta: 43, reason: "conflicting replay", confirmation: `${target}:43` },
-    });
-    expectError(conflict, 409, "conflict");
-
     const hardPolicy = await api("PATCH", "admin/feature-flags/age_gate_required", {
       userId: admin,
       role: "admin",
@@ -3253,7 +3078,7 @@ describe("admin writes are audited", () => {
     expect(auditActions).toEqual(
       expect.arrayContaining([
         "user.status.write",
-        "billing.ledger.adjust",
+        "user.role.write",
         "config.feature_flag.write",
       ]),
     );
@@ -3651,117 +3476,6 @@ describe("generation and Creative Run truth containment", () => {
   });
 });
 
-describe("billing operations", () => {
-  it("lists subscriptions with plan + status and gates by billing.read", async () => {
-    const support = await setupActor("support", "billing-subs");
-    const ops = await setupActor("ops", "billing-subs");
-    const owner = `${P}sub-owner`;
-    await createUser({ id: owner, dataClass: "customer" });
-    // 复用 seed 的 premium 套餐，避免 (slug, billingPeriod) 唯一约束碰撞。
-    const plan = await prisma.plan.findFirstOrThrow({ where: { slug: "premium" } });
-    await prisma.subscription.create({
-      data: {
-        id: `${P}sub-1`,
-        userId: owner,
-        planId: plan.id,
-        provider: "mock",
-        status: "active",
-        currentPeriodEnd: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-      },
-    });
-
-    // ops 无 billing.read。
-    expectError(await api("GET", "admin/billing/subscriptions", { userId: ops, role: "ops" }), 403);
-
-    const list = await api("GET", "admin/billing/subscriptions", {
-      userId: support,
-      role: "support",
-      query: { userId: owner },
-    });
-    expectOk(list);
-    expect(list.data.dataScope).toMatchObject({
-      kind: "customer",
-      includedDataClasses: ["customer"],
-    });
-    expect(list.data.items).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          id: `${P}sub-1`,
-          plan: "premium",
-          status: "active",
-          provider: "mock",
-        }),
-      ]),
-    );
-  });
-
-  it("reconciles ledger by reason over the window with one active-subscription count", async () => {
-    const admin = await setupActor("admin", "billing-recon");
-    const owner = `${P}recon-owner`;
-    await createUser({ id: owner, dataClass: "customer" });
-    await prisma.dreamcoinLedger.create({
-      data: {
-        id: `${P}recon-grant`,
-        userId: owner,
-        delta: 250,
-        balanceAfter: 250,
-        reason: "signup_bonus",
-        sourceId: `${P}recon-grant`,
-      },
-    });
-    const fixtureOwner = `${P}recon-fixture-owner`;
-    await createUser({ id: fixtureOwner, dataClass: "fixture" });
-    await prisma.dreamcoinLedger.create({
-      data: {
-        id: `${P}recon-fixture-spend`,
-        userId: fixtureOwner,
-        delta: -9_999,
-        balanceAfter: -9_999,
-        reason: "generation_spend",
-        sourceId: `${P}recon-fixture-spend`,
-      },
-    });
-    await prisma.dreamcoinLedger.create({
-      data: {
-        id: `${P}recon-spend-1`,
-        userId: owner,
-        delta: -5,
-        balanceAfter: 245,
-        reason: "generation_spend",
-        sourceId: `${P}recon-spend-1`,
-      },
-    });
-    await prisma.dreamcoinLedger.create({
-      data: {
-        id: `${P}recon-spend-2`,
-        userId: owner,
-        delta: -5,
-        balanceAfter: 240,
-        reason: "generation_spend",
-        sourceId: `${P}recon-spend-2`,
-      },
-    });
-
-    const recon = await api("GET", "admin/billing/reconciliation", { userId: admin, role: "admin" });
-    expectOk(recon);
-    expect(recon.data.dataScope).toMatchObject({
-      kind: "customer",
-      includedDataClasses: ["customer"],
-    });
-    // 全局窗口聚合，断言用 >=/<= 以兼容并发测试数据。
-    const byReason = Object.fromEntries(
-      (recon.data.byReason as Array<{ reason: string; totalDelta: number; count: number }>).map(
-        (row) => [row.reason, row],
-      ),
-    );
-    expect(byReason.signup_bonus?.totalDelta).toBeGreaterThanOrEqual(250);
-    expect(byReason.generation_spend?.totalDelta).toBeLessThanOrEqual(-10);
-    expect(recon.data.totals.entries).toBeGreaterThanOrEqual(3);
-    expect(typeof recon.data.activeSubscriptions).toBe("number");
-    expect(byReason.generation_spend?.totalDelta).toBeGreaterThan(-9_999);
-  });
-});
-
 describe("analytics overview", () => {
   it("aggregates funnel/economy and gates by analytics.export", async () => {
     const analyst = await setupActor("analyst", "analytics");
@@ -4051,10 +3765,11 @@ describe("user permission overrides", () => {
 
     // baseline：support 无 billing.ledger.adjust。
     expectError(
-      await api("POST", "admin/billing/adjustments", {
+      await adminLedgerAdjust(support, "support", {
         userId: support,
-        role: "support",
-        body: { userId: support, delta: 1, reason: "noop baseline", confirmation: `${support}:1` },
+        delta: 1,
+        reason: "noop baseline",
+        confirmation: `${support}:1`,
       }),
       403,
     );
@@ -4101,10 +3816,11 @@ describe("user permission overrides", () => {
       }),
     );
     expectOk(
-      await api("POST", "admin/billing/adjustments", {
+      await adminLedgerAdjust(support, "support", {
         userId: support,
-        role: "support",
-        body: { userId: support, delta: 1, reason: "granted adjust", confirmation: `${support}:1` },
+        delta: 1,
+        reason: "granted adjust",
+        confirmation: `${support}:1`,
       }),
     );
 
@@ -4121,7 +3837,7 @@ describe("user permission overrides", () => {
         },
       }),
     );
-    expectError(await api("GET", "admin/billing/ledger", { userId: support, role: "support" }), 403);
+    expectError(await adminLedgerRead(support, "support"), 403);
 
     const list = await api("GET", `admin/users/${support}/permissions`, {
       userId: admin,
@@ -4144,7 +3860,7 @@ describe("user permission overrides", () => {
         },
       }),
     );
-    expectOk(await api("GET", "admin/billing/ledger", { userId: support, role: "support" }));
+    expectOk(await adminLedgerRead(support, "support"));
 
     // 未知 key 拒绝。
     expectError(
@@ -4549,135 +4265,6 @@ describe("admin featured curation (F3)", () => {
       .filter((id): id is string => Boolean(id));
     expect(ids[0]).toBe(cold);
     expect(ids).not.toContain(priv);
-  });
-});
-
-describe("admin promo: redeem codes + referrals (F4)", () => {
-  it("replays an exact create command without duplicating domain, audit, or outbox rows", async () => {
-    const admin = await setupActor("admin", "promo-idempotency");
-    const code = `${P}IDEMPOTENT`;
-    const idempotencyKey = `${P}promo-create-key`;
-    const body = {
-      code,
-      reward: { dreamcoins: 15 },
-      maxRedemptions: 5,
-      reason: "verify exact command replay",
-      confirmation: code,
-    };
-    const first = await api("POST", "admin/promo/redeem-codes", {
-      userId: admin,
-      role: "admin",
-      headers: { "idempotency-key": idempotencyKey },
-      body,
-    });
-    const replay = await api("POST", "admin/promo/redeem-codes", {
-      userId: admin,
-      role: "admin",
-      headers: { "idempotency-key": idempotencyKey },
-      body,
-    });
-    expectOk(first);
-    expectOk(replay);
-    expect(replay.data).toMatchObject({ id: first.data.id, replayed: true });
-    await expect(prisma.adminAuditLog.count({
-      where: { action: "promo.redeem_code.create", targetId: first.data.id },
-    })).resolves.toBe(1);
-    await expect(prisma.mainOutboxEvent.count({
-      where: { eventType: "admin.promo.redeem_code_created.v2", aggregateId: first.data.id },
-    })).resolves.toBe(1);
-  });
-
-  it("creates/lists/disables redeem codes (no plaintext) with permission gating", async () => {
-    const admin = await setupActor("admin", "promo");
-    const analyst = await setupActor("analyst", "promo"); // has growth.promo.read, not write
-    const ops = await setupActor("ops", "promo"); // has neither
-
-    expectError(await api("GET", "admin/promo/redeem-codes", { userId: ops, role: "ops" }), 403);
-
-    const created = await api("POST", "admin/promo/redeem-codes", {
-      userId: admin,
-      role: "admin",
-      body: {
-        code: `${P}WELCOME50`,
-        reward: { dreamcoins: 50, note: "welcome" },
-        maxRedemptions: 100,
-        reason: "launch promo",
-        confirmation: `${P}WELCOME50`,
-      },
-    });
-    expectOk(created);
-    const codeId = created.data.id as string;
-
-    const wrongConfirmation = await api("POST", "admin/promo/redeem-codes", {
-      userId: admin,
-      role: "admin",
-      body: {
-        code: `${P}WRONGCONFIRM`,
-        reward: { dreamcoins: 25 },
-        maxRedemptions: 10,
-        reason: "wrong confirmation",
-        confirmation: "CREATE",
-      },
-    });
-    expectError(wrongConfirmation, 400, "bad_request");
-
-    // analyst can read, cannot write.
-    expectOk(await api("GET", "admin/promo/redeem-codes", { userId: analyst, role: "analyst" }));
-    expectError(
-      await api("POST", `admin/promo/redeem-codes/${codeId}/disable`, {
-        userId: analyst,
-        role: "analyst",
-        body: { reason: "x", confirmation: "DISABLE" },
-      }),
-      403,
-    );
-
-    // Plaintext code never returned by list.
-    const list = await api("GET", "admin/promo/redeem-codes", { userId: admin, role: "admin" });
-    expect(JSON.stringify(list.json)).not.toContain("WELCOME50");
-
-    const redeemer = `${P}promo-redeemer`;
-    await createUser({ id: redeemer });
-    const redeemed = await api("POST", "redeem-codes/redeem", {
-      userId: redeemer,
-      body: { code: `${P}WELCOME50` },
-    });
-    expectOk(redeemed);
-    expect(redeemed.data.dreamcoins).toBe(50);
-
-    const listAfterRedeem = await api("GET", "admin/promo/redeem-codes", {
-      userId: admin,
-      role: "admin",
-    });
-    expectOk(listAfterRedeem);
-    const listedCreatedCode = (listAfterRedeem.data.items as Array<{ id: string; redemptions: number }>).find(
-      (item) => item.id === codeId,
-    );
-    expect(listedCreatedCode?.redemptions).toBe(1);
-
-    const disabled = await api("POST", `admin/promo/redeem-codes/${codeId}/disable`, {
-      userId: admin,
-      role: "admin",
-      body: { reason: "fraud", confirmation: "DISABLE" },
-    });
-    expectError(disabled, 400, "bad_request");
-
-    const exactDisabled = await api("POST", `admin/promo/redeem-codes/${codeId}/disable`, {
-      userId: admin,
-      role: "admin",
-      body: { reason: "fraud", confirmation: codeId },
-    });
-    expectOk(exactDisabled);
-    expect(exactDisabled.data.status).toBe("disabled");
-
-    // Audit must not leak the plaintext code.
-    const audit = await prisma.adminAuditLog.findFirst({
-      where: { action: "promo.redeem_code.create", targetId: codeId },
-    });
-    expect(audit).not.toBeNull();
-    expect(JSON.stringify(audit)).not.toContain("WELCOME50");
-
-    expectOk(await api("GET", "admin/promo/referrals", { userId: admin, role: "admin" }));
   });
 });
 
@@ -5259,7 +4846,7 @@ describe("admin dual-approval hard enforcement (T4)", () => {
       const big = { userId: target, delta: 5000, reason: "large comp", confirmation: `${target}:5000` };
 
       // no approval → 403
-      expectError(await api("POST", "admin/billing/adjustments", { userId: a1, role: "admin", body: big }), 403);
+      expectError(await adminLedgerAdjust(a1, "admin", big), 403);
 
       // create + approve a matching request
       const req = await api("POST", "admin/approvals", {
@@ -5285,10 +4872,10 @@ describe("admin dual-approval hard enforcement (T4)", () => {
       );
 
       // with approval → ok (consumes credential)
-      expectOk(await api("POST", "admin/billing/adjustments", { userId: a1, role: "admin", body: big }));
+      expectOk(await adminLedgerAdjust(a1, "admin", big));
 
       // reuse → credential consumed → 403
-      expectError(await api("POST", "admin/billing/adjustments", { userId: a1, role: "admin", body: big }), 403);
+      expectError(await adminLedgerAdjust(a1, "admin", big), 403);
 
       const concurrentReq = await api("POST", "admin/approvals", {
         userId: a1,
@@ -5313,8 +4900,8 @@ describe("admin dual-approval hard enforcement (T4)", () => {
       );
 
       const concurrent = await Promise.all([
-        api("POST", "admin/billing/adjustments", { userId: a1, role: "admin", body: big }),
-        api("POST", "admin/billing/adjustments", { userId: a1, role: "admin", body: big }),
+        adminLedgerAdjust(a1, "admin", big),
+        adminLedgerAdjust(a1, "admin", big),
       ]);
       expect(concurrent.filter((res) => res.status === 200)).toHaveLength(1);
       expect(concurrent.filter((res) => res.status === 403)).toHaveLength(1);

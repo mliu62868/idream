@@ -40,10 +40,10 @@ describe("BillingWorkspace hydration", () => {
     apiGet.mockReset();
     apiWrite.mockReset();
     apiGet.mockImplementation(async (path) => {
-      if (path.startsWith("/api/v1/admin/billing/subscriptions")) {
+      if (path.startsWith("/api/v2/admin/billing/subscriptions")) {
         return { dataScope, items: [], pageInfo: { endCursor: null, hasNextPage: false } };
       }
-      if (path.startsWith("/api/v1/admin/billing/ledger")) {
+      if (path.startsWith("/api/v2/admin/billing/ledger")) {
         return { dataScope, items: [], pageInfo: { endCursor: null, hasNextPage: false } };
       }
       return {

@@ -86,7 +86,7 @@ describe("admin source boundary", () => {
     expect(catchAll).not.toContain("/api/v1/admin/billing/");
     expect(catchAll).not.toContain("function BillingView");
     expect(billingFeature).toContain("export function BillingWorkspace");
-    expect(billingFeature).toContain("/api/v1/admin/billing/adjustments");
+    expect(billingFeature).toContain("/api/v2/admin/billing/adjustments");
     expect(catchAll).toContain("window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT))");
     expect(billingFeature).toContain("window.addEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, refresh)");
   });

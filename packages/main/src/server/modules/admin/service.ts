@@ -75,24 +75,7 @@ import {
 } from "./announcements";
 import { listExperiments } from "./experiments";
 import { auditLog } from "./audit/query";
-import {
-  billingAdjustment,
-  resolveCheckoutReconciliation,
-} from "./billing/command";
-import {
-  reconcileSubscriptionRefund,
-  requestSubscriptionRefund,
-} from "./billing/refund";
-import { billingLedger, billingReconciliation, listSubscriptions } from "./billing/query";
 import { listFeatureFlags, patchFeatureFlag } from "./config/feature-flags";
-import {
-  createPricingRule,
-  listPricingRules,
-  patchPricingRule,
-  publishPricingRule,
-  rollbackPricingRule,
-} from "./pricing/service";
-export { DUAL_APPROVAL_FLAG, LEDGER_APPROVAL_THRESHOLD } from "./shared/legacy-approval";
 import {
   getUserDetail,
   listUserPermissions,
@@ -134,12 +117,6 @@ import {
   patchSupportRequest,
   viewPlaintext,
 } from "./support/service";
-import {
-  createRedeemCode,
-  disableRedeemCode,
-  listRedeemCodes,
-  listReferrals,
-} from "./promo/service";
 import {
   approveApproval,
   createApproval,
@@ -264,18 +241,6 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
     if (id === "metrics" && !action && method === "GET") return generationMetrics(request);
   }
 
-  if (resource === "pricing" && id === "rules") {
-    if (!action && method === "GET") return listPricingRules(request);
-    if (!action && method === "POST") return createPricingRule(request);
-    if (action && !child && method === "PATCH") return patchPricingRule(request, action);
-    if (action && child === "publish" && method === "POST") {
-      return publishPricingRule(request, action);
-    }
-    if (action && child === "rollback" && method === "POST") {
-      return rollbackPricingRule(request, action);
-    }
-  }
-
   if (resource === "moderation") {
     if (id === "queue" && !action && method === "GET") return moderationQueue(request);
     if (id === "media" && action && child === "decision" && method === "POST") {
@@ -286,43 +251,6 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
     }
     if (id === "appeals" && action && !child && method === "PATCH") {
       return appealDecision(request, action);
-    }
-  }
-
-  if (resource === "billing") {
-    if (id === "ledger" && !action && method === "GET") return billingLedger(request);
-    if (id === "subscriptions" && !action && method === "GET") return listSubscriptions(request);
-    if (id === "reconciliation" && !action && method === "GET") {
-      return billingReconciliation(request);
-    }
-    if (
-      id === "reconciliation" &&
-      action &&
-      child === "resolve" &&
-      method === "POST"
-    ) {
-      return resolveCheckoutReconciliation(request, action);
-    }
-    if (id === "adjustments" && !action && method === "POST") {
-      return billingAdjustment(request);
-    }
-    if (
-      id === "subscriptions" &&
-      action &&
-      child === "refund" &&
-      !grandchild &&
-      method === "POST"
-    ) {
-      return requestSubscriptionRefund(request, action);
-    }
-    if (
-      id === "subscriptions" &&
-      action &&
-      child === "refund" &&
-      grandchild === "reconcile" &&
-      method === "POST"
-    ) {
-      return reconcileSubscriptionRefund(request, action);
     }
   }
 
@@ -459,15 +387,6 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
   // AI 辅助生成（官方角色/模板共用，§8 后置增强）
   if (resource === "content" && id === "character-assist" && !action && method === "POST") {
     return generateCharacterDraft(request);
-  }
-
-  if (resource === "promo") {
-    if (id === "redeem-codes" && !action && method === "GET") return listRedeemCodes(request);
-    if (id === "redeem-codes" && !action && method === "POST") return createRedeemCode(request);
-    if (id === "redeem-codes" && action && child === "disable" && method === "POST") {
-      return disableRedeemCode(request, action);
-    }
-    if (id === "referrals" && !action && method === "GET") return listReferrals(request);
   }
 
   if (resource === "approvals") {

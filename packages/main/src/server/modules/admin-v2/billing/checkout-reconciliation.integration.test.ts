@@ -1,14 +1,17 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { POST as resolveRoute } from "@/app/api/v2/admin/billing/reconciliation/[id]/resolve/route";
 import { prisma } from "@/server/lib/db";
 import {
   api,
   createPlan,
   createUser,
+  expectError,
   expectOk,
   purgeTestData,
 } from "@/server/test/helpers";
+import { adminV2Route } from "@/server/test/admin-v2-route-client";
 
-const P = "zt-admin-billing-reconcile-";
+const P = "zt-adminv2-billing-reconcile-";
 const actorId = `${P}actor`;
 const supportId = `${P}support`;
 const customerId = `${P}customer`;
@@ -16,6 +19,23 @@ const planId = `${P}plan`;
 const checkoutId = `${P}checkout`;
 const invoiceId = `${P}invoice`;
 const providerReference = `${P}provider-refund`;
+
+function resolveCheckout(options: {
+  userId: string;
+  role: string;
+  idempotencyKey?: string;
+  body: Record<string, unknown>;
+}) {
+  return adminV2Route(resolveRoute, {
+    method: "POST",
+    path: `billing/reconciliation/${checkoutId}/resolve`,
+    params: { id: checkoutId },
+    userId: options.userId,
+    role: options.role,
+    idempotencyKey: options.idempotencyKey,
+    body: options.body,
+  });
+}
 
 async function cleanup() {
   await prisma.controlPlaneCommand.deleteMany({
@@ -62,26 +82,36 @@ afterAll(async () => {
   await prisma.$disconnect();
 });
 
-describe("admin late-settlement reconciliation command", () => {
+describe.sequential("Admin v2 late-settlement reconciliation command", () => {
   it("requires the dedicated reconciliation permission", async () => {
-    const denied = await api(
-      "POST",
-      `admin/billing/reconciliation/${checkoutId}/resolve`,
-      {
-        userId: supportId,
-        role: "support",
-        body: {
-          resolution: "refund_acknowledged",
-          providerReference,
-          reason: "Provider refund was completed and verified.",
-          confirmation: `${checkoutId}:refund_acknowledged`,
-        },
+    const denied = await resolveCheckout({
+      userId: supportId,
+      role: "support",
+      body: {
+        resolution: "refund_acknowledged",
+        providerReference,
+        reason: "Provider refund was completed and verified.",
+        confirmation: `${checkoutId}:refund_acknowledged`,
       },
-    );
+    });
     expect(denied.status).toBe(403);
     expect(denied.error?.details).toMatchObject({
       permission: "billing.checkout.reconcile",
     });
+  });
+
+  it("rejects a confirmation that does not name the checkout", async () => {
+    const denied = await resolveCheckout({
+      userId: actorId,
+      role: "admin",
+      body: {
+        resolution: "refund_acknowledged",
+        providerReference,
+        reason: "Provider refund was completed and verified.",
+        confirmation: "ACKNOWLEDGE",
+      },
+    });
+    expectError(denied, 400, "bad_request");
   });
 
   it("closes a late settlement once with audit, outbox, evidence, and replay receipt", async () => {
@@ -92,16 +122,12 @@ describe("admin late-settlement reconciliation command", () => {
       reason: "Provider refund was completed and verified.",
       confirmation: `${checkoutId}:refund_acknowledged`,
     };
-    const first = await api(
-      "POST",
-      `admin/billing/reconciliation/${checkoutId}/resolve`,
-      {
-        userId: actorId,
-        role: "admin",
-        headers: { "idempotency-key": idempotencyKey },
-        body,
-      },
-    );
+    const first = await resolveCheckout({
+      userId: actorId,
+      role: "admin",
+      idempotencyKey,
+      body,
+    });
     expectOk(first);
     expect(first.data).toMatchObject({
       checkout: {
@@ -117,16 +143,12 @@ describe("admin late-settlement reconciliation command", () => {
       },
     });
 
-    const replay = await api(
-      "POST",
-      `admin/billing/reconciliation/${checkoutId}/resolve`,
-      {
-        userId: actorId,
-        role: "admin",
-        headers: { "idempotency-key": idempotencyKey },
-        body,
-      },
-    );
+    const replay = await resolveCheckout({
+      userId: actorId,
+      role: "admin",
+      idempotencyKey,
+      body,
+    });
     expectOk(replay);
     expect(replay.data).toMatchObject({ replayed: true });
     await expect(
@@ -202,5 +224,19 @@ describe("admin late-settlement reconciliation command", () => {
       needsReconciliation: false,
       status: "canceled",
     });
+  });
+
+  it("refuses a checkout that is no longer an unresolved late settlement", async () => {
+    const conflict = await resolveCheckout({
+      userId: actorId,
+      role: "admin",
+      body: {
+        resolution: "refund_acknowledged",
+        providerReference,
+        reason: "Second acknowledgement attempt.",
+        confirmation: `${checkoutId}:refund_acknowledged`,
+      },
+    });
+    expectError(conflict, 409, "conflict");
   });
 });
