@@ -159,6 +159,7 @@ import {
   listContentCharacters,
   putFeaturedCharacters,
   setCharacterStatus,
+  setCharacterTags,
   setCharacterVisibility,
 } from "./content/merchandising";
 import {
@@ -370,6 +371,9 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
     }
     if (action && child === "status" && method === "POST") {
       return setCharacterStatus(request, action);
+    }
+    if (action && child === "tags" && method === "PUT") {
+      return setCharacterTags(request, action);
     }
     if (action && child === "visual-profiles" && method === "GET") {
       return listCharacterVisualProfiles(request, action);

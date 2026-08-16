@@ -103,6 +103,15 @@ const contentStatusSchema = z.object({
   confirmation: z.string().trim().min(1).max(160),
 });
 
+// SPEC: 整组替换角色标签，tagIds 必须是 Tag 表里已存在的行。
+// INTENT: 只做"把已有词表挂到角色上"，不隐式建标签 —— 造词属于 Taxonomy 的治理动作，
+//         从角色页顺手 upsert 出新标签正是分类法失控的起点。
+const contentTagsSchema = z.object({
+  tagIds: z.array(z.string().trim().min(1).max(160)).max(24),
+  reason: z.string().trim().min(3).max(2_000),
+  confirmation: z.string().trim().min(1).max(160),
+});
+
 const featuredPutSchema = z.object({
   characterIds: z
     .array(z.string().trim().min(1).max(160))
@@ -268,7 +277,8 @@ export async function getContentCharacter(request: Request, id: string) {
     include: {
       stats: true,
       creator: { select: { id: true, email: true, displayName: true } },
-      tags: true,
+      // 带上 Tag 本体：`tags: true` 只给 characterId/tagId，运营界面拿不到标签名。
+      tags: { include: { tag: true } },
     },
   });
   if (!character) throw Errors.notFound("Character not found");
@@ -377,6 +387,71 @@ export async function setCharacterStatus(request: Request, id: string) {
           status: after.status,
         },
       };
+    },
+  });
+  return ok(result);
+}
+
+/**
+ * SPEC: 设置某个角色挂载的标签（整组替换）。perm: content.tag.write。
+ *
+ * INTENT: 补上分类法链路里唯一缺失的一环——「把标签挂到角色上」。此前标签只能在
+ * `createCharacterProject` 的 `legacyTagLabels` 里随创建写一次，而唯一传它的入口是官方角色 CMS
+ * (`characters/official.ts`)，那套 CMS 全仓没有任何前端调用；官方角色的 profile 编辑还会显式
+ * 拒绝改标签并让运营「去 Taxonomy workspace」，但 Taxonomy 只治理词表本身，挂载能力根本不存在。
+ * 结果就是 22 个标签、2 条挂载，公开面的标签筛选没有内容可筛。
+ *
+ * INVARIANT: 与 visibility / status 不同，这里**不** rejectOfficialCharacter —— 需要打标签的恰恰
+ * 是 16 个官方目录角色，而 CharacterTag 是扁平关联，不进 content version / release 快照，
+ * 不归官方内容流水线管。
+ */
+export async function setCharacterTags(request: Request, id: string) {
+  const actor = await actorWithPermission(request, "content.tag.write");
+  const body = contentTagsSchema.parse(await jsonBody(request));
+  if (body.confirmation !== `${id}:tags`) {
+    throw Errors.badRequest("Confirmation did not match tag target");
+  }
+  const tagIds = [...new Set(body.tagIds)];
+  const result = await executeIdempotentDomainCommand({
+    request,
+    actor,
+    commandType: "content.tags.write",
+    targetType: "character",
+    targetId: id,
+    payload: body,
+    execute: async (tx, requestId) => {
+      const before = await tx.character.findFirst({
+        where: operationalCharacterWhere({ id, deletedAt: null }),
+        include: { tags: { include: { tag: true } } },
+      });
+      if (!before) throw Errors.notFound("Character not found");
+      const known = await tx.tag.findMany({
+        where: { id: { in: tagIds } },
+        select: { id: true, label: true },
+      });
+      if (known.length !== tagIds.length) {
+        const missing = tagIds.filter(
+          (tagId) => !known.some((tag) => tag.id === tagId),
+        );
+        throw Errors.badRequest("Unknown tag", { missing });
+      }
+      await tx.characterTag.deleteMany({ where: { characterId: id } });
+      if (tagIds.length > 0) {
+        await tx.characterTag.createMany({
+          data: tagIds.map((tagId) => ({ characterId: id, tagId })),
+        });
+      }
+      const beforeLabels = before.tags.map((link) => link.tag.label).sort();
+      const afterLabels = known.map((tag) => tag.label).sort();
+      await writeCommandSideEffects(tx, request, actor, requestId, {
+        action: "content.tags.write",
+        targetId: id,
+        reason: body.reason,
+        before: { tags: beforeLabels },
+        after: { tags: afterLabels },
+        eventType: "admin.content.tags_changed.v1",
+      });
+      return { character: { id, tags: afterLabels } };
     },
   });
   return ok(result);
