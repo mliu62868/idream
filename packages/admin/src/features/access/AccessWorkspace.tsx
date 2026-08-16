@@ -7,7 +7,7 @@ import {
   type AccessUserListItem,
   type AccessUserListResponse,
 } from "@idream/shared/admin";
-import { ADMIN_PERMISSION_KEYS } from "@idream/shared/admin/permissions";
+import { ADMIN_PERMISSION_KEYS, type AdminPermissionKey } from "@idream/shared/admin/permissions";
 import type { FormEvent } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Ban, Check, Loader2, RefreshCcw, ShieldCheck, X } from "lucide-react";
@@ -18,7 +18,10 @@ import {
 } from "@/components/admin/ui/ConfirmDialog";
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
+import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
+import { permissionLabel } from "@/components/admin/ui/permission-copy";
 import { useToast } from "@/components/admin/ui/Toast";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
@@ -35,7 +38,7 @@ import {
 
 type PermissionDraft = {
   userId: string;
-  permissionKey: string;
+  permissionKey: AdminPermissionKey;
   effect: "grant" | "revoke" | "clear";
 };
 const emptyPermission: PermissionDraft = {
@@ -59,13 +62,14 @@ export function AccessWorkspace({
 }: {
   permissions: { changeStatus: boolean; managePermissions: boolean };
 }) {
-  const { t } = useAdminI18n();
+  const { t, value: valueLabel } = useAdminI18n();
   const { toast } = useToast();
   const [query, setQuery] = useState<AccessQuery>(() => currentQuery());
   const [draft, setDraft] = useState<AccessQuery>(() => currentQuery());
   const [data, setData] = useState<AccessUserListResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [errorCause, setErrorCause] = useState<unknown>(undefined);
   const [refreshedAt, setRefreshedAt] = useState<string | null>(null);
   const [permissionDraft, setPermissionDraft] = useState(emptyPermission);
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
@@ -76,6 +80,7 @@ export function AccessWorkspace({
     const request = gate.current.begin();
     setLoading(true);
     setError(null);
+    setErrorCause(undefined);
     try {
       const response = accessUserListResponseSchema.parse(
         await apiGet<unknown>(accessListPath(next)),
@@ -84,12 +89,14 @@ export function AccessWorkspace({
       setData(response);
       setRefreshedAt(new Date().toISOString());
     } catch (cause) {
-      if (request.isCurrent())
+      if (request.isCurrent()) {
         setError(
           cause instanceof Error
             ? cause.message
             : "Access authority request failed",
         );
+        setErrorCause(cause);
+      }
     } finally {
       if (request.isCurrent()) setLoading(false);
     }
@@ -171,18 +178,8 @@ export function AccessWorkspace({
         {/* 首次加载时下方的骨架屏已经在说"正在加载"，这里再说一遍就是两个加载态。 */}
         <span>{data || error ? freshness(data, loading, error, refreshedAt) : ""}</span>
         <span className="flex gap-3 font-semibold">
-          {!permissions.managePermissions ? (
-            <span>
-
-              {t("Permission override unavailable · user.role.write is not granted")}
-            </span>
-          ) : null}
-          {!permissions.changeStatus ? (
-            <span>
-
-              {t("Status change unavailable · user.status.write is not granted")}
-            </span>
-          ) : null}
+          {!permissions.managePermissions ? <PermissionNotice permission="user.role.write" /> : null}
+          {!permissions.changeStatus ? <PermissionNotice permission="user.status.write" /> : null}
         </span>
       </div>
       <form
@@ -264,7 +261,10 @@ export function AccessWorkspace({
             <Select
               label="Permission key"
               onChange={(permissionKey) =>
-                setPermissionDraft((value) => ({ ...value, permissionKey }))
+                setPermissionDraft((value) => ({
+                  ...value,
+                  permissionKey: permissionKey as AdminPermissionKey,
+                }))
               }
               options={[...ADMIN_PERMISSION_KEYS]}
               value={permissionDraft.permissionKey}
@@ -286,7 +286,11 @@ export function AccessWorkspace({
               onClick={() => {
                 const userId = permissionDraft.userId.trim();
                 confirmCommand({
-                  title: `${permissionDraft.effect} ${permissionDraft.permissionKey}`,
+                  // INTENT: 标题里印能力名而不是权限码——运营在这一步要确认的是「我在给谁开什么」。
+                  title: t("{effect} the permission for: {capability}", {
+                    effect: valueLabel(permissionDraft.effect),
+                    capability: t(permissionLabel(permissionDraft.permissionKey)),
+                  }),
                   completed: t("Permission override applied to {user}", { user: userId }),
                   endpoint: `/api/v2/admin/users/${userId}/permissions`,
                   expected: accessPermissionConfirmation(
@@ -316,27 +320,12 @@ export function AccessWorkspace({
         </section>
       ) : null}
       {error ? (
-        <div
-          className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]"
-          role="alert"
-        >
-
-          {t("Access authority refresh failed:")} {error}
-          <button
-            className="ml-3 min-h-8 rounded border border-current px-2"
-            onClick={() => void load(query)}
-            type="button"
-          >
-
-            {t("Retry access")}
-          </button>
-          {data ? (
-            <span className="ml-2">
-
-              {t("The last good snapshot remains visible.")}
-            </span>
-          ) : null}
-        </div>
+        <AuthorityRequestError
+          cause={errorCause}
+          message={error}
+          onRetry={() => void load(query)}
+          snapshotAt={data ? refreshedAt : null}
+        />
       ) : null}
       {!data && loading ? (
         <div
@@ -444,7 +433,10 @@ function userTableRows(
             className="inline-flex min-h-9 items-center gap-1 rounded border px-2"
             onClick={() =>
               confirm({
-                title: `${next === "active" ? "Restore" : "Suspend"} ${id}`,
+                title:
+                  next === "active"
+                    ? t("Restore access for {user}", { user: id })
+                    : t("Suspend access for {user}", { user: id }),
                 completed:
                   next === "active"
                     ? t("Access restored for {user}", { user: id })

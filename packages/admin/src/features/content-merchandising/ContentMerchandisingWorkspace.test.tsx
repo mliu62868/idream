@@ -53,7 +53,8 @@ describe("Content merchandising permissions", () => {
     );
     expect(html).toContain("Characters: refreshing");
     expect(html).toContain("Featured: refreshing");
-    expect(html).toContain("content.takedown.write is not granted");
+    expect(html).toContain("Taking content down and changing its visibility is unavailable");
+    expect(html).not.toContain("is not granted");
   });
 
   it("labels a configured but runtime-ineligible item as not live", () => {

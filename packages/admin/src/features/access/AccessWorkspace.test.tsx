@@ -10,8 +10,10 @@ describe("Access workspace permissions", () => {
     for (const dataClass of ["customer", "internal", "fixture", "audit"]) {
       expect(html).toContain(`value="${dataClass}"`);
     }
-    expect(html).toContain("user.role.write is not granted");
-    expect(html).toContain("user.status.write is not granted");
+    expect(html).toContain("Changing roles and permission overrides is unavailable");
+    expect(html).toContain("Suspending and restoring accounts is unavailable");
+    // 权限码只留在 title 属性上，不进正文。
+    expect(html).not.toContain("is not granted");
     expect(html).not.toContain("Permission override</h3>");
   });
 });

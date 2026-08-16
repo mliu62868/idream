@@ -10,9 +10,10 @@ describe("Billing workspace permission surface", () => {
 
     expect(html).toContain("Billing Operations");
     expect(html).toContain("Search billing records");
-    expect(html).toContain("Ledger read only");
-    expect(html).toContain("Reconciliation read only");
-    expect(html).toContain("Subscription refund read only");
+    expect(html).toContain("Adjusting customer Dreamcoin balances is unavailable");
+    expect(html).toContain("Reconciling checkout exceptions is unavailable");
+    expect(html).toContain("Refunding subscriptions is unavailable");
+    expect(html).not.toContain("is not granted");
     expect(html).not.toContain("Adjust Ledger");
     expect(html).toContain('aria-label="Loading billing records…"');
   });
@@ -32,7 +33,7 @@ describe("Billing workspace permission surface", () => {
       <BillingWorkspace canAdjust={false} canReconcile canRefund={false} />,
     );
 
-    expect(html).toContain("Ledger read only");
-    expect(html).not.toContain("Reconciliation read only");
+    expect(html).toContain("Adjusting customer Dreamcoin balances is unavailable");
+    expect(html).not.toContain("Reconciling checkout exceptions is unavailable");
   });
 });

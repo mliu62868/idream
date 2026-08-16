@@ -24,6 +24,7 @@ import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestErr
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
+import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import {
@@ -140,6 +141,7 @@ export function ContentMerchandisingWorkspace({
         current,
         queryKey,
         errorMessage(cause, "Characters could not be loaded"),
+        cause,
       ));
     }
   }, []);
@@ -163,6 +165,7 @@ export function ContentMerchandisingWorkspace({
         current,
         queryKey,
         errorMessage(cause, "Featured content could not be loaded"),
+        cause,
       ));
     }
   }, []);
@@ -257,8 +260,8 @@ export function ContentMerchandisingWorkspace({
     const key = crypto.randomUUID();
     setConfirmSpec({
       title: field === "visibility"
-        ? `${contentCommandLabel(field, value)} ${id}`
-        : `Remove ${id}`,
+        ? t("{action} character {id}", { action: t(contentCommandLabel(field, value)), id })
+        : t("Take character {id} down", { id }),
       destructive: { expectedName: expected, inputLabel: "Type confirmation" },
       // INTENT: 改可见性还能改回来；下架（status=removed）在这个台面上没有反向入口，
       //         而且会把角色从 Featured 里一并踢掉——按不可撤回处理。
@@ -319,9 +322,7 @@ export function ContentMerchandisingWorkspace({
           <Freshness authority="Characters" state={characters} />
           <Freshness authority="Featured" state={featured} />
         </div>
-        {!canWrite ? (
-          <strong>{t("Read only · content.takedown.write is not granted")}</strong>
-        ) : null}
+        {!canWrite ? <PermissionNotice permission="content.takedown.write" /> : null}
       </div>
       <form
         className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 md:grid-cols-4"
@@ -378,6 +379,7 @@ export function ContentMerchandisingWorkspace({
       </form>
       {featured.error ? (
         <AuthorityRequestError
+          cause={featured.cause}
           message={featured.error}
           onRetry={() => void loadFeatured()}
           snapshotAt={featured.data ? featured.refreshedAt : null}
@@ -556,6 +558,7 @@ export function ContentMerchandisingWorkspace({
       /> : null}
       {characters.error ? (
         <AuthorityRequestError
+          cause={characters.cause}
           message={characters.error}
           onRetry={() => void loadCharacters(query)}
           snapshotAt={characters.data ? characters.refreshedAt : null}

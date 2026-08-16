@@ -19,7 +19,9 @@ import {
 } from "@/components/admin/ui/ConfirmDialog";
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
+import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { useToast } from "@/components/admin/ui/Toast";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
@@ -45,6 +47,7 @@ type AuthorityState = {
   rows: Row[] | null;
   pageInfo: PageInfo;
   error: string | null;
+  cause: unknown;
   loading: boolean;
   refreshedAt: string | null;
 };
@@ -61,6 +64,7 @@ const emptyState = (): AuthorityState => ({
   rows: null,
   pageInfo: emptyPageInfo,
   error: null,
+  cause: undefined,
   loading: true,
   refreshedAt: null,
 });
@@ -110,6 +114,7 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
           rows,
           pageInfo: pageInfo ?? emptyPageInfo,
           error: null,
+          cause: undefined,
           loading: false,
           refreshedAt: new Date().toISOString(),
         });
@@ -121,6 +126,7 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
               cause instanceof Error
                 ? cause.message
                 : `${scope} authority request failed`,
+            cause,
             loading: false,
           }));
       }
@@ -225,9 +231,7 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
           <Freshness label="Media review" state={media} />
           <Freshness label="Appeals" state={appeals} />
         </div>
-        {!canDecide ? (
-          <strong>{t("Read only · safety.review.write is not granted")}</strong>
-        ) : null}
+        {!canDecide ? <PermissionNotice permission="safety.review.write" /> : null}
       </div>
       <form
         className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 md:grid-cols-2 xl:grid-cols-[minmax(280px,1fr)_200px_200px_auto]"
@@ -274,17 +278,14 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
         </div>
       </form>
       <AuthorityError
-        label="reports"
         onRetry={() => void loadScope(query, "reports")}
         state={reports}
       />
       <AuthorityError
-        label="media review"
         onRetry={() => void loadScope(query, "media")}
         state={media}
       />
       <AuthorityError
-        label="appeals"
         onRetry={() => void loadScope(query, "appeals")}
         state={appeals}
       />
@@ -297,7 +298,7 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
         }
         loadingLabel="Loading reports…"
         state={reports}
-        rows={reportRows(reports.rows ?? [], canDecide, confirmDecision)}
+        rows={reportRows(reports.rows ?? [], canDecide, confirmDecision, t)}
       />
       <Pager
         cursor="reportCursor"
@@ -335,7 +336,7 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
         }
         loadingLabel="Loading appeals…"
         state={appeals}
-        rows={appealRows(appeals.rows ?? [], canDecide, confirmDecision)}
+        rows={appealRows(appeals.rows ?? [], canDecide, confirmDecision, t)}
       />
       <Pager
         cursor="appealCursor"
@@ -466,6 +467,7 @@ function reportRows(
   rows: Row[],
   canDecide: boolean,
   confirm: ConfirmDecision,
+  t: (key: string, values?: Record<string, string | number>) => string,
 ): DataTableRow[] {
   return rows.map((row, index) => {
     const id = text(row.id);
@@ -490,7 +492,7 @@ function reportRows(
                   id,
                   endpoint: `/api/v2/admin/moderation/reports/${id}/decision`,
                   method: "POST",
-                  title: `Action report ${id}`,
+                  title: t("Action report {id}", { id }),
                   payload: () => ({
                     decision: "actioned",
                     policyCode: "manual_review",
@@ -507,7 +509,7 @@ function reportRows(
                   id,
                   endpoint: `/api/v2/admin/moderation/reports/${id}/decision`,
                   method: "POST",
-                  title: `Close report ${id}`,
+                  title: t("Close report {id}", { id }),
                   payload: () => ({ decision: "no_violation" }),
                 })
               }
@@ -524,6 +526,7 @@ function appealRows(
   rows: Row[],
   canDecide: boolean,
   confirm: ConfirmDecision,
+  t: (key: string, values?: Record<string, string | number>) => string,
 ): DataTableRow[] {
   return rows.map((row, index) => {
     const id = text(row.id);
@@ -542,7 +545,7 @@ function appealRows(
             id,
             endpoint: `/api/v2/admin/moderation/appeals/${id}/decision`,
             method: "POST",
-            title: `${label} appeal ${id}`,
+            title: t("{action} appeal {id}", { action: t(label), id }),
             payload: (reason) => ({ outcome, notes: reason }),
           })
         }
@@ -682,34 +685,21 @@ function Freshness({ label, state }: { label: string; state: AuthorityState }) {
   return <span>{label}{t(": loading…")}</span>;
 }
 function AuthorityError({
-  label,
   onRetry,
   state,
 }: {
-  label: string;
   onRetry: () => void;
   state: AuthorityState;
 }) {
-  const { t } = useAdminI18n();
-  return state.error ? (
-    <div
-      className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]"
-      role="alert"
-    >
-      {label}  {t("authority refresh failed:")} {state.error}
-      <button
-        className="ml-3 min-h-8 rounded border border-current px-2"
-        onClick={onRetry}
-        type="button"
-      >
-
-        {t("Retry")} {label}
-      </button>
-      {state.rows ? (
-        <span className="ml-2">{t("The last good snapshot remains visible.")}</span>
-      ) : null}
-    </div>
-  ) : null;
+  if (!state.error) return null;
+  return (
+    <AuthorityRequestError
+      cause={state.cause}
+      message={state.error}
+      onRetry={onRetry}
+      snapshotAt={state.rows ? state.refreshedAt : null}
+    />
+  );
 }
 function Pager({
   cursor,

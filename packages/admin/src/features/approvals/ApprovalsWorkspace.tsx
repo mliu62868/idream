@@ -11,7 +11,9 @@ import {
 } from "@/components/admin/ui/ConfirmDialog";
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
+import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { useToast } from "@/components/admin/ui/Toast";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { createLatestRequestGate } from "@/lib/latest-request";
@@ -36,6 +38,7 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
   const [data, setData] = useState<ListResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [errorCause, setErrorCause] = useState<unknown>(undefined);
   const [refreshedAt, setRefreshedAt] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
   const gate = useRef(createLatestRequestGate());
@@ -45,6 +48,7 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
     const request = gate.current.begin();
     setLoading(true);
     setError(null);
+    setErrorCause(undefined);
     try {
       const response = await apiGet<ListResponse>(approvalListPath(next));
       if (!request.isCurrent()) return;
@@ -57,6 +61,7 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
             ? cause.message
             : "Approval authority request failed",
         );
+        setErrorCause(cause);
       }
     } finally {
       if (request.isCurrent()) setLoading(false);
@@ -107,7 +112,7 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
     const idempotencyKey = crypto.randomUUID();
     const label = decision === "approve" ? "Approve" : "Reject";
     setConfirmation({
-      title: `${label} ${id}`,
+      title: t("{action} request {id}", { action: t(label), id }),
       destructive: { expectedName: id, inputLabel: "Confirmation" },
       // INTENT: 审批是终局裁决——后台没有「撤回审批」这条命令，请求方只能重新发起一条。
       consequence: {
@@ -154,9 +159,7 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
 
           {t("Approval authority ·")} {freshness(data, loading, error, refreshedAt)}
         </span>
-        {!canReview ? (
-          <strong>{t("Read only · admin.approval.review is not granted")}</strong>
-        ) : null}
+        {!canReview ? <PermissionNotice permission="admin.approval.review" /> : null}
       </div>
       <form
         className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 md:grid-cols-[minmax(280px,1fr)_220px_auto]"
@@ -194,27 +197,12 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
         </div>
       </form>
       {error ? (
-        <div
-          className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]"
-          role="alert"
-        >
-
-          {t("Approval authority refresh failed:")} {error}
-          <button
-            className="ml-3 min-h-8 rounded border border-current px-2"
-            onClick={() => void load(query)}
-            type="button"
-          >
-
-            {t("Retry approvals")}
-          </button>
-          {data ? (
-            <span className="ml-2">
-
-              {t("The last good snapshot remains visible.")}
-            </span>
-          ) : null}
-        </div>
+        <AuthorityRequestError
+          cause={errorCause}
+          message={error}
+          onRetry={() => void load(query)}
+          snapshotAt={data ? refreshedAt : null}
+        />
       ) : null}
       {!data && loading ? (
         <div className="rounded-lg border p-4" role="status">

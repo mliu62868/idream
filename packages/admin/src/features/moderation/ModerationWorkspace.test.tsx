@@ -8,6 +8,7 @@ describe("Moderation workspace permissions", () => {
     expect(html).toContain("Reports: loading");
     expect(html).toContain("Media review: loading");
     expect(html).toContain("Appeals: loading");
-    expect(html).toContain("safety.review.write is not granted");
+    expect(html).toContain("Deciding moderation reports and appeals is unavailable");
+    expect(html).not.toContain("is not granted");
   });
 });

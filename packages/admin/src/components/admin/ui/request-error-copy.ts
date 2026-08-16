@@ -1,4 +1,4 @@
-import { AdminV2RequestError } from "@/lib/admin-v2-api";
+import { AdminV2RequestError, apiErrorFieldNames } from "@/lib/admin-v2-api";
 
 // SPEC: 把一次 authority 失败翻译成运营看得懂的两句话 + 一份原样保留的技术详情。
 // INTENT: 运营面对的是「我刚点的退款到底退了没、现在该干什么」，authority 抛的
@@ -9,6 +9,8 @@ export type OperatorErrorCopy = {
   headline: string;
   /** 下一步该做什么。 */
   nextStep: string;
+  /** nextStep 的插值实参（目前只有校验失败的字段名列表）。 */
+  nextStepValues?: Record<string, string>;
   technical: {
     code: string | null;
     status: number | null;
@@ -98,12 +100,22 @@ const OFFLINE: Copy = {
     "Check the connection and try again; whether the request arrived is unknown.",
 };
 
+// SPEC: 校验失败时，把被拒的字段名顶到 nextStep 上。
+// INTENT: 「改正后重新提交」在一个七格表单上等于没说。字段名是机器标识但足够短、能插进译文，
+//         而 Zod 那句英文原话留在技术详情里——中文后台的首屏不出现英文。
+const FIELD_REJECTED: Copy = {
+  headline: "The authority rejected these values.",
+  nextStep: "These fields were rejected: {fields}. Correct them and submit again — nothing was written.",
+};
+
 export function operatorErrorCopy(cause: unknown): OperatorErrorCopy {
   const message = errorText(cause);
   if (cause instanceof AdminV2RequestError) {
     const code = cause.code ?? CODE_BY_STATUS[cause.status] ?? null;
+    const fields = code === "bad_request" ? apiErrorFieldNames(cause.details) : [];
     return {
-      ...(COPY_BY_CODE[code ?? ""] ?? UNMAPPED),
+      ...(fields.length > 0 ? FIELD_REJECTED : (COPY_BY_CODE[code ?? ""] ?? UNMAPPED)),
+      ...(fields.length > 0 ? { nextStepValues: { fields: fields.join("、") } } : {}),
       technical: {
         code: cause.code ?? null,
         status: cause.status,
@@ -136,6 +148,7 @@ export const OPERATOR_ERROR_COPY_KEYS: readonly string[] = [
   ...Object.values(COPY_BY_CODE),
   UNMAPPED,
   OFFLINE,
+  FIELD_REJECTED,
 ].flatMap((copy) => [copy.headline, copy.nextStep]);
 
 function errorText(cause: unknown) {

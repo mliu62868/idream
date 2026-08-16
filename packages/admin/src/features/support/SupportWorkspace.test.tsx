@@ -7,8 +7,9 @@ describe("Support workspace permissions", () => {
     const html = renderToStaticMarkup(
       <SupportWorkspace canViewPlaintext={false} canWrite={false} />,
     );
-    expect(html).toContain("support.request.write is not granted");
-    expect(html).toContain("support.plaintext.view is not granted");
+    expect(html).toContain("Escalating and resolving support requests is unavailable");
+    expect(html).toContain("Revealing customer plaintext is unavailable");
+    expect(html).not.toContain("is not granted");
     expect(html).not.toContain("Plaintext access</h2>");
   });
 });

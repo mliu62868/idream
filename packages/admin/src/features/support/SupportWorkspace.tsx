@@ -30,7 +30,9 @@ import {
 } from "@/components/admin/ui/ConfirmDialog";
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
+import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { createLatestRequestGate } from "@/lib/latest-request";
@@ -78,11 +80,13 @@ export function SupportWorkspace({
   const [data, setData] = useState<ListResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [errorCause, setErrorCause] = useState<unknown>(undefined);
   const [refreshedAt, setRefreshedAt] = useState<string | null>(null);
   const [savedViews, setSavedViews] = useState<SavedView[]>([]);
   const [savedViewsLoading, setSavedViewsLoading] = useState(true);
   const [savedViewLabel, setSavedViewLabel] = useState("");
   const [savedViewError, setSavedViewError] = useState<string | null>(null);
+  const [savedViewErrorCause, setSavedViewErrorCause] = useState<unknown>(undefined);
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
   const [savingView, setSavingView] = useState(false);
   const gate = useRef(createLatestRequestGate());
@@ -92,6 +96,7 @@ export function SupportWorkspace({
     const request = gate.current.begin();
     setLoading(true);
     setError(null);
+    setErrorCause(undefined);
     try {
       const response = await apiGet<ListResponse>(supportListPath(next));
       if (!request.isCurrent()) return;
@@ -104,6 +109,7 @@ export function SupportWorkspace({
             ? cause.message
             : "Support authority request failed",
         );
+        setErrorCause(cause);
       }
     } finally {
       if (request.isCurrent()) setLoading(false);
@@ -113,6 +119,7 @@ export function SupportWorkspace({
   const loadSavedViews = useCallback(async () => {
     setSavedViewsLoading(true);
     setSavedViewError(null);
+    setSavedViewErrorCause(undefined);
     try {
       const response = await adminV2Request(
         `/api/v2/admin/saved-views?scope=${savedViewScope}`,
@@ -123,6 +130,7 @@ export function SupportWorkspace({
       setSavedViewError(
         cause instanceof Error ? cause.message : "Saved views failed",
       );
+      setSavedViewErrorCause(cause);
     } finally {
       setSavedViewsLoading(false);
     }
@@ -249,7 +257,7 @@ export function SupportWorkspace({
     if (!canWrite) return;
     const idempotencyKey = crypto.randomUUID();
     setConfirmation({
-      title: `${input.label} ${input.id}`,
+      title: t("{action} support request {id}", { action: t(input.label), id: input.id }),
       destructive: { expectedName: input.id, inputLabel: "Confirmation" },
       // INTENT: 支持工单的状态可以再改回去，唯独升级会通知到值班——所以分开说。
       consequence: {
@@ -302,15 +310,8 @@ export function SupportWorkspace({
           {freshness(data, loading, error, refreshedAt)}
         </span>
         <span className="flex gap-3 font-semibold">
-          {!canWrite ? (
-            <span>{t("Read only · support.request.write is not granted")}</span>
-          ) : null}
-          {!canViewPlaintext ? (
-            <span>
-
-              {t("Plaintext unavailable · support.plaintext.view is not granted")}
-            </span>
-          ) : null}
+          {!canWrite ? <PermissionNotice permission="support.request.write" /> : null}
+          {!canViewPlaintext ? <PermissionNotice permission="support.plaintext.view" /> : null}
         </span>
       </div>
       <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
@@ -429,34 +430,23 @@ export function SupportWorkspace({
           ) : null}
         </div>
         {savedViewError ? (
-          <p className="mt-2 text-xs text-[var(--ad-red-text)]" role="alert">
-            {savedViewError}
-          </p>
+          <div className="mt-2">
+            <AuthorityRequestError
+              cause={savedViewErrorCause}
+              message={savedViewError}
+              onRetry={() => void loadSavedViews()}
+            />
+          </div>
         ) : null}
       </section>
       {canViewPlaintext ? <PlaintextAccessPanel /> : null}
       {error ? (
-        <div
-          className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]"
-          role="alert"
-        >
-
-          {t("Support authority refresh failed:")} {error}
-          <button
-            className="ml-3 min-h-8 rounded border border-current px-2"
-            onClick={() => void load(query)}
-            type="button"
-          >
-
-            {t("Retry support")}
-          </button>
-          {data ? (
-            <span className="ml-2">
-
-              {t("The last good snapshot remains visible.")}
-            </span>
-          ) : null}
-        </div>
+        <AuthorityRequestError
+          cause={errorCause}
+          message={error}
+          onRetry={() => void load(query)}
+          snapshotAt={data ? refreshedAt : null}
+        />
       ) : null}
       {!data && loading ? (
         <div className="rounded-lg border p-4" role="status">

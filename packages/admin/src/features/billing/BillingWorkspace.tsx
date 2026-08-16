@@ -20,7 +20,9 @@ import {
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
+import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { useToast } from "@/components/admin/ui/Toast";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
@@ -66,6 +68,8 @@ type AdjustmentDraft = { userId: string; delta: string };
 type AuthorityState<T> = {
   data: T | null;
   error: string | null;
+  /** 原始异常——运营文案按错误码挑，光有 message 挑不出来。 */
+  cause: unknown;
   loading: boolean;
   refreshedAt: string | null;
 };
@@ -75,6 +79,7 @@ const emptyAdjustment: AdjustmentDraft = { userId: "", delta: "" };
 const emptyAuthorityState = <T,>(): AuthorityState<T> => ({
   data: null,
   error: null,
+  cause: undefined,
   loading: true,
   refreshedAt: null,
 });
@@ -112,12 +117,13 @@ export function BillingWorkspace({
     try {
       const data = await apiGet<BillingListResponse>(billingLedgerPath(next));
       if (!request.isCurrent()) return;
-      setLedgerState({ data, error: null, loading: false, refreshedAt: new Date().toISOString() });
+      setLedgerState({ data, error: null, cause: undefined, loading: false, refreshedAt: new Date().toISOString() });
     } catch (cause) {
       if (request.isCurrent()) {
         setLedgerState((current) => ({
           ...current,
           error: cause instanceof Error ? cause.message : "Ledger authority request failed",
+          cause,
           loading: false,
         }));
       }
@@ -132,12 +138,13 @@ export function BillingWorkspace({
         await apiGet<unknown>(billingSubscriptionsPath(next)),
       );
       if (!request.isCurrent()) return;
-      setSubscriptionState({ data, error: null, loading: false, refreshedAt: new Date().toISOString() });
+      setSubscriptionState({ data, error: null, cause: undefined, loading: false, refreshedAt: new Date().toISOString() });
     } catch (cause) {
       if (request.isCurrent()) {
         setSubscriptionState((current) => ({
           ...current,
           error: cause instanceof Error ? cause.message : "Subscription authority request failed",
+          cause,
           loading: false,
         }));
       }
@@ -150,12 +157,13 @@ export function BillingWorkspace({
     try {
       const data = await apiGet<BillingReconciliation>("/api/v2/admin/billing/reconciliation");
       if (!request.isCurrent()) return;
-      setReconciliationState({ data, error: null, loading: false, refreshedAt: new Date().toISOString() });
+      setReconciliationState({ data, error: null, cause: undefined, loading: false, refreshedAt: new Date().toISOString() });
     } catch (cause) {
       if (request.isCurrent()) {
         setReconciliationState((current) => ({
           ...current,
           error: cause instanceof Error ? cause.message : "Reconciliation authority request failed",
+          cause,
           loading: false,
         }));
       }
@@ -226,7 +234,7 @@ export function BillingWorkspace({
     const confirmationTarget = billingAdjustmentConfirmation(userId, delta);
     const idempotencyKey = crypto.randomUUID();
     setConfirmation({
-      title: `Adjust ledger ${userId}`,
+      title: t("Adjust ledger for {user}", { user: userId }),
       summary: <span>{t("User")} {userId}  {t("· signed delta")} {delta}</span>,
       destructive: { expectedName: confirmationTarget, inputLabel: "Confirmation" },
       // INTENT: 余额可以再发一笔反向调整改回来，所以标 reversible——但金额已经进了客户账，
@@ -262,7 +270,7 @@ export function BillingWorkspace({
       billingRefundAcknowledgementConfirmation(checkoutId);
     const idempotencyKey = crypto.randomUUID();
     setConfirmation({
-      title: `Acknowledge provider refund for ${checkoutId}`,
+      title: t("Acknowledge provider refund for {id}", { id: checkoutId }),
       summary: (
         <span>
 
@@ -509,9 +517,9 @@ export function BillingWorkspace({
           <AuthorityFreshness label="Reconciliation" state={reconciliationState} />
         </div>
         <div className="flex flex-wrap gap-2">
-          {!canAdjust ? <strong>{t("Ledger read only · billing.ledger.adjust is not granted")}</strong> : null}
-          {!canReconcile ? <strong>{t("Reconciliation read only · billing.checkout.reconcile is not granted")}</strong> : null}
-          {!canRefund ? <strong>{t("Subscription refund read only · billing.subscription.refund is not granted")}</strong> : null}
+          {!canAdjust ? <PermissionNotice permission="billing.ledger.adjust" /> : null}
+          {!canReconcile ? <PermissionNotice permission="billing.checkout.reconcile" /> : null}
+          {!canRefund ? <PermissionNotice permission="billing.subscription.refund" /> : null}
         </div>
       </div>
 
@@ -565,9 +573,9 @@ export function BillingWorkspace({
         </section>
       ) : null}
 
-      <AuthorityError label="ledger" onRetry={() => void loadLedger(query)} state={ledgerState} />
-      <AuthorityError label="subscriptions" onRetry={() => void loadSubscriptions(query)} state={subscriptionState} />
-      <AuthorityError label="reconciliation" onRetry={() => void loadReconciliation()} state={reconciliationState} />
+      <AuthorityError onRetry={() => void loadLedger(query)} state={ledgerState} />
+      <AuthorityError onRetry={() => void loadSubscriptions(query)} state={subscriptionState} />
+      <AuthorityError onRetry={() => void loadReconciliation()} state={reconciliationState} />
       {initiallyLoading ? <BillingLoading /> : (
         <>
           {reconciliation ? <>
@@ -636,22 +644,20 @@ function AuthorityFreshness<T>({ label, state }: { label: string; state: Authori
 }
 
 function AuthorityError<T>({
-  label,
   onRetry,
   state,
 }: {
-  label: string;
   onRetry: () => void;
   state: AuthorityState<T>;
 }) {
-  const { t } = useAdminI18n();
   if (!state.error) return null;
   return (
-    <div className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">
-      {label}  {t("authority refresh failed:")} {state.error}
-      <button className="ml-3 min-h-8 rounded border border-current px-2 font-semibold" onClick={onRetry} type="button">{t("Retry")} {label}</button>
-      {state.data ? <span className="ml-2">{t("The last good snapshot remains visible.")}</span> : null}
-    </div>
+    <AuthorityRequestError
+      cause={state.cause}
+      message={state.error}
+      onRetry={onRetry}
+      snapshotAt={state.data ? state.refreshedAt : null}
+    />
   );
 }
 

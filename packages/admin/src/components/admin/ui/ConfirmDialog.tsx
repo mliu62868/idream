@@ -158,7 +158,7 @@ export function ConfirmDialog({ spec, onClose }: { spec: ConfirmSpec; onClose: (
           {error ? (
             <div className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">
               <span className="block font-semibold">{t(error.headline)}</span>
-              <span className="mt-1 block">{t(error.nextStep)}</span>
+              <span className="mt-1 block">{t(error.nextStep, error.nextStepValues)}</span>
               <RequestErrorDetails technical={error.technical} />
             </div>
           ) : null}

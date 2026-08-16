@@ -7,8 +7,10 @@ import { Activity, Flag, Loader2, Play, RefreshCcw, RotateCcw, UploadCloud, X } 
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
-import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
+import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
+import { useToast } from "@/components/admin/ui/Toast";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import {
@@ -24,11 +26,13 @@ import {
 type RecordRow = Record<string, unknown>;
 type PageInfo = { endCursor: string | null; hasNextPage: boolean };
 type ListResponse = { items: RecordRow[]; pageInfo?: PageInfo };
-type AuthorityState<T> = { data: T | null; error: string | null; loading: boolean; refreshedAt: string | null };
+type AuthorityState<T> = { data: T | null; error: string | null; cause: unknown; loading: boolean; refreshedAt: string | null };
 type Permissions = { manageProfiles: boolean; manageFlags: boolean };
 type ReviewDraft = { sampleCount: string; passCount: string; reviewUrl: string };
+// SPEC: 一次测试出一张。同一个值既发给后端，也印在确认框的成本说明里。
+const TEST_IMAGE_OUTPUT_COUNT = 1;
 const emptyPageInfo: PageInfo = { endCursor: null, hasNextPage: false };
-const emptyAuthorityState = <T,>(): AuthorityState<T> => ({ data: null, error: null, loading: true, refreshedAt: null });
+const emptyAuthorityState = <T,>(): AuthorityState<T> => ({ data: null, error: null, cause: undefined, loading: true, refreshedAt: null });
 type ConfigCommand = {
   title: string;
   /** 成功后 toast 的正文，调用处已经翻译好。 */
@@ -43,7 +47,6 @@ type ConfigCommand = {
 export function GenerationConfigWorkspace({ permissions }: { permissions: Permissions }) {
   const { t } = useAdminI18n();
   const { toast } = useToast();
-  const failureToast = useFailureToast();
   const [query, setQuery] = useState<GenerationConfigQuery>(() => currentQuery());
   const [draft, setDraft] = useState<GenerationConfigQuery>(() => currentQuery());
   const [profiles, setProfiles] = useState<AuthorityState<ListResponse>>(emptyAuthorityState);
@@ -62,9 +65,9 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
     setProfiles((current) => ({ ...current, error: null, loading: true }));
     try {
       const data = await apiGet<ListResponse>(generationProfilesPath(next));
-      if (request.isCurrent()) setProfiles({ data, error: null, loading: false, refreshedAt: new Date().toISOString() });
+      if (request.isCurrent()) setProfiles({ data, error: null, cause: undefined, loading: false, refreshedAt: new Date().toISOString() });
     } catch (cause) {
-      if (request.isCurrent()) setProfiles((current) => ({ ...current, error: errorMessage(cause, "Profile authority request failed"), loading: false }));
+      if (request.isCurrent()) setProfiles((current) => ({ ...current, error: errorMessage(cause, "Profile authority request failed"), cause, loading: false }));
     }
   }, []);
 
@@ -73,9 +76,9 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
     setFlags((current) => ({ ...current, error: null, loading: true }));
     try {
       const data = await apiGet<ListResponse>(featureFlagsPath(next));
-      if (request.isCurrent()) setFlags({ data, error: null, loading: false, refreshedAt: new Date().toISOString() });
+      if (request.isCurrent()) setFlags({ data, error: null, cause: undefined, loading: false, refreshedAt: new Date().toISOString() });
     } catch (cause) {
-      if (request.isCurrent()) setFlags((current) => ({ ...current, error: errorMessage(cause, "Feature-flag authority request failed"), loading: false }));
+      if (request.isCurrent()) setFlags((current) => ({ ...current, error: errorMessage(cause, "Feature-flag authority request failed"), cause, loading: false }));
     }
   }, []);
 
@@ -84,9 +87,9 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
     setRecentJobs((current) => ({ ...current, error: null, loading: true }));
     try {
       const data = await apiGet<ListResponse>("/api/v2/admin/jobs?mode=image&limit=12");
-      if (request.isCurrent()) setRecentJobs({ data, error: null, loading: false, refreshedAt: new Date().toISOString() });
+      if (request.isCurrent()) setRecentJobs({ data, error: null, cause: undefined, loading: false, refreshedAt: new Date().toISOString() });
     } catch (cause) {
-      if (request.isCurrent()) setRecentJobs((current) => ({ ...current, error: errorMessage(cause, "Recent-job authority request failed"), loading: false }));
+      if (request.isCurrent()) setRecentJobs((current) => ({ ...current, error: errorMessage(cause, "Recent-job authority request failed"), cause, loading: false }));
     }
   }, []);
 
@@ -150,26 +153,45 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
     });
   }
 
-  async function createTestImage() {
+  // SPEC: 出测试图要过确认框，并在框里写清楚这一下到底花掉什么。
+  // INTENT: 它以前是一个点了就跑的按钮，而它跑的是**真实**生成——占 provider 一次排队和一次
+  //         GPU 出图，和客户的活儿抢同一条队。后端 costDreamcoins: 0，所以不扣梦币；
+  //         这两件事都要说，只说一半都会让运营做错判断。
+  // INVARIANT: 成本说明里的张数必须跟真正发出去的 outputCount 一致，别写死。
+  function confirmTestImage() {
     if (!permissions.manageProfiles || !selectedId) return;
-    setTestBusy(true);
-    try {
-      const response = await apiWrite<{ job: RecordRow }>(`/api/v2/admin/generation/model-profiles/${selectedId}/commands/test-job`, "POST", {
-        prompt: testPrompt.trim() || undefined,
-        orientation: firstOrientation(selectedProfile),
-        outputCount: 1,
-        reason: "Admin image test from Generation Config",
-        confirmation: selectedId,
-      }, { "idempotency-key": crypto.randomUUID() });
-      // INTENT: 排队成功是 info 不是 success —— 图还没出来，运营要等下面的 recent jobs。
-      toast({ tone: "info", title: t("Test image queued as {id}", { id: text(response.job.id) || t("an unnamed job") }) });
-      await loadJobs();
-    } catch (cause) {
-      // 这里以前把失败塞进绿色的成功横幅里。
-      failureToast(cause);
-    } finally {
-      setTestBusy(false);
-    }
+    const profileId = selectedId;
+    const idempotencyKey = crypto.randomUUID();
+    setConfirmation({
+      title: t("Generate test image on {id}", { id: profileId }),
+      consequence: {
+        effect: t("This runs a real generation: {count} image on {runner}, queued behind customer work. It debits no Dreamcoins, and the queued job cannot be recalled once dispatched.", {
+          count: TEST_IMAGE_OUTPUT_COUNT,
+          runner: display(selectedProfile?.runner),
+        }),
+        reversible: false,
+      },
+      destructive: { expectedName: profileId, inputLabel: "Confirmation" },
+      reasonLabel: "Reason",
+      submitLabel: t("Queue test image"),
+      onSubmit: async (reason) => {
+        setTestBusy(true);
+        try {
+          const response = await apiWrite<{ job: RecordRow }>(`/api/v2/admin/generation/model-profiles/${profileId}/commands/test-job`, "POST", {
+            prompt: testPrompt.trim() || undefined,
+            orientation: firstOrientation(selectedProfile),
+            outputCount: TEST_IMAGE_OUTPUT_COUNT,
+            reason,
+            confirmation: profileId,
+          }, { "idempotency-key": idempotencyKey });
+          // INTENT: 排队成功是 info 不是 success —— 图还没出来，运营要等下面的 recent jobs。
+          toast({ tone: "info", title: t("Test image queued as {id}", { id: text(response.job.id) || t("an unnamed job") }) });
+          await loadJobs();
+        } finally {
+          setTestBusy(false);
+        }
+      },
+    });
   }
 
   const filtered = isGenerationConfigQueryFiltered(query);
@@ -196,26 +218,26 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
         <div className="flex items-end gap-2"><button className="min-h-11 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white" type="submit">{t("Apply")}</button>{filtered ? <button aria-label={t("Clear generation config filters")} className="grid min-h-11 min-w-11 place-items-center rounded-md border border-[var(--ad-border)]" onClick={() => navigate({ ...defaultGenerationConfigQuery, tab: query.tab })} type="button"><X className="h-4 w-4" /></button> : null}</div>
       </form>
 
-      <AuthorityError label="profiles" onRetry={() => void loadProfiles(query)} state={profiles} />
-      <AuthorityError label="feature flags" onRetry={() => void loadFlags(query)} state={flags} />
-      <AuthorityError label="recent jobs" onRetry={() => void loadJobs()} state={recentJobs} />
+      <AuthorityError onRetry={() => void loadProfiles(query)} state={profiles} />
+      <AuthorityError onRetry={() => void loadFlags(query)} state={flags} />
+      <AuthorityError onRetry={() => void loadJobs()} state={recentJobs} />
       {initiallyLoading ? <Loading /> : query.tab === "profiles" ? (
         <>
-          {!permissions.manageProfiles ? <p className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Read only · generation.config.write is not granted")}</p> : null}
+          {!permissions.manageProfiles ? <p className="text-xs"><PermissionNotice permission="generation.config.write" /></p> : null}
           {profiles.data ? profileRows.length === 0 ? <EmptyState hint={filtered ? "The complete profile authority query returned no matches." : "No built-in generation profiles are seeded yet."} title={filtered ? "No generation profiles match these filters." : "No built-in generation profiles are seeded yet."} /> : (
             <div className="grid gap-4 lg:grid-cols-[minmax(260px,0.8fr)_minmax(0,1.6fr)]">
               <div className="space-y-2 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3">{profileRows.map((profile) => {
                 const id = text(profile.id);
                 return <button aria-current={id === selectedId ? "true" : undefined} className={`w-full rounded-md border px-3 py-3 text-left ${id === selectedId ? "border-[var(--ad-ink)] bg-black/5" : "border-[var(--ad-border)]"}`} key={id} onClick={() => setSelectedProfileId(id)} type="button"><span className="block font-semibold">{text(profile.label) || text(profile.profileKey) || id}</span><span className="mt-1 block text-xs text-[var(--ad-text-muted)]">{display(profile.status)} · v{display(profile.version)} · {display(profile.mode)}</span></button>;
               })}</div>
-              {selectedProfile ? <ProfileDetail canWrite={permissions.manageProfiles} jobs={recentJobs.data?.items ?? []} onConfirm={confirmWrite} onTest={() => void createTestImage()} profile={selectedProfile} review={review} setReview={setReview} setTestPrompt={setTestPrompt} testBusy={testBusy} testPrompt={testPrompt} /> : null}
+              {selectedProfile ? <ProfileDetail canWrite={permissions.manageProfiles} jobs={recentJobs.data?.items ?? []} onConfirm={confirmWrite} onTest={confirmTestImage} profile={selectedProfile} review={review} setReview={setReview} setTestPrompt={setTestPrompt} testBusy={testBusy} testPrompt={testPrompt} /> : null}
             </div>
           ) : null}
           <NextPage label="Next profile page" loading={profiles.loading} onClick={() => navigate({ ...query, profileCursor: profiles.data?.pageInfo?.endCursor ?? "" })} pageInfo={profiles.data?.pageInfo ?? emptyPageInfo} />
         </>
       ) : (
         <>
-          {!permissions.manageFlags ? <p className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Read only · config.feature_flag.write is not granted")}</p> : null}
+          {!permissions.manageFlags ? <p className="text-xs"><PermissionNotice permission="config.feature_flag.write" /></p> : null}
           {flags.data ? flagRows.length === 0 ? <EmptyState hint={filtered ? "The complete flag authority query returned no matches." : "No feature flags exist in the authority."} title={filtered ? "No feature flags match these filters" : "No feature flags exist yet"} /> : <FlagsTable canWrite={permissions.manageFlags} confirmWrite={confirmWrite} rows={flagRows} /> : null}
           <NextPage label="Next feature-flag page" loading={flags.loading} onClick={() => navigate({ ...query, flagCursor: flags.data?.pageInfo?.endCursor ?? "" })} pageInfo={flags.data?.pageInfo ?? emptyPageInfo} />
         </>
@@ -248,11 +270,11 @@ function ProfileDetail({ canWrite, jobs, onConfirm, onTest, profile, review, set
   return <section className="space-y-4 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
     <div><h2 className="text-lg font-semibold">{text(profile.label) || text(profile.profileKey) || id}</h2><p className="mt-1 text-sm text-[var(--ad-text-muted)]">{display(status)} · v{display(profile.version)} · {display(profile.runner)} · {display(profile.pipelineModel)}</p></div>
     {canWrite ? <div className="flex flex-wrap gap-2">
-      {status === "draft" ? <Action icon={<Activity className="h-4 w-4" />} label="Configuration check" onClick={() => onConfirm({ title: `Check profile configuration ${id}`, completed: t("Configuration check finished for {id}", { id }), endpoint: `/api/v2/admin/generation/model-profiles/${id}/commands/dry-run`, method: "POST", expected: id, consequence: { effect: t("The profile is validated against the runtime. Nothing customer-facing changes."), reversible: true }, payload: (reason) => ({ reason }) })} /> : null}
+      {status === "draft" ? <Action icon={<Activity className="h-4 w-4" />} label="Configuration check" onClick={() => onConfirm({ title: t("Check profile configuration {id}", { id }), completed: t("Configuration check finished for {id}", { id }), endpoint: `/api/v2/admin/generation/model-profiles/${id}/commands/dry-run`, method: "POST", expected: id, consequence: { effect: t("The profile is validated against the runtime. Nothing customer-facing changes."), reversible: true }, payload: (reason) => ({ reason }) })} /> : null}
       {mode === "image" && status !== "archived" ? <Action disabled={testBusy} icon={testBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />} label="Generate test image" onClick={onTest} /> : null}
-      {status === "draft" ? <Action disabled={!reviewReady} icon={<UploadCloud className="h-4 w-4" />} label="Publish" onClick={() => onConfirm({ title: `Publish profile ${id}`, completed: t("Profile {id} published", { id }), endpoint: `/api/v2/admin/generation/model-profiles/${id}/commands/publish`, method: "POST", expected: id, consequence: { effect: t("Every new customer generation runs on this profile from now on, and the previous active version is archived. A rollback restores it; images already produced are not regenerated."), reversible: true }, payload: (reason) => ({ reason, ...(mode === "image" ? { dryRunSummary: { reviewSource: "admin_console_manual_consistency_review", reviewStatus: "manual_passed", consistencySampleCount: sampleCount, consistencyPassCount: passCount, consistencyRate: sampleCount && passCount !== null ? passCount / sampleCount : 0, reviewUrl: review.reviewUrl.trim() || undefined } } : {}) }) })} /> : null}
-      {status === "active" ? <Action icon={<RotateCcw className="h-4 w-4" />} label="Rollback" onClick={() => onConfirm({ title: `Rollback profile ${id}`, completed: t("Profile {id} rolled back", { id }), endpoint: `/api/v2/admin/generation/model-profiles/${id}/commands/rollback`, method: "POST", expected: id, consequence: { effect: t("Customer generations go back to the previously active profile version from now on."), reversible: true }, payload: (reason) => ({ reason }) })} /> : null}
-      {status === "active" && Boolean(profile.enabled) ? <Action icon={<X className="h-4 w-4" />} label="Disable" onClick={() => onConfirm({ title: `Disable profile ${id}`, completed: t("Profile {id} disabled", { id }), endpoint: `/api/v2/admin/generation/model-profiles/${id}`, method: "PATCH", expected: id, consequence: { effect: t("Generations stop routing to this profile immediately. Re-enabling it is a second edit on this same profile."), reversible: true }, payload: (reason) => ({ reason, enabled: false }) })} /> : null}
+      {status === "draft" ? <Action disabled={!reviewReady} icon={<UploadCloud className="h-4 w-4" />} label="Publish" onClick={() => onConfirm({ title: t("Publish profile {id}", { id }), completed: t("Profile {id} published", { id }), endpoint: `/api/v2/admin/generation/model-profiles/${id}/commands/publish`, method: "POST", expected: id, consequence: { effect: t("Every new customer generation runs on this profile from now on, and the previous active version is archived. A rollback restores it; images already produced are not regenerated."), reversible: true }, payload: (reason) => ({ reason, ...(mode === "image" ? { dryRunSummary: { reviewSource: "admin_console_manual_consistency_review", reviewStatus: "manual_passed", consistencySampleCount: sampleCount, consistencyPassCount: passCount, consistencyRate: sampleCount && passCount !== null ? passCount / sampleCount : 0, reviewUrl: review.reviewUrl.trim() || undefined } } : {}) }) })} /> : null}
+      {status === "active" ? <Action icon={<RotateCcw className="h-4 w-4" />} label="Rollback" onClick={() => onConfirm({ title: t("Rollback profile {id}", { id }), completed: t("Profile {id} rolled back", { id }), endpoint: `/api/v2/admin/generation/model-profiles/${id}/commands/rollback`, method: "POST", expected: id, consequence: { effect: t("Customer generations go back to the previously active profile version from now on."), reversible: true }, payload: (reason) => ({ reason }) })} /> : null}
+      {status === "active" && Boolean(profile.enabled) ? <Action icon={<X className="h-4 w-4" />} label="Disable" onClick={() => onConfirm({ title: t("Disable profile {id}", { id }), completed: t("Profile {id} disabled", { id }), endpoint: `/api/v2/admin/generation/model-profiles/${id}`, method: "PATCH", expected: id, consequence: { effect: t("Generations stop routing to this profile immediately. Re-enabling it is a second edit on this same profile."), reversible: true }, payload: (reason) => ({ reason, enabled: false }) })} /> : null}
     </div> : null}
     {mode === "image" && status !== "archived" ? <div className="grid gap-3 rounded-md border border-[var(--ad-border)] p-3 md:grid-cols-2"><Field label="Test image prompt" onChange={setTestPrompt} value={testPrompt} /><p className="self-end text-xs text-[var(--ad-text-muted)]">{relatedJobs.length}  {t("recent profile test job")}{relatedJobs.length === 1 ? "" : "s"}</p></div> : null}
     {mode === "image" && status === "draft" ? <div className="grid gap-3 rounded-md border border-[var(--ad-border)] p-3 md:grid-cols-3"><Field label="Consistency samples (≥20)" onChange={(sampleCount) => setReview({ ...review, sampleCount })} value={review.sampleCount} /><Field label="Consistency passes (≥80%)" onChange={(passCount) => setReview({ ...review, passCount })} value={review.passCount} /><Field label="Review evidence URL" onChange={(reviewUrl) => setReview({ ...review, reviewUrl })} value={review.reviewUrl} /></div> : null}
@@ -266,14 +288,14 @@ function FlagsTable({ canWrite, confirmWrite, rows }: { canWrite: boolean; confi
     const key = text(row.key);
     const enabled = Boolean(row.enabled);
     const expected = `${key}:${enabled ? "disabled" : "enabled"}`;
-    return <tr className="border-b border-[var(--ad-border)] last:border-0" key={key}><td className="px-4 py-3 font-mono text-xs">{key}</td><td className="px-4 py-3">{String(enabled)}</td><td className="px-4 py-3">{display(row.rolloutPercent)}</td><td className="px-4 py-3">{display(row.version)}</td><td className="px-4 py-3">{display(row.hardPolicy)}</td><td className="px-4 py-3">{canWrite ? <Action icon={<Flag className="h-4 w-4" />} label={enabled ? "Disable" : "Enable"} onClick={() => confirmWrite({ title: `${enabled ? "Disable" : "Enable"} ${key}`, completed: enabled ? t("Feature flag {key} disabled", { key }) : t("Feature flag {key} enabled", { key }), endpoint: `/api/v2/admin/feature-flags/${key}`, method: "PATCH", expected, consequence: { effect: t("The flag flips for live traffic on the next request. Flipping it back is one more click on this same row."), reversible: true }, payload: (reason) => ({ enabled: !enabled, reason }) })} /> : t("Read only")}</td></tr>;
+    return <tr className="border-b border-[var(--ad-border)] last:border-0" key={key}><td className="px-4 py-3 font-mono text-xs">{key}</td><td className="px-4 py-3">{String(enabled)}</td><td className="px-4 py-3">{display(row.rolloutPercent)}</td><td className="px-4 py-3">{display(row.version)}</td><td className="px-4 py-3">{display(row.hardPolicy)}</td><td className="px-4 py-3">{canWrite ? <Action icon={<Flag className="h-4 w-4" />} label={enabled ? "Disable" : "Enable"} onClick={() => confirmWrite({ title: enabled ? t("Disable feature flag {key}", { key }) : t("Enable feature flag {key}", { key }), completed: enabled ? t("Feature flag {key} disabled", { key }) : t("Feature flag {key} enabled", { key }), endpoint: `/api/v2/admin/feature-flags/${key}`, method: "PATCH", expected, consequence: { effect: t("The flag flips for live traffic on the next request. Flipping it back is one more click on this same row."), reversible: true }, payload: (reason) => ({ enabled: !enabled, reason }) })} /> : t("Read only")}</td></tr>;
   })}</tbody></table></div>;
 }
 
 function Freshness<T>({ label, state }: { label: string; state: AuthorityState<T> }) {
   const { t } = useAdminI18n(); const time = state.refreshedAt ? new Date(state.refreshedAt).toLocaleTimeString() : "unknown"; if (state.loading && state.data) return <span>{label}{t(": refreshing · as of")} {time}</span>; if (state.error && state.data) return <span>{label}{t(": stale · last good")} {time}</span>; if (state.error) return <span>{label}{t(": unavailable")}</span>; if (state.data) return <span>{label}{t(": as of")} {time}</span>; return <span>{label}{t(": loading…")}</span>; }
-function AuthorityError<T>({ label, onRetry, state }: { label: string; onRetry: () => void; state: AuthorityState<T> }) {
-  const { t } = useAdminI18n(); return state.error ? <div className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">{label}  {t("authority refresh failed:")} {state.error}<button className="ml-3 min-h-8 rounded border border-current px-2 font-semibold" onClick={onRetry} type="button">{t("Retry")} {label}</button>{state.data ? <span className="ml-2">{t("The last good snapshot remains visible.")}</span> : null}</div> : null; }
+function AuthorityError<T>({ onRetry, state }: { onRetry: () => void; state: AuthorityState<T> }) {
+  return state.error ? <AuthorityRequestError cause={state.cause} message={state.error} onRetry={onRetry} snapshotAt={state.data ? state.refreshedAt : null} /> : null; }
 function Loading() {
   const { t } = useAdminI18n(); return <div aria-label={t("Loading profiles…")} className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" role="status"><span className="inline-flex items-center gap-2 text-sm text-[var(--ad-text-muted)]"><Loader2 className="h-4 w-4 animate-spin" />{t("Loading profiles…")}</span></div>; }
 function Tab({ active, count, label, meta, onClick }: { active: boolean; count: number; label: string; meta: string; onClick: () => void }) { return <button aria-current={active ? "page" : undefined} className={`px-4 py-3 text-left ${active ? "bg-[var(--ad-ink)] text-white" : "bg-[var(--ad-surface)]"}`} onClick={onClick} type="button"><span className="flex justify-between font-semibold"><span>{label}</span><span>{count}</span></span><span className="mt-1 block text-xs opacity-70">{meta}</span></button>; }

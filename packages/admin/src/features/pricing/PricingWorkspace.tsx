@@ -8,7 +8,9 @@ import { apiGet, apiWrite } from "@/components/admin/api";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
+import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import {
@@ -41,6 +43,7 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
   const [loading, setLoading] = useState(true);
   const [writing, setWriting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [errorCause, setErrorCause] = useState<unknown>(undefined);
   const [refreshedAt, setRefreshedAt] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
   const requestGate = useRef(createLatestRequestGate());
@@ -50,6 +53,7 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
     const request = requestGate.current.begin();
     setLoading(true);
     setError(null);
+    setErrorCause(undefined);
     try {
       const data = await apiGet<PricingListResponse>(pricingListPath(next));
       if (!request.isCurrent()) return;
@@ -57,7 +61,10 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
       setPageInfo(data.pageInfo ?? emptyPageInfo);
       setRefreshedAt(new Date().toISOString());
     } catch (cause) {
-      if (request.isCurrent()) setError(cause instanceof Error ? cause.message : "Pricing authority request failed");
+      if (request.isCurrent()) {
+        setError(cause instanceof Error ? cause.message : "Pricing authority request failed");
+        setErrorCause(cause);
+      }
     } finally {
       if (request.isCurrent()) setLoading(false);
     }
@@ -130,7 +137,7 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
     const name = text(row.label) || text(row.ruleKey) || id;
     const idempotencyKey = crypto.randomUUID();
     setConfirmation({
-      title: `${capitalize(action)} pricing rule`,
+      title: action === "publish" ? t("Publish pricing rule") : t("Rollback pricing rule"),
       summary: <span>{name}  {t("· version")} {display(row.version)}</span>,
       destructive: { expectedName: name },
       // INTENT: publish 立刻改客户看到的价格并归档上一版；rollback 是把上一版请回来，
@@ -167,7 +174,7 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
   return (
     <section aria-labelledby="pricing-workspace-title" className="space-y-5">
       <div id="pricing-workspace-title"><PageHeader purpose="Version, publish, and roll back customer-facing generation prices while keeping every decision auditable." title={t("Pricing")} /></div>
-      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--ad-text-muted)]" role="status"><span>{refreshedAt ? <>{t("Refreshed")} <time dateTime={refreshedAt}>{new Date(refreshedAt).toLocaleTimeString()}</time></> : null}</span>{!canWrite ? <strong>{t("Read only · config.pricing.write is not granted")}</strong> : null}</div>
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--ad-text-muted)]" role="status"><span>{refreshedAt ? <>{t("Refreshed")} <time dateTime={refreshedAt}>{new Date(refreshedAt).toLocaleTimeString()}</time></> : null}</span>{!canWrite ? <PermissionNotice permission="config.pricing.write" /> : null}</div>
 
       <form className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 md:grid-cols-2 xl:grid-cols-[minmax(240px,1fr)_180px_180px_auto]" onSubmit={apply}>
         <Field label="Search prices" onChange={(search) => setQueryDraft((current) => ({ ...current, search }))} placeholder={t("rule key, label, or ID")} value={queryDraft.search} />
@@ -177,7 +184,7 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
       </form>
 
       {canWrite ? <PricingDraftForm busy={writing} draft={pricingDraft} onChange={setPricingDraft} onCreate={createDraft} /> : null}
-      {error ? <div className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">{error}<button className="ml-3 min-h-8 rounded border border-current px-2 font-semibold" onClick={() => void load(query)} type="button">{t("Retry")}</button></div> : null}
+      {error ? <AuthorityRequestError cause={errorCause} message={error} onRetry={() => void load(query)} snapshotAt={rows ? refreshedAt : null} /> : null}
       {loading && rows === null ? <PricingLoading /> : rows?.length === 0 ? <EmptyState action={filtered ? <button className="min-h-11 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" onClick={clearFilters} type="button">{t("Clear filters")}</button> : undefined} hint={filtered ? "The complete authority query returned no pricing versions." : "Create a versioned pricing draft before publishing a customer-facing price."} title={filtered ? "No pricing rules match these filters" : "No pricing rules exist yet"} /> : rows ? <PricingTable canWrite={canWrite} onAction={confirmVersionAction} rows={rows} /> : null}
       {pageInfo.hasNextPage && pageInfo.endCursor ? <button className="inline-flex min-h-11 items-center gap-2 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-4 text-sm font-semibold" disabled={loading} onClick={() => navigate({ ...query, cursor: pageInfo.endCursor ?? "" })} type="button"><RefreshCcw className="h-4 w-4" />{t("Next page")}</button> : null}
       {confirmation ? <ConfirmDialog onClose={() => setConfirmation(null)} spec={confirmation} /> : null}

@@ -11,7 +11,9 @@ import {
 } from "@/components/admin/ui/ConfirmDialog";
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
+import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
@@ -32,6 +34,7 @@ type AuthorityState = {
   pageInfo: PageInfo;
   loading: boolean;
   error: string | null;
+  cause: unknown;
   refreshedAt: string | null;
 };
 
@@ -41,6 +44,7 @@ const emptyAuthority = (): AuthorityState => ({
   pageInfo: emptyPageInfo,
   loading: true,
   error: null,
+  cause: undefined,
   refreshedAt: null,
 });
 
@@ -70,6 +74,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
         pageInfo: response.pageInfo ?? emptyPageInfo,
         loading: false,
         error: null,
+        cause: undefined,
         refreshedAt: new Date().toISOString(),
       });
     } catch (cause) {
@@ -81,6 +86,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
           cause instanceof Error
             ? cause.message
             : `${scope} authority request failed`,
+        cause,
       }));
     }
   }, []);
@@ -137,7 +143,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
     if (!canWrite) return;
     const idempotencyKey = crypto.randomUUID();
     setConfirmation({
-      title: `Disable ${id}`,
+      title: t("Disable redeem code {id}", { id }),
       destructive: { expectedName: id, inputLabel: "Confirmation" },
       // INTENT: 后台只有 disable，没有 re-enable —— 停掉的码只能再发一个新的。
       consequence: {
@@ -176,9 +182,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
           <Freshness label="Redeem codes" state={codes} />
           <Freshness label="Referrals" state={referrals} />
         </div>
-        {!canWrite ? (
-          <strong>{t("Read only · growth.promo.write is not granted")}</strong>
-        ) : null}
+        {!canWrite ? <PermissionNotice permission="growth.promo.write" /> : null}
       </div>
       <form
         className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 md:grid-cols-2 xl:grid-cols-[minmax(280px,1fr)_200px_200px_auto]"
@@ -232,7 +236,6 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
         />
       ) : null}
       <AuthorityError
-        label="redeem codes"
         onRetry={() => void loadScope(query, "codes")}
         state={codes}
       />
@@ -256,7 +259,6 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
         pageInfo={codes.pageInfo}
       />
       <AuthorityError
-        label="referrals"
         onRetry={() => void loadScope(query, "referrals")}
         state={referrals}
       />
@@ -502,37 +504,22 @@ function AuthoritySection({
 }
 
 function AuthorityError({
-  label,
   onRetry,
   state,
 }: {
-  label: string;
   onRetry: () => void;
   state: AuthorityState;
 }) {
-  const { t } = useAdminI18n();
   if (!state.error) return null;
   return (
-    <div
-      className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]"
-      role="alert"
-    >
-      {label}  {t("authority refresh failed:")} {state.error}
-      <button
-        className="ml-3 min-h-8 rounded border border-current px-2"
-        onClick={onRetry}
-        type="button"
-      >
-
-        {t("Retry")} {label}
-      </button>
-      {state.rows ? (
-        <span className="ml-2">{t("The last good snapshot remains visible.")}</span>
-      ) : null}
-    </div>
+    <AuthorityRequestError
+      cause={state.cause}
+      message={state.error}
+      onRetry={onRetry}
+      snapshotAt={state.rows ? state.refreshedAt : null}
+    />
   );
 }
-
 function Freshness({ label, state }: { label: string; state: AuthorityState }) {
   const { t } = useAdminI18n();
   const time = state.refreshedAt

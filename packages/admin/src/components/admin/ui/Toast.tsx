@@ -73,7 +73,7 @@ export function useFailureToast() {
       toast({
         tone: "error",
         title: t(copy.headline),
-        description: t(copy.nextStep),
+        description: t(copy.nextStep, copy.nextStepValues),
         action: {
           label: t("Copy for engineering"),
           onClick: () => void navigator.clipboard?.writeText(detail),

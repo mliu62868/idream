@@ -5,10 +5,12 @@
 export const adminZhCustomers: Record<string, string> = {
   ". This records an already-completed provider refund and closes the late-settlement exception; it does not issue a refund.":
     "。此操作只记录供应商已完成的退款并关闭延迟结算异常，不会实际发起退款。",
+  "Acknowledge provider refund for {id}": "确认 {id} 的支付方退款",
   "Acknowledge refund": "确认退款记录",
   "Active Cases": "活跃工单",
   "Active support": "进行中",
   "Adjust Ledger": "调整账本",
+  "Adjust ledger for {user}": "调整 {user} 的余额",
   "Adjustment delta": "调整数额",
   "Adjustment user ID": "调整用户 ID",
   "Age verification queue": "年龄验证队列",
@@ -207,6 +209,7 @@ export const adminZhCustomers: Record<string, string> = {
   "Verify from authority": "从权威数据验证",
   "View plaintext": "查看明文",
   "Wait for dependency": "等待依赖",
+  "Waiting": "等待用户",
   "admin case": "后台工单",
   "free tier": "免费档",
   "immutable sources": "不可变来源",
@@ -223,6 +226,7 @@ export const adminZhCustomers: Record<string, string> = {
   "user, email, subscription, or source": "用户、邮箱、订阅或来源",
   "{action} Character image {id}": "{action}角色图片 {id}",
   "{action} applied to {id}": "已对 {id} 执行 {action}",
+  "{action} support request {id}": "对支持工单 {id} 执行{action}",
   "{count} ledger entries": "{count} 条账本记录",
   "· Authorization:": "· 授权：",
   "· Owner:": "· 负责人：",

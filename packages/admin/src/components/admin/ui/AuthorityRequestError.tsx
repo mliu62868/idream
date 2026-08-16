@@ -27,7 +27,7 @@ export function AuthorityRequestError({
     ? t(copy.headline)
     : t("The latest data could not be loaded.");
   const nextStep = copy
-    ? t(copy.nextStep)
+    ? t(copy.nextStep, copy.nextStepValues)
     : t("Retry below; the technical details tell engineering what failed.");
   return (
     <div

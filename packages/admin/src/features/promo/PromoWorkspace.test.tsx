@@ -10,7 +10,8 @@ describe("Promo workspace permissions", () => {
     const html = renderToStaticMarkup(<PromoWorkspace canWrite={false} />);
     expect(html).toContain("Redeem codes: loading");
     expect(html).toContain("Referrals: loading");
-    expect(html).toContain("growth.promo.write is not granted");
+    expect(html).toContain("Creating and disabling redeem codes is unavailable");
+    expect(html).not.toContain("is not granted");
     expect(html).not.toContain("Create redeem code</h2>");
   });
 });

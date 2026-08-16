@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { adminV2Request, setWorkspaceUrl } from "./admin-v2-api";
+import { AdminV2RequestError, adminV2Request, setWorkspaceUrl } from "./admin-v2-api";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -17,12 +17,20 @@ describe("admin v2 client", () => {
     );
   });
 
-  it("turns a non-JSON upstream failure into a stable fail-closed error", async () => {
+  // SPEC: 非 JSON 响应也必须是 AdminV2RequestError，且带住状态码。
+  // INTENT: 以前抛裸 Error，状态码只存在于那句英文里，运营首屏就只剩 "…failed (500)"；
+  //         成了 AdminV2RequestError，状态码才能被 ui/request-error-copy 接住翻成人话。
+  it("turns a non-JSON upstream failure into a typed, status-carrying error", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 500 })));
 
-    await expect(adminV2Request("/api/v2/admin/incidents")).rejects.toThrow(
-      "Admin authority request failed (500)",
+    const rejection = await adminV2Request("/api/v2/admin/incidents").catch(
+      (cause: unknown) => cause,
     );
+
+    expect(rejection).toBeInstanceOf(AdminV2RequestError);
+    expect((rejection as AdminV2RequestError).status).toBe(500);
+    expect((rejection as AdminV2RequestError).code).toBeUndefined();
+    expect((rejection as AdminV2RequestError).requestId).toBeTruthy();
   });
 
   it("validates successful data with the endpoint contract", async () => {

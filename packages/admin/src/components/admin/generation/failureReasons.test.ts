@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { resolveFailureReason } from "./failureReasons";
+import { hasAdminZh } from "@/components/admin/i18n";
+import { FAILURE_REASON_COPY_KEYS, resolveFailureReason } from "./failureReasons";
 
 describe("resolveFailureReason", () => {
   it("maps a known code and keeps severity", () => {
@@ -29,5 +30,41 @@ describe("resolveFailureReason", () => {
       expect(reason.severity).toBe("engineering");
       expect(reason.code).toBe(key);
     }
+  });
+
+  it("translates a real generation-pipeline code into a title and a next action", () => {
+    const reason = resolveFailureReason("provider_timeout");
+
+    expect(reason.title).toBe("Provider did not answer in time");
+    expect(reason.hint).toBe("Safe to retry");
+    expect(reason.severity).toBe("retry");
+    expect(reason.code).toBe("provider_timeout");
+  });
+
+  // SPEC: 结果未知 ≠ 失败。直接重试可能产出重复图，所以它必须是「先对账」而不是「可以重试」。
+  it("tells the operator to reconcile, not retry, when the provider outcome is unknown", () => {
+    const reason = resolveFailureReason("provider_outcome_unknown");
+
+    expect(reason.severity).toBe("engineering");
+    expect(reason.hint).toContain("Reconcile before retrying");
+  });
+
+  // SPEC: 额度用尽和迟到结果都不是故障，别把它们涂成红色让运营去追。
+  it("marks non-faults as waiting rather than engineering", () => {
+    for (const code of [
+      "allowance_exhausted",
+      "insufficient_dreamcoins_after_synthesis",
+      "operator_cancelled",
+      "stale_provider_outcome",
+      "late_worker_failure",
+      "preserve_on_replay",
+    ]) {
+      expect(resolveFailureReason(code).severity, code).toBe("waiting");
+    }
+  });
+
+  // SPEC: title/hint 经 t(变量) 取值，逃得过 i18n-completeness 的字面量扫描。
+  it("has a Chinese translation for every key the table can return", () => {
+    expect(FAILURE_REASON_COPY_KEYS.filter((key) => !hasAdminZh(key))).toEqual([]);
   });
 });

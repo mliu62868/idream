@@ -66,6 +66,7 @@ export const adminZhGrowth: Record<string, string> = {
   "Deactivate": "停用",
   "Delete announcement": "删除公告",
   "Directional only · no assignment or exposure records": "仅供方向参考 · 无分配或曝光记录",
+  "Disable redeem code {id}": "停用兑换码 {id}",
   "Draft → publish archives the previous active version; rollback restores the previous authority.":
     "草稿发布后会归档此前生效版本；回滚会恢复上一权威版本。",
   "Dreamcoins must be a whole number from 1 to 1,000,000.": "Dreamcoins 必须是 1 至 1,000,000 之间的整数。",
@@ -123,6 +124,7 @@ export const adminZhGrowth: Record<string, string> = {
   "Pricing rule {name} rolled back": "价格规则 {name} 已回滚",
   "Profile health + configuration check": "模型健康度 + 配置检查",
   "Publication readiness": "发布就绪度",
+  "Publish pricing rule": "发布价格规则",
   "Quality & lift": "质量与提升",
   "Quality:": "质量：",
   "Read only · config.pricing.write is not granted": "只读 · 尚未授予 config.pricing.write",
@@ -136,6 +138,7 @@ export const adminZhGrowth: Record<string, string> = {
   "Referrals": "邀请",
   "Resolve blocker": "处理阻塞",
   "Retention cohorts (D1 / D7)": "留存 cohort（D1 / D7）",
+  "Rollback pricing rule": "回滚价格规则",
   "Rule Key": "规则键",
   "Runtime state": "实际上线状态",
   "Save draft": "保存草稿",

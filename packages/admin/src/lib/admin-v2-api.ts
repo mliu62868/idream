@@ -73,7 +73,17 @@ export async function adminV2Request<T>(
   try {
     payload = JSON.parse(raw) as ApiEnvelope<T>;
   } catch {
-    throw new Error(`Admin authority request failed (${response.status})`);
+    // SPEC: 响应不是 JSON（网关 502 页、鉴权跳转、代理超时）也走同一个错误类。
+    // INTENT: 这里以前抛一个裸 Error，运营看到的就是 "Admin authority request failed (502)"
+    //         ——一个孤零零的状态码。抛成 AdminV2RequestError，状态码就能被文案表接住，
+    //         运营读到人话，requestId 也才跟得上。
+    throw new AdminV2RequestError(
+      `Authority returned a non-JSON ${response.status} response`,
+      response.status,
+      undefined,
+      undefined,
+      requestId,
+    );
   }
   if (!payload.ok) {
     throw new AdminV2RequestError(
@@ -87,10 +97,43 @@ export async function adminV2Request<T>(
   return options.schema ? options.schema.parse(payload.data) : payload.data;
 }
 
+/**
+ * SPEC: 组装 `AdminV2RequestError.message` —— **工程通道**的文本，只在「技术详情」里出现。
+ * INTENT: 它曾经是运营首屏读到的那一句，于是 `?? error.code` 把 `entity_version_conflict`
+ *         这种机器码当人话糊了出去。运营看到的那一句现在由 ui/request-error-copy.ts 按
+ *         code / status 生成；code 本来就单独传给了构造函数，不必再冒充散文。
+ * INVARIANT: 不吞掉后端原文——Zod 的字段级说明留在这里，工程要拿它对日志。
+ */
 export function formatApiError(error: ApiError, fallback: string) {
-  const base = error.message ?? error.code ?? fallback;
+  const base = error.message ?? fallback;
   const detail = apiErrorDetailsText(error.details);
   return detail ? `${base}: ${detail}` : base;
+}
+
+/**
+ * SPEC: 校验失败时被拒的字段名（只要名字，不要 Zod 那句英文）。
+ * INTENT: 运营需要知道「哪一格填错了」，但 "String must contain at least 3 character(s)"
+ *         永远是英文、也永远不该出现在中文后台的首屏。字段名短、可插进译文、不用翻译。
+ */
+export function apiErrorFieldNames(details: unknown): string[] {
+  if (typeof details !== "object" || details === null) return [];
+  const names = new Set<string>();
+  const issues = (details as { issues?: unknown }).issues;
+  if (Array.isArray(issues)) {
+    for (const issue of issues) {
+      if (typeof issue !== "object" || issue === null) continue;
+      const path = (issue as { path?: unknown }).path;
+      if (typeof path === "string" && path) names.add(path);
+      else if (Array.isArray(path) && path.length > 0) names.add(path.join("."));
+    }
+  }
+  const fieldErrors = (details as { fieldErrors?: unknown }).fieldErrors;
+  if (typeof fieldErrors === "object" && fieldErrors !== null) {
+    for (const [field, value] of Object.entries(fieldErrors as Record<string, unknown>)) {
+      if (Array.isArray(value) && value.length > 0) names.add(field);
+    }
+  }
+  return [...names].slice(0, 5);
 }
 
 function apiErrorDetailsText(details: unknown) {

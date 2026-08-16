@@ -8,6 +8,7 @@ describe("Pricing workspace permission surface", () => {
     expect(html).toContain("Pricing");
     expect(html).toContain("Search prices");
     expect(html).not.toContain("Create Pricing Rule Draft");
-    expect(html).toContain("Read only");
+    expect(html).toContain("Publishing and rolling back prices is unavailable");
+    expect(html).not.toContain("is not granted");
   });
 });
