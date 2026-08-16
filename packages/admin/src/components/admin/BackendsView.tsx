@@ -61,10 +61,10 @@ export function BackendsView() {
       setAuthority((current) => authorityRequestFailed(
         current,
         queryKey,
-        err instanceof Error ? err.message : "Load failed",
+        err instanceof Error ? err.message : t("Request failed"),
       ));
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     const gate = requestGate.current;

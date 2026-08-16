@@ -17,11 +17,14 @@ export function ReadonlyOpsView({
   columns,
   rows,
   empty,
+  summary,
 }: {
   title: string;
   columns: OpsColumn[];
   rows: Record<string, unknown>[];
   empty?: ReactNode;
+  /** 标题下的一行汇总（合计 / 比率）——逐行数字读不出结论时给运营的总账。 */
+  summary?: ReactNode;
 }) {
   const { t } = useAdminI18n();
   const titleId = useId();
@@ -30,6 +33,7 @@ export function ReadonlyOpsView({
       <h2 className="text-sm font-semibold" id={titleId}>
         {t(title)} ({rows.length})
       </h2>
+      {summary ? <p className="text-xs text-[var(--ad-text-muted)]">{summary}</p> : null}
       <div aria-label={t("{caption} scrollable table", { caption: t(title) })} className="rounded-lg overflow-x-auto border border-[var(--ad-border)]" role="region" tabIndex={0}>
         <table className="w-full text-left text-sm">
           <caption className="sr-only">{t(title)}  {t("results")}</caption>

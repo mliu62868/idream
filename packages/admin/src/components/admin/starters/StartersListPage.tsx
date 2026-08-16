@@ -1,6 +1,6 @@
 "use client";
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { Plus } from "lucide-react";
 import { apiGet } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
@@ -17,6 +17,7 @@ import {
   createAuthorityState,
 } from "@/lib/authority-state";
 import { createLatestRequestGate } from "@/lib/latest-request";
+import { useDebouncedReload, useUrlBootstrap } from "@/components/admin/section-kit";
 import { SCOPES, STARTERS_LIST, type Starter } from "./starters-api";
 
 type StartersResponse = { items: Starter[]; pageInfo: { endCursor: string | null; hasNextPage: boolean } };
@@ -54,27 +55,15 @@ export function StartersListPage() {
     }
   }, [scope, search, status, t]);
 
-  useEffect(() => {
-    const gate = requestGate.current;
-    const params = new URLSearchParams(window.location.search);
-    const timer = window.setTimeout(() => {
-      setSearch(params.get("search") ?? "");
-      setScope(params.get("scope") ?? "all");
-      setStatus(params.get("status") ?? "all");
-      setCursor(params.get("cursor") ?? undefined);
-      setReady(true);
-    }, 0);
-    return () => {
-      gate.invalidate();
-      window.clearTimeout(timer);
-    };
-  }, []);
+  useUrlBootstrap(useCallback((params: URLSearchParams) => {
+    setSearch(params.get("search") ?? "");
+    setScope(params.get("scope") ?? "all");
+    setStatus(params.get("status") ?? "all");
+    setCursor(params.get("cursor") ?? undefined);
+    setReady(true);
+  }, []), requestGate.current);
 
-  useEffect(() => {
-    if (!ready) return;
-    const timer = window.setTimeout(() => void reload(cursor), search.trim() ? 250 : 0);
-    return () => window.clearTimeout(timer);
-  }, [cursor, ready, reload, search]);
+  useDebouncedReload({ cursor, ready, reload, search });
 
   const allOption = { value: "all", label: t("All") };
   const rows = authority.data?.items ?? [];
@@ -149,12 +138,11 @@ export function StartersListPage() {
             <EntityCard
               href={`/admin/content/templates/${row.id}`}
               key={row.id}
-              meta={
-                <span>
-                  {value(row.scope)} · {t("Sort order")} {row.sortOrder} ·{" "}
-                  {t("{count} tags", { count: row.tags.length })}
-                </span>
-              }
+              meta={t("{scope} · sort {order} · {count} tags", {
+                scope: value(row.scope),
+                order: row.sortOrder,
+                count: row.tags.length,
+              })}
               status={row.isActive ? "active" : "disabled"}
               statusLabel={row.isActive ? t("Published") : t("Inactive")}
               title={row.name}

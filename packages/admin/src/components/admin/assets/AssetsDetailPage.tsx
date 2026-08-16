@@ -1,6 +1,6 @@
 "use client";
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { DetailPage, DetailSection } from "@/components/admin/ui/DetailPage";
@@ -10,6 +10,8 @@ import { DangerButton, GhostButton, PrimaryButton } from "@/components/admin/ui/
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { AssetImage } from "@/components/admin/ui/AssetImage";
 import { EngineeringDetails } from "@/components/admin/generation/EngineeringDetails";
+import { LoadingWorkspace } from "@/features/operations/WorkspaceUi";
+import { InfoGrid, useWriteFeedback, WriteFeedbackBanner } from "@/components/admin/section-kit";
 import {
   ASSETS_LIST,
   assetAuthorityDependencyView,
@@ -25,19 +27,6 @@ import { MediaAssetAuthorityNotice } from "./MediaAssetAuthority";
 // Character, Release, and Campaign dependency must be repaired before archival.
 type PendingAction = "save" | "archive" | null;
 
-function InfoGrid({ items }: { items: { label: string; value: ReactNode }[] }) {
-  return (
-    <dl className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3">
-      {items.map((item) => (
-        <div key={item.label}>
-          <dt className="text-xs text-[var(--ad-text-muted)]">{item.label}</dt>
-          <dd className="mt-0.5 text-sm text-[var(--ad-ink)]">{item.value}</dd>
-        </div>
-      ))}
-    </dl>
-  );
-}
-
 export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: string }) {
   const { t, value } = useAdminI18n();
   const [rows, setRows] = useState<ContentAsset[]>([]);
@@ -47,6 +36,7 @@ export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: st
   const [pending, setPending] = useState<PendingAction>(null);
   const [draft, setDraft] = useState<AssetDraft>({ tags: "", description: "" });
   const [draftAssetId, setDraftAssetId] = useState<string | null>(null);
+  const { feedback, reportSuccess, clearFeedback } = useWriteFeedback();
 
   const reload = useCallback(async (propagateError = false) => {
     setLoading(true);
@@ -97,13 +87,14 @@ export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: st
             assetPatchPayload({ id, draft, reason }),
             { "idempotency-key": crypto.randomUUID() },
           );
+          reportSuccess(t("Saved. Tags and description are searchable for chat reuse now."));
           try {
             await reload(true);
           } catch (refreshError) {
             setError(null);
             setRefreshWarning(
               refreshError instanceof Error
-                ? `${t("Asset changes were committed, but the latest projection could not be refreshed:")} ${refreshError.message}. ${t("Use Refresh before another write.")}`
+                ? t("Asset changes were committed, but the latest projection could not be refreshed: {message}. Use Refresh before another write.", { message: refreshError.message })
                 : t("Asset changes were committed, but the latest projection could not be refreshed. Use Refresh before another write."),
             );
           }
@@ -122,22 +113,23 @@ export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: st
           assetPatchPayload({ id, draft, reason, status: "archived" }),
           { "idempotency-key": crypto.randomUUID() },
         );
+        reportSuccess(t("Archived. {id} is out of the library and cannot be placed.", { id: shortId }));
         try {
           await reload(true);
           } catch (refreshError) {
             setError(null);
             setRefreshWarning(
               refreshError instanceof Error
-              ? `${t("Asset archival was committed, but the latest projection could not be refreshed:")} ${refreshError.message}. ${t("Use Refresh before another write.")}`
+              ? t("Asset archival was committed, but the latest projection could not be refreshed: {message}. Use Refresh before another write.", { message: refreshError.message })
               : t("Asset archival was committed, but the latest projection could not be refreshed. Use Refresh before another write."),
             );
         }
       },
     };
-  }, [pending, row, id, draft, shortId, t, reload]);
+  }, [pending, row, id, draft, shortId, t, reload, reportSuccess]);
 
   if (loading) {
-    return <p className="text-sm text-[var(--ad-text-muted)]">{t("Loading…")}</p>;
+    return <LoadingWorkspace label="Loading…" />;
   }
 
   if (!row) {
@@ -182,6 +174,7 @@ export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: st
       status={row.platformStatus}
       title={shortId}
     >
+      <WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} />
       {error ? <p role="alert" className="text-sm text-[var(--ad-red-text)]">{error}</p> : null}
       {refreshWarning ? <p role="status" className="rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]">{refreshWarning}</p> : null}
 

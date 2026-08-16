@@ -9,13 +9,15 @@
 // 合并是破坏性操作（source 标签会被删除），走 ConfirmDialog 的 destructive.expectedName=目标标签
 // label，confirmation 仍自动填充为 `${sourceId}:${targetId}`（mergeTags 要求的精确格式）。
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GitMerge, Loader2, Pencil, RefreshCcw, Save, X } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
+import { FilterBar } from "@/components/admin/ui/FilterBar";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
+import { useWriteFeedback, WriteFeedbackBanner } from "@/components/admin/section-kit";
 import {
   authorityRequestFailed,
   authorityRequestStarted,
@@ -51,6 +53,9 @@ export function TagsView() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<EditDraft>(emptyDraft());
   const [renaming, setRenaming] = useState(false);
+  const [search, setSearch] = useState("");
+  const [category, setCategory] = useState("all");
+  const { feedback, reportSuccess, clearFeedback } = useWriteFeedback();
   const requestGate = useRef(createLatestRequestGate());
 
   const load = useCallback(async () => {
@@ -66,10 +71,10 @@ export function TagsView() {
       setAuthority((current) => authorityRequestFailed(
         current,
         queryKey,
-        err instanceof Error ? err.message : "Load failed",
+        err instanceof Error ? err.message : t("Request failed"),
       ));
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     const gate = requestGate.current;
@@ -83,6 +88,22 @@ export function TagsView() {
   }, [load]);
 
   const tags = authority.data ?? [];
+
+  // SPEC: 接口一次返回全部标签（无分页/无服务端搜索），所以筛选就地做——几百个标签时
+  // 没有搜索的表等于没法用。
+  const categories = useMemo(
+    () => [...new Set(tags.map((tag) => tag.category).filter((item): item is string => Boolean(item)))].sort(),
+    [tags],
+  );
+  const visibleTags = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    return tags.filter((tag) => {
+      if (category !== "all" && (tag.category ?? "") !== category) return false;
+      if (!needle) return true;
+      return `${tag.slug} ${tag.label} ${tag.category ?? ""}`.toLowerCase().includes(needle);
+    });
+  }, [category, search, tags]);
+  const filtered = search.trim().length > 0 || category !== "all";
 
   function startEdit(tag: TagRow) {
     setEditingId(tag.id);
@@ -105,8 +126,21 @@ export function TagsView() {
               reason,
               confirmation: editingTag.slug,
             });
+            const renamed = editingTag.label !== draft.label.trim();
             setEditingId(null);
             await load();
+            reportSuccess(
+              renamed
+                ? t("Renamed {slug} to {label}. {count} character link(s) keep the tag.", {
+                    slug: editingTag.slug,
+                    label: draft.label.trim(),
+                    count: editingTag.characterCount,
+                  })
+                : t("Saved {slug}. {count} character link(s) keep the tag.", {
+                    slug: editingTag.slug,
+                    count: editingTag.characterCount,
+                  }),
+            );
           },
         }
       : null;
@@ -128,17 +162,41 @@ export function TagsView() {
         purpose={t("Manage the tag vocabulary for characters.")}
         title={t("Taxonomy")}
       />
+      <WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} />
       {authority.error ? <AuthorityRequestError message={authority.error} onRetry={() => void load()} snapshotAt={authority.data ? authority.refreshedAt : null} /> : null}
 
       {authority.loading && authority.data === null ? (
         <p className="text-sm text-[var(--ad-text-muted)]" role="status">{t("Loading…")}</p>
       ) : null}
 
-      {authority.data ? <MergeSection reload={load} tags={tags} /> : null}
+      {authority.data ? <MergeSection onMerged={reportSuccess} reload={load} tags={tags} /> : null}
 
       {authority.data ? <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
         <div className="border-b border-[var(--ad-border)] px-3 py-2">
-          <h2 className="text-sm font-semibold">{t("Tag taxonomy")} ({tags.length})</h2>
+          <h2 className="text-sm font-semibold">
+            {filtered
+              ? t("Tag taxonomy — {shown} of {total}", { shown: visibleTags.length, total: tags.length })
+              : t("Tag taxonomy — {total}", { total: tags.length })}
+          </h2>
+        </div>
+        <div className="px-3 pt-3">
+          <FilterBar
+            onSearch={setSearch}
+            search={search}
+            searchPlaceholder={t("Search by slug, label, or category")}
+            selects={[
+              {
+                name: t("Category"),
+                value: category,
+                onChange: setCategory,
+                options: [
+                  { value: "all", label: t("All categories") },
+                  { value: "", label: t("Uncategorised") },
+                  ...categories.map((item) => ({ value: item, label: item })),
+                ],
+              },
+            ]}
+          />
         </div>
         <table className="w-full text-left text-sm">
           <caption className="sr-only">{t("Tag taxonomy")}</caption>
@@ -154,7 +212,7 @@ export function TagsView() {
             </tr>
           </thead>
           <tbody>
-            {tags.map((tag) => (
+            {visibleTags.map((tag) => (
               <TagRowItem
                 draft={editingId === tag.id ? draft : null}
                 key={tag.id}
@@ -165,10 +223,23 @@ export function TagsView() {
                 tag={tag}
               />
             ))}
-            {tags.length === 0 ? (
+            {visibleTags.length === 0 ? (
               <tr>
                 <td className="px-3 py-6 text-center text-xs text-[var(--ad-text-muted)]" colSpan={7}>
-                  {t("No tags.")}
+                  {filtered ? (
+                    <>
+                      {t("No tags match these filters.")}{" "}
+                      <button
+                        className="font-semibold underline underline-offset-4"
+                        onClick={() => { setSearch(""); setCategory("all"); }}
+                        type="button"
+                      >
+                        {t("Reset filters")}
+                      </button>
+                    </>
+                  ) : (
+                    t("No tags.")
+                  )}
                 </td>
               </tr>
             ) : null}
@@ -280,12 +351,19 @@ function TagRowItem({
   );
 }
 
-function MergeSection({ tags, reload }: { tags: TagRow[]; reload: () => void }) {
+function MergeSection({
+  onMerged,
+  tags,
+  reload,
+}: {
+  onMerged: (message: string) => void;
+  tags: TagRow[];
+  reload: () => void;
+}) {
   const { t } = useAdminI18n();
   const [sourceId, setSourceId] = useState("");
   const [targetId, setTargetId] = useState("");
   const [confirming, setConfirming] = useState(false);
-  const [result, setResult] = useState<string | null>(null);
 
   const sourceTag = tags.find((tag) => tag.id === sourceId) ?? null;
   const targetTag = tags.find((tag) => tag.id === targetId) ?? null;
@@ -307,7 +385,11 @@ function MergeSection({ tags, reload }: { tags: TagRow[]; reload: () => void }) 
               "POST",
               { sourceId, targetId, reason, confirmation: `${sourceId}:${targetId}` },
             );
-            setResult(t("Merged — moved {count} character link(s).", { count: data.movedCount }));
+            onMerged(t("Merged {source} into {target} — moved {count} character link(s).", {
+              source: sourceTag.slug,
+              target: targetTag.slug,
+              count: data.movedCount,
+            }));
             setSourceId("");
             setTargetId("");
             await reload();
@@ -361,7 +443,6 @@ function MergeSection({ tags, reload }: { tags: TagRow[]; reload: () => void }) 
       {sourceId && sourceId === targetId ? (
         <p className="mt-2 text-xs text-[var(--ad-red-text)]">{t("Source and target must differ.")}</p>
       ) : null}
-      {result ? <p className="mt-2 text-xs text-[var(--ad-green-text)]">{result}</p> : null}
       {confirmSpec ? <ConfirmDialog onClose={() => setConfirming(false)} spec={confirmSpec} /> : null}
     </section>
   );

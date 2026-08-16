@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Loader2, Sparkles } from "lucide-react";
 import { apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
@@ -25,6 +25,7 @@ export function StartersNewPage() {
   const [creating, setCreating] = useState(false);
   const [assistError, setAssistError] = useState<string | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
+  const createKey = useRef<string | null>(null);
 
   function patch(partial: Partial<StarterDraft>) {
     setDraft((current) => ({ ...current, ...partial }));
@@ -41,6 +42,7 @@ export function StartersNewPage() {
         advancedDetails: { personality: string; speakingStyle: string; firstMessage: string; visualBrief: string };
       }>(
         "/api/v2/admin/content/character-assist", "POST", { seed: seed.trim() },
+        { "idempotency-key": crypto.randomUUID() },
       );
       const summary = data.description.slice(0, 200);
       const traits = tagsFromText(data.advancedDetails?.personality ?? "");
@@ -63,12 +65,15 @@ export function StartersNewPage() {
 
   const canSubmit = !creating && draft.name.trim().length >= 1;
 
+  // INVARIANT: 创建的幂等键存在 ref 里跨重试复用——网络失败后再点一次不能建出第二份模板。
   async function create() {
     setCreating(true);
     setCreateError(null);
     try {
+      createKey.current ??= crypto.randomUUID();
       const created = await apiWrite<{ template?: { id?: string } }>(
         STARTERS_LIST, "POST", starterPayload({ ...draft, reason: EMPTY_DRAFT.reason }),
+        { "idempotency-key": createKey.current },
       );
       const newId = created.template?.id;
       window.location.href = newId
@@ -136,33 +141,33 @@ export function StartersNewPage() {
         </Field>
       </FormSection>
       <FormSection title={t("Reusable persona")}>
-        <Field full label="Creative brief">
+        <Field full label={t("Creative brief")}>
           <textarea className={TEXTAREA_CLASS} onChange={(e) => patch({ creativeBrief: e.target.value })} value={draft.creativeBrief} />
         </Field>
-        <Field label="Archetype">
+        <Field label={t("Archetype")}>
           <input className={INPUT_CLASS} onChange={(e) => patch({ archetype: e.target.value })} value={draft.archetype} />
         </Field>
-        <Field label="Relationship">
+        <Field label={t("Relationship")}>
           <input className={INPUT_CLASS} onChange={(e) => patch({ relationship: e.target.value })} value={draft.relationship} />
         </Field>
-        <Field full label="Personality">
+        <Field full label={t("Personality")}>
           <textarea className={TEXTAREA_CLASS} onChange={(e) => patch({ personality: e.target.value })} value={draft.personality} />
         </Field>
-        <Field full label="Speaking style">
+        <Field full label={t("Speaking style")}>
           <textarea className={TEXTAREA_CLASS} onChange={(e) => patch({ speakingStyle: e.target.value })} value={draft.speakingStyle} />
         </Field>
-        <Field full label="First message">
+        <Field full label={t("First message")}>
           <textarea className={TEXTAREA_CLASS} onChange={(e) => patch({ firstMessage: e.target.value })} value={draft.firstMessage} />
         </Field>
-        <Field full label="Example dialogue">
+        <Field full label={t("Example dialogue")}>
           <textarea className={TEXTAREA_CLASS} onChange={(e) => patch({ exampleDialogue: e.target.value })} value={draft.exampleDialogue} />
         </Field>
       </FormSection>
       <FormSection title={t("Reusable visual direction")}>
-        <Field full label="Appearance anchors">
+        <Field full label={t("Appearance anchors")}>
           <textarea className={TEXTAREA_CLASS} onChange={(e) => patch({ appearanceNotes: e.target.value })} value={draft.appearanceNotes} />
         </Field>
-        <Field full label="Art direction">
+        <Field full label={t("Art direction")}>
           <textarea className={TEXTAREA_CLASS} onChange={(e) => patch({ visualBrief: e.target.value })} value={draft.visualBrief} />
         </Field>
       </FormSection>

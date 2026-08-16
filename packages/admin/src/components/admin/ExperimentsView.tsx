@@ -1,14 +1,24 @@
 "use client";
 
+// SPEC: 受管实验工作台 —— 建草稿 / 启停 / 拉质量与提升度报告，外加只读的 flag 监控。
+// INTENT: 启停是线上状态变更，必须先确认、且理由由运营手写。审计里留一条机器编的
+//         "start from Admin experiment workspace" 等于没有理由——事后没人知道为什么停的。
+// INVARIANT: 启停走 ConfirmDialog（reason ≥3 + 打对实验 key）；expectedStateVersion 取自当前行，
+//            并发改动由后端 409 拦下。
+
 import { useEffect, useState } from "react";
 import { Loader2, Play, RefreshCcw, Square } from "lucide-react";
 import type { ExperimentAnalysisResponse, ExperimentDefinition } from "@idream/shared/admin";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
+import { StatusPill } from "@/components/admin/ui/StatusPill";
+import { useWriteFeedback, WriteFeedbackBanner } from "@/components/admin/section-kit";
 
 type ManagedExperiment = ExperimentDefinition;
 type Analysis = ExperimentAnalysisResponse;
 type FlagRow = { key: string; enabled: boolean; rolloutPercent: number };
+type LifecycleCommand = "start" | "stop";
 
 function idempotencyKey() {
   return typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
@@ -19,12 +29,14 @@ export function ExperimentsView() {
   const [experiments, setExperiments] = useState<ManagedExperiment[]>([]);
   const [flags, setFlags] = useState<FlagRow[]>([]);
   const [analysis, setAnalysis] = useState<Record<string, Analysis>>({});
-  const [key, setKey] = useState("community.character-ranking.v1");
-  const [hypothesis, setHypothesis] = useState("Relationship-first Community ranking increases qualified conversations");
+  const [key, setKey] = useState("");
+  const [hypothesis, setHypothesis] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [monitoringNote, setMonitoringNote] = useState<string | null>(null);
+  const [monitoringUnavailable, setMonitoringUnavailable] = useState(false);
+  const [pending, setPending] = useState<{ row: ManagedExperiment; command: LifecycleCommand } | null>(null);
+  const { feedback, reportSuccess, reportFailure, clearFeedback } = useWriteFeedback();
 
   async function load() {
     setLoading(true);
@@ -35,13 +47,13 @@ export function ExperimentsView() {
       try {
         const monitoring = await apiGet<{ items: FlagRow[] }>("/api/v2/admin/analytics/flag-monitoring");
         setFlags(monitoring.items);
-        setMonitoringNote(null);
+        setMonitoringUnavailable(false);
       } catch {
         setFlags([]);
-        setMonitoringNote("Flag monitoring is unavailable for this permission set; managed experiments are still shown.");
+        setMonitoringUnavailable(true);
       }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Load failed");
+      setError(reason instanceof Error ? reason.message : t("Request failed"));
     } finally {
       setLoading(false);
     }
@@ -51,7 +63,8 @@ export function ExperimentsView() {
 
   async function createDraft(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setBusy("create"); setError(null);
+    setBusy("create");
+    setError(null);
     try {
       const isCommunityRanking = key === "community.character-ranking.v1";
       await apiWrite("/api/v2/admin/experiments", "POST", {
@@ -64,30 +77,56 @@ export function ExperimentsView() {
         salt: `${idempotencyKey()}-${idempotencyKey()}`,
         metrics: { primary: "relationship.qce_activation.v1", controlVariant: "control", minimumMaturePerArm: 100, guardrails: [{ metricKey: "guardrail.support_contact_rate.v1", maxAbsoluteRegression: 0.02 }] },
       }, { "idempotency-key": idempotencyKey() });
-      setKey("community.character-ranking.v1");
-      setHypothesis("Relationship-first Community ranking increases qualified conversations");
+      const createdKey = key;
+      setKey("");
+      setHypothesis("");
       await load();
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Create failed"); }
-    finally { setBusy(null); }
+      reportSuccess(t("Draft {key} created. It is not assigning traffic until you start it.", { key: createdKey }));
+    } catch (reason) {
+      reportFailure(reason instanceof Error ? reason.message : t("Request failed"));
+    } finally {
+      setBusy(null);
+    }
   }
 
-  async function transition(row: ManagedExperiment, command: "start" | "stop") {
-    setBusy(row.id); setError(null);
-    try {
-      await apiWrite(`/api/v2/admin/experiments/${row.id}/commands/${command}`, "POST", { expectedStateVersion: row.stateVersion, reason: `${command} from Admin experiment workspace` }, { "idempotency-key": idempotencyKey() });
-      await load();
-    } catch (reason) { setError(reason instanceof Error ? reason.message : `${command} failed`); }
-    finally { setBusy(null); }
-  }
+  // SPEC: 启停的 reason 由运营手写并进审计；确认框同时要求把实验 key 打对，防止在长列表里点错行。
+  const lifecycleSpec: ConfirmSpec | null = pending
+    ? {
+        title: pending.command === "start" ? t("Start experiment") : t("Stop experiment"),
+        summary: pending.command === "start"
+          ? t("Starting assigns live traffic to {key} v{version}. The reason you enter is written to the audit log.", { key: pending.row.key, version: pending.row.version })
+          : t("Stopping ends live assignment for {key} v{version} and cannot be undone by restarting the same version. The reason you enter is written to the audit log.", { key: pending.row.key, version: pending.row.version }),
+        destructive: { expectedName: pending.row.key, inputLabel: t("Type the experiment key to confirm") },
+        submitLabel: pending.command === "start" ? t("Start") : t("Stop"),
+        onSubmit: async (reason) => {
+          const { row, command } = pending;
+          await apiWrite(
+            `/api/v2/admin/experiments/${row.id}/commands/${command}`,
+            "POST",
+            { expectedStateVersion: row.stateVersion, reason },
+            { "idempotency-key": idempotencyKey() },
+          );
+          await load();
+          reportSuccess(
+            command === "start"
+              ? t("{key} v{version} is running.", { key: row.key, version: row.version })
+              : t("{key} v{version} is stopped.", { key: row.key, version: row.version }),
+          );
+        },
+      }
+    : null;
 
   async function loadAnalysis(id: string) {
-    setBusy(`analysis-${id}`); setError(null);
+    setBusy(`analysis-${id}`);
+    setError(null);
     try {
       const result = await apiGet<Analysis>(`/api/v2/admin/experiments/${id}/analysis`);
       setAnalysis((current) => ({ ...current, [id]: result }));
+    } catch (reason) {
+      reportFailure(reason instanceof Error ? reason.message : t("Request failed"));
+    } finally {
+      setBusy(null);
     }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "Analysis failed"); }
-    finally { setBusy(null); }
   }
 
   return (
@@ -96,11 +135,12 @@ export function ExperimentsView() {
         <div><h2 className="text-base font-semibold">{t("Managed experiment workspace")}</h2><p className="text-xs text-[var(--ad-text-muted)]">{t("Immutable definitions · stable assignment · observed exposure · fail-closed decisions")}</p></div>
         <button className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-[var(--ad-border)] px-3 text-sm disabled:opacity-50" disabled={loading} onClick={() => void load()} type="button">{loading ? <Loader2 aria-hidden className="h-4 w-4 animate-spin" /> : <RefreshCcw aria-hidden className="h-4 w-4" />}{t("Refresh")}</button>
       </header>
+      <WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} />
       {error ? <p className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert" tabIndex={-1}>{error}</p> : null}
 
       <form className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 md:grid-cols-[1fr_2fr_auto]" onSubmit={(event) => void createDraft(event)}>
-        <label className="grid gap-1 text-xs"><span>{t("Experiment key")}</span><input className="min-h-11 rounded-md border border-[var(--ad-border)] bg-transparent px-3" onChange={(event) => setKey(event.target.value)} pattern="[a-z0-9][a-z0-9._\-]*" required value={key} /></label>
-        <label className="grid gap-1 text-xs"><span>{t("Hypothesis")}</span><input className="min-h-11 rounded-md border border-[var(--ad-border)] bg-transparent px-3" minLength={10} onChange={(event) => setHypothesis(event.target.value)} required value={hypothesis} /></label>
+        <label className="grid gap-1 text-xs"><span>{t("Experiment key")}</span><input className="min-h-11 rounded-md border border-[var(--ad-border)] bg-transparent px-3" onChange={(event) => setKey(event.target.value)} pattern="[a-z0-9][a-z0-9._\-]*" placeholder={t("surface.what-changed.v1")} required value={key} /></label>
+        <label className="grid gap-1 text-xs"><span>{t("Hypothesis")}</span><input className="min-h-11 rounded-md border border-[var(--ad-border)] bg-transparent px-3" minLength={10} onChange={(event) => setHypothesis(event.target.value)} placeholder={t("What should change, for whom, and which metric should move")} required value={hypothesis} /></label>
         <button className="min-h-11 self-end rounded-md bg-[var(--ad-ink)] px-4 text-sm text-white disabled:opacity-50" disabled={busy === "create"} type="submit">{busy === "create" ? t("Creating…") : t("Create draft")}</button>
       </form>
 
@@ -111,21 +151,74 @@ export function ExperimentsView() {
           {experiments.map((row) => {
             const result = analysis[row.id];
             return <article className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" key={row.id}>
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"><div><h4 className="font-mono text-sm">{row.key} · v{row.version}</h4><p className="mt-1 text-sm">{row.hypothesis}</p><p className="mt-1 text-xs text-[var(--ad-text-muted)]">{row.status}  {t("· state v")}{row.stateVersion}</p></div><div className="flex flex-wrap gap-2">
-                {row.status === "draft" ? <button className="inline-flex min-h-11 items-center gap-2 rounded-md border px-3 text-sm" disabled={busy === row.id} onClick={() => void transition(row, "start")} type="button"><Play aria-hidden className="h-4 w-4" />{t("Start")}</button> : null}
-                {row.status === "running" ? <button className="inline-flex min-h-11 items-center gap-2 rounded-md border px-3 text-sm" disabled={busy === row.id} onClick={() => void transition(row, "stop")} type="button"><Square aria-hidden className="h-4 w-4" />{t("Stop")}</button> : null}
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"><div><h4 className="font-mono text-sm">{row.key} · v{row.version}</h4><p className="mt-1 text-sm">{row.hypothesis}</p><p className="mt-1 flex items-center gap-2 text-xs text-[var(--ad-text-muted)]"><StatusPill status={row.status} />{t("· state v")}{row.stateVersion}</p></div><div className="flex flex-wrap gap-2">
+                {row.status === "draft" ? <button className="inline-flex min-h-11 items-center gap-2 rounded-md border px-3 text-sm" disabled={busy === row.id} onClick={() => setPending({ row, command: "start" })} type="button"><Play aria-hidden className="h-4 w-4" />{t("Start")}</button> : null}
+                {row.status === "running" ? <button className="inline-flex min-h-11 items-center gap-2 rounded-md border px-3 text-sm" disabled={busy === row.id} onClick={() => setPending({ row, command: "stop" })} type="button"><Square aria-hidden className="h-4 w-4" />{t("Stop")}</button> : null}
                 <button className="min-h-11 rounded-md border px-3 text-sm" disabled={busy === `analysis-${row.id}`} onClick={() => void loadAnalysis(row.id)} type="button">{t("Quality & lift")}</button>
               </div></div>
-              {result ? <div className="mt-4 rounded-md bg-[var(--ad-surface-muted)] p-3 text-xs" role="status"><p>{t("Quality:")} {result.qualityState}  {t("· maturity:")} {result.maturity}  {t("· guardrails:")} {result.guardrailState}  {t("· significance:")} {result.significance}</p><ul className="mt-2 space-y-1">{result.guardrails.map((guardrail) => <li key={guardrail.metricKey}>{guardrail.metricKey}: {guardrail.state}  {t("· regression")} {guardrail.observedRegression === null ? "—" : t("{value} pp", { value: (guardrail.observedRegression * 100).toFixed(1) })}  {t("/ max")} {(guardrail.maxAbsoluteRegression * 100).toFixed(1)}{t("pp")}</li>)}</ul>{result.decisionUse === "eligible" ? <ul className="mt-2 space-y-1">{result.arms.map((arm) => <li key={arm.variant}>{arm.variant}: n={arm.matureSubjects}{t(", rate=")}{arm.rate === null ? "—" : `${(arm.rate * 100).toFixed(1)}%`}{t(", lift=")}{arm.absoluteLiftVsControl === null ? "—" : t("{value} pp", { value: (arm.absoluteLiftVsControl * 100).toFixed(1) })}, p={arm.pValueVsControl?.toFixed(4) ?? "—"}</li>)}</ul> : <p className="mt-2 text-[var(--ad-yellow-text)]">{t("Lift hidden from decision use until every arm has ≥")}{result.minimumMaturePerArm}  {t("mature production exposures and guardrails pass.")}</p>}</div> : null}
+              {result ? <AnalysisReport result={result} /> : null}
             </article>;
           })}
         </div>
       </section>
 
       <section aria-labelledby="flag-monitoring-heading" className="rounded-lg border border-[var(--ad-yellow-text)]/25 bg-[var(--ad-yellow-bg)] p-4">
-        <h3 className="text-sm font-semibold" id="flag-monitoring-heading">{t("Flag Monitoring")} ({flags.length})</h3><p className="mt-1 text-xs">{t("Directional only · no assignment or exposure records")}</p><p className="mt-2 text-xs">{t("Feature flags remain rollout monitoring and never inherit managed experiment lift.")}</p>{monitoringNote ? <p className="mt-2 text-xs" role="status">{t(monitoringNote)}</p> : null}
+        <h3 className="text-sm font-semibold" id="flag-monitoring-heading">{t("Flag Monitoring")} ({flags.length})</h3><p className="mt-1 text-xs">{t("Directional only · no assignment or exposure records")}</p><p className="mt-2 text-xs">{t("Feature flags remain rollout monitoring and never inherit managed experiment lift.")}</p>{monitoringUnavailable ? <p className="mt-2 text-xs" role="status">{t("Flag monitoring is unavailable for this permission set; managed experiments are still shown.")}</p> : null}
         <ul className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{flags.map((flag) => <li className="rounded-md border border-current/20 p-3 text-xs" key={flag.key}><span className="font-mono">{flag.key}</span><br />{flag.enabled ? t("enabled") : t("disabled")} · {flag.rolloutPercent}%</li>)}</ul>
       </section>
+
+      {lifecycleSpec ? <ConfirmDialog onClose={() => setPending(null)} spec={lifecycleSpec} /> : null}
+    </div>
+  );
+}
+
+// SPEC: 报告是给运营读的整句，不是十几个 t() 片段加标点粘出来的——语序在中文里会散架。
+function AnalysisReport({ result }: { result: Analysis }) {
+  const { t, value } = useAdminI18n();
+  const percent = (ratio: number | null) => (ratio === null ? "—" : `${(ratio * 100).toFixed(1)}`);
+  return (
+    <div className="mt-4 space-y-2 rounded-md bg-[var(--ad-surface-muted)] p-3 text-xs" role="status">
+      <p>
+        {t("Quality {quality} · maturity {maturity} · guardrails {guardrails} · significance {significance}", {
+          quality: value(result.qualityState),
+          maturity: value(result.maturity),
+          guardrails: value(result.guardrailState),
+          significance: value(result.significance),
+        })}
+      </p>
+      <ul className="space-y-1">
+        {result.guardrails.map((guardrail) => (
+          <li key={guardrail.metricKey}>
+            {t("{metric} is {state}; observed regression {observed} pp against a {max} pp limit.", {
+              metric: guardrail.metricKey,
+              state: value(guardrail.state),
+              observed: percent(guardrail.observedRegression),
+              max: (guardrail.maxAbsoluteRegression * 100).toFixed(1),
+            })}
+          </li>
+        ))}
+      </ul>
+      {result.decisionUse === "eligible" ? (
+        <ul className="space-y-1">
+          {result.arms.map((arm) => (
+            <li key={arm.variant}>
+              {t("{variant}: {subjects} mature subjects, rate {rate}%, lift {lift} pp vs control, p={p}.", {
+                variant: arm.variant,
+                subjects: arm.matureSubjects,
+                rate: percent(arm.rate),
+                lift: percent(arm.absoluteLiftVsControl),
+                p: arm.pValueVsControl?.toFixed(4) ?? "—",
+              })}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="text-[var(--ad-yellow-text)]">
+          {t("Lift is withheld from decisions until every arm has at least {minimum} mature production exposures and all guardrails pass.", {
+            minimum: result.minimumMaturePerArm,
+          })}
+        </p>
+      )}
     </div>
   );
 }

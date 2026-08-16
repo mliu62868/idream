@@ -1,6 +1,6 @@
 "use client";
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { DetailPage, DetailSection } from "@/components/admin/ui/DetailPage";
@@ -9,6 +9,8 @@ import { FormSection, Field, INPUT_CLASS, TEXTAREA_CLASS } from "@/components/ad
 import { DangerButton, GhostButton, PrimaryButton } from "@/components/admin/ui/buttons";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { EngineeringDetails } from "@/components/admin/generation/EngineeringDetails";
+import { LoadingWorkspace } from "@/features/operations/WorkspaceUi";
+import { InfoGrid, useWriteFeedback, WriteFeedbackBanner } from "@/components/admin/section-kit";
 import {
   SCOPES,
   STARTER_GENDERS,
@@ -50,19 +52,6 @@ function draftFromRow(row: Starter): StarterDraft {
   };
 }
 
-function InfoGrid({ items }: { items: { label: string; value: ReactNode }[] }) {
-  return (
-    <dl className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3">
-      {items.map((item) => (
-        <div key={item.label}>
-          <dt className="text-xs text-[var(--ad-text-muted)]">{item.label}</dt>
-          <dd className="mt-0.5 text-sm text-[var(--ad-ink)]">{item.value}</dd>
-        </div>
-      ))}
-    </dl>
-  );
-}
-
 export function StartersDetailPage({ id }: { id: string }) {
   const { t, value } = useAdminI18n();
   const [rows, setRows] = useState<Starter[]>([]);
@@ -71,6 +60,7 @@ export function StartersDetailPage({ id }: { id: string }) {
   const [mode, setMode] = useState<Mode>("view");
   const [draft, setDraft] = useState<StarterDraft | null>(null);
   const [pending, setPending] = useState<PendingAction>(null);
+  const { feedback, reportSuccess, clearFeedback } = useWriteFeedback();
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -108,6 +98,7 @@ export function StartersDetailPage({ id }: { id: string }) {
     setDraft((prev) => (prev ? { ...prev, [key]: next } : prev));
   }
 
+  // INVARIANT: 三个写操作都带幂等键（与 recipes/presets 同一约定），服务端重试不会写两次。
   const confirmSpec: ConfirmSpec | null = useMemo(() => {
     if (!row || !pending) return null;
     if (pending === "save") {
@@ -116,10 +107,16 @@ export function StartersDetailPage({ id }: { id: string }) {
         title: t("Save changes"),
         submitLabel: t("Save changes"),
         onSubmit: async (reason) => {
-          await apiWrite(`${STARTERS_LIST}/${id}`, "PATCH", starterPayload({ ...draft, reason }));
+          await apiWrite(
+            `${STARTERS_LIST}/${id}`,
+            "PATCH",
+            starterPayload({ ...draft, reason }),
+            { "idempotency-key": crypto.randomUUID() },
+          );
           await reload();
           setMode("view");
           setDraft(null);
+          reportSuccess(t("Saved. {name} now shows the edited values.", { name: row.name }));
         },
       };
     }
@@ -129,8 +126,14 @@ export function StartersDetailPage({ id }: { id: string }) {
         destructive: { expectedName: row.name },
         submitLabel: t("Publish"),
         onSubmit: async (reason) => {
-          await apiWrite(`${STARTERS_LIST}/${id}/active`, "POST", { active: true, reason, confirmation: id });
+          await apiWrite(
+            `${STARTERS_LIST}/${id}/active`,
+            "POST",
+            { active: true, reason, confirmation: id },
+            { "idempotency-key": crypto.randomUUID() },
+          );
           await reload();
+          reportSuccess(t("{name} is published and offered in character creation.", { name: row.name }));
         },
       };
     }
@@ -139,14 +142,20 @@ export function StartersDetailPage({ id }: { id: string }) {
       destructive: { expectedName: row.name },
       submitLabel: t("Offline"),
       onSubmit: async (reason) => {
-        await apiWrite(`${STARTERS_LIST}/${id}/active`, "POST", { active: false, reason, confirmation: id });
+        await apiWrite(
+          `${STARTERS_LIST}/${id}/active`,
+          "POST",
+          { active: false, reason, confirmation: id },
+          { "idempotency-key": crypto.randomUUID() },
+        );
         await reload();
+        reportSuccess(t("{name} is offline and no longer offered in character creation.", { name: row.name }));
       },
     };
-  }, [pending, draft, row, id, t, reload]);
+  }, [pending, draft, row, id, t, reload, reportSuccess]);
 
   if (loading) {
-    return <p className="text-sm text-[var(--ad-text-muted)]">{t("Loading…")}</p>;
+    return <LoadingWorkspace label="Loading…" />;
   }
 
   if (!row) {
@@ -189,6 +198,7 @@ export function StartersDetailPage({ id }: { id: string }) {
       statusLabel={row.isActive ? t("Published") : t("Inactive")}
       title={row.name}
     >
+      <WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} />
       {error ? <p role="alert" className="text-sm text-[var(--ad-red-text)]">{error}</p> : null}
 
       {mode === "edit" && draft ? (
@@ -260,17 +270,17 @@ export function StartersDetailPage({ id }: { id: string }) {
             </Field>
           </FormSection>
           <FormSection title={t("Reusable persona")}>
-            <Field full label="Creative brief"><textarea className={TEXTAREA_CLASS} onChange={(event) => updateDraft("creativeBrief", event.target.value)} value={draft.creativeBrief} /></Field>
-            <Field label="Archetype"><input className={INPUT_CLASS} onChange={(event) => updateDraft("archetype", event.target.value)} value={draft.archetype} /></Field>
-            <Field label="Relationship"><input className={INPUT_CLASS} onChange={(event) => updateDraft("relationship", event.target.value)} value={draft.relationship} /></Field>
-            <Field full label="Personality"><textarea className={TEXTAREA_CLASS} onChange={(event) => updateDraft("personality", event.target.value)} value={draft.personality} /></Field>
-            <Field full label="Speaking style"><textarea className={TEXTAREA_CLASS} onChange={(event) => updateDraft("speakingStyle", event.target.value)} value={draft.speakingStyle} /></Field>
-            <Field full label="First message"><textarea className={TEXTAREA_CLASS} onChange={(event) => updateDraft("firstMessage", event.target.value)} value={draft.firstMessage} /></Field>
-            <Field full label="Example dialogue"><textarea className={TEXTAREA_CLASS} onChange={(event) => updateDraft("exampleDialogue", event.target.value)} value={draft.exampleDialogue} /></Field>
+            <Field full label={t("Creative brief")}><textarea className={TEXTAREA_CLASS} onChange={(event) => updateDraft("creativeBrief", event.target.value)} value={draft.creativeBrief} /></Field>
+            <Field label={t("Archetype")}><input className={INPUT_CLASS} onChange={(event) => updateDraft("archetype", event.target.value)} value={draft.archetype} /></Field>
+            <Field label={t("Relationship")}><input className={INPUT_CLASS} onChange={(event) => updateDraft("relationship", event.target.value)} value={draft.relationship} /></Field>
+            <Field full label={t("Personality")}><textarea className={TEXTAREA_CLASS} onChange={(event) => updateDraft("personality", event.target.value)} value={draft.personality} /></Field>
+            <Field full label={t("Speaking style")}><textarea className={TEXTAREA_CLASS} onChange={(event) => updateDraft("speakingStyle", event.target.value)} value={draft.speakingStyle} /></Field>
+            <Field full label={t("First message")}><textarea className={TEXTAREA_CLASS} onChange={(event) => updateDraft("firstMessage", event.target.value)} value={draft.firstMessage} /></Field>
+            <Field full label={t("Example dialogue")}><textarea className={TEXTAREA_CLASS} onChange={(event) => updateDraft("exampleDialogue", event.target.value)} value={draft.exampleDialogue} /></Field>
           </FormSection>
           <FormSection title={t("Reusable visual direction")}>
-            <Field full label="Appearance anchors"><textarea className={TEXTAREA_CLASS} onChange={(event) => updateDraft("appearanceNotes", event.target.value)} value={draft.appearanceNotes} /></Field>
-            <Field full label="Art direction"><textarea className={TEXTAREA_CLASS} onChange={(event) => updateDraft("visualBrief", event.target.value)} value={draft.visualBrief} /></Field>
+            <Field full label={t("Appearance anchors")}><textarea className={TEXTAREA_CLASS} onChange={(event) => updateDraft("appearanceNotes", event.target.value)} value={draft.appearanceNotes} /></Field>
+            <Field full label={t("Art direction")}><textarea className={TEXTAREA_CLASS} onChange={(event) => updateDraft("visualBrief", event.target.value)} value={draft.visualBrief} /></Field>
           </FormSection>
         </>
       ) : (

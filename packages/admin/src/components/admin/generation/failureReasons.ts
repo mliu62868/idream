@@ -14,6 +14,9 @@ export type FailureReason = {
 };
 
 // key = 机器码 / failureMode / verificationStatus（小写下划线）。title/hint 存 i18n key。
+// RULE: 只登记能在生产代码里查到发出点、且能读出含义的码。查不到就让它走兜底——
+//       一条编出来的原因比一句"把错误码给工程"更贵，运营会照着它做错误的动作。
+//       每条都注明出处，改后端时能顺着找回来。
 const TABLE: Record<string, Omit<FailureReason, "code">> = {
   missing_runtime_components: {
     title: "Model files not ready",
@@ -138,6 +141,12 @@ const TABLE: Record<string, Omit<FailureReason, "code">> = {
     title: "The authority hit an internal error",
     hint: "Send the error code to engineering",
     severity: "engineering",
+  },
+  // shared/media/generated-image-sanity.ts:20 —— 图片过不了完整性检查时抛的码。
+  asset_quality_failed: {
+    title: "Image failed the quality check",
+    hint: "Blank, collaged, or corrupt output is discarded — adjust the prompt and generate again",
+    severity: "retry",
   },
 };
 

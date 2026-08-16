@@ -3,11 +3,12 @@
 // SPEC: 合规运营面板（ADMIN_PHASE3_DESIGN §4）。DSAR 数据导出/账号擦除 + 年龄验证人工复核。
 // INTENT: 自取数、无 props；样式对齐 TagsView。导出展示脱敏 JSON；擦除/override 需 reason+typed。
 // INVARIANTS: erase confirmation=userId、override confirmation=verificationId，均 reason≥3。
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Download, Loader2, RefreshCcw, ShieldAlert, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { Download, FileDown, Loader2, RefreshCcw, ShieldAlert, Trash2 } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
+import { useWriteFeedback, WriteFeedbackBanner } from "@/components/admin/section-kit";
 import {
   authorityRequestFailed,
   authorityRequestStarted,
@@ -54,30 +55,43 @@ function DsarSection() {
   const [exported, setExported] = useState<unknown>(null);
   const [busy, setBusy] = useState<"export" | "erase" | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [note, setNote] = useState<string | null>(null);
   const [eraseDraft, setEraseDraft] = useState<ConfirmDraft | null>(null);
+  const { feedback, reportSuccess, clearFeedback } = useWriteFeedback();
 
   async function exportData() {
     setBusy("export");
     setErr(null);
-    setNote(null);
+    clearFeedback();
     try {
       const data = await apiGet<{ export: unknown }>(
         `/api/v2/admin/compliance/users/${encodeURIComponent(userId.trim())}/export`,
       );
       setExported(data.export);
     } catch (error) {
-      setErr(error instanceof Error ? error.message : "Export failed");
+      setErr(error instanceof Error ? error.message : t("Request failed"));
     } finally {
       setBusy(null);
     }
+  }
+
+  // SPEC: DSAR 的交付物是一个可以发给用户/监管的文件，不是一段屏幕上的 JSON。
+  // INTENT: 不引下载库——Blob + objectURL 是原生的；用完立刻 revoke，不留悬挂引用。
+  function downloadExport() {
+    if (exported === null) return;
+    const blob = new Blob([JSON.stringify(exported, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `dsar-export-${userId.trim() || "user"}.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
   }
 
   async function erase() {
     if (!eraseDraft || !canConfirm(eraseDraft, userId.trim())) return;
     setBusy("erase");
     setErr(null);
-    setNote(null);
+    clearFeedback();
     try {
       const data = await apiWrite<{ erased: boolean; idempotent?: boolean }>(
         `/api/v2/admin/compliance/users/${encodeURIComponent(userId.trim())}/erase`,
@@ -88,9 +102,13 @@ function DsarSection() {
         },
       );
       setEraseDraft(null);
-      setNote(data.idempotent ? t("Already erased (idempotent).") : t("Erasure requested."));
+      reportSuccess(
+        data.idempotent
+          ? t("{id} was already erased — nothing changed.", { id: userId.trim() })
+          : t("Erasure requested for {id}. The cross-service flow reports completion in the audit log.", { id: userId.trim() }),
+      );
     } catch (error) {
-      setErr(error instanceof Error ? error.message : "Erase failed");
+      setErr(error instanceof Error ? error.message : t("Request failed"));
     } finally {
       setBusy(null);
     }
@@ -100,7 +118,7 @@ function DsarSection() {
     <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
       <h2 className="text-sm font-semibold">{t("DSAR — export / erase")}</h2>
       <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
-        导出为脱敏结构化数据（不含明文 prompt/chat）。擦除走 P0-F 跨服务流，需确认。
+        {t("The export is redacted structured data with no raw prompt or chat text. Erasure runs the P0-F cross-service flow and needs confirmation.")}
       </p>
       <div className="mt-3 grid gap-3 md:grid-cols-[1fr_auto_auto]">
         <input
@@ -124,7 +142,7 @@ function DsarSection() {
           disabled={busy !== null || !userId.trim()}
           onClick={() => {
             setErr(null);
-            setNote(null);
+            clearFeedback();
             setEraseDraft({ reason: "", confirmation: "" });
           }}
           type="button"
@@ -172,11 +190,26 @@ function DsarSection() {
         </section>
       ) : null}
       {err ? <p role="alert" className="mt-2 text-xs text-[var(--ad-red-text)]">{err}</p> : null}
-      {note ? <p className="mt-2 text-xs text-[var(--ad-green-text)]">{note}</p> : null}
+      <div className="mt-2">
+        <WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} />
+      </div>
       {exported ? (
-        <pre className="rounded-lg mt-3 max-h-80 overflow-auto border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3 text-xs">
-          {JSON.stringify(exported, null, 2)}
-        </pre>
+        <div className="mt-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-xs font-semibold">{t("Export preview")}</h3>
+            <button
+              className="rounded-md inline-flex h-9 items-center gap-2 border border-[var(--ad-border)] px-3 text-sm"
+              onClick={downloadExport}
+              type="button"
+            >
+              <FileDown className="h-4 w-4" />
+              {t("Download JSON")}
+            </button>
+          </div>
+          <pre className="rounded-lg mt-2 max-h-80 overflow-auto border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3 text-xs">
+            {JSON.stringify(exported, null, 2)}
+          </pre>
+        </div>
       ) : null}
     </section>
   );
@@ -186,12 +219,13 @@ function AgeVerificationSection() {
   const { t, value: valueLabel } = useAdminI18n();
   const [authority, setAuthority] = useState(() => createAuthorityState<AgeRow[]>());
   const [status, setStatus] = useState("pending");
-  const [notice, setNotice] = useState<string | null>(null);
   const [overrideDraft, setOverrideDraft] = useState<AgeOverrideDraft | null>(null);
   const [overrideBusy, setOverrideBusy] = useState(false);
   const [overrideError, setOverrideError] = useState<string | null>(null);
+  const { feedback, reportSuccess, clearFeedback } = useWriteFeedback();
   const requestGate = useRef(createLatestRequestGate());
   const initialStatus = useRef(status);
+  const statusFilterId = useId();
 
   const load = useCallback(async (nextStatus: string) => {
     const queryKey = `status=${encodeURIComponent(nextStatus)}`;
@@ -208,10 +242,10 @@ function AgeVerificationSection() {
       setAuthority((current) => authorityRequestFailed(
         current,
         queryKey,
-        err instanceof Error ? err.message : "Load failed",
+        err instanceof Error ? err.message : t("Request failed"),
       ));
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     const gate = requestGate.current;
@@ -235,7 +269,10 @@ function AgeVerificationSection() {
       });
       setOverrideDraft(null);
       setOverrideError(null);
-      setNotice(t("Age verification updated."));
+      reportSuccess(t("{id} is now {status}. The queue below reflects the new state.", {
+        id: draft.id,
+        status: valueLabel(draft.next),
+      }));
       setAuthority((current) => current.data ? {
         ...current,
         data: current.data.flatMap((row) =>
@@ -245,7 +282,7 @@ function AgeVerificationSection() {
       } : current);
       void load(status);
     } catch (err) {
-      setOverrideError(err instanceof Error ? err.message : "Override failed");
+      setOverrideError(err instanceof Error ? err.message : t("Request failed"));
     } finally {
       setOverrideBusy(false);
     }
@@ -257,12 +294,16 @@ function AgeVerificationSection() {
       <div className="flex items-center justify-between border-b border-[var(--ad-border)] p-3">
         <h2 className="text-sm font-semibold">{t("Age verification queue")}</h2>
         <div className="flex items-center gap-2">
+          <label className="text-xs text-[var(--ad-text-muted)]" htmlFor={statusFilterId}>
+            {t("Status")}
+          </label>
           <select
-            className="rounded-md h-9 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-2 text-sm outline-none"
+            className="rounded-md h-9 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-2 text-sm outline-none focus:border-[var(--ad-ink)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]"
+            id={statusFilterId}
             onChange={(e) => {
               const nextStatus = e.target.value;
               setStatus(nextStatus);
-              setNotice(null);
+              clearFeedback();
               setOverrideDraft(null);
               setOverrideError(null);
               void load(nextStatus);
@@ -295,7 +336,7 @@ function AgeVerificationSection() {
           />
         </div>
       ) : null}
-      {notice ? <p className="px-3 py-2 text-xs text-[var(--ad-green-text)]">{notice}</p> : null}
+      <div className="px-3 pt-2"><WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} /></div>
       {overrideDraft ? (
         <section className="rounded-lg m-3 border border-[var(--ad-yellow-text)]/20 bg-[var(--ad-yellow-bg)] p-3">
           <p className="text-xs font-semibold text-[var(--ad-yellow-text)]">
@@ -371,7 +412,7 @@ function AgeVerificationSection() {
                     disabled={overrideBusy}
                     onClick={() => {
                       setAuthority((current) => ({ ...current, error: null }));
-                      setNotice(null);
+                      clearFeedback();
                       setOverrideError(null);
                       setOverrideDraft({ id: row.id, next: "verified", reason: "", confirmation: "" });
                     }}
@@ -385,7 +426,7 @@ function AgeVerificationSection() {
                     disabled={overrideBusy}
                     onClick={() => {
                       setAuthority((current) => ({ ...current, error: null }));
-                      setNotice(null);
+                      clearFeedback();
                       setOverrideError(null);
                       setOverrideDraft({ id: row.id, next: "failed", reason: "", confirmation: "" });
                     }}

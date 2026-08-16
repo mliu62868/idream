@@ -1,14 +1,22 @@
 "use client";
 
-// SPEC: 只读展示 generation metrics（profiles/recipes/sources/placements）聚合视图 ——
-//       7/30 天窗口切换，四个 section 表格；失败率>20% 高亮。
-// INTENT: selfFetch 模式镜像 BackendsView.tsx；纯展示，无写操作。
-// INVARIANTS: avgDurationMs 渲染为 "x.x s"（null → "–"）；failed/total>0.2 时该行 failed 单元格标红。
+// SPEC: generation metrics 决策面板 —— 顶部四个结论指标（产量 / 失败率 / 花费 / 铺位 CTR）
+//       带同比，下面五张按"最该处理的排最前"排序的明细表，失败单元格直通 Generation Jobs。
+// INTENT: selfFetch 模式镜像 BackendsView.tsx；纯只读，无写操作。
+// WHY(同比): 接口只认"最近 N 天"，没有 offset。上一窗口 = 请求 2N 天再减去当前 N 天——
+//   对可加字段（次数 / 花费 / 曝光 / 点击）这是精确的；平均时长不可减，所以不做同比。
+//   2N 天那一发失败时就不显示同比，绝不用当前值冒充。
+// WHY(排序): 服务端按 total 降序（谁量大）。运营要处理的是"哪儿坏得最多"，所以这里按失败数
+//   降序、失败率降序兜底。纯按失败率会把 1/1=100% 顶到 500 次里失败 125 次的上面。
+// INVARIANTS: avgDurationMs 渲染为 "x.x s"（null → "–"）；失败率 >20% 标红；失败数为 0 时
+//   不给下钻链接（点进去必然是空列表）。
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
+import Link from "next/link";
 import { Loader2, RefreshCcw } from "lucide-react";
 import { apiGet } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { ReadonlyOpsView, type OpsColumn } from "@/components/admin/generation/ReadonlyOpsView";
 import { cn } from "@/lib/utils";
 
 type StatusBuckets = { total: number; completed: number; failed: number; blocked: number };
@@ -50,6 +58,8 @@ export type MetricsWindowDays = (typeof WINDOW_OPTIONS)[number];
 type MetricsSnapshots = Partial<Record<MetricsWindowDays, MetricsResponse>>;
 type MetricsWindowState<T> = Partial<Record<MetricsWindowDays, T>>;
 
+const JOBS_PATH = "/admin/ops/jobs";
+
 export function metricsSnapshotForWindow(
   snapshots: MetricsSnapshots,
   windowDays: MetricsWindowDays,
@@ -57,22 +67,93 @@ export function metricsSnapshotForWindow(
   return snapshots[windowDays] ?? null;
 }
 
+export type MetricsWindowErrorMessage = {
+  key: string;
+  values: Record<string, string | number>;
+};
+
+// SPEC: 返回 i18n key + 插值，不返回成品句子——成品句子必然是英文，中文 locale 下会露馅。
 export function metricsWindowErrorMessage(input: {
   error: string;
   requestedWindowDays: MetricsWindowDays;
   hasRequestedSnapshot: boolean;
   lastGoodWindowDays: MetricsWindowDays | null;
-}) {
+}): MetricsWindowErrorMessage {
   if (input.hasRequestedSnapshot) {
-    return `${input.error} Showing the last successfully loaded ${input.requestedWindowDays}-day snapshot.`;
+    return {
+      key: "{error} Showing the last successfully loaded {days}-day snapshot.",
+      values: { error: input.error, days: input.requestedWindowDays },
+    };
   }
   if (
     input.lastGoodWindowDays !== null &&
     input.lastGoodWindowDays !== input.requestedWindowDays
   ) {
-    return `${input.error} ${input.requestedWindowDays}-day metrics are unavailable. The last successful snapshot was ${input.lastGoodWindowDays} days and is not shown for this window.`;
+    return {
+      key: "{error} {days}-day metrics are unavailable. The last successful snapshot was {lastGood} days and is not shown for this window.",
+      values: {
+        error: input.error,
+        days: input.requestedWindowDays,
+        lastGood: input.lastGoodWindowDays,
+      },
+    };
   }
-  return `${input.error} ${input.requestedWindowDays}-day metrics are unavailable.`;
+  return {
+    key: "{error} {days}-day metrics are unavailable.",
+    values: { error: input.error, days: input.requestedWindowDays },
+  };
+}
+
+export type WindowTotals = {
+  total: number;
+  failed: number;
+  blocked: number;
+  cost: number;
+  impressions: number;
+  clicks: number;
+};
+
+// SPEC: sources 按 sourceType 分组且 sourceType 非空，所以它——而不是 profiles/recipes
+// （两者都丢掉 null 外键的行）——才是全量任务的口径。
+export function windowTotals(metrics: MetricsResponse): WindowTotals {
+  const jobs = metrics.sources.reduce(
+    (sum, row) => ({
+      total: sum.total + row.total,
+      failed: sum.failed + row.failed,
+      blocked: sum.blocked + row.blocked,
+      cost: sum.cost + row.costDreamcoins,
+    }),
+    { total: 0, failed: 0, blocked: 0, cost: 0 },
+  );
+  const engagement = metrics.placementEngagement.reduce(
+    (sum, row) => ({
+      impressions: sum.impressions + row.impressions,
+      clicks: sum.clicks + row.clicks,
+    }),
+    { impressions: 0, clicks: 0 },
+  );
+  return { ...jobs, ...engagement };
+}
+
+// SPEC: 上一窗口 = 双倍窗口 − 当前窗口。两次请求之间数据会继续写入，所以只要出现负值就
+// 认定同比不可用——宁可不给趋势，也不给一个编出来的趋势。
+export function previousWindowTotals(
+  current: WindowTotals,
+  doubled: WindowTotals,
+): WindowTotals | null {
+  const previous: WindowTotals = {
+    total: doubled.total - current.total,
+    failed: doubled.failed - current.failed,
+    blocked: doubled.blocked - current.blocked,
+    cost: doubled.cost - current.cost,
+    impressions: doubled.impressions - current.impressions,
+    clicks: doubled.clicks - current.clicks,
+  };
+  return Object.values(previous).some((value) => value < 0) ? null : previous;
+}
+
+export function ratio(numerator: number, denominator: number): number | null {
+  return denominator === 0 ? null : numerator / denominator;
 }
 
 function failureRate(buckets: StatusBuckets): number {
@@ -85,10 +166,22 @@ function formatDuration(avgDurationMs: number | null): string {
   return `${(avgDurationMs / 1000).toFixed(1)} s`;
 }
 
+function formatPercent(value: number | null): string {
+  return value === null ? "–" : `${(value * 100).toFixed(1)}%`;
+}
+
+// SPEC: 先按失败数降序（要修的量），失败数相同再看失败率，最后才是产量。
+function byFailureImpact<T extends StatusBuckets>(rows: readonly T[]): T[] {
+  return [...rows].sort(
+    (a, b) => b.failed - a.failed || failureRate(b) - failureRate(a) || b.total - a.total,
+  );
+}
+
 export function GenerationMetricsView() {
-  const { t } = useAdminI18n();
+  const { t, value } = useAdminI18n();
   const [windowDays, setWindowDays] = useState<MetricsWindowDays>(7);
   const [snapshots, setSnapshots] = useState<MetricsSnapshots>({});
+  const [baselines, setBaselines] = useState<MetricsWindowState<WindowTotals | null>>({});
   const [loadingByWindow, setLoadingByWindow] = useState<
     MetricsWindowState<boolean>
   >({});
@@ -118,20 +211,37 @@ export function GenerationMetricsView() {
       const data = await apiGet<MetricsResponse>(`/api/v2/admin/generation/metrics?days=${days}`);
       if (data.windowDays !== days) {
         throw new Error(
-          `Metrics authority returned ${data.windowDays} days for a ${days}-day request.`,
+          t("Metrics authority returned {returned} days for a {requested}-day request.", {
+            returned: data.windowDays,
+            requested: days,
+          }),
         );
       }
       setSnapshots((current) => ({ ...current, [days]: data }));
       setLastGoodWindowDays(days);
+      // 同比是加分项，不是这个页面的主体：拿不到就静默降级为"无同比"，不污染主错误条。
+      try {
+        const doubled = await apiGet<MetricsResponse>(
+          `/api/v2/admin/generation/metrics?days=${days * 2}`,
+        );
+        setBaselines((current) => ({
+          ...current,
+          [days]: doubled.windowDays === days * 2
+            ? previousWindowTotals(windowTotals(data), windowTotals(doubled))
+            : null,
+        }));
+      } catch {
+        setBaselines((current) => ({ ...current, [days]: null }));
+      }
     } catch (err) {
       setErrorsByWindow((current) => ({
         ...current,
-        [days]: err instanceof Error ? err.message : "Load failed",
+        [days]: err instanceof Error ? err.message : t("Request failed"),
       }));
     } finally {
       setLoadingByWindow((current) => ({ ...current, [days]: false }));
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -173,29 +283,42 @@ export function GenerationMetricsView() {
       </div>
       {errorMessage ? (
         <p role="alert" className="text-xs text-[var(--ad-red-text)]">
-          {errorMessage}
+          {t(errorMessage.key, errorMessage.values)}
         </p>
       ) : null}
 
       {metrics ? (
         <>
-          <ProfilesTable profiles={metrics.profiles} t={t} />
-          <RecipesTable recipes={metrics.recipes} t={t} />
-          <SourcesTable sources={metrics.sources} t={t} />
-          <PlacementsTable placements={metrics.placements} t={t} />
-          <PlacementEngagementTable engagement={metrics.placementEngagement} t={t} />
-          <RemixSection total={metrics.remix.total} t={t} />
+          <HeadlineBand
+            baseline={baselines[windowDays] ?? null}
+            current={windowTotals(metrics)}
+            windowDays={windowDays}
+          />
+          <ProfilesTable profiles={metrics.profiles} />
+          <RecipesTable recipes={metrics.recipes} />
+          <SourcesTable sources={metrics.sources} />
+          <ReadonlyOpsView
+            columns={[
+              { key: "slot", label: "Slot", render: (row) => <span className="font-mono">{value(String(row.slot))}</span> },
+              { key: "status", label: "Status", render: (row) => value(String(row.status)) },
+              { key: "count", label: "Count" },
+            ]}
+            empty={t("No generation records in window.")}
+            rows={metrics.placements as unknown as Record<string, unknown>[]}
+            title={t("Placements")}
+          />
+          <PlacementEngagementTable engagement={metrics.placementEngagement} />
+          <RemixSection total={metrics.remix.total} />
         </>
       ) : (
-        <MetricsAuthorityState loading={loading} t={t} />
+        <MetricsAuthorityState loading={loading} />
       )}
     </div>
   );
 }
 
-type Translate = (text: string) => string;
-
-function MetricsAuthorityState({ loading, t }: { loading: boolean; t: Translate }) {
+function MetricsAuthorityState({ loading }: { loading: boolean }) {
+  const { t } = useAdminI18n();
   return (
     <section
       aria-live="polite"
@@ -214,203 +337,316 @@ function MetricsAuthorityState({ loading, t }: { loading: boolean; t: Translate 
   );
 }
 
-function SectionShell({ title, isEmpty, t, children }: { title: string; isEmpty: boolean; t: Translate; children: ReactNode }) {
+// SPEC: 四个能直接下结论的数：产量、失败率、花费、铺位 CTR，各带上一个等长窗口的同比。
+function HeadlineBand({
+  baseline,
+  current,
+  windowDays,
+}: {
+  baseline: WindowTotals | null;
+  current: WindowTotals;
+  windowDays: MetricsWindowDays;
+}) {
+  const { t } = useAdminI18n();
+  const currentFailureRate = ratio(current.failed, current.total);
+  const currentCtr = ratio(current.clicks, current.impressions);
   return (
     <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-      <h3 className="mb-3 text-sm font-semibold">{t(title)}</h3>
-      {isEmpty ? (
-        <p className="text-xs text-[var(--ad-text-muted)]">{t("No generation records in window.")}</p>
-      ) : (
-        children
-      )}
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h3 className="text-sm font-semibold">{t("Last {days} days", { days: windowDays })}</h3>
+        <p className="text-xs text-[var(--ad-text-muted)]">
+          {baseline
+            ? t("Change is measured against the {days} days before this window.", { days: windowDays })
+            : t("No comparison window is available, so no change is shown.")}
+        </p>
+      </div>
+      <div className="mt-3 grid gap-px overflow-hidden rounded-md border border-[var(--ad-border)] bg-black/[0.05] sm:grid-cols-2 lg:grid-cols-4">
+        <HeadlineTile
+          delta={baseline ? countDelta(current.total, baseline.total) : null}
+          label={t("Generations")}
+          value={String(current.total)}
+        />
+        <HeadlineTile
+          delta={baseline ? pointDelta(currentFailureRate, ratio(baseline.failed, baseline.total)) : null}
+          higherIsWorse
+          label={t("Failure rate")}
+          tone={currentFailureRate !== null && currentFailureRate > 0.2 ? "bad" : undefined}
+          value={formatPercent(currentFailureRate)}
+        />
+        <HeadlineTile
+          delta={baseline ? countDelta(current.cost, baseline.cost) : null}
+          higherIsWorse
+          label={t("Total cost")}
+          value={t("{cost} DC", { cost: current.cost })}
+        />
+        <HeadlineTile
+          delta={baseline ? pointDelta(currentCtr, ratio(baseline.clicks, baseline.impressions)) : null}
+          label={t("Placement CTR")}
+          value={formatPercent(currentCtr)}
+        />
+      </div>
     </section>
   );
 }
 
-function ProfilesTable({ profiles, t }: { profiles: ProfileMetric[]; t: Translate }) {
-  return (
-    <SectionShell isEmpty={profiles.length === 0} t={t} title={t("Profiles")}>
-      <div className="overflow-x-auto">
-        <table className="w-full text-left text-xs">
-          <caption className="sr-only">{t("Generation profiles")}</caption>
-          <thead>
-            <tr className="text-[var(--ad-text-muted)]">
-              <th scope="col" className="pb-2 pr-4">{t("Label")}</th>
-              <th scope="col" className="pb-2 pr-4">{t("Profile")}</th>
-              <th scope="col" className="pb-2 pr-4">{t("Workflow")}</th>
-              <th scope="col" className="pb-2 pr-4">{t("Total")}</th>
-              <th scope="col" className="pb-2 pr-4">{t("Completed")}</th>
-              <th scope="col" className="pb-2 pr-4">{t("Failed")}</th>
-              <th scope="col" className="pb-2 pr-4">{t("Blocked")}</th>
-              <th scope="col" className="pb-2 pr-4">{t("Cost")}</th>
-              <th scope="col" className="pb-2">{t("Avg Duration")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {profiles.map((row) => {
-              const isHighFailure = failureRate(row) > 0.2;
-              return (
-                <tr className="border-t border-[var(--ad-border)]" key={`${row.profileId}@${row.profileVersion ?? 0}`}>
-                  <td className="py-2 pr-4">{row.label ?? "–"}</td>
-                  <td className="py-2 pr-4 font-mono">
-                    {row.profileId}@{row.profileVersion ?? 0}
-                  </td>
-                  <td className="py-2 pr-4 font-mono">{row.workflowKey ?? "–"}</td>
-                  <td className="py-2 pr-4">{row.total}</td>
-                  <td className="py-2 pr-4">{row.completed}</td>
-                  <td className={cn("py-2 pr-4", isHighFailure && "text-[var(--ad-red-text)]")}>{row.failed}</td>
-                  <td className="py-2 pr-4">{row.blocked}</td>
-                  <td className="py-2 pr-4">{row.costDreamcoins}</td>
-                  <td className="py-2">{formatDuration(row.avgDurationMs)}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-    </SectionShell>
-  );
+type Delta = { text: string; direction: "up" | "down" | "flat" };
+
+function countDelta(current: number, previous: number): Delta {
+  const change = current - previous;
+  return {
+    text: `${change > 0 ? "+" : ""}${change}`,
+    direction: change > 0 ? "up" : change < 0 ? "down" : "flat",
+  };
 }
 
-function RecipesTable({ recipes, t }: { recipes: RecipeMetric[]; t: Translate }) {
-  return (
-    <SectionShell isEmpty={recipes.length === 0} t={t} title={t("Recipes")}>
-      <div className="overflow-x-auto">
-        <table className="w-full text-left text-xs">
-          <caption className="sr-only">{t("Generation recipes")}</caption>
-          <thead>
-            <tr className="text-[var(--ad-text-muted)]">
-              <th scope="col" className="pb-2 pr-4">{t("Recipe")}</th>
-              <th scope="col" className="pb-2 pr-4">{t("Total")}</th>
-              <th scope="col" className="pb-2 pr-4">{t("Completed")}</th>
-              <th scope="col" className="pb-2 pr-4">{t("Failed")}</th>
-              <th scope="col" className="pb-2 pr-4">{t("Blocked")}</th>
-              <th scope="col" className="pb-2">{t("Cost")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {recipes.map((row) => {
-              const isHighFailure = failureRate(row) > 0.2;
-              return (
-                <tr className="border-t border-[var(--ad-border)]" key={row.recipeId}>
-                  <td className="py-2 pr-4 font-mono">{row.recipeId}</td>
-                  <td className="py-2 pr-4">{row.total}</td>
-                  <td className="py-2 pr-4">{row.completed}</td>
-                  <td className={cn("py-2 pr-4", isHighFailure && "text-[var(--ad-red-text)]")}>{row.failed}</td>
-                  <td className="py-2 pr-4">{row.blocked}</td>
-                  <td className="py-2">{row.costDreamcoins}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-    </SectionShell>
-  );
+function pointDelta(current: number | null, previous: number | null): Delta | null {
+  if (current === null || previous === null) return null;
+  const change = (current - previous) * 100;
+  return {
+    text: `${change > 0 ? "+" : ""}${change.toFixed(1)} pp`,
+    direction: change > 0 ? "up" : change < 0 ? "down" : "flat",
+  };
 }
 
-function SourcesTable({ sources, t }: { sources: SourceMetric[]; t: Translate }) {
-  return (
-    <SectionShell isEmpty={sources.length === 0} t={t} title={t("Sources")}>
-      <div className="overflow-x-auto">
-        <table className="w-full text-left text-xs">
-          <caption className="sr-only">{t("Generation sources")}</caption>
-          <thead>
-            <tr className="text-[var(--ad-text-muted)]">
-              <th scope="col" className="pb-2 pr-4">{t("Source")}</th>
-              <th scope="col" className="pb-2 pr-4">{t("Total")}</th>
-              <th scope="col" className="pb-2 pr-4">{t("Completed")}</th>
-              <th scope="col" className="pb-2 pr-4">{t("Failed")}</th>
-              <th scope="col" className="pb-2 pr-4">{t("Blocked")}</th>
-              <th scope="col" className="pb-2">{t("Cost")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {sources.map((row) => {
-              const isHighFailure = failureRate(row) > 0.2;
-              return (
-                <tr className="border-t border-[var(--ad-border)]" key={row.sourceType}>
-                  <td className="py-2 pr-4 font-mono">{row.sourceType}</td>
-                  <td className="py-2 pr-4">{row.total}</td>
-                  <td className="py-2 pr-4">{row.completed}</td>
-                  <td className={cn("py-2 pr-4", isHighFailure && "text-[var(--ad-red-text)]")}>{row.failed}</td>
-                  <td className="py-2 pr-4">{row.blocked}</td>
-                  <td className="py-2">{row.costDreamcoins}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-    </SectionShell>
-  );
-}
-
-function PlacementsTable({ placements, t }: { placements: PlacementMetric[]; t: Translate }) {
-  return (
-    <SectionShell isEmpty={placements.length === 0} t={t} title={t("Placements")}>
-      <div className="overflow-x-auto">
-        <table className="w-full text-left text-xs">
-          <caption className="sr-only">{t("Generation placements")}</caption>
-          <thead>
-            <tr className="text-[var(--ad-text-muted)]">
-              <th scope="col" className="pb-2 pr-4">{t("Slot")}</th>
-              <th scope="col" className="pb-2 pr-4">{t("Status")}</th>
-              <th scope="col" className="pb-2">{t("Count")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {placements.map((row) => (
-              <tr className="border-t border-[var(--ad-border)]" key={`${row.slot}:${row.status}`}>
-                <td className="py-2 pr-4 font-mono">{row.slot}</td>
-                <td className="py-2 pr-4">{row.status}</td>
-                <td className="py-2">{row.count}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </SectionShell>
-  );
-}
-
-function PlacementEngagementTable({
-  engagement,
-  t,
+function HeadlineTile({
+  delta,
+  higherIsWorse = false,
+  label,
+  tone,
+  value,
 }: {
-  engagement: PlacementEngagementMetric[];
-  t: Translate;
+  delta: Delta | null;
+  higherIsWorse?: boolean;
+  label: string;
+  tone?: "bad";
+  value: string;
 }) {
+  const worsening = delta !== null && delta.direction !== "flat"
+    && (delta.direction === "up") === higherIsWorse;
   return (
-    <SectionShell isEmpty={engagement.length === 0} t={t} title={t("Placement Engagement")}>
-      <div className="overflow-x-auto">
-        <table className="w-full text-left text-xs">
-          <caption className="sr-only">{t("Placement engagement")}</caption>
-          <thead>
-            <tr className="text-[var(--ad-text-muted)]">
-              <th scope="col" className="pb-2 pr-4">{t("Slot")}</th>
-              <th scope="col" className="pb-2 pr-4">{t("Placement")}</th>
-              <th scope="col" className="pb-2 pr-4">{t("Impressions")}</th>
-              <th scope="col" className="pb-2">{t("Clicks")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {engagement.map((row) => (
-              <tr className="border-t border-[var(--ad-border)]" key={`${row.slot}:${row.placementId}`}>
-                <td className="py-2 pr-4 font-mono">{row.slot}</td>
-                <td className="py-2 pr-4 font-mono">{row.placementId ?? "–"}</td>
-                <td className="py-2 pr-4">{row.impressions}</td>
-                <td className="py-2">{row.clicks}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </SectionShell>
+    <div className="bg-[var(--ad-surface)] p-3">
+      <p className="text-xs text-[var(--ad-text-muted)]">{label}</p>
+      <p className={cn("mt-1 text-lg font-semibold tabular-nums", tone === "bad" && "text-[var(--ad-red-text)]")}>
+        {value}
+      </p>
+      {delta ? (
+        <p
+          className={cn(
+            "mt-0.5 text-xs tabular-nums",
+            delta.direction === "flat"
+              ? "text-[var(--ad-text-muted)]"
+              : worsening
+                ? "text-[var(--ad-red-text)]"
+                : "text-[var(--ad-green-text)]",
+          )}
+        >
+          {delta.text}
+        </p>
+      ) : null}
+    </div>
   );
 }
 
-function RemixSection({ total, t }: { total: number; t: Translate }) {
+// SPEC: 失败数是链接不是数字——点进去就是这一行在同一窗口里的失败任务列表，原因在那儿。
+function FailedCell({ buckets, jobsQuery }: { buckets: StatusBuckets; jobsQuery: string }) {
+  const { t } = useAdminI18n();
+  const rate = failureRate(buckets);
+  const alarming = rate > 0.2;
+  if (buckets.failed === 0) {
+    return <span className="tabular-nums text-[var(--ad-text-muted)]">0</span>;
+  }
+  return (
+    <Link
+      className={cn(
+        "font-semibold tabular-nums underline underline-offset-2",
+        alarming ? "text-[var(--ad-red-text)]" : "text-[var(--ad-text)]",
+      )}
+      href={`${JOBS_PATH}?${jobsQuery}`}
+      title={t("Open the failed generation jobs behind this number")}
+    >
+      {buckets.failed}
+    </Link>
+  );
+}
+
+function failedJobsQuery(filter: { search?: string; sourceType?: string }) {
+  const params = new URLSearchParams({ mode: "all", legacyStatus: "failed" });
+  if (filter.search) params.set("search", filter.search);
+  if (filter.sourceType) params.set("sourceType", filter.sourceType);
+  return params.toString();
+}
+
+function rateCell(buckets: StatusBuckets) {
+  const rate = failureRate(buckets);
+  return (
+    <span className={cn("tabular-nums", rate > 0.2 && "text-[var(--ad-red-text)]")}>
+      {formatPercent(buckets.total === 0 ? null : rate)}
+    </span>
+  );
+}
+
+function bucketsSummary(rows: readonly (StatusBuckets & { costDreamcoins: number })[], t: (key: string, values?: Record<string, string | number>) => string) {
+  const totals = rows.reduce(
+    (sum, row) => ({
+      total: sum.total + row.total,
+      failed: sum.failed + row.failed,
+      cost: sum.cost + row.costDreamcoins,
+    }),
+    { total: 0, failed: 0, cost: 0 },
+  );
+  return t("{total} generations · {rate} failed · {cost} DC total", {
+    total: totals.total,
+    rate: formatPercent(ratio(totals.failed, totals.total)),
+    cost: totals.cost,
+  });
+}
+
+function ProfilesTable({ profiles }: { profiles: ProfileMetric[] }) {
+  const { t } = useAdminI18n();
+  const columns: OpsColumn[] = [
+    { key: "label", label: "Label", render: (row) => (row.label as string | null) ?? "–" },
+    {
+      key: "profileId",
+      label: "Profile",
+      render: (row) => (
+        <span className="font-mono">{row.profileId as string}@{(row.profileVersion as number | null) ?? 0}</span>
+      ),
+    },
+    { key: "workflowKey", label: "Workflow", render: (row) => <span className="font-mono">{(row.workflowKey as string | null) ?? "–"}</span> },
+    { key: "total", label: "Total" },
+    { key: "completed", label: "Completed" },
+    {
+      key: "failed",
+      label: "Failed",
+      render: (row) => (
+        <FailedCell
+          buckets={row as unknown as StatusBuckets}
+          jobsQuery={failedJobsQuery({ search: row.profileId as string })}
+        />
+      ),
+    },
+    { key: "failureRate", label: "Failure rate", render: (row) => rateCell(row as unknown as StatusBuckets) },
+    { key: "blocked", label: "Blocked" },
+    { key: "costDreamcoins", label: "Cost" },
+    { key: "avgDurationMs", label: "Avg Duration", render: (row) => formatDuration(row.avgDurationMs as number | null) },
+  ];
+  return (
+    <ReadonlyOpsView
+      columns={columns}
+      empty={t("No generation records in window.")}
+      rows={byFailureImpact(profiles) as unknown as Record<string, unknown>[]}
+      summary={profiles.length > 0 ? bucketsSummary(profiles, t) : null}
+      title={t("Profiles")}
+    />
+  );
+}
+
+function RecipesTable({ recipes }: { recipes: RecipeMetric[] }) {
+  const { t } = useAdminI18n();
+  const columns: OpsColumn[] = [
+    { key: "recipeId", label: "Recipe", render: (row) => <span className="font-mono">{row.recipeId as string}</span> },
+    { key: "total", label: "Total" },
+    { key: "completed", label: "Completed" },
+    {
+      key: "failed",
+      label: "Failed",
+      render: (row) => (
+        <FailedCell
+          buckets={row as unknown as StatusBuckets}
+          jobsQuery={failedJobsQuery({ search: row.recipeId as string })}
+        />
+      ),
+    },
+    { key: "failureRate", label: "Failure rate", render: (row) => rateCell(row as unknown as StatusBuckets) },
+    { key: "blocked", label: "Blocked" },
+    { key: "costDreamcoins", label: "Cost" },
+  ];
+  return (
+    <ReadonlyOpsView
+      columns={columns}
+      empty={t("No generation records in window.")}
+      rows={byFailureImpact(recipes) as unknown as Record<string, unknown>[]}
+      summary={recipes.length > 0 ? bucketsSummary(recipes, t) : null}
+      title={t("Recipes")}
+    />
+  );
+}
+
+function SourcesTable({ sources }: { sources: SourceMetric[] }) {
+  const { t, value } = useAdminI18n();
+  const columns: OpsColumn[] = [
+    { key: "sourceType", label: "Source", render: (row) => value(String(row.sourceType)) },
+    { key: "total", label: "Total" },
+    { key: "completed", label: "Completed" },
+    {
+      key: "failed",
+      label: "Failed",
+      render: (row) => (
+        <FailedCell
+          buckets={row as unknown as StatusBuckets}
+          jobsQuery={failedJobsQuery({ sourceType: row.sourceType as string })}
+        />
+      ),
+    },
+    { key: "failureRate", label: "Failure rate", render: (row) => rateCell(row as unknown as StatusBuckets) },
+    { key: "blocked", label: "Blocked" },
+    { key: "costDreamcoins", label: "Cost" },
+  ];
+  return (
+    <ReadonlyOpsView
+      columns={columns}
+      empty={t("No generation records in window.")}
+      rows={byFailureImpact(sources) as unknown as Record<string, unknown>[]}
+      summary={sources.length > 0 ? bucketsSummary(sources, t) : null}
+      title={t("Sources")}
+    />
+  );
+}
+
+// SPEC: 曝光和点击各印一列却从不算 CTR —— 增长唯一要看的派生数。补上，并按 CTR 排序。
+function PlacementEngagementTable({ engagement }: { engagement: PlacementEngagementMetric[] }) {
+  const { t, value } = useAdminI18n();
+  const totals = engagement.reduce(
+    (sum, row) => ({ impressions: sum.impressions + row.impressions, clicks: sum.clicks + row.clicks }),
+    { impressions: 0, clicks: 0 },
+  );
+  const rows = [...engagement].sort(
+    (a, b) => (ratio(b.clicks, b.impressions) ?? -1) - (ratio(a.clicks, a.impressions) ?? -1),
+  );
+  const columns: OpsColumn[] = [
+    { key: "slot", label: "Slot", render: (row) => value(String(row.slot)) },
+    { key: "placementId", label: "Placement", render: (row) => <span className="font-mono">{(row.placementId as string | null) ?? "–"}</span> },
+    { key: "impressions", label: "Impressions" },
+    { key: "clicks", label: "Clicks" },
+    {
+      key: "ctr",
+      label: "CTR",
+      render: (row) => (
+        <span className="tabular-nums">
+          {formatPercent(ratio(row.clicks as number, row.impressions as number))}
+        </span>
+      ),
+    },
+  ];
+  return (
+    <ReadonlyOpsView
+      columns={columns}
+      empty={t("No generation records in window.")}
+      rows={rows as unknown as Record<string, unknown>[]}
+      summary={engagement.length > 0
+        ? t("{impressions} impressions · {clicks} clicks · {ctr} CTR", {
+            impressions: totals.impressions,
+            clicks: totals.clicks,
+            ctr: formatPercent(ratio(totals.clicks, totals.impressions)),
+          })
+        : null}
+      title={t("Placement Engagement")}
+    />
+  );
+}
+
+function RemixSection({ total }: { total: number }): ReactNode {
+  const { t } = useAdminI18n();
   return (
     <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
       <h3 className="mb-3 text-sm font-semibold">{t("Remix")}</h3>

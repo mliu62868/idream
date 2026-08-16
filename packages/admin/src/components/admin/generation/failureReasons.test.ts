@@ -23,6 +23,30 @@ describe("resolveFailureReason", () => {
     expect(resolveFailureReason(null).title).toBe("Unknown error");
     expect(resolveFailureReason(undefined).code).toBe("");
   });
+  // SPEC: 新登记的码都要能从生产代码里查到发出点；这里锁住它们的严重度分类，
+  // 因为严重度决定运营是"重试"还是"找工程"还是"先对账"。
+  // SPEC: 迟到的结果是「无需处理」，落库失败和结果未知是「需要工程介入」。
+  // INTENT: 三者都不该说「可以安全重试」——provider_outcome_unknown 意味着那一次到底跑没跑
+  //         不知道，直接重试可能产生第二次真实生成和第二次扣费。宁可让运营先去对账。
+  it("never tells the operator to retry a job whose outcome is unknown", () => {
+    expect(resolveFailureReason("stale_provider_outcome").severity).toBe("waiting");
+    for (const code of ["terminal_record_persist_failed", "provider_outcome_unknown"]) {
+      expect(resolveFailureReason(code).severity).toBe("engineering");
+      expect(resolveFailureReason(code).title).not.toBe("Unknown error");
+    }
+  });
+
+  it("tells the operator to adjust and regenerate for the quality code", () => {
+    expect(resolveFailureReason("asset_quality_failed").severity).toBe("retry");
+  });
+
+  // SPEC: generation_failed 是「没有更具体的码」时的兜底，不是一个已知原因。
+  // INTENT: 对一个未分类的失败说「可以安全重试」是猜的；让运营去打开任务看它自己的失败原因。
+  it("sends the unclassified fallback to the job's own failure reason", () => {
+    expect(resolveFailureReason("generation_failed").severity).toBe("engineering");
+    expect(resolveFailureReason("generation_failed").hint).toContain("job");
+  });
+
   it("does not leak the prototype chain for special keys", () => {
     for (const key of ["constructor", "__proto__", "hasOwnProperty", "toString"]) {
       const reason = resolveFailureReason(key);

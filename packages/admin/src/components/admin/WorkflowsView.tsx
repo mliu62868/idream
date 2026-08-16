@@ -58,10 +58,10 @@ export function WorkflowsView() {
       setAuthority((current) => authorityRequestFailed(
         current,
         queryKey,
-        err instanceof Error ? err.message : "Load failed",
+        err instanceof Error ? err.message : t("Request failed"),
       ));
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     const gate = requestGate.current;
@@ -104,12 +104,12 @@ export function WorkflowsView() {
           <thead className="border-b border-[var(--ad-border)] text-xs text-[var(--ad-text-muted)]">
             <tr>
               <th scope="col" className="px-3 py-2 font-medium"><span className="sr-only">{t("Expand")}</span></th>
-              <th scope="col" className="px-3 py-2 font-medium">{t("workflowKey")}</th>
-              <th scope="col" className="px-3 py-2 font-medium">{t("modelId")}</th>
-              <th scope="col" className="px-3 py-2 font-medium">{t("backendKind")}</th>
-              <th scope="col" className="px-3 py-2 font-medium">{t("version")}</th>
-              <th scope="col" className="px-3 py-2 font-medium">{t("capabilities")}</th>
-              <th scope="col" className="px-3 py-2 font-medium">{t("slots")}</th>
+              <th scope="col" className="px-3 py-2 font-medium">{t("Workflow")}</th>
+              <th scope="col" className="px-3 py-2 font-medium">{t("Model")}</th>
+              <th scope="col" className="px-3 py-2 font-medium">{t("Backend")}</th>
+              <th scope="col" className="px-3 py-2 font-medium">{t("Version")}</th>
+              <th scope="col" className="px-3 py-2 font-medium">{t("Capabilities")}</th>
+              <th scope="col" className="px-3 py-2 font-medium">{t("Slots")}</th>
             </tr>
           </thead>
           <tbody>
@@ -213,10 +213,10 @@ function SlotTable({ slots }: { slots: WorkflowSlot[] }) {
       <caption className="sr-only">{t("Workflow inputs")}</caption>
       <thead className="text-[var(--ad-text-muted)]">
         <tr>
-          <th scope="col" className="px-2 py-1 font-medium">{t("key")}</th>
-          <th scope="col" className="px-2 py-1 font-medium">{t("type")}</th>
-          <th scope="col" className="px-2 py-1 font-medium">{t("target")}</th>
-          <th scope="col" className="px-2 py-1 font-medium">{t("default")}</th>
+          <th scope="col" className="px-2 py-1 font-medium">{t("Key")}</th>
+          <th scope="col" className="px-2 py-1 font-medium">{t("Type")}</th>
+          <th scope="col" className="px-2 py-1 font-medium">{t("Target")}</th>
+          <th scope="col" className="px-2 py-1 font-medium">{t("Default")}</th>
         </tr>
       </thead>
       <tbody>

@@ -97,6 +97,8 @@ export const adminZhPlatformOps: Record<string, string> = {
   "Provider did not answer in time": "供应商未在时限内响应",
   "Provider is unavailable": "供应商当前不可用",
   "Provider outcome is unknown": "供应商这次的结果未知",
+  "Image failed the quality check": "图片没通过完整性检查",
+  "Blank, collaged, or corrupt output is discarded — adjust the prompt and generate again": "空白、拼贴或损坏的产出会被丢弃——调整提示词后重新生成",
   "Provider policy refused this request": "供应商策略拒绝了这次请求",
   "Provider refused to run this request": "供应商拒绝执行这次请求",
   "Provider rejected the request": "供应商拒绝了这次请求",
@@ -727,4 +729,132 @@ export const adminZhPlatformOps: Record<string, string> = {
     "{profile} 将创建首张肖像，且不会假设身份参考图已经存在。",
   "· authority confirmation required": "· 需要权威确认",
   "· reassigned {count}×": " · 已重新分配 {count} 次",
+  // ---- 视图组运营化改造（生成指标决策层 / 工作流列名 / 档案健康度 / 配方与预设写反馈）----
+  "{error} Showing the last successfully loaded {days}-day snapshot.":
+    "{error} 展示的是最近一次成功加载的 {days} 天快照。",
+  "{error} {days}-day metrics are unavailable. The last successful snapshot was {lastGood} days and is not shown for this window.":
+    "{error} {days} 天口径当前不可用。最近一次成功的快照是 {lastGood} 天，与本窗口口径不同，故不展示。",
+  "{error} {days}-day metrics are unavailable.":
+    "{error} {days} 天口径当前不可用。",
+  "Metrics authority returned {returned} days for a {requested}-day request.":
+    "请求的是 {requested} 天，指标权威返回的却是 {returned} 天。",
+  "Last {days} days":
+    "最近 {days} 天",
+  "Change is measured against the {days} days before this window.":
+    "变化幅度对比的是本窗口之前的 {days} 天。",
+  "No comparison window is available, so no change is shown.":
+    "没有可比窗口，因此不展示变化幅度。",
+  "Failure rate":
+    "失败率",
+  "Total cost":
+    "花费合计",
+  "Placement CTR":
+    "铺位点击率",
+  "Open the failed generation jobs behind this number":
+    "打开这个数字背后的失败任务",
+  "{total} generations · {rate} failed · {cost} DC total":
+    "共 {total} 次生成 · 失败 {rate} · 花费合计 {cost} DC",
+  "{impressions} impressions · {clicks} clicks · {ctr} CTR":
+    "曝光 {impressions} · 点击 {clicks} · 点击率 {ctr}",
+  "Capabilities":
+    "能力",
+  "Slots":
+    "槽位",
+  "Key":
+    "键",
+  "Default":
+    "默认值",
+  "Runs deterministic profile and runtime validation for {label}. No provider is called and no media is generated.":
+    "对 {label} 跑确定性的档案与运行时校验。不调用供应器，也不生成任何媒体。",
+  "Model profile":
+    "模型档案",
+  "No model profiles available.":
+    "没有可选的模型档案。",
+  "Select a model profile…":
+    "选择一个模型档案…",
+  "Draft saved. {label} stays a draft until you publish it.":
+    "草稿已保存。{label} 在你发布之前仍是草稿。",
+  "{label} is published and now serves generation requests.":
+    "{label} 已发布，开始承接生成请求。",
+  "{label} is rolled back and no longer serves generation requests.":
+    "{label} 已回滚，不再承接生成请求。",
+  "Saved. {label} now shows the edited values.":
+    "已保存。{label} 现在展示修改后的值。",
+  "Restored. This preset is selectable again.":
+    "已恢复。这个预设重新可选。",
+  "Archived. {label} is no longer offered to users.":
+    "已归档。{label} 不再提供给用户。",
+  // ---- RELOCATE ----
+  // 下面这些 key 的域归属分别是 i18n-zh-characters.ts（审核队列 / 标签 / 角色模板）、
+  // i18n-zh-creative.ts（铺位 / 图片库）与 i18n-zh-common.ts（Dismiss）。本轮 agent 不持有
+  // 那三个文件（并行改动中），先寄存在这里以保证 i18n 完整性测试为绿；合并时按注释整块搬走，
+  // key 之间无冲突。
+  "Saved view {label} saved.":
+    "已保存视图“{label}”。",
+  "Only this saved filter set is removed. No submission or decision is affected.":
+    "只删除这组保存的筛选条件，不影响任何提交或审核决定。",
+  "Saved view {label} deleted.":
+    "已删除保存的视图“{label}”。",
+  "Human review queue for pending character submissions only. Approve moves the character to approved and into publication prep; it only goes public after Release. Reject moves it to rejected. Both require a reason and are audited.":
+    "角色人审队列：只展示待审（pending）的提交。Approve 把角色置为已通过并进入发布准备；只有 Release 发布后才会公开。Reject 置为已拒绝。两者都需要理由并进审计。",
+  "On submit this character becomes {status}.":
+    "提交后这个角色将变为 {status}。",
+  "Approval only starts publication prep — Asset, QA and Release must still complete before it goes live.":
+    "通过审核只是进入发布准备——仍需完成 Asset、QA 与 Release 才会上线。",
+  "Approved. Awaiting publication: complete assets, QA, and Release before the character goes live.":
+    "已通过。等待发布：完成素材、QA 与 Release 后角色才会上线。",
+  "Approved. This decision did not publish the character.":
+    "已通过。这一步并没有发布该角色。",
+  "Review decision recorded.":
+    "审核决定已记录。",
+  "Renamed {slug} to {label}. {count} character link(s) keep the tag.":
+    "已把 {slug} 改名为 {label}。{count} 条角色关联保持不变。",
+  "Saved {slug}. {count} character link(s) keep the tag.":
+    "已保存 {slug}。{count} 条角色关联保持不变。",
+  "Merged {source} into {target} — moved {count} character link(s).":
+    "已把 {source} 合并进 {target}——迁移了 {count} 条角色关联。",
+  "Tag taxonomy — {shown} of {total}":
+    "标签分类法 —— 共 {total} 个，显示 {shown} 个",
+  "Tag taxonomy — {total}":
+    "标签分类法 —— 共 {total} 个",
+  "Search by slug, label, or category":
+    "按 slug、名称或分类搜索",
+  "All categories":
+    "全部分类",
+  "Uncategorised":
+    "未分类",
+  "No tags match these filters.":
+    "没有标签符合当前筛选。",
+  "Saved. {name} now shows the edited values.":
+    "已保存。{name} 现在展示修改后的值。",
+  "{name} is published and offered in character creation.":
+    "{name} 已发布，出现在角色创建流程里。",
+  "{name} is offline and no longer offered in character creation.":
+    "{name} 已下线，不再出现在角色创建流程里。",
+  "Paused. {slot} stops serving immediately.":
+    "已暂停。{slot} 立即停止投放。",
+  "Archived. {slot} is retired and will not serve again.":
+    "已归档。{slot} 已退役，不会再投放。",
+  "Placement pause was committed, but the latest projection could not be refreshed: {message}. Use Refresh before another write.":
+    "暂停已提交，但最新投影没能刷新：{message}。再次写入前请先点刷新。",
+  "Placement archival was committed, but the latest projection could not be refreshed: {message}. Use Refresh before another write.":
+    "归档已提交，但最新投影没能刷新：{message}。再次写入前请先点刷新。",
+  "Saved. Tags and description are searchable for chat reuse now.":
+    "已保存。标签与描述现在可用于聊天复用检索。",
+  "Archived. {id} is out of the library and cannot be placed.":
+    "已归档。{id} 已移出图库，不能再用于铺位。",
+  "Asset changes were committed, but the latest projection could not be refreshed: {message}. Use Refresh before another write.":
+    "资产修改已提交，但最新投影没能刷新：{message}。再次写入前请先点刷新。",
+  "Asset archival was committed, but the latest projection could not be refreshed: {message}. Use Refresh before another write.":
+    "资产归档已提交，但最新投影没能刷新：{message}。再次写入前请先点刷新。",
+  "Go to Creative Runs":
+    "去 Creative Run",
+  "Assets are produced by Creative Runs. Widen the filters, or start a run to create new ones.":
+    "资产由 Creative Run 产出。放宽筛选条件，或者发起一轮 Run 来生成新的。",
+  "Assets are produced by Creative Runs. Start a run to create the first one.":
+    "资产由 Creative Run 产出。发起一轮 Run 来生成第一批。",
+  "No platform assets yet.":
+    "还没有平台资产。",
+  "{scope} · sort {order} · {count} tags":
+    "{scope} · 排序 {order} · {count} 个标签",
 };
