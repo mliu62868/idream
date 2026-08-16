@@ -3,6 +3,7 @@ import { useState } from "react";
 import { Loader2 } from "lucide-react";
 import { apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { requestErrorMessage } from "@/components/admin/section-kit";
 import { FormPage, FormSection, Field, FormFooter, INPUT_CLASS, TEXTAREA_CLASS } from "@/components/admin/ui/FormPage";
 import { PrimaryButton } from "@/components/admin/ui/buttons";
 import {
@@ -42,7 +43,7 @@ export function RecipesNewPage() {
       const newId = created.recipe?.id;
       window.location.href = newId ? `/admin/generation/recipes/${newId}` : "/admin/generation/recipes";
     } catch (createError) {
-      setError(createError instanceof Error ? createError.message : t("Request failed"));
+      setError(requestErrorMessage(createError, t));
       setCreating(false);
     }
   }

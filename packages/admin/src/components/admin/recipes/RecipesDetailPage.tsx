@@ -11,7 +11,7 @@ import { DangerButton, GhostButton, PrimaryButton } from "@/components/admin/ui/
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { EngineeringDetails } from "@/components/admin/generation/EngineeringDetails";
 import { LoadingWorkspace } from "@/features/operations/WorkspaceUi";
-import { InfoGrid, useWriteFeedback, WriteFeedbackBanner } from "@/components/admin/section-kit";
+import { InfoGrid, WriteFeedbackBanner, requestErrorMessage, useWriteFeedback } from "@/components/admin/section-kit";
 import {
   MODES,
   RECIPES_LIST,
@@ -60,7 +60,7 @@ export function RecipesDetailPage({ id }: { id: string }) {
       const data = await apiGet<{ recipe: Recipe }>(`${RECIPES_LIST}/${encodeURIComponent(id)}`);
       setRows([data.recipe]);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : t("Request failed"));
+      setError(requestErrorMessage(loadError, t));
     } finally {
       setLoading(false);
     }
@@ -103,7 +103,7 @@ export function RecipesDetailPage({ id }: { id: string }) {
       setDraft(null);
       reportSuccess(t("Draft saved. {label} stays a draft until you publish it.", { label: draft.label }));
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : t("Request failed"));
+      setError(requestErrorMessage(saveError, t));
     } finally {
       setSaving(false);
     }

@@ -10,7 +10,7 @@ import { DangerButton, GhostButton, PrimaryButton } from "@/components/admin/ui/
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { EngineeringDetails } from "@/components/admin/generation/EngineeringDetails";
 import { LoadingWorkspace } from "@/features/operations/WorkspaceUi";
-import { InfoGrid, useWriteFeedback, WriteFeedbackBanner } from "@/components/admin/section-kit";
+import { InfoGrid, WriteFeedbackBanner, requestErrorMessage, useWriteFeedback } from "@/components/admin/section-kit";
 import {
   SCOPES,
   STARTER_GENDERS,
@@ -69,7 +69,7 @@ export function StartersDetailPage({ id }: { id: string }) {
       const data = await apiGet<{ template: Starter }>(`${STARTERS_LIST}/${encodeURIComponent(id)}`);
       setRows([data.template]);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : t("Request failed"));
+      setError(requestErrorMessage(loadError, t));
     } finally {
       setLoading(false);
     }

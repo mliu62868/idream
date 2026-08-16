@@ -18,7 +18,7 @@ import {
   createAuthorityState,
 } from "@/lib/authority-state";
 import { createLatestRequestGate } from "@/lib/latest-request";
-import { useDebouncedReload, useUrlBootstrap } from "@/components/admin/section-kit";
+import { requestErrorMessage, useDebouncedReload, useUrlBootstrap } from "@/components/admin/section-kit";
 import { RECIPES_LIST, recipeStateLabelKey, type Recipe } from "./recipes-api";
 
 const STATUSES = ["draft", "active", "archived"] as const;
@@ -51,7 +51,7 @@ export function RecipesListPage() {
       setAuthority((current) => authorityRequestFailed(
         current,
         queryKey,
-        loadError instanceof Error ? loadError.message : t("Request failed"),
+        requestErrorMessage(loadError, t),
       ));
     }
   }, [search, status, t]);

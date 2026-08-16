@@ -9,7 +9,7 @@ import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { StatusPill } from "@/components/admin/ui/StatusPill";
-import { useWriteFeedback, WriteFeedbackBanner } from "@/components/admin/section-kit";
+import { WriteFeedbackBanner, requestErrorMessage, useWriteFeedback } from "@/components/admin/section-kit";
 import {
   authorityRequestFailed,
   authorityRequestStarted,
@@ -69,7 +69,7 @@ function DsarSection() {
       );
       setExported(data.export);
     } catch (error) {
-      setErr(error instanceof Error ? error.message : t("Request failed"));
+      setErr(requestErrorMessage(error, t));
     } finally {
       setBusy(null);
     }
@@ -109,7 +109,7 @@ function DsarSection() {
           : t("Erasure requested for {id}. The cross-service flow reports completion in the audit log.", { id: userId.trim() }),
       );
     } catch (error) {
-      setErr(error instanceof Error ? error.message : t("Request failed"));
+      setErr(requestErrorMessage(error, t));
     } finally {
       setBusy(null);
     }
@@ -243,7 +243,7 @@ function AgeVerificationSection() {
       setAuthority((current) => authorityRequestFailed(
         current,
         queryKey,
-        err instanceof Error ? err.message : t("Request failed"),
+        requestErrorMessage(err, t),
       ));
     }
   }, [t]);
@@ -283,7 +283,7 @@ function AgeVerificationSection() {
       } : current);
       void load(status);
     } catch (err) {
-      setOverrideError(err instanceof Error ? err.message : t("Request failed"));
+      setOverrideError(requestErrorMessage(err, t));
     } finally {
       setOverrideBusy(false);
     }

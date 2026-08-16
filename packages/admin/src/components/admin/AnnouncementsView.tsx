@@ -8,7 +8,7 @@ import { apiGet, apiWrite } from "@/components/admin/api";
 import { adminV2Request } from "@/lib/admin-v2-api";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { StatusPill } from "@/components/admin/ui/StatusPill";
-import { useWriteFeedback, WriteFeedbackBanner } from "@/components/admin/section-kit";
+import { WriteFeedbackBanner, requestErrorMessage, useWriteFeedback } from "@/components/admin/section-kit";
 import {
   announcementListPath,
   announcementQueryFromSearch,
@@ -62,7 +62,7 @@ export function AnnouncementsView() {
       setItems(data.items);
       setPageInfo(data.pageInfo);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t("Request failed"));
+      setError(requestErrorMessage(err, t));
     } finally {
       setLoading(false);
     }
@@ -122,7 +122,7 @@ export function AnnouncementsView() {
             : t("Activated “{title}”. It is visible site-wide now.", { title: item.title }),
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : t("Request failed"));
+      setError(requestErrorMessage(err, t));
     } finally {
       setActionBusy(false);
     }
@@ -306,7 +306,7 @@ function CreateAnnouncementForm({ onCreated, reload }: { onCreated: (message: st
           : t("Created “{title}”. Activate it when you want it on the site.", { title: trimmedTitle }),
       );
     } catch (error) {
-      setErr(error instanceof Error ? error.message : t("Request failed"));
+      setErr(requestErrorMessage(error, t));
     } finally {
       setBusy(false);
     }

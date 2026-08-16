@@ -17,7 +17,7 @@ import {
   createAuthorityState,
 } from "@/lib/authority-state";
 import { createLatestRequestGate } from "@/lib/latest-request";
-import { useDebouncedReload, useUrlBootstrap } from "@/components/admin/section-kit";
+import { requestErrorMessage, useDebouncedReload, useUrlBootstrap } from "@/components/admin/section-kit";
 import { SCOPES, STARTERS_LIST, type Starter } from "./starters-api";
 
 type StartersResponse = { items: Starter[]; pageInfo: { endCursor: string | null; hasNextPage: boolean } };
@@ -50,7 +50,7 @@ export function StartersListPage() {
       setAuthority((current) => authorityRequestFailed(
         current,
         queryKey,
-        loadError instanceof Error ? loadError.message : t("Request failed"),
+        requestErrorMessage(loadError, t),
       ));
     }
   }, [scope, search, status, t]);

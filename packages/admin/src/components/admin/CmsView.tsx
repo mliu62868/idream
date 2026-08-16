@@ -13,7 +13,7 @@ import {
 import { useEffect, useState } from "react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
-import { useWriteFeedback, WriteFeedbackBanner } from "@/components/admin/section-kit";
+import { WriteFeedbackBanner, requestErrorMessage, useWriteFeedback } from "@/components/admin/section-kit";
 
 type ContentStatus = "template" | "draft" | "published";
 type IndexingStatus = "noindex" | "index";
@@ -94,7 +94,7 @@ export function CmsView() {
       }
       setPages(data.items);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t("Request failed"));
+      setError(requestErrorMessage(err, t));
     } finally {
       setLoading(false);
     }
@@ -141,7 +141,7 @@ export function CmsView() {
           : t("{path} is unpublished and back to draft. It is no longer served.", { path }),
       );
     } catch (err) {
-      const message = err instanceof Error ? err.message : t("Request failed");
+      const message = requestErrorMessage(err, t);
       // A status command is a one-shot operation against the exact row version
       // displayed to the operator. Never retain a stale confirmation.
       setPublishDraft(null);
@@ -176,7 +176,7 @@ export function CmsView() {
         confirmation: "",
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : t("Request failed"));
+      setError(requestErrorMessage(err, t));
     } finally {
       setEditLoadingPath(null);
     }
@@ -205,7 +205,7 @@ export function CmsView() {
       await load();
       reportSuccess(t("Draft saved for {path}. Publishing is still a separate action.", { path: savedPath }));
     } catch (err) {
-      const message = err instanceof Error ? err.message : t("Request failed");
+      const message = requestErrorMessage(err, t);
       if (/changed|since it was loaded/i.test(message)) {
         setEditDraft(null);
         await load();
@@ -607,7 +607,7 @@ function CreatePageForm({ onCreated, reload }: { onCreated: (message: string) =>
       await reload();
       onCreated(t("Created draft {path}. It is not served until you publish it.", { path: expectedPath }));
     } catch (error) {
-      setErr(error instanceof Error ? error.message : t("Request failed"));
+      setErr(requestErrorMessage(error, t));
     } finally {
       setBusy(false);
     }

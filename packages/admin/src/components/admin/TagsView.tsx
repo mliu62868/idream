@@ -17,7 +17,7 @@ import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestErr
 import { PageHeader } from "@/components/admin/ui/PageHeader";
 import { FilterBar } from "@/components/admin/ui/FilterBar";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
-import { useWriteFeedback, WriteFeedbackBanner } from "@/components/admin/section-kit";
+import { WriteFeedbackBanner, requestErrorMessage, useWriteFeedback } from "@/components/admin/section-kit";
 import {
   authorityRequestFailed,
   authorityRequestStarted,
@@ -71,7 +71,7 @@ export function TagsView() {
       setAuthority((current) => authorityRequestFailed(
         current,
         queryKey,
-        err instanceof Error ? err.message : t("Request failed"),
+        requestErrorMessage(err, t),
       ));
     }
   }, [t]);

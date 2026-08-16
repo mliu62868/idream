@@ -799,4 +799,7 @@ export const adminZhPlatformOps: Record<string, string> = {
     "关闭",
   "{scope} · sort {order} · {count} tags":
     "{scope} · 排序 {order} · {count} 个标签",
+  // RELOCATE(续): 同属 i18n-zh-characters.ts —— 删除保存视图的后果说明。
+  "Deleting is permanent — there is no undo. Pending submissions and past decisions are untouched.":
+    "删除不可撤销，没有后悔药。待审提交与历史审核决定不受影响。",
 };

@@ -245,4 +245,11 @@ export const adminZhGrowth: Record<string, string> = {
     "{path} 的草稿已保存。发布仍是单独的一步。",
   "Created draft {path}. It is not served until you publish it.":
     "草稿 {path} 已创建。发布之前不会对外提供。",
+  // ---- 实验启停的后果说明（ConfirmDialog.consequence 的文案）----
+  // NOTE: 上面同域的两条旧 summary 文案已被这两条取代，但按「字典只追加」的合并约定保留原位；
+  // 合并完成后可一并清掉（见交接说明）。
+  "Real users start being assigned to {key} v{version} immediately. You can stop it later, but subjects already exposed stay exposed. Your reason goes to the audit log.":
+    "真实用户会立即开始被分配到 {key} v{version}。你之后可以停止它，但已经曝光过的用户仍然算曝光过。你填写的理由会进审计日志。",
+  "Assignment ends for everyone immediately and {key} v{version} cannot be restarted — running this test again needs a new version. Your reason goes to the audit log.":
+    "分流会对所有人立即终止，且 {key} v{version} 无法重启——要再跑这个实验必须新建一个版本。你填写的理由会进审计日志。",
 };

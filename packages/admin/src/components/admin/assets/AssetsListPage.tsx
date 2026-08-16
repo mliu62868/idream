@@ -12,7 +12,7 @@ import { AssetImage } from "@/components/admin/ui/AssetImage";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { DangerButton, GhostButton, PrimaryButton } from "@/components/admin/ui/buttons";
 import { createLatestRequestGate } from "@/lib/latest-request";
-import { useDebouncedReload, useUrlBootstrap } from "@/components/admin/section-kit";
+import { requestErrorMessage, useDebouncedReload, useUrlBootstrap } from "@/components/admin/section-kit";
 import {
   ASSET_PURPOSES,
   ASSET_STATUSES,
@@ -95,7 +95,7 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
       window.history.replaceState(null, "", `${window.location.pathname}${params.size ? `?${params}` : ""}`);
     } catch (loadError) {
       if (!request.isCurrent()) return;
-      setError(loadError instanceof Error ? loadError.message : t("Request failed"));
+      setError(requestErrorMessage(loadError, t));
     } finally {
       if (request.isCurrent()) setLoading(false);
     }

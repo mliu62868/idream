@@ -16,6 +16,7 @@ import Link from "next/link";
 import { Loader2, RefreshCcw } from "lucide-react";
 import { apiGet } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { requestErrorMessage } from "@/components/admin/section-kit";
 import { ReadonlyOpsView, type OpsColumn } from "@/components/admin/generation/ReadonlyOpsView";
 import { cn } from "@/lib/utils";
 
@@ -236,7 +237,7 @@ export function GenerationMetricsView() {
     } catch (err) {
       setErrorsByWindow((current) => ({
         ...current,
-        [days]: err instanceof Error ? err.message : t("Request failed"),
+        [days]: requestErrorMessage(err, t),
       }));
     } finally {
       setLoadingByWindow((current) => ({ ...current, [days]: false }));
