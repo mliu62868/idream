@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { useRef, useState, type FormEvent } from "react";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { ConfirmDialog } from "@/components/admin/ui/ConfirmDialog";
 import {
   StatusBadge,
   WorkspaceButton,
@@ -74,7 +75,10 @@ export function CharacterVoicePanel({
   const [reason, setReason] = useState("");
   const [activationReason, setActivationReason] = useState("");
   const [resetReason, setResetReason] = useState("");
-  const [defaultReason, setDefaultReason] = useState("");
+  // SPEC: 系统默认语音是全局写，确认走 ConfirmDialog（它自己收 reason ≥3）。
+  // INTENT: 这是唯一一处能从单个角色页面改到全站的设置，原先只有一个输入框加一个按钮。
+  const [systemDefaultsConfirmOpen, setSystemDefaultsConfirmOpen] =
+    useState(false);
   const [defaultDraftOverride, setDefaultDraftOverride] = useState<{
     settingVersion: number;
     defaultVoiceId: FishAudioCatalogVoiceId;
@@ -220,7 +224,7 @@ export function CharacterVoicePanel({
     }
   }
 
-  async function saveSystemDefaults() {
+  async function saveSystemDefaults(defaultReason: string) {
     if (!canManageDefaults || busy || defaultReason.trim().length < 3) return;
     setBusy(true);
     setError(null);
@@ -243,7 +247,6 @@ export function CharacterVoicePanel({
           }),
         afterRefresh: () => {
           releaseIdempotencyKey(signature);
-          setDefaultReason("");
           setDefaultDraftOverride(null);
         },
       });
@@ -990,22 +993,10 @@ export function CharacterVoicePanel({
               />
             </div>
           ) : null}
-          <div className="mt-5 grid gap-3 border-t border-[var(--ad-border)] pt-4 md:grid-cols-[1fr_auto] md:items-end">
-            <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
-              {t("System default change reason")}
-              <input
-                className={`${fieldClass} mt-1`}
-                disabled={!canManageDefaults || busy}
-                minLength={3}
-                onChange={(event) => setDefaultReason(event.target.value)}
-                value={defaultReason}
-              />
-            </label>
+          <div className="mt-5 border-t border-[var(--ad-border)] pt-4">
             <WorkspaceButton
-              disabled={
-                !canManageDefaults || busy || defaultReason.trim().length < 3
-              }
-              onClick={() => void saveSystemDefaults()}
+              disabled={!canManageDefaults || busy}
+              onClick={() => setSystemDefaultsConfirmOpen(true)}
               tone="primary"
               type="button"
             >
@@ -1059,6 +1050,34 @@ export function CharacterVoicePanel({
             ))}
           </div>
         </details>
+      ) : null}
+      {systemDefaultsConfirmOpen ? (
+        <ConfirmDialog
+          onClose={() => setSystemDefaultsConfirmOpen(false)}
+          spec={{
+            title: t("Save system voice defaults"),
+            summary: (
+              <div className="space-y-2">
+                <p>
+                  {t(
+                    "This is a platform-wide setting. It changes new speech for every character that has no voice override, not just this one.",
+                  )}
+                </p>
+                <p>
+                  {t(
+                    "Characters with an activated voice keep it. Already generated audio is not replaced.",
+                  )}
+                </p>
+              </div>
+            ),
+            reasonLabel: t("System default change reason"),
+            submitLabel: t("Save system defaults"),
+            onSubmit: async (reason) => {
+              await saveSystemDefaults(reason);
+              setSystemDefaultsConfirmOpen(false);
+            },
+          }}
+        />
       ) : null}
     </div>
   );

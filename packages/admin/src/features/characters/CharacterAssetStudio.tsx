@@ -1817,6 +1817,18 @@ export function CharacterAssetStudio({
     }
   };
 
+  // SPEC: 按钮要说清这一下会重跑哪一张。
+  // INTENT: 它只对 recoveryPurpose 发一条 Run，但旁边写着「3 selected assets…」，
+  //         「Regenerate under current route」会被读成"三张一起重跑"。
+  const regenerateLabel = data.project.draftAssetRouteAuthority?.recoveryPurpose
+    ? t("Regenerate {purpose}", {
+        purpose: t(
+          purposeConfig[data.project.draftAssetRouteAuthority.recoveryPurpose]
+            .label,
+        ),
+      })
+    : t("Regenerate under current route");
+
   const regenerateUnderCurrentRoute = () => {
     const purpose = data.project.draftAssetRouteAuthority?.recoveryPurpose;
     if (!purpose) return;
@@ -2794,7 +2806,7 @@ export function CharacterAssetStudio({
               {t(`The active image route changed. ${data.project.draftAssetRouteAuthority.stalePurposes.length} selected asset${data.project.draftAssetRouteAuthority.stalePurposes.length === 1 ? "" : "s"} remain in history but cannot authorize QA.`)}
             </span>
             <WorkspaceButton disabled={!canGenerate || busy !== null} onClick={regenerateUnderCurrentRoute}>
-              {t("Regenerate under current route")}
+              {regenerateLabel}
             </WorkspaceButton>
           </div>
         ) : productionBlocked ? (
@@ -2817,7 +2829,7 @@ export function CharacterAssetStudio({
             {t(`The active image route changed. ${data.project.draftAssetRouteAuthority.stalePurposes.length} selected asset${data.project.draftAssetRouteAuthority.stalePurposes.length === 1 ? "" : "s"} remain in history but cannot authorize QA.`)}
           </span>
           <WorkspaceButton disabled={!canGenerate || busy !== null} onClick={regenerateUnderCurrentRoute}>
-            {t("Regenerate under current route")}
+            {regenerateLabel}
           </WorkspaceButton>
         </div>
       ) : null}

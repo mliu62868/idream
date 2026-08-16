@@ -30,6 +30,8 @@ export const adminZhCharacters: Record<string, string> = {
   "Candidate could not be activated": "候选身份激活失败",
   "Candidate could not be adopted": "候选身份采用失败",
   "Candidate {number} from run {run}": "第 {run} 次创作的候选图 {number}",
+  "Characters with an activated voice keep it. Already generated audio is not replaced.":
+    "已启用专属语音的角色不受影响；已经生成的音频也不会被替换。",
   "Choose a JPG, PNG, or WebP image": "请选择 JPG、PNG 或 WebP 图片",
   "Choose a valid schedule date and time.": "请选择有效的排期日期与时间。",
   "Collapse": "收起",
@@ -114,6 +116,7 @@ export const adminZhCharacters: Record<string, string> = {
   "Read only · content.tag.write is not granted": "只读 · 未授予 content.tag.write",
   "Reason for change": "变更理由",
   "Reference image: {name}": "参考图：{name}",
+  "Regenerate {purpose}": "重新生成{purpose}",
   "Release steps": "发布步骤",
   "Release {kind} failed": "发布{kind}失败",
   "Requeue in operations": "到运维队列重跑",
@@ -127,6 +130,7 @@ export const adminZhCharacters: Record<string, string> = {
   "Run {run}: no images produced": "第 {run} 次：未产出图片",
   "Runs with no images": "未产出图片的历史创作",
   "Save character tags": "保存角色标签",
+  "Save system voice defaults": "保存系统语音默认值",
   "Save tags": "保存标签",
   "Seed strategy": "种子策略",
   "Selected image": "所选图片",
@@ -148,6 +152,8 @@ export const adminZhCharacters: Record<string, string> = {
     "此操作会创建角色项目、不可变修订和未激活的 Serving 工作区。",
   "It does not create or publish a Release and does not make the Character visible in Explore or Community.":
     "此操作不会创建或发布 Release，也不会让角色出现在 Explore 或 Community。",
+  "This is a platform-wide setting. It changes new speech for every character that has no voice override, not just this one.":
+    "这是全站设置。它会改变所有没有单独指定语音的角色的新语音，不只是当前这个角色。",
   "This older image has no usable composition check on record. You can keep adjusting from it, and newly generated images can be selected again.":
     "旧图片缺少可采用的构图检查记录。可以从这张继续调整，生成的新图仍可重新选择。",
   "This response does not include a visual identity experiment route yet.": "当前响应尚未提供视觉身份实验线路。",
