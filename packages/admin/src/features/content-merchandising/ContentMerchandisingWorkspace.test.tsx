@@ -5,9 +5,46 @@ import {
   ContentMerchandisingWorkspace,
   type FeaturedItem,
   FeaturedWriteResultNotice,
+  characterTableRow,
+  contentCommandLabel,
   featuredTableRow,
   featuredVersionConflictFromError,
 } from "./ContentMerchandisingWorkspace";
+
+describe("Content merchandising takedown targets", () => {
+  // SPEC: 可见性动作能产出 unlisted，不只是 private。
+  // INTENT: 筛选器有三档、服务端 content.visibility.write 收三档、清理工具用 unlisted 表达
+  //         「从公开目录拿掉但保留直链」，此前动作按钮却只能打到 private —— 上线验证内容
+  //         正需要 unlisted 这一档。
+  it("labels each visibility target by its value", () => {
+    expect(contentCommandLabel("visibility", "unlisted")).toBe("Unlist");
+    expect(contentCommandLabel("visibility", "private")).toBe("Make private");
+    expect(contentCommandLabel("status", "removed")).toBe("Remove");
+  });
+
+  it("offers unlist alongside make-private on every character row", () => {
+    const issued: Array<[string, string, string]> = [];
+    const row = characterTableRow(
+      { id: "character-1", name: "Launch validation", visibility: "public" },
+      true,
+      (id, field, value) => issued.push([id, field, value]),
+    );
+    const html = renderToStaticMarkup(<div>{row.cells.at(-1)}</div>);
+    expect(html).toContain("Unlist");
+    expect(html).toContain("Make private");
+    expect(html).toContain("Remove");
+  });
+
+  it("disables every row action without content.takedown.write", () => {
+    const row = characterTableRow(
+      { id: "character-1", name: "Launch validation", visibility: "public" },
+      false,
+      () => undefined,
+    );
+    const html = renderToStaticMarkup(<div>{row.cells.at(-1)}</div>);
+    expect(html.match(/disabled=""/g) ?? []).toHaveLength(3);
+  });
+});
 
 describe("Content merchandising permissions", () => {
   it("renders independent authority freshness and read-only state", () => {

@@ -97,10 +97,12 @@ export function CharacterMediaOperationsCard({
         <span className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--ad-text-muted)]">
           {projection.operations.map((operation) => (
             <span className="inline-flex items-center gap-1.5" key={operation.modality}>
-              {t(mediaOperationLabels[operation.modality])}
+              {/* 裸文本节点不是 flex item，gap 对它无效——「Image」和「No runs」会粘成
+                  「ImageNo runs」。两侧都套 span 才吃得到间距。 */}
+              <span>{t(mediaOperationLabels[operation.modality])}</span>
               {operation.status
                 ? <StatusBadge value={operation.status} />
-                : t("No runs")}
+                : <span>{t("No runs")}</span>}
             </span>
           ))}
         </span>

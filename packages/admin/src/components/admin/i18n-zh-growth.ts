@@ -157,6 +157,7 @@ export const adminZhGrowth: Record<string, string> = {
   "Type page path": "输入页面路径",
   "Type profile ID": "输入 profile ID",
   "Type title to confirm": "输入标题确认",
+  "Unlist": "取消公开列出",
   "Use a new lowercase CMS path. Duplicate and application-owned paths are rejected.":
     "请使用新的小写 CMS 路径；重复路径和应用自有路径会被拒绝。",
   "Version, publish, and roll back customer-facing generation prices while keeping every decision auditable.":

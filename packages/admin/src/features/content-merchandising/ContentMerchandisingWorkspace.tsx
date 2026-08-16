@@ -255,9 +255,11 @@ export function ContentMerchandisingWorkspace({
     const expected = `${id}:${field}:${value}`;
     const key = crypto.randomUUID();
     setConfirmSpec({
-      title: field === "visibility" ? `Make ${id} private` : `Remove ${id}`,
+      title: field === "visibility"
+        ? `${contentCommandLabel(field, value)} ${id}`
+        : `Remove ${id}`,
       destructive: { expectedName: expected, inputLabel: "Type confirmation" },
-      submitLabel: field === "visibility" ? "Make private" : "Remove",
+      submitLabel: contentCommandLabel(field, value),
       onSubmit: async (commandReason) => {
         await apiWrite(
           `/api/v1/admin/content/characters/${encodeURIComponent(id)}/${field}`,
@@ -792,7 +794,23 @@ export function featuredTableRow(
   };
 }
 
-function characterTableRow(
+/**
+ * SPEC: 下架动作的文案由目标值决定，不是写死的「Make private」。
+ *
+ * INTENT: 这张表的可见性筛选器有 private / unlisted / public 三档，但动作按钮只能把角色打到
+ * private —— 「从公开目录里拿掉、但保留直链」这个状态在后台无法产出，尽管服务端
+ * (content.visibility.write) 和清理工具 (applyPublicContentCleanup) 都用 unlisted 表达它。
+ * 上线验证内容正是这一类：不该占公开首位，也不该被收成 owner-only。
+ */
+export function contentCommandLabel(
+  field: "visibility" | "status",
+  value: string,
+) {
+  if (field === "status") return "Remove";
+  return value === "unlisted" ? "Unlist" : "Make private";
+}
+
+export function characterTableRow(
   row: Row,
   canWrite: boolean,
   command: (id: string, field: "visibility" | "status", value: string) => void,
@@ -800,6 +818,15 @@ function characterTableRow(
   const id = stringValue(row.id);
   const actions: ReactNode = (
     <div className="flex gap-2">
+      <button
+        className="rounded border border-[var(--ad-border)] px-2 py-1 text-xs disabled:opacity-50"
+        disabled={!canWrite}
+        onClick={() => command(id, "visibility", "unlisted")}
+        type="button"
+      >
+
+        <AdminText text="Unlist" />
+      </button>
       <button
         className="rounded border border-[var(--ad-border)] px-2 py-1 text-xs disabled:opacity-50"
         disabled={!canWrite}
