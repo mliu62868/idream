@@ -16,6 +16,7 @@ import { EngineeringDetails } from "@/components/admin/generation/EngineeringDet
 import { FailureReason } from "@/components/admin/generation/FailureReason";
 import { ReadonlyOpsView, type OpsColumn } from "@/components/admin/generation/ReadonlyOpsView";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { requestErrorMessage } from "@/components/admin/section-kit";
 import {
   authorityRequestFailed,
   authorityRequestStarted,
@@ -61,7 +62,7 @@ export function BackendsView() {
       setAuthority((current) => authorityRequestFailed(
         current,
         queryKey,
-        err instanceof Error ? err.message : t("Request failed"),
+        requestErrorMessage(err, t),
       ));
     }
   }, [t]);

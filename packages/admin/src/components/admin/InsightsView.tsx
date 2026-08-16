@@ -12,7 +12,7 @@ import { Activity, AlertTriangle, Loader2 } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
-import { useWriteFeedback, WriteFeedbackBanner } from "@/components/admin/section-kit";
+import { WriteFeedbackBanner, requestErrorMessage, useWriteFeedback } from "@/components/admin/section-kit";
 import { createLatestRequestGate } from "@/lib/latest-request";
 
 const inputClass =
@@ -103,7 +103,7 @@ function ProfileHealthSection() {
     } catch (error) {
       if (!request.isCurrent()) return;
       setProfiles([]);
-      setProfilesError(error instanceof Error ? error.message : t("Request failed"));
+      setProfilesError(requestErrorMessage(error, t));
     }
   }, [t]);
 
@@ -132,7 +132,7 @@ function ProfileHealthSection() {
       );
       setHealth(data);
     } catch (error) {
-      setErr(error instanceof Error ? error.message : t("Request failed"));
+      setErr(requestErrorMessage(error, t));
     } finally {
       setBusy(null);
     }

@@ -24,6 +24,15 @@ import { cn } from "@/lib/utils";
 // INVARIANT: 成功提示自动消失，失败提示不会——运营没读到的失败等于没发生。
 const SUCCESS_DISMISS_MS = 8_000;
 
+// SPEC: 请求失败时给运营看什么。有 Error 就用它自己的话，否则一句通用兜底。
+// SEAM(request-error-copy): 上游已落地 ui/request-error-copy.ts —— 把 AppErrorCode 映射成人话 +
+//   下一步，映射不到就如实说「原因未能识别」，5xx 与网络故障一律不承诺"没有写入"。合并后只改
+//   这一个函数体（`return requestErrorCopy(error).message`），26 个调用点一行都不用动。
+// INTENT: 兜底刻意只有一句通用文案 —— 绝不在 26 处各编一句自己的中文，那正是要消灭的东西。
+export function requestErrorMessage(error: unknown, t: (key: string) => string): string {
+  return error instanceof Error ? error.message : t("Request failed");
+}
+
 export type WriteFeedback = { tone: "success" | "failure"; message: string };
 
 export type WriteFeedbackHandle = {

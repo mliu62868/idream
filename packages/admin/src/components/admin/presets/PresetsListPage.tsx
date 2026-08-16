@@ -18,7 +18,7 @@ import {
   createAuthorityState,
 } from "@/lib/authority-state";
 import { createLatestRequestGate } from "@/lib/latest-request";
-import { useDebouncedReload, useUrlBootstrap } from "@/components/admin/section-kit";
+import { requestErrorMessage, useDebouncedReload, useUrlBootstrap } from "@/components/admin/section-kit";
 import { PRESET_TYPES, PRESETS_LIST, type PresetRow } from "./presets-api";
 
 type PresetsResponse = { items: PresetRow[]; pageInfo: { endCursor: string | null; hasNextPage: boolean } };
@@ -50,7 +50,7 @@ export function PresetsListPage() {
       setAuthority((current) => authorityRequestFailed(
         current,
         queryKey,
-        loadError instanceof Error ? loadError.message : t("Request failed"),
+        requestErrorMessage(loadError, t),
       ));
     }
   }, [search, t, type]);

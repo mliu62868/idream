@@ -17,7 +17,7 @@ import { apiGet, apiWrite } from "@/components/admin/api";
 import { adminV2Request } from "@/lib/admin-v2-api";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
-import { useWriteFeedback, WriteFeedbackBanner } from "@/components/admin/section-kit";
+import { WriteFeedbackBanner, requestErrorMessage, useWriteFeedback } from "@/components/admin/section-kit";
 import { cn } from "@/lib/utils";
 
 type ReviewCharacter = {
@@ -120,7 +120,7 @@ export function ReviewQueueView() {
       setPageInfo(data.pageInfo);
       window.history.replaceState(null, "", `${window.location.pathname}?${params}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t("Request failed"));
+      setError(requestErrorMessage(err, t));
     } finally {
       setLoading(false);
     }
@@ -135,7 +135,7 @@ export function ReviewQueueView() {
       );
       setSavedViews([...data.items]);
     } catch (err) {
-      reportFailure(err instanceof Error ? err.message : t("Request failed"));
+      reportFailure(requestErrorMessage(err, t));
     } finally {
       setSavedViewsLoading(false);
     }
@@ -183,7 +183,7 @@ export function ReviewQueueView() {
       await loadSavedViews();
       reportSuccess(t("Saved view {label} saved.", { label }));
     } catch (err) {
-      reportFailure(err instanceof Error ? err.message : t("Request failed"));
+      reportFailure(requestErrorMessage(err, t));
     } finally {
       setSavingView(false);
     }
@@ -192,10 +192,14 @@ export function ReviewQueueView() {
   // SPEC: 删除保存的视图必须先确认——这是本页唯一的破坏性写操作，且服务端不做软删除。
   // INTENT: DELETE 契约（collaboration.ts savedViewDeleteSchema）不收 reason，所以
   // requireReason:false——不让运营填一个会被丢弃的原因。双击防护由 ConfirmDialog 的 busy 守卫兜住。
+  // SEAM(consequence): 上游 ConfirmDialog 已加 consequence 字段（不可撤销动作常驻红条 +
+  //   DangerButton），本分支的 ConfirmSpec 还没有它。合并时把下面这句从 summary 移到
+  //   consequence 即可，文案不用改：
+  //   "Deleting is permanent — there is no undo. Pending submissions and past decisions are untouched."
   const deleteViewSpec: ConfirmSpec | null = deletingView
     ? {
         title: t("Delete saved view {label}", { label: deletingView.label }),
-        summary: t("Only this saved filter set is removed. No submission or decision is affected."),
+        summary: t("Deleting is permanent — there is no undo. Pending submissions and past decisions are untouched."),
         destructive: { expectedName: deletingView.label },
         requireReason: false,
         submitLabel: t("Delete"),
@@ -530,7 +534,7 @@ function DecisionDialog({
       );
       await onDone(result);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t("Request failed"));
+      setError(requestErrorMessage(err, t));
       setBusy(false);
     }
   }

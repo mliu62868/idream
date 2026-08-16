@@ -77,6 +77,8 @@ describe("ReviewQueueView saved-view deletion", () => {
     const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]');
     expect(dialog).not.toBeNull();
     expect(dialog?.textContent).toContain("Reported only");
+    // 后果先于确认串出现：删除不可撤销，但不牵连任何提交或审核决定。
+    expect(dialog?.textContent).toContain("Deleting is permanent");
 
     const submit = dialogButton(dialog, "Delete");
     expect(submit?.disabled).toBe(true);

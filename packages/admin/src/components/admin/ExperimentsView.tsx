@@ -13,7 +13,7 @@ import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { StatusPill } from "@/components/admin/ui/StatusPill";
-import { useWriteFeedback, WriteFeedbackBanner } from "@/components/admin/section-kit";
+import { WriteFeedbackBanner, requestErrorMessage, useWriteFeedback } from "@/components/admin/section-kit";
 
 type ManagedExperiment = ExperimentDefinition;
 type Analysis = ExperimentAnalysisResponse;
@@ -53,7 +53,7 @@ export function ExperimentsView() {
         setMonitoringUnavailable(true);
       }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : t("Request failed"));
+      setError(requestErrorMessage(reason, t));
     } finally {
       setLoading(false);
     }
@@ -83,19 +83,23 @@ export function ExperimentsView() {
       await load();
       reportSuccess(t("Draft {key} created. It is not assigning traffic until you start it.", { key: createdKey }));
     } catch (reason) {
-      reportFailure(reason instanceof Error ? reason.message : t("Request failed"));
+      reportFailure(requestErrorMessage(reason, t));
     } finally {
       setBusy(null);
     }
   }
 
   // SPEC: 启停的 reason 由运营手写并进审计；确认框同时要求把实验 key 打对，防止在长列表里点错行。
+  // SEAM(consequence): 上游 ConfirmDialog 已加 consequence 字段（不可撤销动作常驻红条 +
+  //   DangerButton），本分支的 ConfirmSpec 还没有它。合并时把下面 summary 的两句原样移进
+  //   consequence 即可。stop 那句的「不能重启」是核对过后端的：management.ts:158 里 start 只
+  //   接受 draft，stopped 没有回到 running 的路径。
   const lifecycleSpec: ConfirmSpec | null = pending
     ? {
         title: pending.command === "start" ? t("Start experiment") : t("Stop experiment"),
         summary: pending.command === "start"
-          ? t("Starting assigns live traffic to {key} v{version}. The reason you enter is written to the audit log.", { key: pending.row.key, version: pending.row.version })
-          : t("Stopping ends live assignment for {key} v{version} and cannot be undone by restarting the same version. The reason you enter is written to the audit log.", { key: pending.row.key, version: pending.row.version }),
+          ? t("Real users start being assigned to {key} v{version} immediately. You can stop it later, but subjects already exposed stay exposed. Your reason goes to the audit log.", { key: pending.row.key, version: pending.row.version })
+          : t("Assignment ends for everyone immediately and {key} v{version} cannot be restarted — running this test again needs a new version. Your reason goes to the audit log.", { key: pending.row.key, version: pending.row.version }),
         destructive: { expectedName: pending.row.key, inputLabel: t("Type the experiment key to confirm") },
         submitLabel: pending.command === "start" ? t("Start") : t("Stop"),
         onSubmit: async (reason) => {
@@ -123,7 +127,7 @@ export function ExperimentsView() {
       const result = await apiGet<Analysis>(`/api/v2/admin/experiments/${id}/analysis`);
       setAnalysis((current) => ({ ...current, [id]: result }));
     } catch (reason) {
-      reportFailure(reason instanceof Error ? reason.message : t("Request failed"));
+      reportFailure(requestErrorMessage(reason, t));
     } finally {
       setBusy(null);
     }

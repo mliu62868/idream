@@ -12,7 +12,7 @@ import { PrimaryButton } from "@/components/admin/ui/buttons";
 import { StatusPill } from "@/components/admin/ui/StatusPill";
 import { AssetImage } from "@/components/admin/ui/AssetImage";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
-import { useDebouncedReload, useUrlBootstrap } from "@/components/admin/section-kit";
+import { requestErrorMessage, useDebouncedReload, useUrlBootstrap } from "@/components/admin/section-kit";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import { ALL_STATUSES, placementsListPath, type Placement } from "./placements-api";
 
@@ -48,7 +48,7 @@ export function PlacementsListPage({ canPublish }: { canPublish: boolean }) {
       window.history.replaceState(null, "", `${window.location.pathname}${params.size ? `?${params}` : ""}`);
     } catch (loadError) {
       if (!request.isCurrent()) return;
-      setError(loadError instanceof Error ? loadError.message : t("Request failed"));
+      setError(requestErrorMessage(loadError, t));
     } finally {
       if (request.isCurrent()) setLoading(false);
     }

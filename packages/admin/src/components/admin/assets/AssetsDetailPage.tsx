@@ -11,7 +11,7 @@ import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { AssetImage } from "@/components/admin/ui/AssetImage";
 import { EngineeringDetails } from "@/components/admin/generation/EngineeringDetails";
 import { LoadingWorkspace } from "@/features/operations/WorkspaceUi";
-import { InfoGrid, useWriteFeedback, WriteFeedbackBanner } from "@/components/admin/section-kit";
+import { InfoGrid, WriteFeedbackBanner, requestErrorMessage, useWriteFeedback } from "@/components/admin/section-kit";
 import {
   ASSETS_LIST,
   assetAuthorityDependencyView,
@@ -46,7 +46,7 @@ export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: st
       setRows([data.asset]);
       setRefreshWarning(null);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : t("Request failed"));
+      setError(requestErrorMessage(loadError, t));
       if (propagateError) throw loadError;
     } finally {
       setLoading(false);

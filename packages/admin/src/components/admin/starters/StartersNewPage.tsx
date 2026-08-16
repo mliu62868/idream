@@ -3,6 +3,7 @@ import { useRef, useState } from "react";
 import { Loader2, Sparkles } from "lucide-react";
 import { apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { requestErrorMessage } from "@/components/admin/section-kit";
 import { FormPage, FormSection, Field, FormFooter, INPUT_CLASS, TEXTAREA_CLASS } from "@/components/admin/ui/FormPage";
 import { GhostButton, PrimaryButton } from "@/components/admin/ui/buttons";
 import { SCOPES, STARTER_GENDERS, STARTER_STYLES, STARTERS_LIST, starterPayload, tagsFromText, type StarterDraft } from "./starters-api";
@@ -57,7 +58,7 @@ export function StartersNewPage() {
         tags: [...new Set([...existing, ...traits])].slice(0, 12).join(", "),
       });
     } catch (assistError) {
-      setAssistError(assistError instanceof Error ? assistError.message : t("Request failed"));
+      setAssistError(requestErrorMessage(assistError, t));
     } finally {
       setAssisting(false);
     }
@@ -80,7 +81,7 @@ export function StartersNewPage() {
         ? `/admin/content/templates/${newId}`
         : "/admin/content/templates";
     } catch (createError) {
-      setCreateError(createError instanceof Error ? createError.message : t("Request failed"));
+      setCreateError(requestErrorMessage(createError, t));
       setCreating(false);
     }
   }

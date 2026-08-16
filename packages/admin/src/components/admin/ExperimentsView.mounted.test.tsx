@@ -77,7 +77,9 @@ describe("ExperimentsView lifecycle commands", () => {
 
     const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]');
     expect(dialog).not.toBeNull();
-    expect(dialog?.textContent).toContain("cannot be undone by restarting the same version");
+    // 后果必须在敲确认串之前就读得到，且说清楚不可逆（management.ts:158 —— stopped 回不到 running）。
+    expect(dialog?.textContent).toContain("cannot be restarted");
+    expect(dialog?.textContent).toContain("needs a new version");
 
     const inputs = Array.from(dialog?.querySelectorAll("input") ?? []);
     expect(inputs).toHaveLength(2);
