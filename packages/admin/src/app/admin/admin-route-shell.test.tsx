@@ -68,8 +68,8 @@ describe("canonical Admin route shell", () => {
 
     expect(source).toContain("adminEntryRedirect");
     expect(source).toContain("renderAdminRoute(section");
-    expect(source).not.toContain("loadBootstrap");
-    expect(renderer).toContain("loadBootstrap");
+    expect(source).not.toContain("loadAdminBootstrap");
+    expect(renderer).toContain("loadAdminBootstrap");
     expect(renderer).toContain("canReadAnyWorkspace");
     expect(renderer).toContain("<AdminConsoleClientOnly");
   });

@@ -10,9 +10,12 @@ export const adminZhShell: Record<string, string> = {
   "Activity type": "动态类型",
   "Add activity": "添加动态",
   "Admin access denied": "无后台访问权限",
+  "Admin authority service unavailable": "后台权威服务不可用",
+  "Admin workspace not found": "未找到后台工作区",
   "Admin navigation": "后台导航",
   "Attachment evidence IDs": "附件证据 ID",
   "Backend Diagnostics": "后端诊断",
+  "Back to Today": "返回今日工作",
   "Billing Operations": "计费运营",
   "Breadcrumb": "当前位置",
   "CMS & SEO": "CMS 与 SEO",
@@ -23,6 +26,7 @@ export const adminZhShell: Record<string, string> = {
   "Checklist update": "检查清单更新",
   "Choose a saved view": "选择已保存视图",
   "Close navigation": "关闭导航",
+  "Closest workspaces": "你可能想去的是",
   "Comment": "评论",
   "Comments, mentions, handoffs, and checklist evidence remain attached to this record.":
     "评论、提及、交接和检查清单证据会一直关联到此记录。",
@@ -76,6 +80,10 @@ export const adminZhShell: Record<string, string> = {
   "Strict": "严格",
   "Support Cases": "支持工单",
   "Taxonomy": "分类体系",
+  "The control plane cannot verify identity, permissions, or data provenance right now. Admin data and commands stay unavailable until the authority service recovers.":
+    "控制面当前无法验证身份、权限和数据来源。权威服务恢复前，后台数据与操作均不可用。",
+  "This route is not part of the current console information architecture.":
+    "此路由不属于当前控制面的信息架构。",
   "These keys are granted in Team Access by an operator holding {key}.":
     "这些权限键在「团队访问」里授予，授予者需要 {key} 权限。",
   "This workspace requires permission keys your account does not have.":

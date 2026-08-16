@@ -1,13 +1,25 @@
-import Link from "next/link";
+import { cookies, headers } from "next/headers";
+import { AdminNotFoundPage } from "@/components/admin/AdminMessagePage";
+import { readAdminShellPreferences } from "@/components/admin/shell-preferences";
+import { loadAdminBootstrap } from "./_server/render-admin-route";
+import { ADMIN_UNKNOWN_PATH_HEADER } from "@/proxy";
 
-export default function AdminNotFound() {
+// SPEC: 404 页要知道运营原本想去哪儿，才能给出"你可能想去的是这几个"。
+// INTENT: not-found.tsx 拿不到 pathname——Next 没给这个入口任何路由参数。proxy 判定这条路径
+//         不存在时顺手把它写进请求头（文档里 proxy → 应用之间就是靠 header 传值），这里读回来。
+//         读不到（例如有人绕过 proxy 直接 notFound()）就只出返回按钮，不猜。
+// INTENT: 权限走一次 bootstrap，只为了不建议运营打不开的页面；权威服务挂了就退化成不给建议，
+//         404 页本身不能因此也挂掉。
+export default async function AdminNotFound() {
+  const [headerList, cookieStore] = await Promise.all([headers(), cookies()]);
+  const { locale } = readAdminShellPreferences((name) => cookieStore.get(name)?.value);
+  const bootstrap = await loadAdminBootstrap(headerList).catch(() => null);
+
   return (
-    <main className="grid min-h-screen place-items-center bg-[var(--ad-canvas)] p-6 text-[var(--ad-ink)]">
-      <section className="max-w-md rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-6">
-        <h1 className="text-xl font-semibold">未找到后台工作区</h1>
-        <p className="mt-2 text-sm text-[var(--ad-text-muted)]">此路由不属于当前控制面信息架构。</p>
-        <Link className="mt-5 inline-flex min-h-11 items-center rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white" href="/admin/today">返回今日工作</Link>
-      </section>
-    </main>
+    <AdminNotFoundPage
+      attemptedPath={headerList.get(ADMIN_UNKNOWN_PATH_HEADER)}
+      locale={locale}
+      permissions={bootstrap?.permissions ?? []}
+    />
   );
 }
