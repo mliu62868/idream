@@ -10,6 +10,7 @@ import {
   canReadAnyWorkspace,
   defaultOpenNavGroups,
   defaultWorkModeForRole,
+  missingWorkspacePermissions,
   navGroupsForPermissions,
   navItems,
   parseAdminPath,
@@ -173,6 +174,18 @@ describe("permission and work-mode navigation", () => {
     expect(sectionIsPermitted("content/assets", new Set(["creative.asset.read"]))).toBe(true);
     expect(sectionIsPermitted("content/placements", new Set(["creative.placement.read"]))).toBe(true);
     expect(sectionIsPermitted("content/assets", new Set(["content.asset.read"]))).toBe(false);
+  });
+
+  // SPEC: 拒绝页要能说出差哪几个键——只报 read.allOf 里真实缺失的，不多不少。
+  it("names exactly the read keys a denied workspace is missing", () => {
+    const characters = navItems.find((item) => item.id === "content/official")!;
+    expect(missingWorkspacePermissions(characters, new Set())).toEqual(characters.read.allOf);
+    expect(missingWorkspacePermissions(characters, new Set(["character.project.read"])))
+      .toEqual(["character.release.read", "character.performance.read"]);
+    expect(missingWorkspacePermissions(characters, new Set(characters.read.allOf))).toEqual([]);
+    // 持有无关的键不能让缺失列表变短。
+    expect(missingWorkspacePermissions(characters, new Set(["audit.read"])))
+      .toEqual(characters.read.allOf);
   });
 
   it("allows bootstrap when any exact workspace predicate is satisfied", () => {

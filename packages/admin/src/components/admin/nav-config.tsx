@@ -350,6 +350,17 @@ export function canReadWorkspace(navItem: NavItem, permissions: ReadonlySet<Admi
   return navItem.read.allOf.every((permission) => permissions.has(permission));
 }
 
+// SPEC: 这个工作台还差哪些 read 键——原样返回 read.allOf 里当前没有的那几个。
+// INTENT: 拒绝页原先只说"你的有效权限键不包含此能力"，运营既不知道差什么、也不知道找谁，
+//         唯一能做的就是关掉页面。差哪几个键是能从导航契约里如实算出来的，就必须说出来；
+//         至于"为什么没有"、"该找谁批"——前端推不出来，也就一个字都不编。
+export function missingWorkspacePermissions(
+  navItem: NavItem,
+  permissions: ReadonlySet<AdminPermissionKey>,
+): AdminPermissionKey[] {
+  return navItem.read.allOf.filter((permission) => !permissions.has(permission));
+}
+
 export function canReadAnyWorkspace(permissions: ReadonlySet<AdminPermissionKey>) {
   return ALL_SECTION_ITEMS.some((navItem) => canReadWorkspace(navItem, permissions));
 }

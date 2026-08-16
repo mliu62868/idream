@@ -205,6 +205,47 @@ describe("canonical Admin route shell", () => {
     expect(source).not.toContain('"content/official"');
   });
 
+  // SPEC: 拒绝页必须给出下一步：缺哪几个键、在哪儿授予、授予者需要什么。
+  // INTENT: 原文案只说"你没权限"，运营在这一页唯一能做的就是关掉它。
+  it("tells a denied operator which permission keys are missing and where they are granted", () => {
+    const markup = renderToString(
+      <AdminConsoleClient
+        {...shellProps({
+          initialSection: "characters",
+          initialPermissions: ["character.project.read"],
+        })}
+      />,
+    );
+
+    expect(markup).toContain('data-testid="admin-section-permission-denied"');
+    expect(markup).toContain("character.release.read");
+    expect(markup).toContain("character.performance.read");
+    // 已经持有的那个键不该出现在"缺少"清单里。
+    expect(markup).not.toContain(">character.project.read<");
+    expect(markup).toContain("Team Access");
+    expect(markup).toContain("user.role.write");
+  });
+
+  // SPEC: 「团队访问」的入口只在运营真读得进去时才给——否则只是第二堵墙。
+  it("only links Team Access to an operator who can actually open it", () => {
+    const withoutUserRead = renderToString(
+      <AdminConsoleClient
+        {...shellProps({ initialSection: "characters", initialPermissions: ["character.project.read"] })}
+      />,
+    );
+    const withUserRead = renderToString(
+      <AdminConsoleClient
+        {...shellProps({
+          initialSection: "characters",
+          initialPermissions: ["character.project.read", "user.read"],
+        })}
+      />,
+    );
+
+    expect(withoutUserRead).not.toContain('href="/admin/system/access"');
+    expect(withUserRead).toContain('href="/admin/system/access"');
+  });
+
   it("uses an accessible drawer instead of a horizontal link strip below desktop", async () => {
     const source = await readFile(
       path.resolve(adminRoot, "../../components/admin/AdminConsoleClient.tsx"),
