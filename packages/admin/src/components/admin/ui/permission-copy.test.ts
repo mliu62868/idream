@@ -19,6 +19,14 @@ describe("permissionLabel", () => {
     expect(leaked).toEqual([]);
   });
 
+  // SPEC: 调用点存在 `as AdminPermissionKey`，断言错了不能白屏。
+  it("falls back to an honest phrase instead of crashing on an unmapped key", () => {
+    const label = permissionLabel("not.a.real.permission" as never);
+
+    expect(label).toBe("An admin capability");
+    expect(label).not.toContain("not.a.real.permission");
+  });
+
   it("has a Chinese translation for every capability name", () => {
     expect(PERMISSION_LABEL_KEYS.filter((key) => !hasAdminZh(key))).toEqual([]);
   });

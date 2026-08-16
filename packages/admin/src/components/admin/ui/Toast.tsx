@@ -109,7 +109,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     (input: ToastInput) => {
       nextToastId += 1;
       const id = `toast-${nextToastId}`;
-      setToasts((current) => [...current, { ...input, id }].slice(-MAX_VISIBLE));
+      setToasts((current) => trimToVisible([...current, { ...input, id }]));
       const ttl = AUTO_DISMISS_MS[input.tone];
       if (ttl !== null) timers.current.set(id, window.setTimeout(() => dismiss(id), ttl));
       return id;
@@ -129,6 +129,17 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         : null}
     </ToastContext>
   );
+}
+
+// SPEC: 超出 MAX_VISIBLE 时，优先挤掉最旧的**非**失败项。
+// INTENT: 「失败不会自己消失」是这套 toast 对运营的承诺。批量操作里攒下几条错误，再来一条
+//         成功就把最早那条错误顶掉——承诺就破了，而且破得无声无息。成功和信息是可丢的，
+//         失败不是；实在全是失败才丢最旧的那条。
+function trimToVisible(items: readonly Toast[]): Toast[] {
+  if (items.length <= MAX_VISIBLE) return [...items];
+  const evictable = items.findIndex((item) => item.tone !== "error");
+  const evictAt = evictable === -1 ? 0 : evictable;
+  return [...items.slice(0, evictAt), ...items.slice(evictAt + 1)];
 }
 
 const TONE_CLASS: Record<ToastTone, string> = {
@@ -175,12 +186,12 @@ function ToastViewport({
               <p className="text-sm font-semibold">{item.title}</p>
               {item.description ? <p className="mt-1 text-xs">{item.description}</p> : null}
               {item.action ? (
+                // INTENT: 点行动链接**不**收起这条 toast。行动槽位现在挂的是「复制给工程」，
+                //         点完就把错误抹掉，等于运营刚复制完就失去了要转述的那段话，
+                //         粘贴没成功连重来一次都做不到。要关就自己点 ✕。
                 <button
                   className="mt-2 text-xs font-semibold underline underline-offset-2"
-                  onClick={() => {
-                    item.action?.onClick();
-                    onDismiss(item.id);
-                  }}
+                  onClick={item.action.onClick}
                   type="button"
                 >
                   {item.action.label}

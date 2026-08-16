@@ -69,10 +69,20 @@ const PERMISSION_LABEL: Record<AdminPermissionKey, string> = {
   "experiment.manage": "Managing experiments",
 };
 
-/** 该权限允许做什么，i18n key；渲染处 t() 一次。 */
+/** SPEC: 表里没有这个码时的说法——照实说不知道，不拿权限码充数。 */
+const UNNAMED_CAPABILITY = "An admin capability";
+
+/**
+ * 该权限允许做什么，i18n key；渲染处 t() 一次。
+ * INTENT: 参数类型已经保证了命中，但调用点存在 `as AdminPermissionKey`（下拉框的值是
+ *         string），断言错了就会渲染 undefined 直接白屏。兜一句体面的话比崩掉强。
+ */
 export function permissionLabel(key: AdminPermissionKey): string {
-  return PERMISSION_LABEL[key];
+  return PERMISSION_LABEL[key] ?? UNNAMED_CAPABILITY;
 }
 
 /** 全部能力名 —— 由 permission-copy.test.ts 逐个核对中文存在。 */
-export const PERMISSION_LABEL_KEYS: readonly string[] = Object.values(PERMISSION_LABEL);
+export const PERMISSION_LABEL_KEYS: readonly string[] = [
+  ...Object.values(PERMISSION_LABEL),
+  UNNAMED_CAPABILITY,
+];

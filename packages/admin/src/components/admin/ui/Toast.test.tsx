@@ -67,6 +67,31 @@ describe("ToastProvider", () => {
     expect(document.body.querySelectorAll('[data-testid="admin-action-status"]')).toHaveLength(2);
   });
 
+  // SPEC: 行动链接不收起 toast。
+  // INTENT: 「复制给工程」点完就把错误抹掉的话，运营刚复制完就失去了要转述的那段话。
+  it("keeps the failure on screen after its action link is used", async () => {
+    const copied: string[] = [];
+    await render(<ActionFixture onAction={(text) => copied.push(text)} />);
+    await act(async () => click("fire"));
+    await act(async () => click("Copy for engineering"));
+
+    expect(copied).toEqual(["copied once"]);
+    expect(liveToast()).not.toBeNull();
+    expect(liveToast()?.textContent).toContain("Refund failed");
+  });
+
+  // SPEC: 溢出时先挤掉可丢的（success/info），别让「失败不会自己消失」变成空话。
+  it("evicts a success before an unread failure when the stack overflows", async () => {
+    await render(<OverflowFixture />);
+    await act(async () => click("fill"));
+
+    const tones = [...document.body.querySelectorAll('[data-testid="admin-action-status"]')].map(
+      (node) => node.getAttribute("data-tone"),
+    );
+    expect(tones).toHaveLength(4);
+    expect(tones.filter((tone) => tone === "error")).toHaveLength(4);
+  });
+
   it("turns an authority failure into operator copy with a details escape hatch", async () => {
     await render(<FailureFixture />);
     await act(async () => click("fail"));
@@ -108,6 +133,42 @@ function Fixture({ title, tone }: { title: string; tone: "success" | "error" | "
   return (
     <button onClick={() => toast({ title, tone })} type="button">
       fire
+    </button>
+  );
+}
+
+function ActionFixture({ onAction }: { onAction: (text: string) => void }) {
+  const { toast } = useToast();
+  return (
+    <button
+      onClick={() =>
+        toast({
+          tone: "error",
+          title: "Refund failed",
+          action: { label: "Copy for engineering", onClick: () => onAction("copied once") },
+        })
+      }
+      type="button"
+    >
+      fire
+    </button>
+  );
+}
+
+function OverflowFixture() {
+  const { toast } = useToast();
+  return (
+    <button
+      onClick={() => {
+        // 先攒 4 条失败，再来一条成功——成功该被丢掉，而不是顶掉最早那条失败。
+        for (let index = 0; index < 4; index += 1) {
+          toast({ tone: "error", title: `Failure ${index}` });
+        }
+        toast({ tone: "success", title: "Unrelated success" });
+      }}
+      type="button"
+    >
+      fill
     </button>
   );
 }

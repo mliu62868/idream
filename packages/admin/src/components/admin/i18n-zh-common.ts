@@ -36,6 +36,7 @@ export const adminZhCommon: Record<string, string> = {
   "All": "全部",
   "All authorized work, filtered and ranked by the same authority as Summary.":
     "按照与摘要相同的权威规则筛选并排序全部已授权工作。",
+  "An admin capability": "某项后台能力",
   "Analytics": "分析",
   "Anchor images": "锚点图片",
   "Announcements": "公告",
