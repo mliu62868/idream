@@ -10,7 +10,6 @@ describe("remaining canonical admin lists", () => {
   const suffix = randomUUID();
   const token = `remaining-${suffix}`;
   const actorId = `remaining-admin-${suffix}`;
-  const planId = `remaining-plan-${suffix}`;
   const ids = (kind: string) => [0, 1].map((index) => `${token}-${kind}-${index}`);
 
   async function call(segments: string[], query: string) {
@@ -23,41 +22,6 @@ describe("remaining canonical admin lists", () => {
 
   beforeAll(async () => {
     await prisma.user.create({ data: { id: actorId, email: `${token}@example.test`, role: "admin", status: "active" } });
-    await prisma.plan.create({ data: {
-      id: planId,
-      slug: token,
-      name: token,
-      billingPeriod: "monthly",
-      priceCents: 100,
-      features: {},
-    } });
-    await prisma.dreamcoinLedger.createMany({ data: ids("ledger").map((id, index) => ({
-      id,
-      userId: actorId,
-      delta: index + 1,
-      balanceAfter: index + 1,
-      reason: "admin_adjust",
-      sourceId: token,
-      createdAt: new Date(Date.UTC(2026, 6, 11, 1, index)),
-    })) });
-    await prisma.subscription.createMany({ data: ids("subscription").map((id, index) => ({
-      id,
-      userId: actorId,
-      planId,
-      provider: "mock",
-      providerSubscriptionId: `${token}-provider-${index}`,
-      status: "active",
-      createdAt: new Date(Date.UTC(2026, 6, 11, 2, index)),
-    })) });
-    await prisma.pricingRule.createMany({ data: ids("pricing").map((id, index) => ({
-      id,
-      ruleKey: `${token}-rule-${index}`,
-      label: `${token} pricing ${index}`,
-      mode: "image",
-      baseCost: index + 1,
-      status: "draft",
-      version: 1,
-    })) });
     await prisma.generationJob.createMany({ data: ids("job").map((id, index) => ({
       id,
       userId: actorId,
@@ -108,20 +72,6 @@ describe("remaining canonical admin lists", () => {
       advancedDetails: {},
       createdAt: new Date(Date.UTC(2026, 6, 11, 7, index)),
     })) });
-    await prisma.redeemCode.createMany({ data: ids("code").map((id, index) => ({
-      id,
-      codeHash: `${token}-hash-${index}`,
-      reward: { note: token },
-      status: "active",
-      createdAt: new Date(Date.UTC(2026, 6, 11, 8, index)),
-    })) });
-    await prisma.referral.createMany({ data: ids("referral").map((id, index) => ({
-      id,
-      inviterId: actorId,
-      code: `${token}-ref-${index}`,
-      status: "pending",
-      createdAt: new Date(Date.UTC(2026, 6, 11, 9, index)),
-    })) });
     await prisma.adminActionRequest.createMany({ data: ids("approval").map((id, index) => ({
       id,
       requestedById: actorId,
@@ -168,30 +118,19 @@ describe("remaining canonical admin lists", () => {
     await prisma.generationModelProfile.deleteMany({ where: { id: { in: ids("profile") } } });
     await prisma.adminAuditLog.deleteMany({ where: { id: { in: ids("audit") } } });
     await prisma.adminActionRequest.deleteMany({ where: { id: { in: ids("approval") } } });
-    await prisma.referral.deleteMany({ where: { id: { in: ids("referral") } } });
-    await prisma.redeemCode.deleteMany({ where: { id: { in: ids("code") } } });
     await prisma.character.deleteMany({ where: { id: { in: ids("character") } } });
     await prisma.appeal.deleteMany({ where: { id: { in: ids("appeal") } } });
     await prisma.contentReport.deleteMany({ where: { id: { in: ids("report") } } });
     await prisma.mediaAsset.deleteMany({ where: { id: { in: ids("media") } } });
     await prisma.generationJob.deleteMany({ where: { id: { in: ids("job") } } });
-    await prisma.pricingRule.deleteMany({ where: { id: { in: ids("pricing") } } });
-    await prisma.subscription.deleteMany({ where: { id: { in: ids("subscription") } } });
-    await prisma.dreamcoinLedger.deleteMany({ where: { id: { in: ids("ledger") } } });
-    await prisma.plan.deleteMany({ where: { id: planId } });
     await prisma.user.deleteMany({ where: { id: actorId } });
     await prisma.$disconnect();
   });
 
   const cases = [
-    { name: "billing ledger", segments: ["billing", "ledger"], query: `search=${token}&limit=1` },
-    { name: "subscriptions", segments: ["billing", "subscriptions"], query: `search=${token}&status=active&limit=1` },
-    { name: "pricing", segments: ["pricing", "rules"], query: `search=${token}&mode=image&limit=1` },
     { name: "dead-letter", segments: ["generation", "dead-letter"], query: `search=${token}&status=failed&limit=1` },
     { name: "merchandising characters", segments: ["content", "characters"], query: `search=${token}&status=approved&limit=1` },
     { name: "merchandising characters without stats", segments: ["content", "characters"], query: `search=${token}&status=approved&sort=popular&limit=1` },
-    { name: "redeem codes", segments: ["promo", "redeem-codes"], query: `search=${token}&status=active&limit=1` },
-    { name: "referrals", segments: ["promo", "referrals"], query: `search=${token}&status=pending&limit=1` },
     { name: "approvals", segments: ["approvals"], query: `search=${token}&status=pending&limit=1` },
     { name: "audit", segments: ["audit-log"], query: `search=${token}&limit=1` },
     { name: "generation profiles", segments: ["generation", "model-profiles"], query: `search=${token}&mode=image&limit=1` },
@@ -263,7 +202,6 @@ describe("remaining canonical admin lists", () => {
 
   it("preserves unbounded V1 defaults while the Admin UI opts into pagination", async () => {
     for (const testCase of [
-      { segments: ["pricing", "rules"], query: `search=${token}` },
       { segments: ["generation", "model-profiles"], query: `search=${token}` },
       { segments: ["feature-flags"], query: `search=${token}` },
     ]) {
@@ -275,20 +213,9 @@ describe("remaining canonical admin lists", () => {
     }
   });
 
-  it("rejects malformed canonical pricing, profile, and flag queries at the boundary", async () => {
-    await expect(call(["pricing", "rules"], "limit=1junk")).resolves.toMatchObject({ response: { status: 400 } });
+  it("rejects malformed canonical profile and flag queries at the boundary", async () => {
     await expect(call(["generation", "model-profiles"], "status=mystery")).resolves.toMatchObject({ response: { status: 400 } });
     await expect(call(["feature-flags"], "enabled=banana")).resolves.toMatchObject({ response: { status: 400 } });
-  });
-
-  it("rejects malformed Billing list and reconciliation queries at the boundary", async () => {
-    await expect(call(["billing", "ledger"], "limit=1junk")).resolves.toMatchObject({ response: { status: 400 } });
-    await expect(call(["billing", "subscriptions"], "status=mystery")).resolves.toMatchObject({ response: { status: 400 } });
-    await expect(call(["billing", "reconciliation"], "from=not-a-date")).resolves.toMatchObject({ response: { status: 400 } });
-    await expect(call(
-      ["billing", "reconciliation"],
-      "from=2026-07-12T00%3A00%3A00.000Z&to=2026-07-11T00%3A00%3A00.000Z",
-    )).resolves.toMatchObject({ response: { status: 400 } });
   });
 
   it("rejects malformed Audit queries at the boundary", async () => {

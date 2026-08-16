@@ -37,7 +37,22 @@ describe("Admin v2 billing reads", () => {
     });
     await prisma.dreamcoinLedger.createMany({
       data: [
-        { id: `${token}-ledger-customer`, userId: customerId, delta: 10, balanceAfter: 10, reason: "signup_bonus" },
+        {
+          id: `${token}-ledger-customer`,
+          userId: customerId,
+          delta: 10,
+          balanceAfter: 10,
+          reason: "signup_bonus",
+          createdAt: new Date(Date.UTC(2026, 6, 11, 1, 0)),
+        },
+        {
+          id: `${token}-ledger-customer-2`,
+          userId: customerId,
+          delta: 5,
+          balanceAfter: 15,
+          reason: "signup_bonus",
+          createdAt: new Date(Date.UTC(2026, 6, 11, 1, 1)),
+        },
         { id: `${token}-ledger-fixture`, userId: fixtureId, delta: 20, balanceAfter: 20, reason: "signup_bonus" },
         { id: `${token}-ledger-internal`, userId: internalId, delta: 30, balanceAfter: 30, reason: "admin_adjust" },
       ],
@@ -51,6 +66,16 @@ describe("Admin v2 billing reads", () => {
           provider: "mock",
           providerSubscriptionId: `${token}-provider-customer`,
           status: "active",
+          createdAt: new Date(Date.UTC(2026, 6, 11, 2, 0)),
+        },
+        {
+          id: `${token}-subscription-customer-2`,
+          userId: customerId,
+          planId,
+          provider: "mock",
+          providerSubscriptionId: `${token}-provider-customer-2`,
+          status: "active",
+          createdAt: new Date(Date.UTC(2026, 6, 11, 2, 1)),
         },
         {
           id: `${token}-subscription-fixture`,
@@ -73,6 +98,7 @@ describe("Admin v2 billing reads", () => {
   });
 
   afterAll(async () => {
+    await prisma.checkoutSession.deleteMany({ where: { userId: { in: [customerId, fixtureId, internalId] } } });
     await prisma.subscription.deleteMany({ where: { id: { startsWith: token } } });
     await prisma.dreamcoinLedger.deleteMany({ where: { id: { startsWith: token } } });
     await prisma.plan.deleteMany({ where: { id: planId } });
@@ -95,12 +121,11 @@ describe("Admin v2 billing reads", () => {
       kind: "customer",
       includedDataClasses: ["customer"],
     });
-    expect(result.data.items).toEqual([
-      expect.objectContaining({
-        id: `${token}-ledger-customer`,
-        userId: customerId,
-      }),
+    expect(result.data.items.map((item: { id: string }) => item.id).sort()).toEqual([
+      `${token}-ledger-customer`,
+      `${token}-ledger-customer-2`,
     ]);
+    expect(result.data.items[0]).toMatchObject({ userId: customerId });
   });
 
   it("lists only customer subscriptions and declares the customer scope", async () => {
@@ -116,15 +141,76 @@ describe("Admin v2 billing reads", () => {
       kind: "customer",
       includedDataClasses: ["customer"],
     });
-    expect(result.data.items).toEqual([
-      expect.objectContaining({
-        id: `${token}-subscription-customer`,
-        userId: customerId,
-        plan: token,
-        status: "active",
-        provider: "mock",
-      }),
+    expect(result.data.items.map((item: { id: string }) => item.id).sort()).toEqual([
+      `${token}-subscription-customer`,
+      `${token}-subscription-customer-2`,
     ]);
+    expect(result.data.items[0]).toMatchObject({
+      userId: customerId,
+      plan: token,
+      status: "active",
+      provider: "mock",
+    });
+  });
+
+  it("paginates ledger and subscriptions with a query-bound cursor", async () => {
+    for (const [route, path, query] of [
+      [ledgerRoute, "billing/ledger", { search: token, limit: "1" }],
+      [subscriptionsRoute, "billing/subscriptions", { search: token, status: "active", limit: "1" }],
+    ] as const) {
+      const first = await adminV2Route(route, {
+        path,
+        userId: actorId,
+        role: "admin",
+        query,
+      });
+      expectOk(first);
+      expect(first.data.items).toHaveLength(1);
+      expect(first.data.pageInfo).toMatchObject({
+        hasNextPage: true,
+        endCursor: expect.any(String),
+      });
+
+      const second = await adminV2Route(route, {
+        path,
+        userId: actorId,
+        role: "admin",
+        query: { ...query, cursor: first.data.pageInfo.endCursor as string },
+      });
+      expectOk(second);
+      expect(second.data.items).toHaveLength(1);
+      expect(second.data.items[0].id).not.toBe(first.data.items[0].id);
+
+      // 游标绑定发出它的那次查询；换了过滤条件就必须失效。
+      const mismatch = await adminV2Route(route, {
+        path,
+        userId: actorId,
+        role: "admin",
+        query: { ...query, search: "different", cursor: first.data.pageInfo.endCursor as string },
+      });
+      expectError(mismatch, 400, "bad_request");
+    }
+  });
+
+  it("rejects malformed billing list and reconciliation queries at the boundary", async () => {
+    expectError(await adminV2Route(ledgerRoute, {
+      path: "billing/ledger",
+      userId: actorId,
+      role: "admin",
+      query: { limit: "1junk" },
+    }), 400);
+    expectError(await adminV2Route(subscriptionsRoute, {
+      path: "billing/subscriptions",
+      userId: actorId,
+      role: "admin",
+      query: { status: "mystery" },
+    }), 400);
+    expectError(await adminV2Route(reconciliationRoute, {
+      path: "billing/reconciliation",
+      userId: actorId,
+      role: "admin",
+      query: { from: "not-a-date" },
+    }), 400);
   });
 
   it("gates every billing read behind billing.read", async () => {
@@ -151,10 +237,12 @@ describe("Admin v2 billing reads", () => {
   });
 
   it("reconciles ledger by reason over the window with one active-subscription count", async () => {
+    // 显式给窗口：夹具的账本分录带固定 createdAt，默认的「近 30 天」窗口盖不到它们。
     const result = await adminV2Route(reconciliationRoute, {
       path: "billing/reconciliation",
       userId: actorId,
       role: "admin",
+      query: { from: "2026-07-01T00:00:00.000Z" },
     });
 
     expectOk(result);
@@ -167,8 +255,8 @@ describe("Admin v2 billing reads", () => {
         .map((row) => [row.reason, row]),
     );
     // 全局窗口聚合，断言用 >=/<= 以兼容同库里的其他测试数据。
-    expect(byReason.signup_bonus?.totalDelta).toBeGreaterThanOrEqual(10);
-    expect(result.data.totals.entries).toBeGreaterThanOrEqual(1);
+    expect(byReason.signup_bonus?.totalDelta).toBeGreaterThanOrEqual(15);
+    expect(result.data.totals.entries).toBeGreaterThanOrEqual(2);
     expect(typeof result.data.activeSubscriptions).toBe("number");
     // internal 用户的 admin_adjust 分录不属于 customer 口径，所以它不会出现在这份聚合里。
     expect(byReason.admin_adjust?.totalDelta ?? 0).not.toBe(30);

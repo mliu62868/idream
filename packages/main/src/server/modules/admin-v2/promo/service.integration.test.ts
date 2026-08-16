@@ -213,6 +213,64 @@ describe.sequential("Admin v2 promo: redeem codes + referrals", () => {
     expect(JSON.stringify(audit)).not.toContain("WELCOME50");
   });
 
+  it("paginates redeem codes and referrals with a query-bound cursor", async () => {
+    const codeIds = [0, 1].map((index) => `${P}page-code-${index}`);
+    const referralIds = [0, 1].map((index) => `${P}page-referral-${index}`);
+    await prisma.redeemCode.createMany({
+      data: codeIds.map((id, index) => ({
+        id,
+        codeHash: `${P}page-hash-${index}`,
+        reward: { dreamcoins: 5 },
+        status: "active",
+        createdAt: new Date(Date.UTC(2026, 6, 11, 8, index)),
+      })),
+    });
+    await prisma.referral.createMany({
+      data: referralIds.map((id, index) => ({
+        id,
+        inviterId: adminId,
+        code: `${P}page-ref-${index}`,
+        status: "pending",
+        createdAt: new Date(Date.UTC(2026, 6, 11, 9, index)),
+      })),
+    });
+    try {
+      for (const [route, path, query] of [
+        [listCodesRoute, "promo/redeem-codes", { search: `${P}page-code`, status: "active", limit: "1" }],
+        [listReferralsRoute, "promo/referrals", { search: `${P}page-referral`, status: "pending", limit: "1" }],
+      ] as const) {
+        const first = await adminV2Route(route, { path, userId: adminId, role: "admin", query });
+        expectOk(first);
+        expect(first.data.items).toHaveLength(1);
+        expect(first.data.pageInfo).toMatchObject({
+          hasNextPage: true,
+          endCursor: expect.any(String),
+        });
+
+        const second = await adminV2Route(route, {
+          path,
+          userId: adminId,
+          role: "admin",
+          query: { ...query, cursor: first.data.pageInfo.endCursor as string },
+        });
+        expectOk(second);
+        expect(second.data.items).toHaveLength(1);
+        expect(second.data.items[0].id).not.toBe(first.data.items[0].id);
+
+        const mismatch = await adminV2Route(route, {
+          path,
+          userId: adminId,
+          role: "admin",
+          query: { ...query, search: "different", cursor: first.data.pageInfo.endCursor as string },
+        });
+        expectError(mismatch, 400, "bad_request");
+      }
+    } finally {
+      await prisma.referral.deleteMany({ where: { id: { in: referralIds } } });
+      await prisma.redeemCode.deleteMany({ where: { id: { in: codeIds } } });
+    }
+  });
+
   it("lists referrals behind growth.promo.read", async () => {
     expectOk(await adminV2Route(listReferralsRoute, {
       path: "promo/referrals",
