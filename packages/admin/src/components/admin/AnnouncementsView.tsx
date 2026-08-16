@@ -7,6 +7,7 @@ import { ChevronRight, Loader2, Plus, RefreshCcw, Search, Trash2 } from "lucide-
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { adminV2Request } from "@/lib/admin-v2-api";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { StatusPill } from "@/components/admin/ui/StatusPill";
 import { useWriteFeedback, WriteFeedbackBanner } from "@/components/admin/section-kit";
 import {
   announcementListPath,
@@ -221,7 +222,7 @@ export function AnnouncementsView() {
               <tr key={item.id} className="border-b border-[var(--ad-border)]">
                 <td className="px-3 py-2">{item.title}</td>
                 <td className="px-3 py-2 text-[var(--ad-text-muted)]">{valueLabel(item.level)}</td>
-                <td className="px-3 py-2">{item.active ? t("yes") : t("no")}</td>
+                <td className="px-3 py-2"><StatusPill label={item.active ? t("Active") : t("Inactive")} status={item.active ? "active" : "disabled"} /></td>
                 <td className="px-3 py-2 text-right">
                   <div className="flex justify-end gap-2">
                     <button

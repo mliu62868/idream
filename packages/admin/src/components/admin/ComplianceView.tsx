@@ -8,6 +8,7 @@ import { Download, FileDown, Loader2, RefreshCcw, ShieldAlert, Trash2 } from "lu
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
+import { StatusPill } from "@/components/admin/ui/StatusPill";
 import { useWriteFeedback, WriteFeedbackBanner } from "@/components/admin/section-kit";
 import {
   authorityRequestFailed,
@@ -387,7 +388,13 @@ function AgeVerificationSection() {
       {authority.loading && authority.data === null ? (
         <p className="px-3 py-6 text-sm text-[var(--ad-text-muted)]" role="status">{t("Loading…")}</p>
       ) : null}
-      {authority.data ? <table className="w-full text-left text-sm">
+      {/* INVARIANT: userId 是 UUID，窄屏必须在表内横滚——否则整页被撑出横向滚动条。 */}
+      {authority.data ? <div
+        aria-label={t("{caption} scrollable table", { caption: t("Compliance records") })}
+        className="overflow-x-auto"
+        role="region"
+        tabIndex={0}
+      ><table className="w-full min-w-[720px] text-left text-sm">
         <caption className="sr-only">{t("Compliance records")}</caption>
         <thead className="border-b border-[var(--ad-border)] text-xs text-[var(--ad-text-muted)]">
           <tr>
@@ -403,7 +410,7 @@ function AgeVerificationSection() {
             <tr key={row.id} className="border-b border-[var(--ad-border)]">
               <td className="px-3 py-2 font-mono text-xs">{row.userId}</td>
               <td className="px-3 py-2">{row.provider}</td>
-              <td className="px-3 py-2 text-[var(--ad-text-muted)]">{valueLabel(row.status)}</td>
+              <td className="px-3 py-2"><StatusPill status={row.status} /></td>
               <td className="px-3 py-2">{row.jurisdiction ?? "—"}</td>
               <td className="px-3 py-2 text-right">
                 <div className="flex justify-end gap-2">
@@ -446,7 +453,7 @@ function AgeVerificationSection() {
             </tr>
           ) : null}
         </tbody>
-      </table> : null}
+      </table></div> : null}
     </section>
   );
 }
